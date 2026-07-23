@@ -145,22 +145,59 @@ Shell form is what users type interactively. Expression form is what
 appears inside `${…}` interpolation in scripts and logpoint messages.
 Both compile to the same `node_call` underneath.
 
-`${…}` evaluates an expression and substitutes its formatted value
-into the surrounding string. Inside, `$name` is an alias lookup (see
-below); a bare path is a `node_get` (or, with one trailing argument
-list in expression form, a `node_call`); literals and operators
-work the way they do in C, with truthiness following the proposal's
-falsy rules (empty string, "false", "0", any error).
+`${…}` (inside a double-quoted string) evaluates an expression and
+splices its formatted value. Inside expression mode, a bare path is a
+`node_get` (or, with a trailing call-form argument list, `node_call`);
+`$name` reads a binding; literals and operators work the way they do
+in C. Truthiness is per kind (shell v2 §3.6): numbers ≠ 0, non-empty
+strings/lists/bytes, `none` never, and errors are not truth values —
+an error reaching a condition aborts.
 
-`$name` is the alias surface. Two tiers:
+`$name` is the unified binding surface (shell v2 §3.4/§3.5): scoped
+`let` bindings first, then the alias table, whose entries behave as
+**reference bindings** — they store path text and re-resolve on every
+access, so they survive `machine.boot`:
 
 - **Built-in aliases** are registered by subsystems at `*_init` time.
   `cpu_init` sets up `$pc` → `machine.cpu.pc`, `$d0` → `machine.cpu.d0`, … . Re-
   registering with the same target is a no-op, so repeated machine
   boots are safe.
-- **User aliases** are added at runtime via `shell.alias.add`. They
-  cannot collide with built-ins or reserved words, and they don't
-  persist across the process.
+- **User aliases** are added with the `alias NAME = PATH` statement
+  (or `shell.alias.add`). They cannot collide with built-ins or
+  reserved words, and they don't persist across the process.
+
+### Reserved words (shell v2 §3.11)
+
+Statement keywords: `let`, `alias`, `if`, `elif`, `else`, `while`,
+`for`, `in`, `break`, `continue`, `return`, `def`, `assert`. Literals:
+`true`, `false`, `none`. Held: `do`. These may not be used as member,
+alias, or binding names (`object_validate_name`). `on`/`off`/`yes`/`no`
+are **not** reserved — they remain accepted as input coercions for
+bool-typed argument slots only.
+
+### Library conventions (shell v2 §6)
+
+- **Methods return data; surfaces do the printing.** Search results
+  come back as lists (`find.str(...)` → list of addresses; empty =
+  not found; `[0]` is the first hit). `*.list` printers are retired:
+  an indexed collection read without an index (`debug.breakpoints.entries`)
+  returns the entry objects as a list, and the REPL renders a list of
+  same-class objects as a table.
+- **Success/failure flows as value-or-`V_ERROR`**, never a printed
+  message plus a bool. `V_BOOL` returns are reserved for methods whose
+  *answer* is a boolean (`storage.path_exists`).
+- **Absence is never `none`.** "Not found" is an empty collection;
+  failure is `V_ERROR`; `none` is the script-side no-value.
+- **Named arguments replace spec strings.** `debug.logpoints.add
+  addr=0x16A width=l mode=write level=5 message="…"` — no flag
+  grammars inside strings.
+- **Deferred evaluation is a parameter type.** `OBJ_ARG_TEMPLATE`
+  slots store the raw string body; the subsystem evaluates it at fire
+  time with per-fire bindings (`$value`/`$addr`/`$size` for logpoint
+  messages).
+- **Tree layout:** emulated hardware lives under `machine.*`; tooling
+  and session surfaces (`debug`, `find`, `scheduler`, `shell`,
+  `storage`) live at the root.
 
 ## Typed dispatch validation
 

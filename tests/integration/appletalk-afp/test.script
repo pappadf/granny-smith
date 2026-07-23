@@ -21,7 +21,7 @@
 # Mouse coordinates are Mac global (512x342); each press/release is
 # bracketed by short runs so the guest polls the transitions.
 
-machine.rtc.time = 2026-04-26T21:30:36
+machine.rtc.time = "2026-04-26T21:30:36"
 
 # Boot to the Finder desktop (same budget as the scsi test).
 scheduler.run 30000000
@@ -29,8 +29,8 @@ scheduler.run 30000000
 # Register the host share BEFORE AppleTalk activates, as the legacy UI did
 # (shares.add returns V_NONE; verify through the entries collection).
 appletalk.shares.add "My Volume" /tmp
-assert ${appletalk.shares.entries[0].name == "My Volume"} "share not registered"
-assert ${appletalk.shares.entries[0].path == "/tmp"} "share path wrong"
+assert appletalk.shares.entries[0].name == "My Volume" "share not registered"
+assert appletalk.shares.entries[0].path == "/tmp" "share path wrong"
 
 # Apple menu → Chooser (press at the menu title, drag down, release).
 machine.adb.mouse.move 25 10

@@ -129,119 +129,92 @@ budget.
 
 ## 4. The shell grammar
 
-### 4.1 Four input shapes
+The shell speaks the **v2 script language** (see
+`docs/core/shell/shell.md`): parse first, evaluate second; one binding
+namespace behind the `$` sigil; interpolation only inside strings.
 
-The shell accepts exactly four shapes:
+### 4.1 Statements
 
-1. **Bare path read** — `machine.cpu.pc`, `machine.memory.ram_size`, `machine.id`,
-   `machine.scsi.bus.phase`. Prints the value using the attribute's declared
-   formatter (e.g. `machine.cpu.pc` → `0x40826cc6` because the attribute has a
-   hex flag).
-2. **Setter** — `machine.cpu.d0 = 0x1234`, `machine.sound.enabled = false`. The RHS is
-   parsed using the attribute's declared kind. Hex / decimal /
-   `true`/`false` are accepted as literals; computed values go inside
-   `${...}` (see 4.2).
-3. **Shell-form method call** — `path arg1 arg2`, whitespace-separated:
-   `debug.breakpoints.add 0x40802A14`, `machine.screen.save "/tmp/x.png"`,
-   `find.str "Apple" $0x40800000..$0x40810000`. Strings with spaces are
-   double-quoted. Top-level call form `path(arg, arg)` is not accepted
-   — that syntax is reserved for inside `${...}`.
-4. **Expression in argument or interpolation** — `${expr}` evaluates and
-   is spliced into the surrounding context. Use it as a method argument
-   (`machine.cpu.d0 = ${machine.cpu.pc + 4}`), inside a string
-   (`echo "pc=${machine.cpu.pc}"`), or as the predicate to `assert`/the source
-   for `echo`. A bare `${expr}` typed as a whole line does not print —
-   the daemon re-dispatches the substituted text as a command and
-   errors with "Unknown command" on the value. To print an expression,
-   wrap it: `echo ${machine.cpu.pc + 4}`.
+```
+machine.cpu.pc                      # bare path -> read & print
+machine.cpu.d0 = machine.cpu.pc + 4 # typed attribute write (RHS is an expression)
+machine.cpu.step 1000               # method call, argument mode
+machine.memory.peek.l(0x400)        # call form; works in any expression
+let t0 = scheduler.host_user_ns     # create binding; read back as $t0
+$t0 = $t0 + 1                       # mutate (error if undeclared)
+alias d = machine.floppy.drive[0]   # reference binding (re-resolves per use)
+echo "pc=${machine.cpu.pc:08x}"     # ${...} interpolation inside strings
+assert machine.cpu.pc == 0x40800090 "boot stalled"
+if machine.cpu.d0 == 0 { echo "zero" }
+while machine.cpu.pc != $t0 { debug.step 1 }
+for addr in find.str("Apple", 0x40800000, 0x40810000) { echo "${$addr:08x}" }
+def where() { return "pc=${machine.cpu.pc:08x}" }
+```
 
-### 4.2 `${expr}` interpolation
+Multi-line blocks open with `{` at end-of-line and close with `}` on
+its own line (`} elif COND {` / `} else {` join the closer); the REPL
+shows a `... ` continuation prompt while a block is open. Inline blocks
+hold exactly one statement.
 
-`${...}` is the form of expression substitution in the shell. It works
-in two places:
+In **argument mode** (after a command path) bare words are strings —
+`machine.floppy.drive[0].insert /tmp/fd0.image` needs no quotes; use
+`"..."` (interpolating), `'...'` (raw), `$binding`, `(expr)`, or
+`name=value` named arguments for everything else. Everywhere else is
+**expression mode**: bare identifiers are object paths, `$name` reads a
+binding, and the C-like operator set applies.
 
-- **As an argument**: the result is spliced into the command line.
-  `machine.cpu.d0 = ${machine.cpu.pc + 4}`, `assert ${machine.cpu.pc == 0x40800090}`,
-  `echo ${machine.cpu.pc + 4}`.
-- **Inside a double-quoted string literal**: the result is
-  interpolated textually. `echo "pc=${machine.cpu.pc} d0=${machine.cpu.d0}"`.
+### 4.2 Expressions and `${...}`
 
-Inside `${...}` the body is a typed expression:
-
-- arithmetic / bitwise / comparison / logical / ternary operators with
-  C-like precedence: `+ - * / % << >> & | ^ == != < > <= >= && || ! ~ ?:`.
-  Operators only work inside `${...}` — `machine.cpu.d0 = machine.cpu.pc + 4` at the
-  top level is a syntax error.
-- literals: `42`, `0x1234`, `0b1010`, `0o17`, `$1234`, `0d100`, `1.0`,
-  `"text"`, `true`/`false`/`on`/`off`/`yes`/`no`.
-- bare identifiers are paths (`machine.cpu.pc`, `machine.memory.ram_size`); they are
-  not alias-resolved here. Aliases require an explicit `$` prefix even
-  inside `${...}`: `${$pc + 4}` works, `${pc + 4}` errors with "path
-  'pc' did not resolve."
-- method calls use call form with parens and commas:
-  `${machine.memory.peek.l(0x400)}`, `${debug.breakpoints.add(0x400100)}`,
-  `${debug.mac.globals.read("MBState")}`. Shell-form is not accepted
-  here.
-- indexed children use brackets:
-  `${debug.breakpoints[3].addr}`, `${machine.floppy.drive[0].present}`.
-  Indices are stable global IDs (sparse, never reused) — the first
-  breakpoint added in a fresh process is `[0]`, the next `[1]`, and
-  removing one leaves a hole.
-- short-circuit: `&&` and `||` skip the unused arm. Errors propagate
-  and count as falsy.
-- truthiness: `assert ${...}` succeeds when the predicate is truthy;
-  numbers are truthy iff non-zero, strings iff non-empty, lists iff
-  non-empty, errors are always falsy.
-- format spec: an optional trailing `:fmt` controls the to-string
-  conversion. The default (no spec) uses the value's native formatter,
-  which respects the attribute's hex/decimal flag. Supported specs:
+`${expr}` lives **only inside double-quoted strings** and splices the
+expression's formatted value; `${expr:fmt}` applies a format spec:
 
   | Spec        | Effect                                           |
   |-------------|--------------------------------------------------|
-  | (none)      | native formatter (e.g. `machine.cpu.pc` → `0x4080002a`)  |
+  | (none)      | native formatter (e.g. `machine.cpu.pc` -> `0x4080002a`) |
   | `:d`        | force decimal                                    |
-  | `:x` / `:X` | force lowercase / uppercase hex (no `$` prefix)  |
+  | `:x` / `:X` | force lowercase / uppercase hex (no prefix)      |
   | `:s`        | string passthrough (rejects non-strings)         |
-  | `:<W>d`     | space-padded decimal: `${42:5d}` → `"   42"`     |
-  | `:0<W>x`    | zero-padded hex: `${machine.cpu.pc:08x}` → `"4080002a"`  |
+  | `:<W>d`     | space-padded decimal: `${42:5d}` -> `"   42"`    |
+  | `:0<W>x`    | zero-padded hex: `${machine.cpu.pc:08x}`         |
   | `:%<printf>`| printf-style escape hatch: `${name:%-10s}`       |
 
-  Padding-sensitive specs need to be quoted at the call site if the
-  result is consumed as a single argument: an unquoted `${0xab:8X}`
-  produces `      AB`, which the line tokenizer then splits on
-  whitespace. Wrap in `"..."` (`echo "${0xab:8X}"`) to keep it intact.
+Expression-mode extras: `a..b` half-open integer ranges,
+`try(EXPR, FALLBACK)` (the only catch mechanism), `error(msg)`,
+`range(start, stop[, step])`, `len(x)`, and the `none` literal (equal
+only to itself, falsy). Errors are not truth values — an error reaching
+`if`/`while`/`for` aborts the script; probe expected failures with
+`try(..., none) == none`. Indexed children use brackets
+(`debug.breakpoints[3].addr`); list results index too (`$hits[0]`).
 
-### 4.3 Aliases
+### 4.3 Bindings and aliases
 
-`shell.alias.list` shows the live set. Built-in aliases cover the CPU
-register file: `pc`, `sr`, `ccr`, `ssp`, `usp`, `msp`, `vbr`, `sp`,
-`d0..d7`, `a0..a7`, `fpcr`, `fpsr`, `fpiar`, `fp0..fp7`. Mac low-memory
-globals are not aliased — read them via
-`debug.mac.globals.read("Name")`.
-
-User aliases:
+`$name` resolves scoped `let` bindings first, then the alias table.
+Aliases are **reference bindings**: they store path text, re-resolve on
+every access (so they survive `machine.boot`), and write through
+(`$pc = 0x400128`). Built-ins cover the CPU register file: `pc`, `sr`,
+`ccr`, `ssp`, `usp`, `msp`, `vbr`, `sp`, `d0..d7`, `a0..a7`, `fpcr`,
+`fpsr`, `fpiar`, `fp0..fp7`. Mac low-memory globals are not aliased —
+read them via `debug.mac.globals.read("Name")`.
 
 ```
-shell.alias.add foo machine.cpu.d0
+alias foo = machine.cpu.d0        # statement form
+shell.alias.add foo machine.cpu.d0  # method form (same table)
 shell.alias.remove foo
+let d = machine.floppy.drive[0]   # snapshot: object handle; goes stale on reboot
 ```
-
-Resolution: `$name` is alias substitution. There is no auto-fallthrough
-to "try as a root child"; root paths are always written without `$`.
-Inside `${...}`, alias substitution still requires the leading `$`.
 
 ### 4.4 Top-level root methods
 
 Shown by `methods emu` (or `methods` with no argument):
-`objects`, `attributes`, `methods`, `help`, `time`, `quit`, `assert`,
-`echo`, `download`.
+`objects`, `attributes`, `methods`, `help`, `time`, `quit`, `echo`,
+`download`. (`assert` is a statement keyword, not a method.)
 
 ```
-echo "hello"                              # → hello
-echo "pc=${machine.cpu.pc} d0=${machine.cpu.d0}"          # → pc=0x40826cc6 d0=0x0
-assert ${machine.cpu.pc == 0x40826cc6}            # → ASSERT OK: true
-assert ${machine.cpu.pc == 0} "boot stalled"      # → ASSERT FAILED: boot stalled
-time                                      # → 1778263528 (Unix epoch)
+echo "hello"                                      # -> hello
+echo "pc=${machine.cpu.pc} d0=${machine.cpu.d0}"  # -> pc=0x40826cc6 d0=0x0
+assert machine.cpu.pc == 0x40826cc6               # silent on success
+assert machine.cpu.pc == 0 "boot stalled"         # -> ASSERT FAILED: boot stalled
+time                                              # -> 1778263528 (Unix epoch)
 ```
 
 ## 5. Introspection — discover what's there
@@ -355,15 +328,16 @@ machine.memory.poke.l 0x10000 0xdeadbeef                      # write
 machine.memory.dump 0x100 32                                  # hex+ASCII
 machine.memory.read_cstring 0x40800030                        # null-terminated string
 
-find.str "Apple" $0x40800000..$0x40810000             # half-open range
-find.long 0x4170706c $0x40800000..$0x40810000         # 32-bit BE
-find.bytes "4e 75" "$0x40800000..$0x40810000 all"     # range + "all" as one quoted arg
+find.str "Apple" 0x40800000 0x40810000        # start, end (inclusive)
+find.long 0x4170706c 0x40800000 0x40810000    # 32-bit BE
+find.bytes "4e 75" 0x40800000 0x40810000      # hex byte string
 ```
 
-Range syntax: `$<start>..$<end>` half-open, or `$<start> <count>`.
-Append `all` to lift the default 16-hit cap. Ranges are passed as a
-single `rest` string argument; quote them when in doubt:
-`find.str "Apple" "$0x40800000..$0x40810000 all"`.
+Each `find.*` method returns the **complete list of match addresses**
+(empty list = not found; `$hits[0]` is the first hit). Omitting
+`start`/`end` scans the whole address space — prefer explicit ranges;
+a full-space scan crosses IO regions and is slow. Iterate results with
+`for addr in find.str(...) { ... }` or capture with `let`.
 
 **Inspection is side-effect-free and crash-proof.** `peek` / `dump` /
 `poke` / `read_cstring` / `peek.bytes` and `find.*` use a debug
@@ -382,22 +356,23 @@ daemon and silently bus-error the guest you were inspecting.)
 
 ### 6.5 Memory logpoints (no-halt watchers)
 
-`debug.logpoints.add` takes a single string spec re-tokenised into the
-logpoint grammar. Wrap the spec in **single quotes** so the shell
-leaves any `${...}` placeholders intact for the logpoint parser to
-expand at fire time:
+`debug.logpoints.add` takes named arguments (shell v2 §6.2); the
+`message=` slot is a **fire-time template** (§6.3) — its string body is
+stored raw and evaluated on every fire:
 
 ```
-debug.logpoints.add '0x40800090 "hello pc=${machine.cpu.pc}"'
-debug.logpoints.add '--write 0x16A.l "Ticks bumped pc=${machine.cpu.pc} val=${lp.value}"'
-debug.logpoints.add '--read  L:0x1200D0C3.b'
-debug.logpoints.list
+debug.logpoints.add addr=0x40800090 message="hello pc=${machine.cpu.pc}"
+debug.logpoints.add addr=0x16A width=l mode=write level=5 message="Ticks pc=${machine.cpu.pc} val=${$value:08x}"
+debug.logpoints.add addr=0x1200D0C3 mode=read width=b space=physical
+debug.logpoints.entries
 debug.logpoints.clear
 ```
 
-Spec components: `[--write|--read|--rw]` (PC logpoint when omitted),
-`[L:|P:]<addr>[.b|.w|.l]`, `"message"`, `level=<n>`,
-`category=<name>` (default `logpoint` for PC, `memory` for read/write).
+Arguments: `addr` (required), `mode` (`pc` default / `read` / `write`
+/ `rw`), `width` (`b`/`w`/`l`, memory modes), `end` (range), `message`
+(template), `level`, `category` (default `logpoint` for PC, `memory`
+for read/write), `value` (fire only on matching value), `space`
+(`logical`/`physical`).
 
 **Memory logpoints only see CPU accesses.** They hook the CPU
 read/write path, so they do **not** fire on bus-master DMA or other
@@ -407,15 +382,11 @@ a gdb hardware watchpoint on the host address (the RAM image base plus
 the physical offset) or an emulator-side trace in the device's transfer
 loop, not a logpoint.
 
-Single quotes opt out of `${...}` substitution entirely — the body is
-passed through to the logpoint parser verbatim, so deferred
-placeholders survive. Inside double quotes `${...}` is expanded
-immediately (useful only when you want the *current* value baked into
-the message text). Available placeholders at fire time: `${machine.cpu.pc}`,
-`${machine.cpu.d0}`, …, `${lp.value}`, `${lp.addr}`, `${lp.size}`,
-`${lp.instruction_pc}`, `${machine.memory.peek.b(addr)}`,
-`${machine.memory.read_cstring(addr)}`. Streaming output requires the matching
-log category to be enabled — `debug.log "memory" 1`.
+Available in message templates at fire time: any expression
+(`${machine.cpu.pc}`, `${machine.memory.peek.b(0x400)}`,
+`${machine.memory.read_cstring(0x40800030)}`) plus the per-fire
+bindings `$value`, `$addr`, `$size` (memory modes). Streaming output
+requires the matching log category to be enabled — `debug.log memory 1`.
 
 ### 6.6 Mac low-memory globals
 
@@ -512,7 +483,7 @@ spec string (`level=5 file=/tmp/cpu.log ts=on`).
 ```
 machine.floppy.create "/tmp/blank.dsk"                        # 800K blank, auto-mounts
 machine.floppy.drive[0].insert "/tmp/blank.dsk"              # mount into drive 0
-echo ${machine.floppy.drive[0].present}                      # true
+echo "${machine.floppy.drive[0].present}"                    # true
 machine.floppy.drive[0].eject                                # zero-arg call
 
 machine.scsi.attach_hd "tests/data/hd/system.img" 0
@@ -574,36 +545,26 @@ Conventions:
 
 ## 7. Pitfalls
 
-- **Operators only work inside `${...}`.** `machine.cpu.d0 = machine.cpu.pc + 4` at the
-  top level is a syntax error; write `machine.cpu.d0 = ${machine.cpu.pc + 4}`.
-- **Top-level `path(arg)` is rejected** — the call form is reserved for
-  inside `${...}`. At the prompt use shell form: `machine.cpu.step 1000`,
-  `debug.breakpoints.add 0x400`. Inside `${...}` use call form:
-  `${machine.cpu.step(1000)}`, `${debug.breakpoints.add(0x400)}`.
-- **Aliases require `$`.** `${pc}` errors; `${$pc}` works. Bare `pc`
-  is treated as a path against the root, which fails.
-- **Padding-sensitive format specs need quoting.** An unquoted
-  `${0xab:8X}` expands to `      AB`, which the line tokenizer splits
-  on whitespace. Quote the substitution (`echo "${0xab:8X}"`) when the
-  consumer wants it as a single token.
+- **Errors abort scripts.** In v2 the first failed statement aborts the
+  script (and a bare read of an empty slot is an error). Probe expected
+  failures with `try(EXPR, none) == none` instead of relying on
+  error-and-continue.
+- **Scripts print nothing implicitly.** A bare `machine.cpu.pc` line is
+  silent in a script (it prints at the interactive prompt); wrap in
+  `echo "${machine.cpu.pc}"` when the log line matters.
+- **Bindings need `$` on every read.** `let t0 = ...` then `$t0`;
+  mutating an undeclared name (`$typo = 1`) errors instead of creating.
+- **Padding-sensitive format specs**: `${0xab:8X}` inside a string
+  keeps its spaces (`echo "[${0xab:8X}]"`).
 - **Indexed children are keyed by stable id, not position.** A fresh
   process numbers from 0; subsequent `clear` + `add` keeps incrementing
   ids monotonically (sparse, never recycled). A stale id surfaces as
-  `'breakpoints[<id>]' is empty` (the diagnostic names the parent
-  object that the user typed) — read the id from the `add` result and
-  use that.
-- **Indexed-child reads of attributes work both at the top level and
-  inside `${...}`** (`debug.breakpoints[<id>].addr`,
-  `machine.floppy.drive[0].present`), but the index must resolve to a live
-  entry: a stale id gives "entries[N] is empty" rather than
-  dispatching. Method calls on indexed entries also work in both forms
-  — shell-form at the prompt (`machine.floppy.drive[0].insert "/tmp/x.dsk"`,
-  `debug.breakpoints[<id>].remove`) and call-form inside expressions
-  (`${debug.breakpoints[<id>].remove()}`).
-- **Logpoint specs need single quotes for deferred `${...}`.** The
-  shell substitutor expands `${...}` immediately inside double-quoted
-  strings; wrap the whole logpoint spec in `'...'` so placeholders
-  reach the logpoint parser intact (`debug.logpoints.add '0x... "${machine.cpu.pc}"'`).
+  `'breakpoints[<id>]' is empty` — read the id from the `add` result
+  (it returns the entry object) and use that. Index-less reads
+  (`debug.breakpoints.entries`) return the whole collection as a list.
+- **Template strings evaluate at fire time.** `message="...${$value}..."`
+  is stored raw because the slot is template-typed; every *other*
+  double-quoted string interpolates immediately at statement time.
 - **VIA timer interrupts don't fire during single-step.** Use
   `scheduler.run N` instead of `debug.step N` if timer-driven code
   needs to make progress.
@@ -625,10 +586,6 @@ Conventions:
   load, so you can stop on the "wrong" hit. Confirm with a second field
   (`machine.cpu.d2`, a count), or break at a PC where the register is known to
   hold the value.
-- **Deep `${...}` nesting has a parser limit.** More than ~3 nested
-  levels (`${machine.memory.peek.l(machine.memory.peek.l(machine.memory.peek.l(...)))}`) or many
-  `${}` groups on one line can error with `unterminated ${...}`. Capture
-  intermediate values across separate commands instead of one mega-expr.
 
 ## 8. Cross-references
 
@@ -641,7 +598,7 @@ Conventions:
 - **Integration test scripts** under `tests/integration/` are reliable
   usage examples — `tests/integration/object-eval/test.script`,
   `tests/integration/object-debug/test.script`.
-- **Script files** (`--script <path>` or `--script-stdin`) accept the
-  same line grammar plus `# comments` and `include <other.script>`.
-  The `include` directive is recognised in script files only, not
-  over the TCP shell.
+- **Script files** (`script=<path>` or `--script-stdin`) accept the
+  same statement grammar plus `# comments`; multi-line blocks are
+  parsed across lines. Over the TCP shell, lines accumulate while a
+  `{` block is open.

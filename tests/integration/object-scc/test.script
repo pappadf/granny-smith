@@ -26,12 +26,12 @@ machine.scc.b.rx_pending
 # round-trip is the real test — anything that decouples the attribute
 # from the underlying scc state shows up here as an assertion failure.
 machine.scc.loopback = true
-assert ${machine.scc.loopback == true}
+assert machine.scc.loopback == true
 machine.scc.loopback = false
-assert ${machine.scc.loopback == false}
+assert machine.scc.loopback == false
 
 # Reset method runs to completion (no return value to assert beyond
 # the absence of an error in the JSON output).
-echo ${machine.scc.reset()}
+echo "${machine.scc.reset()}"
 
 quit

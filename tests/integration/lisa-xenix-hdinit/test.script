@@ -10,9 +10,9 @@
 # Attach a blank in-memory ProFile to the parallel port (the Lisa 2/5 install
 # target).  Without it the kernel panics "pf0 not on line".
 machine.hd.attach
-assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${machine.hd.present == true} "ProFile should be attached"
+assert machine.id == "lisa" "machine.id != lisa"
+assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.hd.present == true "ProFile should be attached"
 
 # (§1.5.1) Boot the floppy to the loader's "boot :" prompt (a COPS poll loop).
 scheduler.run 60000000

@@ -36,7 +36,7 @@ while IFS= read -r -d '' f; do
         *) echo "FAIL: unexpected non-ROM/doc file in roms/: $base"; exit 1 ;;
     esac
     printf 'echo GSFILE %s\n' "$base" >> "$SCRIPT"
-    printf 'echo ${%s("%s")}\n' "$obj" "$f" >> "$SCRIPT"
+    printf 'echo "${%s(\"%s\")}"\n' "$obj" "$f" >> "$SCRIPT"
     count=$((count + 1))
 done < <(find "$ROMS_DIR" -maxdepth 1 -type f -print0 | sort -z)
 echo "quit" >> "$SCRIPT"
@@ -68,8 +68,11 @@ for ln in lines:
     if m:
         pending = m.group(1)
         continue
-    if pending is not None and '{recognised:' in ln:
-        js = ln[ln.index('{recognised:'):]
+    # v2 echoes the identify JSON verbatim (quoted keys); the v1
+    # tokenizer used to strip the quotes. Normalize both to unquoted.
+    stripped = ln.replace('"', '')
+    if pending is not None and '{recognised:' in stripped:
+        js = stripped[stripped.index('{recognised:'):]
         records.append((pending, js))
         pending = None
 

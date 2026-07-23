@@ -46,7 +46,6 @@
 #include "api.h"
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
-#include "cmd_types.h"
 #include "cpu.h"
 #include "keyboard.h"
 #include "log.h"

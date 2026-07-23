@@ -46,54 +46,54 @@
 # --- System Software 2.0 (400K) @ 1 MB RAM --------------------------
 machine.boot model="plus" ram=1024
 machine.floppy.drive[0].insert "../../data/systems/SSW-2.0-400K/System Disk.image"
-t0 = ${scheduler.host_user_ns}
+let t0 = scheduler.host_user_ns
 scheduler.run 17000000
-assert ${machine.id == "plus"}    "ssw-2.0/1M: machine.id != plus"
-assert ${machine.ram == 1024}     "ssw-2.0/1M: machine.ram != 1024"
-assert ${machine.screen.width == 512}     "ssw-2.0/1M: screen.width != 512"
-assert ${machine.screen.height == 342}    "ssw-2.0/1M: screen.height != 342"
+assert machine.id == "plus" "ssw-2.0/1M: machine.id != plus"
+assert machine.ram == 1024 "ssw-2.0/1M: machine.ram != 1024"
+assert machine.screen.width == 512 "ssw-2.0/1M: screen.width != 512"
+assert machine.screen.height == 342 "ssw-2.0/1M: screen.height != 342"
 machine.screen.match plus-ssw-2.0.png
-echo "ssw-2.0/1M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
-assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-2.0/1M: emulator throughput below 50 MIPS"
+echo "ssw-2.0/1M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 50000000 "ssw-2.0/1M: emulator throughput below 50 MIPS"
 
 # --- System Software 3.2 (400K) @ 2 MB RAM --------------------------
 machine.boot model="plus" ram=2048
 machine.floppy.drive[0].insert "../../data/systems/SSW-3.2-400K/System Installation v1.0.image"
-t0 = ${scheduler.host_user_ns}
+let t0 = scheduler.host_user_ns
 scheduler.run 24000000
-assert ${machine.id == "plus"}    "ssw-3.2/2M: machine.id != plus"
-assert ${machine.ram == 2048}     "ssw-3.2/2M: machine.ram != 2048"
-assert ${machine.screen.width == 512}     "ssw-3.2/2M: screen.width != 512"
-assert ${machine.screen.height == 342}    "ssw-3.2/2M: screen.height != 342"
+assert machine.id == "plus" "ssw-3.2/2M: machine.id != plus"
+assert machine.ram == 2048 "ssw-3.2/2M: machine.ram != 2048"
+assert machine.screen.width == 512 "ssw-3.2/2M: screen.width != 512"
+assert machine.screen.height == 342 "ssw-3.2/2M: screen.height != 342"
 machine.screen.match plus-ssw-3.2.png
-echo "ssw-3.2/2M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
-assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-3.2/2M: emulator throughput below 50 MIPS"
+echo "ssw-3.2/2M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 50000000 "ssw-3.2/2M: emulator throughput below 50 MIPS"
 
 # --- System Software 4.2 (800K) @ 2.5 MB RAM ------------------------
 machine.boot model="plus" ram=2560
 machine.floppy.drive[0].insert "../../data/systems/SSW-4.2-800K/System Tools 1.image"
-t0 = ${scheduler.host_user_ns}
+let t0 = scheduler.host_user_ns
 scheduler.run 33000000
-assert ${machine.id == "plus"}    "ssw-4.2/2.5M: machine.id != plus"
-assert ${machine.ram == 2560}     "ssw-4.2/2.5M: machine.ram != 2560"
-assert ${machine.screen.width == 512}     "ssw-4.2/2.5M: screen.width != 512"
-assert ${machine.screen.height == 342}    "ssw-4.2/2.5M: screen.height != 342"
+assert machine.id == "plus" "ssw-4.2/2.5M: machine.id != plus"
+assert machine.ram == 2560 "ssw-4.2/2.5M: machine.ram != 2560"
+assert machine.screen.width == 512 "ssw-4.2/2.5M: screen.width != 512"
+assert machine.screen.height == 342 "ssw-4.2/2.5M: screen.height != 342"
 machine.screen.match plus-ssw-4.2.png
-echo "ssw-4.2/2.5M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
-assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-4.2/2.5M: emulator throughput below 50 MIPS"
+echo "ssw-4.2/2.5M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 50000000 "ssw-4.2/2.5M: emulator throughput below 50 MIPS"
 
 # --- System Software 6.0.8 (800K) @ 4 MB RAM ------------------------
 machine.boot model="plus" ram=4096
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
-t0 = ${scheduler.host_user_ns}
+let t0 = scheduler.host_user_ns
 scheduler.run 40000000
-assert ${machine.id == "plus"}    "ssw-6.0.8/4M: machine.id != plus"
-assert ${machine.ram == 4096}     "ssw-6.0.8/4M: machine.ram != 4096"
-assert ${machine.screen.width == 512}     "ssw-6.0.8/4M: screen.width != 512"
-assert ${machine.screen.height == 342}    "ssw-6.0.8/4M: screen.height != 342"
+assert machine.id == "plus" "ssw-6.0.8/4M: machine.id != plus"
+assert machine.ram == 4096 "ssw-6.0.8/4M: machine.ram != 4096"
+assert machine.screen.width == 512 "ssw-6.0.8/4M: screen.width != 512"
+assert machine.screen.height == 342 "ssw-6.0.8/4M: screen.height != 342"
 machine.screen.match plus-ssw-6.0.8.png
-echo "ssw-6.0.8/4M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
-assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50000000} "ssw-6.0.8/4M: emulator throughput below 50 MIPS"
+echo "ssw-6.0.8/4M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 50000000 "ssw-6.0.8/4M: emulator throughput below 50 MIPS"
 
 # ====================================================================
 # SE/30 iterations
@@ -113,18 +113,18 @@ assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 50
 # --- SE/30 + System Software 6.0.8 (800K) @ 4 MB RAM ----------------
 machine.boot model="se30" ram=4096 rom="../../data/roms/iix-iicx-se30-97221136.rom"
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
-t0 = ${scheduler.host_user_ns}
+let t0 = scheduler.host_user_ns
 scheduler.run 40000000
 machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
 machine.memory.poke.w 0x017A 0
 scheduler.run 33000000
-assert ${machine.id == "se30"}    "se30-ssw-6.0.8/4M: machine.id != se30"
-assert ${machine.ram == 4096}     "se30-ssw-6.0.8/4M: machine.ram != 4096"
-assert ${machine.screen.width == 512}     "se30-ssw-6.0.8/4M: screen.width != 512"
-assert ${machine.screen.height == 342}    "se30-ssw-6.0.8/4M: screen.height != 342"
+assert machine.id == "se30" "se30-ssw-6.0.8/4M: machine.id != se30"
+assert machine.ram == 4096 "se30-ssw-6.0.8/4M: machine.ram != 4096"
+assert machine.screen.width == 512 "se30-ssw-6.0.8/4M: screen.width != 512"
+assert machine.screen.height == 342 "se30-ssw-6.0.8/4M: screen.height != 342"
 machine.screen.match se30-ssw-6.0.8.png
-echo "se30/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
+echo "se30/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
 # SE/30 floor is well below Plus's 50 MIPS because the SE/30 *boot* phase
 # emulates much more slowly than steady-state.  Measured at the time of
 # writing:
@@ -137,7 +137,7 @@ echo "se30/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_n
 # This is worth a separate perf investigation; for now the floor catches
 # anything that pushes the boot-phase cost below ~80% of the current
 # baseline.
-assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 10000000} "se30-ssw-6.0.8/4M: emulator throughput below 10 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 10000000 "se30-ssw-6.0.8/4M: emulator throughput below 10 MIPS"
 
 # --- IIcx + System Software 6.0.8 (800K) @ 4 MB RAM, 13" RGB 1bpp ----
 # Same Universal ROM and $017A wait-bypass as the SE/30 row above; the
@@ -153,7 +153,7 @@ machine.boot model="iicx" ram=4096 rom="../../data/roms/iix-iicx-se30-97221136.r
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
-t0 = ${scheduler.host_user_ns}
+let t0 = scheduler.host_user_ns
 scheduler.run 30000000
 machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
@@ -168,17 +168,17 @@ machine.adb.mouse.move 25 30 "global"
 scheduler.run 3000000
 machine.adb.mouse.click false
 scheduler.run 5000000
-assert ${machine.id == "iicx"}    "iicx-ssw-6.0.8/4M: machine.id != iicx"
-assert ${machine.ram == 4096}     "iicx-ssw-6.0.8/4M: machine.ram != 4096"
-assert ${machine.screen.width == 640}     "iicx-ssw-6.0.8/4M: screen.width != 640"
-assert ${machine.screen.height == 480}    "iicx-ssw-6.0.8/4M: screen.height != 480"
+assert machine.id == "iicx" "iicx-ssw-6.0.8/4M: machine.id != iicx"
+assert machine.ram == 4096 "iicx-ssw-6.0.8/4M: machine.ram != 4096"
+assert machine.screen.width == 640 "iicx-ssw-6.0.8/4M: screen.width != 640"
+assert machine.screen.height == 480 "iicx-ssw-6.0.8/4M: screen.height != 480"
 machine.screen.match iicx-ssw-6.0.8.png
-echo "iicx/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
+echo "iicx/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
 # Floor is well below the SE/30 row because this iteration runs only ~60 M
 # instructions to Finder-plus-About; the formula divides by *iteration*
 # host time, so a budget dominated by the (slow) cold-boot phase pulls
 # the effective MIPS down — current baseline ~8 MIPS.
-assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 5000000} "iicx-ssw-6.0.8/4M: emulator throughput below 5 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 5000000 "iicx-ssw-6.0.8/4M: emulator throughput below 5 MIPS"
 
 # --- IIcx + SSW 7.0 "Disk Tools" (800K) @ 8 MB RAM, 13" RGB 2bpp -----
 # The SSW 7.0 Disk Tools floppy ships its boot blocks as System 6.0.7 +
@@ -193,7 +193,7 @@ machine.boot model="iicx" ram=8192 rom="../../data/roms/iix-iicx-se30-97221136.r
 machine.floppy.drive[0].insert "../../data/systems/SSW-7.0-800K/Disk Tools.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
-t0 = ${scheduler.host_user_ns}
+let t0 = scheduler.host_user_ns
 scheduler.run 30000000
 machine.memory.poke.w 0x017A 0x8805
 scheduler.run 2000000
@@ -205,12 +205,12 @@ machine.adb.mouse.move 25 30 "global"
 scheduler.run 3000000
 machine.adb.mouse.click false
 scheduler.run 5000000
-assert ${machine.id == "iicx"}    "iicx-ssw-7.0/8M: machine.id != iicx"
-assert ${machine.ram == 8192}     "iicx-ssw-7.0/8M: machine.ram != 8192"
-assert ${machine.screen.width == 640}     "iicx-ssw-7.0/8M: screen.width != 640"
-assert ${machine.screen.height == 480}    "iicx-ssw-7.0/8M: screen.height != 480"
+assert machine.id == "iicx" "iicx-ssw-7.0/8M: machine.id != iicx"
+assert machine.ram == 8192 "iicx-ssw-7.0/8M: machine.ram != 8192"
+assert machine.screen.width == 640 "iicx-ssw-7.0/8M: screen.width != 640"
+assert machine.screen.height == 480 "iicx-ssw-7.0/8M: screen.height != 480"
 machine.screen.match iicx-ssw-7.0.png
-echo "iicx/ssw-7.0/8M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - t0)} MIPS"
-assert ${scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - t0) > 5000000} "iicx-ssw-7.0/8M: emulator throughput below 5 MIPS"
+echo "iicx/ssw-7.0/8M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 5000000 "iicx-ssw-7.0/8M: emulator throughput below 5 MIPS"
 
 quit

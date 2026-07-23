@@ -19,16 +19,16 @@ machine.boot model="iifx" ram=8192 video_card="display_card_24ac"
 # stable long before 100M instructions.
 scheduler.run 100000000
 
-assert ${machine.id == "iifx"} "machine.id != iifx"
+assert machine.id == "iifx" "machine.id != iifx"
 
 # The pick was honoured: the 24AC (not the default JMFB) sits in slot $9.
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "slot $9 card != 24AC"
-assert ${machine.nubus.slot[9].card.declrom.present} "declaration ROM not present"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "slot $9 card != 24AC"
+assert machine.nubus.slot[9].card.declrom.present "declaration ROM not present"
 
 # The blind-painted boot screen is visible through the card's power-on
 # display state at the conventional geometry.
-assert ${machine.screen.width == 640} "screen.width != 640"
-assert ${machine.screen.height == 480} "screen.height != 480"
-assert ${machine.screen.checksum() != 0} "screen.checksum == 0 — boot screen not visible"
+assert machine.screen.width == 640 "screen.width != 640"
+assert machine.screen.height == 480 "screen.height != 480"
+assert machine.screen.checksum() != 0 "screen.checksum == 0 — boot screen not visible"
 
 quit

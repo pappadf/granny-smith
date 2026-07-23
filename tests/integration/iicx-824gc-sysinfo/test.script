@@ -37,23 +37,23 @@ scheduler.run 280000000
 
 # The card that booted into the IIcx video slot ($9) is the 8•24 GC at 8-bpp
 # 640x480, and the REAL .GraphAccel driver brought the accelerator up.
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
-assert ${machine.screen.width == 640}                        "boot: screen width != 640"
-assert ${machine.screen.height == 480}                       "boot: screen height != 480"
-assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "boot: framebuffer not 8 bpp"
-assert ${machine.nubus.slot[9].card.gc.on == true}           "accelerator did not turn on"
-assert ${machine.nubus.slot[9].card.gc.state == "gc-on"}     "accelerator state != gc-on"
-assert ${machine.nubus.slot[9].card.gc.error == 0}           "accelerator posted an error"
-assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}        "no RPCs serviced"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $9 card != 8•24 GC"
+assert machine.screen.width == 640 "boot: screen width != 640"
+assert machine.screen.height == 480 "boot: screen height != 480"
+assert machine.nubus.slot[9].card.framebuffer.depth == 8 "boot: framebuffer not 8 bpp"
+assert machine.nubus.slot[9].card.gc.on == true "accelerator did not turn on"
+assert machine.nubus.slot[9].card.gc.state == "gc-on" "accelerator state != gc-on"
+assert machine.nubus.slot[9].card.gc.error == 0 "accelerator posted an error"
+assert machine.nubus.slot[9].card.gc.rpc_count > 0 "no RPCs serviced"
 # The System 7.1 8-bpp colour Finder desktop, card-drawn, pixel-exact.
 machine.screen.match finder-sys71-640x480-8bpp.png
 
 # --- Insert the "Utilities Disk 2" floppy into the internal drive (FD0) ------
 machine.floppy.drive[0].insert "../../data/apps/Norton-Utils-Disk-2.image"
-assert ${machine.floppy.drive[0].present} "Utilities Disk 2 not present in FD0"
+assert machine.floppy.drive[0].present "Utilities Disk 2 not present in FD0"
 scheduler.run 60000000
 # No system error must have been raised (DSErrCode/$AF0 == 0) mounting/opening.
-assert ${machine.memory.peek.w(0xaf0) == 0} "system error raised inserting Utilities Disk 2"
+assert machine.memory.peek.w(0xaf0) == 0 "system error raised inserting Utilities Disk 2"
 # The mounted disk with its window open — window frame, text and icons are all
 # card-drawn (System 7 CGrafPort window ports).
 machine.screen.match utilities-disk-sys71-640x480-8bpp.png
@@ -109,8 +109,8 @@ machine.adb.mouse.click true
 scheduler.run 1000000
 machine.adb.mouse.click false
 scheduler.run 420000000
-assert ${machine.nubus.slot[9].card.gc.error == 0}              "accelerator posted an error during the benchmark"
-assert ${machine.nubus.slot[9].card.gc.queue_bytes > 1000000}   "geometry queue drained < 1 MB (benchmark not card-drawn)"
+assert machine.nubus.slot[9].card.gc.error == 0 "accelerator posted an error during the benchmark"
+assert machine.nubus.slot[9].card.gc.queue_bytes > 1000000 "geometry queue drained < 1 MB (benchmark not card-drawn)"
 # The Display benchmark completed: "System Ratings" (Video) with the Current
 # System rating vs the Quadra 700 reference — pinned pixel-exact, so the
 # accelerated benchmark OUTCOME (rating included) is part of the contract.

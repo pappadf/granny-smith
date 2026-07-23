@@ -1085,7 +1085,7 @@ static value_t floppy_drive_method_eject(struct object *self, const member_t *m,
 }
 
 // `floppy.drives[N].insert(path, [writable])` — mount an image into this
-// specific drive. Routes through shell_fd_argv so persistence / VFS
+// specific drive. Calls system_fd_insert directly so persistence / VFS
 // resolution / drive-occupancy bookkeeping all stay in one place.
 static value_t floppy_drive_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
@@ -1093,15 +1093,7 @@ static value_t floppy_drive_method_insert(struct object *self, const member_t *m
     if (!floppy_drive_floppy(self, &slot))
         return val_err("floppy.drives.N.insert: floppy controller not available");
     bool writable = (argc >= 2) ? argv[1].b : false;
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "fd insert \"%s\" %u %s", argv[0].s, slot, writable ? "true" : "false");
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("floppy.drives.N.insert: path too long");
-    char *targv[16];
-    int targc = tokenize(line, targv, 16);
-    if (targc <= 0)
-        return val_err("floppy.drives.N.insert: tokenisation failed");
-    return val_bool(shell_fd_argv(targc, targv) == 0);
+    return val_bool(system_fd_insert(argv[0].s, (int)slot, writable) == 0);
 }
 
 static const arg_decl_t floppy_drive_insert_args[] = {

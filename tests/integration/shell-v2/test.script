@@ -1,0 +1,104 @@
+# Shell v2 language acceptance tests (proposal §13).
+
+# --- bindings: let creates, = mutates, undeclared mutation errors -------
+let x = 41
+$x = $x + 1
+assert $x == 42 "let + mutate"
+assert try(error("boom"), none) == none "try catches"
+assert none == none "none identity"
+assert (none == 0) == false "none != 0"
+assert "0" "string zero is truthy (v2 truthiness)"
+
+# --- typed values survive without text round-trips ----------------------
+let bytes_val = 0xDEAD_BEEF:4
+assert len($bytes_val) == 4 "bytes literal survives binding round-trip"
+
+# --- while re-evaluates its condition per iteration ---------------------
+let n = 0
+while $n < 3 { $n = $n + 1 }
+assert $n == 3 "while re-tests per iteration"
+
+# --- for over ranges / lists; empty range; loop-var restore -------------
+let acc = 0
+for i in 0..8 {
+  $acc = $acc + $i
+}
+assert $acc == 28 "range iteration"
+for i in 5..2 { assert false "5..2 must iterate zero times" }
+let i = 99
+for i in 0..3 { let inner = $i }
+assert $i == 99 "shadowed outer binding restored after loop"
+let hits = range(4)
+assert len($hits) == 4 "range() builtin"
+assert $hits[3] == 3 "list indexing"
+let total = 0
+for v in $hits {
+  if $v == 2 { continue }
+  if $v == 3 { break }
+  $total = $total + $v
+}
+assert $total == 1 "break/continue"
+
+# --- if / elif / else ---------------------------------------------------
+let label = ""
+if $n == 1 {
+  $label = "one"
+} elif $n == 3 {
+  $label = "three"
+} else {
+  $label = "other"
+}
+assert $label == "three" "elif chain"
+
+# --- functions: def, named args, recursion, remove ----------------------
+def fact(n) {
+  if $n <= 1 { return 1 }
+  return $n * fact($n - 1)
+}
+assert fact(5) == 120 "factorial (recursion)"
+def expect_eq(label, got, want) {
+  if $got != $want {
+    echo "FAIL: ${$label} = ${$got}, want ${$want}"
+    return false
+  }
+  return true
+}
+assert expect_eq("x", $x, 42) "function via command/call form"
+assert expect_eq(want=42, got=$x, label="x") "named function args"
+assert shell.functions.fact.name == "fact" "functions introspect"
+shell.functions.fact.remove
+assert try(fact(1), none) == none "removed function is gone"
+
+# --- aliases: reference semantics across machine.boot -------------------
+machine.boot model="plus" ram=1024
+alias myram = machine.ram
+assert $myram == 1024 "user alias reads through"
+$pc = 0x400128
+assert machine.cpu.pc == 0x400128 "builtin alias writes through"
+let drive = machine.floppy.drive[0]
+machine.boot model="plus" ram=2048
+assert $myram == 2048 "alias re-resolves after reboot"
+assert $pc == machine.cpu.pc "builtin alias survives reboot"
+assert try($drive.present, none) == none "let-captured handle is stale after reboot"
+
+# --- for over a plain integer is a type error ---------------------------
+assert try(shell.eval("for i in 8 { let z = 1 }"), none) == none "for over int is a type error"
+
+# --- entries are data; find returns lists -------------------------------
+debug.breakpoints.add 0x400100
+debug.breakpoints.add addr=0x400200 condition="machine.cpu.d0 == 0"
+assert len(debug.breakpoints.entries) == 2 "entries list"
+let seen = 0
+for bp in debug.breakpoints.entries {
+  $seen = $seen + 1
+}
+assert $seen == 2 "iterate entries"
+debug.breakpoints.clear
+
+# --- logpoint template slot (stored raw, fires with $value bound) -------
+debug.logpoints.add addr=0x16A width=l mode=write level=5 message="t=${$value:08x}"
+assert len(debug.logpoints.entries) == 1 "template logpoint added"
+debug.logpoints.clear
+
+echo "shell-v2 acceptance ok"
+quit

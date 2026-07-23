@@ -15,7 +15,7 @@ scheduler.run 1000000
 machine.sound.capture.stop
 
 # The ROM's sound-enable window is fixed: 42-VBL beep window, measured at the 10-sample scan-batch granularity.
-assert ${machine.sound.capture.frames == 15432} "unexpected capture length"
+assert machine.sound.capture.frames == 15432 "unexpected capture length"
 
 # Sample-exact compare against the golden (fails the test on any divergence).
 machine.sound.match boot-beep.wav

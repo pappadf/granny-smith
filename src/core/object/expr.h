@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "object.h"
 #include "value.h"
 
 #ifdef __cplusplus
@@ -29,17 +30,25 @@ extern "C" {
 
 struct object;
 
-// Resolver callback: turn an alias name into a path string. Caller
-// returns a pointer into its own storage; the expression evaluator does
-// not take ownership. Return NULL if `name` is not a known alias.
-typedef const char *(*expr_alias_fn)(void *ud, const char *name);
+// User-function call hook (shell v2 §3.10): when a single-segment call
+// form (`step_to(0x400128)`) does not resolve against the object tree,
+// the evaluator hands it to this hook. The shell registers its script-
+// function registry here so functions work in any expression — asserts,
+// conditions, and fire-time templates included.
+typedef value_t (*expr_func_hook_fn)(void *ud, const char *name, int argc, const value_t *argv, int named_n,
+                                     const named_arg_t *named);
+void expr_set_func_hook(expr_func_hook_fn fn, void *ud);
 
-// Bindings callback: resolve a bare identifier (no leading `$`, no
-// dots) to a value_t. Used for shell variables (`let X=42` → `${X}`)
-// at shell time and for per-fire context (`${value}`/`${addr}`/`${size}`
-// inside a logpoint message) at fire time. The evaluator queries this
-// after path/alias lookup fails. Return val_none() / V_NONE if unknown
-// — anything else (including V_ERROR) is treated as the resolved value.
+// Bindings callback: resolve `$name` to a value_t (shell v2 §3.4/§3.5).
+// One namespace, one sigil: the callback is the single lookup path for
+// `$name` in expressions, command arguments, and string interpolation.
+// The shell wires this to its scoped binding store (which itself falls
+// back to the built-in alias table, returning V_REF reference values);
+// fire-time evaluators (logpoint templates) chain their per-fire
+// bindings (`$value`/`$addr`/`$size`) in front of the shell store.
+//
+// Contract: return V_ERROR("no such binding ...") for unknown names —
+// V_NONE is a *real* value (`let x = none` must read back as none).
 // Returned value_t is OWNED by the caller of expr_eval; the binding fn
 // must produce a freshly-allocated value (or a self-contained inline
 // value like val_int that needs no free).
@@ -48,9 +57,7 @@ typedef value_t (*expr_binding_fn)(void *ud, const char *name);
 // Context bundling the bindings a single evaluation needs.
 typedef struct expr_ctx {
     struct object *root; // bare paths resolve against this; may be NULL
-    expr_alias_fn alias; // $name lookup; may be NULL
-    void *alias_ud; // user-data for alias callback
-    expr_binding_fn binding; // bare-name lookup fallback; may be NULL
+    expr_binding_fn binding; // $name lookup; may be NULL
     void *binding_ud; // user-data for binding callback
 } expr_ctx_t;
 
@@ -73,13 +80,24 @@ value_t expr_eval_at(const char **p, const expr_ctx_t *ctx);
 // values. ${ that is not closed is an error.
 value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx);
 
-// Evaluate the body of a single `${...}` substitution and return the
-// result as a freshly malloc'd, NUL-terminated string. The body may
-// carry an optional trailing `:fmt` format spec at the top level (see
-// proposal-shell-expressions §4.2.1); in that case the spec governs the
-// to-string conversion. On error the returned string is NULL and *err
-// is set to a freshly malloc'd error message (caller frees both).
-char *expr_substitute(const char *body, const expr_ctx_t *ctx, char **err);
+// Decode + interpolate a raw double-quoted string *body* in one pass
+// (shell v2 §3.3). `body` is the text between the quotes with escapes
+// NOT yet decoded. Handles `\n \t \r \0 \\ \" \' \$ \xHH` escapes,
+// `${EXPR[:FMT]}` splices, and `$name` binding splices. Returns
+// V_STRING, or V_ERROR on an unterminated `${` or a failed splice.
+// This is also the fire-time evaluator for template-typed arguments
+// (logpoint messages): store the raw body, call this per fire.
+value_t expr_interpolate_body(const char *body, const expr_ctx_t *ctx);
+
+// Parse a double-quoted string literal at *p (cursor on the opening
+// `"`), advancing past the closing quote, then decode + interpolate its
+// body via expr_interpolate_body. Returns V_STRING or V_ERROR.
+value_t expr_parse_dq_string(const char **p, const expr_ctx_t *ctx);
+
+// Scan a raw dq-string body starting just past the opening quote;
+// returns a pointer to the closing quote (skipping `\x` escapes and
+// brace-balanced `${…}` regions, which may contain quotes) or NULL.
+const char *expr_scan_dq_body(const char *q);
 
 #ifdef __cplusplus
 }

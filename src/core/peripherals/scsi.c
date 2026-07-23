@@ -2739,8 +2739,7 @@ static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m
 }
 
 // `scsi.attach_hd(path, id)` — attach a hard-disk image at the given SCSI id.
-// Routes through shell_hd_argv so the legacy attach-image plumbing stays in
-// one place.
+// Calls system_hd_attach directly.
 static value_t scsi_method_attach_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -2748,15 +2747,7 @@ static value_t scsi_method_attach_hd(struct object *self, const member_t *m, int
     int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_hd: id must be 0..6");
-    char line[1024];
-    int n = snprintf(line, sizeof(line), "hd attach \"%s\" %lld", argv[0].s, (long long)id);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("scsi.attach_hd: arguments too long");
-    char *targv[16];
-    int targc = tokenize(line, targv, 16);
-    if (targc <= 0)
-        return val_err("scsi.attach_hd: tokenisation failed");
-    return val_bool(shell_hd_argv(targc, targv) == 0);
+    return val_bool(system_hd_attach(argv[0].s, (int)id) == 0);
 }
 
 // `scsi.attach_cdrom(path, id)` — attach a CD-ROM image at the given SCSI id.

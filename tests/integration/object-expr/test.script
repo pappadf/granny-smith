@@ -9,42 +9,42 @@
 scheduler.run 50000
 
 # Pure arithmetic substitution.
-echo ${1 + 2}
-echo ${0xFF & 0x0F}
+echo "${1 + 2}"
+echo "${0xFF & 0x0F}"
 
 # Path arithmetic and alias resolution inside ${...}.
-echo ${machine.memory.rom_size + 1}
-echo ${$pc + 4}
+echo "${machine.memory.rom_size + 1}"
+echo "${$pc + 4}"
 
 # Computed breakpoint address — proposal §0 example.
-debug.breakpoints.add ${$pc + 0x10}
-debug.breakpoints.list
+debug.breakpoints.add ($pc + 0x10)
+echo "${len(debug.breakpoints.entries)} breakpoints"
 
 # Predicate assert — truthy.
-assert ${1 == 1}
-assert ${machine.memory.rom_size == 131072} "Plus ROM is 128 KiB"
+assert 1 == 1
+assert machine.memory.rom_size == 131072 "Plus ROM is 128 KiB"
 
 # Predicate assert — boolean expressions chain through.
-assert ${machine.memory.rom_size > 0 && machine.memory.ram_size > 0} "memory present"
+assert machine.memory.rom_size > 0 && machine.memory.ram_size > 0 "memory present"
 
 # V_LIST == V_STRING compares the list's canonical "[a, b]" formatting
 # (mirrors the V_ENUM == V_STRING label rule), so scripts can assert on
 # list-returning methods without list literals in the grammar.
-assert ${shell.meta.attributes == "[prompt, running, aliases, vars]"} "list == formatted string"
-assert ${shell.meta.attributes != "[prompt]"} "list != wrong string"
-assert ${(shell.meta.attributes == "prompt, running, aliases, vars") == false} "brackets are part of the formatting"
+assert shell.meta.attributes == "[prompt, running, aliases, vars]" "list == formatted string"
+assert shell.meta.attributes != "[prompt]" "list != wrong string"
+assert (shell.meta.attributes == "prompt, running, aliases, vars") == false "brackets are part of the formatting"
 
 # --- Named arguments (proposal-named-args-boot-config §3) ---
 # Shell form: unquoted name=value tokens bind to declared slots, any
 # order, mixing with positionals.
 machine.boot model="plus" ram=1024
-assert ${machine.id == "plus"} "named-arg shell-form boot"
-assert ${machine.ram == 1024} "named-arg shell-form ram"
+assert machine.id == "plus" "named-arg shell-form boot"
+assert machine.ram == 1024 "named-arg shell-form ram"
 
 # Call form: name=expr inside call parentheses; value is a full expression.
 # The ROM is inherited from the built-from record and re-staged by boot.
-t0 = ${machine.boot(ram=1024*2, model="plus")}
-assert ${machine.ram == 2048} "named-arg call-form ram"
+let t0 = machine.boot(ram=1024*2, model="plus")
+assert machine.ram == 2048 "named-arg call-form ram"
 scheduler.run 1000
 
 quit

@@ -14,7 +14,7 @@
 # Mouse geometry is in screen ("global") pixels at 640x480, 8•24 GC 13" RGB.
 
 # Create a blank HD20SC hard-disk image (21,307,392 bytes, zero-filled).
-storage.hd_create ${WORK_DIR}/blank.img HD20SC
+storage.hd_create "$WORK_DIR/blank.img" HD20SC
 
 # Select the 8•24 GC + 13" RGB 640x480 sense, boot the IIcx with 8 MB, and
 # reload the ROM so the card's declaration ROM (mdc-8-24-revb-d1629664.vrom, found
@@ -24,7 +24,7 @@ machine.boot model="iicx" ram=8192 video_card="mdc_8_24" video_sense=6
 # Attach the blank HD at SCSI ID 0 (unformatted → won't boot / won't mount),
 # and insert the SSW 6.0.8 boot floppy (Disk2of4 is the "Utilities" disk that
 # carries Apple HD SC Setup).
-machine.scsi.attach_hd ${WORK_DIR}/blank.img 0
+machine.scsi.attach_hd "$WORK_DIR/blank.img" 0
 machine.floppy.drive[0].insert "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk2of4"
 
 # Boot to the Finder desktop.  The IIcx Universal ROM otherwise burns ~16.8 s of
@@ -93,6 +93,6 @@ scheduler.run 30000000
 machine.screen.match done.png
 
 # Export the formatted HD (base + delta flattened) for inspection.
-machine.scsi.device[0].image.export ${WORK_DIR}/formatted.img
+machine.scsi.device[0].image.export "$WORK_DIR/formatted.img"
 
 quit

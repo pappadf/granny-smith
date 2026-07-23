@@ -35,6 +35,16 @@
 #include "object.h"
 #include "parse.h"
 
+// === User-function hook =====================================================
+
+static expr_func_hook_fn g_func_hook = NULL;
+static void *g_func_hook_ud = NULL;
+
+void expr_set_func_hook(expr_func_hook_fn fn, void *ud) {
+    g_func_hook = fn;
+    g_func_hook_ud = ud;
+}
+
 // === Lexer state ============================================================
 
 typedef struct lex {
@@ -87,6 +97,8 @@ static value_t parse_unary(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_postfix(lex_t *L, const expr_ctx_t *ctx);
 static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx);
 static void format_value_default(const value_t *v, char **buf, size_t *len, size_t *cap);
+static void buf_append(char **buf, size_t *len, size_t *cap, const char *s, size_t n);
+static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx);
 
 // === Numeric promotion helpers ==============================================
 //
@@ -189,6 +201,10 @@ static bool same_kind_equal(const value_t *a, const value_t *b) {
         return true;
     case V_OBJECT:
         return a->obj == b->obj;
+    case V_RANGE:
+        return a->range.start == b->range.start && a->range.stop == b->range.stop;
+    case V_REF:
+        return strcmp(a->ref ? a->ref : "", b->ref ? b->ref : "") == 0;
     default:
         return false;
     }
@@ -476,6 +492,338 @@ static bool parse_call_args(lex_t *L, const expr_ctx_t *ctx, value_t **out_argv,
     return true;
 }
 
+// Invoke the method at node `n` with an already-open call-args list
+// (cursor just past `(`). Shared by the path and binding primaries.
+static value_t call_node_with_args(lex_t *L, const expr_ctx_t *ctx, node_t n) {
+    value_t *argv = NULL;
+    call_named_t *named = NULL;
+    int argc = 0, named_n = 0;
+    if (!parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+        return val_err("bad call");
+    value_t r;
+    if (named_n > 0) {
+        named_arg_t nb[OBJ_BIND_MAX_ARGS];
+        if (named_n > OBJ_BIND_MAX_ARGS) {
+            free_call_args(argv, argc, named, named_n);
+            return val_err("too many named arguments");
+        }
+        for (int i = 0; i < named_n; i++) {
+            nb[i].name = named[i].name;
+            nb[i].value = named[i].value;
+        }
+        value_t bound[OBJ_BIND_MAX_ARGS];
+        int bound_n = 0;
+        value_t err = node_bind_args(n, argc, argv, named_n, nb, bound, &bound_n);
+        if (val_is_error(&err)) {
+            free_call_args(argv, argc, named, named_n);
+            return err;
+        }
+        r = node_call(n, bound_n, bound);
+    } else {
+        r = node_call(n, argc, argv);
+    }
+    free_call_args(argv, argc, named, named_n);
+    return r;
+}
+
+// Read optional `.ident` / `[expr]` continuation segments into sub_buf
+// (leading '.' included for non-empty paths) and detect an opening `(`.
+// Mirrors read_path_segments but produces a *relative* path.
+static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, size_t sub_size, bool *call_open) {
+    *call_open = false;
+    size_t pi = 0;
+    sub_buf[0] = '\0';
+    char ident[64];
+    while (*L->p) {
+        if (*L->p == '.') {
+            if (!(isalpha((unsigned char)L->p[1]) || L->p[1] == '_' || isdigit((unsigned char)L->p[1])))
+                break;
+            L->p++;
+            if (isdigit((unsigned char)L->p[0])) {
+                // numeric segment (indexed child spelled `.N`)
+                size_t k = 0;
+                while (isdigit((unsigned char)*L->p) && k + 2 < sizeof(ident))
+                    ident[k++] = *L->p++;
+                ident[k] = '\0';
+            } else if (!lex_read_ident(L, ident, sizeof(ident))) {
+                lex_error(L, "expected identifier after '.'");
+                return false;
+            }
+            int n = snprintf(sub_buf + pi, sub_size - pi, ".%s", ident);
+            if (n < 0 || (size_t)n >= sub_size - pi) {
+                lex_error(L, "path too long");
+                return false;
+            }
+            pi += (size_t)n;
+        } else if (*L->p == '[') {
+            L->p++;
+            value_t idx = parse_expr(L, ctx);
+            if (L->err_set) {
+                value_free(&idx);
+                return false;
+            }
+            if (val_is_error(&idx)) {
+                lex_error(L, "%s", idx.err ? idx.err : "bad index");
+                value_free(&idx);
+                return false;
+            }
+            bool ok = false;
+            int64_t iv = val_as_i64(&idx, &ok);
+            value_free(&idx);
+            if (!ok) {
+                lex_error(L, "index must be numeric");
+                return false;
+            }
+            lex_skip_ws(L);
+            if (*L->p != ']') {
+                lex_error(L, "expected ']'");
+                return false;
+            }
+            L->p++;
+            int n = snprintf(sub_buf + pi, sub_size - pi, "[%lld]", (long long)iv);
+            if (n < 0 || (size_t)n >= sub_size - pi) {
+                lex_error(L, "path too long");
+                return false;
+            }
+            pi += (size_t)n;
+        } else if (*L->p == '(') {
+            L->p++;
+            *call_open = true;
+            return true;
+        } else {
+            break;
+        }
+    }
+    return true;
+}
+
+// `$name` primary: look the binding up via ctx->binding, then apply
+// continuation segments. A V_REF binding re-resolves its stored path on
+// every access (reference semantics, §3.5); a V_OBJECT binding resolves
+// segments relative to the captured object (snapshot semantics); any
+// other kind is a plain value and admits no continuation.
+static value_t eval_binding_expr(lex_t *L, const expr_ctx_t *ctx) {
+    char ident[64];
+    if (!lex_read_ident(L, ident, sizeof(ident))) {
+        lex_error(L, "expected binding name after '$'");
+        return val_err("bad binding");
+    }
+    if (!ctx || !ctx->binding)
+        return val_err("no bindings in this context ('$%s')", ident);
+    value_t base = ctx->binding(ctx->binding_ud, ident);
+
+    // Consume any continuation segments *before* acting on a lookup
+    // error, so the cursor always advances past the whole binding path
+    // (callers like try() and assert depend on a consistent cursor).
+    char sub[256];
+    bool call_open = false;
+    if (!read_sub_segments(L, ctx, sub, sizeof(sub), &call_open)) {
+        value_free(&base);
+        return val_err("bad path after '$%s'", ident);
+    }
+    if (val_is_error(&base)) {
+        if (call_open) {
+            // Drain the argument list to keep the cursor consistent.
+            value_t *argv = NULL;
+            call_named_t *named = NULL;
+            int argc = 0, named_n = 0;
+            if (parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+                free_call_args(argv, argc, named, named_n);
+        }
+        return base; // "no such binding" / stale object — propagates
+    }
+    bool has_sub = sub[0] != '\0';
+
+    if (base.kind == V_REF) {
+        // Re-resolve stored path (+ continuation) against the root.
+        char full[512];
+        int n = snprintf(full, sizeof(full), "%s%s", base.ref ? base.ref : "", sub);
+        value_free(&base);
+        if (n < 0 || (size_t)n >= sizeof(full))
+            return val_err("reference path too long");
+        if (!ctx->root)
+            return val_err("'$%s' has no root to resolve against", ident);
+        node_t node = object_resolve(ctx->root, full);
+        if (!node_valid(node))
+            return val_err("'$%s' → '%s' did not resolve", ident, full);
+        if (call_open)
+            return call_node_with_args(L, ctx, node);
+        return node_get(node);
+    }
+
+    if (base.kind == V_LIST && has_sub && !call_open) {
+        // List indexing: `$hits[0]`, `$m[1][2]`. The continuation text
+        // holds only stringified `[N]` segments for lists.
+        const char *s = sub;
+        value_t cur = base; // owned
+        while (*s) {
+            if (*s != '[') {
+                value_free(&cur);
+                return val_err("'$%s': lists support only [index] access", ident);
+            }
+            char *endp = NULL;
+            long long idx = strtoll(s + 1, &endp, 10);
+            if (!endp || *endp != ']') {
+                value_free(&cur);
+                return val_err("'$%s': bad list index", ident);
+            }
+            if (cur.kind != V_LIST) {
+                value_free(&cur);
+                return val_err("'$%s': cannot index into a non-list", ident);
+            }
+            if (idx < 0 || (size_t)idx >= cur.list.len) {
+                size_t n = cur.list.len;
+                value_free(&cur);
+                return val_err("'$%s': index %lld out of range (len %zu)", ident, idx, n);
+            }
+            value_t item = value_dup(&cur.list.items[idx]);
+            value_free(&cur);
+            cur = item;
+            s = endp + 1;
+        }
+        return cur;
+    }
+
+    if (base.kind == V_OBJECT && (has_sub || call_open)) {
+        struct object *obj = base.obj;
+        value_free(&base);
+        if (!obj)
+            return val_err("'$%s' holds a destroyed object", ident);
+        // Resolve the relative path against the captured object.
+        const char *rel = has_sub ? sub + 1 : ""; // skip leading '.'
+        node_t node = object_resolve(obj, rel);
+        if (!node_valid(node))
+            return val_err("'$%s%s' did not resolve", ident, sub);
+        if (call_open)
+            return call_node_with_args(L, ctx, node);
+        return node_get(node);
+    }
+
+    if (has_sub || call_open) {
+        value_t e = val_err("'$%s' is not an object or reference (cannot continue path)", ident);
+        value_free(&base);
+        return e;
+    }
+    return base;
+}
+
+// === Builtins ===============================================================
+//
+// `range(start, stop[, step])`, `len(x)`, `error(msg)` are ordinary
+// call-form builtins; `try(EXPR, FALLBACK)` is a special form that
+// catches evaluation errors from its first argument (§3.9). They are
+// recognised by name in primary position, before object-tree lookup.
+
+#define EXPR_RANGE_MAX_ITEMS (1 << 20) // cap materialised range() lists
+
+static value_t eval_builtin_range(int argc, const value_t *argv) {
+    int64_t start = 0, stop = 0, step = 1;
+    bool ok = true, ok2 = true, ok3 = true;
+    if (argc == 1) {
+        stop = val_as_i64(&argv[0], &ok);
+    } else if (argc == 2) {
+        start = val_as_i64(&argv[0], &ok);
+        stop = val_as_i64(&argv[1], &ok2);
+    } else if (argc == 3) {
+        start = val_as_i64(&argv[0], &ok);
+        stop = val_as_i64(&argv[1], &ok2);
+        step = val_as_i64(&argv[2], &ok3);
+    } else {
+        return val_err("range: expected (stop), (start, stop) or (start, stop, step)");
+    }
+    if (!ok || !ok2 || !ok3)
+        return val_err("range: arguments must be integers");
+    if (step == 0)
+        return val_err("range: step must not be zero");
+    int64_t count = 0;
+    if (step > 0 && stop > start)
+        count = (stop - start + step - 1) / step;
+    else if (step < 0 && stop < start)
+        count = (start - stop + (-step) - 1) / (-step);
+    if (count > EXPR_RANGE_MAX_ITEMS)
+        return val_err("range: %lld items exceeds cap of %d", (long long)count, EXPR_RANGE_MAX_ITEMS);
+    value_t *items = count > 0 ? (value_t *)calloc((size_t)count, sizeof(value_t)) : NULL;
+    if (count > 0 && !items)
+        return val_err("range: out of memory");
+    int64_t v = start;
+    for (int64_t i = 0; i < count; i++, v += step)
+        items[i] = val_int(v);
+    return val_list(items, (size_t)count);
+}
+
+static value_t eval_builtin_len(int argc, const value_t *argv) {
+    if (argc != 1)
+        return val_err("len: expected one argument");
+    const value_t *v = &argv[0];
+    switch (v->kind) {
+    case V_STRING:
+        return val_int((int64_t)(v->s ? strlen(v->s) : 0));
+    case V_LIST:
+        return val_int((int64_t)v->list.len);
+    case V_BYTES:
+        return val_int((int64_t)v->bytes.n);
+    case V_RANGE:
+        return val_int(v->range.stop > v->range.start ? v->range.stop - v->range.start : 0);
+    default:
+        return val_err("len: takes a string, list, bytes, or range");
+    }
+}
+
+static value_t eval_builtin_error(int argc, const value_t *argv) {
+    if (argc != 1 || argv[0].kind != V_STRING)
+        return val_err("error: expected (message)");
+    return val_err("%s", argv[0].s ? argv[0].s : "");
+}
+
+// try(EXPR, FALLBACK): evaluate EXPR; on any error (runtime V_ERROR or
+// an evaluation error flagged on the lexer), evaluate and return
+// FALLBACK instead. The cursor sits just past `try(`. Note that in this
+// evaluate-while-parsing design the fallback is always evaluated (like
+// the short-circuit skip helpers); keep fallbacks side-effect free.
+static value_t eval_builtin_try(lex_t *L, const expr_ctx_t *ctx) {
+    value_t a = parse_expr(L, ctx);
+    bool failed = val_is_error(&a);
+    if (L->err_set) {
+        // Recoverable only if the cursor stopped where the ',' should
+        // be — otherwise the first argument was syntactically broken in
+        // a way we can't skip past, so keep the hard error.
+        lex_skip_ws(L);
+        if (*L->p != ',') {
+            value_free(&a);
+            return val_err("%s", L->err);
+        }
+        L->err_set = false;
+        L->err[0] = '\0';
+        failed = true;
+    }
+    lex_skip_ws(L);
+    if (*L->p != ',') {
+        value_free(&a);
+        lex_error(L, "try: expected (expr, fallback)");
+        return val_err("try: expected (expr, fallback)");
+    }
+    L->p++;
+    value_t b = parse_expr(L, ctx);
+    if (L->err_set || val_is_error(&b)) {
+        value_free(&a);
+        return b;
+    }
+    lex_skip_ws(L);
+    if (*L->p != ')') {
+        value_free(&a);
+        value_free(&b);
+        lex_error(L, "try: expected ')'");
+        return val_err("try: expected ')'");
+    }
+    L->p++;
+    if (failed) {
+        value_free(&a);
+        return b;
+    }
+    value_free(&b);
+    return a;
+}
+
 // === Primary ================================================================
 
 static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
@@ -502,50 +850,56 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         return v;
     }
 
-    // String literal — decode the body and run interpolation against
-    // ctx so `${expr}` works inside expression strings too.
+    // String literal — decode escapes and run interpolation against ctx
+    // in one pass so `${expr}` and `$name` work inside expression strings.
     if (c == '"') {
-        value_t s = parse_string_literal(&L->p);
-        if (val_is_error(&s)) {
-            lex_error(L, "%s", s.err ? s.err : "bad string");
-            return s;
-        }
-        // Run interpolation on the decoded body.
-        value_t out = expr_interpolate_string(s.s, ctx);
-        value_free(&s);
-        return out;
+        return expr_parse_dq_string(&L->p, ctx);
     }
 
-    // `$name` alias substitution.
+    // Raw string literal — no interpolation, no escapes beyond \'.
+    if (c == '\'') {
+        const char *q = L->p + 1;
+        char *buf = NULL;
+        size_t blen = 0, bcap = 0;
+        while (*q && *q != '\'') {
+            if (*q == '\\' && q[1] == '\'') {
+                buf_append(&buf, &blen, &bcap, "'", 1);
+                q += 2;
+            } else {
+                buf_append(&buf, &blen, &bcap, q, 1);
+                q++;
+            }
+        }
+        if (*q != '\'') {
+            free(buf);
+            lex_error(L, "unterminated raw string");
+            return val_err("unterminated raw string");
+        }
+        L->p = q + 1;
+        value_t v = val_str(buf ? buf : "");
+        free(buf);
+        return v;
+    }
+
+    // `$name` binding read, with path continuation (`$d.present`,
+    // `$bp[0]`) and call form (`$d.insert(...)`) through V_REF and
+    // V_OBJECT bindings (shell v2 §3.5/§3.6).
     if (c == '$') {
         L->p++;
-        char ident[64];
-        if (!lex_read_ident(L, ident, sizeof(ident))) {
-            lex_error(L, "expected alias name after '$'");
-            return val_err("bad alias");
-        }
-        const char *path = NULL;
-        if (ctx && ctx->alias)
-            path = ctx->alias(ctx->alias_ud, ident);
-        if (!path)
-            return val_err("no such alias '$%s'", ident);
-        if (!ctx || !ctx->root)
-            return val_err("alias '$%s' has no root", ident);
-        node_t n = object_resolve(ctx->root, path);
-        if (!node_valid(n))
-            return val_err("alias '$%s' → '%s' did not resolve", ident, path);
-        return node_get(n);
+        return eval_binding_expr(L, ctx);
     }
 
-    // Boolean keywords (treated as primary literals, not paths).
+    // Literal keywords (treated as primary literals, not paths).
     if (isalpha((unsigned char)c) || c == '_') {
         // Snapshot the position so we can rewind and treat as path if
         // not a literal.
         const char *save = L->p;
-        // Try literals (true/false/on/off/yes/no).
+        // Try literals (true/false/none).
         value_t lit = parse_literal(&L->p, NULL, 0);
         if (lit.kind == V_BOOL)
             return lit;
+        if (lit.kind == V_NONE)
+            return lit; // the `none` literal (§3.9)
         // Other literal kinds returned by parse_literal: V_STRING (bare
         // ident — handled below as path) or V_ERROR. Discard and parse
         // as a path-or-call.
@@ -557,19 +911,30 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         bool call_open = false;
         if (!read_path_segments(L, ctx, path_buf, sizeof(path_buf), &call_open))
             return val_err("bad path");
-        // Bare-identifier bindings fallback: if path_buf is a single
-        // segment (no dots) with no call, the binding callback gets
-        // first crack. Used for shell variables (`let X=42`) and for
-        // per-eval scope (`${value}`/`${addr}`/`${size}` inside a
-        // logpoint message). Bindings are queried BEFORE object_resolve
-        // so a fire-time `${value}` doesn't get shadowed by an unrelated
-        // root-attached `value` if one ever shows up.
-        bool bare_ident = !call_open && strchr(path_buf, '.') == NULL;
-        if (bare_ident && ctx && ctx->binding) {
-            value_t bound = ctx->binding(ctx->binding_ud, path_buf);
-            if (bound.kind != V_NONE)
-                return bound;
-            value_free(&bound);
+        // Builtins (§3.6): recognised by name in call form, before
+        // object-tree lookup. `try` is a special form (lazy w.r.t.
+        // errors); the rest evaluate their args normally.
+        if (call_open && strchr(path_buf, '.') == NULL) {
+            if (strcmp(path_buf, "try") == 0)
+                return eval_builtin_try(L, ctx);
+            if (strcmp(path_buf, "range") == 0 || strcmp(path_buf, "len") == 0 || strcmp(path_buf, "error") == 0) {
+                value_t *argv = NULL;
+                call_named_t *named = NULL;
+                int argc = 0, named_n = 0;
+                if (!parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+                    return val_err("bad call");
+                value_t r;
+                if (named_n > 0)
+                    r = val_err("%s: named arguments not supported", path_buf);
+                else if (strcmp(path_buf, "range") == 0)
+                    r = eval_builtin_range(argc, argv);
+                else if (strcmp(path_buf, "len") == 0)
+                    r = eval_builtin_len(argc, argv);
+                else
+                    r = eval_builtin_error(argc, argv);
+                free_call_args(argv, argc, named, named_n);
+                return r;
+            }
         }
         if (!ctx || !ctx->root) {
             // No root bound — path resolution is a runtime error (not a
@@ -591,49 +956,36 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
                 value_t *argv = NULL;
                 call_named_t *named = NULL;
                 int argc = 0, named_n = 0;
-                if (parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+                if (!parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
+                    return val_err("bad call");
+                // Unresolved single-segment call form → user function.
+                if (g_func_hook && strchr(path_buf, '.') == NULL) {
+                    named_arg_t nb[OBJ_BIND_MAX_ARGS];
+                    value_t r;
+                    if (named_n > OBJ_BIND_MAX_ARGS) {
+                        r = val_err("too many named arguments");
+                    } else {
+                        for (int i = 0; i < named_n; i++) {
+                            nb[i].name = named[i].name;
+                            nb[i].value = named[i].value;
+                        }
+                        r = g_func_hook(g_func_hook_ud, path_buf, argc, argv, named_n, nb);
+                    }
                     free_call_args(argv, argc, named, named_n);
+                    return r;
+                }
+                free_call_args(argv, argc, named, named_n);
             }
             return val_err("path '%s' did not resolve", path_buf);
         }
-        if (call_open) {
-            value_t *argv = NULL;
-            call_named_t *named = NULL;
-            int argc = 0, named_n = 0;
-            if (!parse_call_args(L, ctx, &argv, &argc, &named, &named_n))
-                return val_err("bad call");
-            value_t r;
-            if (named_n > 0) {
-                // Bind named arguments against the method's declared slots,
-                // then call with the resulting positional argv.
-                named_arg_t nb[OBJ_BIND_MAX_ARGS];
-                if (named_n > OBJ_BIND_MAX_ARGS) {
-                    free_call_args(argv, argc, named, named_n);
-                    return val_err("too many named arguments");
-                }
-                for (int i = 0; i < named_n; i++) {
-                    nb[i].name = named[i].name;
-                    nb[i].value = named[i].value;
-                }
-                value_t bound[OBJ_BIND_MAX_ARGS];
-                int bound_n = 0;
-                value_t err = node_bind_args(node, argc, argv, named_n, nb, bound, &bound_n);
-                if (val_is_error(&err)) {
-                    free_call_args(argv, argc, named, named_n);
-                    return err;
-                }
-                r = node_call(node, bound_n, bound);
-            } else {
-                r = node_call(node, argc, argv);
-            }
-            free_call_args(argv, argc, named, named_n);
-            return r;
-        }
+        if (call_open)
+            return call_node_with_args(L, ctx, node);
         return node_get(node);
     }
 
-    // Numeric / string literal via the unified literal parser.
-    if (c == '+' || c == '-' || c == '.' || c == '$' || isdigit((unsigned char)c)) {
+    // Numeric literal via the unified literal parser. (`$` is the
+    // binding sigil in v2, never Mac-style hex — handled above.)
+    if (c == '+' || c == '-' || c == '.' || isdigit((unsigned char)c)) {
         value_t v = parse_literal(&L->p, NULL, 0);
         if (val_is_error(&v)) {
             lex_error(L, "%s", v.err ? v.err : "bad literal");
@@ -1115,6 +1467,39 @@ static value_t parse_bitor(lex_t *L, const expr_ctx_t *ctx) {
     return a;
 }
 
+// === Range (`a..b`) =========================================================
+//
+// Binds looser than arithmetic/bitwise, tighter than comparison (§3.6):
+// `$base..$base+4` is `$base..($base+4)`. Half-open; `a >= b` yields an
+// empty range. Endpoints must be integral (V_INT / V_UINT).
+
+static value_t parse_range_level(lex_t *L, const expr_ctx_t *ctx) {
+    value_t a = parse_bitor(L, ctx);
+    if (L->err_set || val_is_error(&a))
+        return a;
+    lex_skip_ws(L);
+    if (L->p[0] != '.' || L->p[1] != '.')
+        return a;
+    L->p += 2;
+    value_t b = parse_bitor(L, ctx);
+    if (L->err_set || val_is_error(&b)) {
+        value_free(&a);
+        return b;
+    }
+    if ((a.kind != V_INT && a.kind != V_UINT) || (b.kind != V_INT && b.kind != V_UINT)) {
+        value_free(&a);
+        value_free(&b);
+        lex_error(L, "range endpoints must be integers");
+        return val_err("range endpoints must be integers");
+    }
+    bool ok = false;
+    int64_t s = val_as_i64(&a, &ok);
+    int64_t e = val_as_i64(&b, &ok);
+    value_free(&a);
+    value_free(&b);
+    return val_range(s, e);
+}
+
 // === Relational / Equality ==================================================
 
 static int compare_numeric(const value_t *a, const value_t *b, bool *ok) {
@@ -1142,7 +1527,7 @@ static int compare_numeric(const value_t *a, const value_t *b, bool *ok) {
 }
 
 static value_t parse_relational(lex_t *L, const expr_ctx_t *ctx) {
-    value_t a = parse_bitor(L, ctx);
+    value_t a = parse_range_level(L, ctx);
     if (L->err_set || val_is_error(&a))
         return a;
     while (1) {
@@ -1160,7 +1545,7 @@ static value_t parse_relational(lex_t *L, const expr_ctx_t *ctx) {
             op = +1;
         } else
             break;
-        value_t b = parse_bitor(L, ctx);
+        value_t b = parse_range_level(L, ctx);
         if (L->err_set || val_is_error(&b)) {
             value_free(&a);
             return b;
@@ -1434,6 +1819,13 @@ static void format_value_default(const value_t *v, char **buf, size_t *len, size
     case V_ERROR:
         n = snprintf(tmp, sizeof(tmp), "<error: %s>", v->err ? v->err : "");
         break;
+    case V_REF:
+        if (v->ref)
+            buf_append(buf, len, cap, v->ref, strlen(v->ref));
+        return;
+    case V_RANGE:
+        n = snprintf(tmp, sizeof(tmp), "%lld..%lld", (long long)v->range.start, (long long)v->range.stop);
+        break;
     case V_LIST:
         buf_append(buf, len, cap, "[", 1);
         for (size_t i = 0; i < v->list.len; i++) {
@@ -1610,13 +2002,104 @@ static int find_format_colon(const char *body, size_t blen) {
     return last;
 }
 
-value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx) {
+// Dereference a V_REF value through the context root; other kinds pass
+// through unchanged. Consumes `v`.
+static value_t deref_if_ref(value_t v, const expr_ctx_t *ctx) {
+    if (v.kind != V_REF)
+        return v;
+    char path[512];
+    snprintf(path, sizeof(path), "%s", v.ref ? v.ref : "");
+    value_free(&v);
+    if (!ctx || !ctx->root)
+        return val_err("reference '%s' has no root", path);
+    node_t n = object_resolve(ctx->root, path);
+    if (!node_valid(n))
+        return val_err("reference '%s' did not resolve", path);
+    return node_get(n);
+}
+
+// The one interpolation walker (shell v2 §3.3). Handles `${EXPR[:FMT]}`
+// splices, `$name` binding splices, and — when decode_escapes is set —
+// the dq-string escapes `\n \t \r \0 \\ \" \' \$ \xHH`.
+static value_t interp_walk(const char *src, const expr_ctx_t *ctx, bool decode_escapes) {
     if (!src)
         return val_str("");
     const char *p = src;
     char *out = NULL;
     size_t len = 0, cap = 0;
     while (*p) {
+        if (decode_escapes && p[0] == '\\' && p[1]) {
+            char c2 = 0;
+            switch (p[1]) {
+            case 'n':
+                c2 = '\n';
+                break;
+            case 't':
+                c2 = '\t';
+                break;
+            case 'r':
+                c2 = '\r';
+                break;
+            case '0':
+                c2 = '\0';
+                break;
+            case '\\':
+                c2 = '\\';
+                break;
+            case '"':
+                c2 = '"';
+                break;
+            case '\'':
+                c2 = '\'';
+                break;
+            case '$':
+                c2 = '$';
+                break;
+            case 'x': {
+                if (isxdigit((unsigned char)p[2]) && isxdigit((unsigned char)p[3])) {
+                    char hex[3] = {p[2], p[3], 0};
+                    c2 = (char)strtoul(hex, NULL, 16);
+                    buf_append(&out, &len, &cap, &c2, 1);
+                    p += 4;
+                    continue;
+                }
+                free(out);
+                return val_err("bad \\x escape in string");
+            }
+            default:
+                free(out);
+                return val_err("bad escape '\\%c' in string", p[1]);
+            }
+            buf_append(&out, &len, &cap, &c2, 1);
+            p += 2;
+            continue;
+        }
+        if (p[0] == '$' && (isalpha((unsigned char)p[1]) || p[1] == '_')) {
+            // `$name` binding splice.
+            const char *q = p + 1;
+            char ident[64];
+            size_t i = 0;
+            while (*q && (isalnum((unsigned char)*q) || *q == '_')) {
+                if (i + 1 < sizeof(ident))
+                    ident[i++] = *q;
+                q++;
+            }
+            ident[i] = '\0';
+            if (!ctx || !ctx->binding) {
+                free(out);
+                return val_err("no bindings in this context ('$%s')", ident);
+            }
+            value_t v = ctx->binding(ctx->binding_ud, ident);
+            v = deref_if_ref(v, ctx);
+            if (val_is_error(&v)) {
+                free(out);
+                return v;
+            }
+            format_value_default(&v, &out, &len, &cap);
+            value_free(&v);
+            p = q;
+            continue;
+        }
         if (p[0] == '$' && p[1] == '{') {
             const char *q = p + 2;
             int depth = 1;
@@ -1675,6 +2158,14 @@ value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx) {
 
             value_t v = expr_eval(body, ctx);
             free(body);
+            v = deref_if_ref(v, ctx);
+            if (val_is_error(&v)) {
+                // A failed splice fails the whole string (§3.9) — the v1
+                // "<error: …>" inline rendering hid failures in output.
+                free(spec);
+                free(out);
+                return v;
+            }
 
             format_value_with_spec(&v, spec, &out, &len, &cap);
             free(spec);
@@ -1690,42 +2181,68 @@ value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx) {
     return r;
 }
 
-char *expr_substitute(const char *body, const expr_ctx_t *ctx, char **err) {
-    if (err)
-        *err = NULL;
-    if (!body)
-        return strdup("");
+value_t expr_interpolate_string(const char *src, const expr_ctx_t *ctx) {
+    return interp_walk(src, ctx, false);
+}
 
-    // Split off an optional `:fmt` format spec at the top level. The
-    // expression evaluator must not see it (the colon would parse as
-    // trailing garbage); the formatter takes the spec separately.
-    size_t blen = strlen(body);
-    int colon = find_format_colon(body, blen);
-    size_t expr_len = (colon >= 0) ? (size_t)colon : blen;
-    const char *fmt_spec = (colon >= 0) ? body + colon + 1 : NULL;
+value_t expr_interpolate_body(const char *body, const expr_ctx_t *ctx) {
+    return interp_walk(body, ctx, true);
+}
 
-    char *expr_buf = (char *)malloc(expr_len + 1);
-    if (!expr_buf)
-        return NULL;
-    memcpy(expr_buf, body, expr_len);
-    expr_buf[expr_len] = '\0';
-
-    value_t v = expr_eval(expr_buf, ctx);
-    free(expr_buf);
-    if (v.kind == V_ERROR) {
-        if (err)
-            *err = strdup(v.err ? v.err : "(unknown)");
-        value_free(&v);
-        return NULL;
+// Scan a raw dq-string body starting just past the opening quote.
+// Returns a pointer to the closing quote, or NULL if unterminated.
+// `${…}` regions are skipped brace-balanced (with their own inner
+// quotes), so `"${methods("find")}"` terminates at the right quote.
+const char *expr_scan_dq_body(const char *q) {
+    while (*q && *q != '"') {
+        if (*q == '\\' && q[1]) {
+            q += 2;
+            continue;
+        }
+        if (q[0] == '$' && q[1] == '{') {
+            q += 2;
+            int depth = 1;
+            while (*q && depth > 0) {
+                if (*q == '"' || *q == '\'') {
+                    char quote = *q++;
+                    while (*q && *q != quote) {
+                        if (*q == '\\' && q[1])
+                            q += 2;
+                        else
+                            q++;
+                    }
+                    if (*q)
+                        q++;
+                    continue;
+                }
+                if (*q == '{')
+                    depth++;
+                else if (*q == '}')
+                    depth--;
+                q++;
+            }
+            continue;
+        }
+        q++;
     }
+    return *q == '"' ? q : NULL;
+}
 
-    char *out = NULL;
-    size_t out_len = 0, out_cap = 0;
-    format_value_with_spec(&v, fmt_spec, &out, &out_len, &out_cap);
-    value_free(&v);
-    if (!out) {
-        // format_value_with_spec emits no chars for V_NONE; return "".
-        return strdup("");
-    }
-    return out;
+value_t expr_parse_dq_string(const char **p, const expr_ctx_t *ctx) {
+    if (!p || !*p || **p != '"')
+        return val_err("expected '\"' to start string literal");
+    const char *body = *p + 1;
+    const char *q = expr_scan_dq_body(body);
+    if (!q)
+        return val_err("unterminated string literal");
+    size_t blen = (size_t)(q - body);
+    char *copy = (char *)malloc(blen + 1);
+    if (!copy)
+        return val_err("oom");
+    memcpy(copy, body, blen);
+    copy[blen] = '\0';
+    *p = q + 1;
+    value_t v = interp_walk(copy, ctx, true);
+    free(copy);
+    return v;
 }

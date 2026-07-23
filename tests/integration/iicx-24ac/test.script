@@ -27,12 +27,12 @@ scheduler.run 200000000
 
 # The card that booted into the IIcx video slot ($9) is the 24AC, not the
 # slot-default 8•24 — i.e. machine.nubus.video_card took effect.
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "slot $9 card != 24AC"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "slot $9 card != 24AC"
 # 8-bpp colour at 640x480: MODE depth bits 7-5 == 0x40, framebuffer 8 bpp.
-assert ${machine.screen.width == 640}                        "boot: screen width != 640"
-assert ${machine.screen.height == 480}                       "boot: screen height != 480"
-assert ${(machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40} "boot: MODE depth latch != 8 bpp"
-assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "boot: framebuffer not 8 bpp"
+assert machine.screen.width == 640 "boot: screen width != 640"
+assert machine.screen.height == 480 "boot: screen height != 480"
+assert (machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40 "boot: MODE depth latch != 8 bpp"
+assert machine.nubus.slot[9].card.framebuffer.depth == 8 "boot: framebuffer not 8 bpp"
 # The 8-bpp colour Finder desktop, booted from the SCSI HD, pixel-exact.
 machine.screen.match finder-640x480-8bpp.png
 

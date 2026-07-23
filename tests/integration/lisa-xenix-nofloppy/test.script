@@ -6,10 +6,10 @@
 # "boot :" prompt is pre-filled with the default pf(0,0)xenix, so a bare Return
 # (0xC8/0x48) boots it.
 
-machine.hd.attach "${WORK_DIR}/profile.image"
-assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${machine.hd.present == true} "ProFile should be attached"
+machine.hd.attach "$WORK_DIR/profile.image"
+assert machine.id == "lisa" "machine.id != lisa"
+assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.hd.present == true "ProFile should be attached"
 
 # === No floppy: the ROM "insert diskette / STARTUP FROM…" screen =============
 scheduler.run 200000000

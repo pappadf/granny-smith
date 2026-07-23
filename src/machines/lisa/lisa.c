@@ -428,22 +428,15 @@ static bool lisa_fd_present(config_t *cfg, int drive) {
 //
 // The Lisa's drive is the 6504A FDC, not the IWM, so it gets its own small
 // object tree (the IWM `floppy` object in floppy.c is bound to a floppy_t).
-// `insert` routes through the same shell_fd_argv → sys_fd_insert → fd_insert
-// path every other machine uses; `eject` and `present` go straight to the FDC.
-// Each object's instance_data is the config_t.
+// `insert` calls system_fd_insert (drive 0) — the same path every other
+// machine uses; `eject` and `present` go straight to the FDC. Each
+// object's instance_data is the config_t.
 
 static value_t lisa_fd_drive_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
     (void)m;
     bool writable = (argc >= 2) ? argv[1].b : false;
-    // Build an argv for shell_fd_argv (mutable buffers — it takes char**).
-    char fd[] = "fd", insert[] = "insert", drive[] = "0";
-    char wr[8];
-    snprintf(wr, sizeof(wr), "%s", writable ? "true" : "false");
-    char path[1024];
-    if ((size_t)snprintf(path, sizeof(path), "%s", argv[0].s) >= sizeof(path))
-        return val_err("floppy.drives.0.insert: path too long");
-    char *targv[] = {fd, insert, path, drive, wr};
-    return val_bool(shell_fd_argv(5, targv) == 0);
+    return val_bool(system_fd_insert(argv[0].s, 0, writable) == 0);
 }
 
 static value_t lisa_fd_drive_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {

@@ -7,7 +7,7 @@
 # specific seed used to panic with "Sorry, a system error occurred."
 # before the se30 slot-deassert fix (commit db03c13). Booting cleanly
 # at this seed proves the fix.
-machine.rtc.time = 2026-04-26T21:30:36
+machine.rtc.time = "2026-04-26T21:30:36"
 
 # Skip the Universal ROM's boot-drive-discovery key-scan at $40801610 (poke
 # $8805 into $017A, clear it after one inner-poll cycle).  See

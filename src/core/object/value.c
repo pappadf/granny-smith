@@ -121,6 +121,21 @@ value_t val_err(const char *fmt, ...) {
     return v;
 }
 
+value_t val_ref(const char *path) {
+    value_t v = {0};
+    v.kind = V_REF;
+    v.ref = xstrdup(path ? path : "");
+    return v;
+}
+
+value_t val_range(int64_t start, int64_t stop) {
+    value_t v = {0};
+    v.kind = V_RANGE;
+    v.range.start = start;
+    v.range.stop = stop;
+    return v;
+}
+
 bool val_is_heap(const value_t *v) {
     if (!v)
         return false;
@@ -129,6 +144,7 @@ bool val_is_heap(const value_t *v) {
     case V_BYTES:
     case V_LIST:
     case V_ERROR:
+    case V_REF:
         return true;
     default:
         return false;
@@ -146,6 +162,10 @@ void value_free(value_t *v) {
     case V_ERROR:
         free(v->err);
         v->err = NULL;
+        break;
+    case V_REF:
+        free(v->ref);
+        v->ref = NULL;
         break;
     case V_BYTES:
         free(v->bytes.p);
@@ -181,6 +201,8 @@ value_t value_dup(const value_t *v) {
         return val_str(v->s ? v->s : "");
     case V_ERROR:
         return val_err("%s", v->err ? v->err : "");
+    case V_REF:
+        return val_ref(v->ref ? v->ref : "");
     case V_BYTES:
         return val_bytes(v->bytes.p, v->bytes.n);
     case V_LIST: {
@@ -307,6 +329,10 @@ bool val_as_bool(const value_t *v) {
         return false;
     case V_ERROR:
         return false;
+    case V_REF:
+        return v->ref != NULL; // a reference is truthy; deref happens before tests
+    case V_RANGE:
+        return v->range.stop > v->range.start; // non-empty range
     }
     return false;
 }
@@ -331,6 +357,9 @@ value_t value_copy(const value_t *v) {
         break;
     case V_ERROR:
         r.err = xstrdup(v->err);
+        break;
+    case V_REF:
+        r.ref = xstrdup(v->ref);
         break;
     case V_BYTES:
         if (v->bytes.n > 0) {

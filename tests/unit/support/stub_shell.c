@@ -1,25 +1,15 @@
-// Shell command stubs for unit tests
-// Provides no-op implementations of shell command registration and dispatch.
+// Shell stubs for unit tests.
+//
+// Provides no-op implementations of the shell entry points so objects
+// that reference them (memory.o, system.o, …) link without pulling in
+// the full shell/script interpreter. The typed methods the suites do
+// exercise (e.g. memory.dump) operate directly on the object model and
+// need no shell support.
 
-#include "cmd_types.h"
+#include <stdbool.h>
+#include <stdint.h>
 
-int register_command(const struct cmd_reg *reg) {
-    (void)reg;
-    return 0;
-}
-
-int register_cmd(const char *name, const char *category, const char *synopsis, cmd_fn_simple fn) {
-    (void)name;
-    (void)category;
-    (void)synopsis;
-    (void)fn;
-    return 0;
-}
-
-int unregister_cmd(const char *name) {
-    (void)name;
-    return 0;
-}
+#include "addr_format.h"
 
 int shell_init(void) {
     return 0;
@@ -30,19 +20,12 @@ uint64_t shell_dispatch(char *line) {
     return 0;
 }
 
-// Tokenizer + rich-parser argv entry points: stubbed because the unit
-// tests don't exercise the typed methods that route through them
-// (memory.dump → shell_examine_argv via tokenize, etc.). The CPU/MMU/
-// storage suites just need memory.o to link.
-int tokenize(char *line, char *argv[], int max) {
-    (void)line;
-    (void)argv;
-    (void)max;
-    return 0;
-}
-
-int shell_examine_argv(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-    return 0;
+// memory.o references parse_address (memory.dump resolves symbol-string
+// addresses through it). The suites never dump memory, so a stub that
+// declines all input is enough to link.
+bool parse_address(const char *str, uint32_t *addr_out, addr_space_t *space_out) {
+    (void)str;
+    (void)addr_out;
+    (void)space_out;
+    return false;
 }

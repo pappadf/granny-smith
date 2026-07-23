@@ -10,7 +10,7 @@
 #define SHELL_H
 
 // === Includes ===
-#include "cmd_types.h"
+#include "cmd_complete.h" // struct completion
 #include "system.h"
 
 #include <stddef.h>
@@ -42,20 +42,6 @@ int shell_init(void);
 // On failure, fills `err_buf` (if non-NULL) with a human-readable message
 // and returns a negative errno. Returns 0 on success.
 int shell_cp(const char *src, const char *dst, bool recursive, char *err_buf, size_t err_cap);
-
-// In-place split of `line` into up to `max` argv tokens. The tokenizer
-// honours quotes, backslash escapes, and `$(...)` expression tokens
-// just like the legacy shell command line. `line` is mutated; argv
-// pointers point inside it. Returns argc, or -1 on overflow.
-int tokenize(char *line, char *argv[], int max);
-
-// `log` legacy shell entry point (simple_fn signature). Exposed so the
-// typed `log_set` wrapper can apply spec strings without going through
-// `shell_dispatch`.
-uint64_t cmd_log(int argc, char *argv[]);
-
-// `set` legacy shell entry point (register/CC/memory writer).
-uint64_t cmd_set(int argc, char *argv[]);
 
 // === Tab Completion ===
 

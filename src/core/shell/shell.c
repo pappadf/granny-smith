@@ -8,15 +8,13 @@
 
 #include "alias.h"
 #include "cmd_complete.h"
-#include "cmd_io.h"
-#include "cmd_parse.h"
-#include "cmd_types.h"
 #include "debug.h"
 #include "expr.h"
 #include "log.h"
 #include "meta.h"
 #include "object.h"
 #include "parse.h"
+#include "script.h"
 #include "shell_var.h"
 #include "system.h"
 #include "value.h"
@@ -42,177 +40,23 @@
 // read the flag from another thread.
 static volatile int32_t shell_initialized = 0;
 
-/* --- tokenizer ----------------------------------------------------------- */
-#define MAXTOK 32
-
-// In-place tokenizer exposed via shell.h as `shell_tokenize` so the
-// typed object-model bridge can split free-form spec strings (e.g.
-// logpoint specs, log argv) without routing through `shell_dispatch`.
-// `line` is mutated in place; returned argv pointers point inside it.
-// The _q variant additionally records, per token, whether the token
-// *started* with a quote character — the named-argument escape hatch
-// (a quoted token is always a plain string, never `name=value`).
-static int tokenize_q(char *line, char *argv[], unsigned char quoted[], int max) {
-    // Tokenizer with support for: \-escapes, ASCII and UTF-8 curly
-    // quotes, and ' / " quoted strings. `${...}` substitution has
-    // already been resolved by shell_var_expand before tokenisation,
-    // so the tokenizer only sees the post-expansion source — except
-    // inside single-quoted regions, where `${...}` survives verbatim
-    // (the deferred-eval opt-out used by logpoint messages).
-    int argc = 0;
-    int esc = 0;
-    enum { Q_NONE = 0, Q_DQUOTE, Q_SQUOTE, Q_CURLY } qstate = Q_NONE;
-
-    char *p = line;
-    while (*p) {
-        while (*p && isspace((unsigned char)*p))
-            p++;
-        if (!*p)
-            break;
-        if (argc == max)
-            return -1;
-
-        // Record whether this token opens with a quote (", ', or a UTF-8
-        // curly quote) before the quote characters are stripped in place.
-        if (quoted) {
-            bool q = (*p == '"' || *p == '\'' ||
-                      ((unsigned char)p[0] == 0xE2 && (unsigned char)p[1] == 0x80 && (unsigned char)p[2] == 0x9C));
-            quoted[argc] = q ? 1 : 0;
-        }
-
-        argv[argc++] = p;
-        char *dst = p;
-
-        for (;;) {
-            unsigned char c = (unsigned char)*p;
-            if (c == '\0') {
-                *dst = '\0';
-                break;
-            }
-
-            if (esc) {
-                *dst++ = *p++;
-                esc = 0;
-                continue;
-            }
-
-            // UTF-8 curly quotes (E2 80 9C/9D)
-            if ((unsigned char)p[0] == 0xE2 && (unsigned char)p[1] == 0x80 &&
-                ((unsigned char)p[2] == 0x9C || (unsigned char)p[2] == 0x9D)) {
-                if (qstate == Q_NONE)
-                    qstate = Q_CURLY;
-                else if (qstate == Q_CURLY)
-                    qstate = Q_NONE;
-                else {
-                    *dst++ = *p++;
-                    continue;
-                }
-                p += 3;
-                continue;
-            }
-
-            if (*p == '\\') {
-                esc = 1;
-                p++;
-                continue;
-            }
-
-            if (*p == '"') {
-                if (qstate == Q_NONE)
-                    qstate = Q_DQUOTE;
-                else if (qstate == Q_DQUOTE)
-                    qstate = Q_NONE;
-                else
-                    *dst++ = *p;
-                p++;
-                continue;
-            }
-
-            if (*p == '\'') {
-                if (qstate == Q_NONE)
-                    qstate = Q_SQUOTE;
-                else if (qstate == Q_SQUOTE)
-                    qstate = Q_NONE;
-                else
-                    *dst++ = *p;
-                p++;
-                continue;
-            }
-
-            if (qstate == Q_NONE && isspace((unsigned char)*p)) {
-                *dst = '\0';
-                p++;
-                break;
-            }
-
-            *dst++ = *p++;
-        }
-    }
-    return argc;
-}
-
-int tokenize(char *line, char *argv[], int max) {
-    return tokenize_q(line, argv, NULL, max);
-}
-
-// Forward declaration — definition lives below in the shell-form
-// grammar block. Returns 0 on success, -1 on error, 1 if unhandled.
-// `quoted` may be NULL (no named-argument recognition then).
-static int try_path_dispatch(int argc, char **argv, const unsigned char *quoted);
-
-// Dispatch a command line. Phase 5c — the legacy registry is gone;
-// everything routes through the typed path-form parser. No longer in
-// shell.h's public surface (proposal-shell-as-object-model-citizen.md):
-// callers now go through `gs_eval("shell.run", [line])` which lands in
-// the Shell class's `run` method, which calls back here via
-// shell_internal_dispatch_command.
-static void dispatch_command(char *line, struct cmd_result *res);
-
-void shell_internal_dispatch_command(char *line, struct cmd_result *res) {
-    dispatch_command(line, res);
-}
-
-static void dispatch_command(char *line, struct cmd_result *res) {
-    memset(res, 0, sizeof(*res));
-    res->type = RES_OK;
-
+// Run a free-form line through the v2 script interpreter (REPL
+// semantics). Used by the Shell class's `run` method.
+bool shell_internal_dispatch_command(char *line, char *err_buf, size_t err_size) {
     if (!shell_initialized) {
-        cmd_err(res, "shell not initialized");
-        return;
+        if (err_buf && err_size)
+            snprintf(err_buf, err_size, "shell not initialized");
+        return false;
     }
-
-    char *expanded = shell_var_expand(line);
-    if (!expanded) {
-        cmd_err(res, "expansion failed");
-        return;
+    if (script_run_line(line) != 0) {
+        if (err_buf && err_size)
+            snprintf(err_buf, err_size, "command failed");
+        return false;
     }
-
-    char *argv[MAXTOK];
-    unsigned char quoted[MAXTOK];
-    int argc = tokenize_q(expanded, argv, quoted, MAXTOK);
-    if (argc <= 0) {
-        free(expanded);
-        return;
-    }
-
-    int pd = try_path_dispatch(argc, argv, quoted);
-    if (pd < 0)
-        cmd_err(res, "command failed");
-    else if (pd > 0)
-        cmd_err(res, "unknown command: '%s'", argv[0]);
-    free(expanded);
+    return true;
 }
 
-// === New shell-form grammar dispatch (proposal §4.1) =======================
-//
-// Falls between the legacy command lookup and the "unknown command"
-// suggestion: if argv[0] resolves as a path against the object root,
-// dispatch as one of:
-//   - bare path (argc == 1)            → node_get + print
-//   - path = value (argv[1] == "=")    → node_set with parsed argv[2]
-//   - path arg arg arg (M_METHOD)      → node_call with parsed args
-// Returns true if the line was handled (caller should not fall through
-// to suggest_command), false otherwise.
+// === Value printing (the REPL formatting surface, §5) ======================
 
 // Print one scalar value inline (no trailing newline). Used as the
 // rhs in the object-attribute table dump and inside list expansion.
@@ -275,6 +119,12 @@ static void format_scalar_inline(const value_t *v) {
     case V_ERROR:
         printf("<error: %s>", v->err ? v->err : "");
         break;
+    case V_REF:
+        printf("%s", v->ref ? v->ref : "");
+        break;
+    case V_RANGE:
+        printf("%lld..%lld", (long long)v->range.start, (long long)v->range.stop);
+        break;
     }
 }
 
@@ -330,6 +180,105 @@ static void format_object_table(struct object *o) {
     }
 }
 
+// Render one cell of the object-list table into buf. Scalar kinds only;
+// structured kinds render as compact placeholders.
+static void format_cell(const value_t *v, char *buf, size_t buf_size) {
+    switch (v->kind) {
+    case V_NONE:
+        snprintf(buf, buf_size, "-");
+        break;
+    case V_BOOL:
+        snprintf(buf, buf_size, "%s", v->b ? "true" : "false");
+        break;
+    case V_INT:
+        snprintf(buf, buf_size, (v->flags & VAL_HEX) ? "0x%llx" : "%lld",
+                 (v->flags & VAL_HEX) ? (long long)(uint64_t)v->i : (long long)v->i);
+        break;
+    case V_UINT:
+        snprintf(buf, buf_size, (v->flags & VAL_HEX) ? "0x%llx" : "%llu", (unsigned long long)v->u);
+        break;
+    case V_FLOAT:
+        snprintf(buf, buf_size, "%g", v->f);
+        break;
+    case V_STRING:
+        snprintf(buf, buf_size, "%s", v->s ? v->s : "");
+        break;
+    case V_ENUM:
+        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
+            snprintf(buf, buf_size, "%s", v->enm.table[v->enm.idx]);
+        else
+            snprintf(buf, buf_size, "enum:%d", v->enm.idx);
+        break;
+    default:
+        snprintf(buf, buf_size, "<%d>", (int)v->kind);
+        break;
+    }
+}
+
+#define TABLE_MAX_COLS 12
+#define TABLE_CELL_MAX 48
+
+// A V_LIST whose elements are all objects of one class prints as a
+// table — columns from the class's attributes (§5). This is what lets
+// `debug.breakpoints.entries` at the prompt render the same table the
+// retired `list` methods used to print. Returns false when the list
+// isn't table-shaped (caller falls back to inline list rendering).
+static bool try_print_object_table(const value_t *v) {
+    if (v->kind != V_LIST || v->list.len == 0)
+        return false;
+    const class_desc_t *cls = NULL;
+    for (size_t i = 0; i < v->list.len; i++) {
+        const value_t *e = &v->list.items[i];
+        if (e->kind != V_OBJECT || !e->obj)
+            return false;
+        const class_desc_t *c = object_class(e->obj);
+        if (!c || (cls && c != cls))
+            return false;
+        cls = c;
+    }
+    if (!cls || !cls->members)
+        return false;
+    // Collect attribute columns.
+    int cols[TABLE_MAX_COLS];
+    int n_cols = 0;
+    for (size_t i = 0; i < cls->n_members && n_cols < TABLE_MAX_COLS; i++) {
+        const member_t *mb = &cls->members[i];
+        if (mb->kind == M_ATTR && mb->name && mb->attr.get)
+            cols[n_cols++] = (int)i;
+    }
+    if (n_cols == 0)
+        return false;
+    // Width pass.
+    int width[TABLE_MAX_COLS];
+    for (int c = 0; c < n_cols; c++)
+        width[c] = (int)strlen(cls->members[cols[c]].name);
+    char cell[TABLE_CELL_MAX];
+    for (size_t i = 0; i < v->list.len; i++) {
+        for (int c = 0; c < n_cols; c++) {
+            const member_t *mb = &cls->members[cols[c]];
+            value_t cv = mb->attr.get(v->list.items[i].obj, mb);
+            format_cell(&cv, cell, sizeof(cell));
+            value_free(&cv);
+            int len = (int)strlen(cell);
+            if (len > width[c])
+                width[c] = len;
+        }
+    }
+    // Header + rows.
+    for (int c = 0; c < n_cols; c++)
+        printf("%-*s%s", width[c], cls->members[cols[c]].name, c + 1 < n_cols ? "  " : "\n");
+    for (size_t i = 0; i < v->list.len; i++) {
+        for (int c = 0; c < n_cols; c++) {
+            const member_t *mb = &cls->members[cols[c]];
+            value_t cv = mb->attr.get(v->list.items[i].obj, mb);
+            format_cell(&cv, cell, sizeof(cell));
+            value_free(&cv);
+            printf("%-*s%s", width[c], cell, c + 1 < n_cols ? "  " : "\n");
+        }
+    }
+    return true;
+}
+
 static void format_value_print(const value_t *v) {
     if (!v)
         return;
@@ -367,6 +316,9 @@ static void format_value_print(const value_t *v) {
             printf("enum:%d\n", v->enm.idx);
         break;
     case V_LIST:
+        // A list of same-class objects renders as an attribute table.
+        if (try_print_object_table(v))
+            break;
         // Expand list elements inline: [item1, item2, ...]. Strings are
         // quoted, ints/uints printed in their natural base, objects use
         // <class:name>, nested lists recurse via the size form.
@@ -418,6 +370,12 @@ static void format_value_print(const value_t *v) {
             case V_ERROR:
                 printf("<error>");
                 break;
+            case V_REF:
+                printf("%s", e->ref ? e->ref : "");
+                break;
+            case V_RANGE:
+                printf("%lld..%lld", (long long)e->range.start, (long long)e->range.stop);
+                break;
             }
         }
         printf("]\n");
@@ -431,251 +389,33 @@ static void format_value_print(const value_t *v) {
     case V_ERROR:
         fprintf(stderr, "%s\n", v->err ? v->err : "(error)");
         break;
+    case V_REF:
+        printf("%s\n", v->ref ? v->ref : "");
+        break;
+    case V_RANGE:
+        printf("%lld..%lld\n", (long long)v->range.start, (long long)v->range.stop);
+        break;
     }
 }
 
-// If `tok` has the shape ident=rest where ident matches a declared fixed
-// argument of method `m`, split it in place (the '=' becomes NUL) and
-// return the value part via *out_rest; returns the argument name, or NULL
-// if the token is not a named argument of this method. Tokens that were
-// quoted never reach this check (escape hatch).
-static const char *named_arg_split(char *tok, const member_t *m, const char **out_rest) {
-    if (!m || m->kind != M_METHOD || !m->method.args || m->method.nargs <= 0)
-        return NULL;
-    if (!(isalpha((unsigned char)tok[0]) || tok[0] == '_'))
-        return NULL;
-    size_t n = 1;
-    while (tok[n] && (isalnum((unsigned char)tok[n]) || tok[n] == '_'))
-        n++;
-    if (tok[n] != '=')
-        return NULL;
-    const arg_decl_t *args = m->method.args;
-    bool has_rest = (args[m->method.nargs - 1].validation_flags & OBJ_ARG_REST) != 0;
-    int fixed_n = has_rest ? m->method.nargs - 1 : m->method.nargs;
-    for (int i = 0; i < fixed_n; i++) {
-        if (args[i].name && strlen(args[i].name) == n && strncmp(args[i].name, tok, n) == 0) {
-            tok[n] = '\0';
-            *out_rest = tok + n + 1;
-            return tok;
-        }
-    }
-    return NULL;
+// Public print surface for the script interpreter (REPL result
+// printing, §5).
+void shell_print_value(const value_t *v) {
+    format_value_print(v);
 }
 
-// Returns 0 if handled successfully, -1 if handled with error, or 1 if
-// not a path (caller continues with the unknown-command path).
-// `quoted` may be NULL (no named-argument recognition then).
-static int try_path_dispatch(int argc, char **argv, const unsigned char *quoted) {
-    if (argc < 1)
-        return 1;
-    // Resolve argv[0] against the object root.  Anything that names a
-    // valid node — root method, attached child object, attribute, or
-    // dotted path — dispatches; everything else falls through to the
-    // unknown-command path.
-    node_t n = object_resolve(object_root(), argv[0]);
-
-    // Script-variable setter fallback: `name = value` where `name` is a
-    // bare identifier that doesn't resolve to any existing path creates
-    // a typed shell variable.  The RHS goes through parse_literal_full
-    // so numeric literals (after ${...} substitution has already
-    // happened) become V_UINT / V_INT, and non-literal tokens fall
-    // back to V_STRING.  Subsequent reads via `${name}` or bare `name`
-    // inside `${...}` see the typed value, so arithmetic like
-    // `${scheduler.host_user_ns - t0}` works without string coercion.
-    //
-    //     t0 = ${scheduler.host_user_ns}       # snapshot, typed V_UINT
-    //     scheduler.run 17000000
-    //     echo "elapsed = ${scheduler.host_user_ns - t0} ns"
-    //
-    // Existing attribute setters (e.g. `cpu.d0 = 0x1234`) are unchanged
-    // because they resolve before reaching this branch.  The dot-free
-    // gate prevents accidentally creating shell vars from mistyped
-    // attribute paths (`cpu.dO = 1` falls through to the usual
-    // "not a settable attribute" error rather than silently making a
-    // shell var named "cpu.dO").
-    if (!node_valid(n) && argc == 3 && strcmp(argv[1], "=") == 0 && strchr(argv[0], '.') == NULL &&
-        !object_is_reserved_word(argv[0])) {
-        value_t rhs = parse_literal_full(argv[2], NULL, 0);
-        if (val_is_error(&rhs)) {
-            // Not a recognised literal — treat the token as a string.
-            value_free(&rhs);
-            rhs = val_str(argv[2]);
-        }
-        shell_var_set_value(argv[0], rhs);
-        return 0;
-    }
-
-    if (!node_valid(n))
-        return 1;
-
-    // Setter form: `path = value`.
-    if (argc >= 3 && strcmp(argv[1], "=") == 0) {
-        if (!n.member || n.member->kind != M_ATTR) {
-            fprintf(stderr, "'%s' is not a settable attribute\n", argv[0]);
-            return -1;
-        }
-        value_t v = parse_literal_full(argv[2], NULL, 0);
-        if (val_is_error(&v)) {
-            // Fall back to treating the token as a string literal —
-            // mirrors the method-call branch and lets attribute setters
-            // accept opaque tokens (ISO timestamps, paths, identifiers
-            // that aren't valid number/bool/enum literals).
-            value_free(&v);
-            v = val_str(argv[2]);
-        }
-        value_t result = node_set(n, v);
-        if (val_is_error(&result)) {
-            fprintf(stderr, "set %s: %s\n", argv[0], result.err ? result.err : "failed");
-            value_free(&result);
-            return -1;
-        }
-        value_free(&result);
-        return 0;
-    }
-
-    // Method call form: `path arg arg name=value ...` — positional tokens
-    // first, then named arguments targeting declared slots (proposal
-    // proposal-named-args-boot-config §3.2). A token is named iff it was
-    // unquoted, matches ident=rest, and ident names a declared argument of
-    // this method; everything else stays a positional token.
-    if (n.member && n.member->kind == M_METHOD) {
-        int call_argc = argc - 1;
-        value_t *vals = call_argc > 0 ? (value_t *)calloc((size_t)call_argc, sizeof(value_t)) : NULL;
-        named_arg_t named[MAXTOK];
-        if (call_argc > 0 && !vals) {
-            fprintf(stderr, "%s: out of memory\n", argv[0]);
-            return -1;
-        }
-        int pos_n = 0, named_n = 0;
-        for (int i = 0; i < call_argc; i++) {
-            char *tok = argv[i + 1];
-            const char *rest = NULL;
-            const char *name = (!quoted || !quoted[i + 1]) ? named_arg_split(tok, n.member, &rest) : NULL;
-            if (name) {
-                if (!*rest) {
-                    fprintf(stderr, "%s: empty value for argument '%s' (omit the argument instead)\n", argv[0], name);
-                    goto shell_call_cleanup_err;
-                }
-                value_t v = parse_literal_full((char *)rest, NULL, 0);
-                if (val_is_error(&v)) {
-                    value_free(&v);
-                    v = val_str(rest);
-                }
-                named[named_n].name = name;
-                named[named_n].value = v;
-                vals[pos_n + named_n] = v; // keep every parsed value freeable in one sweep
-                named_n++;
-                continue;
-            }
-            if (named_n > 0) {
-                fprintf(stderr, "%s: positional argument '%s' after named argument\n", argv[0], tok);
-                goto shell_call_cleanup_err;
-            }
-            vals[pos_n] = parse_literal_full(tok, NULL, 0);
-            if (val_is_error(&vals[pos_n])) {
-                // Fall back to treating the token as a string literal —
-                // mirrors the way most legacy commands accept a bare
-                // word as a path/name.
-                value_free(&vals[pos_n]);
-                vals[pos_n] = val_str(tok);
-            }
-            pos_n++;
-        }
-
-        value_t result;
-        if (named_n > 0) {
-            value_t bound[OBJ_BIND_MAX_ARGS];
-            int bound_n = 0;
-            value_t err = node_bind_args(n, pos_n, vals, named_n, named, bound, &bound_n);
-            if (val_is_error(&err)) {
-                fprintf(stderr, "%s: %s\n", argv[0], err.err ? err.err : "bind failed");
-                value_free(&err);
-                goto shell_call_cleanup_err;
-            }
-            result = node_call(n, bound_n, bound);
-        } else {
-            result = node_call(n, pos_n, vals);
-        }
-        for (int i = 0; i < pos_n + named_n; i++)
-            value_free(&vals[i]);
-        free(vals);
-        if (val_is_error(&result)) {
-            fprintf(stderr, "%s: %s\n", argv[0], result.err ? result.err : "call failed");
-            value_free(&result);
-            return -1;
-        }
-        format_value_print(&result);
-        value_free(&result);
-        return 0;
-
-    shell_call_cleanup_err:
-        // Error path before the call happened — free every parsed value
-        // (calloc zeroed the tail, and value_free on a zeroed slot is a
-        // no-op) and report the statement as failed.
-        for (int i = 0; i < pos_n + named_n; i++)
-            value_free(&vals[i]);
-        free(vals);
-        return -1;
-    }
-
-    // Bare path read.
-    if (argc == 1) {
-        value_t v = node_get(n);
-        if (val_is_error(&v)) {
-            // Print the error to stderr but return 0 — matches the
-            // legacy `eval` semantics. Tests intentionally probe empty
-            // indexed slots etc. ("scsi.devices[5]") and expect the
-            // script to keep going. Use `assert (exists(path))` for
-            // strict membership checks.
-            fprintf(stderr, "%s: %s\n", argv[0], v.err ? v.err : "read failed");
-            value_free(&v);
-            return 0;
-        }
-        format_value_print(&v);
-        value_free(&v);
-        return 0;
-    }
-
-    // Anything else (path with extra tokens that isn't a setter or a
-    // method call) is ambiguous — let the legacy code path handle it.
-    return 1;
-}
-
-// Dispatch interactively and return integer result.
+// Dispatch interactively and return integer result. The line runs
+// through the v2 script interpreter with REPL semantics (results
+// print). Errors return -1 so scripted drivers surface failures.
 uint64_t shell_dispatch(char *line) {
     if (!shell_initialized)
         return -1;
 
     worker_thread_assert("shell_dispatch");
 
-    char *expanded = shell_var_expand(line);
-    if (!expanded) {
-        fputs("expansion failed\n", stderr);
-        return (uint64_t)-1;
-    }
-
-    char *argv[MAXTOK];
-    unsigned char quoted[MAXTOK];
-    int argc = tokenize_q(expanded, argv, quoted, MAXTOK);
-    if (argc < 0) {
-        fputs("too many arguments\n", stderr);
-        free(expanded);
+    if (!line)
         return 0;
-    }
-    if (argc == 0) {
-        free(expanded);
-        return 0;
-    }
-
-    int pd = try_path_dispatch(argc, argv, quoted);
-    if (pd > 0)
-        fprintf(stderr, "Unknown command: '%s'\n", argv[0]);
-    free(expanded);
-    // pd == 0 → handled successfully
-    // pd  < 0 → handled with error
-    // pd  > 0 → unknown command; treated as a hard error so test scripts
-    //          surface typos instead of silently no-opping.
-    return (pd != 0) ? (uint64_t)-1 : 0;
+    return script_run_line(line) == 0 ? 0 : (uint64_t)-1;
 }
 
 // Tab completion entry point

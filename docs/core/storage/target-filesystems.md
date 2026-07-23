@@ -393,14 +393,14 @@ stat as empty read-only directories; `opendir` on them returns `-ENOTDIR`. Use
 
 ### Shell / object-model commands
 
-Partition inspection (`src/core/shell/cmd_image.c`):
+Partition inspection (`src/core/storage/storage_class.c`):
 
 | Command | Effect |
 |---------|--------|
-| `image partmap <path> [--json]` | Parse and print the partition map (text table or JSON array). |
-| `image probe <path>` | Print the detected format without descending — APM, ISO 9660 (`CD001` @ 0x8000), APM+ISO hybrid, bare HFS, or raw. |
-| `image list [--json]` | Enumerate currently-cached auto-mounts (format, partition count, refs, busy/ok). |
-| `image unmount <path>` | Force-close a cached auto-mount. |
+| `storage.partmap <path> [--json]` | Parse and print the partition map (text table or JSON array). |
+| `storage.probe <path>` | Print the detected format without descending — APM, ISO 9660 (`CD001` @ 0x8000), APM+ISO hybrid, bare HFS, or raw. |
+| `storage.mounts [--json]` | Enumerate currently-cached auto-mounts (format, partition count, refs, busy/ok). |
+| `storage.unmount <path>` | Force-close a cached auto-mount. |
 
 Content access (`src/core/vfs/vfs_class.c`, `src/core/shell/cmd_cp.c`):
 
@@ -510,7 +510,7 @@ The web frontend runs these through the **terminal pane**
 | `src/core/storage/image_hfs.{c,h}` | HFS catalog + Extents Overflow walker, fork reader |
 | `src/core/storage/image_ufs.{c,h}` | UFS-1 superblock + inode walker, file reader |
 | `src/core/storage/macroman.{c,h}` | MacRoman → UTF-8 transcoder (shared) |
-| `src/core/shell/cmd_image.c` | `image partmap/probe/list/unmount` |
+| `src/core/storage/storage_class.c` | `storage.partmap/probe/mounts/unmount` |
 | `src/core/shell/cmd_cp.c` | `cp` (VFS-backed, supports image→host) |
 | `src/core/storage/image.{c,h}` | Underlying disk image + `disk_read_data` / `disk_read_bytes` |
 

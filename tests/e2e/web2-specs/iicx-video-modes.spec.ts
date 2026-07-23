@@ -84,7 +84,7 @@ async function terminalRun(page: Page, line: string): Promise<void> {
 let probeSeq = 0;
 async function probeState(page: Page): Promise<{ instr: number; running: boolean } | null> {
   const key = `probe${++probeSeq}`;
-  await terminalRun(page, `echo ${key}=\${machine.cpu.instr_count},\${scheduler.running}`);
+  await terminalRun(page, `echo "${key}=\${machine.cpu.instr_count},\${scheduler.running}"`);
   await page.waitForTimeout(400);
   const text = await page.locator('.xterm-rows').innerText();
   const m = text.match(new RegExp(`${key}=(\\d+),(true|false)`));

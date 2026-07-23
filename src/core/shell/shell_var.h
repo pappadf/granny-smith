@@ -2,15 +2,14 @@
 // Copyright (c) pappadf
 
 // shell_var.h
-// Typed shell-variable store and ${...} substitution.
+// Scoped shell binding store (shell v2 §3.4/§3.7).
 //
-// Variables are created by `name = expr` in scripts (where `name` is a
-// bare identifier that doesn't resolve to any object-tree path) or by
-// the legacy --var NAME=VALUE command-line flag (which always stores a
-// string).  Values are typed `value_t` — assigning the result of an
-// integer expression preserves that as a numeric type, so subsequent
-// arithmetic in `${...}` works without round-trip-through-string
-// coercion.
+// One namespace, one sigil: `$name` resolves through a stack of scopes
+// (function frame(s) → script top level → process globals) and then
+// falls back to the built-in/user alias table, whose entries surface as
+// V_REF reference values (path text, re-resolved per access — §3.5).
+// `let` creates in the top scope, `$x =` mutates the innermost holding
+// scope, and mutating an undeclared name is a loud error.
 
 #pragma once
 
@@ -22,39 +21,53 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-// Set a shell variable as a string (legacy / --var path).  Stores
-// V_STRING internally.  Returns 0 on success.
+// Initialize the store (creates the global + top-level scopes and the
+// default TMP_DIR binding).
+void shell_var_init(void);
+
+// `$name` lookup: walk scopes top-down, then the alias table (aliases
+// come back as V_REF). Returns an OWNED value; V_ERROR("no such
+// binding …") when the name is nowhere. A binding holding a destroyed
+// V_OBJECT reads as V_ERROR (§3.5 snapshot semantics).
+value_t shell_binding_get(const char *name);
+
+// `let NAME = v` — create (or overwrite) in the current top scope.
+// Takes ownership of v. Returns 0, or -1 with a message in err_buf
+// (invalid name / table full).
+int shell_binding_let(const char *name, value_t v, char *err_buf, size_t err_size);
+
+// `$NAME = v` — mutate the innermost scope holding NAME. Takes
+// ownership of v. Returns 0, or -1 if no such binding (v is freed).
+int shell_binding_mutate(const char *name, value_t v);
+
+// Lvalue classification for the script layer (`$x = …`):
+//   VALUE — a scope binding exists; *value_out borrows its current value
+//   ALIAS — no scope binding, but the alias table maps name → path
+//   NONE  — unknown everywhere (assignment must error: "use let")
+typedef enum {
+    SHELL_BINDING_NONE = 0,
+    SHELL_BINDING_VALUE,
+    SHELL_BINDING_ALIAS,
+} shell_binding_kind_t;
+shell_binding_kind_t shell_binding_classify(const char *name, const value_t **value_out, const char **alias_path_out);
+
+// Function-call scopes. push returns -1 when the frame cap (16) is hit.
+int shell_binding_push_scope(void);
+void shell_binding_pop_scope(void);
+
+// Loop-variable support (§3.8): save a duplicate of the top-scope
+// binding if present (returns true), and remove a name from the top
+// scope only.
+bool shell_binding_save_top(const char *name, value_t *saved_out);
+void shell_binding_remove_top(const char *name);
+
+// Legacy string API — process-start bindings (`--var FOO=BAR`) and
+// internal init code. Stores V_STRING in the global scope.
 int shell_var_set(const char *name, const char *value);
-
-// Set a shell variable to a typed value.  Takes ownership of `v` —
-// caller must not free it afterwards.  Returns 0 on success.
-int shell_var_set_value(const char *name, value_t v);
-
-// Get a shell variable's string repr (returns NULL if undefined or if
-// the stored value isn't a string).  Legacy callers that expect a C
-// string only see V_STRING entries; numeric variables look "undefined"
-// through this API.  New code should use shell_var_get_value.
 const char *shell_var_get(const char *name);
 
-// Get a shell variable's typed value.  Returns V_NONE if undefined.
-// Caller does not own the returned value; treat it as a borrowed copy
-// (use value_dup if you need to keep it past the next set/unset).
-value_t shell_var_get_value(const char *name);
-
-// Delete a shell variable (returns 0 on success, -1 if not found).
-int shell_var_unset(const char *name);
-
-// Expand ${...} references in a string.  Returns a malloc'd string;
-// caller must free.
-char *shell_var_expand(const char *input);
-
-// Iterate every shell variable in insertion order. The callback returns
-// true to continue, false to stop early. `v` is a borrowed view — do
-// not free it or hold it past the next set/unset.
+// Walk every scope binding, innermost scope first. Used by `shell.vars`.
 typedef bool (*shell_var_iter_fn)(const char *name, const value_t *v, void *ud);
 void shell_var_each(shell_var_iter_fn fn, void *ud);
-
-// Register the "var" command and seed built-in defaults.
-void shell_var_init(void);
 
 #endif // SHELL_VAR_H

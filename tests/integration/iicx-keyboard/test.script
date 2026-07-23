@@ -56,10 +56,10 @@ scheduler.run 2000000
 machine.memory.poke.w 0x017A 0
 scheduler.run 45000000
 
-assert ${machine.id == "iicx"}  "machine.id != iicx"
-assert ${machine.ram == 8192}   "machine.ram != 8192"
-assert ${machine.screen.width == 640}   "screen.width != 640 (JMFB not seated?)"
-assert ${machine.screen.height == 480}  "screen.height != 480"
+assert machine.id == "iicx" "machine.id != iicx"
+assert machine.ram == 8192 "machine.ram != 8192"
+assert machine.screen.width == 640 "screen.width != 640 (JMFB not seated?)"
+assert machine.screen.height == 480 "screen.height != 480"
 machine.screen.match desktop.png
 
 # --- Open File > Find... with the MOUSE (proves the mouse path works) ------
@@ -93,7 +93,7 @@ scheduler.run 60000000
 # Save the actual result as an artifact, then assert the field reads exactly
 # "macintosh".  See the bug note above — a mismatch with fewer characters
 # means the every-other-key drop has regressed.
-machine.screen.save "${WORK_DIR}/typed-macintosh.png"
+machine.screen.save "$WORK_DIR/typed-macintosh.png"
 machine.screen.match typed-macintosh.png
 
 quit

@@ -23,18 +23,18 @@ machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
 scheduler.run 200000000
 
 # The card that booted into the IIcx video slot ($9) is the 8•24 GC.
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $9 card != 8•24 GC"
 
 # --- The accelerator is ON and brought up cleanly by the REAL driver. ---
-assert ${machine.nubus.slot[9].card.gc.on == true}       "accelerator did not turn on"
-assert ${machine.nubus.slot[9].card.gc.state == "gc-on"} "accelerator state != gc-on"
-assert ${machine.nubus.slot[9].card.gc.error == 0}       "accelerator posted an error"
+assert machine.nubus.slot[9].card.gc.on == true "accelerator did not turn on"
+assert machine.nubus.slot[9].card.gc.state == "gc-on" "accelerator state != gc-on"
+assert machine.nubus.slot[9].card.gc.error == 0 "accelerator posted an error"
 # The driver rang real doorbell RPCs (HELLO/ping/memcfg/PQDInit/CopyBits/...),
 # proving the gcp command-block path works end-to-end (not just the poke path).
-assert ${machine.nubus.slot[9].card.gc.rpc_count > 0}    "no RPCs serviced (bring-up never engaged)"
+assert machine.nubus.slot[9].card.gc.rpc_count > 0 "no RPCs serviced (bring-up never engaged)"
 
-assert ${machine.screen.width == 640}  "boot: screen width != 640"
-assert ${machine.screen.height == 480} "boot: screen height != 480"
+assert machine.screen.width == 640 "boot: screen width != 640"
+assert machine.screen.height == 480 "boot: screen height != 480"
 
 # The 1-bpp B&W Finder desktop, drawn by the CARD (func $2D accepted → the
 # DrawMultiObject interpreter rasterizes the geometry — including the RRect

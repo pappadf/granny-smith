@@ -16,8 +16,15 @@ extern "C" {
 // Opaque category handle
 typedef struct log_category log_category_t;
 
-// Initialization (idempotent). Registers the `log` shell command.
+// Initialization (idempotent).
 void log_init(void);
+
+// `debug.log(category, spec)` core. `category` NULL/empty prints every
+// category's config; `spec` NULL/empty prints the named category's
+// config, otherwise it is a whitespace-delimited option string
+// (`"5"`, `"level=5 file=tmp/x.log stdout=off ts=on"`). Returns 0 on
+// success, -1 on allocation failure.
+int log_configure(const char *category, const char *spec);
 
 // Category management -------------------------------------------------------
 // Registers a category (or returns existing). On first creation, level = 0.

@@ -331,29 +331,24 @@ static value_t storage_method_find_media(struct object *self, const member_t *m,
 
 // `storage.hd_create(path, size)` — create a blank SCSI HD image.
 // size is a V_NONE-kind slot, so the body discriminates between
-// V_STRING (label/size string) and integer (byte count).
+// V_STRING (label/size string) and integer (byte count). The size
+// string that system_hd_create parses accepts model labels, human
+// sizes, and byte counts alike, so integers stringify cleanly.
 static value_t storage_method_hd_create(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    char line[512];
-    int n;
+    char size_str[64];
     if (argv[1].kind == V_STRING) {
-        n = snprintf(line, sizeof(line), "hd create \"%s\" \"%s\"", argv[0].s, argv[1].s);
+        snprintf(size_str, sizeof(size_str), "%s", argv[1].s ? argv[1].s : "");
     } else if (argv[1].kind == V_INT) {
-        n = snprintf(line, sizeof(line), "hd create \"%s\" %lld", argv[0].s, (long long)argv[1].i);
+        snprintf(size_str, sizeof(size_str), "%lld", (long long)argv[1].i);
     } else if (argv[1].kind == V_UINT) {
-        n = snprintf(line, sizeof(line), "hd create \"%s\" %llu", argv[0].s, (unsigned long long)argv[1].u);
+        snprintf(size_str, sizeof(size_str), "%llu", (unsigned long long)argv[1].u);
     } else {
         return val_err("storage.hd_create: size must be string or integer");
     }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("storage.hd_create: arguments too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("storage.hd_create: tokenisation failed");
-    return val_bool(shell_hd_argv(targc, targv) == 0);
+    return val_bool(system_hd_create(argv[0].s, size_str) == 0);
 }
 
 // Recursively remove a file or directory tree (best-effort). Returns 0 when

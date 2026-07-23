@@ -36,7 +36,7 @@ tests/unit/
     harness_isolated.c  #   Stub-only harness
     harness_cpu.c       #   CPU+memory harness
     stub_platform.c     #   Platform function stubs
-    stub_shell.c        #   Shell command stubs
+    stub_shell.c        #   Shell entry-point stubs
     stub_checkpoint.c   #   Checkpoint I/O stubs
     stub_system.c       #   System accessor stubs (routes to harness context)
     stub_memory.c       #   Memory stubs (isolated mode only)

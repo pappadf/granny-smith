@@ -24,10 +24,10 @@ scheduler.run 200000000
 
 # The card that booted into the IIcx video slot ($9) is the 8•24 GC at
 # 640×480 8 bpp.
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "slot $9 card != 8•24 GC"
-assert ${machine.screen.width == 640}                        "screen width != 640"
-assert ${machine.screen.height == 480}                       "screen height != 480"
-assert ${machine.nubus.slot[9].card.framebuffer.depth == 8}  "framebuffer not 8 bpp"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $9 card != 8•24 GC"
+assert machine.screen.width == 640 "screen width != 640"
+assert machine.screen.height == 480 "screen height != 480"
+assert machine.nubus.slot[9].card.framebuffer.depth == 8 "framebuffer not 8 bpp"
 
 # The 8-bpp Finder desktop with the Marathon folder window — pixel-exact.
 machine.screen.match finder-marathon-8bpp-640x480.png
@@ -121,8 +121,8 @@ machine.adb.mouse.click false
 scheduler.run 20000000
 # At 256 colors the mode does not change (stays 8 bpp) and no error is raised;
 # we are back at the main menu.
-assert ${machine.nubus.slot[9].card.framebuffer.depth == 8} "depth changed away from 8 bpp at 256 colors"
-assert ${machine.memory.peek.w(0xaf0) != 0x19}              "unexpected out-of-memory bomb at 256 colors"
+assert machine.nubus.slot[9].card.framebuffer.depth == 8 "depth changed away from 8 bpp at 256 colors"
+assert machine.memory.peek.w(0xaf0) != 0x19 "unexpected out-of-memory bomb at 256 colors"
 machine.screen.match marathon-menu-after-prefs-8bpp-640x480.png
 
 # --- BEGIN NEW GAME ----------------------------------------------------------

@@ -14,50 +14,50 @@
 #   * the record rides in checkpoints and restores with the machine.
 
 # --- Startup boot wrote the built-from record (headless CLI = same path). ---
-assert ${machine.config.valid} "record valid after startup boot"
-assert ${machine.config.model == "iicx"} "record model from CLI"
-assert ${machine.config.ram == 8192} "record ram from CLI"
-assert ${machine.config.rom_crc == 0x97221136} "record rom_crc"
-assert ${machine.config.created != ""} "record created stamped"
+assert machine.config.valid "record valid after startup boot"
+assert machine.config.model == "iicx" "record model from CLI"
+assert machine.config.ram == 8192 "record ram from CLI"
+assert machine.config.rom_crc == 0x97221136 "record rom_crc"
+assert machine.config.created != "" "record created stamped"
 
 # --- Empty sockets exist as slot nodes before any staging. ---
-assert ${machine.nubus.slot[10].number == 10} "empty socket $A missing from object model"
-assert ${machine.nubus.slot[11].number == 11} "empty socket $B missing from object model"
+assert machine.nubus.slot[10].number == 10 "empty socket $A missing from object model"
+assert machine.nubus.slot[11].number == 11 "empty socket $B missing from object model"
 
 # --- Validate-before-teardown: every rejection leaves the machine running. ---
-assert ${!machine.boot(model="bogus")} "unknown model must be rejected"
-assert ${!machine.boot(ram=999)} "off-menu ram must be rejected"
-assert ${!machine.boot(rom="does/not/exist.rom")} "unreadable rom must be rejected"
-assert ${!machine.boot(vrom="../../data/roms/plus-v3-4d1f8172.rom")} "non-vROM vrom= must be rejected"
-assert ${!machine.boot(video_card="nonesuch")} "unknown card id must be rejected"
-assert ${!machine.boot(video_sense=9)} "out-of-range sense must be rejected"
-assert ${!machine.boot(video_mode="nonesuch")} "unknown video mode must be rejected"
-assert ${machine.id == "iicx"} "machine survives every rejected boot"
-assert ${machine.config.ram == 8192} "record intact after rejected boots"
+assert !machine.boot(model="bogus") "unknown model must be rejected"
+assert !machine.boot(ram=999) "off-menu ram must be rejected"
+assert !machine.boot(rom="does/not/exist.rom") "unreadable rom must be rejected"
+assert !machine.boot(vrom="../../data/roms/plus-v3-4d1f8172.rom") "non-vROM vrom= must be rejected"
+assert !machine.boot(video_card="nonesuch") "unknown card id must be rejected"
+assert !machine.boot(video_sense=9) "out-of-range sense must be rejected"
+assert !machine.boot(video_mode="nonesuch") "unknown video mode must be rejected"
+assert machine.id == "iicx" "machine survives every rejected boot"
+assert machine.config.ram == 8192 "record intact after rejected boots"
 
 # --- Per-slot staging: pick the 24AC for socket $9, honoured at boot. ---
 machine.nubus.slot[9].card_id = "display_card_24ac"
-assert ${machine.nubus.slot[9].card_id == "display_card_24ac"} "staged card_id not readable back"
+assert machine.nubus.slot[9].card_id == "display_card_24ac" "staged card_id not readable back"
 machine.boot
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "per-slot pick not honoured"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "per-slot pick not honoured"
 # Consumed exactly once; the inheriting boot re-staged the ROM itself.
-assert ${machine.nubus.slot[9].card_id == ""} "slot[9].card_id not consumed at boot"
-assert ${machine.rom.loaded == true} "inheriting boot must re-stage the ROM"
+assert machine.nubus.slot[9].card_id == "" "slot[9].card_id not consumed at boot"
+assert machine.rom.loaded == true "inheriting boot must re-stage the ROM"
 
 # --- Wildcard: video_card= applies to the machine's first socket. ---
 machine.boot video_card="824gc"
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "video_card= not applied to first socket"
-assert ${machine.config.video_card == "824gc"} "record video_card"
-assert ${machine.config.vroms != "[]"} "vroms record must list resolved picks"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "video_card= not applied to first socket"
+assert machine.config.video_card == "824gc" "record video_card"
+assert machine.config.vroms != "[]" "vroms record must list resolved picks"
 
 # --- Inheritance: a bare reboot keeps the wildcard card. ---
 machine.boot
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "bare reboot must inherit video_card"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "bare reboot must inherit video_card"
 
 # --- A concrete slot entry beats the wildcard for that slot. ---
 machine.nubus.slot[9].card_id = "display_card_24ac"
 machine.boot video_card="824gc"
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"} "concrete staging must beat the wildcard"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "concrete staging must beat the wildcard"
 
 # --- Per-slot video_mode: the 8-bpp seed reaches the resolved card.
 # (The record's inherited video_card="824gc" wildcard is shadowed by the
@@ -65,28 +65,28 @@ assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC"}
 machine.nubus.slot[9].card_id = "824gc"
 machine.nubus.slot[9].video_mode = "gc_640x480_8bpp"
 machine.boot
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "mode test: card not seated"
-assert ${machine.nubus.slot[9].card.mode.depth == 8} "per-slot video_mode seed did not set 8 bpp"
-assert ${machine.nubus.slot[9].video_mode == ""} "slot[9].video_mode not consumed at boot"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "mode test: card not seated"
+assert machine.nubus.slot[9].card.mode.depth == 8 "per-slot video_mode seed did not set 8 bpp"
+assert machine.nubus.slot[9].video_mode == "" "slot[9].video_mode not consumed at boot"
 
 # --- Checkpoint round-trip of the built-from record. ---
 machine.boot video_card="824gc" video_mode="gc_640x480_8bpp"
 scheduler.run 100000
-assert ${checkpoint.save("${WORK_DIR}/bootcfg.checkpoint")} "checkpoint save"
+assert checkpoint.save("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint save"
 machine.boot video_card="display_card_24ac"
-assert ${machine.config.video_card == "display_card_24ac"} "pre-restore record differs"
-assert ${checkpoint.load("${WORK_DIR}/bootcfg.checkpoint")} "checkpoint load"
-assert ${machine.config.video_card == "824gc"} "restored record video_card"
-assert ${machine.config.model == "iicx"} "restored record model"
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "restored machine card"
+assert machine.config.video_card == "display_card_24ac" "pre-restore record differs"
+assert checkpoint.load("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint load"
+assert machine.config.video_card == "824gc" "restored record video_card"
+assert machine.config.model == "iicx" "restored record model"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine card"
 # An inheriting reboot after restore recreates the restored configuration.
 machine.boot
-assert ${machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC"} "post-restore inherit"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "post-restore inherit"
 
 # --- Explicit vrom= pins a revision: the record's resolved-pick list shows
 # the v1.0 ROM (crc $9E9857E8) winning over the catalog-preferred v1.1. ---
 machine.boot video_card="824gc" vrom="../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"
-assert ${machine.config.vrom != ""} "record must carry the explicit pick"
-assert ${machine.config.vroms == "[{\"card_id\":\"824gc\",\"path\":\"../../data/roms/824gc-v1.0-reva-9e9857e8.vrom\",\"crc\":\"0x9e9857e8\",\"explicit\":true}]"} "explicit v1.0 pick must win over the preferred v1.1"
+assert machine.config.vrom != "" "record must carry the explicit pick"
+assert machine.config.vroms == "[{\"card_id\":\"824gc\",\"path\":\"../../data/roms/824gc-v1.0-reva-9e9857e8.vrom\",\"crc\":\"0x9e9857e8\",\"explicit\":true}]" "explicit v1.0 pick must win over the preferred v1.1"
 
 quit

@@ -12,6 +12,7 @@
 #include "lisa_mmu.h"
 #include "mmu.h"
 
+#include "addr_format.h"
 #include "common.h"
 #include "cpu.h"
 #include "debug.h"
@@ -1677,38 +1678,52 @@ static const arg_decl_t mem_read_cstring_args[] = {
 static value_t method_mem_dump(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    // addr is V_NONE-kind: body discriminates integer vs string.
+    // addr is V_NONE-kind: an integer, or a string symbol/alias the
+    // address parser resolves (parse_address handles $hex / 0x / symbol).
+    uint32_t addr = 0;
     bool addr_ok = false;
     uint64_t addr_u = val_as_u64(&argv[0], &addr_ok);
-    bool addr_is_str = (argv[0].kind == V_STRING);
-    if (!addr_ok && !addr_is_str)
-        return val_err("memory.dump: addr must be integer or string");
-    int64_t count = 0;
-    bool have_count = false;
-    if (argc >= 2) {
-        count = argv[1].i;
-        have_count = true;
-    }
-    char line[128];
-    int n;
-    if (have_count) {
-        if (addr_ok)
-            n = snprintf(line, sizeof(line), "x 0x%llx %lld", (unsigned long long)addr_u, (long long)count);
-        else
-            n = snprintf(line, sizeof(line), "x %s %lld", argv[0].s ? argv[0].s : "", (long long)count);
+    if (addr_ok) {
+        addr = (uint32_t)addr_u;
+    } else if (argv[0].kind == V_STRING && argv[0].s) {
+        addr_space_t sp;
+        if (!parse_address(argv[0].s, &addr, &sp))
+            return val_err("memory.dump: cannot resolve address '%s'", argv[0].s);
     } else {
-        if (addr_ok)
-            n = snprintf(line, sizeof(line), "x 0x%llx", (unsigned long long)addr_u);
-        else
-            n = snprintf(line, sizeof(line), "x %s", argv[0].s ? argv[0].s : "");
+        return val_err("memory.dump: addr must be an integer or a symbol name");
     }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("memory.dump: argument too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("memory.dump: tokenisation failed");
-    return val_bool(shell_examine_argv(targc, targv) == 0);
+
+    uint32_t nbytes = 64;
+    if (argc >= 2) {
+        int64_t count = argv[1].i;
+        if (count <= 0)
+            return val_err("memory.dump: byte count must be > 0");
+        nbytes = (uint32_t)count;
+    }
+    if (nbytes > 512)
+        nbytes = 512;
+
+    // Classic hex + ASCII layout, 16 bytes per row. Uses the
+    // side-effect-free debug read so a dump across unmapped pages can't
+    // latch a spurious guest bus error.
+    for (uint32_t i = 0; i < nbytes; i += 16) {
+        printf("$%08X  ", addr + i);
+        for (uint32_t j = 0; j < 16; j++) {
+            if (i + j < nbytes)
+                printf("%02x ", memory_debug_read_uint8(addr + i + j));
+            else
+                printf("   ");
+        }
+        printf(" ");
+        for (uint32_t j = 0; j < 16; j++) {
+            if (i + j < nbytes) {
+                uint8_t byte = memory_debug_read_uint8(addr + i + j);
+                printf("%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
+            }
+        }
+        printf("\n");
+    }
+    return val_none();
 }
 
 static const arg_decl_t mem_dump_args[] = {
@@ -1798,7 +1813,7 @@ static const member_t memory_members[] = {
     {.kind = M_METHOD,
      .name = "dump",
      .doc = "Hex-dump count bytes at addr (replaces the legacy `x` / examine)",
-     .method = {.args = mem_dump_args, .nargs = 2, .result = V_BOOL, .fn = method_mem_dump}},
+     .method = {.args = mem_dump_args, .nargs = 2, .result = V_NONE, .fn = method_mem_dump}},
     {.kind = M_METHOD,
      .name = "translate",
      .doc = "Show debug-path MMU translation of a logical address (validity + phys + backing)",

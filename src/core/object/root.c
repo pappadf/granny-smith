@@ -18,6 +18,7 @@
 #include "alias.h"
 #include "debug.h"
 #include "object.h"
+#include "shell_funcs.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -184,31 +185,6 @@ static value_t method_root_quit(struct object *self, const member_t *m, int argc
     return val_none();
 }
 
-// `assert(predicate, [message])` — truthiness check. Callers have
-// already $()-expanded the predicate to a string, so this just runs
-// predicate_is_truthy on it and returns V_ERROR on failure.
-static value_t method_root_assert(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1)
-        return val_err("assert: expected (predicate, [message])");
-    const char *pred = (argv[0].kind == V_STRING && argv[0].s) ? argv[0].s : NULL;
-    if (!pred && argv[0].kind == V_BOOL)
-        pred = argv[0].b ? "true" : "false";
-    if (!pred)
-        pred = "";
-    const char *msg = (argc >= 2 && argv[1].kind == V_STRING) ? argv[1].s : NULL;
-    if (predicate_is_truthy(pred)) {
-        printf("ASSERT OK: %s\n", pred);
-        return val_bool(true);
-    }
-    if (msg && *msg)
-        printf("ASSERT FAILED: %s\n", msg);
-    else
-        printf("ASSERT FAILED: %s\n", pred);
-    return val_err("assert failed: %s", msg && *msg ? msg : pred);
-}
-
 // `echo(...)` — print arguments separated by spaces. Mirrors the
 // classic `echo` shell command so test scripts can write the result
 // of a `$(...)` expression to stdout without going through any
@@ -297,10 +273,8 @@ static const member_t emu_root_members[] = {
      .name = "quit",
      .doc = "Exit the emulator (asks the legacy quit command to end the run)",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = method_root_quit}                },
-    {.kind = M_METHOD,
-     .name = "assert",
-     .doc = "Assert that a predicate is truthy; abort the script otherwise",
-     .method = {.args = NULL, .nargs = 2, .result = V_BOOL, .fn = method_root_assert}              },
+    // `assert` is a statement keyword in shell v2 (script.c); the former
+    // root method is gone — its name is now a reserved word.
     {.kind = M_METHOD,
      .name = "echo",
      .doc = "Print arguments separated by spaces (final newline appended)",
@@ -392,6 +366,8 @@ void root_install(struct config *cfg) {
     // backwards compatibility with the existing
     // `shell.alias.{add,remove,list}` surface).
     struct object *shell_obj = attach_stub(NULL, &shell_class, cfg, "shell");
+    if (shell_obj)
+        shell_funcs_install(shell_obj); // `shell.functions` container (§3.10)
     struct object *storage_obj = attach_stub(NULL, &storage_class_real, cfg, "storage");
     if (storage_obj) {
         attach_stub(storage_obj, &storage_images_collection_class, cfg, "images");
@@ -415,6 +391,8 @@ void root_install(struct config *cfg) {
 }
 
 void root_uninstall(void) {
+    // Detach function entry objects before their parent stub goes away.
+    shell_funcs_uninstall();
     for (int i = g_stub_count - 1; i >= 0; i--) {
         struct object *o = g_stubs[i];
         if (o) {
@@ -432,11 +410,10 @@ void root_uninstall(void) {
     // Restore the namespace-only root class so a fresh object_root()
     // call after uninstall doesn't surface stale members.
     object_root_set_class(NULL);
-    // Drop user-added aliases only — built-in `$reg` aliases are owned
-    // by the subsystem _init hooks (cpu_init, etc.) and the next
-    // machine boot re-registers them. Wiping built-ins here would
-    // strand them between cpu_init and the next install.
-    alias_clear_user();
+    // Aliases (built-in and user) survive machine teardown: they store
+    // path text and re-resolve per access (shell v2 §3.5), so a
+    // reference like `alias d = machine.floppy.drive[0]` tracks the
+    // *new* drive object after a reboot instead of being wiped.
     g_installed_cfg = NULL;
 }
 

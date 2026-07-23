@@ -12,10 +12,6 @@
 
 #include "addr_format.h"
 #include "alias.h"
-#include "cmd_io.h"
-#include "cmd_parse.h"
-#include "cmd_symbol.h"
-#include "cmd_types.h"
 #include "common.h"
 #include "cpu.h"
 #include "cpu_internal.h"
@@ -32,6 +28,7 @@
 #include "root.h"
 #include "scheduler.h"
 #include "shell.h"
+#include "shell_var.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -166,6 +163,13 @@ breakpoint_t *set_breakpoint(debug_t *debug, uint32_t addr, addr_space_t space) 
     return bp;
 }
 
+// `$name` resolver for debugger-side expression contexts: straight
+// through to the shell's scoped binding store (+ alias table).
+static value_t debug_shell_binding(void *ud, const char *name) {
+    (void)ud;
+    return shell_binding_get(name);
+}
+
 // Evaluate a breakpoint condition expression using the full ${...}
 // expression grammar (see src/core/object/expr.c).  Supports anything
 // expr_eval supports — paths (cpu.pc, cpu.d0), method calls
@@ -188,9 +192,7 @@ static bool eval_breakpoint_condition(const char *expr) {
 
     expr_ctx_t ctx = {
         .root = object_root(),
-        .alias = NULL, // bp conditions don't currently support shell aliases
-        .alias_ud = NULL,
-        .binding = NULL, // bp conditions don't currently support shell vars
+        .binding = debug_shell_binding, // $name → shell bindings/aliases
         .binding_ud = NULL,
     };
 
@@ -346,25 +348,13 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
     return lp;
 }
 
-// Adapter for expr_alias_fn — alias_lookup's signature differs because
-// it also returns the alias kind via an out-pointer.
-static const char *alias_lookup_for_expr(void *ud, const char *name) {
-    (void)ud;
-    return alias_lookup(name, NULL);
-}
-
-// Expand a logpoint message via the unified ${...} interpolator. Sets
-// up the `lp` synthetic context with addr/value/size, then calls
-// expr_interpolate_string against the object root with the alias
-// resolver bound. Outside ${...} the message is literal — a bare `$`
-// is just a dollar sign. Use ${cpu.pc}, ${lp.value},
-// ${memory.peek.l(<addr>)}, ${memory.read_cstring(<addr>)}.
-// Per-fire bindings exposed during logpoint message expansion. The
-// three event-intrinsic values (`value`, `addr`, `size`) live nowhere
+// Expand a logpoint message template at fire time (shell v2 §6.3).
+// The message is a stored (raw) interpolating-string body: `${expr}`
+// splices any expression, `$name` splices a binding. The three
+// event-intrinsic values (`$value`, `$addr`, `$size`) live nowhere
 // else — there is no persistent object holding "the byte that just got
-// written to 0x4000". The deferred interpolator queries this binding
-// table for bare identifiers; everything else (registers, memory,
-// peripherals) resolves through the normal object tree at fire time.
+// written to 0x4000" — so they are pushed as per-fire bindings, layered
+// in front of the shell's regular binding store.
 typedef struct {
     uint32_t addr;
     uint32_t value;
@@ -389,7 +379,9 @@ static value_t lp_binding(void *ud, const char *name) {
     }
     if (strcmp(name, "size") == 0)
         return val_uint(1, lp->size);
-    return val_none();
+    // Everything else falls through to the shell's binding store
+    // (scoped `let` bindings, then the alias table as V_REF).
+    return shell_binding_get(name);
 }
 
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
@@ -401,14 +393,12 @@ static void format_logpoint_message(char *buf, size_t buf_size, const char *msg,
     lp_bindings_t lp = {.addr = addr, .value = value, .size = size};
     expr_ctx_t ctx = {
         .root = object_root(),
-        .alias = alias_lookup_for_expr,
-        .alias_ud = NULL,
         .binding = lp_binding,
         .binding_ud = &lp,
     };
-    value_t v = expr_interpolate_string(msg, &ctx);
+    value_t v = expr_interpolate_body(msg, &ctx);
 
-    const char *s = (v.kind == V_STRING && v.s) ? v.s : "";
+    const char *s = (v.kind == V_STRING && v.s) ? v.s : (v.kind == V_ERROR && v.err) ? v.err : "";
     size_t n = strlen(s);
     if (n >= buf_size)
         n = buf_size - 1;
@@ -564,7 +554,6 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
 
 // Forward declarations for logpoint management (IMP-604)
 void list_logpoints(debug_t *debug);
-static int delete_logpoint(debug_t *debug, uint32_t addr);
 int delete_all_logpoints(debug_t *debug);
 
 static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
@@ -829,71 +818,6 @@ void list_breakpoints(debug_t *debug) {
     }
 }
 
-// Parse an address token, optionally followed by ".b"/".w"/".l" size.  Also
-// honors the "start-end" and "start:length" forms used by PC-range logpoints.
-// Returns false on invalid input.  *size_out is 0 when no size suffix was
-// given (caller applies default).  *space_out receives the parsed address
-// space (ADDR_LOGICAL by default, ADDR_PHYSICAL when the input had a P:
-// prefix).
-static bool parse_logpoint_target(const char *in, uint32_t *addr_out, uint32_t *end_addr_out, unsigned *size_out,
-                                  addr_space_t *space_out) {
-    char buf[64];
-    strncpy(buf, in, sizeof(buf) - 1);
-    buf[sizeof(buf) - 1] = '\0';
-    *size_out = 0;
-
-    // Strip optional .b/.w/.l (only when no ':' separator present — ':' is used
-    // for length, and could appear with a size suffix too)
-    char *dot = strrchr(buf, '.');
-    if (dot && (dot[1] == 'b' || dot[1] == 'B') && dot[2] == '\0') {
-        *size_out = 1;
-        *dot = '\0';
-    } else if (dot && (dot[1] == 'w' || dot[1] == 'W') && dot[2] == '\0') {
-        *size_out = 2;
-        *dot = '\0';
-    } else if (dot && (dot[1] == 'l' || dot[1] == 'L') && dot[2] == '\0') {
-        *size_out = 4;
-        *dot = '\0';
-    }
-
-    // Skip L:/P: prefix for separator search
-    int prefix_len = 0;
-    if ((buf[0] == 'L' || buf[0] == 'l' || buf[0] == 'P' || buf[0] == 'p') && buf[1] == ':')
-        prefix_len = 2;
-
-    char *range_sep = strchr(buf + prefix_len, '-');
-    char *length_sep = strchr(buf + prefix_len, ':');
-    addr_space_t sp = ADDR_LOGICAL;
-
-    if (range_sep) {
-        *range_sep = '\0';
-        if (!parse_address(buf, addr_out, &sp))
-            return false;
-        addr_space_t sp2;
-        if (!parse_address(range_sep + 1, end_addr_out, &sp2))
-            return false;
-        if (*end_addr_out < *addr_out)
-            return false;
-    } else if (length_sep) {
-        *length_sep = '\0';
-        if (!parse_address(buf, addr_out, &sp))
-            return false;
-        uint32_t len;
-        addr_space_t sp2;
-        if (!parse_address(length_sep + 1, &len, &sp2))
-            return false;
-        if (len == 0)
-            return false;
-        *end_addr_out = *addr_out + len - 1;
-    } else {
-        if (!parse_address(buf, addr_out, &sp))
-            return false;
-        *end_addr_out = *addr_out;
-    }
-    *space_out = sp;
-    return true;
-}
-
 // Check if tracing is active (for log capture hook)
 int debug_trace_is_active(void) {
     if (!system_is_initialized())
@@ -978,303 +902,6 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc) {
     if (debug->trace_entries_head == debug->trace_entries_tail) {
         debug->trace_entries_tail = (debug->trace_entries_tail + 1) % debug->trace_entries_size;
     }
-}
-
-// Helper function to convert string to uppercase (for case-insensitive comparisons)
-static void str_to_upper(char *dest, const char *src) {
-    while (*src) {
-        *dest++ = (*src >= 'a' && *src <= 'z') ? (*src - 32) : *src;
-        src++;
-    }
-    *dest = '\0';
-}
-
-uint64_t cmd_set(int argc, char *argv[]) {
-    if (argc != 3) {
-        printf("Usage: set <register|address> <value>\n");
-        printf("  Registers: D0-D7, A0-A7, PC, SP, SSP, USP, SR, CCR\n");
-        printf("  Condition codes: C, V, Z, N, X\n");
-        printf("  Memory: <address>.b|.w|.l <value>\n");
-        return 0;
-    }
-
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
-        printf("CPU not available\n");
-        return 0;
-    }
-    char target[64];
-    str_to_upper(target, argv[1]);
-
-    // Parse the value (support $ prefix for Motorola hex)
-    const char *val_str = argv[2];
-    if (*val_str == '$')
-        val_str++;
-    char *endptr;
-    uint32_t value = (uint32_t)strtoul(val_str, &endptr,
-                                       (*val_str == '0' && (*(val_str + 1) == 'x' || *(val_str + 1) == 'X')) ? 0 : 16);
-    if (*endptr != '\0') {
-        printf("Invalid value: %s\n", argv[2]);
-        return 0;
-    }
-
-    // Data registers (D0-D7)
-    if (target[0] == 'D' && target[1] >= '0' && target[1] <= '7' && target[2] == '\0') {
-        int reg = target[1] - '0';
-        cpu_set_dn(cpu, reg, value);
-        printf("D%d = $%08X\n", reg, value);
-        return 0;
-    }
-
-    // Address registers (A0-A7)
-    if (target[0] == 'A' && target[1] >= '0' && target[1] <= '7' && target[2] == '\0') {
-        int reg = target[1] - '0';
-        cpu_set_an(cpu, reg, value);
-        printf("A%d = $%08X\n", reg, value);
-        return 0;
-    }
-
-    // Program Counter
-    if (strcmp(target, "PC") == 0) {
-        cpu_set_pc(cpu, value);
-        printf("PC = $%08X\n", value);
-        return 0;
-    }
-
-    // Stack Pointer (alias for A7)
-    if (strcmp(target, "SP") == 0) {
-        cpu_set_an(cpu, 7, value);
-        printf("SP = $%08X\n", value);
-        return 0;
-    }
-
-    // Supervisor Stack Pointer
-    if (strcmp(target, "SSP") == 0) {
-        cpu_set_ssp(cpu, value);
-        printf("SSP = $%08X\n", value);
-        return 0;
-    }
-
-    // User Stack Pointer
-    if (strcmp(target, "USP") == 0) {
-        cpu_set_usp(cpu, value);
-        printf("USP = $%08X\n", value);
-        return 0;
-    }
-
-    // Status Register
-    if (strcmp(target, "SR") == 0) {
-        cpu_set_sr(cpu, (uint16_t)value);
-        printf("SR = $%04X\n", (uint16_t)value);
-        return 0;
-    }
-
-    // Condition Code Register
-    if (strcmp(target, "CCR") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        sr = (sr & ~cpu_ccr_mask) | (value & cpu_ccr_mask);
-        cpu_set_sr(cpu, sr);
-        printf("CCR = $%02X\n", (uint8_t)(value & cpu_ccr_mask));
-        return 0;
-    }
-
-    // Individual condition code flags
-    if (strcmp(target, "C") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        if (value & 1)
-            sr |= cpu_ccr_c;
-        else
-            sr &= ~cpu_ccr_c;
-        cpu_set_sr(cpu, sr);
-        printf("C = %d\n", (value & 1));
-        return 0;
-    }
-
-    if (strcmp(target, "V") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        if (value & 1)
-            sr |= cpu_ccr_v;
-        else
-            sr &= ~cpu_ccr_v;
-        cpu_set_sr(cpu, sr);
-        printf("V = %d\n", (value & 1));
-        return 0;
-    }
-
-    if (strcmp(target, "Z") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        if (value & 1)
-            sr |= cpu_ccr_z;
-        else
-            sr &= ~cpu_ccr_z;
-        cpu_set_sr(cpu, sr);
-        printf("Z = %d\n", (value & 1));
-        return 0;
-    }
-
-    if (strcmp(target, "N") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        if (value & 1)
-            sr |= cpu_ccr_n;
-        else
-            sr &= ~cpu_ccr_n;
-        cpu_set_sr(cpu, sr);
-        printf("N = %d\n", (value & 1));
-        return 0;
-    }
-
-    if (strcmp(target, "X") == 0) {
-        uint16_t sr = cpu_get_sr(cpu);
-        if (value & 1)
-            sr |= cpu_ccr_x;
-        else
-            sr &= ~cpu_ccr_x;
-        cpu_set_sr(cpu, sr);
-        printf("X = %d\n", (value & 1));
-        return 0;
-    }
-
-    // Master Stack Pointer (68030 only, IMP-406)
-    if (strcmp(target, "MSP") == 0) {
-        if (cpu->cpu_model != CPU_MODEL_68030) {
-            printf("MSP is only available on 68030\n");
-            return 0;
-        }
-        cpu->msp = value;
-        printf("MSP = $%08X\n", value);
-        return 0;
-    }
-
-    // FPU control registers (IMP-403)
-    if (strcmp(target, "FPCR") == 0) {
-        fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-        if (!fpu) {
-            printf("FPU not available\n");
-            return 0;
-        }
-        fpu->fpcr = value;
-        printf("FPCR = $%08X\n", value);
-        return 0;
-    }
-    if (strcmp(target, "FPSR") == 0) {
-        fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-        if (!fpu) {
-            printf("FPU not available\n");
-            return 0;
-        }
-        fpu->fpsr = value;
-        printf("FPSR = $%08X\n", value);
-        return 0;
-    }
-    if (strcmp(target, "FPIAR") == 0) {
-        fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-        if (!fpu) {
-            printf("FPU not available\n");
-            return 0;
-        }
-        fpu->fpiar = value;
-        printf("FPIAR = $%08X\n", value);
-        return 0;
-    }
-
-    // Individual MMU registers (IMP-404)
-    if (strcmp(target, "TC") == 0) {
-        if (!g_mmu) {
-            printf("MMU not present\n");
-            return 0;
-        }
-        g_mmu->tc = value;
-        printf("TC = $%08X\n", value);
-        return 0;
-    }
-    if (strcmp(target, "TT0") == 0) {
-        if (!g_mmu) {
-            printf("MMU not present\n");
-            return 0;
-        }
-        g_mmu->tt0 = value;
-        printf("TT0 = $%08X\n", value);
-        return 0;
-    }
-    if (strcmp(target, "TT1") == 0) {
-        if (!g_mmu) {
-            printf("MMU not present\n");
-            return 0;
-        }
-        g_mmu->tt1 = value;
-        printf("TT1 = $%08X\n", value);
-        return 0;
-    }
-
-    // Memory addresses with size specifiers (.b, .w, .l)
-    char *size_spec = strchr(target, '.');
-    if (size_spec != NULL) {
-        *size_spec = '\0';
-        size_spec++;
-
-        // Parse the address from target (supports $, 0x, and bare hex,
-        // plus L: / P: prefixes for logical/physical address space).
-        uint32_t addr;
-        addr_space_t space;
-        if (!parse_address(target, &addr, &space)) {
-            printf("Invalid address: %s\n", target);
-            return 0;
-        }
-
-        // Physical writes go through mmu_write_physical_*, which bypasses
-        // the CPU SoA so the write reliably hits the targeted PA regardless
-        // of whichever mode (user/supervisor) is currently active.  This is
-        // what you want when poking a kernel-allocated structure that's
-        // only mapped in one address space.
-        if (space == ADDR_PHYSICAL) {
-            bool ok = false;
-            if (strcmp(size_spec, "B") == 0) {
-                ok = mmu_write_physical_uint8(g_mmu, addr, (uint8_t)value);
-                if (ok)
-                    printf("P:[$%08X].b = $%02X\n", addr, (uint8_t)value);
-            } else if (strcmp(size_spec, "W") == 0) {
-                ok = mmu_write_physical_uint16(g_mmu, addr, (uint16_t)value);
-                if (ok)
-                    printf("P:[$%08X].w = $%04X\n", addr, (uint16_t)value);
-            } else if (strcmp(size_spec, "L") == 0) {
-                ok = mmu_write_physical_uint32(g_mmu, addr, value);
-                if (ok)
-                    printf("P:[$%08X].l = $%08X\n", addr, value);
-            } else {
-                printf("Invalid size specifier: .%s (use .b, .w, or .l)\n", size_spec);
-                return 0;
-            }
-            if (!ok)
-                printf("Physical write failed (PA $%08X unmapped or read-only)\n", addr);
-            return 0;
-        }
-
-        if (strcmp(size_spec, "B") == 0) {
-            memory_write_uint8(addr, (uint8_t)value);
-            printf("[$%08X].b = $%02X\n", addr, (uint8_t)value);
-            return 0;
-        } else if (strcmp(size_spec, "W") == 0) {
-            memory_write_uint16(addr, (uint16_t)value);
-            printf("[$%08X].w = $%04X\n", addr, (uint16_t)value);
-            return 0;
-        } else if (strcmp(size_spec, "L") == 0) {
-            memory_write_uint32(addr, value);
-            printf("[$%08X].l = $%08X\n", addr, value);
-            return 0;
-        } else {
-            printf("Invalid size specifier: .%s (use .b, .w, or .l)\n", size_spec);
-            return 0;
-        }
-    }
-
-    printf("Unknown target: %s\n", target);
-    printf("Usage: set <register|address> <value>\n");
-    printf("  Registers: D0-D7, A0-A7, PC, SP, SSP, USP, SR, CCR\n");
-    printf("  FPU: FPCR, FPSR, FPIAR   MMU: TC, TT0, TT1   68030: MSP\n");
-    printf("  Condition codes: C, V, Z, N, X\n");
-    printf("  Memory: <address>.b|.w|.l <value>\n");
-    printf("  Values are hex by default (42 = $42). Use 0d prefix for decimal (0d66).\n");
-    return 0;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -2154,29 +1781,6 @@ write_error:
 // FPU register dump (IMP-402)
 // ============================================================================
 
-// Convert float80 to approximate double for display
-static double fp80_to_double(float80_reg_t f) {
-    if (fp80_is_zero(f))
-        return FP80_SIGN(f) ? -0.0 : 0.0;
-    if (fp80_is_inf(f))
-        return FP80_SIGN(f) ? -1.0 / 0.0 : 1.0 / 0.0;
-    if (fp80_is_nan(f))
-        return 0.0 / 0.0;
-    int sign = FP80_SIGN(f);
-    int exp = FP80_EXP(f) - 16383;
-    double mant = (double)f.mantissa / (double)(1ULL << 63);
-    double result = mant;
-    // Apply exponent via repeated multiply (safe for reasonable range)
-    if (exp > 0) {
-        for (int i = 0; i < exp && i < 1023; i++)
-            result *= 2.0;
-    } else if (exp < 0) {
-        for (int i = 0; i > exp && i > -1023; i--)
-            result /= 2.0;
-    }
-    return sign ? -result : result;
-}
-
 // ============================================================================
 // Configurable status line / prompt (IMP-308)
 // ============================================================================
@@ -2258,21 +1862,6 @@ static void free_logpoint(logpoint_t *lp) {
     free(lp);
 }
 
-// Delete a logpoint at a specific address (matches the start address)
-static int delete_logpoint(debug_t *debug, uint32_t addr) {
-    logpoint_t **pp = &debug->logpoints;
-    while (*pp) {
-        if ((*pp)->addr == addr) {
-            logpoint_t *lp = *pp;
-            *pp = lp->next;
-            free_logpoint(lp);
-            return 0;
-        }
-        pp = &(*pp)->next;
-    }
-    return -1; // not found
-}
-
 // Delete logpoint by sparse stable id (proposal §2.1). Same shape as
 // delete_breakpoint_by_id — match `lp->id`, not list position.
 static int delete_logpoint_by_id(debug_t *debug, int id) {
@@ -2304,428 +1893,6 @@ int delete_all_logpoints(debug_t *debug) {
         debug->logpoints = NULL;
     return count;
 }
-
-// ============================================================================
-// Command Handlers
-// ============================================================================
-
-// --- print (replaces get, get-global, reg read) ---
-static void cmd_print_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    // If no arg provided, delegate to raw_argv for backward compat
-    if (!ctx->args[0].present) {
-        cmd_err(res, "usage: print <register|global|address.size>");
-        return;
-    }
-
-    struct resolved_symbol *sym = &ctx->args[0].as_sym;
-
-    if (sym->kind == SYM_REGISTER) {
-        // Special handling for FP data registers
-        cpu_t *cpu = system_cpu();
-        if (cpu && cpu->fpu && sym->size == 10) {
-            fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
-            // Extract register number from name
-            int reg = -1;
-            if (sym->name[0] == 'F' && sym->name[1] == 'P' && sym->name[2] >= '0' && sym->name[2] <= '7')
-                reg = sym->name[2] - '0';
-            if (reg >= 0) {
-                float80_reg_t fp = fpu->fp[reg];
-                cmd_printf(ctx, "%s = $%04X.%016llX\n", sym->name, fp.exponent, (unsigned long long)fp.mantissa);
-                cmd_ok(res);
-                return;
-            }
-        }
-        // Special handling for SR (show decoded flags)
-        if (strcmp(sym->name, "SR") == 0) {
-            uint16_t sr = (uint16_t)sym->value;
-            int s_bit = (sr >> 13) & 1;
-            int im = (sr >> 8) & 7;
-            int t_bit = (sr >> 15) & 1;
-            int x = (sr & 0x0010) ? 1 : 0, n = (sr & 0x0008) ? 1 : 0;
-            int z = (sr & 0x0004) ? 1 : 0, v = (sr & 0x0002) ? 1 : 0;
-            int cc = (sr & 0x0001) ? 1 : 0;
-            cmd_printf(ctx, "SR = $%04X  (S=%d, IM=%d, T=%d, XNZVC=%d%d%d%d%d)\n", sr, s_bit, im, t_bit, x, n, z, v,
-                       cc);
-            cmd_int(res, sym->value);
-            return;
-        }
-        // CRP/SRP (64-bit MMU registers)
-        if (strcmp(sym->name, "CRP") == 0 && g_mmu) {
-            cmd_printf(ctx, "CRP = $%08X_%08X\n", (uint32_t)(g_mmu->crp >> 32), (uint32_t)(g_mmu->crp & 0xFFFFFFFF));
-            cmd_ok(res);
-            return;
-        }
-        if (strcmp(sym->name, "SRP") == 0 && g_mmu) {
-            cmd_printf(ctx, "SRP = $%08X_%08X\n", (uint32_t)(g_mmu->srp >> 32), (uint32_t)(g_mmu->srp & 0xFFFFFFFF));
-            cmd_ok(res);
-            return;
-        }
-
-        cmd_printf(ctx, "%s = $%0*X\n", sym->name, sym->size * 2, sym->value);
-        cmd_int(res, sym->value);
-        return;
-    }
-
-    if (sym->kind == SYM_MAC_GLOBAL) {
-        cmd_printf(ctx, "%s ($%06X) = $%0*X\n", sym->name, sym->address, sym->size * 2, sym->value);
-        cmd_int(res, sym->value);
-        return;
-    }
-
-    // Special targets that aren't symbols
-    const char *target_name = ctx->raw_argc >= 2 ? ctx->raw_argv[1] : NULL;
-    if (target_name && (strcasecmp(target_name, "instr") == 0 || strcasecmp(target_name, "$instr") == 0)) {
-        uint64_t count = cpu_instr_count();
-        cmd_printf(ctx, "Instruction count = %llu\n", (unsigned long long)count);
-        cmd_int(res, (int64_t)count);
-        return;
-    }
-
-    // SYM_UNKNOWN: try as address.size (already resolved by parser)
-    if (sym->address != 0 || sym->size != 0) {
-        cmd_printf(ctx, "[$%08X].%c = $%0*X\n", sym->address, sym->size == 1 ? 'b' : (sym->size == 2 ? 'w' : 'l'),
-                   sym->size * 2, sym->value);
-        cmd_int(res, sym->value);
-        return;
-    }
-
-    cmd_err(res, "unknown target: %s", ctx->raw_argv[1]);
-}
-
-// --- assert ---
-// Compare a symbol (register or Mac global) against an expected value and fail
-// the running script when they differ.  Useful for scripted integration tests.
-// Usage: assert <target> <op> <value>
-//   target : register (e.g. pc, d0, sr) or Mac global name
-//   op     : == != < > <= >=
-//   value  : numeric literal ($hex, 0xhex, or decimal) or another symbol
-// Truthiness for the new predicate form. The shell's $(...) expansion
-// has already converted the result to a string before reaching us; we
-// match the proposal §2.5 truthiness rules on that string.
-bool predicate_is_truthy(const char *s) {
-    if (!s || !*s)
-        return false;
-    if (strcmp(s, "false") == 0 || strcmp(s, "0") == 0)
-        return false;
-    if (strcmp(s, "<error") == 0)
-        return false; // formatted error tail
-    if (strncmp(s, "<error:", 7) == 0)
-        return false;
-    return true;
-}
-
-// --- examine ---
-static void cmd_examine_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    uint32_t addr;
-    if (ctx->args[0].present) {
-        addr = ctx->args[0].as_addr;
-    } else {
-        cmd_err(res, "usage: examine <address> [count]");
-        return;
-    }
-
-    uint32_t nbytes = 64;
-    if (ctx->args[1].present)
-        nbytes = (uint32_t)ctx->args[1].as_int;
-    if (nbytes == 0) {
-        cmd_err(res, "byte count must be > 0");
-        return;
-    }
-    if (nbytes > 512)
-        nbytes = 512;
-
-    for (uint32_t i = 0; i < nbytes; i += 16) {
-        cmd_printf(ctx, "$%08X  ", addr + i);
-        for (uint32_t j = 0; j < 16; j++) {
-            if (i + j < nbytes)
-                cmd_printf(ctx, "%02x ", memory_debug_read_uint8(addr + i + j));
-            else
-                cmd_printf(ctx, "   ");
-        }
-        cmd_printf(ctx, " ");
-        for (uint32_t j = 0; j < 16; j++) {
-            if (i + j < nbytes) {
-                uint8_t byte = memory_debug_read_uint8(addr + i + j);
-                cmd_printf(ctx, "%c", (byte >= 0x20 && byte <= 0x7e) ? byte : '.');
-            }
-        }
-        cmd_printf(ctx, "\n");
-    }
-    cmd_ok(res);
-}
-
-// --- disasm ---
-// --- logpoint ---
-static void cmd_logpoint_handler(struct cmd_context *ctx, struct cmd_result *res) {
-    debug_t *debug = system_debug();
-    if (!debug) {
-        cmd_err(res, "debug not available");
-        return;
-    }
-
-    // Bare invocation or "list": dump all logpoints
-    if (ctx->raw_argc <= 1 || (ctx->subcmd && strcmp(ctx->subcmd, "list") == 0)) {
-        list_logpoints(debug);
-        cmd_ok(res);
-        return;
-    }
-
-    // "clear": delete all logpoints
-    if (ctx->subcmd && strcmp(ctx->subcmd, "clear") == 0) {
-        delete_all_logpoints(debug);
-        cmd_printf(ctx, "All logpoints deleted\n");
-        cmd_ok(res);
-        return;
-    }
-
-    // "del": delete by #id, address, or all
-    if (ctx->subcmd && strcmp(ctx->subcmd, "del") == 0) {
-        if (ctx->raw_argc < 3) {
-            cmd_err(res, "usage: logpoint del <#id|address|all>");
-            return;
-        }
-        const char *target = ctx->raw_argv[2];
-        if (strcmp(target, "all") == 0) {
-            delete_all_logpoints(debug);
-            cmd_printf(ctx, "All logpoints deleted\n");
-            cmd_ok(res);
-            return;
-        }
-        if (target[0] == '#') {
-            int id = atoi(target + 1);
-            if (delete_logpoint_by_id(debug, id) == 0)
-                cmd_printf(ctx, "Logpoint #%d deleted\n", id);
-            else
-                cmd_err(res, "No logpoint with id #%d", id);
-            return;
-        }
-        uint32_t addr;
-        addr_space_t sp;
-        if (!parse_address(target, &addr, &sp)) {
-            cmd_err(res, "Invalid address: %s", target);
-            return;
-        }
-        if (delete_logpoint(debug, addr) == 0)
-            cmd_printf(ctx, "Logpoint at $%08X deleted\n", addr);
-        else
-            cmd_err(res, "No logpoint at $%08X", addr);
-        return;
-    }
-
-    // Otherwise: "set" (default subcommand) — set a logpoint.
-    // Syntax:
-    //   logpoint [set] [--write|--read|--rw] <addr[.size]> [msg] [key=val...]
-    int arg_idx = 1;
-    if (ctx->subcmd && strcmp(ctx->subcmd, "set") == 0)
-        arg_idx = 2;
-
-    // Pre-scan for kind flags so they can appear before or after the address.
-    int kind = LP_KIND_PC;
-    for (int i = arg_idx; i < ctx->raw_argc; i++) {
-        const char *a = ctx->raw_argv[i];
-        if (strcmp(a, "--write") == 0)
-            kind = (kind == LP_KIND_READ) ? LP_KIND_RW : LP_KIND_WRITE;
-        else if (strcmp(a, "--read") == 0)
-            kind = (kind == LP_KIND_WRITE) ? LP_KIND_RW : LP_KIND_READ;
-        else if (strcmp(a, "--rw") == 0)
-            kind = LP_KIND_RW;
-    }
-
-    // Find first non-flag argument: this is the address
-    int addr_arg = -1;
-    for (int i = arg_idx; i < ctx->raw_argc; i++) {
-        const char *a = ctx->raw_argv[i];
-        if (a[0] == '-' && a[1] == '-')
-            continue;
-        addr_arg = i;
-        break;
-    }
-    if (addr_arg < 0) {
-        cmd_err(res, "usage: logpoint set [--write|--read] <addr[.b|.w|.l]> [msg]");
-        return;
-    }
-
-    uint32_t addr, end_addr;
-    unsigned size = 0;
-    addr_space_t space = ADDR_LOGICAL;
-    if (!parse_logpoint_target(ctx->raw_argv[addr_arg], &addr, &end_addr, &size, &space)) {
-        cmd_err(res, "Invalid address: %s", ctx->raw_argv[addr_arg]);
-        return;
-    }
-    // For memory logpoints with a size suffix and no explicit range, widen
-    // the end to size-1 past the start so the hook matches all accesses
-    // overlapping the address.
-    if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
-        end_addr = addr + size - 1;
-
-    // Parse remaining args (message + key=val), skipping flags and the address
-    const char *message = NULL;
-    const char *category_name = (kind == LP_KIND_PC) ? "logpoint" : "memory";
-    int level = 0;
-    for (int i = arg_idx; i < ctx->raw_argc; i++) {
-        if (i == addr_arg)
-            continue;
-        char *a = ctx->raw_argv[i];
-        if (a[0] == '-' && a[1] == '-')
-            continue; // kind flag, already handled
-        // Tokens of the form `<known-key>=<value>` are recognised as
-        // named parameters. Anything else — including a message like
-        // "pc=${cpu.pc}" that happens to contain `=` — is treated as
-        // the message body. ${...} interpolation in a message naturally
-        // contains `key=value` text patterns that pre-existing logic
-        // would have mis-parsed.
-        char *equals = strchr(a, '=');
-        bool is_named = false;
-        const char *key = NULL, *value = NULL;
-        if (equals) {
-            size_t klen = (size_t)(equals - a);
-            if ((klen == 8 && memcmp(a, "category", 8) == 0) || (klen == 5 && memcmp(a, "level", 5) == 0) ||
-                (klen == 5 && memcmp(a, "value", 5) == 0)) {
-                is_named = true;
-                *equals = '\0';
-                key = a;
-                value = equals + 1;
-            }
-        }
-        if (is_named) {
-            if (strcmp(key, "category") == 0)
-                category_name = value;
-            else if (strcmp(key, "level") == 0) {
-                level = atoi(value);
-                if (level < 0) {
-                    cmd_err(res, "Invalid level: %s", value);
-                    return;
-                }
-            } else if (strcmp(key, "value") == 0) {
-                // Already parsed above; restore '=' and continue.
-                *equals = '=';
-                continue;
-            }
-        } else if (!message) {
-            message = a;
-        } else {
-            cmd_err(res, "Unexpected argument: %s", a);
-            return;
-        }
-    }
-
-    // Pre-scan for value=$X filter (memory logpoints only)
-    bool have_value_filter = false;
-    uint32_t value_filter = 0;
-    for (int i = arg_idx; i < ctx->raw_argc; i++) {
-        if (i == addr_arg)
-            continue;
-        char *a = ctx->raw_argv[i];
-        if (strncmp(a, "value=", 6) == 0) {
-            const char *vstr = a + 6;
-            if (*vstr == '$')
-                vstr++;
-            char *endp = NULL;
-            unsigned long v = strtoul(vstr, &endp, 16);
-            if (!endp || *endp != '\0') {
-                cmd_err(res, "Invalid value=: %s", a + 6);
-                return;
-            }
-            value_filter = (uint32_t)v;
-            have_value_filter = true;
-        }
-    }
-    if (have_value_filter && kind == LP_KIND_PC) {
-        cmd_err(res, "value= filter is only supported on memory logpoints");
-        return;
-    }
-
-    log_category_t *category = log_get_category(category_name);
-    if (!category)
-        category = log_register_category(category_name);
-    if (!category) {
-        cmd_err(res, "Failed to register log category: %s", category_name);
-        return;
-    }
-
-    logpoint_t *lp;
-    if (kind == LP_KIND_PC)
-        lp = set_logpoint(debug, addr, end_addr, category, level);
-    else
-        lp = set_memory_logpoint(debug, addr, end_addr, space, kind, category, level);
-    if (!lp) {
-        cmd_err(res, "Failed to set logpoint");
-        return;
-    }
-    if (message)
-        lp->message = strdup(message);
-    if (have_value_filter) {
-        lp->value_filter_active = true;
-        lp->value_filter = value_filter;
-    }
-
-    const char *kstr = lp_kind_label(kind);
-    if (addr == end_addr)
-        cmd_printf(ctx, "logpoint %s set at $%08X (category: %s, level: %d)%s\n", kstr, addr, category_name, level,
-                   have_value_filter ? " [value-filtered]" : "");
-    else
-        cmd_printf(ctx, "logpoint %s set at $%08X-$%08X (category: %s, level: %d)%s\n", kstr, addr, end_addr,
-                   category_name, level, have_value_filter ? " [value-filtered]" : "");
-    cmd_ok(res);
-}
-
-// ============================================================================
-// Command Registration Tables
-// ============================================================================
-
-// --- print ---
-static const struct arg_spec print_args[] = {
-    {"target", ARG_SYMBOL, "register, Mac global, or address.size"},
-};
-
-// --- examine ---
-static const struct arg_spec examine_args[] = {
-    {"address", ARG_ADDR,               "start address"                         },
-    {"count",   ARG_INT | ARG_OPTIONAL, "bytes to display (default 64, max 512)"},
-};
-
-// --- logpoint ---
-// Handler drives off raw_argv (supports --write/--read flags, ranges, key=val
-// options, and substitutions in the message).  The spec below is loose so the
-// framework doesn't reject legitimate combinations.
-static const struct arg_spec lp_set_args[] = {
-    {"target",  ARG_STRING | ARG_OPTIONAL, "[--write|--read] <address[.b|.w|.l]>"                             },
-    {"message", ARG_REST | ARG_OPTIONAL,   "log message (${cpu.pc}, ${lp.value}, ${lp.addr}, ${...:08x}, ...)"},
-};
-static const struct arg_spec lp_del_args[] = {
-    {"target", ARG_STRING, "#id, address, or 'all'"},
-};
-static const struct subcmd_spec logpoint_subcmds[] = {
-    {NULL,    NULL, lp_set_args, 2, "set logpoint"        },
-    {"set",   NULL, lp_set_args, 2, "set logpoint"        },
-    {"del",   NULL, lp_del_args, 1, "delete logpoint(s)"  },
-    {"list",  NULL, NULL,        0, "list all logpoints"  },
-    {"clear", NULL, NULL,        0, "delete all logpoints"},
-};
-
-// --- find ---
-// Handler parses raw_argv directly: "bytes" consumes a variable number of hex
-// tokens, and the trailing range/"all" slot is positional but optional.  The
-// arg specs below are loose so the framework doesn't reject legitimate forms.
-void cmd_find_handler(struct cmd_context *ctx, struct cmd_result *res);
-static const struct arg_spec find_str_args[] = {
-    {"text", ARG_STRING,              "literal ASCII/UTF-8 text to search for"},
-    {"rest", ARG_REST | ARG_OPTIONAL, "[range] [all]"                         },
-};
-static const struct arg_spec find_bytes_args[] = {
-    {"bytes", ARG_REST, "2-digit hex tokens, optional [range] [all]"},
-};
-// find word / find long share the same shape: one numeric value then optional [range] [all].
-static const struct arg_spec find_value_args[] = {
-    {"value", ARG_STRING,              "numeric value ($hex, 0xhex, or bare hex)"},
-    {"rest",  ARG_REST | ARG_OPTIONAL, "[range] [all]"                           },
-};
-static const struct subcmd_spec find_subcmds[] = {
-    {"str",   NULL, find_str_args,   2, "find ASCII/UTF-8 text"             },
-    {"bytes", NULL, find_bytes_args, 1, "find a byte sequence (2-digit hex)"},
-    {"word",  NULL, find_value_args, 2, "find a 16-bit big-endian value"    },
-    {"long",  NULL, find_value_args, 2, "find a 32-bit big-endian value"    },
-};
 
 // ============================================================================
 // Object-model accessors and id-based collection helpers
@@ -3082,75 +2249,6 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
     }
 }
 
-// ===== argv-driven entry points for the typed object-model bridge =====
-// These bypass shell_dispatch / find_cmd: the typed wrappers tokenize
-// their spec strings via `tokenize` and call into these helpers directly.
-
-// Run a cmd_fn handler with a fresh ctx/result/io. Returns the integer
-// from cmd_int (when set), 0 on RES_OK, -1 on parse error or RES_ERR.
-static int64_t run_handler(cmd_fn fn, const struct cmd_reg *reg, int argc, char **argv) {
-    struct cmd_io io;
-    init_cmd_io(&io);
-    struct cmd_context ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.out = io.out_stream;
-    ctx.err = io.err_stream;
-    struct cmd_result res;
-    memset(&res, 0, sizeof(res));
-    res.type = RES_OK;
-    if (cmd_parse_args(argc, argv, reg, &ctx, &res))
-        fn(&ctx, &res);
-    finalize_cmd_io(&io, &res);
-    if (res.type == RES_ERR) {
-        if (res.as_str)
-            fprintf(stderr, "%s\n", res.as_str);
-        return -1;
-    }
-    if (res.type == RES_INT)
-        return res.as_int;
-    return 0;
-}
-
-int64_t shell_print_argv(int argc, char **argv) {
-    static const struct cmd_reg reg = {
-        .name = "print",
-        .fn = cmd_print_handler,
-        .args = print_args,
-        .nargs = 1,
-    };
-    return run_handler(cmd_print_handler, &reg, argc, argv);
-}
-
-int shell_examine_argv(int argc, char **argv) {
-    static const struct cmd_reg reg = {
-        .name = "examine",
-        .fn = cmd_examine_handler,
-        .args = examine_args,
-        .nargs = 2,
-    };
-    return (int)run_handler(cmd_examine_handler, &reg, argc, argv);
-}
-
-int shell_logpoint_argv(int argc, char **argv) {
-    static const struct cmd_reg reg = {
-        .name = "logpoint",
-        .fn = cmd_logpoint_handler,
-        .subcmds = logpoint_subcmds,
-        .n_subcmds = 5,
-    };
-    return (int)run_handler(cmd_logpoint_handler, &reg, argc, argv);
-}
-
-int shell_find_argv(int argc, char **argv) {
-    static const struct cmd_reg reg = {
-        .name = "find",
-        .fn = cmd_find_handler,
-        .subcmds = find_subcmds,
-        .n_subcmds = 4,
-    };
-    return (int)run_handler(cmd_find_handler, &reg, argc, argv);
-}
-
 // === Object-model class descriptors =========================================
 //
 // `debug.breakpoints` / `debug.logpoints` are indexed children
@@ -3485,17 +2583,6 @@ static value_t bp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
-static value_t bp_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
-    debug_t *debug = debug_from(self);
-    if (!debug)
-        return val_err("debugger not initialised");
-    list_breakpoints(debug);
-    return val_none();
-}
-
 static value_t lp_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc;
@@ -3507,33 +2594,119 @@ static value_t lp_method_clear(struct object *self, const member_t *m, int argc,
     return val_none();
 }
 
-static value_t lp_method_list(struct object *self, const member_t *m, int argc, const value_t *argv) {
+// `debug.logpoints.add` — typed named-argument surface (shell v2 §6.2):
+//   debug.logpoints.add addr=0x16A width=l mode=write level=5
+//       message="Ticks pc=${machine.cpu.pc:08x} val=${$value:08x}"
+// `message` is a template slot (§6.3): stored raw, evaluated per fire
+// with `$value`/`$addr`/`$size` bindings in scope. Returns the created
+// entry object, like breakpoints.add.
+static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
-    (void)argc;
-    (void)argv;
     debug_t *debug = debug_from(self);
     if (!debug)
         return val_err("debugger not initialised");
-    list_logpoints(debug);
-    return val_none();
-}
 
-// `debug.logpoints.add(spec)` — install a logpoint from the legacy spec
-// string (e.g. `--write 0x000016A.l "Ticks bumped pc=${cpu.pc} ..." level=5`).
-// Forwarded to shell_logpoint_argv which carries the rich-parser command body.
-static value_t lp_method_add(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    char line[2048];
-    int n = snprintf(line, sizeof(line), "logpoint %s", argv[0].s);
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("logpoints.add: argument too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("logpoints.add: empty spec");
-    return val_bool(shell_logpoint_argv(targc, targv) == 0);
+    // argv: 0 addr, 1 mode, 2 width, 3 end, 4 message, 5 level,
+    //       6 category, 7 value, 8 space
+    uint32_t addr = (uint32_t)argv[0].u;
+
+    const char *mode = (argc > 1 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "pc";
+    int kind;
+    if (strcmp(mode, "pc") == 0)
+        kind = LP_KIND_PC;
+    else if (strcmp(mode, "read") == 0)
+        kind = LP_KIND_READ;
+    else if (strcmp(mode, "write") == 0)
+        kind = LP_KIND_WRITE;
+    else if (strcmp(mode, "rw") == 0)
+        kind = LP_KIND_RW;
+    else
+        return val_err("logpoints.add: mode must be pc, read, write, or rw");
+
+    unsigned size = 0;
+    if (argc > 2 && argv[2].kind == V_STRING && argv[2].s && argv[2].s[0]) {
+        const char *w = argv[2].s;
+        if (strcmp(w, "b") == 0)
+            size = 1;
+        else if (strcmp(w, "w") == 0)
+            size = 2;
+        else if (strcmp(w, "l") == 0)
+            size = 4;
+        else
+            return val_err("logpoints.add: width must be b, w, or l");
+    }
+
+    uint32_t end_addr = addr;
+    if (argc > 3 && (argv[3].kind == V_UINT || argv[3].kind == V_INT)) {
+        bool ok = false;
+        uint64_t e = val_as_u64(&argv[3], &ok);
+        if (ok && argv[3].kind == V_UINT)
+            end_addr = (uint32_t)e;
+        else if (ok && argv[3].kind == V_INT && argv[3].i >= 0)
+            end_addr = (uint32_t)argv[3].i;
+    }
+    // Memory logpoints with a width and no explicit range widen to
+    // cover every access overlapping the address.
+    if (kind != LP_KIND_PC && size > 0 && end_addr == addr)
+        end_addr = addr + size - 1;
+
+    const char *message = (argc > 4 && argv[4].kind == V_STRING && argv[4].s && argv[4].s[0]) ? argv[4].s : NULL;
+
+    int level = 0;
+    if (argc > 5) {
+        bool ok = false;
+        int64_t lv = val_as_i64(&argv[5], &ok);
+        if (ok)
+            level = (int)lv;
+        if (level < 0)
+            return val_err("logpoints.add: level must be >= 0");
+    }
+
+    const char *category_name = (argc > 6 && argv[6].kind == V_STRING && argv[6].s && argv[6].s[0])
+                                    ? argv[6].s
+                                    : (kind == LP_KIND_PC ? "logpoint" : "memory");
+
+    bool have_value_filter = false;
+    uint32_t value_filter = 0;
+    if (argc > 7 && (argv[7].kind == V_UINT || argv[7].kind == V_INT)) {
+        bool ok = false;
+        uint64_t v = val_as_u64(&argv[7], &ok);
+        if (ok && !(argv[7].kind == V_INT && argv[7].i < 0)) {
+            have_value_filter = true;
+            value_filter = (uint32_t)v;
+        }
+    }
+    if (have_value_filter && kind == LP_KIND_PC)
+        return val_err("logpoints.add: value filter is only supported on memory logpoints");
+
+    addr_space_t space = ADDR_LOGICAL;
+    if (argc > 8 && argv[8].kind == V_STRING && argv[8].s && argv[8].s[0]) {
+        if (strcmp(argv[8].s, "physical") == 0)
+            space = ADDR_PHYSICAL;
+        else if (strcmp(argv[8].s, "logical") != 0)
+            return val_err("logpoints.add: space must be \"logical\" or \"physical\"");
+    }
+
+    log_category_t *category = log_get_category(category_name);
+    if (!category)
+        category = log_register_category(category_name);
+    if (!category)
+        return val_err("logpoints.add: cannot register category '%s'", category_name);
+
+    logpoint_t *lp;
+    if (kind == LP_KIND_PC)
+        lp = set_logpoint(debug, addr, end_addr, category, level);
+    else
+        lp = set_memory_logpoint(debug, addr, end_addr, space, kind, category, level);
+    if (!lp)
+        return val_err("logpoints.add: allocation failed");
+    if (message)
+        lp->message = strdup(message);
+    if (have_value_filter) {
+        lp->value_filter_active = true;
+        lp->value_filter = value_filter;
+    }
+    return val_obj(logpoint_get_entry_object(lp));
 }
 
 static const arg_decl_t bp_add_args[] = {
@@ -3545,10 +2718,61 @@ static const arg_decl_t bp_add_args[] = {
      .doc = "\"logical\" (default) or \"physical\""                                                                 },
 };
 
+// Interior optional slots need defaults so the named-argument binder's
+// V_NONE holes fill instead of erroring (see node_validate_args).
+static const value_t lp_def_mode = {.kind = V_STRING, .s = (char *)"pc"};
+static const value_t lp_def_width = {.kind = V_STRING, .s = (char *)""};
+static const value_t lp_def_end = {.kind = V_INT, .i = -1};
+static const value_t lp_def_message = {.kind = V_STRING, .s = (char *)""};
+static const value_t lp_def_level = {.kind = V_INT, .i = 0};
+static const value_t lp_def_category = {.kind = V_STRING, .s = (char *)""};
+static const value_t lp_def_value = {.kind = V_INT, .i = -1};
+static const value_t lp_def_space = {.kind = V_STRING, .s = (char *)"logical"};
+
 static const arg_decl_t lp_add_args[] = {
-    {.name = "spec",
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},
+    {.name = "mode",
      .kind = V_STRING,
-     .doc = "Legacy logpoint spec string (e.g. `--write 0x000016A.l \"text\" level=5`)"},
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_mode,
+     .doc = "pc (default), read, write, or rw"},
+    {.name = "width",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_width,
+     .doc = "access width for memory modes: b, w, or l"},
+    {.name = "end",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .default_value = &lp_def_end,
+     .doc = "range end address, inclusive"},
+    {.name = "message",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL | OBJ_ARG_TEMPLATE,
+     .default_value = &lp_def_message,
+     .doc = "fire-time template; $value/$addr/$size bind per fire"},
+    {.name = "level",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_level,
+     .doc = "log level (default 0)"},
+    {.name = "category",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_category,
+     .doc = "log category (default: logpoint / memory)"},
+    {.name = "value",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .presentation_flags = VAL_HEX,
+     .default_value = &lp_def_value,
+     .doc = "only fire when the accessed value matches (memory modes)"},
+    {.name = "space",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &lp_def_space,
+     .doc = "\"logical\" (default) or \"physical\""},
 };
 
 static const member_t bp_collection_members[] = {
@@ -3560,10 +2784,8 @@ static const member_t bp_collection_members[] = {
      .name = "clear",
      .doc = "Remove every breakpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_clear}},
-    {.kind = M_METHOD,
-     .name = "list",
-     .doc = "Print the breakpoint table",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_list}},
+    // `list` retired (shell v2 §6.1): read `entries` — the REPL renders
+    // an object list as a table.
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &breakpoint_entry_class,
@@ -3583,16 +2805,13 @@ const class_desc_t bp_collection_class = {
 static const member_t lp_collection_members[] = {
     {.kind = M_METHOD,
      .name = "add",
-     .doc = "Install a logpoint from a spec string",
-     .method = {.args = lp_add_args, .nargs = 1, .result = V_BOOL, .fn = lp_method_add}},
+     .doc = "Install a logpoint (named args; message= is a fire-time template)",
+     .method = {.args = lp_add_args, .nargs = 9, .result = V_OBJECT, .fn = lp_method_add}},
     {.kind = M_METHOD,
      .name = "clear",
      .doc = "Remove every logpoint",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_clear}},
-    {.kind = M_METHOD,
-     .name = "list",
-     .doc = "Print the logpoint table",
-     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lp_method_list}},
+    // `list` retired (shell v2 §6.1): read `entries`.
     {.kind = M_CHILD,
      .name = "entries",
      .child = {.cls = &logpoint_entry_class,
@@ -3610,32 +2829,25 @@ const class_desc_t lp_collection_class = {
 };
 
 // `debug.log(category, level_or_spec)` — adjust per-subsystem log level.
-// The second arg accepts either an integer level or a full named-arg spec
-// string (e.g. `"level=5 file=/tmp/foo.txt stdout=off ts=on"`); spec
-// strings are tokenised and forwarded to cmd_log directly.
+// The second arg accepts either an integer level or a full option spec
+// string (e.g. `"level=5 file=tmp/foo.txt stdout=off ts=on"`); both are
+// handed to log_configure directly (no line round-trip).
 static value_t debug_method_log(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    char line[512];
-    int n;
-    // level is V_NONE-kind: body discriminates string spec vs integer level.
-    if (argv[1].kind == V_STRING) {
-        n = snprintf(line, sizeof(line), "log %s %s", argv[0].s, argv[1].s);
-    } else {
-        bool ok = false;
-        int64_t level = val_as_i64(&argv[1], &ok);
-        if (!ok)
-            return val_err("debug.log: level must be integer or spec string");
-        n = snprintf(line, sizeof(line), "log %s %lld", argv[0].s, (long long)level);
-    }
-    if (n < 0 || (size_t)n >= sizeof(line))
-        return val_err("debug.log: argument too long");
-    char *targv[32];
-    int targc = tokenize(line, targv, 32);
-    if (targc <= 0)
-        return val_err("debug.log: empty spec");
-    return val_bool(cmd_log(targc, targv) == 0);
+    const char *category = (argv[0].kind == V_STRING) ? argv[0].s : NULL;
+    if (!category)
+        return val_err("debug.log: category must be a string");
+    if (argv[1].kind == V_STRING)
+        return val_bool(log_configure(category, argv[1].s) == 0);
+    bool ok = false;
+    int64_t level = val_as_i64(&argv[1], &ok);
+    if (!ok)
+        return val_err("debug.log: level must be integer or spec string");
+    char spec[32];
+    snprintf(spec, sizeof(spec), "%lld", (long long)level);
+    return val_bool(log_configure(category, spec) == 0);
 }
 
 // json_open_obj callback: emit "<category>": <level> for one category.

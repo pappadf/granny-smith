@@ -15,7 +15,7 @@ MODELS="plus se30 iicx iix iifx iici iisi lisa macxl"
 
 : > "$SCRIPT"
 for m in $MODELS; do
-    echo "machine.profile $m" >> "$SCRIPT"
+    echo "echo \"\${machine.profile(\"$m\")}\"" >> "$SCRIPT"
 done
 echo "quit" >> "$SCRIPT"
 

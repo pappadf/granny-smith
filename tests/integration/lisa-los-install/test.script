@@ -19,10 +19,10 @@
 # Boot to the Install menu (same budget as lisa-los-boot; menu stable from ~48M).
 scheduler.run 50000000
 
-assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${machine.screen.width == 720} "screen.width != 720"
-assert ${machine.screen.height == 364} "screen.height != 364"
+assert machine.id == "lisa" "machine.id != lisa"
+assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.screen.width == 720 "screen.width != 720"
+assert machine.screen.height == 364 "screen.height != 364"
 
 # Warp the cursor onto the Install button (right column, third from top) and let
 # the closed loop converge over the next several mouse reports.

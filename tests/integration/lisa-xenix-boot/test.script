@@ -8,10 +8,10 @@
 # parens in "pf(0,0)xenix" hold SHIFT (kc 0x7e) around the digit with a short
 # settle.  Keycodes: p=44 f=69 e=60 x=7a 0=51 9=50 comma=5d Return=48 shift=7e.
 
-machine.hd.attach "${WORK_DIR}/profile.image"
-assert ${machine.id == "lisa"} "machine.id != lisa"
-assert ${machine.rom.checksum == "098917B2"} "rom.checksum != 098917B2 (rev-H)"
-assert ${machine.hd.present == true} "ProFile should be attached"
+machine.hd.attach "$WORK_DIR/profile.image"
+assert machine.id == "lisa" "machine.id != lisa"
+assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
+assert machine.hd.present == true "ProFile should be attached"
 
 # Boot the floppy loader to its "boot :" prompt.
 scheduler.run 60000000

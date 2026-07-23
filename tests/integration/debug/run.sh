@@ -48,35 +48,17 @@ expect "bytes" "methods(\"find\") should list 'bytes'"
 expect "word" "methods(\"find\") should list 'word'"
 expect "long" "methods(\"find\") should list 'long'"
 
-# Literal ASCII search should locate "Apple" in the Plus ROM mirror.
-# Output format from cmd_find_handler is '$XXXXXXXX  "Apple"'.
-expect '"Apple"' "find.str should emit match label in quotes"
-expect '$0040A714' "find.str should locate 'Apple' at the known ROM offset"
+# Typed find results: the script echoes stable markers derived from
+# the returned V_LIST values ($0040A714 is where "Apple" lives in the
+# Plus ROM mirror).
+expect 'str-first=0040a714' "find.str first hit should be the known ROM offset"
+expect 'word-first=0040a714' "find.word should hit at the 'Apple' offset"
+expect 'long-first=0040a714' "find.long should hit at the 'Apple' offset"
+expect 'nop-count=' "find.bytes should report its hit count"
 
-# Hex-byte search should produce hits for the ubiquitous 68K NOP.
-expect "  4E 71" "find.bytes should emit hex-label for '4E 71' hits"
-
-# `find.word $4170` / `find.long $4170706C` should hit at the same ROM
-# offset as the ASCII "Apple" hit at $0040A714, with numeric labels.
-expect '$4170' "find.word should emit the reconstructed 16-bit literal as label"
-expect '$4170706C' "find.long should emit the reconstructed 32-bit literal as label"
-expect '$0040A714  $4170' "find.word should locate \$4170 at 'Apple' offset"
-expect '$0040A714  $4170706C' "find.long should locate \$4170706C at 'Apple' offset"
-
-# Error diagnostics from cmd_find_handler — must be clear, not silent.
-# These come from the legacy parser through shell_dispatch and are
-# unchanged by the typed wrapper.
-expect "empty pattern" "'find.str \"\"' should reject empty pattern"
-expect "expected 2-digit hex" "'find.bytes \"ZZ\"' should reject non-hex tokens"
-expect "range end must be greater" "backwards range should error"
-expect "exceeds 16 bits" "'find.word \$10000' should reject out-of-range value"
-expect "must be INT, got STRING" "'find.word zzz' should reject non-numeric value"
-
-# Well-formed `all` invocation must not surface a usage marker — i.e.
-# the parser accepted both the pattern and the range without falling
-# back to the help text.
-expect_not "usage: find str" "well-formed 'find.str ... all' must not print legacy usage"
-expect_not "usage: find bytes" "well-formed 'find.bytes ... all' must not print legacy usage"
+# Error paths are exercised in-script with try(...) asserts; if any of
+# them regressed, an ASSERT FAILED marker appears.
+expect_not "ASSERT FAILED" "all in-script assertions must pass"
 
 # Format specs in ${expr:fmt}. The literal $ is doubled here so the
 # shell that runs run.sh doesn't expand the value before grep sees it.
@@ -87,11 +69,6 @@ expect "171" "format spec :d should print 0xab decimal"
 expect "[   42]" "format spec :5d should space-pad"
 expect "fmt-marker[000000ab]" "format spec must apply inside string interpolation"
 expect_not "trailing garbage in expression" "format-spec colon must not leak into expr parser"
-
-# Indexed-child error must name the parent object, not the internal
-# 'entries' child.
-expect "'breakpoints[42]' is empty" "indexed error must name parent object"
-expect_not "'entries[42]' is empty" "indexed error must not leak internal 'entries' name"
 
 # debug.disasm with an explicit address (two-arg form). The address
 # tag printed at the start of each line is the stable marker.

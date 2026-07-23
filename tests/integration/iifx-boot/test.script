@@ -27,22 +27,22 @@
 # margin without burning cycles past it.
 scheduler.run 260000000
 
-assert ${machine.id == "iifx"} "machine.id != iifx"
-assert ${machine.rom.checksum == "4147DD77"} "rom.checksum != 4147DD77"
+assert machine.id == "iifx" "machine.id != iifx"
+assert machine.rom.checksum == "4147DD77" "rom.checksum != 4147DD77"
 
 # Default IIfx slot table seats the same JMFB card in slot $9 as IIx.
-assert ${machine.screen.width == 640} "screen.width != 640"
-assert ${machine.screen.height == 480} "screen.height != 480"
+assert machine.screen.width == 640 "screen.width != 640"
+assert machine.screen.height == 480 "screen.height != 480"
 
 # fDBInit (bit 5 of $5405 in ADBVars) must be CLEAR after the ADB scan.
-assert ${machine.memory.peek.b(0x5405) == 0x04} "fDBInit still set ($5405 != 0x04)"
+assert machine.memory.peek.b(0x5405) == 0x04 "fDBInit still set ($5405 != 0x04)"
 
 # AddrMapFlags bit 20 (RPUExists) must be clear — POST phase $93's
 # bus-error probe of $50F1E000 should have stayed in the "no parity
 # unit" branch, otherwise System 7's ParityINIT would post the
 # "Parity has been disabled" alert and stall the boot at a modal
 # dialog.  See src/machines/iifx.c (commit a2f2e34).
-assert ${(machine.memory.peek.l(0x0DD0) & 0x100000) == 0} "RPUExists bit 20 of AddrMapFlags still set"
+assert (machine.memory.peek.l(0x0DD0) & 0x100000) == 0 "RPUExists bit 20 of AddrMapFlags still set"
 
 # Verify the Finder desktop matches the reference (System 7 menu bar,
 # Disk Tools volume icon, Trash icon, gray desktop pattern).
