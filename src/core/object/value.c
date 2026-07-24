@@ -102,6 +102,15 @@ value_t val_list(value_t *items, size_t len) {
     return v;
 }
 
+value_t val_map(struct value_entry *entries, size_t len) {
+    GS_ASSERT(len == 0 || entries != NULL);
+    value_t v = {0};
+    v.kind = V_MAP;
+    v.map.entries = entries;
+    v.map.len = len;
+    return v;
+}
+
 value_t val_obj(struct object *o) {
     value_t v = {0};
     v.kind = V_OBJECT;
@@ -143,12 +152,106 @@ bool val_is_heap(const value_t *v) {
     case V_STRING:
     case V_BYTES:
     case V_LIST:
+    case V_MAP:
     case V_ERROR:
     case V_REF:
         return true;
     default:
         return false;
     }
+}
+
+// === Map builder =============================================================
+
+// Growable entry array plus a sticky error flag (val_map_finish surfaces
+// it as V_ERROR so per-put checks aren't needed at call sites).
+struct value_map_builder {
+    struct value_entry *entries;
+    size_t len;
+    size_t cap;
+    bool err;
+};
+
+value_map_builder_t *val_map_new(void) {
+    return (value_map_builder_t *)calloc(1, sizeof(value_map_builder_t));
+}
+
+void val_map_put(value_map_builder_t *b, const char *key, value_t v) {
+    if (!b || b->err) {
+        value_free(&v);
+        return;
+    }
+    // Duplicate key: replace the existing value in place (keys unique).
+    for (size_t i = 0; i < b->len; i++) {
+        if (strcmp(b->entries[i].key, key ? key : "") == 0) {
+            value_free(&b->entries[i].val);
+            b->entries[i].val = v;
+            return;
+        }
+    }
+    if (b->len + 1 > b->cap) {
+        size_t cap = b->cap ? b->cap * 2 : 8;
+        struct value_entry *e = (struct value_entry *)realloc(b->entries, cap * sizeof(*e));
+        if (!e) {
+            b->err = true;
+            value_free(&v);
+            return;
+        }
+        b->entries = e;
+        b->cap = cap;
+    }
+    char *k = xstrdup(key ? key : "");
+    if (!k) {
+        b->err = true;
+        value_free(&v);
+        return;
+    }
+    b->entries[b->len].key = k;
+    b->entries[b->len].val = v;
+    b->len++;
+}
+
+value_t val_map_finish(value_map_builder_t *b) {
+    if (!b)
+        return val_err("map builder: out of memory");
+    if (b->err) {
+        // Free the partial map and report the sticky allocation failure.
+        for (size_t i = 0; i < b->len; i++) {
+            free(b->entries[i].key);
+            value_free(&b->entries[i].val);
+        }
+        free(b->entries);
+        free(b);
+        return val_err("map builder: out of memory");
+    }
+    value_t v = val_map(b->entries, b->len);
+    free(b);
+    return v;
+}
+
+bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v) {
+    if (*len + 1 > *cap) {
+        size_t nc = *cap ? *cap * 2 : 8;
+        value_t *ni = (value_t *)realloc(*items, nc * sizeof(value_t));
+        if (!ni) {
+            value_free(&v);
+            return false;
+        }
+        *items = ni;
+        *cap = nc;
+    }
+    (*items)[(*len)++] = v;
+    return true;
+}
+
+const value_t *value_map_get(const value_t *v, const char *key) {
+    if (!v || v->kind != V_MAP || !key)
+        return NULL;
+    for (size_t i = 0; i < v->map.len; i++) {
+        if (v->map.entries[i].key && strcmp(v->map.entries[i].key, key) == 0)
+            return &v->map.entries[i].val;
+    }
+    return NULL;
 }
 
 void value_free(value_t *v) {
@@ -180,6 +283,17 @@ void value_free(value_t *v) {
         }
         v->list.items = NULL;
         v->list.len = 0;
+        break;
+    case V_MAP:
+        if (v->map.entries) {
+            for (size_t i = 0; i < v->map.len; i++) {
+                free(v->map.entries[i].key);
+                value_free(&v->map.entries[i].val);
+            }
+            free(v->map.entries);
+        }
+        v->map.entries = NULL;
+        v->map.len = 0;
         break;
     default:
         break;
@@ -215,6 +329,21 @@ value_t value_dup(const value_t *v) {
                 items[i] = value_dup(&v->list.items[i]);
         }
         return val_list(items, v->list.len);
+    }
+    case V_MAP: {
+        struct value_entry *entries = NULL;
+        if (v->map.len > 0) {
+            entries = (struct value_entry *)calloc(v->map.len, sizeof(*entries));
+            if (!entries)
+                return val_err("value_dup: OOM duplicating map of %zu", v->map.len);
+            for (size_t i = 0; i < v->map.len; i++) {
+                entries[i].key = xstrdup(v->map.entries[i].key);
+                entries[i].val = value_dup(&v->map.entries[i].val);
+            }
+        }
+        value_t r = val_map(entries, v->map.len);
+        r.flags = v->flags;
+        return r;
     }
     default:
         // Inline kinds (V_NONE, V_BOOL, V_INT, V_UINT, V_FLOAT, V_ENUM,
@@ -323,6 +452,8 @@ bool val_as_bool(const value_t *v) {
         return v->enm.idx != 0;
     case V_LIST:
         return v->list.len > 0;
+    case V_MAP:
+        return v->map.len > 0;
     case V_OBJECT:
         return v->obj != NULL;
     case V_NONE:
@@ -376,6 +507,19 @@ value_t value_copy(const value_t *v) {
                     r.list.items[i] = value_copy(&v->list.items[i]);
             } else {
                 r.list.len = 0;
+            }
+        }
+        break;
+    case V_MAP:
+        if (v->map.len > 0) {
+            r.map.entries = (struct value_entry *)calloc(v->map.len, sizeof(*r.map.entries));
+            if (r.map.entries) {
+                for (size_t i = 0; i < v->map.len; i++) {
+                    r.map.entries[i].key = xstrdup(v->map.entries[i].key);
+                    r.map.entries[i].val = value_copy(&v->map.entries[i].val);
+                }
+            } else {
+                r.map.len = 0;
             }
         }
         break;

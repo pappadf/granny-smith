@@ -180,6 +180,81 @@ TEST(test_truthiness) {
     value_free(&t);
 }
 
+// Maps: builder → V_MAP with insertion order, unique keys, heap-owned
+// keys, recursively-owned values.
+TEST(test_map_builder) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "one", val_int(1));
+    val_map_put(b, "two", val_str("2"));
+    val_map_put(b, "one", val_int(11)); // duplicate key replaces in place
+    value_t m = val_map_finish(b);
+    ASSERT_EQ_INT(V_MAP, m.kind);
+    ASSERT_EQ_INT(2, (int)m.map.len);
+    // Insertion order preserved; the replaced key kept its slot.
+    ASSERT_TRUE(strcmp(m.map.entries[0].key, "one") == 0);
+    ASSERT_TRUE(strcmp(m.map.entries[1].key, "two") == 0);
+    const value_t *one = value_map_get(&m, "one");
+    ASSERT_TRUE(one != NULL);
+    ASSERT_EQ_INT(11, (int)one->i);
+    ASSERT_TRUE(value_map_get(&m, "absent") == NULL);
+    ASSERT_TRUE(val_as_bool(&m)); // non-empty map is truthy
+    value_free(&m);
+    ASSERT_EQ_INT(V_NONE, m.kind);
+    ASSERT_TRUE(m.map.entries == NULL);
+
+    // Empty map: valid, falsy.
+    value_t e = val_map_finish(val_map_new());
+    ASSERT_EQ_INT(V_MAP, e.kind);
+    ASSERT_EQ_INT(0, (int)e.map.len);
+    ASSERT_TRUE(!val_as_bool(&e));
+    value_free(&e);
+}
+
+// Maps nest recursively (maps in lists in maps); free releases every level.
+TEST(test_map_nested_free) {
+    value_map_builder_t *inner = val_map_new();
+    val_map_put(inner, "s", val_str("deep"));
+
+    value_t *items = (value_t *)calloc(2, sizeof(value_t));
+    items[0] = val_map_finish(inner);
+    items[1] = val_str("mid");
+
+    value_map_builder_t *outer = val_map_new();
+    val_map_put(outer, "list", val_list(items, 2));
+    val_map_put(outer, "top", val_int(7));
+    value_t m = val_map_finish(outer);
+
+    const value_t *lst = value_map_get(&m, "list");
+    ASSERT_TRUE(lst && lst->kind == V_LIST && lst->list.len == 2);
+    const value_t *deep = value_map_get(&lst->list.items[0], "s");
+    ASSERT_TRUE(deep && strcmp(deep->s, "deep") == 0);
+
+    value_free(&m); // recursive free of the whole tree (ASan-checked in CI)
+    ASSERT_EQ_INT(V_NONE, m.kind);
+}
+
+// value_dup / value_copy deep-copy maps: independent lifetimes.
+TEST(test_map_copy) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "k", val_str("v"));
+    value_t *items = (value_t *)calloc(1, sizeof(value_t));
+    items[0] = val_int(3);
+    val_map_put(b, "nums", val_list(items, 1));
+    value_t src = val_map_finish(b);
+
+    value_t dup = value_dup(&src);
+    value_t cpy = value_copy(&src);
+    value_free(&src);
+
+    ASSERT_EQ_INT(V_MAP, dup.kind);
+    ASSERT_TRUE(strcmp(value_map_get(&dup, "k")->s, "v") == 0);
+    ASSERT_EQ_INT(3, (int)value_map_get(&dup, "nums")->list.items[0].i);
+    ASSERT_EQ_INT(V_MAP, cpy.kind);
+    ASSERT_TRUE(strcmp(value_map_get(&cpy, "k")->s, "v") == 0);
+    value_free(&dup);
+    value_free(&cpy);
+}
+
 // Cleanup attribute (VALUE_AUTO) frees on scope exit.
 TEST(test_value_auto_cleanup) {
     bool ran = true;
@@ -202,6 +277,9 @@ int main(void) {
     RUN(test_nested_list_free);
     RUN(test_value_copy);
     RUN(test_truthiness);
+    RUN(test_map_builder);
+    RUN(test_map_nested_free);
+    RUN(test_map_copy);
     RUN(test_value_auto_cleanup);
     return 0;
 }

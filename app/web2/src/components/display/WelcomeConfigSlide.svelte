@@ -209,60 +209,49 @@
   }
 
   async function identifyRom(path: string): Promise<RomEntry | null> {
+    // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
     const r = await gsEval('machine.rom.identify', [path]);
-    if (typeof r !== 'string') return null;
-    try {
-      const parsed = JSON.parse(r) as {
-        recognised?: boolean;
-        compatible?: string[];
-        checksum?: string;
-        name?: string;
-      };
-      if (!parsed.recognised || !Array.isArray(parsed.compatible)) return null;
-      return {
-        path,
-        name: parsed.name ?? path.split('/').pop() ?? path,
-        checksum: parsed.checksum ?? '',
-        compatible: parsed.compatible,
-      };
-    } catch {
-      return null;
-    }
+    if (!r || typeof r !== 'object' || 'error' in r) return null;
+    const parsed = r as {
+      recognised?: boolean;
+      compatible?: string[];
+      checksum?: string;
+      name?: string;
+    };
+    if (!parsed.recognised || !Array.isArray(parsed.compatible)) return null;
+    return {
+      path,
+      name: parsed.name ?? path.split('/').pop() ?? path,
+      checksum: parsed.checksum ?? '',
+      compatible: parsed.compatible,
+    };
   }
 
   // Probe one VROM file to the card it provides, mirroring identifyRom. The
   // core (vrom.identify) owns the vROM→card mapping; the UI carries none.
   async function identifyVrom(path: string): Promise<VromEntry | null> {
+    // vrom.identify returns a native object (V_MAP) — no inner JSON.parse.
     const r = await gsEval('machine.vrom.identify', [path]);
-    if (typeof r !== 'string') return null;
-    try {
-      const parsed = JSON.parse(r) as {
-        recognised?: boolean;
-        card_id?: string;
-        compatible?: string[];
-      };
-      if (!parsed.recognised || !parsed.card_id) return null;
-      return {
-        path,
-        cardId: parsed.card_id,
-        compatible: Array.isArray(parsed.compatible) ? parsed.compatible : [parsed.card_id],
-      };
-    } catch {
-      return null;
-    }
+    if (!r || typeof r !== 'object' || 'error' in r) return null;
+    const parsed = r as {
+      recognised?: boolean;
+      card_id?: string;
+      compatible?: string[];
+    };
+    if (!parsed.recognised || !parsed.card_id) return null;
+    return {
+      path,
+      cardId: parsed.card_id,
+      compatible: Array.isArray(parsed.compatible) ? parsed.compatible : [parsed.card_id],
+    };
   }
 
   async function resolveProfile(id: string): Promise<MachineProfile> {
     if (profiles[id]) return profiles[id];
+    // machine.profile returns a native nested object — no inner JSON.parse.
     const r = await gsEval('machine.profile', [id]);
     let parsed: MachineProfile = {};
-    if (typeof r === 'string') {
-      try {
-        parsed = JSON.parse(r) as MachineProfile;
-      } catch {
-        /* fall through with empty profile */
-      }
-    }
+    if (r && typeof r === 'object' && !('error' in r)) parsed = r as MachineProfile;
     profiles = { ...profiles, [id]: parsed };
     return parsed;
   }

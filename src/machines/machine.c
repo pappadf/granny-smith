@@ -7,7 +7,6 @@
 #include "machine.h"
 
 #include "cpu.h"
-#include "json_encode.h"
 #include "log.h"
 #include "machine_config.h"
 #include "nubus.h"
@@ -164,93 +163,74 @@ static value_t attr_machine_created(struct object *self, const member_t *m) {
     return val_bool(cfg && cfg->machine != NULL);
 }
 
-// Emit the `capabilities` object into the open profile map.  Every field is
-// DERIVED from the hardware facts + mmu_kind so it can never drift from
+// Build the `capabilities` map of the profile.  Every field is DERIVED
+// from the hardware facts + mmu_kind so it can never drift from
 // behaviour (proposal §4.4): the frontend probes this instead of guessing
 // from the model's display name.
-static void encode_capabilities(json_builder_t *b, const hw_profile_t *p) {
-    json_key(b, "capabilities");
-    json_open_obj(b);
+static value_t build_capabilities(const hw_profile_t *p) {
+    value_map_builder_t *cpu = val_map_new();
+    val_map_put(cpu, "model", val_int((int64_t)p->cpu_model)); // 68000 / 68030
+    val_map_put(cpu, "address_bits", val_int((int64_t)p->address_bits));
+    val_map_put(cpu, "fpu", val_bool(cpu_has_fpu(p->cpu_model)));
 
-    json_key(b, "cpu");
-    json_open_obj(b);
-    json_key(b, "model");
-    json_int(b, (int64_t)p->cpu_model); // 68000 / 68030
-    json_key(b, "address_bits");
-    json_int(b, (int64_t)p->address_bits);
-    json_key(b, "fpu");
-    json_bool(b, cpu_has_fpu(p->cpu_model));
-    json_close_obj(b);
-
-    json_key(b, "mmu");
-    json_open_obj(b);
     // Typed, not a bool: the debug panels must tell a 68030 PMMU (show
     // TC/CRP/SRP/TT0/TT1/MMUSR) from the Lisa segment MMU (don't) from none.
-    json_key(b, "present");
-    json_bool(b, p->mmu_kind != MMU_NONE);
-    json_key(b, "kind");
-    json_str(b, mmu_kind_to_string(p->mmu_kind));
-    json_close_obj(b);
+    value_map_builder_t *mmu = val_map_new();
+    val_map_put(mmu, "present", val_bool(p->mmu_kind != MMU_NONE));
+    val_map_put(mmu, "kind", val_str(mmu_kind_to_string(p->mmu_kind)));
 
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "cpu", val_map_finish(cpu));
+    val_map_put(b, "mmu", val_map_finish(mmu));
     // NOTE: video configurability is the video_slots block, NOT "nubus
     // exists" — the two are deliberately not conflated.
-    json_key(b, "nubus");
-    json_bool(b, p->nubus_slots != NULL);
-
-    json_close_obj(b);
+    val_map_put(b, "nubus", val_bool(p->nubus_slots != NULL));
+    return val_map_finish(b);
 }
 
-// Emit one video card object (id, display_name, requires_vrom, monitors)
-// into an open array.  requires_vrom is read straight off the card kind —
-// the property the dialog drives its VROM row from (proposal §4.4).
-static void encode_video_card(json_builder_t *b, const char *card_id) {
+// Build one video card map (id, display_name, requires_vrom, monitors).
+// requires_vrom is read straight off the card kind — the property the
+// dialog drives its VROM row from (proposal §4.4).
+static value_t build_video_card(const char *card_id) {
     const nubus_card_kind_t *kind = card_id ? nubus_card_find(card_id) : NULL;
-    json_open_obj(b);
-    json_key(b, "id");
-    json_str(b, card_id ? card_id : "");
-    json_key(b, "display_name");
-    json_str(b, (kind && kind->display_name) ? kind->display_name : (card_id ? card_id : ""));
-    json_key(b, "requires_vrom");
-    json_bool(b, kind ? kind->requires_vrom : false);
-    json_key(b, "monitors");
-    json_open_arr(b);
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "id", val_str(card_id ? card_id : ""));
+    val_map_put(b, "display_name",
+                val_str((kind && kind->display_name) ? kind->display_name : (card_id ? card_id : "")));
+    val_map_put(b, "requires_vrom", val_bool(kind ? kind->requires_vrom : false));
+    value_t *mons = NULL;
+    size_t n_mons = 0, cap_mons = 0;
     if (kind && kind->monitors) {
         for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
-            json_open_obj(b);
-            json_key(b, "id");
-            json_str(b, mon->id);
-            json_key(b, "name");
-            json_str(b, mon->name ? mon->name : mon->id);
-            json_key(b, "width");
-            json_int(b, (int64_t)mon->width);
-            json_key(b, "height");
-            json_int(b, (int64_t)mon->height);
-            json_key(b, "depths");
-            json_open_arr(b);
+            value_map_builder_t *mb = val_map_new();
+            val_map_put(mb, "id", val_str(mon->id));
+            val_map_put(mb, "name", val_str(mon->name ? mon->name : mon->id));
+            val_map_put(mb, "width", val_int((int64_t)mon->width));
+            val_map_put(mb, "height", val_int((int64_t)mon->height));
+            value_t *depths = NULL;
+            size_t n_depths = 0, cap_depths = 0;
             if (mon->depths) {
                 for (const int *d = mon->depths; *d; d++)
-                    json_int(b, (int64_t)*d);
+                    val_list_push(&depths, &n_depths, &cap_depths, val_int((int64_t)*d));
             }
-            json_close_arr(b);
-            json_close_obj(b);
+            val_map_put(mb, "depths", val_list(depths, n_depths));
+            val_list_push(&mons, &n_mons, &cap_mons, val_map_finish(mb));
         }
     }
-    json_close_arr(b); // monitors
-    json_close_obj(b); // card
+    val_map_put(b, "monitors", val_list(mons, n_mons));
+    return val_map_finish(b);
 }
 
-// Emit the `video_slots` block: the real shape the user navigates — slot →
+// Build the `video_slots` list: the real shape the user navigates — slot →
 // card → monitor/depth.  VROM-required-ness is per *card* (the SE/30-vs-IIci
 // asymmetry), so the dialog shows the VROM row iff the selected card needs
 // one.  This is the ONLY video shape in the profile — the flat web-legacy
 // `video_modes` compat view was deleted with that UI (proposal §7 stage 3).
-static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
-    json_key(b, "video_slots");
-    json_open_arr(b);
-    if (!p->nubus_slots) {
-        json_close_arr(b);
-        return;
-    }
+static value_t build_video_slots(const hw_profile_t *p) {
+    value_t *slots = NULL;
+    size_t n_slots = 0, cap_slots = 0;
+    if (!p->nubus_slots)
+        return val_list(NULL, 0);
     for (const struct nubus_slot_decl *s = p->nubus_slots; s->slot; s++) {
         // Only slots that can carry a video card appear here.  Every SOCKET
         // is emitted (a machine may declare several); the dialog's single
@@ -259,14 +239,13 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
             continue;
         const char *default_card = (s->kind == NUBUS_SLOT_BUILTIN) ? s->builtin_card_id : s->default_card;
 
-        json_open_obj(b);
-        json_key(b, "slot");
+        value_map_builder_t *b = val_map_new();
         if (s->kind == NUBUS_SLOT_BUILTIN) {
-            json_str(b, "builtin");
+            val_map_put(b, "slot", val_str("builtin"));
         } else {
             char slot_buf[8];
             snprintf(slot_buf, sizeof slot_buf, "%X", s->slot); // "9".."E"
-            json_str(b, slot_buf);
+            val_map_put(b, "slot", val_str(slot_buf));
         }
         // A BUILTIN slot may have sibling kinds (same monitor table, both
         // BUILTIN-attach — the SE/30's generic/real video pair): those are
@@ -281,19 +260,19 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
                     builtin_candidates++;
             }
         }
-        json_key(b, "fixed");
-        json_bool(b, s->kind == NUBUS_SLOT_BUILTIN && builtin_candidates == 1);
-        json_key(b, "default_card");
-        json_str(b, default_card ? default_card : "");
+        val_map_put(b, "fixed", val_bool(s->kind == NUBUS_SLOT_BUILTIN && builtin_candidates == 1));
+        val_map_put(b, "default_card", val_str(default_card ? default_card : ""));
 
-        json_key(b, "cards");
-        json_open_arr(b);
+        value_t *cards = NULL;
+        size_t n_cards = 0, cap_cards = 0;
         if (s->kind == NUBUS_SLOT_BUILTIN) {
-            encode_video_card(b, s->builtin_card_id);
+            val_list_push(&cards, &n_cards, &cap_cards, build_video_card(s->builtin_card_id));
+            // Sibling builtin kinds sharing the monitor table are selectable
+            // via video_card=, so offer them alongside the declared one.
             if (decl_kind) {
                 for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
                     if (*k != decl_kind && (*k)->attach == CARD_ATTACH_BUILTIN && (*k)->monitors == decl_kind->monitors)
-                        encode_video_card(b, (*k)->id);
+                        val_list_push(&cards, &n_cards, &cap_cards, build_video_card((*k)->id));
                 }
             }
         } else {
@@ -304,91 +283,74 @@ static void encode_video_slots(json_builder_t *b, const hw_profile_t *p) {
             // (proposal-nubus-computed-card-compatibility.md §5.3).
             for (const nubus_card_kind_t *const *k = nubus_card_registry(); *k; k++) {
                 if (nubus_card_fits_socket(s, *k) && (*k)->monitors)
-                    encode_video_card(b, (*k)->id);
+                    val_list_push(&cards, &n_cards, &cap_cards, build_video_card((*k)->id));
             }
         }
-        json_close_arr(b);
-        json_close_obj(b);
+        val_map_put(b, "cards", val_list(cards, n_cards));
+        val_list_push(&slots, &n_slots, &cap_slots, val_map_finish(b));
     }
-    json_close_arr(b);
+    return val_list(slots, n_slots);
 }
 
-// Build the JSON-encoded profile map for a registered hw_profile_t.
-static value_t encode_profile(const hw_profile_t *p) {
-    json_builder_t *b = json_builder_new();
-    if (!b)
-        return val_err("machine.profile: out of memory");
+// Build the typed profile map for a registered hw_profile_t.
+static value_t build_profile(const hw_profile_t *p) {
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "id", val_str(p->id ? p->id : ""));
+    val_map_put(b, "name", val_str(p->name ? p->name : ""));
+    val_map_put(b, "freq", val_int((int64_t)p->freq));
 
-    json_open_obj(b);
-    json_key(b, "id");
-    json_str(b, p->id ? p->id : "");
-    json_key(b, "name");
-    json_str(b, p->name ? p->name : "");
-    json_key(b, "freq");
-    json_int(b, (int64_t)p->freq);
-
-    json_key(b, "ram_options");
-    json_open_arr(b);
+    value_t *rams = NULL;
+    size_t n_rams = 0, cap_rams = 0;
     if (p->ram_options) {
         for (const uint32_t *r = p->ram_options; *r; r++)
-            json_int(b, (int64_t)*r);
+            val_list_push(&rams, &n_rams, &cap_rams, val_int((int64_t)*r));
     }
-    json_close_arr(b);
+    val_map_put(b, "ram_options", val_list(rams, n_rams));
 
-    json_key(b, "ram_default");
-    json_int(b, (int64_t)(p->ram_default / 1024u));
-    json_key(b, "ram_max");
-    json_int(b, (int64_t)(p->ram_max / 1024u));
+    val_map_put(b, "ram_default", val_int((int64_t)(p->ram_default / 1024u)));
+    val_map_put(b, "ram_max", val_int((int64_t)(p->ram_max / 1024u)));
 
-    json_key(b, "floppy_slots");
-    json_open_arr(b);
+    value_t *flops = NULL;
+    size_t n_flops = 0, cap_flops = 0;
     if (p->floppy_slots) {
         for (const struct floppy_slot *s = p->floppy_slots; s->label; s++) {
-            json_open_obj(b);
-            json_key(b, "label");
-            json_str(b, s->label);
-            json_key(b, "kind");
-            json_str(b, floppy_kind_to_string(s->kind));
-            json_close_obj(b);
+            value_map_builder_t *fb = val_map_new();
+            val_map_put(fb, "label", val_str(s->label));
+            val_map_put(fb, "kind", val_str(floppy_kind_to_string(s->kind)));
+            val_list_push(&flops, &n_flops, &cap_flops, val_map_finish(fb));
         }
     }
-    json_close_arr(b);
+    val_map_put(b, "floppy_slots", val_list(flops, n_flops));
 
-    json_key(b, "scsi_slots");
-    json_open_arr(b);
+    value_t *scsis = NULL;
+    size_t n_scsis = 0, cap_scsis = 0;
     if (p->scsi_slots) {
         for (const struct scsi_slot *s = p->scsi_slots; s->label; s++) {
-            json_open_obj(b);
-            json_key(b, "label");
-            json_str(b, s->label);
-            json_key(b, "id");
-            json_int(b, (int64_t)s->id);
-            json_close_obj(b);
+            value_map_builder_t *sb = val_map_new();
+            val_map_put(sb, "label", val_str(s->label));
+            val_map_put(sb, "id", val_int((int64_t)s->id));
+            val_list_push(&scsis, &n_scsis, &cap_scsis, val_map_finish(sb));
         }
     }
-    json_close_arr(b);
+    val_map_put(b, "scsi_slots", val_list(scsis, n_scsis));
 
-    json_key(b, "hd_bus");
-    json_str(b, hd_bus_to_string(p->hd_bus));
+    val_map_put(b, "hd_bus", val_str(hd_bus_to_string(p->hd_bus)));
 
-    json_key(b, "has_cdrom");
-    json_bool(b, p->has_cdrom);
-    json_key(b, "cdrom_id");
-    json_int(b, (int64_t)p->cdrom_id);
+    val_map_put(b, "has_cdrom", val_bool(p->has_cdrom));
+    val_map_put(b, "cdrom_id", val_int((int64_t)p->cdrom_id));
 
     // Derived capability probe + per-card video-slot shape (proposal §4.4) —
     // the source of truth the frontend consumes.  (The web-legacy compat keys
     // needs_vrom / video_modes / video_mode_default were deleted with that UI;
     // everything derives from video_slots now.)
-    encode_capabilities(b, p);
-    encode_video_slots(b, p);
+    val_map_put(b, "capabilities", build_capabilities(p));
+    val_map_put(b, "video_slots", build_video_slots(p));
 
-    json_close_obj(b);
-    return json_finish(b);
+    return val_map_finish(b);
 }
 
 // machine.profile(id) — static lookup, returns the model's full configuration
-// shape as a JSON-encoded map (see proposal §3.2.2).  Errors when id is empty
+// shape as a typed map (see proposal §3.2.2).  Errors when id is empty
 // or doesn't match a registered profile.
 static value_t machine_method_profile(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
@@ -400,7 +362,7 @@ static value_t machine_method_profile(struct object *self, const member_t *m, in
     const hw_profile_t *p = machine_find(id);
     if (!p)
         return val_err("machine.profile: unknown model '%s'", id);
-    return encode_profile(p);
+    return build_profile(p);
 }
 
 // True if `kb` is one of the values in profile->ram_options.
@@ -788,8 +750,8 @@ static const member_t machine_members[] = {
      .attr = {.type = V_BOOL, .get = attr_machine_created, .set = NULL}},
     {.kind = M_METHOD,
      .name = "profile",
-     .doc = "Look up a registered model's full configuration map (JSON-encoded)",
-     .method = {.args = machine_profile_args, .nargs = 1, .result = V_STRING, .fn = machine_method_profile}},
+     .doc = "Look up a registered model's full configuration map",
+     .method = {.args = machine_profile_args, .nargs = 1, .result = V_MAP, .fn = machine_method_profile}},
     {.kind = M_METHOD,
      .name = "boot",
      .doc = "Boot a machine from a configuration document; omitted arguments inherit from machine.config",

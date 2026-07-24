@@ -428,24 +428,37 @@ static value_t vrom_method_identify(struct object *self, const member_t *m, int 
         // mirroring rom.identify: a missing/unreadable path is a V_ERROR,
         // while a real file of the wrong size is simply unrecognised.
         return val_err("vrom.identify: cannot read '%s'", path);
-    case VROM_ID_WRONG_SIZE:
-        return val_str("{\"recognised\":false}");
+    case VROM_ID_WRONG_SIZE: {
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "recognised", val_bool(false));
+        return val_map_finish(b);
+    }
     case VROM_ID_KNOWN: {
-        char out[256];
-        snprintf(out, sizeof(out),
-                 "{\"recognised\":true,\"card_id\":\"%s\",\"compatible\":[\"%s\"],"
-                 "\"size\":%zu,\"crc\":\"0x%08x\"}",
-                 id.card_id, id.card_id, size, crc);
-        return val_str(out);
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "recognised", val_bool(true));
+        val_map_put(b, "card_id", val_str(id.card_id));
+        value_t *compat = NULL;
+        size_t n_compat = 0, cap_compat = 0;
+        val_list_push(&compat, &n_compat, &cap_compat, val_str(id.card_id));
+        val_map_put(b, "compatible", val_list(compat, n_compat));
+        val_map_put(b, "size", val_int((int64_t)size));
+        char hex[16];
+        snprintf(hex, sizeof(hex), "0x%08x", crc);
+        val_map_put(b, "crc", val_str(hex));
+        return val_map_finish(b);
     }
     case VROM_ID_UNKNOWN:
     default: {
         // Right size but not a known declaration ROM. Recognised=false so
         // callers route into a normal "unrecognised file" path; still report
         // the CRC so a future catalog entry (or the user) can identify it.
-        char out[128];
-        snprintf(out, sizeof(out), "{\"recognised\":false,\"size\":%zu,\"crc\":\"0x%08x\"}", size, crc);
-        return val_str(out);
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "recognised", val_bool(false));
+        val_map_put(b, "size", val_int((int64_t)size));
+        char hex[16];
+        snprintf(hex, sizeof(hex), "0x%08x", crc);
+        val_map_put(b, "crc", val_str(hex));
+        return val_map_finish(b);
     }
     }
 }
@@ -466,8 +479,8 @@ static const member_t vrom_members[] = {
      .method = {.args = vrom_path_arg, .nargs = 1, .result = V_BOOL, .fn = vrom_method_offer}},
     {.kind = M_METHOD,
      .name = "identify",
-     .doc = "JSON map: {recognised, card_id?, compatible?, size, crc}.",
-     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_STRING, .fn = vrom_method_identify}},
+     .doc = "Typed map: {recognised, card_id?, compatible?, size, crc}.",
+     .method = {.args = vrom_path_arg, .nargs = 1, .result = V_MAP, .fn = vrom_method_identify}},
 };
 
 const class_desc_t vrom_class = {

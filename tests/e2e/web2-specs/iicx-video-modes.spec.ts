@@ -169,11 +169,19 @@ test('IIcx video modes: post-shader canvas matches per-mode baselines', async ({
         undefined,
         { timeout: 60_000 },
       );
-      // The resume prompt only appears if a quick checkpoint was persisted
-      // on the prior page's beforeunload; decline it if present.
-      const fresh = page.getByRole('button', { name: 'Start fresh' });
-      if (await fresh.isVisible().catch(() => false)) await fresh.click();
-      else await expect(page.locator('.welcome-layer')).toBeVisible({ timeout: 15_000 });
+      // The prior iteration left a running machine, so its beforeunload quick
+      // checkpoint reliably triggers the resume prompt. Wait for the modal and
+      // decline it, mirroring checkpoint-resume.spec's robust pattern: __gsReady
+      // is set before checkpoint.probe resolves and the modal renders async, so
+      // a single-shot isVisible() check races the modal and, when it loses, the
+      // modal backdrop blocks the "New Machine..." click below until the test
+      // timeout.
+      const resumeModal = page
+        .locator('.modal, [role="dialog"]')
+        .filter({ hasText: 'Continue from saved checkpoint?' });
+      await expect(resumeModal).toBeVisible({ timeout: 30_000 });
+      await page.getByRole('button', { name: 'Start fresh' }).click();
+      await expect(resumeModal).toHaveCount(0);
     }
 
     // New Machine: IIcx + this iteration's mode + the System 7.0.1 floppy.

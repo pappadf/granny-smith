@@ -2765,9 +2765,7 @@ static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, 
 }
 
 // `scsi.hd_models` — V_LIST of {label, vendor, product, size} maps for the
-// known SCSI HD model catalog. Each entry is rendered as a JSON-ish string
-// for now (V_LIST<V_STRING>) since the value substrate doesn't have a map
-// type yet; UI code can JSON.parse each entry.
+// known SCSI HD model catalog.
 static value_t scsi_attr_hd_models(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -2779,10 +2777,12 @@ static value_t scsi_attr_hd_models(struct object *self, const member_t *m) {
         return val_err("scsi.hd_models: out of memory");
     for (int i = 0; i < count; i++) {
         const struct drive_model *md = drive_catalog_get(i);
-        char buf[192];
-        snprintf(buf, sizeof(buf), "{\"label\":\"%s\",\"vendor\":\"%s\",\"product\":\"%s\",\"size\":%zu}",
-                 md ? md->label : "", md ? md->vendor : "", md ? md->product : "", md ? md->size : 0);
-        items[i] = val_str(buf);
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "label", val_str(md ? md->label : ""));
+        val_map_put(b, "vendor", val_str(md ? md->vendor : ""));
+        val_map_put(b, "product", val_str(md ? md->product : ""));
+        val_map_put(b, "size", val_int(md ? (int64_t)md->size : 0));
+        items[i] = val_map_finish(b);
     }
     return val_list(items, (size_t)count);
 }
@@ -2805,7 +2805,7 @@ static const arg_decl_t scsi_attach_args[] = {
 static const member_t scsi_static_members[] = {
     {.kind = M_ATTR,
      .name = "hd_models",
-     .doc = "Known SCSI HD model catalog (list of JSON-encoded entries)",
+     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
      .flags = VAL_RO,
      .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
     {.kind = M_METHOD,
@@ -2855,7 +2855,7 @@ static const member_t scsi_members[] = {
      .attr = {.type = V_BOOL, .get = scsi_attr_loopback_get, .set = scsi_attr_loopback_set}},
     {.kind = M_ATTR,
      .name = "hd_models",
-     .doc = "Known SCSI HD model catalog (list of JSON-encoded entries)",
+     .doc = "Known SCSI HD model catalog: [{label, vendor, product, size}] maps",
      .flags = VAL_RO,
      .attr = {.type = V_LIST, .get = scsi_attr_hd_models, .set = NULL}},
     {.kind = M_METHOD,

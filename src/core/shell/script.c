@@ -1074,20 +1074,35 @@ static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char 
                 *errv = idx;
                 return false;
             }
-            bool ok = false;
-            int64_t iv = val_as_i64(&idx, &ok);
-            value_free(&idx);
-            if (!ok) {
-                *errv = val_err("index must be numeric");
-                return false;
-            }
             q = skip_sp(q);
             if (*q != ']') {
+                value_free(&idx);
                 *errv = val_err("expected ']'");
                 return false;
             }
             q++;
-            int n = snprintf(out + pi, out_size - pi, "[%lld]", (long long)iv);
+            // Integer index (indexed child / list slot) or string index
+            // (map key, emitted as a `["key"]` segment).
+            int n;
+            if (idx.kind == V_STRING) {
+                const char *k = idx.s ? idx.s : "";
+                if (strpbrk(k, "\"\\")) {
+                    value_free(&idx);
+                    *errv = val_err("map key may not contain '\"' or '\\'");
+                    return false;
+                }
+                n = snprintf(out + pi, out_size - pi, "[\"%s\"]", k);
+            } else {
+                bool ok = false;
+                int64_t iv = val_as_i64(&idx, &ok);
+                if (!ok) {
+                    value_free(&idx);
+                    *errv = val_err("index must be numeric or a string key");
+                    return false;
+                }
+                n = snprintf(out + pi, out_size - pi, "[%lld]", (long long)iv);
+            }
+            value_free(&idx);
             if (n < 0 || (size_t)n >= out_size - pi) {
                 *errv = val_err("path too long");
                 return false;
@@ -1103,8 +1118,17 @@ static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char 
 // Resolve a command/lvalue head at *p into a node. Handles both bare
 // object paths and `$binding` heads (V_REF re-resolution, V_OBJECT
 // relative resolution). On success advances *p past the path text.
-static bool resolve_path_head(const char **p, const expr_ctx_t *ectx, node_t *out_node, value_t *errv) {
+// When out_path/out_base are non-NULL they receive the normalized path
+// text and the object it resolves against even when node resolution
+// fails, so exec_command can retry the head as a structured-value read
+// (map/list access into an attribute or method result).
+static bool resolve_path_head_ex(const char **p, const expr_ctx_t *ectx, node_t *out_node, value_t *errv,
+                                 char *out_path, size_t out_path_size, struct object **out_base) {
     char path[512] = "";
+    if (out_path && out_path_size)
+        out_path[0] = '\0';
+    if (out_base)
+        *out_base = NULL;
     if (**p == '$') {
         (*p)++;
         char name[64];
@@ -1134,6 +1158,10 @@ static bool resolve_path_head(const char **p, const expr_ctx_t *ectx, node_t *ou
         if (base.kind == V_REF) {
             snprintf(path, sizeof(path), "%s%s", base.ref ? base.ref : "", sub);
             value_free(&base);
+            if (out_path && out_path_size)
+                snprintf(out_path, out_path_size, "%s", path);
+            if (out_base)
+                *out_base = object_root();
             node_t n = object_resolve(object_root(), path);
             if (!node_valid(n)) {
                 *errv = val_err("'$%s' → '%s' did not resolve", name, path);
@@ -1150,6 +1178,10 @@ static bool resolve_path_head(const char **p, const expr_ctx_t *ectx, node_t *ou
                 return false;
             }
             const char *rel = sub[0] == '.' ? sub + 1 : sub;
+            if (out_path && out_path_size)
+                snprintf(out_path, out_path_size, "%s", rel);
+            if (out_base)
+                *out_base = obj;
             node_t n = object_resolve(obj, rel);
             if (!node_valid(n)) {
                 *errv = val_err("'$%s%s' did not resolve", name, sub);
@@ -1176,6 +1208,10 @@ static bool resolve_path_head(const char **p, const expr_ctx_t *ectx, node_t *ou
     path[i] = '\0';
     if (!scan_path_continuation(p, ectx, path, sizeof(path), errv))
         return false;
+    if (out_path && out_path_size)
+        snprintf(out_path, out_path_size, "%s", path);
+    if (out_base)
+        *out_base = object_root();
     node_t n = object_resolve(object_root(), path);
     if (!node_valid(n)) {
         *errv = val_err("unknown command or path '%s'", path);
@@ -1183,6 +1219,11 @@ static bool resolve_path_head(const char **p, const expr_ctx_t *ectx, node_t *ou
     }
     *out_node = n;
     return true;
+}
+
+// Back-compat wrapper: resolve without exposing the normalized path.
+static bool resolve_path_head(const char **p, const expr_ctx_t *ectx, node_t *out_node, value_t *errv) {
+    return resolve_path_head_ex(p, ectx, out_node, errv, NULL, 0, NULL);
 }
 
 // --- argument mode ----------------------------------------------------------
@@ -1459,11 +1500,13 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
     node_t node = {0};
     script_func_t *fn = NULL;
     value_t errv = val_none();
+    char norm_path[512] = "";
+    struct object *path_base = NULL;
 
     // Try the object tree first; fall back to the user-function
     // registry for single-identifier heads.
     const char *head = p;
-    if (!resolve_path_head(&p, &ectx, &node, &errv)) {
+    if (!resolve_path_head_ex(&p, &ectx, &node, &errv, norm_path, sizeof(norm_path), &path_base)) {
         // Single bare identifier → user function?
         const char *q = head;
         if (ident_start(*q)) {
@@ -1479,6 +1522,30 @@ static void exec_command(stmt_t *st, exec_ctx_t *cx) {
                 value_free(&errv);
                 p = q;
             }
+        }
+        // Bare read into a structured value: the head may address a map
+        // key / list slot inside an attribute result
+        // (`machine.config.vroms[0].card_id`). Only for argument-less
+        // heads — values cannot take command arguments.
+        if (!fn && norm_path[0] && path_base && *skip_sp(p) == '\0') {
+            value_t v = expr_object_path_read(path_base, norm_path);
+            if (!val_is_error(&v)) {
+                value_free(&errv);
+                if (cx->interactive)
+                    shell_print_value(&v);
+                value_free(&v);
+                return;
+            }
+            // A specific map/list access error ("no key 'x' in map") beats
+            // the generic resolver message; the generic "path ... did not
+            // resolve" falls through to the original command error.
+            if (v.err && strncmp(v.err, "path '", 6) != 0) {
+                value_free(&errv);
+                exec_error(cx, st->line, "%s", v.err);
+                value_free(&v);
+                return;
+            }
+            value_free(&v);
         }
         if (!fn) {
             exec_error(cx, st->line, "%s", errv.err ? errv.err : "unknown command");
@@ -1688,8 +1755,8 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         value_free(&iter);
         return;
     }
-    if (iter.kind != V_LIST && iter.kind != V_RANGE && iter.kind != V_BYTES) {
-        exec_error(cx, st->line, "for: cannot iterate a %s (use a list, a..b range, or bytes)",
+    if (iter.kind != V_LIST && iter.kind != V_RANGE && iter.kind != V_BYTES && iter.kind != V_MAP) {
+        exec_error(cx, st->line, "for: cannot iterate a %s (use a list, map, a..b range, or bytes)",
                    iter.kind == V_INT || iter.kind == V_UINT ? "plain integer" : "value of this kind");
         value_free(&iter);
         return;
@@ -1703,6 +1770,8 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
     size_t count = 0;
     if (iter.kind == V_LIST)
         count = iter.list.len;
+    else if (iter.kind == V_MAP)
+        count = iter.map.len;
     else if (iter.kind == V_BYTES)
         count = iter.bytes.n;
     else
@@ -1717,6 +1786,9 @@ static void exec_for(stmt_t *st, exec_ctx_t *cx) {
         value_t item;
         if (iter.kind == V_LIST)
             item = value_dup(&iter.list.items[i]);
+        else if (iter.kind == V_MAP)
+            // Maps iterate their keys (dict idiom); `map[k]` fetches values.
+            item = val_str(iter.map.entries[i].key);
         else if (iter.kind == V_BYTES)
             item = val_uint(1, iter.bytes.p[i]);
         else

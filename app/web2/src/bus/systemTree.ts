@@ -178,14 +178,11 @@ export async function loadNodeMethods(path: string): Promise<MethodInfo[]> {
   const out: MethodInfo[] = [];
   for (const name of names) {
     if (typeof name !== 'string') continue;
+    // method_info returns a native object (V_MAP) — no inner JSON.parse.
     const raw = await gsEval(`${path}.meta.method_info`, [name]);
-    if (typeof raw !== 'string') continue;
-    try {
-      const info = JSON.parse(raw) as MethodInfo;
-      if (!info.hidden) out.push(info);
-    } catch {
-      // Tolerate a malformed descriptor — skip rather than break the menu.
-    }
+    if (!raw || typeof raw !== 'object' || 'error' in raw) continue;
+    const info = raw as MethodInfo;
+    if (!info.hidden) out.push(info);
   }
   return out;
 }

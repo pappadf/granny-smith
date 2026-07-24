@@ -40,14 +40,11 @@ interface RomIdentifyResult {
 }
 
 async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
+  // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
-  if (typeof r !== 'string') return null;
-  try {
-    const parsed = JSON.parse(r) as Partial<RomIdentifyResult>;
-    if (parsed && parsed.recognised) return parsed as RomIdentifyResult;
-  } catch {
-    // Fall through.
-  }
+  if (!r || typeof r !== 'object') return null;
+  const parsed = r as Partial<RomIdentifyResult>;
+  if (parsed.recognised) return parsed as RomIdentifyResult;
   return null;
 }
 
@@ -409,13 +406,9 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
   const model = info.compatible[0];
   const profile = await gsEval('machine.profile', [model]);
   let ramKb = 4096;
-  if (typeof profile === 'string') {
-    try {
-      const parsed = JSON.parse(profile) as { ram_default?: number };
-      if (parsed.ram_default) ramKb = parsed.ram_default;
-    } catch {
-      /* keep default */
-    }
+  if (profile && typeof profile === 'object' && !('error' in profile)) {
+    const parsed = profile as { ram_default?: number };
+    if (parsed.ram_default) ramKb = parsed.ram_default;
   }
   // One boot document — the core validates and installs the ROM itself.
   await gsEval('machine.boot', { model, ram: ramKb, rom: romPath });
