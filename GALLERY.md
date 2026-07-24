@@ -6,22 +6,6 @@ A tour of Granny Smith running real Macintosh software, and the tooling around i
 
 ---
 
-## Macintosh Quadra 700 booting System 7.1 from SCSI
-
-![System 7.1 Finder desktop on a Quadra 700](tests/integration/q700-boot-hd/hd-desktop.png)
-
-The Macintosh Quadra 700 — Granny Smith's first 68040 machine — booted from a SCSI hard disk to the System 7.1 Finder desktop: a 25 MHz MC68040 with its on-chip MMU and FPU, DAFB built-in video at 640×480, and the NCR 53C96 SCSI controller moving the System through its TurboSCSI pseudo-DMA path.
-
----
-
-## Macintosh Quadra 950 in Thousands of colors
-
-![16-bit x555 desktop on a Quadra 950 after switching Monitors to Thousands](tests/integration/q950-boot-hd/thousands-desktop.png)
-
-A Macintosh Quadra 950 tower after the Monitors control panel — driven by scripted mouse input through the real ADB path — switches the display to Thousands: the AC842a RAMDAC's x555 16-bit direct-color mode on DAFB 3, exclusive to the Q950 in this family.
-
----
-
 ## Display Card 24AC (Macintosh IIcx) with Norton System Info
 
 ![System Info on a IIcx with the Display Card 24AC, ready to run the Display benchmark](docs/assets/24ac_sysinfo.png)
