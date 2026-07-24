@@ -34,9 +34,12 @@
 struct adb;
 struct asc;
 struct dafb;
+struct egret;
 struct floppy;
+struct iop;
 struct mmu_state;
 struct nubus_slot_decl;
+struct scsi;
 struct scsi_53c96;
 struct sonic;
 
@@ -70,6 +73,10 @@ typedef struct mcu_board {
     void (*via1_shift_out)(void *context, uint8_t byte);
     void (*via2_output)(void *context, uint8_t port, uint8_t value);
     void (*build_devices)(config_t *cfg, checkpoint_t *cp); // machine-specific tail
+    // SCC chip IRQ callback override (NULL → mac030_glue_scc_irq).  The towers
+    // OR the SCC chip INT with the SCC IOP host INT onto the level-4 source
+    // (ref §15.12), so they intercept the chip line here.
+    void (*scc_irq)(void *context, bool active);
 } mcu_board_t;
 
 // Unified MCU-family machine state.
@@ -81,6 +88,15 @@ typedef struct mcu_state {
     struct scsi_53c96 *scsi96; // NCR 53C96 (bus/targets attach in Phase E)
     struct sonic *sonic; // DP83932 SONIC Ethernet (Phase F; no wire in v1)
     uint8_t sonic_byte2; // high byte latched from an in-flight register write
+
+    // --- Tower (Q900/Q950) devices — NULL on the Q700 (Phase G) ---
+    struct egret *caboose; // Egret-protocol system manager ("Caboose" firmware; ref §15.14)
+    struct iop *scc_iop; // SCC behind an Apple PIC/IOP at island $C000 (ref §6.3)
+    struct iop *swim_iop; // SWIM/ADB behind the second IOP at island $1E000
+    struct scsi_53c96 *scsi96_ext; // second 53C96 — external bus (regs $F402, pdma $F502)
+    struct scsi *scsi_ext; // external SCSI bus (no default devices in v1)
+    uint8_t scc_irq_or; // level-4 requesters: bit0 = SCC chip, bit1 = SCC IOP host INT
+    uint8_t scsi_irq_or; // VIA2 CB2 requesters: bit0 = internal 53C96, bit1 = external
 
     bool rom_overlay; // true = ROM mapped at $00000000 (access-triggered drop)
     struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs live on the CPU
@@ -111,6 +127,10 @@ extern const machine_substrate_t mcu_substrate;
 
 // Q700 I/O window table (exposed for the address-map unit test).
 extern const mac030_io_range_t mcu_q700_io_ranges[];
+
+// Q900/Q950 tower I/O window table: IOP apertures replace direct SCC/SWIM,
+// second 53C96 windows at $F400/$F500 (ref §6.3).
+extern const mac030_io_range_t mcu_q900_io_ranges[];
 
 // Bind the family device set + board tables into the shared I/O engine.
 void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy);

@@ -1,0 +1,17 @@
+# Quadra 900 Phase G gate (see config.mk).
+
+# Happy Mac → "Welcome to Macintosh" → extensions → Finder desktop.
+# (Desktop is stable from ~800M; 900M adds margin.  Deterministic across
+# runs — verified twice at bring-up.)
+scheduler.run 900000000
+
+# The ROM identified the tower: BoxFlag ($CB3, listed under its older
+# MMUFluff name) holds boxQuadra900 = 14 (InternalOnlyEqu.a).
+assert debug.mac.globals.read("MMUFluff") == 14 "not identified as Quadra 900"
+
+# The desktop is up at 640x480: pixel-exact match against the golden.
+assert machine.screen.width == 640 "not in 640x480 mode"
+assert machine.screen.height == 480 "not in 640x480 mode"
+machine.screen.match hd-desktop.png
+
+quit

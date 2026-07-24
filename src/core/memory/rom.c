@@ -49,8 +49,7 @@ static const char *const MACXL_COMPATIBLE[] = {"macxl", NULL};
 static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
 // Quadra 700/900 shared 1 MB ROM (also shipped in the PowerBook 140/170 —
 // portables are out of scope and not listed as targets; proposal §13.2).
-// "q900" joins this list when the tower registers in Phase G.
-static const char *const Q700_Q900_COMPATIBLE[] = {"q700", NULL};
+static const char *const Q700_Q900_COMPATIBLE[] = {"q700", "q900", NULL};
 
 // Master ROM signature table.  Content facts only — the canonical fixture
 // filenames live in tooling (scripts/rom_naming.py), not here.

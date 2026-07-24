@@ -19,8 +19,10 @@
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
 #include "dafb.h"
 #include "debug.h"
+#include "egret.h" // tower Caboose = Egret-protocol engine (ref §15.14)
 #include "floppy.h"
 #include "image.h"
+#include "iop.h" // tower SCC/SWIM Apple PIC/IOPs (IIfx-compatible host aperture)
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
@@ -146,6 +148,29 @@ static void mcu_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
     scsi_53c96_pdma_write8(mcu_st(cfg)->scsi96, value);
 }
 
+// --- Second NCR 53C96 (towers; regs at $5000F402 on 16-byte spacing and
+// pseudo-DMA at $5000F502 — UniversalTables.a OrwellDecoderTable "2nd
+// (external) SCSI96" [A]; the pdma alias matches current MAME [R]).  The
+// same (offset >> 4) register decode as bus 0 serves the +2 byte lane.
+
+static uint8_t mcu_scsi_ext_read(config_t *cfg, uint32_t addr) {
+    return scsi_53c96_read(mcu_st(cfg)->scsi96_ext, (addr & 0xFFu) >> 4);
+}
+
+static void mcu_scsi_ext_write(config_t *cfg, uint32_t addr, uint8_t value) {
+    scsi_53c96_write(mcu_st(cfg)->scsi96_ext, (addr & 0xFFu) >> 4, value);
+}
+
+static uint8_t mcu_scsi_ext_pdma_read(config_t *cfg, uint32_t addr) {
+    (void)addr;
+    return scsi_53c96_pdma_read8(mcu_st(cfg)->scsi96_ext);
+}
+
+static void mcu_scsi_ext_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+    (void)addr;
+    scsi_53c96_pdma_write8(mcu_st(cfg)->scsi96_ext, value);
+}
+
 // --- YANCC ($50028000) — the system-bus/NuBus bridge register file.
 // The register address is Apple-documented, its width and bits are not
 // (ref §10.2 [A][U]): same latch-and-log policy as the MCU file, so the
@@ -197,6 +222,35 @@ const mac030_io_range_t mcu_q700_io_ranges[] = {
     {0x0F100, 0x0F102, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma"},
     {0x14000, 0x16000, MAC030_DEV_ASC, MCU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
     {0x1E000, 0x20000, MAC030_DEV_FLOPPY, MCU_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim"},
+    {0x28000, 0x2A000, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc"},
+    {0}, // sentinel: end == 0
+};
+
+// ============================================================
+// Q900/Q950 tower I/O island decode (ref §6.3; UniversalTables.a
+// OrwellDecoderTable — Eclipse memory map)
+// ============================================================
+// Deltas vs the Q700: the SCC and SWIM windows route to the two Apple
+// PIC/IOP host apertures (register layout identical to the IIfx PIC —
+// iopRamAddrH $00 / L $02 / iopStatCtl $04 / iopRamData $08 / bypass $20,
+// HardwarePrivateEqu.a), and a second 53C96 serves the external SCSI bus.
+
+#define MCU_IOP_IO_PENALTY 2 // same class as the IIfx PIC apertures
+
+//   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
+const mac030_io_range_t mcu_q900_io_ranges[] = {
+    {0x00000, 0x02000, MAC030_DEV_VIA1, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
+    {0x02000, 0x04000, MAC030_DEV_VIA2, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
+    {0x08000, 0x08008, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
+    {0x0A000, 0x0B100, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
+    {0x0C000, 0x0E000, MAC030_DEV_SCC_IOP, MCU_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc_iop"},
+    {0x0E000, 0x0F000, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
+    {0x0F000, 0x0F100, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_read, mcu_scsi_write, "scsi_53c96"},
+    {0x0F100, 0x0F102, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma"},
+    {0x0F400, 0x0F500, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_ext_read, mcu_scsi_ext_write, "scsi1_53c96"},
+    {0x0F500, 0x0F510, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_ext_pdma_read, mcu_scsi_ext_pdma_write, "scsi1_pdma"},
+    {0x14000, 0x16000, MAC030_DEV_ASC, MCU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
+    {0x1E000, 0x20000, MAC030_DEV_SWIM_IOP, MCU_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim_iop"},
     {0x28000, 0x2A000, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc"},
     {0}, // sentinel: end == 0
 };
@@ -431,7 +485,9 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, cp);
+    // Towers intercept the SCC chip INT (OR with the SCC IOP host INT);
+    // the Q700 routes it straight to the level-4 source.
+    cfg->scc = scc_init(NULL, cfg->scheduler, board->scc_irq ? board->scc_irq : mac030_glue_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
     cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", board->via1_output, board->via1_shift_out,
@@ -474,6 +530,27 @@ static void mcu_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     mcu_state_t *st = mcu_st(cfg);
     if (st) {
+        // Tower devices first (Q900/Q950; all NULL on the Q700).
+        if (st->caboose) {
+            egret_delete(st->caboose);
+            st->caboose = NULL;
+        }
+        if (st->scc_iop) {
+            iop_delete(st->scc_iop);
+            st->scc_iop = NULL;
+        }
+        if (st->swim_iop) {
+            iop_delete(st->swim_iop);
+            st->swim_iop = NULL;
+        }
+        if (st->scsi96_ext) {
+            scsi_53c96_delete(st->scsi96_ext);
+            st->scsi96_ext = NULL;
+        }
+        if (st->scsi_ext) {
+            scsi_delete(st->scsi_ext);
+            st->scsi_ext = NULL;
+        }
         if (st->sonic) {
             sonic_delete(st->sonic);
             st->sonic = NULL;
@@ -566,6 +643,10 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_checkpoint(st->scsi96, cp);
     sonic_checkpoint(st->sonic, cp);
     dafb_checkpoint(st->dafb, cp);
+    // Tower devices (caboose/IOPs/external SCSI) are NOT checkpointed yet —
+    // their inits run with cp=NULL on restore, so the stream stays aligned
+    // with this save set.  Phase I's save-state pass owns full coverage
+    // (alongside the pre-existing q700 asc/floppy-vs-scsi96 ordering debt).
     // Substrate-private state: overlay flag + MCU/YANCC register files +
     // the /SLOTIRQ aggregate mask.
     system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
