@@ -115,32 +115,11 @@ static void iici_memory_layout_init(config_t *cfg) {
     mac030_io_fill_interface(&st->io_interface);
     memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "IIci I/O", &st->io_interface, &st->mdu_io);
 
-    // Wire the built-in framebuffer (registered via mmu_register_vram) and
-    // its Mode-24 slot-$B alias into the page table — same machinery as the
+    // Wire the built-in framebuffer (a registered host region) and its
+    // Mode-24 slot-$B alias into the page table — same machinery as the
     // IIcx VRAM/Mode-24 handling so QuickDraw's 32-bit ($FBB08000) and
     // 24-bit ($00B08000) screen-base writes both land in the card buffer.
-    if (st->mmu) {
-        if (st->mmu->physical_vram && st->mmu->physical_vram_size > 0) {
-            uint32_t pages = st->mmu->physical_vram_size >> PAGE_SHIFT;
-            uint32_t start = st->mmu->vram_phys_base >> PAGE_SHIFT;
-            for (uint32_t i = 0; i < pages && (int)(start + i) < g_page_count; i++)
-                mac030_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), /*writable*/ true);
-
-            uint32_t base32 = st->mmu->vram_phys_base;
-            uint32_t high = base32 & 0xFF000000u;
-            if (high >= 0xF9000000u && high <= 0xFE000000u) {
-                int slot = (int)((base32 >> 24) & 0xFu);
-                uint32_t mode24_base = (uint32_t)slot << 20; // $00s00000
-                uint32_t alias_bytes = st->mmu->physical_vram_size;
-                if (alias_bytes > 0x100000u)
-                    alias_bytes = 0x100000u; // 1 MB Mode-24 slot window
-                uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
-                uint32_t start24 = mode24_base >> PAGE_SHIFT;
-                for (uint32_t i = 0; i < alias_pages && (int)(start24 + i) < g_page_count; i++)
-                    mac030_fill_page(start24 + i, st->mmu->physical_vram + (i << PAGE_SHIFT), /*writable*/ true);
-            }
-        }
-    }
+    mmu_host_regions_fill_pages(st->mmu, mac030_fill_page, /*mode24_alias*/ true);
 
     st->rom_overlay = false;
     iici_set_rom_overlay(cfg, true);

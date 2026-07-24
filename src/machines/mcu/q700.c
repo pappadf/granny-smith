@@ -29,12 +29,14 @@
 #include "memory.h"
 #include "mmu.h"
 #include "mmu040.h"
+#include "nubus.h"
 #include "rom.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "sonic.h"
 #include "via.h"
 
 #include <assert.h>
@@ -104,13 +106,39 @@ static void q700_scsi96_irq(void *context, bool active) {
     via_input_c(cfg->via2, 1, 1, active ? 0 : 1);
 }
 
-// DAFB video interrupt → VIA2 PA6 (active-low) + the /SLOTIRQ aggregate on
-// CA1 (ref §11.18/§13.3).  Level-sensitive; video is the only slot-path
-// source until NuBus lands in Phase F, so CA1 mirrors it directly.
+// SONIC INT → VIA2 PA0 (active-low) through the /SLOTIRQ aggregate
+// (ref §13.3/§16.5; A/UX level-3 remap not modeled).
+static void q700_sonic_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    mcu_slot_irq_source(cfg, 0, active);
+}
+
+// SONIC bus-master DMA: guest-physical accesses through the bus resolver
+// (no IOMMU on this family, ref §16.3 — CPU MMU is not in the path).
+static uint32_t q700_sonic_mem_read(void *context, uint32_t phys, unsigned width) {
+    (void)context;
+    if (width == 1)
+        return mmu_read_physical_uint8(g_mmu, phys);
+    if (width == 2)
+        return mmu_read_physical_uint16(g_mmu, phys);
+    return mmu_read_physical_uint32(g_mmu, phys);
+}
+
+static void q700_sonic_mem_write(void *context, uint32_t phys, uint32_t value, unsigned width) {
+    (void)context;
+    if (width == 1)
+        mmu_write_physical_uint8(g_mmu, phys, (uint8_t)value);
+    else if (width == 2)
+        mmu_write_physical_uint16(g_mmu, phys, (uint16_t)value);
+    else
+        mmu_write_physical_uint32(g_mmu, phys, value);
+}
+
+// DAFB video interrupt → VIA2 PA6 (active-low) through the family /SLOTIRQ
+// aggregate on CA1 (ref §11.18/§13.3), alongside the NuBus slot sources.
 static void q700_dafb_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
-    via_input(cfg->via2, 0, 6, active ? 0 : 1);
-    via_input_c(cfg->via2, 0, 0, active ? 0 : 1);
+    mcu_slot_irq_source(cfg, 6, active);
 }
 
 // ============================================================
@@ -160,6 +188,11 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
+    // SONIC Ethernet (Phase F; ~20 MHz part on the Q700, no wire in v1).
+    st->sonic = sonic_init(cp);
+    sonic_set_irq_callback(st->sonic, q700_sonic_irq, cfg);
+    sonic_set_memory_hooks(st->sonic, q700_sonic_mem_read, q700_sonic_mem_write, NULL);
+
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core until Phase D
     asc_set_mix(st->asc, ASC_MIX_CH_A);
     asc_set_irq_handler(st->asc, q700_asc_irq, cfg);
@@ -206,6 +239,8 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
         bool overlay = false;
         system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
         system_read_checkpoint_data(cp, st->mcu_regs, sizeof(st->mcu_regs));
+        system_read_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
+        system_read_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
         // The layout above armed the overlay; a post-overlay snapshot drops it.
         if (!overlay)
             mcu_set_overlay(cfg, false);
@@ -233,6 +268,17 @@ static const struct scsi_slot q700_scsi_slots[] = {
     {0},
 };
 
+// NuBus topology (ref §10.3): two sockets, D and E; the PDS is mechanically
+// aligned with slot E (a PDS card precludes a NuBus card there — not modeled
+// as a constraint in v1).  The built-in DAFB video is pseudo-slot 9: its
+// declaration ROM lives in the system ROM and its apertures are mapped
+// directly by the substrate, so it is not a card on this bus.
+static const nubus_slot_decl_t q700_nubus_slots[] = {
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {0},
+};
+
 static const mcu_board_desc_t q700_board_desc = {
     .chipset = "MCU+DAFB",
     .rom_base = 0x40000000u,
@@ -240,7 +286,7 @@ static const mcu_board_desc_t q700_board_desc = {
     .io_ranges = mcu_q700_io_ranges,
     .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
     .io_unmapped_read = 0,
-    .slots = NULL, // NuBus lands in Phase F
+    .slots = q700_nubus_slots,
     .bus_err_lo = 0xF1000000u,
     .bus_err_hi = 0xFEFFFFFFu,
     .via1_pa_model = 0xC0, // Q700 model sense (ref §7.4 [R])
@@ -273,7 +319,7 @@ const hw_profile_t machine_q700 = {
     .has_cdrom = true,
     .cdrom_id = 3,
 
-    .nubus_slots = NULL, // Phase F: slots D/E + built-in video slot 9
+    .nubus_slots = q700_nubus_slots,
 
     .substrate = &mcu_substrate,
     .board = &q700_board,

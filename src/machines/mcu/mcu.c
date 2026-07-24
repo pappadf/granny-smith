@@ -24,11 +24,13 @@
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
+#include "nubus.h"
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "sonic.h"
 #include "via.h"
 
 #include <assert.h>
@@ -75,10 +77,13 @@ static void mcu_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
 }
 
 // --- Ethernet MAC-address PROM ($50008000, ref §16 [R]) ---
-// Phase C: a fixed locally-administered address so reads are deterministic;
-// the Apple byte transform + checksum layout are verified in Phase F against
-// the DeclData/DeclNet/Sonic consumption.
-static const uint8_t mcu_mac_prom[8] = {0x02, 0x00, 0x00, 0x09, 0x07, 0x00, 0x00, 0x00};
+// The Apple presentation the SONIC driver consumes (SonicEnet.a @GetAddr):
+// bytes 0-5 hold the station address with each byte BIT-REVERSED (the
+// driver's NormAddr undoes it), and the XOR of all eight bytes must equal
+// $FF (checksum probed before the address is trusted).  The address here is
+// the locally-administered 02:00:00:09:07:01 → bit-reversed 40 00 00 90 E0
+// 80; byte 6 is zero and byte 7 makes the XOR come out to $FF.
+static const uint8_t mcu_mac_prom[8] = {0x40, 0x00, 0x00, 0x90, 0xE0, 0x80, 0x00, 0x4F};
 
 static uint8_t mcu_prom_read(config_t *cfg, uint32_t addr) {
     (void)cfg;
@@ -90,15 +95,31 @@ static void mcu_prom_write(config_t *cfg, uint32_t addr, uint8_t value) {
     LOG(2, "MAC PROM write $%X = $%02X ignored (read-only)", addr & 7u, value);
 }
 
-// --- SONIC ($5000A000) — Phase F device; accept-and-log stub until then ---
+// --- SONIC ($5000A000; 16-bit registers on 4-byte spacing, ref §16.2) ---
+// The register value rides the LOW half of the 32-bit slot ([R] — current
+// MAME maps it the same way); the engine byte-decomposes wider accesses, so
+// reads serve bytes 2-3 of each slot and a write COMMITS when byte 3
+// lands (the Quadra driver/tests use 32-bit accesses throughout — SonicEqu.a
+// SONIC32).  Bytes 0-1 read as zero and their writes are ignored.
 
 static uint8_t mcu_sonic_read(config_t *cfg, uint32_t addr) {
-    LOG(2, "SONIC read  $%03X (pc=%08X) -> 0 [stub until Phase F]", addr & 0xFFFu, cpu_get_pc(cfg->cpu));
-    return 0;
+    mcu_state_t *st = mcu_st(cfg);
+    uint32_t off = addr & 0xFFFu;
+    uint32_t byte = off & 3u;
+    if (byte < 2)
+        return 0;
+    uint16_t v = sonic_reg_read(st->sonic, off >> 2);
+    return (byte == 2) ? (uint8_t)(v >> 8) : (uint8_t)v;
 }
 
 static void mcu_sonic_write(config_t *cfg, uint32_t addr, uint8_t value) {
-    LOG(2, "SONIC write $%03X = $%02X (pc=%08X) [stub until Phase F]", addr & 0xFFFu, value, cpu_get_pc(cfg->cpu));
+    mcu_state_t *st = mcu_st(cfg);
+    uint32_t off = addr & 0xFFFu;
+    uint32_t byte = off & 3u;
+    if (byte == 2)
+        st->sonic_byte2 = value;
+    else if (byte == 3)
+        sonic_reg_write(st->sonic, off >> 2, (uint16_t)((st->sonic_byte2 << 8) | value));
 }
 
 // --- NCR 53C96 ($5000F000; registers on a 16-byte spacing, ref §6.4) ---
@@ -125,15 +146,31 @@ static void mcu_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
     scsi_53c96_pdma_write8(mcu_st(cfg)->scsi96, value);
 }
 
-// --- YANCC ($50028000) — Phase F bridge; accept-and-log stub until then ---
+// --- YANCC ($50028000) — the system-bus/NuBus bridge register file.
+// The register address is Apple-documented, its width and bits are not
+// (ref §10.2 [A][U]): same latch-and-log policy as the MCU file, so the
+// ROM's/driver's access sequence is recoverable as an RE artifact.  Actual
+// NuBus transactions run through the memory map + nubus core directly; the
+// write-buffer/error machinery this register controls is not modeled yet.
 
 static uint8_t mcu_yancc_read(config_t *cfg, uint32_t addr) {
-    LOG(2, "YANCC read  $%03X (pc=%08X) -> 0 [stub until Phase F]", addr & 0xFFFu, cpu_get_pc(cfg->cpu));
-    return 0;
+    mcu_state_t *st = mcu_st(cfg);
+    uint32_t off = addr & 0x1FFFu;
+    uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;
+    uint32_t v = st->yancc_regs[idx];
+    if (!(st->yancc_touched & (1ull << (idx & 63))))
+        LOG(2, "YANCC read  $%04X -> $%08X (pc=%08X)", off, v, cpu_get_pc(cfg->cpu));
+    return (uint8_t)(v >> (8 * (3 - (off & 3))));
 }
 
 static void mcu_yancc_write(config_t *cfg, uint32_t addr, uint8_t value) {
-    LOG(2, "YANCC write $%03X = $%02X (pc=%08X) [stub until Phase F]", addr & 0xFFFu, value, cpu_get_pc(cfg->cpu));
+    mcu_state_t *st = mcu_st(cfg);
+    uint32_t off = addr & 0x1FFFu;
+    uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;
+    uint32_t shift = 8 * (3 - (off & 3));
+    st->yancc_regs[idx] = (st->yancc_regs[idx] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    LOG(2, "YANCC write $%04X = $%08X (pc=%08X)", off, st->yancc_regs[idx], cpu_get_pc(cfg->cpu));
+    st->yancc_touched |= 1ull << (idx & 63);
 }
 
 // ============================================================
@@ -185,6 +222,35 @@ void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, v
     io->mirror_mask = desc->io_mirror_mask;
     io->cfg = cfg;
     io->unmapped_read = desc->io_unmapped_read;
+}
+
+// ============================================================
+// /SLOTIRQ aggregation (ref §13.3)
+// ============================================================
+// The slot/video/Ethernet request lines land on VIA2 PA0-PA6 (active-low)
+// and OR into the active-low /SLOTIRQ on VIA2 CA1.  Every source funnels
+// through here so the aggregate stays consistent regardless of origin
+// (DAFB video = PA6, SONIC = PA0, NuBus slots A-E = PA1-PA5).
+
+void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
+    mcu_state_t *st = mcu_st(cfg);
+    if (pa_bit < 0 || pa_bit > 6)
+        return;
+    uint8_t bit = (uint8_t)(1u << pa_bit);
+    st->slot_pa_mask = active ? (st->slot_pa_mask | bit) : (st->slot_pa_mask & (uint8_t)~bit);
+    via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low line
+    via_input_c(cfg->via2, /*CA1*/ 0, 0, st->slot_pa_mask ? 0 : 1); // /SLOTIRQ = OR of sources
+}
+
+// substrate.nubus_slot_irq: a NuBus card's /NMRQ maps to VIA2 PA(slot-9)
+// (slot $A→PA1 .. $E→PA5; ref §13.3).  Slot 9 is the built-in video and
+// never arrives here — DAFB drives PA6 directly through the aggregate.
+static void mcu_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    (void)umbrella_edge; // CA1 derives from the family aggregate, not the bus's own OR
+    int pa_bit = slot - 0x9;
+    if (pa_bit < 1 || pa_bit > 5)
+        return;
+    mcu_slot_irq_source(cfg, pa_bit, active);
 }
 
 // ============================================================
@@ -376,6 +442,17 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
     // memory layout, checkpoint restore.
     board->build_devices(cfg, cp);
 
+    // NuBus (Phase F): seat the declared slot cards; their windows layer
+    // over the bus-error range, and slot IRQs route through the substrate's
+    // nubus_slot_irq into the VIA2 PA aggregate.
+    cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
+    // Project the cards' host regions (VRAM, declaration ROMs) into the
+    // page table so CPU accesses resolve with the MMU off; the bus
+    // resolver serves the 040 walker when it's on.  No Mode-24 aliases —
+    // this family's ROM and System are 32-bit clean, and a low alias would
+    // shadow RAM at $00s00000 on large-memory configurations.
+    mmu_host_regions_fill_pages(st->bus_mmu, mac030_fill_page, /*mode24_alias*/ false);
+
     mac030_glue_finish(cfg, cp);
 }
 
@@ -397,6 +474,10 @@ static void mcu_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     mcu_state_t *st = mcu_st(cfg);
     if (st) {
+        if (st->sonic) {
+            sonic_delete(st->sonic);
+            st->sonic = NULL;
+        }
         if (st->scsi96) {
             scsi_53c96_delete(st->scsi96);
             st->scsi96 = NULL;
@@ -483,10 +564,14 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     asc_checkpoint(st->asc, cp);
     floppy_checkpoint(st->floppy, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
+    sonic_checkpoint(st->sonic, cp);
     dafb_checkpoint(st->dafb, cp);
-    // Substrate-private state: overlay flag + MCU register file.
+    // Substrate-private state: overlay flag + MCU/YANCC register files +
+    // the /SLOTIRQ aggregate mask.
     system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
     system_write_checkpoint_data(cp, st->mcu_regs, sizeof(st->mcu_regs));
+    system_write_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
+    system_write_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
 }
 
 // VBL tick: VIA1 CA1 pulse (the 60.15 Hz VIA2-PB7 chain, functionally;
@@ -495,6 +580,7 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 static void mcu_trigger_vbl(config_t *cfg) {
     via_input_c(cfg->via1, 0, 0, 0);
     via_input_c(cfg->via1, 0, 0, 1);
+    nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
 }
 
@@ -511,6 +597,7 @@ const machine_substrate_t mcu_substrate = {
     .checkpoint_save = mcu_checkpoint_save,
     .update_ipl = mac030_glue_update_ipl, // VIA1→1, VIA2→2, SCC→4, NMI→7 (ref §13)
     .trigger_vbl = mcu_trigger_vbl,
+    .nubus_slot_irq = mcu_nubus_slot_irq, // slots → VIA2 PA1-PA5 + /SLOTIRQ aggregate
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,
     .input_key = mac_input_key,

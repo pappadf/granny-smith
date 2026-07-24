@@ -38,11 +38,17 @@ struct floppy;
 struct mmu_state;
 struct nubus_slot_decl;
 struct scsi_53c96;
+struct sonic;
 
 // Number of longword slots kept for the accept-and-log MCU register file
 // ($5000E000; ref §8.2 — offsets/masks unresolved, so writes latch and read
 // back verbatim while a log records the ROM's access sequence).
 #define MCU_REG_COUNT 64
+
+// Same policy for the YANCC system-bus/NuBus bridge register file
+// ($50028000; ref §10.2 [A][U] — the address is Apple-documented, the bit
+// layout is not, so writes latch and read back under a log).
+#define MCU_YANCC_REG_COUNT 64
 
 // The MCU-family board descriptor: per-machine hardware data consumed by the
 // shared substrate (parallel to mac030_board_desc_t).
@@ -73,6 +79,8 @@ typedef struct mcu_state {
     struct floppy *floppy;
     struct dafb *dafb; // DAFB video (register stub until Phase D)
     struct scsi_53c96 *scsi96; // NCR 53C96 (bus/targets attach in Phase E)
+    struct sonic *sonic; // DP83932 SONIC Ethernet (Phase F; no wire in v1)
+    uint8_t sonic_byte2; // high byte latched from an in-flight register write
 
     bool rom_overlay; // true = ROM mapped at $00000000 (access-triggered drop)
     struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs live on the CPU
@@ -84,6 +92,15 @@ typedef struct mcu_state {
     // Accept-and-log MCU register file ($5000E000, ref §8.2 [U]).
     uint32_t mcu_regs[MCU_REG_COUNT];
     uint64_t mcu_touched; // log-once bitmap (bit n = slot n already logged)
+
+    // Accept-and-log YANCC bridge register file ($50028000, ref §10.2 [U]).
+    uint32_t yancc_regs[MCU_YANCC_REG_COUNT];
+    uint64_t yancc_touched; // log-once bitmap, parallel to mcu_touched
+
+    // /SLOTIRQ aggregate (ref §13.3): bit n set = the VIA2 PA n source is
+    // asserting (Ethernet 0, NuBus A-E 1-5, built-in video 6).  CA1 follows
+    // the OR of the mask.
+    uint8_t slot_pa_mask;
 
     memory_interface_t io_interface; // registered at the $50000000 island
     memory_interface_t overlay_interface; // ROM-aperture trigger while overlay on
@@ -105,5 +122,9 @@ void mcu_memory_layout(config_t *cfg);
 
 // Overlay control (checkpoint restore / tests); layout arms it by default.
 void mcu_set_overlay(config_t *cfg, bool on);
+
+// Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity):
+// sets the active-low PA input and re-resolves the CA1 aggregate (ref §13.3).
+void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active);
 
 #endif // GS_MACHINES_MCU_H

@@ -195,24 +195,15 @@ static inline __attribute__((always_inline)) uint8_t *phys_to_host(mmu_state_t *
         uint32_t offset = (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
         return mmu->physical_rom + offset;
     }
-    // Range checks use (addr - base < size) so they don't wrap when base+size
-    // would exceed UINT32_MAX (defensive; SE/30 placements are well below the
-    // wrap, but VROM at $FExxxxxx is close enough to flag).
-    if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
-        (phys_addr - mmu->vram_phys_base) < mmu->physical_vram_size)
-        return mmu->physical_vram + (phys_addr - mmu->vram_phys_base);
-    // VROM region (read-only video declaration ROM)
-    if (mmu->physical_vrom && phys_addr >= mmu->vrom_phys_base &&
-        (phys_addr - mmu->vrom_phys_base) < mmu->physical_vrom_size)
-        return mmu->physical_vrom + (phys_addr - mmu->vrom_phys_base);
-    // Alternate VRAM address (page-table-mapped I/O space)
-    if (mmu->vram_phys_alt && mmu->physical_vram && phys_addr >= mmu->vram_phys_alt &&
-        (phys_addr - mmu->vram_phys_alt) < mmu->physical_vram_size)
-        return mmu->physical_vram + (phys_addr - mmu->vram_phys_alt);
-    // Alternate VROM address (page-table-mapped I/O space)
-    if (mmu->vrom_phys_alt && mmu->physical_vrom && phys_addr >= mmu->vrom_phys_alt &&
-        (phys_addr - mmu->vrom_phys_alt) < mmu->physical_vrom_size)
-        return mmu->physical_vrom + (phys_addr - mmu->vrom_phys_alt);
+    // Host-backed regions (card VRAM, declaration ROMs, aliases) in
+    // registration order.  Range checks use (addr - base < size) so they
+    // don't wrap when base+size would exceed UINT32_MAX (VROM at $FExxxxxx
+    // is close enough to flag).
+    for (int i = 0; i < mmu->host_region_count; i++) {
+        const mmu_host_region_t *r = &mmu->host_regions[i];
+        if (phys_addr >= r->phys_base && (phys_addr - r->phys_base) < r->size)
+            return r->host + (phys_addr - r->phys_base);
+    }
     return NULL;
 }
 
@@ -231,21 +222,12 @@ static inline __attribute__((always_inline)) bool phys_is_writable(mmu_state_t *
     // ROM mirror region is read-only
     if (mmu->physical_rom && phys_addr >= mmu->rom_phys_base && phys_addr < mmu->rom_region_end)
         return false;
-    if (mmu->physical_vram && phys_addr >= mmu->vram_phys_base &&
-        (phys_addr - mmu->vram_phys_base) < mmu->physical_vram_size)
-        return true;
-    // VROM is read-only
-    if (mmu->physical_vrom && phys_addr >= mmu->vrom_phys_base &&
-        (phys_addr - mmu->vrom_phys_base) < mmu->physical_vrom_size)
-        return false;
-    // Alternate VRAM address is writable
-    if (mmu->vram_phys_alt && mmu->physical_vram && phys_addr >= mmu->vram_phys_alt &&
-        (phys_addr - mmu->vram_phys_alt) < mmu->physical_vram_size)
-        return true;
-    // Alternate VROM address is read-only
-    if (mmu->vrom_phys_alt && mmu->physical_vrom && phys_addr >= mmu->vrom_phys_alt &&
-        (phys_addr - mmu->vrom_phys_alt) < mmu->physical_vrom_size)
-        return false;
+    // Host-backed regions carry their own writability.
+    for (int i = 0; i < mmu->host_region_count; i++) {
+        const mmu_host_region_t *r = &mmu->host_regions[i];
+        if (phys_addr >= r->phys_base && (phys_addr - r->phys_base) < r->size)
+            return r->writable;
+    }
     return false;
 }
 
@@ -557,12 +539,62 @@ void mmu_delete(mmu_state_t *mmu) {
 }
 
 // Register a VRAM region so table walks and TT matches can resolve it
-void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size) {
-    if (!mmu)
+void mmu_register_host_region(mmu_state_t *mmu, uint8_t *host, uint32_t phys_base, uint32_t size, bool writable) {
+    if (!mmu || !host || size == 0)
         return;
-    mmu->physical_vram = vram;
-    mmu->vram_phys_base = phys_base;
-    mmu->physical_vram_size = size;
+    // Re-registration of the same physical window replaces the entry (a
+    // machine re-running its layout must not accumulate duplicates).
+    for (int i = 0; i < mmu->host_region_count; i++) {
+        mmu_host_region_t *r = &mmu->host_regions[i];
+        if (r->phys_base == phys_base && r->size == size) {
+            r->host = host;
+            r->writable = writable;
+            return;
+        }
+    }
+    if (mmu->host_region_count >= MMU_HOST_REGION_MAX) {
+        LOG(0, "mmu_register_host_region: list full (%d); region $%08X+$%X dropped", MMU_HOST_REGION_MAX, phys_base,
+            size);
+        return;
+    }
+    mmu_host_region_t *r = &mmu->host_regions[mmu->host_region_count++];
+    r->host = host;
+    r->phys_base = phys_base;
+    r->size = size;
+    r->writable = writable;
+    r->alias = false;
+}
+
+// Walk the host-region list, projecting each region (and optionally its
+// Mode-24 slot alias) into the CPU page table via the machine's fill hook.
+void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool mode24_alias) {
+    if (!mmu || !fill)
+        return;
+    for (int i = 0; i < mmu->host_region_count; i++) {
+        const mmu_host_region_t *r = &mmu->host_regions[i];
+        if (r->alias)
+            continue; // resolver-only: device windows may overlap the alias range
+        uint32_t pages = r->size >> PAGE_SHIFT;
+        uint32_t start = r->phys_base >> PAGE_SHIFT;
+        for (uint32_t p = 0; p < pages && (int)(start + p) < g_page_count; p++)
+            fill(start + p, r->host + (p << PAGE_SHIFT), r->writable);
+        // Mode-24 (24-bit Memory Manager) slot window: slot s ($9..$E) has a
+        // 1 MB region at $00s00000 mirroring the start of its 32-bit slot
+        // space at $Fs000000 (GLUE/BBU decode both to the same slot).
+        if (mode24_alias && r->writable) {
+            uint32_t high = r->phys_base & 0xFF000000u;
+            if (high >= 0xF9000000u && high <= 0xFE000000u) {
+                int slot = (int)((r->phys_base >> 24) & 0xFu);
+                uint32_t alias_bytes = 0x100000u; // 1 MB Mode-24 slot window
+                if (alias_bytes > r->size)
+                    alias_bytes = r->size;
+                uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
+                uint32_t start24 = ((uint32_t)slot << 20) >> PAGE_SHIFT; // $00s00000
+                for (uint32_t p = 0; p < alias_pages && (int)(start24 + p) < g_page_count; p++)
+                    fill(start24 + p, r->host + (p << PAGE_SHIFT), true);
+            }
+        }
+    }
 }
 
 void mmu_set_ram_bank_b(mmu_state_t *mmu, uint32_t ram_a_size, uint8_t *bank_b_host, uint32_t bank_b_phys_base,
@@ -578,15 +610,6 @@ void mmu_set_ram_bank_b(mmu_state_t *mmu, uint32_t ram_a_size, uint8_t *bank_b_h
     // contiguous RAM size at Bank A so any stray `phys < physical_ram_size`
     // path can only ever reach Bank A.
     mmu->physical_ram_size = ram_a_size;
-}
-
-// Register a VROM region so table walks and TT matches can resolve it
-void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint32_t size) {
-    if (!mmu)
-        return;
-    mmu->physical_vrom = vrom;
-    mmu->vrom_phys_base = phys_base;
-    mmu->physical_vrom_size = size;
 }
 
 // Attach a 68040 register file (owned by the CPU) to this bus-side MMU state.
@@ -653,41 +676,28 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
                             bool writable) {
     (void)m; // forwarder uses g_mmu in v1
+    (void)name; // regions are matched by physical window, not name
     if (!g_mmu)
         return;
-    // V1 limitation: there's exactly one VRAM slot and one VROM slot in
-    // mmu_state_t. Warn loudly if a caller's host region would overwrite
-    // a populated slot — without the warning, a second call silently
-    // detaches the previous machine layout.
-    if (writable) {
-        if (g_mmu->physical_vram)
-            LOG(1, "memory_map_host_region: '%s' overwrites existing VRAM slot (phys $%08X size $%X)",
-                name ? name : "?", g_mmu->vram_phys_base, g_mmu->physical_vram_size);
-        mmu_register_vram(g_mmu, host_ptr, phys_base, size);
-    } else {
-        if (g_mmu->physical_vrom)
-            LOG(1, "memory_map_host_region: '%s' overwrites existing VROM slot (phys $%08X size $%X)",
-                name ? name : "?", g_mmu->vrom_phys_base, g_mmu->physical_vrom_size);
-        mmu_register_vrom(g_mmu, host_ptr, phys_base, size);
-    }
+    mmu_register_host_region(g_mmu, host_ptr, phys_base, size, writable);
 }
 
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {
     (void)m;
     if (!g_mmu)
         return;
-    if (g_mmu->physical_vram && original_phys_base == g_mmu->vram_phys_base) {
-        g_mmu->vram_phys_alt = alias_phys_base;
-        return;
+    // Match by physical base and clone the region at the alias address.
+    // The clone is flagged `alias`: it resolves through phys_to_host but is
+    // never page-filled (mmu_host_regions_fill_pages skips it), preserving
+    // the pre-list `vram_phys_alt`/`vrom_phys_alt` semantics.
+    for (int i = 0; i < g_mmu->host_region_count; i++) {
+        const mmu_host_region_t *r = &g_mmu->host_regions[i];
+        if (r->phys_base == original_phys_base) {
+            mmu_register_host_region(g_mmu, r->host, alias_phys_base, r->size, r->writable);
+            g_mmu->host_regions[g_mmu->host_region_count - 1].alias = true;
+            return;
+        }
     }
-    if (g_mmu->physical_vrom && original_phys_base == g_mmu->vrom_phys_base) {
-        g_mmu->vrom_phys_alt = alias_phys_base;
-        return;
-    }
-    // Unrecognised original — silently ignore in v1; once the storage
-    // refactor lands and host regions become a list, we'll match by phys
-    // base instead of by named slot. Log so callers know their alias was
-    // dropped on the floor.
     LOG(1, "memory_map_host_region_alias: no host region at phys $%08X; alias $%08X dropped", original_phys_base,
         alias_phys_base);
 }
