@@ -104,6 +104,15 @@ static void q700_scsi96_irq(void *context, bool active) {
     via_input_c(cfg->via2, 1, 1, active ? 0 : 1);
 }
 
+// DAFB video interrupt → VIA2 PA6 (active-low) + the /SLOTIRQ aggregate on
+// CA1 (ref §11.18/§13.3).  Level-sensitive; video is the only slot-path
+// source until NuBus lands in Phase F, so CA1 mirrors it directly.
+static void q700_dafb_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    via_input(cfg->via2, 0, 6, active ? 0 : 1);
+    via_input_c(cfg->via2, 0, 0, active ? 0 : 1);
+}
+
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
@@ -158,6 +167,8 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q700 maxed; base 512 KiB later)
     assert(st->dafb != NULL);
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
+    dafb_set_irq_callback(st->dafb, q700_dafb_irq, cfg);
+    dafb_set_monitor_sense(st->dafb, 6); // 13" 640×480 AppleColor RGB
 
     // Bus-side physical resolver for the 040 walker: RAM at 0, the 1 MiB ROM
     // mirroring through the aperture.  ram_size_max is the full 1 GiB RAM

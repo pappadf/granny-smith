@@ -489,12 +489,18 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 }
 
 // VBL tick: VIA1 CA1 pulse (the 60.15 Hz VIA2-PB7 chain, functionally;
-// Phase D rederives video interrupts from programmed Swatch state instead
-// of this fixed tick — Traps 9/10 apply to the Swatch IRQs, not this line).
+// video interrupts come from the Swatch's programmed timing in dafb.c —
+// Traps 9/10 apply to the Swatch IRQs, not this line).
 static void mcu_trigger_vbl(config_t *cfg) {
     via_input_c(cfg->via1, 0, 0, 0);
     via_input_c(cfg->via1, 0, 0, 1);
     image_tick_all(cfg);
+}
+
+// Primary display: the DAFB scanout (substrate .display hook).
+static struct display *mcu_display(config_t *cfg) {
+    mcu_state_t *st = mcu_st(cfg);
+    return (st && st->dafb) ? dafb_display(st->dafb) : NULL;
 }
 
 const machine_substrate_t mcu_substrate = {
@@ -509,6 +515,7 @@ const machine_substrate_t mcu_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
+    .display = mcu_display,
 };
 
 // Shared layout entry for the machine files (called from build_devices once

@@ -65,6 +65,8 @@ void mmu040_set_tc(mmu040_state_t *mmu, uint32_t value) {
         return;
     mmu->tc = value & (TC040_E | TC040_P);
     mmu->enabled = (mmu->tc & TC040_E) != 0;
+    LOG(2, "mmu040 TC <- $%04X (enabled=%d) urp=$%08X srp=$%08X dtt0=$%08X dtt1=$%08X itt0=$%08X itt1=$%08X", mmu->tc,
+        mmu->enabled ? 1 : 0, mmu->urp, mmu->srp, mmu->dtt0, mmu->dtt1, mmu->itt0, mmu->itt1);
     if (mmu->bus)
         mmu->bus->enabled = mmu->enabled;
     mmu040_invalidate_tlb(mmu);
@@ -75,6 +77,7 @@ void mmu040_set_ttr(mmu040_state_t *mmu, uint32_t *reg, uint32_t value) {
     if (!mmu || !reg)
         return;
     *reg = value & TT040_WRITE_MASK;
+    LOG(2, "mmu040 TTR <- $%08X (raw $%08X)", *reg, value);
     mmu040_invalidate_tlb(mmu);
 }
 
