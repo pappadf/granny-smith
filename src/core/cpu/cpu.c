@@ -10,6 +10,7 @@
 #include "fpu.h"
 #include "log.h"
 #include "memory.h"
+#include "mmu040.h"
 #include "object.h"
 #include "scheduler.h"
 #include "system.h"
@@ -23,9 +24,10 @@ extern const class_desc_t fpu_class;
 extern const class_desc_t mmu_class;
 LOG_USE_CATEGORY_NAME("cpu");
 
-// Declare decoder functions (defined in cpu_68000.c and cpu_68030.c)
+// Declare decoder functions (defined in cpu_68000.c, cpu_68030.c, cpu_68040.c)
 void cpu_run_68000(cpu_t *restrict cpu, uint32_t *instructions);
 void cpu_run_68030(cpu_t *restrict cpu, uint32_t *instructions);
+void cpu_run_68040(cpu_t *restrict cpu, uint32_t *instructions);
 
 // === Public Accessors ===
 
@@ -126,11 +128,11 @@ void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value) {
 }
 
 // Get the complete status register (includes CCR and system byte).
-// On 68030, includes M bit (bit 12) and T0 bit (bit 14).
+// On 68030/68040, includes M bit (bit 12) and T0 bit (bit 14).
 uint16_t cpu_get_sr(cpu_t *restrict cpu) {
     uint16_t sr = read_ccr(cpu);
 
-    if (cpu->cpu_model == CPU_MODEL_68030) {
+    if (cpu->cpu_model >= CPU_MODEL_68030) {
         sr |= (cpu->trace >> 1 & 1) << 15; // T1
         sr |= (cpu->trace & 1) << 14; // T0
         if (cpu->m)
@@ -236,9 +238,21 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
         // 68030-specific registers default to zero (VBR=0, CACR=0, etc.)
     }
 
-    // Allocate FPU state for 68030 model
-    if (cpu->cpu_model == CPU_MODEL_68030) {
+    // Allocate FPU state for models that carry one (68030 paired 68882,
+    // 68040 on-chip FPU — the same datapath serves both, see fpu.c).
+    if (cpu_has_fpu(cpu->cpu_model)) {
         cpu->fpu = fpu_init();
+    }
+
+    // The 68040 MMU is on-chip: the CPU owns its state (created here, freed
+    // in cpu_delete), unlike the 030 PMMU which machine code constructs and
+    // attaches via cpu_attach_mmu.  MOVEC in cpu_68040.c reaches it through
+    // cpu->mmu.  On checkpoint restore the register file follows the cpu_t
+    // blob in the stream (see cpu_checkpoint).
+    if (cpu->cpu_model == CPU_MODEL_68040) {
+        cpu->mmu = mmu040_init();
+        if (checkpoint && cpu->mmu)
+            system_read_checkpoint_data(checkpoint, cpu->mmu, sizeof(mmu040_state_t));
     }
 
     // Object-tree binding — instance_data on the cpu node is the cpu_t
@@ -304,6 +318,12 @@ void cpu_delete(cpu_t *cpu) {
         fpu_free((fpu_state_t *)cpu->fpu);
         cpu->fpu = NULL;
     }
+    // The 040 MMU is CPU-owned (see cpu_init); the 030 PMMU belongs to the
+    // machine and must not be freed here.
+    if (cpu->cpu_model == CPU_MODEL_68040 && cpu->mmu) {
+        mmu040_delete((mmu040_state_t *)cpu->mmu);
+        cpu->mmu = NULL;
+    }
     free(cpu);
 }
 
@@ -313,13 +333,19 @@ void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint) {
         return;
     // Write contiguous plain-data portion of cpu_t in one operation
     system_write_checkpoint_data(checkpoint, cpu, sizeof(cpu_t));
+    // 68040: the on-chip MMU register file follows the cpu_t blob (the 030
+    // PMMU is machine-owned and checkpointed by the machine instead).
+    if (cpu->cpu_model == CPU_MODEL_68040 && cpu->mmu)
+        system_write_checkpoint_data(checkpoint, cpu->mmu, sizeof(mmu040_state_t));
 }
 
 // === Runtime Dispatch ===
 
 // Run the appropriate decoder for the CPU model
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
-    if (cpu->cpu_model == CPU_MODEL_68030)
+    if (cpu->cpu_model == CPU_MODEL_68040)
+        cpu_run_68040(cpu, instructions);
+    else if (cpu->cpu_model == CPU_MODEL_68030)
         cpu_run_68030(cpu, instructions);
     else
         cpu_run_68000(cpu, instructions);

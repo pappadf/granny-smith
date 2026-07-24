@@ -660,7 +660,7 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
     }
     if (!cpu->supervisor) {
         cpu->usp = cpu->a[7];
-        cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
+        cpu->a[7] = (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
         cpu->m = 0; // exceptions always switch to ISP (M=0)
         // Mode transition: point the active SoA at the supervisor tables so
@@ -668,14 +668,14 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         // supervisor MMU view, not the user one that was in effect.
         g_active_read = g_supervisor_read;
         g_active_write = g_supervisor_write;
-    } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
+    } else if (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) {
         // In supervisor+master mode: switch to ISP for the exception frame
         cpu->msp = cpu->a[7];
         cpu->a[7] = cpu->ssp;
         cpu->m = 0;
     }
 
-    if (cpu->cpu_model == CPU_MODEL_68030) {
+    if (cpu->cpu_model >= CPU_MODEL_68030) {
         // Determine frame format from exception vector number
         uint32_t vec_num = vector / 4;
         int format = 0;
@@ -711,6 +711,28 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
     }
 }
 
+// Push the MC68040 format $7 access-error frame (30 words, MC68040UM §8.4.4).
+// Our memory model completes or aborts each access atomically, so there is
+// never a pending writeback to expose: WB1S/WB2S/WB3S are pushed invalid
+// (V=0) and a handler that fixes the fault has nothing to complete — its RTE
+// simply resumes at the stacked PC.  SSW carries ATC (MMU descriptor fault vs
+// bus timeout), the read/write direction, and the transfer-modifier field
+// (the FC the access was issued with, same source as the $B frame's SSW).
+static inline void push_access_error_frame_040(cpu_t *restrict cpu, uint32_t saved_pc, uint16_t saved_sr,
+                                               uint32_t fault_addr, uint32_t rw, uint16_t fc, bool atc) {
+    cpu->a[7] -= 60;
+    uint32_t frame = cpu->a[7];
+    for (int i = 0; i < 60; i += 4)
+        memory_write_uint32(frame + i, 0);
+    memory_write_uint16(frame + 0x00, saved_sr);
+    memory_write_uint32(frame + 0x02, saved_pc);
+    memory_write_uint16(frame + 0x06, 0x7008); // format $7, vector 2 (access error)
+    memory_write_uint32(frame + 0x08, fault_addr); // effective address
+    uint16_t ssw = (uint16_t)((atc ? (1u << 10) : 0) | ((rw ? 1u : 0) << 8) | (fc & 7u));
+    memory_write_uint16(frame + 0x0C, ssw);
+    memory_write_uint32(frame + 0x14, fault_addr); // fault address
+}
+
 // Bus error with retry semantics for MMU-enabled OS kernels (A/UX).
 // Saves faulting PC (instruction_pc) so the handler's RTE restarts the
 // instruction after mapping the page.  The instruction has already completed
@@ -725,14 +747,14 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
     // Switch to supervisor mode / ISP
     if (!cpu->supervisor) {
         cpu->usp = cpu->a[7];
-        cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
+        cpu->a[7] = (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
         cpu->m = 0;
         // Mode transition: repoint active SoA at the supervisor tables so
         // the frame push and vector fetch below walk the supervisor MMU view.
         g_active_read = g_supervisor_read;
         g_active_write = g_supervisor_write;
-    } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
+    } else if (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) {
         cpu->msp = cpu->a[7];
         cpu->a[7] = cpu->ssp;
         cpu->m = 0;
@@ -780,6 +802,33 @@ static __attribute__((noinline, cold)) void exception_bus_error_retry(cpu_t *res
         if (saved_pc != faulting_pc)
             cpu->last_bus_error_pc = 0;
         exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0, 0);
+        return;
+    }
+
+    // MC68040 access error: format $7 frame with retry semantics (saved_pc =
+    // faulting instruction; the handler fixes the mapping and its RTE
+    // restarts the instruction — the 040 analogue of the $B retry below).
+    if (cpu->cpu_model >= CPU_MODEL_68040) {
+        push_access_error_frame_040(cpu, saved_pc, saved_sr, fault_addr, rw, fc, g_bus_error_is_pmmu);
+        if (g_bus_error_pending) {
+            cpu->halted = 1;
+            g_bus_error_pending = false;
+            if (g_bus_error_instr_ptr)
+                *g_bus_error_instr_ptr = 0;
+            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 1);
+            return;
+        }
+        cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+        if (g_bus_error_pending) {
+            cpu->halted = 1;
+            g_bus_error_pending = false;
+            if (g_bus_error_instr_ptr)
+                *g_bus_error_instr_ptr = 0;
+            exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 2);
+            return;
+        }
+        cpu->trace = 0;
+        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 0);
         return;
     }
 
@@ -861,14 +910,14 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // Switch to supervisor mode / ISP
     if (!cpu->supervisor) {
         cpu->usp = cpu->a[7];
-        cpu->a[7] = (cpu->m && cpu->cpu_model == CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
+        cpu->a[7] = (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) ? cpu->msp : cpu->ssp;
         cpu->supervisor = 1;
         cpu->m = 0;
         // Mode transition: repoint active SoA at the supervisor tables so
         // the frame push and vector fetch below walk the supervisor MMU view.
         g_active_read = g_supervisor_read;
         g_active_write = g_supervisor_write;
-    } else if (cpu->m && cpu->cpu_model == CPU_MODEL_68030) {
+    } else if (cpu->m && cpu->cpu_model >= CPU_MODEL_68030) {
         cpu->msp = cpu->a[7];
         cpu->a[7] = cpu->ssp;
         cpu->m = 0;
@@ -919,6 +968,19 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
         return;
     }
 
+    // MC68040 access error: format $7 frame with skip semantics (saved_pc =
+    // next instruction; the deferred fault is delivered after the faulting
+    // instruction completed, matching the $A path below).
+    if (cpu->cpu_model >= CPU_MODEL_68040) {
+        push_access_error_frame_040(cpu, saved_pc, saved_sr, fault_addr, rw, fc, g_bus_error_is_pmmu);
+        cpu->pc = memory_read_uint32(cpu->vbr + 0x008);
+        cpu->trace = 0;
+        if (saved_pc != faulting_pc)
+            cpu->last_bus_error_pc = 0;
+        exc_trace_record(0x008, faulting_pc, saved_pc, fault_addr, rw, cpu->vbr, saved_sr, 0x7, 0);
+        return;
+    }
+
     // Push 68030 Format $B (long bus cycle fault) frame: 46 words = 92 bytes.
     // FC comes from g_bus_error_fc (set by the slow path when raising the
     // fault) so the frame reflects the FC the access was actually issued
@@ -964,11 +1026,12 @@ static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
 }
 
 // Update full status register including supervisor mode, M bit, and interrupt mask.
-// On 68030, handles ISP/MSP switching when M bit changes and updates SoA active pointers.
+// On 68030/68040, handles ISP/MSP switching when M bit changes and updates SoA
+// active pointers.
 static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     bool new_s = (sr >> 13) & 1;
 
-    if (cpu->cpu_model == CPU_MODEL_68030) {
+    if (cpu->cpu_model >= CPU_MODEL_68030) {
         bool old_s = cpu->supervisor;
         bool new_m = (sr >> 12) & 1;
         if (cpu->supervisor) {
