@@ -636,23 +636,68 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via2, cp);
     adb_checkpoint(st->adb, cp);
     mac_checkpoint_save_images(cfg, cp);
+    // Device order mirrors the build_devices construction order exactly
+    // (q900_build_devices is the superset; the tower entries are guarded so
+    // the same save set serves the Q700's subset stream).
     if (cfg->scsi)
         scsi_checkpoint(cfg->scsi, cp);
+    scsi_53c96_checkpoint(st->scsi96, cp);
+    if (st->scsi_ext)
+        scsi_checkpoint(st->scsi_ext, cp);
+    if (st->scsi96_ext)
+        scsi_53c96_checkpoint(st->scsi96_ext, cp);
+    sonic_checkpoint(st->sonic, cp);
     asc_checkpoint(st->asc, cp);
     floppy_checkpoint(st->floppy, cp);
-    scsi_53c96_checkpoint(st->scsi96, cp);
-    sonic_checkpoint(st->sonic, cp);
+    if (st->caboose)
+        egret_checkpoint(st->caboose, cp);
+    if (st->scc_iop)
+        iop_checkpoint(st->scc_iop, cp);
+    if (st->swim_iop)
+        iop_checkpoint(st->swim_iop, cp);
     dafb_checkpoint(st->dafb, cp);
-    // Tower devices (caboose/IOPs/external SCSI) are NOT checkpointed yet —
-    // their inits run with cp=NULL on restore, so the stream stays aligned
-    // with this save set.  Phase I's save-state pass owns full coverage
-    // (alongside the pre-existing q700 asc/floppy-vs-scsi96 ordering debt).
     // Substrate-private state: overlay flag + MCU/YANCC register files +
-    // the /SLOTIRQ aggregate mask.
+    // the /SLOTIRQ aggregate mask + the in-flight SONIC write latch + the
+    // tower wire-OR IRQ masks (zero on the Q700).
     system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
     system_write_checkpoint_data(cp, st->mcu_regs, sizeof(st->mcu_regs));
     system_write_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
     system_write_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
+    system_write_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
+    system_write_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));
+    system_write_checkpoint_data(cp, &st->scsi_irq_or, sizeof(st->scsi_irq_or));
+}
+
+// Restore the substrate-private checkpoint tail (mirrors the tail writes in
+// mcu_checkpoint_save) and re-drive the derived interrupt lines.  Called at
+// the end of each board's build_devices on the restore path, after the
+// memory layout armed the overlay and parked the VIA input lines at idle.
+void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
+    mcu_state_t *st = mcu_st(cfg);
+    bool overlay = false;
+    system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
+    system_read_checkpoint_data(cp, st->mcu_regs, sizeof(st->mcu_regs));
+    system_read_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
+    system_read_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
+    system_read_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
+    system_read_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));
+    system_read_checkpoint_data(cp, &st->scsi_irq_or, sizeof(st->scsi_irq_or));
+    // The layout armed the overlay; a post-overlay snapshot drops it.
+    if (!overlay)
+        mcu_set_overlay(cfg, false);
+    // Re-drive the /SLOTIRQ PA lines + the CA1 aggregate from the restored
+    // mask (sources 0-6; build parked them at the inactive level).
+    for (int bit = 0; bit <= 6; bit++)
+        via_input(cfg->via2, 0, bit, (st->slot_pa_mask >> bit) & 1 ? 0 : 1);
+    via_input_c(cfg->via2, 0, 0, st->slot_pa_mask ? 0 : 1);
+    // Tower wire-ORs: VIA2 CB2 (dual 53C96) and the level-4 SCC source
+    // (chip INT | SCC IOP host INT) resume at their save-time levels.
+    if (st->scsi96_ext)
+        via_input_c(cfg->via2, 1, 1, st->scsi_irq_or ? 0 : 1);
+    if (st->scc_iop)
+        mac030_glue_update_ipl(cfg, MAC030_GLUE_IRQ_SCC, st->scc_irq_or != 0);
+    mmu_invalidate_tlb(st->bus_mmu);
+    via_redrive_outputs(cfg->via1);
 }
 
 // VBL tick: VIA1 CA1 pulse (the 60.15 Hz VIA2-PB7 chain, functionally;

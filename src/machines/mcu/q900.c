@@ -224,9 +224,8 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // External SCSI bus: electrically isolated second 53C96 (ref §12.1).
     // No default devices in v1 — selections time out like an empty chain.
-    // (Not checkpointed yet — Phase I owns tower save-state coverage.)
-    st->scsi_ext = scsi_init(NULL, NULL);
-    st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, NULL);
+    st->scsi_ext = scsi_init(NULL, cp);
+    st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96_ext, q900_scsi96_ext_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96_ext, st->scsi_ext);
 
@@ -245,7 +244,7 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // the ROM drives it through the same EgretMgr dispatch it uses for
     // Egret8 — ChkFirmware branches on the box flag, not the chip).  ADB
     // stays NULL here: tower ADB belongs to the SWIM IOP.
-    st->caboose = egret_init(cfg->via1, cfg->rtc, NULL, cfg->scheduler, NULL);
+    st->caboose = egret_init(cfg->via1, cfg->rtc, NULL, cfg->scheduler, cp);
     assert(st->caboose != NULL);
 
     // The two Apple PIC/IOPs.  The host aperture layout matches the IIfx
@@ -253,9 +252,9 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // + firmware-behaviour models are reused as-is; only the base addresses
     // and IRQ routing differ.  Front-side devices ride the bypass windows.
     st->scc_iop =
-        iop_init(SccIopNum, scc_get_memory_interface(cfg->scc), cfg->scc, q900_scc_iop_irq, cfg, cfg->scheduler, NULL);
+        iop_init(SccIopNum, scc_get_memory_interface(cfg->scc), cfg->scc, q900_scc_iop_irq, cfg, cfg->scheduler, cp);
     st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(st->floppy), st->floppy, q900_swim_iop_irq, cfg,
-                            cfg->scheduler, NULL);
+                            cfg->scheduler, cp);
 
     st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q900 maxed)
     assert(st->dafb != NULL);
@@ -293,18 +292,8 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Slot probing bus-errors in the NuBus windows.
     memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
 
-    if (cp) {
-        // Restore substrate-private state saved by mcu_checkpoint_save.
-        bool overlay = false;
-        system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
-        system_read_checkpoint_data(cp, st->mcu_regs, sizeof(st->mcu_regs));
-        system_read_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
-        system_read_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
-        if (!overlay)
-            mcu_set_overlay(cfg, false);
-        mmu_invalidate_tlb(st->bus_mmu);
-        via_redrive_outputs(cfg->via1);
-    }
+    if (cp)
+        mcu_restore_private(cfg, cp);
 }
 
 // ============================================================

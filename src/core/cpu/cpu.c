@@ -22,6 +22,7 @@
 extern const class_desc_t cpu_class;
 extern const class_desc_t fpu_class;
 extern const class_desc_t mmu_class;
+extern const class_desc_t mmu040_class;
 LOG_USE_CATEGORY_NAME("cpu");
 
 // Declare decoder functions (defined in cpu_68000.c, cpu_68030.c, cpu_68040.c)
@@ -270,6 +271,13 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
             cpu->fpu_object = object_new(&fpu_class, cpu->fpu, "fpu");
             if (cpu->fpu_object)
                 object_attach(cpu->cpu_object, cpu->fpu_object);
+        }
+        // The 040's on-chip MMU binds its inspector here (the 030 PMMU is
+        // machine-constructed and binds later via cpu_attach_mmu).
+        if (cpu->cpu_model == CPU_MODEL_68040 && cpu->mmu) {
+            cpu->mmu_object = object_new(&mmu040_class, cpu->mmu, "mmu");
+            if (cpu->mmu_object)
+                object_attach(cpu->cpu_object, cpu->mmu_object);
         }
     }
 
@@ -898,4 +906,90 @@ const class_desc_t mmu_class = {
     .name = "mmu",
     .members = mmu_members,
     .n_members = sizeof(mmu_members) / sizeof(mmu_members[0]),
+};
+
+// === CPU.mmu child class (68040) ============================================
+//
+// The 040 MMU is on-chip (register file in mmu040_state_t, owned by the CPU;
+// registers reached via MOVEC, no PMOVE).  Expose TC, the four transparent-
+// translation registers, both root pointers, and MMUSR as cpu.mmu.*
+// attributes — the PMMU-shaped mmu_class above would misread this state.
+// instance_data on the node is the mmu040_state_t* directly.
+
+static mmu040_state_t *mmu040_from(struct object *self) {
+    return (mmu040_state_t *)object_data(self);
+}
+
+// One read-only hex attribute getter per 32-bit register field.
+#define MMU040_HEX_ATTR(field)                                                                                         \
+    static value_t attr_mmu040_##field(struct object *self, const member_t *m) {                                       \
+        (void)m;                                                                                                       \
+        mmu040_state_t *mmu = mmu040_from(self);                                                                       \
+        if (!mmu)                                                                                                      \
+            return val_err("mmu not present");                                                                         \
+        value_t v = val_uint(4, mmu->field);                                                                           \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+MMU040_HEX_ATTR(tc)
+MMU040_HEX_ATTR(itt0)
+MMU040_HEX_ATTR(itt1)
+MMU040_HEX_ATTR(dtt0)
+MMU040_HEX_ATTR(dtt1)
+MMU040_HEX_ATTR(urp)
+MMU040_HEX_ATTR(srp)
+MMU040_HEX_ATTR(mmusr)
+
+static value_t attr_mmu040_enabled(struct object *self, const member_t *m) {
+    (void)m;
+    mmu040_state_t *mmu = mmu040_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    return val_uint(1, mmu->enabled ? 1 : 0);
+}
+
+static const member_t mmu040_members[] = {
+    {.kind = M_ATTR,
+     .name = "tc",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_tc, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "itt0",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt0, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "itt1",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt1, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "dtt0",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt0, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "dtt1",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt1, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "urp",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_urp, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "srp",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_srp, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "mmusr",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_mmusr, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}                             },
+};
+
+const class_desc_t mmu040_class = {
+    .name = "mmu040",
+    .members = mmu040_members,
+    .n_members = sizeof(mmu040_members) / sizeof(mmu040_members[0]),
 };

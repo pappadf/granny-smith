@@ -220,8 +220,7 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     g_mmu = st->bus_mmu;
     // Attach the CPU-owned 040 register file: translation now dispatches to
     // the mmu040 walker; `enabled` mirrors TC.E.  (The cpu.mmu debug object
-    // stays unbound until the mmu040 inspector class lands in Phase I — the
-    // PMMU-shaped mmu_class would misread this state.)
+    // is bound by cpu_init itself — the 040-shaped mmu040_class in cpu.c.)
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
     setup_images(cfg);
@@ -234,19 +233,8 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // slot scan even with no cards; the mapped VRAM aperture wins first).
     memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
 
-    if (cp) {
-        // Restore substrate-private state saved by mcu_checkpoint_save.
-        bool overlay = false;
-        system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
-        system_read_checkpoint_data(cp, st->mcu_regs, sizeof(st->mcu_regs));
-        system_read_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
-        system_read_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
-        // The layout above armed the overlay; a post-overlay snapshot drops it.
-        if (!overlay)
-            mcu_set_overlay(cfg, false);
-        mmu_invalidate_tlb(st->bus_mmu);
-        via_redrive_outputs(cfg->via1);
-    }
+    if (cp)
+        mcu_restore_private(cfg, cp);
 }
 
 // ============================================================

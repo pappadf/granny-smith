@@ -145,6 +145,10 @@ void mcu_memory_layout(config_t *cfg);
 // Overlay control (checkpoint restore / tests); layout arms it by default.
 void mcu_set_overlay(config_t *cfg, bool on);
 
+// Read the substrate-private checkpoint tail and re-drive derived IRQ lines;
+// each board's build_devices calls this at the end of its restore path.
+void mcu_restore_private(config_t *cfg, checkpoint_t *cp);
+
 // Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity):
 // sets the active-low PA input and re-resolves the CA1 aggregate (ref §13.3).
 void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active);
