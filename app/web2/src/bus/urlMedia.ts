@@ -126,14 +126,11 @@ interface RomIdentifyResult {
 }
 
 async function romIdentify(path: string): Promise<RomIdentifyResult | null> {
+  // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
-  if (typeof r !== 'string') return null;
-  try {
-    const parsed = JSON.parse(r) as Partial<RomIdentifyResult>;
-    if (parsed && parsed.recognised) return parsed as RomIdentifyResult;
-  } catch {
-    return null;
-  }
+  if (!r || typeof r !== 'object') return null;
+  const parsed = r as Partial<RomIdentifyResult>;
+  if (parsed.recognised) return parsed as RomIdentifyResult;
   return null;
 }
 
@@ -141,12 +138,8 @@ async function parseProfile(
   model: string,
 ): Promise<{ ram_default?: number; hd_bus?: string } | null> {
   const r = await gsEval('machine.profile', [model]);
-  if (typeof r !== 'string') return null;
-  try {
-    return JSON.parse(r) as { ram_default?: number; hd_bus?: string };
-  } catch {
-    return null;
-  }
+  if (!r || typeof r !== 'object' || 'error' in r) return null;
+  return r as { ram_default?: number; hd_bus?: string };
 }
 
 // Fetch a URL and stage its bytes into /tmp/url_<slot>. Handles ZIP wrapping

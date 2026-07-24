@@ -54,7 +54,6 @@ SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/memory/mmu.c \
         $(EMU_ROOT)/core/memory/mmu040.c \
         $(EMU_ROOT)/core/object/meta.c \
-        $(EMU_ROOT)/core/object/json_encode.c \
         $(EMU_ROOT)/core/object/object.c \
         $(EMU_ROOT)/core/object/value.c
 

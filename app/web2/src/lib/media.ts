@@ -57,15 +57,11 @@ interface VromIdentifyResult {
 }
 
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
+  // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
   if (r === null || r === undefined) return null;
-  if (typeof r === 'object' && r !== null && 'error' in (r as object)) return null;
-  if (typeof r !== 'string') return null;
-  try {
-    return JSON.parse(r) as RomIdentifyResult;
-  } catch {
-    return null;
-  }
+  if (typeof r !== 'object' || 'error' in (r as object)) return null;
+  return r as RomIdentifyResult;
 }
 
 export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
@@ -89,22 +85,19 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     label: 'Video ROM image',
     persistDir: VROMS_DIR,
     async validate(path, gsEval) {
+      // vrom.identify returns a native object (V_MAP) — no inner JSON.parse.
       const r = await gsEval('machine.vrom.identify', [path]);
-      if (typeof r !== 'string') return { valid: false };
-      try {
-        const parsed = JSON.parse(r) as VromIdentifyResult;
-        if (!parsed.recognised) return { valid: false };
-        return {
-          valid: true,
-          info: {
-            cardId: parsed.card_id,
-            compatible: parsed.compatible,
-            checksum: parsed.crc,
-          },
-        };
-      } catch {
-        return { valid: false };
-      }
+      if (!r || typeof r !== 'object' || 'error' in (r as object)) return { valid: false };
+      const parsed = r as VromIdentifyResult;
+      if (!parsed.recognised) return { valid: false };
+      return {
+        valid: true,
+        info: {
+          cardId: parsed.card_id,
+          compatible: parsed.compatible,
+          checksum: parsed.crc,
+        },
+      };
     },
     // VROMs are stored by content hash (the declaration ROM's Format-Block
     // CRC), mirroring how CPU ROMs are stored by checksum. Discovery is

@@ -8,18 +8,17 @@ import { registerTerminalInsert } from '@/components/panel-views/terminal/termin
 // `step` method. Categories are model-derived (subsystem bucket + the static
 // Language keywords group), not a hand-listed catalogue.
 vi.mock('@/bus/emulator', () => {
-  const methodInfo = (name: string, doc = '') =>
-    JSON.stringify({
-      name,
-      verb: name,
-      category: 'basic',
-      task: '',
-      doc,
-      destructive: false,
-      mutate: false,
-      hidden: false,
-      nargs: 0,
-    });
+  const methodInfo = (name: string, doc = '') => ({
+    name,
+    verb: name,
+    category: 'basic',
+    task: '',
+    doc,
+    destructive: false,
+    mutate: false,
+    hidden: false,
+    nargs: 0,
+  });
   return {
     isModuleReady: () => true,
     gsEval: async (path: string, args?: unknown[]) => {

@@ -111,6 +111,9 @@ static void format_scalar_inline(const value_t *v) {
     case V_LIST:
         printf("<list:%zu>", v->list.len);
         break;
+    case V_MAP:
+        printf("<map:%zu>", v->map.len);
+        break;
     case V_OBJECT: {
         const class_desc_t *cc = v->obj ? object_class(v->obj) : NULL;
         printf("<%s>", cc && cc->name ? cc->name : "object");
@@ -208,6 +211,12 @@ static void format_cell(const value_t *v, char *buf, size_t buf_size) {
             snprintf(buf, buf_size, "%s", v->enm.table[v->enm.idx]);
         else
             snprintf(buf, buf_size, "enum:%d", v->enm.idx);
+        break;
+    case V_LIST:
+        snprintf(buf, buf_size, "<list:%zu>", v->list.len);
+        break;
+    case V_MAP:
+        snprintf(buf, buf_size, "<map:%zu>", v->map.len);
         break;
     default:
         snprintf(buf, buf_size, "<%d>", (int)v->kind);
@@ -355,6 +364,9 @@ static void format_value_print(const value_t *v) {
             case V_LIST:
                 printf("<list:%zu>", e->list.len);
                 break;
+            case V_MAP:
+                printf("<map:%zu>", e->map.len);
+                break;
             case V_ENUM:
                 if (e->enm.table && (size_t)e->enm.idx < e->enm.n_table && e->enm.table[e->enm.idx])
                     printf("\"%s\"", e->enm.table[e->enm.idx]);
@@ -380,6 +392,25 @@ static void format_value_print(const value_t *v) {
         }
         printf("]\n");
         break;
+    case V_MAP: {
+        // A map prints as aligned `key : value` rows; nested maps/lists
+        // show as compact placeholders (index in via map.key / map[i]).
+        int width = 0;
+        for (size_t i = 0; i < v->map.len; i++) {
+            const char *k = v->map.entries[i].key;
+            int klen = k ? (int)strlen(k) : 0;
+            if (klen > width)
+                width = klen;
+        }
+        if (width > 24)
+            width = 24; // cap so very long keys don't blow the layout
+        for (size_t i = 0; i < v->map.len; i++) {
+            printf("%-*s : ", width, v->map.entries[i].key ? v->map.entries[i].key : "");
+            format_scalar_inline(&v->map.entries[i].val);
+            printf("\n");
+        }
+        break;
+    }
     case V_OBJECT:
         // Bare-read of an object prints its attributes as a
         // `name = value` table. Methods are skipped; child nodes show

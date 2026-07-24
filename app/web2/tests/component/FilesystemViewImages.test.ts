@@ -3,8 +3,10 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // Mock the emulator bridge so vfs.list returns canned partition / volume
 // listings — exercises the Filesystem tree's descent into a disk image
-// without a running WASM module. Declared via vi.hoisted so the spy exists
-// before the (hoisted) vi.mock factory runs.
+// without a running WASM module. vfs.list returns a native array of
+// {name,kind,size} objects (V_LIST of V_MAP through the gsEval bridge), so
+// the mock returns arrays directly rather than JSON strings. Declared via
+// vi.hoisted so the spy exists before the (hoisted) vi.mock factory runs.
 const { gsEvalMock } = vi.hoisted(() => ({ gsEvalMock: vi.fn() }));
 
 vi.mock('@/bus/emulator', () => ({
@@ -77,20 +79,20 @@ beforeEach(() => {
     if (path !== 'vfs.list') return null;
     const dir = (args?.[0] as string) ?? '';
     if (dir === '/opfs/disk.img') {
-      return JSON.stringify([
+      return [
         { name: 'partition1', kind: 'directory', size: 0 },
         { name: 'partition2', kind: 'directory', size: 0 },
-      ]);
+      ];
     }
     if (dir === '/opfs/disk.img/partition1') {
-      return JSON.stringify([
+      return [
         { name: 'System Folder', kind: 'directory', size: 0 },
         { name: 'Read Me', kind: 'file', size: 4522 },
         // A name the HFS reader surfaced from an in-name '/': OPFS rejects ':'.
         { name: 'Install 1:2.img', kind: 'file', size: 819200 },
-      ]);
+      ];
     }
-    return JSON.stringify([]);
+    return [];
   });
 });
 
@@ -100,14 +102,13 @@ describe('FilesystemView — disk-image descent', () => {
     gsEvalMock.mockImplementation(async (path: string, args?: unknown[]) => {
       if (path !== 'vfs.list') return null;
       const dir = (args?.[0] as string) ?? '';
-      if (dir === '/opfs/disk.img')
-        return JSON.stringify([{ name: 'partition1', kind: 'directory', size: 0 }]);
+      if (dir === '/opfs/disk.img') return [{ name: 'partition1', kind: 'directory', size: 0 }];
       if (dir === '/opfs/disk.img/partition1')
-        return JSON.stringify([
+        return [
           { name: 'System Folder', kind: 'directory', size: 0 },
           { name: 'Read Me', kind: 'file', size: 4522 },
-        ]);
-      return JSON.stringify([]);
+        ];
+      return [];
     });
 
     const { container } = render(FilesystemView);

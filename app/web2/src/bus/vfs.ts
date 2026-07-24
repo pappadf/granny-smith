@@ -23,15 +23,10 @@ interface VfsRawEntry {
 // distinguishable from a genuinely empty directory so the tree doesn't cache
 // them as permanent emptiness.
 export async function vfsList(dir: string): Promise<OpfsEntry[]> {
-  const raw = await gsEval('vfs.list', [dir]);
-  if (typeof raw !== 'string') throw new Error(gsErrorText(raw));
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(`vfs.list: unparseable listing for '${dir}'`);
-  }
-  if (!Array.isArray(parsed)) throw new Error(`vfs.list: unexpected result for '${dir}'`);
+  // vfs.list returns a native array of {name, kind, size} objects (V_LIST
+  // of V_MAP through the gsEval bridge) — no inner JSON.parse.
+  const parsed = await gsEval('vfs.list', [dir]);
+  if (!Array.isArray(parsed)) throw new Error(gsErrorText(parsed));
   return (parsed as VfsRawEntry[]).map((e) => ({
     name: e.name,
     path: `${dir}/${e.name}`,

@@ -69,21 +69,19 @@
     }
     const list: HdModel[] = [];
     for (const entry of raw) {
-      if (typeof entry !== 'string') continue;
-      try {
-        const m = JSON.parse(entry) as { label?: string; size?: number };
-        if (!m.label || !m.size) continue;
-        const existing = list.find((x) => x.label === m.label);
-        if (existing) {
-          if (m.size > existing.sizeBytes) {
-            existing.sizeBytes = m.size;
-            existing.mb = Math.round(m.size / (1024 * 1024));
-          }
-        } else {
-          list.push({ label: m.label, sizeBytes: m.size, mb: Math.round(m.size / (1024 * 1024)) });
+      // hd_models entries are native {label, vendor, product, size}
+      // objects (V_MAP through the gsEval bridge) — no inner JSON.parse.
+      if (!entry || typeof entry !== 'object') continue;
+      const m = entry as { label?: string; size?: number };
+      if (!m.label || !m.size) continue;
+      const existing = list.find((x) => x.label === m.label);
+      if (existing) {
+        if (m.size > existing.sizeBytes) {
+          existing.sizeBytes = m.size;
+          existing.mb = Math.round(m.size / (1024 * 1024));
         }
-      } catch {
-        /* skip malformed entry */
+      } else {
+        list.push({ label: m.label, sizeBytes: m.size, mb: Math.round(m.size / (1024 * 1024)) });
       }
     }
     hdModels = list;

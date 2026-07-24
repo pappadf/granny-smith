@@ -18,6 +18,31 @@ static value_t eval(const char *src) {
     return expr_eval(src, &ctx);
 }
 
+// Binding callback serving one `$m` map binding (nested map + list) so the
+// map-access grammar can be tested without an object tree.
+static value_t map_binding(void *ud, const char *name) {
+    (void)ud;
+    if (strcmp(name, "m") != 0)
+        return val_err("no such binding '$%s'", name);
+    value_map_builder_t *inner = val_map_new();
+    val_map_put(inner, "kind", val_str("68030_pmmu"));
+    value_t *items = (value_t *)calloc(2, sizeof(value_t));
+    items[0] = val_int(10);
+    items[1] = val_int(20);
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "mmu", val_map_finish(inner));
+    val_map_put(b, "nums", val_list(items, 2));
+    val_map_put(b, "n", val_int(7));
+    return val_map_finish(b);
+}
+
+// Evaluate with the `$m` map binding wired in.
+static value_t eval_m(const char *src) {
+    expr_ctx_t ctx = {0};
+    ctx.binding = map_binding;
+    return expr_eval(src, &ctx);
+}
+
 // === Literal arithmetic =====================================================
 
 TEST(test_literal_addition) {
@@ -377,6 +402,58 @@ TEST(test_interp_colon_inside_string_doesnt_split_spec) {
     value_free(&v);
 }
 
+// === Map access (V_MAP, shell v2 map/list descent) ==========================
+
+TEST(test_map_dotted_key_access) {
+    value_t v = eval_m("$m.mmu.kind");
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "68030_pmmu") == 0);
+    value_free(&v);
+}
+
+TEST(test_map_bracket_string_key_access) {
+    value_t v = eval_m("$m[\"mmu\"][\"kind\"]");
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "68030_pmmu") == 0);
+    value_free(&v);
+    // Mixed: dotted into a list index.
+    v = eval_m("$m.nums[1]");
+    ASSERT_EQ_INT(20, (int)v.i);
+    value_free(&v);
+}
+
+TEST(test_map_missing_key_errors) {
+    value_t v = eval_m("$m.absent");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+    // Numeric index on a map is an error (map keys are strings).
+    v = eval_m("$m[0]");
+    ASSERT_TRUE(val_is_error(&v));
+    value_free(&v);
+}
+
+TEST(test_map_len_and_arithmetic) {
+    value_t v = eval_m("len($m) + $m.n");
+    ASSERT_EQ_INT(10, (int)v.i); // 3 keys + 7
+    value_free(&v);
+}
+
+TEST(test_map_interpolates_as_json) {
+    expr_ctx_t ctx = {0};
+    ctx.binding = map_binding;
+    value_t v = expr_interpolate_string("${$m}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "{\"mmu\":{\"kind\":\"68030_pmmu\"},\"nums\":[10,20],\"n\":7}") == 0);
+    value_free(&v);
+}
+
+TEST(test_map_equals_json_string) {
+    value_t v = eval_m("$m.mmu == \"{\\\"kind\\\":\\\"68030_pmmu\\\"}\"");
+    ASSERT_EQ_INT(V_BOOL, v.kind);
+    ASSERT_TRUE(v.b);
+    value_free(&v);
+}
+
 int main(void) {
     RUN(test_literal_addition);
     RUN(test_operator_precedence);
@@ -412,5 +489,11 @@ int main(void) {
     RUN(test_interp_spec_default_when_no_spec);
     RUN(test_interp_multiple_chunks);
     RUN(test_interp_colon_inside_string_doesnt_split_spec);
+    RUN(test_map_dotted_key_access);
+    RUN(test_map_bracket_string_key_access);
+    RUN(test_map_missing_key_errors);
+    RUN(test_map_len_and_arithmetic);
+    RUN(test_map_interpolates_as_json);
+    RUN(test_map_equals_json_string);
     return 0;
 }

@@ -13,13 +13,13 @@ import { VROMS_DIR } from '@/lib/opfsPaths';
 const vromIdentify: GsEval = async (evalPath: string, args?: unknown[]) => {
   expect(evalPath).toBe('machine.vrom.identify');
   expect(args).toEqual(['/opfs/upload/my_weird.bin']);
-  return JSON.stringify({
+  return {
     recognised: true,
     card_id: 'mdc_8_24',
     compatible: ['mdc_8_24'],
     size: 32768,
     crc: '0xd1629664',
-  });
+  };
 };
 
 describe('vrom media descriptor', () => {
@@ -32,7 +32,7 @@ describe('vrom media descriptor', () => {
   });
 
   it('validate() rejects unrecognised files', async () => {
-    const unrecognised: GsEval = async () => JSON.stringify({ recognised: false, size: 32768 });
+    const unrecognised: GsEval = async () => ({ recognised: false, size: 32768 });
     const result = await MEDIA_TYPES.vrom.validate('/opfs/upload/junk.bin', unrecognised);
     expect(result.valid).toBe(false);
   });

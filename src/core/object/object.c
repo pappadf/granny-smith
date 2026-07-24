@@ -852,6 +852,8 @@ static const char *kind_name(value_kind_t k) {
         return "ENUM";
     case V_LIST:
         return "LIST";
+    case V_MAP:
+        return "MAP";
     case V_OBJECT:
         return "OBJECT";
     case V_ERROR:

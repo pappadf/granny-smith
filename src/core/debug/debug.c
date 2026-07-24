@@ -19,7 +19,6 @@
 #include "display.h"
 #include "expr.h"
 #include "fpu.h"
-#include "json_encode.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
@@ -2850,15 +2849,14 @@ static value_t debug_method_log(struct object *self, const member_t *m, int argc
     return val_bool(log_configure(category, spec) == 0);
 }
 
-// json_open_obj callback: emit "<category>": <level> for one category.
-static void debug_log_level_json_cb(const log_category_t *cat, void *ud) {
-    json_builder_t *b = (json_builder_t *)ud;
-    json_key(b, log_category_name(cat));
-    json_int(b, log_get_level(cat));
+// log_foreach_category callback: put "<category>" → <level> into the map.
+static void debug_log_level_map_cb(const log_category_t *cat, void *ud) {
+    value_map_builder_t *b = (value_map_builder_t *)ud;
+    val_map_put(b, log_category_name(cat), val_int(log_get_level(cat)));
 }
 
 // `debug.log_levels()` — every registered category and its current level, as a
-// JSON object {"<category>": <level>, ...}.  The Logs view's level editor reads
+// map {<category>: <level>, ...}.  The Logs view's level editor reads
 // this to populate its list (the categories register lazily, so the set grows
 // as subsystems first log; a freshly booted machine has registered its own).
 static value_t debug_method_log_levels(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -2866,11 +2864,9 @@ static value_t debug_method_log_levels(struct object *self, const member_t *m, i
     (void)m;
     (void)argc;
     (void)argv;
-    json_builder_t *b = json_builder_new();
-    json_open_obj(b);
-    log_foreach_category(debug_log_level_json_cb, b);
-    json_close_obj(b);
-    return json_finish(b);
+    value_map_builder_t *b = val_map_new();
+    log_foreach_category(debug_log_level_map_cb, b);
+    return val_map_finish(b);
 }
 
 static const arg_decl_t debug_log_args[] = {
@@ -3018,9 +3014,9 @@ static double fp80_to_display_double(float80_reg_t f) {
 //     }
 //   }
 //
-// Address values are emitted as JSON integers (not hex strings) so the
-// JS parser is JSON.parse + direct property access — no string→number
-// conversion per field.
+// Address values are emitted as plain integers (not hex strings) so the
+// JS side does direct property access — no string→number conversion per
+// field. The gsEval bridge serializes this map to JSON exactly once.
 static value_t debug_method_frame(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -3041,97 +3037,75 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
     if (count > 256)
         count = 256;
 
-    json_builder_t *b = json_builder_new();
-    if (!b)
-        return val_err("debug.frame: OOM");
-
-    json_open_obj(b);
+    value_map_builder_t *b = val_map_new();
 
     // Registers — all 16 GPRs + control regs in one shot.
-    json_key(b, "regs");
-    json_open_obj(b);
+    value_map_builder_t *regs = val_map_new();
     char rname[4];
     for (int i = 0; i < 8; i++) {
         snprintf(rname, sizeof(rname), "d%d", i);
-        json_key(b, rname);
-        json_int(b, (int64_t)cpu_get_dn(cpu, i));
+        val_map_put(regs, rname, val_int((int64_t)cpu_get_dn(cpu, i)));
     }
     for (int i = 0; i < 8; i++) {
         snprintf(rname, sizeof(rname), "a%d", i);
-        json_key(b, rname);
-        json_int(b, (int64_t)cpu_get_an(cpu, i));
+        val_map_put(regs, rname, val_int((int64_t)cpu_get_an(cpu, i)));
     }
-    json_key(b, "pc");
-    json_int(b, (int64_t)cpu_get_pc(cpu));
-    json_key(b, "sr");
-    json_int(b, (int64_t)cpu_get_sr(cpu));
-    json_key(b, "usp");
-    json_int(b, (int64_t)cpu_get_usp(cpu));
-    json_key(b, "ssp");
-    json_int(b, (int64_t)cpu_get_ssp(cpu));
-    json_close_obj(b);
+    val_map_put(regs, "pc", val_int((int64_t)cpu_get_pc(cpu)));
+    val_map_put(regs, "sr", val_int((int64_t)cpu_get_sr(cpu)));
+    val_map_put(regs, "usp", val_int((int64_t)cpu_get_usp(cpu)));
+    val_map_put(regs, "ssp", val_int((int64_t)cpu_get_ssp(cpu)));
+    val_map_put(b, "regs", val_map_finish(regs));
 
     // Disasm rows + per-row MMU translation. Each row carries logical
     // addr, physical addr (or null when invalid), validity flag,
     // mnemonic, and operands — everything the pane needs to render
     // without further bridge round-trips.
-    json_key(b, "rows");
-    json_open_arr(b);
+    value_t *rows = NULL;
+    size_t n_rows = 0, cap_rows = 0;
     uint16_t words[16];
     char mnem[32], ops[80];
     for (int i = 0; i < (int)count; i++) {
-        json_open_obj(b);
-        json_key(b, "addr");
-        json_int(b, (int64_t)addr);
+        value_map_builder_t *row = val_map_new();
+        val_map_put(row, "addr", val_int((int64_t)addr));
 
         bool valid = true;
         uint32_t phys = debug_translate_address(addr, NULL, NULL, &valid);
-        json_key(b, "phys");
-        if (valid)
-            json_int(b, (int64_t)phys);
-        else
-            json_null(b);
-        json_key(b, "valid");
-        json_bool(b, valid);
+        val_map_put(row, "phys", valid ? val_int((int64_t)phys) : val_none());
+        val_map_put(row, "valid", val_bool(valid));
 
         for (int j = 0; j < 16; j++)
             words[j] = cpu_get_uint16(addr + j * 2);
         int n = disasm(words, mnem, ops);
 
-        json_key(b, "mnem");
-        json_str(b, mnem);
-        json_key(b, "ops");
-        json_str(b, ops);
-        json_close_obj(b);
+        val_map_put(row, "mnem", val_str(mnem));
+        val_map_put(row, "ops", val_str(ops));
+        val_list_push(&rows, &n_rows, &cap_rows, val_map_finish(row));
 
         addr += 2 * n;
     }
-    json_close_arr(b);
+    val_map_put(b, "rows", val_list(rows, n_rows));
 
     // FPU block — only emitted when the running CPU model has an FPU.
     // Each fp[i] is the raw 80-bit register as a hex string plus a host
     // double rendered as decimal, so the UI can show both side by side.
     fpu_state_t *fpu = (fpu_state_t *)cpu->fpu;
     if (fpu) {
-        json_key(b, "fpu");
-        json_open_obj(b);
+        value_map_builder_t *fb = val_map_new();
 
-        json_key(b, "fp");
-        json_open_arr(b);
+        value_t *fps = NULL;
+        size_t n_fps = 0, cap_fps = 0;
         char hexbuf[24];
         char valbuf[40];
         for (int i = 0; i < 8; i++) {
-            json_open_obj(b);
+            value_map_builder_t *fpb = val_map_new();
             // 4 hex digits of exponent (with sign bit) + underscore + 16
             // hex digits of mantissa. Underscore makes scanning easier.
             snprintf(hexbuf, sizeof(hexbuf), "%04X_%016llX", fpu->fp[i].exponent,
                      (unsigned long long)fpu->fp[i].mantissa);
-            json_key(b, "hex");
-            json_str(b, hexbuf);
+            val_map_put(fpb, "hex", val_str(hexbuf));
 
-            // Decimal display — handle special values explicitly so the
-            // JSON stays valid (Inf/NaN aren't legal JSON numbers, but
-            // we encode the value as a string anyway).
+            // Decimal display — handle special values explicitly and keep
+            // the value a string (Inf/NaN aren't legal JSON numbers).
             uint16_t e = FP80_EXP(fpu->fp[i]);
             int sign = FP80_SIGN(fpu->fp[i]);
             if (e == 0 && fpu->fp[i].mantissa == 0) {
@@ -3146,24 +3120,19 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
                 double d = fp80_to_display_double(fpu->fp[i]);
                 snprintf(valbuf, sizeof(valbuf), "%.17g", d);
             }
-            json_key(b, "val");
-            json_str(b, valbuf);
-            json_close_obj(b);
+            val_map_put(fpb, "val", val_str(valbuf));
+            val_list_push(&fps, &n_fps, &cap_fps, val_map_finish(fpb));
         }
-        json_close_arr(b);
+        val_map_put(fb, "fp", val_list(fps, n_fps));
 
-        json_key(b, "fpcr");
-        json_int(b, (int64_t)fpu->fpcr);
-        json_key(b, "fpsr");
-        json_int(b, (int64_t)fpu->fpsr);
-        json_key(b, "fpiar");
-        json_int(b, (int64_t)fpu->fpiar);
+        val_map_put(fb, "fpcr", val_int((int64_t)fpu->fpcr));
+        val_map_put(fb, "fpsr", val_int((int64_t)fpu->fpsr));
+        val_map_put(fb, "fpiar", val_int((int64_t)fpu->fpiar));
 
-        json_close_obj(b);
+        val_map_put(b, "fpu", val_map_finish(fb));
     }
 
-    json_close_obj(b);
-    return json_finish(b);
+    return val_map_finish(b);
 }
 
 static const arg_decl_t debug_frame_args[] = {
@@ -3196,27 +3165,27 @@ static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "log",
      .doc = "Set per-subsystem log level (or pass a full spec string)",
-     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}                                                                                                                    },
+     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}                                                                                                                 },
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward. `disasm` from PC, `disasm <count>` from PC, `disasm <addr> <count>` from addr.",
-     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                                              },
+     .method = {.args = debug_disasm_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_disasm}                                                                                                           },
     {.kind = M_METHOD,
      .name = "frame",
      .doc = "Bundled snapshot for the debug UI: registers + disasm window + per-row MMU translation, "
-            "returned as a single JSON V_STRING. Default: 32 rows starting at PC.",                                .method = {.args = debug_frame_args, .nargs = 2, .result = V_STRING, .fn = debug_method_frame}},
+            "returned as a typed map. Default: 32 rows starting at PC.",                                           .method = {.args = debug_frame_args, .nargs = 2, .result = V_MAP, .fn = debug_method_frame}},
     {.kind = M_METHOD,
      .name = "step",
      .doc = "Single-step N instructions and stop (default 1)",
-     .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}                                                                                                                  },
+     .method = {.args = debug_step_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_step}                                                                                                               },
     {.kind = M_METHOD,
      .name = "exceptions",
      .doc = "Dump the 256-entry exception trace ring (always-on). Optional filter=1 hides routine traps/IRQs.",
-     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                      },
+     .method = {.args = debug_exceptions_args, .nargs = 1, .result = V_BOOL, .fn = debug_method_exceptions}                                                                                                   },
     {.kind = M_METHOD,
      .name = "log_levels",
-     .doc = "Every registered log category and its level as a JSON object {\"<cat>\": <level>}.",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = debug_method_log_levels}                                                                                                                     },
+     .doc = "Every registered log category and its level as a map {<cat>: <level>}.",
+     .method = {.args = NULL, .nargs = 0, .result = V_MAP, .fn = debug_method_log_levels}                                                                                                                     },
 };
 
 const class_desc_t debug_class = {

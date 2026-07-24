@@ -18,22 +18,22 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
       if (path === 'machine.rom.identify') {
         const p = (args?.[0] as string) ?? '';
         if (p.endsWith('plus-v3-4d1f8172.rom')) {
-          return JSON.stringify({
+          return {
             recognised: true,
             checksum: 'plus-checksum',
             name: 'Macintosh Plus ROM',
             compatible: ['plus'],
             size: 128 * 1024,
-          });
+          };
         }
         if (p.endsWith('iix-iicx-se30-97221136.rom')) {
-          return JSON.stringify({
+          return {
             recognised: true,
             checksum: 'se30-checksum',
             name: 'Macintosh SE/30 ROM',
             compatible: ['se30'],
             size: 256 * 1024,
-          });
+          };
         }
         return null;
       }
@@ -67,7 +67,7 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
             has_cdrom: true, // SE/30 advertises a CD-ROM → the CD row is shown
           },
         };
-        return JSON.stringify(byId[id] ?? { name: id });
+        return byId[id] ?? { name: id };
       }
       return null;
     },

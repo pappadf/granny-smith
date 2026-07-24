@@ -397,9 +397,11 @@ export async function applyCapabilities(model: string): Promise<void> {
   let kind: MmuKind = 'none';
   let fpu = false;
   try {
+    // machine.profile returns a native nested object (V_MAP through the
+    // gsEval bridge) — no inner JSON.parse.
     const r = await gsEval('machine.profile', [model]);
-    if (typeof r === 'string') {
-      const parsed = JSON.parse(r) as {
+    if (r && typeof r === 'object' && !('error' in r)) {
+      const parsed = r as {
         capabilities?: { mmu?: { kind?: string }; cpu?: { fpu?: boolean } };
       };
       const k = parsed.capabilities?.mmu?.kind;

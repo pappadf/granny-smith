@@ -111,17 +111,11 @@ function compactStamp(): string {
 export async function refreshCatLevels(): Promise<void> {
   const { gsEval, isModuleReady } = await import('@/bus/emulator');
   if (!isModuleReady()) return;
-  // debug.log_levels returns a JSON object {"<category>": <level>, ...} of every
+  // debug.log_levels returns a native object {<category>: <level>, ...} of every
   // registered category. (Categories register lazily as subsystems first log, so
   // the set grows over a session.)
-  const json = await gsEval('debug.log_levels');
-  if (typeof json !== 'string') return;
-  let map: Record<string, unknown>;
-  try {
-    map = JSON.parse(json);
-  } catch {
-    return;
-  }
+  const map = await gsEval('debug.log_levels');
+  if (!map || typeof map !== 'object' || 'error' in map) return;
   const next: Record<string, number> = {};
   for (const [name, lvl] of Object.entries(map)) {
     if (typeof lvl === 'number') next[name] = lvl;

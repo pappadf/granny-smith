@@ -33,6 +33,7 @@ typedef enum {
     V_BYTES, // heap-owned opaque byte buffer
     V_ENUM, // integer + static name table
     V_LIST, // heap-owned, recursively owned items
+    V_MAP, // heap-owned, ordered {key → recursively-owned value} entries
     V_OBJECT, // non-owning reference to a tree node
     V_ERROR, // heap-owned error message
     V_REF, // heap-owned object-tree path text; re-resolved on every access
@@ -50,6 +51,11 @@ typedef enum {
 
 // Forward declaration; defined in object.h.
 struct object;
+
+// One V_MAP entry: heap-owned key plus recursively-owned value. Defined
+// after struct value (it embeds one by value); forward-declared here so
+// the union arm can carry the pointer.
+struct value_entry;
 
 // Tagged union value; passed by value across boundaries.
 typedef struct value {
@@ -75,6 +81,10 @@ typedef struct value {
             struct value *items;
             size_t len;
         } list;
+        struct {
+            struct value_entry *entries;
+            size_t len;
+        } map; // entries heap-owned; insertion-ordered, keys unique
         struct object *obj; // non-owning
         char *err; // heap-owned
         char *ref; // heap-owned path text (V_REF); freed by value_free
@@ -84,6 +94,13 @@ typedef struct value {
         } range; // half-open [start, stop)
     };
 } value_t;
+
+// One {key → value} slot of a V_MAP. The key is heap-owned (strdup'd by
+// the constructors); the value is recursively owned like a list item.
+struct value_entry {
+    char *key;
+    struct value val;
+};
 
 // === Constructors ============================================================
 
@@ -98,6 +115,7 @@ value_t val_str(const char *s);
 value_t val_bytes(const void *p, size_t n);
 value_t val_enum(int idx, const char *const *table, size_t n_table);
 value_t val_list(value_t *items, size_t len); // takes ownership of items array
+value_t val_map(struct value_entry *entries, size_t len); // takes ownership of entries array
 value_t val_obj(struct object *o);
 value_t val_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 value_t val_ref(const char *path); // node reference by path text (strdup'd)
@@ -105,6 +123,40 @@ value_t val_range(int64_t start, int64_t stop); // half-open [start, stop)
 
 // Convenience constants.
 #define V_NONE_VAL (val_none())
+
+// === Map builder =============================================================
+//
+// Incremental V_MAP construction mirroring the shape the retired JSON
+// builder had, so map-returning method bodies stay a flat put-sequence.
+// The builder owns everything handed to it; val_map_finish transfers the
+// finished map (or a V_ERROR after any OOM) and frees the builder either
+// way. Errors are sticky: a failed put poisons the builder and finish
+// reports it.
+
+typedef struct value_map_builder value_map_builder_t;
+
+// Allocate a fresh builder. Returns NULL on OOM (val_map_finish(NULL)
+// yields a V_ERROR, so call sites may chain without checking).
+value_map_builder_t *val_map_new(void);
+
+// Append {key → v}. The key is strdup'd; v is owned by the builder from
+// this call on (also on failure). A duplicate key replaces the earlier
+// value in place, keeping keys unique and order stable.
+void val_map_put(value_map_builder_t *b, const char *key, value_t v);
+
+// Consume the builder and return the finished V_MAP (possibly empty),
+// or V_ERROR if any allocation failed along the way.
+value_t val_map_finish(value_map_builder_t *b);
+
+// Borrowed lookup: pointer to the value stored under `key`, or NULL if
+// `v` is not a V_MAP or the key is absent. Valid only while *v lives.
+const value_t *value_map_get(const value_t *v, const char *key);
+
+// Append v to a growable value_t array (doubling capacity), the common
+// idiom for assembling a V_LIST of unknown length before val_list. On
+// OOM frees v and returns false; the array so far stays valid so the
+// caller can free the partial list.
+bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v);
 
 // === Lifetime ================================================================
 

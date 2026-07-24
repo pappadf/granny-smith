@@ -118,14 +118,9 @@ export async function loadDebugFrame(addr?: number, count = 32): Promise<DebugFr
   if (!isModuleReady()) return null;
   const args: number[] = addr === undefined ? [] : [addr >>> 0, count];
   if (addr === undefined && count !== 32) args.push(0, count);
-  const r = await gsEval('debug.frame', args.length ? args : undefined);
-  if (typeof r !== 'string') return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(r);
-  } catch {
-    return null;
-  }
+  // debug.frame returns a native nested object (V_MAP through the gsEval
+  // bridge) — no inner JSON.parse.
+  const parsed = await gsEval('debug.frame', args.length ? args : undefined);
   if (!parsed || typeof parsed !== 'object') return null;
   const obj = parsed as { regs?: Record<string, number>; rows?: unknown[] };
   if (!obj.regs || !Array.isArray(obj.rows)) return null;

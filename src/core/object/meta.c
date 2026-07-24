@@ -19,7 +19,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "json_encode.h"
 #include "object.h"
 #include "value.h"
 
@@ -307,7 +306,7 @@ static value_t meta_method_member_label(struct object *self, const member_t *m, 
     return val_str(label);
 }
 
-// `method_info(name)` — UI metadata for a method member, JSON-encoded so the
+// `method_info(name)` — UI metadata for a method member, a typed map so the
 // context menu and command browser render it without a static catalogue
 // (proposal §7.3/§8.3/§8.6): verb label, task category, destructive/mutate/
 // hidden flags, declared arg count, and doc. Returns a V_ERROR if the member
@@ -320,30 +319,17 @@ static value_t meta_method_method_info(struct object *self, const member_t *m, i
     const member_t *mb = class_find_member(insp ? object_class(insp) : NULL, argv[0].s);
     if (!mb || mb->kind != M_METHOD)
         return val_err("method_info: '%s' is not a method", argv[0].s);
-    json_builder_t *b = json_builder_new();
-    if (!b)
-        return val_err("method_info: out of memory");
-    json_open_obj(b);
-    json_key(b, "name");
-    json_str(b, mb->name ? mb->name : "");
-    json_key(b, "verb");
-    json_str(b, mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : ""));
-    json_key(b, "category");
-    json_str(b, category_name(mb->flags));
-    json_key(b, "task");
-    json_str(b, mb->method.task_category ? mb->method.task_category : "");
-    json_key(b, "doc");
-    json_str(b, mb->doc ? mb->doc : "");
-    json_key(b, "destructive");
-    json_bool(b, (mb->method.ui_flags & MM_DESTRUCTIVE) != 0);
-    json_key(b, "mutate");
-    json_bool(b, (mb->method.ui_flags & MM_MUTATE) != 0);
-    json_key(b, "hidden");
-    json_bool(b, (mb->method.ui_flags & MM_HIDDEN) != 0);
-    json_key(b, "nargs");
-    json_int(b, (int64_t)mb->method.nargs);
-    json_close_obj(b);
-    return json_finish(b);
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "name", val_str(mb->name ? mb->name : ""));
+    val_map_put(b, "verb", val_str(mb->method.verb_label ? mb->method.verb_label : (mb->name ? mb->name : "")));
+    val_map_put(b, "category", val_str(category_name(mb->flags)));
+    val_map_put(b, "task", val_str(mb->method.task_category ? mb->method.task_category : ""));
+    val_map_put(b, "doc", val_str(mb->doc ? mb->doc : ""));
+    val_map_put(b, "destructive", val_bool((mb->method.ui_flags & MM_DESTRUCTIVE) != 0));
+    val_map_put(b, "mutate", val_bool((mb->method.ui_flags & MM_MUTATE) != 0));
+    val_map_put(b, "hidden", val_bool((mb->method.ui_flags & MM_HIDDEN) != 0));
+    val_map_put(b, "nargs", val_int((int64_t)mb->method.nargs));
+    return val_map_finish(b);
 }
 
 // `indices(name)` — the live indices of an indexed-child member (proposal
@@ -458,7 +444,7 @@ static const member_t meta_members[] = {
     {.kind = M_METHOD,
      .name = "method_info",
      .doc = "JSON UI metadata for a method (verb, task, destructive, mutate, hidden, nargs)",
-     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_STRING, .fn = meta_method_method_info}},
+     .method = {.args = meta_named_member_args, .nargs = 1, .result = V_MAP, .fn = meta_method_method_info}},
     {.kind = M_METHOD,
      .name = "indices",
      .doc = "Live indices of an indexed-child member (errors if not indexed)",
