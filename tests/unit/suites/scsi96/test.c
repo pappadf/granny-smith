@@ -297,9 +297,11 @@ TEST(read6_partial_last_chunk) {
     (void)take_int();
 
     // Drain 31 full 16-byte chunks (496 bytes), then a final chunk that
-    // asks for 32 bytes when only 16 remain: the chip transfers 16, the
-    // target changes to STATUS, and a bus-service interrupt fires without
-    // the CPU having drained first.
+    // asks for 32 bytes when only 16 remain: the chip transfers the 16
+    // available bytes (byte-correct), the target runs out, and the
+    // completion (bus-service) interrupt fires as the CPU reads past the
+    // last real byte — the counter-driven, drain-completion timing both
+    // ROM drain shapes rely on.
     for (int c = 0; c < 31; c++) {
         wr(R_XFER_LO, 16);
         wr(R_XFER_HI, 0);
@@ -308,19 +310,80 @@ TEST(read6_partial_last_chunk) {
             (void)scsi_53c96_pdma_read16(chip);
         (void)take_int();
     }
-    // Over-long final chunk.
+    // Over-long final chunk: count 32, only 16 bytes remain in the block.
     wr(R_XFER_LO, 32);
     wr(R_XFER_HI, 0);
     irq_level = false;
     wr(R_COMMAND, 0x90);
-    // The completion interrupt is posted even though the CPU has not
-    // drained yet (the stall this models in the real ROM).
+    // No interrupt yet — the transfer is armed; the CPU must drain.
+    ASSERT_TRUE(!irq_level);
+    // The 16 real bytes come out byte-correct, then reads past the end
+    // return 0 and the completion interrupt fires.
+    for (int b = 0; b < 16; b++) {
+        uint8_t got = scsi_53c96_pdma_read8(chip);
+        ASSERT_EQ_INT((uint8_t)(0 * 7 + (496 + b)), got);
+    }
+    (void)scsi_53c96_pdma_read8(chip); // read past end → target ran out
     ASSERT_TRUE(irq_level);
-    // The 16 buffered bytes are still drainable.
-    uint16_t w0 = scsi_53c96_pdma_read16(chip);
-    size_t p = 496;
-    uint8_t exp_hi = (uint8_t)(0 * 7 + (p % MOCK_BLOCK));
-    ASSERT_EQ_INT(exp_hi, (w0 >> 8) & 0xFF);
+    teardown();
+}
+
+// Odd-length pseudo-DMA read: the 53C96 reserves the trailing byte in its
+// FIFO, so the completion interrupt fires once (count-1) bytes have drained
+// through the aperture and the final byte is read from the FIFO register.
+// This is exactly the Duff's-device blind-drain shape the boot driver uses.
+TEST(read_odd_length_fifo_residual) {
+    setup();
+    wr(R_COMMAND, 0x01); // flush
+    wr(R_STATUS, 0);
+    wr(R_INTERRUPT, 0xA7);
+    wr(R_XFER_LO, 6);
+    wr(R_XFER_HI, 0);
+    wr(R_COMMAND, 0xC1); // DMA select without ATN
+    (void)take_int();
+    uint8_t cdb[6] = {0x08, 0, 0, 0, 1, 0}; // READ block 0, 1 block
+    for (int i = 0; i < 6; i++)
+        wr(R_FIFO, cdb[i]);
+    (void)take_int();
+    ASSERT_EQ_INT(MB_data_in, mb.phase);
+
+    // Count 15 (odd): 14 bytes drain through the aperture, one is reserved.
+    wr(R_XFER_LO, 15);
+    wr(R_XFER_HI, 0);
+    irq_level = false;
+    wr(R_COMMAND, 0x90);
+    ASSERT_TRUE(!irq_level); // armed; nothing drained yet
+    for (int b = 0; b < 14; b++) {
+        uint8_t got = scsi_53c96_pdma_read8(chip);
+        ASSERT_EQ_INT((uint8_t)b, got); // block 0 byte i == i
+    }
+    // Completion interrupt fires at the residual (14 drained, 1 reserved).
+    ASSERT_TRUE(irq_level);
+    (void)take_int();
+    // The reserved odd byte is delivered from the FIFO register.
+    uint8_t last = rd(R_FIFO);
+    ASSERT_EQ_INT((uint8_t)14, last);
+    teardown();
+}
+
+// The status register's low three bits track the live bus phase on every
+// read (they are combinational from the phase lines on real silicon), so a
+// driver polling status after a select sees COMMAND phase, then DATA IN once
+// the CDB is fed — without issuing another chip command in between.
+TEST(status_reflects_live_phase) {
+    setup();
+    wr(R_COMMAND, 0x01); // flush
+    wr(R_STATUS, 0);
+    wr(R_INTERRUPT, 0xA7);
+    wr(R_XFER_LO, 6);
+    wr(R_XFER_HI, 0);
+    wr(R_COMMAND, 0xC1); // DMA select without ATN → stops in command phase
+    (void)take_int();
+    ASSERT_EQ_INT(0x2, rd(R_STATUS) & 0x07); // COMMAND phase (010)
+    uint8_t cdb[6] = {0x08, 0, 0, 0, 1, 0};
+    for (int i = 0; i < 6; i++)
+        wr(R_FIFO, cdb[i]);
+    ASSERT_EQ_INT(0x1, rd(R_STATUS) & 0x07); // DATA IN (001) on the next read
     teardown();
 }
 
@@ -330,6 +393,8 @@ int main(void) {
     RUN(read6_single_block);
     RUN(read6_multi_block);
     RUN(read6_partial_last_chunk);
+    RUN(read_odd_length_fifo_residual);
+    RUN(status_reflects_live_phase);
     printf("[scsi96] all tests passed\n");
     return 0;
 }

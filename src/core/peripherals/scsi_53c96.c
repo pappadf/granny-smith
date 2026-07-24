@@ -86,19 +86,8 @@ struct scsi_53c96 {
     // Active DMA transfer through the pseudo-DMA aperture
     uint8_t xfer_mode; // XFER_* below
     uint32_t counter_live; // live byte counter (0 write = 65536)
-
-    // DMA data-in holding buffer: a DMA Transfer Information pulls the
-    // counted bytes (or fewer, if the target runs out first) out of the
-    // target into here and posts the completion interrupt; the CPU then
-    // drains them through the pseudo-DMA aperture.  This models the real
-    // chip's autonomous transfer — some ROM paths issue the command and
-    // wait for the interrupt without draining first, which a purely lazy
-    // per-aperture-read model would hang forever.  Sized to the full
-    // 16-bit transfer count so no programmed transfer is truncated.
-    uint8_t hold[65536];
-    uint32_t hold_len;
-    uint32_t hold_pos;
-    bool hold_owe_int; // a full-count fill defers its interrupt until drained
+    uint32_t xfer_residual; // bytes held back in the FIFO at INT time (odd = 1)
+    uint8_t xfer_int_done; // completion INT already posted for this transfer
 
     struct scheduler *sched;
     struct scsi *bus; // bus/target model (NULL until attached)
@@ -141,6 +130,7 @@ static void refresh_phase(scsi_53c96_t *c) {
 }
 
 static void pdma_out_byte(scsi_53c96_t *c, uint8_t value);
+static uint8_t pdma_in_byte(scsi_53c96_t *c);
 
 // Drive the INT output (and Status bit 7 mirror).
 static void set_int(scsi_53c96_t *c, bool active) {
@@ -221,7 +211,6 @@ static void chip_reset(scsi_53c96_t *c) {
     c->config3 = 0;
     c->sel_enabled = false;
     c->xfer_mode = XFER_IDLE;
-    c->hold_len = c->hold_pos = 0;
     if (c->bus)
         scsi_external_release(c->bus);
     set_int(c, false);
@@ -334,60 +323,29 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
             }
             if (ph == scsi_data_in) {
                 if (dma) {
-                    // Pseudo-DMA read: pull the counted bytes from the
-                    // target into the holding buffer now and post the
-                    // completion interrupt, so a caller that waits on the
-                    // interrupt without draining first still makes progress
-                    // (the ROM has both a polled-drain path and an
-                    // interrupt-wait path).  The CPU then drains the buffer
-                    // through the aperture.  Terminal Count is reported when
-                    // the whole count was satisfied; a short transfer (the
-                    // target ran out first) reports the residual count and
-                    // the buffered bytes stay drainable.
-                    c->hold_len = 0;
-                    c->hold_pos = 0;
-                    uint32_t want = c->counter_live;
-                    if (want > sizeof(c->hold))
-                        want = sizeof(c->hold);
-                    uint8_t b;
-                    while (c->hold_len < want && scsi_pop_data_in_byte(c->bus, &b)) {
-                        c->hold[c->hold_len++] = b;
-                        if (c->counter_live > 0)
-                            c->counter_live--;
-                    }
-                    c->xfer_counter = (uint16_t)c->counter_live;
+                    // Pseudo-DMA read: arm the transfer and let the CPU pull
+                    // the counted bytes through the aperture — each aperture
+                    // read decrements the counter, exactly as a real DACK
+                    // does on the DMA-side of the chip's FIFO.  DRQ is
+                    // asserted (Terminal Count is reported up front because
+                    // the count is latched and the FIFO is ready) so the
+                    // ROM's polled drain loop, which checks TC BEFORE its
+                    // MOVE.W drain, proceeds.  The completion interrupt is
+                    // posted from pdma_in_byte when the counter reaches the
+                    // FIFO residual: the 53C96 reserves the trailing odd byte
+                    // in its FIFO, so for an odd-length transfer the completion
+                    // interrupt fires once the CPU has drained (count-1) bytes
+                    // through the aperture, and the driver then reads that last
+                    // byte from the FIFO register.  For an even count the
+                    // residual is 0 and the interrupt fires when the whole
+                    // count has drained.  BOTH ROM drain shapes rely on this:
+                    // the fixed 8-word chunk loop uses even counts, while the
+                    // Duff's-device blind drain reads (count-1) words then waits
+                    // for this interrupt before pulling the odd byte.
                     c->xfer_mode = XFER_DATA_IN;
-                    // If the target delivered its whole payload (its buffer
-                    // is now empty), advance it to STATUS — otherwise a
-                    // full-count *final* chunk would leave the bus stuck in
-                    // data-in and the driver's completion read would fail
-                    // and retry forever.  A no-op while more data remains.
-                    scsi_external_data_in_complete(c->bus);
-                    refresh_phase(c);
-                    if (c->counter_live == 0 && scsi_get_bus_phase(c->bus) == scsi_data_in) {
-                        // Whole count satisfied, target still has data for
-                        // later chunks: report Terminal Count and defer the
-                        // completion interrupt until the CPU drains the
-                        // buffer (real hardware fires TC as the last DACK
-                        // decrements the counter).  The ROM's polled drain
-                        // loop checks TC, drains, then waits on the
-                        // interrupt.
-                        //
-                        // KNOWN LIMITATION: the ROM also has an interrupt-
-                        // wait drain path that issues this command and polls
-                        // for the interrupt WITHOUT draining first; deferring
-                        // to the drain hangs it, while posting immediately
-                        // mis-sequences the early boot-driver load.
-                        // Distinguishing the two callers needs more ROM RE
-                        // (§15) — this is why HD-to-desktop is not yet a gate.
-                        c->status |= ST_TC;
-                        c->hold_owe_int = true;
-                    } else {
-                        if (c->counter_live == 0)
-                            c->status |= ST_TC;
-                        c->hold_owe_int = false;
-                        post_interrupt(c, IR_BUS_SERVICE);
-                    }
+                    c->xfer_residual = c->counter_live & 1u;
+                    c->xfer_int_done = 0;
+                    c->status |= ST_TC;
                 } else {
                     uint8_t b;
                     if (scsi_pop_data_in_byte(c->bus, &b))
@@ -417,6 +375,21 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
                     fifo_push(c, (uint8_t)msg);
                 refresh_phase(c);
                 post_interrupt(c, IR_FUNC_COMPLETE);
+            } else if (ph == scsi_command) {
+                // The System's SCSI Manager selects without ATN/CDB and then
+                // issues a separate Transfer Information to feed the command
+                // block.  In DMA mode the CDB streams through the aperture; in
+                // non-DMA mode the driver pre-loads the CDB into the FIFO, so
+                // drain it to the target here and report completion once the
+                // target advances out of command phase.
+                if (dma) {
+                    c->xfer_mode = XFER_CMD_OUT;
+                } else {
+                    while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
+                        scsi_push_data_out_byte(c->bus, fifo_pop(c));
+                    refresh_phase(c);
+                    post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
+                }
             } else {
                 LOG(2, "53C96 transfer info in unhandled phase %d", ph);
                 post_interrupt(c, IR_ILL_CMD);
@@ -465,10 +438,25 @@ uint8_t scsi_53c96_read(scsi_53c96_t *c, uint32_t reg) {
     case R_XFER_HI:
         return (uint8_t)(c->xfer_counter >> 8);
     case R_FIFO:
+        // During an active pseudo-DMA read the chip's FIFO holds the transfer
+        // data, so a FIFO-register read pulls the next payload byte (and
+        // advances the DMA counter).  The ROM uses this for the trailing odd
+        // byte of an odd-length transfer — it drains whole words through the
+        // pseudo-DMA aperture, then reads the final byte here.  Without this,
+        // the counter never reaches zero and the completion interrupt never
+        // fires.
+        if (c->xfer_mode == XFER_DATA_IN)
+            return pdma_in_byte(c);
         return fifo_pop(c);
     case R_COMMAND:
         return c->command;
     case R_STATUS:
+        // The status register's low three bits are combinational from the live
+        // bus phase lines (/MSG //C/D /I/O), so a driver that polls status in a
+        // tight loop — as the System's SCSI Manager does while waiting for the
+        // target to enter COMMAND phase after a select — sees the phase change
+        // without issuing another chip command.  Refresh from the bus on read.
+        refresh_phase(c);
         return c->status;
     case R_INTERRUPT: {
         // Reading the interrupt register releases INT and clears the
@@ -485,9 +473,11 @@ uint8_t scsi_53c96_read(scsi_53c96_t *c, uint32_t reg) {
     case R_SEQSTEP:
         return (uint8_t)(c->seq_step | 0x08); // SOM idle (active-low, not at max)
     case R_FIFOFLAGS: {
-        // Bytes available to the CPU: the DMA holding buffer while draining,
-        // else the command/status FIFO.  Upper 3 bits duplicate seq step.
-        uint32_t avail = (c->xfer_mode == XFER_DATA_IN) ? (uint32_t)(c->hold_len - c->hold_pos) : c->fifo_count;
+        // Bytes available to the CPU: the residual DMA counter while a
+        // pseudo-DMA read is armed (capped at the 16-byte FIFO width), else
+        // the command/status FIFO count.  Upper 3 bits duplicate seq step.
+        uint32_t avail = (c->xfer_mode == XFER_DATA_IN) ? (c->counter_live < FIFO_DEPTH ? c->counter_live : FIFO_DEPTH)
+                                                        : c->fifo_count;
         return (uint8_t)(((c->seq_step & 7) << 5) | (avail & 0x1F));
     }
     case R_CONFIG1:
@@ -636,22 +626,48 @@ static void pdma_finish(scsi_53c96_t *c) {
     post_interrupt(c, IR_BUS_SERVICE);
 }
 
-// One payload byte through the aperture, read side — drains the holding
-// buffer the DMA Transfer Information command filled.  The completion
-// interrupt was already posted when the buffer was filled, so a drained
-// buffer just returns 0 (the ROM reads a fixed word count and masks off
-// any bytes beyond the transferred length).
+// One payload byte through the aperture, read side — pulls straight from
+// the target as the CPU reads, decrementing the transfer counter (one DACK
+// per byte).  When the counter reaches zero, or the target runs out first,
+// the transfer completes: advance the target to STATUS if its buffer is now
+// empty (so the driver's completion read sees the phase change) and post the
+// Bus Service interrupt the ROM's drain loop waits for.
 static uint8_t pdma_in_byte(scsi_53c96_t *c) {
-    if (!c || c->hold_pos >= c->hold_len)
+    uint8_t b = 0;
+    if (!c || !c->bus || c->xfer_mode != XFER_DATA_IN)
         return 0;
-    uint8_t v = c->hold[c->hold_pos++];
-    if (c->hold_pos >= c->hold_len && c->hold_owe_int) {
-        // Buffer drained: fire the deferred full-count completion interrupt
-        // (the ROM's drain loop polls for it right after its read).
-        c->hold_owe_int = false;
+    if (!scsi_pop_data_in_byte(c->bus, &b)) {
+        // Target ran out before the count — short transfer.
+        scsi_external_data_in_complete(c->bus);
+        refresh_phase(c);
+        c->xfer_mode = XFER_IDLE;
         post_interrupt(c, IR_BUS_SERVICE);
+        return 0;
     }
-    return v;
+    if (c->counter_live > 0)
+        c->counter_live--;
+    c->xfer_counter = (uint16_t)c->counter_live;
+    if (!c->xfer_int_done && c->counter_live == c->xfer_residual) {
+        // The counted transfer has moved all but the reserved FIFO residual:
+        // post the completion interrupt the ROM's drain loop waits for.  With
+        // a zero residual (even count) the transfer is fully done here; with a
+        // residual of one (odd count) the final byte stays live for the FIFO-
+        // register read that the driver issues after seeing this interrupt.
+        c->xfer_int_done = 1;
+        post_interrupt(c, IR_BUS_SERVICE);
+        if (c->xfer_residual == 0) {
+            scsi_external_data_in_complete(c->bus);
+            refresh_phase(c);
+            c->xfer_mode = XFER_IDLE;
+        }
+    } else if (c->counter_live == 0) {
+        // Residual odd byte consumed (via the FIFO register read): finish the
+        // transfer without a second interrupt.
+        scsi_external_data_in_complete(c->bus);
+        refresh_phase(c);
+        c->xfer_mode = XFER_IDLE;
+    }
+    return b;
 }
 
 // One payload byte through the aperture, write side (data-out or the CDB
@@ -707,7 +723,5 @@ void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value) {
 bool scsi_53c96_dreq(scsi_53c96_t *c) {
     if (!c)
         return false;
-    if (c->xfer_mode == XFER_DATA_IN)
-        return c->hold_pos < c->hold_len; // bytes waiting to be drained
-    return c->xfer_mode != XFER_IDLE; // data-out / command aperture ready
+    return c->xfer_mode != XFER_IDLE; // a transfer is armed and the FIFO is ready
 }
