@@ -82,6 +82,15 @@ struct dafb {
     uint8_t dac_rgb[3];
     uint8_t pcbr0;
 
+    // AC842a (Q950): PCBR1 lives behind AddrReg==1 at the config register
+    // (DAFBDriver.a/PrimaryInit.a [A]).  Bits 7:4 latch; the low nibble is
+    // the read-only mfg/rev field (0 = non-Antelope → the driver uses the
+    // sparse Trans5to8 CLUT load).  x555 16-bit direct mode is active when
+    // the $C0 bits are set and PCBR0 selects direct color.
+    bool ac842a; // true = AC842a model (PCBR1 exists)
+    uint8_t pcbr1;
+    uint8_t version; // DAFB_Test bits 11:9 (0 Q700/Q900, 3 Q950; ref §11.8)
+
     // DP8531 nibble registers + committed output
     uint8_t clk_reg[16];
     double clock_hz; // committed synthesizer output (0 = never committed)
@@ -126,8 +135,12 @@ static uint32_t pixel_divide(dafb_t *dafb) {
     return 1u << ((dafb->pcbr0 & 0x60u) >> 5);
 }
 
-// Map the PCBR0 depth field to a display format (ref §11.11).
-static bool depth_format(uint8_t pcbr0, pixel_format_t *fmt, uint32_t *bpp) {
+// Map the PCBR0 depth field to a display format (ref §11.11).  Direct color
+// is 24-in-32 XRGB, except on an AC842a with PCBR1's x555 bits set —
+// then pixels are big-endian x555 16-bit words (DAFBDriver.a writes
+// PCBR1 = $C0 when entering the "Thousands" mode).
+static bool depth_format(const dafb_t *dafb, pixel_format_t *fmt, uint32_t *bpp) {
+    uint8_t pcbr0 = dafb->pcbr0;
     switch (pcbr0 & 0x1Cu) {
     case 0x00:
         *fmt = PIXEL_1BPP_MSB;
@@ -146,8 +159,13 @@ static bool depth_format(uint8_t pcbr0, pixel_format_t *fmt, uint32_t *bpp) {
         *bpp = 8;
         return true;
     case 0x1C:
-        *fmt = PIXEL_32BPP_XRGB;
-        *bpp = 32;
+        if (dafb->ac842a && (dafb->pcbr1 & 0xC0u) == 0xC0u) {
+            *fmt = PIXEL_16BPP_555;
+            *bpp = 16;
+        } else {
+            *fmt = PIXEL_32BPP_XRGB;
+            *bpp = 32;
+        }
         return true;
     default:
         return false; // undefined pattern: log, keep previous mode
@@ -170,7 +188,7 @@ static void reconfigure(dafb_t *dafb) {
 
     pixel_format_t fmt;
     uint32_t bpp;
-    if (!depth_format(dafb->pcbr0, &fmt, &bpp)) {
+    if (!depth_format(dafb, &fmt, &bpp)) {
         LOG(1, "DAFB PCBR0 undefined depth pattern $%02X — keeping previous mode", dafb->pcbr0);
         return;
     }
@@ -327,7 +345,18 @@ static void ac842_write(dafb_t *dafb, uint32_t reg, uint8_t value) {
         }
         break;
     case AC842_PCBR0:
-        dafb->pcbr0 = value;
+        // On an AC842a, AddrReg == 1 routes the config register to PCBR1
+        // (Apple's own driver: "Move.l #1,ACDC_AddrReg … Tell ACDC to use
+        // PCBR1"); anything else reaches PCBR0.  On the plain AC842 there
+        // is no PCBR1 — the write always lands in PCBR0, which is exactly
+        // what PrimaryInit's presence probe exploits ($06 into PCBR0,
+        // 0 "into PCBR1", read PCBR0 back: $06 ⇒ AC842a, 0 ⇒ AC842).
+        if (dafb->ac842a && dafb->dac_idx == 1) {
+            dafb->pcbr1 = (uint8_t)((value & 0xF0u) | (dafb->pcbr1 & 0x0Fu)); // low nibble = RO mfg/rev
+            LOG(2, "AC842a PCBR1 = $%02X%s", dafb->pcbr1, (dafb->pcbr1 & 0xC0u) == 0xC0u ? " (x555 16bpp)" : "");
+        } else {
+            dafb->pcbr0 = value;
+        }
         reconfigure(dafb);
         break;
     default:
@@ -348,6 +377,11 @@ static uint8_t ac842_read(dafb_t *dafb, uint32_t reg) {
         return v;
     }
     case AC842_PCBR0:
+        // AC842a: AddrReg == 1 reads PCBR1 (low nibble = mfg/rev, 0 here —
+        // the non-Antelope answer, so the driver loads the sparse
+        // Trans5to8 CLUT for x555).
+        if (dafb->ac842a && dafb->dac_idx == 1)
+            return dafb->pcbr1;
         return dafb->pcbr0;
     default:
         return (uint8_t)dafb->regs[reg >> 2];
@@ -412,6 +446,12 @@ static void reg_write_effects(dafb_t *dafb, uint32_t off, uint32_t value) {
 static bool reg_read_special(dafb_t *dafb, uint32_t off, uint32_t *out) {
     if (off == DAFB_SENSE) {
         *out = sense_read(dafb);
+        return true;
+    }
+    if (off == DAFB_TEST_VERSION) {
+        // Version rides bits 11:9 of the 12-bit test register (ref §11.8;
+        // the driver's 33 MHz path shifts by 9 and compares to DAFB3Vers).
+        *out = (dafb->regs[off >> 2] & 0x1FFu) | ((uint32_t)(dafb->version & 0x7u) << 9);
         return true;
     }
     if (off == 0x024u || off == 0x028u) {
@@ -540,6 +580,7 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &dafb->dac_phase, sizeof(dafb->dac_phase));
         system_read_checkpoint_data(cp, dafb->dac_rgb, sizeof(dafb->dac_rgb));
         system_read_checkpoint_data(cp, &dafb->pcbr0, sizeof(dafb->pcbr0));
+        system_read_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
         system_read_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
         system_read_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
         system_read_checkpoint_data(cp, dafb->vram, vram_size);
@@ -566,6 +607,7 @@ void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &dafb->dac_phase, sizeof(dafb->dac_phase));
     system_write_checkpoint_data(cp, dafb->dac_rgb, sizeof(dafb->dac_rgb));
     system_write_checkpoint_data(cp, &dafb->pcbr0, sizeof(dafb->pcbr0));
+    system_write_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
     system_write_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
     system_write_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
     system_write_checkpoint_data(cp, dafb->vram, dafb->vram_size);
@@ -583,6 +625,16 @@ void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context) {
 void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
     if (dafb)
         dafb->sense_code = code & 0x7u;
+}
+
+void dafb_set_version(dafb_t *dafb, uint8_t version) {
+    if (dafb)
+        dafb->version = version & 0x7u;
+}
+
+void dafb_set_ac842a(dafb_t *dafb, bool ac842a) {
+    if (dafb)
+        dafb->ac842a = ac842a;
 }
 
 void dafb_set_scsi_drq_query(dafb_t *dafb, int chan, dafb_drq_query_fn fn, void *context) {
@@ -612,6 +664,7 @@ void dafb_reset(dafb_t *dafb) {
     dafb->regs[DAFB_SENSE >> 2] = 0x7u; // sense drives tristate at reset
     memset(dafb->clk_reg, 0, sizeof(dafb->clk_reg));
     dafb->pcbr0 = 0;
+    dafb->pcbr1 = 0;
     dafb->dac_idx = 0;
     dafb->dac_phase = 0;
     dafb->clock_hz = 0;

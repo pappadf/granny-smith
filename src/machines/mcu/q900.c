@@ -18,6 +18,7 @@
 //   * five NuBus '90 slots A-E on VIA2 PA1-PA5 (ref §13.3)
 
 #include "mcu.h"
+#include "q900_internal.h"
 
 #include "mac_host_io.h"
 #include "machine.h"
@@ -67,7 +68,7 @@ static inline mcu_state_t *q900_state(config_t *cfg) {
 // sysSes; PB3 xcvrSes is our input to the host) — VIA1InitQuadra900.  Port A
 // is all model-sense inputs on the tower (no head select: floppy is behind
 // the SWIM IOP).
-static void q900_via1_output(void *context, uint8_t port, uint8_t output) {
+void q900_via1_output(void *context, uint8_t port, uint8_t output) {
     config_t *cfg = (config_t *)context;
     mcu_state_t *st = q900_state(cfg);
     if (port == 1 && st->caboose)
@@ -75,7 +76,7 @@ static void q900_via1_output(void *context, uint8_t port, uint8_t output) {
 }
 
 // VIA1 SR shift-out: a command byte for Caboose (Egret byte pump).
-static void q900_via1_shift_out(void *context, uint8_t byte) {
+void q900_via1_shift_out(void *context, uint8_t byte) {
     config_t *cfg = (config_t *)context;
     mcu_state_t *st = q900_state(cfg);
     if (st->caboose)
@@ -84,7 +85,7 @@ static void q900_via1_shift_out(void *context, uint8_t byte) {
 
 // VIA2 outputs: PB3/PB6 select the sound input source on the towers; DFAC
 // programming itself lives behind Caboose (WrDFAC, accept-and-log there).
-static void q900_via2_output(void *context, uint8_t port, uint8_t output) {
+void q900_via2_output(void *context, uint8_t port, uint8_t output) {
     (void)context;
     (void)port;
     (void)output;
@@ -121,7 +122,7 @@ static void q900_scc_irq_update(config_t *cfg, int bit, bool active) {
     mac030_glue_update_ipl(cfg, MAC030_GLUE_IRQ_SCC, st->scc_irq_or != 0);
 }
 
-static void q900_scc_irq(void *context, bool active) {
+void q900_scc_irq(void *context, bool active) {
     q900_scc_irq_update((config_t *)context, 0, active);
 }
 
@@ -172,7 +173,7 @@ static void q900_dafb_irq(void *context, bool active) {
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
 
-static void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
+void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = q900_state(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
@@ -203,7 +204,7 @@ static void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     via_input(cfg->via2, 1, 0, 1);
     via_input(cfg->via2, 1, 1, 1);
     via_input(cfg->via2, 1, 2, 1);
-    via_input(cfg->via2, 1, 5, 0);
+    via_input(cfg->via2, 1, 5, cfg->machine->freq >= 33000000 ? 1 : 0);
 
     // ADB device state: the tower's ADB bus is serviced by the SWIM/ADB IOP
     // (ADBIop in InfoQuadra900), not VIA1's shift register — pass NULL for
@@ -261,6 +262,8 @@ static void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, q900_dafb_irq, cfg);
     dafb_set_monitor_sense(st->dafb, 6); // 13" 640×480 AppleColor RGB
+    dafb_set_version(st->dafb, desc->dafb_version); // 3 on the Q950 (DAFB 3)
+    dafb_set_ac842a(st->dafb, desc->has_ac842a); // AC842a x555 on the Q950
     // TurboSCSI DRQ observation: channel 0 = internal, channel 1 = external.
     dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
     dafb_set_scsi_drq_query(st->dafb, 1, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96_ext);

@@ -64,6 +64,8 @@ typedef struct mcu_board_desc {
     const struct nubus_slot_decl *slots; // NuBus slot table (NULL until Phase F)
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
     uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950; ref §7.4 [R])
+    uint8_t dafb_version; // DAFB_Test bits 11:9 (0 = Q700/Q900, 3 = Q950 "DAFB 3"; ref §11.8)
+    bool has_ac842a; // AC842a RAMDAC (PCBR1 + x555 16-bit mode; Q950 only)
 } mcu_board_desc_t;
 
 // Per-machine hooks + data, named by hw_profile_t.board.

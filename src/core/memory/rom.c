@@ -50,6 +50,8 @@ static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
 // Quadra 700/900 shared 1 MB ROM (also shipped in the PowerBook 140/170 —
 // portables are out of scope and not listed as targets; proposal §13.2).
 static const char *const Q700_Q900_COMPATIBLE[] = {"q700", "q900", NULL};
+// Dedicated Quadra 950 ("Zydeco") 1 MB ROM.
+static const char *const Q950_COMPATIBLE[] = {"q950", NULL};
 
 // Master ROM signature table.  Content facts only — the canonical fixture
 // filenames live in tooling (scripts/rom_naming.py), not here.
@@ -62,6 +64,7 @@ static const rom_info_t ROM_TABLE[] = {
     {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024 },
     {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024 },
     {"Quadra 700/900 ROM",                      Q700_Q900_COMPATIBLE, 0x420DBFF3, 1024 * 1024},
+    {"Quadra 950 ROM",                          Q950_COMPATIBLE,      0x3DC27823, 1024 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))

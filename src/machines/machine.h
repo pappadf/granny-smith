@@ -28,5 +28,6 @@ extern const hw_profile_t machine_macxl;
 extern const hw_profile_t machine_iisi;
 extern const hw_profile_t machine_q700;
 extern const hw_profile_t machine_q900;
+extern const hw_profile_t machine_q950;
 
 #endif // MACHINE_H
