@@ -10,8 +10,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Forward declaration (memory.h has the full definition)
+// Forward declarations (memory.h has the page_entry definition; mmu040.h
+// has the 68040 MMU register file)
 typedef struct page_entry page_entry_t;
+struct mmu040_state;
 
 // === TC Register field extraction ===
 #define TC_ENABLE(tc) ((tc) >> 31)
@@ -129,6 +131,13 @@ typedef struct mmu_state {
     // reads return 0 silently (as the hardware does for non-NuBus slots).
     uint32_t nubus_berr_start; // first address that can bus error (inclusive)
     uint32_t nubus_berr_end; // last address that can bus error (inclusive)
+
+    // 68040 front-end (Quadra proposal §6.5): when non-NULL, this machine's
+    // translation front-end (TTR match + fixed three-level walk in mmu040.c)
+    // replaces the PMMU one; the physical resolver, SoA fill, and TLB
+    // tracking above are shared.  `enabled` mirrors the 040 TC.E bit so the
+    // memory.c fast-path checks stay unchanged.  Set via mmu_attach_mmu040.
+    struct mmu040_state *m040;
 } mmu_state_t;
 
 // === Lifecycle ===
@@ -222,6 +231,17 @@ bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
 // Register a VRAM region so table walks and TT matches can resolve it
 void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size);
 void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint32_t size);
+
+// Attach a 68040 register file (owned by the CPU) to this bus-side MMU
+// state: translation dispatches to the mmu040.c walker from here on.
+void mmu_attach_mmu040(mmu_state_t *mmu, struct mmu040_state *m040);
+
+// Fill one 4 KiB SoA page from an already-resolved translation.  Exposed for
+// the 68040 walker (mmu040.c); handles host resolution, logpoint suppression,
+// and TLB tracking exactly like the PMMU fill.  `writable` gates the write
+// arrays (further limited by host writability).
+void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool fill_super, bool fill_user,
+                       bool writable);
 
 // Configure a second physical RAM bank (e.g. the Macintosh IIsi's SIMM Bank B
 // at physical $04000000).  After this, Bank A is [0, ram_a_size) host-backed by

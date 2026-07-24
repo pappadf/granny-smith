@@ -251,8 +251,12 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
     // blob in the stream (see cpu_checkpoint).
     if (cpu->cpu_model == CPU_MODEL_68040) {
         cpu->mmu = mmu040_init();
-        if (checkpoint && cpu->mmu)
+        if (checkpoint && cpu->mmu) {
             system_read_checkpoint_data(checkpoint, cpu->mmu, sizeof(mmu040_state_t));
+            // The bus backlink is a save-time pointer; machine init
+            // re-establishes it via mmu_attach_mmu040 after restore.
+            ((mmu040_state_t *)cpu->mmu)->bus = NULL;
+        }
     }
 
     // Object-tree binding — instance_data on the cpu node is the cpu_t

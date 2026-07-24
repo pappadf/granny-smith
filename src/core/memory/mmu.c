@@ -8,6 +8,7 @@
 #include "mmu.h"
 #include "log.h"
 #include "memory.h"
+#include "mmu040.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -291,6 +292,8 @@ static bool tt_matches(uint32_t tt, uint32_t addr, bool write, bool supervisor) 
 bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor) {
     if (!mmu)
         return false;
+    if (mmu->m040)
+        return mmu040_check_tt(mmu->m040, addr, write, supervisor);
     return tt_matches(mmu->tt0, addr, write, supervisor) || tt_matches(mmu->tt1, addr, write, supervisor);
 }
 
@@ -586,6 +589,56 @@ void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint
     mmu->physical_vrom_size = size;
 }
 
+// Attach a 68040 register file (owned by the CPU) to this bus-side MMU state.
+// From here on translation dispatches to the mmu040.c walker; `enabled`
+// mirrors the 040's TC.E (kept in sync by mmu040_set_tc via the backlink).
+void mmu_attach_mmu040(mmu_state_t *mmu, struct mmu040_state *m040) {
+    if (!mmu)
+        return;
+    mmu->m040 = m040;
+    if (m040) {
+        m040->bus = mmu;
+        mmu->enabled = m040->enabled;
+    }
+}
+
+// Fill one 4 KiB SoA page from an already-resolved translation (68040 walker
+// entry point).  Shares host resolution, logpoint suppression, and TLB
+// tracking with the PMMU fill above.
+void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool fill_super, bool fill_user,
+                       bool writable) {
+    uint8_t *host_ptr = phys_to_host(mmu, physical_page);
+    if (!host_ptr)
+        return; // unmapped physical address — leave SoA entry as zero
+
+    bool host_writable = writable && phys_is_writable(mmu, physical_page);
+    uint32_t page_index = logical_page >> PAGE_SHIFT;
+    if ((int)page_index >= g_page_count)
+        return;
+
+    // Memory logpoints force the slow path — see mmu_fill_soa_entry.
+    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page_index])
+        return;
+    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[physical_page >> PAGE_SHIFT])
+        return;
+
+    uintptr_t adjusted = (uintptr_t)host_ptr - logical_page;
+    tlb_track_page(page_index);
+
+    if (fill_super) {
+        if (g_supervisor_read)
+            g_supervisor_read[page_index] = adjusted;
+        if (g_supervisor_write && host_writable)
+            g_supervisor_write[page_index] = adjusted;
+    }
+    if (fill_user) {
+        if (g_user_read)
+            g_user_read[page_index] = adjusted;
+        if (g_user_write && host_writable)
+            g_user_write[page_index] = adjusted;
+    }
+}
+
 // === memory_map_host_region — public bus-map API (proposal §3.2.3) =========
 //
 // The names below live on the memory map (declared in memory.h) but the
@@ -862,6 +915,8 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
 
 // Handle a TLB miss: perform table walk or TT check, fill SoA entry.
 bool mmu_handle_fault(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor) {
+    if (mmu && mmu->m040)
+        return mmu040_handle_fault(mmu, logical_addr, write, supervisor);
     return mmu_handle_fault_internal(mmu, logical_addr, write, supervisor, true);
 }
 
@@ -919,6 +974,11 @@ uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool super
     if (!mmu || !mmu->enabled)
         return logical_addr;
 
+    if (mmu->m040) {
+        uint32_t pa;
+        return mmu040_translate_checked(mmu, logical_addr, supervisor, &pa) ? pa : logical_addr;
+    }
+
     if (mmu_check_tt(mmu, logical_addr, false, supervisor))
         return logical_addr;
 
@@ -940,6 +1000,8 @@ bool mmu_translate_checked(mmu_state_t *mmu, uint32_t logical_addr, bool supervi
             *pa_out = logical_addr;
         return true; // MMU off: identity, always valid
     }
+    if (mmu->m040)
+        return mmu040_translate_checked(mmu, logical_addr, supervisor, pa_out);
     if (mmu_check_tt(mmu, logical_addr, false, supervisor)) {
         if (pa_out)
             *pa_out = logical_addr;

@@ -38,9 +38,12 @@
 #define MMUSR040_T        (1u << 1) // transparent (TTR hit)
 #define MMUSR040_R        (1u << 0) // resident
 
+// Forward declaration (mmu.h has the full definition)
+struct mmu_state;
+
 // MC68040 MMU state.  Registers are written via MOVEC in cpu_68040.c;
-// the table walker (Phase B) consumes them.  Owned by the CPU instance
-// (the 040 MMU is on-chip; cpu_init creates it, cpu_delete frees it).
+// the table walker consumes them.  Owned by the CPU instance (the 040 MMU
+// is on-chip; cpu_init creates it, cpu_delete frees it).
 typedef struct mmu040_state {
     uint32_t tc; // translation control (E, P; 16-bit register)
     uint32_t itt0; // instruction transparent translation 0
@@ -51,6 +54,11 @@ typedef struct mmu040_state {
     uint32_t srp; // supervisor root pointer
     uint32_t mmusr; // MMU status register (PTEST result)
     bool enabled; // TC.E — translation active
+
+    // Backlink to the bus-side MMU state (physical resolver + SoA fill in
+    // mmu.c).  Set by mmu_attach_mmu040 at machine init; NULL in bare CPU
+    // unit tests and re-established after checkpoint restore.
+    struct mmu_state *bus;
 } mmu040_state_t;
 
 // === Lifecycle ===
@@ -86,9 +94,24 @@ void mmu040_pflush_all(mmu040_state_t *mmu, bool nonglobal_only);
 // === PTEST ===
 
 // PTESTR/PTESTW (An): walk the translation for `addr` under function code
-// `fc` (from DFC per MC68040UM) and load MMUSR with the result.  Phase B
-// implements the real three-level walk; until a 040 machine exists this
-// reports a resident identity translation when the MMU is disabled.
+// `fc` (from DFC per MC68040UM) and load MMUSR with the result.
 void mmu040_ptest(mmu040_state_t *mmu, uint32_t addr, bool write, uint32_t fc);
+
+// === Translation front-end (dispatched from mmu.c) ===
+
+// True if any enabled TTR matches this access (identity translation).
+// A match against a write-protected TTR still reports true; the fault is
+// raised by mmu040_handle_fault when the access is a write.
+bool mmu040_check_tt(mmu040_state_t *mmu, uint32_t addr, bool write, bool supervisor);
+
+// TLB-miss handler: TTR match or three-level walk, then SoA fill via
+// mmu_fill_soa_page.  Returns false on a translation fault (caller raises
+// the bus error; g_bus_error_is_pmmu is set for retry semantics).
+bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool write, bool supervisor);
+
+// Side-effect-free translation (no SoA fill, no U/M updates).  Returns true
+// and writes *pa_out on success; false (with *pa_out = logical_addr) on a
+// failed walk.
+bool mmu040_translate_checked(struct mmu_state *bus, uint32_t logical_addr, bool supervisor, uint32_t *pa_out);
 
 #endif // MMU040_H

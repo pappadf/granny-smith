@@ -1,8 +1,9 @@
-# MMU unit test (Milestone 7)
-# Tests 68030 PMMU: SoA arrays, table walk, TLB invalidation, TT, PTEST.
-# Uses real memory.c and mmu.c.
+# MMU040 unit test (Quadra proposal Phase B)
+# Tests the MC68040 MMU: TTRs, three-level table walk, U/M protocol,
+# protection, indirect descriptors, 8K pages, PTEST MMUSR.
+# Uses real memory.c, mmu.c, and mmu040.c.
 
-TEST_NAME := mmu
+TEST_NAME := mmu040
 
 UNIT_ROOT      := $(abspath ../../)
 WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
@@ -37,7 +38,7 @@ CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
 LDFLAGS ?=
 LDFLAGS += -rdynamic
 
-# Real memory.c and mmu.c; exclude stub_memory.c to avoid symbol conflicts
+# Real memory.c, mmu.c, mmu040.c; exclude stub_memory.c to avoid symbol conflicts
 SRCS := $(CURDIR)/test.c \
         $(UNIT_ROOT)/support/harness_common.c \
         $(UNIT_ROOT)/support/harness_isolated.c \

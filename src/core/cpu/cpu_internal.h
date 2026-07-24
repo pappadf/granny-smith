@@ -679,13 +679,19 @@ static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, 
         // Determine frame format from exception vector number
         uint32_t vec_num = vector / 4;
         int format = 0;
-        // Vectors 5,6,7,9 and FPU exceptions (48-54) use Format $2 on 68020+
+        // Vectors 5,6,7,9 and FPU exceptions (48-54) use Format $2 on 68020+.
+        // On the 68040, FP post-instruction exceptions use Format $3 instead —
+        // same 6-word size, but the extra long is the effective address.  Our
+        // synchronous FPU model has no pending mid-instruction EA, so the
+        // instruction address stands in for it (documented divergence).
         if (vec_num == 5 || vec_num == 6 || vec_num == 7 || vec_num == 9 || (vec_num >= 48 && vec_num <= 54)) {
             format = 2;
+            if (cpu->cpu_model >= CPU_MODEL_68040 && vec_num >= 48 && vec_num <= 54)
+                format = 3;
         }
 
-        if (format == 2) {
-            // Format $2: push instruction address (4 bytes) before format word
+        if (format == 2 || format == 3) {
+            // Format $2/$3: push instruction address (4 bytes) before format word
             cpu->a[7] -= 4;
             memory_write_uint32(cpu->a[7], cpu->instruction_pc);
         }
