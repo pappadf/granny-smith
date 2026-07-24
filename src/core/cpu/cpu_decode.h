@@ -538,6 +538,7 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
             case 1: OP_MOVE16_XXX_L_AN_P; break;
             case 2: OP_MOVE16_AN_XXX_L;   break;
             case 3: OP_MOVE16_XXX_L_AN;   break;
+            case 4: OP_MOVE16_AN_P_AN_P;  break;
             default: OP_FTRAP;            break;
             }
             break;

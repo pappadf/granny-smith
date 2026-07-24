@@ -51,9 +51,11 @@ typedef enum mmu_kind {
     MMU_NONE = 0, // no MMU (compact 68000 Macs)
     MMU_68030_PMMU, // Motorola 68030 integrated PMMU
     MMU_LISA_SEGMENT, // Apple Lisa custom segment MMU
+    MMU_68040, // Motorola 68040 integrated MMU (URP/SRP, fixed 3-level walk)
 } mmu_kind_t;
 
-// Wire string for an mmu_kind_t ("none" / "68030_pmmu" / "lisa_segment").
+// Wire string for an mmu_kind_t ("none" / "68030_pmmu" / "lisa_segment" /
+// "68040").
 const char *mmu_kind_to_string(mmu_kind_t kind);
 
 // How a machine attaches a hard-disk image.  Every Mac hangs its HD off the

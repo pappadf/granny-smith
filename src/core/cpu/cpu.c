@@ -10,6 +10,7 @@
 #include "fpu.h"
 #include "log.h"
 #include "memory.h"
+#include "mmu040.h"
 #include "object.h"
 #include "scheduler.h"
 #include "system.h"
@@ -21,11 +22,13 @@
 extern const class_desc_t cpu_class;
 extern const class_desc_t fpu_class;
 extern const class_desc_t mmu_class;
+extern const class_desc_t mmu040_class;
 LOG_USE_CATEGORY_NAME("cpu");
 
-// Declare decoder functions (defined in cpu_68000.c and cpu_68030.c)
+// Declare decoder functions (defined in cpu_68000.c, cpu_68030.c, cpu_68040.c)
 void cpu_run_68000(cpu_t *restrict cpu, uint32_t *instructions);
 void cpu_run_68030(cpu_t *restrict cpu, uint32_t *instructions);
+void cpu_run_68040(cpu_t *restrict cpu, uint32_t *instructions);
 
 // === Public Accessors ===
 
@@ -126,11 +129,11 @@ void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value) {
 }
 
 // Get the complete status register (includes CCR and system byte).
-// On 68030, includes M bit (bit 12) and T0 bit (bit 14).
+// On 68030/68040, includes M bit (bit 12) and T0 bit (bit 14).
 uint16_t cpu_get_sr(cpu_t *restrict cpu) {
     uint16_t sr = read_ccr(cpu);
 
-    if (cpu->cpu_model == CPU_MODEL_68030) {
+    if (cpu->cpu_model >= CPU_MODEL_68030) {
         sr |= (cpu->trace >> 1 & 1) << 15; // T1
         sr |= (cpu->trace & 1) << 14; // T0
         if (cpu->m)
@@ -236,9 +239,25 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
         // 68030-specific registers default to zero (VBR=0, CACR=0, etc.)
     }
 
-    // Allocate FPU state for 68030 model
-    if (cpu->cpu_model == CPU_MODEL_68030) {
+    // Allocate FPU state for models that carry one (68030 paired 68882,
+    // 68040 on-chip FPU — the same datapath serves both, see fpu.c).
+    if (cpu_has_fpu(cpu->cpu_model)) {
         cpu->fpu = fpu_init();
+    }
+
+    // The 68040 MMU is on-chip: the CPU owns its state (created here, freed
+    // in cpu_delete), unlike the 030 PMMU which machine code constructs and
+    // attaches via cpu_attach_mmu.  MOVEC in cpu_68040.c reaches it through
+    // cpu->mmu.  On checkpoint restore the register file follows the cpu_t
+    // blob in the stream (see cpu_checkpoint).
+    if (cpu->cpu_model == CPU_MODEL_68040) {
+        cpu->mmu = mmu040_init();
+        if (checkpoint && cpu->mmu) {
+            system_read_checkpoint_data(checkpoint, cpu->mmu, sizeof(mmu040_state_t));
+            // The bus backlink is a save-time pointer; machine init
+            // re-establishes it via mmu_attach_mmu040 after restore.
+            ((mmu040_state_t *)cpu->mmu)->bus = NULL;
+        }
     }
 
     // Object-tree binding — instance_data on the cpu node is the cpu_t
@@ -252,6 +271,13 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
             cpu->fpu_object = object_new(&fpu_class, cpu->fpu, "fpu");
             if (cpu->fpu_object)
                 object_attach(cpu->cpu_object, cpu->fpu_object);
+        }
+        // The 040's on-chip MMU binds its inspector here (the 030 PMMU is
+        // machine-constructed and binds later via cpu_attach_mmu).
+        if (cpu->cpu_model == CPU_MODEL_68040 && cpu->mmu) {
+            cpu->mmu_object = object_new(&mmu040_class, cpu->mmu, "mmu");
+            if (cpu->mmu_object)
+                object_attach(cpu->cpu_object, cpu->mmu_object);
         }
     }
 
@@ -304,6 +330,12 @@ void cpu_delete(cpu_t *cpu) {
         fpu_free((fpu_state_t *)cpu->fpu);
         cpu->fpu = NULL;
     }
+    // The 040 MMU is CPU-owned (see cpu_init); the 030 PMMU belongs to the
+    // machine and must not be freed here.
+    if (cpu->cpu_model == CPU_MODEL_68040 && cpu->mmu) {
+        mmu040_delete((mmu040_state_t *)cpu->mmu);
+        cpu->mmu = NULL;
+    }
     free(cpu);
 }
 
@@ -313,13 +345,19 @@ void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint) {
         return;
     // Write contiguous plain-data portion of cpu_t in one operation
     system_write_checkpoint_data(checkpoint, cpu, sizeof(cpu_t));
+    // 68040: the on-chip MMU register file follows the cpu_t blob (the 030
+    // PMMU is machine-owned and checkpointed by the machine instead).
+    if (cpu->cpu_model == CPU_MODEL_68040 && cpu->mmu)
+        system_write_checkpoint_data(checkpoint, cpu->mmu, sizeof(mmu040_state_t));
 }
 
 // === Runtime Dispatch ===
 
 // Run the appropriate decoder for the CPU model
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
-    if (cpu->cpu_model == CPU_MODEL_68030)
+    if (cpu->cpu_model == CPU_MODEL_68040)
+        cpu_run_68040(cpu, instructions);
+    else if (cpu->cpu_model == CPU_MODEL_68030)
         cpu_run_68030(cpu, instructions);
     else
         cpu_run_68000(cpu, instructions);
@@ -868,4 +906,90 @@ const class_desc_t mmu_class = {
     .name = "mmu",
     .members = mmu_members,
     .n_members = sizeof(mmu_members) / sizeof(mmu_members[0]),
+};
+
+// === CPU.mmu child class (68040) ============================================
+//
+// The 040 MMU is on-chip (register file in mmu040_state_t, owned by the CPU;
+// registers reached via MOVEC, no PMOVE).  Expose TC, the four transparent-
+// translation registers, both root pointers, and MMUSR as cpu.mmu.*
+// attributes — the PMMU-shaped mmu_class above would misread this state.
+// instance_data on the node is the mmu040_state_t* directly.
+
+static mmu040_state_t *mmu040_from(struct object *self) {
+    return (mmu040_state_t *)object_data(self);
+}
+
+// One read-only hex attribute getter per 32-bit register field.
+#define MMU040_HEX_ATTR(field)                                                                                         \
+    static value_t attr_mmu040_##field(struct object *self, const member_t *m) {                                       \
+        (void)m;                                                                                                       \
+        mmu040_state_t *mmu = mmu040_from(self);                                                                       \
+        if (!mmu)                                                                                                      \
+            return val_err("mmu not present");                                                                         \
+        value_t v = val_uint(4, mmu->field);                                                                           \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+MMU040_HEX_ATTR(tc)
+MMU040_HEX_ATTR(itt0)
+MMU040_HEX_ATTR(itt1)
+MMU040_HEX_ATTR(dtt0)
+MMU040_HEX_ATTR(dtt1)
+MMU040_HEX_ATTR(urp)
+MMU040_HEX_ATTR(srp)
+MMU040_HEX_ATTR(mmusr)
+
+static value_t attr_mmu040_enabled(struct object *self, const member_t *m) {
+    (void)m;
+    mmu040_state_t *mmu = mmu040_from(self);
+    if (!mmu)
+        return val_err("mmu not present");
+    return val_uint(1, mmu->enabled ? 1 : 0);
+}
+
+static const member_t mmu040_members[] = {
+    {.kind = M_ATTR,
+     .name = "tc",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_tc, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "itt0",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt0, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "itt1",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_itt1, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "dtt0",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt0, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "dtt1",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_dtt1, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "urp",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_urp, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "srp",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_srp, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "mmusr",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_mmu040_mmusr, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}                             },
+};
+
+const class_desc_t mmu040_class = {
+    .name = "mmu040",
+    .members = mmu040_members,
+    .n_members = sizeof(mmu040_members) / sizeof(mmu040_members[0]),
 };

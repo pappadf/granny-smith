@@ -1,0 +1,31 @@
+# Quadra 700 + Display Card 8•24 GC — Phase F gate #2 (see config.mk).
+
+# Pin the RTC so the boot is deterministic run-to-run.
+machine.rtc.time = 3000000000
+
+# Seat the GC in the first socket (slot $D); no video_mode seed — the card
+# boots through its declROM driver defaults as the second display.
+machine.boot model="q700" ram=8192 video_card="824gc"
+machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
+
+# Same budget as q700-24ac: dual-display boot settles by 1.5B.
+scheduler.run 1500000000
+
+# The GC seated in slot $D and its declROM driver brought the display up.
+assert machine.nubus.slot[13].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $D card != 8•24 GC"
+assert machine.nubus.slot[13].card.framebuffer.width == 640 "card fb width != 640"
+
+# Authentic 68040 behavior: the GC acceleration software declines to
+# install on a Quadra (it never starts the coprocessor), so the card runs
+# as a plain video card.  On a IIcx the same image sets gc.on == true.
+assert machine.nubus.slot[13].card.gc.on == false "GC INIT unexpectedly started the coprocessor on a 68040"
+
+# The System's main screen (menu bar) is the built-in DAFB.
+assert (debug.mac.globals.read("ScrnBase") & 0xFF000000) == 0xF9000000 "ScrnBase not on the DAFB"
+assert machine.screen.width == 640 "screen width != 640"
+assert machine.screen.height == 480 "screen height != 480"
+
+# Finder desktop on the DAFB, pixel-exact.
+machine.screen.match dafb-desktop.png
+
+quit

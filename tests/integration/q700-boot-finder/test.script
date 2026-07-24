@@ -1,0 +1,17 @@
+# Quadra 700 Phase D gate (see config.mk).
+
+machine.floppy.drive[0].insert "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+scheduler.run 260000000
+
+# The desktop is up: pixel-exact match against the golden.
+assert machine.screen.width == 640 "not in 640x480 mode"
+assert machine.screen.height == 480 "not in 640x480 mode"
+machine.screen.match finder-desktop.png
+
+# ADB is alive: a mouse move changes the frame (cursor redraw).
+let before = machine.screen.checksum()
+machine.adb.mouse.move 320 240
+scheduler.run 20000000
+assert machine.screen.checksum() != $before "cursor did not move"
+
+quit

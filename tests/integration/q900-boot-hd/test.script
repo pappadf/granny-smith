@@ -1,0 +1,32 @@
+# Quadra 900 Phase G gate (see config.mk).
+
+# Happy Mac → "Welcome to Macintosh" → extensions → Finder desktop.
+# (Desktop is stable from ~800M; 900M adds margin.  Deterministic across
+# runs — verified twice at bring-up.)
+scheduler.run 900000000
+
+# The ROM identified the tower: BoxFlag ($CB3, listed under its older
+# MMUFluff name) holds boxQuadra900 = 14 (InternalOnlyEqu.a).
+assert debug.mac.globals.read("MMUFluff") == 14 "not identified as Quadra 900"
+assert machine.screen.width == 640 "not in 640x480 mode"
+assert machine.screen.height == 480 "not in 640x480 mode"
+
+# Bring up "About This Macintosh" via the Apple menu (global warps position
+# the cursor exactly; press/release goes through the SWIM IOP ADB autopoll).
+# The About box names the machine from Gestalt ("Macintosh Quadra 900",
+# tower icon) and shows Total Memory 8,192K, so the pixel match verifies
+# the desktop AND that the System reports the correct machine type.
+machine.adb.mouse.move 50 50 global
+scheduler.run 5000000
+machine.adb.mouse.move 25 10 global
+scheduler.run 3000000
+machine.adb.mouse.click 1
+scheduler.run 6000000
+machine.adb.mouse.move 25 30 global
+scheduler.run 6000000
+machine.adb.mouse.click 0
+scheduler.run 45000000
+
+machine.screen.match about.png
+
+quit

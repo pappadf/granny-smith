@@ -33,8 +33,8 @@ LOG_USE_CATEGORY_NAME("setup");
 // machine_register(), no MAX_MACHINES cap.  The profiles are defined in each
 // family's machine file (glue/se30.c, mdu/iici.c, …).
 static const hw_profile_t *const builtin_machines[] = {
-    &machine_plus, &machine_se30, &machine_iicx, &machine_iix,   &machine_iifx,
-    &machine_iici, &machine_iisi, &machine_lisa, &machine_macxl,
+    &machine_plus, &machine_se30, &machine_iicx, &machine_iix,  &machine_iifx, &machine_iici,
+    &machine_iisi, &machine_q700, &machine_q900, &machine_q950, &machine_lisa, &machine_macxl,
 };
 static const size_t builtin_machine_count = sizeof(builtin_machines) / sizeof(builtin_machines[0]);
 
@@ -62,6 +62,8 @@ const char *mmu_kind_to_string(mmu_kind_t kind) {
         return "68030_pmmu";
     case MMU_LISA_SEGMENT:
         return "lisa_segment";
+    case MMU_68040:
+        return "68040";
     }
     return "none";
 }

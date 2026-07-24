@@ -1909,6 +1909,51 @@ void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte) {
     scsi_odr_auto_handshake_byte(scsi, byte, /*apply_primer_gate=*/false);
 }
 
+// ============================================================================
+// External-initiator API (53C96-class front-ends) — see scsi.h
+// ============================================================================
+
+bool scsi_external_select(scsi_t *scsi, int target) {
+    if (!scsi || target < 0 || target > 7)
+        return false;
+    if (!scsi_device_present(scsi, (unsigned)target))
+        return false; // no device: the front-end times out
+    if (scsi->bus.phase != scsi_bus_free)
+        phase_free(scsi); // a stuck prior transaction never blocks a select
+    scsi->bus.initiator = 7; // Macintosh host ID
+    scsi->bus.target = target;
+    phase_arbitration(scsi);
+    phase_selection(scsi);
+    phase_command(scsi);
+    return true;
+}
+
+void scsi_external_data_in_complete(scsi_t *scsi) {
+    if (!scsi || scsi->bus.phase != scsi_data_in || scsi->buf.size != 0)
+        return;
+    phase_status(scsi, STATUS_GOOD);
+}
+
+int scsi_external_status_byte(scsi_t *scsi) {
+    if (!scsi || scsi->bus.phase != scsi_status)
+        return -1;
+    int status = scsi->reg.cdr;
+    phase_message_in(scsi, 0x00); // COMMAND COMPLETE
+    return status;
+}
+
+int scsi_external_message_byte(scsi_t *scsi) {
+    if (!scsi || scsi->bus.phase != scsi_message_in)
+        return -1;
+    return scsi->reg.cdr;
+}
+
+void scsi_external_release(scsi_t *scsi) {
+    if (!scsi)
+        return;
+    phase_free(scsi);
+}
+
 void scsi_signal_eop(scsi_t *scsi) {
     // External DMA controllers (IIfx wrapper, etc.) drive the chip's EOP
     // input when their byte count reaches zero.  On real hardware the

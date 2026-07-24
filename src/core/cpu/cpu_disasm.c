@@ -1213,6 +1213,7 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 #define OP_MOVE16_XXX_L_AN_P ASM("MOVE16\t$%08X,(%s)+", SRC_LONG, AY)
 #define OP_MOVE16_AN_XXX_L   ASM("MOVE16\t(%s),$%08X", AY, DST_LONG)
 #define OP_MOVE16_XXX_L_AN   ASM("MOVE16\t$%08X,(%s)", SRC_LONG, AY)
+#define OP_MOVE16_AN_P_AN_P  ASM("MOVE16\t(%s)+,(%s)+", AY, an[SRC_WORD >> 12 & 7])
 #define OP_PMMU_GENERAL      disasm_pmmu(opcode, ext_word, buf, &fetch_pos_src)
 #define OP_FTRAP             OP_UNDEFINED
 

@@ -9,9 +9,14 @@
 #   * the IIcx ROM's boot-screen selection with virgin PRAM lands on the
 #     HIGHEST video slot — the ROM paints the gray desktop dither into the
 #     GC's framebuffer in $A (observed contract, same with a 24AC in $A);
+#   * the ROM also grays the SECONDARY screen: InitGDevices runs every
+#     card's driver, so the JMFB in $9 carries the 1-bpp dither too.  (The
+#     pre-multi-region bus map dropped these writes — the single host-region
+#     slot only resolved the last-registered card — so $9 used to read as
+#     unpainted; since the host-region list landed, both frame buffers are
+#     live and the dither rows are pinned below.)
 #   * `machine.screen` follows nubus_primary_display — the FIRST video card
-#     in declared slot order ($9) — which therefore stays unpainted in this
-#     pre-OS dual configuration.  (Multi-display UI selection is future
+#     in declared slot order ($9).  (Multi-display UI selection is future
 #     work; the rule is deliberately deterministic.)
 
 # Stage the second card into socket $A ($A = slot index 10); socket $9
@@ -44,9 +49,12 @@ assert machine.memory.peek.l(0xAC011400) == 0x6DB6DB6D "slot $A fb: boot dither 
 assert machine.memory.peek.l(0xAC011440) == 0xB6DB6DB6 "slot $A fb: boot dither long 1 mismatch"
 
 # machine.screen = primary display = first video slot ($9): correct
-# geometry, deliberately unpainted in this pre-OS dual configuration.
+# geometry, grayed by its driver like the boot screen (1-bpp dither rows
+# alternate $55/$AA at the JMFB's standard-slot framebuffer).
 assert machine.screen.width == 640 "screen.width != 640"
 assert machine.screen.height == 480 "screen.height != 480"
-assert machine.screen.checksum() == 0 "primary ($9) unexpectedly painted — boot-screen contract changed"
+assert machine.memory.peek.l(0xF9008000) == 0x55555555 "slot $9 fb: dither row 0 mismatch"
+assert machine.memory.peek.l(0xF9008050) == 0xAAAAAAAA "slot $9 fb: dither row 1 mismatch"
+assert machine.screen.checksum() != 0 "primary ($9) framebuffer unexpectedly empty"
 
 quit

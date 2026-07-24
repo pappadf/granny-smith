@@ -129,44 +129,10 @@ void iicx_memory_layout_init(config_t *cfg) {
     // se30_fill_page calls).  Without this, slot-space reads fall to the
     // unmapped-$FF path even when phys_to_host would resolve, because
     // memory_read's slow path doesn't probe phys_to_host directly.
-    if (st->mmu) {
-        if (st->mmu->physical_vram && st->mmu->physical_vram_size > 0) {
-            uint32_t pages = st->mmu->physical_vram_size >> PAGE_SHIFT;
-            uint32_t start = st->mmu->vram_phys_base >> PAGE_SHIFT;
-            for (uint32_t i = 0; i < pages && (int)(start + i) < g_page_count; i++)
-                mac030_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), /*writable*/ true);
-        }
-        if (st->mmu->physical_vrom && st->mmu->physical_vrom_size > 0) {
-            uint32_t pages = st->mmu->physical_vrom_size >> PAGE_SHIFT;
-            uint32_t start = st->mmu->vrom_phys_base >> PAGE_SHIFT;
-            for (uint32_t i = 0; i < pages && (int)(start + i) < g_page_count; i++)
-                mac030_fill_page(start + i, st->mmu->physical_vrom + (i << PAGE_SHIFT), /*writable*/ false);
-        }
-
-        // Mode-24 (24-bit Memory Manager) NuBus slot windows: each slot s
-        // ($9..$E) has a 1 MB region at $00s00000 that mirrors the start of
-        // its 32-bit slot space at $Fs000000. On real Mac II family hardware
-        // the GLUE / BBU chip decodes both ranges to the same NuBus slot;
-        // the IIcx/IIx/SE/30 ROM is 24-bit-only, so the OS routinely uses
-        // these low aliases. Without this mirror, a card's framebuffer that
-        // QuickDraw reaches via a Mode-24 ScrnBase ($00900080) lands in
-        // unmapped low memory.
-        if (st->mmu->physical_vram) {
-            uint32_t base32 = st->mmu->vram_phys_base;
-            uint32_t high = base32 & 0xFF000000u;
-            if (high >= 0xF9000000u && high <= 0xFE000000u) {
-                int slot = (int)((base32 >> 24) & 0xFu);
-                uint32_t mode24_base = (uint32_t)slot << 20; // $00s00000
-                uint32_t alias_bytes = 0x100000u; // 1 MB Mode-24 slot window
-                if (alias_bytes > st->mmu->physical_vram_size)
-                    alias_bytes = st->mmu->physical_vram_size;
-                uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
-                uint32_t start = mode24_base >> PAGE_SHIFT;
-                for (uint32_t i = 0; i < alias_pages && (int)(start + i) < g_page_count; i++)
-                    mac030_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), /*writable*/ true);
-            }
-        }
-    }
+    // mode24_alias=true adds the 1 MB Mode-24 slot windows at $00s00000:
+    // the IIcx/IIx/SE/30 ROM is 24-bit-only, so QuickDraw routinely reaches
+    // a card framebuffer via a Mode-24 ScrnBase ($00900080).
+    mmu_host_regions_fill_pages(st->mmu, mac030_fill_page, /*mode24_alias*/ true);
 
     st->rom_overlay = false;
     iicx_set_rom_overlay(cfg, true);

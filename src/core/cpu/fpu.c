@@ -685,6 +685,50 @@ int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     return 4 + size;
 }
 
+// MC68040 FSAVE: the on-chip FPU's frames are a single status longword —
+// NULL (version $00) when the FPU is in the reset state, IDLE (version $41,
+// size byte $00) otherwise.  The larger UNIMP/BUSY frames only exist mid-
+// exception on real silicon; this functional model completes every FP
+// operation synchronously (proposal §6.4 decision A), so there is never a
+// mid-instruction state to dump.  Frame sizes cross-checked against the
+// FPSP equates (fpsp.h: IDLE_SIZE=4, UNIMP_41_SIZE=52, BUSY_SIZE=100).
+int fpu_fsave040(fpu_state_t *fpu, uint32_t addr) {
+    memory_write_uint32(addr, fpu->initialized ? 0x41000000u : 0x00000000u);
+    // After FSAVE the FPU is in the null state; the programmer model
+    // (FP0-FP7, control registers) is preserved, as on the 6888x path.
+    fpu->initialized = false;
+    fpu->pre_exc_mask = 0;
+    return 4;
+}
+
+// MC68040 FRESTORE: a NULL frame resets the FPU; IDLE/UNIMP/BUSY frames
+// are consumed by their size byte (bits 23:16 = $00/$30/$60; total frame
+// is size+4) and re-arm the idle state.
+int fpu_frestore040(fpu_state_t *fpu, uint32_t addr) {
+    uint32_t header = memory_read_uint32(addr);
+    uint32_t version = header >> 24;
+    uint32_t size = (header >> 16) & 0xFF;
+
+    if (version == 0) {
+        // Null frame: reset to hardware-reset state (same discipline as the
+        // 6888x path — a full reset only when aborting an initialized state).
+        if (fpu->initialized) {
+            for (int i = 0; i < 8; i++)
+                fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
+            fpu->fpcr = 0;
+            fpu->fpsr = 0;
+            fpu->fpiar = 0;
+        }
+        fpu->pre_exc_mask = 0;
+        fpu->exceptional_operand = FP80_ZERO;
+        fpu->initialized = false;
+        return 4;
+    }
+
+    fpu->initialized = true;
+    return 4 + (int)size;
+}
+
 // ============================================================================
 // Data format conversions: memory -> float80_reg_t
 // ============================================================================

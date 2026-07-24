@@ -965,6 +965,7 @@
 #define OP_MOVE16_XXX_L_AN_P  OP(EXC_FTRAP())
 #define OP_MOVE16_AN_XXX_L    OP(EXC_FTRAP())
 #define OP_MOVE16_XXX_L_AN    OP(EXC_FTRAP())
+#define OP_MOVE16_AN_P_AN_P   OP(EXC_FTRAP())
 
 // ============================================================
 // CPU-specific instruction definitions
@@ -1515,6 +1516,18 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         case 0x2:                                                                                                      \
             _offset += 4;                                                                                              \
             break; /* 6-word frame: +instruction address */                                                            \
+        case 0x3:                                                                                                      \
+            _offset += 4;                                                                                              \
+            break; /* 68040 FP post-instruction frame: +effective address */                                           \
+        case 0x7:                                                                                                      \
+            /* MC68040 access error (30-word) frame.  Writebacks are never  */                                         \
+            /* pending in this functional model, so the WBxS fields the     */                                         \
+            /* handler may have completed are simply discarded.             */                                         \
+            if (cpu->cpu_model >= CPU_MODEL_68040)                                                                     \
+                _offset += 52;                                                                                         \
+            else                                                                                                       \
+                _fmterr = 1;                                                                                           \
+            break;                                                                                                     \
         case 0x9:                                                                                                      \
             _offset += 12;                                                                                             \
             break; /* coprocessor mid-instruction (+12) */                                                             \

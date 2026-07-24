@@ -1382,35 +1382,9 @@ static void iifx_memory_layout_init(config_t *cfg) {
     };
     memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "IIfx I/O", &st->io_interface, &st->iifx_io);
 
-    if (st->mmu) {
-        if (st->mmu->physical_vram && st->mmu->physical_vram_size > 0) {
-            uint32_t pages = st->mmu->physical_vram_size >> PAGE_SHIFT;
-            uint32_t start = st->mmu->vram_phys_base >> PAGE_SHIFT;
-            for (uint32_t i = 0; i < pages && (int)(start + i) < g_page_count; i++)
-                iifx_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), true);
-        }
-        if (st->mmu->physical_vrom && st->mmu->physical_vrom_size > 0) {
-            uint32_t pages = st->mmu->physical_vrom_size >> PAGE_SHIFT;
-            uint32_t start = st->mmu->vrom_phys_base >> PAGE_SHIFT;
-            for (uint32_t i = 0; i < pages && (int)(start + i) < g_page_count; i++)
-                iifx_fill_page(start + i, st->mmu->physical_vrom + (i << PAGE_SHIFT), false);
-        }
-        if (st->mmu->physical_vram) {
-            uint32_t base32 = st->mmu->vram_phys_base;
-            uint32_t high = base32 & 0xff000000u;
-            if (high >= 0xf9000000u && high <= 0xfe000000u) {
-                int slot = (int)((base32 >> 24) & 0xfu);
-                uint32_t mode24_base = (uint32_t)slot << 20;
-                uint32_t alias_bytes = 0x100000u;
-                if (alias_bytes > st->mmu->physical_vram_size)
-                    alias_bytes = st->mmu->physical_vram_size;
-                uint32_t alias_pages = alias_bytes >> PAGE_SHIFT;
-                uint32_t start = mode24_base >> PAGE_SHIFT;
-                for (uint32_t i = 0; i < alias_pages && (int)(start + i) < g_page_count; i++)
-                    iifx_fill_page(start + i, st->mmu->physical_vram + (i << PAGE_SHIFT), true);
-            }
-        }
-    }
+    // Project card host regions (VRAM/declaration ROMs) plus their Mode-24
+    // slot aliases into the page table (shared helper; see iicx.c).
+    mmu_host_regions_fill_pages(st->mmu, iifx_fill_page, /*mode24_alias*/ true);
 
     st->rom_overlay = false;
     iifx_set_rom_overlay(cfg, true);

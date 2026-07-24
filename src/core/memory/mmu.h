@@ -10,8 +10,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Forward declaration (memory.h has the full definition)
+// Forward declarations (memory.h has the page_entry definition; mmu040.h
+// has the 68040 MMU register file)
 typedef struct page_entry page_entry_t;
+struct mmu040_state;
 
 // === TC Register field extraction ===
 #define TC_ENABLE(tc) ((tc) >> 31)
@@ -56,6 +58,21 @@ typedef struct page_entry page_entry_t;
 #define MMUSR_T       (1u << 6) // transparent translation
 #define MMUSR_M       (1u << 4) // modified
 #define MMUSR_N_SHIFT 0 // number of levels traversed (bits 2:0)
+
+// One host-backed physical region on the bus map (card VRAM, a declaration
+// ROM, built-in video, or an alias of one of those).  Kept in a small list
+// in mmu_state_t; resolved by phys_to_host in registration order.
+#define MMU_HOST_REGION_MAX 16
+typedef struct mmu_host_region {
+    uint8_t *host; // host base pointer (NULL = unused entry)
+    uint32_t phys_base; // guest-physical base address
+    uint32_t size; // region size in bytes
+    bool writable; // false = read-only (declaration ROMs)
+    bool alias; // registered via memory_map_host_region_alias: resolver-only —
+                // never projected into the page table (a device window may
+                // deliberately overlap the alias range and must keep its pages,
+                // e.g. the 8•24 GC's command-block window over its FB alias)
+} mmu_host_region_t;
 
 // Result of a table walk
 typedef struct mmu_walk_result {
@@ -108,27 +125,27 @@ typedef struct mmu_state {
     uint32_t rom_phys_base; // physical address where ROM region starts
     uint32_t rom_region_end; // end of ROM mirror region (exclusive)
 
-    // Optional VRAM region (SE/30 built-in video at $FE000000)
-    uint8_t *physical_vram; // base of VRAM buffer (NULL if none)
-    uint32_t physical_vram_size; // size of VRAM in bytes
-    uint32_t vram_phys_base; // physical address where VRAM is mapped
-
-    // Optional VROM region (SE/30 video declaration ROM at $FEFFE000)
-    uint8_t *physical_vrom; // base of VROM buffer (NULL if none)
-    uint32_t physical_vrom_size; // size of VROM in bytes
-    uint32_t vrom_phys_base; // physical address where VROM is mapped
-
-    // Alternate physical addresses for page-table-mapped I/O access.
-    // On SE/30, logical $FExxxxxx identity-maps via TT to $FExxxxxx
-    // but the ROM's page table remaps it to $50Fxxxxx.
-    uint32_t vram_phys_alt; // alternate VRAM physical base (0 = none)
-    uint32_t vrom_phys_alt; // alternate VROM physical base (0 = none)
+    // Host-backed physical regions beyond RAM/ROM (card VRAM, declaration
+    // ROMs, built-in video buffers, and their aliases).  Formerly a single
+    // VRAM + single VROM slot pair — a list since the Quadra work, where a
+    // machine carries built-in DAFB VRAM *and* NuBus card regions at once.
+    // Registered through memory_map_host_region()/_alias(); resolved in
+    // registration order by phys_to_host/phys_is_writable.
+    mmu_host_region_t host_regions[MMU_HOST_REGION_MAX];
+    int host_region_count; // populated entries in host_regions[]
 
     // NuBus bus error range: only unmapped reads in this physical address
     // range generate bus errors.  Outside this range, unmapped TT-mapped
     // reads return 0 silently (as the hardware does for non-NuBus slots).
     uint32_t nubus_berr_start; // first address that can bus error (inclusive)
     uint32_t nubus_berr_end; // last address that can bus error (inclusive)
+
+    // 68040 front-end (Quadra proposal §6.5): when non-NULL, this machine's
+    // translation front-end (TTR match + fixed three-level walk in mmu040.c)
+    // replaces the PMMU one; the physical resolver, SoA fill, and TLB
+    // tracking above are shared.  `enabled` mirrors the 040 TC.E bit so the
+    // memory.c fast-path checks stay unchanged.  Set via mmu_attach_mmu040.
+    struct mmu040_state *m040;
 } mmu_state_t;
 
 // === Lifecycle ===
@@ -219,9 +236,31 @@ uint8_t *mmu_phys_to_host(mmu_state_t *mmu, uint32_t phys_addr);
 // True when the physical address is backed by writable host memory.
 bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
 
-// Register a VRAM region so table walks and TT matches can resolve it
-void mmu_register_vram(mmu_state_t *mmu, uint8_t *vram, uint32_t phys_base, uint32_t size);
-void mmu_register_vrom(mmu_state_t *mmu, uint8_t *vrom, uint32_t phys_base, uint32_t size);
+// Append a host-backed region to the bus map so table walks and TT matches
+// can resolve it.  Registration order is resolution order; the list resets
+// with each mmu_init.  Logs and drops the region when the list is full.
+void mmu_register_host_region(mmu_state_t *mmu, uint8_t *host, uint32_t phys_base, uint32_t size, bool writable);
+
+// Project every registered host region into the CPU page table by calling
+// `fill(page, host_ptr, writable)` per 4 KiB page — machines run this after
+// nubus_init so card VRAM/declaration ROMs are CPU-visible with the MMU off.
+// `mode24_alias` additionally projects the first 1 MB of each *writable*
+// slot-space region ($F9-$FE) at its Mode-24 window $00s00000 (the 24-bit
+// Memory Manager slot alias the GLUE/OSS/MDU machines rely on; the 32-bit-
+// clean MCU family passes false).
+typedef void (*mmu_fill_page_fn)(uint32_t page_index, uint8_t *host_ptr, bool writable);
+void mmu_host_regions_fill_pages(mmu_state_t *mmu, mmu_fill_page_fn fill, bool mode24_alias);
+
+// Attach a 68040 register file (owned by the CPU) to this bus-side MMU
+// state: translation dispatches to the mmu040.c walker from here on.
+void mmu_attach_mmu040(mmu_state_t *mmu, struct mmu040_state *m040);
+
+// Fill one 4 KiB SoA page from an already-resolved translation.  Exposed for
+// the 68040 walker (mmu040.c); handles host resolution, logpoint suppression,
+// and TLB tracking exactly like the PMMU fill.  `writable` gates the write
+// arrays (further limited by host writability).
+void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool fill_super, bool fill_user,
+                       bool writable);
 
 // Configure a second physical RAM bank (e.g. the Macintosh IIsi's SIMM Bank B
 // at physical $04000000).  After this, Bank A is [0, ram_a_size) host-backed by

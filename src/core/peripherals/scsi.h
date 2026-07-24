@@ -165,6 +165,37 @@ uint16_t scsi_get_cmd_blk_sz(const scsi_t *scsi);
 #define SCSI_PDMA_SEL  0x200 // pseudo-DMA ODR auto-handshake alias
 #define SCSI_BLIND_SEL 0x400 // BLIND pseudo-DMA window marker
 
+// ============================================================================
+// External-initiator API (53C96-class front-ends)
+// ============================================================================
+//
+// The Quadra's NCR 53C96 (scsi_53c96.c) is a different protocol chip in
+// front of the same bus/target/CD-ROM model.  It drives the bus through
+// these calls instead of the 5380 register file: select puts the bus in
+// COMMAND phase (CDB bytes then arrive via scsi_push_data_out_byte, and
+// run_cmd dispatches on the full CDB exactly as for the 5380 paths); data
+// phases use the pop/push helpers above; the status/message tail is
+// stepped explicitly.
+
+// Arbitrate + select `target`.  Returns false when no device answers
+// (the front-end turns that into its selection time-out); on success the
+// bus is in COMMAND phase.
+bool scsi_external_select(scsi_t *scsi, int target);
+
+// DATA-IN drained: the target transitions to STATUS (GOOD).  No-op unless
+// the bus is in data_in with an empty buffer.
+void scsi_external_data_in_complete(scsi_t *scsi);
+
+// Pop the status byte (STATUS → MESSAGE-IN with COMMAND COMPLETE).
+// Returns -1 if the bus is not in STATUS phase.
+int scsi_external_status_byte(scsi_t *scsi);
+
+// Read the message byte (stays in MESSAGE-IN).  -1 if not in MESSAGE-IN.
+int scsi_external_message_byte(scsi_t *scsi);
+
+// Message accepted / target disconnect: bus returns to FREE.
+void scsi_external_release(scsi_t *scsi);
+
 // Query whether MR_DMA is currently set in the chip's mode register.
 // Used by bus-master pumps to gate transfers.
 bool scsi_get_mr_dma(const scsi_t *scsi);

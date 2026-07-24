@@ -19,11 +19,13 @@
 // CPU model identifiers (also defined in cpu_internal.h for decoder use)
 #define CPU_MODEL_68000 68000
 #define CPU_MODEL_68030 68030
+#define CPU_MODEL_68040 68040
 
 // True if the given CPU model carries (or is paired with) a floating-point
 // unit in the machines we emulate: the 68000 compacts have none; every
-// 68030 Mac we model ships an FPU (68882).  This is the single source of
-// truth the machine capability probe derives `fpu` from.
+// 68030 Mac we model ships an FPU (68882), and the 68040 integrates one
+// on-chip.  This is the single source of truth the machine capability
+// probe derives `fpu` from.
 static inline bool cpu_has_fpu(int cpu_model) {
     return cpu_model >= CPU_MODEL_68030;
 }

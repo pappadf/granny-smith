@@ -244,23 +244,24 @@ uint8_t *system_framebuffer(void) {
     return d ? (uint8_t *)d->bits : NULL;
 }
 
-// System-level display accessor.  Per proposal §3.3.2: glue030-family
-// machines source their primary display from the NuBus bus controller;
-// Plus (and any future non-NuBus machine) implements the
-// hw_profile_t.display callback to surface its own descriptor.  Returns
-// NULL when no machine is booted or the booted machine has no primary
-// display (e.g. a IIcx with no card seated, once IIcx lands).
+// System-level display accessor.  Per proposal §3.3.2: a machine with
+// built-in video (substrate .display — Plus, Lisa, the MCU family's DAFB)
+// shows that factory display; glue030-family machines source theirs from
+// the NuBus bus controller (the IIci's built-in RBV is itself the first
+// BUILTIN card, so "built-in wins" holds uniformly).  Returns NULL when no
+// machine is booted or the booted machine has no primary display (e.g. a
+// IIcx with no card seated).
 display_t *system_display(void) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine)
         return NULL;
-    if (cfg->nubus) {
-        display_t *d = nubus_primary_display(cfg->nubus);
+    if (cfg->machine->substrate->display) {
+        display_t *d = cfg->machine->substrate->display(cfg);
         if (d)
             return d;
     }
-    if (cfg->machine->substrate->display)
-        return cfg->machine->substrate->display(cfg);
+    if (cfg->nubus)
+        return nubus_primary_display(cfg->nubus);
     return NULL;
 }
 

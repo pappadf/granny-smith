@@ -97,11 +97,13 @@ else ifeq ($(TEST_HARNESS),cpu)
   EMU_SRCS += $(EMU_ROOT)/core/cpu/cpu.c \
               $(EMU_ROOT)/core/cpu/cpu_68000.c \
               $(EMU_ROOT)/core/cpu/cpu_68030.c \
+              $(EMU_ROOT)/core/cpu/cpu_68040.c \
               $(EMU_ROOT)/core/cpu/cpu_disasm.c \
               $(EMU_ROOT)/core/cpu/fpu.c \
               $(EMU_ROOT)/core/cpu/fpu_transc.c \
               $(EMU_ROOT)/core/memory/memory.c \
               $(EMU_ROOT)/core/memory/mmu.c \
+              $(EMU_ROOT)/core/memory/mmu040.c \
               $(EMU_ROOT)/core/object/alias.c \
               $(EMU_ROOT)/core/object/meta.c \
               $(EMU_ROOT)/core/object/object.c \
