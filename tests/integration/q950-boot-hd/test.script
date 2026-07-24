@@ -47,4 +47,21 @@ scheduler.run 200000000
 # the 16-bit path.
 machine.screen.match thousands-desktop.png
 
+# Bring up "About This Macintosh" via the Apple menu, still in 16bpp.
+# The About box names the machine from Gestalt ("Macintosh Quadra 950"),
+# so the pixel match verifies the reported machine type — rendered over
+# the open Monitors panel through the x555 path.
+machine.adb.mouse.move 50 50 global
+scheduler.run 5000000
+machine.adb.mouse.move 25 10 global
+scheduler.run 3000000
+machine.adb.mouse.click 1
+scheduler.run 6000000
+machine.adb.mouse.move 25 30 global
+scheduler.run 6000000
+machine.adb.mouse.click 0
+scheduler.run 45000000
+
+machine.screen.match about.png
+
 quit

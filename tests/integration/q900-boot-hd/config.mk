@@ -10,7 +10,7 @@
 # verify), so the IIfx behavioural models are exercised end-to-end here.
 
 TEST_NAME := Quadra 900 System 7.1 SCSI HD boot to desktop
-TEST_DESC := Tower boot via Caboose + IOPs + dual 53C96: desktop pixel-match
+TEST_DESC := Tower boot via Caboose + IOPs + dual 53C96: About box pixel-match
 
 TEST_ROM := roms/q700-q900-420dbff3.rom
 

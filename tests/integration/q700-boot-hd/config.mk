@@ -10,7 +10,7 @@
 # CommToolbox 'cmtb' resources never loaded (null dispatch at PC=$2E).
 
 TEST_NAME := Quadra 700 System 7.1 SCSI HD boot to desktop
-TEST_DESC := 53C96 hard-disk boot: Finder desktop pixel-match
+TEST_DESC := 53C96 hard-disk boot: About box pixel-match (machine identity)
 
 TEST_ROM := roms/q700-q900-420dbff3.rom
 

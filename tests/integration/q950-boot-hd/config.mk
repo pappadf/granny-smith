@@ -12,7 +12,7 @@
 # driver write PCBR1=$C0 and the scanout switch to big-endian x555 16bpp.
 
 TEST_NAME := Quadra 950 SCSI HD boot + Monitors switch to Thousands
-TEST_DESC := 33 MHz tower boot; AC842a x555 16-bit mode via the Monitors UI
+TEST_DESC := 33 MHz tower; Thousands via Monitors UI + About box, both in x555
 
 TEST_ROM := roms/q950-3dc27823.rom
 
