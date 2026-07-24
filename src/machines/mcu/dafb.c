@@ -89,6 +89,10 @@ struct dafb {
     // Monitor sense
     uint8_t sense_code; // attached monitor's passive 3-bit code
 
+    // TurboSCSI DRQ observation (per channel; ref §12.4 bit 9)
+    dafb_drq_query_fn drq_fn[2];
+    void *drq_ctx[2];
+
     // Derived timing
     uint64_t frame_ns; // full frame period (fallback until valid)
     bool timing_valid;
@@ -410,6 +414,14 @@ static bool reg_read_special(dafb_t *dafb, uint32_t off, uint32_t *out) {
         *out = sense_read(dafb);
         return true;
     }
+    if (off == 0x024u || off == 0x028u) {
+        // TurboSCSI control readback: stored control bits + live DRQ in
+        // bit 9 (ref §12.4).
+        int chan = (off == 0x028u) ? 1 : 0;
+        bool drq = dafb->drq_fn[chan] && dafb->drq_fn[chan](dafb->drq_ctx[chan]);
+        *out = (dafb->regs[off >> 2] & 0x1FFu) | (drq ? 0x200u : 0u);
+        return true;
+    }
     if (off >= 0x200u && off < 0x300u) {
         *out = ac842_read(dafb, off);
         return true;
@@ -571,6 +583,13 @@ void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context) {
 void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
     if (dafb)
         dafb->sense_code = code & 0x7u;
+}
+
+void dafb_set_scsi_drq_query(dafb_t *dafb, int chan, dafb_drq_query_fn fn, void *context) {
+    if (!dafb || chan < 0 || chan > 1)
+        return;
+    dafb->drq_fn[chan] = fn;
+    dafb->drq_ctx[chan] = context;
 }
 
 uint8_t *dafb_vram(dafb_t *dafb) {

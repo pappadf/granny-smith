@@ -23,6 +23,7 @@
 #include <stdint.h>
 
 struct scheduler;
+struct scsi;
 
 typedef struct scsi_53c96 scsi_53c96_t;
 
@@ -44,5 +45,23 @@ void scsi_53c96_write(scsi_53c96_t *c, uint32_t reg, uint8_t value);
 
 // Hardware reset (power-on / RESET line).
 void scsi_53c96_reset(scsi_53c96_t *c);
+
+// Attach the bus/target model (scsi.c): select sequences reach real
+// targets, transfer commands move data through the shared buffer, and
+// the pseudo-DMA aperture below carries the payload.
+void scsi_53c96_attach_bus(scsi_53c96_t *c, struct scsi *bus);
+
+// TurboSCSI pseudo-DMA aperture: the CPU moves 16-bit words (or bytes)
+// through this port while a DMA Transfer Information command is active.
+// Not bus-mastering (Trap 1) — the CPU is the mover; DAFB only supplies
+// the DRQ-gated acknowledge timing, which this functional model always
+// satisfies immediately (the data is buffer-backed).
+uint16_t scsi_53c96_pdma_read16(scsi_53c96_t *c);
+void scsi_53c96_pdma_write16(scsi_53c96_t *c, uint16_t value);
+uint8_t scsi_53c96_pdma_read8(scsi_53c96_t *c);
+void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value);
+
+// Live DRQ output (for the TurboSCSI DRQ-status bit).
+bool scsi_53c96_dreq(scsi_53c96_t *c);
 
 #endif // SCSI_53C96_H

@@ -12,6 +12,7 @@
 
 #include "log.h"
 #include "scheduler.h"
+#include "scsi.h"
 #include "system.h"
 
 #include <stdlib.h>
@@ -82,10 +83,64 @@ struct scsi_53c96 {
 
     uint32_t clock_hz; // chip clock (time-out scaling)
 
+    // Active DMA transfer through the pseudo-DMA aperture
+    uint8_t xfer_mode; // XFER_* below
+    uint32_t counter_live; // live byte counter (0 write = 65536)
+
+    // DMA data-in holding buffer: a DMA Transfer Information pulls the
+    // counted bytes (or fewer, if the target runs out first) out of the
+    // target into here and posts the completion interrupt; the CPU then
+    // drains them through the pseudo-DMA aperture.  This models the real
+    // chip's autonomous transfer — some ROM paths issue the command and
+    // wait for the interrupt without draining first, which a purely lazy
+    // per-aperture-read model would hang forever.  Sized to the full
+    // 16-bit transfer count so no programmed transfer is truncated.
+    uint8_t hold[65536];
+    uint32_t hold_len;
+    uint32_t hold_pos;
+    bool hold_owe_int; // a full-count fill defers its interrupt until drained
+
     struct scheduler *sched;
+    struct scsi *bus; // bus/target model (NULL until attached)
     scsi_53c96_irq_cb irq_cb;
     void *irq_ctx;
 };
+
+// Pseudo-DMA transfer modes
+#define XFER_IDLE     0
+#define XFER_CMD_OUT  1 // CDB continues via the aperture (DMA select)
+#define XFER_DATA_IN  2
+#define XFER_DATA_OUT 3
+
+// Map the bus model's phase to the 53C96 status-register phase field
+// (MSG/CD/IO wire encoding; Figure 4-2).
+static uint8_t phase_bits(int p) {
+    switch (p) {
+    case scsi_data_out:
+        return 0x0;
+    case scsi_data_in:
+        return 0x1;
+    case scsi_command:
+        return 0x2;
+    case scsi_status:
+        return 0x3;
+    case scsi_message_out:
+        return 0x6;
+    case scsi_message_in:
+        return 0x7;
+    default:
+        return 0x0;
+    }
+}
+
+// Refresh the status-register phase field from the live bus.
+static void refresh_phase(scsi_53c96_t *c) {
+    if (!c->bus)
+        return;
+    c->status = (uint8_t)((c->status & ~ST_PHASE) | phase_bits(scsi_get_bus_phase(c->bus)));
+}
+
+static void pdma_out_byte(scsi_53c96_t *c, uint8_t value);
 
 // Drive the INT output (and Status bit 7 mirror).
 static void set_int(scsi_53c96_t *c, bool active) {
@@ -165,6 +220,10 @@ static void chip_reset(scsi_53c96_t *c) {
     c->config2 = 0;
     c->config3 = 0;
     c->sel_enabled = false;
+    c->xfer_mode = XFER_IDLE;
+    c->hold_len = c->hold_pos = 0;
+    if (c->bus)
+        scsi_external_release(c->bus);
     set_int(c, false);
     if (c->sched)
         remove_event(c->sched, select_timeout_event, c);
@@ -180,7 +239,7 @@ void scsi_53c96_reset(scsi_53c96_t *c) {
 static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
     uint8_t code = cmd & 0x7F;
     bool dma = (cmd & 0x80) != 0;
-    LOG(3, "53C96 command $%02X (dest=%u timeout=$%02X)", cmd, c->dest_id, c->timeout);
+    LOG(3, "53C96 command $%02X (dest=%u)", cmd, c->dest_id);
 
     switch (code) {
     case 0x00: // NOP
@@ -191,27 +250,192 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         break;
     case 0x01: // Flush FIFO
         fifo_flush(c);
+        c->xfer_mode = XFER_IDLE; // abandons a paused select sequence
         break;
     case 0x02: // Reset chip
         chip_reset(c);
         break;
     case 0x03: // Reset SCSI bus
-        // No targets yet (Phase E); the reset itself is a no-op on the wire.
+        c->xfer_mode = XFER_IDLE;
+        if (c->bus)
+            scsi_external_release(c->bus);
         // Interrupt only when reset reporting is enabled (Config 1 bit 6 = 0).
         if (!(c->config1 & 0x40))
             post_interrupt(c, IR_SCSI_RST);
         break;
-    case 0x40: // Reselect sequence
     case 0x41: // Select without ATN
     case 0x42: // Select with ATN
     case 0x43: // Select with ATN and stop
     case 0x46: // Select with ATN3
-        // Disconnected-state selects: with no attached targets every select
-        // ends in a selection time-out (Phase E connects the bus).
-        if (c->sched)
-            scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 0, select_timeout_ns(c));
-        else
-            select_timeout_event(c, 0);
+    {
+        if (!c->bus || !scsi_external_select(c->bus, c->dest_id)) {
+            // No device at the destination ID: selection time-out.
+            if (c->sched)
+                scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 0, select_timeout_ns(c));
+            else
+                select_timeout_event(c, 0);
+            break;
+        }
+        // Message byte(s) first for the ATN variants (IDENTIFY etc.) —
+        // informational to the v1 target model; consumed from the FIFO.
+        int msg_bytes = (code == 0x41) ? 0 : (code == 0x46) ? 3 : 1;
+        for (int i = 0; i < msg_bytes && c->fifo_count > 0; i++)
+            (void)fifo_pop(c);
+        if (code == 0x43) {
+            // Select-with-ATN-and-stop: halt after the message byte.
+            c->seq_step = 1;
+            refresh_phase(c);
+            post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
+            break;
+        }
+        // CDB from the FIFO; run_cmd dispatches on the full CDB and moves
+        // the bus out of COMMAND phase.
+        while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
+            scsi_push_data_out_byte(c->bus, fifo_pop(c));
+        if (scsi_get_bus_phase(c->bus) != scsi_command) {
+            c->seq_step = 4; // completed the whole select sequence
+            if (dma) {
+                c->counter_live = c->xfer_count ? c->xfer_count : 65536u;
+                c->xfer_counter = (uint16_t)c->counter_live;
+                c->status &= (uint8_t)~ST_TC;
+            }
+            refresh_phase(c);
+            post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
+        } else {
+            // Target selected, now in command phase, but the CDB has not
+            // been supplied yet (the boot ROM flushes the FIFO before the
+            // DMA select and feeds the CDB through the FIFO register /
+            // pseudo-DMA port afterward).  Post the "selected, command
+            // phase entered" interrupt (seq step 2) and arm the command
+            // aperture; the presence probe reads exactly this state.
+            c->seq_step = 2;
+            c->xfer_mode = XFER_CMD_OUT;
+            refresh_phase(c);
+            post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
+        }
+        break;
+    }
+    case 0x40: // Reselect sequence (target role — not modeled)
+        post_interrupt(c, IR_ILL_CMD);
+        break;
+    case 0x10: // Transfer information
+    case 0x11: // Initiator command complete sequence
+    case 0x12: // Message accepted
+        if (!c->bus) {
+            post_interrupt(c, IR_ILL_CMD);
+            break;
+        }
+        if (code == 0x10) {
+            int ph = scsi_get_bus_phase(c->bus);
+            if (dma) {
+                c->counter_live = c->xfer_count ? c->xfer_count : 65536u;
+                c->xfer_counter = (uint16_t)c->counter_live;
+                c->status &= (uint8_t)~ST_TC;
+            }
+            if (ph == scsi_data_in) {
+                if (dma) {
+                    // Pseudo-DMA read: pull the counted bytes from the
+                    // target into the holding buffer now and post the
+                    // completion interrupt, so a caller that waits on the
+                    // interrupt without draining first still makes progress
+                    // (the ROM has both a polled-drain path and an
+                    // interrupt-wait path).  The CPU then drains the buffer
+                    // through the aperture.  Terminal Count is reported when
+                    // the whole count was satisfied; a short transfer (the
+                    // target ran out first) reports the residual count and
+                    // the buffered bytes stay drainable.
+                    c->hold_len = 0;
+                    c->hold_pos = 0;
+                    uint32_t want = c->counter_live;
+                    if (want > sizeof(c->hold))
+                        want = sizeof(c->hold);
+                    uint8_t b;
+                    while (c->hold_len < want && scsi_pop_data_in_byte(c->bus, &b)) {
+                        c->hold[c->hold_len++] = b;
+                        if (c->counter_live > 0)
+                            c->counter_live--;
+                    }
+                    c->xfer_counter = (uint16_t)c->counter_live;
+                    c->xfer_mode = XFER_DATA_IN;
+                    // If the target delivered its whole payload (its buffer
+                    // is now empty), advance it to STATUS — otherwise a
+                    // full-count *final* chunk would leave the bus stuck in
+                    // data-in and the driver's completion read would fail
+                    // and retry forever.  A no-op while more data remains.
+                    scsi_external_data_in_complete(c->bus);
+                    refresh_phase(c);
+                    if (c->counter_live == 0 && scsi_get_bus_phase(c->bus) == scsi_data_in) {
+                        // Whole count satisfied, target still has data for
+                        // later chunks: report Terminal Count and defer the
+                        // completion interrupt until the CPU drains the
+                        // buffer (real hardware fires TC as the last DACK
+                        // decrements the counter).  The ROM's polled drain
+                        // loop checks TC, drains, then waits on the
+                        // interrupt.
+                        //
+                        // KNOWN LIMITATION: the ROM also has an interrupt-
+                        // wait drain path that issues this command and polls
+                        // for the interrupt WITHOUT draining first; deferring
+                        // to the drain hangs it, while posting immediately
+                        // mis-sequences the early boot-driver load.
+                        // Distinguishing the two callers needs more ROM RE
+                        // (§15) — this is why HD-to-desktop is not yet a gate.
+                        c->status |= ST_TC;
+                        c->hold_owe_int = true;
+                    } else {
+                        if (c->counter_live == 0)
+                            c->status |= ST_TC;
+                        c->hold_owe_int = false;
+                        post_interrupt(c, IR_BUS_SERVICE);
+                    }
+                } else {
+                    uint8_t b;
+                    if (scsi_pop_data_in_byte(c->bus, &b))
+                        fifo_push(c, b);
+                    scsi_external_data_in_complete(c->bus);
+                    refresh_phase(c);
+                    post_interrupt(c, IR_BUS_SERVICE);
+                }
+            } else if (ph == scsi_data_out) {
+                if (dma) {
+                    c->xfer_mode = XFER_DATA_OUT; // aperture writes push the payload
+                } else {
+                    while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
+                        scsi_push_data_out_byte(c->bus, fifo_pop(c));
+                    refresh_phase(c);
+                    post_interrupt(c, IR_BUS_SERVICE);
+                }
+            } else if (ph == scsi_status) {
+                int st = scsi_external_status_byte(c->bus);
+                if (st >= 0)
+                    fifo_push(c, (uint8_t)st);
+                refresh_phase(c);
+                post_interrupt(c, IR_BUS_SERVICE);
+            } else if (ph == scsi_message_in) {
+                int msg = scsi_external_message_byte(c->bus);
+                if (msg >= 0)
+                    fifo_push(c, (uint8_t)msg);
+                refresh_phase(c);
+                post_interrupt(c, IR_FUNC_COMPLETE);
+            } else {
+                LOG(2, "53C96 transfer info in unhandled phase %d", ph);
+                post_interrupt(c, IR_ILL_CMD);
+            }
+        } else if (code == 0x11) {
+            // ICCS: status byte then COMMAND COMPLETE message into the FIFO.
+            int st = scsi_external_status_byte(c->bus);
+            int msg = (st >= 0) ? scsi_external_message_byte(c->bus) : -1;
+            if (st >= 0)
+                fifo_push(c, (uint8_t)st);
+            if (msg >= 0)
+                fifo_push(c, (uint8_t)msg);
+            refresh_phase(c);
+            post_interrupt(c, IR_FUNC_COMPLETE);
+        } else { // 0x12: message accepted → target disconnects
+            scsi_external_release(c->bus);
+            refresh_phase(c);
+            post_interrupt(c, IR_DISCONNECT);
+        }
         break;
     case 0x44: // Enable selection/reselection
         c->sel_enabled = true;
@@ -260,8 +484,12 @@ uint8_t scsi_53c96_read(scsi_53c96_t *c, uint32_t reg) {
     }
     case R_SEQSTEP:
         return (uint8_t)(c->seq_step | 0x08); // SOM idle (active-low, not at max)
-    case R_FIFOFLAGS:
-        return (uint8_t)(((c->seq_step & 7) << 5) | (c->fifo_count & 0x1F));
+    case R_FIFOFLAGS: {
+        // Bytes available to the CPU: the DMA holding buffer while draining,
+        // else the command/status FIFO.  Upper 3 bits duplicate seq step.
+        uint32_t avail = (c->xfer_mode == XFER_DATA_IN) ? (uint32_t)(c->hold_len - c->hold_pos) : c->fifo_count;
+        return (uint8_t)(((c->seq_step & 7) << 5) | (avail & 0x1F));
+    }
     case R_CONFIG1:
         return c->config1;
     case R_CONFIG2:
@@ -286,6 +514,13 @@ void scsi_53c96_write(scsi_53c96_t *c, uint32_t reg, uint8_t value) {
         c->xfer_count = (uint16_t)((c->xfer_count & 0x00FF) | ((uint16_t)value << 8));
         break;
     case R_FIFO:
+        if (c->xfer_mode == XFER_CMD_OUT && c->bus) {
+            // A select sequence is paused awaiting CDB bytes: FIFO writes
+            // feed the command phase directly (the ROM pushes the CDB
+            // prefix here, then the tail via the pseudo-DMA port).
+            pdma_out_byte(c, value);
+            break;
+        }
         fifo_push(c, value);
         break;
     case R_COMMAND:
@@ -344,6 +579,8 @@ scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkp
         saved.clock_hz = clock_hz;
         saved.irq_cb = NULL;
         saved.irq_ctx = NULL;
+        saved.bus = NULL; // re-attached by the machine after restore
+        saved.xfer_mode = XFER_IDLE; // mid-transfer restore lands in Phase I
         *c = saved;
     }
     if (sched)
@@ -373,4 +610,104 @@ void scsi_53c96_set_irq_callback(scsi_53c96_t *c, scsi_53c96_irq_cb cb, void *co
     // Re-drive the current level so a restore re-establishes the VIA input.
     if (cb)
         cb(context, c->int_line);
+}
+
+void scsi_53c96_attach_bus(scsi_53c96_t *c, struct scsi *bus) {
+    if (c)
+        c->bus = bus;
+}
+
+// ============================================================================
+// TurboSCSI pseudo-DMA aperture
+// ============================================================================
+// The CPU moves the payload for an armed DMA Transfer Information command.
+// A finished transfer (counter exhausted, or the target changed phase)
+// terminates the command: Terminal Count when the counter reached zero,
+// then a Bus Service interrupt for the phase change.
+
+// Terminate the active data-out transfer with the phase-change interrupt.
+static void pdma_finish(scsi_53c96_t *c) {
+    if (c->xfer_mode == XFER_IDLE)
+        return;
+    if (c->counter_live == 0)
+        c->status |= ST_TC;
+    c->xfer_mode = XFER_IDLE;
+    refresh_phase(c);
+    post_interrupt(c, IR_BUS_SERVICE);
+}
+
+// One payload byte through the aperture, read side — drains the holding
+// buffer the DMA Transfer Information command filled.  The completion
+// interrupt was already posted when the buffer was filled, so a drained
+// buffer just returns 0 (the ROM reads a fixed word count and masks off
+// any bytes beyond the transferred length).
+static uint8_t pdma_in_byte(scsi_53c96_t *c) {
+    if (!c || c->hold_pos >= c->hold_len)
+        return 0;
+    uint8_t v = c->hold[c->hold_pos++];
+    if (c->hold_pos >= c->hold_len && c->hold_owe_int) {
+        // Buffer drained: fire the deferred full-count completion interrupt
+        // (the ROM's drain loop polls for it right after its read).
+        c->hold_owe_int = false;
+        post_interrupt(c, IR_BUS_SERVICE);
+    }
+    return v;
+}
+
+// One payload byte through the aperture, write side (data-out or the CDB
+// tail of a DMA select).
+static void pdma_out_byte(scsi_53c96_t *c, uint8_t value) {
+    if (!c->bus)
+        return;
+    if (c->xfer_mode == XFER_CMD_OUT) {
+        scsi_push_data_out_byte(c->bus, value);
+        if (scsi_get_bus_phase(c->bus) != scsi_command) {
+            // Full CDB dispatched: the select sequence completes.
+            c->xfer_mode = XFER_IDLE;
+            c->seq_step = 4;
+            refresh_phase(c);
+            post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
+        }
+        return;
+    }
+    if (c->xfer_mode != XFER_DATA_OUT)
+        return;
+    scsi_push_data_out_byte(c->bus, value);
+    if (c->counter_live > 0)
+        c->counter_live--;
+    c->xfer_counter = (uint16_t)c->counter_live;
+    if (c->counter_live == 0 || scsi_get_bus_phase(c->bus) != scsi_data_out)
+        pdma_finish(c);
+}
+
+uint16_t scsi_53c96_pdma_read16(scsi_53c96_t *c) {
+    if (!c)
+        return 0;
+    uint16_t hi = pdma_in_byte(c);
+    uint16_t lo = pdma_in_byte(c);
+    return (uint16_t)((hi << 8) | lo);
+}
+
+void scsi_53c96_pdma_write16(scsi_53c96_t *c, uint16_t value) {
+    if (!c)
+        return;
+    pdma_out_byte(c, (uint8_t)(value >> 8));
+    pdma_out_byte(c, (uint8_t)value);
+}
+
+uint8_t scsi_53c96_pdma_read8(scsi_53c96_t *c) {
+    return c ? pdma_in_byte(c) : 0;
+}
+
+void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value) {
+    if (c)
+        pdma_out_byte(c, value);
+}
+
+bool scsi_53c96_dreq(scsi_53c96_t *c) {
+    if (!c)
+        return false;
+    if (c->xfer_mode == XFER_DATA_IN)
+        return c->hold_pos < c->hold_len; // bytes waiting to be drained
+    return c->xfer_mode != XFER_IDLE; // data-out / command aperture ready
 }

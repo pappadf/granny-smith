@@ -152,11 +152,13 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
 
-    // No NCR 5380 on this family.  The 53C96 chip model answers the ROM's
-    // probe (reset / select → time-out interrupt); the bus/target attach
-    // and pseudo-DMA land in Phase E.  cfg->scsi stays NULL until then.
+    // The bus/target model carries the disks and CD; the 53C96 chip model
+    // is the protocol front-end driving it through the external-initiator
+    // API (there is no NCR 5380 register file on this family).
+    cfg->scsi = scsi_init(NULL, cp);
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
+    scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core until Phase D
     asc_set_mix(st->asc, ASC_MIX_CH_A);
@@ -169,6 +171,8 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, q700_dafb_irq, cfg);
     dafb_set_monitor_sense(st->dafb, 6); // 13" 640×480 AppleColor RGB
+    // TurboSCSI channel 0 observes the 53C96's DRQ (control-reg bit 9).
+    dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
 
     // Bus-side physical resolver for the 040 walker: RAM at 0, the 1 MiB ROM
     // mirroring through the aperture.  ram_size_max is the full 1 GiB RAM

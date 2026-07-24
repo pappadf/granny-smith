@@ -111,17 +111,18 @@ static void mcu_scsi_write(config_t *cfg, uint32_t addr, uint8_t value) {
     scsi_53c96_write(mcu_st(cfg)->scsi96, (addr & 0xFFu) >> 4, value);
 }
 
-// --- SCSI 0 pseudo-DMA aperture ($5000F100) — TurboSCSI glue lands Phase E ---
+// --- SCSI 0 pseudo-DMA aperture ($5000F100): the TurboSCSI payload port.
+// The engine byte-decomposes 16-bit accesses, so the byte hooks carry both
+// widths in wire order (big-endian high byte first).
 
 static uint8_t mcu_scsi_pdma_read(config_t *cfg, uint32_t addr) {
     (void)addr;
-    LOG(2, "53C96 pseudo-DMA read (pc=%08X) [stub until Phase E]", cpu_get_pc(cfg->cpu));
-    return 0;
+    return scsi_53c96_pdma_read8(mcu_st(cfg)->scsi96);
 }
 
 static void mcu_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
     (void)addr;
-    LOG(2, "53C96 pseudo-DMA write $%02X (pc=%08X) [stub until Phase E]", value, cpu_get_pc(cfg->cpu));
+    scsi_53c96_pdma_write8(mcu_st(cfg)->scsi96, value);
 }
 
 // --- YANCC ($50028000) — Phase F bridge; accept-and-log stub until then ---
