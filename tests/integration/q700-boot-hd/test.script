@@ -1,0 +1,11 @@
+# Quadra 700 Phase E gate (see config.mk).
+
+# Happy Mac → "Welcome to Macintosh" → extensions → Finder desktop.
+scheduler.run 850000000
+
+# The desktop is up at 640x480: pixel-exact match against the golden.
+assert machine.screen.width == 640 "not in 640x480 mode"
+assert machine.screen.height == 480 "not in 640x480 mode"
+machine.screen.match hd-desktop.png
+
+quit

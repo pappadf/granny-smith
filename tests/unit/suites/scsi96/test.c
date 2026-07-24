@@ -53,24 +53,32 @@ static void mock_reset(void) {
     mb.present[0] = true; // one disk at ID 0
 }
 
-// Run the received CDB: READ(6) returns `tl` blocks of a recognizable
-// pattern (block b, byte i -> (b*7 + i) & 0xFF); everything else → GOOD
-// with no data.
+// Fill the data buffer with `tl` blocks of a recognizable pattern
+// (block b, byte i -> (b*7 + i) & 0xFF) and enter DATA IN.
+static void mock_fill_read(uint32_t lba, uint32_t tl) {
+    mb.data_len = (size_t)tl * MOCK_BLOCK;
+    if (mb.data_len > sizeof(mb.data))
+        mb.data_len = sizeof(mb.data);
+    for (size_t i = 0; i < mb.data_len; i++) {
+        uint32_t blk = lba + (uint32_t)(i / MOCK_BLOCK);
+        mb.data[i] = (uint8_t)(blk * 7 + (i % MOCK_BLOCK));
+    }
+    mb.phase = MB_data_in;
+}
+
+// Run the received CDB: READ(6)/READ(10) return pattern blocks (see
+// mock_fill_read); everything else → GOOD with no data.
 static void mock_run_cdb(void) {
     mb.data_pos = 0;
     mb.data_len = 0;
     mb.status = 0x00; // GOOD
     if (mb.cdb[0] == 0x08) { // READ(6)
         uint32_t lba = ((uint32_t)(mb.cdb[1] & 0x1F) << 16) | ((uint32_t)mb.cdb[2] << 8) | mb.cdb[3];
-        uint32_t tl = mb.cdb[4] ? mb.cdb[4] : 256;
-        mb.data_len = (size_t)tl * MOCK_BLOCK;
-        if (mb.data_len > sizeof(mb.data))
-            mb.data_len = sizeof(mb.data);
-        for (size_t i = 0; i < mb.data_len; i++) {
-            uint32_t blk = lba + (uint32_t)(i / MOCK_BLOCK);
-            mb.data[i] = (uint8_t)(blk * 7 + (i % MOCK_BLOCK));
-        }
-        mb.phase = MB_data_in;
+        mock_fill_read(lba, mb.cdb[4] ? mb.cdb[4] : 256);
+    } else if (mb.cdb[0] == 0x28) { // READ(10)
+        uint32_t lba =
+            ((uint32_t)mb.cdb[2] << 24) | ((uint32_t)mb.cdb[3] << 16) | ((uint32_t)mb.cdb[4] << 8) | mb.cdb[5];
+        mock_fill_read(lba, ((uint32_t)mb.cdb[7] << 8) | mb.cdb[8]);
     } else {
         mb.phase = MB_status; // no data phase
     }
@@ -387,6 +395,39 @@ TEST(status_reflects_live_phase) {
     teardown();
 }
 
+// The System 7.1 HD driver's READ(10) flow: DMA select without ATN (chip
+// pauses in COMMAND phase awaiting the CDB), then Flush FIFO, then the
+// 10-byte CDB pushed through the pseudo-DMA aperture.  The flush must not
+// abandon the paused select sequence — dropping the CDB left the target in
+// COMMAND phase forever and every post-boot SCSI Manager read timed out.
+TEST(flush_preserves_paused_select) {
+    setup();
+    wr(R_COMMAND, 0x01); // flush FIFO
+    wr(R_STATUS, 0); // dest ID 0
+    wr(R_INTERRUPT, 0xA7);
+    wr(R_COMMAND, 0xC1); // DMA select without ATN → pauses in command phase
+    ASSERT_TRUE(irq_level);
+    (void)take_int();
+    ASSERT_EQ_INT(MB_command, mb.phase);
+
+    wr(R_COMMAND, 0x01); // flush FIFO again — must keep the select paused
+
+    // READ(10), lba=2, tl=1, via the aperture (byte-wide driver push).
+    uint8_t cdb[10] = {0x28, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x01, 0x00};
+    for (int i = 0; i < 10; i++)
+        scsi_53c96_pdma_write8(chip, cdb[i]);
+
+    // The full CDB reached the target: bus left COMMAND for DATA IN and
+    // the select-complete interrupt fired.
+    ASSERT_EQ_INT(MB_data_in, mb.phase);
+    ASSERT_EQ_INT(10, mb.cdb_len);
+    ASSERT_EQ_INT(0x28, mb.cdb[0]);
+    ASSERT_TRUE(irq_level);
+    (void)take_int();
+    ASSERT_EQ_INT(0x1, rd(R_STATUS) & 0x07); // DATA IN phase visible
+    teardown();
+}
+
 int main(void) {
     RUN(reset_defaults);
     RUN(select_timeout_no_device);
@@ -395,6 +436,7 @@ int main(void) {
     RUN(read6_partial_last_chunk);
     RUN(read_odd_length_fifo_residual);
     RUN(status_reflects_live_phase);
+    RUN(flush_preserves_paused_select);
     printf("[scsi96] all tests passed\n");
     return 0;
 }

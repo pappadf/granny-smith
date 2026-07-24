@@ -238,8 +238,14 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         }
         break;
     case 0x01: // Flush FIFO
+        // Clears the FIFO only: "initializes the FIFO to the empty condition
+        // by resetting the FIFO flags" (ch. 5, Flush FIFO). [D]  It must NOT
+        // abandon a paused DMA-select sequence: the System 7.1 HD driver
+        // flushes the FIFO between the DMA select and pushing the CDB through
+        // the pseudo-DMA aperture; clearing xfer_mode here dropped those CDB
+        // bytes, the target never left COMMAND phase, and every SCSI Manager
+        // READ(10) timed out (ioErr) after the "Welcome" splash.
         fifo_flush(c);
-        c->xfer_mode = XFER_IDLE; // abandons a paused select sequence
         break;
     case 0x02: // Reset chip
         chip_reset(c);
