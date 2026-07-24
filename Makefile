@@ -149,6 +149,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(MACHINES_DIR)/mac030 \
             -I$(MACHINES_DIR)/glue \
             -I$(MACHINES_DIR)/mdu \
+            -I$(MACHINES_DIR)/mcu \
             -I$(MACHINES_DIR)/oss \
             -I$(MACHINES_DIR)/compact \
             -I$(MACHINES_DIR)/lisa \

@@ -47,17 +47,22 @@ static const char *const LISA_COMPATIBLE[] = {"lisa", NULL};
 static const char *const MACXL_COMPATIBLE[] = {"macxl", NULL};
 // Dedicated 512 KB Macintosh IIsi ("Erickson") ROM — not the universal ROM.
 static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
+// Quadra 700/900 shared 1 MB ROM (also shipped in the PowerBook 140/170 —
+// portables are out of scope and not listed as targets; proposal §13.2).
+// "q900" joins this list when the tower registers in Phase G.
+static const char *const Q700_Q900_COMPATIBLE[] = {"q700", NULL};
 
 // Master ROM signature table.  Content facts only — the canonical fixture
 // filenames live in tooling (scripts/rom_naming.py), not here.
 static const rom_info_t ROM_TABLE[] = {
-    {"Macintosh Plus (Rev 1, Lonely Hearts)",   PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024},
-    {"Macintosh Plus (Rev 2, Lonely Heifers)",  PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024},
-    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024},
-    {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024},
-    {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024},
-    {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024},
-    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024},
+    {"Macintosh Plus (Rev 1, Lonely Hearts)",   PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024 },
+    {"Macintosh Plus (Rev 2, Lonely Heifers)",  PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024 },
+    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024 },
+    {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024 },
+    {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024 },
+    {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024 },
+    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024 },
+    {"Quadra 700/900 ROM",                      Q700_Q900_COMPATIBLE, 0x420DBFF3, 1024 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))

@@ -26,5 +26,6 @@ extern const hw_profile_t machine_iici;
 extern const hw_profile_t machine_lisa;
 extern const hw_profile_t machine_macxl;
 extern const hw_profile_t machine_iisi;
+extern const hw_profile_t machine_q700;
 
 #endif // MACHINE_H
