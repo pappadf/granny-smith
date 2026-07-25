@@ -799,6 +799,235 @@ static int dcmp2_decompress(const uint8_t *payload, size_t payload_len, uint8_t 
     return 0;
 }
 
+// ============================================================================
+//  dcmp 3 — "InstaCompOne" (v9)
+// ============================================================================
+//
+// LZ77 with static Huffman codes.  Conceptually Deflate-like (literals,
+// back-references, prefix codes) but sharing no format details with Deflate.
+// Never documented by Apple; the bitstream layout below was reconstructed
+// from published reverse-engineering work (ResDecompress, resource_dasm —
+// both MIT) and validated against the `dcmp` 3 code resource Apple's own
+// Installer ships uncompressed.  No third-party code is reproduced here.
+//
+// Two properties make this different from most LZ77 variants:
+//
+//   1. Literals are emitted in *runs* with a Huffman-coded run length; they
+//      are not individually flagged.
+//   2. The distance code layout is keyed on how many bytes have been produced
+//      so far, so it widens as the output grows.  There is no fixed window.
+//
+#include "rsrc_dcmp3_tables.h"
+
+// Stream layout: the bitstream starts at `hdr_len` (18).  The 4 bytes at
+// +14..+17 are decompressor-specific parameters that this algorithm does not
+// consume.  `actual_size` is the sole termination condition — there is no
+// end-of-stream marker.
+
+// MSB-first bit reader.  Nothing in this format is byte-aligned; literal
+// bytes are read as 8-bit fields wherever the bit position happens to be.
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t bit; // next bit index, MSB-first within each byte
+} bitr_t;
+
+// Peek `n` bits (n <= 24) without consuming.  Reads past the end yield zero
+// bits, which lets a stream that ends mid-byte finish its final token.
+static uint32_t bitr_peek(const bitr_t *br, unsigned n) {
+    uint32_t v = 0;
+    for (unsigned i = 0; i < n; i++) {
+        size_t b = br->bit + i;
+        unsigned bitval = 0;
+        if ((b >> 3) < br->len)
+            bitval = (br->data[b >> 3] >> (7 - (b & 7))) & 1;
+        v = (v << 1) | bitval;
+    }
+    return v;
+}
+
+static void bitr_skip(bitr_t *br, unsigned n) {
+    br->bit += n;
+}
+
+static uint32_t bitr_get(bitr_t *br, unsigned n) {
+    uint32_t v = bitr_peek(br, n);
+    bitr_skip(br, n);
+    return v;
+}
+
+// True once the reader has consumed more bits than the payload holds.  Used
+// only as a corruption guard; a well-formed stream stops on actual_size.
+static bool bitr_overrun(const bitr_t *br) {
+    return (br->bit >> 3) > br->len;
+}
+
+// One entry of a static prefix code.  `nbits`/`code` are the prefix; the
+// decoded value is `base + get(extra)`.  `extra == 0` means a direct value.
+typedef struct {
+    uint8_t nbits;
+    uint16_t code;
+    uint8_t extra;
+    uint16_t base;
+} dc3_code_t;
+
+// Match-length table.  Decoded value Lc feeds the token loop below; the
+// escape ladder (1110, 11110, 111110, ...) widens into larger ranges.
+// Max Lc is 2042, so the longest match is 2045 bytes.
+static const dc3_code_t DC3_LEN[] = {
+    {2,  0x0,   0,  0   },
+    {2,  0x1,   0,  1   },
+    {3,  0x4,   0,  2   },
+    {4,  0xA,   0,  3   },
+    {4,  0xB,   0,  4   },
+    {5,  0x18,  0,  5   },
+    {5,  0x19,  0,  6   },
+    {6,  0x34,  0,  7   },
+    {6,  0x35,  0,  8   },
+    {6,  0x36,  0,  9   },
+    {6,  0x37,  0,  10  },
+    {4,  0xE,   3,  11  },
+    {5,  0x1E,  3,  19  },
+    {6,  0x3E,  5,  27  },
+    {7,  0x7E,  6,  59  },
+    {8,  0xFE,  7,  123 },
+    {9,  0x1FE, 8,  251 },
+    {10, 0x3FE, 9,  507 },
+    {11, 0x7FE, 10, 1019},
+};
+
+// Literal-run-length table.  Yields 1..63; a run of exactly 63 is the
+// continuation sentinel (see the token loop).
+static const dc3_code_t DC3_LIT[] = {
+    {1, 0x0,  0, 1 },
+    {3, 0x4,  0, 2 },
+    {3, 0x5,  0, 3 },
+    {5, 0x18, 0, 4 },
+    {5, 0x19, 0, 5 },
+    {5, 0x1A, 0, 6 },
+    {5, 0x1B, 0, 7 },
+    {7, 0x70, 0, 8 },
+    {7, 0x71, 0, 9 },
+    {7, 0x72, 0, 10},
+    {7, 0x73, 0, 11},
+    {7, 0x74, 0, 12},
+    {7, 0x75, 0, 13},
+    {7, 0x76, 0, 14},
+    {7, 0x77, 0, 15},
+    {5, 0x1E, 4, 16},
+    {5, 0x1F, 5, 32},
+};
+
+// Decode one symbol from a static table.  Both tables are prefix-free, so
+// matching the shortest candidate first is unambiguous.  Returns -1 if no
+// prefix matches (corrupt stream).
+static int32_t dc3_decode(bitr_t *br, const dc3_code_t *tbl, size_t n) {
+    for (unsigned bits = 1; bits <= 11; bits++) {
+        uint32_t v = bitr_peek(br, bits);
+        for (size_t i = 0; i < n; i++) {
+            if (tbl[i].nbits == bits && tbl[i].code == v) {
+                bitr_skip(br, bits);
+                return (int32_t)tbl[i].base + (int32_t)(tbl[i].extra ? bitr_get(br, tbl[i].extra) : 0);
+            }
+        }
+    }
+    return -1;
+}
+
+// Decode a back-reference distance.  `mag` is the number of bytes already
+// produced, which is also the largest legal distance.
+//
+// A band is selected from `mag` (DC3_DISPATCH), giving a three-tier code:
+//
+//   prefix 0   -> get(t0_bits) + t0_base
+//   prefix 10  -> get(t1_bits) + t1_base
+//   prefix 11  -> a step ladder keyed on `mag`, so the encoder spends only as
+//                 many bits as the current output length can possibly need.
+//
+// The ladder is genuinely irregular — some steps repeat a width, and one
+// threshold in band 0xA80 reproduces an off-by-one in Apple's original
+// encoder.  It therefore cannot be reduced to a closed form; the table in
+// rsrc_dcmp3_tables.h is the specification.
+static int64_t dc3_distance(bitr_t *br, uint32_t mag) {
+    if (mag == 0)
+        return -1;
+
+    uint32_t bandmax = DC3_DISPATCH_LAST;
+    for (size_t i = 0; i < sizeof(DC3_DISPATCH) / sizeof(DC3_DISPATCH[0]); i++) {
+        if (mag <= DC3_DISPATCH[i].max) {
+            bandmax = DC3_DISPATCH[i].band;
+            break;
+        }
+    }
+    const dc3_band_t *b = NULL;
+    for (size_t i = 0; i < sizeof(DC3_BANDS) / sizeof(DC3_BANDS[0]); i++) {
+        if (DC3_BANDS[i].band == bandmax) {
+            b = &DC3_BANDS[i];
+            break;
+        }
+    }
+    if (!b)
+        return -1;
+
+    if (bitr_get(br, 1) == 0)
+        return (int64_t)bitr_get(br, b->t0_bits) + b->t0_base;
+    if (bitr_get(br, 1) == 0)
+        return (int64_t)bitr_get(br, b->t1_bits) + b->t1_base;
+    for (uint8_t j = 0; j < b->nsteps; j++) {
+        if (mag <= b->steps[j].max)
+            return (int64_t)bitr_get(br, b->steps[j].bits) + b->steps[j].base;
+    }
+    return -1;
+}
+
+// Token loop.  `after_literal` overloads length code 0: false means "a
+// literal run follows", true means "a real match of length 3".  The +1 in
+// the after-literal branch keeps the minimum match length at 3 either way.
+// Writes exactly `actual_size` bytes.  Returns 0 on success.
+static int dcmp3_decompress(const uint8_t *in, size_t in_len, uint8_t *out, size_t actual_size) {
+    bitr_t br = {in, in_len, 0};
+    size_t produced = 0;
+    bool after_literal = false;
+
+    while (produced < actual_size) {
+        int32_t lc = dc3_decode(&br, DC3_LEN, sizeof(DC3_LEN) / sizeof(DC3_LEN[0]));
+        if (lc < 0 || bitr_overrun(&br))
+            return -1;
+
+        if (lc > 0 || after_literal) {
+            size_t mlen = (size_t)lc + 2 + (after_literal ? 1u : 0u);
+            int64_t dist = dc3_distance(&br, (uint32_t)produced);
+            if (dist <= 0 || (uint64_t)dist > produced)
+                return -1;
+            if (produced + mlen > actual_size)
+                mlen = actual_size - produced; // tolerate a trailing partial match
+            // Byte-at-a-time and forward: dist < mlen is legal and produces
+            // run-length repetition, which any bulk copy would corrupt.
+            size_t src = produced - (size_t)dist;
+            for (size_t i = 0; i < mlen; i++)
+                out[produced + i] = out[src + i];
+            produced += mlen;
+            after_literal = false;
+        } else {
+            int32_t n = dc3_decode(&br, DC3_LIT, sizeof(DC3_LIT) / sizeof(DC3_LIT[0]));
+            if (n < 1)
+                return -1;
+            size_t run = (size_t)n;
+            if (produced + run > actual_size)
+                run = actual_size - produced;
+            for (size_t i = 0; i < run; i++)
+                out[produced + i] = (uint8_t)bitr_get(&br, 8);
+            produced += run;
+            // A maximal run is a chunk of a longer run and must be able to
+            // continue, so it does not arm the after-literal state.
+            after_literal = (n < 63);
+        }
+        if (bitr_overrun(&br))
+            return -1;
+    }
+    return produced == actual_size ? 0 : -1;
+}
+
 // ---- Public entry point ---------------------------------------------------
 
 uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, size_t *out_len, const char **errmsg) {
@@ -894,6 +1123,18 @@ uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, 
             FAIL("out of memory");
         if (dcmp2_decompress(compressed + hdr_len, compressed_len - hdr_len, uncompressed, actual_size, byte_table_size,
                              compress_flags) < 0)
+            FAIL("corrupt stream");
+        if (out_len)
+            *out_len = actual_size;
+        return uncompressed;
+    }
+
+    // ---- dcmp 3 — InstaCompOne (v9) --------------------------------------
+    if (dcmp_id == 3 && hdr_ver == 9) {
+        uncompressed = calloc(actual_size > 0 ? actual_size : 1, 1);
+        if (!uncompressed)
+            FAIL("out of memory");
+        if (dcmp3_decompress(compressed + hdr_len, compressed_len - hdr_len, uncompressed, actual_size) < 0)
             FAIL("corrupt stream");
         if (out_len)
             *out_len = actual_size;

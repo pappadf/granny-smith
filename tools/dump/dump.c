@@ -16,6 +16,8 @@
 
 #include "dump.h"
 
+#include "rsrc_dcmp.h"
+
 #include "annotate_disasm.h"
 #include "code_segment.h"
 #include "coff.h"
@@ -33,6 +35,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+
+// Count of resources whose compressed payload could not be inflated (the
+// dcmp variant is unsupported).  Reported at the end of a run so the caller
+// knows the corresponding output is raw compressed bytes, not content.
+static unsigned g_compressed_unhandled = 0;
 
 // Forward declaration: dump_disasm lives below dump_run for readability
 // but dump_run calls it as the final step.
@@ -248,6 +255,17 @@ static int dump_resources(const rfork_t *rf, const char *dst_dir) {
             n = snprintf(res_path, sizeof(res_path), "%s/%s", type_dir, id_str);
             if (n < 0 || (size_t)n >= sizeof(res_path))
                 return -1;
+            // A resource whose compressed bit is set but whose payload still
+            // carries the dcmp magic did not inflate — the dcmp variant is
+            // unsupported.  Say so: silently writing the compressed payload
+            // (and disassembling it) produces confident-looking garbage.
+            if ((attrs & 0x01) && sz >= 4 && rsrc_dcmp_is_compressed(bytes, sz)) {
+                fprintf(stderr,
+                        "dump: warning: %.4s %d is compressed with an unsupported dcmp; "
+                        "emitting the raw payload (disassembly will be meaningless)\n",
+                        (const char *)type_cc, (int)id);
+                g_compressed_unhandled++;
+            }
             if (write_blob(res_path, bytes, sz) != 0)
                 return -1;
             char info_path[PATH_MAX];
@@ -361,6 +379,10 @@ int dump_run(const uint8_t *data_bytes, size_t data_len, const uint8_t *rsrc_byt
 
     printf("dump: %s -> %s (%d resource%s, %d code segment%s, %d decoded)\n", src_label, dst_dir, total_resources,
            total_resources == 1 ? "" : "s", disasm_written, disasm_written == 1 ? "" : "s", decoded_written);
+    if (g_compressed_unhandled)
+        printf("dump: %u resource%s left compressed (unsupported dcmp) — their bytes and any\n"
+               "      disassembly of them are the raw compressed payload, not content\n",
+               g_compressed_unhandled, g_compressed_unhandled == 1 ? "" : "s");
     return 0;
 }
 
