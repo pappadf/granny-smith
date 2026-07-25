@@ -176,6 +176,40 @@ describe('WelcomeConfigSlide OPFS scan', () => {
     expect(labels).toEqual(expect.arrayContaining(['Macintosh Plus', 'Macintosh SE/30']));
   });
 
+  // Regression: scanImages('fd') folds the legacy /opfs/images/fdhd/ listing
+  // into the fd one, so the same filename can arrive twice. The floppy
+  // dropdown used to key its options by that name — the duplicate threw
+  // each_key_duplicate mid-flush, which aborted the whole Svelte render and
+  // froze the dialog on "Scanning ROMs…" (the ROM inventory itself was fine).
+  it('survives the same floppy name appearing twice in the fd listing', async () => {
+    setOpfsBackend(
+      new StubOpfs({
+        rom: [
+          {
+            name: 'plus-v3-4d1f8172.rom',
+            path: '/opfs/images/rom/plus-v3-4d1f8172.rom',
+            kind: 'file',
+          },
+        ],
+        fd: [
+          { name: 'Install 1.img', path: '/opfs/images/fd/Install 1.img', kind: 'file' },
+          { name: 'Install 1.img', path: '/opfs/images/fdhd/Install 1.img', kind: 'file' },
+        ],
+      }),
+    );
+    const { container } = render(WelcomeConfigSlide);
+    await waitFor(() => {
+      const sel = container.querySelector('#cfg-model') as HTMLSelectElement | null;
+      if (!sel || sel.options.length === 0) throw new Error('not ready');
+    });
+    // The scan finished (no "Scanning ROMs…" left) and the duplicate collapsed
+    // to a single offer.
+    expect(container.textContent).not.toContain('Scanning ROMs');
+    const fd = container.querySelector('select[id^="cfg-fd"]') as HTMLSelectElement;
+    const labels = Array.from(fd.options).map((o) => o.textContent);
+    expect(labels.filter((l) => l === 'Install 1.img').length).toBe(1);
+  });
+
   it('falls back to MockOpfs by default in the test setup', async () => {
     setOpfsBackend(new MockOpfs());
     const { container } = render(WelcomeConfigSlide);

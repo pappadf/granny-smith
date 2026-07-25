@@ -6,7 +6,7 @@
   import { pickAndUploadAs } from '@/bus/upload';
   import type { MediaTypeId } from '@/lib/media';
   import { DEFAULT_CONFIG } from '@/lib/machine';
-  import type { ImageCategory } from '@/bus/types';
+  import type { ImageCategory, OpfsEntry } from '@/bus/types';
   import { images } from '@/state/images.svelte';
   import CreateImageDialog from './CreateImageDialog.svelte';
 
@@ -102,7 +102,9 @@
   let romsByModel = $derived.by(() => {
     const out: Record<string, RomEntry[]> = {};
     for (const r of allRoms) {
-      for (const id of r.compatible) {
+      // A repeated id in `compatible` would list the same ROM twice under one
+      // model — the ROM picker keys its options by path, so keep it unique.
+      for (const id of new Set(r.compatible)) {
         (out[id] ??= []).push(r);
       }
     }
@@ -196,6 +198,14 @@
   let fdOptions = $state<string[]>([NONE_SENTINEL]);
   let hdOptions = $state<string[]>([NONE_SENTINEL]);
   let cdOptions = $state<string[]>([NONE_SENTINEL]);
+  // Selected filename -> the OPFS path it actually came from. The dropdowns
+  // speak in filenames, but a category's listing is not always one directory:
+  // scanImages('fd') folds in the legacy /opfs/images/fdhd/ (see
+  // BrowserOpfs.scanImages), so `/opfs/images/<cat>/<name>` is not a safe way
+  // to reconstruct the path at submit time. Filled by refreshOpfs.
+  let fdPaths = $state<Record<string, string>>({});
+  let hdPaths = $state<Record<string, string>>({});
+  let cdPaths = $state<Record<string, string>>({});
 
   // Create-blank-image dialog state.
   let createOpen = $state(false);
@@ -256,46 +266,76 @@
     return parsed;
   }
 
+  // Collapse a category listing to the unique filenames the dropdown offers,
+  // plus the path each name resolves to. A listing can carry the same name
+  // twice — scanImages('fd') concatenates /opfs/images/fd/ with the legacy
+  // /opfs/images/fdhd/ — and the first (canonical) entry wins. Deduping here
+  // is what keeps the option list free of repeats; the dropdowns identify an
+  // option by its text, so a repeat is both ambiguous to the user and (until
+  // the {#each} keys below were changed) fatal to the render.
+  function mediaOptions(entries: OpfsEntry[]): { names: string[]; paths: Record<string, string> } {
+    const names: string[] = [];
+    const paths: Record<string, string> = {};
+    for (const e of entries) {
+      if (e.name in paths) continue;
+      paths[e.name] = e.path;
+      names.push(e.name);
+    }
+    return { names, paths };
+  }
+
   async function refreshOpfs() {
     scanning = true;
-    const [roms, vroms, fds, hds, cds] = await Promise.all([
-      opfs.scanRoms().catch(() => []),
-      opfs.scanImages('vrom').catch(() => []),
-      opfs.scanImages('fd').catch(() => []),
-      opfs.scanImages('hd').catch(() => []),
-      opfs.scanImages('cd').catch(() => []),
-    ]);
+    try {
+      const [roms, vroms, fds, hds, cds] = await Promise.all([
+        opfs.scanRoms().catch(() => []),
+        opfs.scanImages('vrom').catch(() => []),
+        opfs.scanImages('fd').catch(() => []),
+        opfs.scanImages('hd').catch(() => []),
+        opfs.scanImages('cd').catch(() => []),
+      ]);
 
-    // Identify every ROM in parallel. Drop the unrecognised ones.
-    const identified = (await Promise.all(roms.map((r) => identifyRom(r.path)))).filter(
-      (e): e is RomEntry => e !== null,
-    );
-    allRoms = identified;
+      // Identify every ROM in parallel. Drop the unrecognised ones.
+      const identified = (await Promise.all(roms.map((r) => identifyRom(r.path)))).filter(
+        (e): e is RomEntry => e !== null,
+      );
+      allRoms = identified;
 
-    // Identify every VROM to the card it provides (drop unrecognised). The
-    // card picker is then built from machine.profile filtered to these.
-    allVroms = (await Promise.all(vroms.map((v) => identifyVrom(v.path)))).filter(
-      (e): e is VromEntry => e !== null,
-    );
+      // Identify every VROM to the card it provides (drop unrecognised). The
+      // card picker is then built from machine.profile filtered to these.
+      allVroms = (await Promise.all(vroms.map((v) => identifyVrom(v.path)))).filter(
+        (e): e is VromEntry => e !== null,
+      );
 
-    // Look up display names for every model surfaced by these ROMs.
-    const seenIds: string[] = [];
-    for (const r of identified) {
-      for (const id of r.compatible) {
-        if (!seenIds.includes(id)) seenIds.push(id);
+      // Look up display names for every model surfaced by these ROMs.
+      const seenIds: string[] = [];
+      for (const r of identified) {
+        for (const id of r.compatible) {
+          if (!seenIds.includes(id)) seenIds.push(id);
+        }
       }
-    }
-    await Promise.all(seenIds.map(resolveProfile));
+      await Promise.all(seenIds.map(resolveProfile));
 
-    // Default the model selection to the first compatible model we found.
-    if (!modelId || !seenIds.includes(modelId)) {
-      modelId = seenIds[0] ?? '';
-    }
+      // Default the model selection to the first compatible model we found.
+      if (!modelId || !seenIds.includes(modelId)) {
+        modelId = seenIds[0] ?? '';
+      }
 
-    fdOptions = [NONE_SENTINEL, ...fds.map((f) => f.name), UPLOAD_SENTINEL, CREATE_SENTINEL];
-    hdOptions = [NONE_SENTINEL, ...hds.map((h) => h.name), UPLOAD_SENTINEL, CREATE_SENTINEL];
-    cdOptions = [NONE_SENTINEL, ...cds.map((c) => c.name), UPLOAD_SENTINEL];
-    scanning = false;
+      const fd = mediaOptions(fds);
+      const hdm = mediaOptions(hds);
+      const cdm = mediaOptions(cds);
+      fdPaths = fd.paths;
+      hdPaths = hdm.paths;
+      cdPaths = cdm.paths;
+      fdOptions = [NONE_SENTINEL, ...fd.names, UPLOAD_SENTINEL, CREATE_SENTINEL];
+      hdOptions = [NONE_SENTINEL, ...hdm.names, UPLOAD_SENTINEL, CREATE_SENTINEL];
+      cdOptions = [NONE_SENTINEL, ...cdm.names, UPLOAD_SENTINEL];
+    } finally {
+      // Never leave the dialog pinned on "Scanning ROMs…": a rejected scan
+      // has to surface as an empty inventory the user can act on, not as a
+      // spinner that outlives the page.
+      scanning = false;
+    }
   }
 
   // Keep romPath sync'd with the current model. When the dropdown is hidden
@@ -441,11 +481,14 @@
     // means no explicit pick — the card factory content-matches among the
     // files the platform offered from the OPFS store.
     const vromPath = resolvedVrom ? resolvedVrom.path : '(auto)';
+    // Resolve each pick back to the path it was scanned from (fdPaths etc.);
+    // the category directory is only the fallback, since an fd listing can
+    // also carry files from the legacy fdhd directory.
     const floppyPaths = floppies.map((f) =>
-      f === NONE_SENTINEL || !f ? '' : `/opfs/images/fd/${f}`,
+      f === NONE_SENTINEL || !f ? '' : (fdPaths[f] ?? `/opfs/images/fd/${f}`),
     );
-    const hdPath = hd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/hd/${hd}`;
-    const cdPath = cd === NONE_SENTINEL ? NONE_SENTINEL : `/opfs/images/cd/${cd}`;
+    const hdPath = hd === NONE_SENTINEL ? NONE_SENTINEL : (hdPaths[hd] ?? `/opfs/images/hd/${hd}`);
+    const cdPath = cd === NONE_SENTINEL ? NONE_SENTINEL : (cdPaths[cd] ?? `/opfs/images/cd/${cd}`);
     // A fixed builtin video slot (IIci / IIsi) hard-wires its card and has
     // no C-side video-mode catalog — the boot document carries neither
     // field for it (boot validation rejects unknown mode ids).
@@ -550,7 +593,7 @@
       <div class="form-row">
         <label for="cfg-ram">RAM</label>
         <select id="cfg-ram" bind:value={ram}>
-          {#each ramOptions as opt (opt)}
+          {#each ramOptions as opt, i (i)}
             <option>{opt}</option>
           {/each}
         </select>
@@ -564,7 +607,7 @@
             value={floppies[i] ?? NONE_SENTINEL}
             onchange={(e) => onFdChange(e, i)}
           >
-            {#each fdOptions as opt (opt)}
+            {#each fdOptions as opt, oi (oi)}
               <option>{opt}</option>
             {/each}
           </select>
@@ -573,7 +616,7 @@
       <div class="form-row">
         <label for="cfg-hd">{hdSlotLabel}</label>
         <select id="cfg-hd" value={hd} onchange={onHdChange}>
-          {#each hdOptions as opt (opt)}
+          {#each hdOptions as opt, i (i)}
             <option>{opt}</option>
           {/each}
         </select>
@@ -582,7 +625,7 @@
         <div class="form-row">
           <label for="cfg-cd">SCSI CD-ROM</label>
           <select id="cfg-cd" value={cd} onchange={onCdChange}>
-            {#each cdOptions as opt (opt)}
+            {#each cdOptions as opt, i (i)}
               <option>{opt}</option>
             {/each}
           </select>
