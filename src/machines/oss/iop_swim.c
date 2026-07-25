@@ -97,6 +97,7 @@
 #include "image.h"
 #include "log.h"
 #include "memory.h"
+#include "mmu.h"
 #include "scheduler.h"
 #include "system.h"
 #include "system_config.h"
@@ -745,6 +746,12 @@ static void swim_handle_eject(iop_t *iop) {
     swim_slot2_complete(iop, MAC_ERR_NO_ERR);
 }
 
+// True when the guest runs 24-bit addressing (68030 PMMU tree with TC.IS=8),
+// where only A0-A23 reach the bus and address bits 24-31 are not decoded.
+static inline bool swim_addressing_is_24bit(void) {
+    return g_mmu && g_mmu->enabled && TC_IS(g_mmu->tc) == 8;
+}
+
 // Resolves host_addr to a direct RAM pointer using ram_native_pointer.
 // The IIfx PIC's DMA controller writes to *physical* RAM addresses,
 // bypassing the host MMU — modelled here by writing directly into the
@@ -754,6 +761,14 @@ static uint8_t *swim_host_dma_ptr(uint32_t host_addr, size_t byte_count) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->mem_map)
         return NULL;
+    // In 24-bit mode the buffer the .Sony driver hands us is a Memory Manager
+    // master pointer whose high byte carries the lock/purge/resource flags —
+    // a locked handle arrives as $80xxxxxx.  Those bits never reach the DMA
+    // controller on real hardware (24 address lines), so strip them here;
+    // otherwise the bounds check below rejects the transfer with paramErr.
+    // (Mac OS 7.6's Installer hits this reading its source floppies.)
+    if (swim_addressing_is_24bit())
+        host_addr &= 0x00FFFFFFu;
     if ((uint64_t)host_addr + byte_count > (uint64_t)cfg->ram_size)
         return NULL;
     return ram_native_pointer(cfg->mem_map, host_addr);
