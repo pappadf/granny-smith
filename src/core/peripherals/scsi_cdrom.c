@@ -278,6 +278,73 @@ void scsi_cdrom_read_toc(scsi_t *scsi) {
     memcpy(scsi->buf.data, toc, len);
 }
 
+// Handle the Sony vendor READ TOC (C1h) — returns the CDU-541 "TOC Data Format"
+// (Sony CDU-541 SCSI Interface Manual §5.2.23, Table 5-23), which is NOT the
+// SCSI-2 (43h) layout: a 4-byte header followed by *6-byte* track descriptors
+//   [track#] [reserved(hi nibble) | control(lo nibble)] [4-byte CD address]
+// rather than the 8-byte SCSI-2 descriptor [rsvd][ADR|control][track#][rsvd][4].
+// The control low nibble is defined in Table 5-24: bit 2 = 1 -> data track,
+// 0 -> audio track.  Early Apple CD-ROM drivers (System 7.x) drive the AppleCD
+// SC's Sony CDU-8002 with this vendor command exclusively; if we answer C1h with
+// the 43h byte layout, the driver reads the control nibble from the wrong offset
+// (it lands on an SCSI-2 padding byte = 0) and mis-classifies the data disc as an
+// audio CD.  The CD address is returned as an LBA (the LBAMSF bit default in the
+// CD-ROM parameters page; we do not model MSF addressing for the TOC).
+void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
+    int target = scsi->bus.target & 7;
+    // CDB (§5.2.23): byte 5 = starting track, bytes 7-8 = allocation length.
+    uint8_t start_track = scsi->buf.data[5];
+    uint16_t alloc_len = (uint16_t)((scsi->buf.data[7] << 8) | scsi->buf.data[8]);
+
+    // Single data session: one data track (#1) plus the lead-out (#AAh).
+    // The lead-out CD address is the disc's total block count.
+    uint16_t blk_sz = scsi->devices[target].block_size;
+    uint32_t total = 0;
+    if (scsi->devices[target].image)
+        total = (uint32_t)(disk_size(scsi->devices[target].image) / blk_sz);
+
+    // Include track 1 only when the requested starting track covers it; AAh (or
+    // any value past our single track) asks for just the lead-out.  Track 0 is
+    // treated leniently as "from the first track" — the real AppleCD firmware
+    // does the same even though the generic spec calls 0 an illegal value.
+    bool want_track1 = (start_track <= 1);
+
+    uint8_t toc[4 + 6 * 2];
+    memset(toc, 0, sizeof(toc));
+
+    // 6-byte track descriptor: [track#][reserved|control][CD address b0..b3].
+    // Control = 0x04 (bit 2 set) = data track; high nibble reserved (Table 5-23).
+    int pos = 4; // after the 4-byte header
+    if (want_track1) {
+        toc[pos + 0] = 0x01; // track number 1
+        toc[pos + 1] = 0x04; // control: data track
+        // CD address = LBA 0 (bytes pos+2..pos+5 already zero)
+        pos += 6;
+    }
+    // Lead-out descriptor (always last).
+    toc[pos + 0] = 0xAA; // lead-out track number
+    toc[pos + 1] = 0x04; // control: data track
+    toc[pos + 2] = (total >> 24) & 0xFF; // CD address = total blocks (LBA)
+    toc[pos + 3] = (total >> 16) & 0xFF;
+    toc[pos + 4] = (total >> 8) & 0xFF;
+    toc[pos + 5] = total & 0xFF;
+    pos += 6;
+
+    // 4-byte header: TOC data length (excludes itself) then first/last track.
+    uint16_t toc_data_len = (uint16_t)(pos - 2); // first+last (2) + descriptors
+    toc[0] = (toc_data_len >> 8) & 0xFF;
+    toc[1] = toc_data_len & 0xFF;
+    toc[2] = 0x01; // first track number
+    toc[3] = 0x01; // last track number
+
+    int len = pos;
+    if (alloc_len > 0 && len > alloc_len)
+        len = alloc_len;
+
+    phase_data_in(scsi, len);
+    memcpy(scsi->buf.data, toc, len);
+}
+
 // ============================================================================
 // READ SUB-CHANNEL Handler
 // ============================================================================

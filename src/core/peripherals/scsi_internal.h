@@ -352,6 +352,9 @@ void scsi_cdrom_request_sense(scsi_t *scsi);
 // Handle READ TOC command
 void scsi_cdrom_read_toc(scsi_t *scsi);
 
+// Sony vendor READ TOC (C1h) — CDU-541 TOC Data Format (6-byte descriptors).
+void scsi_cdrom_read_toc_sony(scsi_t *scsi);
+
 // Handle READ SUB-CHANNEL command
 void scsi_cdrom_read_sub_channel(scsi_t *scsi);
 

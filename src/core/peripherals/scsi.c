@@ -738,11 +738,14 @@ static void run_cmd(scsi_t *scsi) {
         scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INCOMPATIBLE_MEDIUM, 0x00);
         break;
 
-    // Sony vendor commands — data-only disc, return ILLEGAL REQUEST
+    // Sony vendor READ TOC (C1h): the AppleCD SC's Sony CDU-8002 vendor command,
+    // used exclusively by the early Apple CD-ROM driver (System 7.x).  Its TOC
+    // Data Format (Sony CDU-541 manual §5.2.23, Table 5-23) uses 6-byte track
+    // descriptors, NOT the SCSI-2 (43h) 8-byte layout — answering with the 43h
+    // format makes the driver mis-read a data disc as an audio CD.
     case CMD_SONY_READ_TOC:
-        // Sony READ TOC: delegate to SCSI-2 READ TOC for CD-ROM
         if (scsi->devices[target].type == scsi_dev_cdrom)
-            scsi_cdrom_read_toc(scsi);
+            scsi_cdrom_read_toc_sony(scsi);
         else
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
         break;
