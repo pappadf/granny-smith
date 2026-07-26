@@ -37,7 +37,7 @@ Each machine is modeled faithfully: the original ROMs run unpatched, and all on-
   - Tested with System 7.0.1
 - **Macintosh Quadra 700, 900, and 950** (the 68040 MCU/DAFB generation)
   - 68040 with on-chip MMU and FPU; MCU memory controller with its access-triggered ROM overlay; NuBus '90 slots
-  - DAFB built-in video (AC842/AC842a RAMDAC, up to Thousands in 16-bit x555 on the Quadra 950), NCR 53C96 SCSI with TurboSCSI pseudo-DMA, SONIC Ethernet controller, EASC sound
+  - DAFB built-in video with its AC842/AC842a RAMDAC, up to Thousands of colors on the Quadra 950; NCR 53C96 SCSI with TurboSCSI pseudo-DMA, SONIC Ethernet controller, EASC sound
   - The 900/950 towers add the Caboose system manager (Egret protocol), functional emulations of the two IIfx-style IOPs in front of SCC and SWIM/ADB, and a second 53C96 for the external SCSI bus
   - Tested with System 7.1, booting from floppy or SCSI hard disk
 
