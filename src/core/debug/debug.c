@@ -108,6 +108,13 @@ struct logpoint {
     uint32_t start_phys_page;
     uint32_t end_phys_page;
 
+    // For PC logpoints, the install-time physical *address* range (not page —
+    // a page-granular compare fires on every instruction sharing the page,
+    // which made PC logpoints unusable).  end_phys < start_phys means "no
+    // physical range was recorded"; the logical compare is then the only test.
+    uint32_t start_phys;
+    uint32_t end_phys;
+
     // Optional value filter for memory logpoints: when value_filter_active is
     // true, the hook fires only if the access value equals value_filter.
     // Useful for needle-in-haystack searches (e.g. "find the write of
@@ -247,24 +254,28 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
     lp->message = NULL;
     // PC logpoints don't touch the memory-logpoint page refcounts (those are
     // for the memory slow-path hook), but we DO record the install-time
-    // physical page range so the per-instruction check can fire when the
-    // same physical instruction is executed via an aliased VA — same fix as
-    // de9bde3 for memory logpoints.  When MMU is off or translation fails,
-    // leave the range "empty" (end < start) and fall back to logical match.
+    // physical address range so the per-instruction check can fire when the
+    // same physical instruction is executed via an aliased VA — same intent as
+    // de9bde3 for memory logpoints, but address-exact: comparing pages made a
+    // single-address logpoint fire on every instruction sharing its page.
+    // When MMU is off or translation fails, leave the range "empty"
+    // (end < start) and fall back to the logical match.
     lp->start_phys_page = 1;
     lp->end_phys_page = 0;
+    lp->start_phys = 1;
+    lp->end_phys = 0;
     if (g_mmu && g_mmu->enabled) {
         bool is_identity, valid;
         uint32_t phys_start = debug_translate_address(addr, &is_identity, NULL, &valid);
         if (valid) {
             uint32_t phys_end = debug_translate_address(end_addr, &is_identity, NULL, &valid);
             if (valid) {
-                lp->start_phys_page = phys_start >> PAGE_SHIFT;
-                lp->end_phys_page = phys_end >> PAGE_SHIFT;
-                if (lp->end_phys_page < lp->start_phys_page) {
-                    uint32_t tmp = lp->start_phys_page;
-                    lp->start_phys_page = lp->end_phys_page;
-                    lp->end_phys_page = tmp;
+                lp->start_phys = phys_start;
+                lp->end_phys = phys_end;
+                if (lp->end_phys < lp->start_phys) {
+                    uint32_t tmp = lp->start_phys;
+                    lp->start_phys = lp->end_phys;
+                    lp->end_phys = tmp;
                 }
             }
         }
@@ -446,8 +457,15 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     // The LOG_WITH macro short-circuits when level > threshold, so this adds
     // only a single memory load + branch when streaming is off.
     log_category_t *cat = exc_trace_get_category();
-    LOG_WITH(cat, 1, "[EXC] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
-             format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
+    // Line 1010 ($028) is the OS call interface, so decode the trap word at the
+    // faulting PC: with the category enabled the stream then reads as a Toolbox
+    // /OS call trace instead of a wall of identical vector numbers.  Only done
+    // when streaming is on — the read is a debug-path memory access.
+    const char *trap_name = "";
+    if (vector == 0x028 && log_get_level(cat) >= 1)
+        trap_name = macos_atrap_name(memory_debug_read_uint16(faulting_pc));
+    LOG_WITH(cat, 1, "[EXC] vec=$%03X %s fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s", vector,
+             trap_name, format_frame, rw ? "R" : "W", fault_addr, faulting_pc, saved_pc, sr, vbr,
              double_fault_kind ? "  [DOUBLE FAULT]" : "");
 }
 
@@ -666,25 +684,24 @@ int debug_break_and_trace(void) {
     }
 
     // Check for logpoints at current PC (these don't stop execution).
-    // Match on either logical PC (install-time VA) or physical page (catches
-    // the same physical instruction reached via a different VA — e.g. user
-    // and supervisor mappings of shared kernel code).
+    // Match on either the logical PC (install-time VA) or the exact physical
+    // address (catches the same physical instruction reached via a different
+    // VA — e.g. user and supervisor mappings of shared kernel code).
     logpoint_t *lp = debug->logpoints;
-    uint32_t phys_pc_page = 0;
+    uint32_t phys_pc_addr = 0;
     bool phys_pc_resolved = false;
     bool phys_pc_valid = false;
     while (lp != NULL) {
         if (lp->kind == LP_KIND_PC) {
             bool hit = (current_pc >= lp->addr && current_pc <= lp->end_addr);
-            if (!hit && lp->start_phys_page <= lp->end_phys_page) {
+            if (!hit && lp->start_phys <= lp->end_phys) {
                 // Lazy-translate once across all logpoints with a phys range.
                 if (!phys_pc_resolved) {
                     bool is_identity;
-                    uint32_t phys_pc = debug_translate_address(current_pc, &is_identity, NULL, &phys_pc_valid);
-                    phys_pc_page = phys_pc >> PAGE_SHIFT;
+                    phys_pc_addr = debug_translate_address(current_pc, &is_identity, NULL, &phys_pc_valid);
                     phys_pc_resolved = true;
                 }
-                if (phys_pc_valid && phys_pc_page >= lp->start_phys_page && phys_pc_page <= lp->end_phys_page)
+                if (phys_pc_valid && phys_pc_addr >= lp->start_phys && phys_pc_addr <= lp->end_phys)
                     hit = true;
             }
             if (hit) {
@@ -986,6 +1003,181 @@ static uint32_t adler32(const uint8_t *data, size_t len) {
     return (b << 16) | a;
 }
 
+// ===== Minimal DEFLATE compressor (LZ77 + fixed Huffman) ====================
+// Screenshots are committed to the repo as reference images, so they are worth
+// compressing: a 640x480 framebuffer is 1.2 MB of stored blocks but ~12 KB
+// deflated.  Only the writer is new — the PNG reader already inflates, so
+// references written either way keep matching.
+
+#define DEFLATE_WINDOW    32768
+#define DEFLATE_MIN_MATCH 3
+#define DEFLATE_MAX_MATCH 258
+#define DEFLATE_HASH_BITS 15
+#define DEFLATE_HASH_SIZE (1 << DEFLATE_HASH_BITS)
+#define DEFLATE_MAX_CHAIN 64
+
+// Match-length codes 257..285: first length each code covers, and how many
+// extra bits follow (RFC 1951 §3.2.5).
+static const uint16_t deflate_len_base[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
+                                              31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
+static const uint8_t deflate_len_extra[29] = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
+                                              2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0};
+// Distance codes 0..29, same layout.
+static const uint16_t deflate_dist_base[30] = {1,    2,    3,    4,    5,    7,    9,    13,    17,    25,
+                                               33,   49,   65,   97,   129,  193,  257,  385,   513,   769,
+                                               1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577};
+static const uint8_t deflate_dist_extra[30] = {0, 0, 0, 0, 1, 1, 2, 2,  3,  3,  4,  4,  5,  5,  6,
+                                               6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
+
+// LSB-first bit writer over a caller-sized buffer.
+typedef struct {
+    uint8_t *buf;
+    size_t cap;
+    size_t pos;
+    uint32_t acc; // pending bits, lowest bit written first
+    int nbits;
+} deflate_bw_t;
+
+// Append the low `n` bits of `v`, least-significant bit first.
+static void deflate_put(deflate_bw_t *w, uint32_t v, int n) {
+    if (n <= 0)
+        return;
+    w->acc |= (v & ((1u << n) - 1)) << w->nbits;
+    w->nbits += n;
+    while (w->nbits >= 8) {
+        if (w->pos < w->cap)
+            w->buf[w->pos] = (uint8_t)(w->acc & 0xff);
+        w->pos++;
+        w->acc >>= 8;
+        w->nbits -= 8;
+    }
+}
+
+// Append a Huffman code: the code's most-significant bit goes out first.
+static void deflate_put_code(deflate_bw_t *w, uint32_t code, int n) {
+    uint32_t reversed = 0;
+    for (int i = 0; i < n; i++)
+        reversed |= ((code >> i) & 1u) << (n - 1 - i);
+    deflate_put(w, reversed, n);
+}
+
+// Emit one literal/length symbol in the fixed Huffman code (RFC 1951 §3.2.6).
+static void deflate_put_symbol(deflate_bw_t *w, unsigned sym) {
+    if (sym < 144)
+        deflate_put_code(w, 0x30 + sym, 8);
+    else if (sym < 256)
+        deflate_put_code(w, 0x190 + (sym - 144), 9);
+    else if (sym < 280)
+        deflate_put_code(w, sym - 256, 7);
+    else
+        deflate_put_code(w, 0xc0 + (sym - 280), 8);
+}
+
+// Hash three bytes into the match-chain head table.
+static uint32_t deflate_hash3(const uint8_t *p) {
+    return (((uint32_t)p[0] << 10) ^ ((uint32_t)p[1] << 5) ^ (uint32_t)p[2]) & (DEFLATE_HASH_SIZE - 1);
+}
+
+// Deflate `src` into a complete zlib stream (2-byte header, one fixed-Huffman
+// block, adler32 trailer).  Returns a malloc'd buffer, or NULL on OOM.
+static uint8_t *zlib_compress(const uint8_t *src, size_t len, size_t *out_len) {
+    // Fixed Huffman codes an incompressible byte in at most 9 bits, so 1.25x
+    // plus a small constant can never overflow.
+    size_t cap = len + len / 4 + 64;
+    uint8_t *out = malloc(cap);
+    int32_t *head = malloc(DEFLATE_HASH_SIZE * sizeof(int32_t));
+    int32_t *prev = malloc((len ? len : 1) * sizeof(int32_t));
+    if (!out || !head || !prev) {
+        free(out);
+        free(head);
+        free(prev);
+        return NULL;
+    }
+    for (size_t i = 0; i < DEFLATE_HASH_SIZE; i++)
+        head[i] = -1;
+
+    deflate_bw_t w = {out, cap, 0, 0, 0};
+    // zlib header: CM=8 / CINFO=7 (32K window), FLEVEL=2, FCHECK making the
+    // 16-bit value a multiple of 31.
+    out[w.pos++] = 0x78;
+    out[w.pos++] = 0x9c;
+    deflate_put(&w, 1, 1); // BFINAL — one block covers the whole stream
+    deflate_put(&w, 1, 2); // BTYPE = 01, fixed Huffman
+
+    size_t pos = 0;
+    while (pos < len) {
+        size_t best_len = 0, best_dist = 0;
+        if (pos + DEFLATE_MIN_MATCH <= len) {
+            uint32_t h = deflate_hash3(src + pos);
+            // Walk the chain of earlier positions with the same hash, newest
+            // first, keeping the longest match inside the 32K window.
+            int32_t cand = head[h];
+            for (int chain = DEFLATE_MAX_CHAIN; cand >= 0 && chain > 0; chain--) {
+                size_t dist = pos - (size_t)cand;
+                if (dist == 0 || dist > DEFLATE_WINDOW)
+                    break;
+                size_t max_len = len - pos;
+                if (max_len > DEFLATE_MAX_MATCH)
+                    max_len = DEFLATE_MAX_MATCH;
+                size_t l = 0;
+                while (l < max_len && src[(size_t)cand + l] == src[pos + l])
+                    l++;
+                if (l > best_len) {
+                    best_len = l;
+                    best_dist = dist;
+                    if (l >= DEFLATE_MAX_MATCH)
+                        break;
+                }
+                cand = prev[cand];
+            }
+            prev[pos] = head[h];
+            head[h] = (int32_t)pos;
+        }
+
+        if (best_len >= DEFLATE_MIN_MATCH) {
+            int lc = 28;
+            while (lc > 0 && best_len < deflate_len_base[lc])
+                lc--;
+            deflate_put_symbol(&w, 257 + (unsigned)lc);
+            deflate_put(&w, (uint32_t)(best_len - deflate_len_base[lc]), deflate_len_extra[lc]);
+            int dc = 29;
+            while (dc > 0 && best_dist < deflate_dist_base[dc])
+                dc--;
+            deflate_put_code(&w, (uint32_t)dc, 5);
+            deflate_put(&w, (uint32_t)(best_dist - deflate_dist_base[dc]), deflate_dist_extra[dc]);
+            // Index the bytes the match covered so later matches can find them.
+            for (size_t k = 1; k < best_len; k++) {
+                if (pos + k + DEFLATE_MIN_MATCH > len)
+                    break;
+                uint32_t h2 = deflate_hash3(src + pos + k);
+                prev[pos + k] = head[h2];
+                head[h2] = (int32_t)(pos + k);
+            }
+            pos += best_len;
+        } else {
+            deflate_put_symbol(&w, src[pos]);
+            pos++;
+        }
+    }
+    deflate_put_symbol(&w, 256); // end of block
+    if (w.nbits > 0)
+        deflate_put(&w, 0, 8 - w.nbits); // pad the final byte
+
+    free(head);
+    free(prev);
+
+    uint32_t adler = adler32(src, len);
+    if (w.pos + 4 > cap) { // cannot happen with the 1.25x bound; fail loudly
+        free(out);
+        return NULL;
+    }
+    write_be32(out + w.pos, adler);
+    w.pos += 4;
+
+    *out_len = w.pos;
+    return out;
+}
+
 // Calculate a simple checksum of the framebuffer for fast screen comparison.
 // v1 hashes every byte of `bits`; CLUT inclusion (so palette-only changes
 // hash differently) lands with the indexed/direct format expansion.
@@ -1046,64 +1238,224 @@ static uint32_t read_be32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
-// Simple inflate implementation for PNG stored blocks only
-// Returns decompressed data or NULL on error
-static uint8_t *inflate_stored_only(const uint8_t *data, size_t data_len, size_t *out_len) {
-    if (data_len < 6)
-        return NULL; // Need zlib header + at least one block
+// ===== Inflate (stored, fixed and dynamic Huffman blocks) ==================
+// Reference PNGs are written deflated (see zlib_compress) and may also come
+// from ordinary image tools, so the reader implements all three DEFLATE block
+// types rather than just stored blocks.
 
-    // Skip zlib header (2 bytes)
-    size_t pos = 2;
+// LSB-first bit reader over a deflate stream.
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t pos;
+    uint32_t acc;
+    int nbits;
+    int error;
+} inflate_br_t;
 
-    // First pass: calculate total output size
-    size_t total_size = 0;
-    size_t scan_pos = pos;
-    while (scan_pos < data_len - 4) { // Leave room for adler32
-        uint8_t bfinal_btype = data[scan_pos++];
-        int btype = (bfinal_btype >> 1) & 0x03;
-        int bfinal = bfinal_btype & 0x01;
-
-        if (btype != 0) {
-            // Not a stored block - we only support stored blocks
-            return NULL;
+// Pull `need` bits (0..16), least-significant bit first.
+static uint32_t inflate_bits(inflate_br_t *b, int need) {
+    if (need <= 0)
+        return 0;
+    while (b->nbits < need) {
+        if (b->pos >= b->len) {
+            b->error = 1;
+            return 0;
         }
-
-        if (scan_pos + 4 > data_len)
-            return NULL;
-        uint16_t len = data[scan_pos] | ((uint16_t)data[scan_pos + 1] << 8);
-        scan_pos += 4; // Skip len and nlen
-
-        total_size += len;
-        scan_pos += len;
-
-        if (bfinal)
-            break;
+        b->acc |= (uint32_t)b->data[b->pos++] << b->nbits;
+        b->nbits += 8;
     }
+    uint32_t v = b->acc & ((1u << need) - 1);
+    b->acc >>= need;
+    b->nbits -= need;
+    return v;
+}
 
-    // Allocate output buffer
-    uint8_t *output = malloc(total_size);
-    if (!output)
+// A canonical Huffman table: how many codes exist per bit length, plus the
+// symbols in canonical order.
+typedef struct {
+    uint16_t counts[16];
+    uint16_t symbols[288];
+} inflate_huff_t;
+
+// Build a canonical Huffman table from an array of per-symbol code lengths.
+static void inflate_build(inflate_huff_t *h, const uint8_t *lengths, int n) {
+    for (int i = 0; i < 16; i++)
+        h->counts[i] = 0;
+    for (int i = 0; i < n; i++)
+        h->counts[lengths[i]]++;
+    h->counts[0] = 0;
+    uint16_t offsets[16];
+    offsets[0] = 0;
+    offsets[1] = 0;
+    for (int i = 1; i < 15; i++)
+        offsets[i + 1] = (uint16_t)(offsets[i] + h->counts[i]);
+    for (int i = 0; i < n; i++)
+        if (lengths[i])
+            h->symbols[offsets[lengths[i]]++] = (uint16_t)i;
+}
+
+// Decode one symbol, walking code lengths shortest-first.  Returns -1 on a
+// malformed stream.
+static int inflate_decode(inflate_br_t *b, const inflate_huff_t *h) {
+    int code = 0, first = 0, index = 0;
+    for (int len = 1; len <= 15; len++) {
+        code |= (int)inflate_bits(b, 1);
+        if (b->error)
+            return -1;
+        int count = h->counts[len];
+        if (code - first < count)
+            return h->symbols[index + (code - first)];
+        index += count;
+        first = (first + count) << 1;
+        code <<= 1;
+    }
+    return -1;
+}
+
+// Append one byte to a growing output buffer.  Returns 0 on allocation failure.
+static int inflate_push(uint8_t **out, size_t *cap, size_t *pos, uint8_t byte) {
+    if (*pos >= *cap) {
+        size_t new_cap = *cap * 2;
+        uint8_t *grown = realloc(*out, new_cap);
+        if (!grown)
+            return 0;
+        *out = grown;
+        *cap = new_cap;
+    }
+    (*out)[(*pos)++] = byte;
+    return 1;
+}
+
+// Inflate a zlib stream (2-byte header, deflate blocks, adler32 trailer).
+// Returns malloc'd output, or NULL if the stream is truncated or malformed.
+static uint8_t *png_inflate(const uint8_t *data, size_t data_len, size_t *out_len) {
+    if (data_len < 6)
+        return NULL; // zlib header + at least one block
+
+    inflate_br_t b = {data + 2, data_len - 2, 0, 0, 0, 0};
+    size_t cap = 1 << 16, pos = 0;
+    uint8_t *out = malloc(cap);
+    if (!out)
         return NULL;
 
-    // Second pass: extract data
-    size_t out_pos = 0;
-    while (pos < data_len - 4) {
-        uint8_t bfinal_btype = data[pos++];
-        int bfinal = bfinal_btype & 0x01;
+    for (;;) {
+        int bfinal = (int)inflate_bits(&b, 1);
+        int btype = (int)inflate_bits(&b, 2);
+        if (b.error)
+            goto fail;
 
-        uint16_t len = data[pos] | ((uint16_t)data[pos + 1] << 8);
-        pos += 4; // Skip len and nlen
+        if (btype == 0) {
+            // Stored: discard the partial byte, then copy LEN raw bytes.
+            b.acc = 0;
+            b.nbits = 0;
+            if (b.pos + 4 > b.len)
+                goto fail;
+            uint16_t len = (uint16_t)(b.data[b.pos] | ((uint16_t)b.data[b.pos + 1] << 8));
+            b.pos += 4; // LEN + NLEN
+            if (b.pos + len > b.len)
+                goto fail;
+            for (uint16_t i = 0; i < len; i++)
+                if (!inflate_push(&out, &cap, &pos, b.data[b.pos + i]))
+                    goto fail;
+            b.pos += len;
+        } else if (btype == 1 || btype == 2) {
+            inflate_huff_t lit, dist;
+            if (btype == 1) {
+                // Fixed code lengths (RFC 1951 §3.2.6).
+                uint8_t ll[288], dl[30];
+                for (int i = 0; i < 288; i++)
+                    ll[i] = (i < 144) ? 8 : (i < 256) ? 9 : (i < 280) ? 7 : 8;
+                for (int i = 0; i < 30; i++)
+                    dl[i] = 5;
+                inflate_build(&lit, ll, 288);
+                inflate_build(&dist, dl, 30);
+            } else {
+                // Dynamic: read the code-length code, then the two real ones.
+                static const uint8_t order[19] = {16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15};
+                int hlit = (int)inflate_bits(&b, 5) + 257;
+                int hdist = (int)inflate_bits(&b, 5) + 1;
+                int hclen = (int)inflate_bits(&b, 4) + 4;
+                if (b.error || hlit > 286 || hdist > 30)
+                    goto fail;
+                uint8_t cl[19] = {0};
+                for (int i = 0; i < hclen; i++)
+                    cl[order[i]] = (uint8_t)inflate_bits(&b, 3);
+                if (b.error)
+                    goto fail;
+                inflate_huff_t clh;
+                inflate_build(&clh, cl, 19);
 
-        memcpy(output + out_pos, data + pos, len);
-        out_pos += len;
-        pos += len;
+                uint8_t lengths[318] = {0};
+                int n = 0;
+                while (n < hlit + hdist) {
+                    int sym = inflate_decode(&b, &clh);
+                    if (sym < 0)
+                        goto fail;
+                    if (sym < 16) {
+                        lengths[n++] = (uint8_t)sym;
+                    } else if (sym == 16) {
+                        if (n == 0)
+                            goto fail;
+                        uint8_t prev = lengths[n - 1];
+                        int repeat = 3 + (int)inflate_bits(&b, 2);
+                        while (repeat-- > 0 && n < hlit + hdist)
+                            lengths[n++] = prev;
+                    } else if (sym == 17) {
+                        int repeat = 3 + (int)inflate_bits(&b, 3);
+                        while (repeat-- > 0 && n < hlit + hdist)
+                            lengths[n++] = 0;
+                    } else {
+                        int repeat = 11 + (int)inflate_bits(&b, 7);
+                        while (repeat-- > 0 && n < hlit + hdist)
+                            lengths[n++] = 0;
+                    }
+                    if (b.error)
+                        goto fail;
+                }
+                inflate_build(&lit, lengths, hlit);
+                inflate_build(&dist, lengths + hlit, hdist);
+            }
+
+            for (;;) {
+                int sym = inflate_decode(&b, &lit);
+                if (sym < 0)
+                    goto fail;
+                if (sym == 256)
+                    break;
+                if (sym < 256) {
+                    if (!inflate_push(&out, &cap, &pos, (uint8_t)sym))
+                        goto fail;
+                    continue;
+                }
+                sym -= 257;
+                if (sym >= 29)
+                    goto fail;
+                size_t length = deflate_len_base[sym] + inflate_bits(&b, deflate_len_extra[sym]);
+                int dsym = inflate_decode(&b, &dist);
+                if (dsym < 0 || dsym >= 30)
+                    goto fail;
+                size_t distance = deflate_dist_base[dsym] + inflate_bits(&b, deflate_dist_extra[dsym]);
+                if (b.error || distance == 0 || distance > pos)
+                    goto fail;
+                for (size_t i = 0; i < length; i++)
+                    if (!inflate_push(&out, &cap, &pos, out[pos - distance]))
+                        goto fail;
+            }
+        } else {
+            goto fail; // BTYPE 3 is reserved
+        }
 
         if (bfinal)
             break;
     }
 
-    *out_len = total_size;
-    return output;
+    *out_len = pos;
+    return out;
+
+fail:
+    free(out);
+    return NULL;
 }
 
 // Convert one row of a live framebuffer to packed RGBA (no PNG filter
@@ -1264,10 +1616,10 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     }
 
     size_t raw_size = 0;
-    uint8_t *raw_data = inflate_stored_only(idat_data, idat_len, &raw_size);
+    uint8_t *raw_data = png_inflate(idat_data, idat_len, &raw_size);
     free(idat_data);
     if (!raw_data) {
-        printf("Error: Failed to decompress PNG (only stored-block PNGs supported).\n");
+        printf("Error: Failed to decompress PNG..\n");
         return -1;
     }
 
@@ -1419,11 +1771,11 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int ex
 
     // Decompress IDAT data (stored blocks only)
     size_t raw_size = 0;
-    uint8_t *raw_data = inflate_stored_only(idat_data, idat_len, &raw_size);
+    uint8_t *raw_data = png_inflate(idat_data, idat_len, &raw_size);
     free(idat_data);
 
     if (!raw_data) {
-        printf("Error: Failed to decompress PNG (only stored-block PNGs supported).\n");
+        printf("Error: Failed to decompress PNG..\n");
         return -1;
     }
 
@@ -1703,57 +2055,17 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
         }
     }
 
-    // Create "uncompressed" zlib stream using stored blocks
-    // zlib header (2 bytes) + stored blocks + adler32 (4 bytes)
-    // Each stored block: 1 byte header + 2 bytes len + 2 bytes nlen + data
-    // Max block size is 65535 bytes
-
-    // Calculate number of blocks needed
-    size_t max_block = 65535;
-    size_t num_blocks = (raw_size + max_block - 1) / max_block;
-    // zlib overhead: 2 (header) + 5*num_blocks (block headers) + 4 (adler32)
-    size_t zlib_size = 2 + raw_size + 5 * num_blocks + 4;
-
-    uint8_t *zlib_data = malloc(zlib_size);
+    // Deflate the filtered scanlines into a zlib stream.  A 640x480 screen is
+    // 1.2 MB raw and about 12 KB compressed, which is what makes committing a
+    // reference image per test milestone reasonable.
+    size_t zpos = 0;
+    uint8_t *zlib_data = zlib_compress(raw_data, raw_size, &zpos);
+    free(raw_data);
     if (!zlib_data) {
         printf("Error: Out of memory.\n");
-        free(raw_data);
         fclose(fp);
         return -1;
     }
-
-    size_t zpos = 0;
-    // zlib header: CMF=0x78 (deflate, 32K window), FLG=0x01 (no dict, check bits)
-    zlib_data[zpos++] = 0x78;
-    zlib_data[zpos++] = 0x01;
-
-    // Write stored blocks
-    size_t remaining = raw_size;
-    size_t src_pos = 0;
-    while (remaining > 0) {
-        size_t block_len = (remaining > max_block) ? max_block : remaining;
-        int is_final = (remaining <= max_block) ? 1 : 0;
-        // Block header: BFINAL (1 bit) + BTYPE (2 bits) = 0b000 or 0b001 for stored
-        zlib_data[zpos++] = is_final ? 0x01 : 0x00;
-        // LEN (2 bytes, little-endian)
-        zlib_data[zpos++] = block_len & 0xff;
-        zlib_data[zpos++] = (block_len >> 8) & 0xff;
-        // NLEN (one's complement of LEN)
-        zlib_data[zpos++] = (~block_len) & 0xff;
-        zlib_data[zpos++] = ((~block_len) >> 8) & 0xff;
-        // Data
-        memcpy(zlib_data + zpos, raw_data + src_pos, block_len);
-        zpos += block_len;
-        src_pos += block_len;
-        remaining -= block_len;
-    }
-
-    // Adler-32 checksum of uncompressed data (big-endian)
-    uint32_t adler = adler32(raw_data, raw_size);
-    write_be32(zlib_data + zpos, adler);
-    zpos += 4;
-
-    free(raw_data);
 
     // Write IDAT chunk
     if (write_png_chunk(fp, "IDAT", zlib_data, (uint32_t)zpos) < 0) {
