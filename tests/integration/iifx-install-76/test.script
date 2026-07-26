@@ -1,0 +1,324 @@
+# Integration test: IIfx + Display Card 8•24 — format a blank HD160SC under
+# Mac OS 7.6, run the 7.6 Installer to completion, and boot the result.
+#
+# Part 1 (format): creates a blank HD160SC SCSI disk, boots a Macintosh IIfx
+# (16 MB) with the Apple Macintosh Display Card 8•24 (JMFB) at 13" RGB 640x480
+# 8 bpp from the Mac OS 7.6 "Disk Tools 1" floppy, opens Apple HD SC Setup
+# v7.3.5 off that floppy, and initialises the drive (APM partition map +
+# Apple_Driver43 + HFS "Untitled").
+#
+# Part 2 (start the install): reboots from the Mac OS 7.6 "Install 1" floppy,
+# accepts the licence, switches the Installer to **Custom Install** and selects
+# **"Minimum system for any supported computer"**.
+#
+# Part 3 (feed the source floppies): follows the Installer's disk requests.
+# Each request is proved by matching a full-screen reference pixel-exact BEFORE
+# the disk goes in — the Installer names the disk it wants on screen, so the
+# screenshot is both the synchronisation point and the assertion.  Reading the
+# request out of guest memory was tried and abandoned: ParamText's ^0 slot goes
+# empty exactly when a request is pending, and the request is not a plain
+# statText item in the front dialog's item list, so both readers report "no
+# request" while one is plainly on screen.
+#
+# Part 4: asserts the Installer's own "Installation was successful." dialog,
+# then reboots from the installed volume and lands on the Finder desktop.
+#
+# WHY MINIMUM SYSTEM AND NOT EASY INSTALL
+# ---------------------------------------
+# An Easy Install cannot complete from this floppy set.  "Installation Tome 7"
+# contains a file — "English Dialect", an AppleScript dialect resource
+# (type 'dlct', creator 'ascr') — whose compressed stream is **corrupt in the
+# media**: roughly 25.9% of its 42,024 bytes are damaged.  That is not an
+# emulator defect.  A reference decompressor written on the host reproduces
+# 277 of 278 single-chunk forks across all 14 tomes exactly, and the *correct*
+# copy of this file (stored uncompressed in the 7.6 net-install image) settles
+# it: the floppy copy decompresses byte-for-byte identically to that plaintext
+# for 27,787 bytes and then diverges.  See
+# local/gs-docs/notes/debug/2026-07-26-iifx-76-install-decompressor-handover.md
+#
+# "English Dialect" is reachable from three Installer packages —
+# "Universal system for any supported computer", "System for this computer"
+# (what Easy Install picks) and "Utility" → "AppleScript" — so deselecting
+# AppleScript alone is not enough.  "Minimum system for any supported computer"
+# is the one system variant whose transitive closure excludes it, which is why
+# this test selects it and leaves every other category unchecked.
+#
+# The swap after "Install 1" is the regression point for the SWIM IOP 24-bit
+# DMA-address strip (swim_host_dma_ptr in src/machines/oss/iop_swim.c): before
+# it, the Installer's read of a locked-handle buffer ($80xxxxxx master pointer)
+# came back paramErr and the guest gave up with "An error occurred while trying
+# to complete the installation."
+#
+# Mouse geometry is in screen ("global") pixels at 640x480.
+
+# Reference images: run with `--var REGEN=1` to (re)capture every .png in this
+# directory instead of comparing against it.
+let regen = try($REGEN, "0")
+let src = "../../data/systems/SSW-7.6-1.4M"
+
+# Compare the screen against a committed reference, or capture it in REGEN mode.
+def check(ref) {
+    if $regen == "1" {
+        machine.screen.save "${$ref}"
+    } else {
+        machine.screen.match "${$ref}"
+    }
+}
+
+# Run until the screen stops changing, so a reference is matched against a
+# settled frame rather than a mid-repaint one.
+def settle(limit) {
+    let previous = 0
+    let stable = 0
+    let j = 0
+    while $stable < 3 {
+        assert $j < $limit "the screen never settled"
+        scheduler.run 20000000
+        let now = machine.screen.checksum()
+        if $now == $previous {
+            $stable = $stable + 1
+        } else {
+            $stable = 0
+        }
+        $previous = $now
+        $j = $j + 1
+    }
+}
+
+# --- Part 1: format a blank HD160SC ------------------------------------------
+
+# Create a blank HD160SC hard-disk image (177,269,760 bytes, zero-filled).
+storage.hd_create "$WORK_DIR/blank.img" HD160SC
+
+# Pin the RTC so the boot is deterministic run-to-run.
+machine.rtc.time = 3000000000
+
+# Select the Display Card 8•24 and the 13" RGB 640x480 8 bpp mode, then boot
+# the IIfx with 16 MB.  The re-boot binds the card's declaration ROM
+# (mdc-8-24-revb-d1629664.vrom, found next to iifx-4147dd77.rom) and applies
+# the pending video mode — neither can be passed as a startup argument.
+machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp"
+
+# Attach the blank HD at SCSI ID 0 (unformatted → won't boot / won't mount)
+# and insert the Mac OS 7.6 "Disk Tools 1" floppy, which carries Apple HD SC
+# Setup.  The floppy is mounted writable so the guest can update its desktop
+# database the way it would on real media.
+machine.scsi.attach_hd "$WORK_DIR/blank.img" 0
+machine.floppy.drive[0].insert "$src/Disk Tools 1.img" true
+
+# Boot to the Finder desktop.  7.6 opens the "Disk Tools 1" window itself;
+# the desktop is stable by ~585M instructions (~15 s at 40 MHz).
+scheduler.run 600000000
+
+assert machine.id == "iifx" "machine.id != iifx"
+assert machine.rom.checksum == "4147DD77" "rom.checksum != 4147DD77"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "slot $9 card != Display Card 8•24"
+assert machine.screen.width == 640 "screen.width != 640"
+assert machine.screen.height == 480 "screen.height != 480"
+assert machine.rtc.pram.peek(0x48) == 0x83 "savedMode != 0x83 (8bpp)"
+check("desktop.png")
+
+# Double-click the "Apple HD SC Setup" label to launch it.  (The clickable
+# hit region is the text label, not the gap above it.)
+machine.adb.mouse.move 52 110 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 120000000
+# HD SC Setup recognises the uninitialised drive at SCSI Device 0:
+# "The disk is uninitialized, or its partition map has become invalid."
+check("ready.png")
+
+# Click "Initialize".
+machine.adb.mouse.move 245 113 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 30000000
+check("confirm.png")
+
+# Click "Init" in the "erase all data" confirmation alert.  This writes the
+# partition map, the Apple_Driver43 partition and the HFS volume structures
+# over the IIfx's SCSI DMA engine.
+machine.adb.mouse.move 430 195 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 100000000
+check("name.png")
+
+# Click "OK" to accept the default volume name ("Untitled").
+machine.adb.mouse.move 263 170 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+# The guest OS reports the format completed and mounted the volume:
+# "Disk initialization successfully completed."
+check("done.png")
+
+# The formatted drive really carries an Apple Partition Map with a driver
+# partition and an HFS volume — flatten base + delta and read it back.
+machine.scsi.device[0].image.export "$WORK_DIR/formatted.img"
+storage.partmap "$WORK_DIR/formatted.img"
+assert len(vfs.list("$WORK_DIR/formatted.img")) == 4 "formatted HD partition map != 4 entries"
+
+# --- Part 2: start a Custom Install of the minimum system --------------------
+# Fresh machine, same card/mode; the formatted HD is re-attached (empty, so
+# unbootable) and the Installer floppy is the boot medium.  This is Apple's
+# documented floppy procedure: boot "Install 1", then feed the rest into the
+# same drive as the Installer asks for them.
+machine.rtc.time = 3000000000
+machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp"
+machine.scsi.attach_hd "$WORK_DIR/formatted.img" 0
+machine.floppy.drive[0].insert "$src/Install 1.img" true
+
+# The Installer auto-launches from the floppy's System Folder; its welcome
+# window ("Welcome to Mac OS 7.6") is painted by ~790M instructions.
+scheduler.run 800000000
+check("installer.png")
+
+# Click "Continue" to reach the software licence.
+machine.adb.mouse.move 470 366 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+check("licence.png")
+
+# Click "Agree" to reach the "Install System Software" window (Easy Install,
+# destination disk "Untitled" — the volume Part 1 just created).
+machine.adb.mouse.move 510 390 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+check("easy-install.png")
+
+# Switch the mode popup from "Easy Install" to "Custom Install".  It is a
+# press-drag-release menu — Easy Install / Custom Install / Custom Remove at
+# 16-pixel spacing — so Custom Install sits one item below the button.
+machine.adb.mouse.move 170 133 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 20000000
+machine.adb.mouse.move 170 147 "global"
+scheduler.run 10000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+# The feature list appears with the three system variants at the top and every
+# category unchecked ("Selected size: zero K").
+check("custom-install.png")
+
+# Tick "Minimum system for any supported computer" — the third row, and the
+# only system variant whose contents exclude the corrupt "English Dialect"
+# (see the header).  "Selected size" changes from "zero K" to "6,528K".
+machine.adb.mouse.move 114 199 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 30000000
+check("minimum-checked.png")
+
+# Click "Install".  The Installer reads its script off Install 1, ejects the
+# disk and asks for the first source floppy.
+machine.adb.mouse.move 471 359 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+
+# --- Part 3: feed every floppy the Installer asks for ------------------------
+
+# Wait for the Installer to reach its next disk request, then prove which disk
+# it is asking for.  The guest ejects the disk it has finished with, so drive
+# occupancy (device state, not guest memory) says when a request is imminent;
+# the screen is then allowed to settle and matched pixel-exact.
+def await_request(ref) {
+    let k = 0
+    while machine.floppy.drive[0].present {
+        assert $k < 80 "${$ref}: the Installer never ejected the previous disk"
+        scheduler.run 20000000
+        $k = $k + 1
+    }
+    # The disk-request screen is completely static — no progress bar movement,
+    # no cursor blink — so three identical checksums means it has settled.
+    settle(80)
+    check("${$ref}")
+}
+
+# Answer one disk request: match its reference, then insert that exact disk.
+# The drive is named explicitly — system_fd_insert fails rather than silently
+# using the other drive, so a mis-fed disk is an error and not a wedge.
+def hand_over(n) {
+    await_request("insert-disk${$n:d}.png")
+    assert machine.floppy.drive[0].insert("$src/Install ${$n:d}.img", true) == true "insert of Install ${$n:d} failed"
+}
+
+# The order the Installer asks for them in.  It is NOT contiguous: the minimum
+# system needs Installation Tomes 6-10, 14 and 17-19, but not 11-13 or 15-16.
+# The sequence was found by probing — insert in ascending order; a wrong disk
+# raises a modal "… is the wrong disk" alert instead of being read — and every
+# step is pinned here by its own reference screenshot.
+#
+# "Install 2" is the read that used to fail: the Installer's buffer is a locked
+# handle ($80xxxxxx master pointer) and the IOP DMA path must strip the flag
+# byte in 24-bit mode.  Before the strip the read came back paramErr, the
+# Installer asked for "Install 1" again and then gave up.
+hand_over(2)
+# Disks 2-5 carry the System file's pieces ("System Orts", "System Morsels",
+# "System Tidbits", "More System Tidbits"); 6 upwards are Installation Tomes.
+hand_over(3)
+hand_over(4)
+hand_over(5)
+hand_over(6)
+hand_over(7)
+hand_over(8)
+hand_over(9)
+hand_over(10)
+hand_over(14)
+hand_over(17)
+hand_over(18)
+hand_over(19)
+# Finally the Installer asks for its own disk back to write "Install 1:System"
+# ("Updating disk…").  Handing back a volume it previously ejected is the step
+# the old Easy Install run never reached.
+hand_over(1)
+
+# --- Part 4: the Installer reports success, and the result boots -------------
+
+# "Installation was successful.  If you are finished, click Quit to leave the
+# Installer."  This is the Installer's own verdict, not our inference.
+settle(160)
+check("success.png")
+
+# The destination carries a real System Folder.
+machine.scsi.device[0].image.export "$WORK_DIR/installed.img"
+let root = vfs.list("$WORK_DIR/installed.img/partition1")
+echo "destination root: ${$root}"
+let sysfolder = vfs.list("$WORK_DIR/installed.img/partition1/System Folder")
+echo "System Folder: ${$sysfolder}"
+assert len($sysfolder) >= 10 "System Folder has fewer than 10 items — the install did not land"
+
+# Boot the installed volume with no floppy in the drive.  Reaching the Finder
+# desktop from the freshly-installed System Folder is the end-to-end proof:
+# formatted, installed, bootable.
+machine.rtc.time = 3000000000
+machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp"
+machine.scsi.attach_hd "$WORK_DIR/installed.img" 0
+scheduler.run 900000000
+settle(120)
+check("installed-desktop.png")
+
+quit
