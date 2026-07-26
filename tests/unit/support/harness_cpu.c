@@ -5,6 +5,7 @@
 #include "harness.h"
 #include "memory.h"
 #include <stdlib.h>
+#include <string.h>
 
 // Initialize a CPU test context with real memory and CPU
 test_context_t *test_harness_init(void) {
@@ -27,8 +28,15 @@ test_context_t *test_harness_init(void) {
     // Set as active context BEFORE cpu_init (CPU may call system_memory())
     test_set_active_context(ctx);
 
-    // Initialize CPU (no checkpoint restore)
-    ctx->cpu = cpu_init(CPU_MODEL_68000, NULL);
+    // Initialize CPU (no checkpoint restore).  CPU_TEST_MODEL=68030 points the
+    // same conformance vectors at the 68030 core, which is a separate
+    // implementation from the 68000 one and is otherwise untested for the
+    // instructions the two share.
+    int model = CPU_MODEL_68000;
+    const char *model_env = getenv("CPU_TEST_MODEL");
+    if (model_env && strcmp(model_env, "68030") == 0)
+        model = CPU_MODEL_68030;
+    ctx->cpu = cpu_init(model, NULL);
     if (!ctx->cpu) {
         memory_map_delete(ctx->memory);
         test_set_active_context(NULL);
