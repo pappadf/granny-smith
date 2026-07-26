@@ -373,19 +373,31 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     bool d0_free = !sys_fd_is_inserted(config, 0);
     bool d1_free = !sys_fd_is_inserted(config, 1);
 
-    int target = -1;
-    if (preferred != -1 && (preferred == 0 ? d0_free : d1_free)) {
-        target = preferred;
-    } else if (d0_free) {
-        target = 0;
-    } else if (d1_free) {
-        target = 1;
+    // An explicit drive is a request, not a hint: fail rather than silently
+    // load the disk into the other drive (a caller feeding a guest that is
+    // waiting on drive 1 must never have its disk land in drive 0).
+    if (preferred != -1) {
+        if (preferred == 0 ? !d0_free : !d1_free) {
+            printf("fd insert: floppy drive %d is already occupied.\n", preferred);
+            image_close(disk);
+            free(persistent_path);
+            return -1;
+        }
     }
 
+    // No drive requested: fall back to the first free one.
+    int target = preferred;
     if (target == -1) {
-        printf("fd insert: both floppy drives are already occupied.\n");
-        free(persistent_path);
-        return -1;
+        if (d0_free) {
+            target = 0;
+        } else if (d1_free) {
+            target = 1;
+        } else {
+            printf("fd insert: both floppy drives are already occupied.\n");
+            image_close(disk);
+            free(persistent_path);
+            return -1;
+        }
     }
 
     add_image(config, disk);
