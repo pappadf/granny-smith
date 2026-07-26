@@ -982,6 +982,20 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
 }
 
 // ── Bus-master pump (spec §15, §16) ───────────────────────────────
+// Maps a DMA address counter value onto the bus address the hardware would
+// actually drive.  Mac OS 7.6 runs the IIfx in 24-bit addressing mode, and a
+// Memory Manager master pointer carries lock/purge/resource flags in its high
+// byte — a locked handle reaches a driver as $80xxxxxx.  Real hardware drives
+// only 24 address lines, so those flag bits never reach the DMA controller;
+// strip them here too, exactly as swim_host_dma_ptr does for the SWIM IOP
+// (see src/machines/oss/iop_swim.c).  Without this the transfer lands outside
+// RAM and the data silently goes nowhere.
+static inline uint32_t iifx_scsidma_bus_addr(uint32_t addr) {
+    if (g_mmu && g_mmu->enabled && TC_IS(g_mmu->tc) == 8)
+        return addr & 0x00FFFFFFu;
+    return addr;
+}
+
 //
 // Walks the FIFO byte-router in whichever direction the chip phase
 // implies. Refill/drain (mem -> SCSI) or accept/flush (SCSI -> mem).
@@ -1035,14 +1049,14 @@ static void iifx_scsidma_pump(config_t *cfg) {
         // equivalent to a direct byte path for this caller.
         uint8_t byte;
         while (st->scsi_dma_count > 0 && scsi_pop_data_in_byte(scsi, &byte)) {
-            mmu_write_physical_uint8(st->mmu, st->scsi_dma_addr, byte);
+            mmu_write_physical_uint8(st->mmu, iifx_scsidma_bus_addr(st->scsi_dma_addr), byte);
             st->scsi_dma_addr++;
             st->scsi_dma_count--;
         }
     } else if (phase == scsi_data_out) {
         // mem -> SCSI. Direct byte path, same reasoning as data-in.
         while (st->scsi_dma_count > 0) {
-            uint8_t byte = mmu_read_physical_uint8(st->mmu, st->scsi_dma_addr);
+            uint8_t byte = mmu_read_physical_uint8(st->mmu, iifx_scsidma_bus_addr(st->scsi_dma_addr));
             scsi_push_data_out_byte(scsi, byte);
             st->scsi_dma_addr++;
             st->scsi_dma_count--;
