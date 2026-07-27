@@ -42,9 +42,9 @@ MEDIA_SYSTEM = [
     ("System_4_2", "4.2"), ("System_4_3", "4.3"), ("System_6_0_0", "6.0"),
     ("System_6_0_3", "6.0.3"), ("System_6_0_5", "6.0.5"),
     ("System_6_0_8", "6.0.8"), ("System_7_0_1", "7.0.1"),
-    ("System_7_1_0", "7.1"),
+    ("System_7_1_0", "6.0.x (800K '7.1' disk)"),  # 7.1 doesn't fit on 800K; boots ~6.0.7
     ("system_6_0_8", "6.0.8"), ("system_7_1", "7.1"),
-    ("hd1.", "6.x (hd1)"),
+    ("hd1.", "6.0.8 (hd1)"),  # version verified from the image's vers resource
     ("aux", "A/UX 3.0.1"), ("AUX", "A/UX 3.0.1"),
     ("LOS-3.1", "LOS 3.1"), ("Xenix", "Xenix 3.0"),
     ("MacWorks", "MacWorks 3.0"),
