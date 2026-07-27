@@ -32,8 +32,11 @@
 #      Per-iteration emulator-throughput floor.  scheduler.instr_count
 #      is the count for the current machine (machine.boot reset it);
 #      the time delta is over just this iteration's scheduler.run.
-#      Floor set at 50 MIPS — a comfortable margin below the ~80–100
-#      MIPS a modern x86 host delivers at --speed=max.
+#      Floors are set 3-5x below healthy (proposal-integration-test-
+#      rework §5.8): a modern x86 host delivers ~80-100 MIPS on these
+#      rows at --speed=max, and the 20 MIPS floor still catches major
+#      degradations while absorbing shared-runner noise and parallel
+#      (-j) suite runs.
 #
 # Note: sub-4 MB RAM configurations depend on the Plus RAM mirror in
 # src/machines/plus.c.  The Plus ROM hardcodes its exception save area
@@ -54,7 +57,7 @@ assert machine.screen.width == 512 "ssw-2.0/1M: screen.width != 512"
 assert machine.screen.height == 342 "ssw-2.0/1M: screen.height != 342"
 machine.screen.match plus-ssw-2.0.png
 echo "ssw-2.0/1M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
-assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 50000000 "ssw-2.0/1M: emulator throughput below 50 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 20000000 "ssw-2.0/1M: emulator throughput below 20 MIPS"
 
 # --- System Software 3.2 (400K) @ 2 MB RAM --------------------------
 machine.boot model="plus" ram=2048
@@ -67,7 +70,7 @@ assert machine.screen.width == 512 "ssw-3.2/2M: screen.width != 512"
 assert machine.screen.height == 342 "ssw-3.2/2M: screen.height != 342"
 machine.screen.match plus-ssw-3.2.png
 echo "ssw-3.2/2M:    ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
-assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 50000000 "ssw-3.2/2M: emulator throughput below 50 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 20000000 "ssw-3.2/2M: emulator throughput below 20 MIPS"
 
 # --- System Software 4.2 (800K) @ 2.5 MB RAM ------------------------
 machine.boot model="plus" ram=2560
@@ -80,7 +83,7 @@ assert machine.screen.width == 512 "ssw-4.2/2.5M: screen.width != 512"
 assert machine.screen.height == 342 "ssw-4.2/2.5M: screen.height != 342"
 machine.screen.match plus-ssw-4.2.png
 echo "ssw-4.2/2.5M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
-assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 50000000 "ssw-4.2/2.5M: emulator throughput below 50 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 20000000 "ssw-4.2/2.5M: emulator throughput below 20 MIPS"
 
 # --- System Software 6.0.8 (800K) @ 4 MB RAM ------------------------
 machine.boot model="plus" ram=4096
@@ -93,7 +96,7 @@ assert machine.screen.width == 512 "ssw-6.0.8/4M: screen.width != 512"
 assert machine.screen.height == 342 "ssw-6.0.8/4M: screen.height != 342"
 machine.screen.match plus-ssw-6.0.8.png
 echo "ssw-6.0.8/4M:  ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
-assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 50000000 "ssw-6.0.8/4M: emulator throughput below 50 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 20000000 "ssw-6.0.8/4M: emulator throughput below 20 MIPS"
 
 # ====================================================================
 # SE/30 iterations
@@ -137,7 +140,7 @@ echo "se30/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_n
 # This is worth a separate perf investigation; for now the floor catches
 # anything that pushes the boot-phase cost below ~80% of the current
 # baseline.
-assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 10000000 "se30-ssw-6.0.8/4M: emulator throughput below 10 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 4000000 "se30-ssw-6.0.8/4M: emulator throughput below 4 MIPS"
 
 # --- IIcx + System Software 6.0.8 (800K) @ 4 MB RAM, 13" RGB 1bpp ----
 # Same Universal ROM and $017A wait-bypass as the SE/30 row above; the
@@ -178,7 +181,7 @@ echo "iicx/ssw-6.0.8/4M: ${scheduler.instr_count * 1000 / (scheduler.host_user_n
 # instructions to Finder-plus-About; the formula divides by *iteration*
 # host time, so a budget dominated by the (slow) cold-boot phase pulls
 # the effective MIPS down — current baseline ~8 MIPS.
-assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 5000000 "iicx-ssw-6.0.8/4M: emulator throughput below 5 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 2000000 "iicx-ssw-6.0.8/4M: emulator throughput below 2 MIPS"
 
 # --- IIcx + SSW 7.0 "Disk Tools" (800K) @ 8 MB RAM, 13" RGB 2bpp -----
 # The SSW 7.0 Disk Tools floppy ships its boot blocks as System 6.0.7 +
@@ -211,6 +214,6 @@ assert machine.screen.width == 640 "iicx-ssw-7.0/8M: screen.width != 640"
 assert machine.screen.height == 480 "iicx-ssw-7.0/8M: screen.height != 480"
 machine.screen.match iicx-ssw-7.0.png
 echo "iicx/ssw-7.0/8M: ${scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)} MIPS"
-assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 5000000 "iicx-ssw-7.0/8M: emulator throughput below 5 MIPS"
+assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > 2000000 "iicx-ssw-7.0/8M: emulator throughput below 2 MIPS"
 
 quit
