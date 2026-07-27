@@ -52,6 +52,12 @@ void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context);
 // Extended-sense tie matrices come with the larger-monitor support.
 void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
 
+// Pending-sense staging for `machine.boot video_sense=N` (the JMFB
+// pattern): machine.c stages, the Quadra constructors consume; the slot
+// self-resets to $6 on consumption.
+void dafb_pending_sense_set(uint8_t code);
+uint8_t dafb_consume_pending_sense(void);
+
 // Board revision facts (Phase H).  `version` is served in DAFB_Test bits
 // 11:9 (ref §11.8 [R]; Q700/Q900 = 0, Q950 "DAFB 3" = 3 — the driver's
 // 16bpp-always-allowed check reads it on 33 MHz machines).  `ac842a`

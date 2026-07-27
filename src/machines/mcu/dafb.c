@@ -627,6 +627,23 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
         dafb->sense_code = code & 0x7u;
 }
 
+// Pending monitor sense consumed by the next Quadra construction — the
+// built-in-video mirror of the JMFB pending slot, fed from
+// `machine.boot video_sense=N` (machine.c).  Reset to the default $6
+// (13" RGB) on consumption so a forgotten setting doesn't leak into a
+// later boot.
+static uint8_t s_dafb_pending_sense = 0x6;
+
+void dafb_pending_sense_set(uint8_t code) {
+    s_dafb_pending_sense = code & 0x7u;
+}
+
+uint8_t dafb_consume_pending_sense(void) {
+    uint8_t code = s_dafb_pending_sense;
+    s_dafb_pending_sense = 0x6;
+    return code;
+}
+
 void dafb_set_version(dafb_t *dafb, uint8_t version) {
     if (dafb)
         dafb->version = version & 0x7u;

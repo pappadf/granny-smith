@@ -19,6 +19,8 @@
 #include "nubus/card.h"
 #include "nubus/cards/jmfb.h"
 
+#include "mcu/dafb.h"
+
 LOG_USE_CATEGORY_NAME("setup");
 
 #include <stdbool.h>
@@ -589,8 +591,10 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, doc.video_mode);
     if (doc.custom_mode && *doc.custom_mode)
         nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, doc.custom_mode);
-    if (doc.video_sense >= 0)
+    if (doc.video_sense >= 0) {
         jmfb_pending_sense_set((uint8_t)doc.video_sense);
+        dafb_pending_sense_set((uint8_t)doc.video_sense); // built-in Quadra video
+    }
 
     machine_config_reset_vroms();
     config_t *cfg = system_create(profile, NULL);
