@@ -68,8 +68,10 @@ image_t *image_open_readonly(const char *base_path);
 
 // Create a new writable image instance.  The image subsystem mints an opaque
 // 16-hex-char id internally and creates two files at <delta_dir>/<id>.delta
-// and <delta_dir>/<id>.journal.  If `delta_dir` is NULL, the directory of
-// `base_path` is used (legacy adjacent-to-base layout).
+// and <delta_dir>/<id>.journal.  If `delta_dir` is NULL, the GS_STORAGE_CACHE
+// environment directory is used when set (the integration runner's per-test
+// sidecar routing), else the directory of `base_path` (legacy
+// adjacent-to-base layout).
 image_t *image_create(const char *base_path, const char *delta_dir);
 
 // Reopen an existing writable image instance.  `instance_path` is the stem

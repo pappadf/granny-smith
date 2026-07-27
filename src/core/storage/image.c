@@ -378,6 +378,17 @@ size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t s
 // Scratch directory for read-only image deltas (kept volatile).
 #define IMAGE_RO_SCRATCH_DIR "/tmp/gs-image-ro"
 
+// Sidecar scratch root: GS_STORAGE_CACHE, when set, redirects every
+// scratch sidecar (read-only deltas, blank-image deltas, NDIF
+// materialisations) AND the default writable delta placement below it —
+// the integration runner points it at a per-test directory so no test
+// ever writes beside shared media (tests/data stays clean, and tests
+// can run in parallel).  Unset: the fixed /tmp scratch dir.
+static const char *image_scratch_dir(void) {
+    const char *cache = getenv("GS_STORAGE_CACHE");
+    return (cache && *cache) ? cache : IMAGE_RO_SCRATCH_DIR;
+}
+
 // === AppleDouble fork acquisition + host-file NDIF materialisation =========
 // A host `.img` file has only a data fork, but a Disk Copy 6 / NDIF image keeps
 // its block map ('bcem') in the resource fork.  When such a file was copied out
@@ -559,13 +570,13 @@ static char *resolve_base_image(const char *base_path) {
                 h = fork_hash_str(meta, h);
             }
             char scratch[PATH_MAX];
-            snprintf(scratch, sizeof(scratch), "%s/ndif-%08x.img", IMAGE_RO_SCRATCH_DIR, h);
+            snprintf(scratch, sizeof(scratch), "%s/ndif-%08x.img", image_scratch_dir(), h);
 
             struct stat cached;
             if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)map->sectors * 512) {
                 result = dup_string(scratch); // already materialised
             } else {
-                mkdir_recursive(IMAGE_RO_SCRATCH_DIR);
+                mkdir_recursive(image_scratch_dir());
                 if (materialize_ndif_host(base_path, map, scratch) == 0) {
                     LOG(3, "decoded NDIF '%s' -> '%s' (%u sectors)", base_path, scratch, map->sectors);
                     result = dup_string(scratch);
@@ -614,14 +625,15 @@ image_t *image_open_readonly_with_geometry(const char *base_path, image_geometry
     image->from_diskcopy = is_diskcopy;
     image->ghost_instance = true;
 
-    // Mint a scratch instance under /tmp so the read-only mount does not
-    // pollute the base image's directory with delta sidecars.
-    mkdir_recursive(IMAGE_RO_SCRATCH_DIR);
+    // Mint a scratch instance under the scratch root so the read-only
+    // mount does not pollute the base image's directory with delta
+    // sidecars.
+    mkdir_recursive(image_scratch_dir());
     char id[17];
     mint_random_hex_id(id, sizeof(id));
     image->instance_path = NULL; // never serialized for read-only mounts
-    image->delta_path = str_printf("%s/%s.delta", IMAGE_RO_SCRATCH_DIR, id);
-    image->journal_path = str_printf("%s/%s.journal", IMAGE_RO_SCRATCH_DIR, id);
+    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
+    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
     if (!image->filename || !image->delta_path || !image->journal_path) {
         image_close(image);
         return NULL;
@@ -661,12 +673,19 @@ image_t *image_create_with_geometry(const char *base_path, const char *delta_dir
         return NULL;
     }
 
-    // Default delta_dir to the directory containing the (original) base image.
-    // Headless callers may pass NULL when they have no machine-id concept (§2.4).
+    // Default delta_dir: GS_STORAGE_CACHE when set (sidecars routed away
+    // from the media — see image_scratch_dir), else the directory
+    // containing the (original) base image.  Headless callers may pass
+    // NULL when they have no machine-id concept (§2.4).
     char *derived_dir = NULL;
     if (!delta_dir || !*delta_dir) {
-        derived_dir = dirname_of(base_path);
-        delta_dir = derived_dir;
+        const char *cache = getenv("GS_STORAGE_CACHE");
+        if (cache && *cache) {
+            delta_dir = cache;
+        } else {
+            derived_dir = dirname_of(base_path);
+            delta_dir = derived_dir;
+        }
     }
     if (mkdir_recursive(delta_dir) != 0) {
         printf("image_create: cannot create delta directory: %s\n", delta_dir);
@@ -772,15 +791,15 @@ image_t *image_create_blank(uint64_t block_count, image_geometry_t geom) {
     image->from_diskcopy = false;
     image->ghost_instance = true; // delta+journal are scratch, removed on close
 
-    // Place the delta+journal in the read-only scratch dir so the blank disk's
+    // Place the delta+journal in the scratch root so the blank disk's
     // sidecars don't clutter any user directory; ghost_instance unlinks them on
     // image_close.  The image is ephemeral unless exported via image_export_to.
-    mkdir_recursive(IMAGE_RO_SCRATCH_DIR);
+    mkdir_recursive(image_scratch_dir());
     char id[17];
     mint_random_hex_id(id, sizeof(id));
     image->instance_path = NULL; // never serialized
-    image->delta_path = str_printf("%s/%s.delta", IMAGE_RO_SCRATCH_DIR, id);
-    image->journal_path = str_printf("%s/%s.journal", IMAGE_RO_SCRATCH_DIR, id);
+    image->delta_path = str_printf("%s/%s.delta", image_scratch_dir(), id);
+    image->journal_path = str_printf("%s/%s.journal", image_scratch_dir(), id);
     if (!image->delta_path || !image->journal_path) {
         image_close(image);
         return NULL;
