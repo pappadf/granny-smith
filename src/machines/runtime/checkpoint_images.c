@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -76,9 +77,30 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
         // base is reopened with `geom` so a non-512 device (the ProFile) restores
         // at its real block size rather than the default 512.
         bool consolidated = checkpoint_get_kind(cp) == CHECKPOINT_KIND_CONSOLIDATED;
-        if (raw_size > 0 && consolidated)
-            image_create_empty(name, (size_t)raw_size);
-        if (writable && consolidated) {
+        bool base_ok = true;
+        if (raw_size > 0 && consolidated) {
+            // The blob restore below covers every block, so the base file's
+            // content is never read through — but `name` is the image's
+            // ORIGINAL path, and blindly re-materialising it truncated an
+            // existing file to zeros (the "checkpoint.load destroyed my
+            // disk image" footgun: a suite that checkpointed with shared
+            // test media attached lost that media on load).  Create the
+            // empty base only when nothing exists there; reuse a same-size
+            // regular file untouched; refuse to clobber anything else.
+            struct stat st;
+            if (stat(name, &st) != 0) {
+                image_create_empty(name, (size_t)raw_size);
+            } else if (!S_ISREG(st.st_mode) || (uint64_t)st.st_size != raw_size) {
+                printf("Error: '%s' exists with a different size; refusing to overwrite it "
+                       "while restoring a consolidated checkpoint\n",
+                       name);
+                checkpoint_set_error(cp);
+                base_ok = false;
+            }
+        }
+        if (!base_ok) {
+            img = NULL;
+        } else if (writable && consolidated) {
             img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
         } else if (writable && instance_path && instance_path[0]) {
             img = image_open_with_geometry(name, instance_path, geom);

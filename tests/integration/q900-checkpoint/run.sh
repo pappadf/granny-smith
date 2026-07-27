@@ -42,7 +42,7 @@ scheduler.run 500000000
 assert debug.mac.globals.read("MMUFluff") == 14 "restored machine is not a Quadra 900"
 assert machine.screen.width == 640 "not in 640x480 mode"
 assert machine.screen.height == 480 "not in 640x480 mode"
-machine.screen.match ../q900-boot-hd/hd-desktop.png
+machine.screen.match hd-desktop.png
 quit
 EOF
 
