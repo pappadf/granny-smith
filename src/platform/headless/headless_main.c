@@ -493,33 +493,13 @@ static bool headless_script_pump(void) {
     return quit_requested != 0;
 }
 
-// Run a script file through the v2 interpreter. The whole file is
-// parsed up front (multi-line blocks need the full source), then
-// executed; the pump hook drives the scheduler between statements.
+// Run a script file through the v2 interpreter. script_run_file keeps
+// the include stack, so `include` paths resolve relative to the script
+// and diagnostics carry the file name; the pump hook drives the
+// scheduler between statements.
 static int run_script_file(const char *filename) {
-    FILE *f = fopen(filename, "r");
-    if (!f) {
-        fprintf(stderr, "Error: Cannot open script file: %s\n", filename);
-        return -1;
-    }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size < 0)
-        size = 0;
-    char *src = malloc((size_t)size + 1);
-    if (!src) {
-        fclose(f);
-        fprintf(stderr, "Error: out of memory reading script: %s\n", filename);
-        return -1;
-    }
-    size_t got = fread(src, 1, (size_t)size, f);
-    src[got] = '\0';
-    fclose(f);
-
     printf("> running %s\n", filename);
-    int result = script_run_source(src);
-    free(src);
+    int result = script_run_file(filename);
     if (result != 0) {
         // v2 scripts abort on the first error (§3.9); a script that
         // aborted never reaches its `quit`, so exit here instead of

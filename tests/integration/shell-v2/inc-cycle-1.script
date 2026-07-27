@@ -1,0 +1,3 @@
+# Cycle fixture: includes its own includer — the interpreter's cycle
+# guard must reject this rather than recurse forever.
+include "inc-cycle-2.script"

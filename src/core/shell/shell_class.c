@@ -222,35 +222,17 @@ static value_t shell_method_expand(struct object *self, const member_t *m, int a
     return expr_interpolate_body(argv[0].s, &ectx);
 }
 
-// `shell.script_run(path)` — parse the whole file with the v2 script
-// interpreter (block-aware) and execute it non-interactively. Returns
-// V_NONE on success, V_ERROR if the script aborted.
+// `shell.script_run(path)` — parse and execute the file with the v2
+// script interpreter via script_run_file, so `include` paths inside it
+// resolve relative to the file. Returns V_NONE on success, V_ERROR if
+// the script aborted.
 static value_t shell_method_script_run(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     if (argc < 1 || argv[0].kind != V_STRING || !argv[0].s)
         return val_err("shell.script_run: expected (path)");
     const char *path = argv[0].s;
-    FILE *f = fopen(path, "r");
-    if (!f)
-        return val_err("shell.script_run: cannot open '%s'", path);
-    // Slurp the file so multi-line blocks parse as a unit.
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (size < 0)
-        size = 0;
-    char *src = (char *)malloc((size_t)size + 1);
-    if (!src) {
-        fclose(f);
-        return val_err("shell.script_run: out of memory");
-    }
-    size_t got = fread(src, 1, (size_t)size, f);
-    src[got] = '\0';
-    fclose(f);
-    int rc = script_run_source(src);
-    free(src);
-    if (rc != 0)
+    if (script_run_file(path) != 0)
         return val_err("shell.script_run: '%s' failed", path);
     return val_none();
 }

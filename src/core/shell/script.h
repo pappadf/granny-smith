@@ -47,6 +47,11 @@ int script_run_line(const char *line);
 // shell.script_run, the headless script= runner). Returns 0 / -1.
 int script_run_source(const char *src);
 
+// Parse + execute a script file with the include stack maintained: an
+// `include "path"` inside the file resolves relative to the file's own
+// directory, and diagnostics carry the file name. Returns 0 / -1.
+int script_run_file(const char *path);
+
 // True when `buf` has an unbalanced multi-line `{` (quote-aware depth
 // counter) — the REPL should show a continuation prompt and accumulate
 // more lines before submitting.

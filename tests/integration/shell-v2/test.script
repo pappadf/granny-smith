@@ -100,5 +100,15 @@ debug.logpoints.add addr=0x16A width=l mode=write level=5 message="t=${$value:08
 assert len(debug.logpoints.entries) == 1 "template logpoint added"
 debug.logpoints.clear
 
+# --- include: defs + bindings land here; nesting resolves relative ------
+include "inc-lib.script"
+assert inc_add(2, 3) == 5 "included function callable"
+assert $inc_lib_ran == 1 "included top-level statements ran"
+assert $inc_nested_ran == 1 "nested include (file-relative path) ran"
+
+# --- include: missing file and cycles are errors, not hangs -------------
+assert try(shell.eval("include \"inc-no-such-file.script\""), none) == none "missing include file is an error"
+assert try(shell.eval("include \"inc-cycle-1.script\""), none) == none "include cycle is an error"
+
 echo "shell-v2 acceptance ok"
 quit
