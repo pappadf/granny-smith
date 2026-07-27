@@ -1,0 +1,36 @@
+{
+  "rows": {
+    "suite-quadra/q700-71-fd": {
+      "instr": 177944213,
+      "tolerance": 0.2
+    },
+    "suite-quadra/q700-75-hd": {
+      "instr": 691003452,
+      "tolerance": 0.2
+    },
+    "suite-quadra/q700-checkpoint": {
+      "instr": 181998203,
+      "tolerance": 0.2
+    },
+    "suite-quadra/q700-chime": {
+      "instr": 37083119,
+      "tolerance": 0.2
+    },
+    "suite-quadra/q900-75-hd": {
+      "instr": 685035188,
+      "tolerance": 0.2
+    },
+    "suite-quadra/q900-76-fd": {
+      "instr": 372892049,
+      "tolerance": 0.2
+    },
+    "suite-quadra/q950-71-hd": {
+      "instr": 1035253632,
+      "tolerance": 0.2
+    },
+    "suite-quadra/q950-76-hd": {
+      "instr": 763957189,
+      "tolerance": 0.2
+    }
+  }
+}

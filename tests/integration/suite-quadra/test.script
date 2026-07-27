@@ -1,0 +1,281 @@
+# Quadra family suite — the proposal-integration-test-rework §9 pilot.
+#
+# Row map (former directory → row; **bold** rows are new matrix cells):
+#
+#   q700-chime      q700-boot-chime: EASC chime window, MemTop sizing,
+#                   overlay drop, Ticks alive (8 MB)
+#   q700-71-fd      q700-boot-finder: 7.1 Disk Tools floppy (direct
+#                   SWIM) to Finder, pixel golden + cursor move (4 MB —
+#                   RAM axis)
+#   q700-75-hd      **Q700 × 7.5**: prepared 7.5 HD image over the
+#                   53C96 (absorbs q700-boot-hd's SCSI-boot + About
+#                   machine-identity coverage on fresher media)
+#   q700-20m        **milestone**: Q700 @ 20 MB RAM-sizing stall (found
+#                   by the RAM axis; red until the MCU bug is fixed)
+#   q900-76-fd      **Q900 × 7.6**: Disk Tools 1 through the SWIM IOP
+#                   mailbox path (q900-boot-floppy re-media'd per §7)
+#   q900-75-hd      **Q900 × 7.5**: tower Caboose+IOPs+53C96 HD boot +
+#                   About (absorbs q900-boot-hd's coverage; 16 MB)
+#   q950-71-hd      q950-boot-hd: 33 MHz tower boot, Monitors switch to
+#                   Thousands (AC842a x555), About in 16bpp
+#   q950-76-hd      **Q950 × 7.6**: 7.6 HD boot, 32-bit asserted (32 MB)
+#   q700-checkpoint **MCU-family checkpoint round-trip** (§7 epilogue):
+#                   boot → save → fresh boot → load → re-match
+#
+# The 7.5/7.6 rows skip (with an echo) when the prepared image has not
+# been fetched — the §9 landable-before-data pattern. The DAFB
+# 832×624 cell from §7 is NOT here: staging exists (machine.boot
+# video_sense= now reaches DAFB), but the measured q.3 answer is that
+# only sense 6 (640×480) renders correctly today — larger-monitor
+# scanout + extended sense are emulator work, tracked in the proposal.
+
+include "../lib/mac.script"
+
+let disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+let disk_tools_76 = "../../data/systems/SSW-7.6-1.4M/Disk Tools 1.img"
+let hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
+let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+let hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
+let quadra_rom = "../../data/roms/q700-q900-420dbff3.rom"
+let q950_rom = "../../data/roms/q950-3dc27823.rom"
+
+# ---- q700-chime -------------------------------------------------------------
+# Phase C observables. The capture window is frame-exact (run_exact
+# semantics): the constants are load-bearing, not padding.
+def row_q700_chime() {
+    machine.boot model="q700" ram=8192 rom="${$quadra_rom}"
+    machine.sound.capture.start
+    scheduler.run 30000000
+    machine.sound.capture.stop
+    # ~62.4k frames at 22,257 Hz; silence or a hung POST miss the window.
+    assert machine.sound.capture.frames > 60000 "q700-chime: boot chime missing or short"
+    assert machine.sound.capture.frames < 65000 "q700-chime: unexpected capture length"
+    assert debug.mac.globals.read("MemTop") == 0x800000 "q700-chime: RAM sizing wrong"
+    assert debug.mac.globals.read("ROMBase") == 0x40800000 "q700-chime: ROMBase wrong"
+    let t0 = debug.mac.globals.read("Ticks")
+    scheduler.run 10000000
+    assert debug.mac.globals.read("Ticks") > $t0 "q700-chime: Ticks stalled"
+    report_perf("suite-quadra/q700-chime", scheduler.instr_count)
+}
+
+# ---- q700-71-fd -------------------------------------------------------------
+# Disk Tools over the direct (non-IOP) SWIM, DAFB 640x480 pixel-exact.
+# 4 MB is the Q700 minimum RAM option (§7 RAM axis).
+def boot_q700_fd() {
+    machine.boot model="q700" ram=4096 rom="${$quadra_rom}"
+    machine.floppy.drive[0].insert "${$disk_tools_71}"
+    let spent = wait_match("goldens/q700-7.1-640x480-finder.png", 500000000, 20000000)
+    assert machine.id == "q700" "q700-71-fd: machine.id != q700"
+    assert machine.ram == 4096 "q700-71-fd: machine.ram != 4096"
+    assert machine.screen.width == 640 "q700-71-fd: not in 640x480"
+    assert machine.screen.height == 480 "q700-71-fd: not in 640x480"
+    return $spent
+}
+def row_q700_71_fd() {
+    let t0 = scheduler.host_user_ns
+    boot_q700_fd()
+    # ADB alive: a mouse move changes the frame (cursor redraw).
+    let before = machine.screen.checksum()
+    machine.adb.mouse.move 320 240
+    wait_change($before, 60000000)
+    mips_floor("q700-71-fd", $t0, 3)
+    report_row("7.1", "dafb", "fd-boot swim-direct")
+    report_perf("suite-quadra/q700-71-fd", scheduler.instr_count)
+}
+
+# ---- q700-75-hd -------------------------------------------------------------
+# NEW CELL Q700 × 7.5: the prepared universal 7.5 image over the 53C96
+# (SCSI-boot coverage formerly q700-boot-hd's; About proves Gestalt
+# machine identity end-to-end). System 7.5 puts a clock in the menu
+# bar, so desktop/About goldens exclude the menu-bar right corner and
+# the RTC is pinned for determinism.
+def row_q700_75_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q700" ram=8192 rom="${$quadra_rom}"
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
+    assert machine.id == "q700" "q700-75-hd: machine.id != q700"
+    assert machine.ram == 8192 "q700-75-hd: machine.ram != 8192"
+    assert machine.screen.width == 640 "q700-75-hd: not in 640x480"
+    # 7.5's About box says just "Macintosh" (no Gestalt name string in
+    # the minimal install), so machine identity rides on BoxFlag:
+    # boxQuadra700 = 16.
+    assert debug.mac.globals.read("MMUFluff") == 16 "q700-75-hd: not identified as Quadra 700"
+    # Measured (§3.4): under default PRAM the towers boot 7.5 in 24-bit
+    # compatibility mode; deliberately selecting 32-bit is the q.7 PRAM
+    # follow-up.
+    assert_addr(false)
+    check_ex("goldens/q700-7.5-640x480-finder.png", 0, 440, 20, 640)
+    about_box()
+    check_ex("goldens/q700-7.5-640x480-about.png", 0, 440, 20, 640)
+    report_row("7.5", "dafb", "hd-boot 53c96 about")
+    report_perf("suite-quadra/q700-75-hd", scheduler.instr_count)
+}
+
+# ---- q700-20m (milestone) ---------------------------------------------------
+# FOUND BY THE RAM AXIS (§7): at the 20 MB option (4 MB onboard +
+# 4×4 MB bank) the Q700 ROM never completes RAM sizing — MemTop stays
+# 0 and POST spins in ROM at PC=$4084BBF8 (measured 2026-07-27, still
+# stuck after 1.5 B instructions; every pre-rework Quadra test pinned
+# 8 MB, so this was invisible). Milestone semantics: nightly reports
+# it red until the MCU bank-sizing bug is fixed, then it promotes.
+def row_q700_20m() {
+    machine.boot model="q700" ram=20480 rom="${$quadra_rom}"
+    scheduler.run 100000000
+    assert debug.mac.globals.read("MemTop") == 0x1400000 "q700-20m: RAM sizing incomplete (MemTop=${debug.mac.globals.read("MemTop"):08x}, PC=${machine.cpu.pc:08x})"
+    report_perf("suite-quadra/q700-20m", scheduler.instr_count)
+}
+
+# ---- q900-76-fd -------------------------------------------------------------
+# NEW CELL Q900 × 7.6: every tower floppy transfer is a SWIM IOP
+# mailbox transaction — the transport row, re-media'd per §7 (Q900 ×
+# 7.1 stays lit via q900-checkpoint).
+def row_q900_76_fd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q900" ram=8192 rom="${$quadra_rom}"
+    machine.floppy.drive[0].insert "${$disk_tools_76}"
+    scheduler.run 300000000
+    wait_stable(900000000)
+    assert machine.id == "q900" "q900-76-fd: machine.id != q900"
+    assert machine.screen.width == 640 "q900-76-fd: not in 640x480"
+    # The 7.6 *floppy* system runs 24-bit (§3.4 — unlike the installed
+    # volume, which selects 32-bit itself).
+    assert_addr(false)
+    check_ex("goldens/q900-7.6-640x480-finder.png", 0, 440, 20, 640)
+    report_row("7.6", "dafb", "fd-boot swim-iop")
+    report_perf("suite-quadra/q900-76-fd", scheduler.instr_count)
+}
+
+# ---- q900-75-hd -------------------------------------------------------------
+# NEW CELL Q900 × 7.5: the full Phase G device set (Caboose RTC/PRAM,
+# IOP firmware + mailboxes, dual 53C96) under 7.5; About proves the
+# Gestalt identity ("Macintosh Quadra 900") and the 16 MB RAM option.
+def row_q900_75_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q900" ram=16384 rom="${$quadra_rom}"
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
+    assert machine.id == "q900" "q900-75-hd: machine.id != q900"
+    assert machine.ram == 16384 "q900-75-hd: machine.ram != 16384"
+    assert debug.mac.globals.read("MMUFluff") == 14 "q900-75-hd: not identified as Quadra 900"
+    assert_addr(false)
+    check_ex("goldens/q900-7.5-640x480-finder.png", 0, 440, 20, 640)
+    about_box()
+    check_ex("goldens/q900-7.5-640x480-about.png", 0, 440, 20, 640)
+    report_row("7.5", "dafb", "hd-boot caboose iop about")
+    report_perf("suite-quadra/q900-75-hd", scheduler.instr_count)
+}
+
+# ---- q950-71-hd -------------------------------------------------------------
+# Phase H: DAFB 3 + AC842a. Monitors lists "Thousands" only if
+# PrimaryInit's PCBR1 presence probe passed; clicking it switches the
+# scanout to big-endian x555 16bpp, matched pixel-exactly, then About
+# renders over it. Mouse choreography is guest-tick-timed (run_ticks)
+# so it is CPU-clock independent.
+def row_q950_71_hd() {
+    machine.boot model="q950" ram=8192 rom="${$q950_rom}"
+    machine.scsi.attach_hd "${$hd_71}" 0
+    scheduler.run 700000000
+    wait_stable(1400000000)
+    assert debug.mac.globals.read("MMUFluff") == 20 "q950-71-hd: not identified as Quadra 950"
+    assert machine.screen.width == 640 "q950-71-hd: not in 640x480"
+    # Apple menu → Control Panels (press on the title, drag down, release).
+    machine.adb.mouse.move 14 5 "global"
+    run_ticks(8)
+    machine.adb.mouse.click true
+    run_ticks(12)
+    machine.adb.mouse.move 80 132 "global"
+    run_ticks(12)
+    machine.adb.mouse.click false
+    wait_stable(400000000)
+    # Double-click the Monitors control panel icon.
+    double_click(124, 137)
+    wait_stable(500000000)
+    # Click "Thousands": the driver writes PCBR1=$C0, scanout goes x555.
+    machine.adb.mouse.move 189 130 "global"
+    run_ticks(8)
+    machine.adb.mouse.click true
+    run_ticks(4)
+    machine.adb.mouse.click false
+    wait_stable(500000000)
+    check("goldens/q950-7.1-640x480x16-thousands.png")
+    about_box()
+    check("goldens/q950-7.1-640x480x16-about.png")
+    report_row("7.1", "dafb", "hd-boot thousands x555 about")
+    report_perf("suite-quadra/q950-71-hd", scheduler.instr_count)
+}
+
+# ---- q950-76-hd -------------------------------------------------------------
+# NEW CELL Q950 × 7.6. The §6.1 "AppleTalk cannot be used" dialog is
+# IIfx-specific — measured on the Q950 the image boots straight to the
+# desktop (Control Strip up, no dialog). 7.6 selects 32-bit addressing
+# itself (measured §3.4, here and on the IIfx).
+def row_q950_76_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q950" ram=32768 rom="${$q950_rom}"
+    machine.scsi.attach_hd "${$hd_76}" 0
+    scheduler.run 700000000
+    wait_stable(1600000000)
+    assert debug.mac.globals.read("MMUFluff") == 20 "q950-76-hd: not identified as Quadra 950"
+    assert machine.ram == 32768 "q950-76-hd: machine.ram != 32768"
+    assert_addr(true)
+    check_ex("goldens/q950-7.6-640x480-finder.png", 0, 440, 20, 640)
+    report_row("7.6", "dafb", "hd-boot")
+    report_perf("suite-quadra/q950-76-hd", scheduler.instr_count)
+}
+
+# ---- q700-checkpoint --------------------------------------------------------
+# §7 epilogue: checkpoint round-trip on the MCU family (previously only
+# exercised via q900-checkpoint's two-process flow). Save the booted
+# Finder state, wipe it with a fresh machine.boot, load it back, and
+# re-match the same golden in-process.
+def row_q700_checkpoint() {
+    boot_q700_fd()
+    assert checkpoint.save("${$WORK_DIR}/suite-quadra.gsc") "q700-checkpoint: save failed"
+    machine.boot model="q700" ram=4096 rom="${$quadra_rom}"
+    assert checkpoint.load("${$WORK_DIR}/suite-quadra.gsc") "q700-checkpoint: load failed"
+    scheduler.run 2000000
+    check("goldens/q700-7.1-640x480-finder.png")
+    report_perf("suite-quadra/q700-checkpoint", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("q700-chime") { row_end("q700-chime", try(row_q700_chime(), "FAILED")) }
+if row_on("q700-71-fd") { row_end("q700-71-fd", try(row_q700_71_fd(), "FAILED")) }
+if row_on("q700-75-hd") {
+    if have_media($hd_75) {
+        row_end("q700-75-hd", try(row_q700_75_hd(), "FAILED"))
+    } else {
+        echo "skip: q700-75-hd (7.5 prepared image not fetched)"
+    }
+}
+if row_on("q700-20m") { row_end_milestone("q700-20m", try(row_q700_20m(), "FAILED")) }
+if row_on("q900-76-fd") {
+    if have_media($disk_tools_76) {
+        row_end("q900-76-fd", try(row_q900_76_fd(), "FAILED"))
+    } else {
+        echo "skip: q900-76-fd (7.6 Disk Tools not fetched)"
+    }
+}
+if row_on("q900-75-hd") {
+    if have_media($hd_75) {
+        row_end("q900-75-hd", try(row_q900_75_hd(), "FAILED"))
+    } else {
+        echo "skip: q900-75-hd (7.5 prepared image not fetched)"
+    }
+}
+if row_on("q950-71-hd") { row_end("q950-71-hd", try(row_q950_71_hd(), "FAILED")) }
+if row_on("q950-76-hd") {
+    if have_media($hd_76) {
+        row_end("q950-76-hd", try(row_q950_76_hd(), "FAILED"))
+    } else {
+        echo "skip: q950-76-hd (7.6 prepared image not fetched)"
+    }
+}
+if row_on("q700-checkpoint") { row_end("q700-checkpoint", try(row_q700_checkpoint(), "FAILED")) }
+
+suite_done()
+quit

@@ -1,0 +1,276 @@
+# tests/integration/lib/mac.script — shared integration-suite library
+# (proposal-integration-test-rework §5.1/§5.2/§5.6/§5.7).
+#
+# Pull in with `include "../lib/mac.script"` from a suite's test.script
+# (paths resolve relative to the including file). The library reads
+# three optional --var definitions, forwarded by the Makefile via
+# TEST_VARS= :
+#
+#   ROW=<label>     run only the row whose label matches (suite row filter)
+#   REGEN=1         capture goldens instead of matching them
+#   KEEP_GOING=1    a failing row records red + continues (nightly mode);
+#                   default is fail-fast (PR mode)
+#
+# Row protocol: each suite row is a `def row_<name>() { ... }` whose body
+# asserts its facts. Call sites use the row_on / row_end pair:
+#
+#   if row_on("q700-chime") { row_end("q700-chime", try(row_q700_chime(), "FAILED")) }
+#
+# try() maps a successful row to none (functions return none implicitly)
+# and a failed one to "FAILED", so row_end can count reds, dump context,
+# and either abort (PR) or continue (nightly). suite_done() fails the
+# run at the end when any keep-going row went red.
+
+# --- run-mode bindings (globals; suites read but don't write these) ----------
+let ROW_FILTER = try($ROW, "")
+let REGEN_MODE = try($REGEN, "0")
+let KEEP_GOING_MODE = try($KEEP_GOING, "0")
+let RESULTS_DIR = try($TEST_RESULTS_DIR, ".")
+let rows_run = 0
+let rows_failed = 0
+let failed_labels = ""
+
+# --- row harness -------------------------------------------------------------
+
+# True when the row filter is empty or names this row.
+def row_on(label) {
+    if $ROW_FILTER == "" { return true }
+    return $ROW_FILTER == $label
+}
+
+# Close a row: `r` is try(row_fn(), "FAILED") — none on success. On
+# failure dump the screen for diagnosis, then abort (fail-fast) or
+# record red and continue (KEEP_GOING=1).
+def row_end(label, r) {
+    $rows_run = $rows_run + 1
+    if $r == "FAILED" {
+        $rows_failed = $rows_failed + 1
+        $failed_labels = "${$failed_labels} ${$label}"
+        try(machine.screen.save("${$RESULTS_DIR}/fail-${$label}.png"), none)
+        echo "ROW FAILED: ${$label}"
+        if $KEEP_GOING_MODE != "1" { assert false "row ${$label} failed (fail-fast)" }
+    } else {
+        echo "ROW OK: ${$label}"
+    }
+}
+
+# Milestone close (§7 "The RAM axis"): the row runs and its result is
+# reported, but red does not fail the suite — milestones track known
+# emulator gaps (A/UX bring-up, RAM-config stalls) until they start
+# passing, at which point they promote to enforced rows via review.
+def row_end_milestone(label, r) {
+    $rows_run = $rows_run + 1
+    if $r == "FAILED" {
+        try(machine.screen.save("${$RESULTS_DIR}/milestone-${$label}.png"), none)
+        echo "MILESTONE RED: ${$label} (known gap; not counted as failure)"
+    } else {
+        echo "MILESTONE GREEN: ${$label} - passing now; promote to enforced"
+    }
+}
+
+# Suite epilogue: report totals and fail the run if keep-going rows went
+# red. Call as the suite's last statement before `quit`.
+def suite_done() {
+    echo "rows: ${$rows_run} run, ${$rows_failed} failed${$failed_labels}"
+    assert $rows_failed == 0 "suite:${$rows_failed} row(s) failed:${$failed_labels}"
+}
+
+# --- goldens (§5.5) ----------------------------------------------------------
+
+# Match `ref` against the screen — or capture it when REGEN=1 (adopted
+# from iifx-install-76). Regenerating a suite is
+#   make test-<suite> TEST_VARS="REGEN=1"   + a reviewed git diff.
+def check(ref) {
+    if $REGEN_MODE == "1" {
+        machine.screen.save "${$ref}"
+    } else {
+        machine.screen.match "${$ref}"
+    }
+}
+
+# Like check(), but the match excludes the (top,left,bottom,right)
+# rectangle — for goldens carrying nondeterministic chrome the row
+# can't pin (System 7.5+'s menu-bar clock is the canonical case; pin
+# the RTC too so the rest of the frame is stable).
+def check_ex(ref, top, left, bottom, right) {
+    if $REGEN_MODE == "1" {
+        machine.screen.save "${$ref}"
+    } else {
+        machine.screen.match "${$ref}" $top $left $bottom $right
+    }
+}
+
+# --- waits (§5.2): a wait states its condition; ceilings are hang -----------
+# detectors, not tuning. All return the instructions actually spent, the
+# per-row perf telemetry (§5.8).
+
+# Run until the screen matches `golden`, in `step`-instruction quanta,
+# up to `ceiling`. On timeout, screen.match fails the row with the
+# usual diff artifacts. REGEN mode can't wait on a not-yet-captured
+# golden: it settles and captures instead.
+def wait_match(golden, ceiling, step) {
+    if $REGEN_MODE == "1" {
+        # Can't wait on a golden that doesn't exist yet. Burn half the
+        # ceiling first so the capture lands on the terminal state, not
+        # an earlier screen that happens to sit still (the Welcome
+        # splash is stable for far longer than the settle window).
+        scheduler.run $ceiling / 2
+        let spent = wait_stable($ceiling)
+        machine.screen.save "${$golden}"
+        return $spent + $ceiling / 2
+    }
+    let spent = 0
+    while $spent < $ceiling {
+        scheduler.run $step
+        $spent = $spent + $step
+        if machine.screen.matches("${$golden}") { return $spent }
+    }
+    machine.screen.match "${$golden}"
+    return $spent
+}
+
+# Run until the screen checksum is unchanged for 3 consecutive polls
+# (the field-proven iifx-install-76 settle()), up to `ceiling`.
+def wait_stable(ceiling) {
+    let previous = 0
+    let stable = 0
+    let spent = 0
+    while $stable < 3 {
+        assert $spent < $ceiling "wait_stable: screen never settled within ${$ceiling}"
+        scheduler.run 20000000
+        $spent = $spent + 20000000
+        let now = machine.screen.checksum()
+        if $now == $previous {
+            $stable = $stable + 1
+        } else {
+            $stable = 0
+        }
+        $previous = $now
+    }
+    return $spent
+}
+
+# Run until the screen checksum differs from `before` (menu opened,
+# dialog appeared, cursor moved), up to `ceiling`.
+def wait_change(before, ceiling) {
+    let spent = 0
+    while machine.screen.checksum() == $before {
+        assert $spent < $ceiling "wait_change: screen never changed within ${$ceiling}"
+        scheduler.run 5000000
+        $spent = $spent + 5000000
+    }
+    return $spent
+}
+
+# Run until lowmem global `name` reads `want`, up to `ceiling`.
+def wait_global(name, want, ceiling) {
+    let spent = 0
+    while debug.mac.globals.read("${$name}") != $want {
+        assert $spent < $ceiling "wait_global: ${$name} != ${$want} within ${$ceiling}"
+        scheduler.run 5000000
+        $spent = $spent + 5000000
+    }
+    return $spent
+}
+
+# --- guest-time choreography (§5.2) ------------------------------------------
+
+# Run for `n` guest ticks (1/60 s each): interaction delays are guest-
+# time constraints (DoubleTime is in ticks), so choreography built on
+# this ports across CPU speeds unchanged.
+def run_ticks(n) {
+    let t0 = debug.mac.globals.read("Ticks")
+    while debug.mac.globals.read("Ticks") < $t0 + $n { scheduler.run 500000 }
+}
+
+# Press-move-release double-click at screen coordinates, inside
+# DoubleTime on every machine.
+def double_click(x, y) {
+    machine.adb.mouse.move $x $y "global"
+    run_ticks(6)
+    machine.adb.mouse.click true
+    run_ticks(3)
+    machine.adb.mouse.click false
+    run_ticks(4)
+    machine.adb.mouse.click true
+    run_ticks(3)
+    machine.adb.mouse.click false
+}
+
+# Apple menu → first item ("About ...") via a fixed guest-tick render
+# window; the caller matches or checks the resulting frame. Fixed, not
+# a stability wait, deliberately (§5.2): the About box's memory figures
+# update live when another heap is active (e.g. a control panel DA
+# open), so the screen may never settle — determinism makes the fixed
+# instant phase-exact instead. Byte-identical dance previously pasted
+# into the three Quadra HD tests.
+def about_box() {
+    machine.adb.mouse.move 50 50 "global"
+    run_ticks(8)
+    machine.adb.mouse.move 25 10 "global"
+    run_ticks(5)
+    machine.adb.mouse.click true
+    run_ticks(9)
+    machine.adb.mouse.move 25 30 "global"
+    run_ticks(9)
+    machine.adb.mouse.click false
+    run_ticks(120)
+}
+
+# --- boot helpers ------------------------------------------------------------
+
+# Universal-ROM ~13 s boot-drive-discovery bypass: hold Cmd-Shift-Power
+# in the KeyMap lowmem for one poll cycle ($017A poke, previously
+# copy-pasted into ~12 scripts).
+def skip_boot_wait() {
+    machine.memory.poke.w 0x017A 0x8805
+    scheduler.run 2000000
+    machine.memory.poke.w 0x017A 0
+}
+
+# Assert the booted System's addressing mode (§3.4): MMU32bit ($0CB2)
+# is 0 in 24-bit mode, nonzero in 32-bit mode.
+def assert_addr(want32) {
+    let m = debug.mac.globals.read("MMU32bit")
+    if $want32 {
+        assert $m != 0 "addressing: expected 32-bit, MMU32bit=${$m}"
+    } else {
+        assert $m == 0 "addressing: expected 24-bit, MMU32bit=${$m}"
+    }
+}
+
+# True when optional media exists — the §9 skip pattern: rows whose
+# prepared image has not been fetched echo "skip:" and report an
+# uncovered target cell instead of failing.
+def have_media(path) {
+    return storage.path_exists("${$path}")
+}
+
+# --- performance telemetry (§5.8) --------------------------------------------
+
+# Emit this row's deterministic instruction spend; nightly tooling
+# diffs these against perf-baselines.json.
+def report_perf(row, instr) {
+    echo "@@PERF {\"row\":\"${$row}\",\"instr\":${$instr}}"
+}
+
+# Host-throughput floor (coarse, 3-5x below healthy): t0 is a
+# scheduler.host_user_ns snapshot from before the row's runs. Disabled
+# by --var PERF_FLOORS=off (the Valgrind runner).
+def mips_floor(label, t0, floor_mips) {
+    let mips = scheduler.instr_count * 1000 / (scheduler.host_user_ns - $t0)
+    echo "${$label}: ${$mips} MIPS"
+    if try($PERF_FLOORS, "on") != "off" {
+        assert scheduler.instr_count * 1000000000 / (scheduler.host_user_ns - $t0) > $floor_mips * 1000000 "${$label}: emulator throughput below ${$floor_mips} MIPS"
+    }
+}
+
+# --- coverage records (§5.6) -------------------------------------------------
+
+# Emit the machine-read coverage record for a row that reached its
+# golden: machine, RAM, geometry, and addressing mode are read from the
+# live machine; `system` and `card` are declared by the row (a unified
+# machine.screen.depth and a guest-read system version are follow-ups).
+def report_row(system, card, feature) {
+    echo "@@COV {\"machine\":\"${machine.id}\",\"ram\":${machine.ram},\"system\":\"${$system}\",\"card\":\"${$card}\",\"width\":${machine.screen.width},\"height\":${machine.screen.height},\"addr32\":${debug.mac.globals.read("MMU32bit") != 0},\"feature\":\"${$feature}\"}"
+}

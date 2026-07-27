@@ -1,0 +1,58 @@
+{
+  "cells": [
+    {
+      "addr32": false,
+      "card": "dafb",
+      "height": 480,
+      "machine": "q700",
+      "suite": "suite-quadra",
+      "system": "7.1",
+      "width": 640
+    },
+    {
+      "addr32": false,
+      "card": "dafb",
+      "height": 480,
+      "machine": "q700",
+      "suite": "suite-quadra",
+      "system": "7.5",
+      "width": 640
+    },
+    {
+      "addr32": false,
+      "card": "dafb",
+      "height": 480,
+      "machine": "q900",
+      "suite": "suite-quadra",
+      "system": "7.5",
+      "width": 640
+    },
+    {
+      "addr32": false,
+      "card": "dafb",
+      "height": 480,
+      "machine": "q900",
+      "suite": "suite-quadra",
+      "system": "7.6",
+      "width": 640
+    },
+    {
+      "addr32": false,
+      "card": "dafb",
+      "height": 480,
+      "machine": "q950",
+      "suite": "suite-quadra",
+      "system": "7.1",
+      "width": 640
+    },
+    {
+      "addr32": true,
+      "card": "dafb",
+      "height": 480,
+      "machine": "q950",
+      "suite": "suite-quadra",
+      "system": "7.6",
+      "width": 640
+    }
+  ]
+}

@@ -174,16 +174,57 @@ no browser). Each test has a `config.mk` (ROM/disk paths, arguments) and a
 
 ```bash
 make integration-test               # Build headless + run all
-make integration-test-valgrind      # Same, under Valgrind
-make -C tests/integration test-boot # Run a single test
-make -C tests/integration list      # List available tests
+make integration-test TIER=matrix   # One tier: unit | matrix | extended
+make integration-test -j$(nproc)    # Parallel (safe: per-test storage cache)
+make integration-test-valgrind      # Under Valgrind (scope to TIER=unit)
+make -C tests/integration test-boot-matrix   # Run a single test
+make -C tests/integration list      # List available tests (with tiers)
 ```
+
+Every test runs with a private `GS_STORAGE_CACHE` under its work
+directory: the emulator routes all delta/journal sidecars and scratch
+files there, so nothing ever writes into `tests/data` and independent
+tests can run concurrently. The per-test runner logic lives in
+`scripts/run-integration-test.sh`.
+
+Each `config.mk` declares a `TEST_TIER` (proposal-integration-test-
+rework §5.4): `unit` (zero/near-zero guest cycles, seconds for the
+whole tier), `matrix` (per-machine boot suites — the PR gate), and
+`extended` (long diagnostics, installers, app choreography — nightly).
+
+### Suites and the shared script library
+
+Machine families are covered by *suite* directories (e.g.
+`suite-quadra`): one daemon run, one row per (system, media, RAM,
+video) cell, re-instantiating via `machine.boot` between rows. Shared
+harness functions live in `tests/integration/lib/mac.script`, pulled
+in with the shell's `include` statement. The library provides
+condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
+`wait_global` — a wait states its condition; ceilings are hang
+detectors), guest-tick choreography (`run_ticks`, `double_click`,
+`about_box`), the row harness (`row_on`/`row_end`/`suite_done`,
+milestone rows), addressing-mode asserts (`assert_addr`), and
+machine-read coverage records (`@@COV` lines).
+
+Suite variables are passed via `TEST_VARS`:
+
+```bash
+make -C tests/integration test-suite-quadra TEST_VARS="ROW=q700-chime"   # one row
+make -C tests/integration test-suite-quadra TEST_VARS="KEEP_GOING=1"     # nightly: run past red rows
+make -C tests/integration test-suite-quadra TEST_VARS="REGEN=1"          # recapture goldens (review the diff!)
+```
+
+Suite goldens live in `<suite>/goldens/` named
+`<model>-<system>-<WxHxD>[-<state>].png`.
 
 ### Writing a New Integration Test
 
 1. Create `tests/integration/foo/` with `config.mk` and `test.script`.
-2. `config.mk` sets `ROM`, `FD_IMAGE` or `HD_IMAGE`, and emulator arguments.
+2. `config.mk` sets `TEST_ROM`, `TEST_ARGS`, `TEST_TIER`, and optionally
+   `TEST_SETUP`/`TEST_RUNNER`.
 3. `test.script` contains shell commands sent to the headless emulator.
+   A boot assertion belongs as a row in its machine's suite, not a new
+   directory — new directories are for genuinely new mechanisms.
 4. Run: `make -C tests/integration test-foo`
 
 ---

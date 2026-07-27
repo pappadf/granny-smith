@@ -97,6 +97,7 @@ else
         $EXPANDED_ARGS \
         script=test.script \
         --var WORK_DIR="$WORK_DIR" \
+        --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
         $VAR_ARGS \
         --speed=max || fail
 fi
