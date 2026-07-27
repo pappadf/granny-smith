@@ -3762,6 +3762,27 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
     return val_err("screen.match: screen does not match '%s'", ref);
 }
 
+// `screen.matches(reference)` — the non-fatal twin of `screen.match`:
+// same comparison, V_BOOL result, no abort, no diff artifacts, and no
+// per-call output (it is a polling primitive — wait_match() in the
+// integration library calls it every few million cycles).  An
+// unreadable reference is still a hard error: polling against a
+// missing golden would spin to the ceiling and report a timeout
+// instead of the actual mistake.
+static value_t screen_method_matches(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    const char *ref = argv[0].s;
+    const display_t *d = system_display();
+    if (!d || !d->bits)
+        return val_err("screen.matches: framebuffer not available");
+    int result = match_framebuffer_with_png(d, ref, NULL);
+    if (result < 0)
+        return val_err("screen.matches: cannot load reference '%s'", ref);
+    return val_bool(result == 0);
+}
+
 static value_t screen_method_match_or_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -3864,6 +3885,9 @@ static const arg_decl_t screen_match_args[] = {
     {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
     {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
 };
+static const arg_decl_t screen_matches_args[] = {
+    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+};
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
     {.name = "actual",
@@ -3906,6 +3930,10 @@ static const member_t screen_members[] = {
      .name = "match",
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
             "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_match}},
+    {.kind = M_METHOD,
+     .name = "matches",
+     .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive)",
+     .method = {.args = screen_matches_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_matches}},
     {.kind = M_METHOD,
      .name = "match_or_save",
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
