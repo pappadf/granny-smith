@@ -17,3 +17,6 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 # Boot from System 6.0.8 in the internal drive; the blank floppy is created
 # by the script into WORK_DIR and inserted into the external drive.
 TEST_ARGS := fd=$(TEST_DATA)/systems/System_6_0_8.dsk
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

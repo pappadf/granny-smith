@@ -8,3 +8,6 @@ TEST_DESC := Boot Welcome on the generic 24AC kind at 640x480 and 832x624.
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

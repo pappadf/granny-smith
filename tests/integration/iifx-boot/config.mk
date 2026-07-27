@@ -13,3 +13,6 @@ TEST_ROM := roms/iifx-4147dd77.rom
 # while probing the SCC IOP).  ram=16384 boots cleanly through to Finder.
 # The 8 MB stall is tracked separately.
 TEST_ARGS := model=iifx ram=16384 fd=$(TEST_DATA)/systems/System_7_0_1.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

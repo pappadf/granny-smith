@@ -23,3 +23,6 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # PrimaryInit timing transfers directly.  The display-card-24ac-d8daab87.vrom is
 # found next to the ROM via the shared declrom loader's rom-dir search.
 TEST_ARGS := model=iicx ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

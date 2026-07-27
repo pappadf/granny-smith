@@ -15,3 +15,6 @@ TEST_DESC := Same boot as iicx-824gc-accel but every drawing func declines; the 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

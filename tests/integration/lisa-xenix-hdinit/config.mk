@@ -28,3 +28,6 @@ TEST_ROM := roms/lisa2-revh-098917b2.rom
 # Lisa 2, 2 MB.  Boot from the Xenix "Boot XProFile Patch" floppy (the plain Boot
 # floppy's pf driver cannot drive an external ProFile).
 TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

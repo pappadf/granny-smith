@@ -19,3 +19,6 @@ TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_1_20mb_24ac_cd_32bit.img" "$(TES
 
 # Two-step custom runner (save process + restore process).
 TEST_RUNNER := run.sh
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

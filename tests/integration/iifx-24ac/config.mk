@@ -21,3 +21,6 @@ TEST_ROM := roms/iifx-4147dd77.rom
 # The harness boots the IIfx once; the script re-boots with the 24AC
 # selected (the ROM-only phase needs no disk).
 TEST_ARGS := model=iifx ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

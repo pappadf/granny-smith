@@ -17,3 +17,6 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # The harness boots the IIx once; the script re-boots with the 8•24 GC
 # selected (video_card can't be passed as a startup arg).
 TEST_ARGS := model=iix ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

@@ -12,3 +12,6 @@ TEST_DESC := machine.sound.capture/match: ASC wavetable chime on the RBV machine
 
 TEST_ROM := roms/iici-368cadfe.rom
 TEST_ARGS := model=iici ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

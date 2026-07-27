@@ -19,3 +19,6 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 # all four officially-supported real-hardware Plus RAM configurations
 # in a single test run.
 TEST_ARGS := model=plus ram=1024
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

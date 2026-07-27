@@ -16,3 +16,6 @@ TEST_ROM := roms/macxl-3a-094c82f0.rom
 # profile default) so the 608x431 framebuffer sits at $F8000 and the rendered
 # desktop is reproducible.  The system disk is inserted at runtime by the script.
 TEST_ARGS := model=macxl ram=1024 fd=$(TEST_DATA)/Lisa/MacWorksXL/MacWorksXL_3.0_May1985.dc42
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

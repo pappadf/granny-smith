@@ -9,3 +9,6 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # No extra disk images; boot to floppy icon (no bootable disk)
 TEST_ARGS :=
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

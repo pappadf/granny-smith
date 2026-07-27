@@ -16,3 +16,6 @@ TEST_ROM := roms/lisa2-revh-098917b2.rom
 # target pixel; a button click is then the COPS mouse-button keycode, which the OS
 # hit-tests against the tracked cursor.
 TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

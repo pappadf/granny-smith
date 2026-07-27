@@ -26,3 +26,6 @@ TEST_DESC := Run through the Marathon gameplay hand-off and assert the QuickTime
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=iicx ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

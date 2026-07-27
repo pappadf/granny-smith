@@ -26,3 +26,6 @@ TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/Installation Boot Disk SE.image" "$
 
 # 16 MB RAM required for A/UX boot.
 TEST_ARGS := ram=16384 fd=$(TEST_TMPDIR)/boot.image hd=$(TEST_TMPDIR)/hd.img cdrom=$(TEST_TMPDIR)/install.iso
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

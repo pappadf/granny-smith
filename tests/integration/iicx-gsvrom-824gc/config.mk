@@ -14,3 +14,6 @@ TEST_DESC := GC accelerator bring-up (attach/boot/arm/gc-on) on the generic kind
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

@@ -9,3 +9,6 @@ TEST_DESC := machine.sound.capture/match: ASC wavetable chime on the V8 machine 
 
 TEST_ROM := roms/iisi-36b7fb6c.rom
 TEST_ARGS := model=iisi ram=17408
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

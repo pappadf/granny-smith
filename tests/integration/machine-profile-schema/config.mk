@@ -10,3 +10,6 @@ TEST_DESC := machine.profile() JSON shape pinned per model (added/removed/retype
 # Any ROM works — machine.profile() is a static registry lookup, no boot.
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

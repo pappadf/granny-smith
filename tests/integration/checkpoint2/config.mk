@@ -20,3 +20,6 @@ TEST_RUNNER := run.sh
 TEST_SETUP := unzip -o -q $(TEST_DATA)/systems/hd1.zip -d $(TEST_RESULTS_DIR) && cp $(TEST_DATA)/systems/System_6_0_8.dsk $(TEST_RESULTS_DIR)/System_6_0_8.dsk
 
 # Note: TEST_ARGS not used when TEST_RUNNER is set
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

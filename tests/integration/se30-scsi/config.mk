@@ -15,3 +15,6 @@ TEST_SETUP := unzip -o -q $(TEST_DATA)/systems/hd1.zip -d $(TEST_TMPDIR)
 # Emulator arguments (hd= for hard disk)
 # $(TEST_TMPDIR) is the temporary directory created for this test run
 TEST_ARGS := hd=$(TEST_TMPDIR)/hd1.img
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

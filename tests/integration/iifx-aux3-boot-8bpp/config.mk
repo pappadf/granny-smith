@@ -30,3 +30,6 @@ TEST_DESC := Boot IIfx (16 MB, JMFB at 13" RGB 8 bpp) from the A/UX 3.0.1 HD ima
 TEST_ROM := roms/iifx-4147dd77.rom
 
 TEST_ARGS := model=iifx ram=16384
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

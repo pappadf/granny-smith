@@ -6,3 +6,6 @@ TEST_NAME := Object-model sound class
 TEST_DESC := sound.enabled / .volume / .sample_rate / .mute() — Plus PWM module
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

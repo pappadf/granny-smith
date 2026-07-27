@@ -18,3 +18,6 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # were captured against it, and the SE/30 profile now defaults to the
 # generic GS-vROM sibling (proposal-generic-nubus-vrom.md stage 3).
 TEST_ARGS := video_card=builtin_se30_video ram=4096 fd0=$(TEST_DATA)/apps/MacTest-SE30.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

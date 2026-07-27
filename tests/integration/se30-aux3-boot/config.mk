@@ -18,3 +18,6 @@ TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/hd160-with-aux-301.img" "$(TEST_TMP
 # were captured against it, and the SE/30 profile now defaults to the
 # generic GS-vROM sibling (proposal-generic-nubus-vrom.md stage 3).
 TEST_ARGS := video_card=builtin_se30_video ram=16384 hd=$(TEST_TMPDIR)/hd.img
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

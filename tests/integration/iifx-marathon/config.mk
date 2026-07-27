@@ -16,3 +16,6 @@ TEST_ROM := roms/iifx-4147dd77.rom
 # The harness creates the IIfx with 16 MB; the script re-boots with the
 # 8•24 GC card selected and attaches the SCSI HD.
 TEST_ARGS := model=iifx ram=16384
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

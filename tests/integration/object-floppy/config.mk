@@ -8,3 +8,6 @@ TEST_DESC := floppy.drives[0|1] indexed children + eject method
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_ARGS := fd0=$(TEST_DATA)/systems/System_6_0_8.dsk
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

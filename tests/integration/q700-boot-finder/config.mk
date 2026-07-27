@@ -11,3 +11,6 @@ TEST_DESC := Disk Tools boot: DAFB 640x480 desktop pixel-match
 
 TEST_ROM := roms/q700-q900-420dbff3.rom
 TEST_ARGS := model=q700 ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

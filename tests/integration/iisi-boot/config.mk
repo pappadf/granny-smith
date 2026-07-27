@@ -17,3 +17,6 @@ TEST_ROM := roms/iisi-36b7fb6c.rom
 # IIsi profile default, so the boot path — and the rendered desktop — is
 # reproducible.  Boot from the same System 7.0.1 1.44 MB floppy as iici-boot.
 TEST_ARGS := ram=17408 fd=$(TEST_DATA)/systems/System_7_0_1.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

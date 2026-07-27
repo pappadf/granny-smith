@@ -17,3 +17,6 @@ TEST_ROM := roms/macxl-3a-094c82f0.rom
 # at $F8000 and the rendered prompt is reproducible).  No fd= and no profile=
 # argument: the machine starts with no removable or fixed media at all.
 TEST_ARGS := model=macxl ram=1024
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

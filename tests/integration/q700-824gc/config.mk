@@ -18,3 +18,6 @@ TEST_ROM := roms/q700-q900-420dbff3.rom
 TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" "$(WORK_DIR)/hd.img"
 
 TEST_ARGS := model=q700 ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

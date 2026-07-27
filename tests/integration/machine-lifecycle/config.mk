@@ -9,3 +9,6 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # No extra disk images required; uses TEST_RUNNER for multi-step execution
 TEST_RUNNER := run.sh
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

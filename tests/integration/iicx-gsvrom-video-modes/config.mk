@@ -11,3 +11,6 @@ TEST_DESC := Cold-boot Welcome-at-N-bpp via staged video_mode on the generic 8_2
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 TEST_ARGS := model=iicx ram=8192 fd=$(TEST_DATA)/systems/System_7_0_1.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

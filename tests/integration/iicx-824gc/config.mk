@@ -19,3 +19,6 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # The harness creates the IIcx with 8 MB; the script re-boots with the 8•24 GC
 # card selected (video_card can't be passed as an arg).
 TEST_ARGS := model=iicx ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

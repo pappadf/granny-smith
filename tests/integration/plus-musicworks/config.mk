@@ -15,3 +15,6 @@ TEST_DESC := Boot MFS floppy to Finder, open Samples/Brandenburg No. 3 in MusicW
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_ARGS := fd=$(TEST_DATA)/apps/MusicWorks-0.42.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

@@ -29,3 +29,6 @@ TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/hd160-with-aux-301.img" "$(TEST_TMP
 
 # 16 MB RAM matches iifx-aux3-boot (A/UX wants 16 MB).
 TEST_ARGS := model=iifx ram=16384 hd=$(TEST_TMPDIR)/hd.img
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

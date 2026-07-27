@@ -11,3 +11,6 @@ TEST_DESC := Floppy boot through the SWIM IOP mailbox path
 
 TEST_ROM := roms/q700-q900-420dbff3.rom
 TEST_ARGS := model=q900 ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

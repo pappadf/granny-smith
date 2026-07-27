@@ -8,3 +8,6 @@ TEST_DESC := storage.images indexed children — filename / path / type / writab
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_SETUP := unzip -o -q $(TEST_DATA)/systems/hd1.zip -d $(TEST_TMPDIR)
 TEST_ARGS := hd=$(TEST_TMPDIR)/hd1.img fd0=$(TEST_DATA)/systems/System_6_0_8.dsk
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

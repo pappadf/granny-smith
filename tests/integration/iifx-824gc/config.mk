@@ -27,3 +27,6 @@ TEST_ROM := roms/iifx-4147dd77.rom
 # machine creation (the headless twin of web2's pre-boot
 # machine.nubus.video_card write).
 TEST_ARGS := model=iifx ram=16384 fd=$(TEST_DATA)/systems/System_7_0_1.image video_card=824gc
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

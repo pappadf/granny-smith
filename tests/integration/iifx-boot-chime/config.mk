@@ -13,3 +13,6 @@ TEST_DESC := machine.sound.capture/match: ASC wavetable chime on the OSS machine
 
 TEST_ROM := roms/iifx-4147dd77.rom
 TEST_ARGS := model=iifx ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

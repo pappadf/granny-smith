@@ -30,3 +30,6 @@ TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-Boot-X
 # Copy the installed image to a writable scratch path so the staged input is never
 # modified by the boot (fsck / mount may write).
 TEST_SETUP := cp "$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-ProFile.image" "$(WORK_DIR)/profile.image"
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

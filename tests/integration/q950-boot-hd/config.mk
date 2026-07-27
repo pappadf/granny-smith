@@ -21,3 +21,6 @@ TEST_ROM := roms/q950-3dc27823.rom
 TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_1_20mb_24ac_cd_32bit.img" "$(TEST_TMPDIR)/hd.img"
 
 TEST_ARGS := model=q950 ram=8192 hd=$(TEST_TMPDIR)/hd.img
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

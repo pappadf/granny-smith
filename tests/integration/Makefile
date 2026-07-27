@@ -3,24 +3,32 @@
 # Auto-discovers and runs all integration tests under tests/integration/
 # Each test subdirectory must contain:
 #   - test.script: Shell commands to run the test
-#   - config.mk: Test configuration (ROM, disk images, arguments)
+#   - config.mk: Test configuration (ROM, disk images, arguments, tier)
+#
+# The per-test runner logic lives in scripts/run-integration-test.sh
+# (one copy for the plain and valgrind flavors); this Makefile handles
+# discovery, tier filtering, parallelism, and the summary.
 #
 # Usage:
-#   make test          - Run all integration tests
-#   make test-<name>   - Run a specific test (e.g., make test-boot)
-#   make list          - List all available tests
-#   make build         - Build the headless emulator only
-#   make check-data    - Check if test data is available
+#   make test              - Run all integration tests
+#   make test TIER=matrix  - Run one tier (unit | matrix | extended)
+#   make test -j$(nproc)   - Run tests in parallel (safe: per-test
+#                            GS_STORAGE_CACHE keeps tests/data pristine)
+#   make test-<name>       - Run a specific test (e.g. make test-boot-matrix)
+#   make test-<name> TEST_VARS="ROW=x REGEN=1"  - extra --var definitions
+#   make list              - List all available tests (with tiers)
+#   make build             - Build the headless emulator only
+#   make check-data        - Check if test data is available
 
 # Paths
 ROOT_DIR := ../..
 HEADLESS_BIN := $(ROOT_DIR)/build/headless/gs-headless
 DUMP_BIN := $(ROOT_DIR)/tools/dump/dump
 TEST_DATA := $(ROOT_DIR)/tests/data
-STORAGE_CACHE := $(ROOT_DIR)/build/storage-cache
 TEST_RESULTS_BASE := $(ROOT_DIR)/tests/integration/test-results
 WORK_DIR_BASE := $(ROOT_DIR)/build/integration
 FETCH_SCRIPT := $(ROOT_DIR)/scripts/fetch-test-data.sh
+RUNNER := $(ROOT_DIR)/scripts/run-integration-test.sh
 
 # Valgrind configuration for memcheck
 # --error-exitcode=1: Return non-zero on memory errors
@@ -36,9 +44,30 @@ VALGRIND_FLAGS := --error-exitcode=1 \
                   --errors-for-leak-kinds=definite \
                   --quiet
 
-# Auto-discover test directories (those containing test.script)
-TEST_DIRS := $(patsubst %/test.script,%,$(wildcard */test.script))
+# Auto-discover test directories (those containing test.script); TIER=
+# narrows to directories whose config.mk declares that TEST_TIER.
+ALL_TEST_DIRS := $(patsubst %/test.script,%,$(wildcard */test.script))
+TIER ?=
+ifeq ($(TIER),)
+TEST_DIRS := $(ALL_TEST_DIRS)
+else
+TEST_DIRS := $(patsubst %/config.mk,%,$(shell grep -l '^TEST_TIER := $(TIER)$$' $(addsuffix /config.mk,$(ALL_TEST_DIRS)) 2>/dev/null))
+ifeq ($(TEST_DIRS),)
+$(error TIER=$(TIER) matches no tests (expected unit, matrix, or extended))
+endif
+endif
 TEST_TARGETS := $(addprefix test-,$(TEST_DIRS))
+VALGRIND_TARGETS := $(addprefix test-valgrind-,$(TEST_DIRS))
+
+# Extra --var definitions forwarded to the shell (suite row filters,
+# golden regeneration, keep-going nightly mode).
+TEST_VARS ?=
+export TEST_VARS
+
+# Environment for the runner script (absolute; the runner cds per test).
+export HEADLESS_BIN_ABS := $(abspath $(HEADLESS_BIN))
+export DUMP_BIN_ABS := $(abspath $(DUMP_BIN))
+export TEST_DATA_ABS := $(abspath $(TEST_DATA))
 
 .PHONY: all build test test-valgrind list clean check-data FORCE
 FORCE:
@@ -89,20 +118,25 @@ $(HEADLESS_BIN):
 $(DUMP_BIN):
 	@$(MAKE) -C $(ROOT_DIR)/tools/dump
 
-# Run all integration tests (checks for test data first)
+# Run the (tier-filtered) tests.  The recursive make inherits -j, so
+# `make test -j8` runs tests concurrently; -k keeps going past failures
+# and the summary below reads the per-test status files the runner
+# writes, which stays accurate under parallel interleaving.
 test: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
-	@echo "Running $(words $(TEST_DIRS)) integration test(s)"
+	@echo "Running $(words $(TEST_DIRS)) integration test(s)$(if $(TIER), [tier: $(TIER)])"
 	@echo "========================================"
-	@failed=0; \
+	@$(MAKE) --no-print-directory -k $(TEST_TARGETS); \
+	failed=""; \
 	for dir in $(TEST_DIRS); do \
-		$(MAKE) --no-print-directory test-$$dir || failed=$$((failed + 1)); \
+		[ "$$(cat "$(TEST_RESULTS_BASE)/$$dir/status" 2>/dev/null)" = "PASS" ] || failed="$$failed $$dir"; \
 	done; \
 	echo "========================================"; \
-	if [ $$failed -eq 0 ]; then \
+	if [ -z "$$failed" ]; then \
 		echo "All $(words $(TEST_DIRS)) integration test(s) passed"; \
 	else \
-		echo "$$failed of $(words $(TEST_DIRS)) test(s) FAILED"; \
+		echo "FAILED:$$failed"; \
+		echo "$$(echo $$failed | wc -w) of $(words $(TEST_DIRS)) test(s) FAILED"; \
 		exit 1; \
 	fi
 
@@ -112,153 +146,56 @@ list:
 	@for dir in $(TEST_DIRS); do \
 		if [ -f "$$dir/config.mk" ]; then \
 			name=$$(grep -m1 '^TEST_NAME' "$$dir/config.mk" 2>/dev/null | cut -d= -f2- | sed 's/^[ \t]*//'); \
-			desc=$$(grep -m1 '^TEST_DESC' "$$dir/config.mk" 2>/dev/null | cut -d= -f2- | sed 's/^[ \t]*//'); \
-			echo "  $$dir: $$name"; \
-			[ -n "$$desc" ] && echo "         $$desc"; \
+			tier=$$(grep -m1 '^TEST_TIER' "$$dir/config.mk" 2>/dev/null | cut -d= -f2- | sed 's/^[ \t]*//'); \
+			echo "  $$dir [$$tier]: $$name"; \
 		else \
 			echo "  $$dir"; \
 		fi; \
 	done
 
-# Pattern rule for running individual tests
-# Loads config.mk from the test directory to get ROM, disk, and arguments
-# Supports TEST_SETUP for pre-test setup commands (e.g., unzipping files)
-# Supports TEST_RUNNER for custom test scripts (multi-step tests)
+# Pattern rule for running individual tests: delegate to the shared
+# runner with per-test result/work dirs.
 test-%: $(HEADLESS_BIN) FORCE
-	@if [ ! -d "$*" ]; then \
-		echo "ERROR: Test directory '$*' not found"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$*/test.script" ]; then \
-		echo "ERROR: Test script '$*/test.script' not found"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$*/config.mk" ]; then \
-		echo "ERROR: Test config '$*/config.mk' not found"; \
-		exit 1; \
-	fi
-	@# Extract configuration from config.mk and run with absolute paths
-	@TEST_ROM=$$(grep -m1 '^TEST_ROM' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	TEST_ARGS=$$(grep -m1 '^TEST_ARGS' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	TEST_SETUP=$$(grep -m1 '^TEST_SETUP' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	TEST_RUNNER=$$(grep -m1 '^TEST_RUNNER' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	TEST_NAME=$$(grep -m1 '^TEST_NAME' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	echo "=== Running: $$TEST_NAME ($*) ==="; \
-	ABS_TEST_DATA="$(abspath $(TEST_DATA))"; \
-	ROM_PATH="$$ABS_TEST_DATA/$$TEST_ROM"; \
-	if [ ! -f "$$ROM_PATH" ]; then \
-		echo "ERROR: ROM not found: $$ROM_PATH"; \
-		exit 1; \
-	fi; \
-	rm -rf "$(abspath $(STORAGE_CACHE))"; \
-	TEST_TMPDIR=$$(mktemp -d); \
-	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*"; \
-	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*"; \
-	rm -rf "$$WORK_DIR"; \
-	mkdir -p "$$TEST_RESULTS_DIR" "$$WORK_DIR"; \
-	find "$$ABS_TEST_DATA" \( -name '*.delta' -o -name '*.journal' \) -delete 2>/dev/null; \
-	trap "rm -rf $$TEST_TMPDIR; find '$$ABS_TEST_DATA' \( -name '*.delta' -o -name '*.journal' \) -delete 2>/dev/null" EXIT; \
-	if [ -n "$$TEST_SETUP" ]; then \
-		SETUP_CMD=$$(echo "$$TEST_SETUP" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g" | sed "s|\$$(TEST_RESULTS_DIR)|$$TEST_RESULTS_DIR|g" | sed "s|\$$(WORK_DIR)|$$WORK_DIR|g"); \
-		echo "Setup: $$SETUP_CMD"; \
-		eval "$$SETUP_CMD" || { echo "=== FAIL: $* (setup) ==="; exit 1; }; \
-	fi; \
-	EXPANDED_ARGS=$$(echo "$$TEST_ARGS" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g"); \
-	if [ -n "$$TEST_RUNNER" ]; then \
-		cd $* && HEADLESS_BIN=$(abspath $(HEADLESS_BIN)) ROM_PATH="$$ROM_PATH" \
-			DUMP_BIN=$(abspath $(DUMP_BIN)) \
-			TEST_DATA="$$ABS_TEST_DATA" TEST_TMPDIR="$$TEST_TMPDIR" \
-			TEST_RESULTS_DIR="$$TEST_RESULTS_DIR" \
-			WORK_DIR="$$WORK_DIR" \
-			STORAGE_CACHE=$(abspath $(STORAGE_CACHE)) \
-			bash "$$TEST_RUNNER" || { echo "=== FAIL: $* ==="; exit 1; }; \
-	else \
-		cd $* && GS_STORAGE_CACHE=$(abspath $(STORAGE_CACHE)) $(abspath $(HEADLESS_BIN)) \
-			rom="$$ROM_PATH" \
-			$$EXPANDED_ARGS \
-			script=test.script \
-			--var WORK_DIR="$$WORK_DIR" \
-			--speed=max || { echo "=== FAIL: $* ==="; exit 1; }; \
-	fi; \
-	echo "=== PASS: $* ==="
+	@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
+	DUMP_BIN="$(DUMP_BIN_ABS)" \
+	TEST_DATA="$(TEST_DATA_ABS)" \
+	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*" \
+	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*" \
+	WRAPPER="" \
+	bash $(RUNNER) "$*"
 
 # Clean integration test artifacts (headless binary is cleaned by top-level make)
 clean:
-	rm -rf $(TEST_RESULTS_BASE) $(WORK_DIR_BASE) $(STORAGE_CACHE)
+	rm -rf $(TEST_RESULTS_BASE) $(WORK_DIR_BASE)
 
-# Run all integration tests under Valgrind memcheck
-test-valgrind: $(HEADLESS_BIN)
+# Run the (tier-filtered) tests under Valgrind memcheck.  Note: the
+# full-suite sweep is impractical (20-50x slowdown over billions of
+# guest cycles); CI runs `make test-valgrind TIER=unit` plus selected
+# boots — see proposal-integration-test-rework §5.4.
+test-valgrind: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
-	@echo "Running $(words $(TEST_DIRS)) integration test(s) under Valgrind"
+	@echo "Running $(words $(TEST_DIRS)) integration test(s) under Valgrind$(if $(TIER), [tier: $(TIER)])"
 	@echo "========================================"
-	@failed=0; \
+	@$(MAKE) --no-print-directory -k $(VALGRIND_TARGETS); \
+	failed=""; \
 	for dir in $(TEST_DIRS); do \
-		$(MAKE) --no-print-directory test-valgrind-$$dir || failed=$$((failed + 1)); \
+		[ "$$(cat "$(TEST_RESULTS_BASE)/$$dir/status" 2>/dev/null)" = "PASS" ] || failed="$$failed $$dir"; \
 	done; \
 	echo "========================================"; \
-	if [ $$failed -eq 0 ]; then \
+	if [ -z "$$failed" ]; then \
 		echo "All $(words $(TEST_DIRS)) integration test(s) passed (valgrind)"; \
 	else \
-		echo "$$failed of $(words $(TEST_DIRS)) test(s) FAILED (valgrind)"; \
+		echo "FAILED:$$failed"; \
+		echo "$$(echo $$failed | wc -w) of $(words $(TEST_DIRS)) test(s) FAILED (valgrind)"; \
 		exit 1; \
 	fi
 
-# Pattern rule for running individual tests under Valgrind
-# Supports TEST_SETUP for pre-test setup commands (e.g., unzipping files)
-# Supports TEST_RUNNER for custom test scripts (multi-step tests)
+# Valgrind flavor of the pattern rule: same runner, wrapped binary.
 test-valgrind-%: $(HEADLESS_BIN) FORCE
-	@if [ ! -d "$*" ]; then \
-		echo "ERROR: Test directory '$*' not found"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$*/test.script" ]; then \
-		echo "ERROR: Test script '$*/test.script' not found"; \
-		exit 1; \
-	fi
-	@if [ ! -f "$*/config.mk" ]; then \
-		echo "ERROR: Test config '$*/config.mk' not found"; \
-		exit 1; \
-	fi
-	@# Extract configuration from config.mk and run with valgrind
-	@TEST_ROM=$$(grep -m1 '^TEST_ROM' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	TEST_ARGS=$$(grep -m1 '^TEST_ARGS' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	TEST_SETUP=$$(grep -m1 '^TEST_SETUP' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	TEST_RUNNER=$$(grep -m1 '^TEST_RUNNER' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	TEST_NAME=$$(grep -m1 '^TEST_NAME' "$*/config.mk" | cut -d= -f2- | sed 's/^[ \t]*//'); \
-	echo "=== Running (valgrind): $$TEST_NAME ($*) ==="; \
-	ABS_TEST_DATA="$(abspath $(TEST_DATA))"; \
-	ROM_PATH="$$ABS_TEST_DATA/$$TEST_ROM"; \
-	if [ ! -f "$$ROM_PATH" ]; then \
-		echo "ERROR: ROM not found: $$ROM_PATH"; \
-		exit 1; \
-	fi; \
-	rm -rf "$(abspath $(STORAGE_CACHE))"; \
-	TEST_TMPDIR=$$(mktemp -d); \
-	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*"; \
-	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*"; \
-	rm -rf "$$WORK_DIR"; \
-	mkdir -p "$$TEST_RESULTS_DIR" "$$WORK_DIR"; \
-	find "$$ABS_TEST_DATA" \( -name '*.delta' -o -name '*.journal' \) -delete 2>/dev/null; \
-	trap "rm -rf $$TEST_TMPDIR; find '$$ABS_TEST_DATA' \( -name '*.delta' -o -name '*.journal' \) -delete 2>/dev/null" EXIT; \
-	if [ -n "$$TEST_SETUP" ]; then \
-		SETUP_CMD=$$(echo "$$TEST_SETUP" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g" | sed "s|\$$(TEST_RESULTS_DIR)|$$TEST_RESULTS_DIR|g" | sed "s|\$$(WORK_DIR)|$$WORK_DIR|g"); \
-		echo "Setup: $$SETUP_CMD"; \
-		eval "$$SETUP_CMD" || { echo "=== FAIL: $* (setup) ==="; exit 1; }; \
-	fi; \
-	EXPANDED_ARGS=$$(echo "$$TEST_ARGS" | sed "s|\$$(TEST_DATA)|$$ABS_TEST_DATA|g" | sed "s|\$$(TEST_TMPDIR)|$$TEST_TMPDIR|g"); \
-	if [ -n "$$TEST_RUNNER" ]; then \
-		cd $* && HEADLESS_BIN="$(VALGRIND) $(VALGRIND_FLAGS) $(abspath $(HEADLESS_BIN))" ROM_PATH="$$ROM_PATH" \
-			TEST_DATA="$$ABS_TEST_DATA" TEST_TMPDIR="$$TEST_TMPDIR" \
-			TEST_RESULTS_DIR="$$TEST_RESULTS_DIR" \
-			WORK_DIR="$$WORK_DIR" \
-			STORAGE_CACHE=$(abspath $(STORAGE_CACHE)) \
-			bash "$$TEST_RUNNER" || { echo "=== FAIL (valgrind): $* ==="; exit 1; }; \
-	else \
-		cd $* && GS_STORAGE_CACHE=$(abspath $(STORAGE_CACHE)) $(VALGRIND) $(VALGRIND_FLAGS) $(abspath $(HEADLESS_BIN)) \
-			rom="$$ROM_PATH" \
-			$$EXPANDED_ARGS \
-			script=test.script \
-			--var WORK_DIR="$$WORK_DIR" \
-			--speed=max || { echo "=== FAIL (valgrind): $* ==="; exit 1; }; \
-	fi; \
-	echo "=== PASS (valgrind): $* ==="
+	@HEADLESS_BIN="$(HEADLESS_BIN_ABS)" \
+	DUMP_BIN="$(DUMP_BIN_ABS)" \
+	TEST_DATA="$(TEST_DATA_ABS)" \
+	TEST_RESULTS_DIR="$(abspath $(TEST_RESULTS_BASE))/$*" \
+	WORK_DIR="$(abspath $(WORK_DIR_BASE))/$*" \
+	WRAPPER="$(VALGRIND) $(VALGRIND_FLAGS)" \
+	bash $(RUNNER) "$*"

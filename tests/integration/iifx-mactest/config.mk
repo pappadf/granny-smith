@@ -24,3 +24,6 @@ TEST_ROM := roms/iifx-4147dd77.rom
 # IOP); ram=16384 boots cleanly.  MacTest reports "RAM size: 16 MB" at this
 # setting, which the main.png baseline below depends on.
 TEST_ARGS := model=iifx ram=16384 fd=$(TEST_DATA)/apps/MacTest-IIfx.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

@@ -7,3 +7,6 @@ TEST_DESC := scsi.bus.phase + scsi.devices indexed children + scsi.loopback
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_SETUP := unzip -o -q $(TEST_DATA)/systems/hd1.zip -d $(TEST_TMPDIR)
 TEST_ARGS := hd=$(TEST_TMPDIR)/hd1.img
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

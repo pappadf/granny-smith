@@ -31,3 +31,6 @@ TEST_DESC := Boots the installed Xenix 3.0 ProFile to its multi-user prompt with
 TEST_ROM := roms/lisa2-revh-098917b2.rom
 TEST_ARGS := model=lisa ram=2048
 TEST_SETUP := cp "$(TEST_DATA)/Lisa/Xenix-3.0/Xenix-3.0-ProFile.image" "$(WORK_DIR)/profile.image"
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

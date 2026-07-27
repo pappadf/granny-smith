@@ -14,3 +14,6 @@ TEST_DESC := machine.sound.capture/match: ASC wavetable chime through the produc
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_ARGS := model=se30
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix
