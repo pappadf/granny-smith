@@ -16,6 +16,10 @@
       "instr": 59293304,
       "tolerance": 0.2
     },
+    "suite-iici/iici-24ac-dual": {
+      "instr": 375326506,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-701-fd": {
       "instr": 392597910,
       "tolerance": 0.2
@@ -30,6 +34,14 @@
     },
     "suite-iici/iici-chime": {
       "instr": 9401255,
+      "tolerance": 0.2
+    },
+    "suite-iicx/iicx-24ac": {
+      "instr": 411558844,
+      "tolerance": 0.2
+    },
+    "suite-iicx/iicx-24ac-restart": {
+      "instr": 455862780,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-chime": {

@@ -13,6 +13,9 @@
 #                   selects 32-bit itself, so this row is also the
 #                   suite's asserted 32-bit addressing cell (32 MB,
 #                   which only a 32-bit System can see in full)
+#   iici-24ac-dual  **first OS-level DUAL DISPLAY**: a 24AC in socket $C
+#                   beside the live built-in RBV, plus the 24AC engine
+#                   counters §3.2 wanted asserted
 #   iici-checkpoint **MDU-family checkpoint round-trip**, MILESTONE (§7
 #                   epilogue): the first checkpoint coverage this family
 #                   has had, and it fails — the restored screen is blank
@@ -24,6 +27,7 @@ include "../lib/mac.script"
 let sys_701 = "../../data/systems/System_7_0_1.image"
 let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 let hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
+let hd_71_gc = "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
 
 # ---- iici-chime -------------------------------------------------------------
 # Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
@@ -100,6 +104,48 @@ def row_iici_76_hd() {
     report_perf("suite-iici/iici-76-hd", scheduler.instr_count)
 }
 
+# ---- iici-24ac-dual ---------------------------------------------------------
+# NEW CELL and §7's second-display goal: a 24AC seated in socket $C while
+# the IIci's built-in RBV video stays live in slot $B — the first time any
+# test boots an OS with TWO display devices present. It also closes §3.2's
+# acceleration-proof gap on this card from the other direction: the 24AC's
+# engine counters are asserted non-zero, so the accelerator is proven to
+# have run under a real System rather than inferred from goldens a fallback
+# render would reproduce exactly.
+#
+# Measured while writing it (2026-07-28): the built-in video remains the
+# BOOT SCREEN — machine.screen reports the RBV's 640x480x1, and seeding the
+# Start Manager's default-video-device pointer (PRAM $80..$81, pram.md §7)
+# does not move it; the ROM rewrites the high byte. So the golden here is
+# the RBV desktop, and the 24AC's own raster stays covered by suite-iicx's
+# rows rather than being lost in the move.
+def row_iici_24ac_dual() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iici" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
+    machine.scsi.attach_hd "${$hd_71_gc}" 0
+    scheduler.run 300000000
+    wait_stable(1200000000)
+    assert machine.id == "iici" "iici-24ac-dual: machine.id != iici"
+    # Two display devices, both live.
+    assert machine.nubus.slot[11].card.name == "Macintosh IIci Built-in Video" "iici-24ac-dual: slot $B is not the built-in video"
+    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC" "iici-24ac-dual: slot $C card != 24AC"
+    assert machine.nubus.slot[12].card.framebuffer.depth == 8 "iici-24ac-dual: 24AC framebuffer not 8 bpp"
+    # The boot screen is the built-in RBV (see the comment above).
+    assert machine.screen.width == 640 "iici-24ac-dual: primary width != 640"
+    assert machine.screen.height == 480 "iici-24ac-dual: primary height != 480"
+    assert machine.screen.depth == 1 "iici-24ac-dual: primary depth != 1 (did the 24AC become the boot screen?)"
+    # §3.2's proof of engagement: counters, not pixels.
+    assert machine.nubus.slot[12].card.engine.fill_ops > 0 "iici-24ac-dual: 24AC engine did no fills under the OS"
+    assert machine.nubus.slot[12].card.engine.fill_bytes > 0 "iici-24ac-dual: 24AC engine filled no bytes"
+    # 32-bit: this prepared 7.1 image carries the enablement (its name says
+    # so) and the IIci is a clean-ROM machine, so it takes effect here —
+    # measured 2026-07-28, and the only 7.1 row in the suite that does.
+    assert_addr(true)
+    check("goldens/iici-7.1-640x480x1-dual-display.png")
+    report_row("7.1", "rbv+24ac", "hd-boot dual-display engine-counted")
+    report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
+}
+
 # ---- iici-checkpoint (MILESTONE) -------------------------------------------
 # §7 epilogue on the MDU device set (RBV, IIci VIA path, 5380) — and the
 # first checkpoint coverage this family has ever had, which immediately
@@ -154,6 +200,7 @@ if row_on("iici-76-hd") {
         echo "skip: iici-76-hd (7.6 prepared image not fetched)"
     }
 }
+if row_on("iici-24ac-dual") { row_end("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
 if row_on("iici-checkpoint") { row_end_milestone("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
 
 suite_done()
