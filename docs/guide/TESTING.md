@@ -269,6 +269,26 @@ A waiver must name every file in the collision, so it cannot silently grow to
 cover a third golden that collides later. A waiver with no separate proof behind
 it is the same failure wearing a comment.
 
+`check-goldens.py` only catches goldens identical to *each other*. A lone bad
+one — a single row whose reference is a blank screen — has nothing to collide
+with. For that, `scripts/golden-triage.py` ranks every reference image by how
+much is actually on it (distinct 8x8 tiles: a dither pattern is a handful, a
+Welcome splash ~64, a Finder desktop 100+):
+
+```bash
+python3 scripts/golden-triage.py
+```
+
+It has no pass/fail and is not run by CI — "how sparse may a legitimate screen
+be" is a judgement. Read it against a golden's **siblings**, not against an
+absolute number: within one depth sweep every cell lands on the same splash, so
+one cell reading 8 where its three siblings read 64 is wrong whatever the
+threshold. That comparison found four goldens that were pictures of an empty
+screen; the absolute value alone would have been merely suggestive.
+
+Neither script changes how goldens are compared. Matching is byte-exact via
+`machine.screen.match`, with no tolerance and no fuzzy comparison anywhere.
+
 ### What CI runs
 
 | Trigger | Runs |
