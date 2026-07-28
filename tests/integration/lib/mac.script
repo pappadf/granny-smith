@@ -105,19 +105,36 @@ def check_ex(ref, top, left, bottom, right) {
 # per-row perf telemetry (§5.8).
 
 # Run until the screen matches `golden`, in `step`-instruction quanta,
-# up to `ceiling`. On timeout, screen.match fails the row with the
-# usual diff artifacts. REGEN mode can't wait on a not-yet-captured
-# golden: it settles and captures instead.
+# up to `ceiling`. On timeout, screen.match fails the row with the usual
+# diff artifacts. REGEN mode can't wait on a golden that doesn't exist
+# yet, so it polls at the SAME granularity until the screen holds still
+# and captures that frame.
+#
+# Use this for terminal "reach this screen" rows. A row that goes on to
+# INTERACT (menus, clicks) should use `wait_stable` + `check` instead:
+# wait_match stops at the first quantum whose frame equals the golden,
+# which can be a few quanta before the guest is actually quiescent, and
+# a capture-time/verify-time difference in that slack changes how the
+# interaction lands. wait_stable behaves identically in both modes.
 def wait_match(golden, ceiling, step) {
     if $REGEN_MODE == "1" {
-        # Can't wait on a golden that doesn't exist yet. Burn half the
-        # ceiling first so the capture lands on the terminal state, not
-        # an earlier screen that happens to sit still (the Welcome
-        # splash is stable for far longer than the settle window).
-        scheduler.run $ceiling / 2
-        let spent = wait_stable($ceiling)
+        let previous = 0
+        let stable = 0
+        let spent = 0
+        while $stable < 3 {
+            assert $spent < $ceiling "wait_match(REGEN): screen never settled within ${$ceiling}"
+            scheduler.run $step
+            $spent = $spent + $step
+            let now = machine.screen.checksum()
+            if $now == $previous {
+                $stable = $stable + 1
+            } else {
+                $stable = 0
+            }
+            $previous = $now
+        }
         machine.screen.save "${$golden}"
-        return $spent + $ceiling / 2
+        return $spent
     }
     let spent = 0
     while $spent < $ceiling {
@@ -246,6 +263,11 @@ def skip_boot_wait() {
 
 # Assert the booted System's addressing mode (§3.4): MMU32bit ($0CB2)
 # is 0 in 24-bit mode, nonzero in 32-bit mode.
+#
+# Only meaningful on 68020-and-later machines. The 68000 models (Plus,
+# Lisa/XL) are always 24-bit and never define this global — $0CB2 there
+# holds unrelated lowmem (measured: it reads $70 on a Plus under 6.0.8),
+# so those rows must not call this.
 def assert_addr(want32) {
     let m = debug.mac.globals.read("MMU32bit")
     if $want32 {
