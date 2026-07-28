@@ -100,6 +100,26 @@ def check_ex(ref, top, left, bottom, right) {
     }
 }
 
+# Sound goldens: stop the running capture and either match `ref` or, in
+# REGEN mode, write the capture to it. `machine.sound.capture.stop` takes
+# an optional WAV path precisely for this, so sound goldens can be
+# regenerated the same way screen goldens are — which matters because a
+# capture window is host-specific: the same Sound Manager beep spans 5,423
+# frames on a 68030 IIcx and 5,426 on a 68020 IIx, so re-hosting a sound
+# row means recapturing, not reusing.
+# Frames are asserted BEFORE the compare so a window-length change reports
+# as such instead of as an opaque waveform mismatch. Existing chime rows
+# still stop/assert/match by hand; they can adopt this as they are touched.
+def check_sound(ref, want_frames) {
+    if $REGEN_MODE == "1" {
+        machine.sound.capture.stop "${$ref}"
+    } else {
+        machine.sound.capture.stop
+    }
+    assert machine.sound.capture.frames == $want_frames "sound ${$ref}: capture length ${machine.sound.capture.frames}, want ${$want_frames}"
+    if $REGEN_MODE != "1" { machine.sound.match "${$ref}" }
+}
+
 # --- waits (§5.2): a wait states its condition; ceilings are hang -----------
 # detectors, not tuning. All return the instructions actually spent, the
 # per-row perf telemetry (§5.8).

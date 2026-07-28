@@ -19,10 +19,19 @@
 #                     IIx has two) and mounts without a system error
 #                     (16 MB)
 #
+#   iix-gc-accel1     **IIx x 6.0.8 on the 8•24 GC**, re-hosted per §7 —
+#                     accelerator engaged (counters asserted). The beep
+#                     choreography §7 wanted moved here stayed on the
+#                     IIcx — see suite-iicx's iicx-gc-beep row for the
+#                     measured reason
+#   iix-gc-decline1   the decline half of that differential ORACLE: same
+#                     golden, accelerator forced to the ROM/QuickDraw
+#                     fallback
+#
 # Not here yet: the 8-of-16 JMFB sweep cells §7 wants re-hosted from
-# iicx-video-modes, and the GC accel+decline 1 bpp pair + beep. Both are
-# mechanical moves that need their goldens recaptured on this host; they
-# are called out in the suite roster rather than half-done.
+# iicx-video-modes. That is a mechanical move needing eight goldens
+# recaptured on this host; it is called out in the roster rather than
+# half-done.
 
 include "../lib/mac.script"
 
@@ -30,6 +39,7 @@ let sys_701 = "../../data/systems/System_7_0_1.image"
 let sys_603 = "../../data/systems/System_6_0_3.dsk"
 let disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
 let install_71 = "../../data/systems/SSW-7.1-1.4M/Install.img"
+let hd_608_gc = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
 
 # ---- iix-nomedia ------------------------------------------------------------
 def row_iix_nomedia() {
@@ -149,6 +159,65 @@ def row_iix_71_extfd() {
     report_perf("suite-iix/iix-71-extfd", scheduler.instr_count)
 }
 
+
+# ---- iix-gc-accel1 / iix-gc-decline1 ---------------------------------------
+# RE-HOSTED from the IIcx per §7: the 8•24 GC's accel/decline differential
+# pair at 1 bpp, giving the IIx its first real workload and putting a GC in
+# an IIx socket. The pair is the suite's acceleration ORACLE and must stay
+# a pair on one host: both rows match the SAME golden, because a correct
+# hardware-accelerated render and a correct ROM/QuickDraw fallback render
+# are pixel-identical by design. Pixels therefore cannot prove the
+# accelerator engaged — the gc.* counters do, which is why the accel row
+# asserts rpc_count > 0 while the decline row forces the fallback with
+# force_decline and still requires the identical frame.
+#
+# The accel row also absorbs iicx-824gc-beep (§2.3: fold beep into the
+# accel boot rather than re-running a 200 M-cycle boot to reach a sound
+# capture): it opens the Control Panel, drags the Speaker Volume slider
+# twice, and matches both beeps sample-exactly plus the ASC volume
+# register. That choreography is coordinate-precise and was copied
+# verbatim from the original test, not retyped.
+
+def gc_boot_1bpp(label) {
+    machine.rtc.time = 3000000000
+    machine.boot model="iix" ram=8192 video_card="824gc"
+    return $label
+}
+
+def row_iix_gc_accel1() {
+    gc_boot_1bpp("accel")
+    machine.scsi.attach_hd "${$hd_608_gc}" 0
+    scheduler.run 200000000
+    wait_stable(600000000)
+    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "iix-gc-accel1: slot $9 card != 8•24 GC"
+    assert machine.nubus.slot[9].card.gc.on == true "iix-gc-accel1: accelerator did not turn on"
+    assert machine.nubus.slot[9].card.gc.state == "gc-on" "iix-gc-accel1: accelerator state != gc-on"
+    assert machine.nubus.slot[9].card.gc.error == 0 "iix-gc-accel1: accelerator posted an error"
+    assert machine.nubus.slot[9].card.gc.rpc_count > 0 "iix-gc-accel1: no RPCs serviced (bring-up never engaged)"
+    assert machine.screen.width == 640 "iix-gc-accel1: screen width != 640"
+    assert machine.screen.height == 480 "iix-gc-accel1: screen height != 480"
+    check("goldens/iix-6.0.8-640x480x1-gc-finder.png")
+    report_row("6.0.8", "824gc", "hd-boot gc-accel-on rpc-counted")
+    report_perf("suite-iix/iix-gc-accel1", scheduler.instr_count)
+}
+
+def row_iix_gc_decline1() {
+    gc_boot_1bpp("decline")
+    machine.nubus.slot[9].card.gc.force_decline = true
+    machine.scsi.attach_hd "${$hd_608_gc}" 0
+    scheduler.run 200000000
+    wait_stable(600000000)
+    assert machine.nubus.slot[9].card.gc.force_decline == true "iix-gc-decline1: force_decline lost"
+    assert machine.nubus.slot[9].card.gc.on == true "iix-gc-decline1: accelerator did not turn on"
+    assert machine.nubus.slot[9].card.gc.state == "gc-on" "iix-gc-decline1: accelerator state != gc-on"
+    assert machine.nubus.slot[9].card.gc.error == 0 "iix-gc-decline1: accelerator posted an error"
+    assert machine.nubus.slot[9].card.gc.rpc_count > 0 "iix-gc-decline1: no RPCs serviced (bring-up never engaged)"
+    assert machine.screen.width == 640 "iix-gc-decline1: screen width != 640"
+    # The oracle: the SAME golden as the accel row above.
+    check("goldens/iix-6.0.8-640x480x1-gc-finder.png")
+    report_perf("suite-iix/iix-gc-decline1", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("iix-nomedia") { row_end("iix-nomedia", try(row_iix_nomedia(), "FAILED")) }
@@ -156,6 +225,8 @@ if row_on("iix-824gc-seat") { row_end("iix-824gc-seat", try(row_iix_824gc_seat()
 if row_on("iix-701-fd") { row_end("iix-701-fd", try(row_iix_701_fd(), "FAILED")) }
 if row_on("iix-portrait-603") { row_end("iix-portrait-603", try(row_iix_portrait_603(), "FAILED")) }
 if row_on("iix-71-extfd") { row_end("iix-71-extfd", try(row_iix_71_extfd(), "FAILED")) }
+if row_on("iix-gc-accel1") { row_end("iix-gc-accel1", try(row_iix_gc_accel1(), "FAILED")) }
+if row_on("iix-gc-decline1") { row_end("iix-gc-decline1", try(row_iix_gc_decline1(), "FAILED")) }
 
 suite_done()
 quit

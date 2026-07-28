@@ -2,10 +2,20 @@
 #
 # Row map (former directory → row):
 #
-#   iicx-chime   iicx-boot-chime: sample-exact ASC wavetable chime
-#                through the producer path
+#   iicx-chime        iicx-boot-chime: sample-exact ASC wavetable chime
+#                     through the producer path
+#   iicx-gc-accel8    the 8•24 GC accelerated at 8 bpp with the counters
+#                     asserted, plus the absorbed iicx-824gc-adb-mouse
+#                     cursor-tracking checks
+#   iicx-gc-decline8  the decline half of that differential ORACLE: same
+#                     golden, accelerator forced to the fallback
+#   iicx-gc-beep      iicx-824gc-beep: Control Panel, two Speaker Volume
+#                     drags, two sample-exact beeps + the ASC volume
+#                     register — kept on this host, see the row comment
 
 include "../lib/mac.script"
+
+let hd_608_gc = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
 
 # ---- iicx-chime -------------------------------------------------------------
 # Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
@@ -21,7 +31,198 @@ def row_iicx_chime() {
     report_perf("suite-iicx/iicx-chime", scheduler.instr_count)
 }
 
+
+# ---- iicx-gc-accel8 / iicx-gc-decline8 --------------------------------------
+# The 8•24 GC's accel/decline differential pair at 8 bpp. §7 keeps this
+# pair on the IIcx (the 1 bpp pair re-hosted to suite-iix) because the
+# 6.0.8 GC image is this host's home media and because a differential
+# pair must share a host by construction: both rows match the SAME
+# golden, since a correct accelerated render and a correct ROM/QuickDraw
+# fallback are pixel-identical by design. That is exactly why pixels
+# cannot prove engagement — the gc.* counters do.
+#
+# The accel row also absorbs iicx-824gc-adb-mouse (§2.3): rather than
+# re-running the same 200 M-cycle boot to reach a few lowmem asserts, the
+# cursor-tracking checks run after the golden matched. They guard a real
+# regression — an aborted ADB Talk used to lose the delta, so MTemp,
+# RawMouse and Mouse are all asserted, which also proves the slot VBL
+# task is firing.
+def gc_boot_8bpp() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp"
+    machine.scsi.attach_hd "${$hd_608_gc}" 0
+}
+
+def row_iicx_gc_accel8() {
+    gc_boot_8bpp()
+    scheduler.run 200000000
+    wait_stable(600000000)
+    assert machine.nubus.slot[9].card.gc.on == true "iicx-gc-accel8: accelerator did not turn on"
+    assert machine.nubus.slot[9].card.gc.state == "gc-on" "iicx-gc-accel8: accelerator state != gc-on"
+    assert machine.nubus.slot[9].card.gc.error == 0 "iicx-gc-accel8: accelerator posted an error"
+    assert machine.nubus.slot[9].card.gc.rpc_count > 0 "iicx-gc-accel8: no RPCs serviced"
+    assert machine.nubus.slot[9].card.gc.queue_bytes > 100 "iicx-gc-accel8: geometry queue never drained"
+    assert machine.screen.width == 640 "iicx-gc-accel8: screen width != 640"
+    assert machine.screen.height == 480 "iicx-gc-accel8: screen height != 480"
+    assert machine.screen.depth == 8 "iicx-gc-accel8: screen depth != 8"
+    check("goldens/iicx-6.0.8-640x480x8-gc-finder.png")
+    report_row("6.0.8", "824gc", "hd-boot gc-accel-on 8bpp rpc-counted")
+
+    # Absorbed from iicx-824gc-adb-mouse: cursor tracking through the real
+    # ADB path. Mouse starts at (15,15) and the deltas must land in all
+    # three lowmem cursor globals.
+    assert machine.memory.peek.l(0x830) == 0x000F000F "iicx-gc-accel8: Mouse != (15,15) after boot"
+    machine.adb.mouse.move 40 40 "hw"
+    scheduler.run 20000000
+    assert machine.memory.peek.l(0x828) == 0x00370037 "iicx-gc-accel8: MTemp: ADB delta not consumed (aborted-Talk delta loss)"
+    assert machine.memory.peek.l(0x82C) == 0x00370037 "iicx-gc-accel8: RawMouse: cursor task did not run (slot VBL not firing)"
+    assert machine.memory.peek.l(0x830) == 0x00370037 "iicx-gc-accel8: Mouse != (55,55) after +40,+40"
+    machine.adb.mouse.move -20 10 "hw"
+    scheduler.run 20000000
+    assert machine.memory.peek.l(0x830) == 0x00410023 "iicx-gc-accel8: Mouse != (35,65) after -20,+10"
+    report_perf("suite-iicx/iicx-gc-accel8", scheduler.instr_count)
+}
+
+def row_iicx_gc_decline8() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp"
+    machine.nubus.slot[9].card.gc.force_decline = true
+    machine.scsi.attach_hd "${$hd_608_gc}" 0
+    scheduler.run 200000000
+    wait_stable(600000000)
+    assert machine.nubus.slot[9].card.gc.force_decline == true "iicx-gc-decline8: force_decline lost"
+    assert machine.nubus.slot[9].card.gc.on == true "iicx-gc-decline8: accelerator did not turn on"
+    assert machine.nubus.slot[9].card.gc.error == 0 "iicx-gc-decline8: accelerator posted an error"
+    assert machine.nubus.slot[9].card.gc.rpc_count > 0 "iicx-gc-decline8: no RPCs serviced"
+    assert machine.screen.width == 640 "iicx-gc-decline8: screen width != 640"
+    assert machine.screen.depth == 8 "iicx-gc-decline8: screen depth != 8"
+    # The oracle: the SAME golden as the accel row above.
+    check("goldens/iicx-6.0.8-640x480x8-gc-finder.png")
+    report_perf("suite-iicx/iicx-gc-decline8", scheduler.instr_count)
+}
+
+
+# ---- iicx-gc-beep -----------------------------------------------------------
+# The former iicx-824gc-beep test, folded in as a row on its ORIGINAL host
+# and mode (IIcx, 1 bpp). §7 wanted the beep to travel to the IIx with the
+# 1 bpp accel/decline pair; measurement says it should not. Its strongest
+# assertion is that the two beeps are byte-identical pre-volume — the guard
+# proving no Sound Manager state (wavetable fill, phase accumulators, FIFO
+# pointers) leaks from one beep into the next. On the 68020 IIx that
+# invariant does NOT reproduce: the second capture runs 3 frames longer and
+# the waveforms diverge ~31 frames in, so re-hosting would have traded a
+# real oracle for two per-host baselines. Whether that divergence is a
+# capture-phase artifact or genuine leakage on the 020 path is unresolved
+# and worth a look; until then the guard stays where it holds.
+#
+# The choreography (Control Panel, two Speaker Volume drags, the exact
+# slider pixel coordinates) is copied verbatim from the original test.
+def row_iicx_gc_beep() {
+    # Boots on the card's DEFAULT mode, with no video_mode staged — and
+    # that is load-bearing. Staging the nominally identical
+    # "gc_640x480_1bpp" produces the same two screen goldens but shifts
+    # the beep timing enough that the second capture stops being
+    # byte-identical to the first (measured 2026-07-28), which would
+    # destroy this row's whole point. So the row must run BEFORE the
+    # 8 bpp rows, before anything stages a mode into the built-from
+    # record that machine.boot would inherit; the depth assert below
+    # fails loudly if that ordering is ever broken.
+    machine.boot model="iicx" ram=8192 video_card="824gc"
+
+    # Pin the RTC so the run is deterministic. This must come AFTER machine.boot
+    # (which resets the RTC to the host wall clock) — the Control Panel's clock
+    # is visible in the golden, so an unpinned RTC changes pixels run-to-run.
+    machine.rtc.time = 3000000000
+
+    machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
+    scheduler.run 200000000
+
+    # --- The Finder desktop, drawn by the card (accelerator ON). ---
+    assert machine.nubus.slot[9].card.gc.on == true "accelerator did not turn on"
+    check("goldens/iicx-6.0.8-640x480x1-gc-finder.png")
+
+    # --- Open the Control Panel from the Apple menu. ---
+    # Held mouse-down at the Apple menu (25,10) drops the menu; "Control Panel"
+    # sits at y=139; releasing over it launches the DA (General cdev selected).
+    machine.adb.mouse.move 50 50 "global"
+    scheduler.run 5000000
+    machine.adb.mouse.move 25 10 "global"
+    scheduler.run 3000000
+    machine.adb.mouse.click true
+    scheduler.run 8000000
+    machine.adb.mouse.move 68 139 "global"
+    scheduler.run 3000000
+    machine.adb.mouse.click false
+    scheduler.run 60000000
+    check("goldens/iicx-6.0.8-640x480x1-gc-control-panel.png")
+
+    # --- Drag the Speaker Volume slider from level 3 to 5. ---
+    # The slider track is at x=458; the level-3 knob center is y=248 and each
+    # level is ~11.5 px. The knob itself must be pressed (the track is inert),
+    # and the drag needs intermediate steps for the control to track it. On
+    # release the Sound Manager plays the confirmation beep at the new volume:
+    # mode 2 wavetable, one clean mode 2->0 window, with the decay envelope
+    # re-rendering the 512-byte voice table in place ~14 times mid-play.
+    machine.sound.capture.start
+    machine.adb.mouse.move 458 248 "global"
+    scheduler.run 3000000
+    machine.adb.mouse.click true
+    scheduler.run 3000000
+    machine.adb.mouse.move 458 242 "global"
+    scheduler.run 2000000
+    machine.adb.mouse.move 458 236 "global"
+    scheduler.run 2000000
+    machine.adb.mouse.move 458 230 "global"
+    scheduler.run 2000000
+    machine.adb.mouse.move 458 225 "global"
+    scheduler.run 2000000
+    machine.adb.mouse.click false
+    scheduler.run 40000000
+
+    # The beep window is Sound-Manager-controlled: mode 2 for exactly 5,423
+    # samples (22,257 Hz), captured pre-resampling/pre-volume.
+    check_sound("goldens/iicx-gc-beep.wav", 5423)
+
+    # Sample-exact compare against the golden (fails the test on any divergence).
+    # Loudness does NOT appear in the capture: the sink is pre-volume, and the
+    # slider level lands in the ASC volume register (post-DAC attenuation the
+    # host applies at playback). The register is asserted directly instead.
+    assert machine.sound.volume == 5 "ASC volume register != slider level 5"
+
+    # --- Drag the slider one more notch, from level 5 to 6: a second beep. ---
+    # The level-5 knob center is y=225, level 6 is y=214. A second, separately
+    # captured beep guards the beep path's repeatability (the Sound Manager
+    # re-renders the wavetable from scratch each time; state left over from the
+    # first beep — table fill, phase accumulators, FIFO pointers — must not leak
+    # into the next one).
+    machine.sound.capture.start
+    machine.adb.mouse.move 458 225 "global"
+    scheduler.run 3000000
+    machine.adb.mouse.click true
+    scheduler.run 3000000
+    machine.adb.mouse.move 458 221 "global"
+    scheduler.run 2000000
+    machine.adb.mouse.move 458 217 "global"
+    scheduler.run 2000000
+    machine.adb.mouse.move 458 214 "global"
+    scheduler.run 2000000
+    machine.adb.mouse.click false
+    scheduler.run 40000000
+
+    check_sound("goldens/iicx-gc-beep2.wav", 5423)
+    # The pre-volume waveform is identical to the first beep (beep2.wav ==
+    # beep.wav byte-for-byte): the Sound Manager re-renders the same table and
+    # no state leaks between beeps. The second beep is LOUDER only through the
+    # volume register, asserted below.
+    assert machine.sound.volume == 6 "ASC volume register != slider level 6"
+    report_perf("suite-iicx/iicx-gc-beep", scheduler.instr_count)
+}
+
 if row_on("iicx-chime") { row_end("iicx-chime", try(row_iicx_chime(), "FAILED")) }
+# iicx-gc-beep runs before the 8 bpp rows on purpose — see its comment.
+if row_on("iicx-gc-beep") { row_end("iicx-gc-beep", try(row_iicx_gc_beep(), "FAILED")) }
+if row_on("iicx-gc-accel8") { row_end("iicx-gc-accel8", try(row_iicx_gc_accel8(), "FAILED")) }
+if row_on("iicx-gc-decline8") { row_end("iicx-gc-decline8", try(row_iicx_gc_decline8(), "FAILED")) }
 
 suite_done()
 quit

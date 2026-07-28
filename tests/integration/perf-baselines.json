@@ -20,6 +20,18 @@
       "instr": 11718825,
       "tolerance": 0.2
     },
+    "suite-iicx/iicx-gc-accel8": {
+      "instr": 317849318,
+      "tolerance": 0.2
+    },
+    "suite-iicx/iicx-gc-beep": {
+      "instr": 380641745,
+      "tolerance": 0.2
+    },
+    "suite-iicx/iicx-gc-decline8": {
+      "instr": 277871895,
+      "tolerance": 0.2
+    },
     "suite-iifx/iifx-24ac-seat": {
       "instr": 86111937,
       "tolerance": 0.2
@@ -78,6 +90,14 @@
     },
     "suite-iix/iix-824gc-seat": {
       "instr": 89800230,
+      "tolerance": 0.2
+    },
+    "suite-iix/iix-gc-accel1": {
+      "instr": 277753582,
+      "tolerance": 0.2
+    },
+    "suite-iix/iix-gc-decline1": {
+      "instr": 277753593,
       "tolerance": 0.2
     },
     "suite-iix/iix-nomedia": {

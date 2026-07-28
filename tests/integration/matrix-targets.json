@@ -60,6 +60,9 @@
     {"machine": "iix",  "system": "6.0.3", "card": "jmfb",    "width": 640, "height": 870, "depth": 1, "addr32": false, "suite": "suite-iix"},
     {"machine": "iix",  "system": "7.0.1", "card": "jmfb",    "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iix"},
     {"machine": "iix",  "system": "7.1",   "card": "jmfb",    "width": 640, "height": 480, "depth": 2, "addr32": false, "suite": "suite-iix"},
+    {"machine": "iix",  "system": "6.0.8", "card": "824gc",   "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iix"},
+
+    {"machine": "iicx", "system": "6.0.8", "card": "824gc",   "width": 640, "height": 480, "depth": 8, "addr32": false, "suite": "suite-iicx"},
 
     {"machine": "iici", "system": "7.0.1", "card": "rbv",     "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iici"},
     {"machine": "iici", "system": "7.5",   "card": "rbv",     "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iici", "media_gated": true},
