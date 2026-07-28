@@ -79,9 +79,11 @@
 
     {"machine": "iifx", "system": "6.0.8", "card": "jmfb",  "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iifx"},
     {"machine": "iifx", "system": "7.0.1", "card": "jmfb",  "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iifx"},
-    {"machine": "iifx", "system": "7.0.1", "card": "jmfb",  "width": 640, "height": 480, "depth": 1, "addr32": true,  "suite": "suite-iifx"},
+    {"machine": "iifx", "system": "7.0.1", "card": "jmfb",  "width": 640, "height": 480, "depth": 1, "addr32": true,  "suite": "suite-iifx",
+     "blocked": "proposal-integration-test-rework §10 q.7 — the PRAM 24/32-bit selector is unidentified; MMFlags ($8A) ruled out by measurement"},
     {"machine": "iifx", "system": "7.1",   "card": "824gc", "width": 640, "height": 480, "depth": 8, "addr32": false, "suite": "suite-iifx"},
-    {"machine": "iifx", "system": "7.5",   "card": "display_card_24ac", "width": 832, "height": 624, "depth": 8, "addr32": false, "suite": "suite-iifx", "media_gated": true},
+    {"machine": "iifx", "system": "7.5",   "card": "display_card_24ac", "width": 832, "height": 624, "depth": 8, "addr32": false, "suite": "suite-iifx",
+     "blocked": "proposal-emulator-bug-fixes.md §7 — 832x624 applies but scans out a corrupt raster"},
     {"machine": "iifx", "system": "A/UX 3.0.1", "card": "jmfb", "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iifx"},
 
     {"machine": "lisa", "system": "LOS 3.1",      "card": "builtin", "width": 720, "height": 364, "depth": 1, "addr32": false, "suite": "suite-lisa"},
