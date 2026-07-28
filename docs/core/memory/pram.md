@@ -264,6 +264,35 @@ _WriteXPRam
 behavior on machines that support it (it is patched off by older System
 versions if needed).
 
+**Bit 0 selects 24- vs 32-bit addressing** (measured 2026-07-28 on the IIfx and
+the IIci). Seed it *before* the boot and the System comes up in that mode:
+
+| `$8A` seeded | `MMU32bit` after boot |
+| ------------ | --------------------- |
+| `$01`        | `1` — 32-bit          |
+| `$04`        | `0` — 24-bit          |
+| not seeded   | `0` — 24-bit          |
+
+System 7.6 writes `$05` once booted (bit 0 plus bit 2), so `$01` is the minimal
+value that selects the mode rather than a guess.
+
+The seed only takes if the **validity tokens are stamped first**
+(`rtc.pram.validate`, §3). Without them the ROM's `PRAMInit` rewrites `$8A`
+during boot — a poked value reads back `$00` afterwards — so the byte looks
+inert and a real selector can be mistakenly ruled out. That is exactly what
+happened during the integration-test rework, where MMFlags was written up as
+"ruled out by measurement" on the strength of an unstamped poke.
+
+Note that stamping validity also suppresses the ROM's default startup-device
+init, so this technique is free on a floppy boot and breaks a SCSI boot (the
+machine parks on the blinking "?" floppy). Selecting 32-bit for an HD-booted
+row needs a different approach.
+
+Selecting the mode is not the same as the System tolerating it: forcing 32-bit
+under System 7.0.1 (the Disk Tools media) sets `MMU32bit = 1` and then Sad Macs
+with `$0000000F / $00000001`, identically on the IIfx and the IIci, while 7.6
+boots 32-bit normally on the same IIci.
+
 ## 5. Full PRAM memory map after a successful boot
 
 Combining the low-PRAM defaults, the XPRAM signature, the StartMgr block,

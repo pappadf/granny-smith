@@ -379,7 +379,7 @@
       "depth": 1,
       "addr32": true,
       "suite": "suite-iifx",
-      "blocked": "proposal-integration-test-rework §10 q.7 — the PRAM 24/32-bit selector is unidentified; MMFlags ($8A) ruled out by measurement"
+      "blocked": "System 7.0.1 cannot run 32-bit on this media. The selector IS known (bit 0 of MMFlags, PRAM $8A, with the validity tokens stamped first — proposal-integration-test-rework §10 q.7, resolved 2026-07-28), and it does select the mode: MMU32bit reads 1. The guest then Sad Macs ($0000000F / $00000001) before reaching the Finder, identically on the IIfx and the IIci, while 7.6 boots 32-bit fine on the same IIci — so the emulator's 32-bit path works and this System/media does not support it. Covering this cell needs 32-bit-capable media on the IIfx, not a seed."
     },
     {
       "machine": "iifx",
