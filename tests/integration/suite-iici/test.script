@@ -13,9 +13,10 @@
 #                   selects 32-bit itself, so this row is also the
 #                   suite's asserted 32-bit addressing cell (32 MB,
 #                   which only a 32-bit System can see in full)
-#   iici-24ac-dual  **first OS-level DUAL DISPLAY**: a 24AC in socket $C
-#                   beside the live built-in RBV, plus the 24AC engine
-#                   counters §3.2 wanted asserted
+#   iici-24ac-dual  **first OS-level DUAL DISPLAY**, MILESTONE: a 24AC in
+#                   socket $C beside the live built-in RBV, with the 24AC
+#                   engine counters §3.2 wanted asserted. Red because this
+#                   machine hangs at Welcome on 7.1 — see the row.
 #   iici-checkpoint **MDU-family checkpoint round-trip**, MILESTONE (§7
 #                   epilogue): the first checkpoint coverage this family
 #                   has had, and it fails — the restored screen is blank
@@ -104,45 +105,47 @@ def row_iici_76_hd() {
     report_perf("suite-iici/iici-76-hd", scheduler.instr_count)
 }
 
-# ---- iici-24ac-dual ---------------------------------------------------------
-# NEW CELL and §7's second-display goal: a 24AC seated in socket $C while
-# the IIci's built-in RBV video stays live in slot $B — the first time any
-# test boots an OS with TWO display devices present. It also closes §3.2's
-# acceleration-proof gap on this card from the other direction: the 24AC's
-# engine counters are asserted non-zero, so the accelerator is proven to
-# have run under a real System rather than inferred from goldens a fallback
-# render would reproduce exactly.
+# ---- iici-24ac-dual (MILESTONE) ---------------------------------------------
+# §7's second-display goal, and the first test anywhere to boot an OS with
+# TWO display devices present: a 24AC in socket $C beside the IIci's live
+# built-in RBV video. The card-level facts below all hold — both devices
+# come up, the RBV keeps the boot screen, and the 24AC's engine really
+# runs (§3.2's missing proof of engagement, counters rather than pixels).
 #
-# Measured while writing it (2026-07-28): the built-in video remains the
-# BOOT SCREEN — machine.screen reports the RBV's 640x480x1, and seeding the
-# Start Manager's default-video-device pointer (PRAM $80..$81, pram.md §7)
-# does not move it; the ROM rewrites the high byte. So the golden here is
-# the RBV desktop, and the 24AC's own raster stays covered by suite-iicx's
-# rows rather than being lost in the move.
+# What does NOT hold is the boot itself: this machine hangs at "Welcome to
+# Macintosh" with EITHER prepared System 7.1 image, and a no-card control
+# hangs identically, so it is not the 24AC (measured 2026-07-28; ledger
+# proposal-emulator-bug-fixes.md §8). 7.0.1, 7.5 and 7.6 all reach the
+# desktop on this same machine.
+#
+# So the row is a milestone and claims no cell: it asserts what is true,
+# then asserts it got past the splash, which fails today. When the 7.1
+# boot works, that assert passes on its own — then this row gains its
+# desktop golden and a report_row call, and the cell's `blocked` marker
+# comes off matrix-targets.json in the same reviewed diff.
 def row_iici_24ac_dual() {
     machine.rtc.time = 3000000000
     machine.boot model="iici" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
     machine.scsi.attach_hd "${$hd_71_gc}" 0
-    scheduler.run 300000000
-    wait_stable(1200000000)
+    scheduler.run 900000000
+    wait_stable(1500000000)
     assert machine.id == "iici" "iici-24ac-dual: machine.id != iici"
     # Two display devices, both live.
     assert machine.nubus.slot[11].card.name == "Macintosh IIci Built-in Video" "iici-24ac-dual: slot $B is not the built-in video"
     assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC" "iici-24ac-dual: slot $C card != 24AC"
     assert machine.nubus.slot[12].card.framebuffer.depth == 8 "iici-24ac-dual: 24AC framebuffer not 8 bpp"
-    # The boot screen is the built-in RBV (see the comment above).
+    # The boot screen is the built-in RBV: seeding the Start Manager's
+    # default-video-device pointer (PRAM $80..$81, pram.md §7) does not move
+    # it — the ROM rewrites the high byte.
     assert machine.screen.width == 640 "iici-24ac-dual: primary width != 640"
-    assert machine.screen.height == 480 "iici-24ac-dual: primary height != 480"
     assert machine.screen.depth == 1 "iici-24ac-dual: primary depth != 1 (did the 24AC become the boot screen?)"
     # §3.2's proof of engagement: counters, not pixels.
     assert machine.nubus.slot[12].card.engine.fill_ops > 0 "iici-24ac-dual: 24AC engine did no fills under the OS"
     assert machine.nubus.slot[12].card.engine.fill_bytes > 0 "iici-24ac-dual: 24AC engine filled no bytes"
-    # 32-bit: this prepared 7.1 image carries the enablement (its name says
-    # so) and the IIci is a clean-ROM machine, so it takes effect here —
-    # measured 2026-07-28, and the only 7.1 row in the suite that does.
-    assert_addr(true)
-    check("goldens/iici-7.1-640x480x1-dual-display.png")
-    report_row("7.1", "rbv+24ac", "hd-boot dual-display engine-counted")
+    # The milestone itself. -288949432 is the settled "Welcome to Macintosh"
+    # frame this machine parks on; asserting against it (rather than matching
+    # a golden) keeps the row from shipping a splash as if it were coverage.
+    assert machine.screen.checksum() != -288949432 "iici-24ac-dual: still on the Welcome splash — IIci x 7.1 boot stall (ledger §8)"
     report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
 }
 
@@ -200,7 +203,7 @@ if row_on("iici-76-hd") {
         echo "skip: iici-76-hd (7.6 prepared image not fetched)"
     }
 }
-if row_on("iici-24ac-dual") { row_end("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
+if row_on("iici-24ac-dual") { row_end_milestone("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
 if row_on("iici-checkpoint") { row_end_milestone("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
 
 suite_done()

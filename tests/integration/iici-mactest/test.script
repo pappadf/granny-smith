@@ -20,7 +20,7 @@
 # 8 bpp the IIcx run used. Goldens were recaptured for this host.
 include "../lib/mac.script"
 
-machine.boot model="iici" ram=4096
+machine.boot model="iici" ram=8192
 machine.floppy.drive[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
 
 machine.scc.loopback = true

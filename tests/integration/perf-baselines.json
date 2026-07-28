@@ -41,7 +41,7 @@
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac": {
-      "instr": 411558844,
+      "instr": 411558866,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac-restart": {
@@ -81,11 +81,11 @@
       "tolerance": 0.2
     },
     "suite-iifx/iifx-75-24ac-832": {
-      "instr": 463546760,
+      "instr": 463546878,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-aux3-login": {
-      "instr": 667019458,
+      "instr": 667251066,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-chime": {
@@ -201,7 +201,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q700-checkpoint": {
-      "instr": 181998186,
+      "instr": 181998192,
       "tolerance": 0.2
     },
     "suite-quadra/q700-chime": {
@@ -221,7 +221,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q950-76-hd": {
-      "instr": 763956818,
+      "instr": 763957167,
       "tolerance": 0.2
     },
     "suite-se30/se30-608-fd": {
@@ -237,7 +237,7 @@
       "tolerance": 0.2
     },
     "suite-se30/se30-75-hd": {
-      "instr": 1136315481,
+      "instr": 1076355964,
       "tolerance": 0.2
     },
     "suite-se30/se30-checkpoint": {

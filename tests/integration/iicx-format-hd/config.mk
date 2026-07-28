@@ -1,7 +1,12 @@
-# RE-HOSTED IIcx -> IIci (§7): formatting exercises the NCR 5380 pseudo-DMA
-# path on the MDU family rather than repeating GLUE's, which is what makes
-# the re-host worth a boot.
-# Integration test configuration: IIci + 8•24 GC — format a blank HD under System 6.0.8
+# STAYS ON THE IIcx for now. §7 wants this on the IIci (NCR 5380 pseudo-DMA
+# on the MDU family) and the rationale is sound, but the move is a
+# re-authoring job rather than a re-host: the HD SC Setup choreography's
+# budgets are tuned to this host's boot timing, and on the IIci the initial
+# run lands on "Welcome to Macintosh" instead of the desktop — every
+# subsequent click then acts on the splash and every golden captures it,
+# which passes while verifying nothing. Re-hosting needs the flow's waits
+# converted to conditions first (§5.2), not just a model= change.
+# Integration test configuration: IIcx + 8•24 GC — format a blank HD under System 6.0.8
 #
 # Boots a Macintosh IIcx with the Apple Macintosh Display Card 8•24 (JMFB,
 # mdc_8_24 — loads mdc-8-24-revb-d1629664.vrom next to the ROM) from the SSW 6.0.8
@@ -21,12 +26,12 @@
 TEST_NAME := IIcx Format Blank HD (8•24, System 6.0.8)
 TEST_DESC := Boot IIcx + 8•24 GC from SSW 6.0.8 floppy, run Apple HD SC Setup, format a blank HD20SC
 
-TEST_ROM := roms/iici-368cadfe.rom
+TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness creates the IIcx with 8 MB; the script re-boots with the 8•24
 # card selected (video_card can't be passed as an arg), attaches the blank HD,
 # and inserts the boot floppy.
-TEST_ARGS := model=iici ram=8192
+TEST_ARGS := model=iicx ram=8192
 
 # CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
 TEST_TIER := extended

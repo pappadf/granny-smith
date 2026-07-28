@@ -98,7 +98,8 @@
     {"machine": "lisa", "system": "Xenix 3.0",    "card": "builtin", "width": 720, "height": 364, "depth": 1, "addr32": false, "suite": "suite-lisa"},
     {"machine": "macxl", "system": "MacWorks 3.0", "card": "builtin", "width": 608, "height": 431, "depth": 1, "addr32": false, "suite": "suite-lisa"},
 
-    {"machine": "iici", "system": "7.1",   "card": "rbv+24ac", "width": 640, "height": 480, "depth": 1, "addr32": true, "suite": "suite-iici"},
+    {"machine": "iici", "system": "7.1",   "card": "rbv+24ac", "width": 640, "height": 480, "depth": 1, "addr32": true, "suite": "suite-iici",
+     "blocked": "proposal-emulator-bug-fixes.md §8 — the IIci hangs at Welcome booting either prepared 7.1 image"},
     {"machine": "iicx", "system": "7.1",   "card": "display_card_24ac", "width": 640,  "height": 480, "depth": 8, "addr32": false, "suite": "suite-iicx"},
     {"machine": "iici", "system": "7.1",   "card": "display_card_24ac", "width": 1152, "height": 870, "depth": 8, "addr32": false, "suite": "suite-iici",
      "blocked": "proposal-emulator-bug-fixes.md §7 — the 24AC's non-640-wide modes scan out corrupt; and the built-in video keeps the boot screen on the IIci, so a card-only raster is not observable via machine.screen"},

@@ -19,7 +19,7 @@ TEST_ROM := roms/iici-368cadfe.rom
 # MacTest IIcx/IIci floppy disk image.
 # Pin RAM at 4 MB to match the SE/30 baseline so MacTest's RAM-test reports
 # don't drift across screenshots if the IIci profile RAM default changes.
-TEST_ARGS := model=iici ram=4096 fd0=$(TEST_DATA)/apps/MacTest-IIcx-IIci.image
+TEST_ARGS := model=iici ram=8192 fd0=$(TEST_DATA)/apps/MacTest-IIcx-IIci.image
 
 # CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
 TEST_TIER := extended

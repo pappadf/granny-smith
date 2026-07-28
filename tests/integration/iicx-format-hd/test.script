@@ -19,9 +19,7 @@ storage.hd_create "$WORK_DIR/blank.img" HD20SC
 # Select the 8•24 GC + 13" RGB 640x480 sense, boot the IIcx with 8 MB, and
 # reload the ROM so the card's declaration ROM (mdc-8-24-revb-d1629664.vrom, found
 # next to iix-iicx-se30-97221136.rom) binds.  video_card can't be passed as a boot arg.
-include "../lib/mac.script"
-
-machine.boot model="iici" ram=8192 video_card="mdc_8_24" video_sense=6
+machine.boot model="iicx" ram=8192 video_card="mdc_8_24" video_sense=6
 
 # Attach the blank HD at SCSI ID 0 (unformatted → won't boot / won't mount),
 # and insert the SSW 6.0.8 boot floppy (Disk2of4 is the "Utilities" disk that
@@ -38,7 +36,7 @@ machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 26000000
-check("desktop.png")
+machine.screen.match desktop.png
 
 # Double-click the "Utilities" floppy icon (top-right) to open its window.
 machine.adb.mouse.move 590 45 "global"
@@ -65,7 +63,7 @@ scheduler.run 1000000
 machine.adb.mouse.click false
 scheduler.run 40000000
 # HD SC Setup recognises the uninitialised drive at SCSI Device 0.
-check("ready.png")
+machine.screen.match ready.png
 
 # Click "Initialize".
 machine.adb.mouse.move 247 116 "global"
@@ -92,10 +90,9 @@ scheduler.run 1000000
 machine.adb.mouse.click false
 scheduler.run 30000000
 # The guest OS reports the format completed and mounted the volume.
-check("done.png")
+machine.screen.match done.png
 
 # Export the formatted HD (base + delta flattened) for inspection.
 machine.scsi.device[0].image.export "$WORK_DIR/formatted.img"
 
-report_row("6.0.8", "rbv", "hd-format 5380-pseudo-dma")
 quit
