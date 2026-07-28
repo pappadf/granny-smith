@@ -52,7 +52,7 @@
 # computer" is the one system variant that excludes it.  Full analysis:
 # local/gs-docs/notes/debug/2026-07-26-iifx-76-install-decompressor-handover.md
 #
-# Companion: tests/integration/iicx-format-hd (System 6.0.8 / HD20SC / HD SC
+# Companion: tests/integration/iici-format-hd (System 6.0.8 / HD20SC / HD SC
 # Setup 2.0.3) pins the IIcx's NCR 5380 pseudo-DMA primer gate.
 #
 # Media note: tests/data/systems/SSW-7.6-1.4M/ holds all 20 floppies as plain

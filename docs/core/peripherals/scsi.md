@@ -414,7 +414,9 @@ and a zero-filled block (e.g. an HFS volume bitmap or B-tree node) whose
 first byte is legitimately `$00` must NOT be dropped.  Gating the DRQ
 window broke System 6.0.8 Apple HD SC Setup's HFS volume init — it wrote
 only the MDB and one bitmap block, then aborted with "unable to mount
-volume" (guarded now by the `iicx-format-hd` integration test).
+volume" (guarded now by the `iici-format-hd` integration test, which drives
+the 5380 through the MDU; the test was re-hosted from the IIcx in the
+integration-test rework so the guard covers the MDU bus path).
 
 Within the BLIND window, the emulator currently still distinguishes the
 A/UX primer from a real leading byte with a **PC-discriminated primer
