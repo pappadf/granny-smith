@@ -1,4 +1,11 @@
-# Integration test configuration: IIcx + Display Card 24AC — floppy insert +
+# STAYS ON THE IIcx. §7 moved this with the 24AC suite, but that suite
+# stayed here (the IIci keeps its built-in video as the boot screen, so the
+# card's own raster would stop being observable), and on the IIci this
+# flow additionally raised a system error inserting Utilities Disk 2 —
+# unexplained, and not worth chasing for a re-host with no remaining
+# rationale. The IIci's dual-display coverage is suite-iici's
+# iici-24ac-dual row instead.
+# Integration test configuration: IIci + Display Card 24AC — floppy insert +
 # launch the Symantec "System Info" application.
 #
 # A variant of iicx-24ac: it boots the same 32-bit System 7.1 SCSI cdev image

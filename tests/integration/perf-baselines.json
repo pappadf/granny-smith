@@ -16,6 +16,10 @@
       "instr": 59293304,
       "tolerance": 0.2
     },
+    "quadra-dual-card/dual": {
+      "instr": 772706113,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-24ac-dual": {
       "instr": 375326506,
       "tolerance": 0.2
@@ -25,11 +29,11 @@
       "tolerance": 0.2
     },
     "suite-iici/iici-75-hd": {
-      "instr": 372143906,
+      "instr": 372143843,
       "tolerance": 0.2
     },
     "suite-iici/iici-76-hd": {
-      "instr": 466674593,
+      "instr": 466674613,
       "tolerance": 0.2
     },
     "suite-iici/iici-chime": {
@@ -77,11 +81,11 @@
       "tolerance": 0.2
     },
     "suite-iifx/iifx-75-24ac-832": {
-      "instr": 523259044,
+      "instr": 463546760,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-aux3-login": {
-      "instr": 667019514,
+      "instr": 667019458,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-chime": {
@@ -101,7 +105,7 @@
       "tolerance": 0.2
     },
     "suite-iisi/iisi-75-hd": {
-      "instr": 370367921,
+      "instr": 370367750,
       "tolerance": 0.2
     },
     "suite-iisi/iisi-chime": {
@@ -193,11 +197,11 @@
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-hd": {
-      "instr": 691003452,
+      "instr": 703485288,
       "tolerance": 0.2
     },
     "suite-quadra/q700-checkpoint": {
-      "instr": 181998203,
+      "instr": 181998186,
       "tolerance": 0.2
     },
     "suite-quadra/q700-chime": {
@@ -205,7 +209,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q900-75-hd": {
-      "instr": 685035188,
+      "instr": 697438092,
       "tolerance": 0.2
     },
     "suite-quadra/q900-76-fd": {
@@ -213,11 +217,11 @@
       "tolerance": 0.2
     },
     "suite-quadra/q950-71-hd": {
-      "instr": 1035253632,
+      "instr": 1052622849,
       "tolerance": 0.2
     },
     "suite-quadra/q950-76-hd": {
-      "instr": 763957189,
+      "instr": 763956818,
       "tolerance": 0.2
     },
     "suite-se30/se30-608-fd": {
@@ -225,15 +229,15 @@
       "tolerance": 0.2
     },
     "suite-se30/se30-701-gsvrom": {
-      "instr": 86638666,
+      "instr": 86638579,
       "tolerance": 0.2
     },
     "suite-se30/se30-71-fd": {
-      "instr": 726559830,
+      "instr": 734049059,
       "tolerance": 0.2
     },
     "suite-se30/se30-75-hd": {
-      "instr": 1116329227,
+      "instr": 1136315481,
       "tolerance": 0.2
     },
     "suite-se30/se30-checkpoint": {

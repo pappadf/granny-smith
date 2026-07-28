@@ -21,15 +21,15 @@
 # Finally, to leave a CLEANLY-UNMOUNTED artifact (so the saved image cold-boots
 # without the "startup disk was in use" scavenge), the test reboots the machine
 # off the freshly installed ProFile (no floppy; a synthesized clean-shutdown PRAM
-# auto-boots it — see lisa-profile-boot), reaches the Office System desktop, and
+# auto-boots it — see suite-lisa's lisa-los31-profile row), reaches the Office System desktop, and
 # presses the soft power-off switch (`power.off`).  Pressing it at the floppy
 # install menu is a no-op — the floppy-booted installer does not act on the COPS
 # $FB switch — so the orderly FS_Shutdown (boot volume MDDF mountinfo := unmounted)
 # only happens once the OS is running FROM the ProFile.  The image is saved after
 # the screen goes blank (powered off).
 #
-# TEST_SETUP synthesizes the boot PRAM with the shared seed_pram.py (reused from
-# lisa-profile-boot): BootVol=2 + the ProFile in the device-config table, exactly
+# TEST_SETUP synthesizes the boot PRAM with the shared seed_pram.py (now in suite-lisa/, reused from
+# suite-lisa): BootVol=2 + the ProFile in the device-config table, exactly
 # what the installer leaves in PRAM at clean shutdown.
 
 TEST_NAME := Apple Lisa 2 LOS 3.1 ProFile install
@@ -37,7 +37,7 @@ TEST_DESC := Full LOS 3.1 install onto the ProFile, then reboot off it and clean
 
 TEST_ROM := roms/lisa2-revh-098917b2.rom
 TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image
-TEST_SETUP := python3 lisa-profile-boot/seed_pram.py "$(WORK_DIR)/profile.pram"
+TEST_SETUP := python3 suite-lisa/seed_pram.py "$(WORK_DIR)/profile.pram"
 
 # CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
 TEST_TIER := extended

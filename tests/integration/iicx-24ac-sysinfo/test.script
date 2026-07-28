@@ -27,6 +27,8 @@
 # defaults + the slot sPRAMRec savedMode $82) — which both selects 8-bpp colour
 # AND arms the 32-bit SCSI HD boot in one shot.  (video_card can't be an arg, so
 # the harness booted the default card; we re-boot here.)
+include "../lib/mac.script"
+
 machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
 
 # Attach the cdev HD at SCSI ID 0 (the boot device).  The complete valid PRAM
@@ -71,7 +73,7 @@ assert machine.screen.height == 480 "boot: screen height != 480"
 assert (machine.memory.peek.b(0xF9D80001) & 0xE0) == 0x40 "boot: MODE depth latch != 8 bpp"
 assert machine.nubus.slot[9].card.framebuffer.depth == 8 "boot: framebuffer not 8 bpp"
 # The 8-bpp colour Finder desktop, booted from the SCSI HD, pixel-exact.
-machine.screen.match finder-640x480-8bpp.png
+check("finder-640x480-8bpp.png")
 
 # --- Insert the "Utilities Disk 2" floppy into the internal drive (FD0) ------
 # (apps/Norton-Utils-Disk-2.image — the Norton/Symantec "Utilities Disk 2".)
@@ -85,7 +87,7 @@ scheduler.run 60000000
 # No system error must have been raised (DSErrCode/$AF0 == 0) mounting/opening.
 assert machine.memory.peek.w(0xaf0) == 0 "system error raised inserting Utilities Disk 2"
 # The mounted disk with its window open, showing the "System Info" app icon.
-machine.screen.match utilities-disk-640x480-8bpp.png
+check("utilities-disk-640x480-8bpp.png")
 
 # --- Launch "System Info" by double-clicking its icon -----------------------
 # The icon sits in the disk window at (264, 100) in screen (global) coordinates.
@@ -105,7 +107,7 @@ machine.adb.mouse.click false
 scheduler.run 50000000
 # System Info's window is up and it has identified the machine + the 24AC card.
 # All four suites (Test CPU / Display / Volume / FPU) are checked by default.
-machine.screen.match system-info-640x480-8bpp.png
+check("system-info-640x480-8bpp.png")
 
 # --- De-select every suite except "Test Display" -----------------------------
 # Single-click each checkbox (they toggle) to UNCHECK Test CPU, Test Volume and
@@ -130,7 +132,7 @@ scheduler.run 500000
 machine.adb.mouse.click false
 scheduler.run 3000000
 # Pixel-proof that ONLY Test Display is now checked (CPU/Volume/FPU cleared).
-machine.screen.match system-info-display-only-640x480-8bpp.png
+check("system-info-display-only-640x480-8bpp.png")
 
 # --- Click "Run": the display benchmark starts immediately (no dialog) --------
 # Because PRAM was seeded with the reference config (128 KB cache + AppleTalk
@@ -148,6 +150,6 @@ machine.adb.mouse.click false
 scheduler.run 380000000
 # The Display benchmark completed: "System Ratings" (Video) with a Current
 # System rating vs the Quadra 700 reference — only the Display suite ran.
-machine.screen.match system-info-video-rating-640x480-8bpp.png
+check("system-info-video-rating-640x480-8bpp.png")
 
 quit

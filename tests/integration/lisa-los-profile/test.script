@@ -27,12 +27,23 @@
 # so the per-disk copy windows are 15-25M, not the worst-case guesses.  Diskette
 # paths are relative to this test directory.
 
+include "../lib/mac.script"
+
 machine.hd.attach
 scheduler.run 50000000
 
 assert machine.id == "lisa" "machine.id != lisa"
 assert machine.rom.checksum == "098917B2" "rom.checksum != 098917B2 (rev-H)"
 assert machine.hd.present == true "ProFile should be attached"
+
+# (0) The install floppy's own first screen. Folded in from lisa-los-boot,
+# which existed only to boot this same media and match this same screen —
+# §2.1's conclusion that the install flow "passes through the same
+# screens", so the menu golden becomes a checkpoint inside the flow rather
+# than a 80 M-cycle boot of its own. The geometry asserts came with it.
+assert machine.screen.width == 720 "screen.width != 720"
+assert machine.screen.height == 364 "screen.height != 364"
+check("boot-menu.png")
 
 # (1) Install.
 machine.adb.mouse.move 648 211 "global"
@@ -42,7 +53,9 @@ scheduler.run 600000
 machine.adb.mouse.click false
 scheduler.run 14000000
 # (2) ProFile detected -> "use the disk attached to the parallel connector?"
-machine.screen.match expected.png
+# This is also the screen lisa-los-install existed to reach: same media,
+# same click on Install, same dialog. Folded in here (§2.1).
+check("expected.png")
 
 # (3) OK (use this disk).
 machine.adb.mouse.move 607 120 "global"
@@ -68,7 +81,7 @@ scheduler.run 600000
 machine.adb.mouse.click false
 scheduler.run 40000000
 # (6) Installer initialised the ProFile and asks for Office System 2.
-machine.screen.match expected_insert2.png
+check("expected_insert2.png")
 
 # --- copy Office System 2 -> "insert Office System 3" ---
 machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-2.image"
@@ -79,7 +92,7 @@ machine.adb.mouse.click true
 scheduler.run 600000
 machine.adb.mouse.click false
 scheduler.run 15000000
-machine.screen.match expected_insert3.png
+check("expected_insert3.png")
 
 # --- copy Office System 3 -> "insert Office System 4" ---
 machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-3.image"
@@ -90,7 +103,7 @@ machine.adb.mouse.click true
 scheduler.run 600000
 machine.adb.mouse.click false
 scheduler.run 15000000
-machine.screen.match expected_insert4.png
+check("expected_insert4.png")
 
 # --- copy Office System 4 -> "insert Office System 5" ---
 machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-4.image"
@@ -101,7 +114,7 @@ machine.adb.mouse.click true
 scheduler.run 600000
 machine.adb.mouse.click false
 scheduler.run 25000000
-machine.screen.match expected_insert5.png
+check("expected_insert5.png")
 
 # --- copy Office System 5 -> "reinsert Office System 1" ---
 machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-5.image"
@@ -112,7 +125,7 @@ machine.adb.mouse.click true
 scheduler.run 600000
 machine.adb.mouse.click false
 scheduler.run 15000000
-machine.screen.match expected_reinsert1.png
+check("expected_reinsert1.png")
 
 # --- reinsert Office System 1 -> boot_remount writes the boot tracks, finishing ---
 machine.floppy.drive.0.insert "../../data/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image"
@@ -125,7 +138,7 @@ machine.adb.mouse.click false
 scheduler.run 20000000
 # Install complete: back at the Install/Repair menu with the ProFile as the startup
 # disk ("the disk attached to the parallel connector").
-machine.screen.match expected_installed.png
+check("expected_installed.png")
 
 # === Reboot off the installed ProFile and cleanly power off ==================
 # The install ran from the floppy, so the running OS's boot volume is the floppy,
@@ -134,7 +147,7 @@ machine.screen.match expected_installed.png
 # we must run the OS FROM it: persist the just-installed image, power-cycle into it
 # (machine.boot re-creates the machine and re-stages the inherited boot ROM), and
 # re-attach the SAME image with the clean-shutdown PRAM (TEST_SETUP) so the ROM
-# auto-boots the ProFile with no floppy — exactly lisa-profile-boot's cold boot.
+# auto-boots the ProFile with no floppy — exactly suite-lisa's lisa-los31-profile row.
 machine.hd.save "$WORK_DIR/lisa-los-installed-raw.image"
 machine.boot model="lisa" ram=2048
 machine.hd.attach "$WORK_DIR/lisa-los-installed-raw.image"
@@ -150,7 +163,7 @@ machine.adb.mouse.click true
 scheduler.run 600000
 machine.adb.mouse.click false
 scheduler.run 12000000
-machine.screen.match expected_desktop.png
+check("expected_desktop.png")
 
 # Press the soft power-off switch.  LOS catches the COPS $FB, runs its orderly
 # FS_Shutdown (boot volume MDDF mountinfo := unmounted), and the screen blanks as
@@ -158,9 +171,9 @@ machine.screen.match expected_desktop.png
 # "startup disk was in use" scavenge).
 machine.power.off
 scheduler.run 40000000
-machine.screen.match expected_poweroff.png
+check("expected_poweroff.png")
 
 # Save the cleanly-unmounted, self-contained single-file image (flat 532-byte
-# blocks) as the bootable LOS-on-HD artifact (lisa-profile-boot consumes it).
+# blocks) as the bootable LOS-on-HD artifact (suite-lisa's lisa-los31-profile row consumes it).
 assert machine.hd.save("${$WORK_DIR}/lisa-los-installed.image") "profile.save failed"
 quit

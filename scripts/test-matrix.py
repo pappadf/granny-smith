@@ -265,7 +265,16 @@ def read_targets(path):
     return [c for c in doc["cells"] if not str(c.get("machine", "")).startswith("//")]
 
 
-def check_coverage(target_path, log_paths, suite_root):
+def owner_tier(suite_root, suite):
+    """TEST_TIER of the directory that owes a cell (read from its config.mk)."""
+    cfg = Path(suite_root) / suite / "config.mk"
+    if not cfg.exists():
+        return None
+    m = re.search(r"^TEST_TIER\s*:=\s*(\w+)", cfg.read_text(), re.M)
+    return m.group(1) if m else None
+
+
+def check_coverage(target_path, log_paths, suite_root, tier=None):
     """Diff achieved (@@COV) against declared (matrix-targets.json).
 
     Exit semantics (§5.6): a declared cell that was not covered fails; a
@@ -291,11 +300,13 @@ def check_coverage(target_path, log_paths, suite_root):
     missing = [c for k, c in by_key_declared.items() if k not in by_key_achieved]
     extra = [c for k, c in by_key_achieved.items() if k not in by_key_declared]
 
-    pending, gated, blocked, failed = [], [], [], []
+    pending, gated, blocked, other_tier, failed = [], [], [], [], []
     for c in missing:
         suite = c.get("suite", "")
         if suite and not (Path(suite_root) / suite).is_dir():
             pending.append(c)
+        elif tier and owner_tier(suite_root, suite) not in (None, tier):
+            other_tier.append(c)
         elif c.get("blocked"):
             blocked.append(c)
         elif c.get("media_gated") and skips:
@@ -307,6 +318,7 @@ def check_coverage(target_path, log_paths, suite_root):
     for label, group in (("NOT COVERED (regression)", failed),
                          ("not covered — suite not built yet", pending),
                          ("not covered — blocked by an emulator defect", blocked),
+                         ("not covered — owed by another tier (not in this run)", other_tier),
                          ("not covered — media absent (skipped)", gated),
                          ("covered but undeclared (claim it)", extra)):
         if group:
@@ -337,7 +349,9 @@ def main():
                       f"| {c.get('width')}x{c.get('height')}x{c.get('depth')} "
                       f"| {str(c.get('addr32')).lower()} | {c.get('feature','')} |")
         if "--check" in flags:
-            return check_coverage(targets, paths, suite_root)
+            tier = next((f.split("=", 1)[1] for f in flags
+                         if f.startswith("--tier=")), None)
+            return check_coverage(targets, paths, suite_root, tier)
         return 0
 
     root = Path(paths[0]) if paths else Path("tests/integration")
