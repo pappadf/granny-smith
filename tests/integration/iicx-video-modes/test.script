@@ -198,7 +198,12 @@ scheduler.run 50000000
 machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+# MEASURED, and 5x the sibling budget: at +11 M this cell is still on the bare
+# desktop pattern, which is static — so the golden captured here used to be a
+# screen with nothing on it while its 1/2/4 bpp siblings had the splash. The
+# Welcome dialog is up at +60 M. Runs are bit-reproducible, so a fixed instant
+# is exact; the sibling tile-diversity mismatch is what exposed it.
+scheduler.run 60000000
 assert machine.rtc.pram.peek(0x48) == 0x83 "12in_rgb 8bpp savedMode rewritten by ROM"
 machine.screen.match welcome-12in_rgb-512x384-8bpp.png
 

@@ -49,6 +49,12 @@ def row_iisi_chime() {
 def row_iisi_701_fd() {
     machine.boot model="iisi" ram=17408
     machine.floppy.drive[0].insert "${$sys_701}"
+    # Run past the early boot transient BEFORE waiting. The desktop pattern is
+    # painted long before the Finder draws its menu bar and icons, and that bare
+    # grey frame is static, so REGEN and verify agreed on a screen with nothing
+    # on it — this row's golden was such a frame until 2026-07-28. Same defect
+    # fixed in suite-iifx's two floppy rows. The real Finder is up by ~200 M.
+    scheduler.run 200000000
     let spent = wait_match("goldens/iisi-7.0.1-640x480x1-finder.png", 800000000, 20000000)
     assert machine.id == "iisi" "iisi-701-fd: machine.id != iisi"
     assert machine.rom.checksum == "36B7FB6C" "iisi-701-fd: rom.checksum != 36B7FB6C"
@@ -57,7 +63,9 @@ def row_iisi_701_fd() {
     assert machine.screen.height == 480 "iisi-701-fd: screen.height != 480"
     assert_addr(false)
     report_row("7.0.1", "v8", "fd-boot")
-    report_perf("suite-iisi/iisi-701-fd", $spent)
+    # Total row spend, not $spent: with the 200 M pre-run above the wait matches
+    # on its first poll, so $spent would be a constant 20 M and signal nothing.
+    report_perf("suite-iisi/iisi-701-fd", scheduler.instr_count)
 }
 
 # ---- iisi-608-hd -----------------------------------------------------------
@@ -88,6 +96,12 @@ def row_iisi_71_kbd() {
     wait_stable(900000000)
     assert machine.ram == 9216 "iisi-71-kbd: machine.ram != 9216"
     assert machine.screen.width == 640 "iisi-71-kbd: screen.width != 640"
+    # golden-collision-ok: iisi-7.1-640x480x1-desktop.png iisi-7.0.1-640x480x1-finder.png
+    # - System_7_0_1.image and the 7.1 Disk Tools disk are both volumes named
+    # "Disk Tools", so at 640x480x1 the two Finders draw an identical desktop
+    # (the same frame appears in suite-iifx and suite-se30 for the same reason).
+    # Neither golden is what proves its row: this one exists as the stable
+    # starting point for the ADB keystroke choreography that follows.
     check("goldens/iisi-7.1-640x480x1-desktop.png")
 
     # File → Find… (drag the File menu open and release on the item).

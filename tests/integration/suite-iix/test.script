@@ -235,7 +235,7 @@ def row_iix_gc_decline1() {
 # through. The frame is the Welcome splash, and the DEPTH is proven by
 # savedMode, not by the pixels: the splash is black-and-white, so it scans out
 # identically at 1 and 2 bpp (see the golden-collision waivers).
-def sweep_cell(sense, sister, spid, w, h, golden) {
+def sweep_cell(sense, sister, spid, w, h, settle, golden) {
     # Staging named explicitly: the GC rows above seat an 824gc, and an
     # unnamed machine.boot inherits it — which is how the same trap produced
     # a wrong diagnosis in suite-iici (ledger §8).
@@ -247,7 +247,12 @@ def sweep_cell(sense, sister, spid, w, h, golden) {
     machine.memory.poke.w 0x017A 0x8805
     scheduler.run 1500000
     machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    # Settle budget is per-cell and MEASURED, not shared: the Welcome splash
+    # is a transient here, and the 21" 2 bpp cell reaches it ~5x later than
+    # its siblings (bare desktop at +11 M, splash at +60 M, gone again by
+    # +80 M). A single shared budget silently captured that cell's bare
+    # desktop. Runs are bit-reproducible, so a fixed instant is exact.
+    scheduler.run $settle
     assert machine.screen.width == $w "jmfb-sweep ${$golden}: width != ${$w}"
     assert machine.screen.height == $h "jmfb-sweep ${$golden}: height != ${$h}"
     assert machine.rtc.pram.peek(0x48) == $spid "jmfb-sweep ${$golden}: savedMode rewritten by ROM"
@@ -256,7 +261,7 @@ def sweep_cell(sense, sister, spid, w, h, golden) {
 
 def row_iix_jmfb_sweep() {
     # 15" Portrait B&W, sense $1, 640x870.
-    sweep_cell(1, 0x002780a1a1000000:8, 0x80, 640, 870, "goldens/iix-jmfb-15in_bw-640x870-1bpp.png")
+    sweep_cell(1, 0x002780a1a1000000:8, 0x80, 640, 870, 11000000, "goldens/iix-jmfb-15in_bw-640x870-1bpp.png")
     # golden-collision-ok: iix-jmfb-15in_bw-640x870-1bpp.png iix-jmfb-15in_bw-640x870-2bpp.png iix-6.0.3-640x870x1-welcome.png
     # - three-way, and all three are the same ROM-stage Welcome splash at
     # 640x870. 1 bpp vs 2 bpp: the splash is black-and-white, so it scans out
@@ -264,16 +269,16 @@ def row_iix_jmfb_sweep() {
     # vs iix-portrait-603's golden: that row seeds the identical sense and
     # sPRAMRec and checks the same pre-System frame, so it cannot differ — its
     # 6.0.3-specific work is the desktop-geometry assertions that follow it.
-    sweep_cell(1, 0x002781a1a1000000:8, 0x81, 640, 870, "goldens/iix-jmfb-15in_bw-640x870-2bpp.png")
-    sweep_cell(1, 0x002782a1a1000000:8, 0x82, 640, 870, "goldens/iix-jmfb-15in_bw-640x870-4bpp.png")
-    sweep_cell(1, 0x002783a1a1000000:8, 0x83, 640, 870, "goldens/iix-jmfb-15in_bw-640x870-8bpp.png")
+    sweep_cell(1, 0x002781a1a1000000:8, 0x81, 640, 870, 11000000, "goldens/iix-jmfb-15in_bw-640x870-2bpp.png")
+    sweep_cell(1, 0x002782a1a1000000:8, 0x82, 640, 870, 11000000, "goldens/iix-jmfb-15in_bw-640x870-4bpp.png")
+    sweep_cell(1, 0x002783a1a1000000:8, 0x83, 640, 870, 11000000, "goldens/iix-jmfb-15in_bw-640x870-8bpp.png")
     # 21" RGB (Kong), sense $0, 1152x870. References at >= 2 bpp carry Kong's
     # gamma pre-distortion — see iicx-video-modes' header for why that is
     # correct for a pre-CRT-response capture.
-    sweep_cell(0, 0x002780a7a7000000:8, 0x80, 1152, 870, "goldens/iix-jmfb-21in_rgb-1152x870-1bpp.png")
-    sweep_cell(0, 0x002781a7a7000000:8, 0x81, 1152, 870, "goldens/iix-jmfb-21in_rgb-1152x870-2bpp.png")
-    sweep_cell(0, 0x002782a7a7000000:8, 0x82, 1152, 870, "goldens/iix-jmfb-21in_rgb-1152x870-4bpp.png")
-    sweep_cell(0, 0x002783a7a7000000:8, 0x83, 1152, 870, "goldens/iix-jmfb-21in_rgb-1152x870-8bpp.png")
+    sweep_cell(0, 0x002780a7a7000000:8, 0x80, 1152, 870, 11000000, "goldens/iix-jmfb-21in_rgb-1152x870-1bpp.png")
+    sweep_cell(0, 0x002781a7a7000000:8, 0x81, 1152, 870, 60000000, "goldens/iix-jmfb-21in_rgb-1152x870-2bpp.png")
+    sweep_cell(0, 0x002782a7a7000000:8, 0x82, 1152, 870, 11000000, "goldens/iix-jmfb-21in_rgb-1152x870-4bpp.png")
+    sweep_cell(0, 0x002783a7a7000000:8, 0x83, 1152, 870, 11000000, "goldens/iix-jmfb-21in_rgb-1152x870-8bpp.png")
     report_perf("suite-iix/iix-jmfb-sweep", scheduler.instr_count)
 }
 
