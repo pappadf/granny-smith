@@ -20,6 +20,34 @@
       "instr": 11718825,
       "tolerance": 0.2
     },
+    "suite-iifx/iifx-24ac-seat": {
+      "instr": 86111937,
+      "tolerance": 0.2
+    },
+    "suite-iifx/iifx-608-fd": {
+      "instr": 80000000,
+      "tolerance": 0.2
+    },
+    "suite-iifx/iifx-701-fd": {
+      "instr": 338753914,
+      "tolerance": 0.2
+    },
+    "suite-iifx/iifx-71-824gc": {
+      "instr": 80000000,
+      "tolerance": 0.2
+    },
+    "suite-iifx/iifx-75-24ac-832": {
+      "instr": 523259044,
+      "tolerance": 0.2
+    },
+    "suite-iifx/iifx-aux3-login": {
+      "instr": 667019514,
+      "tolerance": 0.2
+    },
+    "suite-iifx/iifx-chime": {
+      "instr": 7509818,
+      "tolerance": 0.2
+    },
     "suite-iisi/iisi-608-hd": {
       "instr": 40000000,
       "tolerance": 0.2
@@ -58,6 +86,30 @@
     },
     "suite-iix/iix-portrait-603": {
       "instr": 135804332,
+      "tolerance": 0.2
+    },
+    "suite-lisa/lisa-los31-profile": {
+      "instr": 110719499,
+      "tolerance": 0.2
+    },
+    "suite-lisa/lisa-xenix-boot": {
+      "instr": 191400000,
+      "tolerance": 0.2
+    },
+    "suite-lisa/lisa-xenix-hdinit": {
+      "instr": 386600000,
+      "tolerance": 0.2
+    },
+    "suite-lisa/lisa-xenix-nofloppy": {
+      "instr": 391800000,
+      "tolerance": 0.2
+    },
+    "suite-lisa/xl-macworks-boot": {
+      "instr": 750000000,
+      "tolerance": 0.2
+    },
+    "suite-lisa/xl-no-media": {
+      "instr": 120000000,
       "tolerance": 0.2
     },
     "suite-plus/plus-20-fd": {
