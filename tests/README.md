@@ -31,10 +31,11 @@ tests/
 │
 ├── integration/                    # Native C integration tests (headless)
 │   ├── Makefile                   #   Auto-discovers test dirs with test.script
-│   ├── boot/                      #   Basic boot + shell command tests
-│   ├── checkpoint/                #   Checkpoint save/restore cycle
-│   ├── checkpoint2/               #   Consolidated checkpoint restore
-│   └── scsi/                      #   SCSI disk boot tests
+│   ├── lib/                       #   Shared row/wait/golden library (include'd)
+│   ├── suite-plus/ suite-se30/ …  #   Per-machine suites (rows + goldens/)
+│   ├── checkpoint/                #   Cross-process checkpoint save/restore
+│   ├── object-*/ shell-*/ …       #   Unit-tier object-model + shell tests
+│   └── iicx-video-modes/          #   16-cell real-vROM JMFB sweep
 │
 └── e2e/                            # Browser Playwright tests (web2 UI)
     ├── playwright.web2.config.ts  #   Main config (testDir → web2-specs/)

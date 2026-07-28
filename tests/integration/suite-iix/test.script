@@ -1,0 +1,161 @@
+# Macintosh IIx suite (see config.mk).
+#
+# Row map (former directory → row; **bold** = new matrix coverage):
+#
+#   iix-nomedia       iix-boot: ROM-only boot, the JMFB paints (1 MB)
+#   iix-824gc-seat    iix-824gc: the 8•24 GC seats in a IIx socket, its
+#                     declaration ROM binds, and the accelerator sits in
+#                     reset on a ROM-only boot (2 MB)
+#   iix-701-fd        **first IIx pixel golden**: iix-floppy was
+#                     checksum-only; this row pixel-matches the 7.0.1
+#                     Finder on the JMFB at 640x480 (8 MB)
+#   iix-portrait-603  **IIx x 6.0.3 at 640x870x1**: the JMFB portrait
+#                     raster, pixel-matched at the ROM stage AND at the
+#                     Finder desktop — the first full desktop anything
+#                     has rendered at portrait geometry. Media is one of
+#                     §6.2's unused single-disk images (4 MB)
+#   iix-71-extfd      **IIx x 7.1** and the re-hosted external-floppy
+#                     row: a second disk goes into the EXTERNAL bay (the
+#                     IIx has two) and mounts without a system error
+#                     (16 MB)
+#
+# Not here yet: the 8-of-16 JMFB sweep cells §7 wants re-hosted from
+# iicx-video-modes, and the GC accel+decline 1 bpp pair + beep. Both are
+# mechanical moves that need their goldens recaptured on this host; they
+# are called out in the suite roster rather than half-done.
+
+include "../lib/mac.script"
+
+let sys_701 = "../../data/systems/System_7_0_1.image"
+let sys_603 = "../../data/systems/System_6_0_3.dsk"
+let disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+let install_71 = "../../data/systems/SSW-7.1-1.4M/Install.img"
+
+# ---- iix-nomedia ------------------------------------------------------------
+def row_iix_nomedia() {
+    machine.boot model="iix" ram=1024
+    scheduler.run 100000000
+    assert machine.id == "iix" "iix-nomedia: machine.id != iix"
+    assert machine.ram == 1024 "iix-nomedia: machine.ram != 1024"
+    assert machine.screen.width == 640 "iix-nomedia: screen.width != 640"
+    assert machine.screen.height == 480 "iix-nomedia: screen.height != 480"
+    assert machine.screen.checksum() != 0 "iix-nomedia: JMFB never painted"
+    report_perf("suite-iix/iix-nomedia", scheduler.instr_count)
+}
+
+# ---- iix-824gc-seat ---------------------------------------------------------
+# The card-seat contract: name, declaration ROM, and an accelerator that
+# is still in reset because no driver has run (ROM-only boot).
+def row_iix_824gc_seat() {
+    machine.boot model="iix" ram=2048 video_card="824gc"
+    scheduler.run 100000000
+    assert machine.id == "iix" "iix-824gc-seat: machine.id != iix"
+    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "iix-824gc-seat: slot $9 card != 8•24 GC"
+    assert machine.nubus.slot[9].card.declrom.present "iix-824gc-seat: declaration ROM not present"
+    assert machine.nubus.slot[9].card.gc.state == "reset" "iix-824gc-seat: gc.state != reset in ROM-only boot"
+    assert machine.screen.width == 640 "iix-824gc-seat: screen.width != 640"
+    assert machine.screen.checksum() != 0 "iix-824gc-seat: 8•24 GC never painted"
+    report_perf("suite-iix/iix-824gc-seat", scheduler.instr_count)
+}
+
+# ---- iix-701-fd -------------------------------------------------------------
+# The IIx's first pixel golden (§2.1: all three IIx tests were
+# checksum-only). JMFB at 13" RGB 640x480, 1 bpp — the sense code and
+# slot-PRAM sister come from the shared seeding idiom.
+def row_iix_701_fd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6
+    machine.floppy.drive[0].insert "${$sys_701}"
+    machine.rtc.pram.validate
+    machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
+    scheduler.run 40000000
+    skip_boot_wait()
+    let spent = wait_match("goldens/iix-7.0.1-640x480x1-finder.png", 900000000, 20000000)
+    assert machine.id == "iix" "iix-701-fd: machine.id != iix"
+    assert machine.ram == 8192 "iix-701-fd: machine.ram != 8192"
+    assert machine.screen.width == 640 "iix-701-fd: screen.width != 640"
+    assert machine.screen.height == 480 "iix-701-fd: screen.height != 480"
+    assert_addr(false)
+    report_row("7.0.1", "jmfb", "fd-boot 640x480x1")
+    report_perf("suite-iix/iix-701-fd", $spent)
+}
+
+# ---- iix-portrait-603 -------------------------------------------------------
+# NEW CELL: the JMFB's portrait monitor (sense $1 → Mac Portrait Display,
+# 640x870, sister $A1) on the IIx, booting System 6.0.3 — one of the
+# unused single-disk images §6.2 asked to put to work.
+#
+# The row pins both stages: the ROM's PrimaryInit programming the
+# 640x870 raster (Welcome screen, pixel-exact) and System 6.0.3 keeping
+# it all the way to the Finder — so this is the first time any test
+# renders a full desktop at portrait geometry.
+#
+# NOTE for suite authors: this row must name video_card explicitly.
+# machine.boot inherits unspecified fields from the built-from record, so
+# without it the row would silently run on whatever card the PREVIOUS row
+# seated (the 8•24 GC, two rows up) and the portrait sense would not
+# apply — which is exactly how this row first failed.
+def row_iix_portrait_603() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iix" ram=4096 video_card="mdc_8_24" video_sense=1
+    machine.floppy.drive[0].insert "${$sys_603}"
+    machine.rtc.pram.validate
+    machine.rtc.pram.poke 0x46 0x002780a1a1000000:8
+    scheduler.run 50000000
+    skip_boot_wait()
+    scheduler.run 11000000
+    assert machine.id == "iix" "iix-portrait-603: machine.id != iix"
+    assert machine.ram == 4096 "iix-portrait-603: machine.ram != 4096"
+    assert machine.screen.width == 640 "iix-portrait-603: screen.width != 640"
+    assert machine.screen.height == 870 "iix-portrait-603: ROM did not program the portrait raster"
+    assert machine.rtc.pram.peek(0x48) == 0x80 "iix-portrait-603: savedMode rewritten by ROM"
+    check("goldens/iix-6.0.3-640x870x1-welcome.png")
+    report_row("6.0.3", "jmfb", "rom-stage 640x870x1 portrait")
+
+    # ...and 6.0.3 keeps the portrait raster through to the desktop.
+    wait_stable(900000000)
+    assert machine.screen.width == 640 "iix-portrait-603: desktop width != 640"
+    assert machine.screen.height == 870 "iix-portrait-603: desktop lost the portrait raster"
+    check("goldens/iix-6.0.3-640x870x1-finder.png")
+    report_row("6.0.3", "jmfb", "fd-boot 640x870x1 portrait-desktop")
+    report_perf("suite-iix/iix-portrait-603", scheduler.instr_count)
+}
+
+# ---- iix-71-extfd -----------------------------------------------------------
+# NEW CELL IIx x 7.1 and the re-hosted external-floppy row: boot from the
+# internal bay, then insert a second disk in the EXTERNAL bay and confirm
+# it mounts with no system error (SysErr $AF0 stays 0).
+def row_iix_71_extfd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iix" ram=16384 video_card="mdc_8_24" video_sense=6
+    machine.floppy.drive[0].insert "${$disk_tools_71}"
+    machine.rtc.pram.validate
+    machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
+    scheduler.run 30000000
+    skip_boot_wait()
+    scheduler.run 45000000
+    wait_stable(600000000)
+    assert machine.id == "iix" "iix-71-extfd: machine.id != iix"
+    assert machine.ram == 16384 "iix-71-extfd: machine.ram != 16384"
+    assert machine.screen.width == 640 "iix-71-extfd: screen.width != 640 (JMFB not seated?)"
+    check("goldens/iix-7.1-640x480x2-desktop.png")
+
+    machine.floppy.drive[1].insert "${$install_71}"
+    assert machine.floppy.drive[1].present "iix-71-extfd: Install.img not present in FD1"
+    wait_stable(600000000)
+    assert machine.memory.peek.w(0xaf0) == 0 "iix-71-extfd: system error raised on FD1 insert (Finder bomb?)"
+    check("goldens/iix-7.1-640x480x2-fd1-mounted.png")
+    report_row("7.1", "jmfb", "fd-boot external-fd1")
+    report_perf("suite-iix/iix-71-extfd", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("iix-nomedia") { row_end("iix-nomedia", try(row_iix_nomedia(), "FAILED")) }
+if row_on("iix-824gc-seat") { row_end("iix-824gc-seat", try(row_iix_824gc_seat(), "FAILED")) }
+if row_on("iix-701-fd") { row_end("iix-701-fd", try(row_iix_701_fd(), "FAILED")) }
+if row_on("iix-portrait-603") { row_end("iix-portrait-603", try(row_iix_portrait_603(), "FAILED")) }
+if row_on("iix-71-extfd") { row_end("iix-71-extfd", try(row_iix_71_extfd(), "FAILED")) }
+
+suite_done()
+quit

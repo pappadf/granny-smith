@@ -1,0 +1,159 @@
+# Macintosh IIci suite (see config.mk).
+#
+# Row map (former directory → row; **bold** = new matrix coverage):
+#
+#   iici-chime      iici-boot-chime: sample-exact chime WAV, on the
+#                   1 MB minimum RAM option (ROM-only row)
+#   iici-701-fd     iici-boot: RBV built-in video, 7.0.1 floppy boot,
+#                   Finder + About This Macintosh (8 MB)
+#   iici-75-hd      **IIci x 7.5**: prepared 7.5 image over the MDU's
+#                   NCR 5380 (16 MB — see the row comment for why not 5)
+#   iici-76-hd      **IIci x 7.6**: §7 moved the second 7.6 consumer
+#                   here because the IIci is clean-ROM 32-bit; 7.6
+#                   selects 32-bit itself, so this row is also the
+#                   suite's asserted 32-bit addressing cell (32 MB,
+#                   which only a 32-bit System can see in full)
+#   iici-checkpoint **MDU-family checkpoint round-trip**, MILESTONE (§7
+#                   epilogue): the first checkpoint coverage this family
+#                   has had, and it fails — the restored screen is blank
+#                   because the RBV's video state is not in the save set.
+#                   Run-not-fatal until that is fixed (see the row).
+
+include "../lib/mac.script"
+
+let sys_701 = "../../data/systems/System_7_0_1.image"
+let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+let hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
+
+# ---- iici-chime -------------------------------------------------------------
+# Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
+# 13,405-frame length are both the assertion.
+def row_iici_chime() {
+    machine.boot model="iici" ram=1024
+    machine.sound.capture.start
+    scheduler.run 12000000
+    machine.sound.capture.stop
+    assert machine.ram == 1024 "iici-chime: machine.ram != 1024"
+    assert machine.sound.capture.frames == 13405 "iici-chime: unexpected capture length"
+    machine.sound.match goldens/iici-chime.wav
+    report_perf("suite-iici/iici-chime", scheduler.instr_count)
+}
+
+# ---- iici-701-fd ------------------------------------------------------------
+# wait_stable (not wait_match) because the row interacts afterwards.
+def row_iici_701_fd() {
+    machine.boot model="iici" ram=8192
+    machine.floppy.drive[0].insert "${$sys_701}"
+    scheduler.run 300000000
+    wait_stable(900000000)
+    assert machine.id == "iici" "iici-701-fd: machine.id != iici"
+    assert machine.rom.checksum == "368CADFE" "iici-701-fd: rom.checksum != 368CADFE"
+    assert machine.ram == 8192 "iici-701-fd: machine.ram != 8192"
+    assert machine.screen.width == 640 "iici-701-fd: screen.width != 640"
+    assert machine.screen.height == 480 "iici-701-fd: screen.height != 480"
+    assert_addr(false)
+    check("goldens/iici-7.0.1-640x480x1-finder.png")
+    about_box()
+    check("goldens/iici-7.0.1-640x480x1-about.png")
+    report_row("7.0.1", "rbv", "fd-boot about")
+    report_perf("suite-iici/iici-701-fd", scheduler.instr_count)
+}
+
+# ---- iici-75-hd -------------------------------------------------------------
+# NEW CELL IIci x 7.5 over the MDU's NCR 5380 pseudo-DMA path.
+# 16 MB, not the 5 MB bank split the RAM axis would have preferred: at
+# 5 MB this boot leaves MMU32bit holding $6D — the System does not
+# maintain the flag in that configuration — while at 16 MB it reads a
+# clean 0 (24-bit, matching the IIcx measurement that 7.5 + MODE32 still
+# boots 24-bit under default PRAM). Asserting the addressing axis is
+# worth more here than the extra bank config.
+def row_iici_75_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iici" ram=16384
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 300000000
+    wait_stable(1500000000)
+    assert machine.id == "iici" "iici-75-hd: machine.id != iici"
+    assert machine.ram == 16384 "iici-75-hd: machine.ram != 16384"
+    assert_addr(false)
+    check_ex("goldens/iici-7.5-640x480x1-finder.png", 0, 440, 20, 640)
+    report_row("7.5", "rbv", "hd-boot 5380")
+    report_perf("suite-iici/iici-75-hd", scheduler.instr_count)
+}
+
+# ---- iici-76-hd -------------------------------------------------------------
+# NEW CELL IIci x 7.6, and the suite's 32-bit addressing cell: 7.6
+# selects 32-bit itself on a clean-ROM machine (measured §3.4), so 32 MB
+# is fully visible — the RAM-sizing and addressing axes interact here.
+def row_iici_76_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iici" ram=32768
+    machine.scsi.attach_hd "${$hd_76}" 0
+    scheduler.run 400000000
+    wait_stable(1800000000)
+    assert machine.id == "iici" "iici-76-hd: machine.id != iici"
+    assert machine.ram == 32768 "iici-76-hd: machine.ram != 32768"
+    assert_addr(true)
+    check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
+    report_row("7.6", "rbv", "hd-boot 5380 addr32")
+    report_perf("suite-iici/iici-76-hd", scheduler.instr_count)
+}
+
+# ---- iici-checkpoint (MILESTONE) -------------------------------------------
+# §7 epilogue on the MDU device set (RBV, IIci VIA path, 5380) — and the
+# first checkpoint coverage this family has ever had, which immediately
+# found a gap: the pre-save desktop matches its golden, but after
+# save → fresh boot → load the screen comes back BLANK (measured
+# 2026-07-28). The guest state restores; the RBV's built-in video does
+# not. Root cause is visible in the source: card_init() in
+# src/machines/mdu/builtin_rbv_video.c takes a checkpoint_t and discards
+# it ("(void)cp;"), so a restore re-allocates a zeroed framebuffer at the
+# 1 bpp power-up default instead of reading back the saved VRAM, depth
+# and CLUT — rbv_checkpoint() covers the RBV chip registers but nothing
+# covers the card. Landed as a milestone (run-not-fatal): nightly reports
+# it red with the artifact until that save set is completed, then it
+# promotes to an enforced row via a reviewed matrix-targets edit.
+# Boots at 8 MB, which is what the 7.0.1 golden was captured on — a 2 MB
+# IIci never reaches a desktop with 7.0.1 at all (measured: the screen
+# stays blank), so the smaller RAM config has nothing to re-match.
+def row_iici_checkpoint() {
+    machine.boot model="iici" ram=8192
+    machine.floppy.drive[0].insert "${$sys_701}"
+    scheduler.run 300000000
+    wait_stable(900000000)
+    check("goldens/iici-7.0.1-640x480x1-finder.png")
+    assert checkpoint.save("${$WORK_DIR}/suite-iici.gsc") "iici-checkpoint: save failed"
+    machine.boot model="iici" ram=1024
+    assert checkpoint.load("${$WORK_DIR}/suite-iici.gsc") "iici-checkpoint: load failed"
+    scheduler.run 5000000
+    wait_stable(400000000)
+    assert machine.ram == 8192 "iici-checkpoint: restored RAM size wrong"
+    # Re-match the pre-save golden rather than comparing raw checksums:
+    # the restored guest keeps running for a few million instructions
+    # before it is quiescent again, so only a settled frame is comparable.
+    check("goldens/iici-7.0.1-640x480x1-finder.png")
+    report_perf("suite-iici/iici-checkpoint", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("iici-chime") { row_end("iici-chime", try(row_iici_chime(), "FAILED")) }
+if row_on("iici-701-fd") { row_end("iici-701-fd", try(row_iici_701_fd(), "FAILED")) }
+if row_on("iici-75-hd") {
+    if have_media($hd_75) {
+        row_end("iici-75-hd", try(row_iici_75_hd(), "FAILED"))
+    } else {
+        echo "skip: iici-75-hd (7.5 prepared image not fetched)"
+    }
+}
+if row_on("iici-76-hd") {
+    if have_media($hd_76) {
+        row_end("iici-76-hd", try(row_iici_76_hd(), "FAILED"))
+    } else {
+        echo "skip: iici-76-hd (7.6 prepared image not fetched)"
+    }
+}
+if row_on("iici-checkpoint") { row_end_milestone("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
+
+suite_done()
+quit

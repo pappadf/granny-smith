@@ -1,0 +1,27 @@
+# Macintosh IIcx suite (see config.mk for why this suite is small).
+#
+# Row map (former directory → row):
+#
+#   iicx-chime   iicx-boot-chime: sample-exact ASC wavetable chime
+#                through the producer path
+
+include "../lib/mac.script"
+
+# ---- iicx-chime -------------------------------------------------------------
+# Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
+# 15,359-frame length are both the assertion.
+def row_iicx_chime() {
+    machine.boot model="iicx" ram=8192
+    machine.sound.capture.start
+    scheduler.run 12000000
+    machine.sound.capture.stop
+    assert machine.id == "iicx" "iicx-chime: machine.id != iicx"
+    assert machine.sound.capture.frames == 15359 "iicx-chime: unexpected capture length"
+    machine.sound.match goldens/iicx-chime.wav
+    report_perf("suite-iicx/iicx-chime", scheduler.instr_count)
+}
+
+if row_on("iicx-chime") { row_end("iicx-chime", try(row_iicx_chime(), "FAILED")) }
+
+suite_done()
+quit

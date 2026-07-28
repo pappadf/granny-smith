@@ -204,13 +204,13 @@ def run_ticks(n) {
 # DoubleTime on every machine.
 def double_click(x, y) {
     machine.adb.mouse.move $x $y "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(4)
+    machine.adb.mouse.click false
     run_ticks(6)
     machine.adb.mouse.click true
-    run_ticks(3)
-    machine.adb.mouse.click false
     run_ticks(4)
-    machine.adb.mouse.click true
-    run_ticks(3)
     machine.adb.mouse.click false
 }
 
@@ -222,16 +222,22 @@ def double_click(x, y) {
 # instant phase-exact instead. Byte-identical dance previously pasted
 # into the three Quadra HD tests.
 def about_box() {
+    # The first warp after a boot is swallowed, so step on a neutral spot
+    # before aiming at the menu title. Tick counts are deliberately
+    # generous (~30 ticks per step): the Menu Manager and the ADB poll
+    # need tens of ticks to track a warp, and the threshold varies per
+    # machine — measured on the IIci, 8 ticks (~0.8 M instructions there)
+    # opens nothing while 30 works everywhere tried.
     machine.adb.mouse.move 50 50 "global"
-    run_ticks(8)
+    run_ticks(30)
     machine.adb.mouse.move 25 10 "global"
-    run_ticks(5)
+    run_ticks(20)
     machine.adb.mouse.click true
-    run_ticks(9)
+    run_ticks(40)
     machine.adb.mouse.move 25 30 "global"
-    run_ticks(9)
+    run_ticks(40)
     machine.adb.mouse.click false
-    run_ticks(120)
+    run_ticks(150)
 }
 
 # Same choreography for machines with a QUADRATURE mouse (Plus, and any
@@ -241,16 +247,26 @@ def about_box() {
 # positional moves work. Rows on ADB machines use about_box() above.
 def about_box_quad() {
     machine.adb.mouse.move 14 8
-    run_ticks(10)
+    run_ticks(20)
     machine.adb.mouse.click true
-    run_ticks(10)
+    run_ticks(30)
     machine.adb.mouse.move 25 30
-    run_ticks(10)
+    run_ticks(30)
     machine.adb.mouse.click false
-    run_ticks(120)
+    run_ticks(150)
 }
 
 # --- boot helpers ------------------------------------------------------------
+#
+# SUITE-AUTHOR NOTE on machine.boot inside a suite: unspecified arguments
+# are inherited from the built-from record, i.e. from whatever the
+# PREVIOUS row booted. So any row whose behaviour depends on the video
+# card, the vROM, or the monitor sense must name those explicitly, even
+# when the machine's default would be right in a fresh process — a row
+# that omits video_card silently runs on the card a row above it seated.
+# (Found the hard way: suite-iix's portrait row inherited the 8•24 GC
+# from the card-seat row two rows earlier and never applied the portrait
+# sense, while passing in isolation.)
 
 # Universal-ROM ~13 s boot-drive-discovery bypass: hold Cmd-Shift-Power
 # in the KeyMap lowmem for one poll cycle ($017A poke, previously
@@ -270,10 +286,16 @@ def skip_boot_wait() {
 # so those rows must not call this.
 def assert_addr(want32) {
     let m = debug.mac.globals.read("MMU32bit")
+    # The byte is only a boolean when the System actually maintains it.
+    # Measured 2026-07-28: an IIci booting the 7.5 image at 5 MB reads
+    # $6D there while the same boot at 16 MB reads $00 — so a value
+    # outside {0,1} means "this configuration does not maintain the
+    # flag", and the row must say so instead of guessing a direction.
+    assert ($m == 0) || ($m == 1) "addressing: MMU32bit=${$m:02x} is not a boolean in this configuration"
     if $want32 {
-        assert $m != 0 "addressing: expected 32-bit, MMU32bit=${$m}"
+        assert $m == 1 "addressing: expected 32-bit, MMU32bit=${$m:02x}"
     } else {
-        assert $m == 0 "addressing: expected 24-bit, MMU32bit=${$m}"
+        assert $m == 0 "addressing: expected 24-bit, MMU32bit=${$m:02x}"
     }
 }
 

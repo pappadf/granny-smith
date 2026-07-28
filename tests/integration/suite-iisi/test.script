@@ -1,0 +1,158 @@
+# Macintosh IIsi suite (see config.mk).
+#
+# Row map (former directory → row; **bold** = new matrix coverage):
+#
+#   iisi-chime      iisi-boot-chime: sample-exact chime WAV, on the
+#                   65 MB maximum RAM option (a ROM-only row, so the
+#                   biggest RAM config costs nothing here)
+#   iisi-701-fd     iisi-boot: V8 built-in video, 7.0.1 floppy, 17 MB
+#   iisi-608-hd     **IIsi x 6.0.8** (§7 media re-assignment): the
+#                   6.0.8 HD image on the 5 MB minimum — 6.0.8's HD
+#                   rows all boot the prepared image per §7's 6.0.8
+#                   rationalization
+#   iisi-71-kbd     **IIsi x 7.1** and the re-hosted ADB keyboard test:
+#                   Find dialog + typed text through ADB behind the
+#                   EGRET transceiver (9 MB)
+#   iisi-75-hd      **IIsi x 7.5**: the pure-redistribution gap §7 could
+#                   not close by moving anything — one cheap boot row
+#
+# The IIsi is builtin-video only, so every row runs the V8 at 640x480.
+# Depth rows (V8 at 8 bpp) are NOT here: the built-in video's boot depth
+# is not selectable through the slot-PRAM savedMode byte the JMFB uses —
+# measured 2026-07-28, the ROM rewrites $58/$70 back to $80 (1 bpp) and
+# the framebuffer stays 1 bpp — so a depth row needs the Monitors
+# control panel driven under the OS, which is tracked as follow-up work
+# rather than guessed at here.
+
+include "../lib/mac.script"
+
+let sys_701 = "../../data/systems/System_7_0_1.image"
+let disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+let hd_608 = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
+let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+
+# ---- iisi-chime -------------------------------------------------------------
+# Frame-exact capture window (§5.2 run_exact): both the 12 M budget and
+# the 13,444-frame length are the assertion. Runs at the 65 MB maximum,
+# so the ROM's RAM sizing covers the largest supported configuration.
+def row_iisi_chime() {
+    machine.boot model="iisi" ram=66560
+    machine.sound.capture.start
+    scheduler.run 12000000
+    machine.sound.capture.stop
+    assert machine.ram == 66560 "iisi-chime: machine.ram != 66560"
+    assert machine.sound.capture.frames == 13444 "iisi-chime: unexpected capture length"
+    machine.sound.match goldens/iisi-chime.wav
+    report_perf("suite-iisi/iisi-chime", scheduler.instr_count)
+}
+
+# ---- iisi-701-fd ------------------------------------------------------------
+def row_iisi_701_fd() {
+    machine.boot model="iisi" ram=17408
+    machine.floppy.drive[0].insert "${$sys_701}"
+    let spent = wait_match("goldens/iisi-7.0.1-640x480x1-finder.png", 800000000, 20000000)
+    assert machine.id == "iisi" "iisi-701-fd: machine.id != iisi"
+    assert machine.rom.checksum == "36B7FB6C" "iisi-701-fd: rom.checksum != 36B7FB6C"
+    assert machine.ram == 17408 "iisi-701-fd: machine.ram != 17408"
+    assert machine.screen.width == 640 "iisi-701-fd: screen.width != 640"
+    assert machine.screen.height == 480 "iisi-701-fd: screen.height != 480"
+    assert_addr(false)
+    report_row("7.0.1", "v8", "fd-boot")
+    report_perf("suite-iisi/iisi-701-fd", $spent)
+}
+
+# ---- iisi-608-hd -----------------------------------------------------------
+# NEW CELL IIsi x 6.0.8 on the 5 MB minimum (1+4 two-bank split).
+def row_iisi_608_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iisi" ram=5120
+    machine.scsi.attach_hd "${$hd_608}" 0
+    let spent = wait_match("goldens/iisi-6.0.8-640x480x1-finder.png", 900000000, 20000000)
+    assert machine.ram == 5120 "iisi-608-hd: machine.ram != 5120"
+    assert machine.screen.width == 640 "iisi-608-hd: screen.width != 640"
+    assert_addr(false)
+    report_row("6.0.8", "v8", "hd-boot scsi")
+    report_perf("suite-iisi/iisi-608-hd", $spent)
+}
+
+# ---- iisi-71-kbd -----------------------------------------------------------
+# NEW CELL IIsi x 7.1, and the ADB keyboard test re-hosted here so the
+# keystroke path runs through the Egret transceiver. The regression it
+# guards: the ADB keyboard used to drop roughly every other keystroke,
+# so typing into the Find dialog and matching the result pixel-exactly
+# is the assertion.
+def row_iisi_71_kbd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iisi" ram=9216
+    machine.floppy.drive[0].insert "${$disk_tools_71}"
+    scheduler.run 60000000
+    wait_stable(900000000)
+    assert machine.ram == 9216 "iisi-71-kbd: machine.ram != 9216"
+    assert machine.screen.width == 640 "iisi-71-kbd: screen.width != 640"
+    check("goldens/iisi-7.1-640x480x1-desktop.png")
+
+    # File → Find… (drag the File menu open and release on the item).
+    machine.adb.mouse.move 50 50 "global"
+    run_ticks(30)
+    machine.adb.mouse.move 38 7 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move 38 200 "global"
+    run_ticks(40)
+    machine.adb.mouse.click false
+    # Fixed guest-time window, not a settle: the Find dialog blinks a
+    # text caret, so the screen never holds still and the golden is
+    # caret-phase-sensitive (§5.2's run_exact class).
+    run_ticks(90)
+    check("goldens/iisi-7.1-640x480x1-find-dialog.png")
+
+    # Type "macintosh" one key at a time — every keystroke must land.
+    machine.adb.keyboard.press 0x2E
+    machine.adb.keyboard.press 0x00
+    machine.adb.keyboard.press 0x08
+    machine.adb.keyboard.press 0x22
+    machine.adb.keyboard.press 0x2D
+    machine.adb.keyboard.press 0x11
+    machine.adb.keyboard.press 0x1F
+    machine.adb.keyboard.press 0x01
+    machine.adb.keyboard.press 0x04
+    run_ticks(90)
+    check("goldens/iisi-7.1-640x480x1-typed.png")
+    report_row("7.1", "v8", "fd-boot adb-egret keyboard")
+    report_perf("suite-iisi/iisi-71-kbd", scheduler.instr_count)
+}
+
+# ---- iisi-75-hd ------------------------------------------------------------
+# NEW CELL IIsi x 7.5 — the one cell pure redistribution could not close
+# (§7), so it is a plain cheap boot row.
+def row_iisi_75_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iisi" ram=17408
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 300000000
+    wait_stable(1500000000)
+    assert machine.id == "iisi" "iisi-75-hd: machine.id != iisi"
+    assert machine.screen.width == 640 "iisi-75-hd: screen.width != 640"
+    assert_addr(false)
+    check_ex("goldens/iisi-7.5-640x480x1-finder.png", 0, 440, 20, 640)
+    report_row("7.5", "v8", "hd-boot scsi")
+    report_perf("suite-iisi/iisi-75-hd", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("iisi-chime") { row_end("iisi-chime", try(row_iisi_chime(), "FAILED")) }
+if row_on("iisi-701-fd") { row_end("iisi-701-fd", try(row_iisi_701_fd(), "FAILED")) }
+if row_on("iisi-608-hd") { row_end("iisi-608-hd", try(row_iisi_608_hd(), "FAILED")) }
+if row_on("iisi-71-kbd") { row_end("iisi-71-kbd", try(row_iisi_71_kbd(), "FAILED")) }
+if row_on("iisi-75-hd") {
+    if have_media($hd_75) {
+        row_end("iisi-75-hd", try(row_iisi_75_hd(), "FAILED"))
+    } else {
+        echo "skip: iisi-75-hd (7.5 prepared image not fetched)"
+    }
+}
+
+suite_done()
+quit

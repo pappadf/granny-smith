@@ -9,7 +9,7 @@ emulator), and browser-based end-to-end tests (Playwright).
 | Tier | Command | Duration | Test Data Required |
 |------|---------|----------|--------------------|
 | Unit | `make -C tests/unit run` | 1–5 min | No (uses `third-party/single-step-tests`) |
-| Integration | `make integration-test` | 1–2 min | Yes |
+| Integration | `make integration-test` | 10–20 min (`-j` shortens) | Yes |
 | E2E | `make e2e-test` | 10–15 min | Yes |
 | Unit + Integration | `make test` | 2–7 min | Partially |
 
@@ -36,10 +36,11 @@ tests/
 │       ├── platform.h             #     Platform header override
 │       └── log.h                  #     Logging header override
 ├── integration/                    # Headless emulator integration tests
-│   ├── boot/                      #   Basic boot + shell commands
-│   ├── checkpoint/                #   Checkpoint save/restore
-│   ├── checkpoint2/               #   Consolidated checkpoint restore
-│   └── scsi/                      #   SCSI disk boot
+│   ├── lib/                       #   Shared row/wait/golden library (include'd)
+│   ├── suite-plus/ suite-se30/ …  #   Per-machine suites (rows, goldens/)
+│   ├── checkpoint/                #   Cross-process checkpoint save/restore
+│   ├── object-*/ shell-*/ …       #   Unit-tier object-model + shell tests
+│   └── iicx-video-modes/          #   16-cell real-vROM JMFB sweep
 └── e2e/                            # Browser Playwright E2E tests (web2 UI)
     ├── web2-specs/                #   Functional suite (playwright.web2.config.ts)
     ├── ui-prod-smoke/             #   Production-bundle boot smoke
@@ -177,7 +178,7 @@ make integration-test               # Build headless + run all
 make integration-test TIER=matrix   # One tier: unit | matrix | extended
 make integration-test -j$(nproc)    # Parallel (safe: per-test storage cache)
 make integration-test-valgrind      # Under Valgrind (scope to TIER=unit)
-make -C tests/integration test-boot-matrix   # Run a single test
+make -C tests/integration test-suite-plus    # Run a single test/suite
 make -C tests/integration list      # List available tests (with tiers)
 ```
 
@@ -194,9 +195,26 @@ whole tier), `matrix` (per-machine boot suites — the PR gate), and
 
 ### Suites and the shared script library
 
-Machine families are covered by *suite* directories (e.g.
+Machine families are covered by *suite* directories (`suite-plus`,
+`suite-se30`, `suite-iix`, `suite-iicx`, `suite-iici`, `suite-iisi`,
 `suite-quadra`): one daemon run, one row per (system, media, RAM,
-video) cell, re-instantiating via `machine.boot` between rows. Shared
+video) cell, re-instantiating via `machine.boot` between rows. A boot
+assertion belongs as a row in its machine's suite.
+
+Two rules suite rows must follow, both learned from real failures:
+
+- **Name every staging argument the row depends on.** `machine.boot`
+  inherits unspecified fields from the built-from record — i.e. from
+  whatever the previous row booted — so a row that cares about the video
+  card, vROM, or monitor sense must pass it explicitly even when the
+  machine default would be correct in a fresh process.
+- **Interacting rows use `wait_stable` + `check`, not `wait_match`.**
+  `wait_match` stops at the first quantum whose frame equals the golden,
+  which can precede quiescence; `wait_stable` behaves identically when
+  capturing and when verifying, so menu/click choreography lands the
+  same way in both. Screens that animate (a blinking "?" icon, a text
+  caret) never settle at all — those rows use a fixed `run_ticks`
+  window and their goldens are animation-phase-sensitive by design. Shared
 harness functions live in `tests/integration/lib/mac.script`, pulled
 in with the shell's `include` statement. The library provides
 condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
