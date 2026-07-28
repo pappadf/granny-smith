@@ -104,11 +104,66 @@ jobs:
         run: |
           make -C tests/unit run
 
-      # Integration and e2e tests require proprietary test data
-      - name: Run integration tests
+      # Integration and e2e tests require proprietary test data.
+      #
+      # PR/push runs the unit and matrix tiers only, in parallel, per
+      # proposal-integration-test-rework §5.4: the unit tier is seconds, the
+      # matrix tier is the per-machine boot suites, and the extended tier
+      # (long diagnostics, installers, app choreography) moves to the nightly
+      # workflow. Suites are parallel-safe because each test gets a private
+      # GS_STORAGE_CACHE, so nothing writes beside the shared media.
+      - name: Run integration tests (unit tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
-          make integration-test
+          make integration-test TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Run integration tests (matrix tier)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          make integration-test TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
+          exit "${PIPESTATUS[0]}"
+
+      # Coverage contract (§5.6): diff the cells the run actually reported
+      # (@@COV records, read from the live machine) against the declared
+      # roster in tests/integration/matrix-targets.json. A declared cell that
+      # went uncovered fails; cells owed by another tier, blocked by a known
+      # emulator defect, or gated on absent media are reported, not failed.
+      - name: Check coverage contract
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          python3 scripts/test-matrix.py --check --tier=matrix /tmp/it-matrix.log \
+            | tee /tmp/coverage.log
+          exit "${PIPESTATUS[0]}"
+
+      # Performance gate (§5.8, dimension 1): per-row guest instruction spend
+      # is host-independent and bit-reproducible, so a row outside its
+      # tolerance band is a real change and fails like a pixel golden.
+      # Absorbing a legitimate timing change means committing a reviewed
+      # perf-baselines.json diff (scripts/gen-baselines.py) in the same PR.
+      - name: Check performance baselines
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          python3 scripts/test-matrix.py --perf /tmp/it-matrix.log | tee /tmp/perf.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Coverage + row report into the step summary
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          {
+            echo "## Integration coverage"
+            echo '```'
+            cat /tmp/coverage.log 2>/dev/null || echo "(no coverage log)"
+            echo '```'
+            echo "### Cells covered by this run"
+            python3 scripts/test-matrix.py --from-results /tmp/it-matrix.log 2>/dev/null || true
+            echo "### Milestone rows (known gaps, non-fatal)"
+            grep -h "MILESTONE" /tmp/it-matrix.log 2>/dev/null || echo "(none)"
+            echo "### Per-row instruction spend vs baselines"
+            echo '```'
+            cat /tmp/perf.log 2>/dev/null || echo "(no perf log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # NOTE: the browser end-to-end suite (Playwright) now runs in the `ui`
       # job against the web2 (Svelte) frontend — see `make ui2-e2e` there.

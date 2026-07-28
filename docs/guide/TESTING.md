@@ -235,6 +235,18 @@ make -C tests/integration test-suite-quadra TEST_VARS="REGEN=1"          # recap
 Suite goldens live in `<suite>/goldens/` named
 `<model>-<system>-<WxHxD>[-<state>].png`.
 
+### What CI runs
+
+| Trigger | Runs |
+|---|---|
+| PR / push (`tests.yml`) | unit + matrix tiers in parallel, then the coverage contract and the perf baselines; both gate the build. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
+| Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier + one boot with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
+
+Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
+billions of guest cycles, `test-valgrind` across every test cannot run to
+completion, and the throughput floors would fail by construction — hence
+`PERF_FLOORS=off` for those runs.
+
 ### Coverage and performance contracts
 
 Two committed files gate the suite as a whole, and they have deliberately
@@ -250,17 +262,26 @@ records. Diff achieved against declared:
 
 ```bash
 make -C tests/integration test TIER=matrix 2>&1 | tee run.log
-python3 scripts/test-matrix.py --check run.log        # exits 1 on a coverage regression
-python3 scripts/test-matrix.py --from-results run.log # render what a run covered
+python3 scripts/test-matrix.py --check --tier=matrix run.log  # 1 on a coverage regression
+python3 scripts/test-matrix.py --perf run.log                # 1 if a row drifted out of band
+python3 scripts/test-matrix.py --from-results run.log        # render what a run covered
 ```
 
 A declared cell that was not covered fails; a covered cell nobody
-declared is a warning telling you to claim it. Three cases warn instead
-of failing, because none of them means coverage regressed: the owing
-suite directory does not exist yet (derived from the filesystem, so it
-cannot be faked), the cell is `blocked` by a known emulator defect (the
+declared is a warning telling you to claim it. Four cases warn instead of
+failing, because none of them means coverage regressed: the owing suite
+directory does not exist yet (derived from the filesystem, so it cannot
+be faked), the cell is owed by a test in a **different tier** than the
+one being checked (`--tier=` reads each owner's `TEST_TIER` from its own
+config.mk), the cell is `blocked` by a known emulator defect (the
 cell-level twin of a milestone row), or it is `media_gated` and its row
 skipped because private test data is absent.
+
+`--perf` gates each row's guest instruction spend against
+`perf-baselines.json` within its tolerance band (±20% by default). The
+spend is deterministic per build, so a band violation is a real change,
+not flake — absorb legitimate ones with a reviewed
+`scripts/gen-baselines.py` diff in the PR that caused them.
 
 ### Writing a New Integration Test
 

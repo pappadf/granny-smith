@@ -265,6 +265,43 @@ def read_targets(path):
     return [c for c in doc["cells"] if not str(c.get("machine", "")).startswith("//")]
 
 
+def check_perf(baseline_path, log_paths):
+    """Gate per-row instruction spend against perf-baselines.json (§5.8).
+
+    The spend is deterministic per build — same guest work, same count — so a
+    row outside its tolerance band is a real change, not flake, and fails like
+    a pixel golden. Absorbing a legitimate change means committing a reviewed
+    baselines diff in the PR that caused it (scripts/gen-baselines.py).
+    """
+    doc = json.loads(Path(baseline_path).read_text())
+    rows = doc["rows"]
+    seen, bad, new = {}, [], []
+    for lp in log_paths:
+        for line in Path(lp).read_text(errors="replace").splitlines():
+            m = re.search(r"@@PERF (\{.*\})", line)
+            if m:
+                rec = json.loads(m.group(1))
+                seen[rec["row"]] = rec["instr"]
+    for row, instr in sorted(seen.items()):
+        base = rows.get(row)
+        if not base:
+            new.append((row, instr))
+            continue
+        want, tol = base["instr"], base.get("tolerance", 0.20)
+        if want and abs(instr - want) > want * tol:
+            bad.append((row, instr, want, tol))
+    print(f"perf rows measured: {len(seen)}   baselined: {len(rows)}")
+    for row, instr, want, tol in bad:
+        delta = (instr - want) / want * 100.0
+        print(f"  OUT OF BAND {row}: {instr} vs baseline {want} "
+              f"({delta:+.1f}%, tolerance ±{tol * 100:.0f}%)")
+    for row, instr in new:
+        print(f"  no baseline yet: {row} = {instr}")
+    if not bad:
+        print("OK: every baselined row is within its tolerance band")
+    return 1 if bad else 0
+
+
 def owner_tier(suite_root, suite):
     """TEST_TIER of the directory that owes a cell (read from its config.mk)."""
     cfg = Path(suite_root) / suite / "config.mk"
@@ -337,6 +374,9 @@ def main():
     paths = [a for a in argv if not a.startswith("--")]
 
     # Runtime modes take the log files as positional arguments.
+    if "--perf" in flags:
+        return check_perf(Path("tests/integration/perf-baselines.json"), paths)
+
     if "--check" in flags or "--from-results" in flags:
         targets = Path("tests/integration/matrix-targets.json")
         suite_root = Path("tests/integration")
