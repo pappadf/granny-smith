@@ -136,6 +136,14 @@ jobs:
             | tee /tmp/coverage.log
           exit "${PIPESTATUS[0]}"
 
+      # Golden-collision gate: two DIFFERENT goldens asserted in one script must
+      # not hold identical bytes, or one frame is silently doing the work of
+      # several assertions. Needs no test data and no build — it only reads the
+      # scripts and the committed PNGs — so it runs regardless of the data fetch
+      # and catches a bad recapture before the expensive tiers do.
+      - name: Check golden distinctness
+        run: python3 scripts/check-goldens.py
+
       # Performance gate (§5.8, dimension 1): per-row guest instruction spend
       # is host-independent and bit-reproducible, so a row outside its
       # tolerance band is a real change and fails like a pixel golden.

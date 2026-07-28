@@ -31,7 +31,6 @@ def row_gsvrom_sweep() {
     # --- 13" RGB at 1/2/4/8 bpp --------------------------------------------------
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_1bpp"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
     scheduler.run 1500000
@@ -48,7 +47,6 @@ def row_gsvrom_sweep() {
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_2bpp"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
     scheduler.run 1500000
@@ -57,10 +55,12 @@ def row_gsvrom_sweep() {
     assert machine.rtc.pram.peek(0x48) == 0x81       "13in_rgb 2bpp savedMode != 0x81"
     assert machine.memory.peek.l(0xf9200208) == 0x88 "13in_rgb 2bpp CLUTPBCR != 0x88"
     assert machine.memory.peek.l(0xf920000c) == 0x28 "13in_rgb 2bpp RowWords != 0x28"
+    # golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
+    # - black-and-white splash, identical at both depths; the depth is proven by
+    # the savedMode/RowWords asserts above. Same pair as iicx-video-modes.
     check("goldens/welcome-13in_rgb-640x480-2bpp.png")
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_4bpp"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -73,7 +73,6 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-13in_rgb-640x480-4bpp.png")
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_8bpp"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -88,7 +87,6 @@ def row_gsvrom_sweep() {
     # --- 12" RGB at 1/8 bpp ------------------------------------------------------
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_1bpp"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
     scheduler.run 1500000
@@ -102,7 +100,6 @@ def row_gsvrom_sweep() {
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_8bpp"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
     scheduler.run 1500000
@@ -113,7 +110,6 @@ def row_gsvrom_sweep() {
 
     # --- 15" Portrait B&W at 1/8 bpp ---------------------------------------------
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_1bpp"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -128,7 +124,6 @@ def row_gsvrom_sweep() {
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_8bpp"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
     scheduler.run 1500000
@@ -139,7 +134,6 @@ def row_gsvrom_sweep() {
 
     # --- 21" RGB at 1/8 bpp (neutral grays — identity gamma, see header) ---------
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_1bpp"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -153,7 +147,6 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-21in_rgb-1152x870-1bpp.png")
 
     machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_8bpp"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -173,7 +166,6 @@ def row_gsvrom_24ac() {
     # other siblings; the extended-sense probe in the GS ROM picks the monitor.
     machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_640x480_8bpp"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
     scheduler.run 1500000
@@ -183,10 +175,13 @@ def row_gsvrom_24ac() {
     assert machine.screen.height == 480               "24ac 640x480 height != 480"
     assert machine.rtc.pram.peek(0x48) == 0x82        "24ac savedMode != 0x82 (8bpp)"
     assert machine.rtc.pram.peek(0x49) == 0x6b        "24ac sister != 0x6b"
+    # golden-collision-ok: welcome-13in_rgb-640x480-8bpp.png welcome-24ac-640x480-8bpp.png
+    # - two different cards driving the same 640x480x8 geometry render the same
+    # splash. Card identity is proven by the sPRAMRec asserts above (sister byte
+    # 0x6b is the 24AC), not by the pixels.
     check("goldens/welcome-24ac-640x480-8bpp.png")
 
     machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_832x624_8bpp"
-    machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805

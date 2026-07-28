@@ -15,15 +15,21 @@
 #                   which only a 32-bit System can see in full)
 #   iici-lowram     **MILESTONE**: the IIci does not POST below 8 MB, so
 #                   its whole low-RAM plane is untestable (ledger §3)
+#   iici-71-hd      **IIci x 7.1** on the built-in RBV — the cell §8 wrongly
+#                   believed unreachable (8 MB)
 #   iici-24ac-dual  **first OS-level DUAL DISPLAY**, MILESTONE: a 24AC in
 #                   socket $C beside the live built-in RBV, with the 24AC
-#                   engine counters §3.2 wanted asserted. Red because this
-#                   machine hangs at Welcome on 7.1 — see the row.
+#                   engine counters §3.2 wanted asserted. Red because seating
+#                   the card hangs the boot at Welcome — see the row.
 #   iici-checkpoint **MDU-family checkpoint round-trip**, MILESTONE (§7
 #                   epilogue): the first checkpoint coverage this family
 #                   has had, and it fails — the restored screen is blank
 #                   because the RBV's video state is not in the save set.
 #                   Run-not-fatal until that is fixed (see the row).
+#   iici-mactest-diag **MILESTONE**: §7 tried to re-host iicx-mactest here;
+#                   MacTest instead diagnoses this machine as a bad logic
+#                   board the moment Start is clicked (ledger §9). The
+#                   re-host was reverted; this row is what remains of it.
 
 include "../lib/mac.script"
 
@@ -31,12 +37,13 @@ let sys_701 = "../../data/systems/System_7_0_1.image"
 let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 let hd_76 = "../../data/systems/system_7_6_170mb_24ac.img"
 let hd_71_gc = "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
+let mactest_img = "../../data/apps/MacTest-IIcx-IIci.image"
 
 # ---- iici-chime -------------------------------------------------------------
 # Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
 # 13,405-frame length are both the assertion.
 def row_iici_chime() {
-    machine.boot model="iici" ram=1024
+    machine.boot model="iici" ram=1024 video_card="builtin_rbv_video"
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
@@ -49,7 +56,7 @@ def row_iici_chime() {
 # ---- iici-701-fd ------------------------------------------------------------
 # wait_stable (not wait_match) because the row interacts afterwards.
 def row_iici_701_fd() {
-    machine.boot model="iici" ram=8192
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 300000000
     wait_stable(900000000)
@@ -77,7 +84,7 @@ def row_iici_701_fd() {
 # still boots 24-bit under default PRAM, matching the IIcx measurement.
 def row_iici_75_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iici" ram=16384
+    machine.boot model="iici" ram=16384 video_card="builtin_rbv_video"
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 300000000
     wait_stable(1500000000)
@@ -95,7 +102,7 @@ def row_iici_75_hd() {
 # is fully visible — the RAM-sizing and addressing axes interact here.
 def row_iici_76_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iici" ram=32768
+    machine.boot model="iici" ram=32768 video_card="builtin_rbv_video"
     machine.scsi.attach_hd "${$hd_76}" 0
     scheduler.run 400000000
     wait_stable(1800000000)
@@ -105,6 +112,34 @@ def row_iici_76_hd() {
     check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
     report_row("7.6", "rbv", "hd-boot 5380 addr32")
     report_perf("suite-iici/iici-76-hd", scheduler.instr_count)
+}
+
+# ---- iici-71-hd -------------------------------------------------------------
+# NEW CELL IIci x 7.1 on the built-in RBV, and the row that retired a wrong
+# ledger entry. §8 recorded "the IIci hangs at Welcome booting either prepared
+# 7.1 image", with a no-card control said to hang identically. The control was
+# not actually card-free: it ran after iici-24ac-dual in the same suite and, with
+# no video_card named, INHERITED that row's 24AC (machine.boot inherits every
+# unspecified staging field from the record it was built from). Name the built-in
+# video explicitly and 7.1 boots straight to the Finder — measured 2026-07-28.
+# The real defect is that a 24AC seated beside the live RBV hangs the boot, which
+# is what §8 now says and what iici-24ac-dual now guards.
+def row_iici_71_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.scsi.attach_hd "${$hd_71_gc}" 0
+    scheduler.run 300000000
+    wait_stable(1200000000)
+    assert machine.id == "iici" "iici-71-hd: machine.id != iici"
+    assert machine.ram == 8192 "iici-71-hd: machine.ram != 8192"
+    assert machine.screen.width == 640 "iici-71-hd: screen.width != 640"
+    assert machine.screen.depth == 1 "iici-71-hd: screen.depth != 1"
+    # The 24AC must NOT be present: this row exists to prove the card-free path,
+    # so an inherited card would make it silently re-measure the §8 hang.
+    assert machine.nubus.slot[11].card.name == "Macintosh IIci Built-in Video" "iici-71-hd: slot $B is not the built-in video"
+    check("goldens/iici-7.1-640x480x1-finder.png")
+    report_row("7.1", "rbv", "hd-boot 5380")
+    report_perf("suite-iici/iici-71-hd", scheduler.instr_count)
 }
 
 # ---- iici-lowram (MILESTONE) ------------------------------------------------
@@ -119,7 +154,7 @@ def row_iici_76_hd() {
 # installed RAM. Measured 2026-07-28 it reads the $DB6DB6DB
 # uninitialised-read pattern instead, i.e. no lowmem global is ever written.
 def row_iici_lowram() {
-    machine.boot model="iici" ram=4096
+    machine.boot model="iici" ram=4096 video_card="builtin_rbv_video"
     scheduler.run 120000000
     assert machine.ram == 4096 "iici-lowram: machine.ram != 4096"
     assert debug.mac.globals.read("MemTop") == 0x400000 "iici-lowram: POST never completed — MemTop=${debug.mac.globals.read("MemTop"):08x} (uninitialised pattern means no lowmem was written)"
@@ -133,11 +168,16 @@ def row_iici_lowram() {
 # come up, the RBV keeps the boot screen, and the 24AC's engine really
 # runs (§3.2's missing proof of engagement, counters rather than pixels).
 #
-# What does NOT hold is the boot itself: this machine hangs at "Welcome to
-# Macintosh" with EITHER prepared System 7.1 image, and a no-card control
-# hangs identically, so it is not the 24AC (measured 2026-07-28; ledger
-# proposal-emulator-bug-fixes.md §8). 7.0.1, 7.5 and 7.6 all reach the
-# desktop on this same machine.
+# What does NOT hold is the boot itself: with the 24AC seated the machine
+# hangs at "Welcome to Macintosh" forever (ledger §8).
+#
+# The card IS the trigger, and an earlier version of this comment said the
+# opposite. It claimed a no-card control hung identically "so it is not the
+# 24AC" — but that control was a bare `machine.boot` running after this row,
+# which inherits every staging field it does not name and so inherited the very
+# card it was meant to exclude. Named explicitly, the same 7.1 image boots to
+# the Finder: that is now the iici-71-hd row above. Two arms agreeing on an
+# EXACT checksum was the clue that they were the same arm.
 #
 # So the row is a milestone and claims no cell: it asserts what is true,
 # then asserts it got past the splash, which fails today. When the 7.1
@@ -166,7 +206,10 @@ def row_iici_24ac_dual() {
     # The milestone itself. -288949432 is the settled "Welcome to Macintosh"
     # frame this machine parks on; asserting against it (rather than matching
     # a golden) keeps the row from shipping a splash as if it were coverage.
-    assert machine.screen.checksum() != -288949432 "iici-24ac-dual: still on the Welcome splash — IIci x 7.1 boot stall (ledger §8)"
+    # The same checksum appears when a 24AC is seated and the machine boots a
+    # MacTest FLOPPY instead — different medium, identical hang, which is what
+    # identifies the card rather than the System as the trigger.
+    assert machine.screen.checksum() != -288949432 "iici-24ac-dual: still on the Welcome splash — a seated 24AC hangs the boot (ledger §8)"
     report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
 }
 
@@ -188,13 +231,13 @@ def row_iici_24ac_dual() {
 # IIci never reaches a desktop with 7.0.1 at all (measured: the screen
 # stays blank), so the smaller RAM config has nothing to re-match.
 def row_iici_checkpoint() {
-    machine.boot model="iici" ram=8192
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 300000000
     wait_stable(900000000)
     check("goldens/iici-7.0.1-640x480x1-finder.png")
     assert checkpoint.save("${$WORK_DIR}/suite-iici.gsc") "iici-checkpoint: save failed"
-    machine.boot model="iici" ram=1024
+    machine.boot model="iici" ram=1024 video_card="builtin_rbv_video"
     assert checkpoint.load("${$WORK_DIR}/suite-iici.gsc") "iici-checkpoint: load failed"
     scheduler.run 5000000
     wait_stable(400000000)
@@ -204,6 +247,88 @@ def row_iici_checkpoint() {
     # before it is quiescent again, so only a settled frame is comparable.
     check("goldens/iici-7.0.1-640x480x1-finder.png")
     report_perf("suite-iici/iici-checkpoint", scheduler.instr_count)
+}
+
+# ---- iici-mactest-diag (MILESTONE) -----------------------------------------
+# §7 tried to re-host iicx-mactest here (the media is "MacTest-IIcx-IIci", so
+# the IIci is the other machine the diagnostic was written for). Measured
+# 2026-07-28: it does not work. MacTest reaches its main screen and its Options
+# dialog fine — both goldens below are real IIci frames — but the moment Start
+# is clicked it puts up
+#
+#     SUSPECTED PROBLEM:  Logic board
+#     DO THIS:            Shut down the Macintosh and replace the logic board.
+#
+# and stays there for the rest of the run. The same disk and the same
+# choreography complete the whole flow on the IIcx, so this is the machine
+# model, not the media (ledger §9).
+#
+# The re-host was reverted — iicx-mactest is restored verbatim, with the nine
+# distinct goldens of the flow it really does exercise — and what is left here
+# is the guard. It matters that this row exists rather than just deleting the
+# attempt: MacTest is Apple's own board-level diagnostic, and the closest thing
+# the suite has to an oracle that is not a screenshot of ourselves. Its verdict
+# says one of VIA / ASC / RTC-PRAM / SCSI answers a probe differently than a
+# real IIci does.
+#
+# The two check()s are NOT the milestone; they are there so a drift in the
+# Options choreography fails with its own message instead of silently reporting
+# this defect for the wrong reason. The milestone is the checksum inequality:
+# 1141271653 is the settled logic-board dialog. Asserting != against it (rather
+# than matching a golden) is deliberate — recapturing a golden here is exactly
+# how the re-host went green while asserting that a frame named
+# "floppy-test-success" showed a hardware failure.
+#
+# ADB Communication is unchecked before Start precisely so this cannot be
+# blamed on the emulated keyboard/mouse: those sub-tests are switched off and
+# the logic-board verdict comes anyway.
+def row_iici_mactest_diag() {
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.floppy.drive[0].insert "${$mactest_img}" true
+    machine.scc.loopback = true
+    machine.scsi.loopback = true
+    scheduler.run 120000000
+    # A condition, not a budget (§5.2). The golden this row inherited from the
+    # abandoned re-host was captured at a fixed `scheduler.run 200000000`, which
+    # lands on a mid-paint frame: MacTest keeps painting until ~250 M and then
+    # holds. Waiting for the settled screen and matching that is both stabler and
+    # a truer statement of the state — "MacTest is up and offering Start".
+    wait_stable(900000000)
+    assert machine.id == "iici" "iici-mactest-diag: machine.id != iici"
+    assert machine.screen.width == 640 "iici-mactest-diag: primary width != 640"
+    assert machine.screen.height == 480 "iici-mactest-diag: primary height != 480"
+    check("goldens/iici-mactest-640x480x1-main.png")
+
+    # Options ▸ Test Selections, uncheck Keyboard + Mouse, OK. Coordinates and
+    # the prime-click are inherited from iicx-mactest-options, which
+    # established them; see that directory for the derivation.
+    machine.adb.mouse.move 115 10 "global"
+    scheduler.run 4000000
+    machine.adb.mouse.click true
+    scheduler.run 20000000
+    machine.adb.mouse.move 115 28 "global"
+    scheduler.run 8000000
+    machine.adb.mouse.click false
+    scheduler.run 160000000
+    # Prime click: the first click after the dialog opens is swallowed on focus
+    # under E-clock-synced ADB, so a throwaway on empty dialog area absorbs it.
+    click(400, 90)
+    click(130, 305)
+    click(130, 325)
+    check("goldens/iici-mactest-640x480x1-adb-unchecked.png")
+    # OK is DITL item 1; (560, 385) is inside its rect-derived global bounds —
+    # the rendered glyph centre is 2 px above the real rect and hits a dummy
+    # user-item instead.
+    click(560, 385)
+    scheduler.run 60000000
+
+    # Start (button centre ~(188, 153)), then let the VIA/ASC/clock/SCSI
+    # sequence run to where the floppy phase would begin.
+    click(188, 153)
+    scheduler.run 100000000
+    wait_stable(300000000)
+    assert machine.screen.checksum() != 1141271653 "iici-mactest-diag: MacTest reports SUSPECTED PROBLEM: Logic board (ledger §9)"
+    report_perf("suite-iici/iici-mactest-diag", scheduler.instr_count)
 }
 
 # ---- row dispatch -----------------------------------------------------------
@@ -224,9 +349,23 @@ if row_on("iici-76-hd") {
         echo "skip: iici-76-hd (7.6 prepared image not fetched)"
     }
 }
+if row_on("iici-71-hd") {
+    if have_media($hd_71_gc) {
+        row_end("iici-71-hd", try(row_iici_71_hd(), "FAILED"))
+    } else {
+        echo "skip: iici-71-hd (7.1 prepared image not fetched)"
+    }
+}
 if row_on("iici-lowram") { row_end_milestone("iici-lowram", try(row_iici_lowram(), "FAILED")) }
 if row_on("iici-24ac-dual") { row_end_milestone("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
 if row_on("iici-checkpoint") { row_end_milestone("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
+if row_on("iici-mactest-diag") {
+    if have_media($mactest_img) {
+        row_end_milestone("iici-mactest-diag", try(row_iici_mactest_diag(), "FAILED"))
+    } else {
+        echo "skip: iici-mactest-diag (MacTest image not fetched)"
+    }
+}
 
 suite_done()
 quit

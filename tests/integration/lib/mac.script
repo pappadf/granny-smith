@@ -108,16 +108,20 @@ def check_ex(ref, top, left, bottom, right) {
 # frames on a 68030 IIcx and 5,426 on a 68020 IIx, so re-hosting a sound
 # row means recapturing, not reusing.
 # Frames are asserted BEFORE the compare so a window-length change reports
-# as such instead of as an opaque waveform mismatch. Existing chime rows
-# still stop/assert/match by hand; they can adopt this as they are touched.
+# as such instead of as an opaque waveform mismatch — but only on the verify
+# path. REGEN echoes the count it captured rather than asserting it, because
+# the whole reason to REGEN a re-hosted row is that the old count no longer
+# holds. Existing chime rows still stop/assert/match by hand; they can adopt
+# this as they are touched.
 def check_sound(ref, want_frames) {
     if $REGEN_MODE == "1" {
         machine.sound.capture.stop "${$ref}"
+        echo "REGEN sound ${$ref}: captured ${machine.sound.capture.frames} frames (update the check_sound call to match)"
     } else {
         machine.sound.capture.stop
+        assert machine.sound.capture.frames == $want_frames "sound ${$ref}: capture length ${machine.sound.capture.frames}, want ${$want_frames}"
+        machine.sound.match "${$ref}"
     }
-    assert machine.sound.capture.frames == $want_frames "sound ${$ref}: capture length ${machine.sound.capture.frames}, want ${$want_frames}"
-    if $REGEN_MODE != "1" { machine.sound.match "${$ref}" }
 }
 
 # --- waits (§5.2): a wait states its condition; ceilings are hang -----------
@@ -218,6 +222,20 @@ def wait_global(name, want, ceiling) {
 def run_ticks(n) {
     let t0 = debug.mac.globals.read("Ticks")
     while debug.mac.globals.read("Ticks") < $t0 + $n { scheduler.run 500000 }
+}
+
+# Move-press-release SINGLE click at screen coordinates. The move is a real
+# move to somewhere the cursor is not already parked: a same-spot warp emits no
+# ADB motion, so under E-clock-synced ADB the click that follows has no fresh
+# position event to bind to and is dropped. Callers that must click the same
+# button twice therefore step away in between rather than repeating click().
+def click(x, y) {
+    machine.adb.mouse.move $x $y "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(4)
+    machine.adb.mouse.click false
+    run_ticks(6)
 }
 
 # Press-move-release double-click at screen coordinates, inside

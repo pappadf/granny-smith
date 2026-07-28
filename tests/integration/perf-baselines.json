@@ -28,6 +28,10 @@
       "instr": 392597910,
       "tolerance": 0.2
     },
+    "suite-iici/iici-71-hd": {
+      "instr": 373215426,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-75-hd": {
       "instr": 372143809,
       "tolerance": 0.2

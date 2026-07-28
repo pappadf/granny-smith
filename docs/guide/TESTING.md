@@ -235,11 +235,45 @@ make -C tests/integration test-suite-quadra TEST_VARS="REGEN=1"          # recap
 Suite goldens live in `<suite>/goldens/` named
 `<model>-<system>-<WxHxD>[-<state>].png`.
 
+**Review the REGEN diff, and never skim it.** Recapturing turns *whatever is
+on screen* into the expected result, so a row whose choreography stopped
+advancing recaptures into a green test that asserts a stuck frame. That is not
+theoretical: an attempt to re-host `iicx-mactest` to the IIci recaptured all
+seven of its checkpoints to one frame — MacTest's "SUSPECTED PROBLEM: Logic
+board" dialog — and CI passed, with a golden named `floppy-test-success.png`
+holding a picture of a hardware failure.
+
+`scripts/check-goldens.py` gates the cheapest signal for that failure: within
+one script, two *different* goldens must not hold identical bytes. It runs in
+CI before the test tiers (it needs neither a build nor test data) and is worth
+running by hand after any recapture:
+
+```bash
+python3 scripts/check-goldens.py
+```
+
+Some collisions are legitimate — the Welcome splash is pure black-and-white, so
+it scans out identically at 1 bpp and 2 bpp, and identically from two cards at
+the same geometry. Those rows prove the state changed with asserts on the
+hardware (savedMode, RowWords, CLUT PBCR, the card's sister byte) and use the
+golden only to pin that the raster still scans out. Waive them explicitly, in
+the script, naming both files and the proof:
+
+```
+# golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
+# - black-and-white splash, identical at both depths; the depth change is proven
+# by the savedMode/RowWords asserts above, not by the frame.
+```
+
+A waiver must name every file in the collision, so it cannot silently grow to
+cover a third golden that collides later. A waiver with no separate proof behind
+it is the same failure wearing a comment.
+
 ### What CI runs
 
 | Trigger | Runs |
 |---|---|
-| PR / push (`tests.yml`) | unit + matrix tiers in parallel, then the coverage contract and the perf baselines; both gate the build. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
+| PR / push (`tests.yml`) | golden distinctness (no build or data needed), then unit + matrix tiers in parallel, then the coverage contract and the perf baselines; all three gate the build. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
 | Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier + one boot with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
 
 Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over

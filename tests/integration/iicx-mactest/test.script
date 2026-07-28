@@ -13,14 +13,9 @@
 # investigation harness that established the Options-menu and DITL
 # checkbox coordinates used below.
 
-# (Was: configure JMFB for 13" RGB at 8 bpp.)  Equivalent to the explicit
+# Configure JMFB for 13" RGB at 8 bpp.  Equivalent to the explicit
 # video_sense + rtc.pram.poke pair used by iicx-video-modes.
-# No NuBus card here: on the IIci the built-in RBV video is the boot
-# screen, so the diagnostic renders at 640x480x1 rather than the JMFB
-# 8 bpp the IIcx run used. Goldens were recaptured for this host.
-include "../lib/mac.script"
-
-machine.boot model="iici" ram=8192
+machine.boot model="iicx" ram=4096 video_mode="13in_rgb_8bpp"
 machine.floppy.drive[0].insert "../../data/apps/MacTest-IIcx-IIci.image" true
 
 machine.scc.loopback = true
@@ -29,16 +24,14 @@ machine.scsi.loopback = true
 # Boot past Happy Mac through splash screens to MacTest main UI.
 scheduler.run 200000000
 
-assert machine.id == "iici" "machine.id != iici"
-assert machine.screen.width == 640 "screen.width != 640"
+assert machine.id == "iicx" "machine.id != iicx"
+assert machine.screen.width == 640 "screen.width != 640 (JMFB not seated?)"
 assert machine.screen.height == 480 "screen.height != 480"
-# (The IIcx run asserted slot $9's savedMode here; this host has no NuBus
-# card seated, so there is no slot-$9 sPRAMRec to check.)
-# (The IIcx run also read the JMFB's RowWords register here; with no NuBus
-# card seated there is no slot-$9 aperture to read. The built-in video's
-# geometry is asserted through machine.screen above.)
+assert machine.rtc.pram.peek(0x48) == 0x83 "savedMode != 0x83 (8bpp)"
+assert machine.memory.peek.l(0xf9200208) == 0x98 "JMFB CLUTPBCR != 0x98 (8bpp)"
+assert machine.memory.peek.l(0xf920000c) == 0xa0 "JMFB RowWords != 0xa0 (640*8/8/8)"
 
-check("main.png")
+machine.screen.match main.png
 
 # --- Open Options > Test Selections and uncheck ADB sub-tests --------------
 # Pull-down menu pattern: move + 4M, mousedown + 20M to draw the menu,
@@ -89,7 +82,7 @@ scheduler.run 10000000
 # same two clicks at the same coordinates — so a mismatch here means
 # the dialog DITL layout drifted or one of the clicks landed off the
 # checkbox row.
-check("test-selections-adb-unchecked.png")
+machine.screen.match test-selections-adb-unchecked.png
 
 # Click OK to commit and close the dialog.
 #
@@ -128,7 +121,7 @@ machine.adb.mouse.click false
 # VIA -> ASC -> clock/PRAM -> SCSI tests run, then MacTest asks for the
 # first blank 800K diskette.
 scheduler.run 100000000
-check("insert-800k-internal.png")
+machine.screen.match insert-800k-internal.png
 
 machine.floppy.create "$WORK_DIR/blank800-int.dsk" 0
 scheduler.run 10000000
@@ -141,7 +134,7 @@ scheduler.run 5000000
 machine.adb.mouse.click false
 
 scheduler.run 300000000
-check("insert-1.4mb-internal.png")
+machine.screen.match insert-1.4mb-internal.png
 
 machine.adb.mouse.click false "global"
 machine.floppy.create "$WORK_DIR/blankHD-int.dsk" "hd"
@@ -169,7 +162,7 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 scheduler.run 150000000
-check("insert-800k-external.png")
+machine.screen.match insert-800k-external.png
 
 machine.adb.mouse.click false "global"
 machine.floppy.create "$WORK_DIR/blank800-ext.dsk" 1
@@ -201,7 +194,7 @@ scheduler.run 300000000
 # if the click-false above landed in a read window and was dropped.
 machine.adb.mouse.click false "global"
 scheduler.run 20000000
-check("insert-1.4mb-external.png")
+machine.screen.match insert-1.4mb-external.png
 
 machine.adb.mouse.click false "global"
 machine.floppy.create "$WORK_DIR/blankHD-ext.dsk" "hd"
@@ -224,7 +217,7 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 scheduler.run 150000000
-check("floppy-test-success.png")
+machine.screen.match floppy-test-success.png
 
 
 

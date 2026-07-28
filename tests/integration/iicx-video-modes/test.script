@@ -116,6 +116,11 @@ scheduler.run 11000000
 assert machine.rtc.pram.peek(0x48) == 0x81 "13in_rgb 2bpp savedMode rewritten by ROM"
 assert machine.memory.peek.l(0xf9200208) == 0x88 "13in_rgb 2bpp CLUTPBCR != 0x88"
 assert machine.memory.peek.l(0xf920000c) == 0x28 "13in_rgb 2bpp RowWords != 0x28"
+# golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
+# - the Welcome splash is pure black-and-white, so it scans out to identical
+# pixels at both depths. The depth change is proven by the three asserts above
+# (savedMode 0x80 vs 0x81, CLUT PBCR, RowWords), not by the frame; the golden
+# only pins that the raster still scans out correctly.
 machine.screen.match welcome-13in_rgb-640x480-2bpp.png
 
 machine.boot model="iicx" ram=8192 video_sense=6
@@ -222,6 +227,8 @@ scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
 scheduler.run 11000000
 assert machine.rtc.pram.peek(0x48) == 0x81 "15in_bw 2bpp savedMode rewritten by ROM"
+# golden-collision-ok: welcome-15in_bw-640x870-1bpp.png welcome-15in_bw-640x870-2bpp.png
+# - same reasoning as the 13in RGB pair above, on the 15in portrait geometry.
 machine.screen.match welcome-15in_bw-640x870-2bpp.png
 
 machine.boot model="iicx" ram=8192 video_sense=1
