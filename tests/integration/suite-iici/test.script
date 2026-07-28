@@ -13,6 +13,8 @@
 #                   selects 32-bit itself, so this row is also the
 #                   suite's asserted 32-bit addressing cell (32 MB,
 #                   which only a 32-bit System can see in full)
+#   iici-lowram     **MILESTONE**: the IIci does not POST below 8 MB, so
+#                   its whole low-RAM plane is untestable (ledger §3)
 #   iici-24ac-dual  **first OS-level DUAL DISPLAY**, MILESTONE: a 24AC in
 #                   socket $C beside the live built-in RBV, with the 24AC
 #                   engine counters §3.2 wanted asserted. Red because this
@@ -103,6 +105,25 @@ def row_iici_76_hd() {
     check_ex("goldens/iici-7.6-640x480x1-finder.png", 0, 440, 20, 640)
     report_row("7.6", "rbv", "hd-boot 5380 addr32")
     report_perf("suite-iici/iici-76-hd", scheduler.instr_count)
+}
+
+# ---- iici-lowram (MILESTONE) ------------------------------------------------
+# GUARD for proposal-emulator-bug-fixes.md §3: a IIci does not complete POST
+# at ANY RAM size below 8 MB. 1, 2, 4 and 5 MB are all published in
+# iici_ram_options_kb and a real IIci shipped in 1 MB and 4 MB
+# configurations, so the model claims support it does not have — and the
+# whole low-RAM plane of this machine (including the 1+4 bank split the RAM
+# axis wanted) is untestable until it is fixed.
+#
+# ROM-only, so it costs almost nothing: after POST, MemTop must equal the
+# installed RAM. Measured 2026-07-28 it reads the $DB6DB6DB
+# uninitialised-read pattern instead, i.e. no lowmem global is ever written.
+def row_iici_lowram() {
+    machine.boot model="iici" ram=4096
+    scheduler.run 120000000
+    assert machine.ram == 4096 "iici-lowram: machine.ram != 4096"
+    assert debug.mac.globals.read("MemTop") == 0x400000 "iici-lowram: POST never completed — MemTop=${debug.mac.globals.read("MemTop"):08x} (uninitialised pattern means no lowmem was written)"
+    report_perf("suite-iici/iici-lowram", scheduler.instr_count)
 }
 
 # ---- iici-24ac-dual (MILESTONE) ---------------------------------------------
@@ -203,6 +224,7 @@ if row_on("iici-76-hd") {
         echo "skip: iici-76-hd (7.6 prepared image not fetched)"
     }
 }
+if row_on("iici-lowram") { row_end_milestone("iici-lowram", try(row_iici_lowram(), "FAILED")) }
 if row_on("iici-24ac-dual") { row_end_milestone("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
 if row_on("iici-checkpoint") { row_end_milestone("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
 

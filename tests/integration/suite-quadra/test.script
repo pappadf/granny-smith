@@ -12,6 +12,8 @@
 #                   machine-identity coverage on fresher media)
 #   q700-20m        **milestone**: Q700 @ 20 MB RAM-sizing stall (found
 #                   by the RAM axis; red until the MCU bug is fixed)
+#   q700-dafb-senses **milestone**: the DAFB honours only monitor sense 6
+#                   (ledger §6), which blocks every non-640x480 tower cell
 #   q900-76-fd      **Q900 × 7.6**: Disk Tools 1 through the SWIM IOP
 #                   mailbox path (q900-boot-floppy re-media'd per §7)
 #   q900-75-hd      **Q900 × 7.5**: tower Caboose+IOPs+53C96 HD boot +
@@ -125,6 +127,32 @@ def row_q700_20m() {
     scheduler.run 100000000
     assert debug.mac.globals.read("MemTop") == 0x1400000 "q700-20m: RAM sizing incomplete (MemTop=${debug.mac.globals.read("MemTop"):08x}, PC=${machine.cpu.pc:08x})"
     report_perf("suite-quadra/q700-20m", scheduler.instr_count)
+}
+
+# ---- q700-dafb-senses (MILESTONE) -------------------------------------------
+# GUARD for proposal-emulator-bug-fixes.md §6: the DAFB programs a correct
+# raster only for monitor sense 6. Measured 2026-07-28 with the staging this
+# branch added (machine.boot video_sense=), the other codes come up at
+# geometries that are not any real monitor's:
+#
+#   sense 0  expected 1152x870 (21" two-page)  ->  72x870
+#   sense 1  expected  640x870 (portrait)      -> 160x870
+#   sense 2  expected  512x384 (12" RGB)       -> 512x385
+#
+# This is what blocks §7's Quadra 832x624 cell and any tower portrait or
+# two-page coverage — suite-iix pixel-matches a 640x870 portrait desktop on
+# the JMFB, so the target behaviour has a working reference in-tree.
+# ROM-only rows, so the guard is nearly free.
+def row_q700_dafb_senses() {
+    machine.boot model="q700" ram=8192 rom="${$quadra_rom}" video_sense=1
+    scheduler.run 30000000
+    assert machine.screen.width == 640 "q700-dafb-senses: portrait sense gave width ${machine.screen.width}, want 640"
+    assert machine.screen.height == 870 "q700-dafb-senses: portrait sense gave height ${machine.screen.height}, want 870"
+    machine.boot model="q700" ram=8192 rom="${$quadra_rom}" video_sense=2
+    scheduler.run 30000000
+    assert machine.screen.width == 512 "q700-dafb-senses: 12in sense gave width ${machine.screen.width}, want 512"
+    assert machine.screen.height == 384 "q700-dafb-senses: 12in sense gave height ${machine.screen.height}, want 384"
+    report_perf("suite-quadra/q700-dafb-senses", scheduler.instr_count)
 }
 
 # ---- q900-76-fd -------------------------------------------------------------
@@ -276,6 +304,12 @@ if row_on("q950-76-hd") {
     }
 }
 if row_on("q700-checkpoint") { row_end("q700-checkpoint", try(row_q700_checkpoint(), "FAILED")) }
+
+# q700-dafb-senses runs LAST on purpose: it stages non-default monitor
+# senses, and machine.boot inherits unspecified staging from the built-from
+# record, so any row after it would boot with sense 2 still selected (that is
+# exactly how it first broke q900-76-fd).
+if row_on("q700-dafb-senses") { row_end_milestone("q700-dafb-senses", try(row_q700_dafb_senses(), "FAILED")) }
 
 suite_done()
 quit

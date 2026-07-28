@@ -29,11 +29,11 @@
       "tolerance": 0.2
     },
     "suite-iici/iici-75-hd": {
-      "instr": 372143843,
+      "instr": 372143809,
       "tolerance": 0.2
     },
     "suite-iici/iici-76-hd": {
-      "instr": 466674613,
+      "instr": 466670553,
       "tolerance": 0.2
     },
     "suite-iici/iici-chime": {
@@ -41,11 +41,11 @@
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac": {
-      "instr": 411558866,
+      "instr": 411558835,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac-restart": {
-      "instr": 455862780,
+      "instr": 455862809,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-chime": {
@@ -81,11 +81,11 @@
       "tolerance": 0.2
     },
     "suite-iifx/iifx-75-24ac-832": {
-      "instr": 463546878,
+      "instr": 463546678,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-aux3-login": {
-      "instr": 667251066,
+      "instr": 667019463,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-chime": {
@@ -105,7 +105,7 @@
       "tolerance": 0.2
     },
     "suite-iisi/iisi-75-hd": {
-      "instr": 370367750,
+      "instr": 370367967,
       "tolerance": 0.2
     },
     "suite-iisi/iisi-chime": {
@@ -197,11 +197,11 @@
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-hd": {
-      "instr": 703485288,
+      "instr": 723471447,
       "tolerance": 0.2
     },
     "suite-quadra/q700-checkpoint": {
-      "instr": 181998192,
+      "instr": 181998203,
       "tolerance": 0.2
     },
     "suite-quadra/q700-chime": {
@@ -209,7 +209,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q900-75-hd": {
-      "instr": 697438092,
+      "instr": 697438382,
       "tolerance": 0.2
     },
     "suite-quadra/q900-76-fd": {
@@ -217,11 +217,11 @@
       "tolerance": 0.2
     },
     "suite-quadra/q950-71-hd": {
-      "instr": 1052622849,
+      "instr": 1052622857,
       "tolerance": 0.2
     },
     "suite-quadra/q950-76-hd": {
-      "instr": 763957167,
+      "instr": 763955582,
       "tolerance": 0.2
     },
     "suite-se30/se30-608-fd": {
@@ -237,7 +237,7 @@
       "tolerance": 0.2
     },
     "suite-se30/se30-75-hd": {
-      "instr": 1076355964,
+      "instr": 1096342456,
       "tolerance": 0.2
     },
     "suite-se30/se30-checkpoint": {
