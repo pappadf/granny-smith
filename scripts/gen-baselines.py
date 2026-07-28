@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
-"""Seed perf-baselines.json and matrix-targets.json from a suite run log.
+"""Seed perf-baselines.json from a suite run log.
 
-Reads @@PERF and @@COV records (proposal-integration-test-rework §5.6,
-§5.8) from one or more test logs and (re)writes the two committed JSON
-files. Existing entries for rows/cells not present in the logs are
-preserved, so suites can be added incrementally:
+Reads the @@PERF records suite rows emit (proposal-integration-test-rework
+§5.8) from one or more test logs and (re)writes tests/integration/
+perf-baselines.json. Rows not present in the logs are preserved, so
+suites can be added incrementally:
 
-    python3 scripts/gen-baselines.py --suite suite-quadra tmp/sq-full.log
+    python3 scripts/gen-baselines.py tmp/sq-full.log
 
-Baselines update deliberately: run this, review the git diff, commit it
-in the PR that legitimately changed guest timing.
+A baseline legitimately records observed behaviour — the gate is drift
+(±tolerance), so regenerating it is the intended workflow: run this,
+review the git diff, and commit it in the PR that legitimately changed
+guest timing.
+
+This script does NOT write matrix-targets.json. That file is the declared
+coverage contract, hand-authored from §7; generating it from a run would
+make it agree with whatever the run happened to cover, which is exactly
+the check it exists to perform. Verify coverage instead with:
+
+    python3 scripts/test-matrix.py --check <run logs>
 """
 
 import argparse
@@ -20,7 +29,6 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 BASELINES = ROOT / "tests/integration/perf-baselines.json"
-TARGETS = ROOT / "tests/integration/matrix-targets.json"
 DEFAULT_TOLERANCE = 0.20
 
 
@@ -33,10 +41,10 @@ def load(path, key):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("logs", nargs="+", help="test log files containing @@PERF/@@COV lines")
-    ap.add_argument("--suite", required=True, help="suite name owning the @@COV cells")
+    ap.add_argument("--suite", help="unused; kept so existing invocations do not break")
     args = ap.parse_args()
 
-    perfs, covs = {}, []
+    perfs = {}
     for logf in args.logs:
         for line in pathlib.Path(logf).read_text(errors="replace").splitlines():
             m = re.search(r"@@(PERF|COV) (\{.*\})", line)
@@ -45,8 +53,6 @@ def main():
             rec = json.loads(m.group(2))
             if m.group(1) == "PERF":
                 perfs[rec["row"]] = rec["instr"]
-            else:
-                covs.append(rec)
 
     baselines = load(BASELINES, "rows")
     for row, instr in sorted(perfs.items()):
@@ -57,29 +63,7 @@ def main():
         }
     BASELINES.write_text(json.dumps(baselines, indent=2, sort_keys=True) + "\n")
 
-    targets = load(TARGETS, "cells")
-    # Replace this suite's cells wholesale; other suites' cells survive.
-    cells = [c for c in targets["cells"] if c.get("suite") != args.suite]
-    seen = set()
-    for rec in covs:
-        cell = {
-            "machine": rec["machine"],
-            "system": rec["system"],
-            "card": rec["card"],
-            "width": rec["width"],
-            "height": rec["height"],
-            "addr32": rec["addr32"],
-            "suite": args.suite,
-        }
-        key = json.dumps(cell, sort_keys=True)
-        if key not in seen:
-            seen.add(key)
-            cells.append(cell)
-    targets["cells"] = sorted(cells, key=lambda c: (c["suite"], c["machine"], c["system"]))
-    TARGETS.write_text(json.dumps(targets, indent=2, sort_keys=True) + "\n")
-
     print(f"perf-baselines.json: {len(baselines['rows'])} row(s)")
-    print(f"matrix-targets.json: {len(targets['cells'])} cell(s)")
     return 0
 
 

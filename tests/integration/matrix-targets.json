@@ -1,238 +1,109 @@
 {
+  "README": [
+    "Declared coverage contract (proposal-integration-test-rework §5.6).",
+    "",
+    "This file is HAND-AUTHORED from the §7 assignment tables and says which",
+    "(machine x system x card x geometry x depth x addressing) cells the",
+    "integration suite is REQUIRED to cover, and which directory owes each",
+    "one. It is never generated from a test run: a contract derived from what",
+    "happened would be satisfied by whatever happened, and the one question it",
+    "exists to answer — did a later change silently narrow coverage? — would",
+    "become unanswerable.",
+    "",
+    "The achieved side is the @@COV records suite rows emit at runtime, read",
+    "from the live machine. Diff the two with:",
+    "",
+    "    make -C tests/integration test TIER=matrix 2>&1 | tee run.log",
+    "    python3 scripts/test-matrix.py --check run.log",
+    "",
+    "Check semantics:",
+    "  declared and covered ......  ok",
+    "  declared, NOT covered .....  FAILS (coverage regressed)",
+    "  covered, not declared .....  warning: claim it so it becomes protected",
+    "",
+    "Three declared-but-uncovered cases are warnings rather than failures,",
+    "because none of them means coverage regressed:",
+    "  suite:<dir> does not exist   the owing suite is not built yet. Derived",
+    "                              from the filesystem, so it cannot be faked.",
+    "  blocked: <reason>           an emulator defect makes the cell",
+    "                              unreachable — see",
+    "                              proposal-emulator-bug-fixes.md. This is the",
+    "                              cell-level twin of a milestone row.",
+    "  media_gated: true           the row skipped because private test data is",
+    "                              absent from this checkout (§9's",
+    "                              landable-before-data rule).",
+    "",
+    "DELIBERATELY NOT DECLARED YET — the §7 passes still to land bring their",
+    "cells with them, and declaring them against directories that already exist",
+    "would report them as regressions rather than as work in progress:",
+    "  * the IIcx card-family cells (iicx-824gc accel/decline boots,",
+    "    iicx-gsvrom, iicx-video-modes' 16-cell sweep and the 8 cells that",
+    "    re-host to suite-iix)",
+    "  * extended-tier app/diagnostic re-hosts beyond the ones listed below",
+    "  * the 6.0.8 rationalization's IIcx and IIfx floppy/HD split",
+    "Under-declaration is stated here on purpose: it is visible in review",
+    "rather than silently missing from the diff."
+  ],
   "cells": [
-    {
-      "addr32": false,
-      "card": "rbv",
-      "height": 480,
-      "machine": "iici",
-      "suite": "suite-iici",
-      "system": "7.0.1",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "rbv",
-      "height": 480,
-      "machine": "iici",
-      "suite": "suite-iici",
-      "system": "7.5",
-      "width": 640
-    },
-    {
-      "addr32": true,
-      "card": "rbv",
-      "height": 480,
-      "machine": "iici",
-      "suite": "suite-iici",
-      "system": "7.6",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "v8",
-      "height": 480,
-      "machine": "iisi",
-      "suite": "suite-iisi",
-      "system": "6.0.8",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "v8",
-      "height": 480,
-      "machine": "iisi",
-      "suite": "suite-iisi",
-      "system": "7.0.1",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "v8",
-      "height": 480,
-      "machine": "iisi",
-      "suite": "suite-iisi",
-      "system": "7.1",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "v8",
-      "height": 480,
-      "machine": "iisi",
-      "suite": "suite-iisi",
-      "system": "7.5",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "jmfb",
-      "height": 870,
-      "machine": "iix",
-      "suite": "suite-iix",
-      "system": "6.0.3",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "jmfb",
-      "height": 480,
-      "machine": "iix",
-      "suite": "suite-iix",
-      "system": "7.0.1",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "jmfb",
-      "height": 480,
-      "machine": "iix",
-      "suite": "suite-iix",
-      "system": "7.1",
-      "width": 640
-    },
-    {
-      "addr32": true,
-      "card": "builtin",
-      "height": 342,
-      "machine": "plus",
-      "suite": "suite-plus",
-      "system": "2.0",
-      "width": 512
-    },
-    {
-      "addr32": true,
-      "card": "builtin",
-      "height": 342,
-      "machine": "plus",
-      "suite": "suite-plus",
-      "system": "3.2",
-      "width": 512
-    },
-    {
-      "addr32": true,
-      "card": "builtin",
-      "height": 342,
-      "machine": "plus",
-      "suite": "suite-plus",
-      "system": "4.1",
-      "width": 512
-    },
-    {
-      "addr32": true,
-      "card": "builtin",
-      "height": 342,
-      "machine": "plus",
-      "suite": "suite-plus",
-      "system": "4.2",
-      "width": 512
-    },
-    {
-      "addr32": true,
-      "card": "builtin",
-      "height": 342,
-      "machine": "plus",
-      "suite": "suite-plus",
-      "system": "6.0.8",
-      "width": 512
-    },
-    {
-      "addr32": true,
-      "card": "builtin",
-      "height": 342,
-      "machine": "plus",
-      "suite": "suite-plus",
-      "system": "7.1",
-      "width": 512
-    },
-    {
-      "addr32": false,
-      "card": "dafb",
-      "height": 480,
-      "machine": "q700",
-      "suite": "suite-quadra",
-      "system": "7.1",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "dafb",
-      "height": 480,
-      "machine": "q700",
-      "suite": "suite-quadra",
-      "system": "7.5",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "dafb",
-      "height": 480,
-      "machine": "q900",
-      "suite": "suite-quadra",
-      "system": "7.5",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "dafb",
-      "height": 480,
-      "machine": "q900",
-      "suite": "suite-quadra",
-      "system": "7.6",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "dafb",
-      "height": 480,
-      "machine": "q950",
-      "suite": "suite-quadra",
-      "system": "7.1",
-      "width": 640
-    },
-    {
-      "addr32": true,
-      "card": "dafb",
-      "height": 480,
-      "machine": "q950",
-      "suite": "suite-quadra",
-      "system": "7.6",
-      "width": 640
-    },
-    {
-      "addr32": false,
-      "card": "builtin",
-      "height": 342,
-      "machine": "se30",
-      "suite": "suite-se30",
-      "system": "6.0.8",
-      "width": 512
-    },
-    {
-      "addr32": false,
-      "card": "gsvrom",
-      "height": 342,
-      "machine": "se30",
-      "suite": "suite-se30",
-      "system": "7.0.1",
-      "width": 512
-    },
-    {
-      "addr32": false,
-      "card": "builtin",
-      "height": 342,
-      "machine": "se30",
-      "suite": "suite-se30",
-      "system": "7.1",
-      "width": 512
-    },
-    {
-      "addr32": false,
-      "card": "builtin",
-      "height": 342,
-      "machine": "se30",
-      "suite": "suite-se30",
-      "system": "7.5",
-      "width": 512
-    }
+    {"machine": "plus", "system": "2.0",   "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-plus"},
+    {"machine": "plus", "system": "3.2",   "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-plus"},
+    {"machine": "plus", "system": "4.1",   "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-plus"},
+    {"machine": "plus", "system": "4.2",   "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-plus"},
+    {"machine": "plus", "system": "6.0.8", "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-plus"},
+    {"machine": "plus", "system": "7.1",   "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-plus"},
+
+    {"machine": "se30", "system": "6.0.8", "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-se30"},
+    {"machine": "se30", "system": "7.0.1", "card": "gsvrom",  "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-se30"},
+    {"machine": "se30", "system": "7.1",   "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-se30"},
+    {"machine": "se30", "system": "7.5",   "card": "builtin", "width": 512, "height": 342, "depth": 1, "addr32": false, "suite": "suite-se30", "media_gated": true},
+
+    {"machine": "iix",  "system": "6.0.3", "card": "jmfb",    "width": 640, "height": 870, "depth": 1, "addr32": false, "suite": "suite-iix"},
+    {"machine": "iix",  "system": "7.0.1", "card": "jmfb",    "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iix"},
+    {"machine": "iix",  "system": "7.1",   "card": "jmfb",    "width": 640, "height": 480, "depth": 2, "addr32": false, "suite": "suite-iix"},
+
+    {"machine": "iici", "system": "7.0.1", "card": "rbv",     "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iici"},
+    {"machine": "iici", "system": "7.5",   "card": "rbv",     "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iici", "media_gated": true},
+    {"machine": "iici", "system": "7.6",   "card": "rbv",     "width": 640, "height": 480, "depth": 1, "addr32": true,  "suite": "suite-iici", "media_gated": true},
+
+    {"machine": "iisi", "system": "6.0.8", "card": "v8",      "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iisi"},
+    {"machine": "iisi", "system": "7.0.1", "card": "v8",      "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iisi"},
+    {"machine": "iisi", "system": "7.1",   "card": "v8",      "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iisi"},
+    {"machine": "iisi", "system": "7.5",   "card": "v8",      "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iisi", "media_gated": true},
+
+    {"machine": "q700", "system": "7.1",   "card": "dafb",    "width": 640, "height": 480, "depth": 1,  "addr32": false, "suite": "suite-quadra"},
+    {"machine": "q700", "system": "7.5",   "card": "dafb",    "width": 640, "height": 480, "depth": 1,  "addr32": false, "suite": "suite-quadra", "media_gated": true},
+    {"machine": "q900", "system": "7.5",   "card": "dafb",    "width": 640, "height": 480, "depth": 1,  "addr32": false, "suite": "suite-quadra", "media_gated": true},
+    {"machine": "q900", "system": "7.6",   "card": "dafb",    "width": 640, "height": 480, "depth": 1,  "addr32": false, "suite": "suite-quadra", "media_gated": true},
+    {"machine": "q950", "system": "7.1",   "card": "dafb",    "width": 640, "height": 480, "depth": 16, "addr32": false, "suite": "suite-quadra"},
+    {"machine": "q950", "system": "7.6",   "card": "dafb",    "width": 640, "height": 480, "depth": 8,  "addr32": true,  "suite": "suite-quadra", "media_gated": true},
+
+    {"machine": "iifx", "system": "6.0.8", "card": "jmfb",  "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iifx"},
+    {"machine": "iifx", "system": "7.0.1", "card": "jmfb",  "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iifx"},
+    {"machine": "iifx", "system": "7.0.1", "card": "jmfb",  "width": 640, "height": 480, "depth": 1, "addr32": true,  "suite": "suite-iifx"},
+    {"machine": "iifx", "system": "7.1",   "card": "824gc", "width": 640, "height": 480, "depth": 8, "addr32": false, "suite": "suite-iifx"},
+    {"machine": "iifx", "system": "7.5",   "card": "display_card_24ac", "width": 832, "height": 624, "depth": 8, "addr32": false, "suite": "suite-iifx", "media_gated": true},
+    {"machine": "iifx", "system": "A/UX 3.0.1", "card": "jmfb", "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "suite-iifx"},
+
+    {"machine": "lisa", "system": "LOS 3.1",      "card": "builtin", "width": 720, "height": 364, "depth": 1, "addr32": false, "suite": "suite-lisa"},
+    {"machine": "lisa", "system": "Xenix 3.0",    "card": "builtin", "width": 720, "height": 364, "depth": 1, "addr32": false, "suite": "suite-lisa"},
+    {"machine": "xl",   "system": "MacWorks 3.0", "card": "builtin", "width": 608, "height": 431, "depth": 1, "addr32": false, "suite": "suite-lisa"},
+
+    {"machine": "iici", "system": "7.1",   "card": "display_card_24ac", "width": 640,  "height": 480, "depth": 8, "addr32": false, "suite": "iici-24ac"},
+    {"machine": "iici", "system": "7.1",   "card": "display_card_24ac", "width": 1152, "height": 870, "depth": 8, "addr32": false, "suite": "iici-24ac"},
+    {"machine": "iici", "system": "6.0.8", "card": "rbv", "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "iici-format-hd"},
+    {"machine": "iici", "system": "7.1",   "card": "rbv", "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "iici-mactest"},
+    {"machine": "iix",  "system": "A/UX 3.0.1", "card": "jmfb", "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "iix-aux3-boot"},
+    {"machine": "q700", "system": "7.6",   "card": "dafb", "width": 640, "height": 480, "depth": 1, "addr32": false, "suite": "quadra-dual-card", "media_gated": true},
+
+    {"machine": "q700", "system": "7.5",   "card": "dafb", "width": 832, "height": 624, "depth": 8, "addr32": false, "suite": "suite-quadra",
+     "blocked": "proposal-emulator-bug-fixes.md §6 — DAFB honours only monitor sense 6"},
+    {"machine": "iici", "system": "7.0.1", "card": "rbv",  "width": 640, "height": 480, "depth": 2, "addr32": false, "suite": "suite-iici",
+     "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"},
+    {"machine": "iici", "system": "7.0.1", "card": "rbv",  "width": 640, "height": 480, "depth": 4, "addr32": false, "suite": "suite-iici",
+     "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"},
+    {"machine": "iici", "system": "7.0.1", "card": "rbv",  "width": 640, "height": 480, "depth": 8, "addr32": false, "suite": "suite-iici",
+     "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"},
+    {"machine": "iisi", "system": "6.0.8", "card": "v8",   "width": 640, "height": 480, "depth": 8, "addr32": false, "suite": "suite-iisi",
+     "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"}
   ]
 }

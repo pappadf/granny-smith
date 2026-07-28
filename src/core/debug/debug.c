@@ -3844,6 +3844,36 @@ static value_t screen_attr_height(struct object *self, const member_t *m) {
     return val_int(d ? (int64_t)d->height : 0);
 }
 
+// `screen.depth` — bits per pixel of the active display, whichever device
+// is driving it (built-in video or a NuBus card).  Per-card depth is
+// reachable as `nubus.slot[N].card.framebuffer.depth`, but the coverage
+// records the integration suites emit need the depth of the screen that
+// is actually live, without first knowing which device owns it
+// (proposal-integration-test-rework §5.6).
+static value_t screen_attr_depth(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    if (!d)
+        return val_int(0);
+    switch (d->format) {
+    case PIXEL_1BPP_MSB:
+        return val_int(1);
+    case PIXEL_2BPP_MSB:
+        return val_int(2);
+    case PIXEL_4BPP_MSB:
+        return val_int(4);
+    case PIXEL_8BPP:
+        return val_int(8);
+    case PIXEL_16BPP_555:
+        return val_int(16);
+    case PIXEL_32BPP_XRGB:
+        return val_int(32);
+    default:
+        return val_int(0);
+    }
+}
+
 // `screen.par_w` / `screen.par_h` — the active display's pixel aspect ratio
 // (one display pixel's width:height in host units; see display.h).  1:1 is
 // square (every Mac); the Lisa 2's 720x364 raster reports 2:3 so the frontend
@@ -3912,6 +3942,11 @@ static const member_t screen_members[] = {
      .flags = VAL_RO,
      .doc = "Active display height in pixels",
      .attr = {.type = V_INT, .get = screen_attr_height, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "depth",
+     .flags = VAL_RO,
+     .doc = "Bits per pixel of the active display (1/2/4/8/16/32; 0 if unknown)",
+     .attr = {.type = V_INT, .get = screen_attr_depth, .set = NULL}},
     {.kind = M_ATTR,
      .name = "par_w",
      .flags = VAL_RO,

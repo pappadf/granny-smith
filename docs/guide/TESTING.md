@@ -235,6 +235,33 @@ make -C tests/integration test-suite-quadra TEST_VARS="REGEN=1"          # recap
 Suite goldens live in `<suite>/goldens/` named
 `<model>-<system>-<WxHxD>[-<state>].png`.
 
+### Coverage and performance contracts
+
+Two committed files gate the suite as a whole, and they have deliberately
+different semantics:
+
+| File | Represents | Regenerated? |
+|---|---|---|
+| `tests/integration/matrix-targets.json` | the **declared** cells the suite must cover, and which directory owes each | **No — hand-authored.** Generating it from a run would make it agree with whatever the run covered |
+| `tests/integration/perf-baselines.json` | the observed per-row instruction spend, gated on drift | Yes — `scripts/gen-baselines.py <logs>`, reviewed as a diff in the PR that changed timing |
+
+Rows emit `@@COV` records (read from the live machine) and `@@PERF`
+records. Diff achieved against declared:
+
+```bash
+make -C tests/integration test TIER=matrix 2>&1 | tee run.log
+python3 scripts/test-matrix.py --check run.log        # exits 1 on a coverage regression
+python3 scripts/test-matrix.py --from-results run.log # render what a run covered
+```
+
+A declared cell that was not covered fails; a covered cell nobody
+declared is a warning telling you to claim it. Three cases warn instead
+of failing, because none of them means coverage regressed: the owing
+suite directory does not exist yet (derived from the filesystem, so it
+cannot be faked), the cell is `blocked` by a known emulator defect (the
+cell-level twin of a milestone row), or it is `media_gated` and its row
+skipped because private test data is absent.
+
 ### Writing a New Integration Test
 
 1. Create `tests/integration/foo/` with `config.mk` and `test.script`.

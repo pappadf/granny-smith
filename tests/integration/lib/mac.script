@@ -330,9 +330,19 @@ def mips_floor(label, t0, floor_mips) {
 # --- coverage records (§5.6) -------------------------------------------------
 
 # Emit the machine-read coverage record for a row that reached its
-# golden: machine, RAM, geometry, and addressing mode are read from the
-# live machine; `system` and `card` are declared by the row (a unified
-# machine.screen.depth and a guest-read system version are follow-ups).
+# golden: machine, RAM, geometry, depth and addressing mode are read from
+# the LIVE machine, so the record cannot drift from what actually ran;
+# `system` and `card` are declared by the row (reading the booted
+# System's `vers` resource from the guest instead of trusting the row is
+# a follow-up — three media labels in this tree turned out to lie).
+#
+# addr32 tests for exactly 1, not "nonzero": on a 68000 there is no
+# MMU32bit global at all and $0CB2 holds unrelated lowmem (a Plus reads
+# $70), so a nonzero test would report those rows as 32-bit. Every
+# machine measured that really is in 32-bit mode writes exactly 1.
+#
+# scripts/test-matrix.py --check diffs these against the declared roster
+# in matrix-targets.json.
 def report_row(system, card, feature) {
-    echo "@@COV {\"machine\":\"${machine.id}\",\"ram\":${machine.ram},\"system\":\"${$system}\",\"card\":\"${$card}\",\"width\":${machine.screen.width},\"height\":${machine.screen.height},\"addr32\":${debug.mac.globals.read("MMU32bit") != 0},\"feature\":\"${$feature}\"}"
+    echo "@@COV {\"machine\":\"${machine.id}\",\"ram\":${machine.ram},\"system\":\"${$system}\",\"card\":\"${$card}\",\"width\":${machine.screen.width},\"height\":${machine.screen.height},\"depth\":${machine.screen.depth},\"addr32\":${debug.mac.globals.read("MMU32bit") == 1},\"feature\":\"${$feature}\"}"
 }
