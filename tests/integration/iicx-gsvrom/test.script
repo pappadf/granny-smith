@@ -1,0 +1,28 @@
+# IIcx generic-vROM video suite (see config.mk).
+#
+# Row map (former directory → row):
+#
+#   gsvrom-sweep        iicx-gsvrom-video-modes: the 10-cell JMFB sweep
+#                       (13" RGB 1/2/4/8 bpp, 12" RGB, 15" portrait,
+#                       21" two-page) on the generated vROM
+#   gsvrom-24ac         iicx-gsvrom-24ac: the 24AC-kind generated vROM at
+#                       640x480x8 and 832x624x8
+#   gsvrom-824gc        iicx-gsvrom-824gc: the 8*24 GC bring-up ladder on
+#                       a generated vROM (no pixel match — blocked on the
+#                       QD32 upgrade pass, per §7)
+#   gsvrom-custom-mode  iicx-gsvrom-custom-mode: an 800x600x8 custom
+#                       geometry the generated vROM can declare
+#
+# Row bodies are in rows.script, transcribed by script from the absorbed
+# tests so the sweep's sense/PRAM seeding stays byte-exact.
+
+include "../lib/mac.script"
+include "rows.script"
+
+if row_on("gsvrom-sweep") { row_end("gsvrom-sweep", try(row_gsvrom_sweep(), "FAILED")) }
+if row_on("gsvrom-24ac") { row_end("gsvrom-24ac", try(row_gsvrom_24ac(), "FAILED")) }
+if row_on("gsvrom-824gc") { row_end("gsvrom-824gc", try(row_gsvrom_824gc(), "FAILED")) }
+if row_on("gsvrom-custom-mode") { row_end("gsvrom-custom-mode", try(row_gsvrom_custom_mode(), "FAILED")) }
+
+suite_done()
+quit

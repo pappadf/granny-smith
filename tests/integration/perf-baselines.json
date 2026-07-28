@@ -1,5 +1,21 @@
 {
   "rows": {
+    "iicx-gsvrom/gsvrom-24ac": {
+      "instr": 67583321,
+      "tolerance": 0.2
+    },
+    "iicx-gsvrom/gsvrom-824gc": {
+      "instr": 188473905,
+      "tolerance": 0.2
+    },
+    "iicx-gsvrom/gsvrom-custom-mode": {
+      "instr": 152096626,
+      "tolerance": 0.2
+    },
+    "iicx-gsvrom/gsvrom-sweep": {
+      "instr": 59293304,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-701-fd": {
       "instr": 392597910,
       "tolerance": 0.2
