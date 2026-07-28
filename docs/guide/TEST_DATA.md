@@ -25,69 +25,100 @@ The CPU tests use the open source [ProcessorTests](https://github.com/SingleStep
 
 ## Required Files
 
-### ROM Images
+Everything below lives under `tests/data/`, which is `.gitignored` and
+synced from the private `gs-test-data` repository by
+`scripts/fetch-test-data.sh`. The listing reflects what the integration
+suite actually loads — `scripts/test-matrix.py --tests` prints the
+per-test media mapping if you need to know which test needs what.
 
-Located in `tests/data/roms/`:
+### ROM images (`tests/data/roms/`)
 
-| File         | Size    | Description            |
-|--------------|---------|------------------------|
-| `plus-v3-4d1f8172.rom`| 128 KB  | Macintosh Plus ROM v3  |
-| `iix-iicx-se30-97221136.rom`   | 256 KB  | Macintosh IIcx ROM     |
+Machine ROMs. The filename carries the ROM's checksum, and `rom-naming`
+(unit tier) enforces that grammar, so a mismatched dump is caught rather
+than silently booted.
 
-**How to obtain:**
-- Extract from a physical Macintosh using ROM extraction tools
+| File | Machines |
+|---|---|
+| `plus-v3-4d1f8172.rom` | Macintosh Plus |
+| `iix-iicx-se30-97221136.rom` | Universal: SE/30, IIx, IIcx |
+| `iici-368cadfe.rom` | IIci |
+| `iisi-36b7fb6c.rom` | IIsi |
+| `iifx-4147dd77.rom` | IIfx |
+| `q700-q900-420dbff3.rom` | Quadra 700 and 900 |
+| `q950-3dc27823.rom` | Quadra 950 |
+| `lisa2-revh-098917b2.rom` | Lisa 2 (rev H) |
+| `macxl-3a-094c82f0.rom` | Macintosh XL |
 
-### System Software
+NuBus **declaration ROMs** (`*.vrom`) live beside them — the 8•24 (JMFB),
+8•24 GC, 24AC and the SE/30 built-in video. Cards can also run on the
+runtime-generated generic GS vROM instead; `iicx-gsvrom` covers that path.
 
-Located in `tests/data/systems/`:
+### Prepared hard-disk images (`tests/data/systems/`)
 
-| File                  | Description         |
-|-----------------------|---------------------|
-| `System_2_0_1.dsk`    | System 2.0.1        |
-| `System_3_0_0.dsk`    | System 3.0          |
-| `System_3_2_0.dsk`    | System 3.2          |
-| `System_3_3_0.dsk`    | System 3.3          |
-| `System_4_0_0.dsk`    | System 4.0          |
-| `System_4_1_0.dsk`    | System 4.1          |
-| `System_4_2_0.dsk`    | System 4.2          |
-| `System_4_3_0.dsk`    | System 4.3          |
-| `System_6_0_0.dsk`    | System 6.0          |
-| `System_6_0_3.dsk`    | System 6.0.3        |
-| `System_6_0_5.dsk`    | System 6.0.5        |
-| `System_6_0_8.dsk`    | System 6.0.8        |
-| `System_7_1_0.dsk`    | System 7.1          |
+These are the workhorses: full installs that boot on any supported
+machine, so a test can pick its host freely. Naming grammar (§6.1 of
+proposal-integration-test-rework):
+`system_<ver>_<size>_<trait>[_<trait>…].img`.
 
-**Disk image format:**
-- 800 KB raw disk images (no headers)
-- File size should be exactly 819,200 bytes for 800K floppies
-- For hard disk images, use raw block format
+| File | Contents |
+|---|---|
+| `system_6_0_8_20mb_8_24gc.img` | System 6.0.8, 20 MB ST225N geometry, 8•24 GC support + AppleShare + 32-Bit QD |
+| `system_7_1_20mb_24ac_cd_32bit.img` | System 7.1, 20 MB, 24AC drivers, 32-bit enabled |
+| `system_7_1_20mb_24ac_cd_32bit_gc.img` | as above plus 8•24 GC support |
+| `system_7_5_0_77mb_mode32_24ac.img` | System 7.5.0, 77 MB, MODE32 + 24AC drivers |
+| `system_7_6_170mb_24ac.img` | Mac OS 7.6, 170 MB HD160SC, minimum system + 24AC drivers |
 
-### Application Test Data
+The 7.5 and 7.6 images are consumed by rows that **skip gracefully** when
+they are absent, so a checkout without them still runs green — the
+coverage check reports those cells as media-gated rather than failing
+(`python3 scripts/test-matrix.py --check --tier=matrix <log>`).
 
-Located in `tests/data/apps/`:
+`hd1.zip` is **no longer used**: it was verified to be the same System
+6.0.8 at the same geometry as `system_6_0_8_20mb_8_24gc.img`, whose
+System Folder is a strict superset, so every consumer was re-pointed and
+the suite's last `TEST_SETUP` unzip went away with it.
 
-| File                          | Description                   |
-|-------------------------------|-------------------------------|
-| `MacTest_Disk.image_.sit_.hqx`| MacTest diagnostic application |
+### System floppies (`tests/data/systems/`)
+
+Single-disk system images (`System_<ver>.dsk`, 400K/800K raw — exactly
+409,600 or 819,200 bytes) plus the multi-disk installer sets
+`SSW-2.0-400K/`, `SSW-3.2-400K/`, `SSW-4.2-800K/`, `SSW-6.08-800K/`,
+`SSW-7.0-800K/`, `SSW-7.1-1.4M/`, `SSW-7.5-1.4M/`, `SSW-7.6-1.4M/`.
+
+⚠️ **Three media labels are known to lie**, so do not trust a filename as
+a system version (each is documented in §6.2/§7 of the rework proposal):
+
+| File | Claims | Actually boots |
+|---|---|---|
+| `System_7_1_0.dsk` | System 7.1 | a 6.0.7-class System (7.1 does not fit on 800K) |
+| `SSW-7.0-800K/` boot disk | System 7.0 | a minimal 6.0.7 that *installs* 7.0 |
+| `System_6_0_8.dsk` | System 6.0.8 | reports Finder 6.1.5 / **System 6.0.5** in its own About box |
+
+Deliberately unused as a result: `System_7_1_0.dsk` and the SSW-7.0 set.
+Real 7.1 comes from the 1.4 M `SSW-7.1-1.4M/Disk Tools.img` or the
+prepared 7.1 HD images.
+
+### Other media
+
+| Path | Contents |
+|---|---|
+| `tests/data/apps/` | MacTest diagnostics, Marathon, MusicWorks, Norton System Info |
+| `tests/data/Lisa/` | Lisa Office System 3.1, Xenix 3.0, MacWorks XL 3.0 (floppies + installed ProFile images) |
+| `tests/data/aux/aux_3.0.1/` | A/UX 3.0.1 retail ISO and an installed 160 MB HD image |
+| `tests/data/cdroms/` | CD-ROM images |
 
 ---
 
 ## Directory Structure
 
-Your `tests/data/` directory should look like this:
-
 ```
 tests/data/
-├── README.md           (this can remain - explains the directory)
-├── roms/
-│   ├── plus-v3-4d1f8172.rom     (128 KB - Macintosh Plus ROM)
-│   └── iix-iicx-se30-97221136.rom        (256 KB - optional)
-├── systems/
-│   ├── System_6_0_8.dsk   (819,200 bytes - primary test system)
-│   ├── System_7_1_0.dsk   (optional)
-│   └── ... (other system disks)
-└── apps/
-    └── ... (test applications)
+├── roms/          machine ROMs (*.rom) + NuBus declaration ROMs (*.vrom)
+├── systems/       prepared HD images, single system floppies, SSW-* sets
+├── apps/          application/diagnostic media
+├── Lisa/          Lisa Office System, Xenix, MacWorks XL
+├── aux/           A/UX 3.0.1 installer ISO + installed HD image
+└── cdroms/        CD-ROM images
 ```
 
 ---

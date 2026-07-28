@@ -18,7 +18,7 @@ set -e
 
 CHECKPOINT_FILE="$TEST_RESULTS_DIR/checkpoint.gs"
 FD_IMAGE="$TEST_RESULTS_DIR/System_6_0_8.dsk"
-HD_IMAGE="$TEST_RESULTS_DIR/hd1.img"
+HD_IMAGE="$TEST_RESULTS_DIR/hd.img"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 for f in "$FD_IMAGE" "$HD_IMAGE"; do
