@@ -1,12 +1,12 @@
-# SE/30 A/UX 3.0.1 HD Boot.
+# IIx A/UX 3.0.1 HD Boot.
 #
-# Boots the SE/30 from a pre-installed A/UX 3.0.1 HD image, logs in as root,
+# Boots the IIx from a pre-installed A/UX 3.0.1 HD image, logs in as root,
 # opens a CommandShell, and runs `ls` — verifying the full boot-to-shell path.
 
-# Pin the wall clock so screenshot comparisons are reproducible. This
-# specific seed used to panic with "Sorry, a system error occurred."
-# before the se30 slot-deassert fix (commit db03c13). Booting cleanly
-# at this seed proves the fix.
+# Pin the wall clock so screenshot comparisons are reproducible. The seed
+# is inherited from this row's SE/30 origin, where it used to panic with
+# "Sorry, a system error occurred." before the slot-deassert fix (commit
+# db03c13); it is kept so the two hosts stay comparable.
 include "../lib/mac.script"
 
 machine.rtc.time = "2026-04-26T21:30:36"

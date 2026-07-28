@@ -5,7 +5,7 @@
 # unexplained, and not worth chasing for a re-host with no remaining
 # rationale. The IIci's dual-display coverage is suite-iici's
 # iici-24ac-dual row instead.
-# Integration test configuration: IIci + Display Card 24AC — floppy insert +
+# Integration test configuration: IIcx + Display Card 24AC — floppy insert +
 # launch the Symantec "System Info" application.
 #
 # A variant of iicx-24ac: it boots the same 32-bit System 7.1 SCSI cdev image

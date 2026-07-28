@@ -4,11 +4,11 @@
 # recapture. It gives the IIx its first A/UX presence; se30-aux-3 (the
 # retail installer) stays on the SE/30 because its boot disk is
 # SE/30-specific media.
-# Integration test configuration: SE/30 A/UX 3.0.1 HD Boot
-# Verifies that the SE/30 boots A/UX 3.0.1 from a pre-installed HD image.
+# Integration test configuration: IIx A/UX 3.0.1 HD Boot
+# Verifies that the IIx boots A/UX 3.0.1 from a pre-installed HD image.
 
-TEST_NAME := SE/30 A/UX 3.0.1 HD Boot
-TEST_DESC := Boot SE/30 with 16 MB RAM from a pre-installed A/UX 3.0.1 HD image
+TEST_NAME := IIx A/UX 3.0.1 HD Boot
+TEST_DESC := Boot IIx with 16 MB RAM from a pre-installed A/UX 3.0.1 HD image
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
@@ -20,9 +20,9 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 TEST_SETUP := cp "$(TEST_DATA)/aux/aux_3.0.1/hd160-with-aux-301.img" "$(TEST_TMPDIR)/hd.img"
 
 # 16 MB RAM required for A/UX boot.
-# Pinned to the REAL onboard-video vROM kind: this suite's reference PNGs
-# were captured against it, and the SE/30 profile now defaults to the
-# generic GS-vROM sibling (proposal-generic-nubus-vrom.md stage 3).
+# No vROM pin here, unlike this row's SE/30 origin: the IIx has no onboard
+# video, so it seats the default JMFB (mdc-8-24-revb-d1629664.vrom, see
+# src/machines/glue/iix.c) and the reference PNGs were recaptured against it.
 TEST_ARGS := model=iix ram=16384 hd=$(TEST_TMPDIR)/hd.img
 
 # CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended

@@ -3,7 +3,7 @@
 # over the IIsi because A/UX requires an FPU and the IIci has a standard
 # 68882. Expected to surface real gaps, so it is run-not-fatal until it
 # passes; promotion is a reviewed edit.
-# Integration test configuration: IIfx A/UX 3.0.1 HD Boot at 8 bpp
+# Integration test configuration: IIci A/UX 3.0.1 HD Boot at 8 bpp (via RBV)
 #
 # 8-bpp sibling of iifx-aux3-boot (which runs the JMFB's default 1 bpp).
 # Exists because 8-bit colour is the configuration that exposed two distinct
@@ -27,11 +27,12 @@
 # no hd= in TEST_ARGS: the script re-boots with the seed and attaches the
 # HD itself.  See test.script.
 
-TEST_NAME := IIfx A/UX 3.0.1 HD Boot at 8 bpp (reaches graphical login)
-TEST_DESC := Boot IIfx (16 MB, JMFB at 13" RGB 8 bpp) from the A/UX 3.0.1 HD image; expect the graphical login window, pixel-exact.
+TEST_NAME := IIci A/UX 3.0.1 HD Boot at 8 bpp (reaches graphical login)
+TEST_DESC := Boot IIci (16 MB, built-in RBV at 8 bpp) from the A/UX 3.0.1 HD image; expect the graphical login window, pixel-exact.
 
-# IIfx ROM (checksum 0x4147DD77).  JMFB declrom (mdc-8-24-revb-d1629664.vrom) is
-# auto-discovered from the same directory as the ROM file.
+# IIci ROM (checksum 0x368CADFE).  Video is the machine's built-in RBV, not a
+# NuBus card, so no declrom is discovered or needed — that is the point of the
+# re-host.
 TEST_ROM := roms/iici-368cadfe.rom
 
 TEST_ARGS := model=iici ram=16384
