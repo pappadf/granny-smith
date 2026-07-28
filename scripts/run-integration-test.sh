@@ -16,6 +16,10 @@
 #   WRAPPER           optional command prefix (e.g. "valgrind --quiet ...")
 #   TEST_VARS         optional extra shell --var definitions ("ROW=x REGEN=1")
 #
+# A TEST_RUNNER script additionally receives TEST_VAR_ARGS — TEST_VARS
+# pre-formatted as "--var K=V ..." — to splice into its own emulator
+# invocations so multi-process tests honor ROW=/REGEN= too.
+#
 # Each test gets a private GS_STORAGE_CACHE under its WORK_DIR: the
 # binary routes every delta/journal/scratch sidecar there, so nothing
 # writes into tests/data and independent tests can run in parallel.
@@ -89,6 +93,7 @@ if [ -n "$TEST_RUNNER" ]; then
         TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
         WORK_DIR="$WORK_DIR" \
         STORAGE_CACHE="$GS_STORAGE_CACHE" \
+        TEST_VAR_ARGS="$VAR_ARGS" \
         bash "$TEST_RUNNER" || fail
 else
     # shellcheck disable=SC2086 — args and vars are intentionally word-split

@@ -217,6 +217,22 @@ def about_box() {
     run_ticks(120)
 }
 
+# Same choreography for machines with a QUADRATURE mouse (Plus, and any
+# pre-ADB model): the moves must NOT use "global". Measured 2026-07-28 —
+# with a global warp the Menu Manager highlights the item but the release
+# never commits the selection, so the About window never opens; plain
+# positional moves work. Rows on ADB machines use about_box() above.
+def about_box_quad() {
+    machine.adb.mouse.move 14 8
+    run_ticks(10)
+    machine.adb.mouse.click true
+    run_ticks(10)
+    machine.adb.mouse.move 25 30
+    run_ticks(10)
+    machine.adb.mouse.click false
+    run_ticks(120)
+}
+
 # --- boot helpers ------------------------------------------------------------
 
 # Universal-ROM ~13 s boot-drive-discovery bypass: hold Cmd-Shift-Power

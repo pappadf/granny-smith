@@ -1,3 +1,0 @@
-# Integration test: Checkpoint Save/Load v2
-# This test uses a custom runner (run.sh) - this file exists for auto-discovery
-# See run.sh for the actual test implementation

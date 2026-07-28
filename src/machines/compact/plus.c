@@ -13,6 +13,7 @@
 #include "system_config.h" // full config_t definition
 
 #include "appletalk.h"
+#include "checkpoint_images.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "debug.h"
@@ -219,84 +220,12 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     cfg->mouse = mouse_init(cfg->scheduler, cfg->scc, cfg->via1, checkpoint);
 
-    // Restore image list from checkpoint before devices that may reference them
-    if (checkpoint) {
-        uint32_t count = 0;
-        system_read_checkpoint_data(checkpoint, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i) {
-            uint32_t len = 0;
-            system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            char *name = NULL;
-            if (len > 0) {
-                name = (char *)malloc(len);
-                if (!name) {
-                    char tmp;
-                    for (uint32_t k = 0; k < len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                } else {
-                    system_read_checkpoint_data(checkpoint, name, len);
-                }
-            }
-            char writable = 0;
-            system_read_checkpoint_data(checkpoint, &writable, sizeof(writable));
-            // Read raw image size (written by image_checkpoint)
-            uint64_t raw_size = 0;
-            system_read_checkpoint_data(checkpoint, &raw_size, sizeof(raw_size));
-            // Read instance path (added by image_checkpoint, §2.8)
-            uint32_t instance_len = 0;
-            system_read_checkpoint_data(checkpoint, &instance_len, sizeof(instance_len));
-            char *instance_path = NULL;
-            if (instance_len > 0) {
-                instance_path = (char *)malloc(instance_len);
-                if (instance_path)
-                    system_read_checkpoint_data(checkpoint, instance_path, instance_len);
-                else {
-                    char tmp;
-                    for (uint32_t k = 0; k < instance_len; ++k)
-                        system_read_checkpoint_data(checkpoint, &tmp, 1);
-                }
-            }
-            image_t *img = NULL;
-            if (name) {
-                bool consolidated = checkpoint_get_kind(checkpoint) == CHECKPOINT_KIND_CONSOLIDATED;
-                // For consolidated checkpoints the embedded data is authoritative
-                if (raw_size > 0 && consolidated)
-                    image_create_empty(name, (size_t)raw_size);
-                if (writable && consolidated) {
-                    // Fresh writable instance — embedded blocks will fill it.
-                    img = image_create(name, checkpoint_machine_dir());
-                } else if (writable && instance_path && instance_path[0]) {
-                    // Quick checkpoint: reopen the same delta files referenced
-                    // by the saved instance_path.
-                    img = image_open(name, instance_path);
-                } else if (writable) {
-                    // Old checkpoint without instance_path — fall back to a
-                    // fresh instance.  This degrades on quick checkpoints (the
-                    // bitmap will not match) but avoids hard failure.
-                    img = image_create(name, checkpoint_machine_dir());
-                } else {
-                    img = image_open_readonly(name);
-                }
-                if (!img) {
-                    LOG(0, "image_open failed for %s while restoring checkpoint", name);
-                    checkpoint_set_error(checkpoint);
-                }
-            }
-            if (storage_restore_from_checkpoint(img ? img->storage : NULL, checkpoint) != GS_SUCCESS) {
-                LOG(0, "storage_restore_from_checkpoint failed for %s", name ? name : "<unnamed>");
-                checkpoint_set_error(checkpoint);
-            }
-            if (img) {
-                add_image(cfg, img);
-            }
-            if (name) {
-                free(name);
-            }
-            if (instance_path) {
-                free(instance_path);
-            }
-        }
-    }
+    // Restore the image list from the checkpoint before any device that
+    // may reference an image.  Shared helper (checkpoint_images.c) so the
+    // Plus uses the same stream layout — and the same base-image
+    // protection — as every other machine.
+    if (checkpoint)
+        mac_checkpoint_restore_images(cfg, checkpoint);
 
     cfg->scsi = scsi_init(cfg->mem_map, checkpoint);
 
