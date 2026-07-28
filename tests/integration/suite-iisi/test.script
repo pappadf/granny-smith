@@ -17,12 +17,11 @@
 #                   not close by moving anything — one cheap boot row
 #
 # The IIsi is builtin-video only, so every row runs the V8 at 640x480.
-# Depth rows (V8 at 8 bpp) are NOT here: the built-in video's boot depth
-# is not selectable through the slot-PRAM savedMode byte the JMFB uses —
-# measured 2026-07-28, the ROM rewrites $58/$70 back to $80 (1 bpp) and
-# the framebuffer stays 1 bpp — so a depth row needs the Monitors
-# control panel driven under the OS, which is tracked as follow-up work
-# rather than guessed at here.
+# Depth rows (V8 at 2/4/8 bpp) are NOT here: built-in video exposes no
+# declaration ROM, so the guest sees no depth mode list and stays at
+# 1 bpp no matter what the slot-PRAM record says (measured 2026-07-28).
+# Tracked as an emulator defect in proposal-emulator-bug-fixes.md §5;
+# the depth rows get written once it is fixed.
 
 include "../lib/mac.script"
 

@@ -286,11 +286,13 @@ def skip_boot_wait() {
 # so those rows must not call this.
 def assert_addr(want32) {
     let m = debug.mac.globals.read("MMU32bit")
-    # The byte is only a boolean when the System actually maintains it.
-    # Measured 2026-07-28: an IIci booting the 7.5 image at 5 MB reads
-    # $6D there while the same boot at 16 MB reads $00 — so a value
-    # outside {0,1} means "this configuration does not maintain the
-    # flag", and the row must say so instead of guessing a direction.
+    # A value outside {0,1} means the guest never wrote the global — in
+    # practice the machine did not finish booting, and the byte is
+    # uninitialised memory. (Measured 2026-07-28: a IIci at 5 MB reads
+    # $6D here, which is a byte of the $DB6DB6DB uninitialised pattern
+    # MemTop shows too; the machine never completes POST below 8 MB —
+    # proposal-emulator-bug-fixes.md §3.) Fail with the raw byte rather
+    # than silently reading garbage as an addressing mode.
     assert ($m == 0) || ($m == 1) "addressing: MMU32bit=${$m:02x} is not a boolean in this configuration"
     if $want32 {
         assert $m == 1 "addressing: expected 32-bit, MMU32bit=${$m:02x}"

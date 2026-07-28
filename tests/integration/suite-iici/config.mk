@@ -8,13 +8,15 @@
 # itself, so the cell is legal by construction and open question q.4
 # dissolves.
 #
-# The RBV depth sweep §3.2 wants (2/4/8 bpp) is deliberately absent:
-# measured 2026-07-28, built-in video does NOT take its boot depth from
-# the slot-PRAM savedMode byte the JMFB uses — the ROM rewrites it back
-# to $80 (1 bpp) and the framebuffer stays 1 bpp — so those cells need
-# the Monitors control panel driven under the OS (the pattern
-# suite-quadra's Thousands row proves) and are tracked as follow-up
-# rather than guessed at.
+# The RBV depth sweep §3.2 wants (2/4/8 bpp) is deliberately absent: the
+# built-in video is stuck at 1 bpp because it exposes no declaration ROM,
+# so the guest has no depth mode list to choose from (measured
+# 2026-07-28 — slot[11].card.declrom.present is false, and even a VALID
+# slot-PRAM record with BoardID $001F and depth $83 comes back rewritten
+# to $80). Tracked as an emulator defect in
+# proposal-emulator-bug-fixes.md §5, with the depth rows to be written
+# once it is fixed — through the Monitors control panel, the pattern
+# suite-quadra's Thousands row proves.
 #
 #   make test-suite-iici
 #   make test-suite-iici TEST_VARS="ROW=iici-chime"   one row only

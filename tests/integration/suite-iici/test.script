@@ -61,12 +61,13 @@ def row_iici_701_fd() {
 
 # ---- iici-75-hd -------------------------------------------------------------
 # NEW CELL IIci x 7.5 over the MDU's NCR 5380 pseudo-DMA path.
-# 16 MB, not the 5 MB bank split the RAM axis would have preferred: at
-# 5 MB this boot leaves MMU32bit holding $6D — the System does not
-# maintain the flag in that configuration — while at 16 MB it reads a
-# clean 0 (24-bit, matching the IIcx measurement that 7.5 + MODE32 still
-# boots 24-bit under default PRAM). Asserting the addressing axis is
-# worth more here than the extra bank config.
+# 16 MB, not the 5 MB bank split the RAM axis would have preferred,
+# because a IIci does not boot at all below 8 MB — POST never completes
+# and no lowmem global is ever written (measured 2026-07-28; tracked as
+# an emulator defect in proposal-emulator-bug-fixes.md §3, which is also
+# what made an earlier version of this row misread uninitialised memory
+# as an addressing mode). At 16 MB the flag reads a clean 0: 7.5 + MODE32
+# still boots 24-bit under default PRAM, matching the IIcx measurement.
 def row_iici_75_hd() {
     machine.rtc.time = 3000000000
     machine.boot model="iici" ram=16384
