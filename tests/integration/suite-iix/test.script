@@ -27,11 +27,12 @@
 #   iix-gc-decline1   the decline half of that differential ORACLE: same
 #                     golden, accelerator forced to the ROM/QuickDraw
 #                     fallback
-#
-# Not here yet: the 8-of-16 JMFB sweep cells §7 wants re-hosted from
-# iicx-video-modes. That is a mechanical move needing eight goldens
-# recaptured on this host; it is called out in the roster rather than
-# half-done.
+#   iix-jmfb-sweep  **8 of the 16 JMFB depth x resolution cells**, re-hosted
+#                   from iicx-video-modes per §7: the 15" portrait and 21"
+#                   RGB senses at 1/2/4/8 bpp. The IIcx keeps the 13" and 12"
+#                   halves, so the same 16 cells now span two hosts.
+#   iix-75-hd       **IIx x 7.5** — see the sweep row's comment for why this
+#                   is a separate boot row rather than half the sweep.
 
 include "../lib/mac.script"
 
@@ -40,6 +41,7 @@ let sys_603 = "../../data/systems/System_6_0_3.dsk"
 let disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
 let install_71 = "../../data/systems/SSW-7.1-1.4M/Install.img"
 let hd_608_gc = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
+let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 
 # ---- iix-nomedia ------------------------------------------------------------
 def row_iix_nomedia() {
@@ -218,6 +220,100 @@ def row_iix_gc_decline1() {
     report_perf("suite-iix/iix-gc-decline1", scheduler.instr_count)
 }
 
+# ---- iix-jmfb-sweep ---------------------------------------------------------
+# §7's 8-of-16 JMFB sweep re-host. iicx-video-modes drove all four monitor
+# senses at four depths on one host; the 15" portrait (sense $1) and 21" RGB
+# (sense $0) halves live here now, so the same 16 cells span two machines. The
+# JMFB seats in slot 9 on both, so the sPRAMRec address and the whole seeding
+# recipe carry over unchanged (verified: the card in slot 9 here reports
+# "Apple Macintosh Display Card 8*24").
+#
+# Each cell is a cold boot: seed the slot's sPRAMRec so the Slot Manager's
+# GET_SLOT_DEPTH picks the wanted sResource at boot, then short-circuit the
+# Universal ROM's boot-drive-discovery wait by synthesising Cmd-Shift-Power in
+# KeyMap ($017A) — otherwise it burns ~16.8 s of guest time before falling
+# through. The frame is the Welcome splash, and the DEPTH is proven by
+# savedMode, not by the pixels: the splash is black-and-white, so it scans out
+# identically at 1 and 2 bpp (see the golden-collision waivers).
+def sweep_cell(sense, sister, spid, w, h, golden) {
+    # Staging named explicitly: the GC rows above seat an 824gc, and an
+    # unnamed machine.boot inherits it — which is how the same trap produced
+    # a wrong diagnosis in suite-iici (ledger §8).
+    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=$sense
+    machine.floppy.drive[0].insert "${$sys_701}"
+    machine.rtc.pram.validate
+    machine.rtc.pram.poke 0x46 $sister
+    scheduler.run 50000000
+    machine.memory.poke.w 0x017A 0x8805
+    scheduler.run 1500000
+    machine.memory.poke.w 0x017A 0
+    scheduler.run 11000000
+    assert machine.screen.width == $w "jmfb-sweep ${$golden}: width != ${$w}"
+    assert machine.screen.height == $h "jmfb-sweep ${$golden}: height != ${$h}"
+    assert machine.rtc.pram.peek(0x48) == $spid "jmfb-sweep ${$golden}: savedMode rewritten by ROM"
+    check($golden)
+}
+
+def row_iix_jmfb_sweep() {
+    # 15" Portrait B&W, sense $1, 640x870.
+    sweep_cell(1, 0x002780a1a1000000:8, 0x80, 640, 870, "goldens/iix-jmfb-15in_bw-640x870-1bpp.png")
+    # golden-collision-ok: iix-jmfb-15in_bw-640x870-1bpp.png iix-jmfb-15in_bw-640x870-2bpp.png iix-6.0.3-640x870x1-welcome.png
+    # - three-way, and all three are the same ROM-stage Welcome splash at
+    # 640x870. 1 bpp vs 2 bpp: the splash is black-and-white, so it scans out
+    # identically; the depth is proven by the savedMode assert in sweep_cell.
+    # vs iix-portrait-603's golden: that row seeds the identical sense and
+    # sPRAMRec and checks the same pre-System frame, so it cannot differ — its
+    # 6.0.3-specific work is the desktop-geometry assertions that follow it.
+    sweep_cell(1, 0x002781a1a1000000:8, 0x81, 640, 870, "goldens/iix-jmfb-15in_bw-640x870-2bpp.png")
+    sweep_cell(1, 0x002782a1a1000000:8, 0x82, 640, 870, "goldens/iix-jmfb-15in_bw-640x870-4bpp.png")
+    sweep_cell(1, 0x002783a1a1000000:8, 0x83, 640, 870, "goldens/iix-jmfb-15in_bw-640x870-8bpp.png")
+    # 21" RGB (Kong), sense $0, 1152x870. References at >= 2 bpp carry Kong's
+    # gamma pre-distortion — see iicx-video-modes' header for why that is
+    # correct for a pre-CRT-response capture.
+    sweep_cell(0, 0x002780a7a7000000:8, 0x80, 1152, 870, "goldens/iix-jmfb-21in_rgb-1152x870-1bpp.png")
+    sweep_cell(0, 0x002781a7a7000000:8, 0x81, 1152, 870, "goldens/iix-jmfb-21in_rgb-1152x870-2bpp.png")
+    sweep_cell(0, 0x002782a7a7000000:8, 0x82, 1152, 870, "goldens/iix-jmfb-21in_rgb-1152x870-4bpp.png")
+    sweep_cell(0, 0x002783a7a7000000:8, 0x83, 1152, 870, "goldens/iix-jmfb-21in_rgb-1152x870-8bpp.png")
+    report_perf("suite-iix/iix-jmfb-sweep", scheduler.instr_count)
+}
+
+# ---- iix-75-hd --------------------------------------------------------------
+# NEW CELL IIx x 7.5.
+#
+# §7 wanted this cell taken by splitting the re-hosted sweep's media 4/4
+# between 7.0.1 and 7.5. That is not buildable, and the reason is worth
+# recording: a depth cell has to seed slot PRAM, which requires
+# rtc.pram.validate to stamp the validity tokens — and stamping them
+# suppresses the boot ROM's own default PRAM init, which is what populates the
+# startup device. On a floppy boot that costs nothing (the drive is found by
+# scanning), but a SCSI boot then finds no startup device and parks on the
+# blinking "?" floppy. Measured 2026-07-28: the sweep recipe against the 7.5
+# HD image gives the right geometry (1152x870) and a "?" floppy; restoring the
+# documented default boot device ($78..$7B = $FFFFFFDF) does not rescue it, so
+# more of the suppressed init matters than that one field. The same interaction
+# is recorded from the other direction in iici-aux3-8bpp/config.mk.
+#
+# So the sweep stays entirely on 7.0.1 floppy media, and IIx x 7.5 is taken by
+# this plain boot-to-desktop row instead. The cell is what §7 was after; only
+# the mechanism differs. Verified the image is host-portable first: IIx and
+# IIcx settle on the byte-identical frame from this image with no seeding.
+def row_iix_75_hd() {
+    machine.rtc.time = 3000000000
+    # video_sense named too: the sweep above leaves sense $0 (21" RGB, 1152
+    # wide) staged, and this row is a 640x480 cell.
+    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 400000000
+    wait_stable(1500000000)
+    assert machine.id == "iix" "iix-75-hd: machine.id != iix"
+    assert machine.ram == 8192 "iix-75-hd: machine.ram != 8192"
+    assert machine.screen.width == 640 "iix-75-hd: screen.width != 640"
+    assert_addr(false)
+    check_ex("goldens/iix-7.5-640x480x1-finder.png", 0, 440, 20, 640)
+    report_row("7.5", "jmfb", "hd-boot 5380")
+    report_perf("suite-iix/iix-75-hd", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("iix-nomedia") { row_end("iix-nomedia", try(row_iix_nomedia(), "FAILED")) }
@@ -227,6 +323,14 @@ if row_on("iix-portrait-603") { row_end("iix-portrait-603", try(row_iix_portrait
 if row_on("iix-71-extfd") { row_end("iix-71-extfd", try(row_iix_71_extfd(), "FAILED")) }
 if row_on("iix-gc-accel1") { row_end("iix-gc-accel1", try(row_iix_gc_accel1(), "FAILED")) }
 if row_on("iix-gc-decline1") { row_end("iix-gc-decline1", try(row_iix_gc_decline1(), "FAILED")) }
+if row_on("iix-jmfb-sweep") { row_end("iix-jmfb-sweep", try(row_iix_jmfb_sweep(), "FAILED")) }
+if row_on("iix-75-hd") {
+    if have_media($hd_75) {
+        row_end("iix-75-hd", try(row_iix_75_hd(), "FAILED"))
+    } else {
+        echo "skip: iix-75-hd (7.5 prepared image not fetched)"
+    }
+}
 
 suite_done()
 quit

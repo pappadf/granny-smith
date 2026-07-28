@@ -54,8 +54,8 @@
     "cells with them, and declaring them against directories that already exist",
     "would report them as regressions rather than as work in progress:",
     "  * the IIcx card-family cells (iicx-824gc accel/decline boots,",
-    "    iicx-gsvrom, iicx-video-modes' 16-cell sweep and the 8 cells that",
-    "    re-host to suite-iix)",
+    "    iicx-gsvrom, and iicx-video-modes' remaining 8-cell sweep",
+    "    half)",
     "  * extended-tier app/diagnostic re-hosts beyond the ones listed below",
     "  * the 6.0.8 rationalization's IIcx and IIfx floppy/HD split",
     "Under-declaration is stated here on purpose: it is visible in review",
@@ -504,6 +504,17 @@
       "depth": 1,
       "addr32": true,
       "suite": "iix-aux3-boot"
+    },
+    {
+      "machine": "iix",
+      "system": "7.5",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iix",
+      "media_gated": true
     },
     {
       "machine": "iici",

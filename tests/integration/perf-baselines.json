@@ -73,7 +73,7 @@
       "tolerance": 0.2
     },
     "suite-iifx/iifx-608-fd": {
-      "instr": 80000000,
+      "instr": 291539612,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-701-fd": {
@@ -81,7 +81,7 @@
       "tolerance": 0.2
     },
     "suite-iifx/iifx-71-824gc": {
-      "instr": 80000000,
+      "instr": 291528832,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-75-24ac-832": {
@@ -124,6 +124,10 @@
       "instr": 234259484,
       "tolerance": 0.2
     },
+    "suite-iix/iix-75-hd": {
+      "instr": 474770463,
+      "tolerance": 0.2
+    },
     "suite-iix/iix-824gc-seat": {
       "instr": 89800230,
       "tolerance": 0.2
@@ -134,6 +138,10 @@
     },
     "suite-iix/iix-gc-decline1": {
       "instr": 277753593,
+      "tolerance": 0.2
+    },
+    "suite-iix/iix-jmfb-sweep": {
+      "instr": 59329908,
       "tolerance": 0.2
     },
     "suite-iix/iix-nomedia": {

@@ -114,6 +114,12 @@ def row_se30_701_gsvrom() {
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 50000000
     skip_boot_wait()
+    # golden-collision-ok: se30-7.0.1-512x342-gsvrom-finder.png se30-7.1-512x342-finder.png
+    # - System_7_0_1.image and the 7.1 Disk Tools disk are both volumes named
+    # "Disk Tools", and at 512x342 mono the 7.0.1 and 7.1 Finders draw an
+    # identical desktop. The version is not what either golden proves: se30-71-fd
+    # pins 7.1 through its About-box golden, and this row's own claim is the
+    # generic vROM, asserted below via machine.config.vroms.
     let spent = wait_match("goldens/se30-7.0.1-512x342-gsvrom-finder.png", 600000000, 10000000)
     assert machine.id == "se30" "se30-701-gsvrom: machine.id != se30"
     assert machine.ram == 8192 "se30-701-gsvrom: machine.ram != 8192"

@@ -60,6 +60,14 @@ def row_iifx_608_fd() {
     machine.rtc.time = 3000000000
     machine.boot model="iifx" ram=32768 video_card="mdc_8_24"
     machine.floppy.drive[0].insert "${$ssw_608}"
+    # Run past the early boot transient BEFORE waiting. The desktop pattern is
+    # painted long before the Finder draws its menu bar and icons, and that bare
+    # grey frame is static for tens of millions of instructions — so both this
+    # row's REGEN and its verify used to settle on it, self-consistently, and
+    # the row claimed its coverage cell against a screen with nothing on it.
+    # Found by scripts/check-goldens.py once it learned to see wait_match
+    # goldens. The real Finder is up by ~400 M here.
+    scheduler.run 300000000
     let spent = wait_match("goldens/iifx-6.0.8-640x480x1-finder.png", 900000000, 20000000)
     assert machine.id == "iifx" "iifx-608-fd: machine.id != iifx"
     assert machine.ram == 32768 "iifx-608-fd: machine.ram != 32768"
@@ -67,7 +75,10 @@ def row_iifx_608_fd() {
     assert machine.screen.height == 480 "iifx-608-fd: screen.height != 480"
     assert_addr(false)
     report_row("6.0.8", "jmfb", "fd-boot swim-iop 800k-gcr")
-    report_perf("suite-iifx/iifx-608-fd", $spent)
+    # Total row spend, not $spent: with the 300 M pre-run above, the wait
+    # matches on its first poll, so $spent would be a constant 20 M and
+    # signal nothing. instr_count still moves if the boot changes.
+    report_perf("suite-iifx/iifx-608-fd", scheduler.instr_count)
 }
 
 # ---- iifx-701-fd ------------------------------------------------------------
@@ -88,6 +99,13 @@ def row_iifx_701_fd() {
     assert machine.memory.peek.b(0x5405) == 0x04 "iifx-701-fd: fDBInit still set ($5405 != 0x04)"
     assert (machine.memory.peek.l(0x0DD0) & 0x100000) == 0 "iifx-701-fd: RPUExists bit 20 of AddrMapFlags still set"
     assert_addr(false)
+    # golden-collision-ok: iifx-7.0.1-640x480x1-finder.png iifx-7.1-640x480x1-824gc-finder.png
+    # - System_7_0_1.image and the 7.1 Disk Tools disk are both volumes named
+    # "Disk Tools", so at 640x480x1 the two Finders draw an identical desktop,
+    # and at 1 bpp the JMFB and the 8*24 GC put out the same raster. Neither
+    # golden is what proves its row: this one is pinned by the fDBInit and
+    # RPUExists lowmem asserts above, and the 824gc row by its card-identity and
+    # gc.state == "reset" asserts.
     check("goldens/iifx-7.0.1-640x480x1-finder.png")
     about_box()
     check("goldens/iifx-7.0.1-640x480x1-about.png")
@@ -104,6 +122,14 @@ def row_iifx_71_824gc() {
     machine.rtc.time = 3000000000
     machine.boot model="iifx" ram=32768 video_card="824gc"
     machine.floppy.drive[0].insert "${$disk_tools_71}"
+    # Run past the early boot transient BEFORE waiting. The desktop pattern is
+    # painted long before the Finder draws its menu bar and icons, and that bare
+    # grey frame is static for tens of millions of instructions — so both this
+    # row's REGEN and its verify used to settle on it, self-consistently, and
+    # the row claimed its coverage cell against a screen with nothing on it.
+    # Found by scripts/check-goldens.py once it learned to see wait_match
+    # goldens. The real Finder is up by ~400 M here.
+    scheduler.run 300000000
     let spent = wait_match("goldens/iifx-7.1-640x480x1-824gc-finder.png", 900000000, 20000000)
     assert machine.id == "iifx" "iifx-71-824gc: machine.id != iifx"
     assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "iifx-71-824gc: slot $9 card != 8•24 GC"
@@ -112,7 +138,10 @@ def row_iifx_71_824gc() {
     assert machine.screen.width == 640 "iifx-71-824gc: screen.width != 640"
     assert_addr(false)
     report_row("7.1", "824gc", "fd-boot gc-declined")
-    report_perf("suite-iifx/iifx-71-824gc", $spent)
+    # Total row spend, not $spent: with the 300 M pre-run above, the wait
+    # matches on its first poll, so $spent would be a constant 20 M and
+    # signal nothing. instr_count still moves if the boot changes.
+    report_perf("suite-iifx/iifx-71-824gc", scheduler.instr_count)
 }
 
 # ---- iifx-24ac-seat ---------------------------------------------------------

@@ -31,10 +31,15 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-# check("x.png") / check_ex("x.png", ...) / machine.screen.match x.png
+# check("x.png") / check_ex("x.png", ...) / machine.screen.match x.png, plus any
+# bare "*.png" literal — which is how a parameterised helper's call sites name
+# their goldens (sweep_cell(..., "goldens/x.png")). Without that third pattern
+# the helper's goldens are invisible to this gate rather than merely
+# unresolvable, which is worse: nothing is reported at all.
 PATTERNS = [
-    re.compile(r'\bcheck(?:_ex)?\(\s*"([^"]+\.png)"'),
+    re.compile(r'\bcheck(?:_ex)?\(\s*"([^"]*)"'),
     re.compile(r'\bmachine\.screen\.match\s+"?([^\s"]+\.png)"?'),
+    re.compile(r'"([^"]*\.png)"'),
 ]
 
 # A row may legitimately re-assert the SAME golden at two points — the IIci
@@ -62,9 +67,9 @@ WAIVER = re.compile(r"#\s*golden-collision-ok:\s*(.+)$")
 
 
 def scan(script: Path):
-    """Return (assertion targets, waived basename-sets) for one script."""
+    """Return (resolvable targets, waived basename-sets, dynamic refs)."""
     text = script.read_text(encoding="utf-8", errors="replace")
-    out, waivers = [], []
+    out, waivers, dynamic = [], [], []
     for line in text.splitlines():
         waiver = WAIVER.search(line)
         if waiver:
@@ -76,9 +81,24 @@ def scan(script: Path):
             continue
         if line.lstrip().startswith("#"):
             continue
+        # machine.screen.save writes a diagnostic artifact; it asserts nothing,
+        # so its path is not a golden and must not be reported either way.
+        if "screen.save" in line:
+            continue
         for pat in PATTERNS:
-            out.extend(pat.findall(line))
-    return out, waivers
+            for ref in pat.findall(line):
+                if not ref.endswith(".png") and "${" not in ref:
+                    continue  # a check() arg that is not a golden reference
+                # A reference built from a variable — check("goldens/${$g}") in
+                # a parameterised sweep helper — cannot be resolved by reading
+                # the script, so those goldens are NOT covered by this gate.
+                # Say so out loud: a lint that silently skips what it cannot
+                # parse reads as "checked and clean", which is the same class
+                # of false assurance it exists to prevent.
+                bucket = dynamic if "${" in ref else out
+                if ref not in bucket:  # both patterns can match one line
+                    bucket.append(ref)
+    return out, waivers, dynamic
 
 
 def main() -> int:
@@ -90,10 +110,13 @@ def main() -> int:
     collisions = 0
     checked = 0
     waived_count = 0
+    unresolved = []
     for script in sorted(root.glob("*/*.script")):
         if script.parent.name == "lib":
             continue
-        refs, waivers = scan(script)
+        refs, waivers, dynamic = scan(script)
+        for ref in dynamic:
+            unresolved.append(f"{script.relative_to(root)}: {ref}")
         by_digest = defaultdict(set)
         for ref in refs:
             golden = (script.parent / ref).resolve()
@@ -132,6 +155,15 @@ def main() -> int:
         print("waive it explicitly:  # golden-collision-ok: a.png b.png - "
               "<why, and what proves it>")
         return 1
+
+    if unresolved:
+        print(f"NOT CHECKED — {len(unresolved)} golden reference(s) built from a "
+              f"variable, so this gate cannot resolve them:")
+        for u in unresolved:
+            print(f"    {u}")
+        print("    (verify those by hand: md5sum the goldens the helper is "
+              "called with)")
+        print()
 
     note = f", {waived_count} reviewed collision(s) waived" if waived_count else ""
     print(f"goldens ok: {checked} screen assertions, no unexplained "

@@ -202,109 +202,12 @@ scheduler.run 11000000
 assert machine.rtc.pram.peek(0x48) == 0x83 "12in_rgb 8bpp savedMode rewritten by ROM"
 machine.screen.match welcome-12in_rgb-512x384-8bpp.png
 
-# --- 15" Portrait B&W (sense $1) at 1/2/4/8 bpp ---
-machine.boot model="iicx" ram=8192 video_sense=1
-machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x002780a1a1000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
-assert machine.screen.width == 640 "15in_bw 1bpp width != 640"
-assert machine.screen.height == 870 "15in_bw 1bpp height != 870"
-assert machine.rtc.pram.peek(0x48) == 0x80 "15in_bw 1bpp savedMode rewritten by ROM"
-machine.screen.match welcome-15in_bw-640x870-1bpp.png
-
-machine.boot model="iicx" ram=8192 video_sense=1
-machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x002781a1a1000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
-assert machine.rtc.pram.peek(0x48) == 0x81 "15in_bw 2bpp savedMode rewritten by ROM"
-# golden-collision-ok: welcome-15in_bw-640x870-1bpp.png welcome-15in_bw-640x870-2bpp.png
-# - same reasoning as the 13in RGB pair above, on the 15in portrait geometry.
-machine.screen.match welcome-15in_bw-640x870-2bpp.png
-
-machine.boot model="iicx" ram=8192 video_sense=1
-machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x002782a1a1000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
-assert machine.rtc.pram.peek(0x48) == 0x82 "15in_bw 4bpp savedMode rewritten by ROM"
-machine.screen.match welcome-15in_bw-640x870-4bpp.png
-
-machine.boot model="iicx" ram=8192 video_sense=1
-machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x002783a1a1000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
-assert machine.rtc.pram.peek(0x48) == 0x83 "15in_bw 8bpp savedMode rewritten by ROM"
-machine.screen.match welcome-15in_bw-640x870-8bpp.png
-
-# --- 21" RGB Kong (sense $0) at 1/2/4/8 bpp ---
-# References at >= 2bpp show a yellow tint — see header comment.
-machine.boot model="iicx" ram=8192 video_sense=0
-machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x002780a7a7000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
-assert machine.screen.width == 1152 "21in_rgb 1bpp width != 1152"
-assert machine.screen.height == 870 "21in_rgb 1bpp height != 870"
-assert machine.rtc.pram.peek(0x48) == 0x80 "21in_rgb 1bpp savedMode rewritten by ROM"
-machine.screen.match welcome-21in_rgb-1152x870-1bpp.png
-
-machine.boot model="iicx" ram=8192 video_sense=0
-machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x002781a7a7000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
-assert machine.rtc.pram.peek(0x48) == 0x81 "21in_rgb 2bpp savedMode rewritten by ROM"
-machine.screen.match welcome-21in_rgb-1152x870-2bpp.png
-
-machine.boot model="iicx" ram=8192 video_sense=0
-machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x002782a7a7000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
-assert machine.rtc.pram.peek(0x48) == 0x82 "21in_rgb 4bpp savedMode rewritten by ROM"
-machine.screen.match welcome-21in_rgb-1152x870-4bpp.png
-
-machine.boot model="iicx" ram=8192 video_sense=0
-machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
-machine.rtc.pram.validate
-machine.rtc.pram.poke 0x46 0x002783a7a7000000:8
-scheduler.run 50000000
-machine.memory.poke.w 0x017A 0x8805
-scheduler.run 1500000
-machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
-assert machine.rtc.pram.peek(0x48) == 0x83 "21in_rgb 8bpp savedMode rewritten by ROM"
-machine.screen.match welcome-21in_rgb-1152x870-8bpp.png
+# --- 15" Portrait B&W (sense $1) and 21" RGB Kong (sense $0) ---
+# RE-HOSTED to suite-iix (§7's 8-of-16 split): those eight cells now run on the
+# IIx, whose JMFB also seats in slot 9, so the same sixteen (sense x depth)
+# cells span two hosts instead of one. See suite-iix's iix-jmfb-sweep row —
+# including why the 4/4 media split §7 also asked for is not buildable
+# (seeding slot PRAM suppresses the ROM's startup-device init, which a SCSI
+# boot needs), and what takes the IIx x 7.5 cell instead.
 
 quit
