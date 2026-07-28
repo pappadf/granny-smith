@@ -873,6 +873,10 @@ config_t *system_restore(const char *filename) {
             nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, restored_record.custom_mode);
         if (restored_record.video_sense >= 0)
             jmfb_pending_sense_set((uint8_t)restored_record.video_sense);
+        // The DAFB's half of this is NOT staged here: dafb.h is a machine
+        // header (src/machines/mcu/) and core may not include it — see the
+        // core-layering test. The Quadras' built-in video carries its sense
+        // through the checkpoint as device state instead; see dafb_checkpoint().
         if (restored_record.vrom[0])
             vrom_set_path(restored_record.vrom);
     }

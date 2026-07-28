@@ -269,6 +269,40 @@ def row_q700_checkpoint() {
     report_perf("suite-quadra/q700-checkpoint", scheduler.instr_count)
 }
 
+# ---- q700-sense-checkpoint --------------------------------------------------
+# Regression for the boot/restore asymmetry in monitor-sense staging, found by
+# review of this branch. machine.boot stages the sense into BOTH video paths
+# (jmfb_pending_sense_set + dafb_pending_sense_set, machine.c), but the
+# checkpoint restore path in system.c only staged the jmfb half — so a Quadra
+# booted with a non-default video_sense came back from a restore reporting the
+# hardcoded default (6) on its sense pins.
+#
+# The sense is NOT carried in the checkpoint stream on purpose: that stream is
+# strictly ordered, so adding a field would misalign every checkpoint written
+# before the change. It is re-staged from the built-from record, which already
+# persists video_sense and is authoritative — sense pins are passive, so the
+# guest cannot change them.
+#
+# ROM-only, so it costs a few million instructions. Reading the sense register
+# ($F9800000 + $1C) needs the drive bits released first ($7 = tristate);
+# the register then presents the monitor code INVERTED, so sense 1 reads as
+# ~1 & 7 = 6. Before the fix the second read returned ~6 & 7 = 1 (measured).
+def row_q700_sense_checkpoint() {
+    machine.boot model="q700" ram=4096 rom="${$quadra_rom}" video_sense=1
+    scheduler.run 5000000
+    machine.memory.poke.l 0xf980001c 0x7
+    assert machine.memory.peek.l(0xf980001c) == 0x6 "q700-sense-checkpoint: sense reg reads ${machine.memory.peek.l(0xf980001c):x} at boot, want 6 (video_sense=1 inverted)"
+    assert checkpoint.save("${$WORK_DIR}/suite-quadra-sense.gsc") "q700-sense-checkpoint: save failed"
+    # Rebuild at the DEFAULT sense, so a restore that fails to re-stage leaves
+    # the default in place and the assert below catches it.
+    machine.boot model="q700" ram=4096 rom="${$quadra_rom}"
+    assert checkpoint.load("${$WORK_DIR}/suite-quadra-sense.gsc") "q700-sense-checkpoint: load failed"
+    scheduler.run 2000000
+    machine.memory.poke.l 0xf980001c 0x7
+    assert machine.memory.peek.l(0xf980001c) == 0x6 "q700-sense-checkpoint: sense reg reads ${machine.memory.peek.l(0xf980001c):x} after restore, want 6 — the restore path dropped video_sense and fell back to the default"
+    report_perf("suite-quadra/q700-sense-checkpoint", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("q700-chime") { row_end("q700-chime", try(row_q700_chime(), "FAILED")) }
@@ -304,6 +338,7 @@ if row_on("q950-76-hd") {
     }
 }
 if row_on("q700-checkpoint") { row_end("q700-checkpoint", try(row_q700_checkpoint(), "FAILED")) }
+if row_on("q700-sense-checkpoint") { row_end("q700-sense-checkpoint", try(row_q700_sense_checkpoint(), "FAILED")) }
 
 # q700-dafb-senses runs LAST on purpose: it stages non-default monitor
 # senses, and machine.boot inherits unspecified staging from the built-from

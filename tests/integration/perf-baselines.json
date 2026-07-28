@@ -212,6 +212,10 @@
       "instr": 37083119,
       "tolerance": 0.2
     },
+    "suite-quadra/q700-sense-checkpoint": {
+      "instr": 6398720,
+      "tolerance": 0.2
+    },
     "suite-quadra/q900-75-hd": {
       "instr": 697438382,
       "tolerance": 0.2

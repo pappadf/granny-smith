@@ -203,7 +203,13 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     assert(st->dafb != NULL);
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, q700_dafb_irq, cfg);
-    dafb_set_monitor_sense(st->dafb, dafb_consume_pending_sense()); // default 6 = 13" RGB
+    // Consume unconditionally so a staged sense never leaks into a later
+    // boot, but only APPLY it on a cold build: on a restore, dafb_init()
+    // has already read the saved sense out of the checkpoint, and this
+    // call would otherwise overwrite it with the default.
+    uint8_t staged_sense = dafb_consume_pending_sense(); // default 6 = 13" RGB
+    if (!cp)
+        dafb_set_monitor_sense(st->dafb, staged_sense);
     // TurboSCSI channel 0 observes the 53C96's DRQ (control-reg bit 9).
     dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
 
