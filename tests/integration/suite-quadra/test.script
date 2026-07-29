@@ -44,14 +44,30 @@ let q950_rom = "../../data/roms/q950-3dc27823.rom"
 # ---- q700-chime -------------------------------------------------------------
 # Phase C observables. The capture window is frame-exact (run_exact
 # semantics): the constants are load-bearing, not padding.
+#
+# §10 q.5 asked whether pinning rtc.time plus a fixed power-on phase could make
+# this capture sample-exact, or whether the window assert had to stay. Measured
+# 2026-07-28, and the premise was wrong in both directions:
+#
+#   * The capture is ALREADY bit-reproducible, and rtc.time is irrelevant to
+#     it. Three separate processes with the clock pinned and three more with it
+#     untouched all produced 62,362 frames and a byte-identical WAV — six runs,
+#     one md5. The believed +-1 frame RTC-phase sensitivity does not reproduce.
+#   * A sample-exact golden is nevertheless impossible here, for an unrelated
+#     reason: sound.match refuses the comparison with "sample rate changed
+#     mid-capture". The ASC reads a steady 22,257 Hz whenever it is sampled, so
+#     the change is a transient inside the capture; starting the capture 500 K
+#     or 2 M instructions later does not clear it either.
+#
+# So the window assert stays, but it becomes an EXACT frame count rather than a
+# 5,000-frame range — which the reproducibility measurement earns. If the ASC
+# transient is ever tracked down, this row can adopt check_sound() unchanged.
 def row_q700_chime() {
     machine.boot model="q700" ram=8192 rom="${$quadra_rom}"
     machine.sound.capture.start
     scheduler.run 30000000
     machine.sound.capture.stop
-    # ~62.4k frames at 22,257 Hz; silence or a hung POST miss the window.
-    assert machine.sound.capture.frames > 60000 "q700-chime: boot chime missing or short"
-    assert machine.sound.capture.frames < 65000 "q700-chime: unexpected capture length"
+    assert machine.sound.capture.frames == 62362 "q700-chime: capture length ${machine.sound.capture.frames}, want 62362 (bit-reproducible across processes — a change here is a real change)"
     assert debug.mac.globals.read("MemTop") == 0x800000 "q700-chime: RAM sizing wrong"
     assert debug.mac.globals.read("ROMBase") == 0x40800000 "q700-chime: ROMBase wrong"
     let t0 = debug.mac.globals.read("Ticks")

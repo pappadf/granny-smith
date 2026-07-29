@@ -39,6 +39,30 @@ for v in $hits {
 }
 assert $total == 1 "break/continue"
 
+# --- list literals (proposal-integration-test-rework §10 q.8) ------------
+# `[` in postfix position is indexing, so a `[` where a primary is expected
+# can only start a list — these two readings never collide.
+let empty = []
+assert len($empty) == 0 "empty list literal"
+let nums = [1, 2, 3]
+assert len($nums) == 3 "list literal length"
+assert $nums[0] == 1 "list literal first element"
+assert $nums[2] == 3 "list literal last element"
+let trailing = [1, 2, 3,]
+assert len($trailing) == 3 "trailing comma is allowed"
+let mixed = [1, "two", 3 + 4]
+assert $mixed[1] == "two" "mixed-kind list literal"
+assert $mixed[2] == 7 "list elements are full expressions"
+let nested = [[1, 2], [3, 4]]
+assert len($nested) == 2 "nested list literal"
+assert $nested[1][0] == 3 "nested list indexing"
+let sum = 0
+for n in [10, 20, 30] { $sum = $sum + $n }
+assert $sum == 60 "for over a list literal"
+# Indexing a path still parses as indexing, not as a list.
+assert try(shell.eval("let bad = [1, 2"), none) == none "unterminated list literal is an error"
+assert try(shell.eval("let bad = [1 2]"), none) == none "missing comma is an error"
+
 # --- if / elif / else ---------------------------------------------------
 let label = ""
 if $n == 1 {

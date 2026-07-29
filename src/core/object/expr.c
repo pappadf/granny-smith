@@ -996,6 +996,46 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         return v;
     }
 
+    // List literal — `[a, b, c]`, with a trailing comma allowed. Unambiguous
+    // here: `[` in POSTFIX position is indexing (`slot[9]`) and is consumed by
+    // the path parser, so a `[` where a primary is expected can only start a
+    // list. `for x in [...]` then works with no change to the loop, which
+    // already iterates V_LIST.
+    if (c == '[') {
+        L->p++;
+        value_t *items = NULL;
+        size_t len = 0, cap = 0;
+        lex_skip_ws(L);
+        while (*L->p != ']') {
+            value_t item = parse_expr(L, ctx);
+            if (L->err_set) {
+                value_t partial = val_list(items, len);
+                value_free(&partial);
+                return item;
+            }
+            if (!val_list_push(&items, &len, &cap, item)) {
+                value_t partial = val_list(items, len);
+                value_free(&partial);
+                lex_error(L, "out of memory in list literal");
+                return val_err("out of memory");
+            }
+            lex_skip_ws(L);
+            if (*L->p == ',') {
+                L->p++;
+                lex_skip_ws(L);
+                continue; // trailing comma before ']' is fine
+            }
+            if (*L->p != ']') {
+                value_t partial = val_list(items, len);
+                value_free(&partial);
+                lex_error(L, "expected ',' or ']' in list literal");
+                return val_err("expected ',' or ']'");
+            }
+        }
+        L->p++;
+        return val_list(items, len);
+    }
+
     // String literal — decode escapes and run interpolation against ctx
     // in one pass so `${expr}` and `$name` work inside expression strings.
     if (c == '"') {

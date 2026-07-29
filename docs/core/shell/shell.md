@@ -97,6 +97,28 @@ context:
 `${…}` exists **only inside double-quoted strings**. Nothing outside a
 string is ever rewritten.
 
+## List literals
+
+`[a, b, c]` builds a list. Elements are full expressions, may be of mixed
+kinds, may nest, and a trailing comma is allowed:
+
+```
+let nums   = [1, 2, 3]
+let mixed  = [1, "two", 3 + 4]     # -> [1, two, 7]
+let table  = [[1, 2], [3, 4]]
+let empty  = []
+assert $table[1][0] == 3
+for n in [10, 20, 30] { … }
+```
+
+This does not collide with indexing. `[` in **postfix** position — after a
+path or a value, as in `slot[9]` or `$table[1]` — is an index and is consumed
+by the path parser; `[` where a **primary** is expected can only begin a list.
+The two readings never overlap, so no disambiguation rule is needed.
+
+`for` already iterated lists, so a literal is directly iterable with no
+further machinery.
+
 ## Bindings — one namespace, one sigil
 
 `$name` means "the value of binding `name`" everywhere. The store is a
