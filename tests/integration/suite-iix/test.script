@@ -257,6 +257,10 @@ def sweep_cell(sense, sister, spid, w, h, settle, golden) {
     assert machine.screen.height == $h "jmfb-sweep ${$golden}: height != ${$h}"
     assert machine.rtc.pram.peek(0x48) == $spid "jmfb-sweep ${$golden}: savedMode rewritten by ROM"
     check($golden)
+    # Claim the cell so the contract protects it: these are (card x geometry
+    # x depth) cells in §3.2's sense, taken at ROM stage — the same shape
+    # iix-portrait-603 already declares.
+    report_row("7.0.1", "jmfb", "rom-stage ${$w}x${$h}x${machine.screen.depth}")
 }
 
 def row_iix_jmfb_sweep() {

@@ -50,168 +50,34 @@
     "                              chance to cover it. Read from that",
     "                              directory's config.mk, so it cannot drift.",
     "",
-    "DELIBERATELY NOT DECLARED YET — the §7 passes still to land bring their",
-    "cells with them, and declaring them against directories that already exist",
-    "would report them as regressions rather than as work in progress:",
-    "  * the IIcx card-family cells (iicx-824gc accel/decline boots,",
-    "    iicx-gsvrom, and iicx-video-modes' remaining 8-cell sweep",
-    "    half)",
-    "  * extended-tier app/diagnostic re-hosts beyond the ones listed below",
-    "  * the 6.0.8 rationalization's IIcx and IIfx floppy/HD split",
+    "STILL NOT DECLARED, and now for a different reason. Every §7 pass has",
+    "landed, so nothing here is waiting on work in progress; what is left is",
+    "coverage that exists and passes but is not claimed:",
+    "  * extended-tier app and diagnostic rows (mactest x4, marathon x2,",
+    "    sysinfo x2, the installers). These assert an application's behaviour",
+    "    rather than a (machine x system x card x geometry x depth) cell, so a",
+    "    matrix row would restate the directory's own goldens without adding a",
+    "    protected axis.",
+    "  * the 6.0.8 rationalization's IIcx and IIfx floppy/HD split.",
+    "The card-family display cells that used to sit here are now DECLARED:",
+    "iicx-video-modes' 8 remaining JMFB cells, iicx-gsvrom's 12 generic-vROM",
+    "cells, and suite-iix's 8 re-hosted sweep cells. They emit @@COV like any",
+    "other row, so the contract now catches it if they stop covering what they",
+    "cover. ROM-stage cells are labelled as such in their feature string, the",
+    "shape iix-portrait-603 established.",
     "Under-declaration is stated here on purpose: it is visible in review",
     "rather than silently missing from the diff."
   ],
   "cells": [
     {
-      "machine": "plus",
-      "system": "2.0",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-plus"
-    },
-    {
-      "machine": "plus",
-      "system": "3.2",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-plus"
-    },
-    {
-      "machine": "plus",
-      "system": "4.1",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-plus"
-    },
-    {
-      "machine": "plus",
-      "system": "4.2",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-plus"
-    },
-    {
-      "machine": "plus",
+      "machine": "iici",
       "system": "6.0.8",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-plus"
-    },
-    {
-      "machine": "plus",
-      "system": "7.1",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-plus"
-    },
-    {
-      "machine": "se30",
-      "system": "6.0.8",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-se30"
-    },
-    {
-      "machine": "se30",
-      "system": "7.0.1",
-      "card": "gsvrom",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-se30"
-    },
-    {
-      "machine": "se30",
-      "system": "7.1",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-se30"
-    },
-    {
-      "machine": "se30",
-      "system": "7.5",
-      "card": "builtin",
-      "width": 512,
-      "height": 342,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-se30",
-      "media_gated": true
-    },
-    {
-      "machine": "iix",
-      "system": "6.0.3",
-      "card": "jmfb",
-      "width": 640,
-      "height": 870,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-iix"
-    },
-    {
-      "machine": "iix",
-      "system": "7.0.1",
-      "card": "jmfb",
+      "card": "rbv",
       "width": 640,
       "height": 480,
       "depth": 1,
       "addr32": false,
-      "suite": "suite-iix"
-    },
-    {
-      "machine": "iix",
-      "system": "7.1",
-      "card": "jmfb",
-      "width": 640,
-      "height": 480,
-      "depth": 2,
-      "addr32": false,
-      "suite": "suite-iix"
-    },
-    {
-      "machine": "iix",
-      "system": "6.0.8",
-      "card": "824gc",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-iix"
-    },
-    {
-      "machine": "iicx",
-      "system": "6.0.8",
-      "card": "824gc",
-      "width": 640,
-      "height": 480,
-      "depth": 8,
-      "addr32": false,
-      "suite": "suite-iicx"
+      "suite": "iici-format-hd"
     },
     {
       "machine": "iici",
@@ -225,6 +91,72 @@
     },
     {
       "machine": "iici",
+      "system": "7.0.1",
+      "card": "rbv",
+      "width": 640,
+      "height": 480,
+      "depth": 2,
+      "addr32": false,
+      "suite": "suite-iici",
+      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+    },
+    {
+      "machine": "iici",
+      "system": "7.0.1",
+      "card": "rbv",
+      "width": 640,
+      "height": 480,
+      "depth": 4,
+      "addr32": false,
+      "suite": "suite-iici",
+      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+    },
+    {
+      "machine": "iici",
+      "system": "7.0.1",
+      "card": "rbv",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-iici",
+      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+    },
+    {
+      "machine": "iici",
+      "system": "7.1",
+      "card": "display_card_24ac",
+      "width": 1152,
+      "height": 870,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-iici",
+      "blocked": "proposal-emulator-bug-fixes.md §7 — the 24AC's non-640-wide modes scan out corrupt; and the built-in video keeps the boot screen on the IIci, so a card-only raster is not observable via machine.screen"
+    },
+    {
+      "machine": "iici",
+      "system": "7.1",
+      "card": "rbv",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iici",
+      "media_gated": true
+    },
+    {
+      "machine": "iici",
+      "system": "7.1",
+      "card": "rbv+24ac",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": true,
+      "suite": "suite-iici",
+      "blocked": "proposal-emulator-bug-fixes.md §8 — a Display Card 24AC seated beside the live built-in RBV hangs the boot at Welcome, whatever the boot medium; the card-free 7.1 cell above boots fine"
+    },
+    {
+      "machine": "iici",
       "system": "7.5",
       "card": "rbv",
       "width": 640,
@@ -246,109 +178,235 @@
       "media_gated": true
     },
     {
-      "machine": "iisi",
-      "system": "6.0.8",
-      "card": "v8",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-iisi"
-    },
-    {
-      "machine": "iisi",
-      "system": "7.0.1",
-      "card": "v8",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-iisi"
-    },
-    {
-      "machine": "iisi",
-      "system": "7.1",
-      "card": "v8",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-iisi"
-    },
-    {
-      "machine": "iisi",
-      "system": "7.5",
-      "card": "v8",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-iisi",
-      "media_gated": true
-    },
-    {
-      "machine": "q700",
-      "system": "7.1",
-      "card": "dafb",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-quadra"
-    },
-    {
-      "machine": "q700",
-      "system": "7.5",
-      "card": "dafb",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-quadra",
-      "media_gated": true
-    },
-    {
-      "machine": "q900",
-      "system": "7.5",
-      "card": "dafb",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-quadra",
-      "media_gated": true
-    },
-    {
-      "machine": "q900",
-      "system": "7.6",
-      "card": "dafb",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": false,
-      "suite": "suite-quadra",
-      "media_gated": true
-    },
-    {
-      "machine": "q950",
-      "system": "7.1",
-      "card": "dafb",
-      "width": 640,
-      "height": 480,
-      "depth": 16,
-      "addr32": false,
-      "suite": "suite-quadra"
-    },
-    {
-      "machine": "q950",
-      "system": "7.6",
-      "card": "dafb",
+      "machine": "iici",
+      "system": "A/UX 3.0.1",
+      "card": "rbv",
       "width": 640,
       "height": 480,
       "depth": 8,
-      "addr32": true,
-      "suite": "suite-quadra",
-      "media_gated": true
+      "addr32": false,
+      "suite": "iici-aux3-8bpp",
+      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video cannot reach 8 bpp, which is what this milestone hits under A/UX"
+    },
+    {
+      "machine": "iicx",
+      "system": "6.0.8",
+      "card": "824gc",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-iicx"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 512,
+      "height": 384,
+      "depth": 1,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 512,
+      "height": 384,
+      "depth": 8,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 640,
+      "height": 480,
+      "depth": 2,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 640,
+      "height": 480,
+      "depth": 4,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 640,
+      "height": 870,
+      "depth": 1,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 640,
+      "height": 870,
+      "depth": 8,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 800,
+      "height": 600,
+      "depth": 8,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 832,
+      "height": 624,
+      "depth": 8,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 1152,
+      "height": 870,
+      "depth": 1,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 1152,
+      "height": 870,
+      "depth": 8,
+      "addr32": false,
+      "suite": "iicx-gsvrom"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 512,
+      "height": 384,
+      "depth": 1,
+      "addr32": false,
+      "suite": "iicx-video-modes"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 512,
+      "height": 384,
+      "depth": 2,
+      "addr32": false,
+      "suite": "iicx-video-modes"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 512,
+      "height": 384,
+      "depth": 4,
+      "addr32": false,
+      "suite": "iicx-video-modes"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 512,
+      "height": 384,
+      "depth": 8,
+      "addr32": false,
+      "suite": "iicx-video-modes"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "iicx-video-modes"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 2,
+      "addr32": false,
+      "suite": "iicx-video-modes"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 4,
+      "addr32": false,
+      "suite": "iicx-video-modes"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "iicx-video-modes"
+    },
+    {
+      "machine": "iicx",
+      "system": "7.1",
+      "card": "display_card_24ac",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-iicx"
     },
     {
       "machine": "iifx",
@@ -413,6 +471,199 @@
       "suite": "suite-iifx"
     },
     {
+      "machine": "iisi",
+      "system": "6.0.8",
+      "card": "v8",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iisi"
+    },
+    {
+      "machine": "iisi",
+      "system": "6.0.8",
+      "card": "v8",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-iisi",
+      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+    },
+    {
+      "machine": "iisi",
+      "system": "7.0.1",
+      "card": "v8",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iisi"
+    },
+    {
+      "machine": "iisi",
+      "system": "7.1",
+      "card": "v8",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iisi"
+    },
+    {
+      "machine": "iisi",
+      "system": "7.5",
+      "card": "v8",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iisi",
+      "media_gated": true
+    },
+    {
+      "machine": "iix",
+      "system": "6.0.3",
+      "card": "jmfb",
+      "width": 640,
+      "height": 870,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "6.0.8",
+      "card": "824gc",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 870,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 870,
+      "depth": 2,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 870,
+      "depth": 4,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 870,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 1152,
+      "height": 870,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 1152,
+      "height": 870,
+      "depth": 2,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 1152,
+      "height": 870,
+      "depth": 4,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.0.1",
+      "card": "jmfb",
+      "width": 1152,
+      "height": 870,
+      "depth": 8,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 2,
+      "addr32": false,
+      "suite": "suite-iix"
+    },
+    {
+      "machine": "iix",
+      "system": "7.5",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iix",
+      "media_gated": true
+    },
+    {
+      "machine": "iix",
+      "system": "A/UX 3.0.1",
+      "card": "jmfb",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": true,
+      "suite": "iix-aux3-boot"
+    },
+    {
       "machine": "lisa",
       "system": "LOS 3.1",
       "card": "builtin",
@@ -443,99 +694,84 @@
       "suite": "suite-lisa"
     },
     {
-      "machine": "iici",
-      "system": "7.1",
-      "card": "rbv",
-      "width": 640,
-      "height": 480,
+      "machine": "plus",
+      "system": "2.0",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
       "depth": 1,
       "addr32": false,
-      "suite": "suite-iici",
-      "media_gated": true
+      "suite": "suite-plus"
     },
     {
-      "machine": "iici",
-      "system": "7.1",
-      "card": "rbv+24ac",
-      "width": 640,
-      "height": 480,
+      "machine": "plus",
+      "system": "3.2",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
       "depth": 1,
-      "addr32": true,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §8 — a Display Card 24AC seated beside the live built-in RBV hangs the boot at Welcome, whatever the boot medium; the card-free 7.1 cell above boots fine"
-    },
-    {
-      "machine": "iicx",
-      "system": "7.1",
-      "card": "display_card_24ac",
-      "width": 640,
-      "height": 480,
-      "depth": 8,
       "addr32": false,
-      "suite": "suite-iicx"
+      "suite": "suite-plus"
     },
     {
-      "machine": "iici",
-      "system": "7.1",
-      "card": "display_card_24ac",
-      "width": 1152,
-      "height": 870,
-      "depth": 8,
+      "machine": "plus",
+      "system": "4.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
       "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §7 — the 24AC's non-640-wide modes scan out corrupt; and the built-in video keeps the boot screen on the IIci, so a card-only raster is not observable via machine.screen"
+      "suite": "suite-plus"
     },
     {
-      "machine": "iici",
+      "machine": "plus",
+      "system": "4.2",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-plus"
+    },
+    {
+      "machine": "plus",
       "system": "6.0.8",
-      "card": "rbv",
-      "width": 640,
-      "height": 480,
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
       "depth": 1,
       "addr32": false,
-      "suite": "iici-format-hd"
+      "suite": "suite-plus"
     },
     {
-      "machine": "iix",
-      "system": "A/UX 3.0.1",
-      "card": "jmfb",
-      "width": 640,
-      "height": 480,
-      "depth": 1,
-      "addr32": true,
-      "suite": "iix-aux3-boot"
-    },
-    {
-      "machine": "iix",
-      "system": "7.5",
-      "card": "jmfb",
-      "width": 640,
-      "height": 480,
+      "machine": "plus",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
       "depth": 1,
       "addr32": false,
-      "suite": "suite-iix",
-      "media_gated": true
-    },
-    {
-      "machine": "iici",
-      "system": "A/UX 3.0.1",
-      "card": "rbv",
-      "width": 640,
-      "height": 480,
-      "depth": 8,
-      "addr32": false,
-      "suite": "iici-aux3-8bpp",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video cannot reach 8 bpp, which is what this milestone hits under A/UX"
+      "suite": "suite-plus"
     },
     {
       "machine": "q700",
-      "system": "7.6",
-      "card": "dafb+24ac+824gc",
+      "system": "7.1",
+      "card": "dafb",
       "width": 640,
       "height": 480,
       "depth": 1,
-      "addr32": true,
-      "suite": "quadra-dual-card",
+      "addr32": false,
+      "suite": "suite-quadra"
+    },
+    {
+      "machine": "q700",
+      "system": "7.5",
+      "card": "dafb",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-quadra",
       "media_gated": true
     },
     {
@@ -550,48 +786,99 @@
       "blocked": "proposal-emulator-bug-fixes.md §6 — DAFB honours only monitor sense 6"
     },
     {
-      "machine": "iici",
-      "system": "7.0.1",
-      "card": "rbv",
+      "machine": "q700",
+      "system": "7.6",
+      "card": "dafb+24ac+824gc",
       "width": 640,
       "height": 480,
-      "depth": 2,
-      "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "depth": 1,
+      "addr32": true,
+      "suite": "quadra-dual-card",
+      "media_gated": true
     },
     {
-      "machine": "iici",
-      "system": "7.0.1",
-      "card": "rbv",
+      "machine": "q900",
+      "system": "7.5",
+      "card": "dafb",
       "width": 640,
       "height": 480,
-      "depth": 4,
+      "depth": 1,
       "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "suite": "suite-quadra",
+      "media_gated": true
     },
     {
-      "machine": "iici",
-      "system": "7.0.1",
-      "card": "rbv",
+      "machine": "q900",
+      "system": "7.6",
+      "card": "dafb",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-quadra",
+      "media_gated": true
+    },
+    {
+      "machine": "q950",
+      "system": "7.1",
+      "card": "dafb",
+      "width": 640,
+      "height": 480,
+      "depth": 16,
+      "addr32": false,
+      "suite": "suite-quadra"
+    },
+    {
+      "machine": "q950",
+      "system": "7.6",
+      "card": "dafb",
       "width": 640,
       "height": 480,
       "depth": 8,
-      "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "addr32": true,
+      "suite": "suite-quadra",
+      "media_gated": true
     },
     {
-      "machine": "iisi",
+      "machine": "se30",
       "system": "6.0.8",
-      "card": "v8",
-      "width": 640,
-      "height": 480,
-      "depth": 8,
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
       "addr32": false,
-      "suite": "suite-iisi",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "suite": "suite-se30"
+    },
+    {
+      "machine": "se30",
+      "system": "7.0.1",
+      "card": "gsvrom",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-se30"
+    },
+    {
+      "machine": "se30",
+      "system": "7.1",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-se30"
+    },
+    {
+      "machine": "se30",
+      "system": "7.5",
+      "card": "builtin",
+      "width": 512,
+      "height": 342,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-se30",
+      "media_gated": true
     }
   ]
 }
