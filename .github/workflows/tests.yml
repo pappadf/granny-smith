@@ -58,6 +58,11 @@ jobs:
         id: fetch-data
         run: |
           if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            # No flag: fetches the revision pinned in tests/data-version, not
+            # whatever gs-test-data HEAD happens to be. CI is therefore
+            # reproducible against the media the goldens were captured from,
+            # and adopting newer data is a reviewed pin bump rather than
+            # something that silently changes under a green build.
             ./scripts/fetch-test-data.sh
             # Only mark test data as available once fetch actually succeeds,
             # otherwise gated steps below would run without data and fail confusingly.

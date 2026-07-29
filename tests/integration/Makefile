@@ -30,6 +30,23 @@ WORK_DIR_BASE := $(ROOT_DIR)/build/integration
 FETCH_SCRIPT := $(ROOT_DIR)/scripts/fetch-test-data.sh
 RUNNER := $(ROOT_DIR)/scripts/run-integration-test.sh
 
+# Which gs-test-data revision the goldens were captured against, and which one
+# is actually on disk. Printed in the run header so a stale-media failure is
+# diagnosable from the log alone rather than looking like a pile of golden
+# regressions. Both are empty on a checkout with no pin or pre-pin data, and
+# the header then simply says nothing.
+DATA_PIN := $(shell grep -vE '^[[:space:]]*(\#|$$)' $(ROOT_DIR)/tests/data-version 2>/dev/null | head -1 | tr -d '[:space:]')
+DATA_HAVE := $(shell sed -n 's/^\# Commit: //p' $(TEST_DATA)/.gs-test-data-marker 2>/dev/null | head -1 | tr -d '[:space:]')
+ifeq ($(DATA_HAVE),)
+DATA_LINE :=
+else ifeq ($(DATA_PIN),$(DATA_HAVE))
+DATA_LINE := test data: $(shell echo $(DATA_HAVE) | cut -c1-12) (pinned)
+else ifeq ($(DATA_PIN),)
+DATA_LINE := test data: $(shell echo $(DATA_HAVE) | cut -c1-12) (no pin recorded)
+else
+DATA_LINE := !! test data: $(shell echo $(DATA_HAVE) | cut -c1-12) but tests/data-version pins $(shell echo $(DATA_PIN) | cut -c1-12) -- goldens may not match this media
+endif
+
 # Valgrind configuration for memcheck
 # --error-exitcode=1: Return non-zero on memory errors
 # --leak-check=full: Detailed leak reporting
@@ -74,8 +91,16 @@ FORCE:
 
 # Check if test data is available
 check-data:
-	@if $(FETCH_SCRIPT) --check 2>/dev/null; then \
+	@$(FETCH_SCRIPT) --check >/dev/null 2>&1; rc=$$?; \
+	if [ $$rc -eq 0 ]; then \
 		echo "Test data is available"; \
+	elif [ $$rc -eq 2 ]; then \
+		echo ""; \
+		echo "========================================"; \
+		echo "ERROR: Test data is the WRONG REVISION"; \
+		echo "========================================"; \
+		$(FETCH_SCRIPT) --check 2>&1 | tail -n +2; \
+		exit 1; \
 	else \
 		echo ""; \
 		echo "========================================"; \
@@ -125,6 +150,7 @@ $(DUMP_BIN):
 test: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
 	@echo "Running $(words $(TEST_DIRS)) integration test(s)$(if $(TIER), [tier: $(TIER)])"
+	@$(if $(DATA_LINE),echo "$(DATA_LINE)",true)
 	@echo "========================================"
 	@$(MAKE) --no-print-directory -k $(TEST_TARGETS); \
 	failed=""; \
@@ -175,6 +201,7 @@ clean:
 test-valgrind: check-data $(HEADLESS_BIN) $(DUMP_BIN)
 	@echo "========================================"
 	@echo "Running $(words $(TEST_DIRS)) integration test(s) under Valgrind$(if $(TIER), [tier: $(TIER)])"
+	@$(if $(DATA_LINE),echo "$(DATA_LINE)",true)
 	@echo "========================================"
 	@$(MAKE) --no-print-directory -k $(VALGRIND_TARGETS); \
 	failed=""; \

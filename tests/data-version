@@ -1,0 +1,5 @@
+# gs-test-data revision this checkout's tests are tuned against.
+# Goldens are byte-exact, so changing this line means re-verifying
+# every row that consumes the media it changes.
+# Update with: scripts/fetch-test-data.sh --update
+1203ea75a1e0ae3cadfba263892762356fb634e2

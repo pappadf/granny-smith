@@ -73,6 +73,38 @@ Trait tokens in prepared-image names are a closed vocabulary: `mode32`,
 System Folder** (not "cdev"; the rework proposal briefly proposed renaming it
 on that misreading and the rename was struck).
 
+## Data revision pinning
+
+Goldens are byte-exact, so a test only means something against the media it was
+captured from. `tests/data` is a copy of the private `gs-test-data` repo, so
+that repo's **commit hash is the data's identity** — there is no separate
+manifest to maintain.
+
+| Artifact | Role |
+|---|---|
+| `tests/data-version` | Tracked here. The gs-test-data revision this checkout's tests are tuned against. |
+| `tests/data/.gs-test-data-marker` | Written by the fetch. Its `# Commit:` line records the revision actually on disk. |
+
+```bash
+./scripts/fetch-test-data.sh            # fetch the PINNED revision (reproducible)
+./scripts/fetch-test-data.sh --update   # fetch latest AND move the pin
+./scripts/fetch-test-data.sh --check    # 0 = ok, 1 = absent, 2 = wrong revision
+./scripts/fetch-test-data.sh --status   # show pinned vs present
+```
+
+A plain fetch reproduces the pinned revision rather than taking whatever HEAD
+happens to be. Adopting newer media is deliberate: `--update` rewrites
+`tests/data-version`, so it arrives as a reviewable one-line diff next to
+whatever goldens had to be recaptured for it.
+
+`make integration-test` refuses to run against a mismatched revision, and the
+run header prints `test data: <rev> (pinned)` — so if media does drift, the log
+says so instead of presenting it as a pile of golden regressions.
+
+If you supply your own media, none of this applies: with no pin, or data
+predating the marker's `Commit:` line, the check verifies nothing and fails
+nothing.
+
 The 7.5 and 7.6 images are consumed by rows that **skip gracefully** when
 they are absent, so a checkout without them still runs green — the
 coverage check reports those cells as media-gated rather than failing
