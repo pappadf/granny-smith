@@ -208,20 +208,33 @@ def row_iifx_aux3_login() {
     report_perf("suite-iifx/iifx-aux3-login", scheduler.instr_count)
 }
 
-# ---- iifx-8m (MILESTONE) ----------------------------------------------------
-# FOUND AND LEFT UNTRACKED BEFORE THIS REWORK: iifx-boot pinned 16 MB
-# with the comment "ram=8192 currently regresses the boot (stalls in POST
-# at $40843F96)" and "tracked separately", i.e. by nothing. §7 makes it a
-# tracked fact: the row boots the 6.0.8 HD image at 8 MB — a supported
-# RAM option — and reports red with the stall PC until the POST bug is
-# fixed, then promotes to an enforced row.
+# ---- iifx-8m ----------------------------------------------------------------
+# The IIfx at 8 MB — its smallest two-SIMM-bank RAM option — completes POST,
+# publishes MemTop, and boots 6.0.8 to the Finder desktop.
+#
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §11, the
+# oldest defect in that ledger: before the test rework, iifx-boot simply
+# pinned 16 MB with the source comment "ram=8192 currently regresses the boot
+# (stalls in POST at $40843F96)" and "tracked separately" — i.e. by nothing.
+# POST never wrote MemTop, which read back the $B6DB6DB6 uninitialised-read
+# pattern. Fixed 2026-07-29 by mirroring installed RAM throughout the IIfx's
+# 64 MB RAM decode window so the ROM's descending sizing probe reads a wrap
+# instead of unmapped $FF; promoted to enforced here.
+#
+# The desktop assertion is what makes this more than a MemTop check: it proves
+# the sized memory is actually usable, not merely counted.
 def row_iifx_8m() {
     machine.boot model="iifx" ram=8192 video_card="mdc_8_24"
     machine.scsi.attach_hd "${$hd_608}" 0
     scheduler.run 400000000
+    assert machine.ram == 8192 "iifx-8m: machine.ram != 8192"
     assert debug.mac.globals.read("MemTop") == 0x800000 "iifx-8m: RAM sizing incomplete (MemTop=${debug.mac.globals.read("MemTop"):08x}, PC=${machine.cpu.pc:08x})"
     wait_stable(900000000)
     assert machine.screen.width == 640 "iifx-8m: screen.width != 640"
+    assert machine.screen.height == 480 "iifx-8m: screen.height != 480"
+    assert machine.screen.depth == 1 "iifx-8m: screen.depth != 1"
+    check("goldens/iifx-6.0.8-640x480x1-8m-finder.png")
+    report_row("6.0.8", "mdc_8_24", "hd-boot 8m-post")
     report_perf("suite-iifx/iifx-8m", scheduler.instr_count)
 }
 
@@ -246,7 +259,7 @@ if row_on("iifx-aux3-login") {
         echo "skip: iifx-aux3-login (A/UX installed image not fetched)"
     }
 }
-if row_on("iifx-8m") { row_end_milestone("iifx-8m", try(row_iifx_8m(), "FAILED")) }
+if row_on("iifx-8m") { row_end("iifx-8m", try(row_iifx_8m(), "FAILED")) }
 
 suite_done()
 quit

@@ -41,7 +41,11 @@
       "tolerance": 0.2
     },
     "suite-iici/iici-chime": {
-      "instr": 9401255,
+      "instr": 9400927,
+      "tolerance": 0.2
+    },
+    "suite-iici/iici-lowram": {
+      "instr": 109269466,
       "tolerance": 0.2
     },
     "suite-iicx/iicx-24ac": {
@@ -86,6 +90,10 @@
     },
     "suite-iifx/iifx-75-24ac-832": {
       "instr": 463546678,
+      "tolerance": 0.2
+    },
+    "suite-iifx/iifx-8m": {
+      "instr": 468443895,
       "tolerance": 0.2
     },
     "suite-iifx/iifx-aux3-login": {

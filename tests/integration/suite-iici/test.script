@@ -42,12 +42,23 @@ let mactest_img = "../../data/apps/MacTest-IIcx-IIci.image"
 # ---- iici-chime -------------------------------------------------------------
 # Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
 # 13,405-frame length are both the assertion.
+#
+# Boots at the machine's default 8 MB, like every sibling chime row
+# (iicx/iifx 8192, iisi 66560). It used to boot 1024 KB — a size that, until
+# the ledger §3 fix landed 2026-07-29, never completed POST. The chime was
+# therefore being captured from a machine stuck in RAM sizing; once POST
+# completed, the Sound Manager reconfigured the ASC inside the capture window
+# and sound.match failed with "sample rate changed mid-capture".
+#
+# The golden itself did NOT change: the 8 MB capture matches the committed
+# iici-chime.wav byte-for-byte at the same 13,405 frames. Only the RAM size
+# this row asks for was wrong.
 def row_iici_chime() {
-    machine.boot model="iici" ram=1024 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
-    assert machine.ram == 1024 "iici-chime: machine.ram != 1024"
+    assert machine.ram == 8192 "iici-chime: machine.ram != 8192"
     assert machine.sound.capture.frames == 13405 "iici-chime: unexpected capture length"
     machine.sound.match goldens/iici-chime.wav
     report_perf("suite-iici/iici-chime", scheduler.instr_count)
@@ -142,22 +153,28 @@ def row_iici_71_hd() {
     report_perf("suite-iici/iici-71-hd", scheduler.instr_count)
 }
 
-# ---- iici-lowram (MILESTONE) ------------------------------------------------
-# GUARD for proposal-emulator-bug-fixes.md §3: a IIci does not complete POST
-# at ANY RAM size below 8 MB. 1, 2, 4 and 5 MB are all published in
-# iici_ram_options_kb and a real IIci shipped in 1 MB and 4 MB
-# configurations, so the model claims support it does not have — and the
-# whole low-RAM plane of this machine (including the 1+4 bank split the RAM
-# axis wanted) is untestable until it is fixed.
+# ---- iici-lowram ------------------------------------------------------------
+# The IIci's low-RAM plane: every published sub-8 MB option must complete POST
+# and publish its installed size in MemTop.
 #
-# ROM-only, so it costs almost nothing: after POST, MemTop must equal the
-# installed RAM. Measured 2026-07-28 it reads the $DB6DB6DB
-# uninitialised-read pattern instead, i.e. no lowmem global is ever written.
+# 5120 KB is the load-bearing one — 5 MB is 4 MB in bank A plus 1 MB in bank B,
+# so it is the only row in this suite that exercises the two-bank split at all.
+# 1024/2048 are single-bank; 4096 fills bank A exactly.
+#
+# ROM-only, so the whole sweep costs almost nothing.
+#
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §3 (POST
+# never completed below 8 MB — MemTop read back the $DB6DB6DB
+# uninitialised-read pattern, meaning no lowmem global was ever written).
+# Fixed 2026-07-29 by modelling the two physical SIMM banks and their 64 MB
+# mirror windows in iici_memory_layout_init; promoted to enforced here.
 def row_iici_lowram() {
-    machine.boot model="iici" ram=4096 video_card="builtin_rbv_video"
-    scheduler.run 120000000
-    assert machine.ram == 4096 "iici-lowram: machine.ram != 4096"
-    assert debug.mac.globals.read("MemTop") == 0x400000 "iici-lowram: POST never completed — MemTop=${debug.mac.globals.read("MemTop"):08x} (uninitialised pattern means no lowmem was written)"
+    for kb in [1024, 2048, 4096, 5120] {
+        machine.boot model="iici" ram=$kb video_card="builtin_rbv_video"
+        scheduler.run 120000000
+        assert machine.ram == $kb "iici-lowram: machine.ram != ${$kb}"
+        assert debug.mac.globals.read("MemTop") == $kb * 1024 "iici-lowram: POST did not complete at ${$kb} KB — MemTop=${debug.mac.globals.read("MemTop"):08x} want ${$kb * 1024:08x}"
+    }
     report_perf("suite-iici/iici-lowram", scheduler.instr_count)
 }
 
@@ -356,7 +373,7 @@ if row_on("iici-71-hd") {
         echo "skip: iici-71-hd (7.1 prepared image not fetched)"
     }
 }
-if row_on("iici-lowram") { row_end_milestone("iici-lowram", try(row_iici_lowram(), "FAILED")) }
+if row_on("iici-lowram") { row_end("iici-lowram", try(row_iici_lowram(), "FAILED")) }
 if row_on("iici-24ac-dual") { row_end_milestone("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
 if row_on("iici-checkpoint") { row_end_milestone("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
 if row_on("iici-mactest-diag") {

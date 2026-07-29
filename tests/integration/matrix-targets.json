@@ -420,6 +420,16 @@
     },
     {
       "machine": "iifx",
+      "system": "6.0.8",
+      "card": "mdc_8_24",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iifx"
+    },
+    {
+      "machine": "iifx",
       "system": "7.0.1",
       "card": "jmfb",
       "width": 640,

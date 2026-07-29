@@ -88,6 +88,45 @@ static void iici_set_rom_overlay(config_t *cfg, bool overlay) {
 // Memory layout
 // ============================================================
 
+// Split an installed RAM total into the two physical SIMM banks.
+//
+// Per the Macintosh IIci Developer Note, ch. 3 "RAM Configuration": RAM is two
+// banks of four SIMM sockets each, and a bank holds either nothing or four
+// equal SIMMs of 256 KB / 1 MB / 4 MB / 16 MB — so a populated bank is exactly
+// 1, 4, 16 or 64 MB.  Every total in iici_ram_options_kb decomposes into two
+// such banks, which is why the table below is a closed set rather than a
+// general partition.
+//
+// The note's Figure 3-1 puts the SMALLER SIMMs in Bank A ("for best
+// performance with on-board video"), so the smaller half goes to Bank A here:
+// a 5 MB machine is 1 MB in A plus 4 MB in B, matching the figure.  Banks are
+// otherwise interchangeable, and Bank A must be populated for on-board video.
+static void iici_split_ram_banks(uint32_t ram_size, uint32_t *bank_a, uint32_t *bank_b) {
+    static const uint32_t legal[] = {0x00100000, 0x00400000, 0x01000000, 0x04000000}; // 1/4/16/64 MB
+    const size_t n = sizeof(legal) / sizeof(legal[0]);
+    // Ascending, so the first hit is the smallest legal Bank A.
+    for (size_t i = 0; i < n; i++) {
+        if (legal[i] > ram_size)
+            break;
+        uint32_t rem = ram_size - legal[i];
+        if (rem == 0) {
+            *bank_a = legal[i];
+            *bank_b = 0;
+            return;
+        }
+        for (size_t j = 0; j < n; j++)
+            if (rem == legal[j]) {
+                *bank_a = legal[i];
+                *bank_b = rem;
+                return;
+            }
+    }
+    // Not a shipping SIMM combination — present it as one bank and let the
+    // ROM's own sizing decide what it thinks of that.
+    *bank_a = ram_size;
+    *bank_b = 0;
+}
+
 static void iici_memory_layout_init(config_t *cfg) {
     iici_state_t *st = iici_state(cfg);
 
@@ -96,11 +135,32 @@ static void iici_memory_layout_init(config_t *cfg) {
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
 
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-    bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
-    uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
-    for (uint32_t p = 0; p < map_end_page && (int)p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
+    // Two physical RAM banks, each a socket group of four 30-pin SIMMs:
+    // Bank A at physical 0, Bank B at $04000000.  Each bank mirrors its
+    // installed size throughout its 64 MB window — the boot ROM sizes a bank
+    // by probing down from the window top and then classifying the wrap, so
+    // the mirror is load-bearing (a linear map with no wrap mis-sizes every
+    // configuration the descending probe can't stumble onto; ledger §3).
+    // Same model as the IIsi, whose Bank A is soldered 1 MB.
+    uint32_t bank_a_size, bank_b_size;
+    iici_split_ram_banks(ram_size, &bank_a_size, &bank_b_size);
+
+    uint32_t bank_a_pages = bank_a_size >> PAGE_SHIFT;
+    uint32_t bank_a_window_pages = IICI_BANK_B_PHYS >> PAGE_SHIFT;
+    for (uint32_t p = 0; p < bank_a_window_pages && (int)p < g_page_count; p++)
+        mac030_fill_page(p, ram_base + ((p % bank_a_pages) << PAGE_SHIFT), true);
+
+    uint8_t *bank_b = ram_base + bank_a_size;
+    uint32_t bank_b_pages = bank_b_size >> PAGE_SHIFT;
+    uint32_t bank_b_start_page = IICI_BANK_B_PHYS >> PAGE_SHIFT;
+    uint32_t bank_b_window_pages = IICI_BANK_WINDOW >> PAGE_SHIFT;
+    for (uint32_t i = 0; bank_b_pages && i < bank_b_window_pages && (int)(bank_b_start_page + i) < g_page_count; i++)
+        mac030_fill_page(bank_b_start_page + i, bank_b + ((i % bank_b_pages) << PAGE_SHIFT), true);
+
+    // Teach the PMMU-side physical resolver the same two-bank layout so
+    // table walks and TLB fills resolve Bank B (no-op when bank_b_size == 0
+    // — but ram_a_size must still be set so window mirroring resolves).
+    mmu_set_ram_bank_b(st->mmu, bank_a_size, bank_b, IICI_BANK_B_PHYS, bank_b_size, IICI_BANK_WINDOW);
 
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint32_t rom_start_page = IICI_ROM_START >> PAGE_SHIFT;

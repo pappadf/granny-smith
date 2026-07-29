@@ -49,6 +49,9 @@ static inline iici_state_t *iici_state(config_t *cfg) {
 // I/O island shares the IIcx base/size; the mirror mask is widened to
 // $3FFFF so RBV ($26000) and VDAC ($24000) decode distinctly from the
 // SCSI windows (the IIcx's $1FFFF mask would fold $26000 onto $6000).
+#define IICI_BANK_B_PHYS 0x04000000UL // Bank B physical base
+#define IICI_BANK_WINDOW 0x04000000UL // 64 MB per-bank mirror window
+
 #define IICI_ROM_START 0x40800000UL
 #define IICI_ROM_END   0x41000000UL
 #define IICI_IO_BASE   0x50000000UL

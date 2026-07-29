@@ -44,6 +44,8 @@
 LOG_USE_CATEGORY_NAME("iifx");
 
 // Top-level IIfx address-space constants.
+#define IIFX_RAM_WINDOW 0x04000000UL // 64 MB RAM decode window (mirrors installed RAM)
+
 #define IIFX_ROM_START 0x40000000UL
 #define IIFX_ROM_END   0x50000000UL
 #define IIFX_IO_BASE   0x50000000UL
@@ -462,8 +464,13 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
 
+    // Dropping the overlay restores the same wrapped RAM mapping
+    // iifx_memory_layout_init installs (identical to a linear one while
+    // rom_size ≤ ram_size, but keep the two expressions in lock-step).
+    uint32_t ram_pages = cfg->ram_size >> PAGE_SHIFT;
+
     for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++) {
-        uint8_t *host_ptr = overlay ? rom_data + (p << PAGE_SHIFT) : ram_base + (p << PAGE_SHIFT);
+        uint8_t *host_ptr = overlay ? rom_data + (p << PAGE_SHIFT) : ram_base + ((p % ram_pages) << PAGE_SHIFT);
         iifx_fill_page(p, host_ptr, !overlay);
     }
 
@@ -1368,9 +1375,21 @@ static void iifx_memory_layout_init(config_t *cfg) {
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
 
+    // Installed RAM is one contiguous region at physical 0 that mirrors
+    // itself throughout the 64 MB RAM decode window.  The boot ROM sizes
+    // memory by probing down from the window top and reading where the
+    // address wraps; with a bare linear map the probe reads unmapped $FF
+    // instead of a wrap and POST stalls (ledger §11 — 4 and 8 MB stalled
+    // while 16/32/64 MB happened to survive the descending probe).
+    //
+    // Unlike the two-bank MDU machines (iici.c, iisi.c) there is no second
+    // decode window at $04000000: modelling one regressed the 32 MB case,
+    // which the ROM sizes correctly as a single contiguous 32 MB region.
     uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-    for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++)
-        iifx_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
+    uint32_t window_pages = IIFX_RAM_WINDOW >> PAGE_SHIFT;
+    uint32_t map_pages = (ram_pages > window_pages) ? ram_pages : window_pages;
+    for (uint32_t p = 0; p < map_pages && (int)p < g_page_count; p++)
+        iifx_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
 
     st->rom_interface = (memory_interface_t){
         .read_uint8 = iifx_rom_read_uint8,
