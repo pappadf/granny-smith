@@ -52,8 +52,12 @@ let q950_rom = "../../data/roms/q950-3dc27823.rom"
 #
 #   * The capture is ALREADY bit-reproducible, and rtc.time is irrelevant to
 #     it. Three separate processes with the clock pinned and three more with it
-#     untouched all produced 62,362 frames and a byte-identical WAV — six runs,
-#     one md5. The believed +-1 frame RTC-phase sensitivity does not reproduce.
+#     untouched all produced the same frame count and a byte-identical WAV —
+#     six runs, one md5. The believed +-1 frame RTC-phase sensitivity does not
+#     reproduce. (The count was 62,362 when measured; it became 58,777 when the
+#     VIA phi2 clock was corrected — this substrate had been running its timers
+#     1.6x fast, so a fixed instruction budget now spans different guest time.
+#     Reproducibility is unchanged; only the constant moved.)
 #   * A sample-exact golden is nevertheless impossible here, for an unrelated
 #     reason: sound.match refuses the comparison with "sample rate changed
 #     mid-capture". The ASC reads a steady 22,257 Hz whenever it is sampled, so
@@ -68,7 +72,7 @@ def row_q700_chime() {
     machine.sound.capture.start
     scheduler.run 30000000
     machine.sound.capture.stop
-    assert machine.sound.capture.frames == 62362 "q700-chime: capture length ${machine.sound.capture.frames}, want 62362 (bit-reproducible across processes — a change here is a real change)"
+    assert machine.sound.capture.frames == 58777 "q700-chime: capture length ${machine.sound.capture.frames}, want 58777 (bit-reproducible across processes — a change here is a real change)"
     assert debug.mac.globals.read("MemTop") == 0x800000 "q700-chime: RAM sizing wrong"
     assert debug.mac.globals.read("ROMBase") == 0x40800000 "q700-chime: ROMBase wrong"
     let t0 = debug.mac.globals.read("Ticks")
@@ -282,6 +286,17 @@ def row_q950_76_hd() {
     assert debug.mac.globals.read("MMUFluff") == 20 "q950-76-hd: not identified as Quadra 950"
     assert machine.ram == 32768 "q950-76-hd: machine.ram != 32768"
     assert_addr(true)
+    # 7.6 puts up "AppleTalk cannot be used because no AppleTalk address is
+    # available" on this machine, and that is CORRECT: the Quadras have no
+    # network hardware wired (the SONIC has no wire, and appletalk_init is only
+    # called for the Plus), so a real Q950 with nothing plugged in says exactly
+    # this. It did not appear before 2026-07-29 only because the VIA phi2 clock
+    # ran 2.15x fast on this substrate, so AppleTalk never finished its failing
+    # startup inside the row's window — the clean desktop this row used to match
+    # was an artefact of that. Dismiss the alert and assert the desktop behind
+    # it, which is the state the row actually means to claim.
+    click(486, 225)
+    wait_stable(600000000)
     check_ex("goldens/q950-7.6-640x480-finder.png", 0, 440, 20, 640)
     report_row("7.6", "dafb", "hd-boot")
     report_perf("suite-quadra/q950-76-hd", scheduler.instr_count)

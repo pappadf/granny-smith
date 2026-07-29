@@ -59,8 +59,13 @@ void mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *
     cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", board->via1_output, board->via1_shift_out,
-                         mac030_glue_via1_irq, cfg, cp);
+    // Derived from the CPU clock, not hardcoded: this substrate serves the
+    // 25 MHz IIci and the 20 MHz IIsi, so a single literal is wrong for one of
+    // them.  It used to be 20 — correct for the 16 MHz IIcx this code was
+    // adapted from, and 1.6x too fast on a IIci, which is what made MacTest's
+    // VIA timer test overshoot its interrupt-count window (ledger §9).
+    cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
+                         board->via1_output, board->via1_shift_out, mac030_glue_via1_irq, cfg, cp);
 
     // Everything machine-specific (straps, ADB/Egret, SCSI, ASC, SWIM, RBV, MMU,
     // NuBus video, mdu_io_bind, bus-error, memory layout, checkpoint restore).

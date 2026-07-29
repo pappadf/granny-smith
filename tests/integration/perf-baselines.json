@@ -109,7 +109,7 @@
       "tolerance": 0.2
     },
     "suite-iisi/iisi-608-hd": {
-      "instr": 40000000,
+      "instr": 60000000,
       "tolerance": 0.2
     },
     "suite-iisi/iisi-701-fd": {
@@ -221,15 +221,15 @@
       "tolerance": 0.2
     },
     "suite-quadra/q700-71-fd": {
-      "instr": 177944213,
+      "instr": 197984642,
       "tolerance": 0.2
     },
     "suite-quadra/q700-75-hd": {
-      "instr": 723471447,
+      "instr": 703408784,
       "tolerance": 0.2
     },
     "suite-quadra/q700-checkpoint": {
-      "instr": 181998203,
+      "instr": 201998247,
       "tolerance": 0.2
     },
     "suite-quadra/q700-chime": {
@@ -241,7 +241,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q900-75-hd": {
-      "instr": 697438382,
+      "instr": 717418518,
       "tolerance": 0.2
     },
     "suite-quadra/q900-76-fd": {
@@ -253,7 +253,7 @@
       "tolerance": 0.2
     },
     "suite-quadra/q950-76-hd": {
-      "instr": 763955582,
+      "instr": 886916774,
       "tolerance": 0.2
     },
     "suite-se30/se30-608-fd": {

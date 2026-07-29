@@ -630,9 +630,13 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
     cfg->scc = scc_init(NULL, cfg->scheduler, board->scc_irq ? board->scc_irq : mac030_glue_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", board->via1_output, board->via1_shift_out,
+    // Derived from the CPU clock (see the same note in mdu.c): the towers run
+    // 25 MHz (Q700/Q900) and 33 MHz (Q950), so the previous hardcoded 20/21 —
+    // inherited from the 16 MHz IIcx — ran both machines' VIA timers fast.
+    uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
+    cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
-    cfg->via2 = via_init(NULL, cfg->scheduler, 21, "via2", board->via2_output, NULL, mac030_glue_via2_irq, cfg, cp);
+    cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, NULL, mac030_glue_via2_irq, cfg, cp);
 
     // Machine-specific tail: straps, ADB, EASC, SWIM, DAFB, bus resolver,
     // memory layout, checkpoint restore.
