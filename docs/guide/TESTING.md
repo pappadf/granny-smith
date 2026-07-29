@@ -293,7 +293,7 @@ Neither script changes how goldens are compared. Matching is byte-exact via
 
 | Trigger | Runs |
 |---|---|
-| PR / push (`tests.yml`) | golden distinctness (no build or data needed), then unit + matrix tiers in parallel, then the coverage contract and the perf baselines; all three gate the build. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
+| PR / push (`tests.yml`) | golden distinctness (no build or data needed), then unit + matrix tiers in parallel, **plus the extended tier while the integration-test rework settles**, then the coverage contract and the perf baselines; all gate the build. The extended tier is normally nightly-only (§5.4) — it is on the PR gate temporarily so a regression in a long row is caught before merge rather than the next morning, and the step says how to revert it. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
 | Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier + one boot with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
 
 Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
