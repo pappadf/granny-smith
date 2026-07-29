@@ -17,6 +17,16 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
+# Every `run:` uses bash, not the container's default sh. Steps here pipe into
+# tee and then `exit "${PIPESTATUS[0]}"` to surface the real command's status
+# rather than tee's — PIPESTATUS is a bashism, and under dash it expands to
+# nothing and the step dies with "Bad substitution" AFTER the tests have
+# already passed. GitHub's bash mode also sets -o pipefail, so the pipeline
+# status is correct twice over.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     runs-on: ubuntu-24.04
