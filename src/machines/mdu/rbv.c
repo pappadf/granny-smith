@@ -25,11 +25,21 @@
 // We decode both the native small offsets and those two aliases so code
 // written either way reaches the same register.
 //
-// Interrupt model.  RBV's SCSI / slot / sound interrupts are level inputs;
-// we recompute the aggregated IFR from the live source state on every
-// change rather than latching edges.  The chip asserts a single combined
-// interrupt (→ 68030 IPL 2, matching the VIA2 it replaces) whenever
-// (IFR & IER & $7F) is non-zero.
+// Interrupt model.  The chip asserts a single combined interrupt (→ 68030
+// IPL 2, matching the VIA2 it replaces) whenever (IFR & IER & $7F) is non-zero.
+//
+// RvSCSIDRQ / RvAnySlot / RvSCSIRQ are level inputs and are composed live from
+// the source state: DRQ is flow control, and the SCSI and slot lines are
+// cleared at their own devices on service.
+//
+// RvSndIRQ is different and must LATCH.  It occupies the VIA2 CB1 slot (the OS
+// dispatches it as jASCInt = Via2DT+4*ifCB1), and per the R6522 datasheet a CB1
+// flag is set by the input's ACTIVE EDGE and "remain[s] set until the interrupt
+// has been serviced", cleared by writing a 1 to its IFR bit.  The distinction is
+// load-bearing because the ASC's status register is clear-on-read: the moment
+// software reads $50F14804 the ASC drops INT*, so a live-composed flag would
+// vanish retroactively and the interrupt would be lost.  MacTest 2.11's sound
+// test does exactly that read pair and failed on it (ledger §9).
 
 #include "rbv.h"
 
@@ -110,6 +120,7 @@ struct rbv {
     bool scsi_irq; // live RvSCSIRQ source
     bool scsi_drq; // live RvSCSIDRQ source
     bool snd_irq; // live RvSndIRQ source
+    bool snd_latch; // RvSndIRQ FLAG: set by the source's rising edge, cleared by an IFR write
 
     bool irq_active; // last reported combined-interrupt state
     bool power_armed; // soft-power debounce (see RvDataB write handler)
@@ -136,7 +147,7 @@ static uint8_t rbv_compose_ifr(const rbv_t *rbv) {
         ifr |= RVIFR_ANYSLOT;
     if (rbv->scsi_irq)
         ifr |= RVIFR_SCSIRQ;
-    if (rbv->snd_irq)
+    if (rbv->snd_latch)
         ifr |= RVIFR_SNDIRQ;
     return ifr;
 }
@@ -251,11 +262,14 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
         LOG(3, "write RvSInt = $%02X (accept-and-log)", value);
         return;
     case RV_IFR:
-        // IFR is composed live from source state.  The OS clears flags by
-        // writing with bit 7 = 0; the underlying sources deassert on
-        // service, so the recompute below reflects the result.  Accept the
-        // write so diagnostic poke/peek sequences see no bus error.
-        LOG(3, "write RvIFR = $%02X (set/clr=%d)", value, (value & RVIFR_SETCLR) ? 1 : 0);
+        // Per the R6522, a flag bit is cleared by writing a 1 into it (bit 7 is
+        // not a flag and is not directly writable).  Only RvSndIRQ is latched
+        // here; the level-composed bits ignore the write and simply re-read
+        // their sources, which is what the OS's clear-then-service sequence
+        // expects of them.
+        if (value & RVIFR_SNDIRQ)
+            rbv->snd_latch = false;
+        LOG(3, "write RvIFR = $%02X (snd_latch now %d)", value, rbv->snd_latch ? 1 : 0);
         rbv_update_irq(rbv);
         return;
     case RV_MONP: {
@@ -424,6 +438,8 @@ void rbv_set_scsi_drq(rbv_t *rbv, bool active) {
 void rbv_set_snd_irq(rbv_t *rbv, bool active) {
     if (rbv->snd_irq == active)
         return;
+    if (active)
+        rbv->snd_latch = true; // active edge sets the flag; only an IFR write clears it
     rbv->snd_irq = active;
     rbv_update_irq(rbv);
 }
