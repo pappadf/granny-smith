@@ -63,10 +63,15 @@ proposal-integration-test-rework):
 | File | Contents |
 |---|---|
 | `system_6_0_8_20mb_8_24gc.img` | System 6.0.8, 20 MB ST225N geometry, 8•24 GC support + AppleShare + 32-Bit QD |
-| `system_7_1_20mb_24ac_cd_32bit.img` | System 7.1, 20 MB, 24AC drivers, 32-bit enabled |
+| `system_7_1_20mb_24ac_cd_32bit.img` | System 7.1, 20 MB, 24AC drivers, CD-ROM support, 32-bit enabled |
 | `system_7_1_20mb_24ac_cd_32bit_gc.img` | as above plus 8•24 GC support |
 | `system_7_5_0_77mb_mode32_24ac.img` | System 7.5.0, 77 MB, MODE32 + 24AC drivers |
 | `system_7_6_170mb_24ac.img` | Mac OS 7.6, 170 MB HD160SC, minimum system + 24AC drivers |
+
+Trait tokens in prepared-image names are a closed vocabulary: `mode32`,
+`24ac`, `824gc`, `32bit`, and **`cd` — CD-ROM driver support installed in the
+System Folder** (not "cdev"; the rework proposal briefly proposed renaming it
+on that misreading and the rename was struck).
 
 The 7.5 and 7.6 images are consumed by rows that **skip gracefully** when
 they are absent, so a checkout without them still runs green — the
