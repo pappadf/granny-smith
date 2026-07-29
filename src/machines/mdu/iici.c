@@ -357,6 +357,11 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     st->video_card = nubus_card(cfg->nubus, 0xB);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
+    // Card-side display state (VRAM, palette, mode) — written by
+    // mdu_checkpoint_save immediately after the RBV chip, so it reads back
+    // here, before the MMU tail below (ledger §2).
+    if (checkpoint)
+        nubus_checkpoint_restore(cfg->nubus, checkpoint);
 
     // Bind device handles + the board's I/O window table for the shared engine.
     mdu_io_bind(&st->mdu_io, cfg, &iici_board, st->asc, st->floppy, st->rbv, st->video_card);

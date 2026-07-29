@@ -40,6 +40,10 @@
       "instr": 466670553,
       "tolerance": 0.2
     },
+    "suite-iici/iici-checkpoint": {
+      "instr": 454642827,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-chime": {
       "instr": 9400927,
       "tolerance": 0.2

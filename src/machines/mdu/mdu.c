@@ -170,6 +170,9 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     asc_checkpoint(st->asc, cp);
     floppy_checkpoint(st->floppy, cp);
     rbv_checkpoint(st->rbv, cp);
+    // The RBV chip's registers are above; this covers the display CARD behind
+    // it — VRAM, palette and active mode (ledger §2).
+    nubus_checkpoint_save(cfg->nubus, cp);
     mmu_checkpoint_save(st->mmu, cp);
 }
 

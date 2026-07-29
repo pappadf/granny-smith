@@ -2,8 +2,8 @@
 #
 # Row map (former directory → row; **bold** = new matrix coverage):
 #
-#   iici-chime      iici-boot-chime: sample-exact chime WAV, on the
-#                   1 MB minimum RAM option (ROM-only row)
+#   iici-chime      iici-boot-chime: sample-exact chime WAV (ROM-only row,
+#                   8 MB — see the row for why not 1 MB)
 #   iici-701-fd     iici-boot: RBV built-in video, 7.0.1 floppy boot,
 #                   Finder + About This Macintosh (8 MB)
 #   iici-75-hd      **IIci x 7.5**: prepared 7.5 image over the MDU's
@@ -13,19 +13,18 @@
 #                   selects 32-bit itself, so this row is also the
 #                   suite's asserted 32-bit addressing cell (32 MB,
 #                   which only a 32-bit System can see in full)
-#   iici-lowram     **MILESTONE**: the IIci does not POST below 8 MB, so
-#                   its whole low-RAM plane is untestable (ledger §3)
+#   iici-lowram     the IIci's low-RAM plane: every published sub-8 MB size
+#                   sizes correctly (was ledger §3; fixed and enforced)
 #   iici-71-hd      **IIci x 7.1** on the built-in RBV — the cell §8 wrongly
 #                   believed unreachable (8 MB)
 #   iici-24ac-dual  **first OS-level DUAL DISPLAY**, MILESTONE: a 24AC in
 #                   socket $C beside the live built-in RBV, with the 24AC
 #                   engine counters §3.2 wanted asserted. Red because seating
 #                   the card hangs the boot at Welcome — see the row.
-#   iici-checkpoint **MDU-family checkpoint round-trip**, MILESTONE (§7
-#                   epilogue): the first checkpoint coverage this family
-#                   has had, and it fails — the restored screen is blank
-#                   because the RBV's video state is not in the save set.
-#                   Run-not-fatal until that is fixed (see the row).
+#   iici-checkpoint **MDU-family checkpoint round-trip** (§7 epilogue):
+#                   save → reboot into a different machine → load →
+#                   re-match. Was ledger §2 (restored screen came back
+#                   blank); fixed and enforced.
 #   iici-mactest-diag **MILESTONE**: §7 tried to re-host iicx-mactest here;
 #                   MacTest instead diagnoses this machine as a bad logic
 #                   board the moment Start is clicked (ledger §9). The
@@ -230,23 +229,26 @@ def row_iici_24ac_dual() {
     report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
 }
 
-# ---- iici-checkpoint (MILESTONE) -------------------------------------------
-# §7 epilogue on the MDU device set (RBV, IIci VIA path, 5380) — and the
-# first checkpoint coverage this family has ever had, which immediately
-# found a gap: the pre-save desktop matches its golden, but after
-# save → fresh boot → load the screen comes back BLANK (measured
-# 2026-07-28). The guest state restores; the RBV's built-in video does
-# not. Root cause is visible in the source: card_init() in
-# src/machines/mdu/builtin_rbv_video.c takes a checkpoint_t and discards
-# it ("(void)cp;"), so a restore re-allocates a zeroed framebuffer at the
-# 1 bpp power-up default instead of reading back the saved VRAM, depth
-# and CLUT — rbv_checkpoint() covers the RBV chip registers but nothing
-# covers the card. Landed as a milestone (run-not-fatal): nightly reports
-# it red with the artifact until that save set is completed, then it
-# promotes to an enforced row via a reviewed matrix-targets edit.
-# Boots at 8 MB, which is what the 7.0.1 golden was captured on — a 2 MB
-# IIci never reaches a desktop with 7.0.1 at all (measured: the screen
-# stays blank), so the smaller RAM config has nothing to re-match.
+# ---- iici-checkpoint --------------------------------------------------------
+# §7 epilogue on the MDU device set (RBV, IIci VIA path, 5380): boot to a
+# desktop, save, reboot into a DIFFERENT machine (1 MB), load, and re-match the
+# pre-save golden. Restoring over a deliberately mismatched machine is the
+# point — it proves the restore rebuilds RAM size, devices and display from the
+# checkpoint rather than inheriting them.
+#
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §2: the
+# guest state restored but the screen came back BLANK and never repainted,
+# because nothing serialised the display CARD. rbv_checkpoint() covered the RBV
+# chip registers; VRAM, the active depth/stride and the CLUT were not in the
+# save set at all, so a restore re-ran card_init and came up on a zeroed
+# framebuffer at the 1 bpp power-up default.
+#
+# Fixed 2026-07-29: the NuBus layer gained a per-card checkpoint pass and the
+# built-in video card implements it. Promoted to enforced here.
+#
+# Boots at 8 MB, which is what the 7.0.1 golden was captured on — a 2 MB IIci
+# never reaches a desktop with 7.0.1 at all, so the smaller RAM config has
+# nothing to re-match.
 def row_iici_checkpoint() {
     machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
     machine.floppy.drive[0].insert "${$sys_701}"
@@ -375,7 +377,7 @@ if row_on("iici-71-hd") {
 }
 if row_on("iici-lowram") { row_end("iici-lowram", try(row_iici_lowram(), "FAILED")) }
 if row_on("iici-24ac-dual") { row_end_milestone("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
-if row_on("iici-checkpoint") { row_end_milestone("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
+if row_on("iici-checkpoint") { row_end("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
 if row_on("iici-mactest-diag") {
     if have_media($mactest_img) {
         row_end_milestone("iici-mactest-diag", try(row_iici_mactest_diag(), "FAILED"))

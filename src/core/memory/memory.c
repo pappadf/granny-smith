@@ -1413,10 +1413,39 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // doesn't silently default to the 24-bit layout.
     GS_ASSERTF(address_bits == 24 || address_bits == 32, "memory_map_init: address_bits must be 24 or 32 (got %d)",
                address_bits);
-    // A double-init without an intervening memory_map_delete would leak the
-    // previous tables. The current architecture only creates one map per
-    // machine, so flag the inconsistency.
-    GS_ASSERTF(g_page_table == NULL, "memory_map_init: previous memory map not torn down before re-init");
+    // Hand over from any still-installed map.
+    //
+    // checkpoint.load deliberately builds the new machine BEFORE destroying
+    // the old one (see system_restore / system_reload_checkpoint), so the
+    // outgoing map is still installed here.  That is legal, but the outgoing
+    // map's SoA fast-path and logpoint arrays are reachable ONLY through these
+    // globals — its memory_map_t keeps a pointer to page_table and nothing
+    // else — so overwriting them below would strand the allocations.  Free
+    // them now, while they are still reachable.
+    //
+    // g_page_table itself is deliberately NOT freed: the outgoing
+    // memory_map_t owns it and frees it in memory_map_delete, which skips the
+    // global teardown once it sees the globals have moved on.
+    //
+    // This used to be an assertion (`previous memory map not torn down before
+    // re-init`), which fired on every checkpoint restore and would have
+    // stopped a build with asserts fatal.  The lifetime it complained about
+    // was real; the response was wrong.
+    if (g_page_table != NULL) {
+        free(g_supervisor_read);
+        free(g_supervisor_write);
+        free(g_user_read);
+        free(g_user_write);
+        free(g_mem_logpoint_page_count);
+        free(g_mem_logpoint_phys_page_count);
+        g_supervisor_read = g_supervisor_write = NULL;
+        g_user_read = g_user_write = NULL;
+        g_active_read = g_active_write = NULL;
+        g_mem_logpoint_page_count = NULL;
+        g_mem_logpoint_phys_page_count = NULL;
+        g_page_table = NULL;
+        g_page_count = 0;
+    }
 
     memory_map_t *mem = (memory_map_t *)calloc(1, sizeof(memory_map_t));
     GS_ASSERTF(mem != NULL, "memory_map_init: out of memory allocating memory_map_t");

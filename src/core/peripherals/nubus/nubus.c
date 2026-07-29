@@ -443,6 +443,32 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot) {
     return bus->cards[slot];
 }
 
+// Serialise every seated card that implements the hooks, in slot order.
+//
+// Save and restore walk the slots identically, and a machine restores with the
+// same slot table it saved with (the built-from record pins the staging), so
+// the stream stays in step without any per-card tagging.  Cards that do not
+// implement the hooks contribute nothing, exactly as before.
+void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
+    if (!bus || !cp)
+        return;
+    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
+        nubus_card_t *card = bus->cards[i];
+        if (card && card->ops && card->ops->checkpoint_save)
+            card->ops->checkpoint_save(card, cp);
+    }
+}
+
+void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp) {
+    if (!bus || !cp)
+        return;
+    for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
+        nubus_card_t *card = bus->cards[i];
+        if (card && card->ops && card->ops->checkpoint_restore)
+            card->ops->checkpoint_restore(card, cp);
+    }
+}
+
 display_t *nubus_primary_display(nubus_bus_t *bus) {
     if (!bus)
         return NULL;

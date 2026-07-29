@@ -12,6 +12,7 @@
 #include "builtin_rbv_video.h"
 
 #include "card.h"
+#include "checkpoint.h"
 #include "display.h"
 #include "log.h"
 #include "nubus.h"
@@ -158,11 +159,67 @@ static const char *card_name(const nubus_card_t *card) {
     return "Macintosh IIci Built-in Video";
 }
 
+// Save/restore the card's own display state.
+//
+// The RBV *chip* registers ride along in rbv_checkpoint(), but nothing covered
+// the card: VRAM contents, the active depth/format and stride, and the CLUT
+// the VDAC has been fed.  Without them a restore re-ran card_init and came up
+// on a freshly zeroed framebuffer at the 1 bpp power-up default, i.e. a blank
+// white screen that never repainted (ledger §2).
+//
+// The dirty flags are forced on restore rather than saved: the frontend has
+// just been handed a different buffer and must re-upload everything once.
+static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
+    rbv_video_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    // A machine-owned framebuffer (the IIsi's, which lives in main RAM) is
+    // already covered by the RAM image; only a card-owned buffer needs saving.
+    if (!p->fb_external)
+        system_write_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
+    system_write_checkpoint_data(cp, p->clut, sizeof(p->clut));
+    system_write_checkpoint_data(cp, &p->display.format, sizeof(p->display.format));
+    system_write_checkpoint_data(cp, &p->display.width, sizeof(p->display.width));
+    system_write_checkpoint_data(cp, &p->display.height, sizeof(p->display.height));
+    system_write_checkpoint_data(cp, &p->display.stride, sizeof(p->display.stride));
+    system_write_checkpoint_data(cp, &p->vdac_idx, sizeof(p->vdac_idx));
+    system_write_checkpoint_data(cp, &p->vdac_phase, sizeof(p->vdac_phase));
+    system_write_checkpoint_data(cp, p->vdac_rgb, sizeof(p->vdac_rgb));
+    system_write_checkpoint_data(cp, &p->vdac_pix_mask, sizeof(p->vdac_pix_mask));
+}
+
+static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
+    rbv_video_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    if (!p->fb_external)
+        system_read_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
+    system_read_checkpoint_data(cp, p->clut, sizeof(p->clut));
+    system_read_checkpoint_data(cp, &p->display.format, sizeof(p->display.format));
+    system_read_checkpoint_data(cp, &p->display.width, sizeof(p->display.width));
+    system_read_checkpoint_data(cp, &p->display.height, sizeof(p->display.height));
+    system_read_checkpoint_data(cp, &p->display.stride, sizeof(p->display.stride));
+    system_read_checkpoint_data(cp, &p->vdac_idx, sizeof(p->vdac_idx));
+    system_read_checkpoint_data(cp, &p->vdac_phase, sizeof(p->vdac_phase));
+    system_read_checkpoint_data(cp, p->vdac_rgb, sizeof(p->vdac_rgb));
+    system_read_checkpoint_data(cp, &p->vdac_pix_mask, sizeof(p->vdac_pix_mask));
+
+    // p->display.bits still points into p->fb (card_init set it up and the
+    // buffer address has not moved), but everything the frontend caches about
+    // this display is now stale.
+    p->display.shape_dirty = true;
+    p->display.clut_dirty = true;
+    p->display.fb_dirty = true;
+    p->display.response_dirty = true;
+}
+
 static const nubus_card_ops_t builtin_rbv_video_ops = {
     .init = card_init,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
     .name = card_name,
 };
 
