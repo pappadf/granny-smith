@@ -10,8 +10,9 @@
 #   q700-75-hd      **Q700 × 7.5**: prepared 7.5 HD image over the
 #                   53C96 (absorbs q700-boot-hd's SCSI-boot + About
 #                   machine-identity coverage on fresher media)
-#   q700-20m        **milestone**: Q700 @ 20 MB RAM-sizing stall (found
-#                   by the RAM axis; red until the MCU bug is fixed)
+#   q700-20m        Q700 RAM sizing across every published bank
+#                   arrangement, 4-68 MB (was a milestone for the 20/36 MB
+#                   stall the RAM axis found; fixed and enforced)
 #   q700-dafb-senses **milestone**: the DAFB honours only monitor sense 6
 #                   (ledger §6), which blocks every non-640x480 tower cell
 #   q900-76-fd      **Q900 × 7.6**: Disk Tools 1 through the SWIM IOP
@@ -131,17 +132,33 @@ def row_q700_75_hd() {
     report_perf("suite-quadra/q700-75-hd", scheduler.instr_count)
 }
 
-# ---- q700-20m (milestone) ---------------------------------------------------
-# FOUND BY THE RAM AXIS (§7): at the 20 MB option (4 MB onboard +
-# 4×4 MB bank) the Q700 ROM never completes RAM sizing — MemTop stays
-# 0 and POST spins in ROM at PC=$4084BBF8 (measured 2026-07-27, still
-# stuck after 1.5 B instructions; every pre-rework Quadra test pinned
-# 8 MB, so this was invisible). Milestone semantics: nightly reports
-# it red until the MCU bank-sizing bug is fixed, then it promotes.
+# ---- q700-20m ---------------------------------------------------------------
+# The Q700's whole published RAM range must complete sizing and publish the
+# installed size in MemTop. Every size here is a distinct bank arrangement:
+#
+#   4 MB   bank A only (the soldered 4 MB; no SIMMs)
+#   8 MB   A + four 1 MB SIMMs
+#   20 MB  A + four 4 MB SIMMs   — Apple's largest official configuration
+#   36 MB  A + four 8 MB SIMMs   — unofficial, but real and widely used
+#   68 MB  A + four 16 MB SIMMs  — ditto
+#
+# 20 and 36 MB are the ones that used to fail, and they are the interesting
+# ones: they are the totals that are NOT a power-of-two multiple of the bank
+# size, which is exactly what the ROM's sizing maths cannot express until the
+# two banks are decoded separately.
+#
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §4 (MemTop
+# stayed 0 and POST spun at $4084BBF8 forever). Fixed 2026-07-29 by
+# implementing the Orwell memory controller's bank-start registers, so the
+# banks decode in their own 64 MB windows while the ROM probes them and then
+# merge contiguous when it latches the computed starts. Promoted to enforced.
 def row_q700_20m() {
-    machine.boot model="q700" ram=20480 rom="${$quadra_rom}"
-    scheduler.run 100000000
-    assert debug.mac.globals.read("MemTop") == 0x1400000 "q700-20m: RAM sizing incomplete (MemTop=${debug.mac.globals.read("MemTop"):08x}, PC=${machine.cpu.pc:08x})"
+    for kb in [4096, 8192, 20480, 36864, 69632] {
+        machine.boot model="q700" ram=$kb rom="${$quadra_rom}"
+        scheduler.run 100000000
+        assert machine.ram == $kb "q700-20m: machine.ram != ${$kb}"
+        assert debug.mac.globals.read("MemTop") == $kb * 1024 "q700-20m: RAM sizing incomplete at ${$kb} KB (MemTop=${debug.mac.globals.read("MemTop"):08x}, want ${$kb * 1024:08x}, PC=${machine.cpu.pc:08x})"
+    }
     report_perf("suite-quadra/q700-20m", scheduler.instr_count)
 }
 
@@ -330,7 +347,7 @@ if row_on("q700-75-hd") {
         echo "skip: q700-75-hd (7.5 prepared image not fetched)"
     }
 }
-if row_on("q700-20m") { row_end_milestone("q700-20m", try(row_q700_20m(), "FAILED")) }
+if row_on("q700-20m") { row_end("q700-20m", try(row_q700_20m(), "FAILED")) }
 if row_on("q900-76-fd") {
     if have_media($disk_tools_76) {
         row_end("q900-76-fd", try(row_q900_76_fd(), "FAILED"))

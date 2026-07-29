@@ -279,6 +279,8 @@ static const mcu_board_desc_t q700_board_desc = {
     .rom_end = 0x50000000u,
     .io_ranges = mcu_q700_io_ranges,
     .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
+    .ram_onboard_size = 0x00400000u, // 4 MB soldered = bank A; SIMM bank B follows
+    .ram_bank_count = 2, // 4 MB soldered + one four-SIMM bank
     .io_unmapped_read = 0,
     .slots = q700_nubus_slots,
     .bus_err_lo = 0xF1000000u,

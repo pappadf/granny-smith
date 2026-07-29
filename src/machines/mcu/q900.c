@@ -337,6 +337,7 @@ static const mcu_board_desc_t q900_board_desc = {
     .rom_base = 0x40000000u,
     .rom_end = 0x50000000u,
     .io_ranges = mcu_q900_io_ranges,
+    .ram_bank_count = 4, // sixteen SIMM sockets = four four-SIMM banks
     .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
     .io_unmapped_read = 0,
     .slots = q900_nubus_slots,

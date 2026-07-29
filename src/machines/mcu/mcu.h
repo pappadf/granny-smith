@@ -43,10 +43,34 @@ struct scsi;
 struct scsi_53c96;
 struct sonic;
 
-// Number of longword slots kept for the accept-and-log MCU register file
-// ($5000E000; ref §8.2 — offsets/masks unresolved, so writes latch and read
-// back verbatim while a log records the ROM's access sequence).
-#define MCU_REG_COUNT 64
+// Orwell memory-controller configuration register ($5000E000).
+//
+// Semantics recovered from the ROM sources (SuperMarioProj
+// Internal/Asm/HardwarePrivateEqu.a "Orwell Memory Controller Equates", and
+// its user OS/StartMgr/SizeMem.a).  Orwell has only ONE config data bit, so
+// the register is written and read one bit at a time through a run of
+// longword addresses: bit N lives at byte offset N*4, and only bit 0 of the
+// accessed longword carries data.  A written value becomes active only when
+// the matching latch address is poked.
+//
+//   bits  0..5   BANK_B start address    bits 19..20  DRAM_SPEED
+//   bits  6..11  BANK_C start address    bits 21..23  ROM_SPEED
+//   bits 12..17  BANK_D start address    bits 24..26  REFRESH
+//   bit  18      CLK_SPEED               bit  27      PAR_ENB / 28 PAR_ODD
+//   bits 29..33  page mode, wait states, RAS precharge
+//
+// A bank field holds the bank's start address in 4 MB units (SizeMem.a
+// computes it as `offset >> 22`), so the power-up split the ROM programs —
+// $10/$20/$30 — puts banks B/C/D at 64/128/192 MB.  Bank A is not
+// programmable; it is always at physical 0.
+#define ORWELL_CFG_BITS    34
+#define ORWELL_BANK_BITS   6 // width of one bank's start field
+#define ORWELL_BANK_UNIT   0x00400000u // a bank-field count is this many bytes (4 MB)
+#define ORWELL_LATCH_BASE  0xA0u // OrwellLatches: $A0 banks, $A4 speeds, $A8 refresh, ...
+#define ORWELL_LATCH_BANKS 0xA0u // OrLoadBanks
+#define ORWELL_STATUS_BASE 0x100u // parity status/error registers live at $100+
+#define ORWELL_MAX_BANKS   4 // banks A..D
+#define ORWELL_BANK_WINDOW 0x04000000u // 64 MB decode window per bank
 
 // Same policy for the YANCC system-bus/NuBus bridge register file
 // ($50028000; ref §10.2 [A][U] — the address is Apple-documented, the bit
@@ -63,6 +87,8 @@ typedef struct mcu_board_desc {
     uint8_t io_unmapped_read; // unmapped-read value inside the island
     const struct nubus_slot_decl *slots; // NuBus slot table (NULL until Phase F)
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
+    uint32_t ram_onboard_size; // soldered RAM forming bank A (Q700: 4 MB; 0 = SIMM banks only)
+    uint8_t ram_bank_count; // physical banks the board decodes (Q700: 2, towers: 4)
     uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950; ref §7.4 [R])
     uint8_t dafb_version; // DAFB_Test bits 11:9 (0 = Q700/Q900, 3 = Q950 "DAFB 3"; ref §11.8)
     bool has_ac842a; // AC842a RAMDAC (PCBR1 + x555 16-bit mode; Q950 only)
@@ -107,9 +133,13 @@ typedef struct mcu_state {
 
     uint8_t last_port_b; // VIA1 PB output, for ADB ST-transition filtering
 
-    // Accept-and-log MCU register file ($5000E000, ref §8.2 [U]).
-    uint32_t mcu_regs[MCU_REG_COUNT];
-    uint64_t mcu_touched; // log-once bitmap (bit n = slot n already logged)
+    // Orwell memory controller ($5000E000).  `orwell_cfg` is the 34-bit
+    // shift-in register; `bank_start` holds the values latched from it.
+    uint64_t orwell_cfg; // staged config bits (bit N = config bit N)
+    uint32_t bank_start[ORWELL_MAX_BANKS]; // latched physical start of each bank
+    uint32_t bank_size[ORWELL_MAX_BANKS]; // installed bytes in each bank (0 = empty socket)
+    uint32_t bank_image_off[ORWELL_MAX_BANKS]; // where the bank lives in the flat RAM image
+    int bank_count; // populated banks
 
     // Accept-and-log YANCC bridge register file ($50028000, ref §10.2 [U]).
     uint32_t yancc_regs[MCU_YANCC_REG_COUNT];

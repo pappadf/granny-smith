@@ -212,6 +212,10 @@
       "instr": 1000000,
       "tolerance": 0.2
     },
+    "suite-quadra/q700-20m": {
+      "instr": 97121021,
+      "tolerance": 0.2
+    },
     "suite-quadra/q700-71-fd": {
       "instr": 177944213,
       "tolerance": 0.2
