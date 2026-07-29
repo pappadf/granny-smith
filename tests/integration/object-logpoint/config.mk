@@ -6,3 +6,6 @@ TEST_NAME := Object-model logpoint interpolation
 TEST_DESC := ${...} interpolation drives logpoint message formatting
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

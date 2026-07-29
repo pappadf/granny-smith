@@ -1,42 +1,44 @@
 #!/bin/bash
-# Integration test: Checkpoint Save/Load
-# This script runs the emulator twice to test checkpoint functionality:
-#   Step 1: Boot from floppy, run 50M instructions, save checkpoint, quit
-#   Step 2: Boot from SCSI HD, run 100M instructions, load checkpoint, run 50M more, verify desktop
+# Integration test: Checkpoint save/load across processes (see config.mk).
+#
+#   Step 1  boot the 6.0.8 floppy to the desktop, save a checkpoint, quit.
+#   Step 2  boot the SCSI HD (a different device set), load step 1's
+#           checkpoint, re-match the floppy desktop, then drive the Apple
+#           menu to prove the restored machine is interactive.
+#
+# Both steps run from TEST_RESULTS_DIR (media + checkpoint live there, so
+# nothing is written beside tests/data) while the scripts stay in the test
+# directory: their goldens resolve through $TEST_DIR and the shared
+# library through the script's own directory.
+#
+# Environment from the runner: HEADLESS_BIN, ROM_PATH, TEST_DATA,
+# TEST_RESULTS_DIR, STORAGE_CACHE, TEST_VAR_ARGS.
 
 set -e
 
-# These variables are set by the parent Makefile
-# HEADLESS_BIN, ROM_PATH, TEST_DATA, TEST_TMPDIR, STORAGE_CACHE
+CHECKPOINT_FILE="$TEST_RESULTS_DIR/checkpoint.gs"
+FD_IMAGE="$TEST_RESULTS_DIR/System_6_0_8.dsk"
+HD_IMAGE="$TEST_RESULTS_DIR/hd.img"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-CHECKPOINT_FILE="$TEST_TMPDIR/checkpoint.gs"
-FD_IMAGE="$TEST_TMPDIR/System_6_0_8.dsk"
-HD_IMAGE="$TEST_TMPDIR/hd1.img"
+for f in "$FD_IMAGE" "$HD_IMAGE"; do
+    [ -f "$f" ] || { echo "ERROR: test media missing: $f"; exit 1; }
+done
 
-# Copy floppy image to temp directory so consolidated checkpoint restore
-# (which recreates backing files in-place) does not overwrite the original.
-cp "$TEST_DATA/systems/System_6_0_8.dsk" "$FD_IMAGE"
+echo "Step 1: boot the floppy to the desktop and save a checkpoint"
+echo "  checkpoint: $CHECKPOINT_FILE"
 
-# Export checkpoint path for scripts to use
-export CHECKPOINT_FILE
-
-echo "Step 1: Boot from floppy, run 50M instructions, save checkpoint"
-echo "Checkpoint will be saved to: $CHECKPOINT_FILE"
-
-# Create step1 script - boot from floppy, run 50M instructions, save checkpoint.
-# `\$(...)` escapes bash command substitution so the literal `$(...)`
-# reaches the gs-headless expression evaluator.
-cat > "$TEST_TMPDIR/step1.script" << INNER_EOF
-# Step 1: Boot from floppy and save checkpoint
-scheduler.run 50000000
-assert checkpoint.save("$CHECKPOINT_FILE") "step1 checkpoint save failed"
-quit
-INNER_EOF
-
+# fd= opens the floppy writable, matching the conditions the goldens were
+# captured under.
+cd "$TEST_RESULTS_DIR"
+# shellcheck disable=SC2086 — TEST_VAR_ARGS is intentionally word-split
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     fd="$FD_IMAGE" \
-    script="$TEST_TMPDIR/step1.script" \
+    script="$SCRIPT_DIR/step1.script" \
+    --var TEST_DIR="$SCRIPT_DIR" \
+    --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
+    $TEST_VAR_ARGS \
     --speed=max
 
 if [ ! -f "$CHECKPOINT_FILE" ]; then
@@ -46,26 +48,18 @@ fi
 echo "Checkpoint saved: $CHECKPOINT_FILE ($(stat -c%s "$CHECKPOINT_FILE") bytes)"
 
 echo ""
-echo "Step 2: Boot from SCSI HD, load checkpoint, run 50M more, verify desktop"
+echo "Step 2: boot the SCSI HD, restore the floppy checkpoint over it"
 
-# Create step2 script - boot from SCSI, load checkpoint, run 50M more, verify screen.
-# `\$(...)` escapes bash command substitution so the literal `$(...)`
-# reaches the gs-headless expression evaluator.
-cat > "$TEST_TMPDIR/step2.script" << INNER_EOF
-# Step 2: Boot from SCSI HD, load checkpoint, continue to desktop
-scheduler.run 100000000
-assert checkpoint.load("$CHECKPOINT_FILE") "step2 checkpoint load failed"
-# Run 50M more instructions (should reach desktop just like step 1 would)
-scheduler.run 50000000
-# Save screenshot for debugging, then verify
-machine.screen.match desktop.png
-quit
-INNER_EOF
-
+cd "$TEST_RESULTS_DIR"
+# shellcheck disable=SC2086 — TEST_VAR_ARGS is intentionally word-split
 GS_STORAGE_CACHE="$STORAGE_CACHE" $HEADLESS_BIN \
     rom="$ROM_PATH" \
     hd="$HD_IMAGE" \
-    script="$TEST_TMPDIR/step2.script" \
+    script="$SCRIPT_DIR/step2.script" \
+    --var TEST_DIR="$SCRIPT_DIR" \
+    --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
+    $TEST_VAR_ARGS \
     --speed=max
 
-echo "Checkpoint test passed!"
+echo "Checkpoint test passed"
+echo "Results saved to: $TEST_RESULTS_DIR"

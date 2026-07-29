@@ -5,3 +5,6 @@ TEST_NAME := dump manifest + decoders + flags
 TEST_DESC := Validate manifest schema, decoded JSON, and the --no-X flags on System 6 Finder
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

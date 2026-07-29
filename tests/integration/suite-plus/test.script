@@ -1,0 +1,176 @@
+# Macintosh Plus suite (see config.mk for the RAM-config rationale and
+# what this suite absorbed).
+#
+# Row map (former directory / boot-matrix row → row; **bold** = new):
+#
+#   plus-beep      plus-boot-beep: sample-exact PWM boot beep
+#                  (frame-exact window — the constants are load-bearing)
+#   plus-20-fd     System 2.0 @ 1 MB (factory-default RAM)
+#   plus-32-fd     System 3.2 @ 2 MB
+#   plus-4x-fd     **System 4.1 @ 2.5 MB** — one of §6.2's unused
+#                  single-disk system images, on the asymmetric-bank
+#                  RAM config
+#   plus-42-fd     System 4.2, moved to the 4 MB maximum
+#   plus-608-fd    System 6.0.8 @ 2 MB + the blank-floppy initialize
+#                  dialog and Finder eject flow, absorbed from
+#                  plus-floppy-blank
+#   plus-71-hd     **Plus x 7.1**: the `scsi` HD-boot row re-media'd to
+#                  the universal 7.1 image — System 7 on a 68000, with
+#                  genuine 7.1 rather than hd1's System 6
+#
+# All four supported Plus RAM totals (1 / 2 / 2.5 / 4 MB) appear across
+# the rows, so the version axis and the RAM-sizing axis fill together.
+
+include "../lib/mac.script"
+
+let ssw_20 = "../../data/systems/SSW-2.0-400K/System Disk.image"
+let ssw_32 = "../../data/systems/SSW-3.2-400K/System Installation v1.0.image"
+let sys_41 = "../../data/systems/System_4_1_0.dsk"
+let ssw_42 = "../../data/systems/SSW-4.2-800K/System Tools 1.image"
+let ssw_608 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+let hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
+
+# Boot the Plus at `ram` KB off `media`, wait for `golden`, and assert
+# the machine facts every floppy row shares. Returns the spend.
+def plus_fd_row(label, ram, media, golden, ceiling) {
+    machine.boot model="plus" ram=$ram
+    machine.floppy.drive[0].insert "${$media}"
+    let spent = wait_match("${$golden}", $ceiling, 5000000)
+    assert machine.id == "plus" "${$label}: machine.id != plus"
+    assert machine.ram == $ram "${$label}: machine.ram != ${$ram}"
+    assert machine.screen.width == 512 "${$label}: screen.width != 512"
+    assert machine.screen.height == 342 "${$label}: screen.height != 342"
+    return $spent
+}
+
+# ---- plus-beep --------------------------------------------------------------
+# Deterministic PWM audio through the generalized audio path. The fixed
+# window and the exact frame count are both the assertion (§5.2's
+# run_exact class), not padding.
+def row_plus_beep() {
+    machine.boot model="plus" ram=1024
+    machine.sound.capture.start
+    scheduler.run 1000000
+    machine.sound.capture.stop
+    assert machine.sound.capture.frames == 15432 "plus-beep: unexpected capture length"
+    machine.sound.match goldens/plus-beep.wav
+    report_perf("suite-plus/plus-beep", scheduler.instr_count)
+}
+
+# ---- the floppy rows --------------------------------------------------------
+
+def row_plus_20_fd() {
+    let t0 = scheduler.host_user_ns
+    let spent = plus_fd_row("plus-20-fd", 1024, $ssw_20, "goldens/plus-2.0-512x342-finder.png", 80000000)
+    mips_floor("plus-20-fd", $t0, 20)
+    report_row("2.0", "builtin", "fd-boot iwm 400k-gcr")
+    report_perf("suite-plus/plus-20-fd", $spent)
+}
+
+def row_plus_32_fd() {
+    let t0 = scheduler.host_user_ns
+    let spent = plus_fd_row("plus-32-fd", 2048, $ssw_32, "goldens/plus-3.2-512x342-finder.png", 90000000)
+    mips_floor("plus-32-fd", $t0, 20)
+    report_row("3.2", "builtin", "fd-boot iwm 400k-gcr")
+    report_perf("suite-plus/plus-32-fd", $spent)
+}
+
+# NEW ROW: System 4.1 — one of the single-disk system images that sat
+# unused in tests/data (§6.2), on the asymmetric two-bank RAM config.
+def row_plus_4x_fd() {
+    let t0 = scheduler.host_user_ns
+    let spent = plus_fd_row("plus-4x-fd", 2560, $sys_41, "goldens/plus-4.1-512x342-finder.png", 90000000)
+    mips_floor("plus-4x-fd", $t0, 20)
+    report_row("4.1", "builtin", "fd-boot iwm 400k-gcr")
+    report_perf("suite-plus/plus-4x-fd", $spent)
+}
+
+def row_plus_42_fd() {
+    let t0 = scheduler.host_user_ns
+    let spent = plus_fd_row("plus-42-fd", 4096, $ssw_42, "goldens/plus-4.2-512x342-finder.png", 100000000)
+    mips_floor("plus-42-fd", $t0, 20)
+    report_row("4.2", "builtin", "fd-boot iwm 800k-gcr")
+    report_perf("suite-plus/plus-42-fd", $spent)
+}
+
+# ---- plus-608-fd ------------------------------------------------------------
+# 6.0.8, then the blank-floppy flow absorbed from plus-floppy-blank:
+# create an image, insert it in the second drive, the System offers to
+# initialize it, and Eject in that dialog removes it again. wait_stable
+# (not wait_match) throughout because the row interacts.
+def row_plus_608_fd() {
+    machine.boot model="plus" ram=2048
+    machine.floppy.drive[0].insert "${$ssw_608}"
+    scheduler.run 30000000
+    wait_stable(300000000)
+    assert machine.ram == 2048 "plus-608-fd: machine.ram != 2048"
+    check("goldens/plus-6.0.8-512x342-finder.png")
+    # No assert_addr here: the Plus is a 68000, always 24-bit, and it has
+    # no MMU32bit global (§3.4 — the axis is n/a for this class).
+    report_row("6.0.8", "builtin", "fd-boot iwm 800k-gcr")
+
+    # Blank second floppy → the System's initialize-disk dialog.
+    assert storage.fd_create("${$WORK_DIR}/blank.dsk") "plus-608-fd: fd_create failed"
+    machine.floppy.drive[1].insert "${$WORK_DIR}/blank.dsk" true
+    wait_stable(300000000)
+    assert machine.floppy.drive[1].present "plus-608-fd: blank floppy not present in drive 1"
+    check("goldens/plus-6.0.8-512x342-init-dialog.png")
+
+    # Eject. Quadrature-mouse machine: plain positional moves, no warp.
+    machine.adb.mouse.move 157 155
+    run_ticks(6)
+    machine.adb.mouse.click true
+    run_ticks(6)
+    machine.adb.mouse.click false
+    wait_stable(300000000)
+    assert machine.floppy.drive[1].present == false "plus-608-fd: blank floppy still present after Eject"
+    check("goldens/plus-6.0.8-512x342-after-eject.png")
+    report_perf("suite-plus/plus-608-fd", scheduler.instr_count)
+}
+
+# ---- plus-71-hd -------------------------------------------------------------
+# NEW CELL Plus x 7.1: the SCSI HD-boot row (formerly the `scsi` test, on
+# hd1's System 6) re-media'd to the universal 7.1 image — System 7 on a
+# 68000 — and the Plus's only HD-boot path coverage.
+#
+# Booting this universal image on a 68000 surfaces a real System 7.1
+# behaviour the row now pins: Apple Photo Access (a QuickTime file-system
+# module that needs a 68020+) fails to install, so the System raises "One
+# of the File System Access modules could not be installed" and waits.
+# The row matches that dialog, clicks Continue, and only then expects the
+# desktop — so a regression that changed WHICH modules fail, or that lost
+# the dialog entirely, shows up as a golden mismatch.
+def row_plus_71_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="plus" ram=4096
+    machine.scsi.attach_hd "${$hd_71}" 0
+    scheduler.run 60000000
+    wait_stable(1200000000)
+    assert machine.id == "plus" "plus-71-hd: machine.id != plus"
+    assert machine.screen.width == 512 "plus-71-hd: screen.width != 512"
+    check("goldens/plus-7.1-512x342-fsaccess-dialog.png")
+
+    # Continue (quadrature mouse: plain positional moves, no warp).
+    machine.adb.mouse.move 357 245
+    run_ticks(8)
+    machine.adb.mouse.click true
+    run_ticks(8)
+    machine.adb.mouse.click false
+    wait_stable(900000000)
+    check("goldens/plus-7.1-512x342-finder.png")
+    report_row("7.1", "builtin", "hd-boot scsi fs-access-dialog")
+    report_perf("suite-plus/plus-71-hd", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("plus-beep") { row_end("plus-beep", try(row_plus_beep(), "FAILED")) }
+if row_on("plus-20-fd") { row_end("plus-20-fd", try(row_plus_20_fd(), "FAILED")) }
+if row_on("plus-32-fd") { row_end("plus-32-fd", try(row_plus_32_fd(), "FAILED")) }
+if row_on("plus-4x-fd") { row_end("plus-4x-fd", try(row_plus_4x_fd(), "FAILED")) }
+if row_on("plus-42-fd") { row_end("plus-42-fd", try(row_plus_42_fd(), "FAILED")) }
+if row_on("plus-608-fd") { row_end("plus-608-fd", try(row_plus_608_fd(), "FAILED")) }
+if row_on("plus-71-hd") { row_end("plus-71-hd", try(row_plus_71_hd(), "FAILED")) }
+
+suite_done()
+quit

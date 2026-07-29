@@ -9,3 +9,6 @@ TEST_DESC := Descends into the A/UX 3.0.1 UFS root partition and copies out /etc
 
 # Universal ROM shared by SE/30, IIcx, IIx
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

@@ -1,11 +1,12 @@
-# Step 1: Boot from floppy and save checkpoint
-# Run 50M instructions to get partway through boot process
+# Checkpoint step 1: boot the 6.0.8 floppy to a settled desktop and save.
+# The floppy comes from fd= (run.sh); the library's settle wait means the
+# save point is a screen state rather than an instruction count that rots.
 
-scheduler.run 50000000
+include "../lib/mac.script"
 
-# Save machine state to checkpoint file. assert fails the step if the
-# typed wrapper returned false (silent failure used to be masked by
-# path-form returning 0 regardless of the bool result).
-assert checkpoint.save("checkpoint") "step1 checkpoint save failed"
+wait_stable(400000000)
+check("${$TEST_DIR}/desktop.png")
 
+assert checkpoint.save("checkpoint.gs") "step1: checkpoint save failed"
+machine.screen.save "${$RESULTS_DIR}/screenshot-step1.png"
 quit

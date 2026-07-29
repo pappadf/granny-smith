@@ -17,6 +17,16 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
+# Every `run:` uses bash, not the container's default sh. Steps here pipe into
+# tee and then `exit "${PIPESTATUS[0]}"` to surface the real command's status
+# rather than tee's — PIPESTATUS is a bashism, and under dash it expands to
+# nothing and the step dies with "Bad substitution" AFTER the tests have
+# already passed. GitHub's bash mode also sets -o pipefail, so the pipeline
+# status is correct twice over.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -58,6 +68,11 @@ jobs:
         id: fetch-data
         run: |
           if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            # No flag: fetches the revision pinned in tests/data-version, not
+            # whatever gs-test-data HEAD happens to be. CI is therefore
+            # reproducible against the media the goldens were captured from,
+            # and adopting newer data is a reviewed pin bump rather than
+            # something that silently changes under a green build.
             ./scripts/fetch-test-data.sh
             # Only mark test data as available once fetch actually succeeds,
             # otherwise gated steps below would run without data and fail confusingly.
@@ -104,11 +119,96 @@ jobs:
         run: |
           make -C tests/unit run
 
-      # Integration and e2e tests require proprietary test data
-      - name: Run integration tests
+      # Integration and e2e tests require proprietary test data.
+      #
+      # §5.4 tiers: unit is seconds, matrix is the per-machine boot suites,
+      # extended is the long diagnostics, installers and app choreography.
+      # Normally the PR gate is unit + matrix and extended is nightly-only —
+      # but while the integration-test rework settles, extended runs here too
+      # (see its step below). Suites are parallel-safe because each test gets a
+      # private GS_STORAGE_CACHE, so nothing writes beside the shared media.
+      - name: Run integration tests (unit tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
-          make integration-test
+          make integration-test TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Run integration tests (matrix tier)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          make integration-test TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
+          exit "${PIPESTATUS[0]}"
+
+      # Extended tier on the PR gate as well as the nightly, TEMPORARILY.
+      # §5.4 puts the long diagnostics, installers and app choreography in the
+      # nightly so the PR gate stays quick; while the integration-test rework
+      # settles we want the full set on every PR and every push to main
+      # instead, so a regression in a long row is caught before merge rather
+      # than the following morning. KEEP_GOING=1 so one red row does not
+      # truncate the report (§5.7) — the build still fails at the end.
+      #
+      # Revert to nightly-only once the rework has proven stable: delete this
+      # step, and the nightly workflow already covers the tier unchanged.
+      - name: Run integration tests (extended tier)
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        timeout-minutes: 120
+        run: |
+          make integration-test TIER=extended TEST_VARS="KEEP_GOING=1" \
+            2>&1 | tee /tmp/it-extended.log
+          exit "${PIPESTATUS[0]}"
+
+      # Coverage contract (§5.6): diff the cells the run actually reported
+      # (@@COV records, read from the live machine) against the declared
+      # roster in tests/integration/matrix-targets.json. A declared cell that
+      # went uncovered fails; cells owed by another tier, blocked by a known
+      # emulator defect, or gated on absent media are reported, not failed.
+      - name: Check coverage contract
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          python3 scripts/test-matrix.py --check --tier=matrix /tmp/it-matrix.log \
+            | tee /tmp/coverage.log
+          exit "${PIPESTATUS[0]}"
+
+      # Golden-collision gate: two DIFFERENT goldens asserted in one script must
+      # not hold identical bytes, or one frame is silently doing the work of
+      # several assertions. Needs no test data and no build — it only reads the
+      # scripts and the committed PNGs — so it runs regardless of the data fetch
+      # and catches a bad recapture before the expensive tiers do.
+      - name: Check golden distinctness
+        run: python3 scripts/check-goldens.py
+
+      # Performance gate (§5.8, dimension 1): per-row guest instruction spend
+      # is host-independent and bit-reproducible, so a row outside its
+      # tolerance band is a real change and fails like a pixel golden.
+      # Absorbing a legitimate timing change means committing a reviewed
+      # perf-baselines.json diff (scripts/gen-baselines.py) in the same PR.
+      - name: Check performance baselines
+        if: steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          python3 scripts/test-matrix.py --perf /tmp/it-matrix.log | tee /tmp/perf.log
+          exit "${PIPESTATUS[0]}"
+
+      - name: Coverage + row report into the step summary
+        if: always() && steps.fetch-data.outputs.has_test_data == 'true'
+        run: |
+          {
+            echo "## Integration coverage"
+            echo '```'
+            cat /tmp/coverage.log 2>/dev/null || echo "(no coverage log)"
+            echo '```'
+            echo "### Cells covered by this run"
+            python3 scripts/test-matrix.py --from-results /tmp/it-matrix.log 2>/dev/null || true
+            echo "### Milestone rows (known gaps, non-fatal)"
+            grep -h "MILESTONE" /tmp/it-matrix.log /tmp/it-extended.log 2>/dev/null || echo "(none)"
+            echo "### Extended-tier coverage (temporarily on the PR gate)"
+            echo '```'
+            python3 scripts/test-matrix.py --check --tier=extended /tmp/it-extended.log 2>&1 || true
+            echo '```'
+            echo "### Per-row instruction spend vs baselines"
+            echo '```'
+            cat /tmp/perf.log 2>/dev/null || echo "(no perf log)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # NOTE: the browser end-to-end suite (Playwright) now runs in the `ui`
       # job against the web2 (Svelte) frontend — see `make ui2-e2e` there.

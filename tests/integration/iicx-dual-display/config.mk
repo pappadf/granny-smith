@@ -13,3 +13,6 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 
 # The harness boots the IIcx once; the script stages socket $A and re-boots.
 TEST_ARGS := model=iicx ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := matrix

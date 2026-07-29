@@ -1,0 +1,56 @@
+# Quadra 700 with two NuBus display cards (see config.mk).
+#
+# Merged from q700-24ac + q700-824gc: one boot, both cards, every
+# assertion either original made, plus the multi-card facts neither could
+# check on its own.
+
+include "../lib/mac.script"
+
+machine.rtc.time = 3000000000
+
+# Seat both cards before the boot consumes the staging channels: the 24AC
+# in socket $D (where the single-card tests put their card) and the 8*24 GC
+# in socket $E.
+machine.nubus.slot[13].card_id = "display_card_24ac"
+machine.nubus.slot[14].card_id = "824gc"
+# Per-slot staging seats a card but does NOT carry a mode, unlike the
+# video_card= wildcard the single-card tests used — so the 24AC's 8 bpp
+# mode has to be staged for its slot explicitly, or it comes up at the
+# card default and the depth assert below fails.
+machine.nubus.slot[13].video_mode = "rgb_640x480_8bpp"
+machine.boot model="q700" ram=8192
+machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
+scheduler.run 700000000
+wait_stable(1800000000)
+
+assert machine.id == "q700" "machine.id != q700"
+
+# Both staged cards came up, each with its declaration ROM bound.
+assert machine.nubus.slot[13].card.name == "Apple Macintosh Display Card 24AC" "slot $D card != 24AC"
+assert machine.nubus.slot[14].card.name == "Apple Macintosh Display Card 8•24 GC" "slot $E card != 8•24 GC"
+assert machine.nubus.slot[13].card.declrom.present "slot $D declaration ROM not present"
+assert machine.nubus.slot[14].card.declrom.present "slot $E declaration ROM not present"
+assert machine.nubus.slot[13].card_id == "" "staged card_id for slot $D not consumed at boot"
+assert machine.nubus.slot[14].card_id == "" "staged card_id for slot $E not consumed at boot"
+
+# From q700-24ac: the 24AC's own framebuffer geometry/depth.
+assert machine.nubus.slot[13].card.framebuffer.width == 640 "24AC fb width != 640"
+assert machine.nubus.slot[13].card.framebuffer.depth == 8 "24AC fb depth != 8 bpp"
+
+# From q700-824gc: on a 68040 the GC INIT must NOT start the coprocessor.
+assert machine.nubus.slot[14].card.gc.on == false "GC INIT unexpectedly started the coprocessor on a 68040"
+
+# From both: the built-in DAFB stays the boot screen even with two cards in.
+assert (debug.mac.globals.read("ScrnBase") & 0xFF000000) == 0xF9000000 "ScrnBase not on the DAFB"
+# 7.6 selects 32-bit addressing itself (§3.4).
+assert_addr(true)
+assert machine.screen.width == 640 "screen width != 640"
+assert machine.screen.height == 480 "screen height != 480"
+# 7.6 puts a clock in the menu bar, so the golden excludes that corner —
+# the same exclusion the other 7.5/7.6 rows use. The RTC is pinned above,
+# but the displayed minute still depends on where in guest time the
+# settled frame lands.
+check_ex("dafb-desktop.png", 0, 440, 20, 640)
+report_row("7.6", "dafb+24ac+824gc", "hd-boot dual-card dafb-primary gc-declined-on-040")
+report_perf("quadra-dual-card/dual", scheduler.instr_count)
+quit

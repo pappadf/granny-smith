@@ -10,9 +10,19 @@
 #   GS_TEST_DATA_REPO   - (optional) Override repo name (default: pappadf/gs-test-data)
 #
 # Usage:
-#   ./scripts/fetch-test-data.sh           # Fetch/update test data
-#   ./scripts/fetch-test-data.sh --check   # Check if data is available (exit 0/1)
+#   ./scripts/fetch-test-data.sh           # Fetch the PINNED data revision
+#   ./scripts/fetch-test-data.sh --update  # Fetch latest and move the pin
+#   ./scripts/fetch-test-data.sh --check   # 0 = ok, 1 = absent, 2 = wrong revision
 #   ./scripts/fetch-test-data.sh --status  # Show detailed status
+#
+# Data revision pinning:
+#   Goldens are byte-exact, so a test is only meaningful against the media it
+#   was captured from. tests/data is a copy of the gs-test-data repo, so that
+#   repo's COMMIT HASH is the data's identity — no separate manifest needed.
+#   tests/data-version records the revision this checkout's tests were tuned
+#   against; a plain fetch reproduces exactly that. Adopting newer data is a
+#   deliberate act: --update moves the pin, and the diff shows up in review
+#   next to whatever goldens had to be recaptured.
 #
 # Security notes:
 #   - Token is NEVER logged or echoed
@@ -26,6 +36,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DATA_DIR="$REPO_ROOT/tests/data"
 MARKER_FILE="$DATA_DIR/.gs-test-data-marker"
+PIN_FILE="$REPO_ROOT/tests/data-version"
+
 DEFAULT_REPO="pappadf/gs-test-data"
 
 # Colors for output (if terminal supports it)
@@ -49,6 +61,20 @@ log_success() { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
+# The pinned gs-test-data revision, or empty if this checkout does not pin one.
+# Comments and blank lines are ignored so the file can explain itself.
+read_pin() {
+    [[ -f "$PIN_FILE" ]] || return 0
+    grep -vE '^[[:space:]]*(#|$)' "$PIN_FILE" | head -1 | tr -d '[:space:]'
+}
+
+# The revision actually present in tests/data, recorded by the last fetch.
+# Empty for data fetched before pinning existed, or supplied by hand.
+read_marker_commit() {
+    [[ -f "$MARKER_FILE" ]] || return 0
+    sed -n 's/^# Commit: //p' "$MARKER_FILE" | head -1 | tr -d '[:space:]'
+}
+
 # Check if test data is available
 check_data_available() {
     if [[ -f "$MARKER_FILE" ]]; then
@@ -68,6 +94,13 @@ show_status() {
     
     if check_data_available; then
         log_success "Test data is available"
+        pin="$(read_pin)"
+        have="$(read_marker_commit)"
+        echo "  Pinned revision:  ${pin:-<none recorded>}"
+        echo "  Present revision: ${have:-<unknown>}"
+        if [[ -n "$pin" && -n "$have" && "$pin" != "$have" ]]; then
+            log_warn "  MISMATCH — goldens may not correspond to this media"
+        fi
         if [[ -f "$MARKER_FILE" ]]; then
             echo "  Marker file present: $MARKER_FILE"
             if command -v git &>/dev/null && [[ -d "$DATA_DIR/.git" ]]; then
@@ -88,13 +121,36 @@ show_status() {
 }
 
 # Check mode
+UPDATE_PIN=0
 case "${1:-}" in
     --check)
-        if check_data_available; then
-            exit 0
-        else
+        if ! check_data_available; then
             exit 1
         fi
+        pin="$(read_pin)"
+        have="$(read_marker_commit)"
+        # No pin, or data predating the marker's Commit line: nothing to verify.
+        # Silence here is deliberate — an external contributor using their own
+        # media must not be told their tree is broken.
+        if [[ -z "$pin" || -z "$have" ]]; then
+            exit 0
+        fi
+        if [[ "$pin" != "$have" ]]; then
+            log_error "test data revision mismatch"
+            echo "  pinned  (tests/data-version): $pin"
+            echo "  present (tests/data)........: $have"
+            echo ""
+            echo "Goldens are byte-exact, so results against the wrong media are not"
+            echo "meaningful. Run scripts/fetch-test-data.sh to get the pinned revision,"
+            echo "or --update to adopt what is present and move the pin."
+            # 2, not 1: the data IS present, it is the wrong revision. Callers
+            # print very different advice for the two cases.
+            exit 2
+        fi
+        exit 0
+        ;;
+    --update)
+        UPDATE_PIN=1
         ;;
     --status)
         show_status
@@ -184,6 +240,31 @@ if GIT_LFS_SKIP_SMUDGE=1 git \
         -c "http.https://github.com/.extraheader=AUTHORIZATION: Basic ${AUTH_HEADER_VALUE}" \
         clone --quiet --depth 1 "$CLONE_URL" "$TEMP_CLONE_DIR" 2>/dev/null; then
 
+    # Reproduce the PINNED revision rather than whatever HEAD happens to be,
+    # unless --update was asked for. The clone above is --depth 1 on the default
+    # branch; GitHub serves a fetch by explicit sha, so one extra shallow fetch
+    # is all a rewind costs.
+    PIN="$(read_pin)"
+    if [[ "$UPDATE_PIN" -eq 0 && -n "$PIN" ]]; then
+        if [[ "$(git -C "$TEMP_CLONE_DIR" rev-parse HEAD)" != "$PIN" ]]; then
+            log_info "Rewinding to pinned revision ${PIN:0:12}..."
+            if GIT_LFS_SKIP_SMUDGE=1 git -C "$TEMP_CLONE_DIR" \
+                    -c "http.https://github.com/.extraheader=AUTHORIZATION: Basic ${AUTH_HEADER_VALUE}" \
+                    fetch --quiet --depth 1 origin "$PIN" 2>/dev/null \
+               && git -C "$TEMP_CLONE_DIR" checkout --quiet FETCH_HEAD 2>/dev/null; then
+                :
+            else
+                log_error "Could not fetch pinned revision $PIN from $REPO"
+                echo ""
+                echo "The pin in tests/data-version names a revision this token cannot"
+                echo "reach — it may have been force-pushed away, or the pin is wrong."
+                echo "Use --update to adopt current HEAD and move the pin deliberately."
+                exit 1
+            fi
+        fi
+    fi
+    DATA_COMMIT="$(git -C "$TEMP_CLONE_DIR" rev-parse HEAD)"
+
     log_info "Copying test data files..."
 
     # Ensure data directory exists
@@ -234,9 +315,25 @@ else
     exit 1
 fi
 
-# Create marker file
+# Create marker file. The Commit line is what makes this data identifiable:
+# tests/data has no .git of its own, so without it the copy is anonymous.
 echo "# Test data marker - do not delete" > "$MARKER_FILE"
 echo "# Cloned from: $REPO" >> "$MARKER_FILE"
+echo "# Commit: $DATA_COMMIT" >> "$MARKER_FILE"
 echo "# Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$MARKER_FILE"
 
-log_success "Test data is ready at: $DATA_DIR"
+# --update is the deliberate act of adopting newer media: move the pin so the
+# change is a reviewable diff in the main repo, next to any goldens it forced
+# to be recaptured.
+if [[ "$UPDATE_PIN" -eq 1 ]]; then
+    {
+        echo "# gs-test-data revision this checkout's tests are tuned against."
+        echo "# Goldens are byte-exact, so changing this line means re-verifying"
+        echo "# every row that consumes the media it changes."
+        echo "# Update with: scripts/fetch-test-data.sh --update"
+        echo "$DATA_COMMIT"
+    } > "$PIN_FILE"
+    log_success "Pinned tests/data-version to ${DATA_COMMIT:0:12}"
+fi
+
+log_success "Test data is ready at: $DATA_DIR (revision ${DATA_COMMIT:0:12})"

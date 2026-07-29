@@ -1,0 +1,252 @@
+# Macintosh IIfx suite (see config.mk for the card and RAM rationale, and
+# for why the 24/32-bit pair is not here yet).
+#
+# Row map (former directory → row; **bold** = new matrix coverage):
+#
+#   iifx-chime       iifx-boot-chime: sample-exact chime WAV (8 MB, a
+#                    ROM-only row so the known 8 MB boot defect is not in
+#                    play)
+#   iifx-608-fd      **IIfx x 6.0.8**: the 800K floppy behind the SWIM
+#                    IOP — §7's third floppy-transport row (the Plus has
+#                    IWM, the SE/30 direct SWIM, this one the IOP
+#                    mailbox path) and the cell that completes 6.0.8
+#                    across every machine that supports it (32 MB)
+#   iifx-701-fd      iifx-boot: JMFB Finder + About, plus the two lowmem
+#                    regression asserts this test exists for (16 MB)
+#   iifx-71-824gc    **IIfx x 7.1**: iifx-824gc re-media'd from 7.0.1 per
+#                    §7 — the 8•24 GC seated but declining (no GC
+#                    software on Disk Tools), so the ROM/QuickDraw
+#                    fallback renders (32 MB)
+#   iifx-24ac-seat   iifx-24ac: 24AC card-seat contract, ROM-only
+#   iifx-75-24ac-832 24AC at 832x624x8 on the 7.5 image: the mode applies
+#                    (geometry+depth enforced) but the raster content is
+#                    corrupt, so the row stops short of a golden and does
+#                    not claim the cell — see the row comment
+#   iifx-aux3-login  iifx-aux3-boot: A/UX 3.0.1 boots to the login
+#                    prompt; the 1 bpp gate that stays on the deepest
+#                    stack per §7
+#   iifx-8m          **MILESTONE**: the known 8 MB POST stall
+
+include "../lib/mac.script"
+
+let ssw_608 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+let sys_701 = "../../data/systems/System_7_0_1.image"
+let disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+let hd_608 = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
+let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+let hd_aux = "../../data/aux/aux_3.0.1/hd160-with-aux-301.img"
+
+# ---- iifx-chime -------------------------------------------------------------
+# Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
+# 12,516-frame length are both the assertion.
+def row_iifx_chime() {
+    machine.boot model="iifx" ram=8192 video_card="mdc_8_24"
+    machine.sound.capture.start
+    scheduler.run 12000000
+    machine.sound.capture.stop
+    assert machine.id == "iifx" "iifx-chime: machine.id != iifx"
+    assert machine.sound.capture.frames == 12516 "iifx-chime: unexpected capture length"
+    machine.sound.match goldens/iifx-chime.wav
+    report_perf("suite-iifx/iifx-chime", scheduler.instr_count)
+}
+
+# ---- iifx-608-fd ------------------------------------------------------------
+# NEW CELL IIfx x 6.0.8, and the SWIM-IOP floppy transport row: on this
+# machine every floppy transfer is an IOP mailbox transaction rather than
+# direct SWIM register access, so the same 800K media exercises a third
+# distinct transport (cf. suite-plus's IWM row and suite-se30's direct
+# SWIM row).
+def row_iifx_608_fd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iifx" ram=32768 video_card="mdc_8_24"
+    machine.floppy.drive[0].insert "${$ssw_608}"
+    # Run past the early boot transient BEFORE waiting. The desktop pattern is
+    # painted long before the Finder draws its menu bar and icons, and that bare
+    # grey frame is static for tens of millions of instructions — so both this
+    # row's REGEN and its verify used to settle on it, self-consistently, and
+    # the row claimed its coverage cell against a screen with nothing on it.
+    # Found by scripts/check-goldens.py once it learned to see wait_match
+    # goldens. The real Finder is up by ~400 M here.
+    scheduler.run 300000000
+    let spent = wait_match("goldens/iifx-6.0.8-640x480x1-finder.png", 900000000, 20000000)
+    assert machine.id == "iifx" "iifx-608-fd: machine.id != iifx"
+    assert machine.ram == 32768 "iifx-608-fd: machine.ram != 32768"
+    assert machine.screen.width == 640 "iifx-608-fd: screen.width != 640"
+    assert machine.screen.height == 480 "iifx-608-fd: screen.height != 480"
+    assert_addr(false)
+    report_row("6.0.8", "jmfb", "fd-boot swim-iop 800k-gcr")
+    # Total row spend, not $spent: with the 300 M pre-run above, the wait
+    # matches on its first poll, so $spent would be a constant 20 M and
+    # signal nothing. instr_count still moves if the boot changes.
+    report_perf("suite-iifx/iifx-608-fd", scheduler.instr_count)
+}
+
+# ---- iifx-701-fd ------------------------------------------------------------
+# The two lowmem asserts are why this test exists: fDBInit ($5405) must
+# be cleared and AddrMapFlags' RPUExists bit (bit 20 of $0DD0) must stay
+# clear, both IIfx-specific ROM-init regressions. wait_stable (not
+# wait_match) because the row goes on to interact.
+def row_iifx_701_fd() {
+    machine.boot model="iifx" ram=16384 video_card="mdc_8_24"
+    machine.floppy.drive[0].insert "${$sys_701}"
+    scheduler.run 200000000
+    wait_stable(900000000)
+    assert machine.id == "iifx" "iifx-701-fd: machine.id != iifx"
+    assert machine.rom.checksum == "4147DD77" "iifx-701-fd: rom.checksum != 4147DD77"
+    assert machine.ram == 16384 "iifx-701-fd: machine.ram != 16384"
+    assert machine.screen.width == 640 "iifx-701-fd: screen.width != 640"
+    assert machine.screen.height == 480 "iifx-701-fd: screen.height != 480"
+    assert machine.memory.peek.b(0x5405) == 0x04 "iifx-701-fd: fDBInit still set ($5405 != 0x04)"
+    assert (machine.memory.peek.l(0x0DD0) & 0x100000) == 0 "iifx-701-fd: RPUExists bit 20 of AddrMapFlags still set"
+    assert_addr(false)
+    # golden-collision-ok: iifx-7.0.1-640x480x1-finder.png iifx-7.1-640x480x1-824gc-finder.png
+    # - System_7_0_1.image and the 7.1 Disk Tools disk are both volumes named
+    # "Disk Tools", so at 640x480x1 the two Finders draw an identical desktop,
+    # and at 1 bpp the JMFB and the 8*24 GC put out the same raster. Neither
+    # golden is what proves its row: this one is pinned by the fDBInit and
+    # RPUExists lowmem asserts above, and the 824gc row by its card-identity and
+    # gc.state == "reset" asserts.
+    check("goldens/iifx-7.0.1-640x480x1-finder.png")
+    about_box()
+    check("goldens/iifx-7.0.1-640x480x1-about.png")
+    report_row("7.0.1", "jmfb", "fd-boot lowmem about")
+    report_perf("suite-iifx/iifx-701-fd", scheduler.instr_count)
+}
+
+# ---- iifx-71-824gc ----------------------------------------------------------
+# NEW CELL IIfx x 7.1. The 8•24 GC is seated but its accelerator stays in
+# reset because Disk Tools carries no GC software — so this row pins the
+# card's ROM/QuickDraw fallback rendering path under a System, which is
+# the half of the accel/decline oracle that does not need the GC driver.
+def row_iifx_71_824gc() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iifx" ram=32768 video_card="824gc"
+    machine.floppy.drive[0].insert "${$disk_tools_71}"
+    # Run past the early boot transient BEFORE waiting. The desktop pattern is
+    # painted long before the Finder draws its menu bar and icons, and that bare
+    # grey frame is static for tens of millions of instructions — so both this
+    # row's REGEN and its verify used to settle on it, self-consistently, and
+    # the row claimed its coverage cell against a screen with nothing on it.
+    # Found by scripts/check-goldens.py once it learned to see wait_match
+    # goldens. The real Finder is up by ~400 M here.
+    scheduler.run 300000000
+    let spent = wait_match("goldens/iifx-7.1-640x480x1-824gc-finder.png", 900000000, 20000000)
+    assert machine.id == "iifx" "iifx-71-824gc: machine.id != iifx"
+    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "iifx-71-824gc: slot $9 card != 8•24 GC"
+    assert machine.nubus.slot[9].card.declrom.present "iifx-71-824gc: declaration ROM not present"
+    assert machine.nubus.slot[9].card.gc.state == "reset" "iifx-71-824gc: gc.state != reset (no GC software on Disk Tools)"
+    assert machine.screen.width == 640 "iifx-71-824gc: screen.width != 640"
+    assert_addr(false)
+    report_row("7.1", "824gc", "fd-boot gc-declined")
+    # Total row spend, not $spent: with the 300 M pre-run above, the wait
+    # matches on its first poll, so $spent would be a constant 20 M and
+    # signal nothing. instr_count still moves if the boot changes.
+    report_perf("suite-iifx/iifx-71-824gc", scheduler.instr_count)
+}
+
+# ---- iifx-24ac-seat ---------------------------------------------------------
+# Card-seat contract, ROM-only: name, declaration ROM, and a painted boot
+# screen at the card's default mode.
+def row_iifx_24ac_seat() {
+    machine.boot model="iifx" ram=16384 video_card="display_card_24ac"
+    scheduler.run 100000000
+    assert machine.id == "iifx" "iifx-24ac-seat: machine.id != iifx"
+    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "iifx-24ac-seat: slot $9 card != 24AC"
+    assert machine.nubus.slot[9].card.declrom.present "iifx-24ac-seat: declaration ROM not present"
+    assert machine.screen.width == 640 "iifx-24ac-seat: screen.width != 640"
+    assert machine.screen.height == 480 "iifx-24ac-seat: screen.height != 480"
+    assert machine.screen.checksum() != 0 "iifx-24ac-seat: boot screen not visible"
+    report_perf("suite-iifx/iifx-24ac-seat", scheduler.instr_count)
+}
+
+# ---- iifx-75-24ac-832 -------------------------------------------------------
+# The 24AC's 832x624 mode IS staged and applied — the raster comes up at
+# the right geometry and depth, which is what this row enforces — but the
+# SCANOUT of it is corrupt: instead of a Finder desktop the frame is
+# noise rows over uniform dither, the signature of a stride/pitch
+# mismatch (artifact captured 2026-07-28; see
+# proposal-emulator-bug-fixes.md §7).
+#
+# So the row deliberately stops short of a pixel golden and does NOT
+# report the cell: claiming IIfx x 7.5 x 24AC x 832x624x8 as covered
+# while the picture is garbage would be worse than leaving it dark. The
+# cell stays declared in matrix-targets.json marked `blocked`, so the
+# coverage check keeps reporting the debt until the raster is right, at
+# which point this row gains its golden and its report_row.
+def row_iifx_75_24ac_832() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iifx" ram=32768 video_card="display_card_24ac" video_mode="rgb_832x624_8bpp"
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 400000000
+    wait_stable(1800000000)
+    assert machine.id == "iifx" "iifx-75-24ac-832: machine.id != iifx"
+    assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "iifx-75-24ac-832: slot $9 card != 24AC"
+    assert machine.screen.width == 832 "iifx-75-24ac-832: screen.width != 832 (mode not applied?)"
+    assert machine.screen.height == 624 "iifx-75-24ac-832: screen.height != 624"
+    assert machine.screen.depth == 8 "iifx-75-24ac-832: screen.depth != 8"
+    echo "note: 832x624 raster content is corrupt — see proposal-emulator-bug-fixes.md §7"
+    machine.screen.save "${$RESULTS_DIR}/iifx-7.5-832x624x8-corrupt.png"
+    report_perf("suite-iifx/iifx-75-24ac-832", scheduler.instr_count)
+}
+
+# ---- iifx-aux3-login --------------------------------------------------------
+# A/UX 3.0.1 from the installed image to the login prompt. The exclude
+# rectangle covers the blinking cursor — the golden is otherwise exact,
+# and A/UX owns the MMU outright so the addressing axis does not apply.
+# The RTC is pinned to the timestamp the golden was captured with.
+def row_iifx_aux3_login() {
+    machine.rtc.time = "2026-04-26T21:30:36"
+    machine.boot model="iifx" ram=16384 video_card="mdc_8_24"
+    machine.scsi.attach_hd "${$hd_aux}" 0
+    scheduler.run 1500000000
+    assert machine.id == "iifx" "iifx-aux3-login: machine.id != iifx"
+    assert machine.rom.checksum == "4147DD77" "iifx-aux3-login: rom.checksum != 4147DD77"
+    assert machine.screen.width == 640 "iifx-aux3-login: screen.width != 640"
+    assert machine.screen.height == 480 "iifx-aux3-login: screen.height != 480"
+    check_ex("goldens/iifx-aux3-640x480x1-login.png", 240, 318, 258, 323)
+    report_row("A/UX 3.0.1", "jmfb", "hd-boot login-prompt")
+    report_perf("suite-iifx/iifx-aux3-login", scheduler.instr_count)
+}
+
+# ---- iifx-8m (MILESTONE) ----------------------------------------------------
+# FOUND AND LEFT UNTRACKED BEFORE THIS REWORK: iifx-boot pinned 16 MB
+# with the comment "ram=8192 currently regresses the boot (stalls in POST
+# at $40843F96)" and "tracked separately", i.e. by nothing. §7 makes it a
+# tracked fact: the row boots the 6.0.8 HD image at 8 MB — a supported
+# RAM option — and reports red with the stall PC until the POST bug is
+# fixed, then promotes to an enforced row.
+def row_iifx_8m() {
+    machine.boot model="iifx" ram=8192 video_card="mdc_8_24"
+    machine.scsi.attach_hd "${$hd_608}" 0
+    scheduler.run 400000000
+    assert debug.mac.globals.read("MemTop") == 0x800000 "iifx-8m: RAM sizing incomplete (MemTop=${debug.mac.globals.read("MemTop"):08x}, PC=${machine.cpu.pc:08x})"
+    wait_stable(900000000)
+    assert machine.screen.width == 640 "iifx-8m: screen.width != 640"
+    report_perf("suite-iifx/iifx-8m", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("iifx-chime") { row_end("iifx-chime", try(row_iifx_chime(), "FAILED")) }
+if row_on("iifx-608-fd") { row_end("iifx-608-fd", try(row_iifx_608_fd(), "FAILED")) }
+if row_on("iifx-701-fd") { row_end("iifx-701-fd", try(row_iifx_701_fd(), "FAILED")) }
+if row_on("iifx-71-824gc") { row_end("iifx-71-824gc", try(row_iifx_71_824gc(), "FAILED")) }
+if row_on("iifx-24ac-seat") { row_end("iifx-24ac-seat", try(row_iifx_24ac_seat(), "FAILED")) }
+if row_on("iifx-75-24ac-832") {
+    if have_media($hd_75) {
+        row_end("iifx-75-24ac-832", try(row_iifx_75_24ac_832(), "FAILED"))
+    } else {
+        echo "skip: iifx-75-24ac-832 (7.5 prepared image not fetched)"
+    }
+}
+if row_on("iifx-aux3-login") {
+    if have_media($hd_aux) {
+        row_end("iifx-aux3-login", try(row_iifx_aux3_login(), "FAILED"))
+    } else {
+        echo "skip: iifx-aux3-login (A/UX installed image not fetched)"
+    }
+}
+if row_on("iifx-8m") { row_end_milestone("iifx-8m", try(row_iifx_8m(), "FAILED")) }
+
+suite_done()
+quit

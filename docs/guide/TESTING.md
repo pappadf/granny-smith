@@ -9,7 +9,7 @@ emulator), and browser-based end-to-end tests (Playwright).
 | Tier | Command | Duration | Test Data Required |
 |------|---------|----------|--------------------|
 | Unit | `make -C tests/unit run` | 1–5 min | No (uses `third-party/single-step-tests`) |
-| Integration | `make integration-test` | 1–2 min | Yes |
+| Integration | `make integration-test` | 10–20 min (`-j` shortens) | Yes |
 | E2E | `make e2e-test` | 10–15 min | Yes |
 | Unit + Integration | `make test` | 2–7 min | Partially |
 
@@ -36,10 +36,11 @@ tests/
 │       ├── platform.h             #     Platform header override
 │       └── log.h                  #     Logging header override
 ├── integration/                    # Headless emulator integration tests
-│   ├── boot/                      #   Basic boot + shell commands
-│   ├── checkpoint/                #   Checkpoint save/restore
-│   ├── checkpoint2/               #   Consolidated checkpoint restore
-│   └── scsi/                      #   SCSI disk boot
+│   ├── lib/                       #   Shared row/wait/golden library (include'd)
+│   ├── suite-plus/ suite-se30/ …  #   Per-machine suites (rows, goldens/)
+│   ├── checkpoint/                #   Cross-process checkpoint save/restore
+│   ├── object-*/ shell-*/ …       #   Unit-tier object-model + shell tests
+│   └── iicx-video-modes/          #   16-cell real-vROM JMFB sweep
 └── e2e/                            # Browser Playwright E2E tests (web2 UI)
     ├── web2-specs/                #   Functional suite (playwright.web2.config.ts)
     ├── ui-prod-smoke/             #   Production-bundle boot smoke
@@ -174,16 +175,176 @@ no browser). Each test has a `config.mk` (ROM/disk paths, arguments) and a
 
 ```bash
 make integration-test               # Build headless + run all
-make integration-test-valgrind      # Same, under Valgrind
-make -C tests/integration test-boot # Run a single test
-make -C tests/integration list      # List available tests
+make integration-test TIER=matrix   # One tier: unit | matrix | extended
+make integration-test -j$(nproc)    # Parallel (safe: per-test storage cache)
+make integration-test-valgrind      # Under Valgrind (scope to TIER=unit)
+make -C tests/integration test-suite-plus    # Run a single test/suite
+make -C tests/integration list      # List available tests (with tiers)
 ```
+
+Every test runs with a private `GS_STORAGE_CACHE` under its work
+directory: the emulator routes all delta/journal sidecars and scratch
+files there, so nothing ever writes into `tests/data` and independent
+tests can run concurrently. The per-test runner logic lives in
+`scripts/run-integration-test.sh`.
+
+Each `config.mk` declares a `TEST_TIER` (proposal-integration-test-
+rework §5.4): `unit` (zero/near-zero guest cycles, seconds for the
+whole tier), `matrix` (per-machine boot suites — the PR gate), and
+`extended` (long diagnostics, installers, app choreography — nightly).
+
+### Suites and the shared script library
+
+Machine families are covered by *suite* directories (`suite-plus`,
+`suite-se30`, `suite-iix`, `suite-iicx`, `suite-iici`, `suite-iisi`,
+`suite-quadra`): one daemon run, one row per (system, media, RAM,
+video) cell, re-instantiating via `machine.boot` between rows. A boot
+assertion belongs as a row in its machine's suite.
+
+Two rules suite rows must follow, both learned from real failures:
+
+- **Name every staging argument the row depends on.** `machine.boot`
+  inherits unspecified fields from the built-from record — i.e. from
+  whatever the previous row booted — so a row that cares about the video
+  card, vROM, or monitor sense must pass it explicitly even when the
+  machine default would be correct in a fresh process.
+- **Interacting rows use `wait_stable` + `check`, not `wait_match`.**
+  `wait_match` stops at the first quantum whose frame equals the golden,
+  which can precede quiescence; `wait_stable` behaves identically when
+  capturing and when verifying, so menu/click choreography lands the
+  same way in both. Screens that animate (a blinking "?" icon, a text
+  caret) never settle at all — those rows use a fixed `run_ticks`
+  window and their goldens are animation-phase-sensitive by design. Shared
+harness functions live in `tests/integration/lib/mac.script`, pulled
+in with the shell's `include` statement. The library provides
+condition-based waits (`wait_match`, `wait_stable`, `wait_change`,
+`wait_global` — a wait states its condition; ceilings are hang
+detectors), guest-tick choreography (`run_ticks`, `double_click`,
+`about_box`), the row harness (`row_on`/`row_end`/`suite_done`,
+milestone rows), addressing-mode asserts (`assert_addr`), and
+machine-read coverage records (`@@COV` lines).
+
+Suite variables are passed via `TEST_VARS`:
+
+```bash
+make -C tests/integration test-suite-quadra TEST_VARS="ROW=q700-chime"   # one row
+make -C tests/integration test-suite-quadra TEST_VARS="KEEP_GOING=1"     # nightly: run past red rows
+make -C tests/integration test-suite-quadra TEST_VARS="REGEN=1"          # recapture goldens (review the diff!)
+```
+
+Suite goldens live in `<suite>/goldens/` named
+`<model>-<system>-<WxHxD>[-<state>].png`.
+
+**Review the REGEN diff, and never skim it.** Recapturing turns *whatever is
+on screen* into the expected result, so a row whose choreography stopped
+advancing recaptures into a green test that asserts a stuck frame. That is not
+theoretical: an attempt to re-host `iicx-mactest` to the IIci recaptured all
+seven of its checkpoints to one frame — MacTest's "SUSPECTED PROBLEM: Logic
+board" dialog — and CI passed, with a golden named `floppy-test-success.png`
+holding a picture of a hardware failure.
+
+`scripts/check-goldens.py` gates the cheapest signal for that failure: within
+one script, two *different* goldens must not hold identical bytes. It runs in
+CI before the test tiers (it needs neither a build nor test data) and is worth
+running by hand after any recapture:
+
+```bash
+python3 scripts/check-goldens.py
+```
+
+Some collisions are legitimate — the Welcome splash is pure black-and-white, so
+it scans out identically at 1 bpp and 2 bpp, and identically from two cards at
+the same geometry. Those rows prove the state changed with asserts on the
+hardware (savedMode, RowWords, CLUT PBCR, the card's sister byte) and use the
+golden only to pin that the raster still scans out. Waive them explicitly, in
+the script, naming both files and the proof:
+
+```
+# golden-collision-ok: welcome-13in_rgb-640x480-1bpp.png welcome-13in_rgb-640x480-2bpp.png
+# - black-and-white splash, identical at both depths; the depth change is proven
+# by the savedMode/RowWords asserts above, not by the frame.
+```
+
+A waiver must name every file in the collision, so it cannot silently grow to
+cover a third golden that collides later. A waiver with no separate proof behind
+it is the same failure wearing a comment.
+
+`check-goldens.py` only catches goldens identical to *each other*. A lone bad
+one — a single row whose reference is a blank screen — has nothing to collide
+with. For that, `scripts/golden-triage.py` ranks every reference image by how
+much is actually on it (distinct 8x8 tiles: a dither pattern is a handful, a
+Welcome splash ~64, a Finder desktop 100+):
+
+```bash
+python3 scripts/golden-triage.py
+```
+
+It has no pass/fail and is not run by CI — "how sparse may a legitimate screen
+be" is a judgement. Read it against a golden's **siblings**, not against an
+absolute number: within one depth sweep every cell lands on the same splash, so
+one cell reading 8 where its three siblings read 64 is wrong whatever the
+threshold. That comparison found four goldens that were pictures of an empty
+screen; the absolute value alone would have been merely suggestive.
+
+Neither script changes how goldens are compared. Matching is byte-exact via
+`machine.screen.match`, with no tolerance and no fuzzy comparison anywhere.
+
+### What CI runs
+
+| Trigger | Runs |
+|---|---|
+| PR / push (`tests.yml`) | golden distinctness (no build or data needed), then unit + matrix tiers in parallel, **plus the extended tier while the integration-test rework settles**, then the coverage contract and the perf baselines; all gate the build. The extended tier is normally nightly-only (§5.4) — it is on the PR gate temporarily so a regression in a long row is caught before merge rather than the next morning, and the step says how to revert it. Coverage, covered cells, milestone rows and per-row spends go into the step summary. |
+| Nightly 03:20 UTC (`nightly.yml`) | the extended tier in `KEEP_GOING=1` mode (so one red row does not truncate the report), plus Valgrind rescoped to the unit tier + one boot with `PERF_FLOORS=off`. Failure uploads `tests/integration/test-results/**`. |
+
+Valgrind is deliberately *not* a full sweep: at its 20–50× slowdown over
+billions of guest cycles, `test-valgrind` across every test cannot run to
+completion, and the throughput floors would fail by construction — hence
+`PERF_FLOORS=off` for those runs.
+
+### Coverage and performance contracts
+
+Two committed files gate the suite as a whole, and they have deliberately
+different semantics:
+
+| File | Represents | Regenerated? |
+|---|---|---|
+| `tests/integration/matrix-targets.json` | the **declared** cells the suite must cover, and which directory owes each | **No — hand-authored.** Generating it from a run would make it agree with whatever the run covered |
+| `tests/integration/perf-baselines.json` | the observed per-row instruction spend, gated on drift | Yes — `scripts/gen-baselines.py <logs>`, reviewed as a diff in the PR that changed timing |
+
+Rows emit `@@COV` records (read from the live machine) and `@@PERF`
+records. Diff achieved against declared:
+
+```bash
+make -C tests/integration test TIER=matrix 2>&1 | tee run.log
+python3 scripts/test-matrix.py --check --tier=matrix run.log  # 1 on a coverage regression
+python3 scripts/test-matrix.py --perf run.log                # 1 if a row drifted out of band
+python3 scripts/test-matrix.py --from-results run.log        # render what a run covered
+```
+
+A declared cell that was not covered fails; a covered cell nobody
+declared is a warning telling you to claim it. Four cases warn instead of
+failing, because none of them means coverage regressed: the owing suite
+directory does not exist yet (derived from the filesystem, so it cannot
+be faked), the cell is owed by a test in a **different tier** than the
+one being checked (`--tier=` reads each owner's `TEST_TIER` from its own
+config.mk), the cell is `blocked` by a known emulator defect (the
+cell-level twin of a milestone row), or it is `media_gated` and its row
+skipped because private test data is absent.
+
+`--perf` gates each row's guest instruction spend against
+`perf-baselines.json` within its tolerance band (±20% by default). The
+spend is deterministic per build, so a band violation is a real change,
+not flake — absorb legitimate ones with a reviewed
+`scripts/gen-baselines.py` diff in the PR that caused them.
 
 ### Writing a New Integration Test
 
 1. Create `tests/integration/foo/` with `config.mk` and `test.script`.
-2. `config.mk` sets `ROM`, `FD_IMAGE` or `HD_IMAGE`, and emulator arguments.
+2. `config.mk` sets `TEST_ROM`, `TEST_ARGS`, `TEST_TIER`, and optionally
+   `TEST_SETUP`/`TEST_RUNNER`.
 3. `test.script` contains shell commands sent to the headless emulator.
+   A boot assertion belongs as a row in its machine's suite, not a new
+   directory — new directories are for genuinely new mechanisms.
 4. Run: `make -C tests/integration test-foo`
 
 ---

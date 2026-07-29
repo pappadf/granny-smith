@@ -1,0 +1,34 @@
+# Lisa 2 / Macintosh XL suite (see config.mk).
+#
+# Row map (former directory → row):
+#
+#   lisa-los31-profile    lisa-profile-boot: cold-boot LOS 3.1 from the
+#                         installed ProFile, driven by the image's own
+#                         on-disk PRAM snapshot
+#   lisa-xenix-hdinit     lisa-xenix-hdinit: Xenix 3.0 hard-disk init
+#                         from the boot floppy (the fast-tier gate for
+#                         the full install, which stays in extended)
+#   lisa-xenix-boot       lisa-xenix-boot: boot Xenix from the floppy
+#                         with the installed ProFile attached
+#   lisa-xenix-nofloppy   lisa-xenix-nofloppy: same machine with no
+#                         floppy — the ROM's startup-from prompt path
+#   xl-macworks-boot      xl-boot: MacWorks XL 3.0 loader ejects, the
+#                         system disk goes in, the Finder comes up
+#   xl-no-media           xl-no-media: no boot device — the XL's
+#                         DRVERR prompt rather than a clamp error
+#
+# Every row keeps its original assertions and choreography verbatim; see
+# rows.script.
+
+include "../lib/mac.script"
+include "rows.script"
+
+if row_on("lisa-los31-profile") { row_end("lisa-los31-profile", try(row_lisa_los31_profile(), "FAILED")) }
+if row_on("lisa-xenix-hdinit") { row_end("lisa-xenix-hdinit", try(row_lisa_xenix_hdinit(), "FAILED")) }
+if row_on("lisa-xenix-boot") { row_end("lisa-xenix-boot", try(row_lisa_xenix_boot(), "FAILED")) }
+if row_on("lisa-xenix-nofloppy") { row_end("lisa-xenix-nofloppy", try(row_lisa_xenix_nofloppy(), "FAILED")) }
+if row_on("xl-macworks-boot") { row_end("xl-macworks-boot", try(row_xl_macworks_boot(), "FAILED")) }
+if row_on("xl-no-media") { row_end("xl-no-media", try(row_xl_no_media(), "FAILED")) }
+
+suite_done()
+quit

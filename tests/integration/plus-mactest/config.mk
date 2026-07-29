@@ -9,3 +9,6 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # MacTest floppy disk image (pre-extracted from MacTest_Disk.image_.sit_.hqx)
 TEST_ARGS := fd=$(TEST_DATA)/apps/MacTest-Plus.image
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

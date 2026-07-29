@@ -4,7 +4,10 @@
 // web2 e2e: IIfx A/UX 3.0.1 boot to the graphical login — FAITHFUL real-time
 // run. Port of the legacy iifx-aux3-login-realtime.spec.ts (retired with the
 // legacy UI); the deterministic fixed-budget sibling lives headless as
-// tests/integration/iifx-aux3-boot-8bpp.
+// tests/integration/iici-aux3-8bpp (that row was re-hosted IIfx -> IIci by
+// the integration-test rework; the reference frame moved with it unchanged,
+// byte-identical, because the A/UX login window does not differ by host at
+// this geometry and depth. This spec still drives an IIfx.)
 //
 // This spec is the load-bearing guard against host-pacing-only regressions:
 // the machine free-runs under the real RAF loop (scheduler_main_loop) in the
@@ -35,13 +38,13 @@ const IIFX_ROM = path.join(DATA, 'roms', 'iifx-4147dd77.rom');
 const JMFB_VROM = path.join(DATA, 'roms', 'mdc-8-24-revb-d1629664.vrom');
 const AUX_HD = path.join(DATA, 'aux', 'aux_3.0.1', 'hd160-with-aux-301.img');
 // The 8bpp A/UX login framebuffer — same bytes as the integration
-// reference (tests/integration/iifx-aux3-boot-8bpp/aux-login-8bpp.png).
+// reference (tests/integration/iici-aux3-8bpp/aux-login-8bpp.png).
 const LOGIN_REF = path.join(
   __dirname,
   '..',
   '..',
   'integration',
-  'iifx-aux3-boot-8bpp',
+  'iici-aux3-8bpp',
   'aux-login-8bpp.png',
 );
 

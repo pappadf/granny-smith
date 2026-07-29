@@ -3762,6 +3762,27 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
     return val_err("screen.match: screen does not match '%s'", ref);
 }
 
+// `screen.matches(reference)` — the non-fatal twin of `screen.match`:
+// same comparison, V_BOOL result, no abort, no diff artifacts, and no
+// per-call output (it is a polling primitive — wait_match() in the
+// integration library calls it every few million cycles).  An
+// unreadable reference is still a hard error: polling against a
+// missing golden would spin to the ceiling and report a timeout
+// instead of the actual mistake.
+static value_t screen_method_matches(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    const char *ref = argv[0].s;
+    const display_t *d = system_display();
+    if (!d || !d->bits)
+        return val_err("screen.matches: framebuffer not available");
+    int result = match_framebuffer_with_png(d, ref, NULL);
+    if (result < 0)
+        return val_err("screen.matches: cannot load reference '%s'", ref);
+    return val_bool(result == 0);
+}
+
 static value_t screen_method_match_or_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -3823,6 +3844,36 @@ static value_t screen_attr_height(struct object *self, const member_t *m) {
     return val_int(d ? (int64_t)d->height : 0);
 }
 
+// `screen.depth` — bits per pixel of the active display, whichever device
+// is driving it (built-in video or a NuBus card).  Per-card depth is
+// reachable as `nubus.slot[N].card.framebuffer.depth`, but the coverage
+// records the integration suites emit need the depth of the screen that
+// is actually live, without first knowing which device owns it
+// (proposal-integration-test-rework §5.6).
+static value_t screen_attr_depth(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    if (!d)
+        return val_int(0);
+    switch (d->format) {
+    case PIXEL_1BPP_MSB:
+        return val_int(1);
+    case PIXEL_2BPP_MSB:
+        return val_int(2);
+    case PIXEL_4BPP_MSB:
+        return val_int(4);
+    case PIXEL_8BPP:
+        return val_int(8);
+    case PIXEL_16BPP_555:
+        return val_int(16);
+    case PIXEL_32BPP_XRGB:
+        return val_int(32);
+    default:
+        return val_int(0);
+    }
+}
+
 // `screen.par_w` / `screen.par_h` — the active display's pixel aspect ratio
 // (one display pixel's width:height in host units; see display.h).  1:1 is
 // square (every Mac); the Lisa 2's 720x364 raster reports 2:3 so the frontend
@@ -3864,6 +3915,9 @@ static const arg_decl_t screen_match_args[] = {
     {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
     {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
 };
+static const arg_decl_t screen_matches_args[] = {
+    {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+};
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
     {.name = "actual",
@@ -3889,6 +3943,11 @@ static const member_t screen_members[] = {
      .doc = "Active display height in pixels",
      .attr = {.type = V_INT, .get = screen_attr_height, .set = NULL}},
     {.kind = M_ATTR,
+     .name = "depth",
+     .flags = VAL_RO,
+     .doc = "Bits per pixel of the active display (1/2/4/8/16/32; 0 if unknown)",
+     .attr = {.type = V_INT, .get = screen_attr_depth, .set = NULL}},
+    {.kind = M_ATTR,
      .name = "par_w",
      .flags = VAL_RO,
      .doc = "Pixel aspect ratio numerator (display pixel width; 1 = square)",
@@ -3906,6 +3965,10 @@ static const member_t screen_members[] = {
      .name = "match",
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
             "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_match}},
+    {.kind = M_METHOD,
+     .name = "matches",
+     .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive)",
+     .method = {.args = screen_matches_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_matches}},
     {.kind = M_METHOD,
      .name = "match_or_save",
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",

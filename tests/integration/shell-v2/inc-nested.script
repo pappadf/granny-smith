@@ -1,0 +1,2 @@
+# Second-level include fixture (reached via inc-lib.script).
+let inc_nested_ran = 1

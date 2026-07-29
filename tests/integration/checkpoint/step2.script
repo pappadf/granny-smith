@@ -1,20 +1,28 @@
-# Step 2: Boot from SCSI HD, then load checkpoint and continue
-# This tests that checkpoint restore works even when starting from a different boot config
+# Checkpoint step 2: boot the SCSI HD, then restore step 1's
+# floppy-booted checkpoint over that live machine — the restore has to
+# replace a differently-shaped device set, not fill in a blank one.
 
-# Run 100M instructions with SCSI boot (gets us into a completely different state)
-scheduler.run 100000000
+include "../lib/mac.script"
 
-# Load the checkpoint saved in step 1 (restores floppy boot state at
-# 50M instructions). assert prevents the rest of the step from running
-# against an unrestored machine if load failed.
-assert checkpoint.load("checkpoint") "step2 checkpoint load failed"
+# Boot the HD far enough to have a real System running off it (its own
+# drivers, volume, desktop) before the restore replaces everything.
+wait_stable(600000000)
+assert machine.scsi.device[0].image != none "step2: HD not attached"
 
-# Run another 50M instructions from the restored checkpoint
-# Total should be 50M + 50M = 100M instructions from floppy boot
-# This should get us close to but not quite at the desktop
-scheduler.run 70000000
+assert checkpoint.load("checkpoint.gs") "step2: checkpoint load failed"
+scheduler.run 20000000
+wait_stable(400000000)
 
-# Match against the boot test's desktop reference
-machine.screen.match desktop.png
+# The restored screen is step 1's floppy desktop, not the HD's.
+check("${$TEST_DIR}/desktop.png")
 
+# ...and the restored machine is live, not a frozen image: drive the
+# Apple menu to "About the Finder" through the quadrature-mouse path and
+# match the dialog. The About box also states what this media really is
+# (Finder 6.1.5 / System 6.0.5 — the file is named System_6_0_8.dsk but
+# reports 6.0.5, so the golden is the honest record of the version).
+about_box_quad()
+check("${$TEST_DIR}/about-after-restore.png")
+
+machine.screen.save "${$RESULTS_DIR}/screenshot-step2.png"
 quit

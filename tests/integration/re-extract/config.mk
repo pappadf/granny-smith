@@ -8,3 +8,6 @@ TEST_NAME := dump end-to-end (AUX 3.0.1 HFS Finder)
 TEST_DESC := Extract the AUX hd image's MacOS-partition Finder; verify deterministic per-resource output
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 TEST_RUNNER := run.sh
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

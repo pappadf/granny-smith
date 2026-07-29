@@ -1,0 +1,135 @@
+name: Nightly
+
+# The long half of the integration suite, split out of the PR gate per
+# proposal-integration-test-rework §5.4. PR/push runs the unit and matrix
+# tiers (see tests.yml); this workflow runs:
+#
+#   * the extended tier — MacTest diagnostics, the installers and their
+#     artifact-producing flows, app choreography (Marathon, MusicWorks),
+#     the A/UX family, CD-ROM and format-HD flows;
+#   * Valgrind, RESCOPED. `make integration-test-valgrind` used to sweep
+#     every test, which at Valgrind's 20-50x slowdown over billions of guest
+#     cycles cannot plausibly have run to completion. It now runs the unit
+#     tier plus one representative boot, with the perf floors switched off
+#     (PERF_FLOORS=off) because a 20-50x slowdown makes throughput asserts
+#     meaningless — the latent contradiction §5.8 called out.
+#
+# Nightly also runs the suites in KEEP_GOING mode so a red row does not hide
+# every row after it: the coverage and milestone report at the end is only
+# useful if the whole run happened.
+
+on:
+  schedule:
+    # 03:20 UTC daily — after any evening pushes have settled.
+    - cron: '20 3 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Tier to run (extended, matrix, unit)'
+        required: false
+        default: 'extended'
+
+# Every `run:` uses bash, not the container's default sh. Steps here pipe into
+# tee and then `exit "${PIPESTATUS[0]}"` to surface the real command's status
+# rather than tee's — PIPESTATUS is a bashism, and under dash it expands to
+# nothing and the step dies with "Bad substitution" AFTER the tests have
+# already passed. GitHub's bash mode also sets -o pipefail, so the pipeline
+# status is correct twice over.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  extended:
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-node22
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install p7zip
+        run: |
+          if ! command -v 7z >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq p7zip-full
+          fi
+
+      - name: Install m68k binutils
+        run: |
+          if ! command -v m68k-linux-gnu-as >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq binutils-m68k-linux-gnu
+          fi
+
+      - name: Fetch test data
+        id: fetch-data
+        run: |
+          if [ -n "$GS_TEST_DATA_TOKEN" ]; then
+            ./scripts/fetch-test-data.sh
+            echo "has_test_data=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_test_data=false" >> $GITHUB_OUTPUT
+            echo "::error::Nightly needs the private test data; nothing to run."
+            exit 1
+          fi
+        env:
+          GS_TEST_DATA_TOKEN: ${{ secrets.GS_TEST_DATA_TOKEN }}
+
+      - name: Build headless emulator
+        run: make -f Makefile.headless
+
+      # KEEP_GOING so one red row does not truncate the report (§5.7).
+      - name: Run integration tests (${{ github.event.inputs.tier || 'extended' }} tier)
+        run: |
+          make integration-test TIER="${{ github.event.inputs.tier || 'extended' }}" \
+            TEST_VARS="KEEP_GOING=1" 2>&1 | tee /tmp/it-nightly.log
+          exit "${PIPESTATUS[0]}"
+
+      # Valgrind, rescoped (§5.4): the unit tier plus one representative boot,
+      # with throughput floors off because Valgrind makes them meaningless.
+      - name: Valgrind (unit tier + one boot)
+        if: always()
+        run: |
+          make -C tests/integration test-valgrind TIER=unit \
+            TEST_VARS="PERF_FLOORS=off" 2>&1 | tee /tmp/vg-unit.log
+          make -C tests/integration test-valgrind-suite-plus \
+            TEST_VARS="ROW=plus-beep PERF_FLOORS=off" 2>&1 | tee /tmp/vg-boot.log
+
+      - name: Report into the step summary
+        if: always()
+        run: |
+          {
+            echo "## Nightly integration run"
+            echo "### Coverage contract"
+            echo '```'
+            python3 scripts/test-matrix.py --check --tier=extended /tmp/it-nightly.log 2>&1 || true
+            echo '```'
+            echo "### Per-row instruction spend vs baselines"
+            echo '```'
+            python3 scripts/test-matrix.py --perf /tmp/it-nightly.log 2>&1 || true
+            echo '```'
+            echo "### Cells covered"
+            python3 scripts/test-matrix.py --from-results /tmp/it-nightly.log 2>/dev/null || true
+            echo "### Milestone rows (known gaps, non-fatal)"
+            echo '```'
+            grep -h "MILESTONE" /tmp/it-nightly.log 2>/dev/null || echo "(none)"
+            echo '```'
+            echo "### Row failures recorded in KEEP_GOING mode"
+            echo '```'
+            grep -h "ROW FAILED" /tmp/it-nightly.log 2>/dev/null || echo "(none)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-integration-artifacts
+          path: |
+            tests/integration/test-results/**
+            /tmp/it-nightly.log
+          retention-days: 14

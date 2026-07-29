@@ -12,3 +12,6 @@ TEST_ROM := roms/lisa2-revh-098917b2.rom
 
 # Lisa 2, 1 MB.  No floppy: the test drives the ProFile directly via PROREAD.
 TEST_ARGS := model=lisa ram=1024
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

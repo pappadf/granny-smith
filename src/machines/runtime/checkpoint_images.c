@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -76,8 +77,23 @@ image_t *mac_checkpoint_restore_one_image(checkpoint_t *cp, image_geometry_t geo
         // base is reopened with `geom` so a non-512 device (the ProFile) restores
         // at its real block size rather than the default 512.
         bool consolidated = checkpoint_get_kind(cp) == CHECKPOINT_KIND_CONSOLIDATED;
-        if (raw_size > 0 && consolidated)
+        if (raw_size > 0 && consolidated && access(name, F_OK) != 0) {
+            // A consolidated checkpoint carries every block inline and the
+            // restore below writes them all into a fresh delta, so the base
+            // file's CONTENT is never read through — it only has to exist so
+            // the opener can probe the geometry.  Materialise it only when
+            // nothing is there: this used to run unconditionally, and
+            // because it opens with "wb" it truncated the image at its
+            // ORIGINAL path (the "checkpoint.load destroyed my disk image"
+            // footgun — a suite that checkpointed with shared test media
+            // attached silently zeroed that media on load, while the guest
+            // kept working off the restored delta).  An existing file is now
+            // left completely alone, whatever its size: a DiskCopy base is
+            // legitimately 84 bytes larger than its logical raw_size, and a
+            // genuinely mismatched geometry is still caught loudly by
+            // storage_restore_from_checkpoint's own check.
             image_create_empty(name, (size_t)raw_size);
+        }
         if (writable && consolidated) {
             img = image_create_with_geometry(name, checkpoint_machine_dir(), geom);
         } else if (writable && instance_path && instance_path[0]) {

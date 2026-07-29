@@ -6,3 +6,6 @@ TEST_NAME := Image HFS traverse
 TEST_DESC := Traverse a System 6 HFS floppy via VFS descent; verify cp, EROFS, EBUSY
 
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

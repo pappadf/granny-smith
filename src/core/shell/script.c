@@ -24,6 +24,7 @@
 #include "value.h"
 
 #include <ctype.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +45,7 @@ typedef enum {
     ST_RETURN,
     ST_DEF,
     ST_ASSERT,
+    ST_INCLUDE,
 } stmt_kind_t;
 
 typedef struct stmt stmt_t;
@@ -634,6 +636,16 @@ static stmt_t *parse_stmt_text(parser_t *ps, const char *text, int line_no) {
         st->text = dup_trim(after, after + strlen(after));
         return st;
     }
+    if ((after = kw_match(p, "include"))) {
+        const char *body = skip_sp(after);
+        if (*body == '\0') {
+            parse_error(ps, line_no, "include: missing path");
+            return NULL;
+        }
+        stmt_t *st = stmt_new(ST_INCLUDE, line_no);
+        st->text = strdup(body);
+        return st;
+    }
     if ((after = kw_match(p, "assert"))) {
         const char *body = skip_sp(after);
         if (*body == '\0') {
@@ -1035,18 +1047,138 @@ void script_expr_ctx(expr_ctx_t *out) {
 }
 
 // Report a statement-level error and set the abort signal.
+// Include stack (`include "path"`, script_run_file): the chain of files
+// currently executing, innermost last. Drives relative-path resolution,
+// the cycle guard, and file attribution in diagnostics.
+#define INCLUDE_MAX_DEPTH 16
+static char *g_include_stack[INCLUDE_MAX_DEPTH];
+static int g_include_depth = 0;
+
 static void exec_error(exec_ctx_t *cx, int line, const char *fmt, ...) {
     char buf[512];
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
-    fprintf(stderr, "line %d: %s\n", line, buf);
+    // Prefix the innermost executing file so suite/library diagnostics
+    // carry an accurate file:line even across `include`.
+    if (g_include_depth > 0)
+        fprintf(stderr, "%s: line %d: %s\n", g_include_stack[g_include_depth - 1], line, buf);
+    else
+        fprintf(stderr, "line %d: %s\n", line, buf);
     cx->sig = SIG_ERROR;
 }
 
 static void exec_block(script_block_t *b, exec_ctx_t *cx);
 static void exec_stmt(stmt_t *st, exec_ctx_t *cx);
+
+// --- include ----------------------------------------------------------------
+
+// Directory part of `path` (malloc'd; "" when path has no '/').
+static char *include_dirname(const char *path) {
+    const char *slash = strrchr(path, '/');
+    if (!slash)
+        return strdup("");
+    size_t n = (size_t)(slash - path);
+    char *r = (char *)malloc(n + 1);
+    if (r) {
+        memcpy(r, path, n);
+        r[n] = '\0';
+    }
+    return r;
+}
+
+// Resolve `path` against the including file's directory when relative —
+// a library include works no matter what CWD the daemon started in.
+static char *include_resolve(const char *path) {
+    if (path[0] == '/' || g_include_depth == 0)
+        return strdup(path);
+    char *dir = include_dirname(g_include_stack[g_include_depth - 1]);
+    if (!dir)
+        return NULL;
+    if (!dir[0]) {
+        free(dir);
+        return strdup(path);
+    }
+    size_t n = strlen(dir) + 1 + strlen(path) + 1;
+    char *r = (char *)malloc(n);
+    if (r)
+        snprintf(r, n, "%s/%s", dir, path);
+    free(dir);
+    return r;
+}
+
+// Read a whole file into a malloc'd NUL-terminated buffer; NULL on error.
+static char *slurp_script_file(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return NULL;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0)
+        size = 0;
+    char *src = (char *)malloc((size_t)size + 1);
+    if (!src) {
+        fclose(f);
+        return NULL;
+    }
+    size_t got = fread(src, 1, (size_t)size, f);
+    src[got] = '\0';
+    fclose(f);
+    return src;
+}
+
+// Parse + execute one script file with the include stack maintained —
+// the shared engine behind `include` and script_run_file(). Returns the
+// terminating signal (SIG_NONE on success) with a one-line diagnostic
+// in `err` on SIG_ERROR.
+static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size) {
+    if (g_include_depth >= INCLUDE_MAX_DEPTH) {
+        snprintf(err, err_size, "include depth limit (%d) exceeded at '%s'", INCLUDE_MAX_DEPTH, path);
+        return SIG_ERROR;
+    }
+    // Cycle guard: the canonical path may not already be executing.
+    char canon[PATH_MAX];
+    const char *key = realpath(path, canon) ? canon : path;
+    for (int i = 0; i < g_include_depth; i++) {
+        if (strcmp(g_include_stack[i], key) == 0) {
+            snprintf(err, err_size, "include cycle: '%s' is already being included", path);
+            return SIG_ERROR;
+        }
+    }
+    char *src = slurp_script_file(path);
+    if (!src) {
+        snprintf(err, err_size, "cannot open '%s'", path);
+        return SIG_ERROR;
+    }
+    char perr[256];
+    script_t *s = script_parse(src, perr, sizeof(perr));
+    free(src);
+    if (!s) {
+        // perr already reads "line N: msg" — prefix the file.
+        snprintf(err, err_size, "%s: %s", path, perr);
+        return SIG_ERROR;
+    }
+    char *frame = strdup(key);
+    if (!frame) {
+        script_free(s);
+        snprintf(err, err_size, "out of memory");
+        return SIG_ERROR;
+    }
+    g_include_stack[g_include_depth++] = frame;
+    exec_ctx_t cx = {0}; // non-interactive; a file is never a loop/function body
+    exec_block(s->top, &cx);
+    value_free(&cx.ret);
+    free(g_include_stack[--g_include_depth]);
+    script_free(s);
+    if (cx.sig == SIG_ERROR) {
+        // The failing statement already printed its own file:line.
+        snprintf(err, err_size, "'%s' failed", path);
+        return SIG_ERROR;
+    }
+    return cx.sig == SIG_QUIT ? SIG_QUIT : SIG_NONE;
+}
 
 // --- path helpers -----------------------------------------------------------
 
@@ -1857,6 +1989,38 @@ static void exec_assert(stmt_t *st, exec_ctx_t *cx) {
     cx->sig = SIG_ERROR;
 }
 
+// `include EXPR` — evaluate the path, resolve it relative to the
+// including file, and run the file in place (defs land in the shared
+// registry; top-level statements execute now).
+static void exec_include(stmt_t *st, exec_ctx_t *cx) {
+    expr_ctx_t ectx;
+    script_expr_ctx(&ectx);
+    value_t v = expr_eval(st->text, &ectx);
+    if (val_is_error(&v)) {
+        exec_error(cx, st->line, "include: %s", v.err ? v.err : "bad path expression");
+        value_free(&v);
+        return;
+    }
+    if (v.kind != V_STRING || !v.s || !v.s[0]) {
+        exec_error(cx, st->line, "include: expected a non-empty path string");
+        value_free(&v);
+        return;
+    }
+    char *path = include_resolve(v.s);
+    value_free(&v);
+    if (!path) {
+        exec_error(cx, st->line, "include: out of memory");
+        return;
+    }
+    char err[512];
+    exec_sig_t sig = include_exec_file(path, err, sizeof(err));
+    free(path);
+    if (sig == SIG_ERROR)
+        exec_error(cx, st->line, "include: %s", err);
+    else if (sig == SIG_QUIT)
+        cx->sig = SIG_QUIT;
+}
+
 // --- statement dispatch -----------------------------------------------------
 
 static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
@@ -1958,6 +2122,9 @@ static void exec_stmt(stmt_t *st, exec_ctx_t *cx) {
     case ST_ASSERT:
         exec_assert(st, cx);
         return;
+    case ST_INCLUDE:
+        exec_include(st, cx);
+        return;
     }
 }
 
@@ -2018,4 +2185,14 @@ int script_run_source(const char *src) {
     int rc = script_exec(s, false);
     script_free(s);
     return rc;
+}
+
+int script_run_file(const char *path) {
+    char err[512];
+    exec_sig_t sig = include_exec_file(path, err, sizeof(err));
+    if (sig == SIG_ERROR) {
+        fprintf(stderr, "%s\n", err);
+        return -1;
+    }
+    return 0; // SIG_QUIT is a clean stop, not a failure
 }

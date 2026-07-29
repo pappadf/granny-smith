@@ -583,6 +583,7 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
         system_read_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
         system_read_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
+        system_read_checkpoint_data(cp, &dafb->sense_code, sizeof(dafb->sense_code));
         system_read_checkpoint_data(cp, dafb->vram, vram_size);
         reconfigure(dafb);
     }
@@ -610,6 +611,14 @@ void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &dafb->pcbr1, sizeof(dafb->pcbr1));
     system_write_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
     system_write_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
+    // The attached monitor's passive sense code. It is configuration rather
+    // than something the guest can write — the pins are passive — but it has
+    // to survive a restore, and it cannot be re-staged from core: dafb.h is a
+    // machine header and src/core/ may not include it (core-layering test).
+    // So it rides in the device's own stream. Changing this stream costs
+    // nothing: checkpoint.c rejects any file whose build ID differs from the
+    // running binary, so no older checkpoint can reach this code.
+    system_write_checkpoint_data(cp, &dafb->sense_code, sizeof(dafb->sense_code));
     system_write_checkpoint_data(cp, dafb->vram, dafb->vram_size);
 }
 
@@ -625,6 +634,23 @@ void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context) {
 void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
     if (dafb)
         dafb->sense_code = code & 0x7u;
+}
+
+// Pending monitor sense consumed by the next Quadra construction — the
+// built-in-video mirror of the JMFB pending slot, fed from
+// `machine.boot video_sense=N` (machine.c).  Reset to the default $6
+// (13" RGB) on consumption so a forgotten setting doesn't leak into a
+// later boot.
+static uint8_t s_dafb_pending_sense = 0x6;
+
+void dafb_pending_sense_set(uint8_t code) {
+    s_dafb_pending_sense = code & 0x7u;
+}
+
+uint8_t dafb_consume_pending_sense(void) {
+    uint8_t code = s_dafb_pending_sense;
+    s_dafb_pending_sense = 0x6;
+    return code;
 }
 
 void dafb_set_version(dafb_t *dafb, uint8_t version) {

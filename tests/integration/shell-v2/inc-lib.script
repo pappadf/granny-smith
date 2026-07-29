@@ -1,0 +1,6 @@
+# Include fixture (shell-v2 `include` rows): defines a function, sets a
+# binding, and pulls in a sibling via a relative path — proving nesting
+# and include-file-relative resolution.
+def inc_add(a, b) { return $a + $b }
+let inc_lib_ran = 1
+include "inc-nested.script"

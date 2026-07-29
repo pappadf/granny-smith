@@ -64,7 +64,7 @@ the devcontainer image.)
 
 **Run tests:**
 - Unit tests (CPU): `make -C tests/unit run` (~1–5 min) — uses `third-party/single-step-tests`
-- Integration tests: `make integration-test` (~1–2 min) — builds headless emulator, runs tests in `tests/integration/`
+- Integration tests: `make integration-test` (~10–20 min serial; add `-j$(nproc)` to parallelize, or `TIER=unit` / `TIER=matrix` for a subset — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
 - List available integration tests: `make -C tests/integration list`
 - E2E/UI tests (Playwright, web2):

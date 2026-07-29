@@ -1,0 +1,2 @@
+# Cycle fixture: see inc-cycle-1.script.
+include "inc-cycle-1.script"

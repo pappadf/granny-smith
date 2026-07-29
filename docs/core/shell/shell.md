@@ -58,6 +58,7 @@ per line, except that brace blocks span lines (see below).
 | `return [EXPR]` | Return from the enclosing function |
 | `def NAME(P1, …) { … }` | Define a function |
 | `assert EXPR ["message"]` | Typed assertion; falsy or error aborts the script |
+| `include EXPR` | Parse + execute another script file in place (see Scripts) |
 
 Blocks come in two layouts: **multi-line** (`{` last on its line, `}`
 first on its line, `} elif COND {` / `} else {` joining the closer) and
@@ -95,6 +96,28 @@ context:
 
 `${…}` exists **only inside double-quoted strings**. Nothing outside a
 string is ever rewritten.
+
+## List literals
+
+`[a, b, c]` builds a list. Elements are full expressions, may be of mixed
+kinds, may nest, and a trailing comma is allowed:
+
+```
+let nums   = [1, 2, 3]
+let mixed  = [1, "two", 3 + 4]     # -> [1, two, 7]
+let table  = [[1, 2], [3, 4]]
+let empty  = []
+assert $table[1][0] == 3
+for n in [10, 20, 30] { … }
+```
+
+This does not collide with indexing. `[` in **postfix** position — after a
+path or a value, as in `slot[9]` or `$table[1]` — is an index and is consumed
+by the path parser; `[` where a **primary** is expected can only begin a list.
+The two readings never overlap, so no disambiguation rule is needed.
+
+`for` already iterated lists, so a literal is directly iterable with no
+further machinery.
 
 ## Bindings — one namespace, one sigil
 
@@ -176,6 +199,17 @@ the scheduler between statements, so `scheduler.run N` completes before
 the next statement. The first error aborts the script and exits
 non-zero. `shell.script_run(path)` and `shell.eval(text)` are the
 platform-neutral equivalents.
+
+`include "path"` pulls another script file into the run at the point of
+the statement: its `def`s land in the shared function registry, its
+top-level statements execute immediately, and its own `include`s nest
+(depth-capped, with a canonical-path cycle guard). A **relative** path
+resolves against the directory of the *including file* — not the
+process CWD — so a suite script can `include "../lib/mac.script"`
+wherever the daemon was started. Errors keep accurate attribution: the
+diagnostic carries the included file's name and line. The integration
+suite's shared library (`tests/integration/lib/`) is the primary
+consumer.
 
 Deferred evaluation is a **parameter type**, not a quoting trick:
 argument slots declared with `OBJ_ARG_TEMPLATE` (e.g.

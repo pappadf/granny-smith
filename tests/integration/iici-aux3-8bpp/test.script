@@ -1,0 +1,58 @@
+# IIfx A/UX 3.0.1 HD Boot at 8 bpp — boots to the graphical login window.
+#
+# Same guest path as iifx-aux3-boot (Mac OS boot → "A/UX Startup" → kernel →
+# UFS root mount → exec(/etc/init) → fsck → CommandShell login window) but
+# with the JMFB seeded to 13" RGB at 8 bpp before boot, the way the web2
+# New Machine dialog does it: `machine.nubus.video_mode` → `machine.boot`.
+# The card factory consumes the seed during boot (sense lines + slot-PRAM
+# savedMode $83 + the boot-ROM PRAM validity tokens + PRAMInitTbl defaults).
+#
+# Why 8 bpp gets its own pin: see config.mk (jmfb PRAM-seeding regression +
+# the PMMU instruction-fetch retry double-fault, both 8bpp-only failures).
+#
+# The HD attaches directly from tests/data; writes land in the .delta
+# sidecar (removed by the harness on exit), so the source stays pristine —
+# same pattern as iicx-824gc-accel8.
+#
+# DETERMINISM / REFERENCE PROVENANCE
+# ----------------------------------
+# Budget = 4600 VBL frame-units x 166,251 instructions = 764,754,600 — a
+# whole number of frame-units, so the run lands exactly on a frame boundary.
+# The login screen is a stable plateau from ~4000 frame-units on; the only
+# frame-to-frame difference is the Name field's blinking text cursor (a
+# 1x16 pixel column at x=320, y=241..256), whose phase is fully determined
+# by the instruction budget.  aux-login-8bpp.png is byte-identical to the
+# reference the retired legacy e2e pinned via the browser build
+# (tests/e2e/specs/iifx-aux3-boot/aux-login-8bpp.png) — the headless and
+# wasm builds produce the same framebuffer at this budget, which this test
+# quietly cross-checks.
+
+include "../lib/mac.script"
+
+# MILESTONE row semantics for a directory-level test: the flow runs and its
+# result is reported, but red does not fail the run. §7 classes this move as
+# the milestone class precisely because RBV-under-A/UX is a video path
+# nothing has exercised and is expected to surface gaps; promotion to
+# enforced is a reviewed edit here plus removing the cell's marker in
+# matrix-targets.json.
+def row_iici_aux3_8bpp() {
+    machine.boot model="iici" ram=16384
+    machine.scsi.attach_hd "../../data/aux/aux_3.0.1/hd160-with-aux-301.img" 0
+    machine.rtc.time = "2026-04-26T21:30:36"
+    scheduler.run 764754600
+    assert machine.id == "iici" "machine.id != iici"
+    assert machine.rom.checksum == "368CADFE" "rom.checksum != 368CADFE"
+    assert machine.screen.width == 640 "screen.width != 640"
+    assert machine.screen.height == 480 "screen.height != 480"
+    # (The IIfx run pinned the JMFB's 8 bpp savedMode in slot PRAM here. This
+    # host has no NuBus card: the built-in RBV drives the display, and its
+    # depth is what the row is really about — see the note below.)
+    assert machine.screen.depth == 8 "iici-aux3-8bpp: display not 8 bpp under A/UX"
+    check("aux-login-8bpp.png")
+    report_row("A/UX 3.0.1", "rbv", "hd-boot login 8bpp")
+    report_perf("iici-aux3-8bpp/login", scheduler.instr_count)
+}
+
+row_end_milestone("iici-aux3-8bpp", try(row_iici_aux3_8bpp(), "FAILED"))
+suite_done()
+quit

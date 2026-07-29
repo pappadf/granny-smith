@@ -1,0 +1,192 @@
+# Macintosh SE/30 suite (see config.mk for what it absorbs).
+#
+# Row map (former directory → row; **bold** = new matrix coverage):
+#
+#   se30-nomedia     se30-boot: no bootable media → the blinking "?"
+#                    floppy icon renders (1 MB, the minimum RAM option)
+#   se30-chime       se30-boot-chime: sample-exact ASC wavetable chime
+#                    through the producer path (frame-exact window)
+#   se30-608-fd      the **direct-SWIM 800K GCR transport row**, moved
+#                    out of boot-matrix (2 MB)
+#   se30-71-fd       **SE/30 x 7.1**: se30-floppy-hd re-media'd to the
+#                    1.4M Disk Tools floppy — genuine 7.1, and the
+#                    1.44M MFM transport row (+ About box, 4 MB)
+#   se30-701-gsvrom  se30-gsvrom: Finder on the runtime-generated
+#                    generic GS vROM (7.0.1, 8 MB)
+#   se30-75-hd       **SE/30 x 7.5**: prepared 7.5 image over SCSI —
+#                    absorbs se30-scsi's HD-boot coverage (16 MB)
+#   se30-checkpoint  **GLUE-family checkpoint round-trip** (§7 epilogue)
+#
+# Each row also picks a distinct supported RAM configuration (§7 "The
+# RAM axis"), so the system-version and RAM-sizing axes fill together.
+
+include "../lib/mac.script"
+
+let ssw_608 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+let disk_tools_71 = "../../data/systems/SSW-7.1-1.4M/Disk Tools.img"
+let sys_701 = "../../data/systems/System_7_0_1.image"
+let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+
+# ---- se30-nomedia -----------------------------------------------------------
+# With no media the ROM runs its full drive-discovery timeout and then
+# draws the floppy "?" icon. The budget is FIXED deliberately (§5.2's
+# run_exact class, not padding): the icon BLINKS, so the golden is
+# animation-phase-sensitive — a settle wait never converges and a
+# polling wait would only ever sample multiples of its step. The 335 M
+# figure also covers the ROM's own discovery timeout, which is part of
+# what this row pins.
+def row_se30_nomedia() {
+    machine.boot model="se30" ram=1024
+    scheduler.run 335000000
+    assert machine.id == "se30" "se30-nomedia: machine.id != se30"
+    assert machine.ram == 1024 "se30-nomedia: machine.ram != 1024"
+    assert machine.screen.width == 512 "se30-nomedia: width != 512"
+    assert machine.screen.height == 342 "se30-nomedia: height != 342"
+    check("goldens/se30-nomedia-512x342.png")
+    report_perf("suite-se30/se30-nomedia", scheduler.instr_count)
+}
+
+# ---- se30-chime -------------------------------------------------------------
+# Sample-exact: the capture window is frame-exact by design (run_exact
+# semantics — the 12 M budget and the 15,359-frame length are both
+# load-bearing, so neither becomes a condition wait).
+def row_se30_chime() {
+    machine.boot model="se30" ram=8192
+    machine.sound.capture.start
+    scheduler.run 12000000
+    machine.sound.capture.stop
+    assert machine.sound.capture.frames == 15359 "se30-chime: unexpected capture length"
+    machine.sound.match goldens/se30-chime.wav
+    report_perf("suite-se30/se30-chime", scheduler.instr_count)
+}
+
+# ---- se30-608-fd ------------------------------------------------------------
+# The direct-SWIM transport row (800K GCR straight off the SWIM, no IOP
+# in the path) — moved here from boot-matrix, which keeps only its Plus
+# and IIcx rows. The Universal ROM's ~13 s drive-discovery wait is
+# short-circuited by the shared KeyMap poke.
+def row_se30_608_fd() {
+    machine.boot model="se30" ram=2048
+    machine.floppy.drive[0].insert "${$ssw_608}"
+    let t0 = scheduler.host_user_ns
+    scheduler.run 40000000
+    skip_boot_wait()
+    let spent = wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
+    assert machine.ram == 2048 "se30-608-fd: machine.ram != 2048"
+    assert machine.screen.width == 512 "se30-608-fd: width != 512"
+    assert_addr(false)
+    mips_floor("se30-608-fd", $t0, 4)
+    report_row("6.0.8", "builtin", "fd-boot swim-direct 800k-gcr")
+    report_perf("suite-se30/se30-608-fd", scheduler.instr_count)
+}
+
+# ---- se30-71-fd -------------------------------------------------------------
+# NEW CELL SE/30 x 7.1 and the 1.44 M MFM transport row: se30-floppy-hd
+# re-media'd from 7.0.1 to the 1.4 M "Disk Tools" floppy, which is
+# genuinely 7.1 (§7's rule — a 7.1 row never uses an 800K "7.1" disk).
+# The About box confirms the System version and the 4 MB total.
+def row_se30_71_fd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="se30" ram=4096
+    machine.floppy.drive[0].insert "${$disk_tools_71}"
+    scheduler.run 40000000
+    skip_boot_wait()
+    scheduler.run 600000000
+    # wait_stable (not wait_match) because this row interacts afterwards:
+    # the settle point is identical in capture and verify runs, so the
+    # About choreography lands the same way in both.
+    wait_stable(2500000000)
+    check("goldens/se30-7.1-512x342-finder.png")
+    assert machine.ram == 4096 "se30-71-fd: machine.ram != 4096"
+    assert_addr(false)
+    about_box()
+    check("goldens/se30-7.1-512x342-about.png")
+    report_row("7.1", "builtin", "fd-boot swim-direct 1.44m-mfm about")
+    report_perf("suite-se30/se30-71-fd", scheduler.instr_count)
+}
+
+# ---- se30-701-gsvrom --------------------------------------------------------
+# The runtime-generated generic GS vROM drives the built-in video: the
+# boot reaches the Finder and the built-from record names a vROM.
+def row_se30_701_gsvrom() {
+    machine.rtc.time = 3000000000
+    machine.boot model="se30" ram=8192
+    machine.floppy.drive[0].insert "${$sys_701}"
+    scheduler.run 50000000
+    skip_boot_wait()
+    # golden-collision-ok: se30-7.0.1-512x342-gsvrom-finder.png se30-7.1-512x342-finder.png
+    # - System_7_0_1.image and the 7.1 Disk Tools disk are both volumes named
+    # "Disk Tools", and at 512x342 mono the 7.0.1 and 7.1 Finders draw an
+    # identical desktop. The version is not what either golden proves: se30-71-fd
+    # pins 7.1 through its About-box golden, and this row's own claim is the
+    # generic vROM, asserted below via machine.config.vroms.
+    let spent = wait_match("goldens/se30-7.0.1-512x342-gsvrom-finder.png", 600000000, 10000000)
+    assert machine.id == "se30" "se30-701-gsvrom: machine.id != se30"
+    assert machine.ram == 8192 "se30-701-gsvrom: machine.ram != 8192"
+    assert machine.config.vroms != "" "se30-701-gsvrom: built-from vrom record empty"
+    assert_addr(false)
+    report_row("7.0.1", "gsvrom", "fd-boot generic-vrom")
+    report_perf("suite-se30/se30-701-gsvrom", scheduler.instr_count)
+}
+
+# ---- se30-75-hd -------------------------------------------------------------
+# NEW CELL SE/30 x 7.5, and the SE/30's SCSI-HD boot path (se30-scsi
+# deleted — same path, fresher media). 16 MB exercises a RAM total the
+# SE/30 can only see in 32-bit mode; the prepared image carries MODE32,
+# but under default PRAM it still boots 24-bit (measured §3.4), so the
+# addressing assert records reality and MemTop is capped at 8 MB.
+def row_se30_75_hd() {
+    machine.rtc.time = 3000000000
+    machine.boot model="se30" ram=16384
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 300000000
+    skip_boot_wait()
+    scheduler.run 700000000
+    # 7.5 puts a clock in the menu bar, so the golden excludes that
+    # corner (the RTC is pinned above, but the displayed minute still
+    # depends on where in guest time the frame lands).
+    wait_stable(2500000000)
+    assert machine.id == "se30" "se30-75-hd: machine.id != se30"
+    assert machine.ram == 16384 "se30-75-hd: machine.ram != 16384"
+    assert_addr(false)
+    check_ex("goldens/se30-7.5-512x342-finder.png", 0, 380, 20, 512)
+    report_row("7.5", "builtin", "hd-boot scsi")
+    report_perf("suite-se30/se30-75-hd", scheduler.instr_count)
+}
+
+# ---- se30-checkpoint --------------------------------------------------------
+# §7 epilogue: the GLUE device set's save/restore round-trip, in
+# process — boot, save, wipe with a fresh boot, load, re-match.
+def row_se30_checkpoint() {
+    machine.boot model="se30" ram=2048
+    machine.floppy.drive[0].insert "${$ssw_608}"
+    scheduler.run 40000000
+    skip_boot_wait()
+    wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
+    assert checkpoint.save("${$WORK_DIR}/suite-se30.gsc") "se30-checkpoint: save failed"
+    machine.boot model="se30" ram=1024
+    assert checkpoint.load("${$WORK_DIR}/suite-se30.gsc") "se30-checkpoint: load failed"
+    scheduler.run 5000000
+    assert machine.ram == 2048 "se30-checkpoint: restored RAM size wrong"
+    check("goldens/se30-6.0.8-512x342-finder.png")
+    report_perf("suite-se30/se30-checkpoint", scheduler.instr_count)
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("se30-nomedia") { row_end("se30-nomedia", try(row_se30_nomedia(), "FAILED")) }
+if row_on("se30-chime") { row_end("se30-chime", try(row_se30_chime(), "FAILED")) }
+if row_on("se30-608-fd") { row_end("se30-608-fd", try(row_se30_608_fd(), "FAILED")) }
+if row_on("se30-71-fd") { row_end("se30-71-fd", try(row_se30_71_fd(), "FAILED")) }
+if row_on("se30-701-gsvrom") { row_end("se30-701-gsvrom", try(row_se30_701_gsvrom(), "FAILED")) }
+if row_on("se30-75-hd") {
+    if have_media($hd_75) {
+        row_end("se30-75-hd", try(row_se30_75_hd(), "FAILED"))
+    } else {
+        echo "skip: se30-75-hd (7.5 prepared image not fetched)"
+    }
+}
+if row_on("se30-checkpoint") { row_end("se30-checkpoint", try(row_se30_checkpoint(), "FAILED")) }
+
+suite_done()
+quit

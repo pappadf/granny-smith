@@ -21,6 +21,8 @@
 # Mouse coordinates are Mac global (512x342); each press/release is
 # bracketed by short runs so the guest polls the transitions.
 
+include "../lib/mac.script"
+
 machine.rtc.time = "2026-04-26T21:30:36"
 
 # Boot to the Finder desktop (same budget as the scsi test).
@@ -61,7 +63,7 @@ machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
 scheduler.run 48000000
-machine.screen.match chooser-server-listed.png
+check("chooser-server-listed.png")
 
 # Select "Shared Folders", then OK.
 machine.adb.mouse.move 300 85
@@ -84,7 +86,7 @@ machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
 scheduler.run 40000000
-machine.screen.match volume-list.png
+check("volume-list.png")
 
 # Select "My Volume", then OK — the mount itself.
 machine.adb.mouse.move 140 110
@@ -107,6 +109,6 @@ machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
 scheduler.run 40000000
-machine.screen.match desktop-mounted.png
+check("desktop-mounted.png")
 
 quit

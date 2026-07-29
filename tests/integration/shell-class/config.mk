@@ -9,3 +9,6 @@ TEST_NAME := Shell class surface
 TEST_DESC := shell.{run,complete,expand,alias_set,alias_unset,vars,aliases,prompt,running} via gs_eval
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

@@ -7,3 +7,6 @@ TEST_NAME := Object-model debug consolidation
 TEST_DESC := debug.breakpoints/.logpoints indexed children with sparse stable indices
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit

@@ -1,3 +1,10 @@
+# STAYS ON THE IIcx. §7 moved this with the 24AC suite, but that suite
+# stayed here (the IIci keeps its built-in video as the boot screen, so the
+# card's own raster would stop being observable), and on the IIci this
+# flow additionally raised a system error inserting Utilities Disk 2 —
+# unexplained, and not worth chasing for a re-host with no remaining
+# rationale. The IIci's dual-display coverage is suite-iici's
+# iici-24ac-dual row instead.
 # Integration test configuration: IIcx + Display Card 24AC — floppy insert +
 # launch the Symantec "System Info" application.
 #
@@ -23,3 +30,6 @@ TEST_ROM := roms/iix-iicx-se30-97221136.rom
 # The harness creates the IIcx with 8 MB; the script re-boots with the 24AC
 # card selected (video_card can't be passed as an arg) and attaches the SCSI HD.
 TEST_ARGS := model=iicx ram=8192
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := extended

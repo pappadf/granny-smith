@@ -15,6 +15,8 @@
 # findings.md, and is deliberately NOT exercised here.)
 
 # Pin the RTC so the boot is deterministic run-to-run.
+include "../lib/mac.script"
+
 machine.rtc.time = 3000000000
 
 machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp"
@@ -30,7 +32,7 @@ assert machine.screen.height == 480 "screen height != 480"
 assert machine.nubus.slot[9].card.framebuffer.depth == 8 "framebuffer not 8 bpp"
 
 # The 8-bpp Finder desktop with the Marathon folder window — pixel-exact.
-machine.screen.match finder-marathon-8bpp-640x480.png
+check("finder-marathon-8bpp-640x480.png")
 
 # --- Launch Marathon by double-clicking its icon in the folder window --------
 machine.adb.mouse.move 237 157 "global"
@@ -52,7 +54,7 @@ scheduler.run 85000000
 
 # The Marathon main menu (Begin New Game / network / film panels, © 1994
 # Bungie footer) — pixel-exact.
-machine.screen.match marathon-menu-8bpp-640x480.png
+check("marathon-menu-8bpp-640x480.png")
 
 # --- Open PREFERENCES (left panel, bottom) -----------------------------------
 # Opening the dialog also stops the idle countdown to the self-running demo,
@@ -65,7 +67,7 @@ machine.adb.mouse.click false
 scheduler.run 20000000
 # The Preferences dialog as it opens: Detail "Low Resolution", Window Size
 # "100%", Number of Colors "256", Brightness "Dark" — pixel-exact.
-machine.screen.match marathon-prefs-8bpp-640x480.png
+check("marathon-prefs-8bpp-640x480.png")
 
 # --- Background Music ON (checkbox, left of "Background Music") ---------------
 machine.adb.mouse.move 95 313 "global"
@@ -119,6 +121,13 @@ machine.adb.mouse.click false
 scheduler.run 5000000
 # All set: High Resolution / 100% / 256 colors / Normal — pixel-exact.
 
+# All settings applied: High Resolution / 100% / 256 colors / Normal, and
+# Background Music now ON. Folded in from iicx-marathon, which was deleted
+# as fully subsumed by this test (§8) — this was its one assertion that
+# had no counterpart here, so it moves rather than disappearing. The
+# golden differs from iicx-marathon's by the Background Music checkbox.
+check("marathon-prefs-set-8bpp-640x480.png")
+
 # --- OK: accept the dialog and return to the main menu -----------------------
 machine.adb.mouse.move 533 410 "global"
 scheduler.run 3000000
@@ -130,7 +139,7 @@ scheduler.run 20000000
 # we are back at the main menu.
 assert machine.nubus.slot[9].card.framebuffer.depth == 8 "depth changed away from 8 bpp at 256 colors"
 assert machine.memory.peek.w(0xaf0) != 0x19 "unexpected out-of-memory bomb at 256 colors"
-machine.screen.match marathon-menu-after-prefs-8bpp-640x480.png
+check("marathon-menu-after-prefs-8bpp-640x480.png")
 
 # --- BEGIN NEW GAME ----------------------------------------------------------
 # The top button of the centre panel.  Starts the "Arrival" intro cut scene,
@@ -147,7 +156,7 @@ machine.adb.mouse.click false
 # fetch fails with a swallowed memFullErr and the song is silent.  See
 # local/gs-docs/marathon/README.md for the full root-cause dossier.)
 scheduler.run 50000000
-machine.screen.match marathon-arrival-8bpp-640x480.png
+check("marathon-arrival-8bpp-640x480.png")
 
 # --- The level song starts during the cut-scene -> gameplay hand-off ----------
 # Music begins ~+110M after the Begin click; capture +50M..+140M.  We send no
@@ -162,6 +171,6 @@ assert machine.sound.capture.peak > 4000 "no in-game background music (capture.p
 # The world view has a blinking light with an ~8M-instruction period (about
 # 4M matching / 4M not); +179M total lands mid-window on the reference frame.
 scheduler.run 89000000
-machine.screen.match marathon-game-8bpp-640x480.png
+check("marathon-game-8bpp-640x480.png")
 
 quit

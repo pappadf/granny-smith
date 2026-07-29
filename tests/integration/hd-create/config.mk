@@ -6,3 +6,6 @@ TEST_DESC := Tests hd create with model names, human sizes, and hd models listin
 
 # Universal ROM shared by SE/30, IIcx, IIx (checksum 0x97221136)
 TEST_ROM := roms/iix-iicx-se30-97221136.rom
+
+# CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
+TEST_TIER := unit
