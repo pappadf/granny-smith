@@ -27,14 +27,19 @@
 # pressed Apple CD uses is covered by the scsi_cdrom unit suite instead, which
 # needs no media — see tests/unit/suites/scsi_cdrom.
 #
-# Discs that are NOT usable, recorded so nobody re-tests them:
-#   * tests/data/cdroms/Misc_Mac_Drivers.toast and the A/UX retail ISO both have
-#     an Apple Partition Map but NO driver partition — Toast-mastered data
-#     discs, not bootable;
+# Discs that are NOT usable, recorded so nobody re-tests them.  Note that in
+# every case the fault is the CAPTURE, not the original disc — see
+# local/gs-docs/CD_boot/cd-rom-boot.md §6.3:
+#   * tests/data/cdroms/Misc_Mac_Drivers.toast and the A/UX retail ISO have an
+#     Apple Partition Map but no driver partition;
+#   * the Quadra 660AV/840AV "Install Me First" CD likewise — and it carries a
+#     complete System Folder (System, Finder, System Enabler 088), so the
+#     original certainly booted.  Its map is named 'MRKS' / 'Toast 3.5.7
+#     Partition', its boot blocks are zeroed and its blessed-folder id is 0:
+#     a file-level re-master that dropped everything living outside a file;
 #   * the 1994 Apple Restoration CD ships as a bare HFS volume (block 0 is an
 #     'LK' HFS boot block, not a Driver Descriptor Map), so there is no
-#     partition map for the Start Manager to read.  The emulator mounts it
-#     fine; a Mac cannot boot a SCSI device with no driver partition.
+#     partition map for the Start Manager to read at all.
 
 include "../lib/mac.script"
 
