@@ -149,8 +149,7 @@
       "height": 480,
       "depth": 1,
       "addr32": true,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §8 — a Display Card 24AC seated beside the live built-in RBV hangs the boot at Welcome, whatever the boot medium; the card-free 7.1 cell above boots fine"
+      "suite": "suite-iici"
     },
     {
       "machine": "iici",

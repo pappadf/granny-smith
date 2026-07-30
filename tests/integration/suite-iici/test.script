@@ -17,10 +17,11 @@
 #                   sizes correctly (was ledger §3; fixed and enforced)
 #   iici-71-hd      **IIci x 7.1** on the built-in RBV — the cell §8 wrongly
 #                   believed unreachable (8 MB)
-#   iici-24ac-dual  **first OS-level DUAL DISPLAY**, MILESTONE: a 24AC in
-#                   socket $C beside the live built-in RBV, with the 24AC
-#                   engine counters §3.2 wanted asserted. Red because seating
-#                   the card hangs the boot at Welcome — see the row.
+#   iici-24ac-dual  **first OS-level DUAL DISPLAY**: a 24AC in socket $C beside
+#                   the live built-in RBV, booting 7.1 to the Finder, with the
+#                   24AC engine counters §3.2 wanted asserted. Was ledger §8
+#                   (seating the card hung the boot at Welcome); fixed and
+#                   enforced.
 #   iici-checkpoint **MDU-family checkpoint round-trip** (§7 epilogue):
 #                   save → reboot into a different machine → load →
 #                   re-match. Was ledger §2 (restored screen came back
@@ -271,13 +272,18 @@ def row_iici_24ac_dual() {
     # §3.2's proof of engagement: counters, not pixels.
     assert machine.nubus.slot[12].card.engine.fill_ops > 0 "iici-24ac-dual: 24AC engine did no fills under the OS"
     assert machine.nubus.slot[12].card.engine.fill_bytes > 0 "iici-24ac-dual: 24AC engine filled no bytes"
-    # The milestone itself. -288949432 is the settled "Welcome to Macintosh"
-    # frame this machine parks on; asserting against it (rather than matching
-    # a golden) keeps the row from shipping a splash as if it were coverage.
-    # The same checksum appears when a 24AC is seated and the machine boots a
-    # MacTest FLOPPY instead — different medium, identical hang, which is what
-    # identifies the card rather than the System as the trigger.
-    assert machine.screen.checksum() != -288949432 "iici-24ac-dual: still on the Welcome splash — a seated 24AC hangs the boot (ledger §8)"
+    # It reaches the Finder with both displays present. As a milestone this row
+    # could only assert a checksum INEQUALITY against the settled "Welcome to
+    # Macintosh" frame (-288949432) it used to park on; now it asserts the
+    # desktop it actually reaches, and claims the cell.
+    # golden-collision-ok: iici-7.1-640x480x1-24ac-dual-finder.png iici-7.1-640x480x1-finder.png
+    # - the PRIMARY display is the built-in RBV at 1 bpp in both rows, showing the
+    # same settled 7.1 desktop, so the frames are legitimately identical; the 24AC
+    # is a SECOND display and its content is not in this framebuffer. What proves
+    # the states differ is above and not pixel-based: slot $C is the 24AC, its own
+    # framebuffer is 8 bpp, and its blitter engine did non-zero fills under the OS.
+    check("goldens/iici-7.1-640x480x1-24ac-dual-finder.png")
+    report_row("7.1", "rbv+24ac", "dual-display hd-boot 24ac-engine")
     report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
 }
 

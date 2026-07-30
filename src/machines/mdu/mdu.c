@@ -181,6 +181,31 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mmu_checkpoint_save(st->mmu, cp);
 }
 
+// substrate.nubus_slot_irq — the RBV aggregates NuBus slot interrupts itself
+// (RvSInt & RvSEnb -> RvAnySlot -> the chip's combined interrupt -> IPL 2), so a
+// slot source has to go to the chip rather than straight to update_ipl.
+//
+// The shared mac030_nubus_slot_irq_via_ipl passes `1 << (slot - 9)` as the
+// machine's IRQ SOURCE mask, and on this family every one of those bits is
+// already spoken for: IICI_IRQ_VIA1/RBV/SCC/NMI are 1<<0 .. 1<<3.  So a card in
+// slot $C asserted the NMI source and the machine took a level-7 autovector
+// every few instructions forever — which is what "a 24AC beside the live
+// built-in RBV hangs the boot at Welcome" actually was (ledger §8).
+//
+// RvSInt numbering is logical: 0 is the built-in video (RvIRQ0, bit 6) and
+// 1..6 are RvIRQ1..6, so NuBus $9..$E map to 1..6.
+static void mdu_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    (void)umbrella_edge; // the RBV aggregates internally
+    mac030_mdu_state_t *st = mdu_st(cfg);
+    if (!st || !st->rbv || slot < 0x9 || slot > 0xE)
+        return;
+    int logical = slot - 0x8;
+    if (active)
+        rbv_assert_slot_irq(st->rbv, logical);
+    else
+        rbv_clear_slot_irq(st->rbv, logical);
+}
+
 // MDU VBL: single VIA1 CA1 pulse (no VIA2), then fan out to NuBus.
 static void mdu_trigger_vbl(config_t *cfg) {
     via_input_c(cfg->via1, 0, 0, 0);
@@ -196,7 +221,7 @@ const machine_substrate_t mdu_substrate = {
     .checkpoint_save = mdu_checkpoint_save,
     .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = mdu_trigger_vbl,
-    .nubus_slot_irq = mac030_nubus_slot_irq_via_ipl, // RBV aggregates slots → update_ipl
+    .nubus_slot_irq = mdu_nubus_slot_irq, // straight to the RBV's slot-interrupt register
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,
     .input_key = mac_input_key,
