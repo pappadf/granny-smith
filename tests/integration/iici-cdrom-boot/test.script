@@ -1,0 +1,151 @@
+# IIci CD-ROM boot — PROTOTYPE
+#
+# Boot a Macintosh IIci from a bootable Apple system CD and nothing else.
+#
+# Why this is worth a test at all: there is no CD-specific code in the Mac ROM.
+# A bootable CD is mastered like a hard disk — Driver Descriptor Map in block 0,
+# an Apple_Driver43 partition holding the CD driver, an Apple_HFS partition with
+# a blessed System Folder — and the Start Manager boots it with the same code
+# that boots a hard disk.  So this row exercises the ordinary SCSI boot path
+# against a device that is READ-ONLY and reports 2048-byte blocks, which nothing
+# else in the suites does.  se30-cdrom only proves a CD on the bus does not
+# BREAK a floppy boot; nothing until now booted FROM one.
+#
+# The disc's partition map, read off the image directly:
+#
+#   block 0                    'ER'  Driver Descriptor Map, blockSize 2048
+#   [1] "Macintosh"  Apple_Driver43       start     64  blocks    128
+#   [2] "MacOS"      Apple_HFS            start    192  blocks 500000
+#   [3] "Extra"      Apple_Free           start 500192  blocks 565043
+#   [4] "Apple"      Apple_partition_map  start      1  blocks     63
+#
+# Two other discs were tried and are NOT usable, for reasons worth recording so
+# nobody re-tests them:
+#   * the Quadra 660AV/840AV "Install Me First" CD has an Apple Partition Map
+#     but NO driver partition — it is a Toast-mastered data disc, not bootable;
+#   * the 1994 Apple Restoration CD ships as a bare HFS volume (block 0 is an
+#     'LK' HFS boot block, not a Driver Descriptor Map), so it has no partition
+#     map for the Start Manager to read.  The emulator mounts it fine; a Mac
+#     cannot boot a SCSI device that has no driver partition.
+
+include "../lib/mac.script"
+
+let cd = "../../data/cdroms/SSW-7.5.3-CD.toast"
+
+if !have_media($cd) {
+    echo "skip: iici-cdrom-boot (7.5.3 CD image not fetched)"
+    quit
+}
+
+# ---- cd-device --------------------------------------------------------------
+# The plug contract: what the guest sees on the bus before anything boots.
+# 2048-byte blocks and read_only are the two properties that make this a
+# different transport from every HD row in the suites.
+def row_cd_device() {
+    machine.boot model="iici" ram=8192
+    machine.scsi.attach_cdrom "${$cd}" 3
+    assert machine.scsi.device[3].type == "cdrom" "cd-device: SCSI 3 is not a CD-ROM"
+    assert machine.scsi.device[3].block_size == 2048 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048"
+    assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
+    assert machine.scsi.device[3].medium_present "cd-device: no medium present"
+    assert machine.scsi.device[3].vendor == "SONY    " "cd-device: unexpected vendor"
+    # No other storage: the boot below can only come from the disc.  An empty
+    # SCSI slot does not resolve as an object at all, so probe it with try()
+    # rather than reading a type (shell v2 §7 — errors are not truth values).
+    assert try(machine.scsi.device[0].type, none) == none "cd-device: something is attached at SCSI 0"
+    assert !machine.floppy.drive[0].present "cd-device: a floppy is inserted"
+}
+
+# ---- cd-boot ----------------------------------------------------------------
+# The actual claim: with ONLY the CD attached, the machine runs a System.
+#
+# Every assertion here is a fact that can only be true if the disc's driver
+# partition was loaded and its HFS volume mounted and blessed — there is no
+# other source of a System on this machine.
+def row_cd_boot() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iici" ram=8192
+    machine.scsi.attach_cdrom "${$cd}" 3
+    scheduler.run 400000000
+    scheduler.run 1000000000
+
+    assert machine.id == "iici" "cd-boot: machine.id != iici"
+    # BootDrive is the drive number the Start Manager booted from; zero means
+    # it never found a bootable device.
+    assert debug.mac.globals.read("BootDrive") != 0 "cd-boot: BootDrive is 0 — nothing booted"
+    # A running System: the Memory Manager zones are live and the tick
+    # interrupt has been counting for a couple of emulated minutes.
+    assert debug.mac.globals.read("SysZone") != 0 "cd-boot: SysZone unset — no System heap"
+    assert debug.mac.globals.read("BufPtr") != 0 "cd-boot: BufPtr unset — Memory Manager not up"
+    assert debug.mac.globals.read("Ticks") > 10000 "cd-boot: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
+    # SysMap is the System file's resource map reference — nonzero only once a
+    # System FILE has been opened, which is the part that proves the read came
+    # off the disc rather than out of the ROM.
+    assert debug.mac.globals.read("SysMap") != 0 "cd-boot: SysMap unset — no System file opened"
+
+    report_perf("iici-cdrom-boot/cd-boot", scheduler.instr_count)
+}
+
+# ---- cd-desktop (MILESTONE) -------------------------------------------------
+# The destination this prototype does NOT reach, and the guard for it.
+#
+# System 7.5.3 off this disc runs out of memory before the Finder appears and
+# stops on "Not enough memory is available while using “System”".  It is not a
+# shortage of PHYSICAL RAM: the dialog is identical at 8 MB and at 32 MB, and
+# BufPtr lands at 0x007EE600 in both — the ~8 MB ceiling of the IIci's 24-bit
+# addressing.  Measured on three machines (IIci, Q700, Q950): all three reach
+# byte-identical framebuffers, so this is a property of the System on the disc
+# and the addressing mode, not of any one machine's SCSI or video path.
+#
+# Routes tried and ruled out, so they are not re-tried:
+#
+#   * 32-bit addressing via PRAM.  `rtc.pram.validate` + MMFlags ($8A) bit 0
+#     DOES select it — MMU32bit reads 1 and BufPtr moves to 0x01FAF520, the
+#     full 32 MB — and the machine then Sad Macs $0000000F / $00000001 before
+#     the desktop.  Identical on the IIci and the Q950.  docs/core/memory/pram.md
+#     §4.3 already records this signature for 7.0.1 and warns that stamping
+#     validity suppresses the ROM's startup-device init; this is the same
+#     interaction, now also seen on a 68040 machine.  Seeding $8A WITHOUT
+#     validity does not stick (XPRAM writes are gated on the validity tokens —
+#     the poke reads back 0x00), so there is no way to select 32-bit here
+#     without also taking the side effect.
+#   * Extensions off (the dialog's own advice).  Holding Shift really does
+#     reach the guest — KeyMap bit 0x38 sets and clears, and execution
+#     diverges (BufPtr 0x007AF400 vs 0x007EE600) — but the System still does
+#     not fit.  NOTE for whoever picks this up: the key must be pressed AFTER
+#     the ADB bus is initialised.  A `keyboard.down` issued before the first
+#     `scheduler.run` is silently lost, and the run then reproduces the
+#     no-Shift frame bit-for-bit, which looks exactly like "Shift had no
+#     effect" and is how this was first misread.
+#
+# The likely real fix is a lighter System on the disc — a 7.1-era bootable CD,
+# or Apple's Disk Tools CD — rather than anything in the emulator.  Nothing
+# measured here points at a defect in the SCSI, partition or HFS paths: they
+# all did their job, which is what row_cd_boot asserts.
+def row_cd_desktop() {
+    machine.rtc.time = 3000000000
+    machine.boot model="iici" ram=8192
+    machine.scsi.attach_cdrom "${$cd}" 3
+    scheduler.run 400000000
+    wait_stable(1400000000)
+    # Pinned to the exact frame the boot parks on today.  A checksum
+    # INEQUALITY is a weak assertion and this repo has been bitten by weak
+    # ones before, so it is deliberately pinned to the ONE known-bad frame
+    # rather than to some structural property of the screen: the first
+    # version of this row compared row 0 against row 240 and passed on the
+    # dialog, reporting the milestone green with no desktop in sight.
+    #
+    # When a System that fits does boot, this stops matching and the
+    # milestone flips green for a real reason — at which point the row gains
+    # a desktop golden and this comment goes away.
+    assert machine.screen.checksum() != -107001373 "cd-desktop: still parked on the \"not enough memory\" dialog"
+}
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("cd-device") { row_end("cd-device", try(row_cd_device(), "FAILED")) }
+if row_on("cd-boot") { row_end("cd-boot", try(row_cd_boot(), "FAILED")) }
+if row_on("cd-desktop") { row_end_milestone("cd-desktop", try(row_cd_desktop(), "FAILED")) }
+
+suite_done()
+quit
