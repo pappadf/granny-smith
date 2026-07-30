@@ -24,6 +24,10 @@
       "instr": 375326506,
       "tolerance": 0.2
     },
+    "suite-iici/iici-701-depths": {
+      "instr": 362350516,
+      "tolerance": 0.2
+    },
     "suite-iici/iici-701-fd": {
       "instr": 392597910,
       "tolerance": 0.2

@@ -80,6 +80,36 @@ static uint32_t format_bpp(pixel_format_t f) {
     }
 }
 
+// Point display.clut at the slice of the 256-entry hardware CLUT the current
+// depth actually addresses.
+//
+// The RBV feeds the VDAC eight index lines but a reduced-depth pixel only
+// occupies the low `bpp` of them; the rest are driven HIGH.  So the active
+// palette sits at the TOP of the table, and Mac OS programs it there —
+// measured on a 7.0.1 boot of this machine:
+//
+//   2 bpp -> CLUT[252..255] = white / ltGray / dkGray / black
+//   4 bpp -> CLUT[240..255] = the 16-colour palette (white, yellow $FCF610,
+//                             purple $6800BC, brown $784B10, ... black)
+//   8 bpp -> CLUT[0..255]
+//
+// i.e. base = 256 - (1 << bpp).  display.h defines `clut` as the "0/4/16/256-
+// entry palette", so exposing just that window is the contract the renderer
+// already expects (it indexes clut[pixel % clut_len]).  Without this the
+// renderer read the untouched low entries, which after the boot ROM's
+// gray-out all hold the same 50% gray — so a 2 or 4 bpp desktop scanned out
+// as a uniform gray field even though the framebuffer and ScreenRow were
+// correct (ledger §5).
+static void rbv_video_apply_clut_window(rbv_video_priv_t *p) {
+    uint32_t bpp = format_bpp(p->display.format);
+    uint32_t len = 1u << bpp; // 2, 4, 16 or 256
+    if (len > 256)
+        len = 256;
+    p->display.clut = p->clut + (256u - len);
+    p->display.clut_len = len;
+    p->display.clut_dirty = true;
+}
+
 // === Card vtable ============================================================
 
 static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
@@ -101,7 +131,7 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->display.format = PIXEL_1BPP_MSB;
     p->display.stride = RBV_VIDEO_WIDTH / 8; // 80 bytes/row at 1 bpp
     p->display.bits = p->fb + BUILTIN_RBV_SCREEN_OFFSET;
-    p->display.clut = p->clut;
+    p->display.clut = p->clut; // narrowed to the active window below
     p->display.clut_len = 256;
     p->display.crt_response = NULL; // 13" RGB gamma is near-identity
     p->display.shape_dirty = true;
@@ -117,6 +147,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
         p->clut[i].b = (uint8_t)i;
         p->clut[i].a = 255;
     }
+
+    rbv_video_apply_clut_window(p);
 
     card->priv = p;
     return 0;
@@ -204,6 +236,9 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, p->vdac_rgb, sizeof(p->vdac_rgb));
     system_read_checkpoint_data(cp, &p->vdac_pix_mask, sizeof(p->vdac_pix_mask));
 
+    // The CLUT window depends on the restored depth, so recompute it.
+    rbv_video_apply_clut_window(p);
+
     // p->display.bits still points into p->fb (card_init set it up and the
     // buffer address has not moved), but everything the frontend caches about
     // this display is now stale.
@@ -262,6 +297,7 @@ void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code) {
         return;
     p->display.format = f;
     p->display.stride = RBV_VIDEO_WIDTH * format_bpp(f) / 8u;
+    rbv_video_apply_clut_window(p);
     p->display.shape_dirty = true;
     p->display.fb_dirty = true;
     LOG(2, "depth -> %u bpp (stride %u)", format_bpp(f), p->display.stride);

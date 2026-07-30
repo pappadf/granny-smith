@@ -83,6 +83,58 @@ def row_iici_701_fd() {
     report_perf("suite-iici/iici-701-fd", scheduler.instr_count)
 }
 
+# ---- iici-701-depths --------------------------------------------------------
+# The built-in RBV video at 2, 4 and 8 bpp — the three cells ledger §5 recorded
+# as unreachable.
+#
+# §5 claimed the built-in video "exposes no guest-visible depth mode list, so the
+# OS cannot select 2/4/8 bpp", and §12.2 concluded that seeding slot PRAM was the
+# wrong lever because a seeded record made no difference. Both were wrong, and
+# for the same reason: the seeds were malformed. The mechanism is exactly the one
+# iicx-video-modes already uses for the IIcx's JMFB, only on this machine's own
+# slot and board ID.
+#
+# The IIci's built-in video is slot $B (VideoInfoMDU sets SlotPramAddr from slot
+# $0B), so its sPRAMRec is PRAM $56..$5D, and its BoardID is ciVidBoardID =
+# $001F. Within the record: byte 2 ($58) is the saved depth spID and byte 3
+# ($59) the selected video sRsrc spID. $86 is what the ROM computes here on its
+# own — bit 7 plus monitor ID 6 ("MacII monitors", 13" RGB) with the sub-1.5 MB
+# flag clear — verified by dumping the record after an unseeded boot.
+#
+# pram.validate first, or PRAMInit rewrites the record during boot and the poke
+# looks inert (ledger §12.2). Safe here because these rows boot from floppy; a
+# SCSI boot would need the startup device seeded too.
+def boot_iici_701_at_depth(spid) {
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.floppy.drive[0].insert "${$sys_701}"
+    machine.rtc.pram.validate
+    if $spid == 0x81 { machine.rtc.pram.poke 0x56 0x001f818600000000:8 }
+    if $spid == 0x82 { machine.rtc.pram.poke 0x56 0x001f828600000000:8 }
+    if $spid == 0x83 { machine.rtc.pram.poke 0x56 0x001f838600000000:8 }
+    scheduler.run 300000000
+    wait_stable(900000000)
+    assert machine.rtc.pram.peek(0x58) == $spid "iici-701-depths: savedMode rewritten by the ROM (wanted ${$spid:02x})"
+    assert machine.screen.width == 640 "iici-701-depths: width != 640"
+    assert machine.screen.height == 480 "iici-701-depths: height != 480"
+}
+def row_iici_701_depths() {
+    boot_iici_701_at_depth(0x81)
+    assert machine.screen.depth == 2 "iici-701-depths: savedMode $81 gave depth ${machine.screen.depth}, want 2"
+    check("goldens/iici-7.0.1-640x480x2-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 2bpp")
+
+    boot_iici_701_at_depth(0x82)
+    assert machine.screen.depth == 4 "iici-701-depths: savedMode $82 gave depth ${machine.screen.depth}, want 4"
+    check("goldens/iici-7.0.1-640x480x4-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 4bpp")
+
+    boot_iici_701_at_depth(0x83)
+    assert machine.screen.depth == 8 "iici-701-depths: savedMode $83 gave depth ${machine.screen.depth}, want 8"
+    check("goldens/iici-7.0.1-640x480x8-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 8bpp")
+    report_perf("suite-iici/iici-701-depths", scheduler.instr_count)
+}
+
 # ---- iici-75-hd -------------------------------------------------------------
 # NEW CELL IIci x 7.5 over the MDU's NCR 5380 pseudo-DMA path.
 # 16 MB, not the 5 MB bank split the RAM axis would have preferred,
@@ -346,6 +398,7 @@ def row_iici_mactest_diag() {
 
 if row_on("iici-chime") { row_end("iici-chime", try(row_iici_chime(), "FAILED")) }
 if row_on("iici-701-fd") { row_end("iici-701-fd", try(row_iici_701_fd(), "FAILED")) }
+if row_on("iici-701-depths") { row_end("iici-701-depths", try(row_iici_701_depths(), "FAILED")) }
 if row_on("iici-75-hd") {
     if have_media($hd_75) {
         row_end("iici-75-hd", try(row_iici_75_hd(), "FAILED"))

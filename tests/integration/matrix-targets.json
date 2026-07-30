@@ -97,8 +97,7 @@
       "height": 480,
       "depth": 2,
       "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "suite": "suite-iici"
     },
     {
       "machine": "iici",
@@ -108,8 +107,7 @@
       "height": 480,
       "depth": 4,
       "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "suite": "suite-iici"
     },
     {
       "machine": "iici",
@@ -119,8 +117,7 @@
       "height": 480,
       "depth": 8,
       "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "suite": "suite-iici"
     },
     {
       "machine": "iici",
