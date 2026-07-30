@@ -30,7 +30,11 @@ assert !machine.boot(ram=999) "off-menu ram must be rejected"
 assert !machine.boot(rom="does/not/exist.rom") "unreadable rom must be rejected"
 assert !machine.boot(vrom="../../data/roms/plus-v3-4d1f8172.rom") "non-vROM vrom= must be rejected"
 assert !machine.boot(video_card="nonesuch") "unknown card id must be rejected"
-assert !machine.boot(video_sense=9) "out-of-range sense must be rejected"
+# 15 is one past the top of Apple's indexed sense numbering: 0..7 is the
+# passive 3-bit code, 8..14 names a monitor that answers the EXTENDED
+# tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*). This assertion used 9
+# while the range stopped at 7; 9 is the PAL monitor now.
+assert !machine.boot(video_sense=15) "out-of-range sense must be rejected"
 assert !machine.boot(video_mode="nonesuch") "unknown video mode must be rejected"
 assert machine.id == "iicx" "machine survives every rejected boot"
 assert machine.config.ram == 8192 "record intact after rejected boots"
