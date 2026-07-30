@@ -466,15 +466,23 @@ static void run_cmd(scsi_t *scsi) {
             break;
         }
 
-        // Promote both operands before the multiply so an overflow can't slip
-        // past a 32-bit-int host. tl is up to 256, blk_sz is typically 512 or
-        // 2048, so the product stays inside BUF_LIMIT in practice.
-        if ((size_t)scsi->cmd.tl * (size_t)blk_sz > BUF_LIMIT) {
-            LOG(1, "SCSI %s transfer too large: tl=%u blk_sz=%u > BUF_LIMIT=%zu",
-                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, (size_t)BUF_LIMIT);
-            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_OPCODE, 0x00);
-            break;
-        }
+        // A 6-byte CDB's transfer length is 8 bits (0 meaning 256), so the
+        // product tops out at 256 blocks — 128 KB at 512-byte blocks, but
+        // 512 KB on a CD-ROM's 2048-byte blocks.  BUF_LIMIT is 256 * 512, so
+        // this used to reject any CD-ROM READ(6) of more than 64 blocks with
+        // ILLEGAL REQUEST.  The comment here used to claim "the product stays
+        // inside BUF_LIMIT in practice", which is only true for 512-byte
+        // blocks and is why no hard-disk row ever caught it: booting System
+        // 7.5.3 off a CD dies on `lba=2531 tl=124` (248 KB), and the System
+        // reports the refused read as "Not enough memory is available".
+        //
+        // Grow the staging buffer instead, exactly as the 10-byte path below
+        // already does (see scsi_buf_ensure in phase_data_in/out).  Promote
+        // both operands before the multiply so an overflow can't slip past a
+        // 32-bit-int host.
+        if ((size_t)scsi->cmd.tl * (size_t)blk_sz > BUF_LIMIT)
+            LOG(2, "SCSI %s large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
+                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, (size_t)scsi->cmd.tl * blk_sz);
 
         if (scsi->cmd.opcode == CMD_WRITE) {
             phase_data_out(scsi, blk_sz * scsi->cmd.tl);
