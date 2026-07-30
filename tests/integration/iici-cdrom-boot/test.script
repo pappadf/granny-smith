@@ -33,10 +33,12 @@
 #   * tests/data/cdroms/Misc_Mac_Drivers.toast and the A/UX retail ISO have an
 #     Apple Partition Map but no driver partition;
 #   * the Quadra 660AV/840AV "Install Me First" CD likewise — and it carries a
-#     complete System Folder (System, Finder, System Enabler 088), so the
-#     original certainly booted.  Its map is named 'MRKS' / 'Toast 3.5.7
-#     Partition', its boot blocks are zeroed and its blessed-folder id is 0:
-#     a file-level re-master that dropped everything living outside a file;
+#     complete System Folder (System, Finder, System Enabler 088) and a properly
+#     blessed volume, so the original certainly booted.  Its map is named
+#     'MRKS' / 'Toast 3.5.7 Partition' and its boot blocks are zeroed: a
+#     file-level re-master that dropped everything living outside a file.  A
+#     second capture of the same disc (.cdr) keeps the boot blocks but has no
+#     partition map at all, so neither boots on its own;
 #   * the 1994 Apple Restoration CD ships as a bare HFS volume (block 0 is an
 #     'LK' HFS boot block, not a Driver Descriptor Map), so there is no
 #     partition map for the Start Manager to read at all.
