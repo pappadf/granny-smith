@@ -101,6 +101,7 @@ struct display_card_24ac_priv {
     uint16_t mon_width; // connected monitor geometry
     uint16_t mon_height;
     uint8_t mon_sense_ext; // its extended-sense code
+    uint8_t mon_sense_primary; // its primary sense code (6 or 7 here)
     bool vbl_enabled; // slot VBL IRQ armed (VIDCTL bit 7 clear)
 
     // === Phase 2 acceleration engine ===
@@ -682,18 +683,46 @@ static uint8_t savedmode_for_bpp(int bpp) {
         return 0x82u;
     }
 }
-// Monitor sister sRsrc id → the extended-sense code the card reports on
-// SENSE_CLK so PrimaryInit lands on that monitor (vrom RE).
-static uint8_t ext_for_sister(uint8_t sister) {
+// Monitor sister sRsrc id → the (primary, extended) sense pair the card
+// reports on SENSE_CLK so PrimaryInit lands on that monitor.
+//
+// The vrom's own dispatch tables are the authority (chip 0x14E-0x171): a
+// word-per-primary-code table, then a $FF-terminated (ext, monitor-id) list
+// for each code that uses extended sense.  Codes 6 and 7 do; the rest take
+// the default id $40+code.  Decoded:
+//
+//   primary 6 → (03,$6B) (0B,$6C) (23,$6D)
+//   primary 7 → (2D,$80) (17,$81) (3A,$82)
+//
+// The monitor id is NOT a sResource id — it indexes the on-vrom timing
+// directory at chip 0x62E, which is what actually picks the geometry.  Which
+// id means which raster was measured by booting 7.5 once per code and reading
+// the resulting GDevice's pixMap bounds (see the ledger's §7 table):
+//
+//   $6B 640×480   $6C 832×624   $6D 1152×870
+//   $81 640×480   $80 832×624   $82 1024×768
+//
+// Only the primary-6 trio is offered as a monitor (see the table below for
+// why); the primary-7 row is recorded because it is measured fact and is what
+// a 1024×768 monitor would need.  Cross-checks against Apple's own equates in
+// DepVideoEqu.a: extendedMSB1/2/3 = $03/$0B/$23 (the three multiscan bands),
+// extendedSenseVGA = $17, extendedSenseGF = $2D, extendedSense19 = $3A.
+//
+// (The 800×600 and 640×870 sResources in the vrom image are not reachable
+// from primary 6 or 7 at all; 640×870 is the primary-1 portrait default.)
+static void sense_for_sister(uint8_t sister, uint8_t *primary, uint8_t *ext) {
+    *primary = 6; // every monitor this card offers is a primary-6 multisync
     switch (sister) {
-    case 0x6Bu:
-        return 0x03u; // 640×480
     case 0x6Cu:
-        return 0x0Bu; // 800×600
+        *ext = 0x0Bu; // 832×624
+        return;
     case 0x6Du:
-        return 0x23u; // 832×624
+        *ext = 0x23u; // 1152×870
+        return;
+    case 0x6Bu:
     default:
-        return 0x03u;
+        *ext = 0x03u; // 640×480
+        return;
     }
 }
 
@@ -724,7 +753,7 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p) {
     // the boot ROM executes a 68k RESET early in StartBoot, and the
     // sensed monitor has to survive it or a staged mode silently falls
     // back to the default monitor when PrimaryInit re-reads the lines.
-    p->sense_primary = 6;
+    p->sense_primary = p->mon_sense_primary;
     p->sense_ext = p->mon_sense_ext;
     p->sense_last_write = 0;
     p->status_busy = 0;
@@ -834,11 +863,12 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // (set_poweron_defaults derives sense + geometry from it).
     p->mon_width = 640;
     p->mon_height = 480;
+    p->mon_sense_primary = 6;
     p->mon_sense_ext = 0x03;
     if (seeded_monitor) {
         p->mon_width = (uint16_t)seeded_monitor->width;
         p->mon_height = (uint16_t)seeded_monitor->height;
-        p->mon_sense_ext = ext_for_sister(seeded_monitor->srsrc_sister);
+        sense_for_sister(seeded_monitor->srsrc_sister, &p->mon_sense_primary, &p->mon_sense_ext);
     }
 
     // Phase-1 starting state: 8 bpp at the connected monitor's geometry,
@@ -1078,15 +1108,26 @@ static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) 
     return factory_common(slot, cfg, cp, &display_card_24ac_generic_ops);
 }
 
-// Advertised modes (vrom identity strings, proposal §3.1): 640×480,
-// 800×600, 832×624.  All are the multisync monitor family — primary sense
-// code 6 plus a per-mode extended-sense code that the vrom video driver
-// reads back from the SENSE_CLK line (0xD8000D); the resulting top-level
-// "sister" sResource ids are 0x6B / 0x6C / 0x6D (see the vrom RE doc and the
-// stateful sense model in reg_read).  The card is a 24-bit colour board (4 MB
-// VRAM), so every mode supports 1/4/8/16/32 bpp — there is NO 2-bpp mode (vrom
-// RE depth ladder).  The default-sensed monitor is the 640×480 multisync
-// (sense_primary 6, ext 0x03 → sRsrc 0x6B).
+// Advertised monitors.  The card is a 24-bit colour board (4 MB VRAM), so
+// every one supports 1/4/8/16/32 bpp — there is NO 2-bpp mode (vrom RE depth
+// ladder).  Each row's geometry is the raster the REAL vrom programs when the
+// card reports that monitor's sense pair; see sense_for_sister above for the
+// decode of the vrom's own dispatch tables and how the id↔geometry column was
+// measured.  Getting this wrong is not a cosmetic labelling error: the vrom
+// programs the guest's GDevice from the sensed monitor while the card scans
+// out at the geometry named here, so a mislabelled row shreds the picture.
+//
+// (An "800 × 600" row used to sit at sister 0x6C.  The vrom does carry 800×600
+// sResources, but no sense code on this board reaches them — 0x6C is the 16"
+// 832×624 monitor.  Nothing referenced the mode id.)
+//
+// Deliberately three rows, not more.  The card's primary-sense-7 monitors were
+// measured too ($2D → 832×624, $17 → 640×480, $3A → 1024×768 on the real
+// vrom), but the GENERIC sibling shares this table and its GS vrom
+// personality (vrom68k/ops_boogie.s) is written around exactly the three
+// 0x6B/0x6C/0x6D multisync spIDs — a fourth row generates a video sResource
+// its PrimaryInit will not prune, and the Slot Manager then picks the wrong
+// one.  Adding a monitor here means teaching that personality first.
 static const int display_card_24ac_depths[] = {1, 4, 8, 16, 32, 0};
 static const nubus_monitor_t display_card_24ac_monitors[] = {
     {.id = "rgb_640x480",
@@ -1096,17 +1137,17 @@ static const nubus_monitor_t display_card_24ac_monitors[] = {
      .depths = display_card_24ac_depths,
      .sense_code = 6,
      .srsrc_sister = 0x6B},
-    {.id = "rgb_800x600",
-     .name = "800 × 600 (60 Hz)",
-     .width = 800,
-     .height = 600,
-     .depths = display_card_24ac_depths,
-     .sense_code = 6,
-     .srsrc_sister = 0x6C},
     {.id = "rgb_832x624",
      .name = "832 × 624 (75 Hz)",
      .width = 832,
      .height = 624,
+     .depths = display_card_24ac_depths,
+     .sense_code = 6,
+     .srsrc_sister = 0x6C},
+    {.id = "rgb_1152x870",
+     .name = "1152 × 870 (75 Hz)",
+     .width = 1152,
+     .height = 870,
      .depths = display_card_24ac_depths,
      .sense_code = 6,
      .srsrc_sister = 0x6D},

@@ -128,7 +128,7 @@
       "depth": 8,
       "addr32": false,
       "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §7 — the 24AC's non-640-wide modes scan out corrupt; and the built-in video keeps the boot screen on the IIci, so a card-only raster is not observable via machine.screen"
+      "blocked": "The 24AC drives 1152x870 correctly since the §7 fix (suite-quadra pixel-matches that raster on the DAFB), but on the IIci the built-in RBV stays the primary display, and machine.screen reports the primary — so a card-only raster is not observable. Needs either a per-display screen selector or a IIci configuration where the card is primary."
     },
     {
       "machine": "iici",
@@ -458,13 +458,12 @@
     {
       "machine": "iifx",
       "system": "7.5",
-      "card": "display_card_24ac",
+      "card": "24ac",
       "width": 832,
       "height": 624,
       "depth": 8,
       "addr32": false,
-      "suite": "suite-iifx",
-      "blocked": "proposal-emulator-bug-fixes.md §7 — 832x624 applies but scans out a corrupt raster"
+      "suite": "suite-iifx"
     },
     {
       "machine": "iifx",
