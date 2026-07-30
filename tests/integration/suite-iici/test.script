@@ -230,15 +230,20 @@ def row_iici_lowram() {
     report_perf("suite-iici/iici-lowram", scheduler.instr_count)
 }
 
-# ---- iici-24ac-dual (MILESTONE) ---------------------------------------------
+# ---- iici-24ac-dual ---------------------------------------------------------
 # §7's second-display goal, and the first test anywhere to boot an OS with
 # TWO display devices present: a 24AC in socket $C beside the IIci's live
-# built-in RBV video. The card-level facts below all hold — both devices
-# come up, the RBV keeps the boot screen, and the 24AC's engine really
-# runs (§3.2's missing proof of engagement, counters rather than pixels).
+# built-in RBV video. Both devices come up, the RBV keeps the boot screen,
+# and the 24AC's engine really runs (§3.2's missing proof of engagement,
+# counters rather than pixels).
 #
-# What does NOT hold is the boot itself: with the 24AC seated the machine
-# hangs at "Welcome to Macintosh" forever (ledger §8).
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §8: with
+# the 24AC seated the machine hung at "Welcome to Macintosh" forever. The
+# hang was a level-7 autovector storm — mac030_nubus_slot_irq_via_ipl passed
+# `1 << (slot - 0x9)` as the machine IRQ SOURCE mask, and on this family
+# those bits are VIA1/RBV/SCC/NMI, so a card in slot $C asserted NMI. Fixed
+# 2026-07-30 by routing slot interrupts to the RBV, which aggregates them
+# itself. Promoted to enforced.
 #
 # The card IS the trigger, and an earlier version of this comment said the
 # opposite. It claimed a no-card control hung identically "so it is not the
@@ -247,12 +252,6 @@ def row_iici_lowram() {
 # card it was meant to exclude. Named explicitly, the same 7.1 image boots to
 # the Finder: that is now the iici-71-hd row above. Two arms agreeing on an
 # EXACT checksum was the clue that they were the same arm.
-#
-# So the row is a milestone and claims no cell: it asserts what is true,
-# then asserts it got past the splash, which fails today. When the 7.1
-# boot works, that assert passes on its own — then this row gains its
-# desktop golden and a report_row call, and the cell's `blocked` marker
-# comes off matrix-targets.json in the same reviewed diff.
 def row_iici_24ac_dual() {
     machine.rtc.time = 3000000000
     machine.boot model="iici" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
@@ -274,7 +273,7 @@ def row_iici_24ac_dual() {
     assert machine.nubus.slot[12].card.engine.fill_bytes > 0 "iici-24ac-dual: 24AC engine filled no bytes"
     # It reaches the Finder with both displays present. As a milestone this row
     # could only assert a checksum INEQUALITY against the settled "Welcome to
-    # Macintosh" frame (-288949432) it used to park on; now it asserts the
+    # Macintosh" frame (-288949432) it used to park on; it now asserts the
     # desktop it actually reaches, and claims the cell.
     # golden-collision-ok: iici-7.1-640x480x1-24ac-dual-finder.png iici-7.1-640x480x1-finder.png
     # - the PRIMARY display is the built-in RBV at 1 bpp in both rows, showing the
@@ -427,7 +426,7 @@ if row_on("iici-71-hd") {
     }
 }
 if row_on("iici-lowram") { row_end("iici-lowram", try(row_iici_lowram(), "FAILED")) }
-if row_on("iici-24ac-dual") { row_end_milestone("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
+if row_on("iici-24ac-dual") { row_end("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
 if row_on("iici-checkpoint") { row_end("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
 if row_on("iici-mactest-diag") {
     if have_media($mactest_img) {

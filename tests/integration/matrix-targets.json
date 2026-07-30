@@ -148,7 +148,7 @@
       "width": 640,
       "height": 480,
       "depth": 1,
-      "addr32": true,
+      "addr32": false,
       "suite": "suite-iici"
     },
     {
