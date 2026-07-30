@@ -1,55 +1,64 @@
 # IIci CD-ROM boot
 #
-# Boot a Macintosh IIci from a bootable Apple system CD and nothing else, all
-# the way to the Finder desktop.
+# Boot a Macintosh IIci from a read-only SCSI CD-ROM and nothing else — no hard
+# disk, no floppy — all the way to the Finder desktop.
 #
 # Why this is worth a test at all: there is no CD-specific code in the Mac ROM.
 # A bootable CD is mastered like a hard disk — Driver Descriptor Map in block 0,
-# an Apple_Driver43 partition holding the CD driver, an Apple_HFS partition with
-# a blessed System Folder — and the Start Manager boots it with the same code
-# that boots a hard disk.  So this row exercises the ordinary SCSI boot path
-# against a device that is READ-ONLY and reports 2048-byte blocks, which nothing
-# else in the suites does.  se30-cdrom only proves a CD on the bus does not
-# BREAK a floppy boot; nothing until now booted FROM one.
+# a driver partition, an Apple_HFS partition with a blessed System Folder — and
+# the Start Manager boots it with the same code that boots a hard disk.  So this
+# exercises the ordinary SCSI boot path against a READ-ONLY device, which
+# nothing else in the suites does.  se30-cdrom only proves a CD on the bus does
+# not BREAK a floppy boot; nothing until now booted FROM one.
 #
-# The disc's partition map, read off the image directly:
+# THE DISC IS AN ORDINARY HD IMAGE.  Because "bootable CD" is just that layout,
+# the main rows need no CD-specific media at all: they attach
+# system_7_1_20mb_24ac_cd_32bit.img — 20 MB, already in gs-test-data, already
+# booted as a hard disk by suite-iici — through scsi.attach_cdrom instead of
+# attach_hd.  That makes it a read-only, CD-typed device answering INQUIRY as a
+# SONY CD-ROM, and it boots.  Its volume is still called "Macintosh HD", which
+# is honest: the disc's name is not what makes it a CD.
 #
-#   block 0                    'ER'  Driver Descriptor Map, blockSize 2048
-#   [1] "Macintosh"  Apple_Driver43       start     64  blocks    128
-#   [2] "MacOS"      Apple_HFS            start    192  blocks 500000
-#   [3] "Extra"      Apple_Free           start 500192  blocks 565043
-#   [4] "Apple"      Apple_partition_map  start      1  blocks     63
+# Attaching it read-only is not cosmetic either — a CD boot is a LOCKED-volume
+# boot, and no HD row covers that path.
 #
-# Two other discs were tried and are NOT usable, for reasons worth recording so
-# nobody re-tests them:
-#   * the Quadra 660AV/840AV "Install Me First" CD has an Apple Partition Map
-#     but NO driver partition — it is a Toast-mastered data disc, not bootable;
+# NOTE ON BLOCK SIZE: every image in gs-test-data is mastered at 512
+# bytes/block, so these rows exercise the 512-byte path.  The 2048-byte path a
+# pressed Apple CD uses is covered by the scsi_cdrom unit suite instead, which
+# needs no media — see tests/unit/suites/scsi_cdrom.
+#
+# Discs that are NOT usable, recorded so nobody re-tests them:
+#   * tests/data/cdroms/Misc_Mac_Drivers.toast and the A/UX retail ISO both have
+#     an Apple Partition Map but NO driver partition — Toast-mastered data
+#     discs, not bootable;
 #   * the 1994 Apple Restoration CD ships as a bare HFS volume (block 0 is an
-#     'LK' HFS boot block, not a Driver Descriptor Map), so it has no partition
-#     map for the Start Manager to read.  The emulator mounts it fine; a Mac
-#     cannot boot a SCSI device that has no driver partition.
+#     'LK' HFS boot block, not a Driver Descriptor Map), so there is no
+#     partition map for the Start Manager to read.  The emulator mounts it
+#     fine; a Mac cannot boot a SCSI device with no driver partition.
 
 include "../lib/mac.script"
 
-let cd = "../../data/cdroms/SSW-7.5.3-CD.toast"
-
-if !have_media($cd) {
-    echo "skip: iici-cdrom-boot (7.5.3 CD image not fetched)"
-    quit
-}
+# An ordinary HD image, attached as a CD.  DDM blockSize 512, Apple_Driver43 +
+# Apple_HFS, System 7.1 — the same image suite-iici boots as a hard disk.
+let disc = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
 
 # ---- cd-device --------------------------------------------------------------
 # The plug contract: what the guest sees on the bus before anything boots.
-# 2048-byte blocks and read_only are the two properties that make this a
-# different transport from every HD row in the suites.
+# read_only is what makes this a different transport from every HD row in the
+# suites, and block_size is taken from the disc's own Driver Descriptor Map
+# rather than assumed.
 def row_cd_device() {
     machine.boot model="iici" ram=8192
-    machine.scsi.attach_cdrom "${$cd}" 3
+    machine.scsi.attach_cdrom "${$disc}" 3
     assert machine.scsi.device[3].type == "cdrom" "cd-device: SCSI 3 is not a CD-ROM"
-    assert machine.scsi.device[3].block_size == 2048 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048"
     assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
     assert machine.scsi.device[3].medium_present "cd-device: no medium present"
     assert machine.scsi.device[3].vendor == "SONY    " "cd-device: unexpected vendor"
+    # Mastered at 512 bytes/block, and the device must say so: the block size
+    # comes from the disc's own DDM, not a hard-coded CD default.  Serving a
+    # 512-mastered image at 2048 multiplies every LBA by four and the machine
+    # does not boot at all.
+    assert machine.scsi.device[3].block_size == 512 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
     # No other storage: the boot below can only come from the disc.  An empty
     # SCSI slot does not resolve as an object at all, so probe it with try()
     # rather than reading a type (shell v2 §7 — errors are not truth values).
@@ -58,72 +67,47 @@ def row_cd_device() {
 }
 
 # ---- cd-boot ----------------------------------------------------------------
-# The actual claim: with ONLY the CD attached, the machine runs a System.
+# The claim: with ONLY the read-only disc attached, the machine runs a System.
 #
-# Every assertion here is a fact that can only be true if the disc's driver
-# partition was loaded and its HFS volume mounted and blessed — there is no
-# other source of a System on this machine.
+# Every assertion here can only be true if the driver partition was loaded and
+# the HFS volume mounted and blessed — there is no other source of a System on
+# this machine.
 def row_cd_boot() {
     machine.rtc.time = 3000000000
     machine.boot model="iici" ram=8192
-    machine.scsi.attach_cdrom "${$cd}" 3
+    machine.scsi.attach_cdrom "${$disc}" 3
     scheduler.run 400000000
     scheduler.run 1000000000
 
     assert machine.id == "iici" "cd-boot: machine.id != iici"
-    # BootDrive is the drive number the Start Manager booted from; zero means
-    # it never found a bootable device.
+    # BootDrive is the drive the Start Manager booted from; zero means it
+    # never found a bootable device.
     assert debug.mac.globals.read("BootDrive") != 0 "cd-boot: BootDrive is 0 — nothing booted"
-    # A running System: the Memory Manager zones are live and the tick
-    # interrupt has been counting for a couple of emulated minutes.
     assert debug.mac.globals.read("SysZone") != 0 "cd-boot: SysZone unset — no System heap"
     assert debug.mac.globals.read("BufPtr") != 0 "cd-boot: BufPtr unset — Memory Manager not up"
     assert debug.mac.globals.read("Ticks") > 10000 "cd-boot: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
-    # SysMap is the System file's resource map reference — nonzero only once a
-    # System FILE has been opened, which is the part that proves the read came
-    # off the disc rather than out of the ROM.
+    # SysMap is the System file's resource-map reference — nonzero only once a
+    # System FILE has been opened, which is what proves the read came off the
+    # disc rather than out of the ROM.
     assert debug.mac.globals.read("SysMap") != 0 "cd-boot: SysMap unset — no System file opened"
+    # Still read-only after a full boot: nothing quietly promoted it.
+    assert machine.scsi.device[3].read_only "cd-boot: device stopped being read-only"
 
     report_perf("iici-cdrom-boot/cd-boot", scheduler.instr_count)
 }
 
 # ---- cd-desktop -------------------------------------------------------------
-# The destination: System 7.5.3's Finder desktop, with the disc's own volume
-# window open, running entirely off the CD.
-#
-# This row was a milestone that could not be reached, and the reason is worth
-# keeping because the symptom pointed somewhere else entirely.  The boot used
-# to stop on "Not enough memory is available while using “System”", which is
-# not a memory problem at all: it is System 7.5.3 reporting a REFUSED SCSI
-# READ.  READ(6) carries an 8-bit transfer length (0 meaning 256 blocks), and
-# the emulator rejected any request whose byte count exceeded BUF_LIMIT
-# (256 * 512).  On a hard disk that ceiling is unreachable — 256 blocks of 512
-# bytes is exactly BUF_LIMIT — but a CD-ROM's blocks are 2048 bytes, so any
-# READ(6) of more than 64 blocks was answered with CHECK CONDITION.  The boot
-# died on `lba=2531 tl=124`, a 248 KB read.  READ(10) had already been taught
-# to grow its staging buffer for the System 7.1 installer; READ(6) had not,
-# and its comment asserted the product "stays inside BUF_LIMIT in practice",
-# which is only true for 512-byte blocks.
-#
-# The tell was the transfer volume: an entire System startup moved only
-# 0.73 MB off the disc across 104 reads before stopping.  That is far too
-# little to have loaded a System, and it is what redirected the investigation
-# from the Memory Manager to the bus.  Worth remembering that a guest's own
-# error dialog names the symptom it noticed, not the cause.
-#
-# Runs at 8 MB in 24-bit addressing with no PRAM seeding — exactly the
-# configuration that used to fail.
+# The destination: a Finder desktop running entirely off a locked disc.
 def row_cd_desktop() {
     machine.rtc.time = 3000000000
     machine.boot model="iici" ram=8192
-    machine.scsi.attach_cdrom "${$cd}" 3
+    machine.scsi.attach_cdrom "${$disc}" 3
     scheduler.run 400000000
     wait_stable(1600000000)
     # The application zone exists only once the Process Manager has launched
-    # the Finder; while the boot was failing this stayed equal to SysZone.
+    # the Finder; a boot that dies during System startup leaves it at SysZone.
     assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "cd-desktop: ApplZone == SysZone — the Finder never launched"
-    check("goldens/iici-7.5.3-640x480x1-cd-finder.png")
-    report_row("7.5.3", "rbv", "cd-boot finder-desktop")
+    check("goldens/iici-7.1-640x480x1-cd-finder.png")
     report_perf("iici-cdrom-boot/cd-desktop", scheduler.instr_count)
 }
 

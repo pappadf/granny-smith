@@ -1,11 +1,11 @@
 {
   "rows": {
     "iici-cdrom-boot/cd-desktop": {
-      "instr": 459948612,
+      "instr": 459723082,
       "tolerance": 0.2
     },
     "iici-cdrom-boot/cd-boot": {
-      "instr": 1381650588,
+      "instr": 1379448961,
       "tolerance": 0.2
     },
     "iicx-gsvrom/gsvrom-24ac": {

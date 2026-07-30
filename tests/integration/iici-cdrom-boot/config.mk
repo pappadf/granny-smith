@@ -20,12 +20,16 @@
 # read as "Not enough memory is available while using “System”".  See the
 # cd-desktop row comment.
 #
-# MEDIA: tests/data/cdroms/SSW-7.5.3-CD.toast — Apple's "Macintosh System 7.5
-# Version 7.5.3" CD (part 96073-016A-U, 1996), a 255 MB raw image with a real
-# Apple Partition Map.  A .toast file from Toast is a raw sector dump, so it
-# needs no conversion.  The test SKIPS cleanly when the image has not been
-# fetched (the landable-before-data pattern), so it can land before the media
-# is added to gs-test-data.
+# MEDIA: none new.  The main rows attach
+# tests/data/systems/system_7_1_20mb_24ac_cd_32bit.img — 20 MB, already in
+# gs-test-data, already booted as a hard disk by suite-iici — through
+# scsi.attach_cdrom.  A bootable CD is just an APM + driver partition + blessed
+# HFS volume, which that image already is, so no CD-specific media is required
+# to prove CD boot works.
+#
+# One optional row (cd-2048) wants a genuine pressed Apple system CD, because
+# every image in gs-test-data is mastered at 512 bytes/block and the SCSI fix
+# above is unreachable at that block size.  It skips cleanly when absent.
 
 TEST_NAME := IIci CD-ROM boot
 TEST_DESC := Boot a Macintosh IIci from a bootable Apple system CD with no other storage attached, all the way to the Finder desktop
