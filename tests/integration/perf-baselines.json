@@ -52,6 +52,10 @@
       "instr": 109269466,
       "tolerance": 0.2
     },
+    "suite-iici/iici-mactest-diag": {
+      "instr": 678930958,
+      "tolerance": 0.2
+    },
     "suite-iicx/iicx-24ac": {
       "instr": 411558835,
       "tolerance": 0.2

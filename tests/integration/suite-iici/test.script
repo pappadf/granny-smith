@@ -25,10 +25,10 @@
 #                   save → reboot into a different machine → load →
 #                   re-match. Was ledger §2 (restored screen came back
 #                   blank); fixed and enforced.
-#   iici-mactest-diag **MILESTONE**: §7 tried to re-host iicx-mactest here;
-#                   MacTest instead diagnoses this machine as a bad logic
-#                   board the moment Start is clicked (ledger §9). The
-#                   re-host was reverted; this row is what remains of it.
+#   iici-mactest-diag MacTest 2.11 runs its board-level sequence to the floppy
+#                   phase, which means VIA, RBV, sound, clock/PRAM, FPU, SCC
+#                   and SCSI all pass. Was ledger §9 (it condemned the machine
+#                   as a bad logic board); fixed and enforced.
 
 include "../lib/mac.script"
 
@@ -268,39 +268,29 @@ def row_iici_checkpoint() {
     report_perf("suite-iici/iici-checkpoint", scheduler.instr_count)
 }
 
-# ---- iici-mactest-diag (MILESTONE) -----------------------------------------
-# §7 tried to re-host iicx-mactest here (the media is "MacTest-IIcx-IIci", so
-# the IIci is the other machine the diagnostic was written for). Measured
-# 2026-07-28: it does not work. MacTest reaches its main screen and its Options
-# dialog fine — both goldens below are real IIci frames — but the moment Start
-# is clicked it puts up
+# ---- iici-mactest-diag ------------------------------------------------------
+# MacTest 2.11 is Apple's own board-level diagnostic and the closest thing this
+# suite has to an oracle that is not a screenshot of ourselves: it exercises the
+# VIA, RBV, ASC, RTC/PRAM, FPU, SCC, SCSI and floppy controller and returns a
+# verdict of its own.  Reaching the "insert a diskette" prompt means every stage
+# before the floppy passed.
 #
-#     SUSPECTED PROBLEM:  Logic board
-#     DO THIS:            Shut down the Macintosh and replace the logic board.
+# This was a milestone guarding proposal-emulator-bug-fixes.md §9: clicking Start
+# put up "SUSPECTED PROBLEM: Logic board" and stayed there.  It took two fixes,
+# and both were real emulator defects rather than anything to do with MacTest:
 #
-# and stays there for the rest of the run. The same disk and the same
-# choreography complete the whole flow on the IIcx, so this is the machine
-# model, not the media (ledger §9).
+#   1. The VIA phi2 clock was derived from a hardcoded divisor that suited the
+#      16 MHz IIcx, so this machine's timers ran 1.6x fast and MacTest's T1
+#      free-run interrupt count landed outside its 128..207 window (commit
+#      fd1db42).
+#   2. Undecoded reads inside the I/O island returned 0x00 instead of floating
+#      high.  MacTest's sound test reads the VIA2 IFR at island $3A00 — which a
+#      IIci does not have, so the read floats — and checks bit 4.
 #
-# The re-host was reverted — iicx-mactest is restored verbatim, with the nine
-# distinct goldens of the flow it really does exercise — and what is left here
-# is the guard. It matters that this row exists rather than just deleting the
-# attempt: MacTest is Apple's own board-level diagnostic, and the closest thing
-# the suite has to an oracle that is not a screenshot of ourselves. Its verdict
-# says one of VIA / ASC / RTC-PRAM / SCSI answers a probe differently than a
-# real IIci does.
-#
-# The two check()s are NOT the milestone; they are there so a drift in the
-# Options choreography fails with its own message instead of silently reporting
-# this defect for the wrong reason. The milestone is the checksum inequality:
-# 1141271653 is the settled logic-board dialog. Asserting != against it (rather
-# than matching a golden) is deliberate — recapturing a golden here is exactly
-# how the re-host went green while asserting that a frame named
-# "floppy-test-success" showed a hardware failure.
-#
-# ADB Communication is unchecked before Start precisely so this cannot be
-# blamed on the emulated keyboard/mouse: those sub-tests are switched off and
-# the logic-board verdict comes anyway.
+# ADB Communication is unchecked before Start so the result cannot be blamed on
+# the emulated keyboard/mouse.  The two check()s before Start are drift guards on
+# the Options choreography, so a mis-click fails with its own message rather than
+# silently reporting a board fault.
 def row_iici_mactest_diag() {
     machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
     machine.floppy.drive[0].insert "${$mactest_img}" true
@@ -341,12 +331,14 @@ def row_iici_mactest_diag() {
     click(560, 385)
     scheduler.run 60000000
 
-    # Start (button centre ~(188, 153)), then let the VIA/ASC/clock/SCSI
-    # sequence run to where the floppy phase would begin.
+    # Start (button centre ~(188, 153)), then let the whole board-level sequence
+    # run.  Reaching the floppy phase is the assertion: MacTest only asks for a
+    # diskette after VIA, RBV, sound, clock/PRAM, FPU, SCC and SCSI have all
+    # passed, so this one golden stands in for every one of them.  That is a far
+    # stronger claim than the checksum inequality this row carried as a
+    # milestone, which only said "not the logic-board dialog".
     click(188, 153)
-    scheduler.run 100000000
-    wait_stable(300000000)
-    assert machine.screen.checksum() != 1141271653 "iici-mactest-diag: MacTest reports SUSPECTED PROBLEM: Logic board (ledger §9)"
+    wait_match("goldens/iici-mactest-640x480x1-insert-800k.png", 1500000000, 20000000)
     report_perf("suite-iici/iici-mactest-diag", scheduler.instr_count)
 }
 
@@ -380,7 +372,7 @@ if row_on("iici-24ac-dual") { row_end_milestone("iici-24ac-dual", try(row_iici_2
 if row_on("iici-checkpoint") { row_end("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
 if row_on("iici-mactest-diag") {
     if have_media($mactest_img) {
-        row_end_milestone("iici-mactest-diag", try(row_iici_mactest_diag(), "FAILED"))
+        row_end("iici-mactest-diag", try(row_iici_mactest_diag(), "FAILED"))
     } else {
         echo "skip: iici-mactest-diag (MacTest image not fetched)"
     }

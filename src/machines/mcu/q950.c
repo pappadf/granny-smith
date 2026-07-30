@@ -54,7 +54,7 @@ static const mcu_board_desc_t q950_board_desc = {
     .io_ranges = mcu_q900_io_ranges, // identical tower island decode
     .ram_bank_count = 4, // sixteen SIMM sockets = four four-SIMM banks
     .io_mirror_mask = 0x0003FFFFu,
-    .io_unmapped_read = 0,
+    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
     .slots = q950_nubus_slots,
     .bus_err_lo = 0xF1000000u,
     .bus_err_hi = 0xFEFFFFFFu,
