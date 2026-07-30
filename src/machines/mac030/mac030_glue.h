@@ -110,7 +110,18 @@ typedef struct mac030_board_desc {
     uint32_t rom_base, rom_end; // MMU ROM window (GLUE $40000000-$50000000; MDU/OSS differ)
     const mac030_io_range_t *io_ranges; // the shared engine's ordered window table
     uint32_t io_mirror_mask; // I/O island mirror mask (GLUE $1FFFF; MDU/OSS $3FFFF)
-    uint8_t io_unmapped_read; // value returned on an unmapped read (0 GLUE/MDU; 0xFF OSS)
+    // Value an undecoded address inside the I/O island reads back.  On real
+    // hardware nothing drives the bus there, so pull-ups float it high — the
+    // same reasoning memory.c applies to unmapped physical space ("floating
+    // bus, pull-up resistors").  0xFF for every machine; a machine that
+    // genuinely drives a decoded 0 should model that window explicitly rather
+    // than lowering this.
+    //
+    // This is load-bearing, not cosmetic.  MacTest 2.11's sound test reads the
+    // VIA2 IFR at island $3A00 unconditionally — the IIci has no VIA2 there, so
+    // the read floats — and checks bit 4.  With a 0 fill the bit read clear and
+    // the machine was condemned as a bad logic board (ledger §9).
+    uint8_t io_unmapped_read;
     const struct nubus_slot_decl *slots; // NuBus slot table
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
     asc_mix_t asc_mix; // speaker fold of the ASC stereo pair (SE/30 sums; IIx/IIcx take A)

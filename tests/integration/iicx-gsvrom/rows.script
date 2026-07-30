@@ -202,7 +202,7 @@ def row_gsvrom_24ac() {
     assert machine.screen.width == 832                "24ac 832x624 width != 832"
     assert machine.screen.height == 624               "24ac 832x624 height != 624"
     assert machine.rtc.pram.peek(0x48) == 0x82        "24ac savedMode != 0x82 (8bpp)"
-    assert machine.rtc.pram.peek(0x49) == 0x6d        "24ac sister != 0x6d"
+    assert machine.rtc.pram.peek(0x49) == 0x6c        "24ac sister != 0x6c"
     check("goldens/welcome-24ac-832x624-8bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 832x624x8 24ac")
     report_perf("iicx-gsvrom/gsvrom-24ac", scheduler.instr_count)

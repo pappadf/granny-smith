@@ -250,7 +250,7 @@ static const mac030_board_desc_t iisi_board = {
     .rom_end = IISI_ROM_END,
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
-    .io_unmapped_read = 0,
+    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
     .slots = iisi_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
@@ -339,6 +339,14 @@ static void iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // physical 0), so the guest's writes and the renderer share Bank A directly —
     // no separate VRAM aperture and no $E00000 offset.
     builtin_rbv_video_set_framebuffer(st->video_card, ram_base + IISI_FB_PHYS_OFFSET, IISI_FB_SCREEN_OFFSET);
+
+    // Card-side display state (palette, mode, VDAC), written by
+    // mdu_checkpoint_save right after the RBV chip.  Restored here rather than
+    // at nubus_init because the framebuffer pointer above must be attached
+    // first — this machine's framebuffer is main RAM, so the card must already
+    // know it does not own the buffer (ledger §2).
+    if (checkpoint)
+        nubus_checkpoint_restore(cfg->nubus, checkpoint);
 
     // NuBus expansion / slot space bus-errors on unmapped reads.  There is no
     // addressable card in slot $E (built-in video is main DRAM mapped by the OS),

@@ -80,6 +80,12 @@ static inline uint32_t nubus_super_slot_base(int slot) {
 // user's pick via the video.* pending statics and resolves through the
 // same path.  Returns NULL on failure.
 nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoint_t *cp);
+
+// Serialise per-card state (framebuffer, palette, mode) for every seated card
+// that implements the ops hooks.  Save and restore walk the slots in the same
+// order; call restore after nubus_init has built the cards.
+void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp);
+void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp);
 void nubus_delete(nubus_bus_t *bus);
 
 // === Staged per-slot configuration (proposal §5.6, stage 2) ================

@@ -2,8 +2,8 @@
 #
 # Row map (former directory → row; **bold** = new matrix coverage):
 #
-#   iici-chime      iici-boot-chime: sample-exact chime WAV, on the
-#                   1 MB minimum RAM option (ROM-only row)
+#   iici-chime      iici-boot-chime: sample-exact chime WAV (ROM-only row,
+#                   8 MB — see the row for why not 1 MB)
 #   iici-701-fd     iici-boot: RBV built-in video, 7.0.1 floppy boot,
 #                   Finder + About This Macintosh (8 MB)
 #   iici-75-hd      **IIci x 7.5**: prepared 7.5 image over the MDU's
@@ -13,23 +13,23 @@
 #                   selects 32-bit itself, so this row is also the
 #                   suite's asserted 32-bit addressing cell (32 MB,
 #                   which only a 32-bit System can see in full)
-#   iici-lowram     **MILESTONE**: the IIci does not POST below 8 MB, so
-#                   its whole low-RAM plane is untestable (ledger §3)
+#   iici-lowram     the IIci's low-RAM plane: every published sub-8 MB size
+#                   sizes correctly (was ledger §3; fixed and enforced)
 #   iici-71-hd      **IIci x 7.1** on the built-in RBV — the cell §8 wrongly
 #                   believed unreachable (8 MB)
-#   iici-24ac-dual  **first OS-level DUAL DISPLAY**, MILESTONE: a 24AC in
-#                   socket $C beside the live built-in RBV, with the 24AC
-#                   engine counters §3.2 wanted asserted. Red because seating
-#                   the card hangs the boot at Welcome — see the row.
-#   iici-checkpoint **MDU-family checkpoint round-trip**, MILESTONE (§7
-#                   epilogue): the first checkpoint coverage this family
-#                   has had, and it fails — the restored screen is blank
-#                   because the RBV's video state is not in the save set.
-#                   Run-not-fatal until that is fixed (see the row).
-#   iici-mactest-diag **MILESTONE**: §7 tried to re-host iicx-mactest here;
-#                   MacTest instead diagnoses this machine as a bad logic
-#                   board the moment Start is clicked (ledger §9). The
-#                   re-host was reverted; this row is what remains of it.
+#   iici-24ac-dual  **first OS-level DUAL DISPLAY**: a 24AC in socket $C beside
+#                   the live built-in RBV, booting 7.1 to the Finder, with the
+#                   24AC engine counters §3.2 wanted asserted. Was ledger §8
+#                   (seating the card hung the boot at Welcome); fixed and
+#                   enforced.
+#   iici-checkpoint **MDU-family checkpoint round-trip** (§7 epilogue):
+#                   save → reboot into a different machine → load →
+#                   re-match. Was ledger §2 (restored screen came back
+#                   blank); fixed and enforced.
+#   iici-mactest-diag MacTest 2.11 runs its board-level sequence to the floppy
+#                   phase, which means VIA, RBV, sound, clock/PRAM, FPU, SCC
+#                   and SCSI all pass. Was ledger §9 (it condemned the machine
+#                   as a bad logic board); fixed and enforced.
 
 include "../lib/mac.script"
 
@@ -42,12 +42,23 @@ let mactest_img = "../../data/apps/MacTest-IIcx-IIci.image"
 # ---- iici-chime -------------------------------------------------------------
 # Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
 # 13,405-frame length are both the assertion.
+#
+# Boots at the machine's default 8 MB, like every sibling chime row
+# (iicx/iifx 8192, iisi 66560). It used to boot 1024 KB — a size that, until
+# the ledger §3 fix landed 2026-07-29, never completed POST. The chime was
+# therefore being captured from a machine stuck in RAM sizing; once POST
+# completed, the Sound Manager reconfigured the ASC inside the capture window
+# and sound.match failed with "sample rate changed mid-capture".
+#
+# The golden itself did NOT change: the 8 MB capture matches the committed
+# iici-chime.wav byte-for-byte at the same 13,405 frames. Only the RAM size
+# this row asks for was wrong.
 def row_iici_chime() {
-    machine.boot model="iici" ram=1024 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
-    assert machine.ram == 1024 "iici-chime: machine.ram != 1024"
+    assert machine.ram == 8192 "iici-chime: machine.ram != 8192"
     assert machine.sound.capture.frames == 13405 "iici-chime: unexpected capture length"
     machine.sound.match goldens/iici-chime.wav
     report_perf("suite-iici/iici-chime", scheduler.instr_count)
@@ -71,6 +82,58 @@ def row_iici_701_fd() {
     check("goldens/iici-7.0.1-640x480x1-about.png")
     report_row("7.0.1", "rbv", "fd-boot about")
     report_perf("suite-iici/iici-701-fd", scheduler.instr_count)
+}
+
+# ---- iici-701-depths --------------------------------------------------------
+# The built-in RBV video at 2, 4 and 8 bpp — the three cells ledger §5 recorded
+# as unreachable.
+#
+# §5 claimed the built-in video "exposes no guest-visible depth mode list, so the
+# OS cannot select 2/4/8 bpp", and §12.2 concluded that seeding slot PRAM was the
+# wrong lever because a seeded record made no difference. Both were wrong, and
+# for the same reason: the seeds were malformed. The mechanism is exactly the one
+# iicx-video-modes already uses for the IIcx's JMFB, only on this machine's own
+# slot and board ID.
+#
+# The IIci's built-in video is slot $B (VideoInfoMDU sets SlotPramAddr from slot
+# $0B), so its sPRAMRec is PRAM $56..$5D, and its BoardID is ciVidBoardID =
+# $001F. Within the record: byte 2 ($58) is the saved depth spID and byte 3
+# ($59) the selected video sRsrc spID. $86 is what the ROM computes here on its
+# own — bit 7 plus monitor ID 6 ("MacII monitors", 13" RGB) with the sub-1.5 MB
+# flag clear — verified by dumping the record after an unseeded boot.
+#
+# pram.validate first, or PRAMInit rewrites the record during boot and the poke
+# looks inert (ledger §12.2). Safe here because these rows boot from floppy; a
+# SCSI boot would need the startup device seeded too.
+def boot_iici_701_at_depth(spid) {
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.floppy.drive[0].insert "${$sys_701}"
+    machine.rtc.pram.validate
+    if $spid == 0x81 { machine.rtc.pram.poke 0x56 0x001f818600000000:8 }
+    if $spid == 0x82 { machine.rtc.pram.poke 0x56 0x001f828600000000:8 }
+    if $spid == 0x83 { machine.rtc.pram.poke 0x56 0x001f838600000000:8 }
+    scheduler.run 300000000
+    wait_stable(900000000)
+    assert machine.rtc.pram.peek(0x58) == $spid "iici-701-depths: savedMode rewritten by the ROM (wanted ${$spid:02x})"
+    assert machine.screen.width == 640 "iici-701-depths: width != 640"
+    assert machine.screen.height == 480 "iici-701-depths: height != 480"
+}
+def row_iici_701_depths() {
+    boot_iici_701_at_depth(0x81)
+    assert machine.screen.depth == 2 "iici-701-depths: savedMode $81 gave depth ${machine.screen.depth}, want 2"
+    check("goldens/iici-7.0.1-640x480x2-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 2bpp")
+
+    boot_iici_701_at_depth(0x82)
+    assert machine.screen.depth == 4 "iici-701-depths: savedMode $82 gave depth ${machine.screen.depth}, want 4"
+    check("goldens/iici-7.0.1-640x480x4-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 4bpp")
+
+    boot_iici_701_at_depth(0x83)
+    assert machine.screen.depth == 8 "iici-701-depths: savedMode $83 gave depth ${machine.screen.depth}, want 8"
+    check("goldens/iici-7.0.1-640x480x8-finder.png")
+    report_row("7.0.1", "rbv", "fd-boot 8bpp")
+    report_perf("suite-iici/iici-701-depths", scheduler.instr_count)
 }
 
 # ---- iici-75-hd -------------------------------------------------------------
@@ -142,34 +205,45 @@ def row_iici_71_hd() {
     report_perf("suite-iici/iici-71-hd", scheduler.instr_count)
 }
 
-# ---- iici-lowram (MILESTONE) ------------------------------------------------
-# GUARD for proposal-emulator-bug-fixes.md §3: a IIci does not complete POST
-# at ANY RAM size below 8 MB. 1, 2, 4 and 5 MB are all published in
-# iici_ram_options_kb and a real IIci shipped in 1 MB and 4 MB
-# configurations, so the model claims support it does not have — and the
-# whole low-RAM plane of this machine (including the 1+4 bank split the RAM
-# axis wanted) is untestable until it is fixed.
+# ---- iici-lowram ------------------------------------------------------------
+# The IIci's low-RAM plane: every published sub-8 MB option must complete POST
+# and publish its installed size in MemTop.
 #
-# ROM-only, so it costs almost nothing: after POST, MemTop must equal the
-# installed RAM. Measured 2026-07-28 it reads the $DB6DB6DB
-# uninitialised-read pattern instead, i.e. no lowmem global is ever written.
+# 5120 KB is the load-bearing one — 5 MB is 4 MB in bank A plus 1 MB in bank B,
+# so it is the only row in this suite that exercises the two-bank split at all.
+# 1024/2048 are single-bank; 4096 fills bank A exactly.
+#
+# ROM-only, so the whole sweep costs almost nothing.
+#
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §3 (POST
+# never completed below 8 MB — MemTop read back the $DB6DB6DB
+# uninitialised-read pattern, meaning no lowmem global was ever written).
+# Fixed 2026-07-29 by modelling the two physical SIMM banks and their 64 MB
+# mirror windows in iici_memory_layout_init; promoted to enforced here.
 def row_iici_lowram() {
-    machine.boot model="iici" ram=4096 video_card="builtin_rbv_video"
-    scheduler.run 120000000
-    assert machine.ram == 4096 "iici-lowram: machine.ram != 4096"
-    assert debug.mac.globals.read("MemTop") == 0x400000 "iici-lowram: POST never completed — MemTop=${debug.mac.globals.read("MemTop"):08x} (uninitialised pattern means no lowmem was written)"
+    for kb in [1024, 2048, 4096, 5120] {
+        machine.boot model="iici" ram=$kb video_card="builtin_rbv_video"
+        scheduler.run 120000000
+        assert machine.ram == $kb "iici-lowram: machine.ram != ${$kb}"
+        assert debug.mac.globals.read("MemTop") == $kb * 1024 "iici-lowram: POST did not complete at ${$kb} KB — MemTop=${debug.mac.globals.read("MemTop"):08x} want ${$kb * 1024:08x}"
+    }
     report_perf("suite-iici/iici-lowram", scheduler.instr_count)
 }
 
-# ---- iici-24ac-dual (MILESTONE) ---------------------------------------------
+# ---- iici-24ac-dual ---------------------------------------------------------
 # §7's second-display goal, and the first test anywhere to boot an OS with
 # TWO display devices present: a 24AC in socket $C beside the IIci's live
-# built-in RBV video. The card-level facts below all hold — both devices
-# come up, the RBV keeps the boot screen, and the 24AC's engine really
-# runs (§3.2's missing proof of engagement, counters rather than pixels).
+# built-in RBV video. Both devices come up, the RBV keeps the boot screen,
+# and the 24AC's engine really runs (§3.2's missing proof of engagement,
+# counters rather than pixels).
 #
-# What does NOT hold is the boot itself: with the 24AC seated the machine
-# hangs at "Welcome to Macintosh" forever (ledger §8).
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §8: with
+# the 24AC seated the machine hung at "Welcome to Macintosh" forever. The
+# hang was a level-7 autovector storm — mac030_nubus_slot_irq_via_ipl passed
+# `1 << (slot - 0x9)` as the machine IRQ SOURCE mask, and on this family
+# those bits are VIA1/RBV/SCC/NMI, so a card in slot $C asserted NMI. Fixed
+# 2026-07-30 by routing slot interrupts to the RBV, which aggregates them
+# itself. Promoted to enforced.
 #
 # The card IS the trigger, and an earlier version of this comment said the
 # opposite. It claimed a no-card control hung identically "so it is not the
@@ -178,12 +252,6 @@ def row_iici_lowram() {
 # card it was meant to exclude. Named explicitly, the same 7.1 image boots to
 # the Finder: that is now the iici-71-hd row above. Two arms agreeing on an
 # EXACT checksum was the clue that they were the same arm.
-#
-# So the row is a milestone and claims no cell: it asserts what is true,
-# then asserts it got past the splash, which fails today. When the 7.1
-# boot works, that assert passes on its own — then this row gains its
-# desktop golden and a report_row call, and the cell's `blocked` marker
-# comes off matrix-targets.json in the same reviewed diff.
 def row_iici_24ac_dual() {
     machine.rtc.time = 3000000000
     machine.boot model="iici" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
@@ -203,33 +271,41 @@ def row_iici_24ac_dual() {
     # §3.2's proof of engagement: counters, not pixels.
     assert machine.nubus.slot[12].card.engine.fill_ops > 0 "iici-24ac-dual: 24AC engine did no fills under the OS"
     assert machine.nubus.slot[12].card.engine.fill_bytes > 0 "iici-24ac-dual: 24AC engine filled no bytes"
-    # The milestone itself. -288949432 is the settled "Welcome to Macintosh"
-    # frame this machine parks on; asserting against it (rather than matching
-    # a golden) keeps the row from shipping a splash as if it were coverage.
-    # The same checksum appears when a 24AC is seated and the machine boots a
-    # MacTest FLOPPY instead — different medium, identical hang, which is what
-    # identifies the card rather than the System as the trigger.
-    assert machine.screen.checksum() != -288949432 "iici-24ac-dual: still on the Welcome splash — a seated 24AC hangs the boot (ledger §8)"
+    # It reaches the Finder with both displays present. As a milestone this row
+    # could only assert a checksum INEQUALITY against the settled "Welcome to
+    # Macintosh" frame (-288949432) it used to park on; it now asserts the
+    # desktop it actually reaches, and claims the cell.
+    # golden-collision-ok: iici-7.1-640x480x1-24ac-dual-finder.png iici-7.1-640x480x1-finder.png
+    # - the PRIMARY display is the built-in RBV at 1 bpp in both rows, showing the
+    # same settled 7.1 desktop, so the frames are legitimately identical; the 24AC
+    # is a SECOND display and its content is not in this framebuffer. What proves
+    # the states differ is above and not pixel-based: slot $C is the 24AC, its own
+    # framebuffer is 8 bpp, and its blitter engine did non-zero fills under the OS.
+    check("goldens/iici-7.1-640x480x1-24ac-dual-finder.png")
+    report_row("7.1", "rbv+24ac", "dual-display hd-boot 24ac-engine")
     report_perf("suite-iici/iici-24ac-dual", scheduler.instr_count)
 }
 
-# ---- iici-checkpoint (MILESTONE) -------------------------------------------
-# §7 epilogue on the MDU device set (RBV, IIci VIA path, 5380) — and the
-# first checkpoint coverage this family has ever had, which immediately
-# found a gap: the pre-save desktop matches its golden, but after
-# save → fresh boot → load the screen comes back BLANK (measured
-# 2026-07-28). The guest state restores; the RBV's built-in video does
-# not. Root cause is visible in the source: card_init() in
-# src/machines/mdu/builtin_rbv_video.c takes a checkpoint_t and discards
-# it ("(void)cp;"), so a restore re-allocates a zeroed framebuffer at the
-# 1 bpp power-up default instead of reading back the saved VRAM, depth
-# and CLUT — rbv_checkpoint() covers the RBV chip registers but nothing
-# covers the card. Landed as a milestone (run-not-fatal): nightly reports
-# it red with the artifact until that save set is completed, then it
-# promotes to an enforced row via a reviewed matrix-targets edit.
-# Boots at 8 MB, which is what the 7.0.1 golden was captured on — a 2 MB
-# IIci never reaches a desktop with 7.0.1 at all (measured: the screen
-# stays blank), so the smaller RAM config has nothing to re-match.
+# ---- iici-checkpoint --------------------------------------------------------
+# §7 epilogue on the MDU device set (RBV, IIci VIA path, 5380): boot to a
+# desktop, save, reboot into a DIFFERENT machine (1 MB), load, and re-match the
+# pre-save golden. Restoring over a deliberately mismatched machine is the
+# point — it proves the restore rebuilds RAM size, devices and display from the
+# checkpoint rather than inheriting them.
+#
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §2: the
+# guest state restored but the screen came back BLANK and never repainted,
+# because nothing serialised the display CARD. rbv_checkpoint() covered the RBV
+# chip registers; VRAM, the active depth/stride and the CLUT were not in the
+# save set at all, so a restore re-ran card_init and came up on a zeroed
+# framebuffer at the 1 bpp power-up default.
+#
+# Fixed 2026-07-29: the NuBus layer gained a per-card checkpoint pass and the
+# built-in video card implements it. Promoted to enforced here.
+#
+# Boots at 8 MB, which is what the 7.0.1 golden was captured on — a 2 MB IIci
+# never reaches a desktop with 7.0.1 at all, so the smaller RAM config has
+# nothing to re-match.
 def row_iici_checkpoint() {
     machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
     machine.floppy.drive[0].insert "${$sys_701}"
@@ -249,39 +325,29 @@ def row_iici_checkpoint() {
     report_perf("suite-iici/iici-checkpoint", scheduler.instr_count)
 }
 
-# ---- iici-mactest-diag (MILESTONE) -----------------------------------------
-# §7 tried to re-host iicx-mactest here (the media is "MacTest-IIcx-IIci", so
-# the IIci is the other machine the diagnostic was written for). Measured
-# 2026-07-28: it does not work. MacTest reaches its main screen and its Options
-# dialog fine — both goldens below are real IIci frames — but the moment Start
-# is clicked it puts up
+# ---- iici-mactest-diag ------------------------------------------------------
+# MacTest 2.11 is Apple's own board-level diagnostic and the closest thing this
+# suite has to an oracle that is not a screenshot of ourselves: it exercises the
+# VIA, RBV, ASC, RTC/PRAM, FPU, SCC, SCSI and floppy controller and returns a
+# verdict of its own.  Reaching the "insert a diskette" prompt means every stage
+# before the floppy passed.
 #
-#     SUSPECTED PROBLEM:  Logic board
-#     DO THIS:            Shut down the Macintosh and replace the logic board.
+# This was a milestone guarding proposal-emulator-bug-fixes.md §9: clicking Start
+# put up "SUSPECTED PROBLEM: Logic board" and stayed there.  It took two fixes,
+# and both were real emulator defects rather than anything to do with MacTest:
 #
-# and stays there for the rest of the run. The same disk and the same
-# choreography complete the whole flow on the IIcx, so this is the machine
-# model, not the media (ledger §9).
+#   1. The VIA phi2 clock was derived from a hardcoded divisor that suited the
+#      16 MHz IIcx, so this machine's timers ran 1.6x fast and MacTest's T1
+#      free-run interrupt count landed outside its 128..207 window (commit
+#      fd1db42).
+#   2. Undecoded reads inside the I/O island returned 0x00 instead of floating
+#      high.  MacTest's sound test reads the VIA2 IFR at island $3A00 — which a
+#      IIci does not have, so the read floats — and checks bit 4.
 #
-# The re-host was reverted — iicx-mactest is restored verbatim, with the nine
-# distinct goldens of the flow it really does exercise — and what is left here
-# is the guard. It matters that this row exists rather than just deleting the
-# attempt: MacTest is Apple's own board-level diagnostic, and the closest thing
-# the suite has to an oracle that is not a screenshot of ourselves. Its verdict
-# says one of VIA / ASC / RTC-PRAM / SCSI answers a probe differently than a
-# real IIci does.
-#
-# The two check()s are NOT the milestone; they are there so a drift in the
-# Options choreography fails with its own message instead of silently reporting
-# this defect for the wrong reason. The milestone is the checksum inequality:
-# 1141271653 is the settled logic-board dialog. Asserting != against it (rather
-# than matching a golden) is deliberate — recapturing a golden here is exactly
-# how the re-host went green while asserting that a frame named
-# "floppy-test-success" showed a hardware failure.
-#
-# ADB Communication is unchecked before Start precisely so this cannot be
-# blamed on the emulated keyboard/mouse: those sub-tests are switched off and
-# the logic-board verdict comes anyway.
+# ADB Communication is unchecked before Start so the result cannot be blamed on
+# the emulated keyboard/mouse.  The two check()s before Start are drift guards on
+# the Options choreography, so a mis-click fails with its own message rather than
+# silently reporting a board fault.
 def row_iici_mactest_diag() {
     machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
     machine.floppy.drive[0].insert "${$mactest_img}" true
@@ -322,12 +388,14 @@ def row_iici_mactest_diag() {
     click(560, 385)
     scheduler.run 60000000
 
-    # Start (button centre ~(188, 153)), then let the VIA/ASC/clock/SCSI
-    # sequence run to where the floppy phase would begin.
+    # Start (button centre ~(188, 153)), then let the whole board-level sequence
+    # run.  Reaching the floppy phase is the assertion: MacTest only asks for a
+    # diskette after VIA, RBV, sound, clock/PRAM, FPU, SCC and SCSI have all
+    # passed, so this one golden stands in for every one of them.  That is a far
+    # stronger claim than the checksum inequality this row carried as a
+    # milestone, which only said "not the logic-board dialog".
     click(188, 153)
-    scheduler.run 100000000
-    wait_stable(300000000)
-    assert machine.screen.checksum() != 1141271653 "iici-mactest-diag: MacTest reports SUSPECTED PROBLEM: Logic board (ledger §9)"
+    wait_match("goldens/iici-mactest-640x480x1-insert-800k.png", 1500000000, 20000000)
     report_perf("suite-iici/iici-mactest-diag", scheduler.instr_count)
 }
 
@@ -335,6 +403,7 @@ def row_iici_mactest_diag() {
 
 if row_on("iici-chime") { row_end("iici-chime", try(row_iici_chime(), "FAILED")) }
 if row_on("iici-701-fd") { row_end("iici-701-fd", try(row_iici_701_fd(), "FAILED")) }
+if row_on("iici-701-depths") { row_end("iici-701-depths", try(row_iici_701_depths(), "FAILED")) }
 if row_on("iici-75-hd") {
     if have_media($hd_75) {
         row_end("iici-75-hd", try(row_iici_75_hd(), "FAILED"))
@@ -356,12 +425,12 @@ if row_on("iici-71-hd") {
         echo "skip: iici-71-hd (7.1 prepared image not fetched)"
     }
 }
-if row_on("iici-lowram") { row_end_milestone("iici-lowram", try(row_iici_lowram(), "FAILED")) }
-if row_on("iici-24ac-dual") { row_end_milestone("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
-if row_on("iici-checkpoint") { row_end_milestone("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
+if row_on("iici-lowram") { row_end("iici-lowram", try(row_iici_lowram(), "FAILED")) }
+if row_on("iici-24ac-dual") { row_end("iici-24ac-dual", try(row_iici_24ac_dual(), "FAILED")) }
+if row_on("iici-checkpoint") { row_end("iici-checkpoint", try(row_iici_checkpoint(), "FAILED")) }
 if row_on("iici-mactest-diag") {
     if have_media($mactest_img) {
-        row_end_milestone("iici-mactest-diag", try(row_iici_mactest_diag(), "FAILED"))
+        row_end("iici-mactest-diag", try(row_iici_mactest_diag(), "FAILED"))
     } else {
         echo "skip: iici-mactest-diag (MacTest image not fetched)"
     }

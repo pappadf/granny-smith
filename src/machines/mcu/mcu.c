@@ -58,24 +58,163 @@ static inline mcu_state_t *mcu_st(config_t *cfg) {
 
 // --- MCU/Orwell register file ($5000E000, ref §8.2 [U]) ---
 
+// Decompose the installed RAM into physical banks.
+//
+// A bank is four equal SIMMs, so a populated bank is 4, 16 or 64 MB from the
+// 1/4/16 MB parts Apple documented — plus 32 MB from the 8 MB SIMMs that were
+// never in the launch note but work in practice, which is exactly what makes
+// the Q700's 36 MB and the towers' larger totals reachable.  The Q700 also has
+// 4 MB soldered, forming a fixed bank A.
+//
+// Fill the largest legal bank first, so a total decomposes the way the board
+// would really be populated, and never use more banks than the board decodes.
+// Anything that will not decompose is presented as a single bank and left for
+// the ROM to judge.
+static void mcu_bank_layout(config_t *cfg) {
+    mcu_state_t *st = mcu_st(cfg);
+    static const uint32_t simm_bank[] = {0x04000000u, 0x02000000u, 0x01000000u, 0x00400000u}; // 64/32/16/4 MB
+    const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
+    uint32_t onboard = desc->ram_onboard_size;
+    int max_banks = desc->ram_bank_count ? desc->ram_bank_count : ORWELL_MAX_BANKS;
+    uint32_t left = cfg->ram_size;
+    uint32_t off = 0;
+
+    st->bank_count = 0;
+    for (int i = 0; i < ORWELL_MAX_BANKS; i++) {
+        st->bank_size[i] = 0;
+        st->bank_image_off[i] = 0;
+    }
+
+    if (onboard && left >= onboard) {
+        st->bank_size[0] = onboard;
+        st->bank_image_off[0] = 0;
+        st->bank_count = 1;
+        left -= onboard;
+        off = onboard;
+    }
+
+    while (left > 0 && st->bank_count < max_banks) {
+        uint32_t take = 0;
+        for (size_t i = 0; i < sizeof(simm_bank) / sizeof(simm_bank[0]); i++)
+            if (simm_bank[i] <= left) {
+                take = simm_bank[i];
+                break;
+            }
+        if (take == 0)
+            break; // remainder is not a legal bank — see the fallback below
+        st->bank_size[st->bank_count] = take;
+        st->bank_image_off[st->bank_count] = off;
+        st->bank_count++;
+        off += take;
+        left -= take;
+    }
+
+    if (left > 0) {
+        // Not a shipping SIMM arrangement.  Present it all as one bank rather
+        // than silently dropping the remainder.
+        st->bank_size[0] = cfg->ram_size;
+        st->bank_image_off[0] = 0;
+        st->bank_count = 1;
+        for (int i = 1; i < ORWELL_MAX_BANKS; i++)
+            st->bank_size[i] = 0;
+    }
+
+    // Power-up split: bank A at 0, the rest on their 64 MB boundaries. The ROM
+    // reprograms these to the same values before sizing (SizeMem.a
+    // @OrwellSplit) and then merges them contiguous once the sizes are known.
+    for (int i = 0; i < ORWELL_MAX_BANKS; i++)
+        st->bank_start[i] = (uint32_t)i * ORWELL_BANK_WINDOW;
+    st->orwell_cfg =
+        ((uint64_t)0x10) | ((uint64_t)0x20 << ORWELL_BANK_BITS) | ((uint64_t)0x30 << (2 * ORWELL_BANK_BITS));
+
+    for (int i = 0; i < st->bank_count; i++)
+        LOG(2, "Orwell bank %c: %u MB at image offset $%08X", 'A' + i, st->bank_size[i] >> 20, st->bank_image_off[i]);
+}
+
+// Apply the latched bank start addresses to the page table.
+//
+// A bank decodes from its start address up to whichever populated bank starts
+// next above it, or 64 MB if none does, and mirrors its installed size
+// throughout that span.  The mirroring is what lets the boot ROM size a bank:
+// it walks down from the top of the window and finds where the image repeats.
+static void mcu_map_ram(config_t *cfg) {
+    mcu_state_t *st = mcu_st(cfg);
+    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+
+    for (int b = 0; b < st->bank_count; b++) {
+        uint32_t size = st->bank_size[b];
+        if (size == 0)
+            continue;
+        uint32_t start = st->bank_start[b];
+
+        // The span this bank owns ends at the next populated bank above it.
+        uint32_t end = start + ORWELL_BANK_WINDOW;
+        for (int o = 0; o < st->bank_count; o++)
+            if (o != b && st->bank_size[o] && st->bank_start[o] > start && st->bank_start[o] < end)
+                end = st->bank_start[o];
+
+        uint8_t *bank = ram_base + st->bank_image_off[b];
+        uint32_t pages = (end - start) >> PAGE_SHIFT;
+        uint32_t size_pages = size >> PAGE_SHIFT;
+        uint32_t first = start >> PAGE_SHIFT;
+        for (uint32_t p = 0; p < pages && (int)(first + p) < g_page_count; p++)
+            mac030_fill_page(first + p, bank + ((p % size_pages) << PAGE_SHIFT), true);
+    }
+}
+
+// Recompute bank starts from the staged config register and re-map.  Called
+// when the ROM pokes OrLoadBanks ($A0).
+static void mcu_orwell_latch_banks(config_t *cfg) {
+    mcu_state_t *st = mcu_st(cfg);
+    st->bank_start[0] = 0; // bank A is not programmable
+    for (int b = 1; b < ORWELL_MAX_BANKS; b++) {
+        uint32_t field = (uint32_t)((st->orwell_cfg >> ((b - 1) * ORWELL_BANK_BITS)) & ((1u << ORWELL_BANK_BITS) - 1));
+        st->bank_start[b] = field * ORWELL_BANK_UNIT;
+    }
+    LOG(2, "Orwell latch banks: A=$%08X B=$%08X C=$%08X D=$%08X (pc=%08X)", st->bank_start[0], st->bank_start[1],
+        st->bank_start[2], st->bank_start[3], cpu_get_pc(cfg->cpu));
+    mcu_map_ram(cfg);
+}
+
 static uint8_t mcu_reg_read(config_t *cfg, uint32_t addr) {
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0xFFFu;
-    uint32_t idx = (off >> 2) % MCU_REG_COUNT;
-    uint32_t v = st->mcu_regs[idx];
-    if (!(st->mcu_touched & (1ull << (idx & 63))))
-        LOG(2, "MCU read  $%03X -> $%08X (pc=%08X)", off, v, cpu_get_pc(cfg->cpu));
-    return (uint8_t)(v >> (8 * (3 - (off & 3))));
+    if (off >= ORWELL_STATUS_BASE)
+        return 0; // parity status / error latches — no parity hardware modelled
+    if (off >= ORWELL_LATCH_BASE)
+        return 0; // latch addresses are write-strobes
+    uint32_t bit = off >> 2;
+    if (bit >= ORWELL_CFG_BITS)
+        return 0;
+    // Only bit 0 carries data; it reads back in the low bit of every byte lane
+    // the caller happens to touch, and callers assemble it one bit at a time.
+    return (off & 3) == 3 ? (uint8_t)((st->orwell_cfg >> bit) & 1) : 0;
 }
 
 static void mcu_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0xFFFu;
-    uint32_t idx = (off >> 2) % MCU_REG_COUNT;
-    uint32_t shift = 8 * (3 - (off & 3));
-    st->mcu_regs[idx] = (st->mcu_regs[idx] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-    LOG(2, "MCU write $%03X = $%08X (pc=%08X)", off, st->mcu_regs[idx], cpu_get_pc(cfg->cpu));
-    st->mcu_touched |= 1ull << (idx & 63);
+
+    if (off >= ORWELL_LATCH_BASE && off < ORWELL_STATUS_BASE) {
+        // A write to a latch address commits the staged config bits it owns.
+        if ((off & ~3u) == ORWELL_LATCH_BANKS)
+            mcu_orwell_latch_banks(cfg);
+        else
+            LOG(2, "Orwell latch $%03X (pc=%08X)", off, cpu_get_pc(cfg->cpu));
+        return;
+    }
+    if (off >= ORWELL_STATUS_BASE)
+        return;
+
+    // Config bit N at longword offset N*4; only bit 0 of the datum is wired.
+    // The engine decomposes wider accesses into bytes, so the bit arrives in
+    // the lowest byte lane of the longword.
+    if ((off & 3) != 3)
+        return;
+    uint32_t bit = off >> 2;
+    if (bit >= ORWELL_CFG_BITS)
+        return;
+    st->orwell_cfg = (st->orwell_cfg & ~(1ull << bit)) | ((uint64_t)(value & 1) << bit);
 }
 
 // --- Ethernet MAC-address PROM ($50008000, ref §16 [R]) ---
@@ -336,11 +475,9 @@ static void mcu_overlay_drop(config_t *cfg) {
     st->rom_overlay = false;
     LOG(1, "MCU overlay drop: RAM at $00000000, ROM direct in aperture (pc=%08X)", cpu_get_pc(cfg->cpu));
 
-    // RAM appears at zero (flat model, ref §8.5's sanctioned compromise).
-    uint32_t ram_pages = cfg->ram_size >> PAGE_SHIFT;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    for (uint32_t p = 0; p < ram_pages && (int)p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + (p << PAGE_SHIFT), true);
+    // RAM appears at zero, decoded per the Orwell bank starts currently
+    // latched (the power-up 64 MB split until the ROM merges the banks).
+    mcu_map_ram(cfg);
 
     // The aperture switches from the trigger device to direct ROM mirrors
     // (mac030_fill_page overwrites the device page entries).
@@ -434,6 +571,9 @@ static void mcu_memory_layout_init(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
     const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
 
+    // Work out the physical bank arrangement before anything maps RAM.
+    mcu_bank_layout(cfg);
+
     // I/O island at $50000000 (256 KiB block; the published map mirrors it
     // through $53FFFFFF, current RE through $50FFFFFF — we register the
     // Apple-documented extent and let the mirror mask fold accesses; ref §6).
@@ -490,9 +630,13 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
     cfg->scc = scc_init(NULL, cfg->scheduler, board->scc_irq ? board->scc_irq : mac030_glue_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", board->via1_output, board->via1_shift_out,
+    // Derived from the CPU clock (see the same note in mdu.c): the towers run
+    // 25 MHz (Q700/Q900) and 33 MHz (Q950), so the previous hardcoded 20/21 —
+    // inherited from the 16 MHz IIcx — ran both machines' VIA timers fast.
+    uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
+    cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
-    cfg->via2 = via_init(NULL, cfg->scheduler, 21, "via2", board->via2_output, NULL, mac030_glue_via2_irq, cfg, cp);
+    cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, NULL, mac030_glue_via2_irq, cfg, cp);
 
     // Machine-specific tail: straps, ADB, EASC, SWIM, DAFB, bus resolver,
     // memory layout, checkpoint restore.
@@ -656,11 +800,13 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     if (st->swim_iop)
         iop_checkpoint(st->swim_iop, cp);
     dafb_checkpoint(st->dafb, cp);
-    // Substrate-private state: overlay flag + MCU/YANCC register files +
+    // Substrate-private state: overlay flag + Orwell config/bank starts +
+    // the YANCC register file +
     // the /SLOTIRQ aggregate mask + the in-flight SONIC write latch + the
     // tower wire-OR IRQ masks (zero on the Q700).
     system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
-    system_write_checkpoint_data(cp, st->mcu_regs, sizeof(st->mcu_regs));
+    system_write_checkpoint_data(cp, &st->orwell_cfg, sizeof(st->orwell_cfg));
+    system_write_checkpoint_data(cp, st->bank_start, sizeof(st->bank_start));
     system_write_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
     system_write_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
     system_write_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
@@ -676,7 +822,8 @@ void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
     bool overlay = false;
     system_read_checkpoint_data(cp, &overlay, sizeof(overlay));
-    system_read_checkpoint_data(cp, st->mcu_regs, sizeof(st->mcu_regs));
+    system_read_checkpoint_data(cp, &st->orwell_cfg, sizeof(st->orwell_cfg));
+    system_read_checkpoint_data(cp, st->bank_start, sizeof(st->bank_start));
     system_read_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
     system_read_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
     system_read_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));

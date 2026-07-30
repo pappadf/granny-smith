@@ -18,10 +18,8 @@
 #                    software on Disk Tools), so the ROM/QuickDraw
 #                    fallback renders (32 MB)
 #   iifx-24ac-seat   iifx-24ac: 24AC card-seat contract, ROM-only
-#   iifx-75-24ac-832 24AC at 832x624x8 on the 7.5 image: the mode applies
-#                    (geometry+depth enforced) but the raster content is
-#                    corrupt, so the row stops short of a golden and does
-#                    not claim the cell — see the row comment
+#   iifx-75-24ac-832 **IIfx x 7.5 x 24AC**: the card's 832x624x8 mode, the
+#                    project's only non-640-wide colour raster
 #   iifx-aux3-login  iifx-aux3-boot: A/UX 3.0.1 boots to the login
 #                    prompt; the 1 bpp gate that stays on the deepest
 #                    stack per §7
@@ -160,19 +158,16 @@ def row_iifx_24ac_seat() {
 }
 
 # ---- iifx-75-24ac-832 -------------------------------------------------------
-# The 24AC's 832x624 mode IS staged and applied — the raster comes up at
-# the right geometry and depth, which is what this row enforces — but the
-# SCANOUT of it is corrupt: instead of a Finder desktop the frame is
-# noise rows over uniform dither, the signature of a stride/pitch
-# mismatch (artifact captured 2026-07-28; see
-# proposal-emulator-bug-fixes.md §7).
+# 7.5 on the 24AC at 832x624x8 — the only raster in the whole matrix that
+# is neither 640 nor 1152 wide, and the widest colour desktop the suites
+# assert.
 #
-# So the row deliberately stops short of a pixel golden and does NOT
-# report the cell: claiming IIfx x 7.5 x 24AC x 832x624x8 as covered
-# while the picture is garbage would be worse than leaving it dark. The
-# cell stays declared in matrix-targets.json marked `blocked`, so the
-# coverage check keeps reporting the debt until the raster is right, at
-# which point this row gains its golden and its report_row.
+# This row was a documented defect (proposal-emulator-bug-fixes.md §7):
+# the geometry and depth applied, but the picture was noise rows over
+# dither, so the row stopped short of a golden and claimed no cell.  The
+# cause was not the stride the comment guessed at — the card was
+# reporting the WRONG MONITOR on the sense lines, so the vrom programmed
+# the guest for a 1152x870 GDevice over an 832x624 scanout.  See §7.
 def row_iifx_75_24ac_832() {
     machine.rtc.time = 3000000000
     machine.boot model="iifx" ram=32768 video_card="display_card_24ac" video_mode="rgb_832x624_8bpp"
@@ -184,8 +179,13 @@ def row_iifx_75_24ac_832() {
     assert machine.screen.width == 832 "iifx-75-24ac-832: screen.width != 832 (mode not applied?)"
     assert machine.screen.height == 624 "iifx-75-24ac-832: screen.height != 624"
     assert machine.screen.depth == 8 "iifx-75-24ac-832: screen.depth != 8"
-    echo "note: 832x624 raster content is corrupt — see proposal-emulator-bug-fixes.md §7"
-    machine.screen.save "${$RESULTS_DIR}/iifx-7.5-832x624x8-corrupt.png"
+    # The excluded strip is the menu-bar clock, same convention as the
+    # suite-quadra 7.5/7.6 rows — scaled to this row's 832-wide raster.
+    # It is NOT decoration: machine.boot re-seeds the RTC from host time,
+    # so the `machine.rtc.time =` above it is a no-op and the minute digit
+    # tracks the wall clock (measured 2026-07-30).
+    check_ex("goldens/iifx-7.5-832x624x8-24ac-finder.png", 0, 632, 20, 832)
+    report_row("7.5", "24ac", "hd-boot 832x624x8")
     report_perf("suite-iifx/iifx-75-24ac-832", scheduler.instr_count)
 }
 
@@ -208,20 +208,33 @@ def row_iifx_aux3_login() {
     report_perf("suite-iifx/iifx-aux3-login", scheduler.instr_count)
 }
 
-# ---- iifx-8m (MILESTONE) ----------------------------------------------------
-# FOUND AND LEFT UNTRACKED BEFORE THIS REWORK: iifx-boot pinned 16 MB
-# with the comment "ram=8192 currently regresses the boot (stalls in POST
-# at $40843F96)" and "tracked separately", i.e. by nothing. §7 makes it a
-# tracked fact: the row boots the 6.0.8 HD image at 8 MB — a supported
-# RAM option — and reports red with the stall PC until the POST bug is
-# fixed, then promotes to an enforced row.
+# ---- iifx-8m ----------------------------------------------------------------
+# The IIfx at 8 MB — its smallest two-SIMM-bank RAM option — completes POST,
+# publishes MemTop, and boots 6.0.8 to the Finder desktop.
+#
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §11, the
+# oldest defect in that ledger: before the test rework, iifx-boot simply
+# pinned 16 MB with the source comment "ram=8192 currently regresses the boot
+# (stalls in POST at $40843F96)" and "tracked separately" — i.e. by nothing.
+# POST never wrote MemTop, which read back the $B6DB6DB6 uninitialised-read
+# pattern. Fixed 2026-07-29 by mirroring installed RAM throughout the IIfx's
+# 64 MB RAM decode window so the ROM's descending sizing probe reads a wrap
+# instead of unmapped $FF; promoted to enforced here.
+#
+# The desktop assertion is what makes this more than a MemTop check: it proves
+# the sized memory is actually usable, not merely counted.
 def row_iifx_8m() {
     machine.boot model="iifx" ram=8192 video_card="mdc_8_24"
     machine.scsi.attach_hd "${$hd_608}" 0
     scheduler.run 400000000
+    assert machine.ram == 8192 "iifx-8m: machine.ram != 8192"
     assert debug.mac.globals.read("MemTop") == 0x800000 "iifx-8m: RAM sizing incomplete (MemTop=${debug.mac.globals.read("MemTop"):08x}, PC=${machine.cpu.pc:08x})"
     wait_stable(900000000)
     assert machine.screen.width == 640 "iifx-8m: screen.width != 640"
+    assert machine.screen.height == 480 "iifx-8m: screen.height != 480"
+    assert machine.screen.depth == 1 "iifx-8m: screen.depth != 1"
+    check("goldens/iifx-6.0.8-640x480x1-8m-finder.png")
+    report_row("6.0.8", "mdc_8_24", "hd-boot 8m-post")
     report_perf("suite-iifx/iifx-8m", scheduler.instr_count)
 }
 
@@ -246,7 +259,7 @@ if row_on("iifx-aux3-login") {
         echo "skip: iifx-aux3-login (A/UX installed image not fetched)"
     }
 }
-if row_on("iifx-8m") { row_end_milestone("iifx-8m", try(row_iifx_8m(), "FAILED")) }
+if row_on("iifx-8m") { row_end("iifx-8m", try(row_iifx_8m(), "FAILED")) }
 
 suite_done()
 quit

@@ -97,6 +97,8 @@ struct dafb {
 
     // Monitor sense
     uint8_t sense_code; // attached monitor's passive 3-bit code
+    uint8_t sense_ext; // raw 6-bit extended-sense code (valid when sense_ext_on)
+    bool sense_ext_on; // monitor answers the tie-matrix probe
 
     // TurboSCSI DRQ observation (per channel; ref §12.4 bit 9)
     dafb_drq_query_fn drq_fn[2];
@@ -131,7 +133,22 @@ static void update_irq(dafb_t *dafb) {
 // Swatch timing derivation (ref §11.9/§11.14)
 // ============================================================
 
-static uint32_t pixel_divide(dafb_t *dafb) {
+// PCBR0's VidClk field (bits 6:5) selects the RAMDAC's PixClk/1, /2 or /4 tap
+// (DAFBDriver.a's DAFBWombatTimingAdjTbl is indexed by exactly this field,
+// shifted right by 5).  That tap is what the SWATCH CRTC is clocked from, so
+// every horizontal SWATCH count is in units of THIS MANY DOTS: the DAFB
+// serialises `mult` pixels out of VRAM per CRTC tick, which is how a 100 MHz
+// two-page dot rate is driven by a 25 MHz character clock.
+//
+// So the multiplier converts SWATCH units → pixels, and its reciprocal
+// converts the dot clock → the CRTC's tick rate.  Measured on a Q700 ROM boot,
+// one row per monitor sense code:
+//
+//   sense 6  13" RGB      HFP-HAL = 640  mult 1  ->  640 px
+//   sense 1  portrait     HFP-HAL = 320  mult 2  ->  640 px
+//   sense 0  21" 2-page   HFP-HAL = 288  mult 4  -> 1152 px
+//   sense 2  12" RGB      HFP-HAL = 512  mult 1  ->  512 px
+static uint32_t pixel_multiplier(const dafb_t *dafb) {
     return 1u << ((dafb->pcbr0 & 0x60u) >> 5);
 }
 
@@ -193,8 +210,22 @@ static void reconfigure(dafb_t *dafb) {
         return;
     }
 
-    uint32_t divide = pixel_divide(dafb);
-    uint32_t width = (hfp - hal) / divide;
+    // Horizontal counts are SWATCH ticks; multiply up to dots.  Vertical
+    // counts are half-lines, and VAL..VFP is the active span.  Measured
+    // (VFP-VAL)/2 against every monitor the Q700 ROM programs:
+    //
+    //   13" RGB 640x480    960/2 = 480 ✓      21" 2-page 1152x870  1740/2 = 870 ✓
+    //   portrait 640x870  1740/2 = 870 ✓      16"       832x624    1248/2 = 624 ✓
+    //   12" RGB  512x384   770/2 = 385  <-- the ROM programs one active line
+    //                                        MORE than the mode it declares
+    //                                        (its own GDevice bounds say 384)
+    //
+    // The 12" is left literal rather than special-cased: the one rule that
+    // would trim it (VFPEQ odd => one half-line short) also trims the 16",
+    // whose VFPEQ is odd too and whose 624 is already exact.
+    uint32_t mult = pixel_multiplier(dafb);
+    uint32_t hactive = hfp - hal;
+    uint32_t width = hactive * mult;
     uint32_t height = (vfp - val) / 2u;
     // Convolution halves the effective horizontal fetch on the composite
     // modes; v1 renders the literal pixels (documented divergence [R][U]).
@@ -226,12 +257,16 @@ static void reconfigure(dafb_t *dafb) {
     dafb->display.shape_dirty = true;
     dafb->display.fb_dirty = true;
 
-    // Frame period: line time = h_total scanout pixels at (clock / divide);
+    // Frame period: line time = h_total SWATCH ticks at the CRTC tick rate;
     // v_total lines from the half-line total.
-    double dot = dafb->clock_hz > 0 ? dafb->clock_hz / divide : 0;
+    // Stay in SWATCH units on both sides: HPIX is a tick count, and the CRTC
+    // ticks at clock/mult.  (Scaling both by `mult` would give the same
+    // period; keeping them unscaled keeps the comparison against `hactive`
+    // meaningful.)
+    double dot = dafb->clock_hz > 0 ? dafb->clock_hz / mult : 0;
     uint32_t h_total = hpix + 2u;
     uint32_t v_total = vfpeq / 2u;
-    if (dot > 1e5 && h_total > width && v_total >= height) {
+    if (dot > 1e5 && h_total > hactive && v_total >= height) {
         dafb->frame_ns = (uint64_t)(1e9 * (double)h_total * (double)v_total / dot);
         // Host safety: clamp to a sane refresh range (20-200 Hz).
         if (dafb->frame_ns < 5000000ull || dafb->frame_ns > 50000000ull)
@@ -278,9 +313,46 @@ void dafb_attach_scheduler(dafb_t *dafb, struct scheduler *sched) {
 // drives it low or the passive monitor ties it low; high otherwise.  The
 // standard codes have the monitor grounding the zero bits of its code.
 
+// Extended sense: the tie-matrix probe.  PrimaryInit.a's DoDAFBExtendedSense
+// drives one line low and reads the other two, three times, assembling a
+// 6-bit code "bc/ac/ab" (its own comment).  Line numbering is
+// dafbSenseLineA/B/C = bit 2/1/0, and the drive masks are the code's
+// complement: $3 drives A, $5 drives B, $6 drives C.  After each read the ROM
+// masks with the same drive mask, so only the two RELEASED lines survive:
+//
+//   drive A ($3) -> keeps bits 1,0 -> ext[5:4]
+//   drive B ($5) -> keeps bits 2,0 -> ext[3:2]  (bit 2 is then shifted to 1)
+//   drive C ($6) -> keeps bits 2,1 -> ext[1:0]  (then shifted right one)
+//
+// Answer each probe straight from the stored code rather than modelling the
+// diode matrix: the real codes are not symmetric (extendedHR $2B has
+// ext[4] != ext[1], which no pairwise tie can produce), so a physical model
+// would be a fiction that happens to be lossy.
+static bool sense_read_extended(const dafb_t *dafb, uint8_t drive, uint8_t *lines) {
+    uint8_t e = dafb->sense_ext;
+    switch (drive) {
+    case 0x3u:
+        *lines = (uint8_t)((((e >> 5) & 1u) << 1) | ((e >> 4) & 1u));
+        return true;
+    case 0x5u:
+        *lines = (uint8_t)((((e >> 3) & 1u) << 2) | ((e >> 2) & 1u));
+        return true;
+    case 0x6u:
+        *lines = (uint8_t)((((e >> 1) & 1u) << 2) | (((e >> 0) & 1u) << 1));
+        return true;
+    default:
+        return false;
+    }
+}
+
 static uint8_t sense_read(dafb_t *dafb) {
     uint8_t drive = (uint8_t)(dafb->regs[DAFB_SENSE >> 2] & 0x7u);
     uint8_t lines = 0;
+    if (dafb->sense_ext_on && sense_read_extended(dafb, drive, &lines)) {
+        uint8_t ev = (uint8_t)(~lines & 0x7u);
+        LOG(3, "sense read (ext $%02X): drive=$%X lines=$%X -> $%X", dafb->sense_ext, drive, lines, ev);
+        return ev;
+    }
     for (int i = 0; i < 3; i++) {
         bool host_low = !(drive & (1u << i));
         bool monitor_low = !(dafb->sense_code & (1u << i));
@@ -584,6 +656,8 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, dafb->clk_reg, sizeof(dafb->clk_reg));
         system_read_checkpoint_data(cp, &dafb->clock_hz, sizeof(dafb->clock_hz));
         system_read_checkpoint_data(cp, &dafb->sense_code, sizeof(dafb->sense_code));
+        system_read_checkpoint_data(cp, &dafb->sense_ext, sizeof(dafb->sense_ext));
+        system_read_checkpoint_data(cp, &dafb->sense_ext_on, sizeof(dafb->sense_ext_on));
         system_read_checkpoint_data(cp, dafb->vram, vram_size);
         reconfigure(dafb);
     }
@@ -619,6 +693,8 @@ void dafb_checkpoint(dafb_t *dafb, checkpoint_t *cp) {
     // nothing: checkpoint.c rejects any file whose build ID differs from the
     // running binary, so no older checkpoint can reach this code.
     system_write_checkpoint_data(cp, &dafb->sense_code, sizeof(dafb->sense_code));
+    system_write_checkpoint_data(cp, &dafb->sense_ext, sizeof(dafb->sense_ext));
+    system_write_checkpoint_data(cp, &dafb->sense_ext_on, sizeof(dafb->sense_ext_on));
     system_write_checkpoint_data(cp, dafb->vram, dafb->vram_size);
 }
 
@@ -631,7 +707,38 @@ void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context) {
         cb(context, dafb->irq_line);
 }
 
+// Apple maps the extended-sense monitors into the bottom of the normal sense
+// table starting at 8 (DepVideoEqu.a: "we map the extended sense codes from
+// 8").  `video_sense=` takes that same indexed numbering, so 0..7 is the
+// passive code and 8..14 name a monitor that answers the tie matrix.  Raw
+// codes are DepVideoEqu.a's extendedSense* equates.
+//
+// Which of these the Q700 ROM actually has timings for was measured by
+// sweeping every documented raw code through a ROM boot: only GoldFish
+// ($2D) produces a new raster (832x624).  The rest fall back to 640x480,
+// including the ones with their own DAFB entry (VGA, PAL, 19") — this ROM
+// predates their tables.
+static const uint8_t k_indexed_ext[] = {
+    [DAFB_SENSE_INDEXED_VGA] = 0x17u, // extendedSenseVGA
+    [DAFB_SENSE_INDEXED_PAL] = 0x30u, // extendedSensePAL
+    [DAFB_SENSE_INDEXED_GF] = 0x2Du, // extendedSenseGF — Apple 16", 832x624
+    [DAFB_SENSE_INDEXED_19] = 0x3Au, // extendedSense19
+    [DAFB_SENSE_INDEXED_MSB1] = 0x03u, // extendedMSB1
+    [DAFB_SENSE_INDEXED_MSB2] = 0x0Bu, // extendedMSB2
+    [DAFB_SENSE_INDEXED_MSB3] = 0x23u, // extendedMSB3
+};
+
 void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
+    if (dafb && code >= DAFB_SENSE_INDEXED_VGA && code < DAFB_SENSE_INDEXED_MAX) {
+        // Extended monitor: the pins read as no-connect ($7), which is what
+        // makes the ROM run the tie-matrix probe in the first place.
+        dafb->sense_code = 0x7u;
+        dafb->sense_ext = k_indexed_ext[code];
+        dafb->sense_ext_on = true;
+        return;
+    }
+    if (dafb)
+        dafb->sense_ext_on = false;
     if (dafb)
         dafb->sense_code = code & 0x7u;
 }
@@ -644,7 +751,7 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
 static uint8_t s_dafb_pending_sense = 0x6;
 
 void dafb_pending_sense_set(uint8_t code) {
-    s_dafb_pending_sense = code & 0x7u;
+    s_dafb_pending_sense = (code < DAFB_SENSE_INDEXED_MAX) ? code : 0x6u;
 }
 
 uint8_t dafb_consume_pending_sense(void) {

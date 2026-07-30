@@ -10,10 +10,13 @@
 #   q700-75-hd      **Q700 × 7.5**: prepared 7.5 HD image over the
 #                   53C96 (absorbs q700-boot-hd's SCSI-boot + About
 #                   machine-identity coverage on fresher media)
-#   q700-20m        **milestone**: Q700 @ 20 MB RAM-sizing stall (found
-#                   by the RAM axis; red until the MCU bug is fixed)
-#   q700-dafb-senses **milestone**: the DAFB honours only monitor sense 6
-#                   (ledger §6), which blocks every non-640x480 tower cell
+#   q700-20m        Q700 RAM sizing across every published bank
+#                   arrangement, 4-68 MB (was a milestone for the 20/36 MB
+#                   stall the RAM axis found; fixed and enforced)
+#   q700-dafb-senses The DAFB's whole monitor-sense range, ROM-only: the
+#                   passive codes AND the extended (tie-matrix) ones
+#   q700-75-monitors **Q700 x 7.5 x 832x624 and x 1152x870**: the two new
+#                   built-in-video rasters, booted to the Finder
 #   q900-76-fd      **Q900 × 7.6**: Disk Tools 1 through the SWIM IOP
 #                   mailbox path (q900-boot-floppy re-media'd per §7)
 #   q900-75-hd      **Q900 × 7.5**: tower Caboose+IOPs+53C96 HD boot +
@@ -25,11 +28,12 @@
 #                   boot → save → fresh boot → load → re-match
 #
 # The 7.5/7.6 rows skip (with an echo) when the prepared image has not
-# been fetched — the §9 landable-before-data pattern. The DAFB
-# 832×624 cell from §7 is NOT here: staging exists (machine.boot
-# video_sense= now reaches DAFB), but the measured q.3 answer is that
-# only sense 6 (640×480) renders correctly today — larger-monitor
-# scanout + extended sense are emulator work, tracked in the proposal.
+# been fetched — the §9 landable-before-data pattern.
+#
+# §10 q.3 ("which monitors can the built-in Quadra video actually drive?")
+# is answered here rather than in the proposal: every geometry the Q700 ROM
+# has timings for is asserted by q700-dafb-senses, and the two that are
+# worth a desktop are pixel-matched by q700-75-monitors.
 
 include "../lib/mac.script"
 
@@ -51,8 +55,12 @@ let q950_rom = "../../data/roms/q950-3dc27823.rom"
 #
 #   * The capture is ALREADY bit-reproducible, and rtc.time is irrelevant to
 #     it. Three separate processes with the clock pinned and three more with it
-#     untouched all produced 62,362 frames and a byte-identical WAV — six runs,
-#     one md5. The believed +-1 frame RTC-phase sensitivity does not reproduce.
+#     untouched all produced the same frame count and a byte-identical WAV —
+#     six runs, one md5. The believed +-1 frame RTC-phase sensitivity does not
+#     reproduce. (The count was 62,362 when measured; it became 58,777 when the
+#     VIA phi2 clock was corrected — this substrate had been running its timers
+#     1.6x fast, so a fixed instruction budget now spans different guest time.
+#     Reproducibility is unchanged; only the constant moved.)
 #   * A sample-exact golden is nevertheless impossible here, for an unrelated
 #     reason: sound.match refuses the comparison with "sample rate changed
 #     mid-capture". The ASC reads a steady 22,257 Hz whenever it is sampled, so
@@ -67,7 +75,7 @@ def row_q700_chime() {
     machine.sound.capture.start
     scheduler.run 30000000
     machine.sound.capture.stop
-    assert machine.sound.capture.frames == 62362 "q700-chime: capture length ${machine.sound.capture.frames}, want 62362 (bit-reproducible across processes — a change here is a real change)"
+    assert machine.sound.capture.frames == 58777 "q700-chime: capture length ${machine.sound.capture.frames}, want 58777 (bit-reproducible across processes — a change here is a real change)"
     assert debug.mac.globals.read("MemTop") == 0x800000 "q700-chime: RAM sizing wrong"
     assert debug.mac.globals.read("ROMBase") == 0x40800000 "q700-chime: ROMBase wrong"
     let t0 = debug.mac.globals.read("Ticks")
@@ -131,44 +139,119 @@ def row_q700_75_hd() {
     report_perf("suite-quadra/q700-75-hd", scheduler.instr_count)
 }
 
-# ---- q700-20m (milestone) ---------------------------------------------------
-# FOUND BY THE RAM AXIS (§7): at the 20 MB option (4 MB onboard +
-# 4×4 MB bank) the Q700 ROM never completes RAM sizing — MemTop stays
-# 0 and POST spins in ROM at PC=$4084BBF8 (measured 2026-07-27, still
-# stuck after 1.5 B instructions; every pre-rework Quadra test pinned
-# 8 MB, so this was invisible). Milestone semantics: nightly reports
-# it red until the MCU bank-sizing bug is fixed, then it promotes.
+# ---- q700-20m ---------------------------------------------------------------
+# The Q700's whole published RAM range must complete sizing and publish the
+# installed size in MemTop. Every size here is a distinct bank arrangement:
+#
+#   4 MB   bank A only (the soldered 4 MB; no SIMMs)
+#   8 MB   A + four 1 MB SIMMs
+#   20 MB  A + four 4 MB SIMMs   — Apple's largest official configuration
+#   36 MB  A + four 8 MB SIMMs   — unofficial, but real and widely used
+#   68 MB  A + four 16 MB SIMMs  — ditto
+#
+# 20 and 36 MB are the ones that used to fail, and they are the interesting
+# ones: they are the totals that are NOT a power-of-two multiple of the bank
+# size, which is exactly what the ROM's sizing maths cannot express until the
+# two banks are decoded separately.
+#
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §4 (MemTop
+# stayed 0 and POST spun at $4084BBF8 forever). Fixed 2026-07-29 by
+# implementing the Orwell memory controller's bank-start registers, so the
+# banks decode in their own 64 MB windows while the ROM probes them and then
+# merge contiguous when it latches the computed starts. Promoted to enforced.
 def row_q700_20m() {
-    machine.boot model="q700" ram=20480 rom="${$quadra_rom}"
-    scheduler.run 100000000
-    assert debug.mac.globals.read("MemTop") == 0x1400000 "q700-20m: RAM sizing incomplete (MemTop=${debug.mac.globals.read("MemTop"):08x}, PC=${machine.cpu.pc:08x})"
+    for kb in [4096, 8192, 20480, 36864, 69632] {
+        machine.boot model="q700" ram=$kb rom="${$quadra_rom}"
+        scheduler.run 100000000
+        assert machine.ram == $kb "q700-20m: machine.ram != ${$kb}"
+        assert debug.mac.globals.read("MemTop") == $kb * 1024 "q700-20m: RAM sizing incomplete at ${$kb} KB (MemTop=${debug.mac.globals.read("MemTop"):08x}, want ${$kb * 1024:08x}, PC=${machine.cpu.pc:08x})"
+    }
     report_perf("suite-quadra/q700-20m", scheduler.instr_count)
 }
 
-# ---- q700-dafb-senses (MILESTONE) -------------------------------------------
-# GUARD for proposal-emulator-bug-fixes.md §6: the DAFB programs a correct
-# raster only for monitor sense 6. Measured 2026-07-28 with the staging this
-# branch added (machine.boot video_sense=), the other codes come up at
-# geometries that are not any real monitor's:
+# ---- q700-dafb-senses -------------------------------------------------------
+# Every monitor the Q700's built-in DAFB can be told is plugged in, ROM-only
+# (so the whole sweep is nearly free). video_sense= takes Apple's INDEXED
+# numbering (DepVideoEqu.a): 0..7 is the passive 3-bit code, 8..14 name the
+# monitors that answer the EXTENDED tie-matrix probe instead.
 #
-#   sense 0  expected 1152x870 (21" two-page)  ->  72x870
-#   sense 1  expected  640x870 (portrait)      -> 160x870
-#   sense 2  expected  512x384 (12" RGB)       -> 512x385
+# This was a milestone row guarding proposal-emulator-bug-fixes.md §6, which
+# recorded that only sense 6 produced a real monitor's raster — the others
+# came up 72x870, 160x870 and 512x385. The width figures were the tell: the
+# SWATCH horizontal counts are in CHARACTER ticks, not dots, and the RAMDAC's
+# PixClk/1,/2,/4 tap says how many dots each tick carries. The code divided by
+# that factor instead of multiplying, so exactly the modes that run the CRTC
+# below the dot clock — every monitor wider or taller than 640x480 — came out
+# 1/4 or 1/2 size. Fixed 2026-07-30; promoted to enforced.
 #
-# This is what blocks §7's Quadra 832x624 cell and any tower portrait or
-# two-page coverage — suite-iix pixel-matches a 640x870 portrait desktop on
-# the JMFB, so the target behaviour has a working reference in-tree.
-# ROM-only rows, so the guard is nearly free.
+# The table below is measured, not aspirational. Codes 4, 8, 9 and 11-14 are
+# real Apple monitors with no timing entry in THIS 1991 ROM, so the driver
+# falls back to 640x480; that fallback is asserted too, because it is the
+# difference between "unsupported" and "silently wrong".
+def sense_is(code, w, h, what) {
+    machine.boot model="q700" ram=8192 rom="${$quadra_rom}" video_sense=$code
+    scheduler.run 30000000
+    assert machine.screen.width == $w "q700-dafb-senses: sense ${$code} (${$what}) gave width ${machine.screen.width}, want ${$w}"
+    assert machine.screen.height == $h "q700-dafb-senses: sense ${$code} (${$what}) gave height ${machine.screen.height}, want ${$h}"
+}
+
 def row_q700_dafb_senses() {
-    machine.boot model="q700" ram=8192 rom="${$quadra_rom}" video_sense=1
-    scheduler.run 30000000
-    assert machine.screen.width == 640 "q700-dafb-senses: portrait sense gave width ${machine.screen.width}, want 640"
-    assert machine.screen.height == 870 "q700-dafb-senses: portrait sense gave height ${machine.screen.height}, want 870"
-    machine.boot model="q700" ram=8192 rom="${$quadra_rom}" video_sense=2
-    scheduler.run 30000000
-    assert machine.screen.width == 512 "q700-dafb-senses: 12in sense gave width ${machine.screen.width}, want 512"
-    assert machine.screen.height == 384 "q700-dafb-senses: 12in sense gave height ${machine.screen.height}, want 384"
+    sense_is(6, 640, 480, "13in RGB")
+    sense_is(0, 1152, 870, "21in two-page colour")
+    sense_is(3, 1152, 870, "21in two-page mono")
+    sense_is(1, 640, 870, "portrait")
+    sense_is(5, 640, 870, "RGB full-page")
+    sense_is(10, 832, 624, "16in, extended sense $2D")
+    # The 12" RGB is the one monitor whose CRTC programming and declared mode
+    # disagree: the ROM programs 385 active lines for a 512x384 display (its
+    # own GDevice bounds say 384). Asserted literally rather than trimmed —
+    # see the note in dafb.c's reconfigure().
+    sense_is(2, 512, 385, "12in RGB")
+    # No timing entry in this 1991 ROM -> the driver falls back to 640x480.
+    # Asserted so an unsupported monitor stays distinguishable from a broken one.
+    sense_is(7, 640, 480, "no connect")
+    sense_is(4, 640, 480, "NTSC")
+    sense_is(8, 640, 480, "VGA (extended $17)")
+    sense_is(9, 640, 480, "PAL (extended $30)")
+    sense_is(11, 640, 480, "19in (extended $3A)")
+    sense_is(14, 640, 480, "multiscan band 3 (extended $23)")
     report_perf("suite-quadra/q700-dafb-senses", scheduler.instr_count)
+}
+
+# ---- q700-75-monitors -------------------------------------------------------
+# NEW CELLS Q700 x 7.5 x 832x624 and Q700 x 7.5 x 1152x870 — the first
+# coverage of the built-in Quadra video driving anything other than a 13" RGB,
+# and the largest raster anywhere in the suites.
+#
+# 832x624 comes from the Apple 16" display, which is an EXTENDED-sense monitor
+# (raw code $2D, "GoldFish"): the pins read as no-connect and the ROM then runs
+# the three-drive tie-matrix probe. That probe had no model at all until this
+# branch, which is the second half of the §6 fix — the geometry fix alone gets
+# you the passive monitors, but not this one.
+#
+# Both boot at 1 bpp, which is what this ROM + media give on the built-in video
+# (so does the existing 640x480 row). The excluded strip is the menu-bar clock,
+# same convention as the other 7.5/7.6 rows, scaled to each raster.
+def row_q700_75_monitors() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q700" ram=8192 rom="${$quadra_rom}" video_sense=10
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 400000000
+    wait_stable(1200000000)
+    assert machine.screen.width == 832 "q700-75-monitors: 16in width ${machine.screen.width}, want 832"
+    assert machine.screen.height == 624 "q700-75-monitors: 16in height ${machine.screen.height}, want 624"
+    check_ex("goldens/q700-7.5-832x624-finder.png", 0, 632, 20, 832)
+    report_row("7.5", "dafb", "hd-boot 832x624 16in-extended-sense")
+
+    machine.boot model="q700" ram=8192 rom="${$quadra_rom}" video_sense=0
+    machine.scsi.attach_hd "${$hd_75}" 0
+    scheduler.run 400000000
+    wait_stable(1200000000)
+    assert machine.screen.width == 1152 "q700-75-monitors: 2-page width ${machine.screen.width}, want 1152"
+    assert machine.screen.height == 870 "q700-75-monitors: 2-page height ${machine.screen.height}, want 870"
+    check_ex("goldens/q700-7.5-1152x870-finder.png", 0, 952, 20, 1152)
+    report_row("7.5", "dafb", "hd-boot 1152x870 two-page")
+    report_perf("suite-quadra/q700-75-monitors", scheduler.instr_count)
 }
 
 # ---- q900-76-fd -------------------------------------------------------------
@@ -265,6 +348,17 @@ def row_q950_76_hd() {
     assert debug.mac.globals.read("MMUFluff") == 20 "q950-76-hd: not identified as Quadra 950"
     assert machine.ram == 32768 "q950-76-hd: machine.ram != 32768"
     assert_addr(true)
+    # 7.6 puts up "AppleTalk cannot be used because no AppleTalk address is
+    # available" on this machine, and that is CORRECT: the Quadras have no
+    # network hardware wired (the SONIC has no wire, and appletalk_init is only
+    # called for the Plus), so a real Q950 with nothing plugged in says exactly
+    # this. It did not appear before 2026-07-29 only because the VIA phi2 clock
+    # ran 2.15x fast on this substrate, so AppleTalk never finished its failing
+    # startup inside the row's window — the clean desktop this row used to match
+    # was an artefact of that. Dismiss the alert and assert the desktop behind
+    # it, which is the state the row actually means to claim.
+    click(486, 225)
+    wait_stable(600000000)
     check_ex("goldens/q950-7.6-640x480-finder.png", 0, 440, 20, 640)
     report_row("7.6", "dafb", "hd-boot")
     report_perf("suite-quadra/q950-76-hd", scheduler.instr_count)
@@ -330,7 +424,7 @@ if row_on("q700-75-hd") {
         echo "skip: q700-75-hd (7.5 prepared image not fetched)"
     }
 }
-if row_on("q700-20m") { row_end_milestone("q700-20m", try(row_q700_20m(), "FAILED")) }
+if row_on("q700-20m") { row_end("q700-20m", try(row_q700_20m(), "FAILED")) }
 if row_on("q900-76-fd") {
     if have_media($disk_tools_76) {
         row_end("q900-76-fd", try(row_q900_76_fd(), "FAILED"))
@@ -356,11 +450,18 @@ if row_on("q950-76-hd") {
 if row_on("q700-checkpoint") { row_end("q700-checkpoint", try(row_q700_checkpoint(), "FAILED")) }
 if row_on("q700-sense-checkpoint") { row_end("q700-sense-checkpoint", try(row_q700_sense_checkpoint(), "FAILED")) }
 
-# q700-dafb-senses runs LAST on purpose: it stages non-default monitor
-# senses, and machine.boot inherits unspecified staging from the built-from
-# record, so any row after it would boot with sense 2 still selected (that is
-# exactly how it first broke q900-76-fd).
-if row_on("q700-dafb-senses") { row_end_milestone("q700-dafb-senses", try(row_q700_dafb_senses(), "FAILED")) }
+# The two monitor-sense rows run LAST on purpose: they stage non-default
+# monitor senses, and machine.boot inherits unspecified staging from the
+# built-from record, so any row after them would boot with the last sense
+# still selected (that is exactly how it first broke q900-76-fd).
+if row_on("q700-75-monitors") {
+    if have_media($hd_75) {
+        row_end("q700-75-monitors", try(row_q700_75_monitors(), "FAILED"))
+    } else {
+        echo "skip: q700-75-monitors (7.5 prepared image not fetched)"
+    }
+}
+if row_on("q700-dafb-senses") { row_end("q700-dafb-senses", try(row_q700_dafb_senses(), "FAILED")) }
 
 suite_done()
 quit

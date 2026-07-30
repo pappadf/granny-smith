@@ -48,6 +48,26 @@ typedef void (*via_porta_write_fn)(void *context, uint8_t value, bool handshake)
 // `name` ("via1" / "via2") tags scheduler events for checkpointing and is
 // used as the object-tree node name. Must be a string literal or otherwise
 // outlive the via_t.
+// The 6522's φ2 clock on every Macintosh that has one: 783,360 Hz (the Plus's
+// 7.8336 MHz CPU clock divided by 10).  Timer periods are specified in φ2
+// cycles, so a machine's `freq_factor` — the CPU-cycles-per-φ2-cycle divisor
+// the scheduler works in — is its CPU clock divided by this.
+#define VIA_PHI2_HZ 783360u
+
+// Derive the freq_factor for a CPU clock, rounded to nearest and clamped to the
+// uint8_t the constructor takes.  Use this rather than hardcoding a divisor:
+// a literal that is right for one member of a machine family is wrong for any
+// sibling with a different clock, and the symptom is timers running fast or
+// slow by exactly that ratio.
+static inline uint8_t via_freq_factor_for_clock(uint32_t cpu_hz) {
+    uint32_t f = (cpu_hz + VIA_PHI2_HZ / 2) / VIA_PHI2_HZ;
+    if (f < 1)
+        f = 1;
+    if (f > 255)
+        f = 255;
+    return (uint8_t)f;
+}
+
 via_t *via_init(memory_map_t *map, struct scheduler *scheduler, uint8_t freq_factor, const char *name,
                 via_output_fn output_cb, via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context,
                 checkpoint_t *checkpoint);

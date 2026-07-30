@@ -97,8 +97,7 @@
       "height": 480,
       "depth": 2,
       "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "suite": "suite-iici"
     },
     {
       "machine": "iici",
@@ -108,8 +107,7 @@
       "height": 480,
       "depth": 4,
       "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "suite": "suite-iici"
     },
     {
       "machine": "iici",
@@ -119,8 +117,7 @@
       "height": 480,
       "depth": 8,
       "addr32": false,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §5 — built-in video exposes no depth mode list"
+      "suite": "suite-iici"
     },
     {
       "machine": "iici",
@@ -131,7 +128,7 @@
       "depth": 8,
       "addr32": false,
       "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §7 — the 24AC's non-640-wide modes scan out corrupt; and the built-in video keeps the boot screen on the IIci, so a card-only raster is not observable via machine.screen"
+      "blocked": "The 24AC drives 1152x870 correctly since the §7 fix (suite-quadra pixel-matches that raster on the DAFB), but on the IIci the built-in RBV stays the primary display, and machine.screen reports the primary — so a card-only raster is not observable. Needs either a per-display screen selector or a IIci configuration where the card is primary."
     },
     {
       "machine": "iici",
@@ -151,9 +148,8 @@
       "width": 640,
       "height": 480,
       "depth": 1,
-      "addr32": true,
-      "suite": "suite-iici",
-      "blocked": "proposal-emulator-bug-fixes.md §8 — a Display Card 24AC seated beside the live built-in RBV hangs the boot at Welcome, whatever the boot medium; the card-free 7.1 cell above boots fine"
+      "addr32": false,
+      "suite": "suite-iici"
     },
     {
       "machine": "iici",
@@ -420,6 +416,16 @@
     },
     {
       "machine": "iifx",
+      "system": "6.0.8",
+      "card": "mdc_8_24",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-iifx"
+    },
+    {
+      "machine": "iifx",
       "system": "7.0.1",
       "card": "jmfb",
       "width": 640,
@@ -452,13 +458,12 @@
     {
       "machine": "iifx",
       "system": "7.5",
-      "card": "display_card_24ac",
+      "card": "24ac",
       "width": 832,
       "height": 624,
       "depth": 8,
       "addr32": false,
-      "suite": "suite-iifx",
-      "blocked": "proposal-emulator-bug-fixes.md §7 — 832x624 applies but scans out a corrupt raster"
+      "suite": "suite-iifx"
     },
     {
       "machine": "iifx",
@@ -780,10 +785,21 @@
       "card": "dafb",
       "width": 832,
       "height": 624,
-      "depth": 8,
+      "depth": 1,
       "addr32": false,
       "suite": "suite-quadra",
-      "blocked": "proposal-emulator-bug-fixes.md §6 — DAFB honours only monitor sense 6"
+      "media_gated": true
+    },
+    {
+      "machine": "q700",
+      "system": "7.5",
+      "card": "dafb",
+      "width": 1152,
+      "height": 870,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-quadra",
+      "media_gated": true
     },
     {
       "machine": "q700",
