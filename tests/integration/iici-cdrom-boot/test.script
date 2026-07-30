@@ -1,6 +1,7 @@
-# IIci CD-ROM boot — PROTOTYPE
+# IIci CD-ROM boot
 #
-# Boot a Macintosh IIci from a bootable Apple system CD and nothing else.
+# Boot a Macintosh IIci from a bootable Apple system CD and nothing else, all
+# the way to the Finder desktop.
 #
 # Why this is worth a test at all: there is no CD-specific code in the Mac ROM.
 # A bootable CD is mastered like a hard disk — Driver Descriptor Map in block 0,
@@ -86,66 +87,51 @@ def row_cd_boot() {
     report_perf("iici-cdrom-boot/cd-boot", scheduler.instr_count)
 }
 
-# ---- cd-desktop (MILESTONE) -------------------------------------------------
-# The destination this prototype does NOT reach, and the guard for it.
+# ---- cd-desktop -------------------------------------------------------------
+# The destination: System 7.5.3's Finder desktop, with the disc's own volume
+# window open, running entirely off the CD.
 #
-# System 7.5.3 off this disc runs out of memory before the Finder appears and
-# stops on "Not enough memory is available while using “System”".  It is not a
-# shortage of PHYSICAL RAM: the dialog is identical at 8 MB and at 32 MB, and
-# BufPtr lands at 0x007EE600 in both — the ~8 MB ceiling of the IIci's 24-bit
-# addressing.  Measured on three machines (IIci, Q700, Q950): all three reach
-# byte-identical framebuffers, so this is a property of the System on the disc
-# and the addressing mode, not of any one machine's SCSI or video path.
+# This row was a milestone that could not be reached, and the reason is worth
+# keeping because the symptom pointed somewhere else entirely.  The boot used
+# to stop on "Not enough memory is available while using “System”", which is
+# not a memory problem at all: it is System 7.5.3 reporting a REFUSED SCSI
+# READ.  READ(6) carries an 8-bit transfer length (0 meaning 256 blocks), and
+# the emulator rejected any request whose byte count exceeded BUF_LIMIT
+# (256 * 512).  On a hard disk that ceiling is unreachable — 256 blocks of 512
+# bytes is exactly BUF_LIMIT — but a CD-ROM's blocks are 2048 bytes, so any
+# READ(6) of more than 64 blocks was answered with CHECK CONDITION.  The boot
+# died on `lba=2531 tl=124`, a 248 KB read.  READ(10) had already been taught
+# to grow its staging buffer for the System 7.1 installer; READ(6) had not,
+# and its comment asserted the product "stays inside BUF_LIMIT in practice",
+# which is only true for 512-byte blocks.
 #
-# Routes tried and ruled out, so they are not re-tried:
+# The tell was the transfer volume: an entire System startup moved only
+# 0.73 MB off the disc across 104 reads before stopping.  That is far too
+# little to have loaded a System, and it is what redirected the investigation
+# from the Memory Manager to the bus.  Worth remembering that a guest's own
+# error dialog names the symptom it noticed, not the cause.
 #
-#   * 32-bit addressing via PRAM.  `rtc.pram.validate` + MMFlags ($8A) bit 0
-#     DOES select it — MMU32bit reads 1 and BufPtr moves to 0x01FAF520, the
-#     full 32 MB — and the machine then Sad Macs $0000000F / $00000001 before
-#     the desktop.  Identical on the IIci and the Q950.  docs/core/memory/pram.md
-#     §4.3 already records this signature for 7.0.1 and warns that stamping
-#     validity suppresses the ROM's startup-device init; this is the same
-#     interaction, now also seen on a 68040 machine.  Seeding $8A WITHOUT
-#     validity does not stick (XPRAM writes are gated on the validity tokens —
-#     the poke reads back 0x00), so there is no way to select 32-bit here
-#     without also taking the side effect.
-#   * Extensions off (the dialog's own advice).  Holding Shift really does
-#     reach the guest — KeyMap bit 0x38 sets and clears, and execution
-#     diverges (BufPtr 0x007AF400 vs 0x007EE600) — but the System still does
-#     not fit.  NOTE for whoever picks this up: the key must be pressed AFTER
-#     the ADB bus is initialised.  A `keyboard.down` issued before the first
-#     `scheduler.run` is silently lost, and the run then reproduces the
-#     no-Shift frame bit-for-bit, which looks exactly like "Shift had no
-#     effect" and is how this was first misread.
-#
-# The likely real fix is a lighter System on the disc — a 7.1-era bootable CD,
-# or Apple's Disk Tools CD — rather than anything in the emulator.  Nothing
-# measured here points at a defect in the SCSI, partition or HFS paths: they
-# all did their job, which is what row_cd_boot asserts.
+# Runs at 8 MB in 24-bit addressing with no PRAM seeding — exactly the
+# configuration that used to fail.
 def row_cd_desktop() {
     machine.rtc.time = 3000000000
     machine.boot model="iici" ram=8192
     machine.scsi.attach_cdrom "${$cd}" 3
     scheduler.run 400000000
-    wait_stable(1400000000)
-    # Pinned to the exact frame the boot parks on today.  A checksum
-    # INEQUALITY is a weak assertion and this repo has been bitten by weak
-    # ones before, so it is deliberately pinned to the ONE known-bad frame
-    # rather than to some structural property of the screen: the first
-    # version of this row compared row 0 against row 240 and passed on the
-    # dialog, reporting the milestone green with no desktop in sight.
-    #
-    # When a System that fits does boot, this stops matching and the
-    # milestone flips green for a real reason — at which point the row gains
-    # a desktop golden and this comment goes away.
-    assert machine.screen.checksum() != -107001373 "cd-desktop: still parked on the \"not enough memory\" dialog"
+    wait_stable(1600000000)
+    # The application zone exists only once the Process Manager has launched
+    # the Finder; while the boot was failing this stayed equal to SysZone.
+    assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "cd-desktop: ApplZone == SysZone — the Finder never launched"
+    check("goldens/iici-7.5.3-640x480x1-cd-finder.png")
+    report_row("7.5.3", "rbv", "cd-boot finder-desktop")
+    report_perf("iici-cdrom-boot/cd-desktop", scheduler.instr_count)
 }
 
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("cd-device") { row_end("cd-device", try(row_cd_device(), "FAILED")) }
 if row_on("cd-boot") { row_end("cd-boot", try(row_cd_boot(), "FAILED")) }
-if row_on("cd-desktop") { row_end_milestone("cd-desktop", try(row_cd_desktop(), "FAILED")) }
+if row_on("cd-desktop") { row_end("cd-desktop", try(row_cd_desktop(), "FAILED")) }
 
 suite_done()
 quit

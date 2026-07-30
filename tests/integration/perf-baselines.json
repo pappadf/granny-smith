@@ -1,5 +1,9 @@
 {
   "rows": {
+    "iici-cdrom-boot/cd-desktop": {
+      "instr": 459948612,
+      "tolerance": 0.2
+    },
     "iici-cdrom-boot/cd-boot": {
       "instr": 1381650588,
       "tolerance": 0.2

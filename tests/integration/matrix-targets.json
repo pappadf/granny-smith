@@ -175,6 +175,17 @@
     },
     {
       "machine": "iici",
+      "system": "7.5.3",
+      "card": "rbv",
+      "width": 640,
+      "height": 480,
+      "depth": 1,
+      "addr32": false,
+      "suite": "iici-cdrom-boot",
+      "media_gated": true
+    },
+    {
+      "machine": "iici",
       "system": "A/UX 3.0.1",
       "card": "rbv",
       "width": 640,
