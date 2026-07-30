@@ -48,8 +48,20 @@ void dafb_attach_scheduler(dafb_t *dafb, struct scheduler *sched);
 // Video interrupt output — level-sensitive (ref §11.18).
 void dafb_set_irq_callback(dafb_t *dafb, dafb_irq_cb cb, void *context);
 
-// Monitor on the sense lines: the passive 3-bit code (6 = 13" 640×480 RGB).
-// Extended-sense tie matrices come with the larger-monitor support.
+// Monitor on the sense lines, in Apple's INDEXED numbering
+// (DepVideoEqu.a's indexedSense* equates): 0..7 is the passive 3-bit code
+// (6 = 13" 640×480 RGB, the default), and 8..14 name a monitor that answers
+// the extended tie-matrix probe instead.  The extended range is Apple's own
+// convention — "we map the extended sense codes from 8" — not an invention
+// of this emulator, and it lets one `video_sense=` knob address both.
+#define DAFB_SENSE_INDEXED_VGA  8u // 640×480 VGA
+#define DAFB_SENSE_INDEXED_PAL  9u
+#define DAFB_SENSE_INDEXED_GF   10u // "GoldFish" — Apple 16", 832×624
+#define DAFB_SENSE_INDEXED_19   11u // third-party 19"
+#define DAFB_SENSE_INDEXED_MSB1 12u // multiscan band 1
+#define DAFB_SENSE_INDEXED_MSB2 13u // multiscan band 2
+#define DAFB_SENSE_INDEXED_MSB3 14u // multiscan band 3
+#define DAFB_SENSE_INDEXED_MAX  15u
 void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
 
 // Pending-sense staging for `machine.boot video_sense=N` (the JMFB

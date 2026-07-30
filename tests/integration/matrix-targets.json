@@ -785,10 +785,21 @@
       "card": "dafb",
       "width": 832,
       "height": 624,
-      "depth": 8,
+      "depth": 1,
       "addr32": false,
       "suite": "suite-quadra",
-      "blocked": "proposal-emulator-bug-fixes.md §6 — DAFB honours only monitor sense 6"
+      "media_gated": true
+    },
+    {
+      "machine": "q700",
+      "system": "7.5",
+      "card": "dafb",
+      "width": 1152,
+      "height": 870,
+      "depth": 1,
+      "addr32": false,
+      "suite": "suite-quadra",
+      "media_gated": true
     },
     {
       "machine": "q700",

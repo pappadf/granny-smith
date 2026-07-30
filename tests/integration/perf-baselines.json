@@ -236,12 +236,20 @@
       "instr": 703408784,
       "tolerance": 0.2
     },
+    "suite-quadra/q700-75-monitors": {
+      "instr": 475551339,
+      "tolerance": 0.2
+    },
     "suite-quadra/q700-checkpoint": {
       "instr": 201998247,
       "tolerance": 0.2
     },
     "suite-quadra/q700-chime": {
       "instr": 37083119,
+      "tolerance": 0.2
+    },
+    "suite-quadra/q700-dafb-senses": {
+      "instr": 27149999,
       "tolerance": 0.2
     },
     "suite-quadra/q700-sense-checkpoint": {

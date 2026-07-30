@@ -89,9 +89,14 @@ TEST(depth_matrix_pcbr0) {
     // Undefined depth pattern: mode unchanged, no crash (Trap 24: logged)
     w32(d, 0x220, 0x04);
     ASSERT_EQ_INT((int)PIXEL_32BPP_XRGB, (int)dafb_display(d)->format);
-    // Pixel divider halves the derived width (bits 6:5)
+    // PCBR0's VidClk field (bits 6:5) picks the RAMDAC's PixClk/1,/2,/4 tap,
+    // which is what SWATCH is clocked from — so each SWATCH horizontal count
+    // carries that many DOTS and the field MULTIPLIES the derived width.  It
+    // used to divide here, which is why every monitor whose CRTC runs below
+    // the dot clock (all of them wider or taller than 640x480) came out 1/2
+    // or 1/4 size.  See dafb.c's pixel_multiplier() for the measured table.
     w32(d, 0x220, 0x18 | 0x20);
-    ASSERT_EQ_INT(320, (int)dafb_display(d)->width);
+    ASSERT_EQ_INT(1280, (int)dafb_display(d)->width);
     dafb_delete(d);
 }
 
@@ -140,6 +145,36 @@ TEST(sense_protocol_13in) {
     dafb_delete(d);
 }
 
+// The extended (tie-matrix) probe, replayed exactly as PrimaryInit.a's
+// DoDAFBExtendedSense does it: drive one line, read the other two, three
+// times, assembling "bc/ac/ab".  GoldFish (the Apple 16", raw $2D) is the
+// one extended monitor this ROM family has timings for, and it is what the
+// Quadra's 832x624 coverage rides on.
+TEST(sense_protocol_extended_16in) {
+    dafb_t *d = make_dafb();
+    dafb_set_monitor_sense(d, DAFB_SENSE_INDEXED_GF);
+    // Passive probe must read as no-connect ($7) — that is what makes the
+    // ROM run the extended algorithm at all.  Register is inverted.
+    ASSERT_EQ_INT(0x0, (int)(r32(d, 0x01C) & 7)); // ~7 & 7
+
+    // $2D = 0b101101.  Reassemble it the way the ROM does and check the
+    // answer end-to-end rather than asserting three magic register reads.
+    w32(d, 0x01C, 0x3); // drive A -> released lines carry ext[5:4]
+    unsigned a = (~r32(d, 0x01C)) & 0x3u; // ROM: ANDI #dafbAMask
+    w32(d, 0x01C, 0x5); // drive B -> ext[3:2], A read in bit 2
+    unsigned b = (~r32(d, 0x01C)) & 0x5u; // ROM: ANDI #dafbBMask
+    b = (b & 0x1u) | ((b & 0x4u) ? 0x2u : 0u); // ROM: move bit A into bit B
+    w32(d, 0x01C, 0x6); // drive C -> ext[1:0], in bits 2:1
+    unsigned c = ((~r32(d, 0x01C)) & 0x6u) >> 1; // ROM: ANDI #dafbCMask, LSR #1
+    ASSERT_EQ_INT(0x2D, (int)((a << 4) | (b << 2) | c));
+
+    // A passive monitor must not answer the tie matrix at all.
+    dafb_set_monitor_sense(d, 6);
+    w32(d, 0x01C, 0x3);
+    ASSERT_EQ_INT(0x5, (int)(r32(d, 0x01C) & 7));
+    dafb_delete(d);
+}
+
 TEST(swatch_interrupt_clears) {
     dafb_t *d = make_dafb();
     // Seed pending bits as the frame event would.
@@ -157,6 +192,7 @@ int main(void) {
     RUN(depth_matrix_pcbr0);
     RUN(clut_component_phase);
     RUN(sense_protocol_13in);
+    RUN(sense_protocol_extended_16in);
     RUN(swatch_interrupt_clears);
     printf("[dafb] all tests passed\n");
     return 0;
