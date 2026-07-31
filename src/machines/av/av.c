@@ -12,6 +12,7 @@
 
 #include "av.h"
 
+#include "civic.h"
 #include "cuda.h"
 #include "new_age.h"
 #include "psc.h"
@@ -203,9 +204,12 @@ const mac030_io_range_t av_io_ranges[] = {
     {0x18000, 0x18100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96"},
     {0x18100, 0x18200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma"},
     {0x2A000, 0x2A200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
+    {0x2E000, 0x2E100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_clk_read, av_civic_clk_write, "clock"},
     {0x30000, 0x30400, 0, 0, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
     {0x30400, 0x30800, 0, 0, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
+    {0x30800, 0x30C00, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_seb_read, av_civic_seb_write, "sebastian"},
     {0x31000, 0x33000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_reg_read, av_psc_reg_write, "psc"},
+    {0x36000, 0x38000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_read, av_civic_write, "civic"},
     {0}, // sentinel: end == 0
 };
 
@@ -602,6 +606,10 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->fdc = av_new_age_init(cfg, cp);
     assert(st->fdc != NULL);
 
+    // CIVIC + Sebastian video (Hi-Res 640x480 monitor, 2 MB VRAM).
+    st->civic = av_civic_init(cfg, cp);
+    assert(st->civic != NULL);
+
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
 
@@ -633,6 +641,9 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Bind the I/O island + CPU-ID + ROM aperture, then arm the overlay.
     av_io_bind(&st->io, cfg, desc);
     av_memory_layout(cfg);
+
+    // VRAM pages + the $50036000 CIVIC alias layer over the flat map.
+    av_civic_install_memory(cfg, st->civic);
 
     // NuBus super-slot and slot space bus-errors on probes (the ROM's slot
     // scan expects it even with no cards).
@@ -700,6 +711,10 @@ static void av_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     av_state_t *st = av_st(cfg);
     if (st) {
+        if (st->civic) {
+            av_civic_delete(st->civic);
+            st->civic = NULL;
+        }
         if (st->scsi96) {
             scsi_53c96_delete(st->scsi96);
             st->scsi96 = NULL;
@@ -781,6 +796,7 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     if (cfg->scsi)
         scsi_checkpoint(cfg->scsi, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
+    av_civic_checkpoint(st->civic, cp);
     // Substrate-private tail (mirrored by the restore block in av_init).
     system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
     system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
@@ -801,6 +817,12 @@ static void av_trigger_vbl(config_t *cfg) {
     image_tick_all(cfg);
 }
 
+// Primary display: the CIVIC scanout (substrate .display hook).
+static struct display *av_display(config_t *cfg) {
+    av_state_t *st = av_st(cfg);
+    return (st && st->civic) ? av_civic_display(st->civic) : NULL;
+}
+
 const machine_substrate_t av_substrate = {
     .init = av_init,
     .reset = av_reset,
@@ -813,6 +835,7 @@ const machine_substrate_t av_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
+    .display = av_display,
 };
 
 // Public overlay control for checkpoint restore / tests.
