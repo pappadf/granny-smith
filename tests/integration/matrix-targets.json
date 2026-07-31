@@ -904,8 +904,7 @@
       "height": 480,
       "depth": 8,
       "addr32": true,
-      "suite": "suite-av",
-      "media_gated": true
+      "suite": "suite-av"
     },
     {
       "machine": "q660av",
@@ -915,8 +914,7 @@
       "height": 480,
       "depth": 8,
       "addr32": true,
-      "suite": "suite-av",
-      "media_gated": true
+      "suite": "suite-av"
     }
   ]
 }

@@ -30,16 +30,18 @@
 # Install-Me-First CD stays a local bring-up asset and is never a CI
 # dependency.
 #
-# Every row gates on have_media() and echoes "skip:" while its data is
-# absent (proposal-quadra-av.md §5.2 — the landable-before-data pattern):
-# the ROM-only rows need roms/q840av-q660av-5bf10fd1.rom, and the boot rows
-# additionally need the AV boot disk, which is pending the gs-test-data
-# push; those matrix cells carry media_gated: true until it lands.
+# Every row gates on have_media() and echoes "skip:" if its data is absent
+# (proposal-quadra-av.md §5.2 — the landable-before-data pattern): the
+# ROM-only rows need roms/q840av-q660av-5bf10fd1.rom and the boot rows
+# additionally need systems/system_7_1_77mb_av.img.  Both are in
+# gs-test-data as of revision 2937e56, so all six rows run; the gating
+# stays in so a checkout with stale or partial data skips rather than
+# fails.
 
 include "../lib/mac.script"
 
 let av_rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"
-let av_hd = "../../data/systems/system_7_1_76mb_av.img"
+let av_hd = "../../data/systems/system_7_1_77mb_av.img"
 
 # ---- av-identity ------------------------------------------------------------
 # The ROM reads the CPU-ID register ($5FFFFFFC = $A55A2830, and must NOT be
