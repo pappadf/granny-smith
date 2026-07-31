@@ -139,8 +139,9 @@ identify result. See [`nubus_vrom.md`](../../nubus_vrom.md) and
 
 ## 6. Provenance
 
-The reverse-engineering dossier (raw disassembly, dated working notes, and the
-in-progress errata this doc distills) lives in **`local/gs-docs/24AC/`** — RE
-scratch, not committed. Canonical, load-bearing facts (register map, engine
-semantics, errata E7–E10) are promoted here; the hardware spec (`§4.2`/`§4.3`)
-and errata (`2026-06-29-errata.md`) are the authoritative source notes.
+This page is the canonical reference for the card. It distils the
+reverse-engineering behind the model — register map, engine semantics, errata
+E7–E10 — so the load-bearing facts live here rather than in working notes; the
+model in
+[display_card_24ac.c](../../../../../src/core/peripherals/nubus/cards/display_card_24ac.c)
+is the implementation those facts describe.

@@ -4,9 +4,7 @@ CIVIC (343S1096) is the frame-buffer and video-timing controller; Sebastian
 (343S0704) is the RAMDAC/CLUT downstream of it; an Endeavor (840AV) or
 Clifton/PUMA (660AV) synthesizer supplies the pixel clock. All three live in
 [src/machines/av/civic.c](../../../src/machines/av/civic.c) /
-[civic.h](../../../src/machines/av/civic.h). Hardware reference:
-`local/gs-docs/840av_660av/docs/civic.md`, `sebastian.md`,
-`endeavor-clifton-puma.md`.
+[civic.h](../../../src/machines/av/civic.h).
 
 ## The register interface is bit-serial
 
@@ -66,9 +64,9 @@ and `$FF` for black), and the derived display CLUT gathers them from there.
 
 ## Clock synthesizer
 
-Pure write latches at `$50F2E000`. The frequency formulas are undocumented
-even in Apple's source — the per-mode M/N (Endeavor) and W (Clifton/PUMA)
-values are opaque signatures — and nothing functional depends on them. The
+Pure write latches at `$50F2E000`. The frequency formulas are undocumented —
+the per-mode M/N (Endeavor) and W (Clifton/PUMA) values are opaque signatures —
+and nothing functional depends on them. The
 `IsItPUMA` ID probe reads back all ones (`$FF`), so a 660AV takes the Clifton
 path.
 
@@ -99,6 +97,6 @@ Video input (the whole VDC path — `VDCClk` parks the clock off and `VDCInt`
 reads idle, so the `vdig` component never opens), the convolution/flicker
 filter, TV-out via Mickey, interlaced modes, and depth/mode switching beyond
 what the depth code implies. The per-mode timing values are accepted and
-stored but nothing derives geometry from them — the dossier notes that what
-the hardware counts is nowhere explained, so treating them as opaque
-signatures is the documented recommendation.
+stored but nothing derives geometry from them: what the hardware counts is
+nowhere explained, so treating them as opaque signatures is the only defensible
+model.

@@ -13,11 +13,10 @@ controller and every DMA channel.
 Machine pages: [q840av.md](q840av.md), [q660av.md](q660av.md).
 Device pages: [psc.md](psc.md), [civic.md](civic.md), [cuda.md](cuda.md).
 
-The hardware reference for this family is the dossier at
-`local/gs-docs/840av_660av/`, recovered from Apple's own SuperMario source for
-this exact ROM plus the shipping ROM, the Cuda firmware and the datasheets.
-These pages document the **implementation**; the dossier documents the
-hardware, and every non-obvious decision here cites it.
+These pages document the **implementation**. Every non-obvious decision below
+records the hardware behaviour that forced it, so the reasoning stands on its
+own; the models themselves are the normative reference, and each page names the
+source file that owns the contract.
 
 ## Family traits
 
@@ -50,7 +49,7 @@ hardware, and every non-obvious decision here cites it.
   Sebastian `$30800`, PSC `$31000`, CIVIC `$36000`. CIVIC also answers at
   `$50036000` (the decoder ignores A20–A23 within `$50xxxxxx`), registered as
   a separate region.
-- **Interrupts** (dossier `docs/README.md`): VIA1→IPL 1, the PSC-VIA2
+- **Interrupts**: VIA1→IPL 1, the PSC-VIA2
   window→IPL 2 (**SCSI and floppy arrive here**, not at the PSC level
   registers), MACE→3, SCC/Singer/DMA-complete→4, DSP→5, 60.15 Hz→6, NMI→7.
   The family instantiates the shared `mac030_irq_resolve_ipl` engine with its
@@ -62,9 +61,9 @@ Every YMCA register is **one bit wide, accessed as a longword with the value
 in bit 31** — which is why the ROM writes `0` or `-1` everywhere. `av.c` stores
 one bit per longword slot. The machine-ID straps (`+$38/$3C/$40/$44`) read the
 board's nibble; the speed/width/bank registers latch and read back. Their
-electrical semantics are undocumented even in Apple's source (dossier
-`ymca.md` §10 records that the ROM knows only three fixed patterns per clock
-grade), so accept-and-readback is the correct model, not a shortcut.
+electrical semantics are undocumented, and the ROM only ever writes three fixed
+patterns per clock grade, so accept-and-readback is the correct model, not a
+shortcut.
 
 **RAM is mapped flat at physical 0, and that is correct rather than a
 simplification.** The eight banks decode at a fixed 16 MB spacing
@@ -88,7 +87,7 @@ handler and is skipped harmlessly.
 
 ## Interrupt-model note (a real bring-up trap)
 
-The dossier lists PSC-VIA2 IFR bit 0 as a "SCSI mirror" of bit 3. Driving it
+PSC-VIA2 IFR bit 0 is sometimes described as a "SCSI mirror" of bit 3. Driving it
 as a second interrupt source **breaks the boot**: the ROM's level-2 dispatcher
 is pattern-indexed, and the extra bit produces IFR combinations
 (`$09`/`$29`) it never expects. The SCSI service then runs on a
@@ -114,7 +113,7 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 ## Testing
 
 - `tests/unit/suites/psc/` — the DMA engine against the three known-good
-  client sequences the dossier quotes from Apple's drivers.
+  register sequences the shipping drivers issue.
 - `tests/unit/suites/civic/` — the bit-serial codec, sense protocol, CLUT and
   VBL ack dance.
 - `tests/integration/suite-av/` — identity, RAM sizing, video bring-up (ROM

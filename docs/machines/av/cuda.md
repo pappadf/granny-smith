@@ -4,8 +4,7 @@ Cuda (Apple 341S0788, firmware 2.37) is Egret's successor: a 68HC05 owning
 ADB, PRAM, the real-time clock, the one-second tick, power control and the
 I²C bus to the video-in chips. The AV Quadras are the first Macs to carry it.
 Implementation: [src/machines/av/cuda.c](../../../src/machines/av/cuda.c) /
-[cuda.h](../../../src/machines/av/cuda.h). Hardware reference:
-`local/gs-docs/840av_660av/docs/via1-cuda.md`.
+[cuda.h](../../../src/machines/av/cuda.h).
 
 ## Behavioral, not a core — and why that is a stronger position here
 
@@ -13,9 +12,9 @@ The model reproduces the host-visible wire protocol rather than executing the
 68HC05. The usual argument applies (the boot-time surface is small, a core
 brings pin wiring, second-CPU checkpoint state and a host↔MCU timing coupling
 that threatens determinism), but this family has an unusual advantage: the
-firmware **has been disassembled** and its findings folded into the dossier,
-so the behavioral model is written against what Cuda 2.37 actually does — not
-only against the host's view of it. That is where the rejected-command list,
+firmware **has been disassembled**, so the behavioral model is written against
+what Cuda 2.37 actually does — not only against the host's view of it. That is
+where the rejected-command list,
 the exact PRAM geometry and the handshake polarities below come from.
 
 Forked from [mdu/egret.c](../../../src/machines/mdu/egret.c) and diverged;

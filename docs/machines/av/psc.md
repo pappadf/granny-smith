@@ -5,9 +5,7 @@ Quadra substrate: the PSC absorbs VIA2, the whole system interrupt controller,
 seven DMA channels, the Singer sound engine's register block and the DSP
 reset latch. Implementation:
 [src/machines/av/psc.c](../../../src/machines/av/psc.c) /
-[psc.h](../../../src/machines/av/psc.h). Hardware reference:
-`local/gs-docs/840av_660av/docs/psc.md` (+ `singer.md` §7 and `dsp3210.md` §8
-for the sound/DSP stubs).
+[psc.h](../../../src/machines/av/psc.h).
 
 The VIA1 function the PSC *also* implements is not here — it is the generic
 6522 model mapped at island offset 0.
@@ -92,7 +90,7 @@ either.
 ## Testing
 
 `tests/unit/suites/psc/` replays the three known-good client sequences the
-dossier quotes verbatim from Apple's drivers: the SCSI HAL's
+shipping drivers issue: the SCSI HAL's
 `StartPSC`/`PausePSC`/`StopPSCRead`, `MaceInit`'s interrupt gating plus
 `ResetMACE`'s SWRESET, and the New Age driver's both-sets dance across the
 automatic set switch — plus the direction gate and the ≥`$40000000`
