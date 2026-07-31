@@ -218,16 +218,18 @@ TEST(select_timeout_no_device) {
 // bytes drained from the pseudo-DMA aperture match the target pattern.
 static void do_read(uint32_t lba, uint32_t tl) {
     // DMA select without ATN, FIFO flushed first — the boot ROM's flow:
-    // the target answers, the bus enters command phase, and the chip
-    // interrupts (function complete, seq step 2) before the CDB is fed.
+    // the target answers and the bus enters command phase.  The select
+    // sequence is still running at that point, so the chip asks for the
+    // remaining command bytes with DREQ and stays silent; an interrupt here
+    // would mean "the target went to an unexpected phase".
     wr(R_COMMAND, 0x01); // flush FIFO
     wr(R_STATUS, 0); // dest ID 0
     wr(R_INTERRUPT, 0xA7);
     wr(R_XFER_LO, 6);
     wr(R_XFER_HI, 0);
     wr(R_COMMAND, 0xC1); // DMA select without ATN
-    ASSERT_TRUE(irq_level);
-    (void)take_int();
+    ASSERT_TRUE(!irq_level);
+    ASSERT_TRUE(scsi_53c96_dreq(chip));
     ASSERT_EQ_INT(MB_command, mb.phase);
 
     // Deliver the READ(6) CDB via the FIFO (paused select accepts it).
@@ -406,8 +408,7 @@ TEST(flush_preserves_paused_select) {
     wr(R_STATUS, 0); // dest ID 0
     wr(R_INTERRUPT, 0xA7);
     wr(R_COMMAND, 0xC1); // DMA select without ATN → pauses in command phase
-    ASSERT_TRUE(irq_level);
-    (void)take_int();
+    ASSERT_TRUE(!irq_level); // DREQ, not an interrupt (see do_read)
     ASSERT_EQ_INT(MB_command, mb.phase);
 
     wr(R_COMMAND, 0x01); // flush FIFO again — must keep the select paused

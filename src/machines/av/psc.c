@@ -79,6 +79,8 @@ struct av_psc {
 
     // --- pointers (not checkpointed) ---
     config_t *cfg;
+    av_psc_dreq_fn dreq_fn; // live SCSI DREQ, published in the VIA2 IFR
+    void *dreq_ctx;
     av_psc_mem_read_fn mem_read; // guest-physical accessors for DMA
     av_psc_mem_write_fn mem_write;
     void *mem_ctx;
@@ -166,6 +168,18 @@ uint8_t av_psc_via2_read(config_t *cfg, uint32_t addr) {
         uint8_t ifr = (uint8_t)((psc->via2_level | psc->via2_latched) & 0x7F);
         if (ifr & psc->via2_ier & 0x7F)
             ifr |= 0x80; // 6522-style: bit 7 = any enabled source pending
+        // Bit 0 is NOT an interrupt source on this platform: it publishes the
+        // SCSI chip's live DREQ.  The SCSI Manager's HAL polls exactly this
+        // address and bit (InitItt.c `case kCyclone`: dreqAddr = $50F03A00,
+        // intDREQbitNum = 0; the SCSI *interrupt* is bit 3) and treats DREQ
+        // as the success signal for a select — "the target selected OK and
+        // went to the expected phase, and the chip is asking for the command
+        // byte".  Without it the HAL sees no DREQ, reads the select's
+        // interrupt instead, concludes the target went to an unexpected
+        // phase, and retries the select forever.  It contributes to neither
+        // the pending-summary bit nor the IPL.
+        if (psc->dreq_fn && psc->dreq_fn(psc->dreq_ctx))
+            ifr |= 1u;
         return ifr;
     }
     case 0x1C00:
@@ -259,6 +273,11 @@ static void psc_dma_complete(av_psc_t *psc, int n) {
     ch->active_set ^= 1;
     LOG(2, "DMA ch%d set %d complete; active set -> %d", n, s, ch->active_set);
     psc_update_dma_ipl(psc);
+}
+
+void av_psc_set_dreq_query(av_psc_t *psc, av_psc_dreq_fn fn, void *ctx) {
+    psc->dreq_fn = fn;
+    psc->dreq_ctx = ctx;
 }
 
 void av_psc_set_memory_hooks(av_psc_t *psc, av_psc_mem_read_fn rd, av_psc_mem_write_fn wr, void *ctx) {

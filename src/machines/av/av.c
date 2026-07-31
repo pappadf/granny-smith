@@ -641,6 +641,8 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, av_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
+    // The HAL polls PSC-VIA2 IFR bit 0 for the chip's DREQ (see psc.c).
+    av_psc_set_dreq_query(st->psc, (av_psc_dreq_fn)scsi_53c96_dreq, st->scsi96);
 
     // The PSC channel-0 pump (the hardware's DREQ/DACK engine).
     scheduler_new_event_type(cfg->scheduler, "av", cfg, "scsi_pump", &av_scsi_pump_event);

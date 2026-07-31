@@ -62,7 +62,11 @@ void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value);
 
 // === Interrupt sources ======================================================
 
-// Drive a level-sensitive VIA2-window source (SCSI bits 0/3).
+// Query the SCSI chip's live DREQ, surfaced in PSC-VIA2 IFR bit 0.
+typedef bool (*av_psc_dreq_fn)(void *ctx);
+void av_psc_set_dreq_query(av_psc_t *psc, av_psc_dreq_fn fn, void *ctx);
+
+// Drive a level-sensitive VIA2-window source (SCSI interrupt, bit 3).
 void av_psc_via2_source(av_psc_t *psc, int bit, bool active);
 
 // Latch a pulse VIA2-window source (FDC bit 5, sound frame bit 6); cleared

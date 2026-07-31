@@ -302,13 +302,22 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
             // Target selected, now in command phase, but the CDB has not
             // been supplied yet (the boot ROM flushes the FIFO before the
             // DMA select and feeds the CDB through the FIFO register /
-            // pseudo-DMA port afterward).  Post the "selected, command
-            // phase entered" interrupt (seq step 2) and arm the command
-            // aperture; the presence probe reads exactly this state.
+            // pseudo-DMA port afterward).  Arm the command aperture at
+            // sequence step 2.
             c->seq_step = 2;
             c->xfer_mode = XFER_CMD_OUT;
             refresh_phase(c);
-            post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
+            // A DMA select is still *executing* here: the chip has won the
+            // bus and the target has entered the phase the sequence expects,
+            // so it raises DREQ for the remaining command bytes and stays
+            // silent.  An interrupt at this point means "selected, but the
+            // target went somewhere unexpected", and SCSI Manager 4.3's
+            // DoSelect reacts by clearing its NeedCmdSent flag — after which
+            // DoCommand refuses to send the CDB at all (HALc96.a DoSelect
+            // @waitLoop / @doneWithSel).  Non-DMA selects have no DREQ to
+            // wait on, so they still get the interrupt.
+            if (!dma)
+                post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
         }
         break;
     }
