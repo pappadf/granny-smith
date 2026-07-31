@@ -18,7 +18,7 @@ OUT="$WORK_DIR/profiles.txt"
 SCRIPT="$WORK_DIR/profiles.script"
 mkdir -p "$WORK_DIR"
 
-MODELS="plus se30 iicx iix iifx iici iisi lisa macxl"
+MODELS="plus se30 iicx iix iifx iici iisi q840av q660av lisa macxl"
 
 : > "$SCRIPT"
 for m in $MODELS; do
@@ -130,6 +130,34 @@ assert_contains se30 '"id":"builtin_se30_video"' "se30 builtin video card"
 for card in mdc_8_24 display_card_24ac 824gc; do
     assert_absent se30 "\"id\":\"$card\"" "se30 has no socket for $card"
     assert_absent iisi "\"id\":\"$card\"" "iisi has no socket for $card"
+done
+
+# --- The AV family (Quadra 840AV / Centris 660AV) --------------------------
+# Both are 68040 machines with the integrated 040 MMU, and both carry the
+# same 2 MB ROM — so what distinguishes them in the profile is the clock and
+# the NuBus story.  The 840AV's three slots ride a MUNI bridge and the
+# 660AV's single slot rides an adapter that is absent by default; neither
+# machine declares NuBus sockets while no AV declaration-ROM work exists, so
+# `nubus:false` here is the load-bearing assertion that the profile is not
+# quietly offering cards the family cannot seat.
+for m in q840av q660av; do
+    assert_contains "$m" '"model":68040' "$m is a 68040"
+    assert_contains "$m" '"kind":"68040"' "$m has the integrated 040 MMU"
+    assert_contains "$m" '"fpu":true' "$m has an FPU"
+    assert_contains "$m" '"address_bits":32' "$m is 32-bit"
+    assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets"
+    assert_contains "$m" '"has_cdrom":true' "$m offers a CD-ROM bay"
+    # The New Age FDC is stubbed as 'no drive', so no floppy slot is offered.
+    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive"
+done
+assert_contains q840av '"freq":40000000' "q840av runs at 40 MHz"
+assert_contains q660av '"freq":25000000' "q660av runs at 25 MHz"
+# Built-in CIVIC video is motherboard circuitry, not a card: neither machine
+# may offer a pluggable video card.
+for m in q840av q660av; do
+    for card in mdc_8_24 display_card_24ac 824gc; do
+        assert_absent "$m" "\"id\":\"$card\"" "$m has no socket for $card"
+    done
 done
 
 if [ "$fail" -ne 0 ]; then
