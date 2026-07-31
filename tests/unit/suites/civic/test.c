@@ -282,26 +282,58 @@ TEST(test_sebastian_clut) {
     ASSERT_EQ_INT(seb_read(SEB_DATA), 0x00);
 
     // The display follows the depth code: 8 bpp indexed with a 256-entry
-    // CLUT, 640x480, stride 640.
+    // CLUT at 640x480.  test_serial_codec left RowWords = 32, so the row
+    // pitch is 32 * 32 = 1024 bytes — NOT the 640 the visible width would
+    // imply (see test_stride_follows_rowwords).
     seb_write(SEB_PCBR, 0x13);
     display_t *d = av_civic_display(s_st.civic);
     ASSERT_EQ_INT((int)d->width, 640);
     ASSERT_EQ_INT((int)d->height, 480);
     ASSERT_EQ_INT((int)d->format, PIXEL_8BPP);
-    ASSERT_EQ_INT((int)d->stride, 640);
+    ASSERT_EQ_INT((int)d->stride, 1024);
     ASSERT_EQ_INT((int)d->clut_len, 256);
 
-    // 1 bpp: stride 80, two CLUT entries — which the driver writes at
-    // $7F (white) and $FF (black), the documented start/skip placement.
+    // 1 bpp: two CLUT entries — which the driver writes at $7F (white) and
+    // $FF (black), the documented start/skip placement.  The pitch is still
+    // the programmed 1024; CIVIC's row pitch does not shrink with depth.
     seb_write(SEB_PCBR, 0x10); // depth code 0
     ASSERT_EQ_INT((int)d->format, PIXEL_1BPP_MSB);
-    ASSERT_EQ_INT((int)d->stride, 80);
+    ASSERT_EQ_INT((int)d->stride, 1024);
     ASSERT_EQ_INT((int)d->clut_len, 2);
 
+    // 32 bpp needs 2560 bytes for 640 visible pixels — more than RowWords
+    // describes — so the packed row wins and the descriptor stays coherent.
     seb_write(SEB_PCBR, 0x05); // depth code 5 = 32 bpp, direct
     ASSERT_EQ_INT((int)d->format, PIXEL_32BPP_XRGB);
     ASSERT_EQ_INT((int)d->stride, 2560);
     ASSERT_EQ_INT((int)d->clut_len, 0);
+    seb_write(SEB_PCBR, 0x13); // back to 8 bpp for the following rows
+}
+
+// 7. The row pitch comes from RowWords, not from width*bpp/8.
+//
+// This is the regression guard for a real bug: deriving the stride from the
+// visible width rendered the ROM's 1024-byte rows at a 640-byte pitch and
+// sheared the picture into diagonal bands.  The booted System reports the
+// same number in ScreenRow, and PrimaryInit paints `cvpRowWords << 3`
+// LONGWORDS per row (civic.md §4 step 15) — i.e. RowWords * 32 bytes.
+TEST(test_stride_follows_rowwords) {
+    display_t *d = av_civic_display(s_st.civic);
+    seb_write(SEB_PCBR, 0x13); // 8 bpp: 640 visible bytes per row
+
+    civic_write_reg(R_ROWWORDS, 8, 32); // the Hi-Res 640x480 value
+    ASSERT_EQ_INT((int)d->stride, 1024);
+
+    civic_write_reg(R_ROWWORDS, 8, 64); // a wider pitch must be honoured
+    ASSERT_EQ_INT((int)d->stride, 2048);
+
+    // Below the packed row the descriptor falls back to the packed width, so
+    // it can never claim a stride that cannot hold a scanline.
+    civic_write_reg(R_ROWWORDS, 8, 4); // 128 bytes < 640 visible
+    ASSERT_EQ_INT((int)d->stride, 640);
+
+    civic_write_reg(R_ROWWORDS, 8, 32); // restore
+    ASSERT_EQ_INT((int)d->stride, 1024);
 }
 
 // 6. VBL: a frame with the timing generator + VBLEnb on latches VBLInt
@@ -348,6 +380,7 @@ int main(void) {
     RUN(test_monitor_sense);
     RUN(test_sebastian_clut);
     RUN(test_vbl_ack_dance);
+    RUN(test_stride_follows_rowwords);
 
     fprintf(stderr, "civic: all tests passed\n");
     return 0;

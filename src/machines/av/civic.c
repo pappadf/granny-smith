@@ -137,7 +137,23 @@ static void civic_update_disp_clut(av_civic_t *cv) {
     cv->display.clut_dirty = true;
 }
 
-// Re-derive the display descriptor from PCBR + BaseAddr (Hi-Res 640x480).
+// Re-derive the display descriptor from the live registers.
+//
+// stride comes from RowWords, NOT from width*bpp/8: the VRAM row pitch is
+// quantised well above the visible row.  PrimaryInit paints
+// `cvpRowWords << 3` LONGWORDS per row (civic.md §4 step 15), so the pitch
+// is RowWords * 32 bytes — 1024 at the Hi-Res 8 bpp setting, which is
+// exactly what the booted System reports in ScreenRow.  Deriving it from
+// the visible width instead renders 1024-byte rows at a 640-byte pitch and
+// shears the picture into bands.
+//
+// width/height stay the mode constants.  They are not free parameters: the
+// sense model answers "Hi-Res" (indexed code 6), which is what makes the
+// ROM select this 640x480 mode and program these timings.  The vertical
+// timing independently confirms the height — (VFP - VAL) / 2 half-lines =
+// (1042 - 82) / 2 = 480 — but the horizontal count's units change with the
+// pixel clock between depths, so the dossier's advice to treat the timing
+// values as opaque per-mode signatures applies (civic.md §8).
 static void civic_update_display(av_civic_t *cv) {
     static const pixel_format_t fmt_by_code[6] = {
         PIXEL_1BPP_MSB, PIXEL_2BPP_MSB, PIXEL_4BPP_MSB, PIXEL_8BPP, PIXEL_16BPP_555, PIXEL_32BPP_XRGB,
@@ -147,7 +163,12 @@ static void civic_update_display(av_civic_t *cv) {
         code = 5;
     uint32_t bpp = 1u << code;
     uint32_t width = 640, height = 480;
-    uint32_t stride = width * bpp / 8;
+    uint32_t row_words = civic_get(cv, SLOT_ROWWORDS, 8);
+    uint32_t stride = row_words * 32u;
+    // Before the ROM programs RowWords there is no row pitch at all; fall
+    // back to the packed width so the descriptor stays self-consistent.
+    if (stride < width * bpp / 8u)
+        stride = width * bpp / 8u;
     uint32_t base = (civic_get(cv, SLOT_BASEADDR, 9) & 0xFFu) << 5;
 
     display_t *d = &cv->display;
@@ -243,7 +264,10 @@ static void civic_slot_write(av_civic_t *cv, uint32_t off, uint8_t value) {
             civic_update_display(cv);
         break;
     default:
+        // BaseAddr moves the scanout pointer; RowWords changes the pitch.
         if (slot >= SLOT_BASEADDR && slot < SLOT_BASEADDR + 9)
+            civic_update_display(cv);
+        else if (slot >= SLOT_ROWWORDS && slot < SLOT_ROWWORDS + 8)
             civic_update_display(cv);
         break;
     }

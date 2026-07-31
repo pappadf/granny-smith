@@ -313,21 +313,36 @@ static void av_scsi96_irq(void *context, bool active) {
     av_psc_via2_source(st->psc, AV_PSC_VIA2_SCSI_CB2, active);
 }
 
-// The channel-0 pump: while the set is armed and the chip requests DMA,
-// move bytes between the 53C96 FIFO and memory.  Runs on a fixed-cadence
-// scheduler event (the hardware's DREQ/DACK engine, functionally); the
-// HAL polls CIRQ in the CmdStat for completion.
+// The channel-0 pump: the hardware's DREQ/DACK engine, functionally — while
+// the chip has payload to move and the channel's active set is armed,
+// shuttle bytes between the 53C96 FIFO and memory.  The SCSI HAL polls CIRQ
+// in the CmdStat for completion and never installs a channel-0 handler.
+//
+// The phase gate matters: `scsi_53c96_dreq()` only reports "a DMA-mode
+// transfer is armed", which stays true across a phase change, so without it
+// the pump can drain bytes the CPU is about to read out of the FIFO during a
+// STATUS or MESSAGE phase.
 #define AV_SCSI_PUMP_NS  10000.0 // 10 us cadence
 #define AV_SCSI_PUMP_MAX 2048 // bytes per firing (a CD sector burst)
+
+// True while the bus is in a phase whose payload the DMA engine carries.
+// DATA IN/OUT are the payload phases, and COMMAND is included because a
+// DMA-mode select streams the CDB out of the same engine.  STATUS and the
+// MESSAGE phases are always the CPU's through the FIFO, so pumping there
+// would steal bytes the driver is about to read.
+static bool av_scsi_data_phase(config_t *cfg) {
+    int ph = scsi_get_bus_phase(cfg->scsi);
+    return ph == scsi_data_in || ph == scsi_data_out || ph == scsi_command;
+}
 
 static void av_scsi_pump_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
     av_state_t *st = av_st(cfg);
-    if (st && st->psc && st->scsi96) {
+    if (st && st->psc && st->scsi96 && cfg->scsi) {
         int dir = av_psc_dma_dir(st->psc, AV_PSC_DMA_SCSI);
         int moved = 0;
-        while (dir >= 0 && moved < AV_SCSI_PUMP_MAX && scsi_53c96_dreq(st->scsi96)) {
+        while (dir >= 0 && moved < AV_SCSI_PUMP_MAX && av_scsi_data_phase(cfg) && scsi_53c96_dreq(st->scsi96)) {
             uint8_t byte;
             if (dir == 1) { // device → memory
                 byte = scsi_53c96_pdma_read8(st->scsi96);
