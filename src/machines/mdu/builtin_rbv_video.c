@@ -306,10 +306,11 @@ void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code) {
         return;
     // A depth change before anything has been drawn (the IIsi picks 8 bpp
     // during machine init) would leave the power-on blank showing as white.
-    display_refill_if_pristine(p->fb, BUILTIN_RBV_VRAM_SIZE, display_black_fill(p->display.format),
-                               display_black_fill(f));
+    bool pristine = display_raster_is_pristine(&p->display);
     p->display.format = f;
     p->display.stride = RBV_VIDEO_WIDTH * format_bpp(f) / 8u;
+    if (pristine)
+        display_blank_raster(&p->display);
     rbv_video_apply_clut_window(p);
     p->display.shape_dirty = true;
     p->display.fb_dirty = true;

@@ -54,25 +54,6 @@ static inline uint8_t display_black_fill(pixel_format_t format) {
     return format == PIXEL_1BPP_MSB ? 0xFFu : 0x00u;
 }
 
-// Re-blank a framebuffer nothing has been drawn into yet, after a depth
-// change reinterprets every byte in it.  The pattern chosen at power-on
-// stops meaning black when the format moves under it: 0xFF is black at
-// 1 bpp but index 255 at 8 bpp, which is WHITE in the grayscale ramp the
-// indexed sources seed their CLUT with.
-//
-// Only rewrite when every byte still equals the old fill — that is the
-// proof the guest has not drawn anything.  A depth switch on a screen with
-// real content must keep it (System 7's Monitors control panel changes
-// depth under a live desktop).
-static inline void display_refill_if_pristine(uint8_t *fb, size_t n, uint8_t old_fill, uint8_t new_fill) {
-    if (!fb || old_fill == new_fill)
-        return;
-    for (size_t i = 0; i < n; i++)
-        if (fb[i] != old_fill)
-            return;
-    memset(fb, new_fill, n);
-}
-
 // Single CLUT entry; rgba layout matches QuickDraw's RGBColor packed for
 // host consumption (alpha is always 255 on Mac displays).
 typedef struct rgba8 {
@@ -151,6 +132,24 @@ static inline void display_blank_raster(display_t *d) {
     if (!d || !d->bits || !d->stride || !d->height)
         return;
     memset((uint8_t *)d->bits, display_black_fill(d->format), (size_t)d->stride * d->height);
+}
+
+// True when the visible raster still holds nothing but its power-on blank,
+// i.e. the guest has not drawn.  A depth change reinterprets every byte, so
+// the fill chosen at the old depth stops meaning black at the new one (0xFF
+// is black at 1 bpp but index 255 -- white in the seeded ramp -- at 8 bpp).
+// Test BEFORE changing the descriptor, re-blank after, so the new raster
+// size is the one that gets filled.  A depth switch under a live desktop
+// must keep its pixels, which is what this guards.
+static inline bool display_raster_is_pristine(const display_t *d) {
+    if (!d || !d->bits || !d->stride || !d->height)
+        return false;
+    uint8_t fill = display_black_fill(d->format);
+    size_t n = (size_t)d->stride * d->height;
+    for (size_t i = 0; i < n; i++)
+        if (d->bits[i] != fill)
+            return false;
+    return true;
 }
 
 #endif // NUBUS_DISPLAY_H

@@ -1022,8 +1022,14 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     // can never be the BOOT depth, so the power-on pitch is always 1024.
     p->display.stride = 1024u;
     p->display.bits = p->dram + GC824_FB_OFFSET;
-    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
-    display_blank_raster(&p->display);
+    // NOT blanked, deliberately.  Unlike every other source here the 8*24 GC's
+    // framebuffer lives inside the accelerator's own DRAM, which the GC engine
+    // and its driver treat as a CLEARED drawing surface -- the engine composes
+    // into it and the guest reads the result back.  Pre-filling it with the
+    // 1 bpp black pattern is not a cosmetic choice there, it is drawing:
+    // iicx-824gc's oval (rows 3C/7E/FF) and iicx-824gc-16bpp's 50%-red blend
+    // both read the composed bytes and see the fill instead.  A card whose
+    // scanout buffer doubles as engine memory has to keep powering up zeroed.
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL;
