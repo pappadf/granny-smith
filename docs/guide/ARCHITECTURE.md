@@ -401,8 +401,9 @@ The repository is organized as follows:
 
 ### Multi-machine support
 
-The emulator runs nine models — `plus`, `se30`, `iicx`, `iix`, `iifx`, `iici`,
-`iisi`, `lisa`, and `macxl` — on one shared core. Hardware is shared **by
+The emulator runs fourteen models — `plus`, `se30`, `iicx`, `iix`, `iifx`,
+`iici`, `iisi`, `q700`, `q900`, `q950`, `q840av`, `q660av`, `lisa`, and
+`macxl` — on one shared core. Hardware is shared **by
 subsystem**, not by cloning a file per machine, across three layers. (The
 precedent is the NuBus card subsystem: a static descriptor that advertises its
 own capabilities, a vtable of NULL-safe hooks, and an explicit registry.)
@@ -419,9 +420,15 @@ own capabilities, a vtable of NULL-safe hooks, and an explicit registry.)
   segment-MMU machines).
 - **Tier 3 — chipset families** compose `mac030` as *siblings* (not as
   descendants of any one chipset): **GLUE** (`glue/` — se30/iicx/iix), **MDU+RBV**
-  (`mdu/` — iici/iisi), and **OSS+FMC** (`oss/` — iifx). Each family supplies its
-  own I/O window table, IRQ routing, and the few code hooks a data table can't
-  express; the shared `mac030` engine drives all three.
+  (`mdu/` — iici/iisi), **OSS+FMC** (`oss/` — iifx), **MCU+DAFB** (`mcu/` —
+  q700/q900/q950, the first 68040 generation) and **YMCA+PSC** (`av/` —
+  q840av/q660av, the Cyclone/Tempest "AV" generation). Each family supplies
+  its own I/O window table, IRQ routing, and the few code hooks a data table
+  can't express; the shared `mac030` engine drives all five. The 68040
+  families reuse the spine for its lifecycle, I/O engine and IRQ resolver,
+  and bring their own MMU (`mmu040`) and interrupt map — the AV family
+  notably has **no VIA2 chip at all**, so `config_t.via2` stays NULL and the
+  IPL-2 path belongs to the PSC's pseudo-VIA2 window.
 
 **A machine is mostly data.** Each model is a `hw_profile_t` (defined in
 `core/machine_profile.h`) holding identity, the CPU/MMU facts the init reads as
@@ -433,7 +440,8 @@ behavior pointers:
   (`init`/`reset`/`teardown`/`checkpoint_save`/`update_ipl`/`trigger_vbl`/
   `nubus_slot_irq`/`fd_*`/`input_*`/`display`), shared **per family**: all three
   GLUE machines bind the same `glue_substrate`, both MDU machines bind
-  `mdu_substrate`, and the bespoke IIfx binds `iifx_substrate`. `system.c` and
+  `mdu_substrate`, all three Quadras bind `mcu_substrate`, both AV machines
+  bind `av_substrate`, and the bespoke IIfx binds `iifx_substrate`. `system.c` and
   `nubus.c` dispatch through this vtable, so they hold no machine knowledge.
 - **`.board`** — a typed-by-convention board descriptor (e.g.
   `mac030_glue_board_t`) the family substrate interprets: the ROM window, the
@@ -444,7 +452,8 @@ behavior pointers:
 
 **Layout rule:** a chip lives with the narrowest scope that uses it — generic →
 `core/peripherals/`; one family → that family's dir (`rbv`/`egret` → `mdu/`,
-`oss`/`iop*` → `oss/`, `cops`/`lisa_fdc`/`lisa_profile` → `lisa/`, the built-in
+`oss`/`iop*` → `oss/`, `dafb` → `mcu/`, `psc`/`civic`/`cuda`/`new_age`/`mace`
+→ `av/`, `cops`/`lisa_fdc`/`lisa_profile` → `lisa/`, the built-in
 video cards with their family); one machine → that machine's file. The core may
 include the public `core/machine_profile.h` but **not** any machine
 *implementation* header — a CI layering check enforces this
