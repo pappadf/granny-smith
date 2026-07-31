@@ -139,4 +139,18 @@ typedef struct display {
     bool response_dirty; // crt_response changed (effectively init-only today)
 } display_t;
 
+// Blank the visible raster of a fully-populated descriptor to black.
+//
+// Only `bits[0 .. stride*height)` is touched — NOT the whole VRAM
+// allocation.  A card's buffer is mapped into the slot aperture in one piece
+// and the framebuffer usually starts at an offset inside it (the 8•24 puts it
+// at +0xA00), so filling the whole allocation writes bytes the guest can read
+// that are not pixels at all.  Doing that changed what MacTest's video test
+// saw on a IIcx and diverged the run — blank the raster, nothing else.
+static inline void display_blank_raster(display_t *d) {
+    if (!d || !d->bits || !d->stride || !d->height)
+        return;
+    memset((uint8_t *)d->bits, display_black_fill(d->format), (size_t)d->stride * d->height);
+}
+
 #endif // NUBUS_DISPLAY_H

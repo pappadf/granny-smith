@@ -129,10 +129,10 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->display.width = RBV_VIDEO_WIDTH;
     p->display.height = RBV_VIDEO_HEIGHT;
     p->display.format = PIXEL_1BPP_MSB;
-    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
-    memset(p->fb, display_black_fill(p->display.format), BUILTIN_RBV_VRAM_SIZE);
     p->display.stride = RBV_VIDEO_WIDTH / 8; // 80 bytes/row at 1 bpp
     p->display.bits = p->fb + BUILTIN_RBV_SCREEN_OFFSET;
+    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
+    display_blank_raster(&p->display);
     p->display.clut = p->clut; // narrowed to the active window below
     p->display.clut_len = 256;
     p->display.crt_response = NULL; // 13" RGB gamma is near-identity
@@ -287,7 +287,7 @@ void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, ui
     // comes up black.  Only the screen the renderer scans out is touched, and
     // only before the guest has run; the ROM's RAM test writes and reads back
     // its own patterns over this either way.
-    memset(p->display.bits, display_black_fill(p->display.format), (size_t)p->display.stride * p->display.height);
+    display_blank_raster(&p->display);
     p->display.fb_dirty = true;
 }
 
