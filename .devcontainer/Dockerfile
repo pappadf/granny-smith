@@ -13,6 +13,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends \
     build-essential \
     binutils-m68k-linux-gnu \
+    7zip \
     cmake \
     ninja-build \
     valgrind \
