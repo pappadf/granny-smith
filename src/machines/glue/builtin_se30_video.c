@@ -201,6 +201,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     p->display.height = 342;
     p->display.stride = 512 / 8;
     p->display.format = PIXEL_1BPP_MSB;
+    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
+    memset(p->vram, display_black_fill(p->display.format), SE30_VRAM_SIZE);
     p->display.bits = p->vram + SE30_FB_PRIMARY_OFFSET;
     p->display.clut = NULL;
     p->display.clut_len = 0;

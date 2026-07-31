@@ -19,6 +19,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 // Pixel encodings exposed by display sources.
 typedef enum pixel_format {
@@ -37,6 +38,40 @@ typedef enum pixel_format {
                       // "24bpp packed-pixel" terminology).  The 24-bit name
                       // describes the visible colour depth, not the storage.
 } pixel_format_t;
+
+// The byte a display source should fill fresh VRAM with so a cold boot
+// scans out BLACK, which is what a real monitor shows before the video
+// circuitry starts driving it.
+//
+// Zero-filled VRAM is not black everywhere: 1 bpp is scanned out inverted
+// (1 = black, 0 = white — the Mac convention), so an all-zero 1 bpp buffer
+// is a WHITE screen, and that is what the user sees for the first second of
+// a cold boot, before the ROM programs the card and paints anything.  Every
+// other format already reads black at zero — the direct formats encode
+// black as all-zero, and the indexed formats power up with an all-zero
+// (i.e. black) CLUT — so this only has to special-case 1 bpp.
+static inline uint8_t display_black_fill(pixel_format_t format) {
+    return format == PIXEL_1BPP_MSB ? 0xFFu : 0x00u;
+}
+
+// Re-blank a framebuffer nothing has been drawn into yet, after a depth
+// change reinterprets every byte in it.  The pattern chosen at power-on
+// stops meaning black when the format moves under it: 0xFF is black at
+// 1 bpp but index 255 at 8 bpp, which is WHITE in the grayscale ramp the
+// indexed sources seed their CLUT with.
+//
+// Only rewrite when every byte still equals the old fill — that is the
+// proof the guest has not drawn anything.  A depth switch on a screen with
+// real content must keep it (System 7's Monitors control panel changes
+// depth under a live desktop).
+static inline void display_refill_if_pristine(uint8_t *fb, size_t n, uint8_t old_fill, uint8_t new_fill) {
+    if (!fb || old_fill == new_fill)
+        return;
+    for (size_t i = 0; i < n; i++)
+        if (fb[i] != old_fill)
+            return;
+    memset(fb, new_fill, n);
+}
 
 // Single CLUT entry; rgba layout matches QuickDraw's RGBColor packed for
 // host consumption (alpha is always 255 on Mac displays).

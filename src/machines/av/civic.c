@@ -450,6 +450,10 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
         free(cv);
         return NULL;
     }
+    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives
+    // (Sebastian powers up at PCBR depth code 0 = 1 bpp).  Before the
+    // checkpoint read below, so a restore still wins.
+    memset(cv->vram, display_black_fill(PIXEL_1BPP_MSB), AV_CIVIC_VRAM_SIZE);
 
     if (cp) {
         size_t data_size = offsetof(av_civic_t, cfg);

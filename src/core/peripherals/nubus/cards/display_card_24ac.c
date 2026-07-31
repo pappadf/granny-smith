@@ -783,6 +783,9 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p) {
     p->display.width = p->mon_width;
     p->display.height = p->mon_height;
     p->display.format = PIXEL_8BPP;
+    // Cold boot scans out black (already so at 8 bpp: the power-on CLUT is
+    // all-zero); go through the helper so a future depth change stays right.
+    memset(p->vram, display_black_fill(p->display.format), DISPLAY_CARD_24AC_VRAM_SIZE);
     recompute_stride(p); // 640 bytes/row at 8 bpp
     p->display.bits = p->vram;
     p->display.clut = p->clut;

@@ -129,6 +129,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->display.width = RBV_VIDEO_WIDTH;
     p->display.height = RBV_VIDEO_HEIGHT;
     p->display.format = PIXEL_1BPP_MSB;
+    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
+    memset(p->fb, display_black_fill(p->display.format), BUILTIN_RBV_VRAM_SIZE);
     p->display.stride = RBV_VIDEO_WIDTH / 8; // 80 bytes/row at 1 bpp
     p->display.bits = p->fb + BUILTIN_RBV_SCREEN_OFFSET;
     p->display.clut = p->clut; // narrowed to the active window below
@@ -279,6 +281,13 @@ void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, ui
     p->fb = aperture;
     p->fb_external = true;
     p->display.bits = p->fb + screen_offset;
+    // The private buffer card_init blanked has just been thrown away, so blank
+    // the visible window of the aperture too — otherwise the IIsi cold-boots to
+    // a white screen (zeroed DRAM is white at 1 bpp) while every other machine
+    // comes up black.  Only the screen the renderer scans out is touched, and
+    // only before the guest has run; the ROM's RAM test writes and reads back
+    // its own patterns over this either way.
+    memset(p->display.bits, display_black_fill(p->display.format), (size_t)p->display.stride * p->display.height);
     p->display.fb_dirty = true;
 }
 
@@ -295,6 +304,10 @@ void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code) {
     pixel_format_t f = depth_to_format(depth_code);
     if (p->display.format == f)
         return;
+    // A depth change before anything has been drawn (the IIsi picks 8 bpp
+    // during machine init) would leave the power-on blank showing as white.
+    display_refill_if_pristine(p->fb, BUILTIN_RBV_VRAM_SIZE, display_black_fill(p->display.format),
+                               display_black_fill(f));
     p->display.format = f;
     p->display.stride = RBV_VIDEO_WIDTH * format_bpp(f) / 8u;
     rbv_video_apply_clut_window(p);

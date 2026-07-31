@@ -109,15 +109,19 @@ def row_av_ram_sizing() {
 # buffer this family actually scans out.
 def row_av_video() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    # The power-on blank is no longer all-zero (display sources fill VRAM so a
+    # cold boot scans out black, not white), so "checksum != 0" would pass on a
+    # screen nothing ever drew to.  Compare against the actual blank instead.
+    let blank = machine.screen.checksum()
     scheduler.run 400000000
     assert machine.screen.width == 640 "av-video: width ${machine.screen.width}, want 640"
     assert machine.screen.height == 480 "av-video: height ${machine.screen.height}, want 480"
     let scrn = debug.mac.globals.read("ScrnBase")
     assert $scrn >= 0x50100000 "av-video: ScrnBase ${$scrn:08x} below the CIVIC VRAM aperture"
     assert $scrn < 0x50300000 "av-video: ScrnBase ${$scrn:08x} above the CIVIC VRAM aperture"
-    # Something was actually painted: a blank framebuffer checksums as the
-    # all-zero screen every model produces before video comes up.
-    assert machine.screen.checksum() != 0 "av-video: framebuffer never written"
+    # Something was actually painted, i.e. the screen moved off the power-on
+    # blank this very machine produced a moment ago.
+    assert machine.screen.checksum() != $blank "av-video: framebuffer never painted"
     report_perf("suite-av/av-video", scheduler.instr_count)
 }
 

@@ -632,6 +632,8 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
     dafb->display.width = 640;
     dafb->display.height = 480;
     dafb->display.format = PIXEL_1BPP_MSB;
+    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
+    memset(dafb->vram, display_black_fill(dafb->display.format), dafb->vram_size);
     dafb->display.stride = 1024;
     dafb->display.bits = dafb->vram + 0x1000;
     dafb->display.clut = dafb->clut;

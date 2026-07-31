@@ -1015,6 +1015,8 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     // the driver will program at Open (the direct MFB/ACDC path isn't
     // decoded); RUNTIME depth switches arrive via VidComm (gc_vidcomm).
     p->display.format = format_for_bpp(p->seeded_bpp ? p->seeded_bpp : 1);
+    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
+    memset(p->vram, display_black_fill(p->display.format), GC824_VRAM_SIZE);
     p->display.width = 640u;
     p->display.height = 480u;
     // Row pitch: 1024 bytes at every indexed depth (guest-probed at 1/8 bpp).

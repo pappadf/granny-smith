@@ -251,6 +251,20 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // When restoring from a checkpoint, VIA outputs will re-drive the selection.
     if (!checkpoint) {
         plus_use_video_buffer(cfg, true);
+        // Blank both screen buffers so a cold boot scans out black rather than
+        // the white that zeroed DRAM gives at 1 bpp.  The Plus framebuffer IS
+        // main RAM, so this only touches the two visible windows, and only
+        // before the guest runs — the ROM's RAM test writes and reads back its
+        // own patterns over them regardless.
+        plus_state_t *ps = plus_state(cfg);
+        size_t screen_bytes = (size_t)ps->display.stride * ps->display.height;
+        uint8_t fill = display_black_fill(ps->display.format);
+        for (int main_buf = 0; main_buf <= 1; main_buf++) {
+            uint32_t addr = cfg->ram_size - 0x5900 - (main_buf ? 0 : 0x8000);
+            uint8_t *p = ram_native_pointer(cfg->mem_map, addr);
+            if (p)
+                memset(p, fill, screen_bytes);
+        }
     }
 
     cfg->debugger = debug_init();
