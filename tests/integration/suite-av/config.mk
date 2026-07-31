@@ -21,7 +21,7 @@
 #   make test-suite-av TEST_VARS="REGEN=1"               recapture goldens
 
 TEST_NAME := AV suite (Quadra 840AV / 660AV)
-TEST_DESC := Cyclone/Tempest identity + CD boot to the Finder desktop
+TEST_DESC := Cyclone/Tempest identity + 7.1 HD boot to the Finder desktop
 
 TEST_ROM := roms/q700-q900-420dbff3.rom
 TEST_ARGS := model=q700 ram=8192

@@ -14,27 +14,32 @@
 #                   and paints the gray boot pattern into CIVIC VRAM.  The
 #                   assertions are the hardware truths (geometry, ScrnBase
 #                   inside the VRAM aperture) — no golden, no media.
-#   av-cd-device    The plug contract for the boot medium: a read-only,
-#                   CD-typed device answering at ID 3 with the block size
-#                   adopted from the disc's own Driver Descriptor Map.
-#   q840av-71-cd-desktop  840AV boots System 7.1 + System Enabler 088 from
-#                   the CD to the Finder desktop; hardware truths first, then
-#                   the byte-exact golden.
-#   q660av-71-cd-desktop  Same for the 660AV.
+#   av-hd-device    The plug contract for the boot medium: a writable,
+#                   disk-typed device answering at ID 0 with the block size
+#                   adopted from the image's own Driver Descriptor Map.
+#   q840av-71-hd-desktop  840AV boots System 7.1 + System Enabler 088 from
+#                   the hard disk to the Finder desktop; hardware truths
+#                   first, then the byte-exact golden.
+#   q660av-71-hd-desktop  Same for the 660AV.
+#
+# The boot rows ride a prepared 76 MB System 7.1 AV hard-disk image rather
+# than a CD.  It is the volume that exercises the family properly: a full
+# AV install (A:ROSE, PlainTalk speech, QuickTime) whose extension load is
+# what caught the Cuda idle-acknowledge race, and it boots BOTH models from
+# the same fixture over the ordinary 53C96 disk path.  The dossier's 245 MB
+# Install-Me-First CD stays a local bring-up asset and is never a CI
+# dependency.
 #
 # Every row gates on have_media() and echoes "skip:" while its data is
 # absent (proposal-quadra-av.md §5.2 — the landable-before-data pattern):
 # the ROM-only rows need roms/q840av-q660av-5bf10fd1.rom, and the boot rows
-# additionally need the small AV boot disk.  Both are pending the
-# gs-test-data push; the boot rows' matrix cells carry media_gated: true
-# until then.  The bring-up asset that proves the path today is the
-# dossier's 245 MB Install-Me-First image, which stays local by design and
-# is never a CI dependency.
+# additionally need the AV boot disk, which is pending the gs-test-data
+# push; those matrix cells carry media_gated: true until it lands.
 
 include "../lib/mac.script"
 
 let av_rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"
-let av_cd = "../../data/systems/system_7_1_20mb_av_cd.img"
+let av_hd = "../../data/systems/system_7_1_76mb_av.img"
 
 # ---- av-identity ------------------------------------------------------------
 # The ROM reads the CPU-ID register ($5FFFFFFC = $A55A2830, and must NOT be
@@ -114,23 +119,24 @@ def row_av_video() {
     report_perf("suite-av/av-video", scheduler.instr_count)
 }
 
-# ---- av-cd-device -----------------------------------------------------------
-# The plug contract, no boot: what the guest sees on the bus.  read_only is
-# what makes this a locked-volume boot, and block_size comes from the disc's
-# own Driver Descriptor Map rather than a hard-coded CD default.
-def row_av_cd_device() {
+# ---- av-hd-device -----------------------------------------------------------
+# The plug contract, no boot: what the guest sees on the bus.  block_size
+# comes from the image's own Driver Descriptor Map rather than a hard-coded
+# default, and the volume is writable — the boot rows below let the System
+# update the desktop database on it, as a real machine would.
+def row_av_hd_device() {
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    machine.scsi.attach_cdrom "${$av_cd}" 3
-    assert machine.scsi.device[3].type == "cdrom" "av-cd-device: SCSI 3 is not a CD-ROM"
-    assert machine.scsi.device[3].read_only "av-cd-device: CD-ROM is not read-only"
-    assert machine.scsi.device[3].medium_present "av-cd-device: no medium present"
-    assert machine.scsi.device[3].block_size == 512 "av-cd-device: block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
-    # Nothing else on the bus: any boot below can only come from the disc.
-    assert try(machine.scsi.device[0].type, none) == none "av-cd-device: something is attached at SCSI 0"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    assert machine.scsi.device[0].type == "hd" "av-hd-device: SCSI 0 is not a hard disk"
+    assert !machine.scsi.device[0].read_only "av-hd-device: disk came up read-only"
+    assert machine.scsi.device[0].medium_present "av-hd-device: no medium present"
+    assert machine.scsi.device[0].block_size == 512 "av-hd-device: block_size ${machine.scsi.device[0].block_size}, want 512 (from the image's DDM)"
+    # Nothing else on the bus: any boot below can only come from this disk.
+    assert try(machine.scsi.device[3].type, none) == none "av-hd-device: something is attached at SCSI 3"
 }
 
-# ---- q840av-71-cd-desktop ---------------------------------------------------
-# The deliverable: System 7.1 + System Enabler 088 from a read-only CD to the
+# ---- q840av-71-hd-desktop ---------------------------------------------------
+# The deliverable: System 7.1 + System Enabler 088 from the hard disk to the
 # Finder desktop on a Quadra 840AV.  The enabler is not optional — its `gbly`
 # gates on machine IDs 72 and 54, so a stock 7.1 volume will not boot this
 # machine at all.
@@ -138,43 +144,42 @@ def row_av_cd_device() {
 # Hardware truths BEFORE the golden (the empty-screen-trap defense): a blank
 # screen can match a blank golden, so the facts that prove a System is running
 # are asserted first and the pixels only confirm what it drew.
-def row_q840av_71_cd_desktop() {
+def row_q840av_71_hd_desktop() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
-    machine.scsi.attach_cdrom "${$av_cd}" 3
-    scheduler.run 400000000
-    scheduler.run 1000000000
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
 
-    assert machine.id == "q840av" "q840av-cd: machine.id != q840av"
-    assert debug.mac.globals.read("BootDrive") != 0 "q840av-cd: BootDrive is 0 — nothing booted"
-    assert debug.mac.globals.read("SysMap") != 0 "q840av-cd: SysMap unset — no System file opened"
-    assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "q840av-cd: ApplZone == SysZone — no application heap, the Finder never launched"
-    assert debug.mac.globals.read("Ticks") > 10000 "q840av-cd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
-    assert machine.scsi.device[3].read_only "q840av-cd: device stopped being read-only"
+    assert machine.id == "q840av" "q840av-hd: machine.id != q840av"
+    assert debug.mac.globals.read("BootDrive") != 0 "q840av-hd: BootDrive is 0 — nothing booted"
+    assert debug.mac.globals.read("SysMap") != 0 "q840av-hd: SysMap unset — no System file opened"
+    assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "q840av-hd: ApplZone == SysZone — no application heap, the Finder never launched"
+    assert debug.mac.globals.read("Ticks") > 2000 "q840av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
 
-    check("goldens/q840av-7.1-640x480x8-cd-finder.png")
-    report_row("7.1", "civic", "cdrom-boot")
-    report_perf("suite-av/q840av-71-cd-desktop", scheduler.instr_count)
+    check("goldens/q840av-7.1-640x480x8-hd-finder.png")
+    report_row("7.1", "civic", "hd-boot")
+    report_perf("suite-av/q840av-71-hd-desktop", scheduler.instr_count)
 }
 
-# ---- q660av-71-cd-desktop ---------------------------------------------------
+# ---- q660av-71-hd-desktop ---------------------------------------------------
 # The same volume on the sibling board: 25 MHz, strap nibble $B, and no MUNI.
-def row_q660av_71_cd_desktop() {
+def row_q660av_71_hd_desktop() {
     machine.rtc.time = 3000000000
     machine.boot model="q660av" ram=16384 rom="${$av_rom}"
-    machine.scsi.attach_cdrom "${$av_cd}" 3
-    scheduler.run 400000000
-    scheduler.run 1000000000
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
 
-    assert machine.id == "q660av" "q660av-cd: machine.id != q660av"
-    assert debug.mac.globals.read("BootDrive") != 0 "q660av-cd: BootDrive is 0 — nothing booted"
-    assert debug.mac.globals.read("SysMap") != 0 "q660av-cd: SysMap unset — no System file opened"
-    assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "q660av-cd: ApplZone == SysZone — no application heap, the Finder never launched"
-    assert debug.mac.globals.read("Ticks") > 10000 "q660av-cd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
+    assert machine.id == "q660av" "q660av-hd: machine.id != q660av"
+    assert debug.mac.globals.read("BootDrive") != 0 "q660av-hd: BootDrive is 0 — nothing booted"
+    assert debug.mac.globals.read("SysMap") != 0 "q660av-hd: SysMap unset — no System file opened"
+    assert debug.mac.globals.read("ApplZone") != debug.mac.globals.read("SysZone") "q660av-hd: ApplZone == SysZone — no application heap, the Finder never launched"
+    assert debug.mac.globals.read("Ticks") > 2000 "q660av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
 
-    check("goldens/q660av-7.1-640x480x8-cd-finder.png")
-    report_row("7.1", "civic", "cdrom-boot")
-    report_perf("suite-av/q660av-71-cd-desktop", scheduler.instr_count)
+    check("goldens/q660av-7.1-640x480x8-hd-finder.png")
+    report_row("7.1", "civic", "hd-boot")
+    report_perf("suite-av/q660av-71-hd-desktop", scheduler.instr_count)
 }
 
 # --- row calls ---------------------------------------------------------------
@@ -201,26 +206,26 @@ if row_on("av-video") {
     }
 }
 
-# The boot rows additionally need the small AV boot disk.
-if row_on("av-cd-device") {
-    if have_media($av_rom) && have_media($av_cd) {
-        row_end("av-cd-device", try(row_av_cd_device(), "FAILED"))
+# The boot rows additionally need the AV boot disk.
+if row_on("av-hd-device") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("av-hd-device", try(row_av_hd_device(), "FAILED"))
     } else {
-        echo "skip: av-cd-device — ${$av_cd} not fetched"
+        echo "skip: av-hd-device — ${$av_hd} not fetched"
     }
 }
-if row_on("q840av-71-cd-desktop") {
-    if have_media($av_rom) && have_media($av_cd) {
-        row_end("q840av-71-cd-desktop", try(row_q840av_71_cd_desktop(), "FAILED"))
+if row_on("q840av-71-hd-desktop") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("q840av-71-hd-desktop", try(row_q840av_71_hd_desktop(), "FAILED"))
     } else {
-        echo "skip: q840av-71-cd-desktop — ${$av_cd} not fetched"
+        echo "skip: q840av-71-hd-desktop — ${$av_hd} not fetched"
     }
 }
-if row_on("q660av-71-cd-desktop") {
-    if have_media($av_rom) && have_media($av_cd) {
-        row_end("q660av-71-cd-desktop", try(row_q660av_71_cd_desktop(), "FAILED"))
+if row_on("q660av-71-hd-desktop") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("q660av-71-hd-desktop", try(row_q660av_71_hd_desktop(), "FAILED"))
     } else {
-        echo "skip: q660av-71-cd-desktop — ${$av_cd} not fetched"
+        echo "skip: q660av-71-hd-desktop — ${$av_hd} not fetched"
     }
 }
 
