@@ -48,15 +48,15 @@ jobs:
           submodules: recursive
 
       # 7z extracts the large binary archives (CD-ROM images and the like).
-      # Shipped by the devcontainer Dockerfile, so verify rather than install.
-      - name: Verify 7z presence
-        shell: bash
+      # Still install-if-missing: `7zip` was only just added to the devcontainer
+      # Dockerfile, and the pinned image predates it.  Once build-dev-image has
+      # published an image carrying it, this becomes a verify step like the
+      # m68k one below.
+      - name: Install 7z
         run: |
-          which 7z || {
-            echo '7z not on PATH — the pinned dev image is wrong or stale'
-            exit 1
-          }
-          7z i | head -n 2
+          if ! command -v 7z >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq 7zip
+          fi
 
       # m68k binutils assembles the generic declaration-ROM fragments
       # (tools/vrom / src/core/peripherals/nubus/vrom68k).  The devcontainer
@@ -260,15 +260,12 @@ jobs:
           submodules: recursive
 
       # 7z extracts the large binary archives (e.g. the A/UX HD) the functional
-      # web2 e2e specs boot from — verified, not installed.
-      - name: Verify 7z presence
-        shell: bash
+      # web2 e2e specs boot from (see the matching step in the test job).
+      - name: Install 7z
         run: |
-          which 7z || {
-            echo '7z not on PATH — the pinned dev image is wrong or stale'
-            exit 1
-          }
-          7z i | head -n 2
+          if ! command -v 7z >/dev/null 2>&1; then
+            apt-get update -qq && apt-get install -y -qq 7zip
+          fi
 
       # m68k binutils for the WASM build's declaration-ROM fragments —
       # verified, not installed (see the matching step in the test job).
