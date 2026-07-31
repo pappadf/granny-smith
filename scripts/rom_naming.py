@@ -27,6 +27,7 @@ CANONICAL_NAMES = {
     "36b7fb6c": "iisi-36b7fb6c.rom",  # Macintosh IIsi ("Erickson")
     "420dbff3": "q700-q900-420dbff3.rom",  # Quadra 700/900 (also PB140/170)
     "3dc27823": "q950-3dc27823.rom",  # Quadra 950
+    "5bf10fd1": "q840av-q660av-5bf10fd1.rom",  # Quadra 840AV / Centris 660AV (Cyclone/Tempest)
     "098917b2": "lisa2-revh-098917b2.rom",  # Apple Lisa 2 boot ROM rev H (computed checksum)
     "094c82f0": "macxl-3a-094c82f0.rom",  # Macintosh XL boot ROM "3A" (computed checksum)
     # --- Declaration ROMs / vROMs (*.vrom), keyed by Format-Block CRC -------
