@@ -15,6 +15,7 @@ RUN apt-get update \
     binutils-m68k-linux-gnu \
     cmake \
     ninja-build \
+    valgrind \
     python3 \
     python3-pip \
     python3-venv \
