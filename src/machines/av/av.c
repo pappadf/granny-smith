@@ -12,9 +12,13 @@
 
 #include "av.h"
 
+#include "cuda.h"
+#include "psc.h"
+
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
 #include "mmu040.h"
 
+#include "adb.h"
 #include "checkpoint_images.h"
 #include "cpu.h"
 #include "cpu_internal.h" // cpu->mmu (attach the 040 walker to the bus resolver)
@@ -182,12 +186,16 @@ static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
 // ============================================================
 
 #define AV_VIA_IO_PENALTY 16
+#define AV_SCC_IO_PENALTY 2
 
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
 const mac030_io_range_t av_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, AV_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
+    {0x02000, 0x04000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
+    {0x04000, 0x08000, MAC030_DEV_SCC, AV_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
     {0x30000, 0x30400, 0, 0, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
     {0x30400, 0x30800, 0, 0, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
+    {0x31000, 0x33000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_reg_read, av_psc_reg_write, "psc"},
     {0}, // sentinel: end == 0
 };
 
@@ -243,11 +251,17 @@ static void av_via1_irq(void *context, bool active) {
     av_update_ipl((config_t *)context, AV_IRQ_VIA1, active);
 }
 
-// SCC chip INT: routed through the PSC's level-4 SCCA/SCCB bits once the
-// PSC lands (Phase B); the chip line alone cannot raise an IPL until then.
+// SCC chip INT → PSC level-4 SCCA/SCCB bits.  The chip has one INT line;
+// the ROM's SccDecode handler reads SCC RR3 to find the channel, so both
+// bits track the line.  (Guarded: scc_init fires this before the PSC is
+// built.)
 static void av_scc_irq(void *context, bool active) {
-    (void)context;
-    (void)active;
+    config_t *cfg = (config_t *)context;
+    av_state_t *st = av_st(cfg);
+    if (!st || !st->psc)
+        return;
+    av_psc_level_source(st->psc, AV_PSC_L4, 1, active);
+    av_psc_level_source(st->psc, AV_PSC_L4, 2, active);
 }
 
 // ============================================================
@@ -411,18 +425,20 @@ static void av_memory_layout(config_t *cfg) {
 // VIA1 callbacks (shared by both leaves)
 // ============================================================
 // Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out, PB5 TIP
-// out — via1-cuda.md §2); the SR shift-out is a Cuda command byte.  Wired to
-// the behavioral Cuda model in Phase B.
+// out — via1-cuda.md §2); the SR shift-out is a Cuda command byte.
 
 void av_via1_output(void *context, uint8_t port, uint8_t value) {
-    (void)context;
-    (void)port;
-    (void)value;
+    config_t *cfg = (config_t *)context;
+    av_state_t *st = av_st(cfg);
+    if (port == 1 && st && st->cuda)
+        av_cuda_via1_pb_input(st->cuda, value);
 }
 
 void av_via1_shift_out(void *context, uint8_t byte) {
-    (void)context;
-    (void)byte;
+    config_t *cfg = (config_t *)context;
+    av_state_t *st = av_st(cfg);
+    if (st && st->cuda)
+        av_cuda_via1_shift_input(st->cuda, byte);
 }
 
 // ============================================================
@@ -447,6 +463,19 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
     via_input_c(cfg->via1, 1, 1, 1);
+
+    // The PSC interrupt controller (VIA2 window + L3-L6 + sndPhase).
+    st->psc = av_psc_init(cfg, cp);
+    assert(st->psc != NULL);
+
+    // ADB device state, serviced through Cuda packets (adb_iop_transact),
+    // not the VIA shifter — pass NULL for the VIA (the IIsi/Egret pattern).
+    st->adb = adb_init(NULL, cfg->scheduler, cp);
+    cfg->adb = st->adb;
+
+    // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.
+    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, cp);
+    assert(st->cuda != NULL);
 
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
@@ -539,6 +568,19 @@ static void av_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     av_state_t *st = av_st(cfg);
     if (st) {
+        if (st->cuda) {
+            av_cuda_delete(st->cuda);
+            st->cuda = NULL;
+        }
+        if (st->psc) {
+            av_psc_delete(st->psc);
+            st->psc = NULL;
+        }
+        if (st->adb) {
+            adb_delete(st->adb);
+            st->adb = NULL;
+            cfg->adb = NULL;
+        }
         if (st->bus_mmu) {
             mmu_delete(st->bus_mmu);
             st->bus_mmu = NULL;
@@ -591,6 +633,9 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
     via_checkpoint(cfg->via1, cp);
+    av_psc_checkpoint(st->psc, cp);
+    adb_checkpoint(st->adb, cp);
+    av_cuda_checkpoint(st->cuda, cp);
     mac_checkpoint_save_images(cfg, cp);
     if (cfg->scsi)
         scsi_checkpoint(cfg->scsi, cp);
@@ -601,11 +646,14 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
 }
 
-// VBL tick: VIA1 CA1 pulse (60 Hz reference; the PSC's own 60.15 Hz level-6
-// source joins in Phase B).
+// VBL tick: VIA1 CA1 pulse (60 Hz reference) + the PSC's own 60.15 Hz
+// level-6 source.
 static void av_trigger_vbl(config_t *cfg) {
+    av_state_t *st = av_st(cfg);
     via_input_c(cfg->via1, 0, 0, 0);
     via_input_c(cfg->via1, 0, 0, 1);
+    if (st && st->psc)
+        av_psc_tick60(st->psc);
     if (cfg->nubus)
         nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
