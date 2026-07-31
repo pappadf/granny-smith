@@ -137,6 +137,14 @@ def row_av_hd_device() {
     assert try(machine.scsi.device[3].type, none) == none "av-hd-device: something is attached at SCSI 3"
 }
 
+# golden-collision-ok: q840av-7.1-640x480x8-hd-finder.png q660av-7.1-640x480x8-hd-finder.png — both
+# models render the same volume's desktop at the same geometry, so the freshly
+# booted frames are identical by construction; nothing in a Finder desktop
+# names the machine.  What proves the two states differ is the About box each
+# row opens straight afterwards: the -hd-about goldens print "Quadra 840AV" vs
+# "Quadra 660AV" (with different case icons), which is the Gestalt machine name
+# the strap nibble and System Enabler 088 between them decide.
+
 # ---- q840av-71-hd-desktop ---------------------------------------------------
 # The deliverable: System 7.1 + System Enabler 088 from the hard disk to the
 # Finder desktop on a Quadra 840AV.  The enabler is not optional — its `gbly`
@@ -160,7 +168,15 @@ def row_q840av_71_hd_desktop() {
     assert debug.mac.globals.read("Ticks") > 2000 "q840av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
 
     check("goldens/q840av-7.1-640x480x8-hd-finder.png")
-    report_row("7.1", "civic", "hd-boot")
+    # The two models render an identical desktop from the same volume, so the
+    # desktop frames collide by construction.  About This Macintosh is what
+    # separates them: it prints the Gestalt machine name, which is the whole
+    # point of this family — the YMCA strap nibble picks the ProductInfo, the
+    # enabler gates on the resulting machine ID, and only then does the System
+    # know which box it is running on.
+    about_box()
+    check("goldens/q840av-7.1-640x480x8-hd-about.png")
+    report_row("7.1", "civic", "hd-boot about")
     report_perf("suite-av/q840av-71-hd-desktop", scheduler.instr_count)
 }
 
@@ -180,7 +196,15 @@ def row_q660av_71_hd_desktop() {
     assert debug.mac.globals.read("Ticks") > 2000 "q660av-hd: only ${debug.mac.globals.read("Ticks")} ticks — System not running"
 
     check("goldens/q660av-7.1-640x480x8-hd-finder.png")
-    report_row("7.1", "civic", "hd-boot")
+    # The two models render an identical desktop from the same volume, so the
+    # desktop frames collide by construction.  About This Macintosh is what
+    # separates them: it prints the Gestalt machine name, which is the whole
+    # point of this family — the YMCA strap nibble picks the ProductInfo, the
+    # enabler gates on the resulting machine ID, and only then does the System
+    # know which box it is running on.
+    about_box()
+    check("goldens/q660av-7.1-640x480x8-hd-about.png")
+    report_row("7.1", "civic", "hd-boot about")
     report_perf("suite-av/q660av-71-hd-desktop", scheduler.instr_count)
 }
 
