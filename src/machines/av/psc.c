@@ -57,6 +57,9 @@ typedef struct av_psc_chan {
     bool pause; // PAUSE latched (FROZEN reads 1 while paused)
     bool cie; // channel interrupt enable
     bool berr; // bus error latched
+    bool sense_last; // last-written SENSE bit, reflected in reads (the
+                     // ROM's SerialHAL compares the whole word against
+                     // $C400 after a $8800 SWRESET write)
 } av_psc_chan_t;
 
 struct av_psc {
@@ -269,6 +272,13 @@ bool av_psc_dma_ready(av_psc_t *psc, int chan) {
     return !ch->pause && (ch->cs[ch->active_set] & PSC_CS_ENABLED) && ch->cnt[ch->active_set] != 0;
 }
 
+int av_psc_dma_dir(av_psc_t *psc, int chan) {
+    av_psc_chan_t *ch = &psc->chan[chan];
+    if (!av_psc_dma_ready(psc, chan))
+        return -1;
+    return (ch->cs[ch->active_set] & PSC_CS_DIR) ? 1 : 0;
+}
+
 // Common transfer core.  `to_memory` mirrors DIR (1 = device→memory).
 static int psc_dma_transfer(av_psc_t *psc, int n, const uint8_t *in, uint8_t *out, int len, bool to_memory) {
     av_psc_chan_t *ch = &psc->chan[n];
@@ -325,6 +335,8 @@ static uint8_t psc_ctrl_read(av_psc_t *psc, int n, uint32_t lane) {
             hi |= 0x10;
         if (ch->berr)
             hi |= 0x20;
+        if (ch->sense_last)
+            hi |= 0x80; // SENSE reads back latched
         return hi;
     }
     if (lane == 1)
@@ -338,6 +350,7 @@ static void psc_ctrl_write(av_psc_t *psc, int n, uint32_t lane, uint8_t value) {
         return; // every writable bit lives in the high byte
     bool sense = (value & 0x80) != 0;
     uint8_t bits = (uint8_t)(value & 0x7F);
+    ch->sense_last = sense;
     if (bits & 0x04) { // PAUSE
         ch->pause = sense;
         LOG(3, "DMA ch%d %s", n, sense ? "pause" : "run");

@@ -189,11 +189,19 @@ static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
 #define AV_VIA_IO_PENALTY 16
 #define AV_SCC_IO_PENALTY 2
 
+// 53C96 window handlers (defined with the SCSI wiring below).
+static uint8_t av_scsi_read(config_t *cfg, uint32_t addr);
+static void av_scsi_write(config_t *cfg, uint32_t addr, uint8_t value);
+static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t addr);
+static void av_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value);
+
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
 const mac030_io_range_t av_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, AV_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
     {0x04000, 0x08000, MAC030_DEV_SCC, AV_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {0x18000, 0x18100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96"},
+    {0x18100, 0x18200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma"},
     {0x2A000, 0x2A200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
     {0x30000, 0x30400, 0, 0, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
     {0x30400, 0x30800, 0, 0, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
@@ -251,6 +259,83 @@ void av_update_ipl(config_t *cfg, int source, bool active) {
 // VIA1 interrupt line → IPL 1.
 static void av_via1_irq(void *context, bool active) {
     av_update_ipl((config_t *)context, AV_IRQ_VIA1, active);
+}
+
+// ============================================================
+// SCSI: the Curio's 53C96 at island $18000 ($10 register stride)
+// ============================================================
+// No pseudo-DMA on this platform (pdmaAddr = 0) — data moves through PSC
+// channel 0, which the SCSI HAL POLLS (it never installs a channel-0
+// handler).  The chip IRQ is level-sensitive into the PSC-VIA2 window,
+// bits 3 and mirror 0 (curio.md §2, IMPLEMENTATION.md §5).
+
+static uint8_t av_scsi_read(config_t *cfg, uint32_t addr) {
+    return scsi_53c96_read(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
+}
+
+static void av_scsi_write(config_t *cfg, uint32_t addr, uint8_t value) {
+    scsi_53c96_write(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4, value);
+}
+
+// Curio's rDMA pseudo-DMA port at +$100: the ROM's boot-time SCSI Manager
+// (SCSIMgrHWPSC.a) streams 16-bit words through it — the engine
+// byte-decomposes them, and byte order equals wire order.
+static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t addr) {
+    (void)addr;
+    return scsi_53c96_pdma_read8(av_st(cfg)->scsi96);
+}
+
+static void av_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+    (void)addr;
+    scsi_53c96_pdma_write8(av_st(cfg)->scsi96, value);
+}
+
+// The chip INT drives ONLY the CB2-position bit (3).  psc.md lists bit 0 as
+// a "SCSI mirror", but driving it as a second interrupt source feeds the
+// ROM's pattern-indexed level-2 dispatcher combinations it never expects
+// (IFR $09/$29): the SCSI service then runs on patterns whose table entries
+// mis-classify, the manager's deferred-interrupt bookkeeping is left stale,
+// and the next transaction's select is never issued — verified against the
+// dossier CD image, where the boot hangs in SCSIComplete's phase wait with
+// the mirror driven and reaches the desktop without it.
+static void av_scsi96_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    av_state_t *st = av_st(cfg);
+    if (!st || !st->psc)
+        return;
+    av_psc_via2_source(st->psc, AV_PSC_VIA2_SCSI_CB2, active);
+}
+
+// The channel-0 pump: while the set is armed and the chip requests DMA,
+// move bytes between the 53C96 FIFO and memory.  Runs on a fixed-cadence
+// scheduler event (the hardware's DREQ/DACK engine, functionally); the
+// HAL polls CIRQ in the CmdStat for completion.
+#define AV_SCSI_PUMP_NS  10000.0 // 10 us cadence
+#define AV_SCSI_PUMP_MAX 2048 // bytes per firing (a CD sector burst)
+
+static void av_scsi_pump_event(void *source, uint64_t data) {
+    (void)data;
+    config_t *cfg = (config_t *)source;
+    av_state_t *st = av_st(cfg);
+    if (st && st->psc && st->scsi96) {
+        int dir = av_psc_dma_dir(st->psc, AV_PSC_DMA_SCSI);
+        int moved = 0;
+        while (dir >= 0 && moved < AV_SCSI_PUMP_MAX && scsi_53c96_dreq(st->scsi96)) {
+            uint8_t byte;
+            if (dir == 1) { // device → memory
+                byte = scsi_53c96_pdma_read8(st->scsi96);
+                if (av_psc_dma_device_in(st->psc, AV_PSC_DMA_SCSI, &byte, 1) != 1)
+                    break;
+            } else { // memory → device
+                if (av_psc_dma_device_out(st->psc, AV_PSC_DMA_SCSI, &byte, 1) != 1)
+                    break;
+                scsi_53c96_pdma_write8(st->scsi96, byte);
+            }
+            moved++;
+            dir = av_psc_dma_dir(st->psc, AV_PSC_DMA_SCSI);
+        }
+    }
+    scheduler_new_cpu_event(cfg->scheduler, &av_scsi_pump_event, cfg, 0, 0, (uint64_t)AV_SCSI_PUMP_NS);
 }
 
 // PSC bus-master DMA: guest-physical accesses through the bus resolver
@@ -520,9 +605,16 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
 
-    // SCSI bus/target model (the 53C96 front-end arrives in Phase E; the bus
-    // exists from the start so images and the object model stay uniform).
+    // SCSI: the bus/target model carries the disks and CD; the 53C96 chip
+    // model fronts it through the external-initiator API.
     cfg->scsi = scsi_init(NULL, cp);
+    st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
+    scsi_53c96_set_irq_callback(st->scsi96, av_scsi96_irq, cfg);
+    scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
+
+    // The PSC channel-0 pump (the hardware's DREQ/DACK engine).
+    scheduler_new_event_type(cfg->scheduler, "av", cfg, "scsi_pump", &av_scsi_pump_event);
+    scheduler_new_cpu_event(cfg->scheduler, &av_scsi_pump_event, cfg, 0, 0, (uint64_t)AV_SCSI_PUMP_NS);
 
     // Bus-side physical resolver for the 040 walker: RAM decoded up to the
     // ROM base, the 2 MB ROM at $40800000.  ram aperture max = $40800000 so
@@ -608,6 +700,10 @@ static void av_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     av_state_t *st = av_st(cfg);
     if (st) {
+        if (st->scsi96) {
+            scsi_53c96_delete(st->scsi96);
+            st->scsi96 = NULL;
+        }
         if (st->fdc) {
             av_new_age_delete(st->fdc);
             st->fdc = NULL;
@@ -684,6 +780,7 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mac_checkpoint_save_images(cfg, cp);
     if (cfg->scsi)
         scsi_checkpoint(cfg->scsi, cp);
+    scsi_53c96_checkpoint(st->scsi96, cp);
     // Substrate-private tail (mirrored by the restore block in av_init).
     system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
     system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));

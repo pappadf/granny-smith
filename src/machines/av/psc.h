@@ -114,4 +114,9 @@ int av_psc_dma_device_out(av_psc_t *psc, int chan, uint8_t *buf, int len);
 // uses this to know whether to bother polling its DREQ).
 bool av_psc_dma_ready(av_psc_t *psc, int chan);
 
+// Armed direction of the channel's active set: 1 = device→memory (DIR
+// set), 0 = memory→device, -1 = not armed/paused.  A device pump reads
+// this before touching its FIFO so probing has no side effects.
+int av_psc_dma_dir(av_psc_t *psc, int chan);
+
 #endif // GS_MACHINES_AV_PSC_H
