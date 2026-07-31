@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # machine.profile() capability-probe assertions.
 #
-# Runs the headless shell once, dumps machine.profile for every registered
-# model, then greps each model's JSON line for the expected capability
+# Runs the headless shell once, dumps machine.profile for the models listed in
+# MODELS= below, then greps each model's JSON line for the expected capability
 # fields.  Each model's profile is a single JSON line containing
 # "id":"<model>", so we isolate a model's line by that key.
+#
+# MODELS= is deliberately NOT "every registered model": every assertion here is
+# hand-written and names its model explicitly, so adding a model to the list
+# alone buys no coverage — it just dumps a JSON line nothing inspects.  A new
+# machine earns coverage here only by having assertions written for it.  (The
+# shape of the profile JSON *is* checked for every registered model, by the
+# sibling machine-profile-schema test.)
 set -euo pipefail
 
 OUT="$WORK_DIR/profiles.txt"
