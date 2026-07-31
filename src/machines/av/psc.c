@@ -39,6 +39,26 @@ LOG_USE_CATEGORY_NAME("psc");
 // the driver's Handler never writes the IFR.
 #define AV_PSC_VIA2_LATCH_MASK (1u << AV_PSC_VIA2_SNDFRM)
 
+// CmdStat action bits, stored as (hardware word >> 8) — every architected
+// bit of the register lives in the high byte (psc.md §2.7).
+#define PSC_CS_IF      0x01 // bit 8: interrupt flag (set at completion)
+#define PSC_CS_DIR     0x02 // bit 9: 1 = device→memory
+#define PSC_CS_TERMCNT 0x04 // bit 10: terminal count reached
+#define PSC_CS_ENABLED 0x08 // bit 11: set armed (hardware clears at completion)
+#define PSC_CS_IE      0x10 // bit 12: interrupt enable for this set
+
+// One DMA channel: two {Addr, Cnt, CmdStat} register sets + the control
+// word's stateful bits (psc.md §2.6-§2.7).
+typedef struct av_psc_chan {
+    uint32_t addr[2]; // 32-bit physical buffer address per set
+    uint32_t cnt[2]; // byte count / residual per set
+    uint8_t cs[2]; // CmdStat action bits (PSC_CS_*) per set
+    uint8_t active_set; // control bit 0: which set the engine runs
+    bool pause; // PAUSE latched (FROZEN reads 1 while paused)
+    bool cie; // channel interrupt enable
+    bool berr; // bus error latched
+} av_psc_chan_t;
+
 struct av_psc {
     // --- plain data (checkpointed up to the first pointer field) ---
     uint8_t via2_level; // live VIA2-window source levels
@@ -52,9 +72,13 @@ struct av_psc {
     uint8_t psctest[4]; // $400 test register latch (no known function)
     uint8_t snd[0x1C]; // $200-$21B sound-block latches ($20C reads computed)
     uint8_t dsp_overrun; // $21C sense-bit latch (pdspReset/pdspResetEn/pdspFrameOvr)
+    av_psc_chan_t chan[AV_PSC_DMA_CHANNELS]; // the 7-channel DMA engine
 
     // --- pointers (not checkpointed) ---
     config_t *cfg;
+    av_psc_mem_read_fn mem_read; // guest-physical accessors for DMA
+    av_psc_mem_write_fn mem_write;
+    void *mem_ctx;
 };
 
 static inline av_psc_t *psc_of(config_t *cfg) {
@@ -196,6 +220,181 @@ static uint32_t psc_snd_phase(av_psc_t *psc) {
 }
 
 // ============================================================
+// DMA engine (psc.md §2.6-§3)
+// ============================================================
+
+// Big-endian byte lane of a 32-bit value.
+static inline uint8_t lane32(uint32_t v, uint32_t off) {
+    return (uint8_t)(v >> (8 * (3 - (off & 3))));
+}
+
+// PSC_ISR: bit (31−n) = channel n interrupting — a set's IF && IE, gated
+// by the channel's CIE (BFFFO-compatible bit order, psc.md §2.4).
+static uint32_t psc_isr_value(av_psc_t *psc) {
+    uint32_t isr = 0;
+    for (int n = 0; n < AV_PSC_DMA_CHANNELS; n++) {
+        av_psc_chan_t *ch = &psc->chan[n];
+        bool pending = ((ch->cs[0] & PSC_CS_IF) && (ch->cs[0] & PSC_CS_IE)) ||
+                       ((ch->cs[1] & PSC_CS_IF) && (ch->cs[1] & PSC_CS_IE));
+        if (pending && ch->cie)
+            isr |= 1u << (31 - n);
+    }
+    return isr;
+}
+
+// Re-derive the L4 DMA source (bit 3) from PSC_ISR.
+static void psc_update_dma_ipl(av_psc_t *psc) {
+    av_psc_level_source(psc, AV_PSC_L4, 3, psc_isr_value(psc) != 0);
+}
+
+// Terminal count on the active set: hardware clears ENABLED, sets TERMCNT
+// and IF, and switches the active set to the other one (psc.md §3.3).
+static void psc_dma_complete(av_psc_t *psc, int n) {
+    av_psc_chan_t *ch = &psc->chan[n];
+    int s = ch->active_set;
+    ch->cs[s] = (uint8_t)((ch->cs[s] & ~PSC_CS_ENABLED) | PSC_CS_TERMCNT | PSC_CS_IF);
+    ch->active_set ^= 1;
+    LOG(2, "DMA ch%d set %d complete; active set -> %d", n, s, ch->active_set);
+    psc_update_dma_ipl(psc);
+}
+
+void av_psc_set_memory_hooks(av_psc_t *psc, av_psc_mem_read_fn rd, av_psc_mem_write_fn wr, void *ctx) {
+    psc->mem_read = rd;
+    psc->mem_write = wr;
+    psc->mem_ctx = ctx;
+}
+
+bool av_psc_dma_ready(av_psc_t *psc, int chan) {
+    av_psc_chan_t *ch = &psc->chan[chan];
+    return !ch->pause && (ch->cs[ch->active_set] & PSC_CS_ENABLED) && ch->cnt[ch->active_set] != 0;
+}
+
+// Common transfer core.  `to_memory` mirrors DIR (1 = device→memory).
+static int psc_dma_transfer(av_psc_t *psc, int n, const uint8_t *in, uint8_t *out, int len, bool to_memory) {
+    av_psc_chan_t *ch = &psc->chan[n];
+    int s = ch->active_set;
+    if (ch->pause || !(ch->cs[s] & PSC_CS_ENABLED))
+        return 0;
+    if (((ch->cs[s] & PSC_CS_DIR) != 0) != to_memory)
+        return 0; // direction mismatch — the set is armed the other way
+    uint32_t remain = ch->cnt[s]; // (MACE-receive chain mode not modelled)
+    if (remain == 0)
+        return 0;
+    if (ch->addr[s] >= 0x40000000u) {
+        // The PSC cannot DMA into ROM/NuBus space (Radar #1059322): latch a
+        // bus error instead of transferring.
+        ch->berr = true;
+        LOG(1, "DMA ch%d bus error: addr $%08X >= $40000000", n, ch->addr[s]);
+        return 0;
+    }
+    uint32_t count = (uint32_t)len < remain ? (uint32_t)len : remain;
+    for (uint32_t i = 0; i < count; i++) {
+        if (to_memory)
+            psc->mem_write(psc->mem_ctx, ch->addr[s] + i, in[i], 1);
+        else
+            out[i] = (uint8_t)psc->mem_read(psc->mem_ctx, ch->addr[s] + i, 1);
+    }
+    ch->addr[s] += count;
+    ch->cnt[s] -= count;
+    if (ch->cnt[s] == 0)
+        psc_dma_complete(psc, n);
+    return (int)count;
+}
+
+int av_psc_dma_device_in(av_psc_t *psc, int chan, const uint8_t *buf, int len) {
+    return psc_dma_transfer(psc, chan, buf, NULL, len, true);
+}
+
+int av_psc_dma_device_out(av_psc_t *psc, int chan, uint8_t *buf, int len) {
+    return psc_dma_transfer(psc, chan, NULL, buf, len, false);
+}
+
+// --- Channel control word ($C00 + chan*$10, word; action bits in the high
+// byte, kmSET in the low byte) ---
+
+static uint8_t psc_ctrl_read(av_psc_t *psc, int n, uint32_t lane) {
+    av_psc_chan_t *ch = &psc->chan[n];
+    if (lane == 0) {
+        // CIRQ (bit 8) = OR of both sets' IF, independent of enables.
+        uint8_t hi = 0;
+        if ((ch->cs[0] | ch->cs[1]) & PSC_CS_IF)
+            hi |= 0x01; // CIRQ
+        if (ch->pause)
+            hi |= 0x04 | 0x40; // PAUSE latched + FROZEN (stops immediately)
+        if (ch->cie)
+            hi |= 0x10;
+        if (ch->berr)
+            hi |= 0x20;
+        return hi;
+    }
+    if (lane == 1)
+        return ch->active_set; // kmSET
+    return 0;
+}
+
+static void psc_ctrl_write(av_psc_t *psc, int n, uint32_t lane, uint8_t value) {
+    av_psc_chan_t *ch = &psc->chan[n];
+    if (lane != 0)
+        return; // every writable bit lives in the high byte
+    bool sense = (value & 0x80) != 0;
+    uint8_t bits = (uint8_t)(value & 0x7F);
+    if (bits & 0x04) { // PAUSE
+        ch->pause = sense;
+        LOG(3, "DMA ch%d %s", n, sense ? "pause" : "run");
+    }
+    if ((bits & 0x08) && sense) { // SWRESET: paused, both sets disarmed
+        ch->pause = true;
+        ch->cs[0] &= (uint8_t)~PSC_CS_ENABLED;
+        ch->cs[1] &= (uint8_t)~PSC_CS_ENABLED;
+        LOG(2, "DMA ch%d swreset", n);
+    }
+    if (bits & 0x10) // CIE
+        ch->cie = sense;
+    if ((bits & 0x20) && !sense) // BERR: writable-to-clear
+        ch->berr = false;
+    // DMAFLUSH (0x02) self-clears instantly — nothing is buffered here.
+    psc_update_dma_ipl(psc);
+}
+
+// --- Channel register sets ($1000 + chan*$20, set 1 at +$10) ---
+
+static uint8_t psc_set_read(av_psc_t *psc, int n, int s, uint32_t reg_off) {
+    av_psc_chan_t *ch = &psc->chan[n];
+    if (reg_off < 4)
+        return lane32(ch->addr[s], reg_off);
+    if (reg_off < 8)
+        return lane32(ch->cnt[s], reg_off);
+    if (reg_off == 8)
+        return ch->cs[s]; // CmdStat high byte
+    return 0; // CmdStat low byte (SETMASK — unused) + reserved
+}
+
+static void psc_set_write(av_psc_t *psc, int n, int s, uint32_t reg_off, uint8_t value) {
+    av_psc_chan_t *ch = &psc->chan[n];
+    if (reg_off < 4) {
+        uint32_t shift = 8 * (3 - reg_off);
+        ch->addr[s] = (ch->addr[s] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        return;
+    }
+    if (reg_off < 8) {
+        uint32_t shift = 8 * (3 - (reg_off & 3));
+        ch->cnt[s] = (ch->cnt[s] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        return;
+    }
+    if (reg_off == 8) {
+        // Sense-bit write on the CmdStat action bits.
+        bool sense = (value & 0x80) != 0;
+        uint8_t bits = (uint8_t)(value & (PSC_CS_IF | PSC_CS_DIR | PSC_CS_TERMCNT | PSC_CS_ENABLED | PSC_CS_IE));
+        if (sense)
+            ch->cs[s] |= bits;
+        else
+            ch->cs[s] &= (uint8_t)~bits;
+        psc_update_dma_ipl(psc);
+        return;
+    }
+}
+
+// ============================================================
 // UTSC ($300 lo / $304 hi; ~1 MHz monotonic)
 // ============================================================
 
@@ -206,11 +405,6 @@ static uint64_t psc_utsc(config_t *cfg) {
 // ============================================================
 // PSC register block ($50F31000-$50F32FFF)
 // ============================================================
-
-// Big-endian byte lane of a 32-bit value.
-static inline uint8_t lane32(uint32_t v, uint32_t off) {
-    return (uint8_t)(v >> (8 * (3 - (off & 3))));
-}
 
 uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
     av_psc_t *psc = psc_of(cfg);
@@ -231,6 +425,20 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
         if (reg == 4) // IER
             return psc->l_ier[level];
         return 0;
+    }
+
+    // Channel control words ($C00 + chan*$10, word).
+    if (off >= 0xC00 && off < 0xC00 + 0x10 * AV_PSC_DMA_CHANNELS) {
+        int n = (int)((off - 0xC00) >> 4);
+        uint32_t sub = off & 0xF;
+        return sub < 2 ? psc_ctrl_read(psc, n, sub) : 0;
+    }
+
+    // Channel register sets ($1000 + chan*$20; set 1 at +$10).
+    if (off >= 0x1000 && off < 0x1000 + 0x20 * AV_PSC_DMA_CHANNELS) {
+        int n = (int)((off - 0x1000) >> 5);
+        int s = (int)((off >> 4) & 1);
+        return psc_set_read(psc, n, s, off & 0xF);
     }
 
     switch (off & ~3u) {
@@ -254,7 +462,7 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
     case 0x800:
         return (off & 3) == 0 ? psc->berrie : 0;
     case 0x804:
-        return 0; // PSC_ISR: no DMA channels interrupting until Phase D
+        return lane32(psc_isr_value(psc), off); // PSC_ISR
     default:
         return 0;
     }
@@ -281,6 +489,21 @@ void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
                 psc->l_ier[level] &= (uint8_t)~value;
             psc_update_level_ipl(psc, level);
         }
+        return;
+    }
+
+    // Channel control words + register sets.
+    if (off >= 0xC00 && off < 0xC00 + 0x10 * AV_PSC_DMA_CHANNELS) {
+        int n = (int)((off - 0xC00) >> 4);
+        uint32_t sub = off & 0xF;
+        if (sub < 2)
+            psc_ctrl_write(psc, n, sub, value);
+        return;
+    }
+    if (off >= 0x1000 && off < 0x1000 + 0x20 * AV_PSC_DMA_CHANNELS) {
+        int n = (int)((off - 0x1000) >> 5);
+        int s = (int)((off >> 4) & 1);
+        psc_set_write(psc, n, s, off & 0xF, value);
         return;
     }
 

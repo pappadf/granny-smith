@@ -253,6 +253,28 @@ static void av_via1_irq(void *context, bool active) {
     av_update_ipl((config_t *)context, AV_IRQ_VIA1, active);
 }
 
+// PSC bus-master DMA: guest-physical accesses through the bus resolver
+// (the sonic memory-hook pattern — the CPU MMU is deliberately not in the
+// path).
+static uint32_t av_psc_mem_read(void *context, uint32_t phys, unsigned width) {
+    (void)context;
+    if (width == 1)
+        return mmu_read_physical_uint8(g_mmu, phys);
+    if (width == 2)
+        return mmu_read_physical_uint16(g_mmu, phys);
+    return mmu_read_physical_uint32(g_mmu, phys);
+}
+
+static void av_psc_mem_write(void *context, uint32_t phys, uint32_t value, unsigned width) {
+    (void)context;
+    if (width == 1)
+        mmu_write_physical_uint8(g_mmu, phys, (uint8_t)value);
+    else if (width == 2)
+        mmu_write_physical_uint16(g_mmu, phys, (uint16_t)value);
+    else
+        mmu_write_physical_uint32(g_mmu, phys, value);
+}
+
 // SCC chip INT → PSC level-4 SCCA/SCCB bits.  The chip has one INT line;
 // the ROM's SccDecode handler reads SCC RR3 to find the channel, so both
 // bits track the line.  (Guarded: scc_init fires this before the PSC is
@@ -476,9 +498,11 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     via_input_c(cfg->via1, 1, 0, 1);
     via_input_c(cfg->via1, 1, 1, 1);
 
-    // The PSC interrupt controller (VIA2 window + L3-L6 + sndPhase).
+    // The PSC interrupt controller + DMA engine (VIA2 window, L3-L6,
+    // sndPhase, the 7 channels).
     st->psc = av_psc_init(cfg, cp);
     assert(st->psc != NULL);
+    av_psc_set_memory_hooks(st->psc, av_psc_mem_read, av_psc_mem_write, cfg);
 
     // ADB device state, serviced through Cuda packets (adb_iop_transact),
     // not the VIA shifter — pass NULL for the VIA (the IIsi/Egret pattern).
