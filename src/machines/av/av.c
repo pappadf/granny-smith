@@ -13,6 +13,7 @@
 #include "av.h"
 
 #include "cuda.h"
+#include "new_age.h"
 #include "psc.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -193,6 +194,7 @@ const mac030_io_range_t av_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, AV_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
     {0x04000, 0x08000, MAC030_DEV_SCC, AV_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {0x2A000, 0x2A200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
     {0x30000, 0x30400, 0, 0, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
     {0x30400, 0x30800, 0, 0, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
     {0x31000, 0x33000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_reg_read, av_psc_reg_write, "psc"},
@@ -265,8 +267,18 @@ static void av_scc_irq(void *context, bool active) {
 }
 
 // ============================================================
-// RAM mapping (flat until the YMCA bank machinery lands in Phase C)
+// RAM mapping
 // ============================================================
+// A flat map of the installed RAM at physical 0 is the CORRECT model for
+// this platform, not a shortcut: the eight YMCA banks decode at a fixed
+// 16 MB spacing ($00000000/$01000000/…, ymca.md §3 RamInfo), so any
+// population of full banks is contiguous by construction, and a partial
+// last bank simply ends early (probes above installed RAM read floating
+// $FF, which is how the ROM's SizeMemory finds each bank's size — verified
+// for 8/16/32 MB against the real sizing + Mod3Test).  The per-bank
+// boundary/size registers still latch and read back (av_ymca_write); the
+// ROM's merge pass re-programs them to the same contiguous layout they
+// power up with, so they never change the decode.
 
 static void av_map_ram(config_t *cfg) {
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
@@ -477,6 +489,10 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, cp);
     assert(st->cuda != NULL);
 
+    // New Age FDC stub ("no drive" — ST3 = $FF).
+    st->fdc = av_new_age_init(cfg, cp);
+    assert(st->fdc != NULL);
+
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
 
@@ -568,6 +584,10 @@ static void av_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     av_state_t *st = av_st(cfg);
     if (st) {
+        if (st->fdc) {
+            av_new_age_delete(st->fdc);
+            st->fdc = NULL;
+        }
         if (st->cuda) {
             av_cuda_delete(st->cuda);
             st->cuda = NULL;
@@ -636,6 +656,7 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     av_psc_checkpoint(st->psc, cp);
     adb_checkpoint(st->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
+    av_new_age_checkpoint(st->fdc, cp);
     mac_checkpoint_save_images(cfg, cp);
     if (cfg->scsi)
         scsi_checkpoint(cfg->scsi, cp);

@@ -34,7 +34,10 @@
 LOG_USE_CATEGORY_NAME("psc");
 
 // VIA2-window latched bits (write-1-to-clear); the rest are level-derived.
-#define AV_PSC_VIA2_LATCH_MASK ((1u << AV_PSC_VIA2_FDC) | (1u << AV_PSC_VIA2_SNDFRM))
+// The FDC bit is a LEVEL: the New Age deasserts its INT when the host reads
+// the interrupt status (new-age.md §5), which is what clears the IFR bit —
+// the driver's Handler never writes the IFR.
+#define AV_PSC_VIA2_LATCH_MASK (1u << AV_PSC_VIA2_SNDFRM)
 
 struct av_psc {
     // --- plain data (checkpointed up to the first pointer field) ---
