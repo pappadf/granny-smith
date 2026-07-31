@@ -468,8 +468,15 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
 // === Autonomous tick + autopoll =============================================
 
 static bool cuda_bus_idle(av_cuda_t *cuda) {
-    // Only initiate unsolicited traffic when both we and the host are idle.
-    return cuda->state == CUDA_IDLE && (cuda->last_pb & PB_TIP) != 0;
+    // Only initiate unsolicited traffic when both we and the host are idle
+    // AND the previous transaction's idle acknowledge has actually been
+    // clocked out.  A pending push means CudaMgr's @waitIdleAck is still
+    // spinning on that byte; cuda_begin_send() cancels it, so the host would
+    // consume our attention byte as the acknowledge, finish the old
+    // transaction and go idle — while we sit in CUDA_SENDING with TREQ
+    // asserted, waiting for a TIP that never comes.  Both sides then wait
+    // for each other forever.
+    return cuda->state == CUDA_IDLE && !cuda->push_pending && (cuda->last_pb & PB_TIP) != 0;
 }
 
 // 1-second tick: [attn, tickPkt] — drives the OS one-second timer.
