@@ -60,7 +60,7 @@ jobs:
             echo '7z not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          7z i | head -n 2
+          7z i | sed -n '1,2p'
 
       - name: Verify m68k binutils presence
         shell: bash
@@ -69,7 +69,7 @@ jobs:
             echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          m68k-linux-gnu-as --version | head -n 1
+          m68k-linux-gnu-as --version | sed -n '1p'
 
       - name: Fetch test data
         id: fetch-data

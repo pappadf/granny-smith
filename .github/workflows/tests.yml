@@ -58,7 +58,7 @@ jobs:
             echo '7z not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          7z i | head -n 2
+          7z i | sed -n '1,2p'
 
       # m68k binutils assembles the generic declaration-ROM fragments
       # (tools/vrom / src/core/peripherals/nubus/vrom68k).  The devcontainer
@@ -72,7 +72,7 @@ jobs:
             echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          m68k-linux-gnu-as --version | head -n 1
+          m68k-linux-gnu-as --version | sed -n '1p'
 
       # Fetch proprietary test data (only works for internal builds with token access)
       - name: Fetch test data
@@ -270,7 +270,7 @@ jobs:
             echo '7z not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          7z i | head -n 2
+          7z i | sed -n '1,2p'
 
       # m68k binutils for the WASM build's declaration-ROM fragments —
       # verified, not installed (see the matching step in the test job).
@@ -281,7 +281,7 @@ jobs:
             echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          m68k-linux-gnu-as --version | head -n 1
+          m68k-linux-gnu-as --version | sed -n '1p'
 
       # Fetch proprietary test data (internal builds with token access only).
       # Gates the functional web2 e2e below; the token is scoped to this step.
