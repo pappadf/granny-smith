@@ -53,11 +53,14 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install 7z
+      - name: Verify 7z presence
+        shell: bash
         run: |
-          if ! command -v 7z >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq 7zip
-          fi
+          which 7z || {
+            echo '7z not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+          7z i | head -n 2
 
       - name: Verify m68k binutils presence
         shell: bash
