@@ -14,6 +14,7 @@
 
 #include "civic.h"
 #include "cuda.h"
+#include "mace.h"
 #include "new_age.h"
 #include "psc.h"
 
@@ -201,8 +202,10 @@ const mac030_io_range_t av_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, AV_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
     {0x04000, 0x08000, MAC030_DEV_SCC, AV_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
+    {0x08000, 0x08080, 0, 0, MAC030_IO_NORMAL, 0, 0, av_mace_prom_read, av_mace_prom_write, "mac_prom"},
     {0x18000, 0x18100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96"},
     {0x18100, 0x18200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma"},
+    {0x1C000, 0x1C200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace"},
     {0x2A000, 0x2A200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
     {0x2E000, 0x2E100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_clk_read, av_civic_clk_write, "clock"},
     {0x30000, 0x30400, 0, 0, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
@@ -606,6 +609,10 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->fdc = av_new_age_init(cfg, cp);
     assert(st->fdc != NULL);
 
+    // MACE Ethernet register stub + address PROM (no wire).
+    st->mace = av_mace_init(cfg, cp);
+    assert(st->mace != NULL);
+
     // CIVIC + Sebastian video (Hi-Res 640x480 monitor, 2 MB VRAM).
     st->civic = av_civic_init(cfg, cp);
     assert(st->civic != NULL);
@@ -715,6 +722,10 @@ static void av_teardown(config_t *cfg) {
             av_civic_delete(st->civic);
             st->civic = NULL;
         }
+        if (st->mace) {
+            av_mace_delete(st->mace);
+            st->mace = NULL;
+        }
         if (st->scsi96) {
             scsi_53c96_delete(st->scsi96);
             st->scsi96 = NULL;
@@ -797,6 +808,7 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
         scsi_checkpoint(cfg->scsi, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
     av_civic_checkpoint(st->civic, cp);
+    av_mace_checkpoint(st->mace, cp);
     // Substrate-private tail (mirrored by the restore block in av_init).
     system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
     system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
