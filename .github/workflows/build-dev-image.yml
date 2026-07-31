@@ -82,3 +82,26 @@ jobs:
         run: |
           echo "${{ steps.meta.outputs.image }}@${{ steps.digest.outputs.digest }}" > image_digest.txt
         shell: bash
+
+      # GHCR never garbage-collects. Re-pushing a moving tag orphans the old
+      # version rather than removing it, and `cache-to: mode=max` exports every
+      # intermediate layer on every build, so versions accumulate indefinitely
+      # (that cache is the bulk of them, and is untagged).
+      #
+      # Only untagged versions are removed: the image is single-platform
+      # (linux/amd64), so there are no multi-arch child manifests that pruning
+      # could orphan — which is the usual way this action bites people. The
+      # buildx cache goes with them, so the next build is cold; `cache-to`
+      # rewrites it every run, so that costs time and nothing else.
+      #
+      # continue-on-error because this is housekeeping: a retention hiccup must
+      # not fail a build that has already pushed a good image. It shows up as a
+      # yellow step, so a persistent failure is still visible.
+      - name: Prune untagged dev images
+        uses: actions/delete-package-versions@v5
+        continue-on-error: true
+        with:
+          package-name: granny-smith-dev
+          package-type: container
+          delete-only-untagged-versions: true
+          min-versions-to-keep: 10

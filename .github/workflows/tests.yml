@@ -47,21 +47,30 @@ jobs:
         with:
           submodules: recursive
 
-      # Install p7zip (needed to extract large binary archives like CD-ROM images)
-      - name: Install p7zip
+      # 7z extracts the large binary archives (CD-ROM images and the like).
+      # Still install-if-missing: `7zip` was only just added to the devcontainer
+      # Dockerfile, and the pinned image predates it.  Once build-dev-image has
+      # published an image carrying it, this becomes a verify step like the
+      # m68k one below.
+      - name: Install 7z
         run: |
           if ! command -v 7z >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq p7zip-full
+            apt-get update -qq && apt-get install -y -qq 7zip
           fi
 
       # m68k binutils assembles the generic declaration-ROM fragments
       # (tools/vrom / src/core/peripherals/nubus/vrom68k).  The devcontainer
-      # image ships it; this step covers image versions that predate it.
-      - name: Install m68k binutils
+      # Dockerfile installs it, so this VERIFIES rather than installs: a
+      # self-repairing step hides a stale image pin, which is exactly how
+      # publish-staging drifted onto a five-month-old image unnoticed.
+      - name: Verify m68k binutils presence
+        shell: bash
         run: |
-          if ! command -v m68k-linux-gnu-as >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq binutils-m68k-linux-gnu
-          fi
+          which m68k-linux-gnu-as || {
+            echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+          m68k-linux-gnu-as --version | head -n 1
 
       # Fetch proprietary test data (only works for internal builds with token access)
       - name: Fetch test data
@@ -250,21 +259,24 @@ jobs:
         with:
           submodules: recursive
 
-      # p7zip extracts the large binary archives (e.g. the A/UX HD) that the
-      # functional web2 e2e specs boot from.
-      - name: Install p7zip
+      # 7z extracts the large binary archives (e.g. the A/UX HD) the functional
+      # web2 e2e specs boot from (see the matching step in the test job).
+      - name: Install 7z
         run: |
           if ! command -v 7z >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq p7zip-full
+            apt-get update -qq && apt-get install -y -qq 7zip
           fi
 
-      # m68k binutils assembles the generic declaration-ROM fragments for
-      # the WASM build (see the matching step in the test job above).
-      - name: Install m68k binutils
+      # m68k binutils for the WASM build's declaration-ROM fragments —
+      # verified, not installed (see the matching step in the test job).
+      - name: Verify m68k binutils presence
+        shell: bash
         run: |
-          if ! command -v m68k-linux-gnu-as >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq binutils-m68k-linux-gnu
-          fi
+          which m68k-linux-gnu-as || {
+            echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+          m68k-linux-gnu-as --version | head -n 1
 
       # Fetch proprietary test data (internal builds with token access only).
       # Gates the functional web2 e2e below; the token is scoped to this step.

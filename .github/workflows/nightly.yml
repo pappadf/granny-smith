@@ -53,17 +53,20 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install p7zip
+      - name: Install 7z
         run: |
           if ! command -v 7z >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq p7zip-full
+            apt-get update -qq && apt-get install -y -qq 7zip
           fi
 
-      - name: Install m68k binutils
+      - name: Verify m68k binutils presence
+        shell: bash
         run: |
-          if ! command -v m68k-linux-gnu-as >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq binutils-m68k-linux-gnu
-          fi
+          which m68k-linux-gnu-as || {
+            echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+          m68k-linux-gnu-as --version | head -n 1
 
       - name: Fetch test data
         id: fetch-data
