@@ -51,6 +51,8 @@ static const char *const IISI_COMPATIBLE[] = {"iisi", NULL};
 static const char *const Q700_Q900_COMPATIBLE[] = {"q700", "q900", NULL};
 // Dedicated Quadra 950 ("Zydeco") 1 MB ROM.
 static const char *const Q950_COMPATIBLE[] = {"q950", NULL};
+// Quadra 840AV / Centris 660AV shared 2 MB "Cyclone/Tempest" ROM.
+static const char *const AV_COMPATIBLE[] = {"q840av", "q660av", NULL};
 
 // Master ROM signature table.  Content facts only — the canonical fixture
 // filenames live in tooling (scripts/rom_naming.py), not here.
@@ -64,6 +66,7 @@ static const rom_info_t ROM_TABLE[] = {
     {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024 },
     {"Quadra 700/900 ROM",                      Q700_Q900_COMPATIBLE, 0x420DBFF3, 1024 * 1024},
     {"Quadra 950 ROM",                          Q950_COMPATIBLE,      0x3DC27823, 1024 * 1024},
+    {"Quadra 840AV/660AV ROM",                  AV_COMPATIBLE,        0x5BF10FD1, 2048 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))

@@ -1,9 +1,7 @@
 # Shell
 
 This document describes the shell layer in `src/core/shell/` — the
-**v2 script language** (see
-`local/gs-docs/proposals/proposal-shell-control-flow-and-functions.md`)
-layered on the [object model](object-model.md). A line is **parsed
+**v2 script language** layered on the [object model](object-model.md). A line is **parsed
 first and evaluated second**: statements carry typed argument
 expressions, string interpolation lives inside string literals, and one
 binding namespace serves variables and aliases behind a single `$`

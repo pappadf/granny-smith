@@ -202,6 +202,16 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     p->display.stride = 512 / 8;
     p->display.format = PIXEL_1BPP_MSB;
     p->display.bits = p->vram + SE30_FB_PRIMARY_OFFSET;
+    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
+    // Blank BOTH rasters: VIA1 PA6 picks the buffer and may select the
+    // alternate before the OS draws, so blanking only the primary would still
+    // flash white.  Raster only — the rest of VRAM is guest-readable memory
+    // that is not pixels.
+    display_blank_raster(&p->display);
+    const uint8_t *primary = p->display.bits;
+    p->display.bits = p->vram + SE30_FB_ALTERNATE_OFFSET;
+    display_blank_raster(&p->display);
+    p->display.bits = primary;
     p->display.clut = NULL;
     p->display.clut_len = 0;
     p->display.shape_dirty = true;

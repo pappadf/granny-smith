@@ -839,8 +839,22 @@ void via_input_sr(via_t *restrict via, uint8_t byte) {
     if (sr_mode == 7) {
         // Mode 7: shift out under external clock.  The ADB transceiver (or
         // other external device) has finished clocking all 8 bits via CB1.
-        // On real hardware this sets IFR_SR.  SR contents are unchanged
-        // (the shift-out byte was already delivered via sr_shift_complete_callback).
+        // On real hardware this sets IFR_SR.
+        //
+        // If a shift-out is still pending, this external clock burst IS its
+        // completion — deliver the byte now and drop the fallback timer.
+        // Setting IFR_SR without delivering would tell the guest its byte
+        // went out while the device never saw it, and the guest's next SR
+        // write would overwrite the undelivered byte.  The Cuda's idle
+        // acknowledge racing the host's first command byte did exactly that
+        // on the Centris 660AV, silently eating the packet-type byte and
+        // desynchronising the transport for the rest of the boot.
+        if (via->sr_shift_pending) {
+            via->sr_shift_pending = false;
+            remove_event(via->scheduler, &sr_shift_complete_callback, via);
+            LOG(3, "via_input_sr: mode 7 completes pending shift-out 0x%02x", via->sr_shift_data);
+            via->shift_cb(via->cb_context, via->sr_shift_data);
+        }
         LOG(3, "via_input_sr: mode 7 -> setting IFR_SR (byte=0x%02x, sr=0x%02x)", byte, via->sr);
         update_ifr(via, via->ifr | IFR_SR);
         return;

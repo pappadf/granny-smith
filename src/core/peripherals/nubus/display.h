@@ -19,6 +19,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 // Pixel encodings exposed by display sources.
 typedef enum pixel_format {
@@ -37,6 +38,21 @@ typedef enum pixel_format {
                       // "24bpp packed-pixel" terminology).  The 24-bit name
                       // describes the visible colour depth, not the storage.
 } pixel_format_t;
+
+// The byte a display source should fill fresh VRAM with so a cold boot
+// scans out BLACK, which is what a real monitor shows before the video
+// circuitry starts driving it.
+//
+// Zero-filled VRAM is not black everywhere: 1 bpp is scanned out inverted
+// (1 = black, 0 = white — the Mac convention), so an all-zero 1 bpp buffer
+// is a WHITE screen, and that is what the user sees for the first second of
+// a cold boot, before the ROM programs the card and paints anything.  Every
+// other format already reads black at zero — the direct formats encode
+// black as all-zero, and the indexed formats power up with an all-zero
+// (i.e. black) CLUT — so this only has to special-case 1 bpp.
+static inline uint8_t display_black_fill(pixel_format_t format) {
+    return format == PIXEL_1BPP_MSB ? 0xFFu : 0x00u;
+}
 
 // Single CLUT entry; rgba layout matches QuickDraw's RGBColor packed for
 // host consumption (alpha is always 255 on Mac displays).
@@ -103,5 +119,37 @@ typedef struct display {
     bool clut_dirty; // CLUT entries changed
     bool response_dirty; // crt_response changed (effectively init-only today)
 } display_t;
+
+// Blank the visible raster of a fully-populated descriptor to black.
+//
+// Only `bits[0 .. stride*height)` is touched — NOT the whole VRAM
+// allocation.  A card's buffer is mapped into the slot aperture in one piece
+// and the framebuffer usually starts at an offset inside it (the 8•24 puts it
+// at +0xA00), so filling the whole allocation writes bytes the guest can read
+// that are not pixels at all.  Doing that changed what MacTest's video test
+// saw on a IIcx and diverged the run — blank the raster, nothing else.
+static inline void display_blank_raster(display_t *d) {
+    if (!d || !d->bits || !d->stride || !d->height)
+        return;
+    memset((uint8_t *)d->bits, display_black_fill(d->format), (size_t)d->stride * d->height);
+}
+
+// True when the visible raster still holds nothing but its power-on blank,
+// i.e. the guest has not drawn.  A depth change reinterprets every byte, so
+// the fill chosen at the old depth stops meaning black at the new one (0xFF
+// is black at 1 bpp but index 255 -- white in the seeded ramp -- at 8 bpp).
+// Test BEFORE changing the descriptor, re-blank after, so the new raster
+// size is the one that gets filled.  A depth switch under a live desktop
+// must keep its pixels, which is what this guards.
+static inline bool display_raster_is_pristine(const display_t *d) {
+    if (!d || !d->bits || !d->stride || !d->height)
+        return false;
+    uint8_t fill = display_black_fill(d->format);
+    size_t n = (size_t)d->stride * d->height;
+    for (size_t i = 0; i < n; i++)
+        if (d->bits[i] != fill)
+            return false;
+    return true;
+}
 
 #endif // NUBUS_DISPLAY_H

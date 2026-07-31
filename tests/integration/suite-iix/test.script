@@ -46,12 +46,15 @@ let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 # ---- iix-nomedia ------------------------------------------------------------
 def row_iix_nomedia() {
     machine.boot model="iix" ram=1024
+    # Power-on blank is no longer all-zero (display sources cold-boot black),
+    # so compare against this machine's own blank rather than against 0.
+    let blank = machine.screen.checksum()
     scheduler.run 100000000
     assert machine.id == "iix" "iix-nomedia: machine.id != iix"
     assert machine.ram == 1024 "iix-nomedia: machine.ram != 1024"
     assert machine.screen.width == 640 "iix-nomedia: screen.width != 640"
     assert machine.screen.height == 480 "iix-nomedia: screen.height != 480"
-    assert machine.screen.checksum() != 0 "iix-nomedia: JMFB never painted"
+    assert machine.screen.checksum() != $blank "iix-nomedia: JMFB never painted"
     report_perf("suite-iix/iix-nomedia", scheduler.instr_count)
 }
 
@@ -60,13 +63,16 @@ def row_iix_nomedia() {
 # is still in reset because no driver has run (ROM-only boot).
 def row_iix_824gc_seat() {
     machine.boot model="iix" ram=2048 video_card="824gc"
+    # Power-on blank is no longer all-zero (display sources cold-boot black),
+    # so compare against this machine's own blank rather than against 0.
+    let blank = machine.screen.checksum()
     scheduler.run 100000000
     assert machine.id == "iix" "iix-824gc-seat: machine.id != iix"
     assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "iix-824gc-seat: slot $9 card != 8•24 GC"
     assert machine.nubus.slot[9].card.declrom.present "iix-824gc-seat: declaration ROM not present"
     assert machine.nubus.slot[9].card.gc.state == "reset" "iix-824gc-seat: gc.state != reset in ROM-only boot"
     assert machine.screen.width == 640 "iix-824gc-seat: screen.width != 640"
-    assert machine.screen.checksum() != 0 "iix-824gc-seat: 8•24 GC never painted"
+    assert machine.screen.checksum() != $blank "iix-824gc-seat: 8•24 GC never painted"
     report_perf("suite-iix/iix-824gc-seat", scheduler.instr_count)
 }
 

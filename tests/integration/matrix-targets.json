@@ -895,6 +895,26 @@
       "addr32": false,
       "suite": "suite-se30",
       "media_gated": true
+    },
+    {
+      "machine": "q840av",
+      "system": "7.1",
+      "card": "civic",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-av"
+    },
+    {
+      "machine": "q660av",
+      "system": "7.1",
+      "card": "civic",
+      "width": 640,
+      "height": 480,
+      "depth": 8,
+      "addr32": true,
+      "suite": "suite-av"
     }
   ]
 }

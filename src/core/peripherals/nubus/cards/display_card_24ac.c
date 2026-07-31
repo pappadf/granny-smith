@@ -785,6 +785,9 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p) {
     p->display.format = PIXEL_8BPP;
     recompute_stride(p); // 640 bytes/row at 8 bpp
     p->display.bits = p->vram;
+    // Cold boot scans out black (already so at 8 bpp: index 0 of the seeded
+    // ramp is black); go through the helper so a depth change stays right.
+    display_blank_raster(&p->display);
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL; // identity until a monitor needs gamma

@@ -147,13 +147,16 @@ def row_iifx_71_824gc() {
 # screen at the card's default mode.
 def row_iifx_24ac_seat() {
     machine.boot model="iifx" ram=16384 video_card="display_card_24ac"
+    # Power-on blank is no longer all-zero (display sources cold-boot black),
+    # so compare against this machine's own blank rather than against 0.
+    let blank = machine.screen.checksum()
     scheduler.run 100000000
     assert machine.id == "iifx" "iifx-24ac-seat: machine.id != iifx"
     assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "iifx-24ac-seat: slot $9 card != 24AC"
     assert machine.nubus.slot[9].card.declrom.present "iifx-24ac-seat: declaration ROM not present"
     assert machine.screen.width == 640 "iifx-24ac-seat: screen.width != 640"
     assert machine.screen.height == 480 "iifx-24ac-seat: screen.height != 480"
-    assert machine.screen.checksum() != 0 "iifx-24ac-seat: boot screen not visible"
+    assert machine.screen.checksum() != $blank "iifx-24ac-seat: boot screen not visible"
     report_perf("suite-iifx/iifx-24ac-seat", scheduler.instr_count)
 }
 

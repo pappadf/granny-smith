@@ -67,11 +67,15 @@ proposal-integration-test-rework):
 | `system_7_1_20mb_24ac_cd_32bit_gc.img` | as above plus 8•24 GC support |
 | `system_7_5_0_77mb_mode32_24ac.img` | System 7.5.0, 77 MB, MODE32 + 24AC drivers |
 | `system_7_6_170mb_24ac.img` | Mac OS 7.6, 170 MB HD160SC, minimum system + 24AC drivers |
+| `system_7_1_77mb_av.img` | System 7.1 + System Enabler 088, 77 MB, full AV install (A•ROSE, PlainTalk, QuickTime) on built-in CIVIC video |
 
 Trait tokens in prepared-image names are a closed vocabulary: `mode32`,
-`24ac`, `824gc`, `32bit`, and **`cd` — CD-ROM driver support installed in the
+`24ac`, `824gc`, `32bit`, **`cd` — CD-ROM driver support installed in the
 System Folder** (not "cdev"; the rework proposal briefly proposed renaming it
-on that misreading and the rename was struck).
+on that misreading and the rename was struck), and **`av` — a Quadra 840AV /
+Centris 660AV install carrying System Enabler 088**, which the AV machines
+cannot boot without (its `gbly` gates on machine IDs 72 and 54, so a stock
+volume will not start them at all).
 
 ## Data revision pinning
 

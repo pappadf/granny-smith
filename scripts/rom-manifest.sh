@@ -45,7 +45,12 @@ while IFS= read -r -d '' f; do
         *) continue ;;
     esac
     printf 'echo GSFILE %s\n' "$base" >> "$SCRIPT"
-    printf 'echo ${%s("%s")}\n' "$obj" "$f" >> "$SCRIPT"
+    # ${...} interpolation is only recognised inside a double-quoted string
+    # (shell v2 §4.2), so the call has to be quoted -- bare `echo ${...}`
+    # fails to parse with "expected binding name after '$'".  The path uses
+    # the raw single-quoted form because a nested double quote would close
+    # the interpolating string.
+    printf "echo \"\${%s('%s')}\"\n" "$obj" "$f" >> "$SCRIPT"
 done < <(find "$ROMS_DIR" -maxdepth 1 -type f -print0 | sort -z)
 echo "quit" >> "$SCRIPT"
 
@@ -54,7 +59,7 @@ GS_STORAGE_CACHE="$WORK/cache" "$HEADLESS_BIN" \
     rom="$BOOT_ROM" --no-prompt --speed=max "script=$SCRIPT" > "$OUT" 2>/dev/null
 
 python3 - "$OUT" "$OUT_FILE" "$SCRIPT_DIR" <<'PY'
-import re, sys, os
+import json, re, sys, os
 
 out_path, dest, script_dir = sys.argv[1], sys.argv[2], sys.argv[3]
 sys.path.insert(0, script_dir)
@@ -62,20 +67,19 @@ from rom_naming import canonical_name  # the tooling naming grammar
 
 lines = open(out_path, encoding="utf-8", errors="replace").read().splitlines()
 
+# `machine.(v)rom.identify` interpolates as compact JSON (shell v2 §4.2:
+# map-shaped values render as JSON text), so parse it as JSON rather than
+# scraping it -- free-text fields like `name` may contain commas and
+# quotes that no regex should have to survive.
 def field(js, key):
-    # Comma-free scalar fields (checksum, crc, card_id, size, recognised).
-    # NOT for `name` / `compatible`, which can contain commas.
-    m = re.search(r'(?:^|[,{])' + re.escape(key) + r':([^,}]*)', js)
-    return m.group(1) if m else None
+    v = js.get(key)
+    return None if v is None else str(v)
 
 def rom_name(js):
-    # rom.identify key order: ...,name:<free text>,size:...
-    m = re.search(r'(?:^|,)name:(.*?),size:', js)
-    return m.group(1) if m else ""
+    return js.get("name", "")
 
 def compatible(js):
-    m = re.search(r'compatible:\[([^\]]*)\]', js)
-    return m.group(1) if m else ""
+    return ",".join(js.get("compatible", []))
 
 # Curated human notes keyed by canonical filename. Machine-derived columns
 # (size/checksum/models) come from identify; this is only what identify cannot
@@ -86,6 +90,9 @@ NOTES = {
   "iifx-4147dd77.rom":               "Macintosh IIfx ROM.",
   "iici-368cadfe.rom":               "Macintosh IIci (“Aurora”) ROM.",
   "iisi-36b7fb6c.rom":               "Macintosh IIsi (“Erickson”) ROM.",
+  "q700-q900-420dbff3.rom":          "Quadra 700/900 ROM (also the PowerBook 140/170 ROM).",
+  "q950-3dc27823.rom":               "Quadra 950 ROM.",
+  "q840av-q660av-5bf10fd1.rom":      "Quadra 840AV / Centris 660AV (“Cyclone”/“Tempest”) 2 MB ROM — byte-identical across both; the YMCA strap nibble ($F vs $B), not the ROM, selects the machine.",
   "lisa2-revh-098917b2.rom":         "Apple Lisa 2 boot ROM rev H (interleaved 16 KB image; checksum is the Mac-style computed value, not the stored reset SSP).",
   "macxl-3a-094c82f0.rom":           "Macintosh XL boot ROM “3A” (interleaved 16 KB image).",
   "builtin-se30-video-4f71ff1a.vrom":"SE/30 onboard-video declaration ROM — a built-in video slot, not a NuBus card.",
@@ -118,8 +125,8 @@ for ln in lines:
     m = re.search(r'GSFILE (\S+)', ln)
     if m:
         pending = m.group(1); continue
-    if pending is not None and '{recognised:' in ln:
-        rows.append((pending, ln[ln.index('{recognised:'):])); pending = None
+    if pending is not None and '{"recognised"' in ln:
+        rows.append((pending, json.loads(ln[ln.index('{"recognised"'):]))); pending = None
 
 def human_kb(n):
     n = int(n)

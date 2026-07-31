@@ -148,6 +148,7 @@ static void set_int(scsi_53c96_t *c, bool active) {
 // Post an interrupt cause: latch the bits and raise INT.
 static void post_interrupt(scsi_53c96_t *c, uint8_t bits) {
     c->intr |= bits;
+    LOG(3, "post int $%02X (intr=$%02X)", bits, c->intr);
     set_int(c, true);
 }
 
@@ -157,6 +158,7 @@ static void post_interrupt(scsi_53c96_t *c, uint8_t bits) {
 static void select_timeout_event(void *source, uint64_t data) {
     (void)data;
     scsi_53c96_t *c = (scsi_53c96_t *)source;
+    LOG(3, "select timeout fires (dest=%u)", c->dest_id);
     c->seq_step = 0; // no progress through the selection algorithm
     post_interrupt(c, IR_DISCONNECT);
 }
@@ -300,13 +302,22 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
             // Target selected, now in command phase, but the CDB has not
             // been supplied yet (the boot ROM flushes the FIFO before the
             // DMA select and feeds the CDB through the FIFO register /
-            // pseudo-DMA port afterward).  Post the "selected, command
-            // phase entered" interrupt (seq step 2) and arm the command
-            // aperture; the presence probe reads exactly this state.
+            // pseudo-DMA port afterward).  Arm the command aperture at
+            // sequence step 2.
             c->seq_step = 2;
             c->xfer_mode = XFER_CMD_OUT;
             refresh_phase(c);
-            post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
+            // A DMA select is still *executing* here: the chip has won the
+            // bus and the target has entered the phase the sequence expects,
+            // so it raises DREQ for the remaining command bytes and stays
+            // silent.  An interrupt at this point means "selected, but the
+            // target went somewhere unexpected", and SCSI Manager 4.3's
+            // DoSelect reacts by clearing its NeedCmdSent flag — after which
+            // DoCommand refuses to send the CDB at all (HALc96.a DoSelect
+            // @waitLoop / @doneWithSel).  Non-DMA selects have no DREQ to
+            // wait on, so they still get the interrupt.
+            if (!dma)
+                post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
         }
         break;
     }
@@ -435,9 +446,8 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
     }
 }
 
-uint8_t scsi_53c96_read(scsi_53c96_t *c, uint32_t reg) {
-    if (!c)
-        return 0;
+// Register-read body (traced by the public wrapper below).
+static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
     switch (reg & 0xF) {
     case R_XFER_LO:
         return (uint8_t)c->xfer_counter;
@@ -499,9 +509,18 @@ uint8_t scsi_53c96_read(scsi_53c96_t *c, uint32_t reg) {
     }
 }
 
+uint8_t scsi_53c96_read(scsi_53c96_t *c, uint32_t reg) {
+    if (!c)
+        return 0;
+    uint8_t v = reg_read_body(c, reg);
+    LOG(5, "rd reg %X -> %02X", reg & 0xF, v);
+    return v;
+}
+
 void scsi_53c96_write(scsi_53c96_t *c, uint32_t reg, uint8_t value) {
     if (!c)
         return;
+    LOG(5, "wr reg %X = %02X", reg & 0xF, value);
     switch (reg & 0xF) {
     case R_XFER_LO:
         c->xfer_count = (uint16_t)((c->xfer_count & 0xFF00) | value);
