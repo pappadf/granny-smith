@@ -51,4 +51,4 @@ todo/
 local/
 tmp/
 .claude/scheduled_tasks.lock
-scripts/__pycache__/
+__pycache__/
