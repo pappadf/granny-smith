@@ -25,7 +25,7 @@ Computed slots, where a plain latch would be wrong:
 | Slot | Behavior |
 |---|---|
 | VBLInt `$000` | live VBL flag, **active high** |
-| VDCInt `$008` | constant 1 — **active low**, so 1 means "no video-in interrupt"; this is what makes the enabler's `vdig` fail to open cleanly |
+| VDCInt `$008` | live VDC field flag, **active low** — 1 means "no video-in interrupt pending" ([vdc.md](vdc.md)) |
 | SyncClr `$06C` | **reads inverted** (the driver's open treats bit 0 == 0 as "driving composite") |
 | ReadSense `$080` | the three sense lines from the monitor model |
 | CntTest `$140` | reads are a pure settle delay — **side-effect-free**, returns 0 |
@@ -91,10 +91,20 @@ the ROM's side: after the slot PrimaryInit runs, the screen is 640×480,
 `ScrnBase` points inside the CIVIC VRAM aperture, and the framebuffer is not
 blank.
 
+## Video input
+
+The video-in slots are live: `VDCClk`/`VDCEnb`/`VDCInt`/`VDCClr` are the
+field-interrupt quartet, `VidInSize` picks the capture row stride, and
+`BusSize` gates the whole path. When Sebastian's PCBR carries both the
+video-in enable (bit 4) and overlay (bit 7) bits, the scanout is composed —
+graphics underlay plus the capture buffer inside the window
+`VInHAL`/`VInHFP`/`VInVAL`/`VInVFP` place — into a 32-bpp buffer the display
+descriptor points at while the overlay is on. The digitizer chips and the
+frame engine that fills that buffer are [vdc.md](vdc.md).
+
 ## Not modelled
 
-Video input (the whole VDC path — `VDCClk` parks the clock off and `VDCInt`
-reads idle, so the `vdig` component never opens), the convolution/flicker
+The convolution/flicker
 filter, TV-out via Mickey, interlaced modes, and depth/mode switching beyond
 what the depth code implies. The per-mode timing values are accepted and
 stored but nothing derives geometry from them: what the hardware counts is

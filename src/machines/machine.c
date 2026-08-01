@@ -189,6 +189,8 @@ static value_t build_capabilities(const hw_profile_t *p) {
     // NOTE: video configurability is the video_slots block, NOT "nubus
     // exists" — the two are deliberately not conflated.
     val_map_put(b, "nubus", val_bool(p->nubus_slots != NULL));
+    // On-board video digitizer (webcam capture) — gates the camera UI.
+    val_map_put(b, "video_in", val_bool(p->has_video_in));
     return val_map_finish(b);
 }
 

@@ -253,6 +253,25 @@ int gs_register_machine(const char *machine_id, const char *created);
 // the weak stub.  Prints the discovered path on success.
 int gs_find_media(const char *dir_path, const char *dest);
 
+// Host video-input seam (the AV video digitizer's webcam source —
+// proposal-av-video-in.md §2.2).  The weak defaults model "no camera":
+// headless machines use the deterministic machine.videoin sources
+// instead; the WASM platform overrides these with the getUserMedia
+// frame path (em_camera.c).
+//
+//   gs_video_in_connected()  — true when a host camera is attached and
+//                              delivering frames (drives the DMSD's
+//                              signal-lock status bit).
+//   gs_video_in_frame(rgba)  — fill a 640x480 RGBA8888 top-down buffer
+//                              with the current camera frame; returns 0,
+//                              or -1 when no source is connected.
+//   gs_video_in_state(active)— capture-engine on/off notification (the
+//                              guest gating the VDC clock); the browser
+//                              attaches/stops the camera track on it.
+bool gs_video_in_connected(void);
+int gs_video_in_frame(uint8_t *rgba);
+void gs_video_in_state(bool active);
+
 // True if a valid checkpoint exists for the active machine.  Weak
 // default returns NULL (headless has no auto-checkpoint loop); WASM
 // overrides with actual scanning of /opfs/checkpoints/.

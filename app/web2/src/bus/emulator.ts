@@ -18,6 +18,7 @@ import {
   type SchedulerMode,
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
+import { onVideoInReady, onVideoInState, reapplyCameraSource } from '@/state/camera.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
@@ -78,6 +79,8 @@ interface EmscriptenModuleConfig {
   onFloppyChange?(drive: number, present: boolean): void;
   onSchedulerSpeed?(speedX256: number): void;
   onPerfUpdate?(mipsX100: number, tpsX10: number): void;
+  onVideoInReady?(ptr: number, w: number, h: number): void;
+  onVideoInState?(active: boolean): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -150,6 +153,8 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onFloppyChange: onFloppyDriveChange,
     onSchedulerSpeed: handleSchedulerSpeed,
     onPerfUpdate: handlePerfUpdate,
+    onVideoInReady,
+    onVideoInState,
   });
 
   bridgePtr = Module._get_js_bridge();
@@ -375,6 +380,14 @@ export function getModule(): EmscriptenModule | null {
   return Module;
 }
 
+// Fresh heap views for direct shared-memory writers (the camera frame
+// transport). Fetched per use — under ALLOW_MEMORY_GROWTH the underlying
+// buffer can be replaced, so callers must never cache these.
+export function getModuleHeap(): { u8: Uint8Array; i32: Int32Array } | null {
+  if (!Module || !moduleReady) return null;
+  return { u8: Module.HEAPU8, i32: Module.HEAP32 };
+}
+
 // --- Lifecycle wrappers --------------------------------------------------
 
 // Remember the most recent boot config so `restart()` can re-apply it
@@ -396,24 +409,27 @@ export function getLastBootConfig(): MachineConfig | null {
 export async function applyCapabilities(model: string): Promise<void> {
   let kind: MmuKind = 'none';
   let fpu = false;
+  let videoIn = false;
   try {
     // machine.profile returns a native nested object (V_MAP through the
     // gsEval bridge) — no inner JSON.parse.
     const r = await gsEval('machine.profile', [model]);
     if (r && typeof r === 'object' && !('error' in r)) {
       const parsed = r as {
-        capabilities?: { mmu?: { kind?: string }; cpu?: { fpu?: boolean } };
+        capabilities?: { mmu?: { kind?: string }; cpu?: { fpu?: boolean }; video_in?: boolean };
       };
       const k = parsed.capabilities?.mmu?.kind;
       if (k === '68030_pmmu' || k === 'lisa_segment') kind = k;
       fpu = parsed.capabilities?.cpu?.fpu === true;
+      videoIn = parsed.capabilities?.video_in === true;
     }
   } catch {
-    /* leave kind = 'none', fpu = false */
+    /* leave kind = 'none', fpu = false, videoIn = false */
   }
   machine.mmuKind = kind;
   machine.mmuEnabled = kind === '68030_pmmu';
   machine.fpu = fpu;
+  machine.videoIn = videoIn;
 }
 
 // Boot a machine from a config. Construction-time settings travel as ONE
@@ -458,6 +474,9 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   machine.model = config.modelName ?? config.model;
   machine.ram = config.ram;
   await applyCapabilities(config.model);
+  // machine.videoin resets with the machine; re-assert the user's camera
+  // toggle (or drop it if the new model has no digitizer).
+  await reapplyCameraSource();
 
   // A fresh core boots paced; re-assert the user's toolbar selection so a
   // pre-selected Turbo survives machine (re)creation.

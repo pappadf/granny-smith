@@ -98,6 +98,15 @@ construction, not through the bridge slot:
   into the reactive `logs.entries` buffer (rAF-coalesced).
 - **`Module.print` / `Module.printErr`** — Emscripten's stdout/stderr
   pipes. The same `logSink` writes these to the xterm pane.
+- **`Module.onVideoInReady(ptr, w, h)`** — fired once at startup from
+  `em_camera.c::em_camera_init` with the address of the webcam frame
+  transport in the shared heap (see below). JS keeps the pointer;
+  everything after that is direct heap access, not callbacks.
+- **`Module.onVideoInState(active)`** — fired when the guest gates the
+  AV digitizer's VDC clock, i.e. when capture actually starts and stops.
+  [`state/camera.svelte.ts`](../app/web2/src/state/camera.svelte.ts)
+  attaches or stops the `MediaStreamTrack` on it, so the camera light
+  is on only while the guest is capturing.
 
 These callbacks are the template for any future C→JS event: install on
 `Module.*`, fire from C with `MAIN_THREAD_*_EM_ASM`. No exports, no
@@ -302,6 +311,11 @@ full surface.
   `has_cdrom`, … — drives the slot-specific rows in the New Machine
   dialog (Video ROM hidden when `needs_vrom: false`, RAM dropdown built
   from `ram_options`, floppy rows = `floppy_slots.length`).
+- **`machine.videoin.source`** (`none`/`pattern`/`file`/`host`) plus the
+  read-only `connected` / `fields` — the AV video digitizer's host source.
+  The camera toolbar button sets `host`; the button itself is gated on
+  `capabilities.video_in` from `machine.profile`. See
+  [../machines/av/vdc.md](../machines/av/vdc.md).
 - **`machine.boot(id, ram_kb)`** — destroys any current machine and
   creates a fresh one of the named model.
 - **`rom.load(path)`** — loads a ROM into the booted machine.
@@ -426,6 +440,29 @@ on toggle so light/dark switches re-skin live.
 Browsers gate WebAudio behind a user gesture. The audio worklet init
 runs lazily after the first pointer/key/click/touch event; the
 emulator can run silently before that without errors.
+
+## Camera (AV video input)
+
+The AV machines' video digitizer can take its frames from the host
+webcam. The transport is the audio ring inverted: `em_camera.c` owns a
+static double-buffered frame slot pair plus an atomic header in the
+shared heap (static storage, so the address survives
+`ALLOW_MEMORY_GROWTH`) and announces its address once via
+`Module.onVideoInReady`. The **main thread** decodes each camera frame
+onto a 640×480 canvas, writes it into the *non-active* slot through
+`Module.HEAPU8` and flips the active index; the **worker** copies out of
+the active slot at field cadence through the `gs_video_in_frame` seam.
+The writer never touches the active slot, so tearing is impossible and
+staleness is at most one frame — no locks cross the thread boundary. The
+bridge is deliberately not involved: it caps at ~4 KB per call, and a
+frame is 1.2 MB.
+
+The camera button in the display toolbar is the master toggle (its click
+is also the user gesture `getUserMedia` needs) and is shown only on
+machines whose profile reports `capabilities.video_in`. The physical
+device is attached only while that toggle *and* the guest's capture
+engine are both on — see `Module.onVideoInState` above and
+[../machines/av/vdc.md](../machines/av/vdc.md).
 
 ## COOP/COEP Headers
 

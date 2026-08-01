@@ -36,6 +36,9 @@ interface MachineState {
   // debug panel gates its presence on this static capability rather than
   // waiting for the first debug frame to carry an `fpu` block.
   fpu: boolean;
+  // True iff the active machine has the on-board video digitizer
+  // (capabilities.video_in — the AV family). Gates the camera toolbar button.
+  videoIn: boolean;
   // width/height are the framebuffer pixel dimensions; parW/parH are the
   // monitor's pixel aspect ratio (display pixel width:height), so the renderer
   // can show non-square pixels correctly (the Lisa 2's 720x364 raster is 2:3,
@@ -63,6 +66,7 @@ export const machine: MachineState = $state({
   mmuEnabled: false,
   mmuKind: 'none',
   fpu: false,
+  videoIn: false,
   screen: { width: 512, height: 342, parW: 1, parH: 1 },
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
   scheduler: 'live',

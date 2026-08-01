@@ -162,6 +162,11 @@ typedef struct hw_profile {
     bool has_cdrom;
     int cdrom_id; // SCSI bus id for the CD bay; conventionally 3.
 
+    // On-board video digitizer (the AV family's DMSD/VDC capture path).
+    // Drives the exported `video_in` capability, which gates the frontend's
+    // camera control the same way `fpu`/`mmu.kind` gate the debug panels.
+    bool has_video_in;
+
     // NuBus slot declarations — sentinel-terminated array of
     // nubus_slot_decl_t (slot id, kind, builtin card / default card).
     // Topology only: which cards FIT a configurable slot is computed from

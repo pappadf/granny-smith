@@ -26,6 +26,7 @@
 
 #include "av.h"
 #include "psc.h"
+#include "vdc.h"
 
 #include "cpu.h"
 #include "log.h"
@@ -44,6 +45,11 @@ LOG_USE_CATEGORY_NAME("civic");
 #define SLOT_VBLINT    (0x000u >> 2)
 #define SLOT_ENABLE    (0x004u >> 2)
 #define SLOT_VDCINT    (0x008u >> 2)
+#define SLOT_VDCCLR    (0x00Cu >> 2) // VDC field-int ack: write 0 then 1
+#define SLOT_VDCENB    (0x010u >> 2) // VDC field-interrupt enable
+#define SLOT_VIDINSIZE (0x014u >> 2) // video-in row stride: 0 = 1024, 1 = 1536
+#define SLOT_VDCCLK    (0x018u >> 2) // VDC clock gate: 1 = clock OFF
+#define SLOT_BUSSIZE   (0x04Cu >> 2) // 0 = 32-bit (video-in shares the bus)
 #define SLOT_SYNCCLR   (0x06Cu >> 2)
 #define SLOT_SENSE0    (0x05Cu >> 2) // drives line C
 #define SLOT_SENSE1    (0x060u >> 2) // drives line B
@@ -55,6 +61,12 @@ LOG_USE_CATEGORY_NAME("civic");
 #define SLOT_VBLENB    (0x110u >> 2)
 #define SLOT_VBLCLR    (0x120u >> 2)
 #define SLOT_CNTTEST   (0x140u >> 2) // 12 bits, settle-delay reads
+#define SLOT_VINHAL    (0x1C0u >> 2) // 12 bits, video-in H active start
+#define SLOT_VINHFP    (0x240u >> 2) // 12 bits, video-in H front porch
+#define SLOT_HAL       (0x380u >> 2) // 12 bits, graphics H active start
+#define SLOT_VAL       (0x580u >> 2) // 12 bits, graphics V active start
+#define SLOT_VINVAL    (0x5C0u >> 2) // 12 bits, video-in V active start
+#define SLOT_VINVFP    (0x600u >> 2) // 12 bits, video-in V front porch
 #define SLOT_CURLINE   (0x6C0u >> 2) // 12 bits, R/O
 #define AV_CIVIC_SLOTS (0x700u >> 2)
 
@@ -69,6 +81,8 @@ struct av_civic {
     uint8_t slot[AV_CIVIC_SLOTS]; // one stored bit per longword slot
     bool vbl_flag; // VBLInt latch
     bool vbl_armed; // VBLClr wrote 1 after 0 (re-armed)
+    bool vdc_flag; // VDCInt latch (reads inverted — active low)
+    bool vdc_armed; // VDCClr wrote 1 after 0 (re-armed)
     rgba8_t clut[2][256]; // Sebastian CLUT banks (graphics, video-in)
     uint8_t seb_addr; // CLUT address register
     uint8_t seb_phase; // 0-3 within the R,G,B,A quad
@@ -78,6 +92,7 @@ struct av_civic {
     // --- pointers (not checkpointed) ---
     config_t *cfg;
     uint8_t *vram; // 2 MB, host-owned
+    uint8_t *compose; // 640x480 XRGB scanout while the video-in overlay is on
     display_t display;
     rgba8_t disp_clut[256]; // derived CLUT the display consumes
     memory_interface_t lo_iface; // the $50036000 register alias
@@ -137,6 +152,112 @@ static void civic_update_disp_clut(av_civic_t *cv) {
     cv->display.clut_dirty = true;
 }
 
+// ============================================================
+// Video-in overlay compositing (video-in.md §5.2, §6)
+// ============================================================
+// With fCivicVidInEnb (bit 4) + fCivicVidInOvly (bit 7) set in Sebastian's
+// PCBR, the scanout shows the video-in buffer inside the window CIVIC's
+// VInHAL/VInHFP/VInVAL/VInVFP registers place over the graphics raster.
+// The model composes both planes into a 32-bpp XRGB buffer once per frame
+// and points the display at it while the overlay is on.
+//
+// Approximations, documented in docs/machines/av/vdc.md: the window wins
+// unconditionally inside its rect (the vdTypeKey key-colour gating that
+// clips video against overlapping windows is untraced in the dossier —
+// video-in.md §11), and VInDoubleLine's capture-side line doubling is not
+// modelled (the shipping driver's geometry is 1:1, verified live).
+
+static bool civic_overlay_active(av_civic_t *cv) {
+    return (cv->seb_pcbr & 0x90) == 0x90; // fCivicVidInEnb + fCivicVidInOvly
+}
+
+// One graphics pixel of the current mode as XRGB bytes (out[0] unused).
+static void civic_gr_pixel(av_civic_t *cv, const uint8_t *bits, uint32_t stride, int code, int x, int y, uint8_t *out) {
+    if (code <= 3) { // 1/2/4/8 bpp through the derived CLUT
+        int bpp = 1 << code;
+        int per = 8 / bpp;
+        uint8_t byte = bits[(size_t)y * stride + (size_t)(x / per)];
+        int shift = 8 - bpp * ((x % per) + 1);
+        rgba8_t e = cv->disp_clut[(byte >> shift) & ((1 << bpp) - 1)];
+        out[1] = e.r;
+        out[2] = e.g;
+        out[3] = e.b;
+    } else if (code == 4) { // 16 bpp 1-5-5-5, big-endian
+        const uint8_t *p = bits + (size_t)y * stride + (size_t)x * 2;
+        uint16_t v = (uint16_t)((p[0] << 8) | p[1]);
+        out[1] = (uint8_t)(((v >> 10) & 31) * 255 / 31);
+        out[2] = (uint8_t)(((v >> 5) & 31) * 255 / 31);
+        out[3] = (uint8_t)((v & 31) * 255 / 31);
+    } else { // 32 bpp XRGB
+        const uint8_t *p = bits + (size_t)y * stride + (size_t)x * 4;
+        out[1] = p[1];
+        out[2] = p[2];
+        out[3] = p[3];
+    }
+}
+
+// Rebuild the composed frame: graphics underlay + the video-in window.
+static void civic_compose(av_civic_t *cv) {
+    if (!cv->compose)
+        return;
+    int code = cv->seb_pcbr & 7;
+    if (code > 5)
+        code = 5;
+    uint32_t bpp = 1u << code;
+    uint32_t width = cv->display.width, height = cv->display.height;
+    uint32_t gr_stride = civic_get(cv, SLOT_ROWWORDS, 8) * 32u;
+    if (gr_stride < width * bpp / 8u)
+        gr_stride = width * bpp / 8u;
+    const uint8_t *gr = cv->vram + ((civic_get(cv, SLOT_BASEADDR, 9) & 0xFFu) << 5) % AV_CIVIC_VRAM_SIZE;
+
+    // The window rect, inverted from the driver's programming (§5.2):
+    // 16 bpp video-in: VInHAL = HAL + left - 1; 8 bpp video-in with <=8 bpp
+    // graphics halves the horizontal units.  Vertical is progressive on the
+    // modelled Hi-Res monitor: VInVAL = VAL + (top << 1).
+    bool vi16 = (cv->seb_pcbr & 0x08) != 0;
+    int hal = (int)civic_get(cv, SLOT_HAL, 12), val = (int)civic_get(cv, SLOT_VAL, 12);
+    int left = (int)civic_get(cv, SLOT_VINHAL, 12) - hal + 1;
+    int right = (int)civic_get(cv, SLOT_VINHFP, 12) - hal + 1;
+    if (!vi16 && code <= 3) {
+        left <<= 1;
+        right <<= 1;
+    }
+    int top = ((int)civic_get(cv, SLOT_VINVAL, 12) - val) >> 1;
+    int bottom = ((int)civic_get(cv, SLOT_VINVFP, 12) - val) >> 1;
+    uint32_t vid_stride = cv->slot[SLOT_VIDINSIZE] ? 1536u : 1024u;
+
+    for (int y = 0; y < (int)height; y++) {
+        uint8_t *row = cv->compose + (size_t)y * width * 4;
+        bool vrow = y >= top && y < bottom;
+        const uint8_t *vsrc = NULL;
+        if (vrow) {
+            uint32_t voff = 0x100800u + (uint32_t)(y - top) * vid_stride;
+            if (voff + (vi16 ? (uint32_t)(right - left) * 2u : (uint32_t)(right - left)) <= AV_CIVIC_VRAM_SIZE)
+                vsrc = cv->vram + voff;
+        }
+        for (int x = 0; x < (int)width; x++) {
+            uint8_t *out = row + (size_t)x * 4;
+            out[0] = 0;
+            if (vsrc && x >= left && x < right) {
+                if (vi16) { // 1-5-5-5 from the capture buffer
+                    const uint8_t *p = vsrc + (size_t)(x - left) * 2;
+                    uint16_t v = (uint16_t)((p[0] << 8) | p[1]);
+                    out[1] = (uint8_t)(((v >> 10) & 31) * 255 / 31);
+                    out[2] = (uint8_t)(((v >> 5) & 31) * 255 / 31);
+                    out[3] = (uint8_t)((v & 31) * 255 / 31);
+                } else { // 8-bit greyscale capture
+                    uint8_t v = vsrc[x - left];
+                    out[1] = v;
+                    out[2] = v;
+                    out[3] = v;
+                }
+            } else {
+                civic_gr_pixel(cv, gr, gr_stride, code, x, y, out);
+            }
+        }
+    }
+}
+
 // Re-derive the display descriptor from the live registers.
 //
 // stride comes from RowWords, NOT from width*bpp/8: the VRAM row pitch is
@@ -172,33 +293,50 @@ static void civic_update_display(av_civic_t *cv) {
     uint32_t base = (civic_get(cv, SLOT_BASEADDR, 9) & 0xFFu) << 5;
 
     display_t *d = &cv->display;
-    bool shape_changed = d->format != fmt_by_code[code] || d->stride != stride || d->width != width;
+    pixel_format_t fmt = fmt_by_code[code];
+    uint8_t *bits = cv->vram + (base % AV_CIVIC_VRAM_SIZE);
+    const rgba8_t *clut = (bpp <= 8) ? cv->disp_clut : NULL;
+    uint32_t clut_len = (bpp <= 8) ? (1u << bpp) : 0;
+
+    // While the video-in overlay is on, scan out the composed XRGB frame
+    // instead of the raw graphics plane (civic_compose refreshes it).
+    if (civic_overlay_active(cv) && cv->compose) {
+        fmt = PIXEL_32BPP_XRGB;
+        bits = cv->compose;
+        stride = width * 4;
+        clut = NULL;
+        clut_len = 0;
+    }
+
+    bool shape_changed = d->format != fmt || d->stride != stride || d->width != width;
     d->width = width;
     d->height = height;
     d->stride = stride;
-    d->format = fmt_by_code[code];
-    d->bits = cv->vram + (base % AV_CIVIC_VRAM_SIZE);
-    if (bpp <= 8) {
-        d->clut = cv->disp_clut;
-        d->clut_len = 1u << bpp;
-    } else {
-        d->clut = NULL;
-        d->clut_len = 0;
-    }
+    d->format = fmt;
+    d->bits = bits;
+    d->clut = clut;
+    d->clut_len = clut_len;
     if (shape_changed)
         d->shape_dirty = true;
     civic_update_disp_clut(cv);
 }
 
 // ============================================================
-// VBL (civic.md §4; the ack is VBLClr 0-then-1)
+// VBL + VDC field interrupts (civic.md §4; video-in.md §5.6)
 // ============================================================
+// Both share PSC-VIA2 slot-int bit 6: the guest disambiguates through the
+// Slot Manager queue (CIVIC's handler checks VBLInt, the vdig's checks
+// VDCInt), so the line is the OR of the two latches with independent acks.
+
+static void civic_update_slot_line(av_civic_t *cv) {
+    av_state_t *st = (av_state_t *)cv->cfg->machine_context;
+    if (st && st->psc)
+        av_psc_slot_source(st->psc, AV_PSC_SINT_VBL, cv->vbl_flag || cv->vdc_flag);
+}
 
 static void civic_set_vbl(av_civic_t *cv, bool active) {
     cv->vbl_flag = active;
-    av_state_t *st = (av_state_t *)cv->cfg->machine_context;
-    if (st && st->psc)
-        av_psc_slot_source(st->psc, AV_PSC_SINT_VBL, active);
+    civic_update_slot_line(cv);
 }
 
 static void civic_frame_event(void *source, uint64_t data) {
@@ -206,6 +344,9 @@ static void civic_frame_event(void *source, uint64_t data) {
     av_civic_t *cv = (av_civic_t *)source;
     if (cv->slot[SLOT_ENABLE] && cv->slot[SLOT_VBLENB] && cv->vbl_armed)
         civic_set_vbl(cv, true);
+    // Refresh the composed overlay frame while video-in is being shown.
+    if (civic_overlay_active(cv))
+        civic_compose(cv);
     // The framebuffer may have changed; nudge the renderer each frame.
     cv->display.fb_dirty = true;
     scheduler_new_cpu_event(cv->cfg->scheduler, &civic_frame_event, cv, 0, 0, (uint64_t)AV_CIVIC_FRAME_NS);
@@ -226,7 +367,7 @@ static uint8_t civic_slot_read(av_civic_t *cv, uint32_t off) {
     case SLOT_VBLINT:
         return cv->vbl_flag ? 1 : 0; // active high
     case SLOT_VDCINT:
-        return 1; // active LOW — 1 means "no video-in interrupt pending"
+        return cv->vdc_flag ? 0 : 1; // active LOW — 1 means "no interrupt pending"
     case SLOT_SYNCCLR:
         return cv->slot[SLOT_SYNCCLR] ? 0 : 1; // reads inverted
     default:
@@ -259,6 +400,25 @@ static void civic_slot_write(av_civic_t *cv, uint32_t off, uint8_t value) {
             cv->vbl_armed = true;
         }
         break;
+    case SLOT_VDCCLR:
+        // The VDC field-interrupt ack: same 0-then-1 dance, independent of
+        // the VBL latch on the shared line (video-in.md §5.6).
+        if (bit == 0) {
+            cv->vdc_flag = false;
+            cv->vdc_armed = false;
+            civic_update_slot_line(cv);
+        } else {
+            cv->vdc_armed = true;
+        }
+        break;
+    case SLOT_VDCCLK: {
+        // The capture-engine gate (1 = clock off); the digitizer model
+        // tracks transitions for the host camera lifecycle.
+        av_state_t *st = (av_state_t *)cv->cfg->machine_context;
+        if (st && st->vdc)
+            av_vdc_clock_gate(st->vdc, bit != 0);
+        break;
+    }
     case SLOT_ENABLE:
         if (bit)
             civic_update_display(cv);
@@ -270,6 +430,33 @@ static void civic_slot_write(av_civic_t *cv, uint32_t off, uint8_t value) {
         else if (slot >= SLOT_ROWWORDS && slot < SLOT_ROWWORDS + 8)
             civic_update_display(cv);
         break;
+    }
+}
+
+// === Video-in datapath hooks (consumed by vdc.c; video-in.md §5) ============
+
+bool av_civic_vidin_clock_off(av_civic_t *cv) {
+    return cv->slot[SLOT_VDCCLK] != 0; // 1 = clock OFF
+}
+
+bool av_civic_vidin_stride_big(av_civic_t *cv) {
+    return cv->slot[SLOT_VIDINSIZE] != 0; // 1 = 1536-byte rows
+}
+
+bool av_civic_bus64(av_civic_t *cv) {
+    return cv->slot[SLOT_BUSSIZE] != 0; // 1 = 64-bit, graphics only
+}
+
+uint8_t *av_civic_vram(av_civic_t *cv) {
+    return cv->vram;
+}
+
+// A captured field landed in VRAM: latch the VDC interrupt if the guest has
+// armed it (VDCEnb + the VDCClr re-arm) and assert the shared slot line.
+void av_civic_vdc_field(av_civic_t *cv) {
+    if (cv->slot[SLOT_VDCENB] && cv->vdc_armed) {
+        cv->vdc_flag = true;
+        civic_update_slot_line(cv);
     }
 }
 
@@ -384,7 +571,12 @@ void av_civic_seb_write(config_t *cfg, uint32_t addr, uint8_t value) {
     }
     case 2:
         cv->seb_pcbr = value;
-        LOG(2, "Sebastian PCBR = $%02X (depth code %d)", value, value & 7);
+        LOG(2, "Sebastian PCBR = $%02X (depth code %d, vidin %s%s)", value, value & 7, (value & 0x10) ? "on" : "off",
+            (value & 0x80) ? "+overlay" : "");
+        // Compose before repointing so an overlay turn-on never scans out a
+        // stale or blank frame.
+        if (civic_overlay_active(cv))
+            civic_compose(cv);
         civic_update_display(cv);
         break;
     default:
@@ -450,6 +642,18 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
         free(cv);
         return NULL;
     }
+    // The overlay scanout buffer (640x480 XRGB); derived state, rebuilt
+    // from VRAM + registers every frame the overlay is on.
+    cv->compose = calloc(1, 640u * 480u * 4u);
+    if (!cv->compose) {
+        free(cv->vram);
+        free(cv);
+        return NULL;
+    }
+    // Power-on state: the VDC clock gate reads 1 (clock OFF) so the frame
+    // engine is parked until the digitizer starts it (video-in.md §9.1).
+    cv->slot[SLOT_VDCCLK] = 1;
+
     if (cp) {
         size_t data_size = offsetof(av_civic_t, cfg);
         system_read_checkpoint_data(cp, cv, data_size);
@@ -474,6 +678,7 @@ void av_civic_delete(av_civic_t *cv) {
         return;
     if (cv->cfg && cv->cfg->scheduler)
         remove_event(cv->cfg->scheduler, &civic_frame_event, cv);
+    free(cv->compose);
     free(cv->vram);
     free(cv);
 }

@@ -41,7 +41,9 @@ export type IconName =
   | 'color-mode'
   | 'sign-out'
   | 'screen-full'
-  | 'screen-normal';
+  | 'screen-normal'
+  | 'camera'
+  | 'camera-off';
 
 export function iconHref(name: IconName): string {
   // Page-relative path so `<use href>` resolves against document.baseURI.

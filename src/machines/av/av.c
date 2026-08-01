@@ -17,6 +17,7 @@
 #include "mace.h"
 #include "new_age.h"
 #include "psc.h"
+#include "vdc.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
 #include "mmu040.h"
@@ -632,6 +633,12 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->civic = av_civic_init(cfg, cp);
     assert(st->civic != NULL);
 
+    // The video digitizer (DMSD + VDC + frame engine), reached through
+    // Cuda pseudo-command $22 and CIVIC's video-in gates.
+    st->vdc = av_vdc_init(cfg, cp);
+    assert(st->vdc != NULL);
+    av_cuda_attach_vdc(st->cuda, st->vdc);
+
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
 
@@ -735,6 +742,10 @@ static void av_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     av_state_t *st = av_st(cfg);
     if (st) {
+        if (st->vdc) {
+            av_vdc_delete(st->vdc);
+            st->vdc = NULL;
+        }
         if (st->civic) {
             av_civic_delete(st->civic);
             st->civic = NULL;
@@ -816,16 +827,19 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
     via_checkpoint(cfg->via1, cp);
+    // Device order mirrors the checkpoint READS in av_build_devices — the
+    // stream is sequential, so save and restore must walk it identically.
     av_psc_checkpoint(st->psc, cp);
     adb_checkpoint(st->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     av_new_age_checkpoint(st->fdc, cp);
+    av_mace_checkpoint(st->mace, cp);
+    av_civic_checkpoint(st->civic, cp);
+    av_vdc_checkpoint(st->vdc, cp);
     mac_checkpoint_save_images(cfg, cp);
     if (cfg->scsi)
         scsi_checkpoint(cfg->scsi, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
-    av_civic_checkpoint(st->civic, cp);
-    av_mace_checkpoint(st->mace, cp);
     // Substrate-private tail (mirrored by the restore block in av_init).
     system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
     system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));

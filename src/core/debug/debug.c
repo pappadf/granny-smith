@@ -1671,6 +1671,12 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     return 0;
 }
 
+// Public wrapper over load_png_to_rgba (debug.h): lets subsystems outside
+// debug.c (machine.videoin.load) reuse the golden PNG decoder.
+int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *out_rgba) {
+    return load_png_to_rgba(filename, width, height, out_rgba);
+}
+
 // Load a PNG file and extract framebuffer (1-bit packed, same format as emulator).
 // `expected_width`, `expected_height`, and `expected_stride` are the active
 // display's dimensions; the helper validates the PNG matches before

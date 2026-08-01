@@ -46,6 +46,7 @@ struct av_cuda;
 struct av_mace;
 struct av_new_age;
 struct av_psc;
+struct av_vdc;
 struct mmu_state;
 struct nubus_slot_decl;
 struct scsi_53c96;
@@ -109,6 +110,7 @@ typedef struct av_state {
     struct av_cuda *cuda; // behavioral Cuda 2.37 model on VIA1's SR
     struct av_psc *psc; // DMA + interrupt controller (the platform's heart)
     struct av_civic *civic; // CIVIC frame buffer + Sebastian RAMDAC
+    struct av_vdc *vdc; // video digitizer: DMSD + VDC models + frame engine
     struct av_new_age *fdc; // New Age floppy controller stub
     struct av_mace *mace; // MACE Ethernet register stub
     struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio (Phase E)

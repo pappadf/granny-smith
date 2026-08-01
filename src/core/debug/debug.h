@@ -127,6 +127,9 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
 // compare the whole screen.
 int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rect);
 int save_framebuffer_as_png(const display_t *d, const char *filename);
+// Decode a width x height PNG into a caller-owned RGBA8888 buffer
+// (width*height*4 bytes).  Returns 0 / -1 (the machine.videoin.load path).
+int debug_load_png_rgba(const char *filename, int width, int height, uint8_t *out_rgba);
 
 // === M6: object-model accessors ============================================
 //

@@ -55,6 +55,21 @@ void av_civic_seb_write(config_t *cfg, uint32_t addr, uint8_t value);
 uint8_t av_civic_clk_read(config_t *cfg, uint32_t addr);
 void av_civic_clk_write(config_t *cfg, uint32_t addr, uint8_t value);
 
+// === Video-in datapath hooks (consumed by vdc.c; video-in.md §5) ============
+
+// Gate states the frame engine consults each field.  (VDCEnb is deliberately
+// not exposed: arming is CIVIC's own business, applied in av_civic_vdc_field.)
+bool av_civic_vidin_clock_off(av_civic_t *cv); // VDCClk $018 (1 = clock OFF)
+bool av_civic_vidin_stride_big(av_civic_t *cv); // VidInSize $014 (1 = 1536 B rows)
+bool av_civic_bus64(av_civic_t *cv); // BusSize $04C (1 = graphics only)
+
+// The 2 MB VRAM backing array (the video-in buffer lives at $100800).
+uint8_t *av_civic_vram(av_civic_t *cv);
+
+// A captured field landed in VRAM: latch the VDC field interrupt if armed
+// and assert the shared PSC-VIA2 slot line (bit 6, shared with VBL).
+void av_civic_vdc_field(av_civic_t *cv);
+
 // === Display ================================================================
 
 // The scanout display (substrate .display hook).

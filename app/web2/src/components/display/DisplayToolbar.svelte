@@ -2,6 +2,7 @@
   import { machine, setZoom } from '@/state/machine.svelte';
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
   import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
+  import { camera, setCameraEnabled } from '@/state/camera.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import {
     pauseEmulator,
@@ -93,6 +94,23 @@
 
   function onSchedulerClick(mode: SchedulerMode) {
     void applySchedulerMode(mode);
+  }
+
+  // Camera toggle — shown only on machines with the on-board video
+  // digitizer (capabilities.video_in, the AV family). The click doubles as
+  // the user gesture getUserMedia needs; the camera light itself follows
+  // the guest's capture activity (state/camera.svelte).
+  const cameraIcon: IconName = $derived(camera.enabled ? 'camera' : 'camera-off');
+  const cameraTitle = $derived(
+    camera.enabled
+      ? camera.live
+        ? 'Camera connected (capturing) — click to disconnect'
+        : 'Camera connected — click to disconnect'
+      : 'Connect camera to the video input',
+  );
+
+  function onCameraClick() {
+    void setCameraEnabled(!camera.enabled);
   }
 
   function onZoomInput(e: Event) {
@@ -189,6 +207,19 @@
     >
       <Icon name="download" />
     </button>
+    {#if machine.videoIn}
+      <button
+        class="tbtn"
+        class:cam-live={camera.live}
+        title={cameraTitle}
+        aria-label={cameraTitle}
+        aria-pressed={camera.enabled}
+        disabled={!isLive}
+        onclick={onCameraClick}
+      >
+        <Icon name={cameraIcon} />
+      </button>
+    {/if}
   </div>
   <div class="layout-controls">
     <button class="tbtn" title={themeTitle} aria-label={themeTitle} onclick={cycleTheme}>
@@ -286,6 +317,10 @@
   .tbtn:disabled {
     opacity: 0.4;
     cursor: default;
+  }
+  /* The camera button glows while frames are actually flowing to the guest. */
+  .tbtn.cam-live {
+    color: var(--gs-accent, #4ea1ff);
   }
   .scheduler {
     display: flex;
