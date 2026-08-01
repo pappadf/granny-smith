@@ -48,15 +48,17 @@ jobs:
           submodules: recursive
 
       # 7z extracts the large binary archives (CD-ROM images and the like).
-      # Still install-if-missing: `7zip` was only just added to the devcontainer
-      # Dockerfile, and the pinned image predates it.  Once build-dev-image has
-      # published an image carrying it, this becomes a verify step like the
-      # m68k one below.
-      - name: Install 7z
+      # The devcontainer Dockerfile installs `7zip`, so this VERIFIES rather
+      # than installs — see the m68k step below for why self-repair is the
+      # wrong shape here.
+      - name: Verify 7z presence
+        shell: bash
         run: |
-          if ! command -v 7z >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq 7zip
-          fi
+          which 7z || {
+            echo '7z not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+          7z i | sed -n '1,2p'
 
       # m68k binutils assembles the generic declaration-ROM fragments
       # (tools/vrom / src/core/peripherals/nubus/vrom68k).  The devcontainer
@@ -70,7 +72,7 @@ jobs:
             echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          m68k-linux-gnu-as --version | head -n 1
+          m68k-linux-gnu-as --version | sed -n '1p'
 
       # Fetch proprietary test data (only works for internal builds with token access)
       - name: Fetch test data
@@ -261,11 +263,14 @@ jobs:
 
       # 7z extracts the large binary archives (e.g. the A/UX HD) the functional
       # web2 e2e specs boot from (see the matching step in the test job).
-      - name: Install 7z
+      - name: Verify 7z presence
+        shell: bash
         run: |
-          if ! command -v 7z >/dev/null 2>&1; then
-            apt-get update -qq && apt-get install -y -qq 7zip
-          fi
+          which 7z || {
+            echo '7z not on PATH — the pinned dev image is wrong or stale'
+            exit 1
+          }
+          7z i | sed -n '1,2p'
 
       # m68k binutils for the WASM build's declaration-ROM fragments —
       # verified, not installed (see the matching step in the test job).
@@ -276,7 +281,7 @@ jobs:
             echo 'm68k-linux-gnu-as not on PATH — the pinned dev image is wrong or stale'
             exit 1
           }
-          m68k-linux-gnu-as --version | head -n 1
+          m68k-linux-gnu-as --version | sed -n '1p'
 
       # Fetch proprietary test data (internal builds with token access only).
       # Gates the functional web2 e2e below; the token is scoped to this step.
