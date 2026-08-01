@@ -886,6 +886,97 @@ static void test_da_ifalt(void) {
     CHECK(dsp3210_acc_get(&S, 3) == 99.0); /* N clear → kept */
 }
 
+/* ---- the DAU pipeline latencies [IM §4.4.2] (errata.md E12-E14) ---- */
+
+/* Latency 1 [IM §4.4.2.1]: a DA instruction's memory write "is not
+ * available to be read from that location until four instructions later".
+ * The manual's own example writes *r3 twice and reads it in I5, and the
+ * value read is the one written in I1, not I2. */
+static void test_latency_da_store(void) {
+    const uint32_t p[] = {
+        e_set24(RC(1), 0x100), /* r1 -> the location under test  */
+        e_set24(RC(2), 0x104), /* r2 -> the value to store       */
+        /* *r1 = a0 = *r2 + 0.0*X  (a DA store of 7.0 to $100)   */
+        e_damac(1, 4, 0, 0, 0, DF_ACC(0), DF(2, 0), DF(1, 0)),
+        /* a1 = *r1 at +1, a2 = *r1 at +2, a3 = *r1 at +3 ...    */
+        e_damac(1, 4, 0, 0, 1, DF_ACC(0), DF(1, 0), DF_NOWR),
+        e_damac(1, 4, 0, 0, 2, DF_ACC(0), DF(1, 0), DF_NOWR),
+        e_damac(1, 4, 0, 0, 3, DF_ACC(0), DF(1, 0), DF_NOWR),
+        /* ...and at +4, which is the first instruction that sees it */
+        e_damac(1, 4, 0, 0, 1, DF_ACC(0), DF(1, 0), DF_NOWR),
+    };
+    prog(p, 7);
+    dsp3210_poke(&S, 0x100, 4, dsp3210_double_to_dsp32(1.0)); /* the old value */
+    dsp3210_poke(&S, 0x104, 4, dsp3210_double_to_dsp32(7.0)); /* the new one   */
+    steps(6);
+    /* memory itself holds the new value; the three reads inside the
+     * shadow all returned the pre-write word */
+    CHECK(fabs(dsp3210_acc_get(&S, 1) - 1.0) < 1e-9);
+    CHECK(fabs(dsp3210_acc_get(&S, 2) - 1.0) < 1e-9);
+    CHECK(fabs(dsp3210_acc_get(&S, 3) - 1.0) < 1e-9);
+    steps(1);
+    CHECK(fabs(dsp3210_acc_get(&S, 1) - 7.0) < 1e-9); /* four later: visible */
+    uint32_t v;
+    dsp3210_peek(&S, 0x100, 4, &v);
+    CHECK(fabs(dsp3210_dsp32_to_double(v) - 7.0) < 1e-9);
+}
+
+/* Latency 2 [IM §4.4.2.2]: an accumulator feeding the MULTIPLIER "is
+ * established no sooner than three instructions prior"; an accumulator
+ * feeding the ADDER has no latency at all. */
+static void test_latency_acc_multiplier(void) {
+    const uint32_t p[] = {
+        e_set24(RC(1), 0x100),
+        /* a0 = *r1 + 0.0*X   -> a0 = 5.0                        */
+        e_damac(1, 4, 0, 0, 0, DF_ACC(0), DF(1, 0), DF_NOWR),
+        /* a1 = a0 * *r1  ONE instruction later: the multiplier still
+         * sees the pre-load a0 (2.0), not 5.0                    */
+        e_damac(3, 4, 0, 0, 1, DF_ACC(0), DF(1, 0), DF_NOWR),
+        E_NOP,
+        E_NOP,
+        /* the same multiply three instructions later now sees 5.0 */
+        e_damac(3, 4, 0, 0, 2, DF_ACC(0), DF(1, 0), DF_NOWR),
+        /* a3 = a0 + 0.0*X — the ADDER lane, always current       */
+        e_damac(1, 4, 0, 0, 3, DF_ACC(0), DF_ACC(0), DF_NOWR),
+    };
+    prog(p, 7);
+    dsp3210_poke(&S, 0x100, 4, dsp3210_double_to_dsp32(5.0));
+    dsp3210_acc_set(&S, 0, 2.0);
+    steps(3); /* set24, a0 = 5.0, a1 = a0*5 with the stale a0 */
+    CHECK(fabs(dsp3210_acc_get(&S, 1) - 10.0) < 1e-6); /* 2.0 * 5.0 */
+    steps(3); /* two nops, then the same multiply */
+    CHECK(fabs(dsp3210_acc_get(&S, 2) - 25.0) < 1e-6); /* 5.0 * 5.0 */
+    steps(1);
+    CHECK(fabs(dsp3210_acc_get(&S, 3) - 5.0) < 1e-6); /* adder: current */
+}
+
+/* Latency 4 [IM §4.4.2.4]: a DAU condition tested by a conditional branch
+ * is the one established four instructions earlier — the manual's example
+ * has I5's `if (agt)` test the flags of I1, not I2. */
+static void test_latency_dau_condition(void) {
+    const uint32_t q[] = {
+        /* I1 sets agt true, I2 sets it false, and the conditional four
+         * instructions after I1 must still see I1's answer. */
+        e_set24(RC(1), 0x100),
+        e_set24(RC(2), 0x104),
+        e_set24(RC(5), 0),
+        e_set24(RC(6), 1),
+        e_damac(1, 4, 0, 0, 0, DF_ACC(0), DF(1, 0), DF_NOWR), /* +4 */
+        e_damac(1, 4, 0, 0, 1, DF_ACC(0), DF(2, 0), DF_NOWR), /* -4 */
+        E_NOP,
+        E_NOP,
+        e_alur(1, 0, RC(5), RC(6), 24u, 0), /* if (agt) r5 = r6 + r0 */
+    };
+    prog(q, 9);
+    dsp3210_poke(&S, 0x100, 4, dsp3210_double_to_dsp32(4.0));
+    dsp3210_poke(&S, 0x104, 4, dsp3210_double_to_dsp32(-4.0));
+    steps(9);
+    /* the live flags are I2's (negative, agt false); the pipeline serves
+     * I1's (positive, agt true) — so the conditional executed */
+    CHECK((S.ps & DSP3210_PS_N) != 0);
+    CHECK(S.r[5] == 1);
+}
+
 static void test_dsp32_format(void) {
     /* spot values from the format definition [DOC §1.5.6] */
     CHECK(dsp3210_dsp32_to_double(0) == 0.0);
@@ -1194,6 +1285,9 @@ int main(void) {
     test_da_ic_oc();
     test_da_ifalt();
     test_dsp32_format();
+    test_latency_da_store();
+    test_latency_acc_multiplier();
+    test_latency_dau_condition();
 
     /* repo-adaptation coverage */
     test_timer_mmio();

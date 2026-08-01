@@ -27,7 +27,16 @@ its window (`(frame+1) & 1`):
   matters: CycloneBeep re-points `sndOutBase` just after the phase
   wraps, and a start-of-window snapshot replays a stale half.
 - **Input** (`pSndInEn`): fill `sndInBase + half·sndSize·4` from the
-  `machine.audioin` source (never into ROM/NuBus space).
+  `machine.audioin` source (never into ROM/NuBus space), scaled by
+  `singerCtl`'s A/D gain fields (`pLeftGain`/`pRightGain`, the same
+  1.5 dB ladder upwards, 0 to +22.5 dB — the shipped `singerCtlInit`
+  selects +7.5 dB and the speech front end's AGC drives the field), and
+  with the converter's **noise floor** added: about an LSB, independently
+  per channel, deterministic from the checkpointed sample counter.  The
+  noise floor is not cosmetic — a run of mathematically exact zeros
+  drives Apple's speech front end's envelope normaliser through a
+  division by zero, whose infinities permanently saturate the endpoint
+  detector's running cepstral mean.
 - **Frame interrupt** (`pFrmIntEn`): latch PSC-VIA2 IFR bit 6
   (`PSCSNDFRM`) **and** pulse DSP EXT1 — the same gated tick (B2).
   If the previous EXT1 is still latched unserviced, that is a frame
@@ -53,13 +62,14 @@ Host source surface, mirroring `machine.videoin`:
 
 | source | behavior |
 |---|---|
-| `none` | default — mic absent, input records silence |
+| `none` | default — mic absent, input records the converter's noise floor only |
 | `tone` | deterministic 600 Hz sawtooth (integer math, pure function of the checkpointed sample counter) |
 | `wav`  | a PCM16 WAV loaded via `machine.audioin.load <path>` (prepared offline at the codec rate; playback position checkpointed; `rewind()` restarts) |
 | `host` | the platform microphone through the `gs_audio_in_*` seam (weak defaults model "no mic"; a browser getUserMedia override can trail — the seam is the whole contract) |
 
 `gain` (percent, default 100) lets bring-up sweep input levels without
-re-mastering assets.  `connected` drives the mic-present sense;
+re-mastering assets; it is a test-harness knob, applied *before* the
+codec's own A/D gain ladder and noise floor.  `connected` drives the mic-present sense;
 `samples`/`position` expose progress.  The loaded WAV is checkpointed
 with the machine; the host mic is checkpoint-ephemeral.
 

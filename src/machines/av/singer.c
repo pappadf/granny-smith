@@ -111,6 +111,15 @@ static const uint32_t singer_atten_x65536[16] = {
     65536, 55142, 46396, 39037, 32846, 27636, 23253, 19565, 16462, 13851, 11654, 9806, 8250, 6942, 5841, 4915,
 };
 
+// A/D gain ladder (singer.md §3, singerCtl bits 12-19): the same 1.5 dB
+// steps upwards, 0 dB to +22.5 dB.  The driver's `singerCtlInit` selects
+// +7.5 dB on both channels, and the speech front end's AGC drives this
+// field, so an unmodelled A/D gain leaves every recorded level wrong.
+static const uint32_t singer_adgain_x65536[16] = {
+    65536,  77890,  92572,  110022, 130762, 155410, 184706, 219523,
+    260904, 310084, 368536, 438006, 520571, 618700, 735326, 873937,
+};
+
 // Stage the guest's output half-buffer with singerCtl attenuation/mute
 // applied — the capture sink then records exactly what the codec drives.
 static void singer_stage_output(av_singer_t *s, uint32_t base, uint32_t nframes) {
@@ -146,6 +155,33 @@ static bool singer_ain_connected(av_singer_t *s) {
         return gs_audio_in_connected();
     default:
         return false;
+    }
+}
+
+// The converter's noise floor.  A real Singer digitises its analogue front
+// end continuously, so the captured stream is never a run of mathematically
+// exact zeros — there is always about an LSB of converter and thermal noise,
+// on both channels independently.  Modelling it is not cosmetic: Apple's DSP
+// speech front end normalises each frame by its own envelope, and a frame of
+// exact zeros drives that normalisation through a division by zero.  The
+// resulting infinities land in the endpoint detector's running cepstral mean,
+// which saturates and never recovers, so the recognizer stops detecting
+// speech for the rest of the session (debug-plaintalk, rung 7).
+//
+// Deterministic — a pure function of the checkpointed sample counter, so
+// captures stay byte-identical across hosts and across checkpoint restore.
+static void singer_ain_dither(av_singer_t *s, uint32_t nframes) {
+    for (uint32_t i = 0; i < nframes * 2; i++) {
+        uint32_t h = (uint32_t)((s->ain_samples * 2 + i) * 2654435761u);
+        h ^= h >> 13;
+        h *= 1274126177u;
+        h ^= h >> 16;
+        int32_t v = (int32_t)s->stage[i] + (int32_t)(h % 3u) - 1; // -1, 0, +1
+        if (v > 32767)
+            v = 32767;
+        if (v < -32768)
+            v = -32768;
+        s->stage[i] = (int16_t)v;
     }
 }
 
@@ -192,6 +228,7 @@ static void singer_ain_pull(av_singer_t *s, uint32_t nframes, uint32_t rate) {
             s->stage[i] = (int16_t)v;
         }
     }
+    singer_ain_dither(s, nframes);
     s->ain_samples += nframes;
 }
 
@@ -201,6 +238,19 @@ static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
     if (base >= 0x40000000u)
         return; // never DMA into ROM/NuBus space
     singer_ain_pull(s, nframes, singer_rate(s));
+    // The codec's A/D gain sits ahead of the converter, so it scales what
+    // the DMA deposits (singer.md §3, singerCtl bits 12-19).
+    uint32_t ctl = av_psc_snd_read32(singer_st(s)->psc, 0x04); // singerCtl
+    uint32_t agl = singer_adgain_x65536[(ctl >> 16) & 15]; // pLeftGain
+    uint32_t agr = singer_adgain_x65536[(ctl >> 12) & 15]; // pRightGain
+    if (agl != 65536 || agr != 65536) {
+        for (uint32_t i = 0; i < nframes; i++) {
+            int64_t l = ((int64_t)s->stage[i * 2] * agl) >> 16;
+            int64_t r = ((int64_t)s->stage[i * 2 + 1] * agr) >> 16;
+            s->stage[i * 2] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
+            s->stage[i * 2 + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
+        }
+    }
     for (uint32_t i = 0; i < nframes; i++) {
         mmu_write_physical_uint16(g_mmu, base + i * 4, (uint16_t)s->stage[i * 2]);
         mmu_write_physical_uint16(g_mmu, base + i * 4 + 2, (uint16_t)s->stage[i * 2 + 1]);

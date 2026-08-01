@@ -26,6 +26,19 @@
 //   - Exact integer DAU: 40-bit accumulators (24-bit mantissa + 8 guard bits
 //     + 8-bit exponent), exact 25x25 multiplier, truncating adder, documented
 //     rounding.  No host floating point in the data path.
+//   - All three of the DAU pipeline's data latencies [IM §4.4.2] are
+//     modelled, because Apple's shipped sound and speech modules are
+//     software-pipelined to them and compute the wrong thing without:
+//     Latency 1 — a DA memory write is not readable for three instructions
+//     (WinAuto's in-place pre-emphasis FIR, errata.md E13);
+//     Latency 2 — an accumulator feeding the MULTIPLIER reads its value
+//     from three instructions back (the RTM sound-input converter's DC
+//     blocker, E12);
+//     Latency 4 — a DAU condition tested by a conditional branch or
+//     conditional CA instruction is the one established four instructions
+//     back, while ifalt/ifagt/ifaeq stay zero-latency (VQ's codebook
+//     search, E14).
+//     Latency 3 (delayed branches) was already modelled.
 //   - Exception model: 16-entry vector table at evtp, error vs interrupt
 //     dispatch, emr masking, processing levels, ireturn with shadow restore,
 //     waiti, sftrst.  bkpt halts the core (state "crashed").
@@ -177,6 +190,46 @@ typedef struct dsp3210 {
     // DAU accumulators (exact 40-bit model)
     dsp3210_acc a[4];
 
+    // The DAU multiplier-input pipeline [IM §4.4.2.2, "Latency 2"]: an
+    // accumulator feeding the MULTIPLIER — or the X field of the
+    // `[Z =] aN = [-]Y {+,-} X` form — reads the value it held three
+    // instructions earlier, because the X/Y multiplier registers are
+    // loaded that far ahead of the multiply.  Accumulators feeding the
+    // ADDER have no such latency.  `a_pipe[k]` is the accumulator file as
+    // it stood after instruction (n-1-k), so a multiply in instruction n
+    // reads `a_pipe[2]`.  Apple's sound-input converter depends on this:
+    // its DC-blocker feeds back the *output* sample written three
+    // instructions earlier, not the raw sample loaded two ago.
+    dsp3210_acc a_pipe[3][4];
+
+    // The DA store shadow [IM §4.4.2.1, "Latency 1"]: a DA instruction's
+    // memory write travels the pipeline's fourth stage, so the location is
+    // "not available to be read from ... until four instructions later".
+    // The store is committed to memory immediately (faults, DMA and host
+    // visibility are unaffected); reads that land inside the three-
+    // instruction window are served the PRE-write bytes from here instead.
+    // Apple's WinAuto depends on it: its pre-emphasis FIR runs in place and
+    // reads x[n-1] one instruction after overwriting it, so a core without
+    // the window silently computes an IIR (errata.md E13).
+    struct {
+        uint32_t addr, old;
+        uint8_t size;
+        uint64_t ic;
+    } da_wr[4];
+    uint32_t da_wr_n;
+    int in_fetch; // the current read is an instruction fetch, not data
+
+    // The DAU flag pipeline [IM §4.4.2.4, "Latency 4"]: a DAU condition
+    // tested by a conditional BRANCH or conditional CA instruction is
+    // established by the last DA instruction "no sooner than four
+    // instructions prior" — so a test in instruction n sees the flags as
+    // they stood after instruction n-4.  The zero-latency ifalt/ifagt/ifaeq
+    // conditional loads are explicitly exempt and read the live flags.
+    // Apple's VQ codebook search is scheduled to this: its early-exit
+    // branch tests a comparison four instructions back while the ifalt
+    // right before it uses the newest one (errata.md E14).
+    uint16_t dau_flag_pipe[4]; // [k] = the DAU flag bits after insn n-1-k
+
     // do-loop state [IM DO page]
     int do_active;
     int do_lock; // dolock: interrupts disabled for the loop
@@ -201,6 +254,8 @@ typedef struct dsp3210 {
     uint16_t sh_ps;
     uint8_t sh_dauc, sh_ctr;
     dsp3210_acc sh_a[4];
+    dsp3210_acc sh_a_pipe[3][4]; // the DAU pipeline is part of that state
+    uint16_t sh_dau_flag_pipe[4];
     int sh_do_active, sh_do_lock;
     uint32_t sh_do_start, sh_do_end, sh_do_count;
 

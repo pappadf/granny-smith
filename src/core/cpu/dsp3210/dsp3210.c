@@ -202,6 +202,8 @@ static void take_interrupt(dsp3210_t *s, int vn) {
     s->sh_dauc = s->dauc;
     s->sh_ctr = s->ctr;
     memcpy(s->sh_a, s->a, sizeof s->a);
+    memcpy(s->sh_a_pipe, s->a_pipe, sizeof s->a_pipe);
+    memcpy(s->sh_dau_flag_pipe, s->dau_flag_pipe, sizeof s->dau_flag_pipe);
     s->sh_do_active = s->do_active;
     s->sh_do_lock = s->do_lock;
     s->sh_do_start = s->do_start;
@@ -233,6 +235,8 @@ static void do_ireturn(dsp3210_t *s) {
         s->dauc = s->sh_dauc;
         s->ctr = s->sh_ctr;
         memcpy(s->a, s->sh_a, sizeof s->a);
+        memcpy(s->a_pipe, s->sh_a_pipe, sizeof s->a_pipe);
+        memcpy(s->dau_flag_pipe, s->sh_dau_flag_pipe, sizeof s->dau_flag_pipe);
         s->do_active = s->sh_do_active;
         s->do_lock = s->sh_do_lock;
         s->do_start = s->sh_do_start;
@@ -446,16 +450,72 @@ static int raw_access(dsp3210_t *s, uint32_t addr, int size, uint32_t *inout, in
     return 0;
 }
 
-/* access from executing code — raises address/bus errors.
- *
- * A misaligned access raises the address error (vector 4).  When that
+/* ---- the DA store shadow [IM §4.4.2.1] ---- */
+
+static uint32_t byte_lane(uint32_t v, int size, int idx, int big) {
+    return (v >> (8 * (big ? size - 1 - idx : idx))) & 0xFFu;
+}
+
+static uint32_t put_lane(uint32_t v, int size, int idx, int big, uint32_t b) {
+    int sh = 8 * (big ? size - 1 - idx : idx);
+    return (v & ~(0xFFu << sh)) | (b << sh);
+}
+
+/* Record the pre-write bytes of a DA store, so reads inside its three-
+ * instruction shadow still see them. */
+static void da_store_shadow(dsp3210_t *s, uint32_t addr, int size) {
+    uint32_t i = s->da_wr_n & 3, old = 0;
+    if (safe_read(s, addr, size, &old))
+        return; /* unreadable: nothing to shadow */
+    s->da_wr[i].addr = addr;
+    s->da_wr[i].size = (uint8_t)size;
+    s->da_wr[i].old = old;
+    s->da_wr[i].ic = s->icount;
+    s->da_wr_n++;
+}
+
+/* Overlay any byte still inside a DA store's shadow with its pre-write
+ * value.  Oldest entry first, so the earliest pending write wins a byte
+ * two of them touch — that is the content before the whole window. */
+static void da_store_bypass(dsp3210_t *s, uint32_t addr, int size, uint32_t *val) {
+    int big = (s->pcw >> 8) & 1, i, k;
+    uint8_t done[4] = {0, 0, 0, 0};
+    for (k = 4; k >= 1; k--) {
+        uint32_t idx = (s->da_wr_n - (uint32_t)k) & 3;
+        if (!s->da_wr[idx].size || s->icount - s->da_wr[idx].ic > 3)
+            continue;
+        for (i = 0; i < size; i++) {
+            uint32_t a = addr + (uint32_t)i;
+            if (done[i] || a < s->da_wr[idx].addr || a - s->da_wr[idx].addr >= s->da_wr[idx].size)
+                continue;
+            *val = put_lane(*val, size, i, big,
+                            byte_lane(s->da_wr[idx].old, s->da_wr[idx].size, (int)(a - s->da_wr[idx].addr), big));
+            done[i] = 1;
+        }
+    }
+}
+
+static int mem_read_raw(dsp3210_t *s, uint32_t addr, int size, uint32_t *out);
+
+/* access from executing code — raises address/bus errors, and serves any
+ * byte still inside a DA store's three-instruction shadow from `da_wr`
+ * (instruction fetch is exempt: the kernel's chunk loader writes code and
+ * the modules run from it much later). */
+static int mem_read(dsp3210_t *s, uint32_t addr, int size, uint32_t *out) {
+    int r = mem_read_raw(s, addr, size, out);
+    if (!r && !s->in_fetch)
+        da_store_bypass(s, addr & ~(uint32_t)(size - 1), size, out);
+    return r;
+}
+
+/* A misaligned access raises the address error (vector 4).  When that
  * error is MASKED, the access still completes with the low address bits
  * ignored (aligned down): the AV ROM's kernel relies on this — it
  * programs the 8-bit tcon register with `*r7 = (long) r8` at $50030413
  * (kernel main, core image +$74 into the $1160 chunk), which only works
  * if the masked misaligned long store lands on the $0410 word slot with
  * tcon in its low byte lane. */
-static int mem_read(dsp3210_t *s, uint32_t addr, int size, uint32_t *out) {
+static int mem_read_raw(dsp3210_t *s, uint32_t addr, int size, uint32_t *out) {
     int fault = 0;
     uint32_t base = (s->pcw & (1u << 10)) ? 0u : 0x50030000u;
     if (addr & (uint32_t)(size - 1)) { /* [IM §7.5, address error] */
@@ -946,12 +1006,17 @@ static uint32_t bitrev(uint32_t x, int nbits) {
 }
 
 /* condition evaluation (Table 4-7 / DOC §1.5.2) */
+#define DSP3210_PS_DAU (DSP3210_PS_N | DSP3210_PS_Z | DSP3210_PS_U | DSP3210_PS_V)
+
 static int cond_eval(dsp3210_t *s, unsigned c) {
     unsigned ps = s->ps;
     unsigned n = !!(ps & DSP3210_PS_n), z = !!(ps & DSP3210_PS_z);
     unsigned v = !!(ps & DSP3210_PS_v), cf = !!(ps & DSP3210_PS_c);
-    unsigned AN = !!(ps & DSP3210_PS_N), AZ = !!(ps & DSP3210_PS_Z);
-    unsigned AU = !!(ps & DSP3210_PS_U), AV = !!(ps & DSP3210_PS_V);
+    /* DAU conditions read the flag pipeline, not the live flags
+     * [IM §4.4.2.4] — see the header.  CAU flags have no such latency. */
+    unsigned dps = s->dau_flag_pipe[3];
+    unsigned AN = !!(dps & DSP3210_PS_N), AZ = !!(dps & DSP3210_PS_Z);
+    unsigned AU = !!(dps & DSP3210_PS_U), AV = !!(dps & DSP3210_PS_V);
 
     switch (c & 63) {
     case 0:
@@ -1230,10 +1295,10 @@ static int da_read(dsp3210_t *s, unsigned f, int size, da_opnd *o) {
     if (p == 0 || p == 15) { /* register direct (or reserved) */
         o->from_acc = 1;
         o->acc = i & 3;
-        o->val = s->a[i & 3];
-        o->raw = dsp3210_acc_pack(s->a[i & 3]); /* guard bits truncated,
-                                       as when an accumulator feeds the
-                                       multiplier [IM §8.2.3] */
+        o->val = s->a[i & 3]; /* the ADDER lane: current, full 40 bits */
+        /* the MULTIPLIER lane: guard bits truncated [IM §8.2.3] AND three
+         * instructions stale [IM §4.4.2.2] */
+        o->raw = dsp3210_acc_pack(s->a_pipe[2][i & 3]);
         return 0;
     }
     o->maddr = s->r[p];
@@ -1259,6 +1324,7 @@ static int da_store_z_through_y(dsp3210_t *s, unsigned z, int size, uint32_t val
     unsigned i = z & 7;
     if (y->from_acc)
         return 0; /* no memory operand to store through */
+    da_store_shadow(s, y->maddr, size);
     if (mem_write(s, y->maddr, size, val))
         return -1;
     da_postmod(s, y->preg, i, size);
@@ -1278,6 +1344,7 @@ static int da_write(dsp3210_t *s, unsigned f, int size, uint32_t val) {
     unsigned p = (f >> 3) & 15, i = f & 7;
     if (p == 0 || p == 15)
         return 0; /* no write */
+    da_store_shadow(s, s->r[p], size);
     if (mem_write(s, s->r[p], size, val))
         return -1;
     da_postmod(s, p, i, size);
@@ -1582,8 +1649,8 @@ static int exec_da(dsp3210_t *s, uint32_t w) {
             pm = 0;
             pe = 0;
         } /* 0.0 * X */
-        else
-            dau_mul(m == 5 ? ONE : dsp3210_acc_pack(s->a[m]), da_mult(&X), &pm, &pe);
+        else /* aM is a multiplier input: three instructions stale */
+            dau_mul(m == 5 ? ONE : dsp3210_acc_pack(s->a_pipe[2][m]), da_mult(&X), &pm, &pe);
         tap = 0;
     } else {
         /* fmt 2 (tap) / fmt 3 (store): aN = [-]{aM,0,1} {+,-} Y*X */
@@ -2057,8 +2124,12 @@ int dsp3210_step(dsp3210_t *s) {
     } else {
         addr = s->pc;
         s->cur_insn = addr;
-        if (mem_read(s, addr, 4, &w))
-            return DSP3210_STEP_OK; /* fetch fault → exception taken */
+        s->in_fetch = 1;
+        if (mem_read(s, addr, 4, &w)) {
+            s->in_fetch = 0;
+            return DSP3210_STEP_OK;
+        }
+        s->in_fetch = 0;
 
         s->pc = s->npc;
         s->npc = s->pc + 4;
@@ -2086,6 +2157,16 @@ int dsp3210_step(dsp3210_t *s) {
             s->npc = s->do_start + 4;
         }
     }
+    /* the DAU multiplier-input pipeline advances one instruction cycle
+     * [IM §4.4.2.2] — including on instructions that touch no accumulator */
+    memmove(s->a_pipe[1], s->a_pipe[0], sizeof s->a_pipe[0] * 2);
+    memcpy(s->a_pipe[0], s->a, sizeof s->a);
+    /* ...and so does the DAU flag pipeline [IM §4.4.2.4] */
+    s->dau_flag_pipe[3] = s->dau_flag_pipe[2];
+    s->dau_flag_pipe[2] = s->dau_flag_pipe[1];
+    s->dau_flag_pipe[1] = s->dau_flag_pipe[0];
+    s->dau_flag_pipe[0] = (uint16_t)(s->ps & DSP3210_PS_DAU);
+
     /* the on-chip timer counts per executed instruction cycle */
     timer_tick(s, timer_ticks_per_insn(s));
     ext_pulse_tick(s); /* live pin-pulse windows burn down in core time */
@@ -2142,6 +2223,13 @@ void dsp3210_reset(dsp3210_t *s, unsigned straps) {
     uint32_t prev_pc = s->pc;
     memset(s->r, 0, sizeof s->r);
     memset(s->a, 0, sizeof s->a); /* e = 0 => all four read as zero */
+    memset(s->a_pipe, 0, sizeof s->a_pipe);
+    memset(s->dau_flag_pipe, 0, sizeof s->dau_flag_pipe);
+    memset(s->sh_dau_flag_pipe, 0, sizeof s->sh_dau_flag_pipe);
+    memset(s->da_wr, 0, sizeof s->da_wr);
+    s->da_wr_n = 0;
+    s->in_fetch = 0;
+    memset(s->sh_a_pipe, 0, sizeof s->sh_a_pipe);
     s->r[20] = prev_pc; /* r20 = previous pc */
     s->pc = 0; /* reset vector: call evtp+0 (r20),
                   evtp cleared to 0 */
@@ -2230,7 +2318,12 @@ double dsp3210_acc_get(const dsp3210_t *s, int n) {
 }
 
 void dsp3210_acc_set(dsp3210_t *s, int n, double v) {
+    int k;
     s->a[n & 3] = dsp3210_acc_from_double(v);
+    /* a host poke is instantaneous: flush the multiplier pipeline too, so
+     * rigs and tests see the value on the very next instruction */
+    for (k = 0; k < 3; k++)
+        s->a_pipe[k][n & 3] = s->a[n & 3];
 }
 
 void dsp3210_acc_raw(const dsp3210_t *s, int n, int64_t *mant_guard, int *exp) {
