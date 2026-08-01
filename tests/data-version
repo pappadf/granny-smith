@@ -2,4 +2,4 @@
 # Goldens are byte-exact, so changing this line means re-verifying
 # every row that consumes the media it changes.
 # Update with: scripts/fetch-test-data.sh --update
-2937e56c31b2667e5d1b4e743f8fe1d28f477c21
+a51402b7d5731a524fa0fb952c451471c18ce720
