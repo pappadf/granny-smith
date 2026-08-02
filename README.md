@@ -31,7 +31,7 @@ Each machine is modeled faithfully: the original ROMs run unpatched, and all on-
   - Tested with System 6.0.3 through 7.5, and A/UX 3.0.1
 - **Macintosh IIfx**
   - 68030 with on-chip PMMU + 68882 FPU
-  - OSS interrupt controller, FMC memory controller, 65C02 IOPs (SCC, SWIM/ADB), SCSI DMA engine
+  - OSS interrupt controller, FMC memory controller, IOPs (SCC, SWIM/ADB), SCSI DMA engine
   - RTC, ADB, SWIM floppy, 5380 SCSI, ASC sound, VIA, SCC serial, NuBus
   - Tested with System 6.0.8 through 7.6 and A/UX 3.0.1
 - **Macintosh IIci and IIsi** (the 68030 MDU generation)
