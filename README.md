@@ -28,25 +28,25 @@ Each machine is modeled faithfully: the original ROMs run unpatched, and all on-
 - **Macintosh SE/30, IIx, and IIcx** (the 68030 "GLUE" generation)
   - 68030 with on-chip PMMU + 68882 FPU
   - RTC, ADB, SWIM floppy, 5380 SCSI, ASC sound, VIAs, SCC serial, NuBus or built-in video
-  - Tested with System 6.0.3 through 7.5, and A/UX 3.0.1 on the SE/30 and IIx
+  - Tested with System 6.0.3 through 7.5, and A/UX 3.0.1
 - **Macintosh IIfx**
   - 68030 with on-chip PMMU + 68882 FPU
-  - OSS interrupt controller, FMC memory controller, two 65C02 IOPs (SCC, SWIM/ADB), custom SCSI DMA engine
+  - OSS interrupt controller, FMC memory controller, 65C02 IOPs (SCC, SWIM/ADB), SCSI DMA engine
   - RTC, ADB, SWIM floppy, 5380 SCSI, ASC sound, VIA, SCC serial, NuBus
   - Tested with System 6.0.8 through 7.6 and A/UX 3.0.1
 - **Macintosh IIci and IIsi** (the 68030 MDU generation)
   - 68030 with on-chip PMMU + 68882 FPU
   - RBV (VIA2 replacement and built-in video), Egret system manager on the IIsi
-  - RTC, ADB, SWIM floppy, 5380 SCSI, ASC sound, VIA, SCC serial, RBV video, NuBus
+  - RTC, ADB, SWIM floppy, 5380 SCSI, ASC sound, VIA, SCC serial, NuBus, video
   - Tested with System 6.0.8 through 7.6
 - **Macintosh Quadra 700, 900, and 950** (the 68040 MCU generation)
   - 68040 with on-chip MMU and FPU
   - MCU memory controller, DAFB video controller, Caboose system manager and two IOPs on the 900/950
-  - RTC, ADB, SWIM floppy, 53C96 SCSI, EASC sound, SONIC Ethernet, VIAs, SCC serial, NuBus and DAFB video
+  - RTC, ADB, SWIM floppy, 53C96 SCSI, EASC sound, SONIC Ethernet, VIAs, SCC serial, NuBus, video
   - Tested with System 7.1 through 7.6
 - **Macintosh Quadra 840AV and Centris 660AV** (the 68040 AV generation)
   - 68040 with on-chip MMU and FPU
-  - YMCA memory controller, PSC (interrupt controller and DMA), Cuda system manager, CIVIC video controller
+  - YMCA memory controller, PSC (interrupt controller and DMA), Cuda system manager, CIVIC video
   - RTC, ADB, New Age floppy controller, 53C96 SCSI, MACE Ethernet, VIA, SCC serial, CIVIC video
   - Tested with System 7.1
 
