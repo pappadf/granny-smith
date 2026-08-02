@@ -41,13 +41,13 @@ Each machine is modeled faithfully: the original ROMs run unpatched, and all on-
   - Tested with System 6.0.8 through 7.6
 - **Macintosh Quadra 700, 900, and 950** (the 68040 MCU generation)
   - 68040 with on-chip MMU and FPU
-  - MCU memory controller, DAFB video controller, Caboose system manager and two IOPs on the 900/950
+  - MCU memory controller, DAFB video controller, Caboose system manager and IOPs in 900/950
   - RTC, ADB, SWIM floppy, 53C96 SCSI, EASC sound, SONIC Ethernet, VIAs, SCC serial, NuBus, video
   - Tested with System 7.1 through 7.6
 - **Macintosh Quadra 840AV and Centris 660AV** (the 68040 AV generation)
   - 68040 with on-chip MMU and FPU
   - YMCA memory controller, PSC (interrupt controller and DMA), Cuda system manager, CIVIC video
-  - RTC, ADB, New Age floppy controller, 53C96 SCSI, MACE Ethernet, VIA, SCC serial, CIVIC video
+  - RTC, ADB, New Age floppy controller, 53C96 SCSI, MACE Ethernet, VIA, SCC serial
   - Tested with System 7.1
 
 ## Emulated Display Cards
