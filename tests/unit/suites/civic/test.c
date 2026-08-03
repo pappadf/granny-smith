@@ -45,6 +45,13 @@ uint32_t cpu_get_pc(cpu_t *cpu) {
     return 0;
 }
 
+// --- the video digitizer's clock-gate hook (st->vdc stays NULL here, but
+// the symbol must resolve; the vdc suite covers the real interplay) ---
+void av_vdc_clock_gate(struct av_vdc *vdc, bool clock_off) {
+    (void)vdc;
+    (void)clock_off;
+}
+
 // --- scheduler: capture the frame event so tests can tick it manually ---
 static void (*s_frame_cb)(void *, uint64_t);
 static void *s_frame_src;

@@ -98,9 +98,20 @@ MIDI interrupts that live above it. Nothing in the emulator masks on Cuda's
 behalf, so this is satisfied by construction — recorded here because it is the
 kind of thing a future "optimization" would break.
 
+## The I²C bus — pseudo-command `$22`
+
+`$22` (`RdWrIIC`) is the only route to the video-in chips. The wire format is
+`OS/CudaMgr.a`'s: the first parameter byte is the I²C slave address and its
+**bit 0 is the direction** (even = write, odd = read); the remaining header
+bytes are what goes on the I²C wire, which for these parts means the
+subaddress first. Writes get the ordinary 4-byte acknowledgement; reads append
+the data bytes to it. Only the two Philips slaves (`$8A`/`$8B` DMSD,
+`$B8`/`$B9` VDC) are on the bus — anything else gets an error packet and a
+warning, since the firmware's behavior for other addresses was never analysed.
+The chips themselves are [vdc.md](vdc.md).
+
 ## Not modelled
 
-The I²C pseudo-command `$22` (`RdWrIIC`) accepts and acknowledges but has no
-Philips chips behind it, matching the video-in scope decision. Autopoll uses
+Autopoll uses
 the shared ADB device model rather than reproducing the firmware's polling
 state machine. Power-off logs rather than acting.

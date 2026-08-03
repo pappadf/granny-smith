@@ -21,6 +21,13 @@
 #                   the hard disk to the Finder desktop; hardware truths
 #                   first, then the byte-exact golden.
 #   q660av-71-hd-desktop  Same for the 660AV.
+#   q840av-71-video-in    The video digitizer end to end: no-signal default
+#                   asserted, then the deterministic pattern source, Video
+#                   Monitor launched from its desktop alias, capture-engine
+#                   hardware truths, and a golden of the hardware-playthrough
+#                   overlay showing the pattern.
+#   q660av-71-video-in    Same for the 660AV (different clock → different
+#                   captured frame at the golden instant, so no collision).
 #
 # The boot rows ride a prepared 76 MB System 7.1 AV hard-disk image rather
 # than a CD.  It is the volume that exercises the family properly: a full
@@ -212,6 +219,61 @@ def row_q660av_71_hd_desktop() {
     report_perf("suite-av/q660av-71-hd-desktop", scheduler.instr_count)
 }
 
+# ---- video-in rows ----------------------------------------------------------
+# The AV video digitizer end to end (proposal-av-video-in.md §4 Phase 3): the
+# vdig opens over Cuda I2C, programs the SAA7186 window/format, starts the
+# CIVIC frame engine, and Video Monitor's hardware playthrough shows the
+# deterministic test pattern through the Sebastian overlay.
+#
+# Determinism note: once capture runs, the screen updates every field (the
+# pattern scrolls), so NO stability wait may follow the launch — the dance is
+# guest-tick-paced and the golden is a phase-exact instant, the same policy
+# as about_box().  The two models tick at different clocks, so their captured
+# frames differ and the goldens do not collide.
+#
+# The Video Monitor alias sits at (536, 150) on the CI disk's desktop
+# (see the -hd-finder goldens).
+
+def row_video_in(model, golden) {
+    machine.rtc.time = 3000000000
+    machine.boot model="${$model}" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
+
+    # Default state: nothing plugged in — the machine booted with the
+    # digitizer present but idle, and the DMSD reports no signal lock.
+    assert machine.videoin.source == "none" "video-in: default source is ${machine.videoin.source}, want none"
+    assert !machine.videoin.connected "video-in: connected with no source"
+    assert machine.videoin.fields == 0 "video-in: ${machine.videoin.fields} fields written before any capture"
+
+    # Plug in the deterministic pattern source, then launch Video Monitor.
+    machine.videoin.pattern
+    assert machine.videoin.connected "video-in: pattern source not connected"
+    machine.adb.mouse.move 50 50 "global"
+    run_ticks(30)
+    double_click(536, 150)
+    run_ticks(600)
+
+    # Hardware truths before pixels: the vdig started the capture engine.
+    assert machine.videoin.fields > 0 "video-in: no fields captured — the vdig never started the VDC"
+    assert (machine.memory.peek.l(0x50036018) & 1) == 0 "video-in: VDCClk still gated off"
+    assert (machine.memory.peek.l(0x50036010) & 1) == 1 "video-in: VDC field interrupt not enabled"
+    assert (machine.memory.peek.l(0x5003604C) & 1) == 0 "video-in: BusSize still 64-bit — video-in impossible"
+    # Sebastian: video-in enable + overlay bits both set (PCBR bit 4 + 7).
+    assert (machine.memory.peek.b(0x50F30820) & 0x90) == 0x90 "video-in: PCBR ${machine.memory.peek.b(0x50F30820):02x} — overlay not enabled"
+
+    check("goldens/${$golden}")
+    # No report_row() here, deliberately.  The coverage matrix is keyed on the
+    # raster (machine x system x card x WxHxD), and these rows add none: the
+    # -hd-desktop rows above already claim 640x480x8 for both models.  Worse,
+    # report_row reads machine.screen.depth live, and while the video overlay
+    # is composited the scanout descriptor is a 32-bpp XRGB buffer — so a claim
+    # from here would register a phantom 640x480x32 cell for a guest whose
+    # graphics mode is 8 bpp.  What this row covers is a feature, not a raster.
+    report_perf("suite-av/${$model}-71-video-in", scheduler.instr_count)
+}
+
 # --- row calls ---------------------------------------------------------------
 
 if row_on("av-identity") {
@@ -256,6 +318,20 @@ if row_on("q660av-71-hd-desktop") {
         row_end("q660av-71-hd-desktop", try(row_q660av_71_hd_desktop(), "FAILED"))
     } else {
         echo "skip: q660av-71-hd-desktop — ${$av_hd} not fetched"
+    }
+}
+if row_on("q840av-71-video-in") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("q840av-71-video-in", try(row_video_in("q840av", "q840av-7.1-640x480x8-video-monitor.png"), "FAILED"))
+    } else {
+        echo "skip: q840av-71-video-in — ${$av_hd} not fetched"
+    }
+}
+if row_on("q660av-71-video-in") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("q660av-71-video-in", try(row_video_in("q660av", "q660av-7.1-640x480x8-video-monitor.png"), "FAILED"))
+    } else {
+        echo "skip: q660av-71-video-in — ${$av_hd} not fetched"
     }
 }
 

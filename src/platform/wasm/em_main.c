@@ -1388,6 +1388,7 @@ int main(int argc, char *argv[]) {
     // Initialize subsystems (safe without a machine — video and audio handle NULL)
     em_video_init();
     em_audio_init();
+    em_camera_init(); // announce the webcam frame transport to the main thread
     setup_pointer_lock();
 
     install_background_checkpoint_handlers();

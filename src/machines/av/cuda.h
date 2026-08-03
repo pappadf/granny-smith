@@ -38,6 +38,7 @@ struct via;
 struct rtc;
 struct adb;
 struct scheduler;
+struct av_vdc;
 
 struct av_cuda;
 typedef struct av_cuda av_cuda_t;
@@ -66,5 +67,9 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b);
 
 // Firmware identity string ("Cuda 2.37").
 const char *av_cuda_firmware(const av_cuda_t *cuda);
+
+// Attach the video digitizer's I2C targets (DMSD + VDC) behind
+// pseudo-command $22 (wired from av_build_devices once both exist).
+void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc);
 
 #endif // GS_MACHINES_AV_CUDA_H

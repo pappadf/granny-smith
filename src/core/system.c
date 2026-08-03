@@ -613,6 +613,22 @@ __attribute__((weak)) int gs_find_media(const char *dir_path, const char *dest) 
     return 1;
 }
 
+// Host video-input seam: the defaults model "no camera attached" — the
+// headless build drives capture from the deterministic machine.videoin
+// sources instead; em_camera.c overrides these on WASM.
+__attribute__((weak)) bool gs_video_in_connected(void) {
+    return false;
+}
+
+__attribute__((weak)) int gs_video_in_frame(uint8_t *rgba) {
+    (void)rgba;
+    return -1;
+}
+
+__attribute__((weak)) void gs_video_in_state(bool active) {
+    (void)active;
+}
+
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
 config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {

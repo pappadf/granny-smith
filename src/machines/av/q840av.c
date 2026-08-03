@@ -72,6 +72,7 @@ const hw_profile_t machine_q840av = {
     .scsi_slots = q840av_scsi_slots,
     .has_cdrom = true,
     .cdrom_id = 3,
+    .has_video_in = true, // on-board DMSD/VDC digitizer (video-in.md)
 
     .nubus_slots = NULL,
 

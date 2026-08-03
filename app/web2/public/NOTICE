@@ -1,8 +1,8 @@
 Granny Smith UI — Third-Party Notices (icons)
 
 This directory bundles third-party icon assets. Each item below lists the
-work, its copyright holder, the license under which it is used, and a link
-to the upstream source. No item has been modified.
+work, its copyright holder, the license under which it is used, a link to
+the upstream source, and whether it has been modified.
 
 ================================================================================
 1. VS Code Codicons
@@ -26,6 +26,7 @@ names of the icons reproduced here are:
     debug-step-into           (debug Step Into action)
     debug-step-over           (debug Step Over action)
     debug-stop                (debug Stop action, Display Toolbar Stop)
+    device-camera-video       (Camera on/off toolbar button; MODIFIED for the off state)
     file                      (file rows in the Filesystem tree)
     folder                    (folder rows in the Filesystem tree)
     history                   (RTC clock node in the Machine tree)
@@ -71,9 +72,18 @@ License:
     applies here.
 
 Modifications:
-    None. The icon paths are reproduced verbatim from the upstream SVG
-    files. Sizing and theming (color, scale) are applied via CSS at
-    render time without altering the path data.
+    All icons except one are reproduced verbatim from the upstream SVG
+    files. Sizing and theming (color, scale) are applied via CSS at render
+    time without altering the path data.
+
+    One derivative work is included. The sprite symbol `i-camera-off` is
+    based on upstream `device-camera-video`, whose path data is itself
+    reproduced verbatim; a diagonal knockout mask and a 1.1 px diagonal
+    stroke have been added to it to form a disabled/off variant. Codicons
+    ships no camera "-off" icon, so no verbatim alternative exists. The
+    derivative follows the construction upstream uses for its own
+    `bell-slash` and `eye-closed` icons. `i-camera` (the on state) is
+    unmodified `device-camera-video`.
 
 Trademark:
     The CC BY 4.0 license does not grant any rights to use Microsoft's

@@ -152,6 +152,14 @@ for m in q840av q660av; do
 done
 assert_contains q840av '"freq":40000000' "q840av runs at 40 MHz"
 assert_contains q660av '"freq":25000000' "q660av runs at 25 MHz"
+# The on-board DMSD/VDC video digitizer is what makes these machines "AV":
+# video_in gates the frontend's camera control, and only this family has it.
+for m in q840av q660av; do
+    assert_contains "$m" '"video_in":true' "$m has the on-board video digitizer"
+done
+for m in plus se30 iicx iix iifx iici iisi lisa macxl; do
+    assert_contains "$m" '"video_in":false' "$m has no video digitizer"
+done
 # Built-in CIVIC video is motherboard circuitry, not a card: neither machine
 # may offer a pluggable video card.
 for m in q840av q660av; do

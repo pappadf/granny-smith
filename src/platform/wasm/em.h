@@ -35,6 +35,7 @@ uint8_t *em_video_get_framebuffer(void);
 // Initialize audio subsystem (context + worklet module; the stream itself is
 // opened by the machine's sound frontend via platform_audio_open)
 void em_audio_init(void);
+void em_camera_init(void);
 
 // Resume audio context (if suspended)
 void em_audio_resume(void);

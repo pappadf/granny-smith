@@ -125,6 +125,7 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 The DSP3210 (no core — the enabler's Real Time Manager releases reset, polls,
 times out and re-asserts reset, which is the documented graceful failure and
 is verified on a real boot), Singer sound output beyond the mandatory
-free-running `sndPhase` counter, video input (the `vdig` simply fails to
-open), GeoPort/DMA serial, Ethernet beyond the register stub, floppy media,
-and NuBus cards in the AV slots.
+free-running `sndPhase` counter, GeoPort/DMA serial, Ethernet beyond the
+register stub, floppy media, and NuBus cards in the AV slots. Video *input*
+is modelled — the digitizer, its capture path and the browser webcam feed are
+[vdc.md](vdc.md); capture is mute, as it is on the hardware.

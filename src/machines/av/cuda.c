@@ -32,6 +32,8 @@
 
 #include "cuda.h"
 
+#include "vdc.h"
+
 #include "adb.h"
 #include "checkpoint.h"
 #include "log.h"
@@ -71,6 +73,7 @@ LOG_USE_CATEGORY_NAME("cuda");
 #define CMD_PWRDOWN    0x0A // power off
 #define CMD_WRPRAM     0x0C // write PRAM
 #define CMD_WRDFAC     0x0E // audio gain (accept-and-log)
+#define CMD_RDWRIIC    0x22 // I2C master transaction (DMSD/VDC — video-in.md §2)
 #define CMD_RESET      0x11 // cold reset
 #define CMD_SETAUTOP   0x14 // set autopoll rate
 #define CMD_WR1SECMODE 0x1B // 1-second-interrupt mode
@@ -132,6 +135,7 @@ struct av_cuda {
     struct rtc *rtc;
     struct adb *adb;
     struct scheduler *sched;
+    struct av_vdc *vdc; // I2C targets behind pseudo-command $22 (may be NULL)
 };
 
 static void cuda_tick_event(void *source, uint64_t data);
@@ -345,11 +349,36 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         cuda->autopoll_enabled = false;
         cuda->onesec_enabled = false;
         break;
+    case CMD_RDWRIIC: {
+        // I2C master transaction (OS/CudaMgr.a SetTransferParams wire
+        // format, video-in.md §2.3): data[0] = slave address, direction =
+        // its bit 0 (even = write, odd = read); the remaining bytes are
+        // what goes on the I2C wire — for these Philips parts the first is
+        // the subaddress.  Reads append the data bytes to the header; the
+        // host terminates when it has its count (open-ended, like RdPRAM).
+        if (data_len < 1 || !cuda->vdc)
+            break; // no slave byte / no bus: header-only acknowledgement
+        uint8_t slave = data[0];
+        if (!av_vdc_i2c_slave_known(slave)) {
+            // Only the DMSD and VDC are on the bus; the real handler's
+            // behavior for other addresses was never analysed (GAPS.md
+            // §2.4) — reject loudly so a guest probing one is visible.
+            LOG(1, "RdWrIIC to unknown I2C slave $%02X rejected", slave);
+            cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
+            return;
+        }
+        if (slave & 1)
+            n += av_vdc_i2c_read(cuda->vdc, slave, data_len >= 2, (data_len >= 2) ? data[1] : 0, &cuda->tx_buf[n],
+                                 CUDA_TX_MAX - n);
+        else
+            av_vdc_i2c_write(cuda->vdc, slave, &data[1], data_len - 1);
+        break;
+    }
     case CMD_WRDFAC:
     case CMD_NOP:
     default:
-        // Accepted commands with no modelled behavior (EnDisPDM, RdWrIIC,
-        // …): header-only acknowledgement.
+        // Accepted commands with no modelled behavior (EnDisPDM, …):
+        // header-only acknowledgement.
         break;
     }
     cuda->tx_len = n;
@@ -581,4 +610,9 @@ void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp) {
 const char *av_cuda_firmware(const av_cuda_t *cuda) {
     (void)cuda;
     return "Cuda 2.37";
+}
+
+void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc) {
+    if (cuda)
+        cuda->vdc = vdc;
 }
