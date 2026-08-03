@@ -55,7 +55,7 @@ jobs:
       #    the default branch when workflow_dispatch is used from the
       #    Actions UI).
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           path: source
@@ -70,7 +70,7 @@ jobs:
 
       # 3. Checkout the deployment repository.
       - name: Checkout gs-pages
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: pappadf/gs-pages
           token: ${{ secrets.DEPLOY_TOKEN }}
