@@ -31,6 +31,7 @@
 #include "system.h"
 #include "value.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -45,6 +46,14 @@ LOG_USE_CATEGORY_NAME("singer");
 // always programs 240; the register is 16-bit).
 #define SINGER_MAX_FRAMES 0x4000u
 
+// Host audio source selection (machine.audioin.source).
+typedef enum {
+    AIN_SRC_NONE = 0, // no microphone (default; input records silence)
+    AIN_SRC_TONE, // deterministic sawtooth, pure function of the sample counter
+    AIN_SRC_WAV, // a WAV loaded via machine.audioin.load (position checkpointed)
+    AIN_SRC_HOST, // the platform microphone through the gs_audio_in seam
+} ain_src_t;
+
 struct av_singer {
     // --- plain data (checkpointed up to `cfg`) ---
     uint64_t frames; // frame ticks serviced since power-on
@@ -52,13 +61,23 @@ struct av_singer {
     uint32_t open_rate; // rate the host stream was opened at
     uint16_t last_com; // previous sndComCtl (edge-triggered logging)
 
+    // machine.audioin state (the microphone-source surface)
+    uint8_t ain_src; // ain_src_t
+    uint16_t ain_gain; // input gain in percent (100 = unity)
+    uint64_t ain_samples; // sample frames pulled since power-on (tone phase)
+    uint32_t wav_pos; // playback position in the loaded WAV (frames)
+    uint32_t wav_frames; // loaded WAV length in frames (0 = none)
+
     // --- pointers (not checkpointed) ---
     config_t *cfg;
     int16_t *stage; // staging buffer for one half-buffer (stereo)
+    int16_t *wav; // loaded WAV, interleaved stereo at the codec rate
     struct object *object; // the machine.sound node
+    struct object *ain_object; // the machine.audioin node
 };
 
 extern const class_desc_t av_singer_sound_class;
+extern const class_desc_t av_audioin_class;
 
 static void singer_frame_event(void *source, uint64_t data);
 
@@ -102,7 +121,9 @@ static void singer_stage_output(av_singer_t *s, uint32_t base, uint32_t nframes)
     for (uint32_t i = 0; i < nframes; i++) {
         uint32_t addr = base + i * 4;
         int16_t l = 0, r = 0;
-        if (!mute && addr < 0x40000000u) {
+        if (!mute) {
+            // Reads may address ROM: CycloneBeep plays the chime PCM
+            // straight out of the ROM image at $408C5D24.
             l = (int16_t)mmu_read_physical_uint16(g_mmu, addr);
             r = (int16_t)mmu_read_physical_uint16(g_mmu, addr + 2);
             l = (int16_t)(((int32_t)l * (int32_t)gl) >> 16);
@@ -113,13 +134,73 @@ static void singer_stage_output(av_singer_t *s, uint32_t base, uint32_t nframes)
     }
 }
 
-// Fill the guest's input half-buffer from the host audio-in seam (silence
-// until a source is connected — the "mic absent" presentation).
+// True when the selected source reports a signal (the singerStat mic
+// presentation and the Speech Setup detection read this indirectly).
+static bool singer_ain_connected(av_singer_t *s) {
+    switch (s->ain_src) {
+    case AIN_SRC_TONE:
+        return true;
+    case AIN_SRC_WAV:
+        return s->wav_frames != 0;
+    case AIN_SRC_HOST:
+        return gs_audio_in_connected();
+    default:
+        return false;
+    }
+}
+
+// Produce nframes stereo sample pairs from the selected source into the
+// staging buffer.  Deterministic sources are pure functions of the
+// checkpointed counters; the host microphone is checkpoint-ephemeral.
+static void singer_ain_pull(av_singer_t *s, uint32_t nframes, uint32_t rate) {
+    memset(s->stage, 0, (size_t)nframes * 2 * sizeof(int16_t));
+    switch (s->ain_src) {
+    case AIN_SRC_TONE: {
+        // 600 Hz sawtooth, +-12000, integer math only (byte-determinism
+        // across hosts — no libm in the sample path).
+        uint32_t period = rate / 600;
+        if (period == 0)
+            period = 1;
+        for (uint32_t i = 0; i < nframes; i++) {
+            uint32_t ph = (uint32_t)((s->ain_samples + i) % period);
+            int16_t v = (int16_t)((int32_t)ph * 24000 / (int32_t)period - 12000);
+            s->stage[i * 2] = v;
+            s->stage[i * 2 + 1] = v;
+        }
+        break;
+    }
+    case AIN_SRC_WAV: {
+        for (uint32_t i = 0; i < nframes && s->wav_pos < s->wav_frames; i++, s->wav_pos++) {
+            s->stage[i * 2] = s->wav[(size_t)s->wav_pos * 2];
+            s->stage[i * 2 + 1] = s->wav[(size_t)s->wav_pos * 2 + 1];
+        }
+        break;
+    }
+    case AIN_SRC_HOST:
+        gs_audio_in_frames(s->stage, nframes, rate);
+        break;
+    default:
+        break;
+    }
+    if (s->ain_gain != 100) {
+        for (uint32_t i = 0; i < nframes * 2; i++) {
+            int32_t v = (int32_t)s->stage[i] * s->ain_gain / 100;
+            if (v > 32767)
+                v = 32767;
+            if (v < -32768)
+                v = -32768;
+            s->stage[i] = (int16_t)v;
+        }
+    }
+    s->ain_samples += nframes;
+}
+
+// Fill the guest's input half-buffer from the selected audio-in source
+// (silence when none — the "mic absent" presentation).
 static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
     if (base >= 0x40000000u)
-        return;
-    memset(s->stage, 0, (size_t)nframes * 2 * sizeof(int16_t));
-    gs_audio_in_frames(s->stage, nframes, singer_rate(s));
+        return; // never DMA into ROM/NuBus space
+    singer_ain_pull(s, nframes, singer_rate(s));
     for (uint32_t i = 0; i < nframes; i++) {
         mmu_write_physical_uint16(g_mmu, base + i * 4, (uint16_t)s->stage[i * 2]);
         mmu_write_physical_uint16(g_mmu, base + i * 4 + 2, (uint16_t)s->stage[i * 2 + 1]);
@@ -138,7 +219,12 @@ static void singer_frame_event(void *source, uint64_t data) {
     double now_ns = scheduler_time_ns(s->cfg->scheduler);
     uint64_t sample = (uint64_t)(now_ns * (double)rate / 1e9);
     uint64_t frame = sample / size;
-    uint32_t half = (uint32_t)(frame & 1);
+    // The half that just FINISHED playing/recording.  Hardware touches
+    // samples progressively across the frame; emitting the half at the
+    // END of its window reads the state the guest had staged while it
+    // "played" — CycloneBeep re-points sndOutBase just after the phase
+    // wraps, and a start-of-frame snapshot would replay a stale half.
+    uint32_t half = (uint32_t)((frame + 1) & 1);
 
     if (com & SND_OUT_EN) {
         uint32_t base = av_psc_snd_read32(st->psc, 0x14) + half * size * 4; // sndOutBase
@@ -184,12 +270,241 @@ static void singer_frame_event(void *source, uint64_t data) {
 }
 
 // ============================================================
-// machine.sound — the object node
+// machine.audioin — the microphone-source surface
 // ============================================================
 
 static inline av_singer_t *singer_self(struct object *self) {
     return (av_singer_t *)object_data(self);
 }
+
+static const char *ain_src_name(uint8_t mode) {
+    switch (mode) {
+    case AIN_SRC_TONE:
+        return "tone";
+    case AIN_SRC_WAV:
+        return "wav";
+    case AIN_SRC_HOST:
+        return "host";
+    default:
+        return "none";
+    }
+}
+
+static int singer_ain_set_source(av_singer_t *s, const char *name) {
+    if (strcmp(name, "none") == 0)
+        s->ain_src = AIN_SRC_NONE;
+    else if (strcmp(name, "tone") == 0)
+        s->ain_src = AIN_SRC_TONE;
+    else if (strcmp(name, "wav") == 0)
+        s->ain_src = s->wav_frames ? AIN_SRC_WAV : AIN_SRC_NONE;
+    else if (strcmp(name, "host") == 0)
+        s->ain_src = AIN_SRC_HOST;
+    else
+        return -1;
+    gs_audio_in_state(s->ain_src == AIN_SRC_HOST);
+    return 0;
+}
+
+// Minimal PCM16 WAV reader: fmt + data chunks, mono or stereo, any rate
+// (assets are prepared offline at the codec rate — TEST_DATA.md).
+static int singer_load_wav(av_singer_t *s, const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp)
+        return -1;
+    uint8_t hdr[12];
+    if (fread(hdr, 1, 12, fp) != 12 || memcmp(hdr, "RIFF", 4) != 0 || memcmp(hdr + 8, "WAVE", 4) != 0) {
+        fclose(fp);
+        return -1;
+    }
+    uint16_t channels = 0, bits = 0;
+    uint8_t chunk[8];
+    long data_off = 0;
+    uint32_t data_len = 0;
+    while (fread(chunk, 1, 8, fp) == 8) {
+        uint32_t len =
+            (uint32_t)chunk[4] | ((uint32_t)chunk[5] << 8) | ((uint32_t)chunk[6] << 16) | ((uint32_t)chunk[7] << 24);
+        if (memcmp(chunk, "fmt ", 4) == 0 && len >= 16) {
+            uint8_t fmt[16];
+            if (fread(fmt, 1, 16, fp) != 16)
+                break;
+            channels = (uint16_t)(fmt[2] | (fmt[3] << 8));
+            bits = (uint16_t)(fmt[14] | (fmt[15] << 8));
+            if (len > 16)
+                fseek(fp, (long)len - 16, SEEK_CUR);
+        } else if (memcmp(chunk, "data", 4) == 0) {
+            data_off = ftell(fp);
+            data_len = len;
+            fseek(fp, (long)len, SEEK_CUR);
+        } else {
+            fseek(fp, (long)((len + 1) & ~1u), SEEK_CUR);
+        }
+    }
+    if (!data_off || bits != 16 || (channels != 1 && channels != 2)) {
+        fclose(fp);
+        return -1;
+    }
+    uint32_t nframes = data_len / (channels * 2u);
+    int16_t *buf = malloc((size_t)nframes * 2 * sizeof(int16_t));
+    uint8_t *raw = malloc(data_len);
+    if (!buf || !raw) {
+        free(buf);
+        free(raw);
+        fclose(fp);
+        return -1;
+    }
+    fseek(fp, data_off, SEEK_SET);
+    if (fread(raw, 1, data_len, fp) != data_len) {
+        free(buf);
+        free(raw);
+        fclose(fp);
+        return -1;
+    }
+    fclose(fp);
+    for (uint32_t i = 0; i < nframes; i++) {
+        int16_t l = (int16_t)(raw[i * channels * 2] | (raw[i * channels * 2 + 1] << 8));
+        int16_t r = channels == 2 ? (int16_t)(raw[i * channels * 2 + 2] | (raw[i * channels * 2 + 3] << 8)) : l;
+        buf[i * 2] = l;
+        buf[i * 2 + 1] = r;
+    }
+    free(raw);
+    free(s->wav);
+    s->wav = buf;
+    s->wav_frames = nframes;
+    s->wav_pos = 0;
+    return 0;
+}
+
+static value_t ain_attr_source_get(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_str(s ? ain_src_name(s->ain_src) : "none");
+}
+
+static value_t ain_attr_source_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    if (!s) {
+        value_free(&in);
+        return val_err("audioin not available");
+    }
+    if (singer_ain_set_source(s, in.s) < 0) {
+        value_t e = val_err("audioin.source: want none|tone|wav|host, got '%s'", in.s);
+        value_free(&in);
+        return e;
+    }
+    value_free(&in);
+    return val_none();
+}
+
+static value_t ain_attr_connected(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_bool(s && singer_ain_connected(s));
+}
+
+static value_t ain_attr_gain_get(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_uint(2, s ? s->ain_gain : 100);
+}
+
+static value_t ain_attr_gain_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    if (!s) {
+        value_free(&in);
+        return val_err("audioin not available");
+    }
+    if (in.u > 800) {
+        value_free(&in);
+        return val_err("audioin.gain: percent 0-800");
+    }
+    s->ain_gain = (uint16_t)in.u;
+    value_free(&in);
+    return val_none();
+}
+
+static value_t ain_attr_samples(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_uint(8, s ? s->ain_samples : 0);
+}
+
+static value_t ain_attr_position(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_uint(4, s ? s->wav_pos : 0);
+}
+
+static value_t ain_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    if (!s || argc < 1)
+        return val_err("audioin not available");
+    if (singer_load_wav(s, argv[0].s) < 0)
+        return val_err("audioin.load: cannot load '%s' as a PCM16 WAV", argv[0].s);
+    s->ain_src = AIN_SRC_WAV;
+    return val_uint(4, s->wav_frames);
+}
+
+static value_t ain_method_rewind(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    av_singer_t *s = singer_self(self);
+    if (!s)
+        return val_err("audioin not available");
+    s->wav_pos = 0;
+    return val_none();
+}
+
+static const arg_decl_t ain_load_args[] = {
+    {.name = "path", .kind = V_STRING, .doc = "PCM16 WAV prepared at the codec rate (mono or stereo)"},
+};
+
+static const member_t av_audioin_members[] = {
+    {.kind = M_ATTR,
+     .name = "source",
+     .doc = "Host audio source: none | tone | wav | host (microphone)",
+     .attr = {.type = V_STRING, .get = ain_attr_source_get, .set = ain_attr_source_set}},
+    {.kind = M_ATTR,
+     .name = "connected",
+     .doc = "True when the source reports a signal (the mic-present sense)",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = ain_attr_connected, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "gain",
+     .doc = "Input gain in percent (100 = unity; bring-up level sweeps)",
+     .attr = {.type = V_UINT, .get = ain_attr_gain_get, .set = ain_attr_gain_set}},
+    {.kind = M_ATTR,
+     .name = "samples",
+     .doc = "Sample frames pulled from the source since power-on",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = ain_attr_samples, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "position",
+     .doc = "Playback position in the loaded WAV (frames)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = ain_attr_position, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "load",
+     .doc = "Load a PCM16 WAV and select it as the source; returns its length",
+     .method = {.args = ain_load_args, .nargs = 1, .result = V_UINT, .fn = ain_method_load}},
+    {.kind = M_METHOD,
+     .name = "rewind",
+     .doc = "Rewind the loaded WAV to its start",
+     .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = ain_method_rewind}},
+};
+
+const class_desc_t av_audioin_class = {
+    .name = "audioin",
+    .members = av_audioin_members,
+    .n_members = sizeof(av_audioin_members) / sizeof(av_audioin_members[0]),
+};
+
+// ============================================================
+// machine.sound — the object node
+// ============================================================
 
 static value_t snd_attr_rate(struct object *self, const member_t *m) {
     (void)m;
@@ -289,6 +604,11 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         size_t data_size = offsetof(av_singer_t, cfg);
         system_read_checkpoint_data(cp, s, data_size);
+        if (s->wav_frames) {
+            s->wav = malloc((size_t)s->wav_frames * 2 * sizeof(int16_t));
+            if (s->wav)
+                system_read_checkpoint_data(cp, s->wav, (size_t)s->wav_frames * 2 * sizeof(int16_t));
+        }
     }
 
     scheduler_new_event_type(cfg->scheduler, "singer", s, "frame", &singer_frame_event);
@@ -310,7 +630,16 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
         audio_out_capture_attach(s->object);
     }
 
-    LOG(1, "Singer init (%u Hz)", s->open_rate);
+    if (!s->ain_gain)
+        s->ain_gain = 100; // unity on a fresh machine
+    s->ain_object = object_new(&av_audioin_class, s, "audioin");
+    if (s->ain_object) {
+        object_set_label(s->ain_object, "Audio In");
+        object_set_order(s->ain_object, 126);
+        object_attach(machine_object(), s->ain_object);
+    }
+
+    LOG(1, "Singer init (%u Hz, audioin %s)", s->open_rate, ain_src_name(s->ain_src));
     return s;
 }
 
@@ -318,12 +647,17 @@ void av_singer_delete(av_singer_t *s) {
     if (!s)
         return;
     audio_out_capture_detach();
+    if (s->ain_object) {
+        object_detach(s->ain_object);
+        object_delete(s->ain_object);
+    }
     if (s->object) {
         object_detach(s->object);
         object_delete(s->object);
     }
     if (s->cfg && s->cfg->scheduler)
         remove_event(s->cfg->scheduler, &singer_frame_event, s);
+    free(s->wav);
     free(s->stage);
     free(s);
 }
@@ -333,4 +667,8 @@ void av_singer_checkpoint(av_singer_t *s, checkpoint_t *cp) {
         return;
     size_t data_size = offsetof(av_singer_t, cfg);
     system_write_checkpoint_data(cp, s, data_size);
+    // The loaded WAV is state (a restore must keep producing the same
+    // samples); the host microphone is checkpoint-ephemeral.
+    if (s->wav_frames && s->wav)
+        system_write_checkpoint_data(cp, s->wav, (size_t)s->wav_frames * 2 * sizeof(int16_t));
 }

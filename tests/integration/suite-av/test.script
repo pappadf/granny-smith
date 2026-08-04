@@ -274,6 +274,124 @@ def row_video_in(model, golden) {
     report_perf("suite-av/${$model}-71-video-in", scheduler.instr_count)
 }
 
+# ---- av-dsp-boot ------------------------------------------------------------
+# The DSP3210 comes alive: during the Enabler's RTM init the DSP is released
+# (dspOverRun $01 clear-write), Apple's kernel boots out of the ROM's '3210'
+# segments, and all three handshake stages pass — the stage-1 cell, then
+# data+$198 bits 0 AND 1 (rtm-rom-host-side.md; gap-closure D8).  The init
+# probe then deliberately parks the DSP again (ShutDownProcessor) until a
+# sound client needs it, so the row samples the live window rather than the
+# end state.  Hardware truths only — no golden, no screen.
+def row_av_dsp_boot() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    # The RTM init runs ~65-90M instructions into boot; sample the window.
+    scheduler.run 60000000
+    let saw_live = 0
+    let saw_alive = 0
+    let i = 0
+    while $i < 40 {
+        scheduler.run 1000000
+        if machine.dsp.state == "running" || machine.dsp.state == "idle" {
+            $saw_live = 1
+            if machine.dsp.evtp != 0 {
+                # kernel data area = evtp + $200; the alive flags at +$198
+                if (machine.memory.peek.l(machine.dsp.evtp + 0x398) & 3) == 3 {
+                    $saw_alive = 1
+                }
+            }
+        }
+        $i = $i + 1
+    }
+    assert $saw_live == 1 "av-dsp-boot: the DSP never left reset — StartProcessorRoutine did not release it"
+    assert $saw_alive == 1 "av-dsp-boot: kernel-alive bits 0+1 of data+$198 never both set"
+    assert machine.dsp.instr_count > 100000 "av-dsp-boot: only ${machine.dsp.instr_count} DSP instructions — the kernel never reached its service loop"
+    assert machine.sound.overruns == 0 "av-dsp-boot: ${machine.sound.overruns} frame overruns during a healthy boot"
+    # After the probe the RTM parks the DSP; the machine must still be sane.
+    assert machine.dsp.state == "reset" "av-dsp-boot: state '${machine.dsp.state}' after the init probe, want reset (parked)"
+    report_perf("suite-av/av-dsp-boot", scheduler.instr_count)
+}
+
+# ---- av-dsp-determinism -----------------------------------------------------
+# Two identical boots through DSP start + steady frames must be
+# byte-deterministic.  The probe compares live-state fingerprints (screen
+# checksum, DSP instruction count/pc, sound frame count) at an identical
+# instruction budget across two fresh boots — a divergence in any burst
+# budget, interrupt ordering or frame cadence shows up here.
+def dsp_fingerprint() {
+    return "${machine.screen.checksum()}/${machine.dsp.instr_count}/${machine.dsp.pc:08x}/${machine.dsp.state}/${machine.sound.frames}"
+}
+
+def row_av_dsp_determinism() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 100000000
+    let fp1 = dsp_fingerprint()
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 100000000
+    let fp2 = dsp_fingerprint()
+    assert $fp1 == $fp2 "av-dsp-determinism: ${$fp1} != ${$fp2}"
+    assert machine.dsp.instr_count > 100000 "av-dsp-determinism: the DSP did not run inside the window"
+    report_perf("suite-av/av-dsp-determinism", scheduler.instr_count)
+}
+
+# ---- av-chime ---------------------------------------------------------------
+# The power-on chime through the Singer output engine: CycloneBeep plays
+# ROM PCM via sndOutBase + pSndOutEn with NO DSP involvement — the first
+# audible milestone.  Captured from power-on at the guest rate (24 kHz
+# stereo), sample-exact against the golden.
+def row_av_chime() {
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.sound.capture.start
+    # The chime plays out-enabled frames ~10-67 (~0.6 s); run well past it.
+    scheduler.run 30000000
+    assert machine.sound.frames > 100 "av-chime: sound frame engine not ticking"
+    check_sound("goldens/av-chime.wav", 54720)
+    report_perf("suite-av/av-chime", scheduler.instr_count)
+}
+
+# ---- av-audio-in-device -----------------------------------------------------
+# The plug contract for the emulator's first microphone: the
+# machine.audioin object surface, the singerStat mic-present straps, and
+# the input datapath itself — the PSC input engine is programmed directly
+# (sndInBase/sndSize/pSndInEn), and the deterministic tone source must
+# land samples in the guest double buffer.  ROM only — no guest driver.
+def row_av_audio_in_device() {
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    scheduler.run 5000000
+    # Surface defaults: no mic, unity gain.
+    assert machine.audioin.source == "none" "audioin: default source '${machine.audioin.source}', want none"
+    assert machine.audioin.connected == false "audioin: 'none' reports connected"
+    assert machine.audioin.gain == 100 "audioin: default gain ${machine.audioin.gain}, want 100"
+    # singerStat presents the mic straps (BI1/BI3 for the input-source
+    # enumeration, BI4 for the output port — singer.md §3, gap-closure B4).
+    assert (machine.memory.peek.l(0x50F31208) & 0xD) == 0xD "audioin: singerStat ${machine.memory.peek.l(0x50F31208):08x} lacks the mic straps"
+    # Tone source: connected, deterministic.
+    machine.audioin.source = "tone"
+    assert machine.audioin.connected "audioin: tone source not connected"
+    # Drive the input engine the way the Singer driver would: input
+    # double buffer at $10000, 240-frame halves, pSndInEn on.
+    machine.memory.poke.l 0x50F31210 0x10000
+    machine.memory.poke.w 0x50F31218 240
+    machine.memory.poke.w 0x50F31200 0x0080
+    let pulled0 = machine.audioin.samples
+    scheduler.run 3000000
+    assert machine.audioin.samples > $pulled0 "audioin: the frame engine pulled nothing from the source"
+    # The sawtooth lands in guest RAM: some words of both halves nonzero.
+    let nz = 0
+    let j = 0
+    while $j < 8 {
+        if machine.memory.peek.l(0x10000 + $j * 244) != 0 { $nz = $nz + 1 }
+        $j = $j + 1
+    }
+    assert $nz > 4 "audioin: only ${$nz}/8 probed words nonzero — tone not reaching the double buffer"
+    report_perf("suite-av/av-audio-in-device", scheduler.instr_count)
+}
+
 # --- row calls ---------------------------------------------------------------
 
 if row_on("av-identity") {
@@ -295,6 +413,34 @@ if row_on("av-video") {
         row_end("av-video", try(row_av_video(), "FAILED"))
     } else {
         echo "skip: av-video — ${$av_rom} not fetched"
+    }
+}
+if row_on("av-chime") {
+    if have_media($av_rom) {
+        row_end("av-chime", try(row_av_chime(), "FAILED"))
+    } else {
+        echo "skip: av-chime — ${$av_rom} not fetched"
+    }
+}
+if row_on("av-dsp-boot") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("av-dsp-boot", try(row_av_dsp_boot(), "FAILED"))
+    } else {
+        echo "skip: av-dsp-boot — ${$av_hd} not fetched"
+    }
+}
+if row_on("av-audio-in-device") {
+    if have_media($av_rom) {
+        row_end("av-audio-in-device", try(row_av_audio_in_device(), "FAILED"))
+    } else {
+        echo "skip: av-audio-in-device — ${$av_rom} not fetched"
+    }
+}
+if row_on("av-dsp-determinism") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("av-dsp-determinism", try(row_av_dsp_determinism(), "FAILED"))
+    } else {
+        echo "skip: av-dsp-determinism — ${$av_hd} not fetched"
     }
 }
 
