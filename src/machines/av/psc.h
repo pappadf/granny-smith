@@ -86,6 +86,27 @@ void av_psc_level_latch(av_psc_t *psc, int level, int bit);
 // The 60.15 Hz tick (wired from the substrate VBL callback).
 void av_psc_tick60(av_psc_t *psc);
 
+// === DSP + Singer wiring ====================================================
+
+// Observe dspOverRun ($21C) writes (the DSP glue's reset lifecycle: bit 0
+// pdspReset, bit 1 pdspResetEn, bit 2 pdspFrameOvr).  `bits` is the latch
+// after the write, `written` the raw sense-byte — the glue needs the
+// written value because the power-on release is a bit-0 CLEAR write with
+// the latch already reading 0 (hardware reset held the chip until then).
+typedef void (*av_psc_dsp_fn)(void *ctx, uint8_t bits, uint8_t written);
+void av_psc_set_dsp_hook(av_psc_t *psc, av_psc_dsp_fn fn, void *ctx);
+
+// Sound-block latch readback for the Singer engine (big-endian lanes of
+// the $200-$21B byte latches; `off` is the block offset, e.g. 0x00 for
+// sndComCtl, 0x14 for sndOutBase).
+uint16_t av_psc_snd_read16(av_psc_t *psc, uint32_t off);
+uint32_t av_psc_snd_read32(av_psc_t *psc, uint32_t off);
+
+// Frame overrun from the Singer engine: sets the sticky pdspFrameOvr bit
+// and asserts L5 bit 1 as a level (it re-latches until the host clears
+// the $21C bit — rtm-rom-host-side.md §2).
+void av_psc_dsp_frame_overrun(av_psc_t *psc);
+
 // === DMA engine (psc.md §2.6-§3) ============================================
 
 // Channel assignments (psc.md §2.5).

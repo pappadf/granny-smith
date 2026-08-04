@@ -272,6 +272,26 @@ bool gs_video_in_connected(void);
 int gs_video_in_frame(uint8_t *rgba);
 void gs_video_in_state(bool active);
 
+// Host audio-input seam (the AV Singer codec's microphone source —
+// proposal-dsp3210-plaintalk.md §2.5, mirroring the video-in seam).  The
+// weak defaults model "no microphone": headless machines use the
+// deterministic machine.audioin sources instead; a browser platform
+// override (getUserMedia audio) can trail in a follow-up.
+//
+//   gs_audio_in_connected()      — true when a host microphone is
+//                                  attached and delivering samples
+//                                  (drives the singerStat mic sense).
+//   gs_audio_in_frames(lr,n,rate)— fill `n` interleaved stereo int16
+//                                  sample pairs at `rate` Hz from the
+//                                  current source; returns false when no
+//                                  source is connected (buffer untouched
+//                                  — the caller keeps silence).
+//   gs_audio_in_state(active)    — capture on/off notification (the
+//                                  guest gating pSndInEn).
+bool gs_audio_in_connected(void);
+bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate);
+void gs_audio_in_state(bool active);
+
 // True if a valid checkpoint exists for the active machine.  Weak
 // default returns NULL (headless has no auto-checkpoint loop); WASM
 // overrides with actual scanning of /opfs/checkpoints/.

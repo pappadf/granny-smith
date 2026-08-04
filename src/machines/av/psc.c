@@ -21,6 +21,7 @@
 #include "psc.h"
 
 #include "av.h"
+#include "singer.h" // AV_SINGER_STAT presentation
 
 #include "cpu.h"
 #include "log.h"
@@ -84,6 +85,8 @@ struct av_psc {
     av_psc_mem_read_fn mem_read; // guest-physical accessors for DMA
     av_psc_mem_write_fn mem_write;
     void *mem_ctx;
+    av_psc_dsp_fn dsp_fn; // dspOverRun latch observer (the DSP glue)
+    void *dsp_ctx;
 };
 
 static inline av_psc_t *psc_of(config_t *cfg) {
@@ -154,6 +157,25 @@ void av_psc_level_latch(av_psc_t *psc, int level, int bit) {
 
 void av_psc_tick60(av_psc_t *psc) {
     av_psc_level_latch(psc, AV_PSC_L6, 0); // L660HZ
+}
+
+void av_psc_set_dsp_hook(av_psc_t *psc, av_psc_dsp_fn fn, void *ctx) {
+    psc->dsp_fn = fn;
+    psc->dsp_ctx = ctx;
+}
+
+uint16_t av_psc_snd_read16(av_psc_t *psc, uint32_t off) {
+    off &= 0x1F;
+    return (uint16_t)((psc->snd[off] << 8) | psc->snd[off + 1]);
+}
+
+uint32_t av_psc_snd_read32(av_psc_t *psc, uint32_t off) {
+    return ((uint32_t)av_psc_snd_read16(psc, off) << 16) | av_psc_snd_read16(psc, off + 2);
+}
+
+void av_psc_dsp_frame_overrun(av_psc_t *psc) {
+    psc->dsp_overrun |= 0x04; // pdspFrameOvr, sticky until the host clears it
+    av_psc_level_source(psc, AV_PSC_L5, 1, true); // FRMOVRN re-latches while set
 }
 
 // ============================================================
@@ -474,9 +496,10 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
     }
 
     switch (off & ~3u) {
+    case 0x208: // singerStat — board straps + valid-data presentation
+        return lane32(AV_SINGER_STAT, off);
     case 0x200: // sndComCtl (word) + neighbours — latches
     case 0x204:
-    case 0x208:
     case 0x210:
     case 0x214:
     case 0x218:
@@ -541,6 +564,10 @@ void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
 
     switch (off & ~3u) {
     case 0x200:
+        psc->snd[off & 0x1F] = value;
+        if ((off & 3) == 1) // second lane of the sndComCtl word landed
+            LOG(2, "sndComCtl = $%04X (pc=%08X)", av_psc_snd_read16(psc, 0), cpu_get_pc(cfg->cpu));
+        return;
     case 0x204:
     case 0x208:
     case 0x20C: // sndPhase is read-only; latch the bytes anyway (harmless)
@@ -557,6 +584,11 @@ void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
             else
                 psc->dsp_overrun &= (uint8_t) ~(value & 0x07);
             LOG(2, "dspOverRun write $%02X -> $%02X (pc=%08X)", value, psc->dsp_overrun, cpu_get_pc(cfg->cpu));
+            // FRMOVRN (L5 bit 1) is a level view of the sticky bit: it
+            // re-latches until the host clears pdspFrameOvr itself.
+            av_psc_level_source(psc, AV_PSC_L5, 1, (psc->dsp_overrun & 0x04) != 0);
+            if (psc->dsp_fn)
+                psc->dsp_fn(psc->dsp_ctx, psc->dsp_overrun, value);
         }
         return;
     case 0x400:

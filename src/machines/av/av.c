@@ -14,9 +14,11 @@
 
 #include "civic.h"
 #include "cuda.h"
+#include "dsp.h"
 #include "mace.h"
 #include "new_age.h"
 #include "psc.h"
+#include "singer.h"
 #include "vdc.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -612,6 +614,14 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     assert(st->psc != NULL);
     av_psc_set_memory_hooks(st->psc, av_psc_mem_read, av_psc_mem_write, cfg);
 
+    // The DSP3210 aux core on the PSC's dspOverRun reset latch, and the
+    // Singer sound frame engine that feeds it EXT1 ticks.
+    st->dsp = av_dsp_init(cfg, cp);
+    assert(st->dsp != NULL);
+    av_psc_set_dsp_hook(st->psc, av_dsp_overrun_hook, st->dsp);
+    st->singer = av_singer_init(cfg, cp);
+    assert(st->singer != NULL);
+
     // ADB device state, serviced through Cuda packets (adb_iop_transact),
     // not the VIA shifter — pass NULL for the VIA (the IIsi/Egret pattern).
     st->adb = adb_init(NULL, cfg->scheduler, cp);
@@ -766,6 +776,14 @@ static void av_teardown(config_t *cfg) {
             av_cuda_delete(st->cuda);
             st->cuda = NULL;
         }
+        if (st->singer) {
+            av_singer_delete(st->singer);
+            st->singer = NULL;
+        }
+        if (st->dsp) {
+            av_dsp_delete(st->dsp);
+            st->dsp = NULL;
+        }
         if (st->psc) {
             av_psc_delete(st->psc);
             st->psc = NULL;
@@ -830,6 +848,8 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // Device order mirrors the checkpoint READS in av_build_devices — the
     // stream is sequential, so save and restore must walk it identically.
     av_psc_checkpoint(st->psc, cp);
+    av_dsp_checkpoint(st->dsp, cp);
+    av_singer_checkpoint(st->singer, cp);
     adb_checkpoint(st->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     av_new_age_checkpoint(st->fdc, cp);

@@ -289,9 +289,12 @@ static void timer_tick(dsp3210_t *s, int ticks) {
     }
 }
 
-/* Driven pin levels: output-register bits on pins configured as outputs. */
+/* Pin levels the board can observe.  The output REGISTER is reported
+ * regardless of bioc: the AV board's doorbell latch follows the kernel's
+ * per-message BIO0 toggle without the kernel ever programming bioc
+ * (gap-closure B1: "any BIO0 output transition"). */
 static uint8_t bio_pins(const dsp3210_t *s) {
-    return (uint8_t)(s->bio_out & s->bioc);
+    return s->bio_out;
 }
 
 /* bio 16-bit write: eight 2-bit fields BFn at bits 2n+1:2n — 00 hold,
