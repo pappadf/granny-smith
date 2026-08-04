@@ -216,8 +216,20 @@ void value_free(value_t *v) {
 
 static int g_dummy_cpu; // opaque non-NULL cpu pointer
 static int g_dummy_cfg; // opaque non-NULL config pointer
-#define TEST_CPU ((cpu_t *)&g_dummy_cpu)
 #define TEST_CFG ((config_t *)&g_dummy_cfg)
+
+// The main-CPU seam wired to the stub CPU above.
+static void test_run_sprint(void *ctx, uint32_t *instructions) {
+    cpu_run_sprint((cpu_t *)ctx, instructions);
+}
+static bool test_is_stopped(void *ctx) {
+    return cpu_is_stopped((cpu_t *)ctx);
+}
+static void test_poll_interrupt(void *ctx) {
+    cpu_poll_interrupt((cpu_t *)ctx);
+}
+static const sched_cpu_if_t g_test_cpu_if = {&g_dummy_cpu, test_run_sprint, test_is_stopped, test_poll_interrupt};
+#define TEST_CPU (&g_test_cpu_if)
 
 // Self-rescheduling event: fires every 77,777 cycles forever, so sprints get
 // clamped at event boundaries and the interleaving is non-trivial.

@@ -21,7 +21,8 @@ TOOL_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 # and tools/dump headers (annotate_disasm.h).  Force-include our platform
 # override before all sources to prevent the real platform.h from loading
 # (same pattern as tests/unit/support/).
-INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_DBG_DIR) -I$(DUMP_DIR) \
+INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_CPU_DIR)/dsp3210 \
+            -I$(CORE_DBG_DIR) -I$(DUMP_DIR) \
             -I$(TOOL_DIR) \
             -include $(TOOL_DIR)/platform.h
 
@@ -30,7 +31,8 @@ LOCAL_SRCS := disasm.c trap_lookup.c stubs.c
 
 # Core sources compiled directly from src/ (not copied).  annotate_disasm.c
 # lives next to dump.c in tools/dump/ now and is shared between the two tools.
-CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c $(CORE_DBG_DIR)/mac_traps_data.c \
+CORE_SRCS := $(CORE_CPU_DIR)/cpu_disasm.c $(CORE_CPU_DIR)/dsp3210/dsp3210_disasm.c \
+             $(CORE_DBG_DIR)/mac_traps_data.c \
              $(DUMP_DIR)/annotate_disasm.c
 
 .PHONY: all clean

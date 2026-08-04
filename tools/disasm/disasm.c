@@ -2,11 +2,13 @@
 // Copyright (c) pappadf
 
 // disasm.c
-// Standalone 68000/68030 disassembler tool for binary files.
-// Uses the existing cpu_disasm.c decoder with minimal dependencies.
+// Standalone disassembler tool for binary files: 68000/68030 (default,
+// via the core cpu_disasm.c decoder) or DSP3210 (--arch dsp3210, via the
+// dsp3210 core's disassembler). Minimal dependencies either way.
 
 #include "annotate_disasm.h"
 #include "cpu.h"
+#include "dsp3210_disasm.h"
 #include "symbols.h" // for the empty-ctx no-op; signature uses re_symbols_t*
 
 #include <errno.h>
@@ -40,6 +42,7 @@ static void print_usage(const char *progname) {
             "  -l, --length <bytes>          Number of bytes to disassemble. Default: entire file from offset\n"
             "  -a, --address-offset <addr>   Base address for display (hex). Default: 0\n"
             "  -n, --count <n>               Maximum number of instructions to disassemble\n"
+            "  -A, --arch <name>             Instruction set: m68k (default) or dsp3210\n"
             "  -h, --help                    Show this help message\n",
             progname);
 }
@@ -52,6 +55,7 @@ int main(int argc, char *argv[]) {
     uint32_t address_offset = 0;
     uint32_t max_instructions = 0; // 0 = unlimited
     const char *input_file = NULL;
+    const char *arch = "m68k";
 
     // long options table
     static struct option long_options[] = {
@@ -59,12 +63,13 @@ int main(int argc, char *argv[]) {
         {"length",         required_argument, NULL, 'l'},
         {"address-offset", required_argument, NULL, 'a'},
         {"count",          required_argument, NULL, 'n'},
+        {"arch",           required_argument, NULL, 'A'},
         {"help",           no_argument,       NULL, 'h'},
         {NULL,             0,                 NULL, 0  },
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "o:l:a:n:h", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "o:l:a:n:A:h", long_options, NULL)) != -1) {
         switch (opt) {
         case 'o':
             offset = parse_hex_arg(optarg);
@@ -79,6 +84,9 @@ int main(int argc, char *argv[]) {
         case 'n':
             max_instructions = parse_hex_arg(optarg);
             break;
+        case 'A':
+            arch = optarg;
+            break;
         case 'h':
             print_usage(argv[0]);
             return 0;
@@ -86,6 +94,12 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    bool arch_dsp3210 = strcmp(arch, "dsp3210") == 0;
+    if (!arch_dsp3210 && strcmp(arch, "m68k") != 0) {
+        fprintf(stderr, "Error: unknown --arch '%s' (want m68k or dsp3210).\n", arch);
+        return 1;
     }
 
     // positional argument: input file
@@ -124,8 +138,8 @@ int main(int argc, char *argv[]) {
     if (!length_set || length > available)
         length = available;
 
-    // ensure even length (68K instructions are word-aligned)
-    length &= ~1u;
+    // align length to the ISA word size (68K: 2 bytes; DSP3210: 4)
+    length &= arch_dsp3210 ? ~3u : ~1u;
     if (length == 0) {
         fprintf(stderr, "Error: no data to disassemble.\n");
         fclose(fp);
@@ -146,7 +160,27 @@ int main(int argc, char *argv[]) {
     fclose(fp);
 
     if (nread < length)
-        length = (uint32_t)(nread & ~1u);
+        length = (uint32_t)(nread & (arch_dsp3210 ? ~3u : ~1u));
+
+    // DSP3210: fixed-length 32-bit big-endian words, one instruction each
+    if (arch_dsp3210) {
+        uint32_t word_count = length / 4;
+        uint32_t pos = 0, instr_count = 0;
+        while (pos < word_count) {
+            uint32_t addr = address_offset + offset + pos * 4;
+            uint32_t w = dsp3210_read_be32(raw_buf + (size_t)pos * 4);
+            dsp3210_insn ins;
+            dsp3210_disassemble(w, addr, &ins);
+            printf("$%08X  %08x  %s\n", (unsigned int)addr, w, ins.text);
+            pos++;
+            instr_count++;
+            if (max_instructions > 0 && instr_count >= max_instructions)
+                break;
+        }
+        printf("; %u instruction%s disassembled, %u bytes\n", instr_count, instr_count == 1 ? "" : "s", pos * 4);
+        free(raw_buf);
+        return 0;
+    }
 
     // convert from big-endian file bytes to host uint16_t array
     // cpu_disasm expects an array of uint16_t in host byte order

@@ -140,7 +140,8 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
 void mac030_build_core(config_t *cfg, checkpoint_t *cp) {
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
     cfg->cpu = cpu_init(cfg->machine->cpu_model, cp);
-    cfg->scheduler = scheduler_init(cfg->cpu, cp);
+    sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
+    cfg->scheduler = scheduler_init(&cpu_if, cp);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 4);
 }

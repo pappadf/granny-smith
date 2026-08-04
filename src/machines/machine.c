@@ -191,6 +191,21 @@ static value_t build_capabilities(const hw_profile_t *p) {
     val_map_put(b, "nubus", val_bool(p->nubus_slots != NULL));
     // On-board video digitizer (webcam capture) — gates the camera UI.
     val_map_put(b, "video_in", val_bool(p->has_video_in));
+
+    // Auxiliary CPU cores (heterogeneous multi-CPU): asserted from data,
+    // never from model names — empty list on machines without any.
+    value_t *aux = NULL;
+    size_t n_aux = 0, cap_aux = 0;
+    if (p->aux_cpus) {
+        for (const struct aux_cpu_slot *a = p->aux_cpus; a->name; a++) {
+            value_map_builder_t *ab = val_map_new();
+            val_map_put(ab, "name", val_str(a->name));
+            val_map_put(ab, "arch", val_str(a->arch));
+            val_map_put(ab, "freq", val_int((int64_t)a->freq));
+            val_list_push(&aux, &n_aux, &cap_aux, val_map_finish(ab));
+        }
+    }
+    val_map_put(b, "aux_cpus", val_list(aux, n_aux));
     return val_map_finish(b);
 }
 

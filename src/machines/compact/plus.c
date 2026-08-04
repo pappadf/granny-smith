@@ -181,7 +181,8 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
 
-    cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
+    sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
+    cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
     // Average CPI for the 7.8336 MHz 68000: the Plus retires ~783k
     // instructions per emulated second (~0.78 MIPS, slightly above the
     // ~0.7 MIPS of real hardware). Calibrated against MusicWorks 0.42: its
