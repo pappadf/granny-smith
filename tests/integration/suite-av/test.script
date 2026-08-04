@@ -17,6 +17,19 @@
 #   av-hd-device    The plug contract for the boot medium: a writable,
 #                   disk-typed device answering at ID 0 with the block size
 #                   adopted from the image's own Driver Descriptor Map.
+#   av-chime        Power-on chime through the Singer output engine — the
+#                   ROM's CycloneBeep PCM, captured at guest rate and
+#                   sample-exact against the golden (content-identical to
+#                   the dossier oracle).  ROM only.
+#   av-dsp-boot     The DSP3210 comes alive: the RTM init releases the
+#                   DSP, Apple's kernel boots out of the ROM's '3210'
+#                   segments (three-stage handshake), then the probe parks
+#                   it cleanly.  Hardware truths only.
+#   av-dsp-determinism  Two identical boots through DSP start compare
+#                   state fingerprints at an identical instruction budget.
+#   av-audio-in-device  The microphone plug contract: machine.audioin
+#                   surface, singerStat straps, and the tone source landing
+#                   in the guest input double buffer.  ROM only.
 #   q840av-71-hd-desktop  840AV boots System 7.1 + System Enabler 088 from
 #                   the hard disk to the Finder desktop; hardware truths
 #                   first, then the byte-exact golden.

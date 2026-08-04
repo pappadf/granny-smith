@@ -430,6 +430,16 @@ own capabilities, a vtable of NULL-safe hooks, and an explicit registry.)
   notably has **no VIA2 chip at all**, so `config_t.via2` stays NULL and the
   IPL-2 path belongs to the PSC's pseudo-VIA2 window.
 
+**Heterogeneous CPUs.** A machine may carry auxiliary cores beside the one
+main CPU that owns time: peripheral processors that execute real guest code
+in burst events on the shared scheduler queue (the AV family's DSP3210,
+`src/core/cpu/dsp3210/` + `src/machines/av/dsp.c`).  The core-module
+contract — injected bus hooks, burn-down execution ABI, mandatory
+disassembler, `machine.<name>` object node, `capabilities.aux_cpus` — is
+[docs/core/cpu/cores.md](../core/cpu/cores.md); the scheduler reaches the
+main CPU through the narrow `sched_cpu_if_t` seam so a future main-CPU
+architecture plugs in without scheduler changes.
+
 **A machine is mostly data.** Each model is a `hw_profile_t` (defined in
 `core/machine_profile.h`) holding identity, the CPU/MMU facts the init reads as
 the single source of truth (`cpu_model`, `freq`, `address_bits`, `mmu_kind`,

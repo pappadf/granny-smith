@@ -69,20 +69,26 @@ device pump can probe without touching its FIFO.
 buffers rather than bytes), and FIFO depth/latency — nothing in scope needs
 either.
 
-## Sound and DSP stubs
+## Sound and DSP
+
+The sound block is no longer a stub: the Singer frame engine
+([singer.md](singer.md)) services the `$200`–`$21B` latches, and a live
+DSP3210 sits behind the reset latch ([dsp.md](dsp.md)).
 
 - **`sndPhase` (`$50F3120C`) must tick.** `CycloneBeep` runs on every boot at
   IPL 7 with caches off and spin-waits on the masked field twice (first for
   ≠ 0, then for = 0). A constant value hangs the ROM forever with no escape.
   Implemented as a free-running frame counter derived from emulated time at
-  the programmed codec rate.
+  the programmed codec rate; the Singer frame engine is phase-locked to the
+  same formula, so play position and frame interrupts cannot drift apart.
 - **`dspOverRun` (`$50F3121C`)** is a sense-bit latch over
-  pdspReset/pdspResetEn/pdspFrameOvr with no DSP behind it. On a real boot the
-  enabler's Real Time Manager writes `$01` (release reset), polls its
-  handshake cell, times out and writes `$81` (re-assert) — the documented
-  graceful failure, verified end-to-end.
-- The rest of the `$200`–`$21C` block latches and reads back; `singerStat`
-  reading 0 is the datasheet-correct idle value.
+  pdspReset/pdspResetEn/pdspFrameOvr; writes are surfaced to the DSP glue
+  (`av_psc_set_dsp_hook`) — a bit-0 clear write is the RTM's release, and on
+  a healthy boot the kernel handshake succeeds with no `$81` timeout.  L5
+  bit 1 (FRMOVRN) is a level view of the sticky `pdspFrameOvr` bit.
+- The `$200`–`$21B` latches read back and feed the frame engine
+  (`av_psc_snd_read16/32`); `singerStat` reads the board-strap presentation
+  `AV_SINGER_STAT` (mic present, [singer.md](singer.md)).
 - **UTSC** (`$300`/`$304`) is a monotonic 48-bit counter. The real tick source
   is undocumented; the serial HAL only uses bits 16..47 as a multi-millisecond
   timeout reference, so ~1 MHz is a safe choice.

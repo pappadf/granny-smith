@@ -854,7 +854,14 @@ Enforced by `scheduler_check_invariants` at every API entry/exit:
   `schedule_accelerated`).
 - `cpi_eff_x256` is nonzero and never above the authentic `cpi << 8`;
   `cycle_frac_x256 < 256`.
-- `cpu` pointer is non-NULL.
+- The `cpu` seam (`sched_cpu_if_t.run_sprint`) is non-NULL.
+
+**Auxiliary cores (docs/core/cpu/cores.md):**
+- Auxiliary-core bursts are ordinary events on the one queue; burst budgets
+  are integer functions of cycle deltas (`ratio_x256` + carry), so aux state
+  at any checkpoint is a pure function of the frame-unit count and
+  `scheduler.run N` stays byte-deterministic with aux cores live.  Aux cores
+  never call `scheduler_set_*` and never own an event timestamp's meaning.
 
 All violations abort via `GS_ASSERT` / `GS_ASSERTF` (from `common.h`) with file, line,
 function, and context. There are no `printf`-based error reports in the scheduler.
