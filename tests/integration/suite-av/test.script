@@ -48,6 +48,10 @@
 #                   rate-converts the samples on the DSP and the capture is
 #                   sample-exact against the golden.  The kernel must
 #                   survive playback (emr stays $8000).
+#   av-tts          Text-to-speech (rung 5): TeachText 7.2 launched from
+#                   the volume root, "hello" typed, File → Speak All
+#                   (Cmd-H) — Speech Manager synthesis (pure 68040) plays
+#                   through the same sdev/DSP path, captured sample-exact.
 #
 # The boot rows ride a prepared 76 MB System 7.1 AV hard-disk image rather
 # than a CD.  It is the volume that exercises the family properly: a full
@@ -354,6 +358,82 @@ def row_av_beep() {
     report_perf("suite-av/av-beep", scheduler.instr_count)
 }
 
+# ---- av-tts -----------------------------------------------------------------
+# Rung 5 of the observable ladder: text-to-speech.  TTS synthesis is pure
+# 68040 (plaintalk-software-inventory.md) — what this row proves is the
+# Speech Manager → Sound Manager → sdev/DSP output path end to end: boot
+# to the desktop, raise the volume (Sound cdev, as in av-beep), close the
+# panel windows, launch the AV-bundled TeachText 7.2 from the volume
+# root, type "hello", and File → Speak All (Cmd-H).  Before the DSP
+# worked this alerted "An error occurred when TeachText tried to speak"
+# (guest-ui-exploration.md §5); now it speaks ~0.5 s of synthesized
+# audio, captured sample-exact.  Kernel aliveness = emr stays $8000.
+def row_av_tts() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
+
+    # Volume up via the Sound cdev (ships at 0 — silent otherwise).
+    machine.adb.mouse.move 50 50 "global"
+    run_ticks(30)
+    machine.adb.mouse.move 14 8 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move 70 150 "global"
+    run_ticks(30)
+    machine.adb.mouse.click false
+    run_ticks(400)
+    double_click(104, 131) # the Sound cdev icon
+    run_ticks(600)
+    machine.adb.mouse.move 173 205 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(15)
+    machine.adb.mouse.move 173 165 "global"
+    run_ticks(15)
+    machine.adb.mouse.move 173 128 "global"
+    run_ticks(15)
+    machine.adb.mouse.click false
+    run_ticks(300)
+    assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after the slider alert — kernel died"
+
+    # Close the Sound panel and the Control Panels window, then launch
+    # TeachText from the volume root.
+    click(115, 51)
+    run_ticks(100)
+    click(28, 33)
+    run_ticks(100)
+    double_click(600, 52) # Macintosh HD
+    run_ticks(400)
+    double_click(294, 95) # TeachText
+    run_ticks(800)
+
+    # Type "hello" (Speak All is grayed on an empty document), then Cmd-H.
+    machine.adb.keyboard.press 0x04
+    run_ticks(5)
+    machine.adb.keyboard.press 0x0E
+    run_ticks(5)
+    machine.adb.keyboard.press 0x25
+    run_ticks(5)
+    machine.adb.keyboard.press 0x25
+    run_ticks(5)
+    machine.adb.keyboard.press 0x1F
+    run_ticks(30)
+    machine.sound.capture.start
+    machine.adb.keyboard.down 0x37
+    machine.adb.keyboard.press 0x04
+    machine.adb.keyboard.up 0x37
+    run_ticks(200)
+    assert machine.dsp.state == "running" "av-tts: DSP ${machine.dsp.state} after speech"
+    assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died"
+    assert machine.sound.overruns == 0 "av-tts: ${machine.sound.overruns} frame overruns"
+    check_sound("goldens/av-tts.wav", 47760)
+    report_perf("suite-av/av-tts", scheduler.instr_count)
+}
+
 # ---- av-dsp-boot ------------------------------------------------------------
 # The DSP3210 comes alive: during the Enabler's RTM init the DSP is released
 # (dspOverRun $01 clear-write), Apple's kernel boots out of the ROM's '3210'
@@ -570,6 +650,13 @@ if row_on("av-beep") {
         row_end("av-beep", try(row_av_beep(), "FAILED"))
     } else {
         echo "skip: av-beep — ${$av_hd} not fetched"
+    }
+}
+if row_on("av-tts") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("av-tts", try(row_av_tts(), "FAILED"))
+    } else {
+        echo "skip: av-tts — ${$av_hd} not fetched"
     }
 }
 
