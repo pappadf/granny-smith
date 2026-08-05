@@ -274,8 +274,13 @@ static void singer_ain_meter(av_singer_t *s, uint32_t nframes, uint32_t rate) {
         // means NO audio is arriving, however loud it sounds afterwards.
         double pk = s->ain_peak > 0 ? 20.0 * log10((double)s->ain_peak / 32768.0) : -999.0;
         double rm = s->ain_level > 0 ? 20.0 * log10((double)s->ain_level / 32768.0) : -999.0;
-        LOG(1, "audioin[%s]: peak %5d (%6.1f dBFS)  rms %5d (%6.1f dBFS)  %s", ain_src_name(s->ain_src), s->ain_peak,
-            pk, s->ain_level, rm,
+        // The platform's own view of the capture, when it has one: the
+        // guest-side level says audio is missing, never which side lost it.
+        char host[192];
+        if (!gs_audio_in_debug(host, sizeof host))
+            host[0] = 0;
+        LOG(1, "audioin[%s]: peak %5d (%6.1f dBFS)  rms %5d (%6.1f dBFS) %s %s", ain_src_name(s->ain_src), s->ain_peak,
+            pk, s->ain_level, rm, host,
             // The dither floor measures 3 counts once the codec's +7.5 dB
             // A/D gain is applied, so anything at or under that is silence.
             s->ain_peak <= 4 ? "<- SILENCE: no audio is reaching the guest" : "");
