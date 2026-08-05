@@ -78,10 +78,11 @@ let source: MediaStreamAudioSourceNode | null = null;
 
 // --- Module callbacks (attached in bus/emulator.ts) ------------------------
 
-// `rate` is the codec rate the C side would prefer. It is deliberately NOT
-// used to construct the AudioContext — see buildGraph — so it is ignored
-// here; the rate actually negotiated travels the other way instead.
-export function onAudioInReady(ptr: number, len: number, _rate: number): void {
+// em_audio_in_init passes a third argument, the codec rate the C side would
+// prefer. It is deliberately NOT used to construct the AudioContext — see
+// buildGraph — so it is not taken as a parameter here at all; the rate
+// actually negotiated travels the other way instead, via resetRing.
+export function onAudioInReady(ptr: number, len: number): void {
   shmPtr = ptr;
   ringLen = len;
 }
