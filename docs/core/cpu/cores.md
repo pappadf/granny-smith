@@ -52,7 +52,7 @@ checkpoint as POD, object class) with these core-specific requirements:
 |---|---|
 | Interpreter | big-switch decode, plain C, no JIT |
 | Execution ABI | `void <arch>_run(<arch>_t *, uint32_t *instructions)` — burn-down counter; returns with it 0 (budget spent) or >0 (went idle) |
-| Idle/reset | `<arch>_is_idle()`, `<arch>_reset(...)`, an interrupt-request entry point for external pins |
+| Idle/reset | `<arch>_is_idle()`, `<arch>_reset(...)`, an interrupt-request entry point for external pins.  When guest code polls a pin's *level* (not just its latched request), the entry point must model both — e.g. `dsp3210_ext_pulse(s, vector, slots)` latches the request and asserts the live pin for `slots` of core time, and the status-register pin bits reflect the level, not the latch |
 | **Bus access** | **injected at init** (the guest-physical hook pattern of `sonic.h`/`psc.h`).  The core never touches `g_active_*`, `g_page_table`, the MMU, or any sprint-timing global.  On-chip resources (internal RAM, MMIO) decode *inside* the core before the hooks are consulted |
 | State | one POD struct, pointers last; checkpoint boundary before the first pointer; hook pointers re-planted on restore |
 | **Disassembler** | mandatory, dependency-free, raw words + pc in / text out — linkable standalone (`tools/disasm --arch <name>`) |

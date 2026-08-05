@@ -268,6 +268,19 @@ static void dis_da(uint32_t w, dsp3210_insn *ins, sb *s) {
 
     ins->klass = DSP3210_CLASS_DA;
 
+    /* Z with p=1111: undocumented "through Y" spelling ([IM] calls
+     * p=1111 not allowed; Apple's assembler emits it throughout the AV
+     * sound modules).  The store goes through the Y operand's address
+     * and Z's I field post-modifies Y's pointer register — render it as
+     * that pointer.  With an accumulator Y there is nothing to store
+     * through, which is where the old "p=1111,i=111 = no write" reading
+     * came from; treat any I as no write there. */
+    if (((z >> 3) & 15) == 15) {
+        unsigned yp = (y >> 3) & 15;
+        z = (yp != 0 && yp != 15) ? ((yp << 3) | (z & 7)) : 0x07u;
+        zw = da_z_is_write(z);
+    }
+
     /* Format 5 — special functions: [Z =] aN = g(Y)  (031111 GGGG NN) */
     if (fmt == 3 && m >= 6) {
         unsigned g = bits(w, 26, 23);

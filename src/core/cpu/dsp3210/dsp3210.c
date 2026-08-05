@@ -173,14 +173,23 @@ static int pending_vector(dsp3210_t *s) {
     return 0;
 }
 
-/* PS.IR0/IR1 mirror the latched external requests: the RTM kernel polls
- * ir1s to detect a frame tick arriving while the previous one is still
- * being serviced (overrun detection) — dsp3210emu as shipped never set
- * these bits (gap-closure D7). */
+/* PS.IR0/IR1 read the LIVE pin level, 1 = negated: the board's frame tick
+ * is a short active-low pulse, and the RTM kernel's `if (ir1s)` spins wait
+ * for the pulse both in the frame-period calibration gadget and in the
+ * per-module overrun poll (dsp-kernel-messages.md §3.2/§3.4).  A latched
+ * mirror here makes both spins fall through instantly and the kernel
+ * measures a ~0-tick frame period — killing the GPB admission check. */
 static void update_irq_ps(dsp3210_t *s) {
-    s->ps = (uint16_t)((s->ps & ~(DSP3210_PS_IR0 | DSP3210_PS_IR1)) |
-                       ((s->pending & (1u << DSP3210_VEC_EXT0)) ? DSP3210_PS_IR0 : 0) |
-                       ((s->pending & (1u << DSP3210_VEC_EXT1)) ? DSP3210_PS_IR1 : 0));
+    s->ps = (uint16_t)((s->ps & ~(DSP3210_PS_IR0 | DSP3210_PS_IR1)) | (s->ext_pulse[0] ? 0 : DSP3210_PS_IR0) |
+                       (s->ext_pulse[1] ? 0 : DSP3210_PS_IR1));
+}
+
+/* Burn one instruction-slot of core time off the live pin-pulse windows. */
+static void ext_pulse_tick(dsp3210_t *s) {
+    if (s->ext_pulse[0] && --s->ext_pulse[0] == 0)
+        update_irq_ps(s);
+    if (s->ext_pulse[1] && --s->ext_pulse[1] == 0)
+        update_irq_ps(s);
 }
 
 static void take_interrupt(dsp3210_t *s, int vn) {
@@ -391,15 +400,26 @@ static int mmio_write(dsp3210_t *s, uint32_t off, uint32_t val, int size) {
 /* ------------------------------------------------------------------ */
 /* memory [DOC §1.1]                                                   */
 
-static uint8_t *mem_ptr(dsp3210_t *s, uint32_t addr) {
-    /* The on-chip 64 KB window (boot ROM, MMIO, RAM1, RAM0) is the same
-     * physical array decoded at $0000xxxx in computer mode (pcw[10]=1)
-     * and at $5003xxxx in processor mode [IM Figure 3-4] — the boot
-     * ROM's SAR path runs across the switch.  External memory A backs
-     * everything else (it starts at $10000 in computer mode). */
+/* On-chip window offset for addr, or -1 when the access is external.
+ * The window is 64 KB (boot ROM, MMIO, RAM) decoded at $0000xxxx in
+ * computer mode (pcw[10]=1) and at $5003xxxx in processor mode [IM
+ * Figure 3-4].  Accesses just past the window ($50040000+) are BOARD
+ * targets, not on-chip: on the AV they hit the Singer sound-FIFO ring
+ * window (see the AV glue's bus hooks). */
+static int32_t chip_window_off(const dsp3210_t *s, uint32_t addr) {
     uint32_t base = (s->pcw & (1u << 10)) ? 0u : 0x50030000u;
-    if (addr - base < 0x10000u)
-        return &s->chip[addr - base];
+    uint32_t off = addr - base;
+    if (off < 0x10000u)
+        return (int32_t)off;
+    return -1;
+}
+
+static uint8_t *mem_ptr(dsp3210_t *s, uint32_t addr) {
+    /* On-chip window first (incl. the RAM mirror); external memory A
+     * backs everything else (it starts at $10000 in computer mode). */
+    int32_t off = chip_window_off(s, addr);
+    if (off >= 0)
+        return &s->chip[off];
     if (addr < s->mem_size)
         return &s->mem[addr];
     return NULL;
@@ -444,8 +464,9 @@ static int mem_read(dsp3210_t *s, uint32_t addr, int size, uint32_t *out) {
         addr &= ~(uint32_t)(size - 1);
     }
     /* the on-chip window decodes inside the core, before any hook
-     * (cores.md contract): timer/BIO MMIO first, chip RAM otherwise */
-    if (addr - base < 0x10000u) {
+     * (cores.md contract): timer/BIO MMIO first, chip RAM otherwise
+     * (incl. the RAM mirror above the window) */
+    if (chip_window_off(s, addr) >= 0) {
         uint32_t off = addr - base;
         if (off - DSP_MMIO_BASE < DSP_MMIO_END - DSP_MMIO_BASE && mmio_read(s, off, size, out))
             return 0;
@@ -478,7 +499,7 @@ static int mem_write(dsp3210_t *s, uint32_t addr, int size, uint32_t val) {
             return -1;
         addr &= ~(uint32_t)(size - 1); /* see mem_read */
     }
-    if (addr - base < 0x10000u) {
+    if (chip_window_off(s, addr) >= 0) {
         uint32_t off = addr - base;
         if (off - DSP_MMIO_BASE < DSP_MMIO_END - DSP_MMIO_BASE && mmio_write(s, off, val, size))
             return 0;
@@ -507,10 +528,9 @@ static int mem_write(dsp3210_t *s, uint32_t addr, int size, uint32_t val) {
  * model must see external memory when the core runs on a real bus (the
  * reference rigs fell through to flat memory; the AV glue has none). */
 static int safe_read(dsp3210_t *s, uint32_t addr, int size, uint32_t *out) {
-    uint32_t base = (s->pcw & (1u << 10)) ? 0u : 0x50030000u;
     if (addr & (uint32_t)(size - 1))
         return -1;
-    if (addr - base >= 0x10000u && s->read_fn) {
+    if (chip_window_off(s, addr) < 0 && s->read_fn) {
         int fault = 0;
         *out = s->read_fn(s->hook_ctx, addr, size, &fault);
         return fault ? -1 : 0;
@@ -1047,6 +1067,11 @@ static int ior_write(dsp3210_t *s, unsigned n, uint32_t v, int size) {
         break;
     case 8:
         s->emr = (uint16_t)v;
+        /* emr bit 0 has no maskable source; the kernel pulses it to drop a
+         * latched-but-untaken EXT1 edge without taking the interrupt
+         * (dsp-kernel-messages.md §3.5 — gadget, slave entry, overrun) */
+        if (v & 1u)
+            s->pending &= (uint16_t) ~(1u << DSP3210_VEC_EXT1);
         break;
     case 10: /* spc pseudo-register */
         return size == 1 ? SPC_SFTRST : size == 2 ? SPC_BKPT : SPC_WAITI;
@@ -1174,6 +1199,8 @@ typedef struct {
     int from_acc; /* 1: accumulator (or reserved field) */
     unsigned acc; /* accumulator number when from_acc */
     uint32_t raw; /* raw bits read when memory */
+    uint32_t maddr; /* effective address when memory (pre-post-modify) */
+    unsigned preg; /* pointer register (r1-r14) when memory */
     dsp3210_acc val; /* the accumulator itself when from_acc */
 } da_opnd;
 
@@ -1209,9 +1236,32 @@ static int da_read(dsp3210_t *s, unsigned f, int size, da_opnd *o) {
                                        multiplier [IM §8.2.3] */
         return 0;
     }
+    o->maddr = s->r[p];
+    o->preg = p;
     if (mem_read(s, s->r[p], size, &o->raw))
         return -1;
     da_postmod(s, p, i, size);
+    return 0;
+}
+
+/*
+ * Z with p=1111: undocumented "through Y" spelling ([IM] calls p=1111
+ * not allowed; Apple's assembler emits it throughout the AV sound
+ * modules).  The result stores through the Y operand's own effective
+ * address, and Z's I field post-modifies Y's *pointer register* — e.g.
+ * Midput's whole body is `a0 = *r2 * a1` with Z=$7F, an in-place gain
+ * multiply that advances r2, and AppleSRC converts integers in place
+ * with `a0 = float32(*r1)` Z=$78.  When Y is an accumulator there is
+ * nothing to store through, which is where the old "p=1111,i=111 means
+ * no write" reading came from.  Returns -1 on a write fault.
+ */
+static int da_store_z_through_y(dsp3210_t *s, unsigned z, int size, uint32_t val, const da_opnd *y) {
+    unsigned i = z & 7;
+    if (y->from_acc)
+        return 0; /* no memory operand to store through */
+    if (mem_write(s, y->maddr, size, val))
+        return -1;
+    da_postmod(s, y->preg, i, size);
     return 0;
 }
 
@@ -1476,8 +1526,12 @@ static int exec_da_special(dsp3210_t *s, uint32_t w) {
     }
 
     s->a[n] = res;
-    if (zw)
+    if (((z >> 3) & 15) == 15) {
+        if (da_store_z_through_y(s, z, zsz, zbits, &Y))
+            return DSP3210_STEP_OK;
+    } else if (zw) {
         da_write(s, z, zsz, zbits);
+    }
     return DSP3210_STEP_OK;
 }
 
@@ -1551,7 +1605,11 @@ static int exec_da(dsp3210_t *s, uint32_t w) {
     res = da_flags(s, dau_add(adder, pm, pe), 1);
     s->a[n] = res;
 
-    if (zw) {
+    if (((zf >> 3) & 15) == 15) {
+        uint32_t zbits = tap ? da_mult(&Y) : dsp3210_acc_pack(res);
+        if (da_store_z_through_y(s, zf, 4, zbits, &Y))
+            return DSP3210_STEP_OK;
+    } else if (zw) {
         uint32_t zbits = tap ? da_mult(&Y) /* the tap passes Y on */
                              : dsp3210_acc_pack(res);
         da_write(s, zf, 4, zbits);
@@ -2030,6 +2088,7 @@ int dsp3210_step(dsp3210_t *s) {
     }
     /* the on-chip timer counts per executed instruction cycle */
     timer_tick(s, timer_ticks_per_insn(s));
+    ext_pulse_tick(s); /* live pin-pulse windows burn down in core time */
     if (st == DSP3210_STEP_BKPT)
         s->halted = 1; /* crashed until reset */
     return st;
@@ -2056,6 +2115,7 @@ void dsp3210_run(dsp3210_t *s, uint32_t *instructions) {
             /* asleep with the timer counting: time passes, no instruction
              * retires — charge the budget while the timer runs to wake */
             timer_tick(s, timer_ticks_per_insn(s));
+            ext_pulse_tick(s);
             (*instructions)--;
             continue;
         }
@@ -2114,6 +2174,10 @@ void dsp3210_reset(dsp3210_t *s, unsigned straps) {
     s->timer_reload = 0xFFFFFFFFu;
     s->bioc = 0;
     s->bio_out = 0;
+    /* EXT pins idle negated — PS.IR0/IR1 read 1 */
+    s->ext_pulse[0] = 0;
+    s->ext_pulse[1] = 0;
+    update_irq_ps(s);
 }
 
 void dsp3210_init(dsp3210_t *s, uint8_t *mem, uint32_t mem_size) {
@@ -2124,10 +2188,21 @@ void dsp3210_init(dsp3210_t *s, uint8_t *mem, uint32_t mem_size) {
 }
 
 void dsp3210_request_interrupt(dsp3210_t *s, int vector) {
-    if (vector >= 8 && vector <= 15) {
+    if (vector >= 8 && vector <= 15)
         s->pending |= (uint16_t)(1u << vector);
-        update_irq_ps(s); /* PS.IR0/IR1 pin mirrors */
-    }
+}
+
+void dsp3210_ext_pulse(dsp3210_t *s, int vector, uint32_t slots) {
+    int idx;
+    if (vector == DSP3210_VEC_EXT0)
+        idx = 0;
+    else if (vector == DSP3210_VEC_EXT1)
+        idx = 1;
+    else
+        return;
+    s->pending |= (uint16_t)(1u << vector); /* edge-latch the request */
+    s->ext_pulse[idx] = slots ? slots : 1;
+    update_irq_ps(s); /* pin asserted for the window */
 }
 
 int dsp3210_load(dsp3210_t *s, uint32_t addr, const void *buf, size_t len) {

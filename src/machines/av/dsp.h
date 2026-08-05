@@ -39,13 +39,19 @@ void av_dsp_overrun_write(av_dsp_t *dsp, uint8_t bits, uint8_t written);
 // av_psc_dsp_fn adapter (ctx = the av_dsp_t) for av_psc_set_dsp_hook.
 void av_dsp_overrun_hook(void *ctx, uint8_t bits, uint8_t written);
 
-// Assert an external interrupt pin (DSP3210_VEC_EXT0/EXT1).  The Singer
-// frame engine pulses EXT1 (IR1N) once per sound frame while `pFrmIntEn`
-// is set; waking a parked core re-arms its burst promptly.
+// Assert an external interrupt request (DSP3210_VEC_EXT0/EXT1) without a
+// pin pulse; waking a parked core re-arms its burst promptly.
 void av_dsp_irq(av_dsp_t *dsp, int vector);
 
+// The Singer frame tick: a short active-low EXT1 (IR1N) pin pulse, once
+// per sound frame while `pFrmIntEn` is set.  Latches the interrupt request
+// and drives the live PS.IR1 pin mirror the kernel's calibration gadget
+// and overrun polls spin on.
+void av_dsp_ext1_tick(av_dsp_t *dsp);
+
 // True when the frame engine should count a frame as unserviced: the
-// previous EXT1 request is still latched (the kernel never woke for it).
+// previous EXT1 request is still latched with EXT1 unmasked (the kernel
+// asked for frame interrupts and never woke for it).
 bool av_dsp_ext1_pending(av_dsp_t *dsp);
 
 // True once the RTM has started the DSP and it has not been re-held.

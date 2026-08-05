@@ -23,8 +23,9 @@
 #                   the dossier oracle).  ROM only.
 #   av-dsp-boot     The DSP3210 comes alive: the RTM init releases the
 #                   DSP, Apple's kernel boots out of the ROM's '3210'
-#                   segments (three-stage handshake), then the probe parks
-#                   it cleanly.  Hardware truths only.
+#                   segments (three-stage handshake), the GPB calibration
+#                   passes and the sound team stays signed in.  Hardware
+#                   truths only.
 #   av-dsp-determinism  Two identical boots through DSP start compare
 #                   state fingerprints at an identical instruction budget.
 #   av-audio-in-device  The microphone plug contract: machine.audioin
@@ -41,6 +42,12 @@
 #                   overlay showing the pattern.
 #   q660av-71-video-in    Same for the 660AV (different clock → different
 #                   captured frame at the golden instant, so no collision).
+#   av-beep         SysBeep through the full RTM/DSP path (rung 4 of the
+#                   observable ladder): Sound cdev opened by mouse, volume
+#                   raised, Simple Beep clicked — the sdev's AppleSRC task
+#                   rate-converts the samples on the DSP and the capture is
+#                   sample-exact against the golden.  The kernel must
+#                   survive playback (emr stays $8000).
 #
 # The boot rows ride a prepared 76 MB System 7.1 AV hard-disk image rather
 # than a CD.  It is the volume that exercises the family properly: a full
@@ -287,14 +294,74 @@ def row_video_in(model, golden) {
     report_perf("suite-av/${$model}-71-video-in", scheduler.instr_count)
 }
 
+# ---- av-beep ----------------------------------------------------------------
+# Rung 4 of the observable ladder: SysBeep through the full RTM/DSP path.
+# Boot to the desktop, open the Sound cdev (Apple menu → Control Panels →
+# double-click Sound), raise the volume slider (the image ships with it at
+# 0, where alerts are menu-flash only; the release itself plays a feedback
+# alert through the DSP), then click "Simple Beep" with the capture
+# running: the Sound Manager posts a MsgFIFO command {count, rate $ED62 =
+# 22254→24000, gains} and streams the samples through the Blue FIFO, the
+# sdev's AppleSRC task rate-converts on the DSP (in-place DAU stores —
+# local/gs-docs/dsp3210/errata.md E10), and the Singer frame engine plays
+# the result.  The kernel must SURVIVE playback: emr stays $8000 — a dead
+# kernel still reads state "running" (waiti with the timer free-running),
+# so emr is the aliveness check (docs/machines/av/dsp.md).
+def row_av_beep() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
+
+    # Apple menu → Control Panels (menus are press-drag-release; park the
+    # mouse first — the first warp after boot is swallowed).
+    machine.adb.mouse.move 50 50 "global"
+    run_ticks(30)
+    machine.adb.mouse.move 14 8 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move 70 150 "global"
+    run_ticks(30)
+    machine.adb.mouse.click false
+    run_ticks(400)
+    double_click(104, 131) # the Sound cdev icon
+    run_ticks(600) # panel open — "Built-in" visible
+
+    # Raise the volume slider: press on the track, drag up in two steps,
+    # release (plays the feedback alert).
+    machine.adb.mouse.move 173 205 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(15)
+    machine.adb.mouse.move 173 165 "global"
+    run_ticks(15)
+    machine.adb.mouse.move 173 128 "global"
+    run_ticks(15)
+    machine.adb.mouse.click false
+    run_ticks(300)
+    assert machine.dsp.emr == 0x8000 "av-beep: emr=${machine.dsp.emr:04x} after the slider alert — kernel died"
+    assert machine.sound.overruns == 0 "av-beep: ${machine.sound.overruns} frame overruns after the slider alert"
+
+    machine.sound.capture.start
+    click(280, 163) # "Simple Beep" in the alert-sound list
+    run_ticks(400)
+    assert machine.dsp.state == "running" "av-beep: DSP ${machine.dsp.state} after playback"
+    assert machine.dsp.emr == 0x8000 "av-beep: emr=${machine.dsp.emr:04x} after playback — kernel died"
+    assert machine.sound.overruns == 0 "av-beep: ${machine.sound.overruns} frame overruns after playback"
+    check_sound("goldens/av-beep.wav", 7200)
+    report_perf("suite-av/av-beep", scheduler.instr_count)
+}
+
 # ---- av-dsp-boot ------------------------------------------------------------
 # The DSP3210 comes alive: during the Enabler's RTM init the DSP is released
 # (dspOverRun $01 clear-write), Apple's kernel boots out of the ROM's '3210'
 # segments, and all three handshake stages pass — the stage-1 cell, then
-# data+$198 bits 0 AND 1 (rtm-rom-host-side.md; gap-closure D8).  The init
-# probe then deliberately parks the DSP again (ShutDownProcessor) until a
-# sound client needs it, so the row samples the live window rather than the
-# end state.  Hardware truths only — no golden, no screen.
+# data+$198 bits 0 AND 1 (rtm-rom-host-side.md; gap-closure D8).  The GPB
+# calibration then measures the frame period off the live EXT1 pin, the
+# standard sound team installs, and the DSP stays signed in — idling until
+# a sound client enables frame ticks.  Hardware truths only — no golden.
 def row_av_dsp_boot() {
     machine.rtc.time = 3000000000
     machine.boot model="q840av" ram=16384 rom="${$av_rom}"
@@ -321,8 +388,13 @@ def row_av_dsp_boot() {
     assert $saw_alive == 1 "av-dsp-boot: kernel-alive bits 0+1 of data+$198 never both set"
     assert machine.dsp.instr_count > 100000 "av-dsp-boot: only ${machine.dsp.instr_count} DSP instructions — the kernel never reached its service loop"
     assert machine.sound.overruns == 0 "av-dsp-boot: ${machine.sound.overruns} frame overruns during a healthy boot"
-    # After the probe the RTM parks the DSP; the machine must still be sane.
-    assert machine.dsp.state == "reset" "av-dsp-boot: state '${machine.dsp.state}' after the init probe, want reset (parked)"
+    # With the GPB calibration measuring a real frame period (live EXT1 pin
+    # model) the RTM's sound install now SUCCEEDS: the sound team stays
+    # signed in and the kernel parks in its idle loop awaiting frame ticks
+    # (emr=$8000) instead of being shut down after a failed probe.
+    assert machine.dsp.state != "reset" "av-dsp-boot: DSP parked ('${machine.dsp.state}') — the RTM sound install failed and shut it down"
+    assert machine.dsp.state != "crashed" "av-dsp-boot: DSP crashed after the install"
+    assert machine.dsp.emr == 0x8000 "av-dsp-boot: emr=${machine.dsp.emr:04x} at rest, want $8000 (idle loop awaiting frame ticks)"
     report_perf("suite-av/av-dsp-boot", scheduler.instr_count)
 }
 
@@ -491,6 +563,13 @@ if row_on("q660av-71-video-in") {
         row_end("q660av-71-video-in", try(row_video_in("q660av", "q660av-7.1-640x480x8-video-monitor.png"), "FAILED"))
     } else {
         echo "skip: q660av-71-video-in — ${$av_hd} not fetched"
+    }
+}
+if row_on("av-beep") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("av-beep", try(row_av_beep(), "FAILED"))
+    } else {
+        echo "skip: av-beep — ${$av_hd} not fetched"
     }
 }
 

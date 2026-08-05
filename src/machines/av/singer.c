@@ -255,7 +255,7 @@ static void singer_frame_event(void *source, uint64_t data) {
         // The host IFR bit and the DSP tick are the SAME gated tick (B2).
         av_psc_via2_latch(st->psc, AV_PSC_VIA2_SNDFRM);
         if (st->dsp)
-            av_dsp_irq(st->dsp, DSP3210_VEC_EXT1);
+            av_dsp_ext1_tick(st->dsp);
     }
 
     s->frames++;

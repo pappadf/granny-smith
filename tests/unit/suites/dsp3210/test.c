@@ -736,6 +736,54 @@ static void test_da_int_float(void) {
     CHECK(dsp3210_acc_get(&S, 0) == -2.0);
 }
 
+static void test_da_inplace_convert(void) {
+    /* Z with p=1111, I!=111 — the manual calls p=1111 not allowed, but
+     * Apple's assembler emits it for in-place conversions (AppleSRC
+     * 'src' module, ROM sound path): the result stores back through the
+     * Y operand's address.  `a0 = float32(*r1)` in this spelling must
+     * leave the DSP32 float at *r1, or the module later multiplies by
+     * the raw integer reinterpreted as a float (2^112 for 0xF0). */
+    const uint32_t p[] = {
+        e_set24(RC(1), 0x100), e_daspec(8, 0, DF(1, 0), DF(15, 0)), /* float32 in-place */
+    };
+    prog(p, 2);
+    dsp3210_poke(&S, 0x100, 4, 240); /* raw int */
+    steps(2);
+    CHECK(dsp3210_acc_get(&S, 0) == 240.0);
+    uint32_t v;
+    dsp3210_peek(&S, 0x100, 4, &v);
+    CHECK(v == 0x70000087); /* 1.875 * 2^7 in DSP32 format */
+    CHECK(S.r[1] == 0x100); /* no post-modify from either field */
+
+    /* MAC form, Z=$7F with a memory Y (the Midput gain loop,
+     * `a0 = *r2 * a1`): stores the result through *r2, then Z's
+     * post-increment advances r2 */
+    const uint32_t q[] = {
+        e_set24(RC(2), 0x100),
+        e_damac(3, 4, 0, 0, 0, DF_ACC(1), DF(2, 0), DF(15, 7)),
+    };
+    prog(q, 2);
+    dsp3210_poke(&S, 0x100, 4, 0x00000081); /* 2.0 */
+    dsp3210_acc_set(&S, 1, 3.0);
+    steps(2);
+    CHECK(dsp3210_acc_get(&S, 0) == 6.0);
+    dsp3210_peek(&S, 0x100, 4, &v);
+    CHECK(v == 0x40000082); /* 6.0 written through the Y address */
+    CHECK(S.r[2] == 0x104); /* Z's I field advanced Y's pointer */
+
+    /* Z=$7F with an accumulator Y: nothing to store through */
+    const uint32_t q2[] = {
+        e_set24(RC(1), 0x100), e_daspec(9, 0, DF_ACC(1), 0x7F), /* a0 = int32(a1) */
+    };
+    prog(q2, 2);
+    dsp3210_poke(&S, 0x100, 4, 240);
+    dsp3210_acc_set(&S, 1, 5.0);
+    steps(2);
+    dsp3210_peek(&S, 0x100, 4, &v);
+    CHECK(v == 240); /* untouched */
+    CHECK(S.r[1] == 0x100);
+}
+
 static void test_da_ieee_dsp(void) {
     /* a0 = dsp(*r1) ; *r2 = a1 = ieee(a0) */
     const uint32_t p[] = {
@@ -947,22 +995,44 @@ static void test_bio_doorbell(void) {
     CHECK(S.r[5] == 0);
 }
 
-/* PS.IR0/IR1 mirror the latched requests until serviced (the kernel's
- * frame-overrun poll — gap-closure D7). */
+/* PS.IR0/IR1 read the LIVE pin level (1 = negated): dsp3210_ext_pulse
+ * asserts the pin for a bounded window of core time and edge-latches the
+ * request; taking the interrupt does not touch the pin, and an emr write
+ * with bit 0 set drops a latched-but-untaken EXT1 request (§3.5). */
 static void test_ps_ir_mirror(void) {
-    const uint32_t p[] = {E_NOP, E_NOP, E_NOP, E_NOP};
-    prog(p, 4);
+    const uint32_t p[] = {
+        E_NOP,
+        E_NOP,
+        e_alui(0, F_OR, RC(1), 1), /* r1 = r1 | 1 (r1 = 1) */
+        e_mvior(1, W_SHORT, RC(1), 8), /* emr = (short) r1 — bit-0 pulse */
+        E_NOP,
+        E_NOP,
+    };
+    prog(p, 6);
+    /* idle: both pins negated */
+    CHECK(S.ps & DSP3210_PS_IR0);
+    CHECK(S.ps & DSP3210_PS_IR1);
+    dsp3210_ext_pulse(&S, DSP3210_VEC_EXT1, 2); /* 2-slot active-low pulse */
+    CHECK(!(S.ps & DSP3210_PS_IR1)); /* pin asserted */
+    CHECK(S.ps & DSP3210_PS_IR0); /* EXT0 untouched */
+    CHECK(S.pending & (1u << DSP3210_VEC_EXT1)); /* edge latched */
+    steps(2); /* emr = 0: window expires, request stays latched */
+    CHECK(S.ps & DSP3210_PS_IR1); /* pin negated again */
+    CHECK(S.pending & (1u << DSP3210_VEC_EXT1));
+    steps(2); /* the kernel's emr bit-0 write drops the untaken edge */
+    CHECK(!(S.pending & (1u << DSP3210_VEC_EXT1)));
+    /* dispatch path: a fresh pulse is taken when unmasked; the dispatch
+     * consumes the request but never touches the pin mirror */
+    dsp3210_reset(&S, 0);
+    prog(p, 6);
     dsp3210_poke(&S, 0x100 + 8 * DSP3210_VEC_EXT1, 4, E_NOP); /* handler */
-    dsp3210_request_interrupt(&S, DSP3210_VEC_EXT1);
-    CHECK(S.ps & DSP3210_PS_IR1);
-    CHECK(!(S.ps & DSP3210_PS_IR0));
-    steps(1); /* emr = 0: stays pending */
-    CHECK(S.ps & DSP3210_PS_IR1);
+    dsp3210_ext_pulse(&S, DSP3210_VEC_EXT1, 8);
     S.emr = 1u << DSP3210_VEC_EXT1;
     S.r[22] = 0x100; /* evtp */
-    steps(1); /* taken → mirror clears */
-    CHECK(!(S.ps & DSP3210_PS_IR1));
+    steps(1); /* taken */
     CHECK(S.level == DSP3210_LVL_INTERRUPT);
+    CHECK(!(S.pending & (1u << DSP3210_VEC_EXT1))); /* request consumed */
+    CHECK(!(S.ps & DSP3210_PS_IR1)); /* pin still inside its window */
 }
 
 /* dsp3210_run: a dead sleep leaves the budget unspent (park); a sleep with
@@ -1118,6 +1188,7 @@ int main(void) {
     test_da_mult_acc();
     test_da_tap();
     test_da_int_float();
+    test_da_inplace_convert();
     test_da_ieee_dsp();
     test_da_seed();
     test_da_ic_oc();

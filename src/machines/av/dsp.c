@@ -80,11 +80,33 @@ static inline av_psc_t *dsp_psc(av_dsp_t *d) {
 // Bus hooks: guest-physical, never the CPU MMU
 // ============================================================
 
+// The DSP's IO alias: $F0000000-$F07FFFFF maps the host IO window
+// $50800000-$50FFFFFF (the driver's 'phas' selector hands the kernel the
+// sndPhase register as $F073120C = PSC $50F3120C; the sound team's output
+// task phase-syncs against it every frame).
+static inline int dsp_io_alias(uint32_t addr, uint32_t *host) {
+    if ((addr & 0xFF800000u) == 0xF0000000u) {
+        *host = 0x50800000u | (addr & 0x7FFFFFu);
+        return 1;
+    }
+    return 0;
+}
+
+// $50040000 is the top of the kernel's on-chip hmem heap (kernel data
+// +$1A8/+$1F8) and nothing legitimate ever addresses at or above it:
+// all sound/message FIFO rings live in host RAM (DSPFIFO records carry
+// absolute host bases), so accesses landing here are runaway pointers
+// and take the normal >= $40000000 bus fault ('xbus' in the guest).
+
 static uint32_t av_dsp_bus_read(void *ctx, uint32_t addr, int size, int *fault) {
-    (void)ctx;
-    if (addr >= 0x40000000u) {
+    av_dsp_t *d = (av_dsp_t *)ctx;
+    uint32_t host;
+    if (dsp_io_alias(addr, &host)) {
+        addr = host;
+    } else if (addr >= 0x40000000u) {
         // ROM/NuBus space is not a DSP target — fault, and let the guest's
         // own 'xbus' handler report it (free negative-path fidelity).
+        LOG(1, "bus read FAULT addr=%08X size=%d pc=%08X", addr, size, d && d->core ? d->core->cur_insn : 0);
         *fault = 1;
         return 0;
     }
@@ -96,8 +118,13 @@ static uint32_t av_dsp_bus_read(void *ctx, uint32_t addr, int size, int *fault) 
 }
 
 static void av_dsp_bus_write(void *ctx, uint32_t addr, uint32_t val, int size, int *fault) {
-    (void)ctx;
-    if (addr >= 0x40000000u) {
+    av_dsp_t *d = (av_dsp_t *)ctx;
+    uint32_t host;
+    if (dsp_io_alias(addr, &host)) {
+        addr = host;
+    } else if (addr >= 0x40000000u) {
+        LOG(1, "bus write FAULT addr=%08X val=%08X size=%d pc=%08X", addr, val, size,
+            d && d->core ? d->core->cur_insn : 0);
         *fault = 1;
         return;
     }
@@ -209,8 +236,29 @@ void av_dsp_irq(av_dsp_t *d, int vector) {
     cpu_reschedule();
 }
 
+// Frame tick: a short active-low pulse on EXT1 (IR1N), width in core time
+// (instruction-slots).  It must outlast the kernel's 2-slot `if (ir1s)
+// goto self` spin period (so a spin never misses a pulse) but expire
+// before the calibration gadget's FIRST spin check runs (~9 slots after
+// the tick: waiti latent + dispatch + handler prologue) — otherwise both
+// of the gadget's spins fall through inside one pulse and the measured
+// frame period (kernel data+$1D0, the device's total GPB) collapses to a
+// few ticks, and the RTM rejects every sound task with $F5C8.
+#define AV_DSP_EXT1_PULSE_SLOTS 4
+
+void av_dsp_ext1_tick(av_dsp_t *d) {
+    if (!d || !d->started || d->reset_held)
+        return;
+    dsp3210_ext_pulse(d->core, DSP3210_VEC_EXT1, AV_DSP_EXT1_PULSE_SLOTS);
+    av_dsp_arm(d, 1);
+    cpu_reschedule();
+}
+
 bool av_dsp_ext1_pending(av_dsp_t *d) {
-    return d && (d->core->pending & (1u << DSP3210_VEC_EXT1)) != 0;
+    // "Previous tick never consumed": the request is still latched AND the
+    // kernel is asking for frame interrupts.  In timer-driven steady state
+    // EXT1 is masked (emr=$0200) and latched-but-ignored edges are normal.
+    return d && (d->core->pending & (1u << DSP3210_VEC_EXT1)) != 0 && (d->core->emr & (1u << DSP3210_VEC_EXT1)) != 0;
 }
 
 bool av_dsp_running(av_dsp_t *d) {

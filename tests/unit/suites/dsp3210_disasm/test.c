@@ -183,9 +183,15 @@ int main(void) {
     expect(da(3, 4, 0, 0, 3, 0x5E, 0x67, 0x13), "*r2++r17 = a3 = *r12++ * *r11--"); /* FMULT-STORE */
     expect(da(2, 4, 0, 1, 0, 0x46, 0x08, 0x12), "a0 = -(*r2++r16 = *r1) * *r8--"); /* FMULT-TAP */
     expect(da(3, 0, 0, 0, 0, 0x00, 0x00, 0x07), "a0 = a0 + a0 * a0"); /* all defaults */
-    /* Apple's assembler encodes "no Z write" as 0x7F (seen in the ROM
-     * '3210' segments and enabler dspf modules), not the manual's 0x07 */
-    expect(0x3440087F, "a2 = *r2 + a0");
+    /* Z with p=1111 ([IM] "not allowed"; emitted by Apple's assembler
+     * throughout the AV sound modules): the store goes through the Y
+     * operand's address and Z's I field post-modifies Y's pointer —
+     * an in-place accumulate with cursor advance.  With an accumulator
+     * Y there is nothing to store through, so it reads as no write
+     * (the old blanket "0x7F = no write" reading was wrong for memory
+     * Y operands — see local/gs-docs/dsp3210/errata.md). */
+    expect(0x3440087F, "*r2++ = a2 = *r2 + a0");
+    expect(0x700000FF, "a0 = a1 * a0"); /* acc Y: no write */
     expect(0x3800079F, "a0 = (*r3++ = *r1++) + a0");
 
     /* ---- DA special functions — IM chapter 4.6 examples ---- */

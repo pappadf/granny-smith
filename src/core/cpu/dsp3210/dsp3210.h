@@ -35,8 +35,12 @@
 //     2-bit op fields, output transitions surfaced through a callback — the
 //     AV board's DSP→host doorbell).  SIO/DMAC registers are
 //     present-but-inert (plain on-chip RAM).
-//   - PS.IR0/IR1 mirror the latched external-interrupt requests — the RTM
-//     kernel polls `ir1s` for frame-overrun detection.
+//   - PS.IR0/IR1 read the LIVE EXT0/EXT1 pin level (1 = negated): the board
+//     delivers short active-low pulses via dsp3210_ext_pulse(), and the RTM
+//     kernel polls `ir1s` both to measure the frame period (calibration
+//     gadget) and to detect frame overrun between modules.  Writing emr with
+//     bit 0 set drops a latched-but-untaken EXT1 request (the kernel's
+//     "clear the edge latch" pulse, dsp-kernel-messages.md §3.5).
 //
 // Portable C99, no globals, no I/O, no allocation: the struct is plain data
 // followed by pointers (checkpoint boundary at `mem`).  Bus access outside
@@ -94,8 +98,8 @@ enum {
 #define DSP3210_PS_OBE (1u << 9)
 #define DSP3210_PS_SY  (1u << 10)
 #define DSP3210_PS_FB  (1u << 11)
-#define DSP3210_PS_IR0 (1u << 12) // latched EXT0 request (pin-state mirror)
-#define DSP3210_PS_IR1 (1u << 13) // latched EXT1 request (pin-state mirror)
+#define DSP3210_PS_IR0 (1u << 12) // live EXT0 pin level (1 = negated)
+#define DSP3210_PS_IR1 (1u << 13) // live EXT1 pin level (1 = negated)
 
 // Injected bus hooks for everything OUTSIDE the on-chip 64 KB window (the
 // on-chip window — RAM, MMIO, boot-ROM range — decodes inside the core
@@ -186,6 +190,12 @@ typedef struct dsp3210 {
     int int_defer; // run one insn before taking interrupt (waiti latent insn)
     int last_vector; // last vector raised (incl. masked)
     int halted; // bkpt executed — dead until reset ("crashed")
+    // live EXT0/EXT1 pin windows: remaining instruction-slots the pin stays
+    // asserted after dsp3210_ext_pulse() (0 = negated).  PS.IR0/IR1 read the
+    // LIVE pin level (1 = negated) — the RTM kernel's frame-period gadget
+    // and per-module overrun polls both spin on `ir1s` waiting for the
+    // board's short active-low frame pulse (dsp-kernel-messages.md §3.2/3.4)
+    uint32_t ext_pulse[2]; // [0] = EXT0 (vec 8), [1] = EXT1 (vec 15)
 
     // interrupt shadow registers [IM §7.5.1; ps/ctr per Figure 4-1]
     uint16_t sh_ps;
@@ -248,9 +258,16 @@ void dsp3210_run(dsp3210_t *s, uint32_t *instructions);
 int dsp3210_is_idle(const dsp3210_t *s);
 
 // Assert an interrupt request (vector 8..15).  It is taken when the
-// corresponding emr bit is set and the processor is at base level.
-// EXT0/EXT1 requests are mirrored into PS.IR0/IR1 until serviced.
+// corresponding emr bit is set and the processor is at base level.  The
+// PS.IR0/IR1 pin mirrors are NOT touched — board pulses go through
+// dsp3210_ext_pulse().
 void dsp3210_request_interrupt(dsp3210_t *s, int vector);
+
+// Deliver a short active-low pulse on the EXT0 or EXT1 pin (vector 8 or
+// 15): latches the interrupt request (edge) and asserts the PS.IR pin
+// mirror for `slots` instruction-slots of core time (executed instructions
+// and waiti sleep slots both count), then the pin reads negated again.
+void dsp3210_ext_pulse(dsp3210_t *s, int vector, uint32_t slots);
 
 // Copy bytes into emulated memory through the address map (for loading
 // program images).  Returns 0, or -1 if part of the range is unmapped.
