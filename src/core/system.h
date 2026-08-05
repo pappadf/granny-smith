@@ -291,6 +291,11 @@ void gs_video_in_state(bool active);
 bool gs_audio_in_connected(void);
 bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate);
 void gs_audio_in_state(bool active);
+// Optional one-line description of the host capture's own state, appended to
+// machine.audioin's level meter.  The guest-side level alone cannot say
+// WHERE audio was lost — the platform knows whether samples arrived at all.
+// Weak default writes nothing and returns false.
+bool gs_audio_in_debug(char *buf, size_t buflen);
 
 // True if a valid checkpoint exists for the active machine.  Weak
 // default returns NULL (headless has no auto-checkpoint loop); WASM

@@ -33,6 +33,7 @@
 #include <math.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 // One second at the codec's default rate: far more than the ~10 ms the
@@ -300,6 +301,22 @@ bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
             lr[i * 2 + 1] = block[j];
         }
     }
+    return true;
+}
+
+// Report the capture side's own state for machine.audioin's level meter:
+// whether the browser is delivering at all, how the ring is tracking, and
+// where the conditioner's normaliser has settled.  The guest-side level says
+// only that audio is missing; this says which side lost it.
+bool gs_audio_in_debug(char *buf, size_t buflen) {
+    uint32_t wr = atomic_load_explicit(&g_mic.wr, memory_order_relaxed);
+    uint32_t rd = atomic_load_explicit(&g_mic.rd, memory_order_relaxed);
+    snprintf(buf, buflen, "| host: conn %d in %u out %u lag %u under %u over %u @%dHz gain %.2f floor %.0f",
+             atomic_load_explicit(&g_mic.connected, memory_order_relaxed) != 0, wr, rd, wr - rd,
+             atomic_load_explicit(&g_mic.underruns, memory_order_relaxed),
+             atomic_load_explicit(&g_mic.overruns, memory_order_relaxed),
+             (int)atomic_load_explicit(&g_mic.rate, memory_order_relaxed), (double)g_cond.gain,
+             (double)g_cond.floor_est);
     return true;
 }
 

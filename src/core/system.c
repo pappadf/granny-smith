@@ -647,6 +647,12 @@ __attribute__((weak)) void gs_audio_in_state(bool active) {
     (void)active;
 }
 
+__attribute__((weak)) bool gs_audio_in_debug(char *buf, size_t buflen) {
+    (void)buf;
+    (void)buflen;
+    return false;
+}
+
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
 config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
