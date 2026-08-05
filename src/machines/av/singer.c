@@ -31,6 +31,7 @@
 #include "system.h"
 #include "value.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,6 +66,21 @@ struct av_singer {
     uint8_t ain_src; // ain_src_t
     uint16_t ain_gain; // input gain in percent (100 = unity)
     uint64_t ain_samples; // sample frames pulled since power-on (tone phase)
+
+    // Input level meter (machine.audioin.monitor/level/peak).  Measured on
+    // exactly the samples the DMA is about to deposit — after the source,
+    // the harness gain, the codec's A/D gain ladder and the dither — so it
+    // reports what the GUEST actually receives, not what a source intended.
+    // That distinction is the whole point: the guest's recorder gains its
+    // input up hard, so a path delivering nothing comes back as full-scale
+    // white noise, indistinguishable by ear from one delivering rubbish.
+    // One number here separates them.
+    uint8_t ain_monitor; // periodic level logging
+    int32_t ain_peak; // peak |sample| in the last completed window
+    int32_t ain_level; // RMS in the last completed window
+    double ain_sumsq; // accumulator for the window in progress
+    uint32_t ain_acc_n;
+    int32_t ain_acc_peak;
     uint32_t wav_pos; // playback position in the loaded WAV (frames)
     uint32_t wav_frames; // loaded WAV length in frames (0 = none)
 
@@ -232,6 +248,43 @@ static void singer_ain_pull(av_singer_t *s, uint32_t nframes, uint32_t rate) {
     s->ain_samples += nframes;
 }
 
+static const char *ain_src_name(uint8_t mode);
+
+// Fold one staged half-buffer into the level meter, and emit a line about
+// once a second while `machine.audioin.monitor` is on.
+static void singer_ain_meter(av_singer_t *s, uint32_t nframes, uint32_t rate) {
+    for (uint32_t i = 0; i < nframes; i++) {
+        int32_t v = s->stage[i * 2];
+        int32_t a = v < 0 ? -v : v;
+        if (a > s->ain_acc_peak)
+            s->ain_acc_peak = a;
+        s->ain_sumsq += (double)v * (double)v;
+    }
+    s->ain_acc_n += nframes;
+    // A quarter-second window: the attributes stay responsive enough to
+    // watch live, and a full second would not even complete inside a short
+    // scripted run (which is how this was first found reporting zero).
+    if (s->ain_acc_n < rate / 4)
+        return;
+    s->ain_peak = s->ain_acc_peak;
+    s->ain_level = (int32_t)(sqrt(s->ain_sumsq / (double)s->ain_acc_n) + 0.5);
+    if (s->ain_monitor) { // one line per quarter-second window
+        // dBFS is the readable form; the raw counts matter because the
+        // codec's own dither floor is +-1, so anything at or under ~2 counts
+        // means NO audio is arriving, however loud it sounds afterwards.
+        double pk = s->ain_peak > 0 ? 20.0 * log10((double)s->ain_peak / 32768.0) : -999.0;
+        double rm = s->ain_level > 0 ? 20.0 * log10((double)s->ain_level / 32768.0) : -999.0;
+        LOG(1, "audioin[%s]: peak %5d (%6.1f dBFS)  rms %5d (%6.1f dBFS)  %s", ain_src_name(s->ain_src), s->ain_peak,
+            pk, s->ain_level, rm,
+            // The dither floor measures 3 counts once the codec's +7.5 dB
+            // A/D gain is applied, so anything at or under that is silence.
+            s->ain_peak <= 4 ? "<- SILENCE: no audio is reaching the guest" : "");
+    }
+    s->ain_sumsq = 0.0;
+    s->ain_acc_n = 0;
+    s->ain_acc_peak = 0;
+}
+
 // Fill the guest's input half-buffer from the selected audio-in source
 // (silence when none — the "mic absent" presentation).
 static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
@@ -251,6 +304,7 @@ static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
             s->stage[i * 2 + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
         }
     }
+    singer_ain_meter(s, nframes, singer_rate(s));
     for (uint32_t i = 0; i < nframes; i++) {
         mmu_write_physical_uint16(g_mmu, base + i * 4, (uint16_t)s->stage[i * 2]);
         mmu_write_physical_uint16(g_mmu, base + i * 4 + 2, (uint16_t)s->stage[i * 2 + 1]);
@@ -516,6 +570,33 @@ static value_t ain_method_rewind(struct object *self, const member_t *m, int arg
     return val_none();
 }
 
+static value_t ain_attr_monitor_get(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_bool(s && s->ain_monitor);
+}
+
+static value_t ain_attr_monitor_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    if (!s)
+        return val_err("audioin not available");
+    s->ain_monitor = in.b ? 1 : 0;
+    return val_none();
+}
+
+static value_t ain_attr_level(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_int(s ? s->ain_level : 0);
+}
+
+static value_t ain_attr_peak(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_int(s ? s->ain_peak : 0);
+}
+
 static const arg_decl_t ain_load_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "PCM16 WAV prepared at the codec rate (mono or stereo)"},
 };
@@ -534,6 +615,20 @@ static const member_t av_audioin_members[] = {
      .name = "gain",
      .doc = "Input gain in percent (100 = unity; bring-up level sweeps)",
      .attr = {.type = V_UINT, .get = ain_attr_gain_get, .set = ain_attr_gain_set}},
+    {.kind = M_ATTR,
+     .name = "monitor",
+     .doc = "Log the input level ~1/s; needs the singer category on: debug.log singer \"level=1\"",
+     .attr = {.type = V_BOOL, .get = ain_attr_monitor_get, .set = ain_attr_monitor_set}},
+    {.kind = M_ATTR,
+     .name = "level",
+     .doc = "RMS of the last second of input, in int16 counts (the codec's dither floor is ~1)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = ain_attr_level, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "peak",
+     .doc = "Peak |sample| of the last second of input, in int16 counts",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = ain_attr_peak, .set = NULL}},
     {.kind = M_ATTR,
      .name = "samples",
      .doc = "Sample frames pulled from the source since power-on",

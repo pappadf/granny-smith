@@ -79,7 +79,21 @@ if (typeof globalThis !== 'undefined') {
 }
 
 export function onAudioInState(active: boolean): void {
+  const started = active && !microphone.guestActive;
   microphone.guestActive = active;
+  // The guest has started recording. If no microphone is connected it will
+  // capture the codec's own noise floor, and its recorder gains that up into
+  // full-scale white noise — a result indistinguishable from a broken
+  // capture path, with nothing anywhere to say the microphone was simply
+  // never connected. Say so. The connection stays a deliberate user act
+  // (attaching a microphone because the guest asked would be exactly the
+  // wrong default), but silence about it is not a defensible one.
+  if (started && !microphone.enabled && machine.audioIn) {
+    showNotification(
+      'The Mac is recording, but no microphone is connected — click the microphone button in the toolbar',
+      'warning',
+    );
+  }
   void syncStream();
 }
 
