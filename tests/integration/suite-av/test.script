@@ -84,12 +84,13 @@
 # with stale or partial data skips rather than fails.
 #
 # The two speech rows additionally need speech/sr-open-the-trash.wav and
-# speech/sr-what-day-is-it.wav.  Those are NOT in the pinned gs-test-data
-# revision yet, so they skip on a clean checkout until the media lands and
-# tests/data-version moves — which is exactly what the gating is for.  The
-# goldens here were captured against those two files; regenerate them if
-# the media is ever re-synthesized (the generator is deterministic, so it
-# only changes if its inputs or the contract do).
+# speech/sr-what-day-is-it.wav, which landed in gs-test-data at revision
+# 9df0a79 (the revision tests/data-version now pins).  Those two WAVs are
+# synthesized rather than recorded and are NON-COMMERCIALLY licensed — see
+# speech/NOTICE in that repo before copying them anywhere.  The goldens
+# here were captured against them; regenerate the goldens if the media is
+# ever re-synthesized (the generator is deterministic, so it only changes
+# if its inputs or the contract do).
 
 include "../lib/mac.script"
 
