@@ -1389,6 +1389,7 @@ int main(int argc, char *argv[]) {
     em_video_init();
     em_audio_init();
     em_camera_init(); // announce the webcam frame transport to the main thread
+    em_audio_in_init(); // ...and the microphone sample ring
     setup_pointer_lock();
 
     install_background_checkpoint_handlers();

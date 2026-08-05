@@ -79,6 +79,7 @@ const hw_profile_t machine_q660av = {
     .has_cdrom = true,
     .cdrom_id = 3,
     .has_video_in = true, // on-board DMSD/VDC digitizer (video-in.md)
+    .has_audio_in = true, // Singer codec microphone input (singer.md)
     .aux_cpus = q660av_aux_cpus, // the DSP3210 (machine.dsp)
 
     .nubus_slots = NULL,

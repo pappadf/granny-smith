@@ -19,6 +19,7 @@ import {
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
 import { onVideoInReady, onVideoInState, reapplyCameraSource } from '@/state/camera.svelte';
+import { onAudioInReady, onAudioInState, reapplyMicrophoneSource } from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
@@ -38,6 +39,7 @@ const ARGS_SIZE = 8192;
 
 // Minimal Emscripten module surface — enough to type-check what bus uses.
 interface EmscriptenModule {
+  HEAP16: Int16Array<ArrayBufferLike>;
   HEAP32: Int32Array<ArrayBufferLike>;
   HEAPU8: Uint8Array<ArrayBufferLike>;
   FS: {
@@ -81,6 +83,8 @@ interface EmscriptenModuleConfig {
   onPerfUpdate?(mipsX100: number, tpsX10: number): void;
   onVideoInReady?(ptr: number, w: number, h: number): void;
   onVideoInState?(active: boolean): void;
+  onAudioInReady?(ptr: number, len: number, rate: number): void;
+  onAudioInState?(active: boolean): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -155,6 +159,8 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onPerfUpdate: handlePerfUpdate,
     onVideoInReady,
     onVideoInState,
+    onAudioInReady,
+    onAudioInState,
   });
 
   bridgePtr = Module._get_js_bridge();
@@ -383,9 +389,9 @@ export function getModule(): EmscriptenModule | null {
 // Fresh heap views for direct shared-memory writers (the camera frame
 // transport). Fetched per use — under ALLOW_MEMORY_GROWTH the underlying
 // buffer can be replaced, so callers must never cache these.
-export function getModuleHeap(): { u8: Uint8Array; i32: Int32Array } | null {
+export function getModuleHeap(): { u8: Uint8Array; i16: Int16Array; i32: Int32Array } | null {
   if (!Module || !moduleReady) return null;
-  return { u8: Module.HEAPU8, i32: Module.HEAP32 };
+  return { u8: Module.HEAPU8, i16: Module.HEAP16, i32: Module.HEAP32 };
 }
 
 // --- Lifecycle wrappers --------------------------------------------------
@@ -410,26 +416,34 @@ export async function applyCapabilities(model: string): Promise<void> {
   let kind: MmuKind = 'none';
   let fpu = false;
   let videoIn = false;
+  let audioIn = false;
   try {
     // machine.profile returns a native nested object (V_MAP through the
     // gsEval bridge) — no inner JSON.parse.
     const r = await gsEval('machine.profile', [model]);
     if (r && typeof r === 'object' && !('error' in r)) {
       const parsed = r as {
-        capabilities?: { mmu?: { kind?: string }; cpu?: { fpu?: boolean }; video_in?: boolean };
+        capabilities?: {
+          mmu?: { kind?: string };
+          cpu?: { fpu?: boolean };
+          video_in?: boolean;
+          audio_in?: boolean;
+        };
       };
       const k = parsed.capabilities?.mmu?.kind;
       if (k === '68030_pmmu' || k === 'lisa_segment') kind = k;
       fpu = parsed.capabilities?.cpu?.fpu === true;
       videoIn = parsed.capabilities?.video_in === true;
+      audioIn = parsed.capabilities?.audio_in === true;
     }
   } catch {
-    /* leave kind = 'none', fpu = false, videoIn = false */
+    /* leave kind = 'none', fpu = false, videoIn/audioIn = false */
   }
   machine.mmuKind = kind;
   machine.mmuEnabled = kind === '68030_pmmu';
   machine.fpu = fpu;
   machine.videoIn = videoIn;
+  machine.audioIn = audioIn;
 }
 
 // Boot a machine from a config. Construction-time settings travel as ONE
@@ -474,9 +488,11 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   machine.model = config.modelName ?? config.model;
   machine.ram = config.ram;
   await applyCapabilities(config.model);
-  // machine.videoin resets with the machine; re-assert the user's camera
-  // toggle (or drop it if the new model has no digitizer).
+  // machine.videoin / machine.audioin reset with the machine; re-assert the
+  // user's camera and microphone toggles (or drop them if the new model has
+  // no digitizer / no audio input).
   await reapplyCameraSource();
+  await reapplyMicrophoneSource();
 
   // A fresh core boots paced; re-assert the user's toolbar selection so a
   // pre-selected Turbo survives machine (re)creation.

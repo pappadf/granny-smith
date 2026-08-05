@@ -65,11 +65,56 @@ Host source surface, mirroring `machine.videoin`:
 | `none` | default — mic absent, input records the converter's noise floor only |
 | `tone` | deterministic 600 Hz sawtooth (integer math, pure function of the checkpointed sample counter) |
 | `wav`  | a PCM16 WAV loaded via `machine.audioin.load <path>` (prepared offline at the codec rate; playback position checkpointed; `rewind()` restarts) |
-| `host` | the platform microphone through the `gs_audio_in_*` seam (weak defaults model "no mic"; a browser getUserMedia override can trail — the seam is the whole contract) |
+| `host` | the platform microphone through the `gs_audio_in_*` seam |
 
 `gain` (percent, default 100) lets bring-up sweep input levels without
 re-mastering assets; it is a test-harness knob, applied *before* the
-codec's own A/D gain ladder and noise floor.  `connected` drives the mic-present sense;
+codec's own A/D gain ladder and noise floor.
+
+### The `host` source in the browser
+
+`src/platform/wasm/em_audio_in.c` overrides the seam for the WASM build and
+`app/web2/src/state/microphone.svelte.ts` drives it, mirroring the camera
+path exactly: a toolbar toggle gated on the `audio_in` capability, and a
+`MediaStreamTrack` attached only while the user's toggle AND the guest's
+`pSndInEn` both hold, so the browser's recording indicator is lit only while
+the guest is genuinely listening.
+
+Samples cross on a lock-free SPSC ring in the shared wasm heap rather than
+the camera's latest-wins slot pair: the guest pulls whole 10 ms half-buffers
+on the Singer's frame cadence while the browser produces on its own, so the
+two rates need a queue.  An underrun reports "no source" for that frame — the
+engine then presents its own noise floor rather than a torn buffer.
+
+**The capture is deliberately raw.**  `getUserMedia` is asked for
+`echoCancellation: false, noiseSuppression: false, autoGainControl: false`.
+Those are voice-call processing, and a browser AGC in front of the emulator
+is exactly the defect that made recorded speech-recognition assets unusable —
+levels 6-12 dB hot with the dynamics flattened, which Apple's recognizer
+rejects (`sr-test-audio-assets.md` §2).  The AudioContext is opened at the
+codec rate so the browser's own resampler does the rate conversion.
+
+The C side then applies the PlainTalk microphone's own characteristics, the
+same chain the offline asset generator applies, so live audio and recorded
+assets reach the guest looking alike:
+
+* a **100 Hz high-pass** — the electret, its preamp and the codec's AC
+  coupling do not pass the proximity rumble a laptop or headset mic delivers;
+* a **slow sensitivity normaliser** targeting TIL15884's 100-200 mVpp window
+  for typical voiced speech.  This models the *fixed* sensitivity of the
+  PlainTalk preamp — it cancels the tens of dB of spread between one user's
+  microphone and another's, not the dynamics of speech.  It measures voiced
+  blocks only, moves over seconds so it neither pumps nor races the guest's
+  own AGC (`AnalogGC` → `singerCtl` A/D gain), and holds during silence
+  rather than winding up into the noise floor.
+
+Mono is fanned to both channels because that is what the hardware presents:
+the PlainTalk plug's middle contact drives the left and right inputs with the
+same blended signal.  No noise floor is added here — the codec model already
+contributes its own, and a live microphone brings a room with it.
+
+`local/gs-docs/debug-plaintalk/micrig/` exercises the conditioning without a
+browser (it found two defects review had missed).  `connected` drives the mic-present sense;
 `samples`/`position` expose progress.  The loaded WAV is checkpointed
 with the machine; the host mic is checkpoint-ephemeral.
 

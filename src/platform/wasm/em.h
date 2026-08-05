@@ -36,6 +36,8 @@ uint8_t *em_video_get_framebuffer(void);
 // opened by the machine's sound frontend via platform_audio_open)
 void em_audio_init(void);
 void em_camera_init(void);
+// Announce the microphone sample ring to the main thread (em_audio_in.c).
+void em_audio_in_init(void);
 
 // Resume audio context (if suspended)
 void em_audio_resume(void);

@@ -176,6 +176,13 @@ typedef struct hw_profile {
     // camera control the same way `fpu`/`mmu.kind` gate the debug panels.
     bool has_video_in;
 
+    // On-board audio input (the AV family's Singer codec microphone path).
+    // Drives the exported `audio_in` capability, which gates the frontend's
+    // microphone control exactly as `video_in` gates the camera control.
+    // Separate from `has_video_in` on purpose: the two seams are
+    // independent, and a machine could plausibly have one without the other.
+    bool has_audio_in;
+
     // Auxiliary CPU cores (heterogeneous multi-CPU, cores.md): peripheral
     // processors that execute real guest code but do not own time — the AV
     // family's DSP3210.  Sentinel-terminated (name == NULL); NULL when the

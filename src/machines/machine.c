@@ -191,6 +191,8 @@ static value_t build_capabilities(const hw_profile_t *p) {
     val_map_put(b, "nubus", val_bool(p->nubus_slots != NULL));
     // On-board video digitizer (webcam capture) — gates the camera UI.
     val_map_put(b, "video_in", val_bool(p->has_video_in));
+    // On-board audio input (microphone capture) — gates the mic UI.
+    val_map_put(b, "audio_in", val_bool(p->has_audio_in));
 
     // Auxiliary CPU cores (heterogeneous multi-CPU): asserted from data,
     // never from model names — empty list on machines without any.

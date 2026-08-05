@@ -3,6 +3,7 @@
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
   import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
+  import { microphone, setMicrophoneEnabled } from '@/state/microphone.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import {
     pauseEmulator,
@@ -113,6 +114,23 @@
     void setCameraEnabled(!camera.enabled);
   }
 
+  // Microphone toggle — shown only on machines with on-board audio input
+  // (capabilities.audio_in, the AV family). Same shape as the camera: the
+  // click is the user gesture getUserMedia needs, and the live indicator
+  // follows the guest actually recording (state/microphone.svelte).
+  const micIcon: IconName = $derived(microphone.enabled ? 'mic' : 'mic-off');
+  const micTitle = $derived(
+    microphone.enabled
+      ? microphone.live
+        ? 'Microphone connected (recording) — click to disconnect'
+        : 'Microphone connected — click to disconnect'
+      : 'Connect microphone to the sound input',
+  );
+
+  function onMicClick() {
+    void setMicrophoneEnabled(!microphone.enabled);
+  }
+
   function onZoomInput(e: Event) {
     const input = e.target as HTMLInputElement;
     const n = parseInt(input.value, 10);
@@ -220,6 +238,19 @@
         <Icon name={cameraIcon} />
       </button>
     {/if}
+    {#if machine.audioIn}
+      <button
+        class="tbtn"
+        class:cam-live={microphone.live}
+        title={micTitle}
+        aria-label={micTitle}
+        aria-pressed={microphone.enabled}
+        disabled={!isLive}
+        onclick={onMicClick}
+      >
+        <Icon name={micIcon} />
+      </button>
+    {/if}
   </div>
   <div class="layout-controls">
     <button class="tbtn" title={themeTitle} aria-label={themeTitle} onclick={cycleTheme}>
@@ -318,7 +349,8 @@
     opacity: 0.4;
     cursor: default;
   }
-  /* The camera button glows while frames are actually flowing to the guest. */
+  /* The camera and microphone buttons glow while data is actually flowing
+     to the guest. */
   .tbtn.cam-live {
     color: var(--gs-accent, #4ea1ff);
   }
