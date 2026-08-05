@@ -123,8 +123,16 @@ one writer; that, and nothing else, is what makes the ring lock-free.
 Those are voice-call processing, and a browser AGC in front of the emulator
 is exactly the defect that made recorded speech-recognition assets unusable —
 levels 6-12 dB hot with the dynamics flattened, which Apple's recognizer
-rejects (`sr-test-audio-assets.md` §2).  The AudioContext is opened at the
-codec rate so the browser's own resampler does the rate conversion.
+rejects (`sr-test-audio-assets.md` §2).
+
+**The AudioContext runs at the browser's NATIVE rate**, not the codec's.
+Asking for 24 kHz looks tidier and would leave the C side at 1:1, but a real
+capture device routed into a context whose `sampleRate` does not match the
+track's delivers *silence* — the graph runs, the worklet is pulled, full
+quanta arrive, and every sample is ~0.  Chromium's fake device adopts
+whatever rate is requested, so an e2e against it passes while every real
+microphone fails.  The negotiated rate is published to the C side, which
+does the conversion itself.
 
 The C side then applies the PlainTalk microphone's own characteristics, the
 same chain the offline asset generator applies, so live audio and recorded
@@ -139,6 +147,25 @@ assets reach the guest looking alike:
   blocks only, moves over seconds so it neither pumps nor races the guest's
   own AGC (`AnalogGC` → `singerCtl` A/D gain), and holds during silence
   rather than winding up into the noise floor.
+
+…and then, when the rates differ, a **polyphase windowed-sinc resampler**
+(48-tap Kaiser, 128 fractional phases, designed when the ratio changes and
+carrying its tail across blocks).  Equal rates keep a straight 1:1 copy.
+What this filter does is audible, so it is measured rather than asserted —
+`micrig` probes it with steady tones:
+
+| 48 kHz → 24 kHz | passband ≤ 8 kHz | 16 kHz folded onto 8 kHz |
+|---|---|---|
+| box filter (until 2026-08) | −1.25 dB | **−6.0 dB** |
+| polyphase | −0.00 dB | **−81.6 dB** |
+
+The stopband was the real defect: with only ~6 dB of rejection, everything a
+microphone picks up between 12 and 24 kHz — hiss, fans, sibilance, switching
+noise — folded back into the speech band nearly unattenuated.  At 44.1 kHz
+the box was worse in a second way, spanning 1 or 2 input samples alternately,
+which makes it a *time-varying* filter.  This mattered less while the DSP's
+own `int32` defect (errata E16) was destroying recordings anyway; once that
+was fixed it was the only crude resampler left in the chain.
 
 Mono is fanned to both channels because that is what the hardware presents:
 the PlainTalk plug's middle contact drives the left and right inputs with the

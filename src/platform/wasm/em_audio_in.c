@@ -237,6 +237,141 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
 }
 
 // ===========================================================================
+// Rate conversion: browser rate → codec rate
+// ===========================================================================
+//
+// The AudioContext runs at the browser's NATIVE rate (buildGraph explains
+// why asking for 24 kHz yields silence on real devices), so almost every
+// live capture arrives at 44.1 or 48 kHz and has to come down to the
+// Singer's 24 kHz here.  What that filter does is audible, and the box
+// filter this replaced was the only crude resampler left in the chain
+// once the DSP's int32 defect was fixed (errata E16).  Measured on the
+// box, 48→24:
+//
+//   passband  -1.25 dB at 8 kHz, -2.0 dB at 10 kHz   (dulls)
+//   stopband  16 kHz folded onto 8 kHz only 6 dB down,
+//             14 kHz onto 10 kHz only 4.3 dB down    (grit)
+//
+// The stopband is the real problem: everything a microphone picks up
+// between 12 and 24 kHz — hiss, fans, sibilance, switching noise — landed
+// back in the speech band essentially unattenuated.  At 44.1 kHz it was
+// worse in a second way, because the box spanned 1 or 2 input samples
+// alternately: a time-VARYING filter, which modulates as well as aliases.
+//
+// This is an ordinary polyphase windowed-sinc resampler: one Kaiser-
+// windowed low-pass, sampled at GS_RS_PHASES fractional offsets, designed
+// once whenever the ratio changes.  It is causal (the centre tap sits
+// GS_RS_TAPS/2 input samples back) so it never needs samples the ring has
+// not delivered, and it carries its tail across calls — the box filter
+// restarted at every block boundary, which is a discontinuity per 10 ms
+// frame on top of everything else.  Cost is ~11.5k multiply-adds per
+// frame; the budget here is a whole 10 ms.
+//
+// Equal rates keep the 1:1 copy path: a mic already at the codec rate
+// (and the Chromium fake device, which adopts whatever it is asked for)
+// must pass through untouched rather than through a filter it does not
+// need.
+
+#define GS_RS_TAPS   48 // taps per output sample (even)
+#define GS_RS_PHASES 128 // fractional positions the bank is sampled at
+// Cutoff as a fraction of the lower Nyquist.  0.90 puts 48→24's corner at
+// 10.8 kHz and the stopband inside 12 kHz, which is where it has to be:
+// the guest's own converter is already 3.4 dB down at 9 kHz, so passband
+// spent above ~11 kHz buys nothing and costs stopband.
+#define GS_RS_KEEP 0.90
+
+static struct {
+    float h[GS_RS_PHASES][GS_RS_TAPS];
+    uint32_t src, dst; // the ratio the bank was designed for
+    int16_t hist[GS_RS_TAPS]; // input tail from the previous block
+} g_rs;
+
+// Modified Bessel function of the first kind, order 0 — the Kaiser window's
+// only transcendental.  The series converges in a handful of terms for the
+// beta we use.
+static double rs_i0(double x) {
+    double s = 1.0, t = 1.0;
+    for (int k = 1; k < 40; k++) {
+        double q = x / (2.0 * k);
+        t *= q * q;
+        s += t;
+        if (t < 1e-13 * s)
+            break;
+    }
+    return s;
+}
+
+static void rs_design(uint32_t src, uint32_t dst) {
+    // beta 7.0 is about 72 dB of stopband, which puts every fold-back
+    // under the guest's own 8-bit quantisation floor.
+    const double beta = 7.0;
+    const int m = GS_RS_TAPS / 2;
+    double fc = 0.5 * (dst < src ? (double)dst / (double)src : 1.0) * GS_RS_KEEP;
+    double i0b = rs_i0(beta);
+
+    for (int p = 0; p < GS_RS_PHASES; p++) {
+        double frac = (double)p / (double)GS_RS_PHASES;
+        double sum = 0.0;
+        for (int k = 0; k < GS_RS_TAPS; k++) {
+            // Distance, in input samples, from tap k to the point being
+            // reconstructed (which sits m samples back — see the header).
+            double d = (double)(k - m) + frac;
+            double x = 2.0 * fc * d;
+            double sinc = (fabs(x) < 1e-9) ? 1.0 : sin(M_PI * x) / (M_PI * x);
+            double r = d / ((double)m + 0.5); // |r| < 1 over every tap
+            double w = rs_i0(beta * sqrt(1.0 - r * r)) / i0b;
+            double v = sinc * w;
+            g_rs.h[p][k] = (float)v;
+            sum += v;
+        }
+        // Normalise each phase to unity DC gain.  Without this the phases
+        // differ by a fraction of a dB and the difference is a periodic
+        // amplitude ripple at the beat between the two rates.
+        float inv = (float)(sum != 0.0 ? 1.0 / sum : 1.0);
+        for (int k = 0; k < GS_RS_TAPS; k++)
+            g_rs.h[p][k] *= inv;
+    }
+    g_rs.src = src;
+    g_rs.dst = dst;
+    memset(g_rs.hist, 0, sizeof g_rs.hist);
+}
+
+// Resample `need` conditioned mono samples in `in` to `frames` output
+// samples, fanned out to both channels of `lr`.
+static void rs_run(const int16_t *in, uint32_t need, int16_t *lr, uint32_t frames, uint32_t src, uint32_t dst) {
+    if (g_rs.src != src || g_rs.dst != dst)
+        rs_design(src, dst);
+
+    // Position is computed from `i` rather than accumulated: output g of the
+    // whole stream sits at input g*need/frames, and since consecutive blocks
+    // are contiguous in both, evaluating i*need/frames per block is exactly
+    // that mapping with no drift.  A `pos += step` accumulator truncates
+    // once per output instead, which walks ~0.0015 samples off across a
+    // block and puts a discontinuity at every block boundary.
+    for (uint32_t i = 0; i < frames; i++) {
+        uint64_t pos = ((uint64_t)i * need << 16) / frames;
+        uint32_t j = (uint32_t)(pos >> 16);
+        const float *h = g_rs.h[(pos >> 9) & (GS_RS_PHASES - 1)];
+        float acc = 0.0f;
+        for (uint32_t k = 0; k < GS_RS_TAPS; k++) {
+            int32_t n = (int32_t)j - (int32_t)k;
+            acc += h[k] * (float)(n >= 0 ? in[n] : g_rs.hist[GS_RS_TAPS + n]);
+        }
+        int16_t v = (int16_t)(acc < -32768.0f ? -32768.0f : (acc > 32767.0f ? 32767.0f : acc));
+        lr[i * 2] = v;
+        lr[i * 2 + 1] = v;
+    }
+
+    // Carry the tail so the next block's first taps see real history.
+    if (need >= GS_RS_TAPS) {
+        memcpy(g_rs.hist, in + need - GS_RS_TAPS, sizeof g_rs.hist);
+    } else {
+        memmove(g_rs.hist, g_rs.hist + need, (GS_RS_TAPS - need) * sizeof(int16_t));
+        memcpy(g_rs.hist + GS_RS_TAPS - need, in, need * sizeof(int16_t));
+    }
+}
+
+// ===========================================================================
 // gs_audio_in_* seam overrides (weak defaults in core/system.c)
 // ===========================================================================
 
@@ -305,39 +440,8 @@ bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
             lr[i * 2] = block[i];
             lr[i * 2 + 1] = block[i];
         }
-    } else if (need > frames) {
-        // Downsampling (the common case: a 44.1/48 kHz microphone into the
-        // Singer's 24 kHz).  Average each output sample's whole input span —
-        // a box filter, which is crude as filters go but does suppress the
-        // aliasing that dropping samples would fold straight into the voice
-        // band.  Nearest-neighbour here would alias every component above
-        // 12 kHz down on top of the speech.
-        for (uint32_t i = 0; i < frames; i++) {
-            uint32_t a = (uint32_t)((uint64_t)i * need / frames);
-            uint32_t b = (uint32_t)((uint64_t)(i + 1) * need / frames);
-            if (b <= a)
-                b = a + 1;
-            if (b > need)
-                b = need;
-            int32_t sum = 0;
-            for (uint32_t j = a; j < b; j++)
-                sum += block[j];
-            int32_t v = sum / (int32_t)(b - a);
-            lr[i * 2] = (int16_t)v;
-            lr[i * 2 + 1] = (int16_t)v;
-        }
     } else {
-        // Upsampling: linear interpolation.
-        for (uint32_t i = 0; i < frames; i++) {
-            uint64_t pos = (uint64_t)i * (need - 1) * 256u / (frames ? frames : 1);
-            uint32_t j = (uint32_t)(pos >> 8);
-            int32_t frac = (int32_t)(pos & 0xFF);
-            int32_t s0 = block[j < need ? j : need - 1];
-            int32_t s1 = block[j + 1 < need ? j + 1 : need - 1];
-            int32_t v = s0 + ((s1 - s0) * frac >> 8);
-            lr[i * 2] = (int16_t)v;
-            lr[i * 2 + 1] = (int16_t)v;
-        }
+        rs_run(block, need, lr, frames, producer_rate, rate);
     }
     return true;
 }
