@@ -56,6 +56,17 @@
 #                   dialog records the emulator's tone source through
 #                   .AppleSoundInput, then plays it back out through the
 #                   DSP — input and output paths in one round trip.
+#   av-sr-command   Speech recognition (rung 7): Apple's Casper recognizer
+#                   is turned on from Speech Setup, a spoken "Computer,
+#                   open the Trash" is played into the microphone seam,
+#                   and the Finder opens the Trash window — the whole
+#                   chain from the audioin seam through the DSP front end
+#                   to the Speakable Item's action, in one golden.
+#   av-sr-macro     The same recognizer against a My Speech Macros
+#                   AppleScript rule: "Computer, what day is it?" is
+#                   answered OUT LOUD, so recognition, the scripting
+#                   action and text-to-speech all ride one utterance —
+#                   asserted with both a sound and a screen golden.
 #
 # The boot rows ride a prepared 76 MB System 7.1 AV hard-disk image rather
 # than a CD.  It is the volume that exercises the family properly: a full
@@ -69,14 +80,27 @@
 # (proposal-quadra-av.md §5.2 — the landable-before-data pattern): the
 # ROM-only rows need roms/q840av-q660av-5bf10fd1.rom and the boot rows
 # additionally need systems/system_7_1_77mb_av.img.  Both are in
-# gs-test-data as of revision 2937e56, so all six rows run; the gating
-# stays in so a checkout with stale or partial data skips rather than
-# fails.
+# gs-test-data as of revision 2937e56; the gating stays in so a checkout
+# with stale or partial data skips rather than fails.
+#
+# The two speech rows additionally need speech/sr-open-the-trash.wav and
+# speech/sr-what-day-is-it.wav.  Those are NOT in the pinned gs-test-data
+# revision yet, so they skip on a clean checkout until the media lands and
+# tests/data-version moves — which is exactly what the gating is for.  The
+# goldens here were captured against those two files; regenerate them if
+# the media is ever re-synthesized (the generator is deterministic, so it
+# only changes if its inputs or the contract do).
 
 include "../lib/mac.script"
 
 let av_rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"
 let av_hd = "../../data/systems/system_7_1_77mb_av.img"
+# Spoken-command media.  Generated, not recorded: see
+# local/gs-docs/debug-plaintalk/scripts/gen-sr-asset.py and
+# dsp3210-plaintalk/sr-test-audio-assets.md §2 for the PlainTalk
+# microphone contract they are conditioned to.
+let av_sr_trash = "../../data/speech/sr-open-the-trash.wav"
+let av_sr_date = "../../data/speech/sr-what-day-is-it.wav"
 
 # ---- av-identity ------------------------------------------------------------
 # The ROM reads the CPU-ID register ($5FFFFFFC = $A55A2830, and must NOT be
@@ -506,6 +530,110 @@ def row_av_sound_in() {
     report_perf("suite-av/av-sound-in", scheduler.instr_count)
 }
 
+# ---- the speech-recognition rows --------------------------------------------
+# Rung 7: Apple's Casper recognizer, end to end.  Shared bring-up — boot,
+# open Speech Setup from its desktop alias, turn Recognition on, idle out
+# the ~10-15 s startup blackout, close the panel and park the mouse.  The
+# windoid ends up bottom-left reading "Computer / Starting up… / Ready.",
+# which IS the listening state (the Attention Key is a toggle, not
+# push-to-talk).
+#
+# Nothing may be loaded into machine.audioin before this: a loaded WAV
+# plays once on its own during the blackout, which would recognize early
+# and change the state the row asserts on.
+def sr_bring_up() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    machine.audioin.source = "none"
+    scheduler.run 600000000
+    wait_stable(1500000000)
+
+    machine.adb.mouse.move 50 50 "global"
+    run_ticks(30)
+    double_click(536, 306) # the Speech Setup alias
+    run_ticks(600)
+    click(176, 107) # Recognition: On
+    run_ticks(1800) # the recognizer's startup blackout
+    click(114, 51) # close the Speech Setup panel
+    run_ticks(200)
+    machine.adb.mouse.move 320 400 "global"
+    run_ticks(1200)
+
+    assert machine.dsp.state == "running" "sr: DSP ${machine.dsp.state} after the recognizer started"
+    assert machine.dsp.emr == 0x8000 "sr: emr=${machine.dsp.emr:04x} — kernel died bringing the recognizer up"
+    assert machine.sound.in_enabled "sr: input DMA not running — the recognizer is not listening"
+}
+
+# Play one utterance and let the endpointer close it (400 ms of silence)
+# before the host's language-model search and the feedback draw.
+def sr_say(path) {
+    machine.audioin.load "${$path}"
+    machine.audioin.rewind
+    run_ticks(320) # long enough to play the whole ~3.5 s utterance
+    run_ticks(200) # endpointer close + the host search + the feedback draw
+}
+
+# ---- av-sr-command ----------------------------------------------------------
+# A Speakable Item spoken as a command: "Computer, open the Trash".  The
+# feedback windoid prints the recognized text and the Finder opens the
+# Trash window — so the golden covers the whole chain at once, from the
+# machine.audioin seam through the Singer, the DSP front end, the host
+# language-model search and the alias action.
+#
+# Two takes: per-take recognition is roughly one in two even with a
+# well-conditioned asset, which is what 1993 speaker-independent
+# recognition does.  The run is deterministic, so the golden pins whatever
+# the two takes produce.
+def row_av_sr_command() {
+    sr_bring_up()
+    sr_say($av_sr_trash)
+    sr_say($av_sr_trash)
+
+    assert machine.dsp.emr == 0x8000 "av-sr-command: emr=${machine.dsp.emr:04x} after the utterance — kernel died"
+    assert machine.sound.overruns == 0 "av-sr-command: ${machine.sound.overruns} frame overruns"
+    check("goldens/av-sr-command.png")
+    report_perf("suite-av/av-sr-command", scheduler.instr_count)
+}
+
+# ---- av-sr-macro ------------------------------------------------------------
+# The other half of the recognizer's world: a My Speech Macros rule rather
+# than a Speakable Item alias.  "Computer, what day is it?" matches an
+# AppleScript rule whose action ACKNOWLEDGES OUT LOUD, so this one
+# utterance exercises recognition, the scripting action and text-to-speech
+# in a single pass — the spoken answer is captured and held to a sound
+# golden, and the windoid caption to a screen golden.
+def row_av_sr_macro() {
+    sr_bring_up()
+    # Two takes, and the first one is load-bearing: with a single take this
+    # row fails with "nothing was spoken back".  The first utterance warms
+    # the recognizer up — its AGC settles the codec's A/D gain and the
+    # endpointer's running cepstral mean converges on speech statistics —
+    # and only then does the second match.
+    sr_say($av_sr_date)
+
+    # The capture records the machine's OUTPUT, which is silent for as long
+    # as an utterance is being fed IN.  So open it for the second take only,
+    # and only from the point the utterance has finished playing: the answer
+    # lands ~0.4 s later, after the endpointer's 400 ms close and the host's
+    # language-model search.  Capturing the whole row would work equally
+    # well but would bury 2 s of speech in 11 s of digital silence.
+    machine.audioin.load "${$av_sr_date}"
+    machine.audioin.rewind
+    run_ticks(180)
+    machine.sound.capture.start
+    run_ticks(340)
+
+    assert machine.dsp.emr == 0x8000 "av-sr-macro: emr=${machine.dsp.emr:04x} after the utterance — kernel died"
+    assert machine.sound.overruns == 0 "av-sr-macro: ${machine.sound.overruns} frame overruns"
+    # The golden alone would still pass if a regen ever captured silence,
+    # so assert the answer was actually SPOKEN before comparing it.
+    assert machine.sound.capture.peak > 2000 "av-sr-macro: capture peak ${machine.sound.capture.peak} — nothing was spoken back"
+    check_sound("goldens/av-sr-macro.wav", 102000)
+    check("goldens/av-sr-macro.png")
+    report_perf("suite-av/av-sr-macro", scheduler.instr_count)
+}
+
 # ---- av-dsp-boot ------------------------------------------------------------
 # The DSP3210 comes alive: during the Enabler's RTM init the DSP is released
 # (dspOverRun $01 clear-write), Apple's kernel boots out of the ROM's '3210'
@@ -736,6 +864,20 @@ if row_on("av-sound-in") {
         row_end("av-sound-in", try(row_av_sound_in(), "FAILED"))
     } else {
         echo "skip: av-sound-in — ${$av_hd} not fetched"
+    }
+}
+if row_on("av-sr-command") {
+    if have_media($av_rom) && have_media($av_hd) && have_media($av_sr_trash) {
+        row_end("av-sr-command", try(row_av_sr_command(), "FAILED"))
+    } else {
+        echo "skip: av-sr-command — ${$av_hd} or ${$av_sr_trash} not fetched"
+    }
+}
+if row_on("av-sr-macro") {
+    if have_media($av_rom) && have_media($av_hd) && have_media($av_sr_date) {
+        row_end("av-sr-macro", try(row_av_sr_macro(), "FAILED"))
+    } else {
+        echo "skip: av-sr-macro — ${$av_hd} or ${$av_sr_date} not fetched"
     }
 }
 
