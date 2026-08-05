@@ -69,3 +69,11 @@ with the machine; the host mic is checkpoint-ephemeral.
 dossier oracle `boot-chime-24kHz.wav`), `av-audio-in-device` (plug
 contract + tone landing in the guest double buffer), plus the DSP rows
 that ride the frame tick (`av-dsp-boot`, `av-dsp-determinism`).
+
+The guest-driven sound rows exercise the same engine from above:
+`av-beep` (SysBeep through the sdev/DSP output path), `av-tts`
+(TeachText Speak All), and `av-sound-in` — the Sound cdev's "Add…"
+recorder capturing the `tone` source through `.AppleSoundInput` and
+playing it back out, i.e. input and output in one round trip.  The
+Sound Manager's record path applies AGC, so what comes back is the
+600 Hz sawtooth driven to full scale.

@@ -52,6 +52,10 @@
 #                   the volume root, "hello" typed, File → Speak All
 #                   (Cmd-H) — Speech Manager synthesis (pure 68040) plays
 #                   through the same sdev/DSP path, captured sample-exact.
+#   av-sound-in     The guest records (rung 6): the Sound cdev's "Add…"
+#                   dialog records the emulator's tone source through
+#                   .AppleSoundInput, then plays it back out through the
+#                   DSP — input and output paths in one round trip.
 #
 # The boot rows ride a prepared 76 MB System 7.1 AV hard-disk image rather
 # than a CD.  It is the volume that exercises the family properly: a full
@@ -434,6 +438,74 @@ def row_av_tts() {
     report_perf("suite-av/av-tts", scheduler.instr_count)
 }
 
+# ---- av-sound-in ------------------------------------------------------------
+# Rung 6 of the observable ladder: the guest RECORDS.  av-audio-in-device
+# proves the input engine by programming the PSC directly from the ROM;
+# this row proves the whole guest path — .AppleSoundInput → Sound
+# Manager SndRecord → the Sound cdev's "Add…" recording dialog — with
+# the emulator's deterministic tone source (600 Hz sawtooth) plugged in
+# as the microphone.  Record for ~3 s, Stop, then Play with the capture
+# running: what comes back out through the sdev/DSP output path is the
+# recorded tone (the Sound Manager's record AGC drives it to full
+# scale), sample-exact against the golden.  Cancel at the end so the
+# sound is never added to the System file.
+def row_av_sound_in() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    machine.audioin.source = "tone"
+    assert machine.audioin.connected "av-sound-in: tone source not connected"
+    scheduler.run 600000000
+    wait_stable(1500000000)
+
+    # Volume up via the Sound cdev (ships at 0 — playback silent otherwise).
+    machine.adb.mouse.move 50 50 "global"
+    run_ticks(30)
+    machine.adb.mouse.move 14 8 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move 70 150 "global"
+    run_ticks(30)
+    machine.adb.mouse.click false
+    run_ticks(400)
+    double_click(104, 131) # the Sound cdev icon
+    run_ticks(600)
+    machine.adb.mouse.move 173 205 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(15)
+    machine.adb.mouse.move 173 165 "global"
+    run_ticks(15)
+    machine.adb.mouse.move 173 128 "global"
+    run_ticks(15)
+    machine.adb.mouse.click false
+    run_ticks(300)
+
+    # "Add…" opens the standard SndRecord dialog (Record/Stop/Pause/Play).
+    click(261, 240)
+    run_ticks(600)
+    let samples_before = machine.audioin.samples
+    click(138, 152) # Record
+    run_ticks(400)
+    assert machine.sound.in_enabled "av-sound-in: input DMA not running while recording"
+    assert machine.audioin.samples > $samples_before "av-sound-in: no samples pulled from the source while recording"
+    assert machine.dsp.emr == 0x8000 "av-sound-in: emr=${machine.dsp.emr:04x} while recording — kernel died"
+    click(174, 152) # Stop
+    run_ticks(200)
+
+    # Play the recording back out through the DSP path.
+    machine.sound.capture.start
+    click(248, 152) # Play
+    run_ticks(400)
+    assert machine.dsp.emr == 0x8000 "av-sound-in: emr=${machine.dsp.emr:04x} after playback — kernel died"
+    assert machine.sound.overruns == 0 "av-sound-in: ${machine.sound.overruns} frame overruns"
+    check_sound("goldens/av-sound-in.wav", 121680)
+    click(377, 169) # Cancel — never Save
+    run_ticks(100)
+    report_perf("suite-av/av-sound-in", scheduler.instr_count)
+}
+
 # ---- av-dsp-boot ------------------------------------------------------------
 # The DSP3210 comes alive: during the Enabler's RTM init the DSP is released
 # (dspOverRun $01 clear-write), Apple's kernel boots out of the ROM's '3210'
@@ -657,6 +729,13 @@ if row_on("av-tts") {
         row_end("av-tts", try(row_av_tts(), "FAILED"))
     } else {
         echo "skip: av-tts — ${$av_hd} not fetched"
+    }
+}
+if row_on("av-sound-in") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("av-sound-in", try(row_av_sound_in(), "FAILED"))
+    } else {
+        echo "skip: av-sound-in — ${$av_hd} not fetched"
     }
 }
 
