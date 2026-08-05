@@ -83,8 +83,24 @@ the guest is genuinely listening.
 Samples cross on a lock-free SPSC ring in the shared wasm heap rather than
 the camera's latest-wins slot pair: the guest pulls whole 10 ms half-buffers
 on the Singer's frame cadence while the browser produces on its own, so the
-two rates need a queue.  An underrun reports "no source" for that frame — the
-engine then presents its own noise floor rather than a torn buffer.
+two rates need a queue.  The browser captures on **wall** time and the guest
+consumes on **emulated** time, so the two clocks drift by definition — the
+consumer drops its own backlog when it falls behind, bounding latency, and
+reports "no source" on an underrun so the engine presents its noise floor
+rather than a torn buffer.  `rd` has exactly one writer and `wr` has exactly
+one writer; that, and nothing else, is what makes the ring lock-free.
+
+> **A dead capture path does not sound silent — it sounds like white noise.**
+> The guest's recorder gains up hard (rung 6's tone golden plays back at full
+> scale), so it amplifies the codec's own dither into full-scale hiss.  "No
+> audio" and "wrong audio" are therefore indistinguishable by ear, which is
+> why the mic button's tooltip carries the live transport counters — rate,
+> samples in, samples out, underruns, overruns.  Check those FIRST: `in`
+> climbing with `out` means samples are genuinely flowing and the problem is
+> downstream.  The first bug here was an `AudioWorkletNode` built with
+> `numberOfOutputs: 0` and never connected onward — a node with no path to
+> the destination is not in the rendering graph, so its `process()` never
+> runs and not one sample is captured.
 
 **The capture is deliberately raw.**  `getUserMedia` is asked for
 `echoCancellation: false, noiseSuppression: false, autoGainControl: false`.

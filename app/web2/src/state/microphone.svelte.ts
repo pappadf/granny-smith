@@ -45,12 +45,12 @@ export const microphone: MicrophoneState = $state({
 });
 
 // Shared-heap transport, announced by em_audio_in.c at startup.
-// Header Int32 layout: [0] connected, [1] wr, [2] rd, [3] rate.
-// The ring of int16 mono samples follows the 16-byte header.
+// Header Int32 layout: [0] connected, [1] wr, [2] rd, [3] rate,
+// [4] underruns, [5] overruns. The int16 ring follows the 24-byte header.
 let shmPtr = 0;
 let ringLen = 0;
 let wantRate = 24000;
-const HDR_BYTES = 16;
+const HDR_BYTES = 24;
 
 let stream: MediaStream | null = null;
 let audioCtx: AudioContext | null = null;
@@ -86,20 +86,46 @@ function resetRing(rate: number): void {
   Atomics.store(heap.i32, hdr + 1, 0); // wr
   Atomics.store(heap.i32, hdr + 2, 0); // rd
   Atomics.store(heap.i32, hdr + 3, rate | 0);
+  Atomics.store(heap.i32, hdr + 4, 0); // underruns
+  Atomics.store(heap.i32, hdr + 5, 0); // overruns
 }
 
-// Append one block of mono samples. The producer only ever advances `wr`;
-// if the consumer has stalled (a background tab), drop the oldest by pulling
-// `rd` forward rather than overwriting samples the worker may be reading.
+// Live transport counters, for the toolbar tooltip. Without these, "the
+// capture path is dead" and "the audio is wrong" are indistinguishable from
+// outside — the guest amplifies silence into full-scale white noise, so both
+// sound the same.
+export function micStats(): {
+  ptr: number;
+  rate: number;
+  produced: number;
+  consumed: number;
+  underruns: number;
+  overruns: number;
+} {
+  const heap = getModuleHeap();
+  if (!heap || !shmPtr)
+    return { ptr: shmPtr, rate: 0, produced: 0, consumed: 0, underruns: 0, overruns: 0 };
+  const hdr = shmPtr >> 2;
+  return {
+    ptr: shmPtr,
+    rate: Atomics.load(heap.i32, hdr + 3),
+    produced: Atomics.load(heap.i32, hdr + 1),
+    consumed: Atomics.load(heap.i32, hdr + 2),
+    underruns: Atomics.load(heap.i32, hdr + 4),
+    overruns: Atomics.load(heap.i32, hdr + 5),
+  };
+}
+
+// Append one block of mono samples. The producer writes ONLY `wr` — it must
+// never touch `rd`, or the ring has two writers on the same index and the
+// lock-free claim is false. A producer that gets ahead is the consumer's
+// problem to notice, and it does (em_audio_in.c drops its own backlog).
 function pushSamples(block: Float32Array): void {
   const heap = getModuleHeap();
   if (!heap || !shmPtr || !ringLen) return;
   const hdr = shmPtr >> 2;
   let wr = Atomics.load(heap.i32, hdr + 1);
-  const rd = Atomics.load(heap.i32, hdr + 2);
-  const room = ringLen - (wr - rd);
   const n = Math.min(block.length, ringLen);
-  if (room < n) Atomics.store(heap.i32, hdr + 2, wr + n - ringLen); // drop oldest
   const base = (shmPtr + HDR_BYTES) >> 1; // int16 index of ring[0]
   for (let i = 0; i < n; i++) {
     const v = block[i];
@@ -115,12 +141,21 @@ function pushSamples(block: Float32Array): void {
 // A tiny worklet: hand each render quantum's mono channel to the main thread.
 // Copying through a port message keeps the ring writer on one thread, which
 // is what makes the single-producer claim on the C side true.
+// A tap must reach the destination to be rendered at all; a zeroed gain
+// gets it there without the user hearing themselves.
+function muteToDestination(ctx: AudioContext): GainNode {
+  const mute = ctx.createGain();
+  mute.gain.value = 0;
+  mute.connect(ctx.destination);
+  return mute;
+}
+
 const WORKLET_SRC = `
 class GsMicTap extends AudioWorkletProcessor {
   process(inputs) {
     const ch = inputs[0] && inputs[0][0];
     if (ch && ch.length) this.port.postMessage(ch.slice(0));
-    return true;
+    return true;   // outputs are left silent; this node exists only to tap
   }
 }
 registerProcessor('gs-mic-tap', GsMicTap);
@@ -143,9 +178,22 @@ async function buildGraph(s: MediaStream): Promise<boolean> {
     const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
     await ctx.audioWorklet.addModule(url);
     URL.revokeObjectURL(url);
-    const wn = new AudioWorkletNode(ctx, 'gs-mic-tap', { numberOfOutputs: 0 });
+    const wn = new AudioWorkletNode(ctx, 'gs-mic-tap', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+    });
     wn.port.onmessage = (e: MessageEvent<Float32Array>) => pushSamples(e.data);
     source.connect(wn);
+    // A node with no path to the destination is NOT part of the rendering
+    // graph, so its process() is never called and not one sample is
+    // captured. Built with numberOfOutputs: 0 and left dangling, this tap
+    // silently produced nothing — and because the guest's recorder gains up
+    // hard, the silence came back as full-scale white noise rather than as
+    // silence, which is a much more misleading symptom. Route it to the
+    // destination through a zeroed gain, exactly as the fallback below
+    // already did for the same reason.
+    wn.connect(muteToDestination(ctx));
     node = wn;
     return true;
   } catch {
@@ -155,12 +203,7 @@ async function buildGraph(s: MediaStream): Promise<boolean> {
       const sp = ctx.createScriptProcessor(1024, 1, 1);
       sp.onaudioprocess = (e) => pushSamples(e.inputBuffer.getChannelData(0));
       source.connect(sp);
-      // Deprecated nodes only run when connected to a destination; a zeroed
-      // gain keeps the user from hearing themselves.
-      const mute = ctx.createGain();
-      mute.gain.value = 0;
-      sp.connect(mute);
-      mute.connect(ctx.destination);
+      sp.connect(muteToDestination(ctx));
       node = sp;
       return true;
     } catch {

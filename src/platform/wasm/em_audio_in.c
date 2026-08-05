@@ -46,6 +46,13 @@ typedef struct gs_mic_shm {
     _Atomic uint32_t wr; // producer index (main thread), free-running
     _Atomic uint32_t rd; // consumer index (worker), free-running
     _Atomic int32_t rate; // the rate the producer is actually delivering
+    // Diagnostics, surfaced in the UI.  Worth their four bytes each: with
+    // no counters, "no audio" and "wrong audio" look identical from the
+    // outside, and the guest AMPLIFIES silence into full-scale white noise
+    // (its recorder gains up hard), so a dead capture path sounds exactly
+    // like a corrupted one.  That cost two wrong diagnoses.
+    _Atomic uint32_t underruns; // consumer found less than a frame's worth
+    _Atomic uint32_t overruns; // producer outran us; backlog was dropped
     int16_t ring[GS_MIC_RING]; // mono samples; stereo is made at the seam
 } gs_mic_shm_t;
 
@@ -246,12 +253,26 @@ bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
     if (need > GS_MIC_RING)
         need = GS_MIC_RING;
 
+    // The browser captures on WALL time and the guest consumes on EMULATED
+    // time, so the two clocks drift by definition.  When the producer gets
+    // ahead, drop the backlog and take the freshest samples: the alternative
+    // is unbounded latency between speaking and the guest hearing it.  The
+    // CONSUMER does this, never the producer — `rd` has exactly one writer,
+    // which is what makes the lock-free claim true.
+    if (avail > GS_MIC_RING / 2) {
+        rd = wr - need;
+        avail = need;
+        atomic_fetch_add_explicit(&g_mic.overruns, 1, memory_order_relaxed);
+    }
+
     // Underrun: the producer has not caught up (a tab throttled in the
     // background, or the very first frames after attach).  Report "no
     // source" rather than emitting a partial buffer of garbage — the caller
     // then presents silence for this frame and tries again on the next.
-    if (avail < need)
+    if (avail < need) {
+        atomic_fetch_add_explicit(&g_mic.underruns, 1, memory_order_relaxed);
         return false;
+    }
 
     // Pull into a scratch block, condition it, then fan mono out to both
     // channels.  The PlainTalk plug's middle contact drives the left AND

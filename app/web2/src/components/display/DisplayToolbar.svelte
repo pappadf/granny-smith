@@ -3,7 +3,7 @@
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
   import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
-  import { microphone, setMicrophoneEnabled } from '@/state/microphone.svelte';
+  import { microphone, setMicrophoneEnabled, micStats } from '@/state/microphone.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import {
     pauseEmulator,
@@ -119,10 +119,30 @@
   // click is the user gesture getUserMedia needs, and the live indicator
   // follows the guest actually recording (state/microphone.svelte).
   const micIcon: IconName = $derived(microphone.enabled ? 'mic' : 'mic-off');
+  // The tooltip carries the transport counters while recording. They are
+  // the difference between a diagnosable report and a guess: the guest's
+  // recorder gains up hard, so a capture path delivering NOTHING comes back
+  // as full-scale white noise — identical, by ear, to one delivering
+  // garbage. `in` climbing with `out` means samples are really flowing.
+  let micDetail = $state('');
+  $effect(() => {
+    if (!microphone.live) {
+      micDetail = '';
+      return;
+    }
+    const t = setInterval(() => {
+      const s = micStats();
+      micDetail =
+        ` — ${s.rate} Hz, in ${s.produced} / out ${s.consumed}` +
+        (s.underruns || s.overruns ? `, under ${s.underruns} over ${s.overruns}` : '');
+    }, 500);
+    return () => clearInterval(t);
+  });
+
   const micTitle = $derived(
     microphone.enabled
       ? microphone.live
-        ? 'Microphone connected (recording) — click to disconnect'
+        ? `Microphone connected (recording)${micDetail} — click to disconnect`
         : 'Microphone connected — click to disconnect'
       : 'Connect microphone to the sound input',
   );
