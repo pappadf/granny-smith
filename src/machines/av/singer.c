@@ -67,6 +67,17 @@ struct av_singer {
     uint16_t ain_gain; // input gain in percent (100 = unity)
     uint64_t ain_samples; // sample frames pulled since power-on (tone phase)
 
+    // The codec A/D gain the guest last selected (singerCtl bits 12-19),
+    // in x65536 fixed point.  The meter reports it because the guest's own
+    // AGC drives it: a recording that comes back flat and full-scale is
+    // explained by the ladder sitting at its top, and cannot be told apart
+    // from a source problem without seeing where the guest parked it.
+    uint32_t ain_adgain;
+    // Last input-engine configuration logged, so a change is reported once
+    // rather than every 10 ms frame.  PlainTalk recognition works through
+    // this same engine, so what the Sound cdev's 8-bit recorder programs
+    // DIFFERENTLY from what the recognizer programs is the whole question.
+    uint32_t dbg_in_base, dbg_in_frames, dbg_in_rate, dbg_in_ctl;
     // Input level meter (machine.audioin.monitor/level/peak).  Measured on
     // exactly the samples the DMA is about to deposit — after the source,
     // the harness gain, the codec's A/D gain ladder and the dither — so it
@@ -279,8 +290,8 @@ static void singer_ain_meter(av_singer_t *s, uint32_t nframes, uint32_t rate) {
         char host[192];
         if (!gs_audio_in_debug(host, sizeof host))
             host[0] = 0;
-        LOG(1, "audioin[%s]: peak %5d (%6.1f dBFS)  rms %5d (%6.1f dBFS) %s %s", ain_src_name(s->ain_src), s->ain_peak,
-            pk, s->ain_level, rm, host,
+        LOG(1, "audioin[%s]: peak %5d (%6.1f dBFS)  rms %5d (%6.1f dBFS) adgain %.2fx %s %s", ain_src_name(s->ain_src),
+            s->ain_peak, pk, s->ain_level, rm, (double)s->ain_adgain / 65536.0, host,
             // The dither floor measures 3 counts once the codec's +7.5 dB
             // A/D gain is applied, so anything at or under that is silence.
             s->ain_peak <= 4 ? "<- SILENCE: no audio is reaching the guest" : "");
@@ -300,6 +311,7 @@ static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
     // the DMA deposits (singer.md §3, singerCtl bits 12-19).
     uint32_t ctl = av_psc_snd_read32(singer_st(s)->psc, 0x04); // singerCtl
     uint32_t agl = singer_adgain_x65536[(ctl >> 16) & 15]; // pLeftGain
+    s->ain_adgain = agl;
     uint32_t agr = singer_adgain_x65536[(ctl >> 12) & 15]; // pRightGain
     if (agl != 65536 || agr != 65536) {
         for (uint32_t i = 0; i < nframes; i++) {
@@ -308,6 +320,15 @@ static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
             s->stage[i * 2] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
             s->stage[i * 2 + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
         }
+    }
+    if (base != s->dbg_in_base || nframes != s->dbg_in_frames || singer_rate(s) != s->dbg_in_rate ||
+        ctl != s->dbg_in_ctl) {
+        s->dbg_in_base = base;
+        s->dbg_in_frames = nframes;
+        s->dbg_in_rate = singer_rate(s);
+        s->dbg_in_ctl = ctl;
+        LOG(2, "input engine: base $%08X %u frames @%u Hz singerCtl $%08X (adgain %.2fx) sndComCtl $%04X", base,
+            nframes, singer_rate(s), ctl, (double)agl / 65536.0, av_psc_snd_read16(singer_st(s)->psc, 0x00));
     }
     singer_ain_meter(s, nframes, singer_rate(s));
     for (uint32_t i = 0; i < nframes; i++) {
