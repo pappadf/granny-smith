@@ -102,12 +102,22 @@ void em_audio_in_init(void) {
 // it is this far above the running noise floor.  Speech sits ~20 dB or more
 // over room tone; anything closer is silence and must not drive the gain.
 //
-// The floor is SEEDED LOW (at its clamp) and allowed to rise, never seeded
-// at a guess: seeding high gates out quiet microphones altogether — their
-// speech never clears the threshold, so the normaliser never engages and the
-// user is left inaudible with no indication why.  Seeding low costs at worst
-// a few blocks of room tone counted as speech, which the seconds-long gain
-// time constant absorbs.
+// The floor is SEEDED FROM THE FIRST BLOCK OBSERVED, never from a constant.
+// Both constants fail, in opposite directions, and both were caught by
+// micrig rather than by review:
+//
+//   seeded HIGH — a quiet microphone's speech never clears the threshold, so
+//     no block ever counts as voiced, the normaliser never engages, and the
+//     user is inaudible with nothing to indicate why;
+//   seeded LOW  — a normal room's TONE clears the threshold immediately, so
+//     silence is treated as speech and amplified to speech level.  That is
+//     aggressive static in the guest's recorder, and it is what shipped.
+//
+// Seeding from observation lands in the right ballpark for either
+// microphone on the first block.  The estimate then falls fast (a pause
+// re-learns a lower floor within ~0.2 s) and rises slowly (a burst of speech
+// never becomes "the floor"), so a mic that starts mid-word recovers as soon
+// as the speaker draws breath.
 #define GS_MIC_VOICED_OVER_FLOOR 6.0f
 
 static struct {
@@ -124,15 +134,18 @@ static struct {
     uint32_t rate;
 } g_hp;
 
-static void mic_hp_design(uint32_t rate, float fc) {
-    float K = tanf((float)M_PI * fc / (float)rate);
-    float Q = 0.70710678f;
-    float n = 1.0f / (1.0f + K / Q + K * K);
-    g_hp.b0 = n;
-    g_hp.b1 = -2.0f * n;
-    g_hp.b2 = n;
-    g_hp.a1 = 2.0f * (K * K - 1.0f) * n;
-    g_hp.a2 = (1.0f - K / Q + K * K) * n;
+// Designed in double and stored in float: the coefficients want the
+// precision, the running state provably does not — micrig measures the
+// designed -28.00 dB at 20 Hz either way.
+static void mic_hp_design(uint32_t rate, double fc) {
+    double K = tan(M_PI * fc / (double)rate);
+    double Q = 0.70710678118654752;
+    double n = 1.0 / (1.0 + K / Q + K * K);
+    g_hp.b0 = (float)n;
+    g_hp.b1 = (float)(-2.0 * n);
+    g_hp.b2 = (float)n;
+    g_hp.a1 = (float)(2.0 * (K * K - 1.0) * n);
+    g_hp.a2 = (float)((1.0 - K / Q + K * K) * n);
     g_hp.rate = rate;
 }
 
@@ -141,10 +154,10 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
     if (!n)
         return;
     if (g_hp.rate != rate)
-        mic_hp_design(rate, 100.0f);
+        mic_hp_design(rate, 100.0);
     if (!g_cond.primed) {
         g_cond.gain = 1.0f;
-        g_cond.floor_est = 4.0f;
+        g_cond.floor_est = -1.0f; // seeded from the first block's RMS below
         g_cond.level_est = 0.0f;
         g_cond.primed = 1;
     }
@@ -166,10 +179,12 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
 
     // Track the noise floor downward quickly and upward slowly, so a quiet
     // room is learned fast but a burst of speech never becomes "the floor".
-    if (rms < g_cond.floor_est)
+    if (g_cond.floor_est < 0.0f)
+        g_cond.floor_est = rms; // first block: seed from what is actually there
+    else if (rms < g_cond.floor_est)
         g_cond.floor_est += (rms - g_cond.floor_est) * 0.05f;
     else
-        g_cond.floor_est += (rms - g_cond.floor_est) * 0.0005f;
+        g_cond.floor_est += (rms - g_cond.floor_est) * 0.002f;
     if (g_cond.floor_est < 4.0f)
         g_cond.floor_est = 4.0f;
 
