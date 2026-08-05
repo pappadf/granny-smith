@@ -291,6 +291,15 @@ static void singer_frame_event(void *source, uint64_t data) {
     if ((com ^ s->last_com) & (SND_FRM_INT_EN | SND_OUT_EN | SND_IN_EN))
         LOG(2, "sndComCtl now $%04X at frame %llu (int %d out %d in %d)", com, (unsigned long long)frame,
             !!(com & SND_FRM_INT_EN), !!(com & SND_OUT_EN), !!(com & SND_IN_EN));
+    // Host capture lifecycle, on the GUEST's own gate — the mirror of the
+    // VDC clock driving gs_video_in_state.  A browser platform attaches its
+    // microphone track here, so the recording indicator is lit only while
+    // the guest is genuinely recording.  This must NOT be driven from the
+    // machine.audioin source setter: that merely echoes back the selection
+    // the caller just made, which re-enters the frontend's own stream
+    // reconciliation and races it.
+    if ((com ^ s->last_com) & SND_IN_EN)
+        gs_audio_in_state((com & SND_IN_EN) != 0);
     s->last_com = com;
 
     if (com & SND_FRM_INT_EN) {
@@ -351,7 +360,6 @@ static int singer_ain_set_source(av_singer_t *s, const char *name) {
         s->ain_src = AIN_SRC_HOST;
     else
         return -1;
-    gs_audio_in_state(s->ain_src == AIN_SRC_HOST);
     return 0;
 }
 

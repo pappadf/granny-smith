@@ -90,6 +90,13 @@ reports "no source" on an underrun so the engine presents its noise floor
 rather than a torn buffer.  `rd` has exactly one writer and `wr` has exactly
 one writer; that, and nothing else, is what makes the ring lock-free.
 
+> **The lifecycle notification fires on the GUEST's gate.**  `pSndInEn`
+> changing drives `gs_audio_in_state`, exactly as the VDC clock drives
+> `gs_video_in_state` — never the `machine.audioin` source setter, which
+> merely echoes back the selection the caller just made and re-enters the
+> frontend's own stream reconciliation.  That inversion raced the toggle
+> against itself and left the control switching itself back off.
+>
 > **A dead capture path does not sound silent — it sounds like white noise.**
 > The guest's recorder gains up hard (rung 6's tone golden plays back at full
 > scale), so it amplifies the codec's own dither into full-scale hiss.  "No
@@ -100,7 +107,16 @@ one writer; that, and nothing else, is what makes the ring lock-free.
 > downstream.  The first bug here was an `AudioWorkletNode` built with
 > `numberOfOutputs: 0` and never connected onward — a node with no path to
 > the destination is not in the rendering graph, so its `process()` never
-> runs and not one sample is captured.
+> runs and not one sample is captured.  Two more of the same family: the
+> worklet module must be served as a real file (`addModule()` on a `blob:`
+> URL is rejected under the cross-origin isolation SharedArrayBuffer needs,
+> and fails *silently* into the deprecated ScriptProcessor), and the stream
+> reconciliation must be serialised (its two callers fire within a tick of
+> each other, and overlapping runs close each other's AudioContext).
+>
+> `tests/e2e/web2-specs/av-microphone.spec.ts` covers all of it against
+> Chromium's fake capture device — the only thing that can, since none of
+> these layers exist outside a browser.
 
 **The capture is deliberately raw.**  `getUserMedia` is asked for
 `echoCancellation: false, noiseSuppression: false, autoGainControl: false`.

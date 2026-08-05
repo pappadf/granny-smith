@@ -65,6 +65,19 @@ export function onAudioInReady(ptr: number, len: number, rate: number): void {
   wantRate = rate;
 }
 
+// Expose the counters for the e2e spec (and for anyone debugging in the
+// console). Cheap, and the alternative is guessing at which layer is dead.
+if (typeof globalThis !== 'undefined') {
+  (globalThis as unknown as { __micStats?: () => unknown }).__micStats = () => micStats();
+  (globalThis as unknown as { __micLive?: () => unknown }).__micLive = () => ({
+    enabled: microphone.enabled,
+    guestActive: microphone.guestActive,
+    live: microphone.live,
+    ctx: audioCtx ? audioCtx.state + '@' + audioCtx.sampleRate : 'none',
+    node: node ? node.constructor.name : 'none',
+  });
+}
+
 export function onAudioInState(active: boolean): void {
   microphone.guestActive = active;
   void syncStream();
@@ -150,17 +163,6 @@ function muteToDestination(ctx: AudioContext): GainNode {
   return mute;
 }
 
-const WORKLET_SRC = `
-class GsMicTap extends AudioWorkletProcessor {
-  process(inputs) {
-    const ch = inputs[0] && inputs[0][0];
-    if (ch && ch.length) this.port.postMessage(ch.slice(0));
-    return true;   // outputs are left silent; this node exists only to tap
-  }
-}
-registerProcessor('gs-mic-tap', GsMicTap);
-`;
-
 async function buildGraph(s: MediaStream): Promise<boolean> {
   // Ask the browser to resample to the codec rate: its resampler is better
   // than anything worth writing here, and it keeps the C side at 1:1.
@@ -175,9 +177,10 @@ async function buildGraph(s: MediaStream): Promise<boolean> {
   resetRing(ctx.sampleRate);
 
   try {
-    const url = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'application/javascript' }));
-    await ctx.audioWorklet.addModule(url);
-    URL.revokeObjectURL(url);
+    // Page-relative, like the icon sprite: an origin-rooted path 404s under
+    // deploy subpaths, and a blob: URL is rejected outright under the
+    // cross-origin isolation SharedArrayBuffer needs.
+    await ctx.audioWorklet.addModule('gs-mic-tap.js');
     const wn = new AudioWorkletNode(ctx, 'gs-mic-tap', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
@@ -250,7 +253,31 @@ function stopStream(): void {
 }
 
 // Reconcile the physical microphone with (enabled && guestActive).
+//
+// Serialised, and it matters: the two callers — the user's toggle and the
+// guest's pSndInEn gate — routinely fire within a tick of each other, and
+// two overlapping runs each build a graph, then one's stopStream() closes
+// the other's AudioContext mid-construction. That surfaced as
+// "Construction of ScriptProcessorNode is not useful when context is
+// closed", a failed buildGraph, and the toggle switching itself back off.
+let syncing: Promise<void> | null = null;
 async function syncStream(): Promise<void> {
+  // Coalesce: a call arriving mid-flight waits for the in-flight one, then
+  // re-reconciles, so the final state always matches the latest intent.
+  while (syncing) {
+    const inFlight = syncing;
+    await inFlight;
+    if (syncing === inFlight) break;
+  }
+  syncing = syncStreamInner();
+  try {
+    await syncing;
+  } finally {
+    syncing = null;
+  }
+}
+
+async function syncStreamInner(): Promise<void> {
   const want = microphone.enabled && microphone.guestActive;
   if (want && !stream) {
     const s = await acquireStream();
