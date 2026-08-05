@@ -291,14 +291,38 @@ bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
             lr[i * 2] = block[i];
             lr[i * 2 + 1] = block[i];
         }
-    } else {
-        // Nearest-neighbour rate match for the off-nominal case above.
+    } else if (need > frames) {
+        // Downsampling (the common case: a 44.1/48 kHz microphone into the
+        // Singer's 24 kHz).  Average each output sample's whole input span —
+        // a box filter, which is crude as filters go but does suppress the
+        // aliasing that dropping samples would fold straight into the voice
+        // band.  Nearest-neighbour here would alias every component above
+        // 12 kHz down on top of the speech.
         for (uint32_t i = 0; i < frames; i++) {
-            uint32_t j = (uint32_t)((uint64_t)i * need / frames);
-            if (j >= need)
-                j = need - 1;
-            lr[i * 2] = block[j];
-            lr[i * 2 + 1] = block[j];
+            uint32_t a = (uint32_t)((uint64_t)i * need / frames);
+            uint32_t b = (uint32_t)((uint64_t)(i + 1) * need / frames);
+            if (b <= a)
+                b = a + 1;
+            if (b > need)
+                b = need;
+            int32_t sum = 0;
+            for (uint32_t j = a; j < b; j++)
+                sum += block[j];
+            int32_t v = sum / (int32_t)(b - a);
+            lr[i * 2] = (int16_t)v;
+            lr[i * 2 + 1] = (int16_t)v;
+        }
+    } else {
+        // Upsampling: linear interpolation.
+        for (uint32_t i = 0; i < frames; i++) {
+            uint64_t pos = (uint64_t)i * (need - 1) * 256u / (frames ? frames : 1);
+            uint32_t j = (uint32_t)(pos >> 8);
+            int32_t frac = (int32_t)(pos & 0xFF);
+            int32_t s0 = block[j < need ? j : need - 1];
+            int32_t s1 = block[j + 1 < need ? j + 1 : need - 1];
+            int32_t v = s0 + ((s1 - s0) * frac >> 8);
+            lr[i * 2] = (int16_t)v;
+            lr[i * 2 + 1] = (int16_t)v;
         }
     }
     return true;

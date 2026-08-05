@@ -49,7 +49,6 @@ export const microphone: MicrophoneState = $state({
 // [4] underruns, [5] overruns. The int16 ring follows the 24-byte header.
 let shmPtr = 0;
 let ringLen = 0;
-let wantRate = 24000;
 const HDR_BYTES = 24;
 
 let stream: MediaStream | null = null;
@@ -59,10 +58,12 @@ let source: MediaStreamAudioSourceNode | null = null;
 
 // --- Module callbacks (attached in bus/emulator.ts) ------------------------
 
-export function onAudioInReady(ptr: number, len: number, rate: number): void {
+// `rate` is the codec rate the C side would prefer. It is deliberately NOT
+// used to construct the AudioContext — see buildGraph — so it is ignored
+// here; the rate actually negotiated travels the other way instead.
+export function onAudioInReady(ptr: number, len: number, _rate: number): void {
   shmPtr = ptr;
   ringLen = len;
-  wantRate = rate;
 }
 
 // Expose the counters for the e2e spec (and for anyone debugging in the
@@ -178,9 +179,15 @@ function muteToDestination(ctx: AudioContext): GainNode {
 }
 
 async function buildGraph(s: MediaStream): Promise<boolean> {
-  // Ask the browser to resample to the codec rate: its resampler is better
-  // than anything worth writing here, and it keeps the C side at 1:1.
-  const ctx = new AudioContext({ sampleRate: wantRate });
+  // Use the browser's NATIVE rate. Asking for the codec's 24 kHz instead
+  // looks tidier — it keeps the C side at 1:1 — but a real capture device
+  // routed into a context whose sampleRate does not match the track's
+  // delivers SILENCE: the graph runs, the worklet is pulled, full quanta
+  // arrive, and every sample is ~0. Chromium's fake device adopts whatever
+  // rate is requested, so an e2e against it passes while every real
+  // microphone fails, which is exactly how this survived being "verified".
+  // The rate actually negotiated is published to the C side, which resamples.
+  const ctx = new AudioContext();
   try {
     await ctx.resume();
   } catch {
