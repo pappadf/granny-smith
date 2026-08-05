@@ -29,6 +29,11 @@ import { gsEval } from '@/bus/emulator';
 import { machine } from './machine.svelte';
 import { showNotification } from './toasts.svelte';
 
+export interface AudioInputDevice {
+  id: string;
+  label: string;
+}
+
 interface MicrophoneState {
   // The user's master toggle (the toolbar button).
   enabled: boolean;
@@ -36,20 +41,35 @@ interface MicrophoneState {
   guestActive: boolean;
   // A MediaStreamTrack is attached and samples are flowing.
   live: boolean;
+  // Selectable capture devices, and the one the user picked ('' = system
+  // default). Without this the machine is stuck with whatever getUserMedia
+  // considers default, and that is routinely NOT the user's microphone: a
+  // dock's unplugged headset jack, an HDMI input, a monitor source. Such a
+  // device is live and well-behaved — it simply delivers its own dither at
+  // about -80 dBFS forever, which is indistinguishable from a broken
+  // capture path anywhere downstream, and cost several rounds of chasing
+  // bugs in the emulator that were never there.
+  devices: AudioInputDevice[];
+  deviceId: string;
 }
 
 export const microphone: MicrophoneState = $state({
   enabled: false,
   guestActive: false,
   live: false,
+  devices: [],
+  deviceId: '',
 });
 
 // Shared-heap transport, announced by em_audio_in.c at startup.
 // Header Int32 layout: [0] connected, [1] wr, [2] rd, [3] rate,
-// [4] underruns, [5] overruns. The int16 ring follows the 24-byte header.
+// [4] underruns, [5] overruns, [6] js_rms, [7] js_peak, then char
+// label[64] at byte 32. The int16 ring follows the 96-byte header.
 let shmPtr = 0;
 let ringLen = 0;
-const HDR_BYTES = 24;
+const HDR_BYTES = 96;
+const LABEL_OFF = 32; // char label[64] — the chosen capture device
+const LABEL_MAX = 63;
 
 let stream: MediaStream | null = null;
 let audioCtx: AudioContext | null = null;
@@ -116,6 +136,22 @@ function resetRing(rate: number): void {
   Atomics.store(heap.i32, hdr + 3, rate | 0);
   Atomics.store(heap.i32, hdr + 4, 0); // underruns
   Atomics.store(heap.i32, hdr + 5, 0); // overruns
+  Atomics.store(heap.i32, hdr + 6, 0); // js_rms
+  Atomics.store(heap.i32, hdr + 7, 0); // js_peak
+}
+
+// Publish the capture device's name where the emulator's level meter prints
+// it. getUserMedia takes the SYSTEM DEFAULT input, which on a machine with
+// several is often not the microphone the user means — and a wrong-but-live
+// device delivers exactly what a broken ring would: full-rate quanta of
+// near-silence. The meter cannot distinguish those; the device name can.
+function publishLabel(text: string): void {
+  const heap = getModuleHeap();
+  if (!heap || !shmPtr) return;
+  const bytes = new TextEncoder().encode(text);
+  const n = Math.min(bytes.length, LABEL_MAX);
+  for (let i = 0; i < n; i++) heap.u8[shmPtr + LABEL_OFF + i] = bytes[i];
+  heap.u8[shmPtr + LABEL_OFF + n] = 0;
 }
 
 // Live transport counters, for the toolbar tooltip. Without these, "the
@@ -155,10 +191,20 @@ function pushSamples(block: Float32Array): void {
   let wr = Atomics.load(heap.i32, hdr + 1);
   const n = Math.min(block.length, ringLen);
   const base = (shmPtr + HDR_BYTES) >> 1; // int16 index of ring[0]
+  // Measure what the WORKLET handed us, before our conversion or the ring:
+  // the single number that says whether the browser is capturing at all.
+  let sum = 0;
+  let peak = 0;
   for (let i = 0; i < n; i++) {
     const v = block[i];
     const s = v < -1 ? -32768 : v > 1 ? 32767 : Math.round(v * 32767);
     heap.i16[base + ((wr + i) % ringLen)] = s;
+    sum += s * s;
+    if (Math.abs(s) > peak) peak = Math.abs(s);
+  }
+  if (n) {
+    Atomics.store(heap.i32, hdr + 6, Math.round(Math.sqrt(sum / n)));
+    Atomics.store(heap.i32, hdr + 7, peak);
   }
   wr += n;
   Atomics.store(heap.i32, hdr + 1, wr);
@@ -237,19 +283,58 @@ async function buildGraph(s: MediaStream): Promise<boolean> {
 }
 
 async function acquireStream(): Promise<MediaStream | null> {
+  const audio: MediaTrackConstraints = {
+    channelCount: 1,
+    // See the header: browser voice processing must stay out of the way.
+    echoCancellation: false,
+    noiseSuppression: false,
+    autoGainControl: false,
+  };
+  // `exact`, deliberately: a device the user chose explicitly must not be
+  // silently swapped for the default when it is busy or unplugged. Failing
+  // loudly and falling back below is honest; capturing the wrong device is
+  // the failure this whole selection exists to prevent.
+  if (microphone.deviceId) audio.deviceId = { exact: microphone.deviceId };
   try {
-    return await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        // See the header: browser voice processing must stay out of the way.
-        echoCancellation: false,
-        noiseSuppression: false,
-        autoGainControl: false,
-      },
-      video: false,
-    });
+    return await navigator.mediaDevices.getUserMedia({ audio, video: false });
   } catch {
-    return null;
+    if (!microphone.deviceId) return null;
+    // The chosen device is gone (undocked, unplugged). Say so, drop back to
+    // the default rather than leaving the user with no microphone at all.
+    showNotification('Selected microphone unavailable — using the system default', 'warning');
+    microphone.deviceId = '';
+    try {
+      return await navigator.mediaDevices.getUserMedia({
+        audio: { ...audio, deviceId: undefined },
+        video: false,
+      });
+    } catch {
+      return null;
+    }
+  }
+}
+
+// Enumerate capture devices. Labels are blank until permission has been
+// granted at least once, so this is worth re-running after a connect.
+export async function refreshAudioInputs(): Promise<void> {
+  try {
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    microphone.devices = devs
+      .filter((d) => d.kind === 'audioinput')
+      .map((d, i) => ({ id: d.deviceId, label: d.label || `Input ${i + 1}` }));
+  } catch {
+    microphone.devices = [];
+  }
+}
+
+// Switch capture device. Re-acquires immediately when a stream is attached,
+// so the change is audible at once rather than at the next recording.
+export async function setMicrophoneDevice(id: string): Promise<void> {
+  if (id === microphone.deviceId) return;
+  microphone.deviceId = id;
+  if (stream) {
+    stopStream();
+    await syncStream();
   }
 }
 
@@ -315,6 +400,18 @@ async function syncStreamInner(): Promise<void> {
       return;
     }
     stream = s;
+    const t0 = s.getAudioTracks()[0];
+    if (t0) {
+      const st = t0.getSettings() as Record<string, unknown>;
+      publishLabel(`${t0.label}${t0.muted ? ' [MUTED]' : ''}`);
+      console.log(
+        `[gs mic] track "${t0.label}" enabled=${t0.enabled} muted=${t0.muted} state=${t0.readyState}`,
+        st,
+      );
+    }
+    // Permission is granted now, so the device labels are finally readable;
+    // populate the picker from here rather than at startup.
+    await refreshAudioInputs();
     if (!(await buildGraph(s))) {
       showNotification('Microphone unavailable — no audio capture path', 'warning');
       stopStream();

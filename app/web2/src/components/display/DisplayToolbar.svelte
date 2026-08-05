@@ -3,7 +3,14 @@
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
   import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
-  import { microphone, setMicrophoneEnabled, micStats } from '@/state/microphone.svelte';
+  import {
+    microphone,
+    setMicrophoneEnabled,
+    setMicrophoneDevice,
+    refreshAudioInputs,
+    micStats,
+  } from '@/state/microphone.svelte';
+  import { openContextMenu, type ContextMenuItem } from '../common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import {
     pauseEmulator,
@@ -142,13 +149,44 @@
   const micTitle = $derived(
     microphone.enabled
       ? microphone.live
-        ? `Microphone connected (recording)${micDetail} — click to disconnect`
-        : 'Microphone connected — click to disconnect'
+        ? `Microphone connected (recording)${micDetail} — click to choose input`
+        : 'Microphone connected — click to choose input'
       : 'Connect microphone to the sound input',
   );
 
-  function onMicClick() {
-    void setMicrophoneEnabled(!microphone.enabled);
+  // A MENU rather than a plain toggle: getUserMedia takes the system default
+  // input, and on a docked machine that is regularly not the microphone the
+  // user means — a dock's empty headset jack looks perfectly healthy and
+  // delivers its own dither forever. Choosing the device has to be reachable
+  // from the same control that turns the thing on.
+  async function onMicClick(ev: MouseEvent) {
+    const btn = ev.currentTarget as HTMLElement;
+    const r = btn.getBoundingClientRect();
+
+    if (!microphone.enabled) {
+      // Nothing to choose between yet: device labels stay blank until
+      // permission has been granted once, so connect first and let the menu
+      // do its real work from the second click onwards.
+      await setMicrophoneEnabled(true);
+      return;
+    }
+
+    await refreshAudioInputs();
+    const items: ContextMenuItem[] = [
+      { label: 'Disconnect microphone', action: () => void setMicrophoneEnabled(false) },
+      { sep: true },
+      {
+        label: `${microphone.deviceId === '' ? '\u2713' : '\u2007'} System default`,
+        action: () => void setMicrophoneDevice(''),
+      },
+      ...microphone.devices
+        .filter((d) => d.id && d.id !== 'default')
+        .map((d) => ({
+          label: `${microphone.deviceId === d.id ? '\u2713' : '\u2007'} ${d.label}`,
+          action: () => void setMicrophoneDevice(d.id),
+        })),
+    ];
+    openContextMenu(items, r.left, r.bottom);
   }
 
   function onZoomInput(e: Event) {
@@ -265,6 +303,7 @@
         title={micTitle}
         aria-label={micTitle}
         aria-pressed={microphone.enabled}
+        aria-haspopup="menu"
         disabled={!isLive}
         onclick={onMicClick}
       >

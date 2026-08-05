@@ -54,6 +54,20 @@ typedef struct gs_mic_shm {
     // like a corrupted one.  That cost two wrong diagnoses.
     _Atomic uint32_t underruns; // consumer found less than a frame's worth
     _Atomic uint32_t overruns; // producer outran us; backlog was dropped
+    // Level of the raw Float32 blocks as JS receives them from the worklet,
+    // in int16 counts, BEFORE anything of ours touches them.  This is the
+    // one measurement that splits "the browser is handing us silence" from
+    // "we are losing it between the worklet and the ring" — everything else
+    // in this header is downstream of the write.
+    _Atomic int32_t js_rms;
+    _Atomic int32_t js_peak;
+    // The capture device the browser actually chose, NUL-terminated ASCII,
+    // written once by JS at attach.  getUserMedia picks the system default,
+    // and a default that is not the user's microphone (a monitor source, an
+    // HDMI input, a muted device) yields a perfectly healthy stream of
+    // near-silence — indistinguishable, from inside the ring, from a bug in
+    // this file.  Naming the device is what tells those apart.
+    char label[64];
     int16_t ring[GS_MIC_RING]; // mono samples; stereo is made at the seam
 } gs_mic_shm_t;
 
@@ -335,12 +349,15 @@ bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
 bool gs_audio_in_debug(char *buf, size_t buflen) {
     uint32_t wr = atomic_load_explicit(&g_mic.wr, memory_order_relaxed);
     uint32_t rd = atomic_load_explicit(&g_mic.rd, memory_order_relaxed);
-    snprintf(buf, buflen, "| host: conn %d in %u out %u lag %u under %u over %u @%dHz gain %.2f floor %.0f",
+    snprintf(buf, buflen,
+             "| host: conn %d in %u out %u lag %u under %u over %u @%dHz gain %.2f floor %.0f "
+             "| JS rms %d peak %d src \"%.48s\"",
              atomic_load_explicit(&g_mic.connected, memory_order_relaxed) != 0, wr, rd, wr - rd,
              atomic_load_explicit(&g_mic.underruns, memory_order_relaxed),
              atomic_load_explicit(&g_mic.overruns, memory_order_relaxed),
              (int)atomic_load_explicit(&g_mic.rate, memory_order_relaxed), (double)g_cond.gain,
-             (double)g_cond.floor_est);
+             (double)g_cond.floor_est, (int)atomic_load_explicit(&g_mic.js_rms, memory_order_relaxed),
+             (int)atomic_load_explicit(&g_mic.js_peak, memory_order_relaxed), g_mic.label[0] ? g_mic.label : "?");
     return true;
 }
 

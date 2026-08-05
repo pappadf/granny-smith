@@ -275,8 +275,23 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
     `guest buffer peaks at ${peak} — at or below the codec's dither, so no audio is arriving`,
   ).toBeGreaterThan(16);
 
-  // --- 6. Disconnect: the guest goes back to no microphone.
+  // --- 6. Once connected, the button is a DEVICE MENU.
+  // getUserMedia takes the system default input, which on a docked machine is
+  // routinely not the user's microphone — an empty headset jack on a dock is
+  // live, well-behaved, and delivers its own ~-80 dBFS dither forever, which
+  // from inside the ring is indistinguishable from a broken capture path.
+  // Being able to pick the device is the fix, so the menu has to be there.
   await micBtn.click();
+  const menu = page.locator('[role="menu"]');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByText("System default")).toBeVisible();
+  // The fake device enumerates like a real one, so a selectable input is
+  // listed alongside the default.
+  const deviceItems = menu.locator('[role="menuitem"]');
+  expect(await deviceItems.count()).toBeGreaterThan(2); // disconnect + default + ≥1
+
+  // --- 7. Disconnect from that menu: the guest goes back to no microphone.
+  await menu.getByText("Disconnect microphone").click();
   await expect(micBtn).toHaveAttribute("aria-pressed", "false");
   await expect
     .poll(async () => probe(page, "machine.audioin.source"))
