@@ -25,7 +25,13 @@
 //     do-loops, hard-wired r0, pc = insn+8, 16-bit flag rules).
 //   - Exact integer DAU: 40-bit accumulators (24-bit mantissa + 8 guard bits
 //     + 8-bit exponent), exact 25x25 multiplier, truncating adder, documented
-//     rounding.  No host floating point in the data path.
+//     rounding.  No host floating point in the data path.  The conversions
+//     that PRODUCE an integer (int32/int16/oc) deposit it raw into the
+//     accumulator's top bits, where float32/float16/ic read it back — the
+//     round trip is how the RTM's sound-input rate converter splits its
+//     phase accumulator, and "leave the numeric value there instead"
+//     turned every Sound cdev recording into a saturated derivative
+//     (errata.md E16).
 //   - All three of the DAU pipeline's data latencies [IM §4.4.2] are
 //     modelled, because Apple's shipped sound and speech modules are
 //     software-pipelined to them and compute the wrong thing without:

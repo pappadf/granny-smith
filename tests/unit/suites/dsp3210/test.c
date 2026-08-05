@@ -711,28 +711,46 @@ static void test_da_int_float(void) {
     dsp3210_peek(&S, 0x104, 2, &v);
     CHECK(v == 0xFFFB); /* halfword Z write */
 
-    /* int32 saturation + rounding modes */
+    /* int32 saturation + rounding modes.  INT32 does NOT leave a float
+     * in the accumulator: the result goes into the 32 MSBs — mantissa
+     * and guard bits — with the rest "unpredictable" [IM INT32 page], so
+     * it is read back the two ways the hardware offers: the Z write, and
+     * float32().  Apple's sound-input rate converter needs exactly that
+     * round trip (`*r8 = a0 = int32(a3)` ; `a0 = float32(a0)` splits its
+     * phase accumulator into integer and fractional parts); modelling
+     * INT32 as "leave the numeric value" turned every recording the
+     * Sound control panel made into a saturated derivative (errata E16). */
     const uint32_t q[] = {
-        e_daspec(9, 0, DF_ACC(1), DF_NOWR), /* a0 = int32(a1) */
+        e_set24(RC(2), 0x104), e_daspec(9, 0, DF_ACC(1), DF(2, 0)), /* *r2 = a0 = int32(a1) */
+        e_daspec(8, 0, DF_ACC(0), DF_NOWR), /* a0 = float32(a0) */
     };
-    prog(q, 1);
+    uint32_t w;
+    prog(q, 3);
     dsp3210_acc_set(&S, 1, 1e30);
-    steps(1);
-    CHECK(dsp3210_acc_get(&S, 0) == 2147483647.0); /* saturated */
+    steps(3);
+    dsp3210_peek(&S, 0x104, 4, &w);
+    CHECK(w == 0x7FFFFFFF); /* saturated */
+    CHECK(dsp3210_acc_get(&S, 0) == 2147483647.0);
 
-    prog(q, 1);
+    prog(q, 3);
     dsp3210_acc_set(&S, 1, -2.5);
-    steps(1);
-    CHECK(dsp3210_acc_get(&S, 0) == -2.0); /* nearest, ties up */
-    prog(q, 1);
+    steps(3);
+    dsp3210_peek(&S, 0x104, 4, &w);
+    CHECK(w == 0xFFFFFFFE); /* nearest, ties up */
+    CHECK(dsp3210_acc_get(&S, 0) == -2.0);
+    prog(q, 3);
     S.dauc = 1u << 4; /* truncate to -inf */
     dsp3210_acc_set(&S, 1, -2.5);
-    steps(1);
+    steps(3);
+    dsp3210_peek(&S, 0x104, 4, &w);
+    CHECK(w == 0xFFFFFFFD);
     CHECK(dsp3210_acc_get(&S, 0) == -3.0);
-    prog(q, 1);
+    prog(q, 3);
     S.dauc = 3u << 4; /* truncate to 0 */
     dsp3210_acc_set(&S, 1, -2.5);
-    steps(1);
+    steps(3);
+    dsp3210_peek(&S, 0x104, 4, &w);
+    CHECK(w == 0xFFFFFFFE);
     CHECK(dsp3210_acc_get(&S, 0) == -2.0);
 }
 

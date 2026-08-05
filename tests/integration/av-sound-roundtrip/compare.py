@@ -14,7 +14,7 @@ is what is measured:
      AND against a different one, and must match the former by a clear
      margin.
      A bare threshold cannot do this job: measured on the two assets in
-     tests/data/speech, two DIFFERENT utterances already score 0.592,
+     tests/data/speech, two DIFFERENT utterances already score 0.632,
      because both are speech and speech envelopes resemble each other.  Any
      absolute bar low enough to accept a real recording (degraded by 8-bit
      quantisation, an AGC and resampling) would also accept a recording of
@@ -39,7 +39,7 @@ import wave
 
 WIN_MS = 20.0
 # How much better the recording must match what was fed than a different
-# utterance.  Self-vs-self scores 1.000 and self-vs-decoy 0.592 on these
+# utterance.  Self-vs-self scores 1.000 and self-vs-decoy 0.632 on these
 # assets, so a real recording has ~0.4 of headroom to lose to the guest's
 # 8-bit path before this trips.
 MIN_DECOY_MARGIN = 0.15
@@ -87,17 +87,27 @@ def dynamic_range_db(env):
 
 
 def best_correlation(a, b):
-    """Peak normalised cross-correlation of two envelopes over all lags."""
+    """Peak normalised cross-correlation of two envelopes over all lags.
+
+    The lag runs in BOTH directions.  The recording can start later than
+    the utterance (the obvious case) but it can equally start EARLIER:
+    the source is rewound just before Record is clicked, so the guest eats
+    part of the utterance's leading silence before its DMA is running, and
+    the playback then leads the input by that much.  Searching only
+    non-negative lags scores such a recording against a misaligned window
+    — 0.30 instead of 0.97 on a recording that is in fact correct.
+    """
     if len(a) < 4 or len(b) < 4:
         return 0.0, 0
     best, best_lag = -1.0, 0
     span = min(len(a), len(b))
-    for lag in range(0, max(1, len(b) - span // 2)):
-        n = min(len(a), len(b) - lag)
+    for lag in range(-(len(a) - span // 2), max(1, len(b) - span // 2)):
+        ai, bi = max(0, -lag), max(0, lag)
+        n = min(len(a) - ai, len(b) - bi)
         if n < span // 2:
-            break
-        x = a[:n]
-        y = b[lag : lag + n]
+            continue
+        x = a[ai : ai + n]
+        y = b[bi : bi + n]
         mx, my = sum(x) / n, sum(y) / n
         num = sum((x[i] - mx) * (y[i] - my) for i in range(n))
         dx = math.sqrt(sum((v - mx) ** 2 for v in x))

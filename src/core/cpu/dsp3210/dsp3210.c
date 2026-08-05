@@ -826,6 +826,26 @@ static dsp3210_acc acc_round(dsp3210_acc a) {
     return a;
 }
 
+/* INT16/INT32 do NOT leave a floating-point value in the accumulator:
+ * they deposit the raw integer into the mantissa and guard bits — the
+ * same lane FLOAT16/FLOAT32 read back [IM INT32 page: "the result is
+ * stored in the 32 MSBs of an accumulator (aN), the mantissa, and guard
+ * bits.  The remaining bits of aN contain unpredictable data"; INT16:
+ * "the upper 16 bits"].  Apple's sound-input rate converter depends on
+ * the round trip: `*r8 = a0 = int32(a3)` then `a0 = float32(a0)` is how
+ * it splits the phase accumulator into integer and fractional parts.
+ *
+ * `lane` is the 32-bit mantissa+guard value; the exponent is the "un-
+ * predictable" part, and this model leaves the adder's own there so the
+ * lane survives (a zero exponent means "zero" everywhere else). */
+static dsp3210_acc acc_int_lane(uint32_t lane, int16_t e) {
+    dsp3210_acc r;
+    int64_t v = (int64_t)(int32_t)lane;
+    r.m = v + ((v < 0) ? -(INT64_C(1) << SC_ACC) : (INT64_C(1) << SC_ACC));
+    r.e = e ? e : (int16_t)(128 + SC_ACC);
+    return r;
+}
+
 /* exact integer -> float */
 static dsp3210_acc acc_from_i64(int64_t v) {
     dsp3210_acc r;
@@ -1459,10 +1479,10 @@ static int exec_da_special(dsp3210_t *s, uint32_t w) {
 
     /* The special-function result reaches memory from the DAU's own S
      * register, which is why the manual requires the Z write to be
-     * issued in the same instruction.  For the integer/companded/IEEE
-     * conversions the accumulator's own bits are then "unpredictable";
-     * this model leaves the numeric value there (documented deviation),
-     * while the Z bits are exact. */
+     * issued in the same instruction.  The integer/companded conversions
+     * (OC/INT16/INT32) also deposit their result into the accumulator's
+     * TOP bits as a raw integer, leaving the rest "unpredictable" — see
+     * acc_int_lane; only IEEE leaves the numeric value there. */
     switch (g) {
     case G_IC: { /* byte -> float, NZ00 */
         unsigned code = Y.from_acc ? (unsigned)((dsp3210_acc_pack(Y.val) >> 24) & 0xFFu) : (Y.raw & 0xFFu);
@@ -1483,13 +1503,16 @@ static int exec_da_special(dsp3210_t *s, uint32_t w) {
     }
     case G_OC: { /* float -> byte, no flags */
         unsigned conv = s->dauc & 15, code;
+        dsp3210_acc yv = da_adder(&Y);
         if (conv & 8) { /* 1xxx unsigned linear out */
-            int64_t t = acc_to_int(da_adder(&Y), s->dauc, 8);
+            int64_t t = acc_to_int(yv, s->dauc, 8);
             code = (unsigned)t;
         } else { /* mu-law / A-law out */
-            code = companded_encode_acc(da_adder(&Y), (conv & 2) != 0);
+            code = companded_encode_acc(yv, (conv & 2) != 0);
         }
-        res = acc_from_i64((int64_t)code);
+        /* "stored in the most significant byte of an accumulator" — the
+         * byte lane IC reads back; see acc_int_lane */
+        res = acc_int_lane((code & 0xFFu) << 24, yv.e);
         zbits = code;
         break;
     }
@@ -1517,14 +1540,17 @@ static int exec_da_special(dsp3210_t *s, uint32_t w) {
         break;
     }
     case G_INT16: { /* float -> int16, no flags */
-        int64_t iv = acc_to_int(da_adder(&Y), s->dauc, 16);
-        res = acc_from_i64(iv);
+        dsp3210_acc yv = da_adder(&Y);
+        int64_t iv = acc_to_int(yv, s->dauc, 16);
+        /* the upper 16 bits of the accumulator; the rest is unpredictable */
+        res = acc_int_lane(((uint32_t)iv & 0xFFFFu) << 16, yv.e);
         zbits = (uint32_t)iv & 0xFFFFu;
         break;
     }
     case G_INT32: { /* float -> int32, no flags */
-        int64_t iv = acc_to_int(da_adder(&Y), s->dauc, 32);
-        res = acc_from_i64(iv);
+        dsp3210_acc yv = da_adder(&Y);
+        int64_t iv = acc_to_int(yv, s->dauc, 32);
+        res = acc_int_lane((uint32_t)iv, yv.e);
         zbits = (uint32_t)iv;
         break;
     }
