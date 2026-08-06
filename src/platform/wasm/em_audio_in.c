@@ -213,14 +213,21 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         g_cond.floor_est = 4.0f;
 
     // Only voiced blocks move the level estimate; silence holds it.
-    int first_voice = 0;
+    //
+    // The estimate tracks the UPPER envelope — fast up, slow down — because
+    // "this microphone's sensitivity" means the level of representative
+    // voiced speech, and the first block over the threshold is not that.  It
+    // is the onset: a measured trace of a real utterance opens at 56 counts
+    // RMS and reaches 1970 three blocks later.  Seeding from that first
+    // block sets the estimate 30x low, and the gain that follows from it
+    // overshoots just as far.
     if (rms > g_cond.floor_est * GS_MIC_VOICED_OVER_FLOOR) {
-        if (g_cond.level_est <= 0.0f) {
+        if (g_cond.level_est <= 0.0f)
             g_cond.level_est = rms;
-            first_voice = 1;
-        } else {
-            g_cond.level_est += (rms - g_cond.level_est) * 0.05f;
-        }
+        else if (rms > g_cond.level_est)
+            g_cond.level_est += (rms - g_cond.level_est) * 0.5f; // attack
+        else
+            g_cond.level_est += (rms - g_cond.level_est) * 0.05f; // release
         g_cond.voiced_blocks++;
     }
 
@@ -228,12 +235,12 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
     // speech RMS of about a quarter of the peak-to-peak is the usual crest
     // for ordinary speech, which is what the target window describes.
     //
-    // ESTABLISH THE SENSITIVITY ON THE FIRST EVIDENCE, then hold it.  This
-    // models a fixed preamp, so what it must never do is ride the level
-    // WITHIN an utterance — and starting at unity and crawling at 2% a
-    // block (a ~0.5 s time constant) did exactly that, because the crawl
-    // and the utterance are the same length.  Measured on a live capture
-    // of a known-good clip: the path was 25 dB down at speech onset, still
+    // ESTABLISH THE SENSITIVITY WITHIN THE FIRST FEW BLOCKS, then hold it.
+    // This models a fixed preamp, so what it must never do is ride the
+    // level WITHIN an utterance — and starting at unity and crawling at 2%
+    // a block (a ~0.5 s time constant) did exactly that, because the crawl
+    // and the utterance are the same length.  Measured on a live capture of
+    // a known-good clip: the path was 25 dB down at speech onset, still
     // 18 dB down 300 ms in, and +6 dB by the end.  The AVERAGE level came
     // out right (voiced RMS 1001 against the asset's 1143) while the
     // dynamics were destroyed, and the casualty was the first word.  For a
@@ -241,19 +248,22 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
     // total failure: Casper never matched, and never even printed "Pardon
     // me?", because it never heard "Computer".
     //
-    // So: jump to the target on the first voiced block, settle quickly over
-    // the next 200 ms (one block is a noisy estimate), and only then drop
-    // to the slow drift that keeps it from tracking speech.
-    if (g_cond.level_est > 0.0f) {
+    // Jumping straight to the target on the FIRST voiced block is not the
+    // answer either — that block is the onset, so the jump lands ~30x too
+    // high and then decays, which is the same defect with the sign flipped.
+    // What works is the upper-envelope estimate above plus a fast settle
+    // over the first 200 ms, which converges within a few blocks and is not
+    // hostage to any single one.
+    // Three voiced blocks (30 ms) before touching the gain at all: one block
+    // is the onset and nothing else, and acting on it alone still threw a
+    // 14x spike before the envelope pulled it back.
+    if (g_cond.level_est > 0.0f && g_cond.voiced_blocks >= 3) {
         float want = (GS_MIC_TARGET_COUNTS * 0.25f) / g_cond.level_est;
         if (want > 64.0f)
             want = 64.0f; // don't chase a dead microphone into hiss
         if (want < 0.02f)
             want = 0.02f;
-        if (first_voice)
-            g_cond.gain = want;
-        else
-            g_cond.gain += (want - g_cond.gain) * (g_cond.voiced_blocks < 20 ? 0.25f : 0.02f);
+        g_cond.gain += (want - g_cond.gain) * (g_cond.voiced_blocks < 20 ? 0.5f : 0.02f);
     }
 
     for (uint32_t i = 0; i < n; i++) {

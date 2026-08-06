@@ -208,7 +208,15 @@ const TRASH_RECT = "365, 260, 445, 550";
 // The codec's own dither is ±1 LSB, which the A/D gain lifts to a handful of
 // counts. Anything at or under this is silence however loud it sounds after
 // the guest's recorder has gained it up.
-const AUDIO_FLOOR = 64;
+//
+// Set well above the dither, not just clear of it. At 64 this gate passed a
+// build whose conditioning had collapsed the level to 90 counts — audible as
+// nothing — and the spec went on to report a recognition. A healthy run
+// delivers ~13,700 here (headless av-sr-command sees ~12,600 for the same
+// asset), so 2000 is ~16 dB of margin below a good run and ~30 dB above the
+// floor: wide enough not to be brittle, tight enough that "the fixture is
+// not arriving" cannot masquerade as a pass.
+const AUDIO_FLOOR = 2000;
 
 test("PlainTalk recognises speech from the browser microphone", async ({ page }) => {
   test.setTimeout(1_200_000);
