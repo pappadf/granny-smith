@@ -139,7 +139,12 @@ static uint16_t get_le16(const uint8_t *p) {
 
 // Writes an interleaved int16 sample buffer as a canonical 44-byte-header
 // PCM WAV file. Returns 0 on success, -1 on I/O error.
-static int wav_write(const char *path, const int16_t *samples, size_t nsamples, uint32_t rate, int channels) {
+//
+// Shared with the INPUT side (singer.c's machine.audioin.capture): both
+// capture paths must produce byte-identical WAVs, because a file written by
+// one is routinely fed back through the other — a microphone capture is
+// replayed with machine.audioin.load to reproduce a live session headlessly.
+int audio_wav_write(const char *path, const int16_t *samples, size_t nsamples, uint32_t rate, int channels) {
     uint32_t data_bytes = (uint32_t)(nsamples * sizeof(int16_t));
     uint8_t hdr[44];
 
@@ -290,7 +295,7 @@ int64_t audio_out_capture_stop(const char *wav_path) {
     s.have_capture = true;
     LOG(1, "capture stop: %zu frames", s.nsamples / (size_t)s.cap_channels);
     if (wav_path && *wav_path) {
-        if (wav_write(wav_path, s.samples, s.nsamples, s.cap_rate, s.cap_channels) < 0)
+        if (audio_wav_write(wav_path, s.samples, s.nsamples, s.cap_rate, s.cap_channels) < 0)
             return -1;
     }
     return (int64_t)(s.nsamples / (size_t)s.cap_channels);
@@ -309,7 +314,7 @@ uint64_t audio_out_capture_frames(void) {
 static void write_actual(const char *golden) {
     char path[1024];
     snprintf(path, sizeof(path), "%s.actual.wav", golden);
-    if (wav_write(path, s.samples, s.nsamples, s.cap_rate, s.cap_channels) == 0)
+    if (audio_wav_write(path, s.samples, s.nsamples, s.cap_rate, s.cap_channels) == 0)
         printf("MATCH FAILED: Saved actual capture to '%s'.\n", path);
 }
 

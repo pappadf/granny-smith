@@ -172,6 +172,49 @@ the PlainTalk plug's middle contact drives the left and right inputs with the
 same blended signal.  No noise floor is added here — the codec model already
 contributes its own, and a live microphone brings a room with it.
 
+### Diagnosing a live microphone
+
+Two surfaces exist for the case that is otherwise unanswerable from outside
+— someone speaks, the level meter waves, and the recognizer never matches.
+
+`machine.audioin.capture` is the mirror of `machine.sound.capture`: it
+records what the SOURCE delivered, ahead of the codec's A/D gain, and writes
+a WAV that goes straight back in through `machine.audioin.load`.  That turns
+an unreproducible live session into a file, and the round trip is exact
+(capture → load → capture differs only by the ±1 LSB dither).  In a browser,
+`download /tmp/mic.wav` hands it to the user.
+
+```
+machine.audioin.capture.start
+… speak …
+machine.audioin.capture.stop "/tmp/mic.wav"
+```
+
+`machine.audioin.advise` judges the incoming audio once a second against
+what PlainTalk needs (`debug.log singer "level=1"` to see it):
+
+```
+audioin advice: level 1250 rms (+0.4 dB vs target, ok)  peak 5319 x2.37 = 12613 (ok)
+                tilt -3.5 dB (fyi) -> in the window the recognizer wants
+```
+
+The **clipping** test is the one a level meter cannot replace: a source that
+looks clean on its own (peak 21145, no railed samples) is hard clipped by
+the time it reaches the converter, because the A/D ladder multiplies it by
+2.37× at the driver's default setting.  A real user recording read "level
+ok" and `CLIPS` in the same second.
+
+The **tilt** figure is reported but not judged, deliberately.  Averaged over
+a whole utterance offline it separated a recognised asset (−11 dB) from a
+rejected recording (−20 dB); measured per second in the emulator the ranges
+overlap (−7.0/−3.5 against −5.3/−9.7), so no threshold is honest.  The
+thresholds that ARE enforced come from the PlainTalk contract and from rung
+7's finding that assets 6–12 dB hot are rejected — but they are calibrated
+against one accepted signal and one rejected one, so passing them is not a
+promise of recognition.  It is not: the rejected recording was corrected to
+match the asset in both level and spectrum and was still rejected, 12 takes
+out of 12, while the asset recognised in the same session.
+
 `local/gs-docs/debug-plaintalk/micrig/` exercises the conditioning without a
 browser (it found two defects review had missed).  `connected` drives the mic-present sense;
 `samples`/`position` expose progress.  The loaded WAV is checkpointed

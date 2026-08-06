@@ -101,10 +101,49 @@ struct av_singer {
     int16_t *wav; // loaded WAV, interleaved stereo at the codec rate
     struct object *object; // the machine.sound node
     struct object *ain_object; // the machine.audioin node
+
+    // machine.audioin.capture — the host's ear on what the SOURCE delivered.
+    //
+    // The mirror of machine.sound.capture, and the tool for a class of
+    // failure that is otherwise unreachable: something that only misbehaves
+    // with a real microphone, in a real browser, in front of a real person.
+    // Nobody can hand over their microphone, but they can hand over the
+    // samples it became — and because this records the source stream (see
+    // singer_ain_capture), the WAV it writes goes straight back in through
+    // machine.audioin.load and reproduces the session headlessly.
+    //
+    // Deliberately NOT checkpointed, and deliberately after `cfg`: a live
+    // capture is a debugging session, not machine state, and restoring one
+    // with a NULL buffer would be a crash waiting to happen.
+    int16_t *ain_cap; // interleaved stereo, malloc'd, or NULL
+    size_t ain_cap_n; // int16 samples used
+    size_t ain_cap_max; // int16 samples allocated
+    uint32_t ain_cap_rate; // codec rate latched at start
+    uint8_t ain_cap_active;
+    uint8_t ain_cap_full; // hit the cap; reported once
+    struct object *ain_cap_object;
+
+    // machine.audioin.advise — a once-a-second verdict on whether the
+    // incoming audio is in the shape PlainTalk's recognizer wants.  State
+    // for two bandpass filters and the per-second accumulators; see
+    // singer_ain_advise.
+    uint8_t ain_advise;
+    uint32_t ain_adv_rate; // rate the biquads were designed for
+    double adv_lo_b0, adv_lo_b1, adv_lo_b2, adv_lo_a1, adv_lo_a2;
+    double adv_hi_b0, adv_hi_b1, adv_hi_b2, adv_hi_a1, adv_hi_a2;
+    double adv_lo_x1, adv_lo_x2, adv_lo_y1, adv_lo_y2;
+    double adv_hi_x1, adv_hi_x2, adv_hi_y1, adv_hi_y2;
+    double adv_lo_e, adv_hi_e; // band energy, voiced blocks only
+    double adv_sumsq; // voiced RMS accumulator
+    uint32_t adv_voiced_n; // voiced sample count this second
+    uint32_t adv_n; // samples this second
+    int32_t adv_peak; // source peak this second
+    double adv_floor; // running noise-floor estimate (RMS counts)
 };
 
 extern const class_desc_t av_singer_sound_class;
 extern const class_desc_t av_audioin_class;
+extern const class_desc_t av_audioin_capture_class;
 
 static void singer_frame_event(void *source, uint64_t data);
 
@@ -261,6 +300,224 @@ static void singer_ain_pull(av_singer_t *s, uint32_t nframes, uint32_t rate) {
 
 static const char *ain_src_name(uint8_t mode);
 
+// ============================================================
+// machine.audioin.advise — is this audio in the shape Casper wants?
+// ============================================================
+//
+// A once-a-second verdict on the incoming signal, for the case that is
+// otherwise unanswerable from the outside: the user speaks, the level meter
+// waves, and nothing is ever recognised.  The meter above says how LOUD the
+// input is; this says whether it is USABLE, which is a different question
+// and the one people actually have.
+//
+// WHERE THE NUMBERS COME FROM — read this before trusting a verdict.  They
+// are calibrated against exactly two signals: the synthesized asset that
+// the recognizer does accept (tests/data/speech/sr-open-the-trash.wav, and
+// suite-av's av-sr-command row proves it), and one real user recording that
+// it rejected 12 times out of 12 across two corrections.  That is a sample
+// of two.  The level and clipping tests rest on documented behaviour and
+// are solid; the SPECTRAL test is a heuristic drawn from a single failing
+// example, so treat "tilt" as a hint about microphone technique, never as a
+// specification.  Passing every check here does NOT promise recognition —
+// the same recording passed all of them, spectrum-matched to the asset, and
+// was still rejected.
+//
+//   level    Voiced RMS of the SOURCE, ahead of the codec's A/D gain.  The
+//            PlainTalk contract puts typical voiced speech at 100-200 mVpp
+//            (TIL15884), which is ~1400 counts of voiced RMS here; the
+//            asset that works measures 1143.  Rung 7 found assets 6-12 dB
+//            hot were rejected because the guest's AGC winds the codec gain
+//            down in response (sr-test-audio-assets.md §2), so the window
+//            is deliberately tight.
+//   clip     Source peak times the CURRENT A/D gain ladder setting.  This
+//            catches the trap a plain level meter cannot: a source that
+//            looks fine on its own (peak 21145, no railed samples) is hard
+//            clipped by the time it reaches the converter, because the
+//            ladder multiplies it by 2.37x at the driver's default.
+//   tilt     Energy in 1-3 kHz relative to 200-600 Hz.  REPORTED, NOT
+//            JUDGED, and that is a finding rather than laziness.  Offline,
+//            averaged over a whole utterance, this separated the two
+//            signals cleanly (asset -11 dB, rejected recording -20 dB).
+//            Measured here — per second, energy-weighted, over voiced
+//            blocks only — the ranges OVERLAP: the asset reads -7.0 and
+//            -3.5, the rejected recording -5.3 and -9.7.  No threshold
+//            separates them, so no verdict is issued.  The number is still
+//            worth printing (a persistently low figure across many seconds
+//            does indicate proximity effect), but a confident flag here
+//            would be a detector that produces plausible wrong answers,
+//            and this investigation has already been bitten twice by
+//            exactly that.
+#define ADV_LEVEL_LO   500.0 // voiced RMS counts: quieter than this is thin
+#define ADV_LEVEL_HI   2500.0 // ...louder than this is the "hot" band
+#define ADV_LEVEL_WANT 1200.0 // mid-window; the working asset sits at 1143
+#define ADV_CLIP_CEIL  31000 // counts after the A/D gain
+
+// RBJ constant-0-dB-peak bandpass.
+static void adv_bp(double fc, double q, uint32_t rate, double *b0, double *b1, double *b2, double *a1, double *a2) {
+    double w0 = 2.0 * M_PI * fc / (double)rate;
+    double alpha = sin(w0) / (2.0 * q);
+    double a0 = 1.0 + alpha;
+    *b0 = alpha / a0;
+    *b1 = 0.0;
+    *b2 = -alpha / a0;
+    *a1 = (-2.0 * cos(w0)) / a0;
+    *a2 = (1.0 - alpha) / a0;
+}
+
+static void adv_design(av_singer_t *s, uint32_t rate) {
+    // 200-600 Hz and 1-3 kHz, as geometric centre + matching Q.
+    adv_bp(346.0, 0.87, rate, &s->adv_lo_b0, &s->adv_lo_b1, &s->adv_lo_b2, &s->adv_lo_a1, &s->adv_lo_a2);
+    adv_bp(1732.0, 0.87, rate, &s->adv_hi_b0, &s->adv_hi_b1, &s->adv_hi_b2, &s->adv_hi_a1, &s->adv_hi_a2);
+    s->ain_adv_rate = rate;
+    s->adv_lo_x1 = s->adv_lo_x2 = s->adv_lo_y1 = s->adv_lo_y2 = 0.0;
+    s->adv_hi_x1 = s->adv_hi_x2 = s->adv_hi_y1 = s->adv_hi_y2 = 0.0;
+}
+
+// Fold one staged half-buffer in, and emit a verdict once a second.  Called
+// on the SOURCE samples, ahead of the A/D gain, because that is the signal
+// the user can actually do something about.
+static void singer_ain_advise(av_singer_t *s, uint32_t nframes, uint32_t rate) {
+    if (!s->ain_advise)
+        return;
+    if (s->ain_adv_rate != rate)
+        adv_design(s, rate);
+
+    // This block's RMS decides whether it counts as speech. Room tone must
+    // not drive the level or the tilt: a quiet room would otherwise read as
+    // "too quiet" forever, and its spectrum is not the speaker's.
+    double sum2 = 0.0;
+    int32_t pk = 0;
+    for (uint32_t i = 0; i < nframes; i++) {
+        double v = (double)s->stage[i * 2];
+        sum2 += v * v;
+        int32_t a = s->stage[i * 2] < 0 ? -s->stage[i * 2] : s->stage[i * 2];
+        if (a > pk)
+            pk = a;
+    }
+    double rms = sqrt(sum2 / (double)nframes);
+    if (s->adv_floor <= 0.0)
+        s->adv_floor = rms;
+    else if (rms < s->adv_floor)
+        s->adv_floor += (rms - s->adv_floor) * 0.05;
+    else
+        s->adv_floor += (rms - s->adv_floor) * 0.002;
+    if (s->adv_floor < 4.0)
+        s->adv_floor = 4.0;
+    int voiced = rms > s->adv_floor * 6.0;
+
+    if (pk > s->adv_peak)
+        s->adv_peak = pk;
+    s->adv_n += nframes;
+
+    if (voiced) {
+        s->adv_sumsq += sum2;
+        s->adv_voiced_n += nframes;
+        for (uint32_t i = 0; i < nframes; i++) {
+            double x = (double)s->stage[i * 2];
+            double yl = s->adv_lo_b0 * x + s->adv_lo_b1 * s->adv_lo_x1 + s->adv_lo_b2 * s->adv_lo_x2 -
+                        s->adv_lo_a1 * s->adv_lo_y1 - s->adv_lo_a2 * s->adv_lo_y2;
+            s->adv_lo_x2 = s->adv_lo_x1;
+            s->adv_lo_x1 = x;
+            s->adv_lo_y2 = s->adv_lo_y1;
+            s->adv_lo_y1 = yl;
+            double yh = s->adv_hi_b0 * x + s->adv_hi_b1 * s->adv_hi_x1 + s->adv_hi_b2 * s->adv_hi_x2 -
+                        s->adv_hi_a1 * s->adv_hi_y1 - s->adv_hi_a2 * s->adv_hi_y2;
+            s->adv_hi_x2 = s->adv_hi_x1;
+            s->adv_hi_x1 = x;
+            s->adv_hi_y2 = s->adv_hi_y1;
+            s->adv_hi_y1 = yh;
+            s->adv_lo_e += yl * yl;
+            s->adv_hi_e += yh * yh;
+        }
+    }
+
+    if (s->adv_n < rate)
+        return;
+
+    // A second with little speech in it gets no verdict: "silence" once a
+    // second is noise in the log, none of the tests mean anything without a
+    // voice to measure, and a second holding only the first syllable reads
+    // as "too quiet" when the utterance is fine.
+    if (s->adv_voiced_n >= rate / 5) { // at least 200 ms of speech
+        double vrms = sqrt(s->adv_sumsq / (double)s->adv_voiced_n);
+        double lvl_db = 20.0 * log10(vrms / ADV_LEVEL_WANT);
+        double tilt = (s->adv_lo_e > 0.0 && s->adv_hi_e > 0.0) ? 10.0 * log10(s->adv_hi_e / s->adv_lo_e) : 0.0;
+        int64_t after_gain = ((int64_t)s->adv_peak * (int64_t)s->ain_adgain) >> 16;
+
+        const char *lvl = "ok";
+        if (vrms > ADV_LEVEL_HI)
+            lvl = "HOT";
+        else if (vrms < ADV_LEVEL_LO)
+            lvl = "QUIET";
+        const char *clip = after_gain >= ADV_CLIP_CEIL ? "CLIPS" : "ok";
+
+        char advice[192];
+        advice[0] = 0;
+        if (after_gain >= ADV_CLIP_CEIL || vrms > ADV_LEVEL_HI)
+            snprintf(advice, sizeof advice, " -> too loud: move back from the mic, or lower the input level");
+        else if (vrms < ADV_LEVEL_LO)
+            snprintf(advice, sizeof advice, " -> too quiet: move closer, or raise the input level");
+        else
+            snprintf(advice, sizeof advice, " -> in the window the recognizer wants");
+
+        LOG(1,
+            "audioin advice: level %.0f rms (%+.1f dB vs target, %s)  peak %d x%.2f = %lld (%s)  "
+            "tilt %+.1f dB (fyi)%s",
+            vrms, lvl_db, lvl, s->adv_peak, (double)s->ain_adgain / 65536.0, (long long)after_gain, clip, tilt, advice);
+    }
+
+    s->adv_lo_e = s->adv_hi_e = 0.0;
+    s->adv_sumsq = 0.0;
+    s->adv_voiced_n = 0;
+    s->adv_n = 0;
+    s->adv_peak = 0;
+}
+
+// Two minutes of stereo at the highest codec rate (48 kHz) — 23 MB. Long
+// enough for any spoken diagnostic, bounded so a capture left running in a
+// browser tab cannot grow until the tab dies.
+#define AIN_CAP_MAX_SAMPLES ((size_t)48000 * 2 * 120)
+
+// Append one staged half-buffer to the capture.
+//
+// Called from singer_fill_input BEFORE the codec's A/D gain, which is the
+// whole point: this records what the SOURCE delivered, which is exactly
+// what machine.audioin.load feeds back in. Capturing after the A/D gain
+// would look more like "what the guest heard", but replaying such a file
+// would apply the ladder a second time and land 2.37x hot at the default
+// setting — a trap that would quietly invalidate every comparison made
+// with it. The harness gain and the converter's dither ARE included; both
+// are re-applied on replay, so the dither differs by its ±1 LSB and
+// nothing else does.
+static void singer_ain_capture(av_singer_t *s, uint32_t nframes) {
+    if (!s->ain_cap_active)
+        return;
+    size_t want = (size_t)nframes * 2;
+    if (s->ain_cap_n + want > AIN_CAP_MAX_SAMPLES) {
+        if (!s->ain_cap_full) {
+            s->ain_cap_full = 1;
+            LOG(1, "audioin capture: reached the %zu-second cap, still recording nothing further",
+                AIN_CAP_MAX_SAMPLES / (2 * 48000));
+        }
+        return;
+    }
+    if (s->ain_cap_n + want > s->ain_cap_max) {
+        size_t grow = s->ain_cap_max ? s->ain_cap_max * 2 : (size_t)48000 * 2 * 4;
+        while (grow < s->ain_cap_n + want)
+            grow *= 2;
+        int16_t *p = realloc(s->ain_cap, grow * sizeof(int16_t));
+        if (!p) {
+            LOG(0, "audioin capture: out of memory at %zu samples, stopping", s->ain_cap_n);
+            s->ain_cap_active = 0;
+            return;
+        }
+        s->ain_cap = p;
+        s->ain_cap_max = grow;
+    }
+    memcpy(s->ain_cap + s->ain_cap_n, s->stage, want * sizeof(int16_t));
+    s->ain_cap_n += want;
+}
+
 // Fold one staged half-buffer into the level meter, and emit a line about
 // once a second while `machine.audioin.monitor` is on.
 static void singer_ain_meter(av_singer_t *s, uint32_t nframes, uint32_t rate) {
@@ -308,11 +565,22 @@ static void singer_fill_input(av_singer_t *s, uint32_t base, uint32_t nframes) {
         return; // never DMA into ROM/NuBus space
     singer_ain_pull(s, nframes, singer_rate(s));
     // The codec's A/D gain sits ahead of the converter, so it scales what
-    // the DMA deposits (singer.md §3, singerCtl bits 12-19).
+    // the DMA deposits (singer.md §3, singerCtl bits 12-19).  Read it BEFORE
+    // the source taps below: both of them report on the pre-gain signal, and
+    // the advisory needs the ladder setting to predict clipping at the
+    // converter.
     uint32_t ctl = av_psc_snd_read32(singer_st(s)->psc, 0x04); // singerCtl
     uint32_t agl = singer_adgain_x65536[(ctl >> 16) & 15]; // pLeftGain
     s->ain_adgain = agl;
     uint32_t agr = singer_adgain_x65536[(ctl >> 12) & 15]; // pRightGain
+
+    // Both taps see the SOURCE stream, ahead of the A/D gain — see the
+    // functions.  Hooking them after it made the advisory measure a gained
+    // signal and then apply the gain a second time, so it called the very
+    // asset the recognizer accepts "too loud".
+    singer_ain_capture(s, nframes);
+    singer_ain_advise(s, nframes, singer_rate(s));
+
     if (agl != 65536 || agr != 65536) {
         for (uint32_t i = 0; i < nframes; i++) {
             int64_t l = ((int64_t)s->stage[i * 2] * agl) >> 16;
@@ -596,6 +864,27 @@ static value_t ain_method_rewind(struct object *self, const member_t *m, int arg
     return val_none();
 }
 
+static value_t ain_attr_advise_get(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    return val_bool(s && s->ain_advise);
+}
+
+static value_t ain_attr_advise_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    if (!s) {
+        value_free(&in);
+        return val_err("audioin not available");
+    }
+    s->ain_advise = in.b ? 1 : 0;
+    s->adv_n = s->adv_voiced_n = 0;
+    s->adv_peak = 0;
+    s->adv_sumsq = s->adv_lo_e = s->adv_hi_e = s->adv_floor = 0.0;
+    value_free(&in);
+    return val_none();
+}
+
 static value_t ain_attr_monitor_get(struct object *self, const member_t *m) {
     (void)m;
     av_singer_t *s = singer_self(self);
@@ -642,6 +931,10 @@ static const member_t av_audioin_members[] = {
      .doc = "Input gain in percent (100 = unity; bring-up level sweeps)",
      .attr = {.type = V_UINT, .get = ain_attr_gain_get, .set = ain_attr_gain_set}},
     {.kind = M_ATTR,
+     .name = "advise",
+     .doc = "Judge the incoming audio ~1/s (level, clipping, spectrum); needs debug.log singer \"level=1\"",
+     .attr = {.type = V_BOOL, .get = ain_attr_advise_get, .set = ain_attr_advise_set}},
+    {.kind = M_ATTR,
      .name = "monitor",
      .doc = "Log the input level ~1/s; needs the singer category on: debug.log singer \"level=1\"",
      .attr = {.type = V_BOOL, .get = ain_attr_monitor_get, .set = ain_attr_monitor_set}},
@@ -679,6 +972,100 @@ const class_desc_t av_audioin_class = {
     .name = "audioin",
     .members = av_audioin_members,
     .n_members = sizeof(av_audioin_members) / sizeof(av_audioin_members[0]),
+};
+
+// ============================================================
+// machine.audioin.capture — record what the source delivered
+// ============================================================
+
+static value_t ain_cap_attr_active(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = (av_singer_t *)object_data(self);
+    return val_bool(s && s->ain_cap_active);
+}
+
+static value_t ain_cap_attr_frames(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = (av_singer_t *)object_data(self);
+    return val_uint(8, s ? (uint64_t)(s->ain_cap_n / 2) : 0);
+}
+
+static value_t ain_cap_attr_seconds(struct object *self, const member_t *m) {
+    (void)m;
+    av_singer_t *s = (av_singer_t *)object_data(self);
+    uint32_t rate = s && s->ain_cap_rate ? s->ain_cap_rate : 24000;
+    return val_float(s ? (double)(s->ain_cap_n / 2) / (double)rate : 0.0);
+}
+
+static value_t ain_cap_method_start(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    av_singer_t *s = (av_singer_t *)object_data(self);
+    if (!s)
+        return val_err("audioin not available");
+    s->ain_cap_n = 0;
+    s->ain_cap_full = 0;
+    s->ain_cap_rate = singer_rate(s);
+    s->ain_cap_active = 1;
+    LOG(1, "audioin capture: start (%u Hz stereo, source %s)", s->ain_cap_rate, ain_src_name(s->ain_src));
+    return val_bool(true);
+}
+
+static value_t ain_cap_method_stop(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    av_singer_t *s = (av_singer_t *)object_data(self);
+    if (!s)
+        return val_err("audioin not available");
+    s->ain_cap_active = 0;
+    uint64_t frames = s->ain_cap_n / 2;
+    if (argc >= 1 && argv[0].kind == V_STRING && argv[0].s && *argv[0].s) {
+        if (!s->ain_cap_n)
+            return val_err("audioin.capture.stop: nothing captured — was a source connected?");
+        if (audio_wav_write(argv[0].s, s->ain_cap, s->ain_cap_n, s->ain_cap_rate, 2) < 0)
+            return val_err("audioin.capture.stop: cannot write '%s'", argv[0].s);
+        LOG(1, "audioin capture: wrote %llu frames to %s", (unsigned long long)frames, argv[0].s);
+    }
+    return val_uint(8, frames);
+}
+
+static const arg_decl_t ain_cap_stop_args[] = {
+    {.name = "path",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Write the capture here as a PCM16 WAV (replayable with audioin.load)"},
+};
+
+static const member_t ain_capture_members[] = {
+    {.kind = M_ATTR,
+     .name = "active",
+     .doc = "True while a capture is recording",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = ain_cap_attr_active, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "frames",
+     .doc = "Sample frames accumulated in the current or last capture",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = ain_cap_attr_frames, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "seconds",
+     .doc = "Length of the current or last capture, in seconds",
+     .flags = VAL_RO,
+     .attr = {.type = V_FLOAT, .get = ain_cap_attr_seconds, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "start",
+     .doc = "Begin recording what the audio-in source delivers",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = ain_cap_method_start}},
+    {.kind = M_METHOD,
+     .name = "stop",
+     .doc = "Stop recording; with a path, write it as a WAV. Returns frames",
+     .method = {.args = ain_cap_stop_args, .nargs = 1, .result = V_UINT, .fn = ain_cap_method_stop}},
+};
+
+const class_desc_t av_audioin_capture_class = {
+    .name = "capture",
+    .members = ain_capture_members,
+    .n_members = sizeof(ain_capture_members) / sizeof(ain_capture_members[0]),
 };
 
 // ============================================================
@@ -816,6 +1203,11 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
         object_set_label(s->ain_object, "Audio In");
         object_set_order(s->ain_object, 126);
         object_attach(machine_object(), s->ain_object);
+        s->ain_cap_object = object_new(&av_audioin_capture_class, s, "capture");
+        if (s->ain_cap_object) {
+            object_set_label(s->ain_cap_object, "Capture");
+            object_attach(s->ain_object, s->ain_cap_object);
+        }
     }
 
     LOG(1, "Singer init (%u Hz, audioin %s)", s->open_rate, ain_src_name(s->ain_src));
@@ -826,6 +1218,10 @@ void av_singer_delete(av_singer_t *s) {
     if (!s)
         return;
     audio_out_capture_detach();
+    if (s->ain_cap_object) {
+        object_detach(s->ain_cap_object);
+        object_delete(s->ain_cap_object);
+    }
     if (s->ain_object) {
         object_detach(s->ain_object);
         object_delete(s->ain_object);
@@ -836,6 +1232,7 @@ void av_singer_delete(av_singer_t *s) {
     }
     if (s->cfg && s->cfg->scheduler)
         remove_event(s->cfg->scheduler, &singer_frame_event, s);
+    free(s->ain_cap);
     free(s->wav);
     free(s->stage);
     free(s);

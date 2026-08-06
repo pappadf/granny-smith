@@ -16,6 +16,7 @@
 #define AUDIO_OUT_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "value.h"
@@ -26,6 +27,11 @@ struct object;
 
 // Opens (or re-parameterizes) the host audio stream: source sample rate in Hz
 // and channel count (1 = mono, 2 = interleaved stereo).
+// Writes interleaved int16 samples as a canonical PCM WAV. 0 on success,
+// -1 on I/O error. Shared with the input-side capture in singer.c so both
+// produce byte-identical files (one's output is fed back through the other).
+int audio_wav_write(const char *path, const int16_t *samples, size_t nsamples, uint32_t rate, int channels);
+
 void audio_out_open(uint32_t src_rate_hz, int channels);
 
 // Changes the source sample rate mid-stream (e.g. ascClockRate write).
