@@ -422,7 +422,7 @@ Sizes: 1/2/4-byte globals come back as unsigned ints; larger blobs
 ```
 machine.screen.save "/tmp/now.png"
 machine.screen.checksum                                       # whole framebuffer
-machine.screen.checksum 0 0 100 100                           # rectangle
+machine.screen.checksum 0 0 100 100                           # rectangle (top, left, bottom, right)
 machine.screen.match "tests/integration/<test>/expected.png"
 machine.screen.match_or_save "ref.png" "/tmp/actual.png"
 ```

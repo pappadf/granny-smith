@@ -26,14 +26,22 @@ tests/e2e/
 ├── scripts/prod-smoke-server.mjs    # Subpath server without COI headers (prod-smoke)
 │
 ├── web2-specs/                      # Main functional suite (playwright.web2.config.ts)
+│   ├── av-camera.spec.ts            # AV video-in against Chromium's fake camera
+│   ├── av-microphone.spec.ts        # Browser mic → shared-heap ring → guest RAM (no OS)
+│   ├── av-sound-record.spec.ts      # Browser mic → the guest's own Sound cdev, record + play
+│   ├── av-speech-recognition.spec.ts# PlainTalk recognition from the browser mic
 │   ├── checkpoint-resume.spec.ts    # Checkpoint save → reload → resume (+ SE/30 profile restore)
 │   ├── display-card-config.spec.ts  # New Machine dialog: card-by-name video config
 │   ├── display-drop.spec.ts         # Drag-and-drop onto the Display (ROM/floppy/checkpoint)
+│   ├── fd-duplicate-name.spec.ts    # Duplicate floppy names in the image library
 │   ├── filesystem-tab.spec.ts       # Filesystem tab: descend image, copy/move/rename/unpack
 │   ├── iicx-video-modes.spec.ts     # Post-shader WebGL canvas baselines (per monitor × depth)
 │   ├── iifx-aux3-realtime.spec.ts   # A/UX 3.0.1 boot to login under the real RAF scheduler
 │   ├── lisa-xenix-profile.spec.ts   # Lisa/XL ProFile-vs-SCSI config + boot
-│   └── url-boot.spec.ts             # ?rom=… URL-parameter boot
+│   ├── perf-bench.spec.ts           # Accelerated + turbo throughput (tracked numbers)
+│   ├── scheduler-accelerated.spec.ts# Accelerated mode: faster CPU, real-time timebase
+│   ├── url-boot.spec.ts             # ?rom=… URL-parameter boot
+│   └── vrom-offer-ingest.spec.ts    # Mid-session vROM upload is offered to "(auto)"
 │
 ├── ui-prod-smoke/                   # Production-bundle smoke (playwright.prod-smoke.config.ts)
 │   └── prod-smoke.spec.ts           # dist/ on a subpath w/o COI headers reaches __gsReady
