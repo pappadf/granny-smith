@@ -140,13 +140,21 @@ assets reach the guest looking alike:
 
 * a **100 Hz high-pass** — the electret, its preamp and the codec's AC
   coupling do not pass the proximity rumble a laptop or headset mic delivers;
-* a **slow sensitivity normaliser** targeting TIL15884's 100-200 mVpp window
+* a **sensitivity normaliser** targeting TIL15884's 100-200 mVpp window
   for typical voiced speech.  This models the *fixed* sensitivity of the
   PlainTalk preamp — it cancels the tens of dB of spread between one user's
   microphone and another's, not the dynamics of speech.  It measures voiced
   blocks only, moves over seconds so it neither pumps nor races the guest's
   own AGC (`AnalogGC` → `singerCtl` A/D gain), and holds during silence
-  rather than winding up into the noise floor.
+  rather than winding up into the noise floor.  It **establishes the gain on
+  the first voiced block** and settles over the next 200 ms, then drops to a
+  slow drift.  Starting at unity and crawling there instead made it ride the
+  level *within* an utterance, because the crawl and the utterance are the
+  same length: a live capture of a known-good clip came back 25 dB down at
+  speech onset and +6 dB by the end.  The average level was right and the
+  dynamics were gone — and the casualty was the first word, which for a
+  recognizer listening for an attention word is total failure.  `micrig`
+  measures the first 300 ms after a cold start for exactly this.
 
 …and then, when the rates differ, a **polyphase windowed-sinc resampler**
 (48-tap Kaiser, 128 fractional phases, designed when the ratio changes and

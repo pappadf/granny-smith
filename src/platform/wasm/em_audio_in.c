@@ -147,6 +147,7 @@ static struct {
     float gain; // the sensitivity normaliser's current gain
     float floor_est; // running noise floor (RMS counts)
     float level_est; // running voiced level (RMS counts)
+    uint32_t voiced_blocks; // voiced blocks seen since the stream opened
     int primed;
 } g_cond;
 
@@ -181,6 +182,7 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         g_cond.gain = 1.0f;
         g_cond.floor_est = -1.0f; // seeded from the first block's RMS below
         g_cond.level_est = 0.0f;
+        g_cond.voiced_blocks = 0;
         g_cond.primed = 1;
     }
 
@@ -211,23 +213,47 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         g_cond.floor_est = 4.0f;
 
     // Only voiced blocks move the level estimate; silence holds it.
+    int first_voice = 0;
     if (rms > g_cond.floor_est * GS_MIC_VOICED_OVER_FLOOR) {
-        if (g_cond.level_est <= 0.0f)
+        if (g_cond.level_est <= 0.0f) {
             g_cond.level_est = rms;
-        else
+            first_voice = 1;
+        } else {
             g_cond.level_est += (rms - g_cond.level_est) * 0.05f;
+        }
+        g_cond.voiced_blocks++;
     }
 
     // Move the gain toward what puts the voiced level at the target.  A
     // speech RMS of about a quarter of the peak-to-peak is the usual crest
     // for ordinary speech, which is what the target window describes.
+    //
+    // ESTABLISH THE SENSITIVITY ON THE FIRST EVIDENCE, then hold it.  This
+    // models a fixed preamp, so what it must never do is ride the level
+    // WITHIN an utterance — and starting at unity and crawling at 2% a
+    // block (a ~0.5 s time constant) did exactly that, because the crawl
+    // and the utterance are the same length.  Measured on a live capture
+    // of a known-good clip: the path was 25 dB down at speech onset, still
+    // 18 dB down 300 ms in, and +6 dB by the end.  The AVERAGE level came
+    // out right (voiced RMS 1001 against the asset's 1143) while the
+    // dynamics were destroyed, and the casualty was the first word.  For a
+    // recognizer listening for an attention word, eating the first word is
+    // total failure: Casper never matched, and never even printed "Pardon
+    // me?", because it never heard "Computer".
+    //
+    // So: jump to the target on the first voiced block, settle quickly over
+    // the next 200 ms (one block is a noisy estimate), and only then drop
+    // to the slow drift that keeps it from tracking speech.
     if (g_cond.level_est > 0.0f) {
         float want = (GS_MIC_TARGET_COUNTS * 0.25f) / g_cond.level_est;
         if (want > 64.0f)
             want = 64.0f; // don't chase a dead microphone into hiss
         if (want < 0.02f)
             want = 0.02f;
-        g_cond.gain += (want - g_cond.gain) * 0.02f; // seconds, not frames
+        if (first_voice)
+            g_cond.gain = want;
+        else
+            g_cond.gain += (want - g_cond.gain) * (g_cond.voiced_blocks < 20 ? 0.25f : 0.02f);
     }
 
     for (uint32_t i = 0; i < n; i++) {
