@@ -54,10 +54,33 @@ test.use({
   },
 });
 
+// Focus xterm's own hidden input and WAIT until it really is the active
+// element.  `.xterm` click() resolves when the click is DISPATCHED, not when
+// xterm has taken focus, and with an AV machine plus a live AudioWorklet on
+// the main thread that gap is wide: CI #636 lost the first 17 characters of
+// a line, so `machine.memory.poke.w 0x50F31218 240` reached the shell as
+// `ke.w 0x50F31218 240` and the register was never written.
+async function focusTerminal(page: Page): Promise<void> {
+  const ta = page.locator(".xterm textarea.xterm-helper-textarea");
+  if ((await ta.count()) > 0) {
+    await ta.focus();
+    await page.waitForFunction(
+      () =>
+        document.activeElement instanceof HTMLTextAreaElement &&
+        document.activeElement.classList.contains("xterm-helper-textarea"),
+      undefined,
+      { timeout: 15_000 },
+    );
+    return;
+  }
+  await page.locator(".xterm").click();
+}
+
 async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator(".xterm");
-  await term.click();
-  await page.keyboard.type(line);
+  await focusTerminal(page);
+  // A per-key delay as well: a burst typed while the terminal is re-rendering
+  // the previous command's output can lose characters mid-line too.
+  await page.keyboard.type(line, { delay: 10 });
   await page.keyboard.press("Enter");
 }
 
@@ -166,14 +189,30 @@ test("AV microphone control delivers browser audio into guest RAM", async ({
   // makes the guest actually pull, and it is also what flips pSndInEn, so
   // the browser track attaches (the mic is live only while the guest is
   // genuinely recording).
-  // Typing through the xterm is not always reliable on the first attempt,
-  // so each poke is verified by reading the register back.
-  for (let attempt = 0; attempt < 5; attempt++) {
-    await terminalRun(page, "machine.memory.poke.l 0x50F31210 0x10000");
-    await terminalRun(page, "machine.memory.poke.w 0x50F31218 240");
-    await terminalRun(page, "machine.memory.poke.w 0x50F31200 0x0080");
-    await page.waitForTimeout(500);
-    if ((await probe(page, "machine.sound.in_enabled")) === "true") break;
+  // EACH poke is verified individually and retried until its own register
+  // reads back.  Retrying the block as a whole is not enough: a line the
+  // terminal ate is silently skipped, and the block then re-runs the two
+  // pokes that DID land while the mangled one stays unwritten every time —
+  // which is how all five attempts failed identically in CI #636.  The
+  // readback is a comparison rather than a value so it does not depend on
+  // how the shell formats the number.
+  for (const [cmd, check] of [
+    [
+      "machine.memory.poke.l 0x50F31210 0x10000",
+      "machine.memory.peek.l(0x50F31210) == 0x10000",
+    ],
+    [
+      "machine.memory.poke.w 0x50F31218 240",
+      "machine.memory.peek.w(0x50F31218) == 240",
+    ],
+    ["machine.memory.poke.w 0x50F31200 0x0080", "machine.sound.in_enabled"],
+  ] as const) {
+    let landed = false;
+    for (let attempt = 0; attempt < 6 && !landed; attempt++) {
+      await terminalRun(page, cmd);
+      landed = (await probe(page, check)) === "true";
+    }
+    expect(landed, `the shell never accepted: ${cmd}`).toBe(true);
   }
   // Log the whole picture BEFORE asserting: a failed assertion that takes
   // the diagnostics down with it is what made the last three rounds guesswork.
