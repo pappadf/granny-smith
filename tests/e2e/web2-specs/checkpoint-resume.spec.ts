@@ -102,6 +102,36 @@ async function terminalExpect(page: Page, line: string, pattern: RegExp): Promis
   await expect(page.locator('.xterm-rows')).toContainText(pattern, { timeout: 15_000 });
 }
 
+test('tick-auto checkpoint: status-bar CP glyph updates, terminal stays silent', async ({
+  page,
+}) => {
+  // The ~15 s tick-auto cadence is the one timing dependence here; the
+  // 60 s tooltip poll leaves generous RAF-jitter margin.
+  test.setTimeout(180_000);
+  await gotoWeb2(page);
+  await uploadRom(page, PLUS_ROM);
+  await startMachine(page, 'plus');
+
+  // Terminal open from the start so any stray "Checkpoint saved" print
+  // would be captured.
+  await page.locator('button.ptab[data-tab="terminal"]').click();
+  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+
+  // The CP glyph is present with its idle tooltip before the first save.
+  const cp = page.locator('.gs-statusbar .sb-drive', { hasText: 'CP' });
+  await expect(cp).toBeVisible({ timeout: 15_000 });
+  await expect(cp).toHaveAttribute('title', /none yet this session/);
+
+  // After the first background save the tooltip carries time + duration.
+  await expect(cp).toHaveAttribute('title', /Last background checkpoint .+\(\d+(\.\d+)? ms\)/, {
+    timeout: 60_000,
+  });
+
+  // ...and the old terminal spam is gone.
+  const text = await page.locator('.xterm-rows').innerText();
+  expect(text).not.toContain('Checkpoint saved');
+});
+
 test.describe('checkpoint save → reload → resume', () => {
   test('Plus: checkpoint survives a reload and Resume brings the machine back live', async ({
     page,

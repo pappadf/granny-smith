@@ -33,6 +33,24 @@
       ? `${machine.acceleratedSpeed}×`
       : `${machine.acceleratedSpeed.toFixed(1)}×`,
   );
+
+  // Background-checkpoint heartbeat — same flash idiom as the drive
+  // lights; each core push (state/machine setCheckpointSaved stores a
+  // fresh object, so identity re-fires the effect) lights the glyph for
+  // the drive lights' 180 ms. The tooltip carries the time + duration
+  // that used to spam the terminal.
+  let cpFlash = $state(false);
+  $effect(() => {
+    if (!machine.checkpoint) return;
+    cpFlash = true;
+    const t = setTimeout(() => (cpFlash = false), 180);
+    return () => clearTimeout(t);
+  });
+  const cpTitle = $derived(
+    machine.checkpoint
+      ? `Last background checkpoint ${new Date(machine.checkpoint.at).toLocaleTimeString()} (${machine.checkpoint.ms.toFixed(1)} ms)`
+      : 'Background checkpoint: none yet this session',
+  );
 </script>
 
 {#if visible}
@@ -68,6 +86,7 @@
       <DriveActivity label="HD" title="Hard disk" activity={machine.driveActivity.hd} />
       <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
       <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
+      <DriveActivity label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
     </div>
     <div class="statusbar-right">
       {#if activity.current}

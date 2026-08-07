@@ -1123,6 +1123,14 @@ static int save_quick_checkpoint(const char *reason, bool verbose, bool rate_lim
 
     if (rc == GS_SUCCESS) {
         g_last_background_checkpoint_ms = now;
+        // Status-bar heartbeat: push the save duration so the CP glyph
+        // flashes and its tooltip updates. x100 fixed-point since
+        // MAIN_THREAD_ASYNC_EM_ASM carries ints.
+        // clang-format off
+        MAIN_THREAD_ASYNC_EM_ASM(
+            { if (typeof Module.onCheckpointSaved === 'function') Module.onCheckpointSaved($0); },
+            (int)(checkpoint_elapsed_ms * 100.0));
+        // clang-format on
         if (verbose)
             printf("Checkpoint saved to %s (%.2f ms)\n", final_path, checkpoint_elapsed_ms);
     } else if (verbose) {

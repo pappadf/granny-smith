@@ -36,12 +36,22 @@ describe('StatusBar', () => {
     expect(container.querySelector('.sb-desc')?.textContent).toBe('SE/30 · 8 MB');
   });
 
-  it('renders three drive indicators (HD, FD, CD)', () => {
+  it('renders the drive indicators plus the checkpoint glyph (HD, FD, CD, CP)', () => {
     machine.status = 'running';
     const { container } = render(StatusBar);
     const driveLabels = Array.from(container.querySelectorAll('.sb-drive .drive-ico')).map(
       (d) => d.textContent,
     );
-    expect(driveLabels).toEqual(['HD', 'FD', 'CD']);
+    expect(driveLabels).toEqual(['HD', 'FD', 'CD', 'CP']);
+  });
+
+  it('checkpoint glyph tooltip carries the last save time and duration', () => {
+    machine.status = 'running';
+    machine.checkpoint = { at: Date.now(), ms: 12.34 };
+    const { container } = render(StatusBar);
+    const cp = Array.from(container.querySelectorAll('.sb-drive')).find(
+      (d) => d.querySelector('.drive-ico')?.textContent === 'CP',
+    );
+    expect(cp?.getAttribute('title')).toMatch(/Last background checkpoint .+\(12\.3 ms\)/);
   });
 });

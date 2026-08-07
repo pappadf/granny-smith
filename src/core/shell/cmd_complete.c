@@ -76,6 +76,11 @@ static void complete_paths(const char *prefix, struct completion *out) {
     char dir[256] = ".";
     const char *partial = prefix;
 
+    // Candidates are bare entry names: narrow the replace span to the
+    // basename after the last '/' (out->start arrives at the word start).
+    if (last_slash)
+        out->start += (int)(last_slash - prefix) + 1;
+
     if (last_slash) {
         size_t dir_len = (size_t)(last_slash - prefix);
         if (dir_len == 0) {
@@ -105,7 +110,26 @@ static void complete_paths(const char *prefix, struct completion *out) {
             break;
         if (ent.name[0] == '.' && partial[0] != '.')
             continue;
-        const char *copy = pool_strdup(ent.name);
+        // Skip non-matches before any stat so the per-entry cost below
+        // is only paid for actual candidates.
+        size_t plen = strlen(partial);
+        if (plen && strncasecmp(ent.name, partial, plen) != 0)
+            continue;
+        // Directories complete to "name/" (bash-style) so the terminal
+        // omits the trailing space and the next Tab descends into them.
+        // Name-only backends (host readdir) leave has_stat false; one
+        // vfs_stat per matching entry types those.
+        bool is_dir = ent.has_stat && (ent.st.mode & VFS_MODE_DIR);
+        if (!ent.has_stat) {
+            char full[512];
+            snprintf(full, sizeof(full), "%s%s%s", dir, (dir[0] == '/' && dir[1] == '\0') ? "" : "/", ent.name);
+            vfs_stat_t st;
+            if (vfs_stat(full, &st) == 0 && (st.mode & VFS_MODE_DIR))
+                is_dir = true;
+        }
+        char buf[sizeof(ent.name) + 1];
+        snprintf(buf, sizeof(buf), "%s%s", ent.name, is_dir ? "/" : "");
+        const char *copy = pool_strdup(buf);
         if (!copy)
             break;
         push_match(out, copy, partial);
@@ -243,6 +267,21 @@ static bool in_special_context(const parse_state_t *st) {
 // trailing identifier. Suggestions are members of the class at
 // `head_buf` plus statically-attached children of the resolved object.
 
+// Push one member/child name; object-valued entries complete to "name."
+// (bash's directory-slash idiom) so the terminal omits the trailing
+// space and the next Tab lists the object's own members.
+static void push_name_match(struct completion *out, const char *name, bool is_object, const char *tail) {
+    if (!name)
+        return;
+    if (!is_object) {
+        push_match(out, name, tail);
+        return;
+    }
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s.", name);
+    push_match(out, pool_strdup(buf), tail);
+}
+
 static void complete_class_members(const class_desc_t *cls, const char *tail, struct completion *out) {
     if (!cls)
         return;
@@ -250,7 +289,7 @@ static void complete_class_members(const class_desc_t *cls, const char *tail, st
         const member_t *m = &cls->members[i];
         if (!m->name)
             continue;
-        push_match(out, m->name, tail);
+        push_name_match(out, m->name, m->kind == M_CHILD, tail);
     }
 }
 
@@ -265,7 +304,8 @@ static void each_attached_cb(struct object *parent, struct object *child, void *
     const char *name = object_name(child);
     if (!name)
         return;
-    push_match(acc->out, name, acc->tail);
+    // Attached children are objects: complete to "name.".
+    push_name_match(acc->out, name, true, acc->tail);
 }
 
 static void complete_attached(struct object *o, const char *tail, struct completion *out) {
@@ -282,8 +322,9 @@ static void complete_indexed_children(struct object *o, const member_t *m, const
         return;
     int idx = m->child.next(o, -1);
     while (idx >= 0 && out->count < CMD_MAX_COMPLETIONS) {
+        // Indexed children resolve to objects: complete to "N.".
         char tmp[16];
-        snprintf(tmp, sizeof(tmp), "%d", idx);
+        snprintf(tmp, sizeof(tmp), "%d.", idx);
         const char *copy = pool_strdup(tmp);
         if (!copy)
             break;
@@ -600,6 +641,8 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     if (!line || !out)
         return;
     out->count = 0;
+    out->start = 0;
+    out->end = 0;
     pool_reset();
 
     int len = (int)strlen(line);
@@ -609,6 +652,9 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
         cursor_pos = len;
 
     cursor_info_t info = scan_to_cursor(line, cursor_pos);
+    // Default span: the whole current word (complete_paths narrows it).
+    out->start = info.word_start;
+    out->end = cursor_pos;
     if (info.inside_special)
         return; // §4.6: empty inside $(...), ${...}, "..."
 

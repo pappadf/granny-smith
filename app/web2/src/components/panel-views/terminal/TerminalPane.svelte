@@ -9,8 +9,10 @@
     isModuleReady,
     whenModuleReady,
   } from '@/bus/emulator';
+  import { opfs, writeToOPFS } from '@/bus/opfs';
   import { setTerminalSink } from '@/bus/logSink';
   import { layout } from '@/state/layout.svelte';
+  import { machine } from '@/state/machine.svelte';
   import { theme } from '@/state/theme.svelte';
   import { registerTerminalInsert } from './terminalBridge';
 
@@ -24,6 +26,7 @@
       background: readCssToken('--gs-terminal-bg') || '#0d0f11',
       foreground: readCssToken('--gs-terminal-fg') || '#cccccc',
       cursor: readCssToken('--gs-terminal-cursor') || '#cccccc',
+      selectionBackground: readCssToken('--gs-terminal-selection') || 'rgba(128, 128, 128, 0.4)',
     };
   }
 
@@ -39,7 +42,14 @@
     focus(): void;
     scrollToBottom(): void;
     cols: number;
-    options: { theme?: { background?: string; foreground?: string; cursor?: string } };
+    options: {
+      theme?: {
+        background?: string;
+        foreground?: string;
+        cursor?: string;
+        selectionBackground?: string;
+      };
+    };
   }
   interface FitAddonLike {
     fit(): void;
@@ -94,6 +104,23 @@
     xterm.write(inputState.prompt);
   }
 
+  // Reseed the rendered prompt on machine state transitions (boot, toolbar
+  // pause/resume): the prompt is state-aware, and the idle input line would
+  // otherwise keep the stale pre-transition text until the next command.
+  // Only repaints an *idle* input line — while a command is in flight its
+  // own shell.run return carries the fresh prompt.
+  $effect(() => {
+    void machine.status;
+    void machine.model; // model swap can re-boot without a status edge
+    void (async () => {
+      await seedPrompt();
+      if (!destroyed && xterm && inputState.active) {
+        refreshPrompt();
+        renderInput();
+      }
+    })();
+  });
+
   function writeLine(message: string) {
     if (!xterm) return;
     const text = (message ?? '').toString();
@@ -103,12 +130,56 @@
     if (inputState.active) renderInput();
   }
 
+  // --- Persistent history (OPFS) ---------------------------------------
+  //
+  // The in-memory ring survives reloads via one newline-separated file at
+  // the OPFS root (a dotfile, like ~/.bash_history). Loaded once at
+  // component init and merged BEFORE anything typed since page load;
+  // rewritten (it is at most MAX_HISTORY small lines) after each push,
+  // coalesced so a burst of commands never overlaps writes. All
+  // best-effort: a missing file or a write failure only costs history.
+  const HISTORY_PATH = '/opfs/.shell_history';
+  let historySaving = false;
+  let historySaveQueued = false;
+
+  async function saveHistory(): Promise<void> {
+    if (historySaving) {
+      historySaveQueued = true;
+      return;
+    }
+    historySaving = true;
+    try {
+      await writeToOPFS(HISTORY_PATH, new Blob([inputState.history.join('\n') + '\n']));
+    } catch {
+      // Best-effort.
+    }
+    historySaving = false;
+    if (historySaveQueued) {
+      historySaveQueued = false;
+      void saveHistory();
+    }
+  }
+
+  async function loadHistory(): Promise<void> {
+    try {
+      const text = await (await opfs.readFile(HISTORY_PATH)).text();
+      const lines = text.split('\n').filter((l) => l.trim().length > 0);
+      if (destroyed || !lines.length) return;
+      inputState.history = [...lines, ...inputState.history].slice(-MAX_HISTORY);
+      inputState.historyIndex = inputState.history.length;
+    } catch {
+      // No history file yet.
+    }
+  }
+  void loadHistory();
+
   function pushHistory(line: string) {
     const trimmed = line?.trim();
     if (!trimmed) return;
     inputState.history.push(line);
     if (inputState.history.length > MAX_HISTORY) inputState.history.shift();
     inputState.historyIndex = inputState.history.length;
+    void saveHistory();
   }
 
   function recallHistory(delta: number) {
@@ -166,8 +237,11 @@
       const after = inputState.buffer.slice(span.end);
       inputState.buffer = before + completed + after;
       inputState.cursor = before.length + completed.length;
-      // Trailing space when caret lands at the very end.
-      if (inputState.cursor === inputState.buffer.length) {
+      // Trailing space when caret lands at the very end — except after
+      // drill-in candidates (object "name.", directory "name/", named-arg
+      // "name="), where the next keystroke continues the same token.
+      const drillIn = /[./=]$/.test(completed);
+      if (inputState.cursor === inputState.buffer.length && !drillIn) {
         inputState.buffer += ' ';
         inputState.cursor++;
       }
