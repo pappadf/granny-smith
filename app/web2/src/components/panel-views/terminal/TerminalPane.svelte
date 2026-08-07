@@ -11,6 +11,7 @@
   } from '@/bus/emulator';
   import { setTerminalSink } from '@/bus/logSink';
   import { layout } from '@/state/layout.svelte';
+  import { machine } from '@/state/machine.svelte';
   import { theme } from '@/state/theme.svelte';
   import { registerTerminalInsert } from './terminalBridge';
 
@@ -93,6 +94,23 @@
     clearLine();
     xterm.write(inputState.prompt);
   }
+
+  // Reseed the rendered prompt on machine state transitions (boot, toolbar
+  // pause/resume): the prompt is state-aware, and the idle input line would
+  // otherwise keep the stale pre-transition text until the next command.
+  // Only repaints an *idle* input line — while a command is in flight its
+  // own shell.run return carries the fresh prompt.
+  $effect(() => {
+    void machine.status;
+    void machine.model; // model swap can re-boot without a status edge
+    void (async () => {
+      await seedPrompt();
+      if (!destroyed && xterm && inputState.active) {
+        refreshPrompt();
+        renderInput();
+      }
+    })();
+  });
 
   function writeLine(message: string) {
     if (!xterm) return;

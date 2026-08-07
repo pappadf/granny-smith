@@ -71,10 +71,21 @@ test('shell prompt reflects machine and run state', async ({ page }) => {
   ).toBeVisible({ timeout: 60_000 });
 
   // --- Running: "gs se30> ", no PC --------------------------------------
-  // The rendered prompt refreshes on each shell.run return, so run a
-  // no-op first; the prompt that comes back reflects the live machine.
+  // No command is typed first: TerminalPane reseeds the rendered prompt on
+  // the machine.status edge, so the idle input line must update by itself.
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await terminalRun(page, 'echo sync-running');
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 15_000 })
+    .toMatch(/^gs se30>$/);
+
+  // --- Toolbar pause/resume: idle prompt repaints by itself -------------
+  // No terminal input at all — the run-state edge alone must flip the
+  // rendered prompt to the halted-PC form and back.
+  await page.getByRole('button', { name: 'Pause', exact: true }).click();
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 15_000 })
+    .toMatch(/^gs se30 @[0-9A-F]{8}>$/);
+  await page.getByRole('button', { name: 'Run', exact: true }).click();
   await expect
     .poll(() => lastTermLine(page), { timeout: 15_000 })
     .toMatch(/^gs se30>$/);
