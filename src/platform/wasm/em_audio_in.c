@@ -108,6 +108,26 @@ void em_audio_in_init(void) {
 //      which adapts far faster.  Silence holds the gain rather than winding
 //      it up into the noise floor.
 //
+//   3. The PLAINTALK CHANNEL: a fixed first-order darkening filter.  The
+//      recognizer's acoustic models were trained through the PlainTalk
+//      capsule and the Singer analog input path, not through a flat digital
+//      channel — and the acceptance region measured on the real recognizer
+//      is lopsided around flat input: +2..4 dB of extra brightness is total
+//      failure while 12 dB of darkening still recognizes, i.e. flat sits at
+//      the models' bright EDGE (debug-plaintalk/re/02-acceptance-region-
+//      probe.md).  This filter moves every host's audio toward the channel
+//      the models expect; it is host-independent because every host delivers
+//      roughly flat digital audio.
+//   4. A SLOW spectral-tilt normaliser.  Microphones differ in brightness
+//      the way they differ in sensitivity, so this is the tilt sibling of
+//      the gain normaliser and follows the same discipline learned from it:
+//      voiced-blocks-only evidence, a settle phase then a slow drift, hold
+//      in silence, and a hard clamp — so it can never ride the balance
+//      WITHIN an utterance the way the first gain normaliser rode the
+//      level.  It starts neutral: the fixed channel filter above carries
+//      the systematic correction from the first word, and this stage only
+//      trims the per-microphone residual over the following utterances.
+//
 // Deliberately NOT done here: adding a noise floor (singer.c already models
 // the converter's own, and a live mic brings its own room tone), and peak
 // normalisation (it is what flattens speech dynamics — see the §2 contract).
@@ -142,12 +162,45 @@ void em_audio_in_init(void) {
 // as the speaker draws breath.
 #define GS_MIC_VOICED_OVER_FLOOR 6.0f
 
+// The PlainTalk channel model: one-pole darkening y = (1-a)x + a*y'.
+// Calibrated against the recognizer itself (re/02-acceptance-region-probe.md):
+// the value must keep the reference voice recognized while moving flat input
+// away from the models' bright edge.  DC gain is unity and the loss at
+// 500 Hz is ~0.1 dB, so the level normaliser's target math is unaffected.
+#define GS_MIC_CHANNEL_A 0.45f
+
+// Tilt normaliser: band balance is measured around this split, and the
+// corrective high-shelf is clamped to this range.  The target balance is
+// what the reference asset (the voice the recognizer demonstrably accepts)
+// measures through the high-pass + channel filter above — i.e. "what a
+// PlainTalk microphone would have delivered", not any particular host.
+#define GS_MIC_TILT_SPLIT_HZ 1000.0f
+// The corrector is DARKEN-ONLY.  From one signal a dark microphone and a
+// dark voice are indistinguishable, and a deep voice measured "too dark"
+// would otherwise be corrected bright — cancelling the channel filter and
+// pushing the speaker toward the models' bright cliff (this happened: a
+// real speaker's balance sits well below the synthetic reference's, and
+// the first live capture came back brighter than the old, unconditioned
+// one).  The acceptance region is asymmetric — bright is a cliff at
+// +2..4 dB, dark is tolerated past 12 dB — so only the bright direction
+// needs correcting, and only darkening is safe to apply.
+#define GS_MIC_TILT_MAX 1.0f // never brighten
+#define GS_MIC_TILT_MIN 0.5f // up to -6 dB of darkening for bright mics
+#define GS_MIC_BAL_TARGET                                                                                              \
+    0.42f // hi/lo voiced RMS ratio of the reference asset
+          // (sr-open-the-trash.wav through HP+channel)
+
 static struct {
     float hp_x1, hp_x2, hp_y1, hp_y2; // 100 Hz Butterworth state
+    float ch_y1; // PlainTalk channel one-pole state
+    float lo_y1; // tilt split one-pole state (shared measure/apply)
     float gain; // the sensitivity normaliser's current gain
     float floor_est; // running noise floor (RMS counts)
     float level_est; // running voiced level (RMS counts)
+    float bal_est; // running voiced hi/lo band balance
+    float shelf; // tilt corrector's current high-shelf gain (1 = neutral)
     uint32_t voiced_blocks; // voiced blocks seen since the stream opened
+    uint32_t voiced_run; // CONSECUTIVE voiced blocks (reset by silence)
     int primed;
 } g_cond;
 
@@ -182,12 +235,21 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         g_cond.gain = 1.0f;
         g_cond.floor_est = -1.0f; // seeded from the first block's RMS below
         g_cond.level_est = 0.0f;
+        g_cond.bal_est = 0.0f;
+        g_cond.shelf = 1.0f; // neutral: the fixed channel filter carries day one
         g_cond.voiced_blocks = 0;
         g_cond.primed = 1;
     }
 
-    // High-pass, and measure this block's RMS from the filtered signal.
-    double sum2 = 0.0;
+    // Tilt split one-pole coefficient for this rate.
+    float k2 = 1.0f - (float)exp(-2.0 * M_PI * (double)GS_MIC_TILT_SPLIT_HZ / (double)rate);
+    // The application pass below re-runs the split filter over the same
+    // samples, so it must start from the same state this pass starts from.
+    float lo_state_in = g_cond.lo_y1;
+
+    // High-pass, apply the PlainTalk channel, and measure this block's RMS
+    // and band balance from the channel-filtered signal.
+    double sum2 = 0.0, losum2 = 0.0, hisum2 = 0.0;
     for (uint32_t i = 0; i < n; i++) {
         float x = (float)s[i];
         float y = g_hp.b0 * x + g_hp.b1 * g_cond.hp_x1 + g_hp.b2 * g_cond.hp_x2 - g_hp.a1 * g_cond.hp_y1 -
@@ -196,10 +258,21 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         g_cond.hp_x1 = x;
         g_cond.hp_y2 = g_cond.hp_y1;
         g_cond.hp_y1 = y;
-        s[i] = (int16_t)(y < -32768.0f ? -32768.0f : (y > 32767.0f ? 32767.0f : y));
-        sum2 += (double)y * (double)y;
+        // The fixed channel: unity at DC, first-order rolloff toward Nyquist.
+        float c = (1.0f - GS_MIC_CHANNEL_A) * y + GS_MIC_CHANNEL_A * g_cond.ch_y1;
+        g_cond.ch_y1 = c;
+        // Band split for the tilt measurement (pre-shelf, i.e. the raw
+        // microphone's balance as seen through the channel).
+        g_cond.lo_y1 += k2 * (c - g_cond.lo_y1);
+        float hi = c - g_cond.lo_y1;
+        losum2 += (double)g_cond.lo_y1 * (double)g_cond.lo_y1;
+        hisum2 += (double)hi * (double)hi;
+        s[i] = (int16_t)(c < -32768.0f ? -32768.0f : (c > 32767.0f ? 32767.0f : c));
+        sum2 += (double)c * (double)c;
     }
     float rms = (float)sqrt(sum2 / (double)n);
+    float lo_rms = (float)sqrt(losum2 / (double)n);
+    float hi_rms = (float)sqrt(hisum2 / (double)n);
 
     // Track the noise floor downward quickly and upward slowly, so a quiet
     // room is learned fast but a burst of speech never becomes "the floor".
@@ -229,6 +302,32 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         else
             g_cond.level_est += (rms - g_cond.level_est) * 0.05f; // release
         g_cond.voiced_blocks++;
+        g_cond.voiced_run++;
+
+        // Track this microphone's spectral balance — but only from blocks
+        // whose balance is PLAUSIBLE FOR SPEECH.  Voiced speech through any
+        // reasonable microphone lands within a couple of octaves of the
+        // reference balance; a test tone, a hum, or hiss lands decades away
+        // (a 500 Hz tone over hiss measures ~0.01, a whistle ~100).  Such
+        // blocks must hold the estimate, not slam the shelf to its clamp.
+        // Three further guards, each caught by a rig check:
+        //   - both bands clearly above the noise floor (a tone's "other
+        //     band" is the room hiss AT the floor, and tone/hiss can land
+        //     anywhere, including inside the balance gate);
+        //   - a run of ≥3 consecutive voiced blocks (an isolated click or a
+        //     burst edge is broadband for one block and looks speech-like);
+        //   - the balance gate itself.
+        if (g_cond.voiced_run >= 3 && lo_rms > g_cond.floor_est * 1.5f && hi_rms > g_cond.floor_est * 1.5f) {
+            float bal = hi_rms / lo_rms;
+            if (bal > 0.08f && bal < 5.0f) {
+                if (g_cond.bal_est <= 0.0f)
+                    g_cond.bal_est = bal;
+                else
+                    g_cond.bal_est += (bal - g_cond.bal_est) * (g_cond.voiced_blocks < 20 ? 0.3f : 0.05f);
+            }
+        }
+    } else {
+        g_cond.voiced_run = 0;
     }
 
     // Move the gain toward what puts the voiced level at the target.  A
@@ -266,8 +365,31 @@ static void mic_condition(int16_t *s, uint32_t n, uint32_t rate) {
         g_cond.gain += (want - g_cond.gain) * (g_cond.voiced_blocks < 20 ? 0.5f : 0.02f);
     }
 
+    // Move the shelf toward what corrects this microphone's balance to the
+    // reference target.  Unlike the gain there is NO fast-settle phase: the
+    // fixed channel filter already carries the systematic correction from
+    // the first word, so this stage may converge gently across an utterance
+    // or two.  A fast phase here would re-create the ride-within-the-
+    // utterance defect the gain normaliser was cured of — in spectrum
+    // instead of level.
+    if (g_cond.bal_est > 0.0f && g_cond.voiced_blocks >= 3) {
+        float want = GS_MIC_BAL_TARGET / g_cond.bal_est;
+        if (want > GS_MIC_TILT_MAX)
+            want = GS_MIC_TILT_MAX;
+        if (want < GS_MIC_TILT_MIN)
+            want = GS_MIC_TILT_MIN;
+        // 0.004 per 10 ms block ≈ a 2.5 s time constant of VOICED audio:
+        // most of one utterance passes before half the correction is in.
+        g_cond.shelf += (want - g_cond.shelf) * 0.004f;
+    }
+
+    // Apply the corrective high-shelf (y = lo + shelf*hi, re-splitting from
+    // the same state the measurement pass started from) and the gain.
+    float lo = lo_state_in;
     for (uint32_t i = 0; i < n; i++) {
-        float v = (float)s[i] * g_cond.gain;
+        float x = (float)s[i];
+        lo += k2 * (x - lo);
+        float v = (lo + g_cond.shelf * (x - lo)) * g_cond.gain;
         s[i] = (int16_t)(v < -32768.0f ? -32768.0f : (v > 32767.0f ? 32767.0f : v));
     }
 }
@@ -491,12 +613,13 @@ bool gs_audio_in_debug(char *buf, size_t buflen) {
     uint32_t rd = atomic_load_explicit(&g_mic.rd, memory_order_relaxed);
     snprintf(buf, buflen,
              "| host: conn %d in %u out %u lag %u under %u over %u @%dHz gain %.2f floor %.0f "
-             "| JS rms %d peak %d src \"%.48s\"",
+             "shelf %.2f bal %.2f | JS rms %d peak %d src \"%.48s\"",
              atomic_load_explicit(&g_mic.connected, memory_order_relaxed) != 0, wr, rd, wr - rd,
              atomic_load_explicit(&g_mic.underruns, memory_order_relaxed),
              atomic_load_explicit(&g_mic.overruns, memory_order_relaxed),
              (int)atomic_load_explicit(&g_mic.rate, memory_order_relaxed), (double)g_cond.gain,
-             (double)g_cond.floor_est, (int)atomic_load_explicit(&g_mic.js_rms, memory_order_relaxed),
+             (double)g_cond.floor_est, (double)g_cond.shelf, (double)g_cond.bal_est,
+             (int)atomic_load_explicit(&g_mic.js_rms, memory_order_relaxed),
              (int)atomic_load_explicit(&g_mic.js_peak, memory_order_relaxed), g_mic.label[0] ? g_mic.label : "?");
     return true;
 }

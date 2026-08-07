@@ -71,6 +71,15 @@ Host source surface, mirroring `machine.videoin`:
 re-mastering assets; it is a test-harness knob, applied *before* the
 codec's own A/D gain ladder and noise floor.
 
+**Injecting a WAV is one command.** `machine.audioin.load <path>` loads
+the file, selects the `wav` source and resets the position, so whatever
+is listening hears the utterance from the top at that moment — there is
+no separate play step, because the *guest's* input DMA is the transport
+(the source is a tape the codec reads, not a player). `rewind()` replays
+it without re-reading the file. In the browser, drop the WAV into OPFS
+via the Filesystem tab and load it by its `/opfs/...` path. Switch back
+to the microphone with `machine.audioin.source = "host"`.
+
 ### The `host` source in the browser
 
 `src/platform/wasm/em_audio_in.c` overrides the seam for the WASM build and
@@ -140,6 +149,35 @@ assets reach the guest looking alike:
 
 * a **100 Hz high-pass** — the electret, its preamp and the codec's AC
   coupling do not pass the proximity rumble a laptop or headset mic delivers;
+* the **PlainTalk channel filter** — a fixed first-order darkening
+  (`GS_MIC_CHANNEL_A`).  The recognizer's acoustic models were trained
+  through the PlainTalk capsule and the Singer analog path, not through a
+  flat digital channel; measured on the real recognizer, flat input sits at
+  the models' *bright edge* (+2–4 dB of extra tilt is total, silent
+  recognition failure, while 12 dB of darkening still recognizes).  The
+  constant was calibrated by sweeping tilt against four synthesized voices
+  and picking the value that recovers the failing ones without moving the
+  reference — see `local/gs-docs/debug-plaintalk/re/02-acceptance-region-
+  probe.md`.  It is host-independent: every host delivers roughly flat
+  digital audio, so the correction toward the trained channel is the same
+  everywhere;
+* a **spectral-tilt normaliser** — the tilt sibling of the sensitivity
+  normaliser, for the per-microphone brightness spread the fixed filter
+  cannot know.  It measures the voiced-band hi/lo balance around 1 kHz,
+  compares it with the reference asset's balance through the channel
+  filter (`GS_MIC_BAL_TARGET`), and trims a **darken-only** (0…−6 dB)
+  high-shelf.  Darken-only because a dark microphone and a dark *voice*
+  are indistinguishable from one signal, and the acceptance region is
+  asymmetric (bright is a cliff, dark is tolerated): a deep voice measured
+  "too dark" must be left alone, not corrected bright into the cliff — a
+  real speaker was measurably pushed there by the symmetric version.  Its
+  evidence gates are strict — both bands clearly above the noise floor, a
+  speech-plausible balance, three consecutive voiced blocks — so tones,
+  hum, clicks and hiss hold it still; and it deliberately has **no
+  fast-settle phase**: the fixed filter carries the first utterance, and
+  the shelf converges over ~2.5 s of voiced audio so it can never ride the
+  spectrum within an utterance the way the first sensitivity normaliser
+  rode the level;
 * a **sensitivity normaliser** targeting TIL15884's 100-200 mVpp window
   for typical voiced speech.  This models the *fixed* sensitivity of the
   PlainTalk preamp — it cancels the tens of dB of spread between one user's
