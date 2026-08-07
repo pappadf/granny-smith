@@ -12,6 +12,7 @@ import {
   machine,
   setSchedulerMode,
   setAcceleratedSpeed,
+  setCheckpointSaved,
   setPerfStats,
   type MachineStatus,
   type MmuKind,
@@ -86,6 +87,7 @@ interface EmscriptenModuleConfig {
   onFloppyChange?(drive: number, present: boolean): void;
   onSchedulerSpeed?(speedX256: number): void;
   onPerfUpdate?(mipsX100: number, tpsX10: number): void;
+  onCheckpointSaved?(elapsedMsX100: number): void;
   onVideoInReady?(ptr: number, w: number, h: number): void;
   onVideoInState?(active: boolean): void;
   onAudioInReady?(ptr: number, len: number, rate: number): void;
@@ -163,6 +165,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onFloppyChange: onFloppyDriveChange,
     onSchedulerSpeed: handleSchedulerSpeed,
     onPerfUpdate: handlePerfUpdate,
+    onCheckpointSaved: handleCheckpointSaved,
     onVideoInReady,
     onVideoInState,
     onAudioInReady,
@@ -362,6 +365,13 @@ function handleSchedulerSpeed(speedX256: number): void {
 // (x100 / x10) since MAIN_THREAD_ASYNC_EM_ASM carries ints.
 function handlePerfUpdate(mipsX100: number, tpsX10: number): void {
   setPerfStats((mipsX100 | 0) / 100, (tpsX10 | 0) / 10);
+}
+
+// Core-pushed quick/background checkpoint completion (elapsed ms x100 —
+// MAIN_THREAD_ASYNC_EM_ASM carries ints). The status bar flashes its CP
+// glyph and carries the time + duration in the tooltip.
+function handleCheckpointSaved(elapsedMsX100: number): void {
+  setCheckpointSaved((elapsedMsX100 | 0) / 100);
 }
 
 function handleScreenResize(w: number, h: number, parW?: number, parH?: number): void {

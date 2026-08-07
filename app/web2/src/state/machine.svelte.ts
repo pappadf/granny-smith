@@ -48,6 +48,11 @@ interface MachineState {
   // most everything else is square 1:1). Reported by the core via onScreenResize.
   screen: { width: number; height: number; parW: number; parH: number };
   driveActivity: { hd: DriveActivity; fd: DriveActivity; cd: DriveActivity };
+  // Last successful quick/background checkpoint, pushed from the core
+  // (bus/emulator.ts handleCheckpointSaved): wall-clock stamp + save
+  // duration. null until the first save after page load; the status bar
+  // flashes its CP glyph on each push and shows this in the tooltip.
+  checkpoint: { at: number; ms: number } | null;
   scheduler: SchedulerMode;
   // Effective CPU speed multiplier the core is currently applying (1 = the
   // original Mac's speed). Only meaningful — and only shown — in `accel` mode,
@@ -73,6 +78,7 @@ export const machine: MachineState = $state({
   audioIn: false,
   screen: { width: 512, height: 342, parW: 1, parH: 1 },
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
+  checkpoint: null,
   scheduler: 'live',
   acceleratedSpeed: 1,
   mips: 0,
@@ -108,6 +114,13 @@ export function setAcceleratedSpeed(multiplier: number): void {
 export function setPerfStats(mips: number, ticksPerSecond: number): void {
   machine.mips = mips;
   machine.ticksPerSecond = ticksPerSecond;
+}
+
+// Core-pushed quick-checkpoint completion (bus/emulator.ts
+// handleCheckpointSaved). A fresh object per push so effects keyed on
+// identity re-fire even for back-to-back saves.
+export function setCheckpointSaved(ms: number): void {
+  machine.checkpoint = { at: Date.now(), ms };
 }
 
 // ---- Drive activity mock ----
