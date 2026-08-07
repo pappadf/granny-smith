@@ -18,10 +18,16 @@
 
 // Completion result: a fixed-capacity list of borrowed candidate
 // strings (they point at static class-member names or a per-call
-// string pool inside the completer).
+// string pool inside the completer), plus the half-open [start, end)
+// span of line text each candidate replaces. `end` is the cursor;
+// `start` is the current word's first character — except for
+// filesystem-path candidates, which are bare entry names and replace
+// only the basename after the word's last '/'.
 struct completion {
     const char *items[CMD_MAX_COMPLETIONS];
     int count;
+    int start;
+    int end;
 };
 
 // Run tab completion for the given line at cursor_pos.

@@ -181,9 +181,12 @@ static value_t shell_method_run(struct object *self, const member_t *m, int argc
 }
 
 // `shell.complete(line, cursor)` — line-level tab completion. Returns
-// a V_LIST<V_STRING> of candidates. The `meta.complete` method on the
-// synthetic Meta overlay delegates here through the provider hook in
-// shell.c, so callers see a single canonical completion engine.
+// {candidates: V_LIST<V_STRING>, span: {start, end}} where span is the
+// half-open range of line text each candidate replaces (object-path
+// candidates cover the whole word; filesystem candidates only the
+// basename). The `meta.complete` method on the synthetic Meta overlay
+// delegates here through the provider hook in shell.c and keeps the
+// bare-list shape.
 static value_t shell_method_complete(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -198,14 +201,21 @@ static value_t shell_method_complete(struct object *self, const member_t *m, int
     struct completion comp;
     memset(&comp, 0, sizeof(comp));
     shell_complete(line, cursor, &comp);
-    if (comp.count <= 0)
-        return val_list(NULL, 0);
-    value_t *items = (value_t *)calloc((size_t)comp.count, sizeof(value_t));
-    if (!items)
-        return val_err("shell.complete: out of memory");
-    for (int i = 0; i < comp.count; i++)
-        items[i] = val_str(comp.items[i] ? comp.items[i] : "");
-    return val_list(items, (size_t)comp.count);
+    value_t *items = NULL;
+    if (comp.count > 0) {
+        items = (value_t *)calloc((size_t)comp.count, sizeof(value_t));
+        if (!items)
+            return val_err("shell.complete: out of memory");
+        for (int i = 0; i < comp.count; i++)
+            items[i] = val_str(comp.items[i] ? comp.items[i] : "");
+    }
+    value_map_builder_t *span = val_map_new();
+    val_map_put(span, "start", val_int(comp.start));
+    val_map_put(span, "end", val_int(comp.end));
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "candidates", val_list(items, comp.count > 0 ? (size_t)comp.count : 0));
+    val_map_put(b, "span", val_map_finish(span));
+    return val_map_finish(b);
 }
 
 // `shell.expand(text)` — interpolate a string body (`${…}` / `$name`)
@@ -351,8 +361,8 @@ static const member_t shell_members[] = {
      .method = {.args = shell_run_args, .nargs = 1, .result = V_STRING, .fn = shell_method_run}},
     {.kind = M_METHOD,
      .name = "complete",
-     .doc = "Tab-completion candidates for a partial line",
-     .method = {.args = shell_complete_args, .nargs = 2, .result = V_LIST, .fn = shell_method_complete}},
+     .doc = "Tab completion: {candidates, span:{start,end}} for a partial line",
+     .method = {.args = shell_complete_args, .nargs = 2, .result = V_MAP, .fn = shell_method_complete}},
     {.kind = M_METHOD,
      .name = "expand",
      .doc = "Expand ${...} / $(...) references in text",

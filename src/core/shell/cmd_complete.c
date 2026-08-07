@@ -76,6 +76,11 @@ static void complete_paths(const char *prefix, struct completion *out) {
     char dir[256] = ".";
     const char *partial = prefix;
 
+    // Candidates are bare entry names: narrow the replace span to the
+    // basename after the last '/' (out->start arrives at the word start).
+    if (last_slash)
+        out->start += (int)(last_slash - prefix) + 1;
+
     if (last_slash) {
         size_t dir_len = (size_t)(last_slash - prefix);
         if (dir_len == 0) {
@@ -600,6 +605,8 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
     if (!line || !out)
         return;
     out->count = 0;
+    out->start = 0;
+    out->end = 0;
     pool_reset();
 
     int len = (int)strlen(line);
@@ -609,6 +616,9 @@ void shell_complete(const char *line, int cursor_pos, struct completion *out) {
         cursor_pos = len;
 
     cursor_info_t info = scan_to_cursor(line, cursor_pos);
+    // Default span: the whole current word (complete_paths narrows it).
+    out->start = info.word_start;
+    out->end = cursor_pos;
     if (info.inside_special)
         return; // §4.6: empty inside $(...), ${...}, "..."
 

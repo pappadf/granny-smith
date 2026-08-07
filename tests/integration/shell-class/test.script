@@ -24,33 +24,41 @@ shell.vars
 # expand: no-op when nothing to expand; passes through verbatim.
 assert shell.expand("hello") == "hello" "expand pass-through"
 
-# complete: the tree-walking completer's decision tree, asserted via the
+# complete: the tree-walking completer's decision tree. Returns
+# {candidates, span:{start,end}}; candidates is asserted via the
 # expression layer's V_LIST == V_STRING comparison (a list compares equal
-# to its canonical "[a, b]" formatting). One case per branch — previously
-# these lived in the legacy web UI's tab-complete e2e (window.tabComplete
-# was a thin wrapper over this same shell.complete engine).
+# to its canonical "[a, b]" formatting), span via its int fields. One
+# case per branch — previously these lived in the legacy web UI's
+# tab-complete e2e (window.tabComplete was a thin wrapper over this same
+# shell.complete engine).
 #
 # Line-start: a prefix narrows root children / root methods.
-assert shell.complete("mach", 4) == "[machine]" "line-start child prefix"
-assert shell.complete("qu", 2) == "[quit]" "line-start method prefix"
+assert shell.complete("mach", 4).candidates == "[machine]" "line-start child prefix"
+assert shell.complete("qu", 2).candidates == "[quit]" "line-start method prefix"
 # Mid-path: members of the resolved object, composed with the head so the
-# terminal performs one full-token replace.
-assert shell.complete("machine.cpu.p", 13) == "[machine.cpu.pc]" "mid-path single match"
-assert shell.complete("machine.cpu.s", 13) == "[machine.cpu.sr, machine.cpu.ssp, machine.cpu.sp]" "mid-path multi match"
+# terminal performs one full-token replace — span covers the whole word.
+assert shell.complete("machine.cpu.p", 13).candidates == "[machine.cpu.pc]" "mid-path single match"
+assert shell.complete("machine.cpu.p", 13).span.start == 0 "mid-path span start"
+assert shell.complete("machine.cpu.p", 13).span.end == 13 "mid-path span end"
+assert shell.complete("machine.cpu.s", 13).candidates == "[machine.cpu.sr, machine.cpu.ssp, machine.cpu.sp]" "mid-path multi match"
 # Method-arg position dispatches by arg_decl kind: V_BOOL offers the
 # canonical spellings, followed by the `name=` named-argument forms
-# (proposal-named-args-boot-config §3.5).
-assert shell.complete("machine.sound.mute ", 19) == "[on, off, true, false, muted=]" "V_BOOL arg candidates"
+# (proposal-named-args-boot-config §3.5). The span is the arg word alone.
+assert shell.complete("machine.sound.mute ", 19).candidates == "[on, off, true, false, muted=]" "V_BOOL arg candidates"
 # A typed name prefix narrows to the named-argument form; `name=` prefix
 # completes the value with the name kept.
-assert shell.complete("machine.sound.mute mut", 22) == "[muted=]" "name= prefix narrows"
-assert shell.complete("machine.sound.mute muted=t", 26) == "[muted=true]" "named value completes"
+assert shell.complete("machine.sound.mute mut", 22).candidates == "[muted=]" "name= prefix narrows"
+assert shell.complete("machine.sound.mute mut", 22).span.start == 19 "arg span start"
+assert shell.complete("machine.sound.mute muted=t", 26).candidates == "[muted=true]" "named value completes"
+# Filesystem-path candidates are bare entry names: the span narrows to
+# the basename after the word's last '/'.
+assert shell.complete("vfs.ls /", 8).span.start == 8 "path span after slash"
 # Completion is deliberately suppressed inside $(...), "..." and ${...}.
 # The $ is split off via string concat so the script parser doesn't try to
 # expand a $( / ${ inside this very ${...} expression.
-assert shell.complete("echo $" + "(cpu.", 11) == "[]" "no candidates inside $()"
-assert shell.complete("echo \"machine.cpu.", 18) == "[]" "no candidates inside quotes"
-assert shell.complete("echo $" + "{cpu.", 11) == "[]" "no candidates inside dollar-brace"
+assert shell.complete("echo $" + "(cpu.", 11).candidates == "[]" "no candidates inside $()"
+assert shell.complete("echo \"machine.cpu.", 18).candidates == "[]" "no candidates inside quotes"
+assert shell.complete("echo $" + "{cpu.", 11).candidates == "[]" "no candidates inside dollar-brace"
 
 # alias_set / alias_unset round-trip. Adding "foo" -> "machine.cpu.pc" should
 # make it show up in shell.aliases, and unset should remove it.

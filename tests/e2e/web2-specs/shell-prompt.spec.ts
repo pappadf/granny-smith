@@ -40,6 +40,42 @@ async function terminalRun(page: Page, line: string): Promise<void> {
   await page.waitForTimeout(250);
 }
 
+test('terminal Tab completion replaces the right span', async ({ page }) => {
+  test.setTimeout(3 * 60 * 1000);
+  await gotoWeb2(page);
+
+  // Terminal is live pre-machine (object-model shell needs no emulated
+  // machine), which keeps this test cheap.
+  await page.locator('button.ptab[data-tab="terminal"]').click();
+  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 15_000 })
+    .toMatch(/^gs>$/);
+  const term = page.locator('.xterm');
+  await term.click();
+
+  // Object-path completion: the single candidate replaces the whole
+  // dotted word and appends a trailing space.
+  await page.keyboard.type('shell.pro');
+  await page.keyboard.press('Tab');
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 10_000 })
+    .toMatch(/^gs> shell\.prompt$/);
+  await page.keyboard.press('Enter'); // run it; harmless readback
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 10_000 })
+    .toMatch(/^gs>$/);
+
+  // Filesystem-path completion in a method arg: candidates are bare
+  // entry names, so the span must narrow to the basename after the last
+  // '/' — the browser VFS root always contains /opfs.
+  await page.keyboard.type('vfs.ls /op');
+  await page.keyboard.press('Tab');
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 10_000 })
+    .toMatch(/^gs> vfs\.ls \/opfs$/);
+});
+
 test('shell prompt reflects machine and run state', async ({ page }) => {
   test.setTimeout(5 * 60 * 1000);
   await gotoWeb2(page);
