@@ -54,9 +54,23 @@ test('terminal Tab completion replaces the right span', async ({ page }) => {
   const term = page.locator('.xterm');
   await term.click();
 
-  // Object-path completion: the single candidate replaces the whole
-  // dotted word and appends a trailing space.
-  await page.keyboard.type('shell.pro');
+  // Object completion: a lone object candidate completes to "shell."
+  // with NO trailing space (bash's directory idiom), so Tab twice
+  // drills in instead of dead-ending on "shell ".
+  await page.keyboard.type('she');
+  await page.keyboard.press('Tab');
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 10_000 })
+    .toMatch(/^gs> shell\.$/);
+
+  // Second Tab proposes the object's members.
+  await page.keyboard.press('Tab');
+  await expect
+    .poll(() => page.locator('.xterm-rows').innerText(), { timeout: 10_000 })
+    .toContain('shell.complete');
+
+  // A leaf attribute completes with the trailing space.
+  await page.keyboard.type('pro');
   await page.keyboard.press('Tab');
   await expect
     .poll(() => lastTermLine(page), { timeout: 10_000 })
@@ -67,13 +81,14 @@ test('terminal Tab completion replaces the right span', async ({ page }) => {
     .toMatch(/^gs>$/);
 
   // Filesystem-path completion in a method arg: candidates are bare
-  // entry names, so the span must narrow to the basename after the last
-  // '/' — the browser VFS root always contains /opfs.
+  // entry names (span narrows to the basename after the last '/'), and
+  // a directory completes to "name/" — the browser VFS root always
+  // contains /opfs.
   await page.keyboard.type('vfs.ls /op');
   await page.keyboard.press('Tab');
   await expect
     .poll(() => lastTermLine(page), { timeout: 10_000 })
-    .toMatch(/^gs> vfs\.ls \/opfs$/);
+    .toMatch(/^gs> vfs\.ls \/opfs\/$/);
 });
 
 test('shell prompt reflects machine and run state', async ({ page }) => {

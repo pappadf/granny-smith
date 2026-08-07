@@ -32,11 +32,15 @@ assert shell.expand("hello") == "hello" "expand pass-through"
 # tab-complete e2e (window.tabComplete was a thin wrapper over this same
 # shell.complete engine).
 #
-# Line-start: a prefix narrows root children / root methods.
-assert shell.complete("mach", 4).candidates == "[machine]" "line-start child prefix"
+# Line-start: a prefix narrows root children / root methods. Objects
+# complete to "name." (bash's directory-slash idiom) so the terminal
+# omits the trailing space and the next Tab lists their members; leaf
+# methods/attributes stay bare.
+assert shell.complete("mach", 4).candidates == "[machine.]" "line-start child prefix"
 assert shell.complete("qu", 2).candidates == "[quit]" "line-start method prefix"
 # Mid-path: members of the resolved object, composed with the head so the
 # terminal performs one full-token replace — span covers the whole word.
+assert shell.complete("machine.cp", 10).candidates == "[machine.cpu.]" "mid-path object gets a dot"
 assert shell.complete("machine.cpu.p", 13).candidates == "[machine.cpu.pc]" "mid-path single match"
 assert shell.complete("machine.cpu.p", 13).span.start == 0 "mid-path span start"
 assert shell.complete("machine.cpu.p", 13).span.end == 13 "mid-path span end"
@@ -51,8 +55,13 @@ assert shell.complete("machine.sound.mute mut", 22).candidates == "[muted=]" "na
 assert shell.complete("machine.sound.mute mut", 22).span.start == 19 "arg span start"
 assert shell.complete("machine.sound.mute muted=t", 26).candidates == "[muted=true]" "named value completes"
 # Filesystem-path candidates are bare entry names: the span narrows to
-# the basename after the word's last '/'.
+# the basename after the word's last '/'. Directories complete to
+# "name/" so the next Tab descends.
 assert shell.complete("vfs.ls /", 8).span.start == 8 "path span after slash"
+# Self-contained fixture: a directory in the test's cwd, unique enough
+# that it is the only completion for its prefix.
+vfs.mkdir "cmpl_probe_dir"
+assert shell.complete("vfs.ls cmpl_probe_d", 19).candidates == "[cmpl_probe_dir/]" "directory gets a slash"
 # Completion is deliberately suppressed inside $(...), "..." and ${...}.
 # The $ is split off via string concat so the script parser doesn't try to
 # expand a $( / ${ inside this very ${...} expression.

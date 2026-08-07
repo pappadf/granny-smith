@@ -192,8 +192,11 @@
       const after = inputState.buffer.slice(span.end);
       inputState.buffer = before + completed + after;
       inputState.cursor = before.length + completed.length;
-      // Trailing space when caret lands at the very end.
-      if (inputState.cursor === inputState.buffer.length) {
+      // Trailing space when caret lands at the very end — except after
+      // drill-in candidates (object "name.", directory "name/", named-arg
+      // "name="), where the next keystroke continues the same token.
+      const drillIn = /[./=]$/.test(completed);
+      if (inputState.cursor === inputState.buffer.length && !drillIn) {
         inputState.buffer += ' ';
         inputState.cursor++;
       }
