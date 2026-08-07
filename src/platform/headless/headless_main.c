@@ -576,20 +576,13 @@ static int stdin_has_data(void) {
     return select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv) > 0;
 }
 
-// Shell prompt — shows disassembled current instruction (like the web shell)
+// Shell prompt — shared builder in shell.c (same text as the web shell)
 void print_prompt(void) {
     if (g_daemon_mode)
         return;
-    if (system_is_initialized()) {
-        char disasm_buf[160];
-        debugger_disasm_pc(disasm_buf, sizeof(disasm_buf));
-        if (disasm_buf[0] != '\0')
-            printf("%s > ", disasm_buf);
-        else
-            printf("gs> ");
-    } else {
-        printf("gs> ");
-    }
+    char buf[256];
+    shell_build_prompt(buf, sizeof(buf));
+    printf("%s", buf);
     fflush(stdout);
 }
 

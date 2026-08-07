@@ -8,6 +8,7 @@
 
 #include "alias.h"
 #include "cmd_complete.h"
+#include "cpu.h"
 #include "debug.h"
 #include "expr.h"
 #include "log.h"
@@ -454,32 +455,28 @@ void shell_tab_complete(const char *line, int cursor_pos, struct completion *out
     shell_complete(line, cursor_pos, out);
 }
 
-// Compose the current shell prompt: `<disasm> > ` when a machine is up
-// (matching the headless REPL and the legacy WASM `build_prompt_text`),
-// `gs> ` otherwise. Centralised here so the Shell class's `prompt`
-// attribute, the headless REPL's `print_prompt`, and any future
-// consumer share a single source of truth.
+// Compose the current shell prompt.  Short and state-aware:
+//   no machine       -> "gs> "
+//   machine running  -> "gs <model>> "         (a sampled PC would be stale)
+//   machine stopped  -> "gs <model> @<pc>> "   (where execution halted)
+// Centralised here so the Shell class's `prompt` attribute, the headless
+// REPL's `print_prompt`, and any future consumer share a single source
+// of truth.
 void shell_build_prompt(char *buf, size_t buf_size) {
     if (!buf || buf_size == 0)
         return;
     buf[0] = '\0';
-    if (!system_is_initialized()) {
+    const char *model = system_machine_model_id();
+    if (!model) {
         snprintf(buf, buf_size, "gs> ");
         return;
     }
-    // Reserve 3 bytes for " > " suffix + 1 for terminator.
-    debugger_disasm_pc(buf, buf_size > 3 ? buf_size - 3 : 1);
-    size_t used = strnlen(buf, buf_size - 1);
-    if (used == 0) {
-        snprintf(buf, buf_size, "gs> ");
-        return;
-    }
-    if (used >= buf_size - 3)
-        used = buf_size - 4;
-    buf[used++] = ' ';
-    buf[used++] = '>';
-    buf[used++] = ' ';
-    buf[used] = '\0';
+    scheduler_t *sched = system_scheduler();
+    cpu_t *cpu = system_cpu();
+    if ((sched && scheduler_is_running(sched)) || !cpu)
+        snprintf(buf, buf_size, "gs %s> ", model);
+    else
+        snprintf(buf, buf_size, "gs %s @%08X> ", model, cpu_get_pc(cpu));
 }
 
 // Provider wired into the Meta class so `meta.complete(line, cursor)`

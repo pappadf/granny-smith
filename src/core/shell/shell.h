@@ -26,10 +26,10 @@
 
 uint64_t shell_dispatch(char *line);
 
-// Compose the current shell prompt (e.g. "<disasm> > " when a machine
-// is up, "gs> " otherwise) into `buf`. Used by the Shell class's
-// `prompt` attribute and the headless REPL's `print_prompt`. Output is
-// NUL-terminated and truncated to `buf_size - 1`.
+// Compose the current shell prompt into `buf`: "gs> " with no machine,
+// "gs <model>> " while running, "gs <model> @<pc>> " when stopped. Used
+// by the Shell class's `prompt` attribute and the headless REPL's
+// `print_prompt`. Output is NUL-terminated and truncated to `buf_size - 1`.
 void shell_build_prompt(char *buf, size_t buf_size);
 
 // === Shell Lifecycle ===
