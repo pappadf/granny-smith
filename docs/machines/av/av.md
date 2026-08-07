@@ -122,10 +122,12 @@ hangs forever inside `SCSIComplete`'s phase wait (whose deadline is
 
 ## What is deliberately not modelled
 
-The DSP3210 (no core — the enabler's Real Time Manager releases reset, polls,
-times out and re-asserts reset, which is the documented graceful failure and
-is verified on a real boot), Singer sound output beyond the mandatory
-free-running `sndPhase` counter, GeoPort/DMA serial, Ethernet beyond the
-register stub, floppy media, and NuBus cards in the AV slots. Video *input*
-is modelled — the digitizer, its capture path and the browser webcam feed are
-[vdc.md](vdc.md); capture is mute, as it is on the hardware.
+GeoPort/DMA serial, Ethernet beyond the register stub, floppy media, and
+NuBus cards in the AV slots.  The DSP3210 **is** modelled — a live core
+executing Apple's RTM kernel out of the ROM ([dsp.md](dsp.md)) — as is the
+Singer sound datapath in both directions ([singer.md](singer.md):
+`machine.sound` with the golden-WAV capture sink, and `machine.audioin`,
+the emulator's first microphone surface).  Video *input* is modelled — the
+digitizer, its capture path and the browser webcam feed are
+[vdc.md](vdc.md); capture is no longer mute: the boot chime and Singer
+output play through `audio_out`.

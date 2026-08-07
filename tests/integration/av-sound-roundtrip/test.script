@@ -1,0 +1,3 @@
+# Integration test: AV Sound cdev record round-trip
+# This test uses a custom runner (run.sh) - this file exists for auto-discovery
+# See run.sh for the actual test implementation, record.script for the GUI drive

@@ -43,9 +43,11 @@
 struct adb;
 struct av_civic;
 struct av_cuda;
+struct av_dsp;
 struct av_mace;
 struct av_new_age;
 struct av_psc;
+struct av_singer;
 struct av_vdc;
 struct mmu_state;
 struct nubus_slot_decl;
@@ -109,6 +111,8 @@ typedef struct av_state {
     struct adb *adb;
     struct av_cuda *cuda; // behavioral Cuda 2.37 model on VIA1's SR
     struct av_psc *psc; // DMA + interrupt controller (the platform's heart)
+    struct av_dsp *dsp; // the DSP3210 aux core on the PSC reset latch
+    struct av_singer *singer; // Singer codec + PSC sound frame engine
     struct av_civic *civic; // CIVIC frame buffer + Sebastian RAMDAC
     struct av_vdc *vdc; // video digitizer: DMSD + VDC models + frame engine
     struct av_new_age *fdc; // New Age floppy controller stub

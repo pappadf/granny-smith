@@ -3,6 +3,8 @@ build/
 
 # ── Standalone tool binaries (rebuilt by `make -C tools/<tool>`) ─
 tools/dump/dump
+tools/disasm/disasm
+tools/peeler/peeler
 
 # ── Emscripten / WASM artifacts ──────────────────────────────────
 *.wasm.map

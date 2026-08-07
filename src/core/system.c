@@ -629,6 +629,34 @@ __attribute__((weak)) void gs_video_in_state(bool active) {
     (void)active;
 }
 
+// Host audio-input seam: the defaults model "no microphone attached" —
+// the headless build drives capture from the deterministic
+// machine.audioin sources instead; a WASM override can trail.
+__attribute__((weak)) bool gs_audio_in_connected(void) {
+    return false;
+}
+
+__attribute__((weak)) bool gs_audio_in_frames(int16_t *lr, uint32_t frames, uint32_t rate) {
+    (void)lr;
+    (void)frames;
+    (void)rate;
+    return false;
+}
+
+__attribute__((weak)) void gs_audio_in_state(bool active) {
+    (void)active;
+}
+
+__attribute__((weak)) void gs_audio_in_injected(const char *path) {
+    (void)path;
+}
+
+__attribute__((weak)) bool gs_audio_in_debug(char *buf, size_t buflen) {
+    (void)buf;
+    (void)buflen;
+    return false;
+}
+
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
 config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {

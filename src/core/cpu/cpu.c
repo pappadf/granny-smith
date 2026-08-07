@@ -353,6 +353,25 @@ void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint) {
 
 // === Runtime Dispatch ===
 
+// 68K adapter for the scheduler's main-CPU seam (multi-cpu proposal §3.6):
+// one indirect call per sprint, nothing per instruction.
+static void cpu_if_run_sprint(void *ctx, uint32_t *instructions) {
+    cpu_run_sprint((cpu_t *)ctx, instructions);
+}
+
+static bool cpu_if_is_stopped(void *ctx) {
+    return cpu_is_stopped((cpu_t *)ctx);
+}
+
+static void cpu_if_poll_interrupt(void *ctx) {
+    cpu_poll_interrupt((cpu_t *)ctx);
+}
+
+sched_cpu_if_t cpu_sched_if(cpu_t *cpu) {
+    sched_cpu_if_t cif = {cpu, cpu_if_run_sprint, cpu_if_is_stopped, cpu_if_poll_interrupt};
+    return cif;
+}
+
 // Run the appropriate decoder for the CPU model
 void cpu_run_sprint(cpu_t *restrict cpu, uint32_t *instructions) {
     if (cpu->cpu_model == CPU_MODEL_68040)

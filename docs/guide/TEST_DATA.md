@@ -147,6 +147,7 @@ prepared 7.1 HD images.
 | `tests/data/Lisa/` | Lisa Office System 3.1, Xenix 3.0, MacWorks XL 3.0 (floppies + installed ProFile images) |
 | `tests/data/aux/aux_3.0.1/` | A/UX 3.0.1 retail ISO and an installed 160 MB HD image |
 | `tests/data/cdroms/` | CD-ROM images |
+| `tests/data/speech/` | Spoken-command WAVs for the AV speech-recognition rows (`sr-<phrase-slug>.wav`, PCM16 mono at the 24 kHz codec rate).  **Generated, not recorded** — `local/gs-docs/debug-plaintalk/scripts/gen-sr-asset.py` synthesizes a phrase and conditions it to the PlainTalk microphone's electrical contract; a capture from a phone carries its own AGC and cannot be levelled after the fact.  Used by `suite-av`'s `av-sr-command` and `av-sr-macro`. |
 
 ---
 
@@ -159,7 +160,8 @@ tests/data/
 ├── apps/          application/diagnostic media
 ├── Lisa/          Lisa Office System, Xenix, MacWorks XL
 ├── aux/           A/UX 3.0.1 installer ISO + installed HD image
-└── cdroms/        CD-ROM images
+├── cdroms/        CD-ROM images
+└── speech/        spoken-command WAVs for the AV speech-recognition rows
 ```
 
 ---

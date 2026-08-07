@@ -16,6 +16,7 @@ import { logs } from './logs.svelte';
 import { filesystem } from './filesystem.svelte';
 import { images } from './images.svelte';
 import { checkpoints, type CheckpointSortColumn, type SortDirection } from './checkpoints.svelte';
+import { microphone } from './microphone.svelte';
 import type { ImageCategory } from '@/bus/types';
 
 const KEYS = {
@@ -31,6 +32,8 @@ const KEYS = {
   fsExpanded: 'gs-fs-expanded',
   imagesCollapsed: 'gs-images-collapsed',
   checkpointsSort: 'gs-checkpoints-sort',
+  // Phase 8
+  micDevice: 'gs-mic-device',
 } as const;
 
 const VERSION = 1;
@@ -157,6 +160,14 @@ export function loadPersistedState(): void {
     }
     if (cpSort.dir === 'asc' || cpSort.dir === 'desc') checkpoints.sortDir = cpSort.dir;
   }
+
+  // The chosen capture device. Worth persisting because the system default
+  // is so often the wrong one (a dock's empty headset jack, an HDMI input),
+  // and re-picking it on every reload is exactly the friction that makes a
+  // user conclude the feature is broken. A stale id is harmless: the connect
+  // falls back to the default and says so.
+  const micDev = readEnvelope<string>(KEYS.micDevice);
+  if (typeof micDev === 'string') microphone.deviceId = micDev;
 }
 
 // Wire up effects that mirror state changes back to localStorage. Must be
@@ -190,4 +201,7 @@ export function startPersistEffects(): void {
       dir: checkpoints.sortDir,
     }),
   );
+
+  // Phase 8 effects.
+  $effect(() => writeEnvelope(KEYS.micDevice, microphone.deviceId));
 }

@@ -46,10 +46,25 @@ enum schedule_mode { schedule_paced, schedule_unthrottled, schedule_accelerated 
 struct scheduler;
 typedef struct scheduler scheduler_t;
 
+// What the scheduler needs from "the main CPU" — the four-entry seam that
+// lets a future main-CPU architecture replace the 68K without touching the
+// scheduler (proposal-heterogeneous-multi-cpu.md §3.6).  The struct is
+// copied at scheduler_init; the ctx outlives the scheduler.
+typedef struct sched_cpu_if {
+    void *ctx; // the core instance
+    void (*run_sprint)(void *ctx, uint32_t *instructions); // burn-down sprint
+    bool (*is_stopped)(void *ctx); // halted awaiting an interrupt
+    void (*poll_interrupt)(void *ctx); // service a now-eligible interrupt
+} sched_cpu_if_t;
+
+// The 68K adapter for the seam (implemented in cpu.c).
+sched_cpu_if_t cpu_sched_if(struct cpu *cpu);
+
 // === Lifecycle (Constructor / Destructor / Checkpoint) ===
 
-// Create and initialize a scheduler, optionally restoring from checkpoint
-struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint);
+// Create and initialize a scheduler, optionally restoring from checkpoint.
+// The interface struct is copied; every entry must be non-NULL.
+struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkpoint);
 
 // Free all resources associated with a scheduler instance
 void scheduler_delete(struct scheduler *scheduler);

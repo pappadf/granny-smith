@@ -3,6 +3,14 @@
   import { layout, setPanelPos, setPanelCollapsed, type PanelPos } from '@/state/layout.svelte';
   import { theme, cycleTheme, resolveTheme } from '@/state/theme.svelte';
   import { camera, setCameraEnabled } from '@/state/camera.svelte';
+  import {
+    microphone,
+    setMicrophoneEnabled,
+    setMicrophoneDevice,
+    refreshAudioInputs,
+    micStats,
+  } from '@/state/microphone.svelte';
+  import { openContextMenu, type ContextMenuItem } from '../common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
   import {
     pauseEmulator,
@@ -113,6 +121,74 @@
     void setCameraEnabled(!camera.enabled);
   }
 
+  // Microphone toggle — shown only on machines with on-board audio input
+  // (capabilities.audio_in, the AV family). Same shape as the camera: the
+  // click is the user gesture getUserMedia needs, and the live indicator
+  // follows the guest actually recording (state/microphone.svelte).
+  const micIcon: IconName = $derived(microphone.enabled ? 'mic' : 'mic-off');
+  // The tooltip carries the transport counters while recording. They are
+  // the difference between a diagnosable report and a guess: the guest's
+  // recorder gains up hard, so a capture path delivering NOTHING comes back
+  // as full-scale white noise — identical, by ear, to one delivering
+  // garbage. `in` climbing with `out` means samples are really flowing.
+  let micDetail = $state('');
+  $effect(() => {
+    if (!microphone.live) {
+      micDetail = '';
+      return;
+    }
+    const t = setInterval(() => {
+      const s = micStats();
+      micDetail =
+        ` — ${s.rate} Hz, in ${s.produced} / out ${s.consumed}` +
+        (s.underruns || s.overruns ? `, under ${s.underruns} over ${s.overruns}` : '');
+    }, 500);
+    return () => clearInterval(t);
+  });
+
+  const micTitle = $derived(
+    microphone.enabled
+      ? microphone.live
+        ? `Microphone connected (recording)${micDetail} — click to choose input`
+        : 'Microphone connected — click to choose input'
+      : 'Connect microphone to the sound input',
+  );
+
+  // A MENU rather than a plain toggle: getUserMedia takes the system default
+  // input, and on a docked machine that is regularly not the microphone the
+  // user means — a dock's empty headset jack looks perfectly healthy and
+  // delivers its own dither forever. Choosing the device has to be reachable
+  // from the same control that turns the thing on.
+  async function onMicClick(ev: MouseEvent) {
+    const btn = ev.currentTarget as HTMLElement;
+    const r = btn.getBoundingClientRect();
+
+    if (!microphone.enabled) {
+      // Nothing to choose between yet: device labels stay blank until
+      // permission has been granted once, so connect first and let the menu
+      // do its real work from the second click onwards.
+      await setMicrophoneEnabled(true);
+      return;
+    }
+
+    await refreshAudioInputs();
+    const items: ContextMenuItem[] = [
+      { label: 'Disconnect microphone', action: () => void setMicrophoneEnabled(false) },
+      { sep: true },
+      {
+        label: `${microphone.deviceId === '' ? '\u2713' : '\u2007'} System default`,
+        action: () => void setMicrophoneDevice(''),
+      },
+      ...microphone.devices
+        .filter((d) => d.id && d.id !== 'default')
+        .map((d) => ({
+          label: `${microphone.deviceId === d.id ? '\u2713' : '\u2007'} ${d.label}`,
+          action: () => void setMicrophoneDevice(d.id),
+        })),
+    ];
+    openContextMenu(items, r.left, r.bottom);
+  }
+
   function onZoomInput(e: Event) {
     const input = e.target as HTMLInputElement;
     const n = parseInt(input.value, 10);
@@ -220,6 +296,20 @@
         <Icon name={cameraIcon} />
       </button>
     {/if}
+    {#if machine.audioIn}
+      <button
+        class="tbtn"
+        class:cam-live={microphone.live}
+        title={micTitle}
+        aria-label={micTitle}
+        aria-pressed={microphone.enabled}
+        aria-haspopup="menu"
+        disabled={!isLive}
+        onclick={onMicClick}
+      >
+        <Icon name={micIcon} />
+      </button>
+    {/if}
   </div>
   <div class="layout-controls">
     <button class="tbtn" title={themeTitle} aria-label={themeTitle} onclick={cycleTheme}>
@@ -318,7 +408,8 @@
     opacity: 0.4;
     cursor: default;
   }
-  /* The camera button glows while frames are actually flowing to the guest. */
+  /* The camera and microphone buttons glow while data is actually flowing
+     to the guest. */
   .tbtn.cam-live {
     color: var(--gs-accent, #4ea1ff);
   }

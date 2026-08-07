@@ -207,7 +207,9 @@ simulated network are its siblings at the root:
   `machine.memory`, `machine.rom`, `machine.vrom`, `machine.via1`/`via2`,
   `machine.scc`, `machine.rtc`, `machine.adb.keyboard` / `machine.adb.mouse`,
   `machine.floppy.drive[N].disk`, `machine.scsi.device[N].image`,
-  `machine.sound`, `machine.screen`, `machine.nubus`. (Lisa adds
+  `machine.sound`, `machine.screen`, `machine.nubus`; the AV machines add
+  `machine.dsp` (the DSP3210 aux core), `machine.videoin` and
+  `machine.audioin` (host camera/microphone source surfaces). (Lisa adds
   `machine.hd` (ProFile) and `machine.power`.)
 - **meta services** (siblings of `machine`): `scheduler`, `debug` (+ `.mac`),
   `storage`, `vfs`, `checkpoint`, `archive`, `find`, `shell`.

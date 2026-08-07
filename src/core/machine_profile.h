@@ -85,6 +85,15 @@ struct scsi_slot {
     int id; // Conventional SCSI bus id for this slot
 };
 
+// One auxiliary CPU core on a machine (heterogeneous multi-CPU): a
+// peripheral processor executing real guest code on the main timeline
+// (docs/core/cpu/cores.md).  Exported as `capabilities.aux_cpus`.
+struct aux_cpu_slot {
+    const char *name; // instance name — the machine.<name> node; NULL terminates
+    const char *arch; // ISA token, e.g. "dsp3210"
+    uint32_t freq; // core clock in Hz
+};
+
 // Machine lifecycle + host-input vtable.  The behavior half of a machine
 // (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of
 // these.  system.c / nubus.c dispatch through it; every hook is NULL-safe.
@@ -166,6 +175,19 @@ typedef struct hw_profile {
     // Drives the exported `video_in` capability, which gates the frontend's
     // camera control the same way `fpu`/`mmu.kind` gate the debug panels.
     bool has_video_in;
+
+    // On-board audio input (the AV family's Singer codec microphone path).
+    // Drives the exported `audio_in` capability, which gates the frontend's
+    // microphone control exactly as `video_in` gates the camera control.
+    // Separate from `has_video_in` on purpose: the two seams are
+    // independent, and a machine could plausibly have one without the other.
+    bool has_audio_in;
+
+    // Auxiliary CPU cores (heterogeneous multi-CPU, cores.md): peripheral
+    // processors that execute real guest code but do not own time — the AV
+    // family's DSP3210.  Sentinel-terminated (name == NULL); NULL when the
+    // machine has none.  Drives the exported `capabilities.aux_cpus` list.
+    const struct aux_cpu_slot *aux_cpus;
 
     // NuBus slot declarations — sentinel-terminated array of
     // nubus_slot_decl_t (slot id, kind, builtin card / default card).

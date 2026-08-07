@@ -728,7 +728,8 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
 
     cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
-    cfg->scheduler = scheduler_init(cfg->cpu, checkpoint);
+    sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
+    cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
     // Run at the Lisa's real 5.09375 MHz, not the scheduler's Mac-Plus default
     // (7.8336 MHz).  Set before the VIAs init: their timer clock is CPU/4, so the
     // wrong CPU frequency would skew every VIA-timer-derived rate — including the

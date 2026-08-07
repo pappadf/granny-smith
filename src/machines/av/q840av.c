@@ -54,6 +54,12 @@ static const av_board_t q840av_board = {
     .build_devices = av_build_devices,
 };
 
+// The DSP3210 aux core (66.6667 MHz; dsp3210.md §0).
+static const struct aux_cpu_slot q840av_aux_cpus[] = {
+    {"dsp", "dsp3210", 66666667u},
+    {NULL,  NULL,      0        },
+};
+
 const hw_profile_t machine_q840av = {
     .name = "Macintosh Quadra 840AV",
     .id = "q840av",
@@ -73,6 +79,8 @@ const hw_profile_t machine_q840av = {
     .has_cdrom = true,
     .cdrom_id = 3,
     .has_video_in = true, // on-board DMSD/VDC digitizer (video-in.md)
+    .has_audio_in = true, // Singer codec microphone input (singer.md)
+    .aux_cpus = q840av_aux_cpus, // the DSP3210 (machine.dsp)
 
     .nubus_slots = NULL,
 

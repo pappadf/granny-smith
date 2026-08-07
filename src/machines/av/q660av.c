@@ -54,6 +54,12 @@ static const av_board_t q660av_board = {
     .build_devices = av_build_devices,
 };
 
+// The DSP3210 aux core (55.5 MHz; dsp3210.md §0).
+static const struct aux_cpu_slot q660av_aux_cpus[] = {
+    {"dsp", "dsp3210", 55500000u},
+    {NULL,  NULL,      0        },
+};
+
 const hw_profile_t machine_q660av = {
     .name = "Macintosh Quadra 660AV",
     .id = "q660av",
@@ -73,6 +79,8 @@ const hw_profile_t machine_q660av = {
     .has_cdrom = true,
     .cdrom_id = 3,
     .has_video_in = true, // on-board DMSD/VDC digitizer (video-in.md)
+    .has_audio_in = true, // Singer codec microphone input (singer.md)
+    .aux_cpus = q660av_aux_cpus, // the DSP3210 (machine.dsp)
 
     .nubus_slots = NULL,
 

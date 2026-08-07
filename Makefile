@@ -64,6 +64,7 @@ PEELER_DIR    := src/peeler
 # Core emulator sources (platform-agnostic)
 CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/cpu/*.c) \
+            $(wildcard $(CORE_DIR)/cpu/dsp3210/*.c) \
             $(wildcard $(CORE_DIR)/memory/*.c) \
             $(wildcard $(CORE_DIR)/peripherals/*.c) \
             $(wildcard $(CORE_DIR)/peripherals/nubus/*.c) \
@@ -133,6 +134,7 @@ PEELER_INCLUDES := -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
 
 INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/cpu \
+            -I$(CORE_DIR)/cpu/dsp3210 \
             -I$(CORE_DIR)/memory \
             -I$(CORE_DIR)/peripherals \
             -I$(CORE_DIR)/peripherals/nubus \
@@ -178,7 +180,7 @@ LDFLAGS := $(MODE_CFLAGS) \
            -sOFFSCREENCANVAS_SUPPORT \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
-           -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall','stringToUTF8','UTF8ToString','HEAP32','HEAPU8'] \
+           -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8'] \
            -s EXPORTED_FUNCTIONS="['_main','_get_js_bridge']" \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \

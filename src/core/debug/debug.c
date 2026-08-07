@@ -1194,9 +1194,53 @@ uint32_t framebuffer_checksum(const display_t *d) {
 
 // Calculate checksum for a region of the framebuffer (top, left, bottom, right)
 // Region is specified in pixels; v1 supports 1bpp only.
-uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int bottom, int right) {
-    if (!d || !d->bits || d->format != PIXEL_1BPP_MSB)
+// Bits per pixel for a display format, or 0 if it is not a packed encoding
+// this file knows how to walk.
+static unsigned framebuffer_format_bits(pixel_format_t f) {
+    switch (f) {
+    case PIXEL_1BPP_MSB:
+        return 1;
+    case PIXEL_2BPP_MSB:
+        return 2;
+    case PIXEL_4BPP_MSB:
+        return 4;
+    case PIXEL_8BPP:
+        return 8;
+    case PIXEL_16BPP_555:
+        return 16;
+    case PIXEL_32BPP_XRGB:
+        return 32;
+    default:
         return 0;
+    }
+}
+
+uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int bottom, int right) {
+    if (!d || !d->bits)
+        return 0;
+    // Colour displays: hash the bytes backing each row's span.  Before this,
+    // every format except 1 bpp returned 0 — silently, so a caller comparing
+    // two regions on an 8 bpp machine compared 0 with 0 and could never see
+    // a difference.  That is how av-speech-recognition.spec.ts came to
+    // "prove" a Finder window had not opened when it had never been able to
+    // tell.  1 bpp keeps its exact bit-packing walk below so existing
+    // baselines are unchanged.
+    if (d->format != PIXEL_1BPP_MSB) {
+        unsigned bpp = framebuffer_format_bits(d->format);
+        if (!bpp)
+            return 0;
+        // Byte span of the row segment, rounded outwards for sub-byte
+        // formats (a partial byte still changes when the region does).
+        size_t first = ((size_t)left * bpp) / 8;
+        size_t last = (((size_t)right * bpp) + 7) / 8; // exclusive
+        uint32_t checksum = 0;
+        for (int y = top; y < bottom; y++) {
+            const uint8_t *row = d->bits + (size_t)y * d->stride;
+            for (size_t i = first; i < last; i++)
+                checksum = checksum * 31 + row[i];
+        }
+        return checksum;
+    }
     const uint8_t *fb = d->bits;
     const uint32_t stride = d->stride;
     uint32_t checksum = 0;

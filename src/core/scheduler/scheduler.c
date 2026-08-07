@@ -38,7 +38,7 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // scheduler_set_cpi(); CPI never depends on the pacing mode.
 #define CYCLES_PER_INSTR_DEFAULT 12
 #define MAC_CPU_FREQUENCY        7833600.0
-#define MAX_EVENT_TYPES          32
+#define MAX_EVENT_TYPES          64
 #define MAX_SANE_EVENTS          10000 // upper bound for event queue length sanity checks
 
 // Paced mode: hard cap on frame-units executed per host tick. A slow or
@@ -173,7 +173,7 @@ struct scheduler {
     uint32_t sprint_burndown; // instructions remaining in current sprint
 
     // Pointers last
-    struct cpu *cpu;
+    sched_cpu_if_t cpu; // the main-CPU seam (copied at init; ctx outlives us)
     event_t *cpu_events; // priority queue sorted by timestamp
 
     // Temporary storage used during checkpoint restore
@@ -391,8 +391,8 @@ static void scheduler_check_invariants(struct scheduler *s, const char *context)
         }
     }
 
-    // CPU pointer must remain valid
-    GS_ASSERTF(s->cpu != NULL, "[%s] cpu pointer is NULL", context);
+    // CPU interface must remain valid
+    GS_ASSERTF(s->cpu.run_sprint != NULL, "[%s] cpu interface is NULL", context);
 }
 #endif // GS_FAST
 
@@ -679,15 +679,16 @@ uint64_t cmd_events(int argc, char *argv[]) {
 // ============================================================================
 
 // Create and initialize a scheduler instance, optionally restoring from checkpoint
-struct scheduler *scheduler_init(struct cpu *cpu, checkpoint_t *checkpoint) {
+struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkpoint) {
     GS_ASSERT(cpu != NULL);
+    GS_ASSERT(cpu->run_sprint != NULL && cpu->is_stopped != NULL && cpu->poll_interrupt != NULL);
 
     // Zero-initialize to avoid uninitialized padding bytes
     struct scheduler *s = (struct scheduler *)calloc(1, sizeof(struct scheduler));
     if (s == NULL)
         return NULL;
 
-    s->cpu = cpu;
+    s->cpu = *cpu;
     s->cpu_events = NULL;
     s->running = false;
     s->vbl_acc_error = 0;
@@ -822,7 +823,7 @@ void scheduler_delete(struct scheduler *scheduler) {
 // Save scheduler state to a checkpoint
 void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *checkpoint) {
     GS_ASSERT(scheduler != NULL && checkpoint != NULL);
-    GS_ASSERT(scheduler->cpu != NULL);
+    GS_ASSERT(scheduler->cpu.run_sprint != NULL);
     GS_ASSERT(scheduler->mode == schedule_paced || scheduler->mode == schedule_unthrottled ||
               scheduler->mode == schedule_accelerated);
     GS_ASSERT(scheduler->cpu_cycles < (1ULL << 60));
@@ -967,7 +968,7 @@ void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *
 event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
                                  uint64_t data, uint64_t cycles, uint64_t ns) {
     GS_ASSERT(scheduler != NULL);
-    GS_ASSERT(scheduler->cpu != NULL);
+    GS_ASSERT(scheduler->cpu.run_sprint != NULL);
     GS_ASSERT(callback != NULL);
     GS_ASSERT(cycles != 0 || ns != 0);
     GS_ASSERT(!(cycles != 0 && ns != 0));
@@ -1196,7 +1197,7 @@ void scheduler_set_cpi(struct scheduler *restrict s, uint32_t cpi) {
 // Run the scheduler for a specified number of instructions
 void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     GS_ASSERT(s != NULL);
-    GS_ASSERT(s->cpu != NULL);
+    GS_ASSERT(s->cpu.run_sprint != NULL);
     GS_ASSERT(s->mode == schedule_paced || s->mode == schedule_unthrottled || s->mode == schedule_accelerated);
 
     CHECK_INVARIANTS(s);
@@ -1204,7 +1205,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
     if (s->cpu_events != NULL)
         GS_ASSERT(s->cpu_events->timestamp >= s->cpu_cycles);
 
-    cpu_t *cpu = s->cpu;
+    const sched_cpu_if_t *cpu = &s->cpu;
     s->running = true;
 
     // Check once at loop entry whether debugger is engaged
@@ -1223,12 +1224,12 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         // of instructions spinning — advance emulated time straight to the next
         // scheduled event so its interrupt can wake the CPU.  Idle time consumes
         // the cycle budget but executes no instructions (the correct behaviour).
-        if (cpu_is_stopped(cpu)) { // Take any interrupt already pending at entry FIRST — e.g. the VBL,
+        if (cpu->is_stopped(cpu->ctx)) { // Take any interrupt already pending at entry FIRST — e.g. the VBL,
             // which trigger_vbl asserts just before this loop for only a short
             // retrace window.  Advancing to the next event before checking could
             // skip past (and clear) that window, dropping the heartbeat.
-            cpu_poll_interrupt(cpu);
-            if (cpu_is_stopped(cpu)) { // still halted: sleep until the next event
+            cpu->poll_interrupt(cpu->ctx);
+            if (cpu->is_stopped(cpu->ctx)) { // still halted: sleep until the next event
                 if (s->cpu_events == NULL)
                     break; // nothing scheduled can ever wake it; end the run
                 uint64_t cte =
@@ -1237,7 +1238,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
                 remaining_cycles -= advance;
                 s->cpu_cycles += advance;
                 process_event_queue(&s->cpu_events, s->cpu_cycles);
-                cpu_poll_interrupt(cpu); // event may have raised the IPL → take it (clears stopped)
+                cpu->poll_interrupt(cpu->ctx); // event may have raised the IPL → take it (clears stopped)
             }
             continue;
         }
@@ -1275,7 +1276,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
         g_sprint_frac_x256 = s->cycle_frac_x256;
         g_sprint_total_slots = instr_to_exec;
         // Note: g_io_penalty_remainder is NOT reset — it carries across sprints
-        cpu_run_sprint(cpu, &s->sprint_burndown);
+        cpu->run_sprint(cpu->ctx, &s->sprint_burndown);
         g_sprint_burndown_ptr = NULL; // no longer valid outside sprint
 
         // Account for executed instructions and cycles.
@@ -1349,7 +1350,7 @@ void scheduler_run_instructions(struct scheduler *restrict s, uint64_t n) {
 // Run the scheduler for a specified amount of time (in seconds)
 void scheduler_run(struct scheduler *restrict s, double time) {
     GS_ASSERT(s != NULL);
-    GS_ASSERT(s->cpu != NULL);
+    GS_ASSERT(s->cpu.run_sprint != NULL);
 
     CHECK_INVARIANTS(s);
 
@@ -1370,7 +1371,7 @@ void scheduler_run(struct scheduler *restrict s, double time) {
 // Run the scheduler for a specified number of microseconds
 void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs) {
     GS_ASSERT(s != NULL);
-    GS_ASSERT(s->cpu != NULL);
+    GS_ASSERT(s->cpu.run_sprint != NULL);
 
     CHECK_INVARIANTS(s);
 
