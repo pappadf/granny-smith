@@ -91,6 +91,29 @@ test('terminal Tab completion replaces the right span', async ({ page }) => {
     .toMatch(/^gs> vfs\.ls \/opfs\/$/);
 });
 
+test('shell history persists across reloads via OPFS', async ({ page }) => {
+  test.setTimeout(3 * 60 * 1000);
+  await gotoWeb2(page);
+  await page.locator('button.ptab[data-tab="terminal"]').click();
+  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await page.locator('.xterm').click();
+  await page.keyboard.type('echo history-survives-reload');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => lastTermLine(page), { timeout: 10_000 }).toMatch(/^gs>$/);
+  // Let the coalesced OPFS history write land before navigating away.
+  await page.waitForTimeout(500);
+
+  // Fresh page load, same origin storage: ArrowUp must recall the line.
+  await gotoWeb2(page);
+  await page.locator('button.ptab[data-tab="terminal"]').click();
+  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await page.locator('.xterm').click();
+  await page.keyboard.press('ArrowUp');
+  await expect
+    .poll(() => lastTermLine(page), { timeout: 10_000 })
+    .toMatch(/^gs> echo history-survives-reload$/);
+});
+
 test('shell prompt reflects machine and run state', async ({ page }) => {
   test.setTimeout(5 * 60 * 1000);
   await gotoWeb2(page);

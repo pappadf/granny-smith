@@ -9,6 +9,7 @@
     isModuleReady,
     whenModuleReady,
   } from '@/bus/emulator';
+  import { opfs, writeToOPFS } from '@/bus/opfs';
   import { setTerminalSink } from '@/bus/logSink';
   import { layout } from '@/state/layout.svelte';
   import { machine } from '@/state/machine.svelte';
@@ -129,12 +130,56 @@
     if (inputState.active) renderInput();
   }
 
+  // --- Persistent history (OPFS) ---------------------------------------
+  //
+  // The in-memory ring survives reloads via one newline-separated file at
+  // the OPFS root (a dotfile, like ~/.bash_history). Loaded once at
+  // component init and merged BEFORE anything typed since page load;
+  // rewritten (it is at most MAX_HISTORY small lines) after each push,
+  // coalesced so a burst of commands never overlaps writes. All
+  // best-effort: a missing file or a write failure only costs history.
+  const HISTORY_PATH = '/opfs/.shell_history';
+  let historySaving = false;
+  let historySaveQueued = false;
+
+  async function saveHistory(): Promise<void> {
+    if (historySaving) {
+      historySaveQueued = true;
+      return;
+    }
+    historySaving = true;
+    try {
+      await writeToOPFS(HISTORY_PATH, new Blob([inputState.history.join('\n') + '\n']));
+    } catch {
+      // Best-effort.
+    }
+    historySaving = false;
+    if (historySaveQueued) {
+      historySaveQueued = false;
+      void saveHistory();
+    }
+  }
+
+  async function loadHistory(): Promise<void> {
+    try {
+      const text = await (await opfs.readFile(HISTORY_PATH)).text();
+      const lines = text.split('\n').filter((l) => l.trim().length > 0);
+      if (destroyed || !lines.length) return;
+      inputState.history = [...lines, ...inputState.history].slice(-MAX_HISTORY);
+      inputState.historyIndex = inputState.history.length;
+    } catch {
+      // No history file yet.
+    }
+  }
+  void loadHistory();
+
   function pushHistory(line: string) {
     const trimmed = line?.trim();
     if (!trimmed) return;
     inputState.history.push(line);
     if (inputState.history.length > MAX_HISTORY) inputState.history.shift();
     inputState.historyIndex = inputState.history.length;
+    void saveHistory();
   }
 
   function recallHistory(delta: number) {
