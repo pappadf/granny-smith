@@ -286,6 +286,11 @@ static void plus_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     }
 
+    // Mirror the appletalk_init() in plus_init(): tear the AppleTalk
+    // object nodes down before the SCC and scheduler it holds pointers
+    // to are freed below.
+    appletalk_delete();
+
     if (cfg->keyboard) {
         keyboard_delete(cfg->keyboard);
         cfg->keyboard = NULL;

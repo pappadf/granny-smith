@@ -2481,11 +2481,13 @@ void debug_cleanup(debug_t *debug) {
         debug->object = NULL;
     }
 
-    // Free all breakpoints
+    // Free all breakpoints — via free_breakpoint() so the entry object
+    // and condition string go with them (the same discipline every other
+    // breakpoint-removal path follows).
     breakpoint_t *bp = debug->breakpoints;
     while (bp) {
         breakpoint_t *next = bp->next;
-        free(bp);
+        free_breakpoint(bp);
         bp = next;
     }
     debug->breakpoints = NULL;

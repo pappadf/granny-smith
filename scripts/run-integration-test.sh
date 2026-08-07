@@ -83,11 +83,29 @@ for v in ${TEST_VARS:-}; do
     VAR_ARGS="$VAR_ARGS --var $v"
 done
 
+# Under a wrapper, hand custom runners a real executable rather than a
+# multi-word "valgrind --flags... /path/to/bin" string: every run.sh
+# quotes "$HEADLESS_BIN" (as it must, paths may contain spaces), which
+# turned the folded form into one nonexistent filename and failed the
+# test before it ran. A shim keeps HEADLESS_BIN a single path and moves
+# the wrapper inside it.
+RUNNER_BIN="$HEADLESS_BIN"
+if [ -n "${WRAPPER:-}" ]; then
+    SHIM="$TEST_TMPDIR/headless-wrapped"
+    {
+        echo '#!/usr/bin/env bash'
+        echo "exec $WRAPPER \"\$HEADLESS_REAL_BIN\" \"\$@\""
+    } > "$SHIM"
+    chmod +x "$SHIM"
+    export HEADLESS_REAL_BIN="$HEADLESS_BIN"
+    RUNNER_BIN="$SHIM"
+fi
+
 cd "$TEST" || exit 1
 if [ -n "$TEST_RUNNER" ]; then
-    # Custom multi-step runner: it invokes $HEADLESS_BIN itself, with the
-    # wrapper folded into the variable (the historical valgrind contract).
-    HEADLESS_BIN="${WRAPPER:+$WRAPPER }$HEADLESS_BIN" ROM_PATH="$ROM_PATH" \
+    # Custom multi-step runner: it invokes $HEADLESS_BIN itself. Under a
+    # wrapper it gets the shim path, so its quoted "$HEADLESS_BIN" works.
+    HEADLESS_BIN="$RUNNER_BIN" ROM_PATH="$ROM_PATH" \
         DUMP_BIN="$DUMP_BIN" \
         TEST_DATA="$TEST_DATA" TEST_TMPDIR="$TEST_TMPDIR" \
         TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
