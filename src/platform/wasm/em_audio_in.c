@@ -624,6 +624,21 @@ bool gs_audio_in_debug(char *buf, size_t buflen) {
     return true;
 }
 
+// machine.audioin.inject: name the injected file to the UI so it can play
+// the same OPFS file through the host speakers (a demo affordance — the
+// audience hears what the guest was just fed).  The path is copied into a
+// static buffer because the async main-thread JS runs after this call
+// returns and the caller's string may be gone by then.
+void gs_audio_in_injected(const char *path) {
+    static char keep[512];
+    snprintf(keep, sizeof keep, "%s", path);
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM(
+        { if (typeof Module.onAudioInInjected === 'function') Module.onAudioInInjected(UTF8ToString($0)); },
+        (uint32_t)(uintptr_t)keep);
+    // clang-format on
+}
+
 // The guest gated sound input (pSndInEn): let JS attach or release the
 // microphone track, so the browser's recording indicator is lit only while
 // the guest is genuinely listening — the same privacy discipline the camera

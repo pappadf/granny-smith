@@ -19,7 +19,12 @@ import {
 } from '@/state/machine.svelte';
 import { onFloppyDriveChange } from '@/state/images.svelte';
 import { onVideoInReady, onVideoInState, reapplyCameraSource } from '@/state/camera.svelte';
-import { onAudioInReady, onAudioInState, reapplyMicrophoneSource } from '@/state/microphone.svelte';
+import {
+  onAudioInReady,
+  onAudioInState,
+  onAudioInInjected,
+  reapplyMicrophoneSource,
+} from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
@@ -85,6 +90,7 @@ interface EmscriptenModuleConfig {
   onVideoInState?(active: boolean): void;
   onAudioInReady?(ptr: number, len: number, rate: number): void;
   onAudioInState?(active: boolean): void;
+  onAudioInInjected?(path: string): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -161,6 +167,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onVideoInState,
     onAudioInReady,
     onAudioInState,
+    onAudioInInjected,
   });
 
   bridgePtr = Module._get_js_bridge();

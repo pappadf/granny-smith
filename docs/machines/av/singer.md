@@ -77,8 +77,17 @@ is listening hears the utterance from the top at that moment — there is
 no separate play step, because the *guest's* input DMA is the transport
 (the source is a tape the codec reads, not a player). `rewind()` replays
 it without re-reading the file. In the browser, drop the WAV into OPFS
-via the Filesystem tab and load it by its `/opfs/...` path. Switch back
-to the microphone with `machine.audioin.source = "host"`.
+via the Filesystem tab and load it by its `/opfs/...` path.
+
+**For demos, `machine.audioin.inject <path>`** does everything `load`
+does and additionally asks the platform to MONITOR the file through the
+host speakers (`gs_audio_in_injected`; the browser plays the same OPFS
+file via WebAudio), so an audience hears what the guest was just fed —
+e.g. `machine.audioin.inject "/opfs/upload/sr-open-the-trash.wav"`
+against a listening recognizer both plays the phrase aloud and opens the
+Trash. The monitor path never touches the emulated input (headless: the
+hook is a silent no-op; tests keep using `load`). Switch back to the
+microphone with `machine.audioin.source = "host"`.
 
 ### The `host` source in the browser
 

@@ -26,6 +26,7 @@
 
 import { getModuleHeap } from '@/bus/emulator';
 import { gsEval } from '@/bus/emulator';
+import { opfs } from '@/bus/opfs';
 import { machine } from './machine.svelte';
 import { showNotification } from './toasts.svelte';
 
@@ -458,6 +459,28 @@ export async function setMicrophoneEnabled(on: boolean): Promise<void> {
     setConnected(false);
     stopStream();
     await gsEval('machine.audioin.source', ['none']);
+  }
+}
+
+// machine.audioin.inject monitor: the worker names the injected OPFS file
+// and we play the same file through the host speakers, so a demo audience
+// hears what the guest was just fed. Fully decoupled from the emulator's
+// own audio path — this is an ordinary WebAudio one-shot from OPFS.
+let monitorCtx: AudioContext | null = null;
+export async function onAudioInInjected(path: string): Promise<void> {
+  try {
+    const blob = await opfs.readFile(path);
+    const bytes = await blob.arrayBuffer();
+    monitorCtx ??= new AudioContext();
+    if (monitorCtx.state === 'suspended') await monitorCtx.resume();
+    const audio = await monitorCtx.decodeAudioData(bytes);
+    const src = monitorCtx.createBufferSource();
+    src.buffer = audio;
+    src.connect(monitorCtx.destination);
+    src.start();
+  } catch (e) {
+    showNotification(`Injected, but could not monitor '${path}' on the speakers`, 'warning');
+    console.warn('audioin inject monitor:', e);
   }
 }
 

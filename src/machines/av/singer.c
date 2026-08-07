@@ -864,6 +864,21 @@ static value_t ain_method_rewind(struct object *self, const member_t *m, int arg
     return val_none();
 }
 
+// inject = load, plus the platform monitor hook: in the browser the same
+// file is also played through the host speakers so an audience hears what
+// the guest was just fed.  `load` stays silent — tests use it.
+static value_t ain_method_inject(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    av_singer_t *s = singer_self(self);
+    if (!s || argc < 1)
+        return val_err("audioin not available");
+    if (singer_load_wav(s, argv[0].s) < 0)
+        return val_err("audioin.inject: cannot load '%s' as a PCM16 WAV", argv[0].s);
+    s->ain_src = AIN_SRC_WAV;
+    gs_audio_in_injected(argv[0].s);
+    return val_uint(4, s->wav_frames);
+}
+
 static value_t ain_attr_advise_get(struct object *self, const member_t *m) {
     (void)m;
     av_singer_t *s = singer_self(self);
@@ -960,12 +975,16 @@ static const member_t av_audioin_members[] = {
      .attr = {.type = V_UINT, .get = ain_attr_position, .set = NULL}},
     {.kind = M_METHOD,
      .name = "load",
-     .doc = "Load a PCM16 WAV and select it as the source; returns its length",
-     .method = {.args = ain_load_args, .nargs = 1, .result = V_UINT, .fn = ain_method_load}},
+     .doc = "Inject a PCM16 WAV as the microphone: selects the wav source and feeds it "
+            "from the top to whatever is listening; returns its length in frames", .method = {.args = ain_load_args, .nargs = 1, .result = V_UINT, .fn = ain_method_load}},
     {.kind = M_METHOD,
      .name = "rewind",
-     .doc = "Rewind the loaded WAV to its start",
+     .doc = "Replay the loaded WAV from its start (no reload)",
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = ain_method_rewind}},
+    {.kind = M_METHOD,
+     .name = "inject",
+     .doc = "Like load, and additionally monitors the file through the host "
+            "speakers (browser) so an audience hears what the guest was fed", .method = {.args = ain_load_args, .nargs = 1, .result = V_UINT, .fn = ain_method_inject}},
 };
 
 const class_desc_t av_audioin_class = {

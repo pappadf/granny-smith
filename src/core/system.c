@@ -647,6 +647,10 @@ __attribute__((weak)) void gs_audio_in_state(bool active) {
     (void)active;
 }
 
+__attribute__((weak)) void gs_audio_in_injected(const char *path) {
+    (void)path;
+}
+
 __attribute__((weak)) bool gs_audio_in_debug(char *buf, size_t buflen) {
     (void)buf;
     (void)buflen;

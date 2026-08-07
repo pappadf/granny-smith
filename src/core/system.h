@@ -296,6 +296,11 @@ void gs_audio_in_state(bool active);
 // WHERE audio was lost — the platform knows whether samples arrived at all.
 // Weak default writes nothing and returns false.
 bool gs_audio_in_debug(char *buf, size_t buflen);
+// machine.audioin.inject notification: the platform may MONITOR the injected
+// file through its own speakers so a demo audience hears what the guest was
+// just fed.  Pure UX — the emulated input path is untouched (the browser
+// plays the same file from its own storage).  Weak default: silent.
+void gs_audio_in_injected(const char *path);
 
 // True if a valid checkpoint exists for the active machine.  Weak
 // default returns NULL (headless has no auto-checkpoint loop); WASM
