@@ -89,6 +89,9 @@
   --gs-terminal-bg: #0d0f11; /* terminal.background dark */
   --gs-terminal-fg: #cccccc; /* terminal.foreground dark */
   --gs-terminal-cursor: #cccccc;
+  /* Selection overlay — xterm's built-in default is translucent white,
+     which vanishes on a light background, so both themes set it. */
+  --gs-terminal-selection: rgba(255, 255, 255, 0.25);
 
   /* Diff highlight — applied to debug panes (registers / FPU / memory)
      on cells whose value differs from the previous refresh. Persists
@@ -192,6 +195,7 @@
   --gs-terminal-bg: #f6f6f6; /* terminal.background light */
   --gs-terminal-fg: #333333; /* terminal.foreground light */
   --gs-terminal-cursor: #333333;
+  --gs-terminal-selection: #add6ff; /* editor-blue, visible on #f6f6f6 */
 
   /* Diff highlight (see dark theme note). */
   --gs-changed-bg: rgba(220, 170, 0, 0.22);

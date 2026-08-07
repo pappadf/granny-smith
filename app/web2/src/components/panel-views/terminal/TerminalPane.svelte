@@ -25,6 +25,7 @@
       background: readCssToken('--gs-terminal-bg') || '#0d0f11',
       foreground: readCssToken('--gs-terminal-fg') || '#cccccc',
       cursor: readCssToken('--gs-terminal-cursor') || '#cccccc',
+      selectionBackground: readCssToken('--gs-terminal-selection') || 'rgba(128, 128, 128, 0.4)',
     };
   }
 
@@ -40,7 +41,14 @@
     focus(): void;
     scrollToBottom(): void;
     cols: number;
-    options: { theme?: { background?: string; foreground?: string; cursor?: string } };
+    options: {
+      theme?: {
+        background?: string;
+        foreground?: string;
+        cursor?: string;
+        selectionBackground?: string;
+      };
+    };
   }
   interface FitAddonLike {
     fit(): void;
