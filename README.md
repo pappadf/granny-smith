@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning three CPU generations, from the 68000 Lisa 2 and Macintosh Plus to the 68040 Quadra towers and AV machines. It runs Mac OS (System 2.0 through System 7.6) and A/UX 3.0.1 on the Macintosh, and the Lisa Office System, MacWorks XL, and Xenix on the Lisa 2 / Macintosh XL.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning three CPU generations, from the 68000 Lisa 2 and Macintosh Plus to the 68040 Quadra towers and AV machines. It runs Mac OS  and A/UX on the Macintosh, and the Lisa Office System, MacWorks XL, and Xenix on the Lisa 2 / Macintosh XL.
 
 > **See it:** [Screenshot gallery of A/UX, MacTest, and more](GALLERY.md) from the test system
 
@@ -93,6 +93,11 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 - **AV NuBus** - the 840AV's slots C/D/E and the 660AV's adapter slot are decoded but cannot be populated with the display cards above
 - **LaserWriter** - printer is identified, but print jobs don't complete correctly
 - **AFP** - file content access not yet implemented (mounting and browsing only)
+
+## A Note on AI
+
+This project allows the use of AI (my project, my rules. This is not limited to code generation or code review; it also includes documentation and reverse engineering of the hardware involved.
+There is no intention to track, at the file or commit level, which code was generated with AI assistance and which was not. I know that AI may be a red flag for some people, and I fully respect that.
 
 ## Acknowledgments
 
