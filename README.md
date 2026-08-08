@@ -96,7 +96,7 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 
 ## A Note on AI
 
-This project allows the use of AI (my project, my rules. This is not limited to code generation or code review; it also includes documentation and reverse engineering of the hardware involved.
+This project allows the use of AI (my project, my rules). This is not limited to code generation or code review; it also includes documentation and reverse engineering of the hardware involved.
 There is no intention to track, at the file or commit level, which code was generated with AI assistance and which was not. I know that AI may be a red flag for some people, and I fully respect that.
 
 ## Acknowledgments
