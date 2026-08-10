@@ -422,6 +422,45 @@ static bool lisa_fd_present(config_t *cfg, int drive) {
     return ls && ls->fdc && lisa_fdc_disk_present(ls->fdc);
 }
 
+// hw_profile_t.media_detach / media_attach — machine.restart handle transfer
+// (proposal-boot-vs-reset §3.3).  The Lisa has no cfg->floppy/cfg->scsi, so
+// the std core implementation covers nothing here: the Sony disk lives in
+// the 6504A FDC (owned by cfg->images) and the hard disk is the parallel
+// ProFile (which owns its image itself, hence take/attach_image).
+static int lisa_media_detach(config_t *cfg, media_slot_t *out, int max) {
+    lisa_state_t *ls = lisa_state(cfg);
+    int n = 0;
+    image_t *fd = (ls && ls->fdc) ? lisa_fdc_disk_image(ls->fdc) : NULL;
+    if (fd && n < max) {
+        out[n] = (media_slot_t){.bus = MEDIA_BUS_FLOPPY, .unit = 0, .img = fd};
+        config_remove_image(cfg, fd); // survives system_destroy's close loop
+        n++;
+    }
+    image_t *hd = (ls && ls->profile) ? lisa_profile_take_image(ls->profile) : NULL;
+    if (hd && n < max) {
+        out[n] = (media_slot_t){.bus = MEDIA_BUS_PROFILE, .unit = 0, .img = hd};
+        n++; // ProFile images are not in cfg->images — nothing to remove
+    }
+    return n;
+}
+
+static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
+    lisa_state_t *ls = lisa_state(cfg);
+    switch (slot->bus) {
+    case MEDIA_BUS_FLOPPY:
+        if (lisa_fd_insert(cfg, slot->unit, slot->img) != 0)
+            return -1;
+        add_image(cfg, slot->img);
+        return 0;
+    case MEDIA_BUS_PROFILE:
+        if (!ls || !ls->profile || !lisa_profile_attach_image(ls->profile, slot->img))
+            return -1;
+        return 0;
+    default:
+        return -1; // no SCSI bus on a Lisa
+    }
+}
+
 // ============================================================
 // `floppy` object surface (insert/eject the one Sony drive at runtime)
 // ============================================================
@@ -1054,6 +1093,8 @@ static const machine_substrate_t lisa_substrate = {
     .input_key = lisa_input_key,
     .input_mouse_move = lisa_input_mouse_move,
     .input_mouse_button = lisa_input_mouse_button,
+    .media_detach = lisa_media_detach,
+    .media_attach = lisa_media_attach,
 };
 
 const hw_profile_t machine_lisa = {

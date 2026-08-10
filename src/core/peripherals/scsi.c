@@ -2489,7 +2489,7 @@ static const member_t scsi_image_members[] = {
      .attr = {.type = V_BOOL, .get = scsi_image_attr_present, .set = NULL}},
     {.kind = M_ATTR,
      .name = "path",
-     .doc = "Source path / storage URI backing the medium",
+     .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = scsi_image_attr_path, .set = NULL}},
     {.kind = M_ATTR,

@@ -429,6 +429,10 @@ bool lisa_fdc_disk_present(const lisa_fdc_t *fdc) {
     return fdc && fdc->image != NULL;
 }
 
+image_t *lisa_fdc_disk_image(const lisa_fdc_t *fdc) {
+    return fdc ? fdc->image : NULL;
+}
+
 // === Parameter memory (battery-backed NVRAM) ================================
 //
 // The Lisa's parameter memory (boot volume + device-configuration table + UI

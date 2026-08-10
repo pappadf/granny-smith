@@ -96,6 +96,24 @@ void config_add_image(config_t *cfg, image_t *image) {
     cfg->n_images++;
 }
 
+// Remove an image from the config's tracked image list WITHOUT closing it
+// (machine.restart handle transfer: the caller takes ownership so the handle
+// survives system_destroy's close loop).  Order is not preserved-sensitive;
+// the tail is compacted down.
+void config_remove_image(config_t *cfg, image_t *image) {
+    if (!cfg || !image)
+        return;
+    for (int i = 0; i < cfg->n_images; ++i) {
+        if (cfg->images[i] != image)
+            continue;
+        for (int j = i + 1; j < cfg->n_images; ++j)
+            cfg->images[j - 1] = cfg->images[j];
+        cfg->n_images--;
+        cfg->images[cfg->n_images] = NULL;
+        return;
+    }
+}
+
 // Find an image object by its filename path
 image_t *setup_get_image_by_filename(const char *filename) {
     struct config *config = global_emulator;
@@ -840,6 +858,68 @@ void add_scsi_cdrom(struct config *restrict config, const char *filename, int sc
     scsi_add_device(config->scsi, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, cd_block_size, true);
     image_vfs_notify_attached(filename);
     free(persistent_path);
+}
+
+// === machine.restart media transfer (proposal-boot-vs-reset §3.3) ==========
+//
+// The standard substrate implementation over cfg->floppy + cfg->scsi, bound
+// into every Mac substrate's vtable (the Lisa implements its own: parallel
+// FDC + ProFile).  Detach removes the open handles from cfg->images — the
+// list system_destroy would otherwise close — so they survive the teardown;
+// attach hands each handle back through the same device paths a fresh mount
+// uses, minus the open-by-path step.
+
+// Capture every mounted medium's handle + attachment coordinates into `out`
+// and disown them from the tracked-image list.  Returns the count.
+int system_media_detach_std(config_t *cfg, media_slot_t *out, int max) {
+    int n = 0;
+    for (int d = 0; d < 2 && n < max; ++d) {
+        image_t *img = cfg->floppy ? floppy_drive_image(cfg->floppy, (unsigned)d) : NULL;
+        if (!img)
+            continue;
+        out[n] = (media_slot_t){.bus = MEDIA_BUS_FLOPPY, .unit = d, .img = img};
+        config_remove_image(cfg, img);
+        n++;
+    }
+    for (unsigned id = 0; id < 8 && n < max; ++id) {
+        image_t *img = cfg->scsi ? scsi_device_image(cfg->scsi, id) : NULL;
+        if (!img)
+            continue;
+        media_slot_t *s = &out[n];
+        *s = (media_slot_t){.bus = MEDIA_BUS_SCSI, .unit = (int)id, .img = img};
+        s->scsi_type = scsi_device_type(cfg->scsi, id);
+        s->block_size = scsi_device_block_size(cfg->scsi, id);
+        s->read_only = scsi_device_read_only(cfg->scsi, id);
+        snprintf(s->vendor, sizeof(s->vendor), "%s", scsi_device_vendor(cfg->scsi, id));
+        snprintf(s->product, sizeof(s->product), "%s", scsi_device_product(cfg->scsi, id));
+        snprintf(s->revision, sizeof(s->revision), "%s", scsi_device_revision(cfg->scsi, id));
+        config_remove_image(cfg, img);
+        n++;
+    }
+    return n;
+}
+
+// Re-attach one transferred medium to the freshly built machine.  Returns 0
+// on success (the machine owns the handle again), <0 when the medium cannot
+// be attached (the caller must close the handle).
+int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
+    switch (slot->bus) {
+    case MEDIA_BUS_FLOPPY:
+        if (sys_fd_insert(cfg, slot->unit, slot->img) != 0)
+            return -1;
+        add_image(cfg, slot->img);
+        return 0;
+    case MEDIA_BUS_SCSI:
+        if (!cfg->scsi)
+            return -1;
+        add_image(cfg, slot->img);
+        scsi_add_device(cfg->scsi, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
+                        (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
+        image_vfs_notify_attached(image_get_filename(slot->img));
+        return 0;
+    default:
+        return -1;
+    }
 }
 
 // Save current machine state to a checkpoint file.

@@ -7,6 +7,7 @@
 #include "machine.h"
 
 #include "cpu.h"
+#include "image.h"
 #include "log.h"
 #include "machine_config.h"
 #include "nubus.h"
@@ -456,6 +457,12 @@ static value_t validate_vrom_resolution(const hw_profile_t *profile, const char 
     return val_none();
 }
 
+// Armed by machine.restart for the duration of its machine_boot_apply call:
+// carry the mounted media's open image handles across the teardown
+// (proposal-boot-vs-reset §3.3).  A plain machine.boot never transfers —
+// a new machine starts with empty drives.
+static bool s_transfer_media = false;
+
 // Stamp the record's `created` field with the current UTC time (ISO8601).
 static void stamp_created(char *buf, size_t bufsize) {
     time_t now = time(NULL);
@@ -610,8 +617,15 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     if (val_is_error(&verr))
         return verr;
 
-    // 3. Teardown + atomic construction.
+    // 3. Teardown + atomic construction.  On a machine.restart the mounted
+    // media's open handles are detached first so they survive
+    // system_destroy's close loop (§3.3) — the delta stays with its open
+    // instance, so writes survive the power-cycle by construction.
+    media_slot_t media[MEDIA_SLOTS_MAX];
+    int n_media = 0;
     if (global_emulator) {
+        if (s_transfer_media && global_emulator->machine->substrate->media_detach)
+            n_media = global_emulator->machine->substrate->media_detach(global_emulator, media, MEDIA_SLOTS_MAX);
         system_destroy(global_emulator);
         global_emulator = NULL;
     }
@@ -634,16 +648,33 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
 
     machine_config_reset_vroms();
     config_t *cfg = system_create(profile, NULL);
-    if (!cfg)
+    if (!cfg) {
+        for (int i = 0; i < n_media; ++i)
+            image_close(media[i].img); // machine gone; nothing to attach to
         return val_err("machine.boot: failed to create %s", profile->id);
+    }
 
     int rom_rc;
     if (doc.rom2 && *doc.rom2)
         rom_rc = rom_load_lisa_into_machine(doc.rom, doc.rom2);
     else
         rom_rc = rom_load_into_machine(doc.rom);
-    if (rom_rc != 0)
+    if (rom_rc != 0) {
+        for (int i = 0; i < n_media; ++i)
+            image_close(media[i].img); // half-built machine; drop the transfer
         return val_err("machine.boot: machine created but ROM staging failed for '%s'", doc.rom);
+    }
+
+    // Hand the transferred media handles back through the device attach
+    // paths (§3.3).  The rebuilt machine is the same model by construction
+    // (the restart document IS the record), so every slot re-resolves.
+    for (int i = 0; i < n_media; ++i) {
+        if (cfg->machine->substrate->media_attach && cfg->machine->substrate->media_attach(cfg, &media[i]) == 0)
+            continue;
+        LOG(1, "machine.restart: could not re-attach medium '%s'; closing it",
+            image_get_filename(media[i].img) ? image_get_filename(media[i].img) : "(unnamed)");
+        image_close(media[i].img);
+    }
 
     // 4. The built-from record — the machine's birth certificate.
     machine_config_record_t *w = machine_config_record_mut();
@@ -688,6 +719,50 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
     if (val_is_error(&err))
         return err;
     value_free(&err);
+    return val_bool(true);
+}
+
+// machine.restart — power-cycle the running machine (proposal-boot-vs-reset
+// §3.2): rebuild the machine described by the built-from record, taking no
+// configuration arguments, and keep the mounted media attached by
+// transferring the open image handles across the teardown (§3.3).  Errors
+// when no machine is running.  Runtime state that is not construction
+// configuration (scheduler mode, volume, host capture sources) is out of
+// scope — the frontend re-asserts it.
+static value_t machine_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    const machine_config_record_t *rec = machine_config_record();
+    if (!global_emulator || !rec->valid)
+        return val_err("machine.restart: no machine is running; boot one first");
+
+    // Work from a snapshot: boot_apply rewrites the record in place, so doc
+    // pointers into the live record would alias their own destination — and
+    // the original `created` stamp must survive (a power-cycle is not a
+    // re-birth, §6.3).
+    machine_config_record_t snap = *rec;
+    boot_config_t doc = {
+        .model = snap.model,
+        .ram_kb = snap.ram_kb,
+        .rom = snap.rom,
+        .rom2 = snap.rom2[0] ? snap.rom2 : NULL,
+        .vrom = snap.vrom[0] ? snap.vrom : NULL,
+        .video_card = snap.video_card[0] ? snap.video_card : NULL,
+        .video_sense = snap.video_sense,
+        .video_mode = snap.video_mode[0] ? snap.video_mode : NULL,
+        .custom_mode = snap.custom_mode[0] ? snap.custom_mode : NULL,
+    };
+    s_transfer_media = true;
+    value_t err = machine_boot_apply(&doc);
+    s_transfer_media = false;
+    if (val_is_error(&err))
+        return err;
+    value_free(&err);
+
+    machine_config_record_t *w = machine_config_record_mut();
+    snprintf(w->created, sizeof(w->created), "%s", snap.created);
     return val_bool(true);
 }
 
@@ -798,6 +873,10 @@ static const member_t machine_members[] = {
      .name = "boot",
      .doc = "Boot a machine from a configuration document; omitted arguments inherit from machine.config",
      .method = {.args = machine_boot_args, .nargs = 9, .result = V_BOOL, .fn = machine_method_boot}},
+    {.kind = M_METHOD,
+     .name = "restart",
+     .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_restart}},
     {.kind = M_METHOD,
      .name = "register",
      .doc = "Record the active machine identity for checkpointing",
