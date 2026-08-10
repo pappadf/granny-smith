@@ -316,8 +316,12 @@ full surface.
   The camera toolbar button sets `host`; the button itself is gated on
   `capabilities.video_in` from `machine.profile`. See
   [../machines/av/vdc.md](../machines/av/vdc.md).
-- **`machine.boot(id, ram_kb)`** — destroys any current machine and
-  creates a fresh one of the named model.
+- **`machine.boot(model=..., rom=..., ...)`** — destroys any current
+  machine and creates a fresh one from a complete configuration document
+  (model and rom required; nothing is inherited from the previous
+  machine).
+- **`machine.restart`** — power-cycles the running machine: rebuilds it
+  from its built-from record with the mounted media still attached.
 - **`rom.load(path)`** — loads a ROM into the booted machine.
 - **`debug.frame([addr], [count])`** — bundled JSON snapshot for the
   Debug tab: 16 GPRs + control regs, disasm rows with per-row MMU

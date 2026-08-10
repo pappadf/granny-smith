@@ -204,10 +204,13 @@ assertion belongs as a row in its machine's suite.
 Two rules suite rows must follow, both learned from real failures:
 
 - **Name every staging argument the row depends on.** `machine.boot`
-  inherits unspecified fields from the built-from record — i.e. from
-  whatever the previous row booted — so a row that cares about the video
-  card, vROM, or monitor sense must pass it explicitly even when the
-  machine default would be correct in a fresh process.
+  takes a complete document: `model` and `rom` are required (the harness
+  binds `--var ROM` to the test's configured ROM, so `rom="${$ROM}"` is
+  the idiom), and every omitted field resolves to the model's own
+  default — never to what a previous row booted. A row that cares about
+  the video card, vROM, or monitor sense still passes it explicitly so
+  the row reads as its own specification. `machine.restart` power-cycles
+  the current machine, keeping its mounted media attached.
 - **Interacting rows use `wait_stable` + `check`, not `wait_match`.**
   `wait_match` stops at the first quantum whose frame equals the golden,
   which can precede quiescence; `wait_stable` behaves identically when

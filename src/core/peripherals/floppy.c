@@ -1017,6 +1017,15 @@ static value_t floppy_disk_attr_path(struct object *self, const member_t *m) {
     return val_str(p ? p : "");
 }
 
+static value_t floppy_disk_attr_filename(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    image_t *img = floppy_drive_image(floppy, slot);
+    const char *s = img ? image_get_filename(img) : NULL;
+    return val_str(s ? s : "");
+}
+
 // `eject()` — proxy to the owning drive's eject.
 static value_t floppy_disk_method_eject(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
@@ -1039,9 +1048,14 @@ static const member_t floppy_disk_members[] = {
      .attr = {.type = V_BOOL, .get = floppy_disk_attr_present, .set = NULL}},
     {.kind = M_ATTR,
      .name = "path",
-     .doc = "Path / storage URI of the inserted image",
+     .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = floppy_disk_attr_path, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "filename",
+     .doc = "Source path the disk was loaded from",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = floppy_disk_attr_filename, .set = NULL}},
     {.kind = M_METHOD,
      .name = "eject",
      .doc = "Eject the disk from the owning drive",

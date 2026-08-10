@@ -24,6 +24,8 @@
 #include <stdint.h>
 
 struct scheduler;
+struct image;
+typedef struct image image_t;
 
 typedef struct lisa_profile lisa_profile_t;
 
@@ -52,6 +54,15 @@ void lisa_profile_checkpoint(lisa_profile_t *pf, checkpoint_t *cp);
 bool lisa_profile_attach(lisa_profile_t *pf, const char *path, bool writable);
 void lisa_profile_detach(lisa_profile_t *pf); // close the image (no base writeback)
 bool lisa_profile_attached(const lisa_profile_t *pf);
+
+// machine.restart handle transfer (proposal-boot-vs-reset §3.3): take the
+// attached image OUT of the device without closing it (ownership moves to
+// the caller; returns NULL when nothing is attached), and attach an
+// already-open 532-bytes/block image handle to a fresh device (geometry is
+// re-derived from the handle; returns false and leaves the handle with the
+// caller on bad arguments).
+image_t *lisa_profile_take_image(lisa_profile_t *pf);
+bool lisa_profile_attach_image(lisa_profile_t *pf, image_t *img);
 
 // Write the current contents (base merged with the delta) to a new,
 // self-contained single-file 532-bytes/block image at `path`.  Refuses to

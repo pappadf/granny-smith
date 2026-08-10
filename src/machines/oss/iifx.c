@@ -1696,6 +1696,8 @@ static const machine_substrate_t iifx_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
+    .media_detach = system_media_detach_std,
+    .media_attach = system_media_attach_std,
 };
 
 const hw_profile_t machine_iifx = {

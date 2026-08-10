@@ -973,8 +973,8 @@ int main(int argc, char *argv[]) {
 
     // Startup is the same boot-document path scripts use (machine.boot):
     // CLI args fill the document, machine_boot_apply validates and
-    // constructs, and the built-from record makes later argument-less
-    // `machine.boot` reboots inherit this configuration.
+    // constructs, and the built-from record lets a later machine.restart
+    // power-cycle this configuration.
     boot_config_t boot_doc = {
         .model = target_model,
         .ram_kb = ram_kb,

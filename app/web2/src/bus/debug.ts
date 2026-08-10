@@ -7,13 +7,7 @@
 // `lib/disasm.ts` parses the raw `debug.disasm` output; this file owns
 // the gsEval dispatch.
 
-import {
-  gsEval,
-  shutdownEmulator,
-  isModuleReady,
-  initEmulator,
-  getLastBootConfig,
-} from './emulator';
+import { gsEval, shutdownEmulator, isModuleReady, restartEmulator } from './emulator';
 import { parseDisasmBlock, type DisasmRow } from '@/lib/disasm';
 import { bumpDebugRefresh } from '@/state/debug.svelte';
 
@@ -318,15 +312,12 @@ export async function stopMachine(): Promise<void> {
   await shutdownEmulator();
 }
 
-// Restart the current machine by re-applying the cached boot config
-// (model, RAM, ROM, floppies, HD, CD). No dedicated C-side reset method
-// exists today; tearing down and re-creating gives the user a full,
-// well-defined reboot from cold ROM state.
+// Restart the current machine: machine.restart power-cycles it in the core
+// (proposal-boot-vs-reset §3.2), rebuilding the recorded hardware from cold
+// ROM state with the mounted media still attached — no cached-config replay
+// or manual re-insertion needed.
 export async function restart(): Promise<void> {
   if (!isModuleReady()) return;
-  const cfg = getLastBootConfig();
-  if (!cfg) return;
-  await shutdownEmulator();
-  await initEmulator(cfg);
+  await restartEmulator();
   bumpDebugRefresh();
 }

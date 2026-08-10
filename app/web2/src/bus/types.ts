@@ -8,8 +8,8 @@ export interface MachineConfig {
    *  used for status-bar display when set. Falls back to `model` if absent. */
   modelName?: string;
   /** ROM image path (under /opfs/images/rom/). Becomes the boot document's
-   *  `rom` field; unset / '(auto)' = inherit from the live machine's
-   *  built-from record (machine.config). */
+   *  `rom` field, which machine.boot requires — the document is the whole
+   *  specification and inherits nothing (proposal-boot-vs-reset §3.1). */
   rom?: string;
   vrom: string;
   /** NuBus video card-kind id to install (e.g. "display_card_24ac", "mdc_8_24") —
@@ -52,6 +52,10 @@ export interface RecentEntry {
   model: string;
   ram: string;
   media: string;
+  /** ROM image path to boot with. machine.boot requires a rom in every
+   *  document (nothing is inherited), so a recent without one cannot be
+   *  relaunched directly. */
+  rom?: string;
   lastUsedAt: number;
 }
 

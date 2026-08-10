@@ -54,7 +54,7 @@ let mactest_img = "../../data/apps/MacTest-IIcx-IIci.image"
 # iici-chime.wav byte-for-byte at the same 13,405 frames. Only the RAM size
 # this row asks for was wrong.
 def row_iici_chime() {
-    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
@@ -67,7 +67,7 @@ def row_iici_chime() {
 # ---- iici-701-fd ------------------------------------------------------------
 # wait_stable (not wait_match) because the row interacts afterwards.
 def row_iici_701_fd() {
-    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 300000000
     wait_stable(900000000)
@@ -106,7 +106,7 @@ def row_iici_701_fd() {
 # looks inert (ledger §12.2). Safe here because these rows boot from floppy; a
 # SCSI boot would need the startup device seeded too.
 def boot_iici_701_at_depth(spid) {
-    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     machine.rtc.pram.validate
     if $spid == 0x81 { machine.rtc.pram.poke 0x56 0x001f818600000000:8 }
@@ -147,7 +147,7 @@ def row_iici_701_depths() {
 # still boots 24-bit under default PRAM, matching the IIcx measurement.
 def row_iici_75_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iici" ram=16384 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=16384 video_card="builtin_rbv_video" rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 300000000
     wait_stable(1500000000)
@@ -165,7 +165,7 @@ def row_iici_75_hd() {
 # is fully visible — the RAM-sizing and addressing axes interact here.
 def row_iici_76_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iici" ram=32768 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=32768 video_card="builtin_rbv_video" rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_76}" 0
     scheduler.run 400000000
     wait_stable(1800000000)
@@ -189,7 +189,7 @@ def row_iici_76_hd() {
 # is what §8 now says and what iici-24ac-dual now guards.
 def row_iici_71_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_71_gc}" 0
     scheduler.run 300000000
     wait_stable(1200000000)
@@ -222,7 +222,7 @@ def row_iici_71_hd() {
 # mirror windows in iici_memory_layout_init; promoted to enforced here.
 def row_iici_lowram() {
     for kb in [1024, 2048, 4096, 5120] {
-        machine.boot model="iici" ram=$kb video_card="builtin_rbv_video"
+        machine.boot model="iici" ram=$kb video_card="builtin_rbv_video" rom="${$ROM}"
         scheduler.run 120000000
         assert machine.ram == $kb "iici-lowram: machine.ram != ${$kb}"
         assert debug.mac.globals.read("MemTop") == $kb * 1024 "iici-lowram: POST did not complete at ${$kb} KB — MemTop=${debug.mac.globals.read("MemTop"):08x} want ${$kb * 1024:08x}"
@@ -254,7 +254,7 @@ def row_iici_lowram() {
 # EXACT checksum was the clue that they were the same arm.
 def row_iici_24ac_dual() {
     machine.rtc.time = 3000000000
-    machine.boot model="iici" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
+    machine.boot model="iici" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_71_gc}" 0
     scheduler.run 900000000
     wait_stable(1500000000)
@@ -307,13 +307,13 @@ def row_iici_24ac_dual() {
 # never reaches a desktop with 7.0.1 at all, so the smaller RAM config has
 # nothing to re-match.
 def row_iici_checkpoint() {
-    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 300000000
     wait_stable(900000000)
     check("goldens/iici-7.0.1-640x480x1-finder.png")
     assert checkpoint.save("${$WORK_DIR}/suite-iici.gsc") "iici-checkpoint: save failed"
-    machine.boot model="iici" ram=1024 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=1024 video_card="builtin_rbv_video" rom="${$ROM}"
     assert checkpoint.load("${$WORK_DIR}/suite-iici.gsc") "iici-checkpoint: load failed"
     scheduler.run 5000000
     wait_stable(400000000)
@@ -349,7 +349,7 @@ def row_iici_checkpoint() {
 # the Options choreography, so a mis-click fails with its own message rather than
 # silently reporting a board fault.
 def row_iici_mactest_diag() {
-    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+    machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$mactest_img}" true
     machine.scc.loopback = true
     machine.scsi.loopback = true

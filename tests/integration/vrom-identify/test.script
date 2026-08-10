@@ -43,7 +43,7 @@ assert !machine.vrom.identify("/dev/null/nonexistent") "unreadable path must yie
 # the readback proves the catalog and the registry don't drift (proposal §6).
 # IIcx has a nubus with socket $9, so the staged attr exists.  Each pick is
 # cleared afterwards so no staging leaks out of the test.
-machine.boot model="iicx" ram=8192
+machine.boot model="iicx" ram=8192 rom="${$ROM}"
 assert machine.id == "iicx" "machine.boot iicx (nubus present)"
 machine.nubus.slot[9].card_id = "mdc_8_24"
 assert machine.nubus.slot[9].card_id == "mdc_8_24" "catalog card_id mdc_8_24 must be a registered card"

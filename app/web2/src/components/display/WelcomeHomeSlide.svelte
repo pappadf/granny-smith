@@ -33,9 +33,17 @@
   }
 
   async function launchRecent(r: RecentEntry) {
+    // machine.boot requires a rom in every document (nothing is inherited
+    // — proposal-boot-vs-reset §3.1), so a recent persisted without one
+    // cannot be relaunched directly.
+    if (!r.rom) {
+      showNotification('This recent entry has no ROM path — use New Machine...', 'warning');
+      return;
+    }
     await initEmulator({
       model: r.model,
       ram: r.ram,
+      rom: r.rom,
       vrom: '(auto)',
       floppies: [],
       hd: '',

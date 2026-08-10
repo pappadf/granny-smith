@@ -42,17 +42,17 @@ assert machine.ram == 4096 "machine.ram (default 4 MB)"
 
 # machine.boot's ram-options validation.  4 MB is in Plus's ram_options;
 # 99999 KB is not.  The 2.5 MB stepping is accepted (Plus supports it).
-assert !machine.boot("plus", 99999) "ram=99999 must fail Plus ram_options check"
-assert machine.boot("plus", 2560) "ram=2560 (2.5 MB) must succeed for Plus"
+# (The document is complete — rom= travels explicitly, positionally here.)
+assert !machine.boot("plus", 99999, "${$ROM}") "ram=99999 must fail Plus ram_options check"
+assert machine.boot("plus", 2560, "${$ROM}") "ram=2560 (2.5 MB) must succeed for Plus"
 assert machine.ram == 2560 "machine.ram reflects 2.5 MB after re-boot"
 
 # Re-boot back to a default-ish 4 MB so the rest of the harness sees
 # something it can boot — the cleanup quit() below is what matters.
-assert machine.boot("plus", 4096) "ram=4096 must succeed for Plus"
+assert machine.boot("plus", 4096, "${$ROM}") "ram=4096 must succeed for Plus"
 
 # Switch to SE/30 with its default 8 MB to confirm the cross-model attr
-# update.  The model switch needs a compatible ROM in the document — the
-# inherited Plus ROM would (correctly) be rejected by validation.
+# update.  The model switch needs its own compatible ROM in the document.
 assert machine.boot("se30", 8192, "../../data/roms/iix-iicx-se30-97221136.rom") "machine.boot(se30, 8192)"
 assert machine.id == "se30" "machine.id after se30 boot"
 assert machine.ram == 8192 "machine.ram after se30 boot"

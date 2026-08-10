@@ -94,13 +94,13 @@ shell.functions.fact.remove
 assert try(fact(1), none) == none "removed function is gone"
 
 # --- aliases: reference semantics across machine.boot -------------------
-machine.boot model="plus" ram=1024
+machine.boot model="plus" ram=1024 rom="${$ROM}"
 alias myram = machine.ram
 assert $myram == 1024 "user alias reads through"
 $pc = 0x400128
 assert machine.cpu.pc == 0x400128 "builtin alias writes through"
 let drive = machine.floppy.drive[0]
-machine.boot model="plus" ram=2048
+machine.boot model="plus" ram=2048 rom="${$ROM}"
 assert $myram == 2048 "alias re-resolves after reboot"
 assert $pc == machine.cpu.pc "builtin alias survives reboot"
 assert try($drive.present, none) == none "let-captured handle is stale after reboot"

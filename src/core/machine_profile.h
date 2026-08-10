@@ -94,6 +94,35 @@ struct aux_cpu_slot {
     uint32_t freq; // core clock in Hz
 };
 
+// Which bus a medium in transit is attached through (media_slot_t below).
+typedef enum media_bus {
+    MEDIA_BUS_FLOPPY = 0, // unit = drive index
+    MEDIA_BUS_SCSI, // unit = SCSI id; the device-identity fields apply
+    MEDIA_BUS_PROFILE, // Lisa/XL parallel-port ProFile (unit unused)
+} media_bus_t;
+
+// One mounted medium in transit across a machine.restart power-cycle
+// (proposal-boot-vs-reset §3.3): the OPEN image handle — never a captured
+// path, so delta writes and blank images survive by construction — plus the
+// attachment coordinates needed to hand the handle back to the rebuilt
+// machine.
+typedef struct media_slot {
+    media_bus_t bus;
+    int unit; // floppy drive index / SCSI id
+    struct image *img; // open handle; ownership is in transit
+    // SCSI device identity (MEDIA_BUS_SCSI only), captured from the dying
+    // device so the rebuilt one presents the same drive to the guest.
+    int scsi_type; // enum scsi_device_type value (1 = hd, 2 = cdrom)
+    uint16_t block_size;
+    bool read_only;
+    char vendor[9];
+    char product[17];
+    char revision[5];
+} media_slot_t;
+
+// Transfer capacity: 2 floppy drives + 8 SCSI ids + 1 ProFile.
+#define MEDIA_SLOTS_MAX 12
+
 // Machine lifecycle + host-input vtable.  The behavior half of a machine
 // (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of
 // these.  system.c / nubus.c dispatch through it; every hook is NULL-safe.
@@ -128,6 +157,18 @@ typedef struct machine_substrate {
     int (*input_mouse_move)(struct config *cfg, int x, int y, const char *mode);
     int (*input_mouse_button)(struct config *cfg, bool down, const char *mode);
     struct display *(*display)(struct config *cfg);
+
+    // machine.restart media transfer (proposal-boot-vs-reset §3.3).
+    // media_detach hands every mounted medium's open image handle (plus its
+    // attachment coordinates) to `out`, removing them from whatever would
+    // close them during teardown, and returns the count; media_attach hands
+    // one such handle back to the freshly built machine (0 = attached, the
+    // callee now owns the handle; <0 = the caller must close it).  Macs bind
+    // the shared cfg->floppy/cfg->scsi implementation in system.c
+    // (system_media_detach_std / system_media_attach_std); the Lisa
+    // implements its own (parallel FDC + ProFile).
+    int (*media_detach)(struct config *cfg, media_slot_t *out, int max);
+    int (*media_attach)(struct config *cfg, const media_slot_t *slot);
 } machine_substrate_t;
 
 // Machine descriptor: static metadata for each emulated machine model.  The

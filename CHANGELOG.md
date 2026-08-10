@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`machine.restart`** — power-cycle the running machine: rebuilds the recorded hardware from cold ROM state and keeps the mounted media attached. The open image handles transfer across the teardown, so everything the guest wrote survives the power-cycle by construction.
+
+### Changed
+- **`machine.boot` takes a complete document and inherits nothing** — `model` and `rom` are required, and every omitted field resolves to the model's own defaults instead of the previous machine's record. This removes a class of cross-model failures where a field the caller never wrote arrived from an earlier machine (e.g. booting a Centris 660AV after an SE/30 failed with "model 'q660av' has no NuBus slots for video_card 'se30'").
+
 ## [v0.8.0] — 2026-08-10
 
 ### Added

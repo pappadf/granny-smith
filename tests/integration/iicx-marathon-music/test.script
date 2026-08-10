@@ -19,7 +19,7 @@ include "../lib/mac.script"
 
 machine.rtc.time = 3000000000
 
-machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp"
+machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
 
 machine.scsi.attach_hd "../../data/apps/marathon_8_24gc.img" 0
 scheduler.run 200000000

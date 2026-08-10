@@ -89,7 +89,7 @@
 # --- 13" RGB (sense $6) at 1/2/4/8 bpp ---
 include "../lib/mac.script"   # report_row (§5.6 coverage records)
 
-machine.boot model="iicx" ram=8192 video_sense=6
+machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
@@ -107,7 +107,7 @@ assert machine.memory.peek.l(0xf920000c) == 0x14 "13in_rgb 1bpp RowWords != 0x14
 machine.screen.match welcome-13in_rgb-640x480-1bpp.png
 report_row("7.0.1", "jmfb", "rom-stage 640x480x1 13in_rgb")
 
-machine.boot model="iicx" ram=8192 video_sense=6
+machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
@@ -127,7 +127,7 @@ assert machine.memory.peek.l(0xf920000c) == 0x28 "13in_rgb 2bpp RowWords != 0x28
 machine.screen.match welcome-13in_rgb-640x480-2bpp.png
 report_row("7.0.1", "jmfb", "rom-stage 640x480x2 13in_rgb")
 
-machine.boot model="iicx" ram=8192 video_sense=6
+machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002782a6a6000000:8
@@ -142,7 +142,7 @@ assert machine.memory.peek.l(0xf920000c) == 0x50 "13in_rgb 4bpp RowWords != 0x50
 machine.screen.match welcome-13in_rgb-640x480-4bpp.png
 report_row("7.0.1", "jmfb", "rom-stage 640x480x4 13in_rgb")
 
-machine.boot model="iicx" ram=8192 video_sense=6
+machine.boot model="iicx" ram=8192 video_sense=6 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002783a6a6000000:8
@@ -158,7 +158,7 @@ machine.screen.match welcome-13in_rgb-640x480-8bpp.png
 report_row("7.0.1", "jmfb", "rom-stage 640x480x8 13in_rgb")
 
 # --- 12" RGB (sense $2) at 1/2/4/8 bpp ---
-machine.boot model="iicx" ram=8192 video_sense=2
+machine.boot model="iicx" ram=8192 video_sense=2 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002780a2a2000000:8
@@ -173,7 +173,7 @@ assert machine.rtc.pram.peek(0x48) == 0x80 "12in_rgb 1bpp savedMode rewritten by
 machine.screen.match welcome-12in_rgb-512x384-1bpp.png
 report_row("7.0.1", "jmfb", "rom-stage 512x384x1 12in_rgb")
 
-machine.boot model="iicx" ram=8192 video_sense=2
+machine.boot model="iicx" ram=8192 video_sense=2 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002781a2a2000000:8
@@ -186,7 +186,7 @@ assert machine.rtc.pram.peek(0x48) == 0x81 "12in_rgb 2bpp savedMode rewritten by
 machine.screen.match welcome-12in_rgb-512x384-2bpp.png
 report_row("7.0.1", "jmfb", "rom-stage 512x384x2 12in_rgb")
 
-machine.boot model="iicx" ram=8192 video_sense=2
+machine.boot model="iicx" ram=8192 video_sense=2 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002782a2a2000000:8
@@ -199,7 +199,7 @@ assert machine.rtc.pram.peek(0x48) == 0x82 "12in_rgb 4bpp savedMode rewritten by
 machine.screen.match welcome-12in_rgb-512x384-4bpp.png
 report_row("7.0.1", "jmfb", "rom-stage 512x384x4 12in_rgb")
 
-machine.boot model="iicx" ram=8192 video_sense=2
+machine.boot model="iicx" ram=8192 video_sense=2 rom="${$ROM}"
 machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
 machine.rtc.pram.validate
 machine.rtc.pram.poke 0x46 0x002783a2a2000000:8

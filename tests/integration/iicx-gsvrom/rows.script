@@ -29,7 +29,7 @@ def row_gsvrom_sweep() {
     # short-circuit boot-drive discovery, 11M to the stable Welcome window).
 
     # --- 13" RGB at 1/2/4/8 bpp --------------------------------------------------
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_1bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_1bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -46,7 +46,7 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-13in_rgb-640x480-1bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 640x480x1 13in_rgb")
 
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_2bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_2bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -62,7 +62,7 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-13in_rgb-640x480-2bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 640x480x2 13in_rgb")
 
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_4bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_4bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -75,7 +75,7 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-13in_rgb-640x480-4bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 640x480x4 13in_rgb")
 
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -89,7 +89,7 @@ def row_gsvrom_sweep() {
     report_row("7.0.1", "gsvrom", "rom-stage 640x480x8 13in_rgb")
 
     # --- 12" RGB at 1/8 bpp ------------------------------------------------------
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_1bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_1bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -103,7 +103,7 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-12in_rgb-512x384-1bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 512x384x1 12in_rgb")
 
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="12in_rgb_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -115,7 +115,7 @@ def row_gsvrom_sweep() {
     report_row("7.0.1", "gsvrom", "rom-stage 512x384x8 12in_rgb")
 
     # --- 15" Portrait B&W at 1/8 bpp ---------------------------------------------
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_1bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_1bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -129,7 +129,7 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-15in_bw-640x870-1bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 640x870x1 15in_bw")
 
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="15in_bw_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -141,7 +141,7 @@ def row_gsvrom_sweep() {
     report_row("7.0.1", "gsvrom", "rom-stage 640x870x8 15in_bw")
 
     # --- 21" RGB at 1/8 bpp (neutral grays — identity gamma, see header) ---------
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_1bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_1bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -155,7 +155,7 @@ def row_gsvrom_sweep() {
     check("goldens/welcome-21in_rgb-1152x870-1bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 1152x870x1 21in_rgb")
 
-    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="8_24" video_mode="21in_rgb_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -174,7 +174,7 @@ def row_gsvrom_sweep() {
 def row_gsvrom_24ac() {
     # Generic 24AC: staged video modes ride the same PRAM-seeding path as the
     # other siblings; the extended-sense probe in the GS ROM picks the monitor.
-    machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_640x480_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -192,7 +192,7 @@ def row_gsvrom_24ac() {
     check("goldens/welcome-24ac-640x480-8bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 640x480x8 24ac")
 
-    machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_832x624_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="24ac" video_mode="rgb_832x624_8bpp" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
@@ -211,7 +211,7 @@ def row_gsvrom_24ac() {
 def row_gsvrom_824gc() {
     # Generic GC bring-up: boot the 6.0.8 GC system; the 8•24 GC extension
     # matches the GS ROM's identity records and starts GC-OS on the card.
-    machine.boot model="iicx" ram=8192 video_card="8_24gc"
+    machine.boot model="iicx" ram=8192 video_card="8_24gc" rom="${$ROM}"
     machine.rtc.time = 3000000000
     machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
     scheduler.run 200000000
@@ -227,7 +227,7 @@ def row_gsvrom_custom_mode() {
     # with an 800x600 video sResource (the default 13" monitor's slot), the
     # staged custom depth (8bpp) is PRAM-seeded, and the Welcome screen paints
     # at 800x600.  The five-line boot prefix mirrors iicx-gsvrom-video-modes.
-    machine.boot model="iicx" ram=8192 video_card="8_24" custom_mode="800x600x8"
+    machine.boot model="iicx" ram=8192 video_card="8_24" custom_mode="800x600x8" rom="${$ROM}"
     machine.floppy.drive[0].insert "../../data/systems/System_7_0_1.image"
     scheduler.run 50000000
     machine.memory.poke.w 0x017A 0x8805
