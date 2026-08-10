@@ -5,7 +5,7 @@
 
 **Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning three CPU generations, from the 68000 Lisa 2 and Macintosh Plus to the 68040 Quadra towers and AV machines. It runs Mac OS  and A/UX on the Macintosh, and the Lisa Office System, MacWorks XL, and Xenix on the Lisa 2 / Macintosh XL.
 
-> **See it:** [Screenshot gallery of A/UX, MacTest, and more](GALLERY.md) from the test system
+> **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
 > **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
 > Use Chromium browser (Safari and Firefox have known issues)

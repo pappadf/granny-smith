@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.8.0] — 2026-08-10
+
+### Added
+- **Macintosh Quadra 700, 900, and 950** — the 68040 generation: MC68040 core (MOVE16, 040 MMU/cache ops, access-error frames), MCU memory controller, DAFB video, Caboose and the 900/950 IOPs, SONIC and EASC. Boot System 7.1 through 7.6 to the Finder.
+- **Macintosh Quadra 840AV and Centris 660AV** — the AV family: YMCA, PSC interrupt controller and DMA, Cuda, CIVIC video, New Age floppy, MACE. Boots System 7.1 to the Finder.
+- **AT&T DSP3210 and Singer sound on the AV machines** — the on-board DSP runs Apple's own RTM kernel and sound modules out of the ROM, so the guest gets audio out, text-to-speech, and sound recording. **PlainTalk speech recognition works**: spoken commands are recognized and executed. Sound input is also modeled, and the browser's microphone feeds the Singer input.
+- **AV video input** — SAA7191B/SAA7186 digitizer behind Cuda's I2C, with the browser's webcam as a live NTSC source.
+- **Generic NuBus declaration ROM** — display cards run from a runtime-generated declaration ROM when no dump is available, and it can synthesize custom resolutions.
+- **Shell language v2** — typed parsing, control flow, and user-defined functions, plus named arguments and configuration-document boot.
+- Multi-card NuBus: machines declare slot topology, cards declare attachment, and several cards can be staged per boot.
+- Scheduler accelerated mode: a real-time timebase with an adaptive governor, and the effective CPU speed shown in the status bar.
+- IIci boots from CD-ROM, and AppleDouble forks round-trip losslessly.
+
+### Changed
+- Performance: +51% headless and +40% browser turbo, mostly from an ATC-style MMU block cache replacing the eager page-coverage fill, plus core fast paths.
+- ROM provisioning is content-addressed — the core never fabricates or interprets a path.
+- Integration suite reworked from 119 directories to 77 across nine machine suites, with a static coverage matrix and three new gates.
+- Shell and terminal UX: state-aware prompt, working tab completion, quieter checkpoints, persistent history.
+
+### Fixed
+- The emulator defect ledger is closed: 11 of 11.
+- 68020+ bit-field conformance, inverted `FMOVEM.X` direction for control-mode EAs, `CHK` N-flag, `MOVES` same-register store, and aborted writes on extension-word fetch faults.
+- IIfx/SWIM IOP: 24-bit master-pointer flags no longer abort the Mac OS 7.6 Installer, which now installs end to end.
+- Compressed resources decode through `dcmp` 3 instead of disassembling as garbage.
+- Sony vendor READ TOC (C1h) returns the real CDU-541 format.
+- web2: a duplicate floppy name no longer freezes New Machine at "Scanning ROMs…".
+
 ## [v0.7.0] — 2026-07-15
 
 ### Added

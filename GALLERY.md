@@ -1,101 +1,87 @@
 # Gallery
 
-A tour of Granny Smith running real Macintosh software, and the tooling around it.
+Demos of Granny Smith running real Macintosh (and Lisa) software. Click any thumbnail to watch on YouTube.
 
 > [Try Granny Smith yourself →](https://pappadf.github.io/gs-pages/latest/)
 
 ---
 
-## Display Card 24AC (Macintosh IIcx) with Norton System Info
+## PlainTalk Speech Recognition on an Emulated Quadra 840AV (DSP3210)
 
-![System Info on a IIcx with the Display Card 24AC, ready to run the Display benchmark](docs/assets/24ac_sysinfo.png)
+[![PlainTalk speech recognition running on an emulated Quadra 840AV](https://i.ytimg.com/vi/TZw71SAVR_Q/hq720.jpg)](https://www.youtube.com/watch?v=TZw71SAVR_Q)
 
-System Info benchmark from Norton Utilities on a Macintosh IIcx fitted with the Apple Macintosh Display Card 24AC, the Radius-built NuBus colour card, emulated with its hardware QuickDraw accelerator.
-
----
-
-## Display Card 8•24 GC (Macintosh IIcx) with Norton System Info
-
-![System Ratings window showing the emulated 8•24 GC](docs/assets/24gc_sysinfo.png)
-
-The System Ratings verdict for the Macintosh Display Card 8•24 GC with QuickDraw acceleration modelled: the emulated card draws 2373 rectangles/sec, well clear of the Quadra 700 reference system at 649.
+Apple's 1993 PlainTalk speech recognition understanding spoken commands - "Computer, open the Trash" opens the Trash. The interesting part is where the work happens: the Quadra 840AV shipped with an on-board AT&T DSP3210, a 32-bit floating-point DSP running alongside the 68040, and PlainTalk was its flagship application. The audio in this demo is processed, sample by sample, by PlainTalk's original DSP code inside a full emulation of that chip. *(August 2026)*
 
 ---
 
-## Filesystem Browser
+## Emulating the Video Input Path of the Macintosh Quadra 840AV
 
-![Filesystem panel browsing host OPFS and guest HFS/UFS volumes](docs/assets/fs_browser.png)
+[![Live webcam video digitized by the emulated 840AV](https://i.ytimg.com/vi/zUiRTOQy7RM/hq720.jpg)](https://www.youtube.com/watch?v=zUiRTOQy7RM)
 
-The Filesystem panel unifies host and guest storage into a single tree, so disk images open up like directories and you can descend straight from a host folder into the volumes inside an image. The host side covers both OPFS (the browser's Origin Private File System) and the in-memory MemFS; expanding `hd160-with-aux-301.img` walks the disk image in place, through the HFS volume (`MacPartition`, with its System Folder, A/UX Startup, and Trash) and the A/UX UFS partitions (`bin`, `dev`, `etc`, `init.d`, …). Any file can be copied straight out of either tree.
-
----
-
-## Integrated Debugger (Macintosh IIfx) with A/UX
-
-![Integrated debugger with disassembly, register file, and breakpoints alongside a live A/UX desktop](docs/assets/iifx_aux3.png)
-
-The full integrated debugger attached to a Macintosh IIfx running A/UX. The left half is the live machine, with Control Panels, a CommandShell, and the A/UX System Console; the right pane is a live disassembly view that tracks the program counter instruction by instruction, a register file that highlights the values changed by the last step, and inline breakpoints.
+The browser's webcam fed into the emulated 840AV's video digitizer as a live NTSC source - real-time video capture on a 1993 Mac, running in a browser tab. *(August 2026)*
 
 ---
 
-## Macintosh SE/30 booting A/UX 3.0.1
+## Marathon on a Virtual Macintosh IIfx — 8•24 GC Accelerated
 
-![Animated SE/30 cold boot into A/UX 3.0.1](docs/assets/aux_boot.gif)
+[![Marathon running on an emulated IIfx with 8•24 GC](https://i.ytimg.com/vi/7fpy4xqSDLw/hq720.jpg)](https://www.youtube.com/watch?v=7fpy4xqSDLw)
 
-A full SE/30 cold boot into A/UX 3.0.1, captured end to end: from the Happy Mac through the UNIX kernel bring-up to the Finder desktop sitting on top of a System V UNIX userland.
-
----
-
-## Macintosh IIfx with MacTest 1.0
-
-![MacTest 1.0 identifying a Macintosh IIfx in 256 colours](tests/integration/iifx-mactest/main.png)
-
-Apple's MacTest 1.0 identifying a Macintosh IIfx (System 6.0.5, a 68030 CPU with a 68882 FPU, 512 KB ROM, and 16 MB RAM), with the hardware-identification panel rendered in 256 colours (8 bpp on the JMFB display card).
+Bungie's Marathon on an emulated Macintosh IIfx with the Display Card 8•24 GC. The card has no "3D" acceleration, but Marathon renders to an offscreen bitmap and blits each frame with CopyBits — so the emulated QuickDraw acceleration genuinely improves the frame rate. *(July 2026)*
 
 ---
 
-## Macintosh SE/30 with the A/UX 3.0.1 Installer
+## Macintosh Display Card 8•24 GC — with Working Acceleration
 
-![A/UX Easy Install dialog](tests/integration/se30-aux-3/installer.png)
+[![The 8•24 GC accelerator benchmarked in the emulator](https://i.ytimg.com/vi/Rhv8IiNycAw/hq720.jpg)](https://www.youtube.com/watch?v=Rhv8IiNycAw)
 
-The A/UX 3.0.1 Installer dialog, booted from an A/UX boot floppy with the installer CD-ROM mounted as the root filesystem. From here the installer lays down a MacPartition, the A/UX startup files, and the standard system software onto a SCSI hard disk.
-
----
-
-## Macintosh SE/30 with the A/UX 3.0.1 Desktop
-
-![A/UX 3.0.1 Finder desktop](tests/integration/se30-aux3-boot/desktop.png)
-
-The A/UX 3.0.1 Finder desktop after a clean boot from an installed HD image. A/UX presents itself as a familiar Mac desktop on top of a System V Release 2 UNIX kernel, and `MacPartition` is the HFS volume.
+Apple's first "GPU": the 1990 Display Card 8•24 GC, a $1,999 NuBus card with an AMD Am29000 RISC processor that offloaded QuickDraw from the CPU. Here it runs in an emulated IIcx under System 7.1 with unmodified Apple drivers. Rather than emulating the Am29000 itself, the card's drawing engine is implemented natively in the emulator - the command protocol, RPC channel and drawing queue behave exactly like the real firmware's, and the Mac-side software can't tell the difference. Norton System Info's video benchmark runs twice to measure the effect: acceleration off, then on. *(July 2026)*
 
 ---
 
-## Macintosh SE/30 with the A/UX 3.0.1 CommandShell
+## Benchmarking the Macintosh Display Card 24AC: Acceleration On vs. Off
 
-![A/UX CommandShell with directory listing](tests/integration/se30-aux3-boot/shell.png)
+[![Norton System Info benchmarking the emulated 24AC](https://i.ytimg.com/vi/oXxxA1ID1pA/hq720.jpg)](https://www.youtube.com/watch?v=oXxxA1ID1pA)
 
-A/UX's CommandShell launches in a regular Mac window, mixing the classic toolbox with a real UNIX userland.
-
----
-
-## Macintosh SE/30 with MacTest
-
-![MacTest SE/30 main screen after reboot](tests/integration/se30-mactest/main-after-reboot.png)
-
-Apple's internal MacTest SE/30 diagnostic suite reporting "Tous les tests sélectionnés ont réussi", meaning every selected hardware test passed. This exercises the VIA, SCSI, IWM, sound, and logic-board paths against Granny Smith's emulated hardware.
+The emulated Display Card 24AC running Norton System Info 3.1's video benchmark under System 7.1, with hardware acceleration on and off. Absolute numbers depend as much on the host as on the emulated target, but the relative comparison is what's interesting. *(July 2026)*
 
 ---
 
-## Macintosh Plus with MacTest Rev 7.0
+## Booting Lisa Office System 3.1 on an Emulated Apple Lisa 2
 
-![Service MacTest Rev 7.0 on Mac Plus](tests/integration/plus-mactest/mactest-success.png)
+[![Lisa Office System 3.1 on an emulated Lisa 2](https://i.ytimg.com/vi/rYM1fCCsnXI/hq720.jpg)](https://www.youtube.com/watch?v=rYM1fCCsnXI)
 
-The classic MacTest Rev 7.0 running on an emulated 4 MB Macintosh Plus. The full suite (logic board, RAM, video, IWM, sound) completes with a green PASS, validating the 68000 core and Plus-era peripheral emulation.
+The Lisa Office System 3.1 booting on an emulated Apple Lisa 2. *(June 2026)*
 
 ---
 
-## Macintosh SE/30 with Apple HD SC Setup
+## Installing Xenix 3.0 from Floppies on an Emulated Lisa 2
 
-![Apple HD SC Setup formatting a blank disk](tests/integration/se30-format-hd/ready.png)
+[![Xenix 3.0 installation on an emulated Lisa 2](https://i.ytimg.com/vi/IyyMSOJn64Q/hq720.jpg)](https://www.youtube.com/watch?v=IyyMSOJn64Q)
 
-Apple HD SC Setup v7.0.1 ready to initialize a freshly created blank 80 MB SCSI image.
+Microsoft's Xenix 3.0 (a UNIX for the Lisa) installed from the original floppy set onto an emulated Lisa 2. *(June 2026)*
+
+---
+
+## Emulated Macintosh XL (Apple Lisa 2) Booting MacWorks XL 3.0
+
+[![MacWorks XL 3.0 booting on an emulated Macintosh XL](https://i.ytimg.com/vi/8BvvyhE_fvU/hq720.jpg)](https://www.youtube.com/watch?v=8BvvyhE_fvU)
+
+MacWorks XL 3.0 turning an emulated Lisa 2 into a Macintosh XL. *(June 2026)*
+
+---
+
+## Emulated Macintosh IIfx Booting A/UX 3.0.1
+
+[![A/UX 3.0.1 booting on an emulated Macintosh IIfx](https://i.ytimg.com/vi/KlJAWr3AL9s/hq720.jpg)](https://www.youtube.com/watch?v=KlJAWr3AL9s)
+
+A/UX 3.0.1 booting on an emulated IIfx — an interesting workload because it's one of the few that exercises the IIfx's bus-master DMA. Where its contemporaries drove the NCR 53C80 SCSI controller by hand, the IIfx pairs it with a dedicated SCSIDMA engine that moves entire transfers to and from memory on its own. *(June 2026)*
+
+---
+
+## Installing A/UX 3.0.1 from Floppy and CD on an Emulated Macintosh SE/30
+
+[![A/UX 3.0.1 installation on an emulated SE/30](https://i.ytimg.com/vi/o0_bxDgY_SI/hq720.jpg)](https://www.youtube.com/watch?v=o0_bxDgY_SI)
+
+The full A/UX 3.0.1 installation on an emulated SE/30: booting from the A/UX boot floppy with the installer CD-ROM as root, partitioning the SCSI disk, and laying down a complete UNIX system. *(May 2026)*
+
+> **Note:** This demo was recorded with an older, now-deprecated UI frontend, so the interface around the emulated screen looks different from current Granny Smith releases.
