@@ -93,4 +93,25 @@ machine.boot video_card="824gc" vrom="../../data/roms/824gc-v1.0-reva-9e9857e8.v
 assert machine.config.vrom != "" "record must carry the explicit pick"
 assert machine.config.vroms == "[{\"card_id\":\"824gc\",\"path\":\"../../data/roms/824gc-v1.0-reva-9e9857e8.vrom\",\"crc\":\"0x9e9857e8\",\"explicit\":true}]" "explicit v1.0 pick must win over the preferred v1.1"
 
+# --- A model change drops the model-scoped fields instead of inheriting. ---
+# video_card / video_mode / video_sense / vrom name a card in a slot, so they
+# describe the model they were captured on and no other.  Inherited across a
+# model change they arrive somewhere with nowhere to put them, rejecting a
+# boot whose document never mentioned a card: booting an SE/30 and then a
+# 660AV in one session failed on the v0.8.0 staging deploy with "model
+# 'q660av' has no NuBus slots for video_card 'se30'".  The AV machines
+# declare no NuBus slots at all, so they are the strict case.
+machine.boot video_card="824gc"
+assert machine.config.video_card == "824gc" "precondition: record carries a card"
+assert machine.boot(model="q660av", rom="../../data/roms/q840av-q660av-5bf10fd1.rom") "a slotless model must not inherit the previous model's video_card"
+assert machine.config.video_card == "" "the old card must not enter the new record"
+# Coming back does not resurrect it either — the record now holds no card,
+# and the IIcx boots on its slot default.
+assert machine.boot(model="iicx", rom="../../data/roms/iix-iicx-se30-97221136.rom") "back to a carded model"
+assert machine.config.video_card == "" "video_card must not survive two model changes"
+# Same-model inheritance is untouched: a bare reboot still keeps the card.
+machine.boot video_card="824gc"
+machine.boot
+assert machine.config.video_card == "824gc" "same-model reboot must still inherit video_card"
+
 quit

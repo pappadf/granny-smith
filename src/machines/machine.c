@@ -492,22 +492,33 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         snprintf(rom2_buf, sizeof(rom2_buf), "%s", rec->valid ? rec->rom2 : "");
         doc.rom2 = *rom2_buf ? rom2_buf : NULL;
     }
+    // The video fields and the vROM name a card in a specific slot, so they
+    // describe the model they were captured on and nothing else.  Inherit
+    // them only when this document names that same model; carried across a
+    // model change they arrive at a machine with nowhere to put them (an
+    // SE/30's built-in card following the user onto a slotless AV machine:
+    // "model 'q660av' has no NuBus slots for video_card 'se30'"), rejecting a
+    // boot whose document never mentioned a card at all.  An unset model
+    // inherits the record's, so it is the same machine by definition.
+    const bool same_model = !(rec->valid && doc_in->model && *doc_in->model && strcmp(doc_in->model, rec->model) != 0);
+    const bool inherit_video = rec->valid && same_model;
+
     if (!doc.vrom || !*doc.vrom) {
-        snprintf(vrom_buf, sizeof(vrom_buf), "%s", rec->valid ? rec->vrom : "");
+        snprintf(vrom_buf, sizeof(vrom_buf), "%s", inherit_video ? rec->vrom : "");
         doc.vrom = *vrom_buf ? vrom_buf : NULL;
     }
     if (!doc.video_card || !*doc.video_card) {
-        snprintf(card_buf, sizeof(card_buf), "%s", rec->valid ? rec->video_card : "");
+        snprintf(card_buf, sizeof(card_buf), "%s", inherit_video ? rec->video_card : "");
         doc.video_card = *card_buf ? card_buf : NULL;
     }
     if (doc.video_sense < 0)
-        doc.video_sense = rec->valid ? rec->video_sense : -1;
+        doc.video_sense = inherit_video ? rec->video_sense : -1;
     if (!doc.video_mode || !*doc.video_mode) {
-        snprintf(mode_buf, sizeof(mode_buf), "%s", rec->valid ? rec->video_mode : "");
+        snprintf(mode_buf, sizeof(mode_buf), "%s", inherit_video ? rec->video_mode : "");
         doc.video_mode = *mode_buf ? mode_buf : NULL;
     }
     if (!doc.custom_mode || !*doc.custom_mode) {
-        snprintf(custom_buf, sizeof(custom_buf), "%s", rec->valid ? rec->custom_mode : "");
+        snprintf(custom_buf, sizeof(custom_buf), "%s", inherit_video ? rec->custom_mode : "");
         doc.custom_mode = *custom_buf ? custom_buf : NULL;
     }
 
