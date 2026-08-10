@@ -36,7 +36,7 @@ let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 # figure also covers the ROM's own discovery timeout, which is part of
 # what this row pins.
 def row_se30_nomedia() {
-    machine.boot model="se30" ram=1024
+    machine.boot model="se30" ram=1024 rom="${$ROM}"
     scheduler.run 335000000
     assert machine.id == "se30" "se30-nomedia: machine.id != se30"
     assert machine.ram == 1024 "se30-nomedia: machine.ram != 1024"
@@ -51,7 +51,7 @@ def row_se30_nomedia() {
 # semantics — the 12 M budget and the 15,359-frame length are both
 # load-bearing, so neither becomes a condition wait).
 def row_se30_chime() {
-    machine.boot model="se30" ram=8192
+    machine.boot model="se30" ram=8192 rom="${$ROM}"
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
@@ -66,7 +66,7 @@ def row_se30_chime() {
 # and IIcx rows. The Universal ROM's ~13 s drive-discovery wait is
 # short-circuited by the shared KeyMap poke.
 def row_se30_608_fd() {
-    machine.boot model="se30" ram=2048
+    machine.boot model="se30" ram=2048 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"
     let t0 = scheduler.host_user_ns
     scheduler.run 40000000
@@ -87,7 +87,7 @@ def row_se30_608_fd() {
 # The About box confirms the System version and the 4 MB total.
 def row_se30_71_fd() {
     machine.rtc.time = 3000000000
-    machine.boot model="se30" ram=4096
+    machine.boot model="se30" ram=4096 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     scheduler.run 40000000
     skip_boot_wait()
@@ -110,7 +110,7 @@ def row_se30_71_fd() {
 # boot reaches the Finder and the built-from record names a vROM.
 def row_se30_701_gsvrom() {
     machine.rtc.time = 3000000000
-    machine.boot model="se30" ram=8192
+    machine.boot model="se30" ram=8192 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 50000000
     skip_boot_wait()
@@ -137,7 +137,7 @@ def row_se30_701_gsvrom() {
 # addressing assert records reality and MemTop is capped at 8 MB.
 def row_se30_75_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="se30" ram=16384
+    machine.boot model="se30" ram=16384 rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 300000000
     skip_boot_wait()
@@ -158,13 +158,13 @@ def row_se30_75_hd() {
 # §7 epilogue: the GLUE device set's save/restore round-trip, in
 # process — boot, save, wipe with a fresh boot, load, re-match.
 def row_se30_checkpoint() {
-    machine.boot model="se30" ram=2048
+    machine.boot model="se30" ram=2048 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"
     scheduler.run 40000000
     skip_boot_wait()
     wait_match("goldens/se30-6.0.8-512x342-finder.png", 400000000, 10000000)
     assert checkpoint.save("${$WORK_DIR}/suite-se30.gsc") "se30-checkpoint: save failed"
-    machine.boot model="se30" ram=1024
+    machine.boot model="se30" ram=1024 rom="${$ROM}"
     assert checkpoint.load("${$WORK_DIR}/suite-se30.gsc") "se30-checkpoint: load failed"
     scheduler.run 5000000
     assert machine.ram == 2048 "se30-checkpoint: restored RAM size wrong"

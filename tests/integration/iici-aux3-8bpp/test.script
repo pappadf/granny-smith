@@ -36,7 +36,7 @@ include "../lib/mac.script"
 # enforced is a reviewed edit here plus removing the cell's marker in
 # matrix-targets.json.
 def row_iici_aux3_8bpp() {
-    machine.boot model="iici" ram=16384
+    machine.boot model="iici" ram=16384 rom="${$ROM}"
     machine.scsi.attach_hd "../../data/aux/aux_3.0.1/hd160-with-aux-301.img" 0
     machine.rtc.time = "2026-04-26T21:30:36"
     scheduler.run 764754600

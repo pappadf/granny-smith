@@ -350,7 +350,7 @@ configure, and what the JS frontend operates on:
 - **Scripts (headless).** Integration tests and reproducible boot
   scripts contain exactly the same path forms users type. `assert`,
   `echo`, and `${…}` interpolation are root methods on `emu`.
-  Scripted machine setup (`machine.boot('plus')`, `machine.rom.load(...)`,
+  Scripted machine setup (`machine.boot(model=..., rom=...)`, `machine.rom.load(...)`,
   `machine.floppy.drive[0].insert(...)`, `machine.scsi.attach_hd(...)`) is the same
   call sequence whether it runs from a script, from the user's
   terminal, or from the URL-media auto-boot path on the web.

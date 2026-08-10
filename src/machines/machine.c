@@ -417,12 +417,16 @@ static void format_ram_options(char *buf, size_t bufsize, const hw_profile_t *p)
         snprintf(buf, bufsize, "<none>");
 }
 
-// === Boot document (proposal-named-args-boot-config §4) =====================
+// === Boot document (proposal-named-args-boot-config §4, revised by
+// proposal-boot-vs-reset §3.1) ==============================================
 //
-// machine.boot consumes one atomic configuration document: every argument
-// is optional and inherits from the live machine's built-from record; all
+// machine.boot consumes one atomic, COMPLETE configuration document: model
+// and rom are required, every other field falls back to the model's own
+// defaults — never to another machine's record (a field the caller did not
+// write must not arrive from somewhere the caller cannot see).  All
 // validation runs BEFORE the old machine is torn down, so a rejected boot
-// leaves the running machine untouched.
+// leaves the running machine untouched.  machine.restart is the verb for
+// "power-cycle this machine".
 
 // Strict declaration-ROM resolution (§4.1): every catalogued card the
 // user EXPLICITLY picked (per-slot staged entry, or the document's
@@ -473,72 +477,26 @@ static void stamp_created(char *buf, size_t bufsize) {
         snprintf(buf, bufsize, "unknown");
 }
 
-// Apply one boot document: inherit → validate → tear down → construct →
-// record.  Shared by machine.boot and headless startup.  Returns V_NONE on
-// success, V_ERROR (with the old machine still running) on rejection.
+// Apply one boot document: validate → tear down → construct → record.
+// Shared by machine.boot, machine.restart and headless startup.  Returns
+// V_NONE on success, V_ERROR (with the old machine still running) on
+// rejection.
 value_t machine_boot_apply(const boot_config_t *doc_in) {
-    const machine_config_record_t *rec = machine_config_record();
     boot_config_t doc = *doc_in;
 
-    // Inherited strings are copied out of the record: the record is
-    // rewritten during construction (rom.load write-back, step 4), so a
-    // borrowed pointer into it would alias its own destination.
-    char model_buf[MC_ID_MAX], card_buf[MC_ID_MAX], mode_buf[MC_ID_MAX], custom_buf[MC_ID_MAX];
-    char rom_buf[MC_PATH_MAX], rom2_buf[MC_PATH_MAX], vrom_buf[MC_PATH_MAX];
-
-    // 1. Inheritance: every field not given falls back to the record.
-    if (!doc.model || !*doc.model) {
-        snprintf(model_buf, sizeof(model_buf), "%s", rec->valid ? rec->model : "");
-        doc.model = *model_buf ? model_buf : NULL;
-    }
-    if (!doc.rom || !*doc.rom) {
-        snprintf(rom_buf, sizeof(rom_buf), "%s", rec->valid ? rec->rom : "");
-        doc.rom = *rom_buf ? rom_buf : NULL;
-    }
-    if (!doc.rom2 || !*doc.rom2) {
-        snprintf(rom2_buf, sizeof(rom2_buf), "%s", rec->valid ? rec->rom2 : "");
-        doc.rom2 = *rom2_buf ? rom2_buf : NULL;
-    }
-    // The video fields and the vROM name a card in a specific slot, so they
-    // describe the model they were captured on and nothing else.  Inherit
-    // them only when this document names that same model; carried across a
-    // model change they arrive at a machine with nowhere to put them (an
-    // SE/30's built-in card following the user onto a slotless AV machine:
-    // "model 'q660av' has no NuBus slots for video_card 'se30'"), rejecting a
-    // boot whose document never mentioned a card at all.  An unset model
-    // inherits the record's, so it is the same machine by definition.
-    const bool same_model = !(rec->valid && doc_in->model && *doc_in->model && strcmp(doc_in->model, rec->model) != 0);
-    const bool inherit_video = rec->valid && same_model;
-
-    if (!doc.vrom || !*doc.vrom) {
-        snprintf(vrom_buf, sizeof(vrom_buf), "%s", inherit_video ? rec->vrom : "");
-        doc.vrom = *vrom_buf ? vrom_buf : NULL;
-    }
-    if (!doc.video_card || !*doc.video_card) {
-        snprintf(card_buf, sizeof(card_buf), "%s", inherit_video ? rec->video_card : "");
-        doc.video_card = *card_buf ? card_buf : NULL;
-    }
-    if (doc.video_sense < 0)
-        doc.video_sense = inherit_video ? rec->video_sense : -1;
-    if (!doc.video_mode || !*doc.video_mode) {
-        snprintf(mode_buf, sizeof(mode_buf), "%s", inherit_video ? rec->video_mode : "");
-        doc.video_mode = *mode_buf ? mode_buf : NULL;
-    }
-    if (!doc.custom_mode || !*doc.custom_mode) {
-        snprintf(custom_buf, sizeof(custom_buf), "%s", inherit_video ? rec->custom_mode : "");
-        doc.custom_mode = *custom_buf ? custom_buf : NULL;
-    }
-
-    // 2. Validation — all of it before system_destroy.
+    // 1. Validation — all of it before system_destroy.  The document is the
+    // whole specification: nothing is filled in from the previous machine's
+    // record (§2 — a field the caller did not write must not arrive from
+    // somewhere the caller cannot see).
     if (!doc.model || !*doc.model)
-        return val_err("machine.boot: no model given and no machine to inherit from");
+        return val_err("machine.boot: model is required (machine.restart power-cycles the running machine)");
     const hw_profile_t *profile = machine_find(doc.model);
     if (!profile)
         return val_err("machine.boot: unknown model '%s'", doc.model);
 
     uint32_t ram_kb = doc.ram_kb;
     if (ram_kb == 0)
-        ram_kb = (rec->valid && strcmp(rec->model, profile->id) == 0) ? rec->ram_kb : profile->ram_default / 1024u;
+        ram_kb = profile->ram_default / 1024u;
     if (!ram_option_allowed(profile, ram_kb)) {
         char options[128];
         format_ram_options(options, sizeof(options), profile);
@@ -547,7 +505,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     }
 
     if (!doc.rom || !*doc.rom)
-        return val_err("machine.boot: no rom given and no machine to inherit from");
+        return val_err("machine.boot: rom is required (machine.restart power-cycles the running machine)");
     rom_file_info_t rom_fi = {0};
     if (rom_probe_file(doc.rom, &rom_fi) != 0)
         return val_err("machine.boot: cannot read rom '%s'", doc.rom);
@@ -695,11 +653,11 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     return val_none();
 }
 
-// machine.boot — atomic, self-contained configuration document.  All
-// arguments optional; unspecified ones inherit from machine.config (the
-// built-from record), so a bare `machine.boot` is a plain reboot with the
-// ROM re-staged.  Empty-string / 0 defaults are the "not given" sentinels
-// (an explicitly empty value is rejected by the named-argument grammar).
+// machine.boot — atomic, self-contained configuration document.  model and
+// rom are required; every other field falls back to the model's own
+// defaults.  Empty-string / 0 defaults are the "not given" sentinels (an
+// explicitly empty value is rejected by the named-argument grammar).  Use
+// machine.restart to power-cycle the running machine.
 static value_t machine_method_boot(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -775,9 +733,11 @@ static value_t machine_method_register(struct object *self, const member_t *m, i
     return val_bool(gs_register_machine(argv[0].s, argv[1].s) == 0);
 }
 
-// "Not given" sentinels for the all-optional boot document: empty string /
-// 0 / 0xFF mean "inherit from machine.config" (§4.1).  An explicitly empty
-// named value (`rom=`) is rejected by the shell grammar before binding.
+// "Not given" sentinels for the boot document's optional fields: empty
+// string / 0 / 0xFF mean "use the model's default" (§3.1); model and rom
+// are checked as required inside machine_boot_apply so the message can
+// point at machine.restart.  An explicitly empty named value (`rom=`) is
+// rejected by the shell grammar before binding.
 static const value_t k_unset_str = {.kind = V_STRING, .s = (char *)""};
 static const value_t k_unset_u32 = {.kind = V_UINT, .u = 0};
 static const value_t k_unset_sense = {.kind = V_UINT, .u = 0xFF};
@@ -787,47 +747,47 @@ static const arg_decl_t machine_boot_args[] = {
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Machine model id (plus / se30 / ...); default: inherit"              },
+     .doc = "Machine model id (plus / se30 / ...); required"                   },
     {.name = "ram",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_u32,
-     .doc = "RAM in KB (one of profile.ram_options); default: inherit"            },
+     .doc = "RAM in KB (one of profile.ram_options); default: model default"   },
     {.name = "rom",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "ROM file path; default: inherit (re-stages the same ROM)"            },
+     .doc = "ROM file path; required"                                          },
     {.name = "vrom",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Explicit declaration-ROM pick; default: auto-resolve from offers"    },
+     .doc = "Explicit declaration-ROM pick; default: auto-resolve from offers" },
     {.name = "video_card",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Card id for the first NuBus socket; default: inherit / slot default" },
+     .doc = "Card id for the first NuBus socket; default: slot default"        },
     {.name = "video_sense",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_sense,
-     .doc = "Monitor sense 0..7; default: inherit / card default"                 },
+     .doc = "Monitor sense 0..7; default: card default"                        },
     {.name = "video_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Video-mode id (see machine.profile); default: inherit / card default"},
+     .doc = "Video-mode id (see machine.profile); default: card default"       },
     {.name = "rom2",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Lisa/XL second ROM chip (two-chip form); default: single-file rom"   },
+     .doc = "Lisa/XL second ROM chip (two-chip form); default: single-file rom"},
     {.name = "custom_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Custom resolution WxHxD (generic 8_24 kind); default: none"          },
+     .doc = "Custom resolution WxHxD (generic 8_24 kind); default: none"       },
 };
 
 static const arg_decl_t machine_register_args[] = {
@@ -871,8 +831,8 @@ static const member_t machine_members[] = {
      .method = {.args = machine_profile_args, .nargs = 1, .result = V_MAP, .fn = machine_method_profile}},
     {.kind = M_METHOD,
      .name = "boot",
-     .doc = "Boot a machine from a configuration document; omitted arguments inherit from machine.config",
-     .method = {.args = machine_boot_args, .nargs = 9, .result = V_BOOL, .fn = machine_method_boot}},
+     .doc = "Boot a machine from a complete configuration document (model and rom required; other fields default "
+            "per model)", .method = {.args = machine_boot_args, .nargs = 9, .result = V_BOOL, .fn = machine_method_boot}},
     {.kind = M_METHOD,
      .name = "restart",
      .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",

@@ -475,6 +475,8 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   // Map the human-readable RAM string ('4 MB') to KB the boot path wants.
   const ramKB = ramStringToKb(config.ram);
   if (ramKB) doc.ram = ramKB;
+  // rom is required by machine.boot (the document inherits nothing); a
+  // missing one is rejected by the core with a clear error. For vrom,
   // '(auto)' means "let the offer registry resolve" — omit the field.
   if (config.rom && config.rom !== '(auto)') doc.rom = config.rom;
   if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
@@ -525,6 +527,25 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   // debug layout).
   resetDebugSections();
   showNotification('Machine started', 'info');
+}
+
+// Power-cycle the running machine. machine.restart rebuilds the machine
+// from its built-from record — same model, RAM, card, ROM — and keeps the
+// mounted media attached by transferring the open image handles across the
+// teardown (proposal-boot-vs-reset §3.3), so no manual re-attachment is
+// needed here. Only runtime state that is not construction configuration
+// (camera/microphone source, scheduler mode) is re-asserted.
+export async function restartEmulator(): Promise<void> {
+  const ok = await gsEval('machine.restart');
+  if (ok !== true) {
+    showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
+    return;
+  }
+  await reapplyCameraSource();
+  await reapplyMicrophoneSource();
+  await applySchedulerMode(machine.scheduler);
+  await gsEval('scheduler.run');
+  showNotification('Machine restarted', 'info');
 }
 
 export async function shutdownEmulator(): Promise<void> {

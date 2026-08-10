@@ -33,7 +33,7 @@ let hd_71 = "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img"
 # Boot the Plus at `ram` KB off `media`, wait for `golden`, and assert
 # the machine facts every floppy row shares. Returns the spend.
 def plus_fd_row(label, ram, media, golden, ceiling) {
-    machine.boot model="plus" ram=$ram
+    machine.boot model="plus" ram=$ram rom="${$ROM}"
     machine.floppy.drive[0].insert "${$media}"
     let spent = wait_match("${$golden}", $ceiling, 5000000)
     assert machine.id == "plus" "${$label}: machine.id != plus"
@@ -48,7 +48,7 @@ def plus_fd_row(label, ram, media, golden, ceiling) {
 # window and the exact frame count are both the assertion (§5.2's
 # run_exact class), not padding.
 def row_plus_beep() {
-    machine.boot model="plus" ram=1024
+    machine.boot model="plus" ram=1024 rom="${$ROM}"
     machine.sound.capture.start
     scheduler.run 1000000
     machine.sound.capture.stop
@@ -99,7 +99,7 @@ def row_plus_42_fd() {
 # initialize it, and Eject in that dialog removes it again. wait_stable
 # (not wait_match) throughout because the row interacts.
 def row_plus_608_fd() {
-    machine.boot model="plus" ram=2048
+    machine.boot model="plus" ram=2048 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"
     scheduler.run 30000000
     wait_stable(300000000)
@@ -142,7 +142,7 @@ def row_plus_608_fd() {
 # the dialog entirely, shows up as a golden mismatch.
 def row_plus_71_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="plus" ram=4096
+    machine.boot model="plus" ram=4096 rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_71}" 0
     scheduler.run 60000000
     wait_stable(1200000000)

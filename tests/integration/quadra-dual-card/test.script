@@ -18,7 +18,7 @@ machine.nubus.slot[14].card_id = "824gc"
 # mode has to be staged for its slot explicitly, or it comes up at the
 # card default and the depth assert below fails.
 machine.nubus.slot[13].video_mode = "rgb_640x480_8bpp"
-machine.boot model="q700" ram=8192
+machine.boot model="q700" ram=8192 rom="${$ROM}"
 machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
 scheduler.run 700000000
 wait_stable(1800000000)

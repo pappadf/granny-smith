@@ -1,17 +1,22 @@
 # Integration test: configuration-document boot
-# (proposal-named-args-boot-config §4; successor to nubus-staged-config).
+# (proposal-named-args-boot-config §4, revised by proposal-boot-vs-reset:
+# machine.boot inherits NOTHING — the document is the whole specification —
+# and machine.restart is the verb for "power-cycle this machine").
 #
 # Pins the boot-document contract end-to-end:
 #   * headless startup writes the built-from record (same path as scripts);
-#   * every argument is optional — omitted ones inherit from machine.config,
-#     so a bare machine.boot is a plain reboot with the ROM re-staged;
+#   * model and rom are required; every other omitted field resolves to the
+#     MODEL's own default, never to the previous machine's record —
+#     including after a model change;
 #   * all validation runs BEFORE teardown: a rejected boot leaves the
 #     running machine (and its record) untouched;
 #   * video_card= is the wildcard for the first socket; the per-slot staged
 #     surface (slot[N].card_id / video_mode) survives and beats it;
 #   * machine.config.vroms records the declaration-ROM picks the loader
 #     actually resolved; vrom= pins a specific revision;
-#   * the record rides in checkpoints and restores with the machine.
+#   * machine.restart rebuilds the machine the record describes (without
+#     restamping `created`), and the record rides in checkpoints —
+#     machine.restart after checkpoint.load replays the restored record.
 
 # --- Startup boot wrote the built-from record (headless CLI = same path). ---
 assert machine.config.valid "record valid after startup boot"
@@ -24,94 +29,108 @@ assert machine.config.created != "" "record created stamped"
 assert machine.nubus.slot[10].number == 10 "empty socket $A missing from object model"
 assert machine.nubus.slot[11].number == 11 "empty socket $B missing from object model"
 
+# --- The document is the whole specification: model and rom are required. ---
+assert !machine.boot() "bare machine.boot must be rejected (model required)"
+assert !machine.boot(model="iicx") "machine.boot without rom must be rejected"
+assert !machine.boot(rom="${$ROM}") "machine.boot without model must be rejected"
+
 # --- Validate-before-teardown: every rejection leaves the machine running. ---
-assert !machine.boot(model="bogus") "unknown model must be rejected"
-assert !machine.boot(ram=999) "off-menu ram must be rejected"
-assert !machine.boot(rom="does/not/exist.rom") "unreadable rom must be rejected"
-assert !machine.boot(vrom="../../data/roms/plus-v3-4d1f8172.rom") "non-vROM vrom= must be rejected"
-assert !machine.boot(video_card="nonesuch") "unknown card id must be rejected"
+assert !machine.boot(model="bogus", rom="${$ROM}") "unknown model must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", ram=999) "off-menu ram must be rejected"
+assert !machine.boot(model="iicx", rom="does/not/exist.rom") "unreadable rom must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", vrom="../../data/roms/plus-v3-4d1f8172.rom") "non-vROM vrom= must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", video_card="nonesuch") "unknown card id must be rejected"
 # 15 is one past the top of Apple's indexed sense numbering: 0..7 is the
 # passive 3-bit code, 8..14 names a monitor that answers the EXTENDED
-# tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*). This assertion used 9
-# while the range stopped at 7; 9 is the PAL monitor now.
-assert !machine.boot(video_sense=15) "out-of-range sense must be rejected"
-assert !machine.boot(video_mode="nonesuch") "unknown video mode must be rejected"
+# tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*).
+assert !machine.boot(model="iicx", rom="${$ROM}", video_sense=15) "out-of-range sense must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", video_mode="nonesuch") "unknown video mode must be rejected"
 assert machine.id == "iicx" "machine survives every rejected boot"
 assert machine.config.ram == 8192 "record intact after rejected boots"
+
+# --- Non-inheritance: omitted fields resolve to the MODEL's defaults. ---
+machine.boot model="iicx" ram=16384 rom="${$ROM}" video_card="824gc"
+assert machine.config.ram == 16384 "explicit ram recorded"
+assert machine.config.video_card == "824gc" "explicit card recorded"
+machine.boot model="iicx" rom="${$ROM}"
+assert machine.config.ram == 8192 "omitted ram must be the model default, not the record's 16384"
+assert machine.config.video_card == "" "omitted video_card must not come from the record"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "omitted card must resolve to the slot default"
+assert machine.rom.loaded == true "boot must stage the ROM"
 
 # --- Per-slot staging: pick the 24AC for socket $9, honoured at boot. ---
 machine.nubus.slot[9].card_id = "display_card_24ac"
 assert machine.nubus.slot[9].card_id == "display_card_24ac" "staged card_id not readable back"
-machine.boot
+machine.boot model="iicx" rom="${$ROM}"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "per-slot pick not honoured"
-# Consumed exactly once; the inheriting boot re-staged the ROM itself.
+# Consumed exactly once.
 assert machine.nubus.slot[9].card_id == "" "slot[9].card_id not consumed at boot"
-assert machine.rom.loaded == true "inheriting boot must re-stage the ROM"
 
 # --- Wildcard: video_card= applies to the machine's first socket. ---
-machine.boot video_card="824gc"
+machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "video_card= not applied to first socket"
 assert machine.config.video_card == "824gc" "record video_card"
 assert machine.config.vroms != "[]" "vroms record must list resolved picks"
 
-# --- Inheritance: a bare reboot keeps the wildcard card. ---
-machine.boot
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "bare reboot must inherit video_card"
-
 # --- A concrete slot entry beats the wildcard for that slot. ---
 machine.nubus.slot[9].card_id = "display_card_24ac"
-machine.boot video_card="824gc"
+machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "concrete staging must beat the wildcard"
 
-# --- Per-slot video_mode: the 8-bpp seed reaches the resolved card.
-# (The record's inherited video_card="824gc" wildcard is shadowed by the
-# concrete slot-9 entry, so both name the same card here.) ---
+# --- Per-slot video_mode: the 8-bpp seed reaches the resolved card. ---
 machine.nubus.slot[9].card_id = "824gc"
 machine.nubus.slot[9].video_mode = "gc_640x480_8bpp"
-machine.boot
+machine.boot model="iicx" rom="${$ROM}"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "mode test: card not seated"
 assert machine.nubus.slot[9].card.mode.depth == 8 "per-slot video_mode seed did not set 8 bpp"
 assert machine.nubus.slot[9].video_mode == "" "slot[9].video_mode not consumed at boot"
 
+# --- machine.restart: rebuild exactly the machine the record describes. ---
+machine.boot model="iicx" ram=16384 rom="${$ROM}" video_card="824gc" video_mode="gc_640x480_8bpp"
+let created0 = machine.config.created
+machine.restart
+assert machine.id == "iicx" "restart rebuilds the same model"
+assert machine.config.ram == 16384 "restart keeps the recorded ram"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restart reseats the recorded card"
+assert machine.config.created == $created0 "restart must not restamp created"
+
 # --- Checkpoint round-trip of the built-from record. ---
-machine.boot video_card="824gc" video_mode="gc_640x480_8bpp"
 scheduler.run 100000
 assert checkpoint.save("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint save"
-machine.boot video_card="display_card_24ac"
+machine.boot model="iicx" rom="${$ROM}" video_card="display_card_24ac"
 assert machine.config.video_card == "display_card_24ac" "pre-restore record differs"
 assert checkpoint.load("${$WORK_DIR}/bootcfg.checkpoint") "checkpoint load"
 assert machine.config.video_card == "824gc" "restored record video_card"
 assert machine.config.model == "iicx" "restored record model"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restored machine card"
-# An inheriting reboot after restore recreates the restored configuration.
-machine.boot
-assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "post-restore inherit"
+# Under a non-inheriting boot a bare machine.boot after restore is an error;
+# the idiom for "power-cycle the restored machine" is machine.restart, which
+# replays the restored record cold (proposal-boot-vs-reset §6.5).
+assert !machine.boot() "bare machine.boot after restore must be rejected"
+machine.restart
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "machine.restart after checkpoint.load must rebuild the restored configuration"
+assert machine.config.ram == 16384 "restart after restore keeps the restored ram"
 
 # --- Explicit vrom= pins a revision: the record's resolved-pick list shows
 # the v1.0 ROM (crc $9E9857E8) winning over the catalog-preferred v1.1. ---
-machine.boot video_card="824gc" vrom="../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"
+machine.boot model="iicx" rom="${$ROM}" video_card="824gc" vrom="../../data/roms/824gc-v1.0-reva-9e9857e8.vrom"
 assert machine.config.vrom != "" "record must carry the explicit pick"
 assert machine.config.vroms == "[{\"card_id\":\"824gc\",\"path\":\"../../data/roms/824gc-v1.0-reva-9e9857e8.vrom\",\"crc\":\"0x9e9857e8\",\"explicit\":true}]" "explicit v1.0 pick must win over the preferred v1.1"
 
-# --- A model change drops the model-scoped fields instead of inheriting. ---
-# video_card / video_mode / video_sense / vrom name a card in a slot, so they
-# describe the model they were captured on and no other.  Inherited across a
-# model change they arrive somewhere with nowhere to put them, rejecting a
-# boot whose document never mentioned a card: booting an SE/30 and then a
-# 660AV in one session failed on the v0.8.0 staging deploy with "model
-# 'q660av' has no NuBus slots for video_card 'se30'".  The AV machines
-# declare no NuBus slots at all, so they are the strict case.
-machine.boot video_card="824gc"
+# --- A model change carries nothing (the v0.8.0 staging regression). ---
+# video_card / video_mode / video_sense / vrom name a card in a slot, so
+# they describe the model they were captured on and no other.  Under the
+# old inheritance rule they followed the user onto a machine that could not
+# host them: booting an SE/30 (or IIcx) and then a 660AV in one session
+# failed with "model 'q660av' has no NuBus slots for video_card 'se30'".
+# The AV machines declare no NuBus slots at all, so they are the strict case.
+machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
 assert machine.config.video_card == "824gc" "precondition: record carries a card"
-assert machine.boot(model="q660av", rom="../../data/roms/q840av-q660av-5bf10fd1.rom") "a slotless model must not inherit the previous model's video_card"
+assert machine.boot(model="q660av", rom="../../data/roms/q840av-q660av-5bf10fd1.rom") "a slotless model must boot cleanly after a carded one"
 assert machine.config.video_card == "" "the old card must not enter the new record"
-# Coming back does not resurrect it either — the record now holds no card,
-# and the IIcx boots on its slot default.
-assert machine.boot(model="iicx", rom="../../data/roms/iix-iicx-se30-97221136.rom") "back to a carded model"
-assert machine.config.video_card == "" "video_card must not survive two model changes"
-# Same-model inheritance is untouched: a bare reboot still keeps the card.
-machine.boot video_card="824gc"
-machine.boot
-assert machine.config.video_card == "824gc" "same-model reboot must still inherit video_card"
+# Coming back does not resurrect it either — the IIcx boots on its slot default.
+assert machine.boot(model="iicx", rom="${$ROM}") "back to a carded model"
+assert machine.config.video_card == "" "video_card must not survive any model change"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24" "slot default after the round trip"
 
 quit

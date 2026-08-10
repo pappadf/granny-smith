@@ -45,7 +45,7 @@ let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 
 # ---- iix-nomedia ------------------------------------------------------------
 def row_iix_nomedia() {
-    machine.boot model="iix" ram=1024
+    machine.boot model="iix" ram=1024 rom="${$ROM}"
     # Power-on blank is no longer all-zero (display sources cold-boot black),
     # so compare against this machine's own blank rather than against 0.
     let blank = machine.screen.checksum()
@@ -62,7 +62,7 @@ def row_iix_nomedia() {
 # The card-seat contract: name, declaration ROM, and an accelerator that
 # is still in reset because no driver has run (ROM-only boot).
 def row_iix_824gc_seat() {
-    machine.boot model="iix" ram=2048 video_card="824gc"
+    machine.boot model="iix" ram=2048 video_card="824gc" rom="${$ROM}"
     # Power-on blank is no longer all-zero (display sources cold-boot black),
     # so compare against this machine's own blank rather than against 0.
     let blank = machine.screen.checksum()
@@ -82,7 +82,7 @@ def row_iix_824gc_seat() {
 # slot-PRAM sister come from the shared seeding idiom.
 def row_iix_701_fd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6
+    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x46 0x002780a6a6000000:8
@@ -115,7 +115,7 @@ def row_iix_701_fd() {
 # apply — which is exactly how this row first failed.
 def row_iix_portrait_603() {
     machine.rtc.time = 3000000000
-    machine.boot model="iix" ram=4096 video_card="mdc_8_24" video_sense=1
+    machine.boot model="iix" ram=4096 video_card="mdc_8_24" video_sense=1 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_603}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x46 0x002780a1a1000000:8
@@ -145,7 +145,7 @@ def row_iix_portrait_603() {
 # it mounts with no system error (SysErr $AF0 stays 0).
 def row_iix_71_extfd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iix" ram=16384 video_card="mdc_8_24" video_sense=6
+    machine.boot model="iix" ram=16384 video_card="mdc_8_24" video_sense=6 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x46 0x002781a6a6000000:8
@@ -188,7 +188,7 @@ def row_iix_71_extfd() {
 
 def gc_boot_1bpp(label) {
     machine.rtc.time = 3000000000
-    machine.boot model="iix" ram=8192 video_card="824gc"
+    machine.boot model="iix" ram=8192 video_card="824gc" rom="${$ROM}"
     return $label
 }
 
@@ -245,7 +245,7 @@ def sweep_cell(sense, sister, spid, w, h, settle, golden) {
     # Staging named explicitly: the GC rows above seat an 824gc, and an
     # unnamed machine.boot inherits it — which is how the same trap produced
     # a wrong diagnosis in suite-iici (ledger §8).
-    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=$sense
+    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=$sense rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x46 $sister
@@ -316,7 +316,7 @@ def row_iix_75_hd() {
     machine.rtc.time = 3000000000
     # video_sense named too: the sweep above leaves sense $0 (21" RGB, 1152
     # wide) staged, and this row is a 640x480 cell.
-    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6
+    machine.boot model="iix" ram=8192 video_card="mdc_8_24" video_sense=6 rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 400000000
     wait_stable(1500000000)

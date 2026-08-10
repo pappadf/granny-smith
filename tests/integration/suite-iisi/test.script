@@ -35,7 +35,7 @@ let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 # the 13,444-frame length are the assertion. Runs at the 65 MB maximum,
 # so the ROM's RAM sizing covers the largest supported configuration.
 def row_iisi_chime() {
-    machine.boot model="iisi" ram=66560
+    machine.boot model="iisi" ram=66560 rom="${$ROM}"
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
@@ -47,7 +47,7 @@ def row_iisi_chime() {
 
 # ---- iisi-701-fd ------------------------------------------------------------
 def row_iisi_701_fd() {
-    machine.boot model="iisi" ram=17408
+    machine.boot model="iisi" ram=17408 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     # Run past the early boot transient BEFORE waiting. The desktop pattern is
     # painted long before the Finder draws its menu bar and icons, and that bare
@@ -72,7 +72,7 @@ def row_iisi_701_fd() {
 # NEW CELL IIsi x 6.0.8 on the 5 MB minimum (1+4 two-bank split).
 def row_iisi_608_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iisi" ram=5120
+    machine.boot model="iisi" ram=5120 rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_608}" 0
     let spent = wait_match("goldens/iisi-6.0.8-640x480x1-finder.png", 900000000, 20000000)
     assert machine.ram == 5120 "iisi-608-hd: machine.ram != 5120"
@@ -90,7 +90,7 @@ def row_iisi_608_hd() {
 # is the assertion.
 def row_iisi_71_kbd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iisi" ram=9216
+    machine.boot model="iisi" ram=9216 rom="${$ROM}"
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     scheduler.run 60000000
     wait_stable(900000000)
@@ -141,7 +141,7 @@ def row_iisi_71_kbd() {
 # (§7), so it is a plain cheap boot row.
 def row_iisi_75_hd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iisi" ram=17408
+    machine.boot model="iisi" ram=17408 rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 300000000
     wait_stable(1500000000)

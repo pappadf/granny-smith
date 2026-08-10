@@ -455,6 +455,7 @@ static int lisa_media_attach(config_t *cfg, const media_slot_t *slot) {
     case MEDIA_BUS_PROFILE:
         if (!ls || !ls->profile || !lisa_profile_attach_image(ls->profile, slot->img))
             return -1;
+        lisa_profile_update_lines(cfg); // drive OCD//BSY so the ROM sees the drive
         return 0;
     default:
         return -1; // no SCSI bus on a Lisa

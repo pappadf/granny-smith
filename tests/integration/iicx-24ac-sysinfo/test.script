@@ -29,7 +29,7 @@
 # the harness booted the default card; we re-boot here.)
 include "../lib/mac.script"
 
-machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
+machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
 
 # Attach the cdev HD at SCSI ID 0 (the boot device).  The complete valid PRAM
 # lets the ROM boot straight from SCSI (no cold-init scan).

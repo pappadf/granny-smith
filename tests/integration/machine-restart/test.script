@@ -1,0 +1,83 @@
+# machine.restart — power-cycle the running machine (proposal-boot-vs-reset).
+#
+# The contract under test (§3.2/§3.3):
+#   * restart takes no arguments and rebuilds the machine the built-from
+#     record describes — model, RAM, card — without restamping `created`;
+#   * the mounted media stay attached across the teardown, as the SAME open
+#     storage instances (the handle is transferred, never reopened): the
+#     instance stem (image.path) is identical before and after, which is
+#     the write-durability guarantee — the delta with every guest write
+#     survives the power-cycle by construction;
+#   * the transferred handles actually serve I/O: the guest boots to the
+#     Finder again off the same disk.
+
+machine.boot model="iicx" ram=8192 video_card="824gc" rom="${$ROM}"
+machine.rtc.time = 3000000000
+machine.scsi.attach_hd "../../data/systems/system_6_0_8_20mb_8_24gc.img" 0
+
+# First boot to the Finder: the guest mounts the volume and writes to it
+# (boot-time volume metadata lands in the delta).
+scheduler.run 200000000
+assert debug.mac.globals.read("BootDrive") != 0 "first boot: nothing booted"
+assert debug.mac.globals.read("SysMap") != 0 "first boot: no System file opened"
+
+# A floppy in the second bay exercises the floppy half of the transfer.
+# Inserted after the boot so the ROM's boot scan never touches it.
+assert storage.fd_create("${$WORK_DIR}/scratch.fd", false) "blank floppy created"
+machine.floppy.drive[0].insert "${$WORK_DIR}/scratch.fd" true
+assert machine.floppy.drive[0].disk.present "floppy inserted"
+
+# Capture the identity of everything that must survive.
+let created0 = machine.config.created
+let hd_stem0 = machine.scsi.device[0].image.path
+let hd_file0 = machine.scsi.device[0].image.filename
+let fd_file0 = machine.floppy.drive[0].disk.filename
+
+# --- Power-cycle. -----------------------------------------------------------
+machine.restart
+
+# Same machine, per the record; the birth certificate is not restamped.
+assert machine.created "machine came back"
+assert machine.id == "iicx" "same model"
+assert machine.ram == 8192 "same RAM"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "same card"
+assert machine.config.created == $created0 "created stamp preserved"
+
+# Both media still attached — and as the SAME open instances.  An equal
+# instance stem proves the handle was transferred, not reopened: a reopen
+# would mint a fresh delta (different stem) and silently discard every
+# write made since the original attach.
+assert machine.scsi.device[0].image.present "HD still attached"
+assert machine.scsi.device[0].image.filename == $hd_file0 "HD is the same medium"
+assert machine.scsi.device[0].image.path == $hd_stem0 "HD is the same open instance (delta survived)"
+assert machine.floppy.drive[0].disk.present "floppy still inserted"
+assert machine.floppy.drive[0].disk.filename == $fd_file0 "floppy is the same medium"
+
+# The transferred HD handle serves I/O: boot to the Finder again.  (Eject
+# the unformatted scratch floppy first so the ROM's boot scan skips it.)
+machine.floppy.drive[0].disk.eject
+machine.rtc.time = 3000000000
+scheduler.run 200000000
+assert debug.mac.globals.read("BootDrive") != 0 "post-restart boot: nothing booted"
+assert debug.mac.globals.read("SysMap") != 0 "post-restart boot: no System file opened"
+
+# --- Checkpoint interaction (§6.5): machine.restart after checkpoint.load
+# rebuilds the restored configuration cold, media included.  (A bare
+# machine.boot after a restore is an error under the non-inheriting boot —
+# boot-config pins that half.)
+assert checkpoint.save("${$WORK_DIR}/restart.checkpoint") "checkpoint save"
+machine.boot model="iicx" rom="${$ROM}"
+assert try(machine.scsi.device[0].type, none) == none "fresh boot must start with empty drives"
+assert checkpoint.load("${$WORK_DIR}/restart.checkpoint") "checkpoint load"
+# (The shell's machine.scsi binding goes stale across checkpoint.load — a
+# pre-existing object-model quirk, so the restored device is not probed
+# here.  machine.restart rebuilds the machine AND the binding; the asserts
+# below prove the restored medium rode through both the load and the
+# power-cycle.)
+machine.restart
+assert machine.id == "iicx" "restart after restore: same model"
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 8•24 GC" "restart after restore: recorded card"
+assert machine.scsi.device[0].image.present "restart after restore: HD still attached"
+assert machine.scsi.device[0].image.filename == $hd_file0 "restart after restore: same medium"
+
+quit

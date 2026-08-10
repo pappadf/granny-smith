@@ -26,7 +26,7 @@ let hd_608_gc = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
 # Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
 # 15,359-frame length are both the assertion.
 def row_iicx_chime() {
-    machine.boot model="iicx" ram=8192
+    machine.boot model="iicx" ram=8192 rom="${$ROM}"
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
@@ -54,7 +54,7 @@ def row_iicx_chime() {
 # task is firing.
 def gc_boot_8bpp() {
     machine.rtc.time = 3000000000
-    machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_608_gc}" 0
 }
 
@@ -90,7 +90,7 @@ def row_iicx_gc_accel8() {
 
 def row_iicx_gc_decline8() {
     machine.rtc.time = 3000000000
-    machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
     machine.nubus.slot[9].card.gc.force_decline = true
     machine.scsi.attach_hd "${$hd_608_gc}" 0
     scheduler.run 200000000
@@ -132,7 +132,7 @@ def row_iicx_gc_beep() {
     # 8 bpp rows, before anything stages a mode into the built-from
     # record that machine.boot would inherit; the depth assert below
     # fails loudly if that ordering is ever broken.
-    machine.boot model="iicx" ram=8192 video_card="824gc"
+    machine.boot model="iicx" ram=8192 video_card="824gc" rom="${$ROM}"
 
     # Pin the RTC so the run is deterministic. This must come AFTER machine.boot
     # (which resets the RTC to the host wall clock) — the Control Panel's clock
@@ -253,7 +253,7 @@ def row_iicx_24ac() {
     # defaults + the slot sPRAMRec savedMode $82) — which both selects 8-bpp colour
     # AND arms the 32-bit SCSI HD boot in one shot (commit a08f30d).  (video_card
     # can't be an arg, so the harness booted the default card; we re-boot here.)
-    machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
 
     # Attach the cdev HD at SCSI ID 0 (the boot device) and run to the desktop.
     # The complete valid PRAM lets the ROM boot straight from SCSI (no cold-init
@@ -361,7 +361,7 @@ def row_iicx_24ac_restart() {
     # straight from the SCSI HD to an 8-bpp COLOUR Finder desktop.
 
     # === Boot the 24AC 32-bit SCSI cdev image to the 8-bpp Finder desktop. ======
-    machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp"
+    machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
     machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
     scheduler.run 200000000
 

@@ -1,7 +1,7 @@
 include "../lib/mac.script"
 let sys_701 = "../../data/systems/System_7_0_1.image"
 def probe(label, v) {
-    machine.boot model="iifx" ram=16384 video_card="mdc_8_24"
+    machine.boot model="iifx" ram=16384 video_card="mdc_8_24" rom="${$ROM}"
     machine.rtc.pram.validate
     machine.rtc.pram.poke 0x8a $v
     machine.floppy.drive[0].insert "${$sys_701}"

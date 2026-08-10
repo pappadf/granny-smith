@@ -97,7 +97,7 @@ machine.rtc.time = 3000000000
 # the IIfx with 16 MB.  The re-boot binds the card's declaration ROM
 # (mdc-8-24-revb-d1629664.vrom, found next to iifx-4147dd77.rom) and applies
 # the pending video mode — neither can be passed as a startup argument.
-machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp"
+machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
 
 # Attach the blank HD at SCSI ID 0 (unformatted → won't boot / won't mount)
 # and insert the Mac OS 7.6 "Disk Tools 1" floppy, which carries Apple HD SC
@@ -177,7 +177,7 @@ assert len(vfs.list("$WORK_DIR/formatted.img")) == 4 "formatted HD partition map
 # documented floppy procedure: boot "Install 1", then feed the rest into the
 # same drive as the Installer asks for them.
 machine.rtc.time = 3000000000
-machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp"
+machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
 machine.scsi.attach_hd "$WORK_DIR/formatted.img" 0
 machine.floppy.drive[0].insert "$src/Install 1.img" true
 
@@ -315,7 +315,7 @@ assert len($sysfolder) >= 10 "System Folder has fewer than 10 items — the inst
 # desktop from the freshly-installed System Folder is the end-to-end proof:
 # formatted, installed, bootable.
 machine.rtc.time = 3000000000
-machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp"
+machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
 machine.scsi.attach_hd "$WORK_DIR/installed.img" 0
 scheduler.run 900000000
 settle(120)

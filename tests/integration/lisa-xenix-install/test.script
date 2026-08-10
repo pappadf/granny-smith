@@ -56,12 +56,13 @@ scheduler.run 150000000
 machine.screen.match expected_hdinit.png
 
 # === (§1.5.3) Reboot and boot the hard-disk kernel =========================
-# Persist the freshly-initialized ProFile, power-cycle the machine (machine.boot
-# re-instantiates it and re-stages the inherited boot ROM), reattach the same ProFile
-# image, and re-insert the boot floppy so the ROM auto-boots its loader.
-machine.hd.save "$WORK_DIR/xenix_hd.image"
-machine.boot model="lisa" ram=2048
-machine.hd.attach "$WORK_DIR/xenix_hd.image"
+# Power-cycle the machine.  machine.restart rebuilds the recorded Lisa and
+# keeps the mounted media attached across the teardown (proposal-boot-vs-reset
+# §3.3): the freshly-initialized ProFile — delta and all — rides through with
+# no save-and-reattach choreography.  The boot floppy does NOT ride through:
+# hdinit's flow already ejected it, so the drive is empty at the power-cycle
+# and it must be re-inserted for the ROM to auto-boot its loader.
+machine.restart
 machine.floppy.drive.0.insert "../../data/Lisa/Xenix-3.0/Xenix-3.0-Boot-XProFile.dc42"
 scheduler.run 60000000
 # At the loader "boot :" prompt, type "pf(0,0)xenix" to load the kernel from the

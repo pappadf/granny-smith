@@ -29,7 +29,7 @@ storage.hd_create "$WORK_DIR/blank.img" HD20SC
 
 # Built-in RBV named explicitly: this row's declared cell is the RBV one, and an
 # unnamed machine.boot inherits whatever staging came before it.
-machine.boot model="iici" ram=8192 video_card="builtin_rbv_video"
+machine.boot model="iici" ram=8192 video_card="builtin_rbv_video" rom="${$ROM}"
 
 # Attach the blank HD at SCSI ID 0 (unformatted -> won't boot / won't mount),
 # and insert the SSW 6.0.8 boot floppy (Disk2of4 is the "Utilities" disk that

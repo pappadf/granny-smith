@@ -8,8 +8,8 @@
 // The boot document carries every construction-time setting of one
 // machine.boot call; the record is the live machine's immutable birth
 // certificate — written by boot (plus the rom.load write-back), read by
-// the read-only machine.config object, inherited by argument-less
-// reboots, and serialized into checkpoints.
+// the read-only machine.config object, replayed by machine.restart
+// (proposal-boot-vs-reset §3.2), and serialized into checkpoints.
 
 #ifndef GS_MACHINE_CONFIG_H
 #define GS_MACHINE_CONFIG_H
@@ -62,7 +62,8 @@ typedef struct machine_config_record {
 } machine_config_record_t;
 
 // The in-flight boot document: pointers borrow from the caller; NULL/0/-1
-// mean "not given" (inheritance fills them from the record).
+// mean "not given" (the model's own defaults fill them; model and rom are
+// required — proposal-boot-vs-reset §3.1).
 typedef struct boot_config {
     const char *model;
     uint32_t ram_kb; // 0 = inherit / profile default
@@ -96,10 +97,10 @@ void machine_config_note_rom(const char *path, uint32_t crc);
 // Attach the read-only `machine.config` child object (idempotent).
 void machine_config_object_init(struct object *machine_obj);
 
-// Apply one boot document: inherit → validate → tear down → construct →
-// record (defined in machines/machine.c; shared by machine.boot and
-// headless startup).  Returns V_NONE on success; V_ERROR — with the old
-// machine still running — on rejection.
+// Apply one boot document: validate → tear down → construct → record
+// (defined in machines/machine.c; shared by machine.boot, machine.restart
+// and headless startup).  Returns V_NONE on success; V_ERROR — with the
+// old machine still running — on rejection.
 value_t machine_boot_apply(const boot_config_t *doc);
 
 #ifdef __cplusplus

@@ -38,7 +38,7 @@ let hd_aux = "../../data/aux/aux_3.0.1/hd160-with-aux-301.img"
 # Frame-exact capture window (§5.2 run_exact): the 12 M budget and the
 # 12,516-frame length are both the assertion.
 def row_iifx_chime() {
-    machine.boot model="iifx" ram=8192 video_card="mdc_8_24"
+    machine.boot model="iifx" ram=8192 video_card="mdc_8_24" rom="${$ROM}"
     machine.sound.capture.start
     scheduler.run 12000000
     machine.sound.capture.stop
@@ -56,7 +56,7 @@ def row_iifx_chime() {
 # SWIM row).
 def row_iifx_608_fd() {
     machine.rtc.time = 3000000000
-    machine.boot model="iifx" ram=32768 video_card="mdc_8_24"
+    machine.boot model="iifx" ram=32768 video_card="mdc_8_24" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$ssw_608}"
     # Run past the early boot transient BEFORE waiting. The desktop pattern is
     # painted long before the Finder draws its menu bar and icons, and that bare
@@ -85,7 +85,7 @@ def row_iifx_608_fd() {
 # clear, both IIfx-specific ROM-init regressions. wait_stable (not
 # wait_match) because the row goes on to interact.
 def row_iifx_701_fd() {
-    machine.boot model="iifx" ram=16384 video_card="mdc_8_24"
+    machine.boot model="iifx" ram=16384 video_card="mdc_8_24" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$sys_701}"
     scheduler.run 200000000
     wait_stable(900000000)
@@ -118,7 +118,7 @@ def row_iifx_701_fd() {
 # the half of the accel/decline oracle that does not need the GC driver.
 def row_iifx_71_824gc() {
     machine.rtc.time = 3000000000
-    machine.boot model="iifx" ram=32768 video_card="824gc"
+    machine.boot model="iifx" ram=32768 video_card="824gc" rom="${$ROM}"
     machine.floppy.drive[0].insert "${$disk_tools_71}"
     # Run past the early boot transient BEFORE waiting. The desktop pattern is
     # painted long before the Finder draws its menu bar and icons, and that bare
@@ -146,7 +146,7 @@ def row_iifx_71_824gc() {
 # Card-seat contract, ROM-only: name, declaration ROM, and a painted boot
 # screen at the card's default mode.
 def row_iifx_24ac_seat() {
-    machine.boot model="iifx" ram=16384 video_card="display_card_24ac"
+    machine.boot model="iifx" ram=16384 video_card="display_card_24ac" rom="${$ROM}"
     # Power-on blank is no longer all-zero (display sources cold-boot black),
     # so compare against this machine's own blank rather than against 0.
     let blank = machine.screen.checksum()
@@ -173,7 +173,7 @@ def row_iifx_24ac_seat() {
 # the guest for a 1152x870 GDevice over an 832x624 scanout.  See §7.
 def row_iifx_75_24ac_832() {
     machine.rtc.time = 3000000000
-    machine.boot model="iifx" ram=32768 video_card="display_card_24ac" video_mode="rgb_832x624_8bpp"
+    machine.boot model="iifx" ram=32768 video_card="display_card_24ac" video_mode="rgb_832x624_8bpp" rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_75}" 0
     scheduler.run 400000000
     wait_stable(1800000000)
@@ -199,7 +199,7 @@ def row_iifx_75_24ac_832() {
 # The RTC is pinned to the timestamp the golden was captured with.
 def row_iifx_aux3_login() {
     machine.rtc.time = "2026-04-26T21:30:36"
-    machine.boot model="iifx" ram=16384 video_card="mdc_8_24"
+    machine.boot model="iifx" ram=16384 video_card="mdc_8_24" rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_aux}" 0
     scheduler.run 1500000000
     assert machine.id == "iifx" "iifx-aux3-login: machine.id != iifx"
@@ -227,7 +227,7 @@ def row_iifx_aux3_login() {
 # The desktop assertion is what makes this more than a MemTop check: it proves
 # the sized memory is actually usable, not merely counted.
 def row_iifx_8m() {
-    machine.boot model="iifx" ram=8192 video_card="mdc_8_24"
+    machine.boot model="iifx" ram=8192 video_card="mdc_8_24" rom="${$ROM}"
     machine.scsi.attach_hd "${$hd_608}" 0
     scheduler.run 400000000
     assert machine.ram == 8192 "iifx-8m: machine.ram != 8192"

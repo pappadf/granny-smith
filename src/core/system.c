@@ -1050,7 +1050,7 @@ config_t *system_restore(const char *filename) {
     checkpoint_close(checkpoint);
 
     // Install the restored built-from record so machine.config answers for
-    // the restored machine and argument-less reboots inherit it. The vROM
+    // the restored machine and machine.restart can replay it. The vROM
     // pick list reflects THIS construction (the loaders re-reported during
     // system_create), so keep the fresh entries over the serialized ones.
     machine_config_record_t *rec = machine_config_record_mut();

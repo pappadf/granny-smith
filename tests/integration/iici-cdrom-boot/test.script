@@ -55,7 +55,7 @@ let disc = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
 # suites, and block_size is taken from the disc's own Driver Descriptor Map
 # rather than assumed.
 def row_cd_device() {
-    machine.boot model="iici" ram=8192
+    machine.boot model="iici" ram=8192 rom="${$ROM}"
     machine.scsi.attach_cdrom "${$disc}" 3
     assert machine.scsi.device[3].type == "cdrom" "cd-device: SCSI 3 is not a CD-ROM"
     assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
@@ -81,7 +81,7 @@ def row_cd_device() {
 # this machine.
 def row_cd_boot() {
     machine.rtc.time = 3000000000
-    machine.boot model="iici" ram=8192
+    machine.boot model="iici" ram=8192 rom="${$ROM}"
     machine.scsi.attach_cdrom "${$disc}" 3
     scheduler.run 400000000
     scheduler.run 1000000000
@@ -107,7 +107,7 @@ def row_cd_boot() {
 # The destination: a Finder desktop running entirely off a locked disc.
 def row_cd_desktop() {
     machine.rtc.time = 3000000000
-    machine.boot model="iici" ram=8192
+    machine.boot model="iici" ram=8192 rom="${$ROM}"
     machine.scsi.attach_cdrom "${$disc}" 3
     scheduler.run 400000000
     wait_stable(1600000000)
