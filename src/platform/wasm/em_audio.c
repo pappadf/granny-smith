@@ -151,9 +151,11 @@ EM_JS(void, gs_audio_init_js, (), {
         "    this.dcR=1-2*Math.PI*20/this.dstRate;",
         "    this.quietQ=0; this.lastSeq=0;", // quanta since the push_seq moved
         "    this.curGain=0; this.started=false;",
+        "    this.dead=false;", // set by {stop}: next process() returns false
         "    var self2=this;",
         "    this.port.onmessage=function(e){",
         "      var d=e.data;",
+        "      if(d.stop){self2.dead=true;return;}",
         "      if(d.rate){", // rate change = stream restart: flush, re-gate, ramp
         "        self2.srcRate=d.rate;",
         "        self2.step=self2.srcRate/self2.dstRate;",
@@ -165,6 +167,7 @@ EM_JS(void, gs_audio_init_js, (), {
         "    };",
         "  }",
         "  process(inputs,outputs){",
+        "    if(this.dead)return false;", // retired: stop touching the shared ring
         "    var out=outputs[0]; var frames=out[0].length;",
         "    var ch=this.ch; var oc=out.length<ch?out.length:ch;",
         "    var hdr=this.hdr, mask=this.mask;",
@@ -254,6 +257,16 @@ EM_JS(void, gs_audio_init_js, (), {
             return;
         ga.pend = null;
         if (ga.node) {
+            // disconnect() alone does not stop an AudioWorkletProcessor: a
+            // source node whose process() returns true stays "actively
+            // processing" even with no connections, so the old processor
+            // would keep consuming the shared ring forever, racing the new
+            // node for read_idx — audible as a chopped-up stream after any
+            // channel-count change (e.g. mono ASC -> stereo Singer).
+            try {
+                ga.node.port.postMessage({stop: 1});
+            } catch (e) {
+            }
             try {
                 ga.node.disconnect();
             } catch (e) {
