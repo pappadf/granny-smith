@@ -308,7 +308,7 @@ static int ppc_write_message(ppc_session_t *s, const uint8_t *msg, int len) {
 // The session request of §4.3.  A zero-length user name asks for a guest
 // session, which is the only kind we use.
 static int ppc_write_session_request(ppc_session_t *s, const char *dest_port, const char *dest_type) {
-    uint8_t blk[PPC_START_BLK_SIZE];
+    uint8_t blk[PPC_SESSION_REQUEST_SIZE];
     memset(blk, 0, sizeof(blk));
     put32(&blk[0], PPC_MSG_SREQ);
     put32(&blk[4], 0); // user data, handed to the far side's PPCInform client
@@ -320,14 +320,14 @@ static int ppc_write_session_request(ppc_session_t *s, const char *dest_port, co
 }
 
 static int ppc_write_accept(ppc_session_t *s) {
-    uint8_t blk[PPC_ACCEPT_SIZE];
+    uint8_t blk[PPC_ANSWER_SIZE];
     put32(&blk[0], PPC_MSG_SAPT);
     put32(&blk[4], 0);
     return ppc_write_message(s, blk, sizeof(blk));
 }
 
 static int ppc_write_reject(ppc_session_t *s, uint32_t reason) {
-    uint8_t blk[PPC_ACCEPT_SIZE];
+    uint8_t blk[PPC_ANSWER_SIZE];
     put32(&blk[0], PPC_MSG_SREJ);
     put32(&blk[4], reason);
     g_stats.sessions_refused++;
@@ -338,7 +338,7 @@ static int ppc_write_reject(ppc_session_t *s, uint32_t reason) {
 // The list-ports request of §4.6, asking for everything from the start.  The
 // one-character Pascal string "=" is the wildcard in both name and type.
 static int ppc_write_list_request(ppc_session_t *s) {
-    uint8_t blk[PPC_LIST_REQ_SIZE];
+    uint8_t blk[PPC_LIST_REQUEST_SIZE];
     memset(blk, 0, sizeof(blk));
     put32(&blk[0], PPC_MSG_LPRT);
     put16(&blk[4], 0); // start index: from the beginning
@@ -352,9 +352,9 @@ int atalk_ppc_send_block(ppc_session_t *s, uint32_t creator, uint32_t type, uint
                          int len) {
     if (!s || !s->in_use || s->state != PPC_SESSION_OPEN)
         return -1;
-    if (len < 0 || len > PPC_MAX_MESSAGE - PPC_HDR_BLK_SIZE)
+    if (len < 0 || len > PPC_MAX_MESSAGE - PPC_BLOCK_HEADER_SIZE)
         return -1;
-    uint8_t hdr[PPC_HDR_BLK_SIZE];
+    uint8_t hdr[PPC_BLOCK_HEADER_SIZE];
     put32(&hdr[0], creator);
     put32(&hdr[4], type);
     put32(&hdr[8], user_data);
@@ -362,11 +362,11 @@ int atalk_ppc_send_block(ppc_session_t *s, uint32_t creator, uint32_t type, uint
     // Header and payload are one client message, so they must not be split by
     // an EOM in between (§4.7).
     adsp_stack_t *stack = atalk_adsp_stack();
-    if (adsp_write(stack, s->conn, hdr, PPC_HDR_BLK_SIZE, false) < 0)
+    if (adsp_write(stack, s->conn, hdr, PPC_BLOCK_HEADER_SIZE, false) < 0)
         return -1;
     if (adsp_write(stack, s->conn, payload, len, true) < 0)
         return -1;
-    s->bytes_out += (uint64_t)(PPC_HDR_BLK_SIZE + len);
+    s->bytes_out += (uint64_t)(PPC_BLOCK_HEADER_SIZE + len);
     g_stats.blocks_out++;
     return 0;
 }
@@ -577,8 +577,8 @@ static void ppc_handle_session_answer(ppc_session_t *s, const uint8_t *msg, int 
 
 // A session request arriving at our host port (§4.4, responder side).
 static void ppc_handle_session_request(ppc_session_t *s, const uint8_t *msg, int len) {
-    if (len < PPC_START_BLK_SIZE) {
-        ppc_write_reject(s, PPC_REJECT_NO_PORT);
+    if (len < PPC_SESSION_REQUEST_SIZE) {
+        ppc_write_reject(s, PPC_REJECT_UNKNOWN_PORT);
         ppc_session_release(s, "the session request was short", false);
         return;
     }
@@ -591,19 +591,19 @@ static void ppc_handle_session_request(ppc_session_t *s, const uint8_t *msg, int
     get_pstring(&msg[256], 33, user, sizeof(user));
 
     if (!g_host_enabled) {
-        ppc_write_reject(s, PPC_REJECT_IAC_DISABLED);
+        ppc_write_reject(s, PPC_REJECT_LINKING_OFF);
         ppc_session_release(s, "program linking is switched off here", false);
         return;
     }
     if (strcmp(dest_name, g_host_port) != 0) {
         LOG(3, "PPC: session request for unknown port '%s' (we are '%s')", dest_name, g_host_port);
-        ppc_write_reject(s, PPC_REJECT_NO_PORT);
+        ppc_write_reject(s, PPC_REJECT_UNKNOWN_PORT);
         ppc_session_release(s, "no such port here", false);
         return;
     }
     if (user[0]) {
         // Guest linking only (§4.5).
-        ppc_write_reject(s, PPC_REJECT_NO_USER_REC);
+        ppc_write_reject(s, PPC_REJECT_UNKNOWN_USER);
         ppc_session_release(s, "only guest links are accepted here", false);
         return;
     }
@@ -631,7 +631,7 @@ static void ppc_handle_list_request(ppc_session_t *s) {
     if (g_host_enabled)
         ppc_write_message(s, entry, sizeof(entry));
 
-    uint8_t trailer[PPC_LIST_RESP_SIZE];
+    uint8_t trailer[PPC_LIST_TRAILER_SIZE];
     put32(&trailer[0], PPC_MSG_LRSP);
     put16(&trailer[4], g_host_enabled ? 1 : 0);
     ppc_write_message(s, trailer, sizeof(trailer));
@@ -662,7 +662,7 @@ static void ppc_handle_message(ppc_session_t *s, const uint8_t *msg, int len) {
     }
 
     // An open session carries message blocks (§4.7).
-    if (len < PPC_HDR_BLK_SIZE) {
+    if (len < PPC_BLOCK_HEADER_SIZE) {
         LOG(3, "PPC: session %u sent a %d-byte block, shorter than its header", (unsigned)s->id, len);
         return;
     }
@@ -671,7 +671,8 @@ static void ppc_handle_message(ppc_session_t *s, const uint8_t *msg, int len) {
     uint32_t user_data = get32(&msg[8]);
     g_stats.blocks_in++;
     if (s->client && s->client->on_block)
-        s->client->on_block(s->client_ctx, s, creator, type, user_data, msg + PPC_HDR_BLK_SIZE, len - PPC_HDR_BLK_SIZE);
+        s->client->on_block(s->client_ctx, s, creator, type, user_data, msg + PPC_BLOCK_HEADER_SIZE,
+                            len - PPC_BLOCK_HEADER_SIZE);
 }
 
 // ============================================================================

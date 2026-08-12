@@ -161,7 +161,7 @@ Rejection reasons, carried as the second longword of `SREJ`:
 
 A `UREJ` carries an application-defined value in the same slot.
 
-### 4.3 Session request — `IPCStartBlk`, 290 bytes
+### 4.3 The session-request block — 290 bytes
 
 | Offset | Size | Field |
 | -----: | ---: | ----- |
@@ -186,7 +186,7 @@ carries the rejection reason (`SREJ`/`UREJ`) or is unused (`SAPT`).
 
 1. NBP-resolve the target machine's `PPCToolBox` entity to an address.
 2. Open an ADSP connection to it (`ADSP` open dialog, appletalk.md §3.4).
-3. Write `IPCStartBlk`, EOM.
+3. Write the session-request block, EOM.
 4. Read one block and dispatch on its first longword:
    * `SAPT` → the session is live; move to data transfer.
    * `ACNT` → authenticated flow (§4.5) — we do not implement it and fail the
@@ -281,11 +281,10 @@ an Apple event's class field carries the event's own class.
 ### 5.2 AETF — the flattened Apple event
 
 The bytes counted by "message length" are an *AppleEvent Transport Format*
-stream:
-
-```
-'aevt'  version  ( attribute-parameter )*  ';;;;'  ( parameter )*
-```
+stream: a fixed header, then any number of attributes, then a four-byte
+marker that ends the attribute section, then any number of parameters.
+Attributes and parameters share one entry layout, so a reader that does not
+care about the distinction can walk the whole stream with a single loop.
 
 | Offset | Size | Field |
 | -----: | ---: | ----- |
@@ -558,7 +557,7 @@ recorded here, in our own words, and the implementation cites this document.
 | §2.1 | Application port type `<signature>ep01`, incrementing on collision | `ProcessMgr/Eppc.c` (mac-rom) |
 | §3 | NBP object = machine name, type `PPCToolBox`, one entity and one socket per machine | `OS/PPC/PPCInit.c`, `OS/PPC/PPCEntry.c`; the type string itself is a resource field in `OS/PPC/PPCBrowser.r`. Corroborated by *IM: Interapplication Communication* ch. 11, which gives the same NBP form |
 | §4.2 | The eight message type codes and the seven rejection reasons | constant definitions, `OS/PPC/PPCCommon.h` |
-| §4.3 | `IPCStartBlk` layout and the guest = zero-length-user-name rule; the uninitialised `SAPT` longword | struct declaration in `OS/PPC/PPCCommon.h`; behaviour in `OS/PPC/PPCNetwork.c` |
+| §4.3 | the session-request layout and the guest = zero-length-user-name rule; the uninitialised `SAPT` longword | struct declaration in `OS/PPC/PPCCommon.h`; behaviour in `OS/PPC/PPCNetwork.c` |
 | §4.4 | Both state machines, including the rejection branches | behaviour of `OS/PPC/PPCNetwork.c` |
 | §4.5 | DES challenge/response, clock-derived challenge, XOR-obfuscated stored password | behaviour of `OS/PPC/PPCAuth.c` |
 | §4.6 | Seven entries per write, start-index resumption, trailer block | `OS/PPC/PPCCommon.h` constants; behaviour of `OS/PPC/PPCNetwork.c` |
@@ -584,7 +583,7 @@ tabulated layouts above therefore come from the sources listed.
 | ---- | ----- | ------- |
 | PPC NBP type | `PPCToolBox` | the entity type every linking machine registers |
 | `SREQ`/`SAPT`/`SREJ`/`UREJ`/`ACNT`/`ARSP`/`LPRT`/`LRSP` | — | session message types (§4.2) |
-| `IPCStartBlk` | 290 | session-request block size |
+| session-request block | 290 | |
 | accept / reject block | 8 | |
 | authentication response | 12 | |
 | list request | 114 | |

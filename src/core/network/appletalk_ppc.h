@@ -27,27 +27,27 @@ typedef struct ppc_session ppc_session_t;
 #define PPC_HOST_SOCKET   130 // our connection-listening socket
 #define PPC_CLIENT_SOCKET 131 // the socket our outgoing connections use
 
-#define PPC_PORT_REC_SIZE  72
-#define PPC_LOCATION_SIZE  104
-#define PPC_PORT_INFO_SIZE 74
-#define PPC_START_BLK_SIZE 290
-#define PPC_ACCEPT_SIZE    8
-#define PPC_LIST_REQ_SIZE  114
-#define PPC_LIST_RESP_SIZE 6
-#define PPC_HDR_BLK_SIZE   12
+#define PPC_PORT_REC_SIZE        72
+#define PPC_LOCATION_SIZE        104
+#define PPC_PORT_INFO_SIZE       74
+#define PPC_SESSION_REQUEST_SIZE 290
+#define PPC_ANSWER_SIZE          8
+#define PPC_LIST_REQUEST_SIZE    114
+#define PPC_LIST_TRAILER_SIZE    6
+#define PPC_BLOCK_HEADER_SIZE    12
 
 #define PPC_MAX_SESSIONS 8
 #define PPC_MAX_PORTS    32
 #define PPC_MAX_MESSAGE  32768 // largest reassembled message block we accept
 
 // Rejection reasons (§4.2).
-#define PPC_REJECT_NOT_VISIBLE  1
-#define PPC_REJECT_NO_PORT      2
-#define PPC_REJECT_NO_USER_REC  3
-#define PPC_REJECT_AUTH_FAILED  4
-#define PPC_REJECT_NO_INFORMS   5
-#define PPC_REJECT_NO_GUEST     6
-#define PPC_REJECT_IAC_DISABLED 7
+#define PPC_REJECT_PORT_NOT_SHARED 1
+#define PPC_REJECT_UNKNOWN_PORT    2
+#define PPC_REJECT_UNKNOWN_USER    3
+#define PPC_REJECT_BAD_PASSWORD    4
+#define PPC_REJECT_NOT_LISTENING   5
+#define PPC_REJECT_GUESTS_REFUSED  6
+#define PPC_REJECT_LINKING_OFF     7
 
 typedef enum {
     PPC_SESSION_FREE = 0,
