@@ -17,6 +17,16 @@
 #define HOST_AFP_COMPAT_SOCKET 54
 #define HOST_PAP_SOCKET        6
 
+// DDP protocol type field values (Inside AppleTalk 4-11).  ADSP is 7 — the
+// stack doc claimed 10 until the ADSP work corrected it.
+#define DDP_TYPE_RTMP_RESPONSE 0x01
+#define DDP_TYPE_NBP           0x02
+#define DDP_TYPE_ATP           0x03
+#define DDP_TYPE_AEP           0x04
+#define DDP_TYPE_RTMP_REQUEST  0x05
+#define DDP_TYPE_ZIP           0x06
+#define DDP_TYPE_ADSP          0x07
+
 #define LLAP_HEADER_SIZE         3
 #define DDP_SHORT_HEADER_SIZE    5
 #define DDP_EXTENDED_HEADER_SIZE 13
@@ -143,6 +153,13 @@ int atp_responder_send_packets(const ddp_header_t *request_ddp, const atp_packet
 
 int atp_responder_send_simple(const ddp_header_t *request_ddp, const atp_packet_t *request_atp, const uint8_t user[4],
                               const uint8_t *payload, int payload_len, bool sts);
+
+// Send one datagram to a remote AppleTalk socket.  The DDP/LLAP headers are
+// built here; `data` is the protocol payload (for ADSP, its 13-byte header
+// plus body).  Returns 0 on success, -1 if the stack is detached or the
+// payload does not fit a DDP packet.
+int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
+                      int len);
 
 // Printer AppleTalk entry points
 void atalk_printer_register(void);

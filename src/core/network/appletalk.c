@@ -10,6 +10,7 @@
 
 #include "appletalk.h"
 
+#include "appletalk_adsp.h"
 #include "appletalk_internal.h"
 #include "common.h"
 #include "log.h"
@@ -245,14 +246,14 @@ void process_packet(const uint8_t *buf, size_t size) {
 
 // =============================== DDP (Datagram Delivery Protocol) ===============================
 
-// [1]: ddp type field values
-#define DDP_RTMP_RESPONSE 0x01
-#define DDP_NBP           0x02
-#define DDP_ATP           0x03
-#define DDP_AEP           0x04
-#define DDP_RTMP_REQUEST  0x05
-#define DDP_ZIP           0x06
-#define DDP_ADSP          0x07
+// [1]: ddp type field values (shared with the ADSP/PPC modules)
+#define DDP_RTMP_RESPONSE DDP_TYPE_RTMP_RESPONSE
+#define DDP_NBP           DDP_TYPE_NBP
+#define DDP_ATP           DDP_TYPE_ATP
+#define DDP_AEP           DDP_TYPE_AEP
+#define DDP_RTMP_REQUEST  DDP_TYPE_RTMP_REQUEST
+#define DDP_ZIP           DDP_TYPE_ZIP
+#define DDP_ADSP          DDP_TYPE_ADSP
 
 // Returns a short mnemonic name for a DDP protocol type or NULL if unknown.
 static const char *ddp_type_name(uint8_t type) {
@@ -318,6 +319,7 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     asp_sessions_reset();
     atalk_server_init();
     atalk_printer_register();
+    atalk_adsp_init(scheduler);
 
     static const atp_socket_handler_t asp_handler = {.handle_request = asp_in};
     atp_register_socket_handler(HOST_AFP_SOCKET, &asp_handler, NULL);
@@ -379,6 +381,9 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     if (g_atalk_printer_object)
         object_attach(g_atalk_object, g_atalk_printer_object);
 
+    // The ADSP endpoint owns its own subtree, `appletalk.adsp`.
+    atalk_adsp_install_objects(g_atalk_object);
+
     // Collection entry objects are pre-allocated once and handed out by the
     // get()/next() callbacks; they are never attached, so the cascade delete
     // does not free them (this module does, in appletalk_delete).
@@ -424,6 +429,8 @@ void appletalk_delete(void) {
     // Sessions first: closing them hands the AFP layer its forks back.
     atalk_asp_close_all_sessions();
     atalk_server_delete();
+    atalk_adsp_remove_objects();
+    atalk_adsp_shutdown();
 
     // Collection entry objects are never attached, so free them by hand.
     for (int i = 0; i < ATALK_MAX_VOLUME_OBJS; i++) {
@@ -473,6 +480,7 @@ void atalk_set_enabled(bool enabled) {
         // Detaching from the link strands every session; drop them rather than
         // leave forks and locks held by clients that can no longer be reached.
         atalk_asp_close_all_sessions();
+        adsp_close_all(atalk_adsp_stack(), "the stack was detached from the link");
     }
     LOG(1, "atalk: stack %s", enabled ? "attached to the link" : "detached from the link");
 }
@@ -513,7 +521,28 @@ static void ddp_send(const ddp_header_t *header, const uint8_t *data, int size) 
     llap_send(&header->llap, buffer, length);
 }
 
-//
+// Send one datagram to a remote socket.  The higher protocol modules (ADSP,
+// and the PPC layer above it) build their own payload and hand it here rather
+// than reaching into the DDP header layout themselves.
+int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
+                      int len) {
+    if (!dest || len < 0 || len > DDP_MAX_DATA_SIZE)
+        return -1;
+    if (!g_atalk_enabled)
+        return -1;
+    ddp_header_t ddp;
+    memset(&ddp, 0, sizeof(ddp));
+    ddp.llap.dst = dest->node;
+    ddp.llap.src = LLAP_HOST_NODE;
+    ddp.llap.type = LLAP_DDP_SHORT;
+    ddp.len = (uint16_t)(len + DDP_SHORT_HEADER_SIZE);
+    ddp.dst_net = dest->net;
+    ddp.dst_socket = dest->socket;
+    ddp.src_socket = src_socket;
+    ddp.type = ddp_type;
+    ddp_send(&ddp, data, len);
+    return 0;
+}
 
 // Process an incoming DDP packet and dispatch to appropriate protocol handler
 void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
@@ -548,6 +577,11 @@ void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
             reply.type = DDP_AEP; // ensure protocol type preserved
             ddp_send(&reply, buf, (int)len);
         }
+        break;
+
+    case DDP_ADSP:
+        // Reliable byte streams; the PPC Toolbox endpoint rides on these.
+        atalk_adsp_ddp_in(ddp, buf, (int)len);
         break;
 
     case DDP_RTMP_REQUEST:
