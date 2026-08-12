@@ -1041,8 +1041,13 @@ static value_t aevt_method_send(struct object *self, const member_t *m, int argc
     // Named arguments: timeout is an instruction budget, mode picks whether a
     // reply is expected at all (§8).
     ev->timeout_instr = AEVT_DEFAULT_TIMEOUT_INSTR;
-    if (argc > 2 && argv[2].kind != V_NONE)
-        ev->timeout_instr = val_as_u64(&argv[2], NULL);
+    if (argc > 2 && argv[2].kind != V_NONE) {
+        uint64_t budget = val_as_u64(&argv[2], NULL);
+        if (budget > 0)
+            ev->timeout_instr = budget; // 0 means "wait indefinitely"
+        else
+            ev->timeout_instr = 0;
+    }
     if (argc > 3 && argv[3].kind != V_NONE) {
         const char *tag = val_as_str(&argv[3]);
         if (tag)
@@ -1051,6 +1056,16 @@ static value_t aevt_method_send(struct object *self, const member_t *m, int argc
     if (argc > 4 && argv[4].kind != V_NONE) {
         const char *mode = val_as_str(&argv[4]);
         ev->no_reply = (mode && !strcmp(mode, "no_reply"));
+    }
+
+    // Ask for a reply the way the Apple Event Manager does: a zero-length
+    // `true` attribute in the meta section (§5.3).  Without it the receiving
+    // application has no reason to answer, and the event times out even
+    // though it was delivered and handled.
+    if (!ev->no_reply) {
+        value_map_builder_t *flag = val_map_new();
+        val_map_put(flag, "type", val_str("true"));
+        aevt_set_attr(&ev->request, "repq", val_map_finish(flag));
     }
     return aevt_finish_send(ev);
 }
@@ -1113,6 +1128,13 @@ static value_t aevt_method_send_raw(struct object *self, const member_t *m, int 
     return val_obj(g_aevt_event_objs[ev->slot]);
 }
 
+// Interior optional slots need defaults, or the named-argument binder's
+// V_NONE holes are reported as missing arguments when a later slot is named
+// (the same trap debug.logpoints.add documents).
+static const value_t aevt_def_timeout = {.kind = V_UINT, .width = 8, .u = AEVT_DEFAULT_TIMEOUT_INSTR};
+static const value_t aevt_def_tag = {.kind = V_STRING, .s = (char *)""};
+static const value_t aevt_def_mode = {.kind = V_STRING, .s = (char *)"wait"};
+
 static const arg_decl_t aevt_send_args[] = {
     {.name = "target",
      .kind = V_STRING,
@@ -1126,14 +1148,17 @@ static const arg_decl_t aevt_send_args[] = {
      .kind = V_UINT,
      .width = 8,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &aevt_def_timeout,
      .doc = "Reply budget in guest instructions (default 20 million)"},
     {.name = "tag",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &aevt_def_tag,
      .doc = "Lookup key, so events[\"name\"] finds this event"},
     {.name = "mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &aevt_def_mode,
      .doc = "\"wait\" (default) or \"no_reply\""},
 };
 

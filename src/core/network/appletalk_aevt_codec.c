@@ -389,6 +389,54 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
     return val_map_finish(ev);
 }
 
+bool aevt_set_attr(value_t *event, const char *key, value_t leaf) {
+    if (!event || event->kind != V_MAP || !key) {
+        value_free(&leaf);
+        return false;
+    }
+    // Rebuild the event map with the attribute merged into `attrs`; maps are
+    // immutable once finished, and keeping the key order stable matters
+    // because it decides the order attributes are written to the wire.
+    value_map_builder_t *out = val_map_new();
+    value_map_builder_t *attrs = val_map_new();
+    bool had_attrs = false;
+    for (size_t i = 0; i < event->map.len; i++) {
+        const char *k = event->map.entries[i].key;
+        if (!strcmp(k, "attrs")) {
+            had_attrs = true;
+            const value_t *existing = &event->map.entries[i].val;
+            if (existing->kind == V_MAP) {
+                for (size_t j = 0; j < existing->map.len; j++)
+                    val_map_put(attrs, existing->map.entries[j].key, value_copy(&existing->map.entries[j].val));
+            }
+        }
+    }
+    val_map_put(attrs, key, leaf);
+    value_t merged = val_map_finish(attrs);
+
+    bool placed = false;
+    for (size_t i = 0; i < event->map.len; i++) {
+        const char *k = event->map.entries[i].key;
+        if (!strcmp(k, "attrs")) {
+            val_map_put(out, "attrs", merged);
+            placed = true;
+            continue;
+        }
+        val_map_put(out, k, value_copy(&event->map.entries[i].val));
+    }
+    if (!had_attrs || !placed)
+        val_map_put(out, "attrs", merged);
+
+    value_t rebuilt = val_map_finish(out);
+    if (val_is_error(&rebuilt)) {
+        value_free(&rebuilt);
+        return false;
+    }
+    value_free(event);
+    *event = rebuilt;
+    return true;
+}
+
 int64_t aevt_reply_errn(const value_t *event) {
     // The reply's error number is an ordinary parameter (§5.5); the event
     // object republishes it so a script asserts on it without descending.

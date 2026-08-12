@@ -65,6 +65,10 @@ bool aevt_event_codes(const value_t *event, char class4[5], char id4[5]);
 // The `errn` parameter of a reply, or 0 when it carries none (§5.5).
 int64_t aevt_reply_errn(const value_t *event);
 
+// Set one attribute in an event's meta section (§5.2), taking ownership of
+// `leaf`.  Used to mark an outgoing event reply-requested.
+bool aevt_set_attr(value_t *event, const char *key, value_t leaf);
+
 // === Object model / lifecycle ==============================================
 
 void atalk_aevt_init(void);

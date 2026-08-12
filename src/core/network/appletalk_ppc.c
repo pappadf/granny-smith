@@ -84,6 +84,7 @@ struct ppc_session {
     char machine[33];
     uint8_t peer_node;
     uint8_t peer_socket;
+    uint8_t local_socket; // ours, unique per outgoing connection
 
     const ppc_client_t *client;
     void *client_ctx;
@@ -232,6 +233,26 @@ static ppc_session_t *ppc_alloc_session(void) {
     }
     LOG(2, "PPC: session table full");
     return NULL;
+}
+
+// ADSP permits only one connection between a given pair of sockets (Inside
+// AppleTalk 12-5), and a guest's end lingers briefly after we close ours, so
+// every outgoing connection takes its own local socket — the same thing a
+// real PPC Toolbox does by asking ADSP to assign one.
+static uint8_t ppc_alloc_client_socket(void) {
+    for (uint8_t sock = PPC_CLIENT_SOCKET; sock < PPC_CLIENT_SOCKET + PPC_MAX_SESSIONS * 2; sock++) {
+        bool taken = false;
+        for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
+            const ppc_session_t *s = &g_sessions[i];
+            if (s->in_use && s->initiator && s->local_socket == sock) {
+                taken = true;
+                break;
+            }
+        }
+        if (!taken)
+            return sock;
+    }
+    return PPC_CLIENT_SOCKET;
 }
 
 static ppc_session_t *ppc_session_for_conn(adsp_conn_t *c) {
@@ -786,7 +807,8 @@ static void ppc_start_browse_session(const ppc_machine_t *m) {
     snprintf(s->port_name, sizeof(s->port_name), "(browse)");
 
     atalk_socket_addr_t dest = {.net = 0, .node = m->node, .socket = m->socket};
-    s->conn = adsp_open(atalk_adsp_stack(), &dest, PPC_CLIENT_SOCKET, &g_dial_client, NULL);
+    s->local_socket = ppc_alloc_client_socket();
+    s->conn = adsp_open(atalk_adsp_stack(), &dest, s->local_socket, &g_dial_client, NULL);
     if (!s->conn)
         ppc_session_release(s, "no ADSP connection was available", false);
 }
@@ -821,7 +843,8 @@ ppc_session_t *atalk_ppc_open(const char *port_name, const ppc_client_t *client,
     snprintf(s->machine, sizeof(s->machine), "%s", g_ports[idx].machine);
 
     atalk_socket_addr_t dest = {.net = 0, .node = s->peer_node, .socket = s->peer_socket};
-    s->conn = adsp_open(atalk_adsp_stack(), &dest, PPC_CLIENT_SOCKET, &g_dial_client, NULL);
+    s->local_socket = ppc_alloc_client_socket();
+    s->conn = adsp_open(atalk_adsp_stack(), &dest, s->local_socket, &g_dial_client, NULL);
     if (!s->conn) {
         ppc_session_release(s, "no ADSP connection was available", false);
         snprintf(err, err_len, "no ADSP connection was available");
