@@ -1,0 +1,199 @@
+# Apple events against the Scriptable Finder — the payoff script.
+#
+# Everything asserted here is a *value the guest computed*, read back through
+# appletalk.aevt.  No screenshots: where the older guest-driven suites pin
+# pixels to prove what a user would see, this one asks the Finder questions
+# and checks its answers, which is the whole point of the feature
+# (docs/core/network/ppc_appleevents.md, and §1.2 of the proposal).
+#
+# Sequence:
+#   1. Boot System 7.5 on the IIci.
+#   2. Sharing Setup -> identity + Program Linking; Users & Groups -> let
+#      guests link.  (Enabled at runtime rather than shipped in the image:
+#      image writes go to a per-run delta, so a prepared variant could not
+#      persist anyway.)
+#   3. Discover the Finder's program-linking port.
+#   4. Ask it for its version, and for the name of the startup disk, and
+#      assert on the decoded replies.
+#
+# Mouse positions use the "global" routing mode: 7.5 applies pointer
+# acceleration, so feeding deltas lands somewhere else entirely, while the
+# global mode writes the Toolbox's mouse position directly.  Clicks are
+# separated by ~1M instructions so the guest polls each transition at VBL
+# while staying inside its double-click time.
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+# --- 1. Boot ---------------------------------------------------------------
+
+scheduler.run 250000000
+
+assert appletalk.aevt.enabled "the Apple event endpoint is not enabled"
+assert appletalk.nbp["gs-host"].type == "PPCToolBox" "the host port is not advertised"
+assert appletalk.ppc.ports.count == 0 "ports were discovered before any browse"
+
+# --- 2. Turn program linking on --------------------------------------------
+
+# Apple menu -> Control Panels.  The submenu is longer than the screen; park
+# on its scroll arrow until it bottoms out, which makes the item positions
+# below deterministic (they are measured from the fully-scrolled list).
+machine.adb.mouse.move 300 300 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 15 8 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 90 132 "global"
+scheduler.run 12000000
+machine.adb.mouse.move 222 458 "global"
+scheduler.run 40000000
+
+# Sharing Setup.
+machine.adb.mouse.move 260 331 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+
+# Owner Name "gs" — program linking refuses to start without one.
+machine.adb.mouse.move 370 96 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 5000000
+machine.adb.keyboard.press 0x05
+scheduler.run 1500000
+machine.adb.keyboard.press 0x01
+scheduler.run 3000000
+
+# Macintosh Name "gs75" — this becomes the guest's NBP object name.
+machine.adb.mouse.move 370 135 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 5000000
+machine.adb.keyboard.press 0x05
+scheduler.run 1500000
+machine.adb.keyboard.press 0x01
+scheduler.run 1500000
+machine.adb.keyboard.press 0x1A
+scheduler.run 1500000
+machine.adb.keyboard.press 0x17
+scheduler.run 5000000
+
+# Program Linking -> Start, then close the panel.
+machine.adb.mouse.move 211 288 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 80000000
+machine.adb.mouse.move 148 42 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 30000000
+
+# Users & Groups -> <Guest> -> allow guests to link.
+machine.adb.mouse.move 15 8 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 90 132 "global"
+scheduler.run 12000000
+machine.adb.mouse.move 222 458 "global"
+scheduler.run 40000000
+machine.adb.mouse.move 260 427 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+
+machine.adb.mouse.move 105 105 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 70000000
+
+machine.adb.mouse.move 253 190 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 20000000
+machine.adb.mouse.move 213 70 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.adb.mouse.move 463 175 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 50000000
+
+# --- 3. Discover the Finder's port -----------------------------------------
+
+appletalk.ppc.browse
+scheduler.run 40000000
+
+assert appletalk.ppc.ports.count >= 1 "the guest did not answer the port browse"
+assert appletalk.ppc.ports["Finder"].machine == "gs75" "the Finder port is not on the guest we named"
+assert appletalk.ppc.ports["Finder"].type == "MACSep01" "unexpected port type for the Finder"
+assert appletalk.ppc.ports["Finder"].auth_required == false "guest linking did not take effect"
+
+# --- 4. Ask the Finder questions -------------------------------------------
+
+# An event no handler can claim still round-trips: the Apple Event Manager
+# answers it with errAEEventNotHandled, which proves the whole path — framing,
+# AETF encode, dispatch, reply decode, and return-ID correlation.
+let bogus = appletalk.aevt.send("Finder", "zzzz/zzzz", tag="bogus")
+scheduler.run 40000000
+assert $bogus.state == "replied" "an unhandled event drew no reply (state ${$bogus.state})"
+assert $bogus.errn == -1708 "expected errAEEventNotHandled, got ${$bogus.errn}"
+
+# The Finder's own version property, as a descriptor we did not have to decode
+# to assert on: the reply is data, and `errn` is the OS's own verdict on it.
+let vers = appletalk.aevt.send("Finder", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(vers), from:null()}}", timeout=60000000, tag="version")
+scheduler.run 60000000
+assert $vers.state == "replied" "no reply to the version query (state ${$vers.state})"
+assert $vers.errn == 0 "the Finder refused the version query: ${$vers.errn}"
+# Reach the reply through the events collection by tag rather than through
+# the `let` binding: descending a map attribute read off a bound object does
+# not resolve, while the collection path does.
+assert appletalk.aevt.events["version"].reply["----"]["type"] == "vers" "the version reply is not a version descriptor"
+echo "Finder version reply: ${appletalk.aevt.events["version"].reply}"
+
+# The flagship: the name of the startup disk, resolved by the Finder from a
+# nested object specifier and returned as text.  This is the assertion the
+# proposal was written to make possible.
+let name = appletalk.aevt.send("Finder", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(pnam), from:obj{form:enum(prop), want:type(prop), seld:type(sdsk), from:null()}}}", timeout=60000000, tag="diskname")
+scheduler.run 60000000
+assert $name.state == "replied" "no reply to the disk-name query (state ${$name.state})"
+assert $name.errn == 0 "the Finder refused the disk-name query: ${$name.errn}"
+assert appletalk.aevt.events["diskname"].reply["----"]["data"] == "Macintosh HD" "the guest names its startup disk '${appletalk.aevt.events["diskname"].reply["----"]["data"]}'"
+
+# Every event got its own session and gave it back (§7.2): reusing one is the
+# trap that made replies vanish.
+assert appletalk.ppc.stats.sessions_opened >= 3 "events did not each take a session"
+assert appletalk.ppc.stats.sessions_rejected == 0 "the guest rejected a session"
+assert appletalk.aevt.stats.replied >= 3 "not every event was answered"
+assert appletalk.aevt.inbox.count == 0 "a reply was misfiled into the inbox"
+
+# Errors stay in-band and readable.
+let bad = appletalk.aevt.send("NoSuchApp", "aevt/oapp")
+assert $bad.state == "error" "sending to an unknown port did not fail"
+assert $bad.error != "" "the failure carries no reason"
+
+echo "Finder says its startup disk is '${appletalk.aevt.events["diskname"].reply["----"]["data"]}'"
+echo "sessions=${appletalk.ppc.stats.sessions_opened} replied=${appletalk.aevt.stats.replied}"
+
+quit

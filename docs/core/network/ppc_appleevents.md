@@ -398,7 +398,9 @@ An event decodes to an ordered map:
 * `class` and `id` are four-character strings.
 * `attrs` holds the meta section, keyword → leaf.
 * Parameters are top-level entries keyed by their four-character keyword, so
-  `$e.reply["----"].data` reads the direct object without a helper.
+  `$e.reply["----"]["data"]` reads the direct object without a helper. Use
+  the bracket form throughout: after a bracket index, a dotted key does not
+  resolve in a chained path expression.
 * A **leaf** always carries `type`. It then carries exactly one of `data`
   (a decoded string, integer, boolean, list or map) or `hex` (uppercase hex
   of the raw bytes, for types §5.6 leaves opaque). Zero-length types such as
@@ -483,7 +485,7 @@ appletalk.aevt.send("Finder",
   "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(pnam),
                         from:obj{form:enum(prop), want:type(prop),
                                  seld:type(sdsk), from:null()}}}")
-→ errn 0, reply["----"] = { "type": "TEXT", "data": "Macintosh HD" }
+→ errn 0, reply["----"]["data"] == "Macintosh HD" 
 ```
 
 ### 7.2 Two things a guest taught us
