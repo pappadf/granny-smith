@@ -522,6 +522,33 @@ misfiles genuine replies into the inbox.
   needs `fss(...)` or captured bytes.
 * **Authenticated linking** remains unimplemented (§4.5).
 
+### 7.4 What is scriptable on the System 7.5 test image
+
+Two resources decide whether an application is a usable target, and they are
+independent:
+
+* an **`aete`** (terminology) resource means it understands more than the
+  required suite;
+* **bit 5 of its `SIZE` flags** (`localAndRemoteHLEvents`) means it will
+  accept high-level events *from the network* at all. Without it the
+  application is invisible to a browse no matter what it can do.
+
+Ports exist only while an application is running, so a browse lists what is
+open, not what is installed.
+
+| Application | `aete` | Remote-linkable | Use |
+| ----------- | :----: | :-------------: | --- |
+| Finder | yes | yes | the full target: core suite + Finder suite, returns real data |
+| Find File | yes | yes | required suite plus one custom verb, `misc/fndf`; **no core suite**, so `core/getd` answers `errAEEventNotHandled` |
+| AppleCD Audio Player | no | yes | required suite only (`oapp`, `odoc`, `pdoc`, `quit`) |
+| SimpleText | no | **no** | event-aware but local only — unreachable over program linking, which surprises people trying to `odoc` a document into it |
+| Script Editor | no (`aedt` only) | no | not a target, but it is the obvious way to make a guest send events *to* our host port and exercise the inbox |
+| Note Pad, Stickies, Scrapbook, Jigsaw Puzzle, Calculator, Key Caps | no | — | desk accessories; nothing to script |
+
+So a test that wants structured data from the guest wants the Finder. A test
+that wants a *second* peer — to prove more than one session, say — can launch
+Find File and speak the required suite to it.
+
 ## 8. Object-model surface
 
 ```
