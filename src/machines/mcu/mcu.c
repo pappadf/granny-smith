@@ -8,6 +8,7 @@
 // file, and the Q700 I/O island decode table run on the shared mac030 engine.
 
 #include "mcu.h"
+#include "appletalk.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
 #include "mmu040.h"
@@ -630,6 +631,11 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
     cfg->scc = scc_init(NULL, cfg->scheduler, board->scc_irq ? board->scc_irq : mac030_glue_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
+    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
+    // the SCC exists — and, because the checkpoint stream is positional, in
+    // the same relative place the save writes it (right after scc_checkpoint).
+    appletalk_init(cfg->scheduler, cfg->scc, cp);
+
     // Derived from the CPU clock (see the same note in mdu.c): the towers run
     // 25 MHz (Q700/Q900) and 33 MHz (Q950), so the previous hardcoded 20/21 —
     // inherited from the 16 MHz IIcx — ran both machines' VIA timers fast.
@@ -738,6 +744,9 @@ static void mcu_teardown(config_t *cfg) {
         via_delete(cfg->via1);
         cfg->via1 = NULL;
     }
+    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
+    // goes first — it holds the scc pointer it was given at init.
+    appletalk_delete();
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;
@@ -776,6 +785,7 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
     via_checkpoint(cfg->via1, cp);
     via_checkpoint(cfg->via2, cp);
     adb_checkpoint(st->adb, cp);

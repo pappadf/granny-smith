@@ -5,6 +5,7 @@
 // Shared GLUE-family lifecycle leaves — see mac030_glue.h.
 
 #include "mac030_glue.h"
+#include "appletalk.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_* substrate methods (shared by all Macs)
 #include "machine_profile.h" // machine_substrate_t
@@ -100,6 +101,11 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
     cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
+
+    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
+    // the SCC exists — and, because the checkpoint stream is positional, in
+    // the same relative place the save writes it (right after scc_checkpoint).
+    appletalk_init(cfg->scheduler, cfg->scc, cp);
 
     cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
@@ -290,6 +296,9 @@ void mac030_glue_teardown(config_t *cfg, struct adb *adb, struct asc *asc, struc
         via_delete(cfg->via1);
         cfg->via1 = NULL;
     }
+    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
+    // goes first — it holds the scc pointer it was given at init.
+    appletalk_delete();
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;
@@ -361,6 +370,7 @@ static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
     via_checkpoint(cfg->via1, cp);
     via_checkpoint(cfg->via2, cp);
     adb_checkpoint(st->adb, cp);

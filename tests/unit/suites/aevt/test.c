@@ -367,7 +367,15 @@ TEST(test_decode_reply_errn) {
     ASSERT_TRUE(!val_is_error(&ev));
     ASSERT_EQ_INT((int)aevt_reply_errn(&ev), -1708);
     ASSERT_TRUE(strcmp(val_as_str(leaf_data(&ev, "errs")), "not handled") == 0);
+    // `errn` is an ordinary parameter, so it must survive re-encoding and the
+    // text form.  It did not: the encoder skipped it as if it were framing,
+    // which silently dropped the error from any reply we forwarded.
+    char *text = aevt_render_text(&ev);
+    ASSERT_TRUE(text != NULL);
+    ASSERT_TRUE(strstr(text, "errn") != NULL);
+    free(text);
     value_free(&ev);
+    assert_round_trips(s.b, s.len);
 
     // A reply with no error parameter reads as success.
     sbuf_t ok = {0};

@@ -4,6 +4,7 @@
 // iifx.c
 // Macintosh IIfx machine implementation.
 
+#include "appletalk.h"
 #include "mac030_glue.h"
 #include "mac_host_io.h"
 #include "machine.h"
@@ -1477,6 +1478,11 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->scc = scc_init(NULL, cfg->scheduler, iifx_scc_irq, cfg, checkpoint);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
+    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
+    // the SCC exists — and, because the checkpoint stream is positional, in
+    // the same relative place the save writes it (right after scc_checkpoint).
+    appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
+
     cfg->via1 = via_init(NULL, cfg->scheduler, 51, "via1", iifx_via1_output, iifx_via1_shift_out, iifx_via1_irq, cfg,
                          checkpoint);
     rtc_set_via(cfg->rtc, cfg->via1);
@@ -1612,6 +1618,9 @@ static void iifx_teardown(config_t *cfg) {
         via_delete(cfg->via1);
         cfg->via1 = NULL;
     }
+    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
+    // goes first — it holds the scc pointer it was given at init.
+    appletalk_delete();
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;
@@ -1651,6 +1660,7 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
     via_checkpoint(cfg->via1, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);

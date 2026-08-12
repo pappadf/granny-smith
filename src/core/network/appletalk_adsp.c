@@ -139,6 +139,10 @@ struct adsp_stack {
 // ============================================================================
 
 static void adsp_flush(adsp_stack_t *s, adsp_conn_t *c);
+// True while a connection end is still allocated.  Client callbacks may close
+// the very end they were called about, so every caller that keeps using `c`
+// after a callback must re-check this first.
+static bool adsp_conn_live(const adsp_conn_t *c);
 static void adsp_arm(adsp_stack_t *s, adsp_conn_t *c, adsp_timer_slot_t slot, uint64_t delay_ns);
 static void adsp_disarm(adsp_conn_t *c, adsp_timer_slot_t slot);
 static void adsp_conn_release(adsp_stack_t *s, adsp_conn_t *c, const char *reason, bool notify);
@@ -333,6 +337,10 @@ static adsp_listener_t *adsp_find_listener(adsp_stack_t *s, uint8_t socket) {
 // Operations — timers
 // ============================================================================
 
+static bool adsp_conn_live(const adsp_conn_t *c) {
+    return c && c->in_use;
+}
+
 static uint64_t adsp_now(adsp_stack_t *s) {
     return s->cfg.now_ns ? s->cfg.now_ns(s->cfg.ctx) : 0;
 }
@@ -492,6 +500,8 @@ static void adsp_go_open(adsp_stack_t *s, adsp_conn_t *c) {
         (unsigned)c->remote.node, (unsigned)c->remote.socket, (unsigned)c->local_cid, (unsigned)c->remote_cid);
     if (c->client && c->client->on_open)
         c->client->on_open(c->client_ctx, c);
+    if (!adsp_conn_live(c))
+        return; // the client closed it from inside on_open
     adsp_flush(s, c);
 }
 
@@ -678,8 +688,14 @@ static void adsp_handle_data(adsp_stack_t *s, adsp_conn_t *c, uint8_t desc, uint
         c->recv_seq++; // the marker consumes a sequence number (12-9)
     c->bytes_in += (uint64_t)body_len;
     s->stats.bytes_in += (uint64_t)body_len;
-    if ((body_len > 0 || eom) && c->client && c->client->on_data)
+    if ((body_len > 0 || eom) && c->client && c->client->on_data) {
         c->client->on_data(c->client_ctx, c, body, body_len, eom);
+        // The client is allowed to close the connection from inside its own
+        // callback — the Apple event layer does exactly that when a reply
+        // settles an event.  Anything below would be touching a freed end.
+        if (!adsp_conn_live(c))
+            return;
+    }
     // We deliver synchronously, so the window is open again immediately; tell
     // the sender rather than making it wait for its retransmit timer.
     if (ack_req || body_len > 0 || eom)
@@ -732,6 +748,10 @@ void adsp_input(adsp_stack_t *s, const atalk_socket_addr_t *from, uint8_t dst_so
         adsp_rearm_host(s);
         return;
     }
+    if (!adsp_conn_live(c)) {
+        adsp_rearm_host(s);
+        return;
+    }
 
     adsp_update_send_window(s, c, pkt_next, pkt_wdw);
 
@@ -741,6 +761,10 @@ void adsp_input(adsp_stack_t *s, const atalk_socket_addr_t *from, uint8_t dst_so
             LOG(5, "ADSP: data on connection %d before it is open", c->id);
         } else {
             adsp_handle_data(s, c, desc, pkt_first, body, body_len);
+        }
+        if (!adsp_conn_live(c)) {
+            adsp_rearm_host(s);
+            return;
         }
         adsp_flush(s, c);
         adsp_rearm_host(s);

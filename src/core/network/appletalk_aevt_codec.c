@@ -664,8 +664,9 @@ int aevt_encode(const value_t *event, uint8_t *out, int out_max, char *err, size
 
     for (size_t i = 0; i < event->map.len && !w.bad; i++) {
         const char *key = event->map.entries[i].key;
-        // class/id/attrs/errn are framing or conveniences, not parameters.
-        if (!strcmp(key, "class") || !strcmp(key, "id") || !strcmp(key, "attrs") || !strcmp(key, "errn"))
+        // class, id and attrs are framing; everything else is a parameter,
+        // including `errn`, which the event object also republishes (§6.1).
+        if (!strcmp(key, "class") || !strcmp(key, "id") || !strcmp(key, "attrs"))
             continue;
         const value_t *leaf = &event->map.entries[i].val;
         if (leaf->kind != V_MAP) {
@@ -1210,7 +1211,7 @@ char *aevt_render_text(const value_t *event) {
     bool first = true;
     for (size_t i = 0; i < event->map.len; i++) {
         const char *key = event->map.entries[i].key;
-        if (!strcmp(key, "class") || !strcmp(key, "id") || !strcmp(key, "attrs") || !strcmp(key, "errn"))
+        if (!strcmp(key, "class") || !strcmp(key, "id") || !strcmp(key, "attrs"))
             continue;
         if (!first)
             sb_add(&s, ", ");

@@ -137,6 +137,7 @@ static aevt_stats_t g_stats;
 // ============================================================================
 
 static void aevt_flush_queued_for_port(const char *port);
+static void aevt_settle(aevt_event_t *ev);
 static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len);
 
 // ============================================================================
@@ -208,7 +209,7 @@ static void aevt_fail(aevt_event_t *ev, const char *reason) {
     ev->state = AEVT_STATE_ERROR;
     free(ev->error);
     ev->error = strdup(reason ? reason : "the event failed");
-    ev->session = NULL;
+    aevt_settle(ev);
     g_stats.errors++;
     LOG(3, "AE: event %u to '%s' failed — %s", (unsigned)ev->return_id, ev->target, reason ? reason : "");
 }
@@ -224,6 +225,7 @@ static aevt_state_t aevt_effective_state(aevt_event_t *ev) {
             ev->state = AEVT_STATE_TIMEOUT;
             free(ev->error);
             ev->error = strdup("no reply within the instruction budget");
+            aevt_settle(ev);
             g_stats.timeouts++;
         }
     }
@@ -420,8 +422,17 @@ void atalk_aevt_deliver(uint16_t session_id, const char *sender, const char *cla
     (void)session_id;
     value_t map = aevt_decode(class4, id4, stream, len);
 
-    if (is_reply) {
-        aevt_event_t *ev = aevt_find_by_return_id(return_id);
+    // What makes an arriving event a reply is that its return ID matches one
+    // we are waiting on (§5.5) — that is the correlation the Apple Event
+    // Manager itself uses.  System 7.5's Finder answers with the reply bit in
+    // `modifiers` clear, so treating that bit as authoritative sends genuine
+    // replies to the inbox and leaves the caller waiting for ever.  The bit
+    // and the reply class are corroboration, not the test.
+    aevt_event_t *pending = aevt_find_by_return_id(return_id);
+    if (pending && pending->state != AEVT_STATE_SENT)
+        pending = NULL; // already settled; a late duplicate is not its reply
+    if (pending || is_reply) {
+        aevt_event_t *ev = pending;
         if (!ev) {
             LOG(3, "AE: a reply arrived for unknown return id %u", (unsigned)return_id);
             value_free(&map);
@@ -437,7 +448,7 @@ void atalk_aevt_deliver(uint16_t session_id, const char *sender, const char *cla
         ev->reply = map; // ownership moves to the event
         ev->errn = aevt_reply_errn(&ev->reply);
         ev->state = AEVT_STATE_REPLIED;
-        ev->session = NULL;
+        aevt_settle(ev);
         g_stats.replied++;
         LOG(3, "AE: event %u replied (errn=%lld)", (unsigned)return_id, (long long)ev->errn);
         return;
@@ -476,12 +487,31 @@ void atalk_aevt_deliver(uint16_t session_id, const char *sender, const char *cla
 // Operations — the send path
 // ============================================================================
 
-// Get a session to `port`, opening one if needed.  Returns NULL with a reason.
+// Every event gets its own session.
+//
+// Reusing an open session looks like the obvious optimisation and does not
+// work: a System 7 application services the session its PPCInform accepted
+// for that transaction, and once it has answered it stops reading, without
+// closing anything.  Our ADSP connection stays up, so a second event written
+// to that session is accepted by the transport and then silently ignored —
+// the send simply never gets a reply.  Observed against both the 7.1 and the
+// 7.5 Finder: the first event on a session is answered, every later one is
+// not, and a fresh session is answered again.
 static ppc_session_t *aevt_session_for(const char *port, char *err, size_t err_len) {
-    ppc_session_t *s = atalk_ppc_find_open(port);
-    if (s)
-        return s;
     return atalk_ppc_open(port, &g_session_client, NULL, err, err_len);
+}
+
+// An event has reached a final state, so its session has done its job.
+static void aevt_settle(aevt_event_t *ev) {
+    if (!ev || !ev->session)
+        return;
+    ppc_session_t *s = ev->session;
+    ev->session = NULL;
+    // Any other event still riding this session loses it too.
+    for (int i = 0; i < g_event_count; i++)
+        if (g_events[i].in_use && g_events[i].session == s)
+            g_events[i].session = NULL;
+    atalk_ppc_close(s, "the event it carried has been answered");
 }
 
 // Everything queued on this port can now go.

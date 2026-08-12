@@ -464,45 +464,55 @@ captured from the guest.
 
 ### 7.1 What has been verified against a real guest
 
-`tests/integration/appletalk-ppc` drives System 7.1 on a Plus with program
-linking switched on, and proves the following against the guest's own
-`.MPP`/`.DSP` drivers and PPC Toolbox — not against a second copy of
-ourselves:
+`tests/integration/appletalk-ppc` (System 7.1 on a Plus) and
+`tests/integration/aevt-finder` (System 7.5 on a IIci) drive the whole stack
+against System 7's own `.MPP`/`.DSP` drivers, PPC Toolbox and Apple Event
+Manager. Confirmed end to end: NBP discovery, the ADSP open dialog, the
+list-ports browse, the session request/accept dialog with a guest user name,
+message-block framing, the high-level event header, and **the AETF payload in
+both directions** — the Scriptable Finder parses what we send, dispatches it,
+and replies with a stream our decoder reads.
 
-| Layer | Evidence |
-| ----- | -------- |
-| NBP discovery (§3) | the guest answers `=:PPCToolBox@*` under its Sharing Setup name |
-| ADSP open dialog, data, acknowledgment, close (appletalk.md §3) | a full connection to the guest's listener, repeatable |
-| List-ports browse (§4.6) | returns the Finder's port, typed `MACSep01` — independently confirming the `<signature>ep01` convention of §2.1 |
-| Session request and accept with a guest user name (§4.3, §4.4) | the guest returns `SAPT` and the session goes to data transfer |
-| Message-block framing (§4.7) and the high-level event header (§5.1) | the guest acknowledges the complete message at the ADSP level |
+The browse independently corroborates §2.1 from the other side: the Finder's
+port comes back typed `MACSep01`, the `<signature>ep01` convention.
 
-### 7.2 Known gaps
+Worked example, against the 7.5 Finder:
 
-**No reply has yet been observed from a guest application.** An `aevt/oapp`
-sent to the System 7.1 Finder is delivered and acknowledged, but nothing
-comes back, so the event times out. Two explanations are consistent with what
-we have seen, and they have not been separated:
+```
+appletalk.aevt.send("Finder",
+  "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(pnam),
+                        from:obj{form:enum(prop), want:type(prop),
+                                 seld:type(sdsk), from:null()}}}")
+→ errn 0, reply["----"] = { "type": "TEXT", "data": "Macintosh HD" }
+```
 
-1. System 7.1's Finder is not scriptable, and its required-suite handlers may
-   simply not answer an event that arrives over program linking.
-2. Something in the AETF payload (§5.2) is not what the receiving Apple Event
-   Manager expects, so the event is discarded before a handler ever runs.
+### 7.2 Two things a guest taught us
 
-The next step is the capture the original proposal recommended: get a guest
-application to send *us* an event — a System 7.5 image with Script Editor is
-the obvious vehicle — and diff its bytes against what we produce. Our inbox
-(§8) already decodes and records whatever arrives, so the capture costs
-nothing beyond the guest asset. Until that is done, treat §5.2's framing as
-documented-but-unconfirmed on the send path; §5.2's *decode* path is covered
-by goldens in `tests/unit/suites/aevt`.
+**A session carries one transaction.** An application services the session
+its `PPCInform` accepted, and once it has answered it stops reading — without
+closing anything. The ADSP connection underneath stays up, so a second event
+written to that session is accepted by the transport and then silently
+ignored: the send never gets a reply and eventually times out. Reusing an
+open session therefore looks like an obvious optimisation and is a trap. We
+open a session per event and close it when the event settles.
 
-**Only the Plus has the AppleTalk stack.** `appletalk_init` is called from
-`src/machines/compact/plus.c` and nowhere else, so program linking is
-reachable only on that machine today. The System 7.1 image boots there
-happily, which is what the integration test uses, but the 7.5/7.6 images —
-and the Scriptable Finder that makes this feature worth having — want a
-machine that has both AppleTalk and enough hardware to run them.
+**The reply bit in `modifiers` is not reliable.** §5.1 documents bit 0 as
+"this message is a reply", and the 7.5 Finder answers with it clear. What
+actually identifies a reply is its **return ID** matching an event we are
+waiting on — the same correlation the Apple Event Manager uses. We treat the
+bit and the `aevt`/`ansr` class as corroboration only; matching on them alone
+misfiles genuine replies into the inbox.
+
+### 7.3 Remaining rough edges
+
+* **`aevt/oapp` to a running Finder draws no reply.** The event is delivered
+  and the session is accepted; the Finder's Open Application handler simply
+  does not answer when it is already running. Events that a handler answers
+  (`core/getd`, or anything unhandled, which draws `errAEEventNotHandled`)
+  reply normally. Use a query, not `oapp`, when a test needs a round trip.
+* **Alias records** are still not constructible host-side (§6.2), so `odoc`
+  needs `fss(...)` or captured bytes.
+* **Authenticated linking** remains unimplemented (§4.5).
 
 ## 8. Object-model surface
 
