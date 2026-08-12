@@ -549,6 +549,13 @@ So a test that wants structured data from the guest wants the Finder. A test
 that wants a *second* peer — to prove more than one session, say — can launch
 Find File and speak the required suite to it.
 
+**Concurrent events to one application serialise.** Several sessions to the
+same application can be open at once — the transport is happy — but the
+application services one linked transaction at a time, so events queued
+behind another can exhaust a generous instruction budget and time out. Send
+sequentially when a test needs every answer; use a burst only to prove that
+sessions overlap and are given back.
+
 ## 8. Object-model surface
 
 ```

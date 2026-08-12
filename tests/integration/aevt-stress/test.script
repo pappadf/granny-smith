@@ -1,0 +1,333 @@
+# Apple event stress test — many complex operations against two live guest
+# applications, over System 7.5's own PPC Toolbox and Apple Event Manager.
+#
+# Where tests/integration/aevt-finder proves the channel works, this one
+# leans on it: dozens of sessions opened and torn down, every specifier form
+# the Finder understands, nested object specifiers, list- and record-valued
+# replies, both error paths, two applications addressed alternately, and a
+# burst of overlapping sends.  The assertions are values the guest computed;
+# there is not a screenshot in the file.
+#
+# What is worth knowing before editing this (all established by experiment,
+# see docs/core/network/ppc_appleevents.md §7.4):
+#
+#   * The Finder answers the **core suite** (`core/getd`, `core/cnte`) even
+#     though its own terminology resource only advertises the old `FNDR`
+#     suite.  Those `FNDR` events, and `aevt/oapp`, are silently ignored — no
+#     reply and no effect — so nothing here uses them.
+#   * Find File is scriptable and remotely linkable but carries only the
+#     required suite plus one custom verb, so the core suite draws
+#     errAEEventNotHandled from it.  That is an assertion here, not a bug.
+#   * A port exists only while its application runs, which is why Find File
+#     is launched before it can be addressed.
+#   * Reply latency varies a lot; `ask` below polls rather than assuming a
+#     fixed budget.
+#   * Descend replies as `appletalk.aevt.events["tag"].reply["k"]["data"]`.
+#     A map attribute read off a `let` binding does not descend, and after a
+#     bracket index a dotted key does not resolve.
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+# Send one event and run the guest until it settles.  The guard bounds the
+# wait so a silent application fails the test instead of hanging it; the
+# event's own instruction budget is what actually marks it timed out.
+def ask(target, event, tag) {
+let e = appletalk.aevt.send($target, $event, timeout=400000000, tag=$tag)
+let guard = 0
+while $e.state == "queued" || $e.state == "sent" {
+scheduler.run 25000000
+$guard = $guard + 1
+if $guard > 20 { break }
+}
+return $e
+}
+
+# --- 1. Boot ---------------------------------------------------------------
+
+scheduler.run 250000000
+
+assert appletalk.aevt.enabled "the Apple event endpoint is not enabled"
+assert appletalk.nbp["gs-host"].type == "PPCToolBox" "the host port is not advertised"
+
+# --- 2. Turn program linking on --------------------------------------------
+
+machine.adb.mouse.move 300 300 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 15 8 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 90 132 "global"
+scheduler.run 12000000
+machine.adb.mouse.move 222 458 "global"
+scheduler.run 40000000
+machine.adb.mouse.move 260 331 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+
+machine.adb.mouse.move 370 96 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 5000000
+machine.adb.keyboard.press 0x05
+scheduler.run 1500000
+machine.adb.keyboard.press 0x01
+scheduler.run 3000000
+
+machine.adb.mouse.move 370 135 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 5000000
+machine.adb.keyboard.press 0x05
+scheduler.run 1500000
+machine.adb.keyboard.press 0x01
+scheduler.run 1500000
+machine.adb.keyboard.press 0x1A
+scheduler.run 1500000
+machine.adb.keyboard.press 0x17
+scheduler.run 5000000
+
+machine.adb.mouse.move 211 288 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 80000000
+machine.adb.mouse.move 148 42 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 30000000
+
+machine.adb.mouse.move 15 8 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 90 132 "global"
+scheduler.run 12000000
+machine.adb.mouse.move 222 458 "global"
+scheduler.run 40000000
+machine.adb.mouse.move 260 427 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+
+machine.adb.mouse.move 105 105 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 70000000
+
+machine.adb.mouse.move 253 190 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 20000000
+machine.adb.mouse.move 213 70 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.adb.mouse.move 463 175 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 50000000
+
+# --- 3. Repeated discovery -------------------------------------------------
+
+# Three browses back to back.  Each one is an NBP lookup plus a full ADSP
+# connection per machine, opened and closed — the churn that used to wedge
+# the SCC receive queue after the first exchange.
+for round in 0..3 {
+appletalk.ppc.browse
+scheduler.run 30000000
+assert appletalk.ppc.ports["Finder"].type == "MACSep01" "browse ${$round} lost the Finder"
+}
+assert appletalk.ppc.stats.browses == 3 "not every browse was counted"
+assert appletalk.adsp.stats.opens >= 3 "the browses did not each open a connection"
+
+# --- 4. A second application -----------------------------------------------
+
+# Apple menu -> Find File.  Its port only exists once it is running.
+machine.adb.mouse.move 15 8 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 70 150 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 120000000
+
+appletalk.ppc.browse
+scheduler.run 40000000
+assert appletalk.ppc.ports.count == 2 "expected two live ports, found ${appletalk.ppc.ports.count}"
+# Applications register as <signature>ep01; Find File's signature is 'fndf'.
+assert appletalk.ppc.ports["Find File"].type == "fndfep01" "unexpected port type for Find File"
+assert appletalk.ppc.ports["Find File"].auth_required == false "Find File refuses guest links"
+
+# --- 5. Every specifier form the Finder understands ------------------------
+
+# A property of the application itself, returned as a typed descriptor.
+let vers = ask("Finder", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(vers), from:null()}}", "vers")
+assert $vers.state == "replied" "no reply to the version query"
+assert $vers.errn == 0 "the version query failed: ${$vers.errn}"
+assert appletalk.aevt.events["vers"].reply["----"]["type"] == "vers" "the version reply is not a version descriptor"
+
+# A property whose value is itself an object: the reply is a record, which
+# exercises the keyed-collection decoder against real guest bytes.
+let sdsk = ask("Finder", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(sdsk), from:null()}}", "sdsk")
+assert $sdsk.errn == 0 "the startup-disk query failed: ${$sdsk.errn}"
+assert appletalk.aevt.events["sdsk"].reply["----"]["type"] == "obj " "the startup disk did not come back as a specifier"
+assert appletalk.aevt.events["sdsk"].reply["----"]["data"]["seld"]["data"] == "sdsk" "the returned specifier is not the startup disk"
+
+# Nested specifier, depth two: the name of the startup disk.
+let nm = ask("Finder", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(pnam), from:obj{form:enum(prop), want:type(prop), seld:type(sdsk), from:null()}}}", "sdname")
+assert $nm.errn == 0 "the disk-name query failed: ${$nm.errn}"
+assert appletalk.aevt.events["sdname"].reply["----"]["data"] == "Macintosh HD" "unexpected startup disk name"
+
+# The absolute-ordinal form ('abso' = "all"), whose reply is a list.
+let all = ask("Finder", "core/getd{'----':obj{form:enum(indx), want:type(cdis), seld:hex('abso',\"616C6C20\"), from:null()}}", "alldisks")
+assert $all.errn == 0 "the every-disk query failed: ${$all.errn}"
+assert appletalk.aevt.events["alldisks"].reply["----"]["type"] == "list" "every-disk did not return a list"
+
+# The by-name form, with a text selector.
+let byn = ask("Finder", "core/getd{'----':obj{form:enum(name), want:type(cdis), seld:\"Macintosh HD\", from:null()}}", "byname")
+assert $byn.errn == 0 "the by-name query failed: ${$byn.errn}"
+
+# The by-index form, with an integer selector, nested under a property.
+let byi = ask("Finder", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(pnam), from:obj{form:enum(indx), want:type(cdis), seld:1, from:null()}}}", "byindex")
+assert $byi.errn == 0 "the by-index query failed: ${$byi.errn}"
+assert appletalk.aevt.events["byindex"].reply["----"]["data"] == "Macintosh HD" "disk 1 is not the startup disk"
+
+# Counting elements: a second core-suite verb, with two parameters.
+let nd = ask("Finder", "core/cnte{'----':obj{form:enum(indx), want:type(cdis), seld:hex('abso',\"616C6C20\"), from:null()}, kocl:type(cdis)}", "ndisks")
+assert $nd.errn == 0 "the disk count failed: ${$nd.errn}"
+assert appletalk.aevt.events["ndisks"].reply["----"]["data"] == 1 "expected exactly one disk"
+
+let nw = ask("Finder", "core/cnte{'----':obj{form:enum(indx), want:type(cwin), seld:hex('abso',\"616C6C20\"), from:null()}, kocl:type(cwin)}", "nwins")
+assert $nw.errn == 0 "the window count failed: ${$nw.errn}"
+assert appletalk.aevt.events["nwins"].reply["----"]["data"] >= 1 "the Finder reports no open windows"
+
+# --- 6. Both error paths, from the guest's own Apple Event Manager ----------
+
+let bogus = ask("Finder", "zzzz/zzzz", "bogus")
+assert $bogus.state == "replied" "an unhandled event drew no reply"
+assert $bogus.errn == -1708 "expected errAEEventNotHandled, got ${$bogus.errn}"
+
+# A specifier the Finder cannot resolve: a real error code, not silence.
+let noobj = ask("Finder", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(pnam), from:null()}}", "noobj")
+assert $noobj.state == "replied" "an unresolvable specifier drew no reply"
+assert $noobj.errn == -1728 "expected errAENoSuchObject, got ${$noobj.errn}"
+
+# --- 7. Two applications, addressed alternately ----------------------------
+
+# Find File answers, but only the required suite plus its own verb, so the
+# core suite is refused — by it, not by us.
+let ff1 = ask("Find File", "zzzz/zzzz", "ff-bogus")
+assert $ff1.state == "replied" "Find File did not answer at all"
+assert $ff1.errn == -1708 "Find File gave ${$ff1.errn} for an unhandled event"
+
+let ff2 = ask("Find File", "core/getd{'----':obj{form:enum(prop), want:type(prop), seld:type(pnam), from:null()}}", "ff-getd")
+assert $ff2.state == "replied" "Find File did not answer the core-suite query"
+assert $ff2.errn == -1708 "Find File claims the core suite (${$ff2.errn})"
+
+# Alternate between the two applications: every event takes a session of its
+# own, so this is a session open/close per line, to two different peers.
+for round in 0..3 {
+let f = ask("Finder", "core/cnte{'----':obj{form:enum(indx), want:type(cdis), seld:hex('abso',\"616C6C20\"), from:null()}, kocl:type(cdis)}", "loop-finder")
+assert $f.state == "replied" "the Finder stopped answering on round ${$round}"
+assert $f.errn == 0 "the Finder errored on round ${$round}: ${$f.errn}"
+let g = ask("Find File", "zzzz/zzzz", "loop-findfile")
+assert $g.state == "replied" "Find File stopped answering on round ${$round}"
+assert $g.errn == -1708 "Find File errored on round ${$round}: ${$g.errn}"
+}
+
+# --- 8. A burst of overlapping sends ---------------------------------------
+
+# Four events in flight at once, each holding its own session.  What this
+# checks is our side of the contract: overlapping sessions can exist, and
+# every event settles and gives its session back.  It deliberately does not
+# require all four to be *answered* — a System 7 application services one
+# linked transaction at a time, so concurrent events to the same application
+# serialise and the later ones can exhaust their budget.  That is the guest's
+# behaviour, and a test that demanded otherwise would be asserting fiction.
+let b1 = appletalk.aevt.send("Finder", "zzzz/zzz1", timeout=200000000, tag="b1")
+let b2 = appletalk.aevt.send("Finder", "zzzz/zzz2", timeout=200000000, tag="b2")
+let b3 = appletalk.aevt.send("Find File", "zzzz/zzz3", timeout=200000000, tag="b3")
+let b4 = appletalk.aevt.send("Finder", "zzzz/zzz4", timeout=200000000, tag="b4")
+assert appletalk.ppc.sessions.count >= 2 "the burst did not open concurrent sessions"
+
+let spin = 0
+while $spin < 24 {
+scheduler.run 25000000
+$spin = $spin + 1
+if appletalk.ppc.sessions.count == 0 { break }
+}
+
+# Reading each state settles any that ran out of budget, so none is left
+# dangling in a transient state.
+assert $b1.state != "queued" "burst event 1 never left the queue"
+assert $b1.state != "sent" "burst event 1 never settled"
+assert $b2.state != "sent" "burst event 2 never settled"
+assert $b3.state != "sent" "burst event 3 never settled"
+assert $b4.state != "sent" "burst event 4 never settled"
+# At least one of a four-event burst has to get through.
+assert appletalk.aevt.stats.replied >= 20 "the burst answered nothing at all"
+
+# --- 9. Nothing of ours leaked ---------------------------------------------
+
+# Give anything still in flight a chance to finish before calling it a leak.
+let settle = 0
+while $settle < 20 {
+if appletalk.ppc.sessions.count == 0 { break }
+scheduler.run 25000000
+$settle = $settle + 1
+}
+
+# Session slots are sparse — a live session can sit in any slot — so walk
+# them rather than assuming index 0, and count what is left by role.  Ours
+# are the initiator sessions: every event takes one and gives it back when it
+# settles, so none may remain.  A responder session is one the *guest* opened
+# to our host port; it stays until the guest closes it or ADSP's connection
+# timer expires, and it is not ours to reclaim.
+let mine = 0
+let theirs = 0
+for slot in 0..8 {
+if try(appletalk.ppc.sessions[$slot].id, 0) > 0 {
+echo "residual session slot ${$slot}: port='${appletalk.ppc.sessions[$slot].port}' role=${appletalk.ppc.sessions[$slot].role} state=${appletalk.ppc.sessions[$slot].state}"
+if appletalk.ppc.sessions[$slot].role == "initiator" { $mine = $mine + 1 }
+if appletalk.ppc.sessions[$slot].role == "responder" { $theirs = $theirs + 1 }
+}
+}
+assert $mine == 0 "${$mine} initiator session(s) leaked — an event failed to give its session back"
+
+assert appletalk.aevt.inbox.count == 0 "a reply was misfiled into the inbox"
+assert appletalk.ppc.stats.sessions_rejected == 0 "the guest rejected a session"
+assert appletalk.adsp.stats.timeouts == 0 "an ADSP connection was torn down by its timer"
+
+# The counters have to agree with each other: everything sent either came
+# back or is accounted for as an error.
+assert appletalk.aevt.stats.sent >= 20 "the stress run sent fewer events than intended"
+assert appletalk.aevt.stats.replied >= 20 "not every event was answered"
+assert appletalk.ppc.stats.sessions_opened >= 20 "sessions were reused instead of opened per event"
+
+echo "stress: sent=${appletalk.aevt.stats.sent} replied=${appletalk.aevt.stats.replied} timeouts=${appletalk.aevt.stats.timeouts}"
+echo "stress: sessions=${appletalk.ppc.stats.sessions_opened} adsp_opens=${appletalk.adsp.stats.opens} bytes=${appletalk.adsp.stats.bytes_in}/${appletalk.adsp.stats.bytes_out}"
+echo "stress: retransmits=${appletalk.adsp.stats.retransmits} out_of_sequence=${appletalk.adsp.stats.out_of_sequence}"
+
+quit

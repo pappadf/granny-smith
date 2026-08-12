@@ -136,7 +136,7 @@ static aevt_stats_t g_stats;
 // Forward declarations
 // ============================================================================
 
-static void aevt_flush_queued_for_port(const char *port);
+static void aevt_flush_session(ppc_session_t *s);
 static void aevt_settle(aevt_event_t *ev);
 static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len);
 
@@ -298,8 +298,7 @@ static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len) {
 
 static void aevt_session_ready(void *ctx, ppc_session_t *s) {
     (void)ctx;
-    // Every event waiting on this port can go now.
-    aevt_flush_queued_for_port(atalk_ppc_session_port(s));
+    aevt_flush_session(s);
 }
 
 static void aevt_session_failed(void *ctx, ppc_session_t *s, const char *reason) {
@@ -514,16 +513,19 @@ static void aevt_settle(aevt_event_t *ev) {
     atalk_ppc_close(s, "the event it carried has been answered");
 }
 
-// Everything queued on this port can now go.
-static void aevt_flush_queued_for_port(const char *port) {
+// A session finished opening: send whatever was waiting on *that* session.
+//
+// It matters that this is keyed on the session and not on the target port.
+// Every event opens a session of its own (§7.2), so flushing "everything
+// queued for this port" onto whichever session happened to become ready
+// stranded the other events' sessions — nothing ever closed them — and piled
+// several events into one session, which the application services only once.
+// The stress test caught it as a leaked initiator session.
+static void aevt_flush_session(ppc_session_t *s) {
     for (int i = 0; i < g_event_count; i++) {
         aevt_event_t *ev = &g_events[i];
-        if (!ev->in_use || ev->state != AEVT_STATE_QUEUED || strcmp(ev->target, port) != 0)
+        if (!ev->in_use || ev->state != AEVT_STATE_QUEUED || ev->session != s)
             continue;
-        ppc_session_t *s = atalk_ppc_find_open(port);
-        if (!s)
-            continue;
-        ev->session = s;
         char err[192] = "";
         if (!aevt_dispatch(ev, err, sizeof(err)))
             aevt_fail(ev, err);
