@@ -466,8 +466,8 @@ captured from the guest.
 
 ### 7.1 What has been verified against a real guest
 
-`tests/integration/appletalk-ppc` (System 7.1 on a Plus) and
-`tests/integration/aevt-finder` (System 7.5 on a IIci) drive the whole stack
+`tests/integration/appletalk-ppc` (System 7.1 on a Plus), `aevt-finder`,
+`aevt-stress` and `aevt-inbox` (System 7.5 on a IIci) drive the whole stack
 against System 7's own `.MPP`/`.DSP` drivers, PPC Toolbox and Apple Event
 Manager. Confirmed end to end: NBP discovery, the ADSP open dialog, the
 list-ports browse, the session request/accept dialog with a guest user name,
@@ -505,7 +505,17 @@ waiting on — the same correlation the Apple Event Manager uses. We treat the
 bit and the `aevt`/`ansr` class as corroboration only; matching on them alone
 misfiles genuine replies into the inbox.
 
-### 7.3 Remaining rough edges
+### 7.3 What the guest asks us
+
+An application that links to our port does not necessarily start by sending
+the event its script says. AppleScript asks a port for its **event
+dictionary** first — `ascr/gdte`, "get AETE" — before it will compile a tell
+block, and it arrives with `timo` and `inte` attributes attached. We publish
+no terminology, so the answer `auto_reply` sends carries none and the guest
+reports that it cannot get the dictionary. Publishing a real `aete` would let
+a guest script us by name; nothing else needs it.
+
+### 7.4 Remaining rough edges
 
 * **`aevt/oapp` to a running Finder draws no reply**, on either system. The
   event is delivered and the session is accepted; the Open Application
@@ -522,7 +532,7 @@ misfiles genuine replies into the inbox.
   needs `fss(...)` or captured bytes.
 * **Authenticated linking** remains unimplemented (§4.5).
 
-### 7.4 What is scriptable on the System 7.5 test image
+### 7.5 What is scriptable on the System 7.5 test image
 
 Two resources decide whether an application is a usable target, and they are
 independent:
