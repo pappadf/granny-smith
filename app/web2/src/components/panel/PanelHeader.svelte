@@ -80,14 +80,17 @@
     display: flex;
     flex: 1 1 auto;
     min-width: 0;
+    /* Scroll horizontally with a hidden scrollbar (VS Code style). overflow-y
+       must be hidden explicitly: auto on one axis forces visible->auto on the
+       other, and on systems with classic (space-taking) scrollbars the
+       horizontal bar shrinks the 35px header below the 31px tab height,
+       cascading into both scrollbars appearing. */
     overflow-x: auto;
-    scrollbar-width: thin;
+    overflow-y: hidden;
+    scrollbar-width: none;
   }
   .panel-tabs::-webkit-scrollbar {
-    height: 3px;
-  }
-  .panel-tabs::-webkit-scrollbar-thumb {
-    background: var(--gs-scrollbar-thumb);
+    display: none;
   }
   .panel-actions {
     display: flex;
