@@ -96,6 +96,12 @@ typedef struct {
     atalk_aevt_config_t aevt;
 } atalk_persist_t;
 
+// Set when appletalk_init found a previous machine's stack still installed
+// and took it down itself; see appletalk_delete.
+static bool g_atalk_superseded;
+
+static void appletalk_teardown(void);
+
 // Stack enablement. The stack is attached to the SCC link by default; the
 // object model is the user's switch to take the machine off the network
 // (object-model proposal §8.3). Every frame in and out passes this guard.
@@ -325,6 +331,13 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
 // ============================================================================
 
 void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
+    // A previous machine may still be installed (checkpoint restore builds the
+    // new machine first).  Take it down now so this init starts from a clean
+    // tree, and remember that its own teardown must not run afterwards.
+    if (g_atalk_object) {
+        appletalk_teardown();
+        g_atalk_superseded = true;
+    }
     g_scc = scc; // Store SCC dependency for later use
     g_scheduler = scheduler; // Store scheduler for ATP timers
     g_atalk_enabled = true;
@@ -449,7 +462,7 @@ void appletalk_checkpoint(checkpoint_t *checkpoint) {
 // Lifecycle: Destructor
 // ============================================================================
 
-void appletalk_delete(void) {
+static void appletalk_teardown(void) {
     // Sessions first: closing them hands the AFP layer its forks back.
     atalk_asp_close_all_sessions();
     atalk_server_delete();
@@ -492,6 +505,23 @@ void appletalk_delete(void) {
         object_delete(g_atalk_object);
         g_atalk_object = NULL;
     }
+}
+
+// Public teardown.
+//
+// The checkpoint restore path builds the *new* machine before destroying the
+// old one (cmd_load_checkpoint), so appletalk_init can run while a previous
+// machine's stack is still installed.  When that happens init tears the old
+// one down itself and sets this flag, because the appletalk_delete that
+// follows belongs to that old machine: running it would dismantle the stack
+// the new machine just built — which is exactly what made `appletalk.adsp`,
+// `.ppc` and `.aevt` vanish after a restore.
+void appletalk_delete(void) {
+    if (g_atalk_superseded) {
+        g_atalk_superseded = false;
+        return;
+    }
+    appletalk_teardown();
 }
 
 // === Stack-level object-model accessors ====================================
