@@ -51,6 +51,10 @@ void scc_dcd(scc_t *restrict scc, unsigned int ch, unsigned int dcd);
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len);
 
+// True once channel B is in SDLC mode — the guest's AppleTalk driver is up
+// and a frame we originate has somewhere to go.
+bool scc_sdlc_ready(const scc_t *restrict scc);
+
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scc_get_memory_interface(scc_t *scc);
 

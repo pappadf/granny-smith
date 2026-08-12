@@ -196,6 +196,16 @@ int atalk_nbp_update(atalk_nbp_entry_t *entry, const atalk_nbp_service_desc_t *d
 
 int atalk_nbp_unregister(atalk_nbp_entry_t *entry);
 
+// Look an entity pattern up on the network.  `object` and `type` may use the
+// NBP wildcards ("=" matches everything); replies are delivered to `cb` one
+// tuple at a time as they arrive, so the caller must run the scheduler before
+// expecting results.  One lookup is outstanding at a time: issuing another
+// replaces it.  Returns 0 if the request went out.
+typedef void (*atalk_nbp_reply_fn)(void *ctx, const atalk_nbp_info_t *info);
+int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uint8_t reply_socket,
+                     atalk_nbp_reply_fn cb, void *ctx);
+void atalk_nbp_lookup_cancel(void);
+
 // === ASP Status Block ===
 
 // Build the ASP GetStatus Service Status Block (per docs/errata.md layout).

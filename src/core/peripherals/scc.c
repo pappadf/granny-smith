@@ -906,6 +906,17 @@ static void scc_write_uint32(void *scc, uint32_t addr, uint32_t value) {
     LOG(1, "scc: long write at 0x%08X = 0x%08X — SCC is byte-only, ignored", addr, value);
 }
 
+// True once the guest has put channel B into SDLC mode, i.e. once its
+// AppleTalk driver is listening.  Callers that originate traffic rather than
+// answering it (the ADSP endpoint's open dialog, NBP lookups) must check
+// this: before the driver loads there is nobody on the wire.
+bool scc_sdlc_ready(const scc_t *restrict scc) {
+    if (!scc)
+        return false;
+    const ch_t *ch = &scc->ch[1];
+    return SDLC_MODE(ch);
+}
+
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {
     ch_t *ch = &scc->ch[1];
 
