@@ -507,11 +507,17 @@ misfiles genuine replies into the inbox.
 
 ### 7.3 Remaining rough edges
 
-* **`aevt/oapp` to a running Finder draws no reply.** The event is delivered
-  and the session is accepted; the Finder's Open Application handler simply
-  does not answer when it is already running. Events that a handler answers
-  (`core/getd`, or anything unhandled, which draws `errAEEventNotHandled`)
-  reply normally. Use a query, not `oapp`, when a test needs a round trip.
+* **`aevt/oapp` to a running Finder draws no reply**, on either system. The
+  event is delivered and the session is accepted; the Open Application
+  handler simply does not answer when the application is already running.
+  Use a query when a test needs a round trip.
+* **No reply has been observed from the System 7.1 guest at all**, including
+  for an event no handler can claim — the same event the 7.5 Finder answers
+  with `errAEEventNotHandled` within tens of millions of instructions. Since
+  the session-reuse bug is fixed and 7.5 answers over the identical code
+  path, something differs in that older system (or it simply needs far more
+  guest time on a 7.8 MHz Plus). Unresolved; `tests/integration/appletalk-ppc`
+  therefore asserts delivery only, and `aevt-finder` owns the round trip.
 * **Alias records** are still not constructible host-side (§6.2), so `odoc`
   needs `fss(...)` or captured bytes.
 * **Authenticated linking** remains unimplemented (§4.5).
