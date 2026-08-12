@@ -1,20 +1,27 @@
 # AppleTalk AFP mount — Chooser → AppleShare → mount a host-shared volume.
 #
-# Boots System 6 from the SCSI HD, registers a host directory as an
-# AppleShare volume (appletalk.shares.add — the same call the frontends
-# make), then drives the guest Chooser with injected mouse input through
-# the whole client flow:
+# Boots System 6 from the SCSI HD, publishes a host directory as an
+# AppleShare volume (appletalk.afp.volumes.add — the same call the frontends
+# make), then drives the guest Chooser with injected mouse input through the
+# whole client flow:
 #
 #   1. Apple menu → Chooser.
 #   2. Click AppleShare → "AppleShare requires AppleTalk" dialog → OK
 #      (activates AppleTalk).
 #   3. NBP discovery lists the emulated "Shared Folders" server —
 #      pinned by chooser-server-listed.png.
-#   4. Select it → OK → "Connect as Guest" dialog → OK → the ASP session
-#      opens and AFP enumerates the shared volume ("My Volume") —
-#      pinned by volume-list.png.
-#   5. Select the volume → OK → close the Chooser → the AFP volume icon
-#      sits mounted on the desktop — pinned by desktop-mounted.png.
+#   4. Select it → OK → "Connect as Guest" → OK → the ASP session opens,
+#      FPLogin negotiates AFP 2.0 and FPGetSrvrParms enumerates the shared
+#      volume ("My Volume") — pinned by volume-list.png.
+#   5. Select the volume → OK → close the Chooser → the AFP volume icon sits
+#      mounted on the desktop — pinned by desktop-mounted.png.
+#   6. Double-click the volume → its window lists the staged file, drawn from
+#      FPEnumerate/FPGetFileDirParms replies — pinned by volume-window.png.
+#
+# The run then asserts on the object model's observability subtrees
+# (appletalk.afp.stats / .sessions / .volumes) rather than grepping the log,
+# so a flow that silently stops talking to the server fails the suite instead
+# of quietly matching an idle screen.
 #
 # All budgets are instruction-exact and the wall clock is pinned, so every
 # match is bitwise (verified identical across runs from a clean image).
@@ -28,59 +35,66 @@ machine.rtc.time = "2026-04-26T21:30:36"
 # Boot to the Finder desktop (same budget as the scsi test).
 scheduler.run 30000000
 
-# Register the host share BEFORE AppleTalk activates, as the legacy UI did
-# (shares.add returns V_NONE; verify through the entries collection).
-appletalk.shares.add "My Volume" /tmp
-assert appletalk.shares.entries[0].name == "My Volume" "share not registered"
-assert appletalk.shares.entries[0].path == "/tmp" "share path wrong"
+# Publish the host share BEFORE AppleTalk activates, as the legacy UI did.
+# add() returns the volume it created, so one call both registers and
+# verifies — no re-enumeration of the collection needed.
+assert appletalk.afp.volumes.add("My Volume", "${$WORK_DIR}/share").path == "${$WORK_DIR}/share" "share not registered"
+assert appletalk.afp.volumes["My Volume"].vol_id > 0 "volume id not assigned"
+assert appletalk.afp.volumes["My Volume"].cnid_count == 1 "a fresh catalog holds only the root"
 
-# Apple menu → Chooser (press at the menu title, drag down, release).
+# Nothing has talked to the server yet.
+assert appletalk.afp.stats.commands_served == 0 "AFP traffic before the client ran"
+assert try(appletalk.afp.sessions[0].session_ref, 0) == 0 "an ASP session exists before the Chooser ran"
+
+# Apple menu → Chooser (press at the menu title, drag down to the item,
+# release). The Apple menu on this System 6 volume lists About / Access
+# Privileges / Alarm Clock / Battery / Calculator / Chooser, so the Chooser
+# sits at y=123.
 machine.adb.mouse.move 25 10
 scheduler.run 2000000
 machine.adb.mouse.click true
 scheduler.run 4000000
-machine.adb.mouse.move 25 110
+machine.adb.mouse.move 25 123
 scheduler.run 4000000
 machine.adb.mouse.click false
 scheduler.run 60000000
 
 # Click the AppleShare icon in the Chooser's device list.
-machine.adb.mouse.move 100 85
+machine.adb.mouse.move 95 90
 scheduler.run 2000000
 machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
 scheduler.run 20000000
 
-# "AppleShare requires AppleTalk" → OK. AppleTalk flips Active and the
-# NBP lookup runs; the server list must show the emulated share host.
-# (48M: the NBP discovery timers are guest-time-driven, so this budget is
-# sized for the Plus's calibrated CPI 10 — 40M, pinned at CPI 12, fell
-# just short of the reply landing in the list.)
-machine.adb.mouse.move 185 205
+# "AppleShare requires AppleTalk" → OK. AppleTalk flips Active and the NBP
+# lookup runs; the server list must show the emulated share host.
+# (60M: the NBP discovery timers are guest-time-driven.)
+machine.adb.mouse.move 190 206
 scheduler.run 2000000
 machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
-scheduler.run 48000000
+scheduler.run 60000000
 check("chooser-server-listed.png")
 
 # Select "Shared Folders", then OK.
-machine.adb.mouse.move 300 85
+machine.adb.mouse.move 280 88
 scheduler.run 2000000
 machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
-scheduler.run 4000000
-machine.adb.mouse.move 330 180
+scheduler.run 6000000
+machine.adb.mouse.move 333 178
 scheduler.run 2000000
 machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
 scheduler.run 40000000
 
-# "Connect ... as: Guest" → OK. AFP opens the session and lists volumes.
-machine.adb.mouse.move 390 260
+# "Connect to the file server ... as: Guest" → OK. FPLogin runs and
+# FPGetSrvrParms fills the volume list.
+machine.adb.mouse.move 392 259
 scheduler.run 2000000
 machine.adb.mouse.click true
 scheduler.run 2000000
@@ -88,19 +102,23 @@ machine.adb.mouse.click false
 scheduler.run 40000000
 check("volume-list.png")
 
+# The session is up and speaking AFP 2.0 before a single volume is mounted.
+assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0" "System 6 negotiates AFP 2.0"
+assert appletalk.afp.stats.commands_served > 0 "no AFP commands were served"
+
 # Select "My Volume", then OK — the mount itself.
-machine.adb.mouse.move 140 110
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 2000000
-machine.adb.mouse.click false
+machine.adb.mouse.move 150 113
 scheduler.run 4000000
-machine.adb.mouse.move 330 260
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 8000000
+machine.adb.mouse.move 333 259
 scheduler.run 2000000
 machine.adb.mouse.click true
 scheduler.run 2000000
 machine.adb.mouse.click false
-scheduler.run 40000000
+scheduler.run 60000000
 
 # Close the Chooser; the AFP volume icon is on the desktop.
 machine.adb.mouse.move 72 47
@@ -110,5 +128,39 @@ scheduler.run 2000000
 machine.adb.mouse.click false
 scheduler.run 40000000
 check("desktop-mounted.png")
+
+# Open the volume's window. The gap between the two clicks has to fit inside
+# DoubleTime, so it is a fraction of the budgets used for single clicks.
+machine.adb.mouse.move 468 108
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 60000000
+# The window's info bar carries the volume's free space, which WP-1 now
+# reports honestly from the host filesystem — so it is excluded from the
+# match while the listing itself stays pinned.
+check_ex("volume-window.png", 58, 140, 80, 420)
+
+# The object-model observability subtrees carry what the wire did, so the
+# suite asserts on them instead of grepping the log.
+assert appletalk.afp.stats.commands_served > 20 "the volume window served no catalog calls"
+assert appletalk.afp.sessions[0].session_ref > 0 "no ASP session after the mount"
+assert try(appletalk.afp.sessions[1].session_ref, 0) == 0 "expected exactly one ASP session"
+assert appletalk.afp.sessions[0].client_node > 0 "session has no client node"
+assert appletalk.afp.volumes["My Volume"].sessions_using == 1 "the mount is not counted on the volume"
+
+# Listing the volume adopted the staged file into the CNID catalog, and the
+# generation is unchanged because adoption is an append, not a sweep.
+assert appletalk.afp.volumes["My Volume"].cnid_count == 2 "the staged file was not adopted into the catalog"
+assert appletalk.afp.volumes["My Volume"].catalog_generation == 2 "catalog generation moved unexpectedly"
+
+# Browsing opens no forks: the client read parameters, not file data.
+assert appletalk.afp.volumes["My Volume"].open_forks == 0 "browsing leaked an open fork"
+assert appletalk.afp.stats.open_forks == 0 "a fork is open server-wide after browsing"
 
 quit

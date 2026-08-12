@@ -663,6 +663,66 @@ static value_t storage_method_path_size(struct object *self, const member_t *m, 
     return val_uint(8, st.size);
 }
 
+// `storage.path_compare(a, b)` — byte-for-byte comparison of two VFS files.
+// Returns -1 when they are identical, otherwise the offset of the first
+// difference (or of the end of the shorter file).  A fork-fidelity test that
+// only asked "are they equal?" would report a bare false; the offset says
+// where the round trip lost the bytes.
+static value_t storage_method_path_compare(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    vfs_file_t *fa = NULL;
+    vfs_file_t *fb = NULL;
+    const vfs_backend_t *ba = NULL;
+    const vfs_backend_t *bb = NULL;
+    int rc = vfs_open(argv[0].s, &fa, &ba);
+    if (rc < 0)
+        return val_err("cannot open '%s': %s", argv[0].s, strerror(-rc));
+    rc = vfs_open(argv[1].s, &fb, &bb);
+    if (rc < 0) {
+        ba->close(fa);
+        return val_err("cannot open '%s': %s", argv[1].s, strerror(-rc));
+    }
+
+    uint8_t buf_a[8192], buf_b[8192];
+    uint64_t offset = 0;
+    int64_t diff = -1;
+    for (;;) {
+        size_t na = 0, nb = 0;
+        int ra = ba->read(fa, offset, buf_a, sizeof(buf_a), &na);
+        int rb = bb->read(fb, offset, buf_b, sizeof(buf_b), &nb);
+        if (ra < 0 || rb < 0) {
+            diff = (int64_t)offset;
+            break;
+        }
+        size_t common = na < nb ? na : nb;
+        for (size_t i = 0; i < common; i++) {
+            if (buf_a[i] != buf_b[i]) {
+                diff = (int64_t)(offset + (uint64_t)i);
+                break;
+            }
+        }
+        if (diff >= 0)
+            break;
+        if (na != nb) { // one file ended before the other
+            diff = (int64_t)(offset + (uint64_t)common);
+            break;
+        }
+        if (na == 0)
+            break; // both hit EOF with everything matched
+        offset += (uint64_t)na;
+    }
+    ba->close(fa);
+    bb->close(fb);
+    return val_int(diff);
+}
+
+static const arg_decl_t storage_compare_args[] = {
+    {.name = "a", .kind = V_STRING, .doc = "First path (host or VFS)" },
+    {.name = "b", .kind = V_STRING, .doc = "Second path (host or VFS)"},
+};
+
 static const arg_decl_t storage_cp_args[] = {
     {.name = "src", .kind = V_STRING, .doc = "Source path (host or VFS)"},
     {.name = "dst", .kind = V_STRING, .doc = "Destination path"},
@@ -778,6 +838,10 @@ static const member_t storage_members[] = {
      .name = "path_size",
      .doc = "File size in bytes (0 on stat failure)",
      .method = {.args = storage_path_arg, .nargs = 1, .result = V_UINT, .fn = storage_method_path_size}          },
+    {.kind = M_METHOD,
+     .name = "path_compare",
+     .doc = "Byte-compare two files: -1 if identical, else the first differing offset",
+     .method = {.args = storage_compare_args, .nargs = 2, .result = V_INT, .fn = storage_method_path_compare}    },
 };
 
 const class_desc_t storage_class_real = {

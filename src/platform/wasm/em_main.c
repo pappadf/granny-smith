@@ -44,6 +44,7 @@
 #endif
 
 #include "api.h"
+#include "appletalk.h"
 #include "checkpoint.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
@@ -1451,6 +1452,30 @@ void gs_checkpoint_auto_set(bool enabled) {
         checkpoint_tick_counter = 0;
 }
 
+// The always-present AppleShare volume.  The path literal lives here, in the
+// platform layer, because core never fabricates or interprets a path (PR #69);
+// `appletalk_server.c` only ever executes the tree operation it is handed.
+// Under OPFS the directory — and the AppleDouble sidecars the AFP server
+// writes beside each file — persist across page reloads for free.
+#define GS_DEFAULT_SHARE_NAME "Shared"
+#define GS_DEFAULT_SHARE_PATH "/opfs/shared"
+
+// Publish the default share.  Idempotent: a machine teardown drops the volume
+// table, so this runs again on every system_create.  Failure is a logged
+// warning, never a boot error — a user who removed the directory should still
+// get a running machine.
+static void provision_default_share(void) {
+    if (atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
+        return;
+    if (mkdir(GS_DEFAULT_SHARE_PATH, 0777) != 0 && errno != EEXIST) {
+        printf("[C] default share: cannot create %s (%s)\n", GS_DEFAULT_SHARE_PATH, strerror(errno));
+        return;
+    }
+    char err[192];
+    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, GS_DEFAULT_SHARE_PATH, err, sizeof(err)) < 0)
+        printf("[C] default share: %s\n", err);
+}
+
 // Platform hook: install assertion callback and apply deferred speed mode
 // after each system_create (including deferred creation via rom load).
 void system_post_create(config_t *cfg) {
@@ -1458,6 +1483,8 @@ void system_post_create(config_t *cfg) {
     if (debug) {
         debug->assertion_callback = em_assertion_callback;
     }
+
+    provision_default_share();
 
     // Apply deferred speed mode from --speed flag parsed at startup
     if (g_deferred_speed_set) {

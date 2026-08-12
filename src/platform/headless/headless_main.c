@@ -6,6 +6,7 @@
 
 #include "platform.h"
 
+#include "appletalk.h"
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "debug.h"
@@ -37,6 +38,7 @@
 #include <string.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -47,7 +49,32 @@ void frontend_force_redraw(void) {
     // No video in headless mode
 }
 
-// Headless uses the default (no-op) system_post_create from system.c.  VBL is
+// The host directory published as the default AppleShare volume, resolved at
+// startup from --shared-dir or $GS_SHARED_DIR.  The path literal lives here in
+// the platform layer, never in src/core (PR #69): core only ever executes the
+// tree operation it is handed.  Empty means "no default volume".
+#define GS_DEFAULT_SHARE_NAME "Shared"
+static char g_shared_dir[PATH_MAX];
+
+// Publish the default share after every system_create.  A machine teardown
+// drops the volume table, so this has to re-run; failure is a warning, not a
+// fatal error.
+void system_post_create(config_t *cfg) {
+    (void)cfg;
+    if (!g_shared_dir[0])
+        return;
+    if (atalk_afp_volume_find(GS_DEFAULT_SHARE_NAME) >= 0)
+        return;
+    if (mkdir(g_shared_dir, 0755) != 0 && errno != EEXIST) {
+        fprintf(stderr, "warning: cannot create shared directory %s: %s\n", g_shared_dir, strerror(errno));
+        return;
+    }
+    char err[192];
+    if (atalk_afp_volume_add(GS_DEFAULT_SHARE_NAME, g_shared_dir, err, sizeof(err)) < 0)
+        fprintf(stderr, "warning: default share: %s\n", err);
+}
+
+// VBL is
 // no longer a scheduler event armed per machine: the run loop injects it
 // imperatively, one VBL pulse per frame-unit, via scheduler_run_frame() — the
 // same path web2's scheduler_main_loop() takes.  See pump_scheduler_with_heartbeat
@@ -160,6 +187,8 @@ static void print_usage(const char *program) {
     printf("  --var NAME=VAL  Set a shell variable (can be repeated)\n");
     printf("  --no-prompt     Disable the prompt status line for all connections\n");
     printf("  --checkpoint-dir=DIR  Directory to host writable image deltas (default: alongside base image)\n");
+    printf("  --shared-dir=DIR     Publish DIR as the default AppleShare volume \"Shared\"\n");
+    printf("                       (also settable with $GS_SHARED_DIR; created if missing)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -749,6 +778,10 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        if (strncmp(arg, "--shared-dir=", 13) == 0) {
+            snprintf(g_shared_dir, sizeof(g_shared_dir), "%s", arg + 13);
+            continue;
+        }
         if (strncmp(arg, "--checkpoint-dir=", 17) == 0) {
             checkpoint_dir = arg + 17;
             continue;
@@ -915,6 +948,14 @@ int main(int argc, char *argv[]) {
     // Apply --no-prompt default so every client connection inherits it
     if (no_prompt)
         debug_set_prompt_default(false);
+
+    // $GS_SHARED_DIR is the fallback for --shared-dir, so a CI job can turn the
+    // default volume on without touching every invocation.
+    if (!g_shared_dir[0]) {
+        const char *env_dir = getenv("GS_SHARED_DIR");
+        if (env_dir && *env_dir)
+            snprintf(g_shared_dir, sizeof(g_shared_dir), "%s", env_dir);
+    }
 
     // If a --checkpoint-dir was given, point the machine layer at it
     // verbatim so writable image deltas land there.  No id/timestamp

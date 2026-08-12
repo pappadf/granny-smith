@@ -1,10 +1,11 @@
-# Integration test: M8 top-level objects (appletalk, mouse)
-# First M8 slice — exercises appletalk.shares + .printer and
-# mouse.{move,click,trace}. Storage and root introspection methods
-# land in a follow-up M8 sub-commit.
+# Integration test: top-level objects (appletalk, mouse)
+# Exercises the AppleTalk/AFP object surface — stack enablement, the AFP
+# server node, the volumes collection with its constructive add and name
+# lookup, the NBP registry view, the observability subtrees and the
+# printer's attribute pair — plus mouse.{move,click,trace}.
 
-TEST_NAME := Object-model M8 top-level (appletalk + mouse)
-TEST_DESC := appletalk.shares/.printer + mouse.* methods
+TEST_NAME := Object-model top-level (appletalk + mouse)
+TEST_DESC := appletalk.afp volumes/sessions/stats + .printer attributes + mouse.* methods
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 

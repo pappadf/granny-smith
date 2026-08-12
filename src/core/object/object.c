@@ -718,6 +718,42 @@ node_t node_child(node_t n, const char *segment) {
     return bad;
 }
 
+// Name-key descent into an indexed collection (`volumes["Shared"]`).  The
+// integer form addresses a slot; this form asks the collection to map a stable
+// name onto whichever slot currently holds it, so a script can name what it
+// means instead of tracking allocation order.
+node_t node_child_key(node_t n, const char *key) {
+    node_t bad = (node_t){0};
+    if (!n.obj || !key || !*key)
+        return bad;
+    if (n.member && n.member->kind != M_CHILD)
+        return bad;
+
+    // Case 1: already sitting on the indexed-child member itself.
+    if (n.member && n.member->kind == M_CHILD && n.member->child.indexed && n.index < 0) {
+        if (!n.member->child.lookup)
+            return bad;
+        struct object *hit = n.member->child.lookup(n.obj, key);
+        return hit ? (node_t){.obj = hit, .member = NULL, .index = -1} : bad;
+    }
+    if (n.member && n.member->kind == M_CHILD)
+        return bad; // a resolved slot or named child is not itself a collection
+
+    // Case 2: the object is a collection wrapper — use its first indexed
+    // child member, the same convention the integer form follows.
+    const class_desc_t *cls = object_class(n.obj);
+    if (!cls)
+        return bad;
+    for (size_t i = 0; i < cls->n_members; i++) {
+        const member_t *m = &cls->members[i];
+        if (m->kind != M_CHILD || !m->child.indexed || !m->child.lookup)
+            continue;
+        struct object *hit = m->child.lookup(n.obj, key);
+        return hit ? (node_t){.obj = hit, .member = NULL, .index = -1} : bad;
+    }
+    return bad;
+}
+
 node_t object_resolve(struct object *root, const char *path) {
     node_t bad = (node_t){0};
     if (!root)
@@ -728,10 +764,30 @@ node_t object_resolve(struct object *root, const char *path) {
 
     const char *p = skip_ws(path);
     while (*p) {
-        // Bracket form: [INT]
+        // Bracket form: [INT] or ["NAME"]
         if (*p == '[') {
-            long long idx = 0;
             p = skip_ws(p + 1);
+            if (*p == '"') {
+                // Name key — the collection's lookup callback resolves it.
+                const char *k = p + 1;
+                const char *e = strchr(k, '"');
+                if (!e || *skip_ws(e + 1) != ']')
+                    return bad;
+                char key[128];
+                size_t kn = (size_t)(e - k);
+                if (kn >= sizeof(key))
+                    return bad;
+                memcpy(key, k, kn);
+                key[kn] = '\0';
+                cur = node_child_key(cur, key);
+                if (!node_valid(cur))
+                    return bad;
+                p = skip_ws(skip_ws(e + 1) + 1);
+                if (*p == '.')
+                    p = skip_ws(p + 1);
+                continue;
+            }
+            long long idx = 0;
             const char *q = parse_int(p, &idx);
             if (!q)
                 return bad;

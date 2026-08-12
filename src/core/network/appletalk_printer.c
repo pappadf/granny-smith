@@ -1286,11 +1286,55 @@ int atalk_printer_disable(void) {
     return 0;
 }
 
-// === Read-only views =================================================
+// === Object-model surface ============================================
+//
+// `appletalk.printer` exposes `enabled` and `name` as writable attributes
+// (object-model proposal §2): state is an attribute, methods are verbs.
 
 bool atalk_printer_is_enabled(void) {
     return g_printer.enabled;
 }
+
+// The advertised NBP name.  Unlike the enablement flag, the name survives a
+// disable so the tree can show what will be published when it is turned back
+// on — and so setting `name` while disabled is not silently lost.
 const char *atalk_printer_object_name(void) {
-    return g_printer.enabled ? g_printer.object_name : NULL;
+    pap_printer_init();
+    return g_printer.object_name;
+}
+
+int atalk_printer_set_enabled(bool enabled, char *err, size_t err_len) {
+    if (err && err_len)
+        err[0] = '\0';
+    int rc = enabled ? atalk_printer_enable(NULL) : atalk_printer_disable();
+    if (rc != 0 && err && err_len)
+        snprintf(err, err_len, "cannot %s the LaserWriter advertisement", enabled ? "publish" : "withdraw");
+    return rc;
+}
+
+int atalk_printer_set_name(const char *name, char *err, size_t err_len) {
+    if (err && err_len)
+        err[0] = '\0';
+    if (!name || !*name) {
+        if (err && err_len)
+            snprintf(err, err_len, "printer name is required");
+        return -1;
+    }
+    if (strlen(name) > PRINTER_OBJECT_MAX) {
+        if (err && err_len)
+            snprintf(err, err_len, "printer name max %d chars ('%s' is %zu)", PRINTER_OBJECT_MAX, name, strlen(name));
+        return -1;
+    }
+    pap_printer_init();
+    if (!g_printer.enabled) {
+        // Not advertising: record the name for the next enable.
+        snprintf(g_printer.object_name, sizeof(g_printer.object_name), "%s", name);
+        return 0;
+    }
+    if (atalk_printer_enable(name) != 0) { // re-registers the NBP entry
+        if (err && err_len)
+            snprintf(err, err_len, "NBP re-registration failed for '%s'", name);
+        return -1;
+    }
+    return 0;
 }

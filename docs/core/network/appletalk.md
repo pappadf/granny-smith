@@ -701,14 +701,47 @@ Responder behavior:
 
 - Do not send any response to a Tickle. Receipt of any packet (Tickle, request, or reply) simply refreshes the local session liveness timer. If no packets are received for the configured idle period (≈120 s), the session is closed.
 
+Implementation: every ASP packet stamps its session's last-activity time from
+the *emulated* clock, and a scheduler event sweeps the table every 15 s of
+guest time, closing anything silent for 120 s. Guest time rather than host
+time, so an instruction-budgeted integration run sees deterministic expiry.
+Expiry is what returns a wedged client's resources: a guest that is reset
+never sends CloseSess, and without the sweep its open forks, byte-range locks
+and desktop-database references would be held until the machine was torn down.
+Closing a session — whether by CloseSess or by expiry — hands all of that back
+to the AFP layer through `afp_session_closed()`.
+
 ---
 
-### 2.8 ASP State Machine (simplified)
+### 2.8 Attention — server→client notification
+
+The server end of a session can push an unsolicited notification to the
+workstation with SPAttention. It is carried as an ATP request from the
+server's AFP socket to the workstation session socket, with the attention code
+in the ATP UserBytes and no ATP data:
+
+- UserBytes[0] = SPFunction = Attention (0x08)
+- UserBytes[1] = SessionID (1 byte)
+- UserBytes[2..3] = the 16-bit attention code, big-endian
+
+The code's high nibble selects the meaning (AFP_21_22 Table 1-6/1-7); the low
+12 bits are a countdown in minutes for the shutdown codes. This stack raises
+two:
+
+| Code     | Bits | Meaning                                                       |
+| :------- | :--- | :------------------------------------------------------------ |
+| `0x8000` | 1000 | The server is going down. Sent to every session when the AFP server is disabled through `appletalk.afp.enabled = false`. |
+| `0x2000` | 0010 | A server message is available. Sent when `appletalk.afp.message` is set to a non-empty string; the client answers with `FPGetSrvrMsg`. |
+
+---
+
+### 2.9 ASP State Machine (simplified)
 
 ```
 CLOSED → (OpenSess) → OPEN
 OPEN ↔ (Command/Write/Tickle)
 OPEN → (CloseSess) → CLOSED
+OPEN → (idle > 120 s) → CLOSED
 ```
 
 ---

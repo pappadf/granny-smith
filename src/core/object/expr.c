@@ -1172,6 +1172,31 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
             // Trailing `.key` / `[...]` segments on a call result descend
             // into the returned map/list:
             //   machine.profile("se30").capabilities.mmu.kind
+            // A constructive method returns the object it made, so the same
+            // segments descend into the tree instead:
+            //   appletalk.afp.volumes.add("Shared", "/opfs/shared").vol_id
+            if (!val_is_error(&r) && r.kind == V_OBJECT && (*L->p == '.' || *L->p == '[')) {
+                char sub[256];
+                bool sub_call = false;
+                if (!read_sub_segments(L, ctx, sub, sizeof(sub), &sub_call)) {
+                    value_free(&r);
+                    return val_err("bad path after call result");
+                }
+                if (sub_call) {
+                    value_free(&r);
+                    return val_err("cannot call a method on a call result");
+                }
+                if (!sub[0])
+                    return r;
+                // read_sub_segments emits a leading '.'; object_resolve wants
+                // the path without it.
+                const char *rel = (sub[0] == '.') ? sub + 1 : sub;
+                node_t sub_node = object_resolve(r.obj, rel);
+                value_free(&r);
+                if (!node_valid(sub_node))
+                    return val_err("path '%s' did not resolve on the returned object", rel);
+                return node_get(sub_node);
+            }
             if (!val_is_error(&r) && (r.kind == V_MAP || r.kind == V_LIST) && (*L->p == '.' || *L->p == '[')) {
                 char sub[256];
                 bool sub_call = false;

@@ -19,7 +19,10 @@ TEST_DESC := Chooser -> AppleShare -> discover host share -> connect as Guest ->
 
 TEST_ROM := roms/plus-v3-4d1f8172.rom
 
-TEST_SETUP := cp "$(TEST_DATA)/systems/system_6_0_8_20mb_8_24gc.img" "$(TEST_TMPDIR)/hd.img"
+# The share is a fresh per-run directory: the AFP server keeps its CNID
+# catalog and desktop database in "<share>/.gs-afp", so a shared /tmp would
+# carry state between runs and make cnid_count non-deterministic.
+TEST_SETUP := cp "$(TEST_DATA)/systems/system_6_0_8_20mb_8_24gc.img" "$(TEST_TMPDIR)/hd.img" && mkdir -p "$(WORK_DIR)/share" && printf 'Shared over AFP.\n' > "$(WORK_DIR)/share/README"
 
 TEST_ARGS := hd=$(TEST_TMPDIR)/hd.img
 

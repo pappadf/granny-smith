@@ -147,4 +147,9 @@ int atp_responder_send_simple(const ddp_header_t *request_ddp, const atp_packet_
 // Printer AppleTalk entry points
 void atalk_printer_register(void);
 
+// Publish (or rename) / withdraw the LaserWriter NBP entity.  The object model
+// drives these through atalk_printer_set_enabled / atalk_printer_set_name.
+int atalk_printer_enable(const char *object_name);
+int atalk_printer_disable(void);
+
 #endif // APPLETALK_INTERNAL_H
