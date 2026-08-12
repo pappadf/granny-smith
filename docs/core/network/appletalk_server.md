@@ -1,9 +1,17 @@
-# 1 Apple Filing Protocol (AFP 2.0)
+# 1 Apple Filing Protocol (AFP 2.0 / 2.1)
 
 ## 1.1 Overview
 
 AFP is the high-level file service protocol used by AppleShare servers and Macintosh-family clients.  
 It runs on **ASP** (AppleTalk Session Protocol), which itself runs on **ATP/DDP/LLAP**.
+
+This document is the wire reference for the server in
+`src/core/network/appletalk_server.c`. §1–§2 describe AFP 2.0 and the six
+AFP 2.1 additions; §3 the object-model surface the server is driven through;
+§4 the on-disk formats it keeps inside each share; §5 the parts deliberately
+left out. AFP 2.0 material is in-house and authoritative; the 2.1 call
+descriptions were transcribed from `local/gs-docs/AFP_21_22` with page and
+figure citations, so this document remains the single coding reference.
 
 Goals:
 
@@ -124,6 +132,12 @@ The first byte of the ASP Command payload is the AFP function opcode:
 | 0x23         | SetFileDirParms |
 | 0x24         | ChangePassword  |
 | 0x25         | GetUserInfo     |
+| 0x26         | GetSrvrMsg      |
+| 0x27         | CreateID        |
+| 0x28         | DeleteID        |
+| 0x29         | ResolveID       |
+| 0x2A         | ExchangeFiles   |
+| 0x2B         | CatSearch       |
 | 0x30         | OpenDT          |
 | 0x31         | CloseDT         |
 | 0x33         | GetIcon         |
@@ -135,6 +149,11 @@ The first byte of the ASP Command payload is the AFP function opcode:
 | 0x39         | FPRemoveComment |
 | 0x3A         | GetComment      |
 | 0xC0         | AddIcon         |
+
+Opcodes `0x26`–`0x2B` are the AFP 2.1 additions (AFP_21_22 single-page.md
+line ~638). They are dispatched only for a session that negotiated
+`AFPVersion 2.1` at `FPLogin`; a 2.0 session gets `CallNotSupported` so the
+client falls back to its 2.0 paths instead of failing outright.
 
 ---
 
@@ -178,6 +197,17 @@ In this stack, AFP result codes are reported in the **ATP UserBytes** field of t
 | -5030   | 0xFFFFEC5A | IconTypeError    |
 | -5031   | 0xFFFFEC59 | VolLocked        |
 | -5032   | 0xFFFFEC58 | ObjectLocked     |
+| -5033   | 0xFFFFEC57 | ContainsSharedErr |
+| -5034   | 0xFFFFEC56 | IDNotFound       |
+| -5035   | 0xFFFFEC55 | IDExists         |
+| -5036   | 0xFFFFEC54 | DiffVolErr       |
+| -5037   | 0xFFFFEC53 | CatalogChanged   |
+| -5038   | 0xFFFFEC52 | SameObjectErr    |
+| -5039   | 0xFFFFEC51 | BadIDErr         |
+
+The last seven are the AFP 2.1 codes (`SysErr.a` lines 606–648;
+AFP_21_22 p. 60). They are only ever returned by the 2.1 calls, so a 2.0
+client never sees a code its error tables do not carry.
 
 ---
 
@@ -717,11 +747,22 @@ At the AFP level, FPGetSrvrInfo has **no parameter bytes** beyond the opcode; th
 
 Bit numbering: bit 0 = least significant.
 
-|  Bit | Name             | Meaning                                  |
-| ---: | ---------------- | ---------------------------------------- |
-|    0 | SupportsCopyFile | 1 if server supports `FPCopyFile`.       |
-|    1 | SupportsChgPwd   | 1 if server supports `FPChangePassword`. |
-| 2-15 | —                | Reserved, must be 0.                     |
+|  Bit | Name                   | Meaning                                       |
+| ---: | ---------------------- | --------------------------------------------- |
+|    0 | SupportsCopyFile       | 1 if server supports `FPCopyFile`.            |
+|    1 | SupportsChgPwd         | 1 if server supports `FPChangePassword`.      |
+|    2 | DontAllowSavePassword  | AFP 2.1. Do not offer to save the password.   |
+|    3 | SupportsServerMessages | AFP 2.1. `FPGetSrvrMsg` is implemented.       |
+| 4-15 | —                      | Reserved, must be 0.                          |
+
+Bits 2 and 3 are the AFP 2.1 additions (AFP_21_22 Table 1-4, Figure 1-4).
+This server sets bit 0 (FPCopyFile is dispatched), bit 2 (there is no password
+worth saving) and bit 3 (FPGetSrvrMsg and the ASP attention that announces a
+message both exist); bit 1 stays clear because `FPChangePassword` correctly
+answers `CallNotSupported`. Unlike the per-volume capability bits, the Flags
+word is read out of band via ASP `GetStatus`, before any version has been
+negotiated, so it cannot be gated on the session's version — which is why only
+bits a 2.0 client already understands or safely ignores are set.
 
 ### Result Codes
 
@@ -816,10 +857,21 @@ Bit 0 is the least-significant bit.
 
 **Volume Attributes bits (bit 0 of bitmap selects this 16-bit field)**
 
-|  Bit | Name     | Meaning                     |
-| ---: | -------- | --------------------------- |
-|    0 | ReadOnly | Volume is locked read-only. |
-| 1-15 | —        | Reserved (must be 0).       |
+|  Bit | Name                        | Meaning                                        |
+| ---: | --------------------------- | ---------------------------------------------- |
+|    0 | ReadOnly                    | Volume is locked read-only.                    |
+|    1 | HasVolumePassword           | AFP 2.1. Always 0 here — guest-only server.    |
+|    2 | SupportsFileIDs             | AFP 2.1. FPCreateID/DeleteID/ResolveID work.   |
+|    3 | SupportsCatSearch           | AFP 2.1. FPCatSearch works.                    |
+|    4 | SupportsBlankAccessPrivileges | AFP 2.2. Always 0 here.                      |
+| 5-15 | —                           | Reserved (must be 0).                          |
+
+Bits 1–4 are AFP 2.1/2.2 additions (AFP_21_22 Table 1-5, Figure 1-5); in
+AFP 2.0 every bit above ReadOnly is "reserved, must be 0". This server
+therefore sets the capability bits **only for a session that negotiated 2.1**.
+Setting them unconditionally is not a harmless overshare: measured against
+System 6's AppleShare 2.0.2, a 2.0 client that sees bit 2 or 3 set mounts the
+volume software-locked, and the Finder greys out New Folder and Duplicate.
 
 ### Reply
 
@@ -2177,3 +2229,501 @@ _The reply doesn't carry any payload_
 
 - If an icon already exists for the triple (FileCreator, FileType, IconType) and the new bitmap has the same size, it is replaced; otherwise error.
 - Requires FPOpenDT.
+
+---
+
+## AFP 2.1 additions
+
+The six calls below were added in AFP 2.1 and are grouped here rather than
+interleaved by opcode, because they share one gate: the server dispatches them
+only for a session that negotiated `AFPVersion 2.1`. Their wire layouts are
+transcribed from `local/gs-docs/AFP_21_22`, with the page and figure cited per
+call.
+
+---
+
+## FPGetSrvrMsg (0x26)
+
+### Summary
+
+Retrieve the server's message string. AFP 2.1 and later
+(AFP_21_22 p. 55, Figure 1-21). The server raises the ASP Attention code
+`0x2000` ("a server message is available") whenever the message is set, so a
+client normally calls this in response to that attention rather than polling.
+
+### Request
+
+|    # | Field     | Type | Size | Description                                     |
+| ---: | :-------- | :--- | :--- | :---------------------------------------------- |
+|    1 | Pad (0)   | byte | 1    | Must be 0.                                      |
+|    2 | MsgType   | int  | 2    | 0 = logon message, 1 = server message.          |
+|    3 | MsgBitmap | int  | 2    | Bit 0 = return the message string. Others: err. |
+
+### Reply
+
+|    # | Field       | Type   | Size | Description                     |
+| ---: | :---------- | :----- | :--- | :------------------------------ |
+|    1 | MsgType     | int    | 2    | Echo of the request.            |
+|    2 | MsgBitmap   | int    | 2    | Echo of the request.            |
+|    3 | SrvrMessage | string | var  | Pascal string, at most Str199.  |
+
+### Result Codes
+
+- **CallNotSupported** – the session negotiated a version earlier than 2.1.
+- **BitmapErr** – the bitmap has unrecognised bits set.
+- **ParamErr** – MsgType is neither 0 nor 1.
+
+### Details
+
+- Both message types are served from the same string; this server keeps one
+  message, settable through `appletalk.afp.message`.
+- An unset message is returned as a zero-length string, which the client
+  displays as nothing at all.
+
+---
+
+## FPCreateID (0x27)
+
+### Summary
+
+Attach a file-ID thread to a file, so the file can afterwards be found by ID
+regardless of its name or location. AFP 2.1 and later (AFP_21_22 p. 42,
+Figure 1-14).
+
+### Request
+
+|    # | Field        | Type   | Size | Description                    |
+| ---: | :----------- | :----- | :--- | :----------------------------- |
+|    1 | Pad (0)      | byte   | 1    | Must be 0.                     |
+|    2 | Volume ID    | int    | 2    | Volume identifier.             |
+|    3 | Directory ID | long   | 4    | Ancestor directory.            |
+|    4 | PathType     | byte   | 1    | 1 = short, 2 = long names.     |
+|    5 | Pathname     | string | var  | The file to give an ID.        |
+
+### Reply
+
+|    # | Field  | Type | Size | Description                |
+| ---: | :----- | :--- | :--- | :------------------------- |
+|    1 | FileID | long | 4    | The file's ID.             |
+
+### Result Codes
+
+- **CallNotSupported** – version earlier than 2.1.
+- **ObjectNotFound** – the target file does not exist.
+- **IDExists** – an ID already exists; it is still returned in the reply.
+- **ObjectTypeErr** – the target is a directory.
+- **ParamErr** – unknown volume identifier, or a bad pathname.
+
+### Details
+
+- This server's file IDs *are* its CNIDs: the value FPCreateID returns is the
+  same one `FPGetFileDirParms` reports as the File Number, which is what the
+  2.1 Q&A (AFP_21_22 p. 25) requires. The call therefore does not allocate an
+  ID so much as record that a thread exists for one.
+- IDs are unique per volume, stable across rename and move, and never reused —
+  see §4.1.
+
+---
+
+## FPDeleteID (0x28)
+
+### Summary
+
+Invalidate every instance of a file ID. AFP 2.1 and later (AFP_21_22 p. 43,
+Figure 1-15).
+
+### Request
+
+|    # | Field     | Type | Size | Description        |
+| ---: | :-------- | :--- | :--- | :----------------- |
+|    1 | Pad (0)   | byte | 1    | Must be 0.         |
+|    2 | Volume ID | int  | 2    | Volume identifier. |
+|    3 | FileID    | long | 4    | ID to invalidate.  |
+
+### Reply
+
+_The reply doesn't carry any payload_
+
+### Result Codes
+
+- **CallNotSupported** – version earlier than 2.1.
+- **IDNotFound** – no thread exists for that ID.
+- **ObjectTypeErr** – the ID names a directory.
+- **ParamErr** – unknown volume identifier.
+
+### Details
+
+- Only the thread is dropped; the file keeps its CNID, so a later FPCreateID
+  on the same file returns the same value.
+
+---
+
+## FPResolveID (0x29)
+
+### Summary
+
+Return parameters for the file a file ID names. AFP 2.1 and later
+(AFP_21_22 p. 59, Figure 1-22).
+
+### Request
+
+|    # | Field     | Type | Size | Description                                |
+| ---: | :-------- | :--- | :--- | :----------------------------------------- |
+|    1 | Pad (0)   | byte | 1    | Must be 0.                                 |
+|    2 | Volume ID | int  | 2    | Volume identifier.                         |
+|    3 | FileID    | long | 4    | The ID to resolve.                         |
+|    4 | Bitmap    | int  | 2    | File Bitmap, as for FPGetFileDirParms.     |
+
+### Reply
+
+|    # | Field  | Type | Size | Description                                        |
+| ---: | :----- | :--- | :--- | :------------------------------------------------- |
+|    1 | Bitmap | int  | 2    | Echo of the request.                               |
+|    2 | Params | var  | var  | Parameters in bitmap order; names packed at the end. |
+
+### Result Codes
+
+- **CallNotSupported** – version earlier than 2.1.
+- **BadIDErr** – the ID is not a defined file ID (no thread, or a directory).
+- **IDNotFound** – the thread is dangling: the file it named is gone.
+- **ParamErr** – unknown volume identifier.
+
+### Details
+
+- Because IDs survive rename and move, resolving one is how an alias finds its
+  target after the user has reorganised the volume.
+
+---
+
+## FPExchangeFiles (0x2A)
+
+### Summary
+
+Swap two files so an application's Save can replace a document's contents
+while every file ID, alias and Finder reference that pointed at it still does.
+AFP 2.1 and later (AFP_21_22 p. 46, Figure 1-16; worked example Figure 1-17).
+
+### Request
+
+|    # | Field        | Type   | Size | Description                          |
+| ---: | :----------- | :----- | :--- | :----------------------------------- |
+|    1 | Pad (0)      | byte   | 1    | Must be 0.                           |
+|    2 | Volume ID    | int    | 2    | Both files live on this volume.      |
+|    3 | SrcDirID     | long   | 4    | Directory holding the source file.   |
+|    4 | DestDirID    | long   | 4    | Directory holding the destination.   |
+|    5 | SrcPathType  | byte   | 1    | 1 = short, 2 = long names.           |
+|    6 | SrcPathName  | string | var  | Source file.                         |
+|    7 | DestPathType | byte   | 1    | 1 = short, 2 = long names.           |
+|    8 | DestPathName | string | var  | Destination file.                    |
+
+### Reply
+
+_The reply doesn't carry any payload_
+
+### Result Codes
+
+- **CallNotSupported** – version earlier than 2.1.
+- **SameObjectErr** – the two pathnames name the same file.
+- **ObjectNotFound** – either file is missing.
+- **ObjectTypeErr** – either object is a directory.
+- **AccessDenied** – the exchange could not be carried out on the host.
+- **ParamErr** – unknown volume identifier, or a bad pathname.
+
+### Details
+
+- Per Figure 1-17, **only the filename, parent directory ID, file ID and
+  creation date are exchanged**; the fork contents, byte-range locks and deny
+  modes stay with the fork reference that owns them.
+- On a path-addressed host filesystem that means the server physically swaps
+  the two data files and their AppleDouble sidecars, leaves each name's
+  catalog entry — and therefore its ID — in place, restores each name's own
+  creation date afterwards, and re-points any open fork at wherever its bytes
+  moved. A `FPRead` on a refnum opened before the exchange therefore still
+  returns the same bytes.
+
+---
+
+## FPCatSearch (0x2B)
+
+### Summary
+
+Search a volume's catalog for objects matching a set of criteria, returning
+them a page at a time. AFP 2.1 and later (AFP_21_22 p. 36, Figure 1-9).
+
+### Request
+
+|    # | Field          | Type | Size | Description                                            |
+| ---: | :------------- | :--- | :--- | :----------------------------------------------------- |
+|    1 | Pad (0)        | byte | 1    | Must be 0.                                             |
+|    2 | Volume ID      | int  | 2    | Volume to search.                                      |
+|    3 | ReqMatches     | long | 4    | Maximum matches to return in this reply.               |
+|    4 | Reserved       | long | 4    | Must be 0.                                             |
+|    5 | CatPosition    | —    | 16   | Search cursor; a zero first word starts from the root. |
+|    6 | FileRsltBitmap | int  | 2    | File parameters to return (0 = do not search files).   |
+|    7 | DirRsltBitmap  | int  | 2    | Directory parameters (0 = do not search directories).  |
+|    8 | RequestBitmap  | long | 4    | Which fields to match on; bit 31 = partial name match. |
+|    9 | Specification1 | —    | var  | Values and range lower bounds.                         |
+|   10 | Specification2 | —    | var  | Masks and range upper bounds.                          |
+
+Each specification is a length byte, a filler byte, then the selected fields
+packed in bitmap order; variable-length values (names) sit at the end and are
+addressed by a 16-bit offset measured from the first parameter byte.
+
+### Reply
+
+|    # | Field          | Type | Size | Description                                    |
+| ---: | :------------- | :--- | :--- | :--------------------------------------------- |
+|    1 | CatPosition    | —    | 16   | Cursor to pass to the next call.               |
+|    2 | FileRsltBitmap | int  | 2    | Echo of the request.                           |
+|    3 | DirRsltBitmap  | int  | 2    | Echo of the request.                           |
+|    4 | ActualCount    | long | 4    | Matches in this reply.                         |
+|    5 | Results        | var  | var  | Match records, framed exactly as FPEnumerate's. |
+
+### Result Codes
+
+- **CallNotSupported** – version earlier than 2.1.
+- **EOFErr** – the end of the volume's tree was reached. This is the normal
+  terminating result, not a failure: a client keeps calling until it sees it.
+- **CatalogChanged** – the catalog's generation moved since the CatPosition
+  was issued. The client must restart with a zeroed CatPosition.
+- **BitmapErr** – both result bitmaps are zero, no criteria were given, a
+  criterion this server cannot search on was requested, or an attribute search
+  was combined with searching files *and* directories (AFP_21_22 p. 42).
+- **ParamErr** – unknown volume identifier, or a malformed specification.
+
+### Details
+
+- Searchable criteria are the fields FPGetFileDirParms serves from the catalog
+  or the sidecar: Attributes (masked), Parent Directory ID, the three dates
+  (as ranges), Finder Info (masked), Long Name (full or partial), and the
+  data-fork length / offspring count and resource-fork length (as ranges).
+- The cursor is `{valid word, generation, last CNID}`: the walk is in
+  ascending CNID order, so resuming means "continue after this ID", and a
+  generation change (a compaction or a tombstone sweep — §3.1) invalidates it.
+- A search that starts fresh first reconciles the catalog against the host
+  tree, so files deleted behind the server's back cannot surface as matches.
+
+---
+
+# 3 Object-model surface
+
+Everything the server holds is reachable — and, where it is state rather than
+an operation, settable — through the object tree
+(proposal-appletalk-afp-object-model.md §2):
+
+```
+appletalk                        the stack itself
+  enabled          rw  bool      attach/detach from the SCC link (default true)
+  node_id          ro  uint      current LLAP node ID (0 while detached)
+  stats            ro  child     llap_rx/tx, crc_errors, ddp_in/out,
+                                 atp_requests/retries, nbp_lookups
+  nbp              ro  collection every advertised entity: object / type /
+                                 zone / socket / node; `nbp["name"]` resolves
+  afp                            the file server
+    enabled        rw  bool      serve + advertise (default true)
+    name           rw  string    NBP object name; the setter re-registers
+    message        rw  string    FPGetSrvrMsg text; setting it raises the
+                                 "server message available" attention
+    versions       ro  list      the AFP versions actually implemented
+    volumes                      collection; `volumes["name"]` resolves
+      add(name, path) -> object  returns the volume it created
+      remove(name)
+      [i].name / .path / .vol_id            ro
+      [i].open_forks / .sessions_using      ro  live usage
+      [i].catalog_generation / .cnid_count  ro  §3.1
+      [i].remove()
+    sessions       ro  collection session_ref, client_node, afp_version,
+                                 open_forks, idle_ns
+    stats          ro  child     commands_served, bytes_read, bytes_written,
+                                 errors, open_forks, errors_by_code (a map
+                                 keyed by result code)
+  printer
+    enabled        rw  bool
+    name           rw  string    NBP entity name; the setter re-registers
+```
+
+Two conventions worth stating, because tests depend on them:
+
+- **Constructive methods return the object they made**, so
+  `appletalk.afp.volumes.add("Shared", "/opfs/shared").vol_id` is one
+  statement rather than an add followed by a search of the collection.
+- **Failures carry their reason.** `volumes.add` reports "volume name max 32
+  chars", "path '…' is not a directory", "volume table full" and so on as the
+  error value itself; nothing is hidden behind "failed (see log)".
+
+The default volume is configuration, not server code: the platform layer
+creates its directory and issues the ordinary `volumes.add` after each machine
+is built — `/opfs/shared` under wasm, `--shared-dir` (or `$GS_SHARED_DIR`) on
+the headless build. No path literal lives in `src/core`.
+
+---
+
+# 4 Persistence formats
+
+Everything a real AppleShare server keeps in its own catalog, this server
+keeps on the host filesystem, inside the share it is publishing. Two kinds of
+state, two homes:
+
+- **Per-file truth** — resource fork, Finder Info, the create/modify/backup
+  dates, the locked and inhibit bits, and the Finder comment — lives in the
+  file's AppleDouble sidecar (§4.4). It moves and copies with the file, and it
+  interoperates with the shell's `cp`, with macOS and with Netatalk.
+- **Volume-scoped truth** with no per-file home lives in a control directory
+  the server owns:
+
+```
+<share root>/
+  .gs-afp/                     control directory, invisible to AFP clients
+    catalog.gsc                CNID catalog (§4.1)
+    desktop.icons              desktop-database icon store (§4.2)
+    desktop.appl               desktop-database APPL mappings (§4.3)
+    volume                     volume record: the backup date (§4.5)
+  <dir>/._<name>               AppleDouble sidecars (§4.4)
+  <dir>/<name>                 plain data forks, unchanged
+```
+
+`.gs-afp` and every `._*` sidecar are filtered out of FPEnumerate and of the
+offspring count, and a client pathname that names either is rejected with
+`ParamErr` before it can resolve.
+
+## 4.1 catalog.gsc — the CNID catalog
+
+AFP requires catalog node IDs that are unique per volume, stable across
+rename, move and server restart, never reused, and defined for files as well
+as directories (AFP_21_22 p. 25 Q&A). The catalog is the volume's identity
+map; each entry is `(cnid, parent cnid, leaf name, is_dir, has file-ID
+thread)`, so a directory rename keeps every descendant's ID for free and a
+relative path is a walk of the parent chain.
+
+Big-endian throughout:
+
+```
+header:  'GSC1' | u32 generation | u32 next_cnid
+record:  u8 op | u32 cnid | u32 parent | u8 is_dir | pstr name | u32 crc32
+```
+
+| op | Meaning                                            |
+| -: | :------------------------------------------------- |
+|  1 | ADD — a new entry                                  |
+|  2 | RENAME — same parent, new leaf name                |
+|  3 | MOVE — new parent, and possibly a new leaf name    |
+|  4 | DELETE — tombstone; the CNID is never handed out again |
+|  5 | SET_ID — an FPCreateID thread now exists           |
+|  6 | CLR_ID — FPDeleteID dropped the thread             |
+
+- The root is always CNID 2 with parent 1; allocation starts at 17, because
+  HFS reserves everything below 16 and clients expect that.
+- Every mutation appends and flushes, so a crash loses at most the record in
+  flight. A record whose CRC does not match ends the replay: the log is
+  self-truncating rather than corrupt.
+- **Lazy adoption**: anything the server touches — an FPEnumerate, an
+  FPGetFileDirParms, an FPOpenFork — that has no entry gets one. Files that
+  appear behind the server's back (the shell's `cp`, the host, a restored
+  page) therefore acquire stable IDs on first use, and a file renamed
+  *outside* AFP is correctly a new object.
+- The log is rewritten as pure ADDs once it exceeds four times its live-entry
+  footprint, and at volume close. Compaction and any tombstone sweep bump
+  `generation`, which is what invalidates an FPCatSearch cursor and a live
+  FPEnumerate snapshot.
+- An unreadable log is not fatal: the catalog starts empty with the generation
+  bumped, and rebuilds by adoption. Aliases break; files do not.
+
+## 4.2 desktop.icons — the icon store
+
+An append-log of icon records, `'GSI1'` magic followed by:
+
+```
+record:  u8 op | u32 creator | u32 file_type | u8 icon_type | u32 tag
+         | u16 size | bitmap[size]
+```
+
+`op` is 1 (put) or 2 (delete). Records are replayed in order, so the last put
+for a `(creator, type, icon type)` triple wins; the store is compacted at
+close once it holds more than four times its live records. The 1 KB per-record
+ceiling is `kLarge8BitIcon`, the largest icon AFP defines (`Files.p`).
+
+## 4.3 desktop.appl — the APPL mappings
+
+An append-log with `'GSA1'` magic:
+
+```
+record:  u8 op | u32 creator | u32 cnid | u32 tag
+```
+
+Mappings are keyed by the application's **CNID**, not its path, so renaming an
+application through AFP does not orphan its mapping. A delete record with a
+zero CNID removes every mapping for that creator. `FPGetAPPL` resolves the
+CNID through the catalog at call time and reports `ItemNotFound` when the
+application has since gone away.
+
+## 4.4 The AppleDouble sidecar entry map
+
+`._<name>` is an AppleDouble v2 header file (`src/core/storage/appledouble.h`).
+Metadata entries are written first and the fork last, so the server can read
+any file's metadata without touching a fork that may be megabytes long.
+
+| Entry | ID | Carries                                  | Written by                     | Read by                              |
+| :---- | -: | :--------------------------------------- | :----------------------------- | :----------------------------------- |
+| Comment | 4 | Finder comment (Str199)                  | FPAddComment                   | FPGetComment                         |
+| Dates | 8 | create/modify/backup/access, signed seconds from 2000-01-01 GMT | FPSet\*Parms bits 2–4, FPCreateFile | FPGet\*Parms bits 2/4                |
+| Finder Info | 9 | 16 B FInfo + 16 B FXInfo              | FPSet\*Parms bit 5; `cp` copy-out | FPGet\*Parms bit 5; FPEnumerate      |
+| Macintosh info | 10 | AFP attribute word (locked / inhibit bits) | FPSet\*Parms bit 0          | attribute bits and the mutation guards |
+| Resource fork | 2 | the fork itself                        | fork flush/close; `cp` copy-out | FPOpenFork(resource); image copy-in  |
+
+Notes:
+
+- AFP timestamps count seconds from 1904-01-01 (§1.7) while AppleDouble counts
+  signed seconds from 2000-01-01; the conversion is one constant, and the AFP
+  "never" sentinel `0x80000000` maps to AppleDouble's `INT32_MIN`.
+- Entry 10's leading two bytes hold the AFP attribute word this server
+  persists; its trailing byte keeps the classic "protected" flag so foreign
+  readers see something sensible.
+- The **modification** date is not stored here: the host file's `st_mtime` is
+  authoritative, and `FPSetFileParms` writes a new modification date through to
+  the host so the two never disagree.
+- A file with no metadata and no resource fork has **no sidecar at all**; one
+  is created on the first metadata write and removed again when the last piece
+  of metadata goes away, so plain data files stay clean single streams.
+
+## 4.5 volume — the volume record
+
+An eight-byte file: `'GSV1'` magic plus the volume's backup date as an AFP
+timestamp. It exists because the backup date is the one volume parameter
+`FPSetVolParms` may set and the only one with no per-file home.
+
+## 4.6 What is deliberately not persisted
+
+ASP sessions, open forks, byte-range locks, desktop-database refnums and
+FPEnumerate snapshots are client-session state: reconstructible, and
+meaningless once the transport that owned them is gone. A checkpoint therefore
+records the stack's durable state (enablement, counters, session numbering)
+and drops the rest on restore; the backing bytes are already on disk, and a
+restored machine's clients re-open what they need.
+
+---
+
+# 5 Deferred: authentication and access control
+
+The server is guest-only by design, and says so consistently: `FPGetSrvrInfo`
+advertises the single UAM "No User Authent", `FPLogin` accepts only that UAM,
+`FPLoginCont` is unreachable, `FPChangePassword` returns `CallNotSupported`,
+`FPGetUserInfo` reports user and group 0, and `FPMapID` / `FPMapName` answer
+with a fixed "guest" / "staff" pair. Directory access rights are the constant
+`0x07070707` — full Search/Read/Write in all four right bytes — which is what
+makes a guest mount writable.
+
+The extension points, should that stance ever change:
+
+- **UAM dispatch** belongs in `afp_cmd_login`, which already parses the UAM
+  string and would branch to a per-UAM handler; `FPLoginCont` becomes the
+  continuation for the multi-step Randnum exchanges, returning `AuthContinue`.
+- **A user database** replaces the fixed answers in `afp_cmd_map_id` /
+  `afp_cmd_map_name` / `afp_cmd_get_user_info`, and gives each session an
+  identity that `afp_ctx_t` would carry alongside its session reference.
+- **Per-directory rights** replace `AFP_ACCESS_RIGHTS_ALL` in
+  `afp_populate_param_area`, and would want a per-directory record in the
+  `.gs-afp` control directory plus enforcement in the mutation paths that
+  today only consult the locked/inhibit bits.
+- **Volume passwords** would set the `HasPassword` bit in the FPGetSrvrParms
+  volume flags and the `HasVolumePassword` bit in the Volume Attributes word,
+  both of which are currently always clear.

@@ -213,7 +213,8 @@ simulated network are its siblings at the root:
   `machine.hd` (ProFile) and `machine.power`.)
 - **meta services** (siblings of `machine`): `scheduler`, `debug` (+ `.mac`),
   `storage`, `vfs`, `checkpoint`, `archive`, `find`, `shell`.
-- **network**: `appletalk` (+ `shares`, `printer`).
+- **network**: `appletalk` (+ `stats`, `nbp`, `afp` with its `volumes` /
+  `sessions` / `stats` subtrees, and `printer`).
 - **root verbs**: `objects`, `attributes`, `methods`, `help`, `echo`,
   `download`, `quit`, `assert`, `time`.
 

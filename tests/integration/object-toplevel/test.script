@@ -1,46 +1,102 @@
-# M8 integration: appletalk + mouse top-level objects.
-# Both are exercised through the new tree paths and through the legacy
-# command shims to verify they share state.
+# M8 integration: the appletalk + mouse top-level objects.
+#
+# Exercises the AppleTalk/AFP object surface described in
+# proposal-appletalk-afp-object-model.md §2: stack enablement and node ID,
+# the AFP server node (enabled / name / message / versions), the volumes
+# collection (constructive add, name lookup, per-entry observability), the
+# NBP registry view, and the printer's attribute pair.
 
 scheduler.run 50000
 
 # Tree shape.
 appletalk
-appletalk.shares
+appletalk.stats
+appletalk.nbp
+appletalk.afp
+appletalk.afp.volumes
+appletalk.afp.sessions
+appletalk.afp.stats
 appletalk.printer
 machine.adb.mouse
 
-# Initially the shares table is empty. The printer is auto-enabled at
-# register time (atalk_printer_register → atalk_printer_enable(NULL))
-# so enabled starts true with the default object name.
-assert appletalk.printer.enabled == true
-appletalk.printer.name
+# The stack is attached to the link out of the box, so it has a node ID.
+assert appletalk.enabled == true "stack should start enabled"
+assert appletalk.node_id == 33 "host LLAP node is fixed at 33"
 
-# Add a share via the new method, observe it via the legacy command.
-# Use /tmp because atalk_share_add stat()s the directory; /tmp exists
-# both in the dev container (/workspaces/granny-smith) and in CI
-# (/__w/granny-smith/granny-smith) so the path is portable.
-echo "${appletalk.shares.add("docs", "/tmp")}"
-appletalk.shares
-assert appletalk.shares[0].name == "docs"
-assert appletalk.shares[0].path == "/tmp"
-appletalk.shares[0].vol_id
+# The AFP server is on and advertising under its default name.
+assert appletalk.afp.enabled == true "AFP server should start enabled"
+assert appletalk.afp.name == "Shared Folders" "default NBP object name"
+assert appletalk.afp.message == "" "no server message by default"
+appletalk.afp.versions
 
-# Add via the legacy command, observe via the new tree.
-appletalk.shares.add demo /tmp
-assert appletalk.shares[1].name == "demo"
+# The NBP registry lists what the server and printer published. Name lookup
+# resolves an entity without knowing its slot.
+assert appletalk.nbp["Shared Folders"].type == "AFPServer" "AFP entity type"
+assert appletalk.nbp["Shared Folders"].socket == 8 "AFP entity socket"
 
-# Remove via the new tree's per-entry method, verify legacy list reflects it.
-echo "${appletalk.shares[0].remove()}"
-appletalk.shares
+# Constructive methods return the object they made, so the volume's own
+# attributes are reachable straight off the call.
+assert appletalk.afp.volumes.add("docs", "/tmp").name == "docs" "add returns the volume"
+appletalk.afp.volumes
+assert appletalk.afp.volumes[0].path == "/tmp" "volume path"
+assert appletalk.afp.volumes[0].vol_id > 0 "volume id is assigned"
+assert appletalk.afp.volumes[0].open_forks == 0 "a fresh volume has no open forks"
+assert appletalk.afp.volumes[0].sessions_using == 0 "no session has it open"
 
-# Printer enable/disable via the new methods, assert state through the
-# new tree's enabled attr after each transition.
-echo "${appletalk.printer.enable("Test LaserWriter")}"
-assert appletalk.printer.enabled == true
-assert appletalk.printer.name == "Test LaserWriter"
-echo "${appletalk.printer.disable()}"
-assert appletalk.printer.enabled == false
+# The CNID catalog is live from the moment the volume exists: the root always
+# counts as one entry, and the generation is non-zero.
+assert appletalk.afp.volumes[0].cnid_count >= 1 "the catalog holds at least the root"
+assert appletalk.afp.volumes[0].catalog_generation > 0 "catalog generation is set"
+
+# Name lookup on the collection.
+assert appletalk.afp.volumes["docs"].vol_id == appletalk.afp.volumes[0].vol_id "lookup by name"
+
+# Errors come back in-band with the real reason, not "failed (see log)".
+echo "${try(appletalk.afp.volumes.add("docs", "/tmp"), "dup rejected")}"
+echo "${try(appletalk.afp.volumes.add("nope", "/definitely/not/here"), "bad path rejected")}"
+
+# A second volume, then removal through the per-entry method and the
+# collection method.
+appletalk.afp.volumes.add "demo" /tmp
+assert appletalk.afp.volumes[1].name == "demo" "second volume"
+echo "${appletalk.afp.volumes[0].remove()}"
+echo "${appletalk.afp.volumes.remove("demo")}"
+appletalk.afp.volumes
+
+# Server identity is writable; the setter re-registers the NBP entry.
+appletalk.afp.name = "Test Server"
+assert appletalk.afp.name == "Test Server" "server rename"
+assert appletalk.nbp["Test Server"].type == "AFPServer" "NBP entry followed the rename"
+
+# The server message is what FPGetSrvrMsg serves.
+appletalk.afp.message = "Back at 5pm"
+assert appletalk.afp.message == "Back at 5pm" "server message round-trips"
+
+# Disabling the server withdraws the advertisement; re-enabling restores it.
+appletalk.afp.enabled = false
+assert appletalk.afp.enabled == false "server disabled"
+assert try(appletalk.nbp["Test Server"].type, "withdrawn") == "withdrawn" "NBP entry withdrawn"
+appletalk.afp.enabled = true
+assert appletalk.nbp["Test Server"].type == "AFPServer" "NBP entry re-published"
+
+# Stats start at zero on a machine no client has talked to.
+assert appletalk.afp.stats.commands_served == 0 "no AFP commands yet"
+assert appletalk.afp.stats.open_forks == 0 "no forks open"
+appletalk.afp.stats.errors_by_code
+
+# The printer is auto-enabled at register time; `enabled` and `name` are
+# attributes now, not enable()/disable() verbs.
+assert appletalk.printer.enabled == true "printer starts enabled"
+appletalk.printer.name = "Test LaserWriter"
+assert appletalk.printer.name == "Test LaserWriter" "printer rename"
+appletalk.printer.enabled = false
+assert appletalk.printer.enabled == false "printer disabled"
+
+# Taking the stack off the link zeroes the node ID.
+appletalk.enabled = false
+assert appletalk.node_id == 0 "detached stack has no node ID"
+appletalk.enabled = true
+assert appletalk.node_id == 33 "node ID returns on re-attach"
 
 # Mouse methods. Plus is a non-ADB machine with no MAE, so move()
 # falls through to the global write path via set_mouse_default.

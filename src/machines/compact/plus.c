@@ -207,8 +207,10 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // SCC PCLK = C8M (7.8336 MHz = CPU clock), RTxC = 3.6864 MHz
     scc_set_clocks(cfg->scc, 7833600, 3686400);
 
-    // Initialise AppleTalk with scheduler and SCC dependencies (registers shell commands)
-    appletalk_init(cfg->scheduler, cfg->scc, NULL);
+    // Initialise AppleTalk with scheduler and SCC dependencies.  Passing the
+    // checkpoint restores the stack's durable state (enablement, counters,
+    // session numbering) in the same order plus_checkpoint_save writes it.
+    appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
 
     ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
     cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
@@ -367,6 +369,7 @@ static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
 
     plus_state_t *ps = plus_state(cfg);
     sound_checkpoint(ps ? ps->sound : NULL, cp);

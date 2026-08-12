@@ -1,0 +1,196 @@
+# AFP end-to-end fork fidelity (proposal-afp-server-completeness.md §7.3).
+#
+# One script that walks the whole chain and pins every protocol-visible stage:
+#
+#   1. Host side, no guest yet: copy a resource-bearing file out of the System
+#      6 HFS image into the share. `cp` materialises the data fork plus an
+#      AppleDouble "._<name>" sidecar carrying the resource fork and Finder
+#      Info — the same on-disk shape the AFP server reads and writes.
+#   2. Publish the share and mount it from the guest through the Chooser.
+#   3. Open the volume window: TestApp is drawn with the *application* icon,
+#      which it can only be if its Finder Info reached the guest through
+#      FPEnumerate — and the volume is not software-locked, which it would be
+#      if the capability bits we advertise were wrong for the negotiated
+#      version.
+#   4. Launch TestApp. The Segment Loader opens the resource fork over AFP,
+#      reads its CODE resources and jumps into them; the app paints a known
+#      pattern over the screen. Nothing about that works unless the resource
+#      fork is byte-for-byte usable across the whole chain.
+#   5. Reverse direction: the guest duplicates the file on the server volume,
+#      exercising the server's copy path, and the host checks the resulting
+#      AppleDouble pair.
+#   6. Launch the *duplicate*. A round trip that lost a byte of the resource
+#      fork produces a file that will not run — a stronger statement than
+#      comparing bytes, and the reason this is the last stage: the test app
+#      parks the guest deliberately.
+#
+# Budgets are instruction-exact and the wall clock is pinned, so every match
+# is bitwise. Mouse coordinates are Mac global (512x342).
+
+include "../lib/mac.script"
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+# --- Stage 1: stage a fork-bearing file into the share (host side) ----------
+#
+# `Key Layout` is a System 6 control-panel device whose content lives entirely
+# in its resource fork — exactly what has to survive the copy-out.
+storage.cp "../../data/systems/system_6_0_8_20mb_8_24gc.img/partition1/System Folder/Key Layout" "${$WORK_DIR}/share/Key Layout"
+assert storage.path_exists("${$WORK_DIR}/share/Key Layout") "cp did not produce the data fork"
+assert storage.path_exists("${$WORK_DIR}/share/._Key Layout") "cp did not produce the AppleDouble sidecar"
+assert storage.path_size("${$WORK_DIR}/share/._Key Layout") > 1000 "the sidecar carries no resource fork"
+
+# A second copy-out must be byte-identical: the sidecar is a pure function of
+# the source's forks, with nothing environment-dependent baked in.
+storage.cp "../../data/systems/system_6_0_8_20mb_8_24gc.img/partition1/System Folder/Key Layout" "${$WORK_DIR}/again/Key Layout"
+assert storage.path_compare("${$WORK_DIR}/share/._Key Layout", "${$WORK_DIR}/again/._Key Layout") == -1 "copy-out is not deterministic"
+
+# The fixture app the setup step built is an AppleDouble pair too.
+assert storage.path_exists("${$WORK_DIR}/share/TestApp") "TestApp fixture missing"
+assert storage.path_exists("${$WORK_DIR}/share/._TestApp") "TestApp resource fork missing"
+
+# --- Stage 2: publish the share and mount it from the guest -----------------
+
+scheduler.run 30000000
+
+assert appletalk.afp.volumes.add("My Volume", "${$WORK_DIR}/share").name == "My Volume" "share not registered"
+assert appletalk.afp.volumes["My Volume"].cnid_count == 1 "a fresh catalog holds only the root"
+
+# Apple menu -> Chooser.
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 123
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# AppleShare -> "requires AppleTalk" -> OK.
+machine.adb.mouse.move 95 90
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+machine.adb.mouse.move 190 206
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Select the server, OK; then Guest -> OK.
+machine.adb.mouse.move 280 88
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 6000000
+machine.adb.mouse.move 333 178
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.adb.mouse.move 392 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# Select the volume, OK, close the Chooser.
+machine.adb.mouse.move 150 113
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 8000000
+machine.adb.mouse.move 333 259
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+machine.adb.mouse.move 72 47
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+check("e2e-mounted.png")
+
+assert appletalk.afp.sessions[0].afp_version == "AFPVersion 2.0" "System 6 negotiates AFP 2.0"
+assert appletalk.afp.volumes["My Volume"].sessions_using == 1 "the mount is not counted on the volume"
+
+# --- Stage 3: Finder Info fidelity ------------------------------------------
+
+machine.adb.mouse.move 468 108
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 60000000
+# The info bar carries the host filesystem's free space, which is not ours to
+# pin; the listing is.
+check_ex("e2e-volume-window.png", 58, 140, 80, 420)
+
+# Listing the volume adopted both staged files into the catalog.
+assert appletalk.afp.volumes["My Volume"].cnid_count == 3 "the staged files were not adopted"
+
+# --- Stage 4: reverse direction — duplicate on the server volume ------------
+#
+# Select TestApp, then File -> Duplicate. The server does the copy, forks and
+# metadata included.
+machine.adb.mouse.move 105 105
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 10000000
+machine.adb.mouse.move 47 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 60 139
+scheduler.run 6000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+check_ex("e2e-duplicated.png", 58, 140, 80, 420)
+
+# The copy is an AppleDouble pair of exactly the same shape as the original.
+assert storage.path_exists("${$WORK_DIR}/share/Copy of TestApp") "the duplicate has no data fork"
+assert storage.path_exists("${$WORK_DIR}/share/._Copy of TestApp") "the duplicate lost its resource fork"
+# Compared against the original as it stands *now*: the guest's own Get Info
+# traffic has since given the original a dates entry, so the size to match is
+# the live one, not the one the fixture shipped with.
+assert storage.path_size("${$WORK_DIR}/share/._Copy of TestApp") == storage.path_size("${$WORK_DIR}/share/._TestApp") "the duplicate's sidecar is a different size"
+
+# ...and it is a new catalog object with its own CNID.
+assert appletalk.afp.volumes["My Volume"].cnid_count == 4 "the duplicate was not catalogued"
+assert appletalk.afp.stats.commands_served > 30 "the duplicate served no AFP commands"
+
+# --- Stage 5: run the round-tripped binary ----------------------------------
+#
+# Launching the *copy* is the fork-fidelity assertion: the Segment Loader will
+# only find a usable jump table and CODE segment if every byte survived the
+# server's copy path, the AppleDouble codec and the fork store. The app paints
+# its pattern and parks, so this is the last stage.
+machine.adb.mouse.move 147 118
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000000
+check("e2e-app-running.png")
+
+quit

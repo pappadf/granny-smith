@@ -354,6 +354,12 @@ value_t node_bind_args(node_t n, int pos_argc, const value_t *pos_argv, int name
 // Single-segment descent. Used by the resolver and by the completer.
 node_t node_child(node_t n, const char *segment);
 
+// Name-key descent into an indexed collection: `volumes["Shared"]`. Routed to
+// the child member's `lookup` callback, which maps a stable name onto whatever
+// slot currently holds it. Returns an invalid node when the collection has no
+// lookup callback or the name is unknown.
+node_t node_child_key(node_t n, const char *key);
+
 // === Reserved-word check =====================================================
 
 // Reserved words may not be used as member names, alias names, or any
