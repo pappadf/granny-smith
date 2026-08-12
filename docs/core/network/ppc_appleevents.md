@@ -463,6 +463,48 @@ captured from the guest.
   variant of the session layer), alias-record construction, and any host-side
   AppleScript/OSA runtime.
 
+### 7.1 What has been verified against a real guest
+
+`tests/integration/appletalk-ppc` drives System 7.1 on a Plus with program
+linking switched on, and proves the following against the guest's own
+`.MPP`/`.DSP` drivers and PPC Toolbox — not against a second copy of
+ourselves:
+
+| Layer | Evidence |
+| ----- | -------- |
+| NBP discovery (§3) | the guest answers `=:PPCToolBox@*` under its Sharing Setup name |
+| ADSP open dialog, data, acknowledgment, close (appletalk.md §3) | a full connection to the guest's listener, repeatable |
+| List-ports browse (§4.6) | returns the Finder's port, typed `MACSep01` — independently confirming the `<signature>ep01` convention of §2.1 |
+| Session request and accept with a guest user name (§4.3, §4.4) | the guest returns `SAPT` and the session goes to data transfer |
+| Message-block framing (§4.7) and the high-level event header (§5.1) | the guest acknowledges the complete message at the ADSP level |
+
+### 7.2 Known gaps
+
+**No reply has yet been observed from a guest application.** An `aevt/oapp`
+sent to the System 7.1 Finder is delivered and acknowledged, but nothing
+comes back, so the event times out. Two explanations are consistent with what
+we have seen, and they have not been separated:
+
+1. System 7.1's Finder is not scriptable, and its required-suite handlers may
+   simply not answer an event that arrives over program linking.
+2. Something in the AETF payload (§5.2) is not what the receiving Apple Event
+   Manager expects, so the event is discarded before a handler ever runs.
+
+The next step is the capture the original proposal recommended: get a guest
+application to send *us* an event — a System 7.5 image with Script Editor is
+the obvious vehicle — and diff its bytes against what we produce. Our inbox
+(§8) already decodes and records whatever arrives, so the capture costs
+nothing beyond the guest asset. Until that is done, treat §5.2's framing as
+documented-but-unconfirmed on the send path; §5.2's *decode* path is covered
+by goldens in `tests/unit/suites/aevt`.
+
+**Only the Plus has the AppleTalk stack.** `appletalk_init` is called from
+`src/machines/compact/plus.c` and nowhere else, so program linking is
+reachable only on that machine today. The System 7.1 image boots there
+happily, which is what the integration test uses, but the 7.5/7.6 images —
+and the Scriptable Finder that makes this feature worth having — want a
+machine that has both AppleTalk and enough hardware to run them.
+
 ## 8. Object-model surface
 
 ```
@@ -487,10 +529,13 @@ appletalk
 script owns the scheduler. The idiom is
 
 ```
-let e = appletalk.aevt.send("Finder", "core/getd{'----':obj{…}}")
+let e = appletalk.aevt.send("Finder", "core/getd{'----':obj{…}}", tag="version")
 while $e.state == "sent" { scheduler.run 2000000 }
 assert $e.errn == 0
 ```
+
+Named arguments use the shell's `name=value` form — `timeout=`, `tag=`,
+`mode=` — not the `name:` spelling the original proposal sketched.
 
 Event objects are append-only for the life of the run, so the `V_OBJECT` a
 `send` returns stays valid in a `let` binding. A checkpoint restore drops

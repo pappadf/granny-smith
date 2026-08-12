@@ -1260,6 +1260,17 @@ static value_t ppc_sessions_attr_count(struct object *self, const member_t *m) {
     (void)m;
     return val_uint(4, (uint64_t)ppc_sessions_count_cb(self));
 }
+// Name lookup by the port at the far end, so `sessions["Finder"].state` reads
+// naturally in a script.
+static struct object *ppc_sessions_lookup(struct object *self, const char *name) {
+    (void)self;
+    for (int i = 0; i < PPC_MAX_SESSIONS; i++) {
+        const ppc_session_t *s = atalk_ppc_session_at(i);
+        if (s && !strcmp(s->port_name, name))
+            return g_ppc_session_objs[i];
+    }
+    return NULL;
+}
 
 static const member_t ppc_sessions_members[] = {
     {.kind = M_ATTR,
@@ -1273,7 +1284,8 @@ static const member_t ppc_sessions_members[] = {
                .indexed = true,
                .get = ppc_sessions_get,
                .count = ppc_sessions_count_cb,
-               .next = ppc_sessions_next}},
+               .next = ppc_sessions_next,
+               .lookup = ppc_sessions_lookup}},
 };
 
 const class_desc_t ppc_sessions_class = {
