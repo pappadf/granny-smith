@@ -1,0 +1,376 @@
+# Apple events, inbound — a guest application links to our host port and
+# sends us an event, which we decode and answer (WP-7, and the second half of
+# WP-3's acceptance).
+#
+# Every other test in this suite drives the guest.  This one is the other
+# direction: System 7.5's Script Editor is pointed at the port we advertise,
+# and what we assert on is the event *it* sends *us*, decoded out of the
+# object model, plus the fact that our reply reached it.
+#
+# The event that arrives is ascr/gdte — "get AETE".  AppleScript asks a port
+# for its event dictionary before it will compile a tell block, so simply
+# compiling a remote tell is enough to make the guest talk to us, and it
+# arrives with real attributes attached.  We publish no terminology, so the
+# guest ends up reporting that it cannot get the dictionary; that dialog is
+# the visible proof our reply arrived.
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+# --- 1. Boot ---------------------------------------------------------------
+
+scheduler.run 250000000
+
+assert appletalk.aevt.enabled "the Apple event endpoint is not enabled"
+assert appletalk.nbp["gs-host"].type == "PPCToolBox" "the host port is not advertised"
+assert appletalk.ppc.ports.count == 0 "ports were discovered before any browse"
+
+# --- 2. Turn program linking on --------------------------------------------
+
+# Apple menu -> Control Panels.  The submenu is longer than the screen; park
+# on its scroll arrow until it bottoms out, which makes the item positions
+# below deterministic (they are measured from the fully-scrolled list).
+machine.adb.mouse.move 300 300 "global"
+scheduler.run 2000000
+machine.adb.mouse.move 15 8 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 90 132 "global"
+scheduler.run 12000000
+machine.adb.mouse.move 222 458 "global"
+scheduler.run 40000000
+
+# Sharing Setup.
+machine.adb.mouse.move 260 331 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+
+# Owner Name "gs" — program linking refuses to start without one.
+machine.adb.mouse.move 370 96 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 5000000
+machine.adb.keyboard.press 0x05
+scheduler.run 1500000
+machine.adb.keyboard.press 0x01
+scheduler.run 3000000
+
+# Macintosh Name "gs75" — this becomes the guest's NBP object name.
+machine.adb.mouse.move 370 135 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 5000000
+machine.adb.keyboard.press 0x05
+scheduler.run 1500000
+machine.adb.keyboard.press 0x01
+scheduler.run 1500000
+machine.adb.keyboard.press 0x1A
+scheduler.run 1500000
+machine.adb.keyboard.press 0x17
+scheduler.run 5000000
+
+# Program Linking -> Start, then close the panel.
+machine.adb.mouse.move 211 288 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 80000000
+machine.adb.mouse.move 148 42 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 30000000
+
+# Users & Groups -> <Guest> -> allow guests to link.
+machine.adb.mouse.move 15 8 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 90 132 "global"
+scheduler.run 12000000
+machine.adb.mouse.move 222 458 "global"
+scheduler.run 40000000
+machine.adb.mouse.move 260 427 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+
+machine.adb.mouse.move 105 105 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 70000000
+
+machine.adb.mouse.move 253 190 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 20000000
+machine.adb.mouse.move 213 70 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.adb.mouse.move 463 175 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 50000000
+
+# --- 3. Launch Script Editor -----------------------------------------------
+
+# Macintosh HD -> Apple Extras -> AppleScript -> Script Editor.  Script
+# Editor is the only thing on this image that can *originate* an Apple
+# event aimed at another machine, which is what this test needs.
+machine.adb.mouse.move 604 60 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+machine.adb.mouse.move 63 225 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+machine.adb.mouse.move 40 90 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 90000000
+machine.adb.mouse.move 293 95 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 200000000
+
+# Our own reply template, so what goes back is ours and not a default.
+appletalk.aevt.auto_reply = "aevt/ansr{errn:0}"
+assert appletalk.aevt.inbox.count == 0 "the inbox is not empty before the guest sends"
+assert appletalk.aevt.stats.received == 0 "we have already received an event"
+
+# --- 4. Have the guest send us an Apple event ------------------------------
+
+# Type a remote tell into the script window.  Compiling it makes
+# AppleScript link to our port and ask it for its terminology, which is
+# the guest-initiated event this test is about.
+machine.adb.mouse.move 150 200 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 5000000
+machine.adb.keyboard.press 0x11
+scheduler.run 400000
+machine.adb.keyboard.press 0x0E
+scheduler.run 400000
+machine.adb.keyboard.press 0x25
+scheduler.run 400000
+machine.adb.keyboard.press 0x25
+scheduler.run 400000
+machine.adb.keyboard.press 0x31
+scheduler.run 400000
+machine.adb.keyboard.press 0x00
+scheduler.run 400000
+machine.adb.keyboard.press 0x23
+scheduler.run 400000
+machine.adb.keyboard.press 0x23
+scheduler.run 400000
+machine.adb.keyboard.press 0x25
+scheduler.run 400000
+machine.adb.keyboard.press 0x22
+scheduler.run 400000
+machine.adb.keyboard.press 0x08
+scheduler.run 400000
+machine.adb.keyboard.press 0x00
+scheduler.run 400000
+machine.adb.keyboard.press 0x11
+scheduler.run 400000
+machine.adb.keyboard.press 0x22
+scheduler.run 400000
+machine.adb.keyboard.press 0x1F
+scheduler.run 400000
+machine.adb.keyboard.press 0x2D
+scheduler.run 400000
+machine.adb.keyboard.press 0x31
+scheduler.run 400000
+machine.adb.keyboard.down 0x38
+machine.adb.keyboard.press 0x27
+machine.adb.keyboard.up 0x38
+scheduler.run 400000
+machine.adb.keyboard.press 0x05
+scheduler.run 400000
+machine.adb.keyboard.press 0x01
+scheduler.run 400000
+machine.adb.keyboard.press 0x1B
+scheduler.run 400000
+machine.adb.keyboard.press 0x04
+scheduler.run 400000
+machine.adb.keyboard.press 0x1F
+scheduler.run 400000
+machine.adb.keyboard.press 0x01
+scheduler.run 400000
+machine.adb.keyboard.press 0x11
+scheduler.run 400000
+machine.adb.keyboard.down 0x38
+machine.adb.keyboard.press 0x27
+machine.adb.keyboard.up 0x38
+scheduler.run 400000
+machine.adb.keyboard.press 0x31
+scheduler.run 400000
+machine.adb.keyboard.press 0x1F
+scheduler.run 400000
+machine.adb.keyboard.press 0x03
+scheduler.run 400000
+machine.adb.keyboard.press 0x31
+scheduler.run 400000
+machine.adb.keyboard.press 0x2E
+scheduler.run 400000
+machine.adb.keyboard.press 0x00
+scheduler.run 400000
+machine.adb.keyboard.press 0x08
+scheduler.run 400000
+machine.adb.keyboard.press 0x04
+scheduler.run 400000
+machine.adb.keyboard.press 0x22
+scheduler.run 400000
+machine.adb.keyboard.press 0x2D
+scheduler.run 400000
+machine.adb.keyboard.press 0x0E
+scheduler.run 400000
+machine.adb.keyboard.press 0x31
+scheduler.run 400000
+machine.adb.keyboard.down 0x38
+machine.adb.keyboard.press 0x27
+machine.adb.keyboard.up 0x38
+scheduler.run 400000
+machine.adb.keyboard.press 0x05
+scheduler.run 400000
+machine.adb.keyboard.press 0x01
+scheduler.run 400000
+machine.adb.keyboard.press 0x1B
+scheduler.run 400000
+machine.adb.keyboard.press 0x04
+scheduler.run 400000
+machine.adb.keyboard.press 0x1F
+scheduler.run 400000
+machine.adb.keyboard.press 0x01
+scheduler.run 400000
+machine.adb.keyboard.press 0x11
+scheduler.run 400000
+machine.adb.keyboard.down 0x38
+machine.adb.keyboard.press 0x27
+machine.adb.keyboard.up 0x38
+scheduler.run 400000
+machine.adb.keyboard.press 0x31
+scheduler.run 400000
+machine.adb.keyboard.press 0x11
+scheduler.run 400000
+machine.adb.keyboard.press 0x1F
+scheduler.run 400000
+machine.adb.keyboard.press 0x31
+scheduler.run 400000
+machine.adb.keyboard.press 0x0F
+scheduler.run 400000
+machine.adb.keyboard.press 0x20
+scheduler.run 400000
+machine.adb.keyboard.press 0x2D
+scheduler.run 400000
+scheduler.run 8000000
+
+# Run: the guest opens a session to us and puts up its link dialog.
+machine.adb.mouse.move 110 133 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 200000000
+
+# "Link to gs-host as:" — choose Guest, since guest links are all we
+# accept (ppc_appleevents.md §4.5), then confirm.
+machine.adb.mouse.move 207 152 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 20000000
+machine.adb.mouse.move 452 282 "global"
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 1500000
+machine.adb.mouse.click false
+scheduler.run 200000000
+
+# --- 5. What arrived -------------------------------------------------------
+
+assert appletalk.aevt.inbox.count >= 1 "the guest sent us nothing"
+assert appletalk.aevt.stats.received >= 1 "the received counter did not move"
+
+# AppleScript asks a port for its event dictionary before it will compile a
+# tell block, so the event is ascr/gdte — "get AETE" — from Script Editor.
+assert appletalk.aevt.inbox[0].class == "ascr" "unexpected event class ${appletalk.aevt.inbox[0].class}"
+assert appletalk.aevt.inbox[0].id == "gdte" "unexpected event id ${appletalk.aevt.inbox[0].id}"
+assert appletalk.aevt.inbox[0].sender == "Script Editor" "unexpected sender ${appletalk.aevt.inbox[0].sender}"
+assert appletalk.aevt.inbox[0].error == "" "the event did not decode: ${appletalk.aevt.inbox[0].error}"
+
+# It decoded into a map, parameters and attributes both — these attribute
+# values come from the guest, not from a golden of ours.
+assert appletalk.aevt.inbox[0].event["----"]["type"] == "long" "the direct object is not a long"
+assert appletalk.aevt.inbox[0].event["attrs"]["timo"]["data"] > 0 "no timeout attribute came with the event"
+assert appletalk.aevt.inbox[0].event["attrs"]["inte"]["type"] == "enum" "no interaction-level attribute"
+
+# And it round-trips back to text form.
+assert appletalk.aevt.inbox[0].text == "ascr/gdte{'----':0}" "unexpected text form: ${appletalk.aevt.inbox[0].text}"
+
+# --- 6. And what we sent back ----------------------------------------------
+
+# The responder accepted a guest session and our reply template answered it.
+assert appletalk.ppc.stats.sessions_opened >= 1 "no inbound session was accepted"
+assert appletalk.ppc.stats.blocks_in >= 1 "no message block arrived"
+assert appletalk.aevt.stats.auto_replies >= 1 "we never answered the guest"
+assert appletalk.ppc.stats.sessions_refused == 0 "we turned the guest away"
+
+# The guest acted on our answer: having asked for a dictionary and been
+# given a reply without one, AppleScript reports it cannot get the
+# terminology.  That dialog is the observable result of our reply — the
+# half of WP-7 that cannot be seen from this side of the wire.
+machine.screen.save "${$WORK_DIR}/guest-after-reply.png"
+
+echo "inbox: ${appletalk.aevt.inbox[0].text} from ${appletalk.aevt.inbox[0].sender}"
+echo "responder: sessions=${appletalk.ppc.stats.sessions_opened} blocks_in=${appletalk.ppc.stats.blocks_in} auto_replies=${appletalk.aevt.stats.auto_replies}"
+
+quit

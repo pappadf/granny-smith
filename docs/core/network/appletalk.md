@@ -857,54 +857,207 @@ Notes:
 
 ## 3. ADSP — AppleTalk Data Stream Protocol
 
+*Source: Inside AppleTalk, 2nd ed., ch. 12 (page references below are that
+chapter's own, `12-nn`). This section is the coding reference for
+`src/core/network/appletalk_adsp.c`; the PPC Toolbox endpoint described in
+[ppc_appleevents.md](ppc_appleevents.md) is its only in-tree client.*
+
+> **Errata (corrected 2026-08-12).** Earlier revisions of this section gave
+> the ADSP DDP type as 10 and an invented six-field packet header. Both were
+> wrong. ADSP is **DDP type 7** (12-12, and `DDP_TYPE_ADSP` in
+> `appletalk_internal.h`), and the header is the 13 bytes tabulated in §3.2.
+
 ### 3.1 Overview
 
-ADSP provides a **reliable byte-stream connection** similar to TCP, built directly on DDP (`Type = 10`).
-It is often used for high-performance AFP or printer channels, though AFP over ASP is sufficient for most clients.
+ADSP is a symmetric, connection-oriented protocol carrying **full-duplex
+streams of bytes** between two sockets. Delivery is reliable, in order and
+free of duplicates; a window mechanism lets the receiver throttle the sender.
+Unlike ASP (§2), neither end is privileged: either may open the connection,
+either may send at any time.
 
-Key services:
+Services (12-4):
 
-* Connection establishment (Open, OpenAck)
-* Sequenced, acknowledged data delivery
-* Flow control (windows)
-* Forward Reset and Attention messages
+* connection opening, including a listening-socket variant for servers;
+* sequenced, acknowledged, flow-controlled byte delivery;
+* an **attention** sub-channel that bypasses the data stream;
+* **forward reset**, which abandons undelivered data and resynchronises;
+* half-open detection via a connection timer.
 
----
+A connection is identified by both ends' internet socket addresses *and* both
+ConnIDs, so packets stranded in routers from an earlier connection between
+the same sockets cannot be mistaken for current traffic (12-6). Only one
+connection may exist between a given pair of sockets, but a socket may hold
+several connections to different peers.
 
-### 3.2 Packet Header
+### 3.2 Packet format (12-12)
 
-| Field      | Size     | Description                      |
-| :--------- | :------- | :------------------------------- |
-| Descriptor | 2        | Message type (control/data)      |
-| CID        | 2        | Connection ID                    |
-| SeqRecv    | 4        | Highest sequence number received |
-| SeqSend    | 4        | Next sequence number to send     |
-| Ack        | 4        | Acknowledgment number            |
-| Data       | variable | Stream payload or control info   |
+DDP header (type **7**), then a 13-byte ADSP header, then at most **572**
+bytes of ADSP data.
 
----
+| Offset | Size | Field             | Meaning                                                     |
+| -----: | ---: | ----------------- | ----------------------------------------------------------- |
+|      0 |    2 | `SrcConnID`       | sender's ConnID; 0 means "unknown" and is never a valid end   |
+|      2 |    4 | `PktFirstByteSeq` | sequence number of the packet's first data byte              |
+|      6 |    4 | `PktNextRecvSeq`  | next byte the sender expects — an implicit acknowledgment    |
+|     10 |    2 | `PktRecvWdw`      | bytes the sender currently has room to receive               |
+|     12 |    1 | `Descriptor`      | flags plus control code (below)                              |
 
-### 3.3 Connection Lifecycle
+Descriptor bits:
 
-1. **Open Connection Request** → OpenConnection control packet.
-2. **Open Ack** ↔ Exchange CIDs and initial sequence numbers.
-3. **Data Transfer** → Full-duplex byte stream.
-4. **Close** → Either end sends Close control packet.
+| Bit    | Name        | Meaning                                                        |
+| ------ | ----------- | -------------------------------------------------------------- |
+| `0x80` | Control     | control packet: no client data, consumes no sequence numbers     |
+| `0x40` | Ack Request | the receiver must acknowledge immediately, even if it discards   |
+| `0x20` | EOM         | last data byte of a client message (data packets only)           |
+| `0x10` | Attention   | attention packet; the control code must be 0                     |
+| `0x0F` | Code        | control code, meaningful when the Control bit is set             |
 
-ADSP ensures in-order, reliable delivery via positive acknowledgments and sequence tracking.
+Control codes (12-14); `$9`–`$F` are reserved and **rejected**:
 
----
+| Code | Packet                              |
+| ---: | ----------------------------------- |
+|    0 | Probe (with Ack Request) or Acknowledgment |
+|    1 | Open Connection Request             |
+|    2 | Open Connection Acknowledgment      |
+|    3 | Open Connection Request + Ack       |
+|    4 | Open Connection Denial              |
+|    5 | Close Connection Advice             |
+|    6 | Forward Reset                       |
+|    7 | Forward Reset Acknowledgment        |
+|    8 | Retransmit Advice                   |
 
-### 3.4 ADSP in Simple Emulation
+An **attention packet** reinterprets three header fields: `PktFirstByteSeq`
+is `PktAttnSendSeq`, `PktNextRecvSeq` is `PktAttnRecvSeq`, and `PktRecvWdw`
+is unused and must be 0 (12-21). Its data is a 2-byte attention code
+(`$0000`–`$EFFF` are the client's; `$F000`–`$FFFF` are reserved) followed by
+up to 570 bytes.
 
-For a single LocalTalk segment, ADSP is optional.
-Most AFP and PAP clients function fully with ASP and ATP reliability.
-However, implementing ADSP increases compatibility with System 7 and later.
-In emulation:
+### 3.3 Sequencing variables (12-10)
 
-* Treat ADSP like TCP-lite.
-* Maintain sequence windows (~2048 bytes).
-* Reconnect automatically after resets.
+Each end keeps:
+
+| Variable         | Meaning                                                    |
+| ---------------- | ---------------------------------------------------------- |
+| `SendSeq`        | number to assign to the next new byte we send               |
+| `FirstRtmtSeq`   | oldest byte still in our send queue                         |
+| `SendWdwSeq`     | last byte the remote end has room for; never decreases      |
+| `RecvSeq`        | next byte we expect; starts at 0                            |
+| `RecvWdw`        | bytes we currently have room for                            |
+| `AttnSendSeq`    | next attention packet we will send                          |
+| `AttnRecvSeq`    | next attention packet we expect; starts at 0                |
+
+Numbers are unsigned 32-bit and wrap, so all comparisons are signed
+differences. **EOM consumes one sequence number** beyond the last byte of the
+message, which is why an EOM packet may legitimately carry no data at all
+(12-9).
+
+### 3.4 Connection-opening dialog (12-22 … 12-33)
+
+The open packets carry 8 further bytes after the header — the
+open-connection parameters (12-27):
+
+| Offset | Size | Field            |
+| -----: | ---: | ---------------- |
+|      0 |    2 | ADSP version, `$0100`; anything else must be denied |
+|      2 |    2 | destination ConnID (0 in a plain request)           |
+|      4 |    4 | `PktAttnRecvSeq` — first attention packet accepted  |
+
+| Packet     | Descriptor | Source ConnID | Destination ConnID |
+| ---------- | ---------: | ------------- | ------------------ |
+| Request    |      `$81` | ours          | 0                  |
+| Ack        |      `$82` | ours          | theirs             |
+| Request+Ack|      `$83` | ours          | theirs             |
+| Denial     |      `$84` | **0**         | theirs             |
+
+One-sided open (Figure 12-8): A sends a Request; B adopts A's ConnID,
+`SendSeq = PktNextRecvSeq`, `SendWdwSeq = PktNextRecvSeq + PktRecvWdw − 1`
+and `AttnSendSeq = PktAttnRecvSeq`, becoming *established*, and answers
+Request+Ack; A establishes symmetrically, considers the connection open and
+sends an Ack, which opens it at B.
+
+Simultaneous open (Figure 12-9): each end matches the incoming Request
+against its own outstanding Request to the same address and replies with a
+plain Ack, so exactly one connection results.
+
+Error recovery (12-30 ff.): Requests are retransmitted a client-chosen number
+of times; a **duplicate** Request is answered again rather than creating a
+second end; a Request arriving at an already-open end is a retransmission
+only if `PktFirstByteSeq == RecvSeq` (otherwise it is a late duplicate and is
+discarded, Figure 12-16). A server publishes a **connection-listening
+socket** (12-35) and may apply an address filter, denying what it will not
+talk to (12-36).
+
+### 3.5 Data flow, acknowledgment and flow control (12-6 … 12-9)
+
+A receiver accepts a data packet only when `PktFirstByteSeq == RecvSeq`
+(**in-order acceptance**); the in-window variant that buffers early arrivals
+is explicitly optional and we do not implement it. Every packet from the peer
+carries an acknowledgment: `PktNextRecvSeq` retires everything below it from
+our send queue, provided it lies in `[FirstRtmtSeq, SendSeq]`. `SendWdwSeq`
+is recomputed as `PktNextRecvSeq + PktRecvWdw − 1` and is never allowed to go
+backwards. Data beyond the advertised window is discarded by the receiver.
+Several consecutive out-of-sequence packets draw a Retransmit Advice, telling
+the sender to resume from `PktNextRecvSeq`.
+
+### 3.6 Attention, forward reset and closing
+
+**Attention** (12-19): one message may be outstanding at a time. The sender
+sets Attention + Ack Request and retransmits on a timer until the peer's
+`PktAttnRecvSeq` reaches `AttnSendSeq + 1`. The receiver accepts a message
+only when `PktAttnSendSeq == AttnRecvSeq`, then acknowledges with an
+attention-control packet (Attention + Control, no Ack Request).
+
+**Forward reset** (12-9): the sender drops its unsent queue, sets
+`FirstRtmtSeq = SendSeq` and sends Forward Reset with
+`PktFirstByteSeq = SendSeq`, retransmitting until acknowledged. A receiver
+accepts it when the value lies in `[RecvSeq, RecvSeq + RecvWdw]`,
+resynchronises `RecvSeq`, and acknowledges — the acknowledgment goes back
+even when the request was out of range.
+
+**Closing** (12-38): Close Connection Advice is advisory and unacknowledged;
+an end that never receives it times out instead. The connection timer (12-5)
+fires every 30 s without traffic; each expiry sends a Probe, and the fourth
+(two minutes) tears the end down as half-open.
+
+### 3.7 What this stack implements
+
+`src/core/network/appletalk_adsp.c` implements the chapter in full — both
+roles of the open dialog, in-order data with EOM framing, windowed flow
+control, the attention sub-channel, forward reset, close advice and the
+connection timer — with these deliberate choices:
+
+* **Every timer is emulated time.** Deadlines live on the connection, the
+  earliest one is armed as a single scheduler event, and nothing consults the
+  host clock: the same script produces the same wire trace byte for byte.
+  Intervals: probe 30 s ×4, open-request retry 2 s ×4, data retransmit 1 s,
+  attention retransmit 1 s, forward-reset retransmit 1 s.
+* **`LastConnID` counts up from 1** rather than starting at a random value
+  (12-6 permits any starting point), again for reproducibility.
+* **In-order acceptance only**; the optional in-window variant is not
+  implemented, and the engine advertises a fixed 4 KB `RecvWdw` because it
+  delivers to its client synchronously.
+* **An acknowledgment follows every accepted data packet.** The spec only
+  requires one when Ack Request is set; acknowledging promptly keeps the
+  peer's send queue moving instead of waiting on its retransmit timer.
+* **Not implemented:** in-window buffering, multiple outstanding attention
+  messages (the spec allows one), and half-open scavenging beyond the
+  connection timer.
+
+The engine is instance-based and reaches the wire through a small transport
+interface, so `tests/unit/suites/adsp/` runs two endpoints back to back over
+an in-process loopback with a deterministic drop filter — the open dialog,
+loss recovery, the attention channel and the timer paths are all covered
+there without a guest.
+
+### 3.8 Object-model surface
+
+| Path | Contents |
+| ---- | -------- |
+| `appletalk.adsp.connections[i]` | `state` (`closed`/`listening`/`opening`/`established`/`open`), `role`, `local_socket`, `remote_node`, `remote_socket`, `local_cid`, `remote_cid`, the five sequencing variables, `unacked`, `bytes_in`/`bytes_out`, `retransmits`, and `close()` |
+| `appletalk.adsp.stats` | `packets_in`/`packets_out`, `bytes_in`/`bytes_out`, `opens`, `open_denials`, `retransmits`, `out_of_sequence`, `forward_resets`, `attentions_in`/`attentions_out`, `timeouts` |
+
+Connection ends are volatile client state: a checkpoint restore drops them,
+exactly as it drops AFP sessions.
 
 ---
 

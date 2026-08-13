@@ -10,7 +10,10 @@
 
 #include "appletalk.h"
 
+#include "appletalk_adsp.h"
+#include "appletalk_aevt.h"
 #include "appletalk_internal.h"
+#include "appletalk_ppc.h"
 #include "common.h"
 #include "log.h"
 #include "object.h"
@@ -88,7 +91,16 @@ typedef struct {
     bool enabled;
     uint16_t next_sess_ref;
     atalk_stats_t stats;
+    // Durable Apple event configuration (ppc_appleevents.md §7): the sessions
+    // and the events collection are volatile and are not carried across.
+    atalk_aevt_config_t aevt;
 } atalk_persist_t;
+
+// Set when appletalk_init found a previous machine's stack still installed
+// and took it down itself; see appletalk_delete.
+static bool g_atalk_superseded;
+
+static void appletalk_teardown(void);
 
 // Stack enablement. The stack is attached to the SCC link by default; the
 // object model is the user's switch to take the machine off the network
@@ -143,6 +155,14 @@ static void log_hex(int level, const char *tag, const uint8_t *data, size_t len)
 static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len) {
     if (!g_atalk_enabled)
         return -1; // the stack is detached from the link
+    if (g_scc && !scc_sdlc_ready(g_scc)) {
+        // Nothing is listening yet: the guest has not put the SCC into SDLC
+        // mode, so its AppleTalk driver is not loaded.  Replies never reach
+        // here (they answer a frame the guest just sent), but traffic we
+        // originate can, and it must not be forced onto a dead link.
+        LOG(4, "LLAP tx: dropped, the guest's AppleTalk driver is not up");
+        return -1;
+    }
     if (len > LLAP_DATA_MAX_SIZE) {
         LOG(1, "LLAP tx: refused oversize frame (%zu > %d)", len, LLAP_DATA_MAX_SIZE);
         return -1;
@@ -245,14 +265,14 @@ void process_packet(const uint8_t *buf, size_t size) {
 
 // =============================== DDP (Datagram Delivery Protocol) ===============================
 
-// [1]: ddp type field values
-#define DDP_RTMP_RESPONSE 0x01
-#define DDP_NBP           0x02
-#define DDP_ATP           0x03
-#define DDP_AEP           0x04
-#define DDP_RTMP_REQUEST  0x05
-#define DDP_ZIP           0x06
-#define DDP_ADSP          0x07
+// [1]: ddp type field values (shared with the ADSP/PPC modules)
+#define DDP_RTMP_RESPONSE DDP_TYPE_RTMP_RESPONSE
+#define DDP_NBP           DDP_TYPE_NBP
+#define DDP_ATP           DDP_TYPE_ATP
+#define DDP_AEP           DDP_TYPE_AEP
+#define DDP_RTMP_REQUEST  DDP_TYPE_RTMP_REQUEST
+#define DDP_ZIP           DDP_TYPE_ZIP
+#define DDP_ADSP          DDP_TYPE_ADSP
 
 // Returns a short mnemonic name for a DDP protocol type or NULL if unknown.
 static const char *ddp_type_name(uint8_t type) {
@@ -311,6 +331,13 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
 // ============================================================================
 
 void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
+    // A previous machine may still be installed (checkpoint restore builds the
+    // new machine first).  Take it down now so this init starts from a clean
+    // tree, and remember that its own teardown must not run afterwards.
+    if (g_atalk_object) {
+        appletalk_teardown();
+        g_atalk_superseded = true;
+    }
     g_scc = scc; // Store SCC dependency for later use
     g_scheduler = scheduler; // Store scheduler for ATP timers
     g_atalk_enabled = true;
@@ -318,6 +345,11 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     asp_sessions_reset();
     atalk_server_init();
     atalk_printer_register();
+    // The three program-linking layers, bottom up: ADSP carries PPC sessions,
+    // which carry Apple events (docs/core/network/ppc_appleevents.md §1).
+    atalk_adsp_init(scheduler);
+    atalk_ppc_init();
+    atalk_aevt_init();
 
     static const atp_socket_handler_t asp_handler = {.handle_request = asp_in};
     atp_register_socket_handler(HOST_AFP_SOCKET, &asp_handler, NULL);
@@ -334,9 +366,13 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
             g_atalk_enabled = saved.enabled;
             g_atalk_stats = saved.stats;
             asp_sessions_set_next_ref(saved.next_sess_ref);
+            // Only the durable Apple event configuration travels; the guest's
+            // end of every session is equally gone, so the tables start empty.
+            atalk_aevt_set_config(&saved.aevt);
             LOG(1, "appletalk_init: restored from checkpoint (stack %s)", g_atalk_enabled ? "enabled" : "disabled");
         }
         afp_reset_transient_state();
+        atalk_aevt_reset_transient_state();
     }
 
     // Object-tree binding — instance_data is unused (NULL) for the singleton
@@ -379,6 +415,11 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     if (g_atalk_printer_object)
         object_attach(g_atalk_object, g_atalk_printer_object);
 
+    // Each program-linking layer owns its own subtree.
+    atalk_adsp_install_objects(g_atalk_object);
+    atalk_ppc_install_objects(g_atalk_object);
+    atalk_aevt_install_objects(g_atalk_object);
+
     // Collection entry objects are pre-allocated once and handed out by the
     // get()/next() callbacks; they are never attached, so the cascade delete
     // does not free them (this module does, in appletalk_delete).
@@ -413,6 +454,7 @@ void appletalk_checkpoint(checkpoint_t *checkpoint) {
     out.enabled = g_atalk_enabled;
     out.next_sess_ref = asp_sessions_next_ref();
     out.stats = g_atalk_stats;
+    atalk_aevt_get_config(&out.aevt);
     system_write_checkpoint_data(checkpoint, &out, sizeof(out));
 }
 
@@ -420,10 +462,16 @@ void appletalk_checkpoint(checkpoint_t *checkpoint) {
 // Lifecycle: Destructor
 // ============================================================================
 
-void appletalk_delete(void) {
+static void appletalk_teardown(void) {
     // Sessions first: closing them hands the AFP layer its forks back.
     atalk_asp_close_all_sessions();
     atalk_server_delete();
+    atalk_aevt_remove_objects();
+    atalk_aevt_shutdown();
+    atalk_ppc_remove_objects();
+    atalk_ppc_shutdown();
+    atalk_adsp_remove_objects();
+    atalk_adsp_shutdown();
 
     // Collection entry objects are never attached, so free them by hand.
     for (int i = 0; i < ATALK_MAX_VOLUME_OBJS; i++) {
@@ -459,6 +507,23 @@ void appletalk_delete(void) {
     }
 }
 
+// Public teardown.
+//
+// The checkpoint restore path builds the *new* machine before destroying the
+// old one (cmd_load_checkpoint), so appletalk_init can run while a previous
+// machine's stack is still installed.  When that happens init tears the old
+// one down itself and sets this flag, because the appletalk_delete that
+// follows belongs to that old machine: running it would dismantle the stack
+// the new machine just built — which is exactly what made `appletalk.adsp`,
+// `.ppc` and `.aevt` vanish after a restore.
+void appletalk_delete(void) {
+    if (g_atalk_superseded) {
+        g_atalk_superseded = false;
+        return;
+    }
+    appletalk_teardown();
+}
+
 // === Stack-level object-model accessors ====================================
 
 bool atalk_get_enabled(void) {
@@ -473,6 +538,8 @@ void atalk_set_enabled(bool enabled) {
         // Detaching from the link strands every session; drop them rather than
         // leave forks and locks held by clients that can no longer be reached.
         atalk_asp_close_all_sessions();
+        atalk_ppc_close_all("the stack was detached from the link");
+        adsp_close_all(atalk_adsp_stack(), "the stack was detached from the link");
     }
     LOG(1, "atalk: stack %s", enabled ? "attached to the link" : "detached from the link");
 }
@@ -488,9 +555,12 @@ const atalk_stats_t *atalk_get_stats(void) {
 }
 
 // Send a DDP packet to the Mac via LocalTalk
-static void ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
+// Returns 0 once the frame is on the link, -1 if it could not be sent (the
+// stack is detached, the guest's driver is not up, or the payload will not
+// fit a DDP packet).  Callers that originate traffic report that upwards.
+static int ddp_send(const ddp_header_t *header, const uint8_t *data, int size) {
     if (!header || size <= 0 || size > DDP_MAX_DATA_SIZE)
-        return;
+        return -1;
 
     uint8_t buffer[DDP_SHORT_HEADER_SIZE + DDP_MAX_DATA_SIZE];
     uint16_t length = (uint16_t)(size + DDP_SHORT_HEADER_SIZE);
@@ -510,10 +580,30 @@ static void ddp_send(const ddp_header_t *header, const uint8_t *data, int size) 
     LOG_INDENT(-4);
 
     g_atalk_stats.ddp_out++;
-    llap_send(&header->llap, buffer, length);
+    return llap_send(&header->llap, buffer, length);
 }
 
-//
+// Send one datagram to a remote socket.  The higher protocol modules (ADSP,
+// and the PPC layer above it) build their own payload and hand it here rather
+// than reaching into the DDP header layout themselves.
+int atalk_ddp_send_to(const atalk_socket_addr_t *dest, uint8_t src_socket, uint8_t ddp_type, const uint8_t *data,
+                      int len) {
+    if (!dest || len < 0 || len > DDP_MAX_DATA_SIZE)
+        return -1;
+    if (!g_atalk_enabled)
+        return -1;
+    ddp_header_t ddp;
+    memset(&ddp, 0, sizeof(ddp));
+    ddp.llap.dst = dest->node;
+    ddp.llap.src = LLAP_HOST_NODE;
+    ddp.llap.type = LLAP_DDP_SHORT;
+    ddp.len = (uint16_t)(len + DDP_SHORT_HEADER_SIZE);
+    ddp.dst_net = dest->net;
+    ddp.dst_socket = dest->socket;
+    ddp.src_socket = src_socket;
+    ddp.type = ddp_type;
+    return ddp_send(&ddp, data, len);
+}
 
 // Process an incoming DDP packet and dispatch to appropriate protocol handler
 void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
@@ -548,6 +638,11 @@ void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
             reply.type = DDP_AEP; // ensure protocol type preserved
             ddp_send(&reply, buf, (int)len);
         }
+        break;
+
+    case DDP_ADSP:
+        // Reliable byte streams; the PPC Toolbox endpoint rides on these.
+        atalk_adsp_ddp_in(ddp, buf, (int)len);
         break;
 
     case DDP_RTMP_REQUEST:
@@ -749,6 +844,18 @@ static atalk_nbp_entry_t g_nbp_entries[NBP_MAX_ENTRIES];
 static uint8_t g_nbp_next_enum[256];
 
 static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_header, const nbp_tuple_t *nbp_tuple);
+static void nbp_deliver_lookup_reply(uint8_t nbp_id, const nbp_tuple_t *tuples, int count);
+
+// One outstanding outgoing lookup.  The PPC browse is the only client, and it
+// re-issues rather than queueing, so a single slot is enough.
+static struct {
+    bool active;
+    uint8_t nbp_id;
+    atalk_nbp_reply_fn cb;
+    void *ctx;
+} g_nbp_lookup;
+
+static uint8_t g_nbp_next_lookup_id = 1;
 
 // === NBP registry views (object model: `appletalk.nbp`) ====================
 
@@ -1079,7 +1186,8 @@ static void nbp_dispatch(const ddp_header_t *ddp_header, const nbp_header_t *hea
             nbp_handle_lookup_tuple(ddp_header, header->nbp_id, &tuples[i]);
         break;
     case NBP_LKUP_REPLY:
-        // No local lookups issued; ignore replies
+        // Replies to a lookup we issued (the PPC browse is the only client).
+        nbp_deliver_lookup_reply(header->nbp_id, tuples, tuple_count);
         break;
     default:
         LOG(4, "NBP: unsupported function %d", header->function);
@@ -1186,6 +1294,83 @@ static void nbp_send(const ddp_header_t *ddp_header, const nbp_header_t *nbp_hea
     LOG_INDENT(-4);
 
 #undef NBP_ENSURE
+}
+
+// === Outgoing lookups (object model: the PPC browse) ========================
+
+// Hand every tuple of a matching reply to the waiting caller.  Replies to a
+// broadcast trickle in one packet per responder, so the slot stays armed
+// until the caller issues another lookup.
+static void nbp_deliver_lookup_reply(uint8_t nbp_id, const nbp_tuple_t *tuples, int count) {
+    if (!g_nbp_lookup.active || g_nbp_lookup.nbp_id != nbp_id || !g_nbp_lookup.cb)
+        return;
+    for (int i = 0; i < count; i++) {
+        atalk_nbp_info_t info;
+        memset(&info, 0, sizeof(info));
+        snprintf(info.object, sizeof(info.object), "%.*s", tuples[i].object_len, (const char *)tuples[i].object);
+        snprintf(info.type, sizeof(info.type), "%.*s", tuples[i].type_len, (const char *)tuples[i].type);
+        snprintf(info.zone, sizeof(info.zone), "%.*s", tuples[i].zone_len, (const char *)tuples[i].zone);
+        info.net = tuples[i].net;
+        info.node = tuples[i].node;
+        info.socket = tuples[i].socket;
+        LOG(4, "NBP reply: '%s:%s@%s' at %u:%u", info.object, info.type, info.zone, info.node, info.socket);
+        g_nbp_lookup.cb(g_nbp_lookup.ctx, &info);
+    }
+}
+
+int atalk_nbp_lookup(const char *object, const char *type, const char *zone, uint8_t reply_socket,
+                     atalk_nbp_reply_fn cb, void *ctx) {
+    if (!object || !type || !cb || reply_socket == 0)
+        return -1;
+    if (!g_atalk_enabled)
+        return -1;
+
+    size_t obj_len = strlen(object);
+    size_t type_len = strlen(type);
+    const char *zone_str = (zone && zone[0]) ? zone : "*";
+    size_t zone_len = strlen(zone_str);
+    if (obj_len > NBP_OBJECT_MAX || type_len > NBP_TYPE_MAX || zone_len > NBP_ZONE_MAX)
+        return -1;
+
+    // The tuple of a lookup names where the replies should go, then the
+    // pattern being looked up.
+    uint8_t buf[2 + 5 + 3 * 33];
+    int n = 0;
+    buf[n++] = (uint8_t)((NBP_LKUP << 4) | 1);
+    g_nbp_next_lookup_id = (uint8_t)(g_nbp_next_lookup_id == 255 ? 1 : g_nbp_next_lookup_id + 1);
+    buf[n++] = g_nbp_next_lookup_id;
+    buf[n++] = 0; // net high
+    buf[n++] = 0; // net low
+    buf[n++] = LLAP_HOST_NODE;
+    buf[n++] = reply_socket;
+    buf[n++] = 0; // enumerator
+    buf[n++] = (uint8_t)obj_len;
+    memcpy(&buf[n], object, obj_len);
+    n += (int)obj_len;
+    buf[n++] = (uint8_t)type_len;
+    memcpy(&buf[n], type, type_len);
+    n += (int)type_len;
+    buf[n++] = (uint8_t)zone_len;
+    memcpy(&buf[n], zone_str, zone_len);
+    n += (int)zone_len;
+
+    g_nbp_lookup.active = true;
+    g_nbp_lookup.nbp_id = g_nbp_next_lookup_id;
+    g_nbp_lookup.cb = cb;
+    g_nbp_lookup.ctx = ctx;
+
+    // NBP runs on socket 2 of every node; the lookup goes to the broadcast
+    // node so every machine on the segment answers.
+    atalk_socket_addr_t dest = {.net = 0, .node = 0xFF, .socket = 2};
+    LOG(4, "NBP lookup '%s:%s@%s' (id=%u, replies to socket %u)", object, type, zone_str,
+        (unsigned)g_nbp_next_lookup_id, (unsigned)reply_socket);
+    return atalk_ddp_send_to(&dest, reply_socket, DDP_NBP, buf, n);
+}
+
+void atalk_nbp_lookup_cancel(void) {
+    g_nbp_lookup.active = false;
+    g_nbp_lookup.cb = NULL;
+    g_nbp_lookup.ctx = NULL;
 }
 
 void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len) {
@@ -2604,7 +2789,7 @@ static int atalk_nbp_next(struct object *self, int prev) {
     return -1;
 }
 // Named lookup so `appletalk.nbp["Shared Folders"]` resolves.
-static struct object *atalk_nbp_lookup(struct object *self, const char *name) {
+static struct object *atalk_nbp_entry_lookup(struct object *self, const char *name) {
     (void)self;
     for (int i = 0; i < ATALK_MAX_NBP_OBJS && i < atalk_nbp_entry_max(); i++) {
         atalk_nbp_info_t info;
@@ -2623,7 +2808,7 @@ static const member_t atalk_nbp_collection_members[] = {
                .get = atalk_nbp_get,
                .count = atalk_nbp_count,
                .next = atalk_nbp_next,
-               .lookup = atalk_nbp_lookup}},
+               .lookup = atalk_nbp_entry_lookup}},
 };
 
 const class_desc_t atalk_nbp_collection_class = {

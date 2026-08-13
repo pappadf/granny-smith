@@ -300,9 +300,16 @@ void check_rx(ch_t *ch) {
         return;
 
     // in address search mode - only report frames that matches (or broadcasts)
-    if (ch->wr[3] & WR3_ADDRESS_SEARCH)
-        if (ch->sdlc_in.buf[0] != 0xFF && ch->sdlc_in.buf[0] != ch->wr[6])
+    if (ch->wr[3] & WR3_ADDRESS_SEARCH) {
+        if (ch->sdlc_in.buf[0] != 0xFF && ch->sdlc_in.buf[0] != ch->wr[6]) {
+            // Addressed to somebody else.  Drop it: a real receiver simply
+            // never latches such a frame, whereas holding it here would block
+            // every frame queued behind it forever.
+            LOG(6, "scc:rx frame for node 0x%02X discarded (we are 0x%02X)", ch->sdlc_in.buf[0], ch->wr[6]);
+            ch->sdlc_in.len = 0;
             return;
+        }
+    }
 
     ch->rr[0] &= ~RR0_SYNC_HUNT;
     ch->rr[0] |= RR0_RX_CHAR_AVAILABLE;
@@ -369,8 +376,19 @@ static void scc_schedule_rx_if_ready(ch_t *ch) {
         return;
     if (!RX_ENABLED(ch))
         return;
-    if (ch->sdlc_in.len != 0)
+    if (!SDLC_MODE(ch))
         return;
+    if (ch->sdlc_in.len != 0) {
+        // A frame is already in flight.  It may only be sitting there because
+        // it arrived while the receiver was out of hunt mode, so offer it now
+        // that the caller has (re-)entered hunt; without this the frame — and
+        // every frame queued behind it — is stuck for good.  This is the path
+        // an unsolicited frame takes: the guest is mid-hunt when we enqueue,
+        // and nothing else ever retries the delivery.
+        check_rx(ch);
+        if (ch->sdlc_in.len != 0)
+            return;
+    }
     if (ch->pending_rx.count == 0)
         return;
     // Real SCC re-enters hunt automatically once ready; mirror that here so queued frames flow
@@ -904,6 +922,17 @@ static void scc_write_uint16(void *scc, uint32_t addr, uint16_t value) {
 static void scc_write_uint32(void *scc, uint32_t addr, uint32_t value) {
     (void)scc;
     LOG(1, "scc: long write at 0x%08X = 0x%08X — SCC is byte-only, ignored", addr, value);
+}
+
+// True once the guest has put channel B into SDLC mode, i.e. once its
+// AppleTalk driver is listening.  Callers that originate traffic rather than
+// answering it (the ADSP endpoint's open dialog, NBP lookups) must check
+// this: before the driver loads there is nobody on the wire.
+bool scc_sdlc_ready(const scc_t *restrict scc) {
+    if (!scc)
+        return false;
+    const ch_t *ch = &scc->ch[1];
+    return SDLC_MODE(ch);
 }
 
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {

@@ -8,6 +8,7 @@
 // `if (st->egret)` — IIci leaves egret NULL in the unified mac030_mdu_state_t).
 
 #include "mdu.h"
+#include "appletalk.h"
 
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -58,6 +59,11 @@ void mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
     cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 7833600, 3686400);
+
+    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
+    // the SCC exists — and, because the checkpoint stream is positional, in
+    // the same relative place the save writes it (right after scc_checkpoint).
+    appletalk_init(cfg->scheduler, cfg->scc, cp);
 
     // Derived from the CPU clock, not hardcoded: this substrate serves the
     // 25 MHz IIci and the 20 MHz IIsi, so a single literal is wrong for one of
@@ -128,6 +134,9 @@ static void mdu_teardown(config_t *cfg) {
         via_delete(cfg->via1);
         cfg->via1 = NULL;
     }
+    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
+    // goes first — it holds the scc pointer it was given at init.
+    appletalk_delete();
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;
@@ -166,6 +175,7 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
     via_checkpoint(cfg->via1, cp);
     adb_checkpoint(st->adb, cp);
     if (st->egret) // IIsi only; IIci leaves egret NULL

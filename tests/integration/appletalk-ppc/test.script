@@ -1,0 +1,237 @@
+# PPC Toolbox program linking — discover a System 7 guest's linkable
+# applications and open an Apple event session to one of them.
+#
+# The host side is docs/core/network/ppc_appleevents.md: NBP discovery (§3),
+# the list-ports browse (§4.6), and the session request/accept dialog with a
+# guest user name (§4.3, §4.4), all riding the ADSP endpoint of
+# appletalk.md §3.  This test is the interop proof — every layer here is
+# talking to System 7's own .MPP/.DSP drivers and PPC Toolbox, not to a
+# second copy of ourselves (that is tests/unit/suites/adsp's job).
+#
+# Sequence:
+#   1. Boot System 7.1 to the Finder, dismissing the startup advisory.
+#   2. Sharing Setup: owner name, machine name, Program Linking -> Start.
+#   3. Users & Groups: allow guests to link to programs.
+#   4. appletalk.ppc.browse -> the guest answers the NBP lookup, and the
+#      list-ports exchange returns its Finder port.
+#   5. appletalk.aevt.send -> a guest session is requested and accepted, and
+#      the high-level event is written to it.
+#
+# Mouse coordinates are Mac global (512x342).  Every press/release is
+# bracketed by short runs so the guest polls the transitions, and the clock
+# is pinned so the run is reproducible.
+
+machine.rtc.time = "2026-04-26T21:30:36"
+
+# --- 1. Boot ---------------------------------------------------------------
+
+scheduler.run 150000000
+
+# "One of the File System Access modules could not be installed" — this image
+# carries Apple Photo Access, which wants a machine this one is not.
+machine.adb.mouse.move 357 245
+scheduler.run 3000000
+machine.adb.mouse.click true
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 110000000
+
+# The host port is advertised before the guest has said anything: one NBP
+# entity per machine, named by aevt.port_name, typed PPCToolBox (§3).
+assert appletalk.aevt.enabled "the Apple event endpoint is not enabled"
+assert appletalk.nbp["gs-host"].type == "PPCToolBox" "the host port is not advertised"
+assert appletalk.nbp["gs-host"].socket == 130 "the host port is on the wrong socket"
+assert appletalk.ppc.ports.count == 0 "ports were discovered before any browse"
+assert appletalk.adsp.stats.opens == 0 "an ADSP connection existed before the browse"
+
+# --- 2. Sharing Setup: identity and Program Linking ------------------------
+
+# Apple menu -> Control Panels.
+machine.adb.mouse.move 15 8
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 6000000
+machine.adb.mouse.move 60 131
+scheduler.run 3000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Double-click Sharing Setup.  The two clicks must fall inside the guest's
+# double-click time, hence the short runs between them.
+machine.adb.mouse.move 316 140
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 150000
+machine.adb.mouse.click false
+scheduler.run 150000
+machine.adb.mouse.click true
+scheduler.run 150000
+machine.adb.mouse.click false
+scheduler.run 90000000
+
+# Owner Name: "gs".  Program linking refuses to start without one.
+machine.adb.mouse.move 315 85
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 4000000
+machine.adb.keyboard.press 0x05
+scheduler.run 1500000
+machine.adb.keyboard.press 0x01
+scheduler.run 4000000
+
+# Macintosh Name: "gs7".  This becomes the guest's NBP object name, so the
+# browse below finds its ports under it.
+machine.adb.mouse.move 315 127
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 4000000
+machine.adb.keyboard.press 0x05
+scheduler.run 1500000
+machine.adb.keyboard.press 0x01
+scheduler.run 1500000
+machine.adb.keyboard.press 0x1A
+scheduler.run 6000000
+
+# Program Linking -> Start.
+machine.adb.mouse.move 149 277
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+
+# Close Sharing Setup.
+machine.adb.mouse.move 85 32
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 30000000
+
+# --- 3. Users & Groups: let guests link ------------------------------------
+
+machine.adb.mouse.move 173 195
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 150000
+machine.adb.mouse.click false
+scheduler.run 150000
+machine.adb.mouse.click true
+scheduler.run 150000
+machine.adb.mouse.click false
+scheduler.run 80000000
+
+# Open the <Guest> user.
+machine.adb.mouse.move 105 105
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 150000
+machine.adb.mouse.click false
+scheduler.run 150000
+machine.adb.mouse.click true
+scheduler.run 150000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# "Allow guests to link to programs on this Macintosh".
+machine.adb.mouse.move 193 160
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+
+# Close the window, then Save the change.
+machine.adb.mouse.move 145 32
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+machine.adb.mouse.move 404 147
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# --- 4. Discover the guest's program-linking ports -------------------------
+
+# The browse is two exchanges (§3): an NBP lookup for =:PPCToolBox@*, then a
+# list-ports dialog over ADSP with every machine that answers.  Both need the
+# guest to run, so the script owns the scheduler throughout.
+appletalk.ppc.browse
+scheduler.run 30000000
+
+assert appletalk.ppc.ports.count >= 1 "the guest did not answer the port browse"
+assert appletalk.ppc.ports["Finder"].machine == "gs7" "the Finder port is not on the guest we named"
+# Applications register as <signature>ep01 (§2.1); the Finder's signature is MACS.
+assert appletalk.ppc.ports["Finder"].type == "MACSep01" "unexpected port type for the Finder"
+assert appletalk.ppc.ports["Finder"].auth_required == false "guest linking did not take effect"
+assert appletalk.ppc.ports["Finder"].node > 0 "the discovered port has no node"
+
+# The browse itself proves the ADSP endpoint interoperates with the guest's
+# own driver: a full open dialog, data in both directions, and a clean close.
+assert appletalk.adsp.stats.opens >= 1 "no ADSP connection was opened to the guest"
+assert appletalk.adsp.stats.bytes_in > 0 "the guest sent no ADSP data"
+assert appletalk.adsp.stats.bytes_out > 0 "we sent no ADSP data"
+assert appletalk.ppc.stats.browses == 1 "browse counter did not move"
+
+# Browsing again must work: the first exchange must not leave either end
+# wedged (this caught a real SCC receive-queue deadlock).
+appletalk.ppc.browse
+scheduler.run 30000000
+assert appletalk.ppc.ports.count >= 1 "a second browse found nothing"
+assert appletalk.adsp.stats.opens >= 2 "the second browse opened no connection"
+
+# --- 5. Open an Apple event session to the Finder --------------------------
+
+# send() is non-blocking (§8): it returns the event object straight away and
+# the script runs the scheduler until the state settles.
+let e = appletalk.aevt.send("Finder", "aevt/oapp", tag="openapp")
+scheduler.run 60000000
+
+assert appletalk.aevt.events.count == 1 "the event was not recorded"
+assert appletalk.aevt.events["openapp"].class == "aevt" "the event tag does not resolve"
+# `error` state means the session never happened; a timeout waiting for the
+# Finder's answer is a different thing and is checked further down.
+assert $e.state != "error" "the session to the Finder failed: ${$e.error}"
+assert appletalk.ppc.stats.sessions_opened >= 1 "the guest did not accept a session"
+assert appletalk.ppc.stats.sessions_rejected == 0 "the guest rejected a session"
+assert appletalk.aevt.stats.sent == 1 "the event was never written to the session"
+assert appletalk.ppc.stats.blocks_out >= 1 "no message block reached the wire"
+assert appletalk.adsp.stats.bytes_out > 100 "the event did not travel"
+
+# A running Finder does not answer Open Application, on 7.1 or 7.5, so this
+# one is expected to sit unanswered — the session, not the reply, is what it
+# proves.  The round trip is asserted below.
+assert $e.state == "sent" || $e.state == "timeout" "unexpected event state ${$e.state}"
+
+# No reply has ever been observed from this guest, even for an event no
+# handler can claim — where the 7.5 Finder answers the same event with
+# errAEEventNotHandled within a few tens of millions of instructions.  What
+# differs is not established (ppc_appleevents.md §7.3), so this test asserts
+# delivery only, and tests/integration/aevt-finder owns the round trip.
+let bogus = appletalk.aevt.send("Finder", "zzzz/zzzz", tag="bogus")
+scheduler.run 40000000
+assert $bogus.state != "error" "the second session failed: ${$bogus.error}"
+assert appletalk.ppc.stats.sessions_opened >= 2 "the second event got no session of its own"
+assert appletalk.ppc.stats.sessions_rejected == 0 "the guest rejected a session"
+
+# --- 6. Errors are in-band, with real messages -----------------------------
+
+let bad = appletalk.aevt.send("NoSuchApp", "aevt/oapp")
+assert $bad.state == "error" "sending to an unknown port did not fail"
+assert $bad.error != "" "the failure carries no reason"
+
+# A malformed event is refused at parse time, before anything reaches the wire.
+assert try(appletalk.aevt.send("Finder", "this is not an event"), none) == none "malformed event text was accepted"
+
+echo "PPC: discovered ${appletalk.ppc.ports.count} port(s); ADSP opens=${appletalk.adsp.stats.opens} bytes_in=${appletalk.adsp.stats.bytes_in} bytes_out=${appletalk.adsp.stats.bytes_out}"
+echo "PPC: sessions opened=${appletalk.ppc.stats.sessions_opened} blocks_out=${appletalk.ppc.stats.blocks_out}"
+
+quit
