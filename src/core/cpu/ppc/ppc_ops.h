@@ -209,10 +209,13 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define RECT(...) do { uint32_t rect_v_ = (__VA_ARGS__); GPR(RT) = rect_v_; if (PPC_RC(iw)) ppc_record_cr0(p, rect_v_); } while (0)
 #define RECA(...) do { uint32_t reca_v_ = (__VA_ARGS__); GPR(RA) = reca_v_; if (PPC_RC(iw)) ppc_record_cr0(p, reca_v_); } while (0)
 
-// Guards: each aborts the instruction body on the raised exception
+// Guards: each aborts the instruction body on the raised exception.
+// CHKA is the scalar access gate: alignment check, then MSR[DT] translation
+// (rewriting `ea` to the physical address — BAT / T=1 segment, §3.5).
 #define PRIV()  if (ppc_priv_check(p)) break
 #define FP()    if (ppc_fp_check(p)) break
-#define CHKA(ea, sz) if (ppc_check_align_scalar(p, iw, ea, sz)) break
+#define CHKA(ea, sz) if (ppc_check_align_scalar(p, iw, ea, sz) || ppc_dxlate(p, iw, &ea)) break
+#define XLT(ea)      if (ppc_dxlate(p, iw, &ea)) break
 
 // Effective addresses (D-form, D-form update, X-form, X-form update)
 #define EA_D()  uint32_t ea = RA0 + SIMM32
@@ -360,17 +363,17 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_DCBST      OP((void)0)
 #define OP_DCBF       OP((void)0)
 #define OP_DCBI       OP(PRIV()) // supervisor-only
-#define OP_DCBZ       OP(EA_X(); ea &= ~31u; for (int i_ = 0; i_ < 8; i_++) WRITE(32, ea + 4u * (uint32_t)i_, 0)) // really zeroes the block (§3.8)
+#define OP_DCBZ       OP(EA_X(); ea &= ~31u; XLT(ea); for (int i_ = 0; i_ < 8; i_++) WRITE(32, ea + 4u * (uint32_t)i_, 0)) // really zeroes the block (§3.8)
 
 // --- D-form loads/stores ---
 #define OP_LWZ        OP(EA_D();  CHKA(ea, 4); GPR(RT) = READ(32, ea))
 #define OP_LWZU       OP(EA_DU(); CHKA(ea, 4); UPD(); GPR(RT) = READ(32, ea))
-#define OP_LBZ        OP(EA_D();  GPR(RT) = READ(8, ea))
-#define OP_LBZU       OP(EA_DU(); UPD(); GPR(RT) = READ(8, ea))
+#define OP_LBZ        OP(EA_D();  XLT(ea); GPR(RT) = READ(8, ea))
+#define OP_LBZU       OP(EA_DU(); XLT(ea); UPD(); GPR(RT) = READ(8, ea))
 #define OP_STW        OP(EA_D();  CHKA(ea, 4); WRITE(32, ea, GPR(RT)))
 #define OP_STWU       OP(EA_DU(); CHKA(ea, 4); UPD(); WRITE(32, ea, GPR(RT)))
-#define OP_STB        OP(EA_D();  WRITE(8, ea, (uint8_t)GPR(RT)))
-#define OP_STBU       OP(EA_DU(); UPD(); WRITE(8, ea, (uint8_t)GPR(RT)))
+#define OP_STB        OP(EA_D();  XLT(ea); WRITE(8, ea, (uint8_t)GPR(RT)))
+#define OP_STBU       OP(EA_DU(); XLT(ea); UPD(); WRITE(8, ea, (uint8_t)GPR(RT)))
 #define OP_LHZ        OP(EA_D();  CHKA(ea, 2); GPR(RT) = READ(16, ea))
 #define OP_LHZU       OP(EA_DU(); CHKA(ea, 2); UPD(); GPR(RT) = READ(16, ea))
 #define OP_LHA        OP(EA_D();  CHKA(ea, 2); GPR(RT) = (uint32_t)(int32_t)(int16_t)READ(16, ea))
@@ -383,16 +386,16 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // --- indexed loads/stores ---
 #define OP_LWZX       OP(EA_X();  CHKA(ea, 4); GPR(RT) = READ(32, ea))
 #define OP_LWZUX      OP(EA_XU(); CHKA(ea, 4); UPD(); GPR(RT) = READ(32, ea))
-#define OP_LBZX       OP(EA_X();  GPR(RT) = READ(8, ea))
-#define OP_LBZUX      OP(EA_XU(); UPD(); GPR(RT) = READ(8, ea))
+#define OP_LBZX       OP(EA_X();  XLT(ea); GPR(RT) = READ(8, ea))
+#define OP_LBZUX      OP(EA_XU(); XLT(ea); UPD(); GPR(RT) = READ(8, ea))
 #define OP_LHZX       OP(EA_X();  CHKA(ea, 2); GPR(RT) = READ(16, ea))
 #define OP_LHZUX      OP(EA_XU(); CHKA(ea, 2); UPD(); GPR(RT) = READ(16, ea))
 #define OP_LHAX       OP(EA_X();  CHKA(ea, 2); GPR(RT) = (uint32_t)(int32_t)(int16_t)READ(16, ea))
 #define OP_LHAUX      OP(EA_XU(); CHKA(ea, 2); UPD(); GPR(RT) = (uint32_t)(int32_t)(int16_t)READ(16, ea))
 #define OP_STWX       OP(EA_X();  CHKA(ea, 4); WRITE(32, ea, GPR(RT)))
 #define OP_STWUX      OP(EA_XU(); CHKA(ea, 4); UPD(); WRITE(32, ea, GPR(RT)))
-#define OP_STBX       OP(EA_X();  WRITE(8, ea, (uint8_t)GPR(RT)))
-#define OP_STBUX      OP(EA_XU(); UPD(); WRITE(8, ea, (uint8_t)GPR(RT)))
+#define OP_STBX       OP(EA_X();  XLT(ea); WRITE(8, ea, (uint8_t)GPR(RT)))
+#define OP_STBUX      OP(EA_XU(); XLT(ea); UPD(); WRITE(8, ea, (uint8_t)GPR(RT)))
 #define OP_STHX       OP(EA_X();  CHKA(ea, 2); WRITE(16, ea, (uint16_t)GPR(RT)))
 #define OP_STHUX      OP(EA_XU(); CHKA(ea, 2); UPD(); WRITE(16, ea, (uint16_t)GPR(RT)))
 #define OP_LWBRX      OP(EA_X();  CHKA(ea, 4); GPR(RT) = __builtin_bswap32(READ(32, ea)))
@@ -401,12 +404,12 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_STHBRX     OP(EA_X();  CHKA(ea, 2); WRITE(16, ea, (uint16_t)__builtin_bswap16((uint16_t)GPR(RT))))
 
 // --- atomics (word-aligned only → alignment exception) ---
-#define OP_LWARX      OP(EA_X(); if (ea & 3u) { ppc_align_exception(p, iw, ea); break; } p->reserve = 1; p->reserve_addr = ea; GPR(RT) = READ(32, ea))
+#define OP_LWARX      OP(EA_X(); if (ea & 3u) { ppc_align_exception(p, iw, ea); break; } XLT(ea); p->reserve = 1; p->reserve_addr = ea; GPR(RT) = READ(32, ea))
 #define OP_STWCX_DOT  OP(ppc_do_stwcx(p, iw))
 
 // --- external control (EAR-gated, 601UM eciwx/ecowx pages) ---
-#define OP_ECIWX      OP(EA_X(); if (!(p->ear & 0x80000000u)) { ppc_ecx_fault(p, ea, false); break; } GPR(RT) = READ(32, ea))
-#define OP_ECOWX      OP(EA_X(); if (!(p->ear & 0x80000000u)) { ppc_ecx_fault(p, ea, true); break; } WRITE(32, ea, GPR(RT)))
+#define OP_ECIWX      OP(EA_X(); if (!(p->ear & 0x80000000u)) { ppc_ecx_fault(p, ea, false); break; } XLT(ea); GPR(RT) = READ(32, ea))
+#define OP_ECOWX      OP(EA_X(); if (!(p->ear & 0x80000000u)) { ppc_ecx_fault(p, ea, true); break; } XLT(ea); WRITE(32, ea, GPR(RT)))
 
 // --- strings ---
 #define OP_LSWI       OP(ppc_do_lswi(p, iw))

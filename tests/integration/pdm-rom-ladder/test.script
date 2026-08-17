@@ -1,0 +1,64 @@
+# PDM ROM boot ladder (proposal-powerpc-601-pdm.md §6.1).
+#
+# Every assertion is a hardware truth read from the live machine after a
+# clean bounded run — deliberately NO PC logpoints/breakpoints: the debugger
+# forces single-stepping, which suppresses 601 branch folding and skews the
+# ROM's timed measurement loops (the values asserted below).
+#
+# Marker sources (dossier boot walkthrough): NKProcessorInfo is built at
+# physical $A000 (first-bank staging + $A000): +4 CpuClockRateHz,
+# +8 BusClockRateHz, +$C DecClockRateHz.  NKSystemInfo at $A040:
+# +0 PhysicalMemorySize, +$30.. the 9-entry {base,size} bank table.
+
+machine.boot model="pm6100" ram=24576 rom="${$ROM}"
+
+# L1 sanity: the 601 comes out of reset at the documented vector.
+assert machine.cpu.pc == 0xFFF00100 "reset vector != $FFF00100"
+
+# 200M instructions: checksum (~13M), HWInit, boot chime (~100M), kernel
+# entry (~135M), nanokernel init up to the Phase-D translation wall.
+scheduler.run 200000000
+
+# --- L2/L3/L5/L6: HWInit ran end-to-end (cold path, HMC config live) -------
+# HWInit's MMU pre-init T=1 segments were installed and later REPLACED by
+# the nanokernel's ConfigInfo segment maps (see L12/L13 below) — asserting
+# the replacement proves both stages executed.
+
+# --- L7: the two measurement loops (the §5.2 mechanisms) -------------------
+# CPU clock must land EXACTLY on the 60 MHz snap-table entry (CPI 1.0 with
+# 601 branch folding), the bus ratio on 2 (30 MHz), and DecClockRateHz on
+# the 601 RTC constant 7,833,600 x 128.
+assert machine.memory.peek.l(0xA004) == 60000000 "L7: measured CPU clock != 60 MHz"
+assert machine.memory.peek.l(0xA008) == 30000000 "L7: measured bus clock != 30 MHz (ratio 2)"
+assert machine.memory.peek.l(0xA00C) == 1002700800 "L7: DecClockRateHz != 1,002,700,800"
+
+# --- L8: RAM probe + 6100 bank relocation ----------------------------------
+# 24 MB = 8 MB soldered + two 8 MB SIMM banks; the SIMM_BANK_SIZE config
+# write relocates them contiguously and the bank table records the result.
+assert machine.memory.peek.l(0xA040) == 0x1800000 "L8: PhysicalMemorySize != 24 MB"
+assert machine.memory.peek.l(0xA070) == 0x0000000 "L8: bank0 base"
+assert machine.memory.peek.l(0xA074) == 0x0800000 "L8: bank0 size"
+assert machine.memory.peek.l(0xA078) == 0x0800000 "L8: bank1 base (relocated)"
+assert machine.memory.peek.l(0xA07C) == 0x0800000 "L8: bank1 size"
+assert machine.memory.peek.l(0xA080) == 0x1000000 "L8: bank2 base (relocated)"
+assert machine.memory.peek.l(0xA084) == 0x0800000 "L8: bank2 size"
+
+# --- L9: machine-ID register semantics -------------------------------------
+# Byte reads deliver $A55A3010; a 32-bit read must NOT show the signature
+# (the ROM's long-probe depends on it failing).
+assert machine.memory.peek.b(0x5FFFFFFC) == 0xA5 "L9: machine-ID byte 0"
+assert machine.memory.peek.b(0x5FFFFFFE) == 0x30 "L9: machine-ID byte 2"
+assert machine.memory.peek.b(0x5FFFFFFF) == 0x10 "L9: machine-ID byte 3"
+assert machine.memory.peek.l(0x5FFFFFFC) == 0x3010 "L9: 32-bit ID read must hide the signature"
+
+# --- L12 (+ the leading edge of L13): kernel entered and ran ---------------
+# The nanokernel parsed ConfigInfo: segment registers hold its T=0 VSID
+# maps (HWInit's T=1 $87F0000n values are gone) and SDR1 points at the
+# HTAB it carved from top-of-RAM.  Both are impossible unless HWInit
+# completed (L12: entry at $40310000 with r3 = ConfigInfo) and kernel init
+# ran to its memory setup.
+assert machine.cpu.sr0 == 0x00400000 "L12: nanokernel segment map not loaded (sr0)"
+assert machine.cpu.sdr1 != 0 "L13: SDR1/HTAB not set up"
+
+echo "pdm-rom-ladder: high-water rung L12 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x})"
+quit

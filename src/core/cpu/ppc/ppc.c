@@ -12,6 +12,7 @@
 #include "machine_profile.h"
 #include "object.h"
 #include "ppc_disasm.h"
+#include "scheduler.h"
 #include "system.h"
 #include "value.h"
 
@@ -55,6 +56,170 @@ void ppc_set_ext_irq(ppc_t *p, bool level) {
     p->ext_irq = level ? 1u : 0u;
 }
 
+// === Data translation, Phase-C subset (601UM Ch. 6) =========================
+
+// True when iw describes a store-class access (D-form 36..47,52..55 and the
+// X-form store/dcbz extended opcodes) — only feeds the DSISR store bit.
+static bool ppc_iw_is_store(uint32_t iw) {
+    uint32_t op = PPC_OPCD(iw);
+    if (op == 31) {
+        switch (PPC_XO10(iw)) {
+        case 151: // stwx
+        case 183: // stwux
+        case 215: // stbx
+        case 247: // stbux
+        case 407: // sthx
+        case 439: // sthux
+        case 662: // stwbrx
+        case 918: // sthbrx
+        case 150: // stwcx.
+        case 725: // stswi
+        case 661: // stswx
+        case 663: // stfsx
+        case 695: // stfsux
+        case 727: // stfdx
+        case 759: // stfdux
+        case 1014: // dcbz
+            return true;
+        default:
+            return false;
+        }
+    }
+    // D-form stores: stw/stwu/stb/stbu (36-39), sth/sthu (44/45), stmw (47),
+    // stfs/stfsu/stfd/stfdu (52-55).
+    return (op >= 36 && op <= 39) || op == 44 || op == 45 || op == 47 || (op >= 52 && op <= 55);
+}
+
+// MSR[DT] data translation: BAT match first, then the segment.  T=1 with
+// BUID $07F ("memory-forced I/O controller") maps EA directly to the
+// physical segment selected by the SR's low nibble — how HWInit reaches
+// I/O while untranslated-style access is needed, and how the SR5-toggle
+// aliases $5xxxxxxx→$4xxxxxxx (proposal §3.5).  Other BUIDs take the
+// 601-only $00A00 exception.  T=0 is the Phase-D hashed-table walk: raise
+// a loud DSI so premature dependence is visible.
+bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *ea) {
+    uint32_t pa;
+    if (ppc_bat_xlate(p, *ea, &pa)) {
+        *ea = pa;
+        return false;
+    }
+    uint32_t sr = p->sr[*ea >> 28];
+    if (sr & 0x80000000u) { // T=1: I/O controller interface segment
+        if (((sr >> 20) & 0x1FFu) == 0x07Fu) { // memory-forced BUID
+            *ea = ((sr & 0xFu) << 28) | (*ea & 0x0FFFFFFFu);
+            return false;
+        }
+        p->dar = *ea;
+        ppc_exception(p, PPC_VEC_IOERROR, 0, p->instruction_pc);
+        return true;
+    }
+    // T=0 hashed-table translation lands with the Phase-D MMU front end.
+    // Loud but bounded: a guest parked on this wall would otherwise flood
+    // the log at memory speed.
+    static int t0_wall_logged;
+    if (t0_wall_logged < 8) {
+        t0_wall_logged++;
+        LOG(0, "unimplemented T=0 data translation: ea=$%08X sr%u=$%08X pc=$%08X%s", *ea, *ea >> 28, sr,
+            p->instruction_pc, t0_wall_logged == 8 ? " (further hits muted)" : "");
+    }
+    p->dar = *ea;
+    p->dsisr = PPC_DSISR_NOTFOUND | (ppc_iw_is_store(iw) ? PPC_DSISR_STORE : 0);
+    ppc_exception(p, PPC_VEC_DSI, 0, p->instruction_pc);
+    return true;
+}
+
+// === RTC/DEC time derivation (§3.7) =========================================
+
+// Exact rational cycles→ticks: q*mul + r*mul/div never overflows (r < div,
+// both 32-bit after reduction) and is exact over any interval.
+uint64_t ppc_ticks_now(ppc_t *p) {
+    if (!p->tick_mul || !p->scheduler)
+        return 0;
+    uint64_t cycles = scheduler_cpu_cycles(p->scheduler);
+    return (cycles / p->tick_div) * p->tick_mul + (cycles % p->tick_div) * p->tick_mul / p->tick_div;
+}
+
+// RTCL advances 128 units per 7.8336 MHz tick and rolls into RTCU at 10^9
+// (601UM §2.3.3.4); RTCU/RTCL hold their rebase-instant values.
+static void ppc_rtc_now(ppc_t *p, uint32_t *rtcu, uint32_t *rtcl) {
+    if (!p->tick_mul) {
+        *rtcu = p->rtcu;
+        *rtcl = p->rtcl;
+        return;
+    }
+    uint64_t elapsed = ppc_ticks_now(p) - p->rtc_base_ticks;
+    uint64_t units = p->rtcl + elapsed * 128u;
+    *rtcu = p->rtcu + (uint32_t)(units / 1000000000u);
+    *rtcl = (uint32_t)(units % 1000000000u) & 0x3FFFFF80u;
+}
+
+uint32_t ppc_rtcu_now(ppc_t *p) {
+    uint32_t u, l;
+    ppc_rtc_now(p, &u, &l);
+    return u;
+}
+
+uint32_t ppc_rtcl_now(ppc_t *p) {
+    uint32_t u, l;
+    ppc_rtc_now(p, &u, &l);
+    return l;
+}
+
+// DEC decrements 128 units per tick (DecClockRateHz = 1,002,700,800
+// RTCL-units/s — the constant HWInit hard-codes).
+uint32_t ppc_dec_now(ppc_t *p) {
+    if (!p->tick_mul)
+        return p->dec;
+    uint64_t elapsed = ppc_ticks_now(p) - p->dec_base_ticks;
+    return p->dec - (uint32_t)(elapsed * 128u);
+}
+
+// DEC expiry event: latch the exception request (taken when MSR[EE] allows)
+// and re-arm for the next wrap-around transition (~4.3 s away).
+static void ppc_dec_event(void *source, uint64_t data) {
+    (void)data;
+    ppc_t *p = (ppc_t *)source;
+    p->dec_pending = 1;
+    ppc_dec_arm(p);
+}
+
+// Schedule the next 0→negative transition of DEC as a scheduler event.
+void ppc_dec_arm(ppc_t *p) {
+    if (!p->tick_mul || !p->scheduler)
+        return;
+    remove_event(p->scheduler, ppc_dec_event, p);
+    uint32_t dec = ppc_dec_now(p);
+    // Ticks until the sign transition: a non-negative DEC crosses below zero
+    // after floor(dec/128)+1 ticks; an already-negative DEC transitions again
+    // only after wrapping through zero.
+    uint64_t ticks_until;
+    if ((int32_t)dec >= 0)
+        ticks_until = (dec >> 7) + 1u;
+    else
+        ticks_until = (((uint64_t)dec + 0x100000000ull) >> 7) + 1u;
+    // ticks→cycles, rounded up so the event never fires early.
+    uint64_t cycles = (ticks_until * p->tick_div + p->tick_mul - 1) / p->tick_mul;
+    scheduler_new_cpu_event(p->scheduler, ppc_dec_event, p, 0, cycles, 0);
+}
+
+void ppc_bind_time(ppc_t *p, struct scheduler *s, uint32_t freq_hz) {
+    // Reduce 7,833,600/freq once; all derivations use the reduced pair.
+    uint32_t a = 7833600u, b = freq_hz;
+    while (b) {
+        uint32_t t = a % b;
+        a = b;
+        b = t;
+    }
+    p->scheduler = s;
+    p->tick_mul = 7833600u / a;
+    p->tick_div = freq_hz / a;
+    scheduler_new_event_type(s, "ppc", p, "dec", ppc_dec_event);
+    // No rebase: the stored base ticks are in the scheduler-cycle-derived
+    // tick domain, which checkpoint restore reproduces exactly (cold init
+    // starts both at zero).  Only the expiry event needs re-arming.
+    ppc_dec_arm(p);
+}
+
 // === SPR file (mfspr/mtspr Tables 10-4/10-5) ================================
 
 // Common privilege gate: a supervisor-level SPR touched from user mode takes
@@ -85,13 +250,13 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         v = p->xer;
         break;
     case 4:
-        v = p->rtcu;
+        v = ppc_rtcu_now(p);
         break; // RTC reads use SPR 4/5 in EVERY mode (601 asymmetry)
     case 5:
-        v = p->rtcl;
+        v = ppc_rtcl_now(p);
         break;
     case 6: // POWER user-level DEC read, 601-supported (601UM Table 10-4 note 3)
-        v = p->dec;
+        v = ppc_dec_now(p);
         break;
     case 8:
         v = p->lr;
@@ -112,7 +277,7 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
     case 22:
         if (spr_priv_fault(p, iw))
             return false;
-        v = p->dec;
+        v = ppc_dec_now(p);
         break;
     case 25:
         if (spr_priv_fault(p, iw))
@@ -230,18 +395,24 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
     case 20: // RTC writes use SPR 20/21 (supervisor); reads use 4/5
         if (spr_priv_fault(p, iw))
             return false;
+        p->rtcl = ppc_rtcl_now(p); // keep RTCL's live phase across the rebase
         p->rtcu = v;
+        p->rtc_base_ticks = ppc_ticks_now(p);
         break;
     case 21:
         if (spr_priv_fault(p, iw))
             return false;
+        p->rtcu = ppc_rtcu_now(p);
         p->rtcl = v & 0x3FFFFF80u; // RTCL: bits 25-31 and 0-1 read as zero
+        p->rtc_base_ticks = ppc_ticks_now(p);
         break;
     case 22:
         if (spr_priv_fault(p, iw))
             return false;
         p->dec = v;
+        p->dec_base_ticks = ppc_ticks_now(p);
         p->dec_pending = 0; // re-arming clears the latched expiry
+        ppc_dec_arm(p);
         break;
     case 25:
         if (spr_priv_fault(p, iw))
@@ -286,8 +457,9 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
             p->batl[pair] = v;
         else
             p->batu[pair] = v;
-        // BAT writes invalidate cached translations (Phase D wires this
-        // into the shared TLB-shootdown entry points).
+        // BAT writes invalidate the fetch-translation cache now; Phase D
+        // additionally wires the shared TLB-shootdown entry points.
+        p->fetch_span = 0;
         break;
     }
     case 1008:
@@ -414,6 +586,8 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
         p->cpu_object = NULL;
         p->fpu_object = NULL;
         p->mmu_object = NULL;
+        p->scheduler = NULL; // re-planted by ppc_bind_time
+        p->tick_mul = p->tick_div = 0;
         ppc_update_active_maps(p);
     } else {
         memset(p, 0, sizeof(ppc_t));
@@ -582,10 +756,22 @@ static value_t attr_ppc_get(struct object *self, const member_t *m) {
     ppc_t *p = ppc_from(self);
     if (!p)
         return val_err("cpu not initialised");
-    uint32_t *slot = ppc_attr_slot(p, (int)(uintptr_t)m->attr.user_data);
-    if (!slot)
-        return val_err("bad register id");
-    value_t v = val_uint(4, *slot);
+    int id = (int)(uintptr_t)m->attr.user_data;
+    uint32_t raw;
+    // The time-derived SPRs read live, exactly as mfspr does.
+    if (id == PA_RTCU)
+        raw = ppc_rtcu_now(p);
+    else if (id == PA_RTCL)
+        raw = ppc_rtcl_now(p);
+    else if (id == PA_DEC)
+        raw = ppc_dec_now(p);
+    else {
+        uint32_t *slot = ppc_attr_slot(p, id);
+        if (!slot)
+            return val_err("bad register id");
+        raw = *slot;
+    }
+    value_t v = val_uint(4, raw);
     v.flags |= VAL_HEX;
     return v;
 }

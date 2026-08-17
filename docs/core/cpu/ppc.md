@@ -62,8 +62,36 @@ epilogue as a machine check (601UM §5.4.2, the TEA path).
 - FPR file with load/store conversion in deterministic code (NaN payloads
   never pass through host FP arithmetic — WASM byte-determinism), FP
   moves/compares/FPSCR ops.  **FP arithmetic raises a loud illegal until
-  Phase E**; RTC/DEC time derivation and the MMU front end land with the
-  PDM family (Phases C/D).
+  Phase E**.
+
+## Implemented (Phase C — with the PDM family)
+
+- **RTC/DEC time derivation** (`ppc_bind_time`): RTCU/RTCL/DEC derive from
+  `scheduler_cpu_cycles` at exactly 7.8336 MHz-equivalent via the reduced
+  rational 7,833,600/freq — the dossier's hard constraint (HWInit measures
+  the CPU clock against DEC and snaps within ±1/1024; the derivation must
+  be exact over any interval, not on average).  RTCL advances 128 units
+  per tick and rolls into RTCU at 10⁹; DEC decrements 128/tick, with the
+  sign-transition latched by a scheduler event (`ppc.dec`) and taken when
+  MSR[EE] allows.  Unbound (unit tests) the SPRs are static state.
+- **Translation, Phase-C subset**: 601-format BAT match (BLPI/PBN/BSM,
+  128 KB–8 MB blocks — NOT the later architecture's layout) for data and
+  instruction accesses, and the T=1 "memory-forced I/O controller"
+  segments (BUID $07F: PA = SR[28-31] ‖ EA[4-31]) HWInit runs on —
+  including the SR5 low-bit toggle that aliases `$5xxxxxxx`→`$4xxxxxxx`
+  for the flash/L2 probes.  Non-$07F BUIDs take the 601-only $00A00
+  exception.  **T=0 hashed-table translation is Phase D** and raises a
+  loud, rate-limited DSI/ISI so premature dependence is visible.
+  Instruction fetch under MSR[IT] uses a one-entry block-delta cache
+  invalidated on MSR and BAT writes.
+- **601 branch folding**: `b`/`bc`/`bclr`/`bcctr` retire in zero sprint
+  slots (they issue to the branch unit in parallel on real silicon) —
+  required for HWInit's timed 8-addi+`bdnz` loop to measure CPI 1.0
+  exactly.  Two exclusions: a branch to itself burns a slot (a `b .` spin
+  cannot stall the sprint), and the last budget slot never folds, so
+  single-step and PC breakpoints observe branch targets.  Consequence:
+  timed guest measurements are only exact in free-running execution — an
+  active debugger single-steps and suppresses folding.
 
 ## Verification
 

@@ -401,12 +401,13 @@ The repository is organized as follows:
 
 ### Multi-machine support
 
-The emulator runs fourteen models — `plus`, `se30`, `iicx`, `iix`, `iifx`,
-`iici`, `iisi`, `q700`, `q900`, `q950`, `q840av`, `q660av`, `lisa`, and
-`macxl` — on one shared core. Hardware is shared **by
-subsystem**, not by cloning a file per machine, across three layers. (The
-precedent is the NuBus card subsystem: a static descriptor that advertises its
-own capabilities, a vtable of NULL-safe hooks, and an explicit registry.)
+The emulator runs seventeen models — `plus`, `se30`, `iicx`, `iix`, `iifx`,
+`iici`, `iisi`, `q700`, `q900`, `q950`, `q840av`, `q660av`, `pm6100`,
+`pm7100`, `pm8100`, `lisa`, and `macxl` — on one shared core. Hardware is
+shared **by subsystem**, not by cloning a file per machine, across three
+layers. (The precedent is the NuBus card subsystem: a static descriptor that
+advertises its own capabilities, a vtable of NULL-safe hooks, and an explicit
+registry.)
 
 - **Tier 1 — generic chips** (`src/core/peripherals/`): the platform-agnostic
   silicon every family reuses — VIA, SCC, RTC, ADB, ASC, SWIM/IWM floppy,
@@ -437,8 +438,18 @@ in burst events on the shared scheduler queue (the AV family's DSP3210,
 contract — injected bus hooks, burn-down execution ABI, mandatory
 disassembler, `machine.<name>` object node, `capabilities.aux_cpus` — is
 [docs/core/cpu/cores.md](../core/cpu/cores.md); the scheduler reaches the
-main CPU through the narrow `sched_cpu_if_t` seam so a future main-CPU
-architecture plugs in without scheduler changes.
+main CPU through the narrow `sched_cpu_if_t` seam so a main-CPU architecture
+plugs in without scheduler changes.
+
+**The main CPU is per-machine.** `config_t` carries a tagged main-CPU handle
+(`cpu_arch` selects `cpu` — the 68K — or `ppc`); the **PDM family**
+(`pdm/` — pm6100/pm7100/pm8100, the first Power Macintosh generation) is the
+first consumer of the non-68K arm: its PowerPC 601 core
+(`src/core/cpu/ppc/`) owns time through the same `sched_cpu_if_t` seam, and
+`config_t.cpu` stays NULL — the classic 68k world exists on those machines
+only as ROM bytes the 601 executes.  The PDM board model is HMC (memory
+controller) + AMIC (I/O controller) around Tier-1 silicon and the shared
+Cuda model.
 
 **A machine is mostly data.** Each model is a `hw_profile_t` (defined in
 `core/machine_profile.h`) holding identity, the CPU/MMU facts the init reads as

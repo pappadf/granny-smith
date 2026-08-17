@@ -208,6 +208,8 @@ void ppc_do_lmw(ppc_t *p, uint32_t iw) {
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + (uint32_t)PPC_SIMM(iw);
     if (ppc_check_align_string(p, iw, ea, 4u * (32u - rt), false))
         return;
+    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
+        return;
     for (uint32_t reg = rt; reg < 32; reg++, ea += 4)
         if (reg != ra || ra == 0) // rA in range is skipped (kept as base)
             p->gpr[reg] = memory_read_uint32(ea);
@@ -217,6 +219,8 @@ void ppc_do_stmw(ppc_t *p, uint32_t iw) {
     uint32_t rt = PPC_RT(iw), ra = PPC_RA(iw);
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + (uint32_t)PPC_SIMM(iw);
     if (ppc_check_align_string(p, iw, ea, 4u * (32u - rt), false))
+        return;
+    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
         return;
     for (uint32_t reg = rt; reg < 32; reg++, ea += 4)
         memory_write_uint32(ea, p->gpr[reg]);
@@ -260,6 +264,8 @@ void ppc_do_lswi(ppc_t *p, uint32_t iw) {
     uint32_t ea = ra ? p->gpr[ra] : 0u;
     if (ppc_check_align_string(p, iw, ea, n, false))
         return;
+    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
+        return;
     ppc_load_string(p, ea, PPC_RT(iw), n, ra ? (int)ra : -1, -1);
 }
 
@@ -271,6 +277,8 @@ void ppc_do_lswx(ppc_t *p, uint32_t iw) {
         return;
     if (ppc_check_align_string(p, iw, ea, n, false))
         return;
+    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
+        return;
     ppc_load_string(p, ea, PPC_RT(iw), n, ra ? (int)ra : -1, (int)rb);
 }
 
@@ -279,6 +287,8 @@ void ppc_do_stswi(ppc_t *p, uint32_t iw) {
     uint32_t n = PPC_RB(iw) ? PPC_RB(iw) : 32u;
     uint32_t ea = ra ? p->gpr[ra] : 0u;
     if (ppc_check_align_string(p, iw, ea, n, false))
+        return;
+    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
         return;
     ppc_store_string(p, ea, PPC_RT(iw), n);
 }
@@ -290,6 +300,8 @@ void ppc_do_stswx(ppc_t *p, uint32_t iw) {
     if (n == 0)
         return;
     if (ppc_check_align_string(p, iw, ea, n, false))
+        return;
+    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
         return;
     ppc_store_string(p, ea, PPC_RT(iw), n);
 }
@@ -305,6 +317,8 @@ void ppc_do_lscbx(ppc_t *p, uint32_t iw) {
     if (n == 0)
         return; // rD undefined; leave untouched (deterministic)
     if (ppc_check_align_string(p, iw, ea, n, true))
+        return;
+    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
         return;
     uint32_t reg = rt, word = 0, loaded = 0;
     int shift = 24;
@@ -338,6 +352,8 @@ void ppc_do_stwcx(ppc_t *p, uint32_t iw) {
         ppc_align_exception(p, iw, ea);
         return;
     }
+    if (ppc_dxlate(p, iw, &ea))
+        return;
     if (p->reserve) {
         memory_write_uint32(ea, p->gpr[PPC_RT(iw)]);
         ppc_set_cr_field(p, 0, 2u | ((p->xer & PPC_XER_SO) ? 1u : 0u));
@@ -352,6 +368,45 @@ void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store) {
     p->dar = ea;
     p->dsisr = 0x00100000u | (store ? PPC_DSISR_STORE : 0u);
     ppc_exception(p, PPC_VEC_DSI, 0, p->instruction_pc);
+}
+
+// === Instruction fetch translation (MSR[IT]) ================================
+
+// Refill the fetch-translation cache for pc: BAT match yields a linear
+// EA→PA delta valid across the whole matched block.  Fetch through a T=1
+// segment or an unmatched T=0 segment raises ISI (the hashed-table fetch
+// path is Phase D).  Returns false when the fetch faulted.
+static bool ppc_fetch_fill(ppc_t *p, uint32_t pc) {
+    for (int i = 0; i < 4; i++) {
+        uint32_t bl = p->batl[i];
+        if (!(bl & 0x40u))
+            continue; // V
+        uint32_t cmp_mask = ~(((bl & 0x3Fu) << 17) | 0x1FFFFu);
+        if ((pc & cmp_mask) != (p->batu[i] & cmp_mask))
+            continue;
+        p->fetch_lo = pc & cmp_mask;
+        p->fetch_span = ~cmp_mask + 1u; // block size
+        p->fetch_delta = ((bl & 0xFFFE0000u) & cmp_mask) - p->fetch_lo;
+        return true;
+    }
+    LOG(0, "instruction fetch without BAT translation: pc=$%08X msr=$%08X", pc, p->msr);
+    ppc_exception(p, PPC_VEC_ISI, 0x40000000u, pc); // SRR1: translation not found
+    return false;
+}
+
+// Fetch the instruction word at p->pc, honoring MSR[IT].  Returns false when
+// the fetch raised ISI (pc has been redirected to the vector).
+static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
+    uint32_t pc = p->pc;
+    if (p->msr & PPC_MSR_IT) {
+        if (pc - p->fetch_lo >= p->fetch_span) {
+            if (!ppc_fetch_fill(p, pc))
+                return false;
+        }
+        pc += p->fetch_delta;
+    }
+    *iw = memory_read_uint32(pc);
+    return true;
 }
 
 // === The generated decoder ==================================================
@@ -379,13 +434,26 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
         if ((p->ext_irq | p->dec_pending) && (p->msr & PPC_MSR_EE))
             ppc_poll_interrupt(p);
         p->instruction_pc = p->pc;
-        uint32_t iw = memory_read_uint32(p->pc);
+        uint32_t iw;
+        if (!ppc_fetch(p, &iw))
+            continue; // ISI raised; pc now at the vector
         if (__builtin_expect(g_bus_error_pending, 0))
             break; // fetch faulted; delivered below
         p->pc += 4;
-        if (*instructions > 0) // saturating (I/O penalty may have zeroed it)
-            (*instructions)--;
         ppc_execute(p, iw);
+        // 601 branch folding: b/bc/bclr/bcctr issue to the branch unit in
+        // parallel and retire in zero cycles — the reason HWInit's timed
+        // 8-addi + bdnz measurement loop really runs at CPI 1.0 (proposal
+        // §5.2).  Two exclusions: a branch to itself still burns a slot so
+        // a pure spin (`b .`) cannot stall the sprint, and the last budget
+        // slot never folds — a folded branch there would run the branch AND
+        // its target in one nominal instruction, which breaks single-step
+        // and makes PC breakpoints/logpoints skip branch targets.
+        uint32_t op = iw >> 26;
+        bool folded = (op == 18 || op == 16 || (op == 19 && ((iw & 0x7FEu) == 0x20u || (iw & 0x7FEu) == 0x420u))) &&
+                      p->pc != p->instruction_pc && *instructions > 1;
+        if (!folded && *instructions > 0) // saturating (I/O penalty may have zeroed it)
+            (*instructions)--;
     }
     // Deferred data/fetch fault → machine check (601UM §5.4.2: the TEA
     // path; the PDM family's AMIC/BART bus errors arrive this way).

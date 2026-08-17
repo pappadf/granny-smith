@@ -63,6 +63,13 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions);
 // has no STOP-equivalent the Mac uses (guest idles in loops).
 sched_cpu_if_t ppc_sched_if(ppc_t *p);
 
+// Bind the RTC/DEC time source (§3.7): RTCU/RTCL/DEC are derived from
+// scheduler_cpu_cycles at exactly 7.8336 MHz-equivalent via the reduced
+// rational 7,833,600/freq_hz — the dossier's hard constraint.  Registers the
+// "ppc.dec" event type, so call before scheduler_start.  Unbound (unit
+// tests), the RTC/DEC SPRs are static state.
+void ppc_bind_time(ppc_t *p, struct scheduler *s, uint32_t freq_hz);
+
 // Debugger adapter (PPC proposal §3.9b): PC access, pc-based disassembly,
 // logical→physical translation.
 cpu_debug_if_t ppc_debug_if(ppc_t *p);

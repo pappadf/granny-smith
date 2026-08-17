@@ -102,6 +102,14 @@ static void fresh(void) {
     ppc_update_active_maps(P);
 }
 
+// Give every segment a T=1 memory-forced identity mapping (the HWInit
+// state, $87F0000n) so MSR[DT] tests translate EA=PA — with zeroed SRs a
+// DT=1 access would take the loud Phase-D T=0 DSI instead.
+static void identity_segments(void) {
+    for (uint32_t i = 0; i < 16; i++)
+        P->sr[i] = 0x87F00000u | i;
+}
+
 // === Tests ===
 
 static void test_reset_state(void) {
@@ -859,6 +867,7 @@ static void test_alignment(void) {
     // Translation on (MSR[DT]): page-crossing scalar faults...
     fresh();
     P->msr |= PPC_MSR_DT;
+    identity_segments();
     P->gpr[4] = 0x1FFE;
     step1(e_d(32, 3, 4, 0));
     CHECK_EQ(P->pc, 0x00000600u);
@@ -866,6 +875,7 @@ static void test_alignment(void) {
     // ...but a within-page unaligned scalar does not
     fresh();
     P->msr |= PPC_MSR_DT;
+    identity_segments();
     P->gpr[4] = 0x2002;
     memory_write_uint32(0x2000, 0xAABBCCDDu);
     memory_write_uint32(0x2004, 0xEEFF0011u);
@@ -874,12 +884,14 @@ static void test_alignment(void) {
     // unaligned lmw crossing a page faults under DT
     fresh();
     P->msr |= PPC_MSR_DT;
+    identity_segments();
     P->gpr[4] = 0x1FFE;
     step1(e_d(46, 30, 4, 0)); // lmw r30,0(r4): 8 bytes, unaligned, page-crossing
     CHECK_EQ(P->pc, 0x00000600u);
     // word-aligned lmw crossing a page is fine
     fresh();
     P->msr |= PPC_MSR_DT;
+    identity_segments();
     P->gpr[4] = 0x1FFC;
     memory_write_uint32(0x1FFC, 0x11111111u);
     memory_write_uint32(0x2000, 0x22222222u);
@@ -964,6 +976,92 @@ static void test_fp_surface(void) {
     CHECK(P->srr1 & PPC_SRR1_PROG_ILLEGAL);
 }
 
+// Phase-C translation subset: T=1 memory-forced segments (incl. the HWInit
+// SR-toggle aliasing trick), the 601-format BATs, and the loud unimplemented
+// T=0 path (proposal §3.5).
+static void test_translation(void) {
+    // T=1 memory-forced: SR low nibble selects the physical segment.  The
+    // flash-probe pattern: sr[5] → segment 4 makes EA $50800000 read the
+    // ROM at PA $40800000.
+    fresh();
+    identity_segments();
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    P->sr[5] = 0x87F00004u;
+    P->gpr[4] = 0x50800000u;
+    step1(e_d(32, 3, 4, 0)); // lwz r3,0(r4)
+    CHECK_EQ(P->gpr[3], memory_read_uint32(0x40800000u));
+    // Identity T=1: EA=PA within the segment
+    fresh();
+    identity_segments();
+    P->msr |= PPC_MSR_DT;
+    memory_write_uint32(0x3000, 0xC0DEC0DEu);
+    P->gpr[4] = 0x3000;
+    step1(e_d(32, 3, 4, 0));
+    CHECK_EQ(P->gpr[3], 0xC0DEC0DEu);
+    // T=1 with a non-memory-forced BUID takes the 601 $00A00 exception
+    fresh();
+    identity_segments();
+    P->msr |= PPC_MSR_DT;
+    P->sr[0] = 0x80100000u; // T=1, BUID $001
+    P->gpr[4] = 0x4000;
+    step1(e_d(32, 3, 4, 0));
+    CHECK_EQ(P->pc, 0x00000A00u);
+    // T=0 is the Phase-D hashed walk: loud DSI with DSISR "not found"
+    fresh();
+    P->msr |= PPC_MSR_DT; // SRs all zero → T=0
+    P->gpr[4] = 0x5000;
+    step1(e_d(36, 3, 4, 0)); // stw
+    CHECK_EQ(P->pc, 0x00000300u);
+    CHECK_EQ(P->dar, 0x5000u);
+    CHECK(P->dsisr & PPC_DSISR_NOTFOUND);
+    CHECK(P->dsisr & PPC_DSISR_STORE);
+    // 601-format BAT beats the segment: 128 KB block EA $00700000 → PA
+    // $00300000 (BATL: PBN | V; BSM 0 = 128 KB)
+    fresh();
+    P->msr |= PPC_MSR_DT; // deliberately NO identity segments: BAT must hit
+    P->batu[0] = 0x00700000u;
+    P->batl[0] = 0x00300000u | 0x40u;
+    memory_write_uint32(0x00300010u, 0xBA7BA7u);
+    P->gpr[4] = 0x00700010u;
+    step1(e_d(32, 3, 4, 0));
+    CHECK_EQ(P->gpr[3], 0xBA7BA7u);
+    // ...and the block-size mask widens the match (BSM $7 = 1 MB)
+    fresh();
+    P->msr |= PPC_MSR_DT;
+    P->batu[0] = 0x00400000u;
+    P->batl[0] = 0x00000000u | 0x40u | 0x7u; // 1 MB block → PA base 0
+    memory_write_uint32(0x000C0000u, 0x1234ABCDu);
+    P->gpr[4] = 0x004C0000u;
+    step1(e_d(32, 3, 4, 0));
+    CHECK_EQ(P->gpr[3], 0x1234ABCDu);
+    // Instruction translation: IBAT identity block covers the fetch; a
+    // fetch outside every BAT raises ISI (translation-not-found SRR1 bit)
+    fresh();
+    P->batu[0] = 0x00000000u;
+    P->batl[0] = 0x00000000u | 0x40u | 0x7u; // 1 MB identity at 0
+    P->msr |= PPC_MSR_IT;
+    ppc_update_active_maps(P);
+    P->gpr[4] = 7;
+    P->gpr[5] = 8;
+    memory_write_uint32(0x1000, e_xo(3, 4, 5, 0, 266, 0)); // add r3,r4,r5
+    run_at(0x1000, 1);
+    CHECK_EQ(P->gpr[3], 15u);
+    fresh();
+    P->batu[0] = 0x00000000u;
+    P->batl[0] = 0x00000000u | 0x40u; // 128 KB block: $120000 is outside
+    P->msr |= PPC_MSR_IT;
+    ppc_update_active_maps(P);
+    // The redirect consumes the budget on the handler's first instruction
+    // (68K-identical), so give the vector a real one to execute.
+    memory_write_uint32(0x400, 0x60000000u); // nop at the ISI vector
+    run_at(0x120000, 1);
+    CHECK_EQ(P->pc & 0xFFFFFu, 0x00404u); // nop at the ISI vector ran
+    CHECK_EQ(P->srr0, 0x120000u);
+    CHECK(P->srr1 & 0x40000000u);
+    CHECK(!(P->msr & PPC_MSR_IT)); // exception entry cleared IT
+}
+
 static void test_mq_spr(void) {
     fresh();
     P->gpr[4] = 0x13579BDFu;
@@ -1010,6 +1108,7 @@ int main(void) {
     test_exceptions();
     test_external_interrupt();
     test_alignment();
+    test_translation();
     test_fp_surface();
     test_mq_spr();
 

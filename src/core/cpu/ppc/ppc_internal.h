@@ -105,10 +105,25 @@ struct ppc {
     uint32_t dec_pending; // latched decrementer exception request
     int cpu_model; // CPU_MODEL_PPC601
 
+    // --- time derivation (§3.7: exact-rational RTC/DEC) ---
+    // ticks = cycles * tick_mul / tick_div, the reduced 7,833,600/freq
+    // rational; tick_mul == 0 means unbound (unit tests: static SPRs).
+    // rtcu/rtcl/dec above hold the values AT their rebase instant.
+    uint32_t tick_mul, tick_div;
+    uint64_t rtc_base_ticks; // RTC tick count when rtcu/rtcl were written
+    uint64_t dec_base_ticks; // RTC tick count when dec was written
+
+    // --- instruction-fetch translation cache (MSR[IT] BAT path) ---
+    // While fetch EA is in [fetch_lo, fetch_lo+fetch_span), physical fetch
+    // address = EA + fetch_delta.  span == 0 means invalid; refilled by
+    // ppc_fetch_fill, invalidated on MSR/BAT writes.
+    uint32_t fetch_lo, fetch_span, fetch_delta;
+
     // --- pointers (nulled on checkpoint restore, re-planted by owners) ---
     struct object *cpu_object; // machine.cpu node
     struct object *fpu_object; // machine.cpu.fpu (Phase E)
     struct object *mmu_object; // machine.cpu.mmu (Phase D)
+    struct scheduler *scheduler; // time source (ppc_bind_time; NULL in tests)
 };
 
 // === Field extraction (BE bit numbering per 601UM Chapter 10 diagrams).
@@ -175,8 +190,10 @@ static inline void ppc_set_ca(ppc_t *p, int ca) {
 
 // Keep the SoA fast-path maps in sync with MSR[PR] (the one global
 // obligation of a main CPU — proposal §3.5).  Called on every MSR write,
-// exception entry, and rfi.
+// exception entry, and rfi.  Doubles as the fetch-translation cache
+// invalidation point: every MSR[IT] change routes through here.
 static inline void ppc_update_active_maps(ppc_t *p) {
+    p->fetch_span = 0;
     if (p->msr & PPC_MSR_PR) {
         g_active_read = g_user_read;
         g_active_write = g_user_write;
@@ -185,6 +202,48 @@ static inline void ppc_update_active_maps(ppc_t *p) {
         g_active_write = g_supervisor_write;
     }
 }
+
+// === Address translation, Phase-C subset (601UM Ch. 6) ======================
+// BAT match (601 format, unified I/D) + the T=1 memory-forced I/O-controller
+// segments HWInit runs on.  T=0 hashed-table translation is Phase D and
+// raises a loud DSI/ISI so a premature dependence is visible, not silent.
+
+// 601 BAT match (Tables 6-11/6-12): BATU = BLPI[0-14]|WIM|Ks/Ku|PP,
+// BATL = PBN[0-14]|V(bit 25)|BSM[26-31].  BSM is a ones-mask selecting the
+// block size (000000 = 128 KB ... 111111 = 8 MB).
+static inline bool ppc_bat_xlate(ppc_t *p, uint32_t ea, uint32_t *pa) {
+    for (int i = 0; i < 4; i++) {
+        uint32_t bl = p->batl[i];
+        if (!(bl & 0x40u))
+            continue; // V
+        uint32_t cmp_mask = ~(((bl & 0x3Fu) << 17) | 0x1FFFFu); // bits above the block
+        if ((ea & cmp_mask) != (p->batu[i] & cmp_mask))
+            continue;
+        *pa = ((bl & 0xFFFE0000u) & cmp_mask) | (ea & ~cmp_mask);
+        return true;
+    }
+    return false;
+}
+
+// Data-access translation when MSR[DT] is on (ppc.c).  Returns true when the
+// access faulted (exception raised — abandon the instruction); otherwise *ea
+// has been rewritten to the physical address.  Store-ness (for the DSISR
+// image) is derived from the instruction word.
+bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *ea);
+
+static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *ea) {
+    if (!(p->msr & PPC_MSR_DT))
+        return false;
+    return ppc_dxlate_slow(p, iw, ea);
+}
+
+// Live RTC/DEC derivation (§3.7).  With no time binding these return the
+// stored SPR values unchanged.
+uint64_t ppc_ticks_now(ppc_t *p);
+uint32_t ppc_rtcu_now(ppc_t *p);
+uint32_t ppc_rtcl_now(ppc_t *p);
+uint32_t ppc_dec_now(ppc_t *p);
+void ppc_dec_arm(ppc_t *p); // (re)schedule the DEC sign-transition event
 
 // === Shared entry points (ppc.c) ===
 

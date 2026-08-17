@@ -126,6 +126,13 @@ uint64_t cpu_instr_count(void) {
     return 0;
 }
 
+// Cycle counter stub — referenced by the PPC core's RTC/DEC derivation,
+// which is unreachable in the harness (no time binding) but must link.
+uint64_t scheduler_cpu_cycles(scheduler_t *sched) {
+    (void)sched;
+    return 0;
+}
+
 // /RESET-line stub: the single-step CPU test executes the RESET opcode, which
 // calls system_reset_devices().  No emulator peripherals exist in the isolated
 // harness, so this is a no-op.

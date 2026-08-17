@@ -25,6 +25,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "nubus.h"
+#include "ppc.h" // ppc_debug_if (the PPC main-CPU debug seam)
 #include "rom.h"
 #include "root.h"
 #include "rtc.h"
@@ -721,14 +722,15 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     profile->substrate->init(cfg, checkpoint);
 
     // Bind the main-CPU debug seam to whichever core the substrate built.
-    // The PPC arm lands with the ppc core module (PR 1 Phase B / PR 2).
     switch (cfg->cpu_arch) {
     case CPU_ARCH_M68K:
         if (cfg->cpu)
             cfg->cpu_dbg = cpu_debug_if(cfg->cpu);
         break;
     case CPU_ARCH_PPC:
-        break; // ppc_debug_if() once the core exists
+        if (cfg->ppc)
+            cfg->cpu_dbg = ppc_debug_if(cfg->ppc);
+        break;
     }
 
     // Stand up the object-model root (M2): attaches stub classes for

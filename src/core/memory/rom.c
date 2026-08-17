@@ -53,20 +53,24 @@ static const char *const Q700_Q900_COMPATIBLE[] = {"q700", "q900", NULL};
 static const char *const Q950_COMPATIBLE[] = {"q950", NULL};
 // Quadra 840AV / Centris 660AV shared 2 MB "Cyclone/Tempest" ROM.
 static const char *const AV_COMPATIBLE[] = {"q840av", "q660av", NULL};
+// Power Macintosh 6100/7100/8100 shared 4 MB "Boot PDM 601 1.0" ROM.
+static const char *const PDM_COMPATIBLE[] = {"pm6100", "pm7100", "pm8100", NULL};
 
 // Master ROM signature table.  Content facts only — the canonical fixture
 // filenames live in tooling (scripts/rom_naming.py), not here.
 static const rom_info_t ROM_TABLE[] = {
-    {"Macintosh Plus (Rev 1, Lonely Hearts)",   PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024 },
-    {"Macintosh Plus (Rev 2, Lonely Heifers)",  PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024 },
-    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024 },
-    {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024 },
-    {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024 },
-    {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024 },
-    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024 },
-    {"Quadra 700/900 ROM",                      Q700_Q900_COMPATIBLE, 0x420DBFF3, 1024 * 1024},
-    {"Quadra 950 ROM",                          Q950_COMPATIBLE,      0x3DC27823, 1024 * 1024},
-    {"Quadra 840AV/660AV ROM",                  AV_COMPATIBLE,        0x5BF10FD1, 2048 * 1024},
+    {"Macintosh Plus (Rev 1, Lonely Hearts)",   PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024,  0          },
+    {"Macintosh Plus (Rev 2, Lonely Heifers)",  PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024,  0          },
+    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024,  0          },
+    {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024,  0          },
+    {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024,  0          },
+    {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024,  0          },
+    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024,  0          },
+    {"Quadra 700/900 ROM",                      Q700_Q900_COMPATIBLE, 0x420DBFF3, 1024 * 1024, 0          },
+    {"Quadra 950 ROM",                          Q950_COMPATIBLE,      0x3DC27823, 1024 * 1024, 0          },
+    {"Quadra 840AV/660AV ROM",                  AV_COMPATIBLE,        0x5BF10FD1, 2048 * 1024, 0          },
+    // The stored checksum covers the 3 MB 68k half only (checksum_span).
+    {"Power Macintosh 6100/7100/8100 ROM",      PDM_COMPATIBLE,       0x9FEB69B3, 4096 * 1024, 3072 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))
@@ -90,8 +94,8 @@ typedef struct lisa_rom_sig {
 } lisa_rom_sig_t;
 
 static const lisa_rom_sig_t LISA_ROM_TABLE[] = {
-    {{"Apple Lisa 2 Boot ROM (rev H)", LISA_COMPATIBLE, 0x098917B2, LISA_ROM_SIZE},   0x0248},
-    {{"Macintosh XL Boot ROM (\"3A\")", MACXL_COMPATIBLE, 0x094C82F0, LISA_ROM_SIZE}, 0x0341},
+    {{"Apple Lisa 2 Boot ROM (rev H)", LISA_COMPATIBLE, 0x098917B2, LISA_ROM_SIZE, 0},   0x0248},
+    {{"Macintosh XL Boot ROM (\"3A\")", MACXL_COMPATIBLE, 0x094C82F0, LISA_ROM_SIZE, 0}, 0x0341},
 };
 
 #define LISA_ROM_TABLE_COUNT (sizeof(LISA_ROM_TABLE) / sizeof(LISA_ROM_TABLE[0]))
@@ -157,7 +161,10 @@ const rom_info_t *rom_identify_data(const uint8_t *data, size_t size, uint32_t *
 
     const rom_info_t *info = rom_identify(stored);
     if (info) {
-        uint32_t computed = rom_compute_checksum(data, size);
+        // Verify over the span the stored checksum actually covers (the PDM
+        // ROM's header sums only its 68k half).
+        size_t span = info->checksum_span && info->checksum_span <= size ? info->checksum_span : size;
+        uint32_t computed = rom_compute_checksum(data, span);
         if (computed != stored)
             printf("Warning: ROM checksum mismatch (stored=%08X, computed=%08X)\n", stored, computed);
         return info;
