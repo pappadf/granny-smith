@@ -54,3 +54,6 @@ local/
 tmp/
 .claude/scheduled_tasks.lock
 __pycache__/
+
+# Machine-local agent notes (never committed)
+*.local.md
