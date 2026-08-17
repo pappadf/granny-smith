@@ -29,7 +29,7 @@
 #
 # Discs that are NOT usable, recorded so nobody re-tests them.  Note that in
 # every case the fault is the CAPTURE, not the original disc — see
-# local/gs-docs/CD_boot/cd-rom-boot.md §6.3:
+# the CD-ROM boot investigation notes §6.3:
 #   * tests/data/cdroms/Misc_Mac_Drivers.toast and the A/UX retail ISO have an
 #     Apple Partition Map but no driver partition;
 #   * the Quadra 660AV/840AV "Install Me First" CD likewise — and it carries a

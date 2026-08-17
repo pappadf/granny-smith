@@ -5,10 +5,10 @@
  * dsp3210.c — AT&T DSP3210 auxiliary-CPU core
  *
  * Adapted from the validated reference core in
- * local/gs-docs/dsp3210/dsp3210emu-fp (exact integer DAU); see dsp3210.h
+ * the standalone DSP3210 reference emulator (exact integer DAU); see dsp3210.h
  * for provenance and scope.  Section references below ([IM §x.y],
  * instruction page names) are to the AT&T DSP3210 Information Manual;
- * [DOC §x] is local/gs-docs/840av_660av/docs/dsp3210.md.
+ * [DOC §x] refers to the AV DSP3210 hardware notes; see docs/machines/av/dsp.md.
  *
  * The interpreter is deliberately the simplest possible shape: one big
  * switch on the 6-bit top-level opcode, mirroring the reference

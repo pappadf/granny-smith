@@ -6,7 +6,7 @@
 // documented quickest no-floppy path: the PIO command/result handshakes are
 // modelled exactly (they hang the '.NewAge' driver otherwise), every drive
 // reports ST3 = $FF ("no drive"), and no media path exists.  Contract:
-// local/gs-docs/840av_660av/docs/new-age.md §3/§5 — including the <SM23>
+// the AV New Age hardware notes §3/§5 — including the <SM23>
 // silicon deviation the driver depends on (Command Busy transiently SET
 // after an interrupt, so SenseInterrupt's wait-for-CB-set terminates).
 //

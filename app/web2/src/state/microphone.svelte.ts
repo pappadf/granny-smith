@@ -21,7 +21,7 @@
 // on purpose: they are voice-call processing, and an AGC in front of the
 // emulator is precisely the defect that made recorded test assets unusable
 // (levels 6-12 dB hot with the dynamics flattened, which Apple's recognizer
-// rejects — see local/gs-docs/dsp3210-plaintalk/sr-test-audio-assets.md §2).
+// rejects — see the PlainTalk SR test-audio notes §2).
 // The C side then applies the PlainTalk microphone's own characteristics.
 
 import { getModuleHeap } from '@/bus/emulator';

@@ -10,7 +10,8 @@ This document is the wire reference for the server in
 AFP 2.1 additions; §3 the object-model surface the server is driven through;
 §4 the on-disk formats it keeps inside each share; §5 the parts deliberately
 left out. AFP 2.0 material is in-house and authoritative; the 2.1 call
-descriptions were transcribed from `local/gs-docs/AFP_21_22` with page and
+descriptions were transcribed from Apple's *AppleTalk Filing Protocol Version 2.1 and 2.2*
+(AppleShare IP 6.3 Developer's Kit, 1999) with page and
 figure citations, so this document remains the single coding reference.
 
 Goals:
@@ -2237,7 +2238,8 @@ _The reply doesn't carry any payload_
 The six calls below were added in AFP 2.1 and are grouped here rather than
 interleaved by opcode, because they share one gate: the server dispatches them
 only for a session that negotiated `AFPVersion 2.1`. Their wire layouts are
-transcribed from `local/gs-docs/AFP_21_22`, with the page and figure cited per
+transcribed from Apple's *AppleTalk Filing Protocol Version 2.1 and 2.2*
+(AppleShare IP 6.3 Developer's Kit, 1999), with the page and figure cited per
 call.
 
 ---

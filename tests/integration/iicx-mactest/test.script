@@ -175,7 +175,7 @@ machine.floppy.create "$WORK_DIR/blank800-ext.dsk" 1
 # timing the seek phase is longer, so without this pause the debounce lands
 # inside the seek loop.  Letting it complete here (as a real user's pause would)
 # keeps it clear of the seek.  See
-# local/gs-docs/notes/2026-07-15-iicx-mactest-external-floppy-hang-via-eclock-sync.md
+# the IIcx MacTest external-floppy / VIA E-clock investigation notes
 scheduler.run 400000000
 # Move away then back so the OK-click emits fresh ADB motion (the settle wait
 # above shifts the click phase, and a same-spot click can otherwise land in a

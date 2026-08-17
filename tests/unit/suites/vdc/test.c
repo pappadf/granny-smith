@@ -4,7 +4,7 @@
 // AV video-in unit test (proposal-av-video-in.md §5.1).
 //
 // Links the real av/vdc.c + av/civic.c + av/cuda.c against recording stubs
-// and pins the contracts from local/gs-docs/840av_660av/docs/video-in.md:
+// and pins the contracts from the AV video-in hardware notes:
 //
 //  1. Cuda pseudo-command $22 wire framing (§2.3): direction from bit 0 of
 //     the slave address, subaddress as the first wire byte, multi-byte

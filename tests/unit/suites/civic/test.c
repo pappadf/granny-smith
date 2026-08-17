@@ -4,7 +4,7 @@
 // CIVIC serial-register + sense unit test (proposal-quadra-av.md Phase F).
 //
 // Links the real av/civic.c against recording stubs and pins the contracts
-// from local/gs-docs/840av_660av/docs/civic.md and sebastian.md:
+// from the AV Civic and Sebastian hardware notes:
 //
 //  1. The bit-serial register codec: one bit per longword, only D[0]
 //     significant, LSB at the lowest address, stride 4.  Writes stream

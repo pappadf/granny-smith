@@ -6,7 +6,8 @@
 //
 // The wire reference is docs/core/network/appletalk_server.md; the AFP 2.1
 // additions (FPGetSrvrMsg, the file-ID calls, FPExchangeFiles, FPCatSearch)
-// follow local/gs-docs/AFP_21_22.  Persistent server state lives in three
+// follow Apple's AppleTalk Filing Protocol v2.1/2.2 specification (AppleShare IP
+// 6.3 Developer's Kit, 1999).  Persistent server state lives in three
 // companion modules — afp_catalog.c (CNIDs), afp_desktop.c (icons and APPL
 // mappings) and afp_meta.c (per-file AppleDouble metadata) — while open
 // forks, deny modes and byte-range locks live in afp_fork.c.

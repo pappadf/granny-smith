@@ -4,16 +4,16 @@
 // dsp3210.h
 // AT&T DSP3210 auxiliary-CPU core — the floating-point DSP in the Quadra
 // 840AV / Centris 660AV.  Adapted from the validated reference core in
-// local/gs-docs/dsp3210/dsp3210emu-fp (exact integer DAU variant), per the
+// the standalone DSP3210 reference emulator (exact integer DAU variant), per the
 // core-module contract in docs/core/cpu/cores.md.
 //
 // Sources of truth:
 //   - AT&T "DSP3210 Information Manual" (Sept 1991): ch. 4 instruction pages,
 //     ch. 7 exception model, ch. 8 DAU + DSP32 float format, ch. 9 timer/BIO,
 //     ch. 10 encodings.
-//   - The ROM-verified dossier local/gs-docs/840av_660av/docs/dsp3210.md
+//   - The ROM-verified AV DSP3210 hardware notes (docs/machines/av/dsp.md)
 //     (§1.4 MMIO map, §1.5 encodings, §1.6 exceptions) and the errata log
-//     local/gs-docs/dsp3210/ERRATA-and-emulator-bugs.md — every semantic
+//     the DSP3210 errata — every semantic
 //     hardened there (irsh replay under the pre-switch memory map, masked
 //     address-error completion, CA-load flags, IEEE↔DSP32 bias, guard bits)
 //     is load-bearing: real Apple/AT&T code found each one.

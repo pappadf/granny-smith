@@ -3,9 +3,9 @@
 
 // singer.h
 // The Singer codec + PSC sound frame engine — the AV family's sound
-// datapath.  Contract: local/gs-docs/840av_660av/docs/singer.md (register
+// datapath.  Contract: docs/machines/av/singer.md (register
 // map §1, sndComCtl §2, singerCtl/singerStat §3, behavioural model §7) +
-// the frame-tick gating facts in local/gs-docs/dsp3210-plaintalk/
+// the frame-tick gating facts from the PlainTalk gap-closure findings
 // (supermario-board-wiring.md §B2, rtm-rom-host-side.md §2/§5).
 //
 // The engine runs a scheduler event at the programmed frame cadence

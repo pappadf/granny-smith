@@ -17,7 +17,7 @@ The I²C bus is **not** on the CPU bus. It hangs off Cuda and is driven with
 pseudo-command **`$22` (`RdWrIIC`)** — see [cuda.md](cuda.md).
 
 Contract and register semantics:
-`local/gs-docs/840av_660av/docs/video-in.md` (ROM-verified against the
+the AV video-in hardware notes (ROM-verified against the
 disassembled `'vdig'`/`'i2c '` components, plus both Philips datasheets).
 
 ## The chips are register files plus two status bytes

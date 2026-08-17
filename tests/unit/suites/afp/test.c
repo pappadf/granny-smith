@@ -13,7 +13,7 @@
 // permutations, deny matrices, lock overlap tables, log replay after a
 // simulated crash) lives here.  Request and reply layouts are transcribed
 // from docs/core/network/appletalk_server.md §2 and, for the AFP 2.1 calls,
-// from local/gs-docs/AFP_21_22.
+// from Apple's AppleTalk Filing Protocol v2.1/2.2 specification.
 
 #include "afp_catalog.h"
 #include "afp_desktop.h"

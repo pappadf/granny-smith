@@ -15,7 +15,7 @@
 // Coordinate/state conventions, the accept envelopes, and the per-primitive
 // algorithm provenance (which ROM QuickDraw sources each rasterizer is a
 // port of) are documented inline and in
-// local/gs-docs/proposals/proposal-8-24gc-hle-acceleration.md §3.
+// docs/core/peripherals/nubus/cards/display_card_8_24.md §3.
 
 #include "display_card_824gc_priv.h"
 

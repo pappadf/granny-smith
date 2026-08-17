@@ -4,8 +4,8 @@
 // display_card_824gc.c
 // "Apple Macintosh Display Card 8•24 GC" ("Dolphin") — HLE ("option B").  See
 // display_card_824gc.h, the proposal
-// local/gs-docs/proposals/proposal-8-24gc-hle-acceleration.md, and the dossier
-// under local/gs-docs/8-24GC/ (protocol §§3-9/14, driver §§2-6, kernel §§1/7).
+// docs/core/peripherals/nubus/cards/display_card_8_24.md (protocol §§3-9/14,
+// driver §§2-6, kernel §§1/7).
 //
 // Scope (this file): the CARD SHELL — the card presents the genuine v1.1
 // declaration ROM (BoardId $2C), its JMFB-family display half boots a desktop,

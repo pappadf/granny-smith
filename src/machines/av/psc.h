@@ -7,7 +7,7 @@
 // 3-6 interrupt register pairs), the 7-channel DMA engine, the Singer sound
 // engine's register block (modelled as the mandatory free-running `sndPhase`
 // counter plus latches), the UTSC time-stamp counter, and the DSP reset
-// latch.  Contract: local/gs-docs/840av_660av/docs/psc.md (+ singer.md §7,
+// latch.  Contract: docs/machines/av/psc.md (+ singer.md §7,
 // dsp3210.md §8 for the sound/DSP stubs).
 //
 // The VIA1 function the PSC also implements is NOT here — it is the generic

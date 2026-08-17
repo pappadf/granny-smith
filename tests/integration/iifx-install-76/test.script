@@ -34,7 +34,7 @@
 # copy of this file (stored uncompressed in the 7.6 net-install image) settles
 # it: the floppy copy decompresses byte-for-byte identically to that plaintext
 # for 27,787 bytes and then diverges.  See
-# local/gs-docs/notes/debug/2026-07-26-iifx-76-install-decompressor-handover.md
+# the IIfx 7.6-installer decompressor investigation notes
 #
 # "English Dialect" is reachable from three Installer packages —
 # "Universal system for any supported computer", "System for this computer"

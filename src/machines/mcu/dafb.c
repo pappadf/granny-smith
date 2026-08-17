@@ -4,7 +4,7 @@
 // dafb.c
 // DAFB built-in video — see dafb.h.  Register semantics follow the
 // reference's §11 [R] tables, cross-checked against the boot ROM's captured
-// access sequence (local/gs-docs/DAFB/re/q700-rom-dafb-access.log):
+// access sequence, captured from the Quadra 700 boot ROM:
 //   * frame-buffer base $000/$004 (the ROM's 640×480 set programs $1000),
 //     stride $008 (words; ROM uses $100 → 1024-byte rows for the gray screen)
 //   * Swatch timing at +$100: HAL/HFP give 640 visible ($88/$308), VAL/VFP

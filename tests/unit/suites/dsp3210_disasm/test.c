@@ -189,7 +189,7 @@ int main(void) {
      * an in-place accumulate with cursor advance.  With an accumulator
      * Y there is nothing to store through, so it reads as no write
      * (the old blanket "0x7F = no write" reading was wrong for memory
-     * Y operands — see local/gs-docs/dsp3210/errata.md). */
+     * Y operands — see the DSP3210 errata). */
     expect(0x3440087F, "*r2++ = a2 = *r2 + a0");
     expect(0x700000FF, "a0 = a1 * a0"); /* acc Y: no write */
     expect(0x3800079F, "a0 = (*r3++ = *r1++) + a0");

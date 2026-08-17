@@ -5,7 +5,7 @@
  * test.c — unit tests for the DSP3210 core (src/core/cpu/dsp3210/).
  *
  * The instruction-semantics tests are ported from the validated reference
- * suite in local/gs-docs/dsp3210/dsp3210emu-fp/test_dsp3210_emu.c.
+ * suite for the standalone DSP3210 reference emulator.
  * Programs are hand-encoded from the field layouts of IM chapter 10
  * (the same layouts the validated reference disassembler uses); one
  * vector (the ROM boot stub's `r5 = pc - 0x24`) is a raw ROM word.

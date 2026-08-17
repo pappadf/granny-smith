@@ -6,7 +6,7 @@ reference** for the two layers, the role
 [appletalk_server.md](appletalk_server.md) plays for AFP: implementation code
 cites section numbers here, not outside sources. Where a fact came from is
 recorded once, in [Appendix A](#appendix-a--provenance), per the provenance
-rule in `local/gs-docs/completed/proposal-appletalk-ppc-appleevents.md` §2.*
+rule described in §2 of this document.*
 
 *The transport below this document is ADSP, specified in
 [appletalk.md §3](appletalk.md#3-adsp--appletalk-data-stream-protocol).*

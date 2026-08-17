@@ -97,7 +97,7 @@ include "../lib/mac.script"
 let av_rom = "../../data/roms/q840av-q660av-5bf10fd1.rom"
 let av_hd = "../../data/systems/system_7_1_77mb_av.img"
 # Spoken-command media.  Generated, not recorded: see
-# local/gs-docs/debug-plaintalk/scripts/gen-sr-asset.py and
+# the internal PlainTalk SR asset generator and
 # dsp3210-plaintalk/sr-test-audio-assets.md §2 for the PlainTalk
 # microphone contract they are conditioned to.
 let av_sr_trash = "../../data/speech/sr-open-the-trash.wav"
@@ -336,7 +336,7 @@ def row_video_in(model, golden) {
 # running: the Sound Manager posts a MsgFIFO command {count, rate $ED62 =
 # 22254→24000, gains} and streams the samples through the Blue FIFO, the
 # sdev's AppleSRC task rate-converts on the DSP (in-place DAU stores —
-# local/gs-docs/dsp3210/errata.md E10), and the Singer frame engine plays
+# the DSP3210 errata E10), and the Singer frame engine plays
 # the result.  The kernel must SURVIVE playback: emr stays $8000 — a dead
 # kernel still reads state "running" (waiti with the timer free-running),
 # so emr is the aliveness check (docs/machines/av/dsp.md).

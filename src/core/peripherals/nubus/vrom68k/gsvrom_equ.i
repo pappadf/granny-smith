@@ -5,7 +5,7 @@
 | Clean-room equates for the GS generic declaration ROM.  Every value
 | here is sourced from our own documentation — docs/core/peripherals/
 | nubus_vrom.md, the three annotated whole-ROM disassemblies under
-| local/gs-docs/, and the published *Designing Cards and Drivers for the
+| the published *Designing Cards and Drivers for the
 | Macintosh Family* text — NOT from Apple's AIncludes (proposal sec. 6.3).
 
 | --- Format Block ------------------------------------------------------------

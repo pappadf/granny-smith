@@ -8,8 +8,7 @@
 // file crosses out of an HFS/HFS+ image (copy-out), to reconstruct them on the
 // way back in (image_open fork acquisition), and — later — as the AFP server's
 // host-side storage format.  See
-// local/gs-docs/proposals/proposal-appledouble-support.md and the format note
-// under local/gs-docs/AppleDouble/.
+// Apple's *AppleSingle/AppleDouble Formats for Foreign Files* developer note.
 //
 // Two on-disk shapes share one header layout:
 //   AppleSingle (magic 0x00051600): one self-contained file; MAY carry the

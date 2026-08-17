@@ -50,7 +50,7 @@
 # (Easy Install's choice) and "Utility" → "AppleScript" — so deselecting
 # AppleScript alone does not avoid it; "Minimum system for any supported
 # computer" is the one system variant that excludes it.  Full analysis:
-# local/gs-docs/notes/debug/2026-07-26-iifx-76-install-decompressor-handover.md
+# the IIfx 7.6-installer decompressor investigation notes
 #
 # Companion: tests/integration/iici-format-hd (System 6.0.8 / HD20SC / HD SC
 # Setup 2.0.3) pins the IIcx's NCR 5380 pseudo-DMA primer gate.

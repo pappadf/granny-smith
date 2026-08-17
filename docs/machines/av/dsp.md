@@ -4,8 +4,7 @@ The AT&T DSP3210 — the AV family's floating-point DSP — as a live
 auxiliary core.  The generic core lives in `src/core/cpu/dsp3210/`
 (adapted from the validated dossier core, see the header of
 `dsp3210.h`); this file binds it to the board.  Contracts:
-`local/gs-docs/840av_660av/docs/dsp3210.md` §8 and the gap-closure
-findings in `local/gs-docs/dsp3210-plaintalk/`.
+the AV DSP3210 hardware notes §8 and the PlainTalk gap-closure findings.
 
 ## Execution
 
@@ -31,7 +30,7 @@ tick, timer`) re-arm at +1 cycle and `cpu_reschedule()`.
   (kernel data `+$1A8`/`+$1F8`), all FIFO rings live in host RAM via
   `DSPFIFO` records, and anything that lands there is a runaway
   pointer that should fault (see
-  `local/gs-docs/dsp3210/errata.md` E10 for the bug that once made it
+  the DSP3210 errata E10 for the bug that once made it
   look like a sound-FIFO window).
 - **Reset lifecycle** — the PSC `dspOverRun` ($21C) hook: a bit-0 CLEAR
   write releases the DSP (the power-on release finds the latch already

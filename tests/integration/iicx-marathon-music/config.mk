@@ -11,7 +11,7 @@
 # offset-binary silence floor).
 #
 # NOTE: this test was RED from creation until 2026-07-20.  Root cause (full
-# dossier: local/gs-docs/marathon/README.md): at song start QuickTime's
+# from the Marathon music investigation): at song start QuickTime's
 # software synth needs ~380 KB of System 6 system heap (128 KB mixer LUT +
 # instruments); with the image's stock 128 KB boot-block heap floor the
 # instrument fetch failed with a silently swallowed memFullErr — the whole

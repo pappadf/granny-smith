@@ -6,7 +6,7 @@
 // SAA7191B "DMSD" colour decoder (I2C slave $8A/$8B) and the SAA7186 "VDC"
 // video scaler (I2C slave $B8/$B9) — plus the frame engine that writes
 // captured fields into CIVIC VRAM at $50200800.  Contract:
-// local/gs-docs/840av_660av/docs/video-in.md (ROM-verified register maps,
+// docs/machines/av/vdc.md (ROM-verified register maps,
 // probes and the golden open sequence).
 //
 // Model shape (proposal-av-video-in.md §2):

@@ -19,7 +19,7 @@
 # still hangs in the decl-ROM video driver's RISC-driven display bring-up
 # (cscSetMode + the MFB/ACDC hardware handshake), which requires modelling the
 # GC's Am29000-side video hardware — see
-# local/gs-docs/8-24GC/decl-rom-disasm/ and the investigation notes.  This test
+# the 8•24 GC declaration-ROM disassembly and investigation notes.  This test
 # therefore exercises the card model + the CB protocol engine directly rather
 # than booting the OS through the (as-yet-unmodelled) video handshake.
 

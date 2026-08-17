@@ -8,7 +8,7 @@
 // functionally (not as an HC05 core) against BOTH sides of the wire:
 //   * host side — OS/CudaMgr.a (SendCudaCmd / CudaShiftRegIRQ / CudaInit)
 //   * Cuda side — the firmware disassembly distilled in
-//     local/gs-docs/840av_660av/docs/via1-cuda.md §3c (handshake pin map,
+//     docs/machines/av/cuda.md §3c (handshake pin map,
 //     the 37-entry pseudo-command dispatch with its 12 REJECTED commands,
 //     PRAM = 256 bytes at $0100-$01FF, the RTC counter)
 //

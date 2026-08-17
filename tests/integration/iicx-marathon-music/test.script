@@ -154,7 +154,7 @@ machine.adb.mouse.click false
 # heap — bbSysHeapSize at HFS-partition offset $86 — so QuickTime's software
 # synth can load its instruments; with the stock 128 KB floor the instrument
 # fetch fails with a swallowed memFullErr and the song is silent.  See
-# local/gs-docs/marathon/README.md for the full root-cause dossier.)
+# the Marathon music investigation notes for the full root cause.)
 scheduler.run 50000000
 check("marathon-arrival-8bpp-640x480.png")
 

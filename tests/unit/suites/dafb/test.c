@@ -2,7 +2,7 @@
 //
 // Drives dafb.c through its memory interface exactly as the bus would.
 // The Swatch/DP8531 values are the boot ROM's observed 640×480 mode set
-// (local/gs-docs/DAFB/re/q700-rom-dafb-access.log), so the geometry
+// (captured from the Quadra 700 boot ROM), so the geometry
 // derivations are pinned to real programming, not invented numbers.
 
 #include "dafb.h"

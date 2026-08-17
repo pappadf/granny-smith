@@ -3,8 +3,8 @@
 The AV family's sound datapath: the PSC's dedicated sound DMA engine and
 the Singer codec, modelled as a cadenced frame engine — the structural
 twin of the VDC field engine.  Register contract:
-`local/gs-docs/840av_660av/docs/singer.md`; tick gating and overrun
-semantics: `local/gs-docs/dsp3210-plaintalk/` (B2/B3).
+the AV Singer hardware notes; tick gating and overrun
+semantics: the PlainTalk gap-closure findings (B2/B3).
 
 ## The frame engine
 
@@ -166,8 +166,7 @@ assets reach the guest looking alike:
   recognition failure, while 12 dB of darkening still recognizes).  The
   constant was calibrated by sweeping tilt against four synthesized voices
   and picking the value that recovers the failing ones without moving the
-  reference — see `local/gs-docs/debug-plaintalk/re/02-acceptance-region-
-  probe.md`.  It is host-independent: every host delivers roughly flat
+  reference — see the PlainTalk acceptance-region probe notes.  It is host-independent: every host delivers roughly flat
   digital audio, so the correction toward the trained channel is the same
   everywhere;
 * a **spectral-tilt normaliser** — the tilt sibling of the sensitivity
@@ -270,7 +269,7 @@ promise of recognition.  It is not: the rejected recording was corrected to
 match the asset in both level and spectrum and was still rejected, 12 takes
 out of 12, while the asset recognised in the same session.
 
-`local/gs-docs/debug-plaintalk/micrig/` exercises the conditioning without a
+The PlainTalk microphone rig exercises the conditioning without a
 browser (it found two defects review had missed).  `connected` drives the mic-present sense;
 `samples`/`position` expose progress.  The loaded WAV is checkpointed
 with the machine; the host mic is checkpoint-ephemeral.

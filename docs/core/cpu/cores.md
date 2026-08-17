@@ -5,7 +5,7 @@ How Granny Smith executes more than one CPU per machine: exactly one
 **auxiliary cores** — peripheral processors that execute real guest code
 but do not control time.  The first auxiliary core is the AV family's
 DSP3210 (`src/core/cpu/dsp3210/`, wired by `src/machines/av/dsp.c`).
-Design: `local/gs-docs/proposals/proposal-heterogeneous-multi-cpu.md`,
+Design:
 executed by `proposal-dsp3210-plaintalk.md`.
 
 ## Time model
