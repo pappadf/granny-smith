@@ -243,12 +243,15 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
 
     // The AMIC pseudo-VIA1 is a real 6522 core instance behind the island
-    // decode.  Its timers run at 783.36 kHz on every model; the divisor is
-    // rounded here (60 MHz / 783.36 kHz is not integral) — exact-rational
-    // timer scaling lands with the rung that proves tick timing (L17).
+    // decode.  Its timers run at 783.36 kHz on every model, and no PDM CPU
+    // clock divides integrally by that — the rounded divisor is display-only
+    // and via_set_exact_clock installs the reduced 783360/freq rational so
+    // guest-measured timer rates are exactly φ2-equivalent (the dossier's
+    // hard constraint, owed by rung L17).
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", pdm_via1_output, pdm_via1_shift_out, pdm_via1_irq, cfg, cp);
+    via_set_exact_clock(cfg->via1, cfg->machine->freq);
 
     // VIA1 idle input levels: PB3 is Cuda TREQ (active-low, idle high);
     // CA1 (tick) and the Cuda CB1/CB2 lines idle high.
@@ -285,6 +288,11 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     // Finish: debugger + scheduler start (the mac030_glue_finish shape).
     cfg->debugger = debug_init();
     scheduler_start(cfg->scheduler);
+
+    // Fresh boot: start the free-running VBL raster (a restore rebinds
+    // the checkpointed pending event through the registered type).
+    if (!cp)
+        pdm_amic_start_vbl(cfg);
 }
 
 static void pdm_reset(config_t *cfg) {

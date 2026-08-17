@@ -7,6 +7,7 @@
 #include "debug_mac.h"
 
 #include "cpu.h"
+#include "debug.h"
 #include "memory.h"
 #include "mmu.h"
 #include "mouse.h"
@@ -82,29 +83,43 @@ const char *macos_atrap_name(uint16_t trap) {
     return buffer;
 }
 
+// Every 68k-world address in this file resolves through the mac-world
+// translation first: identity on 68K machines, the user-data view on PDM
+// (debug.h cpu_debug_if_t.translate_mac).
+uint32_t debug_mac_xlate(uint32_t addr) {
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (dif && dif->translate_mac) {
+        bool ok;
+        uint32_t pa = dif->translate_mac(dif->ctx, addr, &ok);
+        if (ok)
+            return pa;
+    }
+    return addr;
+}
+
 static uint8_t read_8bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_debug_read_uint8(addr);
+    return memory_debug_read_uint8(debug_mac_xlate(addr));
 }
 
 static uint16_t read_16bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_debug_read_uint16(addr);
+    return memory_debug_read_uint16(debug_mac_xlate(addr));
 }
 
 static uint32_t read_32bit_be(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_debug_read_uint32(addr);
+    return memory_debug_read_uint32(debug_mac_xlate(addr));
 }
 
 static void read_bytes(uint32_t addr, uint8_t *buffer, size_t size) {
     if (!system_memory())
         return;
     for (size_t i = 0; i < size; ++i) {
-        buffer[i] = memory_debug_read_uint8(addr + i);
+        buffer[i] = memory_debug_read_uint8(debug_mac_xlate(addr + (uint32_t)i));
     }
 }
 
@@ -348,21 +363,21 @@ void debug_mac_print_process_info(void) {
 // Target (68K) backtrace and diagnostic functions
 // ────────────────────────────────────────────────────────────────────────────
 
-// Memory read helpers
+// Memory read helpers (mac-world addresses; see debug_mac_xlate above)
 static uint8_t read8(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_debug_read_uint8(addr);
+    return memory_debug_read_uint8(debug_mac_xlate(addr));
 }
 static uint16_t read16(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_debug_read_uint16(addr);
+    return memory_debug_read_uint16(debug_mac_xlate(addr));
 }
 static uint32_t read32(uint32_t addr) {
     if (!system_memory())
         return 0;
-    return memory_debug_read_uint32(addr);
+    return memory_debug_read_uint32(debug_mac_xlate(addr));
 }
 
 // Print target 68K backtrace by walking stack frames

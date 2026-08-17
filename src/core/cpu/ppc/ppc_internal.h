@@ -235,6 +235,10 @@ void ppc_set_sr(ppc_t *p, uint32_t n, uint32_t v);
 // SoA fill, no exception).  data=true follows MSR[DT], else MSR[IT].
 uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok);
 
+// The 68k world's view (user data context, translation forced on) for
+// debug.mac — stable across supervisor/user stop contexts (§3.9e).
+uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok);
+
 // Keep the SoA fast-path maps in sync with the (MSR[PR], MSR[DT]) pair —
 // the one global obligation of a main CPU (proposal §3.5).  Called on
 // every MSR write, exception entry, and rfi.  The user arrays hold the
@@ -366,13 +370,20 @@ void ppc_do_stwcx(ppc_t *p, uint32_t iw);
 void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store);
 
 // FP surface (ppc_fpu.c): single<->double conversion in integer code
-// (WASM/native byte determinism, proposal §3.6), compares, mcrfs, and the
-// Phase-E backstop for the arithmetic datapath.
+// (WASM/native byte determinism, proposal §3.6), compares, the FPSCR
+// instruction semantics, and the Phase-E arithmetic wrappers over the
+// integer-only kernel in ppc_softfp.c.
 uint64_t ppc_f32_to_f64(uint32_t s);
 uint32_t ppc_f64_to_f32(uint64_t d);
 void ppc_fcmp(ppc_t *p, uint32_t iw, bool ordered);
 void ppc_do_mcrfs(ppc_t *p, uint32_t iw);
-void ppc_fpu_unimpl(ppc_t *p, uint32_t iw);
+void ppc_fp_arith(ppc_t *p, uint32_t iw, int op, bool single);
+void ppc_do_frsp(ppc_t *p, uint32_t iw);
+void ppc_do_fctiw(ppc_t *p, uint32_t iw, bool round_to_zero);
+void ppc_do_mtfsf(ppc_t *p, uint32_t iw);
+void ppc_do_mtfsfi(ppc_t *p, uint32_t iw);
+void ppc_do_mtfsb(ppc_t *p, uint32_t iw, bool set);
+void ppc_fp_trap_check(ppc_t *p);
 
 // The interpreter proper (ppc_run.c, generated from ppc_decode.h):
 // execute one instruction word.

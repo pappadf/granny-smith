@@ -16,7 +16,12 @@
 # (the nanokernel sizes the HTAB for 24 MB at $017E0000 with HTABMASK 1),
 # the Emulator Data Page (EDP = HTAB - $1000) carrying the "Boot PDM 601
 # 1.0" bootstrap string, and the 68k world's own low-memory globals read
-# back through the MMU translate hook (debug.mac).
+# back through the MMU translate hook (debug.mac).  Phase-E markers
+# (L16-L18): the DynamicBoxFlag byte, the tick RATE under exact-rational
+# VIA scaling, and HMCMerge's framebuffer/DMA logical windows — the boot
+# now runs through video init (monitor sense 6 + the 66.67 Hz VBL raster)
+# and paints the gray desktop into physical 0 before parking at the
+# Phase-G SCSI-scan wall.
 
 machine.boot model="pm6100" ram=24576 rom="${$ROM}"
 
@@ -25,8 +30,14 @@ assert machine.cpu.pc == 0xFFF00100 "reset vector != $FFF00100"
 
 # 200M instructions: checksum (~13M), HWInit, boot chime (~100M), kernel
 # entry (~135M), nanokernel init, rfi into the 68k emulator, and the 68k
-# Start Manager well past its VIA/Cuda bring-up.
+# Start Manager through video init to the SCSI-scan wall.
 scheduler.run 200000000
+
+# Park in USER mode (the 68k world) so the context-dependent reads below
+# (machine.cpu.mmu.peek/translate follow the CURRENT MSR context) resolve
+# against the 68k mappings whatever supervisor slice the fixed budget
+# happened to stop in.  Deterministic: the whole run is.
+while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
 
 # --- L2/L3/L5/L6: HWInit ran end-to-end (cold path, HMC config live) -------
 # Proven transitively: nothing below is reachable without them.
@@ -81,18 +92,65 @@ assert machine.memory.peek.l(0x17DFF04) == 0x2050444D "L14: EDP bootstrap string
 # The 68k Start Manager initialized low memory (ROMBase) and services the
 # 60.15 Hz tick through the full chain: AMIC edge latch -> 601 external
 # interrupt -> nanokernel AMICIrq2IPL -> emulated 68k level-1 handler
-# incrementing Ticks.  Both reads go through the MMU debug-translate hook
-# (debug.mac follows the 68k world's logical space).
+# incrementing Ticks.  debug.mac resolves the 68k world's logical space
+# through the user-context translate hook (§3.9e) — the nanokernel
+# relocates logical low memory once the framebuffer claims physical 0, so
+# a physical read here would see the gray desktop pattern instead.
 assert debug.mac.globals.read("ROMBase") == 0x40800000 "L15: 68k low memory not initialized (ROMBase)"
 assert debug.mac.globals.read("Ticks") != 0 "L15: 68k tick handler not running (Ticks)"
+
+# --- L16: DynamicBoxFlag classified the machine ----------------------------
+# StartInit's DynamicBoxFlag maps (family, measured CPU clock) to the
+# production box: pm6100 -> 69 boxPDM50WLCD (Gestalt machine 75),
+# pm7100 -> 106 (112), pm8100 -> 59 boxPDM80F (65) — read from the 68k
+# low-memory BoxFlag byte ($CB3) through the user-context window.  A
+# mis-measured clock (branch folding, RTC rational, HMC wait states)
+# lands in a different row of the ROM's speed table.
+assert machine.cpu.mmu.peek(0xCB3, 1) == 0x45 "L16: BoxFlag != boxPDM50WLCD (69)"
+
+# --- L18: HMCMerge's _nkAllocateMemory windows are live --------------------
+# With a monitor sensed (the 14" Hi-Res, code 6), HMCMerge allocates the
+# 604 KB framebuffer at logical $60B00000 FORCED to physical 0 ("HMC
+# requirement") and the 160 KB cache-inhibited DMA buffer at $61000000,
+# physical 256 KB-aligned below the HTAB — both through the kernel-call
+# path with HTAB growth and exception re-entry.  (The VBL raster is what
+# lets the boot leave the Sonora driver's WaitVSync spin and reach here —
+# the dossier's §11.6 polarity suspect resolved: the flag is active-low.)
+assert machine.cpu.mmu.translate(0x60B00000) == 0x0000000 "L18: framebuffer window not at physical 0"
+assert machine.cpu.mmu.translate(0x61000000) == 0x1780000 "L18: DMA window not mapped (24 MB layout)"
+
+# --- L17: pseudo-VIA timing — ticks and seconds advance at rate ------------
+# Cuda/PRAM/ADB init and the tick chain were proven live above; L17 pins
+# the RATE: with the exact-rational 783.36 kHz VIA scaling, Ticks must
+# advance at 60.15 Hz of emulated time over the ~2 s window below (the
+# ±10-tick band allows interrupt-service jitter, not clock error — the
+# old rounded divisor sat 0.5% off and a real regression lands far
+# outside), and the tick handler's Time accumulation follows.  The Cuda
+# RDTIME sync itself happens post-SCSI-scan (Phase G territory); Time
+# counts from 0 until then.  debug.mac reads are stop-context-free (the
+# §3.9e user-view hook), so no re-park is needed after the run.
+let t0 = debug.mac.globals.read("Time")
+let k0 = debug.mac.globals.read("Ticks")
+let c0 = scheduler.cycles
+scheduler.run 120000000
+let dticks = debug.mac.globals.read("Ticks") - $k0
+let dsecs = debug.mac.globals.read("Time") - $t0
+let dcyc = scheduler.cycles - $c0
+# 60.15 Hz against the 60 MHz cycle clock: expected = dcyc * 60.15 / 60e6
+let expect = $dcyc * 6015 / 100 / 60000000
+assert $dticks >= $expect - 10 "L17: tick rate low (${$dticks} vs ~${$expect})"
+assert $dticks <= $expect + 10 "L17: tick rate high (${$dticks} vs ~${$expect})"
+assert $dsecs >= 1 "L17: Time global not advancing"
 
 # The L10 "Lisa" POST marker stays deferred (POST does not run pre-kernel
 # on the normal cold path — §0.1 finding 4), and the warm-restart row is
 # deferred to the first guest-triggered Restart (the warm path locates the
 # ROM image through HTAB state only the kernel-mediated 68k RESET flow
 # creates; the MSR[IR] discriminator and rfi-untranslated mechanics are
-# covered by tests/unit/suites/ppc_mmu).  Next rung: L16 (Gestalt/
-# DynamicBoxFlag via debug.mac) — Phase E territory.
+# covered by tests/unit/suites/ppc_mmu).  Next rung: L19 (boot chime
+# through the AWACS polling contract) — Phase F territory; the gray
+# desktop pattern is already being painted into the framebuffer at
+# physical 0, but the screen surface itself is Phase F's scanout work.
 
-echo "pdm-rom-ladder: high-water rung L15 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")})"
+echo "pdm-rom-ladder: high-water rung L18 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} box=${machine.cpu.mmu.peek(0xCB3, 1)})"
 quit

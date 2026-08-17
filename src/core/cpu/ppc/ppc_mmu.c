@@ -594,3 +594,22 @@ uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok) {
         *ok = false;
     return ea;
 }
+
+// The 68k world's view: user data context with translation forced on,
+// independent of where the sprint stopped (the nanokernel relocates
+// logical low memory once the framebuffer claims physical 0, so a
+// supervisor-context read of a 68k global lands in the frame buffer —
+// debug.mac must always resolve against the user mapping; §3.9e).
+uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok) {
+    xl_out_t out;
+    if (ok)
+        *ok = true;
+    xl_result_t res = xlate(p, ea, true, false, true, true, &out);
+    if (res == XL_OK)
+        return out.pa;
+    if (res == XL_PROT && xlate(p, ea, false, false, true, true, &out) == XL_OK)
+        return out.pa;
+    if (ok)
+        *ok = false;
+    return ea;
+}

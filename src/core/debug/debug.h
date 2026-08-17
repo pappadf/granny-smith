@@ -37,7 +37,19 @@ typedef struct cpu_debug_if {
     // Translate a logical address in the core's current context; *ok reports
     // whether a valid translation exists (identity when translation is off).
     uint32_t (*translate)(void *ctx, uint32_t logical, bool *ok);
+    // Translate a logical address in the MAC WORLD's context — the space the
+    // 68k Toolbox's low-memory globals live in — independent of where the
+    // sprint stopped.  NULL means the mac world is the core's own space
+    // (every 68K machine); the PPC core supplies the user-data view here,
+    // because on PDM the nanokernel relocates logical page 0 away from
+    // physical 0 once the framebuffer claims it (§3.9e).
+    uint32_t (*translate_mac)(void *ctx, uint32_t logical, bool *ok);
 } cpu_debug_if_t;
+
+// Resolve a 68k low-memory address through the mac-world translation
+// (identity on 68K machines and when no machine is live).  Shared by
+// debug.mac and the globals object methods.
+uint32_t debug_mac_xlate(uint32_t addr);
 
 struct breakpoint;
 typedef struct breakpoint breakpoint_t;

@@ -39,8 +39,9 @@ bool cpu_has_fpu(int cpu_model) {
     switch (cpu_model) {
     case CPU_MODEL_68030: // paired 68882
     case CPU_MODEL_68040: // on-chip FPU
+    case CPU_MODEL_PPC601: // on-chip FPU (datapath live since Phase E)
         return true;
-    default: // 68000 compacts; non-68K models answer via their own module
+    default: // 68000 compacts
         return false;
     }
 }
@@ -418,7 +419,9 @@ static uint32_t cpu_dbgif_translate(void *ctx, uint32_t logical, bool *ok) {
 }
 
 cpu_debug_if_t cpu_debug_if(cpu_t *cpu) {
-    cpu_debug_if_t dif = {cpu, cpu_dbgif_get_pc, cpu_dbgif_set_pc, cpu_dbgif_disasm, cpu_dbgif_translate};
+    // translate_mac is NULL: on 68K machines the mac world is the core's
+    // own space (memory_debug_read already applies the 68k MMU).
+    cpu_debug_if_t dif = {cpu, cpu_dbgif_get_pc, cpu_dbgif_set_pc, cpu_dbgif_disasm, cpu_dbgif_translate, NULL};
     return dif;
 }
 

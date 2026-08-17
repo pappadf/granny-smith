@@ -3600,21 +3600,23 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
     int idx = mac_global_lookup(argv[0].s);
     if (idx < 0)
         return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
+    // Globals live in the mac world's logical space (identity on 68K
+    // machines; the user-data view on PDM — debug_mac_xlate).
     uint32_t addr = mac_global_vars[idx].address;
     int sz = mac_global_vars[idx].size;
     switch (sz) {
     case 1: {
-        value_t v = val_uint(1, memory_debug_read_uint8(addr));
+        value_t v = val_uint(1, memory_debug_read_uint8(debug_mac_xlate(addr)));
         v.flags |= VAL_HEX;
         return v;
     }
     case 2: {
-        value_t v = val_uint(2, memory_debug_read_uint16(addr));
+        value_t v = val_uint(2, memory_debug_read_uint16(debug_mac_xlate(addr)));
         v.flags |= VAL_HEX;
         return v;
     }
     case 4: {
-        value_t v = val_uint(4, memory_debug_read_uint32(addr));
+        value_t v = val_uint(4, memory_debug_read_uint32(debug_mac_xlate(addr)));
         v.flags |= VAL_HEX;
         return v;
     }
@@ -3623,7 +3625,7 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
             return val_err("debug.mac.globals.read: unexpected entry size %d", sz);
         uint8_t buf[256];
         for (int i = 0; i < sz; i++)
-            buf[i] = memory_debug_read_uint8(addr + (uint32_t)i);
+            buf[i] = memory_debug_read_uint8(debug_mac_xlate(addr + (uint32_t)i));
         return val_bytes(buf, (size_t)sz);
     }
     }
@@ -3639,15 +3641,29 @@ static value_t method_mac_globals_write(struct object *self, const member_t *m, 
     uint64_t v = argv[1].u;
     uint32_t addr = mac_global_vars[idx].address;
     int sz = mac_global_vars[idx].size;
+    // On a mac-world-translated machine (PDM) the resolved address is
+    // physical, so the write must take the debug path; 68K machines keep
+    // the historical live-CPU write.
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    bool xl = dif && dif->translate_mac;
     switch (sz) {
     case 1:
-        memory_write_uint8(addr, (uint8_t)v);
+        if (xl)
+            memory_debug_write_uint8(debug_mac_xlate(addr), (uint8_t)v);
+        else
+            memory_write_uint8(addr, (uint8_t)v);
         break;
     case 2:
-        memory_write_uint16(addr, (uint16_t)v);
+        if (xl)
+            memory_debug_write_uint16(debug_mac_xlate(addr), (uint16_t)v);
+        else
+            memory_write_uint16(addr, (uint16_t)v);
         break;
     case 4:
-        memory_write_uint32(addr, (uint32_t)v);
+        if (xl)
+            memory_debug_write_uint32(debug_mac_xlate(addr), (uint32_t)v);
+        else
+            memory_write_uint32(addr, (uint32_t)v);
         break;
     default:
         return val_err("debug.mac.globals.write: '%s' is %d bytes (only 1/2/4 supported)", argv[0].s, sz);

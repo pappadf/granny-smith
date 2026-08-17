@@ -15,6 +15,7 @@
 #define GS_CPU_PPC_OPS_H
 
 #include "ppc_internal.h"
+#include "ppc_softfp.h" // FPSCR bits + the PPC_SF_ op enum
 
 // === Alignment exceptions (601UM §5.4.6) ====================================
 //
@@ -429,33 +430,33 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_FNEG       OP(FP(); p->fpr[RT] = p->fpr[RB] ^ 0x8000000000000000ull; REC1())
 #define OP_FABS       OP(FP(); p->fpr[RT] = p->fpr[RB] & 0x7FFFFFFFFFFFFFFFull; REC1())
 #define OP_FNABS      OP(FP(); p->fpr[RT] = p->fpr[RB] | 0x8000000000000000ull; REC1())
-#define OP_MFFS       OP(FP(); p->fpr[RT] = 0xFFF8000000000000ull | p->fpscr; REC1()) // upper half deterministic
-#define OP_MTFSF      OP(FP(); uint32_t m_ = ppc_crm_mask((iw >> 17) & 0xFFu); p->fpscr = ((uint32_t)p->fpr[RB] & m_) | (p->fpscr & ~m_); REC1())
-#define OP_MTFSFI     OP(FP(); uint32_t sh_ = 28 - 4 * PPC_CRFD(iw); p->fpscr = (p->fpscr & ~(0xFu << sh_)) | (((iw >> 12) & 0xFu) << sh_); REC1())
-#define OP_MTFSB0     OP(FP(); p->fpscr &= ~(0x80000000u >> RT); REC1())
-#define OP_MTFSB1     OP(FP(); p->fpscr |= 0x80000000u >> RT; REC1())
+#define OP_MFFS       OP(FP(); p->fpr[RT] = 0xFFF8000000000000ull | p->fpscr; REC1()) // 601: upper half $FFF80000
+#define OP_MTFSF      OP(FP(); ppc_do_mtfsf(p, iw))
+#define OP_MTFSFI     OP(FP(); ppc_do_mtfsfi(p, iw))
+#define OP_MTFSB0     OP(FP(); ppc_do_mtfsb(p, iw, false))
+#define OP_MTFSB1     OP(FP(); ppc_do_mtfsb(p, iw, true))
 #define OP_MCRFS      OP(FP(); ppc_do_mcrfs(p, iw))
 
-// --- FP arithmetic: the Phase-E datapath backstop (loud, never silent) ---
-#define OP_FRSP       OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FCTIW      OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FCTIWZ     OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FDIV       OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FSUB       OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FADD       OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FMUL       OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FMSUB      OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FMADD      OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FNMSUB     OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FNMADD     OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FDIVS      OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FSUBS      OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FADDS      OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FMULS      OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FMSUBS     OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FMADDS     OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FNMSUBS    OP(FP(); ppc_fpu_unimpl(p, iw))
-#define OP_FNMADDS    OP(FP(); ppc_fpu_unimpl(p, iw))
+// --- FP arithmetic: the Phase-E integer-kernel datapath (ppc_softfp.c) ---
+#define OP_FRSP       OP(FP(); ppc_do_frsp(p, iw))
+#define OP_FCTIW      OP(FP(); ppc_do_fctiw(p, iw, false))
+#define OP_FCTIWZ     OP(FP(); ppc_do_fctiw(p, iw, true))
+#define OP_FDIV       OP(FP(); ppc_fp_arith(p, iw, PPC_SF_DIV, false))
+#define OP_FSUB       OP(FP(); ppc_fp_arith(p, iw, PPC_SF_SUB, false))
+#define OP_FADD       OP(FP(); ppc_fp_arith(p, iw, PPC_SF_ADD, false))
+#define OP_FMUL       OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MUL, false))
+#define OP_FMSUB      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MSUB, false))
+#define OP_FMADD      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MADD, false))
+#define OP_FNMSUB     OP(FP(); ppc_fp_arith(p, iw, PPC_SF_NMSUB, false))
+#define OP_FNMADD     OP(FP(); ppc_fp_arith(p, iw, PPC_SF_NMADD, false))
+#define OP_FDIVS      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_DIV, true))
+#define OP_FSUBS      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_SUB, true))
+#define OP_FADDS      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_ADD, true))
+#define OP_FMULS      OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MUL, true))
+#define OP_FMSUBS     OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MSUB, true))
+#define OP_FMADDS     OP(FP(); ppc_fp_arith(p, iw, PPC_SF_MADD, true))
+#define OP_FNMSUBS    OP(FP(); ppc_fp_arith(p, iw, PPC_SF_NMSUB, true))
+#define OP_FNMADDS    OP(FP(); ppc_fp_arith(p, iw, PPC_SF_NMADD, true))
 
 #define OP_ILLEGAL    OP(ppc_illegal_op(p, iw))
 

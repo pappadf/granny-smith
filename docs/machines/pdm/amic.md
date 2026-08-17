@@ -51,6 +51,27 @@ after **every** flag/enable write:
   software-clearable bit (write `$40`).  The device bank aggregates
   SCSI/FDC/any-slot levels gated by set/clear-convention IERs (writable
   masks `$78` slot / `$3B` device).
+- **VBL (Phase E)**: a free-running raster event asserts the slot IFR VBL
+  flag (drives bit 6 LOW) every frame at 66⅔ Hz — the Hi-Res 640×480
+  mode's field rate, an exact cycle count (freq×3/200) on every PDM
+  clock.  This resolves the dossier's §11.6 polarity suspect empirically:
+  the ROM's `SonoraWaitVSync` clears the flag with a `$40` write and then
+  spins until bit 6 **reads 0**, so assertion is active-low — and without
+  the raster that spin is exactly where the boot hangs.  The enable bit
+  (`SonoraSlotIER` bit 6) gates only the interrupt, never the flag.
+
+## Monitor sense (Phase E)
+
+`SonoraVdSenseRg` (`+$28002`) models the three open-collector HDI-45
+sense lines with 10 kΩ pull-ups: readback bits 6:4 = wired-AND of the
+drive nibble (bit *n* = 0 drives line *n* low; `$07` = tristate) and the
+monitor's straps.  The emulated monitor is the **14" AppleColor Hi-Res**
+(sense code 6: A,B floating, C grounded), chosen because `HMCMerge`
+allocates the framebuffer window only when a monitor senses present
+(rung L18) and it is the Phase-F gray-desktop profile.  The extended-
+sense walk over a strap-only monitor yields the non-Multiple-Scan code,
+so the ROM falls back to the plain Hi-Res configuration — the real
+hardware behaviour for this monitor.
 - DMA flag registers `+8`/`+$A` are read-only mirrors of the per-channel
   IF∧IE bits; acks go to the channel's own control byte (IF is
   write-1-to-clear).

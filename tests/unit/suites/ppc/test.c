@@ -976,12 +976,16 @@ static void test_fp_surface(void) {
     memory_write_uint32(0x1000, (63u << 26) | (0u << 23) | (3u << 16) | (4u << 11));
     run_at(0x1000, 1);
     CHECK_EQ(P->cr >> 28, 2u); // EQ
-    // unimplemented FP arithmetic is a loud illegal (Phase E backstop)
+    // FP arithmetic is live since Phase E (the deep coverage lives in
+    // tests/unit/suites/ppc_fpu; this is the integration smoke check)
     fresh();
-    memory_write_uint32(0x1000, (63u << 26) | (3u << 21) | (3u << 16) | (4u << 11) | (21u << 1)); // fadd
+    P->fpr[3] = 0x3FF0000000000000ull; // 1.0
+    P->fpr[4] = 0x4000000000000000ull; // 2.0
+    memory_write_uint32(0x1000, (63u << 26) | (3u << 21) | (3u << 16) | (4u << 11) | (21u << 1)); // fadd f3,f3,f4
     run_at(0x1000, 1);
-    CHECK_EQ(P->pc, 0x00000700u);
-    CHECK(P->srr1 & PPC_SRR1_PROG_ILLEGAL);
+    CHECK_EQ(P->pc, 0x1004u);
+    CHECK_EQ(P->fpr[3], 0x4008000000000000ull); // 3.0
+    CHECK_EQ((P->fpscr >> 12) & 0x1Fu, 0x04u); // FPRF: +normal
 }
 
 // Phase-C translation subset: T=1 memory-forced segments (incl. the HWInit

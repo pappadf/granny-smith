@@ -462,15 +462,59 @@ static void sound_write(config_t *cfg, uint32_t off, uint8_t value) {
     pdm_amic_recompute(cfg);
 }
 
-// Register the sound-out event type (called from pdm.c before
-// scheduler_start so checkpoint restore can rebind it).
+// ============================================================
+// VBL — AMIC's video timing core (video-onboard-ariel.md §6)
+// ============================================================
+
+// The emulated monitor is the Hi-Res 640×480 at 66⅔ Hz (sense code 6, the
+// mode the ROM selects for PDM_MONITOR_SENSE).  The frame period 3/200 s
+// is an exact cycle count on every PDM clock (60/66/80 MHz).
+static uint64_t vbl_period_cycles(config_t *cfg) {
+    return (uint64_t)cfg->machine->freq * 3u / 200u;
+}
+
+// Start of vertical blanking: assert the slot IFR VBL flag (bit 6,
+// ACTIVE-LOW — resolving the dossier's §11.6 polarity suspect: the ROM's
+// SonoraWaitVSync clears the flag with a $40 write, then spins until bit
+// 6 READS 0, so assertion drives the bit low).  Free-running raster; the
+// enable bit only gates the interrupt, never the flag.
+static void pdm_vbl_event(void *source, uint64_t data) {
+    (void)data;
+    config_t *cfg = (config_t *)source;
+    pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
+    v2->slot_ifr &= (uint8_t)~0x40u;
+    pdm_amic_recompute(cfg);
+    scheduler_new_cpu_event(cfg->scheduler, pdm_vbl_event, cfg, 0, vbl_period_cycles(cfg), 0);
+}
+
+// Arm the free-running VBL on a fresh boot (checkpoint restore rebinds
+// the pending event through the registered type instead).
+void pdm_amic_start_vbl(config_t *cfg) {
+    remove_event(cfg->scheduler, pdm_vbl_event, cfg);
+    scheduler_new_cpu_event(cfg->scheduler, pdm_vbl_event, cfg, 0, vbl_period_cycles(cfg), 0);
+}
+
+// Register the event types (called from pdm.c before scheduler_start so
+// checkpoint restore can rebind them).
 void pdm_amic_register_events(config_t *cfg) {
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "sndout", pdm_snd_out_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "vbl", pdm_vbl_event);
 }
 
 // ============================================================
 // Video control ($50F28000) and Ariel CLUT ($50F24000)
 // ============================================================
+
+// Monitor sense lines (video-onboard-ariel.md §7): the HDI-45 carries
+// three open-collector sense lines A/B/C with 10k pull-ups; a dumb monitor
+// hard-wires a subset to ground and the readback nibble reflects
+// wired-AND(drive, strap).  The emulated monitor is the 14" AppleColor
+// Hi-Res (sense code 6 = A,B floating high, C grounded) — the Phase-F
+// gray-desktop profile, wired now because HMCMerge allocates the
+// framebuffer window only when a monitor senses present (rung L18).
+// SonoraVdSenseRg drive nibble: bit n = 0 drives line n low, 1 releases
+// it ($07 = tristate); readback bits 6:4 = lines A,B,C.
+#define PDM_MONITOR_SENSE 0x6u // A=1, B=1, C=0: Hi-Res 13"/14"
 
 static uint8_t video_read(config_t *cfg, uint32_t off) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
@@ -479,10 +523,12 @@ static uint8_t video_read(config_t *cfg, uint32_t off) {
         return a->vid_mode;
     case 1:
         return a->vid_depth;
-    case 2:
-        // Low nibble reads back the drive register; sense readback (bits
-        // 6:4) says "no monitor" until Phase F wires real sense codes.
-        return (uint8_t)((a->vid_sense & 0x0Fu) | 0x70u);
+    case 2: {
+        // Open-collector wired-AND: a line reads low when the host drives
+        // it low OR the monitor straps it to ground; high otherwise.
+        uint8_t lines = (uint8_t)(a->vid_sense & 0x07u & PDM_MONITOR_SENSE);
+        return (uint8_t)((a->vid_sense & 0x0Fu) | (lines << 4));
+    }
     case 3:
         return a->vid_test;
     case 4:

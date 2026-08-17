@@ -6,6 +6,7 @@
 // debugger adapters, object class.  The interpreter lives in ppc_run.c.
 
 #include "ppc_internal.h"
+#include "ppc_softfp.h"
 
 #include "alias.h"
 #include "log.h"
@@ -554,6 +555,13 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
             object_set_label(p->mmu_object, "MMU");
             object_attach(p->cpu_object, p->mmu_object);
         }
+        // machine.cpu.fpu: the FPR file + FPSCR (Phase E, §3.9d).
+        extern const class_desc_t ppc_fpu_class;
+        p->fpu_object = object_new(&ppc_fpu_class, p, "fpu");
+        if (p->fpu_object) {
+            object_set_label(p->fpu_object, "FPU");
+            object_attach(p->cpu_object, p->fpu_object);
+        }
     }
 
     // `$pc`, `$r0`... — the 68K `$d0`-style aliases simply don't exist on a
@@ -566,6 +574,11 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
 void ppc_delete(ppc_t *p) {
     if (!p)
         return;
+    if (p->fpu_object) {
+        object_detach(p->fpu_object);
+        object_delete(p->fpu_object);
+        p->fpu_object = NULL;
+    }
     if (p->mmu_object) {
         object_detach(p->mmu_object);
         object_delete(p->mmu_object);
@@ -638,8 +651,15 @@ static uint32_t ppc_dbgif_translate(void *ctx, uint32_t logical, bool *ok) {
     return ppc_mmu_translate_debug((ppc_t *)ctx, logical, true, ok);
 }
 
+// The mac world on PDM is the user data context (the 68k emulator runs in
+// user mode); debug.mac resolves through it whatever the stop context.
+static uint32_t ppc_dbgif_translate_mac(void *ctx, uint32_t logical, bool *ok) {
+    return ppc_mmu_translate_mac((ppc_t *)ctx, logical, ok);
+}
+
 cpu_debug_if_t ppc_debug_if(ppc_t *p) {
-    cpu_debug_if_t dif = {p, ppc_dbgif_get_pc, ppc_dbgif_set_pc, ppc_dbgif_disasm, ppc_dbgif_translate};
+    cpu_debug_if_t dif = {
+        p, ppc_dbgif_get_pc, ppc_dbgif_set_pc, ppc_dbgif_disasm, ppc_dbgif_translate, ppc_dbgif_translate_mac};
     return dif;
 }
 
@@ -874,4 +894,61 @@ const class_desc_t ppc_mmu_class = {
     .name = "ppc_mmu",
     .members = ppc_mmu_members,
     .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
+};
+
+// === machine.cpu.fpu (§3.9d) — the FPR file and FPSCR =======================
+// Registered by Phase E alongside the arithmetic datapath; its existence is
+// also what flips the capability probe's `fpu` bit for the PDM machines.
+
+static value_t attr_fpr_get(struct object *self, const member_t *m) {
+    ppc_t *p = ppc_from(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    int idx = (int)(uintptr_t)m->attr.user_data;
+    value_t v = (idx == 32) ? val_uint(4, p->fpscr) : val_uint(8, p->fpr[idx]);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_fpr_set(struct object *self, const member_t *m, value_t in) {
+    ppc_t *p = ppc_from(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    int idx = (int)(uintptr_t)m->attr.user_data;
+    if (idx == 32)
+        p->fpscr = ppc_fpscr_derive((uint32_t)in.u); // FEX/VX stay derived
+    else
+        p->fpr[idx] = in.u;
+    return val_none();
+}
+
+#define PPC_FPR_ATTR(name_, id_)                                                                                       \
+    {                                                                                                                  \
+        .kind = M_ATTR, .name = name_, .attr = {                                                                       \
+            .type = V_UINT,                                                                                            \
+            .presentation_flags = VAL_HEX,                                                                             \
+            .get = attr_fpr_get,                                                                                       \
+            .set = attr_fpr_set,                                                                                       \
+            .user_data = (const void *)(uintptr_t)(id_)                                                                \
+        }                                                                                                              \
+    }
+
+// clang-format off
+static const member_t ppc_fpu_members[] = {
+    PPC_FPR_ATTR("fpscr", 32),
+    PPC_FPR_ATTR("fpr0", 0),   PPC_FPR_ATTR("fpr1", 1),   PPC_FPR_ATTR("fpr2", 2),   PPC_FPR_ATTR("fpr3", 3),
+    PPC_FPR_ATTR("fpr4", 4),   PPC_FPR_ATTR("fpr5", 5),   PPC_FPR_ATTR("fpr6", 6),   PPC_FPR_ATTR("fpr7", 7),
+    PPC_FPR_ATTR("fpr8", 8),   PPC_FPR_ATTR("fpr9", 9),   PPC_FPR_ATTR("fpr10", 10), PPC_FPR_ATTR("fpr11", 11),
+    PPC_FPR_ATTR("fpr12", 12), PPC_FPR_ATTR("fpr13", 13), PPC_FPR_ATTR("fpr14", 14), PPC_FPR_ATTR("fpr15", 15),
+    PPC_FPR_ATTR("fpr16", 16), PPC_FPR_ATTR("fpr17", 17), PPC_FPR_ATTR("fpr18", 18), PPC_FPR_ATTR("fpr19", 19),
+    PPC_FPR_ATTR("fpr20", 20), PPC_FPR_ATTR("fpr21", 21), PPC_FPR_ATTR("fpr22", 22), PPC_FPR_ATTR("fpr23", 23),
+    PPC_FPR_ATTR("fpr24", 24), PPC_FPR_ATTR("fpr25", 25), PPC_FPR_ATTR("fpr26", 26), PPC_FPR_ATTR("fpr27", 27),
+    PPC_FPR_ATTR("fpr28", 28), PPC_FPR_ATTR("fpr29", 29), PPC_FPR_ATTR("fpr30", 30), PPC_FPR_ATTR("fpr31", 31),
+};
+// clang-format on
+
+const class_desc_t ppc_fpu_class = {
+    .name = "ppc_fpu",
+    .members = ppc_fpu_members,
+    .n_members = sizeof(ppc_fpu_members) / sizeof(ppc_fpu_members[0]),
 };

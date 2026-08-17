@@ -152,14 +152,14 @@ for m in q840av q660av; do
 done
 # --- PDM family (Power Macintosh 6100/7100/8100): the first PowerPC
 # machines.  cpu.model 601 + the 601 MMU kind are what gate the PPC debug
-# panels; fpu:false is deliberate until the Phase-E FPU datapath registers
-# machine.cpu.fpu (proposal-powerpc-601-pdm.md §3.6).  No SCSI/floppy/NuBus
-# offered yet — those arrive with their Phase G/H device models, and this
-# row is what keeps the profile honest about it.
+# panels; fpu:true since Phase E landed the 601 FPU datapath and the
+# machine.cpu.fpu object (proposal-powerpc-601-pdm.md §3.6).  No
+# SCSI/floppy/NuBus offered yet — those arrive with their Phase G/H device
+# models, and this row is what keeps the profile honest about it.
 for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"model":601' "$m is a PowerPC 601"
     assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
-    assert_contains "$m" '"fpu":false' "$m FPU capability off until Phase E"
+    assert_contains "$m" '"fpu":true' "$m FPU capability on since Phase E"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets yet"
     assert_contains "$m" '"has_cdrom":false' "$m offers no CD bay yet (Phase G)"

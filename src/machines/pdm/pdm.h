@@ -169,6 +169,7 @@ uint32_t pdm_id_read32(void *ctx, uint32_t offset);
 
 void pdm_amic_init(config_t *cfg);
 void pdm_amic_register_events(config_t *cfg); // before scheduler_start
+void pdm_amic_start_vbl(config_t *cfg); // fresh boot: free-running raster
 uint8_t pdm_amic_read(config_t *cfg, uint32_t offset); // island offsets < $40000
 void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Recompute the ICR source levels and drive the 601 EXT line (level-

@@ -81,6 +81,11 @@ display_t *system_display(void) {
     return bits ? &synth : NULL;
 }
 
+struct cpu_debug_if;
+const struct cpu_debug_if *system_cpu_debug_if(void) {
+    return NULL; // unit harnesses have no main-CPU debug interface
+}
+
 bool system_is_initialized(void) {
     // Return true if we have an active context
     return test_get_active_context() != NULL;

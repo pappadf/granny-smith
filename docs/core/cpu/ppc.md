@@ -27,7 +27,8 @@ drift out of sync and each cross-checks the other.
 | `ppc_ops.h` | the emulator's overloads: factored bodies (carry/overflow, compares, branch conditions, alignment) + the one-liner `OP_` table |
 | `ppc_run.c` | multi-statement instruction bodies (branches, divides, strings), the `ppc_execute` instantiation, sprint loop |
 | `ppc_mmu.c` | the 601 MMU front end (Phase D): T=1 segments, 601 BATs, hashed page table search, the translation caches and their invalidation (see below) |
-| `ppc_fpu.c` | FP bodies: single↔double conversions, compares, mcrfs; arithmetic lands in Phase E |
+| `ppc_fpu.c` | FP bodies: single↔double conversions, compares, the FPSCR-instruction write rules, and the Phase-E arithmetic wrappers (writeback/CR1/precise-trap delivery) |
+| `ppc_softfp.c/.h` | **the FPU arithmetic kernel** (Phase E): integer-only IEEE 754 with the full FPSCR status model — pure functions of (operands, FPSCR), dependency-free (the `ppc_disasm` precedent) |
 | `ppc_disasm.c/.h` | the second instantiation of the same tree with sprintf-style `ASM(…)` overloads; dependency-free (`tools/disasm --arch ppc`) |
 
 One consequence of the shared tree: invalid forms (reserved fields set,
@@ -128,8 +129,45 @@ in memory.c to keep their hands off the user arrays.
   no-ops, privilege gating.
 - FPR file with load/store conversion in deterministic code (NaN payloads
   never pass through host FP arithmetic — WASM byte-determinism), FP
-  moves/compares/FPSCR ops.  **FP arithmetic raises a loud illegal until
-  Phase E**.
+  moves/compares/FPSCR ops.
+
+## FPU arithmetic (Phase E) — `ppc_softfp.c`
+
+The datapath is an **integer-only IEEE 754 kernel** ("software floating
+point"): significand arithmetic, rounding decisions, and every FPSCR
+status bit are computed in integer code, so results and status images are
+byte-identical on native and WASM hosts *by construction* rather than by
+auditing host-FP corner cases.  (This deliberately goes one step past the
+proposal §3.6 wording — "host doubles for the arithmetic" — because the
+FR/FI/OX/UX flags and the directed rounding modes need exact knowledge of
+the infinitely precise result anyway; once that machinery exists, host
+doubles are redundant as the implementation and become the test *oracle*
+instead: `tests/unit/suites/ppc_fpu` compares ~290k randomized cases
+against host IEEE arithmetic, and its corpus digest is diffed between the
+native and emcc/node builds by `make wasm-check`.)
+
+Shape: `sf_unpack` → exact significand arithmetic (`sf_add`/`sf_mul`/
+`sf_div`/`sf_madd` — the madd family carries the architecture's full
+106-bit fused intermediate, 601UM §2.5.1.1) → `sf_round_pack`, which owns
+denormalization, tininess-before-rounding, the per-mode disabled-overflow
+results, and the ±1536/±192 trap-enabled exponent wraps (§5.4.7.4/5).
+Alignment uses the Berkeley jamming discipline (≥10 guard bits under the
+round position make the jam bit provably harmless).  The instruction
+surface applies the §5.4.7 action lists: NaN selection frA→frB→frC with
+high-bit quieting, VE/ZE suppression (frD and FPRF untouched, FR/FI
+cleared), FX only on 0→1 transitions, FEX/VX always derived and never
+writable, and the FEX & MSR[FE0|FE1] program exception delivered
+precisely (SRR0 = the causing instruction, SRR1[11]; the 601 ORs FE0/FE1).
+`fctiw[z]` stores the 601's `$FFF80000` high word and leaves FPRF
+untouched (architecturally undefined — deterministic choice).  Corner
+cases whose full RTL lived in the manual's absent Appendix F are marked
+AUTHORITY-PENDING in the kernel and the suite: frsp/single-op NaN payload
+truncation, fctiw's rounded-result VXCVI boundary, and the FR
+magnitude-increment reading (§11 acquisition item).
+
+`machine.cpu.fpu` exposes `fpscr` and `fpr0..fpr31` (raw 64-bit
+patterns); its registration is what flips the machine-capabilities `fpu`
+bit for the PDM profiles.
 
 ## Implemented (Phase C — with the PDM family)
 
