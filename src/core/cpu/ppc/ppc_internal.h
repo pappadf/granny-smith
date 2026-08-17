@@ -96,6 +96,11 @@ struct ppc {
     uint32_t rtcu, rtcl; // RTC pair (read SPR 4/5, write SPR 20/21)
     uint32_t batu[4], batl[4]; // 4 unified BAT pairs, 601 format
     uint32_t sr[16]; // segment registers
+    // Which segments have T=1 (bit n = sr[n] bit 0) — data accesses
+    // consult the segment's T bit even with MSR[DT]=0 (601UM §6.5.2),
+    // and this mask keeps that check off the translation-off fast path.
+    // Derived from sr[]; maintained by ppc_set_sr/ppc_recompute_sr_t_mask.
+    uint32_t sr_t_mask;
 
     // --- execution state ---
     uint32_t instruction_pc; // address of the instruction being executed
@@ -113,11 +118,9 @@ struct ppc {
     uint64_t rtc_base_ticks; // RTC tick count when rtcu/rtcl were written
     uint64_t dec_base_ticks; // RTC tick count when dec was written
 
-    // --- instruction-fetch translation cache (MSR[IT] BAT path) ---
-    // While fetch EA is in [fetch_lo, fetch_lo+fetch_span), physical fetch
-    // address = EA + fetch_delta.  span == 0 means invalid; refilled by
-    // ppc_fetch_fill, invalidated on MSR/BAT writes.
-    uint32_t fetch_lo, fetch_span, fetch_delta;
+    // NOTE: the MMU/fetch translation caches live as file statics in
+    // ppc_mmu.c, NOT here — they embed host pointers, and this struct is
+    // written to the checkpoint stream verbatim (byte-determinism).
 
     // --- pointers (nulled on checkpoint restore, re-planted by owners) ---
     struct object *cpu_object; // machine.cpu node
@@ -188,13 +191,60 @@ static inline void ppc_set_ca(ppc_t *p, int ca) {
         p->xer &= ~PPC_XER_CA;
 }
 
-// Keep the SoA fast-path maps in sync with MSR[PR] (the one global
-// obligation of a main CPU — proposal §3.5).  Called on every MSR write,
-// exception entry, and rfi.  Doubles as the fetch-translation cache
-// invalidation point: every MSR[IT] change routes through here.
+// === MMU front end (ppc_mmu.c, 601UM Ch. 6) =================================
+
+// The one-page instruction-fetch window, refilled by ppc_fetch_fill and
+// checked inline in the sprint loop.  host_adjust = host_base - lo, so
+// LOAD_BE32(host_adjust + pc) fetches directly.  span == 0 = invalid.
+typedef struct ppc_fetch_window {
+    uint32_t lo, span;
+    uintptr_t host_adjust;
+} ppc_fetch_window_t;
+extern ppc_fetch_window_t g_ppc_fetch;
+
+// Refill the fetch window for pc (and return the word there via *iw).
+// Returns false when the fetch raised ISI.
+bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw);
+
+// Full data translation (slow half of ppc_dxlate below).  On return
+// false, *addr holds the address to access: the EA itself when the user
+// SoA maps now cover it (logical fast path), else the physical address.
+// True = exception raised (DSI / I/O-controller error) — abandon.
+bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store);
+
+// dcbz's translated form: W/I alignment rule, T=1 no-op case.
+// Returns 0 = proceed (zero at *addr), 1 = exception raised, 2 = no-op.
+int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr);
+
+// Rebuild sr_t_mask from sr[] (reset, checkpoint restore, shell pokes).
+void ppc_recompute_sr_t_mask(ppc_t *p);
+
+// Invalidation entry points.  invalidate_all: address-space change (SR/
+// BAT/SDR1 value change, bank remap, checkpoint restore).  tlbie:
+// congruence-class invalidation.  flush_fetch: MSR change (privilege or
+// translation bits — fetch permissions are mode-dependent).
+void ppc_mmu_invalidate_all(ppc_t *p);
+void ppc_mmu_tlbie(ppc_t *p, uint32_t ea);
+void ppc_mmu_flush_fetch(void);
+
+// Segment-register write with change-triggered invalidation (the
+// nanokernel reloads identical SR values wholesale on space touches).
+void ppc_set_sr(ppc_t *p, uint32_t n, uint32_t v);
+
+// Side-effect-free translation for the debug surfaces (no R/C update, no
+// SoA fill, no exception).  data=true follows MSR[DT], else MSR[IT].
+uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok);
+
+// Keep the SoA fast-path maps in sync with the (MSR[PR], MSR[DT]) pair —
+// the one global obligation of a main CPU (proposal §3.5).  Called on
+// every MSR write, exception entry, and rfi.  The user arrays hold the
+// MMU's LOGICAL fills, so they are active only for translated user-mode
+// data; every other mode runs on the machine's eager physical identity
+// view in the supervisor arrays (supervisor-translated accesses rewrite
+// their address in ppc_dxlate_slow before touching memory).
 static inline void ppc_update_active_maps(ppc_t *p) {
-    p->fetch_span = 0;
-    if (p->msr & PPC_MSR_PR) {
+    ppc_mmu_flush_fetch();
+    if ((p->msr & (PPC_MSR_PR | PPC_MSR_DT)) == (PPC_MSR_PR | PPC_MSR_DT)) {
         g_active_read = g_user_read;
         g_active_write = g_user_write;
     } else {
@@ -203,38 +253,25 @@ static inline void ppc_update_active_maps(ppc_t *p) {
     }
 }
 
-// === Address translation, Phase-C subset (601UM Ch. 6) ======================
-// BAT match (601 format, unified I/D) + the T=1 memory-forced I/O-controller
-// segments HWInit runs on.  T=0 hashed-table translation is Phase D and
-// raises a loud DSI/ISI so a premature dependence is visible, not silent.
-
-// 601 BAT match (Tables 6-11/6-12): BATU = BLPI[0-14]|WIM|Ks/Ku|PP,
-// BATL = PBN[0-14]|V(bit 25)|BSM[26-31].  BSM is a ones-mask selecting the
-// block size (000000 = 128 KB ... 111111 = 8 MB).
-static inline bool ppc_bat_xlate(ppc_t *p, uint32_t ea, uint32_t *pa) {
-    for (int i = 0; i < 4; i++) {
-        uint32_t bl = p->batl[i];
-        if (!(bl & 0x40u))
-            continue; // V
-        uint32_t cmp_mask = ~(((bl & 0x3Fu) << 17) | 0x1FFFFu); // bits above the block
-        if ((ea & cmp_mask) != (p->batu[i] & cmp_mask))
-            continue;
-        *pa = ((bl & 0xFFFE0000u) & cmp_mask) | (ea & ~cmp_mask);
-        return true;
+// Data-access translation gate, called with *addr = EA before any
+// register writeback (a faulting access must leave the instruction
+// abandoned with no side effects — the update forms depend on this).
+// Fast paths: with translation off, only T=1 segments need the slow
+// half (601UM §6.5.2 — SR[T] is consulted independent of MSR[DT]); with
+// translation on in user mode the active maps hold logical fills, so a
+// covered page needs no address rewrite at all.
+static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
+    if (!(p->msr & PPC_MSR_DT)) {
+        if (__builtin_expect(!(p->sr_t_mask & (1u << (*addr >> 28))), 1))
+            return false;
+        return ppc_dxlate_slow(p, iw, addr, store);
     }
-    return false;
-}
-
-// Data-access translation when MSR[DT] is on (ppc.c).  Returns true when the
-// access faulted (exception raised — abandon the instruction); otherwise *ea
-// has been rewritten to the physical address.  Store-ness (for the DSISR
-// image) is derived from the instruction word.
-bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *ea);
-
-static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *ea) {
-    if (!(p->msr & PPC_MSR_DT))
-        return false;
-    return ppc_dxlate_slow(p, iw, ea);
+    if (p->msr & PPC_MSR_PR) {
+        uintptr_t e = (store ? g_active_write : g_active_read)[*addr >> PAGE_SHIFT];
+        if (__builtin_expect(e != 0, 1))
+            return false;
+    }
+    return ppc_dxlate_slow(p, iw, addr, store);
 }
 
 // Live RTC/DEC derivation (§3.7).  With no time binding these return the
@@ -251,6 +288,31 @@ void ppc_dec_arm(ppc_t *p); // (re)schedule the DEC sign-transition event
 // mutated per the per-exception Register Settings tables (EE/PR/FP/FE0/SE/
 // FE1/IT/DT cleared; ME and EP kept), PC vectored via MSR[EP].
 void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_pc);
+
+// DSISR image for an alignment exception (601UM Table 5-13): opcode fields
+// repacked so the handler can emulate the access without re-reading the
+// instruction.  X-form (opcode 31) and D-form encode differently.
+static inline uint32_t ppc_align_dsisr(uint32_t iw) {
+    uint32_t dsisr = 0;
+    if (PPC_OPCD(iw) == 31) {
+        dsisr |= ((iw >> 2) & 1u) << 16 | ((iw >> 1) & 1u) << 15; // DSISR[15-16] = instr bits 29-30
+        dsisr |= ((iw >> 6) & 1u) << 14; // DSISR[17] = instr bit 25
+        dsisr |= ((iw >> 7) & 0xFu) << 10; // DSISR[18-21] = instr bits 21-24
+    } else {
+        dsisr |= ((iw >> 26) & 1u) << 14; // DSISR[17] = instr bit 5
+        dsisr |= ((iw >> 27) & 0xFu) << 10; // DSISR[18-21] = instr bits 1-4
+    }
+    dsisr |= ((iw >> 21) & 0x1Fu) << 5; // DSISR[22-26] = source/destination
+    dsisr |= (iw >> 16) & 0x1Fu; // DSISR[27-31] = rA
+    return dsisr;
+}
+
+// Raise the alignment exception for the access described by iw/ea.
+static inline void ppc_align_exception(ppc_t *p, uint32_t iw, uint32_t ea) {
+    p->dar = ea;
+    p->dsisr = ppc_align_dsisr(iw);
+    ppc_exception(p, PPC_VEC_ALIGNMENT, 0, p->instruction_pc);
+}
 
 // mfspr/mtspr dispatch (601 SPR map incl. the RTC read/write asymmetry).
 // Returns false if the SPR access raised an exception (privileged from user

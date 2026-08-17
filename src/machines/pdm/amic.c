@@ -84,10 +84,19 @@ void pdm_amic_set_source(config_t *cfg, int bit, bool level) {
 }
 
 // Recompute the ICR picture and drive the 601 external-interrupt line.
-// INTMODE=1 (the shipping state) latches any assertion into CPUINT until
-// acked; a source still pending at ack time re-latches immediately — the
-// level-style model the dossier proves the ROM requires ("a pure edge
-// model that drops interrupts while masked will hang drivers").
+// INTMODE=1 (the shipping state) is "interrupt on CHANGE": any change of
+// the source picture — assertion OR deassertion — latches CPUINT until
+// acked; a source that merely stays asserted does not re-latch after the
+// ack.  Both halves are load-bearing:
+//   - assertion-only latching (no level re-latch after ack) keeps the
+//     machine out of a livelock while the early 68k boot runs at IPL 7
+//     with a pending-but-unserviced VIA source;
+//   - DEASSERTION latching is how the nanokernel learns a source went
+//     away: it re-reads the flags, finds 0, and clears the 68k
+//     emulator's posted interrupt level — without it the emulator
+//     redelivers the stale level forever (the 68k dispatcher's "no
+//     source" jump-table entry exists precisely for these change
+//     interrupts).
 void pdm_amic_recompute(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     pdm_amic_t *a = &st->amic;
@@ -99,7 +108,9 @@ void pdm_amic_recompute(config_t *cfg) {
     else
         st->icr_sources &= (uint8_t) ~(1u << PDM_ICR_VIA2);
 
-    if (st->icr_sources)
+    uint8_t changed = st->icr_sources ^ a->icr_seen;
+    a->icr_seen = st->icr_sources;
+    if (changed)
         a->icr_latch = 1;
     if (cfg->ppc)
         ppc_set_ext_irq(cfg->ppc, a->icr_mode ? a->icr_latch != 0 : st->icr_sources != 0);
@@ -581,9 +592,13 @@ static void icr_write(config_t *cfg, uint32_t off, uint8_t value) {
     pdm_amic_t *a = &st->amic;
     if (off != 0)
         return; // the flag mirrors are read-only
-    a->icr_mode = (value >> 6) & 1u;
+    uint8_t new_mode = (value >> 6) & 1u;
+    if (new_mode != a->icr_mode)
+        a->icr_latch = 0; // toggling INTMODE clears the latch and drops INT
+    a->icr_mode = new_mode;
     if (value & 0x80u) {
-        // Ack: clear the latch; a still-pending source re-latches at once
+        // Ack: clear the latch; still-asserted sources re-latch only on
+        // their next assertion edge (see pdm_amic_recompute).
         a->icr_latch = 0;
         LOG(3, "ICR ack (sources=$%02X)", st->icr_sources);
     }

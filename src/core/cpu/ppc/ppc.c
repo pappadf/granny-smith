@@ -56,78 +56,6 @@ void ppc_set_ext_irq(ppc_t *p, bool level) {
     p->ext_irq = level ? 1u : 0u;
 }
 
-// === Data translation, Phase-C subset (601UM Ch. 6) =========================
-
-// True when iw describes a store-class access (D-form 36..47,52..55 and the
-// X-form store/dcbz extended opcodes) — only feeds the DSISR store bit.
-static bool ppc_iw_is_store(uint32_t iw) {
-    uint32_t op = PPC_OPCD(iw);
-    if (op == 31) {
-        switch (PPC_XO10(iw)) {
-        case 151: // stwx
-        case 183: // stwux
-        case 215: // stbx
-        case 247: // stbux
-        case 407: // sthx
-        case 439: // sthux
-        case 662: // stwbrx
-        case 918: // sthbrx
-        case 150: // stwcx.
-        case 725: // stswi
-        case 661: // stswx
-        case 663: // stfsx
-        case 695: // stfsux
-        case 727: // stfdx
-        case 759: // stfdux
-        case 1014: // dcbz
-            return true;
-        default:
-            return false;
-        }
-    }
-    // D-form stores: stw/stwu/stb/stbu (36-39), sth/sthu (44/45), stmw (47),
-    // stfs/stfsu/stfd/stfdu (52-55).
-    return (op >= 36 && op <= 39) || op == 44 || op == 45 || op == 47 || (op >= 52 && op <= 55);
-}
-
-// MSR[DT] data translation: BAT match first, then the segment.  T=1 with
-// BUID $07F ("memory-forced I/O controller") maps EA directly to the
-// physical segment selected by the SR's low nibble — how HWInit reaches
-// I/O while untranslated-style access is needed, and how the SR5-toggle
-// aliases $5xxxxxxx→$4xxxxxxx (proposal §3.5).  Other BUIDs take the
-// 601-only $00A00 exception.  T=0 is the Phase-D hashed-table walk: raise
-// a loud DSI so premature dependence is visible.
-bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *ea) {
-    uint32_t pa;
-    if (ppc_bat_xlate(p, *ea, &pa)) {
-        *ea = pa;
-        return false;
-    }
-    uint32_t sr = p->sr[*ea >> 28];
-    if (sr & 0x80000000u) { // T=1: I/O controller interface segment
-        if (((sr >> 20) & 0x1FFu) == 0x07Fu) { // memory-forced BUID
-            *ea = ((sr & 0xFu) << 28) | (*ea & 0x0FFFFFFFu);
-            return false;
-        }
-        p->dar = *ea;
-        ppc_exception(p, PPC_VEC_IOERROR, 0, p->instruction_pc);
-        return true;
-    }
-    // T=0 hashed-table translation lands with the Phase-D MMU front end.
-    // Loud but bounded: a guest parked on this wall would otherwise flood
-    // the log at memory speed.
-    static int t0_wall_logged;
-    if (t0_wall_logged < 8) {
-        t0_wall_logged++;
-        LOG(0, "unimplemented T=0 data translation: ea=$%08X sr%u=$%08X pc=$%08X%s", *ea, *ea >> 28, sr,
-            p->instruction_pc, t0_wall_logged == 8 ? " (further hits muted)" : "");
-    }
-    p->dar = *ea;
-    p->dsisr = PPC_DSISR_NOTFOUND | (ppc_iw_is_store(iw) ? PPC_DSISR_STORE : 0);
-    ppc_exception(p, PPC_VEC_DSI, 0, p->instruction_pc);
-    return true;
-}
-
 // === RTC/DEC time derivation (§3.7) =========================================
 
 // Exact rational cycles→ticks: q*mul + r*mul/div never overflows (r < div,
@@ -417,7 +345,10 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
     case 25:
         if (spr_priv_fault(p, iw))
             return false;
-        p->sdr1 = v;
+        if (p->sdr1 != v) {
+            p->sdr1 = v;
+            ppc_mmu_invalidate_all(p); // the whole HTAB moved
+        }
         break;
     case 26:
         if (spr_priv_fault(p, iw))
@@ -453,13 +384,13 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         if (spr_priv_fault(p, iw))
             return false;
         uint32_t pair = (n - 528) >> 1;
-        if (n & 1)
-            p->batl[pair] = v;
-        else
-            p->batu[pair] = v;
-        // BAT writes invalidate the fetch-translation cache now; Phase D
-        // additionally wires the shared TLB-shootdown entry points.
-        p->fetch_span = 0;
+        uint32_t *slot = (n & 1) ? &p->batl[pair] : &p->batu[pair];
+        if (*slot != v) {
+            *slot = v;
+            // Change-triggered only: the nanokernel rewrites identical
+            // BAT values on every 601 space reload (SetSpace).
+            ppc_mmu_invalidate_all(p);
+        }
         break;
     }
     case 1008:
@@ -548,6 +479,7 @@ void ppc_reset(ppc_t *p) {
     p->hid0 = 0x80010080u;
     p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1
     p->instruction_pc = p->pc;
+    ppc_mmu_invalidate_all(p); // translation state gone with the SRs/BATs
 }
 
 // === `$reg` aliases (main-CPU privilege per cores.md) =======================
@@ -573,10 +505,21 @@ static void register_ppc_aliases(void) {
     }
 }
 
+// Memory-logpoint installs reshape the SoA fast path behind the MMU's
+// back; drop every cache that could bypass the slow path.
+static void ppc_fastpath_changed(void) {
+    ppc_mmu_flush_fetch();
+}
+
 ppc_t *ppc_init(checkpoint_t *checkpoint) {
     ppc_t *p = (ppc_t *)malloc(sizeof(ppc_t));
     if (!p)
         return NULL;
+
+    // The user SoA arrays carry this MMU's logical fills — the generic
+    // identity-restore paths must leave them alone (memory.h).
+    g_user_soa_reserved = true;
+    g_mem_fastpath_changed = ppc_fastpath_changed;
 
     if (checkpoint) {
         // The stream carries the whole struct including save-time pointers;
@@ -588,6 +531,10 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
         p->mmu_object = NULL;
         p->scheduler = NULL; // re-planted by ppc_bind_time
         p->tick_mul = p->tick_div = 0;
+        // The MMU caches are derived state and refill lazily; the T-bit
+        // mask is derived from the restored SRs.
+        ppc_recompute_sr_t_mask(p);
+        ppc_mmu_invalidate_all(p);
         ppc_update_active_maps(p);
     } else {
         memset(p, 0, sizeof(ppc_t));
@@ -600,6 +547,13 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
         object_set_label(p->cpu_object, "CPU");
         object_set_order(p->cpu_object, 10);
         object_attach(machine_object(), p->cpu_object);
+        // machine.cpu.mmu: the translation debug window (§3.9d).
+        extern const class_desc_t ppc_mmu_class;
+        p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");
+        if (p->mmu_object) {
+            object_set_label(p->mmu_object, "MMU");
+            object_attach(p->cpu_object, p->mmu_object);
+        }
     }
 
     // `$pc`, `$r0`... — the 68K `$d0`-style aliases simply don't exist on a
@@ -612,6 +566,11 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
 void ppc_delete(ppc_t *p) {
     if (!p)
         return;
+    if (p->mmu_object) {
+        object_detach(p->mmu_object);
+        object_delete(p->mmu_object);
+        p->mmu_object = NULL;
+    }
     if (p->cpu_object) {
         object_detach(p->cpu_object);
         object_delete(p->cpu_object);
@@ -660,22 +619,23 @@ static void ppc_dbgif_set_pc(void *ctx, uint32_t pc) {
 }
 
 // One instruction at pc through the debug memory view; always 4 bytes.
+// The pc is translated with the fetch rules so disassembly through
+// translated pages shows the bytes the CPU would execute.
 static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
-    (void)ctx;
+    ppc_t *p = (ppc_t *)ctx;
+    bool ok;
+    uint32_t pa = ppc_mmu_translate_debug(p, pc, false, &ok);
     ppc_insn ins;
-    ppc_disassemble(memory_debug_read_uint32(pc), pc, &ins);
+    ppc_disassemble(ok ? memory_debug_read_uint32(pa) : 0, pc, &ins);
     // debug.c splits on '\t'; ppc_disasm emits "mnemonic\toperands" already.
     snprintf(buf, 100, "%s", ins.text);
     return 4;
 }
 
-// Translation is identity until the MMU front end lands (Phase D); report
-// validity through the shared debug path so callers stay honest.
+// Data-side logical→physical for the shared debug paths (debug.mac reads
+// the 68k world through this hook).  Side-effect-free.
 static uint32_t ppc_dbgif_translate(void *ctx, uint32_t logical, bool *ok) {
-    (void)ctx;
-    if (ok)
-        *ok = true;
-    return logical;
+    return ppc_mmu_translate_debug((ppc_t *)ctx, logical, true, ok);
 }
 
 cpu_debug_if_t ppc_debug_if(ppc_t *p) {
@@ -705,6 +665,8 @@ enum ppc_attr_id {
     PA_RTCL,
     PA_SDR1,
     PA_FPSCR,
+    PA_DAR,
+    PA_DSISR,
     PA_GPR0 = 0x100, // ..0x11F
     PA_SR0 = 0x200, // ..0x20F
     PA_BAT0U = 0x300, // U/L interleaved ..0x307
@@ -748,6 +710,10 @@ static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
         return &p->sdr1;
     case PA_FPSCR:
         return &p->fpscr;
+    case PA_DAR:
+        return &p->dar;
+    case PA_DSISR:
+        return &p->dsisr;
     }
     return NULL;
 }
@@ -785,10 +751,15 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
     if (!slot)
         return val_err("bad register id");
     *slot = (uint32_t)in.u;
-    // An MSR poke must keep the SoA maps coherent (the §3.5 discipline).
+    // An MSR poke must keep the SoA maps coherent (the §3.5 discipline);
+    // SR/BAT/SDR1 pokes invalidate the translation caches like their
+    // instruction-level counterparts do.
     if (id == PA_MSR) {
         p->msr &= PPC_MSR_MASK;
         ppc_update_active_maps(p);
+    } else if ((id >= PA_SR0 && id < PA_SR0 + 16) || (id >= PA_BAT0U && id < PA_BAT0U + 8) || id == PA_SDR1) {
+        ppc_recompute_sr_t_mask(p);
+        ppc_mmu_invalidate_all(p);
     }
     return val_none();
 }
@@ -809,7 +780,7 @@ static const member_t ppc_members[] = {
     PPC_ATTR("pc", PA_PC),       PPC_ATTR("msr", PA_MSR),   PPC_ATTR("cr", PA_CR),     PPC_ATTR("xer", PA_XER),
     PPC_ATTR("lr", PA_LR),       PPC_ATTR("ctr", PA_CTR),   PPC_ATTR("mq", PA_MQ),     PPC_ATTR("srr0", PA_SRR0),
     PPC_ATTR("srr1", PA_SRR1),   PPC_ATTR("dec", PA_DEC),   PPC_ATTR("rtcu", PA_RTCU), PPC_ATTR("rtcl", PA_RTCL),
-    PPC_ATTR("sdr1", PA_SDR1),   PPC_ATTR("fpscr", PA_FPSCR),
+    PPC_ATTR("sdr1", PA_SDR1),   PPC_ATTR("fpscr", PA_FPSCR), PPC_ATTR("dar", PA_DAR),   PPC_ATTR("dsisr", PA_DSISR),
     PPC_ATTR("r0", PA_GPR0 + 0),   PPC_ATTR("r1", PA_GPR0 + 1),   PPC_ATTR("r2", PA_GPR0 + 2),
     PPC_ATTR("r3", PA_GPR0 + 3),   PPC_ATTR("r4", PA_GPR0 + 4),   PPC_ATTR("r5", PA_GPR0 + 5),
     PPC_ATTR("r6", PA_GPR0 + 6),   PPC_ATTR("r7", PA_GPR0 + 7),   PPC_ATTR("r8", PA_GPR0 + 8),
@@ -837,4 +808,70 @@ const class_desc_t ppc_cpu_class = {
     .name = "ppc",
     .members = ppc_members,
     .n_members = sizeof(ppc_members) / sizeof(ppc_members[0]),
+};
+
+// === machine.cpu.mmu (§3.9d) ================================================
+// Debug window into the 601 translation: side-effect-free logical→physical
+// and a translated peek — the way tests and debugging reach the 68k
+// world's logical memory without knowing the HTAB layout.
+
+static value_t mmu_method_translate(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    bool ok;
+    uint32_t pa = ppc_mmu_translate_debug(p, (uint32_t)argv[0].u, true, &ok);
+    if (!ok)
+        return val_err("no translation for $%08X", (uint32_t)argv[0].u);
+    value_t v = val_uint(4, pa);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t mmu_method_peek(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    ppc_t *p = (ppc_t *)object_data(self);
+    if (!p)
+        return val_err("cpu not initialised");
+    uint32_t size = (argc >= 2) ? (uint32_t)argv[1].u : 4u;
+    if (size != 1 && size != 2 && size != 4)
+        return val_err("size must be 1, 2 or 4");
+    uint32_t raw = 0;
+    for (uint32_t i = 0; i < size; i++) {
+        bool ok;
+        uint32_t pa = ppc_mmu_translate_debug(p, (uint32_t)argv[0].u + i, true, &ok);
+        if (!ok)
+            return val_err("no translation for $%08X", (uint32_t)argv[0].u + i);
+        raw = (raw << 8) | memory_debug_read_uint8(pa);
+    }
+    value_t v = val_uint((int)size, raw);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static const arg_decl_t mmu_translate_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "effective (logical) address"},
+};
+static const arg_decl_t mmu_peek_args[] = {
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX,        .doc = "effective (logical) address"},
+    {.name = "size", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "1, 2 or 4 bytes (default 4)"},
+};
+
+static const member_t ppc_mmu_members[] = {
+    {.kind = M_METHOD,
+     .name = "translate",
+     .doc = "Translate a data-side effective address (current MSR context, no side effects)",
+     .method = {.args = mmu_translate_args, .nargs = 1, .result = V_UINT, .fn = mmu_method_translate}},
+    {.kind = M_METHOD,
+     .name = "peek",
+     .doc = "Read guest memory through the current translation (side-effect-free)",
+     .method = {.args = mmu_peek_args, .nargs = 2, .result = V_UINT, .fn = mmu_method_peek}          },
+};
+
+const class_desc_t ppc_mmu_class = {
+    .name = "ppc_mmu",
+    .members = ppc_mmu_members,
+    .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
 };

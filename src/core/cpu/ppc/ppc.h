@@ -86,6 +86,14 @@ void ppc_set_ext_irq(ppc_t *p, bool level);
 // external or decrementer exception if one is pending and MSR[EE] allows.
 void ppc_poll_interrupt(ppc_t *p);
 
+// === MMU (Phase D) ===
+
+// Drop every cached translation (user-SoA fills, translation TLB, fetch
+// window).  The family calls this when the PHYSICAL map changes under
+// the MMU's feet — the HMC bank remap — mirroring what mtsr/BAT/SDR1
+// writes do from guest code.
+void ppc_mmu_invalidate_all(ppc_t *p);
+
 // === Register access (tests / glue; the shell reads via machine.cpu.*) ===
 
 uint32_t ppc_get_pc(ppc_t *restrict p);

@@ -11,6 +11,7 @@ TEST_SRCS := test.c
 TEST_HARNESS := cpu
 EXTRA_SRCS := ../../../../src/core/cpu/ppc/ppc.c \
               ../../../../src/core/cpu/ppc/ppc_run.c \
+              ../../../../src/core/cpu/ppc/ppc_mmu.c \
               ../../../../src/core/cpu/ppc/ppc_fpu.c \
               ../../../../src/core/cpu/ppc/ppc_disasm.c
 EXTRA_CFLAGS := -I$(abspath ../../../../src/core/cpu/ppc)

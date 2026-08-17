@@ -30,6 +30,7 @@
 #include "pdm.h"
 
 #include "log.h"
+#include "ppc.h"
 
 #include <string.h>
 
@@ -144,6 +145,11 @@ void pdm_hmc_remap(config_t *cfg) {
     // The remap filled page 0 direct; reapply the slow path if active.
     if (h->wait_state)
         pdm_hmc_wait_state(cfg, true);
+
+    // The physical map moved under the MMU's caches (identity SoA is
+    // rebuilt above; translated fills/TLBs re-resolve lazily).
+    if (cfg->ppc)
+        ppc_mmu_invalidate_all(cfg->ppc);
 }
 
 // ============================================================

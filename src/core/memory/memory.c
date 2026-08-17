@@ -92,6 +92,8 @@ uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown
 uint8_t *g_mem_logpoint_page_count = NULL;
 uint8_t *g_mem_logpoint_phys_page_count = NULL;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
+bool g_user_soa_reserved = false;
+void (*g_mem_fastpath_changed)(void) = NULL;
 
 // Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
 uint64_t g_mem_slowpath_count = 0;
@@ -1049,17 +1051,21 @@ static void rebuild_soa_page(uint32_t p) {
         return; // device/unmapped: leave SoA at 0 so the slow path takes over
     if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[p])
         return; // logpoint: must keep SoA = 0 to fire the hook on every access
+    // Identity fill: logical page == physical page, so the physical
+    // logpoint count applies directly too.
+    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[p])
+        return;
     uint32_t guest_base = p << PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)pe->host_base - guest_base;
     tlb_track_page(p); // ensure the next mmu_invalidate_tlb zeroes this entry
     if (g_supervisor_read)
         g_supervisor_read[p] = adjusted;
-    if (g_user_read)
+    if (g_user_read && !g_user_soa_reserved)
         g_user_read[p] = adjusted;
     if (pe->writable) {
         if (g_supervisor_write)
             g_supervisor_write[p] = adjusted;
-        if (g_user_write)
+        if (g_user_write && !g_user_soa_reserved)
             g_user_write[p] = adjusted;
     }
 }
@@ -1080,6 +1086,8 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
         if (g_user_write)
             g_user_write[p] = 0;
     }
+    if (g_mem_fastpath_changed)
+        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
@@ -1091,6 +1099,8 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
         if (g_mem_logpoint_page_count[p] == 0)
             rebuild_soa_page(p);
     }
+    if (g_mem_fastpath_changed)
+        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
@@ -1113,6 +1123,8 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
         memset(g_user_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
     if (g_user_write)
         memset(g_user_write, 0, (size_t)g_page_count * sizeof(uintptr_t));
+    if (g_mem_fastpath_changed)
+        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
@@ -1123,6 +1135,8 @@ void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
             g_mem_logpoint_phys_page_count[p]--;
     }
     // No need to rebuild SoA entries; they refill lazily on next access.
+    if (g_mem_fastpath_changed)
+        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
 }
 
 // ============================================================================
@@ -1413,6 +1427,12 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // doesn't silently default to the 24-bit layout.
     GS_ASSERTF(address_bits == 24 || address_bits == 32, "memory_map_init: address_bits must be 24 or 32 (got %d)",
                address_bits);
+    // A fresh map means a fresh machine: drop any CPU-MMU claims the
+    // previous machine left on the user SoA arrays (a 68K machine booted
+    // after a PPC one must get the classic all-four-arrays behavior back;
+    // the new machine's CPU init re-registers what it needs).
+    g_user_soa_reserved = false;
+    g_mem_fastpath_changed = NULL;
     // Hand over from any still-installed map.
     //
     // checkpoint.load deliberately builds the new machine BEFORE destroying

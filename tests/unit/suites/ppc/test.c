@@ -792,11 +792,18 @@ static void test_exceptions(void) {
     P->gpr[4] = 5;
     step1(e_d(3, 16, 4, 3)); // twi lt,r4,3 — 5 < 3 false
     CHECK_EQ(P->pc, 0x1004u); // fell through
-    // privileged from user mode + SoA switch
+    // privileged from user mode + SoA switch.  The user maps hold the
+    // MMU's logical fills, so they are active only for TRANSLATED user
+    // data (PR=1 AND DT=1); user mode with translation off runs on the
+    // identity view like everything else (proposal §3.5 as amended).
     fresh();
+    identity_segments();
     P->msr |= PPC_MSR_PR;
     ppc_update_active_maps(P);
-    CHECK(g_active_read == g_user_read);
+    CHECK(g_active_read == g_supervisor_read); // PR alone: identity view
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    CHECK(g_active_read == g_user_read); // PR+DT: the MMU's logical maps
     step1(e_x(3, 0, 0, 83, 0)); // mfmsr from user mode
     CHECK_EQ(P->pc, 0x00000700u);
     CHECK(P->srr1 & PPC_SRR1_PROG_PRIV);
@@ -806,15 +813,16 @@ static void test_exceptions(void) {
     P->msr &= ~PPC_MSR_FP;
     step1(e_d(50, 3, 4, 0)); // lfd
     CHECK_EQ(P->pc, 0x00000800u);
-    // rfi round trip
+    // rfi round trip (into translated user state — the L14 shape)
     fresh();
+    identity_segments();
     P->srr0 = 0x2000;
-    P->srr1 = PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_EE | PPC_MSR_PR;
+    P->srr1 = PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_EE | PPC_MSR_PR | PPC_MSR_DT;
     memory_write_uint32(0x1000, (19u << 26) | (50u << 1)); // rfi
     run_at(0x1000, 1);
     CHECK_EQ(P->pc, 0x2000u);
-    CHECK_EQ(P->msr, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_EE | PPC_MSR_PR);
-    CHECK(g_active_read == g_user_read); // PR=1 restored the user maps
+    CHECK_EQ(P->msr, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_EE | PPC_MSR_PR | PPC_MSR_DT);
+    CHECK(g_active_read == g_user_read); // PR+DT restored the user maps
     // rfi is privileged
     step1((19u << 26) | (50u << 1));
     CHECK_EQ(P->pc, 0x00000700u);

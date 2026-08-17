@@ -32,11 +32,20 @@ after **every** flag/enable write:
 
 - ICR (`$50F2A000`): bits 5..0 are live source levels (NMI, DMA, MACE,
   SCC, pseudo-VIA2, pseudo-VIA1); bit 6 INTMODE; bit 7 the CPUINT latch.
-  With INTMODE=1 (the shipping state) any assertion latches CPUINT; a
-  write with bit 7 set acks the latch, and a still-pending source
-  re-latches immediately — the level-style model the ROM's
-  loop-until-clear dispatch requires ("a pure edge model that drops
-  interrupts while masked will hang drivers").
+  With INTMODE=1 (the shipping state) the latch is **"interrupt on
+  change"**: any CHANGE of the source picture — assertion OR deassertion
+  — sets CPUINT; a write with bit 7 set acks it; toggling INTMODE clears
+  it.  A source that merely stays asserted does NOT re-latch after the
+  ack.  Both halves are load-bearing: assertion-only re-latching would
+  livelock the early 68k boot (which runs at IPL 7 with a pending VIA
+  source the kernel keeps redelivering), and WITHOUT deassertion latching
+  the nanokernel never re-reads the flags, never sees 0, and never clears
+  the 68k emulator's posted interrupt level — the emulator then redelivers
+  the stale level forever.  The 68k dispatcher's "no source" jump-table
+  entry exists precisely for the deassertion-change interrupts.  The
+  source summary bits stay live levels, which is where the dossier's
+  "a pure edge model that drops interrupts while masked will hang
+  drivers" warning applies — the 68k handlers loop on the flag registers.
 - Pseudo-VIA2 slot IFR reads **active-low** with unused bits high (reset
   `$7F`); slot bits are live card levels; VBL (bit 6) is the only
   software-clearable bit (write `$40`).  The device bank aggregates

@@ -26,6 +26,7 @@ drift out of sync and each cross-checks the other.
 | `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (reserved fields, BO forms, strict `sc`) so both includers agree by construction |
 | `ppc_ops.h` | the emulator's overloads: factored bodies (carry/overflow, compares, branch conditions, alignment) + the one-liner `OP_` table |
 | `ppc_run.c` | multi-statement instruction bodies (branches, divides, strings), the `ppc_execute` instantiation, sprint loop |
+| `ppc_mmu.c` | the 601 MMU front end (Phase D): T=1 segments, 601 BATs, hashed page table search, the translation caches and their invalidation (see below) |
 | `ppc_fpu.c` | FP bodies: single↔double conversions, compares, mcrfs; arithmetic lands in Phase E |
 | `ppc_disasm.c/.h` | the second instantiation of the same tree with sprintf-style `ASM(…)` overloads; dependency-free (`tools/disasm --arch ppc`) |
 
@@ -38,11 +39,77 @@ deterministic choice for what the manual calls boundedly-undefined forms.
 
 Per the cores.md main-vs-aux rule, this core uses the **global fast-path
 memory system** (`memory_read_uint32` etc.), owns the supervisor/user SoA
-switch on every MSR[PR] transition (`ppc_update_active_maps`), and
-registers `machine.cpu` plus the `$pc $lr $ctr $cr $msr $xer $r0..$r31`
-aliases.  The sprint ABI mirrors the 68K decoders: burn-down counter,
-`g_bus_error_instr_ptr` fault-exit, deferred fault delivered in the
-epilogue as a machine check (601UM §5.4.2, the TEA path).
+switch (`ppc_update_active_maps`), and registers `machine.cpu` plus the
+`$pc $lr $ctr $cr $msr $xer $r0..$r31` aliases.  The sprint ABI mirrors
+the 68K decoders: burn-down counter, `g_bus_error_instr_ptr` fault-exit,
+deferred fault delivered in the epilogue as a machine check (601UM §5.4.2,
+the TEA path).
+
+### The (PR, DT)-keyed SoA discipline
+
+Unlike the 68K cores (whose supervisor/user arrays are both filled by the
+bus-side MMU), the 601 core splits the two array pairs by ROLE:
+
+- the **supervisor arrays always hold the machine's eager physical
+  identity view** (filled by the family's page layout, e.g. `pdm_fill_page`);
+- the **user arrays belong to the MMU front end**, which fills them with
+  LOGICAL page mappings as translated user-mode accesses succeed.
+
+`ppc_update_active_maps` therefore selects the user arrays only when
+**both** MSR[PR] and MSR[DT] are set; every other mode combination runs on
+the identity view, with supervisor translated accesses (the nanokernel's
+MemRetry paths) rewritten to physical addresses per access through a small
+translation TLB in `ppc_mmu.c`.  This is what makes exception entry and
+`rfi` free: the dominant mode transition (user-translated 68k world ↔
+untranslated kernel handler) is a pointer swap, not an invalidation.
+`g_user_soa_reserved` (memory.h) tells the generic identity-restore paths
+in memory.c to keep their hands off the user arrays.
+
+### MMU (Phase D)
+
+`ppc_mmu.c` implements 601UM Chapter 6 with the 601's own quirks:
+
+- **Order**: the segment's T bit decides first — a T=1 segment PREVAILS
+  over any matching BAT (Table 6-10, opposite of the later architecture) —
+  then the 4 unified 601-format BATs, then the hashed page table.
+- **T=1 segments translate data accesses even with MSR[DT]=0** (§6.5.2) —
+  how HWInit reaches RAM and I/O "untranslated", and why the SR5-toggle
+  flash-probe aliasing works.  A per-CPU `sr_t_mask` keeps that check off
+  the translation-off fast path.  BUID $07F is memory-forced
+  (PA = SR[28-31] ‖ EA[4-31], protection bypassed); other BUIDs model the
+  failed bus reply as the 601-only $00A00 exception (SRR0 = following
+  instruction, DSISR unchanged), with atomics taking a DSI (DSISR bit 5)
+  and FP load/stores the alignment exception per §6.10.
+- **HTAB search** per §6.9/Figure 6-19: 19-bit hash, primary + secondary
+  PTEG, 8 PTEs each.  R is set even on protection violations (§6.8.4);
+  C only on permitted stores — and both are written back to the in-RAM
+  PTE, which the PDM nanokernel depends on (it harvests C bits from
+  evicted PTEs to maintain the 68k page-descriptor Modified flags).
+- **Exact fault images**: DSI DSISR bit 1 not-found / 4 protection /
+  6 store, DAR = EA; ISI SRR1 = $40200000 for an HTAB miss (bits 1 AND
+  10 — the mask the nanokernel's InstStorageInt tests), $08000000 for
+  protection, and NO bits for a T=1 fetch (Table 6-3 footnote).
+  Translation runs before any register writeback, so a faulting update
+  form leaves rA untouched.
+- **Invalidation**: `mtsr`/`mtsrin`/BAT/SDR1 writes invalidate ONLY on a
+  value change — the nanokernel reloads identical values wholesale on
+  every space touch (SetSpace), and change-triggered invalidation makes
+  that free.  `tlbie` invalidates by congruence class (EA[13-19] mod 128,
+  Figure 6-15) — exactly the granularity the kernel's FlushTLB loop
+  assumes.  `dcbz` takes the alignment exception on W=1/I=1 mappings and
+  is a no-op in non-memory-forced T=1 segments.
+- **Caches**: the user-SoA fills (tracked, so invalidation is
+  proportional to fills), a 256-entry direct-mapped translation TLB for
+  the non-SoA paths, and a fetch window + 64-entry fetch TLB holding
+  instruction-page host pointers.  All of it lives in file statics — NOT
+  in the checkpointed `ppc_t` blob (host pointers in the stream would
+  break checkpoint byte-determinism) — and rebuilds lazily after restore.
+- **Debug surface**: `machine.cpu.mmu.translate(ea)` and
+  `machine.cpu.mmu.peek(ea, size)` are side-effect-free reads through the
+  current translation; the debug-if `translate` hook feeds `debug.mac`, so
+  the 68k world's logical memory reads normally on PDM.  Limitation:
+  logical-address memory logpoints on translated pages degrade (the slow
+  path sees the physical address) — use physical logpoints on PDM.
 
 ## Implemented (Phase B)
 
@@ -74,16 +141,10 @@ epilogue as a machine check (601UM §5.4.2, the TEA path).
   per tick and rolls into RTCU at 10⁹; DEC decrements 128/tick, with the
   sign-transition latched by a scheduler event (`ppc.dec`) and taken when
   MSR[EE] allows.  Unbound (unit tests) the SPRs are static state.
-- **Translation, Phase-C subset**: 601-format BAT match (BLPI/PBN/BSM,
-  128 KB–8 MB blocks — NOT the later architecture's layout) for data and
-  instruction accesses, and the T=1 "memory-forced I/O controller"
-  segments (BUID $07F: PA = SR[28-31] ‖ EA[4-31]) HWInit runs on —
-  including the SR5 low-bit toggle that aliases `$5xxxxxxx`→`$4xxxxxxx`
-  for the flash/L2 probes.  Non-$07F BUIDs take the 601-only $00A00
-  exception.  **T=0 hashed-table translation is Phase D** and raises a
-  loud, rate-limited DSI/ISI so premature dependence is visible.
-  Instruction fetch under MSR[IT] uses a one-entry block-delta cache
-  invalidated on MSR and BAT writes.
+- **Translation**: superseded by the Phase-D MMU front end — see "MMU
+  (Phase D)" above.  The 601-format BAT layout (BLPI/PBN/BSM, V+BSM in
+  the LOWER register, WIM/Ks/Ku/PP in the upper — NOT the later
+  architecture's layout) and the T=1 memory-forced segments landed here.
 - **601 branch folding**: `b`/`bc`/`bclr`/`bcctr` retire in zero sprint
   slots (they issue to the branch unit in parallel on real silicon) —
   required for HWInit's timed 8-addi+`bdnz` loop to measure CPI 1.0
@@ -99,6 +160,15 @@ epilogue as a machine check (601UM §5.4.2, the TEA path).
   RTL (no public 601 test corpus exists; see proposal §7).  Executed words
   are cross-checked against the disassembler so encoder typos cannot agree
   with decoder typos.
+- `tests/unit/suites/ppc_mmu/` — the Phase-D proof list: 601 BAT
+  protection keys, T=1 with DT off and the SR-toggle alias, primary and
+  secondary HTAB search with R/C write-back (PTEG addresses computed
+  independently from Figure 6-19), exact DSI/ISI images, the abandoned
+  update-form rule, the (PR,DT) SoA discipline, tlbie congruence classes,
+  mtsr change-triggered invalidation, dcbz W/I, and the $00A00 contract.
+- `tests/integration/pdm-rom-ladder/` — the shipping ROM as test program;
+  high-water rung **L15** (the 68k emulator dispatching real 68k ROM code,
+  ticks serviced through the full AMIC→601→nanokernel→emulated-68k chain).
 - `tests/unit/suites/ppc_disasm/` — vectors cross-validated against
   `powerpc-linux-gnu-objdump -b binary -m powerpc:601 -EB` (the RE
   workflow's oracle) over a directed sweep, a 10k-word fuzz corpus, and

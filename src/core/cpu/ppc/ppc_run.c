@@ -208,11 +208,17 @@ void ppc_do_lmw(ppc_t *p, uint32_t iw) {
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + (uint32_t)PPC_SIMM(iw);
     if (ppc_check_align_string(p, iw, ea, 4u * (32u - rt), false))
         return;
-    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
-        return;
-    for (uint32_t reg = rt; reg < 32; reg++, ea += 4)
+    // Word-aligned multiples may cross pages, and HTAB pages need not be
+    // physically contiguous: translate per word.  A mid-transfer fault
+    // abandons with registers partially loaded (restartable — rA in
+    // range is skipped, so the base survives for the re-execution).
+    for (uint32_t reg = rt; reg < 32; reg++, ea += 4) {
+        uint32_t xa = ea;
+        if (ppc_dxlate(p, iw, &xa, false))
+            return;
         if (reg != ra || ra == 0) // rA in range is skipped (kept as base)
-            p->gpr[reg] = memory_read_uint32(ea);
+            p->gpr[reg] = memory_read_uint32(xa);
+    }
 }
 
 void ppc_do_stmw(ppc_t *p, uint32_t iw) {
@@ -220,23 +226,31 @@ void ppc_do_stmw(ppc_t *p, uint32_t iw) {
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + (uint32_t)PPC_SIMM(iw);
     if (ppc_check_align_string(p, iw, ea, 4u * (32u - rt), false))
         return;
-    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
-        return;
-    for (uint32_t reg = rt; reg < 32; reg++, ea += 4)
-        memory_write_uint32(ea, p->gpr[reg]);
+    for (uint32_t reg = rt; reg < 32; reg++, ea += 4) {
+        uint32_t xa = ea;
+        if (ppc_dxlate(p, iw, &xa, true))
+            return;
+        memory_write_uint32(xa, p->gpr[reg]);
+    }
 }
 
 // Load n bytes at ea into registers rt.. (wrapping, left-to-right per
 // register, partial last register zero-filled).  Registers named by the
 // EA-forming fields are skipped (601UM lswx page).  skip_a/skip_b are -1
-// when not applicable.
-static void ppc_load_string(ppc_t *p, uint32_t ea, uint32_t rt, uint32_t n, int skip_a, int skip_b) {
+// when not applicable.  Byte-wise translation: unaligned strings that
+// would cross a page have already taken the alignment exception, but
+// aligned ones may span pages that translate discontiguously.
+static void ppc_load_string(ppc_t *p, uint32_t iw, uint32_t ea, uint32_t rt, uint32_t n, int skip_a, int skip_b) {
     uint32_t r = rt;
     while (n > 0) {
         uint32_t word = 0;
         uint32_t take = n < 4 ? n : 4;
-        for (uint32_t i = 0; i < take; i++)
-            word |= (uint32_t)memory_read_uint8(ea + i) << (24 - 8 * i);
+        for (uint32_t i = 0; i < take; i++) {
+            uint32_t xa = ea + i;
+            if (ppc_dxlate(p, iw, &xa, false))
+                return;
+            word |= (uint32_t)memory_read_uint8(xa) << (24 - 8 * i);
+        }
         if ((int)r != skip_a && (int)r != skip_b)
             p->gpr[r] = word;
         ea += take;
@@ -245,13 +259,17 @@ static void ppc_load_string(ppc_t *p, uint32_t ea, uint32_t rt, uint32_t n, int 
     }
 }
 
-static void ppc_store_string(ppc_t *p, uint32_t ea, uint32_t rs, uint32_t n) {
+static void ppc_store_string(ppc_t *p, uint32_t iw, uint32_t ea, uint32_t rs, uint32_t n) {
     uint32_t r = rs;
     while (n > 0) {
         uint32_t word = p->gpr[r];
         uint32_t take = n < 4 ? n : 4;
-        for (uint32_t i = 0; i < take; i++)
-            memory_write_uint8(ea + i, (uint8_t)(word >> (24 - 8 * i)));
+        for (uint32_t i = 0; i < take; i++) {
+            uint32_t xa = ea + i;
+            if (ppc_dxlate(p, iw, &xa, true))
+                return;
+            memory_write_uint8(xa, (uint8_t)(word >> (24 - 8 * i)));
+        }
         ea += take;
         n -= take;
         r = (r + 1) & 31;
@@ -264,9 +282,7 @@ void ppc_do_lswi(ppc_t *p, uint32_t iw) {
     uint32_t ea = ra ? p->gpr[ra] : 0u;
     if (ppc_check_align_string(p, iw, ea, n, false))
         return;
-    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
-        return;
-    ppc_load_string(p, ea, PPC_RT(iw), n, ra ? (int)ra : -1, -1);
+    ppc_load_string(p, iw, ea, PPC_RT(iw), n, ra ? (int)ra : -1, -1);
 }
 
 void ppc_do_lswx(ppc_t *p, uint32_t iw) {
@@ -277,9 +293,7 @@ void ppc_do_lswx(ppc_t *p, uint32_t iw) {
         return;
     if (ppc_check_align_string(p, iw, ea, n, false))
         return;
-    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
-        return;
-    ppc_load_string(p, ea, PPC_RT(iw), n, ra ? (int)ra : -1, (int)rb);
+    ppc_load_string(p, iw, ea, PPC_RT(iw), n, ra ? (int)ra : -1, (int)rb);
 }
 
 void ppc_do_stswi(ppc_t *p, uint32_t iw) {
@@ -288,9 +302,7 @@ void ppc_do_stswi(ppc_t *p, uint32_t iw) {
     uint32_t ea = ra ? p->gpr[ra] : 0u;
     if (ppc_check_align_string(p, iw, ea, n, false))
         return;
-    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
-        return;
-    ppc_store_string(p, ea, PPC_RT(iw), n);
+    ppc_store_string(p, iw, ea, PPC_RT(iw), n);
 }
 
 void ppc_do_stswx(ppc_t *p, uint32_t iw) {
@@ -301,9 +313,7 @@ void ppc_do_stswx(ppc_t *p, uint32_t iw) {
         return;
     if (ppc_check_align_string(p, iw, ea, n, false))
         return;
-    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
-        return;
-    ppc_store_string(p, ea, PPC_RT(iw), n);
+    ppc_store_string(p, iw, ea, PPC_RT(iw), n);
 }
 
 // lscbx: load string, stopping at the XER compare byte (601UM lscbx page).
@@ -318,13 +328,14 @@ void ppc_do_lscbx(ppc_t *p, uint32_t iw) {
         return; // rD undefined; leave untouched (deterministic)
     if (ppc_check_align_string(p, iw, ea, n, true))
         return;
-    if (ppc_dxlate(p, iw, &ea)) // linear within the matched block (§3.5)
-        return;
     uint32_t reg = rt, word = 0, loaded = 0;
     int shift = 24;
     bool matched = false;
     for (uint32_t i = 0; i < n && !matched; i++) {
-        uint8_t byte = memory_read_uint8(ea + i);
+        uint32_t xa = ea + i;
+        if (ppc_dxlate(p, iw, &xa, false))
+            return;
+        uint8_t byte = memory_read_uint8(xa);
         word |= (uint32_t)byte << shift;
         loaded++;
         matched = (byte == match_byte);
@@ -352,10 +363,11 @@ void ppc_do_stwcx(ppc_t *p, uint32_t iw) {
         ppc_align_exception(p, iw, ea);
         return;
     }
-    if (ppc_dxlate(p, iw, &ea))
+    uint32_t xa = ea;
+    if (ppc_dxlate(p, iw, &xa, true))
         return;
     if (p->reserve) {
-        memory_write_uint32(ea, p->gpr[PPC_RT(iw)]);
+        memory_write_uint32(xa, p->gpr[PPC_RT(iw)]);
         ppc_set_cr_field(p, 0, 2u | ((p->xer & PPC_XER_SO) ? 1u : 0u));
     } else {
         ppc_set_cr_field(p, 0, (p->xer & PPC_XER_SO) ? 1u : 0u);
@@ -370,43 +382,20 @@ void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store) {
     ppc_exception(p, PPC_VEC_DSI, 0, p->instruction_pc);
 }
 
-// === Instruction fetch translation (MSR[IT]) ================================
+// === Instruction fetch ======================================================
 
-// Refill the fetch-translation cache for pc: BAT match yields a linear
-// EA→PA delta valid across the whole matched block.  Fetch through a T=1
-// segment or an unmatched T=0 segment raises ISI (the hashed-table fetch
-// path is Phase D).  Returns false when the fetch faulted.
-static bool ppc_fetch_fill(ppc_t *p, uint32_t pc) {
-    for (int i = 0; i < 4; i++) {
-        uint32_t bl = p->batl[i];
-        if (!(bl & 0x40u))
-            continue; // V
-        uint32_t cmp_mask = ~(((bl & 0x3Fu) << 17) | 0x1FFFFu);
-        if ((pc & cmp_mask) != (p->batu[i] & cmp_mask))
-            continue;
-        p->fetch_lo = pc & cmp_mask;
-        p->fetch_span = ~cmp_mask + 1u; // block size
-        p->fetch_delta = ((bl & 0xFFFE0000u) & cmp_mask) - p->fetch_lo;
-        return true;
-    }
-    LOG(0, "instruction fetch without BAT translation: pc=$%08X msr=$%08X", pc, p->msr);
-    ppc_exception(p, PPC_VEC_ISI, 0x40000000u, pc); // SRR1: translation not found
-    return false;
-}
-
-// Fetch the instruction word at p->pc, honoring MSR[IT].  Returns false when
-// the fetch raised ISI (pc has been redirected to the vector).
+// Fetch the instruction word at p->pc.  The one-page window in
+// g_ppc_fetch caches the host mapping (identity or translated —
+// ppc_mmu.c owns the refill, including ISI delivery); fetch never goes
+// through the mode-dependent g_active maps.  Returns false when the
+// fetch raised ISI (pc has been redirected to the vector).
 static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
     uint32_t pc = p->pc;
-    if (p->msr & PPC_MSR_IT) {
-        if (pc - p->fetch_lo >= p->fetch_span) {
-            if (!ppc_fetch_fill(p, pc))
-                return false;
-        }
-        pc += p->fetch_delta;
+    if (__builtin_expect(pc - g_ppc_fetch.lo < g_ppc_fetch.span, 1)) {
+        *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + pc));
+        return true;
     }
-    *iw = memory_read_uint32(pc);
-    return true;
+    return ppc_fetch_fill(p, pc, iw);
 }
 
 // === The generated decoder ==================================================

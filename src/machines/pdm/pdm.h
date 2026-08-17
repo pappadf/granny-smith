@@ -93,6 +93,7 @@ typedef struct pdm_amic {
     // Interrupt control register $50F2A000
     uint8_t icr_mode; // INTMODE (bit 6)
     uint8_t icr_latch; // CPUINT latch (bit 7)
+    uint8_t icr_seen; // source picture at the last recompute (edge detect)
     // DMA engine registers
     uint8_t dma_base[4]; // $50F31000-3: window base bytes [31:24]..[7:0]
     pdm_dma_ch_t scsi[2]; // $50F32000/4 addr, $50F32008/9 ctrl

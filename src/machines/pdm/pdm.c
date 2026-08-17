@@ -50,21 +50,18 @@ void pdm_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {
     g_page_table[page_index].writable = writable;
     uint32_t guest_base = page_index << PAGE_SHIFT;
     uintptr_t adjusted = (uintptr_t)host_ptr - guest_base;
+    // Supervisor arrays hold the eager physical identity view; the USER
+    // arrays belong to the 601 MMU front end (logical fills, ppc_mmu.c)
+    // and are only ever cleared here.  Callers that change the physical
+    // map (HMC remap) additionally invalidate the MMU caches.
     if (g_supervisor_read)
         g_supervisor_read[page_index] = adjusted;
+    if (g_supervisor_write)
+        g_supervisor_write[page_index] = writable ? adjusted : 0;
     if (g_user_read)
-        g_user_read[page_index] = adjusted;
-    if (writable) {
-        if (g_supervisor_write)
-            g_supervisor_write[page_index] = adjusted;
-        if (g_user_write)
-            g_user_write[page_index] = adjusted;
-    } else {
-        if (g_supervisor_write)
-            g_supervisor_write[page_index] = 0;
-        if (g_user_write)
-            g_user_write[page_index] = 0;
-    }
+        g_user_read[page_index] = 0;
+    if (g_user_write)
+        g_user_write[page_index] = 0;
 }
 
 void pdm_clear_page(uint32_t page_index) {
