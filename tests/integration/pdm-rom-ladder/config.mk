@@ -7,9 +7,9 @@
 # that drops a rung fails this row with the name of the first missing
 # marker — not a vague "boot broke".
 #
-# Current high-water: L12 (HWInit end-to-end, kernel entered) plus the
-# leading edge of L13 (nanokernel ConfigInfo parse, SDR1/HTAB set up); the
-# run parks at the deliberate Phase-D T=0 translation wall.
+# Current high-water: L20 (boot chime golden-WAV-exact through the AWACS
+# datapath, gray-desktop screen golden through the Ariel scanout); the run
+# parks at the Phase-G SCSI-scan wall.  REGEN=1 regenerates both goldens.
 
 TEST_NAME := PDM ROM ladder
 TEST_DESC := Boots the PDM ROM and asserts the §6.1 ladder markers up to the committed high-water rung

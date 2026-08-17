@@ -272,6 +272,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     pdm_hmc_init(cfg);
     pdm_amic_init(cfg);
     pdm_amic_register_events(cfg);
+    pdm_awacs_register_events(cfg);
     pdm_memory_layout(cfg);
 
     // Substrate-private checkpoint tail: the HMC config and AMIC register
@@ -284,6 +285,12 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
         via_redrive_outputs(cfg->via1);
         pdm_amic_recompute(cfg);
     }
+
+    // Presentation state, derived from the (possibly restored) register
+    // file: the scanout descriptor over physical DRAM 0 and the AWACS
+    // staging buffer + machine.sound node.
+    pdm_video_init(cfg);
+    pdm_awacs_init(cfg);
 
     // Finish: debugger + scheduler start (the mac030_glue_finish shape).
     cfg->debugger = debug_init();
@@ -309,12 +316,17 @@ static void pdm_reset(config_t *cfg) {
     st->hmc.wait_state = false;
     st->icr_sources = 0;
     pdm_hmc_remap(cfg);
+    pdm_video_update(cfg); // blanked power-on raster follows the reset regs
 }
 
 static void pdm_teardown(config_t *cfg) {
     if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
     pdm_state_t *st = pdm_st(cfg);
+    if (st) {
+        pdm_awacs_teardown(cfg);
+        pdm_video_teardown(cfg);
+    }
     if (st && st->cuda) {
         av_cuda_delete(st->cuda);
         st->cuda = NULL;
@@ -381,6 +393,11 @@ static void pdm_update_ipl(config_t *cfg, int source, bool active) {
     LOG(1, "update_ipl source=%d active=%d (no NuBus on PDM yet)", source, active);
 }
 
+// Primary display: the Ariel scanout over physical DRAM 0 (ariel.c).
+static struct display *pdm_display(config_t *cfg) {
+    return pdm_video_display(cfg);
+}
+
 // Floppy: no SWIM3 until Phase H — refuse politely.
 static int pdm_fd_insert(config_t *cfg, int drive, struct image *disk) {
     (void)cfg;
@@ -409,5 +426,5 @@ const machine_substrate_t pdm_substrate = {
     .input_mouse_button = mac_input_mouse_button,
     .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
-    .display = NULL,
+    .display = pdm_display,
 };

@@ -5,8 +5,9 @@ logic: the whole classic-Mac interrupt model, a 10-channel DMA engine, the
 AWACS sound engine, built-in video timing, and all `$50Fxxxxx` address
 decode.  Sources: Apple, *Power Macintosh Computers* Developer Note (1994)
 Fig 2-2 and pp. 15–23, the 8100 schematics, and the shipping ROM's
-hardware-init writes.  Phase C models the full software-visible register
-surface; DMA datapaths, audio rendering, and video scanout land with their
+hardware-init writes.  The sound block dispatches to `awacs.c`
+(`awacs.md`), video control and the Ariel CLUT to `ariel.c` (`video.md`);
+remaining DMA datapaths (SCSI, floppy, SCC, Ethernet) land with their
 ladder rungs (proposal-powerpc-601-pdm.md §6).
 
 ## Decode (island offsets from `$50F00000`)
@@ -72,19 +73,11 @@ allocates the framebuffer window only when a monitor senses present
 sense walk over a strap-only monitor yields the non-Multiple-Scan code,
 so the ROM falls back to the plain Hi-Res configuration — the real
 hardware behaviour for this monitor.
-- DMA flag registers `+8`/`+$A` are read-only mirrors of the per-channel
-  IF∧IE bits; acks go to the channel's own control byte (IF is
-  write-1-to-clear).
-
-## Sound engine (Phase-C subset)
-
-While the output-run bit (`+$14010` bit 0) is set, buffers complete on the
-real ping-pong cadence (BufferSize frames at 22 050/29 400/44 100 Hz per
-the rate field) and raise their done flags in `+$14018` — bit 6 pairs with
-the `+$10000` window buffer, bit 7 with `+$12000`; a still-set flag raises
-ERR (bit 5) instead.  This is the polled contract the PPC ROM's boot chime
-depends on (it runs with interrupts off — a frozen engine hangs boot).
-Flags are write-1-to-clear; enables live in the low nibble.
+- DMA flag registers `+8`/`+$A` are read-only **combinational** mirrors of
+  the per-engine flag∧enable bits (the sound engine's `+$14014`/`+$14018`
+  for `+$A`, the channel control bytes for `+8`); acks go to the engine's
+  own register — the ROM never writes the mirrors — and any set mirror
+  bit asserts the ICR's DMA source level.
 
 ## DMA register file (Phase-C subset)
 

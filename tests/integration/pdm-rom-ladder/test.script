@@ -21,9 +21,19 @@
 # VIA scaling, and HMCMerge's framebuffer/DMA logical windows — the boot
 # now runs through video init (monitor sense 6 + the 66.67 Hz VBL raster)
 # and paints the gray desktop into physical 0 before parking at the
-# Phase-G SCSI-scan wall.
+# Phase-G SCSI-scan wall.  Phase-F markers (L19-L20): the boot chime as a
+# sample-exact golden WAV (the whole run is deterministic, so the capture
+# is too) and the gray-desktop screen golden through the Ariel scanout.
+
+include "../lib/mac.script"
 
 machine.boot model="pm6100" ram=24576 rom="${$ROM}"
+
+# L19 instrument: record everything the AWACS engine renders.  The capture
+# must be armed before the run — the chime plays ~50M-135M instructions in,
+# by pure polling of the +$18 half-done flags and the 24-bit position
+# counter, with interrupts off.
+machine.sound.capture.start
 
 # L1 sanity: the 601 comes out of reset at the documented vector.
 assert machine.cpu.pc == 0xFFF00100 "reset vector != $FFF00100"
@@ -142,15 +152,37 @@ assert $dticks >= $expect - 10 "L17: tick rate low (${$dticks} vs ~${$expect})"
 assert $dticks <= $expect + 10 "L17: tick rate high (${$dticks} vs ~${$expect})"
 assert $dsecs >= 1 "L17: Time global not advancing"
 
+# --- L19: the boot chime played through the AWACS output datapath ----------
+# The chime is the ROM's own PCM, drained through the real contract: codec
+# attenuation from the $40/hi/lo/$C0 command port ((7-vol)*2 at the PRAM
+# default volume 5), 86 half-buffers of 1024 frames at 44.1 kHz, refilled
+# by polling.  The run is deterministic, so the capture matches a golden
+# WAV sample-exactly (REGEN=1 regenerates it).  Register truths after the
+# chime: the beep's stop sequence clears RUN and drops the shared rate
+# field back to the 22 050 Hz power-on default.
+check_sound("chime.wav", 88064)
+assert machine.sound.peak >= 8000 "L19: chime rendered silent (peak ${machine.sound.peak})"
+assert machine.sound.out_enabled == false "L19: sound-out RUN still set at the wall"
+assert machine.sound.sample_rate == 22050 "L19: post-chime rate != 22050"
+
+# --- L20: the gray desktop through the Ariel scanout -----------------------
+# 640x480 at 8 bpp (the HRc default depth the sensed 14" Hi-Res config
+# selects), the $00/$FF checker dither through the driver's gamma-corrected
+# CLUT, plus the arrow cursor the 68k boot draws before parking — matched
+# as a screen golden (REGEN=1 regenerates).
+assert machine.screen.width == 640 "L20: screen width != 640"
+assert machine.screen.height == 480 "L20: screen height != 480"
+assert machine.screen.depth == 8 "L20: screen depth != 8 bpp"
+check("gray-desktop.png")
+
 # The L10 "Lisa" POST marker stays deferred (POST does not run pre-kernel
 # on the normal cold path — §0.1 finding 4), and the warm-restart row is
 # deferred to the first guest-triggered Restart (the warm path locates the
 # ROM image through HTAB state only the kernel-mediated 68k RESET flow
 # creates; the MSR[IR] discriminator and rfi-untranslated mechanics are
-# covered by tests/unit/suites/ppc_mmu).  Next rung: L19 (boot chime
-# through the AWACS polling contract) — Phase F territory; the gray
-# desktop pattern is already being painted into the framebuffer at
-# physical 0, but the screen surface itself is Phase F's scanout work.
+# covered by tests/unit/suites/ppc_mmu).  Next rung: L21 (the Slot Manager
+# decl-ROM probe under the bus-error catcher) — Phase G territory, behind
+# the SCSI wall the run parks at.
 
-echo "pdm-rom-ladder: high-water rung L18 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} box=${machine.cpu.mmu.peek(0xCB3, 1)})"
+echo "pdm-rom-ladder: high-water rung L20 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} box=${machine.cpu.mmu.peek(0xCB3, 1)} chime peak=${machine.sound.peak})"
 quit

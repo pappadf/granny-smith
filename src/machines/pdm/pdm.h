@@ -21,6 +21,7 @@
 #ifndef GS_MACHINES_PDM_H
 #define GS_MACHINES_PDM_H
 
+#include "display.h"
 #include "machine.h"
 #include "memory.h"
 #include "system_config.h"
@@ -29,6 +30,7 @@
 #include <stdint.h>
 
 struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+struct object;
 
 // How the memory controller places SIMM banks (hmc.c).
 typedef enum pdm_bank_layout {
@@ -104,9 +106,9 @@ typedef struct pdm_amic {
     uint8_t enet_rx_head, enet_rx_tail;
     uint16_t enet_tx_count[2];
     uint16_t dma_berr_en, dma_berr_flag; // $50F32100/2 (inert)
-    // Sound block $50F14000
+    // Sound block $50F14000 (registers; engine + codec model in awacs.c)
     uint8_t snd[0x20];
-    // Video control $50F28000 + Ariel CLUT $50F24000
+    // Video control $50F28000 + Ariel CLUT $50F24000 (handlers in ariel.c)
     uint8_t vid_mode; // $50F28000 (reset $9F: blanked)
     uint8_t vid_depth; // $50F28001
     uint8_t vid_sense; // $50F28002 (drive bits; sense readback stubbed)
@@ -115,7 +117,23 @@ typedef struct pdm_amic {
     uint8_t clut[256][3];
     uint8_t snd_out_buf; // sound-out ping-pong: next buffer to complete (0/1)
     pdm_via2_t via2;
+    // AWACS codec register shadows (write-only on hardware, loaded through
+    // the $40/hi/lo/$C0 command-port handshake; awacs.c).  Only 0/1/2/4 are
+    // ever addressed by PDM software.
+    uint16_t codec[8];
+    double snd_half_start_ns; // when the in-flight output half began playing
+    uint32_t snd_halves; // output half-buffers rendered since power-on
+    int32_t snd_peak; // loudest |sample| pushed to the host since power-on
 } pdm_amic_t;
+
+// === Video presentation state (ariel.c) =====================================
+// Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
+// clut) and rebuilt on init, reset and checkpoint restore — never saved.
+typedef struct pdm_video {
+    display_t display; // the substrate .display descriptor
+    rgba8_t clut_view[256]; // depth-windowed palette the renderer indexes
+    uint8_t *blank; // black raster presented while the blank bit is set
+} pdm_video_t;
 
 // === Family state ===========================================================
 
@@ -131,6 +149,11 @@ typedef struct pdm_state {
     memory_interface_t io_interface; // $50F00000..$50F4FFFF island
     memory_interface_t id_interface; // $5FFFF000 machine-ID page
     memory_interface_t wait_interface; // page-0 wait-state forwarder (§5.2)
+
+    // Derived presentation state, never checkpointed
+    pdm_video_t video; // scanout descriptor (ariel.c)
+    int16_t *snd_stage; // one half-buffer of staged stereo samples (awacs.c)
+    struct object *snd_object; // the machine.sound node (awacs.c)
 } pdm_state_t;
 
 static inline pdm_state_t *pdm_st(config_t *cfg) {
@@ -183,5 +206,32 @@ void pdm_amic_recompute(config_t *cfg);
 #define PDM_ICR_DMA  4
 #define PDM_ICR_NMI  5
 void pdm_amic_set_source(config_t *cfg, int bit, bool level);
+
+// === awacs.c ================================================================
+// The AWACS codec + AMIC sound engine: the $50F14000 register block, the
+// command-port handshake, and the output datapath (half-buffer render into
+// the host audio stream).  State lives in pdm_amic_t; these are the
+// behavior.
+void pdm_awacs_register_events(config_t *cfg); // before scheduler_start
+void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
+void pdm_awacs_teardown(config_t *cfg);
+uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
+void pdm_awacs_write(config_t *cfg, uint32_t offset, uint8_t value);
+// Combinational ICR mirror bytes ($50F2A008/$50F2A00A): per-channel flag
+// AND enable summaries the interrupt fabric folds into the DMA source bit.
+uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
+
+// === ariel.c ================================================================
+// Onboard video: the Sonora-model control registers ($50F28000), the Ariel II
+// CLUT/DAC ($50F24000), and the scanout descriptor over physical DRAM 0.
+void pdm_video_init(config_t *cfg); // after the memory layout exists
+void pdm_video_teardown(config_t *cfg);
+void pdm_video_update(config_t *cfg); // re-derive the descriptor from the regs
+void pdm_video_vbl(config_t *cfg); // per-VBL framebuffer re-upload mark
+display_t *pdm_video_display(config_t *cfg);
+uint8_t pdm_video_ctl_read(config_t *cfg, uint32_t off); // $50F28000 block
+void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value);
+uint8_t pdm_ariel_read(config_t *cfg, uint32_t off); // $50F24000 block
+void pdm_ariel_write(config_t *cfg, uint32_t off, uint8_t value);
 
 #endif // GS_MACHINES_PDM_H

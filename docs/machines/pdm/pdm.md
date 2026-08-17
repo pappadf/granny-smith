@@ -28,14 +28,21 @@ Two Apple ASICs around Tier-1 silicon:
   pseudo-VIA1 (a real 6522 core instance at stride `$200`), the
   pseudo-VIA2/RBV-style slot+device interrupt bank, the top-level
   interrupt control register driving the 601's single level-sensitive INT
-  line, the DMA-engine register file, the sound block, and the video
-  control registers.  See `amic.md`.
+  line, the DMA-engine register file, and the VBL raster.  See `amic.md`.
+
+Behind AMIC's decode, two datapaths have their own modules:
+
+- **AWACS + sound engine** (`awacs.c`) — the codec command port and the
+  double-buffered output DMA engine, rendering into the shared host audio
+  stream.  See `awacs.md`.
+- **Onboard video** (`ariel.c`) — the Sonora-model control registers, the
+  Ariel II CLUT/DAC, and the scanout of the framebuffer that lives at
+  physical DRAM 0.  See `video.md`.
 
 Reused models: the AV family's behavioral **Cuda** (`av/cuda.c`, the same
 341S0788 firmware 2.37 part) on the pseudo-VIA1 shift-register transport;
 the Tier-1 **6522** core.  SCSI (53C94/53CF96), SWIM3, MACE, ESCC deltas,
-AWACS audio, onboard video, and BART/NuBus arrive in later phases
-(proposal-powerpc-601-pdm.md §6).
+and BART/NuBus arrive in later phases (proposal-powerpc-601-pdm.md §6).
 
 ## Memory map
 
@@ -54,17 +61,17 @@ CPI is 1.0 (with 601 branch folding in the core), which makes HWInit's
 DEC-timed measurement loops land exactly: measured CPU clock snaps to the
 profile frequency and the bus-ratio measurement computes 2 — the values
 the ROM stores into NKProcessorInfo and uses to pick the Gestalt box
-class.  The 60.15 Hz tick drives VIA1 CA1; VIA timers currently use a
-rounded divisor (exact-rational 783.36 kHz scaling lands with rung L17).
+class.  The 60.15 Hz tick drives VIA1 CA1; VIA timers run on the
+exact-rational 783.36 kHz scaling (`via_set_exact_clock`), so
+guest-measured timer rates are exactly φ2-equivalent.
 
 ## Boot ladder
 
 The family is developed ladder-first against the shipping ROM
 (proposal-powerpc-601-pdm.md §6.1).  `tests/integration/pdm-rom-ladder`
 boots the ROM headless and asserts every marker up to the committed
-high-water rung — currently **L12** (HWInit end-to-end: checksum, HMC
-config, both measurement loops, RAM probe + 6100 bank relocation, boot
-chime via the polled sound engine, kernel entry with r3 = ConfigInfo),
-plus the leading edge of L13 (the nanokernel parses ConfigInfo, loads its
-segment maps, and sets up SDR1) — where it parks on the deliberate
-Phase-D T=0 translation wall.
+high-water rung — currently **L20**: HWInit end-to-end, kernel entry, the
+nanokernel's HTAB/translation bring-up, the 68k emulator dispatching the
+Start Manager through Cuda/PRAM init and video init, the boot chime
+matched sample-exactly against a golden WAV, and the gray desktop matched
+as a screen golden — parking at the Phase-G SCSI-scan wall.

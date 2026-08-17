@@ -6,10 +6,10 @@
 // I/O-space decode, the classic-Mac interrupt model (pseudo-VIA1 as a real
 // 6522 core instance, a pseudo-VIA2/RBV-style slot+device bank, and the
 // top-level interrupt control register driving the 601's single INT line),
-// the DMA-engine register file, the sound block, and the video control
-// registers.  Phase C models the full software-visible register surface;
-// datapaths (DMA transfers, sound streaming, video scanout) land with
-// their ladder rungs in later phases.
+// the DMA-engine register file, and the VBL raster.  The sound block
+// dispatches to awacs.c, video control and the Ariel CLUT to ariel.c;
+// remaining DMA datapaths (SCSI, floppy, SCC, Ethernet) land with their
+// ladder rungs in later phases.
 //
 // Register truth: Apple, "Power Macintosh Computers" Developer Note (1994)
 // Fig 2-2 and pp. 15-23, the 8100 schematic set, and the shipping 1994-03
@@ -83,6 +83,18 @@ void pdm_amic_set_source(config_t *cfg, int bit, bool level) {
         pdm_amic_recompute(cfg);
 }
 
+// The combinational DMA-channel half of the flags mirror ($50F2A008):
+// channel IF & IE per selector (bits 0-6).
+static uint8_t dma_irq_summary(pdm_amic_t *a) {
+    return (uint8_t)(((a->scc[3].ctrl & DMA_IF) && (a->scc[3].ctrl & DMA_IE) ? 0x01u : 0) |
+                     ((a->scc[2].ctrl & DMA_IF) && (a->scc[2].ctrl & DMA_IE) ? 0x02u : 0) |
+                     ((a->scc[1].ctrl & DMA_IF) && (a->scc[1].ctrl & DMA_IE) ? 0x04u : 0) |
+                     ((a->scc[0].ctrl & DMA_IF) && (a->scc[0].ctrl & DMA_IE) ? 0x08u : 0) |
+                     ((a->enet_rx.ctrl & DMA_IF) && (a->enet_rx.ctrl & DMA_IE) ? 0x10u : 0) |
+                     ((a->enet_tx.ctrl & DMA_IF) && (a->enet_tx.ctrl & DMA_IE) ? 0x20u : 0) |
+                     ((a->floppy.ctrl & DMA_IF) && (a->floppy.ctrl & DMA_IE) ? 0x40u : 0));
+}
+
 // Recompute the ICR picture and drive the 601 external-interrupt line.
 // INTMODE=1 (the shipping state) is "interrupt on CHANGE": any change of
 // the source picture — assertion OR deassertion — latches CPUINT until
@@ -107,6 +119,15 @@ void pdm_amic_recompute(config_t *cfg) {
         st->icr_sources |= 1u << PDM_ICR_VIA2;
     else
         st->icr_sources &= (uint8_t) ~(1u << PDM_ICR_VIA2);
+
+    // ...and the DMA source: the per-engine flag registers, gated by their
+    // own enables, summarize combinationally through the $50F2A008/$0A
+    // mirror bytes into one ICR source (handlers ack in the engine
+    // registers; the mirrors are never written).
+    if (dma_irq_summary(a) | pdm_awacs_irq_summary(a))
+        st->icr_sources |= 1u << PDM_ICR_DMA;
+    else
+        st->icr_sources &= (uint8_t) ~(1u << PDM_ICR_DMA);
 
     uint8_t changed = st->icr_sources ^ a->icr_seen;
     a->icr_seen = st->icr_sources;
@@ -387,82 +408,6 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
 }
 
 // ============================================================
-// Sound block ($50F14000, $20 bytes)
-// ============================================================
-// Phase-C model: the codec control/status registers store and read back;
-// the OUTPUT engine runs just far enough for the polled boot-beep contract
-// — while the output-run bit (+$10 bit 0) is set, buffers complete on the
-// real ping-pong cadence (BufferSize frames at the selected sample rate)
-// and raise their done flags in +$18 (bit 6 pairs with the +$10000
-// buffer, bit 7 with +$12000; a still-set flag raises ERR instead).  The
-// PPC ROM's chime polls those flags with interrupts off — a frozen engine
-// hangs boot right here.  Audio rendering arrives in Phase F.
-
-// Nanoseconds per buffer at the current rate/size settings.
-static uint64_t sound_buffer_ns(pdm_amic_t *a) {
-    static const uint32_t rates[] = {22050u, 29400u, 44100u, 22050u};
-    uint32_t rate = rates[(a->snd[0x10] >> 1) & 3u];
-    uint32_t frames = (uint32_t)(((a->snd[0x08] & 0x07u) << 8) | a->snd[0x09]);
-    if (frames == 0)
-        frames = 2048;
-    return (uint64_t)frames * 1000000000ull / rate;
-}
-
-// Sound-out buffer completion: raise the finished buffer's flag (or ERR if
-// software hasn't consumed the previous one), flip buffers, re-arm.
-static void pdm_snd_out_event(void *source, uint64_t data) {
-    (void)data;
-    config_t *cfg = (config_t *)source;
-    pdm_amic_t *a = &pdm_st(cfg)->amic;
-    if (!(a->snd[0x10] & 0x01u))
-        return; // stopped since scheduling
-    LOG(2, "sndout buffer %d complete (snd18=$%02X)", a->snd_out_buf, a->snd[0x18]);
-    uint8_t flag = a->snd_out_buf == 0 ? 0x40u : 0x80u; // bit 6 <-> +$10000
-    if (a->snd[0x18] & flag)
-        a->snd[0x18] |= 0x20u; // over/underrun: ERR instead of the IF
-    else
-        a->snd[0x18] |= flag;
-    a->snd_out_buf ^= 1u;
-    pdm_amic_recompute(cfg);
-    scheduler_new_cpu_event(cfg->scheduler, pdm_snd_out_event, cfg, 0, 0, sound_buffer_ns(a));
-}
-
-static uint8_t sound_read(config_t *cfg, uint32_t off) {
-    pdm_amic_t *a = &pdm_st(cfg)->amic;
-    return off < 0x20 ? a->snd[off] : 0;
-}
-
-static void sound_write(config_t *cfg, uint32_t off, uint8_t value) {
-    pdm_amic_t *a = &pdm_st(cfg)->amic;
-    if (off >= 0x20)
-        return;
-    switch (off) {
-    case 0x10: { // control hi: bit 0 = output DMA run
-        bool was_running = (a->snd[0x10] & 0x01u) != 0;
-        a->snd[off] = value;
-        bool running = (value & 0x01u) != 0;
-        if (running && !was_running) {
-            a->snd_out_buf = 0; // playback starts with the +$10000 buffer
-            LOG(2, "sndout run: %llu ns/buffer", (unsigned long long)sound_buffer_ns(a));
-            remove_event(cfg->scheduler, pdm_snd_out_event, cfg);
-            scheduler_new_cpu_event(cfg->scheduler, pdm_snd_out_event, cfg, 0, 0, sound_buffer_ns(a));
-        } else if (!running && was_running) {
-            remove_event(cfg->scheduler, pdm_snd_out_event, cfg);
-        }
-        break;
-    }
-    case 0x14: // in/out DMA status: flag bits (high nibble) are W1C
-    case 0x18:
-        a->snd[off] = (uint8_t)((a->snd[off] & 0xF0u & ~(value & 0xF0u)) | (value & 0x0Fu));
-        break;
-    default:
-        a->snd[off] = value;
-        break;
-    }
-    pdm_amic_recompute(cfg);
-}
-
-// ============================================================
 // VBL — AMIC's video timing core (video-onboard-ariel.md §6)
 // ============================================================
 
@@ -484,6 +429,7 @@ static void pdm_vbl_event(void *source, uint64_t data) {
     pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
     v2->slot_ifr &= (uint8_t)~0x40u;
     pdm_amic_recompute(cfg);
+    pdm_video_vbl(cfg); // guest drawing since the last frame needs re-upload
     scheduler_new_cpu_event(cfg->scheduler, pdm_vbl_event, cfg, 0, vbl_period_cycles(cfg), 0);
 }
 
@@ -497,112 +443,7 @@ void pdm_amic_start_vbl(config_t *cfg) {
 // Register the event types (called from pdm.c before scheduler_start so
 // checkpoint restore can rebind them).
 void pdm_amic_register_events(config_t *cfg) {
-    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "sndout", pdm_snd_out_event);
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "vbl", pdm_vbl_event);
-}
-
-// ============================================================
-// Video control ($50F28000) and Ariel CLUT ($50F24000)
-// ============================================================
-
-// Monitor sense lines (video-onboard-ariel.md §7): the HDI-45 carries
-// three open-collector sense lines A/B/C with 10k pull-ups; a dumb monitor
-// hard-wires a subset to ground and the readback nibble reflects
-// wired-AND(drive, strap).  The emulated monitor is the 14" AppleColor
-// Hi-Res (sense code 6 = A,B floating high, C grounded) — the Phase-F
-// gray-desktop profile, wired now because HMCMerge allocates the
-// framebuffer window only when a monitor senses present (rung L18).
-// SonoraVdSenseRg drive nibble: bit n = 0 drives line n low, 1 releases
-// it ($07 = tristate); readback bits 6:4 = lines A,B,C.
-#define PDM_MONITOR_SENSE 0x6u // A=1, B=1, C=0: Hi-Res 13"/14"
-
-static uint8_t video_read(config_t *cfg, uint32_t off) {
-    pdm_amic_t *a = &pdm_st(cfg)->amic;
-    switch (off) {
-    case 0:
-        return a->vid_mode;
-    case 1:
-        return a->vid_depth;
-    case 2: {
-        // Open-collector wired-AND: a line reads low when the host drives
-        // it low OR the monitor straps it to ground; high otherwise.
-        uint8_t lines = (uint8_t)(a->vid_sense & 0x07u & PDM_MONITOR_SENSE);
-        return (uint8_t)((a->vid_sense & 0x0Fu) | (lines << 4));
-    }
-    case 3:
-        return a->vid_test;
-    case 4:
-    case 5:
-    case 6:
-    case 7:
-        return 0; // beam counters: static until the video timing exists
-    default:
-        return 0;
-    }
-}
-
-static void video_write(config_t *cfg, uint32_t off, uint8_t value) {
-    pdm_amic_t *a = &pdm_st(cfg)->amic;
-    switch (off) {
-    case 0:
-        a->vid_mode = value;
-        LOG(2, "video mode = $%02X", value);
-        break;
-    case 1:
-        a->vid_depth = value;
-        break;
-    case 2:
-        a->vid_sense = value;
-        break;
-    case 3:
-        a->vid_test = value;
-        break;
-    default:
-        break;
-    }
-}
-
-static uint8_t ariel_read(config_t *cfg, uint32_t off) {
-    pdm_amic_t *a = &pdm_st(cfg)->amic;
-    switch (off & 3) {
-    case 0:
-        return a->clut_addr;
-    case 1: { // data reads auto-advance the RGB phase / address
-        uint8_t v = a->clut[a->clut_addr][a->clut_phase];
-        if (++a->clut_phase == 3) {
-            a->clut_phase = 0;
-            a->clut_addr++;
-        }
-        return v;
-    }
-    case 2:
-        return (uint8_t)(a->clut_ctrl & 0x7Fu);
-    default:
-        return a->clut_key;
-    }
-}
-
-static void ariel_write(config_t *cfg, uint32_t off, uint8_t value) {
-    pdm_amic_t *a = &pdm_st(cfg)->amic;
-    switch (off & 3) {
-    case 0:
-        a->clut_addr = value;
-        a->clut_phase = 0; // address write resets the RGB byte index
-        break;
-    case 1:
-        a->clut[a->clut_addr][a->clut_phase] = value;
-        if (++a->clut_phase == 3) {
-            a->clut_phase = 0;
-            a->clut_addr++;
-        }
-        break;
-    case 2:
-        a->clut_ctrl = value;
-        break;
-    default:
-        a->clut_key = value;
-        break;
-    }
 }
 
 // ============================================================
@@ -617,17 +458,10 @@ static uint8_t icr_read(config_t *cfg, uint32_t off) {
         return (uint8_t)((a->icr_latch << 7) | (a->icr_mode << 6) | (st->icr_sources & 0x3Fu));
     case 0x8:
         // DMA flag mirror: channel IF & IE per selector (bits 0-6)
-        return (uint8_t)(((a->scc[3].ctrl & DMA_IF) && (a->scc[3].ctrl & DMA_IE) ? 0x01u : 0) |
-                         ((a->scc[2].ctrl & DMA_IF) && (a->scc[2].ctrl & DMA_IE) ? 0x02u : 0) |
-                         ((a->scc[1].ctrl & DMA_IF) && (a->scc[1].ctrl & DMA_IE) ? 0x04u : 0) |
-                         ((a->scc[0].ctrl & DMA_IF) && (a->scc[0].ctrl & DMA_IE) ? 0x08u : 0) |
-                         ((a->enet_rx.ctrl & DMA_IF) && (a->enet_rx.ctrl & DMA_IE) ? 0x10u : 0) |
-                         ((a->enet_tx.ctrl & DMA_IF) && (a->enet_tx.ctrl & DMA_IE) ? 0x20u : 0) |
-                         ((a->floppy.ctrl & DMA_IF) && (a->floppy.ctrl & DMA_IE) ? 0x40u : 0));
+        return dma_irq_summary(a);
     case 0xA:
         // Sound in/out flags gated by their enables ($50F14014/18)
-        return (uint8_t)((((a->snd[0x14] >> 4) & (a->snd[0x14] & 0x0Fu)) ? 0x01u : 0) |
-                         (((a->snd[0x18] >> 4) & (a->snd[0x18] & 0x0Fu)) ? 0x02u : 0));
+        return pdm_awacs_irq_summary(a);
     default:
         return 0;
     }
@@ -670,13 +504,13 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
     case OFF_VIA1 + 0x1000:
         return via_get_memory_interface(cfg->via1)->read_uint8(cfg->via1, offset);
     case OFF_SOUND:
-        return sound_read(cfg, offset - OFF_SOUND);
+        return pdm_awacs_read(cfg, offset - OFF_SOUND);
     case OFF_ARIEL:
-        return ariel_read(cfg, offset - OFF_ARIEL);
+        return pdm_ariel_read(cfg, offset - OFF_ARIEL);
     case OFF_VIA2:
         return via2_read(cfg, offset - OFF_VIA2);
     case OFF_VIDEO:
-        return video_read(cfg, offset - OFF_VIDEO);
+        return pdm_video_ctl_read(cfg, offset - OFF_VIDEO);
     case OFF_ICR:
         return icr_read(cfg, offset - OFF_ICR);
     case OFF_DIAG:
@@ -698,16 +532,16 @@ void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {
         via_get_memory_interface(cfg->via1)->write_uint8(cfg->via1, offset, value);
         return;
     case OFF_SOUND:
-        sound_write(cfg, offset - OFF_SOUND, value);
+        pdm_awacs_write(cfg, offset - OFF_SOUND, value);
         return;
     case OFF_ARIEL:
-        ariel_write(cfg, offset - OFF_ARIEL, value);
+        pdm_ariel_write(cfg, offset - OFF_ARIEL, value);
         return;
     case OFF_VIA2:
         via2_write(cfg, offset - OFF_VIA2, value);
         return;
     case OFF_VIDEO:
-        video_write(cfg, offset - OFF_VIDEO, value);
+        pdm_video_ctl_write(cfg, offset - OFF_VIDEO, value);
         return;
     case OFF_ICR:
         icr_write(cfg, offset - OFF_ICR, value);
