@@ -11,17 +11,28 @@ implemented.
 Source of truth: Motorola/IBM, *PowerPC 601 RISC Microprocessor User's
 Manual*, 1995 (MPC601UM/AD) — cited per chapter/table in the code.
 
-## Files
+## Files — the shared decoder/disassembler pattern
+
+The module follows the house decode-template pattern (the 68K's
+`cpu_decode.h` model, proposal-heterogeneous-multi-cpu.md §3.3.1): one
+decode tree shared by the emulator and the disassembler, so the two cannot
+drift out of sync and each cross-checks the other.
 
 | File | Contents |
 |---|---|
 | `ppc.h` | public surface: `ppc_t` (opaque), init/reset/run, sched-if and debug-if adapters, external-interrupt line |
-| `ppc_internal.h` | the `ppc_t` state (POD, pointers last), MSR/XER/vector constants, shared inline helpers |
+| `ppc_internal.h` | the `ppc_t` state (POD, pointers last), MSR/XER/vector constants, field macros, shared inline helpers |
 | `ppc.c` | lifecycle, checkpoint, exception machinery, SPR file, `machine.cpu` object class, `$` aliases |
-| `ppc_run.c` | the interpreter: primary-opcode switch → extended switches (19, 31), sprint loop |
-| `ppc_ops.h` | instruction-body helpers: carry/overflow, compares, branch conditions, alignment rules |
-| `ppc_fpu.c` | FP surface: single↔double conversions, moves, compares, FPSCR access; arithmetic lands in Phase E |
-| `ppc_disasm.c/.h` | dependency-free disassembler (`tools/disasm --arch ppc`) |
+| `ppc_decode.h` | **the shared decode tree** — an include-guard-free template configured via `PPC_DECODER_*` macros with one `OP_`-prefixed leaf per instruction; carries the validity rules (reserved fields, BO forms, strict `sc`) so both includers agree by construction |
+| `ppc_ops.h` | the emulator's overloads: factored bodies (carry/overflow, compares, branch conditions, alignment) + the one-liner `OP_` table |
+| `ppc_run.c` | multi-statement instruction bodies (branches, divides, strings), the `ppc_execute` instantiation, sprint loop |
+| `ppc_fpu.c` | FP bodies: single↔double conversions, compares, mcrfs; arithmetic lands in Phase E |
+| `ppc_disasm.c/.h` | the second instantiation of the same tree with sprintf-style `ASM(…)` overloads; dependency-free (`tools/disasm --arch ppc`) |
+
+One consequence of the shared tree: invalid forms (reserved fields set,
+invalid BO encodings) take the illegal-instruction program exception in the
+interpreter, exactly where the disassembler prints `.long` — a legitimate
+deterministic choice for what the manual calls boundedly-undefined forms.
 
 ## Main-CPU status (vs the aux-core contract)
 

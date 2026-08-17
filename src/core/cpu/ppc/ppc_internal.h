@@ -111,19 +111,25 @@ struct ppc {
     struct object *mmu_object; // machine.cpu.mmu (Phase D)
 };
 
-// === Field extraction (BE bit numbering per 601UM Chapter 10 diagrams) ===
+// === Field extraction (BE bit numbering per 601UM Chapter 10 diagrams).
+// Kept in sync with the #ifndef-guarded copy in ppc_decode.h (which serves
+// the dependency-free disassembler TU).
 #define PPC_OPCD(iw) ((iw) >> 26)
 #define PPC_RT(iw)   (((iw) >> 21) & 31) // also RS, TO, BO, crfD<<2|..
 #define PPC_RA(iw)   (((iw) >> 16) & 31) // also BI
 #define PPC_RB(iw)   (((iw) >> 11) & 31) // also SH, NB
 #define PPC_XO10(iw) (((iw) >> 1) & 0x3FF) // X/XL/XFX-form extended opcode
 #define PPC_XO9(iw)  (((iw) >> 1) & 0x1FF) // XO-form (bit 21 = OE)
+#define PPC_XO5(iw)  (((iw) >> 1) & 0x1F) // A-form (FP arithmetic)
 #define PPC_OE(iw)   (((iw) >> 10) & 1)
 #define PPC_RC(iw)   ((iw) & 1)
 #define PPC_SIMM(iw) ((int32_t)(int16_t)(iw))
 #define PPC_UIMM(iw) ((iw) & 0xFFFFu)
 #define PPC_MB(iw)   (((iw) >> 6) & 31)
 #define PPC_ME(iw)   (((iw) >> 1) & 31)
+#define PPC_FRC(iw)  (((iw) >> 6) & 31) // A-form third operand
+#define PPC_CRFD(iw) (((iw) >> 23) & 7)
+#define PPC_CRFS(iw) (((iw) >> 18) & 7)
 
 // (rA|0): a zero RA field reads as the value 0, not r0 (EA computation rule)
 static inline uint32_t ppc_ra0(ppc_t *p, uint32_t iw) {
@@ -194,18 +200,61 @@ void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_
 bool ppc_mfspr(ppc_t *p, uint32_t iw);
 bool ppc_mtspr(ppc_t *p, uint32_t iw);
 
-// FP loads/stores + moves (ppc_fpu.c): single<->double conversion in
-// integer code (WASM/native byte determinism, proposal §3.6).
+// Exception-raise guards shared by the OP_ table (ppc_ops.h).  Each returns
+// true when the fault was taken (the instruction body must abandon).
+static inline bool ppc_priv_check(ppc_t *p) {
+    if (p->msr & PPC_MSR_PR) {
+        ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_PRIV, p->instruction_pc);
+        return true;
+    }
+    return false;
+}
+
+// FP-availability gate for every FP opcode (601UM §5.4.8).
+static inline bool ppc_fp_check(ppc_t *p) {
+    if (!(p->msr & PPC_MSR_FP)) {
+        ppc_exception(p, PPC_VEC_FPUNAVAIL, 0, p->instruction_pc);
+        return true;
+    }
+    return false;
+}
+
+// Multi-statement instruction bodies (ppc_run.c) referenced by the OP_
+// one-liner table: branches, divides with their deterministic-undefined
+// results, string transfers, and the store-conditional.
+void ppc_illegal_op(ppc_t *p, uint32_t iw);
+void ppc_do_b(ppc_t *p, uint32_t iw);
+void ppc_do_bc(ppc_t *p, uint32_t iw);
+void ppc_do_bclr(ppc_t *p, uint32_t iw);
+void ppc_do_bcctr(ppc_t *p, uint32_t iw);
+void ppc_do_divw(ppc_t *p, uint32_t iw);
+void ppc_do_divwu(ppc_t *p, uint32_t iw);
+void ppc_do_doz(ppc_t *p, uint32_t iw);
+void ppc_do_mul(ppc_t *p, uint32_t iw);
+void ppc_do_div(ppc_t *p, uint32_t iw);
+void ppc_do_divs(ppc_t *p, uint32_t iw);
+void ppc_do_sraw(ppc_t *p, uint32_t iw);
+void ppc_do_lmw(ppc_t *p, uint32_t iw);
+void ppc_do_stmw(ppc_t *p, uint32_t iw);
+void ppc_do_lswi(ppc_t *p, uint32_t iw);
+void ppc_do_lswx(ppc_t *p, uint32_t iw);
+void ppc_do_stswi(ppc_t *p, uint32_t iw);
+void ppc_do_stswx(ppc_t *p, uint32_t iw);
+void ppc_do_lscbx(ppc_t *p, uint32_t iw);
+void ppc_do_stwcx(ppc_t *p, uint32_t iw);
+void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store);
+
+// FP surface (ppc_fpu.c): single<->double conversion in integer code
+// (WASM/native byte determinism, proposal §3.6), compares, mcrfs, and the
+// Phase-E backstop for the arithmetic datapath.
 uint64_t ppc_f32_to_f64(uint32_t s);
 uint32_t ppc_f64_to_f32(uint64_t d);
+void ppc_fcmp(ppc_t *p, uint32_t iw, bool ordered);
+void ppc_do_mcrfs(ppc_t *p, uint32_t iw);
+void ppc_fpu_unimpl(ppc_t *p, uint32_t iw);
 
-// Opcode 59/63 dispatch (ppc_fpu.c).  Phase-B surface: register moves,
-// FPSCR access, compares; arithmetic raises the program exception (illegal)
-// until the FPU datapath lands (Phase E).
-void ppc_fpu_op59(ppc_t *p, uint32_t iw);
-void ppc_fpu_op63(ppc_t *p, uint32_t iw);
-
-// The interpreter proper (ppc_run.c): execute one instruction word.
+// The interpreter proper (ppc_run.c, generated from ppc_decode.h):
+// execute one instruction word.
 void ppc_execute(ppc_t *restrict p, uint32_t iw);
 
 #endif // GS_CPU_PPC_INTERNAL_H

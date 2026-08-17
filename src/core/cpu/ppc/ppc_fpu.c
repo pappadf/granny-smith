@@ -2,12 +2,13 @@
 // Copyright (c) pappadf
 
 // ppc_fpu.c
-// PPC (MPC601) floating-point surface, Phase-B scope: the FPR file's
-// load/store format conversions, register moves, compares, and FPSCR
-// access.  The arithmetic datapath (fadd/fmul/fmadd/frsp/fctiw[z] with
-// full FPSCR status modeling) lands in Phase E per the proposal §3.6; the
-// unimplemented entries raise the illegal-instruction program exception so
-// reaching one is loud, never silently wrong.
+// PPC (MPC601) floating-point bodies, Phase-B scope: the FPR file's
+// load/store format conversions, compares, and the mcrfs field move.  The
+// register-move and FPSCR-access instructions are one-liners in the OP_
+// table (ppc_ops.h); the arithmetic datapath (fadd/fmul/fmadd/frsp/
+// fctiw[z] with full FPSCR status modeling) lands in Phase E per the
+// proposal §3.6 — until then ppc_fpu_unimpl() makes reaching it loud,
+// never silently wrong.
 //
 // Determinism rule (§3.6): NaN bit patterns never pass through host
 // floating-point arithmetic — WASM does not guarantee NaN payload/sign
@@ -101,8 +102,7 @@ static int f64_compare(uint64_t a, uint64_t b) {
 #define FPSCR_FPCC   0x0000F000u // FL/FG/FE/FU, bits 16-19
 
 // fcmpu/fcmpo shared body (601UM fcmpu/fcmpo pages)
-static void ppc_fcmp(ppc_t *p, uint32_t iw, bool ordered) {
-    uint32_t crf = (iw >> 23) & 7;
+void ppc_fcmp(ppc_t *p, uint32_t iw, bool ordered) {
     uint64_t a = p->fpr[PPC_RA(iw)], b = p->fpr[PPC_RB(iw)];
     uint32_t c;
     if (f64_is_nan(a) || f64_is_nan(b)) {
@@ -119,110 +119,25 @@ static void ppc_fcmp(ppc_t *p, uint32_t iw, bool ordered) {
         c = (cmp < 0) ? 8u : (cmp > 0) ? 4u : 2u;
     }
     p->fpscr = (p->fpscr & ~FPSCR_FPCC) | (c << 12); // FPCC mirrors the field
-    ppc_set_cr_field(p, crf, c);
+    ppc_set_cr_field(p, PPC_CRFD(iw), c);
 }
 
-// CR1 record form for FP instructions: CR1 = FPSCR[0-3]
-static inline void ppc_record_cr1(ppc_t *p) {
-    ppc_set_cr_field(p, 1, p->fpscr >> 28);
+// mcrfs: FPSCR field to CR field; the copied exception bits clear on read
+// (FEX/VX are derived, FPCC is not).
+void ppc_do_mcrfs(ppc_t *p, uint32_t iw) {
+    uint32_t crfs = PPC_CRFS(iw);
+    uint32_t field = (p->fpscr >> (28 - 4 * crfs)) & 0xFu;
+    ppc_set_cr_field(p, PPC_CRFD(iw), field);
+    if (crfs == 0)
+        p->fpscr &= ~0x90000000u; // FX, OX
+    else if (crfs < 4)
+        p->fpscr &= ~(0xFu << (28 - 4 * crfs));
 }
 
 // Phase-E backstop: arithmetic reaching here is a loud illegal, not a
 // silent wrong answer (the detectors-fail-loudly rule).
-static void ppc_fpu_unimplemented(ppc_t *p, uint32_t iw, const char *group) {
-    LOG(0, "unimplemented FP arithmetic (%s) $%08X at $%08X — lands in Phase E", group, iw, p->instruction_pc);
+void ppc_fpu_unimpl(ppc_t *p, uint32_t iw) {
+    (void)iw; // referenced only when the log category is compiled in
+    LOG(0, "unimplemented FP arithmetic $%08X at $%08X — lands in Phase E", iw, p->instruction_pc);
     ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_ILLEGAL, p->instruction_pc);
-}
-
-// === opcode 59: single-precision arithmetic (Phase E) =======================
-
-void ppc_fpu_op59(ppc_t *p, uint32_t iw) {
-    ppc_fpu_unimplemented(p, iw, "op59");
-}
-
-// === opcode 63: double-precision group ======================================
-
-void ppc_fpu_op63(ppc_t *p, uint32_t iw) {
-    uint32_t rt = PPC_RT(iw), rb = PPC_RB(iw);
-    switch (PPC_XO10(iw)) {
-    case 0: // fcmpu
-        ppc_fcmp(p, iw, false);
-        return;
-    case 32: // fcmpo
-        ppc_fcmp(p, iw, true);
-        return;
-    case 72: // fmr
-        p->fpr[rt] = p->fpr[rb];
-        break;
-    case 40: // fneg
-        p->fpr[rt] = p->fpr[rb] ^ 0x8000000000000000ull;
-        break;
-    case 264: // fabs
-        p->fpr[rt] = p->fpr[rb] & 0x7FFFFFFFFFFFFFFFull;
-        break;
-    case 136: // fnabs
-        p->fpr[rt] = p->fpr[rb] | 0x8000000000000000ull;
-        break;
-    case 583: // mffs: FPSCR into the low word (upper half deterministic)
-        p->fpr[rt] = 0xFFF8000000000000ull | p->fpscr;
-        break;
-    case 711: { // mtfsf: FPSCR fields from frB under the FM field mask
-        uint32_t fm = (iw >> 17) & 0xFFu, mask = 0;
-        for (int i = 0; i < 8; i++)
-            if (fm & (0x80u >> i))
-                mask |= 0xFu << (28 - 4 * i);
-        p->fpscr = ((uint32_t)p->fpr[rb] & mask) | (p->fpscr & ~mask);
-        break;
-    }
-    case 134: { // mtfsfi: immediate into FPSCR field crfD
-        uint32_t crf = (iw >> 23) & 7, imm = (iw >> 12) & 0xFu;
-        p->fpscr = (p->fpscr & ~(0xFu << (28 - 4 * crf))) | (imm << (28 - 4 * crf));
-        break;
-    }
-    case 70: // mtfsb0
-        p->fpscr &= ~(0x80000000u >> PPC_RT(iw));
-        break;
-    case 38: // mtfsb1
-        p->fpscr |= 0x80000000u >> PPC_RT(iw);
-        break;
-    case 64: { // mcrfs: FPSCR field to CR field; copied exception bits clear
-        uint32_t crfd = (iw >> 23) & 7, crfs = (iw >> 18) & 7;
-        uint32_t field = (p->fpscr >> (28 - 4 * crfs)) & 0xFu;
-        ppc_set_cr_field(p, crfd, field);
-        // Exception bits clear when read; FEX/VX are derived, FPCC is not.
-        if (crfs == 0)
-            p->fpscr &= ~0x90000000u; // FX, OX
-        else if (crfs < 4)
-            p->fpscr &= ~(0xFu << (28 - 4 * crfs));
-        return;
-    }
-    case 12: // frsp
-    case 14: // fctiw
-    case 15: // fctiwz
-        ppc_fpu_unimplemented(p, iw, "convert");
-        return;
-    case 18: // fdiv
-    case 20: // fsub
-    case 21: // fadd
-        ppc_fpu_unimplemented(p, iw, "arith");
-        return;
-    default:
-        // A-form arithmetic uses a 5-bit XO (bits 26-30): fmul=25,
-        // fmsub=28, fmadd=29, fnmsub=30, fnmadd=31 — Phase E.
-        switch ((iw >> 1) & 0x1Fu) {
-        case 25:
-        case 28:
-        case 29:
-        case 30:
-        case 31:
-            ppc_fpu_unimplemented(p, iw, "mul-add");
-            return;
-        default:
-            LOG(5, "illegal FP instruction $%08X at $%08X", iw, p->instruction_pc);
-            ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_ILLEGAL, p->instruction_pc);
-            return;
-        }
-    }
-    if (PPC_RC(iw))
-        ppc_record_cr1(p);
 }
