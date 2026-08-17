@@ -16,7 +16,10 @@ static const struct floppy_slot pm7100_floppy_slots[] = {
     {0},
 };
 
+// One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
 static const struct scsi_slot pm7100_scsi_slots[] = {
+    {.label = "SCSI HD0", .id = 0},
+    {.label = "SCSI HD1", .id = 1},
     {0},
 };
 

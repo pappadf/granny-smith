@@ -449,6 +449,7 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
     if (__builtin_expect(g_bus_error_pending, 0)) {
         g_bus_error_pending = false;
         p->dar = g_bus_error_address;
+        LOG(3, "machine check: addr $%08X pc $%08X r24 $%08X", g_bus_error_address, p->instruction_pc, p->gpr[24]);
         ppc_exception(p, PPC_VEC_MCHECK, 0, p->instruction_pc);
     }
     *instructions = 0;

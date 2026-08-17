@@ -360,6 +360,7 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
 static void raise_dsi(ppc_t *p, uint32_t ea, uint32_t dsisr) {
     p->dar = ea;
     p->dsisr = dsisr;
+    LOG(4, "DSI: ea $%08X dsisr $%08X pc $%08X r24 $%08X", ea, dsisr, p->instruction_pc, p->gpr[24]);
     ppc_exception(p, PPC_VEC_DSI, 0, p->instruction_pc);
 }
 

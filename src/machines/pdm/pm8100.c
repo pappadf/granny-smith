@@ -4,8 +4,9 @@
 // pm8100.c
 // Power Macintosh 8100/80 ("Cold Fusion", 80 MHz MPC601, March 1994) — the
 // PDM flagship.  Machine-ID register $A55A3013; 40 MHz bus (2:1); eight
-// fixed-window SIMM banks; three NuBus slots + PDS slot $E (Phase H); the
-// second, discrete 53CF96 fast-SCSI bus arrives with Phase G.
+// fixed-window SIMM banks; three NuBus slots + PDS slot $E (Phase H); a
+// second, discrete 53CF96 on a fast internal SCSI bus (modeled with no
+// devices attached — media land on the standard Curio bus).
 
 #include "pdm.h"
 
@@ -16,7 +17,11 @@ static const struct floppy_slot pm8100_floppy_slots[] = {
     {0},
 };
 
+// Media attach to the standard Curio bus (SCSI Manager bus 1 on this
+// model); the fast 53CF96 bus scans empty.
 static const struct scsi_slot pm8100_scsi_slots[] = {
+    {.label = "SCSI HD0", .id = 0},
+    {.label = "SCSI HD1", .id = 1},
     {0},
 };
 
@@ -26,6 +31,7 @@ static const pdm_board_desc_t pm8100_board = {
     .bank_layout = PDM_BANKS_FIXED,
     .bank_count = 8,
     .wait_state_penalty = 2, // pinned by the rung-L7 bus-ratio row
+    .has_fast_scsi = true, // discrete 53CF96, island +$11000, DMA channel B
 };
 
 const hw_profile_t machine_pm8100 = {

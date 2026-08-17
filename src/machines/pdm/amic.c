@@ -22,6 +22,8 @@
 #include "log.h"
 #include "ppc.h"
 #include "scheduler.h"
+#include "scsi.h"
+#include "scsi_53c96.h"
 #include "via.h"
 
 #include <string.h>
@@ -50,13 +52,19 @@ LOG_USE_CATEGORY_NAME("amic");
 #define DMA_IE  0x08u
 #define DMA_IF  0x80u
 
+static void pdm_scsi_pump_arm(config_t *cfg); // SCSI DMA service loop (below)
+
 // ============================================================
 // Interrupt fabric
 // ============================================================
 
 // Aggregate the pseudo-VIA2 bank: device IFR bit 7 = OR of enabled bits
-// 6..0.  Slot sources fold in through the ANY SLOT bit (device bit 1).
-static uint8_t via2_dev_ifr(pdm_via2_t *v2) {
+// 6..0.  Slot sources fold in through the ANY SLOT bit (device bit 1); the
+// SCSI DRQ bits (0 = Curio, 2 = 53CF96) read the chips' DREQ outputs LIVE
+// — the SCSI Manager's Ck4DREQ polls them, never latches or enables them.
+static uint8_t via2_dev_ifr(config_t *cfg) {
+    pdm_state_t *st = pdm_st(cfg);
+    pdm_via2_t *v2 = &st->amic.via2;
     // Slot flags: register reads active-low; internal any-slot aggregate
     // works on the asserted (low) bits gated by the slot IER.
     uint8_t slot_asserted = (uint8_t)(~v2->slot_ifr & 0x7Cu);
@@ -67,9 +75,26 @@ static uint8_t via2_dev_ifr(pdm_via2_t *v2) {
         levels &= ~0x02u;
     v2->dev_levels = levels;
     uint8_t ifr = levels & 0x7Fu;
+    if (st->scsi96[0] && scsi_53c96_dreq(st->scsi96[0]))
+        ifr |= 0x01u; // SCSI-A DRQ
+    if (st->scsi96[1] && scsi_53c96_dreq(st->scsi96[1]))
+        ifr |= 0x04u; // SCSI-B DRQ
     if (ifr & v2->dev_ier & 0x7Fu)
         ifr |= 0x80u;
     return ifr;
+}
+
+// 53C9x INT pin levels (level-sensitive: the HAL declares the interrupt
+// LEVEL and clears it only by reading the chip's Interrupt register, which
+// drops the pin; writes of the "clear" values to the IFR are no-ops).
+void pdm_amic_set_scsi_irq(config_t *cfg, int chip, bool level) {
+    pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
+    uint8_t bit = chip ? 0x40u : 0x08u;
+    if (level)
+        v2->dev_levels |= bit;
+    else
+        v2->dev_levels &= (uint8_t)~bit;
+    pdm_amic_recompute(cfg);
 }
 
 void pdm_amic_set_source(config_t *cfg, int bit, bool level) {
@@ -114,7 +139,7 @@ void pdm_amic_recompute(config_t *cfg) {
     pdm_amic_t *a = &st->amic;
 
     // Fold the pseudo-VIA2 aggregate into the source picture first
-    uint8_t dev = via2_dev_ifr(&a->via2);
+    uint8_t dev = via2_dev_ifr(cfg);
     if (dev & 0x80u)
         st->icr_sources |= 1u << PDM_ICR_VIA2;
     else
@@ -141,13 +166,23 @@ void pdm_amic_recompute(config_t *cfg) {
 // Pseudo-VIA2 bank ($50F26000)
 // ============================================================
 
+// The VIA2 bank partial-decodes on the LOW FIVE address bits, mirroring the
+// 32-byte register file across the whole $50F26000-$50F27FFF window.  This
+// is load-bearing: the SCSI HAL addresses the bank compactly ($50F26003/
+// $50F26013), while the generic level-2 interrupt dispatcher reads the same
+// registers at classic-VIA stride ($50F26000+$1A03 for the IFR, +$1C13 for
+// the IER — register $D/$E windows with the matching byte lane, whose low
+// five bits alias to the compact offsets).  Without the mirror the
+// dispatcher reads zeros, computes "no source", and never services the
+// asserted SCSI level — an interrupt storm that starves the whole 68k.
 static uint8_t via2_read(config_t *cfg, uint32_t off) {
     pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
+    off &= 0x1Fu;
     switch (off) {
     case 0x02:
         return v2->slot_ifr; // active-low levels, unused bits high
     case 0x03:
-        return via2_dev_ifr(v2);
+        return via2_dev_ifr(cfg);
     case 0x12:
         return v2->slot_ier;
     case 0x13:
@@ -159,6 +194,7 @@ static uint8_t via2_read(config_t *cfg, uint32_t off) {
 
 static void via2_write(config_t *cfg, uint32_t off, uint8_t value) {
     pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
+    off &= 0x1Fu; // low-five-bit partial decode (see via2_read)
     switch (off) {
     case 0x02:
         // Only the VBL latch is software-clearable: writing $40 deasserts
@@ -178,11 +214,11 @@ static void via2_write(config_t *cfg, uint32_t off, uint8_t value) {
         else
             v2->slot_ier &= (uint8_t) ~(value & 0x78u);
         break;
-    case 0x13: // writable mask $3B
+    case 0x13: // writable mask $7B (bit 6 = SCSI-B enable, the HAL's $C8)
         if (value & 0x80u)
-            v2->dev_ier |= value & 0x3Bu;
+            v2->dev_ier |= value & 0x7Bu;
         else
-            v2->dev_ier &= (uint8_t) ~(value & 0x3Bu);
+            v2->dev_ier &= (uint8_t) ~(value & 0x7Bu);
         break;
     default:
         if (off < 0x08)
@@ -336,14 +372,20 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
         if (value & DMA_RST) {
             a->scsi[0].ctrl &= 0x4Cu; // keep DIR + speed bits
         } else {
+            LOG(4, "scsi dma A ctrl=$%02X addr=$%08X", value, a->scsi[0].addr);
             a->scsi[0].ctrl = value & (uint8_t) ~(DMA_RST | 0x10u); // FLUSH self-clears
+            if (value & DMA_RUN)
+                pdm_scsi_pump_arm(cfg);
         }
         return;
     case 0x1009:
-        if (value & DMA_RST)
+        if (value & DMA_RST) {
             a->scsi[1].ctrl &= 0x4Cu;
-        else
+        } else {
             a->scsi[1].ctrl = value & (uint8_t) ~(DMA_RST | 0x10u);
+            if (value & DMA_RUN)
+                pdm_scsi_pump_arm(cfg);
+        }
         return;
     case 0x1028:
         dma_ctrl_write(cfg, &a->enet_rx, value, 0);
@@ -408,6 +450,118 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
 }
 
 // ============================================================
+// SCSI: 53C9x register files + AMIC DMA datapath
+// ============================================================
+// Chip register files at island +$10000 (Curio) / +$11000 (53CF96, 8100),
+// 16-byte stride, with the handshaked pseudo-DMA aperture at +$100 of
+// each.  The AMIC SCSI DMA channels are single-shot and address-only —
+// no count register, no ping-pong: transfer length is governed entirely
+// by the 53C9x transfer counter, and AMIC just services DREQ from/to the
+// advancing address while RUN is set.  The pump below is the functional
+// model of that service loop, cadenced like the AV PSC pump; FLUSH
+// self-clears immediately because nothing is staged (bytes move whole).
+
+#define PDM_SCSI_PUMP_NS  10000.0 // 10 us cadence while a channel runs
+#define PDM_SCSI_PUMP_MAX 2048 // bytes per firing and channel
+
+// Physical RAM byte access through the identity page table (the DMA buffer
+// sits wherever the HMC mapped it; the 7100/8100 fixed bank windows are
+// not host-identity).
+static uint8_t *scsi_dma_host(uint32_t phys) {
+    uint32_t page = phys >> PAGE_SHIFT;
+    if (page >= (uint32_t)g_page_count)
+        return NULL;
+    uint8_t *host = g_page_table[page].host_base;
+    return host ? host + (phys & ((1u << PAGE_SHIFT) - 1u)) : NULL;
+}
+
+static uint8_t pdm_scsi_io_read(config_t *cfg, int chip, uint32_t off) {
+    scsi_53c96_t *c = pdm_st(cfg)->scsi96[chip];
+    if (!c) {
+        LOG(2, "read of absent SCSI chip %d at +$%03X", chip, off);
+        return 0;
+    }
+    if (off < 0x100u)
+        return scsi_53c96_read(c, (off & 0xFFu) >> 4);
+    if (off < 0x200u)
+        return scsi_53c96_pdma_read8(c); // handshaked aperture
+    LOG(2, "read of undecoded SCSI space chip %d +$%03X", chip, off);
+    return 0;
+}
+
+static void pdm_scsi_io_write(config_t *cfg, int chip, uint32_t off, uint8_t value) {
+    scsi_53c96_t *c = pdm_st(cfg)->scsi96[chip];
+    if (!c) {
+        LOG(2, "write of absent SCSI chip %d at +$%03X = $%02X", chip, off, value);
+        return;
+    }
+    if (off < 0x100u) {
+        scsi_53c96_write(c, (off & 0xFFu) >> 4, value);
+        pdm_amic_recompute(cfg); // INT/DREQ levels may have moved
+        return;
+    }
+    if (off < 0x200u) {
+        scsi_53c96_pdma_write8(c, value);
+        return;
+    }
+    LOG(2, "write of undecoded SCSI space chip %d +$%03X", chip, off);
+}
+
+// Only move bytes while the bus is in an information-transfer phase the
+// chip's DMA command covers — mirrors the AV pump's gate.
+static bool pdm_scsi_data_phase(config_t *cfg) {
+    int ph = scsi_get_bus_phase(cfg->scsi);
+    return ph == scsi_data_in || ph == scsi_data_out || ph == scsi_command;
+}
+
+static void pdm_scsi_pump_event(void *source, uint64_t data) {
+    (void)data;
+    config_t *cfg = (config_t *)source;
+    pdm_state_t *st = pdm_st(cfg);
+    pdm_amic_t *a = &st->amic;
+    bool any_running = false;
+    for (int chip = 0; chip < 2; chip++) {
+        pdm_dma_ch_t *ch = &a->scsi[chip];
+        scsi_53c96_t *c96 = st->scsi96[chip];
+        if (!c96 || !(ch->ctrl & DMA_RUN))
+            continue;
+        any_running = true;
+        if (chip == 1)
+            continue; // no bus behind the 8100 fast chip: DREQ never asserts
+        bool mem_to_scsi = (ch->ctrl & 0x40u) != 0; // DIR
+        int moved = 0;
+        while (moved < PDM_SCSI_PUMP_MAX && pdm_scsi_data_phase(cfg) && scsi_53c96_dreq(c96)) {
+            uint8_t *host = scsi_dma_host(ch->addr);
+            if (!host)
+                break; // window points outside RAM: drop the request
+            if (mem_to_scsi) {
+                scsi_53c96_pdma_write8(c96, *host);
+            } else {
+                if (!g_page_table[ch->addr >> PAGE_SHIFT].writable)
+                    break;
+                *host = scsi_53c96_pdma_read8(c96);
+            }
+            ch->addr++;
+            moved++;
+        }
+        if (moved) {
+            LOG(4, "pump chip%d moved %d, addr now $%08X dreq=%d phase=%d", chip, moved, ch->addr, scsi_53c96_dreq(c96),
+                scsi_get_bus_phase(cfg->scsi));
+            pdm_amic_recompute(cfg);
+        }
+    }
+    if (any_running)
+        scheduler_new_cpu_event(cfg->scheduler, pdm_scsi_pump_event, cfg, 0, 0, (uint64_t)PDM_SCSI_PUMP_NS);
+}
+
+// Arm the pump when a SCSI channel starts running (ctrl-write hook; the
+// event keeps itself alive while any channel has RUN set).
+static void pdm_scsi_pump_arm(config_t *cfg) {
+    remove_event(cfg->scheduler, pdm_scsi_pump_event, cfg);
+    scheduler_new_cpu_event(cfg->scheduler, pdm_scsi_pump_event, cfg, 0, 0, (uint64_t)PDM_SCSI_PUMP_NS);
+}
+
+// ============================================================
 // VBL — AMIC's video timing core (video-onboard-ariel.md §6)
 // ============================================================
 
@@ -444,6 +598,7 @@ void pdm_amic_start_vbl(config_t *cfg) {
 // checkpoint restore can rebind them).
 void pdm_amic_register_events(config_t *cfg) {
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "vbl", pdm_vbl_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scsi_pump", pdm_scsi_pump_event);
 }
 
 // ============================================================
@@ -503,11 +658,16 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
     case OFF_VIA1:
     case OFF_VIA1 + 0x1000:
         return via_get_memory_interface(cfg->via1)->read_uint8(cfg->via1, offset);
+    case OFF_SCSIA:
+        return pdm_scsi_io_read(cfg, 0, offset - OFF_SCSIA);
+    case OFF_SCSIB:
+        return pdm_scsi_io_read(cfg, 1, offset - OFF_SCSIB);
     case OFF_SOUND:
         return pdm_awacs_read(cfg, offset - OFF_SOUND);
     case OFF_ARIEL:
         return pdm_ariel_read(cfg, offset - OFF_ARIEL);
     case OFF_VIA2:
+    case OFF_VIA2 + 0x1000: // classic-VIA-stride aliases of the bank
         return via2_read(cfg, offset - OFF_VIA2);
     case OFF_VIDEO:
         return pdm_video_ctl_read(cfg, offset - OFF_VIDEO);
@@ -531,6 +691,12 @@ void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {
     case OFF_VIA1 + 0x1000:
         via_get_memory_interface(cfg->via1)->write_uint8(cfg->via1, offset, value);
         return;
+    case OFF_SCSIA:
+        pdm_scsi_io_write(cfg, 0, offset - OFF_SCSIA, value);
+        return;
+    case OFF_SCSIB:
+        pdm_scsi_io_write(cfg, 1, offset - OFF_SCSIB, value);
+        return;
     case OFF_SOUND:
         pdm_awacs_write(cfg, offset - OFF_SOUND, value);
         return;
@@ -538,6 +704,7 @@ void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {
         pdm_ariel_write(cfg, offset - OFF_ARIEL, value);
         return;
     case OFF_VIA2:
+    case OFF_VIA2 + 0x1000:
         via2_write(cfg, offset - OFF_VIA2, value);
         return;
     case OFF_VIDEO:

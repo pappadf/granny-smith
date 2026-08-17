@@ -31,6 +31,7 @@
 
 struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
 struct object;
+struct scsi_53c96; // the shared 53C9x register core (peripherals/scsi_53c96.h)
 
 // How the memory controller places SIMM banks (hmc.c).
 typedef enum pdm_bank_layout {
@@ -51,6 +52,9 @@ typedef struct pdm_board_desc {
     // is set — sized so HWInit's bus-ratio measurement lands on the real
     // machine's CPU:bus ratio (proposal §5.2; pinned at rung L7).
     uint32_t wait_state_penalty;
+    // 8100 only: the discrete 53CF96 on the fast internal bus (SCSI bus 0,
+    // register file at island +$11000, AMIC DMA channel B).
+    bool has_fast_scsi;
 } pdm_board_desc_t;
 
 // === HMC state (hmc.c) ======================================================
@@ -141,6 +145,11 @@ typedef struct pdm_state {
     pdm_hmc_t hmc;
     pdm_amic_t amic;
     struct av_cuda *cuda;
+    // SCSI: [0] = the Curio 53C94 cell (all models, island +$10000, AMIC
+    // DMA channel A, bus = cfg->scsi); [1] = the 8100's discrete 53CF96
+    // (island +$11000, channel B) — instantiated with no bus attached, so
+    // every select on the fast bus times out like an empty bus.
+    struct scsi_53c96 *scsi96[2];
 
     // ICR source levels (bits 0-5), recomputed by pdm_amic_recompute
     uint8_t icr_sources;
@@ -206,6 +215,10 @@ void pdm_amic_recompute(config_t *cfg);
 #define PDM_ICR_DMA  4
 #define PDM_ICR_NMI  5
 void pdm_amic_set_source(config_t *cfg, int bit, bool level);
+// 53C9x INT pin levels into the pseudo-VIA2 device bank (chip 0 = Curio →
+// bit 3, chip 1 = 53CF96 → bit 6; the DRQ bits 0/2 are read live from the
+// chips' DREQ outputs, never latched).
+void pdm_amic_set_scsi_irq(config_t *cfg, int chip, bool level);
 
 // === awacs.c ================================================================
 // The AWACS codec + AMIC sound engine: the $50F14000 register block, the

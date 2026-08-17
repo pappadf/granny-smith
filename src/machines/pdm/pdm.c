@@ -28,6 +28,8 @@
 #include "ppc.h"
 #include "rtc.h"
 #include "scheduler.h"
+#include "scsi.h"
+#include "scsi_53c96.h"
 #include "via.h"
 
 #include <assert.h>
@@ -218,6 +220,19 @@ static void pdm_via1_irq(void *context, bool active) {
         pdm_amic_set_source(cfg, PDM_ICR_VIA1, active);
 }
 
+// 53C9x INT pins → the pseudo-VIA2 device bank (level-sensitive).
+static void pdm_scsi96a_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    if (pdm_st(cfg))
+        pdm_amic_set_scsi_irq(cfg, 0, active);
+}
+
+static void pdm_scsi96b_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    if (pdm_st(cfg))
+        pdm_amic_set_scsi_irq(cfg, 1, active);
+}
+
 // ============================================================
 // Substrate lifecycle
 // ============================================================
@@ -268,6 +283,20 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp);
     assert(st->cuda != NULL);
 
+    // SCSI: the shared bus/target model on the Curio 53C94 cell (20 MHz
+    // SCSI clock — the divided "Ethernet" oscillator).  The 8100 adds the
+    // discrete 53CF96 on its fast internal bus (40 MHz), instantiated with
+    // no bus attached: every select times out, the empty-bus presentation.
+    // hd=/cd= media land on cfg->scsi, i.e. the Curio bus, on all models.
+    cfg->scsi = scsi_init(NULL, cp);
+    st->scsi96[0] = scsi_53c96_init(cfg->scheduler, 20000000, cp);
+    scsi_53c96_set_irq_callback(st->scsi96[0], pdm_scsi96a_irq, cfg);
+    scsi_53c96_attach_bus(st->scsi96[0], cfg->scsi);
+    if (pdm_board(cfg)->has_fast_scsi) {
+        st->scsi96[1] = scsi_53c96_init(cfg->scheduler, 40000000, cp);
+        scsi_53c96_set_irq_callback(st->scsi96[1], pdm_scsi96b_irq, cfg);
+    }
+
     // Board state + memory map.
     pdm_hmc_init(cfg);
     pdm_amic_init(cfg);
@@ -310,6 +339,9 @@ static void pdm_reset(config_t *cfg) {
     // and becomes a first-class test row in Phase D.)
     ppc_reset(cfg->ppc);
     pdm_amic_init(cfg);
+    for (int i = 0; i < 2; i++)
+        if (st->scsi96[i])
+            scsi_53c96_reset(st->scsi96[i]);
     st->hmc.cfg_lo = 0;
     st->hmc.cfg_hi = 0;
     st->hmc.bit_ptr = 0;
@@ -326,6 +358,16 @@ static void pdm_teardown(config_t *cfg) {
     if (st) {
         pdm_awacs_teardown(cfg);
         pdm_video_teardown(cfg);
+        for (int i = 0; i < 2; i++) {
+            if (st->scsi96[i]) {
+                scsi_53c96_delete(st->scsi96[i]);
+                st->scsi96[i] = NULL;
+            }
+        }
+    }
+    if (cfg->scsi) {
+        scsi_delete(cfg->scsi);
+        cfg->scsi = NULL;
     }
     if (st && st->cuda) {
         av_cuda_delete(st->cuda);
@@ -374,6 +416,12 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via1, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
+    // Same relative order as the pdm_init construction sequence (the
+    // checkpoint stream is positional).
+    scsi_checkpoint(cfg->scsi, cp);
+    scsi_53c96_checkpoint(st->scsi96[0], cp);
+    if (st->scsi96[1])
+        scsi_53c96_checkpoint(st->scsi96[1], cp);
     // Substrate-private tail (mirrored by the restore block in pdm_init).
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
