@@ -2,6 +2,15 @@
 
 Granny Smith: a browser-based Motorola 68000 Macintosh Plus–style emulator compiled to WebAssembly using Emscripten, plus a headless variant compiled with gcc/clang for native host testing.
 
+## Machine-local instructions
+
+**If `AGENTS.local.md` exists at the repository root, read it before doing
+anything else.** It is gitignored, so it is not part of this repository and
+differs per machine — it describes resources available in that particular
+working environment (extra reference material, local mounts, credentials
+setup) that this file cannot know about. Absent on a clean checkout, in which
+case there is nothing to do.
+
 ## Repository Directory Overview
 
 - `src/core/`: Platform-agnostic emulator (cpu/, memory/, peripherals/, scheduler/, debug/, storage/, network/, shell/)
