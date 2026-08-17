@@ -32,6 +32,19 @@ void cpu_run_68040(cpu_t *restrict cpu, uint32_t *instructions);
 
 // === Public Accessors ===
 
+// FPU presence per 68K model (see cpu.h).  An explicit switch so a non-68K
+// cpu_model can never read as "has a 68881/68882" — only the models this
+// module implements answer true.
+bool cpu_has_fpu(int cpu_model) {
+    switch (cpu_model) {
+    case CPU_MODEL_68030: // paired 68882
+    case CPU_MODEL_68040: // on-chip FPU
+        return true;
+    default: // 68000 compacts; non-68K models answer via their own module
+        return false;
+    }
+}
+
 // Get the value of address register An (n=0-7)
 uint32_t cpu_get_an(cpu_t *restrict cpu, int n) {
     assert(n >= 0 && n < 8);
@@ -370,6 +383,43 @@ static void cpu_if_poll_interrupt(void *ctx) {
 sched_cpu_if_t cpu_sched_if(cpu_t *cpu) {
     sched_cpu_if_t cif = {cpu, cpu_if_run_sprint, cpu_if_is_stopped, cpu_if_poll_interrupt};
     return cif;
+}
+
+// === Main-CPU debug interface adapter (PPC proposal §3.9b) ===
+// Debugger paths (breakpoints, disasm, shell prompt) reach the main CPU
+// through this vtable so debug.c stays architecture-neutral.
+
+static uint32_t cpu_dbgif_get_pc(void *ctx) {
+    return cpu_get_pc((cpu_t *)ctx);
+}
+
+static void cpu_dbgif_set_pc(void *ctx, uint32_t pc) {
+    cpu_set_pc((cpu_t *)ctx, pc);
+}
+
+// Disassemble one 68K instruction at pc, reading the instruction stream
+// through the debug memory view (side-effect-free).  Returns bytes consumed.
+static int cpu_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
+    (void)ctx;
+    uint16_t words[16]; // longest 68K instruction is 10 words; decoder may peek further
+    for (int i = 0; i < 16; i++)
+        words[i] = memory_debug_read_uint16(pc + (uint32_t)(i * 2));
+    return cpu_disasm(words, buf) * 2;
+}
+
+// Logical→physical through the current MMU context (identity when off).
+static uint32_t cpu_dbgif_translate(void *ctx, uint32_t logical, bool *ok) {
+    (void)ctx;
+    bool valid = true;
+    uint32_t phys = debug_translate_address(logical, NULL, NULL, &valid);
+    if (ok)
+        *ok = valid;
+    return phys;
+}
+
+cpu_debug_if_t cpu_debug_if(cpu_t *cpu) {
+    cpu_debug_if_t dif = {cpu, cpu_dbgif_get_pc, cpu_dbgif_set_pc, cpu_dbgif_disasm, cpu_dbgif_translate};
+    return dif;
 }
 
 // Run the appropriate decoder for the CPU model

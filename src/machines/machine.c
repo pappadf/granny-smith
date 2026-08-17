@@ -67,6 +67,8 @@ const char *mmu_kind_to_string(mmu_kind_t kind) {
         return "lisa_segment";
     case MMU_68040:
         return "68040";
+    case MMU_PPC_601:
+        return "ppc_601";
     }
     return "none";
 }

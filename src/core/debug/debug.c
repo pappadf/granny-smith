@@ -450,6 +450,7 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     e->format_frame = format_frame;
     e->rw = (uint8_t)rw;
     e->double_fault_kind = (uint8_t)double_fault_kind;
+    e->arch = EXC_ARCH_M68K; // this entry point serves the 68K exception paths
     s_exc_trace_head = (s_exc_trace_head + 1) % EXC_TRACE_RING_SIZE;
     s_exc_trace_count++;
 
@@ -496,9 +497,18 @@ void debug_exc_trace_dump(int filter) {
                 e->vector == 0x024 || (e->vector >= 0x060 && e->vector <= 0x07C))
                 continue;
         }
-        printf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
-               (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc,
-               e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+        // Per-arch line format (§3.9c): the 68K entry prints as always; a PPC
+        // entry carries MSR in the vbr slot, the vector offset in
+        // format_frame, and DAR in fault_addr.
+        if (e->arch == EXC_ARCH_PPC) {
+            printf("[%llu] vec=$%05X rw=%s dar=$%08X pc=$%08X srr0=$%08X msr=$%08X%s\n", (unsigned long long)e->ts,
+                   e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc, e->saved_pc, e->vbr,
+                   e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+        } else {
+            printf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
+                   (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr,
+                   e->faulting_pc, e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+        }
     }
 }
 
@@ -552,8 +562,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
             LOG_WITH(lp->category, lp->level, "logpoint %s $%08X (size=%u, value=$%0*X): %s",
                      is_write ? "WRITE" : "READ", addr, size, (int)(size * 2), value, formatted);
         } else {
-            cpu_t *cpu = system_cpu();
-            uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
+            const cpu_debug_if_t *dif = system_cpu_debug_if();
+            uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
             LOG_WITH(lp->category, lp->level, "logpoint %s $%08X.%c value=$%0*X pc=$%08X", is_write ? "WRITE" : "READ",
                      addr,
                      (size == 1)   ? 'b'
@@ -564,8 +574,6 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
     }
 }
 
-extern int cpu_disasm(uint16_t *instr, char *buf);
-
 // Forward declarations for trace functions
 static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
 
@@ -573,18 +581,28 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
 
-static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
+// Disassemble one instruction at pc through the main-CPU debug interface,
+// splitting the core's "mnemonic\toperands" text.  Returns bytes consumed
+// (so callers advance the address arch-neutrally); 2 as a safe fallback
+// when no machine/core is up.
+static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
     char buf[100];
     int i, n;
 
-    n = cpu_disasm(instr, buf);
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!dif) {
+        buf[0] = '\0';
+        n = 2;
+    } else {
+        n = dif->disasm(dif->ctx, pc, buf);
+    }
 
     if (strlen(buf) == 0) {
         sprintf(mnemonic, "ILLEGAL");
         operands[0] = '\0';
     } else {
         // Cap at 31 so we always have room for the trailing NUL even if
-        // cpu_disasm ever returns an opcode without a tab separator.
+        // the core's disasm ever returns an opcode without a tab separator.
         for (i = 0; i < 31 && buf[i] != '\0' && buf[i] != '\t'; i++)
             mnemonic[i] = buf[i];
         mnemonic[i] = '\0';
@@ -597,16 +615,11 @@ static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
     return n;
 }
 
-// Disassemble instruction at addr, write to buf, return instruction length in words
+// Disassemble instruction at addr, write to buf, return instruction length in bytes
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
-    uint16_t words[16];
     char mnemonic[32], operands[80];
 
-    int i;
-    for (i = 0; i < 16; i++)
-        words[i] = cpu_get_uint16(addr + i * 2);
-
-    int n = disasm(words, mnemonic, operands);
+    int n = disasm_at(addr, mnemonic, operands);
 
     // Format with address prefix.  Use snprintf to bound output: addr_str is
     // up to 39 chars, mnemonic up to 31, operands up to 79 — worst case
@@ -617,7 +630,7 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     char addr_str[40];
     format_address_pair(addr_str, sizeof(addr_str), addr);
     if (buf_size > 0)
-        snprintf(buf, buf_size, "%s  %04x  %-10s%-12s", addr_str, (int)words[0], mnemonic, operands);
+        snprintf(buf, buf_size, "%s  %04x  %-10s%-12s", addr_str, (int)cpu_get_uint16(addr), mnemonic, operands);
 
     return n;
 }
@@ -626,22 +639,22 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
 void debugger_disasm_pc(char *buf, size_t buf_size) {
     if (!buf || buf_size == 0)
         return;
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!dif) {
         buf[0] = '\0';
         return;
     }
-    debugger_disasm(buf, buf_size, cpu_get_pc(cpu));
+    debugger_disasm(buf, buf_size, dif->get_pc(dif->ctx));
 }
 
 // Check if execution should break and trace current instruction
 int debug_break_and_trace(void) {
     debug_t *debug = system_debug();
-    cpu_t *cpu = system_cpu();
-    if (!debug || !cpu)
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!debug || !dif)
         return false;
     bool stop = false;
-    uint32_t current_pc = cpu_get_pc(cpu);
+    uint32_t current_pc = dif->get_pc(dif->ctx);
 
     // If we have a last_breakpoint_pc set, this means we need to skip checking
     // for breakpoints at that specific PC address one time (to allow resuming execution)
@@ -3274,11 +3287,11 @@ static value_t debug_method_exceptions(struct object *self, const member_t *m, i
 static value_t debug_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    cpu_t *cpu = system_cpu();
-    if (!cpu)
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!dif)
         return val_err("debug.disasm: CPU not initialised");
 
-    uint32_t addr = cpu_get_pc(cpu);
+    uint32_t addr = dif->get_pc(dif->ctx);
     int64_t count = 16;
     if (argc == 1) {
         count = argv[0].i;
@@ -3293,9 +3306,9 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
 
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
-        int instr_len = debugger_disasm(buf, sizeof(buf), addr);
+        int instr_len = debugger_disasm(buf, sizeof(buf), addr); // returns bytes
         printf("%s\n", buf);
-        addr += 2 * instr_len;
+        addr += (uint32_t)instr_len;
     }
     return val_bool(true);
 }
@@ -3426,7 +3439,6 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
     // without further bridge round-trips.
     value_t *rows = NULL;
     size_t n_rows = 0, cap_rows = 0;
-    uint16_t words[16];
     char mnem[32], ops[80];
     for (int i = 0; i < (int)count; i++) {
         value_map_builder_t *row = val_map_new();
@@ -3437,15 +3449,13 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
         val_map_put(row, "phys", valid ? val_int((int64_t)phys) : val_none());
         val_map_put(row, "valid", val_bool(valid));
 
-        for (int j = 0; j < 16; j++)
-            words[j] = cpu_get_uint16(addr + j * 2);
-        int n = disasm(words, mnem, ops);
+        int n = disasm_at(addr, mnem, ops); // bytes consumed
 
         val_map_put(row, "mnem", val_str(mnem));
         val_map_put(row, "ops", val_str(ops));
         val_list_push(&rows, &n_rows, &cap_rows, val_map_finish(row));
 
-        addr += 2 * n;
+        addr += (uint32_t)n;
     }
     val_map_put(b, "rows", val_list(rows, n_rows));
 

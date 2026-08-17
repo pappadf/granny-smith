@@ -66,6 +66,14 @@ wrong under an MMU), the inline accessors charge I/O penalties against
 the in-flight main sprint, private address spaces come free, and a core
 then links against nothing — unit tests hand it a 16-line mock bus.
 
+The injected-hook rule is an **auxiliary-core** rule.  A core serving as
+the machine's *main* CPU (the 68K today, PowerPC per
+proposal-powerpc-601-pdm.md) is what the global fast path exists for: it
+reads and writes through the same inline accessors, gets I/O penalties
+charged to its own sprint, and owns the supervisor/user SoA switch.  A
+main CPU likewise registers `machine.cpu` and the `$` register aliases —
+both reserved for whichever core owns emulated time.
+
 ## Machine profile surface
 
 `hw_profile_t.aux_cpus` (sentinel-terminated `struct aux_cpu_slot`

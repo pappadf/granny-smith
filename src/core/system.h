@@ -147,6 +147,13 @@ debug_t *system_debug(void);
 // System-level CPU accessor: returns the current CPU object
 cpu_t *system_cpu(void);
 
+// Main-CPU debug interface accessor (PPC proposal §3.9b): the vtable the
+// debugger routes PC/disasm/translate through, populated by system_create
+// from whichever core is the machine's main CPU.  NULL before a machine is
+// built.  The pointed-to struct lives inside config_t (stable until destroy).
+struct cpu_debug_if;
+const struct cpu_debug_if *system_cpu_debug_if(void);
+
 // The active machine configuration (NULL before setup).  Used by the keyboard /
 // mouse object methods to find a machine-specific host-input hook.
 config_t *system_config(void);

@@ -221,6 +221,15 @@ cpu_t *system_cpu(void) {
     return global_emulator ? global_emulator->cpu : NULL;
 }
 
+// Main-CPU debug interface accessor (PPC proposal §3.9b).  Returns NULL until
+// a machine with a main CPU has been built (ctx doubles as the "populated"
+// flag — system_create fills the vtable right after substrate init).
+const struct cpu_debug_if *system_cpu_debug_if(void) {
+    if (!global_emulator || !global_emulator->cpu_dbg.ctx)
+        return NULL;
+    return &global_emulator->cpu_dbg;
+}
+
 // The active machine configuration (what host-input/object methods act on).
 config_t *system_config(void) {
     return global_emulator;
@@ -687,6 +696,9 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     memset(cfg, 0, sizeof(config_t));
 
     cfg->machine = profile;
+    // Main-CPU architecture tag (PPC proposal §3.9a): derived from the
+    // profile's cpu_model; the substrate init below builds the matching core.
+    cfg->cpu_arch = cpu_arch_for_model(profile->cpu_model);
     global_emulator = cfg;
 
     // Label the machine container node with the active model name so the
@@ -707,6 +719,17 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
 
     // Delegate all machine-specific initialisation to the profile
     profile->substrate->init(cfg, checkpoint);
+
+    // Bind the main-CPU debug seam to whichever core the substrate built.
+    // The PPC arm lands with the ppc core module (PR 1 Phase B / PR 2).
+    switch (cfg->cpu_arch) {
+    case CPU_ARCH_M68K:
+        if (cfg->cpu)
+            cfg->cpu_dbg = cpu_debug_if(cfg->cpu);
+        break;
+    case CPU_ARCH_PPC:
+        break; // ppc_debug_if() once the core exists
+    }
 
     // Stand up the object-model root (M2): attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
