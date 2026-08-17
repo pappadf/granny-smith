@@ -664,6 +664,9 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
         return pdm_scsi_io_read(cfg, 1, offset - OFF_SCSIB);
     case OFF_SOUND:
         return pdm_awacs_read(cfg, offset - OFF_SOUND);
+    case OFF_SWIM3:
+    case OFF_SWIM3 + 0x1000: // 16 registers at stride $200 span both blocks
+        return pdm_swim3_read(cfg, offset - OFF_SWIM3);
     case OFF_ARIEL:
         return pdm_ariel_read(cfg, offset - OFF_ARIEL);
     case OFF_VIA2:
@@ -699,6 +702,10 @@ void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {
         return;
     case OFF_SOUND:
         pdm_awacs_write(cfg, offset - OFF_SOUND, value);
+        return;
+    case OFF_SWIM3:
+    case OFF_SWIM3 + 0x1000: // 16 registers at stride $200 span both blocks
+        pdm_swim3_write(cfg, offset - OFF_SWIM3, value);
         return;
     case OFF_ARIEL:
         pdm_ariel_write(cfg, offset - OFF_ARIEL, value);

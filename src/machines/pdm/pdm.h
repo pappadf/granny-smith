@@ -95,6 +95,25 @@ typedef struct pdm_dma_ch {
     uint8_t ctrl;
 } pdm_dma_ch_t;
 
+// SWIM3 floppy controller ($50F16000, 16 byte-wide registers at stride
+// $200).  Phase-G scope: the register file + drive-sense model the .Sony
+// driver's open/idle path needs — internal SuperDrive present, no disk,
+// drive 2 absent, no interrupt sources.  Media datapaths are Phase H.
+typedef struct pdm_swim3 {
+    uint8_t timer; // reg 1 (storage only; no countdown modelled)
+    uint8_t param; // reg 3 ParamData
+    uint8_t phase; // reg 4 CA0-2/LSTRB lines (probe loopback readback)
+    uint8_t setup; // reg 5 (bit 7 SoftReset self-clears)
+    uint8_t mode; // reg 6 read; written via Zeroes ($C00) / Ones ($E00)
+    uint8_t intr; // reg 8, read-to-clear (never set in this model)
+    uint8_t step, ctrack, csect, gap, sector, nsect; // regs 9-14 storage
+    uint8_t intmask; // reg 15, R/W
+    uint8_t error; // reg 2, read-to-clear (never set in this model)
+    uint8_t motor_on; // drive-1 spindle latch (strobe-controlled)
+    uint8_t mfm_mode; // drive mode latch; forgotten at motor-off (§11.12)
+    uint8_t step_dir; // step-direction latch (sense addr 0)
+} pdm_swim3_t;
+
 typedef struct pdm_amic {
     // Interrupt control register $50F2A000
     uint8_t icr_mode; // INTMODE (bit 6)
@@ -128,6 +147,7 @@ typedef struct pdm_amic {
     double snd_half_start_ns; // when the in-flight output half began playing
     uint32_t snd_halves; // output half-buffers rendered since power-on
     int32_t snd_peak; // loudest |sample| pushed to the host since power-on
+    pdm_swim3_t swim3; // floppy controller register file (swim3.c)
 } pdm_amic_t;
 
 // === Video presentation state (ariel.c) =====================================
@@ -233,6 +253,13 @@ void pdm_awacs_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Combinational ICR mirror bytes ($50F2A008/$50F2A00A): per-channel flag
 // AND enable summaries the interrupt fabric folds into the DMA source bit.
 uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
+
+// === swim3.c ================================================================
+// SWIM3 floppy controller register file + Sony-drive sense model (Phase-G
+// no-media scope; see pdm_swim3_t above).  Island offsets 0..$1FFF from
+// $50F16000; byte accesses only.
+uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
+void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 
 // === ariel.c ================================================================
 // Onboard video: the Sonora-model control registers ($50F28000), the Ariel II
