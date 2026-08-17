@@ -94,6 +94,7 @@ uint8_t *g_mem_logpoint_phys_page_count = NULL;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
 bool g_user_soa_reserved = false;
 void (*g_mem_fastpath_changed)(void) = NULL;
+uint32_t (*g_mem_logical_xlate)(uint32_t addr, bool *ok) = NULL;
 
 // Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
 uint64_t g_mem_slowpath_count = 0;
@@ -198,9 +199,22 @@ static bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_ou
     if (g_mmu && g_mmu->enabled) {
         bool supervisor = (g_active_write == g_supervisor_write);
         phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
-        if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[phys_addr >> PAGE_SHIFT])
-            phys_watched = true;
+    } else if (logical_watched && g_mem_logical_xlate) {
+        // A logically-watched page reaches here with its LOGICAL address
+        // (ppc_dxlate_slow keeps the EA for watched pages); resolve the
+        // physical backing through the CPU's current data context.
+        bool ok;
+        uint32_t pa = g_mem_logical_xlate(addr, &ok);
+        if (ok)
+            phys_addr = pa;
     }
+    // The physical watch applies whichever regime produced phys_addr —
+    // MMU-translated, PPC-translated, or the address itself (which IS
+    // physical when a PPC slow translation already rewrote it, and equals
+    // logical on MMU-less machines).
+    if (g_mem_logpoint_phys_page_count && (phys_addr >> PAGE_SHIFT) < (uint32_t)g_page_count &&
+        g_mem_logpoint_phys_page_count[phys_addr >> PAGE_SHIFT])
+        phys_watched = true;
 
     if (!logical_watched && !phys_watched)
         return false;
@@ -211,10 +225,15 @@ static bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_ou
         uint8_t *base = mmu_phys_to_host(g_mmu, phys_addr & ~(uint32_t)PAGE_MASK);
         *host_out = base ? base + (phys_addr & PAGE_MASK) : NULL;
         *writable_out = base ? mmu_phys_is_writable(g_mmu, phys_addr) : false;
-    } else {
-        page_entry_t *pe = &g_page_table[page];
-        *host_out = pe->host_base ? pe->host_base + (addr & PAGE_MASK) : NULL;
+    } else if ((phys_addr >> PAGE_SHIFT) < (uint32_t)g_page_count) {
+        // No 68K MMU: phys_addr is the identity address or the PPC
+        // translation from above — dispatch on ITS page entry.
+        page_entry_t *pe = &g_page_table[phys_addr >> PAGE_SHIFT];
+        *host_out = pe->host_base ? pe->host_base + (phys_addr & PAGE_MASK) : NULL;
         *writable_out = pe->writable;
+    } else {
+        *host_out = NULL;
+        *writable_out = false;
     }
     return true;
 }
@@ -1433,6 +1452,7 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // the new machine's CPU init re-registers what it needs).
     g_user_soa_reserved = false;
     g_mem_fastpath_changed = NULL;
+    g_mem_logical_xlate = NULL;
     // Hand over from any still-installed map.
     //
     // checkpoint.load deliberately builds the new machine BEFORE destroying

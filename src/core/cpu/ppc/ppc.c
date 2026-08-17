@@ -507,9 +507,24 @@ static void register_ppc_aliases(void) {
 }
 
 // Memory-logpoint installs reshape the SoA fast path behind the MMU's
-// back; drop every cache that could bypass the slow path.
+// back; drop every cache that could bypass the slow path (the xtlb's
+// physical rewrites included — see ppc_mmu_logpoints_changed).
 static void ppc_fastpath_changed(void) {
-    ppc_mmu_flush_fetch();
+    ppc_mmu_logpoints_changed();
+}
+
+// The instance behind the parameterless memory hooks below (one main CPU
+// per machine; rebound on every ppc_init).
+static ppc_t *g_hook_ppc;
+
+// g_mem_logical_xlate: current-data-context logical→physical for the
+// memory slow path's logpoint resolution.  Side-effect-free.
+static uint32_t ppc_hook_logical_xlate(uint32_t addr, bool *ok) {
+    if (!g_hook_ppc) {
+        *ok = false;
+        return addr;
+    }
+    return ppc_mmu_translate_debug(g_hook_ppc, addr, true, ok);
 }
 
 ppc_t *ppc_init(checkpoint_t *checkpoint) {
@@ -521,6 +536,8 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
     // identity-restore paths must leave them alone (memory.h).
     g_user_soa_reserved = true;
     g_mem_fastpath_changed = ppc_fastpath_changed;
+    g_hook_ppc = p;
+    g_mem_logical_xlate = ppc_hook_logical_xlate;
 
     if (checkpoint) {
         // The stream carries the whole struct including save-time pointers;
@@ -574,6 +591,12 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
 void ppc_delete(ppc_t *p) {
     if (!p)
         return;
+    // Drop the parameterless-hook binding if it is ours (memory_map_init
+    // also clears the function pointers on machine swap).
+    if (g_hook_ppc == p) {
+        g_hook_ppc = NULL;
+        g_mem_logical_xlate = NULL;
+    }
     if (p->fpu_object) {
         object_detach(p->fpu_object);
         object_delete(p->fpu_object);

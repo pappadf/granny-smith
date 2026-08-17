@@ -300,6 +300,14 @@ extern bool g_user_soa_reserved;
 // bypass the slow path.  NULL when no CPU registered one.
 extern void (*g_mem_fastpath_changed)(void);
 
+// Current-context logical→physical translation for machines whose data
+// translation lives outside g_mmu (the PPC 601 front end).  Used by the
+// logpoint slow path to resolve the backing of a logically-watched page
+// that arrives with its LOGICAL address (ppc_dxlate_slow keeps the EA for
+// watched plain-RAM pages instead of rewriting it to physical).  Must be
+// side-effect-free; *ok=false → treat as identity.  NULL on 68K machines.
+extern uint32_t (*g_mem_logical_xlate)(uint32_t addr, bool *ok);
+
 // === Value Trap (fast-path needle search) ===
 // Catches writes of a specific (PA, size, value) combination without forcing
 // the page to slow path.  Controlled by `value-trap` shell command.  When

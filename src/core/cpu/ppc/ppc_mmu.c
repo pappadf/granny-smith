@@ -115,6 +115,15 @@ static void user_soa_invalidate_all(void) {
     g_fill_track_overflow = false;
 }
 
+// Memory-logpoint install/uninstall reshaped the watch arrays: drop the
+// translation TLB too — a stale entry would keep rewriting a now-watched
+// EA to physical before ppc_dxlate_slow's keep-logical check can run.
+// (The user SoA arrays are zeroed by the installer itself.)
+void ppc_mmu_logpoints_changed(void) {
+    memset(g_xtlb, 0, sizeof(g_xtlb));
+    ppc_mmu_flush_fetch();
+}
+
 // Full invalidation: context change (mtsr/BAT/SDR1 value change, HMC
 // bank remap, checkpoint restore).
 void ppc_mmu_invalidate_all(ppc_t *p) {
@@ -341,6 +350,12 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
         return; // logical logpoint: stay slow
     if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[ppage])
         return; // physical logpoint: stay slow
+    // Index-collision guard: dxlate_slow hands back PHYSICAL addresses that
+    // then index these (logically-filled) arrays.  A fill at an index that
+    // doubles as a watched physical page would swallow those accesses on
+    // the fast path — through the WRONG host mapping — so keep it empty.
+    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[lpage])
+        return;
     if (g_fill_track_count >= PPC_FILL_TRACK_MAX)
         g_fill_track_overflow = true;
     else
@@ -393,11 +408,17 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     bool user = (p->msr & PPC_MSR_PR) != 0;
     bool dt = (p->msr & PPC_MSR_DT) != 0;
 
+    // Logically-watched page (memory logpoint): skip the xtlb so the
+    // access keeps its LOGICAL address through the memory slow path — the
+    // logpoint must fire with the address the guest used, and the slow
+    // path resolves the physical backing via g_mem_logical_xlate.
+    bool lp_watched = g_mem_logpoint_page_count && g_mem_logpoint_page_count[ea >> PAGE_SHIFT];
+
     // Translation TLB (serves supervisor accesses and user pages that
     // could not be SoA-filled).
     uint32_t tag = (ea & 0xFFFFF000u) | (user ? 2u : 0u) | 1u;
     xtlb_entry_t *te = &g_xtlb[(ea >> PAGE_SHIFT) & (XTLB_SIZE - 1)];
-    if (te->tag == tag && (!store || te->w_ok)) {
+    if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
         *addr = te->pa_page | (ea & 0xFFFu);
         return false;
     }
@@ -429,6 +450,17 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     if (res != XL_OK) {
         raise_dsi(p, ea, PPC_DSISR_NOTFOUND | (store ? PPC_DSISR_STORE : 0));
         return true;
+    }
+
+    // Logically-watched plain-RAM page: hand the memory slow path the
+    // LOGICAL address (uncached — every access must re-enter here) so the
+    // logpoint hook fires with it.  Device targets keep the physical
+    // rewrite: the slow path would misdispatch a logical address on the
+    // identity page table.
+    if (lp_watched) {
+        uint32_t ppg = out.pa >> PAGE_SHIFT;
+        if (ppg < g_page_count && g_page_table[ppg].host_base && !g_page_table[ppg].dev)
+            return false; // *addr stays the EA
     }
 
     if (user && dt) {

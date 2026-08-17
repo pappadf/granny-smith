@@ -348,6 +348,28 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
             memory_logpoint_install_phys(phys_start, phys_end);
             lp->start_phys_page = phys_start;
             lp->end_phys_page = phys_end;
+        } else if (g_mem_logical_xlate) {
+            // PPC-translated machine (no g_mmu): watch the physical pages
+            // behind the 68k-world mapping too, so aliases and physical-
+            // address routes (DMA, supervisor identity) stay off the fast
+            // path.  translate_mac resolves the user data context whatever
+            // the stop context (debug.h).
+            const cpu_debug_if_t *dif = system_cpu_debug_if();
+            if (dif && dif->translate_mac) {
+                bool ok_start = false, ok_end = false;
+                uint32_t phys_start = dif->translate_mac(dif->ctx, addr, &ok_start) >> PAGE_SHIFT;
+                uint32_t phys_end = dif->translate_mac(dif->ctx, end_addr, &ok_end) >> PAGE_SHIFT;
+                if (ok_start && ok_end) {
+                    if (phys_end < phys_start) {
+                        uint32_t tmp = phys_start;
+                        phys_start = phys_end;
+                        phys_end = tmp;
+                    }
+                    memory_logpoint_install_phys(phys_start, phys_end);
+                    lp->start_phys_page = phys_start;
+                    lp->end_phys_page = phys_end;
+                }
+            }
         }
     } else {
         // Physical-space logpoint: only the physical array is bumped.
@@ -535,7 +557,19 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         if (lp->space == ADDR_PHYSICAL) {
             if (!phys_computed) {
                 bool supervisor = (g_active_write == g_supervisor_write);
-                phys_addr = (g_mmu && g_mmu->enabled) ? mmu_translate_debug(g_mmu, addr, supervisor) : addr;
+                if (g_mmu && g_mmu->enabled) {
+                    phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
+                } else if (g_mem_logical_xlate && g_mem_logpoint_page_count &&
+                           g_mem_logpoint_page_count[addr >> PAGE_SHIFT]) {
+                    // PPC keep-logical route: a logically-watched page
+                    // arrives with its logical address — translate it for
+                    // the physical compare.  Unwatched pages arrive
+                    // already-physical and compare as-is.
+                    bool ok;
+                    uint32_t pa = g_mem_logical_xlate(addr, &ok);
+                    if (ok)
+                        phys_addr = pa;
+                }
                 phys_computed = true;
             }
             cmp_addr = phys_addr;
