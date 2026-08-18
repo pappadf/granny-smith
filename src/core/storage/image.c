@@ -546,12 +546,30 @@ static uint32_t fork_hash_str(const char *s, uint32_t h) {
     return h;
 }
 
+// Resolve `path` through realpath() so every spelling of the same file — the
+// relative one a script passes to storage.probe, the absolute one the VFS
+// resolves, a symlink — reduces to one string.  Falls back to the input when
+// realpath cannot resolve it (e.g. the file was just deleted), preserving the
+// old keying.  image_vfs.c canonicalises its mount table the same way.
+static void image_canonicalise(const char *path, char *out, size_t cap) {
+    // Let realpath() allocate, so a host path limit above the build-time
+    // PATH_MAX does not get silently truncated.
+    char *resolved = realpath(path, NULL);
+    snprintf(out, cap, "%s", resolved ? resolved : path);
+    free(resolved);
+}
+
 // Build the deterministic scratch path a decoded image is cached under:
 // "<scratch>/<tag>-<hash>.img", hashed from path + size + mtime so repeated
-// inserts reuse the decode and a changed source re-decodes.
+// inserts reuse the decode and a changed source re-decodes.  The path is
+// canonicalised first: hashing the caller's spelling instead decoded the same
+// disc once per spelling, which for a CD-sized .dmg costs a second full decode
+// and another copy of the whole image on disk.
 static void image_scratch_path(const char *base_path, const char *tag, char *out, size_t cap) {
     struct stat sb;
-    uint32_t h = fork_hash_str(base_path, 0x811c9dc5u);
+    char canon[PATH_MAX];
+    image_canonicalise(base_path, canon, sizeof(canon));
+    uint32_t h = fork_hash_str(canon, 0x811c9dc5u);
     if (stat(base_path, &sb) == 0) {
         h = fork_hash_str("\x1f", h);
         char meta[64];

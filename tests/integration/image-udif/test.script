@@ -31,6 +31,17 @@ for i in 0..len($from_raw) {
 # A nested directory reads too, so the decode holds up past the volume header.
 assert vfs.list("${$dmg}/partition1/System Folder") "System Folder unreadable in the decoded image"
 
+# The same image addressed two ways decodes once, not once per spelling: the
+# scratch name is keyed on the canonicalised path.  Checked by total bytes in
+# the storage cache, which a second decode would roughly double (the decoded
+# disk is 21,411,840 bytes; the delta/journal sidecars beside it are tiny).
+assert storage.probe("${$WORK_DIR}/./fixture.dmg") "second spelling of the .dmg did not open"
+let cached = 0
+for e in vfs.list("${$WORK_DIR}/storage-cache") {
+    $cached = $cached + $e.size
+}
+assert $cached < 32000000 "image decoded once per path spelling (scratch cache holds ${$cached} bytes)"
+
 # Exporting the decoded image yields the full logical disk, not the .dmg size.
 assert storage.export_raw($dmg, "${$WORK_DIR}/exported.img") "export_raw failed"
 assert storage.path_size("${$WORK_DIR}/exported.img") == storage.path_size($raw) "exported image is not the source disk's size"
