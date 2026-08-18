@@ -1008,9 +1008,12 @@ static value_t aevt_attr_set_port_name(struct object *self, const member_t *m, v
     (void)self;
     (void)m;
     char err[192] = "";
-    if (atalk_ppc_set_host_port(in.s, g_enabled, err, sizeof(err)) != 0)
+    if (atalk_ppc_set_host_port(in.s, g_enabled, err, sizeof(err)) != 0) {
+        value_free(&in);
         return val_err("cannot rename the host program-linking port: %s", err);
+    }
     snprintf(g_port_name, sizeof(g_port_name), "%s", in.s);
+    value_free(&in);
     return val_none();
 }
 static value_t aevt_attr_auto_reply(struct object *self, const member_t *m) {
@@ -1028,10 +1031,13 @@ static value_t aevt_attr_set_auto_reply(struct object *self, const member_t *m, 
         value_t probe = aevt_parse_text(text, err, sizeof(err));
         bool bad = val_is_error(&probe);
         value_free(&probe);
-        if (bad)
+        if (bad) {
+            value_free(&in);
             return val_err("that reply template does not parse: %s", err);
+        }
     }
     snprintf(g_auto_reply, sizeof(g_auto_reply), "%s", text);
+    value_free(&in);
     return val_none();
 }
 

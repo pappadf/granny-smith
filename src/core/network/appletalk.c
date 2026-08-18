@@ -3197,8 +3197,11 @@ static value_t atalk_afp_attr_set_name(struct object *self, const member_t *m, v
     (void)self;
     (void)m;
     char err[192];
-    if (atalk_afp_set_name(in.s, err, sizeof(err)) != 0)
+    if (atalk_afp_set_name(in.s, err, sizeof(err)) != 0) {
+        value_free(&in);
         return atalk_err("cannot rename the AFP server", err);
+    }
+    value_free(&in);
     return val_none();
 }
 static value_t atalk_afp_attr_message(struct object *self, const member_t *m) {
@@ -3210,8 +3213,11 @@ static value_t atalk_afp_attr_set_message(struct object *self, const member_t *m
     (void)self;
     (void)m;
     char err[192];
-    if (atalk_afp_set_message(in.s, err, sizeof(err)) != 0)
+    if (atalk_afp_set_message(in.s, err, sizeof(err)) != 0) {
+        value_free(&in);
         return atalk_err("cannot set the server message", err);
+    }
+    value_free(&in);
     return val_none();
 }
 static value_t atalk_afp_attr_versions(struct object *self, const member_t *m) {
@@ -3281,8 +3287,11 @@ static value_t atalk_printer_attr_set_name(struct object *self, const member_t *
     (void)self;
     (void)m;
     char err[192];
-    if (atalk_printer_set_name(in.s, err, sizeof(err)) != 0)
+    if (atalk_printer_set_name(in.s, err, sizeof(err)) != 0) {
+        value_free(&in);
         return atalk_err("cannot rename the printer", err);
+    }
+    value_free(&in);
     return val_none();
 }
 
