@@ -14,6 +14,8 @@ EXTRA_SRCS   := ../../../../src/machines/lisa/lisa_profile.c \
                 ../../../../src/core/storage/storage.c \
                 ../../../../src/core/storage/appledouble.c \
                 ../../../../src/core/storage/image_ndif.c \
+                ../../../../src/core/storage/image_udif.c \
+                ../../../../src/core/storage/inflate.c \
                 ../../../../src/core/storage/adc.c \
                 ../../../../src/core/storage/resource_fork.c \
                 ../../../../src/core/storage/macroman.c \
