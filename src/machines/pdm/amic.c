@@ -658,6 +658,10 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
     case OFF_VIA1:
     case OFF_VIA1 + 0x1000:
         return via_get_memory_interface(cfg->via1)->read_uint8(cfg->via1, offset);
+    case OFF_SCC:
+        // ESCC in Curio: +0 bCtl / +2 aCtl / +4 bData / +6 aData — the
+        // low offset bits carry the chip's A/B and D/C pins directly.
+        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, offset - OFF_SCC);
     case OFF_SCSIA:
         return pdm_scsi_io_read(cfg, 0, offset - OFF_SCSIA);
     case OFF_SCSIB:
@@ -693,6 +697,9 @@ void pdm_amic_write(config_t *cfg, uint32_t offset, uint8_t value) {
     case OFF_VIA1:
     case OFF_VIA1 + 0x1000:
         via_get_memory_interface(cfg->via1)->write_uint8(cfg->via1, offset, value);
+        return;
+    case OFF_SCC:
+        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, offset - OFF_SCC, value);
         return;
     case OFF_SCSIA:
         pdm_scsi_io_write(cfg, 0, offset - OFF_SCSIA, value);

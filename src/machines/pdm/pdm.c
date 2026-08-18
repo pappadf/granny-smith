@@ -21,12 +21,14 @@
 #include "cuda.h" // the shared behavioral Cuda model (machines/av/)
 
 #include "adb.h"
+#include "appletalk.h"
 #include "debug.h"
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
 #include "ppc.h"
 #include "rtc.h"
+#include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
@@ -233,6 +235,15 @@ static void pdm_scsi96b_irq(void *context, bool active) {
         pdm_amic_set_scsi_irq(cfg, 1, active);
 }
 
+// SCC chip INT (one line for both channels) → AMIC ICR source bit 2, 68k
+// level 4 (interrupt-map.md §6.1); channel discrimination is the guest's
+// job via RR2B/RR3.
+static void pdm_scc_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    if (pdm_st(cfg))
+        pdm_amic_set_source(cfg, PDM_ICR_SCC, active);
+}
+
 // ============================================================
 // Substrate lifecycle
 // ============================================================
@@ -256,6 +267,17 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq);
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+
+    // The ESCC cell in Curio behind the AMIC island decode (escc-serial.md
+    // §2: single base $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
+    // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC).
+    cfg->scc = scc_init(NULL, cfg->scheduler, pdm_scc_irq, cfg, cp);
+    scc_set_clocks(cfg->scc, 15667200, 3672000);
+
+    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
+    // the SCC exists — and, because the checkpoint stream is positional, in
+    // the same relative place the save writes it (right after scc_checkpoint).
+    appletalk_init(cfg->scheduler, cfg->scc, cp);
 
     // The AMIC pseudo-VIA1 is a real 6522 core instance behind the island
     // decode.  Its timers run at 783.36 kHz on every model, and no PDM CPU
@@ -339,6 +361,7 @@ static void pdm_reset(config_t *cfg) {
     // and becomes a first-class test row in Phase D.)
     ppc_reset(cfg->ppc);
     pdm_amic_init(cfg);
+    scc_reset(cfg->scc);
     for (int i = 0; i < 2; i++)
         if (st->scsi96[i])
             scsi_53c96_reset(st->scsi96[i]);
@@ -381,6 +404,13 @@ static void pdm_teardown(config_t *cfg) {
         via_delete(cfg->via1);
         cfg->via1 = NULL;
     }
+    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
+    // goes first — it holds the scc pointer it was given at init.
+    appletalk_delete();
+    if (cfg->scc) {
+        scc_delete(cfg->scc);
+        cfg->scc = NULL;
+    }
     if (cfg->rtc) {
         rtc_delete(cfg->rtc);
         cfg->rtc = NULL;
@@ -413,6 +443,8 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     ppc_checkpoint(cfg->ppc, cp);
     scheduler_checkpoint(cfg->scheduler, cp);
     rtc_checkpoint(cfg->rtc, cp);
+    scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
     via_checkpoint(cfg->via1, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
