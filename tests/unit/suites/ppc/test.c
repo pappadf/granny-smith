@@ -20,6 +20,7 @@
 #include "harness.h"
 #include "memory.h"
 #include "ppc_disasm.h"
+#include "ppc_softfp.h" // PPC_FPSCR_* bit names
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -63,6 +64,13 @@ static uint32_t e_rlw(uint32_t op, uint32_t rs, uint32_t ra, uint32_t sh, uint32
 }
 static uint32_t e_bc(uint32_t bo, uint32_t bi, int32_t bd, uint32_t aa, uint32_t lk) {
     return (16u << 26) | (bo << 21) | (bi << 16) | ((uint32_t)bd & 0xFFFCu) | (aa << 1) | lk;
+}
+// Opcode-63 X-form (mffs, mtfsb0/mtfsb1, fcmpu/fcmpo)
+static uint32_t e_x63(uint32_t d, uint32_t a, uint32_t b, uint32_t xo, uint32_t rc) {
+    return (63u << 26) | (d << 21) | (a << 16) | (b << 11) | (xo << 1) | rc;
+}
+static uint32_t e_bcctr(uint32_t bo, uint32_t bi, uint32_t lk) {
+    return (19u << 26) | (bo << 21) | (bi << 16) | (528u << 1) | lk;
 }
 static uint32_t e_spr(uint32_t rt, uint32_t spr, int to_spr) {
     uint32_t f = ((spr & 0x1Fu) << 16) | ((spr >> 5) << 11);
@@ -906,12 +914,124 @@ static void test_alignment(void) {
     step1(e_d(46, 30, 4, 0));
     CHECK_EQ(P->gpr[30], 0x11111111u);
     CHECK_EQ(P->gpr[31], 0x22222222u);
-    // lwarx must be word aligned
+    // lwarx: a misaligned EA is NOT an alignment exception by itself.
+    // §5.4.6.1.1 faults a direct-translation access only on a 256 MB
+    // crossing, and the chapter-3 lwarx page agrees ("the alignment
+    // exception handler will be invoked if the word loaded crosses a page
+    // boundary, or the results may be undefined").
     fresh();
     P->gpr[4] = 0x2002;
     P->gpr[5] = 0;
+    memory_write_uint32(0x2002, 0x5A5A1234u);
+    step1(e_x(3, 4, 5, 20, 0));
+    CHECK_EQ(P->pc, 0x1004u);
+    CHECK_EQ(P->gpr[3], 0x5A5A1234u);
+    CHECK_EQ(P->reserve, 1u);
+    // ...but crossing a 256 MB boundary with translation off does fault,
+    // aligned or not, and faults before the access is attempted.
+    fresh();
+    P->gpr[4] = 0x0FFFFFFEu;
+    P->gpr[5] = 0;
     step1(e_x(3, 4, 5, 20, 0));
     CHECK_EQ(P->pc, 0x00000600u);
+}
+
+// === powerpc-test conformance regressions ===
+//
+// Behaviors the third-party vector tier (tests/unit/suites/ppc_vectors/)
+// caught, each restated against the 601UM passage that settles it so the
+// rule stays pinned here whether or not that submodule is checked out.
+static void test_conformance_regressions(void) {
+    // §3.5.2: a load with update and rA = 0 performs the access but does
+    // NOT update r0 -- the POWER-compatible reading of what the PowerPC
+    // architecture calls an invalid form.
+    fresh();
+    P->gpr[0] = 0x2000;
+    memory_write_uint32(0x2000, 0xAABBCCDDu);
+    step1_valid(e_d(33, 5, 0, 0)); // lwzu r5,0(r0)
+    CHECK_EQ(P->gpr[5], 0xAABBCCDDu);
+    CHECK_EQ(P->gpr[0], 0x2000u);
+
+    // §3.5.3 says the same for the stores, and §3.5.8 for the FP forms.
+    fresh();
+    P->gpr[0] = 0x2000;
+    P->gpr[5] = 0x12345678u;
+    step1_valid(e_d(37, 5, 0, 4)); // stwu r5,4(r0)
+    CHECK_EQ(memory_read_uint32(0x2004), 0x12345678u);
+    CHECK_EQ(P->gpr[0], 0x2000u);
+
+    // A nonzero rA still updates, of course.
+    fresh();
+    P->gpr[4] = 0x2000;
+    step1_valid(e_d(33, 5, 4, 8)); // lwzu r5,8(r4)
+    CHECK_EQ(P->gpr[4], 0x2008u);
+
+    // §3.5.10.1: the store-single conversion is a bit extraction
+    // (WORD[2-31] <- frS[5-34]), not a rounding conversion.  Round-to-
+    // nearest would make this $C2264889.
+    fresh();
+    P->fpr[3] = 0xC044C911174F7A54ull;
+    P->gpr[4] = 0x2000;
+    step1_valid(e_d(52, 3, 4, 0)); // stfs f3,0(r4)
+    CHECK_EQ(memory_read_uint32(0x2000), 0xC2264888u);
+
+    // Table 3-15: mffs fills frD[0-31] with $FFFFFFFF on the 601.
+    fresh();
+    P->fpscr = PPC_FPSCR_OX | PPC_FPSCR_XX;
+    step1_valid(e_x63(3, 0, 0, 583, 0)); // mffs f3
+    CHECK(P->fpr[3] == (0xFFFFFFFF00000000ull | (uint64_t)(PPC_FPSCR_OX | PPC_FPSCR_XX)));
+
+    // fcmpu across signs: +1.0 is GREATER than -1.00390625.  (The bit-
+    // pattern ordering trick this used to use inverted every mixed-sign
+    // compare, and same-sign directed cases could not see it.)
+    fresh();
+    P->fpr[3] = 0x3FF0000000000000ull;
+    P->fpr[4] = 0xBFF0100000000002ull;
+    step1_valid(e_x63(7u << 2, 3, 4, 0, 0)); // fcmpu cr7,f3,f4
+    CHECK_EQ(P->cr & 0xFu, 4u); // GT
+    fresh();
+    P->fpr[3] = 0x3FF0000000000000ull;
+    P->fpr[4] = 0xBFF0100000000002ull;
+    step1_valid(e_x63(7u << 2, 4, 3, 0, 0)); // fcmpu cr7,f4,f3
+    CHECK_EQ(P->cr & 0xFu, 8u); // LT
+
+    // Table 2-1 bit 0: driving an exception condition bit 0 -> 1 sets FX,
+    // and mtfsb1 is not exempt.  VX derives on top.
+    fresh();
+    P->fpscr = 0;
+    step1_valid(e_x63(11, 0, 0, 38, 0)); // mtfsb1 11 (VXIMZ)
+    CHECK_EQ(P->fpscr, PPC_FPSCR_FX | PPC_FPSCR_VX | PPC_FPSCR_VXIMZ);
+    // An enable bit is not an exception condition, so FX stays put.
+    fresh();
+    P->fpscr = 0;
+    step1_valid(e_x63(25, 0, 0, 38, 0)); // mtfsb1 25 (OE)
+    CHECK_EQ(P->fpscr, PPC_FPSCR_OE);
+
+    // Table 3-31: bcctr with BO[2] = 0 is an invalid form the 601 still
+    // executes -- CTR is decremented and tested, but the fetch address is
+    // the NON-decremented CTR (here: CTR 1 -> 0, so the branch is not
+    // taken even though the CR condition holds).
+    fresh();
+    P->ctr = 1;
+    P->cr = 0x00100000u; // CR bit 11 set
+    step1(e_bcctr(8, 11, 1)); // bcctrl 8,11
+    CHECK_EQ(P->pc, 0x1004u);
+    CHECK_EQ(P->ctr, 0u);
+    CHECK_EQ(P->lr, 0x1004u);
+    // The ordinary branch-always form is untouched by that.
+    fresh();
+    P->ctr = 0x3000;
+    step1(e_bcctr(20, 0, 0));
+    CHECK_EQ(P->pc, 0x3000u);
+
+    // Table 5-22: sc loads SRR1[0-15] from instruction bits 16-31 (the
+    // POWER svc field) -- §5.4.11's prose calls those bits undefined, but
+    // the table is the specific rule.
+    fresh();
+    step1(0x44000002u); // sc 2
+    CHECK_EQ(P->pc, 0x00000C00u);
+    CHECK_EQ(P->srr0, 0x1004u);
+    CHECK_EQ(P->srr1, 0x00020000u | PPC_MSR_ME | PPC_MSR_FP);
 }
 
 static void test_fp_surface(void) {
@@ -1123,6 +1243,7 @@ int main(void) {
     test_translation();
     test_fp_surface();
     test_mq_spr();
+    test_conformance_regressions();
 
     ppc_delete(P);
     printf("ppc: %d checks, %d failures\n", checks, failures);

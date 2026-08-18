@@ -66,6 +66,11 @@
     (PPC_FPSCR_VXSNAN | PPC_FPSCR_VXISI | PPC_FPSCR_VXIDI | PPC_FPSCR_VXZDZ | PPC_FPSCR_VXIMZ | PPC_FPSCR_VXVC |       \
      PPC_FPSCR_VXSOFT | PPC_FPSCR_VXSQRT | PPC_FPSCR_VXCVI)
 
+// The exception condition bits: bits 3-12 and 21-23 (601UM §2.2.3 -- FEX
+// and VX are summaries, not conditions).  A 0 -> 1 transition of any of
+// these implicitly sets FX.
+#define PPC_FPSCR_EXCEPTIONS (PPC_FPSCR_OX | PPC_FPSCR_UX | PPC_FPSCR_ZX | PPC_FPSCR_XX | PPC_FPSCR_VX_ANY)
+
 // FPSCR bits mtfsf/mtfsfi/mtfsb0/mtfsb1 can NOT write: FEX and VX are
 // derived summaries ("cannot be explicitly set or reset", Table 2-1).
 #define PPC_FPSCR_UNWRITABLE (PPC_FPSCR_FEX | PPC_FPSCR_VX)

@@ -206,7 +206,13 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define EA_DU() uint32_t ea = GPR(RA) + SIMM32
 #define EA_X()  uint32_t ea = RA0 + GPR(RB)
 #define EA_XU() uint32_t ea = GPR(RA) + GPR(RB)
-#define UPD()   GPR(RA) = ea
+// Update-form writeback.  The PowerPC architecture calls rA = 0 an invalid
+// form; the 601 keeps POWER compatibility instead and performs the access
+// while INHIBITING the update of r0 (601UM §3.5.2 for the integer loads,
+// §3.5.3 for the integer stores, §3.5.8 for the FP forms).  The
+// rA = rD load case needs no guard: those forms update before the load
+// writeback, so the loaded data wins, which is the same rule.
+#define UPD()   do { if (RA) GPR(RA) = ea; } while (0)
 
 // --- immediates, compares, traps ---
 #define OP_TWI        OP(if (ppc_trap_cond(RT, GPR(RA), SIMM32)) ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_TRAP, p->instruction_pc))
@@ -228,7 +234,10 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_B          OP(ppc_do_b(p, iw))
 #define OP_BCLR       OP(ppc_do_bclr(p, iw))
 #define OP_BCCTR      OP(ppc_do_bcctr(p, iw))
-#define OP_SC         OP(ppc_exception(p, PPC_VEC_SYSCALL, 0, p->pc))
+// sc: SRR1[0-15] is loaded from bits 16-31 of the instruction (601UM Table
+// 5-22 — the POWER svc field, which §5.4.11's prose calls "undefined"; the
+// table is the specific rule and costs nothing to honour).
+#define OP_SC         OP(ppc_exception(p, PPC_VEC_SYSCALL, (iw & 0xFFFFu) << 16, p->pc))
 #define OP_RFI        OP(PRIV(); p->msr = (p->srr1 & 0x0000FFFFu) & PPC_MSR_MASK; ppc_update_active_maps(p); p->pc = p->srr0 & ~3u)
 #define OP_ISYNC      OP((void)0) // context synchronize; no pipeline to flush
 
@@ -387,8 +396,14 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_STWBRX     OP(EA_X();  CHKA_ST(ea, 4); WRITE(32, xa, __builtin_bswap32(GPR(RT))))
 #define OP_STHBRX     OP(EA_X();  CHKA_ST(ea, 2); WRITE(16, xa, (uint16_t)__builtin_bswap16((uint16_t)GPR(RT))))
 
-// --- atomics (word-aligned only → alignment exception) ---
-#define OP_LWARX      OP(EA_X(); if (ea & 3u) { ppc_align_exception(p, iw, ea); break; } XLT_LD(ea); p->reserve = 1; p->reserve_addr = xa; GPR(RT) = READ(32, xa))
+// --- atomics ---
+// A misaligned EA is NOT an alignment exception by itself: §5.4.6.1.1 fires
+// only on a 256 MB crossing with translation off (a page crossing with it
+// on), and the chapter-3 lwarx/stwcx. pages say exactly that ("the
+// alignment exception handler will be invoked if the word loaded crosses a
+// page boundary, or the results may be undefined").  So these run the same
+// scalar check as every other word access.
+#define OP_LWARX      OP(EA_X(); CHKA_LD(ea, 4); p->reserve = 1; p->reserve_addr = xa; GPR(RT) = READ(32, xa))
 #define OP_STWCX_DOT  OP(ppc_do_stwcx(p, iw))
 
 // --- external control (EAR-gated, 601UM eciwx/ecowx pages) ---
@@ -409,16 +424,16 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_LFSU       OP(FP(); EA_DU(); CHKA_LD(ea, 4); UPD(); p->fpr[RT] = ppc_f32_to_f64(READ(32, xa)))
 #define OP_LFD        OP(FP(); EA_D();  CHKA_LD(ea, 8); p->fpr[RT] = FPR_LOAD64(xa))
 #define OP_LFDU       OP(FP(); EA_DU(); CHKA_LD(ea, 8); UPD(); p->fpr[RT] = FPR_LOAD64(xa))
-#define OP_STFS       OP(FP(); EA_D();  CHKA_ST(ea, 4); WRITE(32, xa, ppc_f64_to_f32(p->fpr[RT])))
-#define OP_STFSU      OP(FP(); EA_DU(); CHKA_ST(ea, 4); UPD(); WRITE(32, xa, ppc_f64_to_f32(p->fpr[RT])))
+#define OP_STFS       OP(FP(); EA_D();  CHKA_ST(ea, 4); WRITE(32, xa, ppc_f64_to_f32_store(p->fpr[RT])))
+#define OP_STFSU      OP(FP(); EA_DU(); CHKA_ST(ea, 4); UPD(); WRITE(32, xa, ppc_f64_to_f32_store(p->fpr[RT])))
 #define OP_STFD       OP(FP(); EA_D();  CHKA_ST(ea, 8); FPR_STORE64(xa))
 #define OP_STFDU      OP(FP(); EA_DU(); CHKA_ST(ea, 8); UPD(); FPR_STORE64(xa))
 #define OP_LFSX       OP(FP(); EA_X();  CHKA_LD(ea, 4); p->fpr[RT] = ppc_f32_to_f64(READ(32, xa)))
 #define OP_LFSUX      OP(FP(); EA_XU(); CHKA_LD(ea, 4); UPD(); p->fpr[RT] = ppc_f32_to_f64(READ(32, xa)))
 #define OP_LFDX       OP(FP(); EA_X();  CHKA_LD(ea, 8); p->fpr[RT] = FPR_LOAD64(xa))
 #define OP_LFDUX      OP(FP(); EA_XU(); CHKA_LD(ea, 8); UPD(); p->fpr[RT] = FPR_LOAD64(xa))
-#define OP_STFSX      OP(FP(); EA_X();  CHKA_ST(ea, 4); WRITE(32, xa, ppc_f64_to_f32(p->fpr[RT])))
-#define OP_STFSUX     OP(FP(); EA_XU(); CHKA_ST(ea, 4); UPD(); WRITE(32, xa, ppc_f64_to_f32(p->fpr[RT])))
+#define OP_STFSX      OP(FP(); EA_X();  CHKA_ST(ea, 4); WRITE(32, xa, ppc_f64_to_f32_store(p->fpr[RT])))
+#define OP_STFSUX     OP(FP(); EA_XU(); CHKA_ST(ea, 4); UPD(); WRITE(32, xa, ppc_f64_to_f32_store(p->fpr[RT])))
 #define OP_STFDX      OP(FP(); EA_X();  CHKA_ST(ea, 8); FPR_STORE64(xa))
 #define OP_STFDUX     OP(FP(); EA_XU(); CHKA_ST(ea, 8); UPD(); FPR_STORE64(xa))
 
@@ -430,7 +445,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_FNEG       OP(FP(); p->fpr[RT] = p->fpr[RB] ^ 0x8000000000000000ull; REC1())
 #define OP_FABS       OP(FP(); p->fpr[RT] = p->fpr[RB] & 0x7FFFFFFFFFFFFFFFull; REC1())
 #define OP_FNABS      OP(FP(); p->fpr[RT] = p->fpr[RB] | 0x8000000000000000ull; REC1())
-#define OP_MFFS       OP(FP(); p->fpr[RT] = 0xFFF8000000000000ull | p->fpscr; REC1()) // 601: upper half $FFF80000
+#define OP_MFFS       OP(FP(); p->fpr[RT] = 0xFFFFFFFF00000000ull | p->fpscr; REC1()) // 601UM Table 3-15: frD[0-31] = $FFFFFFFF
 #define OP_MTFSF      OP(FP(); ppc_do_mtfsf(p, iw))
 #define OP_MTFSFI     OP(FP(); ppc_do_mtfsfi(p, iw))
 #define OP_MTFSB0     OP(FP(); ppc_do_mtfsb(p, iw, false))

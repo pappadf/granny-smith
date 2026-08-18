@@ -45,29 +45,38 @@ uint64_t ppc_f32_to_f64(uint32_t s) {
     return bits;
 }
 
-// stfs/stfsx: double to single.  Values representable convert per IEEE
-// round-to-nearest (host conversion, deterministic); NaN keeps the top 23
-// payload bits, with the quiet bit forced if truncation would produce an
-// infinity pattern.
-uint32_t ppc_f64_to_f32(uint64_t d) {
-    uint32_t sign = (uint32_t)(d >> 63) << 31;
-    uint32_t exp = (uint32_t)(d >> 52) & 0x7FFu;
-    if (exp == 0x7FFu) {
-        uint64_t frac = d & 0xFFFFFFFFFFFFFull;
-        if (frac == 0)
-            return sign | 0x7F800000u; // infinity
-        uint32_t frac23 = (uint32_t)(frac >> 29) & 0x7FFFFFu;
-        if (frac23 == 0)
-            frac23 = 0x400000u; // payload lived in the low bits: keep it NaN
-        return sign | 0x7F800000u | frac23;
-    }
-    double v;
-    float f;
-    memcpy(&v, &d, 8);
-    f = (float)v; // IEEE round-to-nearest-even, deterministic
-    uint32_t bits;
-    memcpy(&bits, &f, 4);
-    return bits;
+// stfs/stfsu/stfsx/stfsux: the 601UM §3.5.10.1 store conversion, verbatim.
+// This is NOT a rounding conversion and must not be written as one (the
+// host (float) cast rounds to nearest, which is wrong at the last bit for
+// any value the single format cannot hold exactly — powerpc-test's
+// stfsx/stfsux vectors are what caught it).  The manual's algorithm:
+//
+//   no denormalization (frS[1-11] > 896, or the value is +-0):
+//       WORD[0-1] <- frS[0-1];  WORD[2-31] <- frS[5-34]
+//   denormalization (874 <= frS[1-11] <= 896):
+//       shift the significand right until the exponent reaches -126, then
+//       WORD[0] <- sign;  WORD[1-8] <- 0;  WORD[9-31] <- frac[1-23]
+//
+// The first case is a pure bit extraction, which is also why inf and NaN
+// need no special case: exponent 2047 > 896, so the pattern and the top 23
+// payload bits carry across unchanged.  The store raises no exceptions
+// (§2.5.5), so no FPSCR argument.
+uint32_t ppc_f64_to_f32_store(uint64_t d) {
+    uint32_t expfield = (uint32_t)(d >> 52) & 0x7FFu;
+
+    if (expfield > 896u || (d & 0x7FFFFFFFFFFFFFFFull) == 0)
+        return (uint32_t)((d >> 32) & 0xC0000000u) | (uint32_t)((d >> 29) & 0x3FFFFFFFu);
+
+    // Denormalize: frac carries the hidden bit at 52, and each step of the
+    // manual's loop is one right shift.  Below the 874 floor the manual
+    // specifies nothing; shifting out is the natural continuation and
+    // lands on a signed zero, which is the value the single format has.
+    uint64_t frac = (1ull << 52) | (d & 0x000FFFFFFFFFFFFFull);
+    int32_t exp = (int32_t)expfield - 1023;
+    uint32_t shift = (exp < -126) ? (uint32_t)(-126 - exp) : 0u;
+    frac = (shift > 52u) ? 0u : (frac >> shift);
+
+    return (uint32_t)((d >> 32) & 0x80000000u) | (uint32_t)((frac >> 29) & 0x007FFFFFu);
 }
 
 // === FP compares ============================================================
@@ -81,17 +90,21 @@ static inline bool f64_is_snan(uint64_t d) {
     return f64_is_nan(d) && !(d & 0x0008000000000000ull); // quiet bit clear
 }
 
-// Ordered compare of two non-NaN doubles by bit pattern: flip the ordering
-// of negative values (sign-magnitude → two's-complement trick), treating
-// -0 == +0.
+// Map an IEEE double's bit pattern onto a signed key that orders the same
+// way the values do: a positive pattern is already magnitude-ordered, and a
+// negative one mirrors below zero.  Both operands are non-NaN here, and
+// zeroes arrive normalized, so |x| never exceeds INT64_MAX.
+static int64_t f64_order_key(uint64_t x) {
+    return (x >> 63) ? -(int64_t)(x & 0x7FFFFFFFFFFFFFFFull) : (int64_t)x;
+}
+
 static int f64_compare(uint64_t a, uint64_t b) {
     // Normalize both zeroes to +0 so -0 == +0.
     if ((a & 0x7FFFFFFFFFFFFFFFull) == 0)
         a = 0;
     if ((b & 0x7FFFFFFFFFFFFFFFull) == 0)
         b = 0;
-    int64_t ka = (int64_t)((a >> 63) ? (0x8000000000000000ull - a) : (a | 0x8000000000000000ull));
-    int64_t kb = (int64_t)((b >> 63) ? (0x8000000000000000ull - b) : (b | 0x8000000000000000ull));
+    int64_t ka = f64_order_key(a), kb = f64_order_key(b);
     return (ka < kb) ? -1 : (ka > kb) ? 1 : 0;
 }
 
@@ -203,10 +216,24 @@ void ppc_do_mtfsfi(ppc_t *p, uint32_t iw) {
     ppc_fp_trap_check(p);
 }
 
+// mtfsb1 of an exception condition bit also sets FX: Table 2-1 bit 0 says
+// "every floating-point instruction implicitly sets FPSCR[FX] if that
+// instruction causes any of the floating-point exception bits to transition
+// from 0 to 1", and mtfsb1 is not carved out of it.  (Folio 10-132's "other
+// registers altered" line names only FPSCR[crbD], but that list also omits
+// the derived VX, so it reads as a summary rather than an exhaustive action
+// list — unlike §5.4.7.4.1, which IS one and does override the same table
+// for FR/FI on disabled overflow.  powerpc-test's model agrees.)
 void ppc_do_mtfsb(ppc_t *p, uint32_t iw, bool set) {
     uint32_t bit = 0x80000000u >> PPC_RT(iw);
-    if (!(bit & PPC_FPSCR_UNWRITABLE))
-        p->fpscr = set ? (p->fpscr | bit) : (p->fpscr & ~bit);
+    if (!(bit & PPC_FPSCR_UNWRITABLE)) {
+        if (!set)
+            p->fpscr &= ~bit;
+        else if (bit & PPC_FPSCR_EXCEPTIONS)
+            p->fpscr = ppc_fpscr_raise(p->fpscr, bit);
+        else
+            p->fpscr |= bit;
+    }
     p->fpscr = ppc_fpscr_derive(p->fpscr);
     if (PPC_RC(iw))
         ppc_set_cr_field(p, 1, p->fpscr >> 28);

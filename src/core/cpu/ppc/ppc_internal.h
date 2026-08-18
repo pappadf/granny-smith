@@ -375,7 +375,7 @@ void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store);
 // instruction semantics, and the Phase-E arithmetic wrappers over the
 // integer-only kernel in ppc_softfp.c.
 uint64_t ppc_f32_to_f64(uint32_t s);
-uint32_t ppc_f64_to_f32(uint64_t d);
+uint32_t ppc_f64_to_f32_store(uint64_t d);
 void ppc_fcmp(ppc_t *p, uint32_t iw, bool ordered);
 void ppc_do_mcrfs(ppc_t *p, uint32_t iw);
 void ppc_fp_arith(ppc_t *p, uint32_t iw, int op, bool single);

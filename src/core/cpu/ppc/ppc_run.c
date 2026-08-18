@@ -59,10 +59,14 @@ void ppc_do_bclr(ppc_t *p, uint32_t iw) {
         p->pc = target;
 }
 
-// bcctr: the CTR-decrement forms are invalid; no decrement happens.
+// bcctr: BO[2] = 0 (decrement CTR) is an invalid form, and the 601's
+// documented behavior for it (601UM Table 3-31) is peculiar enough to be
+// worth spelling out — the count register IS decremented and tested, and
+// the branch is resolved on that test, but instruction fetch is directed to
+// the NON-decremented value.  Hence the target snapshot before the test.
 void ppc_do_bcctr(ppc_t *p, uint32_t iw) {
-    bool taken = ppc_branch_taken(p, PPC_RT(iw), PPC_RA(iw), false);
     uint32_t target = p->ctr & ~3u;
+    bool taken = ppc_branch_taken(p, PPC_RT(iw), PPC_RA(iw), true);
     if (PPC_RC(iw))
         p->lr = p->pc;
     if (taken)
@@ -359,10 +363,8 @@ void ppc_do_lscbx(ppc_t *p, uint32_t iw) {
 
 void ppc_do_stwcx(ppc_t *p, uint32_t iw) {
     uint32_t ea = (PPC_RA(iw) ? p->gpr[PPC_RA(iw)] : 0u) + p->gpr[PPC_RB(iw)];
-    if (ea & 3u) {
-        ppc_align_exception(p, iw, ea);
+    if (ppc_check_align_scalar(p, iw, ea, 4)) // misalignment alone is not a fault; see OP_LWARX
         return;
-    }
     uint32_t xa = ea;
     if (ppc_dxlate(p, iw, &xa, true))
         return;
