@@ -93,6 +93,11 @@ typedef struct arg_decl {
 
 struct member;
 typedef value_t (*attr_get_fn)(struct object *self, const struct member *m);
+// A setter OWNS `in`: it must value_free() it on every path, including its
+// error returns (node_set frees `in` itself only when it rejects the write
+// before reaching the setter).  Copy anything you need to keep — the value's
+// string/bytes storage is heap memory that nothing else will release.  Scalar
+// kinds carry no allocation, so a setter for those may skip the free.
 typedef value_t (*attr_set_fn)(struct object *self, const struct member *m, value_t in);
 typedef value_t (*method_fn)(struct object *self, const struct member *m, int argc, const value_t *argv);
 typedef struct object *(*child_get_fn)(struct object *self, int index);
@@ -320,6 +325,9 @@ node_t object_resolve(struct object *root, const char *path);
 // Read / write / call by node. node_get on an M_CHILD member returns
 // V_OBJECT pointing at the child; on M_METHOD returns V_ERROR (use
 // node_call). node_set on a read-only attribute returns V_ERROR.
+// node_set consumes `v`: it frees the value when it rejects the write, and
+// otherwise hands ownership to the attribute's setter (see attr_set_fn).
+// Callers must not free `v` afterwards.
 value_t node_get(node_t n);
 value_t node_set(node_t n, value_t v);
 value_t node_call(node_t n, int argc, const value_t *argv);
