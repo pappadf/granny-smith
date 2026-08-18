@@ -33,6 +33,17 @@ static const struct scsi_slot q840av_scsi_slots[] = {
     {0},
 };
 
+// NuBus '90 topology: three sockets C/D/E behind MUNI, which this machine
+// always has (proposal-quadra-av.md §2).  The built-in CIVIC video is not on
+// this bus — it scans a framebuffer the substrate publishes directly — so it
+// is not declared here.
+static const nubus_slot_decl_t q840av_nubus_slots[] = {
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {0},
+};
+
 static const av_board_desc_t q840av_board_desc = {
     .chipset = "YMCA+PSC",
     .rom_base = 0x40800000u,
@@ -40,7 +51,7 @@ static const av_board_desc_t q840av_board_desc = {
     .io_ranges = av_io_ranges,
     .io_mirror_mask = 0x0003FFFFu, // 256 KiB island + the $50F40000 alias
     .io_unmapped_read = 0xFF, // undecoded island reads float high
-    .slots = NULL, // no NuBus cards in scope (slots C/D/E physically exist)
+    .slots = q840av_nubus_slots,
     .bus_err_lo = 0xA0000000u, // NuBus super-slots + slot space bus-error
     .bus_err_hi = 0xFEFFFFFFu,
     .strap_nibble = 0xF, // Cyclone40 straps %1111 (ymca.md §2)
@@ -82,7 +93,7 @@ const hw_profile_t machine_q840av = {
     .has_audio_in = true, // Singer codec microphone input (singer.md)
     .aux_cpus = q840av_aux_cpus, // the DSP3210 (machine.dsp)
 
-    .nubus_slots = NULL,
+    .nubus_slots = q840av_nubus_slots,
 
     .substrate = &av_substrate,
     .board = &q840av_board,
