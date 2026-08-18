@@ -380,6 +380,23 @@ static uint32_t read32(uint32_t addr) {
     return memory_debug_read_uint32(debug_mac_xlate(addr));
 }
 
+// Memory write helpers — same mac-world address translation as the read
+// helpers above.  Load-bearing on the PPC machines, where 68k logical low
+// memory is relocated (framebuffer carve-out): an untranslated write to
+// $0828 lands in the framebuffer instead of MTemp.
+static void write8(uint32_t addr, uint8_t value) {
+    if (system_memory())
+        memory_debug_write_uint8(debug_mac_xlate(addr), value);
+}
+static void write16(uint32_t addr, uint16_t value) {
+    if (system_memory())
+        memory_debug_write_uint16(debug_mac_xlate(addr), value);
+}
+static void write32(uint32_t addr, uint32_t value) {
+    if (system_memory())
+        memory_debug_write_uint32(debug_mac_xlate(addr), value);
+}
+
 // Print target 68K backtrace by walking stack frames
 void debug_mac_print_target_backtrace(void) {
     printf("\n=== Target 68K backtrace ===\n");
@@ -474,17 +491,17 @@ static void mouse_guard_tick(void *source, uint64_t data) {
     }
 
     // Check if MTemp has drifted from the target position
-    int16_t cur_v = (int16_t)memory_debug_read_uint16(0x0828);
-    int16_t cur_h = (int16_t)memory_debug_read_uint16(0x082A);
+    int16_t cur_v = (int16_t)read16(0x0828);
+    int16_t cur_h = (int16_t)read16(0x082A);
 
     if (cur_v != mouse_guard_v || cur_h != mouse_guard_h) {
         // Restore all position globals to the target
-        memory_write_uint16(0x0828, (uint16_t)mouse_guard_v); // MTemp.v
-        memory_write_uint16(0x082A, (uint16_t)mouse_guard_h); // MTemp.h
-        memory_write_uint16(0x082C, (uint16_t)mouse_guard_v); // RawMouse.v
-        memory_write_uint16(0x082E, (uint16_t)mouse_guard_h); // RawMouse.h
-        memory_write_uint16(0x0830, (uint16_t)mouse_guard_v); // Mouse.v
-        memory_write_uint16(0x0832, (uint16_t)mouse_guard_h); // Mouse.h
+        write16(0x0828, (uint16_t)mouse_guard_v); // MTemp.v
+        write16(0x082A, (uint16_t)mouse_guard_h); // MTemp.h
+        write16(0x082C, (uint16_t)mouse_guard_v); // RawMouse.v
+        write16(0x082E, (uint16_t)mouse_guard_h); // RawMouse.h
+        write16(0x0830, (uint16_t)mouse_guard_v); // Mouse.v
+        write16(0x0832, (uint16_t)mouse_guard_h); // Mouse.h
     }
 
     // Reschedule
@@ -542,23 +559,23 @@ static void set_mouse_global(long x, long y) {
     uint16_t h = (uint16_t)(x & 0xFFFF); // horizontal in low word
 
     // Write new position to MTemp and RawMouse (the interrupt-level inputs)
-    memory_write_uint16(addr_MTemp, v);
-    memory_write_uint16(addr_MTemp + 2, h);
-    memory_write_uint16(addr_RawMouse, v);
-    memory_write_uint16(addr_RawMouse + 2, h);
+    write16(addr_MTemp, v);
+    write16(addr_MTemp + 2, h);
+    write16(addr_RawMouse, v);
+    write16(addr_RawMouse + 2, h);
 
     // Also write Mouse directly so GetMouse returns the correct value immediately
     if (addr_Mouse) {
-        memory_write_uint16(addr_Mouse, v);
-        memory_write_uint16(addr_Mouse + 2, h);
+        write16(addr_Mouse, v);
+        write16(addr_Mouse + 2, h);
     }
 
     // Signal the cursor VBL task: copy CrsrCouple → CrsrNew (standard technique)
     if (addr_CrsrCouple) {
-        uint8_t couple = memory_debug_read_uint8(addr_CrsrCouple);
-        memory_write_uint8(addr_CrsrNew, couple);
+        uint8_t couple = read8(addr_CrsrCouple);
+        write8(addr_CrsrNew, couple);
     } else {
-        memory_write_uint8(addr_CrsrNew, 0xFF);
+        write8(addr_CrsrNew, 0xFF);
     }
 }
 
@@ -705,8 +722,8 @@ static void set_mouse_default(long x, long y) {
     }
 
     // Read current cursor position from MTemp
-    int16_t cur_v = (int16_t)memory_debug_read_uint16(addr_MTemp);
-    int16_t cur_h = (int16_t)memory_debug_read_uint16(addr_MTemp + 2);
+    int16_t cur_v = (int16_t)read16(addr_MTemp);
+    int16_t cur_h = (int16_t)read16(addr_MTemp + 2);
     int dx = (int)x - (int)cur_h;
     int dy = (int)y - (int)cur_v;
 
@@ -844,15 +861,15 @@ static void mouse_button_global(bool button_down) {
     }
 
     // MBState bit 7: 0 = button down, 0x80 = button up
-    memory_write_uint8(addr_MBState, button_down ? 0x00 : 0x80);
+    write8(addr_MBState, button_down ? 0x00 : 0x80);
 
     // MBTicks hack: set MBTicks to a far-future value to prevent the VIA
     // interrupt from overwriting MBState.  Required on Mac Plus where the
     // VIA ISR continuously polls the physical button.  Safe on ADB machines
     // too (the field is unused there).
     if (addr_MBTicks && addr_Ticks) {
-        uint32_t ticks = memory_debug_read_uint32(addr_Ticks);
-        memory_write_uint32(addr_MBTicks, ticks + 100);
+        uint32_t ticks = read32(addr_Ticks);
+        write32(addr_MBTicks, ticks + 100);
     }
 }
 
