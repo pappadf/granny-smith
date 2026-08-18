@@ -50,7 +50,7 @@ checkpoint as POD, object class) with these core-specific requirements:
 
 | Requirement | Contract |
 |---|---|
-| Interpreter | big-switch decode, plain C, no JIT |
+| Interpreter | big-switch decode, plain C, no JIT.  The shared decoder/disassembler template-macro pattern (the 68K's `cpu_decode.h` / `cpu_ops.h` model, spelled out in proposal-heterogeneous-multi-cpu.md §3.3.1) is the house style — one guard-free decode tree included by both the emulator (execution `OP_` overloads) and the disassembler (sprintf `OP_` overloads), so the two cannot drift.  Follow it unless the ISA gives a concrete reason not to; the PPC core (`ppc_decode.h`) is the second instantiation of the pattern |
 | Execution ABI | `void <arch>_run(<arch>_t *, uint32_t *instructions)` — burn-down counter; returns with it 0 (budget spent) or >0 (went idle) |
 | Idle/reset | `<arch>_is_idle()`, `<arch>_reset(...)`, an interrupt-request entry point for external pins.  When guest code polls a pin's *level* (not just its latched request), the entry point must model both — e.g. `dsp3210_ext_pulse(s, vector, slots)` latches the request and asserts the live pin for `slots` of core time, and the status-register pin bits reflect the level, not the latch |
 | **Bus access** | **injected at init** (the guest-physical hook pattern of `sonic.h`/`psc.h`).  The core never touches `g_active_*`, `g_page_table`, the MMU, or any sprint-timing global.  On-chip resources (internal RAM, MMIO) decode *inside* the core before the hooks are consulted |
@@ -65,6 +65,14 @@ bus masters (the main CPU's translated, mode-switched view would be
 wrong under an MMU), the inline accessors charge I/O penalties against
 the in-flight main sprint, private address spaces come free, and a core
 then links against nothing — unit tests hand it a 16-line mock bus.
+
+The injected-hook rule is an **auxiliary-core** rule.  A core serving as
+the machine's *main* CPU (the 68K today, PowerPC per
+proposal-powerpc-601-pdm.md) is what the global fast path exists for: it
+reads and writes through the same inline accessors, gets I/O penalties
+charged to its own sprint, and owns the supervisor/user SoA switch.  A
+main CPU likewise registers `machine.cpu` and the `$` register aliases —
+both reserved for whichever core owns emulated time.
 
 ## Machine profile surface
 

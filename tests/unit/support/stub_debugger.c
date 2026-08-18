@@ -1,6 +1,7 @@
 // Debugger stubs for unit tests
 // Provides no-op implementations of debugger functions.
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -20,6 +21,18 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     if (buf && buf_size > 0)
         buf[0] = '\0';
     return 0;
+}
+
+// Identity translation stub (real impl in src/core/debug/addr_format.c).
+// Referenced by the 68K main-CPU debug-if adapter in cpu.c.
+uint32_t debug_translate_address(uint32_t logical_addr, bool *is_identity, bool *tt_hit, bool *valid) {
+    if (is_identity)
+        *is_identity = true;
+    if (tt_hit)
+        *tt_hit = false;
+    if (valid)
+        *valid = true;
+    return logical_addr;
 }
 
 // Exception trace ring stub (real impl in src/core/debug/debug.c).

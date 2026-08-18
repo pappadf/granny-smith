@@ -1,0 +1,108 @@
+# PDM family suite — Phase G acceptance rows (proposal-powerpc-601-pdm.md).
+#
+# Row map:
+#
+#   6100-75-hd   pm6100 × 7.5: SCSI cold boot to the Finder desktop,
+#                desktop + About goldens, BootDrive set, BoxFlag identity
+#   7100-75-hd   pm7100 × 7.5: same coverage on the 7100 board profile
+#   8100-75-hd   pm8100 × 7.5: same, plus the has_fast_scsi second bus
+#                present (its empty-bus probe must not disturb the boot).
+#                16 MB — 24 MB is not in the 8100's ram_options (8 MB
+#                soldered + paired 16 MB SIMMs), so this row also spreads
+#                the RAM axis.
+#
+# All three rows share one recipe (boot_pdm_75):
+#
+#   * machine.rtc.time is pinned — boot-code load addresses and the
+#     menu-bar clock are then byte-deterministic run to run (measured:
+#     identical instruction counts across independent daemon processes).
+#   * After 360 M instructions the boot is parked in the Start Manager's
+#     WaitForPollDrive loop (the drive-spin-up window: FindStartupDevice
+#     polls ITTBOOT every 15 ticks until the PRAM timeout, default 20 s).
+#     Jumping Ticks past the deadline skips ~1.2 G instructions of pure
+#     waiting per row; the natural timeout path was verified equivalent
+#     (handover-pdm-phase-g §9.2) — the give-up path then falls back to
+#     the drive queue, finds the driver's DQE, and boots from it.  The
+#     poke writes PHYSICAL Ticks: 68k-logical $16A + $97000 — the offset
+#     is the 604 KB framebuffer carve at physical 0 (RAM-size
+#     independent; the sensed monitor sets it, and all rows run the
+#     default 14" Hi-Res).
+#   * ~1.2 G more instructions cover boot blocks, CFM init, the
+#     extensions parade, and the Finder through drawing the desktop;
+#     wait_stable absorbs the tail.
+#
+# The desktop goldens are pixel-identical across the three models (same
+# RAM, monitor, System) — About is what differs: Gestalt machine identity
+# renders the model name, so the About golden is the per-model proof.
+# Both checks exclude the menu-bar right corner (the 7.5 clock).
+
+include "../lib/mac.script"
+
+let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+
+# Boot `model` from the prepared 7.5 image to a stable Finder desktop.
+def boot_pdm_75(model, ram_kb) {
+    machine.rtc.time = 0xE0000000
+    machine.boot model=$model ram=$ram_kb rom="${$ROM}"
+    machine.scsi.attach_hd "${$hd_75}" 0
+    # Chip init, bus scan, driver load, DQE post; parks in WaitForPollDrive.
+    scheduler.run 360000000
+    # Skip the 20 s spin-up window (see header).
+    machine.memory.poke.l 0x9716A 0x2000
+    # Boot blocks -> CFM init -> extensions parade -> Finder desktop.
+    scheduler.run 1200000000
+    wait_stable(300000000)
+}
+
+# Shared post-boot facts + the two goldens for one model row.
+def pdm_75_row(model, ram_kb, boxflag) {
+    boot_pdm_75($model, $ram_kb)
+    assert machine.id == $model "${$model}: machine.id != ${$model}"
+    assert machine.ram == $ram_kb "${$model}: machine.ram != ${$ram_kb}"
+    assert machine.screen.width == 640 "${$model}: not in 640x480"
+    assert machine.screen.height == 480 "${$model}: not in 640x480"
+    assert machine.screen.depth == 8 "${$model}: not 8 bpp"
+    # The Start Manager committed to the SCSI drive (Phase G acceptance).
+    assert debug.mac.globals.read("BootDrive") != 0 "${$model}: BootDrive == 0 (no startup device)"
+    # DynamicBoxFlag identity (ladder L16 mechanism, per-model value) —
+    # read through the user-context window, so park in USER mode first.
+    while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
+    assert machine.cpu.mmu.peek(0xCB3, 1) == $boxflag "${$model}: BoxFlag ${machine.cpu.mmu.peek(0xCB3, 1)}, want ${$boxflag}"
+    check_ex("goldens/${$model}-7.5-640x480-finder.png", 0, 440, 20, 640)
+    # About This Macintosh: the Gestalt machine name end-to-end.
+    about_box()
+    check_ex("goldens/${$model}-7.5-640x480-about.png", 0, 440, 20, 640)
+    report_row("7.5", "ariel", "hd-boot 53c96 about")
+    report_perf("suite-pdm/${$model}-75-hd", scheduler.instr_count)
+}
+
+def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69) }
+def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106) }
+def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59) }
+
+# ---- row dispatch -----------------------------------------------------------
+
+if row_on("6100-75-hd") {
+    if have_media($hd_75) {
+        row_end("6100-75-hd", try(row_6100_75_hd(), "FAILED"))
+    } else {
+        echo "skip: 6100-75-hd (7.5 prepared image not fetched)"
+    }
+}
+if row_on("7100-75-hd") {
+    if have_media($hd_75) {
+        row_end("7100-75-hd", try(row_7100_75_hd(), "FAILED"))
+    } else {
+        echo "skip: 7100-75-hd (7.5 prepared image not fetched)"
+    }
+}
+if row_on("8100-75-hd") {
+    if have_media($hd_75) {
+        row_end("8100-75-hd", try(row_8100_75_hd(), "FAILED"))
+    } else {
+        echo "skip: 8100-75-hd (7.5 prepared image not fetched)"
+    }
+}
+
+suite_done()
+quit

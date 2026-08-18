@@ -663,6 +663,7 @@ static uint8_t pdma_in_byte(scsi_53c96_t *c) {
         return 0;
     if (!scsi_pop_data_in_byte(c->bus, &b)) {
         // Target ran out before the count — short transfer.
+        LOG(3, "pdma-in short transfer (counter=%u)", c->counter_live);
         scsi_external_data_in_complete(c->bus);
         refresh_phase(c);
         c->xfer_mode = XFER_IDLE;
@@ -679,6 +680,7 @@ static uint8_t pdma_in_byte(scsi_53c96_t *c) {
         // residual of one (odd count) the final byte stays live for the FIFO-
         // register read that the driver issues after seeing this interrupt.
         c->xfer_int_done = 1;
+        LOG(3, "pdma-in count done (residual=%u)", c->xfer_residual);
         post_interrupt(c, IR_BUS_SERVICE);
         if (c->xfer_residual == 0) {
             scsi_external_data_in_complete(c->bus);

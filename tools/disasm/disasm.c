@@ -3,12 +3,13 @@
 
 // disasm.c
 // Standalone disassembler tool for binary files: 68000/68030 (default,
-// via the core cpu_disasm.c decoder) or DSP3210 (--arch dsp3210, via the
-// dsp3210 core's disassembler). Minimal dependencies either way.
+// via the core cpu_disasm.c decoder), DSP3210 (--arch dsp3210), or PowerPC
+// 601 (--arch ppc).  Minimal dependencies in every mode.
 
 #include "annotate_disasm.h"
 #include "cpu.h"
 #include "dsp3210_disasm.h"
+#include "ppc_disasm.h"
 #include "symbols.h" // for the empty-ctx no-op; signature uses re_symbols_t*
 
 #include <errno.h>
@@ -42,7 +43,7 @@ static void print_usage(const char *progname) {
             "  -l, --length <bytes>          Number of bytes to disassemble. Default: entire file from offset\n"
             "  -a, --address-offset <addr>   Base address for display (hex). Default: 0\n"
             "  -n, --count <n>               Maximum number of instructions to disassemble\n"
-            "  -A, --arch <name>             Instruction set: m68k (default) or dsp3210\n"
+            "  -A, --arch <name>             Instruction set: m68k (default), dsp3210, or ppc\n"
             "  -h, --help                    Show this help message\n",
             progname);
 }
@@ -97,8 +98,9 @@ int main(int argc, char *argv[]) {
     }
 
     bool arch_dsp3210 = strcmp(arch, "dsp3210") == 0;
-    if (!arch_dsp3210 && strcmp(arch, "m68k") != 0) {
-        fprintf(stderr, "Error: unknown --arch '%s' (want m68k or dsp3210).\n", arch);
+    bool arch_ppc = strcmp(arch, "ppc") == 0;
+    if (!arch_dsp3210 && !arch_ppc && strcmp(arch, "m68k") != 0) {
+        fprintf(stderr, "Error: unknown --arch '%s' (want m68k, dsp3210, or ppc).\n", arch);
         return 1;
     }
 
@@ -138,8 +140,8 @@ int main(int argc, char *argv[]) {
     if (!length_set || length > available)
         length = available;
 
-    // align length to the ISA word size (68K: 2 bytes; DSP3210: 4)
-    length &= arch_dsp3210 ? ~3u : ~1u;
+    // align length to the ISA word size (68K: 2 bytes; DSP3210/PPC: 4)
+    length &= (arch_dsp3210 || arch_ppc) ? ~3u : ~1u;
     if (length == 0) {
         fprintf(stderr, "Error: no data to disassemble.\n");
         fclose(fp);
@@ -160,7 +162,38 @@ int main(int argc, char *argv[]) {
     fclose(fp);
 
     if (nread < length)
-        length = (uint32_t)(nread & (arch_dsp3210 ? ~3u : ~1u));
+        length = (uint32_t)(nread & ((arch_dsp3210 || arch_ppc) ? ~3u : ~1u));
+
+    // PPC 601: fixed-length 32-bit big-endian words, one instruction each
+    if (arch_ppc) {
+        uint32_t word_count = length / 4;
+        uint32_t pos = 0, instr_count = 0;
+        while (pos < word_count) {
+            uint32_t addr = address_offset + offset + pos * 4;
+            const uint8_t *bp = raw_buf + (size_t)pos * 4;
+            uint32_t w = (uint32_t)bp[0] << 24 | (uint32_t)bp[1] << 16 | (uint32_t)bp[2] << 8 | bp[3];
+            ppc_insn ins;
+            ppc_disassemble(w, addr, &ins);
+            // "mnemonic\toperands" -> single aligned column pair
+            char mnem[32], ops[64];
+            const char *tab = strchr(ins.text, '\t');
+            if (tab) {
+                snprintf(mnem, sizeof(mnem), "%.*s", (int)(tab - ins.text), ins.text);
+                snprintf(ops, sizeof(ops), "%s", tab + 1);
+            } else {
+                snprintf(mnem, sizeof(mnem), "%s", ins.text);
+                ops[0] = '\0';
+            }
+            printf("$%08X  %08x  %-10s%s\n", (unsigned int)addr, w, mnem, ops);
+            pos++;
+            instr_count++;
+            if (max_instructions > 0 && instr_count >= max_instructions)
+                break;
+        }
+        printf("; %u instruction%s disassembled, %u bytes\n", instr_count, instr_count == 1 ? "" : "s", pos * 4);
+        free(raw_buf);
+        return 0;
+    }
 
     // DSP3210: fixed-length 32-bit big-endian words, one instruction each
     if (arch_dsp3210) {

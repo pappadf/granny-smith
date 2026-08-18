@@ -9,6 +9,7 @@
 
 // === Includes ===
 #include "common.h"
+#include "debug.h" // cpu_debug_if_t (the main-CPU debug seam)
 #include "platform.h"
 
 #include <stdbool.h>
@@ -25,10 +26,11 @@
 // unit in the machines we emulate: the 68000 compacts have none; every
 // 68030 Mac we model ships an FPU (68882), and the 68040 integrates one
 // on-chip.  This is the single source of truth the machine capability
-// probe derives `fpu` from.
-static inline bool cpu_has_fpu(int cpu_model) {
-    return cpu_model >= CPU_MODEL_68030;
-}
+// probe derives `fpu` from.  Implemented in cpu.c as an explicit 68K model
+// switch (not a `>=` compare) so a non-68K cpu_model — e.g. the PPC 601 —
+// can never satisfy it and allocate a 68881-format fpu_t by accident
+// (PPC proposal §3.9); the PPC core answers FPU presence in its own module.
+bool cpu_has_fpu(int cpu_model);
 
 // Condition Code Register (CCR) bit masks
 typedef enum {
@@ -150,5 +152,10 @@ void cpu_poll_interrupt(cpu_t *restrict cpu);
 uint32_t cpu_get_vbr(cpu_t *restrict cpu);
 
 void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value);
+
+// 68K adapter for the main-CPU debug seam (PPC proposal §3.9b): PC access,
+// pc-based disassembly through the memory system, and logical→physical
+// translation.  system_create stores the result in config_t.cpu_dbg.
+cpu_debug_if_t cpu_debug_if(cpu_t *cpu);
 
 #endif // CPU_H

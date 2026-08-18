@@ -2,3 +2,6 @@
 	path = third-party/single-step-tests
 	url = https://github.com/SingleStepTests/m68000.git
 
+[submodule "third-party/powerpc-test"]
+	path = third-party/powerpc-test
+	url = https://github.com/pappadf/powerpc-test.git

@@ -27,14 +27,15 @@ case there is nothing to do.
 - `scripts/`: Tools and helpers
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
 - `tests/e2e`: Playwright end-to-end tests (specs in `specs/`, helpers in `helpers/`)
-- `third-party/`: External libraries (git submodules, e.g. single-step-tests)
+- `third-party/`: External libraries (git submodules, e.g. single-step-tests,
+  powerpc-test)
 
 Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/core/<subsystem>/`; machine/family docs live under `docs/machines/<family>/`.
 
   - The `peeler` archive library now lives in-tree at `src/peeler/` (formerly a
     `third-party/peeler` submodule), so no submodule init is needed for it.
     `git submodule update --init --recursive` is still used for the remaining
-    submodules under `third-party/` (e.g. single-step-tests).
+    submodules under `third-party/` (e.g. single-step-tests, powerpc-test).
 
 ## Tools and Environments
 
@@ -73,6 +74,7 @@ the devcontainer image.)
 
 **Run tests:**
 - Unit tests (CPU): `make -C tests/unit run` (~1–5 min) — uses `third-party/single-step-tests`
+  (68k) and `third-party/powerpc-test` (601); both are submodules, so init them first
 - Integration tests: `make integration-test` (~10–20 min serial; add `-j$(nproc)` to parallelize, or `TIER=unit` / `TIER=matrix` for a subset — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
 - List available integration tests: `make -C tests/integration list`
@@ -229,7 +231,12 @@ simulated network are its siblings at the root:
 
 Hardware paths are model-independent: `machine.scsi.device[0]` means the
 same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)
-still resolve (now to `machine.cpu.*`).
+still resolve (now to `machine.cpu.*`). On the PowerPC machines (pm6100/
+pm7100/pm8100) the aliases are the PPC set instead — `$pc $lr $ctr $cr
+$msr $xer $r0..$r31` — and `machine.cpu` exposes the 601 register file
+(`pc`, `r0..r31`, `lr`, `ctr`, `cr`, `xer`, `msr`, `srr0/1`, `dec`,
+`rtcu/rtcl`, `mq`, `sdr1`, `sr0..15`, `bat0u..bat3l`, `fpscr`); the
+68K-style `$d0`/`$a0` aliases don't exist there.
 
 The browser frontend calls into the tree via `gsEval(path, args?)` (see
 `app/web2/src/bus/emulator.ts`). Inside the shell (v2 script language —

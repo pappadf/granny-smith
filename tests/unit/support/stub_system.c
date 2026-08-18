@@ -81,6 +81,11 @@ display_t *system_display(void) {
     return bits ? &synth : NULL;
 }
 
+struct cpu_debug_if;
+const struct cpu_debug_if *system_cpu_debug_if(void) {
+    return NULL; // unit harnesses have no main-CPU debug interface
+}
+
 bool system_is_initialized(void) {
     // Return true if we have an active context
     return test_get_active_context() != NULL;
@@ -123,6 +128,13 @@ void remove_event_by_data(scheduler_t *sched, event_callback_t callback, void *s
 // `cpu.instr_count` attribute. The unit tests don't drive the
 // scheduler so the live counter is irrelevant; return 0.
 uint64_t cpu_instr_count(void) {
+    return 0;
+}
+
+// Cycle counter stub — referenced by the PPC core's RTC/DEC derivation,
+// which is unreachable in the harness (no time binding) but must link.
+uint64_t scheduler_cpu_cycles(scheduler_t *sched) {
+    (void)sched;
     return 0;
 }
 

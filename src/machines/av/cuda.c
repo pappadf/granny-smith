@@ -263,6 +263,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     int data_len = cuda->rx_len - 2;
     if (data_len < 0)
         data_len = 0;
+    LOG(4, "pseudo cmd=$%02X data_len=%d", cmd, data_len);
 
     if (cuda_cmd_rejected(cmd)) {
         cuda_send_error(cuda, CUDA_ERR_INVPSEUDO, PKT_PSEUDO, cmd);
@@ -290,6 +291,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         // The HC05 address space; only the PRAM page ($100-$1FF) is backed.
         // Open-ended — the host terminates once it has enough bytes.
         uint16_t addr = (data_len >= 2) ? (uint16_t)((data[0] << 8) | data[1]) : 0;
+        LOG(4, "Rd6805 addr=$%04X", addr);
         for (int i = 0; i < 256 && n < CUDA_TX_MAX; i++) {
             uint16_t a = (uint16_t)(addr + i);
             cuda->tx_buf[n++] = (a >= 0x100 && a <= 0x1FF && cuda->rtc) ? rtc_pram_read(cuda->rtc, (uint8_t)a) : 0;
@@ -416,6 +418,8 @@ void av_cuda_via1_shift_input(av_cuda_t *cuda, uint8_t byte) {
             // interrupt and waits for it again — re-clock the attention.
             LOG(2, "collision with attention byte — re-clocking");
             cuda_push_delayed(cuda, cuda->tx_buf[0]);
+        } else {
+            LOG(2, "host byte $%02X dropped mid-send (tx_idx=%d/%d)", byte, cuda->tx_idx, cuda->tx_len);
         }
         return;
     case CUDA_IDLE:
@@ -513,6 +517,7 @@ static void cuda_tick_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
     if (cuda->onesec_enabled && cuda_bus_idle(cuda)) {
+        LOG(3, "tick pkt");
         cuda->tx_buf[0] = 0x00;
         cuda->tx_buf[1] = PKT_TICK;
         cuda->tx_len = 2;

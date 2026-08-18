@@ -34,13 +34,21 @@
 // Full definition of the opaque config_t handle.
 // The forward declaration (`struct config;`) in system.h makes this type
 // visible externally; this definition adds the fields for internal use.
+// Forward declaration — the PowerPC main-CPU core (src/core/cpu/ppc/).
+struct ppc;
+
 struct config {
     const hw_profile_t *machine; // active machine profile (set by system_create)
     uint32_t ram_size; // actual RAM size in bytes (from setup --ram or machine default)
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 
-    // Core CPU and memory subsystems
-    cpu_t *cpu;
+    // Core CPU and memory subsystems.  The main CPU is a tagged handle
+    // (PPC proposal §3.9a): cpu_arch discriminates, and exactly one of
+    // cpu / ppc is non-NULL on a built machine.
+    cpu_arch_t cpu_arch; // set by system_create from machine->cpu_model
+    cpu_t *cpu; // 68K main CPU (NULL on PPC machines)
+    struct ppc *ppc; // PowerPC main CPU (NULL on 68K machines)
+    cpu_debug_if_t cpu_dbg; // main-CPU debug seam (populated by system_create)
     memory_map_t *mem_map;
 
     // VIA chips (via1 = primary; via2 = NULL on Plus)

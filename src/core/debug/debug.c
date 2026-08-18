@@ -348,6 +348,28 @@ logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr
             memory_logpoint_install_phys(phys_start, phys_end);
             lp->start_phys_page = phys_start;
             lp->end_phys_page = phys_end;
+        } else if (g_mem_logical_xlate) {
+            // PPC-translated machine (no g_mmu): watch the physical pages
+            // behind the 68k-world mapping too, so aliases and physical-
+            // address routes (DMA, supervisor identity) stay off the fast
+            // path.  translate_mac resolves the user data context whatever
+            // the stop context (debug.h).
+            const cpu_debug_if_t *dif = system_cpu_debug_if();
+            if (dif && dif->translate_mac) {
+                bool ok_start = false, ok_end = false;
+                uint32_t phys_start = dif->translate_mac(dif->ctx, addr, &ok_start) >> PAGE_SHIFT;
+                uint32_t phys_end = dif->translate_mac(dif->ctx, end_addr, &ok_end) >> PAGE_SHIFT;
+                if (ok_start && ok_end) {
+                    if (phys_end < phys_start) {
+                        uint32_t tmp = phys_start;
+                        phys_start = phys_end;
+                        phys_end = tmp;
+                    }
+                    memory_logpoint_install_phys(phys_start, phys_end);
+                    lp->start_phys_page = phys_start;
+                    lp->end_phys_page = phys_end;
+                }
+            }
         }
     } else {
         // Physical-space logpoint: only the physical array is bumped.
@@ -450,6 +472,7 @@ void exc_trace_record(uint32_t vector, uint32_t faulting_pc, uint32_t saved_pc, 
     e->format_frame = format_frame;
     e->rw = (uint8_t)rw;
     e->double_fault_kind = (uint8_t)double_fault_kind;
+    e->arch = EXC_ARCH_M68K; // this entry point serves the 68K exception paths
     s_exc_trace_head = (s_exc_trace_head + 1) % EXC_TRACE_RING_SIZE;
     s_exc_trace_count++;
 
@@ -496,9 +519,18 @@ void debug_exc_trace_dump(int filter) {
                 e->vector == 0x024 || (e->vector >= 0x060 && e->vector <= 0x07C))
                 continue;
         }
-        printf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
-               (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc,
-               e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+        // Per-arch line format (§3.9c): the 68K entry prints as always; a PPC
+        // entry carries MSR in the vbr slot, the vector offset in
+        // format_frame, and DAR in fault_addr.
+        if (e->arch == EXC_ARCH_PPC) {
+            printf("[%llu] vec=$%05X rw=%s dar=$%08X pc=$%08X srr0=$%08X msr=$%08X%s\n", (unsigned long long)e->ts,
+                   e->format_frame, e->rw ? "R" : "W", e->fault_addr, e->faulting_pc, e->saved_pc, e->vbr,
+                   e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+        } else {
+            printf("[%llu] vec=$%03X fmt=$%X rw=%s addr=$%08X pc=$%08X saved_pc=$%08X sr=$%04X vbr=$%08X%s\n",
+                   (unsigned long long)e->ts, e->vector, e->format_frame, e->rw ? "R" : "W", e->fault_addr,
+                   e->faulting_pc, e->saved_pc, e->sr, e->vbr, e->double_fault_kind ? "  [DOUBLE FAULT]" : "");
+        }
     }
 }
 
@@ -525,7 +557,19 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
         if (lp->space == ADDR_PHYSICAL) {
             if (!phys_computed) {
                 bool supervisor = (g_active_write == g_supervisor_write);
-                phys_addr = (g_mmu && g_mmu->enabled) ? mmu_translate_debug(g_mmu, addr, supervisor) : addr;
+                if (g_mmu && g_mmu->enabled) {
+                    phys_addr = mmu_translate_debug(g_mmu, addr, supervisor);
+                } else if (g_mem_logical_xlate && g_mem_logpoint_page_count &&
+                           g_mem_logpoint_page_count[addr >> PAGE_SHIFT]) {
+                    // PPC keep-logical route: a logically-watched page
+                    // arrives with its logical address — translate it for
+                    // the physical compare.  Unwatched pages arrive
+                    // already-physical and compare as-is.
+                    bool ok;
+                    uint32_t pa = g_mem_logical_xlate(addr, &ok);
+                    if (ok)
+                        phys_addr = pa;
+                }
                 phys_computed = true;
             }
             cmp_addr = phys_addr;
@@ -552,8 +596,8 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
             LOG_WITH(lp->category, lp->level, "logpoint %s $%08X (size=%u, value=$%0*X): %s",
                      is_write ? "WRITE" : "READ", addr, size, (int)(size * 2), value, formatted);
         } else {
-            cpu_t *cpu = system_cpu();
-            uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
+            const cpu_debug_if_t *dif = system_cpu_debug_if();
+            uint32_t pc = dif ? dif->get_pc(dif->ctx) : 0;
             LOG_WITH(lp->category, lp->level, "logpoint %s $%08X.%c value=$%0*X pc=$%08X", is_write ? "WRITE" : "READ",
                      addr,
                      (size == 1)   ? 'b'
@@ -564,8 +608,6 @@ static void debug_memory_logpoint_hook(uint32_t addr, unsigned size, uint32_t va
     }
 }
 
-extern int cpu_disasm(uint16_t *instr, char *buf);
-
 // Forward declarations for trace functions
 static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
 
@@ -573,18 +615,28 @@ static void trace_add_pc_entry(debug_t *debug, uint32_t pc);
 void list_logpoints(debug_t *debug);
 int delete_all_logpoints(debug_t *debug);
 
-static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
+// Disassemble one instruction at pc through the main-CPU debug interface,
+// splitting the core's "mnemonic\toperands" text.  Returns bytes consumed
+// (so callers advance the address arch-neutrally); 2 as a safe fallback
+// when no machine/core is up.
+static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
     char buf[100];
     int i, n;
 
-    n = cpu_disasm(instr, buf);
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!dif) {
+        buf[0] = '\0';
+        n = 2;
+    } else {
+        n = dif->disasm(dif->ctx, pc, buf);
+    }
 
     if (strlen(buf) == 0) {
         sprintf(mnemonic, "ILLEGAL");
         operands[0] = '\0';
     } else {
         // Cap at 31 so we always have room for the trailing NUL even if
-        // cpu_disasm ever returns an opcode without a tab separator.
+        // the core's disasm ever returns an opcode without a tab separator.
         for (i = 0; i < 31 && buf[i] != '\0' && buf[i] != '\t'; i++)
             mnemonic[i] = buf[i];
         mnemonic[i] = '\0';
@@ -597,16 +649,11 @@ static int disasm(uint16_t *instr, char *mnemonic, char *operands) {
     return n;
 }
 
-// Disassemble instruction at addr, write to buf, return instruction length in words
+// Disassemble instruction at addr, write to buf, return instruction length in bytes
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
-    uint16_t words[16];
     char mnemonic[32], operands[80];
 
-    int i;
-    for (i = 0; i < 16; i++)
-        words[i] = cpu_get_uint16(addr + i * 2);
-
-    int n = disasm(words, mnemonic, operands);
+    int n = disasm_at(addr, mnemonic, operands);
 
     // Format with address prefix.  Use snprintf to bound output: addr_str is
     // up to 39 chars, mnemonic up to 31, operands up to 79 — worst case
@@ -617,7 +664,7 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
     char addr_str[40];
     format_address_pair(addr_str, sizeof(addr_str), addr);
     if (buf_size > 0)
-        snprintf(buf, buf_size, "%s  %04x  %-10s%-12s", addr_str, (int)words[0], mnemonic, operands);
+        snprintf(buf, buf_size, "%s  %04x  %-10s%-12s", addr_str, (int)cpu_get_uint16(addr), mnemonic, operands);
 
     return n;
 }
@@ -626,22 +673,22 @@ int debugger_disasm(char *buf, size_t buf_size, uint32_t addr) {
 void debugger_disasm_pc(char *buf, size_t buf_size) {
     if (!buf || buf_size == 0)
         return;
-    cpu_t *cpu = system_cpu();
-    if (!cpu) {
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!dif) {
         buf[0] = '\0';
         return;
     }
-    debugger_disasm(buf, buf_size, cpu_get_pc(cpu));
+    debugger_disasm(buf, buf_size, dif->get_pc(dif->ctx));
 }
 
 // Check if execution should break and trace current instruction
 int debug_break_and_trace(void) {
     debug_t *debug = system_debug();
-    cpu_t *cpu = system_cpu();
-    if (!debug || !cpu)
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!debug || !dif)
         return false;
     bool stop = false;
-    uint32_t current_pc = cpu_get_pc(cpu);
+    uint32_t current_pc = dif->get_pc(dif->ctx);
 
     // If we have a last_breakpoint_pc set, this means we need to skip checking
     // for breakpoints at that specific PC address one time (to allow resuming execution)
@@ -3274,11 +3321,11 @@ static value_t debug_method_exceptions(struct object *self, const member_t *m, i
 static value_t debug_method_disasm(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    cpu_t *cpu = system_cpu();
-    if (!cpu)
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    if (!dif)
         return val_err("debug.disasm: CPU not initialised");
 
-    uint32_t addr = cpu_get_pc(cpu);
+    uint32_t addr = dif->get_pc(dif->ctx);
     int64_t count = 16;
     if (argc == 1) {
         count = argv[0].i;
@@ -3293,9 +3340,9 @@ static value_t debug_method_disasm(struct object *self, const member_t *m, int a
 
     char buf[160];
     for (int i = 0; i < (int)count; i++) {
-        int instr_len = debugger_disasm(buf, sizeof(buf), addr);
+        int instr_len = debugger_disasm(buf, sizeof(buf), addr); // returns bytes
         printf("%s\n", buf);
-        addr += 2 * instr_len;
+        addr += (uint32_t)instr_len;
     }
     return val_bool(true);
 }
@@ -3426,7 +3473,6 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
     // without further bridge round-trips.
     value_t *rows = NULL;
     size_t n_rows = 0, cap_rows = 0;
-    uint16_t words[16];
     char mnem[32], ops[80];
     for (int i = 0; i < (int)count; i++) {
         value_map_builder_t *row = val_map_new();
@@ -3437,15 +3483,13 @@ static value_t debug_method_frame(struct object *self, const member_t *m, int ar
         val_map_put(row, "phys", valid ? val_int((int64_t)phys) : val_none());
         val_map_put(row, "valid", val_bool(valid));
 
-        for (int j = 0; j < 16; j++)
-            words[j] = cpu_get_uint16(addr + j * 2);
-        int n = disasm(words, mnem, ops);
+        int n = disasm_at(addr, mnem, ops); // bytes consumed
 
         val_map_put(row, "mnem", val_str(mnem));
         val_map_put(row, "ops", val_str(ops));
         val_list_push(&rows, &n_rows, &cap_rows, val_map_finish(row));
 
-        addr += 2 * n;
+        addr += (uint32_t)n;
     }
     val_map_put(b, "rows", val_list(rows, n_rows));
 
@@ -3590,21 +3634,23 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
     int idx = mac_global_lookup(argv[0].s);
     if (idx < 0)
         return val_err("debug.mac.globals.read: unknown global '%s'", argv[0].s);
+    // Globals live in the mac world's logical space (identity on 68K
+    // machines; the user-data view on PDM — debug_mac_xlate).
     uint32_t addr = mac_global_vars[idx].address;
     int sz = mac_global_vars[idx].size;
     switch (sz) {
     case 1: {
-        value_t v = val_uint(1, memory_debug_read_uint8(addr));
+        value_t v = val_uint(1, memory_debug_read_uint8(debug_mac_xlate(addr)));
         v.flags |= VAL_HEX;
         return v;
     }
     case 2: {
-        value_t v = val_uint(2, memory_debug_read_uint16(addr));
+        value_t v = val_uint(2, memory_debug_read_uint16(debug_mac_xlate(addr)));
         v.flags |= VAL_HEX;
         return v;
     }
     case 4: {
-        value_t v = val_uint(4, memory_debug_read_uint32(addr));
+        value_t v = val_uint(4, memory_debug_read_uint32(debug_mac_xlate(addr)));
         v.flags |= VAL_HEX;
         return v;
     }
@@ -3613,7 +3659,7 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
             return val_err("debug.mac.globals.read: unexpected entry size %d", sz);
         uint8_t buf[256];
         for (int i = 0; i < sz; i++)
-            buf[i] = memory_debug_read_uint8(addr + (uint32_t)i);
+            buf[i] = memory_debug_read_uint8(debug_mac_xlate(addr + (uint32_t)i));
         return val_bytes(buf, (size_t)sz);
     }
     }
@@ -3629,15 +3675,29 @@ static value_t method_mac_globals_write(struct object *self, const member_t *m, 
     uint64_t v = argv[1].u;
     uint32_t addr = mac_global_vars[idx].address;
     int sz = mac_global_vars[idx].size;
+    // On a mac-world-translated machine (PDM) the resolved address is
+    // physical, so the write must take the debug path; 68K machines keep
+    // the historical live-CPU write.
+    const cpu_debug_if_t *dif = system_cpu_debug_if();
+    bool xl = dif && dif->translate_mac;
     switch (sz) {
     case 1:
-        memory_write_uint8(addr, (uint8_t)v);
+        if (xl)
+            memory_debug_write_uint8(debug_mac_xlate(addr), (uint8_t)v);
+        else
+            memory_write_uint8(addr, (uint8_t)v);
         break;
     case 2:
-        memory_write_uint16(addr, (uint16_t)v);
+        if (xl)
+            memory_debug_write_uint16(debug_mac_xlate(addr), (uint16_t)v);
+        else
+            memory_write_uint16(addr, (uint16_t)v);
         break;
     case 4:
-        memory_write_uint32(addr, (uint32_t)v);
+        if (xl)
+            memory_debug_write_uint32(debug_mac_xlate(addr), (uint32_t)v);
+        else
+            memory_write_uint32(addr, (uint32_t)v);
         break;
     default:
         return val_err("debug.mac.globals.write: '%s' is %d bytes (only 1/2/4 supported)", argv[0].s, sz);

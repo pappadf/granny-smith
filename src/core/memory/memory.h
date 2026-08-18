@@ -286,6 +286,28 @@ extern uint8_t *g_mem_logpoint_phys_page_count;
 typedef void (*memory_logpoint_hook_t)(uint32_t addr, unsigned size, uint32_t value, bool is_write);
 extern memory_logpoint_hook_t g_mem_logpoint_hook;
 
+// When true, the user SoA arrays are owned by an architecture MMU front
+// end that fills them with LOGICAL (translated) mappings — the generic
+// identity-restore paths (rebuild_soa_page, logpoint uninstall) must not
+// plant identity entries in them.  Set by machines whose main CPU keeps
+// translated fills in the user arrays (the PPC 601); 68K machines leave
+// it false and keep the classic all-four-arrays behavior.
+extern bool g_user_soa_reserved;
+
+// Optional notification that the SoA fast-path shape changed outside the
+// owning CPU's control (memory logpoint install/uninstall): CPU-side
+// translation caches (fetch windows, TLBs) must drop entries that could
+// bypass the slow path.  NULL when no CPU registered one.
+extern void (*g_mem_fastpath_changed)(void);
+
+// Current-context logical→physical translation for machines whose data
+// translation lives outside g_mmu (the PPC 601 front end).  Used by the
+// logpoint slow path to resolve the backing of a logically-watched page
+// that arrives with its LOGICAL address (ppc_dxlate_slow keeps the EA for
+// watched plain-RAM pages instead of rewriting it to physical).  Must be
+// side-effect-free; *ok=false → treat as identity.  NULL on 68K machines.
+extern uint32_t (*g_mem_logical_xlate)(uint32_t addr, bool *ok);
+
 // === Value Trap (fast-path needle search) ===
 // Catches writes of a specific (PA, size, value) combination without forcing
 // the page to slow path.  Controlled by `value-trap` shell command.  When

@@ -18,7 +18,7 @@ OUT="$WORK_DIR/profiles.txt"
 SCRIPT="$WORK_DIR/profiles.script"
 mkdir -p "$WORK_DIR"
 
-MODELS="plus se30 iicx iix iifx iici iisi q840av q660av lisa macxl"
+MODELS="plus se30 iicx iix iifx iici iisi q840av q660av pm6100 pm7100 pm8100 lisa macxl"
 
 : > "$SCRIPT"
 for m in $MODELS; do
@@ -150,6 +150,27 @@ for m in q840av q660av; do
     # The New Age FDC is stubbed as 'no drive', so no floppy slot is offered.
     assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive"
 done
+# --- PDM family (Power Macintosh 6100/7100/8100): the first PowerPC
+# machines.  cpu.model 601 + the 601 MMU kind are what gate the PPC debug
+# panels; fpu:true since Phase E landed the 601 FPU datapath and the
+# machine.cpu.fpu object (proposal-powerpc-601-pdm.md §3.6).  Phase G
+# landed the Curio SCSI bus, so two HD slots are offered; floppy (the
+# SWIM3 datapath) and NuBus (BART) remain Phase H, and this row is what
+# keeps the profile honest about it.
+for m in pm6100 pm7100 pm8100; do
+    assert_contains "$m" '"model":601' "$m is a PowerPC 601"
+    assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
+    assert_contains "$m" '"fpu":true' "$m FPU capability on since Phase E"
+    assert_contains "$m" '"address_bits":32' "$m is 32-bit"
+    assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets yet"
+    assert_contains "$m" '"has_cdrom":false' "$m offers no CD bay yet"
+    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive yet (Phase H)"
+    assert_contains "$m" '"scsi_slots":[{"label":"SCSI HD0","id":0},{"label":"SCSI HD1","id":1}]' "$m offers the two Curio SCSI HD slots (Phase G)"
+done
+assert_contains pm6100 '"freq":60000000' "pm6100 runs at 60 MHz"
+assert_contains pm7100 '"freq":66000000' "pm7100 runs at 66 MHz"
+assert_contains pm8100 '"freq":80000000' "pm8100 runs at 80 MHz"
+
 assert_contains q840av '"freq":40000000' "q840av runs at 40 MHz"
 assert_contains q660av '"freq":25000000' "q660av runs at 25 MHz"
 # The on-board DMSD/VDC video digitizer is what makes these machines "AV":

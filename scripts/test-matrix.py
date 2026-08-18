@@ -24,13 +24,15 @@ import sys
 from pathlib import Path
 
 MACHINES = {"plus", "se30", "iix", "iicx", "iici", "iisi", "iifx",
-            "q700", "q900", "q950", "lisa", "macxl"}
+            "q700", "q900", "q950", "q840av", "q660av",
+            "pm6100", "pm7100", "pm8100", "lisa", "macxl"}
 
 # first entry of each ROM's compatible-model list (src/core/memory/rom.c)
 ROM_MACHINE = [
     ("plus-", "plus"), ("iix-iicx-se30", "se30"), ("iici-", "iici"),
     ("iisi-", "iisi"), ("iifx-", "iifx"), ("q700-q900", "q700"),
-    ("q950-", "q950"), ("lisa2-", "lisa"), ("macxl-", "macxl"),
+    ("q950-", "q950"), ("q840av-q660av", "q840av"),
+    ("pm6100-pm7100-pm8100", "pm6100"), ("lisa2-", "lisa"), ("macxl-", "macxl"),
 ]
 
 # media path fragment -> system-software label

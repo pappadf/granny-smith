@@ -19,6 +19,38 @@
 struct cpu;
 struct object;
 
+// === Main-CPU debug interface (PPC proposal §3.9b) ===
+// The handful of debugger paths that reach into the main CPU (PC reads for
+// breakpoints/trace, disassembly, logical→physical translation) go through
+// this vtable so they work unchanged whichever architecture owns the machine.
+// Populated by system_create from the active core's adapter (the 68K one is
+// cpu_debug_if() in cpu.c); fetched via system_cpu_debug_if().
+typedef struct cpu_debug_if {
+    void *ctx; // the core instance (cpu_t / ppc_t)
+    uint32_t (*get_pc)(void *ctx);
+    void (*set_pc)(void *ctx, uint32_t pc);
+    // Disassemble one instruction at pc using the core's own memory view into
+    // buf (mnemonic + '\t' + operands, empty string for illegal encodings;
+    // buf must hold >= 100 bytes).  Returns bytes consumed (68K: 2..20;
+    // PPC: always 4).
+    int (*disasm)(void *ctx, uint32_t pc, char *buf);
+    // Translate a logical address in the core's current context; *ok reports
+    // whether a valid translation exists (identity when translation is off).
+    uint32_t (*translate)(void *ctx, uint32_t logical, bool *ok);
+    // Translate a logical address in the MAC WORLD's context — the space the
+    // 68k Toolbox's low-memory globals live in — independent of where the
+    // sprint stopped.  NULL means the mac world is the core's own space
+    // (every 68K machine); the PPC core supplies the user-data view here,
+    // because on PDM the nanokernel relocates logical page 0 away from
+    // physical 0 once the framebuffer claims it (§3.9e).
+    uint32_t (*translate_mac)(void *ctx, uint32_t logical, bool *ok);
+} cpu_debug_if_t;
+
+// Resolve a 68k low-memory address through the mac-world translation
+// (identity on 68K machines and when no machine is live).  Shared by
+// debug.mac and the globals object methods.
+uint32_t debug_mac_xlate(uint32_t addr);
+
 struct breakpoint;
 typedef struct breakpoint breakpoint_t;
 
@@ -192,6 +224,8 @@ struct object *logpoint_get_entry_object(const logpoint_t *lp);
 
 void debugger_disasm_pc(char *buf, size_t buf_size);
 
+// Disassemble one instruction at addr into buf (address-prefixed line).
+// Returns the instruction length in BYTES (advance addr by the return value).
 int debugger_disasm(char *buf, size_t buf_size, uint32_t addr);
 
 int debug_break_and_trace(void);
@@ -216,17 +250,28 @@ void debug_set_prompt_default(bool enabled);
 // Records every CPU bus error / exception as a ring buffer entry.  The
 // bus-error code paths in cpu_internal.h call exc_trace_record().  Enable
 // streaming with `log exceptions 1`, dump the ring with `info exceptions`.
+
+// Which architecture recorded a ring entry.  One shared ring for all main-CPU
+// architectures — the fields below are reused by role per arch (PPC proposal
+// §3.9c): on PPC, `vbr` carries MSR, `format_frame` carries the vector
+// offset, and `fault_addr` carries DAR.  The dump prints per-arch.
+enum exc_trace_arch {
+    EXC_ARCH_M68K = 0,
+    EXC_ARCH_PPC = 1,
+};
+
 typedef struct exc_trace_entry {
     uint64_t ts; // CPU instruction count at the exception
     uint32_t faulting_pc; // cpu->instruction_pc when the fault occurred
     uint32_t saved_pc; // PC stacked (differs from faulting_pc on retry vs skip)
-    uint32_t fault_addr; // faulting address written to stack frame
-    uint32_t vbr;
+    uint32_t fault_addr; // faulting address written to stack frame (PPC: DAR)
+    uint32_t vbr; // 68K vector base (PPC: MSR)
     uint32_t vector; // exception vector (0x008 = bus error, etc.)
     uint16_t sr;
-    uint16_t format_frame; // 0xA/0xB/0x0/0x2
+    uint16_t format_frame; // 68K: 0xA/0xB/0x0/0x2 (PPC: vector offset)
     uint8_t rw; // 1=read, 0=write
     uint8_t double_fault_kind; // 0 = none, 1 = retry double-fault detected
+    uint8_t arch; // enum exc_trace_arch — selects the dump format
 } exc_trace_entry_t;
 
 // Record one exception event (called from cpu_internal.h exception paths)

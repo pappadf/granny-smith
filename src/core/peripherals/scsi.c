@@ -520,6 +520,9 @@ static void run_cmd(scsi_t *scsi) {
 
         uint16_t blk_sz = scsi->devices[target].block_size;
 
+        LOG(1, "SCSI %s(10) target=%d lba=%u tl=%u blk_sz=%u", scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ",
+            target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
+
         if (getenv("GS_IIFX_SHIM_TRACE"))
             fprintf(stdout, "SCSI_%s_10 tgt=%d lba=%u tl=%u blk_sz=%u\n",
                     scsi->cmd.opcode == CMD_WRITE_10 ? "WR" : "RD", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);

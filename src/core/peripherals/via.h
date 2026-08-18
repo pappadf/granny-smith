@@ -126,4 +126,11 @@ uint16_t via_timer_latch(const via_t *via, unsigned which);
 
 uint8_t via_get_freq_factor(const via_t *via);
 
+// Install exact-rational φ2 timing (ticks = cycles × 783360/cpu_hz, reduced)
+// for machines whose CPU clock is not an integer multiple of VIA_PHI2_HZ —
+// the rounded via_freq_factor_for_clock divisor would run their timers
+// measurably fast or slow (PDM at 60 MHz: 0.54% slow).  Call after
+// via_init; the integer-divisor machines keep the historical arithmetic.
+void via_set_exact_clock(via_t *via, uint32_t cpu_hz);
+
 #endif // VIA_H

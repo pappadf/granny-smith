@@ -1,0 +1,188 @@
+# PDM ROM boot ladder (proposal-powerpc-601-pdm.md §6.1).
+#
+# Every assertion is a hardware truth read from the live machine after a
+# clean bounded run — deliberately NO PC logpoints/breakpoints: the debugger
+# forces single-stepping, which suppresses 601 branch folding and skews the
+# ROM's timed measurement loops (the values asserted below).
+#
+# Marker sources (dossier boot walkthrough): the nanokernel's InfoRecord
+# page at logical $5FFFE000 publishes pointers to the DURABLE copies of
+# NKProcessorInfo ($5FFFEFD8) and NKSystemInfo ($5FFFEFF0) — the HWInit
+# staging area at physical $A000 is scratch the 68k boot later recycles,
+# so the assertions below dereference the pointers through the MMU debug
+# window (machine.cpu.mmu.peek) instead.  ProcessorInfo: +4 CpuClockRateHz,
+# +8 BusClockRateHz, +$C DecClockRateHz.  SystemInfo: +0 PhysicalMemory-
+# Size, +$30.. the 9-entry {base,size} bank table.  Phase-D markers: SDR1
+# (the nanokernel sizes the HTAB for 24 MB at $017E0000 with HTABMASK 1),
+# the Emulator Data Page (EDP = HTAB - $1000) carrying the "Boot PDM 601
+# 1.0" bootstrap string, and the 68k world's own low-memory globals read
+# back through the MMU translate hook (debug.mac).  Phase-E markers
+# (L16-L18): the DynamicBoxFlag byte, the tick RATE under exact-rational
+# VIA scaling, and HMCMerge's framebuffer/DMA logical windows — the boot
+# now runs through video init (monitor sense 6 + the 66.67 Hz VBL raster)
+# and paints the gray desktop into physical 0 before parking at the
+# Phase-G SCSI-scan wall.  Phase-F markers (L19-L20): the boot chime as a
+# sample-exact golden WAV (the whole run is deterministic, so the capture
+# is too) and the gray-desktop screen golden through the Ariel scanout.
+
+include "../lib/mac.script"
+
+machine.boot model="pm6100" ram=24576 rom="${$ROM}"
+
+# L19 instrument: record everything the AWACS engine renders.  The capture
+# must be armed before the run — the chime plays ~50M-135M instructions in,
+# by pure polling of the +$18 half-done flags and the 24-bit position
+# counter, with interrupts off.
+machine.sound.capture.start
+
+# L1 sanity: the 601 comes out of reset at the documented vector.
+assert machine.cpu.pc == 0xFFF00100 "reset vector != $FFF00100"
+
+# 200M instructions: checksum (~13M), HWInit, boot chime (~100M), kernel
+# entry (~135M), nanokernel init, rfi into the 68k emulator, and the 68k
+# Start Manager through video init to the SCSI-scan wall.
+scheduler.run 200000000
+
+# Park in USER mode (the 68k world) so the context-dependent reads below
+# (machine.cpu.mmu.peek/translate follow the CURRENT MSR context) resolve
+# against the 68k mappings whatever supervisor slice the fixed budget
+# happened to stop in.  Deterministic: the whole run is.
+while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
+
+# --- L2/L3/L5/L6: HWInit ran end-to-end (cold path, HMC config live) -------
+# Proven transitively: nothing below is reachable without them.
+
+# The kernel's published info records (durable copies inside the KDP,
+# reachable through the user-space InfoRecord page).
+let pi = machine.cpu.mmu.peek(0x5FFFEFD8, 4)
+let si = machine.cpu.mmu.peek(0x5FFFEFF0, 4)
+
+# --- L7: the two measurement loops (the §5.2 mechanisms) -------------------
+# CPU clock must land EXACTLY on the 60 MHz snap-table entry (CPI 1.0 with
+# 601 branch folding), the bus ratio on 2 (30 MHz), and DecClockRateHz on
+# the 601 RTC constant 7,833,600 x 128.
+assert machine.cpu.mmu.peek($pi + 4, 4) == 60000000 "L7: measured CPU clock != 60 MHz"
+assert machine.cpu.mmu.peek($pi + 8, 4) == 30000000 "L7: measured bus clock != 30 MHz (ratio 2)"
+assert machine.cpu.mmu.peek($pi + 12, 4) == 1002700800 "L7: DecClockRateHz != 1,002,700,800"
+
+# --- L8: RAM probe + 6100 bank relocation ----------------------------------
+# 24 MB = 8 MB soldered + two 8 MB SIMM banks; the SIMM_BANK_SIZE config
+# write relocates them contiguously and the bank table records the result.
+assert machine.cpu.mmu.peek($si, 4) == 0x1800000 "L8: PhysicalMemorySize != 24 MB"
+assert machine.cpu.mmu.peek($si + 0x30, 4) == 0x0000000 "L8: bank0 base"
+assert machine.cpu.mmu.peek($si + 0x34, 4) == 0x0800000 "L8: bank0 size"
+assert machine.cpu.mmu.peek($si + 0x38, 4) == 0x0800000 "L8: bank1 base (relocated)"
+assert machine.cpu.mmu.peek($si + 0x3C, 4) == 0x0800000 "L8: bank1 size"
+assert machine.cpu.mmu.peek($si + 0x40, 4) == 0x1000000 "L8: bank2 base (relocated)"
+assert machine.cpu.mmu.peek($si + 0x44, 4) == 0x0800000 "L8: bank2 size"
+
+# --- L9: machine-ID register semantics -------------------------------------
+# Byte reads deliver $A55A3010; a 32-bit read must NOT show the signature
+# (the ROM's long-probe depends on it failing).
+assert machine.memory.peek.b(0x5FFFFFFC) == 0xA5 "L9: machine-ID byte 0"
+assert machine.memory.peek.b(0x5FFFFFFE) == 0x30 "L9: machine-ID byte 2"
+assert machine.memory.peek.b(0x5FFFFFFF) == 0x10 "L9: machine-ID byte 3"
+assert machine.memory.peek.l(0x5FFFFFFC) == 0x3010 "L9: 32-bit ID read must hide the signature"
+
+# --- L12/L13: kernel entered; HTAB built -----------------------------------
+# The nanokernel carved its structures from top-of-RAM: SDR1 = HTAB at
+# $017E0000 with HTABMASK 1 (128 KB for 24 MB, "2 PTEs per page" sizing).
+# Impossible unless HWInit completed (L12: entry at $40310000 with r3 =
+# ConfigInfo) and kernel init ran through InitKernelMemory.
+assert machine.cpu.sdr1 == 0x017E0001 "L13: SDR1/HTAB not at the 24 MB layout"
+
+# --- L14: rfi into the 68k emulator with translation on --------------------
+# InitEmulator copies the 16-byte bootstrap version string into the
+# Emulator Data Page (EDP = HTAB - $1000) before the rfi into user mode;
+# the emulator then runs from its logical windows via the HTAB.
+assert machine.memory.peek.l(0x17DFF00) == 0x426F6F74 "L14: EDP bootstrap string ('Boot')"
+assert machine.memory.peek.l(0x17DFF04) == 0x2050444D "L14: EDP bootstrap string (' PDM')"
+
+# --- L15: the 68k emulator dispatches real 68k ROM code --------------------
+# The 68k Start Manager initialized low memory (ROMBase) and services the
+# 60.15 Hz tick through the full chain: AMIC edge latch -> 601 external
+# interrupt -> nanokernel AMICIrq2IPL -> emulated 68k level-1 handler
+# incrementing Ticks.  debug.mac resolves the 68k world's logical space
+# through the user-context translate hook (§3.9e) — the nanokernel
+# relocates logical low memory once the framebuffer claims physical 0, so
+# a physical read here would see the gray desktop pattern instead.
+assert debug.mac.globals.read("ROMBase") == 0x40800000 "L15: 68k low memory not initialized (ROMBase)"
+assert debug.mac.globals.read("Ticks") != 0 "L15: 68k tick handler not running (Ticks)"
+
+# --- L16: DynamicBoxFlag classified the machine ----------------------------
+# StartInit's DynamicBoxFlag maps (family, measured CPU clock) to the
+# production box: pm6100 -> 69 boxPDM50WLCD (Gestalt machine 75),
+# pm7100 -> 106 (112), pm8100 -> 59 boxPDM80F (65) — read from the 68k
+# low-memory BoxFlag byte ($CB3) through the user-context window.  A
+# mis-measured clock (branch folding, RTC rational, HMC wait states)
+# lands in a different row of the ROM's speed table.
+assert machine.cpu.mmu.peek(0xCB3, 1) == 0x45 "L16: BoxFlag != boxPDM50WLCD (69)"
+
+# --- L18: HMCMerge's _nkAllocateMemory windows are live --------------------
+# With a monitor sensed (the 14" Hi-Res, code 6), HMCMerge allocates the
+# 604 KB framebuffer at logical $60B00000 FORCED to physical 0 ("HMC
+# requirement") and the 160 KB cache-inhibited DMA buffer at $61000000,
+# physical 256 KB-aligned below the HTAB — both through the kernel-call
+# path with HTAB growth and exception re-entry.  (The VBL raster is what
+# lets the boot leave the Sonora driver's WaitVSync spin and reach here —
+# the dossier's §11.6 polarity suspect resolved: the flag is active-low.)
+assert machine.cpu.mmu.translate(0x60B00000) == 0x0000000 "L18: framebuffer window not at physical 0"
+assert machine.cpu.mmu.translate(0x61000000) == 0x1780000 "L18: DMA window not mapped (24 MB layout)"
+
+# --- L17: pseudo-VIA timing — ticks and seconds advance at rate ------------
+# Cuda/PRAM/ADB init and the tick chain were proven live above; L17 pins
+# the RATE: with the exact-rational 783.36 kHz VIA scaling, Ticks must
+# advance at 60.15 Hz of emulated time over the ~2 s window below (the
+# ±10-tick band allows interrupt-service jitter, not clock error — the
+# old rounded divisor sat 0.5% off and a real regression lands far
+# outside), and the tick handler's Time accumulation follows.  The Cuda
+# RDTIME sync itself happens post-SCSI-scan (Phase G territory); Time
+# counts from 0 until then.  debug.mac reads are stop-context-free (the
+# §3.9e user-view hook), so no re-park is needed after the run.
+let t0 = debug.mac.globals.read("Time")
+let k0 = debug.mac.globals.read("Ticks")
+let c0 = scheduler.cycles
+scheduler.run 120000000
+let dticks = debug.mac.globals.read("Ticks") - $k0
+let dsecs = debug.mac.globals.read("Time") - $t0
+let dcyc = scheduler.cycles - $c0
+# 60.15 Hz against the 60 MHz cycle clock: expected = dcyc * 60.15 / 60e6
+let expect = $dcyc * 6015 / 100 / 60000000
+assert $dticks >= $expect - 10 "L17: tick rate low (${$dticks} vs ~${$expect})"
+assert $dticks <= $expect + 10 "L17: tick rate high (${$dticks} vs ~${$expect})"
+assert $dsecs >= 1 "L17: Time global not advancing"
+
+# --- L19: the boot chime played through the AWACS output datapath ----------
+# The chime is the ROM's own PCM, drained through the real contract: codec
+# attenuation from the $40/hi/lo/$C0 command port ((7-vol)*2 at the PRAM
+# default volume 5), 86 half-buffers of 1024 frames at 44.1 kHz, refilled
+# by polling.  The run is deterministic, so the capture matches a golden
+# WAV sample-exactly (REGEN=1 regenerates it).  Register truths after the
+# chime: the beep's stop sequence clears RUN and drops the shared rate
+# field back to the 22 050 Hz power-on default.
+check_sound("chime.wav", 88064)
+assert machine.sound.peak >= 8000 "L19: chime rendered silent (peak ${machine.sound.peak})"
+assert machine.sound.out_enabled == false "L19: sound-out RUN still set at the wall"
+assert machine.sound.sample_rate == 22050 "L19: post-chime rate != 22050"
+
+# --- L20: the gray desktop through the Ariel scanout -----------------------
+# 640x480 at 8 bpp (the HRc default depth the sensed 14" Hi-Res config
+# selects), the $00/$FF checker dither through the driver's gamma-corrected
+# CLUT, plus the arrow cursor the 68k boot draws before parking — matched
+# as a screen golden (REGEN=1 regenerates).
+assert machine.screen.width == 640 "L20: screen width != 640"
+assert machine.screen.height == 480 "L20: screen height != 480"
+assert machine.screen.depth == 8 "L20: screen depth != 8 bpp"
+check("gray-desktop.png")
+
+# The L10 "Lisa" POST marker stays deferred (POST does not run pre-kernel
+# on the normal cold path — §0.1 finding 4), and the warm-restart row is
+# deferred to the first guest-triggered Restart (the warm path locates the
+# ROM image through HTAB state only the kernel-mediated 68k RESET flow
+# creates; the MSR[IR] discriminator and rfi-untranslated mechanics are
+# covered by tests/unit/suites/ppc_mmu).  Next rung: L21 (the Slot Manager
+# decl-ROM probe under the bus-error catcher) — Phase G territory, behind
+# the SCSI wall the run parks at.
+
+echo "pdm-rom-ladder: high-water rung L20 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} box=${machine.cpu.mmu.peek(0xCB3, 1)} chime peak=${machine.sound.peak})"
+quit

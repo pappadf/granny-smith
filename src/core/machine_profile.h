@@ -52,11 +52,29 @@ typedef enum mmu_kind {
     MMU_68030_PMMU, // Motorola 68030 integrated PMMU
     MMU_LISA_SEGMENT, // Apple Lisa custom segment MMU
     MMU_68040, // Motorola 68040 integrated MMU (URP/SRP, fixed 3-level walk)
+    MMU_PPC_601, // MPC601 integrated MMU (BAT + segment + hashed page table)
 } mmu_kind_t;
 
 // Wire string for an mmu_kind_t ("none" / "68030_pmmu" / "lisa_segment" /
-// "68040").
+// "68040" / "ppc_601").
 const char *mmu_kind_to_string(mmu_kind_t kind);
+
+// Main-CPU architecture of a machine (PPC proposal §3.9a).  The tagged
+// discriminator for config_t's main-CPU handle: exactly one of the per-arch
+// core pointers is non-NULL, selected by this tag.  Derived from
+// hw_profile_t.cpu_model — never stored in the profile separately.
+typedef enum cpu_arch {
+    CPU_ARCH_M68K = 0, // Motorola 68000/68030/68040 (src/core/cpu/)
+    CPU_ARCH_PPC, // PowerPC — MPC601 (src/core/cpu/ppc/)
+} cpu_arch_t;
+
+// PowerPC 601 model id for hw_profile_t.cpu_model (the 68K ids live in cpu.h).
+#define CPU_MODEL_PPC601 601
+
+// Main-CPU architecture implied by a profile's cpu_model.
+static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
+    return cpu_model == CPU_MODEL_PPC601 ? CPU_ARCH_PPC : CPU_ARCH_M68K;
+}
 
 // How a machine attaches a hard-disk image.  Every Mac hangs its HD off the
 // SCSI bus (scsi.attach_hd(path, id)); the Lisa 2 / Macintosh XL use the

@@ -127,6 +127,16 @@ struct via {
     // CPU-to-VIA clock divisor: CPU_clock / freq_factor ≈ 783 kHz VIA φ2 clock
     uint8_t freq_factor;
 
+    // Exact-rational φ2 derivation: φ2 ticks = cycles * ff_num / ff_den.
+    // The legacy integer-divisor machines run as (1, freq_factor) — bit-for-
+    // bit the historical arithmetic — while machines whose CPU clock is not
+    // an integer multiple of 783,360 Hz (PDM: 60/66/80 MHz) install the
+    // reduced 783360/cpu_hz rational via via_set_exact_clock() so the
+    // guest-visible timer rate is exactly φ2-equivalent over any interval
+    // (the PDM dossier's hard constraint).  Config-derived, not part of the
+    // checkpointed plain-data prefix; re-derived on every init.
+    uint32_t ff_num, ff_den;
+
     // Object-tree binding — lifetime tied to via_init / via_delete.
     struct object *object;
     struct object *port_a_object;
@@ -137,9 +147,19 @@ struct via {
 // Static Helpers
 // ============================================================================
 
-// Convert CPU cycles to VIA timer cycles using per-instance divisor
+// Convert CPU cycles to VIA timer cycles using the per-instance rational.
+// Split division keeps the intermediate product inside 64 bits for any
+// cycle count (the ppc_ticks_now precedent).
 static uint64_t cpu_to_via_cycles(via_t *via, uint64_t scheduler_cpu_cycles) {
-    return scheduler_cpu_cycles / via->freq_factor;
+    uint64_t c = scheduler_cpu_cycles;
+    return (c / via->ff_den) * via->ff_num + (c % via->ff_den) * via->ff_num / via->ff_den;
+}
+
+// CPU-cycle delay after which `phi2_ticks` VIA clocks have elapsed: the
+// smallest d with (d * ff_num) / ff_den >= phi2_ticks, keeping event expiry
+// consistent with cpu_to_via_cycles' floor division.
+static uint64_t via_cycles_to_cpu(via_t *via, uint64_t phi2_ticks) {
+    return (phi2_ticks * via->ff_den + via->ff_num - 1) / via->ff_num;
 }
 
 // Update the interrupt flag register and invoke IRQ callback if aggregate changes
@@ -193,7 +213,7 @@ static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_ca
     // Timer interrupt fires when the counter wraps around, i.e. delay is counter + 1.
     // Promote to uint64_t before the multiply so an exotic int-width host can't
     // sign-overflow the intermediate.
-    scheduler_new_cpu_event(via->scheduler, cb, via, 0, ((uint64_t)counter + 1) * via->freq_factor, 0);
+    scheduler_new_cpu_event(via->scheduler, cb, via, 0, via_cycles_to_cpu(via, (uint64_t)counter + 1), 0);
 }
 
 // Shift register completion callback - fires after 8 clock cycles
@@ -519,7 +539,7 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
             remove_event(via->scheduler, &sr_shift_complete_callback, via);
             // 8 VIA clock cycles (= 80 CPU cycles) for internal clock modes;
             // external-clock modes complete when the device drives CB1.
-            scheduler_new_cpu_event(via->scheduler, &sr_shift_complete_callback, via, 0, 8 * via->freq_factor, 0);
+            scheduler_new_cpu_event(via->scheduler, &sr_shift_complete_callback, via, 0, via_cycles_to_cpu(via, 8), 0);
         } else {
             LOG(3, "via SR write: value=0x%02x (shift in mode, not sent)", value);
         }
@@ -628,6 +648,8 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
 
     via->scheduler = scheduler;
     via->freq_factor = freq_factor ? freq_factor : DEFAULT_FREQ_FACTOR;
+    via->ff_num = 1; // legacy integer-divisor arithmetic unless
+    via->ff_den = via->freq_factor; // via_set_exact_clock() installs a rational
 
     // Store per-instance callback routing
     via->output_cb = output_cb;
@@ -738,6 +760,22 @@ uint16_t via_timer_latch(const via_t *via, unsigned which) {
 }
 uint8_t via_get_freq_factor(const via_t *via) {
     return via ? via->freq_factor : 0;
+}
+
+// Install the exact-rational φ2 derivation for a CPU clock that is not an
+// integer multiple of 783,360 Hz.  Reduces 783360/cpu_hz by gcd so the
+// split-division conversion keeps every intermediate inside 64 bits.
+void via_set_exact_clock(via_t *via, uint32_t cpu_hz) {
+    if (!via || !cpu_hz)
+        return;
+    uint32_t a = VIA_PHI2_HZ, b = cpu_hz;
+    while (b) {
+        uint32_t t = a % b;
+        a = b;
+        b = t;
+    }
+    via->ff_num = VIA_PHI2_HZ / a;
+    via->ff_den = cpu_hz / a;
 }
 
 // ============================================================================

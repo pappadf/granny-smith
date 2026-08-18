@@ -28,6 +28,10 @@ typedef struct rom_info {
     const char *const *compatible; // NULL-terminated list of compatible model_ids
     uint32_t checksum; // Stored checksum (first 4 bytes, big-endian)
     uint32_t rom_size; // Expected file size in bytes
+    // Bytes the stored checksum covers; 0 = the whole image.  The PDM 4 MB
+    // ROM's header checksum spans only its 3 MB 68k half — the trailing
+    // megabyte (HWInit/nanokernel/emulator) is outside the classic sum.
+    uint32_t checksum_span;
     // Note: canonical fixture filenames are a tooling concern (scripts/
     // rom_naming.py maps content identity → name for the gs-test-data repo);
     // core reasons only in content identities and never knows a filename.

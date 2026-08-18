@@ -65,6 +65,7 @@ PEELER_DIR    := src/peeler
 CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/cpu/*.c) \
             $(wildcard $(CORE_DIR)/cpu/dsp3210/*.c) \
+            $(wildcard $(CORE_DIR)/cpu/ppc/*.c) \
             $(wildcard $(CORE_DIR)/memory/*.c) \
             $(wildcard $(CORE_DIR)/peripherals/*.c) \
             $(wildcard $(CORE_DIR)/peripherals/nubus/*.c) \
@@ -135,6 +136,7 @@ PEELER_INCLUDES := -I$(PEELER_DIR)/include -I$(PEELER_DIR)/lib
 INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/cpu \
             -I$(CORE_DIR)/cpu/dsp3210 \
+            -I$(CORE_DIR)/cpu/ppc \
             -I$(CORE_DIR)/memory \
             -I$(CORE_DIR)/peripherals \
             -I$(CORE_DIR)/peripherals/nubus \
@@ -153,6 +155,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(MACHINES_DIR)/mdu \
             -I$(MACHINES_DIR)/mcu \
             -I$(MACHINES_DIR)/av \
+            -I$(MACHINES_DIR)/pdm \
             -I$(MACHINES_DIR)/oss \
             -I$(MACHINES_DIR)/compact \
             -I$(MACHINES_DIR)/lisa \
