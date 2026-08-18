@@ -4,8 +4,10 @@
 // test.c — directed unit tests for the PPC (MPC601) core
 // (src/core/cpu/ppc/), proposal-powerpc-601-pdm.md §7 layer 2.
 //
-// No public 601 instruction-level test corpus exists (the proposal's
-// largest stated correctness risk), so these are directed semantics tests
+// Written when no public 601 instruction-level test corpus existed (the
+// proposal's largest stated correctness risk).  One does now — see
+// suites/ppc_vectors — and these stay the place where a manual-cited rule
+// is pinned in our own words.  They are directed semantics tests
 // written from the 601UM chapter-10 RTL and chapter-5 exception tables:
 // carry/overflow/record-form matrices, rotate-mask edges, every POWER
 // holdover against its documented RTL (MQ side effects included), the SPR

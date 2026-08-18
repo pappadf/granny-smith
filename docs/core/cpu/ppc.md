@@ -194,10 +194,22 @@ bit for the PDM profiles.
 
 ## Verification
 
+- `tests/unit/suites/ppc_vectors/` — the [powerpc-test](https://github.com/pappadf/powerpc-test)
+  smoke tier (`third-party/powerpc-test`) replayed through its own
+  reference runner with this core as the runner's `custom` backend: 206
+  encodings, 1153 vectors, four randomized replays each.  Inputs are
+  SPARSE, so every unlisted register is randomized on every replay and the
+  read set and write set are checked for free — an instruction that
+  consults a register it should not, or writes one it should not, fails
+  almost surely.  Vectors assert conformance to the powerpc-sail formal
+  model, not to silicon; the eight defects the first replay found here,
+  and the six it found upstream, are adjudicated against the 601UM in
+  gs-docs `notes/2026-08-18-powerpc-test-vector-disagreements.md`.
 - `tests/unit/suites/ppc/` — directed semantics tests from the chapter-10
-  RTL (no public 601 test corpus exists; see proposal §7).  Executed words
-  are cross-checked against the disassembler so encoder typos cannot agree
-  with decoder typos.
+  RTL, written before the corpus above existed and still the place where a
+  manual-cited rule gets pinned (`test_conformance_regressions` restates
+  every rule the vectors caught).  Executed words are cross-checked against
+  the disassembler so encoder typos cannot agree with decoder typos.
 - `tests/unit/suites/ppc_mmu/` — the Phase-D proof list: 601 BAT
   protection keys, T=1 with DT off and the SR-toggle alias, primary and
   secondary HTAB search with R/C write-back (PTEG addresses computed
@@ -205,8 +217,9 @@ bit for the PDM profiles.
   update-form rule, the (PR,DT) SoA discipline, tlbie congruence classes,
   mtsr change-triggered invalidation, dcbz W/I, and the $00A00 contract.
 - `tests/integration/pdm-rom-ladder/` — the shipping ROM as test program;
-  high-water rung **L15** (the 68k emulator dispatching real 68k ROM code,
-  ticks serviced through the full AMIC→601→nanokernel→emulated-68k chain).
+  high-water rung **L20** (the gray desktop through the Ariel scanout, with
+  the AWACS chime, the exact VIA tick rate and the 68k emulator dispatching
+  real 68k ROM code all asserted below it).
 - `tests/unit/suites/ppc_disasm/` — vectors cross-validated against
   `powerpc-linux-gnu-objdump -b binary -m powerpc:601 -EB` (the RE
   workflow's oracle) over a directed sweep, a 10k-word fuzz corpus, and
