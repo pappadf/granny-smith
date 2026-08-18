@@ -154,16 +154,19 @@ done
 # machines.  cpu.model 601 + the 601 MMU kind are what gate the PPC debug
 # panels; fpu:true since Phase E landed the 601 FPU datapath and the
 # machine.cpu.fpu object (proposal-powerpc-601-pdm.md §3.6).  Phase G
-# landed the Curio SCSI bus, so two HD slots are offered; floppy (the
-# SWIM3 datapath) and NuBus (BART) remain Phase H, and this row is what
-# keeps the profile honest about it.
+# landed the Curio SCSI bus, so two HD slots AND the CD bay are offered —
+# a CD-ROM is an ordinary SCSI target on that same bus, with no
+# CD-specific hardware behind it.  Floppy (the SWIM3 datapath) and NuBus
+# (BART) remain Phase H, and this row is what keeps the profile honest
+# about which of the three is actually absent.
 for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"model":601' "$m is a PowerPC 601"
     assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
     assert_contains "$m" '"fpu":true' "$m FPU capability on since Phase E"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets yet"
-    assert_contains "$m" '"has_cdrom":false' "$m offers no CD bay yet"
+    assert_contains "$m" '"has_cdrom":true' "$m offers the Curio-bus CD bay"
+    assert_contains "$m" '"cdrom_id":3' "$m puts the CD at SCSI ID 3"
     assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive yet (Phase H)"
     assert_contains "$m" '"scsi_slots":[{"label":"SCSI HD0","id":0},{"label":"SCSI HD1","id":1}]' "$m offers the two Curio SCSI HD slots (Phase G)"
 done

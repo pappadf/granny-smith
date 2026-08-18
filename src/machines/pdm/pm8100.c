@@ -50,7 +50,10 @@ const hw_profile_t machine_pm8100 = {
     .ram_options = pm8100_ram_options_kb,
     .floppy_slots = pm8100_floppy_slots,
     .scsi_slots = pm8100_scsi_slots,
-    .has_cdrom = false,
+    // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
+    // (Phase G): no CD-specific hardware is involved, so the bay is
+    // offered as soon as that bus exists.
+    .has_cdrom = true,
     .cdrom_id = 3,
 
     .nubus_slots = NULL,
