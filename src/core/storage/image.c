@@ -12,6 +12,7 @@
 
 #include "appledouble.h"
 #include "image_ndif.h"
+#include "image_udif.h"
 #include "log.h"
 #include "platform.h"
 #include "system.h"
@@ -545,11 +546,235 @@ static uint32_t fork_hash_str(const char *s, uint32_t h) {
     return h;
 }
 
-// If base_path is an NDIF image whose block map can be recovered from a fork
-// sidecar, decode it to a cached scratch raw file and return that path
-// (malloc'd, caller frees / image takes ownership).  Otherwise return a copy of
-// base_path.  NULL only on allocation failure.
+// Build the deterministic scratch path a decoded image is cached under:
+// "<scratch>/<tag>-<hash>.img", hashed from path + size + mtime so repeated
+// inserts reuse the decode and a changed source re-decodes.
+static void image_scratch_path(const char *base_path, const char *tag, char *out, size_t cap) {
+    struct stat sb;
+    uint32_t h = fork_hash_str(base_path, 0x811c9dc5u);
+    if (stat(base_path, &sb) == 0) {
+        h = fork_hash_str("\x1f", h);
+        char meta[64];
+        snprintf(meta, sizeof(meta), "%lld:%lld", (long long)sb.st_size, (long long)sb.st_mtime);
+        h = fork_hash_str(meta, h);
+    }
+    snprintf(out, cap, "%s/%s-%08x.img", image_scratch_dir(), tag, h);
+}
+
+// === UDIF (.dmg) materialisation ==========================================
+// A UDIF image needs no resource fork: the 512-byte 'koly' trailer at EOF
+// points at both the compressed payload and the XML block map, so everything
+// is reachable from the one host path.  Decode it to a scratch raw image the
+// same way NDIF is handled above.  See image_udif.h.
+
+// Largest chunk we will buffer whole for decompression.  Real writers emit
+// ~1 MB chunks; anything wildly larger means a corrupt map, not a big disk.
+#define UDIF_MAX_CHUNK_BYTES (64u * 1024u * 1024u)
+
+// Read exactly `len` bytes at absolute offset `off`.  0 / -errno.
+static int read_at(FILE *f, uint64_t off, void *buf, size_t len) {
+    if (fseeko(f, (off_t)off, SEEK_SET) != 0)
+        return -EIO;
+    return fread(buf, 1, len, f) == len ? 0 : -EIO;
+}
+
+// Fold `len` zero bytes into a running CRC-32 without allocating them.
+static uint32_t crc32_zeros(uint32_t crc, uint64_t len) {
+    static const uint8_t zeros[4096] = {0};
+    while (len) {
+        size_t n = len < sizeof(zeros) ? (size_t)len : sizeof(zeros);
+        crc = udif_crc32(crc, zeros, n);
+        len -= n;
+    }
+    return crc;
+}
+
+// Copy a RAW chunk straight through in slices, folding it into `crc`.  Raw
+// chunks can cover a whole disk, so this never buffers the run whole.
+static int copy_raw_chunk(FILE *df, FILE *out, const udif_chunk_t *c, uint64_t base_sector, uint32_t *crc) {
+    uint8_t buf[64 * 1024];
+    uint64_t remaining = c->count * 512;
+    if (c->length < remaining)
+        return -EINVAL; // the map promises more sectors than the fork holds
+    uint64_t src = c->offset;
+    if (fseeko(out, (off_t)(base_sector + c->sector) * 512, SEEK_SET) != 0)
+        return -EIO;
+    while (remaining) {
+        size_t n = remaining < sizeof(buf) ? (size_t)remaining : sizeof(buf);
+        if (read_at(df, src, buf, n) != 0 || fwrite(buf, 1, n, out) != n)
+            return -EIO;
+        *crc = udif_crc32(*crc, buf, n);
+        src += n;
+        remaining -= n;
+    }
+    return 0;
+}
+
+// Decode one compressed (or zero-fill) chunk to its place in `out`, folding
+// the decoded bytes into `crc`.  0 / -errno.
+static int write_udif_chunk(FILE *df, FILE *out, const udif_chunk_t *c, uint64_t base_sector, uint32_t *crc) {
+    // Ignored chunks are unallocated space: they read as zeros and, unlike
+    // zero-fill, are excluded from the table checksum entirely.
+    if (c->type == UDIF_CHUNK_IGNORE)
+        return 0;
+    uint64_t need = c->count * 512;
+    if (need == 0)
+        return 0;
+    // Zero-fill needs no bytes written — the file was pre-extended with zeros.
+    if (c->type == UDIF_CHUNK_ZERO) {
+        *crc = crc32_zeros(*crc, need);
+        return 0;
+    }
+    if (c->type == UDIF_CHUNK_RAW)
+        return copy_raw_chunk(df, out, c, base_sector, crc);
+
+    if (need > UDIF_MAX_CHUNK_BYTES || c->length > UDIF_MAX_CHUNK_BYTES)
+        return -EFBIG;
+    uint8_t *cbuf = (uint8_t *)malloc((size_t)c->length ? (size_t)c->length : 1);
+    uint8_t *dbuf = (uint8_t *)malloc((size_t)need);
+    int rc = 0;
+    if (!cbuf || !dbuf) {
+        rc = -ENOMEM;
+    } else if (read_at(df, c->offset, cbuf, (size_t)c->length) != 0) {
+        rc = -EIO;
+    } else if ((rc = udif_decode_chunk(c, cbuf, (size_t)c->length, dbuf, (size_t)need)) == 0) {
+        if (fseeko(out, (off_t)(base_sector + c->sector) * 512, SEEK_SET) != 0 ||
+            fwrite(dbuf, 1, (size_t)need, out) != need)
+            rc = -EIO;
+        else
+            *crc = udif_crc32(*crc, dbuf, (size_t)need);
+    }
+    free(cbuf);
+    free(dbuf);
+    return rc;
+}
+
+// Decode a whole UDIF image (host file `base_path`, trailer `tr`, block map
+// `map`) into a freshly created scratch raw file `scratch`.  Each block
+// table's stored CRC-32 is verified as it is written, so a bad decode fails
+// here rather than surfacing as a subtly corrupt disk. 0 / -errno.
+static int materialize_udif_host(const char *base_path, const udif_trailer_t *tr, udif_map_t *map,
+                                 const char *scratch) {
+    FILE *df = fopen(base_path, "rb");
+    if (!df)
+        return -errno;
+    FILE *out = fopen(scratch, "wb");
+    if (!out) {
+        int e = errno;
+        fclose(df);
+        return e ? -e : -EIO;
+    }
+
+    int rc = 0;
+    if (ftruncate(fileno(out), (off_t)(tr->sectors * 512)) != 0) {
+        rc = -EIO;
+        goto done;
+    }
+    for (size_t i = 0; i < map->n_tables && rc == 0; i++) {
+        udif_table_t *t = &map->tables[i];
+        uint32_t crc = 0;
+        for (size_t j = 0; j < t->n_chunks; j++) {
+            udif_chunk_t *c = &t->chunks[j];
+            // Absolute position is the table's base plus the chunk's own
+            // sector, which restarts at 0 in every table.
+            if (t->base_sector + c->sector + c->count > tr->sectors) {
+                rc = -EINVAL;
+                break;
+            }
+            rc = write_udif_chunk(df, out, c, t->base_sector, &crc);
+            if (rc != 0) {
+                LOG(1, "UDIF chunk %zu of '%s' (type %#x) failed: %d", j, t->name, c->type, rc);
+                break;
+            }
+        }
+        // A stored CRC of zero means the writer recorded none (every table of
+        // purely unallocated space does), so only a real value is checked.
+        if (rc == 0 && t->checksum_type == UDIF_CHECKSUM_CRC32 && t->checksum != 0 && crc != t->checksum) {
+            LOG(1, "UDIF checksum mismatch in '%s': stored %08x, decoded %08x", t->name, t->checksum, crc);
+            rc = -EINVAL;
+        }
+    }
+done:
+    fclose(df);
+    if (fclose(out) != 0 && rc == 0)
+        rc = -EIO;
+    return rc;
+}
+
+// If base_path is a UDIF image, decode it to a cached scratch raw file and
+// return that path (malloc'd, caller frees).  Returns NULL when the file is
+// not UDIF at all, or when its decode failed — both fall through to the
+// remaining formats.
+static char *resolve_udif_image(const char *base_path) {
+    FILE *f = fopen(base_path, "rb");
+    if (!f)
+        return NULL;
+    uint8_t trailer[UDIF_TRAILER_SIZE];
+    int seek_rc = fseeko(f, -(off_t)sizeof(trailer), SEEK_END);
+    bool have_trailer = seek_rc == 0 && fread(trailer, 1, sizeof(trailer), f) == sizeof(trailer);
+    fclose(f);
+    if (!have_trailer || !udif_detect(trailer, sizeof(trailer)))
+        return NULL;
+
+    udif_trailer_t tr;
+    int rc = udif_parse_trailer(trailer, sizeof(trailer), &tr);
+    if (rc != 0) {
+        LOG(1, "unsupported UDIF trailer in '%s' (%d)", base_path, rc);
+        return NULL;
+    }
+
+    char scratch[PATH_MAX];
+    image_scratch_path(base_path, "udif", scratch, sizeof(scratch));
+    struct stat cached;
+    if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)(tr.sectors * 512))
+        return dup_string(scratch); // already materialised
+
+    // The block map lives in the XML plist the trailer points at.
+    uint8_t *xml = (uint8_t *)malloc((size_t)tr.xml_length);
+    if (!xml)
+        return NULL;
+    f = fopen(base_path, "rb");
+    if (!f || read_at(f, tr.xml_offset, xml, (size_t)tr.xml_length) != 0) {
+        if (f)
+            fclose(f);
+        free(xml);
+        LOG(1, "UDIF '%s': cannot read block map", base_path);
+        return NULL;
+    }
+    fclose(f);
+
+    udif_map_t *map = NULL;
+    rc = udif_parse_blkx(xml, (size_t)tr.xml_length, &map);
+    free(xml);
+    if (rc != 0) {
+        LOG(1, "UDIF '%s': block map parse failed (%d)", base_path, rc);
+        return NULL;
+    }
+
+    char *result = NULL;
+    mkdir_recursive(image_scratch_dir());
+    if (materialize_udif_host(base_path, &tr, map, scratch) == 0) {
+        LOG(3, "decoded UDIF '%s' -> '%s' (%llu sectors, %zu partitions)", base_path, scratch,
+            (unsigned long long)tr.sectors, map->n_tables);
+        result = dup_string(scratch);
+    } else {
+        remove(scratch);
+        LOG(1, "UDIF decode failed for '%s'", base_path);
+    }
+    udif_map_free(map);
+    return result;
+}
+
+// If base_path is a compressed disk image, decode it to a cached scratch raw
+// file and return that path (malloc'd, caller frees / image takes ownership).
+// UDIF (.dmg) is self-contained and checked first; NDIF needs its block map
+// recovered from a fork sidecar.  Otherwise return a copy of base_path.
+// NULL only on allocation failure.
 static char *resolve_base_image(const char *base_path) {
+    char *udif = resolve_udif_image(base_path);
+    if (udif)
+        return udif;
+
     size_t rlen = 0;
     uint8_t *rfork = acquire_resource_fork(base_path, &rlen);
     if (!rfork)
@@ -559,18 +784,8 @@ static char *resolve_base_image(const char *base_path) {
     if (ndif_detect(rfork, rlen)) {
         ndif_map_t *map = NULL;
         if (ndif_parse(rfork, rlen, &map) == 0) {
-            // Deterministic scratch name from path + size + mtime, so repeated
-            // inserts reuse the decode and a changed source re-decodes.
-            struct stat sb;
-            uint32_t h = fork_hash_str(base_path, 0x811c9dc5u);
-            if (stat(base_path, &sb) == 0) {
-                h = fork_hash_str("\x1f", h);
-                char meta[64];
-                snprintf(meta, sizeof(meta), "%lld:%lld", (long long)sb.st_size, (long long)sb.st_mtime);
-                h = fork_hash_str(meta, h);
-            }
             char scratch[PATH_MAX];
-            snprintf(scratch, sizeof(scratch), "%s/ndif-%08x.img", image_scratch_dir(), h);
+            image_scratch_path(base_path, "ndif", scratch, sizeof(scratch));
 
             struct stat cached;
             if (stat(scratch, &cached) == 0 && cached.st_size == (off_t)map->sectors * 512) {
