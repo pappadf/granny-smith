@@ -59,6 +59,28 @@ static const char *pick_delta_dir(const char *path) {
 
 `fd insert`, `fd create`, and `hd attach` all funnel through this helper.
 
+**Compressed image formats** — NDIF and UDIF
+
+Two Apple disk-image containers are decoded on open, before any of the above runs. `resolve_base_image()` tries each in turn and, on a hit, decodes the whole image once into a raw scratch file under the storage-cache directory (`GS_STORAGE_CACHE`, else `/tmp/gs-image-ro/`); everything downstream then sees an ordinary raw base. The scratch name is derived from the source path, size, and mtime, so repeated inserts reuse the decode and an edited source re-decodes.
+
+| | NDIF (Disk Copy 6.x) | UDIF (`.dmg`) |
+|---|---|---|
+| Block map | `'bcem'` resource, 12-byte descriptors | `'mish'` tables, 40-byte entries |
+| Where it lives | the **resource fork** — needs an AppleDouble sidecar or a containing HFS volume | a **plist inside the file**, found via the 512-byte `'koly'` trailer at EOF |
+| Compressors | zero-fill, raw, ADC | zero-fill, ignored, raw, ADC, zlib |
+| Parser | `image_ndif.c` | `image_udif.c` |
+
+UDIF specifics worth knowing before touching `image_udif.c`:
+
+- **Everything is big-endian**, including on the PowerPC-era images this mostly exists to read.
+- **Chunk sectors are relative to their table's `base_sector`.** Absolute position is `table.base_sector + chunk.sector`; one block table per partition, each restarting at zero. This is the classic way to misread the format, and `tests/integration/image-udif/` exists to catch it.
+- **`SectorCount` lives at trailer offset 0x1EC**, not where a naive walk of the published struct puts it — the 128-byte checksum blobs shift several fields. Static assertions in `image_udif.c` keep every offset inside the 512-byte trailer.
+- **The u32 at `mish` offset 0x24 is the blkx resource ID, not a descriptor count.** The count is at 0xC8.
+- **Each block table carries a CRC-32 over its decoded bytes**, and chunks of type `UDIF_CHUNK_IGNORE` are excluded from it. `materialize_udif_host()` verifies this as it writes, so a bad decode fails at open with a logged mismatch instead of surfacing later as a subtly corrupt disk.
+- Encrypted (`encrcdsa`), multi-segment (`.dmgpart`), bzip2, LZFSE and LZMA images are **rejected explicitly** rather than partially decoded.
+
+The zlib decompressor both this and the PNG reader use is first-party (`inflate.c`); the core links no third-party C libraries.
+
 **Volatile image persistence** — `image_persist_volatile(const char *path)`
 
 When a disk image resides in volatile storage (`/tmp/` or `/fd/`), this function copies it to `/opfs/images/<hash>.img` (OPFS-backed, content-addressed via FNV-1a hash). This runs on the worker thread where OPFS is accessible. The `fd insert` and `hd attach` commands call this automatically before opening the image. Returns a persistent path that the caller must free.

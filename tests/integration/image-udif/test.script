@@ -1,0 +1,49 @@
+# Integration test: a UDIF (.dmg) image decodes transparently when opened.
+#
+# The fixture is built by make-fixture.py at setup time from the raw source
+# below, mixing zlib, raw and zero-fill chunks across two 'mish' block tables
+# (so the second table's chunk sectors restart at zero).  The runner cd's into
+# tests/integration/, so the source path is relative and WORK_DIR is absolute.
+
+let dmg = "${$WORK_DIR}/fixture.dmg"
+let raw = "../../data/systems/system_6_0_8_20mb_8_24gc.img"
+
+# The .dmg is far smaller on the host than the disk it carries — proof the
+# thing being opened really is the compressed container, not a raw image.
+assert storage.path_size($dmg) < 8000000 "fixture .dmg is not compressed"
+assert storage.path_size($raw) == 21411840 "raw source image changed size"
+
+# Opening it decodes the whole container.  Every block table's stored CRC-32
+# is verified during that decode, so reaching this line at the right geometry
+# already means the decoded bytes match what the writer recorded.
+storage.probe $dmg
+assert vfs.list("${$dmg}/partition1") "decoded UDIF did not mount as HFS"
+
+# The volume inside is the same one the raw source carries.
+storage.probe $raw
+let from_dmg = vfs.list("${$dmg}/partition1")
+let from_raw = vfs.list("${$raw}/partition1")
+assert len($from_dmg) == len($from_raw) "decoded volume has a different entry count"
+for i in 0..len($from_raw) {
+    assert $from_dmg[$i].name == $from_raw[$i].name "entry ${$i} differs between decoded and raw"
+}
+
+# A nested directory reads too, so the decode holds up past the volume header.
+assert vfs.list("${$dmg}/partition1/System Folder") "System Folder unreadable in the decoded image"
+
+# The same image addressed two ways decodes once, not once per spelling: the
+# scratch name is keyed on the canonicalised path.  Checked by total bytes in
+# the storage cache, which a second decode would roughly double (the decoded
+# disk is 21,411,840 bytes; the delta/journal sidecars beside it are tiny).
+assert storage.probe("${$WORK_DIR}/./fixture.dmg") "second spelling of the .dmg did not open"
+let cached = 0
+for e in vfs.list("${$WORK_DIR}/storage-cache") {
+    $cached = $cached + $e.size
+}
+assert $cached < 32000000 "image decoded once per path spelling (scratch cache holds ${$cached} bytes)"
+
+# Exporting the decoded image yields the full logical disk, not the .dmg size.
+assert storage.export_raw($dmg, "${$WORK_DIR}/exported.img") "export_raw failed"
+assert storage.path_size("${$WORK_DIR}/exported.img") == storage.path_size($raw) "exported image is not the source disk's size"
+
+quit
