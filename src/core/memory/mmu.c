@@ -673,19 +673,84 @@ void mmu_fill_soa_page(mmu_state_t *mmu, uint32_t logical_page, uint32_t physica
 // machine sets up before calling these.  No fast-path change — these
 // run only at machine init.
 
+// Host regions on a machine with no 68k MMU (the PowerPC families): the
+// page-fill hook is the machine's own physical view, so fill straight into
+// it and remember the window here — the alias forwarder below is the only
+// thing that needs to look one up again.
+#define MEM_HOST_FILL_MAX 16
+typedef struct mem_host_fill_region {
+    uint8_t *host;
+    uint32_t phys_base;
+    uint32_t size;
+    bool writable;
+} mem_host_fill_region_t;
+static mem_host_fill_region_t g_host_fill_regions[MEM_HOST_FILL_MAX];
+static int g_host_fill_count = 0;
+
+// Fill one host window through the hook, page by page.
+static void host_fill_region(uint8_t *host_ptr, uint32_t phys_base, uint32_t size, bool writable) {
+    for (uint32_t off = 0; off < size; off += MEM_PAGE_SIZE)
+        g_mem_host_fill((phys_base + off) >> PAGE_SHIFT, host_ptr + off, writable);
+}
+
+// Forget the recorded fill windows — a new memory map means a new machine
+// (memory_map_init calls this).
+void mmu_host_fill_regions_reset(void) {
+    g_host_fill_count = 0;
+}
+
 void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr, uint32_t phys_base, uint32_t size,
                             bool writable) {
     (void)m; // forwarder uses g_mmu in v1
     (void)name; // regions are matched by physical window, not name
-    if (!g_mmu)
+    // A machine that installed a page-fill hook owns its own physical view
+    // (the PowerPC families, whose page table no mmu_state_t manages).  The
+    // hook — not the absence of g_mmu — is the discriminator: on a
+    // checkpoint restore the OUTGOING machine's MMU is still installed while
+    // the incoming one builds its cards.
+    if (g_mem_host_fill) {
+        if (!host_ptr || size == 0)
+            return;
+        host_fill_region(host_ptr, phys_base, size, writable);
+        // Re-registration of the same window replaces its record (same rule
+        // as mmu_register_host_region).
+        for (int i = 0; i < g_host_fill_count; i++) {
+            mem_host_fill_region_t *r = &g_host_fill_regions[i];
+            if (r->phys_base == phys_base && r->size == size) {
+                r->host = host_ptr;
+                r->writable = writable;
+                return;
+            }
+        }
+        if (g_host_fill_count >= MEM_HOST_FILL_MAX) {
+            LOG(0, "memory_map_host_region: fill list full (%d); region $%08X+$%X not recorded", MEM_HOST_FILL_MAX,
+                phys_base, size);
+            return;
+        }
+        g_host_fill_regions[g_host_fill_count++] =
+            (mem_host_fill_region_t){.host = host_ptr, .phys_base = phys_base, .size = size, .writable = writable};
         return;
+    }
     mmu_register_host_region(g_mmu, host_ptr, phys_base, size, writable);
 }
 
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {
     (void)m;
-    if (!g_mmu)
+    if (g_mem_host_fill) {
+        // Machine-owned physical view: the alias is a second page fill of the same host
+        // bytes.  Card register windows are registered AFTER their aliases
+        // (display_card_24ac.c), so a device page still wins its page.
+        for (int i = 0; i < g_host_fill_count; i++) {
+            const mem_host_fill_region_t *r = &g_host_fill_regions[i];
+            if (r->phys_base == original_phys_base) {
+                host_fill_region(r->host, alias_phys_base, r->size, r->writable);
+                return;
+            }
+        }
+        LOG(1, "memory_map_host_region_alias: no host region at phys $%08X; alias $%08X dropped", original_phys_base,
+            alias_phys_base);
         return;
+    }
     // Match by physical base and clone the region at the alias address.
     // The clone is flagged `alias`: it resolves through phys_to_host but is
     // never page-filled (mmu_host_regions_fill_pages skips it), preserving

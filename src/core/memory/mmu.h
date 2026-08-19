@@ -241,6 +241,11 @@ bool mmu_phys_is_writable(mmu_state_t *mmu, uint32_t phys_addr);
 // with each mmu_init.  Logs and drops the region when the list is full.
 void mmu_register_host_region(mmu_state_t *mmu, uint8_t *host, uint32_t phys_base, uint32_t size, bool writable);
 
+// Drop the host-region fill records kept for machines with NO 68k MMU, whose
+// windows are filled straight into the page table instead (see
+// memory_map_host_region).  Called when a new memory map is built.
+void mmu_host_fill_regions_reset(void);
+
 // Project every registered host region into the CPU page table by calling
 // `fill(page, host_ptr, writable)` per 4 KiB page — machines run this after
 // nubus_init so card VRAM/declaration ROMs are CPU-visible with the MMU off.

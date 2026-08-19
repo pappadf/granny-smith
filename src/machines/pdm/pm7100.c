@@ -5,9 +5,12 @@
 // Power Macintosh 7100/66 ("Carl Sagan", 66 MHz MPC601, March 1994) — the
 // mid-range PDM.  Machine-ID register $A55A3012; 33 MHz bus (2:1); four
 // SIMM banks at the fixed window addresses (never relocated); three NuBus
-// slots ($B/$C/$D) behind BART plus the PDS video slot $E (both Phase H).
+// slots ($B/$C/$D) behind BART, plus the PDS video slot $E (no PDS card is
+// modeled, so that window reads as an empty slot).
 
 #include "pdm.h"
+
+#include "nubus.h"
 
 // 8 MB soldered + fixed-window banks of {2,8,32} MB: up to 136 MB.
 static const uint32_t pm7100_ram_options_kb[] = {8192, 16384, 24576, 40960, 73728, 139264, 0};
@@ -20,6 +23,21 @@ static const struct floppy_slot pm7100_floppy_slots[] = {
 static const struct scsi_slot pm7100_scsi_slots[] = {
     {.label = "SCSI HD0", .id = 0},
     {.label = "SCSI HD1", .id = 1},
+    {0},
+};
+
+// The three NuBus connectors behind BART.  They are $B/$C/$D, not the
+// widely repeated "$C/$D/$E": slot $E is the PDS video pseudo-slot on this
+// board (HPV / AV card), and the ROM disables BART's path to it on every
+// boot.  Physical board order is B, D, C — the middle connector is $D.
+// (Apple, Macintosh 8100 schematics, sheet 22 — the two boards share this
+// topology and the ROM's machine table — where the three 96-pin connectors
+// J11/J12/J13 are labelled NuBus Slot B, C and D.)  Each ships empty; the
+// user stages a card per slot.
+static const struct nubus_slot_decl pm7100_nubus_slots[] = {
+    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
     {0},
 };
 
@@ -53,7 +71,7 @@ const hw_profile_t machine_pm7100 = {
     .has_cdrom = true,
     .cdrom_id = 3,
 
-    .nubus_slots = NULL,
+    .nubus_slots = pm7100_nubus_slots,
 
     .substrate = &pdm_substrate,
     .board = &pm7100_board,

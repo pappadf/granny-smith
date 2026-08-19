@@ -73,6 +73,17 @@ uint32_t g_bus_error_fc = 5;
 // and slot probes).  Selects Format $B vs Format $A dispatch.
 bool g_bus_error_is_pmmu = false;
 uint32_t *g_bus_error_instr_ptr = NULL;
+// True while an inspection read/write is dispatching into a device handler.
+// Devices that answer a GUEST access by latching a bus error (the PDM's
+// BART empty-slot windows) must stay inert for `memory.peek` and friends —
+// same contract as the rest of the debug path: never perturb the guest.
+bool g_mem_debug_access = false;
+// Physical page-fill hook for machines whose page table is NOT owned by a
+// 68k mmu_state_t (the PowerPC families).  memory_map_host_region() routes
+// card-registered host regions through it so their pages land in the
+// machine's own physical view.  NULL on 68k machines, where g_mmu owns the
+// host-region list and its fill walk.
+void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable) = NULL;
 
 // I/O cycle penalty state: tracks extra bus wait-state cycles for I/O accesses.
 // Penalty cycles are converted to "phantom instructions" that consume sprint
@@ -278,6 +289,26 @@ static inline bool dispatch_device_at_logical(uint32_t addr, bool supervisor) {
         return true; // identity mapping — dispatch as usual
     // Non-identity: only divert to the table walk when the target is real RAM.
     return mmu_phys_to_host(g_mmu, phys & ~(uint32_t)PAGE_MASK) == NULL;
+}
+
+// Latch a deferred bus error on behalf of a DEVICE that terminates an
+// access with a transfer error — the PDM's BART windows, where an empty
+// slot answers the Slot Manager's declaration-ROM probe with a recoverable
+// fault rather than data.  Same delivery as the unmapped-page faults the
+// slow paths raise below: the CPU seam takes it at the sprint boundary (68k
+// bus error / 601 machine check).  Inert while an inspection read is
+// dispatching (g_mem_debug_access), so `memory.peek` of an empty slot can
+// never inject a fault into the running guest.
+void memory_signal_bus_error(uint32_t addr, bool write) {
+    if (g_mem_debug_access || g_bus_error_pending)
+        return;
+    g_bus_error_pending = true;
+    g_bus_error_address = addr;
+    g_bus_error_rw = !write; // the flag reads "true = read"
+    g_bus_error_fc = (g_active_read == g_supervisor_read) ? 5 : 1;
+    g_bus_error_is_pmmu = false; // a plain bus timeout, not a descriptor fix-up
+    if (g_bus_error_instr_ptr)
+        *g_bus_error_instr_ptr = 0; // force the decoder loop to exit
 }
 
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
@@ -533,6 +564,30 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
 
 // === Side-effect-free debug reads ==========================================
 //
+// Inspection accesses dispatch into device handlers with this flag raised:
+// a device that answers a guest access by latching a bus error
+// (memory_signal_bus_error) stays inert while it is up, so examining an
+// empty NuBus slot cannot inject a fault into the running guest.
+static inline uint32_t debug_dev_read(const page_entry_t *pe, uint32_t phys, unsigned size) {
+    g_mem_debug_access = true;
+    uint32_t v = size == 1   ? pe->dev->read_uint8(pe->dev_context, phys - pe->base_addr)
+                 : size == 2 ? pe->dev->read_uint16(pe->dev_context, phys - pe->base_addr)
+                             : pe->dev->read_uint32(pe->dev_context, phys - pe->base_addr);
+    g_mem_debug_access = false;
+    return v;
+}
+
+static inline void debug_dev_write(const page_entry_t *pe, uint32_t phys, unsigned size, uint32_t value) {
+    g_mem_debug_access = true;
+    if (size == 1)
+        pe->dev->write_uint8(pe->dev_context, phys - pe->base_addr, (uint8_t)value);
+    else if (size == 2)
+        pe->dev->write_uint16(pe->dev_context, phys - pe->base_addr, (uint16_t)value);
+    else
+        pe->dev->write_uint32(pe->dev_context, phys - pe->base_addr, value);
+    g_mem_debug_access = false;
+}
+
 // Used by the shell's inspection commands (memory.peek/.dump/.read_cstring,
 // find.*).  Examining guest memory MUST NOT perturb guest execution and MUST
 // NOT crash on a bad address.  The normal memory_read_uint* helpers run the
@@ -559,7 +614,7 @@ uint8_t memory_debug_read_uint8(uint32_t addr) {
     if (pe->host_base)
         return LOAD_BE8(pe->host_base + (phys & PAGE_MASK));
     if (pe->dev)
-        return pe->dev->read_uint8(pe->dev_context, phys - pe->base_addr);
+        return (uint8_t)debug_dev_read(pe, phys, 1);
     return 0xFF;
 }
 
@@ -579,7 +634,7 @@ uint16_t memory_debug_read_uint16(uint32_t addr) {
             if (pe->host_base)
                 return LOAD_BE16(pe->host_base + (phys & PAGE_MASK));
             if (pe->dev)
-                return pe->dev->read_uint16(pe->dev_context, phys - pe->base_addr);
+                return (uint16_t)debug_dev_read(pe, phys, 2);
         }
         return 0xFFFF;
     }
@@ -600,7 +655,7 @@ uint32_t memory_debug_read_uint32(uint32_t addr) {
             if (pe->host_base)
                 return LOAD_BE32(pe->host_base + (phys & PAGE_MASK));
             if (pe->dev)
-                return pe->dev->read_uint32(pe->dev_context, phys - pe->base_addr);
+                return debug_dev_read(pe, phys, 4);
         }
         return 0xFFFFFFFFu;
     }
@@ -673,7 +728,7 @@ bool memory_debug_write_uint8(uint32_t addr, uint8_t value) {
         return true;
     }
     if (pe->dev) {
-        pe->dev->write_uint8(pe->dev_context, phys - pe->base_addr, value);
+        debug_dev_write(pe, phys, 1, value);
         return true;
     }
     return false;
@@ -697,7 +752,7 @@ bool memory_debug_write_uint16(uint32_t addr, uint16_t value) {
                 return true;
             }
             if (pe->dev) {
-                pe->dev->write_uint16(pe->dev_context, phys - pe->base_addr, value);
+                debug_dev_write(pe, phys, 2, value);
                 return true;
             }
         }
@@ -726,7 +781,7 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
                 return true;
             }
             if (pe->dev) {
-                pe->dev->write_uint32(pe->dev_context, phys - pe->base_addr, value);
+                debug_dev_write(pe, phys, 4, value);
                 return true;
             }
         }
@@ -1453,6 +1508,10 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     g_user_soa_reserved = false;
     g_mem_fastpath_changed = NULL;
     g_mem_logical_xlate = NULL;
+    // Card host regions filled through the hook (PowerPC families) belong to
+    // the outgoing machine's page table; forget them with it.
+    g_mem_host_fill = NULL;
+    mmu_host_fill_regions_reset();
     // Hand over from any still-installed map.
     //
     // checkpoint.load deliberately builds the new machine BEFORE destroying

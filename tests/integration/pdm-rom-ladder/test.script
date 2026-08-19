@@ -180,9 +180,11 @@ check("gray-desktop.png")
 # deferred to the first guest-triggered Restart (the warm path locates the
 # ROM image through HTAB state only the kernel-mediated 68k RESET flow
 # creates; the MSR[IR] discriminator and rfi-untranslated mechanics are
-# covered by tests/unit/suites/ppc_mmu).  Next rung: L21 (the Slot Manager
-# decl-ROM probe under the bus-error catcher) — Phase G territory, behind
-# the SCSI wall the run parks at.
+# covered by tests/unit/suites/ppc_mmu).  L21 — the Slot Manager's
+# declaration-ROM probe under the bus-error catcher — happens on this very
+# boot, between rungs, now that BART claims the slot windows and an empty
+# one faults recoverably; it is asserted where a card can be seated beside
+# it, in suite-pdm's `pdm-nubus-empty` and `8100-75-24ac` rows.
 
 echo "pdm-rom-ladder: high-water rung L20 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} box=${machine.cpu.mmu.peek(0xCB3, 1)} chime peak=${machine.sound.peak})"
 quit

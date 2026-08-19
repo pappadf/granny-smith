@@ -48,7 +48,10 @@ after **every** flag/enable write:
   "a pure edge model that drops interrupts while masked will hang
   drivers" warning applies — the 68k handlers loop on the flag registers.
 - Pseudo-VIA2 slot IFR reads **active-low** with unused bits high (reset
-  `$7F`); slot bits are live card levels; VBL (bit 6) is the only
+  `$7F`); slot bits are live card levels — bit 2 = NuBus slot `$B`, bit 3 =
+  `$C`, bit 4 = `$D`, bit 5 = the PDS `$E`, driven from the bus controller
+  through `pdm_amic_set_slot_irq` (each connector's `/NMRQ` runs to an AMIC
+  pin; the bridge is not in that path — see bart.md); VBL (bit 6) is the only
   software-clearable bit (write `$40`).  The device bank aggregates
   SCSI/FDC/any-slot levels gated by set/clear-convention IERs (writable
   masks `$78` slot / `$3B` device).

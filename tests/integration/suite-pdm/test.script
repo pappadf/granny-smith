@@ -10,6 +10,20 @@
 #                16 MB — 24 MB is not in the 8100's ram_options (8 MB
 #                soldered + paired 16 MB SIMMs), so this row also spreads
 #                the RAM axis.
+#   8100-75-24ac pm8100 x 7.5 with a Macintosh Display Card 24AC seated in
+#                NuBus slot $C: the card's declaration ROM is enumerated by
+#                the Slot Manager, its own video driver runs, and the OS
+#                carries it as a second screen while the built-in video
+#                keeps the menu bar.  The BART acceptance row.
+#   pdm-nubus-empty  pm8100, ROM only, no card in any socket: the three
+#                sockets enumerate as EMPTY and the ROM still reaches its
+#                gray desktop.  Boot-media-free, so it is cheap; it guards
+#                the regression that matters most on this bridge (an empty
+#                slot that answers $FF instead of faulting looks like a
+#                BROKEN card to the Slot Manager, not like an empty one).
+#   pdm-nubus-checkpoint  pm8100 + 24AC, ROM only: save/restore keeps the
+#                machine, the card and the picture — the guard on the
+#                checkpoint stream's new BART and card-state blocks.
 #   pdm-cd-device  A CD-ROM plugs into the Curio bus: CD-typed, read-only,
 #                medium present, block size from the disc's own DDM.  This
 #                is what the profile's has_cdrom:true rests on.  Boot-free,
@@ -61,8 +75,18 @@ def boot_pdm_75(model, ram_kb) {
     wait_stable(300000000)
 }
 
+# BARTExists — the ROM's own record of whether it found a NuBus bridge.
+# `TestForBart` reads $F0000000 under a bus-error handler at start-up and
+# clears the bit when the read faults, and the ROM's _HWPriv selector 12
+# tests it as `BTST #2,$2402` (AddrMapFlags, 68k logical low memory).  So
+# this reads the guest's conclusion, not ours: set on the 7100/8100, clear
+# on a 6100, whose bridge lives on an adapter card we do not model.
+def bart_exists() {
+    return (machine.cpu.mmu.peek(0x2402, 1) & 0x04) != 0
+}
+
 # Shared post-boot facts + the two goldens for one model row.
-def pdm_75_row(model, ram_kb, boxflag) {
+def pdm_75_row(model, ram_kb, boxflag, want_bart) {
     boot_pdm_75($model, $ram_kb)
     assert machine.id == $model "${$model}: machine.id != ${$model}"
     assert machine.ram == $ram_kb "${$model}: machine.ram != ${$ram_kb}"
@@ -75,6 +99,8 @@ def pdm_75_row(model, ram_kb, boxflag) {
     # read through the user-context window, so park in USER mode first.
     while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
     assert machine.cpu.mmu.peek(0xCB3, 1) == $boxflag "${$model}: BoxFlag ${machine.cpu.mmu.peek(0xCB3, 1)}, want ${$boxflag}"
+    # ...and, read the same way, what the ROM concluded about BART.
+    assert bart_exists() == $want_bart "${$model}: BARTExists ${bart_exists()}, want ${$want_bart}"
     check_ex("goldens/${$model}-7.5-640x480-finder.png", 0, 440, 20, 640)
     # About This Macintosh: the Gestalt machine name end-to-end.
     about_box()
@@ -83,9 +109,127 @@ def pdm_75_row(model, ram_kb, boxflag) {
     report_perf("suite-pdm/${$model}-75-hd", scheduler.instr_count)
 }
 
-def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69) }
-def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106) }
-def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59) }
+# The 6100 is the row where BART must be ABSENT: its bridge ships on an
+# optional PDS adapter, so the probe faults and the machine boots anyway.
+def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69, false) }
+def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106, true) }
+def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59, true) }
+
+# ---- 8100-75-24ac -----------------------------------------------------------
+# The BART acceptance row: a Macintosh Display Card 24AC in NuBus slot $C of
+# an 8100, booting 7.5 all the way to the Finder.
+#
+# Staging is a two-step because `machine.nubus.slot[N]` only exists once a
+# machine with that socket is built: boot the 8100 (zero instructions), park
+# the pick in slot $C, boot again.  That is the per-slot channel the
+# configuration dialog drives, and it is what pins "$C", not just "some
+# socket".
+#
+# What the assertions actually prove, in order of strength:
+#   * the card's framebuffer node reports 640x480 at 1 bpp — the card powers
+#     on at 8 bpp, so a depth of 1 means the OS ran the card's own vROM
+#     video driver and set the mode;
+#   * the card's VRAM carries the 1-bpp gray dither InitGDevices paints into
+#     every secondary screen (the same contract iicx-dual-display pins);
+#   * the built-in video still owns the menu bar — the emulated machine
+#     always has a monitor strapped to its HDI-45, so the ROM allocates the
+#     built-in framebuffer and makes it the main screen, and the card comes
+#     up as screen two; the desktop golden here is the ON-BOARD framebuffer;
+#   * the other two sockets stay empty next to a populated one.
+def row_8100_75_24ac() {
+    machine.boot model="pm8100" ram=16384 rom="${$ROM}"
+    machine.nubus.slot[12].card_id = "24ac"
+    boot_pdm_75("pm8100", 16384)
+
+    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "slot C card != 24AC"
+    assert machine.nubus.slot[12].card.declrom.present "slot C declaration ROM not present"
+    assert machine.nubus.slot[12].card_id == "" "staged card_id not consumed at boot"
+    # The empty sockets either side of it are still empty — what an
+    # unpopulated BART window must look like, to us and to the Slot
+    # Manager alike.
+    assert try(machine.nubus.slot[11].card.name, none) == none "slot B is populated"
+    assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
+
+    # The OS drove the card: geometry and depth come from its driver.
+    assert machine.nubus.slot[12].card.framebuffer.base == 0xFC000000 "slot C framebuffer base != 0xFC000000"
+    assert machine.nubus.slot[12].card.framebuffer.width == 640 "slot C framebuffer width != 640"
+    assert machine.nubus.slot[12].card.framebuffer.height == 480 "slot C framebuffer height != 480"
+    assert machine.nubus.slot[12].card.framebuffer.depth == 1 "slot C framebuffer depth != 1 (driver never set the mode)"
+    # ...and painted it: the secondary-screen dither in the card's own VRAM.
+    assert machine.memory.peek.l(0xFC000000) == 0xAAAAAAAA "slot C fb: no gray dither at row 0"
+    assert machine.memory.peek.l(0xFC004000) == 0xAAAAAAAA "slot C fb: no gray dither at row 128"
+
+    # The bridge the card sits behind, as the ROM sees it.
+    while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
+    assert bart_exists() "pm8100+24AC: BARTExists clear"
+    # The built-in video keeps the menu bar, and it is the SAME desktop the
+    # cardless row produces — a second screen off the canvas changes
+    # nothing on the first — so this row reuses that golden deliberately:
+    # the identity is itself the assertion.
+    assert machine.screen.width == 640 "screen.width != 640"
+    assert machine.screen.depth == 8 "built-in screen not 8 bpp"
+    check_ex("goldens/pm8100-7.5-640x480-finder.png", 0, 440, 20, 640)
+    report_row("7.5", "24ac", "nubus slot C hd-boot")
+    report_perf("suite-pdm/pm8100-75-24ac", scheduler.instr_count)
+}
+
+# ---- pdm-nubus-empty --------------------------------------------------------
+# Every socket empty, ROM only: the cheap guard for the fault semantics.
+#
+# With no card, the Slot Manager's declaration-ROM probe of $FBFFFFFF /
+# $FCFFFFFF / $FDFFFFFF must take a RECOVERABLE bus error per slot and move
+# on, and the Start Manager's "VidReset" probe of the PDS window at
+# $FEFFFF00 must do the same before the Slot Manager even runs.  A window
+# that answered $FF instead would look like a broken card, and one that
+# faulted unrecoverably would never reach a desktop at all — so "the sockets
+# are declared, they are empty, and the ROM still gets to its gray desktop"
+# is exactly the shape of this contract.
+def row_pdm_nubus_empty() {
+    machine.rtc.time = 0xE0000000
+    machine.boot model="pm8100" ram=16384 rom="${$ROM}"
+    assert machine.nubus.slot[11].card_id == "" "slot B carries a staged pick"
+    assert try(machine.nubus.slot[11].card.name, none) == none "slot B is populated"
+    assert try(machine.nubus.slot[12].card.name, none) == none "slot C is populated"
+    assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
+    # Chip init, the slot scan, and on to the "insert disk" gray desktop.
+    scheduler.run 360000000
+    while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
+    assert bart_exists() "pm8100: BARTExists clear with the bridge present"
+    # The Slot Manager got through the scan and built its sInfo list: the
+    # guest-side proof that the faults were RECOVERED, not merely taken.
+    assert debug.mac.globals.read("SInfoPtr") != 0 "Slot Manager built no sInfo list"
+    assert machine.screen.checksum() != 0 "no picture after the slot scan"
+    report_row("rom", "bart", "empty sockets")
+}
+
+# ---- pdm-nubus-checkpoint ---------------------------------------------------
+# Save and restore an 8100 with a card seated, ROM only.
+#
+# The PDM checkpoint tail grew a BART block and a card-state block with this
+# work, and a stream that reads back in the wrong order corrupts the HMC/AMIC
+# registers silently rather than loudly — so this row pins the round trip:
+# same machine, same card in the same socket, same picture, and it still runs
+# afterwards.  It uses the `video_card=` wildcard channel (first socket = $B)
+# because that is the pick the checkpoint record carries; a card staged into a
+# SPECIFIC socket is not re-seated on restore, on any machine (the record has
+# one video-card field — reproducible on a IIcx slot $A just the same).
+def row_pdm_nubus_checkpoint() {
+    machine.rtc.time = 0xE0000000
+    machine.boot model="pm8100" ram=16384 rom="${$ROM}" video_card="24ac"
+    assert machine.nubus.slot[11].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "wildcard pick did not seat in the first socket"
+    scheduler.run 360000000
+    let before = machine.screen.checksum()
+    assert checkpoint.save("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint save failed"
+    assert checkpoint.load("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint load failed"
+    assert machine.id == "pm8100" "restored machine is not a pm8100"
+    assert machine.ram == 16384 "restored machine lost its RAM size"
+    assert machine.nubus.slot[11].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "card gone after restore"
+    assert machine.screen.checksum() == $before "picture changed across the restore"
+    # ...and the restored machine is live, not frozen.
+    scheduler.run 20000000
+    assert machine.screen.checksum() == $before "picture changed after running on"
+    report_row("rom", "24ac", "nubus checkpoint")
+}
 
 # ---- cd-device --------------------------------------------------------------
 # The plug contract for a CD-ROM on the Curio bus, which is what the profile's
@@ -130,6 +274,22 @@ if row_on("8100-75-hd") {
     } else {
         echo "skip: 8100-75-hd (7.5 prepared image not fetched)"
     }
+}
+
+if row_on("8100-75-24ac") {
+    if have_media($hd_75) {
+        row_end("8100-75-24ac", try(row_8100_75_24ac(), "FAILED"))
+    } else {
+        echo "skip: 8100-75-24ac (7.5 prepared image not fetched)"
+    }
+}
+
+if row_on("pdm-nubus-empty") {
+    row_end("pdm-nubus-empty", try(row_pdm_nubus_empty(), "FAILED"))
+}
+
+if row_on("pdm-nubus-checkpoint") {
+    row_end("pdm-nubus-checkpoint", try(row_pdm_nubus_checkpoint(), "FAILED"))
 }
 
 if row_on("pdm-cd-device") {

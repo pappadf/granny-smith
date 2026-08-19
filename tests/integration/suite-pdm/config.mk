@@ -22,11 +22,9 @@
 #   make test-suite-pdm TEST_VARS="REGEN=1"            recapture goldens
 
 TEST_NAME := PDM suite (6100/7100/8100)
-TEST_DESC := System 7.5 SCSI boot to the Finder desktop + About box, all three models
+TEST_DESC := System 7.5 SCSI boot to the Finder desktop + About box, all three models, plus a 24AC in a NuBus slot
 
 # 4 MB Power Macintosh 6100/7100/8100 ROM (stored checksum 0x9FEB69B3).
-# NOT in gs-test-data yet (owner action) — like pdm-rom-ladder, this suite
-# runs locally only until the ROM fixture is uploaded.
 TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
 
 TEST_ARGS := model=pm6100 ram=24576

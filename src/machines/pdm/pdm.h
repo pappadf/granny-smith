@@ -159,6 +159,31 @@ typedef struct pdm_video {
     uint8_t *blank; // black raster presented while the blank bit is set
 } pdm_video_t;
 
+// === BART state (bart.c) ====================================================
+
+// Base of the BART register file — "slot $0 standard slot space" by NuBus
+// numbering, and the address the ROM's presence probe reads.
+#define PDM_BART_BASE 0xF0000000u
+
+// One address window BART claims with nothing behind it (empty slot space,
+// or the whole register page on a board with no bridge).  The context a
+// fault handler needs: what address it was and what to call it in a log.
+typedef struct pdm_bart_window {
+    uint32_t base;
+    char what[24]; // window name, used in the memory map and in fault logs
+} pdm_bart_window_t;
+
+// Three connectors x (standard + super slot space), the PDS slot-$E window,
+// and the no-bridge register page.
+#define PDM_BART_WINDOWS 8
+
+typedef struct pdm_bart {
+    uint8_t slow; // $F0000001 — wait-state bit (latch; the ROM never writes it)
+    uint8_t slot_e_off; // $F0000011 — $80 = BART's slot-$E path disabled
+    uint8_t burst[14]; // per-slot block-transfer enables, slot 1..14 (bit 0)
+    uint32_t reset_pulses; // NuBus /RESET pulses issued (diagnostic)
+} pdm_bart_t;
+
 // === Family state ===========================================================
 
 typedef struct pdm_state {
@@ -174,10 +199,18 @@ typedef struct pdm_state {
     // ICR source levels (bits 0-5), recomputed by pdm_amic_recompute
     uint8_t icr_sources;
 
+    // BART, the NuBus bridge: register file + the windows it claims with
+    // nothing behind them (bart.c).  Absent on a 6100, whose bridge lives
+    // on an adapter card we do not model.
+    pdm_bart_t bart;
+    pdm_bart_window_t bart_window[PDM_BART_WINDOWS];
+    int bart_window_count;
+
     // Memory interfaces registered with the map
     memory_interface_t io_interface; // $50F00000..$50F4FFFF island
     memory_interface_t id_interface; // $5FFFF000 machine-ID page
     memory_interface_t wait_interface; // page-0 wait-state forwarder (§5.2)
+    memory_interface_t bart_reg_interface; // $F0000000 BART register file
 
     // Derived presentation state, never checkpointed
     pdm_video_t video; // scanout descriptor (ariel.c)
@@ -239,6 +272,17 @@ void pdm_amic_set_source(config_t *cfg, int bit, bool level);
 // bit 3, chip 1 = 53CF96 → bit 6; the DRQ bits 0/2 are read live from the
 // chips' DREQ outputs, never latched).
 void pdm_amic_set_scsi_irq(config_t *cfg, int chip, bool level);
+// NuBus slot /NMRQ levels into the pseudo-VIA2 slot bank (slot $B -> bit 2,
+// $C -> 3, $D -> 4, $E -> 5; the register reads active-low).
+void pdm_amic_set_slot_irq(config_t *cfg, int slot, bool level);
+
+// === bart.c =================================================================
+// The NuBus '90 bridge: the $F0000000 register file, the slot-space windows,
+// and the recoverable faults an empty slot answers with.  Call from the
+// family memory layout, BEFORE nubus_init builds the cards.
+void pdm_bart_init(config_t *cfg);
+// A card's /NMRQ, which reaches the CPU through AMIC and not through BART.
+void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
 
 // === awacs.c ================================================================
 // The AWACS codec + AMIC sound engine: the $50F14000 register block, the

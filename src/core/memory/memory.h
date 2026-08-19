@@ -69,6 +69,24 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
 // $FEE00000 and via the page-table-mapped alias at $50FE0000.
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base);
 
+// Latch a deferred bus error for a DEVICE-decoded access the hardware
+// terminates with a transfer error — the PDM's BART slot windows, where an
+// empty slot answers a probe with a recoverable fault instead of data.  The
+// CPU seam delivers it at the sprint boundary (68k bus error / 601 machine
+// check).  No-op while an inspection access is in flight, so `memory.peek`
+// of an empty slot never perturbs the guest.
+void memory_signal_bus_error(uint32_t addr, bool write);
+
+// Physical page-fill hook for machines whose page table is not owned by a
+// 68k mmu_state_t (the PowerPC families).  When set, memory_map_host_region()
+// routes each page of a card-registered host region through it instead of
+// the 68k MMU's host-region list.  See src/machines/pdm/pdm.c.
+extern void (*g_mem_host_fill)(uint32_t page_index, uint8_t *host_ptr, bool writable);
+
+// True while an inspection (debug) access is dispatching into a device
+// handler — see memory_signal_bus_error.
+extern bool g_mem_debug_access;
+
 // Address range where unmapped accesses raise a bus error.  Outside this
 // range, unmapped reads return 0 silently (matches GLUE behaviour for
 // non-NuBus slots).
