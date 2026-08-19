@@ -16,8 +16,11 @@
 // banks, at most two): 16 = 8+8x1, 24 = 8+8x2, 40 = 8+32, 72 = 8+32x2.
 static const uint32_t pm6100_ram_options_kb[] = {8192, 16384, 24576, 40960, 73728, 0};
 
-// No SWIM3 model yet (Phase H): no floppy slots offered.
+// One internal manual-inject SuperDrive behind SWIM3, and no external
+// port — the PDM family has no second bay (Apple, "Power Macintosh
+// Computers" Developer Note, Table 3-7).
 static const struct floppy_slot pm6100_floppy_slots[] = {
+    {.label = "Internal FD0", .kind = FLOPPY_HD},
     {0},
 };
 

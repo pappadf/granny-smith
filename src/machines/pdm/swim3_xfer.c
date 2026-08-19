@@ -378,7 +378,25 @@ typedef struct swim3_parse {
     int sector; // for a sector write: the matched header's sector
     bool format; // whole-track parse: take sectors from the stream
     int sectors_written;
+    // Diagnostics, printed under `debug.log swim3 6` when the parse ends.
+    // The marks the driver feeds the converter are the one part of these
+    // streams no document pins byte-exactly, so make them readable rather
+    // than something to guess at from a silent failure.
+    unsigned bytes; // stream bytes consumed
+    char head[3 * 24 + 1]; // hex dump of the first 24 of them
 } swim3_parse_t;
+
+// Record one stream byte for the trace above.
+static void stream_note(swim3_parse_t *p, uint8_t b) {
+    static const char hex[] = "0123456789ABCDEF";
+    unsigned n = p->bytes++;
+    if (n >= 24)
+        return;
+    p->head[n * 3 + 0] = hex[b >> 4];
+    p->head[n * 3 + 1] = hex[b & 15];
+    p->head[n * 3 + 2] = ' ';
+    p->head[n * 3 + 3] = 0;
+}
 
 // Deposit one parsed data field.
 static void swim3_deposit(config_t *cfg, swim3_parse_t *p, int sector, uint8_t *data, const uint8_t *tag) {
@@ -408,6 +426,7 @@ static bool swim3_parse_mfm(config_t *cfg, swim3_parse_t *p) {
         uint8_t b;
         if (!dma_get(cfg, &b))
             return false;
+        stream_note(p, b);
         if (in_header) {
             // The four bytes after the address mark are C H S N; they are
             // ordinary stream bytes, not escapes.
@@ -457,6 +476,7 @@ static bool swim3_parse_gcr(config_t *cfg, swim3_parse_t *p) {
         uint8_t b;
         if (!dma_get(cfg, &b))
             return false;
+        stream_note(p, b);
         if (b == 0x99) {
             if (!dma_get(cfg, &b))
                 return false;
@@ -466,7 +486,13 @@ static bool swim3_parse_gcr(config_t *cfg, swim3_parse_t *p) {
             continue;
         }
         if (prev2 == 0xD5 && prev == 0xAA) {
-            if (b == 0x00 && p->format) {
+            // The third mark byte tells the two fields apart.  Accept both
+            // spellings of it: the driver feeds the converter the UNencoded
+            // value ($00 address / $0B data) and lets the hardware table
+            // turn it into $96 / $AD, but the same byte written as a
+            // high-bit literal is the other legal way to put that pattern
+            // on the disk, and nothing downstream can tell them apart.
+            if ((b == 0x00 || b == 0x96) && p->format) {
                 // Address field: five encoded header bytes follow
                 // (track, sector, side, format, checksum).
                 uint8_t h[5];
@@ -477,7 +503,7 @@ static bool swim3_parse_gcr(config_t *cfg, swim3_parse_t *p) {
                 prev2 = prev = 0;
                 continue;
             }
-            if (b == 0x0B) {
+            if (b == 0x0B || b == 0xAD) {
                 // Data field: the sector byte then 703 six-bit values.
                 uint8_t s;
                 if (!dma_get(cfg, &s))
@@ -501,7 +527,12 @@ static bool swim3_parse_gcr(config_t *cfg, swim3_parse_t *p) {
 }
 
 static bool swim3_parse_stream(config_t *cfg, swim3_parse_t *p) {
-    return p->m->mfm ? swim3_parse_mfm(cfg, p) : swim3_parse_gcr(cfg, p);
+    p->bytes = 0;
+    p->head[0] = 0;
+    bool ok = p->m->mfm ? swim3_parse_mfm(cfg, p) : swim3_parse_gcr(cfg, p);
+    LOG(6, "%s stream: %u bytes, %d field(s), %s | %s", p->m->mfm ? "mfm" : "gcr", p->bytes, p->sectors_written,
+        ok ? "ended on 99 08" : "channel closed first", p->head);
+    return ok;
 }
 
 // === Raw / copy-protect capture =============================================
@@ -558,6 +589,11 @@ static void swim3_raw_track(config_t *cfg, const swim3_media_t *m, int track, in
                 if (!raw_pair(cfg, 0x00, 0x4E))
                     return;
         } else {
+            // The 6-to-8 GCR codeword table.  The shared floppy module has
+            // the same 64 bytes, but only behind its private header, and
+            // this is the one place a machine model needs the ENCODED form
+            // (raw capture is the only path that sees disk bytes rather
+            // than the values either side of the chip's converter).
             static const uint8_t gcr6[64] = {
                 0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6, 0xA7, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB2, 0xB3,
                 0xB4, 0xB5, 0xB6, 0xB7, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xCB, 0xCD, 0xCE, 0xCF, 0xD3,

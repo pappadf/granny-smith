@@ -1981,6 +1981,12 @@ functions of V8 and SWIM for the Macintosh LC II.
   - Disable escaping for 512 data bytes
   - End transfer
 - Machines: Power Macintosh systems
+- **Modelled** for the PDM family (6100/7100/8100) in
+  `src/machines/pdm/swim3.c` + `swim3_xfer.c`, behind the AMIC floppy DMA
+  channel — see `docs/machines/pdm/swim3.md`.  It is NOT a variant of the
+  SWIM model in this file: SWIM3 has no IWM mode, no ISM entry sequence and
+  a different register map, so it is a separate device rather than a mode
+  of this one.
 
 ### Compatibility Implications
 
