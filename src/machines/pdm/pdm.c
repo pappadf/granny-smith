@@ -26,7 +26,9 @@
 
 #include "adb.h"
 #include "appletalk.h"
+#include "checkpoint_images.h"
 #include "debug.h"
+#include "floppy.h"
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
@@ -321,6 +323,12 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp);
     assert(st->cuda != NULL);
 
+    // Restore the image list before the devices that reference it (the
+    // shape every other Mac family uses: floppy and SCSI both resolve
+    // their media out of it by filename).
+    if (cp)
+        mac_checkpoint_restore_images(cfg, cp);
+
     // SCSI: the shared bus/target model on the Curio 53C94 cell (20 MHz
     // SCSI clock — the divided "Ethernet" oscillator).  The 8100 adds the
     // discrete 53CF96 on its fast internal bus (40 MHz), instantiated with
@@ -335,11 +343,17 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
         scsi_53c96_set_irq_callback(st->scsi96[1], pdm_scsi96b_irq, cfg);
     }
 
+    // The internal SuperDrive behind SWIM3.  No memory map: PDM decodes
+    // the controller through the AMIC island, not through a floppy region
+    // of its own, so the shared module only carries the drive and media.
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, cp);
+
     // Board state + memory map.
     pdm_hmc_init(cfg);
     pdm_amic_init(cfg);
     pdm_amic_register_events(cfg);
     pdm_awacs_register_events(cfg);
+    pdm_swim3_xfer_register_events(cfg);
     pdm_memory_layout(cfg);
 
     // Substrate-private checkpoint tail: the HMC config and AMIC register
@@ -423,6 +437,10 @@ static void pdm_teardown(config_t *cfg) {
         scsi_delete(cfg->scsi);
         cfg->scsi = NULL;
     }
+    if (cfg->floppy) {
+        floppy_delete(cfg->floppy);
+        cfg->floppy = NULL;
+    }
     if (st && st->cuda) {
         av_cuda_delete(st->cuda);
         st->cuda = NULL;
@@ -481,10 +499,12 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     av_cuda_checkpoint(st->cuda, cp);
     // Same relative order as the pdm_init construction sequence (the
     // checkpoint stream is positional).
+    mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     scsi_53c96_checkpoint(st->scsi96[0], cp);
     if (st->scsi96[1])
         scsi_53c96_checkpoint(st->scsi96[1], cp);
+    floppy_checkpoint(cfg->floppy, cp);
     // Substrate-private tail (mirrored by the restore block in pdm_init).
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
@@ -525,18 +545,19 @@ static struct display *pdm_display(config_t *cfg) {
     return pdm_video_display(cfg);
 }
 
-// Floppy: no SWIM3 until Phase H — refuse politely.
+// Floppy: the one internal SuperDrive behind SWIM3.  Drive 1 is the only
+// bay the family has — there is no external port on any PDM — so slot 1
+// refuses whatever the caller asks.
 static int pdm_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    (void)cfg;
-    (void)drive;
-    (void)disk;
-    return -1;
+    if (!cfg->floppy || drive != 0)
+        return -1;
+    return floppy_insert(cfg->floppy, drive, disk);
 }
 
 static bool pdm_fd_present(config_t *cfg, int drive) {
-    (void)cfg;
-    (void)drive;
-    return false;
+    if (!cfg->floppy || drive != 0)
+        return true; // no such bay: report it occupied so nothing targets it
+    return floppy_is_inserted(cfg->floppy, drive);
 }
 
 const machine_substrate_t pdm_substrate = {

@@ -627,6 +627,40 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     return true;
 }
 
+// === SWIM III drive controls ================================================
+
+void floppy_swim3_step(floppy_t *floppy, unsigned drive, bool outward, int count) {
+    if (!floppy || drive >= NUM_DRIVES || count <= 0)
+        return;
+    floppy_drive_t *d = &floppy->drives[drive];
+    int track = d->track + (outward ? -count : count);
+    // The head stops against the mechanical stops rather than running off
+    // the platter — recalibrate is exactly "step outward 80 and look".
+    if (track < 0)
+        track = 0;
+    if (track > NUM_TRACKS - 1)
+        track = NUM_TRACKS - 1;
+    d->_dirtn = outward;
+    d->track = track;
+    d->offset = 0;
+    LOG(4, "Drive %u: SWIM3 seek %s %d -> track %d", drive, outward ? "out" : "in", count, track);
+}
+
+void floppy_swim3_set_motor(floppy_t *floppy, unsigned drive, bool on) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return;
+    floppy_drive_t *d = &floppy->drives[drive];
+    if (d->_motoron != !on)
+        LOG(4, "Drive %u: SWIM3 motor %s", drive, on ? "on" : "off");
+    d->_motoron = !on; // the signal is active low: false = running
+}
+
+void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return;
+    floppy->drives[drive].data_side = side ? 1 : 0;
+}
+
 // ============================================================================
 // Lifecycle (Init / Delete / Checkpoint)
 // ============================================================================
@@ -641,11 +675,17 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
 
     memset(floppy, 0, sizeof(floppy_t));
     floppy->type = type;
-    LOG(2, "Floppy: Controller created (type=%s)", type == FLOPPY_TYPE_SWIM ? "SWIM" : "IWM");
+    static const char *const type_name[] = {"IWM", "SWIM", "SWIM3"};
+    LOG(2, "Floppy: Controller created (type=%s)", type_name[type >= 0 && type <= 2 ? type : 0]);
 
     floppy->scheduler = scheduler;
 
-    if (type == FLOPPY_TYPE_SWIM) {
+    if (type == FLOPPY_TYPE_SWIM3) {
+        // SWIM3 has no memory-mapped register file of its own: the PDM
+        // decodes it through the AMIC island, and the controller model
+        // (src/machines/pdm/swim3.c) drives this drive state directly.
+        scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);
+    } else if (type == FLOPPY_TYPE_SWIM) {
         scheduler_new_event_type(scheduler, "swim", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
         floppy_swim_setup(floppy, map);
     } else {
@@ -832,15 +872,15 @@ static floppy_t *floppy_self_from(struct object *self) {
     return (floppy_t *)object_data(self);
 }
 
-static const char *const FLOPPY_TYPE_NAMES[] = {"iwm", "swim"};
+static const char *const FLOPPY_TYPE_NAMES[] = {"iwm", "swim", "swim3"};
 
 static value_t floppy_attr_type(struct object *self, const member_t *m) {
     (void)m;
     floppy_t *floppy = floppy_self_from(self);
     int t = floppy ? floppy_get_type(floppy) : 0;
-    if (t < 0 || t > 1)
+    if (t < 0 || t > 2)
         t = 0;
-    return val_enum(t, FLOPPY_TYPE_NAMES, 2);
+    return val_enum(t, FLOPPY_TYPE_NAMES, 3);
 }
 
 static value_t floppy_attr_sel(struct object *self, const member_t *m) {

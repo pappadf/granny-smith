@@ -17,8 +17,9 @@
 #include <stdbool.h>
 
 // === Controller Types ===
-#define FLOPPY_TYPE_IWM  0 // IWM-only (Mac Plus)
-#define FLOPPY_TYPE_SWIM 1 // SWIM dual-mode IWM+ISM (SE/30)
+#define FLOPPY_TYPE_IWM   0 // IWM-only (Mac Plus)
+#define FLOPPY_TYPE_SWIM  1 // SWIM dual-mode IWM+ISM (SE/30)
+#define FLOPPY_TYPE_SWIM3 2 // SWIM III, controller-driven (PDM 6100/7100/8100)
 
 // === Type Definitions ===
 // Opaque floppy controller type
@@ -50,7 +51,7 @@ const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
 // 0 (internal) or 1 (external). Out-of-range indices return zero /
 // false / NULL so the object getters can stay branch-free.
 
-int floppy_get_type(const floppy_t *floppy); // FLOPPY_TYPE_IWM | FLOPPY_TYPE_SWIM
+int floppy_get_type(const floppy_t *floppy); // FLOPPY_TYPE_IWM | _SWIM | _SWIM3
 bool floppy_get_sel(const floppy_t *floppy); // VIA-driven head-select signal
 
 int floppy_drive_track(const floppy_t *floppy, unsigned drive);
@@ -67,5 +68,21 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive);
 // service block-level read/write/format requests issued by the host's
 // .Sony driver through XmtMsg[2].
 image_t *floppy_drive_image(const floppy_t *floppy, unsigned drive);
+
+// === SWIM III drive controls ================================================
+//
+// SWIM3 (PDM) owns the Sony sense/strobe protocol itself — there are no IWM
+// state lines to drive the head through — so its controller model moves the
+// head, spins the motor and latches the side directly.  Media, geometry and
+// the object tree stay here; only these three pieces of drive state are
+// written from outside.
+
+// Move the head by `count` tracks, outward (towards 0) or inward; clamps at
+// the 0 and NUM_TRACKS-1 stops the way a real drive's head does.
+void floppy_swim3_step(floppy_t *floppy, unsigned drive, bool outward, int count);
+// Spindle motor latch (the wMotorOn / wMotorOff drive-register strobes).
+void floppy_swim3_set_motor(floppy_t *floppy, unsigned drive, bool on);
+// Head-select latch (the sense address routes head 0 or head 1's RdData).
+void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side);
 
 #endif // FLOPPY_H

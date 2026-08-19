@@ -1,19 +1,24 @@
 // SWIM3 floppy controller — PDM island $50F16000, 16 byte-wide registers
-// at stride $200 (index = offset >> 9).  Phase-G scope: the register file
-// with the readback / read-to-clear semantics the ROM .Sony driver's
-// open, probe and idle-poll paths depend on, plus the Sony-drive sense
-// protocol answering "internal SuperDrive present, no disk inserted,
-// drive 2 absent".  No media datapath, no DMA engine, no interrupt
-// sources — those are Phase H (the driver enables EnableInts at open but
-// nothing here ever raises the FDC line).
+// at stride $200 (index = offset >> 9).  This file is the register file,
+// the interrupt contract, and the Sony drive-register protocol (sense
+// reads and LSTRB strobes); the media transfer engine that reads, writes
+// and formats sectors through the AMIC DMA channel is swim3_xfer.c, and
+// the drive itself — head position, motor, media, the object tree — is
+// the shared floppy module (cfg->floppy, FLOPPY_TYPE_SWIM3).
+//
+// The split follows the chip: SWIM3's registers each have tight, testable
+// semantics (readback, read-to-clear, write-1s-to-set/clear ports), while
+// the engine is a state machine with its own tables.  Keeping them apart
+// preserves the property that made the register file easy to verify.
 //
 // Contract references: the PDM SWIM3 register map and the .Sony driver's
 // expectations follow Apple's SonySWIM3.a driver source and the SWIM3 ERS
-// (register set §3, drive interface §5, presence probe §7.1, no-disk idle
-// behavior §8.3 of the project's SWIM3 note).
+// (register set §3, drive interface §5, presence probe §7.1, state
+// machines §7, driver expectations §8 of the project's SWIM3 note).
 
 #include "pdm.h"
 
+#include "floppy.h"
 #include "log.h"
 
 LOG_USE_CATEGORY_NAME("swim3");
@@ -31,35 +36,67 @@ LOG_USE_CATEGORY_NAME("swim3");
 #define R_STEP    9
 #define R_CTRACK  10
 #define R_CSECT   11
-#define R_GAP     12
+#define R_GAP     12 // write: gap3;  read: the header's format byte
 #define R_SECTOR  13
 #define R_NSECT   14
 #define R_INTMASK 15
 
-// Mode bits
-#define M_ENABLE_INTS 0x01u
-#define M_DRIVE1      0x02u
-#define M_DRIVE2      0x04u
-#define M_HEADSEL     0x20u // the drive SEL line (sense address bit 3)
+// Register names for the `swim3` trace category — the Apple driver's own
+// spellings, so a captured log lines up with SonySWIM3.a's equates.  Three
+// indices read and write different things, hence two tables.
+static const char *const REG_RD_NAMES[16] = {"Data",    "Timer",     "Error", "Param",  "Phase",    "Setup",
+                                             "Mode",    "Hdshk",     "Intr",  "Step",   "CurTrack", "CurSect",
+                                             "FmtByte", "FirstSect", "NSect", "IntMask"};
+static const char *const REG_WR_NAMES[16] = {"Data",   "Timer",     "Error", "Param",  "Phase",    "Setup",
+                                             "Zeroes", "Ones",      "Intr",  "Step",   "CurTrack", "CurSect",
+                                             "Gap",    "FirstSect", "NSect", "IntMask"};
 
-// Handshake bits
-#define H_RDDATA 0x04u // live drive RdData — the sense-read output
+// Handshake bits (§3.3) — the three this model drives
+#define H_INT_PENDING 0x02u // an enabled interrupt is pending
+#define H_RDDATA      0x04u // live drive RdData — the sense-read output
+#define H_ERROR       0x20u // the error register is non-zero
 
-// The drive's sense response for the current {SEL,CA2,CA1,CA0} address.
-// Drive 1 is the internal SuperDrive with no disk in place; drive 2 must
-// sense absent (all-ones RdData, giving kind 1111 = no drive).
-static uint8_t drive_sense(pdm_swim3_t *sw) {
-    if ((sw->mode & M_DRIVE2) && !(sw->mode & M_DRIVE1))
+// The internal drive is always drive 1; PDM has no second drive.
+#define FD 0u
+
+// True while the mode register selects the internal drive.  Drive 2 is
+// probed by enabling it alone, and must sense absent at every address.
+static bool drive1_selected(pdm_swim3_t *sw) {
+    return !((sw->mode & SWIM3_M_DRIVE2) && !(sw->mode & SWIM3_M_DRIVE1));
+}
+
+// The {SEL,CA2,CA1,CA0} drive-register address currently addressed: SEL is
+// mode bit 5 (HeadSelect), CA0-2 are Phase bits 0-2 (§5).
+static uint32_t drive_addr(pdm_swim3_t *sw) {
+    return ((sw->mode & SWIM3_M_HEADSEL) ? 8u : 0u) | (sw->phase & 7u);
+}
+
+// The drive's sense response for the currently addressed register (§5.2).
+// Reading a sense address also ROUTES a head: addresses 4 / 12 select head
+// 0 / 1 for data transfer, and during a GCR format the driver uses 1 / 15
+// instead, because those read back as 1 while it writes from the index.
+static uint8_t drive_sense(config_t *cfg, pdm_swim3_t *sw) {
+    if (!drive1_selected(sw))
         return 1; // no second drive: RdData floats high at every address
-    uint32_t addr = ((sw->mode & M_HEADSEL) ? 8u : 0u) | (sw->phase & 7u);
+
+    uint32_t addr = drive_addr(sw);
+    floppy_t *fd = cfg->floppy;
+    image_t *disk = fd ? floppy_drive_image(fd, FD) : NULL;
+    bool present = disk != NULL;
+
     switch (addr) {
     case 0: // rDirPrev — current step-direction latch
         return sw->step_dir;
-    case 1: // rStepOff — 1 = step complete (idle)
+    case 1: // rStepOff — 1 = step complete (seeks retire on their own event)
+        if (sw->mode & SWIM3_M_FORMAT)
+            sw->xfer_side = 0; // GCRFmtSelDecode routes head 0 here
         return 1;
     case 2: // rMotorOff
-        return sw->motor_on ? 0 : 1;
-    case 3: // rEjectOn — eject button not pressed
+        return (fd && floppy_drive_motor_on(fd, FD)) ? 0 : 1;
+    case 3: // rEjectOn — the emulated drive has no eject button
+        return 0;
+    case 4: // rRdData0 — route head 0
+        sw->xfer_side = 0;
         return 0;
     case 5: // rMFMDrive — 1 = SuperDrive
         return 1;
@@ -67,28 +104,36 @@ static uint8_t drive_sense(pdm_swim3_t *sw) {
         return 1;
     case 7: // rNoDrive — 0 = drive present
         return 0;
-    case 8: // rNoDiskInPl — 1 = NO disk in place (the Phase-G answer)
-        return 1;
-    case 9: // rNoWrProtect — moot with no disk
-        return 1;
-    case 10: // rNotTrack0 — drives auto-home at power-on
+    case 8: // rNoDiskInPl — 1 = NO disk in place
+        return present ? 0 : 1;
+    case 9: // rNoWrProtect — 1 = NOT write-protected
+        return (present && disk->writable) ? 1 : 0;
+    case 10: // rNotTrack0 — 1 = head is not over track 0
+        return (fd && floppy_drive_track(fd, FD) != 0) ? 1 : 0;
+    case 11: // rNoTachPulse (GCR) / rIndexPulse (MFM)
+        return (uint8_t)pdm_swim3_index_pulse(cfg);
+    case 12: // rRdData1 — route head 1
+        sw->xfer_side = 1;
         return 0;
     case 13: // rMFMModeOn
         return sw->mfm_mode;
-    case 14: // rNotReady — no disk: never ready
-        return 1;
-    case 15: // rRevised — with 7/6/5 this senses kind x011 = SuperDrive
-        return 1;
-    default: // 4/11/12: RdData0/1 routing and tach — no flux, no pulses
+    case 14: // rNotReady — 0 = ready: media present and the spindle turning
+        return (present && fd && floppy_drive_motor_on(fd, FD)) ? 0 : 1;
+    case 15: // rNotRevised (no disk) / r1MegMedia: 1 = DD media, 0 = HD
+        if (sw->mode & SWIM3_M_FORMAT)
+            sw->xfer_side = 1; // GCRFmtSelDecode routes head 1 here
+        return pdm_swim3_media_is_hd(cfg) ? 0 : 1;
+    default:
         return 0;
     }
 }
 
-// A control strobe: LSTRB (phase bit 3) rose with address {SEL,CA2,CA1,CA0}.
-// CA2 carries the on/off data bit; only the motor / mode / direction latches
-// matter with no disk present.
-static void drive_strobe(pdm_swim3_t *sw) {
-    uint32_t addr = ((sw->mode & M_HEADSEL) ? 8u : 0u) | (sw->phase & 7u);
+// A control strobe: LSTRB (phase bit 3) rose with address {SEL,CA2,CA1,CA0}
+// (§5.1).  CA2 carries the on/off data bit, so each function has an "on"
+// and an "off" address four apart.
+static void drive_strobe(config_t *cfg, pdm_swim3_t *sw) {
+    uint32_t addr = drive_addr(sw);
+    floppy_t *fd = cfg->floppy;
     switch (addr) {
     case 0: // wDirNext — step inward
         sw->step_dir = 0;
@@ -98,10 +143,17 @@ static void drive_strobe(pdm_swim3_t *sw) {
         break;
     case 2: // wMotorOn
         sw->motor_on = 1;
+        floppy_swim3_set_motor(fd, FD, true);
         break;
     case 6: // wMotorOff — the drive forgets its GCR/MFM mode (§11.12)
         sw->motor_on = 0;
         sw->mfm_mode = 0;
+        floppy_swim3_set_motor(fd, FD, false);
+        break;
+    case 7: // wEjectOn — the mechanism takes up to 1.5 s, which the driver
+        // spends waiting for rNoDiskInPl to read 1; the media leaves now.
+        if (fd && floppy_drive_eject(fd, FD))
+            LOG(1, "eject: media removed");
         break;
     case 9: // wMFMModeOn
         sw->mfm_mode = 1;
@@ -109,14 +161,30 @@ static void drive_strobe(pdm_swim3_t *sw) {
     case 13: // wMFMModeOff (GCR mode)
         sw->mfm_mode = 0;
         break;
-    default: // eject / disk-in-place latches: inert with no disk
+    default: // wEjectOff / wDiskInPl / wNoDiskInPl: latch resets, inert here
         break;
     }
     LOG(3, "strobe addr %u (motor=%u mfm=%u)", addr, sw->motor_on, sw->mfm_mode);
 }
 
-uint8_t pdm_swim3_read(config_t *cfg, uint32_t off) {
+// === Interrupts (§7.9) ======================================================
+
+void pdm_swim3_update_irq(config_t *cfg) {
     pdm_swim3_t *sw = &pdm_st(cfg)->amic.swim3;
+    bool level = (sw->mode & SWIM3_M_ENABLE_INTS) && (sw->intr & sw->intmask);
+    pdm_amic_set_fdc_irq(cfg, level);
+}
+
+void pdm_swim3_raise(config_t *cfg, uint8_t bits) {
+    pdm_swim3_t *sw = &pdm_st(cfg)->amic.swim3;
+    sw->intr |= bits; // a source sets its flag regardless of the mask
+    LOG(4, "interrupt $%02X (intr=$%02X mask=$%02X)", bits, sw->intr, sw->intmask);
+    pdm_swim3_update_irq(cfg);
+}
+
+// === Register file ==========================================================
+
+static uint8_t swim3_read_reg(config_t *cfg, pdm_swim3_t *sw, uint32_t off) {
     uint8_t v;
     switch (off >> 9) {
     case R_TIMER:
@@ -133,11 +201,17 @@ uint8_t pdm_swim3_read(config_t *cfg, uint32_t off) {
         return sw->setup;
     case R_ZEROES: // read = current mode
         return sw->mode;
-    case R_ONES: // read = handshake: only the RdData sense line is live here
-        return drive_sense(sw) ? H_RDDATA : 0;
-    case R_INTR: // read-to-clear
+    case R_ONES: // read = handshake
+        v = drive_sense(cfg, sw) ? H_RDDATA : 0;
+        if ((sw->mode & SWIM3_M_ENABLE_INTS) && (sw->intr & sw->intmask))
+            v |= H_INT_PENDING;
+        if (sw->error)
+            v |= H_ERROR;
+        return v;
+    case R_INTR: // read-to-clear — and the IRQ line drops with it
         v = sw->intr;
         sw->intr = 0;
+        pdm_swim3_update_irq(cfg);
         return v;
     case R_STEP:
         return sw->step;
@@ -145,21 +219,29 @@ uint8_t pdm_swim3_read(config_t *cfg, uint32_t off) {
         return sw->ctrack;
     case R_CSECT:
         return sw->csect;
-    case R_GAP:
-        return sw->gap;
+    case R_GAP: // read side: the last address header's format byte
+        return sw->fmt_byte;
     case R_SECTOR:
         return sw->sector;
     case R_NSECT:
         return sw->nsect;
     case R_INTMASK:
         return sw->intmask;
-    default: // R_DATA: PIO FIFO unused on PDM (DMA machine is Phase H)
+    default: // R_DATA: the PIO FIFO, which PDM never addresses (DMA only)
         return 0;
     }
 }
 
+uint8_t pdm_swim3_read(config_t *cfg, uint32_t off) {
+    pdm_swim3_t *sw = &pdm_st(cfg)->amic.swim3;
+    uint8_t v = swim3_read_reg(cfg, sw, off);
+    LOG(5, "rd +$%04X %-9s = $%02X", off, REG_RD_NAMES[(off >> 9) & 15], v);
+    return v;
+}
+
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
     pdm_swim3_t *sw = &pdm_st(cfg)->amic.swim3;
+    LOG(5, "wr +$%04X %-9s = $%02X", off, REG_WR_NAMES[(off >> 9) & 15], value);
     switch (off >> 9) {
     case R_TIMER:
         sw->timer = value;
@@ -172,23 +254,33 @@ void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
         uint8_t rose = (uint8_t)(value & ~sw->phase & 0x08u);
         sw->phase = value;
         if (rose)
-            drive_strobe(sw);
+            drive_strobe(cfg, sw);
         break;
     }
     case R_SETUP:
         if (value & 0x80u) {
-            // SoftReset (self-clearing): registers return to reset state.
+            // SoftReset (self-clearing): registers return to their reset
+            // state (§3.10) and any running engine stops with them.
             pdm_swim3_t z = {0};
+            z.ctrack = 0xFF;
+            z.csect = 0x7F;
+            z.sector = 0xFF;
             *sw = z;
+            pdm_swim3_engine_update(cfg);
+            pdm_swim3_update_irq(cfg);
         } else {
             sw->setup = value;
         }
         break;
     case R_ZEROES: // clear the 1-bits in mode
         sw->mode &= (uint8_t)~value;
+        pdm_swim3_engine_update(cfg);
+        pdm_swim3_update_irq(cfg);
         break;
     case R_ONES: // set the 1-bits in mode
         sw->mode |= value;
+        pdm_swim3_engine_update(cfg);
+        pdm_swim3_update_irq(cfg);
         break;
     case R_STEP:
         sw->step = value;
@@ -210,6 +302,7 @@ void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
         break;
     case R_INTMASK:
         sw->intmask = value;
+        pdm_swim3_update_irq(cfg);
         break;
     default: // R_DATA / R_ERROR / R_INTR: not writable in this model
         LOG(2, "write to reg %u = $%02X ignored", (unsigned)(off >> 9), value);
