@@ -10,6 +10,10 @@
 #                16 MB — 24 MB is not in the 8100's ram_options (8 MB
 #                soldered + paired 16 MB SIMMs), so this row also spreads
 #                the RAM axis.
+#   pdm-cd-device  A CD-ROM plugs into the Curio bus: CD-typed, read-only,
+#                medium present, block size from the disc's own DDM.  This
+#                is what the profile's has_cdrom:true rests on.  Boot-free,
+#                so it does not disturb the desktop goldens above.
 #
 # All three rows share one recipe (boot_pdm_75):
 #
@@ -39,6 +43,9 @@
 include "../lib/mac.script"
 
 let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+# An ordinary HD image served through attach_cdrom: "CD" is the device
+# type, not the mastering (see iici-cdrom-boot).  Already in gs-test-data.
+let cd_disc = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
 
 # Boot `model` from the prepared 7.5 image to a stable Finder desktop.
 def boot_pdm_75(model, ram_kb) {
@@ -80,6 +87,27 @@ def row_6100_75_hd() { pdm_75_row("pm6100", 24576, 69) }
 def row_7100_75_hd() { pdm_75_row("pm7100", 24576, 106) }
 def row_8100_75_hd() { pdm_75_row("pm8100", 16384, 59) }
 
+# ---- cd-device --------------------------------------------------------------
+# The plug contract for a CD-ROM on the Curio bus, which is what the profile's
+# has_cdrom claim rests on.  A CD is an ordinary SCSI target — no CD-specific
+# hardware sits behind it — so the assertions are the ones the IIci row makes:
+# CD-typed, read-only, medium present, and a block size taken from the disc's
+# own Driver Descriptor Map rather than a hard-coded CD default.
+#
+# Deliberately device-level and boot-free: attaching a disc to a booting row
+# would put a CD icon on the desktop and invalidate the goldens above.
+def row_pdm_cd_device() {
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.scsi.attach_cdrom "${$cd_disc}" 3
+    assert machine.scsi.device[3].type == "cdrom" "cd-device: SCSI 3 is not a CD-ROM"
+    assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
+    assert machine.scsi.device[3].medium_present "cd-device: no medium present"
+    assert machine.scsi.device[3].block_size == 512 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
+    # The HD slots the same bus already served must be undisturbed by it.
+    assert try(machine.scsi.device[0].type, none) == none "cd-device: something is attached at SCSI 0"
+    report_row("7.5", "curio", "cd-device")
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("6100-75-hd") {
@@ -101,6 +129,14 @@ if row_on("8100-75-hd") {
         row_end("8100-75-hd", try(row_8100_75_hd(), "FAILED"))
     } else {
         echo "skip: 8100-75-hd (7.5 prepared image not fetched)"
+    }
+}
+
+if row_on("pdm-cd-device") {
+    if have_media($cd_disc) {
+        row_end("pdm-cd-device", try(row_pdm_cd_device(), "FAILED"))
+    } else {
+        echo "skip: pdm-cd-device (CD disc image not fetched)"
     }
 }
 
