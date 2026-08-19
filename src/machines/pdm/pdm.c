@@ -13,7 +13,11 @@
 //                        from the $40300000 alias, the OS from $40800000)
 //   $50F00000-$50F4FFFF  the AMIC-decoded I/O island (amic.c + hmc port)
 //   $5FFFF000            machine-ID page ($5FFFFFFC)
-//   $60000000-$FEFFFFFF  undecoded: bus error → 601 machine check
+//   $90000000-$EFFFFFFF  NuBus super slot space, and
+//   $F0000000-$FEFFFFFF  the BART register file + NuBus/PDS slot space
+//                        (bart.c) — a window with no card behind it takes a
+//                        recoverable transfer error
+//   the rest of $60000000-$FEFFFFFF  decoded by nobody: reads $FF
 //   $FF000000-$FFFFFFFF  ROM alias (601 reset vector fetches $FFF00100)
 
 #include "pdm.h"
@@ -26,6 +30,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "nubus.h"
 #include "ppc.h"
 #include "rtc.h"
 #include "scc.h"
@@ -185,11 +190,18 @@ static void pdm_memory_layout(config_t *cfg) {
     st->id_interface.write_uint32 = pdm_id_write32;
     memory_map_add(cfg->mem_map, 0x5FFFF000u, 0x00001000u, "Machine ID", &st->id_interface, cfg);
 
-    // Undecoded space: AMIC's bus error (40 us TEA modeled as immediate)
-    // surfaces as a 601 machine check.  BART/NuBus space stays inside the
-    // error range until the BART model lands (Phase H); the ROM alias at
-    // $FF000000 sits above it.
-    memory_set_bus_error_range(cfg->mem_map, 0x60000000u, 0xFEFFFFFFu);
+    // BART: the register file plus every window the bridge claims — slot
+    // space, super slot space and the PDS slot-$E window — each of them
+    // registered EMPTY, so an access no card answers takes the recoverable
+    // transfer error the Slot Manager's probe expects.  Must run before
+    // nubus_init, whose cards overlay the pages they answer (bart.c).
+    //
+    // Undecoded space outside those windows is not claimed by anything on
+    // the board: AMIC's 40 us error there is documented as unrecoverable
+    // ("forces restart"), so this model leaves such accesses reading $FF
+    // rather than faulting — nothing in the ROM depends on that path, and a
+    // fault would be the wrong KIND of failure.
+    pdm_bart_init(cfg);
 
     // DRAM bank windows per the HMC's power-on state.
     pdm_hmc_remap(cfg);
@@ -258,6 +270,10 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     // makes the measured clock land exactly on the snap-table value
     // (proposal §5.2).
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, cp);
+    // No 68k MMU owns this machine's page table, so host-backed regions that
+    // core code registers on the bus map — a NuBus card's VRAM and
+    // declaration ROM — are filled through our own page filler.
+    g_mem_host_fill = pdm_fill_page;
     cfg->ppc = ppc_init(cp);
     assert(cfg->ppc != NULL);
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
@@ -332,10 +348,22 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
         system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
         system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
+        system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
         pdm_hmc_remap(cfg);
         via_redrive_outputs(cfg->via1);
         pdm_amic_recompute(cfg);
     }
+
+    // NuBus: the bus controller seats whatever cards the slots carry, and
+    // each card registers its own regions over the empty windows BART
+    // claimed above.  Card state comes LAST in the stream on purpose — a
+    // machine can restore with fewer cards than it saved (the checkpoint
+    // record carries only the wildcard video-card pick, so a card staged
+    // into a specific socket does not come back), and a short read must not
+    // shift anything that follows it.
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
+    if (cp)
+        nubus_checkpoint_restore(cfg->nubus, cp);
 
     // Presentation state, derived from the (possibly restored) register
     // file: the scanout descriptor over physical DRAM 0 and the AWACS
@@ -361,6 +389,9 @@ static void pdm_reset(config_t *cfg) {
     // and becomes a first-class test row in Phase D.)
     ppc_reset(cfg->ppc);
     pdm_amic_init(cfg);
+    // BART's latches go back to power-on with it; the NuBus /RESET fan-out
+    // to the cards themselves is the bus controller's (system_reset_devices).
+    memset(&st->bart, 0, sizeof(st->bart));
     scc_reset(cfg->scc);
     for (int i = 0; i < 2; i++)
         if (st->scsi96[i])
@@ -458,6 +489,10 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
     system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
+    system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
+    // Card-side state (framebuffer, palette, mode) last — see the restore
+    // call in pdm_init for why the order matters.
+    nubus_checkpoint_save(cfg->nubus, cp);
 }
 
 // The AMIC-internal 60.15 Hz tick: VIA1 CA1 pulse.
@@ -465,12 +500,24 @@ static void pdm_trigger_vbl(config_t *cfg) {
     via_input_c(cfg->via1, 0, 0, 0);
     via_input_c(cfg->via1, 0, 0, 1);
     image_tick_all(cfg);
+    if (cfg->nubus)
+        nubus_tick_vbl(cfg->nubus);
 }
 
-// NuBus routing spine — no BART/NuBus until Phase H.
+// Chipset IRQ spine.  Nothing on this family routes through it: the NuBus
+// slots have their own hook below, and every on-board source is already an
+// AMIC ICR bit (pdm_amic_set_source).
 static void pdm_update_ipl(config_t *cfg, int source, bool active) {
     (void)cfg;
-    LOG(1, "update_ipl source=%d active=%d (no NuBus on PDM yet)", source, active);
+    LOG(1, "update_ipl source=%d active=%d (PDM sources drive the AMIC ICR directly)", source, active);
+}
+
+// A NuBus card's /NMRQ.  The umbrella edge is AMIC's own business (the
+// pseudo-VIA2 "any slot" bit is recomputed from the slot levels on every
+// read), so the bus controller's edge hint is not needed here.
+static void pdm_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    (void)umbrella_edge;
+    pdm_bart_slot_irq(cfg, slot, active);
 }
 
 // Primary display: the Ariel scanout over physical DRAM 0 (ariel.c).
@@ -498,6 +545,7 @@ const machine_substrate_t pdm_substrate = {
     .teardown = pdm_teardown,
     .checkpoint_save = pdm_checkpoint_save,
     .update_ipl = pdm_update_ipl,
+    .nubus_slot_irq = pdm_nubus_slot_irq,
     .trigger_vbl = pdm_trigger_vbl,
     .fd_insert = pdm_fd_insert,
     .fd_present = pdm_fd_present,

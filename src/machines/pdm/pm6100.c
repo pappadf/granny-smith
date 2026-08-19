@@ -58,6 +58,10 @@ const hw_profile_t machine_pm6100 = {
     .has_cdrom = true,
     .cdrom_id = 3,
 
+    // No NuBus without the optional PDS adapter card, which carries the
+    // bridge itself — so this model declares no slots AND no BART: the
+    // ROM's presence probe faults, BARTExists stays clear, and the machine
+    // boots with zero slots (bart.c).
     .nubus_slots = NULL,
 
     .substrate = &pdm_substrate,

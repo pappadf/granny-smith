@@ -10,7 +10,7 @@ Catalogued in [`video.md`](../../video.md) §2.3; vROM byte-layout reference in
 |---|---|
 | **Card kind** | `display_card_24ac` |
 | **vROM** | `display-card-24ac-d8daab87.vrom` (carries its own System 7 video driver) |
-| **Slot** | IIcx video slot `$9` (selectable via `machine.boot video_card=` or `slot[9].card_id`) |
+| **Slot** | any NuBus socket — IIcx video slot `$9` in the tests, and slot `$C` of a Power Macintosh 7100/8100 behind BART (selectable via `machine.boot video_card=` or `slot[N].card_id`) |
 | **VRAM** | 4 MB, flat aperture at slot offset 0 (no VideoBase/RowWords register) |
 | **Depths** | 1 / 4 / 8 / 16 / 32 bpp (no 2 bpp) |
 | **Distinctive** | a fill/copy/ROP accelerator the OS's cdev drives in 32-bit mode |

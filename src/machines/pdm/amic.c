@@ -97,6 +97,21 @@ void pdm_amic_set_scsi_irq(config_t *cfg, int chip, bool level) {
     pdm_amic_recompute(cfg);
 }
 
+// NuBus slot /NMRQ levels.  Each connector's line runs from the slot to an
+// AMIC pin (the bridge is not in the path), and the slot bank presents them
+// ACTIVE LOW: slot $B is bit 2 ... slot $E bit 5, so an asserted line CLEARS
+// its bit.  Level-sensitive — the card drops /NMRQ when its handler has
+// serviced it; nothing here is write-1-to-clear.
+void pdm_amic_set_slot_irq(config_t *cfg, int slot, bool level) {
+    pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
+    uint8_t bit = (uint8_t)(1u << (slot - 9));
+    if (level)
+        v2->slot_ifr &= (uint8_t)~bit;
+    else
+        v2->slot_ifr |= bit;
+    pdm_amic_recompute(cfg);
+}
+
 void pdm_amic_set_source(config_t *cfg, int bit, bool level) {
     pdm_state_t *st = pdm_st(cfg);
     uint8_t old = st->icr_sources;

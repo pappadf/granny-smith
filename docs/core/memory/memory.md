@@ -96,6 +96,37 @@ table entries are populated with:
 - `base_addr` = the device's base address (subtracted from absolute addresses
   before invoking callbacks)
 
+### Host-Backed Card Regions
+
+A NuBus card registers its VRAM and declaration ROM on the bus map with
+`memory_map_host_region()` (and `memory_map_host_region_alias()` for a second
+window onto the same bytes).  Where those pages land depends on who owns the
+machine's physical view:
+
+- **68k machines** keep the window in the MMU's host-region list, which the
+  table walk resolves through and the layout code fills from.
+- **PowerPC machines** have no `mmu_state_t` at all, so they install a
+  page-fill hook (`g_mem_host_fill`, set to the family's own page filler) and
+  each window is filled straight into the page table through it.  The hook —
+  not "is there an MMU" — is the discriminator, because on a checkpoint
+  restore the outgoing machine's MMU is still installed while the incoming
+  one builds its cards.
+
+Card *register* windows go through `memory_map_add()` like any other device,
+and are registered after the host regions so a device page wins its page.
+
+### Device-Signalled Bus Errors
+
+A device region can answer an access with a bus error instead of data by
+calling `memory_signal_bus_error()`: the PDM's BART windows use it so an
+empty NuBus slot faults a Slot Manager probe the way the bridge's bus
+timeout does (docs/machines/pdm/bart.md).  The fault is latched and
+delivered by the CPU seam at the sprint boundary, exactly like the unmapped
+faults the slow paths raise.  Inspection reads (`memory.peek`, `find.*`)
+dispatch into device handlers with `g_mem_debug_access` raised, and the call
+is inert while it is up — examining an empty slot must never inject a fault
+into the running guest.
+
 ### Per-Instance Ownership
 
 Each `memory_map_t` instance stores its own `page_table` and `page_count`.

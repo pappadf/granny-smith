@@ -156,19 +156,45 @@ done
 # machine.cpu.fpu object (proposal-powerpc-601-pdm.md §3.6).  Phase G
 # landed the Curio SCSI bus, so two HD slots AND the CD bay are offered —
 # a CD-ROM is an ordinary SCSI target on that same bus, with no
-# CD-specific hardware behind it.  Floppy (the SWIM3 datapath) and NuBus
-# (BART) remain Phase H, and this row is what keeps the profile honest
-# about which of the three is actually absent.
+# CD-specific hardware behind it.  The floppy datapath (SWIM3) is what
+# remains genuinely absent here, which is why floppy_slots stays empty
+# while everything else in this block is now populated.
 for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"model":601' "$m is a PowerPC 601"
     assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
     assert_contains "$m" '"fpu":true' "$m FPU capability on since Phase E"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
-    assert_contains "$m" '"nubus":false' "$m declares no NuBus sockets yet"
     assert_contains "$m" '"has_cdrom":true' "$m offers the Curio-bus CD bay"
     assert_contains "$m" '"cdrom_id":3' "$m puts the CD at SCSI ID 3"
-    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive yet (Phase H)"
+    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive (no SWIM3 datapath)"
     assert_contains "$m" '"scsi_slots":[{"label":"SCSI HD0","id":0},{"label":"SCSI HD1","id":1}]' "$m offers the two Curio SCSI HD slots (Phase G)"
+done
+# NuBus splits the family in two, and that split is the point of these
+# rows.  The 7100 and 8100 carry BART and three connectors on the logic
+# board; the 6100's bridge ships on an optional PDS adapter card that is
+# not modeled, so it has no sockets at all — the ROM's own probe faults
+# and clears BARTExists, which suite-pdm asserts from guest memory.  These
+# assertions were flipped only after a pm8100 booted 7.5 with a 24AC in
+# slot $C and the OS ran the card's driver as a second screen
+# (suite-pdm row 8100-75-24ac); seating a card in the model is not
+# evidence the guest can use it.
+assert_contains pm6100 '"nubus":false' "pm6100 has no NuBus without the PDS adapter"
+for m in pm7100 pm8100; do
+    assert_contains "$m" '"nubus":true' "$m has the three BART NuBus sockets"
+    # $B/$C/$D — NOT the widely repeated $C/$D/$E: slot $E is the PDS
+    # video pseudo-slot on these boards, which is not a NuBus connector.
+    assert_contains "$m" '"slot":"B"' "$m declares socket \$B"
+    assert_contains "$m" '"slot":"C"' "$m declares socket \$C"
+    assert_contains "$m" '"slot":"D"' "$m declares socket \$D"
+    assert_absent "$m" '"slot":"E"' "$m must not offer the PDS pseudo-slot as a NuBus socket"
+    # Computed compatibility again: every NuBus-attach video card is
+    # offered on every socket, with no per-machine whitelist anywhere.
+    assert_contains "$m" '"id":"mdc_8_24"' "$m offers 8·24"
+    assert_contains "$m" '"id":"display_card_24ac"' "$m offers 24AC"
+    assert_contains "$m" '"id":"824gc"' "$m offers 8·24 GC"
+done
+for card in mdc_8_24 display_card_24ac 824gc; do
+    assert_absent pm6100 "\"id\":\"$card\"" "pm6100 has no socket for $card"
 done
 assert_contains pm6100 '"freq":60000000' "pm6100 runs at 60 MHz"
 assert_contains pm7100 '"freq":66000000' "pm7100 runs at 66 MHz"
