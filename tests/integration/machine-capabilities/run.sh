@@ -156,9 +156,12 @@ done
 # machine.cpu.fpu object (proposal-powerpc-601-pdm.md §3.6).  Phase G
 # landed the Curio SCSI bus, so two HD slots AND the CD bay are offered —
 # a CD-ROM is an ordinary SCSI target on that same bus, with no
-# CD-specific hardware behind it.  The floppy datapath (SWIM3) is what
-# remains genuinely absent here, which is why floppy_slots stays empty
-# while everything else in this block is now populated.
+# CD-specific hardware behind it.  ONE floppy slot, not two: the family
+# has a single internal manual-inject SuperDrive and no external port, and
+# this assertion moved only after a 1.44 MB disk mounted in the Finder on
+# a booted 7100 and a PowerPC application launched off it (suite-pdm rows
+# pdm-floppy-mount / pdm-floppy-boot) — a modelled drive is not
+# evidence the guest can use it.
 for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"model":601' "$m is a PowerPC 601"
     assert_contains "$m" '"kind":"ppc_601"' "$m has the 601 BAT/segment/HTAB MMU"
@@ -166,7 +169,7 @@ for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"has_cdrom":true' "$m offers the Curio-bus CD bay"
     assert_contains "$m" '"cdrom_id":3' "$m puts the CD at SCSI ID 3"
-    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy drive (no SWIM3 datapath)"
+    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
     assert_contains "$m" '"scsi_slots":[{"label":"SCSI HD0","id":0},{"label":"SCSI HD1","id":1}]' "$m offers the two Curio SCSI HD slots (Phase G)"
 done
 # NuBus splits the family in two, and that split is the point of these

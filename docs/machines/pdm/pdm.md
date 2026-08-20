@@ -38,6 +38,12 @@ Behind AMIC's decode, two datapaths have their own modules:
 - **Onboard video** (`ariel.c`) — the Sonora-model control registers, the
   Ariel II CLUT/DAC, and the scanout of the framebuffer that lives at
   physical DRAM 0.  See `video.md`.
+- **SWIM III + the floppy** (`swim3.c`, `swim3_xfer.c`) — the third-
+  generation Sony controller at `$50F16000`, the Sony drive-register
+  sense/strobe protocol, and the sector transfer engine behind the AMIC
+  floppy DMA channel: MFM and GCR reads and writes, whole-track format,
+  and raw capture, against the one internal manual-inject SuperDrive every
+  model in the family has.  See `swim3.md`.
 - **BART** (`bart.c`) — the NuBus '90 bridge on the 7100 and 8100: the
   `$F0000000` register file, the slot and super-slot windows for the three
   connectors `$B`/`$C`/`$D`, and the recoverable faults an empty slot
@@ -48,8 +54,9 @@ Behind AMIC's decode, two datapaths have their own modules:
 Reused models: the AV family's behavioral **Cuda** (`av/cuda.c`, the same
 341S0788 firmware 2.37 part) on the pseudo-VIA1 shift-register transport;
 the Tier-1 **6522** core; the shared **NuBus** bus controller and card
-drivers (`core/peripherals/nubus/`) behind BART.  SWIM3 media datapaths and
-MACE arrive in later phases (proposal-powerpc-601-pdm.md §6).
+drivers (`core/peripherals/nubus/`) behind BART; the shared **floppy**
+module (`core/peripherals/floppy.c`) for the drive and its media.  MACE
+arrives in a later phase (proposal-powerpc-601-pdm.md §6).
 
 ## Memory map
 

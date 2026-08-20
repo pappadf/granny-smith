@@ -37,4 +37,10 @@ assert machine.floppy.drive[0].present == false
 # rather than silently no-op'ing — the harness shouldn't fail on
 # this since echo ${} prints the error and continues).
 
+# The other two controller types live where their machines do: `swim`
+# on the SE/30 (suite-030) and `swim3` on the PDM family, whose
+# pdm-floppy-* rows in suite-pdm walk this same tree on a booted 7100
+# (type, present, and the disk node either side of an insert).
+# Both need their machine's ROM, which this unit-tier row does not have.
+
 quit

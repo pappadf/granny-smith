@@ -60,6 +60,17 @@ let hd_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 # An ordinary HD image served through attach_cdrom: "CD" is the device
 # type, not the mastering (see iici-cdrom-boot).  Already in gs-test-data.
 let cd_disc = "../../data/systems/system_7_1_20mb_24ac_cd_32bit.img"
+# Floppy fixtures.  The 1.44 MB disk is Symantec's "Utilities Disk 2" — the
+# same image the IIcx row mounts, which is what makes it the cross-machine
+# positive control: if a PDM floppy row goes red while iicx-24ac-sysinfo
+# stays green, the fault is in this family's datapath and nowhere else.
+# It also carries two applications built differently on purpose — Fast Find
+# is a FAT binary (68k CODE resources plus a 190 KB PowerPC PEF in its data
+# fork) and System Info is PowerPC-only — so launching one reads a real PEF
+# off the floppy and hands it to CFM.
+let fd_144 = "../../data/apps/Norton-Utils-Disk-2.image"
+let fd_800 = "../../data/systems/SSW-6.08-800K/SSW 6.0.8-800k Disk1of4"
+let fd_boot = "../../data/systems/SSW-7.6-1.4M/Install 1.img"
 
 # Boot `model` from the prepared 7.5 image to a stable Finder desktop.
 def boot_pdm_75(model, ram_kb) {
@@ -252,6 +263,196 @@ def row_pdm_cd_device() {
     report_row("7.5", "curio", "cd-device")
 }
 
+# ---- pdm-floppy-mount -------------------------------------------------------
+# THE row this whole floppy datapath exists for: a 1.44 MB disk inserted into
+# a booted 7100 mounts in the Finder — and then an application launches off
+# it, which is a much stronger signal than a directory listing.
+#
+# The application is "System Info", and which one it is matters.  The disk
+# carries two, built differently on purpose: Fast Find is a FAT binary (68k
+# CODE resources plus a PowerPC PEF in its data fork), and System Info is
+# PowerPC-ONLY — no CODE resource at all.  Launching the fat one would prove
+# the catalog and a fork read; launching the PowerPC-only one can only
+# succeed if a 237 KB PEF came off the floppy through the new datapath and
+# went into CFM, because there is no 68k code path for it to fall back to.
+# It is also something no 68k Mac in the fleet can do.
+#
+# Read-only mount deliberately: a writable mount lets the Finder write back
+# window state, and the goldens should not depend on that.  Writes have their
+# own row below.
+def row_pdm_floppy_mount() {
+    boot_pdm_75("pm7100", 24576)
+    assert machine.floppy.type == "swim3" "floppy controller type ${machine.floppy.type}, want swim3"
+    assert !machine.floppy.drive[0].present "FD0 occupied before the insert"
+
+    # The family has ONE bay, so drive 1 must stay absent whatever happens.
+    assert !machine.floppy.drive[1].present "FD1 reports a disk on a family with one bay"
+
+    machine.floppy.drive[0].insert "${$fd_144}"
+    assert machine.floppy.drive[0].present "FD0 empty after insert"
+    assert machine.floppy.drive[0].disk.present "FD0 disk node absent after insert"
+    # A fixed budget BEFORE the stability wait, deliberately: nothing on the
+    # desktop changes while the drive spins up, seeks and reads the volume,
+    # so a bare wait_stable would return three polls later having watched an
+    # idle screen.  600 M instructions covers the mount on this machine; the
+    # settle then absorbs the window opening.
+    scheduler.run 600000000
+    wait_stable(900000000)
+    # No system error was raised mounting it (DSErrCode, 68k logical $AF0).
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the floppy"
+    check_ex("goldens/pm7100-floppy-mount.png", 0, 440, 20, 640)
+
+    # System Info: the CFM-off-floppy check.  A FIXED budget, not a settle —
+    # this frame is deterministic (the RTC is pinned) but never quiescent,
+    # because the application animates, and a stability wait would either
+    # time out or land on an arbitrary frame.
+    double_click(264, 100)
+    scheduler.run 1500000000
+    check_ex("goldens/pm7100-floppy-sysinfo.png", 0, 440, 20, 640)
+    report_row("7.5", "swim3", "fd-mount ppc-launch")
+    report_perf("suite-pdm/pdm-floppy-mount", scheduler.instr_count)
+}
+
+# ---- pdm-floppy-800k --------------------------------------------------------
+# GCR, and the search order that gets there.  The driver's format detection
+# tries MFM1440K and MFM720K FIRST and every wrong-mode attempt must fail —
+# which on hardware it does by finding nothing it recognises, not by
+# returning a plausible wrong header.  The trace this row leaves behind shows
+# the drive strobed into MFM mode, no address header arriving, then strobed
+# into GCR mode and the headers starting; what the row asserts is the
+# outcome: an 800K System Tools disk mounts.
+def row_pdm_floppy_800k() {
+    boot_pdm_75("pm7100", 24576)
+    machine.floppy.drive[0].insert "${$fd_800}"
+    assert machine.floppy.drive[0].present "FD0 empty after insert"
+    # GCR: the driver's MFM attempts time out first, so the mount takes
+    # longer than the 1.44 MB one (see the note on the fixed budget above).
+    scheduler.run 900000000
+    wait_stable(1200000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} mounting the 800K disk"
+    check_ex("goldens/pm7100-floppy-800k.png", 0, 440, 20, 640)
+    report_row("7.5", "swim3", "fd-mount gcr800k")
+    report_perf("suite-pdm/pdm-floppy-800k", scheduler.instr_count)
+}
+
+# ---- pdm-floppy-write-eject -------------------------------------------------
+# Writes and the eject sequence.  The row makes the guest create a folder on
+# a writable floppy (File > New Folder) and then checks TWO things: that the
+# Finder shows it, and that the bytes reached the medium — the live image
+# instance's delta file grows, which it only can if the driver's escape-coded
+# write stream was parsed and its data field handed to image_write().
+#
+# Why the delta and not an eject-and-re-insert round trip: the media layer
+# mints a FRESH instance for every writable mount, so re-inserting the same
+# base path would deliberately come back to the unmodified base.  The delta
+# is the medium, so it is the right thing to look at.
+#
+# The eject half drives Special > Put Away on the disk icon: the driver seeks
+# away, strobes wEjectOn, and the volume leaves the desktop.  The medium is
+# inspected only AFTER that, deliberately — how much of a volume the Finder
+# has written back at any given instant is its business, and an 800K volume
+# was seen holding its writes long past the point where a 1.44 MB one had
+# flushed them.
+def row_pdm_floppy_write_eject() {
+    boot_pdm_75("pm7100", 24576)
+    machine.floppy.drive[0].insert "${$fd_144}" true
+    scheduler.run 600000000
+    wait_stable(900000000)
+    let inst = machine.floppy.drive[0].disk.path
+    let delta = "${$inst}.delta"
+    let before = storage.path_size($delta)
+
+    # Activate the disk's window, then File > New Folder (cmd-N).
+    click(200, 140)
+    machine.adb.keyboard.down 0x37
+    scheduler.run 2000000
+    machine.adb.keyboard.press 0x2D
+    scheduler.run 2000000
+    machine.adb.keyboard.up 0x37
+    wait_stable(600000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} writing to the floppy"
+    check_ex("goldens/pm7100-floppy-write.png", 0, 440, 20, 640)
+
+    # Select the disk icon on the desktop and Put Away (cmd-Y): the unmount
+    # flushes the volume and then the driver ejects it.
+    click(600, 95)
+    machine.adb.keyboard.down 0x37
+    scheduler.run 2000000
+    machine.adb.keyboard.press 0x10
+    scheduler.run 2000000
+    machine.adb.keyboard.up 0x37
+    wait_stable(900000000)
+    assert !machine.floppy.drive[0].present "the disk is still in the drive after Put Away"
+    # ...and only NOW look at the medium.  Checking before the unmount would
+    # be checking the Finder's disk cache: how much of a volume it has
+    # written back at any given moment is its business, not ours.
+    assert storage.path_size($delta) > $before "nothing reached the medium (delta still ${$before} bytes)"
+    report_row("7.5", "swim3", "fd-write fd-eject")
+    report_perf("suite-pdm/pdm-floppy-write-eject", scheduler.instr_count)
+}
+
+# ---- pdm-floppy-format ------------------------------------------------------
+# The whole-track format path, driven the way a user drives it: a blank
+# image goes in, the Finder offers to initialize it as "Macintosh 1.4 MB"
+# (which is itself the HD-media sense answering correctly), and the format
+# writes all 160 track images — 80 cylinders x 2 sides x 18 sectors.  Then
+# the OS verifies every sector it just laid down and writes a fresh HFS
+# volume, so the mounted, empty, writable disk at the end is the proof that
+# format and read agree with each other.
+#
+# The longest row in the suite by a wide margin: the format and its verify
+# pass each cover the whole surface at 300 rpm, which is what they cost on
+# real hardware too.
+def row_pdm_floppy_format() {
+    boot_pdm_75("pm7100", 24576)
+    let blank = "${$WORK_DIR}/pdm-blank-1440.img"
+    assert storage.fd_create($blank, true) "could not create a blank 1.44 MB image"
+    machine.floppy.drive[0].insert "${$blank}" true
+    scheduler.run 600000000
+    wait_stable(900000000)
+    # "This disk is unreadable... initialize?" -> Initialize -> Continue.
+    check_ex("goldens/pm7100-floppy-initdialog.png", 0, 440, 20, 640)
+    click(452, 232)
+    wait_stable(300000000)
+    click(416, 168)
+    wait_stable(12000000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} formatting the floppy"
+    assert machine.floppy.drive[0].present "the disk left the drive during the format"
+    check_ex("goldens/pm7100-floppy-format.png", 0, 440, 20, 640)
+    report_row("7.5", "swim3", "fd-format")
+    report_perf("suite-pdm/pdm-floppy-format", scheduler.instr_count)
+}
+
+# ---- pdm-floppy-boot --------------------------------------------------------
+# Cold boot from the floppy, with NO SCSI disk attached: the row that proves
+# the whole path rather than a piece of it.  The ROM's Start Manager finds the
+# drive, reads the boot blocks off it, and everything after that — the System
+# loading, its extensions, and the Mac OS 7.6 Installer coming up — is read
+# through the same datapath, one sector at a time, at 300 rpm.
+#
+# Boot-media note: this is the 7.6 INSTALL disk, not Disk Tools.  Disk Tools 1
+# boots equally well and then refuses the machine ("This Disk Tools disk will
+# not work on this computer — use the disk labelled Disk Tools 2"), which is
+# Apple's own PowerPC-enabler gate and not something the emulator can help
+# with; Disk Tools 2 is not in the fixture set.  Reaching that alert is itself
+# a floppy boot, but the Installer is the one that keeps running.
+def row_pdm_floppy_boot() {
+    machine.rtc.time = 0xE0000000
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.floppy.drive[0].insert "${$fd_boot}"
+    assert machine.floppy.drive[0].present "boot floppy not in FD0"
+    assert try(machine.scsi.device[0].type, none) == none "a SCSI disk is attached: this row must boot from the floppy"
+    # Boot blocks, System, extensions, then the Installer's welcome screen.
+    # A fixed budget, not a settle: a floppy boot has long quiet stretches
+    # while the drive works, and a stability wait lands on the first of
+    # them — an empty menu bar, several billion instructions early.
+    scheduler.run 3400000000
+    scheduler.run 4200000000
+    check_ex("goldens/pm7100-floppy-boot.png", 0, 440, 20, 640)
+    report_row("7.6", "swim3", "fd-boot")
+    report_perf("suite-pdm/pdm-floppy-boot", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("6100-75-hd") {
@@ -290,6 +491,49 @@ if row_on("pdm-nubus-empty") {
 
 if row_on("pdm-nubus-checkpoint") {
     row_end("pdm-nubus-checkpoint", try(row_pdm_nubus_checkpoint(), "FAILED"))
+}
+
+if row_on("pdm-floppy-mount") {
+    if have_media($hd_75) && have_media($fd_144) {
+        row_end("pdm-floppy-mount", try(row_pdm_floppy_mount(), "FAILED"))
+    } else {
+        echo "skip: pdm-floppy-mount (7.5 image or the 1.44 MB floppy not fetched)"
+    }
+}
+
+if row_on("pdm-floppy-800k") {
+    if have_media($hd_75) && have_media($fd_800) {
+        row_end("pdm-floppy-800k", try(row_pdm_floppy_800k(), "FAILED"))
+    } else {
+        echo "skip: pdm-floppy-800k (7.5 image or the 800K floppy not fetched)"
+    }
+}
+
+if row_on("pdm-floppy-write-eject") {
+    if have_media($hd_75) && have_media($fd_144) {
+        row_end("pdm-floppy-write-eject", try(row_pdm_floppy_write_eject(), "FAILED"))
+    } else {
+        echo "skip: pdm-floppy-write-eject (7.5 image or the 1.44 MB floppy not fetched)"
+    }
+}
+
+if row_on("pdm-floppy-boot") {
+    if have_media($fd_boot) {
+        row_end("pdm-floppy-boot", try(row_pdm_floppy_boot(), "FAILED"))
+    } else {
+        echo "skip: pdm-floppy-boot (the 7.6 install floppy not fetched)"
+    }
+}
+
+# The format row is opt-in: it is minutes of emulated surface work and the
+# rest of the suite already covers the datapath it shares.  Run it with
+#   make test-suite-pdm TEST_VARS="ROW=pdm-floppy-format"
+if $ROW_FILTER == "pdm-floppy-format" {
+    if have_media($hd_75) {
+        row_end("pdm-floppy-format", try(row_pdm_floppy_format(), "FAILED"))
+    } else {
+        echo "skip: pdm-floppy-format (7.5 prepared image not fetched)"
+    }
 }
 
 if row_on("pdm-cd-device") {

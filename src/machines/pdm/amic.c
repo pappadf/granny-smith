@@ -97,6 +97,18 @@ void pdm_amic_set_scsi_irq(config_t *cfg, int chip, bool level) {
     pdm_amic_recompute(cfg);
 }
 
+// SWIM3's own IRQ pin (SwimIntReq*): pseudo-VIA2 device bit 5, dispatched
+// at 68k level 2.  Level-sensitive like the 53C9x INT lines — the chip
+// drops it when the driver reads (and clears) its Interrupt register.
+void pdm_amic_set_fdc_irq(config_t *cfg, bool level) {
+    pdm_via2_t *v2 = &pdm_st(cfg)->amic.via2;
+    if (level)
+        v2->dev_levels |= 0x20u;
+    else
+        v2->dev_levels &= (uint8_t)~0x20u;
+    pdm_amic_recompute(cfg);
+}
+
 // NuBus slot /NMRQ levels.  Each connector's line runs from the slot to an
 // AMIC pin (the bridge is not in the path), and the slot bank presents them
 // ACTIVE LOW: slot $B is bit 2 ... slot $E bit 5, so an asserted line CLEARS
@@ -261,6 +273,13 @@ static void dma_ctrl_write(config_t *cfg, pdm_dma_ch_t *ch, uint8_t value, uint8
     pdm_amic_recompute(cfg);
 }
 
+// The DMA window's physical base ($50F31000-01; the low two bytes are
+// ignored — the window is 256 KB aligned, so they are always zero).  Every
+// channel's buffer lives inside this one contiguous window.
+static uint32_t dma_window_base(pdm_amic_t *a) {
+    return ((uint32_t)a->dma_base[0] << 24) | ((uint32_t)a->dma_base[1] << 16);
+}
+
 // Byte lane helpers for the 32-bit address registers (MSB at +0)
 static void addr_write_byte(uint32_t *addr, uint32_t lane, uint8_t v) {
     uint32_t shift = 8 * (3 - lane);
@@ -423,6 +442,8 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
     case 0x1055:
         a->enet_tx_count[1] = (uint16_t)((a->enet_tx_count[1] & 0xFF00u) | value);
         return;
+    case 0x1060:
+    case 0x1061:
     case 0x1062:
     case 0x1063:
         addr_write_byte(&a->floppy.addr, off & 3, value);
@@ -434,9 +455,16 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
         a->floppy.count = (uint16_t)((a->floppy.count & 0xFF00u) | value);
         return;
     case 0x1068:
+        // DMARST re-points the channel at its default region: the floppy
+        // channel is hard-wired into the window's SECOND 64 KB at offset
+        // $15000.  The .Sony driver derives its whole track-cache pointer
+        // from this readback minus the window base ($50F31000), so the
+        // register must hold the full PHYSICAL address, not the offset —
+        // the ROM programs a non-zero window base ($05780000 at HWInit).
         if (value & DMA_RST)
-            a->floppy.addr = 0x15000u; // reset restores the default region
+            a->floppy.addr = dma_window_base(a) + 0x15000u;
         dma_ctrl_write(cfg, &a->floppy, value, 0);
+        LOG(4, "floppy dma ctrl=$%02X addr=$%08X count=%u", a->floppy.ctrl, a->floppy.addr, a->floppy.count);
         return;
     case 0x1100:
         a->dma_berr_en = (uint16_t)((a->dma_berr_en & 0x00FFu) | (value << 8));
@@ -481,8 +509,8 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
 
 // Physical RAM byte access through the identity page table (the DMA buffer
 // sits wherever the HMC mapped it; the 7100/8100 fixed bank windows are
-// not host-identity).
-static uint8_t *scsi_dma_host(uint32_t phys) {
+// not host-identity).  Shared by the SCSI pump and the floppy movers.
+static uint8_t *dma_host_ptr(uint32_t phys) {
     uint32_t page = phys >> PAGE_SHIFT;
     if (page >= (uint32_t)g_page_count)
         return NULL;
@@ -546,7 +574,7 @@ static void pdm_scsi_pump_event(void *source, uint64_t data) {
         bool mem_to_scsi = (ch->ctrl & 0x40u) != 0; // DIR
         int moved = 0;
         while (moved < PDM_SCSI_PUMP_MAX && pdm_scsi_data_phase(cfg) && scsi_53c96_dreq(c96)) {
-            uint8_t *host = scsi_dma_host(ch->addr);
+            uint8_t *host = dma_host_ptr(ch->addr);
             if (!host)
                 break; // window points outside RAM: drop the request
             if (mem_to_scsi) {
@@ -574,6 +602,68 @@ static void pdm_scsi_pump_event(void *source, uint64_t data) {
 static void pdm_scsi_pump_arm(config_t *cfg) {
     remove_event(cfg->scheduler, pdm_scsi_pump_event, cfg);
     scheduler_new_cpu_event(cfg->scheduler, pdm_scsi_pump_event, cfg, 0, 0, (uint64_t)PDM_SCSI_PUMP_NS);
+}
+
+// ============================================================
+// Floppy: the AMIC DMA pump behind SWIM3
+// ============================================================
+// Unlike the SCSI channels there is no free-running service loop here.
+// SWIM3 raises FDC_REQ only while a sector is under the head, and the
+// transfer's length is the sector's — so the engine (swim3_xfer.c) moves
+// its bytes inside one scheduler slot and calls these two movers, which
+// are the AMIC half: window addressing, the 16-bit down-counter, and the
+// DMA-complete interrupt the raw-read path terminates on.
+//
+// Addressing (docs/machines/pdm/swim3.md, "AMIC DMA"): the channel is
+// hard-wired into the window's second 64 KB, so only the LOW 16 bits of
+// the address advance — a transfer that would run off the end wraps
+// inside that 64 KB rather than walking into the next region.
+
+// One step of the channel address + count after a byte has moved.  When
+// the count reaches zero the channel stops and raises DMAIF, which is how
+// raw/copy-protect reads terminate (§6.3).
+static void fd_dma_advance(config_t *cfg, pdm_dma_ch_t *ch) {
+    ch->addr = (ch->addr & 0xFFFF0000u) | ((ch->addr + 1u) & 0xFFFFu);
+    if (ch->count > 0 && --ch->count == 0) {
+        ch->ctrl = (uint8_t)((ch->ctrl & ~DMA_RUN) | DMA_IF);
+        LOG(4, "floppy dma terminal count, IF set");
+        pdm_amic_recompute(cfg);
+    }
+}
+
+bool pdm_amic_fd_dma_running(config_t *cfg) {
+    return (pdm_st(cfg)->amic.floppy.ctrl & DMA_RUN) != 0;
+}
+
+bool pdm_amic_fd_dma_to_device(config_t *cfg) {
+    return (pdm_st(cfg)->amic.floppy.ctrl & 0x40u) != 0; // DMADIR: 1 = memory -> SWIM3
+}
+
+// Memory -> SWIM3 (write / format streams).  False when the channel is
+// stopped or its address is outside physical RAM.
+bool pdm_amic_fd_dma_get(config_t *cfg, uint8_t *out) {
+    pdm_dma_ch_t *ch = &pdm_st(cfg)->amic.floppy;
+    if (!(ch->ctrl & DMA_RUN))
+        return false;
+    uint8_t *host = dma_host_ptr(ch->addr);
+    if (!host)
+        return false;
+    *out = *host;
+    fd_dma_advance(cfg, ch);
+    return true;
+}
+
+// SWIM3 -> memory (read streams).
+bool pdm_amic_fd_dma_put(config_t *cfg, uint8_t value) {
+    pdm_dma_ch_t *ch = &pdm_st(cfg)->amic.floppy;
+    if (!(ch->ctrl & DMA_RUN))
+        return false;
+    uint8_t *host = dma_host_ptr(ch->addr);
+    if (!host || !g_page_table[ch->addr >> PAGE_SHIFT].writable)
+        return false;
+    *host = value;
+    fd_dma_advance(cfg, ch);
+    return true;
 }
 
 // ============================================================

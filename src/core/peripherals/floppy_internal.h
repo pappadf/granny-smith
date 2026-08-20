@@ -25,6 +25,8 @@
 #define FLOPPY_TYPE_IWM 0
 // SWIM dual-mode controller (SE/30)
 #define FLOPPY_TYPE_SWIM 1
+// SWIM III, controller-driven (PDM 6100/7100/8100)
+#define FLOPPY_TYPE_SWIM3 2
 
 // ============================================================================
 // Drive and Track Geometry

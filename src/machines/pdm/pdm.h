@@ -96,22 +96,29 @@ typedef struct pdm_dma_ch {
 } pdm_dma_ch_t;
 
 // SWIM3 floppy controller ($50F16000, 16 byte-wide registers at stride
-// $200).  Phase-G scope: the register file + drive-sense model the .Sony
-// driver's open/idle path needs — internal SuperDrive present, no disk,
-// drive 2 absent, no interrupt sources.  Media datapaths are Phase H.
+// $200): the register file, the Sony drive-sense/strobe protocol, and the
+// media transfer engine (swim3.c + swim3_xfer.c).  Drive and media state
+// itself lives in the shared floppy module (cfg->floppy); what is kept
+// here is only what the chip owns.
 typedef struct pdm_swim3 {
     uint8_t timer; // reg 1 (storage only; no countdown modelled)
     uint8_t param; // reg 3 ParamData
     uint8_t phase; // reg 4 CA0-2/LSTRB lines (probe loopback readback)
     uint8_t setup; // reg 5 (bit 7 SoftReset self-clears)
     uint8_t mode; // reg 6 read; written via Zeroes ($C00) / Ones ($E00)
-    uint8_t intr; // reg 8, read-to-clear (never set in this model)
+    uint8_t intr; // reg 8, read-to-clear
     uint8_t step, ctrack, csect, gap, sector, nsect; // regs 9-14 storage
     uint8_t intmask; // reg 15, R/W
-    uint8_t error; // reg 2, read-to-clear (never set in this model)
+    uint8_t error; // reg 2, read-to-clear
     uint8_t motor_on; // drive-1 spindle latch (strobe-controlled)
     uint8_t mfm_mode; // drive mode latch; forgotten at motor-off (§11.12)
-    uint8_t step_dir; // step-direction latch (sense addr 0)
+    uint8_t step_dir; // step-direction latch (sense addr 0); 1 = outward
+    uint8_t fmt_byte; // reg 12 read side: 4th address-field byte
+    // --- transfer engine (swim3_xfer.c) ---
+    uint8_t engine_running; // an engine event is armed (GO seen)
+    uint8_t xfer_side; // head the sense address last routed (0/1)
+    uint8_t eject_pending; // wEjectOn strobed; the media goes at the timeout
+    uint32_t fmt_sectors; // sectors the last format stream declared
 } pdm_swim3_t;
 
 typedef struct pdm_amic {
@@ -275,6 +282,15 @@ void pdm_amic_set_scsi_irq(config_t *cfg, int chip, bool level);
 // NuBus slot /NMRQ levels into the pseudo-VIA2 slot bank (slot $B -> bit 2,
 // $C -> 3, $D -> 4, $E -> 5; the register reads active-low).
 void pdm_amic_set_slot_irq(config_t *cfg, int slot, bool level);
+// SWIM3's IRQ pin into the pseudo-VIA2 device bank (bit 5, 68k level 2).
+void pdm_amic_set_fdc_irq(config_t *cfg, bool level);
+// The AMIC floppy DMA channel, as the SWIM3 engine uses it: RUN/direction
+// state and one byte in either direction (address advance, count decrement
+// and the terminal-count interrupt are the movers' business).
+bool pdm_amic_fd_dma_running(config_t *cfg);
+bool pdm_amic_fd_dma_to_device(config_t *cfg);
+bool pdm_amic_fd_dma_get(config_t *cfg, uint8_t *out);
+bool pdm_amic_fd_dma_put(config_t *cfg, uint8_t value);
 
 // === bart.c =================================================================
 // The NuBus '90 bridge: the $F0000000 register file, the slot-space windows,
@@ -299,11 +315,59 @@ void pdm_awacs_write(config_t *cfg, uint32_t offset, uint8_t value);
 uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
 
 // === swim3.c ================================================================
-// SWIM3 floppy controller register file + Sony-drive sense model (Phase-G
-// no-media scope; see pdm_swim3_t above).  Island offsets 0..$1FFF from
-// $50F16000; byte accesses only.
+// SWIM3 floppy controller register file + Sony-drive sense/strobe model
+// (see pdm_swim3_t above).  Island offsets 0..$1FFF from $50F16000; byte
+// accesses only.
 uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
+// Raise/clear the chip's IRQ line from the current Interrupt/IntMask/mode
+// picture (§7.9: IRQ = EnableInts && (Interrupt & IntMask)).
+void pdm_swim3_update_irq(config_t *cfg);
+// Post an interrupt source (the I_* bits below) and re-evaluate the line.
+void pdm_swim3_raise(config_t *cfg, uint8_t bits);
+
+// Interrupt / IntMask bit assignments (§3.5)
+#define SWIM3_INT_TIMER 0x01u
+#define SWIM3_INT_STEP  0x02u
+#define SWIM3_INT_ID    0x04u
+#define SWIM3_INT_DONE  0x08u
+#define SWIM3_INT_SENSE 0x10u
+
+// Mode register bits (§3.2)
+#define SWIM3_M_ENABLE_INTS 0x01u
+#define SWIM3_M_DRIVE1      0x02u
+#define SWIM3_M_DRIVE2      0x04u
+#define SWIM3_M_ACTION      0x08u // GO
+#define SWIM3_M_WRITE       0x10u
+#define SWIM3_M_HEADSEL     0x20u
+#define SWIM3_M_FORMAT      0x40u
+#define SWIM3_M_GOSTEP      0x80u
+
+// Setup register bits (§3.1)
+#define SWIM3_S_COPYPROT   0x02u
+#define SWIM3_S_GCR        0x04u
+#define SWIM3_S_DISGCRCONV 0x10u
+#define SWIM3_S_IBMDRIVE   0x20u
+
+// Error register bits (§3.4)
+#define SWIM3_E_UNDERRUN 0x01u
+#define SWIM3_E_OVERRUN  0x04u
+#define SWIM3_E_CRC_ADDR 0x40u
+#define SWIM3_E_CRC_DATA 0x80u
+
+// === swim3_xfer.c ===========================================================
+// The media transfer engine: header hunt, sector read/write, whole-track
+// format, raw (copy-protect) capture, and the GCR nibble codec.  It reads
+// and writes the disk image through the shared floppy module and moves its
+// bytes through the AMIC floppy DMA channel.
+void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
+// Mode-register edges: GO or GoStep just became set / cleared.
+void pdm_swim3_engine_update(config_t *cfg);
+// Drive geometry answers the sense protocol needs (media present, density,
+// write protection) — implemented next to the geometry table.
+bool pdm_swim3_media_is_hd(config_t *cfg);
+// The drive's index / tach line for sense address 11.
+int pdm_swim3_index_pulse(config_t *cfg);
 
 // === ariel.c ================================================================
 // Onboard video: the Sonora-model control registers ($50F28000), the Ariel II
