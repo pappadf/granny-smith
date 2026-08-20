@@ -11,10 +11,13 @@
 // the engine is a state machine with its own tables.  Keeping them apart
 // preserves the property that made the register file easy to verify.
 //
-// Contract references: the PDM SWIM3 register map and the .Sony driver's
-// expectations follow Apple's SonySWIM3.a driver source and the SWIM3 ERS
-// (register set §3, drive interface §5, presence probe §7.1, state
-// machines §7, driver expectations §8 of the project's SWIM3 note).
+// Contract references: the register map and its semantics follow Apple's
+// SWIM3 Engineering Requirements Specification v1.2 (3/24/93); the Sony
+// drive-register protocol follows Apple, "Guide to the Macintosh Family
+// Hardware", 2nd ed., and Apple, "Power Macintosh Computers" Developer
+// Note (1994), Table 3-7.  What the ROM's .Sony driver expects of the chip
+// was established by tracing the shipping driver's own register accesses
+// on this emulator (`debug.log swim3 5`), not from its source.
 
 #include "pdm.h"
 
@@ -41,9 +44,9 @@ LOG_USE_CATEGORY_NAME("swim3");
 #define R_NSECT   14
 #define R_INTMASK 15
 
-// Register names for the `swim3` trace category — the Apple driver's own
-// spellings, so a captured log lines up with SonySWIM3.a's equates.  Three
-// indices read and write different things, hence two tables.
+// Register names for the `swim3` trace category, in Apple's own spellings,
+// so a captured log reads against the specification.  Three indices read
+// and write different things, hence two tables.
 static const char *const REG_RD_NAMES[16] = {"Data",    "Timer",     "Error", "Param",  "Phase",    "Setup",
                                              "Mode",    "Hdshk",     "Intr",  "Step",   "CurTrack", "CurSect",
                                              "FmtByte", "FirstSect", "NSect", "IntMask"};

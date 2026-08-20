@@ -29,10 +29,10 @@
 // zone's rpm in GCR.
 //
 // Sources: Apple SWIM3 ERS v1.2 (transfer sizes, escape command table, the
-// GCR converter rule, FirstSector/SectorsToXfer semantics), Apple's
-// SonySWIM3.a .Sony driver (the streams it builds), and Apple, "Guide to
-// the Macintosh Family Hardware", 2nd ed. (GCR speed zones, sector
-// nibblisation, the 3-byte checksum).
+// GCR converter rule, FirstSector/SectorsToXfer semantics); Apple, "Guide
+// to the Macintosh Family Hardware", 2nd ed. (GCR speed zones, sector
+// nibblisation, the 3-byte checksum); and the byte streams the ROM's own
+// .Sony driver puts on the DMA channel, observed on this emulator.
 
 #include "pdm.h"
 
