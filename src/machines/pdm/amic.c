@@ -614,10 +614,10 @@ static void pdm_scsi_pump_arm(config_t *cfg) {
 // are the AMIC half: window addressing, the 16-bit down-counter, and the
 // DMA-complete interrupt the raw-read path terminates on.
 //
-// Addressing (amic.md §7.3): the channel is hard-wired into the window's
-// second 64 KB, so only the LOW 16 bits of the address advance — a
-// transfer that would run off the end wraps inside that 64 KB rather than
-// walking into the next region.
+// Addressing (docs/machines/pdm/swim3.md, "AMIC DMA"): the channel is
+// hard-wired into the window's second 64 KB, so only the LOW 16 bits of
+// the address advance — a transfer that would run off the end wraps
+// inside that 64 KB rather than walking into the next region.
 
 // One step of the channel address + count after a byte has moved.  When
 // the count reaches zero the channel stops and raises DMAIF, which is how
