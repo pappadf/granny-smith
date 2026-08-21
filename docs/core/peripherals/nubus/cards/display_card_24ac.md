@@ -46,9 +46,33 @@ All display registers are byte-wide on lane 3. Offsets are slot-relative
 | Offset | Register | Notes |
 |---|---|---|
 | `0x000000`–`0x37FFFF` | **VRAM** (host-mapped visible bank) | flat; `0x380000` = `VRAM_VISIBLE` |
-| `0x3FE000` | **Operand aperture** | latches the 32-bit engine operand (fill colour / pattern) |
+| *(driver's choice)* | **Operand aperture** | where the driver stages the operand / pattern bytes — **not a fixed offset**, see below |
 | `0x400000`+ | **Active-bank alias** | engine-transforming write window (see §3) |
-| `0x7FE000` | operand **commit** (aperture + `0x400000`) | write `4` (`COMMIT_CMD`) latches the loaded operand |
+| aperture + `0x400000` | operand **commit** / pattern-row select | write `4` = latch 4 bytes; write `8` = latch this row's 8 pattern bytes |
+
+The operand aperture's **address is chosen by the driver at init and must not
+be hardcoded**. Measured with the same card and the same cdev: a IIcx uses
+`0x3FE000` and a Power Macintosh 8100 uses `0x3F8000` (the hardware spec also
+documents `0x0FE000` for a small-VRAM card). The model therefore recognises
+these commands by their *shape* — a longword written through the alias, aimed
+above `VRAM_VISIBLE`, which is far above the largest raster this card scans
+out, so a real fill can never land there — and takes the pattern bytes from
+the VRAM the driver just staged them in. That works at any aperture base,
+including one below `VRAM_VISIBLE`, whose passive writes reach VRAM through
+the host mapping without the card model seeing them at all.
+
+Two command widths arrive, and both mean "these N bytes are the current
+pattern, aligned to absolute VRAM columns":
+
+- **`4` — operand commit.** The solid-colour path: one longword, replicated.
+- **`8` — pattern-row select.** QuickDraw expands an 8×8 pattern into 8 rows
+  of 8 bytes and the driver stages all 64 at the aperture; before each
+  scanline's fill it points the engine at the row that scanline needs,
+  cycling 0–7. This is the ROM's per-row pattern selector, offloaded. The
+  selects are interleaved *between* the fills, one per row, and are **not**
+  followed by a commit — which is what makes a dither alternate line to line.
+  Treating them as fills collapses every patterned fill to a solid colour
+  (the symptom: a white or black Finder desktop instead of the 50% gray).
 | `0xC8000A` / `0xC8000E` | CLUT init data / index | |
 | `0xC80016` | CLUT end-of-load strobe | accept-and-log |
 | `0xC8001A` / `0xC8001E` | CLUT runtime data / index | index write resets the R/G/B sub-counter; 3 data writes load R,G,B |
