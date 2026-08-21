@@ -69,10 +69,19 @@ jobs:
         run: make clean && make && make ui2
 
       # 3. Checkout the deployment repository.
+      #    `ref` is pinned rather than left to default, deliberately:
+      #    without it actions/checkout must call the REST API to ask
+      #    which branch is default, and that single call is billed to
+      #    the DEPLOY_TOKEN owner's personal 5,000 req/hr budget --
+      #    shared across every PAT on that account. A staging deploy
+      #    failed on exactly that (run 32534746678). Git fetch/push
+      #    over HTTPS is not REST-rate-limited, so pinning the ref
+      #    makes this step immune to quota exhaustion.
       - name: Checkout gs-pages
         uses: actions/checkout@v7
         with:
           repository: pappadf/gs-pages
+          ref: main
           token: ${{ secrets.DEPLOY_TOKEN }}
           path: deploy
 
