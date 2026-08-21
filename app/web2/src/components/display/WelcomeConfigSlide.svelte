@@ -618,8 +618,8 @@
           <div class="form-row">
             <span class="form-label"></span>
             <div class="form-help">
-              The monitor is plugged into the card, so the built-in video port is left
-              unconnected and the card becomes the only screen.
+              The monitor is plugged into the card, so the built-in video port is left unconnected
+              and the card becomes the only screen.
             </div>
           </div>
         {/if}
