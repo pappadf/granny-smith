@@ -19,28 +19,53 @@
 
 LOG_USE_CATEGORY_NAME("ppc");
 
+// 601 branch-folding flag for the sprint loop: the four branch handlers
+// (and, for bit-exactness, illegal branch forms) record here whether the
+// just-executed instruction folds — b/bc/bclr/bcctr issue to the branch
+// unit in parallel and retire in zero cycles, EXCEPT a taken branch to
+// itself (a pure spin must still burn budget slots).  Purely
+// intra-instruction state (set in the handler, consumed by the loop right
+// after ppc_execute returns), so it lives outside ppc_t and is never
+// checkpointed.  Keeping the classification here instead of re-deriving
+// `iw >> 26` + a compare chain in the loop takes the cost off the 100%
+// path and puts it on the ~15% of instructions that are branches.
+static uint32_t g_ppc_fold = 0;
+
+// The fold predicate shared by the handlers: everything except a redirect
+// back onto the instruction's own address.
+static inline void ppc_record_fold(ppc_t *p) {
+    g_ppc_fold = (p->pc != p->instruction_pc);
+}
+
 // Illegal-instruction program exception (also the documented path for
 // PowerPC instructions the 601 does not implement — mftb, tlbia, the
 // 64-bit set (601UM §10.3 Tables 10-6/10-8) — and for invalid forms the
 // shared decode tree routes to OP_ILLEGAL).
 void ppc_illegal_op(ppc_t *p, uint32_t iw) {
-    (void)iw; // referenced only when the log category is compiled in
     LOG(5, "illegal instruction $%08X at $%08X", iw, p->instruction_pc);
     ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_ILLEGAL, p->instruction_pc);
+    // Bit-exactness with the loop's former post-hoc opcode test: an illegal
+    // FORM of a branch opcode (invalid BO) classified as folded there, so it
+    // must keep doing so (pc now points at the program vector, != the
+    // faulting address, so the predicate holds).
+    uint32_t op = iw >> 26;
+    if (op == 18 || op == 16 || (op == 19 && ((iw & 0x7FEu) == 0x20u || (iw & 0x7FEu) == 0x420u)))
+        ppc_record_fold(p);
 }
 
 // === Branches ===============================================================
 
-void ppc_do_b(ppc_t *p, uint32_t iw) {
+static inline void ppc_do_b(ppc_t *p, uint32_t iw) {
     int32_t li = (int32_t)(iw << 6) >> 6; // sign-extend the 26-bit field
     li &= ~3;
     uint32_t target = (iw & 2u) ? (uint32_t)li : p->instruction_pc + (uint32_t)li;
     if (iw & 1u)
         p->lr = p->pc;
     p->pc = target;
+    ppc_record_fold(p);
 }
 
-void ppc_do_bc(ppc_t *p, uint32_t iw) {
+static inline void ppc_do_bc(ppc_t *p, uint32_t iw) {
     bool taken = ppc_branch_taken(p, PPC_RT(iw), PPC_RA(iw), true);
     int32_t bd = (int32_t)(int16_t)(iw & 0xFFFCu);
     uint32_t target = (iw & 2u) ? (uint32_t)bd : p->instruction_pc + (uint32_t)bd;
@@ -48,15 +73,17 @@ void ppc_do_bc(ppc_t *p, uint32_t iw) {
         p->lr = p->pc;
     if (taken)
         p->pc = target;
+    ppc_record_fold(p);
 }
 
-void ppc_do_bclr(ppc_t *p, uint32_t iw) {
+static inline void ppc_do_bclr(ppc_t *p, uint32_t iw) {
     bool taken = ppc_branch_taken(p, PPC_RT(iw), PPC_RA(iw), true);
     uint32_t target = p->lr & ~3u;
     if (PPC_RC(iw))
         p->lr = p->pc;
     if (taken)
         p->pc = target;
+    ppc_record_fold(p);
 }
 
 // bcctr: BO[2] = 0 (decrement CTR) is an invalid form, and the 601's
@@ -64,13 +91,14 @@ void ppc_do_bclr(ppc_t *p, uint32_t iw) {
 // worth spelling out — the count register IS decremented and tested, and
 // the branch is resolved on that test, but instruction fetch is directed to
 // the NON-decremented value.  Hence the target snapshot before the test.
-void ppc_do_bcctr(ppc_t *p, uint32_t iw) {
+static inline void ppc_do_bcctr(ppc_t *p, uint32_t iw) {
     uint32_t target = p->ctr & ~3u;
     bool taken = ppc_branch_taken(p, PPC_RT(iw), PPC_RA(iw), true);
     if (PPC_RC(iw))
         p->lr = p->pc;
     if (taken)
         p->pc = target;
+    ppc_record_fold(p);
 }
 
 // === Divides (architecturally-undefined results fixed for determinism) ======
@@ -402,8 +430,12 @@ static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
 
 // === The generated decoder ==================================================
 
+// Single call site in the sprint loop below: force the dispatch switch
+// inline into the loop (the function is past -O2's size heuristics, so a
+// bare `static` stays out of line), dropping the per-instruction
+// call/return and the register spills it forces.
 #define PPC_DECODER_NAME        ppc_execute
-#define PPC_DECODER_RETURN_TYPE void
+#define PPC_DECODER_RETURN_TYPE static inline __attribute__((always_inline)) void
 #define PPC_DECODER_ARGS        ppc_t *restrict p, uint32_t iw
 #define PPC_DECODER_PROLOGUE    (void)0
 #define PPC_DECODER_EPILOGUE    (void)0
@@ -417,6 +449,7 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
     // sprint exits and the epilogue delivers the machine check (the 68030
     // decoder precedent in cpu_68000.c/cpu_68030.c).
     g_bus_error_instr_ptr = instructions;
+    g_ppc_fold = 0; // no stale classification from a prior sprint
     ppc_poll_interrupt(p);
     while (*instructions > 0) {
         // Level-sensitive interrupt inputs re-checked at every boundary —
@@ -435,15 +468,18 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
         // 601 branch folding: b/bc/bclr/bcctr issue to the branch unit in
         // parallel and retire in zero cycles — the reason HWInit's timed
         // 8-addi + bdnz measurement loop really runs at CPI 1.0 (proposal
-        // §5.2).  Two exclusions: a branch to itself still burns a slot so
-        // a pure spin (`b .`) cannot stall the sprint, and the last budget
-        // slot never folds — a folded branch there would run the branch AND
-        // its target in one nominal instruction, which breaks single-step
-        // and makes PC breakpoints/logpoints skip branch targets.
-        uint32_t op = iw >> 26;
-        bool folded = (op == 18 || op == 16 || (op == 19 && ((iw & 0x7FEu) == 0x20u || (iw & 0x7FEu) == 0x420u))) &&
-                      p->pc != p->instruction_pc && *instructions > 1;
-        if (!folded && *instructions > 0) // saturating (I/O penalty may have zeroed it)
+        // §5.2).  The handlers record the classification in g_ppc_fold
+        // (self-branch excluded there), keeping the opcode test off the
+        // every-instruction path.  The last budget slot never folds — a
+        // folded branch there would run the branch AND its target in one
+        // nominal instruction, which breaks single-step and makes PC
+        // breakpoints/logpoints skip branch targets.
+        if (__builtin_expect(g_ppc_fold != 0, 0)) {
+            g_ppc_fold = 0;
+            if (*instructions > 1)
+                continue; // folded: no budget slot consumed
+        }
+        if (*instructions > 0) // saturating (I/O penalty may have zeroed it)
             (*instructions)--;
     }
     // Deferred data/fetch fault → machine check (601UM §5.4.2: the TEA
