@@ -10,6 +10,25 @@ register model and the shipping ROM drives it with the same
 (Table 3-10 timing, Table 3-8 depths), the 8100 schematics, and the
 shipping ROM's Sonora driver/PrimaryInit access idioms.
 
+## Monitor sense
+
+The three HDI-45 sense lines are open-collector with pull-ups; a monitor
+grounds a subset, so the strap IS the monitor (Apple, *Designing Cards and
+Drivers for the Macintosh Family*, 3rd ed., ch. 9).  `pdm_monitors[]` in
+ariel.c lists the straps this model can present, and `machine.boot`'s
+`monitor=` picks one; the readback is wired-AND(drive, strap), which also
+answers the ROM's six-bit extended-sense walk correctly.
+
+`monitor=none` (code 7, grounding nothing) is the interesting one: the
+shipping ROM reads all-ones from the extended walk and turns built-in video
+off entirely — its PrimaryInit prunes every built-in video sResource, and
+the Start Manager skips carving the framebuffer out of DRAM.  The substrate
+display hook returns NULL to match, so `system_display()` falls through to
+the NuBus primary display and a seated card becomes the only screen.
+Verified against the ROM's own arithmetic: MemTop is 618,496 bytes (604 KB)
+higher with the port unconnected — exactly the framebuffer that was never
+allocated.
+
 ## Registers
 
 - **Video control** (`$50F28000`, decoded in amic.c → here):

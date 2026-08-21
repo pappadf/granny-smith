@@ -482,6 +482,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
   if (config.videoCard) doc.video_card = config.videoCard;
   if (config.videoMode) doc.video_mode = config.videoMode;
+  if (config.monitor) doc.monitor = config.monitor;
   const ok = await gsEval('machine.boot', doc);
   if (ok !== true) {
     showNotification(`Boot failed: ${gsErrorText(ok)}`, 'error');

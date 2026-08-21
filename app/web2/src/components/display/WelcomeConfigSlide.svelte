@@ -46,6 +46,13 @@
       mmu?: { present?: boolean; kind?: string };
       nubus?: boolean;
     };
+    // The machine's own built-in video, when it is not a NuBus pseudo-card
+    // (the PDM family's Ariel scanout).  Present means the display can be
+    // driven EITHER by this port or by a NuBus card, and picking a card
+    // leaves this port unconnected — exactly what plugging the monitor into
+    // the card does on real hardware.  Absent (empty map) on every other
+    // machine, so nothing else changes shape.
+    builtin_video?: { id?: string; display_name?: string };
     // Per-card video slot shape (proposal §4.4) — the single source for both
     // the VROM requirement (per-card requires_vrom; see needsVrom) and the
     // video-mode list (each card's monitors × depths; see videoModes).
@@ -80,6 +87,13 @@
     cardId: string; // nubus card-kind id this blob provides
     compatible: string[]; // card ids this vROM can drive (usually [cardId])
   }
+
+  // The pseudo card-id standing for "the machine's own built-in video port".
+  // Never a registry card id, so it can share the `cardId` state without
+  // colliding; the boot document turns it into "no video_card, monitor
+  // connected", and any real card into "that card, built-in port
+  // unconnected".
+  const BUILTIN_VIDEO_ID = 'builtin';
 
   // Local form state.
   let modelId = $state('');
@@ -148,9 +162,25 @@
   let cardOptions = $derived(
     availableCards.map((c) => ({ id: c.id, label: c.display_name ?? c.id })),
   );
-  // Only surface the card picker when there's a real choice; a fixed/builtin
+  // The machine's own built-in video, offered beside the NuBus cards when
+  // the profile advertises one.  BUILTIN_VIDEO_ID is a card id no registry
+  // card can use, so it round-trips through the same `cardId` state.
+  let builtinVideo = $derived(currentProfile?.builtin_video);
+  let hasBuiltinVideo = $derived(!!builtinVideo?.display_name);
+  // What the display picker offers: built-in first (it is the machine's own
+  // port and its default), then every installable NuBus card.
+  let displayOptions = $derived(
+    hasBuiltinVideo
+      ? [
+          { id: BUILTIN_VIDEO_ID, label: builtinVideo?.display_name ?? 'Built-in video' },
+          ...cardOptions,
+        ]
+      : cardOptions,
+  );
+  let builtinSelected = $derived(cardId === BUILTIN_VIDEO_ID);
+  // Only surface the picker when there's a real choice; a fixed/builtin
   // single card (e.g. SE/30 onboard video) needs no dropdown.
-  let needsCardPicker = $derived(cardOptions.length > 1);
+  let needsCardPicker = $derived(displayOptions.length > 1);
   let selectedCard = $derived(availableCards.find((c) => c.id === cardId));
   // VROM row/handling is driven by the *selected card* (the SE/30-vs-IIci
   // asymmetry): a card declares requires_vrom, not the machine.
@@ -162,7 +192,9 @@
   let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);
   // Model expects a video card but none is installable (every candidate card
   // needs a vROM and none is present). Drives the "upload a Video ROM" hint.
-  let videoUnavailable = $derived(slotCards.length > 0 && availableCards.length === 0);
+  let videoUnavailable = $derived(
+    slotCards.length > 0 && availableCards.length === 0 && !hasBuiltinVideo,
+  );
   // HD row label: the Lisa/XL parallel-port ProFile (hd_bus === 'profile') is
   // not on the SCSI bus, so its label comes from the bus, not scsi_slots (which
   // is empty for those machines). SCSI machines keep their profile slot label.
@@ -354,10 +386,16 @@
   // so this is what submit relies on.
   $effect(() => {
     const list = availableCards;
+    const builtin = hasBuiltinVideo;
+    if (builtin && cardId === BUILTIN_VIDEO_ID) return; // a valid pick
     if (!list.length) {
-      cardId = '';
+      // Built-in video is the fallback when no card is installable, and the
+      // default on machines that have it: a stock machine ships no card.
+      cardId = builtin ? BUILTIN_VIDEO_ID : '';
     } else if (!list.find((c) => c.id === cardId)) {
-      cardId = list.find((c) => c.id === defaultCardId)?.id ?? list[0].id;
+      cardId = builtin
+        ? BUILTIN_VIDEO_ID
+        : (list.find((c) => c.id === defaultCardId)?.id ?? list[0].id);
     }
   });
 
@@ -508,7 +546,13 @@
       vrom: vromPath,
       // The selected NuBus video card — the boot document's video_card=, so
       // the right card boots instead of the slot default (the 24AC-vs-8•24 bug).
-      videoCard: fixedVideo ? undefined : cardId || undefined,
+      videoCard: fixedVideo || builtinSelected ? undefined : cardId || undefined,
+      // Which port the monitor is plugged into.  Choosing a NuBus card on a
+      // machine that also has built-in video leaves the built-in port
+      // unconnected, so the ROM turns built-in video off and the card is the
+      // only screen — the hardware behaviour, and the only way the card's
+      // own accelerator ever gets used.
+      monitor: hasBuiltinVideo && !builtinSelected ? 'none' : undefined,
       // Seed the selected video mode (matches web-legacy's bootFromConfig).
       // Without it the card never seeds its slot-PRAM/video defaults and A/UX
       // hangs enabling its device drivers on real hardware.
@@ -563,13 +607,22 @@
       {/if}
       {#if needsCardPicker}
         <div class="form-row">
-          <label for="cfg-card">Display Card</label>
+          <label for="cfg-card">{hasBuiltinVideo ? 'Display' : 'Display Card'}</label>
           <select id="cfg-card" bind:value={cardId}>
-            {#each cardOptions as c (c.id)}
+            {#each displayOptions as c (c.id)}
               <option value={c.id}>{c.label}</option>
             {/each}
           </select>
         </div>
+        {#if hasBuiltinVideo && !builtinSelected}
+          <div class="form-row">
+            <span class="form-label"></span>
+            <div class="form-help">
+              The monitor is plugged into the card, so the built-in video port is left
+              unconnected and the card becomes the only screen.
+            </div>
+          </div>
+        {/if}
       {/if}
       {#if videoUnavailable}
         <div class="form-row">

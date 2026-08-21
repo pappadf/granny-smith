@@ -93,14 +93,19 @@ controller's per-slot hook (`machine_substrate_t.nubus_slot_irq`) therefore
 lands in `pdm_bart_slot_irq`, which forwards to `pdm_amic_set_slot_irq`.
 See amic.md for the enable/aggregate side.
 
-A note on which screen the guest picks: with a 24AC in slot `$C` the desktop
-stays on the built-in video and the card comes up as screen two.  That is a
-consequence of the built-in *monitor*, not of slot priority — `ariel.c`
-straps a 14" Hi-Res monitor onto the HDI-45, and the ROM allocates the
-604 KB framebuffer only when it senses one (video.md).  A PDM with nothing
-plugged into the built-in port allocates no framebuffer at all, and a card
-is then the machine's only screen; the emulator has no way to configure
-that yet.
+A note on which screen the guest picks: with a 24AC in slot `$C` and a
+monitor on the built-in port, the desktop stays on the built-in video and
+the card comes up as screen two.  That is a consequence of the built-in
+*monitor*, not of slot priority — and it is configurable: `monitor=none`
+straps the HDI-45 as unconnected, and the ROM then turns its own video off
+and the card becomes the machine's only screen (video.md, "Monitor sense").
+
+That is the configuration in which a display card's accelerator actually
+does anything.  Measured on an 8100 with a genuine-vROM 24AC as the only
+screen, Symantec System Info's Rectangles test reports 3411 rects/sec with
+the card's cdev installed and 2530 with it removed (+35%); with the built-in
+video owning the screen instead, the card's engine counters do not move at
+all during the benchmark, because nothing is drawn on the card.
 
 The whole path is exercised by a 24AC in slot `$C`: its VBL raises `/NMRQ`,
 the flag reaches the 601 through AMIC's interrupt control register, the

@@ -65,6 +65,7 @@ const hw_profile_t machine_pm6100 = {
     // bridge itself — so this model declares no slots AND no BART: the
     // ROM's presence probe faults, BARTExists stays clear, and the machine
     // boots with zero slots (bart.c).
+    .builtin_video = "Built-in video (Ariel II)",
     .nubus_slots = NULL,
 
     .substrate = &pdm_substrate,
