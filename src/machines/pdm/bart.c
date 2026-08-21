@@ -13,9 +13,10 @@
 //      writes on every 7100/8100 boot, an ID longword, and one burst-enable
 //      byte per slot;
 //   2. the address windows BART decodes — standard slot space
-//      $Fs000000-$FsFFFFFF and super slot space $s0000000-$sFFFFFFF for the
-//      three connectors $B/$C/$D (the middle connector is $D; slot $E is
-//      the PDS video pseudo-slot, not a NuBus connector, on these boards);
+//      $Fs000000-$FsFFFFFF and super slot space $s0000000-$sFFFFFFF for
+//      slots $B..$E.  The three CONNECTORS are $C/$D/$E (pm8100.c); $B is
+//      decoded but unpopulated, so an access there faults like any other
+//      empty slot;
 //   3. the FAULT semantics, which are the whole game: an access BART
 //      claims but nothing answers terminates with a recoverable transfer
 //      error.  The Slot Manager reads declaration ROMs "under a bus-error
@@ -60,8 +61,11 @@ LOG_USE_CATEGORY_NAME("bart");
 // the model deliberately answers with something else.
 #define BART_ID_PROTOTYPE 0x43184000u
 
-// Slots whose /NMRQ the pseudo-VIA2 slot bank carries: $B/$C/$D on the
-// connectors, $E from the PDS (amic.md: bit 2 = $B ... bit 5 = $E).
+// Slots whose /NMRQ the pseudo-VIA2 slot bank carries.  Bit = slot - 9, so
+// $B..$E are bits 2..5; the three connectors ($C/$D/$E) are bits 3/4/5 —
+// the set a booted OS actually enables — and bit 6 is the built-in video
+// VBL.  Nothing enables or services bit 2, which is why $B is decoded but
+// never a connector (pm8100.c).
 #define BART_SLOT_IRQ_FIRST 0x0B
 #define BART_SLOT_IRQ_LAST  0x0E
 

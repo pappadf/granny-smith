@@ -46,7 +46,7 @@ Behind AMIC's decode, two datapaths have their own modules:
   model in the family has.  See `swim3.md`.
 - **BART** (`bart.c`) — the NuBus '90 bridge on the 7100 and 8100: the
   `$F0000000` register file, the slot and super-slot windows for the three
-  connectors `$B`/`$C`/`$D`, and the recoverable faults an empty slot
+  connectors `$C`/`$D`/`$E`, and the recoverable faults an empty slot
   answers a Slot Manager probe with.  The 6100's bridge ships on an
   optional PDS adapter that is not modeled, so that machine presents no
   bridge at all and the ROM's probe finds that out.  See `bart.md`.
@@ -68,7 +68,7 @@ arrives in a later phase (proposal-powerpc-601-pdm.md §6).
 | `$5FFFF000` page | machine-ID register (`$5FFFFFFC`) |
 | `$90000000-$EFFFFFFF` | NuBus super slot space, 256 MB per slot (BART; 7100/8100) |
 | `$F0000000` page | BART register file (7100/8100); a read faults on a 6100, which is how the ROM learns it has no bridge |
-| `$FB000000-$FEFFFFFF` | NuBus standard slot space `$B`/`$C`/`$D` + the PDS `$E` window, 16 MB each (BART) |
+| `$FB000000-$FEFFFFFF` | NuBus standard slot space `$B`..`$E`, 16 MB each (BART); the three connectors are `$C`/`$D`/`$E`, `$B` is decoded but unpopulated |
 | everything else in `$60000000-$FEFFFFFF` | decoded by nobody — reads `$FF` (AMIC's error here is the unrecoverable 40 µs kind, which no ROM path exercises) |
 | `$FF000000-$FFFFFFFF` | ROM alias (reset vector fetch at `$FFF00100`) |
 

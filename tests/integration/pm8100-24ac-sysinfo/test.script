@@ -69,8 +69,8 @@ assert machine.nubus.slot[12].card.declrom.present "slot $C declaration ROM not 
 assert machine.nubus.slot[12].card_id == "" "staged card_id not consumed at boot"
 # The sockets either side stay empty — an unpopulated BART window must look
 # empty to us and to the Slot Manager alike.
-assert try(machine.nubus.slot[11].card.name, none) == none "slot $B is populated"
 assert try(machine.nubus.slot[13].card.name, none) == none "slot $D is populated"
+assert try(machine.nubus.slot[14].card.name, none) == none "slot $E is populated"
 # The card's OWN driver set this: 640x480 at 8 bpp, which the generic-vROM
 # sibling in suite-pdm never reaches (it stays at 1 bpp).
 assert machine.nubus.slot[12].card.framebuffer.base == 0xFC000000 "slot $C framebuffer base != 0xFC000000"
