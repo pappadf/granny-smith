@@ -158,8 +158,8 @@ def row_8100_75_24ac() {
     # The empty sockets either side of it are still empty — what an
     # unpopulated BART window must look like, to us and to the Slot
     # Manager alike.
-    assert try(machine.nubus.slot[11].card.name, none) == none "slot B is populated"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
+    assert try(machine.nubus.slot[14].card.name, none) == none "slot E is populated"
 
     # The OS drove the card: geometry and depth come from its driver.
     assert machine.nubus.slot[12].card.framebuffer.base == 0xFC000000 "slot C framebuffer base != 0xFC000000"
@@ -198,10 +198,18 @@ def row_8100_75_24ac() {
 def row_pdm_nubus_empty() {
     machine.rtc.time = 0xE0000000
     machine.boot model="pm8100" ram=16384 rom="${$ROM}"
-    assert machine.nubus.slot[11].card_id == "" "slot B carries a staged pick"
-    assert try(machine.nubus.slot[11].card.name, none) == none "slot B is populated"
+    assert machine.nubus.slot[12].card_id == "" "slot C carries a staged pick"
     assert try(machine.nubus.slot[12].card.name, none) == none "slot C is populated"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
+    assert try(machine.nubus.slot[14].card.name, none) == none "slot E is populated"
+    # The connectors are $C/$D/$E, and $B is NOT one of them.  This is not
+    # cosmetic: the pseudo-VIA2 slot bit is `slot - 9`, so a socket at $B
+    # would land on bit 2 — which the OS never enables and never services,
+    # leaving that card's /NMRQ latched forever and its slot VBL tasks
+    # (the cursor task, when the card is the main screen) never run.  The
+    # staging channel only exists for declared sockets, so a $B socket
+    # would make this setter succeed.
+    assert try(machine.nubus.slot[11].card_id, none) == none "slot B is declared a socket; the connectors are C/D/E (see pm8100.c)"
     # Chip init, the slot scan, and on to the "insert disk" gray desktop.
     scheduler.run 360000000
     while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
@@ -227,14 +235,14 @@ def row_pdm_nubus_empty() {
 def row_pdm_nubus_checkpoint() {
     machine.rtc.time = 0xE0000000
     machine.boot model="pm8100" ram=16384 rom="${$ROM}" video_card="24ac"
-    assert machine.nubus.slot[11].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "wildcard pick did not seat in the first socket"
+    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "wildcard pick did not seat in the first socket"
     scheduler.run 360000000
     let before = machine.screen.checksum()
     assert checkpoint.save("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint save failed"
     assert checkpoint.load("${$RESULTS_DIR}/pdm-nubus.gs") "checkpoint load failed"
     assert machine.id == "pm8100" "restored machine is not a pm8100"
     assert machine.ram == 16384 "restored machine lost its RAM size"
-    assert machine.nubus.slot[11].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "card gone after restore"
+    assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "card gone after restore"
     assert machine.screen.checksum() == $before "picture changed across the restore"
     # ...and the restored machine is live, not frozen.
     scheduler.run 20000000

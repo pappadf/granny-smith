@@ -56,6 +56,7 @@ typedef struct machine_config_record {
     int32_t video_sense; // -1 = unset
     char video_mode[MC_ID_MAX]; // wildcard video-mode id ("" = card default)
     char custom_mode[MC_ID_MAX]; // "WxHxD" custom resolution ("" = none)
+    char monitor[MC_ID_MAX]; // built-in monitor strap ("" = machine default)
     char created[24]; // ISO8601 UTC, stamped by boot
     machine_config_vrom_t vroms[MC_MAX_VROMS]; // resolved picks, in load order
     int32_t n_vroms;
@@ -74,6 +75,10 @@ typedef struct boot_config {
     int video_sense; // -1 = not given
     const char *video_mode;
     const char *custom_mode; // "WxHxD" custom resolution (NULL = none)
+    // Which monitor is strapped to the machine's BUILT-IN video port.
+    // "none" leaves it unconnected, which switches built-in video off and
+    // hands the screen to a NuBus card (machine_profile_t.builtin_video).
+    const char *monitor; // NULL = machine default
 } boot_config_t;
 
 // Read-only view of the live record (never NULL; check ->valid).

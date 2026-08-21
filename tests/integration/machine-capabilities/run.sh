@@ -184,12 +184,19 @@ done
 assert_contains pm6100 '"nubus":false' "pm6100 has no NuBus without the PDS adapter"
 for m in pm7100 pm8100; do
     assert_contains "$m" '"nubus":true' "$m has the three BART NuBus sockets"
-    # $B/$C/$D — NOT the widely repeated $C/$D/$E: slot $E is the PDS
-    # video pseudo-slot on these boards, which is not a NuBus connector.
-    assert_contains "$m" '"slot":"B"' "$m declares socket \$B"
+    # $C/$D/$E, the numbering the SOFTWARE uses.  An earlier revision
+    # declared $B/$C/$D from the schematic silkscreen; that is a board
+    # label, not a slot ID.  The pseudo-VIA2 slot bit is `slot - 9`, so a
+    # card in $B lands on bit 2 — which nothing enables and nothing
+    # services, leaving its /NMRQ latched forever and its slot VBL tasks
+    # (the cursor task, when the card is the main screen) never run.  A
+    # booted 8100 enables slot-interrupt bits $38 = bits 3/4/5 = $C/$D/$E,
+    # always those three, whichever connector holds a card.  See
+    # docs/machines/pdm/bart.md and pm8100.c.
     assert_contains "$m" '"slot":"C"' "$m declares socket \$C"
     assert_contains "$m" '"slot":"D"' "$m declares socket \$D"
-    assert_absent "$m" '"slot":"E"' "$m must not offer the PDS pseudo-slot as a NuBus socket"
+    assert_contains "$m" '"slot":"E"' "$m declares socket \$E"
+    assert_absent "$m" '"slot":"B"' "$m must not offer \$B — nothing services its interrupt bit"
     # Computed compatibility again: every NuBus-attach video card is
     # offered on every socket, with no per-machine whitelist anywhere.
     assert_contains "$m" '"id":"mdc_8_24"' "$m offers 8·24"

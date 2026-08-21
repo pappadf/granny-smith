@@ -259,6 +259,15 @@ typedef struct hw_profile {
     // runtime view and the profile view are guaranteed identical.
     const struct nubus_slot_decl *nubus_slots;
 
+    // Built-in video that is NOT a NuBus pseudo-card: the display the
+    // machine's own substrate publishes (the PDM family's Ariel scanout).
+    // Non-NULL means the configuration dialog must offer it beside the
+    // NuBus display cards, AND that it can be switched off by leaving its
+    // monitor port unconnected — which is what makes a NuBus card the only
+    // screen.  NULL on machines whose built-in video is a BUILTIN slot
+    // (SE/30, IIci) or which have none at all.
+    const char *builtin_video;
+
     // Behavior: the lifecycle + host-input vtable for this machine.  Machines
     // of the same chipset family SHARE one substrate (glue_substrate /
     // mdu_substrate; iifx is bespoke).

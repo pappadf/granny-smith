@@ -157,6 +157,35 @@ typedef struct pdm_amic {
     pdm_swim3_t swim3; // floppy controller register file (swim3.c)
 } pdm_amic_t;
 
+// === Monitor sense strap (ariel.c) ==========================================
+// What is wired to the HDI-45.  The three open-collector sense lines are
+// pulled up and a monitor grounds a subset, so the strap IS the monitor
+// (Apple, *Designing Cards and Drivers for the Macintosh Family*, 3rd ed.,
+// ch. 9).  Code 7 grounds nothing: no monitor connected.
+//
+// This is the switch that decides whether the machine HAS built-in video at
+// all.  Given code 7 the shipping ROM does the rest by itself — it prunes
+// every built-in video sResource, and its Start Manager skips allocating the
+// DRAM framebuffer — so a NuBus display card becomes the machine's only
+// screen, which is what a real PDM does with nothing plugged into the
+// built-in port.
+#define PDM_SENSE_NONE 0x7u // grounds nothing = nothing connected
+
+typedef struct pdm_monitor_kind {
+    const char *id; // config token ("hires", "none", ...)
+    const char *name; // human-readable, for the object model
+    uint8_t sense; // the 3-bit strap this monitor presents
+} pdm_monitor_kind_t;
+
+// Straps this model can express.  Only the eight 3-bit codes are reachable:
+// the monitors Apple reached through the EXTENDED sense walk (VGA, GoldFish)
+// need a per-line strap this model does not carry, and are deliberately
+// absent rather than half-supported.
+extern const pdm_monitor_kind_t pdm_monitors[];
+const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
+// Stage the strap for the NEXT machine built (machine.boot `monitor=`).
+void pdm_pending_monitor_set(uint8_t sense);
+
 // === Video presentation state (ariel.c) =====================================
 // Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
 // clut) and rebuilt on init, reset and checkpoint restore — never saved.
@@ -164,6 +193,7 @@ typedef struct pdm_video {
     display_t display; // the substrate .display descriptor
     rgba8_t clut_view[256]; // depth-windowed palette the renderer indexes
     uint8_t *blank; // black raster presented while the blank bit is set
+    uint8_t sense; // monitor strap (PDM_SENSE_NONE = nothing connected)
 } pdm_video_t;
 
 // === BART state (bart.c) ====================================================
@@ -374,6 +404,11 @@ int pdm_swim3_index_pulse(config_t *cfg);
 // CLUT/DAC ($50F24000), and the scanout descriptor over physical DRAM 0.
 void pdm_video_init(config_t *cfg); // after the memory layout exists
 void pdm_video_teardown(config_t *cfg);
+// The monitor strapped to the HDI-45.  Set before the machine runs; with
+// PDM_SENSE_NONE the substrate publishes no display and the ROM turns its
+// own built-in video off (see the strap notes above).
+void pdm_video_set_sense(config_t *cfg, uint8_t sense);
+uint8_t pdm_video_sense(config_t *cfg);
 void pdm_video_update(config_t *cfg); // re-derive the descriptor from the regs
 void pdm_video_vbl(config_t *cfg); // per-VBL framebuffer re-upload mark
 display_t *pdm_video_display(config_t *cfg);

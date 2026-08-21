@@ -32,11 +32,45 @@ LOG_USE_CATEGORY_NAME("ariel");
 
 // Monitor sense lines (the HDI-45 carries three open-collector lines A/B/C
 // with 10k pull-ups; a dumb monitor hard-wires a subset to ground and the
-// readback nibble reflects wired-AND(drive, strap)).  The emulated monitor
+// readback nibble reflects wired-AND(drive, strap)).  The default monitor
 // is the 14" AppleColor Hi-Res: sense code 6 = A,B floating high, C
 // grounded.  SonoraVdSenseRg drive nibble: bit n = 0 drives line n low, 1
 // releases it ($07 = tristate); readback bits 6:4 = lines A,B,C.
-#define PDM_MONITOR_SENSE 0x6u // A=1, B=1, C=0: Hi-Res 13"/14"
+//
+// The strap is per-machine (pdm.h), so the built-in port can also be left
+// UNCONNECTED — code 7 grounds nothing, and the ROM's extended-sense walk
+// then reads all-ones and turns built-in video off entirely.
+#define PDM_MONITOR_SENSE_DEFAULT 0x6u // A=1, B=1, C=0: Hi-Res 13"/14"
+
+// The straps this model can present.  Restricted to the eight 3-bit codes
+// on purpose: the monitors Apple distinguished with the EXTENDED sense walk
+// (VGA, GoldFish) need per-line strapping this model does not carry.
+const pdm_monitor_kind_t pdm_monitors[] = {
+    {"hires",    "AppleColor Hi-Res RGB 13\"/14\" (640x480)", 0x6u          },
+    {"portrait", "Macintosh Portrait Display (640x870)",      0x1u          },
+    {"rubik",    "Macintosh 12\" RGB (512x384)",              0x2u          },
+    {"none",     "No monitor connected",                      PDM_SENSE_NONE},
+    {NULL,       NULL,                                        0             },
+};
+
+// Strap staged by machine.boot's `monitor=` and consumed by the next
+// pdm_video_init (the jmfb_pending_sense_set shape).  Reset to the default
+// on consumption so a forgotten setting cannot leak into the next machine.
+static uint8_t s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
+
+void pdm_pending_monitor_set(uint8_t sense) {
+    s_pending_sense = (uint8_t)(sense & 0x07u);
+}
+
+// Look a strap up by config token; NULL when the name is not one of ours.
+const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id) {
+    if (!id || !*id)
+        return NULL;
+    for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++)
+        if (strcmp(m->id, id) == 0)
+            return m;
+    return NULL;
+}
 
 // Largest raster any reachable mode scans out (Hi-Res/VGA at 16 bpp:
 // 640 x 480 x 2 bytes); sizes the blank buffer.
@@ -184,6 +218,8 @@ void pdm_video_update(config_t *cfg) {
 
 void pdm_video_init(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
+    st->video.sense = s_pending_sense; // what machine.boot's monitor= staged
+    s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
     st->video.blank = calloc(1, PDM_VIDEO_MAX_BYTES);
     pdm_video_update(cfg);
     st->video.display.response_dirty = true;
@@ -197,7 +233,34 @@ void pdm_video_teardown(config_t *cfg) {
 
 display_t *pdm_video_display(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
-    return (st && st->video.blank) ? &st->video.display : NULL;
+    if (!st || !st->video.blank)
+        return NULL;
+    // Nothing plugged into the HDI-45: the machine has no built-in screen
+    // to present.  Returning NULL is what lets system_display() fall
+    // through to the NuBus primary display, so a seated card becomes the
+    // only screen — matching the ROM, which on this strap prunes its own
+    // video sResources and never allocates the DRAM framebuffer.
+    if (st->video.sense == PDM_SENSE_NONE)
+        return NULL;
+    return &st->video.display;
+}
+
+// Strap a monitor (or nothing) onto the built-in port.  Called by the
+// machine builder before the first pdm_video_update; changing it while the
+// guest runs would not match hardware, where the ROM samples the lines once
+// at startup.
+void pdm_video_set_sense(config_t *cfg, uint8_t sense) {
+    pdm_state_t *st = pdm_st(cfg);
+    if (!st)
+        return;
+    st->video.sense = (uint8_t)(sense & 0x07u);
+    if (st->video.blank)
+        pdm_video_update(cfg);
+}
+
+uint8_t pdm_video_sense(config_t *cfg) {
+    pdm_state_t *st = pdm_st(cfg);
+    return st ? st->video.sense : 0u;
 }
 
 // Every VBL the framebuffer may have been drawn into by the guest (CPU
@@ -222,7 +285,7 @@ uint8_t pdm_video_ctl_read(config_t *cfg, uint32_t off) {
     case 2: {
         // Open-collector wired-AND: a line reads low when the host drives
         // it low OR the monitor straps it to ground; high otherwise.
-        uint8_t lines = (uint8_t)(a->vid_sense & 0x07u & PDM_MONITOR_SENSE);
+        uint8_t lines = (uint8_t)(a->vid_sense & 0x07u & pdm_st(cfg)->video.sense);
         return (uint8_t)((a->vid_sense & 0x0Fu) | (lines << 4));
     }
     case 3:

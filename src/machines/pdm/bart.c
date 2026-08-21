@@ -13,9 +13,10 @@
 //      writes on every 7100/8100 boot, an ID longword, and one burst-enable
 //      byte per slot;
 //   2. the address windows BART decodes — standard slot space
-//      $Fs000000-$FsFFFFFF and super slot space $s0000000-$sFFFFFFF for the
-//      three connectors $B/$C/$D (the middle connector is $D; slot $E is
-//      the PDS video pseudo-slot, not a NuBus connector, on these boards);
+//      $Fs000000-$FsFFFFFF and super slot space $s0000000-$sFFFFFFF for
+//      slots $B..$E.  The three CONNECTORS are $C/$D/$E (pm8100.c); $B is
+//      decoded but unpopulated, so an access there faults like any other
+//      empty slot;
 //   3. the FAULT semantics, which are the whole game: an access BART
 //      claims but nothing answers terminates with a recoverable transfer
 //      error.  The Slot Manager reads declaration ROMs "under a bus-error
@@ -60,8 +61,11 @@ LOG_USE_CATEGORY_NAME("bart");
 // the model deliberately answers with something else.
 #define BART_ID_PROTOTYPE 0x43184000u
 
-// Slots whose /NMRQ the pseudo-VIA2 slot bank carries: $B/$C/$D on the
-// connectors, $E from the PDS (amic.md: bit 2 = $B ... bit 5 = $E).
+// Slots whose /NMRQ the pseudo-VIA2 slot bank carries.  Bit = slot - 9, so
+// $B..$E are bits 2..5; the three connectors ($C/$D/$E) are bits 3/4/5 —
+// the set a booted OS actually enables — and bit 6 is the built-in video
+// VBL.  Nothing enables or services bit 2, which is why $B is decoded but
+// never a connector (pm8100.c).
 #define BART_SLOT_IRQ_FIRST 0x0B
 #define BART_SLOT_IRQ_LAST  0x0E
 
@@ -288,20 +292,31 @@ void pdm_bart_init(config_t *cfg) {
     // Standard slot space (16 MB per slot) and super slot space (256 MB per
     // slot) for every declared connector, named per slot so a fault log and
     // the memory map both say which one.
-    for (const nubus_slot_decl_t *s = slots; s->slot != 0; s++) {
-        char name[24];
-        snprintf(name, sizeof(name), "NuBus slot $%X", s->slot);
-        bart_claim_empty(cfg, nubus_slot_base(s->slot), 0x01000000u, name);
-        snprintf(name, sizeof(name), "NuBus super slot $%X", s->slot);
-        bart_claim_empty(cfg, nubus_super_slot_base(s->slot), 0x10000000u, name);
-    }
-
-    // Slot $E is the PDS video pseudo-slot on these boards, not a NuBus
-    // connector — so it is not in the slot table above.  Its window still
-    // has to answer, because the Start Manager probes slot $E's declaration
+    // What the BRIDGE decodes, which is a property of the chip and the board
+    // wiring — NOT of which connectors happen to be declared as sockets.
+    // Deriving it from the slot table (as this once did) makes the memory
+    // map move whenever the socket numbering is edited: renumbering the
+    // connectors to $C/$D/$E silently dropped the $B window (so accesses
+    // there read $FF instead of faulting) and added $E's super slot space
+    // (so accesses there faulted instead of reading $FF).  Either change is
+    // visible to the ROM's slot scan, and together they moved the 7.5
+    // System heap by 78K — the 7100's About box lost exactly that much.
+    //
+    // Standard slot space (16 MB each) for $B..$E, super slot space
+    // (256 MB each) for $B..$D.  $B is decoded but is not a connector
+    // (pm8100.c); $E is the PDS video pseudo-slot, whose standard window
+    // still has to answer because the Start Manager probes its declaration
     // ROM for a "VidReset" signature on EVERY boot, before the Slot Manager
-    // runs.  With no PDS card seated, that probe must fault recoverably.
-    bart_claim_empty(cfg, nubus_slot_base(0xE), 0x01000000u, "PDS slot space");
+    // runs, and whose super slot space the PDS claims on the CPU bus.
+    for (uint32_t slot = 0xBu; slot <= 0xEu; slot++) {
+        char name[24];
+        snprintf(name, sizeof(name), "NuBus slot $%X", slot);
+        bart_claim_empty(cfg, nubus_slot_base(slot), 0x01000000u, name);
+        if (slot == 0xEu)
+            continue;
+        snprintf(name, sizeof(name), "NuBus super slot $%X", slot);
+        bart_claim_empty(cfg, nubus_super_slot_base(slot), 0x10000000u, name);
+    }
 }
 
 // Drive one slot's /NMRQ.  The line does not pass through BART at all: it

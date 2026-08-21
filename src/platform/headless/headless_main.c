@@ -169,6 +169,8 @@ static void print_usage(const char *program) {
     printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
     printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
     printf("  video_card=<id> NuBus video card for the configurable slot (e.g. 824gc);\n");
+    printf("  monitor=<id>   monitor on the built-in video port ('none' = unconnected,\n");
+    printf("                 which hands the screen to a NuBus card)\n");
     printf("                  default: the machine's default card\n");
     printf("  script=<file>   Shell script file to execute at startup (optional)\n");
     printf("\n");
@@ -715,6 +717,7 @@ int main(int argc, char *argv[]) {
     uint32_t ram_kb = 0;
     const char *model_override = NULL;
     const char *video_card_arg = NULL;
+    const char *monitor_arg = NULL;
     int quiet = 0;
     int script_stdin = 0;
     int kill_daemon = 0;
@@ -861,6 +864,11 @@ int main(int argc, char *argv[]) {
 
         if ((value = parse_arg(arg, "video_card")) != NULL) {
             video_card_arg = value;
+            continue;
+        }
+
+        if ((value = parse_arg(arg, "monitor")) != NULL) {
+            monitor_arg = value;
             continue;
         }
 
@@ -1021,6 +1029,7 @@ int main(int argc, char *argv[]) {
         .ram_kb = ram_kb,
         .rom = rom_file,
         .video_card = video_card_arg,
+        .monitor = monitor_arg,
         .video_sense = -1,
     };
     value_t boot_err = machine_boot_apply(&boot_doc);

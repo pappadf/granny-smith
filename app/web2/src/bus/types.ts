@@ -24,6 +24,12 @@ export interface MachineConfig {
    *  its device drivers on real hardware.  Unset on models with no
    *  configurable video (Plus / SE/30). */
   videoMode?: string;
+  /** Which port the monitor is plugged into on a machine that has BOTH
+   *  built-in video and NuBus slots (the PDM family).  'none' leaves the
+   *  built-in port unconnected, which makes the ROM turn built-in video off
+   *  and hands the screen to the NuBus card.  Unset = the machine's own
+   *  default monitor. */
+  monitor?: string;
   ram: string;
   /** Ordered list of floppy image paths, one per drive slot. Entries that
    *  are empty / '(none)' are skipped (no insertion into that slot). */

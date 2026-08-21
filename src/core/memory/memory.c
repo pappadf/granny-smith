@@ -102,6 +102,14 @@ uint32_t *g_sprint_burndown_ptr = NULL; // points to scheduler's sprint_burndown
 // path even when the underlying page is plain RAM/ROM.  See memory.h.
 uint8_t *g_mem_logpoint_page_count = NULL;
 uint8_t *g_mem_logpoint_phys_page_count = NULL;
+// Armed-logpoint count (install calls minus uninstall calls).  Zero lets
+// every slow-path access skip logpoint_lookup with one load — the arrays
+// above are always allocated, so their NULL checks never short-circuit.
+// Teardown paths that free the arrays without uninstalling leave this high,
+// which only costs the (armed-era) full lookup; the unsafe direction —
+// zero while pages are armed — would need unbalanced extra uninstalls,
+// which the clamp below turns into a saturating no-op.
+static uint32_t g_mem_logpoints_active = 0;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
 bool g_user_soa_reserved = false;
 void (*g_mem_fastpath_changed)(void) = NULL;
@@ -201,7 +209,12 @@ static inline bool can_lazy_install(uint32_t page, const page_entry_t *pe) {
 // Sets *host_out to the host pointer for the access (MMU-translated when the
 // MMU is enabled), and *writable_out to whether the host page is writable.
 // Returns false if no logpoint covers this page.
-static bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_out) {
+//
+// Split in two so the nothing-armed answer costs one inlined load at the
+// call site: every I/O slow-path access asks this question, and with zero
+// logpoints armed even the call/return overhead was measurable (~3% of a
+// PDM boot under callgrind).
+static bool logpoint_lookup_armed(uint32_t addr, uint8_t **host_out, bool *writable_out) {
     uint32_t page = addr >> PAGE_SHIFT;
     bool logical_watched = g_mem_logpoint_page_count && g_mem_logpoint_page_count[page];
     bool phys_watched = false;
@@ -247,6 +260,13 @@ static bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_ou
         *writable_out = false;
     }
     return true;
+}
+
+// The nothing-armed fast half: inlined into every slow-path caller.
+static inline bool logpoint_lookup(uint32_t addr, uint8_t **host_out, bool *writable_out) {
+    if (__builtin_expect(g_mem_logpoints_active == 0, 1))
+        return false;
+    return logpoint_lookup_armed(addr, host_out, writable_out);
 }
 
 // Decide whether a device registered at this logical page should be
@@ -1147,6 +1167,7 @@ static void rebuild_soa_page(uint32_t p) {
 void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_page_count)
         return;
+    g_mem_logpoints_active++;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p] < 0xFF)
             g_mem_logpoint_page_count[p]++;
@@ -1167,6 +1188,8 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_page_count)
         return;
+    if (g_mem_logpoints_active)
+        g_mem_logpoints_active--;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_page_count[p])
             g_mem_logpoint_page_count[p]--;
@@ -1180,6 +1203,7 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_phys_page_count)
         return;
+    g_mem_logpoints_active++;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_phys_page_count[p] < 0xFF)
             g_mem_logpoint_phys_page_count[p]++;
@@ -1204,6 +1228,8 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
     if (!g_mem_logpoint_phys_page_count)
         return;
+    if (g_mem_logpoints_active)
+        g_mem_logpoints_active--;
     for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
         if (g_mem_logpoint_phys_page_count[p])
             g_mem_logpoint_phys_page_count[p]--;

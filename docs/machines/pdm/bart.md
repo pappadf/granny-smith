@@ -13,14 +13,27 @@ ch. 7–8; the Power Macintosh 8100 schematic set (051-0333 rev A, sheets
 22–23); and the shipping 1994-03 ROM, whose `NuBusReset`, `TestForBart`
 and `_HWPriv` selector 12 are the behavioral oracle.
 
-## Topology — the slots are `$B`/`$C`/`$D`
+## Topology — the slots are `$C`/`$D`/`$E`
 
-The 7100 and 8100 carry three NuBus connectors, numbered **`$B`, `$C`,
-`$D`** — not the widely repeated "`$C`/`$D`/`$E`".  Slot `$E` is the *PDS
-video* pseudo-slot (the HPV VRAM card or the AV card), which claims its
-window on the CPU bus directly; the ROM disables BART's own path to slot
-`$E` on every 7100/8100 boot.  Physical board order is B, D, C: the middle
-connector is `$D`.
+The 7100 and 8100 carry three NuBus connectors, numbered **`$C`, `$D`,
+`$E`** — the widely repeated numbering, and the one the *software* uses.
+That is what matters: the slot number selects the address window a card
+answers in, the sResource the Slot Manager enumerates, and the pseudo-VIA2
+interrupt bit the OS enables.
+
+This file previously documented `$B`/`$C`/`$D`, taken from the schematic
+silkscreen (051-0333 rev A sheet 22, where the 96-pin connectors J11/J12/J13
+are labelled NuBus Slot B, C and D).  That is a board-level label, not the
+slot ID software uses.  Measured on the shipping ROM: a booted 8100 enables
+slot-interrupt bits `$38` — bits 3/4/5, which under the `bit = slot - 9`
+numbering are `$C`/`$D`/`$E` — always those three, whichever connector holds
+a card, with bit 6 the built-in video VBL.  The ROM's own PDM slot-interrupt
+path masks the slot bits with `$78` (bits 3–6), agreeing.  A card staged
+into `$B` landed on bit 2, which nothing enables and nothing services: its
+`/NMRQ` latched and stayed latched forever, the Slot Manager never ran that
+slot's VBL task queue, and with the card as the main screen the cursor stopped
+moving.  BART still *decodes* a `$B` window; nothing answers there, so an
+access faults like any other empty slot.
 
 `pm7100.c` / `pm8100.c` declare the three sockets; `pm6100.c` declares
 none.  Which cards fit a socket is computed from the card registry, not
@@ -87,20 +100,27 @@ would be the wrong kind of failure.
 
 Each connector's `/NMRQ` runs from the slot straight to an AMIC pin; BART
 is not in the path.  The Slot Manager reads the lines from AMIC's
-pseudo-VIA2 slot bank at `$50F26002`, **active low**: bit 2 = `$B`, bit 3 =
+pseudo-VIA2 slot bank at `$50F26002`, **active low** (`bit = slot - 9`, so
+the three connectors are bits 3/4/5): bit 2 = the decoded-but-unpopulated
+`$B`, bit 3 =
 `$C`, bit 4 = `$D`, bit 5 = `$E`, bit 6 = the built-in video VBL.  The bus
 controller's per-slot hook (`machine_substrate_t.nubus_slot_irq`) therefore
 lands in `pdm_bart_slot_irq`, which forwards to `pdm_amic_set_slot_irq`.
 See amic.md for the enable/aggregate side.
 
-A note on which screen the guest picks: with a 24AC in slot `$C` the desktop
-stays on the built-in video and the card comes up as screen two.  That is a
-consequence of the built-in *monitor*, not of slot priority — `ariel.c`
-straps a 14" Hi-Res monitor onto the HDI-45, and the ROM allocates the
-604 KB framebuffer only when it senses one (video.md).  A PDM with nothing
-plugged into the built-in port allocates no framebuffer at all, and a card
-is then the machine's only screen; the emulator has no way to configure
-that yet.
+A note on which screen the guest picks: with a 24AC in slot `$C` and a
+monitor on the built-in port, the desktop stays on the built-in video and
+the card comes up as screen two.  That is a consequence of the built-in
+*monitor*, not of slot priority — and it is configurable: `monitor=none`
+straps the HDI-45 as unconnected, and the ROM then turns its own video off
+and the card becomes the machine's only screen (video.md, "Monitor sense").
+
+That is the configuration in which a display card's accelerator actually
+does anything.  Measured on an 8100 with a genuine-vROM 24AC as the only
+screen, Symantec System Info's Rectangles test reports 3411 rects/sec with
+the card's cdev installed and 2530 with it removed (+35%); with the built-in
+video owning the screen instead, the card's engine counters do not move at
+all during the benchmark, because nothing is drawn on the card.
 
 The whole path is exercised by a 24AC in slot `$C`: its VBL raises `/NMRQ`,
 the flag reaches the 601 through AMIC's interrupt control register, the

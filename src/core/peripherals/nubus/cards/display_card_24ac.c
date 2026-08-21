@@ -110,6 +110,18 @@ struct display_card_24ac_priv {
     uint8_t engine_mode; // latched CONTROL byte ($01 fill / $03 stretch /
                          // $7F copy / computed ROP)
     uint32_t engine_operand; // latched 32-bit operand (fill colour / pattern)
+    // The 8x8 pattern block.  QuickDraw expands a pattern into 8 rows of 8
+    // bytes (at 8 bpp) and the driver stages all 64 bytes in the operand
+    // aperture, then latches them a row at a time before committing.  A
+    // commit that saw row latches uses this block; one that did not uses the
+    // 4-byte `engine_operand` replicated, which is how solid fills arrive.
+    // The engine's CURRENT pattern, replicated across every fill.  Two widths
+    // arrive and both mean the same thing — "these N bytes, aligned to
+    // absolute VRAM columns": 4 bytes from an operand commit (a solid colour,
+    // or a pattern whose period divides 4), and 8 bytes from a pattern-row
+    // select, which is one row of QuickDraw's expanded 8x8 pattern.
+    uint8_t engine_pat[8];
+    uint32_t engine_pat_len; // 4 or 8
     uint32_t engine_copy_src; // block-copy handshake: latched source VRAM offset
     uint32_t engine_copy_len; // block-copy handshake: latched length (low bits)
     // Engine activity counters (diagnostic; see engine.fill_ops/copy_ops object
@@ -317,14 +329,14 @@ static void engine_fill_run(display_card_24ac_priv_t *p, uint32_t dest, uint32_t
         return;
     if (len > DISPLAY_CARD_24AC_VRAM_SIZE - dest)
         len = DISPLAY_CARD_24AC_VRAM_SIZE - dest; // clamp to VRAM
-    uint8_t pat[4] = {
-        (uint8_t)(p->engine_operand >> 24),
-        (uint8_t)(p->engine_operand >> 16),
-        (uint8_t)(p->engine_operand >> 8),
-        (uint8_t)(p->engine_operand),
-    };
+    // Replicate the current pattern, phase-aligned to absolute VRAM columns
+    // (pattern byte i lands wherever addr % len == i).  Every stride this
+    // card scans out is a multiple of 8, so the column phase is also the
+    // screen-x phase — which is what makes a dither alternate along the
+    // scanline instead of smearing into a solid colour.
+    uint32_t plen = p->engine_pat_len ? p->engine_pat_len : 4u;
     for (uint32_t i = 0; i < len; i++)
-        p->vram[dest + i] = pat[(dest + i) & 3];
+        p->vram[dest + i] = p->engine_pat[(dest + i) % plen];
     p->fill_ops++;
     p->fill_bytes += len;
     p->display.fb_dirty = true;
@@ -433,8 +445,6 @@ static uint32_t reg_read(display_card_24ac_priv_t *p, uint32_t off, unsigned wid
     // --- Engine side --------------------------------------------------------
     case DISPLAY_CARD_24AC_CONFIG_OFFSET:
         return (uint32_t)(p->config_variant_bit ? 0x01u : 0x00u);
-    case DISPLAY_CARD_24AC_OPERAND_APERTURE:
-        return p->engine_operand; // driver's 1-entry pattern cache read-back
     default:
         break;
     }
@@ -517,11 +527,6 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
         p->engine_mode = (uint8_t)val; // latch op mode for active-bank writes
         LOG(3, "engine: CONTROL = $%02x", p->engine_mode);
         return;
-    case DISPLAY_CARD_24AC_OPERAND_APERTURE:
-        if (width == 4)
-            p->engine_operand = val;
-        LOG(3, "engine: operand load = $%08x", p->engine_operand);
-        return;
     default:
         break;
     }
@@ -545,11 +550,48 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
     if (off >= DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET &&
         off < DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET + DISPLAY_CARD_24AC_VRAM_SIZE) {
         uint32_t dest = off - DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET;
-        // The operand aperture's +0x400000 alias is the commit window: a
-        // write of `4` here latches the loaded operand (driver writes twice).
-        if (dest == DISPLAY_CARD_24AC_OPERAND_APERTURE) {
-            if (val == DISPLAY_CARD_24AC_COMMIT_CMD)
-                LOG(3, "engine: operand commit ($%08x)", p->engine_operand);
+        // Operand commit.  The aperture is NOT at a fixed offset: the cdev
+        // picks a per-slot base at init and the choice is configuration-
+        // dependent — measured, the same card and cdev use $3FE000 on a IIcx
+        // and $3F8000 on a Power Macintosh 8100.  So the commit is recognised
+        // by its SHAPE rather than its address: the command code `4` written
+        // through the alias, aimed above the framebuffer (VRAM_VISIBLE is far
+        // above the largest supported raster, so a real fill can never land
+        // here).  The pattern longword the driver wrote to the passive
+        // aperture is already in VRAM, so latch it from there — which works
+        // wherever the driver put it, including the small-VRAM card's
+        // $0FE000, whose passive writes go through the host mapping and are
+        // never seen by this function at all.
+        // Anything aimed at the operand aperture is engine CONTROL, never a
+        // fill: the aperture sits above VRAM_VISIBLE, which is far above the
+        // largest raster this card scans out, so a real fill can never land
+        // here.  Treating these as fills is what broke patterned drawing —
+        // the row latches below were writing the current colour over the very
+        // pattern block the commit then read back.
+        if (dest >= DISPLAY_CARD_24AC_VRAM_VISIBLE && width == 4) {
+            if (val == DISPLAY_CARD_24AC_COMMIT_CMD && dest + 4 <= DISPLAY_CARD_24AC_VRAM_SIZE) {
+                // Operand commit: take the longword the driver staged at the
+                // aperture as the current pattern.  This is the solid-colour
+                // path (`bSETUP8`'s one-longword case).
+                p->engine_operand = LOAD_BE32(p->vram + dest);
+                memcpy(p->engine_pat, p->vram + dest, 4);
+                p->engine_pat_len = 4;
+                LOG(3, "engine: operand commit from $%06x ($%08x)", dest, p->engine_operand);
+                return;
+            }
+            if (val == DISPLAY_CARD_24AC_PATTERN_ROW_BYTES && dest + 8 <= DISPLAY_CARD_24AC_VRAM_SIZE) {
+                // Pattern-row select.  QuickDraw expands an 8x8 pattern into
+                // 8 rows of 8 bytes and stages all 64 at the aperture; before
+                // each scanline's fill the driver points the engine at the
+                // row that scanline needs, cycling 0..7 (the ROM's pattern
+                // selector, offloaded).  Measured on the live cdev: the
+                // select is interleaved BETWEEN the fills, one per row, and
+                // is not followed by a commit.
+                memcpy(p->engine_pat, p->vram + dest, 8);
+                p->engine_pat_len = 8;
+                return;
+            }
+            LOG(3, "engine: unmodeled aperture command $%08x at $%06x", val, dest);
             return;
         }
         if (!p->engine_enabled || width != 4) {
@@ -769,6 +811,8 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p) {
     p->engine_enabled = true;
     p->engine_mode = DISPLAY_CARD_24AC_MODE_COPY;
     p->engine_operand = 0;
+    memset(p->engine_pat, 0, sizeof p->engine_pat);
+    p->engine_pat_len = 4;
     p->engine_copy_src = 0;
     p->engine_copy_len = 0;
     p->status_depth_code = depth_code_for_format(PIXEL_8BPP);

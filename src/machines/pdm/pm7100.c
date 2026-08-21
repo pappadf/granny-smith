@@ -30,18 +30,31 @@ static const struct scsi_slot pm7100_scsi_slots[] = {
     {0},
 };
 
-// The three NuBus connectors behind BART.  They are $B/$C/$D, not the
-// widely repeated "$C/$D/$E": slot $E is the PDS video pseudo-slot on this
-// board (HPV / AV card), and the ROM disables BART's path to it on every
-// boot.  Physical board order is B, D, C — the middle connector is $D.
-// (Apple, Macintosh 8100 schematics, sheet 22 — the two boards share this
-// topology and the ROM's machine table — where the three 96-pin connectors
-// J11/J12/J13 are labelled NuBus Slot B, C and D.)  Each ships empty; the
-// user stages a card per slot.
+// The three NuBus connectors behind BART: $C/$D/$E.
+//
+// This is what the SOFTWARE uses, and it is the thing that matters — the
+// slot number selects the address window a card answers in, the sResource
+// the Slot Manager enumerates, and the pseudo-VIA2 interrupt bit the OS
+// enables.  Measured on the shipping ROM: a booted 8100 enables slot-
+// interrupt bits $38, i.e. bits 3/4/5, which under the Mac II bit = slot-9
+// numbering are exactly $C/$D/$E — always those three, whichever connector
+// holds a card — with bit 6 the built-in video VBL (it appears in the mask
+// only when built-in video exists).  The ROM's own PDM slot-interrupt path
+// masks the slot bits with $78, bits 3-6, agreeing.
+//
+// An earlier revision of this file declared $B/$C/$D from the schematic
+// silkscreen (051-0333 rev A sheet 22, where the 96-pin connectors
+// J11/J12/J13 are labelled NuBus Slot B, C and D).  That numbering is a
+// board-level label, not the slot ID the software uses: a card staged into
+// $B lands on interrupt bit 2, which nothing enables and nothing services,
+// so its /NMRQ latched and stayed latched forever.  The Slot Manager then
+// never ran that slot's VBL task queue — which, when the card is the main
+// screen, is where the cursor task lives, so the mouse stopped moving.
+// Each ships empty; the user stages a card per slot.
 static const struct nubus_slot_decl pm7100_nubus_slots[] = {
-    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
     {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
     {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
     {0},
 };
 
@@ -75,6 +88,7 @@ const hw_profile_t machine_pm7100 = {
     .has_cdrom = true,
     .cdrom_id = 3,
 
+    .builtin_video = "Built-in video (Ariel II)",
     .nubus_slots = pm7100_nubus_slots,
 
     .substrate = &pdm_substrate,

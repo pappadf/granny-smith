@@ -54,9 +54,19 @@
 // latched CONTROL mode (fill / copy / ROP).
 #define DISPLAY_CARD_24AC_ENGINE_ALIAS_OFFSET 0x00400000u
 
-// Operand aperture (large-VRAM variant).  A latched 32-bit operand
-// register: write to load, read to read back; the `4`-twice write to its
-// +0x400000 commit alias latches it as the engine's current pattern/colour.
+// Operand aperture: a latched 32-bit operand (pattern longword / fill
+// colour) loaded by writing the passive offset and latched by the `4`-twice
+// write to its +0x400000 commit alias.
+//
+// Its ADDRESS is not fixed and must not be hardcoded.  The cdev picks a
+// per-slot base at init, and the choice is configuration-dependent: measured
+// with the same card and the same cdev, a IIcx uses $3FE000 and a Power
+// Macintosh 8100 uses $3F8000 (the hardware spec also documents $0FE000 for
+// a small-VRAM card).  The model therefore recognises the commit by its
+// shape — command code `4` through the alias, above VRAM_VISIBLE — and
+// latches the operand from the VRAM the driver just wrote it into, which
+// works at any base.  This constant is kept only as the value the Part-A
+// register-level test poke uses.
 #define DISPLAY_CARD_24AC_OPERAND_APERTURE 0x003FE000u
 
 // Engine registers, high in slot space (hardware spec §2 + vrom RE).  All
@@ -114,6 +124,11 @@
 
 // Operand-commit command written through the aperture's +0x400000 alias.
 #define DISPLAY_CARD_24AC_COMMIT_CMD 0x00000004u
+// Pattern row latch: written through the alias at aperture+row*8, it means
+// "this row's 8 staged bytes are one row of the 8x8 pattern".  Eight of them
+// precede a commit when QuickDraw is drawing with a real pattern rather than
+// a solid colour (measured on the live cdev).
+#define DISPLAY_CARD_24AC_PATTERN_ROW_BYTES 0x00000008u
 
 // === Declaration ROM ========================================================
 // display-card-24ac-d8daab87.vrom: 32 KB chip, byteLanes = $78 (lane 3 only) → 128 KB

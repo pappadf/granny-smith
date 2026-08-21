@@ -21,6 +21,7 @@
 #include "nubus/cards/jmfb.h"
 
 #include "mcu/dafb.h"
+#include "pdm/pdm.h" // the built-in monitor strap (profile.builtin_video)
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -319,6 +320,28 @@ static value_t build_video_slots(const hw_profile_t *p) {
     return val_list(slots, n_slots);
 }
 
+// The machine's own built-in video, plus the monitors its port can be
+// strapped with.  `none` is always last and is what switches the port —
+// and therefore built-in video — off.  Empty map when the machine has no
+// substrate built-in video to choose.
+static value_t build_builtin_video(const hw_profile_t *p) {
+    value_map_builder_t *b = val_map_new();
+    if (!p->builtin_video)
+        return val_map_finish(b);
+    val_map_put(b, "id", val_str("builtin"));
+    val_map_put(b, "display_name", val_str(p->builtin_video));
+    value_t *mons = NULL;
+    size_t n = 0, cap = 0;
+    for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++) {
+        value_map_builder_t *mb = val_map_new();
+        val_map_put(mb, "id", val_str(m->id));
+        val_map_put(mb, "name", val_str(m->name));
+        val_list_push(&mons, &n, &cap, val_map_finish(mb));
+    }
+    val_map_put(b, "monitors", val_list(mons, n));
+    return val_map_finish(b);
+}
+
 // Build the typed profile map for a registered hw_profile_t.
 static value_t build_profile(const hw_profile_t *p) {
     value_map_builder_t *b = val_map_new();
@@ -372,6 +395,12 @@ static value_t build_profile(const hw_profile_t *p) {
     // everything derives from video_slots now.)
     val_map_put(b, "capabilities", build_capabilities(p));
     val_map_put(b, "video_slots", build_video_slots(p));
+    // Substrate built-in video, when the machine has one that is NOT a
+    // BUILTIN slot pseudo-card (the PDM family's Ariel scanout).  The
+    // configuration dialog offers it beside the NuBus cards; picking a card
+    // instead means strapping this port unconnected (monitor="none"), which
+    // is what a real machine does when you plug the monitor into the card.
+    val_map_put(b, "builtin_video", build_builtin_video(p));
 
     return val_map_finish(b);
 }
@@ -556,6 +585,12 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
                        doc.video_sense);
     if (doc.video_mode && *doc.video_mode && !nubus_video_mode_known(doc.video_mode))
         return val_err("machine.boot: unknown video-mode id '%s'", doc.video_mode);
+    if (doc.monitor && *doc.monitor) {
+        if (!profile->builtin_video)
+            return val_err("machine.boot: model '%s' has no configurable built-in video port", profile->id);
+        if (!pdm_monitor_lookup(doc.monitor))
+            return val_err("machine.boot: unknown monitor id '%s' (see machine.profile)", doc.monitor);
+    }
     if (doc.custom_mode && *doc.custom_mode) {
         const char *why = NULL;
         if (!nubus_custom_mode_parse(doc.custom_mode, NULL, NULL, NULL, &why))
@@ -606,6 +641,9 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             jmfb_pending_sense_set((uint8_t)doc.video_sense);
         dafb_pending_sense_set((uint8_t)doc.video_sense); // built-in Quadra video
     }
+    // The built-in monitor strap: validated above, so the lookup succeeds.
+    if (doc.monitor && *doc.monitor)
+        pdm_pending_monitor_set(pdm_monitor_lookup(doc.monitor)->sense);
 
     machine_config_reset_vroms();
     config_t *cfg = system_create(profile, NULL);
@@ -649,6 +687,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     w->video_sense = doc.video_sense;
     snprintf(w->video_mode, sizeof(w->video_mode), "%s", doc.video_mode ? doc.video_mode : "");
     snprintf(w->custom_mode, sizeof(w->custom_mode), "%s", doc.custom_mode ? doc.custom_mode : "");
+    snprintf(w->monitor, sizeof(w->monitor), "%s", doc.monitor ? doc.monitor : "");
     stamp_created(w->created, sizeof(w->created));
     w->valid = true;
 
@@ -675,6 +714,7 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
         .video_mode = argv[6].s,
         .rom2 = argv[7].s,
         .custom_mode = argv[8].s,
+        .monitor = argv[9].s,
     };
     value_t err = machine_boot_apply(&doc);
     if (val_is_error(&err))
@@ -791,6 +831,12 @@ static const arg_decl_t machine_boot_args[] = {
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
      .doc = "Custom resolution WxHxD (generic 8_24 kind); default: none"       },
+    {.name = "monitor",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Monitor on the built-in port ('none' = unconnected, which hands "
+            "the screen to a NuBus card); default: model default"              },
 };
 
 static const arg_decl_t machine_register_args[] = {
@@ -835,7 +881,7 @@ static const member_t machine_members[] = {
     {.kind = M_METHOD,
      .name = "boot",
      .doc = "Boot a machine from a complete configuration document (model and rom required; other fields default "
-            "per model)", .method = {.args = machine_boot_args, .nargs = 9, .result = V_BOOL, .fn = machine_method_boot}},
+            "per model)", .method = {.args = machine_boot_args, .nargs = 10, .result = V_BOOL, .fn = machine_method_boot}},
     {.kind = M_METHOD,
      .name = "restart",
      .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",

@@ -349,10 +349,6 @@ static inline bool ppc_fp_check(ppc_t *p) {
 // one-liner table: branches, divides with their deterministic-undefined
 // results, string transfers, and the store-conditional.
 void ppc_illegal_op(ppc_t *p, uint32_t iw);
-void ppc_do_b(ppc_t *p, uint32_t iw);
-void ppc_do_bc(ppc_t *p, uint32_t iw);
-void ppc_do_bclr(ppc_t *p, uint32_t iw);
-void ppc_do_bcctr(ppc_t *p, uint32_t iw);
 void ppc_do_divw(ppc_t *p, uint32_t iw);
 void ppc_do_divwu(ppc_t *p, uint32_t iw);
 void ppc_do_doz(ppc_t *p, uint32_t iw);
@@ -386,8 +382,8 @@ void ppc_do_mtfsfi(ppc_t *p, uint32_t iw);
 void ppc_do_mtfsb(ppc_t *p, uint32_t iw, bool set);
 void ppc_fp_trap_check(ppc_t *p);
 
-// The interpreter proper (ppc_run.c, generated from ppc_decode.h):
-// execute one instruction word.
-void ppc_execute(ppc_t *restrict p, uint32_t iw);
+// The interpreter proper is generated from ppc_decode.h as a static
+// function inside ppc_run.c (single call site, inlined into the sprint
+// loop) — there is deliberately no external ppc_execute entry point.
 
 #endif // GS_CPU_PPC_INTERNAL_H

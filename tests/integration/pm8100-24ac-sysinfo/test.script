@@ -1,0 +1,209 @@
+# Integration test: Power Macintosh 8100 + Display Card 24AC (genuine video
+# ROM) — System 7.5, floppy insert, and the Symantec "System Info" Display
+# benchmark.
+#
+# The PowerPC sibling of iicx-24ac-sysinfo.  Same end-user workflow — boot,
+# insert "Utilities Disk 2", double-click "System Info", de-select every
+# suite but "Test Display", Run — on an 8100 with a REAL 24AC in NuBus slot
+# $C, driven from the genuine display-card-24ac-d8daab87.vrom that the
+# shared declrom loader binds by content.
+#
+# What is new here versus what already exists:
+#
+#   * suite-pdm's 8100-75-24ac row seats the GENERIC-vROM twin (card id
+#     "24ac"), whose framebuffer never gets past 1 bpp because the generic
+#     declaration ROM's driver is never asked for a mode.  This row runs the
+#     card's OWN 68K vROM driver, in emulation mode, on a 601 — and it
+#     mode-sets the card to 640x480x8, which is the observable difference.
+#   * suite-pdm's pdm-floppy-mount row launches System Info off the floppy
+#     on a 7100 but stops at the launched window.  This one drives the
+#     benchmark to its result.
+#
+# WHAT THE 24AC DOES NOT DO HERE, so nobody reads more into the goldens
+# than they say: the PDM family always has a monitor strapped to its
+# HDI-45, so the built-in Ariel video is the main screen and the card comes
+# up as screen two (docs/machines/pdm/bart.md, "which screen the guest
+# picks" — a consequence of the strapped monitor, not of slot priority,
+# and not configurable yet).  `machine.screen` follows the machine's built-in
+# display (system_display() prefers the substrate's own), so every golden
+# below is the ON-BOARD framebuffer, and it is pixel-identical to what a
+# cardless 8100 produces — verified against suite-pdm's
+# pm8100-7.5-640x480-finder.png.  System Info benchmarks the MAIN device
+# and reports "Built-in video (8 bit)"; its "Test Display" row is a label,
+# not a picker (measured — a press on it opens nothing).  So the card is
+# asserted where it is actually observable: the object model, and the
+# guest's own GDevice list.
+
+include "../lib/mac.script"
+
+# --- Boot the 8100 with a genuine-vROM 24AC in NuBus slot $C ----------------
+# Staging is a two-step because `machine.nubus.slot[N]` only exists once a
+# machine with that socket has been built: boot the 8100 (zero
+# instructions), park the pick in slot $C, boot again.  Per-slot staging
+# seats a card but carries no mode, unlike the video_card= wildcard, so the
+# 8-bpp mode is staged for the slot explicitly (the quadra-dual-card
+# lesson) — without it the card comes up at its power-on default and the
+# depth assertion below fails.
+machine.rtc.time = 0xE0000000
+machine.boot model="pm8100" ram=16384 rom="${$ROM}"
+machine.nubus.slot[12].card_id = "display_card_24ac"
+machine.nubus.slot[12].video_mode = "rgb_640x480_8bpp"
+
+# Cold-boot System 7.5 from the prepared 77 MB SCSI image to the Finder
+# desktop.  Identical recipe to suite-pdm's boot_pdm_75 (see its header for
+# the budgets): chip init and bus scan park in WaitForPollDrive, the Ticks
+# poke skips the 20 s spin-up window, then boot blocks -> CFM -> extensions
+# -> desktop.
+machine.rtc.time = 0xE0000000
+machine.boot model="pm8100" ram=16384 rom="${$ROM}"
+machine.scsi.attach_hd "../../data/systems/system_7_5_0_77mb_mode32_24ac.img" 0
+scheduler.run 360000000
+machine.memory.poke.l 0x9716A 0x2000
+scheduler.run 1200000000
+wait_stable(300000000)
+
+# --- The card, as the emulator sees it --------------------------------------
+assert machine.id == "pm8100" "machine.id != pm8100"
+assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC" "slot $C card != 24AC (generic-vROM twin seated instead?)"
+assert machine.nubus.slot[12].card.declrom.present "slot $C declaration ROM not present"
+assert machine.nubus.slot[12].card_id == "" "staged card_id not consumed at boot"
+# The sockets either side stay empty — an unpopulated BART window must look
+# empty to us and to the Slot Manager alike.
+assert try(machine.nubus.slot[13].card.name, none) == none "slot $D is populated"
+assert try(machine.nubus.slot[14].card.name, none) == none "slot $E is populated"
+# The card's OWN driver set this: 640x480 at 8 bpp, which the generic-vROM
+# sibling in suite-pdm never reaches (it stays at 1 bpp).
+assert machine.nubus.slot[12].card.framebuffer.base == 0xFC000000 "slot $C framebuffer base != 0xFC000000"
+assert machine.nubus.slot[12].card.framebuffer.width == 640 "slot $C framebuffer width != 640"
+assert machine.nubus.slot[12].card.framebuffer.height == 480 "slot $C framebuffer height != 480"
+assert machine.nubus.slot[12].card.framebuffer.depth == 8 "slot $C framebuffer depth != 8 (the card's vROM driver never set the mode)"
+
+# --- The card, as the GUEST sees it -----------------------------------------
+# The strongest statement this test makes about the 24AC: System 7.5 built a
+# second GDevice for it, and that device's PixMap points at the card's own
+# VRAM.  Lowmem and the GDevice/PixMap chain are read through the 68K
+# user-context window, so park in USER mode first (the suite-pdm idiom).
+#
+# GDevice layout (Inside Macintosh: Imaging With QuickDraw, "Graphics
+# Devices"): gdRefNum +$00, gdPMap +$16, gdNextGD +$1E.  PixMap: baseAddr
+# +$00, rowBytes +$04, bounds +$06, pixelSize +$20.
+while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
+
+def gd_pixmap(gd) { return machine.cpu.mmu.peek(machine.cpu.mmu.peek($gd + 0x16, 4), 4) }
+
+let gd1_h = machine.cpu.mmu.peek(0x8A8, 4)
+assert $gd1_h != 0 "DeviceList is empty"
+assert machine.cpu.mmu.peek(0x8A4, 4) == $gd1_h "MainDevice is not the head of DeviceList"
+let gd1 = machine.cpu.mmu.peek($gd1_h, 4)
+let pm1 = gd_pixmap($gd1)
+# Screen one is the BUILT-IN video: whatever else is true, it is not the
+# card.  Its baseAddr is deliberately not pinned to a literal — the
+# built-in framebuffer is ordinary system DRAM the boot allocator places
+# (video.md), and the address the 68K side sees for it is the OS's to
+# choose, not a hardware constant.  What matters is the pairing: main
+# device != card, second device == card.
+assert machine.cpu.mmu.peek($pm1, 4) != machine.nubus.slot[12].card.framebuffer.base "the MAIN GDevice is the card; the built-in video should own the menu bar"
+assert machine.cpu.mmu.peek($pm1 + 0x20, 2) == 8 "GDevice 1 pixelSize != 8"
+# ...and it is the screen every golden below captures.
+assert machine.screen.width == 640 "built-in screen width != 640"
+assert machine.screen.height == 480 "built-in screen height != 480"
+assert machine.screen.depth == 8 "built-in screen not 8 bpp"
+
+# Screen two is the card: same geometry, same depth, and a baseAddr that IS
+# the slot $C framebuffer aperture.
+let gd2_h = machine.cpu.mmu.peek($gd1 + 0x1E, 4)
+assert $gd2_h != 0 "no second GDevice — 7.5 did not enumerate the 24AC as a screen"
+let gd2 = machine.cpu.mmu.peek($gd2_h, 4)
+let pm2 = gd_pixmap($gd2)
+assert machine.cpu.mmu.peek($pm2, 4) == machine.nubus.slot[12].card.framebuffer.base "GDevice 2 baseAddr ${machine.cpu.mmu.peek($pm2, 4):08x} != the card's framebuffer base"
+assert machine.cpu.mmu.peek($pm2 + 0x20, 2) == 8 "GDevice 2 pixelSize != 8"
+assert machine.cpu.mmu.peek($pm2 + 0x0A, 2) == 480 "GDevice 2 bounds.bottom != 480"
+assert machine.cpu.mmu.peek($pm2 + 0x0C, 2) == 640 "GDevice 2 bounds.right != 640"
+assert machine.cpu.mmu.peek($gd2 + 0x1E, 4) == 0 "a THIRD GDevice exists; only the built-in and the card were seated"
+
+# The 7.5 Finder desktop on the built-in screen.  This golden is
+# byte-identical to suite-pdm's CARDLESS pm8100-7.5-640x480-finder.png
+# (checked when it was captured), and that identity is itself the
+# assertion: a second screen off the canvas must change nothing on the
+# first.  It is kept as a local copy rather than a cross-directory
+# reference because every test directory here owns its own goldens.
+#
+# The menu-bar clock is excluded: the RTC is pinned above, but which guest
+# minute a settled frame lands in is not something this row pins.
+check_ex("goldens/pm8100-7.5-640x480-finder.png", 0, 440, 20, 640)
+
+# --- Insert the "Utilities Disk 2" floppy into the internal SWIM3 drive -----
+# The Finder mounts it and opens its window (the volume's saved state is
+# "open"), showing the disk's applications — including "System Info".  A
+# FIXED budget before the settle, deliberately: nothing on the desktop
+# changes while the drive spins up, seeks and reads the volume, so a bare
+# wait_stable would return three polls later having watched an idle screen.
+machine.floppy.drive[0].insert "../../data/apps/Norton-Utils-Disk-2.image"
+assert machine.floppy.drive[0].present "Utilities Disk 2 not present in FD0"
+scheduler.run 600000000
+wait_stable(900000000)
+# No system error was raised mounting it (DSErrCode, 68K logical $AF0).
+assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} inserting Utilities Disk 2"
+check_ex("goldens/pm8100-utilities-disk.png", 0, 440, 20, 640)
+
+# --- Launch "System Info" by double-clicking its icon ----------------------
+# Both applications on this disk are FAT binaries — checked, not assumed:
+# "System Info" carries CODE 0-7 (~69 KB of real 68K segments, not a
+# "requires a Power Macintosh" stub) alongside a `cfrg` naming one `pwpc`
+# fragment, and a 237 KB PEF in its data fork; "Fast Find" is the same
+# shape with CODE 0-14 and a 190 KB PEF.  So this launch does NOT prove the
+# PEF path on its own — on a Power Macintosh the Process Manager prefers
+# the native fragment, but a 68K fallback exists.  (suite-pdm's
+# pdm-floppy-mount row states the opposite, that System Info is
+# PowerPC-only with no CODE resource; that is incorrect.)  What the launch
+# does prove is an application starting off the floppy through the SWIM3
+# datapath, which is the point of the step.
+#
+# A FIXED budget, not a settle: the launched window is deterministic (the
+# RTC is pinned) but never quiescent, because the application animates.
+double_click(264, 100)
+scheduler.run 1500000000
+check_ex("goldens/pm8100-system-info.png", 0, 440, 20, 640)
+
+# --- De-select every suite except "Test Display" ---------------------------
+# The checkboxes are at x=187, y=224 (CPU) / 244 (Display) / 264 (Volume) /
+# 284 (FPU) — the same screen coordinates as on the IIcx, because the
+# window is placed identically on a 640x480 screen.  Test Display is left
+# alone.  click() steps the cursor away between clicks, which is why these
+# are three separate calls and not a repeated press.
+click(187, 224)
+click(187, 264)
+click(187, 284)
+run_ticks(30)
+check_ex("goldens/pm8100-system-info-display-only.png", 0, 440, 20, 640)
+
+# --- Click "Run": System Info's "System Differences" advisory --------------
+# Unlike iicx-24ac-sysinfo, this row does NOT seed a reference config into
+# PRAM to suppress the advisory.  The prepared 7.5 image ships a 96 KB disk
+# cache with AppleTalk on, so Run raises the dialog — and driving it is
+# worth more than dodging it: the dialog names both differences it found,
+# which is a read-out of the booted System's real settings.  Its "Test"
+# button proceeds to the benchmark anyway.
+click(456, 255)
+scheduler.run 200000000
+check_ex("goldens/pm8100-system-differences.png", 0, 440, 20, 640)
+
+# --- Test: the Display benchmark ------------------------------------------
+# A full-screen QuickDraw fill/line/scroll stress on the main (built-in)
+# screen, settling on the "System Ratings" window.
+#
+# A FIXED budget, and NOT wait_stable(): measured, the benchmark passes
+# through blank phases that hold a single frame for longer than
+# wait_stable's three 20 M polls, so a stability wait false-settles partway
+# through — it returned at +1.94 G on an all-white frame.  Sampled on a
+# 250 M grid instead, the result frame's last content change is at +5.5 G
+# and it is then identical (outside the excluded clock) all the way to
+# +15 G, so 6 G lands half a gigacycle past the end with 9 G of slack
+# above it.
+click(489, 273)
+scheduler.run 6000000000
+check_ex("goldens/pm8100-system-info-video-rating.png", 0, 440, 20, 640)
+
+report_row("7.5", "ariel+24ac", "hd-boot fd-mount ppc-launch display-benchmark")
+report_perf("pm8100-24ac-sysinfo/bench", scheduler.instr_count)
+quit
