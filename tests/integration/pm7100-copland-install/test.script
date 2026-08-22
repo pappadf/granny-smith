@@ -1,0 +1,131 @@
+# Integration test: Power Macintosh 7100 — install System 7.5 + Copland D11E4.
+#
+# See config.mk for the full design and the phase map.  PHASE 1 is implemented
+# here; phases 2-5 (format with Drive Setup 2.0d5c2, install 7.5 from the seven
+# floppies, run `Install Mac OS`, export the volume) follow.
+#
+# --- Phase 1: the host environment -------------------------------------------
+#
+# Boot the pm7100 from the prepared System 7.5.0 volume the PDM suite already
+# uses, with two more devices on the Curio bus:
+#
+#   SCSI 0   system_7_5_0_77mb_mode32_24ac.img   the host we boot (read/write)
+#   SCSI 1   $WORK_DIR/copland.img (HD230SC)     the blank target volume
+#   SCSI 3   the Mac OS 8 DDK 0.4 CD             Drive Setup 2.0d5c2 + Install Mac OS
+#
+# What the phase has to establish, and what each assertion is for:
+#
+#   * the target drive is the Apple-branded 230 MB mechanism Copland's
+#     installer demands.  Its rule 204 refuses any volume under 230 MB and its
+#     rule 207 refuses a disk Apple's own formatter never touched (plan §5.2),
+#     and before HD230SC existed the drive catalog topped out at 169 MB.  The
+#     INQUIRY identity and the exact image size are what
+#     se30-format-hd-apple230 pins on the SE/30; asserting them here says the
+#     drive this test hands to Drive Setup is that same mechanism.
+#   * the drive is still RAW — no partition map, so nothing has formatted it and
+#     the Finder cannot have mounted it.  Phase 2 starts from a blank disk.
+#   * the DDK disc is a read-only CD-typed device with 2048-byte blocks taken
+#     from the disc's own Driver Descriptor Map, and — the part that matters —
+#     the booted System mounts it.  The prepared 7.5 image carries Apple CD-ROM,
+#     Foreign File Access and ISO 9660 File Access, so the CD mounts and the
+#     Finder auto-opens it; that window is what makes Drive Setup reachable in
+#     phase 2, and the golden is what proves it arrived.
+#
+# The boot recipe is suite-pdm's boot_pdm_75(): pinned RTC, 360 M instructions
+# to the Start Manager's WaitForPollDrive loop, a Ticks poke past the 20 s
+# drive-spin-up window (physical $16A + $97000 — the 604 KB framebuffer carve),
+# then ~1.2 G through boot blocks, CFM init, the extensions parade and the
+# Finder.  Measured spend for the whole phase: ~1.64 G instructions.
+
+include "../lib/mac.script"
+
+# Media (plan §6.0).  Three levels up from tests/integration/<test>/ is the
+# repo root; the Copland media is not in gs-test-data, so every path here is
+# guarded and the test skips rather than fails where it is absent.
+let copland_root = "../../../local/gs-docs/projects/copland"
+let ddk_cd = "${$copland_root}/images/copland_d11e4_jun_1996_mac_os_8_ddk_0.4_original_cd_image.dmg"
+let ssw75 = "${$copland_root}/media/ssw75-1.4M"
+# The 7.5.0 host volume: genuine 7.5.0, boots on all three PDMs, and Apple is
+# explicit that the volume you install FROM does not matter.
+let host_hd = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+let target = "${$WORK_DIR}/copland.img"
+
+# Phase 1 — boot the host environment with the target drive and the CD attached.
+def phase1_host_desktop() {
+    # HD230SC = Quantum ProDrive LPS 240S, the Apple 230 MB SKU: the smallest
+    # catalog entry above the installer's 230 MB floor.  The label form (not a
+    # raw byte count) makes the image exactly the mechanism's capacity, so
+    # READ CAPACITY and the INQUIRY product ID agree.
+    assert storage.hd_create($target, "HD230SC") "hd_create HD230SC failed"
+    assert storage.path_size($target) == 245427200 "HD230SC wrong image size"
+
+    machine.rtc.time = 0xE0000000
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.scsi.attach_hd "${$host_hd}" 0
+    machine.scsi.attach_hd "${$target}" 1
+    machine.scsi.attach_cdrom "${$ddk_cd}" 3
+
+    # The bus, before anything boots: what Drive Setup and the installer will
+    # each be handed.  The blank drive is the Apple-branded mechanism...
+    assert machine.scsi.device[1].type == "hd" "SCSI 1 is not a hard disk"
+    assert machine.scsi.device[1].vendor == "QUANTUM " "SCSI 1 unexpected vendor"
+    assert machine.scsi.device[1].product == "LP240S GM240S01X" "SCSI 1 unexpected product"
+    assert !machine.scsi.device[1].read_only "SCSI 1 target drive is read-only"
+    # ...and the disc is a CD, read-only, with the block size it powers on
+    # with: 512, read off the disc's own Driver Descriptor Map rather than a
+    # hard-coded CD default.  The guest's CD driver changes it later.
+    assert machine.scsi.device[3].type == "cdrom" "SCSI 3 is not a CD-ROM"
+    assert machine.scsi.device[3].read_only "SCSI 3 CD-ROM is not read-only"
+    assert machine.scsi.device[3].medium_present "SCSI 3 has no medium"
+    assert machine.scsi.device[3].block_size == 512 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
+
+    # Chip init, bus scan, driver load, DQE post; parks in WaitForPollDrive.
+    scheduler.run 360000000
+    # Skip the 20 s spin-up window (suite-pdm's documented Ticks poke).
+    machine.memory.poke.l 0x9716A 0x2000
+    # Boot blocks -> CFM init -> extensions parade -> Finder desktop.
+    scheduler.run 1200000000
+    wait_stable(900000000)
+
+    # The machine Copland's rule 200 gates on, and the video it wants.
+    assert machine.id == "pm7100" "machine.id != pm7100"
+    assert machine.ram == 24576 "machine.ram != 24576"
+    assert machine.screen.width == 640 "screen.width != 640"
+    assert machine.screen.height == 480 "screen.height != 480"
+    assert machine.screen.depth == 8 "screen.depth != 8"
+    # DynamicBoxFlag identity, read through the user-context window (so park in
+    # USER mode first) — 106 is the 7100, the value suite-pdm pins.
+    while (machine.cpu.msr & 0x4000) == 0 { scheduler.run 1000 }
+    assert machine.cpu.mmu.peek(0xCB3, 1) == 106 "BoxFlag ${machine.cpu.mmu.peek(0xCB3, 1)}, want 106 (pm7100)"
+    # It booted from SCSI 0, and nothing raised a system error on the way.
+    assert debug.mac.globals.read("BootDrive") != 0 "BootDrive == 0 (no startup device)"
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} during boot"
+
+    # The target drive is untouched: no partition map at all, so Apple's
+    # formatter has not run on it and the Finder cannot have mounted it.
+    assert try(storage.partmap($target), none) == none "the target drive already carries a partition map"
+
+    # The CD's driver ran: Apple CD-ROM re-blocks the drive to 2048 bytes on
+    # mount (it attaches at the DDM's 512).  That is guest-side proof the disc
+    # was mounted by the System and not merely plugged into the bus — which is
+    # what phase 2 needs, since Drive Setup 2.0d5c2 is read off this volume.
+    assert machine.scsi.device[3].block_size == 2048 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (the CD driver never re-blocked it)"
+
+    # The desktop: `Macintosh HD`, the auto-opened `Mac OS 8 DDK 0.4` CD window
+    # with its 9 items, and NO icon for the unformatted target drive.  The
+    # menu-bar clock is masked the way every other 7.5 golden in the suite
+    # masks it.
+    check_ex("host-desktop.png", 0, 440, 20, 640)
+    report_perf("pm7100-copland-install/phase1", scheduler.instr_count)
+}
+
+# Skip cleanly where the Copland media is absent (plan §6.0): it lives in
+# local/ and is deliberately not part of gs-test-data yet.
+if have_media($ddk_cd) && have_media("${$ssw75}/Install Disk 1.img") && have_media($host_hd) {
+    phase1_host_desktop()
+    report_row("7.5", "ariel", "copland-install-phase1 hd-boot cd-mount")
+} else {
+    echo "skip: pm7100-copland-install (Copland media not present — see the bring-up plan §6.0)"
+}
+
+quit
