@@ -1,5 +1,5 @@
-# Integration test configuration: Power Macintosh 7100 — install System 7.5 +
-# Copland D11E4 (Mac OS 8 Developer Release, Compatibility Edition).
+# Integration test configuration: Power Macintosh 7100 — prepare the target
+# volume Copland D11E4 installs onto.
 #
 # The install half of the Copland bring-up
 # (local/gs-docs/projects/copland/bring-up-plan.md §6.2).  It builds the volume
@@ -13,9 +13,9 @@
 #      the DDK CD on the same bus, and lands on the Finder desktop      [here]
 #   2. format the target with Drive Setup 2.0d5c2 off the CD            [here]
 #      and publish it to media/copland_target_formatted_230mb.img       [here]
-#   3. install System 7.5.0 onto it from the seven floppies              [next
-#   4. run the CD's `Install Mac OS` onto the same volume                 test]
-#   5. export the volume and hand it to pm7100-copland-boot
+#   3. install System 7.5.0 onto it from the seven floppies         [pm7100-
+#   4. run the CD's `Install Mac OS` onto the same volume            copland-
+#   5. export the volume and hand it to pm7100-copland-boot          install]
 #
 # Phases 3-5 live in a SEPARATE test that starts from the published formatted
 # image.  The split is the same reasoning as the plan's §6.4 split between
@@ -40,7 +40,7 @@
 # is left untouched; driving this by hand from the repo root without setting
 # that variable writes through to the shared image.
 
-TEST_NAME := Power Macintosh 7100 — install System 7.5 + Copland D11E4
+TEST_NAME := Power Macintosh 7100 — format Copland's target volume (Drive Setup 2.0d5c2)
 TEST_DESC := Boot a pm7100 from the prepared 7.5 volume and initialize a blank Apple 230 MB drive with Drive Setup 2.0d5c2 off the Mac OS 8 DDK 0.4 CD, writing the Apple_MacOSPrep loader partition Copland's installer requires
 
 # 4 MB Power Macintosh 6100/7100/8100 ROM (stored checksum 0x9FEB69B3).

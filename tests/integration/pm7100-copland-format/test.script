@@ -1,8 +1,9 @@
-# Integration test: Power Macintosh 7100 — install System 7.5 + Copland D11E4.
+# Integration test: Power Macintosh 7100 — format Copland's target volume.
 #
-# See config.mk for the full design and the phase map.  PHASE 1 is implemented
-# here; phases 2-5 (format with Drive Setup 2.0d5c2, install 7.5 from the seven
-# floppies, run `Install Mac OS`, export the volume) follow.
+# Phases 1-2 of the bring-up plan §6.2: boot the host environment, then
+# initialize the blank Apple 230 MB drive with Drive Setup 2.0d5c2 off the DDK
+# CD and publish the result.  `pm7100-copland-install` picks that volume up and
+# installs System 7.5.0 and Copland onto it.  See config.mk for the phase map.
 #
 # --- Phase 1: the host environment -------------------------------------------
 #
