@@ -285,17 +285,28 @@ The body always sees a value matching the declared slot kind:
 - **`OBJ_ARG_STRICT_KIND` opt-out.** A slot with this flag accepts
   exactly its declared kind and disables the coercions above.
 
-### `V_NONE`-kind slots
+### `V_ANY` slots (and the `V_NONE` spelling on arguments)
 
-A slot declared with `kind = V_NONE` is the explicit "accept any
+A slot declared with `kind = V_ANY` is the explicit "accept any
 kind" sentinel — the framework skips kind / width / enum checks
 and the body discriminates the input. Used for legitimately
 multi-kind attributes and parameters: `machine.rtc.time` accepts either an
 ISO-8601 string or a Mac-epoch integer; `machine.adb.keyboard.press` accepts
 either a key name or an ADB keycode; `machine.memory.dump.addr` accepts
 either an address integer or an alias / expression string. Most
-slots should declare a concrete kind; `V_NONE` is reserved for
+slots should declare a concrete kind; the sentinel is reserved for
 genuine dual-input shapes.
+
+On an *argument* slot `V_NONE` means the same thing, and predates
+`V_ANY`; both spellings work and existing declarations were left
+alone. On a method's *result* slot the two are not
+interchangeable: there `V_NONE` means "returns nothing" and `V_ANY`
+means "polymorphic" — see below.
+
+`V_ANY` is a declaration-only constant, deliberately outside
+`value_kind_t`'s enumerated range: it describes what a slot accepts
+or promises, never what a live value is, so switches over a value's
+kind stay exhaustive without a dead arm.
 
 ### Argv rewriting and ownership
 
@@ -336,6 +347,17 @@ error). Release builds compile the asserts out, so the production
 cost is zero. Integration and unit tests run with assertions
 enabled so cross-kind regressions surface in CI rather than only
 locally.
+
+A method whose result kind genuinely depends on its arguments
+declares `result = V_ANY` and is not checked. The one such surface
+today is `debug.mac.globals.read`, which hands back a `V_UINT` for a
+1/2/4-byte low-memory global and `V_BYTES` for a wider one
+(`KeyMap`, `EventQueue`, `FileVars`, …). Declaring that method
+`V_UINT` aborted the process on every wide global (issue #106);
+`V_NONE` would have aborted on all of them, since a `V_NONE` result
+slot asserts that the method returns nothing at all. Reach for
+`V_ANY` only when the polymorphism is real — a concrete kind is
+still the norm, and it is what makes the assertion useful.
 
 ## Foundation for shell and configuration
 
@@ -425,7 +447,7 @@ singleton or cfg-scoped:
    non-emptiness, or enum membership. Bodies still own *semantic*
    checks — value ranges that depend on runtime state ("HD already
    attached at id %d", "frequency must be a power of two") — and
-   discrimination on `V_NONE`-kind slots.
+   discrimination on `V_ANY` / `V_NONE`-kind slots.
 3. **Attach the object** at the right lifecycle point — for cfg-scoped
    classes, do it inside the existing `*_init` (next to the
    `cfg->foo = foo_init(...)` call); for process-singletons, add a

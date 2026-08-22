@@ -40,6 +40,17 @@ typedef enum {
     V_RANGE, // half-open integer range [start, stop)
 } value_kind_t;
 
+// Declaration-only sentinel: "any kind" (see object.h). Valid in a typed
+// slot — a method's declared `result`, or an argument slot — to declare a
+// genuinely polymorphic contract, e.g. debug.mac.globals.read, whose
+// result kind follows the width of the named global. It never appears as
+// the kind of a live value_t: it says what a slot accepts or promises,
+// not what a value is. Deliberately a constant outside the enumerated
+// range rather than another enumerator, so that switches over a live
+// value's kind stay exhaustive without a dead arm for a kind no value
+// ever carries.
+#define V_ANY ((value_kind_t)0x7F)
+
 // Display / semantic flags. Stored on attribute member_t and copied onto
 // value_t so formatters see the intent of the originating attribute.
 #define VAL_HEX       0x0001u // prefer hex output

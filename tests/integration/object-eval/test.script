@@ -24,6 +24,14 @@ scheduler
 echo "${debug.mac.globals.read("MBState")}"
 echo "${debug.mac.globals.read("Ticks")}"
 echo "${debug.mac.globals.read("ROMBase")}"
+
+# Globals wider than 4 bytes read back as a byte buffer rather than a
+# uint (issue #106): the read method's result slot is polymorphic, and
+# reading one of the 49 wide entries used to abort the process on the
+# object model's return-kind assertion.
+assert len(debug.mac.globals.read("KeyMap")) == 16 "KeyMap should read as a 16-byte buffer"
+assert len(debug.mac.globals.read("EventQueue")) == 10 "EventQueue should read as a 10-byte buffer"
+echo "${debug.mac.globals.read("KeyMap")}"
 machine.cpu.ccr
 machine.cpu.sp
 

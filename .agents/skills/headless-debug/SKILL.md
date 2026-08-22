@@ -409,13 +409,18 @@ requires the matching log category to be enabled — `debug.log memory 1`.
 ```
 debug.mac.globals.read "Ticks"          # → 0xf999
 debug.mac.globals.read "MBState"        # → 0x80
+debug.mac.globals.read "KeyMap"         # → 0x0000000000000000... (16 bytes)
 debug.mac.globals.address "MBState"     # → 0x172
 debug.mac.globals.list                  # ["BusErrVct", "MonkeyLives", ..., 471 names]
 debug.mac.atrap 0xa05d                  # → "_SwapMMUMode"
 ```
 
 Sizes: 1/2/4-byte globals come back as unsigned ints; larger blobs
-(KeyMap, EventQueue, …) come back as byte buffers.
+(KeyMap, EventQueue, …) come back as byte buffers — use `len(...)` for
+the width, or `+` to concatenate. A handful of table entries are region
+markers with no size (`ScrapEnd`, `SEVarBase`); `read` errors on those,
+so use `address` and read memory directly. `write` takes 1/2/4-byte
+globals only.
 
 ### 6.7 Screen capture and matching
 
