@@ -17,12 +17,28 @@
 // image_create_empty/image_open produce valid block-aligned images.
 // Where possible, use the earliest OEM mechanism for backward compatibility.
 // Source: Apple product brochures (Jul 1987, Feb 1989), Quantum/Seagate manuals.
+//
+// The three entries at 230 MB and above are Apple-shipped OEM mechanisms whose
+// INQUIRY strings and block counts come from bitsavers' apple_scsi_ident.txt;
+// their sizes are (blocks x 512) exactly as those drives report via READ
+// CAPACITY.  They exist because Apple's own formatters gate on capacity as
+// well as on the "APPLE COMPUTER, INC." MODE SENSE page 0x30 signature (see
+// scsi.c), and because Copland's installer demands a >= 230 MB target volume.
+// The pre-existing sub-230 MB entries keep revision "1.0" - the value the
+// attach path hard-coded before this field existed - so their INQUIRY response
+// is unchanged.
 static const struct drive_model catalog[] = {
-    {"HD20SC",  "MINISCRB", "8425S",   21307392 },
-    {"HD20SC",  " SEAGATE", "ST225N",  21411840 },
-    {"HD40SC",  "QUANTUM ", "Q250",    40061952 },
-    {"HD80SC",  "QUANTUM ", "Q280",    80061440 },
-    {"HD160SC", "QUANTUM ", "ELS170S", 177269760},
+    {"HD20SC",   "MINISCRB", "8425S",            "1.0",  21307392  },
+    {"HD20SC",   " SEAGATE", "ST225N",           "1.0",  21411840  },
+    {"HD40SC",   "QUANTUM ", "Q250",             "1.0",  40061952  },
+    {"HD80SC",   "QUANTUM ", "Q280",             "1.0",  80061440  },
+    {"HD160SC",  "QUANTUM ", "ELS170S",          "1.0",  177269760 },
+    // Quantum ProDrive LPS 240S - 479,350 blocks
+    {"HD230SC",  "QUANTUM ", "LP240S GM240S01X", "6.3 ", 245427200 },
+    // Quantum ProDrive LPS 540S, Apple P/N 655-0202 - 1,057,616 blocks
+    {"HD500SC",  "QUANTUM ", "LPS540S",          "590A", 541499392 },
+    // IBM DPES-31080, Apple P/N 655-0141 - 2,118,144 blocks
+    {"HD1000SC", "IBM     ", "DPES-31080",       "S31K", 1084489728},
 };
 
 // number of entries in the catalog

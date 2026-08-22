@@ -18,6 +18,7 @@ struct drive_model {
     const char *label; // human-friendly name, e.g. "HD20SC"
     const char *vendor; // SCSI vendor string, e.g. " SEAGATE"
     const char *product; // SCSI product string, e.g. "ST225N"
+    const char *revision; // SCSI revision string (4 chars), e.g. "590A"
     size_t size; // exact image size in bytes
 };
 

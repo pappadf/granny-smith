@@ -1,0 +1,98 @@
+# Integration test: Apple HD SC Setup accepts an Apple-branded 230 MB drive.
+#
+# The Copland D11E4 installer refuses any target volume under 230 MB, and it
+# also refuses a disk that Apple's own formatter never touched (its rule 207,
+# "Check for Secondary Ldr Partn", looks for the driver partition Drive Setup
+# writes).  Before HD500SC existed the catalog topped out at 169 MB, so no
+# emulated drive could satisfy both.  This test pins the fix end to end:
+# Apple's formatter must see the drive, offer Initialize, and complete.
+#
+# What makes the drive acceptable is MODE SENSE page 0x30 returning
+# "APPLE COMPUTER, INC." (scsi.c) — not the INQUIRY vendor/product ID.  A
+# regression there shows up here as a greyed-out Initialize button.
+#
+# Mouse timing mirrors se30-format-hd: 5M cycles after a move for VBL
+# propagation, then 1M-cycle click phases.
+
+# HD230SC = Quantum ProDrive LPS 240S, 479,350 blocks, the Apple 230 MB SKU —
+# the smallest catalog entry above the installer's floor.  Formatting it here
+# yields a 479,254-block (245,378,048 byte) HFS volume, which clears 230 MB
+# whether the installer means decimal MB or MiB.
+assert storage.hd_create("${$WORK_DIR}/apple230.img", "HD230SC") "hd_create HD230SC failed"
+assert storage.path_size("${$WORK_DIR}/apple230.img") == 245427200 "HD230SC wrong image size"
+
+machine.scsi.attach_hd "$WORK_DIR/apple230.img" 0
+
+# The INQUIRY identity the catalog entry is supposed to present.
+assert machine.scsi.device[0].vendor == "QUANTUM " "unexpected SCSI vendor"
+assert machine.scsi.device[0].product == "LP240S GM240S01X" "unexpected SCSI product"
+assert machine.scsi.device[0].revision == "6.3 " "unexpected SCSI revision"
+
+# Boot to the Finder desktop (SE/30, 8 MB RAM).  The drive is unformatted, so
+# it must NOT mount here — only HD SC Setup should be able to touch it.
+scheduler.run 80000000
+machine.screen.match desktop.png
+
+# Double-click "Disk Tools" to open the floppy
+machine.adb.mouse.move 480 55 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 50000000
+machine.screen.match floppy.png
+
+# Double-click Apple HD SC Setup
+machine.adb.mouse.move 167 83 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 1000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 50000000
+
+# THE ACCEPTANCE CHECK.  A drive the formatter rejects reports "This program
+# cannot be used on the selected device" with Initialize disabled; an accepted
+# one reports "The disk is uninitialized..." with Initialize enabled.
+machine.screen.match ready.png
+
+# Initialize
+machine.adb.mouse.move 167 115 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 5000000
+machine.screen.match confirm.png
+
+# Confirm "Init" in the erase-warning dialog
+machine.adb.mouse.move 360 190 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+
+# Writing the driver, partition map and volume across 479,350 blocks
+scheduler.run 800000000
+
+# "Please name this volume." — accept the default
+machine.adb.mouse.move 200 180 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 1000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+
+# "Disk initialization successfully completed." plus the now-mounted volume,
+# and Update/Partition/Test enabled — all three only appear for a drive the
+# formatter considers a supported Apple mechanism.
+machine.screen.match done.png
+
+quit

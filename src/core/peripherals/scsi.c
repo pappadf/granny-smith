@@ -636,46 +636,48 @@ static void run_cmd(scsi_t *scsi) {
         if (scsi->devices[target].type == scsi_dev_cdrom) {
             scsi_cdrom_mode_sense(scsi);
         } else {
-            // HD MODE SENSE(6): CDB byte 2 bits 5:0 = page code
+            // HD MODE SENSE(6): CDB byte 2 bits 5:0 = page code, byte 4 =
+            // allocation length.  Build the full response in a scratch buffer,
+            // then transfer only as much as the initiator asked for — SCSI-2
+            // §8.2.10 requires the target to send the lesser of the two, and
+            // Apple's formatters do issue short allocation lengths when they
+            // only want the header.
             uint8_t page_code = scsi->buf.data[2] & 0x3F;
+            int alloc_len = scsi->buf.data[4];
             uint32_t blocks = (uint32_t)(disk_size(scsi->devices[target].image) / 512);
 
+            // Vendor-specific page 0x30 carries Apple's drive-identification
+            // string.  This — not the INQUIRY vendor/product ID — is what
+            // Apple HD SC Setup and Drive Setup gate on when deciding whether
+            // a mechanism is an Apple-shipped drive they are willing to format.
+            static const char apple_id[] = "APPLE COMPUTER, INC.";
+            const int apple_id_len = (int)sizeof(apple_id) - 1; // no NUL on the wire
+
+            uint8_t resp[64];
+            memset(resp, 0, sizeof(resp));
+            int total = 4 + 8; // mode parameter header + one block descriptor
+            resp[3] = 8; // block descriptor length
+            // Block descriptor: number of blocks, then 512-byte block length
+            resp[5] = (blocks >> 16) & 0xFF;
+            resp[6] = (blocks >> 8) & 0xFF;
+            resp[7] = blocks & 0xFF;
+            resp[9] = 0x00;
+            resp[10] = 0x02;
+            resp[11] = 0x00;
+
             if (page_code == 0x30) {
-                // Vendor-specific page 0x30: Apple drive identification
-                // Apple HD SC Setup checks this page for "APPLE COMPUTER, INC."
-                static const char apple_id[] = "APPLE COMPUTER, INC.";
-                int page_len = 2 + (int)sizeof(apple_id) - 1; // page header + string (no NUL)
-                int total = 4 + 8 + page_len; // header + block descriptor + page
-                phase_data_in(scsi, total);
-                memset(scsi->buf.data, 0, total);
-                scsi->buf.data[0] = (uint8_t)(total - 1); // mode data length
-                scsi->buf.data[3] = 8; // block descriptor length
-                // Block descriptor: 512-byte blocks
-                scsi->buf.data[5] = (blocks >> 16) & 0xFF;
-                scsi->buf.data[6] = (blocks >> 8) & 0xFF;
-                scsi->buf.data[7] = blocks & 0xFF;
-                scsi->buf.data[9] = 0x00;
-                scsi->buf.data[10] = 0x02;
-                scsi->buf.data[11] = 0x00;
-                // Page 0x30 header
-                scsi->buf.data[12] = 0x30; // page code
-                scsi->buf.data[13] = (uint8_t)(sizeof(apple_id) - 1); // page length
-                // "APPLE COMPUTER, INC." payload
-                memcpy(scsi->buf.data + 14, apple_id, sizeof(apple_id) - 1);
-            } else {
-                // Default: return minimal mode sense header with block descriptor
-                phase_data_in(scsi, 12);
-                memset(scsi->buf.data, 0, 12);
-                scsi->buf.data[0] = 11; // mode data length (excluding itself)
-                scsi->buf.data[3] = 8; // block descriptor length
-                // Block descriptor: 512-byte blocks
-                scsi->buf.data[5] = (blocks >> 16) & 0xFF;
-                scsi->buf.data[6] = (blocks >> 8) & 0xFF;
-                scsi->buf.data[7] = blocks & 0xFF;
-                scsi->buf.data[9] = 0x00;
-                scsi->buf.data[10] = 0x02;
-                scsi->buf.data[11] = 0x00;
+                resp[total] = 0x30; // page code
+                resp[total + 1] = (uint8_t)apple_id_len; // page length
+                memcpy(resp + total + 2, apple_id, (size_t)apple_id_len);
+                total += 2 + apple_id_len;
             }
+            resp[0] = (uint8_t)(total - 1); // mode data length excludes itself
+
+            // Allocation length 0 is legal and means "no data" (SCSI-2 §7.5.3).
+            int n = alloc_len < total ? alloc_len : total;
+            phase_data_in(scsi, n);
+            if (n > 0)
+                memcpy(scsi->buf.data, resp, (size_t)n);
         }
         break;
     }
@@ -2823,8 +2825,8 @@ static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, 
     return val_bool(true);
 }
 
-// `scsi.hd_models` — V_LIST of {label, vendor, product, size} maps for the
-// known SCSI HD model catalog.
+// `scsi.hd_models` — V_LIST of {label, vendor, product, revision, size} maps
+// for the known SCSI HD model catalog.
 static value_t scsi_attr_hd_models(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -2840,6 +2842,7 @@ static value_t scsi_attr_hd_models(struct object *self, const member_t *m) {
         val_map_put(b, "label", val_str(md ? md->label : ""));
         val_map_put(b, "vendor", val_str(md ? md->vendor : ""));
         val_map_put(b, "product", val_str(md ? md->product : ""));
+        val_map_put(b, "revision", val_str(md ? md->revision : ""));
         val_map_put(b, "size", val_int(md ? (int64_t)md->size : 0));
         items[i] = val_map_finish(b);
     }

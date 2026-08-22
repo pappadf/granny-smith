@@ -391,6 +391,57 @@ static void prepare_reg3_reply(adb_t *adb, const adb_device_t *dev) {
     adb->reply_len = 2;
 }
 
+// ADB virtual key codes of the keys that Register 2 reports.  Caps Lock is the
+// one that matters for booting Copland: on a real Apple keyboard it is a
+// mechanically LOCKING switch, so its state is not recoverable from the
+// Register 0 transition stream — the OS reads it here.
+#define ADB_KEY_DELETE   0x33
+#define ADB_KEY_CAPSLOCK 0x39
+#define ADB_KEY_CONTROL  0x36
+#define ADB_KEY_SHIFT    0x38
+#define ADB_KEY_OPTION   0x3A
+#define ADB_KEY_COMMAND  0x37
+#define ADB_KEY_CLEAR    0x47 // keypad Clear, doubles as Num Lock
+#define ADB_KEY_F14      0x6B // doubles as Scroll Lock
+
+// Populates reply_buf with Keyboard Register 2 (modifier keys + LEDs).
+//
+// Layout per docs/core/peripherals/adb.md "Register 2 (Modifier Keys)": a 0 bit
+// means the key is DOWN or the LED is ON; every unused/reserved bit reads 1.
+// The modifier bits are derived from kbd_pressed[] rather than kept as separate
+// state, so a key held with `keyboard.down` stays reported until `keyboard.up`
+// — which is exactly how a locking Caps Lock behaves.  The Caps Lock LED
+// mirrors the key, as it does on real hardware.
+static void prepare_kbd_reg2_reply(adb_t *adb) {
+    uint16_t reg2 = 0xFFFF; // nothing pressed, no LED lit
+
+    // Bit N clears while the corresponding key is held.
+    if (adb->kbd_pressed[ADB_KEY_DELETE])
+        reg2 &= (uint16_t) ~(1u << 14);
+    if (adb->kbd_pressed[ADB_KEY_CAPSLOCK])
+        reg2 &= (uint16_t) ~(1u << 13);
+    if (adb->kbd_pressed[ADB_KEY_CONTROL])
+        reg2 &= (uint16_t) ~(1u << 11);
+    if (adb->kbd_pressed[ADB_KEY_SHIFT])
+        reg2 &= (uint16_t) ~(1u << 10);
+    if (adb->kbd_pressed[ADB_KEY_OPTION])
+        reg2 &= (uint16_t) ~(1u << 9);
+    if (adb->kbd_pressed[ADB_KEY_COMMAND])
+        reg2 &= (uint16_t) ~(1u << 8);
+    if (adb->kbd_pressed[ADB_KEY_CLEAR])
+        reg2 &= (uint16_t) ~(1u << 7);
+    if (adb->kbd_pressed[ADB_KEY_F14])
+        reg2 &= (uint16_t) ~(1u << 6);
+
+    // LED 2 (Caps Lock) follows the key; LEDs 1 and 3 stay off.
+    if (adb->kbd_pressed[ADB_KEY_CAPSLOCK])
+        reg2 &= (uint16_t) ~(1u << 1);
+
+    adb->reply_buf[0] = (uint8_t)(reg2 >> 8);
+    adb->reply_buf[1] = (uint8_t)(reg2 & 0xFF);
+    adb->reply_len = 2;
+}
+
 // Configures a "no device" reply: zero bytes cause bit3=0 on the first SR interrupt
 static void prepare_no_device_reply(adb_t *adb) {
     // reply_len=0 means the first call to adb_deliver_next_byte() immediately
@@ -435,8 +486,15 @@ static void prepare_talk_reply(adb_t *adb, uint8_t addr, uint8_t reg) {
             LOG(2, "talk R3 unknown addr=%d: no device", addr);
             prepare_no_device_reply(adb);
         }
+    } else if (reg == 2 && addr == adb->kbd.address) {
+        // Keyboard Register 2 is a state register, not an event queue: it
+        // always answers, whether or not any key has changed since the last
+        // poll.  This is how the OS learns that Caps Lock is latched.
+        prepare_kbd_reg2_reply(adb);
+        LOG(2, "talk R2 kbd: [%02X %02X]", adb->reply_buf[0], adb->reply_buf[1]);
     } else {
-        // Registers 1 and 2 are not implemented; treat as no device
+        // Register 1 is unused, and only the keyboard implements Register 2;
+        // anything else reads as no device.
         LOG(2, "talk R%d addr=%d: unimplemented register", reg, addr);
         prepare_no_device_reply(adb);
     }
