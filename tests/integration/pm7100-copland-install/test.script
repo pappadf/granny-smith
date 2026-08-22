@@ -119,11 +119,159 @@ def phase1_host_desktop() {
     report_perf("pm7100-copland-install/phase1", scheduler.instr_count)
 }
 
+# Pick an item from an open pop-up menu: press on the pop-up, move onto the
+# item, release.  A plain click() cannot do this — the Menu Manager tracks the
+# selection while the button is held, and a press-and-release in place just
+# re-picks the current item.
+def popup_pick(px, py, ix, iy) {
+    machine.adb.mouse.move $px $py "global"
+    run_ticks(30)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move $ix $iy "global"
+    run_ticks(40)
+    machine.adb.mouse.click false
+}
+
+# Phase 2 — initialize the target with Drive Setup 2.0d5c2 off the DDK CD.
+#
+# 2.0d5c2 and not System 7.5's own Drive Setup 1.0.2 (plan §7): Apple names
+# 2.0d5c2 as the version to use, calls 1.0.4 the oldest acceptable fallback,
+# and — the reason that decides it — initializing with 2.0d5c2 writes the
+# secondary loader partition that the Copland installer's rule 207 ("Check for
+# Secondary Ldr Partn") demands, in one operation, with no separate "Update for
+# Mac OS 8" step.  That partition is the thing that defeats SheepShaver, and it
+# is why the disk cannot simply be handed to the installer as a plain HFS image.
+#
+# Every coordinate below was discovered by hand against a live daemon; the
+# goldens are both the synchronisation points and the assertions, exactly as in
+# iifx-install-76.
+def phase2_format_target() {
+    # Into the CD: Mac OS 8 Runtime SW -> Drive Setup 2.0d5c2 -> Drive Setup.
+    # The Finder auto-opened the disc's root window in phase 1, so the folder
+    # icons are where the phase-1 golden shows them.
+    double_click(152, 193)
+    wait_stable(600000000)
+    check_ex("cd-runtime-sw.png", 0, 440, 20, 640)
+
+    double_click(93, 165)
+    wait_stable(600000000)
+    check_ex("cd-drive-setup-folder.png", 0, 440, 20, 640)
+
+    # Launching it raises Apple's confidential-release notice — which is itself
+    # the proof that the binary that came off the CD is the DR1 build, not 7.5's
+    # Drive Setup 1.0.2.
+    double_click(186, 137)
+    wait_stable(2000000000)
+    check_ex("drive-setup-splash.png", 0, 440, 20, 640)
+    click(407, 138)
+
+    # The bus scan.  A fixed budget first: nothing on screen changes while Drive
+    # Setup walks the bus, so a bare stability wait would return during the scan
+    # with an empty list.
+    scheduler.run 400000000
+    wait_stable(2000000000)
+    # "List of Drives": Macintosh HD at ID 0, <not initialized> at ID 1, and
+    # <CD-ROM drive> at ID 3.  Apple's own formatter enumerating our emulated
+    # HD230SC as an initializable mechanism is GAP 2's acceptance test, now on
+    # the tool Copland actually requires rather than on 7.0.1's HD SC Setup.
+    check_ex("drive-setup-drivelist.png", 0, 440, 20, 640)
+
+    # Select the uninitialized drive; the status line must turn into "This disk
+    # can be initialized." with the Initialize... button enabled.  A drive the
+    # formatter rejects leaves that button greyed out.
+    click(60, 115)
+    wait_stable(600000000)
+    check_ex("drive-setup-selected.png", 0, 440, 20, 640)
+
+    # Initialize... -> Custom Setup..., and pick the partitioning scheme
+    # explicitly.  "1 Macintosh HFS" is already the default, but Apple's
+    # procedure names the step and a default is not something to depend on.
+    click(257, 249)
+    wait_stable(600000000)
+    click(92, 249)
+    wait_stable(600000000)
+    # Custom Setup reports the drive's own capacity: 234 MB, above the
+    # installer's 230 MB floor (rule 204/205).  That number is Drive Setup's
+    # verdict on the mechanism, not ours.
+    check_ex("custom-setup.png", 0, 440, 20, 640)
+
+    popup_pick(255, 97, 240, 128)
+    wait_stable(600000000)
+    # One volume, "untitled", Apple HFS, spanning the whole drive, and OK live.
+    check_ex("custom-setup-1hfs.png", 0, 440, 20, 640)
+
+    click(340, 355)
+    wait_stable(600000000)
+    # THE STATUS LINE the plan asks for:
+    #   New Partitioning: 1 Macintosh HFS
+    #   Initialization Options: None
+    check_ex("ready-to-initialize.png", 0, 440, 20, 640)
+
+    # Write the driver, the partition map and the volume across 479,350 blocks.
+    #
+    # A FIXED budget before the settle, and a large one: the initialize paints
+    # a status line and then works in silence, so its "Initializing volume -
+    # untitled" frame holds still for the better part of a billion
+    # instructions.  A bare wait_stable settles on THAT and captures a
+    # mid-format golden (measured).  1.1 G covers the whole operation; the
+    # settle then absorbs the mount and the Finder putting the new volume on
+    # the desktop.
+    click(280, 249)
+    scheduler.run 1100000000
+    wait_stable(3000000000)
+    # "Initialization was successful.", the drive list now naming the volume
+    # `untitled` at SCSI ID 1, and its icon on the desktop.
+    check_ex("initialized.png", 0, 440, 20, 640)
+    report_perf("pm7100-copland-install/phase2", scheduler.instr_count)
+}
+
+# Export the formatted volume and prove, host-side, that Drive Setup 2.0d5c2
+# wrote what Copland's installer requires.
+#
+# The partition map is the whole point of using 2.0d5c2 (plan §7).  Flattened
+# base+delta, it reads:
+#
+#   1  SecondaryLoader   Apple_MacOSPrep          64      16
+#   2  Apple             Apple_partition_map       1      63
+#   3  Macintosh         Apple_Driver43           80      64
+#   4  Macintosh         Apple_Driver43          144      64
+#   5  Patch Partition   Apple_Patches           208     512
+#   6  untitled          Apple_HFS               720  478620
+#   7  Extra             Apple_Free           479340      10
+#
+# `SecondaryLoader` / `Apple_MacOSPrep` is what installer rule 207 ("Check for
+# Secondary Ldr Partn") looks for, and its absence is what makes a plain HFS
+# image unusable — the check that defeats SheepShaver.  Seven entries is the
+# signature of a 2.0d5c2 format: System 7.5's own HD SC Setup produces four
+# (iifx-install-76 asserts exactly that count on its HD160SC).  storage.partmap
+# prints the table into the test log, so a change of layout is readable as a
+# diff rather than only as a count going wrong.
+def phase2_export_formatted() {
+    machine.scsi.device[1].image.export "${$WORK_DIR}/formatted.img"
+    storage.partmap "${$WORK_DIR}/formatted.img"
+    assert len(vfs.list("${$WORK_DIR}/formatted.img")) == 7 "formatted drive has ${len(vfs.list("${$WORK_DIR}/formatted.img"))} partitions, want 7 (a Drive Setup 2.0d5c2 map)"
+    # The HFS volume is real and readable: a freshly initialized one, so its
+    # root is empty apart from whatever the mount wrote back.
+    let root = vfs.list("${$WORK_DIR}/formatted.img/partition6")
+    echo "formatted volume root: ${$root}"
+    assert len($root) < 5 "the formatted volume is not a fresh empty HFS root"
+
+    # Hand-off (plan §6.4): the next test installs System 7.5 and Copland onto
+    # this volume, and cannot read another test's WORK_DIR — the harness wipes
+    # it.  The format is slow, deterministic and rarely changes, so it is
+    # published once, here, next to the rest of the Copland media.
+    storage.cp "${$WORK_DIR}/formatted.img" "${$copland_root}/media/copland_target_formatted_230mb.img"
+    assert storage.path_exists("${$copland_root}/media/copland_target_formatted_230mb.img") "the formatted volume was not published to media/"
+}
+
 # Skip cleanly where the Copland media is absent (plan §6.0): it lives in
 # local/ and is deliberately not part of gs-test-data yet.
 if have_media($ddk_cd) && have_media("${$ssw75}/Install Disk 1.img") && have_media($host_hd) {
     phase1_host_desktop()
-    report_row("7.5", "ariel", "copland-install-phase1 hd-boot cd-mount")
+    phase2_format_target()
+    phase2_export_formatted()
+    report_row("7.5", "ariel", "copland-install-phase1 hd-boot cd-mount drive-setup-2.0d5c2")
 } else {
     echo "skip: pm7100-copland-install (Copland media not present — see the bring-up plan §6.0)"
 }

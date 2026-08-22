@@ -587,6 +587,17 @@ static void pdm_scsi_pump_event(void *source, uint64_t data) {
             ch->addr++;
             moved++;
         }
+        // The phase gate closed on a transfer that is still armed: the
+        // target sent less than the initiator asked for and has already moved
+        // on.  Unlike a CPU draining the aperture, the pump never asks the
+        // chip for the byte that would reveal this, so tell it directly — it
+        // then posts the phase-change interrupt the driver is waiting on
+        // instead of leaving DREQ asserted forever.  Gated on having moved at
+        // least one byte and on the read direction so it can only ever end a
+        // data-in transfer that genuinely ran out, never a select still
+        // streaming its CDB.
+        if (moved && !mem_to_scsi && !pdm_scsi_data_phase(cfg) && scsi_53c96_dreq(c96))
+            scsi_53c96_dma_short_transfer(c96);
         if (moved) {
             LOG(4, "pump chip%d moved %d, addr now $%08X dreq=%d phase=%d", chip, moved, ch->addr, scsi_53c96_dreq(c96),
                 scsi_get_bus_phase(cfg->scsi));

@@ -7,14 +7,22 @@
 # with Drive Setup 2.0d5c2 off the DDK 0.4 CD, carrying a fresh System 7.5.0
 # install and Copland's own `Install Mac OS` on top of it.
 #
-# PHASE 1 ONLY so far — the host environment the remaining phases run inside:
+# PHASES 1-2: this test now produces the FORMATTED, EMPTY target volume.
 #
 #   1. the machine boots the prepared 7.5 image with the blank target drive and
 #      the DDK CD on the same bus, and lands on the Finder desktop      [here]
-#   2. format the target with Drive Setup 2.0d5c2 off the CD              [todo]
-#   3. install System 7.5.0 onto it from the seven floppies              [todo]
-#   4. run the CD's `Install Mac OS` onto the same volume                [todo]
-#   5. export the volume and hand it to pm7100-copland-boot              [todo]
+#   2. format the target with Drive Setup 2.0d5c2 off the CD            [here]
+#      and publish it to media/copland_target_formatted_230mb.img       [here]
+#   3. install System 7.5.0 onto it from the seven floppies              [next
+#   4. run the CD's `Install Mac OS` onto the same volume                 test]
+#   5. export the volume and hand it to pm7100-copland-boot
+#
+# Phases 3-5 live in a SEPARATE test that starts from the published formatted
+# image.  The split is the same reasoning as the plan's §6.4 split between
+# install and boot: formatting is slow, deterministic and almost never changes,
+# while the two installers are what gets iterated on.  Paying ~5.6 G
+# instructions of boot-and-format before every install attempt is not a cost
+# worth repeating.
 #
 # Deliberately NOT a floppy boot (plan §6.2): the 7.5 Disk Tools floppy carries
 # no CD-ROM extensions, so Drive Setup 2.0d5c2 — which lives on the DDK CD —
@@ -33,7 +41,7 @@
 # that variable writes through to the shared image.
 
 TEST_NAME := Power Macintosh 7100 — install System 7.5 + Copland D11E4
-TEST_DESC := Boot a pm7100 from the prepared 7.5 volume with a blank Apple 230 MB drive and the Mac OS 8 DDK 0.4 CD attached, ready for Drive Setup 2.0d5c2
+TEST_DESC := Boot a pm7100 from the prepared 7.5 volume and initialize a blank Apple 230 MB drive with Drive Setup 2.0d5c2 off the Mac OS 8 DDK 0.4 CD, writing the Apple_MacOSPrep loader partition Copland's installer requires
 
 # 4 MB Power Macintosh 6100/7100/8100 ROM (stored checksum 0x9FEB69B3).
 TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
