@@ -448,19 +448,38 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
     bool tip_rise = !tip_old && tip_new; // host terminates transaction
     bool ba_toggle = ba_old != ba_new;
 
+    // Abort/Sync: ByteAck asserted (falling) while TIP stays negated.  This is
+    // recognised from ANY state, which is the whole point of it — the host-side
+    // line-state table (CudaMgr.a:519-536, transcribed in the PDM notes
+    // "cuda-adb.md" §3) lists TIP=1/ByteAck=0 as Abort/Sync for TREQ low *and*
+    // TREQ high, i.e. whatever Cuda happens to be doing.  CudaInit's sync
+    // explicitly expects to run while we are mid-transaction: its step 2 is "if
+    // TREQ is already low, Cuda is mid-transaction: wait for its SR interrupt",
+    // and only then does it assert ByteAck.
+    //
+    // Honouring it only from CUDA_IDLE deadlocks any host that syncs while an
+    // unsolicited packet is in flight, because nothing ever releases TREQ.
+    // Copland does exactly that: it enables autopoll, our keyboard has a
+    // latched Caps Lock to report, the autopoll packet asserts TREQ, and its
+    // CudaInit then hangs at step 5 ("raise ByteAck, wait TREQ high") forever.
+    // The ROM never noticed because it syncs before enabling anything async.
+    if (tip_new && ba_old && !ba_new) {
+        LOG(2, "sync cycle: acknowledged (state=%d, aborting %d tx byte(s))", cuda->state,
+            cuda->state == CUDA_SENDING ? cuda->tx_len - cuda->tx_idx : 0);
+        cuda_cancel_push(cuda); // an in-flight byte must not land mid-sync
+        cuda->tx_len = 0;
+        cuda->tx_idx = 0;
+        cuda->rx_len = 0;
+        cuda->state = CUDA_SYNC;
+        cuda->autopoll_enabled = false;
+        cuda->onesec_enabled = false;
+        cuda_set_treq(cuda, false);
+        cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
+        return;
+    }
+
     switch (cuda->state) {
     case CUDA_IDLE:
-        // ByteAck asserted with TIP negated = the CudaInit sync state:
-        // acknowledge with TREQ + a clocked byte, silencing all async
-        // sources (that is the sync's documented purpose).
-        if (tip_new && ba_old && !ba_new) {
-            cuda->state = CUDA_SYNC;
-            cuda->autopoll_enabled = false;
-            cuda->onesec_enabled = false;
-            cuda_set_treq(cuda, false);
-            cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
-            LOG(2, "sync cycle: acknowledged");
-        }
         break;
 
     case CUDA_RECEIVING:
