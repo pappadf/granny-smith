@@ -530,6 +530,14 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     snprintf(err_buf, err_size, "%s.%s: arg-only flag set on attribute slot", cls->name, m->name);
                 return false;
             }
+            // V_ANY is a method-slot sentinel: an attribute needs a
+            // concrete kind so the getter/setter round-trip and the
+            // formatters have something to agree on.
+            if (m->attr.type == V_ANY) {
+                if (err_buf && err_size)
+                    snprintf(err_buf, err_size, "%s.%s: V_ANY is not a valid attribute kind", cls->name, m->name);
+                return false;
+            }
             if (m->attr.type == V_ENUM && (!m->attr.enum_values || !m->attr.enum_values[0])) {
                 if (err_buf && err_size)
                     snprintf(err_buf, err_size, "%s.%s: V_ENUM attribute slot has no enum_values table", cls->name,
@@ -889,6 +897,9 @@ static void slot_from_attr(typed_slot_t *out, const member_t *m) {
 
 // Human-readable kind name used in error messages.
 static const char *kind_name(value_kind_t k) {
+    // Slot-declaration sentinel; not one of the live value kinds below.
+    if (k == V_ANY)
+        return "ANY";
     switch (k) {
     case V_NONE:
         return "NONE";
@@ -990,11 +1001,12 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
     bool rewrote = false;
     *out = *in;
 
-    // V_NONE-kind slot is the "accept any kind" sentinel — body sees the
-    // value as-is and does its own discrimination. Used today for slots
-    // that legitimately accept multiple kinds (e.g. storage.hd_create's
-    // size arg, which takes either a string label or an integer count).
-    if (s->kind == V_NONE) {
+    // V_ANY — and V_NONE, its historical spelling on an argument slot —
+    // is the "accept any kind" sentinel: the body sees the value as-is
+    // and does its own discrimination. Used today for slots that
+    // legitimately accept multiple kinds (e.g. storage.hd_create's size
+    // arg, which takes either a string label or an integer count).
+    if (s->kind == V_NONE || s->kind == V_ANY) {
         if ((s->flags & OBJ_ARG_NONEMPTY) && in->kind == V_STRING) {
             if (!in->s || !*in->s) {
                 snprintf(err_buf, err_size, "must not be empty");
@@ -1243,8 +1255,8 @@ static value_t node_validate_args(struct object *obj, const member_t *m, int in_
         const arg_decl_t *rest = &args[nargs - 1];
         typed_slot_t s;
         slot_from_arg(&s, rest);
-        // V_NONE rest accepts any kind without coercion.
-        bool accept_any = (rest->kind == V_NONE);
+        // A V_ANY / V_NONE rest slot accepts any kind without coercion.
+        bool accept_any = (rest->kind == V_NONE || rest->kind == V_ANY);
         for (int i = fixed_n; i < in_argc; i++) {
             char err[160];
             value_t out_v;
@@ -1305,8 +1317,11 @@ static void assert_return_matches(const typed_slot_t *slot, const value_t *out, 
     (void)site;
     if (out->kind == V_ERROR)
         return;
-    // V_NONE-kind slot is the "no constraint" sentinel; no return-kind check.
-    if (slot->kind == V_NONE)
+    // V_ANY declares a polymorphic result; V_NONE reaches here only from
+    // an argument-shaped slot, where it is the same "any kind" sentinel
+    // (node_call handles a V_NONE *result* slot itself — there it means
+    // "returns nothing"). Either way there is nothing to check.
+    if (slot->kind == V_ANY || slot->kind == V_NONE)
         return;
     if (slot->kind != out->kind) {
         fprintf(stderr, "[object] %s: kind mismatch (declared %s, got %s)\n", site, kind_name(slot->kind),
@@ -1457,7 +1472,11 @@ value_t node_call(node_t n, int argc, const value_t *argv) {
     value_t out = n.member->method.fn(n.obj, n.member, eff_argc, eff_argv);
 #ifndef NDEBUG
     value_kind_t want = n.member->method.result;
-    if (want == V_NONE) {
+    if (want == V_ANY) {
+        // Polymorphic result: the kind is the method's own business
+        // (debug.mac.globals.read hands back a uint or bytes depending on
+        // the width of the named global). Nothing to assert.
+    } else if (want == V_NONE) {
         assert((out.kind == V_NONE || out.kind == V_ERROR) && "method declared result V_NONE but returned a value");
     } else {
         typed_slot_t result_slot = {.kind = want};

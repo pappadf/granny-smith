@@ -75,6 +75,8 @@ struct class_desc;
 //      call time on a method-arg slot, but propagated to help text.
 typedef struct arg_decl {
     const char *name;
+    // Declared kind. V_ANY (or, historically, V_NONE — the two are
+    // equivalent here) accepts a value of any kind without coercion.
     value_kind_t kind;
     uint8_t width; // 1/2/4/8 for V_INT/V_UINT range check; 0 = unconstrained
     uint16_t validation_flags; // OBJ_ARG_OPTIONAL | OBJ_ARG_REST | OBJ_ARG_NONEMPTY | OBJ_ARG_STRICT_KIND
@@ -143,6 +145,14 @@ typedef struct member {
         struct {
             const arg_decl_t *args;
             int nargs;
+            // Declared result kind, checked by node_call in debug builds:
+            //   V_NONE — the method returns nothing (only V_NONE/V_ERROR).
+            //   V_ANY  — polymorphic: the kind depends on the arguments or
+            //            on machine state (debug.mac.globals.read returns a
+            //            uint for a 1/2/4-byte global, bytes for a wider
+            //            one). Nothing is asserted about the kind.
+            //   others — the result must carry exactly that kind (V_ERROR
+            //            is always allowed, as the in-band error path).
             value_kind_t result;
             method_fn fn;
             // UI metadata (proposal §7.3): MM_DESTRUCTIVE | MM_MUTATE | MM_HIDDEN.

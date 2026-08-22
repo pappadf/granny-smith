@@ -3426,9 +3426,16 @@ static value_t method_mac_globals_read(struct object *self, const member_t *m, i
         return v;
     }
     default: {
-        if (sz <= 0 || sz > 256)
-            return val_err("debug.mac.globals.read: unexpected entry size %d", sz);
+        // Wider entries (KeyMap 16, EventQueue 10, FileVars 184, …) come
+        // back as a byte buffer; the method's result slot is declared
+        // V_ANY precisely so this branch is legal (issue #106).
         uint8_t buf[256];
+        if (sz <= 0)
+            return val_err("debug.mac.globals.read: '%s' is a region marker with no size — "
+                           "use debug.mac.globals.address(\"%s\") and read memory directly",
+                           argv[0].s, argv[0].s);
+        if (sz > (int)sizeof(buf))
+            return val_err("debug.mac.globals.read: '%s' is %d bytes (max %zu)", argv[0].s, sz, sizeof(buf));
         for (int i = 0; i < sz; i++)
             buf[i] = memory_debug_read_uint8(debug_mac_xlate(addr + (uint32_t)i));
         return val_bytes(buf, (size_t)sz);
@@ -3529,7 +3536,9 @@ static const member_t debug_mac_globals_members[] = {
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read a Mac low-memory global by name (uint for 1/2/4-byte; bytes for larger)",
-     .method = {.args = mac_globals_name_arg, .nargs = 1, .result = V_UINT, .fn = method_mac_globals_read}   },
+     // V_ANY, not V_UINT: the result kind follows the entry's width — 49
+     // of the 471 globals are wider than 4 bytes and read as V_BYTES.
+     .method = {.args = mac_globals_name_arg, .nargs = 1, .result = V_ANY, .fn = method_mac_globals_read}    },
     {.kind = M_METHOD,
      .name = "write",
      .doc = "Write a 1/2/4-byte Mac low-memory global by name",
