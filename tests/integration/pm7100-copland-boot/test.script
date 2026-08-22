@@ -1,0 +1,118 @@
+# Integration test: Power Macintosh 7100 — boot Copland D11E4 (Caps Lock).
+#
+# Plan §6.3, and the test that answers plan open question 1.
+#
+# HOW THE LATCH ACTUALLY REACHES COPLAND, measured here rather than assumed.
+# Copland's installer rewrites the volume's HFS boot blocks: `bbEntry` moves on
+# by 16 bytes and a Pascal string "Mac OS Loader" is spliced into the header.
+# The added 68k code checks the ROM version at ROMBase+8 (>= $077D — our PDM ROM
+# is exactly $077D), a byte at ROMBase+$12, a flag byte, and then:
+#
+#     btst  #1,($017B).w        ; KeyMap bit for key 0x39 = Caps Lock
+#     beq.s ordinary_boot
+#     ...
+#     move.l #'nkld',-(a7)      ; the NuKernel loader
+#     _GetResource
+#     jmp    (a0)
+#
+# So the gate is KeyMap, not ADB Register 2 — this ROM issues zero Talk R2
+# commands across an entire boot.  That is what open question 1 asked, and it
+# is why the fix that makes this work lives in adb_reset/flush_device: a
+# mechanically locking Caps Lock has to be re-reported on Register 0 after the
+# ROM's ADB init clears the keyboard, or KeyMap never learns about it.
+
+include "../lib/mac.script"
+
+let copland_root = "../../../local/gs-docs/projects/copland"
+let img = "${$copland_root}/media/copland_d11e4_installed_230mb.img"
+let plain_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+
+# One boot recipe; the only thing that varies is the volume and whether Caps
+# Lock is latched before the machine is let go.  Anything else differing
+# between the runs would make the comparison worthless.
+def boot_image(image, latch) {
+    machine.rtc.time = 0xE0000000
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.scsi.attach_hd "${$image}" 0
+    if $latch {
+        machine.adb.keyboard.down "capslock"
+    }
+    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan, skip the 20 s
+    # WaitForPollDrive spin-up window, then boot blocks onward.
+    scheduler.run 360000000
+    machine.memory.poke.l 0x9716A 0x2000
+    scheduler.run 1200000000
+}
+
+# THE CONTROL, and it is not optional: without it "Copland did not boot" and
+# "the image is broken" look identical.  No latch, so the same volume must
+# still start System 7.5 and reach the Finder.
+def row_control_75() {
+    boot_image($img, false)
+    wait_stable(900000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} during the 7.5 control boot"
+    check_ex("control-75-desktop.png", 0, 440, 20, 640)
+}
+
+# THE MECHANISM.  Assert the emulator fix at the exact place the boot blocks
+# read: KeyMap's bit for key 0x39.  Measured, the boot blocks do their btst at
+# ~398.7 M instructions, so 380 M is after the ADB init that would have thrown
+# the latch away and before anything acts on it.
+def row_keymap_latch() {
+    machine.rtc.time = 0xE0000000
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.scsi.attach_hd "${$img}" 0
+    machine.adb.keyboard.down "capslock"
+    scheduler.run 380000000
+    let km = machine.cpu.mmu.peek(0x17B, 1)
+    echo "KeyMap[$017B] = ${$km:02x}"
+    assert ($km & 0x02) != 0 "the latched Caps Lock never reached KeyMap — the ADB init discarded it"
+}
+
+# THE DIVERT (plan §6.2's milestone 2).  With the latch, the machine must leave
+# the 68k world entirely.  Asserted structurally rather than by a golden: the
+# loader repaints the framebuffer in a mode we do not model yet, so the frame is
+# not yet meaningful, but low memory ceasing to translate is unambiguous — in
+# the control boot ($017B) reads fine, and here nothing at 68k addresses does.
+def row_capslock_diverts() {
+    boot_image($img, true)
+    try(machine.screen.save("${$RESULTS_DIR}/capslock-diverted.png"), none)
+    echo "diverted: pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+    assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "still in the 68k address space — the Caps Lock latch did not divert the boot"
+}
+
+# REGRESSION (plan §4.1 item 4).  A latched Caps Lock must not disturb an
+# ordinary boot of a volume that has no Copland on it: the re-report is a real
+# key-down, and a System that acts on it would be a regression for every other
+# suite.
+def row_plain_75_with_latch() {
+    boot_image($plain_75, true)
+    wait_stable(900000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} booting plain 7.5 with Caps Lock latched"
+    let km = machine.cpu.mmu.peek(0x17B, 1)
+    assert ($km & 0x02) != 0 "Caps Lock is not latched in KeyMap on the plain 7.5 boot"
+    check_ex("plain-75-capslock.png", 0, 440, 20, 640)
+}
+
+# MILESTONE 3-5 (plan §6.3): the verbose Copland console, the microkernel and
+# the Platinum UI.  Red until they pass, and red here does not fail the suite —
+# what stops us now is downstream of the divert, not the latch.
+def row_copland_console() {
+    boot_image($img, true)
+    scheduler.run 4000000000
+    try(machine.screen.save("${$RESULTS_DIR}/copland-console.png"), none)
+    assert wait_match("copland-console.png", 2000000000) "no readable Copland boot console"
+}
+
+if have_media($img) {
+    if row_on("control-75") { row_end("control-75", try(row_control_75(), "FAILED")) }
+    if row_on("keymap-latch") { row_end("keymap-latch", try(row_keymap_latch(), "FAILED")) }
+    if row_on("capslock-diverts") { row_end("capslock-diverts", try(row_capslock_diverts(), "FAILED")) }
+    if row_on("plain-75-latch") { row_end("plain-75-latch", try(row_plain_75_with_latch(), "FAILED")) }
+    if row_on("copland-console") { row_end_milestone("copland-console", try(row_copland_console(), "FAILED")) }
+    suite_done()
+} else {
+    echo "skip: pm7100-copland-boot (Copland media not present — see the bring-up plan §6.0)"
+}
+
+quit
