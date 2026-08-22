@@ -1,0 +1,160 @@
+# Integration test: Power Macintosh 7100 — install Mac OS 8 D11E4 (Copland).
+#
+# Phase 4-5 of the bring-up plan §6.2.  See config.mk for the phase map.
+#
+# The bus:
+#
+#   SCSI 0   system_7_5_0_77mb_mode32_24ac.img    the 7.5 host we boot from
+#   SCSI 1   copland_target_75_230mb.img          the target: formatted by
+#                                                 Drive Setup 2.0d5c2 and
+#                                                 carrying System 7.5.0
+#   SCSI 3   the Mac OS 8 DDK 0.4 CD              `Install Mac OS` lives here
+
+include "../lib/mac.script"
+
+let copland_root = "../../../local/gs-docs/projects/copland"
+let media = "${$copland_root}/media"
+let ddk_cd = "${$copland_root}/images/copland_d11e4_jun_1996_mac_os_8_ddk_0.4_original_cd_image.dmg"
+let target = "${$media}/copland_target_75_230mb.img"
+let host_hd = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+
+def boot_host() {
+    machine.rtc.time = 0xE0000000
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.scsi.attach_hd "${$host_hd}" 0
+    machine.scsi.attach_hd "${$target}" 1
+    machine.scsi.attach_cdrom "${$ddk_cd}" 3
+
+    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan, skip the 20 s
+    # WaitForPollDrive spin-up window, then boot blocks through to the Finder.
+    scheduler.run 360000000
+    machine.memory.poke.l 0x9716A 0x2000
+    scheduler.run 1200000000
+    wait_stable(900000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} during boot"
+    check_ex("host-desktop.png", 0, 440, 20, 640)
+}
+
+def open_installer() {
+    # The CD window auto-opens; `Mac OS 8 Runtime SW` then the D11E4 folder.
+    double_click(152, 193)
+    wait_stable(600000000)
+    check_ex("cd-runtime-sw.png", 0, 440, 20, 640)
+
+    double_click(275, 170)
+    wait_stable(600000000)
+    check_ex("cd-d11e4-folder.png", 0, 440, 20, 640)
+
+    # `Install Mac OS` is a 'kajr' installation SCRIPT, not an application
+    # (plan §5) — double-clicking it launches the `Installer` sitting beside it
+    # in the same folder, with this script's rules loaded.
+    double_click(87, 137)
+    scheduler.run 800000000
+    wait_stable(3000000000)
+    # It comes up on the volume it booted from, `Macintosh HD` — 77 MB — and
+    # rule 205's text fires verbatim: "must choose a disk with a capacity of at
+    # least 230 megabytes".  Two Switch Disk clicks from here, the same trap and
+    # the same fix as the 7.5 install before it, except that this Installer
+    # refuses rather than silently doing the wrong thing.
+    check_ex("installer-too-small.png", 0, 440, 20, 640)
+
+    # First click lands on the CD, which is locked and says so.
+    click(307, 355)
+    wait_stable(1000000000)
+    check_ex("installer-locked-cd.png", 0, 440, 20, 640)
+    # The intervening move is required, not cosmetic: a same-spot warp emits no
+    # ADB motion, so a second click at the same pixel has no fresh position
+    # event to bind to and is dropped (../lib/mac.script, click()).
+    machine.adb.mouse.move 420 290 "global"
+    run_ticks(10)
+    click(307, 355)
+    wait_stable(1000000000)
+    # `untitled`, and every rule passes: the panel switches to "Click Install to
+    # install the Mac OS 8 Developer Release: Compatibility Edition" and the
+    # Install button goes live.  That sentence is rule 206's package set, and
+    # reaching it means rules 200 (a NuBus PDM), 202 (16 MB), 204 (230 MB),
+    # **207 (the SecondaryLoader partition)** and 210 (System 7.5 on the target)
+    # all passed — which is the whole reason the two tests before this one
+    # exist.  Rule 207 is the one that defeats SheepShaver.
+    check_ex("installer-ready.png", 0, 440, 20, 640)
+}
+
+# Phase 4 — the install itself.
+def install_os8() {
+    click(471, 359)
+    # Measured: the install runs between 4 and 5 G instructions from the click,
+    # off the CD, with no disk swaps and no dialog to dismiss on the way.  A
+    # fixed budget past the end and then a settle, rather than a bare stability
+    # wait: the "Reading from:" progress panel holds still for long stretches
+    # while it copies, and a stability wait returns on one of those frames.
+    scheduler.run 6000000000
+    wait_stable(4000000000)
+    # Always leave the frame behind, so a golden mismatch is diagnosable from
+    # the run's artifacts rather than needing a re-run.
+    try(machine.screen.save("${$RESULTS_DIR}/tail.png"), none)
+    # The Installer's own verdict.  Unlike 7.5's, it reports directly, with no
+    # advisory in between and no request to re-feed any media.
+    check_ex("installed.png", 0, 440, 20, 640)
+
+    # Quit rather than Continue: it leaves the Installer, which closes the
+    # target volume rather than leaving it open for another pass.
+    click(452, 303)
+    wait_stable(2000000000)
+    check_ex("installer-quit.png", 0, 440, 20, 640)
+    report_perf("pm7100-copland-install-os8/install", scheduler.instr_count)
+}
+
+# Phase 5 — prove Copland landed, and publish the volume for the boot test.
+def export_volume() {
+    machine.scsi.device[1].image.export "${$WORK_DIR}/copland-installed.img"
+    let root = vfs.list("${$WORK_DIR}/copland-installed.img/partition6")
+    echo "target root: ${$root}"
+    let mos = vfs.list("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder")
+    echo "Mac OS Folder (${len($mos)} items): ${$mos}"
+    let sysf = vfs.list("${$WORK_DIR}/copland-installed.img/partition6/System Folder")
+    echo "System Folder (${len($sysf)} items): ${$sysf}"
+
+    # Copland installs BESIDE the 7.5 System, it does not replace it: the
+    # machine boots 7.5 normally and Copland only on a Caps Lock latch (plan
+    # §6.3).  So both folders must be here — one missing means the wrong thing
+    # happened, in either direction.
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder") "no Mac OS Folder — Copland did not land on the target volume"
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/System Folder/System") "the 7.5 System is gone — Copland should install alongside it, not over it"
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/System 7.5 --Read Me") "the 7.5 install this started from is not intact"
+
+    # Name what has to be there rather than counting entries — a count is both
+    # weaker evidence and more brittle (the lesson pm7100-copland-install paid
+    # for).  `Mac OS Loader` is the one that matters most: it is the file the
+    # Apple_MacOSPrep secondary loader partition chains to, so a volume without
+    # it cannot start Copland however complete the rest looks.  `System
+    # Libraries` and `Hardware Support` are the microkernel's own trees, and
+    # `Mac OS 8 Applications` / `Apple Extras` come from the other two packages
+    # rule 206 adds, so between them they cover all three.
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/Mac OS Loader") "no Mac OS Loader — the secondary loader partition would have nothing to chain to"
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/System") "no Mac OS 8 System file"
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/System Libraries") "no System Libraries — the microkernel tree is missing"
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS Folder/Hardware Support") "no Hardware Support — the microkernel tree is incomplete"
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Mac OS 8 Applications") "no Mac OS 8 Applications — a package the installer adds did not run"
+    assert storage.path_exists("${$WORK_DIR}/copland-installed.img/partition6/Apple Extras") "no Apple Extras — a package the installer adds did not run"
+
+    # The loader partition Drive Setup 2.0d5c2 wrote must still be there: it is
+    # what rule 207 checked on the way in, and what the ROM's secondary loader
+    # will need on the way out.
+    storage.partmap "${$WORK_DIR}/copland-installed.img"
+    assert len(vfs.list("${$WORK_DIR}/copland-installed.img")) == 7 "the install disturbed the partition map"
+
+    storage.cp "${$WORK_DIR}/copland-installed.img" "${$media}/copland_d11e4_installed_230mb.img"
+    assert storage.path_exists("${$media}/copland_d11e4_installed_230mb.img") "the installed volume was not published to media/"
+}
+
+if have_media($target) && have_media($ddk_cd) && have_media($host_hd) {
+    boot_host()
+    open_installer()
+    install_os8()
+    export_volume()
+    report_row("7.5+D11E4", "ariel", "copland-install-phase4 os8-ddk-cd-install")
+} else {
+    echo "skip: pm7100-copland-install-os8 (Copland media not present — see the bring-up plan §6.0)"
+}
+
+quit
