@@ -329,6 +329,17 @@ static void kbd_relatch_capslock(adb_t *adb, const char *why) {
     kbd_enqueue(adb, ADB_KEY_CAPSLOCK);
 }
 
+// The two halves of carrying the mechanical latch across machine.restart
+// (machine.c reads it off the old machine and re-latches on the new one).
+bool adb_capslock_latched(adb_t *adb) {
+    return adb && adb->kbd_pressed[ADB_KEY_CAPSLOCK];
+}
+
+void adb_capslock_latch(adb_t *adb) {
+    if (adb)
+        adb_keyboard_event(adb, key_down, ADB_KEY_CAPSLOCK);
+}
+
 // Resets all ADB devices to power-on defaults and clears all data queues
 static void adb_reset(adb_t *adb) {
     LOG(2, "adb_reset: resetting all devices to defaults");

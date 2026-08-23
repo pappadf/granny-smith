@@ -103,6 +103,10 @@ static void host_lisa_key(uint8_t code) {
 // everything when the page loses input focus.
 static bool lisa_key_held[256];
 
+// Host-side shadow of the guest Caps Lock latch (Mac path) — the guest key
+// toggles on each fresh host CapsLock keydown; see key_down_cb.
+static bool mac_caps_latched = false;
+
 // Send key-ups for every still-held Lisa key (down & 0x7F clears bit 7).  Called
 // on focus/pointer-lock loss so a lost keyup can't strand a key down.
 static void lisa_release_all_keys(void) {
@@ -577,6 +581,24 @@ static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud)
     int k = map_dom_code_to_mac(e->code, e->key);
     if (k < 0)
         return EM_FALSE;
+    // Caps Lock (0x39) is a mechanically LOCKING key on the emulated
+    // keyboards, and no browser reports the host key as held: macOS
+    // delivers a keydown only when the host caps state turns on and a
+    // keyup only when it turns off; other hosts report momentary
+    // presses.  So each fresh host keydown TOGGLES the guest latch, and
+    // key_up_cb swallows the host keyup.  The latch survives
+    // machine.restart in the core (a mechanical switch outlives the
+    // power-cycle), which is how Copland's diverted boot is reached from
+    // the UI: click into the screen, tap Caps Lock, restart.  The shadow
+    // can go stale if a script drives the guest key directly; one extra
+    // tap resynchronizes it.
+    if (k == 0x39) {
+        if (e->repeat)
+            return EM_TRUE;
+        mac_caps_latched = !mac_caps_latched;
+        system_keyboard_update(mac_caps_latched ? key_down : key_up, k);
+        return EM_TRUE;
+    }
     system_keyboard_update(key_down, k);
     return EM_TRUE;
 }
@@ -603,6 +625,8 @@ static EM_BOOL key_up_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     int k = map_dom_code_to_mac(e->code, e->key);
     if (k < 0)
         return EM_FALSE;
+    if (k == 0x39)
+        return EM_TRUE; // Caps Lock latches on keydown only (see key_down_cb)
     system_keyboard_update(key_up, k);
     return EM_TRUE;
 }
