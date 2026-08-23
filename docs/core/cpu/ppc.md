@@ -87,8 +87,11 @@ in memory.c to keep their hands off the user arrays.
   PTE, which the PDM nanokernel depends on (it harvests C bits from
   evicted PTEs to maintain the 68k page-descriptor Modified flags).
 - **Exact fault images**: DSI DSISR bit 1 not-found / 4 protection /
-  6 store, DAR = EA; ISI SRR1 = $40200000 for an HTAB miss (bits 1 AND
-  10 — the mask the nanokernel's InstStorageInt tests), $08000000 for
+  6 store, DAR = EA; ISI SRR1 = $40000000 for an HTAB miss (bit 1 only
+  — the nanokernel's InstStorageInt masks $40200000, but with
+  `andis.`/`beq`, so either bit satisfies it, while Copland's
+  GetFaultInformation counts bit 10 among its hard-error bits
+  $10200000 and would panic on a plain page fault), $08000000 for
   protection, and NO bits for a T=1 fetch (Table 6-3 footnote).
   Translation runs before any register writeback, so a faulting update
   form leaves rA untouched.
