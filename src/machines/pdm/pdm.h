@@ -101,7 +101,14 @@ typedef struct pdm_dma_ch {
 // itself lives in the shared floppy module (cfg->floppy); what is kept
 // here is only what the chip owns.
 typedef struct pdm_swim3 {
-    uint8_t timer; // reg 1 (storage only; no countdown modelled)
+    // reg 1 Timer: a 1 us countdown (SWIM3-ERS:76).  `timer` is the loaded
+    // value, `timer_start_ns` the scheduler time of the load; the running
+    // count reads back live and TIMER_DONE fires at zero (swim3.c).  The
+    // 7.5 .Sony driver never touches it; Copland's floppy plugin is built
+    // on it (SwimIIISmallWait polls it — gs-docs/projects/copland).
+    uint8_t timer;
+    uint8_t timer_running;
+    uint64_t timer_start_ns;
     uint8_t param; // reg 3 ParamData
     uint8_t phase; // reg 4 CA0-2/LSTRB lines (probe loopback readback)
     uint8_t setup; // reg 5 (bit 7 SoftReset self-clears)
@@ -390,6 +397,7 @@ void pdm_swim3_raise(config_t *cfg, uint8_t bits);
 // format, raw (copy-protect) capture, and the GCR nibble codec.  It reads
 // and writes the disk image through the shared floppy module and moves its
 // bytes through the AMIC floppy DMA channel.
+void pdm_swim3_register_events(config_t *cfg); // before scheduler_start
 void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
 // Mode-register edges: GO or GoStep just became set / cleared.
 void pdm_swim3_engine_update(config_t *cfg);

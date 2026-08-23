@@ -353,6 +353,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     pdm_amic_init(cfg);
     pdm_amic_register_events(cfg);
     pdm_awacs_register_events(cfg);
+    pdm_swim3_register_events(cfg);
     pdm_swim3_xfer_register_events(cfg);
     pdm_memory_layout(cfg);
 
