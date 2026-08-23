@@ -202,7 +202,14 @@ void pdm_video_update(config_t *cfg) {
         memset(v->blank, display_black_fill(f), n);
         v->display.bits = v->blank;
     } else {
-        v->display.bits = ram_native_pointer(cfg->mem_map, 0);
+        // The scan base is selected by HMC serial-config bit 33 (there is
+        // no framebuffer-base register): set = physical 0, the ROM's and
+        // Mac OS's constant state; clear = $100000, the base MkLinux
+        // (VPDM_PHYSADDR) and Copland program, both of which keep their
+        // vector page at physical 0.  Both windows sit inside the 8 MB
+        // soldered bank, which the HMC never relocates.
+        uint32_t base = (st->hmc.cfg_hi & 0x2u) ? 0u : 0x100000u;
+        v->display.bits = ram_native_pointer(cfg->mem_map, base);
     }
 
     if (f == PIXEL_16BPP_555) {
