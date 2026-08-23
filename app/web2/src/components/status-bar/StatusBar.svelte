@@ -1,6 +1,7 @@
 <script lang="ts">
   import { machine, type MachineStatus } from '@/state/machine.svelte';
   import { activity } from '@/state/activity.svelte';
+  import { setCapsLock } from '@/bus/emulator';
   import DriveActivity from './DriveActivity.svelte';
   import Icon from '../common/Icon.svelte';
 
@@ -87,6 +88,15 @@
       <DriveActivity label="FD" title="Floppy disk" activity={machine.driveActivity.fd} />
       <DriveActivity label="CD" title="CD-ROM" activity={machine.driveActivity.cd} />
       <DriveActivity label="CP" title={cpTitle} activity={cpFlash ? 'write' : 'idle'} />
+      <button
+        class="sb-item sb-caps"
+        class:on={machine.capsLock}
+        title="Caps Lock latch — a mechanically locking key, kept down across restarts. Latch it and Restart to boot Mac OS 8 (Copland) from a volume that has it installed."
+        aria-pressed={machine.capsLock}
+        onclick={() => void setCapsLock(!machine.capsLock)}
+      >
+        <span class="label">⇪</span>
+      </button>
     </div>
     <div class="statusbar-right">
       {#if activity.current}
@@ -137,6 +147,20 @@
   .statusbar-left {
     flex: 1 1 auto;
     min-width: 0;
+  }
+  .sb-caps {
+    background: none;
+    border: none;
+    color: inherit;
+    font: inherit;
+    line-height: inherit;
+    padding: 0 6px;
+    cursor: pointer;
+    opacity: 0.45;
+  }
+  .sb-caps.on {
+    opacity: 1;
+    font-weight: 700;
   }
   .statusbar-right {
     flex-direction: row-reverse;

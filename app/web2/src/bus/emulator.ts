@@ -514,6 +514,11 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   await reapplyCameraSource();
   await reapplyMicrophoneSource();
 
+  // The Caps Lock latch is host-keyboard state: a mechanically locking key
+  // is already down when the machine powers on. Latch it BEFORE the machine
+  // runs, so the ROM's ADB init finds the key down and reports it into
+  // KeyMap — that is the gate Copland D11E4's boot blocks test.
+  if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);
   // A fresh core boots paced; re-assert the user's toolbar selection so a
   // pre-selected Turbo survives machine (re)creation.
   await applySchedulerMode(machine.scheduler);
@@ -530,6 +535,16 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   showNotification('Machine started', 'info');
 }
 
+// Toggle the Caps Lock latch: UI state plus an immediate push to the live
+// machine (down latches, up releases). The latch is re-asserted after every
+// boot/restart, which is how Copland D11E4's diverted boot is reached from
+// the UI: turn the latch on, then Restart (or boot the machine).
+export async function setCapsLock(on: boolean): Promise<void> {
+  machine.capsLock = on;
+  if (!isModuleReady()) return;
+  await gsEval(on ? 'machine.adb.keyboard.down' : 'machine.adb.keyboard.up', ['capslock']);
+}
+
 // Power-cycle the running machine. machine.restart rebuilds the machine
 // from its built-from record — same model, RAM, card, ROM — and keeps the
 // mounted media attached by transferring the open image handles across the
@@ -542,6 +557,9 @@ export async function restartEmulator(): Promise<void> {
     showNotification(`Restart failed: ${gsErrorText(ok)}`, 'error');
     return;
   }
+  // Re-assert the Caps Lock latch (the core also carries it across
+  // machine.restart; a re-latch of an already-down key is a no-op).
+  if (machine.capsLock) await gsEval('machine.adb.keyboard.down', ['capslock']);
   await reapplyCameraSource();
   await reapplyMicrophoneSource();
   await applySchedulerMode(machine.scheduler);
