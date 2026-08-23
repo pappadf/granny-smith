@@ -172,6 +172,14 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     (void)out_len;
     return false;
 }
+uint8_t adb_keyboard_address(adb_t *adb) {
+    (void)adb;
+    return 2;
+}
+uint8_t adb_mouse_address(adb_t *adb) {
+    (void)adb;
+    return 3;
+}
 
 // --- object model: registration is skipped when object_new returns NULL ---
 struct object *machine_object(void) {

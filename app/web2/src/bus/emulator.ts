@@ -542,7 +542,9 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
 export async function setCapsLock(on: boolean): Promise<void> {
   machine.capsLock = on;
   if (!isModuleReady() || machine.status === 'no-machine') return;
-  const r = await gsEval(on ? 'machine.adb.keyboard.down' : 'machine.adb.keyboard.up', ['capslock']);
+  const r = await gsEval(on ? 'machine.adb.keyboard.down' : 'machine.adb.keyboard.up', [
+    'capslock',
+  ]);
   if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
 }
 
