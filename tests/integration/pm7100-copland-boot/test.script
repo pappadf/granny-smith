@@ -23,8 +23,10 @@
 
 include "../lib/mac.script"
 
-let copland_root = "../../../local/gs-docs/projects/copland"
-let img = "${$copland_root}/media/copland_d11e4_installed_230mb.img"
+# The published copy of the volume `pm7100-copland-install-os8` builds —
+# gs-test-data `systems/system_7_5_copland_d11e4_230mb.img.7z`, extracted at
+# fetch time — so CI can run this test without the local/ working tree.
+let img = "../../data/systems/system_7_5_copland_d11e4_230mb.img"
 let plain_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 
 # One boot recipe; the only thing that varies is the volume and whether Caps
@@ -94,14 +96,27 @@ def row_plain_75_with_latch() {
     check_ex("plain-75-capslock.png", 0, 440, 20, 640)
 }
 
-# MILESTONE 3-5 (plan §6.3): the verbose Copland console, the microkernel and
-# the Platinum UI.  Red until they pass, and red here does not fail the suite —
-# what stops us now is downstream of the divert, not the latch.
-def row_copland_console() {
+# MILESTONE 3-4 (plan §6.3), now enforced: the verbose boot console over the
+# Mac OS logo.  The microkernel is up by here — the console's own words are
+# "Microkernel initialization starting...complete."  The budget lands after
+# the ADB probe lines (measured: the frame is complete at 1.56 G and the run
+# is deterministic under the fixed RTC), and wait_stable settles any tail.
+def row_copland_logo() {
     boot_image($img, true)
-    scheduler.run 4000000000
-    try(machine.screen.save("${$RESULTS_DIR}/copland-console.png"), none)
-    assert wait_match("copland-console.png", 2000000000) "no readable Copland boot console"
+    wait_stable(900000000)
+    check("copland-logo.png")
+}
+
+# MILESTONE 5 (plan §6.3), the finish line: the Copland Finder desktop —
+# menu bar, volume icon, Trash, arrow cursor.  Copland relocates the
+# framebuffer to physical $100000 by clearing HMC config bit 33, so this
+# golden is also the regression test for the moved scan base (ariel.c).
+# The Finder is idle by ~8.5 G instructions; wait_stable settles the frame.
+def row_copland_desktop() {
+    boot_image($img, true)
+    scheduler.run 7000000000
+    wait_stable(900000000)
+    check("copland-desktop.png")
 }
 
 if have_media($img) {
@@ -109,7 +124,8 @@ if have_media($img) {
     if row_on("keymap-latch") { row_end("keymap-latch", try(row_keymap_latch(), "FAILED")) }
     if row_on("capslock-diverts") { row_end("capslock-diverts", try(row_capslock_diverts(), "FAILED")) }
     if row_on("plain-75-latch") { row_end("plain-75-latch", try(row_plain_75_with_latch(), "FAILED")) }
-    if row_on("copland-console") { row_end_milestone("copland-console", try(row_copland_console(), "FAILED")) }
+    if row_on("copland-logo") { row_end("copland-logo", try(row_copland_logo(), "FAILED")) }
+    if row_on("copland-desktop") { row_end("copland-desktop", try(row_copland_desktop(), "FAILED")) }
     suite_done()
 } else {
     echo "skip: pm7100-copland-boot (Copland media not present — see the bring-up plan §6.0)"
