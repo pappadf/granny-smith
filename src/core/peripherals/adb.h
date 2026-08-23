@@ -56,6 +56,14 @@ void adb_port_b_output(adb_t *adb, uint8_t value);
 // Enqueues a host keyboard event in ADB Register 0 format
 void adb_keyboard_event(adb_t *adb, key_event_t event, int key);
 
+// The current bus addresses of the keyboard and mouse.  ADB devices MOVE:
+// an OS's init may re-address them off their defaults (2 / 3) via Listen R3
+// and leave them there — classic Mac OS moves them back, Copland does not —
+// so an auto-polling transport must ask the model where its devices are
+// now, never assume the power-on addresses.
+uint8_t adb_keyboard_address(adb_t *adb);
+uint8_t adb_mouse_address(adb_t *adb);
+
 // The Caps Lock latch.  Caps Lock is a mechanically locking switch, so its
 // state belongs to the keyboard, not the machine: machine.restart reads it
 // off the dying machine and re-latches it on the rebuilt one, the same way

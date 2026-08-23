@@ -369,6 +369,19 @@ Talk R0 polling every ~11 ms while idle.
 
 A 0 indicates key is down or LED is on. LEDs can be set via Listen R2.
 
+#### Listen R3's handler byte is a command, not a value
+
+`Listen R3` carries `[address | flags, handler]`, and the handler byte
+selects an operation: `$FE` (and `$00`) move the device to the new address
+and **preserve** the handler ID, `$FF` is self-test, `$FD` is
+"move if the activator is pressed", and only a plain ID is adopted as the
+handler (a real device adopts only IDs it implements). Storing `$FE`
+literally breaks any host that reads R3 back to verify an enumeration
+move: Mac OS never does, but Copland's ADB server does — it moved the
+mouse, read back handler `$FE`, concluded "not a mouse", and dropped the
+device (its verbose boot console prints `ADB device @ 0 = 3-FE` when this
+model gets it wrong).
+
 #### Caps Lock is a locking switch, and that has consequences
 
 Caps Lock is the only key here that is a mechanically *locking* switch rather than a

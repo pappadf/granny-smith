@@ -329,6 +329,16 @@ static void kbd_relatch_capslock(adb_t *adb, const char *why) {
     kbd_enqueue(adb, ADB_KEY_CAPSLOCK);
 }
 
+// Where the keyboard and mouse currently live on the bus (Listen R3 moves
+// them; see adb.h).
+uint8_t adb_keyboard_address(adb_t *adb) {
+    return adb ? adb->kbd.address : 2;
+}
+
+uint8_t adb_mouse_address(adb_t *adb) {
+    return adb ? adb->mouse.address : 3;
+}
+
 // The two halves of carrying the mechanical latch across machine.restart
 // (machine.c reads it off the old machine and re-latches on the new one).
 bool adb_capslock_latched(adb_t *adb) {
@@ -561,14 +571,40 @@ static void apply_listen_data(adb_t *adb) {
     }
 
     if (adb->listen_reg == 3) {
-        // Register 3: update device address (byte 0 bits 3-0) and handler (byte 1)
+        // Register 3.  The handler byte selects a COMMAND, not a value to
+        // store (ADB spec; both the ROM's enumeration and Copland's
+        // FullProbe depend on it):
+        //   $FE — change address (if no collision; none are modelled),
+        //         PRESERVE the handler ID
+        //   $00 — change address unconditionally, preserve the handler
+        //   $FF — initiate self-test: no state change
+        //   $FD — change address only if the activator is pressed: not
+        //         modelled, no state change
+        //   else — adopt the handler ID (a real device only adopts IDs it
+        //         implements; ours adopt any plain ID), address unchanged
+        // Storing $FE literally is how Copland's ADB server came to see
+        // "not a mouse" when it read R3 back after a move, and dropped the
+        // device — its boot console's "ADB device @ 0 = 3-FE" was this
+        // model talking.
         adb_device_t *dev = find_device(adb, adb->listen_addr);
         if (dev) {
             uint8_t new_addr = adb->listen_buf[0] & 0x0F;
-            uint8_t new_handler = adb->listen_buf[1];
-            LOG(2, "listen R3 addr=%d: new_addr=%d handler=0x%02X", adb->listen_addr, new_addr, new_handler);
-            dev->address = new_addr;
-            dev->handler = new_handler;
+            uint8_t cmd_byte = adb->listen_buf[1];
+            switch (cmd_byte) {
+            case 0x00:
+            case 0xFE:
+                LOG(2, "listen R3 addr=%d: move to addr=%d (handler preserved)", adb->listen_addr, new_addr);
+                dev->address = new_addr;
+                break;
+            case 0xFD:
+            case 0xFF:
+                LOG(2, "listen R3 addr=%d: command 0x%02X (no state change)", adb->listen_addr, cmd_byte);
+                break;
+            default:
+                LOG(2, "listen R3 addr=%d: handler 0x%02X adopted", adb->listen_addr, cmd_byte);
+                dev->handler = cmd_byte;
+                break;
+            }
         } else {
             LOG(2, "listen R3 unknown addr=%d, ignoring", adb->listen_addr);
         }

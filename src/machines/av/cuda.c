@@ -551,7 +551,12 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
     if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda)) {
-        static const uint8_t poll_addr[2] = {3, 2}; // mouse, keyboard
+        // Poll the devices where they live NOW: an OS's ADB init can move
+        // them off the default addresses via Listen R3 and leave them there
+        // (Copland does; classic Mac OS moves them back), and real Cuda
+        // firmware tracks the moves.  Asking the model beats shadowing the
+        // Listen traffic.
+        const uint8_t poll_addr[2] = {adb_mouse_address(cuda->adb), adb_keyboard_address(cuda->adb)};
         for (int k = 0; k < 2; k++) {
             uint8_t addr = poll_addr[(cuda->autopoll_phase + k) & 1];
             uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
