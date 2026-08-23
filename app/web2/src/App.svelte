@@ -7,6 +7,7 @@
   import { theme, applyThemeToHtml, systemTheme } from '@/state/theme.svelte';
   import { layout } from '@/state/layout.svelte';
   import { startPersistEffects } from '@/state/persist.svelte';
+  import { startCapsLockSync } from '@/lib/capslock';
 
   // Keep <html data-theme> in sync with the theme state. Initial set is done
   // synchronously in main.ts before mount; this effect tracks subsequent
@@ -38,6 +39,7 @@
   });
 
   startPersistEffects();
+  startCapsLockSync();
 </script>
 
 <Workbench />

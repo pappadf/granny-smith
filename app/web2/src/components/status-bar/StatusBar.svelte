@@ -154,13 +154,18 @@
     color: inherit;
     font: inherit;
     line-height: inherit;
-    padding: 0 6px;
+    padding: 0 7px;
     cursor: pointer;
-    opacity: 0.45;
+    opacity: 0.4;
+    border-radius: 3px;
+    align-self: center;
+    height: 18px;
   }
   .sb-caps.on {
     opacity: 1;
     font-weight: 700;
+    background: rgba(255, 255, 255, 0.28);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
   }
   .statusbar-right {
     flex-direction: row-reverse;

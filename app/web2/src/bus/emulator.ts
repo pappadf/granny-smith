@@ -541,8 +541,9 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
 // the UI: turn the latch on, then Restart (or boot the machine).
 export async function setCapsLock(on: boolean): Promise<void> {
   machine.capsLock = on;
-  if (!isModuleReady()) return;
-  await gsEval(on ? 'machine.adb.keyboard.down' : 'machine.adb.keyboard.up', ['capslock']);
+  if (!isModuleReady() || machine.status === 'no-machine') return;
+  const r = await gsEval(on ? 'machine.adb.keyboard.down' : 'machine.adb.keyboard.up', ['capslock']);
+  if (r !== true) showNotification(`Caps Lock: ${gsErrorText(r)}`, 'warning');
 }
 
 // Power-cycle the running machine. machine.restart rebuilds the machine
