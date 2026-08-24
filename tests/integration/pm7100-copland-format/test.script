@@ -60,13 +60,14 @@ def phase1_host_desktop() {
     assert storage.hd_create($target, "HD230SC") "hd_create HD230SC failed"
     assert storage.path_size($target) == 245427200 "HD230SC wrong image size"
 
-    # Set the clock AFTER boot: machine.boot rebuilds the RTC and reseeds it
-    # from the host wall clock, so a pre-boot set is discarded.  Set here it
-    # sticks, and the Cuda Mode3Clock tick delivers it to the OS's low-memory
-    # Time — so files written during the install get this fixed date, making
-    # the produced image byte-reproducible (and every crDat <= mdDat, which is
-    # what Copland's HFS ValidCatalogEntry requires — see gs-docs
-    # projects/copland/notes/app-launch-hang.md).
+    # Clock set AFTER boot (machine.boot reseeds the RTC from the host wall
+    # clock, discarding a pre-boot value).  The three install phases use
+    # ASCENDING bases — format 0xE0000000 < install 0xE0080000 < install-os8
+    # 0xE0100000, gaps of ~6 days >> any phase — so timestamps are monotonic
+    # across the whole install: a file created in an earlier phase and
+    # modified in a later one keeps crDat < mdDat, which Copland's HFS
+    # ValidCatalogEntry requires (a violation hangs any app launch — gs-docs
+    # projects/copland/notes/app-launch-hang.md).  Reproducible and correct.
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
     machine.rtc.time = 0xE0000000
     machine.scsi.attach_hd "${$host_hd}" 0

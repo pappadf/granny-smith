@@ -19,15 +19,12 @@ let target = "${$media}/copland_target_75_230mb.img"
 let host_hd = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 
 def boot_host() {
-    # Set the clock AFTER boot: machine.boot rebuilds the RTC and reseeds it
-    # from the host wall clock, so a pre-boot set is discarded.  Set here it
-    # sticks, and the Cuda Mode3Clock tick delivers it to the OS's low-memory
-    # Time — so files written during the install get this fixed date, making
-    # the produced image byte-reproducible (and every crDat <= mdDat, which is
-    # what Copland's HFS ValidCatalogEntry requires — see gs-docs
-    # projects/copland/notes/app-launch-hang.md).
+    # Clock AFTER boot, ascending base (see the format test's note): this is
+    # the last phase, so 0xE0100000 — above everything the format and 7.5
+    # phases stamped, so files those phases created and this one modifies keep
+    # crDat < mdDat (the condition Copland's ValidCatalogEntry enforces).
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
-    machine.rtc.time = 0xE0000000
+    machine.rtc.time = 0xE0100000
     machine.scsi.attach_hd "${$host_hd}" 0
     machine.scsi.attach_hd "${$target}" 1
     machine.scsi.attach_cdrom "${$ddk_cd}" 3
