@@ -57,6 +57,8 @@ LOG_USE_CATEGORY_NAME("control");
 #define CR_VSBLANK    2 // vertical start blank (end of active, half-lines)
 #define CR_VEBLANK    3 // vertical end blank (display start, half-lines)
 #define CR_VPERIOD    7 // vertical period (half-lines)
+#define CR_HSBLANK    10 // horizontal start blank (end of active, 2-px units)
+#define CR_HEBLANK    11 // horizontal end blank (display start, 2-px units)
 #define CR_CTRL       18 // display control ($400 blanks; $03/$30 gate syncs)
 #define CR_START_ADDR 19 // framebuffer start (low 5 bits zero)
 #define CR_PITCH      20 // bytes between scan lines
@@ -65,6 +67,12 @@ LOG_USE_CATEGORY_NAME("control");
 #define CR_MODE       23 // depth/mode pair (with RaDACal $20)
 #define CR_INTR_ENA   25 // interrupt (VBL) enable
 #define CR_INTR_STAT  26 // interrupt status
+
+// Interrupt bit assignment within INTR_ENA/INTR_STAT: the VBL is BIT 2.
+// The ROM's control ndrv enables $4 (then $C) and spin-polls INTR_STAT
+// bit 2 for the vertical retrace during its mode-set — a status in bit 0
+// leaves it polling forever.
+#define CONTROL_INT_VBL 0x4u
 
 // BAR geometry: the ROM's own reg-builder literals.
 #define CONTROL_BAR_REGS_SIZE 0x1000u
@@ -137,7 +145,13 @@ void tnt_control_update(config_t *cfg) {
 
     uint32_t bpp = depth_bpp(c);
     uint32_t pitch = c->reg[CR_PITCH];
-    uint32_t width = (pitch != 0) ? pitch / (bpp / 8u) : 640u;
+    // Active width comes from the horizontal blank pair (2-pixel units;
+    // the ROM's 640x480 mode line: hsblank 393, heblank 73 -> 640).  The
+    // pitch is the scan-line STRIDE and can carry a pan/scroll margin
+    // (the boot's 32 bpp mode programs 2592 = 640*4 + 32), so deriving
+    // width from it paints the margin as junk pixels.
+    uint32_t hs = c->reg[CR_HSBLANK], he = c->reg[CR_HEBLANK];
+    uint32_t width = (hs > he) ? (hs - he) * 2u : ((pitch != 0) ? pitch / (bpp / 8u) : 640u);
     uint32_t vs = c->reg[CR_VSBLANK], ve = c->reg[CR_VEBLANK];
     uint32_t height = (vs > ve) ? (vs - ve) / 2u : 480u;
     if (width == 0 || width > 2048u)
@@ -209,7 +223,7 @@ static void control_vbl_event(void *source, uint64_t data) {
     config_t *cfg = (config_t *)source;
     tnt_control_t *c = ctl(cfg);
     c->vbl_armed = 0;
-    if (c->reg[CR_INTR_ENA] == 0)
+    if (!(c->reg[CR_INTR_ENA] & CONTROL_INT_VBL))
         return; // disabled while the event was in flight: go quiet
     c->vbl_pending = 1;
     tnt_gc_pulse_event(cfg, TNT_INT_VBL);
@@ -219,7 +233,7 @@ static void control_vbl_event(void *source, uint64_t data) {
 
 static void control_vbl_arm(config_t *cfg) {
     tnt_control_t *c = ctl(cfg);
-    if (c->vbl_armed || c->reg[CR_INTR_ENA] == 0)
+    if (c->vbl_armed || !(c->reg[CR_INTR_ENA] & CONTROL_INT_VBL))
         return;
     c->vbl_armed = 1;
     scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, 1000000000ull / 60u);
@@ -273,7 +287,7 @@ static uint32_t control_reg_read(config_t *cfg, uint32_t offset) {
     case CR_MON_SENSE:
         return control_sense_read(cfg);
     case CR_INTR_STAT:
-        return c->vbl_pending;
+        return c->vbl_pending ? CONTROL_INT_VBL : 0;
     default:
         return c->reg[idx];
     }
@@ -296,10 +310,12 @@ static void control_reg_write(config_t *cfg, uint32_t offset, uint32_t value) {
     case CR_MODE:
     case CR_VSBLANK:
     case CR_VEBLANK:
+    case CR_HSBLANK:
+    case CR_HEBLANK:
         tnt_control_update(cfg);
         break;
     case CR_INTR_ENA:
-        if (value == 0)
+        if (!(value & CONTROL_INT_VBL))
             c->vbl_pending = 0;
         else
             control_vbl_arm(cfg);

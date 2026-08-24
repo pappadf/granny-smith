@@ -97,11 +97,13 @@ void tnt_gc_recompute(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_gc_t *gc = &st->gc;
     // Clear-mode 1 (the NanoKernel's scheme, selected by the $80000000
-    // acknowledge): the CPU line is an OUTPUT LATCH — set by enabled
-    // source edges, cleared by the acknowledge, re-asserted only by the
-    // NEXT edge.  The handler classifies from Levels & Mask; a level a
-    // guest leaves unserviced does not re-fire until its next edge, and
-    // the kernel's rfi does not land straight back in the handler.
+    // acknowledge): the CPU line is an OUTPUT LATCH — set by any CHANGE
+    // of an enabled level source (assertion or deassertion; see
+    // tnt_gc_set_source) or by an enabled event edge, cleared by the
+    // acknowledge, re-asserted only by the NEXT change.  The handler
+    // classifies from Levels & Mask; a level a guest leaves unserviced
+    // does not re-fire until its next change, and the kernel's rfi does
+    // not land straight back in the handler.
     // Mode 0 (power-on; the MkLinux scheme): combinational
     // ((events | levels) & mask), with Events cleared by explicit W1C.
     bool line;
@@ -131,6 +133,18 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level) {
             gc_edge(gc, bit);
     } else {
         gc->int_levels &= ~bit;
+        // DEASSERTION of an enabled source latches too: mode 1 is an
+        // interrupt-on-CHANGE scheme (same law as AMIC INTMODE=1, amic.c).
+        // The deassert interrupt is how the NanoKernel learns a source went
+        // away — ExtIntHandlerTNT re-reads Levels, finds them quiet, and
+        // stores 68k IPL 0 through EmuIntLevelPtr.  Nothing else in the
+        // kernel/emulator contract lowers the posted IPL (the emulator's
+        // delivery path never touches it, and the TNT handler stores the
+        // IplValue without the $8000 reprioritize flag), so without this
+        // the 68k emulator redelivers the stale level forever and the
+        // boot's base context never runs again after its first unmask.
+        if (was && (gc->int_mask & bit))
+            gc->int_latch = 1;
     }
     tnt_gc_recompute(cfg);
 }

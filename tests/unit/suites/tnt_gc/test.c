@@ -210,7 +210,12 @@ TEST(test_mode0_pulse_w1c) {
 
 // The NanoKernel acknowledge: $80000000 selects mode 1, clears no device
 // bits, and drops the latch; a standing level does NOT re-fire until its
-// next edge — the exact semantics the 60.15 Hz tick chain needed.
+// next CHANGE.  Mode 1 is an interrupt-on-change scheme (the AMIC
+// INTMODE=1 law, amic.c): DEASSERTION of an enabled source latches too —
+// that interrupt is how ExtIntHandlerTNT re-reads quiet Levels and lowers
+// the 68k emulator's posted IPL (nothing else in the kernel/emulator
+// contract does; without it the emulator redelivers the stale level
+// forever and the 68k base context starves — the Phase D2 boot wall).
 TEST(test_mode1_latch) {
     fixture();
     reg_write(R_MASK, 1u << TNT_INT_VIA1);
@@ -227,12 +232,21 @@ TEST(test_mode1_latch) {
     // storms here — the Phase B failure mode).
     tnt_gc_recompute(&s_cfg);
     ASSERT_EQ_INT(s_line, 0);
-    // The handler serviced the VIA (level drops), the next tick edges.
+    // The 68k handler serviced the VIA: the DEASSERTION is itself a
+    // change interrupt — the kernel's chance to classify IPL 0.
     tnt_gc_set_source(&s_cfg, TNT_INT_VIA1, false);
-    ASSERT_EQ_INT(s_line, 0);
-    tnt_gc_set_source(&s_cfg, TNT_INT_VIA1, true);
     ASSERT_EQ_INT(s_line, 1);
     ASSERT_EQ_INT(s_line_edges, 2);
+    reg_write(R_CLEAR, 0x80000000u); // kernel acks, reads Levels quiet
+    ASSERT_EQ_INT(s_line, 0);
+    // A masked source's change never latches.
+    tnt_gc_set_source(&s_cfg, TNT_INT_MESH, true);
+    tnt_gc_set_source(&s_cfg, TNT_INT_MESH, false);
+    ASSERT_EQ_INT(s_line, 0);
+    // The next tick edges again.
+    tnt_gc_set_source(&s_cfg, TNT_INT_VIA1, true);
+    ASSERT_EQ_INT(s_line, 1);
+    ASSERT_EQ_INT(s_line_edges, 3);
 }
 
 // Mode 1: enabling a source whose event/level is already pending counts

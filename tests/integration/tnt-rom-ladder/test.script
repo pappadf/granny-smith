@@ -11,7 +11,9 @@
 # Hammerhead/Bandit/Grand Central, sizing memory, writing its environment
 # into the Grand Central NVRAM — before POST and the 68k emulator take
 # over.  The budget below runs through all of that to the 68k Start
-# Manager, which parks at the Phase-D video wall (no Control model yet).
+# Manager, which mode-sets Control through the ROM's native video driver,
+# paints the gray desktop (rung T11) and parks looking for boot media
+# (Phase E's frontier).
 
 include "../lib/mac.script"
 
@@ -109,13 +111,16 @@ assert $dticks <= $expect + 10 "T8: tick rate high (${$dticks} vs ~${$expect})"
 assert machine.memory.peek.l(0xF3008804) == 0x00800000 "T9: ch8 not parked RUN|!ACTIVE after the OF beep"
 assert machine.memory.peek.l(0xF300880C) == 0x9000E0FF "T9: ch8 cmdptr not on the beep program's STOP ($FFE00090)"
 
-# The kernel's enabled interrupt set at the parking point: SCC A/B (15,
-# 16), VIA1 (18), NMI (20) — plus mask bit 31, the ifMode1Clear-era mask
-# image the NanoKernel maintains.  Events carries the standing VIA bit
-# (mode 1: the $80000000 acknowledge clears no device bits and the
-# kernel never W1Cs Events).  The mode-1 ack LOOP itself is proven by
-# T8's tick-rate window — starvation there would fail the rate band.
-assert machine.memory.peek.l(0xF3000024) == 0x00801580 "T9: interrupt mask not the kernel's enabled set"
+# The kernel's enabled interrupt set at the sampling point — the full
+# media-hunt-era driver roster the un-parked boot installs: 53C94 SCSI
+# (12), SCC A/B (15, 16), AWACS (17), VIA1 (18), SWIM3 floppy (19),
+# NMI (20), a PCI-slot external (26, from the expansion-slot scan) —
+# plus mask bit 31, the ifMode1Clear-era mask image the NanoKernel
+# maintains.  Events carries the standing VIA bit (mode 1: the
+# $80000000 acknowledge clears no device bits and the kernel never
+# W1Cs Events).  The mode-1 ack LOOP itself is proven by T8's
+# tick-rate window — starvation there would fail the rate band.
+assert machine.memory.peek.l(0xF3000024) == 0x00901F84 "T9: interrupt mask not the kernel's enabled set"
 assert (machine.memory.peek.l(0xF3000020) & 0x00000400) == 0x00000400 "T9: VIA event bit not standing (mode-1 ack must not clear Events)"
 
 # Register-file decode: cmdptr store-readback through an idle channel's
@@ -130,19 +135,38 @@ machine.memory.poke.l(0xF300830C, 0)
 # NEWECMD port, and a 51 928-frame descriptor program drained through the
 # channel-8 frame-credit gate in emulated time.  The run is
 # deterministic, so the capture matches a golden WAV sample-exactly
-# (REGEN=1 regenerates).  The 68k startup chime does NOT play by the
-# Phase-D wall — this rung's instrument is the firmware's own beep; the
-# chime joins it when a later phase un-parks the boot.
+# (REGEN=1 regenerates).  The 68k startup chime STILL does not play by
+# the T11 desktop (the boot reaches its media hunt chime-less — an open
+# question for Phase E; the row pins the whole capture so the chime's
+# first appearance will show up as a length change here).
 check_sound("of-beep.wav", 51928)
 assert machine.sound.peak >= 2000 "T10: beep rendered silent (peak ${machine.sound.peak})"
 assert machine.sound.sample_rate == 22050 "T10: sound rate != the beep's 22050"
 assert machine.sound.out_enabled == false "T10: channel 8 still draining at the wall"
 
-# The T5/T6 markers (the OF memory-sizing sequence against Hammerhead,
-# the device-tree oracle) are asserted transitively for now — MemTop and
-# the kernel's 32 MB layout are downstream of OF's sizing — and get their
-# own direct rows when the R1 Hammerhead access log is fitted.  T11-T13
-# (video, SCSI, Finder) are Phases D-E.
+# --- T11: the ROM's native video driver drives Control to the gray desktop ---
+# The whole chain in one rung: the mode-1 interrupt-on-CHANGE law lets
+# the NanoKernel lower the emulated 68k IPL after each VIA service (the
+# deassert-change interrupt — without it the boot's base context starves
+# at its first unmask and none of this runs); the master init proceeds
+# to _DisplayDispatch, which finds the display nodes the T6 identity
+# put in the OF tree, loads the ROM's own 'mtej' control ndrv, and the
+# driver mode-sets Control over the VCI bus: 640x480 (hsblank/heblank
+# 393/73, vsblank/veblank 1042/82), 32 bpp (mode 1 + RaDACal $28, the
+# 4 MB-VRAM depth pair), pitch 2592, VBL enable $C with the retrace
+# spin-poll on INTR_STAT bit 2.  The Display Manager then moves
+# ScrnBase into the BAR-assigned VRAM aperture ($90000000 + $800000
+# usable window + $200 start_addr + $10 pixel-0 offset) and QuickDraw
+# paints the desktop.  The golden is the 640x480 gray desktop with the
+# boot arrow cursor — stable from here to at least 3B instructions
+# (the boot's media hunt draws nothing further without a disk).
+assert debug.mac.globals.read("ScrnBase") == 0x90800210 "T11: ScrnBase not in the Control VRAM aperture"
+check("gray-desktop.png")
 
-echo "tnt-rom-ladder: high-water rung T10 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} sound=${machine.sound.frames}f/${machine.sound.peak}pk memtop=${debug.mac.globals.read("MemTop"):08x})"
+# The T5 marker (the OF memory-sizing sequence against Hammerhead) stays
+# asserted transitively — MemTop and the kernel's 32 MB layout are
+# downstream of OF's sizing — and gets its own direct row when the R1
+# Hammerhead access log is fitted.  T12-T13 (SCSI, Finder) are Phase E.
+
+echo "tnt-rom-ladder: high-water rung T11 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} sound=${machine.sound.frames}f/${machine.sound.peak}pk scrn=${debug.mac.globals.read("ScrnBase"):08x})"
 quit

@@ -108,8 +108,15 @@ DMA architecture:
   grounded — extended sense `$2B`, the head of the ROM's own mode table),
   and VBL as Grand Central interrupt 30 at 60 Hz while `intr_ena` is set.
   Scanout presents through the shared `display_t`; geometry derives from
-  pitch/depth and the vertical-blank registers.  Not yet exercised
-  end-to-end: the boot parks before the ROM's video driver loads (below).
+  the blank-pair timing registers (width = (hsblank − heblank) × 2,
+  height = (vsblank − veblank) / 2) with the pitch as the scan-line
+  stride only — the boot's own 640x480 32 bpp mode programs pitch 2592 =
+  640×4 + a 32-byte pan margin, so pitch-derived width paints junk.
+  The VBL is bit 2 of INTR_ENA/INTR_STAT (the ROM's ndrv enables `$4`
+  then `$C` and spin-polls status bit 2 for the retrace during its
+  mode-set).  Exercised end-to-end since rung T11: the ROM's own `mtej`
+  control driver mode-sets the chip and QuickDraw paints the gray
+  desktop into the BAR-assigned VRAM aperture (`ScrnBase $90800210`).
 
 ### The interrupt fabric
 
@@ -119,15 +126,26 @@ selected by Clear-write bit 31 (`ifMode1Clear`):
 
 - **Mode 0** (power-on; the MkLinux scheme): the CPU line is
   combinational `(events | levels) & mask`; Events clear by explicit W1C.
-- **Mode 1** (the NanoKernel's scheme): the line is an **output latch** —
-  set by enabled source edges (or by unmasking a pending source), cleared
-  by the `$80000000` acknowledge, re-asserted only by the next edge.  The
-  kernel classifies from Levels & Mask and never clears Events, so a
-  combinational line would storm forever after the first latched edge.
+- **Mode 1** (the NanoKernel's scheme): the line is an **output latch**,
+  and the scheme is **interrupt-on-CHANGE** (the AMIC INTMODE=1 law) —
+  set by any change of an enabled level source (assertion OR
+  deassertion), by an enabled event edge, or by unmasking a pending
+  source; cleared by the `$80000000` acknowledge; re-asserted only by
+  the next change.  The kernel classifies from Levels & Mask and never
+  clears Events, so a combinational line would storm forever after the
+  first latched edge.  The DEASSERT half is load-bearing: it is the only
+  mechanism in the whole kernel/emulator contract that lowers the
+  emulated 68k IPL — `ExtIntHandlerTNT` re-reads quiet Levels and stores
+  IPL 0 through `EmuIntLevelPtr`; the 68k emulator's delivery path never
+  touches the stored IplValue and never calls `PrioritizeInterrupts`
+  (the TNT handler stores the value without the `$8000` reprioritize
+  flag), so without deassert changes the emulator redelivers the stale
+  level forever and the 68k base context starves at its first unmask —
+  which was exactly the Phase-D2 boot wall.
 
 The mode-1 latch semantics are emulator-derived (pinned by the boot
-reaching a correct 60.15 Hz tick rate); revisit if a later rung
-contradicts them.
+reaching a correct 60.15 Hz tick rate, and by the T11 desktop requiring
+the deassert-change law); revisit if a later rung contradicts them.
 
 ### Endianness
 
@@ -164,13 +182,15 @@ the SuperMario ROM through low-memory init, timer calibration and the
 live tick chain.
 
 `tests/integration/tnt-rom-ladder` asserts the §7.1 ladder markers up to
-the committed high-water rung (currently **T10**: 68k dispatching as an
+the committed high-water rung (currently **T11**: 68k dispatching as an
 identified Power Macintosh 7500, low memory live, the 60.15 Hz tick at
 rate, the DBDMA engine playing Open Firmware's beep — its descriptors
 live in ROM at `$FFE00090` — through the AWACS datapath against a
-sample-exact golden WAV, and the interrupt fabric's mode-1 discipline
-visible in the registers).  The run parks at the video wall (no Control
-model; `ScrnBase` stays 0).  The interrupt-fabric and engine semantics
+sample-exact golden WAV, the interrupt fabric's mode-1 discipline
+visible in the registers, and the ROM's native control driver painting
+the 640x480 gray desktop into the Control VRAM aperture against a
+screen golden).  The run parks hunting for boot media (Phase E's
+frontier; no SCSI/floppy data paths yet).  The interrupt-fabric and engine semantics
 are additionally unit-pinned in `tests/unit/suites/tnt_gc` (the MkLinux
 initialisation sequence and events-driven acknowledge, the NanoKernel's
 `$80000000` mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA
@@ -201,16 +221,12 @@ community's "BoxID bits 11-12" reading:
 
 Known open items at this phase:
 
-- **Rung T11 (the boot-liveness wall)**: the tree and the Control model
-  are in place, but the 68k boot parks just after its first
-  interrupt-unmask (`MOVE #$2000,SR` in the master init sequence at ROM
-  `$FFC002DC`): the main thread is captured by a VIA-cascade interrupt
-  whose 68k-side IPL never drops, and the ROM's video init
-  (`_DisplayDispatch` at `$FFC00336`, the `mtej` ndrv match, ScrnBase)
-  never runs.  See the Phase-D handover for the full diagnosis and the
-  kernel/emulator interrupt-reflection questions it narrows to.
-- The 68k startup chime does not play at the current wall (the OF beep
-  is rung T10's instrument); revisit when the boot advances.
+- The 68k startup chime STILL does not play by the T11 desktop (the OF
+  beep is rung T10's instrument); the boot reaches its media hunt
+  chime-less — an open question for Phase E.
+- The mask row's PCI-slot external interrupt 26 (enabled by the boot's
+  expansion-slot scan) has no modeled source; which physical slot OF
+  assigned it is unrecovered.
 - The 7500's 601 RTC tick source keeps the PDM 7,833,600 Hz assumption
   until a ladder rung measures it (proposal §4.4).
 - The `interruptableDeviceTable` / per-channel SCC interrupt split: the
