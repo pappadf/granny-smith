@@ -14,14 +14,17 @@
 static const uint32_t pm8500_ram_options_kb[] = {16384, 32768, 65536, 131072, 262144, 524288, 1048576, 0};
 
 static const tnt_board_desc_t pm8500_board = {
-    // BoxID: bit 11 SET = 8500 (the shipping ROM's identification
-    // routine at $FFC14844 — the one BoxID bit the model dispatch reads),
-    // MESH present, idle-high straps.  Bit 13 (composite video / Sixty6
-    // present) stays CLEAR while the AV subsystem is unmodeled so
-    // nothing probes for it; revisited with the gated AV phase.
+    // BoxID: bit 11 SET = 8500 (the shipping ROM's 68k identification
+    // routine at $FFC14844 — the one BoxID bit that dispatch reads), and
+    // bit 13 CLEAR = 8500 in Open Firmware's decode (OpenFW $10592 picks
+    // "AAPL,7500" over "AAPL,8500" on bit 13 of xw@>>11 — the earlier
+    // "composite video" reading of bit 13 was wrong).  MESH present,
+    // idle-high straps.
     .boxid = 0x8000u | 0x4000u | 0x0800u,
     .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
-    .hh_r20 = 0, // bit 30 clear = not a 9500
+    // +$20 bit 31 SET = the 7500/8500 class in Open Firmware's selector
+    // (see pm7500.c); bit 30 clear = not a 9500 for the 68k routine.
+    .hh_r20 = 0x80000000u,
     .bus_hz = 40000000u, // 3:1 bus (120 MHz 604 card)
     .bandit_count = 2,
 };

@@ -54,8 +54,9 @@ DMA architecture:
   both ESCC apertures (`+$12000` legacy / `+$13000` native, one shared
   Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
   port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
-  DBDMA channel windows (`+$8000+n*$100`).  SCSI, MACE, AWACS, SWIM3 and
-  RaDACal apertures log and read open bus until their phases land.
+  DBDMA channel windows (`+$8000+n*$100`).  Phase D adds AWACS
+  (`+$14000`) and the RaDACal RAMDAC (`+$1B000`, control.c); SCSI, MACE
+  and SWIM3 apertures log and read open bus until their phases land.
 - **DBDMA** (`dbdma.c`) — the descriptor-based DMA engine, Phase C: one
   implementation, eleven channels (channel *n* raises Grand Central
   interrupt *n*), each a little-endian register file (`channelControl`
@@ -85,7 +86,30 @@ DMA architecture:
   decode.  TNT-driven additions to the shared model: the polled no-TIP
   response termination the ROM's early-boot driver uses, the sync-cycle
   abort of an unread response (the OF-to-68k handoff leaves its last ADB
-  response untaken), and the response-abandonment watchdog.
+  response untaken), the response-abandonment watchdog, and (Phase D
+  part 2) the re-presentation of a sync-aborted SOLICITED response once
+  the sync completes — the abort resets the transport, not the firmware's
+  output queue, and the TNT ROM's InitADB sends its ADB SendReset through
+  the early polled driver then installs the interrupt driver with the
+  reply still in flight.  The machine also feeds the 60.15 Hz reference
+  into VIA1 CA1 each frame (the AMIC/AV line, third instance).
+- **Control video** (`control.c`, Phase D part 2) — Control (343S1154) as
+  PCI device 11 on the Chaos bus: Open Firmware sizes and assigns its two
+  BARs through the Chaos config ports (`$14` = the 4 KB register block,
+  `$18` = the 64 MB VRAM aperture, both landing in the `$90000000` VCI
+  memory space, which this model now claims and dispatches — unclaimed
+  addresses keep the recoverable-fault semantics).  32 little-endian
+  registers on `$10` centres (the controlfb map), 4 MB VRAM as two 2 MB
+  banks with the mode-dependent aperture views the sizing probe expects
+  (bank 2 shows through at `+$600000`; the framebuffer lives in the
+  `+$800000` half with pixel 0 at +16), the RaDACal byte cells at GC
+  `+$1B000` (index/cursor/misc/CLUT on `$10` centres; misc `$20` bits 3:2
+  = 8/16/32 bpp), monitor sense modeled as a 13"/14" strap (line C
+  grounded — extended sense `$2B`, the head of the ROM's own mode table),
+  and VBL as Grand Central interrupt 30 at 60 Hz while `intr_ena` is set.
+  Scanout presents through the shared `display_t`; geometry derives from
+  pitch/depth and the vertical-blank registers.  Not yet exercised
+  end-to-end: the boot parks before the ROM's video driver loads (below).
 
 ### The interrupt fabric
 
@@ -152,25 +176,39 @@ initialisation sequence and events-driven acknowledge, the NanoKernel's
 `$80000000` mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA
 routing) and `tests/unit/suites/dbdma` (the engine in isolation).
 
-### Machine identity (solved)
+### Machine identity (solved — both halves)
 
-The shipping ROM's identification routine (`$FFC14844`) discriminates
-the family from THREE registers, not the community's BoxID bits-11/12
-reading: Hammerhead `+$00` first byte `$39` selects the TNT path (a
-`$3001xxxx` identifier is the 7200/Catalyst — the earlier reading that
-made every Phase-B boot a 7200), Hammerhead `+$20` bit 30 marks the
-9500, and BoxID little-endian bit 11 marks the 8500.  The synthesized
-`$302x` code selects among the ROM's four ProductInfo records
-(ProductKind `$3D`/`$3E`/`$3F`/`$66`).  All three profiles identify:
-`BoxFlag` `$3E`/`$3F`/`$3D` = gestalt 68/69/67.
+The shipping ROM identifies the machine TWICE, and neither half is the
+community's "BoxID bits 11-12" reading:
+
+- **The 68k routine** (`$FFC14844`): Hammerhead `+$00` first byte `$39`
+  selects the TNT path (a `$3001xxxx` identifier is the 7200/Catalyst —
+  the earlier reading that made every Phase-B boot a 7200), Hammerhead
+  `+$20` bit 30 marks the 9500, and BoxID little-endian bit 11 marks
+  the 8500.  All three profiles identify: `BoxFlag` `$3E`/`$3F`/`$3D` =
+  gestalt 68/69/67.
+- **Open Firmware's decode** (OpenFW image `$104db+`, solved in Phase D
+  part 2 by resolving the image's own token dictionary): the model
+  selector is `m = (HH+$20 byte0 >> 5) | ((HH+$20 byte0 >> 1) & 8)` —
+  `$80` (bit 31) reads as the 7500/8500 class, `$40` (bit 30) as the
+  9500 — and the 7500-vs-8500 split is BoxID LE **bit 13** (set =
+  7500).  An unrecognised box gets `compatible "AAPL,????"` and a
+  device tree with **no `chaos`/`control` display nodes** — which was
+  the entire "OF never probes the display" wall.  With the identity
+  right (rung T6), OF instantiates both nodes, probes the VCI bus and
+  assigns Control's BARs; the 9500 correctly gets neither node (no
+  onboard video on the real machine).
 
 Known open items at this phase:
 
-- Rung T11 (Control video): even with the identity solved, Open
-  Firmware never probes the Chaos bridge (nor the GC `+$1C000` aperture
-  its tree-construction literals reference), so no `control` node — and
-  with it no `ndrv` — exists and `ScrnBase` stays 0.  What gates OF's
-  display-bus probe is the open question of the video phase.
+- **Rung T11 (the boot-liveness wall)**: the tree and the Control model
+  are in place, but the 68k boot parks just after its first
+  interrupt-unmask (`MOVE #$2000,SR` in the master init sequence at ROM
+  `$FFC002DC`): the main thread is captured by a VIA-cascade interrupt
+  whose 68k-side IPL never drops, and the ROM's video init
+  (`_DisplayDispatch` at `$FFC00336`, the `mtej` ndrv match, ScrnBase)
+  never runs.  See the Phase-D handover for the full diagnosis and the
+  kernel/emulator interrupt-reflection questions it narrows to.
 - The 68k startup chime does not play at the current wall (the OF beep
   is rung T10's instrument); revisit when the boot advances.
 - The 7500's 601 RTC tick source keeps the PDM 7,833,600 Hz assumption

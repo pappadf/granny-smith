@@ -36,6 +36,7 @@
 #define GS_MACHINES_TNT_H
 
 #include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
+#include "display.h" // scanout descriptor (control.c presents through it)
 #include "machine.h"
 #include "memory.h"
 #include "system_config.h"
@@ -106,6 +107,7 @@ typedef struct tnt_bandit {
     bool is_chaos; // Chaos: restricted config space, writes ignored
     uint32_t cfg_addr; // config address port latch (LE value; 0 = idle)
     uint32_t mode_select; // config $50 (the $40 coherency bit latches)
+    struct config *cfg; // back-pointer (Chaos delegates BARs to control.c)
     memory_interface_t addr_if; // +$800000 port
     memory_interface_t data_if; // +$C00000 port
 } tnt_bandit_t;
@@ -179,6 +181,36 @@ typedef struct tnt_fault_window {
 
 #define TNT_FAULT_WINDOWS 2 // Bandit 1 PCI memory + Chaos/VCI memory
 
+// === Control video state (control.c) ========================================
+// Control (343S1154) is PCI device 11 on the Chaos display bus: a 4 KB
+// register block behind config BAR $14 and a 64 MB VRAM aperture behind
+// BAR $18 (both assigned by Open Firmware inside the $90000000 VCI memory
+// space), 32 little-endian 32-bit registers on $10 centres, plus the
+// RaDACal RAMDAC whose byte registers sit in GRAND CENTRAL at +$1B000.
+#define TNT_CONTROL_REGS 32
+#define TNT_VRAM_SIZE    0x400000u // 4 MB: two 2 MB banks, both populated
+
+typedef struct tnt_control {
+    // PCI BAR latches (config $14 = registers, $18 = VRAM aperture).  The
+    // stored value is the raw last write; reads mask to the BAR's size so
+    // the standard write-ones sizing probe works.
+    uint32_t bar_regs;
+    uint32_t bar_vram;
+    // The register file (index = offset/$10; §4 of control-chaos-video.md)
+    uint32_t reg[TNT_CONTROL_REGS];
+    uint8_t vbl_pending; // intr_stat: a VBL edge not yet acknowledged
+    uint8_t vbl_armed; // the frame event is pending in the scheduler
+    // RaDACal (byte registers on $10 centres at GC +$1B000)
+    uint8_t rad_addr; // +$00 index register (CLUT entry / misc register)
+    uint8_t rad_phase; // RGB byte phase of the CLUT data port
+    uint8_t rad_ctrl; // misc $20: depth control (bits 3:2 = 8/16/32 bpp)
+    uint8_t rad_bank; // misc $21: VRAM bank select
+    uint8_t rad_misc[2]; // misc $10/$11 (cursor, cleared on mode set)
+    uint8_t clut[256][3];
+    uint8_t crsr[8][3]; // cursor palette (+$10 port)
+    uint8_t crsr_phase;
+} tnt_control_t;
+
 // === Family state ===========================================================
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
@@ -192,11 +224,21 @@ typedef struct tnt_state {
     struct object *snd_object; // machine.sound node (awacs.c)
     int16_t *snd_stage; // gain-applied staging frames for audio_out_push
 
+    // Control video (control.c): register/RaDACal state is checkpointed;
+    // the VRAM blob follows it in the tail; the display descriptor and its
+    // derived views are rebuilt from the registers on restore.
+    tnt_control_t control;
+    uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
+    struct display display; // scanout descriptor (display.h)
+    rgba8_t clut_view[256]; // materialized CLUT for the renderer
+    uint8_t *blank; // black stub presented while the raster is blanked
+
     // Memory interfaces registered with the map
     memory_interface_t gc_interface; // $F3000000 island (128 KB)
     memory_interface_t hh_interface; // $F8000000 register window
     memory_interface_t pci_fault_interface; // empty PCI memory space
     memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
+    memory_interface_t vci_interface; // $90000000 VCI memory (control.c)
 } tnt_state_t;
 
 static inline tnt_state_t *tnt_st(config_t *cfg) {
@@ -237,6 +279,25 @@ void tnt_awacs_teardown(config_t *cfg);
 // Island access for the +$14000 block (little-endian register domain).
 uint32_t tnt_awacs_read32(config_t *cfg, uint32_t offset);
 void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value);
+
+// === control.c ==============================================================
+
+void tnt_control_register_events(config_t *cfg); // event type (pre-start)
+void tnt_control_init(config_t *cfg); // VRAM, display, VCI window claim
+void tnt_control_reset(config_t *cfg); // power-on registers (VRAM survives)
+void tnt_control_update(config_t *cfg); // re-derive the display descriptor
+void tnt_control_teardown(config_t *cfg);
+// Chaos config space, device 11 (control's PCI header): full-dword read of
+// register `reg`; byte-lane write (the ports decompose to bytes).
+uint32_t tnt_control_cfg_read(config_t *cfg, uint32_t reg);
+void tnt_control_cfg_write(config_t *cfg, uint32_t reg, uint32_t byte, uint8_t value);
+// RaDACal byte cells (Grand Central +$1B000, $10 centres).
+uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
+void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
+// Presentation: the primary display descriptor (NULL before init), and the
+// host-frame dirty mark (guest CPU writes bypass the renderer).
+struct display *tnt_control_display(config_t *cfg);
+void tnt_control_host_vbl(config_t *cfg);
 
 // === grand_central.c ========================================================
 

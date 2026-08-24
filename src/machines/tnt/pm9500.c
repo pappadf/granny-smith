@@ -25,7 +25,11 @@ static const tnt_board_desc_t pm9500_board = {
     // MESH present, idle-high straps.
     .boxid = 0x8000u | 0x4000u,
     .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
-    .hh_r20 = 0x40000000u, // bit 30 SET = 9500
+    // +$20 bit 30 SET = 9500 (the 68k routine tests it directly; Open
+    // Firmware's selector m = (b>>5)|((b>>1)&8) over the top byte reads
+    // $40 as 2 -> "AAPL,9500").  Bit 31 must stay CLEAR — set it and OF
+    // classifies the box as a 7500/8500 (see pm7500.c).
+    .hh_r20 = 0x40000000u,
     .bus_hz = 44000000u, // 3:1 bus (132 MHz 604 card)
     .bandit_count = 2,
 };

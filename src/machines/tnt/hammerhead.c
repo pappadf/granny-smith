@@ -51,7 +51,12 @@ LOG_USE_CATEGORY_NAME("hammerhead");
 #define HH_REG_L2STROBE  0xF0u // L2 flush/fill strobe
 
 // The machine-identification register at +$20: bit 30 marks the 9500
-// (the 68k identification at ROM $FFC1484E tests it before BoxID).
+// (the 68k identification at ROM $FFC1484E tests it before BoxID), and
+// bit 31 marks the 7500/8500 class — Open Firmware folds the top byte
+// into its model selector as (b>>5)|((b>>1)&8) ($80 -> 7500/8500,
+// $40 -> 9500) and falls back to "AAPL,????" (no display nodes) when
+// neither bit is set.  The +$30 top byte feeds the AAPL,cpu-id low
+// nibble the same way (>>4); it is unattested and currently zero.
 #define HH_REG_MACHID 0x20u
 
 void tnt_hh_init(config_t *cfg) {

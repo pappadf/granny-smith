@@ -16,13 +16,21 @@ static const tnt_board_desc_t pm7500_board = {
     // BoxID (little-endian bit numbering): bit 15 pulled high, bit 14 MESH
     // present, bit 8 factory-test strap CLEAR (set sends the ROM into its
     // serial test monitor), bit 11 CLEAR (set = 8500 — the shipping ROM's
-    // identification routine at $FFC14844, decoded during Phase D).
-    .boxid = 0x8000u | 0x4000u,
+    // identification routine at $FFC14844, decoded during Phase D), and
+    // bit 13 SET — Open Firmware's model decode (OpenFW image $10592,
+    // decoded during Phase D part 2) reads BoxID as xw@>>11 into its
+    // machine word and picks "AAPL,7500" over "AAPL,8500" on bit 13.
+    .boxid = 0x8000u | 0x4000u | 0x2000u,
     // Hammerhead identity: first byte $39 selects the ROM's TNT path
-    // (a $3001xxxx identifier is the 7200/Catalyst); +$20 bit 30 clear =
-    // not a 9500.
+    // (a $3001xxxx identifier is the 7200/Catalyst); +$20 bit 31 SET =
+    // the 7500/8500 class in Open Firmware's selector (m = (b>>5) |
+    // ((b>>1)&8) over the +$20 top byte: $80 -> 4 -> 7500/8500,
+    // $40 -> 2 -> 9500), bit 30 clear = not a 9500 for the 68k routine.
+    // Without bit 31 OF emits compatible "AAPL,????" and never
+    // instantiates the chaos/control display nodes (the Phase-D video
+    // wall's root cause).
     .hh_id = 0x39000000u,
-    .hh_r20 = 0,
+    .hh_r20 = 0x80000000u,
     .bus_hz = 50000000u, // 2:1 bus (100 MHz 601 card)
     .bandit_count = 1,
 };

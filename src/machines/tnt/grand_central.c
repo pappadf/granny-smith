@@ -16,11 +16,11 @@
 //
 // Populated so far: the interrupt block (+$20..$2C), the DBDMA channel
 // windows (+$8000+n*$100, Phase C — the engine itself is dbdma.c), the
-// VIA1/Cuda window (+$16000), BoxID (+$1A000), and the banked NVRAM
-// (+$1D000 port / +$1F000 data window).  The remaining apertures log and
-// read open bus until their phases land (AWACS +$14000 and RaDACal
-// +$1B000 Phase D; SCSI/MESH +$10000/+$18000 Phase E; MACE, SCC, SWIM3
-// Phase F).
+// VIA1/Cuda window (+$16000), BoxID (+$1A000), the banked NVRAM
+// (+$1D000 port / +$1F000 data window), AWACS (+$14000, Phase D) and the
+// RaDACal RAMDAC (+$1B000 — control.c, Phase D part 2).  The remaining
+// apertures log and read open bus until their phases land (SCSI/MESH
+// +$10000/+$18000 Phase E; MACE, SCC, SWIM3 Phase F).
 //
 // Register truth: the shipping ROM's Open Firmware device tree and 68k
 // DecoderInfo tables, the ROM's own NanoKernel interrupt handler, and
@@ -71,17 +71,19 @@ LOG_USE_CATEGORY_NAME("gc");
 // ============================================================
 // BoxID ($F301A000, little-endian bit numbering — the guest reads lwbrx)
 // ============================================================
-// Bit map, community-attested and pinned empirically at ladder rung T4:
+// Bit map, pinned empirically at ladder rungs T4/T6 (the community's
+// "bits 11-12 model code" reading is dead — both identification halves
+// decoded from the ROM):
 //   0-5   PCI slot power/present pins (empty slots: 0)
 //   6-7   SCC RTS-A/B readback
-//   8     factory-test strap; POST tests it (modeled pulled high = normal)
+//   8     factory-test strap; POST tests it (modeled pulled high = normal;
+//         set sends the boot into the ROM's serial test monitor)
 //   9     microphone sense
 //   10    Ethernet 10BT link
-//   11-12 the 2-bit MODEL code the shared ROM dispatches on
-//         (community reading: 9500 = %00, 8500 = %01; the 7500 code is a
-//         starting guess, corrected at T4 from the compatible string the
-//         ROM's Open Firmware emits)
-//   13    composite-video-out / Sixty6 present
+//   11    SET = 8500 (the 68k identification routine at ROM $FFC14844)
+//   12    unread by either identification
+//   13    SET = 7500 (Open Firmware's model decode splits the 7500/8500
+//         class — selected by Hammerhead +$20 bit 31 — on this bit)
 //   14    MESH / fast-SCSI present (all three TNT boards)
 //   15    unused, pulled high
 // The per-model composite values live in the board descriptors (pm7500.c
@@ -143,6 +145,8 @@ void tnt_gc_pulse_event(config_t *cfg, int n) {
 // little-endian register value (the dispatcher swaps at the bus edge).
 static uint32_t int_read(config_t *cfg, uint32_t offset) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
+    LOG(4, "int read +$%02X (events=$%08X levels=$%08X mask=$%08X latch=%d)", offset, gc->int_events, gc->int_levels,
+        gc->int_mask, gc->int_latch);
     switch (offset) {
     case INT_EVENTS:
         return gc->int_events;
@@ -274,6 +278,8 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
         LOG(3, "BoxID byte read +%u -> $%02X", offset & 3u, b);
         return b;
     }
+    case OFF_RADACAL:
+        return tnt_control_rad_read(cfg, offset - OFF_RADACAL);
     default:
         LOG(1, "byte read of unwired island offset +$%05X", offset);
         return 0;
@@ -298,6 +304,9 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         return;
     case OFF_NVDATA:
         nvram_write(cfg, offset - OFF_NVDATA, value);
+        return;
+    case OFF_RADACAL:
+        tnt_control_rad_write(cfg, offset - OFF_RADACAL, value);
         return;
     default:
         LOG(1, "byte write of unwired island offset +$%05X = $%02X", offset, value);

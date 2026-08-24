@@ -32,10 +32,12 @@
 //
 // Chaos differs in three attested ways: its header reads device $0003;
 // most of its BARs are not safely readable (config reads outside
-// $00-$0F/$14/$18 return all-ones); and writes to its config space are
-// ignored entirely ("/chaos really hates writes to config space" —
-// NetBSD; Linux's chaos_map_bus applies the same offsets).  It has no PCI
-// I/O window at all.
+// $00-$0F/$14/$18 return all-ones — the two exceptions are exactly
+// Control's register and VRAM BARs, which delegate to control.c: the
+// ROM's own probe-slots sizes and assigns them); and writes to the rest
+// of its config space are ignored ("/chaos really hates writes to config
+// space" — NetBSD; Linux's chaos_map_bus applies the same offsets).  It
+// has no PCI I/O window at all.
 //
 // Empty PCI MEMORY space faults recoverably: Open Firmware and the OS
 // probe with catchable machine checks (the BART precedent), so the two
@@ -133,7 +135,10 @@ static uint32_t config_read(tnt_bandit_t *b) {
     if (b->is_chaos) {
         // Restricted readability: $00-$0F, $14 and $18 only — most Chaos
         // BARs are not safely readable and reads of them return all-ones.
-        if (!(reg <= 0x0Cu || reg == 0x14u || reg == 0x18u))
+        // The two readable BARs are Control's (control.c).
+        if (reg == 0x14u || reg == 0x18u)
+            return tnt_control_cfg_read(b->cfg, reg);
+        if (reg > 0x0Cu)
             return 0xFFFFFFFFu;
     }
     return bridge_own_config_read(b, reg);
@@ -148,8 +153,14 @@ static void config_write(tnt_bandit_t *b, uint32_t reg_base, uint32_t byte, uint
     if (dev != 11 || fn != 0)
         return; // writes to empty devices vanish
     if (b->is_chaos) {
+        // Control's two BARs latch (the ROM's probe-slots sizes and
+        // assigns them); the rest of Chaos config space ignores writes.
+        if (reg == 0x14u || reg == 0x18u) {
+            tnt_control_cfg_write(b->cfg, reg, byte, (uint8_t)(value & mask));
+            return;
+        }
         LOG(2, "chaos config write $%02X ignored", reg);
-        return; // Chaos config space ignores writes entirely
+        return;
     }
     if (reg == BANDIT_MODE_SELECT) {
         // The documented latch: whatever the OS writes reads back (the
@@ -295,6 +306,7 @@ static void bridge_add(config_t *cfg, uint32_t base, bool is_chaos, const char *
     memset(b, 0, sizeof(*b));
     b->base = base;
     b->is_chaos = is_chaos;
+    b->cfg = cfg;
     b->addr_if.read_uint8 = addr_read8;
     b->addr_if.read_uint16 = addr_read16;
     b->addr_if.read_uint32 = addr_read32;
@@ -323,13 +335,12 @@ void tnt_bandit_init(config_t *cfg) {
     if (tnt_board(cfg)->bandit_count >= 2)
         bridge_add(cfg, TNT_BANDIT2_BASE, false, "Bandit 2");
 
-    // The two 256 MB PCI memory spaces, claimed empty: with no card seated
-    // an access there takes the recoverable transfer error the probe
-    // idioms expect.  A future PCI card's regions overlay these pages.
+    // Bandit 1's 256 MB PCI memory space, claimed empty: with no card
+    // seated an access there takes the recoverable transfer error the
+    // probe idioms expect.  A future PCI card's regions overlay these
+    // pages.  The VCI memory space is control.c's — its BAR dispatcher
+    // provides the same fault semantics for unclaimed addresses.
     st->fault[0].base = TNT_PCI_MEM1;
     snprintf(st->fault[0].what, sizeof(st->fault[0].what), "PCI memory (Bandit 1)");
     memory_map_add(cfg->mem_map, TNT_PCI_MEM1, 0x10000000u, st->fault[0].what, &pci_fault_iface, &st->fault[0]);
-    st->fault[1].base = TNT_PCI_MEM_VCI;
-    snprintf(st->fault[1].what, sizeof(st->fault[1].what), "PCI memory (VCI)");
-    memory_map_add(cfg->mem_map, TNT_PCI_MEM_VCI, 0x10000000u, st->fault[1].what, &pci_fault_iface, &st->fault[1]);
 }

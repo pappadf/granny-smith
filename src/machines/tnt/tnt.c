@@ -401,6 +401,12 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_gc_init(cfg);
     tnt_memory_layout(cfg);
 
+    // Control video: VRAM, the VCI-space dispatcher, the display (after
+    // the memory map so it can claim its window).
+    tnt_control_register_events(cfg);
+    tnt_control_init(cfg);
+    tnt_control_reset(cfg);
+
     // Substrate-private checkpoint tail: register files + NVRAM are plain
     // data; the CPU line is recomputed below.
     if (cp) {
@@ -411,8 +417,11 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
             system_read_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
         }
         system_read_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
+        system_read_checkpoint_data(cp, &st->control, sizeof(st->control));
+        system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
         via_redrive_outputs(cfg->via1);
         tnt_gc_recompute(cfg);
+        tnt_control_update(cfg); // rebuild the descriptor from restored regs
     }
 
     // Finish: debugger + scheduler start.
@@ -431,6 +440,7 @@ static void tnt_reset(config_t *cfg) {
     tnt_gc_init(cfg);
     tnt_dbdma_reset(st->dbdma);
     tnt_awacs_reset(cfg);
+    tnt_control_reset(cfg);
     scc_reset(cfg->scc);
     for (int i = 0; i < st->bridge_count; i++) {
         st->bridge[i].cfg_addr = 0;
@@ -445,6 +455,8 @@ static void tnt_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st)
         tnt_awacs_teardown(cfg);
+    if (st)
+        tnt_control_teardown(cfg);
     if (st && st->dbdma) {
         tnt_dbdma_delete(st->dbdma);
         st->dbdma = NULL;
@@ -512,14 +524,29 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
         system_write_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
     }
     system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
+    system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
+    system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
 }
 
-// Host-frame tick: media insertion polling only.  The guest's own 60 Hz
-// tick comes from VIA1 timer 1, not from an external VBL line, and video
-// VBL (Grand Central interrupt 30) arrives with the Control model in a
-// later phase.
+// Frame tick (scheduler-paced, one per VBL frame-unit): the 60.15 Hz
+// reference into VIA1 CA1 — the same line AMIC (PDM) and the AV feed
+// their VIA1, third instance.  This is load-bearing: the Cuda driver's
+// init waits for a CA1 edge right after its SecMode exchange (it polls
+// IFR bit 1, then enables the CA1 interrupt) and the whole boot — ADB
+// enumeration, DrawBeepScreen, the video driver — hangs forever without
+// it (the Phase-D "video wall" turned out to park HERE, inside InitADB).
+// Also: media insertion polling and the display's re-upload mark (guest
+// CPU writes into VRAM bypass the renderer).
 static void tnt_trigger_vbl(config_t *cfg) {
+    via_input_c(cfg->via1, 0, 0, 0);
+    via_input_c(cfg->via1, 0, 0, 1);
     image_tick_all(cfg);
+    tnt_control_host_vbl(cfg);
+}
+
+// Primary display: Control's scanout over its VRAM (control.c).
+static struct display *tnt_display(config_t *cfg) {
+    return tnt_control_display(cfg);
 }
 
 // Chipset IRQ spine.  Nothing routes through it: every on-board source is
@@ -556,6 +583,7 @@ const machine_substrate_t tnt_substrate = {
     .input_key = mac_input_key,
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
+    .display = tnt_display,
     .media_detach = system_media_detach_std,
     .media_attach = system_media_attach_std,
 };

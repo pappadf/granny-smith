@@ -62,6 +62,19 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     (void)value;
 }
 
+// --- the RaDACal block belongs to the Control video model (control.c);
+// the island dispatch references it, so stub it the same way ---
+uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
+
 // --- VIA/SCC apertures are not exercised here; the island dispatch
 // references the accessors, so give them inert interfaces ---
 static uint8_t stub_read8(void *d, uint32_t a) {
@@ -88,8 +101,9 @@ const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
 // Fixture: a config with the family state and a board descriptor
 // ============================================================================
 
-// BoxID: bit 15 strap, bit 14 MESH, bit 11 clear (the pm7500 power-on
-// value — bit 11 set marks the 8500 in the ROM's identification).
+// BoxID: bit 15 strap, bit 14 MESH, bits 11/13 clear (a fixture value —
+// the tests below exercise the register's byte-lane composition, not the
+// model decode; the real per-model values live in the board descs).
 #define TEST_BOXID (0x8000u | 0x4000u)
 
 static tnt_board_desc_t s_board = {.boxid = TEST_BOXID, .bus_hz = 50000000u, .bandit_count = 1};
