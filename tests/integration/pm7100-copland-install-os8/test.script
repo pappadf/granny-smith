@@ -75,7 +75,8 @@ def open_installer() {
     # reaching it means rules 200 (a NuBus PDM), 202 (16 MB), 204 (230 MB),
     # **207 (the SecondaryLoader partition)** and 210 (System 7.5 on the target)
     # all passed — which is the whole reason the two tests before this one
-    # exist.  Rule 207 is the one that defeats SheepShaver.
+    # exist.  Rule 207 is the strictest: it wants the loader partition on the
+    # disk itself, not just files on a volume.
     check_ex("installer-ready.png", 0, 440, 20, 640)
 }
 

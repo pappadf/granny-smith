@@ -16,7 +16,7 @@
 # that gate this one (plan §5): 200 `'mach'` (a NuBus PDM), 202 16 MB of RAM,
 # 204 a 230 MB volume, 207 a `SecondaryLoader` / `Apple_MacOSPrep` partition
 # that only Drive Setup 2.0d5c2 writes, and 210 a System 7.5.0-or-later on the
-# target.  Rule 207 is the one that defeats SheepShaver.
+# target.
 #
 # MEDIA: everything is under local/gs-docs/projects/copland/ and deliberately
 # not in gs-test-data yet (plan §6.0), so the test SKIPS cleanly where it is

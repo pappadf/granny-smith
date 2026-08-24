@@ -141,8 +141,8 @@ def popup_pick(px, py, ix, iy) {
 # and — the reason that decides it — initializing with 2.0d5c2 writes the
 # secondary loader partition that the Copland installer's rule 207 ("Check for
 # Secondary Ldr Partn") demands, in one operation, with no separate "Update for
-# Mac OS 8" step.  That partition is the thing that defeats SheepShaver, and it
-# is why the disk cannot simply be handed to the installer as a plain HFS image.
+# Mac OS 8" step.  That partition is why the disk cannot simply be handed to
+# the installer as a plain HFS image.
 #
 # Every coordinate below was discovered by hand against a live daemon; the
 # goldens are both the synchronisation points and the assertions, exactly as in
@@ -243,7 +243,7 @@ def phase2_format_target() {
 #
 # `SecondaryLoader` / `Apple_MacOSPrep` is what installer rule 207 ("Check for
 # Secondary Ldr Partn") looks for, and its absence is what makes a plain HFS
-# image unusable — the check that defeats SheepShaver.  Seven entries is the
+# image unusable.  Seven entries is the
 # signature of a 2.0d5c2 format: System 7.5's own HD SC Setup produces four
 # (iifx-install-76 asserts exactly that count on its HD160SC).  storage.partmap
 # prints the table into the test log, so a change of layout is readable as a
