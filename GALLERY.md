@@ -6,6 +6,14 @@ Demos of Granny Smith running real Macintosh (and Lisa) software. Click any thum
 
 ---
 
+## Booting Copland (Mac OS 8) on an Emulated Power Macintosh 7100
+
+[![Copland D11E4 booting to the Finder desktop on an emulated Power Macintosh 7100](https://i.ytimg.com/vi/BelSAvdV2A0/hq720.jpg)](https://www.youtube.com/watch?v=BelSAvdV2A0)
+
+Apple's Copland — the next-generation "Mac OS 8" that was cancelled before it shipped — booting to the Finder desktop on an emulated Power Macintosh 7100. This is the D11E4 developer release, running unmodified: the emulated 7100 brings up Copland's microkernel, mounts the boot volume, and hands off to the Finder. *(August 2026)*
+
+---
+
 ## PlainTalk Speech Recognition on an Emulated Quadra 840AV (DSP3210)
 
 [![PlainTalk speech recognition running on an emulated Quadra 840AV](https://i.ytimg.com/vi/TZw71SAVR_Q/hq720.jpg)](https://www.youtube.com/watch?v=TZw71SAVR_Q)

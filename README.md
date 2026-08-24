@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning three CPU generations, from the 68000 Lisa 2 and Macintosh Plus to the 68040 Quadra towers and AV machines. It runs Mac OS  and A/UX on the Macintosh, and the Lisa Office System, MacWorks XL, and Xenix on the Lisa 2 / Macintosh XL.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning four CPU generations, from the 68000 Lisa 2 and Macintosh Plus, through the 68030 and 68040 Macintoshes, to the PowerPC 601 Power Macintosh 6100/7100/8100. It runs Mac OS and A/UX on the Macintosh — including a developer release of Copland (Mac OS 8) on the Power Macintosh — and the Lisa Office System, MacWorks XL, and Xenix on the Lisa 2 / Macintosh XL.
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
@@ -49,6 +49,11 @@ Each machine is modeled faithfully: the original ROMs run unpatched, and all on-
   - YMCA memory controller, PSC (interrupt controller and DMA), Cuda system manager, CIVIC video
   - RTC, ADB, New Age floppy controller, 53C96 SCSI, MACE Ethernet, VIA, SCC serial
   - Tested with System 7.1
+- **Power Macintosh 6100, 7100, and 8100** (the PowerPC 601 "PDM" generation)
+  - PowerPC 601 at 60 / 66 / 80 MHz, with integrated MMU and FPU
+  - HMC memory controller, AMIC I/O controller (DMA and interrupts), BART NuBus bridge (7100/8100), Ariel built-in video
+  - Cuda system manager, SWIM3 floppy, 53C96 SCSI, AWACS sound, VIA, SCC serial, NuBus on the 7100 and 8100
+  - Tested with System 7.5, and the Copland (Mac OS 8) Developer Release D11E4 on the 7100
 
 ## Emulated Display Cards
 
@@ -67,14 +72,14 @@ Fidelity means compatibility is earned by behaving like the real machine, never 
 
 For users, simplicity means the emulator runs in the browser with no installation, sessions are checkpointed continuously in the background so closing or reloading the tab loses nothing, disk images can be dragged straight onto the screen (compressed `*.sit.hqx` archives included), and a built-in AFP file server bridges the browser/host filesystem into the guest OS.
 
-For developers, it means a highly portable C99 core with no special runtime requirements and no JIT or code generators: a ~550-line shared instruction decoder and one compact opcode header serve all three CPU generations, relying on the compiler and modern hardware for performance. Extensive automated tests (unit, headless integration, and Playwright end-to-end) keep it honest, and the hardware documentation is written in Markdown so it serves human developers and AI coding agents alike.
+For developers, it means a highly portable C99 core with no special runtime requirements and no JIT or code generators: a ~550-line shared instruction decoder and one compact opcode header serve all three 68K generations, with a separate compact interpreter for the PowerPC 601, relying on the compiler and modern hardware for performance. Extensive automated tests (unit, headless integration, and Playwright end-to-end) keep it honest, and the hardware documentation is written in Markdown so it serves human developers and AI coding agents alike.
 
 ## Getting Started
 
 You will need a ROM image and a bootable system disk image for the machine you want to run.
 
 1. **[Open Granny Smith](https://pappadf.github.io/gs-pages/latest/)** in any modern browser
-2. On first launch, upload a ROM for your chosen model (anything from the Macintosh Plus to the Quadra 840AV, or a Lisa); it is persisted in the browser's OPFS storage, so you only need to do this once
+2. On first launch, upload a ROM for your chosen model (anything from the Macintosh Plus to the Power Macintosh 8100, or a Lisa); it is persisted in the browser's OPFS storage, so you only need to do this once
 3. In the **Machine Configuration** dialog, pick a model, choose RAM, and attach disk images to the floppy / SCSI / CD slots (and display cards to NuBus slots)
 4. Click **Boot** - your session is checkpointed continuously in the background, so closing or reloading the tab won't lose state
 5. Once running, you can drag-and-drop additional disk images directly onto the screen to insert them at runtime
