@@ -1,15 +1,20 @@
-# PPC core — MPC601 main CPU
+# PPC core — MPC601/MPC604 main CPU
 
-`src/core/cpu/ppc/` implements the PowerPC 601 as a **main CPU** — the first
-non-68K architecture to own emulated time (proposal-powerpc-601-pdm.md).
-The module is named `ppc`, not `ppc601`: the decode tree and register file
-are architectural 32-bit PowerPC with 601-specific behavior (POWER
-holdovers, MQ, RTC-instead-of-timebase, 601 BAT format, HID SPRs, 601-only
-vectors) behind `cpu_model` discrimination.  Nothing beyond the 601 is
-implemented.
+`src/core/cpu/ppc/` implements the PowerPC 601 and 604 as a **main CPU** —
+the first non-68K architecture to own emulated time
+(proposal-powerpc-601-pdm.md).  The module is named `ppc`, not `ppc601`:
+the decode tree and register file are architectural 32-bit PowerPC with
+model-specific behavior behind `cpu_model` discrimination, exactly the way
+`cpu.c` discriminates 68000/030/040.  Two models exist —
+`CPU_MODEL_PPC601` (the PDM machines) and `CPU_MODEL_PPC604` (Phase A of
+the TNT proposal; see "The 604 model" below).  `ppc_init` takes the model;
+`ppc_reset` preserves it.
 
-Source of truth: Motorola/IBM, *PowerPC 601 RISC Microprocessor User's
-Manual*, 1995 (MPC601UM/AD) — cited per chapter/table in the code.
+Sources of truth: Motorola/IBM, *PowerPC 601 RISC Microprocessor User's
+Manual*, 1995 (MPC601UM/AD) for the 601; *PowerPC 604 RISC Microprocessor
+User's Manual*, 1994 (MPC604UM/AD) and *PowerPC Microprocessor Family:
+The Programming Environments* (MPCFPE32B, "PEM") for the 604 — cited per
+chapter/table in the code.
 
 ## Files — the shared decoder/disassembler pattern
 
@@ -195,6 +200,79 @@ bit for the PDM profiles.
   timed guest measurements are only exact in free-running execution — an
   active debugger single-steps and suppresses folding.
 
+## The 604 model (TNT proposal Phase A)
+
+`CPU_MODEL_PPC604` is a bounded delta over the shared machinery — decoder
+template, softfloat kernel, exception plumbing, sched-if/debug-if, SoA
+discipline all carry over untouched.  It is dead code on every shipping
+machine until the TNT family lands (the DSP3210/601 precedent).  The
+deltas, each keyed on `cpu_model`:
+
+- **Holdover rejection**: every POWER holdover, MQ (SPR 0), the RTC SPRs
+  (4/5/20/21), the POWER DEC read (SPR 6) and HID1 take the illegal
+  program exception.  The decode tree stays model-blind; the leaves
+  decide (`M601()`/`M604()` guards in `ppc_ops.h`).
+- **Time**: TBL/TBU replace the RTC — read via `mftb`/`mftbu` (xo 371,
+  user-readable), written via SPR 284/285 (supervisor), stored in the
+  same `rtcu/rtcl` slots at their rebase instant.  DEC decrements once
+  per timebase tick.  `ppc_bind_time(p, s, freq_hz, tick_hz)` takes the
+  tick rate explicitly: 7,833,600 on the 601 (PDM), bus/4 on the 604.
+- **MSR**: adds POW (accepted as a no-op idle hint), BE, PM, RI.
+  Exception entry keeps ME/EP/PM and clears the rest; `rfi` restores
+  MSR[16-31] only (POW survives).  ILE/LE stay unimplemented on both
+  models (big-endian Macs).
+- **MMU**: the ARCHITECTED BAT format (BEPI/BL/Vs/Vp upper,
+  BRPN/WIMG/PP lower; blocks 128 KB–256 MB; PP-only protection) with
+  four SPLIT pairs each way — fetch consults the IBATs (`batu/batl`),
+  data the DBATs (`dbatu/dbatl`, SPR 536-543).  BATs take precedence
+  over the segment; T=1 is consulted only after a BAT miss, and MSR[DR]=0
+  is true real addressing mode (no segment consult — `sr_t_mask` stays
+  zero).  The HTAB search is byte-identical to the 601's.  `tlbie`
+  invalidates by EA[14-19] (64 classes, 604UM §5.4.3.2); `tlbsync` is a
+  supervisor no-op (invalidation is synchronous here).
+- **Fault images**: ISI HTAB miss sets SRR1 bit 1 alone ($40000000);
+  direct-store fetches set SRR1[3]; direct-store data accesses take a DSI
+  with DSISR bit 0 (bit 5 for lwarx/stwcx./eciwx/ecowx) — there is no
+  $00A00 vector.  The trace vector is $00D00 and $00F00 is the (never
+  firing) performance monitor; neither model delivers trace today
+  (MSR[SE]/[BE] are storage-only).  A TEA machine check sets SRR1[13],
+  zeroes SRR1[30], and clears MSR[ME] (604UM Table 4-8).
+- **Alignment** (604UM §4.5.6): only FP loads/stores, lmw/stmw,
+  lwarx/stwcx. and eciwx/ecowx require word alignment; every other
+  misaligned access is split by hardware — `ppc_scalar_gate` performs a
+  translated page-crossing access byte-wise, since the two pages need not
+  be physically adjacent.  `dcbz` additionally faults with the data cache
+  disabled (HID0[17] clear — the HRESET state) or locked (HID0[19]).
+  The string rules stay 601-shaped on both models (implementation-
+  specific per the PEM; ladder-observable).
+- **SPR file**: undefined SPR numbers trap (the 604 fully decodes the
+  field — 604UM §4.5.7) where the 601 no-ops; MMCR0/PMC1/PMC2/SIA/SDA are
+  supervisor read-zero/write-ignore stubs; PIR/DABR/IABR/HID0 are
+  store-and-readback.  Reset state: MSR = $00000040 (HRESET sets only
+  IP), PVR = $00040103 (the kernel keys on the $0004 half; the revision
+  is a chosen constant), HID0 = 0.
+- **Optional FP** (PEM pages): `fsel` (no FPSCR effects; −0 counts as
+  ≥ 0, NaN selects frB), `stfiwx`, and the estimates `fres`/`frsqrte`.
+  The estimates are implementation-defined within architected envelopes
+  (2⁻⁸ / 2⁻⁵ relative); this model's documented constants are the
+  correctly-rounded single quotient 1.0/frB (through the integer div
+  kernel) and the round-to-nearest of a 62-bit-truncated integer-sqrt
+  reciprocal (relative error < 2⁻⁶¹).  Both report only their architected
+  FPSCR effects — never XX; FR/FI ("undefined") read cleared.  `fsqrt`
+  remains illegal: the 604 does not implement it.
+- **Superscalar timing is not modeled**: the 604 keeps the sprint/CPI-1.0
+  model and 601-style branch folding (TNT proposal §4.2), for the same
+  determinism-and-measurement reasons as the 601.
+- **Object model**: `machine.cpu` adds `dbat0u..dbat3l` and `tbu`/`tbl`
+  (aliases of the rtcu/rtcl storage); the members are static per class,
+  so they exist — inert — on the 601 too.
+- **Disassembler**: the union of both models decodes; `is_power` flags the
+  601-only encodings, `is_604` the 604-only ones, and
+  `ppc_disassemble_model(word, addr, 601|604, out)` applies one model's
+  validity view (`.long` for the other model's exclusives — matching the
+  runtime trap and `objdump -m powerpc:<model>`).  `tools/disasm` grows
+  `--arch ppc604` (`ppc`/`ppc601` keep the 601 view).
+
 ## Verification
 
 - `tests/unit/suites/ppc_vectors/` — the [powerpc-test](https://github.com/pappadf/powerpc-test)
@@ -208,17 +286,31 @@ bit for the PDM profiles.
   model, not to silicon; the eight defects the first replay found here,
   and the six it found upstream, are adjudicated against the 601UM in
   gs-docs `notes/2026-08-18-powerpc-test-vector-disagreements.md`.
+  The tier replays TWICE: once as the 601 (every file), once as the 604
+  with the model-divergent mnemonics filtered (POWER holdovers,
+  mfspr/mtspr/mtmsr/rfi, the word-alignment classes, dcbz) — the shared
+  ISA must replay bit-identically under both models.
 - `tests/unit/suites/ppc/` — directed semantics tests from the chapter-10
   RTL, written before the corpus above existed and still the place where a
   manual-cited rule gets pinned (`test_conformance_regressions` restates
   every rule the vectors caught).  Executed words are cross-checked against
   the disassembler so encoder typos cannot agree with decoder typos.
+  A `test_604_*` matrix covers the model deltas: reset state, the
+  holdover-rejection table, MSR bits, timebase reads/writes/privilege,
+  the split-BAT SPR file and PM stubs, the word-alignment classes, the
+  TEA machine-check image, and the optional-FP group (with the 601-side
+  rejections).
 - `tests/unit/suites/ppc_mmu/` — the Phase-D proof list: 601 BAT
   protection keys, T=1 with DT off and the SR-toggle alias, primary and
   secondary HTAB search with R/C write-back (PTEG addresses computed
   independently from Figure 6-19), exact DSI/ISI images, the abandoned
   update-form rule, the (PR,DT) SoA discipline, tlbie congruence classes,
   mtsr change-triggered invalidation, dcbz W/I, and the $00A00 contract.
+  The `test_604_*` section proves the split I/D BAT files (and the
+  architected format's BL/Vs/Vp/PP fields), BAT-before-segment ordering,
+  real-mode segment blindness, the direct-store DSI/ISI images, the
+  hardware-split page-crossing access over discontiguous translations,
+  per-class tlbie, and the 604 dcbz rules.
 - `tests/integration/pdm-rom-ladder/` — the shipping ROM as test program;
   high-water rung **L20** (the gray desktop through the Ariel scanout, with
   the AWACS chime, the exact VIA tick rate and the 68k emulator dispatching

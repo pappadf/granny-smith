@@ -128,4 +128,12 @@ int ppc_sf_frsp(uint64_t b, uint32_t *fpscr, uint64_t *frt);
 // round_to_zero selects fctiwz.  The 601 stores $FFF80000 in the high word.
 int ppc_sf_fctiw(uint64_t b, int round_to_zero, uint32_t *fpscr, uint64_t *frt);
 
+// The 604's optional estimate instructions (PEM fresx/frsqrtex pages).
+// Both deliver a value far inside the architected error envelope (2^-8 /
+// 2^-5 relative) — see the implementation notes for the exact constants —
+// and report only their architected FPSCR effects (no XX; FR/FI read
+// cleared for "undefined").  Same return convention as ppc_sf_arith.
+int ppc_sf_fres(uint64_t b, uint32_t *fpscr, uint64_t *frt);
+int ppc_sf_frsqrte(uint64_t b, uint32_t *fpscr, uint64_t *frt);
+
 #endif // GS_CPU_PPC_SOFTFP_H

@@ -137,6 +137,36 @@ void ppc_do_frsp(ppc_t *p, uint32_t iw) {
     ppc_fp_trap_check(p);
 }
 
+// === The 604 optional-FP group (PEM fselx/fresx/frsqrtex pages) =============
+
+// fsel: frD = (frA >= 0.0) ? frC : frB — the compare ignores the sign of
+// zero, and a NaN frA selects frB.  No FPSCR effects at all.
+void ppc_do_fsel(ppc_t *p, uint32_t iw) {
+    uint64_t a = p->fpr[PPC_RA(iw)];
+    bool ge_zero = !f64_is_nan(a) && (!(a >> 63) || (a & 0x7FFFFFFFFFFFFFFFull) == 0);
+    p->fpr[PPC_RT(iw)] = ge_zero ? p->fpr[PPC_FRC(iw)] : p->fpr[PPC_RB(iw)];
+    if (PPC_RC(iw))
+        ppc_set_cr_field(p, 1, p->fpscr >> 28);
+}
+
+void ppc_do_fres(ppc_t *p, uint32_t iw) {
+    uint64_t frt;
+    if (ppc_sf_fres(p->fpr[PPC_RB(iw)], &p->fpscr, &frt))
+        p->fpr[PPC_RT(iw)] = frt;
+    if (PPC_RC(iw))
+        ppc_set_cr_field(p, 1, p->fpscr >> 28);
+    ppc_fp_trap_check(p);
+}
+
+void ppc_do_frsqrte(ppc_t *p, uint32_t iw) {
+    uint64_t frt;
+    if (ppc_sf_frsqrte(p->fpr[PPC_RB(iw)], &p->fpscr, &frt))
+        p->fpr[PPC_RT(iw)] = frt;
+    if (PPC_RC(iw))
+        ppc_set_cr_field(p, 1, p->fpscr >> 28);
+    ppc_fp_trap_check(p);
+}
+
 void ppc_do_fctiw(ppc_t *p, uint32_t iw, bool round_to_zero) {
     uint64_t frt;
     if (ppc_sf_fctiw(p->fpr[PPC_RB(iw)], round_to_zero, &p->fpscr, &frt))

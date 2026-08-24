@@ -2,15 +2,19 @@
 // Copyright (c) pappadf
 
 // ppc_internal.h
-// Internal state and shared helpers for the PPC (MPC601) core.
-// All chapter/table citations refer to Motorola/IBM, "PowerPC 601 RISC
-// Microprocessor User's Manual", 1995 (MPC601UM/AD).
+// Internal state and shared helpers for the PPC (MPC601 / MPC604) core.
+// Unqualified chapter/table citations refer to Motorola/IBM, "PowerPC 601
+// RISC Microprocessor User's Manual", 1995 (MPC601UM/AD); citations marked
+// "604UM" refer to "PowerPC 604 RISC Microprocessor User's Manual", 1994
+// (MPC604UM/AD), and "PEM" to "PowerPC Microprocessor Family: The
+// Programming Environments", 32-bit (MPCFPE32B).
 
 #ifndef GS_CPU_PPC_INTERNAL_H
 #define GS_CPU_PPC_INTERNAL_H
 
 #include "ppc.h"
 
+#include "machine_profile.h" // CPU_MODEL_PPC601 / CPU_MODEL_PPC604
 #include "memory.h"
 
 #include <assert.h>
@@ -29,11 +33,19 @@
 #define PPC_MSR_EP  0x0040u // exception prefix: 1 = $FFFnnnnn (bit 25)
 #define PPC_MSR_IT  0x0020u // instruction translation (bit 26)
 #define PPC_MSR_DT  0x0010u // data translation (bit 27)
+// 604-only MSR bits (604UM Table 4-3); ILE/LE stay unimplemented on both
+// models (big-endian Macs — TNT proposal §4.2).
+#define PPC_MSR_POW 0x00040000u // power management enable (bit 13; accepted as a no-op idle hint)
+#define PPC_MSR_BE  0x0200u // branch trace enable (bit 22)
+#define PPC_MSR_PM  0x0004u // performance monitor marked mode (bit 29)
+#define PPC_MSR_RI  0x0002u // recoverable interrupt (bit 30)
 // All MSR bits the 601 implements — mtmsr/rfi writes are masked to this
 // (601 has no POW/ILE/BE/RI; those bits read as zero).
 #define PPC_MSR_MASK                                                                                                   \
     (PPC_MSR_EE | PPC_MSR_PR | PPC_MSR_FP | PPC_MSR_ME | PPC_MSR_FE0 | PPC_MSR_SE | PPC_MSR_FE1 | PPC_MSR_EP |         \
      PPC_MSR_IT | PPC_MSR_DT)
+// The 604 adds POW/BE/PM/RI (604UM Table 4-3).
+#define PPC_MSR_MASK_604 (PPC_MSR_MASK | PPC_MSR_POW | PPC_MSR_BE | PPC_MSR_PM | PPC_MSR_RI)
 
 // === XER bits ===
 #define PPC_XER_SO      0x80000000u
@@ -55,6 +67,12 @@
 #define PPC_VEC_IOERROR   0x00A00u // 601-only I/O controller interface error
 #define PPC_VEC_SYSCALL   0x00C00u
 #define PPC_VEC_TRACE     0x02000u // 601 run-mode/trace (not $00D00)
+// 604-only vectors (604UM Table 4-2).  Neither model delivers trace today
+// (MSR[SE]/[BE] are storage-only, matching the 601 model's standing
+// behavior); the constants pin the per-model addresses.  $00F00 never
+// fires: the performance monitor SPRs are read-zero/write-ignore stubs.
+#define PPC_VEC_TRACE604 0x00D00u
+#define PPC_VEC_PERFMON  0x00F00u
 
 // SRR1 exception-specific bits for the program exception (Table 5-16)
 #define PPC_SRR1_PROG_FPENABLED 0x00100000u // bit 11
@@ -62,9 +80,11 @@
 #define PPC_SRR1_PROG_PRIV      0x00040000u // bit 13
 #define PPC_SRR1_PROG_TRAP      0x00020000u // bit 14
 
-// DSISR bits for the data access exception (Table 5-10)
+// DSISR bits for the data access exception (Table 5-10; 604UM Table 4-2 DSI row)
+#define PPC_DSISR_DIRECT   0x80000000u // bit 0: direct-store error (604 — no XIO device answers)
 #define PPC_DSISR_NOTFOUND 0x40000000u // bit 1: no HTEG/BAT translation
 #define PPC_DSISR_PROT     0x08000000u // bit 4: protection violation
+#define PPC_DSISR_ATOMIC   0x04000000u // bit 5: lwarx/stwcx./eciwx/ecowx to a direct-store segment
 #define PPC_DSISR_STORE    0x02000000u // bit 6: access was a store
 
 // === Instruction state ===
@@ -92,14 +112,21 @@ struct ppc {
     uint32_t sdr1;
     uint32_t ear;
     uint32_t pvr; // $00010001, read-only
-    uint32_t hid0, hid1, iabr, dabr, pir; // 601 HID group: store-and-readback
-    uint32_t rtcu, rtcl; // RTC pair (read SPR 4/5, write SPR 20/21)
-    uint32_t batu[4], batl[4]; // 4 unified BAT pairs, 601 format
+    uint32_t hid0, hid1, iabr, dabr, pir; // HID group: store-and-readback (hid1 is 601-only)
+    // 601: RTC pair (read SPR 4/5, write SPR 20/21).  604: TBU/TBL — the
+    // timebase halves at their rebase instant (read via mftb, write SPR
+    // 285/284); same rebase discipline, different tick semantics (§4.4).
+    uint32_t rtcu, rtcl;
+    uint32_t batu[4],
+        batl[4]; // 601: 4 unified BAT pairs, 601 format.  604: the IBATs (SPR 528-535), architected format
+    uint32_t dbatu[4], dbatl[4]; // 604 only: the DBATs (SPR 536-543), architected format
     uint32_t sr[16]; // segment registers
-    // Which segments have T=1 (bit n = sr[n] bit 0) — data accesses
+    // Which segments have T=1 (bit n = sr[n] bit 0) — 601 data accesses
     // consult the segment's T bit even with MSR[DT]=0 (601UM §6.5.2),
     // and this mask keeps that check off the translation-off fast path.
     // Derived from sr[]; maintained by ppc_set_sr/ppc_recompute_sr_t_mask.
+    // Always zero on the 604: with MSR[DR]=0 it runs in real addressing
+    // mode with no segment consult at all (PEM §7.2).
     uint32_t sr_t_mask;
 
     // --- execution state ---
@@ -108,15 +135,18 @@ struct ppc {
     uint32_t reserve_addr;
     uint32_t ext_irq; // level of the external-interrupt line
     uint32_t dec_pending; // latched decrementer exception request
-    int cpu_model; // CPU_MODEL_PPC601
+    int cpu_model; // CPU_MODEL_PPC601 / CPU_MODEL_PPC604 (the model discriminator)
 
-    // --- time derivation (§3.7: exact-rational RTC/DEC) ---
-    // ticks = cycles * tick_mul / tick_div, the reduced 7,833,600/freq
-    // rational; tick_mul == 0 means unbound (unit tests: static SPRs).
-    // rtcu/rtcl/dec above hold the values AT their rebase instant.
+    // --- time derivation (§3.7: exact-rational RTC/TB/DEC) ---
+    // ticks = cycles * tick_mul / tick_div, the reduced tick_hz/freq_hz
+    // rational (601: the 7.8336 MHz RTC input; 604: the timebase rate,
+    // bus/4); tick_mul == 0 means unbound (unit tests: static SPRs).
+    // rtcu/rtcl/dec above hold the values AT their rebase instant.  Per
+    // tick, the 601's RTCL advances 128 ns-units and DEC drops 128 units;
+    // the 604's TB advances 1 and DEC drops 1.
     uint32_t tick_mul, tick_div;
-    uint64_t rtc_base_ticks; // RTC tick count when rtcu/rtcl were written
-    uint64_t dec_base_ticks; // RTC tick count when dec was written
+    uint64_t rtc_base_ticks; // tick count when rtcu/rtcl (601 RTC / 604 TB) were written
+    uint64_t dec_base_ticks; // tick count when dec was written
 
     // NOTE: the MMU/fetch translation caches live as file statics in
     // ppc_mmu.c, NOT here — they embed host pointers, and this struct is
@@ -153,6 +183,36 @@ struct ppc {
 static inline uint32_t ppc_ra0(ppc_t *p, uint32_t iw) {
     uint32_t a = PPC_RA(iw);
     return a ? p->gpr[a] : 0;
+}
+
+// Model discrimination (the cpu.c 68000/030/040 pattern).
+static inline bool ppc_is_604(const ppc_t *p) {
+    return p->cpu_model == CPU_MODEL_PPC604;
+}
+
+// MSR bits the active model implements (mtmsr/rfi/pokes mask to this).
+static inline uint32_t ppc_msr_mask(const ppc_t *p) {
+    return ppc_is_604(p) ? PPC_MSR_MASK_604 : PPC_MSR_MASK;
+}
+
+// MSR bits an exception entry preserves: ME and EP on both models, plus PM
+// on the 604 (unlisted in the 604UM per-exception MSR rows — unaltered).
+static inline uint32_t ppc_msr_exception_keep(const ppc_t *p) {
+    return PPC_MSR_ME | PPC_MSR_EP | (ppc_is_604(p) ? PPC_MSR_PM : 0u);
+}
+
+// True when iw is a floating-point load/store (601: alignment exception in
+// a non-memory-forced T=1 segment, 601UM §5.4.10; 604: the word-alignment
+// requirement, 604UM §4.5.6).
+static inline bool ppc_iw_is_fp_ls(uint32_t iw) {
+    uint32_t op = PPC_OPCD(iw);
+    if (op >= 48 && op <= 55)
+        return true;
+    if (op != 31)
+        return false;
+    uint32_t xo = PPC_XO10(iw);
+    return xo == 535 || xo == 567 || xo == 599 || xo == 631 || xo == 663 || xo == 695 || xo == 727 || xo == 759 ||
+           xo == 983; // stfiwx included (604-only encoding)
 }
 
 // MASK(MB,ME): 1-bits from BE bit MB through BE bit ME, wrapping when
@@ -279,11 +339,13 @@ static inline bool ppc_dxlate(ppc_t *p, uint32_t iw, uint32_t *addr, bool store)
     return ppc_dxlate_slow(p, iw, addr, store);
 }
 
-// Live RTC/DEC derivation (§3.7).  With no time binding these return the
-// stored SPR values unchanged.
+// Live RTC/TB/DEC derivation (§3.7).  With no time binding these return
+// the stored SPR values unchanged.  The RTC pair is 601 semantics; the TB
+// functions are 604 semantics over the same rtcu/rtcl storage.
 uint64_t ppc_ticks_now(ppc_t *p);
 uint32_t ppc_rtcu_now(ppc_t *p);
 uint32_t ppc_rtcl_now(ppc_t *p);
+uint64_t ppc_tb_now(ppc_t *p); // 604: TBU||TBL as one 64-bit counter
 uint32_t ppc_dec_now(ppc_t *p);
 void ppc_dec_arm(ppc_t *p); // (re)schedule the DEC sign-transition event
 
@@ -345,10 +407,19 @@ static inline bool ppc_fp_check(ppc_t *p) {
     return false;
 }
 
+// Scalar access gate shared by the CHKA_LD/CHKA_ST macros (ppc_run.c):
+// per-model alignment rules plus translation.  Returns -1 when an
+// exception was raised (abandon), 0 to proceed with a normal access at
+// *addr, +1 when the access was completed byte-wise here — the 604's
+// hardware-split page-crossing case (604UM §4.5.6): loads deliver the raw
+// big-endian value via *val, stores consumed it.
+int ppc_scalar_gate(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store, uint64_t *val);
+
 // Multi-statement instruction bodies (ppc_run.c) referenced by the OP_
 // one-liner table: branches, divides with their deterministic-undefined
 // results, string transfers, and the store-conditional.
 void ppc_illegal_op(ppc_t *p, uint32_t iw);
+void ppc_do_mftb(ppc_t *p, uint32_t iw); // 604 mftb/mftbu (in ppc.c beside the SPR file)
 void ppc_do_divw(ppc_t *p, uint32_t iw);
 void ppc_do_divwu(ppc_t *p, uint32_t iw);
 void ppc_do_doz(ppc_t *p, uint32_t iw);
@@ -381,6 +452,10 @@ void ppc_do_mtfsf(ppc_t *p, uint32_t iw);
 void ppc_do_mtfsfi(ppc_t *p, uint32_t iw);
 void ppc_do_mtfsb(ppc_t *p, uint32_t iw, bool set);
 void ppc_fp_trap_check(ppc_t *p);
+// 604 optional-FP group (PEM fselx/fresx/frsqrtex pages)
+void ppc_do_fsel(ppc_t *p, uint32_t iw);
+void ppc_do_fres(ppc_t *p, uint32_t iw);
+void ppc_do_frsqrte(ppc_t *p, uint32_t iw);
 
 // The interpreter proper is generated from ppc_decode.h as a static
 // function inside ppc_run.c (single call site, inlined into the sprint

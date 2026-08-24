@@ -2,15 +2,17 @@
 // Copyright (c) pappadf
 
 // ppc_disasm.c
-// Dependency-free MPC601 disassembler: the second instantiation of the
-// shared decode tree (ppc_decode.h), with the OP_ leaves overloaded by
+// Dependency-free MPC601/MPC604 disassembler: the second instantiation of
+// the shared decode tree (ppc_decode.h), with the OP_ leaves overloaded by
 // sprintf-style printing macros — the cpu_disasm.c pattern
 // (proposal-heterogeneous-multi-cpu.md §3.3.1).  Because this is literally
 // the same decode tree the interpreter runs, the two cannot drift.
 //
 // Output uses standard mnemonics with the common simplified forms (li,
 // lis, mr, nop, blr, bctr, cmpwi, mflr, ...) the way the development
-// oracle (powerpc-linux-gnu-objdump -m powerpc:601) prints them.
+// oracle (powerpc-linux-gnu-objdump -m powerpc:601 / powerpc:604) prints
+// them.  Model validity is flag-based (is_power / is_604) with
+// ppc_disassemble_model() applying one model's view.
 
 #include "ppc_disasm.h"
 
@@ -52,7 +54,8 @@ static void invalid(ppc_insn *o) {
     snprintf(o->text, sizeof(o->text), ".long\t$%08X", (unsigned)o->word);
 }
 
-// SPR name per the 601 encoding tables (10-4/10-5); NULL if unknown.
+// SPR name per the 601 encoding tables (10-4/10-5) and the 604 additions
+// (604UM Table 2-43 + the OEA set); NULL if unknown.
 static const char *spr_name(uint32_t n) {
     switch (n) {
     case 0:
@@ -95,6 +98,10 @@ static const char *spr_name(uint32_t n) {
         return "sprg3";
     case 282:
         return "ear";
+    case 284:
+        return "tbl"; // 604 write encoding (reads via mftb)
+    case 285:
+        return "tbu";
     case 287:
         return "pvr";
     case 528:
@@ -113,6 +120,32 @@ static const char *spr_name(uint32_t n) {
         return "ibat3u";
     case 535:
         return "ibat3l";
+    case 536:
+        return "dbat0u"; // 604 split file
+    case 537:
+        return "dbat0l";
+    case 538:
+        return "dbat1u";
+    case 539:
+        return "dbat1l";
+    case 540:
+        return "dbat2u";
+    case 541:
+        return "dbat2l";
+    case 542:
+        return "dbat3u";
+    case 543:
+        return "dbat3l";
+    case 952:
+        return "mmcr0"; // 604 performance monitor group
+    case 953:
+        return "pmc1";
+    case 954:
+        return "pmc2";
+    case 955:
+        return "sia";
+    case 959:
+        return "sda";
     case 1008:
         return "hid0";
     case 1009:
@@ -218,7 +251,7 @@ static void dis_xform_mem(ppc_insn *o, uint32_t w, const char *mnem, int fp) {
         emitf(o, "%s\t%c%u,0,r%u", mnem, fp ? 'f' : 'r', (unsigned)PPC_RT(w), (unsigned)PPC_RB(w));
 }
 
-// mfspr/mtspr with the 601 SPR names; the canonical short forms for the
+// mfspr/mtspr with the model SPR names; the canonical short forms for the
 // user SPRs (mflr/mtctr/...); MQ/RTC encodings flagged 601-specific.
 static void dis_spr(ppc_insn *o, uint32_t w, int is_mf) {
     uint32_t n = ((w >> 16) & 0x1Fu) | (((w >> 11) & 0x1Fu) << 5);
@@ -228,7 +261,7 @@ static void dis_spr(ppc_insn *o, uint32_t w, int is_mf) {
         return;
     }
     if (n == 0 || n == 4 || n == 5 || n == 20 || n == 21)
-        o->is_power = 1; // MQ/RTC encodings are 601-specific
+        o->is_power = 1; // MQ/RTC encodings are 601-specific (the 604 traps them)
     if (is_mf) {
         if (name)
             emitf(o, "mfspr\tr%u,%s", (unsigned)PPC_RT(w), name);
@@ -240,6 +273,18 @@ static void dis_spr(ppc_insn *o, uint32_t w, int is_mf) {
         else
             emitf(o, "mtspr\t%u,r%u", (unsigned)n, (unsigned)PPC_RT(w));
     }
+}
+
+// mftb/mftbu simplified mnemonics per the TBR number (604-only encoding).
+static void dis_mftb(ppc_insn *o, uint32_t w) {
+    uint32_t n = ((w >> 16) & 0x1Fu) | (((w >> 11) & 0x1Fu) << 5);
+    o->is_604 = 1;
+    if (n == 268)
+        emitf(o, "mftb\tr%u", (unsigned)PPC_RT(w));
+    else if (n == 269)
+        emitf(o, "mftbu\tr%u", (unsigned)PPC_RT(w));
+    else // undefined TBR: print the raw form (traps at runtime)
+        emitf(o, "mftb\tr%u,%u", (unsigned)PPC_RT(w), (unsigned)n);
 }
 
 // === The OP_ printing table =================================================
@@ -397,6 +442,8 @@ static void dis_spr(ppc_insn *o, uint32_t w, int is_mf) {
 #define OP_MFSRIN     ASM("mfsrin\tr%u,r%u", RT_, RB_)
 #define OP_MTSRIN     ASM("mtsrin\tr%u,r%u", RT_, RB_)
 #define OP_TLBIE      ASM("tlbie\tr%u", RB_)
+#define OP_MFTB       dis_mftb(o, iw)
+#define OP_TLBSYNC    (o->is_604 = 1, ASM("tlbsync"))
 
 // --- storage control ---
 #define OP_SYNC       ASM("sync")
@@ -471,6 +518,7 @@ static void dis_spr(ppc_insn *o, uint32_t w, int is_mf) {
 #define OP_STFSUX     dis_xform_mem(o, iw, "stfsux", 1)
 #define OP_STFDX      dis_xform_mem(o, iw, "stfdx", 1)
 #define OP_STFDUX     dis_xform_mem(o, iw, "stfdux", 1)
+#define OP_STFIWX     (o->is_604 = 1, dis_xform_mem(o, iw, "stfiwx", 1))
 
 // --- FP moves / FPSCR / compares ---
 #define OP_FCMPU      ASM("fcmpu\tcr%u,f%u,f%u", CRFD_, RA_, RB_)
@@ -507,6 +555,11 @@ static void dis_spr(ppc_insn *o, uint32_t w, int is_mf) {
 #define OP_FNMSUBS    ASM_FMADD("fnmsubs")
 #define OP_FNMADDS    ASM_FMADD("fnmadds")
 
+// --- 604 optional-FP group ---
+#define OP_FSEL       (o->is_604 = 1, ASM_FMADD("fsel"))
+#define OP_FRES       (o->is_604 = 1, ASM_FRT_FRB("fres"))
+#define OP_FRSQRTE    (o->is_604 = 1, ASM_FRT_FRB("frsqrte"))
+
 #define OP_ILLEGAL    invalid(o)
 
 // clang-format on
@@ -527,5 +580,14 @@ int ppc_disassemble(uint32_t word, uint32_t addr, ppc_insn *out) {
     out->addr = addr;
     out->status = PPC_DIS_OK;
     ppc_disasm_one(word, addr, out);
+    return out->status;
+}
+
+int ppc_disassemble_model(uint32_t word, uint32_t addr, int model, ppc_insn *out) {
+    ppc_disassemble(word, addr, out);
+    // The other model's exclusives trap as illegal there — render them
+    // the way any invalid word renders.
+    if ((model == 604 && out->is_power) || (model == 601 && out->is_604))
+        invalid(out);
     return out->status;
 }

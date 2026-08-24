@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // ppc_run.c
-// The PPC (MPC601) interpreter: instantiates the shared decode tree
+// The PPC (MPC601/MPC604) interpreter: instantiates the shared decode tree
 // (ppc_decode.h) with the execution OP_ table (ppc_ops.h) to generate
 // ppc_execute(), and wraps it in the main-CPU sprint loop.  Fixed-width
 // 32-bit fetch through the global fast-path memory accessors — this core
@@ -233,12 +233,78 @@ void ppc_do_sraw(ppc_t *p, uint32_t iw) {
         ppc_record_cr0(p, r);
 }
 
+// === The scalar access gate =================================================
+
+// 604UM §4.5.6 word-alignment classes routed through CHKA_*: the FP
+// loads/stores and lwarx (stwcx./eciwx/ecowx check at their own sites).
+static bool iw_requires_word_align_604(uint32_t iw) {
+    if (ppc_iw_is_fp_ls(iw))
+        return true;
+    return PPC_OPCD(iw) == 31 && PPC_XO10(iw) == 20; // lwarx
+}
+
+// The 604's hardware-split page-crossing access, modeled byte-wise so
+// discontiguously translated pages behave (the string-transfer precedent).
+// A mid-transfer fault abandons with the store partially done — the 604UM
+// documents exactly that ("the instruction may complete partially").
+// Returns true when an exception was raised.
+static bool ppc_split_access(ppc_t *p, uint32_t iw, uint32_t ea, uint32_t size, bool store, uint64_t *val) {
+    if (store) {
+        for (uint32_t i = 0; i < size; i++) {
+            uint32_t xa = ea + i;
+            if (ppc_dxlate(p, iw, &xa, true))
+                return true;
+            memory_write_uint8(xa, (uint8_t)(*val >> (8u * (size - 1u - i))));
+        }
+    } else {
+        uint64_t v = 0;
+        for (uint32_t i = 0; i < size; i++) {
+            uint32_t xa = ea + i;
+            if (ppc_dxlate(p, iw, &xa, false))
+                return true;
+            v = (v << 8) | memory_read_uint8(xa);
+        }
+        *val = v;
+    }
+    return false;
+}
+
+// See ppc_internal.h for the contract (-1 exception / 0 proceed at *addr /
+// +1 completed byte-wise).  The 601 path is the classic §5.4.6 boundary
+// check plus one translation; the 604 path is the word-alignment rule for
+// its fault-prone classes plus the hardware split.
+int ppc_scalar_gate(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool store, uint64_t *val) {
+    uint32_t ea = *addr;
+    if (!ppc_is_604(p)) {
+        if (ppc_check_align_scalar(p, iw, ea, size))
+            return -1;
+        return ppc_dxlate(p, iw, addr, store) ? -1 : 0;
+    }
+    if ((ea & 3u) && iw_requires_word_align_604(iw)) {
+        ppc_align_exception(p, iw, ea);
+        return -1;
+    }
+    // With translation off the identity map is contiguous and the normal
+    // access handles any misalignment; translated page crossings go
+    // byte-wise (pages need not be physically adjacent).
+    if (size > 1 && (p->msr & PPC_MSR_DT) && ppc_crosses_page(ea, size))
+        return ppc_split_access(p, iw, ea, size, store, val) ? -1 : 1;
+    return ppc_dxlate(p, iw, addr, store) ? -1 : 0;
+}
+
 // === Multiples and strings ==================================================
 
 void ppc_do_lmw(ppc_t *p, uint32_t iw) {
     uint32_t rt = PPC_RT(iw), ra = PPC_RA(iw);
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + (uint32_t)PPC_SIMM(iw);
-    if (ppc_check_align_string(p, iw, ea, 4u * (32u - rt), false))
+    // 604: multiples must be word-aligned (604UM §4.5.6); aligned ones are
+    // split per word below, so no further boundary rule applies.
+    if (ppc_is_604(p)) {
+        if (ea & 3u) {
+            ppc_align_exception(p, iw, ea);
+            return;
+        }
+    } else if (ppc_check_align_string(p, iw, ea, 4u * (32u - rt), false))
         return;
     // Word-aligned multiples may cross pages, and HTAB pages need not be
     // physically contiguous: translate per word.  A mid-transfer fault
@@ -256,7 +322,12 @@ void ppc_do_lmw(ppc_t *p, uint32_t iw) {
 void ppc_do_stmw(ppc_t *p, uint32_t iw) {
     uint32_t rt = PPC_RT(iw), ra = PPC_RA(iw);
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + (uint32_t)PPC_SIMM(iw);
-    if (ppc_check_align_string(p, iw, ea, 4u * (32u - rt), false))
+    if (ppc_is_604(p)) {
+        if (ea & 3u) {
+            ppc_align_exception(p, iw, ea);
+            return;
+        }
+    } else if (ppc_check_align_string(p, iw, ea, 4u * (32u - rt), false))
         return;
     for (uint32_t reg = rt; reg < 32; reg++, ea += 4) {
         uint32_t xa = ea;
@@ -391,7 +462,11 @@ void ppc_do_lscbx(ppc_t *p, uint32_t iw) {
 
 void ppc_do_stwcx(ppc_t *p, uint32_t iw) {
     uint32_t ea = (PPC_RA(iw) ? p->gpr[PPC_RA(iw)] : 0u) + p->gpr[PPC_RB(iw)];
-    if (ppc_check_align_scalar(p, iw, ea, 4)) // misalignment alone is not a fault; see OP_LWARX
+    if (ppc_is_604(p) && (ea & 3u)) { // 604: word alignment required (604UM §4.5.6)
+        ppc_align_exception(p, iw, ea);
+        return;
+    }
+    if (ppc_check_align_scalar(p, iw, ea, 4)) // 601: misalignment alone is not a fault; see OP_LWARX
         return;
     uint32_t xa = ea;
     if (ppc_dxlate(p, iw, &xa, true))
@@ -482,13 +557,22 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
         if (*instructions > 0) // saturating (I/O penalty may have zeroed it)
             (*instructions)--;
     }
-    // Deferred data/fetch fault → machine check (601UM §5.4.2: the TEA
-    // path; the PDM family's AMIC/BART bus errors arrive this way).
+    // Deferred data/fetch fault → machine check (601UM §5.4.2 / 604UM
+    // §4.5.2: the TEA path; the bus errors of the PDM family's AMIC/BART —
+    // and the TNT family's Bandit windows — arrive this way).
     if (__builtin_expect(g_bus_error_pending, 0)) {
         g_bus_error_pending = false;
         p->dar = g_bus_error_address;
         LOG(3, "machine check: addr $%08X pc $%08X r24 $%08X", g_bus_error_address, p->instruction_pc, p->gpr[24]);
-        ppc_exception(p, PPC_VEC_MCHECK, 0, p->instruction_pc);
+        if (ppc_is_604(p)) {
+            // 604UM Table 4-8: SRR1[13] flags the TEA cause, SRR1[30] (the
+            // RI copy) reads zero, and the exception clears MSR[ME].
+            ppc_exception(p, PPC_VEC_MCHECK, 0x00040000u, p->instruction_pc);
+            p->srr1 &= ~PPC_MSR_RI;
+            p->msr &= ~PPC_MSR_ME;
+        } else {
+            ppc_exception(p, PPC_VEC_MCHECK, 0, p->instruction_pc);
+        }
     }
     *instructions = 0;
 }

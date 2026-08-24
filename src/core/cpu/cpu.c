@@ -40,6 +40,7 @@ bool cpu_has_fpu(int cpu_model) {
     case CPU_MODEL_68030: // paired 68882
     case CPU_MODEL_68040: // on-chip FPU
     case CPU_MODEL_PPC601: // on-chip FPU (datapath live since Phase E)
+    case CPU_MODEL_PPC604: // on-chip FPU
         return true;
     default: // 68000 compacts
         return false;

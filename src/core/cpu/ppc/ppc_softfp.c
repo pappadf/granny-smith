@@ -770,6 +770,132 @@ int ppc_sf_frsp(uint64_t b, uint32_t *fpscr, uint64_t *frt) {
     return 1;
 }
 
+// fres (604; PEM fresx page): single-precision reciprocal estimate,
+// architected envelope 2^-8 relative, value implementation-defined.  This
+// model's constant choice: the CORRECTLY-ROUNDED single-precision quotient
+// 1.0/frB from the division kernel — deterministic and well inside the
+// envelope.  Architected FPSCR effects only: FPRF, FX, OX, UX, ZX, VXSNAN;
+// FR/FI are "undefined" and read cleared; XX is NOT an fres effect and the
+// quotient's inexactness is masked off.
+int ppc_sf_fres(uint64_t b, uint32_t *fpscr, uint64_t *frt) {
+    uint32_t f0 = *fpscr;
+    uint32_t f = f0;
+    uint64_t r;
+    int wrote = ppc_sf_arith(PPC_SF_DIV, 0x3FF0000000000000ull /* 1.0 */, b, 0, 1, &f, &r);
+    // Rebuild the FPSCR from the pre-instruction image plus the allowed
+    // newly-raised stickies; FX follows only those (the raise rule).
+    const uint32_t allowed = PPC_FPSCR_OX | PPC_FPSCR_UX | PPC_FPSCR_ZX | PPC_FPSCR_VXSNAN;
+    uint32_t newly = f & ~f0 & allowed;
+    uint32_t nf = (f0 & ~(PPC_FPSCR_FPRF | PPC_FPSCR_FR | PPC_FPSCR_FI)) | newly;
+    nf |= (wrote ? f : f0) & PPC_FPSCR_FPRF; // suppressed delivery leaves FPRF unchanged
+    if (newly)
+        nf |= PPC_FPSCR_FX;
+    *fpscr = ppc_fpscr_derive(nf);
+    if (wrote)
+        *frt = r;
+    return wrote;
+}
+
+// Integer square root: floor(sqrt(a)) for a < 2^126 (the frsqrte scaling
+// keeps the root's MSB at bit 62).  Classic bit-pair method, maintaining
+// rem = prefix(a) - root^2.
+static uint64_t sf_isqrt128(unsigned __int128 a) {
+    unsigned __int128 rem = 0, root = 0;
+    for (int i = 62; i >= 0; i--) {
+        rem = (rem << 2) | ((a >> (2 * i)) & 3u);
+        unsigned __int128 cand = (root << 2) | 1u;
+        root <<= 1;
+        if (rem >= cand) {
+            rem -= cand;
+            root |= 1u;
+        }
+    }
+    return (uint64_t)root;
+}
+
+// frsqrte (604; PEM frsqrtex page): double-precision reciprocal square
+// root estimate, architected envelope 2^-5 relative, value implementation-
+// defined.  This model's constant choice: divide 1.0 by the 62-bit
+// truncated integer square root of the significand and round to nearest —
+// relative error < 2^-61.  Architected FPSCR effects only: FPRF, FX, ZX,
+// VXSNAN, VXSQRT; FR/FI read cleared; no OX/UX/XX.
+int ppc_sf_frsqrte(uint64_t b, uint32_t *fpscr, uint64_t *frt) {
+    sf_val_t vb = sf_unpack(b);
+    uint32_t f = *fpscr & ~(PPC_FPSCR_FR | PPC_FPSCR_FI);
+    uint64_t result;
+
+    if (sf_is_nan(&vb)) {
+        if (vb.cls == SF_SNAN) {
+            f = ppc_fpscr_raise(f, PPC_FPSCR_VXSNAN);
+            if (f & PPC_FPSCR_VE) {
+                *fpscr = ppc_fpscr_derive(f);
+                return 0;
+            }
+        }
+        result = sf_quiet(b);
+    } else if (vb.cls == SF_ZERO) {
+        // ±0 → ±inf with ZX (no result when ZE enabled).
+        f = ppc_fpscr_raise(f, PPC_FPSCR_ZX);
+        if (f & PPC_FPSCR_ZE) {
+            *fpscr = ppc_fpscr_derive(f);
+            return 0;
+        }
+        result = ((uint64_t)vb.sign << 63) | 0x7FF0000000000000ull;
+    } else if (vb.sign) {
+        // Negative (incl. -inf) → default QNaN with VXSQRT.
+        f = ppc_fpscr_raise(f, PPC_FPSCR_VXSQRT);
+        if (f & PPC_FPSCR_VE) {
+            *fpscr = ppc_fpscr_derive(f);
+            return 0;
+        }
+        result = SF_DEFAULT_QNAN;
+    } else if (vb.cls == SF_INF) {
+        result = 0; // +inf → +0
+    } else {
+        // Positive finite: value = m2 * 2^e2 with e2 even and the
+        // significand at bit 62 (bit 63 for the odd-exponent double).
+        int32_t e2 = vb.exp;
+        uint64_t sig_a = vb.sig;
+        if (e2 & 1) {
+            sig_a <<= 1; // m2 = 2m in [2,4)
+            e2 -= 1;
+        }
+        // S = floor(sqrt(m2) * 2^62), in [2^62, 2^63).
+        uint64_t s = sf_isqrt128((unsigned __int128)sig_a << 62);
+        // Q = floor(2^124 / S) ≈ (1/sqrt(m2)) * 2^62, in (2^61, 2^62].
+        unsigned __int128 n = (unsigned __int128)1 << 124;
+        uint64_t q = (uint64_t)(n / s);
+        uint64_t rem = (uint64_t)(n % s);
+        int32_t exp = -(e2 >> 1);
+        if ((q & (1ull << 62)) == 0) {
+            // MSB at 61: shift up one quotient bit (the sf_div refinement).
+            q <<= 1;
+            unsigned __int128 r2 = (unsigned __int128)rem << 1;
+            if (r2 >= s) {
+                q += 1;
+                r2 -= s;
+            }
+            rem = (uint64_t)r2;
+            exp -= 1;
+        }
+        int sticky = rem != 0 || ((unsigned __int128)s * s != (unsigned __int128)sig_a << 62);
+        // Round through the shared packer, then strip the non-architected
+        // status its rounding raised (frsqrte reports no OX/UX/XX and its
+        // FR/FI are "undefined" → cleared); only FPRF survives from it.
+        uint32_t fr = f;
+        result = sf_round_pack(0, exp, q, sticky, 0, &fr);
+        f = (f & ~PPC_FPSCR_FPRF) | (fr & PPC_FPSCR_FPRF);
+        *fpscr = ppc_fpscr_derive(f);
+        *frt = result;
+        return 1;
+    }
+
+    f = sf_set_fprf(f, result);
+    *fpscr = ppc_fpscr_derive(f);
+    *frt = result;
+    return 1;
+}
+
 int ppc_sf_fctiw(uint64_t b, int round_to_zero, uint32_t *fpscr, uint64_t *frt) {
     sf_val_t vb = sf_unpack(b);
     uint32_t f = *fpscr & ~(PPC_FPSCR_FR | PPC_FPSCR_FI);

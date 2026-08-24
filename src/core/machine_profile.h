@@ -53,10 +53,11 @@ typedef enum mmu_kind {
     MMU_LISA_SEGMENT, // Apple Lisa custom segment MMU
     MMU_68040, // Motorola 68040 integrated MMU (URP/SRP, fixed 3-level walk)
     MMU_PPC_601, // MPC601 integrated MMU (BAT + segment + hashed page table)
+    MMU_PPC_604, // MPC604 integrated MMU (architected split I/D BATs + hashed page table)
 } mmu_kind_t;
 
 // Wire string for an mmu_kind_t ("none" / "68030_pmmu" / "lisa_segment" /
-// "68040" / "ppc_601").
+// "68040" / "ppc_601" / "ppc_604").
 const char *mmu_kind_to_string(mmu_kind_t kind);
 
 // Main-CPU architecture of a machine (PPC proposal §3.9a).  The tagged
@@ -68,12 +69,15 @@ typedef enum cpu_arch {
     CPU_ARCH_PPC, // PowerPC — MPC601 (src/core/cpu/ppc/)
 } cpu_arch_t;
 
-// PowerPC 601 model id for hw_profile_t.cpu_model (the 68K ids live in cpu.h).
+// PowerPC model ids for hw_profile_t.cpu_model (the 68K ids live in cpu.h).
+// Both are models of the one `ppc` module (src/core/cpu/ppc/), discriminated
+// by ppc_t.cpu_model the way cpu.c discriminates 68000/030/040.
 #define CPU_MODEL_PPC601 601
+#define CPU_MODEL_PPC604 604
 
 // Main-CPU architecture implied by a profile's cpu_model.
 static inline cpu_arch_t cpu_arch_for_model(int cpu_model) {
-    return cpu_model == CPU_MODEL_PPC601 ? CPU_ARCH_PPC : CPU_ARCH_M68K;
+    return (cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604) ? CPU_ARCH_PPC : CPU_ARCH_M68K;
 }
 
 // How a machine attaches a hard-disk image.  Every Mac hangs its HD off the

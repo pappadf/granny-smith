@@ -2,7 +2,7 @@
 // Copyright (c) pappadf
 
 // ppc_decode.h
-// Instruction decoder for the PPC (MPC601) core.
+// Instruction decoder for the PPC (MPC601 / MPC604) core.
 // Note: this header is a template intended for multiple inclusion with
 // different macro parameters; it intentionally has no include guard (the
 // cpu_decode.h pattern — proposal-heterogeneous-multi-cpu.md §3.3.1).
@@ -11,10 +11,16 @@
 // they cannot drift out of sync.
 //
 // The tree decides VALIDITY as well as identity: invalid forms (reserved
-// fields set, invalid BO encodings, instructions the 601 lacks — 601UM
-// §10.3 Tables 10-6/10-8) route to OP_ILLEGAL on both sides.  Leaves name
-// what was recognized and nothing more; Rc/OE/field variants are read from
-// `iw` by the includer's OP_ overloads.
+// fields set, invalid BO encodings, instructions neither model has — 601UM
+// §10.3 Tables 10-6/10-8; PEM appendix A) route to OP_ILLEGAL on both
+// sides.  MODEL validity is the leaves' job, not the tree's: encodings only
+// one model implements (the POWER holdovers and MQ/RTC moves on the 601;
+// mftb/tlbsync/stfiwx/fsel/fres/frsqrte on the 604) decode here
+// unconditionally, and the emulator's OP_ overloads raise the program
+// exception on the other model while the disassembler's flag the encoding
+// (is_power / is_604) for its model filter.  Leaves name what was
+// recognized and nothing more; Rc/OE/field variants are read from `iw` by
+// the includer's OP_ overloads.
 
 // Required macro configuration (provided by includer):
 // - PPC_DECODER_NAME:        Symbol/name of the generated decoder function
@@ -208,8 +214,13 @@ PPC_DECODER_RETURN_TYPE PPC_DECODER_NAME(PPC_DECODER_ARGS) {
         case 659: OP_MFSRIN; break;
         case 242: OP_MTSRIN; break;
         case 306: OP_TLBIE; break;
-        // xo 371 (mftb) deliberately absent: the 601 has RTC SPRs instead
-        // of the timebase and traps mftb as illegal (601UM mfspr page).
+        // mftb (604): the TBR field is read by the leaf; the 601 has RTC
+        // SPRs instead of the timebase and traps it (601UM mfspr page).
+        case 371: if (PPC_RC(iw)) { OP_ILLEGAL; break; }
+                  OP_MFTB; break;
+        // tlbsync (604): every operand field reserved-zero (PEM page).
+        case 566: if (PPC_RT(iw) || PPC_RA(iw) || PPC_RB(iw) || PPC_RC(iw)) { OP_ILLEGAL; break; }
+                  OP_TLBSYNC; break;
 
         // --- storage control (RT and Rc are reserved-zero) ---
         case 598: OP_SYNC; break;
@@ -269,6 +280,7 @@ PPC_DECODER_RETURN_TYPE PPC_DECODER_NAME(PPC_DECODER_ARGS) {
         case 695: if (PPC_RC(iw)) { OP_ILLEGAL; break; } OP_STFSUX; break;
         case 727: if (PPC_RC(iw)) { OP_ILLEGAL; break; } OP_STFDX; break;
         case 759: if (PPC_RC(iw)) { OP_ILLEGAL; break; } OP_STFDUX; break;
+        case 983: if (PPC_RC(iw)) { OP_ILLEGAL; break; } OP_STFIWX; break; // 604
 
         default:  OP_ILLEGAL; break;
         }
@@ -307,6 +319,8 @@ PPC_DECODER_RETURN_TYPE PPC_DECODER_NAME(PPC_DECODER_ARGS) {
         case 18: if (PPC_FRC(iw)) { OP_ILLEGAL; break; } OP_FDIVS; break;
         case 20: if (PPC_FRC(iw)) { OP_ILLEGAL; break; } OP_FSUBS; break;
         case 21: if (PPC_FRC(iw)) { OP_ILLEGAL; break; } OP_FADDS; break;
+        case 24: if (PPC_RA(iw) || PPC_FRC(iw)) { OP_ILLEGAL; break; }
+                 OP_FRES; break;                                    // 604
         case 25: if (PPC_RB(iw)) { OP_ILLEGAL; break; } OP_FMULS; break;
         case 28: OP_FMSUBS; break;
         case 29: OP_FMADDS; break;
@@ -339,6 +353,9 @@ PPC_DECODER_RETURN_TYPE PPC_DECODER_NAME(PPC_DECODER_ARGS) {
             case 18: if (PPC_FRC(iw)) { OP_ILLEGAL; break; } OP_FDIV; break;
             case 20: if (PPC_FRC(iw)) { OP_ILLEGAL; break; } OP_FSUB; break;
             case 21: if (PPC_FRC(iw)) { OP_ILLEGAL; break; } OP_FADD; break;
+            case 23: OP_FSEL; break;                                // 604
+            case 26: if (PPC_RA(iw) || PPC_FRC(iw)) { OP_ILLEGAL; break; }
+                     OP_FRSQRTE; break;                             // 604
             case 25: if (PPC_RB(iw)) { OP_ILLEGAL; break; } OP_FMUL; break;
             case 28: OP_FMSUB; break;
             case 29: OP_FMADD; break;
