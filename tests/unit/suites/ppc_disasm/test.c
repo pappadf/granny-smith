@@ -203,11 +203,23 @@ static const struct {
     {0x00001000u, 0xFC032040u, "fcmpo cr0,f3,f4"        },
     {0x00001000u, 0xFC60048Eu, "mffs f3"                },
     {0x00001000u, 0xFDFE058Eu, "mtfsf 255,f0"           },
-    {0x00001000u, 0x7C6C42E6u, ".long $7C6C42E6"        },
-    {0x00001000u, 0xFC4D34EEu, ".long $FC4D34EE"        },
-    {0x00001000u, 0x7C0007A4u, ".long $7C0007A4"        },
+    {0x00001000u, 0x7C6C42E6u, "mftb r3"                }, // 604 encoding (union view)
+    {0x00001000u, 0xFC4D34EEu, "fsel f2,f13,f19,f6"     }, // 604 encoding (union view)
+    {0x00001000u, 0x7C0007A4u, ".long $7C0007A4"        }, // tlbld: 603-only, no model here
     {0x00001000u, 0x00000000u, ".long $00000000"        },
     {0x00001000u, 0xFFFFFFFFu, "fnmadd. f31,f31,f31,f31"},
+    // 604 additions (decoded by the union view, flagged is_604)
+    {0x00001000u, 0x7C8C42E6u, "mftb r4"                },
+    {0x00001000u, 0x7C8D42E6u, "mftbu r4"               },
+    {0x00001000u, 0x7C00046Cu, "tlbsync"                },
+    {0x00001000u, 0x7C6427AEu, "stfiwx f3,r4,r4"        },
+    {0x00001000u, 0xEC403030u, "fres f2,f6"             },
+    {0x00001000u, 0xFC403034u, "frsqrte f2,f6"          },
+    {0x00001000u, 0xFC413034u, ".long $FC413034"        }, // frsqrte with FRA set: invalid form
+    {0x00001000u, 0xFC40302Cu, ".long $FC40302C"        }, // fsqrt: neither model implements it
+    {0x00001000u, 0x7C7C43A6u, "mtspr tbl,r3"           }, // SPR 284 (604 write encoding)
+    {0x00001000u, 0x7C9883A6u, "mtspr dbat0u,r4"        }, // SPR 536
+    {0x00001000u, 0x7C78EAA6u, "mfspr r3,mmcr0"         }, // SPR 952
 };
 
 // Branch-target metadata checks
@@ -244,11 +256,62 @@ static void test_power_flag(void) {
     }
 }
 
+// One model-filtered expectation: status + (for OK) the rendered text.
+static void expect_model(uint32_t word, int model, int want_invalid, const char *flag_name) {
+    ppc_insn ins;
+    ppc_disassemble_model(word, 0x1000u, model, &ins);
+    checks++;
+    if ((ins.status == PPC_DIS_INVALID) != want_invalid) {
+        printf("FAIL %08X under %d: want %s, got \"%s\"\n", word, model, want_invalid ? "invalid" : flag_name,
+               ins.text);
+        failures++;
+    }
+}
+
+// Model validity: each model's exclusives render .long under the other
+// (matching the runtime program exception and objdump -m powerpc:<model>).
+static void test_model_validity(void) {
+    ppc_insn ins;
+    // 604-only encodings: OK under 604 (flagged is_604), invalid under 601.
+    static const uint32_t only604[] = {
+        0x7C6C42E6u, // mftb r3
+        0x7C00046Cu, // tlbsync
+        0x7C6427AEu, // stfiwx
+        0xFC4D34EEu, // fsel
+        0xEC403030u, // fres
+        0xFC403034u, // frsqrte
+    };
+    for (unsigned i = 0; i < sizeof(only604) / sizeof(only604[0]); i++) {
+        expect_model(only604[i], 604, 0, "ok");
+        expect_model(only604[i], 601, 1, "ok");
+        ppc_disassemble(only604[i], 0x1000u, &ins);
+        checks++;
+        if (!ins.is_604) {
+            printf("FAIL: %08X not flagged is_604\n", only604[i]);
+            failures++;
+        }
+    }
+    // 601-only encodings: OK under 601, invalid under 604.
+    static const uint32_t only601[] = {
+        0x7C6402D0u, // abs
+        0x7C6402A6u, // mfspr r3,rtcu (SPR 4 read encoding: is_power)
+        0x7C6428D6u, // mul r3,r4,r5
+    };
+    for (unsigned i = 0; i < sizeof(only601) / sizeof(only601[0]); i++) {
+        expect_model(only601[i], 601, 0, "ok");
+        expect_model(only601[i], 604, 1, "ok");
+    }
+    // Shared encodings stay OK under both.
+    expect_model(0x7C642A14u, 601, 0, "ok"); // add
+    expect_model(0x7C642A14u, 604, 0, "ok");
+}
+
 int main(void) {
     for (unsigned i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++)
         expect(vectors[i].addr, vectors[i].word, vectors[i].text);
     test_targets();
     test_power_flag();
+    test_model_validity();
     printf("ppc_disasm: %d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

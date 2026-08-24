@@ -276,13 +276,14 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     // core code registers on the bus map — a NuBus card's VRAM and
     // declaration ROM — are filled through our own page filler.
     g_mem_host_fill = pdm_fill_page;
-    cfg->ppc = ppc_init(cp);
+    cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
     assert(cfg->ppc != NULL);
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 1);
-    ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq);
+    // The 601's RTC input: 7.8336 MHz on every PDM board (601 proposal §3.7).
+    ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
 

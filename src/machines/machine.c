@@ -72,6 +72,8 @@ const char *mmu_kind_to_string(mmu_kind_t kind) {
         return "68040";
     case MMU_PPC_601:
         return "ppc_601";
+    case MMU_PPC_604:
+        return "ppc_604";
     }
     return "none";
 }

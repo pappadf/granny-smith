@@ -82,7 +82,7 @@ static int custom_open(ppc_backend *self, char *err, size_t errlen) {
     memory_populate_pages(CTX->memory, 0x40800000u, 0x40820000u); // plants the RAM/ROM page tables
     test_set_active_context(CTX);
 
-    P = ppc_init(NULL);
+    P = ppc_init(NULL, CPU_MODEL_PPC601);
     if (!P) {
         snprintf(err, errlen, "ppc_init failed");
         return -1;

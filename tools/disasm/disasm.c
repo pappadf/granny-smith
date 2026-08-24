@@ -4,7 +4,7 @@
 // disasm.c
 // Standalone disassembler tool for binary files: 68000/68030 (default,
 // via the core cpu_disasm.c decoder), DSP3210 (--arch dsp3210), or PowerPC
-// 601 (--arch ppc).  Minimal dependencies in every mode.
+// 601/604 (--arch ppc / ppc604).  Minimal dependencies in every mode.
 
 #include "annotate_disasm.h"
 #include "cpu.h"
@@ -43,7 +43,7 @@ static void print_usage(const char *progname) {
             "  -l, --length <bytes>          Number of bytes to disassemble. Default: entire file from offset\n"
             "  -a, --address-offset <addr>   Base address for display (hex). Default: 0\n"
             "  -n, --count <n>               Maximum number of instructions to disassemble\n"
-            "  -A, --arch <name>             Instruction set: m68k (default), dsp3210, or ppc\n"
+            "  -A, --arch <name>             Instruction set: m68k (default), dsp3210, ppc (alias ppc601), or ppc604\n"
             "  -h, --help                    Show this help message\n",
             progname);
 }
@@ -98,9 +98,12 @@ int main(int argc, char *argv[]) {
     }
 
     bool arch_dsp3210 = strcmp(arch, "dsp3210") == 0;
-    bool arch_ppc = strcmp(arch, "ppc") == 0;
+    // "ppc"/"ppc601" apply the 601's validity view, "ppc604" the 604's
+    // (the two models trap each other's exclusive encodings).
+    bool arch_ppc = strcmp(arch, "ppc") == 0 || strcmp(arch, "ppc601") == 0 || strcmp(arch, "ppc604") == 0;
+    int ppc_model = strcmp(arch, "ppc604") == 0 ? 604 : 601;
     if (!arch_dsp3210 && !arch_ppc && strcmp(arch, "m68k") != 0) {
-        fprintf(stderr, "Error: unknown --arch '%s' (want m68k, dsp3210, or ppc).\n", arch);
+        fprintf(stderr, "Error: unknown --arch '%s' (want m68k, dsp3210, ppc, or ppc604).\n", arch);
         return 1;
     }
 
@@ -173,7 +176,7 @@ int main(int argc, char *argv[]) {
             const uint8_t *bp = raw_buf + (size_t)pos * 4;
             uint32_t w = (uint32_t)bp[0] << 24 | (uint32_t)bp[1] << 16 | (uint32_t)bp[2] << 8 | bp[3];
             ppc_insn ins;
-            ppc_disassemble(w, addr, &ins);
+            ppc_disassemble_model(w, addr, ppc_model, &ins);
             // "mnemonic\toperands" -> single aligned column pair
             char mnem[32], ops[64];
             const char *tab = strchr(ins.text, '\t');

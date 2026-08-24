@@ -671,7 +671,7 @@ int main(void) {
     memory_populate_pages(ctx->memory, 0x40800000u, 0x40820000u);
     test_set_active_context(ctx);
 
-    P = ppc_init(NULL);
+    P = ppc_init(NULL, CPU_MODEL_PPC601);
     if (!P) {
         printf("FAIL: ppc_init\n");
         return 1;

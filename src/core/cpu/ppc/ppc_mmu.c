@@ -2,9 +2,9 @@
 // Copyright (c) pappadf
 
 // ppc_mmu.c
-// The 601 MMU front end (Phase D, proposal-powerpc-601-pdm.md §3.5):
-// T=1 I/O-controller segments, BAT match, and the hashed page table
-// search, with three software caches in front of the full walk:
+// The 601/604 MMU front end (proposal-powerpc-601-pdm.md §3.5; TNT
+// proposal §4.3): T=1 I/O-controller segments, BAT match, and the hashed
+// page table search, with three software caches in front of the full walk:
 //
 //   1. the user SoA fast path — with MSR[PR]=1 and MSR[DT]=1 the active
 //      maps are g_user_read/write, which hold LOGICAL page fills made
@@ -41,6 +41,22 @@
 //     on exactly that granularity;
 //   - the $00A00 I/O controller error resumes at the FOLLOWING
 //     instruction with DSISR unchanged (Table 5-21).
+//
+// 604-specific rules (604UM Ch. 5, PEM Ch. 7), keyed on cpu_model:
+//   - the ARCHITECTED BAT format — BEPI/BL/Vs/Vp upper, BRPN/WIMG/PP
+//     lower — with four SPLIT pairs each way: instruction translation
+//     consults the IBATs (batu/batl), data the DBATs;
+//   - BATs take precedence over the segment: T=1 is consulted only after
+//     a BAT miss, and with MSR[DR]=0 there is no segment consult at all
+//     (real addressing mode — sr_t_mask stays zero on this model);
+//   - a direct-store access that no BAT claimed takes the DSI/ISI path
+//     (no XIO device exists): DSISR[0] direct-store error (atomics and
+//     external control DSISR[5]), ISI SRR1[3] for fetches — there is no
+//     $00A00 vector on the 604;
+//   - ISI SRR1 for an HTAB miss sets bit 1 alone ($40000000 — no 601
+//     bit-10 companion);
+//   - tlbie invalidates the class selected by EA[14-19] — 64 classes,
+//     both TLBs (604UM §5.4.3.2; the 64-iteration flush idiom).
 
 #include "ppc_internal.h"
 
@@ -83,8 +99,11 @@ static uint32_t g_fill_track[PPC_FILL_TRACK_MAX];
 static int g_fill_track_count;
 static bool g_fill_track_overflow = true; // conservative until first inval
 
-// tlbie congruence class: EA[13-19] = 128 classes (601UM Figure 6-15).
-#define TLBIE_CLASS_MASK 127u
+// tlbie congruence class: 601 EA[13-19] = 128 classes (601UM Figure 6-15);
+// 604 EA[14-19] = 64 classes (604UM §5.4.3.2).
+static inline uint32_t tlbie_class_mask(const ppc_t *p) {
+    return ppc_is_604(p) ? 63u : 127u;
+}
 
 // ============================================================
 // Invalidation
@@ -135,40 +154,44 @@ void ppc_mmu_invalidate_all(ppc_t *p) {
 }
 
 // tlbie: invalidate the EA's congruence class — every cached translation
-// whose page index matches modulo 128.  Over-invalidation relative to
-// the hardware's two-way class is fine; under-invalidation would break
-// the kernel's FlushTLB loop (one tlbie per class over 1 MB).
+// whose page index matches modulo the model's class count (128 on the
+// 601, 64 on the 604).  Over-invalidation relative to the hardware's
+// two-way class is fine; under-invalidation would break the kernel's
+// flush loops (one tlbie per class).
 void ppc_mmu_tlbie(ppc_t *p, uint32_t ea) {
-    (void)p;
-    uint32_t cls = (ea >> PAGE_SHIFT) & TLBIE_CLASS_MASK;
+    uint32_t mask = tlbie_class_mask(p);
+    uint32_t cls = (ea >> PAGE_SHIFT) & mask;
     if (g_fill_track_overflow) {
         user_soa_invalidate_all();
     } else {
         for (int i = 0; i < g_fill_track_count; i++) {
             uint32_t pg = g_fill_track[i];
-            if ((pg & TLBIE_CLASS_MASK) != cls || pg >= g_page_count)
+            if ((pg & mask) != cls || pg >= g_page_count)
                 continue;
             g_user_read[pg] = 0;
             g_user_write[pg] = 0;
         }
     }
     for (int i = 0; i < XTLB_SIZE; i++)
-        if (((g_xtlb[i].tag >> PAGE_SHIFT) & TLBIE_CLASS_MASK) == cls)
+        if (((g_xtlb[i].tag >> PAGE_SHIFT) & mask) == cls)
             g_xtlb[i].tag = 0;
     for (int i = 0; i < FTLB_SIZE; i++)
-        if (((g_ftlb[i].tag >> PAGE_SHIFT) & TLBIE_CLASS_MASK) == cls)
+        if (((g_ftlb[i].tag >> PAGE_SHIFT) & mask) == cls)
             g_ftlb[i].tag = 0;
     g_ppc_fetch.span = 0;
 }
 
 // Recompute the which-segments-have-T=1 mask consulted by the inline
-// translation-off fast path (data accesses reach T=1 segments even with
-// MSR[DT]=0 — 601UM §6.5.2).
+// translation-off fast path (601 data accesses reach T=1 segments even
+// with MSR[DT]=0 — 601UM §6.5.2).  The 604 in real addressing mode never
+// consults a segment (PEM §7.2), so its mask stays zero and the fast path
+// short-circuits every translation-off access.
 void ppc_recompute_sr_t_mask(ppc_t *p) {
     uint32_t m = 0;
-    for (int i = 0; i < 16; i++)
-        if (p->sr[i] & 0x80000000u)
-            m |= 1u << i;
+    if (!ppc_is_604(p))
+        for (int i = 0; i < 16; i++)
+            if (p->sr[i] & 0x80000000u)
+                m |= 1u << i;
     p->sr_t_mask = m;
 }
 
@@ -240,6 +263,44 @@ static bool bat_xlate(ppc_t *p, uint32_t ea, bool user, bool store, xl_out_t *ou
     return false;
 }
 
+// Architected BAT protection (PEM Table 7-16): PP 00 = no access,
+// x1 = read-only, 10 = read/write.  No key participates.
+static inline bool bat604_pp_allows(uint32_t pp, bool store) {
+    if (pp == 0u)
+        return false;
+    if (pp & 1u)
+        return !store;
+    return true;
+}
+
+// 604 BAT match + protection over one of the split files (PEM §7.4.2,
+// Figure 7-13): BATU = BEPI[0:14] | BL[19:29] | Vs[30] | Vp[31]; BATL =
+// BRPN[0:14] | WIMG[25:28] | PP[30:31].  Validity is per-mode (Vs
+// supervisor / Vp user), block sizes 128 KB (BL=0) through 256 MB.
+static bool bat604_xlate(const uint32_t *batu, const uint32_t *batl, uint32_t ea, bool user, bool store, xl_out_t *out,
+                         xl_result_t *res) {
+    for (int i = 0; i < 4; i++) {
+        uint32_t bu = batu[i];
+        if (!(bu & (user ? 1u : 2u)))
+            continue; // Vp / Vs
+        uint32_t cmp_mask = ~((((bu >> 2) & 0x7FFu) << 17) | 0x1FFFFu);
+        if ((ea & cmp_mask) != (bu & 0xFFFE0000u & cmp_mask))
+            continue;
+        uint32_t bl = batl[i];
+        uint32_t pp = bl & 3u;
+        if (!bat604_pp_allows(pp, store)) {
+            *res = XL_PROT;
+            return true;
+        }
+        out->pa = ((bl & 0xFFFE0000u) & cmp_mask) | (ea & ~cmp_mask);
+        out->wimg = (bl >> 4) & 7u; // W/I/M in the shared 3-bit convention (G unmodeled)
+        out->w_ok = bat604_pp_allows(pp, true); // no C bit on BAT mappings
+        *res = XL_OK;
+        return true;
+    }
+    return false;
+}
+
 // Resolve physical RAM/ROM to a host pointer during the table search.
 // The PDM identity page table is the physical resolver of record (it
 // tracks HMC bank moves); HTAB reads must not touch the mode-dependent
@@ -303,22 +364,51 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
     return XL_NOTFOUND;
 }
 
-// Full translation for one access.  601 order (Figure 6-4, Table 6-10):
-// the segment's T bit decides first — T=1 prevails over any BAT match —
-// then BAT, then the hashed table.  `translation_on` reflects MSR[DT]
-// (or MSR[IT] for fetches): with it off only T=1 segments translate.
-static xl_result_t xlate(ppc_t *p, uint32_t ea, bool user, bool store, bool translation_on, bool nosideffect,
-                         xl_out_t *out) {
-    uint32_t sr = p->sr[ea >> 28];
-    if (sr & 0x80000000u) { // T=1: I/O controller interface segment
-        if (((sr >> 20) & 0x1FFu) == 0x07Fu) { // memory-forced BUID
-            out->pa = ((sr & 0xFu) << 28) | (ea & 0x0FFFFFFFu);
-            out->wimg = 0x3u; // WIM assumed 011 (§6.10.4)
-            out->w_ok = true; // bypasses all protection
+// The memory-forced direct-store case shared by both models: a T=1
+// segment with BUID $07F maps straight to memory (601UM §6.10.4; PEM
+// §7.8 defines the same encoding architecturally).
+static inline bool tseg_memory_forced(uint32_t sr, uint32_t ea, xl_out_t *out) {
+    if (((sr >> 20) & 0x1FFu) != 0x07Fu)
+        return false;
+    out->pa = ((sr & 0xFu) << 28) | (ea & 0x0FFFFFFFu);
+    out->wimg = 0x3u; // WIM assumed 011 (§6.10.4)
+    out->w_ok = true; // bypasses all protection
+    return true;
+}
+
+// Full translation for one access.  `translation_on` reflects MSR[DT] (or
+// MSR[IT] for fetches); `ifetch` selects the 604's IBAT file over the
+// DBATs (the 601's unified BATs serve both sides).
+//
+// 601 order (Figure 6-4, Table 6-10): the segment's T bit decides first —
+// T=1 prevails over any BAT match — then BAT, then the hashed table; with
+// translation off only T=1 segments translate.
+//
+// 604 order (PEM §7.4/7.5): with translation off, real addressing mode —
+// EA = PA, nothing consulted; with it on, BATs take precedence and the
+// segment (T=1 direct-store, else the hashed table) is reached only on a
+// BAT miss.
+static xl_result_t xlate(ppc_t *p, uint32_t ea, bool user, bool store, bool ifetch, bool translation_on,
+                         bool nosideffect, xl_out_t *out) {
+    if (ppc_is_604(p)) {
+        if (!translation_on) { // real addressing mode
+            out->pa = ea;
+            out->wimg = 1u;
+            out->w_ok = true;
             return XL_OK;
         }
-        return XL_IOSEG;
+        xl_result_t res;
+        if (bat604_xlate(ifetch ? p->batu : p->dbatu, ifetch ? p->batl : p->dbatl, ea, user, store, out, &res))
+            return res;
+        uint32_t sr = p->sr[ea >> 28];
+        if (sr & 0x80000000u)
+            return tseg_memory_forced(sr, ea, out) ? XL_OK : XL_IOSEG;
+        return htab_search(p, ea, sr, user, store, nosideffect, out);
     }
+
+    uint32_t sr = p->sr[ea >> 28];
+    if (sr & 0x80000000u) // T=1: I/O controller interface segment
+        return tseg_memory_forced(sr, ea, out) ? XL_OK : XL_IOSEG;
     if (!translation_on) { // direct translation: EA = PA, no protection
         out->pa = ea;
         out->wimg = 1u; // WIM = 001 (§6.6)
@@ -380,25 +470,16 @@ static void raise_dsi(ppc_t *p, uint32_t ea, uint32_t dsisr) {
     ppc_exception(p, PPC_VEC_DSI, 0, p->instruction_pc);
 }
 
-// True when iw is lwarx/stwcx./lscbx — the three instructions that take
-// a DSI (DSISR bit 5) instead of completing in a T=1 segment.
-static bool iw_is_atomic_class(uint32_t iw) {
+// True when iw takes a DSI with DSISR bit 5 instead of completing in a
+// T=1 segment: lwarx/stwcx./lscbx on the 601; lwarx/stwcx./eciwx/ecowx on
+// the 604 (Table 4-9 — its lscbx is illegal long before memory access).
+static bool iw_is_atomic_class(ppc_t *p, uint32_t iw) {
     if (PPC_OPCD(iw) != 31)
         return false;
     uint32_t xo = PPC_XO10(iw);
-    return xo == 20 || xo == 150 || xo == 277;
-}
-
-// True when iw is a floating-point load/store (alignment exception in a
-// non-memory-forced T=1 segment, 601UM §5.4.10).
-static bool iw_is_fp_ls(uint32_t iw) {
-    uint32_t op = PPC_OPCD(iw);
-    if (op >= 48 && op <= 55)
+    if (xo == 20 || xo == 150)
         return true;
-    if (op != 31)
-        return false;
-    uint32_t xo = PPC_XO10(iw);
-    return xo == 535 || xo == 567 || xo == 599 || xo == 631 || xo == 663 || xo == 695 || xo == 727 || xo == 759;
+    return ppc_is_604(p) ? (xo == 310 || xo == 438) : xo == 277;
 }
 
 // See ppc_internal.h for the contract: on return false *addr is the
@@ -425,18 +506,25 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     }
 
     xl_out_t out;
-    xl_result_t res = xlate(p, ea, user, store, dt, false, &out);
+    xl_result_t res = xlate(p, ea, user, store, false, dt, false, &out);
     if (res == XL_IOSEG) {
-        // Non-memory-forced T=1: atomics take a DSI (DSISR bit 5), FP
-        // load/stores the alignment exception; everything else models
-        // the failed bus reply as the 601-only $00A00 I/O controller
-        // error — SRR0 = FOLLOWING instruction, DSISR unchanged
-        // (601UM Table 5-21).  No I/O controller exists on PDM.
-        if (iw_is_atomic_class(iw)) {
-            raise_dsi(p, ea, 0x04000000u | (store ? PPC_DSISR_STORE : 0));
+        // Non-memory-forced T=1: the atomics/external-control class takes
+        // a DSI with DSISR bit 5 on both models.  Past that they diverge:
+        // the 601 gives FP load/stores the alignment exception and models
+        // everything else as the 601-only $00A00 I/O controller error —
+        // SRR0 = FOLLOWING instruction, DSISR unchanged (601UM Table
+        // 5-21); the 604 has no $00A00 and delivers the direct-store
+        // error DSI (DSISR bit 0 — no XIO device ever answers, 604UM
+        // Table 4-9 / Table 4-2 DSI row).
+        if (iw_is_atomic_class(p, iw)) {
+            raise_dsi(p, ea, PPC_DSISR_ATOMIC | (store ? PPC_DSISR_STORE : 0));
             return true;
         }
-        if (iw_is_fp_ls(iw)) {
+        if (ppc_is_604(p)) {
+            raise_dsi(p, ea, PPC_DSISR_DIRECT | (store ? PPC_DSISR_STORE : 0));
+            return true;
+        }
+        if (ppc_iw_is_fp_ls(iw)) {
             ppc_align_exception(p, iw, ea);
             return true;
         }
@@ -482,23 +570,36 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     return false;
 }
 
-// dcbz's translated form (601UM Table 6-3): a W=1 or I=1 mapping takes
-// the alignment exception (R already updated by the walk); a
-// non-memory-forced T=1 segment makes it a no-op.  The framebuffer is
-// mapped write-through, so the W case is guest-visible, not a corner.
+// dcbz's translated form (601UM Table 6-3; 604UM §4.5.6): a W=1 or I=1
+// mapping takes the alignment exception (R already updated by the walk);
+// a non-memory-forced T=1 segment makes it a no-op (§6.10.6 / PEM "cache
+// operations to direct-store are no-ops"); the 604 additionally takes the
+// alignment exception with its data cache disabled or locked (HID0[17]
+// clear / HID0[19] set — the reset state until the ROM enables caches).
+// The framebuffer is mapped write-through, so the W case is
+// guest-visible, not a corner.
 // Returns: 0 = proceed (zero at *addr), 1 = exception raised, 2 = no-op.
 int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
     uint32_t ea = *addr;
     bool dt = (p->msr & PPC_MSR_DT) != 0;
+    bool is604 = ppc_is_604(p);
+    if (is604 && (!(p->hid0 & 0x00004000u) || (p->hid0 & 0x00001000u))) { // DCE clear or DCL set
+        ppc_align_exception(p, iw, ea);
+        return 1;
+    }
     if (!dt && !(p->sr_t_mask & (1u << (ea >> 28))))
-        return 0; // direct translation: plain zeroing
+        return 0; // direct translation: plain zeroing (mask covers the 604 unconditionally)
     bool user = (p->msr & PPC_MSR_PR) != 0;
     uint32_t sr = p->sr[ea >> 28];
-    if ((sr & 0x80000000u) && ((sr >> 20) & 0x1FFu) != 0x07Fu)
+    // 601 order: T=1 prevails, so the no-op is decided before any walk.
+    // The 604 checks T only after a BAT miss — the xlate result decides.
+    if (!is604 && (sr & 0x80000000u) && ((sr >> 20) & 0x1FFu) != 0x07Fu)
         return 2; // T=1 I/O controller: no-op (§6.10.6)
 
     xl_out_t out;
-    xl_result_t res = xlate(p, ea, user, true, dt, false, &out);
+    xl_result_t res = xlate(p, ea, user, true, false, dt, false, &out);
+    if (res == XL_IOSEG)
+        return 2; // 604 direct-store after BAT miss: cache-op no-op
     if (res == XL_PROT) {
         raise_dsi(p, ea, PPC_DSISR_PROT | PPC_DSISR_STORE);
         return 1;
@@ -507,10 +608,11 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
         raise_dsi(p, ea, PPC_DSISR_NOTFOUND | PPC_DSISR_STORE);
         return 1;
     }
-    // Memory-forced T=1 zeroes real memory (WIM 011 describes the bus
-    // attributes; HWInit's RAM work runs through these segments) — the
-    // W/I alignment rule applies to BAT/page mappings only.
-    if (!(sr & 0x80000000u) && (out.wimg & 0x6u)) { // W or I
+    // 601: memory-forced T=1 zeroes real memory (WIM 011 describes the
+    // bus attributes; HWInit's RAM work runs through these segments) —
+    // its W/I alignment rule applies to BAT/page mappings only.  The 604
+    // faults any noncacheable/write-through target (604UM §4.5.6).
+    if ((is604 || !(sr & 0x80000000u)) && (out.wimg & 0x6u)) { // W or I
         ppc_align_exception(p, iw, ea);
         return 1;
     }
@@ -549,11 +651,12 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             return true;
         }
         xl_out_t out;
-        xl_result_t res = xlate(p, pc, user, false, true, false, &out);
+        xl_result_t res = xlate(p, pc, user, false, true, true, false, &out);
         if (res == XL_IOSEG) {
-            // T=1 fetch: ISI with NO SRR1 status bits (601 quirk,
-            // Table 6-3 footnote).
-            ppc_exception(p, PPC_VEC_ISI, 0, pc);
+            // T=1 fetch: the 601 raises ISI with NO SRR1 status bits
+            // (quirk, Table 6-3 footnote); the 604 sets the architected
+            // direct-store-fetch bit SRR1[3] (PEM Table 7-14).
+            ppc_exception(p, PPC_VEC_ISI, ppc_is_604(p) ? 0x10000000u : 0, pc);
             return false;
         }
         if (res == XL_PROT) {
@@ -561,17 +664,19 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             return false;
         }
         if (res != XL_OK) {
-            // HTAB miss: SRR1 bit 1 ONLY ($40000000).  We used to set
-            // bit 10 as well because the nanokernel's InstStorageInt
-            // masks $40200000 — but it does that with `andis. r8,r11,
-            // $4020` followed by `beq` (ROM file offset $311878, the
-            // only such instruction in the image), so either bit alone
-            // satisfies it.  Bit 10 is NOT a page-fault bit, and
-            // Copland's GetFaultInformation reads it as one of the two
-            // hard-error bits ($10200000) and turns an ordinary
-            // instruction page fault into kAccessException — which
-            // panicked its kernel.  Two independent guests only agree
-            // if a 601 leaves bit 10 clear for an HTAB miss.
+            // HTAB miss: SRR1 bit 1 ONLY ($40000000), on BOTH models.
+            // We used to set bit 10 as well on the 601 because the
+            // nanokernel's InstStorageInt masks $40200000 — but it does
+            // that with `andis. r8,r11,$4020` followed by `beq` (ROM
+            // file offset $311878, the only such instruction in the
+            // image), so either bit alone satisfies it.  Bit 10 is NOT
+            // a page-fault bit, and Copland's GetFaultInformation reads
+            // it as one of the two hard-error bits ($10200000) and
+            // turns an ordinary instruction page fault into
+            // kAccessException — which panicked its kernel.  Two
+            // independent guests only agree if a 601 leaves bit 10
+            // clear for an HTAB miss; the 604's architected value is
+            // bit 1 alone anyway.
             ppc_exception(p, PPC_VEC_ISI, 0x40000000u, pc);
             return false;
         }
@@ -626,12 +731,12 @@ uint32_t ppc_mmu_translate_debug(ppc_t *p, uint32_t ea, bool data, bool *ok) {
         return ea; // fetch with IT off is always direct
     bool user = (p->msr & PPC_MSR_PR) != 0;
     xl_out_t out;
-    xl_result_t res = xlate(p, ea, user, false, on, true, &out);
+    xl_result_t res = xlate(p, ea, user, false, !data, on, true, &out);
     if (res == XL_OK)
         return out.pa;
     // Protection failures still resolve for debug reads (retry with the
     // supervisor key); only a true miss reports failure.
-    if (res == XL_PROT && xlate(p, ea, false, false, on, true, &out) == XL_OK)
+    if (res == XL_PROT && xlate(p, ea, false, false, !data, on, true, &out) == XL_OK)
         return out.pa;
     if (ok)
         *ok = false;
@@ -647,10 +752,10 @@ uint32_t ppc_mmu_translate_mac(ppc_t *p, uint32_t ea, bool *ok) {
     xl_out_t out;
     if (ok)
         *ok = true;
-    xl_result_t res = xlate(p, ea, true, false, true, true, &out);
+    xl_result_t res = xlate(p, ea, true, false, false, true, true, &out);
     if (res == XL_OK)
         return out.pa;
-    if (res == XL_PROT && xlate(p, ea, false, false, true, true, &out) == XL_OK)
+    if (res == XL_PROT && xlate(p, ea, false, false, false, true, true, &out) == XL_OK)
         return out.pa;
     if (ok)
         *ok = false;

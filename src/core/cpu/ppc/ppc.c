@@ -2,8 +2,9 @@
 // Copyright (c) pappadf
 
 // ppc.c
-// PPC (MPC601) core: lifecycle, exception machinery, SPR file, scheduler and
-// debugger adapters, object class.  The interpreter lives in ppc_run.c.
+// PPC (MPC601/MPC604) core: lifecycle, exception machinery, SPR file,
+// scheduler and debugger adapters, object class.  The interpreter lives in
+// ppc_run.c; model-specific behavior is discriminated on ppc_t.cpu_model.
 
 #include "ppc_internal.h"
 #include "ppc_softfp.h"
@@ -24,14 +25,15 @@ extern const class_desc_t ppc_cpu_class;
 
 // === Exception machinery ====================================================
 
-// Raise an exception (601UM §5.4, per-exception Register Settings tables):
-// SRR0 = resume_pc; SRR1 = exception-specific high bits | MSR[16-31]; MSR
-// clears EE/PR/FP/FE0/SE/FE1/IT/DT and keeps ME/EP; PC = vector, prefixed
-// $FFF00000 when MSR[EP] is set.
+// Raise an exception (601UM §5.4 / 604UM §4.3, per-exception Register
+// Settings tables): SRR0 = resume_pc; SRR1 = exception-specific high bits
+// | MSR[16-31]; MSR keeps ME/EP (+PM on the 604) and clears everything
+// else — which covers the 604's POW/BE/RI-cleared rows too; PC = vector,
+// prefixed $FFF00000 when MSR[EP] is set.
 void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_pc) {
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
-    p->msr &= PPC_MSR_ME | PPC_MSR_EP;
+    p->msr &= ppc_msr_exception_keep(p);
     ppc_update_active_maps(p);
     p->pc = ((p->msr & PPC_MSR_EP) ? 0xFFF00000u : 0u) + vector;
     // Record in the shared exception trace ring (§3.9c field mapping:
@@ -57,7 +59,7 @@ void ppc_set_ext_irq(ppc_t *p, bool level) {
     p->ext_irq = level ? 1u : 0u;
 }
 
-// === RTC/DEC time derivation (§3.7) =========================================
+// === RTC/TB/DEC time derivation (§3.7; TNT proposal §4.4) ===================
 
 // Exact rational cycles→ticks: q*mul + r*mul/div never overflows (r < div,
 // both 32-bit after reduction) and is exact over any interval.
@@ -94,13 +96,28 @@ uint32_t ppc_rtcl_now(ppc_t *p) {
     return l;
 }
 
-// DEC decrements 128 units per tick (DecClockRateHz = 1,002,700,800
-// RTCL-units/s — the constant HWInit hard-codes).
+// 604 timebase: a plain 64-bit counter advancing one unit per tick (604UM
+// §1.3.2.2 — the tick rate is bus/4, bound by ppc_bind_time).  rtcu/rtcl
+// hold TBU/TBL at the rebase instant.
+uint64_t ppc_tb_now(ppc_t *p) {
+    uint64_t base = ((uint64_t)p->rtcu << 32) | p->rtcl;
+    if (!p->tick_mul)
+        return base;
+    return base + (ppc_ticks_now(p) - p->rtc_base_ticks);
+}
+
+// DEC units per tick, as a shift: the 601 decrements 128 RTCL-units per
+// 7.8336 MHz tick (DecClockRateHz = 1,002,700,800 — the constant HWInit
+// hard-codes); the 604 decrements once per timebase tick (604UM §4.5.9).
+static inline int ppc_dec_shift(const ppc_t *p) {
+    return ppc_is_604(p) ? 0 : 7;
+}
+
 uint32_t ppc_dec_now(ppc_t *p) {
     if (!p->tick_mul)
         return p->dec;
     uint64_t elapsed = ppc_ticks_now(p) - p->dec_base_ticks;
-    return p->dec - (uint32_t)(elapsed * 128u);
+    return p->dec - (uint32_t)(elapsed << ppc_dec_shift(p));
 }
 
 // DEC expiry event: latch the exception request (taken when MSR[EE] allows)
@@ -119,28 +136,29 @@ void ppc_dec_arm(ppc_t *p) {
     remove_event(p->scheduler, ppc_dec_event, p);
     uint32_t dec = ppc_dec_now(p);
     // Ticks until the sign transition: a non-negative DEC crosses below zero
-    // after floor(dec/128)+1 ticks; an already-negative DEC transitions again
-    // only after wrapping through zero.
+    // after floor(dec/units_per_tick)+1 ticks; an already-negative DEC
+    // transitions again only after wrapping through zero.
+    int shift = ppc_dec_shift(p);
     uint64_t ticks_until;
     if ((int32_t)dec >= 0)
-        ticks_until = (dec >> 7) + 1u;
+        ticks_until = (dec >> shift) + 1u;
     else
-        ticks_until = (((uint64_t)dec + 0x100000000ull) >> 7) + 1u;
+        ticks_until = (((uint64_t)dec + 0x100000000ull) >> shift) + 1u;
     // ticks→cycles, rounded up so the event never fires early.
     uint64_t cycles = (ticks_until * p->tick_div + p->tick_mul - 1) / p->tick_mul;
     scheduler_new_cpu_event(p->scheduler, ppc_dec_event, p, 0, cycles, 0);
 }
 
-void ppc_bind_time(ppc_t *p, struct scheduler *s, uint32_t freq_hz) {
-    // Reduce 7,833,600/freq once; all derivations use the reduced pair.
-    uint32_t a = 7833600u, b = freq_hz;
+void ppc_bind_time(ppc_t *p, struct scheduler *s, uint32_t freq_hz, uint32_t tick_hz) {
+    // Reduce tick_hz/freq_hz once; all derivations use the reduced pair.
+    uint32_t a = tick_hz, b = freq_hz;
     while (b) {
         uint32_t t = a % b;
         a = b;
         b = t;
     }
     p->scheduler = s;
-    p->tick_mul = 7833600u / a;
+    p->tick_mul = tick_hz / a;
     p->tick_div = freq_hz / a;
     scheduler_new_event_type(s, "ppc", p, "dec", ppc_dec_event);
     // No rebase: the stored base ticks are in the scheduler-cycle-derived
@@ -167,24 +185,52 @@ static inline uint32_t spr_number(uint32_t iw) {
     return (((iw) >> 16) & 0x1Fu) | ((((iw) >> 11) & 0x1Fu) << 5);
 }
 
+// SPR number not defined for the active model.  Both models: SPR[0]=1 from
+// user mode is the privileged program exception (bit 4 of the swapped `n`).
+// Past that they diverge: the 601 treats the access as a no-op (601UM
+// mfspr page "treated as a no-op"); the 604 fully decodes the SPR field
+// and raises the illegal-instruction program exception (604UM §4.5.7).
+// Returns true when an exception was raised.
+static bool spr_undefined(ppc_t *p, uint32_t n, bool is_read) {
+    (void)is_read; // only the (compiled-out-in-tests) log consumes it
+    if ((n & 0x10u) && (p->msr & PPC_MSR_PR)) {
+        ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_PRIV, p->instruction_pc);
+        return true;
+    }
+    if (ppc_is_604(p)) {
+        ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_ILLEGAL, p->instruction_pc);
+        return true;
+    }
+    LOG(5, "%s %u: unimplemented SPR (no-op)", is_read ? "mfspr" : "mtspr", n);
+    return false;
+}
+
 bool ppc_mfspr(ppc_t *p, uint32_t iw) {
     uint32_t n = spr_number(iw);
     uint32_t d = PPC_RT(iw);
     uint32_t v;
     switch (n) {
-    case 0:
+    case 0: // MQ: 601-only (the 604 rejects the POWER SPRs — 604UM §2.3)
+        if (ppc_is_604(p))
+            goto undefined;
         v = p->mq;
         break;
     case 1:
         v = p->xer;
         break;
-    case 4:
+    case 4: // RTC reads use SPR 4/5 in EVERY mode (601 asymmetry); no RTC on the 604
+        if (ppc_is_604(p))
+            goto undefined;
         v = ppc_rtcu_now(p);
-        break; // RTC reads use SPR 4/5 in EVERY mode (601 asymmetry)
+        break;
     case 5:
+        if (ppc_is_604(p))
+            goto undefined;
         v = ppc_rtcl_now(p);
         break;
     case 6: // POWER user-level DEC read, 601-supported (601UM Table 10-4 note 3)
+        if (ppc_is_604(p))
+            goto undefined;
         v = ppc_dec_now(p);
         break;
     case 8:
@@ -248,19 +294,48 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
     case 532:
     case 533:
     case 534:
-    case 535: {
+    case 535: { // 601 unified BATs / 604 IBATs — same storage
         if (spr_priv_fault(p, iw))
             return false;
         uint32_t pair = (n - 528) >> 1;
         v = (n & 1) ? p->batl[pair] : p->batu[pair];
         break;
     }
+    case 536:
+    case 537:
+    case 538:
+    case 539:
+    case 540:
+    case 541:
+    case 542:
+    case 543: { // DBATs: 604 only (PEM Table 2-8)
+        if (!ppc_is_604(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        uint32_t pair = (n - 536) >> 1;
+        v = (n & 1) ? p->dbatl[pair] : p->dbatu[pair];
+        break;
+    }
+    case 952: // MMCR0 — 604 performance monitor group: read-zero stubs
+    case 953: // PMC1     (TNT proposal §4.2; the $00F00 interrupt never fires)
+    case 954: // PMC2
+    case 955: // SIA
+    case 959: // SDA
+        if (!ppc_is_604(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        v = 0;
+        break;
     case 1008:
         if (spr_priv_fault(p, iw))
             return false;
         v = p->hid0;
         break;
-    case 1009:
+    case 1009: // HID1: 601 only (the 604 defines no HID1)
+        if (ppc_is_604(p))
+            goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         v = p->hid1;
@@ -281,25 +356,36 @@ bool ppc_mfspr(ppc_t *p, uint32_t iw) {
         v = p->pir;
         break;
     default:
-        // Invalid SPR: no-op, unless SPR[0]=1 in user mode → privileged
-        // program exception (601UM mfspr page).  SPR[0] is the high bit of
-        // the low half of the swapped number, i.e. bit 4 of `n`.
-        if ((n & 0x10u) && (p->msr & PPC_MSR_PR)) {
-            ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_PRIV, p->instruction_pc);
-            return false;
-        }
-        LOG(5, "mfspr r%u,%u: unimplemented SPR (no-op)", d, n);
-        return true;
+    undefined:
+        return !spr_undefined(p, n, true);
     }
     p->gpr[d] = v;
     return true;
+}
+
+// mftb/mftbu (opcode 31 xo 371, 604-only — the 601 traps the opcode
+// before reaching here).  User-readable in every mode (PEM §2.2.1); the
+// TBR field uses the same swapped halves as an SPR number, and only 268
+// (TBL) / 269 (TBU) are defined — anything else is an invalid form
+// taking the illegal-instruction program exception (PEM mftb page).
+void ppc_do_mftb(ppc_t *p, uint32_t iw) {
+    uint32_t n = spr_number(iw);
+    uint64_t tb = ppc_tb_now(p);
+    if (n == 268)
+        p->gpr[PPC_RT(iw)] = (uint32_t)tb;
+    else if (n == 269)
+        p->gpr[PPC_RT(iw)] = (uint32_t)(tb >> 32);
+    else
+        ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_ILLEGAL, p->instruction_pc);
 }
 
 bool ppc_mtspr(ppc_t *p, uint32_t iw) {
     uint32_t n = spr_number(iw);
     uint32_t v = p->gpr[PPC_RT(iw)];
     switch (n) {
-    case 0:
+    case 0: // MQ: 601-only
+        if (ppc_is_604(p))
+            goto undefined;
         p->mq = v;
         break;
     case 1:
@@ -321,7 +407,9 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
             return false;
         p->dar = v;
         break;
-    case 20: // RTC writes use SPR 20/21 (supervisor); reads use 4/5
+    case 20: // RTC writes use SPR 20/21 (supervisor); reads use 4/5; 601-only
+        if (ppc_is_604(p))
+            goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         p->rtcl = ppc_rtcl_now(p); // keep RTCL's live phase across the rebase
@@ -329,6 +417,8 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         p->rtc_base_ticks = ppc_ticks_now(p);
         break;
     case 21:
+        if (ppc_is_604(p))
+            goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         p->rtcu = ppc_rtcu_now(p);
@@ -374,6 +464,24 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
             return false;
         p->ear = v;
         break;
+    case 284: // TBL write (604; reads go through mftb — PEM §2.3.1)
+        if (!ppc_is_604(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        p->rtcu = (uint32_t)(ppc_tb_now(p) >> 32); // TBU keeps counting across the rebase
+        p->rtcl = v;
+        p->rtc_base_ticks = ppc_ticks_now(p);
+        break;
+    case 285: // TBU write (604)
+        if (!ppc_is_604(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        p->rtcl = (uint32_t)ppc_tb_now(p);
+        p->rtcu = v;
+        p->rtc_base_ticks = ppc_ticks_now(p);
+        break;
     case 528:
     case 529:
     case 530:
@@ -381,7 +489,7 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
     case 532:
     case 533:
     case 534:
-    case 535: {
+    case 535: { // 601 unified BATs / 604 IBATs — same storage
         if (spr_priv_fault(p, iw))
             return false;
         uint32_t pair = (n - 528) >> 1;
@@ -394,12 +502,44 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         }
         break;
     }
+    case 536:
+    case 537:
+    case 538:
+    case 539:
+    case 540:
+    case 541:
+    case 542:
+    case 543: { // DBATs: 604 only
+        if (!ppc_is_604(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        uint32_t pair = (n - 536) >> 1;
+        uint32_t *slot = (n & 1) ? &p->dbatl[pair] : &p->dbatu[pair];
+        if (*slot != v) {
+            *slot = v;
+            ppc_mmu_invalidate_all(p);
+        }
+        break;
+    }
+    case 952: // 604 performance monitor group: write-ignore stubs
+    case 953:
+    case 954:
+    case 955:
+    case 959:
+        if (!ppc_is_604(p))
+            goto undefined;
+        if (spr_priv_fault(p, iw))
+            return false;
+        break;
     case 1008:
         if (spr_priv_fault(p, iw))
             return false;
         p->hid0 = v;
         break;
-    case 1009:
+    case 1009: // HID1: 601 only
+        if (ppc_is_604(p))
+            goto undefined;
         if (spr_priv_fault(p, iw))
             return false;
         p->hid1 = v;
@@ -420,12 +560,8 @@ bool ppc_mtspr(ppc_t *p, uint32_t iw) {
         p->pir = v;
         break;
     default:
-        if ((n & 0x10u) && (p->msr & PPC_MSR_PR)) {
-            ppc_exception(p, PPC_VEC_PROGRAM, PPC_SRR1_PROG_PRIV, p->instruction_pc);
-            return false;
-        }
-        LOG(5, "mtspr %u,$%08X: unimplemented SPR (no-op)", n, v);
-        return true;
+    undefined:
+        return !spr_undefined(p, n, false);
     }
     return true;
 }
@@ -455,7 +591,7 @@ uint32_t ppc_get_msr(ppc_t *restrict p) {
 }
 
 void ppc_set_msr(ppc_t *restrict p, uint32_t value) {
-    p->msr = value & PPC_MSR_MASK;
+    p->msr = value & ppc_msr_mask(p);
     ppc_update_active_maps(p);
 }
 
@@ -465,20 +601,28 @@ bool ppc_is_supervisor(ppc_t *restrict p) {
 
 // === Lifecycle ==============================================================
 
-// Hard-reset register state (601UM Table 5-8)
+// Hard-reset register state per model (601UM Table 5-8; 604UM §8.8.4 —
+// HRESET sets only MSR[IP], and the 604's HID0 comes up all-zero with the
+// caches and BHT disabled).  The cpu_model itself survives the reset.
 void ppc_reset(ppc_t *p) {
     struct object *keep_cpu = p->cpu_object;
     struct object *keep_fpu = p->fpu_object;
     struct object *keep_mmu = p->mmu_object;
+    int keep_model = p->cpu_model;
     memset(p, 0, sizeof(*p));
     p->cpu_object = keep_cpu;
     p->fpu_object = keep_fpu;
     p->mmu_object = keep_mmu;
-    p->cpu_model = CPU_MODEL_PPC601;
-    p->msr = PPC_MSR_ME | PPC_MSR_EP; // $00001040
-    p->pvr = 0x00010001u;
-    p->hid0 = 0x80010080u;
-    p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1
+    p->cpu_model = keep_model;
+    if (ppc_is_604(p)) {
+        p->msr = PPC_MSR_EP; // $00000040 (IP only)
+        p->pvr = 0x00040103u; // 604, revision 1.3 (chosen constant; the kernel keys on the $0004 half)
+    } else {
+        p->msr = PPC_MSR_ME | PPC_MSR_EP; // $00001040
+        p->pvr = 0x00010001u;
+        p->hid0 = 0x80010080u;
+    }
+    p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1 on both models
     p->instruction_pc = p->pc;
     ppc_mmu_invalidate_all(p); // translation state gone with the SRs/BATs
 }
@@ -527,10 +671,11 @@ static uint32_t ppc_hook_logical_xlate(uint32_t addr, bool *ok) {
     return ppc_mmu_translate_debug(g_hook_ppc, addr, true, ok);
 }
 
-ppc_t *ppc_init(checkpoint_t *checkpoint) {
+ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     ppc_t *p = (ppc_t *)malloc(sizeof(ppc_t));
     if (!p)
         return NULL;
+    assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604);
 
     // The user SoA arrays carry this MMU's logical fills — the generic
     // identity-restore paths must leave them alone (memory.h).
@@ -556,6 +701,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint) {
         ppc_update_active_maps(p);
     } else {
         memset(p, 0, sizeof(ppc_t));
+        p->cpu_model = cpu_model; // ppc_reset keeps the model
         ppc_reset(p);
     }
 
@@ -662,7 +808,7 @@ static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
     bool ok;
     uint32_t pa = ppc_mmu_translate_debug(p, pc, false, &ok);
     ppc_insn ins;
-    ppc_disassemble(ok ? memory_debug_read_uint32(pa) : 0, pc, &ins);
+    ppc_disassemble_model(ok ? memory_debug_read_uint32(pa) : 0, pc, p->cpu_model, &ins);
     // debug.c splits on '\t'; ppc_disasm emits "mnemonic\toperands" already.
     snprintf(buf, 100, "%s", ins.text);
     return 4;
@@ -712,7 +858,8 @@ enum ppc_attr_id {
     PA_DSISR,
     PA_GPR0 = 0x100, // ..0x11F
     PA_SR0 = 0x200, // ..0x20F
-    PA_BAT0U = 0x300, // U/L interleaved ..0x307
+    PA_BAT0U = 0x300, // U/L interleaved ..0x307 (601 unified / 604 IBATs)
+    PA_DBAT0U = 0x400, // U/L interleaved ..0x407 (604 DBATs)
 };
 
 static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
@@ -723,6 +870,10 @@ static uint32_t *ppc_attr_slot(ppc_t *p, int id) {
     if (id >= PA_BAT0U && id < PA_BAT0U + 8) {
         int i = id - PA_BAT0U;
         return (i & 1) ? &p->batl[i >> 1] : &p->batu[i >> 1];
+    }
+    if (id >= PA_DBAT0U && id < PA_DBAT0U + 8) {
+        int i = id - PA_DBAT0U;
+        return (i & 1) ? &p->dbatl[i >> 1] : &p->dbatu[i >> 1];
     }
     switch (id) {
     case PA_PC:
@@ -767,11 +918,12 @@ static value_t attr_ppc_get(struct object *self, const member_t *m) {
         return val_err("cpu not initialised");
     int id = (int)(uintptr_t)m->attr.user_data;
     uint32_t raw;
-    // The time-derived SPRs read live, exactly as mfspr does.
+    // The time-derived SPRs read live, exactly as mfspr/mftb do; on the
+    // 604 the rtcu/rtcl slots ARE the timebase halves (tbu/tbl aliases).
     if (id == PA_RTCU)
-        raw = ppc_rtcu_now(p);
+        raw = ppc_is_604(p) ? (uint32_t)(ppc_tb_now(p) >> 32) : ppc_rtcu_now(p);
     else if (id == PA_RTCL)
-        raw = ppc_rtcl_now(p);
+        raw = ppc_is_604(p) ? (uint32_t)ppc_tb_now(p) : ppc_rtcl_now(p);
     else if (id == PA_DEC)
         raw = ppc_dec_now(p);
     else {
@@ -798,9 +950,10 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
     // SR/BAT/SDR1 pokes invalidate the translation caches like their
     // instruction-level counterparts do.
     if (id == PA_MSR) {
-        p->msr &= PPC_MSR_MASK;
+        p->msr &= ppc_msr_mask(p);
         ppc_update_active_maps(p);
-    } else if ((id >= PA_SR0 && id < PA_SR0 + 16) || (id >= PA_BAT0U && id < PA_BAT0U + 8) || id == PA_SDR1) {
+    } else if ((id >= PA_SR0 && id < PA_SR0 + 16) || (id >= PA_BAT0U && id < PA_BAT0U + 8) ||
+               (id >= PA_DBAT0U && id < PA_DBAT0U + 8) || id == PA_SDR1) {
         ppc_recompute_sr_t_mask(p);
         ppc_mmu_invalidate_all(p);
     }
@@ -844,6 +997,13 @@ static const member_t ppc_members[] = {
     PPC_ATTR("bat0u", PA_BAT0U + 0), PPC_ATTR("bat0l", PA_BAT0U + 1), PPC_ATTR("bat1u", PA_BAT0U + 2),
     PPC_ATTR("bat1l", PA_BAT0U + 3), PPC_ATTR("bat2u", PA_BAT0U + 4), PPC_ATTR("bat2l", PA_BAT0U + 5),
     PPC_ATTR("bat3u", PA_BAT0U + 6), PPC_ATTR("bat3l", PA_BAT0U + 7),
+    // 604 additions: the DBAT file, and tbu/tbl as aliases of the rtcu/rtcl
+    // storage (which holds the timebase halves on that model).  Present on
+    // both models — a static member table — and simply inert on the 601.
+    PPC_ATTR("dbat0u", PA_DBAT0U + 0), PPC_ATTR("dbat0l", PA_DBAT0U + 1), PPC_ATTR("dbat1u", PA_DBAT0U + 2),
+    PPC_ATTR("dbat1l", PA_DBAT0U + 3), PPC_ATTR("dbat2u", PA_DBAT0U + 4), PPC_ATTR("dbat2l", PA_DBAT0U + 5),
+    PPC_ATTR("dbat3u", PA_DBAT0U + 6), PPC_ATTR("dbat3l", PA_DBAT0U + 7),
+    PPC_ATTR("tbu", PA_RTCU),          PPC_ATTR("tbl", PA_RTCL),
 };
 // clang-format on
 
