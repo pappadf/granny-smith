@@ -33,7 +33,15 @@ let plain_75 = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
 # Lock is latched before the machine is let go.  Anything else differing
 # between the runs would make the comparison worthless.
 def boot_image(image, latch) {
-    machine.rtc.time = 0xE0000000
+    # Seed the RTC AFTER the volume's install dates (~0xE0100000, the
+    # install-os8 base). Copland's FileManager rejects a boot-volume catalog
+    # whose entries are newer than "now" — the ValidCatalogEntry check behind
+    # the app-launch hang — so a pre-install clock freezes the boot at
+    # kVolumeMount and the Finder never comes up. A real machine always boots
+    # with its clock later than its files; 0xE0800000 models that, and now
+    # that rtc.time survives machine.boot on the PDM it is the deterministic
+    # simulated-time seed for the whole run.
+    machine.rtc.time = 0xE0800000
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
     machine.scsi.attach_hd "${$image}" 0
     if $latch {
@@ -61,7 +69,7 @@ def row_control_75() {
 # ~398.7 M instructions, so 380 M is after the ADB init that would have thrown
 # the latch away and before anything acts on it.
 def row_keymap_latch() {
-    machine.rtc.time = 0xE0000000
+    machine.rtc.time = 0xE0800000 # post-install seed, as in boot_image
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
     machine.scsi.attach_hd "${$img}" 0
     machine.adb.keyboard.down "capslock"
