@@ -128,6 +128,7 @@ struct av_cuda {
 
     bool autopoll_enabled;
     bool onesec_enabled;
+    uint8_t onesec_mode; // Wr1SecMode value; 3 = Mode3Clock (tick carries RTC)
     uint8_t autopoll_phase;
 
     // --- pointers / callbacks (not checkpointed) ---
@@ -275,6 +276,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     switch (cmd) {
     case CMD_RDTIME: {
         uint32_t secs = cuda->rtc ? rtc_get_seconds(cuda->rtc) : 0;
+        LOG(2, "RdTime -> $%08X", secs);
         cuda->tx_buf[n++] = (uint8_t)(secs >> 24);
         cuda->tx_buf[n++] = (uint8_t)(secs >> 16);
         cuda->tx_buf[n++] = (uint8_t)(secs >> 8);
@@ -302,6 +304,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         // PRAM is one 256-byte page (firmware rejects a nonzero address
         // high byte with error 4).
         if (data_len >= 2 && data[0] != 0) {
+            LOG(2, "RdPram rejected addr=$%02X%02X", data[0], data[1]);
             cuda_send_error(cuda, CUDA_ERR_PRAMADDR, PKT_PSEUDO, cmd);
             return;
         }
@@ -341,8 +344,9 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         cuda->autopoll_enabled = true; // setting a rate implies autopoll
         break;
     case CMD_WR1SECMODE:
-        cuda->onesec_enabled = (data_len >= 1) ? (data[0] != 0) : true;
-        LOG(2, "Wr1SecMode -> 1-sec tick %s", cuda->onesec_enabled ? "on" : "off");
+        cuda->onesec_mode = (data_len >= 1) ? data[0] : 0;
+        cuda->onesec_enabled = cuda->onesec_mode != 0;
+        LOG(2, "Wr1SecMode -> mode %u (tick %s)", cuda->onesec_mode, cuda->onesec_enabled ? "on" : "off");
         break;
     case CMD_PWRDOWN:
         LOG(1, "Cuda PwrDown (accept-and-log; no soft power model)");
@@ -350,6 +354,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     case CMD_RESET:
         cuda->autopoll_enabled = false;
         cuda->onesec_enabled = false;
+        cuda->onesec_mode = 0;
         break;
     case CMD_RDWRIIC: {
         // I2C master transaction (OS/CudaMgr.a SetTransferParams wire
@@ -473,6 +478,7 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         cuda->state = CUDA_SYNC;
         cuda->autopoll_enabled = false;
         cuda->onesec_enabled = false;
+        cuda->onesec_mode = 0;
         cuda_set_treq(cuda, false);
         cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
         return;
@@ -536,10 +542,26 @@ static void cuda_tick_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
     if (cuda->onesec_enabled && cuda_bus_idle(cuda)) {
-        LOG(3, "tick pkt");
-        cuda->tx_buf[0] = 0x00;
-        cuda->tx_buf[1] = PKT_TICK;
-        cuda->tx_len = 2;
+        if (cuda->onesec_mode == 3) {
+            // Mode3Clock: the tick is an RdTime response carrying the
+            // 32-bit BE seconds, so the OS's CudaTickHandler seeds lowmem
+            // Time from the real clock every second instead of merely
+            // incrementing a counter that began at zero (cuda-adb.md §7 —
+            // "always send the RdTime form; the handler accepts both").
+            uint32_t secs = cuda->rtc ? rtc_get_seconds(cuda->rtc) : 0;
+            int n = cuda_put_header(cuda, PKT_PSEUDO, 0, CMD_RDTIME);
+            cuda->tx_buf[n++] = (uint8_t)(secs >> 24);
+            cuda->tx_buf[n++] = (uint8_t)(secs >> 16);
+            cuda->tx_buf[n++] = (uint8_t)(secs >> 8);
+            cuda->tx_buf[n++] = (uint8_t)secs;
+            cuda->tx_len = n;
+            LOG(3, "tick pkt (Mode3Clock, secs=$%08X)", secs);
+        } else {
+            LOG(3, "tick pkt (bare)");
+            cuda->tx_buf[0] = 0x00;
+            cuda->tx_buf[1] = PKT_TICK;
+            cuda->tx_len = 2;
+        }
         cuda_begin_send(cuda);
     }
     scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
@@ -594,6 +616,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
     // ROM's destructive RAM test would derail the CPU.
     cuda->autopoll_enabled = false;
     cuda->onesec_enabled = false;
+    cuda->onesec_mode = 0;
 
     if (cp) {
         size_t data_size = offsetof(av_cuda_t, via1);
