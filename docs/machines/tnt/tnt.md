@@ -25,7 +25,8 @@ exact machines (Linux powermac, NetBSD macppc, OSF/Apple MkLinux DR3).
 
 ## Board model
 
-Phase B (the current high-water) models the chipset skeleton:
+Phases B-C (the current high-water) model the chipset skeleton plus the
+DMA architecture:
 
 - **Hammerhead** (`hammerhead.c`) — the north bridge (system bus / DRAM /
   ROM / L2 controller) as a logged store-and-readback register file of
@@ -51,10 +52,34 @@ Phase B (the current high-water) models the chipset skeleton:
   window).  Phase B populates the interrupt block (`+$20..$2C`), the
   VIA1/Cuda window (`+$16000`, 16 byte-wide registers on `$200` centres),
   both ESCC apertures (`+$12000` legacy / `+$13000` native, one shared
-  Z8530 core), BoxID (`+$1A000`), and the banked NVRAM (`+$1D000` bank
-  port / `+$1F000` data window on `$10` centres, 8 KB).  DBDMA, SCSI,
-  MACE, AWACS, SWIM3 and RaDACal apertures log and read open bus until
-  their phases land.
+  Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
+  port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
+  DBDMA channel windows (`+$8000+n*$100`).  SCSI, MACE, AWACS, SWIM3 and
+  RaDACal apertures log and read open bus until their phases land.
+- **DBDMA** (`dbdma.c`) — the descriptor-based DMA engine, Phase C: one
+  implementation, eleven channels (channel *n* raises Grand Central
+  interrupt *n*), each a little-endian register file (`channelControl`
+  mask/value writes, `channelStatus`, `commandPtrLo`, plus the three
+  condition-select registers kept live) executing 16-byte little-endian
+  descriptors fetched from guest physical memory against a per-channel
+  injected device port `{out, in, s_bits}`.  Register truth is the
+  shipping-silicon programming model Linux and OSF/NetBSD agree on
+  (command nibble 31:28 with NOP=6/STOP=7; branches, waits and
+  interrupts are the b/w/i modifier fields; status RUN/PAUSE/FLUSH/WAKE/
+  DEAD/ACTIVE/BT at `$8000..$0100`) — Apple's pre-release 1993 `DBDMA.h`
+  describes an earlier revision Grand Central does not implement.
+  Design invariants, all unit-pinned (`tests/unit/suites/dbdma`): status
+  transitions are synchronous with the control write (the canonical
+  stop/reset poll loops terminate on the next read), descriptors are
+  refetched rather than cached (the operation-word commit rule; STOP
+  parks *on* its descriptor so the overwrite-and-WAKE ring idiom works),
+  and `resCount`/`xferStatus` write-back is guest-visible *before* the
+  channel interrupt.  A channel whose device port is not attached yet
+  stalls its data commands honestly — except audio-out (channel 8),
+  which carries an interim instant-consume sink until the Phase D AWACS
+  datapath: Open Firmware plays its boot beep through channel 8 and
+  polls for completion, so a stalling channel would hang the boot in
+  firmware.
 - **Cuda / VIA1** — the third instantiation of the shared behavioral Cuda
   (machines/av/cuda.c, firmware 2.37) on one real 6522 behind the island
   decode.  TNT-driven additions to the shared model: the polled no-TIP
@@ -115,9 +140,16 @@ the SuperMario ROM through low-memory init, timer calibration and the
 live tick chain.
 
 `tests/integration/tnt-rom-ladder` asserts the §7.1 ladder markers up to
-the committed high-water rung (currently **T8**: 68k dispatching, low
-memory live, the 60.15 Hz tick at rate).  The run parks at the Phase-D
-video wall (no Control model; `ScrnBase` stays 0).
+the committed high-water rung (currently **T9**: 68k dispatching, low
+memory live, the 60.15 Hz tick at rate, the DBDMA engine executing the
+ROM's own beep program — its descriptors live in ROM at `$FFE00090` —
+and the interrupt fabric's mode-1 discipline visible in the registers).
+The run parks at the Phase-D video wall (no Control model; `ScrnBase`
+stays 0).  The interrupt-fabric and engine semantics are additionally
+unit-pinned in `tests/unit/suites/tnt_gc` (the MkLinux initialisation
+sequence and events-driven acknowledge, the NanoKernel's `$80000000`
+mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA routing) and
+`tests/unit/suites/dbdma` (the engine in isolation).
 
 Known open items at this phase:
 

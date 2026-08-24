@@ -14,12 +14,13 @@
 // centres (VIA: $200) so each occupies its own aligned longword slot —
 // they are byte-access only, and wider access logs and reads open bus.
 //
-// Phase B populates: the interrupt block (+$20..$2C), the VIA1/Cuda
-// window (+$16000), BoxID (+$1A000), and the banked NVRAM (+$1D000 port /
-// +$1F000 data window).  The remaining apertures log and read open bus
-// until their phases land (DBDMA +$8000.. Phase C; AWACS +$14000 and
-// RaDACal +$1B000 Phase D; SCSI/MESH +$10000/+$18000 Phase E; MACE, SCC,
-// SWIM3 Phase F).
+// Populated so far: the interrupt block (+$20..$2C), the DBDMA channel
+// windows (+$8000+n*$100, Phase C — the engine itself is dbdma.c), the
+// VIA1/Cuda window (+$16000), BoxID (+$1A000), and the banked NVRAM
+// (+$1D000 port / +$1F000 data window).  The remaining apertures log and
+// read open bus until their phases land (AWACS +$14000 and RaDACal
+// +$1B000 Phase D; SCSI/MESH +$10000/+$18000 Phase E; MACE, SCC, SWIM3
+// Phase F).
 //
 // Register truth: the shipping ROM's Open Firmware device tree and 68k
 // DecoderInfo tables, the ROM's own NanoKernel interrupt handler, and
@@ -28,6 +29,7 @@
 
 #include "tnt.h"
 
+#include "dbdma.h"
 #include "log.h"
 #include "ppc.h"
 #include "scc.h"
@@ -38,21 +40,22 @@
 LOG_USE_CATEGORY_NAME("gc");
 
 // Island offsets (relative to $F3000000)
-#define OFF_INTS    0x00020u // +$20 Events / +$24 Mask / +$28 Clear / +$2C Levels
-#define OFF_DBDMA   0x08000u // channels 0-10 at +$8000+n*$100 (Phase C)
-#define OFF_SCSI0   0x10000u // 53C94, external bus (Phase E)
-#define OFF_MACE    0x11000u // MACE Ethernet (Phase F)
-#define OFF_SCCLEG  0x12000u // SCC legacy aperture (Phase F)
-#define OFF_ESCC    0x13000u // ESCC: channel B at +0, channel A at +$20 (Phase F)
-#define OFF_AWACS   0x14000u // AWACS codec + sound control (Phase D)
-#define OFF_SWIM3   0x15000u // SWIM3 floppy (Phase F)
-#define OFF_VIA     0x16000u // VIA1/Cuda: 16 byte regs on $200 centres (8 KB)
-#define OFF_MESH    0x18000u // MESH, internal bus (Phase E)
-#define OFF_EPROM   0x19000u // Ethernet address PROM (Phase F)
-#define OFF_BOXID   0x1A000u // machine-identification register (LE)
-#define OFF_RADACAL 0x1B000u // RAMDAC colormap bank (Phase D)
-#define OFF_NVPORT  0x1D000u // NVRAM bank-select port
-#define OFF_NVDATA  0x1F000u // NVRAM data window: byte j at +j*$10
+#define OFF_INTS      0x00020u // +$20 Events / +$24 Mask / +$28 Clear / +$2C Levels
+#define OFF_DBDMA     0x08000u // channels 0-10 at +$8000+n*$100 (dbdma.c)
+#define OFF_DBDMA_END (OFF_DBDMA + 0x100u * TNT_DBDMA_CHANNELS)
+#define OFF_SCSI0     0x10000u // 53C94, external bus (Phase E)
+#define OFF_MACE      0x11000u // MACE Ethernet (Phase F)
+#define OFF_SCCLEG    0x12000u // SCC legacy aperture (Phase F)
+#define OFF_ESCC      0x13000u // ESCC: channel B at +0, channel A at +$20 (Phase F)
+#define OFF_AWACS     0x14000u // AWACS codec + sound control (Phase D)
+#define OFF_SWIM3     0x15000u // SWIM3 floppy (Phase F)
+#define OFF_VIA       0x16000u // VIA1/Cuda: 16 byte regs on $200 centres (8 KB)
+#define OFF_MESH      0x18000u // MESH, internal bus (Phase E)
+#define OFF_EPROM     0x19000u // Ethernet address PROM (Phase F)
+#define OFF_BOXID     0x1A000u // machine-identification register (LE)
+#define OFF_RADACAL   0x1B000u // RAMDAC colormap bank (Phase D)
+#define OFF_NVPORT    0x1D000u // NVRAM bank-select port
+#define OFF_NVDATA    0x1F000u // NVRAM data window: byte j at +j*$10
 
 // Interrupt-register offsets within the block
 #define INT_EVENTS 0x20u
@@ -308,6 +311,11 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
 uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
     if (offset >= OFF_INTS && offset < OFF_INTS + 0x10u)
         return TNT_LE32(int_read(cfg, offset));
+    if (offset >= OFF_DBDMA && offset < OFF_DBDMA_END) {
+        // DBDMA channel n at +$8000+n*$100; registers are LE longwords.
+        int chan = (int)((offset - OFF_DBDMA) >> 8);
+        return TNT_LE32(tnt_dbdma_reg_read(tnt_st(cfg)->dbdma, chan, offset & 0xFFu));
+    }
     if ((offset & 0x1F000u) == OFF_BOXID) {
         LOG(3, "BoxID read -> $%08X", tnt_board(cfg)->boxid);
         return TNT_LE32(tnt_board(cfg)->boxid);
@@ -319,6 +327,11 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
 void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     if (offset >= OFF_INTS && offset < OFF_INTS + 0x10u) {
         int_write(cfg, offset, TNT_LE32(value));
+        return;
+    }
+    if (offset >= OFF_DBDMA && offset < OFF_DBDMA_END) {
+        int chan = (int)((offset - OFF_DBDMA) >> 8);
+        tnt_dbdma_reg_write(tnt_st(cfg)->dbdma, chan, offset & 0xFFu, TNT_LE32(value));
         return;
     }
     if ((offset & 0x1F000u) == OFF_NVPORT) {

@@ -6,9 +6,11 @@
 # rung is committed alongside the code that reaches it; any change that
 # drops a rung fails this row with the name of the first missing marker.
 #
-# Current high-water: T8 (68k dispatching, low memory live, the 60.15 Hz
-# tick chain at rate); the run parks at the Phase-D video wall (no
-# Control model yet — ScrnBase stays 0).
+# Current high-water: T9 (68k dispatching, low memory live, the 60.15 Hz
+# tick chain at rate, the DBDMA engine executing the ROM's own beep
+# program, the interrupt fabric's mode-1 discipline visible in the
+# registers); the run parks at the Phase-D video wall (no Control model
+# yet — ScrnBase stays 0).
 
 TEST_NAME := TNT ROM ladder
 TEST_DESC := Boots the TNT ROM and asserts the §7.1 ladder markers up to the committed high-water rung

@@ -25,11 +25,12 @@
 // corpus for these exact machines (Linux powermac, NetBSD macppc,
 // OSF/Apple MkLinux DR3).  Per-register citations in the .c files.
 //
-// Phase B scope (proposal-powermac-7500-8500-9500 §7): the machine
-// skeleton and boot-ladder rungs T1-T7 — memory map, Hammerhead, Bandit
-// config space, Grand Central decode + interrupt block, BoxID, banked
-// NVRAM, and Cuda/VIA.  DBDMA, MESH, AWACS, Control video and the rest of
-// the datapaths are later phases.
+// Built through Phase C (proposal-powermac-7500-8500-9500 §7): Phase B —
+// the machine skeleton and boot-ladder rungs T1-T8 (memory map,
+// Hammerhead, Bandit config space, Grand Central decode + interrupt
+// block, BoxID, banked NVRAM, Cuda/VIA); Phase C — the DBDMA engine
+// (dbdma.c) behind the island's +$8000 channel window.  MESH, AWACS,
+// Control video and the rest of the datapaths are later phases.
 
 #ifndef GS_MACHINES_TNT_H
 #define GS_MACHINES_TNT_H
@@ -42,6 +43,7 @@
 #include <stdint.h>
 
 struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+struct tnt_dbdma; // the DBDMA engine (dbdma.h)
 
 // === Endianness =============================================================
 // The one structural rule of this platform: Grand Central, the Bandit/Chaos
@@ -157,6 +159,7 @@ typedef struct tnt_state {
     int bridge_count;
     tnt_fault_window_t fault[TNT_FAULT_WINDOWS];
     struct av_cuda *cuda;
+    struct tnt_dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
 
     // Memory interfaces registered with the map
     memory_interface_t gc_interface; // $F3000000 island (128 KB)

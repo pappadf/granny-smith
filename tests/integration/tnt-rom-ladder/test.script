@@ -76,12 +76,38 @@ let expect = $dcyc * 6015 / 100 / 100000000
 assert $dticks >= $expect - 10 "T8: tick rate low (${$dticks} vs ~${$expect})"
 assert $dticks <= $expect + 10 "T8: tick rate high (${$dticks} vs ~${$expect})"
 
+# --- T9: the interrupt fabric + DBDMA engine are live -------------------------
+# (Peeks of the little-endian island registers return byte-swapped
+# values — the raw bus view; the constants below are bswapped LE.)
+#
+# Open Firmware plays its boot beep through DBDMA channel 8: the engine
+# executed the ROM's own descriptor program (at $FFE00090 — the program
+# lives in ROM) to its STOP.  The channel parks ON the STOP descriptor
+# with RUN still set and ACTIVE dropped — three engine behaviors (LE
+# descriptor fetch, OUTPUT data movement, STOP-parking) in one marker.
+assert machine.memory.peek.l(0xF3008804) == 0x00800000 "T9: ch8 not parked RUN|!ACTIVE after the OF beep"
+assert machine.memory.peek.l(0xF300880C) == 0x9000E0FF "T9: ch8 cmdptr not on the beep program's STOP ($FFE00090)"
+
+# The kernel's enabled interrupt set at the parking point: SCC A/B (15,
+# 16), VIA1 (18), NMI (20) — plus mask bit 31, the ifMode1Clear-era mask
+# image the NanoKernel maintains.  Events carries the standing VIA bit
+# (mode 1: the $80000000 acknowledge clears no device bits and the
+# kernel never W1Cs Events).  The mode-1 ack LOOP itself is proven by
+# T8's tick-rate window — starvation there would fail the rate band.
+assert machine.memory.peek.l(0xF3000024) == 0x00801580 "T9: interrupt mask not the kernel's enabled set"
+assert (machine.memory.peek.l(0xF3000020) & 0x00000400) == 0x00000400 "T9: VIA event bit not standing (mode-1 ack must not clear Events)"
+
+# Register-file decode: cmdptr store-readback through an idle channel's
+# island window (channel 3, Ethernet RX — untouched by this boot).
+machine.memory.poke.l(0xF300830C, 0x78563412)
+assert machine.memory.peek.l(0xF300830C) == 0x78563412 "T9: DBDMA cmdptr store-readback through the island"
+machine.memory.poke.l(0xF300830C, 0)
+
 # The T5/T6 markers (the OF memory-sizing sequence against Hammerhead,
 # the device-tree oracle) are asserted transitively for now — MemTop and
 # the kernel's 32 MB layout are downstream of OF's sizing — and get their
-# own direct rows when the R1 Hammerhead access log is fitted.  T9-T13
-# (interrupt-semantics hardening, chime, video, SCSI, Finder) are Phases
-# C-E.
+# own direct rows when the R1 Hammerhead access log is fitted.  T10-T13
+# (chime, video, SCSI, Finder) are Phases D-E.
 
-echo "tnt-rom-ladder: high-water rung T8 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} memtop=${debug.mac.globals.read("MemTop"):08x})"
+echo "tnt-rom-ladder: high-water rung T9 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} memtop=${debug.mac.globals.read("MemTop"):08x})"
 quit

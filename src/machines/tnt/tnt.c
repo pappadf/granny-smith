@@ -29,6 +29,7 @@
 #include "tnt.h"
 
 #include "cuda.h" // the shared behavioral Cuda model (machines/av/)
+#include "dbdma.h"
 
 #include "adb.h"
 #include "debug.h"
@@ -198,6 +199,53 @@ static void tnt_memory_layout(config_t *cfg) {
 }
 
 // ============================================================
+// DBDMA hooks — guest-physical movers + the channel interrupt line
+// ============================================================
+// Bus-master DMA: RAM is moved through the host backing store directly
+// (descriptors and data buffers live there); anything outside RAM (a
+// STORE_QUAD/LOAD_QUAD aimed at a device register) goes through the
+// bus's slow path byte by byte.  The CPU MMU is deliberately not in the
+// path (the sonic/psc memory-hook precedent).
+
+static void tnt_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t len) {
+    config_t *cfg = (config_t *)ctx;
+    if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
+        memcpy(buf, ram_native_pointer(cfg->mem_map, 0) + phys, len);
+        return;
+    }
+    for (uint32_t i = 0; i < len; i++)
+        buf[i] = memory_read_uint8_slow(phys + i);
+}
+
+static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, uint32_t len) {
+    config_t *cfg = (config_t *)ctx;
+    if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
+        memcpy(ram_native_pointer(cfg->mem_map, 0) + phys, buf, len);
+        return;
+    }
+    for (uint32_t i = 0; i < len; i++)
+        memory_write_uint8_slow(phys + i, buf[i]);
+}
+
+// Channel completion -> Grand Central interrupt n (== channel n), an
+// edge event into the fabric (interrupt-map §2.1).
+static void tnt_dbdma_irq(void *ctx, int chan) {
+    tnt_gc_pulse_event((config_t *)ctx, chan);
+}
+
+// Interim audio-out sink (channel 8): Open Firmware plays its boot beep
+// through DBDMA long before the AWACS datapath exists, then polls the
+// channel for completion — an unattached (stalling) port hangs that poll
+// and with it the whole boot.  The sink consumes samples instantly and
+// silently; the Phase D AWACS port replaces it with the real 44.1 kHz
+// paced ring into audio_out.
+static int tnt_audio_sink_out(void *ctx, const uint8_t *buf, int len) {
+    (void)ctx;
+    (void)buf;
+    return len;
+}
+
+// ============================================================
 // VIA1 callbacks — Cuda transport (the PDM/AV pattern, third instance)
 // ============================================================
 
@@ -302,6 +350,16 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
     assert(st->cuda != NULL);
 
+    // The DBDMA engine behind the island's +$8000 channel windows.  No
+    // device ports are attached yet — each datapath phase (AWACS ch 8,
+    // SCSI ch 0/10, ...) registers its port as it lands; until then a
+    // channel's data commands stall honestly.
+    st->dbdma = tnt_dbdma_init(cp);
+    tnt_dbdma_set_memory_hooks(st->dbdma, tnt_dbdma_mem_read, tnt_dbdma_mem_write, cfg);
+    tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
+    tnt_dbdma_port_t audio_sink = {.out = tnt_audio_sink_out};
+    tnt_dbdma_set_port(st->dbdma, 8, &audio_sink); // see tnt_audio_sink_out
+
     // Board state + memory map.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
@@ -334,6 +392,7 @@ static void tnt_reset(config_t *cfg) {
     ppc_reset(cfg->ppc);
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    tnt_dbdma_reset(st->dbdma);
     scc_reset(cfg->scc);
     for (int i = 0; i < st->bridge_count; i++) {
         st->bridge[i].cfg_addr = 0;
@@ -346,6 +405,10 @@ static void tnt_teardown(config_t *cfg) {
     if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
     tnt_state_t *st = tnt_st(cfg);
+    if (st && st->dbdma) {
+        tnt_dbdma_delete(st->dbdma);
+        st->dbdma = NULL;
+    }
     if (st && st->cuda) {
         av_cuda_delete(st->cuda);
         st->cuda = NULL;
@@ -400,6 +463,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via1, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
+    tnt_dbdma_checkpoint(st->dbdma, cp);
     // Substrate-private tail (mirrored by the restore block in tnt_init).
     system_write_checkpoint_data(cp, &st->hh, sizeof(st->hh));
     system_write_checkpoint_data(cp, &st->gc, sizeof(st->gc));
