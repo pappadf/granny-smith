@@ -828,7 +828,7 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
         sz, scsi_id);
 
     add_image(config, img);
-    scsi_add_device(config->scsi, scsi_id, best->vendor, best->product, "1.0", img, scsi_dev_hd, 512, false);
+    scsi_add_device(config->scsi, scsi_id, best->vendor, best->product, best->revision, img, scsi_dev_hd, 512, false);
     // Block the VFS auto-mount cache from serving reads on the same file
     // while the emulator holds writable handles against it (§2.9).
     image_vfs_notify_attached(filename);

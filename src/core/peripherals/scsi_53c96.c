@@ -752,3 +752,29 @@ bool scsi_53c96_dreq(scsi_53c96_t *c) {
         return false;
     return c->xfer_mode != XFER_IDLE; // a transfer is armed and the FIFO is ready
 }
+
+// End an armed DMA read that the target has already walked away from.
+//
+// pdma_in_byte() has the same short-transfer branch, but it only runs when
+// something asks the chip for one more byte.  A CPU draining the aperture
+// always does; a BUS MASTER does not — the PDM's AMIC pump gates on the bus
+// phase, so when the target advances to MESSAGE IN having sent less than the
+// initiator asked for, the pump stops one byte early and nobody ever tells
+// the chip.  DREQ then stays asserted forever and the driver waits for a
+// completion interrupt that cannot arrive.
+//
+// Measured with Drive Setup 2.0d5c2 on a Power Macintosh 7100: its MODE
+// SENSE(6) asks for 16 bytes, our target has 12, and the initialize hung at
+// "Setting drive options..." indefinitely.  A short transfer is legal — SCSI-2
+// §8.2.10 has the target send the lesser of the allocation length and the data
+// it holds — so the initiator must see the phase change and finish with a
+// residual, which is what this posts.
+void scsi_53c96_dma_short_transfer(scsi_53c96_t *c) {
+    if (!c || !c->bus || c->xfer_mode != XFER_DATA_IN)
+        return;
+    LOG(3, "dma short transfer: target left the data phase (counter=%u)", c->counter_live);
+    scsi_external_data_in_complete(c->bus);
+    refresh_phase(c);
+    c->xfer_mode = XFER_IDLE;
+    post_interrupt(c, IR_BUS_SERVICE);
+}

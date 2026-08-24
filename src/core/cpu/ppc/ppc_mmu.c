@@ -31,10 +31,11 @@
 //   - R is set even when protection denies the access (§6.8.4); C only
 //     on permitted stores — and the nanokernel harvests C from evicted
 //     PTEs, so the in-RAM write-back is load-bearing;
-//   - ISI SRR1: HTAB miss sets bits 1 AND 10 ($40200000 — the mask the
-//     nanokernel's InstStorageInt tests), protection sets bit 4
-//     ($08000000), a non-memory-forced T=1 fetch sets NO bits (Table 6-3
-//     footnote);
+//   - ISI SRR1: HTAB miss sets bit 1 ONLY ($40000000); the nanokernel's
+//     InstStorageInt masks $40200000 but with `andis.`/`beq`, so one bit
+//     is enough, and Copland reads bit 10 as a hard access error.
+//     Protection sets bit 4 ($08000000), a non-memory-forced T=1 fetch
+//     sets NO bits (Table 6-3 footnote);
 //   - tlbie invalidates the congruence class selected by EA[13-19] —
 //     128 classes (Figure 6-15) — and the kernel's FlushTLB loop relies
 //     on exactly that granularity;
@@ -560,9 +561,18 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             return false;
         }
         if (res != XL_OK) {
-            // HTAB miss: SRR1 bits 1 and 10 (Table 5-11) — the
-            // nanokernel's InstStorageInt tests exactly this mask.
-            ppc_exception(p, PPC_VEC_ISI, 0x40200000u, pc);
+            // HTAB miss: SRR1 bit 1 ONLY ($40000000).  We used to set
+            // bit 10 as well because the nanokernel's InstStorageInt
+            // masks $40200000 — but it does that with `andis. r8,r11,
+            // $4020` followed by `beq` (ROM file offset $311878, the
+            // only such instruction in the image), so either bit alone
+            // satisfies it.  Bit 10 is NOT a page-fault bit, and
+            // Copland's GetFaultInformation reads it as one of the two
+            // hard-error bits ($10200000) and turns an ordinary
+            // instruction page fault into kAccessException — which
+            // panicked its kernel.  Two independent guests only agree
+            // if a 601 leaves bit 10 clear for an HTAB miss.
+            ppc_exception(p, PPC_VEC_ISI, 0x40000000u, pc);
             return false;
         }
         pa = out.pa;

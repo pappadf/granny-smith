@@ -1335,6 +1335,77 @@ static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
 // single table across both channels would need per-instance member
 // data, which the substrate intentionally avoids.)
 
+// Feed bytes into a channel's receive FIFO as though they had arrived on the
+// wire.  Delivery mirrors the loopback path in wr8: buffer the byte, latch
+// RR0's Rx Character Available, and raise the receive interrupt when the
+// channel has one enabled.
+//
+// Without this the emulated serial ports could only ever TRANSMIT, so a guest
+// that waits for serial input could never be answered — and some do.  Copland's
+// "(Debug)" build is the case that prompted it: its loader prints over the
+// modem port and then polls RR0 bit 0 for a reply from the Power Macintosh
+// Debugger, forever, because nothing on this side can ever set that bit.
+static value_t scc_ch_receive(struct object *self, unsigned idx, int argc, const value_t *argv) {
+    scc_t *scc = scc_from(self);
+    if (!scc)
+        return val_err("scc not available");
+    if (argc != 1)
+        return val_err("receive: expected one argument");
+
+    ch_t *c = &scc->ch[idx];
+
+    const uint8_t *bytes;
+    size_t len;
+    uint8_t one;
+    if (argv[0].kind == V_STRING) {
+        bytes = (const uint8_t *)argv[0].s;
+        len = argv[0].s ? strlen(argv[0].s) : 0;
+    } else if (argv[0].kind == V_INT || argv[0].kind == V_UINT) {
+        one = (uint8_t)(argv[0].kind == V_INT ? (uint64_t)argv[0].i : argv[0].u);
+        bytes = &one;
+        len = 1;
+    } else {
+        return val_err("receive: expected a string or a byte value");
+    }
+
+    uint64_t accepted = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (c->rx.head >= RX_BUF_SIZE) {
+            // Z8530 latches Rx Overrun and drops the byte, keeping what is
+            // already buffered — same as the loopback path above.
+            c->rr[1] |= RR1_RX_OVERRUN;
+            break;
+        }
+        c->rx.buf[c->rx.head++] = bytes[i];
+        accepted++;
+    }
+    if (!accepted)
+        return val_uint(4, 0);
+
+    c->rr[0] |= RR0_RX_CHAR_AVAILABLE;
+    uint8_t rx_int_mode = (c->wr[1] >> 3) & 0x03;
+    if (rx_int_mode != 0) {
+        scc->ch[0].rr[3] |= (c->index ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX);
+        update_irqs(scc);
+    }
+    LOG(3, "receive: ch=%d accepted %llu byte(s)", c->index, (unsigned long long)accepted);
+    return val_uint(4, accepted);
+}
+
+static value_t scc_ch_a_method_receive(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    return scc_ch_receive(self, 0, argc, argv);
+}
+
+static value_t scc_ch_b_method_receive(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    return scc_ch_receive(self, 1, argc, argv);
+}
+
+static const arg_decl_t scc_ch_receive_args[] = {
+    {.name = "data", .kind = V_NONE, .doc = "String to deliver, or a single byte value"},
+};
+
 static const member_t scc_ch_a_members[] = {
     {.kind = M_ATTR,
      .name = "index",
@@ -1352,6 +1423,10 @@ static const member_t scc_ch_a_members[] = {
      .name = "rx_pending",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)0}},
+    {.kind = M_METHOD,
+     .name = "receive",
+     .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
+     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_a_method_receive}   },
 };
 
 static const member_t scc_ch_b_members[] = {
@@ -1371,6 +1446,10 @@ static const member_t scc_ch_b_members[] = {
      .name = "rx_pending",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)1}},
+    {.kind = M_METHOD,
+     .name = "receive",
+     .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
+     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_b_method_receive}   },
 };
 
 const class_desc_t scc_channel_a_class = {

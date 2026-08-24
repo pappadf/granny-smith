@@ -240,6 +240,15 @@ static void hmc_shift_in(config_t *cfg, uint32_t bit) {
         h->cfg_hi = (h->cfg_hi & ~(1u << (n - 32))) | (bit << (n - 32));
     h->bit_ptr = n + 1;
 
+    // Bit 33 selects the scanout base: set = physical 0 (the ROM's and Mac
+    // OS's constant state), clear = $100000 (MkLinux's VPDM_PHYSADDR — and
+    // Copland's, whose kernel owns physical 0 for its vector page).  See
+    // powermac notes amic.md §"no framebuffer-base register" / hmc.md §2.2.
+    if (n == 33) {
+        LOG(1, "video base bit <- %u (scan from $%X)", bit, bit ? 0u : 0x100000u);
+        pdm_video_update(cfg); // scan base moves with the bit (ariel.c)
+    }
+
     // Derived consequences, applied only when the relevant field changed
     if ((old_lo ^ h->cfg_lo) & (HMC_SIMM_SIZE | HMC_MB_4MB)) {
         LOG(1, "config remap: lo=$%08X hi=$%X", h->cfg_lo, h->cfg_hi);

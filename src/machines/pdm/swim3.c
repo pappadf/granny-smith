@@ -23,6 +23,7 @@
 
 #include "floppy.h"
 #include "log.h"
+#include "scheduler.h"
 
 LOG_USE_CATEGORY_NAME("swim3");
 
@@ -185,13 +186,66 @@ void pdm_swim3_raise(config_t *cfg, uint8_t bits) {
     pdm_swim3_update_irq(cfg);
 }
 
+// === Timer (reg 1) ==========================================================
+//
+// A 1 us countdown (SWIM3-ERS:76): a loaded value decrements at 1 MHz,
+// independent of ClockDiv2, and TIMER_DONE (interrupt bit 0) is generated
+// when the count reaches zero.  The ERS leaves the read-back of a running
+// count and write-0-to-stop unstated; both are modelled, because Copland's
+// floppy plugin POLLS the running count (SwimIIISmallWait loads N+1 and
+// spins until the register reads zero — measured, see
+// gs-docs/projects/copland re/bsfloppypdm.dis.txt), which is only
+// meaningful if the live count reads back.  The 7.5 .Sony driver never
+// touches the register (it uses the Time Manager), so this path is
+// exercised by Copland alone.
+
+static void swim3_timer_event(void *source, uint64_t data) {
+    (void)data;
+    config_t *cfg = source;
+    pdm_swim3_t *sw = &pdm_st(cfg)->amic.swim3;
+    sw->timer = 0;
+    sw->timer_running = 0;
+    pdm_swim3_raise(cfg, SWIM3_INT_TIMER);
+}
+
+static void swim3_timer_stop(config_t *cfg, pdm_swim3_t *sw) {
+    remove_event(cfg->scheduler, swim3_timer_event, cfg);
+    sw->timer = 0;
+    sw->timer_running = 0;
+}
+
+static void swim3_timer_load(config_t *cfg, pdm_swim3_t *sw, uint8_t value) {
+    remove_event(cfg->scheduler, swim3_timer_event, cfg);
+    sw->timer = value;
+    if (value == 0) { // write-0-to-stop
+        sw->timer_running = 0;
+        return;
+    }
+    sw->timer_running = 1;
+    sw->timer_start_ns = (uint64_t)scheduler_time_ns(cfg->scheduler);
+    scheduler_new_cpu_event(cfg->scheduler, swim3_timer_event, cfg, 0, 0, (uint64_t)value * 1000u);
+}
+
+static uint8_t swim3_timer_read(config_t *cfg, pdm_swim3_t *sw) {
+    if (!sw->timer_running)
+        return sw->timer; // 0 after done/stop/reset
+    uint64_t elapsed_us = ((uint64_t)scheduler_time_ns(cfg->scheduler) - sw->timer_start_ns) / 1000u;
+    if (elapsed_us >= sw->timer)
+        return 0; // the event will retire it; the count already reads 0
+    return (uint8_t)(sw->timer - elapsed_us);
+}
+
+void pdm_swim3_register_events(config_t *cfg) {
+    scheduler_new_event_type(cfg->scheduler, "swim3", cfg, "timer", swim3_timer_event);
+}
+
 // === Register file ==========================================================
 
 static uint8_t swim3_read_reg(config_t *cfg, pdm_swim3_t *sw, uint32_t off) {
     uint8_t v;
     switch (off >> 9) {
     case R_TIMER:
-        return sw->timer;
+        return swim3_timer_read(cfg, sw);
     case R_ERROR: // read-to-clear
         v = sw->error;
         sw->error = 0;
@@ -247,7 +301,7 @@ void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
     LOG(5, "wr +$%04X %-9s = $%02X", off, REG_WR_NAMES[(off >> 9) & 15], value);
     switch (off >> 9) {
     case R_TIMER:
-        sw->timer = value;
+        swim3_timer_load(cfg, sw, value);
         break;
     case R_PARAM:
         sw->param = value;
@@ -268,6 +322,7 @@ void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
             z.ctrack = 0xFF;
             z.csect = 0x7F;
             z.sector = 0xFF;
+            swim3_timer_stop(cfg, sw);
             *sw = z;
             pdm_swim3_engine_update(cfg);
             pdm_swim3_update_irq(cfg);

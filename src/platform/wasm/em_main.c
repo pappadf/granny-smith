@@ -577,6 +577,14 @@ static EM_BOOL key_down_cb(int type, const EmscriptenKeyboardEvent *e, void *ud)
     int k = map_dom_code_to_mac(e->code, e->key);
     if (k < 0)
         return EM_FALSE;
+    // Caps Lock (0x39) is a mechanically LOCKING key, and only the DOM
+    // layer can see the host's true caps state (getModifierState) — the
+    // emscripten C callback cannot.  So the C side never touches it: the
+    // event is left unconsumed for the web2 frontend, which mirrors the
+    // host caps state into the guest latch and the ⇪ indicator, and
+    // re-asserts it across boot/restart (app/web2 lib/capslock.ts).
+    if (k == 0x39)
+        return EM_FALSE;
     system_keyboard_update(key_down, k);
     return EM_TRUE;
 }
@@ -603,6 +611,8 @@ static EM_BOOL key_up_cb(int type, const EmscriptenKeyboardEvent *e, void *ud) {
     int k = map_dom_code_to_mac(e->code, e->key);
     if (k < 0)
         return EM_FALSE;
+    if (k == 0x39)
+        return EM_FALSE; // Caps Lock belongs to the web2 frontend (see key_down_cb)
     system_keyboard_update(key_up, k);
     return EM_TRUE;
 }

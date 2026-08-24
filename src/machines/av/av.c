@@ -629,7 +629,7 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     cfg->adb = st->adb;
 
     // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.
-    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, cp);
+    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
     assert(st->cuda != NULL);
 
     // New Age FDC stub ("no drive" — ST3 = $FF).

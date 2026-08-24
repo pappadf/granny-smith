@@ -415,8 +415,10 @@ static void test_dcbz_wimg(void) {
 }
 
 // Instruction fetch: HTAB-translated fetch works with MSR[IT]; a missing
-// PTE raises ISI with SRR1 bits 1+10 ($40200000 — the nanokernel's
-// tested mask); a non-memory-forced T=1 fetch sets NO SRR1 bits.
+// PTE raises ISI with SRR1 bit 1 ONLY ($40000000 — the nanokernel's
+// InstStorageInt masks $40200000 with andis./beq, so bit 1 satisfies it,
+// and Copland reads bit 10 as a hard access error and would panic on an
+// ordinary page fault); a non-memory-forced T=1 fetch sets NO SRR1 bits.
 static void test_fetch_translation(void) {
     fresh();
     wipe_htab();
@@ -431,14 +433,14 @@ static void test_fetch_translation(void) {
     run_at(0x00208000u, 1);
     CHECK_EQ(P->gpr[3], 0x77u);
 
-    // Unmapped fetch → ISI, SRR1 = $40200000, and the vector itself is
+    // Unmapped fetch → ISI, SRR1 = $40000000, and the vector itself is
     // fetched untranslated (IT cleared on entry).  A real instruction
     // sits at the vector so the budget completes without a second
     // exception clobbering SRR0/SRR1.
     memory_write_uint32(0x00000400u, e_d(14, 0, 0, 0)); // li r0,0
     run_at(0x00280000u, 1);
     CHECK_EQ(P->srr0, 0x00280000u);
-    CHECK_EQ(P->srr1 & 0xFFFF0000u, 0x40200000u);
+    CHECK_EQ(P->srr1 & 0xFFFF0000u, 0x40000000u);
 
     // T=1 (non-memory-forced) fetch: ISI with NO status bits.
     fresh();

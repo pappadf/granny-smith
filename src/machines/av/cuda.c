@@ -128,6 +128,7 @@ struct av_cuda {
 
     bool autopoll_enabled;
     bool onesec_enabled;
+    uint8_t onesec_mode; // Wr1SecMode value; 3 = Mode3Clock (tick carries RTC)
     uint8_t autopoll_phase;
 
     // --- pointers / callbacks (not checkpointed) ---
@@ -136,6 +137,13 @@ struct av_cuda {
     struct adb *adb;
     struct scheduler *sched;
     struct av_vdc *vdc; // I2C targets behind pseudo-command $22 (may be NULL)
+
+    // Fixed machine property (config, not guest state): whether the one-second
+    // tick may carry the RTC in the Mode3Clock RdTime form.  Enabled only for
+    // the PDM family, whose live guest clock needs a real seed; the AV Quadras
+    // keep the bare tick so their sound goldens stay on the wall-clock-agnostic
+    // path they were captured on.
+    bool mode3_clock;
 };
 
 static void cuda_tick_event(void *source, uint64_t data);
@@ -275,6 +283,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     switch (cmd) {
     case CMD_RDTIME: {
         uint32_t secs = cuda->rtc ? rtc_get_seconds(cuda->rtc) : 0;
+        LOG(2, "RdTime -> $%08X", secs);
         cuda->tx_buf[n++] = (uint8_t)(secs >> 24);
         cuda->tx_buf[n++] = (uint8_t)(secs >> 16);
         cuda->tx_buf[n++] = (uint8_t)(secs >> 8);
@@ -302,6 +311,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         // PRAM is one 256-byte page (firmware rejects a nonzero address
         // high byte with error 4).
         if (data_len >= 2 && data[0] != 0) {
+            LOG(2, "RdPram rejected addr=$%02X%02X", data[0], data[1]);
             cuda_send_error(cuda, CUDA_ERR_PRAMADDR, PKT_PSEUDO, cmd);
             return;
         }
@@ -341,8 +351,9 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         cuda->autopoll_enabled = true; // setting a rate implies autopoll
         break;
     case CMD_WR1SECMODE:
-        cuda->onesec_enabled = (data_len >= 1) ? (data[0] != 0) : true;
-        LOG(2, "Wr1SecMode -> 1-sec tick %s", cuda->onesec_enabled ? "on" : "off");
+        cuda->onesec_mode = (data_len >= 1) ? data[0] : 0;
+        cuda->onesec_enabled = cuda->onesec_mode != 0;
+        LOG(2, "Wr1SecMode -> mode %u (tick %s)", cuda->onesec_mode, cuda->onesec_enabled ? "on" : "off");
         break;
     case CMD_PWRDOWN:
         LOG(1, "Cuda PwrDown (accept-and-log; no soft power model)");
@@ -350,6 +361,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     case CMD_RESET:
         cuda->autopoll_enabled = false;
         cuda->onesec_enabled = false;
+        cuda->onesec_mode = 0;
         break;
     case CMD_RDWRIIC: {
         // I2C master transaction (OS/CudaMgr.a SetTransferParams wire
@@ -448,19 +460,39 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
     bool tip_rise = !tip_old && tip_new; // host terminates transaction
     bool ba_toggle = ba_old != ba_new;
 
+    // Abort/Sync: ByteAck asserted (falling) while TIP stays negated.  This is
+    // recognised from ANY state, which is the whole point of it — the host-side
+    // line-state table (CudaMgr.a:519-536, transcribed in the PDM notes
+    // "cuda-adb.md" §3) lists TIP=1/ByteAck=0 as Abort/Sync for TREQ low *and*
+    // TREQ high, i.e. whatever Cuda happens to be doing.  CudaInit's sync
+    // explicitly expects to run while we are mid-transaction: its step 2 is "if
+    // TREQ is already low, Cuda is mid-transaction: wait for its SR interrupt",
+    // and only then does it assert ByteAck.
+    //
+    // Honouring it only from CUDA_IDLE deadlocks any host that syncs while an
+    // unsolicited packet is in flight, because nothing ever releases TREQ.
+    // Copland does exactly that: it enables autopoll, our keyboard has a
+    // latched Caps Lock to report, the autopoll packet asserts TREQ, and its
+    // CudaInit then hangs at step 5 ("raise ByteAck, wait TREQ high") forever.
+    // The ROM never noticed because it syncs before enabling anything async.
+    if (tip_new && ba_old && !ba_new) {
+        LOG(2, "sync cycle: acknowledged (state=%d, aborting %d tx byte(s))", cuda->state,
+            cuda->state == CUDA_SENDING ? cuda->tx_len - cuda->tx_idx : 0);
+        cuda_cancel_push(cuda); // an in-flight byte must not land mid-sync
+        cuda->tx_len = 0;
+        cuda->tx_idx = 0;
+        cuda->rx_len = 0;
+        cuda->state = CUDA_SYNC;
+        cuda->autopoll_enabled = false;
+        cuda->onesec_enabled = false;
+        cuda->onesec_mode = 0;
+        cuda_set_treq(cuda, false);
+        cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
+        return;
+    }
+
     switch (cuda->state) {
     case CUDA_IDLE:
-        // ByteAck asserted with TIP negated = the CudaInit sync state:
-        // acknowledge with TREQ + a clocked byte, silencing all async
-        // sources (that is the sync's documented purpose).
-        if (tip_new && ba_old && !ba_new) {
-            cuda->state = CUDA_SYNC;
-            cuda->autopoll_enabled = false;
-            cuda->onesec_enabled = false;
-            cuda_set_treq(cuda, false);
-            cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
-            LOG(2, "sync cycle: acknowledged");
-        }
         break;
 
     case CUDA_RECEIVING:
@@ -517,10 +549,26 @@ static void cuda_tick_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
     if (cuda->onesec_enabled && cuda_bus_idle(cuda)) {
-        LOG(3, "tick pkt");
-        cuda->tx_buf[0] = 0x00;
-        cuda->tx_buf[1] = PKT_TICK;
-        cuda->tx_len = 2;
+        if (cuda->onesec_mode == 3 && cuda->mode3_clock) {
+            // Mode3Clock: the tick is an RdTime response carrying the
+            // 32-bit BE seconds, so the OS's CudaTickHandler seeds lowmem
+            // Time from the real clock every second instead of merely
+            // incrementing a counter that began at zero (cuda-adb.md §7 —
+            // "always send the RdTime form; the handler accepts both").
+            uint32_t secs = cuda->rtc ? rtc_get_seconds(cuda->rtc) : 0;
+            int n = cuda_put_header(cuda, PKT_PSEUDO, 0, CMD_RDTIME);
+            cuda->tx_buf[n++] = (uint8_t)(secs >> 24);
+            cuda->tx_buf[n++] = (uint8_t)(secs >> 16);
+            cuda->tx_buf[n++] = (uint8_t)(secs >> 8);
+            cuda->tx_buf[n++] = (uint8_t)secs;
+            cuda->tx_len = n;
+            LOG(3, "tick pkt (Mode3Clock, secs=$%08X)", secs);
+        } else {
+            LOG(3, "tick pkt (bare)");
+            cuda->tx_buf[0] = 0x00;
+            cuda->tx_buf[1] = PKT_TICK;
+            cuda->tx_len = 2;
+        }
         cuda_begin_send(cuda);
     }
     scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
@@ -532,7 +580,12 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
     if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda)) {
-        static const uint8_t poll_addr[2] = {3, 2}; // mouse, keyboard
+        // Poll the devices where they live NOW: an OS's ADB init can move
+        // them off the default addresses via Listen R3 and leave them there
+        // (Copland does; classic Mac OS moves them back), and real Cuda
+        // firmware tracks the moves.  Asking the model beats shadowing the
+        // Listen traffic.
+        const uint8_t poll_addr[2] = {adb_mouse_address(cuda->adb), adb_keyboard_address(cuda->adb)};
         for (int k = 0; k < 2; k++) {
             uint8_t addr = poll_addr[(cuda->autopoll_phase + k) & 1];
             uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
@@ -554,7 +607,8 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
 
 // === Lifecycle ==============================================================
 
-av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp) {
+av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
+                        bool mode3_clock) {
     av_cuda_t *cuda = (av_cuda_t *)calloc(1, sizeof(*cuda));
     if (!cuda)
         return NULL;
@@ -562,6 +616,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
     cuda->rtc = rtc;
     cuda->adb = adb;
     cuda->sched = sched;
+    cuda->mode3_clock = mode3_clock; // config; lives outside the checkpointed region
     cuda->state = CUDA_IDLE;
     cuda->treq_high = true; // TREQ idles high (no request)
     cuda->last_pb = PB_TIP | PB_BYTEACK; // host idle state
@@ -570,6 +625,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
     // ROM's destructive RAM test would derail the CPU.
     cuda->autopoll_enabled = false;
     cuda->onesec_enabled = false;
+    cuda->onesec_mode = 0;
 
     if (cp) {
         size_t data_size = offsetof(av_cuda_t, via1);

@@ -6,6 +6,7 @@
 
 #include "machine.h"
 
+#include "adb.h"
 #include "cpu.h"
 #include "image.h"
 #include "log.h"
@@ -619,9 +620,17 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // instance, so writes survive the power-cycle by construction.
     media_slot_t media[MEDIA_SLOTS_MAX];
     int n_media = 0;
+    bool caps_latched = false;
     if (global_emulator) {
         if (s_transfer_media && global_emulator->machine->substrate->media_detach)
             n_media = global_emulator->machine->substrate->media_detach(global_emulator, media, MEDIA_SLOTS_MAX);
+        // Caps Lock is a mechanically locking switch: like the mounted
+        // media, its state belongs to the hardware that outlives the
+        // power-cycle, not to the machine being torn down.  (Booting
+        // Copland depends on it: the latch has to be down across the
+        // restart into the diverted boot.)
+        if (s_transfer_media)
+            caps_latched = adb_capslock_latched(global_emulator->adb);
         system_destroy(global_emulator);
         global_emulator = NULL;
     }
@@ -674,6 +683,11 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             image_get_filename(media[i].img) ? image_get_filename(media[i].img) : "(unnamed)");
         image_close(media[i].img);
     }
+
+    // The carried Caps Lock latch (see above): re-latch it before the
+    // machine runs, so the ROM's ADB init finds the key already down.
+    if (caps_latched)
+        adb_capslock_latch(cfg->adb);
 
     // 4. The built-from record — the machine's birth certificate.
     machine_config_record_t *w = machine_config_record_mut();

@@ -369,6 +369,44 @@ Talk R0 polling every ~11 ms while idle.
 
 A 0 indicates key is down or LED is on. LEDs can be set via Listen R2.
 
+#### Listen R3's handler byte is a command, not a value
+
+`Listen R3` carries `[address | flags, handler]`, and the handler byte
+selects an operation: `$FE` (and `$00`) move the device to the new address
+and **preserve** the handler ID, `$FF` is self-test, `$FD` is
+"move if the activator is pressed", and only a plain ID is adopted as the
+handler (a real device adopts only IDs it implements). Storing `$FE`
+literally breaks any host that reads R3 back to verify an enumeration
+move: Mac OS never does, but Copland's ADB server does — it moved the
+mouse, read back handler `$FE`, concluded "not a mouse", and dropped the
+device (its verbose boot console prints `ADB device @ 0 = 3-FE` when this
+model gets it wrong).
+
+#### Caps Lock is a locking switch, and that has consequences
+
+Caps Lock is the only key here that is a mechanically *locking* switch rather than a
+momentary contact, so it is the only one that can already be down when the machine is
+powered on, and the only one whose state a bus reset does not change. Granny Smith
+models both halves of that:
+
+- `adb_reset()` clears every other key but keeps a latched Caps Lock, so Register 2
+  keeps reporting it. Register 2 is the only place the latch is visible *as state*.
+- `kbd_relatch_capslock()` re-reports it as a fresh Register 0 key-down after anything
+  that clears what the keyboard last sent — **a reset and a Flush**. A matrix-scanning
+  keyboard reports changes against its own internal map, and that map is what those
+  events clear, so the next scan sees the still-closed switch as new.
+
+The second half is what makes "latch Caps Lock, then start the machine" reach software
+at all, and the Flush is the easy one to miss: the Mac ROM's ADB init is SendReset →
+enumerate → **Flush each device**, so a key-down replayed only at the reset is
+discarded microseconds later.
+
+It matters because classic Mac OS never reads Register 2 — measured as zero Talk R2
+commands across full boots of System 7.0.1 and 7.5 on three machines. It builds
+`KeyMap` from the Register 0 transition stream, and `KeyMap` is what software actually
+tests: Copland's boot blocks pick between the NuKernel loader and an ordinary boot on
+`btst #1,($017B).w`, the KeyMap bit for key `$39`.
+
 ### Handler IDs
 
 - Standard Keyboard: `$02` (Apple Standard), `$01` (old)

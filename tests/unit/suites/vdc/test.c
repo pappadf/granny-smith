@@ -172,6 +172,14 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     (void)out_len;
     return false;
 }
+uint8_t adb_keyboard_address(adb_t *adb) {
+    (void)adb;
+    return 2;
+}
+uint8_t adb_mouse_address(adb_t *adb) {
+    (void)adb;
+    return 3;
+}
 
 // --- object model: registration is skipped when object_new returns NULL ---
 struct object *machine_object(void) {
@@ -567,7 +575,7 @@ int main(void) {
     ASSERT_TRUE(s_st.civic != NULL);
     s_st.vdc = av_vdc_init(&s_cfg, NULL);
     ASSERT_TRUE(s_st.vdc != NULL);
-    s_st.cuda = av_cuda_init((struct via *)&s_st, NULL, NULL, NULL, NULL);
+    s_st.cuda = av_cuda_init((struct via *)&s_st, NULL, NULL, NULL, NULL, /*mode3_clock=*/false);
     ASSERT_TRUE(s_st.cuda != NULL);
     av_cuda_attach_vdc(s_st.cuda, s_st.vdc);
 

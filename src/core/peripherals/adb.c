@@ -283,6 +283,73 @@ static bool device_has_pending_data(const adb_t *adb, uint8_t addr) {
     return false;
 }
 
+// ADB virtual key codes of the keys that Register 2 reports.  Caps Lock is the
+// one that matters for booting Copland: on a real Apple keyboard it is a
+// mechanically LOCKING switch, and so is the only one that can already be down
+// when the machine is powered on.  Two consequences, both modelled: the OS can
+// read the latch here (this register is the only place it is visible as state),
+// and the latch survives a bus reset (see adb_reset).
+#define ADB_KEY_DELETE   0x33
+#define ADB_KEY_CAPSLOCK 0x39
+#define ADB_KEY_CONTROL  0x36
+#define ADB_KEY_SHIFT    0x38
+#define ADB_KEY_OPTION   0x3A
+#define ADB_KEY_COMMAND  0x37
+#define ADB_KEY_CLEAR    0x47 // keypad Clear, doubles as Num Lock
+#define ADB_KEY_F14      0x6B // doubles as Scroll Lock
+
+// Re-reports a latched Caps Lock on Register 0 after something has cleared the
+// keyboard's idea of what it last sent — a bus reset or a Flush.  Caps Lock is
+// the only key this can apply to, because it is the only one that is a
+// mechanically locking switch rather than a momentary contact: it is still
+// closed afterwards, and a matrix-scanning keyboard reports a change against
+// its own cleared state, so the next scan sends a fresh key-down.
+//
+// Both events need it, and the second is the one that is easy to miss.  The
+// ROM's ADB init does SendReset, enumerates by shuffling addresses through 15,
+// and then Flushes each device to drop stale data — so a key-down replayed at
+// the reset is thrown away a few hundred microseconds later and never reaches
+// software.
+//
+// This behaviour is deduced rather than documented, so here is the argument.
+// Copland's boot blocks decide with `btst #1,($017B).w`, KeyMap's bit for key
+// 0x39; classic Mac OS builds KeyMap only from the Register 0 transition
+// stream, and this ROM issues zero Talk R2 commands across a whole boot
+// (measured).  Apple's own instructions are "put down the Caps Lock key" and
+// then restart, and that worked on the real machines.  For all three to be
+// true, the keyboard must report a still-latched Caps Lock after the ADB init
+// has cleared it — there is no other path from the switch to that bit.  The
+// claim is falsifiable and was falsified in the useful direction: with this,
+// the latch diverts the boot into the NuKernel loader; without it, the machine
+// starts System 7.5 and the bit is never set.
+static void kbd_relatch_capslock(adb_t *adb, const char *why) {
+    if (!adb->kbd_pressed[ADB_KEY_CAPSLOCK])
+        return;
+    LOG(2, "%s: Caps Lock is a locking switch and is still latched: re-reporting the key-down", why);
+    kbd_enqueue(adb, ADB_KEY_CAPSLOCK);
+}
+
+// Where the keyboard and mouse currently live on the bus (Listen R3 moves
+// them; see adb.h).
+uint8_t adb_keyboard_address(adb_t *adb) {
+    return adb ? adb->kbd.address : 2;
+}
+
+uint8_t adb_mouse_address(adb_t *adb) {
+    return adb ? adb->mouse.address : 3;
+}
+
+// The two halves of carrying the mechanical latch across machine.restart
+// (machine.c reads it off the old machine and re-latches on the new one).
+bool adb_capslock_latched(adb_t *adb) {
+    return adb && adb->kbd_pressed[ADB_KEY_CAPSLOCK];
+}
+
+void adb_capslock_latch(adb_t *adb) {
+    if (adb)
+        adb_keyboard_event(adb, key_down, ADB_KEY_CAPSLOCK);
+}
+
 // Resets all ADB devices to power-on defaults and clears all data queues
 static void adb_reset(adb_t *adb) {
     LOG(2, "adb_reset: resetting all devices to defaults");
@@ -293,7 +360,14 @@ static void adb_reset(adb_t *adb) {
     adb->mouse.handler = MOUSE_HANDLER_ID;
 
     kbd_queue_reset(adb);
+
+    // Every momentary key comes up released, but a bus reset does not unlatch a
+    // mechanically locking Caps Lock — so it is kept, and Register 2 keeps
+    // reporting it (see kbd_relatch_capslock for the Register 0 half).
+    bool caps_latched = adb->kbd_pressed[ADB_KEY_CAPSLOCK];
     memset(adb->kbd_pressed, 0, sizeof(adb->kbd_pressed));
+    adb->kbd_pressed[ADB_KEY_CAPSLOCK] = caps_latched;
+    kbd_relatch_capslock(adb, "reset");
 
     adb->mouse_dx = 0;
     adb->mouse_dy = 0;
@@ -321,6 +395,7 @@ static void flush_device(adb_t *adb, uint8_t addr) {
     if (addr == adb->kbd.address) {
         LOG(2, "flush_device: flushing keyboard at addr %d", addr);
         kbd_queue_reset(adb);
+        kbd_relatch_capslock(adb, "flush_device");
     } else if (addr == adb->mouse.address) {
         LOG(2, "flush_device: flushing mouse at addr %d", addr);
         adb->mouse_dx = 0;
@@ -391,6 +466,44 @@ static void prepare_reg3_reply(adb_t *adb, const adb_device_t *dev) {
     adb->reply_len = 2;
 }
 
+// Populates reply_buf with Keyboard Register 2 (modifier keys + LEDs).
+//
+// Layout per docs/core/peripherals/adb.md "Register 2 (Modifier Keys)": a 0 bit
+// means the key is DOWN or the LED is ON; every unused/reserved bit reads 1.
+// The modifier bits are derived from kbd_pressed[] rather than kept as separate
+// state, so a key held with `keyboard.down` stays reported until `keyboard.up`
+// — which is exactly how a locking Caps Lock behaves.  The Caps Lock LED
+// mirrors the key, as it does on real hardware.
+static void prepare_kbd_reg2_reply(adb_t *adb) {
+    uint16_t reg2 = 0xFFFF; // nothing pressed, no LED lit
+
+    // Bit N clears while the corresponding key is held.
+    if (adb->kbd_pressed[ADB_KEY_DELETE])
+        reg2 &= (uint16_t) ~(1u << 14);
+    if (adb->kbd_pressed[ADB_KEY_CAPSLOCK])
+        reg2 &= (uint16_t) ~(1u << 13);
+    if (adb->kbd_pressed[ADB_KEY_CONTROL])
+        reg2 &= (uint16_t) ~(1u << 11);
+    if (adb->kbd_pressed[ADB_KEY_SHIFT])
+        reg2 &= (uint16_t) ~(1u << 10);
+    if (adb->kbd_pressed[ADB_KEY_OPTION])
+        reg2 &= (uint16_t) ~(1u << 9);
+    if (adb->kbd_pressed[ADB_KEY_COMMAND])
+        reg2 &= (uint16_t) ~(1u << 8);
+    if (adb->kbd_pressed[ADB_KEY_CLEAR])
+        reg2 &= (uint16_t) ~(1u << 7);
+    if (adb->kbd_pressed[ADB_KEY_F14])
+        reg2 &= (uint16_t) ~(1u << 6);
+
+    // LED 2 (Caps Lock) follows the key; LEDs 1 and 3 stay off.
+    if (adb->kbd_pressed[ADB_KEY_CAPSLOCK])
+        reg2 &= (uint16_t) ~(1u << 1);
+
+    adb->reply_buf[0] = (uint8_t)(reg2 >> 8);
+    adb->reply_buf[1] = (uint8_t)(reg2 & 0xFF);
+    adb->reply_len = 2;
+}
+
 // Configures a "no device" reply: zero bytes cause bit3=0 on the first SR interrupt
 static void prepare_no_device_reply(adb_t *adb) {
     // reply_len=0 means the first call to adb_deliver_next_byte() immediately
@@ -435,8 +548,15 @@ static void prepare_talk_reply(adb_t *adb, uint8_t addr, uint8_t reg) {
             LOG(2, "talk R3 unknown addr=%d: no device", addr);
             prepare_no_device_reply(adb);
         }
+    } else if (reg == 2 && addr == adb->kbd.address) {
+        // Keyboard Register 2 is a state register, not an event queue: it
+        // always answers, whether or not any key has changed since the last
+        // poll.  This is how the OS learns that Caps Lock is latched.
+        prepare_kbd_reg2_reply(adb);
+        LOG(2, "talk R2 kbd: [%02X %02X]", adb->reply_buf[0], adb->reply_buf[1]);
     } else {
-        // Registers 1 and 2 are not implemented; treat as no device
+        // Register 1 is unused, and only the keyboard implements Register 2;
+        // anything else reads as no device.
         LOG(2, "talk R%d addr=%d: unimplemented register", reg, addr);
         prepare_no_device_reply(adb);
     }
@@ -451,14 +571,40 @@ static void apply_listen_data(adb_t *adb) {
     }
 
     if (adb->listen_reg == 3) {
-        // Register 3: update device address (byte 0 bits 3-0) and handler (byte 1)
+        // Register 3.  The handler byte selects a COMMAND, not a value to
+        // store (ADB spec; both the ROM's enumeration and Copland's
+        // FullProbe depend on it):
+        //   $FE — change address (if no collision; none are modelled),
+        //         PRESERVE the handler ID
+        //   $00 — change address unconditionally, preserve the handler
+        //   $FF — initiate self-test: no state change
+        //   $FD — change address only if the activator is pressed: not
+        //         modelled, no state change
+        //   else — adopt the handler ID (a real device only adopts IDs it
+        //         implements; ours adopt any plain ID), address unchanged
+        // Storing $FE literally is how Copland's ADB server came to see
+        // "not a mouse" when it read R3 back after a move, and dropped the
+        // device — its boot console's "ADB device @ 0 = 3-FE" was this
+        // model talking.
         adb_device_t *dev = find_device(adb, adb->listen_addr);
         if (dev) {
             uint8_t new_addr = adb->listen_buf[0] & 0x0F;
-            uint8_t new_handler = adb->listen_buf[1];
-            LOG(2, "listen R3 addr=%d: new_addr=%d handler=0x%02X", adb->listen_addr, new_addr, new_handler);
-            dev->address = new_addr;
-            dev->handler = new_handler;
+            uint8_t cmd_byte = adb->listen_buf[1];
+            switch (cmd_byte) {
+            case 0x00:
+            case 0xFE:
+                LOG(2, "listen R3 addr=%d: move to addr=%d (handler preserved)", adb->listen_addr, new_addr);
+                dev->address = new_addr;
+                break;
+            case 0xFD:
+            case 0xFF:
+                LOG(2, "listen R3 addr=%d: command 0x%02X (no state change)", adb->listen_addr, cmd_byte);
+                break;
+            default:
+                LOG(2, "listen R3 addr=%d: handler 0x%02X adopted", adb->listen_addr, cmd_byte);
+                dev->handler = cmd_byte;
+                break;
+            }
         } else {
             LOG(2, "listen R3 unknown addr=%d, ignoring", adb->listen_addr);
         }

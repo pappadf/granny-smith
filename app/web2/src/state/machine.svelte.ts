@@ -54,6 +54,12 @@ interface MachineState {
   // flashes its CP glyph on each push and shows this in the tooltip.
   checkpoint: { at: number; ms: number } | null;
   scheduler: SchedulerMode;
+  // Caps Lock latch. Caps Lock is a mechanically locking key on the emulated
+  // keyboards, and booting Copland D11E4 requires it latched across a
+  // (re)boot — no browser reports the host key as held, so the latch is UI
+  // state: toggled from the status bar, pushed to the live machine, and
+  // re-asserted after every boot/restart (bus/emulator.ts).
+  capsLock: boolean;
   // Effective CPU speed multiplier the core is currently applying (1 = the
   // original Mac's speed). Only meaningful — and only shown — in `accel` mode,
   // where the adaptive governor moves it; pushed from the core on change
@@ -80,6 +86,7 @@ export const machine: MachineState = $state({
   driveActivity: { hd: 'idle', fd: 'idle', cd: 'idle' },
   checkpoint: null,
   scheduler: 'live',
+  capsLock: false,
   acceleratedSpeed: 1,
   mips: 0,
   ticksPerSecond: 0,

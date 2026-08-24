@@ -45,6 +45,15 @@ void rtc_set_via(rtc_t *restrict rtc, via_t *via);
 // Used by the `set-time` script command to make boot deterministic.
 void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds);
 
+// Deterministic boot seed. `rtc.time = N` set before machine.boot stages N
+// here; a machine's cold-boot path may adopt it via rtc_take_boot_seed so the
+// pin survives into the freshly-constructed RTC (simulated-time determinism)
+// instead of being overwritten by the host wall clock. take is one-shot:
+// it returns false and leaves the RTC on its wall-clock default when nothing
+// was staged, so machines that don't opt in are unaffected.
+void rtc_stage_boot_seed(uint32_t mac_seconds);
+bool rtc_take_boot_seed(uint32_t *out);
+
 // === M7b — object-model accessors ===========================================
 //
 // Read-only views and a controlled PRAM-write helper for the `rtc`

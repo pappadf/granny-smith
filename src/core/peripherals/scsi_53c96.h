@@ -64,4 +64,10 @@ void scsi_53c96_pdma_write8(scsi_53c96_t *c, uint8_t value);
 // Live DRQ output (for the TurboSCSI DRQ-status bit).
 bool scsi_53c96_dreq(scsi_53c96_t *c);
 
+// The target left the data phase with a DMA read still armed — a short
+// transfer.  For a bus master (the PDM's AMIC pump) the phase change is
+// visible before the chip is asked for another byte, so the master calls
+// this to let the chip terminate the command the way real hardware does.
+void scsi_53c96_dma_short_transfer(scsi_53c96_t *c);
+
 #endif // SCSI_53C96_H

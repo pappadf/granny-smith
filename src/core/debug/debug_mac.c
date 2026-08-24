@@ -912,6 +912,10 @@ int debug_mac_resolve_key_name(const char *name) {
         return 0x3A;
     if (!strcasecmp(name, "control") || !strcasecmp(name, "ctrl"))
         return 0x36;
+    // Caps Lock is a locking switch on real Apple keyboards: hold it with
+    // keyboard.down and it stays reported in ADB Register 2 until keyboard.up.
+    if (!strcasecmp(name, "capslock") || !strcasecmp(name, "caps"))
+        return 0x39;
 
     // Hex keycode (e.g., 0x24)
     if (name[0] == '0' && (name[1] == 'x' || name[1] == 'X')) {
