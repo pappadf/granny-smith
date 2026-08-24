@@ -14,11 +14,14 @@ static const uint32_t pm7500_ram_options_kb[] = {16384, 32768, 65536, 131072, 26
 
 static const tnt_board_desc_t pm7500_board = {
     // BoxID (little-endian bit numbering): bit 15 pulled high, bit 14 MESH
-    // present, bit 8 factory-test strap idle-high, model code %10 at bits
-    // 12-11 (STARTING GUESS — the 9500/8500 codes %00/%01 are community-
-    // attested, the 7500's is pinned at ladder rung T4 from the
-    // `compatible` string the ROM's Open Firmware emits).
-    .boxid = 0x8000u | 0x4000u | 0x1000u | 0x0100u,
+    // present, bit 8 factory-test strap CLEAR (set sends the ROM into its
+    // serial test monitor), model code %11 at bits 12-11 as the 7500
+    // GUESS (%00/%01 are the community-attested 9500/8500 codes).  Still
+    // open at the Phase B wall: the 68k BoxFlag reads $66 (the 7200
+    // fallback) for every code tried, so the ROM's model dispatch reads
+    // more than these bits — re-pinned at rung T11 when the About box is
+    // visible (the proposal's T4 method needs the deeper boot stages).
+    .boxid = 0x8000u | 0x4000u | 0x1800u,
     .bus_hz = 50000000u, // 2:1 bus (100 MHz 601 card)
     .bandit_count = 1,
 };

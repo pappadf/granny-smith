@@ -30,6 +30,7 @@
 
 #include "log.h"
 #include "ppc.h"
+#include "scc.h"
 #include "via.h"
 
 #include <string.h>
@@ -90,8 +91,27 @@ LOG_USE_CATEGORY_NAME("gc");
 void tnt_gc_recompute(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_gc_t *gc = &st->gc;
-    bool line = ((gc->int_events | gc->int_levels) & gc->int_mask) != 0;
+    // Clear-mode 1 (the NanoKernel's scheme, selected by the $80000000
+    // acknowledge): the CPU line is an OUTPUT LATCH — set by enabled
+    // source edges, cleared by the acknowledge, re-asserted only by the
+    // NEXT edge.  The handler classifies from Levels & Mask; a level a
+    // guest leaves unserviced does not re-fire until its next edge, and
+    // the kernel's rfi does not land straight back in the handler.
+    // Mode 0 (power-on; the MkLinux scheme): combinational
+    // ((events | levels) & mask), with Events cleared by explicit W1C.
+    bool line;
+    if (gc->int_mode1)
+        line = gc->int_latch != 0;
+    else
+        line = ((gc->int_events | gc->int_levels) & gc->int_mask) != 0;
     ppc_set_ext_irq(cfg->ppc, line);
+}
+
+// An enabled source edge sets the mode-1 output latch.
+static void gc_edge(tnt_gc_t *gc, uint32_t bit) {
+    gc->int_events |= bit;
+    if (gc->int_mask & bit)
+        gc->int_latch = 1;
 }
 
 void tnt_gc_set_source(config_t *cfg, int n, bool level) {
@@ -100,10 +120,10 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level) {
     bool was = (gc->int_levels & bit) != 0;
     if (level) {
         gc->int_levels |= bit;
-        // Events latches source EDGES; a still-asserted source re-latches
+        // Events latch source EDGES; a still-asserted source re-latches
         // only on its next assertion edge.
         if (!was)
-            gc->int_events |= bit;
+            gc_edge(gc, bit);
     } else {
         gc->int_levels &= ~bit;
     }
@@ -112,7 +132,7 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level) {
 
 void tnt_gc_pulse_event(config_t *cfg, int n) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
-    gc->int_events |= 1u << n;
+    gc_edge(gc, 1u << n);
     tnt_gc_recompute(cfg);
 }
 
@@ -141,14 +161,29 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
     case INT_EVENTS:
     case INT_CLEAR:
         // W1C into Events — except the mode-acknowledge bit, which clears
-        // nothing (see INT_MODE_ACK above).
+        // no device bits (see INT_MODE_ACK above).  A Clear write also
+        // selects the clear mode from bit 31: the NanoKernel writes
+        // $80000000 on every interrupt (mode 1), MkLinux writes the event
+        // bits themselves (mode 0).
         gc->int_events &= ~(value & ~INT_MODE_ACK);
-        LOG(3, "clear $%08X -> events $%08X", value, gc->int_events);
+        if (offset == INT_CLEAR) {
+            gc->int_mode1 = (value & INT_MODE_ACK) != 0;
+            if (gc->int_mode1)
+                gc->int_latch = 0; // the acknowledge drops the line
+        }
+        LOG(3, "clear $%08X -> events $%08X (mode %d)", value, gc->int_events, gc->int_mode1);
         break;
-    case INT_MASK:
+    case INT_MASK: {
+        // Enabling a source whose event or level is already pending
+        // counts as an edge for the mode-1 latch (the enable is the first
+        // moment the controller may assert for it).
+        uint32_t newly = value & ~gc->int_mask;
         gc->int_mask = value;
+        if ((gc->int_events | gc->int_levels) & newly)
+            gc->int_latch = 1;
         LOG(3, "mask = $%08X", value);
         break;
+    }
     case INT_LEVELS:
         LOG(2, "write to read-only Levels ($%08X) ignored", value);
         break;
@@ -203,12 +238,28 @@ void tnt_gc_init(config_t *cfg) {
     gc->nvram_bank = 0;
 }
 
+// Map an ESCC-aperture offset (+$13000: B ctl +$00 / B data +$10 /
+// A ctl +$20 / A data +$30) onto the SCC cell's classic address pins
+// (A/B on address bit 1, D/C on bit 2 — the legacy-aperture layout the
+// shared model decodes natively).
+static uint32_t escc_pins(uint32_t off) {
+    uint32_t ab = (off >> 5) & 1u; // A channel at +$20
+    uint32_t dc = (off >> 4) & 1u; // data register at +$10
+    return (ab << 1) | (dc << 2);
+}
+
 uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
     uint32_t block = offset & 0x1F000u;
     switch (block) {
     case OFF_VIA:
     case OFF_VIA + 0x1000: // 16 regs at stride $200 span the 8 KB window
         return via_get_memory_interface(cfg->via1)->read_uint8(cfg->via1, offset - OFF_VIA);
+    case OFF_SCCLEG:
+        // Legacy aperture: +0 bCtl / +2 aCtl / +4 bData / +6 aData — the
+        // low offset bits carry the chip's A/B and D/C pins directly.
+        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, offset - OFF_SCCLEG);
+    case OFF_ESCC:
+        return scc_get_memory_interface(cfg->scc)->read_uint8(cfg->scc, escc_pins(offset - OFF_ESCC));
     case OFF_NVPORT:
         return tnt_st(cfg)->gc.nvram_bank;
     case OFF_NVDATA:
@@ -232,6 +283,12 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
     case OFF_VIA:
     case OFF_VIA + 0x1000:
         via_get_memory_interface(cfg->via1)->write_uint8(cfg->via1, offset - OFF_VIA, value);
+        return;
+    case OFF_SCCLEG:
+        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, offset - OFF_SCCLEG, value);
+        return;
+    case OFF_ESCC:
+        scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, escc_pins(offset - OFF_ESCC), value);
         return;
     case OFF_NVPORT:
         tnt_st(cfg)->gc.nvram_bank = value;

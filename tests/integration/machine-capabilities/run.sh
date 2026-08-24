@@ -18,7 +18,7 @@ OUT="$WORK_DIR/profiles.txt"
 SCRIPT="$WORK_DIR/profiles.script"
 mkdir -p "$WORK_DIR"
 
-MODELS="plus se30 iicx iix iifx iici iisi q840av q660av pm6100 pm7100 pm8100 lisa macxl"
+MODELS="plus se30 iicx iix iifx iici iisi q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 lisa macxl"
 
 : > "$SCRIPT"
 for m in $MODELS; do
@@ -209,6 +209,29 @@ done
 assert_contains pm6100 '"freq":60000000' "pm6100 runs at 60 MHz"
 assert_contains pm7100 '"freq":66000000' "pm7100 runs at 66 MHz"
 assert_contains pm8100 '"freq":80000000' "pm8100 runs at 80 MHz"
+
+# The TNT family (Phase B skeleton): the 7500 keeps the 601, the
+# 8500/9500 are the first 604 machines; no media bays are offered yet —
+# floppy arrives with the SWIM3/DBDMA datapath (Phase F) and SCSI with
+# MESH (Phase E), and a modelled drive is not evidence the guest can use
+# it (the PDM precedent above).  No NuBus on a PCI machine; PCI slot
+# capability arrives with the pluggable-card follow-up.
+assert_contains pm7500 '"model":601' "pm7500 is a PowerPC 601"
+assert_contains pm7500 '"kind":"ppc_601"' "pm7500 has the 601 MMU"
+for m in pm8500 pm9500; do
+    assert_contains "$m" '"model":604' "$m is a PowerPC 604"
+    assert_contains "$m" '"kind":"ppc_604"' "$m has the 604 split-BAT MMU"
+done
+for m in pm7500 pm8500 pm9500; do
+    assert_contains "$m" '"fpu":true' "$m has the FPU datapath"
+    assert_contains "$m" '"address_bits":32' "$m is 32-bit"
+    assert_contains "$m" '"nubus":false' "$m has no NuBus"
+    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy bay before Phase F"
+    assert_contains "$m" '"scsi_slots":[]' "$m offers no SCSI slots before Phase E"
+done
+assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
+assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"
+assert_contains pm9500 '"freq":132000000' "pm9500 runs at 132 MHz"
 
 assert_contains q840av '"freq":40000000' "q840av runs at 40 MHz"
 assert_contains q660av '"freq":25000000' "q660av runs at 25 MHz"

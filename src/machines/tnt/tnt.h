@@ -111,10 +111,16 @@ typedef struct tnt_bandit {
 typedef struct tnt_gc {
     // Interrupt controller (little-endian bit numbering, bit 0 = LSB):
     // Events edge-latches source rising edges, Levels is the live source
-    // picture, and the CPU line follows ((events | levels) & mask).
+    // picture.  Two clear modes (grand_central.c): mode 0 (power-on) has
+    // the CPU line follow ((events | levels) & mask); a Clear write with
+    // bit 31 — the NanoKernel's ifMode1Clear acknowledge — selects mode 1,
+    // where the line follows (levels & mask) alone.
     uint32_t int_events;
     uint32_t int_mask;
     uint32_t int_levels; // live source levels (mirror of the source state)
+    uint8_t int_mode1; // Clear-mode 1 selected (see above)
+    uint8_t int_latch; // mode-1 output latch: set by enabled source edges,
+                       // cleared by the $80000000 acknowledge
     uint8_t nvram_bank; // +$1D000 bank-select port (bank = offset / 32)
     uint8_t nvram[TNT_NVRAM_SIZE];
 } tnt_gc_t;

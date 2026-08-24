@@ -1,0 +1,87 @@
+# TNT ROM boot ladder (proposal-powermac-7500-8500-9500 §7.1).
+#
+# Every assertion is a hardware truth read from the live machine after a
+# clean bounded run — deliberately NO PC logpoints/breakpoints (the PDM
+# precedent: the debugger suppresses branch folding and skews any
+# guest-timed measurement).
+#
+# Boot shape on this platform (unlike PDM, where HWInit did everything):
+# NanoKernel reset entry at $FFF00100 consumes ConfigInfo and builds the
+# MMU, the ROM's own Open Firmware then brings up the hardware — probing
+# Hammerhead/Bandit/Grand Central, sizing memory, writing its environment
+# into the Grand Central NVRAM — before POST and the 68k emulator take
+# over.  The budget below runs through all of that to the 68k Start
+# Manager, which parks at the Phase-D video wall (no Control model yet).
+
+include "../lib/mac.script"
+
+machine.boot model="pm7500" ram=32768 rom="${$ROM}"
+
+# T1: the CPU comes out of reset at the documented vector (ROM base +
+# $300100 — the NanoKernel reset entry in the exception-table component).
+assert machine.cpu.pc == 0xFFF00100 "T1: reset vector != $FFF00100"
+
+# 600M instructions: NanoKernel init, the Cuda pixel-clock I2C triple,
+# Open Firmware bring-up (chipset probe, memory sizing, NVRAM
+# environment), POST, the 68k emulator dispatch storm, 68k low-memory
+# init, timer calibration, and the live 60.15 Hz tick chain.
+scheduler.run 600000000
+
+# --- T2: the kernel rebuilt its MMU for the REAL memory size -----------------
+# After Open Firmware sizes the 32 MB, the NanoKernel re-derives its
+# layout: HTAB at $01FE0000 with HTABMASK 1.  Impossible unless kernel
+# init ran twice with OF's measurement in between.
+assert machine.cpu.sdr1 == 0x01FE0001 "T2: SDR1/HTAB not at the 32 MB layout"
+
+# --- T4 (partial): the chipset identity registers answer ---------------------
+# Hammerhead's part identifier (POST gates on the $3001 upper halfword)
+# and BoxID's model/feature byte (little-endian byte 1: bit 15 strap,
+# bit 14 MESH present, the model code at bits 12-11).  The full T4
+# compatible-string pinning waits for the Phase-D About box.
+assert machine.memory.peek.l(0xF8000000) == 0x30010000 "T4: Hammerhead ID != $3001xxxx"
+assert machine.memory.peek.b(0xF301A001) == 0xD8 "T4: BoxID model byte"
+
+# --- T3: Open Firmware initialised its NVRAM environment ---------------------
+# The banked store's top bank carries the packed OF config-variable
+# strings ("boot", "ttya", "/AAPL,ROM" ...) the firmware writes on a
+# first boot over a blank store — proof the two-aperture banked NVRAM
+# model works end-to-end (bank port + $10-centre data window).
+machine.memory.poke.b(0xF301D000, 255)
+assert machine.memory.peek.b(0xF301F030) == 0x62 "T3: OF environment 'boot' missing from NVRAM"
+assert machine.memory.peek.b(0xF301F180) == 0x41 "T3: OF environment '/AAPL,ROM' missing from NVRAM"
+machine.memory.poke.b(0xF301D000, 0)
+
+# --- T7: the 68k emulator is dispatching real 68k ROM code -------------------
+# The 68k Start Manager initialised low memory: ROMBase carries the TNT
+# ROM base (the 68k sees the ROM at its physical home, DecoderInfo[0]),
+# memory sizing ran (MemTop at the 32 MB kernel-carved top), and the
+# timer calibration wrote TimeDBRA.
+assert debug.mac.globals.read("ROMBase") == 0xFFC00000 "T7: 68k low memory not initialized (ROMBase)"
+assert debug.mac.globals.read("MemTop") == 0x1FD6000 "T7: MemTop not at the 32 MB layout"
+assert machine.memory.peek.w(0xD00) != 0 "T7: TimeDBRA calibration missing"
+
+# --- T8: the 60.15 Hz tick chain runs at rate --------------------------------
+# VIA1 T1 -> Grand Central interrupt 18 -> 604/601 external interrupt ->
+# NanoKernel ExtIntHandlerTNT (mode-1 acknowledge) -> emulated 68k IPL-1
+# handler incrementing Ticks.  The band allows service jitter, not clock
+# error (the PDM L17 precedent).
+assert debug.mac.globals.read("Ticks") != 0 "T8: 68k tick handler not running (Ticks)"
+let k0 = debug.mac.globals.read("Ticks")
+let c0 = scheduler.cycles
+scheduler.run 120000000
+let dticks = debug.mac.globals.read("Ticks") - $k0
+let dcyc = scheduler.cycles - $c0
+# 60.15 Hz against the 100 MHz cycle clock: expected = dcyc * 60.15 / 100e6
+let expect = $dcyc * 6015 / 100 / 100000000
+assert $dticks >= $expect - 10 "T8: tick rate low (${$dticks} vs ~${$expect})"
+assert $dticks <= $expect + 10 "T8: tick rate high (${$dticks} vs ~${$expect})"
+
+# The T5/T6 markers (the OF memory-sizing sequence against Hammerhead,
+# the device-tree oracle) are asserted transitively for now — MemTop and
+# the kernel's 32 MB layout are downstream of OF's sizing — and get their
+# own direct rows when the R1 Hammerhead access log is fitted.  T9-T13
+# (interrupt-semantics hardening, chime, video, SCSI, Finder) are Phases
+# C-E.
+
+echo "tnt-rom-ladder: high-water rung T8 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} memtop=${debug.mac.globals.read("MemTop"):08x})"
+quit

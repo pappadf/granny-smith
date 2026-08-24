@@ -18,7 +18,7 @@ static const tnt_board_desc_t pm8500_board = {
     // 8500), MESH present, idle-high straps.  Bit 13 (composite video /
     // Sixty6 present) stays CLEAR while the AV subsystem is unmodeled so
     // nothing probes for it; revisited with the gated AV phase.
-    .boxid = 0x8000u | 0x4000u | 0x0800u | 0x0100u,
+    .boxid = 0x8000u | 0x4000u | 0x0800u,
     .bus_hz = 40000000u, // 3:1 bus (120 MHz 604 card)
     .bandit_count = 2,
 };

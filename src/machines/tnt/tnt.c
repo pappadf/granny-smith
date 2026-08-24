@@ -37,6 +37,7 @@
 #include "mac_host_io.h"
 #include "ppc.h"
 #include "rtc.h"
+#include "scc.h"
 #include "scheduler.h"
 #include "via.h"
 
@@ -224,6 +225,17 @@ static void tnt_via1_irq(void *context, bool active) {
         tnt_gc_set_source(cfg, TNT_INT_VIA1, active);
 }
 
+// SCC chip INT (one line for both channels) -> Grand Central interrupts 15
+// (ch A) and 16 (ch B) together; the guest discriminates channels via
+// RR2B/RR3 exactly as on every other Mac.  Both classify to 68k IPL 4.
+static void tnt_scc_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    if (!tnt_st(cfg))
+        return;
+    tnt_gc_set_source(cfg, TNT_INT_SCCA, active);
+    tnt_gc_set_source(cfg, TNT_INT_SCCB, active);
+}
+
 // ============================================================
 // Substrate lifecycle
 // ============================================================
@@ -254,6 +266,15 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+
+    // The ESCC cell behind the Grand Central decode, reachable through two
+    // apertures (legacy +$12000 for the 68k Serial Driver, ESCC +$13000
+    // for Open Firmware/native drivers — grand_central.c).  Clocks follow
+    // the PDM values pending a TNT-specific measurement.  The chip's one
+    // INT line fans to Grand Central interrupts 15/16 (ch A/B) — per-
+    // channel splitting arrives with the Phase F serial datapath.
+    cfg->scc = scc_init(NULL, cfg->scheduler, tnt_scc_irq, cfg, cp);
+    scc_set_clocks(cfg->scc, 15667200, 3672000);
 
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
     // $200 centres.  Timer clock: 783.36 kHz is the classic rate and the
@@ -313,6 +334,7 @@ static void tnt_reset(config_t *cfg) {
     ppc_reset(cfg->ppc);
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    scc_reset(cfg->scc);
     for (int i = 0; i < st->bridge_count; i++) {
         st->bridge[i].cfg_addr = 0;
         st->bridge[i].mode_select = 0;
@@ -335,6 +357,10 @@ static void tnt_teardown(config_t *cfg) {
     if (cfg->via1) {
         via_delete(cfg->via1);
         cfg->via1 = NULL;
+    }
+    if (cfg->scc) {
+        scc_delete(cfg->scc);
+        cfg->scc = NULL;
     }
     if (cfg->rtc) {
         rtc_delete(cfg->rtc);
@@ -370,6 +396,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     ppc_checkpoint(cfg->ppc, cp);
     scheduler_checkpoint(cfg->scheduler, cp);
     rtc_checkpoint(cfg->rtc, cp);
+    scc_checkpoint(cfg->scc, cp);
     via_checkpoint(cfg->via1, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
