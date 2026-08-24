@@ -31,9 +31,12 @@
 #
 # All three rows share one recipe (boot_pdm_75):
 #
-#   * machine.rtc.time is pinned — boot-code load addresses and the
-#     menu-bar clock are then byte-deterministic run to run (measured:
-#     identical instruction counts across independent daemon processes).
+#   * machine.rtc.time is pinned AFTER machine.boot (boot reseeds the RTC
+#     from the host wall clock, so a pre-boot set is discarded).  Setting it
+#     after boot makes the menu-bar clock byte-deterministic run to run —
+#     it now shows a fixed 0xE0000000 time instead of the host's, once the
+#     Cuda Mode3Clock tick delivers the RTC to the OS (the clock region is
+#     masked by check_ex regardless, but a deterministic clock is correct).
 #   * After 360 M instructions the boot is parked in the Start Manager's
 #     WaitForPollDrive loop (the drive-spin-up window: FindStartupDevice
 #     polls ITTBOOT every 15 ticks until the PRAM timeout, default 20 s).
@@ -74,8 +77,8 @@ let fd_boot = "../../data/systems/SSW-7.6-1.4M/Install 1.img"
 
 # Boot `model` from the prepared 7.5 image to a stable Finder desktop.
 def boot_pdm_75(model, ram_kb) {
-    machine.rtc.time = 0xE0000000
     machine.boot model=$model ram=$ram_kb rom="${$ROM}"
+    machine.rtc.time = 0xE0000000
     machine.scsi.attach_hd "${$hd_75}" 0
     # Chip init, bus scan, driver load, DQE post; parks in WaitForPollDrive.
     scheduler.run 360000000
@@ -196,8 +199,8 @@ def row_8100_75_24ac() {
 # are declared, they are empty, and the ROM still gets to its gray desktop"
 # is exactly the shape of this contract.
 def row_pdm_nubus_empty() {
-    machine.rtc.time = 0xE0000000
     machine.boot model="pm8100" ram=16384 rom="${$ROM}"
+    machine.rtc.time = 0xE0000000
     assert machine.nubus.slot[12].card_id == "" "slot C carries a staged pick"
     assert try(machine.nubus.slot[12].card.name, none) == none "slot C is populated"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
@@ -233,8 +236,8 @@ def row_pdm_nubus_empty() {
 # SPECIFIC socket is not re-seated on restore, on any machine (the record has
 # one video-card field — reproducible on a IIcx slot $A just the same).
 def row_pdm_nubus_checkpoint() {
-    machine.rtc.time = 0xE0000000
     machine.boot model="pm8100" ram=16384 rom="${$ROM}" video_card="24ac"
+    machine.rtc.time = 0xE0000000
     assert machine.nubus.slot[12].card.name == "Apple Macintosh Display Card 24AC (generic video ROM)" "wildcard pick did not seat in the first socket"
     scheduler.run 360000000
     let before = machine.screen.checksum()
@@ -445,8 +448,8 @@ def row_pdm_floppy_format() {
 # with; Disk Tools 2 is not in the fixture set.  Reaching that alert is itself
 # a floppy boot, but the Installer is the one that keeps running.
 def row_pdm_floppy_boot() {
-    machine.rtc.time = 0xE0000000
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.rtc.time = 0xE0000000
     machine.floppy.drive[0].insert "${$fd_boot}"
     assert machine.floppy.drive[0].present "boot floppy not in FD0"
     assert try(machine.scsi.device[0].type, none) == none "a SCSI disk is attached: this row must boot from the floppy"
