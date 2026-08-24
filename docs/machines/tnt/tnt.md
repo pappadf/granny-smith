@@ -140,23 +140,39 @@ the SuperMario ROM through low-memory init, timer calibration and the
 live tick chain.
 
 `tests/integration/tnt-rom-ladder` asserts the §7.1 ladder markers up to
-the committed high-water rung (currently **T9**: 68k dispatching, low
-memory live, the 60.15 Hz tick at rate, the DBDMA engine executing the
-ROM's own beep program — its descriptors live in ROM at `$FFE00090` —
-and the interrupt fabric's mode-1 discipline visible in the registers).
-The run parks at the Phase-D video wall (no Control model; `ScrnBase`
-stays 0).  The interrupt-fabric and engine semantics are additionally
-unit-pinned in `tests/unit/suites/tnt_gc` (the MkLinux initialisation
-sequence and events-driven acknowledge, the NanoKernel's `$80000000`
-mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA routing) and
-`tests/unit/suites/dbdma` (the engine in isolation).
+the committed high-water rung (currently **T10**: 68k dispatching as an
+identified Power Macintosh 7500, low memory live, the 60.15 Hz tick at
+rate, the DBDMA engine playing Open Firmware's beep — its descriptors
+live in ROM at `$FFE00090` — through the AWACS datapath against a
+sample-exact golden WAV, and the interrupt fabric's mode-1 discipline
+visible in the registers).  The run parks at the video wall (no Control
+model; `ScrnBase` stays 0).  The interrupt-fabric and engine semantics
+are additionally unit-pinned in `tests/unit/suites/tnt_gc` (the MkLinux
+initialisation sequence and events-driven acknowledge, the NanoKernel's
+`$80000000` mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA
+routing) and `tests/unit/suites/dbdma` (the engine in isolation).
+
+### Machine identity (solved)
+
+The shipping ROM's identification routine (`$FFC14844`) discriminates
+the family from THREE registers, not the community's BoxID bits-11/12
+reading: Hammerhead `+$00` first byte `$39` selects the TNT path (a
+`$3001xxxx` identifier is the 7200/Catalyst — the earlier reading that
+made every Phase-B boot a 7200), Hammerhead `+$20` bit 30 marks the
+9500, and BoxID little-endian bit 11 marks the 8500.  The synthesized
+`$302x` code selects among the ROM's four ProductInfo records
+(ProductKind `$3D`/`$3E`/`$3F`/`$66`).  All three profiles identify:
+`BoxFlag` `$3E`/`$3F`/`$3D` = gestalt 68/69/67.
 
 Known open items at this phase:
 
-- The BoxID model-code pinning (rung T4): the 68k `BoxFlag` reads `$66`
-  (the 7200 fallback) for every 2-bit code tried, so the ROM's model
-  dispatch reads more of the register than bits 11-12; re-examined at the
-  Phase-D About box.
+- Rung T11 (Control video): even with the identity solved, Open
+  Firmware never probes the Chaos bridge (nor the GC `+$1C000` aperture
+  its tree-construction literals reference), so no `control` node — and
+  with it no `ndrv` — exists and `ScrnBase` stays 0.  What gates OF's
+  display-bus probe is the open question of the video phase.
+- The 68k startup chime does not play at the current wall (the OF beep
+  is rung T10's instrument); revisit when the boot advances.
 - The 7500's 601 RTC tick source keeps the PDM 7,833,600 Hz assumption
   until a ladder rung measures it (proposal §4.4).
 - The `interruptableDeviceTable` / per-channel SCC interrupt split: the
