@@ -137,6 +137,13 @@ struct av_cuda {
     struct adb *adb;
     struct scheduler *sched;
     struct av_vdc *vdc; // I2C targets behind pseudo-command $22 (may be NULL)
+
+    // Fixed machine property (config, not guest state): whether the one-second
+    // tick may carry the RTC in the Mode3Clock RdTime form.  Enabled only for
+    // the PDM family, whose live guest clock needs a real seed; the AV Quadras
+    // keep the bare tick so their sound goldens stay on the wall-clock-agnostic
+    // path they were captured on.
+    bool mode3_clock;
 };
 
 static void cuda_tick_event(void *source, uint64_t data);
@@ -542,7 +549,7 @@ static void cuda_tick_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
     if (cuda->onesec_enabled && cuda_bus_idle(cuda)) {
-        if (cuda->onesec_mode == 3) {
+        if (cuda->onesec_mode == 3 && cuda->mode3_clock) {
             // Mode3Clock: the tick is an RdTime response carrying the
             // 32-bit BE seconds, so the OS's CudaTickHandler seeds lowmem
             // Time from the real clock every second instead of merely
@@ -600,7 +607,8 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
 
 // === Lifecycle ==============================================================
 
-av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp) {
+av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct scheduler *sched, checkpoint_t *cp,
+                        bool mode3_clock) {
     av_cuda_t *cuda = (av_cuda_t *)calloc(1, sizeof(*cuda));
     if (!cuda)
         return NULL;
@@ -608,6 +616,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
     cuda->rtc = rtc;
     cuda->adb = adb;
     cuda->sched = sched;
+    cuda->mode3_clock = mode3_clock; // config; lives outside the checkpointed region
     cuda->state = CUDA_IDLE;
     cuda->treq_high = true; // TREQ idles high (no request)
     cuda->last_pb = PB_TIP | PB_BYTEACK; // host idle state

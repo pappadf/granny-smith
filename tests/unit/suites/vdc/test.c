@@ -575,7 +575,7 @@ int main(void) {
     ASSERT_TRUE(s_st.civic != NULL);
     s_st.vdc = av_vdc_init(&s_cfg, NULL);
     ASSERT_TRUE(s_st.vdc != NULL);
-    s_st.cuda = av_cuda_init((struct via *)&s_st, NULL, NULL, NULL, NULL);
+    s_st.cuda = av_cuda_init((struct via *)&s_st, NULL, NULL, NULL, NULL, /*mode3_clock=*/false);
     ASSERT_TRUE(s_st.cuda != NULL);
     av_cuda_attach_vdc(s_st.cuda, s_st.vdc);
 

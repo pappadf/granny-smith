@@ -332,6 +332,40 @@ static uint32_t wall_clock_seconds(void) {
     return (uint32_t)((uint64_t)time(NULL) + MAC_TO_UNIX_EPOCH);
 }
 
+// === Deterministic boot seed ===============================================
+//
+// The RTC is a simulated-time counter: seeded once, then advanced only by
+// the simulated one-second scheduler event above.  The *seed* is the sole
+// point that could reach for host wall-clock time.  A test that pins
+// `rtc.time = N` before `machine.boot` is asking for that seed to be N, so
+// that every downstream tick is deterministic regardless of the host clock.
+//
+// The pin lands on the pre-boot RTC object, but `machine.boot` constructs a
+// fresh rtc_t; without staging, the pinned value is lost and rtc_init falls
+// back to wall-clock.  `rtc_stage_boot_seed` records the pin in module scope
+// so the cold-boot path can adopt it.  Only machines that opt in (currently
+// the PDM family, whose live guest clock makes the seed golden-visible)
+// consume it via `rtc_take_boot_seed`; every other machine keeps the
+// wall-clock default untouched, so their goldens are unaffected.  The web UI
+// never pins `rtc.time`, so nothing is staged and it still boots at real
+// time.
+static uint32_t s_pending_boot_seed = 0;
+static bool s_pending_boot_seed_valid = false;
+
+void rtc_stage_boot_seed(uint32_t mac_seconds) {
+    s_pending_boot_seed = mac_seconds;
+    s_pending_boot_seed_valid = true;
+}
+
+bool rtc_take_boot_seed(uint32_t *out) {
+    if (!s_pending_boot_seed_valid)
+        return false;
+    if (out)
+        *out = s_pending_boot_seed;
+    s_pending_boot_seed_valid = false; // one-shot: consumed by the next cold boot
+    return true;
+}
+
 void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
     rtc->via = via;
 }
@@ -532,6 +566,9 @@ static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t
     }
     value_free(&in);
     rtc_set_seconds(rtc, mac_seconds);
+    // Also stage this as the deterministic seed for the next cold boot, so a
+    // pre-boot `rtc.time = N` survives machine.boot on machines that opt in.
+    rtc_stage_boot_seed(mac_seconds);
     return val_none();
 }
 

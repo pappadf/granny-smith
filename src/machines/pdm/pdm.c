@@ -286,6 +286,17 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
 
+    // Deterministic RTC: the PDM guest clock is live (the Mode3Clock tick
+    // carries the RTC), so the seed reaches goldens.  Adopt any `rtc.time`
+    // pinned before machine.boot as the simulated-time seed, so nothing past
+    // this point depends on the host wall clock.  Cold boot only — a
+    // checkpoint restore has already loaded the counter from the stream.
+    if (cfg->rtc && !cp) {
+        uint32_t seed;
+        if (rtc_take_boot_seed(&seed))
+            rtc_set_seconds(cfg->rtc, seed);
+    }
+
     // The ESCC cell in Curio behind the AMIC island decode (escc-serial.md
     // §2: single base $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;
     // PCLK 15.6672 MHz, RTxC 3.672 MHz synthesized by AMIC).
@@ -320,7 +331,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
 
     // The behavioral Cuda (firmware 2.37 — the same 341S0788 part as the
     // AV machines) on the pseudo-VIA1 shift register + PB3/4/5.
-    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp);
+    st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
     assert(st->cuda != NULL);
 
     // Restore the image list before the devices that reference it (the
