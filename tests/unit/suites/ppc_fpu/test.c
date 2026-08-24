@@ -539,6 +539,100 @@ static void test_host_oracle(void) {
     printf("oracle-s: %d comparisons\n", compared);
 }
 
+// === 2b. The 604 estimate kernels (PEM fresx/frsqrtex pages) ================
+
+// Directed status semantics: only the architected FPSCR effects appear —
+// no XX ever, FR/FI read cleared — and the VE/ZE suppression cases return
+// 0 with the target untouched.
+static void test_estimates_directed(void) {
+    uint64_t frt;
+    uint32_t f;
+
+    // fres: an inexact reciprocal raises nothing (XX is not an effect)
+    f = 0;
+    CHECK(ppc_sf_fres(0x4008000000000000ull /* 3.0 */, &f, &frt) == 1);
+    CHECK_EQ64(frt, 0x3FD5555560000000ull); // single 1/3, widened
+    CHECK_EQ32(f & ~PPC_FPSCR_FPRF, 0); // no XX, no FR/FI, no FX
+    // 1/±0: ZX (+FX), per-sign infinity; suppressed under ZE
+    f = 0;
+    CHECK(ppc_sf_fres(0x8000000000000000ull, &f, &frt) == 1);
+    CHECK_EQ64(frt, 0xFFF0000000000000ull);
+    CHECK(f & PPC_FPSCR_ZX);
+    CHECK(f & PPC_FPSCR_FX);
+    f = PPC_FPSCR_ZE;
+    CHECK(ppc_sf_fres(0x0000000000000000ull, &f, &frt) == 0);
+    CHECK((f & (PPC_FPSCR_ZX | PPC_FPSCR_FEX)) == (PPC_FPSCR_ZX | PPC_FPSCR_FEX));
+    // SNaN: VXSNAN, quieted delivery; suppressed under VE
+    f = 0;
+    CHECK(ppc_sf_fres(0x7FF0000000000001ull, &f, &frt) == 1);
+    CHECK(f & PPC_FPSCR_VXSNAN);
+    f = PPC_FPSCR_VE;
+    CHECK(ppc_sf_fres(0x7FF0000000000001ull, &f, &frt) == 0);
+    // ±inf → ±0, no status
+    f = 0;
+    CHECK(ppc_sf_fres(0xFFF0000000000000ull, &f, &frt) == 1);
+    CHECK_EQ64(frt, 0x8000000000000000ull);
+    CHECK_EQ32(f & ~PPC_FPSCR_FPRF, 0);
+
+    // frsqrte specials (PEM table): the sign/class ladder
+    f = 0;
+    CHECK(ppc_sf_frsqrte(0x7FF0000000000000ull, &f, &frt) == 1); // +inf → +0
+    CHECK_EQ64(frt, 0);
+    f = 0;
+    CHECK(ppc_sf_frsqrte(0xBFF0000000000000ull, &f, &frt) == 1); // -1 → QNaN + VXSQRT
+    CHECK_EQ64(frt, 0x7FF8000000000000ull);
+    CHECK(f & PPC_FPSCR_VXSQRT);
+    f = PPC_FPSCR_VE;
+    CHECK(ppc_sf_frsqrte(0xFFF0000000000000ull, &f, &frt) == 0); // -inf suppressed
+    CHECK(f & PPC_FPSCR_VXSQRT);
+    f = 0;
+    CHECK(ppc_sf_frsqrte(0x8000000000000000ull, &f, &frt) == 1); // -0 → -inf + ZX
+    CHECK_EQ64(frt, 0xFFF0000000000000ull);
+    CHECK(f & PPC_FPSCR_ZX);
+    f = 0;
+    CHECK(ppc_sf_frsqrte(0x7FF8000000000042ull, &f, &frt) == 1); // QNaN propagates
+    CHECK_EQ64(frt, 0x7FF8000000000042ull);
+    CHECK_EQ32(f & ~PPC_FPSCR_FPRF, 0);
+    // A denormal input normalizes through the unpack
+    f = 0;
+    CHECK(ppc_sf_frsqrte(0x0008000000000000ull /* 2^-1023 */, &f, &frt) == 1);
+    CHECK_EQ64(frt, 0x5FE6A09E667F3BCDull); // 2^511.5 = sqrt(2)*2^511 (deterministic)
+    CHECK_EQ32(f & ~PPC_FPSCR_FPRF, 0); // inexact never reported
+}
+
+// The architected error envelopes over a random sweep, with the host's
+// double arithmetic as the (amply precise) reference: fres within 2^-8
+// relative, frsqrte within 2^-5 (PEM pages; ours are near-exact, so a
+// tight 2^-23 / 2^-52-ish bound would also hold — the envelope is what
+// the architecture promises, so the envelope is what is pinned).
+static void test_estimates_envelope(void) {
+    uint64_t rng = 0x604E57117A7E5EEDull;
+    int compared = 0;
+    for (int n = 0; n < 20000; n++) {
+        uint64_t frt;
+        uint32_t f = 0;
+        // fres: exponent held inside the single-result range
+        uint64_t a = corpus_rng(&rng);
+        a = (a & ~0xFFF0000000000000ull) | ((uint64_t)(0x390 + (corpus_rng(&rng) % 0xE0)) << 52);
+        CHECK(ppc_sf_fres(a, &f, &frt) == 1);
+        double x = u2d(a), r = u2d(frt);
+        double want = 1.0 / x;
+        CHECK(fabs((r - want) / want) <= 1.0 / 256.0);
+        CHECK(!(f & (PPC_FPSCR_XX | PPC_FPSCR_FR | PPC_FPSCR_FI)));
+        // frsqrte: any positive normal-ish operand
+        f = 0;
+        uint64_t b = corpus_rng(&rng);
+        b = (b & ~0xFFF0000000000000ull) | ((uint64_t)(0x010 + (corpus_rng(&rng) % 0x7D0)) << 52);
+        CHECK(ppc_sf_frsqrte(b, &f, &frt) == 1);
+        double y = u2d(b), s = u2d(frt);
+        double want2 = 1.0 / sqrt(y);
+        CHECK(fabs((s - want2) / want2) <= 1.0 / 32.0);
+        CHECK(!(f & (PPC_FPSCR_XX | PPC_FPSCR_FR | PPC_FPSCR_FI)));
+        compared += 2;
+    }
+    printf("estimate-envelope: %d comparisons\n", compared);
+}
+
 // === 3. Ops-level integration (interpreter, CR1, trap) ======================
 
 static ppc_t *P;
@@ -687,6 +781,8 @@ int main(void) {
     test_frsp();
     test_fctiw();
     test_host_oracle();
+    test_estimates_directed();
+    test_estimates_envelope();
     test_interpreter_integration();
 
     // The cross-host corpus digest: `make wasm-check` compares this line

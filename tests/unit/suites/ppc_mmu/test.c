@@ -63,9 +63,11 @@ static void run_at(uint32_t addr, int n) {
     ppc_run(P, &budget);
 }
 
-// Reset to a clean supervisor state with EP cleared so exception vectors
-// land at $00000xxx (mapped RAM), translation off.
+// Reset to a clean 601 supervisor state with EP cleared so exception
+// vectors land at $00000xxx (mapped RAM), translation off.  The model is
+// pinned: ppc_reset preserves cpu_model and the 604 section flips it.
 static void fresh(void) {
+    P->cpu_model = CPU_MODEL_PPC601;
     ppc_reset(P);
     P->msr = PPC_MSR_ME | PPC_MSR_FP;
     ppc_update_active_maps(P);
@@ -473,6 +475,332 @@ static void test_ioseg_error(void) {
     CHECK_EQ(P->dar, 0x10000000u);
 }
 
+// === The 604 model (TNT proposal §4.3; PEM Ch. 7 / 604UM Ch. 5) ============
+
+// Reset into the 604 model, low vectors, translation off.
+static void fresh604(void) {
+    P->cpu_model = CPU_MODEL_PPC604;
+    ppc_reset(P);
+    P->msr = PPC_MSR_ME | PPC_MSR_FP;
+    ppc_update_active_maps(P);
+}
+
+// Architected-BAT encoders (PEM Figure 7-13): BEPI/BL/Vs/Vp upper,
+// BRPN/WIMG/PP lower.
+static uint32_t bat604u(uint32_t bepi, uint32_t bl, int vs, int vp) {
+    return (bepi & 0xFFFE0000u) | ((bl & 0x7FFu) << 2) | (vs ? 2u : 0u) | (vp ? 1u : 0u);
+}
+static uint32_t bat604l(uint32_t brpn, uint32_t wimg, uint32_t pp) {
+    return (brpn & 0xFFFE0000u) | ((wimg & 0xFu) << 3) | (pp & 3u);
+}
+
+// Split I/D BATs: data goes through the DBATs, fetch through the IBATs,
+// and each side misses mappings that exist only on the other.
+static void test_604_split_bats(void) {
+    fresh604();
+    wipe_htab();
+    P->sdr1 = SDR1_VAL; // empty table behind the BATs
+    // DBAT0: EA $00400000 (128 KB) → PA $00300000, read/write
+    P->dbatu[0] = bat604u(0x00400000u, 0, 1, 0);
+    P->dbatl[0] = bat604l(0x00300000u, 0, 2);
+    memory_write_uint32(0x00300123u & ~3u, 0xD0DAD0DAu);
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    P->gpr[4] = 0x00400000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0x120)); // lwz through the DBAT
+    run_at(0x1000, 1);
+    CHECK_EQ(P->gpr[3], 0xD0DAD0DAu);
+    // A store through PP=10 works and lands physically
+    P->gpr[3] = 0x600D600Du;
+    memory_write_uint32(0x1000, e_d(36, 3, 4, 0x200)); // stw
+    run_at(0x1000, 1);
+    CHECK_EQ(memory_read_uint32(0x00300200u), 0x600D600Du);
+    // Instruction translation ignores the DBATs: an IT-on fetch from the
+    // DBAT-only region walks the (empty) table → ISI with SRR1 bit 1 ONLY
+    // (the 604 has no 601 bit-10 companion).  The redirect consumes the
+    // budget on the handler's first instruction, so plant a nop there.
+    memory_write_uint32(0x400, 0x60000000u); // nop at the ISI vector
+    P->msr |= PPC_MSR_IT;
+    ppc_update_active_maps(P);
+    run_at(0x00400400u, 1);
+    CHECK_EQ(P->pc, 0x00000404u);
+    CHECK_EQ(P->srr0, 0x00400400u);
+    CHECK_EQ(P->srr1 & 0xFFFF0000u, 0x40000000u);
+    // IBAT0 makes the same fetch work
+    fresh604();
+    P->sdr1 = SDR1_VAL;
+    P->batu[0] = bat604u(0x00400000u, 0, 1, 0);
+    P->batl[0] = bat604l(0x00300000u, 0, 1); // PP=01 read-only suffices for fetch
+    P->msr |= PPC_MSR_IT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    memory_write_uint32(0x00300400u, 0x38600042u); // li r3,0x42
+    run_at(0x00400400u, 1);
+    CHECK_EQ(P->gpr[3], 0x42u);
+    CHECK_EQ(P->pc, 0x00400404u);
+    // ...while a DATA access through the IBAT-only region misses
+    P->msr |= PPC_MSR_DT;
+    P->msr &= (uint32_t)~PPC_MSR_IT;
+    ppc_update_active_maps(P);
+    P->gpr[4] = 0x00400000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000300u);
+    CHECK_EQ(P->dsisr, PPC_DSISR_NOTFOUND);
+}
+
+// Architected BAT format: BL block sizing, Vs/Vp validity, PP protection.
+static void test_604_bat_format(void) {
+    fresh604();
+    wipe_htab();
+    P->sdr1 = SDR1_VAL;
+    // BL=1: a 256 KB block — offset +128 KB still matches, +256 KB misses
+    P->dbatu[0] = bat604u(0x00400000u, 1, 1, 0);
+    P->dbatl[0] = bat604l(0x00200000u, 0, 2);
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    memory_write_uint32(0x00220000u, 0x22222222u); // PA of EA +128 KB
+    P->gpr[4] = 0x00420000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->gpr[3], 0x22222222u);
+    P->gpr[4] = 0x00440000u; // +256 KB: outside the block → table miss DSI
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000300u);
+    CHECK_EQ(P->dsisr, PPC_DSISR_NOTFOUND);
+    // Vs-only BAT is invisible to user mode (Vp clear): user access misses
+    // (SRs are all zero after the reset — VSID 0, T=0)
+    fresh604();
+    P->sdr1 = SDR1_VAL;
+    P->dbatu[0] = bat604u(0x00400000u, 0, 1, 0); // supervisor-valid only
+    P->dbatl[0] = bat604l(0x00300000u, 0, 2);
+    P->msr |= PPC_MSR_DT | PPC_MSR_PR;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    P->gpr[4] = 0x00400000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    // (user-mode FETCH at $1000 is IT-off: untranslated)
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc & 0xFFFu, 0x300u);
+    CHECK_EQ(P->dsisr, PPC_DSISR_NOTFOUND);
+    // PP=01 read-only: load ok, store takes the protection DSI
+    fresh604();
+    P->sdr1 = SDR1_VAL;
+    P->dbatu[0] = bat604u(0x00400000u, 0, 1, 0);
+    P->dbatl[0] = bat604l(0x00300000u, 0, 1);
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    memory_write_uint32(0x00300040u, 0x0BADF00Du);
+    P->gpr[4] = 0x00400000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0x40));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->gpr[3], 0x0BADF00Du);
+    memory_write_uint32(0x1000, e_d(36, 3, 4, 0x40));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000300u);
+    CHECK_EQ(P->dsisr, PPC_DSISR_PROT | PPC_DSISR_STORE);
+    // PP=00: no access at all
+    fresh604();
+    P->sdr1 = SDR1_VAL;
+    P->dbatu[0] = bat604u(0x00400000u, 0, 1, 0);
+    P->dbatl[0] = bat604l(0x00300000u, 0, 0);
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    P->gpr[4] = 0x00400000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000300u);
+    CHECK_EQ(P->dsisr, PPC_DSISR_PROT);
+}
+
+// 604 ordering and direct-store delivery: BATs beat T=1; with no BAT a
+// direct-store access is a DSI (bit 0; atomics bit 5) / ISI (SRR1[3]);
+// real mode never consults the segment at all.
+static void test_604_tseg(void) {
+    // Real addressing mode: a memory-forced T=1 SR is IGNORED with DT=0
+    // (the 601 would rewrite the segment; §6.5.2 is 601-only).
+    fresh604();
+    P->sr[0] = 0x87F00003u; // memory-forced → physical segment 3 on a 601
+    ppc_recompute_sr_t_mask(P);
+    memory_write_uint32(0x00002000u, 0x0000C0DEu); // identity target (RAM)
+    P->gpr[4] = 0x00002000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->gpr[3], 0x0000C0DEu); // read the EA, not segment 3
+    CHECK_EQ(P->sr_t_mask, 0); // the 604 mask stays clear by design
+    // DT=1, T=1 non-memory-forced, no BAT: plain load → DSI bit 0
+    fresh604();
+    P->sr[1] = 0x80100000u; // T=1, BUID $001
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    P->gpr[4] = 0x10002000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000300u);
+    CHECK_EQ(P->dsisr, PPC_DSISR_DIRECT);
+    CHECK_EQ(P->dar, 0x10002000u);
+    // ...store adds the store bit
+    memory_write_uint32(0x1000, e_d(36, 3, 4, 0));
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    run_at(0x1000, 1);
+    CHECK_EQ(P->dsisr, PPC_DSISR_DIRECT | PPC_DSISR_STORE);
+    // ...lwarx takes the atomic-class DSI instead
+    memory_write_uint32(0x1000, e_x(3, 4, 0, 20, 0));
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    run_at(0x1000, 1);
+    CHECK_EQ(P->dsisr, PPC_DSISR_ATOMIC);
+    // ...and a BAT covering the same EA takes precedence over T=1
+    fresh604();
+    P->sr[1] = 0x80100000u;
+    P->dbatu[0] = bat604u(0x10000000u, 0, 1, 0);
+    P->dbatl[0] = bat604l(0x00300000u, 0, 2);
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    memory_write_uint32(0x00302000u, 0xBA7BEA75u);
+    P->gpr[4] = 0x10002000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->gpr[3], 0xBA7BEA75u);
+    // T=1 fetch (no IBAT): ISI with the architected SRR1[3]
+    fresh604();
+    P->sr[1] = 0x80100000u;
+    memory_write_uint32(0x400, 0x60000000u); // nop at the ISI vector
+    P->msr |= PPC_MSR_IT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    run_at(0x10002000u, 1);
+    CHECK_EQ(P->pc, 0x00000404u);
+    CHECK_EQ(P->srr0, 0x10002000u);
+    CHECK_EQ(P->srr1 & 0xFFFF0000u, 0x10000000u);
+}
+
+// The 604's hardware-split page crossing: a misaligned word access whose
+// two pages translate DISCONTIGUOUSLY reads/writes the straddling bytes
+// with no exception (the 601 would take the alignment exception).
+static void test_604_split_access(void) {
+    fresh604();
+    wipe_htab();
+    // EA $00200000 → PA $00300000; EA $00201000 → PA $00280000
+    put_pte(0, 0x00200000u, 0x00300000u, 0, 0, 0, 2);
+    put_pte(0, 0x00201000u, 0x00280000u, 0, 0, 0, 2);
+    memory_write_uint32(0x00300FFCu, 0x1122AABBu); // last word of page 1
+    memory_write_uint32(0x00280000u, 0xCCDD3344u); // first word of page 2
+    enter_dt();
+    P->gpr[4] = 0x00200FFEu; // crosses the page boundary
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0)); // lwz
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x1004u); // no exception
+    CHECK_EQ(P->gpr[3], 0xAABBCCDDu);
+    // The split store lands its halves on both physical pages
+    P->gpr[3] = 0x55667788u;
+    memory_write_uint32(0x1000, e_d(36, 3, 4, 0)); // stw
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x1004u);
+    P->msr &= (uint32_t)~PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    CHECK_EQ(memory_read_uint32(0x00300FFCu), 0x11225566u);
+    CHECK_EQ(memory_read_uint32(0x00280000u), 0x77883344u);
+    // The same access on the 601 is an alignment exception
+    fresh();
+    wipe_htab();
+    put_pte(0, 0x00200000u, 0x00300000u, 0, 0, 0, 2);
+    put_pte(0, 0x00201000u, 0x00280000u, 0, 0, 0, 2);
+    enter_dt();
+    P->gpr[4] = 0x00200FFEu;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    CHECK_EQ(P->dar, 0x00200FFEu);
+}
+
+// Per-class tlbie on the 604: invalidating the EA drops the cached
+// translation so the next access re-walks the (rewritten) table.
+static void test_604_tlbie(void) {
+    fresh604();
+    wipe_htab();
+    uint32_t pte = put_pte(0, 0x00200000u, 0x00300000u, 0, 0, 0, 2);
+    memory_write_uint32(0x00300010u, 0x0DDBA115u);
+    memory_write_uint32(0x00280010u, 0x0FADEDA7u);
+    enter_dt();
+    P->gpr[4] = 0x00200000u;
+    memory_write_uint32(0x1000, e_d(32, 3, 4, 0x10));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->gpr[3], 0x0DDBA115u);
+    // Repoint the PTE and tlbie the EA: the stale cached translation dies
+    memory_write_uint32(pte + 4, 0x00280000u | 2u);
+    P->gpr[5] = 0x00200000u;
+    memory_write_uint32(0x1000, e_x(0, 0, 5, 306, 0)); // tlbie r5
+    memory_write_uint32(0x1004, e_d(32, 3, 4, 0x10)); // reload
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0x0FADEDA7u);
+}
+
+// dcbz on the 604: alignment with the data cache disabled (the HRESET
+// state) or locked; zeroes through a DBAT once HID0[DCE] is on; W=1 or
+// I=1 targets fault; direct-store targets are no-ops.
+static void test_604_dcbz(void) {
+    fresh604();
+    CHECK_EQ(P->hid0, 0); // HRESET: caches disabled
+    P->gpr[4] = 0x00002000u;
+    memory_write_uint32(0x2000, 0xFFFFFFFFu);
+    memory_write_uint32(0x1000, e_x(0, 0, 4, 1014, 0)); // dcbz 0,r4
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u); // cache disabled → alignment (604UM §4.5.6)
+    CHECK_EQ(memory_read_uint32(0x2000), 0xFFFFFFFFu);
+    // DCE on: the block zeroes
+    fresh604();
+    P->hid0 = 0x00004000u; // DCE
+    P->gpr[4] = 0x00002000u;
+    memory_write_uint32(0x2000, 0xFFFFFFFFu);
+    memory_write_uint32(0x201C, 0xFFFFFFFFu);
+    memory_write_uint32(0x1000, e_x(0, 0, 4, 1014, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x1004u);
+    CHECK_EQ(memory_read_uint32(0x2000), 0);
+    CHECK_EQ(memory_read_uint32(0x201C), 0);
+    // DCL set: locked → alignment again
+    fresh604();
+    P->hid0 = 0x00004000u | 0x00001000u;
+    P->gpr[4] = 0x00002000u;
+    memory_write_uint32(0x1000, e_x(0, 0, 4, 1014, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    // I=1 DBAT mapping: alignment
+    fresh604();
+    wipe_htab();
+    P->hid0 = 0x00004000u;
+    P->sdr1 = SDR1_VAL;
+    P->dbatu[0] = bat604u(0x00400000u, 0, 1, 0);
+    P->dbatl[0] = bat604l(0x00300000u, 0x4u /* I */, 2);
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    P->gpr[4] = 0x00400000u;
+    memory_write_uint32(0x1000, e_x(0, 0, 4, 1014, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    // Direct-store target: no-op, no exception
+    fresh604();
+    P->hid0 = 0x00004000u;
+    P->sr[1] = 0x80100000u; // T=1 non-memory-forced
+    P->msr |= PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    ppc_mmu_invalidate_all(P);
+    P->gpr[4] = 0x10002000u;
+    memory_write_uint32(0x1000, e_x(0, 0, 4, 1014, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x1004u);
+}
+
 int main(void) {
     // 32-bit address space: 8 MB RAM at 0, 128 KB ROM at $40800000 (the
     // ppc-suite context shape).
@@ -503,6 +831,15 @@ int main(void) {
     test_dcbz_wimg();
     test_fetch_translation();
     test_ioseg_error();
+
+    // The 604 model (TNT proposal §4.3): split BATs, architected format,
+    // ordering/direct-store, hardware-split crossings, tlbie, dcbz.
+    test_604_split_bats();
+    test_604_bat_format();
+    test_604_tseg();
+    test_604_split_access();
+    test_604_tlbie();
+    test_604_dcbz();
 
     ppc_delete(P);
     printf("ppc_mmu: %d checks, %d failures\n", checks, failures);

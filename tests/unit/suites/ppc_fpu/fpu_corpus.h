@@ -86,7 +86,7 @@ static uint64_t ppc_fpu_corpus_hash(void) {
         }
     }
 
-    // frsp / fctiw over the edges and each mode.
+    // frsp / fctiw / the 604 estimates over the edges and each mode.
     for (uint32_t rn = 0; rn < 4; rn++) {
         for (unsigned i = 0; i < CORPUS_N_EDGES; i++) {
             uint32_t fpscr = rn;
@@ -95,6 +95,14 @@ static uint64_t ppc_fpu_corpus_hash(void) {
             h = corpus_mix(h, fpscr);
             fpscr = rn;
             wrote = ppc_sf_fctiw(corpus_edges[i], (int)(rn & 1u), &fpscr, &frt);
+            h = corpus_mix(h, wrote ? frt : 0xDEADull);
+            h = corpus_mix(h, fpscr);
+            fpscr = rn;
+            wrote = ppc_sf_fres(corpus_edges[i], &fpscr, &frt);
+            h = corpus_mix(h, wrote ? frt : 0xDEADull);
+            h = corpus_mix(h, fpscr);
+            fpscr = rn;
+            wrote = ppc_sf_frsqrte(corpus_edges[i], &fpscr, &frt);
             h = corpus_mix(h, wrote ? frt : 0xDEADull);
             h = corpus_mix(h, fpscr);
         }

@@ -104,9 +104,12 @@ static void step1_valid(uint32_t iw) {
     step1(iw);
 }
 
-// Reset to a clean supervisor state with EP cleared so exception vectors
-// land at $00000xxx (mapped RAM), translation off, FP on.
+// Reset to a clean 601 supervisor state with EP cleared so exception
+// vectors land at $00000xxx (mapped RAM), translation off, FP on.  The
+// model is pinned explicitly: ppc_reset preserves cpu_model, and the 604
+// section below flips it.
 static void fresh(void) {
+    P->cpu_model = CPU_MODEL_PPC601;
     ppc_reset(P);
     P->msr = PPC_MSR_ME | PPC_MSR_FP;
     ppc_update_active_maps(P);
@@ -1205,6 +1208,369 @@ static void test_mq_spr(void) {
     CHECK_EQ(P->gpr[3], 0x13579BDFu);
 }
 
+// === The 604 model (TNT proposal §4; 604UM/PEM citations inline) ============
+
+// Reset into the 604 model with EP cleared (vectors at $000xxxxx) and FP
+// on — the 604-side counterpart of fresh().  cpu_model survives ppc_reset.
+static void fresh604(void) {
+    P->cpu_model = CPU_MODEL_PPC604;
+    ppc_reset(P);
+    P->msr = PPC_MSR_ME | PPC_MSR_FP;
+    ppc_update_active_maps(P);
+}
+
+// Execute one word under the 604 and expect the illegal-instruction
+// program exception at the low vector.  (No disassembler cross-check:
+// SPR-number-level traps — undefined SPRs, bad TBR fields — still render
+// as instructions; the model-validity view is pinned in suites/ppc_disasm.)
+static void expect_illegal_604(uint32_t iw) {
+    fresh604();
+    memory_write_uint32(0x1000, iw);
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000700u);
+    CHECK_EQ(P->srr0, 0x1000u);
+    CHECK(P->srr1 & PPC_SRR1_PROG_ILLEGAL);
+}
+
+static void test_604_reset_state(void) {
+    P->cpu_model = CPU_MODEL_PPC604;
+    ppc_reset(P);
+    CHECK_EQ(P->msr, 0x00000040u); // IP alone (604UM §8.8.4)
+    CHECK_EQ(P->pc, 0xFFF00100u);
+    CHECK_EQ(P->pvr, 0x00040103u);
+    CHECK_EQ(P->hid0, 0); // caches/BHT disabled at HRESET
+}
+
+// Every POWER holdover and 601-only SPR encoding takes the program
+// exception on the 604 (604UM §4.5.7; TNT proposal §4.2).
+static void test_604_holdover_rejection(void) {
+    // One representative per holdover family plus every MQ/RTC SPR move,
+    // built from the encoders.
+    expect_illegal_604(e_xo(3, 4, 5, 0, 360, 0)); // abs
+    expect_illegal_604(e_xo(3, 4, 5, 0, 488, 0)); // nabs
+    expect_illegal_604(e_xo(3, 4, 5, 0, 264, 0)); // doz
+    expect_illegal_604(e_d(9, 3, 4, 5)); // dozi
+    expect_illegal_604(e_xo(3, 4, 5, 0, 107, 0)); // mul
+    expect_illegal_604(e_xo(3, 4, 5, 0, 331, 0)); // div
+    expect_illegal_604(e_xo(3, 4, 5, 0, 363, 0)); // divs
+    expect_illegal_604(e_x(3, 4, 0, 531, 0)); // clcs
+    expect_illegal_604(e_x(4, 3, 5, 29, 0)); // maskg
+    expect_illegal_604(e_x(4, 3, 5, 541, 0)); // maskir
+    expect_illegal_604(e_x(4, 3, 5, 537, 0)); // rrib
+    expect_illegal_604(e_x(4, 3, 5, 153, 0)); // sle
+    expect_illegal_604(e_x(4, 3, 5, 217, 0)); // sleq
+    expect_illegal_604(e_x(4, 3, 5, 184, 0)); // sliq
+    expect_illegal_604(e_x(4, 3, 5, 248, 0)); // slliq
+    expect_illegal_604(e_x(4, 3, 5, 216, 0)); // sllq
+    expect_illegal_604(e_x(4, 3, 5, 152, 0)); // slq
+    expect_illegal_604(e_x(4, 3, 5, 664, 0)); // srq
+    expect_illegal_604(e_x(4, 3, 5, 665, 0)); // sre
+    expect_illegal_604(e_x(4, 3, 5, 696, 0)); // sriq
+    expect_illegal_604(e_x(4, 3, 5, 728, 0)); // srlq
+    expect_illegal_604(e_x(4, 3, 5, 729, 0)); // sreq
+    expect_illegal_604(e_x(4, 3, 5, 760, 0)); // srliq
+    expect_illegal_604(e_x(4, 3, 5, 920, 0)); // sraq
+    expect_illegal_604(e_x(4, 3, 5, 952, 0)); // sraiq
+    expect_illegal_604(e_x(4, 3, 5, 921, 0)); // srea
+    expect_illegal_604(e_rlw(22, 4, 3, 5, 0, 31, 0)); // rlmi
+    expect_illegal_604(e_x(3, 4, 5, 277, 0)); // lscbx
+    // 601-only SPR encodings trap as illegal (supervisor mode)
+    expect_illegal_604(e_spr(3, 0, 0)); // mfspr mq
+    expect_illegal_604(e_spr(3, 0, 1)); // mtspr mq
+    expect_illegal_604(e_spr(3, 4, 0)); // mfspr rtcu
+    expect_illegal_604(e_spr(3, 5, 0)); // mfspr rtcl
+    expect_illegal_604(e_spr(3, 6, 0)); // mfspr dec (POWER user encoding)
+    expect_illegal_604(e_spr(3, 20, 1)); // mtspr rtcu
+    expect_illegal_604(e_spr(3, 21, 1)); // mtspr rtcl
+    expect_illegal_604(e_spr(3, 1009, 0)); // mfspr hid1 (601-only)
+    expect_illegal_604(e_spr(3, 100, 0)); // fully-undefined SPR: the 604 decodes and traps
+    // fsqrt stays illegal on both models (not implemented on the 604)
+    expect_illegal_604(e_x63(3, 0, 4, 22, 0));
+}
+
+// MSR: the 604 mask admits POW/BE/PM/RI; exception entry clears POW/RI
+// and keeps ME/EP/PM; rfi restores only MSR[16-31].
+static void test_604_msr_bits(void) {
+    // A 604-only bit set (keeping PR/IT/DT/EE clear so the test keeps
+    // running untranslated in supervisor mode).
+    const uint32_t v = PPC_MSR_POW | PPC_MSR_BE | PPC_MSR_PM | PPC_MSR_RI | PPC_MSR_ME | PPC_MSR_FP;
+    fresh604();
+    P->gpr[4] = v;
+    step1_valid(e_x(4, 0, 0, 146, 0)); // mtmsr r4
+    CHECK_EQ(P->msr, v); // every implemented bit stored (POW is a no-op hint)
+    step1_valid(e_x(3, 0, 0, 83, 0)); // mfmsr r3
+    CHECK_EQ(P->gpr[3], v);
+    // sc from that state: POW/FP/BE/RI cleared, ME+PM kept (EP stays 0)
+    memory_write_uint32(0x1000, 0x44000002u); // sc
+    run_at(0x1000, 1);
+    CHECK_EQ(P->msr, PPC_MSR_ME | PPC_MSR_PM);
+    CHECK_EQ(P->pc, 0x00000C00u);
+    // On the 601 the same mtmsr masks the 604-only bits away
+    fresh();
+    P->gpr[4] = v;
+    step1_valid(e_x(4, 0, 0, 146, 0));
+    CHECK_EQ(P->msr, PPC_MSR_ME | PPC_MSR_FP);
+    // rfi on the 604 restores the low half only (POW outside it survives)
+    fresh604();
+    P->msr |= PPC_MSR_POW;
+    ppc_update_active_maps(P);
+    P->srr0 = 0x2000u;
+    P->srr1 = PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_RI;
+    memory_write_uint32(0x1000, (19u << 26) | (50u << 1)); // rfi
+    memory_write_uint32(0x2000, 0x60000000u); // nop at the target
+    run_at(0x1000, 2);
+    CHECK_EQ(P->pc, 0x2004u);
+    CHECK_EQ(P->msr, PPC_MSR_POW | PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_RI);
+}
+
+// Timebase: mftb/mftbu read the 64-bit counter (user-readable); TBL/TBU
+// write via SPR 284/285 (supervisor); the rebase keeps the other half.
+static void test_604_timebase(void) {
+    fresh604();
+    // Unbound (tick_mul = 0): the stored halves read back directly.
+    P->rtcu = 0x00000012u; // TBU storage
+    P->rtcl = 0x89ABCDEFu; // TBL storage
+    step1_valid(e_spr(3, 268, 0) + (32u << 1)); // mftb r3 (xo 371 = 339+32)
+    CHECK_EQ(P->gpr[3], 0x89ABCDEFu);
+    step1_valid(e_spr(3, 269, 0) + (32u << 1)); // mftbu r3
+    CHECK_EQ(P->gpr[3], 0x00000012u);
+    // mftb is user-readable
+    P->msr |= PPC_MSR_PR;
+    ppc_update_active_maps(P);
+    memory_write_uint32(0x1000, e_spr(4, 268, 0) + (32u << 1));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x1004u);
+    CHECK_EQ(P->gpr[4], 0x89ABCDEFu);
+    // TB writes are supervisor-only
+    memory_write_uint32(0x1000, e_spr(4, 284, 1)); // mtspr tbl from user mode
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000700u);
+    CHECK(P->srr1 & PPC_SRR1_PROG_PRIV);
+    // Supervisor TB writes rebase one half, keeping the other
+    fresh604();
+    P->rtcu = 0x11111111u;
+    P->rtcl = 0x22222222u;
+    P->gpr[4] = 0xAAAAAAAAu;
+    step1_valid(e_spr(4, 284, 1)); // mtspr tbl,r4
+    CHECK_EQ(P->rtcl, 0xAAAAAAAAu);
+    CHECK_EQ(P->rtcu, 0x11111111u);
+    step1_valid(e_spr(4, 285, 1)); // mtspr tbu,r4
+    CHECK_EQ(P->rtcu, 0xAAAAAAAAu);
+    CHECK_EQ(P->rtcl, 0xAAAAAAAAu);
+    // mfspr of the TB write encodings is undefined → illegal (reads go
+    // through mftb only, PEM §2.3.1)
+    expect_illegal_604(e_spr(3, 284, 0));
+    // mftb with an undefined TBR field traps
+    expect_illegal_604(e_spr(3, 270, 0) + (32u << 1));
+    // The 601 rejects the whole mftb opcode (existing behavior, re-pinned)
+    fresh();
+    memory_write_uint32(0x1000, e_spr(3, 268, 0) + (32u << 1));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000700u);
+}
+
+// The 604 SPR file: split BATs, PM stubs, PIR/DABR/IABR/HID0 survive.
+static void test_604_sprs(void) {
+    fresh604();
+    P->gpr[4] = 0xAA55AA55u;
+    step1_valid(e_spr(4, 534, 1)); // mtspr ibat3u
+    CHECK_EQ(P->batu[3], 0xAA55AA55u);
+    step1_valid(e_spr(4, 543, 1)); // mtspr dbat3l
+    CHECK_EQ(P->dbatl[3], 0xAA55AA55u);
+    step1_valid(e_spr(3, 543, 0)); // mfspr r3,dbat3l
+    CHECK_EQ(P->gpr[3], 0xAA55AA55u);
+    // Performance monitor group: read-zero / write-ignore stubs
+    step1_valid(e_spr(4, 952, 1)); // mtspr mmcr0
+    step1_valid(e_spr(3, 952, 0)); // mfspr r3,mmcr0
+    CHECK_EQ(P->gpr[3], 0);
+    step1_valid(e_spr(3, 953, 0)); // pmc1
+    CHECK_EQ(P->gpr[3], 0);
+    step1_valid(e_spr(3, 955, 0)); // sia
+    CHECK_EQ(P->gpr[3], 0);
+    // tlbsync: supervisor no-op; from user mode it is privileged
+    step1_valid(e_x(0, 0, 0, 566, 0));
+    CHECK_EQ(P->pc, 0x1004u);
+    P->msr |= PPC_MSR_PR;
+    ppc_update_active_maps(P);
+    memory_write_uint32(0x1000, e_x(0, 0, 0, 566, 0));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000700u);
+    CHECK(P->srr1 & PPC_SRR1_PROG_PRIV);
+    // DEC via SPR 22 works; the POWER user encoding (SPR 6) trapped above
+    fresh604();
+    P->gpr[4] = 0x00123456u;
+    step1_valid(e_spr(4, 22, 1));
+    CHECK_EQ(P->dec, 0x00123456u);
+    step1_valid(e_spr(3, 22, 0));
+    CHECK_EQ(P->gpr[3], 0x00123456u);
+}
+
+// 604 alignment rules (604UM §4.5.6): FP/lmw/stmw/lwarx/stwcx./eciwx
+// not word-aligned → alignment exception; a misaligned integer access
+// crossing a page with translation on is split by hardware.
+static void test_604_alignment(void) {
+    fresh604();
+    P->gpr[4] = 0x2002u; // halfword-aligned only
+    memory_write_uint32(0x1000, e_d(50, 3, 4, 0)); // lfd f3,0(r4)
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    CHECK_EQ(P->dar, 0x2002u);
+    fresh604();
+    P->gpr[4] = 0x2001u;
+    memory_write_uint32(0x1000, e_d(48, 3, 4, 0)); // lfs f3,0(r4)
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    fresh604();
+    P->gpr[4] = 0x2002u;
+    memory_write_uint32(0x1000, e_d(46, 29, 4, 0)); // lmw r29,0(r4)
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    fresh604();
+    P->gpr[4] = 0x2002u;
+    memory_write_uint32(0x1000, e_d(47, 29, 4, 0)); // stmw
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    fresh604();
+    P->gpr[4] = 0x2002u;
+    P->gpr[5] = 0;
+    memory_write_uint32(0x1000, e_x(3, 4, 5, 20, 0)); // lwarx
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    fresh604();
+    P->gpr[4] = 0x2002u;
+    P->gpr[5] = 0;
+    memory_write_uint32(0x1000, e_x(3, 4, 5, 150, 1)); // stwcx.
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    // The 601 allows all of these when no page/segment boundary is crossed
+    fresh();
+    P->gpr[4] = 0x2002u;
+    memory_write_uint32(0x2002, 0x40490FDBu);
+    memory_write_uint32(0x2006, 0x54442D18u);
+    memory_write_uint32(0x1000, e_d(50, 3, 4, 0)); // lfd on the 601
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x1004u);
+    // Misaligned word-aligned-integer accesses stay legal on the 604 and
+    // read the straddling bytes (identity map: contiguous)
+    fresh604();
+    memory_write_uint32(0x2000, 0x11223344u);
+    memory_write_uint32(0x2004, 0x55667788u);
+    P->gpr[4] = 0x2002u;
+    step1_valid(e_d(32, 3, 4, 0)); // lwz r3,0(r4)
+    CHECK_EQ(P->gpr[3], 0x33445566u);
+}
+
+// TEA machine check on the 604: SRR1[13] set, SRR1[30] cleared, MSR[ME]
+// cleared on entry (604UM Tables 4-2/4-8).
+static void test_604_machine_check(void) {
+    fresh604();
+    P->msr |= PPC_MSR_RI;
+    ppc_update_active_maps(P);
+    memory_write_uint32(0x1000, 0x60000000u); // nop
+    g_bus_error_pending = true; // a device window signalled TEA
+    g_bus_error_address = 0xF2000000u;
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000200u);
+    CHECK(P->srr1 & 0x00040000u); // SRR1[13]: TEA
+    CHECK(!(P->srr1 & PPC_MSR_RI)); // SRR1[30] reads zero
+    CHECK(!(P->msr & PPC_MSR_ME)); // ME cleared (checkstop-on-repeat semantics)
+    CHECK_EQ(P->dar, 0xF2000000u);
+}
+
+// The optional-FP group: fsel/fres/frsqrte/stfiwx execute on the 604 and
+// trap on the 601 (PEM instruction pages; TNT proposal §4.2).
+static void test_604_optional_fp(void) {
+    // fsel: frA >= 0 (incl. -0) picks frC; negative and NaN pick frB
+    fresh604();
+    P->fpr[10] = 0x3FF0000000000000ull; // 1.0
+    P->fpr[11] = 0x4000000000000000ull; // 2.0 (frC)
+    P->fpr[12] = 0x4008000000000000ull; // 3.0 (frB)
+    memory_write_uint32(0x1000, (63u << 26) | (3u << 21) | (10u << 16) | (12u << 11) | (11u << 6) | (23u << 1));
+    run_at(0x1000, 1); // fsel f3,f10,f11,f12
+    CHECK_EQ((uint32_t)(P->fpr[3] >> 32), 0x40000000u); // 2.0: frA positive
+    P->fpr[10] = 0x8000000000000000ull; // -0.0 counts as >= 0
+    run_at(0x1000, 1);
+    CHECK_EQ((uint32_t)(P->fpr[3] >> 32), 0x40000000u);
+    P->fpr[10] = 0xBFF0000000000000ull; // -1.0
+    run_at(0x1000, 1);
+    CHECK_EQ((uint32_t)(P->fpr[3] >> 32), 0x40080000u); // 3.0: frB
+    P->fpr[10] = 0x7FF8000000000000ull; // QNaN
+    run_at(0x1000, 1);
+    CHECK_EQ((uint32_t)(P->fpr[3] >> 32), 0x40080000u); // NaN → frB
+    CHECK_EQ(P->fpscr, 0); // fsel never touches the FPSCR
+
+    // fres: correctly-rounded single reciprocal (documented constant)
+    fresh604();
+    P->fpr[5] = 0x4000000000000000ull; // 2.0
+    memory_write_uint32(0x1000, (59u << 26) | (3u << 21) | (5u << 11) | (24u << 1)); // fres f3,f5
+    run_at(0x1000, 1);
+    CHECK_EQ((uint32_t)(P->fpr[3] >> 32), 0x3FE00000u); // 0.5 exact
+    CHECK_EQ((uint32_t)P->fpr[3], 0);
+    CHECK(!(P->fpscr & PPC_FPSCR_XX)); // inexactness is never reported
+    P->fpr[5] = 0x4008000000000000ull; // 3.0 → 1/3 rounded to single
+    run_at(0x1000, 1);
+    CHECK_EQ(P->fpr[3], 0x3FD5555560000000ull); // single 0x3EAAAAAB widened
+    CHECK(!(P->fpscr & PPC_FPSCR_XX));
+    P->fpr[5] = 0; // 1/+0 → +inf with ZX
+    run_at(0x1000, 1);
+    CHECK_EQ(P->fpr[3], 0x7FF0000000000000ull);
+    CHECK(P->fpscr & PPC_FPSCR_ZX);
+
+    // frsqrte: near-exact double reciprocal square root (documented)
+    fresh604();
+    P->fpr[5] = 0x4010000000000000ull; // 4.0
+    memory_write_uint32(0x1000, (63u << 26) | (3u << 21) | (5u << 11) | (26u << 1)); // frsqrte f3,f5
+    run_at(0x1000, 1);
+    CHECK_EQ(P->fpr[3], 0x3FE0000000000000ull); // 0.5 exact
+    P->fpr[5] = 0x3FF0000000000000ull; // 1.0
+    run_at(0x1000, 1);
+    CHECK_EQ(P->fpr[3], 0x3FF0000000000000ull);
+    P->fpr[5] = 0x4000000000000000ull; // 2.0 → 1/sqrt(2)
+    run_at(0x1000, 1);
+    CHECK_EQ(P->fpr[3], 0x3FE6A09E667F3BCDull); // correctly-rounded double
+    P->fpr[5] = 0xBFF0000000000000ull; // negative → default QNaN + VXSQRT
+    run_at(0x1000, 1);
+    CHECK_EQ(P->fpr[3], 0x7FF8000000000000ull);
+    CHECK(P->fpscr & PPC_FPSCR_VXSQRT);
+    fresh604();
+    P->fpr[5] = 0x8000000000000000ull; // -0 → -inf with ZX
+    memory_write_uint32(0x1000, (63u << 26) | (3u << 21) | (5u << 11) | (26u << 1));
+    run_at(0x1000, 1);
+    CHECK_EQ(P->fpr[3], 0xFFF0000000000000ull);
+    CHECK(P->fpscr & PPC_FPSCR_ZX);
+    P->fpr[5] = 0x7FF0000000000000ull; // +inf → +0
+    run_at(0x1000, 1);
+    CHECK_EQ(P->fpr[3], 0);
+
+    // stfiwx stores the low FPR word verbatim
+    fresh604();
+    P->fpr[3] = 0x123456789ABCDEF0ull;
+    P->gpr[4] = 0x2000u;
+    P->gpr[5] = 4;
+    step1_valid(e_x(3, 4, 5, 983, 0)); // stfiwx f3,r4,r5
+    CHECK_EQ(memory_read_uint32(0x2004u), 0x9ABCDEF0u);
+
+    // All four are illegal on the 601
+    static const uint32_t group[] = {
+        (63u << 26) | (3u << 21) | (10u << 16) | (12u << 11) | (11u << 6) | (23u << 1), // fsel
+        (59u << 26) | (3u << 21) | (5u << 11) | (24u << 1), // fres
+        (63u << 26) | (3u << 21) | (5u << 11) | (26u << 1), // frsqrte
+    };
+    for (unsigned i = 0; i < sizeof(group) / sizeof(group[0]); i++) {
+        fresh();
+        memory_write_uint32(0x1000, group[i]);
+        run_at(0x1000, 1);
+        CHECK_EQ(P->pc, 0x00000700u);
+        CHECK(P->srr1 & PPC_SRR1_PROG_ILLEGAL);
+    }
+    fresh();
+    P->gpr[4] = 0x2000u;
+    P->gpr[5] = 4;
+    memory_write_uint32(0x1000, e_x(3, 4, 5, 983, 0)); // stfiwx on the 601
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000700u);
+}
+
 int main(void) {
     // 32-bit address space: 8 MB RAM at 0, 128 KB ROM at $40800000 (the
     // canonical OS base) — the harness's own init is Plus-shaped (24-bit),
@@ -1246,6 +1612,17 @@ int main(void) {
     test_fp_surface();
     test_mq_spr();
     test_conformance_regressions();
+
+    // The 604 model matrix (TNT proposal §4.5) — these flip P's cpu_model
+    // and run last so every 601 test above sees an untouched 601.
+    test_604_reset_state();
+    test_604_holdover_rejection();
+    test_604_msr_bits();
+    test_604_timebase();
+    test_604_sprs();
+    test_604_alignment();
+    test_604_machine_check();
+    test_604_optional_fp();
 
     ppc_delete(P);
     printf("ppc: %d checks, %d failures\n", checks, failures);

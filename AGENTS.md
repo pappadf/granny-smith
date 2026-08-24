@@ -233,10 +233,13 @@ Hardware paths are model-independent: `machine.scsi.device[0]` means the
 same on a Plus, a IIcx, and a Lisa. The `$reg` aliases (`$pc`, `$d0`, …)
 still resolve (now to `machine.cpu.*`). On the PowerPC machines (pm6100/
 pm7100/pm8100) the aliases are the PPC set instead — `$pc $lr $ctr $cr
-$msr $xer $r0..$r31` — and `machine.cpu` exposes the 601 register file
+$msr $xer $r0..$r31` — and `machine.cpu` exposes the PPC register file
 (`pc`, `r0..r31`, `lr`, `ctr`, `cr`, `xer`, `msr`, `srr0/1`, `dec`,
-`rtcu/rtcl`, `mq`, `sdr1`, `sr0..15`, `bat0u..bat3l`, `fpscr`); the
-68K-style `$d0`/`$a0` aliases don't exist there.
+`rtcu/rtcl`, `mq`, `sdr1`, `sr0..15`, `bat0u..bat3l`, `dbat0u..dbat3l`,
+`tbu/tbl`, `fpscr`); the 68K-style `$d0`/`$a0` aliases don't exist there.
+The `dbat*`/`tbu`/`tbl` members are live on the 604 model (the coming TNT
+machines — on a 604, `rtcu/rtcl` read the timebase halves) and inert on
+the 601.
 
 The browser frontend calls into the tree via `gsEval(path, args?)` (see
 `app/web2/src/bus/emulator.ts`). Inside the shell (v2 script language —

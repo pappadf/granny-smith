@@ -45,6 +45,7 @@
 #include "harness.h"
 #include "memory.h"
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +53,12 @@
 
 // The runner's CLI, renamed by the Makefile so this file can own main().
 int ppc_runner_main(int argc, char **argv);
+
+// Which model the custom backend builds (TNT proposal §4.5): the corpus is
+// generated from the sail 601 model, and main() below replays it twice —
+// once as the 601 (every file), once as the 604 with the 601-divergent
+// mnemonics filtered out.
+static int g_backend_model = CPU_MODEL_PPC601;
 
 // 8 MB of RAM at 0: the vectors' 64 KiB test window ($00100000, recorded in
 // each file's provenance) has to be ordinary read/write memory.  ROM sits
@@ -82,7 +89,7 @@ static int custom_open(ppc_backend *self, char *err, size_t errlen) {
     memory_populate_pages(CTX->memory, 0x40800000u, 0x40820000u); // plants the RAM/ROM page tables
     test_set_active_context(CTX);
 
-    P = ppc_init(NULL, CPU_MODEL_PPC601);
+    P = ppc_init(NULL, g_backend_model);
     if (!P) {
         snprintf(err, errlen, "ppc_init failed");
         return -1;
@@ -306,6 +313,48 @@ static const char *find_vectors_dir(void) {
     return NULL;
 }
 
+// Mnemonic files whose replay legitimately diverges under the 604 model
+// (TNT proposal §4.5: "the 601-only encodings masked out"): the POWER
+// holdovers and MQ/RTC SPR moves trap; mtmsr/rfi mask differently; the
+// word-alignment classes and dcbz's cache-disabled rule fault where the
+// sail 601 model completes.  Everything else must replay bit-identically.
+static const char *const skip_604[] = {
+    // POWER holdovers (program exception on the 604)
+    "abs", "clcs", "div", "divs", "doz", "dozi", "lscbx", "maskg", "maskir", "mul", "nabs", "rlmi", "rrib", "sle",
+    "sleq", "sliq", "slliq", "sllq", "slq", "sraiq", "sraq", "sre", "srea", "sreq", "sriq", "srliq", "srlq", "srq",
+    // per-model SPR map / MSR mask
+    "mfspr", "mtspr", "mtmsr", "rfi",
+    // 604 word-alignment classes (604UM §4.5.6)
+    "lfd", "lfdu", "lfdux", "lfdx", "lfs", "lfsu", "lfsux", "lfsx", "stfd", "stfdu", "stfdux", "stfdx", "stfs", "stfsu",
+    "stfsux", "stfsx", "lmw", "stmw", "lwarx", "stwcx_dot", "eciwx", "ecowx",
+    // dcbz gates on HID0[DCE] (cleared in the vectors' fixed HID0)
+    "dcbz"};
+
+static int skip_under_604(const char *name) {
+    for (size_t i = 0; i < sizeof skip_604 / sizeof skip_604[0]; i++)
+        if (strcmp(name, skip_604[i]) == 0)
+            return 1;
+    return 0;
+}
+
+// Run one pass of the runner over `files` (count `nfiles`), passing the
+// caller's extra argv through.
+static int run_pass(char *argv0, int argc, char **argv, char **files, int nfiles) {
+    char **av = calloc((size_t)argc + (size_t)nfiles + 4, sizeof *av);
+    int n = 0;
+    av[n++] = argv0;
+    av[n++] = (char *)"--backend";
+    av[n++] = (char *)"custom";
+    for (int i = 1; i < argc; i++)
+        av[n++] = argv[i];
+    for (int i = 0; i < nfiles; i++)
+        av[n++] = files[i];
+    av[n] = NULL;
+    int rc = ppc_runner_main(n, av);
+    free(av);
+    return rc;
+}
+
 int main(int argc, char **argv) {
     const char *dir = find_vectors_dir();
     if (!dir) {
@@ -315,20 +364,49 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Prepend the backend selection and append the tier, so hand-driven
-    // invocations can still pass runner flags:
-    //   tests/unit/build/ppc_vectors --verbose --filter add
-    char **av = calloc((size_t)argc + 5, sizeof *av);
-    int n = 0;
-    av[n++] = argv[0];
-    av[n++] = (char *)"--backend";
-    av[n++] = (char *)"custom";
-    for (int i = 1; i < argc; i++)
-        av[n++] = argv[i];
-    av[n++] = (char *)dir;
-    av[n] = NULL;
+    // Pass 1 — the 601 over the whole tier (hand-driven invocations can
+    // still pass runner flags: tests/unit/build/ppc_vectors --verbose
+    // --filter add).
+    g_backend_model = CPU_MODEL_PPC601;
+    char *tier[1] = {(char *)dir};
+    printf("[ppc_vectors] 601 pass\n");
+    int rc = run_pass(argv[0], argc, argv, tier, 1);
+    if (rc != 0)
+        return rc;
 
-    int rc = ppc_runner_main(n, av);
-    free(av);
+    // Pass 2 — the 604 over the model-shared subset.
+    DIR *dp = opendir(dir);
+    if (!dp) {
+        fprintf(stderr, "[ppc_vectors] cannot enumerate %s\n", dir);
+        return 1;
+    }
+    char **files = NULL;
+    int nfiles = 0, cap = 0;
+    struct dirent *de;
+    while ((de = readdir(dp)) != NULL) {
+        const char *suffix = strstr(de->d_name, ".json");
+        if (!suffix)
+            continue;
+        char base[128];
+        snprintf(base, sizeof base, "%.*s", (int)(suffix - de->d_name), de->d_name);
+        if (skip_under_604(base))
+            continue;
+        if (nfiles == cap) {
+            cap = cap ? cap * 2 : 64;
+            files = realloc(files, (size_t)cap * sizeof *files);
+        }
+        char *path = malloc(strlen(dir) + strlen(de->d_name) + 2);
+        sprintf(path, "%s/%s", dir, de->d_name);
+        files[nfiles++] = path;
+    }
+    closedir(dp);
+
+    g_backend_model = CPU_MODEL_PPC604;
+    printf("[ppc_vectors] 604 pass (%d files; %d model-divergent mnemonics skipped)\n", nfiles,
+           (int)(sizeof skip_604 / sizeof skip_604[0]));
+    rc = run_pass(argv[0], argc, argv, files, nfiles);
+    for (int i = 0; i < nfiles; i++)
+        free(files[i]);
+    free(files);
     return rc;
 }
