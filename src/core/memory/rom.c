@@ -55,6 +55,10 @@ static const char *const Q950_COMPATIBLE[] = {"q950", NULL};
 static const char *const AV_COMPATIBLE[] = {"q840av", "q660av", NULL};
 // Power Macintosh 6100/7100/8100 shared 4 MB "Boot PDM 601 1.0" ROM.
 static const char *const PDM_COMPATIBLE[] = {"pm6100", "pm7100", "pm8100", NULL};
+// Power Macintosh 7500/8500/9500 shared 4 MB "Boot TNT 0.1" ROM (the same
+// image also serves the unemulated 7200).  Two revisions exist, differing
+// only in the HWInit and Mac68KROM components.
+static const char *const TNT_COMPATIBLE[] = {"pm7500", "pm8500", "pm9500", NULL};
 
 // Master ROM signature table.  Content facts only — the canonical fixture
 // filenames live in tooling (scripts/rom_naming.py), not here.
@@ -71,6 +75,8 @@ static const rom_info_t ROM_TABLE[] = {
     {"Quadra 840AV/660AV ROM",                  AV_COMPATIBLE,        0x5BF10FD1, 2048 * 1024, 0          },
     // The stored checksum covers the 3 MB 68k half only (checksum_span).
     {"Power Macintosh 6100/7100/8100 ROM",      PDM_COMPATIBLE,       0x9FEB69B3, 4096 * 1024, 3072 * 1024},
+    {"Power Macintosh 7500/8500/9500 ROM (v1)", TNT_COMPATIBLE,       0x96CD923D, 4096 * 1024, 3072 * 1024},
+    {"Power Macintosh 7500/8500/9500 ROM (v2)", TNT_COMPATIBLE,       0x9630C68B, 4096 * 1024, 3072 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))

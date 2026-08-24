@@ -511,7 +511,20 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         } else if (tip_fall && cuda->tx_idx == 0) {
             cuda_advance_tx(cuda); // host accepted the attention byte
         } else if (ba_toggle) {
-            cuda_advance_tx(cuda); // host consumed a byte
+            if (cuda->tx_idx == cuda->tx_len - 1 && tip_new) {
+                // Polled no-TIP read (the TNT ROM's early-boot driver):
+                // the host clocks the whole response with ByteAck toggles
+                // alone, TIP never asserted, so the final byte's
+                // acknowledge IS the termination — go idle and clock the
+                // idle acknowledge it then spin-waits on.  With TIP
+                // asserted (every other host driver) the tip_rise branch
+                // above stays the terminator.
+                cuda->state = CUDA_IDLE;
+                cuda_set_treq(cuda, true);
+                cuda_push_delayed(cuda, 0x00);
+            } else {
+                cuda_advance_tx(cuda); // host consumed a byte
+            }
         }
         break;
 

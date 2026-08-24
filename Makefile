@@ -156,6 +156,7 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(MACHINES_DIR)/mcu \
             -I$(MACHINES_DIR)/av \
             -I$(MACHINES_DIR)/pdm \
+            -I$(MACHINES_DIR)/tnt \
             -I$(MACHINES_DIR)/oss \
             -I$(MACHINES_DIR)/compact \
             -I$(MACHINES_DIR)/lisa \

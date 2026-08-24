@@ -1,0 +1,208 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
+// tnt.h
+// The TNT family (Power Macintosh 7500/8500/9500) — the second PowerPC
+// machine family, and the repository's first PCI platform.  Where PDM was
+// "AMIC plus bespoke DMA per device", TNT is one DMA architecture (DBDMA)
+// behind one I/O controller (Grand Central), reached through a PCI host
+// bridge (Bandit), under a north bridge (Hammerhead).
+//
+// Board model: Hammerhead (343S1142: system bus / DRAM / ROM / L2
+// controller) + one or two Bandits (343S1126: AR-to-PCI bridge) + Chaos
+// (343S1155: the display-bus variant) + Grand Central (343S1125:
+// interrupt controller, eleven DBDMA engines, and the apertures for every
+// legacy I/O cell) around silicon the repo already models (Cuda, 6522,
+// 53C96, Z8530).  On this platform even hardware bring-up is guest code:
+// the ROM's own Open Firmware 1.0.5 probes the chipset, sizes memory and
+// builds the device tree — the emulator implements only the registers it
+// touches.
+//
+// Register truth: the shipping 4 MB TNT ROM (its Open Firmware device
+// tree, 68k DecoderInfo tables and ConfigInfo page), Apple, "Power
+// Macintosh 7500 and 8500 Computers" Developer Note (1995), Apple, "Power
+// Macintosh 9500 Computer" Developer Note (1995), and the OS driver
+// corpus for these exact machines (Linux powermac, NetBSD macppc,
+// OSF/Apple MkLinux DR3).  Per-register citations in the .c files.
+//
+// Phase B scope (proposal-powermac-7500-8500-9500 §7): the machine
+// skeleton and boot-ladder rungs T1-T7 — memory map, Hammerhead, Bandit
+// config space, Grand Central decode + interrupt block, BoxID, banked
+// NVRAM, and Cuda/VIA.  DBDMA, MESH, AWACS, Control video and the rest of
+// the datapaths are later phases.
+
+#ifndef GS_MACHINES_TNT_H
+#define GS_MACHINES_TNT_H
+
+#include "machine.h"
+#include "memory.h"
+#include "system_config.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
+
+// === Endianness =============================================================
+// The one structural rule of this platform: Grand Central, the Bandit/Chaos
+// config ports, DBDMA (registers AND in-memory descriptors), Control and
+// AWACS are little-endian devices behind a big-endian bus with NO byte-lane
+// swapper — software swaps (the guest uses lwbrx/stwbrx).  The memory map
+// stays big-endian; each LE register block applies TNT_LE32 at its edge,
+// so a guest lwbrx of a register yields the little-endian value the model
+// stores.  This macro is the ONLY sanctioned swap point in the family.
+#define TNT_LE32(x) __builtin_bswap32((uint32_t)(x))
+
+// === Physical map ===========================================================
+// Chaos bridge + its device space, Bandit 1 + its PCI I/O window (Grand
+// Central at the window base), Bandit 2 (8500/9500), Hammerhead, ROM.
+#define TNT_CHAOS_BASE   0xF0000000u // Chaos bridge (config ports)
+#define TNT_BANDIT1_BASE 0xF2000000u // Bandit 1 bridge (config ports)
+#define TNT_GC_BASE      0xF3000000u // Grand Central: base of Bandit 1 PCI I/O
+#define TNT_BANDIT2_BASE 0xF4000000u // Bandit 2 bridge (8500/9500)
+#define TNT_HH_BASE      0xF8000000u // Hammerhead register window (2 KB)
+#define TNT_ROM_BASE     0xFFC00000u // 4 MB ROM; reset vector $FFF00100
+#define TNT_PCI_MEM1     0x80000000u // Bandit 1 PCI memory space (256 MB)
+#define TNT_PCI_MEM_VCI  0x90000000u // Chaos/VCI PCI memory space (256 MB)
+
+// Config-port offsets from a bridge base (identical on Bandit and Chaos).
+#define TNT_PCI_CFG_ADDR 0x800000u // config address port (4 bytes, LE)
+#define TNT_PCI_CFG_DATA 0xC00000u // config data port (8 bytes decoded)
+
+// === Per-model board descriptor =============================================
+typedef struct tnt_board_desc {
+    // BoxID power-on value (little-endian bit numbering — the guest reads
+    // the register with lwbrx).  Bits 11-12 carry the 2-bit model code the
+    // shared ROM dispatches on; bit 8 is tested by POST; bit 14 = MESH
+    // present; bit 15 idles pulled high.  The per-model codes are pinned
+    // empirically at ladder rung T4 (grand_central.c has the bit map).
+    uint32_t boxid;
+    uint32_t bus_hz; // processor (AR) bus clock: 50/40/44 MHz
+    int bandit_count; // 1 (7500) or 2 (8500/9500)
+} tnt_board_desc_t;
+
+// === Hammerhead state (hammerhead.c) ========================================
+// 128 x 32-bit registers on $10 centres, big-endian (processor bus — the
+// one non-LE block), store-and-readback with a handful of special offsets.
+#define TNT_HH_REGS 128
+
+typedef struct tnt_hammerhead {
+    uint32_t reg[TNT_HH_REGS]; // raw store; specials overlay on read
+} tnt_hammerhead_t;
+
+// === Bandit / Chaos state (bandit.c) ========================================
+// Per-bridge software-visible state: the config address latch and the two
+// documented config registers of the bridge's own device-11 header.
+typedef struct tnt_bandit {
+    uint32_t base; // bridge window base (identifies the instance in logs)
+    bool is_chaos; // Chaos: restricted config space, writes ignored
+    uint32_t cfg_addr; // config address port latch (LE value; 0 = idle)
+    uint32_t mode_select; // config $50 (the $40 coherency bit latches)
+    memory_interface_t addr_if; // +$800000 port
+    memory_interface_t data_if; // +$C00000 port
+} tnt_bandit_t;
+
+#define TNT_MAX_BRIDGES 3 // Bandit 1, Bandit 2, Chaos
+
+// === Grand Central state (grand_central.c) ==================================
+// The interrupt block at +$20..$2C (LE), BoxID, and the banked NVRAM.
+#define TNT_NVRAM_SIZE 0x2000u // 8 KB: 256 banks of 32 bytes
+
+typedef struct tnt_gc {
+    // Interrupt controller (little-endian bit numbering, bit 0 = LSB):
+    // Events edge-latches source rising edges, Levels is the live source
+    // picture, and the CPU line follows ((events | levels) & mask).
+    uint32_t int_events;
+    uint32_t int_mask;
+    uint32_t int_levels; // live source levels (mirror of the source state)
+    uint8_t nvram_bank; // +$1D000 bank-select port (bank = offset / 32)
+    uint8_t nvram[TNT_NVRAM_SIZE];
+} tnt_gc_t;
+
+// Grand Central interrupt numbers (little-endian bit positions; the same
+// numbers appear in the device tree's AAPL,interrupts properties).  DBDMA
+// channels are numbers 0-10; device interrupts follow.
+#define TNT_INT_SCSI0 12 // 53C94 chip
+#define TNT_INT_MESH  13 // MESH chip
+#define TNT_INT_MACE  14 // MACE Ethernet chip
+#define TNT_INT_SCCA  15 // SCC channel A
+#define TNT_INT_SCCB  16 // SCC channel B
+#define TNT_INT_AWACS 17 // AWACS codec
+#define TNT_INT_VIA1  18 // VIA1/Cuda cascade (60 Hz tick, ADB, timers)
+#define TNT_INT_SWIM3 19 // SWIM3 chip
+#define TNT_INT_NMI   20 // External Int 0 — the NanoKernel's IPL-7 bit
+#define TNT_INT_VBL   30 // External Int 10 — Control/Platinum video VBL
+
+// One empty PCI memory-space window: an access nothing answers takes a
+// recoverable transfer error (the BART precedent — Open Firmware, NetBSD
+// and the Slot Manager all probe under a fault catcher).
+typedef struct tnt_fault_window {
+    uint32_t base;
+    char what[24]; // window name, used in the memory map and fault logs
+} tnt_fault_window_t;
+
+#define TNT_FAULT_WINDOWS 2 // Bandit 1 PCI memory + Chaos/VCI memory
+
+// === Family state ===========================================================
+typedef struct tnt_state {
+    tnt_hammerhead_t hh;
+    tnt_gc_t gc;
+    tnt_bandit_t bridge[TNT_MAX_BRIDGES];
+    int bridge_count;
+    tnt_fault_window_t fault[TNT_FAULT_WINDOWS];
+    struct av_cuda *cuda;
+
+    // Memory interfaces registered with the map
+    memory_interface_t gc_interface; // $F3000000 island (128 KB)
+    memory_interface_t hh_interface; // $F8000000 register window
+    memory_interface_t pci_fault_interface; // empty PCI memory space
+} tnt_state_t;
+
+static inline tnt_state_t *tnt_st(config_t *cfg) {
+    return (tnt_state_t *)cfg->machine_context;
+}
+
+static inline const tnt_board_desc_t *tnt_board(config_t *cfg) {
+    return (const tnt_board_desc_t *)cfg->machine->board;
+}
+
+// === tnt.c ==================================================================
+
+extern const machine_substrate_t tnt_substrate;
+
+// Fill/clear one physical page in the AoS table + SoA fast-path arrays
+// (the pdm_fill_page shape; local so tnt stays free of 68K-family headers).
+void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
+void tnt_clear_page(uint32_t page_index);
+
+// === hammerhead.c ===========================================================
+
+void tnt_hh_init(config_t *cfg); // power-on register state + map claim
+uint8_t tnt_hh_read(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
+void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value);
+
+// === bandit.c ===============================================================
+
+// Build all bridge instances (per the board's bandit_count) and claim the
+// config ports + the empty PCI memory-space fault windows.
+void tnt_bandit_init(config_t *cfg);
+
+// === grand_central.c ========================================================
+
+void tnt_gc_init(config_t *cfg); // power-on state (NVRAM contents survive)
+// Island dispatch ($F3000000, offsets 0..$1FFFF).  Byte-wide cells decode
+// bytes only; the 32-bit LE registers (interrupt block, BoxID) decode
+// longwords only.
+uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset);
+void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value);
+uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset);
+void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value);
+// Level-sensitive source line n (0..30): updates Levels, edge-latches into
+// Events on assertion, recomputes the CPU line.
+void tnt_gc_set_source(config_t *cfg, int n, bool level);
+// Momentary event on line n (edge-latch only; Levels untouched).
+void tnt_gc_pulse_event(config_t *cfg, int n);
+// Recompute ((events | levels) & mask) and drive the CPU external line.
+void tnt_gc_recompute(config_t *cfg);
+
+#endif // GS_MACHINES_TNT_H
