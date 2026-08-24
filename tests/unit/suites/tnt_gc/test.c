@@ -49,6 +49,19 @@ void ppc_set_ext_irq(ppc_t *p, bool level) {
     s_line = level ? 1 : 0;
 }
 
+// --- the AWACS block is not exercised here (it has its own datapath in
+// machines/tnt/awacs.c); the island dispatch references it, so stub it ---
+uint32_t tnt_awacs_read32(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
+
 // --- VIA/SCC apertures are not exercised here; the island dispatch
 // references the accessors, so give them inert interfaces ---
 static uint8_t stub_read8(void *d, uint32_t a) {
@@ -75,9 +88,9 @@ const memory_interface_t *scc_get_memory_interface(scc_t *scc) {
 // Fixture: a config with the family state and a board descriptor
 // ============================================================================
 
-// BoxID: bit 15 strap, bit 14 MESH, model %11 at bits 12-11 (the pm7500
-// power-on value).
-#define TEST_BOXID (0x8000u | 0x4000u | 0x1800u)
+// BoxID: bit 15 strap, bit 14 MESH, bit 11 clear (the pm7500 power-on
+// value — bit 11 set marks the 8500 in the ROM's identification).
+#define TEST_BOXID (0x8000u | 0x4000u)
 
 static tnt_board_desc_t s_board = {.boxid = TEST_BOXID, .bus_hz = 50000000u, .bandit_count = 1};
 static hw_profile_t s_prof;

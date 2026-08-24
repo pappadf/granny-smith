@@ -20,9 +20,12 @@
 static const uint32_t pm9500_ram_options_kb[] = {16384, 32768, 65536, 131072, 262144, 524288, 1048576, 1572864, 0};
 
 static const tnt_board_desc_t pm9500_board = {
-    // BoxID: model code %00 at bits 12-11 (community-attested for the
-    // 9500), MESH present, idle-high straps.
+    // BoxID: bit 11 clear (the 9500 is flagged by Hammerhead +$20 bit 30
+    // instead — the shipping ROM's identification routine at $FFC14844),
+    // MESH present, idle-high straps.
     .boxid = 0x8000u | 0x4000u,
+    .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
+    .hh_r20 = 0x40000000u, // bit 30 SET = 9500
     .bus_hz = 44000000u, // 3:1 bus (132 MHz 604 card)
     .bandit_count = 2,
 };

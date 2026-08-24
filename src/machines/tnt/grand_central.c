@@ -316,6 +316,8 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
         int chan = (int)((offset - OFF_DBDMA) >> 8);
         return TNT_LE32(tnt_dbdma_reg_read(tnt_st(cfg)->dbdma, chan, offset & 0xFFu));
     }
+    if ((offset & 0x1F000u) == OFF_AWACS)
+        return TNT_LE32(tnt_awacs_read32(cfg, offset - OFF_AWACS));
     if ((offset & 0x1F000u) == OFF_BOXID) {
         LOG(3, "BoxID read -> $%08X", tnt_board(cfg)->boxid);
         return TNT_LE32(tnt_board(cfg)->boxid);
@@ -332,6 +334,10 @@ void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     if (offset >= OFF_DBDMA && offset < OFF_DBDMA_END) {
         int chan = (int)((offset - OFF_DBDMA) >> 8);
         tnt_dbdma_reg_write(tnt_st(cfg)->dbdma, chan, offset & 0xFFu, TNT_LE32(value));
+        return;
+    }
+    if ((offset & 0x1F000u) == OFF_AWACS) {
+        tnt_awacs_write32(cfg, offset - OFF_AWACS, TNT_LE32(value));
         return;
     }
     if ((offset & 0x1F000u) == OFF_NVPORT) {

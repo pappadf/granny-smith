@@ -158,6 +158,36 @@ static void hh_write32(void *ctx, uint32_t offset, uint32_t value) {
 }
 
 // ============================================================
+// Chaos-window probe logging (see tnt_memory_layout)
+// ============================================================
+
+static uint32_t chaos_probe(void *ctx, uint32_t offset, bool write, unsigned width, uint32_t value) {
+    (void)ctx;
+    LOG(1, "Chaos window %s%u $%08X%s%s$%08X", write ? "write" : "read", width * 8, TNT_CHAOS_BASE + offset,
+        write ? " = " : "", write ? "" : " -> ", write ? value : 0);
+    return 0;
+}
+
+static uint8_t chaos_probe_read8(void *ctx, uint32_t offset) {
+    return (uint8_t)chaos_probe(ctx, offset, false, 1, 0);
+}
+static uint16_t chaos_probe_read16(void *ctx, uint32_t offset) {
+    return (uint16_t)chaos_probe(ctx, offset, false, 2, 0);
+}
+static uint32_t chaos_probe_read32(void *ctx, uint32_t offset) {
+    return chaos_probe(ctx, offset, false, 4, 0);
+}
+static void chaos_probe_write8(void *ctx, uint32_t offset, uint8_t value) {
+    chaos_probe(ctx, offset, true, 1, value);
+}
+static void chaos_probe_write16(void *ctx, uint32_t offset, uint16_t value) {
+    chaos_probe(ctx, offset, true, 2, value);
+}
+static void chaos_probe_write32(void *ctx, uint32_t offset, uint32_t value) {
+    chaos_probe(ctx, offset, true, 4, value);
+}
+
+// ============================================================
 // Memory layout
 // ============================================================
 
@@ -196,6 +226,20 @@ static void tnt_memory_layout(config_t *cfg) {
 
     // The bridges: config ports + the empty PCI memory fault windows.
     tnt_bandit_init(cfg);
+
+    // The rest of the Chaos display-bus window, logged open bus until the
+    // Control model claims its apertures: reads 0, and every access is
+    // recorded so the firmware's probe sequence can be fitted (the R1
+    // Hammerhead method).
+    st->chaos_probe_interface.read_uint8 = chaos_probe_read8;
+    st->chaos_probe_interface.read_uint16 = chaos_probe_read16;
+    st->chaos_probe_interface.read_uint32 = chaos_probe_read32;
+    st->chaos_probe_interface.write_uint8 = chaos_probe_write8;
+    st->chaos_probe_interface.write_uint16 = chaos_probe_write16;
+    st->chaos_probe_interface.write_uint32 = chaos_probe_write32;
+    memory_map_add(cfg->mem_map, TNT_CHAOS_BASE, TNT_PCI_CFG_ADDR, "Chaos window", &st->chaos_probe_interface, cfg);
+    memory_map_add(cfg->mem_map, TNT_CHAOS_BASE + 0x01000000u, 0x01000000u, "Chaos window hi",
+                   &st->chaos_probe_interface, cfg);
 }
 
 // ============================================================
@@ -231,18 +275,6 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
 // edge event into the fabric (interrupt-map §2.1).
 static void tnt_dbdma_irq(void *ctx, int chan) {
     tnt_gc_pulse_event((config_t *)ctx, chan);
-}
-
-// Interim audio-out sink (channel 8): Open Firmware plays its boot beep
-// through DBDMA long before the AWACS datapath exists, then polls the
-// channel for completion — an unattached (stalling) port hangs that poll
-// and with it the whole boot.  The sink consumes samples instantly and
-// silently; the Phase D AWACS port replaces it with the real 44.1 kHz
-// paced ring into audio_out.
-static int tnt_audio_sink_out(void *ctx, const uint8_t *buf, int len) {
-    (void)ctx;
-    (void)buf;
-    return len;
 }
 
 // ============================================================
@@ -357,8 +389,12 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     st->dbdma = tnt_dbdma_init(cp);
     tnt_dbdma_set_memory_hooks(st->dbdma, tnt_dbdma_mem_read, tnt_dbdma_mem_write, cfg);
     tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
-    tnt_dbdma_port_t audio_sink = {.out = tnt_audio_sink_out};
-    tnt_dbdma_set_port(st->dbdma, 8, &audio_sink); // see tnt_audio_sink_out
+
+    // The AWACS sound face on channel 8 (Open Firmware's beep is the
+    // first exerciser, long before the 68k chime).
+    tnt_awacs_register_events(cfg);
+    tnt_awacs_init(cfg);
+    tnt_awacs_reset(cfg);
 
     // Board state + memory map.
     tnt_hh_init(cfg);
@@ -374,6 +410,7 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
             system_read_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
             system_read_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
         }
+        system_read_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
         via_redrive_outputs(cfg->via1);
         tnt_gc_recompute(cfg);
     }
@@ -393,6 +430,7 @@ static void tnt_reset(config_t *cfg) {
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
     tnt_dbdma_reset(st->dbdma);
+    tnt_awacs_reset(cfg);
     scc_reset(cfg->scc);
     for (int i = 0; i < st->bridge_count; i++) {
         st->bridge[i].cfg_addr = 0;
@@ -405,6 +443,8 @@ static void tnt_teardown(config_t *cfg) {
     if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
     tnt_state_t *st = tnt_st(cfg);
+    if (st)
+        tnt_awacs_teardown(cfg);
     if (st && st->dbdma) {
         tnt_dbdma_delete(st->dbdma);
         st->dbdma = NULL;
@@ -471,6 +511,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
         system_write_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
         system_write_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
     }
+    system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
 }
 
 // Host-frame tick: media insertion polling only.  The guest's own 60 Hz

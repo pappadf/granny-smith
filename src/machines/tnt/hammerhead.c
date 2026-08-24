@@ -36,6 +36,7 @@
 #include "tnt.h"
 
 #include "log.h"
+#include "ppc.h" // r24 (the 68k PC) annotates the R1 access log
 
 #include <string.h>
 
@@ -49,8 +50,9 @@ LOG_USE_CATEGORY_NAME("hammerhead");
 #define HH_REG_L2CFG     0xE0u // L2 present/size
 #define HH_REG_L2STROBE  0xF0u // L2 flush/fill strobe
 
-// The part/revision longword POST checks: upper halfword must be $3001.
-#define HH_ID_VALUE 0x30010000u
+// The machine-identification register at +$20: bit 30 marks the 9500
+// (the 68k identification at ROM $FFC1484E tests it before BoxID).
+#define HH_REG_MACHID 0x20u
 
 void tnt_hh_init(config_t *cfg) {
     tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
@@ -58,7 +60,12 @@ void tnt_hh_init(config_t *cfg) {
     // Power-on values for the registers software reads before writing.
     // Byte-wide registers live in LANE 0 of their $10-centre longword
     // (bits 31-24 — the byte a lbz of the register address returns).
-    hh->reg[HH_REG_ID >> 4] = HH_ID_VALUE;
+    // The part identifier's FIRST BYTE is the model-family discriminator
+    // the shipping ROM dispatches on ($39 = TNT, $3001xxxx = the 7200 /
+    // Catalyst — decoded from the identification routine at $FFC14844;
+    // the dossier's "$3001 required" reading was the Catalyst branch).
+    hh->reg[HH_REG_ID >> 4] = tnt_board(cfg)->hh_id;
+    hh->reg[HH_REG_MACHID >> 4] = tnt_board(cfg)->hh_r20;
     hh->reg[HH_REG_ARBCONFIG >> 4] = 0x00u; // TwoCPU clear: uniprocessor
     hh->reg[HH_REG_WHOAMI >> 4] = 0x10u << 24; // primary CPU
     hh->reg[HH_REG_L2CFG >> 4] = 0x00u; // no L2: POST skips the test
@@ -79,7 +86,7 @@ uint8_t tnt_hh_read(config_t *cfg, uint32_t offset) {
     uint8_t b = (lane < 4) ? (uint8_t)(value >> (8 * (3 - lane))) : 0;
     // R1 instrumentation: every Hammerhead access is loggable so the T5
     // memory-sizing sequence can be recorded and the model fitted to it.
-    LOG(2, "read  +$%03X -> $%02X (reg $%08X)", offset, b, value);
+    LOG(2, "read  +$%03X -> $%02X (reg $%08X) r24=$%08X", offset, b, value, ppc_get_gpr(cfg->ppc, 24));
     return b;
 }
 
@@ -98,8 +105,8 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     uint32_t shift = 8 * (3 - lane);
     *reg = (*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift);
     LOG(2, "write +$%03X = $%02X (reg now $%08X)", offset, value, *reg);
-    // The identifier keeps its POST-checked upper halfword whatever is
+    // The identifier keeps its identity upper halfword whatever is
     // written (accept-and-readback everywhere else).
     if ((offset >> 4) == (HH_REG_ID >> 4))
-        hh->reg[HH_REG_ID >> 4] = (hh->reg[HH_REG_ID >> 4] & 0x0000FFFFu) | HH_ID_VALUE;
+        hh->reg[HH_REG_ID >> 4] = (hh->reg[HH_REG_ID >> 4] & 0x0000FFFFu) | (tnt_board(cfg)->hh_id & 0xFFFF0000u);
 }

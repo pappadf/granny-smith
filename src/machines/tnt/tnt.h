@@ -35,6 +35,7 @@
 #ifndef GS_MACHINES_TNT_H
 #define GS_MACHINES_TNT_H
 
+#include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
 #include "machine.h"
 #include "memory.h"
 #include "system_config.h"
@@ -74,11 +75,16 @@ struct tnt_dbdma; // the DBDMA engine (dbdma.h)
 // === Per-model board descriptor =============================================
 typedef struct tnt_board_desc {
     // BoxID power-on value (little-endian bit numbering — the guest reads
-    // the register with lwbrx).  Bits 11-12 carry the 2-bit model code the
-    // shared ROM dispatches on; bit 8 is tested by POST; bit 14 = MESH
-    // present; bit 15 idles pulled high.  The per-model codes are pinned
-    // empirically at ladder rung T4 (grand_central.c has the bit map).
+    // the register with lwbrx).  Bit 8 is the factory-test strap (must be
+    // clear); bit 14 = MESH present; bit 15 idles pulled high; LE bit 11
+    // = 8500 (the 68k identification's second discriminator — decoded
+    // from the shipping ROM at $FFC14844, see grand_central.c).
     uint32_t boxid;
+    // Hammerhead identity: the part identifier at +$00 (first byte $39
+    // selects the TNT identification path; $3001xxxx is the 7200), and
+    // the +$20 register whose bit 30 ($40000000) marks the 9500.
+    uint32_t hh_id;
+    uint32_t hh_r20;
     uint32_t bus_hz; // processor (AR) bus clock: 50/40/44 MHz
     int bandit_count; // 1 (7500) or 2 (8500/9500)
 } tnt_board_desc_t;
@@ -141,6 +147,28 @@ typedef struct tnt_gc {
 #define TNT_INT_NMI   20 // External Int 0 — the NanoKernel's IPL-7 bit
 #define TNT_INT_VBL   30 // External Int 10 — Control/Platinum video VBL
 
+// === AWACS state (awacs.c) ==================================================
+// The Grand Central sound face: five 32-bit LE registers on $10 centres
+// at island +$14000, the shared ASCO codec shadows behind the NEWECMD
+// command port, and the DBDMA channel-8 pacing state (a frame-credit
+// gate the periodic tick refills exact-rationally off scheduler cycles).
+typedef struct tnt_awacs {
+    uint32_t sound_ctrl; // +$00: subframe selects, rate field (bits 10:8)
+    uint32_t codec_ctrl; // +$10: last command (NEWECMD reads back clear)
+    uint32_t byte_swap; // +$40: bit 0 = sample data is little-endian
+    uint16_t codec[AWACS_CODEC_REGS]; // expanded-command shadows
+    // Channel-8 pacing (exact-rational: frames = cycles*rate/freq)
+    uint64_t tick_cycles; // cycle stamp of the last credit grant
+    uint64_t tick_frac; // running remainder of (elapsed*rate) mod freq
+    uint32_t credit; // frames the port may consume before the next grant
+    uint8_t tick_armed; // the pacing event is pending (mirrors scheduler)
+    uint8_t partial[4]; // sub-frame byte assembly across port calls
+    uint32_t partial_len;
+    // Diagnostics (machine.sound)
+    uint64_t frames_pushed; // frames rendered into the host stream
+    int32_t peak; // loudest |sample| pushed since power-on
+} tnt_awacs_t;
+
 // One empty PCI memory-space window: an access nothing answers takes a
 // recoverable transfer error (the BART precedent — Open Firmware, NetBSD
 // and the Slot Manager all probe under a fault catcher).
@@ -160,11 +188,15 @@ typedef struct tnt_state {
     tnt_fault_window_t fault[TNT_FAULT_WINDOWS];
     struct av_cuda *cuda;
     struct tnt_dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
+    tnt_awacs_t awacs;
+    struct object *snd_object; // machine.sound node (awacs.c)
+    int16_t *snd_stage; // gain-applied staging frames for audio_out_push
 
     // Memory interfaces registered with the map
     memory_interface_t gc_interface; // $F3000000 island (128 KB)
     memory_interface_t hh_interface; // $F8000000 register window
     memory_interface_t pci_fault_interface; // empty PCI memory space
+    memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
 } tnt_state_t;
 
 static inline tnt_state_t *tnt_st(config_t *cfg) {
@@ -195,6 +227,16 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value);
 // Build all bridge instances (per the board's bandit_count) and claim the
 // config ports + the empty PCI memory-space fault windows.
 void tnt_bandit_init(config_t *cfg);
+
+// === awacs.c ================================================================
+
+void tnt_awacs_register_events(config_t *cfg); // event type (before sched start)
+void tnt_awacs_init(config_t *cfg); // stream, machine.sound, DBDMA ch-8 port
+void tnt_awacs_reset(config_t *cfg); // power-on register state
+void tnt_awacs_teardown(config_t *cfg);
+// Island access for the +$14000 block (little-endian register domain).
+uint32_t tnt_awacs_read32(config_t *cfg, uint32_t offset);
+void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value);
 
 // === grand_central.c ========================================================
 
