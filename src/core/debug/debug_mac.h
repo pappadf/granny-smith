@@ -61,4 +61,8 @@ void debug_mac_set_trace_mouse(bool enabled);
 // registered alias and isn't a 0xNN hex literal in range.
 int debug_mac_resolve_key_name(const char *name);
 
+// Resolve one printable ASCII character to the US-layout ADB keycode that
+// produces it; *shift says whether Shift must be held.  -1 = untypable.
+int debug_mac_resolve_ascii(char c, bool *shift);
+
 #endif // DEBUG_MAC_H
