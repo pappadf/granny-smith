@@ -56,7 +56,10 @@ void ppc_poll_interrupt(ppc_t *p) {
 }
 
 void ppc_set_ext_irq(ppc_t *p, bool level) {
-    p->ext_irq = level ? 1u : 0u;
+    uint32_t next = level ? 1u : 0u;
+    if (next != p->ext_irq) // temporary diagnostics for the 604 boot wall
+        LOG(3, "ext_irq %u->%u pc=$%08X msr=$%08X", p->ext_irq, next, p->pc, p->msr);
+    p->ext_irq = next;
 }
 
 // === RTC/TB/DEC time derivation (§3.7; TNT proposal §4.4) ===================

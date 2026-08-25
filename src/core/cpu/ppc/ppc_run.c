@@ -17,7 +17,92 @@
 
 #include "log.h"
 
+#include <stdio.h>
+#include <stdlib.h>
+
 LOG_USE_CATEGORY_NAME("ppc");
+
+// === Temporary pc-trace (pm8500 604 beacon divergence hunt) =================
+// Diagnostic scaffolding, armed only via environment; inert otherwise.
+//   GS_PCTRACE_FILE=<path>    enable; per-instruction "pc iw" lines
+//   GS_PCTRACE_TRIGGER=<hex>  start pc (default FF809A64, the beacon)
+//   GS_PCTRACE_COUNT=<n>      instructions to log once triggered (default 30000)
+//   GS_PCTRACE_SKIP=<n>       trigger hits to ignore before tracing (default 0)
+//   GS_PCTRACE_HITS=1         instead log one context line per trigger hit
+//   GS_PCTRACE_REG=<n>        append gpr[n] to each line (-1 = off)
+//   GS_PCTRACE_WATCH=<hex>    watch mode: log only changes of the word at
+//                             this physical address (with pc), no pc lines
+static FILE *g_trace_file;
+static int g_trace_reg = -1;
+static uint32_t g_trace_trigger, g_trace_count, g_trace_skip;
+static uint32_t g_trace_active; // instructions left in the triggered window
+static uint32_t g_trace_hitno; // trigger hits seen so far
+static uint64_t g_trace_seen; // instructions executed since arm (approximates instr_count)
+static uint32_t g_trace_watch; // physical word address to watch (0 = off)
+static uint32_t g_trace_watch_val; // last observed value at the watch address
+static int g_trace_hits_mode = -1; // -1 = env not parsed yet
+
+// One-time env parse; leaves g_trace_file NULL (trace off) unless armed.
+static void ppc_trace_init(void) {
+    g_trace_hits_mode = 0;
+    const char *path = getenv("GS_PCTRACE_FILE");
+    if (!path)
+        return;
+    g_trace_file = fopen(path, "w");
+    if (!g_trace_file)
+        return;
+    const char *s;
+    g_trace_trigger = (s = getenv("GS_PCTRACE_TRIGGER")) ? (uint32_t)strtoul(s, NULL, 16) : 0xFF809A64u;
+    g_trace_count = (s = getenv("GS_PCTRACE_COUNT")) ? (uint32_t)strtoul(s, NULL, 0) : 30000u;
+    g_trace_skip = (s = getenv("GS_PCTRACE_SKIP")) ? (uint32_t)strtoul(s, NULL, 0) : 0u;
+    g_trace_hits_mode = ((s = getenv("GS_PCTRACE_HITS")) && *s == '1');
+    g_trace_reg = (s = getenv("GS_PCTRACE_REG")) ? atoi(s) : -1;
+    g_trace_watch = (s = getenv("GS_PCTRACE_WATCH")) ? (uint32_t)strtoul(s, NULL, 16) : 0u;
+    g_trace_watch_val = g_trace_watch ? memory_read_uint32(g_trace_watch) : 0u;
+}
+
+// Per-instruction hook (called only while g_trace_file is set): waits for
+// the trigger pc, then logs the instruction stream (or just hit contexts).
+static void ppc_trace(ppc_t *p, uint32_t iw) {
+    g_trace_seen++;
+    if (g_trace_active == 0) {
+        if (p->instruction_pc != g_trace_trigger)
+            return;
+        g_trace_hitno++;
+        if (g_trace_hits_mode) {
+            fprintf(g_trace_file, "HIT %u seen=%llu lr=%08X ctr=%08X msr=%08X r2=%08X r25=%08X\n", g_trace_hitno,
+                    (unsigned long long)g_trace_seen, p->lr, p->ctr, p->msr, p->gpr[2], p->gpr[25]);
+            fflush(g_trace_file);
+            return;
+        }
+        if (g_trace_hitno <= g_trace_skip)
+            return;
+        fprintf(g_trace_file, "TRIG %u seen=%llu lr=%08X ctr=%08X msr=%08X\n", g_trace_hitno,
+                (unsigned long long)g_trace_seen, p->lr, p->ctr, p->msr);
+        g_trace_active = g_trace_count;
+    }
+    if (g_trace_watch) { // watch mode: log only value changes (prev instruction wrote it)
+        uint32_t v = memory_read_uint32(g_trace_watch);
+        if (v != g_trace_watch_val) {
+            fprintf(g_trace_file, "WATCH seen=%llu %08X->%08X next_pc=%08X\n", (unsigned long long)g_trace_seen,
+                    g_trace_watch_val, v, p->instruction_pc);
+            fflush(g_trace_file);
+            g_trace_watch_val = v;
+        }
+        return; // watch mode never expires its window
+    }
+    if (p->instruction_pc == 0xFFF00300u || p->instruction_pc == 0xFFF00600u) // vector entry: fault details
+        fprintf(g_trace_file, "%08X %08X VEC dar=%08X dsisr=%08X srr0=%08X srr1=%08X\n", p->instruction_pc, iw, p->dar,
+                p->dsisr, p->srr0, p->srr1);
+    else if (g_trace_reg >= 0)
+        fprintf(g_trace_file, "%08X %08X %08X\n", p->instruction_pc, iw, p->gpr[g_trace_reg & 31]);
+    else
+        fprintf(g_trace_file, "%08X %08X\n", p->instruction_pc, iw);
+    if (--g_trace_active == 0) { // window done; disarm (one window per run)
+        fclose(g_trace_file);
+        g_trace_file = NULL;
+    }
+}
 
 // 601 branch-folding flag for the sprint loop: the four branch handlers
 // (and, for bit-exactness, illegal branch forms) record here whether the
@@ -525,6 +610,8 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
     // decoder precedent in cpu_68000.c/cpu_68030.c).
     g_bus_error_instr_ptr = instructions;
     g_ppc_fold = 0; // no stale classification from a prior sprint
+    if (__builtin_expect(g_trace_hits_mode < 0, 0))
+        ppc_trace_init(); // temporary pc-trace: parse env once
     ppc_poll_interrupt(p);
     while (*instructions > 0) {
         // Level-sensitive interrupt inputs re-checked at every boundary —
@@ -538,6 +625,8 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
             continue; // ISI raised; pc now at the vector
         if (__builtin_expect(g_bus_error_pending, 0))
             break; // fetch faulted; delivered below
+        if (__builtin_expect(g_trace_file != NULL, 0))
+            ppc_trace(p, iw); // temporary pc-trace (inert unless env-armed)
         p->pc += 4;
         ppc_execute(p, iw);
         // 601 branch folding: b/bc/bclr/bcctr issue to the branch unit in
