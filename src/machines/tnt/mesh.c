@@ -20,10 +20,16 @@
 // Contract points pinned from the driver corpus (linux mesh.c,
 // mesh-scsi.md §5-§8):
 //   * Quick commands (ENBRESEL, DISRESEL, FLUSHFIFO, ENBPARITY,
-//     DISPARITY, RESETMESH, and a zero sequence write) complete
-//     SILENTLY — the driver reads `interrupt` right after DISRESEL and
-//     treats a nonzero value as an unexpected event.  Only ARBITRATE,
-//     SELECT, the transfer commands and BUSFREE raise INT_CMDDONE.
+//     DISPARITY, and a zero sequence write) complete SILENTLY — the
+//     driver reads `interrupt` right after DISRESEL and treats a
+//     nonzero value as an unexpected event, and DR3 issues FLUSHFIFO
+//     *inside* live sequences (before SELECT, before COMMAND) where a
+//     CMDDONE would post an interrupt with no command outstanding.
+//     ARBITRATE, SELECT, the transfer commands and BUSFREE raise
+//     INT_CMDDONE.
+//   * RESETMESH raises INT_CMDDONE too — it is NOT silent, despite
+//     being a quick command.  DR3's mesh_setup_chip() spins on the
+//     latch forever waiting for it; see the case body for the evidence.
 //   * Selection with ATN presents a virtual MSG OUT phase until the
 //     driver's SEQ_MSGOUT consumes the IDENTIFY byte(s) — the shared
 //     bus model has no message-out phase, so the bytes are absorbed
@@ -611,6 +617,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
     }
 
     // Quick commands: no completion interrupt (see header comment).
+    // RESETMESH is the documented exception and is handled below.
     case CMD_ENBRESEL:
         m->resel_enabled = 1;
         return;
@@ -630,6 +637,35 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         // Reset the cell: FIFO, latches, sequencer.  The bus connection
         // is dropped too (drivers reset only from error/recovery paths
         // or with the bus free).
+        //
+        // ...and then COMPLETE, like any other sequence command.  This
+        // one is the exception to the quick-command rule above, and it
+        // is not a guess: MkLinux DR3's mesh_setup_chip() spins on the
+        // latch with no ceiling and no escape --
+        //
+        //     regs->r_cmd = MESH_CMD_RESET_MESH; eieio();
+        //     delay(1);
+        //     do { eieio(); } while (regs->r_interrupt == 0);
+        //     regs->r_interrupt = 0xff; eieio();
+        //
+        // -- so a silent reset hangs the machine outright.  Linux's
+        // mesh_init() agrees from the other side: it does not wait, but
+        // it does write `interrupt <- 0xFF` immediately afterwards,
+        // which is only meaningful if the reset left a bit set.  And
+        // mesh-scsi.md §8 states the rule without a carve-out:
+        // "Sequence command completes -> INT_CMDDONE".
+        //
+        // The carve-out the other quick commands need is real and stays:
+        // DR3 issues FLUSHFIFO *inside* live sequences (immediately
+        // before SELECT and before COMMAND), and ENBRESEL while waiting
+        // for a reselection, so those raising CMDDONE would post an
+        // interrupt with no command outstanding.  RESETMESH is only ever
+        // issued from init and recovery paths, with the bus quiet.
+        //
+        // Note the latch is set with `intr_mask` already zeroed by the
+        // driver ("No interrupts") -- raise_int() latches unconditionally
+        // and only the GC line is gated by the mask, which is exactly the
+        // behaviour the polling loop above depends on.
         if (m->connected && cfg->scsi)
             scsi_external_release(cfg->scsi);
         fifo_clear(m);
@@ -643,7 +679,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         m->msgout_pending = 0;
         m->bus0_atn = 0;
         msg_session_reset(m);
-        mesh_update_irq(cfg);
+        raise_int(cfg, INT_CMDDONE);
         return;
 
     default:
