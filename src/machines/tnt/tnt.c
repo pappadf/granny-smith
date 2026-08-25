@@ -396,7 +396,12 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
-    scheduler_set_cpi(cfg->scheduler, 1);
+    // CPI 2: a real 601/604 under Mac OS sustains well under one
+    // instruction per clock (cache misses, the 68k emulator's dispatch);
+    // CPI 1 over-modeled the chip and demanded 100+ host MIPS to pace
+    // real time — beyond what the wasm build delivers, which surfaced as
+    // stretched guest time and a jumpy, accelerated-step mouse.
+    scheduler_set_cpi(cfg->scheduler, 2);
     // Time: the 601's RTC input keeps the PDM 7.8336 MHz assumption until
     // ladder rung T2 proves otherwise; the 604's timebase/DEC tick at a
     // quarter of the bus clock (Motorola, MPC604UM/AD, §1.3.2.2).
