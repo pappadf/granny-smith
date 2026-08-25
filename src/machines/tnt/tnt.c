@@ -32,6 +32,7 @@
 #include "dbdma.h"
 
 #include "adb.h"
+#include "checkpoint_images.h"
 #include "debug.h"
 #include "image.h"
 #include "log.h"
@@ -40,6 +41,8 @@
 #include "rtc.h"
 #include "scc.h"
 #include "scheduler.h"
+#include "scsi.h"
+#include "scsi_53c96.h"
 #include "via.h"
 
 #include <assert.h>
@@ -316,14 +319,69 @@ static void tnt_scc_irq(void *context, bool active) {
     tnt_gc_set_source(cfg, TNT_INT_SCCB, active);
 }
 
+// 53C94 /IRQ -> Grand Central interrupt 12 (level; 68k IPL 2).
+static void tnt_scsi96_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    if (tnt_st(cfg))
+        tnt_gc_set_source(cfg, TNT_INT_SCSI0, active);
+}
+
+// DBDMA channel-0 device port for the 53C94: the classic DREQ-gated
+// pseudo-DMA byte stream.  With no bus attached the chip never raises
+// DREQ, so the port is exercised only when the external chain gains
+// devices (CD-ROM phase) — at which point a DREQ-edge kick will be
+// wired alongside.
+static int tnt_scsi0_port_in(void *ctx, uint8_t *buf, int len) {
+    tnt_state_t *st = tnt_st((config_t *)ctx);
+    int n = 0;
+    while (n < len && scsi_53c96_dreq(st->scsi96))
+        buf[n++] = scsi_53c96_pdma_read8(st->scsi96);
+    return n;
+}
+
+static int tnt_scsi0_port_out(void *ctx, const uint8_t *buf, int len) {
+    tnt_state_t *st = tnt_st((config_t *)ctx);
+    int n = 0;
+    while (n < len && scsi_53c96_dreq(st->scsi96))
+        scsi_53c96_pdma_write8(st->scsi96, buf[n++]);
+    return n;
+}
+
+static void tnt_scsi0_port_init(config_t *cfg) {
+    tnt_dbdma_port_t port = {
+        .out = tnt_scsi0_port_out,
+        .in = tnt_scsi0_port_in,
+        .s_bits = NULL,
+        .ctx = cfg,
+    };
+    tnt_dbdma_set_port(tnt_st(cfg)->dbdma, 0, &port);
+}
+
 // ============================================================
 // Substrate lifecycle
 // ============================================================
+
+// The NVRAM part is NON-VOLATILE: an 8 KB store whose content survives
+// power cycles.  machine.restart tears the whole substrate down and
+// rebuilds it, so the content is carried across teardown/init in this
+// process-lifetime holder — the soldered chip surviving the power
+// switch.  Load-bearing for booting from disk: Open Firmware reformats
+// a blank store (clearing the Mac OS PRAM partition AFTER the OS's
+// XPRAM shadow would need it), so the first-ever cold boot of a virgin
+// machine cannot match a boot driver (XPRAM $77 "Default OS" reads 0)
+// and only the SECOND boot — against the now-valid store — reaches the
+// startup volume.  Real hardware behaves the same way; its NVRAM just
+// never starts blank twice.  A checkpoint restore overrides the carry
+// (the gc blob holds the store).
+static uint8_t tnt_nvram_carry[TNT_NVRAM_SIZE];
+static bool tnt_nvram_carry_valid;
 
 static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = calloc(1, sizeof(*st));
     assert(st != NULL);
     cfg->machine_context = st;
+    if (!cp && tnt_nvram_carry_valid)
+        memcpy(st->gc.nvram, tnt_nvram_carry, TNT_NVRAM_SIZE);
 
     // Core: memory map, the 601/604 per profile, the scheduler on the PPC
     // seam.  CPI 1.0 — the same determinism-and-measurement rationale as
@@ -424,6 +482,26 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
         tnt_control_update(cfg); // rebuild the descriptor from restored regs
     }
 
+    // SCSI (Phase E; appended at the end of the positional stream).  The
+    // image list restores before the devices that resolve media out of
+    // it, then the shared bus, then the chips.  hd= media land on
+    // cfg->scsi = the MESH internal bus (boot disks are internal on the
+    // real machines); the external 53C94 is instantiated with NO bus
+    // attached — every select times out, the empty-chain presentation
+    // (the PDM 8100 fast-chip precedent).  CD-ROM joins the 53C94 chain
+    // in a later phase.
+    if (cp)
+        mac_checkpoint_restore_images(cfg, cp);
+    cfg->scsi = scsi_init(NULL, cp);
+    st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
+    scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
+    if (cp) {
+        system_read_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
+        tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
+    }
+    tnt_mesh_init(cfg); // DBDMA ch-10 port
+    tnt_scsi0_port_init(cfg); // DBDMA ch-0 port (53C94 pdma)
+
     // Finish: debugger + scheduler start.
     cfg->debugger = debug_init();
     scheduler_start(cfg->scheduler);
@@ -441,6 +519,9 @@ static void tnt_reset(config_t *cfg) {
     tnt_dbdma_reset(st->dbdma);
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
+    tnt_mesh_reset(cfg);
+    if (st->scsi96)
+        scsi_53c96_reset(st->scsi96);
     scc_reset(cfg->scc);
     for (int i = 0; i < st->bridge_count; i++) {
         st->bridge[i].cfg_addr = 0;
@@ -453,10 +534,22 @@ static void tnt_teardown(config_t *cfg) {
     if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
     tnt_state_t *st = tnt_st(cfg);
+    if (st) {
+        memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
+        tnt_nvram_carry_valid = true;
+    }
     if (st)
         tnt_awacs_teardown(cfg);
     if (st)
         tnt_control_teardown(cfg);
+    if (st && st->scsi96) {
+        scsi_53c96_delete(st->scsi96);
+        st->scsi96 = NULL;
+    }
+    if (cfg->scsi) {
+        scsi_delete(cfg->scsi);
+        cfg->scsi = NULL;
+    }
     if (st && st->dbdma) {
         tnt_dbdma_delete(st->dbdma);
         st->dbdma = NULL;
@@ -526,6 +619,11 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
     system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
     system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+    // Phase-E SCSI block (mirrors the tnt_init append order exactly).
+    mac_checkpoint_save_images(cfg, cp);
+    scsi_checkpoint(cfg->scsi, cp);
+    scsi_53c96_checkpoint(st->scsi96, cp);
+    system_write_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
 }
 
 // Frame tick (scheduler-paced, one per VBL frame-unit): the 60.15 Hz

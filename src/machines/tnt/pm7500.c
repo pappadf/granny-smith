@@ -12,6 +12,14 @@
 // 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
 static const uint32_t pm7500_ram_options_kb[] = {16384, 32768, 65536, 131072, 262144, 524288, 1048576, 0};
 
+// The internal fast-SCSI (MESH) bus carries the boot disks; the
+// external 53C94 chain is present but empty until the CD-ROM phase.
+static const struct scsi_slot pm7500_scsi_slots[] = {
+    {.label = "Internal HD0", .id = 0},
+    {.label = "Internal HD1", .id = 1},
+    {0},
+};
+
 static const tnt_board_desc_t pm7500_board = {
     // BoxID (little-endian bit numbering): bit 15 pulled high, bit 14 MESH
     // present, bit 8 factory-test strap CLEAR (set sends the ROM into its
@@ -49,6 +57,7 @@ const hw_profile_t machine_pm7500 = {
     .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     .ram_options = pm7500_ram_options_kb,
+    .scsi_slots = pm7500_scsi_slots,
 
     .substrate = &tnt_substrate,
     .board = &pm7500_board,

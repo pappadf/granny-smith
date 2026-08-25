@@ -112,15 +112,17 @@ assert machine.memory.peek.l(0xF3008804) == 0x00800000 "T9: ch8 not parked RUN|!
 assert machine.memory.peek.l(0xF300880C) == 0x9000E0FF "T9: ch8 cmdptr not on the beep program's STOP ($FFE00090)"
 
 # The kernel's enabled interrupt set at the sampling point — the full
-# media-hunt-era driver roster the un-parked boot installs: 53C94 SCSI
-# (12), SCC A/B (15, 16), AWACS (17), VIA1 (18), SWIM3 floppy (19),
-# NMI (20), a PCI-slot external (26, from the expansion-slot scan) —
-# plus mask bit 31, the ifMode1Clear-era mask image the NanoKernel
-# maintains.  Events carries the standing VIA bit (mode 1: the
+# media-hunt-era driver roster the un-parked boot installs: BOTH SCSI
+# chips (12 = 53C94, 13 = MESH — the SCSI Manager binds each cell it
+# finds; the mesh_id >= $E1 gate at ROM $FFEBB168 selects the native
+# MESH path), SCC A/B (15, 16), AWACS (17), VIA1 (18), SWIM3 floppy
+# (19), NMI (20), a PCI-slot external (26, from the expansion-slot
+# scan) — plus mask bit 31, the ifMode1Clear-era mask image the
+# NanoKernel maintains.  Events carries the standing VIA bit (mode 1: the
 # $80000000 acknowledge clears no device bits and the kernel never
 # W1Cs Events).  The mode-1 ack LOOP itself is proven by T8's
 # tick-rate window — starvation there would fail the rate band.
-assert machine.memory.peek.l(0xF3000024) == 0x00901F84 "T9: interrupt mask not the kernel's enabled set"
+assert machine.memory.peek.l(0xF3000024) == 0x00B01F84 "T9: interrupt mask not the kernel's enabled set"
 assert (machine.memory.peek.l(0xF3000020) & 0x00000400) == 0x00000400 "T9: VIA event bit not standing (mode-1 ack must not clear Events)"
 
 # Register-file decode: cmdptr store-readback through an idle channel's

@@ -46,6 +46,7 @@
 
 struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
 struct tnt_dbdma; // the DBDMA engine (dbdma.h)
+struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 
 // === Endianness =============================================================
 // The one structural rule of this platform: Grand Central, the Bandit/Chaos
@@ -211,6 +212,33 @@ typedef struct tnt_control {
     uint8_t crsr_phase;
 } tnt_control_t;
 
+// === MESH state (mesh.c) ====================================================
+// MESH (343S1146) — Apple's fast internal-bus SCSI cell: sixteen
+// byte-wide registers on $10 centres at island +$18000, a 16-byte FIFO
+// for the non-data phases, and DBDMA channel 10 for the data phases.
+// The register core drives the shared bus/target model through the same
+// scsi_external_* API the 53C96 front-end uses (mesh-scsi.md §2-§8).
+#define TNT_MESH_FIFO 16
+
+typedef struct tnt_mesh {
+    uint8_t fifo[TNT_MESH_FIFO];
+    uint8_t fifo_rd, fifo_n;
+    uint8_t sequence; // last written sequence-command byte
+    uint8_t bus0_atn; // explicitly driven ATN (bus_status0 write)
+    uint8_t exception, error; // W1C cause latches
+    uint8_t intr_mask, interrupt; // W1C summary; mask gates GC line only
+    uint8_t source_id, dest_id;
+    uint8_t sync_params, sel_timeout;
+    // Live transfer engine: the sequence command in progress and its
+    // down-counter (count_lo/hi read back the live remainder).
+    uint8_t active; // command nibble in progress (0 = idle)
+    uint8_t active_dma; // SEQ_DMA_MODE was set on the active command
+    uint32_t remaining; // bytes left on the active transfer
+    uint8_t connected; // a target is selected (bus not free)
+    uint8_t msgout_pending; // select-with-ATN: present MSG OUT until sent
+    uint8_t resel_enabled, parity_enabled;
+} tnt_mesh_t;
+
 // === Family state ===========================================================
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
@@ -228,6 +256,8 @@ typedef struct tnt_state {
     // the VRAM blob follows it in the tail; the display descriptor and its
     // derived views are rebuilt from the registers on restore.
     tnt_control_t control;
+    tnt_mesh_t mesh; // internal fast SCSI (mesh.c; bus = cfg->scsi)
+    struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
     uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
     struct display display; // scanout descriptor (display.h)
     rgba8_t clut_view[256]; // materialized CLUT for the renderer
@@ -279,6 +309,14 @@ void tnt_awacs_teardown(config_t *cfg);
 // Island access for the +$14000 block (little-endian register domain).
 uint32_t tnt_awacs_read32(config_t *cfg, uint32_t offset);
 void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value);
+
+// === mesh.c =================================================================
+
+void tnt_mesh_init(config_t *cfg); // power-on state + DBDMA ch-10 port
+void tnt_mesh_reset(config_t *cfg);
+// Island access for the +$18000 block (byte registers on $10 centres).
+uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset);
+void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value);
 
 // === control.c ==============================================================
 

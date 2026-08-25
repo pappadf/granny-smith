@@ -33,6 +33,7 @@
 #include "log.h"
 #include "ppc.h"
 #include "scc.h"
+#include "scsi_53c96.h"
 #include "via.h"
 
 #include <string.h>
@@ -231,6 +232,8 @@ static uint8_t nvram_read(config_t *cfg, uint32_t offset) {
         return 0xFF;
     }
     uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + (offset >> 4)) % TNT_NVRAM_SIZE;
+    if (idx >= 0x1300u && idx < 0x1400u)
+        LOG(4, "XPRAM read nv[$%04X] -> $%02X", idx, gc->nvram[idx]);
     return gc->nvram[idx];
 }
 
@@ -241,6 +244,8 @@ static void nvram_write(config_t *cfg, uint32_t offset, uint8_t value) {
         return;
     }
     uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + (offset >> 4)) % TNT_NVRAM_SIZE;
+    if (idx >= 0x1300u && idx < 0x1400u)
+        LOG(4, "XPRAM write nv[$%04X] = $%02X (pc=%08X)", idx, value, ppc_get_pc(cfg->ppc));
     gc->nvram[idx] = value;
 }
 
@@ -294,6 +299,11 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
     }
     case OFF_RADACAL:
         return tnt_control_rad_read(cfg, offset - OFF_RADACAL);
+    case OFF_SCSI0:
+        // 53C94: sixteen byte-wide registers on $10 centres.
+        return scsi_53c96_read(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu);
+    case OFF_MESH:
+        return tnt_mesh_read(cfg, offset - OFF_MESH);
     default:
         LOG(1, "byte read of unwired island offset +$%05X", offset);
         return 0;
@@ -321,6 +331,12 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         return;
     case OFF_RADACAL:
         tnt_control_rad_write(cfg, offset - OFF_RADACAL, value);
+        return;
+    case OFF_SCSI0:
+        scsi_53c96_write(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu, value);
+        return;
+    case OFF_MESH:
+        tnt_mesh_write(cfg, offset - OFF_MESH, value);
         return;
     default:
         LOG(1, "byte write of unwired island offset +$%05X = $%02X", offset, value);

@@ -75,6 +75,29 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)value;
 }
 
+// --- the SCSI apertures belong to mesh.c / the shared 53C96 model;
+// the island dispatch references them, so stub them the same way ---
+uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
+uint8_t scsi_53c96_read(struct scsi_53c96 *c, uint32_t reg) {
+    (void)c;
+    (void)reg;
+    return 0;
+}
+void scsi_53c96_write(struct scsi_53c96 *c, uint32_t reg, uint8_t value) {
+    (void)c;
+    (void)reg;
+    (void)value;
+}
+
 // --- VIA/SCC apertures are not exercised here; the island dispatch
 // references the accessors, so give them inert interfaces ---
 static uint8_t stub_read8(void *d, uint32_t a) {
