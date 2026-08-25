@@ -246,6 +246,9 @@ typedef struct tnt_mesh {
     uint8_t mi_buf[8];
     uint8_t mi_n, mi_rd;
     uint8_t sdtr_await; // our SDTR request is out, awaiting the reply
+    uint8_t msgin_taken; // the bus message byte was delivered (MESSAGE IN
+                         // lingers in the bus model until release, but the
+                         // target no longer REQs — busfree must succeed)
 } tnt_mesh_t;
 
 // === Family state ===========================================================

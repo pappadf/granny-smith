@@ -200,6 +200,7 @@ static void msg_session_reset(tnt_mesh_t *m) {
     m->mi_n = 0;
     m->mi_rd = 0;
     m->sdtr_await = 0;
+    m->msgin_taken = 0;
 }
 
 static void msgin_queue_sdtr(tnt_mesh_t *m, uint8_t period, uint8_t offset) {
@@ -549,6 +550,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
             return;
         }
         fifo_push(m, (uint8_t)msg);
+        m->msgin_taken = 1; // delivered: the target REQs nothing more
         m->active = 0;
         raise_int(cfg, INT_CMDDONE);
         return;
@@ -581,8 +583,14 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
             case scsi_data_in:
             case scsi_data_out:
             case scsi_status:
-            case scsi_message_in:
                 req_pending = true;
+                break;
+            case scsi_message_in:
+                // The bus model holds MESSAGE IN until released, but
+                // once the single message byte has been DELIVERED the
+                // target REQs nothing more — this busfree IS the
+                // release step of a normal tail.
+                req_pending = !m->msgin_taken;
                 break;
             default:
                 break;
