@@ -1,0 +1,131 @@
+# Integration test: Power Macintosh 7100 — boot MkLinux DR3 to a login prompt.
+#
+# Plan §5.3, and the test the whole project exists to produce.  It starts from
+# the pair `pm7100-mklinux-install` publishes and asserts, in rows:
+#
+#   macos-control  the same host volume still boots System 7.5 to the Finder
+#   splash         the MkLinux Booter's screen renders, naming the root device
+#                  the install phase wrote into lilo.conf
+#   login          the 10-second timeout fires with nobody watching, the
+#                  Booter loads Mach_Kernel, the Mach kernel brings up the
+#                  Linux server, and the console reaches `localhost login:`
+#   session        root logs in with the installed password and `uname -a`
+#                  answers from the guest's own kernel
+#
+# THE CONTROL ROW IS NOT OPTIONAL.  Without it "MkLinux broke" and "the volume
+# broke" look identical.  It clicks `Boot MacOS` on the same splash, from the
+# same disks, in the same instant of simulated time.
+#
+# NO CD IS ATTACHED.  The installed system has to stand on its own two disks;
+# the DR3 disc is an install-time dependency only, and leaving it off is how
+# that is asserted rather than assumed.
+#
+# TIMING.  Every screen here carries a blinking cursor — the Booter's splash
+# counts down in seconds, the Linux console blinks its block — so `wait_stable`
+# would burn its ceiling and fail the row.  Each rung uses a measured fixed
+# budget instead, and each budget is stated in the comment above it.
+
+include "../lib/mac.script"
+
+# The published pair (plan §5.2 I4).  They live in local/ and are not in
+# gs-test-data yet, so the whole suite is guarded and skips cleanly.
+let mkl_root = "../../../local/gs-docs/projects/mklinux"
+let host = "${$mkl_root}/media/mklinux_host_75_configured.img"
+let target = "${$mkl_root}/media/mklinux_target_dr3_installed_1gb.img"
+
+# One boot recipe for every row; only what happens at the splash differs.
+# Anything else varying between the rows would make the control worthless.
+#
+# The RTC is seeded AFTER machine.boot (which reseeds it from the host clock)
+# and LATER than the install phase's base, so the installed files are in the
+# past — a boot whose clock predates its own filesystem is not something a
+# real machine ever does, and HFS date checks notice.
+def boot_to_splash() {
+    machine.boot model="pm7100" ram=40960 rom="${$ROM}"
+    machine.rtc.time = 0xE1200000
+    machine.scsi.attach_hd "${$host}" 0
+    machine.scsi.attach_hd "${$target}" 1
+    # suite-pdm's boot_pdm_75() head: chip init and bus scan, then the
+    # documented Ticks poke past the 20 s drive-spin-up window.
+    scheduler.run 360000000
+    machine.memory.poke.l 0x9716A 0x2000
+    # 90 M more puts the MkLinux Booter's splash on screen with its countdown
+    # still running (measured: it paints at ~430 M and counts for ten seconds).
+    scheduler.run 90000000
+}
+
+# THE CONTROL.  Click `Boot MacOS` and the machine must still reach the 7.5
+# Finder off the same volume.
+def row_macos_control() {
+    boot_to_splash()
+    click(503, 177)
+    scheduler.run 1200000000
+    wait_stable(1500000000)
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} during the Mac OS control boot"
+    assert debug.mac.globals.read("BootDrive") != 0 "BootDrive == 0 on the control boot"
+    check_ex("macos-control.png", 0, 440, 20, 640)
+}
+
+# THE BOOTER'S OWN SCREEN.  This is the first thing on the machine that is
+# neither Mac OS nor granny-smith: an extension that patched itself into the
+# boot and drew over it.  The golden masks the "Boot in N seconds" line — that
+# is a live countdown — but keeps `Root Device: /dev/sdb2`, which is the
+# install phase's lilo.conf edit read back by the software that consumes it.
+def row_splash() {
+    boot_to_splash()
+    check_ex("booter-splash.png", 300, 420, 340, 570)
+}
+
+# THE MILESTONE.  Nobody clicks anything: the splash's ten-second timeout
+# fires on the installed default (`bootos=MkLinux`), the Booter loads
+# `Mach Kernel` out of the Extensions folder, and the machine leaves the 68k
+# world for good.
+#
+# Budget: 250 M for the countdown, then 3.0 G for Mach's own start-up, the
+# Linux server, the ext2 root mount and the rc scripts.  Measured end-to-end
+# at ~3.7 G instructions from reset; the extra covers the rc scripts' spread.
+def row_login() {
+    boot_to_splash()
+    scheduler.run 250000000
+    scheduler.run 3000000000
+    # Structural proof first, so a failure says WHERE it stopped rather than
+    # only that a golden did not match: the 68k address space is gone.  A 7.5
+    # boot answers low memory; a machine running the Mach kernel does not.
+    assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "still in the 68k address space — the Booter never handed off"
+    check("mklinux-login.png")
+}
+
+# A REAL SESSION.  `root` / `mklinux` is the password the install phase set,
+# and `uname -a` is answered by the guest's own kernel: the golden carries
+# "Linux localhost.localdomain 2.0.33-osfmach3 #1 Thu Jun 11 10:21:31 PDT 1998
+# ppc unknown", which is DR3's shipped build stamp on the PowerPC target.
+#
+# Typed with keyboard.type: the ADB scan codes are the same in both worlds for
+# letters, and only the arrow cluster differs (notes/dr3-guest-quirks.md §2),
+# which a login does not use.
+def row_session() {
+    boot_to_splash()
+    scheduler.run 250000000
+    scheduler.run 3000000000
+    machine.adb.keyboard.type "root\n"
+    scheduler.run 200000000
+    machine.adb.keyboard.type "mklinux\n"
+    scheduler.run 600000000
+    machine.adb.keyboard.type "uname -a\n"
+    scheduler.run 400000000
+    check("mklinux-uname.png")
+    report_perf("pm7100-mklinux-boot/session", scheduler.instr_count)
+}
+
+if have_media($host) && have_media($target) {
+    if row_on("macos-control") { row_end("macos-control", try(row_macos_control(), "FAILED")) }
+    if row_on("splash") { row_end("splash", try(row_splash(), "FAILED")) }
+    if row_on("login") { row_end("login", try(row_login(), "FAILED")) }
+    if row_on("session") { row_end("session", try(row_session(), "FAILED")) }
+    suite_done()
+    report_row("DR3", "ariel", "mklinux-boot login uname")
+} else {
+    echo "skip: pm7100-mklinux-boot (MkLinux media not present — see the bring-up plan §5)"
+}
+
+quit

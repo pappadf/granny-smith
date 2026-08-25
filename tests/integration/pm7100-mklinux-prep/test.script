@@ -1,0 +1,431 @@
+# Integration test: Power Macintosh 7100 — prepare MkLinux DR3's two disks.
+#
+# Plan §5.1.  Everything here is Mac OS running on proven emulation; the
+# machine never leaves the 68k world.  What it produces is the pair of disks
+# `pm7100-mklinux-install` boots:
+#
+#   host    a copy of the PDM suite's System 7.5.0 volume with the five files
+#           from the CD's `Mac Files` folder in the right System Folder
+#           subfolders — README_DR3's exact instruction, and the whole of the
+#           Mac OS side of MkLinux's install (there is no installer app)
+#   target  a blank HD1000SC carrying nothing but an Apple partition map with
+#           `root` and `swap` in it (plan §3)
+#
+# The phases, and what each one is for:
+#
+#   1  boot the host with the target and the DR3 disc on the bus, and pin the
+#      three devices' identities.  This rung is also where the plan's open
+#      question 3 gets its answer: the DR3 image is a DDM-less hybrid (zeros
+#      at block 0, HFS at 1024, ISO9660 at 32768), and it does mount.
+#   2  partition the target with the CD's Mac OS pdisk (plan §3 route (b) —
+#      route (a) is out, see config.mk and notes/dr3-guest-quirks.md §1)
+#   3  copy the five Mac Files into the System Folder by Finder drag
+#   4  shut down, export both disks, verify host-side and publish
+#
+# THE SHUT DOWN IN PHASE 4 IS NOT COSMETIC.  The Finder's copies live in the
+# guest's disk cache long after the progress dialog is gone: an export taken
+# straight after the drags shows only the first file (measured).  Only a clean
+# Shut Down flushes the volume, so every host-side assertion here happens
+# after it.
+
+include "../lib/mac.script"
+
+# Media (plan §5).  Three levels up from tests/integration/<test>/ is the repo
+# root; the MkLinux media lives in local/ and is not in gs-test-data, so the
+# paths are guarded and the test skips rather than fails where it is absent.
+let mkl_root = "../../../local/gs-docs/projects/mklinux"
+let dr3_iso = "${$mkl_root}/media/MkLinux-DR3/MkLinux-DR3.iso"
+let host_hd = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+let target = "${$WORK_DIR}/mklinux-target.img"
+
+# --- local helpers -----------------------------------------------------------
+
+# Press-move-release drag.  The Finder tracks a drag while the button is held,
+# so the path has to be walked in steps with guest ticks between them; a warp
+# from press point to release point reads as a click and drops the drag.
+def drag(x1, y1, x2, y2) {
+    machine.adb.mouse.move $x1 $y1 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(10)
+    machine.adb.mouse.move ($x1 + ($x2 - $x1) / 4) ($y1 + ($y2 - $y1) / 4) "global"
+    run_ticks(8)
+    machine.adb.mouse.move ($x1 + ($x2 - $x1) / 2) ($y1 + ($y2 - $y1) / 2) "global"
+    run_ticks(8)
+    machine.adb.mouse.move ($x1 + 3 * ($x2 - $x1) / 4) ($y1 + 3 * ($y2 - $y1) / 4) "global"
+    run_ticks(8)
+    machine.adb.mouse.move $x2 $y2 "global"
+    run_ticks(12)
+    machine.adb.mouse.click false
+    run_ticks(10)
+}
+
+# Option-double-click: open the folder AND close the window it lives in, so
+# the screen never accumulates windows the later coordinates would be measured
+# against.
+def option_double_click(x, y) {
+    machine.adb.keyboard.down "option"
+    run_ticks(6)
+    double_click($x, $y)
+    run_ticks(10)
+    machine.adb.keyboard.up "option"
+    run_ticks(10)
+}
+
+# Pull down a menu and choose an item: press on the title, move onto the item,
+# release.  A plain click() cannot do this — the Menu Manager tracks the
+# selection while the button is held.
+def menu_pick(title_x, title_y, item_x, item_y) {
+    machine.adb.mouse.move 100 300 "global"
+    run_ticks(20)
+    machine.adb.mouse.move $title_x $title_y "global"
+    run_ticks(30)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move $item_x $item_y "global"
+    run_ticks(30)
+    machine.adb.mouse.click false
+    run_ticks(60)
+}
+
+# Special menu → Shut Down.  Written out rather than reusing about_box()'s
+# dance because the Special menu is at a different title and item offset.
+def shut_down() {
+    machine.adb.mouse.move 100 300 "global"
+    run_ticks(20)
+    machine.adb.mouse.move 233 9 "global"
+    run_ticks(30)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move 250 140 "global"
+    run_ticks(30)
+    machine.adb.mouse.click false
+    run_ticks(60)
+    scheduler.run 400000000
+}
+
+# One pdisk command line.
+#
+# FIXED budgets, never wait_stable: pdisk runs in a SIOUX console window whose
+# insertion point blinks, so the screen never holds still and a stability wait
+# would burn its whole ceiling and fail the row.
+#
+# The budget BEFORE the typing is the one that matters.  Measured with 120 ms
+# either side, the first character of the line that follows pdisk's long
+# device listing was swallowed — echoed to the console but never buffered,
+# because pdisk had not yet returned to its read loop — and `e /dev/scsi0.1`
+# arrived as ` /dev/scsi0.1`, which pdisk answered with "No such command (/)"
+# and then failed every command after it.  Waiting for the guest to be back at
+# its prompt before typing is what makes the sequence deterministic; the
+# `steady` argument lets the one command with pages of output ask for more.
+def pdisk_line(text, steady) {
+    scheduler.run $steady
+    machine.adb.keyboard.type "${$text}"
+    scheduler.run 300000000
+}
+
+# --- phase 1: the bus --------------------------------------------------------
+
+def phase1_host_desktop() {
+    # HD1000SC = IBM DPES-31080, 1,084,489,728 bytes: the catalog's largest
+    # mechanism, comfortably inside DR3's 2 GB per-filesystem rule with room
+    # for a 900 MB root and a 128 MB swap (plan §3).
+    assert storage.hd_create($target, "HD1000SC") "hd_create HD1000SC failed"
+    assert storage.path_size($target) == 1084489728 "HD1000SC wrong image size"
+
+    # Clock set AFTER boot (machine.boot reseeds the RTC from the host wall
+    # clock, discarding a pre-boot value).  The three MkLinux phases use
+    # ASCENDING bases — prep 0xE1000000 < install 0xE1100000 < boot 0xE1200000
+    # — so a file this phase creates and a later phase modifies keeps
+    # crDat < mdDat.  Copland's ValidCatalogEntry hang is the reason that rule
+    # exists in this tree, and it costs nothing to keep everywhere.
+    machine.boot model="pm7100" ram=40960 rom="${$ROM}"
+    machine.rtc.time = 0xE1000000
+    machine.scsi.attach_hd "${$host_hd}" 0
+    machine.scsi.attach_hd "${$target}" 1
+    machine.scsi.attach_cdrom "${$dr3_iso}" 3
+
+    # The bus, before anything boots.
+    assert machine.scsi.device[1].type == "hd" "SCSI 1 is not a hard disk"
+    assert machine.scsi.device[1].vendor == "IBM     " "SCSI 1 unexpected vendor"
+    assert machine.scsi.device[1].product == "DPES-31080      " "SCSI 1 unexpected product"
+    assert !machine.scsi.device[1].read_only "SCSI 1 target drive is read-only"
+    # The disc is a CD, read-only, and — the plan's open question 3 — it comes
+    # up at the 2048-byte CD default rather than a Driver Descriptor Map's
+    # block size, because the DR3 image is a bare hybrid ISO with zeros at
+    # block 0.  system.c reads a DDM only when the 'ER' signature is there.
+    assert machine.scsi.device[3].type == "cdrom" "SCSI 3 is not a CD-ROM"
+    assert machine.scsi.device[3].read_only "SCSI 3 CD-ROM is not read-only"
+    assert machine.scsi.device[3].medium_present "SCSI 3 has no medium"
+    assert machine.scsi.device[3].block_size == 2048 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (the DDM-less CD default)"
+
+    # The target is RAW: no partition map at all.  Phase 2 starts from a blank
+    # disk, and this is also what makes the installer's own Edit screen
+    # unusable on it (config.mk).
+    assert try(storage.partmap($target), none) == none "the target drive already carries a partition map"
+
+    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan, skip the 20 s
+    # WaitForPollDrive spin-up window with the documented Ticks poke, then
+    # boot blocks -> CFM init -> extensions parade -> Finder.
+    scheduler.run 360000000
+    machine.memory.poke.l 0x9716A 0x2000
+    scheduler.run 1200000000
+    wait_stable(900000000)
+
+    assert machine.id == "pm7100" "machine.id != pm7100"
+    assert machine.ram == 40960 "machine.ram != 40960"
+    assert machine.screen.depth == 8 "screen.depth != 8"
+    assert debug.mac.globals.read("BootDrive") != 0 "BootDrive == 0 (no startup device)"
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} during boot"
+
+    # The CD's driver ran: the System mounted the hybrid disc and put
+    # `MkLinux DR3` on the desktop with its own custom icon.  That is the
+    # answer to open question 3, and it is what phases 2 and 3 read from.
+    # No icon for the unformatted target.  Menu-bar clock masked as everywhere.
+    check_ex("host-desktop.png", 0, 440, 20, 640)
+    report_perf("pm7100-mklinux-prep/phase1", scheduler.instr_count)
+}
+
+# --- phase 2: partition the target with the CD's pdisk -----------------------
+#
+# pdisk is a line-oriented Mac OS tool (`MacOS Utilities/pdisk` on the disc).
+# Its device names are its own: /dev/scsi<bus>.<id>, so our target at SCSI ID 1
+# is /dev/scsi0.1 — pdisk itself prints the MkLinux name /dev/sdb beside it.
+#
+# The map this builds is the plan's §3 table, and the installer keys swap off
+# the partition NAME, which is why the second partition has to be called
+# exactly `swap`:
+#
+#   1  Apple  Apple_partition_map        63 @ 1
+#   2  root   Apple_UNIX_SVR2       1843200 @ 64        (900.0M)
+#   3  swap   Apple_UNIX_SVR2        262144 @ 1843264   (128.0M)
+#   4  Extra  Apple_Free              12735 @ 2105408   (  6.2M)
+def phase2_partition_target() {
+    # Into the disc: the Finder did not auto-open the DR3 window (the disc
+    # carries no auto-open setting), so open it from the desktop icon, then
+    # option-open `MacOS Utilities` so the disc's root window closes behind it.
+    double_click(599, 100)
+    wait_stable(600000000)
+    check_ex("cd-root.png", 0, 440, 20, 640)
+
+    option_double_click(180, 158)
+    wait_stable(600000000)
+    check_ex("cd-utilities.png", 0, 440, 20, 640)
+
+    # pdisk opens a SIOUX console window and prompts.  A fixed budget, not a
+    # settle — the console cursor blinks (see pdisk_line).
+    double_click(110, 278)
+    scheduler.run 400000000
+    check_ex("pdisk-launched.png", 0, 440, 20, 640)
+
+    # `L` lists every device pdisk can see.  It is the positive control for
+    # the whole phase: the host volume's map prints in full, and the target
+    # answers "No valid block 1", which is pdisk agreeing with phase 1 that
+    # the disk is raw.  If the golden ever shows a map here, the target was
+    # not blank and everything below is meaningless.
+    pdisk_line("L\n", 200000000)
+    check_ex("pdisk-devices.png", 0, 440, 20, 640)
+
+    # Open the target's map for editing and initialize a fresh one.  `i`
+    # prompts for the physical block size, the logical block size and the
+    # device size in turn; all three defaults are right (512/512/2118143), so
+    # each is accepted with a bare Return.
+    pdisk_line("e /dev/scsi0.1\n", 800000000)
+    pdisk_line("i\n", 200000000)
+    pdisk_line("\n", 200000000)
+    pdisk_line("\n", 200000000)
+    pdisk_line("\n", 200000000)
+    check_ex("pdisk-initialized.png", 0, 440, 20, 640)
+
+    # `c <base> <length> <name>` creates an Apple_UNIX_SVR2 partition — the
+    # MkLinux type is pdisk's default, which is the whole reason README_DR3
+    # recommends it over Drive Setup.  `2p` means "the base of partition 2",
+    # the free-space entry the initialize left behind; after the first create
+    # the remaining free space is entry 3.
+    pdisk_line("c 2p 900m root\n", 200000000)
+    pdisk_line("c 3p 128m swap\n", 200000000)
+    pdisk_line("p\n", 200000000)
+    check_ex("pdisk-map.png", 0, 440, 20, 640)
+
+    # Write it.  pdisk asks for confirmation ("Writing the map destroys what
+    # was there before.  Is that okay? [n/y]:") and takes `y`.
+    pdisk_line("w\n", 400000000)
+    pdisk_line("y\n", 200000000)
+    check_ex("pdisk-written.png", 0, 440, 20, 640)
+
+    # Leave the editor, then the program.  pdisk is a SIOUX app: quitting it
+    # returns to the Finder with the utilities window still open.
+    pdisk_line("q\n", 200000000)
+    pdisk_line("q\n", 200000000)
+    scheduler.run 200000000
+    check_ex("pdisk-quit.png", 0, 440, 20, 640)
+
+    # Close the utilities window before phase 3 measures anything: it sits at
+    # (10,28)-(370,320) and phase 3's drop targets are at y=335, close enough
+    # to its bottom edge that leaving it open is asking for a drop into the
+    # wrong window.
+    machine.adb.keyboard.down "command"
+    run_ticks(6)
+    machine.adb.keyboard.press 0x0D # w
+    run_ticks(6)
+    machine.adb.keyboard.up "command"
+    wait_stable(600000000)
+    report_perf("pm7100-mklinux-prep/phase2", scheduler.instr_count)
+}
+
+# --- phase 3: the five Mac Files ---------------------------------------------
+#
+# README_DR3: "There are five files in the `Mac Files` folder.  Copy the two
+# files `MkLinux Booter` and `Mach Kernel` to your Extensions folder.  Copy
+# the control panel `MkLinux` to your Control Panels folder.  Copy the two
+# files `lilo.conf` and `MkLinux.prefs` to your Preferences folder."
+#
+# Both windows have to be on screen at once, so the System Folder window goes
+# to the bottom half and the files are dropped onto its folder rows.
+#
+# THE SYSTEM FOLDER IS VIEWED **BY NAME**, and that is not cosmetic.  In icon
+# view the Finder draws each item at its saved position, and those positions
+# are a property of the volume's history: the same image reached by a
+# different route lays the folder out on a tighter grid, in a different order,
+# scrolled sideways (measured — a run that opened the disc first got exactly
+# that and dropped two files into the System Folder's root).  A list view has
+# no saved positions at all; it is alphabetical, 16 pixels a row, and cannot
+# drift.
+#
+# The drop x is 70, not 100.  A list-view row is a drop target only over its
+# icon and its NAME: `Extensions` runs out of text at x=97, so a drop at 100
+# lands on the window background, which the Finder reads as "copy into the
+# System Folder itself" — silently, and into the wrong folder.
+def phase3_copy_mac_files() {
+    # Macintosh HD -> System Folder, closing each parent behind it.
+    option_double_click(599, 55)
+    wait_stable(600000000)
+    option_double_click(196, 228)
+    wait_stable(600000000)
+
+    # View -> by Name.  (133,9) is the View title; the items are 16 px apart
+    # from y=28, so `by Name` — the third — is at y=60.
+    menu_pick(133, 9, 150, 60)
+    wait_stable(600000000)
+    check_ex("system-folder-by-name.png", 0, 440, 20, 640)
+
+    # Move it to the bottom half.  Rows then start at y=316 and step by 16:
+    # Apple Menu Items 316, Control Panels 332, Control Strip Modules 348,
+    # Extensions 364, ... Preferences 460 (clipped by the scroll bar, which is
+    # why the last two files wait for a scroll below).
+    drag(200, 36, 200, 278)
+    wait_stable(600000000)
+    check_ex("system-folder-moved.png", 0, 440, 20, 640)
+
+    # The disc's root window is open from phase 2; option-open `Mac Files` so
+    # it closes behind and the file window lands in the top half.
+    double_click(599, 100)
+    wait_stable(600000000)
+    option_double_click(56, 158)
+    wait_stable(600000000)
+    check_ex("mac-files.png", 0, 440, 20, 640)
+
+    # A generous settle after each drag: the Finder's copy progress dialog
+    # appears and disappears, and `Mach Kernel` is 1.28 MB, which is slow
+    # enough that a short wait returns mid-copy and the next drag lands on the
+    # progress dialog instead of on a folder row.
+    drag(52, 113, 70, 364) # MkLinux Booter -> Extensions
+    wait_stable(1500000000)
+    drag(180, 113, 70, 364) # Mach Kernel   -> Extensions
+    wait_stable(2500000000)
+    drag(180, 183, 70, 332) # MkLinux       -> Control Panels
+    wait_stable(1500000000)
+    check_ex("copies-extensions.png", 0, 440, 20, 640)
+
+    # Scroll the list four rows so `Preferences` clears the bottom edge.
+    # FIVE clicks, not four: the first click on an inactive window's control
+    # only activates the window (classic Mac behaviour, measured here), and
+    # the Mac Files title-bar click before it guarantees the System Folder
+    # window IS inactive whichever window the last drop left in front.
+    click(200, 36)
+    run_ticks(20)
+    click(405, 452)
+    run_ticks(8)
+    click(405, 452)
+    run_ticks(8)
+    click(405, 452)
+    run_ticks(8)
+    click(405, 452)
+    run_ticks(8)
+    click(405, 452)
+    run_ticks(20)
+    # Preferences now sits at y=389.
+    check_ex("system-folder-scrolled.png", 0, 440, 20, 640)
+
+    drag(52, 243, 70, 389) # lilo.conf     -> Preferences
+    wait_stable(1500000000)
+    drag(180, 243, 70, 389) # MkLinux.prefs -> Preferences
+    wait_stable(1500000000)
+    check_ex("copies-done.png", 0, 440, 20, 640)
+    report_perf("pm7100-mklinux-prep/phase3", scheduler.instr_count)
+}
+
+# --- phase 4: flush, verify, publish -----------------------------------------
+
+def phase4_export_and_publish() {
+    # Shut Down, and only then read the disks.  See the header: the Finder's
+    # writes are still in the guest's cache until the volume is flushed.
+    shut_down()
+    check("shut-down.png")
+
+    machine.scsi.device[0].image.export "${$WORK_DIR}/mklinux-host.img"
+    machine.scsi.device[1].image.export "${$WORK_DIR}/mklinux-target-part.img"
+
+    # The five files, each in the folder README_DR3 names.  Asserted by
+    # membership and size rather than by a count, so an unrelated System
+    # Folder change does not fail the row and a truncated copy does.
+    let ext = vfs.list("${$WORK_DIR}/mklinux-host.img/partition1/System Folder/Extensions")
+    let cps = vfs.list("${$WORK_DIR}/mklinux-host.img/partition1/System Folder/Control Panels")
+    let prefs = vfs.list("${$WORK_DIR}/mklinux-host.img/partition1/System Folder/Preferences")
+    assert file_sized($ext, "MkLinux Booter", 23152) "Extensions is missing MkLinux Booter (23,152 bytes)"
+    assert file_sized($ext, "Mach Kernel", 1286036) "Extensions is missing Mach Kernel (1,286,036 bytes)"
+    assert file_sized($cps, "MkLinux", 13595) "Control Panels is missing the MkLinux control panel (13,595 bytes)"
+    assert file_sized($prefs, "lilo.conf", 1110) "Preferences is missing lilo.conf (1,110 bytes)"
+    assert file_sized($prefs, "MkLinux.prefs", 99) "Preferences is missing MkLinux.prefs (99 bytes)"
+
+    # The target's map, printed into the log so a layout change reads as a
+    # diff rather than only as a count going wrong (the Copland lesson).
+    storage.partmap "${$WORK_DIR}/mklinux-target-part.img"
+    let parts = vfs.list("${$WORK_DIR}/mklinux-target-part.img")
+    assert len($parts) == 4 "the target has ${len($parts)} partitions, want 4 (map + root + swap + free)"
+
+    # Hand-off (plan §5.1 P3): the install test cannot read another test's
+    # WORK_DIR — the harness wipes it — so both disks are published next to
+    # the rest of the MkLinux media.  Slow, deterministic, rarely changes.
+    storage.cp "${$WORK_DIR}/mklinux-host.img" "${$mkl_root}/media/mklinux_host_75.img"
+    storage.cp "${$WORK_DIR}/mklinux-target-part.img" "${$mkl_root}/media/mklinux_target_partitioned_1gb.img"
+    assert storage.path_exists("${$mkl_root}/media/mklinux_host_75.img") "the host volume was not published to media/"
+    assert storage.path_exists("${$mkl_root}/media/mklinux_target_partitioned_1gb.img") "the target was not published to media/"
+}
+
+# True when `listing` holds a file named `name` of exactly `size` bytes.
+# vfs.list returns a list of maps; a plain membership test would pass on a
+# half-copied file, and a half-copied `Mach Kernel` is exactly the failure the
+# phase-3 settles exist to prevent.
+def file_sized(listing, name, size) {
+    for entry in $listing {
+        if $entry.name == $name {
+            if $entry.size == $size { return true }
+            echo "file_sized: ${$name} is ${$entry.size} bytes, want ${$size}"
+            return false
+        }
+    }
+    return false
+}
+
+if have_media($dr3_iso) && have_media($host_hd) {
+    phase1_host_desktop()
+    phase2_partition_target()
+    phase3_copy_mac_files()
+    phase4_export_and_publish()
+    report_row("7.5", "ariel", "mklinux-prep cd-mount pdisk-partition mac-files")
+} else {
+    echo "skip: pm7100-mklinux-prep (MkLinux media not present — see the bring-up plan §5)"
+}
+
+quit

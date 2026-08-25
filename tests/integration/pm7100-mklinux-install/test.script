@@ -1,0 +1,383 @@
+# Integration test: Power Macintosh 7100 — install MkLinux DR3.
+#
+# Plan §5.2.  It starts from the two disks `pm7100-mklinux-prep` publishes and
+# ends with the pair `pm7100-mklinux-boot` consumes.  Four phases:
+#
+#   1  the Booter hands off to Mach_Kernel and the Red Hat-derived installer
+#      comes up on the onboard Sonora/Ariel video       [the bring-up cliff]
+#   2  the installer's screens, keyboard-driven, to "Congratulations"
+#   3  Mac OS again: point lilo.conf at the installed root and make MkLinux
+#      the startup default
+#   4  export, verify host-side, publish
+#
+# WHAT PHASE 1 IS.  Everything before the splash click is Mac OS on proven
+# emulation.  The click hands the machine to the third kernel this model has
+# run, and exactly one emulator defect stood in the way: a BAT register write
+# must not steer instruction fetch until the processor context-synchronizes
+# (notes/bat-context-sync.md).  DR3's start.s writes `mtibatu 0` then
+# `mtibatl 0` with nothing but a trailing sync/isync, and the half-written
+# pair relocates the kernel's own text off the end of RAM.
+#
+# KEYBOARD.  DR3's ADB driver reads the arrow cluster at $3B-$3E and claims
+# $7B-$7E as the right-hand modifiers, so the rows below press the raw
+# keycodes for arrows and named keys for everything else
+# (notes/dr3-guest-quirks.md §2).
+#
+# TIMING.  The installer's screens are static, so `wait_stable` synchronises
+# them — with one exception called out at the rung that needs it: choosing
+# "Local CDROM" paints an "Initializing CDROM..." dialog that then holds
+# perfectly still for hundreds of millions of instructions while the disc is
+# read, and a bare settle returns on THAT and eats the next keystroke.
+
+include "../lib/mac.script"
+
+let mkl_root = "../../../local/gs-docs/projects/mklinux"
+let dr3_iso = "${$mkl_root}/media/MkLinux-DR3/MkLinux-DR3.iso"
+let host = "${$mkl_root}/media/mklinux_host_75.img"
+let target = "${$mkl_root}/media/mklinux_target_partitioned_1gb.img"
+
+# --- helpers -----------------------------------------------------------------
+
+# Press a key, let the guest act on it for `fixed` instructions, then settle.
+# The fixed part is not optional: newt repaints the whole screen, and a settle
+# started too early returns on the frame that is still the OLD screen.
+def key(code, fixed) {
+    machine.adb.keyboard.press $code
+    scheduler.run $fixed
+    wait_stable(2500000000)
+}
+
+# Same, for the times a row has to Tab across a form before committing.  Tabs
+# are cheap and never repaint more than a focus ring.
+def tab() {
+    machine.adb.keyboard.press "Tab"
+    scheduler.run 20000000
+}
+
+# --- phase 1: the hand-off ---------------------------------------------------
+
+def phase1_into_the_installer() {
+    # The install phase's RTC base sits between prep's and boot's, so files
+    # this phase writes are newer than the ones prep made and older than the
+    # clock the boot test runs under.
+    # The target arrives with the map prep wrote and nothing else: two
+    # Apple_UNIX_SVR2 partitions named `root` and `swap`, which is what makes
+    # the installer's Select Root Partition and Active Swap screens
+    # single-candidate.  Read BEFORE the attach — the VFS will not open an
+    # image the running machine holds.
+    let parts = vfs.list("${$target}")
+    assert len($parts) == 4 "the published target has ${len($parts)} partitions, want 4 (map + root + swap + free)"
+    # Phase 4 compares the two files it edits against the CD's pristine
+    # copies, and by then the disc is in the drive and the VFS will not open
+    # it — so they come out now.
+    storage.cp "${$dr3_iso}/partition1/Mac Files/lilo.conf" "${$WORK_DIR}/lilo-pristine.conf"
+    storage.cp "${$dr3_iso}/partition1/Mac Files/MkLinux.prefs" "${$WORK_DIR}/prefs-pristine"
+
+    machine.boot model="pm7100" ram=40960 rom="${$ROM}"
+    machine.rtc.time = 0xE1100000
+    machine.scsi.attach_hd "${$host}" 0
+    machine.scsi.attach_hd "${$target}" 1
+    machine.scsi.attach_cdrom "${$dr3_iso}" 3
+
+    scheduler.run 360000000
+    machine.memory.poke.l 0x9716A 0x2000
+    scheduler.run 90000000
+    # The Booter's splash, countdown masked.  `Root Device: /dev/scd0` is the
+    # shipped lilo.conf: as it stands the MkLinux button boots the INSTALLER
+    # off the CD, which is exactly what this phase wants.  Phase 3 rewrites it.
+    check_ex("booter-splash-preinstall.png", 300, 420, 340, 570)
+
+    # THE CLIFF.  Everything past this click is Mach.
+    click(139, 177)
+    scheduler.run 500000000
+    wait_stable(3000000000)
+    check("installer-welcome.png")
+    report_perf("pm7100-mklinux-install/phase1", scheduler.instr_count)
+}
+
+# --- phase 2: the installer --------------------------------------------------
+
+def phase2_run_the_installer() {
+    key("Return", 100000000) # Welcome -> Keyboard Type
+    check("keyboard-type.png")
+    key("Return", 100000000) # `us` is preselected -> Installation Method
+    check("installation-method.png")
+
+    # "Local CDROM".  1.5 G before the settle: the CD init dialog holds still
+    # while the disc is read, and a bare settle lands on it (see the header).
+    key("Return", 1500000000)
+    check("installation-path.png")
+    key("Return", 400000000) # Install (not Upgrade) -> Partition Disks
+    # Both disks, named and identified by MkLinux's own SCSI driver: the host
+    # at ID 0 and our HD1000SC target at ID 1.  Nothing is edited here — DR3's
+    # installer cannot partition from this screen (notes/dr3-guest-quirks.md
+    # §1) and does not need to, because prep already did it.
+    check("partition-disks.png")
+
+    key("Return", 400000000) # Done -> Select Root Partition
+    # One candidate, /dev/sdb2, and the partition named `swap` correctly
+    # withheld.  This screen is the answer to the plan's open question 2.
+    check("select-root.png")
+
+    key("Return", 300000000) # -> Partition Disk (extra mount points)
+    check("mount-points.png")
+    tab() # list -> Ok
+    key("Return", 300000000) # -> Active Swap Space
+    # /dev/sdb3 arrives already ticked: the installer keys swap off the
+    # partition NAME, which is why prep calls it exactly `swap`.
+    check("active-swap.png")
+    tab()
+    key("Return", 800000000) # -> Format Partitions
+
+    # The root filesystem has never held MkLinux, so it must be formatted;
+    # the box starts clear and Space ticks it.
+    machine.adb.keyboard.press "space"
+    scheduler.run 30000000
+    check("format-partitions.png")
+    tab()
+    key("Return", 1500000000) # -> Components to Install
+
+    # The default set, minus X Window System.  Unchecking X keeps the install
+    # out of Xconfigurator, which this ladder never accounted for, and the
+    # console login the boot test asserts does not need it (plan open
+    # question 5).  0x3D is DR3's down-arrow.
+    machine.adb.keyboard.press 0x3D
+    scheduler.run 20000000
+    machine.adb.keyboard.press "space"
+    scheduler.run 30000000
+    check("components.png")
+    tab() # list -> "Select individual packages"
+    tab() # -> Ok
+    key("Return", 500000000) # -> Install log
+    check("install-log.png")
+
+    # THE LONG ONE.  224 packages, 183 MB, ~13 G instructions.  A FIXED budget
+    # and a generous one, then a settle: the progress screen holds still for
+    # long stretches inside a big package, so a bare settle would return
+    # mid-install and every screen below would be off by one.
+    machine.adb.keyboard.press "Return"
+    scheduler.run 16000000000
+    wait_stable(3000000000)
+    # Configure Mouse, with `ADB Mouse` already on the right line — the
+    # README's instruction and the installer's own default agreeing.
+    check("configure-mouse.png")
+    report_perf("pm7100-mklinux-install/packages", scheduler.instr_count)
+
+    tab() # list -> "Emulate 3 Buttons?"
+    tab() # -> Ok
+    key("Return", 400000000) # -> Network Configuration
+    check("network-config.png")
+    tab() # Yes -> No
+    key("Return", 400000000) # -> Configure Timezones
+
+    # "Hardware clock set to GMT" is what makes MkLinux read the Mac OS clock
+    # correctly; the focus starts on it, so Space ticks it directly.
+    machine.adb.keyboard.press "space"
+    scheduler.run 30000000
+    check("timezone.png")
+    tab() # checkbox -> timezone list
+    tab() # -> Ok
+    key("Return", 400000000) # -> Services
+    check("services.png")
+    tab()
+    key("Return", 400000000) # -> Configure Printer
+    tab() # Yes -> No
+    key("Return", 400000000) # -> Root Password
+
+    # The password the boot test logs in with.  Typed, not pressed: this is
+    # what keyboard.type exists for.
+    machine.adb.keyboard.type "mklinux"
+    scheduler.run 40000000
+    tab()
+    machine.adb.keyboard.type "mklinux"
+    scheduler.run 40000000
+    tab()
+    key("Return", 400000000) # -> Info
+    # THE GOLDEN THAT RECORDS THE ANSWER: "Set rootdev equal to /dev/sdb2".
+    check("info-rootdev.png")
+    key("Return", 400000000) # -> Done
+    check("install-done.png")
+
+    # Return here shuts the system down: termination signals, kill signals,
+    # `unmounting filesystems`, then `MACH Reboot`.  The unmount is what makes
+    # the artifact below trustworthy, so the row runs it and asserts what
+    # happens next rather than avoiding it.
+    #
+    # KNOWN GAP, asserted rather than papered over: the restart itself does
+    # not happen.  powermac_reboot() sends Cuda pseudo-command $11
+    # (RESET_SYSTEM) and panics if it ever returns; granny-smith's Cuda
+    # accepts $11 but only clears its own autopoll/tick state, so the kernel
+    # comes back and prints `panic: system should have restarted`.  Making a
+    # device callback power-cycle the machine needs a deferred-restart seam
+    # the emulator does not have yet (the bus-error deferral is the shape it
+    # would take).  Until it does, the golden below is the truthful record of
+    # what the machine does, and the phase power-cycles it itself.
+    machine.adb.keyboard.press "Return"
+    scheduler.run 2000000000
+    check("mach-reboot-panic.png")
+}
+
+# --- phase 3: point lilo.conf at the installed root --------------------------
+
+def phase3_configure_lilo() {
+    # The power cycle DR3 asked for and could not have.  machine.restart keeps
+    # the media attached as the same open handles, so every write above
+    # survives it by construction.
+    machine.restart
+    scheduler.run 360000000
+    machine.memory.poke.l 0x9716A 0x2000
+    scheduler.run 90000000
+    click(503, 177) # Boot MacOS
+    scheduler.run 1200000000
+    wait_stable(1500000000)
+    check_ex("macos-after-install.png", 0, 440, 20, 640)
+
+    # Apple menu -> Control Panels -> MkLinux, in one press-move-release.
+    #
+    # Deliberately NOT through the System Folder window: what that window
+    # looks like is a property of the volume the prep test built (a by-Name
+    # list, moved and scrolled), and pinning a coordinate inside it would tie
+    # this test to that layout.  The Apple menu's Control Panels submenu is
+    # alphabetical and independent of every window on screen.
+    machine.adb.mouse.move 100 300 "global"
+    run_ticks(20)
+    machine.adb.mouse.move 20 9 "global"
+    run_ticks(30)
+    machine.adb.mouse.click true
+    run_ticks(50)
+    machine.adb.mouse.move 100 132 "global" # Control Panels (submenu opens)
+    run_ticks(60)
+    machine.adb.mouse.move 250 443 "global" # MkLinux
+    run_ticks(40)
+    machine.adb.mouse.click false
+    scheduler.run 800000000
+    wait_stable(1500000000)
+    check_ex("control-panel.png", 0, 440, 20, 640)
+
+    # "Custom..." launches SimpleText on lilo.conf — the Booter's own
+    # documented way of editing it.
+    #
+    # A FIXED budget and no settle.  Measured once at 800 M + a 2 G settle and
+    # it worked; measured again after a full install in front of it and the
+    # settle burned its whole ceiling, so the launch is not reliably quiescent
+    # on this path.  2 G is ~30 seconds of guest time — far past the launch —
+    # and the golden below is the assertion that the document really is open.
+    click(274, 181)
+    scheduler.run 2000000000
+    check_ex("lilo-conf-open.png", 0, 440, 20, 640)
+
+    # The last line reads `rootdev=/dev/scd0`.  Clicking past its end puts the
+    # caret at the end of the line; four Deletes take `scd0` off and `sdb2`
+    # goes on, which is what the Info screen told us to write.
+    click(300, 435)
+    run_ticks(20)
+    machine.adb.keyboard.press "delete"
+    run_ticks(6)
+    machine.adb.keyboard.press "delete"
+    run_ticks(6)
+    machine.adb.keyboard.press "delete"
+    run_ticks(6)
+    machine.adb.keyboard.press "delete"
+    run_ticks(10)
+    machine.adb.keyboard.type "sdb2"
+    run_ticks(20)
+    check_ex("lilo-conf-edited.png", 0, 440, 20, 640)
+
+    # Save, quit SimpleText, then make MkLinux the startup default so the boot
+    # test can run hands-free on the ten-second timeout.
+    machine.adb.keyboard.down "command"
+    run_ticks(6)
+    machine.adb.keyboard.press 0x01 # s
+    run_ticks(6)
+    machine.adb.keyboard.up "command"
+    scheduler.run 200000000
+    machine.adb.keyboard.down "command"
+    run_ticks(6)
+    machine.adb.keyboard.press 0x0C # q
+    run_ticks(6)
+    machine.adb.keyboard.up "command"
+    # Fixed, for the same reason the launch above is fixed: quitting hands the
+    # screen back to the control panel, and that path is not reliably still.
+    scheduler.run 1200000000
+
+    click(54, 170) # Startup Selection: MkLinux
+    run_ticks(30)
+    check_ex("startup-mklinux.png", 0, 440, 20, 640)
+    machine.adb.keyboard.down "command"
+    run_ticks(6)
+    machine.adb.keyboard.press 0x0D # w — close the control panel
+    run_ticks(6)
+    machine.adb.keyboard.up "command"
+    scheduler.run 600000000
+}
+
+# --- phase 4: flush, verify, publish -----------------------------------------
+
+def phase4_export_and_publish() {
+    # Shut Down before reading anything: the control panel's writes to
+    # lilo.conf and MkLinux.prefs are in the guest's cache until the volume is
+    # flushed (the same rule the prep test's phase 4 documents).
+    machine.adb.mouse.move 100 300 "global"
+    run_ticks(20)
+    machine.adb.mouse.move 233 9 "global"
+    run_ticks(30)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move 250 140 "global"
+    run_ticks(30)
+    machine.adb.mouse.click false
+    run_ticks(60)
+    scheduler.run 400000000
+
+    machine.scsi.device[0].image.export "${$WORK_DIR}/mklinux-host-configured.img"
+    machine.scsi.device[1].image.export "${$WORK_DIR}/mklinux-target-installed.img"
+
+    # The two files the boot test depends on, read back from the exported
+    # volume rather than trusted from a golden of the editor.
+    #
+    # Byte-compared against the CD's pristine copies rather than searched:
+    # `vfs.cat` prints a file, it does not return one, and the shell has no
+    # substring operator.  `storage.path_compare` answers -1 for identical and
+    # otherwise the FIRST differing offset, which turns out to be the sharpest
+    # assertion available — it pins not just that the file changed but where.
+    storage.cp "${$WORK_DIR}/mklinux-host-configured.img/partition1/System Folder/Preferences/lilo.conf" "${$WORK_DIR}/lilo-edited.conf"
+    storage.cp "${$WORK_DIR}/mklinux-host-configured.img/partition1/System Folder/Preferences/MkLinux.prefs" "${$WORK_DIR}/prefs-edited"
+    vfs.cat "${$WORK_DIR}/lilo-edited.conf"
+    vfs.cat "${$WORK_DIR}/prefs-edited"
+
+    # lilo.conf: `scd0` -> `sdb2` is length-preserving, and offset 1045 is the
+    # third character of the device name on the file's last real line — the
+    # only byte in 1110 that the edit was allowed to touch first.
+    assert storage.path_size("${$WORK_DIR}/lilo-edited.conf") == 1110 "lilo.conf is ${storage.path_size("${$WORK_DIR}/lilo-edited.conf")} bytes, want 1110 (the rootdev edit is length-preserving)"
+    let lilo_diff = storage.path_compare("${$WORK_DIR}/lilo-pristine.conf", "${$WORK_DIR}/lilo-edited.conf")
+    assert $lilo_diff == 1045 "lilo.conf first differs from the CD's copy at ${$lilo_diff}, want 1045 (inside `rootdev=/dev/s..`)"
+
+    # MkLinux.prefs: `bootos=MacOS` -> `bootos=MkLinux` is two bytes longer
+    # and first differs at offset 8, the character after `bootos=M`.
+    assert storage.path_size("${$WORK_DIR}/prefs-edited") == 101 "MkLinux.prefs is ${storage.path_size("${$WORK_DIR}/prefs-edited")} bytes, want 101 (99 + `MacOS`->`MkLinux`)"
+    let prefs_diff = storage.path_compare("${$WORK_DIR}/prefs-pristine", "${$WORK_DIR}/prefs-edited")
+    assert $prefs_diff == 8 "MkLinux.prefs first differs from the CD's copy at ${$prefs_diff}, want 8 (inside `bootos=M..`)"
+
+    # The target still carries the map prep wrote — the installer formatted
+    # inside the partitions, it did not repartition.
+    storage.partmap "${$WORK_DIR}/mklinux-target-installed.img"
+    let parts = vfs.list("${$WORK_DIR}/mklinux-target-installed.img")
+    assert len($parts) == 4 "the installed target has ${len($parts)} partitions, want 4"
+
+    storage.cp "${$WORK_DIR}/mklinux-host-configured.img" "${$mkl_root}/media/mklinux_host_75_configured.img"
+    storage.cp "${$WORK_DIR}/mklinux-target-installed.img" "${$mkl_root}/media/mklinux_target_dr3_installed_1gb.img"
+    assert storage.path_exists("${$mkl_root}/media/mklinux_host_75_configured.img") "the configured host was not published"
+    assert storage.path_exists("${$mkl_root}/media/mklinux_target_dr3_installed_1gb.img") "the installed target was not published"
+}
+
+if have_media($dr3_iso) && have_media($host) && have_media($target) {
+    phase1_into_the_installer()
+    phase2_run_the_installer()
+    phase3_configure_lilo()
+    phase4_export_and_publish()
+    report_row("DR3", "ariel", "mklinux-install mach-handoff redhat-installer lilo-conf")
+} else {
+    echo "skip: pm7100-mklinux-install (MkLinux media not present — see the bring-up plan §5)"
+}
+
+quit
