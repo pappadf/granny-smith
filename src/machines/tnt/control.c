@@ -217,10 +217,10 @@ void tnt_control_update(config_t *cfg) {
 // blit at $1C1A24/$1C1B08 era pcs):
 //   * The cursor image plane lives in the 16 bytes BEFORE each row's
 //     pixel 0 — the very reason pixel 0 sits CONTROL_FB_OFF(16) bytes
-//     into the framebuffer — with a FIXED row stride equal to the
-//     geometry's 32 bpp pitch (width*4 + 32; 2592 for 640-wide modes)
-//     regardless of the current depth.  plane(L) = scan_base + L*plane_
-//     stride - 16.
+//     into the framebuffer — with a row stride equal to the CURRENT
+//     pitch: every depth's mode line programs a 32-byte row margin
+//     (640-wide: 2592/1312/672 at 32/16/8 bpp).  plane(L) = scan_base
+//     + L*pitch - 16.
 //   * Each row is 8 bytes = 16 pixels at 4 bits: nibble bit 3 = opaque,
 //     low 3 bits index the 8-entry cursor palette (the ColorSpec table
 //     streamed through the RaDACal +$10 port with entry auto-advance).
@@ -262,7 +262,14 @@ static void control_compose(config_t *cfg) {
     if (base + span > TNT_VRAM_SIZE)
         return;
     memcpy(st->compose, st->vram + base, (size_t)span);
-    uint32_t plane_stride = w * 4u + 32u; // the 32 bpp pitch of this geometry
+    // Plane row stride = the CURRENT pitch: every depth's mode line
+    // programs a 32-byte row margin (640-wide: 2592/1312/672 at 32/16/8
+    // bpp), and the plane rides in the 16 bytes before each row's pixel
+    // 0.  (First decoded in a 32 bpp-only mode as "fixed width*4+32" —
+    // live Monitors switches to 16/8 bpp disproved that: the stale
+    // 2592-stride read drew the old plane plus framebuffer bytes as a
+    // junk cursor column.)
+    uint32_t plane_stride = stride;
     uint32_t x = (((uint32_t)c->rad_misc[0] << 8) | c->rad_misc[1]) + 1u; // hotspot bias
     for (uint32_t y = 0; y < h; y++) {
         uint64_t poff = (uint64_t)base + (uint64_t)y * plane_stride;
