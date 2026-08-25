@@ -1,0 +1,448 @@
+# Integration test: build the disk MkLinux DR3 installs onto — one drive,
+# both operating systems.
+#
+# Half one of recreating `systems/mklinux_dr3_single_169mb.img` from nothing
+# but the stock 7.5 volume and the DR3 disc.  It ends with a 169 MB drive that
+# boots System 7.5 on its own and has empty MkLinux partitions waiting;
+# `pdm-mklinux-install` fills them.
+#
+#   pdm-mklinux-disk     partition, bless, and load the Mac OS side   [here]
+#   pdm-mklinux-install  the DR3 installer onto /dev/sda6             [next]
+#
+# WHAT MAKES ONE DISK POSSIBLE.  Drive Setup cannot create the A/UX-style
+# partitions MkLinux needs, and pdisk cannot write drivers or create an HFS
+# volume — but Drive Setup is willing to leave part of a drive **Unallocated**
+# when its Mac OS volume is shrunk, and pdisk will fill that.  So the two run
+# in that order and neither has to do the other's job.  Layout built here:
+#
+#   1  Apple            Apple_partition_map        63 @ 1
+#   2  Macintosh        Apple_Driver43             54 @ 64
+#   3  Macintosh        Apple_Driver43             74 @ 118
+#   4  Patch Partition  Apple_Patches             512 @ 192
+#   5  untitled         Apple_HFS               81920 @ 704       (40.0M)
+#   6  root             Apple_UNIX_SVR2        196608 @ 82624     (96.0M)
+#   7  swap             Apple_UNIX_SVR2         32768 @ 279232    (16.0M)
+#   8  Extra            Apple_Free              34230 @ 312000    (16.7M)
+#
+# THE SIZES ARE THE SMALLEST THAT ARE STILL COMFORTABLE.  DR3's own table puts
+# its "Absolute Minimum" package set at 58 MB and the installed system measures
+# 54 MB, so 96 MB of root sits at 61% full.  Shrinking root also shrinks the
+# ext2 metadata, which is most of what a fresh image occupies — the same
+# install on an 871 MB root leaves 162 MiB of the file non-zero, on 96 MB it
+# leaves 89 MiB including all of System 7.5.
+#
+# MEDIA: the DR3 disc lives in local/gs-docs/projects/mklinux/ and is not in
+# gs-test-data (a 663 MB hybrid ISO), so this test SKIPS cleanly where it is
+# absent.  Everything else it needs — the stock 7.5 volume — is pinned test
+# data.  `pdm-mklinux-boot`, which consumes the finished image, has no such
+# dependency and runs everywhere.
+#
+# ⚠️ The 7.5 volume is attached read/write and accumulates delta writes.  Under
+# the harness those land in the per-test GS_STORAGE_CACHE and tests/data is
+# left untouched; driving this by hand without setting that variable writes
+# through to the shared image.
+
+include "../lib/mac.script"
+
+let mkl_root = "../../../local/gs-docs/projects/mklinux"
+let dr3_iso = "${$mkl_root}/media/MkLinux-DR3/MkLinux-DR3.iso"
+let host_hd = "../../data/systems/system_7_5_0_77mb_mode32_24ac.img"
+let target = "${$WORK_DIR}/mklinux-single.img"
+
+# --- local helpers -----------------------------------------------------------
+
+# Press-move-release drag.  The Finder tracks a drag while the button is held,
+# so the path has to be walked in steps with guest ticks between them; a warp
+# from press point to release point reads as a click and drops the drag.
+def drag(x1, y1, x2, y2) {
+    machine.adb.mouse.move $x1 $y1 "global"
+    run_ticks(20)
+    machine.adb.mouse.click true
+    run_ticks(10)
+    machine.adb.mouse.move ($x1 + ($x2 - $x1) / 4) ($y1 + ($y2 - $y1) / 4) "global"
+    run_ticks(8)
+    machine.adb.mouse.move ($x1 + ($x2 - $x1) / 2) ($y1 + ($y2 - $y1) / 2) "global"
+    run_ticks(8)
+    machine.adb.mouse.move ($x1 + 3 * ($x2 - $x1) / 4) ($y1 + 3 * ($y2 - $y1) / 4) "global"
+    run_ticks(8)
+    machine.adb.mouse.move $x2 $y2 "global"
+    run_ticks(12)
+    machine.adb.mouse.click false
+    run_ticks(10)
+}
+
+# Option-double-click: open the folder AND close the window it lives in, so the
+# screen never accumulates windows the later coordinates are measured against.
+def option_double_click(x, y) {
+    machine.adb.keyboard.down "option"
+    run_ticks(6)
+    double_click($x, $y)
+    run_ticks(10)
+    machine.adb.keyboard.up "option"
+    run_ticks(10)
+}
+
+# Pull down a menu and choose an item: press on the title, move onto the item,
+# release.  A plain click() cannot do this — the Menu Manager tracks the
+# selection while the button is held.
+def menu_pick(title_x, title_y, item_x, item_y) {
+    machine.adb.mouse.move 100 300 "global"
+    run_ticks(20)
+    machine.adb.mouse.move $title_x $title_y "global"
+    run_ticks(30)
+    machine.adb.mouse.click true
+    run_ticks(40)
+    machine.adb.mouse.move $item_x $item_y "global"
+    run_ticks(30)
+    machine.adb.mouse.click false
+    run_ticks(60)
+}
+
+def cmd_key(code) {
+    machine.adb.keyboard.down "command"
+    run_ticks(6)
+    machine.adb.keyboard.press $code
+    run_ticks(6)
+    machine.adb.keyboard.up "command"
+    run_ticks(20)
+}
+
+def shut_down() {
+    menu_pick(233, 9, 250, 140)
+    scheduler.run 500000000
+}
+
+# One pdisk command line.
+#
+# FIXED budgets, never wait_stable: pdisk runs in a SIOUX console window whose
+# insertion point blinks, so the screen never holds still and a stability wait
+# would burn its whole ceiling.
+#
+# The budget BEFORE the typing is the one that matters.  Measured with 120 ms
+# either side, the first character of the line following pdisk's long device
+# listing was swallowed — echoed to the console but never buffered, because
+# pdisk had not yet returned to its read loop — and `e /dev/scsi0.1` arrived as
+# ` /dev/scsi0.1`, which pdisk answered with "No such command (/)" and then
+# failed every command after it.
+def pdisk_line(text, steady) {
+    scheduler.run $steady
+    machine.adb.keyboard.type "${$text}"
+    scheduler.run 300000000
+}
+
+# --- phase 1: the bus --------------------------------------------------------
+
+def phase1_boot() {
+    # HD160SC = Quantum ELS170S, 177,269,760 bytes: the smallest catalog
+    # mechanism that fits 40 MB of Mac OS, 96 MB of root and 16 MB of swap.
+    assert storage.hd_create($target, "HD160SC") "hd_create HD160SC failed"
+    assert storage.path_size($target) == 177269760 "HD160SC wrong image size"
+
+    # Clock set AFTER boot (machine.boot reseeds the RTC from the host wall
+    # clock, discarding a pre-boot value).  The three MkLinux phases use
+    # ASCENDING bases — disk 0xE1000000 < install 0xE1100000 < boot 0xE1200000
+    # — so a file this phase creates and a later phase modifies keeps
+    # crDat < mdDat.
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.rtc.time = 0xE1000000
+    machine.scsi.attach_hd "${$host_hd}" 0
+    machine.scsi.attach_hd "${$target}" 1
+    machine.scsi.attach_cdrom "${$dr3_iso}" 3
+
+    assert machine.scsi.device[1].type == "hd" "SCSI 1 is not a hard disk"
+    assert !machine.scsi.device[1].read_only "SCSI 1 target drive is read-only"
+    # The DR3 image is a bare hybrid ISO — zeros at block 0, HFS at 1024,
+    # ISO9660 at 32768 — so it attaches at the 2048-byte CD default rather than
+    # at a block size read from a Driver Descriptor Map.  It still mounts:
+    # system.c reads a DDM only when the 'ER' signature is there.
+    assert machine.scsi.device[3].block_size == 2048 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (the DDM-less CD default)"
+    # The target is RAW.  Phase 2 starts from a blank disk.
+    assert try(storage.partmap($target), none) == none "the target drive already carries a partition map"
+
+    # suite-pdm's boot_pdm_75() recipe: chip init and bus scan, the documented
+    # Ticks poke past the 20 s spin-up window, then boot blocks, CFM init, the
+    # extensions parade and the Finder.
+    scheduler.run 360000000
+    machine.memory.poke.l 0x9716A 0x2000
+    scheduler.run 1200000000
+    wait_stable(900000000)
+    assert debug.mac.globals.read("BootDrive") != 0 "BootDrive == 0 (no startup device)"
+    assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} during boot"
+    check_ex("host-desktop.png", 0, 440, 20, 640)
+}
+
+# --- phase 2: Drive Setup leaves room ----------------------------------------
+
+def phase2_drive_setup() {
+    double_click(599, 100) # the DR3 disc
+    wait_stable(600000000)
+    option_double_click(180, 158) # MacOS Utilities, closing the disc's root
+    wait_stable(600000000)
+    check_ex("cd-utilities.png", 0, 440, 20, 640)
+
+    double_click(50, 155) # Drive Setup 1.5
+    scheduler.run 800000000
+    wait_stable(2500000000)
+    # `Macintosh HD` at ID 0, `<not initialized>` at ID 1, `<CD-ROM drive>` at
+    # ID 3 — Apple's own formatter enumerating our emulated HD160SC as a drive
+    # it is willing to touch.
+    check_ex("drive-setup-drivelist.png", 0, 440, 20, 640)
+
+    click(60, 117) # the uninitialized row
+    wait_stable(600000000)
+    click(257, 249) # Initialize...
+    wait_stable(900000000)
+    click(92, 249) # Custom Setup...
+    wait_stable(900000000)
+    check_ex("custom-setup.png", 0, 440, 20, 640)
+
+    # Partitioning Scheme -> `1 Partition`: one Mac OS volume spanning the
+    # drive, which the next step shrinks.
+    machine.adb.mouse.move 250 97 "global"
+    run_ticks(30)
+    machine.adb.mouse.click true
+    run_ticks(50)
+    machine.adb.mouse.move 220 128 "global"
+    run_ticks(40)
+    machine.adb.mouse.click false
+    run_ticks(60)
+    wait_stable(900000000)
+
+    # THE STEP THE WHOLE DESIGN RESTS ON.  The Size field arrives selected, so
+    # typing replaces it; Tab commits.  The volume list then reads `untitled`
+    # 40 MB AND `Extra`, Type **Unallocated**, 129 MB — Drive Setup declining
+    # to spread the volume over the whole drive is what leaves pdisk somewhere
+    # to put root and swap.
+    machine.adb.keyboard.type "40"
+    scheduler.run 60000000
+    machine.adb.keyboard.press "Tab"
+    scheduler.run 200000000
+    wait_stable(900000000)
+    check_ex("unallocated.png", 0, 440, 20, 640)
+
+    click(454, 355) # OK
+    wait_stable(900000000)
+    click(280, 249) # Initialize
+    scheduler.run 1200000000
+    wait_stable(3000000000)
+    # "Initialization was successful.", and the volume mounts.
+    check_ex("initialized.png", 0, 440, 20, 640)
+    cmd_key(0x0C) # quit Drive Setup
+    wait_stable(1500000000)
+    report_perf("pdm-mklinux-disk/phase2", scheduler.instr_count)
+}
+
+# --- phase 3: pdisk fills the free space -------------------------------------
+#
+# pdisk's device names are its own: /dev/scsi<bus>.<id>, so our target at SCSI
+# ID 1 is /dev/scsi0.1 — pdisk prints the MkLinux name /dev/sdb beside it.
+# `c <base> <length> <name>` creates an Apple_UNIX_SVR2 partition, MkLinux's
+# type being pdisk's default, and `6p` means "the base of partition 6", the
+# Apple_Free entry Drive Setup left.  After the first create the remaining free
+# space is entry 7.  The installer keys swap off the partition NAME, which is
+# why the second one has to be called exactly `swap`.
+def phase3_pdisk() {
+    double_click(110, 278) # pdisk
+    scheduler.run 500000000
+    check_ex("pdisk-launched.png", 0, 440, 20, 640)
+
+    pdisk_line("e /dev/scsi0.1\n", 300000000)
+    pdisk_line("p\n", 200000000)
+    # Drive Setup's work, read back by the other tool: two Apple_Driver43
+    # partitions, the Patch partition, the 40 MB volume, and 128.7 MB free.
+    check_ex("pdisk-before.png", 0, 440, 20, 640)
+
+    pdisk_line("c 6p 96m root\n", 200000000)
+    pdisk_line("c 7p 16m swap\n", 200000000)
+    pdisk_line("p\n", 200000000)
+    check_ex("pdisk-map.png", 0, 440, 20, 640)
+
+    pdisk_line("w\n", 400000000)
+    pdisk_line("y\n", 200000000)
+    pdisk_line("q\n", 200000000)
+    pdisk_line("q\n", 200000000)
+    scheduler.run 400000000
+    wait_stable(1500000000)
+    cmd_key(0x0D) # close the utilities window before phase 4 measures anything
+    wait_stable(900000000)
+    report_perf("pdm-mklinux-disk/phase3", scheduler.instr_count)
+}
+
+# --- phase 4: the five Mac Files ---------------------------------------------
+#
+# README_DR3: "There are five files in the `Mac Files` folder.  Copy the two
+# files `MkLinux Booter` and `Mach Kernel` to your Extensions folder.  Copy the
+# control panel `MkLinux` to your Control Panels folder.  Copy the two files
+# `lilo.conf` and `MkLinux.prefs` to your Preferences folder."
+#
+# They go into the STOCK volume's System Folder, which phase 5 then copies
+# wholesale onto the new drive — one drag instead of five more.
+#
+# THE SYSTEM FOLDER IS VIEWED BY NAME, and that is not cosmetic.  In icon view
+# the Finder draws each item at its saved position, and those positions are a
+# property of the volume's history: the same image reached by a different route
+# lays the folder out on a tighter grid, scrolled sideways (measured), and two
+# files land in the System Folder's root.  A list view is alphabetical, 16
+# pixels a row, and cannot drift.  The drop x is 70, not 100: a row is a drop
+# target only over its icon and its NAME, and `Extensions` runs out of text at
+# x=97, so a drop at 100 lands on the window background — which the Finder
+# reads as "copy into the System Folder itself", silently.
+def phase4_mac_files() {
+    option_double_click(599, 55)
+    wait_stable(600000000)
+    option_double_click(196, 228)
+    wait_stable(600000000)
+    menu_pick(133, 9, 150, 60) # View -> by Name
+    wait_stable(600000000)
+    drag(200, 36, 200, 278) # to the bottom half; rows start at y=316, step 16
+    wait_stable(600000000)
+    check_ex("system-folder-by-name.png", 0, 440, 20, 640)
+
+    double_click(599, 100)
+    wait_stable(600000000)
+    option_double_click(56, 158) # Mac Files, closing the disc's root
+    wait_stable(600000000)
+    check_ex("mac-files.png", 0, 440, 20, 640)
+
+    # A generous settle after each: the copy progress dialog appears and
+    # disappears, and `Mach Kernel` is 1.28 MB — slow enough that a short wait
+    # returns mid-copy and the next drag lands on the dialog.
+    drag(52, 113, 70, 364) # MkLinux Booter -> Extensions
+    wait_stable(1500000000)
+    drag(180, 113, 70, 364) # Mach Kernel   -> Extensions
+    wait_stable(2500000000)
+    drag(180, 183, 70, 332) # MkLinux       -> Control Panels
+    wait_stable(1500000000)
+
+    # Scroll four rows so `Preferences` clears the bottom edge.  FIVE clicks,
+    # not four: the first click on an inactive window's control only activates
+    # the window, and the Mac Files title-bar click before it guarantees the
+    # System Folder window IS inactive whichever window the last drop left in
+    # front.
+    click(200, 36)
+    run_ticks(20)
+    click(405, 452)
+    run_ticks(8)
+    click(405, 452)
+    run_ticks(8)
+    click(405, 452)
+    run_ticks(8)
+    click(405, 452)
+    run_ticks(8)
+    click(405, 452)
+    run_ticks(20)
+    check_ex("system-folder-scrolled.png", 0, 440, 20, 640) # Preferences at y=389
+
+    drag(52, 243, 70, 389) # lilo.conf     -> Preferences
+    wait_stable(1500000000)
+    drag(180, 243, 70, 389) # MkLinux.prefs -> Preferences
+    wait_stable(1500000000)
+    check_ex("copies-done.png", 0, 440, 20, 640)
+    report_perf("pdm-mklinux-disk/phase4", scheduler.instr_count)
+}
+
+# --- phase 5: bless the new volume -------------------------------------------
+#
+# Copying a System Folder onto a volume with none is what makes that volume
+# bootable — the Finder blesses it, and its icon gains the Mac face.
+#
+# DROP INTO THE DESTINATION'S WINDOW, NOT ONTO ITS DESKTOP ICON.  Measured: a
+# drop aimed at the volume icon missed by a few pixels, landed on the desktop,
+# and MOVED the System Folder out of the boot volume — a drag within one volume
+# is a move, not a copy.  With both windows open the copy is unambiguous.
+def phase5_bless() {
+    # Close EVERY window first — Cmd-Option-W, the Finder's close-all — so the
+    # two that matter open at the positions these coordinates were measured at
+    # instead of on top of whatever phase 4 left behind.
+    machine.adb.keyboard.down "command"
+    run_ticks(6)
+    machine.adb.keyboard.down "option"
+    run_ticks(6)
+    machine.adb.keyboard.press 0x0D
+    run_ticks(6)
+    machine.adb.keyboard.up "option"
+    run_ticks(6)
+    machine.adb.keyboard.up "command"
+    wait_stable(900000000)
+    check_ex("bare-desktop.png", 0, 440, 20, 640)
+
+    # THREE volumes are mounted here — Macintosh HD, the DR3 disc, and the new
+    # drive — so `untitled` is the THIRD desktop icon, at y=158.  (Measured by
+    # hand with no disc attached it is the second, at y=103; that is the sort
+    # of coordinate that only holds for the bus it was measured on.)
+    double_click(599, 158) # `untitled`, the new volume
+    wait_stable(900000000)
+    option_double_click(599, 55) # Macintosh HD, staggered below it
+    wait_stable(900000000)
+    check_ex("two-volumes.png", 0, 440, 20, 640)
+
+    drag(196, 228, 200, 110) # System Folder -> the untitled window
+    scheduler.run 1500000000
+    wait_stable(8000000000)
+    check_ex("blessed.png", 0, 440, 20, 640)
+    report_perf("pdm-mklinux-disk/phase5", scheduler.instr_count)
+}
+
+# --- phase 6: flush, verify, publish -----------------------------------------
+
+def phase6_publish() {
+    # Shut Down before reading anything.  The Finder's copies live in the
+    # guest's disk cache long after the progress dialog is gone: an export
+    # taken straight after the drags shows only the first file (measured).
+    shut_down()
+    machine.scsi.device[1].image.export "${$WORK_DIR}/mklinux-single-macos.img"
+
+    # The map both tools built between them.
+    storage.partmap "${$WORK_DIR}/mklinux-single-macos.img"
+    let parts = vfs.list("${$WORK_DIR}/mklinux-single-macos.img")
+    assert len($parts) == 8 "the drive has ${len($parts)} partitions, want 8 (map + 2 drivers + patches + HFS + root + swap + free)"
+
+    # Partition 5 is the Mac OS volume, and it carries a blessed System Folder
+    # with all five files where README_DR3 puts them.  Asserted by membership
+    # and size rather than by a count, so an unrelated System Folder change
+    # does not fail the row and a truncated copy does.
+    let sysf = "${$WORK_DIR}/mklinux-single-macos.img/partition5/System Folder"
+    let ext = vfs.list("${$sysf}/Extensions")
+    let cps = vfs.list("${$sysf}/Control Panels")
+    let prefs = vfs.list("${$sysf}/Preferences")
+    assert file_sized($ext, "MkLinux Booter", 23152) "Extensions is missing MkLinux Booter (23,152 bytes)"
+    assert file_sized($ext, "Mach Kernel", 1286036) "Extensions is missing Mach Kernel (1,286,036 bytes)"
+    assert file_sized($cps, "MkLinux", 13595) "Control Panels is missing the MkLinux control panel (13,595 bytes)"
+    assert file_sized($prefs, "lilo.conf", 1110) "Preferences is missing lilo.conf (1,110 bytes)"
+    assert file_sized($prefs, "MkLinux.prefs", 99) "Preferences is missing MkLinux.prefs (99 bytes)"
+
+    # Hand-off: the install test cannot read another test's WORK_DIR — the
+    # harness wipes it — so the drive is published next to the rest of the
+    # MkLinux media.
+    storage.cp "${$WORK_DIR}/mklinux-single-macos.img" "${$mkl_root}/media/mklinux_single_macos_169mb.img"
+    assert storage.path_exists("${$mkl_root}/media/mklinux_single_macos_169mb.img") "the drive was not published to media/"
+}
+
+# True when `listing` holds a file named `name` of exactly `size` bytes.
+# vfs.list returns a list of maps; a plain membership test would pass on a
+# half-copied file, and a half-copied `Mach Kernel` is exactly the failure the
+# phase-4 settles exist to prevent.
+def file_sized(listing, name, size) {
+    for entry in $listing {
+        if $entry.name == $name {
+            if $entry.size == $size { return true }
+            echo "file_sized: ${$name} is ${$entry.size} bytes, want ${$size}"
+            return false
+        }
+    }
+    return false
+}
+
+if have_media($dr3_iso) {
+    phase1_boot()
+    phase2_drive_setup()
+    phase3_pdisk()
+    phase4_mac_files()
+    phase5_bless()
+    phase6_publish()
+    report_row("7.5", "ariel", "mklinux-disk drive-setup pdisk bless mac-files")
+} else {
+    echo "skip: pdm-mklinux-disk (the DR3 disc is not present — see gs-docs projects/mklinux)"
+}
+
+quit
