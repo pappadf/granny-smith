@@ -44,6 +44,7 @@
 #include "tnt.h"
 
 #include "log.h"
+#include "ppc.h"
 #include "scheduler.h"
 
 #include <assert.h>
@@ -97,6 +98,8 @@ LOG_USE_CATEGORY_NAME("control");
 static tnt_control_t *ctl(config_t *cfg) {
     return &tnt_st(cfg)->control;
 }
+
+static void control_compose(config_t *cfg);
 
 // ============================================================
 // Presentation — rebuild the display descriptor from the registers
@@ -203,9 +206,99 @@ void tnt_control_update(config_t *cfg) {
     } else {
         control_refresh_clut(cfg);
     }
+    control_compose(cfg);
     st->display.shape_dirty = true;
     st->display.fb_dirty = true;
     st->display.clut_dirty = true;
+}
+
+// The RaDACal hardware cursor (misc $20 bit 1).  Decoded live from the
+// System driver's own draw code (RAM ndrv, clear loop / shifted-image
+// blit at $1C1A24/$1C1B08 era pcs):
+//   * The cursor image plane lives in the 16 bytes BEFORE each row's
+//     pixel 0 — the very reason pixel 0 sits CONTROL_FB_OFF(16) bytes
+//     into the framebuffer — with a FIXED row stride equal to the
+//     geometry's 32 bpp pitch (width*4 + 32; 2592 for 640-wide modes)
+//     regardless of the current depth.  plane(L) = scan_base + L*plane_
+//     stride - 16.
+//   * Each row is 8 bytes = 16 pixels at 4 bits: nibble bit 3 = opaque,
+//     low 3 bits index the 8-entry cursor palette (the ColorSpec table
+//     streamed through the RaDACal +$10 port with entry auto-advance).
+//   * X position: misc $10 (high) / $11 (low), hotspot-biased by one.
+//     Y is implicit — the driver clears the old rows and draws the new.
+// The ROM ndrv leaves the cursor disabled (T11 unchanged).
+static uint8_t control_clut_match(const tnt_control_t *c, uint8_t r, uint8_t g, uint8_t b) {
+    uint32_t best = 0, bestd = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < 256; i++) {
+        int dr = (int)c->clut[i][0] - r, dg = (int)c->clut[i][1] - g, db = (int)c->clut[i][2] - b;
+        uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (d < bestd) {
+            bestd = d;
+            best = i;
+            if (d == 0)
+                break;
+        }
+    }
+    return (uint8_t)best;
+}
+
+static void control_compose(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    tnt_control_t *c = &st->control;
+    if (!st->blank || !st->compose)
+        return;
+    if (st->display.bits == st->blank)
+        return; // blanked: nothing to composite
+    if (!(c->rad_ctrl & 0x2u))
+        return; // cursor off: update() already points at live VRAM
+    uint32_t bpx = depth_bpp(c) / 8u;
+    uint32_t stride = st->display.stride;
+    uint32_t w = st->display.width, h = st->display.height;
+    // Recompute the scan base exactly as update() does.
+    uint32_t attr = c->reg[CR_VRAM_ATTR];
+    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
+    base += c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
+    uint64_t span = (uint64_t)stride * h;
+    if (base + span > TNT_VRAM_SIZE)
+        return;
+    memcpy(st->compose, st->vram + base, (size_t)span);
+    uint32_t plane_stride = w * 4u + 32u; // the 32 bpp pitch of this geometry
+    uint32_t x = (((uint32_t)c->rad_misc[0] << 8) | c->rad_misc[1]) + 1u; // hotspot bias
+    for (uint32_t y = 0; y < h; y++) {
+        uint64_t poff = (uint64_t)base + (uint64_t)y * plane_stride;
+        if (poff < 16u || poff + 8u > TNT_VRAM_SIZE)
+            continue;
+        const uint8_t *row = st->vram + poff - 16u;
+        uint8_t *line = st->compose + (size_t)y * stride;
+        for (uint32_t i = 0; i < 16u; i++) {
+            uint8_t nib = (i & 1u) ? (row[i >> 1] & 0x0Fu) : (row[i >> 1] >> 4);
+            if (!(nib & 0x8u))
+                continue; // transparent
+            uint32_t px = x + i;
+            if (px >= w)
+                continue;
+            const uint8_t *pal = c->crsr[nib & 7u];
+            uint8_t *dst = line + (size_t)px * bpx;
+            switch (bpx) {
+            case 1:
+                dst[0] = control_clut_match(c, pal[0], pal[1], pal[2]);
+                break;
+            case 2: {
+                uint16_t v = (uint16_t)(((pal[0] >> 3) << 10) | ((pal[1] >> 3) << 5) | (pal[2] >> 3));
+                dst[0] = (uint8_t)(v >> 8);
+                dst[1] = (uint8_t)v;
+                break;
+            }
+            default:
+                dst[0] = 0;
+                dst[1] = pal[0];
+                dst[2] = pal[1];
+                dst[3] = pal[2];
+                break;
+            }
+        }
+    }
+    st->display.bits = st->compose;
 }
 
 struct display *tnt_control_display(config_t *cfg) {
@@ -217,8 +310,10 @@ struct display *tnt_control_display(config_t *cfg) {
 
 void tnt_control_host_vbl(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
-    if (st && st->blank)
+    if (st && st->blank) {
+        control_compose(cfg); // refresh the hardware-cursor composite
         st->display.fb_dirty = true; // guest drawing bypasses the renderer
+    }
 }
 
 // ============================================================
@@ -379,7 +474,8 @@ static uint8_t vram_read8(void *ctx, uint32_t offset) {
 
 static void vram_write8(void *ctx, uint32_t offset, uint8_t value) {
     config_t *cfg = (config_t *)ctx;
-    int64_t m = vram_map(ctl(cfg), offset);
+    tnt_control_t *c = ctl(cfg);
+    int64_t m = vram_map(c, offset);
     if (m >= 0)
         tnt_st(cfg)->vram[m] = value;
 }
@@ -428,8 +524,14 @@ uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset) {
     switch (offset & 0x30u) {
     case 0x00:
         return c->rad_addr;
-    case 0x10:
-        return c->crsr[c->rad_addr & 7u][c->crsr_phase];
+    case 0x10: {
+        uint8_t v = c->crsr[c->rad_addr & 7u][c->crsr_phase];
+        if (++c->crsr_phase == 3) {
+            c->crsr_phase = 0;
+            c->rad_addr++; // entry auto-advances, like the CLUT port
+        }
+        return v;
+    }
     case 0x20:
         switch (c->rad_addr) {
         case 0x20:
@@ -462,10 +564,12 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
         c->crsr_phase = 0;
         break;
     case 0x10:
-        LOG(4, "cursor data [%u.%u] = $%02X", c->rad_addr, c->crsr_phase, value);
+        LOG(4, "cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value, ppc_get_pc(cfg->ppc));
         c->crsr[c->rad_addr & 7u][c->crsr_phase] = value;
-        if (++c->crsr_phase == 3)
+        if (++c->crsr_phase == 3) {
             c->crsr_phase = 0;
+            c->rad_addr++; // the driver streams all 8 entries in one burst
+        }
         break;
     case 0x20:
         LOG(2, "RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
@@ -637,7 +741,8 @@ void tnt_control_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);
-    assert(st->vram != NULL && st->blank != NULL);
+    st->compose = calloc(1, TNT_VRAM_SIZE);
+    assert(st->vram != NULL && st->blank != NULL && st->compose != NULL);
 
     // The VCI memory space: control's BARs answer inside it, everything
     // else takes the recoverable transfer error the probe idioms expect.
@@ -659,4 +764,6 @@ void tnt_control_teardown(config_t *cfg) {
     st->vram = NULL;
     free(st->blank);
     st->blank = NULL;
+    free(st->compose);
+    st->compose = NULL;
 }

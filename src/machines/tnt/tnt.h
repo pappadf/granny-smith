@@ -281,6 +281,7 @@ typedef struct tnt_state {
     struct display display; // scanout descriptor (display.h)
     rgba8_t clut_view[256]; // materialized CLUT for the renderer
     uint8_t *blank; // black stub presented while the raster is blanked
+    uint8_t *compose; // hardware-cursor composite (derived, not checkpointed)
 
     // Memory interfaces registered with the map
     memory_interface_t gc_interface; // $F3000000 island (128 KB)
