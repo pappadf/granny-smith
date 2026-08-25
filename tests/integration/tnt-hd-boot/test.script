@@ -1,4 +1,6 @@
-# TNT MESH disk boot (see config.mk) — the Phase-E frontier row.
+# TNT MESH disk boot (see config.mk) — the Phase-E row, promoted to the
+# full Finder boot (ladder T13) when the data-phase wall fell to the
+# SEQ_BUSFREE expect-free law (mesh.c).
 #
 # Same discipline as the ladder: clean bounded runs, no PC logpoints,
 # assertions read state afterward.
@@ -6,24 +8,30 @@
 include "../lib/mac.script"
 
 machine.boot model="pm7500" ram=32768 rom="${$ROM}"
+machine.rtc.time = "2026-04-26T21:30:36"
 machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
 
 # Through OF, POST, the 68k boot, the gray desktop (T11), the SCSI scan
-# (complete MESH transactions against the disk), driver-partition load
-# and the boot-volume mount.  BootDrive lands well before 900M; the
-# budget reaches the stable splash screen.
-scheduler.run 1100000000
+# (complete MESH transactions against the disk), driver-partition load,
+# the boot-volume mount, the Mac OS splash, and the full System 7.6
+# startup to the Finder desktop.
+scheduler.run 2500000000
 
 # The boot-driver selection matched (XPRAM $77 "Default OS" = 1 through
 # the banked NVRAM against the DDM's ddType) and the volume mounted:
 # BootDrive carries the boot drive number instead of the scan's $FFFF.
 assert debug.mac.globals.read("BootDrive") == 0x8003 "BootDrive not set (driver match / mount failed)"
 
-# The System reached its startup screen: the "Mac OS" splash drawn over
-# the T11 desktop.  The golden deliberately INCLUDES the system-error
-# dialog of the current frontier (the disk driver's data-phase arming —
-# config.mk): when that falls, REGEN moves this golden forward.
-check("macos-splash.png")
+# Startup completed without a system error: DSErrCode was explicitly
+# cleared by the running system (the scan-era sentinel is $FFFF; the
+# old data-phase wall bombed here with $66 dsOldSystem).
+assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
+
+# The Finder desktop: menu bar, mounted "Macintosh HD" volume, Trash,
+# and the Energy Saver first-boot dialog.  The menu-bar clock area is
+# excluded — it tracks the pinned RTC plus guest uptime, so it shifts
+# whenever model changes move boot timing.
+check_ex("finder-desktop.png", 0, 500, 20, 640)
 
 echo "tnt-hd-boot: BootDrive=${debug.mac.globals.read("BootDrive"):04x} dserr=${debug.mac.globals.read("DSErrCode"):04x} ticks=${debug.mac.globals.read("Ticks")}"
 quit

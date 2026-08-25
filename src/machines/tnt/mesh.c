@@ -109,9 +109,10 @@ LOG_USE_CATEGORY_NAME("mesh");
 // virtual overlay.  The target never INITIATES negotiation: neither
 // shipping driver can accept an unsolicited extended message (the
 // unsolicited-message hooks — ROM $FFEB89BC, driver $1A335C — and the
-// driver's message-in state $1A2EF4 all BUSFREE on one), which is also
-// why the T12 data-phase-arming wall cannot be solved by negotiation
-// at all — the full forensic story lives in the handover §8.
+// driver's message-in state $1A2EF4 all BUSFREE on one).  Negotiation
+// is NOT what arms the data phases either — the T12 wall fell to the
+// SEQ_BUSFREE expect-free law (see CMD_BUSFREE) — the full forensic
+// story lives in the handover §8.
 // The response values mirror the framework's own offer (block+48/49):
 // offset 15, period factor 25 (100 ns, fast SCSI).
 #define MESH_SDTR_PERIOD 25u
@@ -420,6 +421,15 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         return;
 
     case CMD_ARBITRATE:
+        // Arbitration implies a free bus: a stale connection from an
+        // abandoned transaction (see CMD_BUSFREE) is gone by the time
+        // the initiator re-arbitrates.
+        if (m->connected) {
+            if (cfg->scsi)
+                scsi_external_release(cfg->scsi);
+            m->connected = 0;
+            msg_session_reset(m);
+        }
         // The shared bus model has no competing initiators: arbitration
         // is always won, immediately.
         m->active = 0;
@@ -544,7 +554,44 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         return;
     }
 
-    case CMD_BUSFREE:
+    case CMD_BUSFREE: {
+        // SEQ_BUSFREE means "expect the bus to go free" — it is NOT a
+        // forced release.  Issued while the target still drives a
+        // phase (REQ pending — e.g. right after a no-data command's
+        // CDB, with the target presenting STATUS), the sequencer sees
+        // REQ where it expects bus-free and raises the phase-mismatch
+        // exception, keeping the connection.  The ROM SIM DEPENDS on
+        // this distinction: its no-data request path issues BUSFREE
+        // straight after the CDB, and its completion treats a PURE
+        // CMDDONE here as "the bus really went free" — phase 8 —
+        // which it then fails as scsiUnexpectedBusFree (-7917, stamp
+        // at ROM $FFEB6A14).  Every TEST UNIT READY through the
+        // request path died on that; and Apple_Driver43's data phases
+        // hang off the same law — its unarmed-sync path ([114]==4)
+        // issues BUSFREE as an expect-free PROBE, and the mismatch
+        // exception is what tells it the target still has data, so it
+        // continues the transaction.  This one semantic was the whole
+        // T12/T13 "data-phase arming wall": with it pinned, the 7.6
+        // disk boots to the Finder.  A stale connection left behind
+        // by an abandoned transaction is swept by the next ARBITRATE.
+        bool req_pending = false;
+        if (m->connected && cfg->scsi) {
+            switch (scsi_get_bus_phase(cfg->scsi)) {
+            case scsi_command:
+            case scsi_data_in:
+            case scsi_data_out:
+            case scsi_status:
+            case scsi_message_in:
+                req_pending = true;
+                break;
+            default:
+                break;
+            }
+        }
+        if (req_pending || (m->connected && (m->msgout_pending || msgin_pending(m)))) {
+            raise_exception(cfg, EXC_PHASEMM);
+            return;
+        }
         if (cfg->scsi)
             scsi_external_release(cfg->scsi);
         m->connected = 0;
@@ -553,6 +600,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         msg_session_reset(m);
         raise_int(cfg, INT_CMDDONE);
         return;
+    }
 
     // Quick commands: no completion interrupt (see header comment).
     case CMD_ENBRESEL:
