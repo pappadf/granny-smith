@@ -1,13 +1,13 @@
 # Integration test: boot MkLinux DR3 on every PowerPC machine we model.
 #
-# One published image — `systems/mklinux_dr3_single_169mb.img`, 169 MB —
-# carrying System 7.5 *and* MkLinux DR3 on one Apple partition map:
+# One published image — `systems/mklinux_dr3_76_single_169mb.img`, 169 MB —
+# carrying Mac OS 7.6 *and* MkLinux DR3 on one Apple partition map:
 #
 #   1  Apple            Apple_partition_map        63 @ 1
 #   2  Macintosh        Apple_Driver43             54 @ 64
 #   3  Macintosh        Apple_Driver43             74 @ 118
 #   4  Patch Partition  Apple_Patches             512 @ 192
-#   5  untitled         Apple_HFS               81920 @ 704       (40.0M)  System 7.5
+#   5  untitled         Apple_HFS               81920 @ 704       (40.0M)  Mac OS 7.6
 #   6  root             Apple_UNIX_SVR2        196608 @ 82624     (96.0M)  ext2, /
 #   7  swap             Apple_UNIX_SVR2         32768 @ 279232    (16.0M)
 #   8  Extra            Apple_Free              34230 @ 312000    (16.7M)
@@ -18,12 +18,17 @@
 # `bootos=MkLinux`) loads `Mach Kernel` and hands over.  Nobody clicks
 # anything.
 #
-# ONE IMAGE, THREE MACHINES, ONE GOLDEN.  The console DR3 prints is identical
-# on all three — same kernel, same userland, nothing machine-specific on the
-# disk — so the same `mklinux-login.png` is the success criterion everywhere.
-# That is the strongest statement this suite can make about the image being
-# machine-independent, and the reason it is worth running on every commit
-# rather than nightly.  The whole suite is well under two minutes.
+# ONE IMAGE, FOUR MACHINES.  The console DR3 prints is identical on the three
+# NuBus models — same kernel, same userland, nothing machine-specific on the
+# disk — so the same `mklinux-login.png` is the success criterion on all of
+# them.  That is the strongest statement this suite can make about the image
+# being machine-independent, and the reason it is worth running on every commit
+# rather than nightly.
+#
+# The 7500 is the fourth machine and the reason the image carries 7.6 rather
+# than 7.5: a PCI Power Mac refuses a 7.5 startup volume with DSErrCode $66
+# (dsOldSystem) before the Booter is ever reached.  It runs the same disk and
+# the same kernel, and is asserted WITHOUT a golden — see row_pm7500().
 #
 # WAIT FOR THE SCREEN, DO NOT BUDGET FOR IT.  Every row uses wait_match, which
 # returns on the first quantum whose frame equals the golden.  A fixed budget
@@ -41,10 +46,14 @@
 
 include "../lib/mac.script"
 
-# In gs-test-data since 2590a822 — `systems/mklinux_dr3_single_169mb.img.7z`,
+# In gs-test-data since 9e807e1 — `systems/mklinux_dr3_76_single_169mb.img.7z`,
 # extracted in place by fetch-test-data.sh.  No have_media() guard: the data is
 # part of the pinned corpus, so a missing image is a failure to report.
-let disk = "../../data/systems/mklinux_dr3_single_169mb.img"
+let disk = "../../data/systems/mklinux_dr3_76_single_169mb.img"
+
+# The 7500 needs its own ROM, so it cannot come through TEST_ROM/$ROM.  Same
+# fixture tnt-hd-boot uses: the 1995-08 TNT ROM v1.
+let tnt_rom = "../../data/roms/pm7500-pm8500-pm9500-96cd923d.rom"
 
 # Power on with the disk attached and run to the point where the Booter's
 # splash is up.  The RTC is seeded AFTER machine.boot (which reseeds it from
@@ -58,6 +67,16 @@ def power_on(model, ram_kb) {
     # documented Ticks poke past the 20 s drive-spin-up window.
     scheduler.run 360000000
     machine.memory.poke.l 0x9716A 0x2000
+}
+
+# Same, for the PCI machine: its own ROM, and none of the PDM spin-up dance —
+# the Ticks poke above pokes a Mac OS low-memory global past the NuBus SCSI
+# scan's wait, which the TNT boot path does not perform.  (tnt-hd-boot does not
+# poke either.)
+def power_on_tnt(model, ram_kb) {
+    machine.boot model="${$model}" ram=$ram_kb rom="${$tnt_rom}"
+    machine.rtc.time = 0xE1200000
+    machine.scsi.attach_hd "${$disk}" 0
 }
 
 # Wait for a golden WITHOUT ever writing it.  mac.script's wait_match captures
@@ -146,17 +165,54 @@ def row_pm7100() {
     assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "pm7100: still in the 68k address space"
     assert machine.screen.depth == 8 "pm7100: ${machine.screen.depth} bpp, want 8"
     prove_root_is_mounted("pm7100")
-    report_perf("pdm-mklinux-boot/pm7100", scheduler.instr_count)
+    report_row("DR3", "ariel", "mklinux-boot single-disk login")
+    report_perf("mklinux-boot/pm7100", scheduler.instr_count)
 }
 
 def row_pm6100() { ride_to_login("pm6100", 24576) }
 def row_pm8100() { ride_to_login("pm8100", 40960) }
 
-# pm7100 first: it owns the login golden the other rows wait on.
+# The PCI machine, and the row the 7.6 image exists for.
+#
+# NO GOLDEN, DELIBERATELY.  The 7500 comes up in 32-bit colour and MkLinux's
+# console is drawn very dark there — the text is legible and identical in
+# content to the other three, but nothing like `mklinux-login.png`, so this row
+# cannot share it.  Nor does it get one of its own: we believe that rendering
+# is a Control-video palette bug, and a golden of it would enshrine the bug as
+# the expected result and go red on the day it is fixed.  Until that is
+# understood, this row asserts what is not in doubt — the machine left the 68k
+# address space, and the root filesystem takes writes.
+#
+# It therefore runs a FIXED budget instead of waiting on a frame, which is
+# safe here for two reasons.  The emulator is deterministic, so a measured
+# figure holds; and a budget that is too short cannot produce a false green —
+# the login typing lands nowhere, nothing is written, and prove_root_is_mounted
+# fails loudly.  Measured on this image: the 68k address space is still
+# answering at 0.5 G and gone by 1.0 G, and the console reaches its final state
+# by 2.0 G (screen checksum identical at 2.0, 2.5 and 3.0 G).  3 G is the
+# margin on that.
+#
+# Do NOT convert this back into a poll on the address-space check.  Written
+# that way it broke on the first iteration and reported a hand-off 20 M
+# instructions in, which is an order of magnitude too early to be real: the
+# check is only meaningful once Mac OS has had a chance to set low memory up,
+# so as a loop condition it fires on the pre-boot state instead.  As an
+# assertion AFTER the run it says exactly what it should.
+def row_pm7500() {
+    power_on_tnt("pm7500", 32768)
+    scheduler.run 3000000000
+    assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "pm7500: still in the 68k address space — the Booter never handed off"
+    assert machine.screen.depth == 32 "pm7500: ${machine.screen.depth} bpp, want 32"
+    prove_root_is_mounted("pm7500")
+    report_row("DR3", "control", "mklinux-boot single-disk login")
+    report_perf("mklinux-boot/pm7500", scheduler.instr_count)
+}
+
+# pm7100 first: it owns the login golden the other NuBus rows wait on.
 if row_on("pm7100") { row_end("pm7100", try(row_pm7100(), "FAILED")) }
 if row_on("pm6100") { row_end("pm6100", try(row_pm6100(), "FAILED")) }
 if row_on("pm8100") { row_end("pm8100", try(row_pm8100(), "FAILED")) }
+if row_on("pm7500") { row_end("pm7500", try(row_pm7500(), "FAILED")) }
 suite_done()
-report_row("DR3", "ariel", "mklinux-boot single-disk login")
 
 quit
