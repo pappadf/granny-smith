@@ -32,6 +32,13 @@ LOG_USE_CATEGORY_NAME("ppc");
 //   GS_PCTRACE_REG=<n>        append gpr[n] to each line (-1 = off)
 //   GS_PCTRACE_WATCH=<hex>    watch mode: log only changes of the word at
 //                             this physical address (with pc), no pc lines
+//   GS_PCTRACE_ONLYPC=<hex>   filter: within the window log only this pc
+//                             (plus a ROUND marker per trigger hit and the
+//                             $300/$600 vector entries); with REG set the
+//                             line also carries the byte at gpr[REG], read
+//                             through the boot-era static alias (arena
+//                             below 16 MB 1:1, kernel $FF8xxxxx → phys
+//                             $4xxxxx)
 static FILE *g_trace_file;
 static int g_trace_reg = -1;
 static uint32_t g_trace_trigger, g_trace_count, g_trace_skip;
@@ -40,6 +47,7 @@ static uint32_t g_trace_hitno; // trigger hits seen so far
 static uint64_t g_trace_seen; // instructions executed since arm (approximates instr_count)
 static uint32_t g_trace_watch; // physical word address to watch (0 = off)
 static uint32_t g_trace_watch_val; // last observed value at the watch address
+static uint32_t g_trace_onlypc; // filter: log only this pc within the window (0 = off)
 static int g_trace_hits_mode = -1; // -1 = env not parsed yet
 
 // One-time env parse; leaves g_trace_file NULL (trace off) unless armed.
@@ -59,16 +67,30 @@ static void ppc_trace_init(void) {
     g_trace_reg = (s = getenv("GS_PCTRACE_REG")) ? atoi(s) : -1;
     g_trace_watch = (s = getenv("GS_PCTRACE_WATCH")) ? (uint32_t)strtoul(s, NULL, 16) : 0u;
     g_trace_watch_val = g_trace_watch ? memory_read_uint32(g_trace_watch) : 0u;
+    g_trace_onlypc = (s = getenv("GS_PCTRACE_ONLYPC")) ? (uint32_t)strtoul(s, NULL, 16) : 0u;
+}
+
+// Boot-era static virtual→physical alias for diagnostic byte peeks: the 68k
+// arena is identity-mapped below 16 MB and the kernel image at virtual
+// $FF800000 is phys $00400000.  Returns $FF for anything else (matches the
+// untranslated-peek convention).
+static uint8_t ppc_trace_peek8(uint32_t vaddr) {
+    if (vaddr < 0x01000000u)
+        return memory_read_uint8(vaddr);
+    if (vaddr >= 0xFF800000u && vaddr < 0xFFC00000u)
+        return memory_read_uint8(vaddr - 0xFF800000u + 0x00400000u);
+    return 0xFF;
 }
 
 // Per-instruction hook (called only while g_trace_file is set): waits for
 // the trigger pc, then logs the instruction stream (or just hit contexts).
 static void ppc_trace(ppc_t *p, uint32_t iw) {
     g_trace_seen++;
+    if (p->instruction_pc == g_trace_trigger)
+        g_trace_hitno++; // counted even inside an active window (ONLYPC round markers)
     if (g_trace_active == 0) {
         if (p->instruction_pc != g_trace_trigger)
             return;
-        g_trace_hitno++;
         if (g_trace_hits_mode) {
             fprintf(g_trace_file, "HIT %u seen=%llu lr=%08X ctr=%08X msr=%08X r2=%08X r25=%08X\n", g_trace_hitno,
                     (unsigned long long)g_trace_seen, p->lr, p->ctr, p->msr, p->gpr[2], p->gpr[25]);
@@ -94,7 +116,18 @@ static void ppc_trace(ppc_t *p, uint32_t iw) {
     if (p->instruction_pc == 0xFFF00300u || p->instruction_pc == 0xFFF00600u) // vector entry: fault details
         fprintf(g_trace_file, "%08X %08X VEC dar=%08X dsisr=%08X srr0=%08X srr1=%08X\n", p->instruction_pc, iw, p->dar,
                 p->dsisr, p->srr0, p->srr1);
-    else if (g_trace_reg >= 0)
+    else if (g_trace_onlypc) { // filtered mode: round markers + the one pc of interest
+        if (p->instruction_pc == g_trace_trigger) {
+            fprintf(g_trace_file, "ROUND %u seen=%llu\n", g_trace_hitno, (unsigned long long)g_trace_seen);
+            fflush(g_trace_file); // survive a daemon kill mid-window
+        } else if (p->instruction_pc == g_trace_onlypc) {
+            if (g_trace_reg >= 0) {
+                uint32_t a = p->gpr[g_trace_reg & 31];
+                fprintf(g_trace_file, "%08X %08X %08X %02X\n", p->instruction_pc, iw, a, ppc_trace_peek8(a));
+            } else
+                fprintf(g_trace_file, "%08X %08X\n", p->instruction_pc, iw);
+        }
+    } else if (g_trace_reg >= 0)
         fprintf(g_trace_file, "%08X %08X %08X\n", p->instruction_pc, iw, p->gpr[g_trace_reg & 31]);
     else
         fprintf(g_trace_file, "%08X %08X\n", p->instruction_pc, iw);

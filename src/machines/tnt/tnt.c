@@ -391,7 +391,17 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // No 68k MMU owns this machine's page table; host-backed regions that
     // core code registers on the bus map are filled through our filler.
     g_mem_host_fill = tnt_fill_page;
-    cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
+    // TEMP diagnostic (604 boot-wall hunt): board-vs-CPU counterfactuals
+    // without profile edits.  Env-gated, inert otherwise.
+    int cpu_model = cfg->machine->cpu_model;
+    {
+        const char *s = getenv("GS_CPU_OVERRIDE");
+        if (s && strcmp(s, "601") == 0)
+            cpu_model = CPU_MODEL_PPC601;
+        else if (s && strcmp(s, "604") == 0)
+            cpu_model = CPU_MODEL_PPC604;
+    }
+    cfg->ppc = ppc_init(cp, cpu_model);
     assert(cfg->ppc != NULL);
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
@@ -405,7 +415,7 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Time: the 601's RTC input keeps the PDM 7.8336 MHz assumption until
     // ladder rung T2 proves otherwise; the 604's timebase/DEC tick at a
     // quarter of the bus clock (Motorola, MPC604UM/AD, §1.3.2.2).
-    uint32_t tick_hz = (cfg->machine->cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u;
+    uint32_t tick_hz = (cpu_model == CPU_MODEL_PPC601) ? 7833600u : tnt_board(cfg)->bus_hz / 4u;
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, tick_hz);
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
