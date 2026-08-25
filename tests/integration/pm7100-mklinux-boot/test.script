@@ -1,93 +1,101 @@
-# Integration test: Power Macintosh 7100 — boot MkLinux DR3 to a login prompt.
+# Integration test: boot MkLinux DR3 from a single Mac OS + MkLinux disk.
 #
 # Plan §5.3, and the test the whole project exists to produce.  It starts from
-# the pair `pm7100-mklinux-install` publishes and asserts, in rows:
+# ONE published image — `mklinux_dr3_single_169mb.img`, 169 MB — carrying both
+# operating systems on one Apple partition map:
 #
-#   macos-control  the same host volume still boots System 7.5 to the Finder
-#   splash         the MkLinux Booter's screen renders, naming the root device
-#                  the install phase wrote into lilo.conf
-#   login          the 10-second timeout fires with nobody watching, the
-#                  Booter loads Mach_Kernel, the Mach kernel brings up the
-#                  Linux server, and the console reaches `localhost login:`
-#   session        root logs in with the installed password and `uname -a`
-#                  answers from the guest's own kernel
+#   1  Apple            Apple_partition_map        63 @ 1
+#   2  Macintosh        Apple_Driver43             54 @ 64
+#   3  Macintosh        Apple_Driver43             74 @ 118
+#   4  Patch Partition  Apple_Patches             512 @ 192
+#   5  untitled         Apple_HFS               81920 @ 704       (40.0M)  System 7.5
+#   6  root             Apple_UNIX_SVR2        196608 @ 82624     (96.0M)  ext2, /
+#   7  swap             Apple_UNIX_SVR2         32768 @ 279232    (16.0M)
+#   8  Extra            Apple_Free              34230 @ 312000    (16.7M)
 #
-# THE CONTROL ROW IS NOT OPTIONAL.  Without it "MkLinux broke" and "the volume
-# broke" look identical.  It clicks `Boot MacOS` on the same splash, from the
-# same disks, in the same instant of simulated time.
+# Mac OS is still the boot path — on this hardware generation MkLinux never
+# boots the machine itself; the MkLinux Booter extension in the System Folder
+# on partition 5 loads `Mach Kernel` and hands over.  What makes one disk
+# possible is that Drive Setup can leave part of a drive Unallocated, and
+# pdisk can fill that with Apple_UNIX_SVR2 partitions (prep phase 2).
 #
-# NO CD IS ATTACHED.  The installed system has to stand on its own two disks;
-# the DR3 disc is an install-time dependency only, and leaving it off is how
-# that is asserted rather than assumed.
+# ROWS.  pm7100 is enforced; the other two PowerPC models are MILESTONE rows —
+# they report red without failing the suite, because they are known gaps with
+# a diagnosis, not regressions:
+#
+#   pm6100  hands off and goes dark: nothing is written to the root
+#           filesystem, so MkLinux never reaches a shell there
+#   pm8100  BOOTS — and the screen says otherwise, which is why these rows
+#           assert the disk and not a picture.  Its console stops repainting
+#           after the Mach banner (`asc0: NCR 53CF94 40 mhz SCSI ID 7`) and a
+#           screenshot ten billion instructions later still shows that text,
+#           but the row's `sync` lands on disk exactly as the 7100's does.  A
+#           console/video gap, not a boot failure — the opposite of what the
+#           screen alone would have said.
+#
+# The 8100 stays a milestone until its console is fixed and it can carry a
+# golden; the 6100 is the next piece of bring-up work.
 #
 # TIMING.  Every screen here carries a blinking cursor — the Booter's splash
 # counts down in seconds, the Linux console blinks its block — so `wait_stable`
 # would burn its ceiling and fail the row.  Each rung uses a measured fixed
-# budget instead, and each budget is stated in the comment above it.
+# budget instead.
 
 include "../lib/mac.script"
 
-# The published pair (plan §5.2 I4).  They live in local/ and are not in
-# gs-test-data yet, so the whole suite is guarded and skips cleanly.
 let mkl_root = "../../../local/gs-docs/projects/mklinux"
-let host = "${$mkl_root}/media/mklinux_host_75_configured.img"
-let target = "${$mkl_root}/media/mklinux_target_dr3_installed_1gb.img"
+let disk = "${$mkl_root}/media/mklinux_dr3_single_169mb.img"
 
-# One boot recipe for every row; only what happens at the splash differs.
-# Anything else varying between the rows would make the control worthless.
+# One boot recipe for every row; only the machine and what happens at the
+# splash differ.  Anything else varying between rows would make the control
+# worthless.
 #
 # The RTC is seeded AFTER machine.boot (which reseeds it from the host clock)
-# and LATER than the install phase's base, so the installed files are in the
+# and later than the install phase's base, so the installed files are in the
 # past — a boot whose clock predates its own filesystem is not something a
 # real machine ever does, and HFS date checks notice.
-def boot_to_splash() {
-    machine.boot model="pm7100" ram=40960 rom="${$ROM}"
+def boot_to_splash(model) {
+    machine.boot model="${$model}" ram=40960 rom="${$ROM}"
     machine.rtc.time = 0xE1200000
-    machine.scsi.attach_hd "${$host}" 0
-    machine.scsi.attach_hd "${$target}" 1
+    machine.scsi.attach_hd "${$disk}" 0
     # suite-pdm's boot_pdm_75() head: chip init and bus scan, then the
     # documented Ticks poke past the 20 s drive-spin-up window.
     scheduler.run 360000000
     machine.memory.poke.l 0x9716A 0x2000
-    # 90 M more puts the MkLinux Booter's splash on screen with its countdown
-    # still running (measured: it paints at ~430 M and counts for ten seconds).
-    scheduler.run 90000000
+    # 450 M more puts the MkLinux Booter's splash on screen with its ten-second
+    # countdown still running.
+    scheduler.run 450000000
 }
 
 # THE CONTROL.  Click `Boot MacOS` and the machine must still reach the 7.5
-# Finder off the same volume.
+# Finder off partition 5.  Without this row, "MkLinux broke" and "the disk
+# broke" look identical.
 def row_macos_control() {
-    boot_to_splash()
+    boot_to_splash("pm7100")
     click(503, 177)
-    scheduler.run 1200000000
-    wait_stable(1500000000)
+    scheduler.run 1500000000
+    wait_stable(2000000000)
     assert machine.cpu.mmu.peek(0xAF0, 2) == 0 "system error ${machine.cpu.mmu.peek(0xAF0, 2)} during the Mac OS control boot"
     assert debug.mac.globals.read("BootDrive") != 0 "BootDrive == 0 on the control boot"
     check_ex("macos-control.png", 0, 440, 20, 640)
 }
 
-# THE BOOTER'S OWN SCREEN.  This is the first thing on the machine that is
-# neither Mac OS nor granny-smith: an extension that patched itself into the
-# boot and drew over it.  The golden masks the "Boot in N seconds" line — that
-# is a live countdown — but keeps `Root Device: /dev/sdb2`, which is the
-# install phase's lilo.conf edit read back by the software that consumes it.
+# THE BOOTER'S OWN SCREEN — the first thing on the machine that is neither
+# Mac OS nor granny-smith.  The golden masks the "Boot in N seconds" line (a
+# live countdown) but keeps `Root Device: /dev/sda6`, which is the install
+# phase's lilo.conf edit read back by the software that consumes it.
 def row_splash() {
-    boot_to_splash()
+    boot_to_splash("pm7100")
     check_ex("booter-splash.png", 300, 420, 340, 570)
 }
 
 # THE MILESTONE.  Nobody clicks anything: the splash's ten-second timeout
 # fires on the installed default (`bootos=MkLinux`), the Booter loads
-# `Mach Kernel` out of the Extensions folder, and the machine leaves the 68k
-# world for good.
-#
-# Budget: 250 M for the countdown, then 3.0 G for Mach's own start-up, the
-# Linux server, the ext2 root mount and the rc scripts.  Measured end-to-end
-# at ~3.7 G instructions from reset; the extra covers the rc scripts' spread.
+# `Mach Kernel` out of the System Folder on partition 5, and the machine
+# leaves the 68k world for good.
 def row_login() {
-    boot_to_splash()
-    scheduler.run 250000000
-    scheduler.run 3000000000
+    boot_to_splash("pm7100")
+    scheduler.run 4000000000
     # Structural proof first, so a failure says WHERE it stopped rather than
     # only that a golden did not match: the 68k address space is gone.  A 7.5
     # boot answers low memory; a machine running the Mach kernel does not.
@@ -96,53 +104,73 @@ def row_login() {
 }
 
 # A REAL SESSION.  `root` / `mklinux` is the password the install phase set,
-# and `uname -a` is answered by the guest's own kernel: the golden carries
-# "Linux localhost.localdomain 2.0.33-osfmach3 #1 Thu Jun 11 10:21:31 PDT 1998
-# ppc unknown", which is DR3's shipped build stamp on the PowerPC target.
-#
-# Typed with keyboard.type: the ADB scan codes are the same in both worlds for
-# letters, and only the arrow cluster differs (notes/dr3-guest-quirks.md §2),
-# which a login does not use.
+# and `df -h` is answered by the guest's own kernel off its own root
+# filesystem: 93M size, 54M used — the Absolute Minimum package set on the
+# 96 MB partition 6.
 def row_session() {
-    boot_to_splash()
-    scheduler.run 250000000
-    scheduler.run 3000000000
+    boot_to_splash("pm7100")
+    scheduler.run 4000000000
     machine.adb.keyboard.type "root\n"
-    scheduler.run 200000000
+    scheduler.run 250000000
     machine.adb.keyboard.type "mklinux\n"
+    scheduler.run 800000000
+    machine.adb.keyboard.type "df -h\n"
     scheduler.run 600000000
-    machine.adb.keyboard.type "uname -a\n"
-    scheduler.run 400000000
-    check("mklinux-uname.png")
+    check("mklinux-df.png")
 
     # A GOLDEN IS NOT ENOUGH HERE, and this test learned that the hard way: a
-    # golden regenerated against a broken image locks the breakage in, and
-    # both the regen and the verify then agree on a screen full of
-    # "bootstrap task cannot find configuration file".  Every row above is
-    # satisfied by that screen.
+    # golden regenerated against a broken image locks the breakage in, and the
+    # regen and the verify then agree on a screen full of "bootstrap task
+    # cannot find configuration file".  Every row above is satisfied by that
+    # screen.
     #
     # So assert something the guest can only do with a real root filesystem
     # under it: make it WRITE.  `sync` flushes the login's utmp/wtmp and the
-    # rc scripts' work to /dev/sdb2 — deterministically, rather than waiting
+    # rc scripts' work to /dev/sda6 — deterministically, rather than waiting
     # on Linux's own writeback — and the disk must then differ from the image
     # this row booted.  A machine that never mounted its root cannot move a
     # single byte of it.
     machine.adb.keyboard.type "sync\n"
-    scheduler.run 600000000
-    machine.scsi.device[1].image.export "${$WORK_DIR}/target-after-session.img"
-    let touched = storage.path_compare($target, "${$WORK_DIR}/target-after-session.img")
-    echo "root filesystem first differs from the published image at ${$touched}"
-    assert $touched != -1 "the session wrote nothing to /dev/sdb2 — no root filesystem was ever mounted"
+    scheduler.run 700000000
+    machine.scsi.device[0].image.export "${$WORK_DIR}/after-session.img"
+    let touched = storage.path_compare($disk, "${$WORK_DIR}/after-session.img")
+    echo "the disk first differs from the published image at ${$touched}"
+    assert $touched != -1 "the session wrote nothing to /dev/sda6 — no root filesystem was ever mounted"
     report_perf("pm7100-mklinux-boot/session", scheduler.instr_count)
 }
 
-if have_media($host) && have_media($target) {
+# THE OTHER TWO POWERPC MODELS, on the SAME image and the same recipe — which
+# is the point of a machine-independent disk.  Milestone rows: see the header.
+# NO GOLDEN, deliberately.  A golden is written by REGEN and matched by the
+# verify run, so a red milestone would quietly record its own failure as the
+# reference and report green forever after — and these two rows sharing the
+# session row's golden made that concrete the first time this was run.  They
+# assert the one thing a broken boot cannot do: log in and WRITE to the root
+# filesystem.
+def row_model(model) {
+    boot_to_splash("${$model}")
+    scheduler.run 4000000000
+    machine.adb.keyboard.type "root\n"
+    scheduler.run 250000000
+    machine.adb.keyboard.type "mklinux\n"
+    scheduler.run 800000000
+    machine.adb.keyboard.type "sync\n"
+    scheduler.run 700000000
+    machine.scsi.device[0].image.export "${$WORK_DIR}/after-${$model}.img"
+    let touched = storage.path_compare($disk, "${$WORK_DIR}/after-${$model}.img")
+    echo "${$model}: the disk first differs from the published image at ${$touched}"
+    assert $touched != -1 "${$model}: nothing was written to /dev/sda6 — MkLinux never reached a shell"
+}
+
+if have_media($disk) {
     if row_on("macos-control") { row_end("macos-control", try(row_macos_control(), "FAILED")) }
     if row_on("splash") { row_end("splash", try(row_splash(), "FAILED")) }
     if row_on("login") { row_end("login", try(row_login(), "FAILED")) }
     if row_on("session") { row_end("session", try(row_session(), "FAILED")) }
+    if row_on("pm6100") { row_end_milestone("pm6100", try(row_model("pm6100"), "FAILED")) }
+    if row_on("pm8100") { row_end_milestone("pm8100", try(row_model("pm8100"), "FAILED")) }
     suite_done()
-    report_row("DR3", "ariel", "mklinux-boot login uname")
+    report_row("DR3", "ariel", "mklinux-boot single-disk login df")
 } else {
     echo "skip: pm7100-mklinux-boot (MkLinux media not present — see the bring-up plan §5)"
 }
