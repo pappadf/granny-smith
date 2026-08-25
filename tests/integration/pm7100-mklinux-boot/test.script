@@ -114,6 +114,25 @@ def row_session() {
     machine.adb.keyboard.type "uname -a\n"
     scheduler.run 400000000
     check("mklinux-uname.png")
+
+    # A GOLDEN IS NOT ENOUGH HERE, and this test learned that the hard way: a
+    # golden regenerated against a broken image locks the breakage in, and
+    # both the regen and the verify then agree on a screen full of
+    # "bootstrap task cannot find configuration file".  Every row above is
+    # satisfied by that screen.
+    #
+    # So assert something the guest can only do with a real root filesystem
+    # under it: make it WRITE.  `sync` flushes the login's utmp/wtmp and the
+    # rc scripts' work to /dev/sdb2 — deterministically, rather than waiting
+    # on Linux's own writeback — and the disk must then differ from the image
+    # this row booted.  A machine that never mounted its root cannot move a
+    # single byte of it.
+    machine.adb.keyboard.type "sync\n"
+    scheduler.run 600000000
+    machine.scsi.device[1].image.export "${$WORK_DIR}/target-after-session.img"
+    let touched = storage.path_compare($target, "${$WORK_DIR}/target-after-session.img")
+    echo "root filesystem first differs from the published image at ${$touched}"
+    assert $touched != -1 "the session wrote nothing to /dev/sdb2 — no root filesystem was ever mounted"
     report_perf("pm7100-mklinux-boot/session", scheduler.instr_count)
 }
 

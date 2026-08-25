@@ -215,6 +215,17 @@ def phase2_run_the_installer() {
     machine.adb.keyboard.press "Return"
     scheduler.run 2000000000
     check("mach-reboot-panic.png")
+
+    # THE INSTALL HAS TO HAVE REACHED THE DISK, and nothing above proves it:
+    # every screen in this phase is the guest's own drawing, and a golden of
+    # "Congratulations" says only that the installer believed itself.  Compare
+    # the target against the partitioned image it started from — a real
+    # install differs inside partition 2, whose first block is at byte 32768.
+    machine.scsi.device[1].image.export "${$WORK_DIR}/target-after-install.img"
+    let wrote = storage.path_compare($target, "${$WORK_DIR}/target-after-install.img")
+    echo "target after install first differs from the partitioned image at ${$wrote}"
+    assert $wrote != -1 "the target is byte-identical to the partitioned image — the install never reached the disk"
+    assert $wrote >= 32768 "the install first changed byte ${$wrote}, which is inside the partition map, not the root partition"
 }
 
 # --- phase 3: point lilo.conf at the installed root --------------------------
@@ -363,6 +374,15 @@ def phase4_export_and_publish() {
     storage.partmap "${$WORK_DIR}/mklinux-target-installed.img"
     let parts = vfs.list("${$WORK_DIR}/mklinux-target-installed.img")
     assert len($parts) == 4 "the installed target has ${len($parts)} partitions, want 4"
+
+    # And the artifact carries the install.  Asserted separately from the
+    # check at the end of phase 2 because it is a different claim: that one
+    # says the installer wrote to the disk, this one says the bytes survived
+    # the power cycle, the Mac OS session and the export into what we publish.
+    let shipped = storage.path_compare($target, "${$WORK_DIR}/mklinux-target-installed.img")
+    echo "published target first differs from the partitioned image at ${$shipped}"
+    assert $shipped != -1 "the exported target is byte-identical to the partitioned image — the artifact is empty"
+    assert $shipped >= 32768 "the exported target differs only at byte ${$shipped}, inside the partition map"
 
     storage.cp "${$WORK_DIR}/mklinux-host-configured.img" "${$mkl_root}/media/mklinux_host_75_configured.img"
     storage.cp "${$WORK_DIR}/mklinux-target-installed.img" "${$mkl_root}/media/mklinux_target_dr3_installed_1gb.img"
