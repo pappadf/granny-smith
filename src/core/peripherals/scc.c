@@ -27,6 +27,10 @@
 #define RX_BUF_SIZE            1024
 #define TX_BUF_SIZE            1024
 #define RX_PENDING_QUEUE_DEPTH 8
+// Host-side transmit capture: one boot's worth of console text per channel.
+// A guest that prints faster than the driving script drains loses the tail,
+// which `sent_dropped` reports rather than hiding.
+#define SENT_BUF_SIZE 65536
 
 LOG_USE_CATEGORY_NAME("scc");
 
@@ -138,6 +142,16 @@ struct scc {
 
     // External loopback: port A TX → port B RX, port B TX → port A RX
     bool external_loopback;
+
+    // Host-side transmit capture, one per channel: every byte the guest hands
+    // to WR8, kept until a driving script drains it with `scc.<ch>.sent()`.
+    // Not part of the chip and not checkpointed — it is a wire tap, so a guest
+    // reset leaves what was already printed alone.
+    struct {
+        uint8_t buf[SENT_BUF_SIZE];
+        size_t len;
+        uint64_t dropped; // bytes lost because nobody drained in time
+    } sent[2];
 
     // Object-tree nodes — lifetime tied to scc_init / scc_delete.
     struct object *object; // top-level scc node
@@ -685,6 +699,15 @@ static void wr8(ch_t *c, uint8_t value) {
         LOG(4, "wr8: TX interrupt enabled, setting rr3=0x%02X", c->scc->ch[0].rr[3]);
         update_irqs(c->scc);
     }
+    // Tap the byte for the host-side capture before the SDLC framing buffer
+    // sees it: in async mode nothing ever drains tx.buf, so the capture is the
+    // only place an emulated serial console's text survives.
+    scc_t *scc = c->scc;
+    if (scc->sent[c->index].len < SENT_BUF_SIZE)
+        scc->sent[c->index].buf[scc->sent[c->index].len++] = value;
+    else
+        scc->sent[c->index].dropped++;
+
     int prev_len = c->tx.len;
     // Drop on overflow rather than asserting — a guest that streams output
     // faster than anyone consumes it (e.g. A/UX panic printf in tight loop)
@@ -1204,6 +1227,35 @@ unsigned scc_channel_rx_pending(const scc_t *scc, unsigned int ch) {
     return (unsigned)(c->rx.head - c->rx.tail);
 }
 
+// Bytes waiting in a channel's host-side transmit capture.
+size_t scc_channel_sent_pending(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return 0;
+    return scc->sent[ch].len;
+}
+
+// Bytes the capture had to drop because it filled up before anyone drained it.
+uint64_t scc_channel_sent_dropped(const scc_t *scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return 0;
+    return scc->sent[ch].dropped;
+}
+
+// Copy up to `max` captured transmit bytes into `out` and forget them; a
+// partial drain keeps the remainder in order for the next call.
+size_t scc_channel_take_sent(scc_t *scc, unsigned int ch, uint8_t *out, size_t max) {
+    if (!scc || ch > 1 || !out || max == 0)
+        return 0;
+    size_t take = scc->sent[ch].len < max ? scc->sent[ch].len : max;
+    memcpy(out, scc->sent[ch].buf, take);
+    // Shuffle any tail down rather than dropping it: the drain is a queue.
+    size_t left = scc->sent[ch].len - take;
+    if (left)
+        memmove(scc->sent[ch].buf, scc->sent[ch].buf + take, left);
+    scc->sent[ch].len = left;
+    return take;
+}
+
 void scc_delete(scc_t *scc) {
     if (!scc)
         return;
@@ -1325,6 +1377,23 @@ static value_t scc_ch_attr_tx_empty(struct object *self, const member_t *m) {
     return val_bool(scc_channel_tx_empty(scc, channel_index_from_member(m)));
 }
 
+// Bytes waiting in this channel's host-side transmit capture, and the count
+// lost to overflow — a nonzero `sent_dropped` says the script drained too
+// late, so an assertion on the text is missing bytes rather than merely failing.
+static value_t scc_ch_attr_sent_pending(struct object *self, const member_t *m) {
+    scc_t *scc = scc_from(self);
+    if (!scc)
+        return val_err("scc not available");
+    return val_uint(8, scc_channel_sent_pending(scc, channel_index_from_member(m)));
+}
+
+static value_t scc_ch_attr_sent_dropped(struct object *self, const member_t *m) {
+    scc_t *scc = scc_from(self);
+    if (!scc)
+        return val_err("scc not available");
+    return val_uint(8, scc_channel_sent_dropped(scc, channel_index_from_member(m)));
+}
+
 static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
     scc_t *scc = scc_from(self);
     return val_uint(4, scc_channel_rx_pending(scc, channel_index_from_member(m)));
@@ -1402,6 +1471,67 @@ static value_t scc_ch_b_method_receive(struct object *self, const member_t *m, i
     return scc_ch_receive(self, 1, argc, argv);
 }
 
+// Drain this channel's transmit capture and return it as text — the mirror of
+// `receive`, and the reason it exists: a guest serial console (MkLinux's
+// `console=ttya`, Copland's loader) could previously only be read by turning on
+// the `scc` log category and reassembling hex bytes by eye.  A drain hands the
+// same text to the script, so serial output becomes an assertion.
+//
+// Printable ASCII, tab, CR and LF pass through; a literal backslash is doubled
+// and every other byte is escaped `\xNN`, so the result is greppable text that
+// still says exactly which bytes came off the wire.
+static value_t scc_ch_sent(struct object *self, unsigned idx) {
+    scc_t *scc = scc_from(self);
+    if (!scc)
+        return val_err("scc not available");
+    size_t pending = scc_channel_sent_pending(scc, idx);
+    if (pending == 0)
+        return val_str("");
+
+    uint8_t *raw = (uint8_t *)malloc(pending);
+    char *text = (char *)malloc(pending * 4 + 1); // worst case: every byte \xNN
+    if (!raw || !text) {
+        free(raw);
+        free(text);
+        return val_err("sent: out of memory");
+    }
+    size_t len = scc_channel_take_sent(scc, idx, raw, pending);
+
+    size_t o = 0;
+    for (size_t i = 0; i < len; i++) {
+        uint8_t b = raw[i];
+        if (b == '\\') {
+            text[o++] = '\\';
+            text[o++] = '\\';
+        } else if (b == '\t' || b == '\n' || b == '\r' || (b >= 0x20 && b < 0x7F)) {
+            text[o++] = (char)b;
+        } else {
+            o += (size_t)snprintf(text + o, 5, "\\x%02X", b);
+        }
+    }
+    text[o] = '\0';
+
+    value_t v = val_str(text);
+    free(text);
+    free(raw);
+    LOG(3, "sent: ch=%u drained %zu byte(s)", idx, len);
+    return v;
+}
+
+static value_t scc_ch_a_method_sent(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return scc_ch_sent(self, 0);
+}
+
+static value_t scc_ch_b_method_sent(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    return scc_ch_sent(self, 1);
+}
+
 static const arg_decl_t scc_ch_receive_args[] = {
     {.name = "data", .kind = V_NONE, .doc = "String to deliver, or a single byte value"},
 };
@@ -1410,46 +1540,70 @@ static const member_t scc_ch_a_members[] = {
     {.kind = M_ATTR,
      .name = "index",
      .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)0}      },
+     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)0}        },
     {.kind = M_ATTR,
      .name = "dcd",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)0}       },
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)0}         },
     {.kind = M_ATTR,
      .name = "tx_empty",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)0}  },
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)0}    },
     {.kind = M_ATTR,
      .name = "rx_pending",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)0}},
+     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)0}  },
+    {.kind = M_ATTR,
+     .name = "sent_pending",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending, .set = NULL, .user_data = (void *)(uintptr_t)0}},
+    {.kind = M_ATTR,
+     .name = "sent_dropped",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped, .set = NULL, .user_data = (void *)(uintptr_t)0}},
     {.kind = M_METHOD,
      .name = "receive",
      .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
-     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_a_method_receive}   },
+     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_a_method_receive}     },
+    {.kind = M_METHOD,
+     .name = "sent",
+     .doc = "Drain and return the text this channel has transmitted since the last call",
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_a_method_sent}                     },
 };
 
 static const member_t scc_ch_b_members[] = {
     {.kind = M_ATTR,
      .name = "index",
      .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)1}      },
+     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)1}        },
     {.kind = M_ATTR,
      .name = "dcd",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)1}       },
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)1}         },
     {.kind = M_ATTR,
      .name = "tx_empty",
      .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)1}  },
+     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)1}    },
     {.kind = M_ATTR,
      .name = "rx_pending",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)1}},
+     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)1}  },
+    {.kind = M_ATTR,
+     .name = "sent_pending",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending, .set = NULL, .user_data = (void *)(uintptr_t)1}},
+    {.kind = M_ATTR,
+     .name = "sent_dropped",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped, .set = NULL, .user_data = (void *)(uintptr_t)1}},
     {.kind = M_METHOD,
      .name = "receive",
      .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
-     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_b_method_receive}   },
+     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_b_method_receive}     },
+    {.kind = M_METHOD,
+     .name = "sent",
+     .doc = "Drain and return the text this channel has transmitted since the last call",
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_b_method_sent}                     },
 };
 
 const class_desc_t scc_channel_a_class = {

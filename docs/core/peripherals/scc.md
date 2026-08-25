@@ -721,3 +721,44 @@ Delivery still flows through the existing `check_rx()` path, so RR0/RR1/RR3 bits
 - Preserve all higher-level AppleTalk state machines: buffering lives in the SCC where the real hardware would queue bytes.
 - Avoid large RAM growth: depth 8 × 1 KB covers LocalTalk bursts without noticeable footprint.
 - Keep logging actionable: overflow cases emit level-1 warnings so we can catch unexpected drops.
+
+---
+
+## Host-side test surfaces (`machine.scc.a` / `machine.scc.b`)
+
+The object model exposes two taps that have no counterpart in the chip. They
+exist so a driving script can *be* the terminal on the other end of the cable
+— which is how the emulated machines that talk over serial (Copland's debug
+loader, MkLinux's `console=ttya`) are driven and asserted.
+
+| Member | Kind | Meaning |
+|---|---|---|
+| `receive(data)` | method | Deliver a string or a single byte value to the channel's receiver, exactly as if it had arrived on the wire: the bytes land in the RX FIFO, RR0's Rx Character Available latches, and the receive interrupt is raised when the channel has one enabled. Returns the number of bytes accepted (a full FIFO latches RR1 Rx Overrun and drops the rest, as the hardware does). |
+| `sent()` | method | Drain and return everything the channel has transmitted since the last call. |
+| `sent_pending` | attribute | Bytes waiting in that capture. |
+| `sent_dropped` | attribute | Bytes the capture had to discard because it filled before anyone drained it. |
+
+### What the capture is, and is not
+
+Every byte the guest writes to WR8 is copied into a per-channel host-side
+buffer (`SENT_BUF_SIZE`, 64 KB) on its way to the transmitter. It is a *wire
+tap*, not chip state: it is not checkpointed, and `scc.reset()` leaves it
+alone, because a guest resetting its UART does not unprint what it already
+printed. In async mode nothing else ever drains `tx.buf` — that path exists
+for SDLC framing — so this capture is the only place an emulated serial
+console's text survives.
+
+`sent()` returns the drained bytes as text: printable ASCII, tab, CR and LF
+pass through, a literal backslash is doubled, and every other byte is escaped
+`\xNN`. That keeps the result greppable while still saying exactly which bytes
+came off the wire — a capture that silently swallowed control bytes would make
+a garbled boot look like clean output.
+
+`sent_dropped` is the loudness rule: if it is nonzero, the script drained too
+late and an assertion against the text is missing bytes rather than merely
+failing. Assert it is zero alongside whatever you assert about the text.
+
+Before this pair, serial output could only be read by turning on the `scc` log
+category (`debug.log scc 5`) and reassembling `wr8 ch=0 value=0x..` lines by
+eye.  That still works and remains useful for watching a boot live; `sent()` is
+what turns the same text into a script assertion.
