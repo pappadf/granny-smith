@@ -31,3 +31,8 @@ TEST_DESC := Boot one 169 MB disk holding System 7.5 and MkLinux DR3 through the
 TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
 TEST_ARGS := model=pm7100 ram=40960
 TEST_TIER := extended
+
+# MEDIA: `systems/mklinux_dr3_single_169mb.img.7z` in gs-test-data since
+# revision 2590a822, extracted in place by scripts/fetch-test-data.sh.  Unlike
+# the prep/install tests this one needs nothing from local/, so it runs
+# wherever the pinned test corpus is present.

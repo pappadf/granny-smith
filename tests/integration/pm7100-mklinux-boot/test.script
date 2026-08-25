@@ -43,8 +43,11 @@
 
 include "../lib/mac.script"
 
-let mkl_root = "../../../local/gs-docs/projects/mklinux"
-let disk = "${$mkl_root}/media/mklinux_dr3_single_169mb.img"
+# In gs-test-data since 2590a822 — `systems/mklinux_dr3_single_169mb.img.7z`,
+# extracted in place by fetch-test-data.sh.  No have_media() guard: the data
+# is part of the pinned test corpus now, so a missing image is a failure to
+# report, not a row to skip.
+let disk = "../../data/systems/mklinux_dr3_single_169mb.img"
 
 # One boot recipe for every row; only the machine and what happens at the
 # splash differ.  Anything else varying between rows would make the control
@@ -162,17 +165,13 @@ def row_model(model) {
     assert $touched != -1 "${$model}: nothing was written to /dev/sda6 — MkLinux never reached a shell"
 }
 
-if have_media($disk) {
-    if row_on("macos-control") { row_end("macos-control", try(row_macos_control(), "FAILED")) }
-    if row_on("splash") { row_end("splash", try(row_splash(), "FAILED")) }
-    if row_on("login") { row_end("login", try(row_login(), "FAILED")) }
-    if row_on("session") { row_end("session", try(row_session(), "FAILED")) }
-    if row_on("pm6100") { row_end_milestone("pm6100", try(row_model("pm6100"), "FAILED")) }
-    if row_on("pm8100") { row_end_milestone("pm8100", try(row_model("pm8100"), "FAILED")) }
-    suite_done()
-    report_row("DR3", "ariel", "mklinux-boot single-disk login df")
-} else {
-    echo "skip: pm7100-mklinux-boot (MkLinux media not present — see the bring-up plan §5)"
-}
+if row_on("macos-control") { row_end("macos-control", try(row_macos_control(), "FAILED")) }
+if row_on("splash") { row_end("splash", try(row_splash(), "FAILED")) }
+if row_on("login") { row_end("login", try(row_login(), "FAILED")) }
+if row_on("session") { row_end("session", try(row_session(), "FAILED")) }
+if row_on("pm6100") { row_end_milestone("pm6100", try(row_model("pm6100"), "FAILED")) }
+if row_on("pm8100") { row_end_milestone("pm8100", try(row_model("pm8100"), "FAILED")) }
+suite_done()
+report_row("DR3", "ariel", "mklinux-boot single-disk login df")
 
 quit
