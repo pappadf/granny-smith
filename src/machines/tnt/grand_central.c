@@ -203,7 +203,7 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
         gc->int_mask = value;
         if ((gc->int_events | gc->int_levels) & newly)
             gc->int_latch = 1;
-        LOG(3, "mask = $%08X", value);
+        LOG(3, "mask = $%08X (pc=%08X)", value, ppc_get_pc(cfg->ppc));
         break;
     }
     case INT_LEVELS:
@@ -324,7 +324,18 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, escc_pins(offset - OFF_ESCC), value);
         return;
     case OFF_NVPORT:
-        tnt_st(cfg)->gc.nvram_bank = value;
+        // The bank-select port is ONE byte-wide cell on the $10 centre.
+        // Load-bearing: the ROM's XPRam trap path selects the bank with
+        // a 16-bit write of the byte-swapped bank number (ROM $FFC5831E,
+        // `move.w` of bank<<8) — the bus splits it into the +$1D000 byte
+        // (the bank) and a +$1D001 byte ($00) that lands on NO cell.  A
+        // model that latches the off-centre byte clobbers the bank back
+        // to 0 and every trap-path PRAM read serves bank 0 — the T12
+        // "XPRAM $77 reads 0" wall.
+        if (((offset - OFF_NVPORT) & 0xFu) == 0)
+            tnt_st(cfg)->gc.nvram_bank = value;
+        else
+            LOG(3, "NVRAM bank-port off-centre byte +$%03X = $%02X ignored", offset - OFF_NVPORT, value);
         return;
     case OFF_NVDATA:
         nvram_write(cfg, offset - OFF_NVDATA, value);

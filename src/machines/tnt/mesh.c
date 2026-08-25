@@ -96,12 +96,17 @@ LOG_USE_CATEGORY_NAME("mesh");
 #define INT_EXCEPTION 0x02u
 #define INT_CMDDONE   0x01u
 
-// mesh_id: the ROM's OWN native driver gates on it (ROM $FFEBB168,
-// found live): mesh_id < $E1 selects its 53C94-protocol fallback path,
-// == $E1 sets two quirk flags, > $E1 is the normal MESH path.  NetBSD's
-// MESH_SIGNATURE $E2 (annotated "XXX wrong!") is thereby vindicated as
-// a real-hardware reading — settling mesh-scsi.md §9.
-#define MESH_ID_VALUE 0xE2u
+// mesh_id: TWO shipping drivers gate on it (both found live).  The
+// ROM's native driver (ROM $FFEBB168): < $E1 selects a 53C94-protocol
+// fallback path, == $E1 sets two quirk flags, > $E1 the normal MESH
+// path.  The DISK's Apple_Driver43 additionally decodes the LOW FIVE
+// BITS as the cell revision: (mesh_id & $1F) <= 2 marks the chip
+// quirky and installs stub data-phase handlers — its transfer-arm
+// step never runs and every data phase disconnects (the 7.6 boot's
+// dsBadPatch bomb).  So the shipping 7500's cell reports at least
+// revision 3: we serve $E3.  NetBSD's MESH_SIGNATURE $E2 ("XXX
+// wrong!") is real-hardware-plausible for an earlier cell revision.
+#define MESH_ID_VALUE 0xE3u
 
 static tnt_mesh_t *mesh(config_t *cfg) {
     return &tnt_st(cfg)->mesh;
