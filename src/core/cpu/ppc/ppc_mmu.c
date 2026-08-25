@@ -239,15 +239,16 @@ static inline bool pp_allows(uint32_t key, uint32_t pp, bool store) {
 // BLPI[0:14] | WIM[25:27] | Ks[28] | Ku[29] | PP[30:31]; BATL =
 // PBN[0:14] | V[25] | BSM[26:31].  Returns true when a BAT matched
 // (result in *res); protection key = Ks supervisor / Ku user.
-static bool bat_xlate(ppc_t *p, uint32_t ea, bool user, bool store, xl_out_t *out, xl_result_t *res) {
+static bool bat_xlate(const uint32_t *batu, const uint32_t *batl, uint32_t ea, bool user, bool store, xl_out_t *out,
+                      xl_result_t *res) {
     for (int i = 0; i < 4; i++) {
-        uint32_t bl = p->batl[i];
+        uint32_t bl = batl[i];
         if (!(bl & 0x40u))
             continue; // V
         uint32_t cmp_mask = ~(((bl & 0x3Fu) << 17) | 0x1FFFFu);
-        if ((ea & cmp_mask) != (p->batu[i] & cmp_mask))
+        if ((ea & cmp_mask) != (batu[i] & cmp_mask))
             continue;
-        uint32_t bu = p->batu[i];
+        uint32_t bu = batu[i];
         uint32_t key = user ? ((bu >> 2) & 1u) : ((bu >> 3) & 1u);
         uint32_t pp = bu & 3u;
         if (!pp_allows(key, pp, store)) {
@@ -398,7 +399,7 @@ static xl_result_t xlate(ppc_t *p, uint32_t ea, bool user, bool store, bool ifet
             return XL_OK;
         }
         xl_result_t res;
-        if (bat604_xlate(ifetch ? p->batu : p->dbatu, ifetch ? p->batl : p->dbatl, ea, user, store, out, &res))
+        if (bat604_xlate(ifetch ? p->ibatu_cs : p->dbatu, ifetch ? p->ibatl_cs : p->dbatl, ea, user, store, out, &res))
             return res;
         uint32_t sr = p->sr[ea >> 28];
         if (sr & 0x80000000u)
@@ -416,7 +417,7 @@ static xl_result_t xlate(ppc_t *p, uint32_t ea, bool user, bool store, bool ifet
         return XL_OK;
     }
     xl_result_t res;
-    if (bat_xlate(p, ea, user, store, out, &res))
+    if (bat_xlate(ifetch ? p->ibatu_cs : p->batu, ifetch ? p->ibatl_cs : p->batl, ea, user, store, out, &res))
         return res;
     return htab_search(p, ea, sr, user, store, nosideffect, out);
 }

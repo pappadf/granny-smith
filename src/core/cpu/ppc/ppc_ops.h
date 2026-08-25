@@ -256,8 +256,12 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // rfi restores MSR[16-31] from SRR1; bits outside that half (the 604's POW)
 // are untouched — identical to the old whole-word form on the 601, whose
 // implemented bits all live in the low half.
-#define OP_RFI        OP(PRIV(); p->msr = ((p->msr & 0xFFFF0000u) | (p->srr1 & 0x0000FFFFu)) & ppc_msr_mask(p); ppc_update_active_maps(p); p->pc = p->srr0 & ~3u)
-#define OP_ISYNC      OP((void)0) // context synchronize; no pipeline to flush
+#define OP_RFI                                                                                                         \
+    OP(PRIV(); p->msr = ((p->msr & 0xFFFF0000u) | (p->srr1 & 0x0000FFFFu)) & ppc_msr_mask(p); ppc_update_active_maps(p); \
+       ppc_context_sync(p); p->pc = p->srr0 & ~3u)
+// Context synchronize: no pipeline to flush, but it is the point at which
+// BAT writes become visible to instruction fetch (ppc_context_sync).
+#define OP_ISYNC      OP(ppc_context_sync(p))
 
 // --- CR logical (601UM XL-forms): a/b are the source CR bits ---
 #define CROP(...)    OP(uint32_t a = ppc_cr_bit(p, RA), b = ppc_cr_bit(p, RB); (void)a; (void)b; ppc_set_cr_bit(p, RT, (__VA_ARGS__) & 1u))
@@ -358,7 +362,7 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define OP_MFSPR      OP(ppc_mfspr(p, iw))
 #define OP_MTSPR      OP(ppc_mtspr(p, iw))
 #define OP_MFMSR      OP(PRIV(); GPR(RT) = p->msr)
-#define OP_MTMSR      OP(PRIV(); p->msr = GPR(RT) & ppc_msr_mask(p); ppc_update_active_maps(p))
+#define OP_MTMSR      OP(PRIV(); p->msr = GPR(RT) & ppc_msr_mask(p); ppc_update_active_maps(p); ppc_context_sync(p))
 #define OP_MFSR       OP(PRIV(); GPR(RT) = p->sr[(iw >> 16) & 0xFu])
 #define OP_MTSR       OP(PRIV(); ppc_set_sr(p, (iw >> 16) & 0xFu, GPR(RT)))
 #define OP_MFSRIN     OP(PRIV(); GPR(RT) = p->sr[GPR(RB) >> 28])

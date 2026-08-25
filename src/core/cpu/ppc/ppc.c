@@ -25,12 +25,43 @@ extern const class_desc_t ppc_cpu_class;
 
 // === Exception machinery ====================================================
 
+// Publish the BAT registers to the fetch side (ppc_t.ibatu_cs).
+//
+// A BAT write does not steer instruction fetching until the processor
+// context-synchronizes: the instructions after the mtspr were fetched and
+// translated before it retired.  Software depends on that.  MkLinux DR3's
+// start.s is the case that forced the model — on the 601 it writes
+//
+//     mtibatu 0,r7    ; BLPI=0, PP=2
+//     mtibatl 0,r8    ; PBN=0, V=1, BSM=8M
+//
+// with only a trailing sync/isync.  Between the two writes the pair reads
+// as "EA 0-8 MB -> the PBN the MacOS loader left behind", which relocates
+// the kernel's own text off the end of RAM; applying that to the fetch of
+// the very next instruction executes whatever the fill pattern decodes to.
+// Data accesses are NOT deferred: they issue after the mtspr retires, so
+// they legitimately see the new value.
+void ppc_context_sync(ppc_t *p) {
+    bool changed = false;
+    for (int i = 0; i < 4; i++) {
+        if (p->ibatu_cs[i] != p->batu[i] || p->ibatl_cs[i] != p->batl[i])
+            changed = true;
+        p->ibatu_cs[i] = p->batu[i];
+        p->ibatl_cs[i] = p->batl[i];
+    }
+    // Only a real change costs a fetch-cache flush; guests re-write
+    // identical BAT values constantly (the nanokernel's SetSpace).
+    if (changed)
+        ppc_mmu_flush_fetch();
+}
+
 // Raise an exception (601UM §5.4 / 604UM §4.3, per-exception Register
 // Settings tables): SRR0 = resume_pc; SRR1 = exception-specific high bits
 // | MSR[16-31]; MSR keeps ME/EP (+PM on the 604) and clears everything
 // else — which covers the 604's POW/BE/RI-cleared rows too; PC = vector,
 // prefixed $FFF00000 when MSR[EP] is set.
 void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_pc) {
+    ppc_context_sync(p); // taking an exception is context-synchronizing
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
     p->msr &= ppc_msr_exception_keep(p);
@@ -625,6 +656,7 @@ void ppc_reset(ppc_t *p) {
     p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1 on both models
     p->instruction_pc = p->pc;
     ppc_mmu_invalidate_all(p); // translation state gone with the SRs/BATs
+    ppc_context_sync(p); // the fetch-side BAT view starts out cleared too
 }
 
 // === `$reg` aliases (main-CPU privilege per cores.md) =======================
@@ -699,6 +731,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         ppc_recompute_sr_t_mask(p);
         ppc_mmu_invalidate_all(p);
         ppc_update_active_maps(p);
+        ppc_context_sync(p); // restoring a checkpoint is context-synchronizing
     } else {
         memset(p, 0, sizeof(ppc_t));
         p->cpu_model = cpu_model; // ppc_reset keeps the model
@@ -956,6 +989,9 @@ static value_t attr_ppc_set(struct object *self, const member_t *m, value_t in) 
                (id >= PA_DBAT0U && id < PA_DBAT0U + 8) || id == PA_SDR1) {
         ppc_recompute_sr_t_mask(p);
         ppc_mmu_invalidate_all(p);
+        // A poke is an operator action, not guest code: publish it to the
+        // fetch side at once rather than waiting for the guest to isync.
+        ppc_context_sync(p);
     }
     return val_none();
 }
