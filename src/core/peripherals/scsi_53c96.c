@@ -165,6 +165,12 @@ static void select_timeout_event(void *source, uint64_t data) {
 
 // Selection time-out in nanoseconds: RV * 8192 * clock-conversion / clock
 // (write address 05).  A clock-conversion register value of 0 means 8.
+//
+// MAY RETURN ZERO, and the caller must handle that: with the timeout register
+// still at its reset value the formula is exactly zero, and zero is not a
+// legal scheduler delay.  It is left as zero here rather than clamped because
+// zero is what the register says, and the decision about what to do with a
+// guest that asked for no timeout belongs at the call site.
 static uint64_t select_timeout_ns(scsi_53c96_t *c) {
     uint32_t ccf = c->clock_conv & 7 ? (c->clock_conv & 7) : 8;
     uint64_t ticks = (uint64_t)c->timeout * 8192ull * ccf;
@@ -267,10 +273,29 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
     {
         if (!c->bus || !scsi_external_select(c->bus, c->dest_id)) {
             // No device at the destination ID: selection time-out.
-            if (c->sched)
-                scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 0, select_timeout_ns(c));
-            else
+            if (c->sched) {
+                uint64_t to_ns = select_timeout_ns(c);
+                if (to_ns != 0) {
+                    scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 0, to_ns);
+                } else {
+                    // Timeout register still zero: the driver selected before
+                    // programming address 05, which MkLinux DR3's 53c94 driver
+                    // does on every empty ID of its bus scan.  The datasheet
+                    // formula (RV * 8192 * CCF / clock) then yields zero, and
+                    // the scheduler requires exactly one of cycles/ns to be
+                    // non-zero.
+                    //
+                    // ONE CYCLE, not a substituted default.  A zero-delay
+                    // insert already landed on the current timestamp and fired
+                    // at the next queue drain, so one cycle is that same
+                    // behaviour spelled legally.  Handing it the ANSI 250 ms
+                    // instead would invent a wait the guest never asked for and
+                    // stretch every empty ID of that scan.
+                    scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 1, 0);
+                }
+            } else {
                 select_timeout_event(c, 0);
+            }
             break;
         }
         // Message byte(s) first for the ATN variants (IDENTIFY etc.) —

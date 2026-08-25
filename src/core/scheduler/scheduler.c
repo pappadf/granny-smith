@@ -970,8 +970,6 @@ event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_cal
     GS_ASSERT(scheduler != NULL);
     GS_ASSERT(scheduler->cpu.run_sprint != NULL);
     GS_ASSERT(callback != NULL);
-    GS_ASSERT(cycles != 0 || ns != 0);
-    GS_ASSERT(!(cycles != 0 && ns != 0));
 
     // The (callback, source) pair MUST have been registered with
     // scheduler_new_event_type beforehand. Without this, the gap only
@@ -981,15 +979,26 @@ event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_cal
     // Asserting here fingers the offending caller directly. Cost is
     // O(num_event_types), typically <30 entries; trivial vs. the bug
     // class it prevents.
+    //
+    // Looked up BEFORE the cycles/ns checks so those can name the culprit
+    // too: a bare "both cycles and ns are 0" identifies the scheduler, which
+    // is never the buggy component, and leaves you grepping ~30 call sites
+    // for the one whose delay computed to zero.
+    const char *event_name = "<unregistered>";
     bool registered = false;
     for (int i = 0; i < scheduler->num_event_types; i++) {
         if (scheduler->event_types[i].callback == callback && scheduler->event_types[i].source == source) {
             registered = true;
+            event_name = scheduler->event_types[i].event_name;
             break;
         }
     }
     GS_ASSERTF(registered, "scheduler_new_cpu_event: event type not registered "
                            "(call scheduler_new_event_type first for this (callback, source) pair)");
+
+    GS_ASSERTF(cycles != 0 || ns != 0, "scheduler_new_cpu_event(%s): both cycles and ns are 0", event_name);
+    GS_ASSERTF(!(cycles != 0 && ns != 0), "scheduler_new_cpu_event(%s): both cycles and ns are set (%llu, %llu)",
+               event_name, (unsigned long long)cycles, (unsigned long long)ns);
 
     CHECK_INVARIANTS(scheduler);
     validate_cpu_events(scheduler);
