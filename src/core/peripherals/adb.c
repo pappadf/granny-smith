@@ -1084,6 +1084,17 @@ void adb_mouse_move(adb_t *adb, int dx, int dy) {
     adb_mouse_event(adb, adb->mouse_button, dx, dy);
 }
 
+// Deltas queued but not yet consumed by a Talk R0 — closed-loop callers
+// (host absolute-position tracking computes corrections against the
+// guest's cursor globals) subtract these so corrections queued while the
+// guest is still catching up are not injected twice.
+void adb_mouse_pending(const adb_t *adb, int *dx, int *dy) {
+    if (dx)
+        *dx = adb ? adb->mouse_dx : 0;
+    if (dy)
+        *dy = adb ? adb->mouse_dy : 0;
+}
+
 // IOP-based ADB transaction (Macintosh IIfx).  See adb.h for the protocol
 // background.  Runs the same Talk / Listen / Reset / Flush dispatch as the
 // VIA-shift path but returns the Talk reply by value instead of clocking

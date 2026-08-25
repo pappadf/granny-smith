@@ -167,6 +167,19 @@ bool system_mouse_move_adb(int dx, int dy) {
     return true;
 }
 
+// Deltas already queued at the ADB device but not yet consumed — see
+// adb_mouse_pending().  Returns false (zeros) on non-ADB machines.
+bool system_mouse_pending_adb(int *dx, int *dy) {
+    if (dx)
+        *dx = 0;
+    if (dy)
+        *dy = 0;
+    if (!global_emulator || !global_emulator->adb)
+        return false;
+    adb_mouse_pending(global_emulator->adb, dx, dy);
+    return true;
+}
+
 // System-level keyboard input wrapper: routes input to appropriate keyboard device model
 void system_keyboard_update(key_event_t event, int key) {
     if (!global_emulator)
