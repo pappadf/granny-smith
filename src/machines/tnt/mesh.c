@@ -96,6 +96,27 @@ LOG_USE_CATEGORY_NAME("mesh");
 #define INT_EXCEPTION 0x02u
 #define INT_CMDDONE   0x01u
 
+// SDTR responses (Phase E part 3).  Message-out bytes absorbed here
+// are assembled and parsed; an initiator-offered SDTR (the SIM
+// framework's needNegot path, or the loaded driver's inline probe that
+// renegotiates with 01 03 01 00 00) gets an SDTR response presented
+// through a virtual MESSAGE IN phase, with EXC_PHASEMM latched on the
+// completed message-out — the phase change to MESSAGE IN is
+// target-driven, and the loaded driver's post-msgout check keys on
+// exception&6 to fix up the sent count and hand the message phase to
+// the SIM framework.  A plain identify raises nothing: the underlying
+// bus phase was COMMAND throughout, the MSG OUT the driver saw was our
+// virtual overlay.  The target never INITIATES negotiation: neither
+// shipping driver can accept an unsolicited extended message (the
+// unsolicited-message hooks — ROM $FFEB89BC, driver $1A335C — and the
+// driver's message-in state $1A2EF4 all BUSFREE on one), which is also
+// why the T12 data-phase-arming wall cannot be solved by negotiation
+// at all — the full forensic story lives in the handover §8.
+// The response values mirror the framework's own offer (block+48/49):
+// offset 15, period factor 25 (100 ns, fast SCSI).
+#define MESH_SDTR_PERIOD 25u
+#define MESH_SDTR_OFFSET 15u
+
 // mesh_id: TWO shipping drivers gate on it (both found live).  The
 // ROM's native driver (ROM $FFEBB168): < $E1 selects a 53C94-protocol
 // fallback path, == $E1 sets two quirk flags, > $E1 the normal MESH
@@ -163,6 +184,91 @@ static void finish_command(config_t *cfg) {
 }
 
 // ============================================================
+// SDTR message engine (see the "Sync negotiation" header block)
+// ============================================================
+
+// A virtual MESSAGE IN is pending while queued bytes remain unread.
+static bool msgin_pending(tnt_mesh_t *m) {
+    return m->mi_rd < m->mi_n;
+}
+
+// Per-session message state: assembled message-out, virtual message-in,
+// and the awaiting-reply flag all die with the connection.
+static void msg_session_reset(tnt_mesh_t *m) {
+    m->mo_len = 0;
+    m->mi_n = 0;
+    m->mi_rd = 0;
+    m->sdtr_await = 0;
+}
+
+static void msgin_queue_sdtr(tnt_mesh_t *m, uint8_t period, uint8_t offset) {
+    m->mi_buf[0] = 0x01; // MESSAGE EXTENDED
+    m->mi_buf[1] = 0x03;
+    m->mi_buf[2] = 0x01; // SDTR
+    m->mi_buf[3] = period;
+    m->mi_buf[4] = offset;
+    m->mi_n = 5;
+    m->mi_rd = 0;
+}
+
+// A message-out sequence completed: parse what the initiator said.
+// Called after finish_command so the CMDDONE presentation is normal;
+// queueing a message-in flips the visible phase for the NEXT command.
+static void msgout_complete(config_t *cfg) {
+    tnt_mesh_t *m = mesh(cfg);
+    int target = m->dest_id & 7;
+    const uint8_t *sdtr = NULL;
+    bool reject = false, incomplete = false, identify = false;
+    for (uint8_t i = 0; i < m->mo_len;) {
+        uint8_t b = m->mo_buf[i];
+        if (b & 0x80u) { // IDENTIFY family
+            identify = true;
+            i++;
+        } else if (b == 0x01u) { // MESSAGE EXTENDED
+            if (i + 2 > m->mo_len || i + 2 + m->mo_buf[i + 1] > m->mo_len) {
+                incomplete = true; // more bytes still to come
+                break;
+            }
+            if (m->mo_buf[i + 1] == 3 && m->mo_buf[i + 2] == 0x01u)
+                sdtr = &m->mo_buf[i + 3]; // period, offset
+            i = (uint8_t)(i + 2 + m->mo_buf[i + 1]);
+        } else {
+            if (b == 0x07u) // MESSAGE REJECT
+                reject = true;
+            i++;
+        }
+    }
+    if (sdtr) {
+        m->mo_len = 0;
+        if (m->sdtr_await) {
+            // The initiator's reply to our request: the agreement is
+            // whatever it answered — nothing more to say.
+            m->sdtr_await = 0;
+            LOG(2, "SDTR reply from initiator (period=%u offset=%u): target %d negotiated", sdtr[0], sdtr[1], target);
+        } else {
+            // Initiator-offered SDTR: answer within our limits through
+            // the virtual MESSAGE IN phase.
+            uint8_t period = sdtr[0] < MESH_SDTR_PERIOD ? MESH_SDTR_PERIOD : sdtr[0];
+            uint8_t offset = sdtr[1] > MESH_SDTR_OFFSET ? MESH_SDTR_OFFSET : sdtr[1];
+            msgin_queue_sdtr(m, period, offset);
+            LOG(2, "SDTR offer (period=%u offset=%u): responding (period=%u offset=%u)", sdtr[0], sdtr[1], period,
+                offset);
+        }
+    } else if (reject && m->sdtr_await) {
+        // Our request was rejected: async it is, and the exchange is
+        // over — drop anything still queued.
+        m->sdtr_await = 0;
+        m->mo_len = 0;
+        m->mi_n = 0;
+        m->mi_rd = 0;
+        LOG(2, "SDTR request rejected: target %d stays async", target);
+    } else if (!incomplete && identify) {
+        m->mo_len = 0; // identify(s) consumed; nothing to answer
+    }
+    (void)target;
+}
+
+// ============================================================
 // Transfer pumps (synchronous against the shared bus model)
 // ============================================================
 
@@ -177,15 +283,37 @@ static void pump_out(config_t *cfg) {
         uint8_t b = fifo_pop(m);
         if (m->active == CMD_MSGOUT) {
             LOG(3, "msgout byte $%02X absorbed", b);
+            if (m->mo_len < sizeof(m->mo_buf))
+                m->mo_buf[m->mo_len++] = b;
         } else if (cfg->scsi) {
             scsi_push_data_out_byte(cfg->scsi, b);
         }
         m->remaining--;
     }
     if (m->remaining == 0 && m->active != 0) {
-        if (m->active == CMD_MSGOUT)
+        uint8_t done = m->active;
+        if (done == CMD_MSGOUT)
             m->msgout_pending = 0; // message sent: present the real phase
         finish_command(cfg);
+        if (done == CMD_MSGOUT) {
+            msgout_complete(cfg);
+            // If the target now has a message to deliver, its phase
+            // change to MESSAGE IN lands while the sequencer still
+            // holds MSG OUT: the phase-mismatch exception latches on
+            // the completed command.  (A plain identify raises nothing:
+            // the underlying bus phase was COMMAND throughout — the
+            // MSG OUT the driver saw was our virtual overlay, so no
+            // target-driven change occurred.)
+            if (msgin_pending(m))
+                raise_exception(cfg, EXC_PHASEMM);
+        }
+        // NOTE (T12 forensics): raising EXC_PHASEMM on a COMMAND
+        // completion whose target has already changed phase was tried
+        // and REVERTED: it routes Apple_Driver43 into its interrupt&6
+        // exception states, which drain the data phase byte-wise into
+        // a scratch buffer (proven: the wire bytes never reach the
+        // client's scsiDataPtr) — and it breaks the ROM engine's
+        // media scan outright.  See the handover §8 rewrite.
     }
 }
 
@@ -311,6 +439,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         m->connected = 1;
         m->active = 0; // a parked transfer command is superseded
         m->active_dma = 0;
+        msg_session_reset(m); // a fresh connection, a fresh conversation
         // With ATN the target enters MSG OUT for the IDENTIFY; the bus
         // model is already in COMMAND, so present a virtual MSG OUT
         // phase until the driver's SEQ_MSGOUT delivers the message.
@@ -322,6 +451,14 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
     case CMD_COMMAND:
     case CMD_MSGOUT:
     case CMD_DATAOUT:
+        if (cmd != CMD_MSGOUT && m->connected && msgin_pending(m)) {
+            // The target is presenting MESSAGE IN (an SDTR to deliver):
+            // a mismatched transfer command trips the phase-mismatch
+            // exception — the driver's message-in state picks it up.
+            // MSGOUT stays legal: asserting ATN overrides the target.
+            raise_exception(cfg, EXC_PHASEMM);
+            return;
+        }
         m->active = cmd;
         m->active_dma = dma && cmd == CMD_DATAOUT;
         m->remaining = count;
@@ -337,6 +474,10 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         return;
 
     case CMD_DATAIN:
+        if (m->connected && msgin_pending(m)) {
+            raise_exception(cfg, EXC_PHASEMM); // MESSAGE IN pending (see above)
+            return;
+        }
         m->active = cmd;
         m->active_dma = dma;
         m->remaining = count;
@@ -356,6 +497,10 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
             m->active = cmd; // parked: no REQ without a target
             return;
         }
+        if (msgin_pending(m)) {
+            raise_exception(cfg, EXC_PHASEMM); // MESSAGE IN pending (see above)
+            return;
+        }
         int st = cfg->scsi ? scsi_external_status_byte(cfg->scsi) : -1;
         if (st < 0) {
             LOG(2, "STATUS sequence outside status phase");
@@ -371,6 +516,20 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
     case CMD_MSGIN: {
         if (!m->connected) {
             m->active = cmd; // parked
+            return;
+        }
+        if (msgin_pending(m)) {
+            // Serve the virtual message (the SDTR conversation) first;
+            // the phase reverts to the live bus once it drains.
+            uint32_t n = count;
+            while (n-- > 0 && msgin_pending(m))
+                fifo_push(m, m->mi_buf[m->mi_rd++]);
+            if (!msgin_pending(m)) {
+                m->mi_n = 0;
+                m->mi_rd = 0;
+            }
+            m->active = 0;
+            raise_int(cfg, INT_CMDDONE);
             return;
         }
         int msg = cfg->scsi ? scsi_external_message_byte(cfg->scsi) : -1;
@@ -391,6 +550,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         m->connected = 0;
         m->msgout_pending = 0;
         m->active = 0;
+        msg_session_reset(m);
         raise_int(cfg, INT_CMDDONE);
         return;
 
@@ -426,6 +586,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         m->connected = 0;
         m->msgout_pending = 0;
         m->bus0_atn = 0;
+        msg_session_reset(m);
         mesh_update_irq(cfg);
         return;
 
@@ -444,6 +605,8 @@ static uint8_t phase_bits(config_t *cfg) {
     tnt_mesh_t *m = mesh(cfg);
     if (m->msgout_pending)
         return 0x06u; // MSG OUT — the virtual post-select-with-ATN phase
+    if (msgin_pending(m))
+        return 0x07u; // MSG IN — the target has an SDTR to deliver
     if (!cfg->scsi)
         return 0;
     switch (scsi_get_bus_phase(cfg->scsi)) {
@@ -565,6 +728,7 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
             m->active = 0;
             m->active_dma = 0;
             fifo_clear(m);
+            msg_session_reset(m);
         }
         break;
     case MR_EXCEPTION:

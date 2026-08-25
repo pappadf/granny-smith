@@ -237,6 +237,15 @@ typedef struct tnt_mesh {
     uint8_t connected; // a target is selected (bus not free)
     uint8_t msgout_pending; // select-with-ATN: present MSG OUT until sent
     uint8_t resel_enabled, parity_enabled;
+    // SDTR message engine (mesh.c §"Sync negotiation"): the assembled
+    // message-out bytes of the current session and the virtual
+    // message-in queue the target speaks through.  All of it is
+    // per-connection state.
+    uint8_t mo_buf[12];
+    uint8_t mo_len;
+    uint8_t mi_buf[8];
+    uint8_t mi_n, mi_rd;
+    uint8_t sdtr_await; // our SDTR request is out, awaiting the reply
 } tnt_mesh_t;
 
 // === Family state ===========================================================
