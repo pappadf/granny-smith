@@ -34,8 +34,7 @@
 # MEDIA: the DR3 disc lives in local/gs-docs/projects/mklinux/ and is not in
 # gs-test-data (a 663 MB hybrid ISO), so this test SKIPS cleanly where it is
 # absent.  Everything else it needs — the stock 7.5 volume — is pinned test
-# data.  `pdm-mklinux-boot`, which consumes the finished image, has no such
-# dependency and runs everywhere.
+# data.  `mklinux-boot` has no such dependency and runs everywhere.
 #
 # ⚠️ The 7.5 volume is attached read/write and accumulates delta writes.  Under
 # the harness those land in the per-test GS_STORAGE_CACHE and tests/data is

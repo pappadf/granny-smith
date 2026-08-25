@@ -1,7 +1,6 @@
 # Integration test configuration: install MkLinux DR3 onto the single drive.
 #
-# Half two of recreating `systems/mklinux_dr3_single_169mb.img` — the image
-# `pdm-mklinux-boot` runs on every commit:
+# Half two of recreating `systems/mklinux_dr3_single_169mb.img`:
 #
 #   pdm-mklinux-disk     partition, bless, and load the Mac OS side   [done]
 #   pdm-mklinux-install  the DR3 installer onto /dev/sda6             [here]
@@ -37,5 +36,12 @@ TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
 # memory size, but that is not a thing to rely on unnecessarily.
 TEST_ARGS := model=pm7100 ram=40960
 
+# WHICH IMAGE THIS PAIR PRODUCES.  The 7.5 one, and only that one.  `mklinux-boot`
+# moved to `systems/mklinux_dr3_76_single_169mb.img` when the 7500 joined it: a
+# PCI Power Mac rejects a 7.5 startup volume with DSErrCode $66 (dsOldSystem)
+# before the Booter runs.  That image was made by swapping the System Folder on
+# a copy of this one -- same map, byte-identical ext2 root -- not by a separate
+# install, so this pair is still where the MkLinux side actually comes from.
+#
 # CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
 TEST_TIER := extended

@@ -1,7 +1,7 @@
 # Integration test: install MkLinux DR3 onto the single Mac OS + MkLinux drive.
 #
-# Half two of recreating `systems/mklinux_dr3_single_169mb.img`, the image
-# `pdm-mklinux-boot` runs on every commit.  It starts from the drive
+# Half two of recreating `systems/mklinux_dr3_single_169mb.img`.
+# It starts from the drive
 # `pdm-mklinux-disk` publishes — partitioned, blessed, with the five Mac Files
 # already in its System Folder — and ends with that same drive carrying a
 # working MkLinux on /dev/sda6.
