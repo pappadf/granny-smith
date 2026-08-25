@@ -148,7 +148,14 @@ typedef struct tnt_gc {
 #define TNT_INT_VIA1  18 // VIA1/Cuda cascade (60 Hz tick, ADB, timers)
 #define TNT_INT_SWIM3 19 // SWIM3 chip
 #define TNT_INT_NMI   20 // External Int 0 — the NanoKernel's IPL-7 bit
-#define TNT_INT_VBL   30 // External Int 10 — Control/Platinum video VBL
+// Control video VBL.  The dossier's interrupt map guessed 30, but the
+// shipping System's video driver is authoritative: right as it writes
+// Control INTR_ENA it toggles GC mask BIT 26 through the kernel's
+// Enable/DisableInterruptSource path (live at 962.6M of the 7.6 boot,
+// mask writes at $FFE68D5C/$FFE68DE8) — the VCI/control interrupt rides
+// line 26.  With the pulse on 30 the driver's VBL never delivered, the
+// cursor task chain stayed dead, and the Finder had no mouse pointer.
+#define TNT_INT_VBL 26
 
 // === AWACS state (awacs.c) ==================================================
 // The Grand Central sound face: five 32-bit LE registers on $10 centres

@@ -73,6 +73,13 @@ LOG_USE_CATEGORY_NAME("control");
 // bit 2 for the vertical retrace during its mode-set — a status in bit 0
 // leaves it polling forever.
 #define CONTROL_INT_VBL 0x4u
+// INTR_ENA bit 3 gates the interrupt OUTPUT, and dropping it is the
+// ACKNOWLEDGE: the System driver's VBL ISR services each frame with the
+// ENA $C -> $4 -> $C dance (never touching INTR_STAT, which it merely
+// polls during the mode-set spin).  Without clearing the pending latch
+// on that falling edge the line re-asserts on the $C and the ISR loops
+// at interrupt speed — a 33 kHz storm that starves the cursor tasks.
+#define CONTROL_INT_GATE 0x8u
 
 // BAR geometry: the ROM's own reg-builder literals.
 #define CONTROL_BAR_REGS_SIZE 0x1000u
@@ -215,8 +222,19 @@ void tnt_control_host_vbl(config_t *cfg) {
 }
 
 // ============================================================
-// VBL — Grand Central interrupt 30, one edge per frame while enabled
+// VBL — Grand Central interrupt 26, a LEVEL held until acknowledged
 // ============================================================
+
+// The GC line mirrors INTR_STAT & INTR_ENA: the System's video driver
+// services its VBL from an interrupt handler that reads INTR_STAT and
+// W1Cs it — the line must stay ASSERTED until that acknowledge, or the
+// kernel's dispatch (which samples the live Levels) never sees the
+// source and the driver's SlotVBL chain (cursor tasks!) starves.  The
+// ROM ndrv's polled use (T11) is indifferent to the line.
+static void control_vbl_sync(config_t *cfg) {
+    tnt_control_t *c = ctl(cfg);
+    tnt_gc_set_source(cfg, TNT_INT_VBL, c->vbl_pending && (c->reg[CR_INTR_ENA] & CONTROL_INT_VBL));
+}
 
 static void control_vbl_event(void *source, uint64_t data) {
     (void)data;
@@ -226,7 +244,7 @@ static void control_vbl_event(void *source, uint64_t data) {
     if (!(c->reg[CR_INTR_ENA] & CONTROL_INT_VBL))
         return; // disabled while the event was in flight: go quiet
     c->vbl_pending = 1;
-    tnt_gc_pulse_event(cfg, TNT_INT_VBL);
+    control_vbl_sync(cfg);
     c->vbl_armed = 1;
     scheduler_new_cpu_event(cfg->scheduler, control_vbl_event, cfg, 0, 0, 1000000000ull / 60u);
 }
@@ -315,13 +333,15 @@ static void control_reg_write(config_t *cfg, uint32_t offset, uint32_t value) {
         tnt_control_update(cfg);
         break;
     case CR_INTR_ENA:
-        if (!(value & CONTROL_INT_VBL))
-            c->vbl_pending = 0;
-        else
+        if (!(value & CONTROL_INT_VBL) || !(value & CONTROL_INT_GATE))
+            c->vbl_pending = 0; // gate dropped: the acknowledge
+        if (value & CONTROL_INT_VBL)
             control_vbl_arm(cfg);
+        control_vbl_sync(cfg);
         break;
     case CR_INTR_STAT:
         c->vbl_pending = 0; // any status write acknowledges
+        control_vbl_sync(cfg);
         break;
     default:
         break;
@@ -442,6 +462,7 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
         c->crsr_phase = 0;
         break;
     case 0x10:
+        LOG(4, "cursor data [%u.%u] = $%02X", c->rad_addr, c->crsr_phase, value);
         c->crsr[c->rad_addr & 7u][c->crsr_phase] = value;
         if (++c->crsr_phase == 3)
             c->crsr_phase = 0;
@@ -608,6 +629,7 @@ void tnt_control_reset(config_t *cfg) {
     memset(c->rad_misc, 0, sizeof(c->rad_misc));
     memset(c->clut, 0, sizeof(c->clut));
     memset(c->crsr, 0, sizeof(c->crsr));
+    tnt_gc_set_source(cfg, TNT_INT_VBL, false);
     tnt_control_update(cfg);
 }
 
