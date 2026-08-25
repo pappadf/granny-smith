@@ -727,11 +727,25 @@ static void set_mouse_default(long x, long y) {
     int dx = (int)x - (int)cur_h;
     int dy = (int)y - (int)cur_v;
 
+    // Closed-loop correction: MTemp lags the injected deltas (ADB poll
+    // plus — on machines whose cursor rides the Cursor Device Manager,
+    // like the PCI PowerMacs — a VBL task before MTemp moves).  Host
+    // events arrive faster than that loop turns around, so subtract
+    // whatever is still queued at the ADB device or the correction gets
+    // injected once per host event instead of once — overshoot and
+    // rubber-banding.
+    int pend_dx = 0, pend_dy = 0;
+    bool has_adb = system_mouse_pending_adb(&pend_dx, &pend_dy);
+    dx -= pend_dx;
+    dy -= pend_dy;
+
     // On ADB machines, inject deltas through ADB so the ROM ISR naturally
     // updates the cursor position (including the screen cursor image).
     // Non-ADB machines (Plus) fall through to global writes.
-    bool injected = system_mouse_move_adb(dx, dy);
-    if (!injected) {
+    if (has_adb) {
+        if (dx != 0 || dy != 0)
+            system_mouse_move_adb(dx, dy);
+    } else {
         set_mouse_global(x, y);
     }
 }

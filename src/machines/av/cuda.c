@@ -99,6 +99,12 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 // Delay before a Cuda-initiated SR byte lands (the firmware's ~25 us).
 #define CUDA_PUSH_DELAY_NS 25000.0
 
+// How long an unclaimed response waits before Cuda gives up on the host
+// (state SENDING with the attention byte still untaken).  Well above any
+// live host's attention latency (microseconds), well below the OF-to-68k
+// handoff gap (~7 ms of guest time on the TNT boot).
+#define CUDA_SEND_ABANDON_NS 5000000.0
+
 // Transfer state.
 typedef enum {
     CUDA_IDLE = 0, // bus idle
@@ -130,6 +136,22 @@ struct av_cuda {
     bool onesec_enabled;
     uint8_t onesec_mode; // Wr1SecMode value; 3 = Mode3Clock (tick carries RTC)
     uint8_t autopoll_phase;
+    // A response whose ATTENTION byte the host never takes is abandoned
+    // after a firmware-style timeout (the TNT ROM's Open Firmware hands
+    // off to the 68k with its last ADB response unread; the 68k's
+    // CudaInit sync then needs an IDLE transport, exactly as real Cuda's
+    // own transaction timeout provides).
+    bool send_timeout_pending;
+    // A response the host sync-aborted mid-flight is RE-PRESENTED once
+    // the sync completes: the abort resets the TRANSPORT, not the
+    // firmware's output queue.  Load-bearing on TNT — its ROM sends the
+    // ADB SendReset through the early polled driver, then installs the
+    // interrupt driver (VIA reinit + CudaInit sync) with the reply still
+    // in flight; the ADB Manager's command stays outstanding forever
+    // unless the reply re-arrives for the new driver.  A re-presented
+    // response nobody reads is reaped by the abandonment watchdog above
+    // (which is how the OF-era leftover stays harmless).
+    bool resend_pending;
 
     // --- pointers / callbacks (not checkpointed) ---
     struct via *via1;
@@ -149,6 +171,8 @@ struct av_cuda {
 static void cuda_tick_event(void *source, uint64_t data);
 static void cuda_autopoll_event(void *source, uint64_t data);
 static void cuda_push_event(void *source, uint64_t data);
+static void cuda_send_timeout_event(void *source, uint64_t data);
+static void cuda_resend_event(void *source, uint64_t data);
 
 // === TREQ / SR helpers ======================================================
 
@@ -212,7 +236,64 @@ static void cuda_begin_send(av_cuda_t *cuda) {
     cuda_cancel_push(cuda); // a stale idle-ack must not fire mid-response
     cuda->state = CUDA_SENDING;
     cuda->tx_idx = 0;
+    LOG(3, "send %d bytes: type=$%02X flags=$%02X cmd=$%02X", cuda->tx_len, cuda->tx_buf[1], cuda->tx_buf[2],
+        cuda->tx_buf[3]);
     cuda_push_byte(cuda, 0);
+    // Give up on a host that never takes the attention byte (see
+    // CUDA_SEND_ABANDON_NS); any transport progress cancels this.
+    cuda->send_timeout_pending = true;
+    remove_event(cuda->sched, &cuda_send_timeout_event, cuda);
+    scheduler_new_cpu_event(cuda->sched, &cuda_send_timeout_event, cuda, 0, 0, (uint64_t)CUDA_SEND_ABANDON_NS);
+}
+
+// Cancel the abandonment watchdog: the host engaged with the response.
+static void cuda_send_progress(av_cuda_t *cuda) {
+    if (!cuda->send_timeout_pending)
+        return;
+    cuda->send_timeout_pending = false;
+    remove_event(cuda->sched, &cuda_send_timeout_event, cuda);
+}
+
+// Re-present a sync-aborted response once the bus has settled: the sync
+// reset the transport, but the firmware's output queue still holds the
+// packet, so it re-raises TREQ and clocks the attention byte again.  A
+// command the host started in the meantime supersedes the stale reply.
+// The delay spans the host's driver-install window (the TNT ROM enables
+// its SR interrupt ~5.7 ms after the sync; re-presenting inside that
+// window would let the abandonment watchdog reap the reply again).
+#define CUDA_RESEND_DELAY_NS 2000000.0
+
+static void cuda_resend_event(void *source, uint64_t data) {
+    (void)data;
+    av_cuda_t *cuda = (av_cuda_t *)source;
+    if (!cuda->resend_pending)
+        return;
+    cuda->resend_pending = false;
+    if (cuda->state != CUDA_IDLE || cuda->tx_len < 4)
+        return; // the host moved on (or a later sync flushed the queue)
+    LOG(2, "re-presenting the sync-aborted response (%d bytes)", cuda->tx_len);
+    cuda_begin_send(cuda);
+    // No abandonment watchdog on a re-presented reply: the host is
+    // mid-driver-install with interrupts masked (that is WHY the abort
+    // happened), and the reply must survive until its unmask.  The next
+    // sync still clears it if the host never engages.
+    cuda_send_progress(cuda);
+}
+
+// The host never took the attention byte: drop the response and return
+// the transport to idle, as the firmware's own transaction timeout does.
+static void cuda_send_timeout_event(void *source, uint64_t data) {
+    (void)data;
+    av_cuda_t *cuda = (av_cuda_t *)source;
+    if (!cuda->send_timeout_pending)
+        return;
+    cuda->send_timeout_pending = false;
+    if (cuda->state != CUDA_SENDING || cuda->tx_idx != 0)
+        return;
+    LOG(2, "response abandoned by host — transport reset to idle");
+    cuda->state = CUDA_IDLE;
+    cuda_cancel_push(cuda);
+    cuda_set_treq(cuda, true);
 }
 
 // Lay down the 4-byte response header [attn, pktType, flags, cmd].
@@ -401,6 +482,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
 
 // Dispatch a completed command packet by its packet-type byte.
 static void cuda_process_command(av_cuda_t *cuda) {
+    cuda->resend_pending = false; // a new command supersedes a stale reply
     uint8_t pkt_type = (cuda->rx_len >= 1) ? cuda->rx_buf[0] : PKT_PSEUDO;
     LOG(4, "command pkt type=$%02X len=%d", pkt_type, cuda->rx_len);
     switch (pkt_type) {
@@ -479,8 +561,19 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         LOG(2, "sync cycle: acknowledged (state=%d, aborting %d tx byte(s))", cuda->state,
             cuda->state == CUDA_SENDING ? cuda->tx_len - cuda->tx_idx : 0);
         cuda_cancel_push(cuda); // an in-flight byte must not land mid-sync
-        cuda->tx_len = 0;
-        cuda->tx_idx = 0;
+        // A SOLICITED response whose attention byte the host never took is
+        // requeued: the sync resets the transport, not the output queue,
+        // and it re-presents after the sync (see cuda_resend_event).  The
+        // asynchronous sources (ticks, autopoll data) stay silenced — that
+        // is half the point of the sync.
+        if (cuda->state == CUDA_SENDING && cuda->tx_idx == 0 && cuda->tx_buf[1] != PKT_TICK &&
+            !(cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL)) {
+            cuda->resend_pending = true; // tx_buf/tx_len kept for the resend
+        } else {
+            cuda->tx_len = 0;
+            cuda->tx_idx = 0;
+            cuda->resend_pending = false; // an idle-bus sync flushes the queue
+        }
         cuda->rx_len = 0;
         cuda->state = CUDA_SYNC;
         cuda->autopoll_enabled = false;
@@ -502,6 +595,29 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         break;
 
     case CUDA_SENDING:
+        if (tip_rise || tip_fall || ba_toggle)
+            cuda_send_progress(cuda); // host engaged: cancel the watchdog
+        if (tip_new && ba_old && !ba_new && ((via_get_acr(cuda->via1) >> 2) & 7) == 7) {
+            // ByteAck asserted with TIP negated while the host's shift
+            // register is in OUTPUT mode: that is CudaInit's sync cycle,
+            // not a response-byte acknowledge — the host is not listening
+            // (a reader flips the SR to input first).  Happens when a
+            // response is abandoned across a driver handoff (the TNT
+            // ROM's Open Firmware leaves its last ADB response untaken
+            // and the 68k's CudaInit syncs into it).  Requeue a solicited
+            // response (see the main sync branch) and run the sync
+            // exactly as from idle.
+            LOG(2, "sync cycle aborts an unread response");
+            cuda_send_progress(cuda);
+            if (cuda->tx_idx == 0 && cuda->tx_buf[1] != PKT_TICK && !(cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL))
+                cuda->resend_pending = true;
+            cuda->state = CUDA_SYNC;
+            cuda->autopoll_enabled = false;
+            cuda->onesec_enabled = false;
+            cuda_set_treq(cuda, false);
+            cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
+            break;
+        }
         if (tip_rise) {
             // Host terminated the response (normal end or open-ended cut):
             // release TREQ and clock the idle acknowledge byte.
@@ -511,7 +627,20 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         } else if (tip_fall && cuda->tx_idx == 0) {
             cuda_advance_tx(cuda); // host accepted the attention byte
         } else if (ba_toggle) {
-            cuda_advance_tx(cuda); // host consumed a byte
+            if (cuda->tx_idx == cuda->tx_len - 1 && tip_new) {
+                // Polled no-TIP read (the TNT ROM's early-boot driver):
+                // the host clocks the whole response with ByteAck toggles
+                // alone, TIP never asserted, so the final byte's
+                // acknowledge IS the termination — go idle and clock the
+                // idle acknowledge it then spin-waits on.  With TIP
+                // asserted (every other host driver) the tip_rise branch
+                // above stays the terminator.
+                cuda->state = CUDA_IDLE;
+                cuda_set_treq(cuda, true);
+                cuda_push_delayed(cuda, 0x00);
+            } else {
+                cuda_advance_tx(cuda); // host consumed a byte
+            }
         }
         break;
 
@@ -525,6 +654,12 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
             cuda_push_delayed(cuda, 0x00);
             cuda->state = CUDA_IDLE;
             LOG(2, "sync cycle: terminated");
+            if (cuda->resend_pending) {
+                // A sync-aborted solicited response re-presents once the
+                // bus settles (after the idle acknowledge above).
+                remove_event(cuda->sched, &cuda_resend_event, cuda);
+                scheduler_new_cpu_event(cuda->sched, &cuda_resend_event, cuda, 0, 0, (uint64_t)CUDA_RESEND_DELAY_NS);
+            }
         }
         break;
     }
@@ -639,11 +774,16 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "tick", &cuda_tick_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "autopoll", &cuda_autopoll_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "push", &cuda_push_event);
+        scheduler_new_event_type(cuda->sched, "cuda", cuda, "sendto", &cuda_send_timeout_event);
+        scheduler_new_event_type(cuda->sched, "cuda", cuda, "resend", &cuda_resend_event);
         scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
         scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, (uint64_t)CUDA_AUTOPOLL_NS);
-        // A checkpoint taken with a push in flight re-arms it here.
+        // A checkpoint taken with a push or abandonment watchdog in
+        // flight re-arms it here.
         if (cuda->push_pending)
             scheduler_new_cpu_event(cuda->sched, &cuda_push_event, cuda, 0, 0, (uint64_t)CUDA_PUSH_DELAY_NS);
+        if (cuda->send_timeout_pending)
+            scheduler_new_cpu_event(cuda->sched, &cuda_send_timeout_event, cuda, 0, 0, (uint64_t)CUDA_SEND_ABANDON_NS);
     }
 
     LOG(1, "Cuda init (firmware Cuda 2.37)");

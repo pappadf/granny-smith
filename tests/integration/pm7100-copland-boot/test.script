@@ -112,7 +112,12 @@ def row_plain_75_with_latch() {
 def row_copland_logo() {
     boot_image($img, true)
     wait_stable(900000000)
-    check("copland-logo.png")
+    # The console's "Getting to know the System libraries ... done =>
+    # N.NNN" line prints a LIVE elapsed-time measurement — a guest-side
+    # stopwatch, not pinned by the RTC seed.  Any timing-adjacent change
+    # moves the milliseconds (the TNT branch shifted it 1.885 -> 1.884),
+    # so exclude the number field (the menu-clock precedent).
+    check_ex("copland-logo.png", 48, 310, 64, 372)
 }
 
 # MILESTONE 5 (plan §6.3), the finish line: the Copland Finder desktop —

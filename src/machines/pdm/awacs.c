@@ -27,6 +27,7 @@
 #include "pdm.h"
 
 #include "audio_out.h"
+#include "awacs.h" // the shared ASCO codec semantics (core/peripherals/)
 #include "log.h"
 #include "machine_profile.h"
 #include "object.h"
@@ -46,13 +47,6 @@ LOG_USE_CATEGORY_NAME("awacs");
 // Output half-buffer offsets inside the 256 KB-aligned DMA window.
 #define AWACS_OUT_HALF0 0x10000u
 #define AWACS_OUT_HALF1 0x12000u
-
-// D/A attenuation ladder: 4-bit code, 0 = loudest, -1.5 dB per step, as
-// x65536 gains (the ASCO 2300 ladder — identical to Singer's, and the
-// chime volume law (7-vol)*2 rides on it).
-static const uint32_t awacs_atten_x65536[16] = {
-    65536, 55142, 46396, 39037, 32846, 27636, 23253, 19565, 16462, 13851, 11654, 9806, 8250, 6942, 5841, 4915,
-};
 
 // Codec sample rate for the whole engine, from the shared rate field in the
 // OUTPUT control register (+$10 bits 2:1): the drivers program %10 = 44 100
@@ -112,9 +106,11 @@ static void awacs_render_half(config_t *cfg, uint32_t half) {
         return;
     uint32_t frames = awacs_frames(a);
     uint32_t base = awacs_window_base(a) + (half ? AWACS_OUT_HALF1 : AWACS_OUT_HALF0);
-    bool mute = (a->codec[1] & 0x0080u) != 0; // speaker mute
-    uint32_t gl = awacs_atten_x65536[(a->codec[4] >> 6) & 15u];
-    uint32_t gr = awacs_atten_x65536[a->codec[4] & 15u];
+    // Speaker path (the headphone jack is never connected): register 4
+    // attenuation + register 1 mute, via the shared codec law.
+    bool mute;
+    uint32_t gl, gr;
+    awacs_speaker_gains(a->codec, &gl, &gr, &mute);
     for (uint32_t i = 0; i < frames; i++) {
         int16_t l = 0, r = 0;
         if (!mute) {

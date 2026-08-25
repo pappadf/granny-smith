@@ -94,6 +94,7 @@ NOTES = {
   "q950-3dc27823.rom":               "Quadra 950 ROM.",
   "q840av-q660av-5bf10fd1.rom":      "Quadra 840AV / Centris 660AV (“Cyclone”/“Tempest”) 2 MB ROM — byte-identical across both; the YMCA strap nibble ($F vs $B), not the ROM, selects the machine.",
   "pm6100-pm7100-pm8100-9feb69b3.rom": "Power Macintosh 6100/7100/8100 (“PDM”) universal 4 MB ROM, version $077D (1994-03) — one image for all three models; the machine-ID register, not the ROM, selects the machine.",
+  "pm7500-pm8500-pm9500-96cd923d.rom": "Power Macintosh 7500/8500/9500 (“TNT”) universal 4 MB ROM v1 (1995-08, “Boot TNT 0.1”) — also served the unemulated 7200; the Grand Central BoxID register, not the ROM, selects the machine.",
   "lisa2-revh-098917b2.rom":         "Apple Lisa 2 boot ROM rev H (interleaved 16 KB image; checksum is the Mac-style computed value, not the stored reset SSP).",
   "macxl-3a-094c82f0.rom":           "Macintosh XL boot ROM “3A” (interleaved 16 KB image).",
   "builtin-se30-video-4f71ff1a.vrom":"SE/30 onboard-video declaration ROM — a built-in video slot, not a NuBus card.",

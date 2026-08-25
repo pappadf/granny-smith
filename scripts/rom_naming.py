@@ -29,6 +29,8 @@ CANONICAL_NAMES = {
     "3dc27823": "q950-3dc27823.rom",  # Quadra 950
     "5bf10fd1": "q840av-q660av-5bf10fd1.rom",  # Quadra 840AV / Centris 660AV (Cyclone/Tempest)
     "9feb69b3": "pm6100-pm7100-pm8100-9feb69b3.rom",  # Power Macintosh 6100/7100/8100 (1994-03 PDM ROM)
+    "96cd923d": "pm7500-pm8500-pm9500-96cd923d.rom",  # Power Macintosh 7500/8500/9500 (1995-08 TNT ROM v1)
+    "9630c68b": "pm7500-pm8500-pm9500-v2-9630c68b.rom",  # Power Macintosh 7500/8500/9500 (1995-08 TNT ROM v2)
     "098917b2": "lisa2-revh-098917b2.rom",  # Apple Lisa 2 boot ROM rev H (computed checksum)
     "094c82f0": "macxl-3a-094c82f0.rom",  # Macintosh XL boot ROM "3A" (computed checksum)
     # --- Declaration ROMs / vROMs (*.vrom), keyed by Format-Block CRC -------

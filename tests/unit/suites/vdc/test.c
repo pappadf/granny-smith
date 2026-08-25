@@ -141,6 +141,12 @@ void via_input_sr(via_t *via, uint8_t byte) {
     if (s_sr_count < SR_MAX)
         s_sr_bytes[s_sr_count++] = byte;
 }
+// Cuda's sync-vs-byte-ack discriminator reads the host SR mode; input
+// mode (3) keeps the byte-ack reading for every existing test flow.
+uint8_t via_get_acr(const via_t *via) {
+    (void)via;
+    return 0x0C;
+}
 
 // --- RTC / ADB (unused by the I2C paths) ---
 uint32_t rtc_get_seconds(const rtc_t *rtc) {

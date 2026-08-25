@@ -119,6 +119,7 @@ image_t *setup_get_image_by_filename(const char *filename);
 void system_mouse_update(bool button, int dx, int dy);
 bool system_mouse_move(int dx, int dy);
 bool system_mouse_move_adb(int dx, int dy);
+bool system_mouse_pending_adb(int *dx, int *dy);
 void system_keyboard_update(key_event_t event, int key);
 
 // Hardware RESET line: calls the machine's reset handler to reinitialize

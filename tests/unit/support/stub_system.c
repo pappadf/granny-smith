@@ -170,6 +170,14 @@ bool system_mouse_move_adb(int dx, int dy) {
     return false;
 }
 
+bool system_mouse_pending_adb(int *dx, int *dy) {
+    if (dx)
+        *dx = 0;
+    if (dy)
+        *dy = 0;
+    return false;
+}
+
 // Machine management stub (used by cmd_rom in memory.c)
 int system_ensure_machine(const char *model_id) {
     (void)model_id;

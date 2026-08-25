@@ -1,0 +1,174 @@
+# TNT ROM boot ladder (proposal-powermac-7500-8500-9500 §7.1).
+#
+# Every assertion is a hardware truth read from the live machine after a
+# clean bounded run — deliberately NO PC logpoints/breakpoints (the PDM
+# precedent: the debugger suppresses branch folding and skews any
+# guest-timed measurement).
+#
+# Boot shape on this platform (unlike PDM, where HWInit did everything):
+# NanoKernel reset entry at $FFF00100 consumes ConfigInfo and builds the
+# MMU, the ROM's own Open Firmware then brings up the hardware — probing
+# Hammerhead/Bandit/Grand Central, sizing memory, writing its environment
+# into the Grand Central NVRAM — before POST and the 68k emulator take
+# over.  The budget below runs through all of that to the 68k Start
+# Manager, which mode-sets Control through the ROM's native video driver,
+# paints the gray desktop (rung T11) and parks looking for boot media
+# (Phase E's frontier).
+
+include "../lib/mac.script"
+
+machine.boot model="pm7500" ram=32768 rom="${$ROM}"
+
+# Record the whole boot's audio: rung T10 matches it against a golden.
+machine.sound.capture.start
+
+# T1: the CPU comes out of reset at the documented vector (ROM base +
+# $300100 — the NanoKernel reset entry in the exception-table component).
+assert machine.cpu.pc == 0xFFF00100 "T1: reset vector != $FFF00100"
+
+# 600M instructions: NanoKernel init, the Cuda pixel-clock I2C triple,
+# Open Firmware bring-up (chipset probe, memory sizing, NVRAM
+# environment), POST, the 68k emulator dispatch storm, 68k low-memory
+# init, timer calibration, and the live 60.15 Hz tick chain.
+scheduler.run 600000000
+
+# --- T2: the kernel rebuilt its MMU for the REAL memory size -----------------
+# After Open Firmware sizes the 32 MB, the NanoKernel re-derives its
+# layout: HTAB at $01FE0000 with HTABMASK 1.  Impossible unless kernel
+# init ran twice with OF's measurement in between.
+assert machine.cpu.sdr1 == 0x01FE0001 "T2: SDR1/HTAB not at the 32 MB layout"
+
+# --- T4: machine identity — SOLVED (Phase D) ---------------------------------
+# The shipping ROM's identification routine ($FFC14844, decoded during
+# Phase D): Hammerhead's part identifier must read $39 in its first byte
+# (a $3001xxxx identifier is the 7200/Catalyst personality — the cause
+# of the Phase-B BoxFlag=$66 puzzle), the 9500 is flagged by Hammerhead
+# +$20 bit 30, and the 8500 by BoxID little-endian bit 11.  The proof is
+# the 68k BoxFlag global: $3E = the Power Macintosh 7500 (gestalt 68).
+# The BoxID model byte carries bit 13 SET (BE byte 1 = $E0) — Open
+# Firmware's half of the identity, decoded in Phase D part 2: its model
+# word takes BoxID xw@>>11 and splits 7500 (bit 13 set) from 8500.
+assert machine.memory.peek.l(0xF8000000) == 0x39000000 "T4: Hammerhead ID != $39xxxxxx"
+assert machine.memory.peek.b(0xF301A001) == 0xE0 "T4: BoxID model byte"
+assert machine.memory.peek.b(0xCB3) == 0x3E "T4: BoxFlag != $3E (not identified as a 7500)"
+
+# --- T6: the Open Firmware device tree carries the display nodes -------------
+# OF's model decode (OpenFW $104db: case Hammerhead-ID>>24 of $39, then
+# selector m = (+$20 byte >> 5) | ((+$20 byte >> 1) & 8) — $80 reads as
+# 4 = the 7500/8500 arm, $40 as 2 = 9500) must recognise the box: the
+# "AAPL,????" fallback builds a tree with NO chaos/control display nodes
+# and the ROM's video driver can never load (the Phase-D video wall).
+# The compatible string and the control node's model property are read
+# back from OF's live workspace in low RAM.
+assert len(find.str("AAPL,7500", 0x8000, 0x20000)) > 0 "T6: OF compatible != AAPL,7500 (model decode fell back)"
+assert len(find.str("AAPL,343S1154", 0x8000, 0x20000)) > 0 "T6: control display node missing from the OF tree"
+assert len(find.str("AAPL,343S1155", 0x8000, 0x20000)) > 0 "T6: chaos bridge node missing from the OF tree"
+
+# --- T3: Open Firmware initialised its NVRAM environment ---------------------
+# The banked store's top bank carries the packed OF config-variable
+# strings ("boot", "ttya", "/AAPL,ROM" ...) the firmware writes on a
+# first boot over a blank store — proof the two-aperture banked NVRAM
+# model works end-to-end (bank port + $10-centre data window).
+machine.memory.poke.b(0xF301D000, 255)
+assert machine.memory.peek.b(0xF301F030) == 0x62 "T3: OF environment 'boot' missing from NVRAM"
+assert machine.memory.peek.b(0xF301F180) == 0x41 "T3: OF environment '/AAPL,ROM' missing from NVRAM"
+machine.memory.poke.b(0xF301D000, 0)
+
+# --- T7: the 68k emulator is dispatching real 68k ROM code -------------------
+# The 68k Start Manager initialised low memory: ROMBase carries the TNT
+# ROM base (the 68k sees the ROM at its physical home, DecoderInfo[0]),
+# memory sizing ran (MemTop at the 32 MB kernel-carved top), and the
+# timer calibration wrote TimeDBRA.
+assert debug.mac.globals.read("ROMBase") == 0xFFC00000 "T7: 68k low memory not initialized (ROMBase)"
+assert debug.mac.globals.read("MemTop") == 0x1FD6000 "T7: MemTop not at the 32 MB layout"
+assert machine.memory.peek.w(0xD00) != 0 "T7: TimeDBRA calibration missing"
+
+# --- T8: the 60.15 Hz tick chain runs at rate --------------------------------
+# VIA1 T1 -> Grand Central interrupt 18 -> 604/601 external interrupt ->
+# NanoKernel ExtIntHandlerTNT (mode-1 acknowledge) -> emulated 68k IPL-1
+# handler incrementing Ticks.  The band allows service jitter, not clock
+# error (the PDM L17 precedent).
+assert debug.mac.globals.read("Ticks") != 0 "T8: 68k tick handler not running (Ticks)"
+let k0 = debug.mac.globals.read("Ticks")
+let c0 = scheduler.cycles
+scheduler.run 120000000
+let dticks = debug.mac.globals.read("Ticks") - $k0
+let dcyc = scheduler.cycles - $c0
+# 60.15 Hz against the 100 MHz cycle clock: expected = dcyc * 60.15 / 100e6
+let expect = $dcyc * 6015 / 100 / 100000000
+assert $dticks >= $expect - 10 "T8: tick rate low (${$dticks} vs ~${$expect})"
+assert $dticks <= $expect + 10 "T8: tick rate high (${$dticks} vs ~${$expect})"
+
+# --- T9: the interrupt fabric + DBDMA engine are live -------------------------
+# (Peeks of the little-endian island registers return byte-swapped
+# values — the raw bus view; the constants below are bswapped LE.)
+#
+# Open Firmware plays its boot beep through DBDMA channel 8: the engine
+# executed the ROM's own descriptor program (at $FFE00090 — the program
+# lives in ROM) to its STOP.  The channel parks ON the STOP descriptor
+# with RUN still set and ACTIVE dropped — three engine behaviors (LE
+# descriptor fetch, OUTPUT data movement, STOP-parking) in one marker.
+assert machine.memory.peek.l(0xF3008804) == 0x00800000 "T9: ch8 not parked RUN|!ACTIVE after the OF beep"
+assert machine.memory.peek.l(0xF300880C) == 0x9000E0FF "T9: ch8 cmdptr not on the beep program's STOP ($FFE00090)"
+
+# The kernel's enabled interrupt set at the sampling point — the full
+# media-hunt-era driver roster the un-parked boot installs: BOTH SCSI
+# chips (12 = 53C94, 13 = MESH — the SCSI Manager binds each cell it
+# finds; the mesh_id >= $E1 gate at ROM $FFEBB168 selects the native
+# MESH path), SCC A/B (15, 16), AWACS (17), VIA1 (18), SWIM3 floppy
+# (19), NMI (20), a PCI-slot external (26, from the expansion-slot
+# scan) — plus mask bit 31, the ifMode1Clear-era mask image the
+# NanoKernel maintains.  Events carries the standing VIA bit (mode 1: the
+# $80000000 acknowledge clears no device bits and the kernel never
+# W1Cs Events).  The mode-1 ack LOOP itself is proven by T8's
+# tick-rate window — starvation there would fail the rate band.
+assert machine.memory.peek.l(0xF3000024) == 0x00B01F84 "T9: interrupt mask not the kernel's enabled set"
+assert (machine.memory.peek.l(0xF3000020) & 0x00000400) == 0x00000400 "T9: VIA event bit not standing (mode-1 ack must not clear Events)"
+
+# Register-file decode: cmdptr store-readback through an idle channel's
+# island window (channel 3, Ethernet RX — untouched by this boot).
+machine.memory.poke.l(0xF300830C, 0x78563412)
+assert machine.memory.peek.l(0xF300830C) == 0x78563412 "T9: DBDMA cmdptr store-readback through the island"
+machine.memory.poke.l(0xF300830C, 0)
+
+# --- T10: the firmware beep through AWACS + DBDMA channel 8 -------------------
+# Open Firmware plays its beep through the full datapath: the sound-
+# control rate write (22 050 Hz), codec attenuation commands over the
+# NEWECMD port, and a 51 928-frame descriptor program drained through the
+# channel-8 frame-credit gate in emulated time.  The run is
+# deterministic, so the capture matches a golden WAV sample-exactly
+# (REGEN=1 regenerates).  The 68k startup chime STILL does not play by
+# the T11 desktop (the boot reaches its media hunt chime-less — an open
+# question for Phase E; the row pins the whole capture so the chime's
+# first appearance will show up as a length change here).
+check_sound("of-beep.wav", 51928)
+assert machine.sound.peak >= 2000 "T10: beep rendered silent (peak ${machine.sound.peak})"
+assert machine.sound.sample_rate == 22050 "T10: sound rate != the beep's 22050"
+assert machine.sound.out_enabled == false "T10: channel 8 still draining at the wall"
+
+# --- T11: the ROM's native video driver drives Control to the gray desktop ---
+# The whole chain in one rung: the mode-1 interrupt-on-CHANGE law lets
+# the NanoKernel lower the emulated 68k IPL after each VIA service (the
+# deassert-change interrupt — without it the boot's base context starves
+# at its first unmask and none of this runs); the master init proceeds
+# to _DisplayDispatch, which finds the display nodes the T6 identity
+# put in the OF tree, loads the ROM's own 'mtej' control ndrv, and the
+# driver mode-sets Control over the VCI bus: 640x480 (hsblank/heblank
+# 393/73, vsblank/veblank 1042/82), 32 bpp (mode 1 + RaDACal $28, the
+# 4 MB-VRAM depth pair), pitch 2592, VBL enable $C with the retrace
+# spin-poll on INTR_STAT bit 2.  The Display Manager then moves
+# ScrnBase into the BAR-assigned VRAM aperture ($90000000 + $800000
+# usable window + $200 start_addr + $10 pixel-0 offset) and QuickDraw
+# paints the desktop.  The golden is the 640x480 gray desktop with the
+# boot arrow cursor — stable from here to at least 3B instructions
+# (the boot's media hunt draws nothing further without a disk).
+assert debug.mac.globals.read("ScrnBase") == 0x90800210 "T11: ScrnBase not in the Control VRAM aperture"
+check("gray-desktop.png")
+
+# The T5 marker (the OF memory-sizing sequence against Hammerhead) stays
+# asserted transitively — MemTop and the kernel's 32 MB layout are
+# downstream of OF's sizing — and gets its own direct row when the R1
+# Hammerhead access log is fitted.  T12-T13 (SCSI, Finder) are Phase E.
+
+echo "tnt-rom-ladder: high-water rung T11 reached (pc=${machine.cpu.pc:08x} sdr1=${machine.cpu.sdr1:08x} ticks=${debug.mac.globals.read("Ticks")} sound=${machine.sound.frames}f/${machine.sound.peak}pk scrn=${debug.mac.globals.read("ScrnBase"):08x})"
+quit
