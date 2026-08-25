@@ -29,8 +29,8 @@ TEST_NAME := Power Macintosh — boot MkLinux DR3 from a single Mac OS + MkLinux
 TEST_DESC := Boot one 169 MB disk holding System 7.5 and MkLinux DR3 through the MkLinux Booter to a root login, on all three PowerPC models
 
 TEST_ROM := roms/pm6100-pm7100-pm8100-9feb69b3.rom
-TEST_ARGS := model=pm7100 ram=40960
-TEST_TIER := extended
+TEST_ARGS := model=pm7100 ram=24576
+TEST_TIER := matrix
 
 # MEDIA: `systems/mklinux_dr3_single_169mb.img.7z` in gs-test-data since
 # revision 2590a822, extracted in place by scripts/fetch-test-data.sh.  Unlike
