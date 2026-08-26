@@ -46,13 +46,14 @@ void machine_config_reset_slot_cards(void) {
     s_record.n_slot_cards = 0;
 }
 
-void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id) {
+void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id, bool explicit_pick) {
     if (!card_id || !*card_id || s_record.n_slot_cards >= MC_MAX_SLOT_CARDS)
         return;
     machine_config_slot_card_t *e = &s_record.slot_cards[s_record.n_slot_cards++];
     e->bus_kind = (uint8_t)bus_kind;
     e->slot = (int16_t)slot;
     snprintf(e->card_id, sizeof(e->card_id), "%s", card_id);
+    e->explicit_pick = explicit_pick;
 }
 
 void machine_config_note_rom(const char *path, uint32_t crc) {
@@ -156,7 +157,9 @@ static value_t cfg_attr_vroms(struct object *self, const member_t *m) {
 }
 
 // `machine.config.slot_cards` — the resolved per-slot picks:
-// [{bus, slot, card_id}, ...] in the order the slot walks populated them.
+// [{bus, slot, card_id, explicit}, ...] in the order the slot walks
+// populated them.  `explicit` separates what the user chose from what the
+// slot's own default supplied (see machine_config_slot_card_t).
 static value_t cfg_attr_slot_cards(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -172,6 +175,7 @@ static value_t cfg_attr_slot_cards(struct object *self, const member_t *m) {
         val_map_put(b, "bus", val_str(e->bus_kind == MC_BUS_PCI ? "pci" : "nubus"));
         val_map_put(b, "slot", val_int(e->slot));
         val_map_put(b, "card_id", val_str(e->card_id));
+        val_map_put(b, "explicit", val_bool(e->explicit_pick));
         items[i] = val_map_finish(b);
     }
     return val_list(items, (size_t)s_record.n_slot_cards);
@@ -220,7 +224,7 @@ static const member_t config_members[] = {
      .attr = {.type = V_LIST, .get = cfg_attr_vroms, .set = NULL}        },
     {.kind = M_ATTR,
      .name = "slot_cards",
-     .doc = "Resolved per-slot card picks: [{bus, slot, card_id}]",
+     .doc = "Resolved per-slot card picks: [{bus, slot, card_id, explicit}]",
      .flags = VAL_RO,
      .attr = {.type = V_LIST, .get = cfg_attr_slot_cards, .set = NULL}   },
     {.kind = M_ATTR,

@@ -59,6 +59,13 @@ typedef struct {
     uint8_t bus_kind; // mc_bus_kind_t
     int16_t slot; // slot number within that bus's numbering
     char card_id[MC_ID_MAX];
+    // True when the USER named this card (a staged per-slot pick, or the
+    // boot document's wildcard); false when the slot resolved its own
+    // declared default or builtin.  machine.restart replays only the
+    // explicit ones: replaying a default as an explicit pick would change
+    // its semantics, because an unsatisfiable DEFAULT degrades to an empty
+    // slot with a log while an unsatisfiable explicit pick fails the boot.
+    bool explicit_pick;
 } machine_config_slot_card_t;
 
 #define MC_MAX_SLOT_CARDS 12
@@ -128,7 +135,7 @@ void machine_config_note_vrom(const char *card_id, const char *path, uint32_t cr
 // Clear / report the resolved per-slot card picks.  A bus controller calls
 // the reporter once per slot it actually populates, after resolution.
 void machine_config_reset_slot_cards(void);
-void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id);
+void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id, bool explicit_pick);
 
 // rom.load write-back: keep the record answering "how do I recreate
 // what I'm looking at" after a live ROM swap.

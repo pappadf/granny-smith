@@ -156,7 +156,9 @@ assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="nonesuch") "unknow
 assert machine.id == "pm9500" "machine survives the rejected boot"
 
 # --- The built-from record captures the resolved per-slot picks. -------------
-assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"tnt_control\"}]" "resolved slot picks recorded"
+# Control is the slot table's own builtin, not a user pick, so it is
+# recorded as NOT explicit — machine.restart re-resolves it from the table.
+assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"tnt_control\",\"explicit\":false}]" "resolved slot picks recorded"
 machine.restart
 assert machine.pci.slot[7].card.name == "Control" "restart must re-seat the recorded slot card"
 

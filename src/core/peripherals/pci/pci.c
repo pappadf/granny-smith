@@ -503,13 +503,18 @@ const pci_card_kind_t *pci_slot_kind(pci_root_t *root, int slot) {
 // honoured only if the named kind physically fits; the fallback is the
 // declared default_card.  Rejections log at level 0 so a bad pick is
 // visible by default instead of silently booting the wrong thing.
-static const char *socket_card_id(const pci_slot_decl_t *s, bool is_first_socket) {
+// *out_explicit reports whether the USER named the winner — the
+// built-from record keeps the two apart (machine_config_slot_card_t).
+static const char *socket_card_id(const pci_slot_decl_t *s, bool is_first_socket, bool *out_explicit) {
+    *out_explicit = false;
     const char *staged = pci_staged_card_get(s->slot);
     if (!staged && is_first_socket)
         staged = pci_staged_card_get(PCI_STAGED_WILDCARD);
     if (staged) {
-        if (pci_card_fits_socket(s, pci_card_find(staged)))
+        if (pci_card_fits_socket(s, pci_card_find(staged))) {
+            *out_explicit = true;
             return staged;
+        }
         LOG(0, "staged card '%s' does not fit slot %d; using default '%s'", staged, s->slot,
             s->default_card ? s->default_card : "(none)");
     }
@@ -547,12 +552,13 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
         }
         for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
             const pci_card_kind_t *kind = NULL;
+            bool explicit_pick = false; // did the USER name this card?
             switch (s->kind) {
             case PCI_SLOT_BUILTIN:
                 kind = pci_card_find(s->builtin_card_id);
                 break;
             case PCI_SLOT_SOCKET:
-                kind = pci_card_find(socket_card_id(s, s->slot == first_socket));
+                kind = pci_card_find(socket_card_id(s, s->slot == first_socket, &explicit_pick));
                 break;
             case PCI_SLOT_ABSENT:
                 continue;
@@ -600,7 +606,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             // The built-from record captures the RESOLVED pick, so
             // machine.restart rebuilds a multi-card machine faithfully
             // (the staged table is cleared below).
-            machine_config_note_slot_card(MC_BUS_PCI, s->slot, kind->id);
+            machine_config_note_slot_card(MC_BUS_PCI, s->slot, kind->id, explicit_pick);
         }
     }
     // Consume the whole staged table so a stale selection can't leak into

@@ -877,11 +877,21 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
         .custom_mode = snap.custom_mode[0] ? snap.custom_mode : NULL,
         .pci_card = snap.pci_card[0] ? snap.pci_card : NULL,
     };
-    // Replay the RESOLVED per-slot picks: the document's wildcard covers
-    // only the first socket, so without these a multi-card machine would
-    // come back with empty slots (proposal-pci-architecture §8.2).
+    // Replay the user's per-slot picks: the document's wildcard covers only
+    // the first socket, so without these a multi-card machine would come
+    // back with empty slots (proposal-pci-architecture §8.2).
+    //
+    // ONLY the explicit ones.  A slot that resolved its own default must be
+    // left to resolve it again: re-staging a default turns it into an
+    // explicit pick, and an explicit pick whose declaration ROM cannot be
+    // resolved FAILS the boot where a default degrades to an empty slot
+    // with a log.  (That asymmetry is deliberate — see
+    // validate_vrom_resolution — and replaying defaults made
+    // machine.restart reject itself on any machine with no vROM offered.)
     for (int i = 0; i < snap.n_slot_cards; i++) {
         const machine_config_slot_card_t *e = &snap.slot_cards[i];
+        if (!e->explicit_pick)
+            continue;
         if (e->bus_kind == MC_BUS_PCI)
             pci_staged_card_set(e->slot, e->card_id);
         else

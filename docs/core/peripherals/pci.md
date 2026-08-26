@@ -133,7 +133,13 @@ a card's identity — the two places `nubus.c` had to include card headers.
 
 The **resolved** picks are captured in the built-from record
 (`machine_config_note_slot_card`) for *both* buses, so `machine.restart`
-re-seats every populated slot instead of only the wildcard one.
+re-seats every populated slot instead of only the wildcard one. Each entry
+records whether the USER named the card or the slot resolved its own
+default, and **restart replays only the explicit ones** — that distinction
+is load-bearing, not bookkeeping: an explicit pick whose declaration ROM
+cannot be resolved *fails* the boot, while a default degrades to an empty
+slot with a log, so replaying a default as an explicit pick would make
+`machine.restart` reject itself on any machine with no ROM offered.
 
 ## Interrupts
 

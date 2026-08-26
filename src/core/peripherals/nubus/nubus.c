@@ -249,13 +249,20 @@ bool nubus_card_fits_socket(const nubus_slot_decl_t *s, const nubus_card_kind_t 
 // physically fits the slot; the fallback is the declared default_card
 // (NULL = the socket ships empty).  Rejections log at level 0 so a bad pick
 // is visible by default instead of silently booting the wrong card.
-static const char *socket_card_id(const nubus_slot_decl_t *s, bool is_first_socket) {
+// *out_explicit reports whether the USER named the winner — the built-from
+// record keeps the two apart, because a default that cannot resolve its
+// declaration ROM degrades to an empty slot while an explicit one fails the
+// boot (machine_config_slot_card_t).
+static const char *socket_card_id(const nubus_slot_decl_t *s, bool is_first_socket, bool *out_explicit) {
+    *out_explicit = false;
     const char *staged = nubus_staged_card_get(s->slot);
     if (!staged && is_first_socket)
         staged = nubus_staged_card_get(NUBUS_STAGED_WILDCARD);
     if (staged) {
-        if (nubus_card_fits_socket(s, nubus_card_find(staged)))
+        if (nubus_card_fits_socket(s, nubus_card_find(staged))) {
+            *out_explicit = true;
             return staged;
+        }
         LOG(0, "nubus: staged card '%s' does not fit slot $%X; using default '%s'", staged, s->slot,
             s->default_card ? s->default_card : "(none)");
     }
@@ -332,6 +339,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
         for (const nubus_slot_decl_t *s = slots; s->slot != 0; s++) {
             const nubus_card_kind_t *kind = NULL;
             const char *staged_mode = NULL;
+            bool explicit_pick = false; // did the USER name this card?
             switch (s->kind) {
             case NUBUS_SLOT_BUILTIN: {
                 // A BUILTIN slot boots its declared card, but a staged pick
@@ -345,9 +353,10 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
                     staged = nubus_staged_card_get(NUBUS_STAGED_WILDCARD);
                 if (staged) {
                     const nubus_card_kind_t *k = nubus_card_find(staged);
-                    if (k && k->attach == CARD_ATTACH_BUILTIN)
+                    if (k && k->attach == CARD_ATTACH_BUILTIN) {
                         kind = k;
-                    else
+                        explicit_pick = true;
+                    } else
                         LOG(0, "nubus: staged card '%s' cannot replace builtin slot $%X; using '%s'", staged, s->slot,
                             s->builtin_card_id);
                 }
@@ -359,7 +368,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
                 break;
             }
             case NUBUS_SLOT_SOCKET:
-                kind = nubus_card_find(socket_card_id(s, s->slot == first_socket));
+                kind = nubus_card_find(socket_card_id(s, s->slot == first_socket, &explicit_pick));
                 staged_mode = socket_staged_mode(s, s->slot == first_socket);
                 break;
             case NUBUS_SLOT_ABSENT:
@@ -400,7 +409,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             // machine.restart re-seats every populated slot and not just
             // the wildcard one (proposal-pci-architecture §8.2, the fix
             // for the NuBus record's known wildcard-only gap).
-            machine_config_note_slot_card(MC_BUS_NUBUS, s->slot, kind->id);
+            machine_config_note_slot_card(MC_BUS_NUBUS, s->slot, kind->id, explicit_pick);
         }
     }
     // Consume the whole staged table so a stale selection doesn't leak
