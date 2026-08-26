@@ -7,6 +7,14 @@
 // Bandit; the 8500/9500 add a second at $F4000000; all three TNT machines
 // carry Chaos at $F0000000.
 //
+// This file is the family's PCI BRIDGE ADAPTER: it owns the chipset facts
+// (where the config ports live, how the address latch decodes, which
+// windows the bridge forwards, the Chaos quirks) and delegates every
+// config cycle to the generic bus controller in core/peripherals/pci/.
+// A bridge's own header is just another registered device — which is why
+// "an empty slot reads all-ones" needs no code here at all: it is simply
+// "no device is registered at that IDSEL" (pci_bus_cfg_read).
+//
 // Software sees exactly two ports per bridge plus a config header:
 //
 //   * config ADDRESS at base+$800000 (4 bytes, little-endian): type-0
@@ -33,19 +41,22 @@
 // Chaos differs in three attested ways: its header reads device $0003;
 // most of its BARs are not safely readable (config reads outside
 // $00-$0F/$14/$18 return all-ones — the two exceptions are exactly
-// Control's register and VRAM BARs, which delegate to control.c: the
-// ROM's own probe-slots sizes and assigns them); and writes to the rest
-// of its config space are ignored ("/chaos really hates writes to config
-// space" — NetBSD; Linux's chaos_map_bus applies the same offsets).  It
-// has no PCI I/O window at all.
+// Control's register and VRAM BARs: the ROM's own probe-slots sizes and
+// assigns them); and writes to the rest of its config space are ignored
+// ("/chaos really hates writes to config space" — NetBSD; Linux's
+// chaos_map_bus applies the same offsets).  It has no PCI I/O window at
+// all.  Both quirks live in this adapter, applied around the generic
+// device dispatch, because they are chipset facts about CHAOS, not about
+// the device behind it.
 //
 // Empty PCI MEMORY space faults recoverably: Open Firmware and the OS
-// probe with catchable machine checks (the BART precedent), so the two
-// 256 MB memory windows are claimed with a fault interface here.
+// probe with catchable machine checks (the BART precedent), which is what
+// the bus's decode windows provide (pci_bus_add_window).
 
 #include "tnt.h"
 
 #include "log.h"
+#include "pci.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -55,13 +66,24 @@ LOG_USE_CATEGORY_NAME("bandit");
 // PCI ids (config dword 0 = device<<16 | vendor, little-endian layout)
 #define PCI_VENDOR_APPLE 0x106Bu
 #define BANDIT_DEVICE_ID 0x0001u
-#define CHAOS_DEVICE_ID  0x0003u
 #define BANDIT_REVISION  0x03u
 
 // Config-space offsets of the bridge's documented mode registers
 #define BANDIT_ADDR_SELECT 0x48u
 #define BANDIT_MODE_SELECT 0x50u
 #define BANDIT_COHERENT    0x40u // mode-select bit every OS latches on
+
+// The bridge's own device-11 header.  A host bridge's command register is
+// not software-settable on this part (Apple documents only $48/$50), so no
+// command bits are writable and none are hardwired on: the bridge decodes
+// by strap, not by config.
+static const pci_config_decl_t bandit_self_decl = {
+    .vendor_id = PCI_VENDOR_APPLE,
+    .device_id = BANDIT_DEVICE_ID,
+    .revision = BANDIT_REVISION,
+    .class_code = 0x060000u, // host bridge
+    .header_type = 0x00u,
+};
 
 // ============================================================
 // Config-space contents of the bridge's own device-11 header
@@ -79,33 +101,55 @@ static uint32_t bandit_addr_select(const tnt_bandit_t *b) {
         // $F3 (PCI I/O — the Grand Central island).
         return (0x0100u << 16) | 0x000Cu;
     case TNT_BANDIT2_BASE:
-        // Second bridge: its $F4/$F5 windows only (no memory-space window
-        // is decoded by this model yet — nothing is behind its slots).
-        return 0x0030u;
-    case TNT_CHAOS_BASE:
     default:
-        // Chaos: 256 MB VCI memory at $90000000; windows $F0/$F1.
-        return (0x0200u << 16) | 0x0003u;
+        // Second bridge: its $F4/$F5 windows only.  No 256 MB memory-space
+        // window is decoded — which memory range Bandit 2 forwards is
+        // still open (Apple's notes quote $90000000 for both Bandit 2 and
+        // Chaos, and a board carrying both cannot have them collide;
+        // proposal-pci-architecture §14 Q5).  The register and the decode
+        // stay consistent: we claim nothing, so we advertise nothing.
+        return 0x0030u;
     }
 }
 
-// One config register of the bridge's own header, as a little-endian
-// dword.  Unimplemented registers read zero (the header exists; only
-// absent DEVICES read all-ones).
-static uint32_t bridge_own_config_read(tnt_bandit_t *b, uint32_t reg) {
+// The bridge's quirk registers.  Everything else falls through to the
+// generic type-0 header (config_space.c).
+static bool bridge_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
+    tnt_bandit_t *b = (tnt_bandit_t *)dev->priv;
     switch (reg) {
-    case 0x00:
-        return ((uint32_t)(b->is_chaos ? CHAOS_DEVICE_ID : BANDIT_DEVICE_ID) << 16) | PCI_VENDOR_APPLE;
-    case 0x08:
-        return 0x06000000u | BANDIT_REVISION; // host-bridge class, rev 3
     case BANDIT_ADDR_SELECT:
-        return bandit_addr_select(b);
+        *out = bandit_addr_select(b);
+        return true;
     case BANDIT_MODE_SELECT:
-        return b->mode_select;
+        *out = b->mode_select;
+        return true;
     default:
-        return 0;
+        return false;
     }
 }
+
+static bool bridge_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t value) {
+    tnt_bandit_t *b = (tnt_bandit_t *)dev->priv;
+    if (reg != BANDIT_MODE_SELECT)
+        return false;
+    // The documented latch: whatever the OS writes reads back (the
+    // coherency handshake is "read, OR in $40, write, read back").
+    uint32_t shift = 8u * (byte & 3u);
+    b->mode_select = (b->mode_select & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    LOG(2, "mode-select now $%08X (coherency %s)", b->mode_select, (b->mode_select & BANDIT_COHERENT) ? "on" : "off");
+    return true;
+}
+
+static const char *bridge_name(const pci_device_t *dev) {
+    const tnt_bandit_t *b = (const tnt_bandit_t *)dev->priv;
+    return b->is_chaos ? "Chaos" : "Bandit";
+}
+
+static const pci_device_ops_t bandit_self_ops = {
+    .cfg_read = bridge_cfg_read,
+    .cfg_write = bridge_cfg_write,
+    .name = bridge_name,
+};
 
 // Decode the address latch into (device, function, register), one-hot
 // IDSEL.  Returns false when the cycle addresses nothing this model
@@ -124,55 +168,39 @@ static bool decode_type0(tnt_bandit_t *b, int *dev, uint32_t *fn, uint32_t *reg)
     return true;
 }
 
+// Chaos restricts what of its config space is safely READABLE: $00-$0F,
+// $14 and $18 only; everything else returns all-ones.  The two readable
+// BARs are exactly Control's.
+static bool chaos_readable(uint32_t reg) {
+    return reg <= 0x0Cu || reg == 0x14u || reg == 0x18u;
+}
+
+// ...and it ignores writes outside those two BAR offsets.
+static bool chaos_writable(uint32_t reg) {
+    return reg == 0x14u || reg == 0x18u;
+}
+
 // Full-dword config read at the latched address (little-endian value).
 static uint32_t config_read(tnt_bandit_t *b) {
     int dev;
     uint32_t fn, reg;
     if (!decode_type0(b, &dev, &fn, &reg))
         return 0xFFFFFFFFu;
-    if (dev != 11 || fn != 0)
-        return 0xFFFFFFFFu; // only the bridge itself answers (empty slots)
-    if (b->is_chaos) {
-        // Restricted readability: $00-$0F, $14 and $18 only — most Chaos
-        // BARs are not safely readable and reads of them return all-ones.
-        // The two readable BARs are Control's (control.c).
-        if (reg == 0x14u || reg == 0x18u)
-            return tnt_control_cfg_read(b->cfg, reg);
-        if (reg > 0x0Cu)
-            return 0xFFFFFFFFu;
-    }
-    return bridge_own_config_read(b, reg);
+    if (b->is_chaos && !chaos_readable(reg))
+        return 0xFFFFFFFFu;
+    return pci_bus_cfg_read(b->bus, dev, fn, reg);
 }
 
-static void config_write(tnt_bandit_t *b, uint32_t reg_base, uint32_t byte, uint32_t value, uint32_t mask) {
+static void config_write(tnt_bandit_t *b, uint32_t byte, uint32_t value, uint32_t mask) {
     int dev;
     uint32_t fn, reg;
-    (void)reg_base;
     if (!decode_type0(b, &dev, &fn, &reg))
         return;
-    if (dev != 11 || fn != 0)
-        return; // writes to empty devices vanish
-    if (b->is_chaos) {
-        // Control's two BARs latch (the ROM's probe-slots sizes and
-        // assigns them); the rest of Chaos config space ignores writes.
-        if (reg == 0x14u || reg == 0x18u) {
-            tnt_control_cfg_write(b->cfg, reg, byte, (uint8_t)(value & mask));
-            return;
-        }
+    if (b->is_chaos && !chaos_writable(reg)) {
         LOG(2, "chaos config write $%02X ignored", reg);
         return;
     }
-    if (reg == BANDIT_MODE_SELECT) {
-        // The documented latch: whatever the OS writes reads back (the
-        // coherency handshake is "read, OR in $40, write, read back").
-        uint32_t shifted = (value & mask) << (8 * byte);
-        uint32_t smask = mask << (8 * byte);
-        b->mode_select = (b->mode_select & ~smask) | shifted;
-        LOG(2, "mode-select now $%08X (coherency %s)", b->mode_select,
-            (b->mode_select & BANDIT_COHERENT) ? "on" : "off");
-    } else {
-        LOG(2, "config write dev 11 reg $%02X byte %u = $%02X ignored", reg, byte, value & mask);
-    }
+    pci_bus_cfg_write(b->bus, dev, fn, reg, byte, (uint8_t)(value & mask));
 }
 
 // ============================================================
@@ -234,7 +262,7 @@ static uint32_t data_read32(void *ctx, uint32_t offset) {
 static void data_write8(void *ctx, uint32_t offset, uint8_t value) {
     tnt_bandit_t *b = (tnt_bandit_t *)ctx;
     LOG(3, "$%08X config data[%u] = $%02X (addr $%08X)", b->base, offset & 7u, value, b->cfg_addr);
-    config_write(b, 0, offset & 3u, value, 0xFFu);
+    config_write(b, offset & 3u, value, 0xFFu);
 }
 
 static void data_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -248,59 +276,12 @@ static void data_write32(void *ctx, uint32_t offset, uint32_t value) {
 }
 
 // ============================================================
-// Empty PCI memory space — the recoverable fault windows
-// ============================================================
-
-static void pci_fault(void *ctx, uint32_t offset, bool write) {
-    tnt_fault_window_t *w = (tnt_fault_window_t *)ctx;
-    LOG(4, "%s: unclaimed %s $%08X", w->what, write ? "write" : "read", w->base + offset);
-    memory_signal_bus_error(w->base + offset, write);
-}
-
-static uint8_t fault_read8(void *ctx, uint32_t offset) {
-    pci_fault(ctx, offset, false);
-    return 0xFF;
-}
-
-static uint16_t fault_read16(void *ctx, uint32_t offset) {
-    pci_fault(ctx, offset, false);
-    return 0xFFFF;
-}
-
-static uint32_t fault_read32(void *ctx, uint32_t offset) {
-    pci_fault(ctx, offset, false);
-    return 0xFFFFFFFFu;
-}
-
-static void fault_write8(void *ctx, uint32_t offset, uint8_t value) {
-    (void)value;
-    pci_fault(ctx, offset, true);
-}
-
-static void fault_write16(void *ctx, uint32_t offset, uint16_t value) {
-    (void)value;
-    pci_fault(ctx, offset, true);
-}
-
-static void fault_write32(void *ctx, uint32_t offset, uint32_t value) {
-    (void)value;
-    pci_fault(ctx, offset, true);
-}
-
-static memory_interface_t pci_fault_iface = {
-    .read_uint8 = fault_read8,
-    .read_uint16 = fault_read16,
-    .read_uint32 = fault_read32,
-    .write_uint8 = fault_write8,
-    .write_uint16 = fault_write16,
-    .write_uint32 = fault_write32,
-};
-
-// ============================================================
 // Wiring
 // ============================================================
 
-static void bridge_add(config_t *cfg, uint32_t base, bool is_chaos, const char *name) {
+// One bridge: its two config ports, its bus, and its own device-11 header
+// seated on that bus.
+static tnt_bandit_t *bridge_add(config_t *cfg, uint32_t base, bool is_chaos, int bus_index, const char *name) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_bandit_t *b = &st->bridge[st->bridge_count++];
     memset(b, 0, sizeof(*b));
@@ -324,23 +305,54 @@ static void bridge_add(config_t *cfg, uint32_t base, bool is_chaos, const char *
     memory_map_add(cfg->mem_map, base + TNT_PCI_CFG_ADDR, MEM_PAGE_SIZE, label, &b->addr_if, b);
     snprintf(label, sizeof(label), "%s cfg data", name);
     memory_map_add(cfg->mem_map, base + TNT_PCI_CFG_DATA, MEM_PAGE_SIZE, label, &b->data_if, b);
+
+    b->bus = pci_bus_create(cfg->pci, name, bus_index);
+    // The bridge's own header at device 11 (kPCIBridgeSelfDevice).  Chaos
+    // gets none: through its restricted config space only $00-$0C are
+    // readable, and today's model answers those from the CONTROL device
+    // seated at the same IDSEL — the documented Chaos/Control conflation
+    // (control.c, proposal §6.2 / §14 Q6).
+    if (!is_chaos) {
+        b->self_dev.ops = &bandit_self_ops;
+        b->self_dev.decl = &bandit_self_decl;
+        b->self_dev.priv = b;
+        pci_cfg_reset(&b->self_dev);
+        pci_bus_add_device(b->bus, &b->self_dev, 11);
+    }
+    return b;
 }
 
 void tnt_bandit_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     st->bridge_count = 0;
 
-    bridge_add(cfg, TNT_CHAOS_BASE, true, "Chaos");
-    bridge_add(cfg, TNT_BANDIT1_BASE, false, "Bandit 1");
+    bridge_add(cfg, TNT_CHAOS_BASE, true, TNT_PCI_BUS_VCI, "Chaos");
+    tnt_bandit_t *bandit1 = bridge_add(cfg, TNT_BANDIT1_BASE, false, TNT_PCI_BUS_1, "Bandit 1");
     if (tnt_board(cfg)->bandit_count >= 2)
-        bridge_add(cfg, TNT_BANDIT2_BASE, false, "Bandit 2");
+        bridge_add(cfg, TNT_BANDIT2_BASE, false, TNT_PCI_BUS_2, "Bandit 2");
 
-    // Bandit 1's 256 MB PCI memory space, claimed empty: with no card
-    // seated an access there takes the recoverable transfer error the
-    // probe idioms expect.  A future PCI card's regions overlay these
-    // pages.  The VCI memory space is control.c's — its BAR dispatcher
-    // provides the same fault semantics for unclaimed addresses.
-    st->fault[0].base = TNT_PCI_MEM1;
-    snprintf(st->fault[0].what, sizeof(st->fault[0].what), "PCI memory (Bandit 1)");
-    memory_map_add(cfg->mem_map, TNT_PCI_MEM1, 0x10000000u, st->fault[0].what, &pci_fault_iface, &st->fault[0]);
+    // Bandit 1's 256 MB PCI memory space and Chaos's 256 MB VCI memory
+    // space: the bus claims both, dispatches an access to whichever seated
+    // device's BAR decodes it, and takes the recoverable transfer error
+    // the probe idioms expect when none does.
+    //
+    // Bandit 2 claims no memory window: which range it forwards is still
+    // open (§14 Q5 — see bandit_addr_select), and its $48 says so too.
+    // Its slots probe correctly regardless: config cycles are the
+    // discovery path, and an unpopulated IDSEL reads all-ones.
+    //
+    // No I/O window is claimed either.  The generic layer supports one
+    // (pci_bus_add_window with PCI_SPACE_IO over base+$000000..$7FFFFF),
+    // but nothing on these machines decodes PCI I/O space yet — Grand
+    // Central is reached by PASS-THROUGH MEMORY at $F3000000, not by I/O
+    // cycles — and claiming the range would turn today's silent reads
+    // into faults for no modelled device's benefit.  It lands with the
+    // first card that declares an I/O BAR.
+    pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, TNT_PCI_MEM1, 0x10000000u, TNT_PCI_MEM1, 0xFFFFFFFFu,
+                       "PCI memory (Bandit 1)");
+    pci_bus_add_window(pci_bus_by_index(cfg->pci, TNT_PCI_BUS_VCI), PCI_SPACE_MEM, TNT_PCI_MEM_VCI, 0x10000000u,
+                       TNT_PCI_MEM_VCI, 0xFFFFFFFFu, "VCI memory (Chaos)");
+
+    // Grand Central's config presence at device 16 (grand_central.c).
+    tnt_gc_pci_attach(cfg, bandit1->bus);
 }

@@ -45,6 +45,7 @@ assert !machine.boot(model="iicx", rom="${$ROM}", video_card="nonesuch") "unknow
 # tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*).
 assert !machine.boot(model="iicx", rom="${$ROM}", video_sense=15) "out-of-range sense must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", video_mode="nonesuch") "unknown video mode must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", pci_card="tnt_control") "pci_card= on a model with no PCI slots must be rejected"
 assert machine.id == "iicx" "machine survives every rejected boot"
 assert machine.config.ram == 8192 "record intact after rejected boots"
 
@@ -76,6 +77,31 @@ assert machine.config.vroms != "[]" "vroms record must list resolved picks"
 machine.nubus.slot[9].card_id = "display_card_24ac"
 machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "concrete staging must beat the wildcard"
+
+# --- The record captures the RESOLVED per-slot picks, not just the
+# wildcard: that is what lets machine.restart re-seat a multi-card machine
+# (proposal-pci-architecture §8.2, the repair of the wildcard-only gap). ---
+machine.nubus.slot[9].card_id = "display_card_24ac"
+machine.nubus.slot[10].card_id = "824gc"
+machine.boot model="iicx" rom="${$ROM}"
+assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"display_card_24ac\",\"explicit\":true}, {\"bus\":\"nubus\",\"slot\":10,\"card_id\":\"824gc\",\"explicit\":true}]" "both populated sockets must appear in the record"
+machine.restart
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "restart must re-seat socket $9"
+assert machine.nubus.slot[10].card.name == "Apple Macintosh Display Card 8•24 GC" "restart must re-seat socket $A, which no wildcard covers"
+
+# ...but a slot that resolved its OWN DEFAULT is recorded as non-explicit,
+# and machine.restart must leave it to resolve the default again.  Promoting
+# a default into an explicit pick changes its semantics: an explicit pick
+# whose declaration ROM cannot be resolved FAILS the boot, where a default
+# degrades to an empty slot with a log.  Replaying defaults made
+# machine.restart reject itself on any machine with no vROM offered (which
+# is every browser session until the user uploads one).  The flag surviving
+# a round trip is the guard: a restart that re-staged the default would come
+# back marked explicit.
+machine.boot model="iicx" rom="${$ROM}"
+assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"mdc_8_24\",\"explicit\":false}]" "a default-populated socket must be recorded as NOT explicit"
+machine.restart
+assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"mdc_8_24\",\"explicit\":false}]" "restart must re-resolve the default, not promote it to an explicit pick"
 
 # --- Per-slot video_mode: the 8-bpp seed reaches the resolved card. ---
 machine.nubus.slot[9].card_id = "824gc"

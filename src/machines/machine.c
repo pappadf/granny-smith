@@ -20,6 +20,7 @@
 #include "vrom.h"
 #include "nubus/card.h"
 #include "nubus/cards/jmfb.h"
+#include "pci/pci.h"
 
 #include "mcu/dafb.h"
 #include "pdm/pdm.h" // the built-in monitor strap (profile.builtin_video)
@@ -198,6 +199,9 @@ static value_t build_capabilities(const hw_profile_t *p) {
     // NOTE: video configurability is the video_slots block, NOT "nubus
     // exists" — the two are deliberately not conflated.
     val_map_put(b, "nubus", val_bool(p->nubus_slots != NULL));
+    // Same rule for PCI: "the machine has PCI sockets", which is what the
+    // dialog's Expansion Slots section probes for.
+    val_map_put(b, "pci", val_bool(p->pci_slots != NULL));
     // On-board video digitizer (webcam capture) — gates the camera UI.
     val_map_put(b, "video_in", val_bool(p->has_video_in));
     // On-board audio input (microphone capture) — gates the mic UI.
@@ -324,6 +328,87 @@ static value_t build_video_slots(const hw_profile_t *p) {
     return val_list(slots, n_slots);
 }
 
+// Build one PCI card map (id, display_name, requires_prom, class,
+// monitors).  `class` is the UI grouping hint the dialog needs now that
+// non-display cards are the point of the bus; it is a property of the
+// DRIVER, not of the machine.
+static value_t build_pci_card(const char *card_id) {
+    const pci_card_kind_t *kind = card_id ? pci_card_find(card_id) : NULL;
+    value_map_builder_t *b = val_map_new();
+    val_map_put(b, "id", val_str(card_id ? card_id : ""));
+    val_map_put(b, "display_name",
+                val_str((kind && kind->display_name) ? kind->display_name : (card_id ? card_id : "")));
+    val_map_put(b, "requires_prom", val_bool(kind ? kind->requires_prom : false));
+    const char *klass =
+        (kind && kind->card_class) ? kind->card_class : ((kind && kind->monitors) ? "display" : "other");
+    val_map_put(b, "class", val_str(klass));
+    value_t *mons = NULL;
+    size_t n_mons = 0, cap_mons = 0;
+    if (kind && kind->monitors) {
+        for (const nubus_monitor_t *mon = kind->monitors; mon->id; mon++) {
+            value_map_builder_t *mb = val_map_new();
+            val_map_put(mb, "id", val_str(mon->id));
+            val_map_put(mb, "name", val_str(mon->name ? mon->name : mon->id));
+            val_map_put(mb, "width", val_int((int64_t)mon->width));
+            val_map_put(mb, "height", val_int((int64_t)mon->height));
+            value_t *depths = NULL;
+            size_t n_depths = 0, cap_depths = 0;
+            if (mon->depths) {
+                for (const int *d = mon->depths; *d; d++)
+                    val_list_push(&depths, &n_depths, &cap_depths, val_int((int64_t)*d));
+            }
+            val_map_put(mb, "depths", val_list(depths, n_depths));
+            val_list_push(&mons, &n_mons, &cap_mons, val_map_finish(mb));
+        }
+    }
+    val_map_put(b, "monitors", val_list(mons, n_mons));
+    return val_map_finish(b);
+}
+
+// Build the `pci_slots` list: one entry per declared socket and builtin,
+// with the fitting cards COMPUTED from the registry (pci_card_fits_socket)
+// exactly as video_slots does for NuBus.  Deliberately NOT folded into
+// video_slots — that block is display-only by construction and the
+// frontend depends on its shape.
+static value_t build_pci_slots(const hw_profile_t *p) {
+    value_t *slots = NULL;
+    size_t n_slots = 0, cap_slots = 0;
+    if (!p->pci_slots)
+        return val_list(NULL, 0);
+    for (const struct pci_slot_decl *s = p->pci_slots; s->slot; s++) {
+        if (s->kind != PCI_SLOT_BUILTIN && s->kind != PCI_SLOT_SOCKET)
+            continue;
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "slot", val_int((int64_t)s->slot));
+        val_map_put(b, "label", val_str(s->label ? s->label : ""));
+        val_map_put(b, "bus", val_int((int64_t)s->bus));
+        val_map_put(b, "device", val_int((int64_t)s->device));
+        val_map_put(b, "irq", val_int((int64_t)s->int_line));
+        // A builtin is soldered down: the dialog renders it as a label,
+        // not a picker.
+        val_map_put(b, "fixed", val_bool(s->kind == PCI_SLOT_BUILTIN));
+        const char *default_card = (s->kind == PCI_SLOT_BUILTIN) ? s->builtin_card_id : s->default_card;
+        val_map_put(b, "default_card", val_str(default_card ? default_card : ""));
+
+        value_t *cards = NULL;
+        size_t n_cards = 0, cap_cards = 0;
+        if (s->kind == PCI_SLOT_BUILTIN) {
+            val_list_push(&cards, &n_cards, &cap_cards, build_pci_card(s->builtin_card_id));
+        } else {
+            // Candidates are COMPUTED: every registered kind whose declared
+            // attachment fits this socket.  Adding a card driver offers it
+            // on every compatible machine with no machine-side edit.
+            for (const pci_card_kind_t *const *k = pci_card_registry(); *k; k++) {
+                if (pci_card_fits_socket(s, *k))
+                    val_list_push(&cards, &n_cards, &cap_cards, build_pci_card((*k)->id));
+            }
+        }
+        val_map_put(b, "cards", val_list(cards, n_cards));
+        val_list_push(&slots, &n_slots, &cap_slots, val_map_finish(b));
+    }
+    return val_list(slots, n_slots);
+}
+
 // The machine's own built-in video, plus the monitors its port can be
 // strapped with.  `none` is always last and is what switches the port —
 // and therefore built-in video — off.  Empty map when the machine has no
@@ -399,6 +484,9 @@ static value_t build_profile(const hw_profile_t *p) {
     // everything derives from video_slots now.)
     val_map_put(b, "capabilities", build_capabilities(p));
     val_map_put(b, "video_slots", build_video_slots(p));
+    // PCI expansion topology: one row per declared socket / builtin, with
+    // the fitting cards computed per socket (proposal-pci-architecture §8.1).
+    val_map_put(b, "pci_slots", build_pci_slots(p));
     // Substrate built-in video, when the machine has one that is NOT a
     // BUILTIN slot pseudo-card (the PDM family's Ariel scanout).  The
     // configuration dialog offers it beside the NuBus cards; picking a card
@@ -580,6 +668,17 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             return val_err("machine.boot: unknown card id '%s' (see nubus.cards())", doc.video_card);
         }
     }
+    if (doc.pci_card && *doc.pci_card) {
+        if (!profile->pci_slots)
+            return val_err("machine.boot: model '%s' has no PCI slots for pci_card '%s'", profile->id, doc.pci_card);
+        if (!pci_card_find(doc.pci_card)) {
+            const char *near = pci_card_suggest(doc.pci_card);
+            if (near)
+                return val_err("machine.boot: unknown card id '%s' — did you mean '%s'? (see machine.pci.cards())",
+                               doc.pci_card, near);
+            return val_err("machine.boot: unknown card id '%s' (see machine.pci.cards())", doc.pci_card);
+        }
+    }
     // 0..7 is the passive sense code; 8..14 is Apple's own indexed numbering
     // for the monitors that answer the EXTENDED (tie-matrix) probe instead
     // (dafb.h's DAFB_SENSE_INDEXED_*).  Only the DAFB models the extended
@@ -644,6 +743,8 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     system_set_pending_ram_kb(ram_kb);
     if (doc.video_card && *doc.video_card)
         nubus_staged_card_set(NUBUS_STAGED_WILDCARD, doc.video_card);
+    if (doc.pci_card && *doc.pci_card)
+        pci_staged_card_set(PCI_STAGED_WILDCARD, doc.pci_card);
     if (doc.video_mode && *doc.video_mode)
         nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, doc.video_mode);
     if (doc.custom_mode && *doc.custom_mode)
@@ -658,6 +759,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         pdm_pending_monitor_set(pdm_monitor_lookup(doc.monitor)->sense);
 
     machine_config_reset_vroms();
+    machine_config_reset_slot_cards();
     config_t *cfg = system_create(profile, NULL);
     if (!cfg) {
         for (int i = 0; i < n_media; ++i)
@@ -705,6 +807,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     snprintf(w->video_mode, sizeof(w->video_mode), "%s", doc.video_mode ? doc.video_mode : "");
     snprintf(w->custom_mode, sizeof(w->custom_mode), "%s", doc.custom_mode ? doc.custom_mode : "");
     snprintf(w->monitor, sizeof(w->monitor), "%s", doc.monitor ? doc.monitor : "");
+    snprintf(w->pci_card, sizeof(w->pci_card), "%s", doc.pci_card ? doc.pci_card : "");
     stamp_created(w->created, sizeof(w->created));
     w->valid = true;
 
@@ -732,6 +835,7 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
         .rom2 = argv[7].s,
         .custom_mode = argv[8].s,
         .monitor = argv[9].s,
+        .pci_card = argv[10].s,
     };
     value_t err = machine_boot_apply(&doc);
     if (val_is_error(&err))
@@ -771,7 +875,28 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
         .video_sense = snap.video_sense,
         .video_mode = snap.video_mode[0] ? snap.video_mode : NULL,
         .custom_mode = snap.custom_mode[0] ? snap.custom_mode : NULL,
+        .pci_card = snap.pci_card[0] ? snap.pci_card : NULL,
     };
+    // Replay the user's per-slot picks: the document's wildcard covers only
+    // the first socket, so without these a multi-card machine would come
+    // back with empty slots (proposal-pci-architecture §8.2).
+    //
+    // ONLY the explicit ones.  A slot that resolved its own default must be
+    // left to resolve it again: re-staging a default turns it into an
+    // explicit pick, and an explicit pick whose declaration ROM cannot be
+    // resolved FAILS the boot where a default degrades to an empty slot
+    // with a log.  (That asymmetry is deliberate — see
+    // validate_vrom_resolution — and replaying defaults made
+    // machine.restart reject itself on any machine with no vROM offered.)
+    for (int i = 0; i < snap.n_slot_cards; i++) {
+        const machine_config_slot_card_t *e = &snap.slot_cards[i];
+        if (!e->explicit_pick)
+            continue;
+        if (e->bus_kind == MC_BUS_PCI)
+            pci_staged_card_set(e->slot, e->card_id);
+        else
+            nubus_staged_card_set(e->slot, e->card_id);
+    }
     s_transfer_media = true;
     value_t err = machine_boot_apply(&doc);
     s_transfer_media = false;
@@ -854,6 +979,11 @@ static const arg_decl_t machine_boot_args[] = {
      .default_value = &k_unset_str,
      .doc = "Monitor on the built-in port ('none' = unconnected, which hands "
             "the screen to a NuBus card); default: model default"              },
+    {.name = "pci_card",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Card id for the first PCI socket; default: slot default"          },
 };
 
 static const arg_decl_t machine_register_args[] = {
@@ -898,7 +1028,10 @@ static const member_t machine_members[] = {
     {.kind = M_METHOD,
      .name = "boot",
      .doc = "Boot a machine from a complete configuration document (model and rom required; other fields default "
-            "per model)", .method = {.args = machine_boot_args, .nargs = 10, .result = V_BOOL, .fn = machine_method_boot}},
+            "per model)", .method = {.args = machine_boot_args,
+                .nargs = sizeof(machine_boot_args) / sizeof(machine_boot_args[0]),
+                .result = V_BOOL,
+                .fn = machine_method_boot}},
     {.kind = M_METHOD,
      .name = "restart",
      .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",

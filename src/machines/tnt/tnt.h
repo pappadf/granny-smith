@@ -39,6 +39,7 @@
 #include "display.h" // scanout descriptor (control.c presents through it)
 #include "machine.h"
 #include "memory.h"
+#include "pci.h" // the generic PCI core: bus, device, config header
 #include "system_config.h"
 
 #include <stdbool.h>
@@ -73,6 +74,11 @@ struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 // Config-port offsets from a bridge base (identical on Bandit and Chaos).
 #define TNT_PCI_CFG_ADDR 0x800000u // config address port (4 bytes, LE)
 #define TNT_PCI_CFG_DATA 0xC00000u // config data port (8 bytes decoded)
+
+// Family bus numbering — what a pci_slot_decl_t's `.bus` field names.
+#define TNT_PCI_BUS_1   0 // Bandit 1 (all machines)
+#define TNT_PCI_BUS_2   1 // Bandit 2 (8500/9500)
+#define TNT_PCI_BUS_VCI 2 // Chaos, the display bus
 
 // === Per-model board descriptor =============================================
 typedef struct tnt_board_desc {
@@ -109,7 +115,9 @@ typedef struct tnt_bandit {
     bool is_chaos; // Chaos: restricted config space, writes ignored
     uint32_t cfg_addr; // config address port latch (LE value; 0 = idle)
     uint32_t mode_select; // config $50 (the $40 coherency bit latches)
-    struct config *cfg; // back-pointer (Chaos delegates BARs to control.c)
+    struct config *cfg; // back-pointer
+    pci_bus_t *bus; // the generic bus this bridge fronts
+    pci_device_t self_dev; // the bridge's own device-11 header
     memory_interface_t addr_if; // +$800000 port
     memory_interface_t data_if; // +$C00000 port
 } tnt_bandit_t;
@@ -180,16 +188,6 @@ typedef struct tnt_awacs {
     int32_t peak; // loudest |sample| pushed since power-on
 } tnt_awacs_t;
 
-// One empty PCI memory-space window: an access nothing answers takes a
-// recoverable transfer error (the BART precedent — Open Firmware, NetBSD
-// and the Slot Manager all probe under a fault catcher).
-typedef struct tnt_fault_window {
-    uint32_t base;
-    char what[24]; // window name, used in the memory map and fault logs
-} tnt_fault_window_t;
-
-#define TNT_FAULT_WINDOWS 2 // Bandit 1 PCI memory + Chaos/VCI memory
-
 // === Control video state (control.c) ========================================
 // Control (343S1154) is PCI device 11 on the Chaos display bus: a 4 KB
 // register block behind config BAR $14 and a 64 MB VRAM aperture behind
@@ -200,11 +198,9 @@ typedef struct tnt_fault_window {
 #define TNT_VRAM_SIZE    0x400000u // 4 MB: two 2 MB banks, both populated
 
 typedef struct tnt_control {
-    // PCI BAR latches (config $14 = registers, $18 = VRAM aperture).  The
-    // stored value is the raw last write; reads mask to the BAR's size so
-    // the standard write-ones sizing probe works.
-    uint32_t bar_regs;
-    uint32_t bar_vram;
+    // The BAR latches ($14 = registers, $18 = VRAM aperture) live in the
+    // generic config header now (tnt_state_t.control_dev.cfg), which also
+    // owns the sizing mask and the decode.  What stays here is the chip.
     // The register file (index = offset/$10; §4 of control-chaos-video.md)
     uint32_t reg[TNT_CONTROL_REGS];
     uint8_t vbl_pending; // intr_stat: a VBL edge not yet acknowledged
@@ -265,7 +261,7 @@ typedef struct tnt_state {
     tnt_gc_t gc;
     tnt_bandit_t bridge[TNT_MAX_BRIDGES];
     int bridge_count;
-    tnt_fault_window_t fault[TNT_FAULT_WINDOWS];
+    pci_device_t gc_dev; // Grand Central's config presence (device 16)
     struct av_cuda *cuda;
     struct tnt_dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
     tnt_awacs_t awacs;
@@ -276,6 +272,8 @@ typedef struct tnt_state {
     // the VRAM blob follows it in the tail; the display descriptor and its
     // derived views are rebuilt from the registers on restore.
     tnt_control_t control;
+    pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
+                               // by the bus: its factory allocated it)
     tnt_mesh_t mesh; // internal fast SCSI (mesh.c; bus = cfg->scsi)
     struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
     uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
@@ -287,9 +285,9 @@ typedef struct tnt_state {
     // Memory interfaces registered with the map
     memory_interface_t gc_interface; // $F3000000 island (128 KB)
     memory_interface_t hh_interface; // $F8000000 register window
-    memory_interface_t pci_fault_interface; // empty PCI memory space
     memory_interface_t chaos_probe_interface; // unclaimed Chaos window (logged)
-    memory_interface_t vci_interface; // $90000000 VCI memory (control.c)
+    memory_interface_t control_regs_if; // Control BAR $14 (register block)
+    memory_interface_t control_vram_if; // Control BAR $18 (VRAM aperture)
 } tnt_state_t;
 
 static inline tnt_state_t *tnt_st(config_t *cfg) {
@@ -317,8 +315,9 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value);
 
 // === bandit.c ===============================================================
 
-// Build all bridge instances (per the board's bandit_count) and claim the
-// config ports + the empty PCI memory-space fault windows.
+// Build all bridge instances (per the board's bandit_count): the config
+// ports, one generic PCI bus per bridge, each bridge's own device-11
+// header and the PCI memory windows the buses claim.  Requires cfg->pci.
 void tnt_bandit_init(config_t *cfg);
 
 // === awacs.c ================================================================
@@ -341,15 +340,14 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value);
 
 // === control.c ==============================================================
 
+// Control is a registered PCI card kind ("tnt_control", BUILTIN attach):
+// the machine's slot table names it, and pci_seat_slots runs its factory,
+// which is what calls the three functions below.
 void tnt_control_register_events(config_t *cfg); // event type (pre-start)
-void tnt_control_init(config_t *cfg); // VRAM, display, VCI window claim
+void tnt_control_init(config_t *cfg); // VRAM, display, BAR backings
 void tnt_control_reset(config_t *cfg); // power-on registers (VRAM survives)
 void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);
-// Chaos config space, device 11 (control's PCI header): full-dword read of
-// register `reg`; byte-lane write (the ports decompose to bytes).
-uint32_t tnt_control_cfg_read(config_t *cfg, uint32_t reg);
-void tnt_control_cfg_write(config_t *cfg, uint32_t reg, uint32_t byte, uint8_t value);
 // RaDACal byte cells (Grand Central +$1B000, $10 centres).
 uint8_t tnt_control_rad_read(config_t *cfg, uint32_t offset);
 void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value);
@@ -361,6 +359,8 @@ void tnt_control_host_vbl(config_t *cfg);
 // === grand_central.c ========================================================
 
 void tnt_gc_init(config_t *cfg); // power-on state (NVRAM contents survive)
+// Seat Grand Central's config presence at device 16 on Bandit 1's bus.
+void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus);
 // Island dispatch ($F3000000, offsets 0..$1FFFF).  Byte-wide cells decode
 // bytes only; the 32-bit LE registers (interrupt block, BoxID) decode
 // longwords only.

@@ -37,6 +37,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "pci.h"
 #include "ppc.h"
 #include "rtc.h"
 #include "scc.h"
@@ -227,7 +228,11 @@ static void tnt_memory_layout(config_t *cfg) {
     st->hh_interface.write_uint32 = hh_write32;
     memory_map_add(cfg->mem_map, TNT_HH_BASE, MEM_PAGE_SIZE, "Hammerhead", &st->hh_interface, cfg);
 
-    // The bridges: config ports + the empty PCI memory fault windows.
+    // PCI: the root first (the bridges create their buses on it), then the
+    // bridges themselves — config ports, per-bridge bus, each bridge's own
+    // device-11 header and the PCI memory windows.
+    cfg->pci = pci_root_create(cfg);
+    pci_init(cfg->pci, cfg->machine->pci_slots);
     tnt_bandit_init(cfg);
 
     // The rest of the Chaos display-bus window, logged open bus until the
@@ -474,11 +479,11 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_gc_init(cfg);
     tnt_memory_layout(cfg);
 
-    // Control video: VRAM, the VCI-space dispatcher, the display (after
-    // the memory map so it can claim its window).
-    tnt_control_register_events(cfg);
-    tnt_control_init(cfg);
-    tnt_control_reset(cfg);
+    // The PCI slot walk: seats every device the machine's slot table names
+    // — Control (the BUILTIN video entry, whose factory allocates its VRAM
+    // and display) and any card the user staged into a socket — then
+    // projects the whole topology into the object model.
+    pci_seat_slots(cfg->pci, cp);
 
     // Substrate-private checkpoint tail: register files + NVRAM are plain
     // data; the CPU line is recomputed below.
@@ -489,6 +494,10 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
             system_read_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
             system_read_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
         }
+        // Every seated device's config header, in canonical (bus, device)
+        // order; the restore replays each BAR transition so the decode is
+        // rebuilt without any device code.
+        pci_checkpoint_restore(cfg->pci, cp);
         system_read_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
         system_read_checkpoint_data(cp, &st->control, sizeof(st->control));
         system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
@@ -542,6 +551,9 @@ static void tnt_reset(config_t *cfg) {
         st->bridge[i].cfg_addr = 0;
         st->bridge[i].mode_select = 0;
     }
+    // PCI RST#: every seated device's header back to power-on, which drops
+    // the assigned BARs and with them the decode.
+    pci_reset(cfg->pci);
     tnt_gc_recompute(cfg);
 }
 
@@ -555,8 +567,12 @@ static void tnt_teardown(config_t *cfg) {
     }
     if (st)
         tnt_awacs_teardown(cfg);
-    if (st)
-        tnt_control_teardown(cfg);
+    // Deleting the PCI root tears down every seated device, which is what
+    // frees Control's VRAM and display buffers (its ops->teardown).
+    if (cfg->pci) {
+        pci_root_delete(cfg->pci);
+        cfg->pci = NULL;
+    }
     if (st && st->scsi96) {
         scsi_53c96_delete(st->scsi96);
         st->scsi96 = NULL;
@@ -631,6 +647,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
         system_write_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
         system_write_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
     }
+    pci_checkpoint_save(cfg->pci, cp);
     system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
     system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
     system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
@@ -655,11 +672,26 @@ static void tnt_trigger_vbl(config_t *cfg) {
     via_input_c(cfg->via1, 0, 0, 1);
     image_tick_all(cfg);
     tnt_control_host_vbl(cfg);
+    pci_tick_vbl(cfg->pci);
 }
 
 // Primary display: Control's scanout over its VRAM (control.c).
 static struct display *tnt_display(config_t *cfg) {
     return tnt_control_display(cfg);
+}
+
+// A PCI slot's strapped INTA-D line.  The slot table names the Grand
+// Central external it reaches (23-25 on Bandit 1, 27-29 on Bandit 2 — the
+// 9500's own published external-interrupt assignment); the lines are
+// level-sensitive, which the interrupt block's mode-1 "interrupt on
+// change" semantics already handle, deassert edge included.
+static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
+    const pci_slot_decl_t *d = pci_slot_decl_get(cfg->pci, slot);
+    if (!d || d->int_line <= 0) {
+        LOG(1, "PCI slot %d asserted an interrupt but declares no line", slot);
+        return;
+    }
+    tnt_gc_set_source(cfg, d->int_line, active);
 }
 
 // Chipset IRQ spine.  Nothing routes through it: every on-board source is
@@ -690,6 +722,7 @@ const machine_substrate_t tnt_substrate = {
     .teardown = tnt_teardown,
     .checkpoint_save = tnt_checkpoint_save,
     .update_ipl = tnt_update_ipl,
+    .pci_slot_irq = tnt_pci_slot_irq,
     .trigger_vbl = tnt_trigger_vbl,
     .fd_insert = tnt_fd_insert,
     .fd_present = tnt_fd_present,

@@ -28,6 +28,7 @@ extern const class_desc_t storage_images_collection_class; // src/core/storage/s
 extern const class_desc_t shell_alias_class; // src/core/object/alias.c
 extern const class_desc_t shell_class; // src/core/shell/shell_class.c
 extern const class_desc_t nubus_class; // src/core/peripherals/nubus/nubus_class.c
+extern const class_desc_t pci_class; // src/core/peripherals/pci/pci_class.c
 
 // === Introspection root methods =============================================
 // `objects`, `attributes`, `methods`, `help`, `time`. Each accepts an
@@ -387,6 +388,15 @@ void root_install(struct config *cfg) {
     if (nubus_obj) {
         object_set_label(nubus_obj, "NuBus");
         object_set_order(nubus_obj, 100);
+    }
+
+    // `machine.pci.*` — the same treatment, beside NuBus.  The slot
+    // children exist only once a PCI machine's slot walk has run
+    // (pci_objects_build), so this reads empty on every other model.
+    struct object *pci_obj = attach_stub(machine_object(), &pci_class, cfg, "pci");
+    if (pci_obj) {
+        object_set_label(pci_obj, "PCI");
+        object_set_order(pci_obj, 101);
     }
 }
 

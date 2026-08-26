@@ -1,14 +1,13 @@
-# Grand Central unit test (proposal-powermac-7500-8500-9500 §5.3/§8,
-# Phase C interrupt-semantics hardening).
-# Links the real tnt/grand_central.c (+ the real tnt/dbdma.c behind the
-# island's channel windows) against recording stubs and pins: the MkLinux
-# initialisation sequence and events-driven acknowledge (clear mode 0),
-# the NanoKernel's $80000000 ifMode1Clear acknowledge and the mode-1
-# output-latch semantics the Phase B boot debugging established, the
-# banked two-aperture NVRAM, BoxID byte/longword composition, and the
-# island's little-endian DBDMA register routing.
+# Generic PCI core unit test (proposal-pci-architecture §13).
+# Links the real core/peripherals/pci/{pci,config_space}.c against a stub
+# bus environment and pins the config-cycle contract: absent devices read
+# all-ones, the type-0 header assembles from the declaration, BAR sizing
+# works by masked read-back, the command register gates the decode, the
+# expansion-ROM enable bit is honoured, bridge windows dispatch to the
+# right device and fault on everything else, and staged slot picks resolve
+# by the documented precedence.
 
-TEST_NAME := tnt_gc
+TEST_NAME := pci
 
 UNIT_ROOT      := $(abspath ../../)
 WORKSPACE_ROOT := $(abspath $(UNIT_ROOT)/../..)
@@ -31,11 +30,11 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -I$(EMU_ROOT)/core/scheduler \
                  -I$(EMU_ROOT)/core/debug \
                  -I$(EMU_ROOT)/core/storage \
+                 -I$(EMU_ROOT)/core/network \
                  -I$(EMU_ROOT)/core/shell \
                  -I$(EMU_ROOT)/core/object \
                  -I$(EMU_ROOT)/core/vfs \
                  -I$(EMU_ROOT)/machines \
-                 -I$(EMU_ROOT)/machines/tnt \
                  -DUNIT_TEST_PLATFORM_OVERRIDE \
                  -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
@@ -44,8 +43,8 @@ CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
 LDFLAGS ?=
 
 SRCS := $(CURDIR)/test.c \
-        $(EMU_ROOT)/machines/tnt/grand_central.c \
-        $(EMU_ROOT)/machines/tnt/dbdma.c \
+        $(EMU_ROOT)/core/peripherals/pci/pci.c \
+        $(EMU_ROOT)/core/peripherals/pci/config_space.c \
         $(UNIT_ROOT)/support/stub_checkpoint.c
 
 ALL_SRCS := $(abspath $(SRCS))

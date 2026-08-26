@@ -31,6 +31,7 @@
 
 #include "dbdma.h"
 #include "log.h"
+#include "pci.h"
 #include "ppc.h"
 #include "scc.h"
 #include "scsi_53c96.h"
@@ -88,7 +89,23 @@ LOG_USE_CATEGORY_NAME("gc");
 //   14    MESH / fast-SCSI present (all three TNT boards)
 //   15    unused, pulled high
 // The per-model composite values live in the board descriptors (pm7500.c
-// etc.); this file just serves the register.
+// etc.); bits 0-5 are added here from the live slot population, because
+// they are not a board constant — they are the power/present pins of the
+// machine's PCI sockets, and an empty socket reads 0.
+
+// The BoxID as software sees it: the board's straps plus one presence bit
+// per POPULATED socket (bit n-1 for slot n, in the machine's declared slot
+// order).  The builtin VCI entry is not a socket and contributes nothing.
+static uint32_t tnt_boxid(config_t *cfg) {
+    uint32_t id = tnt_board(cfg)->boxid;
+    for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
+        if (d->kind != PCI_SLOT_SOCKET || d->slot < 1 || d->slot > 6)
+            continue;
+        if (pci_slot_device(cfg->pci, d->slot))
+            id |= 1u << (d->slot - 1);
+    }
+    return id;
+}
 
 // ============================================================
 // Interrupt fabric
@@ -264,6 +281,57 @@ void tnt_gc_init(config_t *cfg) {
     gc->nvram_bank = 0;
 }
 
+// ============================================================
+// Grand Central's PCI presence — device 16 on Bandit 1
+// ============================================================
+// Apple's own device tree calls it /gc@10, and Open Firmware does issue a
+// command + BAR write at IDSEL 16 during probe-slots (handover-phase-d
+// §1).  What that write lands on is a documented open question
+// (proposal-pci-architecture §14 Q7): the chip's real config identity is
+// unrecovered, and the boot we have is known-good with a device that
+// accepts every write and answers every config read ALL-ONES.  So that is
+// exactly what this device does — as a named device instead of an
+// accident of a `dev != 11` literal, which makes flipping it to a real
+// header a two-line change once the identity is known.
+//
+// Note also what Grand Central is NOT: its 128 KB island at $F3000000 is
+// reached by PASS-THROUGH MEMORY cycles, not through a BAR (ANS developer
+// note §4.2.1), so tnt.c maps it at a fixed address and no BAR is
+// declared here.
+static bool gc_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
+    (void)dev;
+    (void)reg;
+    *out = 0xFFFFFFFFu;
+    return true;
+}
+
+static const char *gc_pci_name(const pci_device_t *dev) {
+    (void)dev;
+    return "Grand Central";
+}
+
+static const pci_config_decl_t gc_decl = {
+    // No ids and no class: every config read answers all-ones above.
+    .header_type = 0x00u,
+    // The command register still latches what the firmware writes, so the
+    // model is honest about accepting the cycle.
+    .command_writable = PCI_CMD_IO_SPACE | PCI_CMD_MEM_SPACE | PCI_CMD_MASTER,
+};
+
+static const pci_device_ops_t gc_pci_ops = {
+    .cfg_read = gc_cfg_read,
+    .name = gc_pci_name,
+};
+
+void tnt_gc_pci_attach(config_t *cfg, pci_bus_t *bus) {
+    tnt_state_t *st = tnt_st(cfg);
+    st->gc_dev.ops = &gc_pci_ops;
+    st->gc_dev.decl = &gc_decl;
+    st->gc_dev.priv = cfg;
+    pci_cfg_reset(&st->gc_dev);
+    pci_bus_add_device(bus, &st->gc_dev, 16);
+}
+
 // Map an ESCC-aperture offset (+$13000: B ctl +$00 / B data +$10 /
 // A ctl +$20 / A data +$30) onto the SCC cell's classic address pins
 // (A/B on address bit 1, D/C on bit 2 — the legacy-aperture layout the
@@ -293,7 +361,7 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
     case OFF_BOXID: {
         // Byte j of the little-endian register (the ROM reads it both as
         // lwbrx and byte-wise).
-        uint8_t b = (uint8_t)(tnt_board(cfg)->boxid >> (8 * (offset & 3u)));
+        uint8_t b = (uint8_t)(tnt_boxid(cfg) >> (8 * (offset & 3u)));
         LOG(3, "BoxID byte read +%u -> $%02X", offset & 3u, b);
         return b;
     }
@@ -369,8 +437,8 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
     if ((offset & 0x1F000u) == OFF_AWACS)
         return TNT_LE32(tnt_awacs_read32(cfg, offset - OFF_AWACS));
     if ((offset & 0x1F000u) == OFF_BOXID) {
-        LOG(3, "BoxID read -> $%08X", tnt_board(cfg)->boxid);
-        return TNT_LE32(tnt_board(cfg)->boxid);
+        LOG(3, "BoxID read -> $%08X", tnt_boxid(cfg));
+        return TNT_LE32(tnt_boxid(cfg));
     }
     LOG(1, "long read of unwired island offset +$%05X", offset);
     return 0;

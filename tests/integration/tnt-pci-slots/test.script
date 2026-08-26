@@ -1,0 +1,165 @@
+# TNT PCI slot topology and the config-cycle contract
+# (proposal-pci-architecture, Phase 1).
+#
+# Three things are pinned here, all of which the hand-rolled Bandit model
+# either could not express or was never tested for:
+#
+#   * ONE declaration, three views — the machine's pci_slot_decl_t table
+#     feeds machine.profile, the object model and the runtime, so a slot's
+#     bus / IDSEL / interrupt line cannot disagree between them.
+#   * The config-cycle contract — a registered device answers its type-0
+#     header, an unpopulated IDSEL reads ALL-ONES and swallows writes
+#     (a probe must never hang), and Open Firmware's own probe-slots sizes
+#     and assigns Control's two BARs through the generic header.
+#   * The topology reaches the guest — BoxID's slot-presence pins follow
+#     live population, and the built-from record captures the resolved
+#     picks so machine.restart re-seats them.
+#
+# Config-port note: the address and data ports are LITTLE-ENDIAN (the guest
+# drives them with lwbrx/stwbrx), and machine.memory.peek/poke are raw
+# big-endian bus views, so every literal below is the byte-swapped form of
+# the value software sees.  The one-hot IDSEL is the physical AD line wired
+# to that slot's IDSEL pin: device N is bit N.
+
+# --- Profile: the slot table, as the configuration layer sees it. -------------
+assert machine.profile("pm7500").capabilities.pci "pm7500 must advertise PCI"
+assert !machine.profile("plus").capabilities.pci "a non-PCI model must not"
+
+# --- Object model: a node for every declared slot, populated or not. ---------
+# Three sockets on Bandit 1 at IDSEL 13/14/15 (the ROM's own slot-names
+# bitmask $0000E000), their strapped INTA-D lines on Grand Central
+# externals 23/24/25 (Apple's 9500 external-interrupt table).
+assert machine.pci.slot[1].label == "A1" "slot 1 label"
+assert machine.pci.slot[1].bus == 0 "slot 1 is on Bandit 1"
+assert machine.pci.slot[1].device == 13 "slot 1 IDSEL"
+assert machine.pci.slot[1].irq == 23 "slot 1 interrupt line"
+assert machine.pci.slot[2].device == 14 "slot 2 IDSEL"
+assert machine.pci.slot[2].irq == 24 "slot 2 interrupt line"
+assert machine.pci.slot[3].device == 15 "slot 3 IDSEL"
+assert machine.pci.slot[3].irq == 25 "slot 3 interrupt line"
+# Control is the soldered-down video device the machine names, on the
+# Chaos display bus.
+assert machine.pci.slot[4].label == "VCI" "builtin slot label"
+assert machine.pci.slot[4].bus == 2 "Control is on the Chaos bus"
+assert machine.pci.slot[4].device == 11 "Control IDSEL"
+assert machine.pci.slot[4].card.name == "Control" "Control not seated from the slot table"
+assert machine.pci.cards() == "[tnt_control]" "card registry"
+
+# --- Staged picks: the surface exists and starts clear. ----------------------
+assert machine.pci.slot[1].card_id == "" "an empty socket must start with no staged pick"
+
+# --- The config-cycle contract, before a single instruction runs. ------------
+# Bandit 1's own header at device 11 (kPCIBridgeSelfDevice): one-hot
+# IDSEL $00000800, vendor $106B device $0001 -> LE dword $0001106B.
+machine.memory.poke.l(0xF2800000, 0x00080000)
+assert machine.memory.peek.l(0xF2800000) == 0x00080000 "the address port must read back its latch"
+assert machine.memory.peek.l(0xF2C00000) == 0x6B100100 "Bandit self-header IDs"
+# Class $060000 (host bridge), revision 3 -> LE dword $06000003.
+machine.memory.poke.l(0xF2800000, 0x08080000)
+assert machine.memory.peek.l(0xF2C00000) == 0x03000006 "Bandit self-header class/revision"
+# $50 mode-select is a latch; the coherency handshake is read/OR $40/write.
+machine.memory.poke.l(0xF2800000, 0x50080000)
+machine.memory.poke.l(0xF2C00000, 0x40000000)
+assert machine.memory.peek.l(0xF2C00000) == 0x40000000 "mode-select $50 must latch"
+
+# Every unpopulated IDSEL reads all-ones and swallows writes — this is the
+# ENTIRE empty-slot model, and the reason a probe never hangs.
+machine.memory.poke.l(0xF2800000, 0x00200000)   # device 13 (socket A1)
+assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "empty socket A1 must read all-ones"
+machine.memory.poke.l(0xF2C00000, 0x12345678)   # writes vanish
+assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "a write to an empty socket must vanish"
+machine.memory.poke.l(0xF2800000, 0x00400000)   # device 14 (socket B1)
+assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "empty socket B1 must read all-ones"
+machine.memory.poke.l(0xF2800000, 0x00800000)   # device 15 (socket C1)
+assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "empty socket C1 must read all-ones"
+# Devices 0-10 do not exist on a primary bus.
+machine.memory.poke.l(0xF2800000, 0x00010000)   # device 8
+assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "device 8 must not exist"
+# An idle (zero) latch selects nothing — NOT device 0.
+machine.memory.poke.l(0xF2800000, 0x00000000)
+assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "an idle address latch must select nothing"
+# A type-1 cycle addresses a subordinate bus; none exist.
+machine.memory.poke.l(0xF2800000, 0x01080000)
+assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "type-1 cycles must read all-ones"
+# A multi-hot latch is an illegal cycle.
+machine.memory.poke.l(0xF2800000, 0x00280000)
+assert machine.memory.peek.l(0xF2C00000) == 0xFFFFFFFF "a multi-hot IDSEL must select nothing"
+machine.memory.poke.l(0xF2800000, 0x00000000)
+
+# Control answers on the Chaos bus at device 11.  Its ids are Chaos's — the
+# documented conflation (control.c, proposal §14 Q6) — and Chaos's config
+# space is readable only at $00-$0F/$14/$18, the two exceptions being
+# exactly Control's BARs.
+machine.memory.poke.l(0xF0800000, 0x00080000)
+assert machine.memory.peek.l(0xF0C00000) == 0x6B100300 "Control/Chaos header IDs"
+machine.memory.poke.l(0xF0800000, 0x10080000)   # $10 — outside the readable set
+assert machine.memory.peek.l(0xF0C00000) == 0xFFFFFFFF "Chaos config space is read-restricted"
+# The universal BAR sizing probe: write all-ones, read back the size mask.
+# BAR $18 is the 64 MB VRAM aperture, BAR $14 the 4 KB register block —
+# the ROM's own reg-builder literals.
+machine.memory.poke.l(0xF0800000, 0x18080000)
+machine.memory.poke.l(0xF0C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF0C00000) == 0x000000FC "BAR $18 must size as 64 MB"
+machine.memory.poke.l(0xF0800000, 0x14080000)
+machine.memory.poke.l(0xF0C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF0C00000) == 0x00F0FFFF "BAR $14 must size as 4 KB"
+machine.memory.poke.l(0xF0800000, 0x00000000)
+
+# (Empty PCI memory space still faults recoverably — the BART contract —
+# but a shell peek is an INSPECTION access and deliberately never
+# perturbs the guest, so the fault path is pinned in the pci unit suite
+# and exercised for real by Open Firmware's own probe below.)
+
+# --- BoxID slot-presence pins follow live population, not the board. ---------
+# Bits 0-5 are the sockets' power/present pins; every socket is empty, so
+# they read 0 while the board's own straps ($E000) stand.
+assert machine.memory.peek.l(0xF301A000) == 0x00E00000 "BoxID presence pins must be clear with empty sockets"
+
+# --- Open Firmware's own probe-slots assigns Control's BARs. -----------------
+# 200M instructions: NanoKernel init, then OF's probe-pci walk (Bandit 1 ->
+# Chaos -> Bandit 2), make-properties and assign-addresses.
+scheduler.run 200000000
+assert machine.pci.slot[4].card.config.bar[2].base == 0x90000000 "OF must assign the VRAM BAR at $90000000"
+assert machine.pci.slot[4].card.config.bar[2].size == 0x4000000 "VRAM BAR size"
+assert machine.pci.slot[4].card.config.bar[2].mapped "the VRAM BAR must decode once assigned"
+assert machine.pci.slot[4].card.config.bar[1].base == 0x94000000 "OF must assign the register BAR at $94000000"
+assert machine.pci.slot[4].card.config.bar[1].size == 0x1000 "register BAR size"
+# The gray desktop the ladder pins lives in the BAR-assigned aperture, so
+# the decode really is coming from the assigned base.
+assert machine.pci.slot[4].card.config.command == 0x0002 "Control decodes memory space unconditionally"
+
+# --- The 9500 declares six sockets across two Bandits. -----------------------
+# Same three IDSELs on each bus; Apple's own external-interrupt table puts
+# Bandit 2's slots on Grand Central 27/28/29.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+assert machine.pci.slot[4].label == "D1" "9500 slot 4 label"
+assert machine.pci.slot[4].bus == 1 "9500 slot 4 is on Bandit 2"
+assert machine.pci.slot[4].device == 13 "9500 slot 4 IDSEL"
+assert machine.pci.slot[4].irq == 27 "9500 slot 4 interrupt line"
+assert machine.pci.slot[6].irq == 29 "9500 slot 6 interrupt line"
+assert machine.pci.slot[7].label == "VCI" "9500 builtin slot label"
+assert machine.pci.slot[7].card.name == "Control" "9500 Control (the documented no-onboard-video deviation)"
+# Bandit 2's config ports answer, and its sockets probe as empty.
+machine.memory.poke.l(0xF4800000, 0x00080000)
+assert machine.memory.peek.l(0xF4C00000) == 0x6B100100 "Bandit 2 self-header IDs"
+machine.memory.poke.l(0xF4800000, 0x00200000)
+assert machine.memory.peek.l(0xF4C00000) == 0xFFFFFFFF "9500 socket D1 must read all-ones"
+machine.memory.poke.l(0xF4800000, 0x00000000)
+
+# --- A staged pick that does not FIT leaves the socket empty. ----------------
+# tnt_control is a soldered-down kind (BUILTIN attach), so it can never be
+# seated in a socket: compatibility is computed, not enumerated.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="tnt_control"
+assert try(machine.pci.slot[1].card.name, none) == none "a non-fitting staged card must not be seated"
+# An unknown id is rejected before the running machine is touched.
+assert !machine.boot(model="pm9500", rom="${$ROM}", pci_card="nonesuch") "unknown pci_card id must be rejected"
+assert machine.id == "pm9500" "machine survives the rejected boot"
+
+# --- The built-from record captures the resolved per-slot picks. -------------
+# Control is the slot table's own builtin, not a user pick, so it is
+# recorded as NOT explicit — machine.restart re-resolves it from the table.
+assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"tnt_control\",\"explicit\":false}]" "resolved slot picks recorded"
+machine.restart
+assert machine.pci.slot[7].card.name == "Control" "restart must re-seat the recorded slot card"
+
+quit

@@ -76,6 +76,12 @@ struct config {
 
     // NuBus subsystem. NULL on machines without NuBus.
     nubus_bus_t *nubus;
+
+    // PCI subsystem (one root, one bus per host bridge).  NULL on machines
+    // without PCI.  Declared by struct tag: core/peripherals/pci/pci.h is
+    // a machine-side include, and this header must not drag it in (its
+    // sibling card.h would shadow the NuBus one included above).
+    struct pci_root *pci;
 };
 
 #endif // SYSTEM_CONFIG_H

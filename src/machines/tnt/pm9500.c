@@ -27,6 +27,29 @@ static const struct scsi_slot pm9500_scsi_slots[] = {
     {0},
 };
 
+// PCI topology (proposal-pci-architecture §6.1).  Six sockets — three on
+// each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
+// FCode instantiates twice) — with their strapped INTA-D lines on Grand
+// Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
+// Apple's own 9500 external-interrupt table verbatim.  Slot 7 carries the
+// Control/Chaos video deviation documented above.
+static const pci_slot_decl_t pm9500_pci_slots[] = {
+    {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
+    {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},
+    {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = TNT_PCI_BUS_1, .device = 15, .int_line = 25},
+    {.slot = 4, .kind = PCI_SLOT_SOCKET, .label = "D1", .bus = TNT_PCI_BUS_2, .device = 13, .int_line = 27},
+    {.slot = 5, .kind = PCI_SLOT_SOCKET, .label = "E1", .bus = TNT_PCI_BUS_2, .device = 14, .int_line = 28},
+    {.slot = 6, .kind = PCI_SLOT_SOCKET, .label = "F1", .bus = TNT_PCI_BUS_2, .device = 15, .int_line = 29},
+    {.slot = 7,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "VCI",
+     .bus = TNT_PCI_BUS_VCI,
+     .device = 11,
+     .int_line = TNT_INT_VBL,
+     .builtin_card_id = "tnt_control"},
+    {0},
+};
+
 static const tnt_board_desc_t pm9500_board = {
     // BoxID: bit 11 clear (the 9500 is flagged by Hammerhead +$20 bit 30
     // instead — the shipping ROM's identification routine at $FFC14844),
@@ -57,6 +80,8 @@ const hw_profile_t machine_pm9500 = {
 
     .ram_options = pm9500_ram_options_kb,
     .scsi_slots = pm9500_scsi_slots,
+
+    .pci_slots = pm9500_pci_slots,
 
     .substrate = &tnt_substrate,
     .board = &pm9500_board,

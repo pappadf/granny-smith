@@ -116,8 +116,10 @@ assert machine.memory.peek.l(0xF300880C) == 0x9000E0FF "T9: ch8 cmdptr not on th
 # chips (12 = 53C94, 13 = MESH — the SCSI Manager binds each cell it
 # finds; the mesh_id >= $E1 gate at ROM $FFEBB168 selects the native
 # MESH path), SCC A/B (15, 16), AWACS (17), VIA1 (18), SWIM3 floppy
-# (19), NMI (20), a PCI-slot external (26, from the expansion-slot
-# scan) — plus mask bit 31, the ifMode1Clear-era mask image the
+# (19), NMI (20), Control's VBL (26 — NOT a PCI-slot external: Apple's
+# 9500 external-interrupt table puts the slot lines on 23-25 and 27-29,
+# and 26 is Bandit 2's error line, free on a one-Bandit board) — plus
+# mask bit 31, the ifMode1Clear-era mask image the
 # NanoKernel maintains.  Events carries the standing VIA bit (mode 1: the
 # $80000000 acknowledge clears no device bits and the kernel never
 # W1Cs Events).  The mode-1 ack LOOP itself is proven by T8's

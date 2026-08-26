@@ -38,15 +38,40 @@ DMA architecture:
   the model can be fitted to what Open Firmware actually does.
 - **Bandit x2 + Chaos** (`bandit.c`) — the AR-to-PCI host bridges
   (`$F2000000`, `$F4000000` on two-bridge boards) and the display-bus
-  variant (`$F0000000`).  Config address/data ports at `+$800000` /
-  `+$C00000` (little-endian; zero = idle; `data + (offset & 3)` carries
-  the low offset bits), type-0 one-hot IDSEL with devices 0-10 and empty
-  IDSELs reading all-ones, the bridge's own device-11 header (vendor
-  `$106B`, device `$0001`/`$0003`, revision 3) with the `$48`
-  address-select and `$50` mode-select (latching coherency bit).  Chaos
-  config space is read-restricted and ignores writes.  The two 256 MB PCI
-  memory spaces are claimed empty with recoverable-fault semantics (the
-  BART pattern).
+  variant (`$F0000000`).  This file is the family's **PCI bridge
+  adapter**: it owns the chipset facts and delegates every config cycle
+  to the generic bus controller in
+  [core/peripherals/pci](../../core/peripherals/pci.md).  Config
+  address/data ports at `+$800000` / `+$C00000` (little-endian; zero =
+  idle; `data + (offset & 3)` carries the low offset bits), type-0
+  one-hot IDSEL, and the bridge's own device-11 header (vendor `$106B`,
+  device `$0001`, revision 3) registered as an ordinary device with
+  `$48` address-select and `$50` mode-select (latching coherency bit) as
+  its two quirk registers.  Devices 0-10 and empty IDSELs read all-ones
+  because nothing is registered there — not because of a literal.  Chaos
+  config space is read-restricted (`$00-$0F`, `$14`, `$18`) and ignores
+  writes outside its two BAR offsets; both quirks are applied in the
+  adapter, around the generic dispatch, because they are facts about
+  Chaos rather than about the device behind it.  The two 256 MB PCI
+  memory spaces are handed to their buses as decode **windows**: an
+  access there reaches whichever seated device's BAR decodes it, and
+  takes a recoverable transfer error when none does (the BART pattern).
+
+  Two windows are deliberately NOT claimed, and the `$48` register says
+  so in both cases (an OS derives the bridge's ranges from it, so the
+  register must describe what the model actually decodes):
+
+  - **Bandit 2 has no memory-space window.**  Which range it forwards is
+    unresolved — Apple's notes quote `$90000000` for both Bandit 2 and
+    Chaos, and a board carrying both cannot have them collide.  The
+    9500's Bandit-2 sockets still probe correctly: discovery is config
+    cycles, and an unpopulated IDSEL reads all-ones.
+  - **No PCI I/O window.**  The generic layer supports one, but nothing
+    on these machines decodes PCI I/O space — Grand Central is reached
+    by *pass-through memory* at `$F3000000`, not by I/O cycles — and
+    claiming `base+$000000..$7FFFFF` would turn today's silent reads
+    into faults for no modelled device's benefit.  It lands with the
+    first card that declares an I/O BAR.
 - **Grand Central** (`grand_central.c`) — the I/O controller: a 128 KB
   little-endian island at `$F3000000` (the base of Bandit 1's PCI I/O
   window).  Phase B populates the interrupt block (`+$20..$2C`), the
@@ -94,7 +119,10 @@ DMA architecture:
   reply still in flight.  The machine also feeds the 60.15 Hz reference
   into VIA1 CA1 each frame (the AMIC/AV line, third instance).
 - **Control video** (`control.c`, Phase D part 2) — Control (343S1154) as
-  PCI device 11 on the Chaos bus: Open Firmware sizes and assigns its two
+  PCI device 11 on the Chaos bus — a registered card kind
+  (`tnt_control`, BUILTIN attach) that the machine's slot table names, so
+  the runtime device and the configuration view come from one
+  declaration.  Open Firmware sizes and assigns its two
   BARs through the Chaos config ports (`$14` = the 4 KB register block,
   `$18` = the 64 MB VRAM aperture, both landing in the `$90000000` VCI
   memory space, which this model now claims and dispatches — unclaimed
@@ -106,7 +134,10 @@ DMA architecture:
   `+$1B000` (index/cursor/misc/CLUT on `$10` centres; misc `$20` bits 3:2
   = 8/16/32 bpp), monitor sense modeled as a 13"/14" strap (line C
   grounded — extended sense `$2B`, the head of the ROM's own mode table),
-  and VBL as Grand Central interrupt 30 at 60 Hz while `intr_ena` is set.
+  and VBL as Grand Central interrupt **26** at 60 Hz while `intr_ena` is
+  set (the dossier's map guessed 30; the shipping video driver toggles
+  mask bit 26 as it writes `INTR_ENA`, and Apple's own 9500
+  external-interrupt table gives 30 to the second-CPU doorbell).
   Scanout presents through the shared `display_t`; geometry derives from
   the blank-pair timing registers (width = (hsblank − heblank) × 2,
   height = (vsblank − veblank) / 2) with the pitch as the scan-line
@@ -146,6 +177,42 @@ selected by Clear-write bit 31 (`ifMode1Clear`):
 The mode-1 latch semantics are emulator-derived (pinned by the boot
 reaching a correct 60.15 Hz tick rate, and by the T11 desktop requiring
 the deassert-change law); revisit if a later rung contradicts them.
+
+### PCI slot topology
+
+Each model declares a `pci_slot_decl_t` table (`pm7500.c` and friends)
+that the profile encoder and `pci_init` share, so `machine.profile`'s
+`pci_slots` block and the runtime cannot drift.  Sockets are PCI devices
+**13/14/15** on their bridge's bus — the ROM's own `slot-names` bitmask
+(`$0000E000`) on the bandit node, corroborated by Apple's Network Server
+developer note IDSEL table — and each socket's strapped INTA-D line
+(`/INTA`-`/INTD` are tied together per slot on these machines, so there
+is no swizzle and a multi-function card collapses onto one line) reaches
+a Grand Central external:
+
+| Model | Sockets | Devices | GC interrupts | Builtin |
+|---|---|---|---|---|
+| 7500 / 8500 | A1 B1 C1 (Bandit 1) | 13 14 15 | 23 24 25 | VCI: Control @ dev 11 |
+| 9500 | A1 B1 C1 (Bandit 1) + D1 E1 F1 (Bandit 2) | 13 14 15 each bus | 23 24 25 / 27 28 29 | VCI: Control @ dev 11 |
+
+The numbers are Apple's own 9500 external-interrupt table (External *N* =
+GC interrupt 20 + *N*).  They also settle the old 26-vs-30 puzzle: on a
+two-Bandit 9500, 26 is Bandit 2's error line and 30 is the second-CPU
+doorbell, so on a one-Bandit TNT both are free — which is why Control's
+VBL could take 26.  The slot lines are level-sensitive, which the
+interrupt block's mode-1 change semantics already handle, deassert edge
+included; `tnt_pci_slot_irq` is the whole delivery path.
+
+Every socket ships empty.  A populated socket also sets its **BoxID
+presence pin** (`+$1A000` bits 0-5, bit *n*-1 for slot *n*) — the pins
+are live population, not a board constant, so an empty socket reads 0
+exactly as the hardware does.
+
+Which cards fit a socket is not declared here: it is computed from the
+card registry (`pci_card_fits_socket`).  Control is a registered kind
+with BUILTIN attachment, so it can never be offered on a socket, and the
+9500's `VCI` builtin entry carries forward the documented no-onboard-video
+deviation until a real PCI display card retires it.
 
 ### Endianness
 
@@ -224,9 +291,6 @@ Known open items at this phase:
 - The 68k startup chime STILL does not play by the T11 desktop (the OF
   beep is rung T10's instrument); the boot reaches its media hunt
   chime-less — an open question for Phase E.
-- The mask row's PCI-slot external interrupt 26 (enabled by the boot's
-  expansion-slot scan) has no modeled source; which physical slot OF
-  assigned it is unrecovered.
 - The 7500's 601 RTC tick source keeps the PDM 7,833,600 Hz assumption
   until a ladder rung measures it (proposal §4.4).
 - The `interruptableDeviceTable` / per-channel SCC interrupt split: the
