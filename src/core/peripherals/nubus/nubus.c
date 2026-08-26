@@ -13,6 +13,7 @@
 #include "display_card_824gc.h"
 #include "jmfb.h"
 #include "log.h"
+#include "machine_config.h" // the built-from record's per-slot picks
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
 #include "system_config.h"
 
@@ -395,6 +396,11 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             card->slot = s->slot;
             if (s->slot >= 0 && s->slot < NUBUS_MAX_SLOTS)
                 bus->cards[s->slot] = card;
+            // Capture the RESOLVED pick in the built-from record, so
+            // machine.restart re-seats every populated slot and not just
+            // the wildcard one (proposal-pci-architecture §8.2, the fix
+            // for the NuBus record's known wildcard-only gap).
+            machine_config_note_slot_card(MC_BUS_NUBUS, s->slot, kind->id);
         }
     }
     // Consume the whole staged table so a stale selection doesn't leak

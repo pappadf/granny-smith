@@ -21,6 +21,27 @@ static const struct scsi_slot pm8500_scsi_slots[] = {
     {0},
 };
 
+// PCI topology (proposal-pci-architecture §6.1).  Three sockets on Bandit
+// 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
+// the bandit node, corroborated by Apple's Network Server developer note
+// IDSEL table — with their strapped INTA-D lines on Grand Central
+// externals 23/24/25 (Apple's 9500 external-interrupt table, §1.4).
+// Control is the soldered-down video device the machine names, on the
+// Chaos display bus.
+static const pci_slot_decl_t pm8500_pci_slots[] = {
+    {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
+    {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},
+    {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = TNT_PCI_BUS_1, .device = 15, .int_line = 25},
+    {.slot = 4,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "VCI",
+     .bus = TNT_PCI_BUS_VCI,
+     .device = 11,
+     .int_line = TNT_INT_VBL,
+     .builtin_card_id = "tnt_control"},
+    {0},
+};
+
 static const tnt_board_desc_t pm8500_board = {
     // BoxID: bit 11 SET = 8500 (the shipping ROM's 68k identification
     // routine at $FFC14844 — the one BoxID bit that dispatch reads), and
@@ -52,6 +73,8 @@ const hw_profile_t machine_pm8500 = {
 
     .ram_options = pm8500_ram_options_kb,
     .scsi_slots = pm8500_scsi_slots,
+
+    .pci_slots = pm8500_pci_slots,
 
     .substrate = &tnt_substrate,
     .board = &pm8500_board,

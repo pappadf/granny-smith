@@ -45,6 +45,7 @@ assert !machine.boot(model="iicx", rom="${$ROM}", video_card="nonesuch") "unknow
 # tie-matrix probe (dafb.h's DAFB_SENSE_INDEXED_*).
 assert !machine.boot(model="iicx", rom="${$ROM}", video_sense=15) "out-of-range sense must be rejected"
 assert !machine.boot(model="iicx", rom="${$ROM}", video_mode="nonesuch") "unknown video mode must be rejected"
+assert !machine.boot(model="iicx", rom="${$ROM}", pci_card="tnt_control") "pci_card= on a model with no PCI slots must be rejected"
 assert machine.id == "iicx" "machine survives every rejected boot"
 assert machine.config.ram == 8192 "record intact after rejected boots"
 
@@ -76,6 +77,17 @@ assert machine.config.vroms != "[]" "vroms record must list resolved picks"
 machine.nubus.slot[9].card_id = "display_card_24ac"
 machine.boot model="iicx" rom="${$ROM}" video_card="824gc"
 assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "concrete staging must beat the wildcard"
+
+# --- The record captures the RESOLVED per-slot picks, not just the
+# wildcard: that is what lets machine.restart re-seat a multi-card machine
+# (proposal-pci-architecture §8.2, the repair of the wildcard-only gap). ---
+machine.nubus.slot[9].card_id = "display_card_24ac"
+machine.nubus.slot[10].card_id = "824gc"
+machine.boot model="iicx" rom="${$ROM}"
+assert machine.config.slot_cards == "[{\"bus\":\"nubus\",\"slot\":9,\"card_id\":\"display_card_24ac\"}, {\"bus\":\"nubus\",\"slot\":10,\"card_id\":\"824gc\"}]" "both populated sockets must appear in the record"
+machine.restart
+assert machine.nubus.slot[9].card.name == "Apple Macintosh Display Card 24AC" "restart must re-seat socket $9"
+assert machine.nubus.slot[10].card.name == "Apple Macintosh Display Card 8•24 GC" "restart must re-seat socket $A, which no wildcard covers"
 
 # --- Per-slot video_mode: the 8-bpp seed reaches the resolved card. ---
 machine.nubus.slot[9].card_id = "824gc"

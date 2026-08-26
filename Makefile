@@ -70,6 +70,8 @@ CORE_SRC := $(wildcard $(CORE_DIR)/*.c) \
             $(wildcard $(CORE_DIR)/peripherals/*.c) \
             $(wildcard $(CORE_DIR)/peripherals/nubus/*.c) \
             $(wildcard $(CORE_DIR)/peripherals/nubus/cards/*.c) \
+            $(wildcard $(CORE_DIR)/peripherals/pci/*.c) \
+            $(wildcard $(CORE_DIR)/peripherals/pci/cards/*.c) \
             $(wildcard $(CORE_DIR)/scheduler/*.c) \
             $(wildcard $(CORE_DIR)/debug/*.c) \
             $(wildcard $(CORE_DIR)/storage/*.c) \
@@ -141,6 +143,8 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(CORE_DIR)/peripherals \
             -I$(CORE_DIR)/peripherals/nubus \
             -I$(CORE_DIR)/peripherals/nubus/cards \
+            -I$(CORE_DIR)/peripherals/pci \
+            -I$(CORE_DIR)/peripherals/pci/cards \
             -I$(CORE_DIR)/scheduler \
             -I$(CORE_DIR)/debug \
             -I$(CORE_DIR)/storage \

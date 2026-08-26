@@ -168,6 +168,14 @@ typedef struct machine_substrate {
     // on non-NuBus machines (Plus / Lisa), which never reach it.
     void (*nubus_slot_irq)(struct config *cfg, int slot, bool active, bool umbrella_edge);
 
+    // Drive PCI slot `slot`'s strapped INTA-D line active/inactive.  The
+    // PCI slot lines are level-sensitive and have no umbrella (each has
+    // its own source bit in the machine's interrupt controller), so there
+    // is no edge argument.  Implemented by every PCI machine (TNT → Grand
+    // Central externals 23-25 / 27-29); keeps pci.c machine-agnostic.
+    // NULL on machines without PCI slots.
+    void (*pci_slot_irq)(struct config *cfg, int slot, bool active);
+
     // Floppy insertion + host-input injection + primary display, implemented by
     // EVERY substrate (Macs route to the shared mac_* helpers / NuBus video;
     // Lisa to its FDC / COPS) — one uniform path, no NULL-and-fallback
@@ -262,6 +270,15 @@ typedef struct hw_profile {
     // callback passes this same pointer to nubus_init() so the
     // runtime view and the profile view are guaranteed identical.
     const struct nubus_slot_decl *nubus_slots;
+
+    // PCI slot declarations — sentinel-terminated array of pci_slot_decl_t
+    // (logical slot, kind, label, bus/device/interrupt line, builtin or
+    // default card).  Topology only: which cards FIT a socket is computed
+    // from the card registry (pci_card_fits_socket), not listed here.  The
+    // machine's `init` hands this same pointer to pci_init(), so the
+    // machine.profile view and the runtime view are identical by
+    // construction.  NULL for non-PCI machines.
+    const struct pci_slot_decl *pci_slots;
 
     // Built-in video that is NOT a NuBus pseudo-card: the display the
     // machine's own substrate publishes (the PDM family's Ariel scanout).

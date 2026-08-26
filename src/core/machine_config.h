@@ -42,6 +42,27 @@ typedef struct {
 
 #define MC_MAX_VROMS 8
 
+// Which expansion bus a resolved slot pick belongs to.  The two bus
+// registries are separate by construction (a NuBus card can never appear
+// on a PCI socket), so the record has to say which one a slot number means.
+typedef enum mc_bus_kind {
+    MC_BUS_NUBUS = 0,
+    MC_BUS_PCI = 1,
+} mc_bus_kind_t;
+
+// One RESOLVED per-slot card pick, reported by a bus controller during
+// machine construction.  This is what makes machine.restart rebuild a
+// multi-card machine faithfully: the boot document's wildcard card covers
+// only the first socket, and concrete per-slot picks are staged state that
+// the slot walk consumes and clears (proposal-pci-architecture §8.2).
+typedef struct {
+    uint8_t bus_kind; // mc_bus_kind_t
+    int16_t slot; // slot number within that bus's numbering
+    char card_id[MC_ID_MAX];
+} machine_config_slot_card_t;
+
+#define MC_MAX_SLOT_CARDS 12
+
 // The built-from record. POD by design — checkpoints store it verbatim
 // (build-ID-gated, so layout changes are safe across builds).
 typedef struct machine_config_record {
@@ -57,9 +78,14 @@ typedef struct machine_config_record {
     char video_mode[MC_ID_MAX]; // wildcard video-mode id ("" = card default)
     char custom_mode[MC_ID_MAX]; // "WxHxD" custom resolution ("" = none)
     char monitor[MC_ID_MAX]; // built-in monitor strap ("" = machine default)
+    char pci_card[MC_ID_MAX]; // wildcard PCI-socket card id ("" = slot default)
     char created[24]; // ISO8601 UTC, stamped by boot
     machine_config_vrom_t vroms[MC_MAX_VROMS]; // resolved picks, in load order
     int32_t n_vroms;
+    // Resolved per-slot card picks across both expansion buses, written by
+    // the slot walks and replayed by machine.restart.
+    machine_config_slot_card_t slot_cards[MC_MAX_SLOT_CARDS];
+    int32_t n_slot_cards;
 } machine_config_record_t;
 
 // The in-flight boot document: pointers borrow from the caller; NULL/0/-1
@@ -79,6 +105,10 @@ typedef struct boot_config {
     // "none" leaves it unconnected, which switches built-in video off and
     // hands the screen to a NuBus card (machine_profile_t.builtin_video).
     const char *monitor; // NULL = machine default
+    // Card id for the machine's FIRST PCI socket — the machine-independent
+    // pre-boot channel, mirroring video_card= for NuBus.  Concrete slots
+    // are staged through machine.pci.slot[N].card_id instead.
+    const char *pci_card;
 } boot_config_t;
 
 // Read-only view of the live record (never NULL; check ->valid).
@@ -94,6 +124,11 @@ void machine_config_reset_vroms(void);
 // Report one resolved declaration-ROM pick (called by the card loader
 // while the machine is being constructed).
 void machine_config_note_vrom(const char *card_id, const char *path, uint32_t crc, bool explicit_pick);
+
+// Clear / report the resolved per-slot card picks.  A bus controller calls
+// the reporter once per slot it actually populates, after resolution.
+void machine_config_reset_slot_cards(void);
+void machine_config_note_slot_card(int bus_kind, int slot, const char *card_id);
 
 // rom.load write-back: keep the record answering "how do I recreate
 // what I'm looking at" after a live ROM swap.

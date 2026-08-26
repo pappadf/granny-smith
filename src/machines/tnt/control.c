@@ -9,12 +9,13 @@
 //
 // Software shape (all boot-verified against the shipping ROM's own probe):
 //
-//   * PCI device 11 on the Chaos bus.  Open Firmware's probe-slots reads
-//     the header through the Chaos config ports, then sizes and assigns
-//     exactly two BARs — $14 (the 4 KB register block) and $18 (the 64 MB
-//     VRAM aperture) — inside the $90000000 VCI memory space it claims.
-//     The BAR sizes are the ROM's own literals (OpenFW reg builder:
-//     $02000018/$4000000, $02000014/$1000).
+//   * PCI device 11 on the Chaos bus — a real pci_device_t on the generic
+//     core (core/peripherals/pci/), whose type-0 header answers the ROM's
+//     probe-slots and whose two BARs — $14 (the 4 KB register block) and
+//     $18 (the 64 MB VRAM aperture) — the firmware sizes and assigns
+//     inside the $90000000 VCI memory space.  The BAR sizes are the ROM's
+//     own literals (OpenFW reg builder: $02000018/$4000000,
+//     $02000014/$1000).
 //   * 32 little-endian 32-bit registers on $10 centres (the controlfb
 //     register map — struct control_regs, Linux fbdev, from Paul
 //     Mackerras's 1996 driver for these exact machines).
@@ -28,8 +29,13 @@
 //     the 7200's DACula) — addr +$00, cursor +$10, misc data +$20, CLUT
 //     +$30.  Misc register $20 carries the depth (bits 3:2: 0/1/2 =
 //     8/16/32 bpp), $21 the VRAM bank select.
-//   * VBL is Grand Central interrupt 30 (the control node's
-//     AAPL,interrupts), IPL 2 through the NanoKernel mapping.
+//   * VBL is Grand Central interrupt 26 (TNT_INT_VBL), IPL 2 through the
+//     NanoKernel mapping.  The dossier's interrupt map guessed 30; the
+//     shipping System's video driver settles it by toggling GC mask bit
+//     26 as it writes INTR_ENA (see tnt.h).  Line 30 is the 9500's
+//     second-CPU doorbell in Apple's own external-interrupt table, and
+//     26 is Bandit 2's error line on a two-Bandit board — free on TNT,
+//     which is why Control could have it.
 //
 // The pixel clock is programmed over Cuda I2C (device $50) and is not
 // visible here — geometry derives from the timing registers and pitch
@@ -44,6 +50,7 @@
 #include "tnt.h"
 
 #include "log.h"
+#include "pci.h"
 #include "ppc.h"
 #include "scheduler.h"
 
@@ -490,39 +497,94 @@ static void vram_write8(void *ctx, uint32_t offset, uint8_t value) {
 }
 
 // ============================================================
-// PCI config header (Chaos device 11) — bandit.c delegates here
+// The PCI face: device 11 on the Chaos bus
 // ============================================================
+// Open Firmware's probe-slots reads this header through the Chaos config
+// ports, then sizes and assigns exactly two BARs — $14 (the 4 KB register
+// block) and $18 (the 64 MB VRAM aperture) — inside the $90000000 VCI
+// memory space it claims.  The generic type-0 header (config_space.c)
+// does all of that: the sizing mask, the latches and the decode.
+//
+// DOCUMENTED FIDELITY DEVIATION (proposal-pci-architecture §6.2 / §14 Q6):
+// Control's real vendor/device ids are unrecorded anywhere we have.  What
+// the shipping ROM actually reads out of $00-$0C through Chaos is CHAOS's
+// own header, because Chaos's restricted config space is all this model
+// has ever exposed; those are the ids declared here, so the guest sees
+// exactly the bytes it saw before this device existed.  Recovering
+// Control's real ids (disassemble the Control ndrv's probe, or capture
+// what the 7.6 Name Registry stores) is a one-line change here.
+#define CONTROL_VENDOR_ID 0x106Bu // Apple
+#define CONTROL_DEVICE_ID 0x0003u // (Chaos's id — see the note above)
+#define CONTROL_REVISION  0x03u
+#define CONTROL_BAR_REGS  1 // config $14
+#define CONTROL_BAR_VRAM  2 // config $18
 
-uint32_t tnt_control_cfg_read(config_t *cfg, uint32_t reg) {
-    tnt_control_t *c = ctl(cfg);
-    switch (reg) {
-    case 0x14:
-        return c->bar_regs & ~(CONTROL_BAR_REGS_SIZE - 1u); // 32-bit memory BAR
-    case 0x18:
-        return c->bar_vram & ~(CONTROL_BAR_VRAM_SIZE - 1u);
-    default:
-        return 0xFFFFFFFFu; // the restricted offsets read all-ones
-    }
+static const pci_config_decl_t control_decl = {
+    .vendor_id = CONTROL_VENDOR_ID,
+    .device_id = CONTROL_DEVICE_ID,
+    .revision = CONTROL_REVISION,
+    .class_code = 0x060000u, // (Chaos's class — see the note above)
+    .header_type = 0x00u,
+    // Chaos ignores config writes outside its two readable BAR offsets, so
+    // software can never set the command register: the device decodes its
+    // assigned BARs unconditionally, which is what the hardware does and
+    // what this model did before the command register existed.
+    .command_reset = PCI_CMD_MEM_SPACE,
+    .bar =
+        {
+              [CONTROL_BAR_REGS] = {.size = CONTROL_BAR_REGS_SIZE, .kind = PCI_BAR_MEM},
+              [CONTROL_BAR_VRAM] = {.size = CONTROL_BAR_VRAM_SIZE, .kind = PCI_BAR_MEM},
+              },
+};
+
+static display_t *control_pci_display(pci_device_t *dev) {
+    return tnt_control_display((config_t *)dev->priv);
 }
 
-void tnt_control_cfg_write(config_t *cfg, uint32_t reg, uint32_t byte, uint8_t value) {
-    tnt_control_t *c = ctl(cfg);
-    uint32_t shift = 8u * (byte & 3u);
-    uint32_t mask = 0xFFu << shift;
-    switch (reg) {
-    case 0x14:
-        c->bar_regs = (c->bar_regs & ~mask) | ((uint32_t)value << shift);
-        LOG(2, "BAR $14 (registers) = $%08X", c->bar_regs);
-        break;
-    case 0x18:
-        c->bar_vram = (c->bar_vram & ~mask) | ((uint32_t)value << shift);
-        LOG(2, "BAR $18 (VRAM) = $%08X", c->bar_vram);
-        break;
-    default:
-        LOG(2, "config write $%02X byte %u = $%02X ignored", reg, byte, value);
-        break;
-    }
+static const char *control_pci_name(const pci_device_t *dev) {
+    (void)dev;
+    return "Control";
 }
+
+static void control_pci_teardown(pci_device_t *dev, config_t *cfg) {
+    (void)dev;
+    tnt_control_teardown(cfg);
+}
+
+static const pci_device_ops_t control_pci_ops = {
+    .teardown = control_pci_teardown,
+    .display = control_pci_display,
+    .name = control_pci_name,
+};
+
+// The card kind.  Control is soldered down, so it attaches BUILTIN and is
+// instantiable only where a machine's slot table names it — it can never
+// be offered on a socket (pci_card_fits_socket).
+static pci_device_t *control_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+    (void)slot_index;
+    (void)cp;
+    tnt_state_t *st = tnt_st(cfg);
+    pci_device_t *dev = calloc(1, sizeof(*dev));
+    if (!dev)
+        return NULL;
+    dev->ops = &control_pci_ops;
+    dev->decl = &control_decl;
+    dev->priv = cfg;
+    pci_cfg_reset(dev);
+    st->control_dev = dev;
+    tnt_control_register_events(cfg);
+    tnt_control_init(cfg);
+    tnt_control_reset(cfg);
+    return dev;
+}
+
+const pci_card_kind_t tnt_control_kind = {
+    .id = "tnt_control",
+    .display_name = "Control / Chaos on-board video",
+    .attach = PCI_ATTACH_BUILTIN,
+    .card_class = "display",
+    .factory = control_factory,
+};
 
 // ============================================================
 // RaDACal (Grand Central +$1B000) — byte cells on $10 centres
@@ -612,110 +674,68 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
 }
 
 // ============================================================
-// VCI memory space ($90000000, 256 MB) — dispatch by live BARs
+// The two BAR-backed regions
 // ============================================================
-// Everything the BARs do not claim faults recoverably, exactly like the
-// empty Bandit memory space (the probe idioms expect a catchable error).
+// The bus dispatches an access inside the Chaos memory window to whichever
+// device BAR decodes it (pci.c); everything unclaimed faults recoverably,
+// exactly as the empty Bandit memory space does.  Each interface here sees
+// an offset into ITS OWN region, so the endianness rules are local: the
+// register block is little-endian longwords, the VRAM aperture is a plain
+// byte array.
 
-// Locate an access: 0 = registers, 1 = VRAM, -1 = unclaimed.
-static int vci_locate(config_t *cfg, uint32_t offset, uint32_t *sub) {
-    tnt_control_t *c = ctl(cfg);
-    uint32_t addr = TNT_PCI_MEM_VCI + offset;
-    uint32_t regs_base = c->bar_regs & ~(CONTROL_BAR_REGS_SIZE - 1u);
-    if (regs_base != 0 && addr - regs_base < CONTROL_BAR_REGS_SIZE) {
-        *sub = addr - regs_base;
-        return 0;
-    }
-    uint32_t vram_base = c->bar_vram & ~(CONTROL_BAR_VRAM_SIZE - 1u);
-    if (vram_base != 0 && addr - vram_base < CONTROL_BAR_VRAM_SIZE) {
-        *sub = addr - vram_base;
-        return 1;
-    }
-    return -1;
-}
-
-static void vci_fault(config_t *cfg, uint32_t offset, bool write) {
-    LOG(4, "VCI: unclaimed %s $%08X", write ? "write" : "read", TNT_PCI_MEM_VCI + offset);
-    memory_signal_bus_error(TNT_PCI_MEM_VCI + offset, write);
-}
-
-static uint8_t vci_read8(void *ctx, uint32_t offset) {
+// --- BAR $14: the register block ---
+static uint8_t regs_read8(void *ctx, uint32_t offset) {
+    // Byte lane of the LE register (lane j = value bits 8j+7:8j).
     config_t *cfg = (config_t *)ctx;
-    uint32_t sub;
-    switch (vci_locate(cfg, offset, &sub)) {
-    case 0:
-        // Byte lane of the LE register (lane j = value bits 8j+7:8j).
-        return (uint8_t)(control_reg_read(cfg, sub & ~3u) >> (8u * (sub & 3u)));
-    case 1:
-        return vram_read8(ctx, sub);
-    default:
-        vci_fault(cfg, offset, false);
-        return 0xFF;
-    }
+    return (uint8_t)(control_reg_read(cfg, offset & ~3u) >> (8u * (offset & 3u)));
 }
 
-static uint16_t vci_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((vci_read8(ctx, offset) << 8) | vci_read8(ctx, offset + 1));
+static uint16_t regs_read16(void *ctx, uint32_t offset) {
+    return (uint16_t)((regs_read8(ctx, offset) << 8) | regs_read8(ctx, offset + 1));
 }
 
-static uint32_t vci_read32(void *ctx, uint32_t offset) {
+static uint32_t regs_read32(void *ctx, uint32_t offset) {
+    return TNT_LE32(control_reg_read((config_t *)ctx, offset));
+}
+
+static void regs_write8(void *ctx, uint32_t offset, uint8_t value) {
+    // Read-modify-write the byte lane so byte pokes of a register work.
     config_t *cfg = (config_t *)ctx;
-    uint32_t sub;
-    switch (vci_locate(cfg, offset, &sub)) {
-    case 0:
-        return TNT_LE32(control_reg_read(cfg, sub));
-    case 1:
-        return ((uint32_t)vram_read8(ctx, sub) << 24) | ((uint32_t)vram_read8(ctx, sub + 1) << 16) |
-               ((uint32_t)vram_read8(ctx, sub + 2) << 8) | vram_read8(ctx, sub + 3);
-    default:
-        vci_fault(cfg, offset, false);
-        return 0xFFFFFFFFu;
-    }
+    uint32_t reg = offset & ~3u;
+    uint32_t shift = 8u * (offset & 3u);
+    uint32_t v = (control_reg_read(cfg, reg) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    control_reg_write(cfg, reg, v);
 }
 
-static void vci_write8(void *ctx, uint32_t offset, uint8_t value) {
-    config_t *cfg = (config_t *)ctx;
-    uint32_t sub;
-    switch (vci_locate(cfg, offset, &sub)) {
-    case 0: {
-        // Read-modify-write the byte lane so byte pokes of a register work.
-        uint32_t reg = sub & ~3u;
-        uint32_t shift = 8u * (sub & 3u);
-        uint32_t v = (control_reg_read(cfg, reg) & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-        control_reg_write(cfg, reg, v);
-        break;
-    }
-    case 1:
-        vram_write8(ctx, sub, value);
-        break;
-    default:
-        vci_fault(cfg, offset, true);
-        break;
-    }
+static void regs_write16(void *ctx, uint32_t offset, uint16_t value) {
+    regs_write8(ctx, offset, (uint8_t)(value >> 8));
+    regs_write8(ctx, offset + 1, (uint8_t)value);
 }
 
-static void vci_write16(void *ctx, uint32_t offset, uint16_t value) {
-    vci_write8(ctx, offset, (uint8_t)(value >> 8));
-    vci_write8(ctx, offset + 1, (uint8_t)value);
+static void regs_write32(void *ctx, uint32_t offset, uint32_t value) {
+    control_reg_write((config_t *)ctx, offset, TNT_LE32(value));
 }
 
-static void vci_write32(void *ctx, uint32_t offset, uint32_t value) {
-    config_t *cfg = (config_t *)ctx;
-    uint32_t sub;
-    switch (vci_locate(cfg, offset, &sub)) {
-    case 0:
-        control_reg_write(cfg, sub, TNT_LE32(value));
-        break;
-    case 1:
-        vram_write8(ctx, sub, (uint8_t)(value >> 24));
-        vram_write8(ctx, sub + 1, (uint8_t)(value >> 16));
-        vram_write8(ctx, sub + 2, (uint8_t)(value >> 8));
-        vram_write8(ctx, sub + 3, (uint8_t)value);
-        break;
-    default:
-        vci_fault(cfg, offset, true);
-        break;
-    }
+// --- BAR $18: the VRAM aperture ---
+static uint16_t vram_read16(void *ctx, uint32_t offset) {
+    return (uint16_t)((vram_read8(ctx, offset) << 8) | vram_read8(ctx, offset + 1));
+}
+
+static uint32_t vram_read32(void *ctx, uint32_t offset) {
+    return ((uint32_t)vram_read8(ctx, offset) << 24) | ((uint32_t)vram_read8(ctx, offset + 1) << 16) |
+           ((uint32_t)vram_read8(ctx, offset + 2) << 8) | vram_read8(ctx, offset + 3);
+}
+
+static void vram_write16(void *ctx, uint32_t offset, uint16_t value) {
+    vram_write8(ctx, offset, (uint8_t)(value >> 8));
+    vram_write8(ctx, offset + 1, (uint8_t)value);
+}
+
+static void vram_write32(void *ctx, uint32_t offset, uint32_t value) {
+    vram_write8(ctx, offset, (uint8_t)(value >> 24));
+    vram_write8(ctx, offset + 1, (uint8_t)(value >> 16));
+    vram_write8(ctx, offset + 2, (uint8_t)(value >> 8));
+    vram_write8(ctx, offset + 3, (uint8_t)value);
 }
 
 // ============================================================
@@ -733,8 +753,6 @@ void tnt_control_reset(config_t *cfg) {
     // mirrors the scheduler's pending event, which reset does not cancel —
     // a stale VBL fires once into a disabled controller and goes quiet.
     memset(c->reg, 0, sizeof(c->reg));
-    c->bar_regs = 0;
-    c->bar_vram = 0;
     c->vbl_pending = 0;
     c->rad_addr = 0;
     c->rad_phase = 0;
@@ -755,15 +773,26 @@ void tnt_control_init(config_t *cfg) {
     st->compose = calloc(1, TNT_VRAM_SIZE);
     assert(st->vram != NULL && st->blank != NULL && st->compose != NULL);
 
-    // The VCI memory space: control's BARs answer inside it, everything
-    // else takes the recoverable transfer error the probe idioms expect.
-    st->vci_interface.read_uint8 = vci_read8;
-    st->vci_interface.read_uint16 = vci_read16;
-    st->vci_interface.read_uint32 = vci_read32;
-    st->vci_interface.write_uint8 = vci_write8;
-    st->vci_interface.write_uint16 = vci_write16;
-    st->vci_interface.write_uint32 = vci_write32;
-    memory_map_add(cfg->mem_map, TNT_PCI_MEM_VCI, 0x10000000u, "VCI memory (Control)", &st->vci_interface, cfg);
+    // The two BAR-backed regions, handed to the bus: it maps them wherever
+    // Open Firmware assigns the BARs and faults on everything else in the
+    // Chaos memory window.
+    st->control_regs_if.read_uint8 = regs_read8;
+    st->control_regs_if.read_uint16 = regs_read16;
+    st->control_regs_if.read_uint32 = regs_read32;
+    st->control_regs_if.write_uint8 = regs_write8;
+    st->control_regs_if.write_uint16 = regs_write16;
+    st->control_regs_if.write_uint32 = regs_write32;
+    st->control_vram_if.read_uint8 = vram_read8;
+    st->control_vram_if.read_uint16 = vram_read16;
+    st->control_vram_if.read_uint32 = vram_read32;
+    st->control_vram_if.write_uint8 = vram_write8;
+    st->control_vram_if.write_uint16 = vram_write16;
+    st->control_vram_if.write_uint32 = vram_write32;
+
+    // The two regions back Control's BARs; the bus seats the device on the
+    // Chaos bus at the IDSEL the machine's slot table declares.
+    pci_bar_backing_iface(st->control_dev, CONTROL_BAR_REGS, &st->control_regs_if, cfg);
+    pci_bar_backing_iface(st->control_dev, CONTROL_BAR_VRAM, &st->control_vram_if, cfg);
 
     tnt_control_update(cfg);
     st->display.response_dirty = true;

@@ -77,6 +77,25 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
 
 // --- the SCSI apertures belong to mesh.c / the shared 53C96 model;
 // the island dispatch references them, so stub them the same way ---
+// --- The PCI core (core/peripherals/pci/), which this suite does not link:
+// grand_central.c reaches it for BoxID's slot-presence bits and for its own
+// device-16 config presence.  With no slot table declared, no socket is
+// populated, so BoxID's low six bits stay zero — which is what the
+// presence-pin assertions below expect. ---
+pci_device_t *pci_slot_device(pci_root_t *root, int slot) {
+    (void)root;
+    (void)slot;
+    return NULL;
+}
+void pci_bus_add_device(pci_bus_t *bus, pci_device_t *dev, int device_num) {
+    (void)bus;
+    (void)dev;
+    (void)device_num;
+}
+void pci_cfg_reset(pci_device_t *dev) {
+    (void)dev;
+}
+
 uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset) {
     (void)cfg;
     (void)offset;

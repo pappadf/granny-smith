@@ -483,8 +483,10 @@ include the public `core/machine_profile.h` but **not** any machine
 **Capability probe (no machine knowledge in the UI).** `machine.profile(id)`
 returns a JSON map that includes a *derived* `capabilities` block
 (`cpu.{model,address_bits,fpu}`, a **typed** `mmu.{present,kind}` —
-`none`/`68030_pmmu`/`lisa_segment` — and `nubus`) plus a per-slot/per-card
-`video_slots` block carrying each card's `requires_vrom`. The frontend probes
+`none`/`68030_pmmu`/`lisa_segment` — plus `nubus` and `pci`) with a
+per-slot/per-card `video_slots` block carrying each card's `requires_vrom`
+and a `pci_slots` block carrying each PCI socket's topology and computed
+card list. The frontend probes
 these instead of regex-matching the model's display name, so the debug panels,
 the VROM prompt, and the slot labels all follow from data. Because capabilities
 are *derived* from the facts, they can never drift from behavior.
@@ -507,7 +509,23 @@ next `machine.boot` — while the boot document's `video_card=` /
 `video_sense=` / `video_mode=` arguments name "the first socket" (what the
 config dialog and the headless `video_card=` arg use; see
 proposal-named-args-boot-config.md). `machine.screen` shows the *primary*
-display: the first populated video slot in declared order.
+display: the first populated video slot in declared order. The **resolved**
+per-slot picks are captured in the built-from record, so `machine.restart`
+re-seats every populated socket rather than only the wildcard one.
+
+**PCI (`core/peripherals/pci/`)** is the same architecture ported to the
+second expansion bus, deliberately as a parallel module rather than a
+shared abstraction — the two differ in kind, not degree, on identity,
+discovery and address assignment (see `docs/core/peripherals/pci.md`).
+Machines declare `pci_slots` topology, card kinds declare
+`pci_attach_t`, and `pci_card_fits_socket` computes the offer. The two
+things PCI adds are a **generic type-0 config header** shared by every
+device (so "an empty slot reads all-ones" is simply "no device is
+registered at that IDSEL") and **movable regions**: the guest's own
+firmware sizes and assigns the BARs, and the bus routes an access inside a
+host-bridge window to whichever device currently decodes it. Host bridges
+stay with their family (`machines/tnt/bandit.c` is an adapter); the core
+never includes a machine header.
 
 The CPU is split into template-instantiated decoders (`cpu_68000.c`,
 `cpu_68030.c`) sharing helpers via `cpu_internal.h`. The memory subsystem uses a
