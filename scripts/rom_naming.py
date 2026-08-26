@@ -8,6 +8,7 @@
 #
 #   <targets>[-<rev>]-<checksum8>.rom       e.g. iix-iicx-se30-97221136.rom
 #   <card-id, _ -> ->[-<rev>]-<crc8>.vrom   e.g. mdc-8-24-revb-d1629664.vrom
+#   <card-id, _ -> ->[-<rev>]-<crc8>.prom   e.g. mach64-gx-104-437584e0.prom
 #
 # The <targets>/<rev> parts are human facts (marketing revs, Apple part
 # generations) that cannot be derived from the bytes, so the grammar reduces
@@ -17,7 +18,8 @@
 # conformance test.  The emulator never sees it.
 
 # Content identity (8 lowercase hex digits: the stored checksum for CPU ROMs,
-# the Format-Block CRC for vROMs) -> canonical basename.
+# the Format-Block CRC for vROMs, the whole-image CRC-32 for PCI expansion
+# ROMs) -> canonical basename.
 CANONICAL_NAMES = {
     # --- CPU ROMs (*.rom), keyed by stored checksum -------------------------
     "4d1f8172": "plus-v3-4d1f8172.rom",  # Macintosh Plus Rev 3 ("Loud Harmonicas")
@@ -40,6 +42,9 @@ CANONICAL_NAMES = {
     "d722b053": "824gc-v1.1-revb-d722b053.vrom",  # 8-24 GC v1.1, part 341-0266 (16bpp default)
     "9e9857e8": "824gc-v1.0-reva-9e9857e8.vrom",  # 8-24 GC v1.0 shipping, part 341-0812-02
     "4740028d": "824gc-v1.0a16-4740028d.vrom",  # 8-24 GC 1.00a16 alpha ("Dolphin")
+    # --- PCI expansion ROMs (*.prom), keyed by whole-image CRC-32 -----------
+    "437584e0": "mach64-gx-104-437584e0.prom",  # Apple Accelerated PCI Graphics Card, ROM 113-32900-104
+    "8c68216e": "mach64-gx-101-8c68216e.prom",  # ...and the earlier -101 programming
 }
 
 

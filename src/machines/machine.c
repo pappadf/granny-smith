@@ -13,6 +13,7 @@
 #include "machine_config.h"
 #include "nubus.h"
 #include "object.h"
+#include "prom.h"
 #include "rom.h"
 #include "system.h"
 #include "system_config.h"
@@ -585,6 +586,36 @@ static value_t validate_vrom_resolution(const hw_profile_t *profile, const char 
     return val_none();
 }
 
+// The same strict-resolution rule for PCI sockets: a card the USER named
+// that needs a real FCode expansion ROM must have one resolvable before
+// the running machine is touched.  Mirrors validate_vrom_resolution, down
+// to the asymmetry — only EXPLICIT picks fail the boot, because a slot
+// resolving its own default degrades to an empty slot with a log instead.
+static value_t validate_prom_resolution(const hw_profile_t *profile, const char *wildcard_card) {
+    if (!profile->pci_slots)
+        return val_none();
+    bool first_socket = true;
+    for (const pci_slot_decl_t *d = profile->pci_slots; d->slot; d++) {
+        if (d->kind != PCI_SLOT_SOCKET)
+            continue;
+        const char *card_id = pci_staged_card_get(d->slot);
+        if ((!card_id || !*card_id) && first_socket && wildcard_card && *wildcard_card)
+            card_id = wildcard_card;
+        first_socket = false;
+        if (!card_id || !*card_id)
+            continue;
+        const pci_card_kind_t *kind = pci_card_find(card_id);
+        if (!kind || !kind->requires_prom)
+            continue;
+        if (!prom_card_resolvable(card_id)) {
+            return val_err("machine.boot: card '%s' (PCI slot %d) needs a PCI expansion ROM but no offered "
+                           ".prom file provides it",
+                           card_id, d->slot);
+        }
+    }
+    return val_none();
+}
+
 // Armed by machine.restart for the duration of its machine_boot_apply call:
 // carry the mounted media's open image handles across the teardown
 // (proposal-boot-vs-reset §3.3).  A plain machine.boot never transfers —
@@ -707,14 +738,27 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         if (!vrom_identify_card(doc.vrom, &vid))
             return val_err("machine.boot: vrom '%s' is not a recognised declaration ROM", doc.vrom);
     }
+    // ...and the same for an explicit PCI expansion-ROM pick.
+    if (doc.prom && *doc.prom) {
+        prom_id_t pid;
+        if (!prom_identify_card(doc.prom, &pid))
+            return val_err("machine.boot: prom '%s' is not a recognised PCI expansion ROM "
+                           "(see prom.identify for what it is instead)",
+                           doc.prom);
+    }
 
     // Strict resolution for explicitly picked socket cards (per-slot staged
     // entries and the document's wildcard card).
     if (doc.vrom && *doc.vrom)
         vrom_set_path(doc.vrom);
+    if (doc.prom && *doc.prom)
+        prom_set_path(doc.prom);
     value_t verr = validate_vrom_resolution(profile, doc.video_card);
     if (val_is_error(&verr))
         return verr;
+    value_t perr = validate_prom_resolution(profile, doc.pci_card);
+    if (val_is_error(&perr))
+        return perr;
 
     // 3. Teardown + atomic construction.  On a machine.restart the mounted
     // media's open handles are detached first so they survive
@@ -802,6 +846,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     w->rom_crc = rom_fi.checksum;
     snprintf(w->rom2, sizeof(w->rom2), "%s", doc.rom2 ? doc.rom2 : "");
     snprintf(w->vrom, sizeof(w->vrom), "%s", doc.vrom ? doc.vrom : "");
+    snprintf(w->prom, sizeof(w->prom), "%s", doc.prom ? doc.prom : "");
     snprintf(w->video_card, sizeof(w->video_card), "%s", doc.video_card ? doc.video_card : "");
     w->video_sense = doc.video_sense;
     snprintf(w->video_mode, sizeof(w->video_mode), "%s", doc.video_mode ? doc.video_mode : "");
@@ -836,6 +881,7 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
         .custom_mode = argv[8].s,
         .monitor = argv[9].s,
         .pci_card = argv[10].s,
+        .prom = argv[11].s,
     };
     value_t err = machine_boot_apply(&doc);
     if (val_is_error(&err))
@@ -871,6 +917,7 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
         .rom = snap.rom,
         .rom2 = snap.rom2[0] ? snap.rom2 : NULL,
         .vrom = snap.vrom[0] ? snap.vrom : NULL,
+        .prom = snap.prom[0] ? snap.prom : NULL,
         .video_card = snap.video_card[0] ? snap.video_card : NULL,
         .video_sense = snap.video_sense,
         .video_mode = snap.video_mode[0] ? snap.video_mode : NULL,
@@ -932,58 +979,63 @@ static const arg_decl_t machine_boot_args[] = {
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Machine model id (plus / se30 / ...); required"                   },
+     .doc = "Machine model id (plus / se30 / ...); required"                    },
     {.name = "ram",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_u32,
-     .doc = "RAM in KB (one of profile.ram_options); default: model default"   },
+     .doc = "RAM in KB (one of profile.ram_options); default: model default"    },
     {.name = "rom",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "ROM file path; required"                                          },
+     .doc = "ROM file path; required"                                           },
     {.name = "vrom",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Explicit declaration-ROM pick; default: auto-resolve from offers" },
+     .doc = "Explicit declaration-ROM pick; default: auto-resolve from offers"  },
     {.name = "video_card",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Card id for the first NuBus socket; default: slot default"        },
+     .doc = "Card id for the first NuBus socket; default: slot default"         },
     {.name = "video_sense",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_sense,
-     .doc = "Monitor sense 0..7; default: card default"                        },
+     .doc = "Monitor sense 0..7; default: card default"                         },
     {.name = "video_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Video-mode id (see machine.profile); default: card default"       },
+     .doc = "Video-mode id (see machine.profile); default: card default"        },
     {.name = "rom2",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Lisa/XL second ROM chip (two-chip form); default: single-file rom"},
+     .doc = "Lisa/XL second ROM chip (two-chip form); default: single-file rom" },
     {.name = "custom_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Custom resolution WxHxD (generic 8_24 kind); default: none"       },
+     .doc = "Custom resolution WxHxD (generic 8_24 kind); default: none"        },
     {.name = "monitor",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
      .doc = "Monitor on the built-in port ('none' = unconnected, which hands "
-            "the screen to a NuBus card); default: model default"              },
+            "the screen to a NuBus card); default: model default"               },
     {.name = "pci_card",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Card id for the first PCI socket; default: slot default"          },
+     .doc = "Card id for the first PCI socket; default: slot default"           },
+    {.name = "prom",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Explicit PCI expansion-ROM pick; default: auto-resolve from offers"},
 };
 
 static const arg_decl_t machine_register_args[] = {

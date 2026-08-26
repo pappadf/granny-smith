@@ -172,27 +172,63 @@ behaviour genuinely is identical — the kind/factory/registry idiom,
 checkpoint hooks, display presentation — the *pattern* is copied, which
 keeps both readable without coupling them.
 
+## Regions that have no BAR
+
+Parts that predate BAR-based I/O decode at **strapped** addresses instead.
+`pci_device_add_fixed_region()` declares one: it answers a PCI address in
+`[base, base+span)` whose masked bits equal `match_value`, and hands the
+device `pci_addr - base` so the card does its own sub-decode.
+
+The match is a mask/value pair rather than a plain range because the first
+such device decodes **sparsely**. A mach64 GX compares only the low bits of
+an I/O address against its strapped base and uses the upper bits as a
+register select, so it answers 64 scattered dwords out of the 64 KB I/O
+space and nothing else; a contiguous claim would have it swallow addresses
+it does not drive. For the mach64 that is `match_mask $3FC`, `match_value
+$2EC`, `span $10000` — `$3FC`, not `$3FF`, because each selected register
+is 32 bits wide and `base+0..base+3` are byte lanes of the same register.
+A mask of 0 makes the match vacuous, which is an ordinary contiguous claim.
+
+Fixed regions are gated by the command register's space-enable bit exactly
+as BARs are, so a card software has not enabled decodes nothing. The gate
+is derived from `cfg.command`, so there is no new checkpointed state.
+
+Faking an I/O BAR instead would be worse, not simpler: a BAR the card's own
+`reg` property does not mention is one Open Firmware sizes, finds and
+assigns — inventing an address the card does not decode, and consuming I/O
+space the card's firmware expects to own outright.
+
+## Endianness at a card's edge
+
+The family rule (`TNT_LE32`) is a *TNT* rule. A pluggable card is not a TNT
+device: it can be seated in any PCI machine, so it must not reach for a
+family macro. A card whose registers are little-endian applies its own swap
+at its own edge and says so in its header comment.
+
 ## Status
 
-Phase 1 of `proposal-pci-architecture`: the generic core, the TNT family
-migrated onto it (Bandit/Chaos as adapters, Control as a registered
-BUILTIN card kind, Grand Central's config presence at device 16), slot
-topology for all three TNT models, the object model, staged configuration
-and the profile surface. Sockets exist and probe correctly but no
-pluggable card kind is registered yet — that is Phase 2 (expansion-ROM /
-FCode plumbing and the Apple Mach64 GX display card).
+Phase 1 of `proposal-pci-architecture`, plus Phase 2's substrate: the
+generic core, the TNT family migrated onto it (Bandit/Chaos as adapters,
+Control as a registered BUILTIN card kind, Grand Central's config presence
+at device 16), slot topology for all three TNT models, the object model,
+staged configuration and the profile surface — and now the PCI I/O window
+on both Bandits, non-BAR region decode, and expansion-ROM provisioning
+(`docs/core/peripherals/pci_prom.md`).
 
-Not done, with reasons: the host-overlay BAR fast path (above); the PCI
-I/O window on TNT (nothing decodes I/O space there yet — see
-`docs/machines/tnt/tnt.md`); Bandit 2's memory window (its forwarded range
-is unresolved); PCI-PCI bridges (type-1 cycles keep returning all-ones —
-no subordinate buses exist on these machines); bus mastering (no modelled
-device masters, and the DBDMA hooks are the precedent when one does).
+Not done, with reasons: the host-overlay BAR fast path (above); **Bandit
+2's memory window** — TN1062 pins it at `$90000000`, but our pm9500 still
+carries Chaos whose VCI window is at that same address, so the claim waits
+on removing Chaos from the 9500; PCI-PCI bridges (type-1 cycles keep
+returning all-ones — no subordinate buses exist on these machines); bus
+mastering (no modelled device masters, and the DBDMA hooks are the
+precedent when one does).
 
 ## See also
 
 - `docs/machines/tnt/tnt.md` — the bridge adapter, slot tables and the
   interrupt map
-- `docs/core/peripherals/nubus_vrom.md` — the declaration-ROM identity
-  machinery the FCode expansion-ROM path will mirror
+- `docs/core/peripherals/pci_prom.md` — expansion-ROM identity and
+  provisioning, the FCode path's half of the story
+- `docs/core/peripherals/nubus_vrom.md` — the declaration-ROM sibling the
+  PROM path mirrors
 - `tests/unit/suites/pci/` — the config-cycle contract, pinned
