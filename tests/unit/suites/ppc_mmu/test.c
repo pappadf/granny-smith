@@ -713,6 +713,21 @@ static void test_604_split_access(void) {
     ppc_update_active_maps(P);
     CHECK_EQ(memory_read_uint32(0x00300FFCu), 0x11225566u);
     CHECK_EQ(memory_read_uint32(0x00280000u), 0x77883344u);
+    // An update-form store that splits must still write rA back: the gate
+    // performs the split store itself, and the op body's update must not
+    // be skipped with it (a lost stwu update shears every stack that
+    // straddles a page edge).
+    enter_dt();
+    P->gpr[4] = 0x00201002u;
+    P->gpr[3] = 0x99AA77EEu;
+    memory_write_uint32(0x1000, e_d(37, 3, 4, (uint32_t)-4)); // stwu r3,-4(r4)
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x1004u); // no exception
+    CHECK_EQ(P->gpr[4], 0x00200FFEu); // rA carries the architected EA
+    P->msr &= (uint32_t)~PPC_MSR_DT;
+    ppc_update_active_maps(P);
+    CHECK_EQ(memory_read_uint32(0x00300FFCu), 0x112299AAu);
+    CHECK_EQ(memory_read_uint32(0x00280000u), 0x77EE3344u);
     // The same access on the 601 is an alignment exception
     fresh();
     wipe_htab();

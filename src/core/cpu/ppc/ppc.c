@@ -9,6 +9,8 @@
 #include "ppc_internal.h"
 #include "ppc_softfp.h"
 
+#include <stdlib.h> // getenv (TEMP diagnostic PVR override)
+
 #include "alias.h"
 #include "log.h"
 #include "machine_profile.h"
@@ -87,7 +89,10 @@ void ppc_poll_interrupt(ppc_t *p) {
 }
 
 void ppc_set_ext_irq(ppc_t *p, bool level) {
-    p->ext_irq = level ? 1u : 0u;
+    uint32_t next = level ? 1u : 0u;
+    if (next != p->ext_irq) // temporary diagnostics for the 604 boot wall
+        LOG(3, "ext_irq %u->%u pc=$%08X msr=$%08X", p->ext_irq, next, p->pc, p->msr);
+    p->ext_irq = next;
 }
 
 // === RTC/TB/DEC time derivation (§3.7; TNT proposal §4.4) ===================
@@ -652,6 +657,14 @@ void ppc_reset(ppc_t *p) {
         p->msr = PPC_MSR_ME | PPC_MSR_EP; // $00001040
         p->pvr = 0x00010001u;
         p->hid0 = 0x80010080u;
+    }
+    // TEMP diagnostic (604 boot-wall hunt): let a run present a foreign PVR so
+    // the ROM/kernel select the other CPU's personality against this model's
+    // semantics.  Env-gated, inert otherwise.
+    {
+        const char *s = getenv("GS_PVR_OVERRIDE");
+        if (s)
+            p->pvr = (uint32_t)strtoul(s, NULL, 16);
     }
     p->pc = 0xFFF00100u; // reset vector, MSR[EP]=1 on both models
     p->instruction_pc = p->pc;

@@ -38,6 +38,7 @@
 #include "log.h"
 #include "ppc.h" // r24 (the 68k PC) annotates the R1 access log
 
+#include <stdlib.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("hammerhead");
@@ -74,6 +75,21 @@ void tnt_hh_init(config_t *cfg) {
     hh->reg[HH_REG_ARBCONFIG >> 4] = 0x00u; // TwoCPU clear: uniprocessor
     hh->reg[HH_REG_WHOAMI >> 4] = 0x10u << 24; // primary CPU
     hh->reg[HH_REG_L2CFG >> 4] = 0x00u; // no L2: POST skips the test
+    // TEMP diagnostic (604 boot-wall hunt): present an L2 module.  Byte
+    // registers live in lane 0, so the value is shifted to bits 31-24.
+    // Bit $80 = present, low 3 bits = size code (encoding unattested; probe
+    // with values $80-$87 and read what OF puts in the tree).  The probe
+    // sequence observed live (read $81 / strobe $80 / WRITE +$E0=$70 /
+    // read-back / strobe $00) shows +$E0 is read back after a write, so
+    // while the override is armed the register is STICKY: reads always
+    // return the env value (hardware-status semantics), writes are dropped.
+    {
+        const char *s = getenv("GS_HH_L2CFG");
+        if (s) {
+            hh->reg[HH_REG_L2CFG >> 4] = ((uint32_t)strtoul(s, NULL, 16) & 0xFFu) << 24;
+            hh->l2cfg_sticky = true;
+        }
+    }
 }
 
 // Byte read.  The register file is 128 x 32-bit on $10 centres; within a
@@ -104,6 +120,10 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     uint32_t lane = offset & 0xFu;
     if (lane >= 4) {
         LOG(2, "write to dead lane +$%03X = $%02X", offset, value);
+        return;
+    }
+    if (hh->l2cfg_sticky && (offset >> 4) == (HH_REG_L2CFG >> 4)) {
+        LOG(2, "write +$%03X = $%02X dropped (GS_HH_L2CFG sticky)", offset, value);
         return;
     }
     uint32_t *reg = &hh->reg[offset >> 4];

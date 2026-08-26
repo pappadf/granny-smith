@@ -98,6 +98,7 @@ typedef struct tnt_board_desc {
 
 typedef struct tnt_hammerhead {
     uint32_t reg[TNT_HH_REGS]; // raw store; specials overlay on read
+    bool l2cfg_sticky; // TEMP diagnostic: +$E0 ignores writes (GS_HH_L2CFG)
 } tnt_hammerhead_t;
 
 // === Bandit / Chaos state (bandit.c) ========================================
