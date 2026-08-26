@@ -161,6 +161,96 @@ LOG_USE_CATEGORY_NAME("mach64");
 // treat < $40 as ordinary registers.
 #define DW_DRAW_ENGINE_FIRST 0x40
 
+// --- the draw engine (RRG ch. 2; behaviour per PRG chapters 3-5) -----------
+#define DW_DST_OFF_PITCH      0x40
+#define DW_DST_X              0x41
+#define DW_DST_Y              0x42
+#define DW_DST_Y_X            0x43
+#define DW_DST_WIDTH          0x44
+#define DW_DST_HEIGHT         0x45
+#define DW_DST_HEIGHT_WIDTH   0x46
+#define DW_DST_X_WIDTH        0x47
+#define DW_DST_CNTL           0x4C
+#define DW_SRC_OFF_PITCH      0x60
+#define DW_SRC_X              0x61
+#define DW_SRC_Y              0x62
+#define DW_SRC_Y_X            0x63
+#define DW_SRC_WIDTH1         0x64
+#define DW_SRC_HEIGHT1        0x65
+#define DW_SRC_HEIGHT1_WIDTH1 0x66
+#define DW_SRC_CNTL           0x6D
+#define DW_HOST_DATA0         0x80
+#define DW_HOST_DATA_LAST     0x8F
+#define DW_HOST_CNTL          0x90
+#define DW_SC_LEFT            0xA8
+#define DW_SC_RIGHT           0xA9
+#define DW_SC_LEFT_RIGHT      0xAA
+#define DW_SC_TOP             0xAB
+#define DW_SC_BOTTOM          0xAC
+#define DW_SC_TOP_BOTTOM      0xAD
+#define DW_DP_BKGD_CLR        0xB0
+#define DW_DP_FRGD_CLR        0xB1
+#define DW_DP_WRITE_MSK       0xB2
+#define DW_DP_PIX_WIDTH       0xB4
+#define DW_DP_MIX             0xB5
+#define DW_DP_SRC             0xB6
+
+// DP_SRC: which generator feeds each of the three muxes in the pixel data
+// path (RRG p. 3-40).  Every draw operation colour-expands a MONOCHROME
+// source into two colour sources: where the mono bit is 1 the foreground
+// colour source and foreground mix are used, where it is 0 the background
+// pair is (PRG, "Logical Pixel Data Path").
+#define DP_BKGD_SRC(v) ((v) & 7u)
+#define DP_FRGD_SRC(v) (((v) >> 8) & 7u)
+#define DP_MONO_SRC(v) (((v) >> 16) & 3u)
+
+// Colour-source encodings, shared by DP_BKGD_SRC and DP_FRGD_SRC.
+#define DP_SRC_BKGD_CLR 0u
+#define DP_SRC_FRGD_CLR 1u
+#define DP_SRC_HOST     2u
+#define DP_SRC_BLIT     3u
+#define DP_SRC_PATTERN  4u
+
+// Monochrome-source encodings (a DIFFERENT table — 1 is the pattern here,
+// not the foreground colour).
+#define DP_MONO_ALWAYS_1 0u
+#define DP_MONO_PATTERN  1u
+#define DP_MONO_HOST     2u
+#define DP_MONO_BLIT     3u
+
+// PAT_REG0/PAT_REG1 hold an 8 x 8 monochrome pattern, one bit per pixel.
+#define DW_PAT_REG0 0xA0
+#define DW_PAT_REG1 0xA1
+#define DW_PAT_CNTL 0xA2
+// DP_MIX: the raster op the pixel ALU applies, foreground in bits 20:16 and
+// background in bits 4:0.  The function table is ATI's own (PRG, "Source
+// and Destination Mixing Logic") and is implemented in full by
+// mach64_mix() — reading it off the manual mattered, because the driver
+// uses function 0 ("not D", an invert) heavily and treating everything as
+// "source" painted solid blocks of foreground colour over the desktop.
+#define DP_FRGD_MIX(v) (((v) >> 16) & 0x1Fu)
+#define DP_BKGD_MIX(v) ((v) & 0x1Fu)
+#define DP_MIX_SRC     7u
+#define DP_MIX_AVERAGE 0x17u // (D+S) >> 1, with DP_CHAIN_MSK breaking carries
+
+// CLR_CMP_CNTL: a per-pixel comparison that can veto the write.  "If the
+// result of the comparison is FALSE, the result of the ALU is written to
+// the destination; otherwise the destination data is written" (PRG), so a
+// TRUE comparison leaves the pixel alone — which is how a transparent blit
+// is expressed.
+#define DW_CLR_CMP_CLR  0xC0
+#define DW_CLR_CMP_MSK  0xC1
+#define DW_CLR_CMP_CNTL 0xC2
+#define CLR_CMP_FN(v)   ((v) & 7u)
+#define CLR_CMP_FALSE   0u // never veto
+#define CLR_CMP_TRUE    1u // always veto
+#define CLR_CMP_NE      4u // veto where the pixel differs from CLR_CMP_CLR
+#define CLR_CMP_EQ      5u // veto where it matches — the transparent blit
+#define CLR_CMP_SRC(v)  (((v) >> 24) & 3u) // 0 = compare the destination
+// DST_CNTL: which way the trajectory walks.  1 = increasing.
+#define DST_X_DIR 0x01u
+#define DST_Y_DIR 0x02u
+
 // CONFIG_CNTL has NO memory-mapped alias, so it has no natural dword
 // index.  It lives one slot above the 256-dword alias window, which the
 // memory face masks to $00-$FF and therefore can never reach.
@@ -196,6 +286,31 @@ LOG_USE_CATEGORY_NAME("mach64");
 #define CRTC_EXT_DISP_EN  0x01000000u
 #define CRTC_EN           0x02000000u
 #define CRTC_DISPLAY_DIS  0x00000040u
+
+// CRTC_PIX_WIDTH encodings (RRG p. 3-24).
+#define CRTC_PIX_4BPP  1u
+#define CRTC_PIX_8BPP  2u
+#define CRTC_PIX_15BPP 3u // 5,5,5 — the Mac "thousands of colours" mode
+#define CRTC_PIX_16BPP 4u // 5,6,5
+#define CRTC_PIX_24BPP 5u
+#define CRTC_PIX_32BPP 6u
+
+// --- CRTC_INT_CNTL (RRG p. 3-21) -------------------------------------------
+// Bit 0 is the live blank state; bits 2 and 4 read as the pending latch and
+// write as the acknowledge (write-1-to-clear).
+#define CRTC_VBLANK        0x01u
+#define CRTC_VBLANK_INT_EN 0x02u
+#define CRTC_VBLANK_INT    0x04u
+#define CRTC_VLINE_INT_EN  0x08u
+#define CRTC_VLINE_INT     0x10u
+#define CRTC_INT_ACK_BITS  (CRTC_VBLANK_INT | CRTC_VLINE_INT)
+
+// Is either interrupt both enabled and pending?  The slot line follows this.
+#define CRTC_INT_ENABLE_FOR(v)                                                                                         \
+    (((((v) & CRTC_VBLANK_INT_EN) && ((v) & CRTC_VBLANK_INT)) ||                                                       \
+      (((v) & CRTC_VLINE_INT_EN) && ((v) & CRTC_VLINE_INT)))                                                           \
+         ? true                                                                                                        \
+         : false)
 
 // ============================================================
 // Monitors
@@ -319,8 +434,29 @@ typedef struct mach64 {
     memory_interface_t aper_if; // BAR0: framebuffer + the register alias
     memory_interface_t io_if; // the sparse I/O face
 
+    // Scanout.  The descriptor is rebuilt from the CRTC registers whenever
+    // one of them moves; `blank` is the black stub shown while the raster
+    // is disabled, and `compose` carries the hardware-cursor composite.
+    display_t display;
+    rgba8_t clut_view[256];
+    uint8_t *blank;
+    uint8_t *compose;
     bool clut_dirty; // palette changed since the last scanout refresh
+    bool irq_active; // the slot line this card is currently driving
     bool aperture_warned; // the "guest touched the BAR0 slack" log is once-only
+    bool pix_width_warned; // the unsupported-depth log is once-only
+    bool host_blit_warned; // the host-data-blit log is once-only
+    bool mix_warned; // the unsupported-raster-op log is once-only
+    uint64_t blits; // operations the engine has executed (diagnostics)
+    // A host-data operation in flight.  Host data is a STREAM: the
+    // trajectory is set up, then pixels arrive one HOST_DATA write at a
+    // time until the rectangle is full (PRG, "Monochrome Expansion
+    // Bitblit").
+    struct {
+        bool active;
+        uint32_t x0, y0, w, h;
+        uint32_t col, row;
+    } host_op;
 } mach64_t;
 
 // The staged options a `pci_card=` boot can carry, consumed by the factory.
@@ -393,6 +529,12 @@ static uint32_t mach64_aperture_size(const mach64_t *m);
 static void mach64_clut_changed(mach64_t *m);
 static uint32_t mach64_reg_read(mach64_t *m, int dw);
 static void mach64_reg_write(mach64_t *m, int dw, uint32_t value);
+static void mach64_update(mach64_t *m);
+static bool mach64_in_vblank(const mach64_t *m);
+static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value);
+static void mach64_host_feed(mach64_t *m, uint32_t value);
+static uint32_t mach64_bytes_per_pixel(const mach64_t *m);
+static void mach64_irq_sync(mach64_t *m);
 
 // --- lane access -----------------------------------------------------------
 //
@@ -467,6 +609,10 @@ static uint32_t mach64_reg_read(mach64_t *m, int dw) {
     case DW_CRTC_VLINE_CRNT_VLINE:
         return mach64_current_vline(m);
 
+    case DW_CRTC_INT_CNTL:
+        // Bit 0 is live; the enables and the pending latches are stored.
+        return (m->reg[DW_CRTC_INT_CNTL] & ~CRTC_VBLANK) | (mach64_in_vblank(m) ? CRTC_VBLANK : 0);
+
     case DW_DAC_REGS:
         return mach64_dac_read(m);
 
@@ -512,6 +658,28 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
         mach64_dac_write(m, value);
         return;
 
+    case DW_CRTC_H_TOTAL_DISP:
+    case DW_CRTC_V_TOTAL_DISP:
+    case DW_CRTC_OFF_PITCH:
+    case DW_CRTC_GEN_CNTL:
+        m->reg[dw] = value;
+        mach64_update(m);
+        return;
+
+    case DW_CRTC_INT_CNTL: {
+        // Bits 2 and 4 are the pending latches: they read as status and a
+        // written 1 ACKNOWLEDGES.  Everything else is a plain latch.  The
+        // driver's ISR reads this register and writes the bit back, so
+        // treating the write as a straight store would leave the interrupt
+        // asserted and the handler would loop at interrupt speed.
+        uint32_t prev = m->reg[DW_CRTC_INT_CNTL];
+        uint32_t kept = prev & CRTC_INT_ACK_BITS & ~value; // 1 = acknowledge
+        // Bit 0 is read-only (the live blank state), so never store it.
+        m->reg[DW_CRTC_INT_CNTL] = (value & ~(CRTC_INT_ACK_BITS | CRTC_VBLANK)) | kept;
+        mach64_irq_sync(m);
+        return;
+    }
+
     case DW_MEM_CNTL:
         // MEM_SIZE (bits 2:0) must agree with the buffer we allocated, or
         // the driver offers depths the framebuffer cannot hold.  The card's
@@ -525,15 +693,11 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
         return;
 
     default:
+        if (dw >= DW_DRAW_ENGINE_FIRST && mach64_engine_write(m, dw, value))
+            return;
         if (dw >= DW_DRAW_ENGINE_FIRST) {
-            // The draw engine is store-and-readback for now, with
-            // FIFO_STAT/GUI_STAT always reporting ready and idle.  Classic
-            // Mac OS draws through QuickDraw into the framebuffer; the
-            // accelerated paths come from the separately installed ATI
-            // Graphics Accelerator extension, and the ndrv in this ROM is a
-            // DISPLAY driver, not the accelerator.  Log at a level that is
-            // off by default but turns the question into a one-line answer
-            // if a desktop ever comes up corrupt.
+            // An engine register with no behaviour of its own: pattern,
+            // colour-compare, context.  Stored and read back.
             LOG(4, "draw-engine register dword $%02X = $%08X (store only)", dw, value);
         }
         m->reg[dw] = value;
@@ -804,6 +968,399 @@ static void mach64_aperture_changed(mach64_t *m) {
 }
 
 // ============================================================
+// The draw engine
+// ============================================================
+//
+// §4.8 of the proposal reasoned this could stay store-and-readback: classic
+// Mac OS draws through QuickDraw into the framebuffer, and the accelerated
+// paths were expected to come from the separately installed ATI Graphics
+// Accelerator extension, with the in-ROM ndrv being a display driver only.
+//
+// The first System 7.6 boot disproved that.  The ndrv issues a steady
+// stream of engine operations — 3 467 register writes in a 200 M
+// instruction window, overwhelmingly solid rectangle fills — and with the
+// engine inert the desktop came up with the startup splash still painted
+// over it, because the regions the driver clears through the blitter never
+// cleared.  So the engine is modelled, from the register traffic the
+// driver actually produces:
+//
+//   DP_FRGD_CLR / DP_BKGD_CLR   the colours
+//   DP_SRC                      which generator feeds the foreground
+//   DP_MIX                      the raster op (7 = source, plain overwrite)
+//   DST_OFF_PITCH               destination base and pitch — the SAME
+//                               $14100040 the CRTC uses, which independently
+//                               confirms the field split in mach64_update()
+//   DST_Y_X, DST_HEIGHT_WIDTH   the trajectory
+//
+// The TRIGGER is whichever write supplies DST_WIDTH.  That is not a guess:
+// the trace shows both shapes, `DST_Y_X` then `DST_HEIGHT_WIDTH` for a
+// rectangle, and `DST_HEIGHT` once then `DST_Y_X`/`DST_WIDTH` repeatedly
+// for a run of single-pixel-tall lines.  Treating DST_Y_X as the trigger
+// would fire every operation twice, once with a stale size.
+
+// A destination or source surface, decoded from an OFF_PITCH register.
+// Same layout as CRTC_OFF_PITCH: pitch in bits 31:22 (pixels / 8), offset
+// in bits 19:0 (units of 8 bytes).
+typedef struct mach64_surface {
+    uint32_t base; // byte offset into VRAM
+    uint32_t pitch; // bytes per row
+} mach64_surface_t;
+
+static mach64_surface_t mach64_surface(const mach64_t *m, int off_pitch_dw, uint32_t bpp) {
+    uint32_t v = m->reg[off_pitch_dw];
+    mach64_surface_t s;
+    s.base = (v & 0xFFFFFu) * 8u;
+    s.pitch = ((v >> 22) & 0x3FFu) * 8u * bpp;
+    return s;
+}
+
+// Byte address of a pixel, or -1 when it falls outside VRAM.
+static int64_t mach64_pixel_at(const mach64_t *m, const mach64_surface_t *s, uint32_t x, uint32_t y, uint32_t bpp) {
+    uint64_t off = (uint64_t)s->base + (uint64_t)y * s->pitch + (uint64_t)x * bpp;
+    if (off + bpp > m->vram_size)
+        return -1;
+    return (int64_t)off;
+}
+
+// The pixel ALU (PRG, "Source and Destination Mixing Logic").  Every
+// function in ATI's table, so nothing has to be approximated by "source".
+static uint32_t mach64_mix(uint32_t fn, uint32_t s, uint32_t d, uint32_t bpp) {
+    switch (fn) {
+    case 0x0:
+        return ~d;
+    case 0x1:
+        return 0u;
+    case 0x2:
+        return ~0u;
+    case 0x3:
+        return d;
+    case 0x4:
+        return ~s;
+    case 0x5:
+        return d ^ s;
+    case 0x6:
+        return (~d) ^ s;
+    case 0x7:
+        return s;
+    case 0x8:
+        return (~d) | (~s);
+    case 0x9:
+        return d | (~s);
+    case 0xA:
+        return (~d) | s;
+    case 0xB:
+        return d | s;
+    case 0xC:
+        return d & s;
+    case 0xD:
+        return (~d) & s;
+    case 0xE:
+        return d & (~s);
+    case 0xF:
+        return (~d) & (~s);
+    case DP_MIX_AVERAGE: {
+        // (D+S) >> 1 with DP_CHAIN_MSK breaking the carry chain.  At every
+        // depth this model renders, the documented mask value breaks it at
+        // byte boundaries, so a per-byte average IS the specified result.
+        uint32_t out = 0;
+        for (uint32_t i = 0; i < bpp; i++) {
+            uint32_t sh = 8u * i;
+            uint32_t avg = ((((s >> sh) & 0xFFu) + ((d >> sh) & 0xFFu)) >> 1) & 0xFFu;
+            out |= avg << sh;
+        }
+        return out;
+    }
+    default:
+        return s;
+    }
+}
+
+// Read one pixel out of VRAM (big-endian bytes) as a value.
+static uint32_t mach64_get_pixel(const mach64_t *m, int64_t at, uint32_t bpp) {
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < bpp; i++)
+        v = (v << 8) | m->vram[at + i];
+    return v;
+}
+
+static void mach64_put_pixel(mach64_t *m, int64_t at, uint32_t colour, uint32_t bpp, uint32_t mask) {
+    for (uint32_t i = 0; i < bpp; i++) {
+        // The framebuffer is big-endian bytes; the colour registers hold the
+        // pixel value little-endian-wise, so byte i of an n-byte pixel is
+        // value bits 8*(n-1-i).
+        uint32_t shift = 8u * (bpp - 1u - i);
+        uint8_t mbyte = (uint8_t)(mask >> shift);
+        if (!mbyte)
+            continue;
+        uint8_t *dst = &m->vram[at + i];
+        *dst = (uint8_t)((*dst & ~mbyte) | ((colour >> shift) & mbyte));
+    }
+}
+
+// The monochrome mux: one bit per pixel, deciding which colour source and
+// which mix this pixel gets (RRG p. 3-40, PRG "Logical Pixel Data Path").
+static bool mach64_mono_bit(mach64_t *m, uint32_t mono_sel, uint32_t x, uint32_t y, uint32_t col, uint32_t row,
+                            const mach64_surface_t *src, uint32_t bpp) {
+    (void)col;
+    (void)row;
+    switch (mono_sel) {
+    case DP_MONO_ALWAYS_1:
+        return true;
+    case DP_MONO_PATTERN: {
+        // An 8 x 8 bit pattern held in PAT_REG0 (rows 0-3) and PAT_REG1
+        // (rows 4-7), addressed by the DESTINATION coordinates — which is
+        // what makes a dithered fill line up across separate operations.
+        uint32_t r = y & 7u;
+        uint32_t word = (r < 4u) ? m->reg[DW_PAT_REG0] : m->reg[DW_PAT_REG1];
+        uint32_t byte = (word >> (8u * (r & 3u))) & 0xFFu;
+        return ((byte >> (7u - (x & 7u))) & 1u) != 0;
+    }
+    case DP_MONO_BLIT: {
+        // The blit source area read as one bit per pixel.
+        int64_t from = mach64_pixel_at(m, src, x, y, bpp);
+        return from >= 0 && mach64_get_pixel(m, from, bpp) != 0;
+    }
+    default:
+        return true;
+    }
+}
+
+// Everything the pixel loop needs, gathered once per operation.  The
+// streamed host-data path re-gathers it per HOST_DATA write, which is
+// correct: a driver does not change the data path mid-stream, and reading
+// it fresh means the two paths cannot drift apart.
+typedef struct mach64_op {
+    uint32_t bpp;
+    mach64_surface_t dst, src;
+    uint32_t frgd_sel, bkgd_sel, mono_sel;
+    uint32_t frgd_mix, bkgd_mix;
+    uint32_t sc_left, sc_right, sc_top, sc_bottom;
+    uint32_t mask;
+    uint32_t src_x0, src_y0, src_w, src_h;
+    uint32_t cmp_fn, cmp_clr, cmp_msk;
+    bool cmp_on_src;
+} mach64_op_t;
+
+static void mach64_op_gather(mach64_t *m, mach64_op_t *op) {
+    op->bpp = mach64_bytes_per_pixel(m);
+    op->dst = mach64_surface(m, DW_DST_OFF_PITCH, op->bpp);
+    op->src = mach64_surface(m, DW_SRC_OFF_PITCH, op->bpp);
+    op->frgd_sel = DP_FRGD_SRC(m->reg[DW_DP_SRC]);
+    op->bkgd_sel = DP_BKGD_SRC(m->reg[DW_DP_SRC]);
+    op->mono_sel = DP_MONO_SRC(m->reg[DW_DP_SRC]);
+    op->frgd_mix = DP_FRGD_MIX(m->reg[DW_DP_MIX]);
+    op->bkgd_mix = DP_BKGD_MIX(m->reg[DW_DP_MIX]);
+    op->sc_left = m->reg[DW_SC_LEFT] & 0xFFFFu;
+    op->sc_right = m->reg[DW_SC_RIGHT] & 0xFFFFu;
+    op->sc_top = m->reg[DW_SC_TOP] & 0xFFFFu;
+    op->sc_bottom = m->reg[DW_SC_BOTTOM] & 0xFFFFu;
+    op->mask = m->reg[DW_DP_WRITE_MSK];
+    op->src_x0 = m->reg[DW_SRC_X] & 0xFFFFu;
+    op->src_y0 = m->reg[DW_SRC_Y] & 0xFFFFu;
+    op->src_w = m->reg[DW_SRC_WIDTH1] & 0xFFFFu;
+    op->src_h = m->reg[DW_SRC_HEIGHT1] & 0xFFFFu;
+    op->cmp_fn = CLR_CMP_FN(m->reg[DW_CLR_CMP_CNTL]);
+    op->cmp_clr = m->reg[DW_CLR_CMP_CLR];
+    op->cmp_msk = m->reg[DW_CLR_CMP_MSK];
+    op->cmp_on_src = CLR_CMP_SRC(m->reg[DW_CLR_CMP_CNTL]) != 0;
+}
+
+// One pixel through the whole data path: mono mux -> colour mux -> ALU ->
+// colour compare -> write mask.  `mono` is supplied by the caller because
+// the two paths source it differently (pattern/blit versus a host stream).
+static void mach64_emit(mach64_t *m, const mach64_op_t *op, uint32_t x, uint32_t y, uint32_t col, uint32_t row,
+                        bool mono) {
+    if (x < op->sc_left || x > op->sc_right || y < op->sc_top || y > op->sc_bottom)
+        return;
+    int64_t at = mach64_pixel_at(m, &op->dst, x, y, op->bpp);
+    if (at < 0)
+        return;
+
+    uint32_t colour_sel = mono ? op->frgd_sel : op->bkgd_sel;
+    uint32_t mix = mono ? op->frgd_mix : op->bkgd_mix;
+    uint32_t source;
+    switch (colour_sel) {
+    case DP_SRC_BKGD_CLR:
+        source = m->reg[DW_DP_BKGD_CLR];
+        break;
+    case DP_SRC_BLIT: {
+        uint32_t sx = op->src_x0 + (op->src_w ? (col % op->src_w) : col);
+        uint32_t sy = op->src_y0 + (op->src_h ? (row % op->src_h) : row);
+        int64_t from = mach64_pixel_at(m, &op->src, sx, sy, op->bpp);
+        if (from < 0)
+            return;
+        source = mach64_get_pixel(m, from, op->bpp);
+        break;
+    }
+    case DP_SRC_FRGD_CLR:
+    case DP_SRC_PATTERN:
+    default:
+        source = m->reg[DW_DP_FRGD_CLR];
+        break;
+    }
+
+    uint32_t dest = mach64_get_pixel(m, at, op->bpp);
+    // A TRUE comparison leaves the destination as it is.
+    if (op->cmp_fn == CLR_CMP_NE || op->cmp_fn == CLR_CMP_EQ) {
+        uint32_t probe = (op->cmp_on_src ? source : dest) & op->cmp_msk;
+        bool equal = probe == (op->cmp_clr & op->cmp_msk);
+        if ((op->cmp_fn == CLR_CMP_EQ) == equal)
+            return;
+    } else if (op->cmp_fn == CLR_CMP_TRUE) {
+        return;
+    }
+    mach64_put_pixel(m, at, mach64_mix(mix, source, dest, op->bpp), op->bpp, op->mask);
+}
+
+// Run one trajectory.  `width`/`height` come from whichever register wrote
+// last; everything else is the standing data-path state.
+static void mach64_engine_run(mach64_t *m) {
+    uint32_t width = m->reg[DW_DST_WIDTH] & 0xFFFFu;
+    uint32_t height = m->reg[DW_DST_HEIGHT] & 0xFFFFu;
+    if (!width || !height)
+        return;
+
+    mach64_op_t op;
+    mach64_op_gather(m, &op);
+    if ((op.frgd_mix > 0xFu && op.frgd_mix != DP_MIX_AVERAGE) && !m->mix_warned) {
+        m->mix_warned = true;
+        LOG(0,
+            "draw engine: DP_MIX foreground function $%02X is not in ATI's table — treating it as "
+            "plain source, which will draw the wrong thing wherever it is used",
+            op.frgd_mix);
+    }
+
+    uint32_t dst_x = m->reg[DW_DST_X] & 0xFFFFu;
+    uint32_t dst_y = m->reg[DW_DST_Y] & 0xFFFFu;
+
+    // A host-fed operation does not draw now: its pixels arrive later, one
+    // HOST_DATA write at a time.  Arm the cursor and return.
+    if (op.mono_sel == DP_MONO_HOST || op.frgd_sel == DP_SRC_HOST || op.bkgd_sel == DP_SRC_HOST) {
+        m->host_op.active = true;
+        m->host_op.x0 = dst_x;
+        m->host_op.y0 = dst_y;
+        m->host_op.w = width;
+        m->host_op.h = height;
+        m->host_op.col = 0;
+        m->host_op.row = 0;
+        LOG(4, "host-data operation armed: %ux%u at (%u,%u)", width, height, dst_x, dst_y);
+        return;
+    }
+
+    uint32_t cntl = m->reg[DW_DST_CNTL];
+    bool x_inc = (cntl & DST_X_DIR) != 0;
+    bool y_inc = (cntl & DST_Y_DIR) != 0;
+    for (uint32_t row = 0; row < height; row++) {
+        uint32_t y = y_inc ? dst_y + row : dst_y - row;
+        for (uint32_t col = 0; col < width; col++) {
+            uint32_t x = x_inc ? dst_x + col : dst_x - col;
+            bool mono = mach64_mono_bit(m, op.mono_sel, x, y, col, row, &op.src, op.bpp);
+            mach64_emit(m, &op, x, y, col, row, mono);
+        }
+    }
+    m->blits++;
+    m->display.fb_dirty = true;
+}
+
+// Feed one dword of host data into the operation in flight.
+//
+// Bit order: DP_BYTE_PIX_ORDER (DP_PIX_WIDTH bit 31) selects MSBit-first
+// (0, the value the driver programs) or LSBit-first within each byte, and
+// bytes are consumed low-address first — which for this little-endian
+// register domain is the dword's low byte first.
+//
+// HOST_CNTL's HOST_BYTE_ALIGN makes consumption jump to the next byte
+// boundary whenever the trajectory steps in Y, so a glyph whose width is
+// not a multiple of 8 still starts each row on a fresh byte.
+static void mach64_host_feed(mach64_t *m, uint32_t value) {
+    if (!m->host_op.active)
+        return;
+    mach64_op_t op;
+    mach64_op_gather(m, &op);
+    bool lsb_first = (m->reg[DW_DP_PIX_WIDTH] & 0x80000000u) != 0;
+    bool byte_align = (m->reg[DW_HOST_CNTL] & 0x1u) != 0;
+
+    for (uint32_t bit = 0; bit < 32u && m->host_op.active; bit++) {
+        uint32_t byte = bit >> 3;
+        uint32_t within = bit & 7u;
+        uint32_t shift = 8u * byte + (lsb_first ? within : (7u - within));
+        bool mono = ((value >> shift) & 1u) != 0;
+
+        uint32_t x = m->host_op.x0 + m->host_op.col;
+        uint32_t y = m->host_op.y0 + m->host_op.row;
+        mach64_emit(m, &op, x, y, m->host_op.col, m->host_op.row, mono);
+
+        if (++m->host_op.col >= m->host_op.w) {
+            m->host_op.col = 0;
+            if (++m->host_op.row >= m->host_op.h) {
+                m->host_op.active = false;
+                m->blits++;
+                m->display.fb_dirty = true;
+                return;
+            }
+            if (byte_align)
+                bit = ((bit >> 3) + 1u) * 8u - 1u; // resume on a byte boundary
+        }
+    }
+}
+
+// The engine's register writes.  Returns true when the write was the
+// engine's business, so the generic store below is skipped.
+static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
+    switch (dw) {
+    case DW_DST_Y_X: // Y in 31:16, X in 15:0 — sets the trajectory origin
+        m->reg[DW_DST_Y] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_DST_X] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    case DW_DST_HEIGHT_WIDTH: // height in 31:16, width in 15:0 — and GO
+        m->reg[DW_DST_HEIGHT] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_DST_WIDTH] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        mach64_engine_run(m);
+        return true;
+    case DW_DST_X_WIDTH: // X in 31:16, width in 15:0 — and GO
+        m->reg[DW_DST_X] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_DST_WIDTH] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        mach64_engine_run(m);
+        return true;
+    case DW_DST_WIDTH: // supplies the width on its own — and GO
+        m->reg[dw] = value;
+        mach64_engine_run(m);
+        return true;
+    case DW_SRC_Y_X:
+        m->reg[DW_SRC_Y] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_X] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    case DW_SRC_HEIGHT1_WIDTH1:
+        m->reg[DW_SRC_HEIGHT1] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_WIDTH1] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    // The combined scissor registers: high halfword is the far edge.
+    case DW_SC_LEFT_RIGHT:
+        m->reg[DW_SC_RIGHT] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_SC_LEFT] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    case DW_SC_TOP_BOTTOM:
+        m->reg[DW_SC_BOTTOM] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_SC_TOP] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    default:
+        if (dw >= DW_HOST_DATA0 && dw <= DW_HOST_DATA_LAST) {
+            m->reg[dw] = value;
+            mach64_host_feed(m, value);
+            return true;
+        }
+        return false;
+    }
+}
+
+// ============================================================
 // The sparse I/O face
 // ============================================================
 //
@@ -875,21 +1432,31 @@ static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
 //
 //   BAR0 + $000000 .. $7FFBFF   linear framebuffer (the 8 MB aperture)
 //   BAR0 + $7FFC00 .. $7FFFFF   1 KB memory-mapped register alias
-//   BAR0 + $800000 .. $FFFFFF   NOT covered by the aperture
+//   BAR0 + $800000 .. $FFFFFF   the same 8 MB aperture again
 //
-// The upper 8 MB is alignment SLACK, not a second aperture: CFG_MEM_AP_LOC
-// has 4 MB granularity while an 8 MB aperture needs 8 MB alignment, so the
-// card asks for 16 MB to guarantee a legal placement wherever Open
-// Firmware puts it, and never refers to the rest.  Model it as decoding
-// nothing — a recoverable fault, the same answer empty PCI space gives —
-// and log the first access, because if something DOES read there the
-// aliasing story is richer than this and we want to know immediately
-// rather than silently render garbage.
+// The card asks for a 16 MB BAR because CFG_MEM_AP_LOC has 4 MB
+// granularity while an 8 MB aperture needs 8 MB alignment, so 16 MB
+// guarantees a legal placement wherever Open Firmware puts it.  What the
+// upper half then does was the open question, and the proposal reasoned it
+// was alignment SLACK decoding nothing — modelled that way deliberately,
+// with a loud log on any access, so that a wrong guess would announce
+// itself instead of silently rendering garbage.
+//
+// It announced itself on the first System 7.6 boot: the driver reads
+// BAR0 + $800200 — the same 512-byte framebuffer offset CRTC_OFFSET points
+// at, 8 MB higher.  With the upper half decoding nothing, its drawing went
+// nowhere and the desktop came up as a uniform field of colour-index 0.
+// The aperture REPEATS through the BAR, which is the same shape Control
+// has (a 64 MB aperture repeating an 8 MB view, with the usable
+// framebuffer in the +$800000 half).  So the upper 8 MB is modelled as
+// what it evidently is: another view of the same memory.
 
 // Where an aperture offset lands.  Returns -1 for the register alias and
 // -2 for the undecoded slack; otherwise a VRAM offset.
-#define MACH64_APER_REGS  (-1)
-#define MACH64_APER_SLACK (-2)
+#define MACH64_APER_REGS (-1)
+#define MACH64_APER_NONE (-2)
+
+static void aper_repeat_note(mach64_t *m, uint32_t offset);
 
 static int64_t aper_map(mach64_t *m, uint32_t offset) {
     uint32_t size = mach64_aperture_size(m);
@@ -902,10 +1469,12 @@ static int64_t aper_map(mach64_t *m, uint32_t offset) {
         LOG(2, "aperture access at +$%06X with CFG_MEM_AP_SIZE = 0", offset);
         if ((offset & ~(MACH64_MMIO_BLOCK_LEN - 1u)) == MACH64_MMIO_OFF_8MB)
             return MACH64_APER_REGS;
-        return MACH64_APER_SLACK;
+        return MACH64_APER_NONE;
     }
-    if (offset >= size)
-        return MACH64_APER_SLACK;
+    if (offset >= size) {
+        aper_repeat_note(m, offset);
+        offset %= size; // the aperture repeats through the 16 MB BAR
+    }
     if (offset >= mach64_mmio_offset(m))
         return MACH64_APER_REGS;
     // VRAM smaller than the aperture aliases through it, which is what
@@ -913,24 +1482,23 @@ static int64_t aper_map(mach64_t *m, uint32_t offset) {
     return (int64_t)(offset & (m->vram_size - 1u));
 }
 
-static void aper_slack_warn(mach64_t *m, uint32_t offset, bool write) {
+// Say so, once, when the guest reaches past the first copy of the aperture
+// — the observation that settled what the upper half of the BAR is.
+static void aper_repeat_note(mach64_t *m, uint32_t offset) {
     if (m->aperture_warned)
         return;
     m->aperture_warned = true;
-    LOG(0,
-        "%s at BAR0 +$%06X is outside the %u MB aperture — this model treats the rest of the "
-        "16 MB BAR as alignment slack that decodes nothing.  If this repeats, the aperture "
-        "aliasing is richer than the ATI manual describes.",
-        write ? "write" : "read", offset, mach64_aperture_size(m) >> 20);
+    LOG(1,
+        "access at BAR0 +$%06X is past the %u MB aperture; serving it as the aperture repeated "
+        "through the 16 MB BAR (the driver puts its framebuffer in the upper half)",
+        offset, mach64_aperture_size(m) >> 20);
 }
 
 static uint8_t aper_read8(void *ctx, uint32_t offset) {
     mach64_t *m = (mach64_t *)ctx;
     int64_t at = aper_map(m, offset);
-    if (at == MACH64_APER_SLACK) {
-        aper_slack_warn(m, offset, false);
+    if (at == MACH64_APER_NONE)
         return 0xFFu;
-    }
     if (at == MACH64_APER_REGS)
         return mach64_reg_read_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u);
     return m->vram[at];
@@ -939,10 +1507,8 @@ static uint8_t aper_read8(void *ctx, uint32_t offset) {
 static void aper_write8(void *ctx, uint32_t offset, uint8_t value) {
     mach64_t *m = (mach64_t *)ctx;
     int64_t at = aper_map(m, offset);
-    if (at == MACH64_APER_SLACK) {
-        aper_slack_warn(m, offset, true);
+    if (at == MACH64_APER_NONE)
         return;
-    }
     if (at == MACH64_APER_REGS) {
         mach64_reg_write_lane(m, (int)((offset & 0x3FFu) >> 2), offset & 3u, value);
         return;
@@ -976,10 +1542,8 @@ static void aper_write16(void *ctx, uint32_t offset, uint16_t value) {
 static uint32_t aper_read32(void *ctx, uint32_t offset) {
     mach64_t *m = (mach64_t *)ctx;
     int64_t at = aper_map(m, offset);
-    if (at == MACH64_APER_SLACK) {
-        aper_slack_warn(m, offset, false);
+    if (at == MACH64_APER_NONE)
         return 0xFFFFFFFFu;
-    }
     if (at == MACH64_APER_REGS)
         return MACH64_LE32(mach64_reg_read(m, (int)((offset & 0x3FFu) >> 2)));
     return ((uint32_t)m->vram[at] << 24) | ((uint32_t)m->vram[(at + 1) & (m->vram_size - 1u)] << 16) |
@@ -989,10 +1553,8 @@ static uint32_t aper_read32(void *ctx, uint32_t offset) {
 static void aper_write32(void *ctx, uint32_t offset, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
     int64_t at = aper_map(m, offset);
-    if (at == MACH64_APER_SLACK) {
-        aper_slack_warn(m, offset, true);
+    if (at == MACH64_APER_NONE)
         return;
-    }
     if (at == MACH64_APER_REGS) {
         mach64_reg_write(m, (int)((offset & 0x3FFu) >> 2), MACH64_LE32(value));
         return;
@@ -1047,24 +1609,260 @@ static void rom_write32(void *ctx, uint32_t offset, uint32_t value) {
 // the frame phase against a nominal 60 Hz.  It only has to ADVANCE — a
 // driver polling for vertical blank spins forever otherwise — so the
 // nominal frame is enough and no pixel clock is needed.
-static uint32_t mach64_current_vline(const mach64_t *m) {
-    uint32_t vtotal = ((m->reg[DW_CRTC_V_TOTAL_DISP] & 0x7FFu) + 1u);
+// Which scan line the raster is on, as a phase of a nominal 60 Hz frame
+// against the programmed vertical total.  Only monotonic-within-frame
+// matters: nothing here consumes a pixel clock, the raster is produced at
+// the host frame rate.
+static uint32_t mach64_scanline(const mach64_t *m, uint32_t *out_vtotal) {
+    uint32_t vtotal = (m->reg[DW_CRTC_V_TOTAL_DISP] & 0x7FFu) + 1u;
     if (vtotal < 2u || vtotal > 4096u)
         vtotal = 525u;
+    if (out_vtotal)
+        *out_vtotal = vtotal;
     uint64_t frame = m->cfg->machine->freq / 60u;
     if (!frame)
         return 0;
     uint64_t pos = scheduler_cpu_cycles(m->cfg->scheduler) % frame;
-    uint32_t line = (uint32_t)(pos * vtotal / frame);
+    return (uint32_t)(pos * vtotal / frame);
+}
+
+static uint32_t mach64_current_vline(const mach64_t *m) {
+    uint32_t line = mach64_scanline(m, NULL);
     // The register pairs the programmed compare line (15:0) with the live
     // current line (bits 26:16).
     return (m->reg[DW_CRTC_VLINE_CRNT_VLINE] & 0xFFFFu) | ((line & 0x7FFu) << 16);
 }
 
-// The palette changed.  Milestone 2b has no scanout yet; the flag is what
-// the display derivation consumes once it lands.
+// CRTC_INT_CNTL bit 0 is the LIVE vertical-blank state, not a latch — it
+// is high while the raster is past the last displayed line and it toggles
+// every frame whether or not any interrupt is enabled.
+//
+// This one is load-bearing, and finding out why cost a whole boot: the
+// System's video driver spins on it
+//
+//     lwz r3,0(r4) ; li r4,24 ; bl <read8> ; andi. r3,r3,1 ; beq -
+//
+// reading byte $18 of the memory-mapped register block — CRTC_INT_CNTL,
+// bit 0 — and waits for it to go high before it will proceed.  With the
+// bit wired to a latch that only the interrupt path ever set, the driver
+// spun there forever and System 7.6 never reached the mount, while the
+// card looked perfectly healthy by every other measure.  A live status bit
+// that never changes is the same trap the proposal flagged for
+// CRTC_VLINE_CRNT_VLINE.
+static bool mach64_in_vblank(const mach64_t *m) {
+    uint32_t vtotal = 0;
+    uint32_t line = mach64_scanline(m, &vtotal);
+    uint32_t v_disp = ((m->reg[DW_CRTC_V_TOTAL_DISP] >> 16) & 0x7FFu) + 1u;
+    if (v_disp == 0 || v_disp >= vtotal)
+        v_disp = vtotal - (vtotal / 16u); // unprogrammed: a plausible blank
+    return line >= v_disp;
+}
+
+// ============================================================
+// Scanout — the CRTC registers become a display_t
+// ============================================================
+//
+// Field positions are the RRG's per-register bit charts (pages 3-17/3-18,
+// 3-20, 3-22, 3-24), and the arithmetic has an external check: Apple's
+// TN1062 dump of this card reports width $280, height $1E0, depth 8 and
+// linebytes $280, so the 640 x 480 mode line must produce H_DISP = 79,
+// V_DISP = 479 and CRTC_PITCH = 80.
+//
+//   width   = ((CRTC_H_TOTAL_DISP >> 16) & $FF)  + 1, in 8-pixel characters
+//   height  = ((CRTC_V_TOTAL_DISP >> 16) & $7FF) + 1  lines
+//   stride  = ((CRTC_OFF_PITCH    >> 22) & $3FF) x 8 x bytes-per-pixel
+//   base    =  (CRTC_OFF_PITCH & $FFFFF) x 8 bytes into VRAM
+//   enabled = CRTC_EN && !CRTC_DISPLAY_DIS
+//
+// CRTC_PITCH is bits 31:22, NOT 31:20, and the external check is what
+// settles it: booted on a pm9500 the guest programs CRTC_OFF_PITCH =
+// $14100040, and only the 10-bit read gives 80 — the CRTC_PITCH that makes
+// linebytes 80 x 8 = $280, exactly what TN1062 reports for this card.  The
+// 12-bit read gives 321 and a 2568-byte stride for a 640-pixel raster.
+// (CRTC_OFFSET is the other way round: bits 19:0, since the 22-bit read
+// puts the scan base 8 MB into a 2 MB framebuffer.)
+
+static uint32_t mach64_pix_width(const mach64_t *m) {
+    return (m->reg[DW_CRTC_GEN_CNTL] >> CRTC_PIX_WIDTH_SH) & 7u;
+}
+
+static uint32_t mach64_bytes_per_pixel(const mach64_t *m) {
+    switch (mach64_pix_width(m)) {
+    case CRTC_PIX_15BPP:
+    case CRTC_PIX_16BPP:
+        return 2;
+    case CRTC_PIX_24BPP:
+    case CRTC_PIX_32BPP:
+        return 4;
+    case CRTC_PIX_8BPP:
+    case CRTC_PIX_4BPP:
+    default:
+        return 1;
+    }
+}
+
+// Materialize the palette for the renderer.  Only the indexed depth reads
+// it; the direct formats bypass it entirely.
+static void mach64_refresh_clut(mach64_t *m) {
+    for (uint32_t i = 0; i < 256; i++) {
+        m->clut_view[i].r = m->clut[i][0];
+        m->clut_view[i].g = m->clut[i][1];
+        m->clut_view[i].b = m->clut[i][2];
+        m->clut_view[i].a = 255;
+    }
+    m->display.clut = m->clut_view;
+    m->display.clut_len = 256;
+    m->display.clut_dirty = true;
+}
+
 static void mach64_clut_changed(mach64_t *m) {
     m->clut_dirty = true;
+    if (mach64_pix_width(m) == CRTC_PIX_8BPP)
+        mach64_refresh_clut(m);
+}
+
+static void mach64_update(mach64_t *m) {
+    if (!m->blank)
+        return; // registers poked before the buffers exist
+
+    uint32_t bpp = mach64_bytes_per_pixel(m);
+    uint32_t width = (((m->reg[DW_CRTC_H_TOTAL_DISP] >> 16) & 0xFFu) + 1u) * 8u;
+    uint32_t height = ((m->reg[DW_CRTC_V_TOTAL_DISP] >> 16) & 0x7FFu) + 1u;
+    uint32_t pitch_chars = (m->reg[DW_CRTC_OFF_PITCH] >> 22) & 0x3FFu;
+    uint32_t stride = pitch_chars * 8u * bpp;
+    uint32_t base = (m->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u;
+
+    pixel_format_t format = PIXEL_8BPP;
+    switch (mach64_pix_width(m)) {
+    case CRTC_PIX_8BPP:
+        format = PIXEL_8BPP;
+        break;
+    case CRTC_PIX_15BPP:
+        format = PIXEL_16BPP_555; // the Mac "thousands of colours" mode
+        break;
+    case CRTC_PIX_24BPP:
+    case CRTC_PIX_32BPP:
+        format = PIXEL_32BPP_XRGB;
+        break;
+    case CRTC_PIX_16BPP:
+        // 5,6,5.  display.h has no format for it, and Mac OS should never
+        // select it, so keep the previous mode rather than render wrong
+        // colours silently.  If this ever fires, PIXEL_16BPP_565 is a small
+        // addition — but we would want to know it fired.
+        if (!m->pix_width_warned) {
+            m->pix_width_warned = true;
+            LOG(0, "CRTC_PIX_WIDTH = 4 (5,6,5) has no display format here — keeping the previous mode");
+        }
+        return;
+    case 0:
+        // The power-on state: nothing is programmed yet, so there is no
+        // mode to derive and nothing has gone wrong.  Present the black
+        // stub and say nothing — a cold boot passes through here.
+        m->display.bits = m->blank;
+        return;
+    default:
+        // 4 bpp, or a reserved encoding.  Same rule as 5,6,5 above.
+        if (!m->pix_width_warned) {
+            m->pix_width_warned = true;
+            LOG(0, "CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode",
+                mach64_pix_width(m));
+        }
+        return;
+    }
+
+    if (width == 0 || width > 2048u || height == 0 || height > 1536u) {
+        LOG(2, "implausible CRTC geometry %ux%u — blanking", width, height);
+        width = 640;
+        height = 480;
+        stride = 0;
+    }
+
+    m->display.width = width;
+    m->display.height = height;
+    m->display.format = format;
+    m->display.stride = stride ? stride : width * bpp;
+    m->display.par_w = 0;
+    m->display.par_h = 0;
+    m->display.crt_response = NULL;
+
+    // Blanked when the CRTC is held in reset, when the raster is disabled,
+    // when no pitch has been programmed, or when the scan would run off the
+    // end of VRAM (nothing sane is being scanned in any of those cases).
+    bool blanked =
+        !(m->reg[DW_CRTC_GEN_CNTL] & CRTC_EN) || (m->reg[DW_CRTC_GEN_CNTL] & CRTC_DISPLAY_DIS) || stride == 0;
+    uint64_t span = (uint64_t)m->display.stride * height;
+    if ((uint64_t)base + span > m->vram_size)
+        blanked = true;
+    if (blanked) {
+        size_t n = (size_t)m->display.stride * height;
+        if (n > m->vram_size)
+            n = m->vram_size;
+        memset(m->blank, display_black_fill(format), n);
+        m->display.bits = m->blank;
+    } else {
+        m->display.bits = m->vram + base;
+    }
+
+    if (format == PIXEL_8BPP) {
+        mach64_refresh_clut(m);
+    } else {
+        m->display.clut = NULL;
+        m->display.clut_len = 0;
+    }
+    m->display.shape_dirty = true;
+    m->display.fb_dirty = true;
+    LOG(2, "mode: %ux%u %u bpp stride=%u base=$%06X%s", width, height, bpp * 8u, m->display.stride, base,
+        blanked ? " BLANKED" : "");
+}
+
+static display_t *mach64_display(pci_device_t *dev) {
+    mach64_t *m = (mach64_t *)dev->priv;
+    if (!m || !m->blank)
+        return NULL;
+    return &m->display;
+}
+
+// ============================================================
+// The vertical-blank interrupt
+// ============================================================
+//
+// The ndrv installs a VBL service through VSLNewInterruptService, so
+// CRTC_INT_CNTL's enable/acknowledge must work and the slot's strapped
+// INTA-D line must reach Grand Central 23.  The line is LEVEL-sensitive and
+// is held until the driver acknowledges: a driver that services its VBL
+// from an interrupt handler needs the source still asserted when the
+// kernel samples it, or the handler never runs and the cursor task chain
+// starves.  (That exact failure is what the Control VBL investigation
+// chased on line 26.)
+
+static void mach64_irq_sync(mach64_t *m) {
+    bool want = CRTC_INT_ENABLE_FOR(m->reg[DW_CRTC_INT_CNTL]);
+    if (want == m->irq_active)
+        return;
+    m->irq_active = want;
+    if (want)
+        pci_assert_irq(m->dev);
+    else
+        pci_deassert_irq(m->dev);
+}
+
+static void mach64_on_vbl(pci_device_t *dev, config_t *cfg) {
+    (void)cfg;
+    mach64_t *m = (mach64_t *)dev->priv;
+    if (!m || !m->blank)
+        return;
+    // Guest CPU writes into VRAM bypass the renderer, so every host frame
+    // has to be re-uploaded regardless of whether the card raised anything.
+    m->display.fb_dirty = true;
+    if (m->clut_dirty) {
+        m->clut_dirty = false;
+        if (mach64_pix_width(m) == CRTC_PIX_8BPP)
+            mach64_refresh_clut(m);
+    }
+    if (m->reg[DW_CRTC_INT_CNTL] & CRTC_VBLANK_INT_EN) {
+        m->reg[DW_CRTC_INT_CNTL] |= CRTC_VBLANK_INT;
+        mach64_irq_sync(m);
+    }
 }
 
 // ============================================================
@@ -1125,6 +1923,19 @@ static void mach64_reset(pci_device_t *dev, config_t *cfg) {
     m->dac_indexed[0x01] = 0x01; // RGB514 ID register reset value
     memset(m->clut, 0, sizeof(m->clut));
     m->aperture_warned = false;
+    m->host_blit_warned = false;
+    m->mix_warned = false;
+    m->host_op.active = false;
+    // The scissor powers up wide open, so an operation from a driver that
+    // never programs it is not clipped to a single pixel at the origin.
+    m->reg[DW_SC_RIGHT] = 0xFFFFu;
+    m->reg[DW_SC_BOTTOM] = 0xFFFFu;
+    m->reg[DW_DP_WRITE_MSK] = 0xFFFFFFFFu;
+    if (m->irq_active) {
+        m->irq_active = false;
+        pci_deassert_irq(dev);
+    }
+    mach64_update(m);
 }
 
 static void mach64_teardown(pci_device_t *dev, config_t *cfg) {
@@ -1133,6 +1944,8 @@ static void mach64_teardown(pci_device_t *dev, config_t *cfg) {
     if (!m)
         return;
     free(m->vram);
+    free(m->blank);
+    free(m->compose);
     free(m);
     dev->priv = NULL;
 }
@@ -1211,13 +2024,17 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
         }
     }
     system_read_checkpoint_data(cp, m->vram, m->vram_size);
-    mach64_clut_changed(m);
+    mach64_refresh_clut(m);
+    mach64_update(m);
+    mach64_irq_sync(m);
 }
 
 static const pci_device_ops_t mach64_ops = {
     .teardown = mach64_teardown,
     .reset = mach64_reset,
     .name = mach64_name,
+    .display = mach64_display,
+    .on_vbl = mach64_on_vbl,
     .checkpoint_save = mach64_checkpoint_save,
     .checkpoint_restore = mach64_checkpoint_restore,
 };
@@ -1484,10 +2301,90 @@ static const member_t dac_members[] = {
 static const class_desc_t mach64_dac_class = {
     .name = "dac", .members = dac_members, .n_members = sizeof(dac_members) / sizeof(dac_members[0])};
 
+// --- the framebuffer node ---------------------------------------------------
+// Mirrors what the NuBus cards expose, so `machine.screen.source.depth`
+// reads the same on either bus.
+
+static value_t fb_attr_width(struct object *self, const member_t *m) {
+    (void)m;
+    mach64_t *c = node_card(self);
+    return val_uint(4, c ? c->display.width : 0);
+}
+static value_t fb_attr_height(struct object *self, const member_t *m) {
+    (void)m;
+    mach64_t *c = node_card(self);
+    return val_uint(4, c ? c->display.height : 0);
+}
+static value_t fb_attr_stride(struct object *self, const member_t *m) {
+    (void)m;
+    mach64_t *c = node_card(self);
+    return val_uint(4, c ? c->display.stride : 0);
+}
+static value_t fb_attr_depth(struct object *self, const member_t *m) {
+    (void)m;
+    mach64_t *c = node_card(self);
+    return val_uint(4, c ? mach64_bytes_per_pixel(c) * 8u : 0);
+}
+static value_t fb_attr_base(struct object *self, const member_t *m) {
+    (void)m;
+    mach64_t *c = node_card(self);
+    return val_uint(4, c ? (c->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u : 0);
+}
+static value_t fb_attr_size(struct object *self, const member_t *m) {
+    (void)m;
+    mach64_t *c = node_card(self);
+    return val_uint(4, c ? (uint64_t)c->display.stride * c->display.height : 0);
+}
+
+static const member_t fb_members[] = {
+    {.kind = M_ATTR,
+     .name = "width",
+     .doc = "Active raster width in pixels",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_width}                              },
+    {.kind = M_ATTR,
+     .name = "height",
+     .doc = "Active raster height in lines",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_height}                             },
+    {.kind = M_ATTR,
+     .name = "stride",
+     .doc = "Bytes per scan line (CRTC_PITCH x 8 x bytes-per-pixel)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_stride}                             },
+    {.kind = M_ATTR,
+     .name = "depth",
+     .doc = "Bits per pixel, from CRTC_PIX_WIDTH",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_depth}                              },
+    {.kind = M_ATTR,
+     .name = "base",
+     .doc = "Scan base as a byte offset into VRAM (CRTC_OFFSET x 8)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = fb_attr_base}},
+    {.kind = M_ATTR,
+     .name = "size",
+     .doc = "Active framebuffer size in bytes (stride x height)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_size}                               },
+};
+static const class_desc_t mach64_fb_class = {
+    .name = "framebuffer", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
+
 static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
     mach64_t *m = (mach64_t *)dev->priv;
     if (!m || !card_node)
         return;
+    struct object *fb = object_new(&mach64_fb_class, m, "framebuffer");
+    if (fb) {
+        object_set_label(fb, "Framebuffer");
+        object_set_order(fb, 10);
+        object_attach(card_node, fb);
+        // Nominate it: `machine.screen.source` resolves to whichever
+        // framebuffer node belongs to the current primary display, and the
+        // generic layer must not have to guess which child that is.
+        pci_card_set_framebuffer_object(dev, fb);
+    }
     struct object *mon = object_new(&mach64_monitor_class, m, "monitor");
     if (mon) {
         object_set_label(mon, "Monitor");
@@ -1555,7 +2452,12 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
 
     m->vram_size = s_staged_vram;
     m->vram = (uint8_t *)calloc(1, m->vram_size);
-    if (!m->vram) {
+    m->blank = (uint8_t *)calloc(1, m->vram_size);
+    m->compose = (uint8_t *)calloc(1, m->vram_size);
+    if (!m->vram || !m->blank || !m->compose) {
+        free(m->vram);
+        free(m->blank);
+        free(m->compose);
         free(dev->rom);
         free(m);
         free(dev);

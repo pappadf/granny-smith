@@ -205,6 +205,20 @@ device: it can be seated in any PCI machine, so it must not reach for a
 family macro. A card whose registers are little-endian applies its own swap
 at its own edge and says so in its header comment.
 
+## Slot kinds
+
+`PCI_SLOT_SOCKET` is a user-populatable connector; `PCI_SLOT_BUILTIN` is a
+soldered device the machine names.
+
+`PCI_SLOT_BUILTIN_FALLBACK` is a builtin that stands in **only while no
+socket supplies a card of the same class**. The Power Macintosh 9500
+shipped with no onboard video at all, so the emulated machine fakes a
+Control/Chaos display purely so a cardless boot has somewhere to draw;
+seating a real display card retires the fake, because otherwise the guest
+sees two monitors where the hardware has one. The test is by `card_class`,
+resolved in a first pass over the sockets, so the generic layer never
+learns any card's identity and declaration order does not matter.
+
 ## Status
 
 Phase 1 of `proposal-pci-architecture`, plus Phase 2's substrate: the
@@ -212,8 +226,11 @@ generic core, the TNT family migrated onto it (Bandit/Chaos as adapters,
 Control as a registered BUILTIN card kind, Grand Central's config presence
 at device 16), slot topology for all three TNT models, the object model,
 staged configuration and the profile surface — and now the PCI I/O window
-on both Bandits, non-BAR region decode, and expansion-ROM provisioning
-(`docs/core/peripherals/pci_prom.md`).
+on both Bandits, non-BAR region decode, expansion-ROM provisioning
+(`docs/core/peripherals/pci_prom.md`), and the first pluggable card kind,
+the Apple Accelerated PCI Graphics Card
+(`src/core/peripherals/pci/cards/mach64gx.c`), which boots System 7.6 to a
+desktop on a Power Macintosh 9500.
 
 Not done, with reasons: the host-overlay BAR fast path (above); **Bandit
 2's memory window** — TN1062 pins it at `$90000000`, but our pm9500 still

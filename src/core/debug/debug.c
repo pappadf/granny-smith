@@ -25,6 +25,7 @@
 #include "mmu.h"
 #include "nubus.h"
 #include "object.h"
+#include "pci.h"
 #include "root.h"
 #include "scheduler.h"
 #include "shell.h"
@@ -3791,10 +3792,17 @@ static value_t screen_attr_par_h(struct object *self, const member_t *m) {
 // never leave it dangling (the proposal's pointer+invalidator hot-path concern
 // applies to per-frame rendering, which uses nubus_primary_display() directly —
 // not this navigational link).  NULL (no source) on builtin-video machines.
+// `machine.screen.source` — a reference edge to whichever framebuffer node
+// is currently driving the display.  A seated PCI display card wins over a
+// NuBus one: on the machines that have both, the PCI card is the primary
+// display (pci_primary_display walks the slot table in declared order).
+// Screen CAPTURE does not depend on this — it reads the substrate's
+// display_t — so this is a debugging convenience, not a correctness path.
 static struct object *screen_source_lookup(struct object *self, const char *name) {
     (void)self;
     (void)name;
-    return nubus_active_framebuffer_object();
+    struct object *pci_fb = pci_active_framebuffer_object();
+    return pci_fb ? pci_fb : nubus_active_framebuffer_object();
 }
 
 static const arg_decl_t screen_save_args[] = {

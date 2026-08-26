@@ -7,12 +7,18 @@
 // processor bus at 3:1, twelve DIMM slots to 1.5 GB (Apple, "Power
 // Macintosh 9500 Computer" Developer Note, 1995).
 //
-// Documented fidelity deviation: the real 9500 has NO onboard video — it
-// requires a PCI display card ("The computer requires a display card in a
-// PCI slot", ibid.).  The emulated pm9500 will populate Chaos/Control
-// like its siblings when the video phase lands, because an FCode-carrying
-// PCI framebuffer card is a substantial gated follow-up of its own; the
-// About-box/Gestalt row still proves identity.
+// The real 9500 has NO onboard video — it "requires a display card in a
+// PCI slot" (ibid.), and a real machine's Open Firmware device tree has no
+// /chaos node at all, only a dangling `vci0` devalias the shipping ROM is
+// perfectly happy with (Apple Technote 1062).
+//
+// So slot 7's Control/Chaos entry is a BUILTIN_FALLBACK: it stands in only
+// while no socket supplies a display card, purely so a cardless boot has
+// somewhere to draw.  Seat an Apple Accelerated PCI Graphics Card in a
+// socket and the fake retires, which is what the hardware looks like.
+// Removing Chaos from the machine altogether is the remaining step and is
+// deliberately separate — it changes what probe-pci walks on a
+// boot-critical path.
 
 #include "tnt.h"
 
@@ -48,7 +54,7 @@ static const pci_slot_decl_t pm9500_pci_slots[] = {
     {.slot = 5, .kind = PCI_SLOT_SOCKET, .label = "E2", .bus = TNT_PCI_BUS_2, .device = 14, .int_line = 28},
     {.slot = 6, .kind = PCI_SLOT_SOCKET, .label = "F2", .bus = TNT_PCI_BUS_2, .device = 15, .int_line = 29},
     {.slot = 7,
-     .kind = PCI_SLOT_BUILTIN,
+     .kind = PCI_SLOT_BUILTIN_FALLBACK,
      .label = "VCI",
      .bus = TNT_PCI_BUS_VCI,
      .device = 11,

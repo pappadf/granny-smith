@@ -137,6 +137,35 @@ assert (machine.pci.slot[1].card.regs.crtc_gen_cntl & 0x01000000) != 0 "CRTC_EXT
 # depths the framebuffer cannot hold.
 assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "MEM_CNTL MEM_SIZE = 2 = 2 MB"
 
+# --- The card DRAWS: the CRTC becomes a display descriptor. -----------------
+# Apple's dump reports width $280, height $1E0, depth 8 and linebytes $280
+# for this card, and every one of those is derived here from the CRTC
+# registers the guest programmed.  The linebytes value is what settles
+# CRTC_PITCH's field position: it is bits 31:22, and only the 10-bit read
+# gives the 80 that makes 80 x 8 = $280.
+assert machine.screen.width == 640 "640 pixels across (CRTC_H_DISP + 1, in characters)"
+assert machine.screen.height == 480 "480 lines (CRTC_V_DISP + 1)"
+assert machine.screen.depth == 8 "8 bpp, matching TN1062's depth 00000008"
+assert machine.screen.source.stride == 640 "linebytes $280 — CRTC_PITCH x 8 x bytes-per-pixel"
+
+# machine.screen.source is a reference edge to the framebuffer node of
+# whatever is currently driving the display.  A seated PCI display card
+# wins over the machine's built-in video.
+assert machine.pci.slot[1].card.framebuffer.depth == 8 "screen.source resolves to the card's framebuffer"
+
+# --- The authentic 9500: no onboard video. ----------------------------------
+# The real machine has none — it "requires a display card in a PCI slot" —
+# so the Control/Chaos entry is a BUILTIN_FALLBACK that stands in only
+# while no socket supplies a display card.  With the Mach64 seated it
+# retires, and the 9500 is the single-display machine the hardware is.
+assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "Control must stand down for a real display card"
+
+# ...and with no card staged it stands in again, so a cardless boot still
+# has somewhere to draw.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+assert machine.pci.slot[7].card.name == "Control" "Control stands in when no display card is seated"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+
 # --- A card that requires an expansion ROM cannot boot without one. ---------
 # Strict resolution runs BEFORE the running machine is touched, so a
 # rejected boot leaves the current machine alive.

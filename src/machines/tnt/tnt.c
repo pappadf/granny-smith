@@ -675,9 +675,18 @@ static void tnt_trigger_vbl(config_t *cfg) {
     pci_tick_vbl(cfg->pci);
 }
 
-// Primary display: Control's scanout over its VRAM (control.c).
+// Primary display: the first display-capable PCI device in declared slot
+// order.  Control is itself a pci_device_t with a display op, seated in the
+// LAST declared slot (7 on the 9500, 4 on the 7500/8500), so this reads
+// "a seated video card when one exists, Control otherwise" with no
+// special-casing — the slot ordering was chosen for exactly this.
+//
+// The direct call survives as the fallback for the window between
+// tnt_control_init and slot seating, when the PCI object graph is not yet
+// answering.
 static struct display *tnt_display(config_t *cfg) {
-    return tnt_control_display(cfg);
+    struct display *d = pci_primary_display(cfg->pci);
+    return d ? d : tnt_control_display(cfg);
 }
 
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand

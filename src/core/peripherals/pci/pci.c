@@ -611,6 +611,21 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 break;
             }
         }
+        // Which card classes the SOCKETS will supply.  Resolved in a first
+        // pass so a BUILTIN_FALLBACK can stand down before it is built —
+        // the machine's slot table lists the fallback last, but a socket
+        // card must win regardless of declaration order.
+        const char *socket_classes[PCI_MAX_SLOTS];
+        int n_socket_classes = 0;
+        for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
+            if (s->kind != PCI_SLOT_SOCKET)
+                continue;
+            bool ignored = false;
+            const pci_card_kind_t *k = pci_card_find(socket_card_id(s, s->slot == first_socket, &ignored));
+            if (k && k->card_class && n_socket_classes < PCI_MAX_SLOTS)
+                socket_classes[n_socket_classes++] = k->card_class;
+        }
+
         for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
             const pci_card_kind_t *kind = NULL;
             bool explicit_pick = false; // did the USER name this card?
@@ -618,6 +633,20 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             case PCI_SLOT_BUILTIN:
                 kind = pci_card_find(s->builtin_card_id);
                 break;
+            case PCI_SLOT_BUILTIN_FALLBACK: {
+                kind = pci_card_find(s->builtin_card_id);
+                if (!kind || !kind->card_class)
+                    break;
+                for (int i = 0; i < n_socket_classes; i++) {
+                    if (strcmp(socket_classes[i], kind->card_class) != 0)
+                        continue;
+                    LOG(1, "slot %d: '%s' stands down — a socket supplies a '%s' card", s->slot, kind->id,
+                        kind->card_class);
+                    kind = NULL;
+                    break;
+                }
+                break;
+            }
             case PCI_SLOT_SOCKET:
                 kind = pci_card_find(socket_card_id(s, s->slot == first_socket, &explicit_pick));
                 break;

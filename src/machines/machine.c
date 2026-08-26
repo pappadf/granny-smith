@@ -377,7 +377,7 @@ static value_t build_pci_slots(const hw_profile_t *p) {
     if (!p->pci_slots)
         return val_list(NULL, 0);
     for (const struct pci_slot_decl *s = p->pci_slots; s->slot; s++) {
-        if (s->kind != PCI_SLOT_BUILTIN && s->kind != PCI_SLOT_SOCKET)
+        if (s->kind != PCI_SLOT_BUILTIN && s->kind != PCI_SLOT_BUILTIN_FALLBACK && s->kind != PCI_SLOT_SOCKET)
             continue;
         value_map_builder_t *b = val_map_new();
         val_map_put(b, "slot", val_int((int64_t)s->slot));
@@ -387,13 +387,14 @@ static value_t build_pci_slots(const hw_profile_t *p) {
         val_map_put(b, "irq", val_int((int64_t)s->int_line));
         // A builtin is soldered down: the dialog renders it as a label,
         // not a picker.
-        val_map_put(b, "fixed", val_bool(s->kind == PCI_SLOT_BUILTIN));
-        const char *default_card = (s->kind == PCI_SLOT_BUILTIN) ? s->builtin_card_id : s->default_card;
+        bool builtin = s->kind == PCI_SLOT_BUILTIN || s->kind == PCI_SLOT_BUILTIN_FALLBACK;
+        val_map_put(b, "fixed", val_bool(builtin));
+        const char *default_card = builtin ? s->builtin_card_id : s->default_card;
         val_map_put(b, "default_card", val_str(default_card ? default_card : ""));
 
         value_t *cards = NULL;
         size_t n_cards = 0, cap_cards = 0;
-        if (s->kind == PCI_SLOT_BUILTIN) {
+        if (builtin) {
             val_list_push(&cards, &n_cards, &cap_cards, build_pci_card(s->builtin_card_id));
         } else {
             // Candidates are COMPUTED: every registered kind whose declared
