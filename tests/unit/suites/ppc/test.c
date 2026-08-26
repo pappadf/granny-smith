@@ -1179,6 +1179,13 @@ static void test_translation(void) {
     P->batl[0] = 0x00000000u | 0x40u | 0x7u; // 1 MB identity at 0
     P->msr |= PPC_MSR_IT;
     ppc_update_active_maps(P);
+    // A BAT write reaches INSTRUCTION FETCH only at context synchronization
+    // (601UM §2.3.2.2): fetch reads a shadow of the pair that ppc_context_sync
+    // refreshes, so the guest's mtspr/isync sequence is modelled honestly.
+    // These cases poke the registers directly, which is not synchronizing on
+    // its own -- ppc_update_active_maps() is the SoA-map/(PR,DT) obligation,
+    // not an architectural event -- so they have to say so.
+    ppc_context_sync(P);
     P->gpr[4] = 7;
     P->gpr[5] = 8;
     memory_write_uint32(0x1000, e_xo(3, 4, 5, 0, 266, 0)); // add r3,r4,r5
@@ -1189,6 +1196,11 @@ static void test_translation(void) {
     P->batl[0] = 0x00000000u | 0x40u; // 128 KB block: $120000 is outside
     P->msr |= PPC_MSR_IT;
     ppc_update_active_maps(P);
+    // Synchronize here too, even though this case expects the fetch to MISS:
+    // without it the miss would be produced by a stale fetch shadow rather
+    // than by the block-size mask, and the check would pass for the wrong
+    // reason.
+    ppc_context_sync(P);
     // The redirect consumes the budget on the handler's first instruction
     // (68K-identical), so give the vector a real one to execute.
     memory_write_uint32(0x400, 0x60000000u); // nop at the ISI vector

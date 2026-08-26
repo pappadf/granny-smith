@@ -273,12 +273,12 @@ Sample (will drift; treat as illustration):
 | `floppy`     | `drives`         | `type sel`                                                | `identify(path) create(path)`                               |
 | `machine.floppy.drive` | indexed (`[0]`, `[1]`) | per-entry: `index present track side motor_on disk` | per-entry: `eject() insert(path)`                |
 | `scc`        | `a b`            | `loopback pclk_hz rtxc_hz`                                | `reset()`                                                   |
-| `machine.scc.a` / `machine.scc.b` | —           | `index dcd tx_empty rx_pending`                           | (none)                                                      |
+| `machine.scc.a` / `machine.scc.b` | —           | `index dcd tx_empty rx_pending sent_pending sent_dropped` | `receive(data) sent()`                                      |
 | `rtc`        | —                | `time read_only pram`                                     | `pram_read pram_write`                                      |
 | `via1` / `via2` | `port_a port_b` | `ifr ier acr pcr sr freq_factor`                       | (none)                                                      |
 | `nubus`      | —                | —                                                         | `cards()`                                                   |
 | `mouse`      | —                | —                                                         | `move(x, y) click([button], [mode]) trace(start\|stop)`     |
-| `keyboard`   | —                | —                                                         | `press(key)` (named keys like `"Return"`, single letters not accepted) |
+| `keyboard`   | —                | —                                                         | `press(key) down(key) up(key)` (named keys like `"Return"`, or an ADB keycode int — single letters are NOT names); `type(text)` types a short line on a US layout |
 | `checkpoint` | —                | `auto`                                                    | `probe() clear() load([path]) save([path]) snapshot()`      |
 | `storage`    | `images`         | —                                                         | `import cp list_dir find_media hd_create partmap probe list_partitions mounts unmount path_exists path_size` (save a mounted disk via `machine.scsi.device[N].image.export`) |
 | `vfs`        | —                | —                                                         | `ls([path]) mkdir(path) cat(path)`                          |
@@ -516,6 +516,8 @@ machine.scsi.bus.phase                                        # bus_free / cmd /
 machine.adb.mouse.move 100 100
 machine.adb.mouse.click
 machine.adb.keyboard.press "Return"
+machine.adb.keyboard.press 0x2E             # ADB keycode ('m'), for keys with no name
+machine.adb.keyboard.type "root\n"          # short line; newline types Return
 ```
 
 ### 6.12 Reading individual resources (synthetic /rsrc tree)

@@ -120,6 +120,11 @@ struct ppc {
     uint32_t batu[4],
         batl[4]; // 601: 4 unified BAT pairs, 601 format.  604: the IBATs (SPR 528-535), architected format
     uint32_t dbatu[4], dbatl[4]; // 604 only: the DBATs (SPR 536-543), architected format
+    // The fetch side's view of batu/batl: the values as of the last
+    // context-synchronizing instruction.  Instruction fetch runs ahead of
+    // the mtspr that changes a BAT, so a half-written pair must not
+    // relocate the code that is writing it (ppc_context_sync).
+    uint32_t ibatu_cs[4], ibatl_cs[4];
     uint32_t sr[16]; // segment registers
     // Which segments have T=1 (bit n = sr[n] bit 0) — 601 data accesses
     // consult the segment's T bit even with MSR[DT]=0 (601UM §6.5.2),
@@ -291,6 +296,11 @@ void ppc_mmu_logpoints_changed(void); // memory-logpoint shape changed: drop xtl
 // Segment-register write with change-triggered invalidation (the
 // nanokernel reloads identical SR values wholesale on space touches).
 void ppc_set_sr(ppc_t *p, uint32_t n, uint32_t v);
+
+// Publish pending BAT writes to the fetch side.  Called from every
+// context-synchronizing event (isync, rfi, mtmsr, exception entry, reset,
+// checkpoint restore) — see the ibatu_cs comment in ppc_t.
+void ppc_context_sync(ppc_t *p);
 
 // Side-effect-free translation for the debug surfaces (no R/C update, no
 // SoA fill, no exception).  data=true follows MSR[DT], else MSR[IT].

@@ -534,6 +534,10 @@ static void test_604_split_bats(void) {
     P->batl[0] = bat604l(0x00300000u, 0, 1); // PP=01 read-only suffices for fetch
     P->msr |= PPC_MSR_IT;
     ppc_update_active_maps(P);
+    // IBAT writes reach instruction fetch only at context synchronization; a
+    // direct register poke is not one.  (The dbatu cases around this need no
+    // such call -- data translation reads the live registers.)
+    ppc_context_sync(P);
     ppc_mmu_invalidate_all(P);
     memory_write_uint32(0x00300400u, 0x38600042u); // li r3,0x42
     run_at(0x00400400u, 1);

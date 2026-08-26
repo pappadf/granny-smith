@@ -20,6 +20,39 @@ etc.) while maintaining compatibility with the Mac Plus VIA-based protocol.
 The `keyboard_update()` function accepts ADB virtual key codes and translates
 them internally to Mac Plus raw transition bytes.
 
+### The shell surface
+
+`machine.adb.keyboard` exposes four methods, all of which end up at the same
+ADB virtual key code:
+
+| Method | What it takes |
+|---|---|
+| `press(key)` | one tap (down + up) |
+| `down(key)` / `up(key)` | the two halves, for chords that hold a modifier |
+| `type(text)` | a short line of text on a US layout |
+
+`key` is either a **name** — `"return"`, `"tab"`, `"space"`, `"escape"`,
+`"delete"`, `"up"`/`"down"`/`"left"`/`"right"`, `"command"`, `"shift"`,
+`"option"`, `"control"`, `"capslock"` — or an **ADB keycode integer**
+(`0x2E` for `m`). Single letters are *not* names: `press("m")` is an error,
+`press(0x2E)` is the `m` key. `debug_mac_resolve_key_name()` is the whole
+table.
+
+`type(text)` walks a US-layout ASCII→keycode table
+(`debug_mac_resolve_ascii()`), holding Shift for the characters that need it;
+a newline in the string types Return and a tab types Tab, so a whole command
+line ends itself. It queues every event at once with no guest time in
+between, and the ADB keyboard ring holds 128 bytes — two per character, four
+when shifted — so it **refuses** anything over 96 bytes' worth rather than
+letting the ring's drop-oldest overflow silently eat the head of the line.
+Type a line at a time and let the guest run.
+
+A guest may not agree with the ADB keycode a name resolves to. MkLinux DR3 is
+the case in this tree: its ADB driver reads the arrow cluster at `$3B`–`$3E`
+and claims `$7B`–`$7E` as the right-hand modifier keys, so `press("down")`
+(which is `$7D`, correct for Mac OS) taps right-Control there and
+`press(0x3D)` is the down arrow. When a guest disagrees, press the keycode.
+
 ---
 
 ## 1. Hardware overview

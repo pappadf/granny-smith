@@ -210,6 +210,8 @@ void tnt_control_update(config_t *cfg) {
     st->display.shape_dirty = true;
     st->display.fb_dirty = true;
     st->display.clut_dirty = true;
+    LOG(2, "mode: %ux%u %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height, bpp, st->display.stride,
+        c->reg[CR_MODE], c->rad_ctrl, st->display.clut ? "yes" : "no", blanked ? " BLANKED" : "");
 }
 
 // The RaDACal hardware cursor (misc $20 bit 1).  Decoded live from the
@@ -599,6 +601,8 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     default: // +$30: CLUT data
         c->clut[c->rad_addr][c->rad_phase] = value;
         if (++c->rad_phase == 3) {
+            LOG(3, "CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0], c->clut[c->rad_addr][1],
+                c->clut[c->rad_addr][2]);
             c->rad_phase = 0;
             c->rad_addr++;
             control_refresh_clut(cfg);

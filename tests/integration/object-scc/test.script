@@ -34,4 +34,24 @@ assert machine.scc.loopback == false
 # the absence of an error in the JSON output).
 echo "${machine.scc.reset()}"
 
+# Host-side transmit capture — the mirror of `receive` (mklinux bring-up plan
+# §7).  Write bytes straight into channel A's data register (the Plus decodes
+# the ESCC write base at $BFFFF8, so aData is +6) and drain them back out.
+# The escape rule is asserted on a non-printable byte, because the whole point
+# of the surface is to make a guest's serial console readable as TEXT: a
+# capture that silently swallowed $01 would look like clean output.
+assert machine.scc.a.sent_pending == 0 "channel A capture is not empty before the write"
+machine.memory.poke.b 0xBFFFFE 0x48
+machine.memory.poke.b 0xBFFFFE 0x69
+machine.memory.poke.b 0xBFFFFE 0x0A
+machine.memory.poke.b 0xBFFFFE 0x01
+assert machine.scc.a.sent_pending == 4 "capture holds ${machine.scc.a.sent_pending} byte(s), want 4"
+assert machine.scc.b.sent_pending == 0 "channel B captured channel A's bytes"
+let drained = machine.scc.a.sent()
+assert $drained == "Hi\n\\x01" "sent() returned [${$drained}], want [Hi\\n\\x01]"
+# A drain is a drain: what came out is gone, and nothing was lost on the way.
+assert machine.scc.a.sent_pending == 0 "sent() did not clear the capture"
+assert machine.scc.a.sent() == "" "a second drain returned text"
+assert machine.scc.a.sent_dropped == 0 "the capture dropped bytes"
+
 quit

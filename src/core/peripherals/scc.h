@@ -77,4 +77,11 @@ bool scc_channel_dcd(const scc_t *scc, unsigned int ch);
 bool scc_channel_tx_empty(const scc_t *scc, unsigned int ch);
 unsigned scc_channel_rx_pending(const scc_t *scc, unsigned int ch);
 
+// Host-side transmit capture (the mirror of `receive`): every byte the guest
+// transmits is held until a driving script drains it, so an emulated serial
+// console can be asserted on instead of read out of the `scc` log category.
+size_t scc_channel_sent_pending(const scc_t *scc, unsigned int ch);
+uint64_t scc_channel_sent_dropped(const scc_t *scc, unsigned int ch);
+size_t scc_channel_take_sent(scc_t *scc, unsigned int ch, uint8_t *out, size_t max);
+
 #endif // SCC_H

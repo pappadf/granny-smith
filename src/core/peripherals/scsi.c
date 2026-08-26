@@ -653,7 +653,7 @@ static void run_cmd(scsi_t *scsi) {
             static const char apple_id[] = "APPLE COMPUTER, INC.";
             const int apple_id_len = (int)sizeof(apple_id) - 1; // no NUL on the wire
 
-            uint8_t resp[64];
+            uint8_t resp[96];
             memset(resp, 0, sizeof(resp));
             int total = 4 + 8; // mode parameter header + one block descriptor
             resp[3] = 8; // block descriptor length
@@ -665,7 +665,49 @@ static void run_cmd(scsi_t *scsi) {
             resp[10] = 0x02;
             resp[11] = 0x00;
 
-            if (page_code == 0x30) {
+            // A CHS geometry for the physical-layout pages.  READ CAPACITY
+            // stays authoritative for the addressable block count — as on a
+            // real drive, cylinders*heads*sectors is the platter geometry and
+            // lands at or just under it — so 63x16 is divided out and the
+            // cylinder count truncates.
+            uint32_t secs_per_track = 63, heads = 16;
+            uint32_t cylinders = blocks / (secs_per_track * heads);
+            if (cylinders == 0) { // a mechanism smaller than one cylinder
+                cylinders = 1;
+                heads = 1;
+                secs_per_track = blocks > 0xFFFFu ? 0xFFFFu : blocks;
+            }
+
+            // Page 3 (Format Device) and page 4 (Rigid Disk Drive Geometry),
+            // SCSI-2 §8.3.3/§8.3.4.  Without them a host that asks for the
+            // physical parameters is handed a GOOD status and an empty page
+            // area, and reads whatever its own buffer held — MkLinux DR3's rz
+            // driver does exactly that and derives a sector size from the
+            // leftovers of its previous INQUIRY (measured: 14384 bytes/sector
+            // off "DPES-31080"), which makes every later block access wrong.
+            if (page_code == 0x03 || page_code == 0x3F) {
+                resp[total] = 0x03; // page code
+                resp[total + 1] = 0x16; // page length: 22 bytes follow
+                resp[total + 10] = (secs_per_track >> 8) & 0xFF; // sectors per track
+                resp[total + 11] = secs_per_track & 0xFF;
+                resp[total + 12] = 0x02; // bytes per physical sector = 512
+                resp[total + 13] = 0x00;
+                resp[total + 15] = 0x01; // interleave 1:1
+                resp[total + 20] = 0x40; // HSEC: hard-sectored, the usual for a fixed disk
+                total += 24;
+            }
+            if (page_code == 0x04 || page_code == 0x3F) {
+                resp[total] = 0x04; // page code
+                resp[total + 1] = 0x16; // page length: 22 bytes follow
+                resp[total + 2] = (cylinders >> 16) & 0xFF; // number of cylinders
+                resp[total + 3] = (cylinders >> 8) & 0xFF;
+                resp[total + 4] = cylinders & 0xFF;
+                resp[total + 5] = (uint8_t)heads; // number of heads
+                resp[total + 20] = 0x15; // medium rotation rate: 5400 rpm
+                resp[total + 21] = 0x18;
+                total += 24;
+            }
+            if (page_code == 0x30 || page_code == 0x3F) {
                 resp[total] = 0x30; // page code
                 resp[total + 1] = (uint8_t)apple_id_len; // page length
                 memcpy(resp + total + 2, apple_id, (size_t)apple_id_len);

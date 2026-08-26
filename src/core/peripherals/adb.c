@@ -1225,6 +1225,63 @@ static value_t keyboard_method_up(struct object *self, const member_t *m, int ar
     return val_bool(true);
 }
 
+// `keyboard.type(text)` — tap the keys that produce `text` on a US layout,
+// holding Shift for the characters that need it.  Newline and tab in the
+// string type Return and Tab, so a whole command line ends itself.
+//
+// Everything is queued at once, with no guest time in between: the ADB
+// keyboard ring holds 128 bytes and each character costs two (four when
+// shifted), so a long line would silently lose its head to the ring's
+// drop-oldest overflow.  Rather than let a test type into a void, refuse
+// anything that could not fit and say so — callers type a line at a time and
+// let the guest run.
+#define KEYBOARD_TYPE_MAX_BYTES 96
+
+static value_t keyboard_method_type(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    if (argv[0].kind != V_STRING || !argv[0].s)
+        return val_err("keyboard.type: text must be a string");
+    const char *text = argv[0].s;
+
+    // Cost the line before typing any of it: a partially typed command is
+    // worse than a refused one.
+    size_t cost = 0;
+    for (const char *p = text; *p; p++) {
+        bool shift = false;
+        if (debug_mac_resolve_ascii(*p, &shift) < 0)
+            return val_err("keyboard.type: no US-layout key types '%c' (0x%02x)", *p, (unsigned char)*p);
+        cost += shift ? 4 : 2;
+    }
+    if (cost > KEYBOARD_TYPE_MAX_BYTES)
+        return val_err("keyboard.type: %zu bytes of ADB events exceeds the %d the keyboard queue can hold — "
+                       "type fewer characters per call",
+                       cost, KEYBOARD_TYPE_MAX_BYTES);
+
+    uint64_t typed = 0;
+    for (const char *p = text; *p; p++) {
+        bool shift = false;
+        int code = debug_mac_resolve_ascii(*p, &shift);
+        char hexbuf[8];
+        snprintf(hexbuf, sizeof(hexbuf), "0x%02x", (unsigned)code);
+        if (shift)
+            system_input_key("shift", true);
+        if (system_input_key(hexbuf, true) < 0)
+            return val_err("keyboard.type: the machine has no keyboard");
+        system_input_key(hexbuf, false);
+        if (shift)
+            system_input_key("shift", false);
+        typed++;
+    }
+    LOG(3, "keyboard.type: %llu character(s)", (unsigned long long)typed);
+    return val_uint(8, typed);
+}
+
+static const arg_decl_t keyboard_type_args[] = {
+    {.name = "text", .kind = V_STRING, .doc = "Text to type; newline types Return, tab types Tab"},
+};
+
 static const arg_decl_t keyboard_press_args[] = {
     // V_NONE: body accepts either a name string or a numeric ADB keycode.
     {.name = "key", .kind = V_NONE, .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
@@ -1243,6 +1300,10 @@ static const member_t keyboard_members[] = {
      .name = "up",
      .doc = "Release a key held by down",
      .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_up}   },
+    {.kind = M_METHOD,
+     .name = "type",
+     .doc = "Type a short line of text (US layout; newline = Return)",
+     .method = {.args = keyboard_type_args, .nargs = 1, .result = V_UINT, .fn = keyboard_method_type}  },
 };
 
 const class_desc_t keyboard_class = {

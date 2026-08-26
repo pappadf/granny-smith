@@ -897,6 +897,119 @@ void debug_mac_mouse_button_mode(bool button_down, char mode) {
         system_mouse_update(button_down, 0, 0);
 }
 
+// Resolves one printable ASCII character to the US-layout ADB virtual keycode
+// that produces it, setting *shift when the character needs the Shift key.
+// Returns -1 for a character the layout cannot type.  Tab and newline resolve
+// to their keys so a typed line can carry its own terminator.
+int debug_mac_resolve_ascii(char c, bool *shift) {
+    // Unshifted keycodes, indexed the way the Apple II-descended ADB layout
+    // numbers them (Inside Macintosh: Toolbox Essentials, "Virtual Key Codes").
+    static const struct {
+        char ch;
+        uint8_t code;
+    } plain[] = {
+        {'a',  0x00},
+        {'b',  0x0B},
+        {'c',  0x08},
+        {'d',  0x02},
+        {'e',  0x0E},
+        {'f',  0x03},
+        {'g',  0x05},
+        {'h',  0x04},
+        {'i',  0x22},
+        {'j',  0x26},
+        {'k',  0x28},
+        {'l',  0x25},
+        {'m',  0x2E},
+        {'n',  0x2D},
+        {'o',  0x1F},
+        {'p',  0x23},
+        {'q',  0x0C},
+        {'r',  0x0F},
+        {'s',  0x01},
+        {'t',  0x11},
+        {'u',  0x20},
+        {'v',  0x09},
+        {'w',  0x0D},
+        {'x',  0x07},
+        {'y',  0x10},
+        {'z',  0x06},
+        {'0',  0x1D},
+        {'1',  0x12},
+        {'2',  0x13},
+        {'3',  0x14},
+        {'4',  0x15},
+        {'5',  0x17},
+        {'6',  0x16},
+        {'7',  0x1A},
+        {'8',  0x1C},
+        {'9',  0x19},
+        {' ',  0x31},
+        {'`',  0x32},
+        {'-',  0x1B},
+        {'=',  0x18},
+        {'[',  0x21},
+        {']',  0x1E},
+        {'\\', 0x2A},
+        {';',  0x29},
+        {'\'', 0x27},
+        {',',  0x2B},
+        {'.',  0x2F},
+        {'/',  0x2C},
+        {'\n', 0x24},
+        {'\r', 0x24},
+        {'\t', 0x30},
+    };
+    // Shifted characters and the unshifted character sharing their key.
+    static const struct {
+        char ch;
+        char base;
+    } shifted[] = {
+        {'!', '1' },
+        {'@', '2' },
+        {'#', '3' },
+        {'$', '4' },
+        {'%', '5' },
+        {'^', '6' },
+        {'&', '7' },
+        {'*', '8' },
+        {'(', '9' },
+        {')', '0' },
+        {'~', '`' },
+        {'_', '-' },
+        {'+', '=' },
+        {'{', '[' },
+        {'}', ']' },
+        {'|', '\\'},
+        {':', ';' },
+        {'"', '\''},
+        {'<', ',' },
+        {'>', '.' },
+        {'?', '/' },
+    };
+
+    if (shift)
+        *shift = false;
+    if (c >= 'A' && c <= 'Z') {
+        if (shift)
+            *shift = true;
+        c = (char)(c - 'A' + 'a');
+    } else {
+        for (size_t i = 0; i < sizeof(shifted) / sizeof(shifted[0]); i++) {
+            if (shifted[i].ch == c) {
+                if (shift)
+                    *shift = true;
+                c = shifted[i].base;
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; i < sizeof(plain) / sizeof(plain[0]); i++)
+        if (plain[i].ch == c)
+            return plain[i].code;
+    return -1;
+}
+
 // Resolves a key name to an ADB virtual keycode, or -1 if unknown
 int debug_mac_resolve_key_name(const char *name) {
     // Named keys (case-insensitive comparison via manual lowering)
