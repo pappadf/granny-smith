@@ -83,8 +83,10 @@ void pci_cfg_reset(pci_device_t *dev) {
     if (!dev)
         return;
     memset(&dev->cfg, 0, sizeof(dev->cfg));
-    if (dev->decl)
+    if (dev->decl) {
         dev->cfg.command = dev->decl->command_reset;
+        dev->cfg.status = dev->decl->status_reset;
+    }
 }
 
 uint32_t pci_cfg_read(pci_device_t *dev, uint32_t reg) {

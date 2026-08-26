@@ -110,6 +110,21 @@ machine.memory.poke.l(0xF0800000, 0x00000000)
 # perturbs the guest, so the fault path is pinned in the pci unit suite
 # and exercised for real by Open Firmware's own probe below.)
 
+# --- Each Bandit forwards a PCI I/O window at its own base. ------------------
+# The bridge's own `ranges` property, dumped from a real 9500 under Open
+# Firmware (Apple TN1062), is the specification:
+#
+#   01000000 00000000 00000000  F2000000  00000000 00800000   I/O,  8 MB
+#   02000000 00000000 F3000000  F3000000  00000000 01000000   mem, 16 MB
+#
+# so the 8 MB at the BRIDGE BASE is I/O and the next 16 MB is pass-through
+# memory (which is how Grand Central is reached — see the BoxID read
+# above at $F301A000, which must keep working).  Nothing decodes PCI I/O
+# on a machine with no seated card, so the window exists but claims
+# nothing; the per-device decode is pinned in the pci unit suite, and the
+# Mach64 GX row exercises it for real.
+assert machine.memory.peek.l(0xF301A000) == 0x00E00000 "the $F3 window is pass-through MEMORY, not I/O"
+
 # --- BoxID slot-presence pins follow live population, not the board. ---------
 # Bits 0-5 are the sockets' power/present pins; every socket is empty, so
 # they read 0 while the board's own straps ($E000) stand.
@@ -132,7 +147,12 @@ assert machine.pci.slot[4].card.config.command == 0x0002 "Control decodes memory
 # Same three IDSELs on each bus; Apple's own external-interrupt table puts
 # Bandit 2's slots on Grand Central 27/28/29.
 machine.boot model="pm9500" ram=32768 rom="${$ROM}"
-assert machine.pci.slot[4].label == "D1" "9500 slot 4 label"
+# Slot labels come from each bridge's own `slot-names` property, dumped
+# live in TN1062: Bandit 1 publishes "A1" "B1" "C1", Bandit 2 publishes
+# "D2" "E2" "F2" (Phase 1 guessed D1/E1/F1 and said so).
+assert machine.pci.slot[4].label == "D2" "9500 slot 4 label"
+assert machine.pci.slot[5].label == "E2" "9500 slot 5 label"
+assert machine.pci.slot[6].label == "F2" "9500 slot 6 label"
 assert machine.pci.slot[4].bus == 1 "9500 slot 4 is on Bandit 2"
 assert machine.pci.slot[4].device == 13 "9500 slot 4 IDSEL"
 assert machine.pci.slot[4].irq == 27 "9500 slot 4 interrupt line"
@@ -143,7 +163,7 @@ assert machine.pci.slot[7].card.name == "Control" "9500 Control (the documented 
 machine.memory.poke.l(0xF4800000, 0x00080000)
 assert machine.memory.peek.l(0xF4C00000) == 0x6B100100 "Bandit 2 self-header IDs"
 machine.memory.poke.l(0xF4800000, 0x00200000)
-assert machine.memory.peek.l(0xF4C00000) == 0xFFFFFFFF "9500 socket D1 must read all-ones"
+assert machine.memory.peek.l(0xF4C00000) == 0xFFFFFFFF "9500 socket D2 must read all-ones"
 machine.memory.poke.l(0xF4800000, 0x00000000)
 
 # --- A staged pick that does not FIT leaves the socket empty. ----------------

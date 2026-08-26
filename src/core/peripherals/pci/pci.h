@@ -89,11 +89,8 @@ void pci_root_delete(pci_root_t *root);
 pci_bus_t *pci_bus_create(pci_root_t *root, const char *name, int index);
 pci_bus_t *pci_bus_by_index(pci_root_t *root, int index);
 
-// Which address space a bridge window forwards.
-typedef enum pci_space {
-    PCI_SPACE_MEM = 0,
-    PCI_SPACE_IO,
-} pci_space_t;
+// pci_space_t — which address space a window forwards / a region decodes —
+// is declared in card.h, beside the region types that use it.
 
 // Hand the bus one of the bridge's decode windows.  The bus claims
 // `map_base .. map_base+size-1` on the physical map: an access there is
@@ -134,6 +131,22 @@ void pci_bus_cfg_write(pci_bus_t *bus, int dev, uint32_t fn, uint32_t reg, uint3
 // does not exist yet (there is no removal counterpart to
 // memory_map_host_region), so it lands with the first card that wants it.
 void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t *iface, void *ctx);
+
+// Declare a region this device decodes WITHOUT a BAR — a legacy or
+// strapped decode, as on parts that predate BAR-based I/O.  See
+// pci_fixed_region_t (card.h) for the match semantics; in short, the
+// region answers `pci_addr` in [base, base+span) whose masked bits equal
+// match_value, which expresses both an ordinary contiguous claim
+// (match_mask 0) and ISA-style SPARSE decoding.  The handler is passed
+// `pci_addr - base`, so a card does its own sub-decode and the bus needs
+// no knowledge of the part's addressing.
+//
+// Faking an I/O BAR instead would be worse, not simpler: a BAR the card's
+// own `reg` property does not mention is one Open Firmware sizes, finds
+// and assigns — inventing an address the card does not decode and
+// consuming I/O space its firmware expects to own outright.
+void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t base, uint32_t span,
+                                 uint32_t match_mask, uint32_t match_value, const memory_interface_t *iface, void *ctx);
 
 // A device's decoded regions may have moved: re-derive them from the
 // header state.  Called by config_space.c on every BAR / command write and

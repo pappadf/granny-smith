@@ -219,9 +219,18 @@ void pci_staged_clear_all(void) {
 // linear probe is deliberate — see pci.h's note on why v1 has no overlay
 // fast path.
 
-// Locate the backing that decodes `pci_addr` in `w`'s space.  Returns NULL
-// when nothing does; on success *sub receives the offset into the region.
-static const pci_bar_backing_t *window_locate(const pci_window_t *w, uint32_t pci_addr, uint32_t *sub) {
+// What answered a window access: the handler, its context and the offset
+// into the region.  BAR-derived and fixed regions both resolve to this, so
+// the six accessors below don't care which kind decoded.
+typedef struct pci_decode {
+    const memory_interface_t *iface;
+    void *ctx;
+    uint32_t sub;
+} pci_decode_t;
+
+// Locate whatever decodes `pci_addr` in `w`'s space.  False when nothing
+// does — which is the fault path, and the whole BART contract.
+static bool window_locate(const pci_window_t *w, uint32_t pci_addr, pci_decode_t *out) {
     const pci_bus_t *bus = w->bus;
     for (int d = 0; d < PCI_MAX_DEVICES; d++) {
         const pci_device_t *dev = bus->dev[d];
@@ -238,12 +247,30 @@ static const pci_bar_backing_t *window_locate(const pci_window_t *w, uint32_t pc
                 continue;
             uint32_t size = pci_cfg_bar_size(dev, b);
             if (pci_addr - bk->base < size) {
-                *sub = pci_addr - bk->base;
-                return bk;
+                out->iface = bk->iface;
+                out->ctx = bk->ctx;
+                out->sub = pci_addr - bk->base;
+                return true;
             }
         }
+        // Then the non-BAR regions: parts that predate BAR-based I/O decode
+        // at strapped addresses, and a sparse decoder answers only its own
+        // congruence class inside the span (card.h).
+        for (int r = 0; r < PCI_FIXED_REGIONS; r++) {
+            const pci_fixed_region_t *fr = &dev->fixed[r];
+            if (!fr->iface || !fr->mapped || fr->space != w->space)
+                continue;
+            if (pci_addr - fr->base >= fr->span)
+                continue;
+            if ((pci_addr & fr->match_mask) != fr->match_value)
+                continue;
+            out->iface = fr->iface;
+            out->ctx = fr->ctx;
+            out->sub = pci_addr - fr->base;
+            return true;
+        }
     }
-    return NULL;
+    return false;
 }
 
 // PCI address of a window offset, and the fault reporter for offsets no
@@ -259,68 +286,62 @@ static void window_fault(const pci_window_t *w, uint32_t offset, bool write) {
 
 static uint8_t window_read8(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFu;
     }
-    return bk->iface->read_uint8(bk->ctx, sub);
+    return d.iface->read_uint8(d.ctx, d.sub);
 }
 
 static uint16_t window_read16(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFFFu;
     }
-    return bk->iface->read_uint16(bk->ctx, sub);
+    return d.iface->read_uint16(d.ctx, d.sub);
 }
 
 static uint32_t window_read32(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFFFFFFFu;
     }
-    return bk->iface->read_uint32(bk->ctx, sub);
+    return d.iface->read_uint32(d.ctx, d.sub);
 }
 
 static void window_write8(void *ctx, uint32_t offset, uint8_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
     }
-    bk->iface->write_uint8(bk->ctx, sub, value);
+    d.iface->write_uint8(d.ctx, d.sub, value);
 }
 
 static void window_write16(void *ctx, uint32_t offset, uint16_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
     }
-    bk->iface->write_uint16(bk->ctx, sub, value);
+    d.iface->write_uint16(d.ctx, d.sub, value);
 }
 
 static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
     }
-    bk->iface->write_uint32(bk->ctx, sub, value);
+    d.iface->write_uint32(d.ctx, d.sub, value);
 }
 
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,
@@ -369,12 +390,50 @@ void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t 
     bk->base = 0;
 }
 
+void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t base, uint32_t span,
+                                 uint32_t match_mask, uint32_t match_value, const memory_interface_t *iface,
+                                 void *ctx) {
+    if (!dev || !iface || !span)
+        return;
+    for (int r = 0; r < PCI_FIXED_REGIONS; r++) {
+        pci_fixed_region_t *fr = &dev->fixed[r];
+        if (fr->iface)
+            continue;
+        fr->iface = iface;
+        fr->ctx = ctx;
+        fr->space = space;
+        fr->base = base;
+        fr->span = span;
+        fr->match_mask = match_mask;
+        fr->match_value = match_value;
+        fr->mapped = false; // pci_device_regions_changed applies the gate
+        return;
+    }
+    LOG(0, "%s: no free fixed-region slot (PCI_FIXED_REGIONS = %d)",
+        (dev->ops && dev->ops->name) ? dev->ops->name(dev) : "device", PCI_FIXED_REGIONS);
+}
+
 // Re-derive every decoded region of `dev` from its header state.  This is
 // the ONE place a BAR transition happens, so a device driver never has to
 // track where it currently answers.
 void pci_device_regions_changed(pci_device_t *dev) {
     if (!dev)
         return;
+    // Non-BAR regions have no latch to move: their address is strapped, so
+    // the only thing that changes is whether the command register enables
+    // the space they sit in.
+    for (int r = 0; r < PCI_FIXED_REGIONS; r++) {
+        pci_fixed_region_t *fr = &dev->fixed[r];
+        if (!fr->iface)
+            continue;
+        uint16_t gate = (fr->space == PCI_SPACE_IO) ? PCI_CMD_IO_SPACE : PCI_CMD_MEM_SPACE;
+        bool on = (dev->cfg.command & gate) != 0;
+        if (on == fr->mapped)
+            continue;
+        fr->mapped = on;
+        LOG(2, "%s: fixed %s region $%08X+$%X %s", (dev->ops && dev->ops->name) ? dev->ops->name(dev) : "device",
+            (fr->space == PCI_SPACE_IO) ? "I/O" : "memory", fr->base, fr->span, on ? "decodes" : "no longer decodes");
+    }
     for (int b = 0; b < PCI_BAR_SLOTS; b++) {
         pci_bar_backing_t *bk = &dev->backing[b];
         if (bk->kind == PCI_BACKING_NONE)

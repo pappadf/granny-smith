@@ -97,17 +97,25 @@ static const pci_config_decl_t bandit_self_decl = {
 static uint32_t bandit_addr_select(const tnt_bandit_t *b) {
     switch (b->base) {
     case TNT_BANDIT1_BASE:
-        // 256 MB PCI memory at $80000000; 16 MB windows $F2 (bridge) and
-        // $F3 (PCI I/O — the Grand Central island).
+        // 256 MB PCI memory at $80000000; 16 MB windows $F2 (the bridge
+        // itself — its config ports AND, since Phase 2, its 8 MB PCI I/O
+        // window at the same base) and $F3 (pass-through memory, the
+        // Grand Central island).
         return (0x0100u << 16) | 0x000Cu;
     case TNT_BANDIT2_BASE:
     default:
-        // Second bridge: its $F4/$F5 windows only.  No 256 MB memory-space
-        // window is decoded — which memory range Bandit 2 forwards is
-        // still open (Apple's notes quote $90000000 for both Bandit 2 and
-        // Chaos, and a board carrying both cannot have them collide;
-        // proposal-pci-architecture §14 Q5).  The register and the decode
-        // stay consistent: we claim nothing, so we advertise nothing.
+        // Second bridge: its $F4 (config ports + PCI I/O) and $F5
+        // (pass-through memory) windows only.  Apple's own dump of a real
+        // 9500 (TN1062) shows Bandit 2 also forwarding 256 MB of memory at
+        // $90000000, which answers proposal-pci-architecture §14 Q5 — but
+        // this model cannot claim it yet, because our pm9500 still carries
+        // Chaos (the documented no-onboard-video deviation) and Chaos's own
+        // VCI memory window is at that same $90000000.  On real hardware
+        // they never collide: a 9500 has no Chaos and a 7500/8500 has no
+        // Bandit 2.  The claim lands with the Chaos removal
+        // (proposal-pci-mach64-gx-spinnaker §5 step 2), which is a separate
+        // gated change.  Until then the register and the decode stay
+        // consistent: we claim no memory window, so we advertise none.
         return 0x0030u;
     }
 }
@@ -328,8 +336,9 @@ void tnt_bandit_init(config_t *cfg) {
 
     bridge_add(cfg, TNT_CHAOS_BASE, true, TNT_PCI_BUS_VCI, "Chaos");
     tnt_bandit_t *bandit1 = bridge_add(cfg, TNT_BANDIT1_BASE, false, TNT_PCI_BUS_1, "Bandit 1");
+    tnt_bandit_t *bandit2 = NULL;
     if (tnt_board(cfg)->bandit_count >= 2)
-        bridge_add(cfg, TNT_BANDIT2_BASE, false, TNT_PCI_BUS_2, "Bandit 2");
+        bandit2 = bridge_add(cfg, TNT_BANDIT2_BASE, false, TNT_PCI_BUS_2, "Bandit 2");
 
     // Bandit 1's 256 MB PCI memory space and Chaos's 256 MB VCI memory
     // space: the bus claims both, dispatches an access to whichever seated
@@ -341,17 +350,44 @@ void tnt_bandit_init(config_t *cfg) {
     // Its slots probe correctly regardless: config cycles are the
     // discovery path, and an unpopulated IDSEL reads all-ones.
     //
-    // No I/O window is claimed either.  The generic layer supports one
-    // (pci_bus_add_window with PCI_SPACE_IO over base+$000000..$7FFFFF),
-    // but nothing on these machines decodes PCI I/O space yet — Grand
-    // Central is reached by PASS-THROUGH MEMORY at $F3000000, not by I/O
-    // cycles — and claiming the range would turn today's silent reads
-    // into faults for no modelled device's benefit.  It lands with the
-    // first card that declares an I/O BAR.
     pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, TNT_PCI_MEM1, 0x10000000u, TNT_PCI_MEM1, 0xFFFFFFFFu,
                        "PCI memory (Bandit 1)");
     pci_bus_add_window(pci_bus_by_index(cfg->pci, TNT_PCI_BUS_VCI), PCI_SPACE_MEM, TNT_PCI_MEM_VCI, 0x10000000u,
                        TNT_PCI_MEM_VCI, 0xFFFFFFFFu, "VCI memory (Chaos)");
+
+    // Each Bandit's PCI I/O window.  The bridge's own `ranges` property,
+    // dumped from a real 9500 under Open Firmware 1.0.5 (Apple Technote
+    // 1062, "Fundamentals of Open Firmware, Part II"), is the
+    // specification:
+    //
+    //     01000000 00000000 00000000  F2000000  00000000 00800000
+    //     ^ I/O    ^ child address 0            ^ parent  ^ size = 8 MB
+    //
+    // 8 MB at the BRIDGE BASE, forwarding PCI I/O address 0 upward with
+    // only the low 16 address bits driven — so the 64 KB I/O space aliases
+    // through the window 128 times.  NOT at $F3000000: the same property
+    // lists that as 16 MB of pass-through MEMORY (see TNT_GC_BASE).
+    //
+    // Phase 1 deliberately left this unclaimed, reasoning that it would
+    // land with the first card declaring an I/O BAR.  The Mach64 GX
+    // declares none and uses I/O space absolutely: CONFIG_CNTL — the
+    // register that ENABLES the memory aperture — is the one mach64
+    // register with no memory-mapped alias (ATI RRG ch. 1), so the card is
+    // unreachable through memory until it has been reached through I/O.
+    //
+    // This is a behaviour change on a boot-critical bridge: $F2000000..
+    // $F27FFFFF is unclaimed today, and after this an access there that no
+    // seated device decodes takes a RECOVERABLE transfer error instead of
+    // the map's default.  That is the correct contract — it is what the
+    // memory windows above already do — but it is why this lands in its
+    // own commit, ahead of any card.
+    pci_bus_add_window(bandit1->bus, PCI_SPACE_IO, TNT_BANDIT1_BASE, TNT_PCI_IO_SIZE, 0x0u, 0xFFFFu,
+                       "PCI I/O (Bandit 1)");
+    // Chaos claims none: the VCI bridge has no I/O window at all
+    // (AppleMacRiscVCI::ioDeviceMemory() returns 0).
+    if (bandit2)
+        pci_bus_add_window(bandit2->bus, PCI_SPACE_IO, TNT_BANDIT2_BASE, TNT_PCI_IO_SIZE, 0x0u, 0xFFFFu,
+                           "PCI I/O (Bandit 2)");
 
     // Grand Central's config presence at device 16 (grand_central.c).
     tnt_gc_pci_attach(cfg, bandit1->bus);

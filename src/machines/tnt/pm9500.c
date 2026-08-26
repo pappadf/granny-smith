@@ -33,13 +33,20 @@ static const struct scsi_slot pm9500_scsi_slots[] = {
 // Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
 // Apple's own 9500 external-interrupt table verbatim.  Slot 7 carries the
 // Control/Chaos video deviation documented above.
+//
+// The slot LABELS come from each bridge's own `slot-names` property, dumped
+// live from a real 9500 under Open Firmware (Apple Technote 1062):
+// Bandit 1 publishes `0000E000 "A1" "B1" "C1"` and Bandit 2 publishes
+// `0000E000 "D2" "E2" "F2"`.  Phase 1 declared the second bank D1/E1/F1,
+// having judged the strings "not decidable from the token stream"; the
+// ROM's own property decides them.
 static const pci_slot_decl_t pm9500_pci_slots[] = {
     {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
     {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},
     {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = TNT_PCI_BUS_1, .device = 15, .int_line = 25},
-    {.slot = 4, .kind = PCI_SLOT_SOCKET, .label = "D1", .bus = TNT_PCI_BUS_2, .device = 13, .int_line = 27},
-    {.slot = 5, .kind = PCI_SLOT_SOCKET, .label = "E1", .bus = TNT_PCI_BUS_2, .device = 14, .int_line = 28},
-    {.slot = 6, .kind = PCI_SLOT_SOCKET, .label = "F1", .bus = TNT_PCI_BUS_2, .device = 15, .int_line = 29},
+    {.slot = 4, .kind = PCI_SLOT_SOCKET, .label = "D2", .bus = TNT_PCI_BUS_2, .device = 13, .int_line = 27},
+    {.slot = 5, .kind = PCI_SLOT_SOCKET, .label = "E2", .bus = TNT_PCI_BUS_2, .device = 14, .int_line = 28},
+    {.slot = 6, .kind = PCI_SLOT_SOCKET, .label = "F2", .bus = TNT_PCI_BUS_2, .device = 15, .int_line = 29},
     {.slot = 7,
      .kind = PCI_SLOT_BUILTIN,
      .label = "VCI",

@@ -96,6 +96,43 @@ typedef struct pci_bar_backing {
     uint32_t base; // where it is decoded (valid while mapped)
 } pci_bar_backing_t;
 
+// Which address space a bridge window forwards / a region decodes.  Lives
+// here rather than in pci.h because a DEVICE's regions are described in
+// this header and pci.h includes it (so `#include "pci.h"` still sees it).
+typedef enum pci_space {
+    PCI_SPACE_MEM = 0,
+    PCI_SPACE_IO,
+} pci_space_t;
+
+// A region whose address is NOT BAR-derived: legacy or strapped decode, as
+// on parts that predate BAR-based I/O.  Decodes `pci_addr` iff it lies in
+// [base, base+span) AND (pci_addr & match_mask) == match_value.
+//
+// The match pair is what makes ISA-style SPARSE decoding expressible.  A
+// mach64 answers only the 64 addresses ((sel << 10) | $2EC) scattered
+// through the 64 KB I/O space — it compares just the low 10 bits and uses
+// bits 15:10 as a register select — so a plain "claim base..base+size"
+// region would have it swallow all 64 KB including addresses it does not
+// drive.  Here that is match_mask $3FF, match_value $2EC, span $10000.
+// A mask of 0 makes the match vacuous, which is an ordinary contiguous
+// claim.
+//
+// Gated by the command register's space-enable bit exactly like a BAR, so
+// a card software has not enabled decodes nothing.  The gate is derived
+// from cfg.command, so there is no new checkpointed state.
+#define PCI_FIXED_REGIONS 2
+
+typedef struct pci_fixed_region {
+    const memory_interface_t *iface; // NULL = unused entry
+    void *ctx;
+    pci_space_t space;
+    uint32_t base; // PCI address the region starts at
+    uint32_t span; // bytes it covers
+    uint32_t match_mask; // 0 = contiguous claim, no sparse match
+    uint32_t match_value;
+    bool mapped; // command register currently enables this space
+} pci_fixed_region_t;
+
 // One seated device.  Per-device private state hangs off `priv`; the bus
 // controller never reads it.
 struct pci_device {
@@ -109,6 +146,7 @@ struct pci_device {
     uint8_t *rom; // expansion-ROM image (FCode), or NULL
     size_t rom_size;
     pci_bar_backing_t backing[PCI_BAR_SLOTS]; // BARs 0..5 + the ROM BAR
+    pci_fixed_region_t fixed[PCI_FIXED_REGIONS]; // non-BAR strapped decode
 };
 
 // Per-card constructor.  The bus controller calls this once per populated
