@@ -45,8 +45,10 @@ static uint32_t g_trace_trigger, g_trace_count, g_trace_skip;
 static uint32_t g_trace_active; // instructions left in the triggered window
 static uint32_t g_trace_hitno; // trigger hits seen so far
 static uint64_t g_trace_seen; // instructions executed since arm (approximates instr_count)
-static uint32_t g_trace_watch; // physical word address to watch (0 = off)
-static uint32_t g_trace_watch_val; // last observed value at the watch address
+#define TRACE_WATCH_MAX 8
+static uint32_t g_trace_watch; // number of watched physical word addresses (0 = off)
+static uint32_t g_trace_watch_addr[TRACE_WATCH_MAX]; // comma-separated GS_PCTRACE_WATCH list
+static uint32_t g_trace_watch_val[TRACE_WATCH_MAX]; // last observed value per address
 static uint32_t g_trace_onlypc; // filter: log only this pc within the window (0 = off)
 static int g_trace_hits_mode = -1; // -1 = env not parsed yet
 
@@ -65,8 +67,20 @@ static void ppc_trace_init(void) {
     g_trace_skip = (s = getenv("GS_PCTRACE_SKIP")) ? (uint32_t)strtoul(s, NULL, 0) : 0u;
     g_trace_hits_mode = ((s = getenv("GS_PCTRACE_HITS")) && *s == '1');
     g_trace_reg = (s = getenv("GS_PCTRACE_REG")) ? atoi(s) : -1;
-    g_trace_watch = (s = getenv("GS_PCTRACE_WATCH")) ? (uint32_t)strtoul(s, NULL, 16) : 0u;
-    g_trace_watch_val = g_trace_watch ? memory_read_uint32(g_trace_watch) : 0u;
+    if ((s = getenv("GS_PCTRACE_WATCH"))) {
+        char *end;
+        while (g_trace_watch < TRACE_WATCH_MAX) {
+            uint32_t a = (uint32_t)strtoul(s, &end, 16);
+            if (end == s)
+                break;
+            g_trace_watch_addr[g_trace_watch] = a;
+            g_trace_watch_val[g_trace_watch] = memory_read_uint32(a);
+            g_trace_watch++;
+            if (*end != ',')
+                break;
+            s = end + 1;
+        }
+    }
     g_trace_onlypc = (s = getenv("GS_PCTRACE_ONLYPC")) ? (uint32_t)strtoul(s, NULL, 16) : 0u;
 }
 
@@ -104,12 +118,17 @@ static void ppc_trace(ppc_t *p, uint32_t iw) {
         g_trace_active = g_trace_count;
     }
     if (g_trace_watch) { // watch mode: log only value changes (prev instruction wrote it)
-        uint32_t v = memory_read_uint32(g_trace_watch);
-        if (v != g_trace_watch_val) {
-            fprintf(g_trace_file, "WATCH seen=%llu %08X->%08X next_pc=%08X\n", (unsigned long long)g_trace_seen,
-                    g_trace_watch_val, v, p->instruction_pc);
+        for (uint32_t i = 0; i < g_trace_watch; i++) {
+            uint32_t v = memory_read_uint32(g_trace_watch_addr[i]);
+            if (v == g_trace_watch_val[i])
+                continue;
+            fprintf(g_trace_file, "WATCH %08X seen=%llu %08X->%08X next_pc=%08X", g_trace_watch_addr[i],
+                    (unsigned long long)g_trace_seen, g_trace_watch_val[i], v, p->instruction_pc);
+            if (g_trace_reg >= 0)
+                fprintf(g_trace_file, " r%d=%08X", g_trace_reg, p->gpr[g_trace_reg]);
+            fputc('\n', g_trace_file);
             fflush(g_trace_file);
-            g_trace_watch_val = v;
+            g_trace_watch_val[i] = v;
         }
         return; // watch mode never expires its window
     }
