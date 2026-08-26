@@ -80,9 +80,11 @@ struct pci_root {
 // extern plus one entry.
 
 extern const pci_card_kind_t tnt_control_kind; // machines/tnt/control.c
+extern const pci_card_kind_t mach64_gx_kind; // peripherals/pci/cards/mach64gx.c
 
 static const pci_card_kind_t *const g_card_registry[] = {
     &tnt_control_kind,
+    &mach64_gx_kind,
     NULL,
 };
 

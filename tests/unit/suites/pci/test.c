@@ -31,6 +31,15 @@
 // deliberately does not link — so it gets a factory-less stand-in.
 const pci_card_kind_t tnt_control_kind = {
     .id = "tnt_control", .display_name = "Control / Chaos on-board video", .attach = PCI_ATTACH_BUILTIN};
+// ...and the pluggable one, from core/peripherals/pci/cards/mach64gx.c, which
+// this suite also does not link (it would drag in the whole prom/object
+// stack).  requires_prom is kept true so the socket-fit and staged-pick
+// rows below exercise a card with a real ROM requirement.
+const pci_card_kind_t mach64_gx_kind = {.id = "mach64_gx",
+                                        .display_name = "Apple Accelerated PCI Graphics Card (ATI Mach64 GX)",
+                                        .attach = PCI_ATTACH_PCI,
+                                        .requires_prom = true,
+                                        .card_class = "display"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;

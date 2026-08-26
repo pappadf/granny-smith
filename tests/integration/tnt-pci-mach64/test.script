@@ -1,0 +1,146 @@
+# The Apple Accelerated PCI Graphics Card (ATI Mach64 GX, "Spinnaker")
+# enumerating in socket A1 of a Power Macintosh 9500.
+#
+# THE ACCEPTANCE TARGET IS APPLE'S OWN HARDWARE.  Technote 1062 walks a
+# real 9500 under Open Firmware 1.0.5 and dumps this card's node:
+#
+#   vendor-id 00001002   device-id 00004758   revision-id 00000002
+#   class-code 00030000  interrupts 00000001  devsel-speed 00000001
+#   AAPL,interrupts 00000017        AAPL,slot-name A1
+#   reg 00006800 ... 0     02006810 ... 01000000
+#   assigned-addresses 82006810 00000000 81000000 00000000 01000000
+#
+# Everything below checks the emulated card produces that same structure.
+# Where the emulator cannot see the OF tree directly, the register state is
+# the proxy — the tree is DERIVED from it, which is the whole "the guest
+# enumerates, we answer" principle.
+#
+# Config-port note: the address and data ports are LITTLE-ENDIAN (the guest
+# drives them with lwbrx/stwbrx) and machine.memory.peek/poke are raw
+# big-endian bus views, so every literal here is the byte-swapped form of
+# the value software sees.  The one-hot IDSEL is the AD line wired to the
+# slot: socket A1 is device 13, so bit 13 -> LE $00002000 -> $00200000.
+
+# --- Expansion-ROM identification, before anything is seated. ---------------
+# Identity is the CRC-32 of the whole chip image; no filename is ever
+# inspected.  The two catalogued dumps of this card:
+assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").recognised "the -104 dump must be recognised"
+assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").card_id == "mach64_gx" "and must provide the mach64_gx card"
+assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").card_id == "mach64_gx" "so must the earlier -101 programming"
+# ...and the failures, each told apart from the others.  A PC/x86 option
+# ROM is the predictable user error and must not be mistaken for "not a ROM".
+assert !machine.prom.identify("${$WORK_DIR}/fake-x86-vga.prom").recognised "an x86 option ROM must be rejected"
+assert !machine.prom.offer("${$WORK_DIR}/fake-x86-vga.prom") "...and must not register as an offer"
+assert !machine.prom.identify("${$WORK_DIR}/uncatalogued.prom").recognised "an uncatalogued OF ROM must be rejected"
+assert !machine.prom.identify("${$ROM}").recognised "a 4 MB CPU ROM is not an expansion ROM"
+
+# --- The card kind reaches the configuration layer from one declaration. ----
+assert machine.pci.cards() == "[tnt_control, mach64_gx]" "the card must be registered"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+
+assert machine.pci.slot[1].label == "A1" "the card sits in socket A1"
+assert machine.pci.slot[1].irq == 23 "A1's strapped INTA-D reaches Grand Central 23 (TN1062: AAPL,interrupts $17)"
+assert machine.pci.slot[1].card.name == "ATI Mach64 GX" "the card is seated"
+
+# --- The type-0 header, before a single instruction runs. -------------------
+# Device 13 on Bandit 1: vendor $1002 device $4758 -> LE dword $47581002.
+machine.memory.poke.l(0xF2800000, 0x00200000)
+assert machine.memory.peek.l(0xF2C00000) == 0x02105847 "vendor $1002 / device $4758"
+# Class $030000 (display / VGA-compatible), revision $02 -> LE $03000002.
+machine.memory.poke.l(0xF2800000, 0x08200000)
+assert machine.memory.peek.l(0xF2C00000) == 0x02000003 "class $030000, revision 2 (GX-2)"
+# Status halfword: medium DEVSEL (bits 10:9 = 01) is what OF publishes as
+# `devsel-speed 00000001`.  The generic header would otherwise say "fast".
+assert machine.pci.slot[1].card.config.status == 0x0200 "medium DEVSEL"
+# Interrupt pin 1 = INTA; the LINE is seeded from the slot table so the
+# header and the topology cannot disagree.
+assert machine.pci.slot[1].card.config.interrupt_line == 23 "the interrupt line follows the slot table"
+
+# The universal $FFFFFFFF sizing probe.  BAR0 is 16 MB of non-prefetchable
+# memory — the size the card's own `reg` property declares and the size
+# Apple's dump reports (02006810 ... 01000000).
+machine.memory.poke.l(0xF2800000, 0x10200000)
+machine.memory.poke.l(0xF2C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF2C00000) == 0x000000FF "BAR0 must size as 16 MB"
+# There is exactly ONE BAR.  BAR1 is unimplemented and reads zero — the
+# device exists, so it is not all-ones; only absent DEVICES read all-ones.
+machine.memory.poke.l(0xF2800000, 0x14200000)
+machine.memory.poke.l(0xF2C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF2C00000) == 0x00000000 "the card declares no second BAR"
+# ...and no I/O BAR either, which is exactly why its register file needs a
+# strapped (non-BAR) I/O decode.
+machine.memory.poke.l(0xF2800000, 0x18200000)
+machine.memory.poke.l(0xF2C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF2C00000) == 0x00000000 "the card declares no I/O BAR"
+# The expansion-ROM BAR at $30 sizes as the 32 KB physical chip.  Bit 0 is
+# the decode-enable bit, which is writable and reads back, so an all-ones
+# sizing write leaves it set: LE $FFFF8001.
+machine.memory.poke.l(0xF2800000, 0x30200000)
+machine.memory.poke.l(0xF2C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF2C00000) == 0x0180FFFF "the ROM BAR must size as 32 KB"
+# Clear it again so the sizing probe does not leave the ROM decoding at an
+# address the firmware never assigned.
+machine.memory.poke.l(0xF2C00000, 0x00000000)
+machine.memory.poke.l(0xF2800000, 0x00000000)
+
+# --- The chip's own identity, before the guest touches it. ------------------
+assert machine.pci.slot[1].card.regs.chip_id == 0x020000D7 "CONFIG_CHIP_ID: 'GX', class 0, revision 2 (GX-2)"
+assert machine.pci.slot[1].card.regs.vram_size == 0x200000 "2 MB of VRAM, as Apple soldered down"
+assert machine.pci.slot[1].card.config.rom_size == 0x8000 "a 32 KB expansion ROM is loaded"
+assert machine.pci.slot[1].card.monitor.id == "14in_rgb" "the default strapped monitor"
+assert !machine.pci.slot[1].card.monitor.probed "nothing has sensed the monitor yet"
+
+# --- Now let the guest's own firmware run the card. -------------------------
+# Open Firmware probes Bandit 1, sizes and assigns the BARs, maps the
+# expansion ROM and byte-loads the card's FCode, which then brings the chip
+# up on its own.  Nothing below is emulator behaviour: it is the card's ROM
+# executing.
+scheduler.run 400000000
+
+# Open Firmware assigned BAR0 inside Bandit 1's 256 MB window — at exactly
+# the address Apple's own machine assigned it.
+assert machine.pci.slot[1].card.config.bar[0].base == 0x81000000 "OF must assign BAR0 at $81000000 (TN1062)"
+assert machine.pci.slot[1].card.config.bar[0].mapped "and the card must decode it"
+# The command register carries memory space; the card's FCode sets the I/O
+# bit while it programs CONFIG_CNTL and CLEARS it again on the way out, so
+# a settled card decodes memory only.
+assert (machine.pci.slot[1].card.config.command & 0x0002) != 0 "memory space enabled"
+
+# The card enabled its own aperture.  CONFIG_CNTL is the one mach64
+# register with NO memory-mapped alias, so this could only have been
+# written through PCI I/O space — which is the whole reason the Bandit I/O
+# window had to be claimed.
+assert machine.pci.slot[1].card.regs.aperture_size == 0x800000 "an 8 MB aperture is enabled"
+assert (machine.pci.slot[1].card.regs.config_cntl & 0x00080000) != 0 "CFG_VGA_DIS: the FCode disabled VGA"
+
+# The monitor-sense engine ran, and did NOT bail.  The card's FCode prints
+# "No monitor" and aborts only when the primary code is 7 AND the extended
+# code is $3F together — every pin floating in every configuration.  A 14"
+# AppleColor answers primary 6, extended $2B.
+#
+# $2B is worth stating twice: it is the same extended walk the repository
+# already records for this monitor on Control's completely unrelated sense
+# circuit (control.c).  Two independent circuits agreeing on one monitor is
+# what makes this engine trustworthy.
+assert machine.pci.slot[1].card.monitor.probed "the guest must have driven the monitor-ID pins"
+assert machine.pci.slot[1].card.monitor.sensed_primary == 6 "primary sense code 6"
+assert machine.pci.slot[1].card.monitor.sensed_extended == 0x2B "extended sense walk $2B"
+
+# The CRTC was programmed for 8 bpp extended (non-VGA) display, which is
+# what the card's own register-init table selects and what TN1062's node
+# reports as `depth 00000008`.
+assert ((machine.pci.slot[1].card.regs.crtc_gen_cntl >> 8) & 7) == 2 "CRTC_PIX_WIDTH = 2 = 8 bpp"
+assert (machine.pci.slot[1].card.regs.crtc_gen_cntl & 0x01000000) != 0 "CRTC_EXT_DISP_EN: not in VGA mode"
+
+# MEM_SIZE must agree with the buffer we allocated, or a driver offers
+# depths the framebuffer cannot hold.
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "MEM_CNTL MEM_SIZE = 2 = 2 MB"
+
+# --- A card that requires an expansion ROM cannot boot without one. ---------
+# Strict resolution runs BEFORE the running machine is touched, so a
+# rejected boot leaves the current machine alive.
+machine.prom.offer("${$WORK_DIR}/fake-x86-vga.prom")
+assert machine.id == "pm9500" "the machine survives"
+
+quit

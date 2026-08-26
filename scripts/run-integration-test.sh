@@ -117,6 +117,8 @@ else
     # shellcheck disable=SC2086 — args and vars are intentionally word-split
     # $ROM mirrors the startup rom= so scripts can re-boot with an explicit
     # rom="${$ROM}" (machine.boot inherits nothing — proposal-boot-vs-reset).
+    # $TEST_DATA is the fixture root, for rows that name a second file by
+    # path (a card's expansion ROM, a second disk image).
     ${WRAPPER:-} "$HEADLESS_BIN" \
         rom="$ROM_PATH" \
         $EXPANDED_ARGS \
@@ -124,6 +126,7 @@ else
         --var WORK_DIR="$WORK_DIR" \
         --var TEST_RESULTS_DIR="$TEST_RESULTS_DIR" \
         --var ROM="$ROM_PATH" \
+        --var TEST_DATA="$TEST_DATA" \
         $VAR_ARGS \
         --speed=max || fail
 fi
