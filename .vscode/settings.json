@@ -39,15 +39,6 @@
         "*.inc": "c",
         "cstdint": "c"
     },
-    // Keep the IntelliSense TagParser out of the gitignored scratch dirs.
-    // tmp/re alone holds hundreds of MB of cloned third-party C source
-    // (AIX, SuperMario, MkLinux), which pins both cores for minutes.
-    "C_Cpp.files.exclude": {
-        "**/.vscode": true,
-        "**/.git": true,
-        "tmp/**": true,
-        "local/**": true
-    },
     "C_Cpp.formatting": "clangFormat",
     // Point Playwright VS Code extension at the web2 e2e config
     "playwright.testConfig": "tests/e2e/playwright.web2.config.ts"
