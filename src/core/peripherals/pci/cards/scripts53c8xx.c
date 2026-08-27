@@ -128,27 +128,716 @@ void sym53c8xx_raise_scsi(sym53c8xx_t *s, uint8_t sist0_bits, uint8_t sist1_bits
 }
 
 // ============================================================
+// Register-file helpers
+// ============================================================
+// Multi-byte registers are LITTLE-endian within the chip: a register's low
+// byte lives at its low offset.  That is a property of the part, not of the
+// host bus — the BIG_LIT/ strap governs how DATA lanes are routed on
+// transfers, not how the register file is numbered.
+
+static uint32_t reg32(sym53c8xx_t *s, uint32_t off) {
+    return (uint32_t)s->reg[off] | ((uint32_t)s->reg[off + 1] << 8) | ((uint32_t)s->reg[off + 2] << 16) |
+           ((uint32_t)s->reg[off + 3] << 24);
+}
+
+static void set_reg32(sym53c8xx_t *s, uint32_t off, uint32_t v) {
+    s->reg[off] = (uint8_t)v;
+    s->reg[off + 1] = (uint8_t)(v >> 8);
+    s->reg[off + 2] = (uint8_t)(v >> 16);
+    s->reg[off + 3] = (uint8_t)(v >> 24);
+}
+
+// The 24-bit DMA Byte Counter shares its dword with DCMD, which occupies
+// the top byte, so it can only be written through its own mask.
+static void set_dbc(sym53c8xx_t *s, uint32_t v) {
+    set_reg32(s, SYM825_DBC, (reg32(s, SYM825_DBC) & 0xFF000000u) | (v & 0x00FFFFFFu));
+}
+
+// Sign-extend a 24-bit relative displacement.  Used by every relative
+// addressing mode in the instruction set, all of which are 24-bit signed.
+static int32_t sext24(uint32_t v) {
+    return (int32_t)((v & 0x00800000u) ? (v | 0xFF000000u) : (v & 0x00FFFFFFu));
+}
+
+// One instruction dword out of host memory.  The chip fetches its program
+// in the HOST's byte order, which the BIG_LIT/ strap selects — big-endian
+// on the Apple Network Server, little-endian on a PC.  Data payloads need
+// no such treatment: a SCSI byte stream lands lowest-address-first either
+// way, so Block Move data is a straight byte copy.
+static uint32_t fetch32(sym53c8xx_t *s, uint32_t phys) {
+    uint8_t b[4];
+    sym53c8xx_read_block(s, phys, b, 4);
+    if (s->big_endian)
+        return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) | ((uint32_t)b[2] << 8) | b[3];
+    return ((uint32_t)b[3] << 24) | ((uint32_t)b[2] << 16) | ((uint32_t)b[1] << 8) | b[0];
+}
+
+// ============================================================
+// The message conversation
+// ============================================================
+// Everything in this block exists because our shared bus/target model
+// (scsi.c) answers an external initiator with COMMAND phase the moment
+// selection succeeds — it has no MESSAGE OUT for the IDENTIFY, and no
+// notion of a negotiation.  MESH solved the identical problem the identical
+// way (mesh.c "Sync negotiation"), and doing anything else here would mean
+// teaching the shared model about a conversation only two chips have.
+
+static bool msgin_pending(const sym53c8xx_t *s) {
+    return s->mi_rd < s->mi_n;
+}
+
+static void msg_session_reset(sym53c8xx_t *s) {
+    s->mo_len = 0;
+    s->mi_n = 0;
+    s->mi_rd = 0;
+    s->msgin_taken = 0;
+    s->msgout_pending = 0;
+}
+
+// Queue an EXTENDED MESSAGE reply for the script to read back.
+static void msgin_queue_ext(sym53c8xx_t *s, uint8_t code, uint8_t a, uint8_t b, bool two) {
+    s->mi_buf[0] = 0x01u; // EXTENDED MESSAGE
+    s->mi_buf[1] = two ? 0x03u : 0x02u; // length
+    s->mi_buf[2] = code;
+    s->mi_buf[3] = a;
+    if (two)
+        s->mi_buf[4] = b;
+    s->mi_n = two ? 5u : 4u;
+    s->mi_rd = 0;
+}
+
+// The script finished its MESSAGE OUT: parse what it said.  Both
+// negotiations are ANSWERED rather than rejected, because a fast/wide
+// channel is expected to negotiate and a chip that always rejected would
+// be lying about the part.  The emulated bus has no timing, so what is
+// modelled is the agreement, not the rate it implies.
+static void msgout_complete(sym53c8xx_t *s) {
+    for (uint8_t i = 0; i < s->mo_len;) {
+        uint8_t b = s->mo_buf[i];
+        if (b & 0x80u) { // IDENTIFY
+            i++;
+        } else if (b == 0x01u) { // EXTENDED MESSAGE
+            if ((uint32_t)i + 2u > s->mo_len || (uint32_t)i + 2u + s->mo_buf[i + 1] > s->mo_len)
+                return; // still incomplete; more bytes are coming
+            uint8_t len = s->mo_buf[i + 1];
+            uint8_t code = s->mo_buf[i + 2];
+            if (code == 0x01u && len == 3) { // SDTR: period, offset
+                s->sync_period = s->mo_buf[i + 3];
+                s->sync_offset = s->mo_buf[i + 4];
+                LOG(3, "ch%d: SDTR agreed, period=%u offset=%u", s->channel, s->sync_period, s->sync_offset);
+                msgin_queue_ext(s, 0x01u, s->sync_period, s->sync_offset, true);
+            } else if (code == 0x03u && len == 2) { // WDTR: transfer width
+                s->wide = s->mo_buf[i + 3] ? 1u : 0u;
+                LOG(3, "ch%d: WDTR agreed, %s transfers", s->channel, s->wide ? "16-bit" : "8-bit");
+                msgin_queue_ext(s, 0x03u, s->wide, 0, false);
+            }
+            i = (uint8_t)(i + 2 + len);
+        } else {
+            i++; // a single-byte message with nothing to answer
+        }
+    }
+    s->mo_len = 0;
+    s->msgout_pending = 0;
+}
+
+// The SCSI phase as the INITIATOR sees it, in the chip's own 3-bit
+// encoding: the two virtual overlays first, then the shared bus model.
+static uint8_t chip_phase(sym53c8xx_t *s) {
+    if (s->msgout_pending)
+        return SYM825_PHASE_MSG_OUT;
+    if (msgin_pending(s))
+        return SYM825_PHASE_MSG_IN;
+    if (!s->bus)
+        return SYM825_PHASE_MSG_IN;
+    switch (scsi_get_bus_phase(s->bus)) {
+    case scsi_command:
+        return SYM825_PHASE_COMMAND;
+    case scsi_data_in:
+        return SYM825_PHASE_DATA_IN;
+    case scsi_data_out:
+        return SYM825_PHASE_DATA_OUT;
+    case scsi_status:
+        return SYM825_PHASE_STATUS;
+    case scsi_message_in:
+        return SYM825_PHASE_MSG_IN;
+    case scsi_message_out:
+        return SYM825_PHASE_MSG_OUT;
+    default:
+        return SYM825_PHASE_MSG_IN;
+    }
+}
+
+// Publish the live phase where a driver expects to read it: SSTAT1's low
+// three bits are the latched phase lines, and SBCL mirrors them.
+static void publish_phase(sym53c8xx_t *s) {
+    uint8_t p = s->connected ? chip_phase(s) : 0u;
+    s->phase = p;
+    s->reg[SYM825_SSTAT1] = (uint8_t)((s->reg[SYM825_SSTAT1] & 0xF8u) | p);
+    s->reg[SYM825_SBCL] = (uint8_t)((s->reg[SYM825_SBCL] & 0xF8u) | p);
+    if (s->connected)
+        s->reg[SYM825_ISTAT] |= SYM825_ISTAT_CON;
+    else
+        s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_CON;
+}
+
+static void disconnect(sym53c8xx_t *s) {
+    if (s->connected && s->bus)
+        scsi_external_release(s->bus);
+    s->connected = false;
+    msg_session_reset(s);
+    s->sync_period = 0;
+    s->sync_offset = 0;
+    s->wide = 0;
+    publish_phase(s);
+}
+
+// The target let go of the bus on its own.  THIS is how a completed command
+// ends, and the shape of it is not obvious from the instruction set at all
+// — it is the ROM's own driver that says so.  Its command loop is:
+//
+//     begin
+//       istat 2 and while/if                          \ a SCSI-type cause
+//         sist@ to sist
+//         sist 400 and if … true eexit then           \ selection time-out
+//         sist 4 and if  dcmd@ 98 <> eexit  then      \ UNEXPECTED DISCONNECT
+//         …
+//       istat 1 and while/if dstat@ to dstat then     \ a DMA-type cause
+//     again
+//
+// There is no exit on the SCRIPTS INT at all.  Every command ends on
+// UNEXPECTED DISCONNECT, and success versus failure is decided by WHERE it
+// landed: `dcmd@ 98 <>` is false — no error — only when the last opcode
+// fetched was $98, the Transfer Control INT that ends the script.  So the
+// disconnect must be reported AFTER the script has run to its INT, never at
+// the moment the bus goes free; report it early and DCMD still holds the
+// Clear-ACK opcode, the driver calls the command failed, and it resets the
+// bus and retries forever.
+static void disconnect_deferred(sym53c8xx_t *s) {
+    if (s->connected && s->bus)
+        scsi_external_release(s->bus);
+    s->connected = false;
+    msg_session_reset(s);
+    publish_phase(s);
+    s->disconnect_pending = 1;
+}
+
+// ============================================================
+// Block Move
+// ============================================================
+// The instruction the whole part exists for.  In initiator mode it waits
+// for an unserviced phase, compares the phase the script asked for against
+// what the target is presenting, and either moves the bytes or raises a
+// PHASE MISMATCH and stops.  That comparison is the single most
+// load-bearing behaviour in the instruction set: a driver drives the whole
+// transaction by moving one phase at a time and branching on the mismatch.
+
+// Move `count` bytes for `phase`, returning how many actually moved.  A
+// short count means the target changed phase mid-transfer, which the
+// caller turns into a mismatch.
+static uint32_t block_move_bytes(sym53c8xx_t *s, uint8_t phase, uint32_t addr, uint32_t count, bool *sfbr_set) {
+    uint8_t buf[512];
+    uint32_t moved = 0;
+    while (moved < count) {
+        uint32_t chunk = count - moved;
+        if (chunk > sizeof(buf))
+            chunk = sizeof(buf);
+        switch (phase) {
+        case SYM825_PHASE_COMMAND:
+        case SYM825_PHASE_DATA_OUT: {
+            sym53c8xx_read_block(s, addr + moved, buf, chunk);
+            for (uint32_t i = 0; i < chunk; i++) {
+                if (scsi_get_bus_phase(s->bus) != (phase == SYM825_PHASE_COMMAND ? scsi_command : scsi_data_out))
+                    return moved + i;
+                scsi_push_data_out_byte(s->bus, buf[i]);
+            }
+            moved += chunk;
+            break;
+        }
+        case SYM825_PHASE_MSG_OUT: {
+            // Collected here rather than pushed at the bus: the target
+            // side of this conversation is ours (see msgout_complete).
+            sym53c8xx_read_block(s, addr + moved, buf, chunk);
+            for (uint32_t i = 0; i < chunk; i++) {
+                if (s->mo_len < sizeof(s->mo_buf))
+                    s->mo_buf[s->mo_len++] = buf[i];
+            }
+            moved += chunk;
+            break;
+        }
+        case SYM825_PHASE_DATA_IN: {
+            for (uint32_t i = 0; i < chunk; i++) {
+                uint8_t b;
+                if (!scsi_pop_data_in_byte(s->bus, &b)) {
+                    // The target ran out: a short DATA IN is a phase
+                    // change, and the bus model needs telling that the
+                    // phase is over before it will advance to STATUS.
+                    // The bytes that DID arrive still have to land — a
+                    // short transfer is not a discarded one, and the
+                    // driver reads the residual count to find out how far
+                    // it got.
+                    if (i > 0)
+                        sym53c8xx_write_block(s, addr + moved, buf, i);
+                    scsi_external_data_in_complete(s->bus);
+                    return moved + i;
+                }
+                buf[i] = b;
+                if (!*sfbr_set) {
+                    s->reg[SYM825_SFBR] = b;
+                    *sfbr_set = true;
+                }
+            }
+            sym53c8xx_write_block(s, addr + moved, buf, chunk);
+            moved += chunk;
+            break;
+        }
+        case SYM825_PHASE_STATUS: {
+            for (uint32_t i = 0; i < chunk; i++) {
+                int st = scsi_external_status_byte(s->bus);
+                if (st < 0) {
+                    if (i > 0)
+                        sym53c8xx_write_block(s, addr + moved, buf, i);
+                    return moved + i;
+                }
+                buf[i] = (uint8_t)st;
+                if (!*sfbr_set) {
+                    s->reg[SYM825_SFBR] = (uint8_t)st;
+                    *sfbr_set = true;
+                }
+            }
+            sym53c8xx_write_block(s, addr + moved, buf, chunk);
+            moved += chunk;
+            break;
+        }
+        case SYM825_PHASE_MSG_IN: {
+            for (uint32_t i = 0; i < chunk; i++) {
+                int msg;
+                if (msgin_pending(s)) {
+                    msg = s->mi_buf[s->mi_rd++];
+                } else {
+                    msg = scsi_external_message_byte(s->bus);
+                    if (msg < 0) {
+                        if (i > 0)
+                            sym53c8xx_write_block(s, addr + moved, buf, i);
+                        return moved + i;
+                    }
+                    // MESSAGE IN lingers in the bus model until it is
+                    // released; once the byte is delivered the target REQs
+                    // nothing more, and only a Wait Disconnect (or a Clear
+                    // ACK followed by one) ends the connection.
+                    s->msgin_taken = 1;
+                }
+                buf[i] = (uint8_t)msg;
+                if (!*sfbr_set) {
+                    s->reg[SYM825_SFBR] = (uint8_t)msg;
+                    *sfbr_set = true;
+                }
+            }
+            sym53c8xx_write_block(s, addr + moved, buf, chunk);
+            moved += chunk;
+            break;
+        }
+        default:
+            return moved;
+        }
+    }
+    return moved;
+}
+
+static void exec_block_move(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
+    uint8_t want = (uint8_t)((insn >> 24) & 7u);
+    uint32_t count = insn & 0x00FFFFFFu;
+    uint32_t addr = dsps;
+
+    // Table indirect: both the byte count and the buffer address are
+    // fetched from a structure at DSA + a 24-bit signed offset.  This is
+    // what lets SCRIPTS execute an operating system's own I/O structures.
+    if (insn & (1u << 28)) {
+        uint32_t table = reg32(s, SYM825_DSA) + (uint32_t)sext24(dsps);
+        count = fetch32(s, table) & 0x00FFFFFFu;
+        addr = fetch32(s, table + 4);
+    } else if (insn & (1u << 29)) {
+        // Indirect: the instruction's address field points at the address.
+        addr = fetch32(s, addr);
+    }
+
+    if (!s->connected || !s->bus) {
+        LOG(1, "ch%d: Block Move with no connection", s->channel);
+        sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
+        return;
+    }
+
+    publish_phase(s);
+    if (want != s->phase) {
+        // PHASE MISMATCH.  The instruction does NOT execute, and DSP is
+        // left pointing AT it so the driver can resume after servicing —
+        // which is why DSP is rewound here rather than advanced.
+        set_dbc(s, count);
+        set_reg32(s, SYM825_DNAD, addr);
+        set_reg32(s, SYM825_DSP, reg32(s, SYM825_DSP) - 8u);
+        LOG(3, "ch%d: phase mismatch — script wants %u, target presents %u", s->channel, want, s->phase);
+        sym53c8xx_raise_scsi(s, SYM825_SIST0_MA, 0);
+        return;
+    }
+
+    bool sfbr_set = false;
+    uint32_t moved = block_move_bytes(s, want, addr, count, &sfbr_set);
+    set_dbc(s, count - moved);
+    set_reg32(s, SYM825_DNAD, addr + moved);
+
+    if (want == SYM825_PHASE_MSG_OUT && s->msgout_pending)
+        msgout_complete(s);
+    // A completed DATA IN has to tell the bus model the phase is over, or
+    // the target never advances to STATUS.
+    if (want == SYM825_PHASE_DATA_IN && moved == count && scsi_get_bus_phase(s->bus) == scsi_data_in)
+        scsi_external_data_in_complete(s->bus);
+    publish_phase(s);
+
+    if (moved != count) {
+        LOG(3, "ch%d: short Block Move (%u of %u bytes in phase %u)", s->channel, moved, count, want);
+        sym53c8xx_raise_scsi(s, SYM825_SIST0_MA, 0);
+    }
+}
+
+// ============================================================
+// I/O instructions
+// ============================================================
+
+static void exec_io(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
+    unsigned opc = (insn >> 27) & 7u;
+    uint32_t alt = dsps;
+    if (insn & (1u << 26)) // relative alternate address
+        alt = reg32(s, SYM825_DSP) + (uint32_t)sext24(dsps);
+
+    switch (opc) {
+    case 0: { // Select (initiator mode)
+        int target = (int)((insn >> 16) & 0x0Fu);
+        // Table indirect: the SCNTL3 configuration, the destination ID and
+        // the synchronous offset/period all come from a four-byte entry at
+        // DSA + a signed offset, ordered `Config | ID | Offset/period | 00`.
+        if (insn & (1u << 25)) {
+            uint32_t e = fetch32(s, reg32(s, SYM825_DSA) + (uint32_t)sext24(insn));
+            s->reg[SYM825_SCNTL3] = (uint8_t)(e >> 24);
+            target = (int)((e >> 16) & 0x0Fu);
+            s->reg[SYM825_SXFER] = (uint8_t)(e >> 8);
+        }
+        s->reg[SYM825_SDID] = (uint8_t)target;
+        if (s->connected)
+            disconnect(s);
+        msg_session_reset(s);
+        if (!s->bus || !scsi_external_select(s->bus, target)) {
+            // Nobody home.  A selection time-out is a SIST1 cause and it
+            // sends the script to the instruction's alternate address —
+            // which is the whole point of that field.
+            LOG(3, "ch%d: select %d timed out", s->channel, target);
+            set_reg32(s, SYM825_DSP, alt);
+            sym53c8xx_raise_scsi(s, 0, SYM825_SIST1_STO);
+            return;
+        }
+        s->connected = true;
+        s->target = (uint8_t)target;
+        // Select WITH ATN/: the target enters MESSAGE OUT to collect the
+        // IDENTIFY.  The shared bus model is already in COMMAND, so the
+        // chip presents a virtual MESSAGE OUT until the script delivers it.
+        s->msgout_pending = (insn & (1u << 24)) ? 1u : 0u;
+        publish_phase(s);
+        LOG(3, "ch%d: selected target %d%s", s->channel, target, s->msgout_pending ? " with ATN" : "");
+        return;
+    }
+    case 1: // Wait Disconnect
+        disconnect(s);
+        return;
+    case 2: // Wait Reselect
+        // No competing initiators and no disconnecting targets on this
+        // bus, so a reselection never arrives.  The instruction's escape
+        // hatch is the documented one: the driver sets SIGP and the chip
+        // takes the alternate address.  Taking it unconditionally is what
+        // keeps a driver's idle loop moving instead of parking here.
+        LOG(4, "ch%d: Wait Reselect — no reselection is possible on this bus", s->channel);
+        s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
+        set_reg32(s, SYM825_DSP, alt);
+        return;
+    case 3: // Set
+    case 4: { // Clear
+        bool set = (opc == 3);
+        if (insn & (1u << 10)) // carry
+            s->reg[SYM825_SCNTL1] = (uint8_t)(set ? (s->reg[SYM825_SCNTL1] | 0x04u) : (s->reg[SYM825_SCNTL1] & ~0x04u));
+        if (insn & (1u << 9)) // target mode
+            s->reg[SYM825_SCNTL0] = (uint8_t)(set ? (s->reg[SYM825_SCNTL0] | SYM825_SCNTL0_TRG)
+                                                  : (s->reg[SYM825_SCNTL0] & ~SYM825_SCNTL0_TRG));
+        if (insn & (1u << 6)) { // SACK/
+            s->reg[SYM825_SOCL] = (uint8_t)(set ? (s->reg[SYM825_SOCL] | 0x40u) : (s->reg[SYM825_SOCL] & ~0x40u));
+            // Clearing ACK after the last MESSAGE IN byte is what releases
+            // the target: the chip deliberately holds ACK asserted on that
+            // final handshake, and the script must clear it explicitly.
+            if (!set && s->msgin_taken && !msgin_pending(s))
+                disconnect_deferred(s);
+        }
+        if (insn & (1u << 3)) // SATN/
+            s->reg[SYM825_SOCL] = (uint8_t)(set ? (s->reg[SYM825_SOCL] | 0x08u) : (s->reg[SYM825_SOCL] & ~0x08u));
+        return;
+    }
+    default:
+        LOG(1, "ch%d: unimplemented I/O opcode %u", s->channel, opc);
+        sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
+        return;
+    }
+}
+
+// ============================================================
+// Read/Write — the register ALU
+// ============================================================
+
+static void exec_read_write(sym53c8xx_t *s, uint32_t insn) {
+    unsigned opc = (insn >> 27) & 7u; // 5 = move from SFBR, 6 = to SFBR, 7 = RMW
+    unsigned op = (insn >> 24) & 7u;
+    bool use_sfbr = (insn & (1u << 23)) != 0;
+    uint32_t ra = (insn >> 16) & 0x7Fu;
+    uint8_t imm = (uint8_t)((insn >> 8) & 0xFFu);
+    if (ra >= SYM825_REGS) {
+        sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
+        return;
+    }
+    // The two operands: for opcode 101 the accumulator is SFBR, otherwise
+    // it is the addressed register; the second operand is the immediate,
+    // or SFBR when the D8 bit says so (which is how two registers are
+    // combined without a temporary).
+    uint8_t acc = (opc == 5) ? s->reg[SYM825_SFBR] : s->reg[ra];
+    uint8_t data = use_sfbr ? s->reg[SYM825_SFBR] : imm;
+    bool carry_in = (s->reg[SYM825_SCNTL1] & 0x04u) != 0;
+    uint8_t result = acc;
+    bool carry_out = carry_in;
+    switch (op) {
+    case 0: // move data
+        result = data;
+        break;
+    case 1: // shift left through carry
+        result = (uint8_t)((acc << 1) | (carry_in ? 1u : 0u));
+        carry_out = (acc & 0x80u) != 0;
+        break;
+    case 2:
+        result = (uint8_t)(acc | data);
+        break;
+    case 3:
+        result = (uint8_t)(acc ^ data);
+        break;
+    case 4:
+        result = (uint8_t)(acc & data);
+        break;
+    case 5: // shift right through carry
+        result = (uint8_t)((acc >> 1) | (carry_in ? 0x80u : 0u));
+        carry_out = (acc & 0x01u) != 0;
+        break;
+    case 6: { // add without carry
+        unsigned sum = (unsigned)acc + data;
+        result = (uint8_t)sum;
+        carry_out = sum > 0xFFu;
+        break;
+    }
+    case 7: { // add with carry
+        unsigned sum = (unsigned)acc + data + (carry_in ? 1u : 0u);
+        result = (uint8_t)sum;
+        carry_out = sum > 0xFFu;
+        break;
+    }
+    default:
+        break;
+    }
+    s->reg[SYM825_SCNTL1] = (uint8_t)(carry_out ? (s->reg[SYM825_SCNTL1] | 0x04u) : (s->reg[SYM825_SCNTL1] & ~0x04u));
+    // Where the result lands: opcode 110 writes SFBR, 101 and 111 write
+    // the addressed register.  SFBR is not writable by the host, but it IS
+    // writable from here — which is the documented way to load it.
+    if (opc == 6)
+        s->reg[SYM825_SFBR] = result;
+    else
+        s->reg[ra] = result;
+}
+
+// ============================================================
+// Transfer Control
+// ============================================================
+
+static void exec_transfer(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
+    unsigned opc = (insn >> 27) & 7u; // 0 Jump, 1 Call, 2 Return, 3 Interrupt
+    uint8_t want = (uint8_t)((insn >> 24) & 7u);
+    bool relative = (insn & (1u << 23)) != 0;
+    bool carry_test = (insn & (1u << 21)) != 0;
+    bool on_the_fly = (insn & (1u << 20)) != 0;
+    bool jump_if_true = (insn & (1u << 19)) != 0;
+    bool cmp_data = (insn & (1u << 18)) != 0;
+    bool cmp_phase = (insn & (1u << 17)) != 0;
+    uint8_t mask = (uint8_t)((insn >> 8) & 0xFFu);
+    uint8_t value = (uint8_t)(insn & 0xFFu);
+
+    // "If both the Phase Compare and Data Compare bits are set, then both
+    // compares must be true to branch on a true condition."  With neither
+    // set and no carry test the transfer is unconditional.
+    bool cond = true;
+    if (carry_test) {
+        cond = (s->reg[SYM825_SCNTL1] & 0x04u) != 0;
+    } else {
+        if (cmp_phase) {
+            publish_phase(s);
+            cond = cond && (s->phase == want);
+        }
+        if (cmp_data)
+            cond = cond && (((s->reg[SYM825_SFBR] ^ value) & (uint8_t)~mask) == 0);
+    }
+    bool take = (cmp_phase || cmp_data || carry_test) ? (cond == jump_if_true) : true;
+
+    if (opc == 3) { // Interrupt
+        if (!take)
+            return;
+        set_reg32(s, SYM825_DSPS, dsps);
+        if (on_the_fly) {
+            // Interrupt-on-the-fly does NOT halt the processor; it sets
+            // its own ISTAT bit and execution continues.
+            s->reg[SYM825_ISTAT] |= SYM825_ISTAT_INTF;
+            sym53c8xx_update_irq(s);
+            return;
+        }
+        LOG(3, "ch%d: INT vector $%08X", s->channel, dsps);
+        sym53c8xx_raise_dma(s, SYM825_DSTAT_SIR);
+        return;
+    }
+    if (opc == 2) { // Return
+        if (take)
+            set_reg32(s, SYM825_DSP, reg32(s, SYM825_TEMP));
+        return;
+    }
+    if (!take)
+        return;
+    uint32_t dest = relative ? reg32(s, SYM825_DSP) + (uint32_t)sext24(dsps) : dsps;
+    if (opc == 1) // Call: TEMP is the link register, and it is not a stack
+        set_reg32(s, SYM825_TEMP, reg32(s, SYM825_DSP));
+    set_reg32(s, SYM825_DSP, dest);
+}
+
+// ============================================================
+// Memory Move, and Load/Store
+// ============================================================
+
+static void exec_memory_move(sym53c8xx_t *s, uint32_t insn, uint32_t src, uint32_t dst) {
+    uint32_t count = insn & 0x00FFFFFFu;
+    // "Both the source and destination addresses must start with the same
+    // address alignment A[1:0].  If the source and destination are not
+    // aligned, then an illegal instruction interrupt occurs."
+    if ((src & 3u) != (dst & 3u)) {
+        LOG(1, "ch%d: Memory Move alignment mismatch ($%08X -> $%08X)", s->channel, src, dst);
+        sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
+        return;
+    }
+    uint8_t buf[512];
+    while (count) {
+        uint32_t chunk = count > sizeof(buf) ? (uint32_t)sizeof(buf) : count;
+        sym53c8xx_read_block(s, src, buf, chunk);
+        sym53c8xx_write_block(s, dst, buf, chunk);
+        src += chunk;
+        dst += chunk;
+        count -= chunk;
+    }
+}
+
+static void exec_load_store(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
+    bool load = (insn & (1u << 24)) != 0;
+    uint32_t ra = (insn >> 16) & 0x7Fu;
+    uint32_t n = insn & 7u;
+    uint32_t addr = (insn & (1u << 28)) ? reg32(s, SYM825_DSA) + (uint32_t)sext24(dsps) : dsps;
+    // "A maximum of 4 bytes may be moved… the register address and memory
+    // address must have the same byte alignment, and the count set such
+    // that it does not cross Dword boundaries."
+    if (n == 0 || n > 4 || ra + n > SYM825_REGS || (ra & 3u) != (addr & 3u)) {
+        LOG(1, "ch%d: illegal Load/Store (reg $%02X, addr $%08X, %u bytes)", s->channel, ra, addr, n);
+        sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
+        return;
+    }
+    if (load)
+        sym53c8xx_read_block(s, addr, &s->reg[ra], n);
+    else
+        sym53c8xx_write_block(s, addr, &s->reg[ra], n);
+}
+
+// ============================================================
 // The instruction engine
 // ============================================================
-// Not yet built: this lands in the SCRIPTS phase, together with its
-// mock-bus unit suite covering all five instruction classes (Block Move,
-// I/O, Transfer Control, Memory Move, Load and Store), phase mismatch and
-// every interrupt condition, including a negative case per class.
-//
-// Until then the engine reports an ILLEGAL INSTRUCTION rather than
-// pretending to run, which is the honest answer AND the safe one: a driver
-// gets a defined error with a cause it can read, instead of the spin loop
-// that a silently-idle engine would produce.  Nothing on the boot path
-// reaches here before Open Firmware's `probe-scsi1` — the machine's whole
-// identity, device tree and interrupt map are proven with SCRIPTS absent.
+
+// Fetch and execute one instruction.  Returns false when the engine
+// stopped (an interrupt, a mismatch, an illegal instruction).
+static bool step(sym53c8xx_t *s) {
+    uint32_t pc = reg32(s, SYM825_DSP);
+    uint32_t insn = fetch32(s, pc);
+    uint32_t dsps = fetch32(s, pc + 4);
+    unsigned type3 = (insn >> 29) & 7u;
+    unsigned type2 = (insn >> 30) & 3u;
+
+    // DCMD and DBC hold the instruction's own first dword while it runs —
+    // a driver reading them after a halt sees what stopped it.
+    set_reg32(s, SYM825_DBC, insn);
+    set_reg32(s, SYM825_DSPS, dsps);
+    // Memory Move is the one three-dword instruction.
+    uint32_t third = (type3 == 6) ? fetch32(s, pc + 8) : 0;
+    set_reg32(s, SYM825_DSP, pc + ((type3 == 6) ? 12u : 8u));
+    s->insn_count++;
+    LOG(5, "ch%d: $%08X: %08X %08X", s->channel, pc, insn, dsps);
+
+    switch (type2) {
+    case 0:
+        exec_block_move(s, insn, dsps);
+        break;
+    case 1:
+        if (((insn >> 27) & 7u) <= 4u)
+            exec_io(s, insn, dsps);
+        else
+            exec_read_write(s, insn);
+        break;
+    case 2:
+        exec_transfer(s, insn, dsps);
+        break;
+    default:
+        if (type3 == 6) {
+            set_reg32(s, SYM825_TEMP, third);
+            exec_memory_move(s, insn, dsps, third);
+        } else {
+            exec_load_store(s, insn, dsps);
+        }
+        break;
+    }
+
+    // Single-step mode: one instruction per START, with its own cause.
+    if (s->running && (s->reg[SYM825_DCNTL] & SYM825_DCNTL_SSM)) {
+        s->running = false;
+        sym53c8xx_raise_dma(s, SYM825_DSTAT_SSI);
+        return false;
+    }
+    return s->running;
+}
+
 void sym53c8xx_start(sym53c8xx_t *s) {
     if (!s)
         return;
-    uint32_t dsp = (uint32_t)s->reg[SYM825_DSP] | ((uint32_t)s->reg[SYM825_DSP + 1] << 8) |
-                   ((uint32_t)s->reg[SYM825_DSP + 2] << 16) | ((uint32_t)s->reg[SYM825_DSP + 3] << 24);
-    LOG(1, "channel %d: START at DSP $%08X — the SCRIPTS engine is not built yet", s->channel, dsp);
-    s->running = false;
-    sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
+    s->running = true;
+    // Clear the START bit: it is a strobe, not a mode.
+    s->reg[SYM825_DCNTL] &= (uint8_t)~SYM825_DCNTL_STD;
+    uint32_t budget = SYM825_INSN_BUDGET;
+    while (s->running && budget--) {
+        if (!step(s))
+            break;
+    }
+    // The target's disconnect, owed since the script cleared ACK on the last
+    // MESSAGE IN byte and reported now that DCMD holds the opcode the
+    // script stopped on (see disconnect_deferred).
+    if (s->disconnect_pending) {
+        s->disconnect_pending = 0;
+        sym53c8xx_raise_scsi(s, SYM825_SIST0_UDC, 0);
+    }
+    if (s->running) {
+        // A program that never stopped.  The chip's own watchdog cause is
+        // the honest report, and it halts the engine — far better than
+        // taking the emulator down with the guest.
+        LOG(0, "ch%d: SCRIPTS ran %u instructions without halting; stopping (DSP $%08X)", s->channel,
+            SYM825_INSN_BUDGET, reg32(s, SYM825_DSP));
+        s->running = false;
+        sym53c8xx_raise_dma(s, SYM825_DSTAT_WTD);
+    }
 }
 
 // ============================================================
@@ -186,7 +875,14 @@ sym53c8xx_t *sym53c8xx_new(config_t *cfg, int channel) {
     // The Apple Network Server straps BIG_LIT/ big-endian (Apple, Network
     // Server Hardware Developer Notes, 1996, §2.9).  A socketed 53C8xx card
     // on some other machine would pass false here.
-    s->big_endian = true;
+    // The Apple Network Server does NOT assert BIG_LIT/ — see the endianness
+    // note in sym53c825.c, which the ROM settles three separate ways.
+    s->big_endian = false;
+    // GPIO0 pulled high: the Network Server's presence strap for a fitted
+    // fast/wide channel (see sym53c8xx.h).  Discovered by decompiling the
+    // ROM's own `check-disabled` at the Open Firmware prompt, after the
+    // node came up `status "disabled"` with the chip otherwise perfect.
+    s->gpio_strap = 0x01u;
     sym53c8xx_chip_reset(s);
     return s;
 }

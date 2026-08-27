@@ -360,6 +360,10 @@ typedef struct tnt_state {
     struct object *board_object; // machine.board node (gbus.c)
     struct object *lcd_object; // machine.lcd node (lcd.c)
     struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
+    // The Network Servers' second fast/wide bus (`machine.scsi2`, Open
+    // Firmware's `scsi-int2` / `probe-scsi2`), carrying backplane bays 4-6.
+    // NULL on the Macintosh boards, which have exactly one visible bus.
+    struct scsi *scsi2;
     uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
     struct display display; // scanout descriptor (display.h)
     rgba8_t clut_view[256]; // materialized CLUT for the renderer
@@ -462,6 +466,10 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level);
 void tnt_gc_pulse_event(config_t *cfg, int n);
 // Recompute ((events | levels) & mask) and drive the CPU external line.
 void tnt_gc_recompute(config_t *cfg);
+// Clear the non-volatile store and its process-lifetime carry: the
+// documented effect of removing the logic board's battery (tnt.c).
+void tnt_nvram_clear(config_t *cfg);
+
 // Board Register 1 / BoxID as software reads it: the board straps, the live
 // PCI slot-presence pins, and (on a Network Server) the GBUS top byte.
 uint32_t tnt_gc_boxid(config_t *cfg);

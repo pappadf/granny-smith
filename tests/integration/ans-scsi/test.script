@@ -1,0 +1,66 @@
+# The SCRIPTS engine, driven by Open Firmware's own probe words
+# (proposal-apple-network-server-500-700 §5.7, ladder rung S8).
+#
+# What a successful probe proves is a whole chain, and none of it can be
+# faked by a register model: the firmware builds a six-instruction SCRIPT in
+# RAM, hands DSP its physical address, and the engine fetches it over the
+# bus, selects the target, moves a six-byte INQUIRY command block out,
+# moves the reply in, takes STATUS and MESSAGE IN, clears ACK, and
+# interrupts.  The text the firmware then prints is the INQUIRY data that
+# came back off the emulated bus.
+
+include "../lib/ans.script"
+
+def probe(model, ram_kb) {
+    let boot = ans_boot_serial($model, $ram_kb)
+
+    # A disk on fast/wide channel 0 and a CD-ROM on channel 1 — one device
+    # per controller, so a probe that answered on the wrong bus would show
+    # up as the wrong device rather than as silence.
+    machine.scsi.attach_hd("${$WORK_DIR}/ansdisk.img", 0)
+    machine.scsi2.attach_cdrom("${$WORK_DIR}/anscd.iso", 4)
+
+    # --- S8: channel 0 --------------------------------------------------------
+    ans_send("probe-sc")
+    ans_send("si1")
+    let p1 = ans_go()
+    assert contains($p1, "Target 0") "S8: ${$model} probe-scsi1 found no target 0"
+    assert contains($p1, "Unit 0") "S8: ${$model} probe-scsi1 reported no LUN 0"
+    assert contains($p1, "Disk") "S8: ${$model} probe-scsi1 did not identify a disk"
+    # A target answers on LUN 0 and NOWHERE ELSE.  Before the shared bus
+    # model declined an unimplemented LUN the way SCSI-2 requires — INQUIRY
+    # data with peripheral qualifier 011b, device type 1Fh, status GOOD —
+    # this listed the same drive as Unit 0 through Unit 7, and AIX would
+    # have configured eight of it.
+    assert !contains($p1, "Unit 1") "S8: ${$model} a single-LUN target must not answer LUN 1"
+
+    # --- S8: channel 1, which is a different bus entirely --------------------
+    ans_send("probe-sc")
+    ans_send("si2")
+    let p2 = ans_go()
+    assert contains($p2, "Target 4") "S8: ${$model} probe-scsi2 found no target 4"
+    assert contains($p2, "Removable Read Only device") || contains($p2, "CD") "S8: ${$model} probe-scsi2 did not identify the CD-ROM"
+    # The disk is on channel 0 ONLY: the two controllers are separate buses,
+    # and a model that shared one would show it here.
+    assert !contains($p2, "Target 0") "S8: ${$model} channel 1 must not see channel 0's disk"
+
+    # --- The device aliases resolve to real media ----------------------------
+    # `disk0` is `/bandit/53c825@11/sd@0,0` and `disk4` is
+    # `/bandit/53c825@12/sd@4,0` — the backplane's own split, which is why
+    # the bays are numbered across two controllers.
+    ans_send("dev dis")
+    ans_send("k0 devi")
+    ans_send("ce-end")
+    let d0 = ans_go()
+    assert !contains($d0, "not found") "S8: ${$model} the disk0 alias does not resolve"
+
+    echo "ans-scsi ${$model}: SCRIPTS engine ran INQUIRY on both fast/wide channels"
+}
+
+# One disk and one CD image, created fresh in the work directory so the row
+# owns its media and leaves the shared corpus alone.
+assert storage.hd_create("${$WORK_DIR}/ansdisk.img", "500M") "could not create the test disk"
+
+probe("ans500", 32768)
+probe("ans700", 49152)
+quit

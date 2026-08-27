@@ -411,6 +411,18 @@ static value_t board_attr_doorbell(struct object *self, const member_t *m) {
         }                                                                                                              \
     }
 
+// `machine.board.clear_nvram()` — pull the battery.
+static value_t board_method_clear_nvram(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    config_t *cfg = (config_t *)object_data(self);
+    if (!cfg)
+        return val_err("clear_nvram: no machine");
+    tnt_nvram_clear(cfg);
+    return val_bool(true);
+}
+
 static const member_t tnt_board_members[] = {
     {.kind = M_ATTR,
      .name = "keyswitch",
@@ -458,6 +470,10 @@ static const member_t tnt_board_members[] = {
      .doc = "Processor bus clock, sourced from the CPU card",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = board_attr_bus_hz, .set = NULL}},
+    {.kind = M_METHOD,
+     .name = "clear_nvram",
+     .doc = "Reset the non-volatile store to defaults — what removing the board battery does",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = board_method_clear_nvram}},
     {.kind = M_ATTR,
      .name = "doorbell",
      .doc = "Accesses to the Ethernet PROM space — the SecToPri_Int doorbell",

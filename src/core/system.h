@@ -207,6 +207,12 @@ int system_create_floppy(const char *path, bool high_density, int preferred);
 // underlying primitive opens the image, registers it as a SCSI device,
 // and emits the legacy "Attaching CD-ROM" stdout message.
 void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
+// The same, on an explicitly named SCSI bus.  A machine with more than one
+// visible bus — the Apple Network Servers' two fast/wide 53C825A channels —
+// needs `machine.scsi2.attach_cdrom` to land on the second one; NULL means
+// the machine's primary bus and is what every Macintosh path passes.
+void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
+void add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
 
 // Probe a floppy image at `path`. Persists volatile (/tmp/, /fd/) paths
 // to OPFS first, then opens read-only and prints the detected density.
@@ -223,6 +229,7 @@ bool system_fd_present(int drive);
 // call these directly. Each returns 0 on success, negative on error.
 int system_fd_insert(const char *path, int drive, bool writable);
 int system_hd_attach(const char *path, int scsi_id);
+int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id);
 int system_hd_create(const char *path, const char *size_str);
 
 // Pending RAM override for next system_create() call (KB, 0 = use default)

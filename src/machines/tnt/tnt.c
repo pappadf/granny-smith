@@ -44,6 +44,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "sym53c8xx.h" // the fast/wide controllers the ANS slot table seats
 #include "via.h"
 
 #include <assert.h>
@@ -362,6 +363,28 @@ static void tnt_scsi0_port_init(config_t *cfg) {
     tnt_dbdma_set_port(tnt_st(cfg)->dbdma, 0, &port);
 }
 
+// Hand each fast/wide controller the bus it drives.  The two 53C825As are
+// PCI cards the slot table seated (slots 8 and 9 in the Network Server
+// profiles), so this runs after pci_seat_slots and after both bus objects
+// exist.  Channel 0 gets cfg->scsi — the bus every existing consumer knows
+// — and channel 1 gets the second one.  A Macintosh board seats neither
+// card and this does nothing.
+static void tnt_fwscsi_attach(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    struct scsi *bus[2] = {cfg->scsi, st->scsi2};
+    for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
+        sym53c8xx_t *chip = sym53c8xx_from_device(pci_slot_device(cfg->pci, d->slot));
+        if (!chip)
+            continue;
+        if (chip->channel < 0 || chip->channel > 1) {
+            LOG(0, "53C825A in slot %d declares channel %d, which no bus serves", d->slot, chip->channel);
+            continue;
+        }
+        sym53c8xx_attach_bus(chip, bus[chip->channel]);
+        LOG(1, "fast/wide channel %d bound to %s", chip->channel, chip->channel ? "machine.scsi2" : "machine.scsi");
+    }
+}
+
 // ============================================================
 // Substrate lifecycle
 // ============================================================
@@ -380,6 +403,25 @@ static void tnt_scsi0_port_init(config_t *cfg) {
 // (the gc blob holds the store).
 static uint8_t tnt_nvram_carry[TNT_NVRAM_SIZE];
 static bool tnt_nvram_carry_valid;
+
+// Clear the non-volatile store — what pulling the battery does.
+//
+// Apple, Network Server Hardware Developer Notes, §2.7: "Removal of a
+// battery from the Main Logic Board will reset all parameter and NVRAM to
+// default values."  It is the machine's own documented way back to a virgin
+// configuration, and it is a real need rather than a test convenience: the
+// ROM caches its DIMM sizing and its Open Firmware environment in there, so
+// a store written by one model is not necessarily meaningful to another.
+// The process-lifetime carry goes with it, or the next machine built in
+// this process would inherit what was just erased.
+void tnt_nvram_clear(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (st)
+        memset(st->gc.nvram, 0, TNT_NVRAM_SIZE);
+    memset(tnt_nvram_carry, 0, TNT_NVRAM_SIZE);
+    tnt_nvram_carry_valid = false;
+    LOG(1, "NVRAM cleared (battery removed)");
+}
 
 static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = calloc(1, sizeof(*st));
@@ -530,6 +572,14 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
     cfg->scsi = scsi_init(NULL, cp);
+    // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
+    // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
+    // aliases), so `hd=` / `cd=` and every existing consumer of
+    // `machine.scsi` keep landing where the boot disk goes.  Channel 1
+    // (`scsi-int2`, bays 4-6 plus the 700's two rear drives) mounts beside
+    // it as `machine.scsi2`.
+    if (tnt_board(cfg)->kind == TNT_BOARD_SHINER)
+        st->scsi2 = scsi_init_named(NULL, cp, "scsi2");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
     if (cp) {
@@ -547,6 +597,10 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     if (tnt_board(cfg)->has_mesh)
         tnt_mesh_init(cfg); // DBDMA ch-10 port
     tnt_scsi0_port_init(cfg); // DBDMA ch-0 port (53C94 pdma)
+    // Hand each 53C825A its bus.  The controllers are PCI cards seated by
+    // the slot walk, so this runs after it — and after the buses exist,
+    // which is why it is here rather than in the card factory.
+    tnt_fwscsi_attach(cfg);
 
     // Finish: debugger + scheduler start.
     cfg->debugger = debug_init();
@@ -610,6 +664,10 @@ static void tnt_teardown(config_t *cfg) {
     if (cfg->scsi) {
         scsi_delete(cfg->scsi);
         cfg->scsi = NULL;
+    }
+    if (st && st->scsi2) {
+        scsi_delete(st->scsi2);
+        st->scsi2 = NULL;
     }
     if (st && st->dbdma) {
         tnt_dbdma_delete(st->dbdma);
@@ -684,6 +742,8 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // Phase-E SCSI block (mirrors the tnt_init append order exactly).
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
+    if (st->scsi2)
+        scsi_checkpoint(st->scsi2, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
     system_write_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
     // The GBUS island (Network Servers only; zeroed and unread elsewhere).

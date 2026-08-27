@@ -315,3 +315,218 @@ Known open items at this phase:
 - The `interruptableDeviceTable` / per-channel SCC interrupt split: the
   shared Z8530's single INT line currently fans to Grand Central
   interrupts 15 and 16 together (both 68k IPL 4); split with Phase F.
+
+---
+
+# The Apple Network Servers — a fourth board on this family
+
+`src/machines/tnt/ans500.c` / `ans700.c` add two machines to `tnt` that are
+**not Macintoshes**: the Apple Network Server 500/132 and 700/150
+("Shiner"), Apple's only non-Macintosh computers, which boot Apple's
+production **Open Firmware 1.1.22** ROM (`$962F6C13`) and run **AIX 4.1.5
+for Apple Network Servers**. They carry no Mac OS Toolbox at all.
+
+That the family name now covers two non-Macintoshes is the honest cost of
+the right decision. The reasoning is Apple's own: the ANS's Grand Central
+address is *"defined by the current OpenFirmware and Expansion Manager code
+for the TNT ROM releases"*; its ROM is built from the 9500 v2 codebase and
+carries the same version string; its entire internal I/O subtree is the
+9500's. Apple's developer note opens by declining to re-document any of it —
+
+> *"This specification is unfortunately not one-stop shopping, owing to the
+> architectural origins of the Network Servers in the PowerMac 9500 family.
+> Therefore much of the hardware detail which is fully documented in the
+> PowerMac family is not repeated here. Instead, unique hardware interfaces
+> are described."*
+
+— so a separate `src/machines/shiner/` would either duplicate
+`hammerhead.c` / `bandit.c` / `grand_central.c` / `dbdma.c` or export them
+across a family boundary the hardware does not have.
+`tnt_board_desc_t.kind` is the seam instead, exactly as it already
+distinguishes a 7500 from a 9500.
+
+Sources: Apple, *Network Server Hardware Developer Notes* (1996); Apple,
+*Network Server Developer's Reference Guide* (1996), ch. 6 and 7; Apple,
+*Network Server Theory of Operations*; the shipping ROM itself — which on
+this machine is an unusually good oracle, because Open Firmware 1.1.22 has
+**named Forth words** and `see <word>` decompiles them at the prompt.
+
+## What differs from a 9500
+
+Apple enumerates it, so this table is scope rather than survey. Four items
+are boot-critical.
+
+| Delta | Where |
+|---|---|
+| Three Grand Central external interrupt lines re-purposed; both Bandits ganged onto `Error_Int` | `tnt.h` `ANS_INT_*` |
+| Slots 1-2 on Bandit 1, slots 3-6 on Bandit 2 — **six devices on Bandit 1**, no P2P bridge | the profiles' slot tables |
+| Two 53C825A fast/wide SCSI controllers at IDSEL 17/18 | `pci/cards/sym53c825.c` |
+| **MESH removed** | `tnt_board_desc_t.has_mesh` |
+| Cirrus 54M30 PCI video at IDSEL 15, no interrupt | `pci/cards/cirrus54m30.c` |
+| The GBUS island: front-panel LCD, keyswitch, board registers, Ethernet PROM | `gbus.c`, `lcd.c` |
+| Parity DRAM, 8 DIMM slots, a 512 MB **ROM decode** ceiling | the profiles |
+| An L2 cache DIMM that is actually present | `hammerhead.c` `+$E0` |
+
+`ANS_INT_*` carries the one trap worth repeating: **a slot's interrupt line
+does not follow its bridge.** Slot 3 sits on Bandit 2 but keeps EXT5 — the
+line a 9500 gives Bandit 1's third slot — so a model that derives the line
+from the bus is wrong for exactly one slot and right for the other five,
+which is the worst failure shape available. The map is data in the profile.
+
+## The GBUS island
+
+Grand Central's Generic Bus provides *"six chip selects and write enable
+which the Network Server uses for devices such as NVRAM, Ethernet PROM,
+board registers, and the LCD."* On a Macintosh those chip selects are
+mostly idle; here they are the server. See `gbus.h` for the address map and
+the bit tables.
+
+Three properties, all of them silent when wrong:
+
+* **Every bit is ACTIVE LOW** unless its name ends in `H`. A healthy
+  machine reads all-ones, not zero.
+* **Board Register 2 is POLLED and never interrupts** — Apple is explicit —
+  so a static healthy value satisfies both the ROM and AIX with no event
+  plumbing at all. Its eight environmental bits are exposed as *writable*
+  object attributes (`machine.board.temp_warn`, …) because injection is the
+  only way to exercise the path, and POST prints a published string for
+  each one.
+* **There are two keyswitches.** The rear one gates power and the sliding
+  logic-board drawer and is a power-on precondition; the front
+  three-position one is what software reads, in Board Register 1 bits 13/14.
+  Both default to LOCKED (`machine.board.keyswitch`, `.rear_key_locked`).
+
+## The front-panel LCD, and why it is built first
+
+`lcd.c` models a write-only HD44780-class panel behind two registers on
+GBUS device 3. It is built before anything else because the *Theory of
+Operations* puts it before memory — *"It is the job of POST to initialize
+the hardware into a working state and establish a software path to the
+LCD"* — so it is the machine's only output device during exactly the phase
+most likely to break. Apple published the strings POST writes, so
+`machine.lcd.text` turns POST into a self-describing test harness, asserted
+both positively (the expected progress message appeared) and negatively (no
+`MainLBU 825#1 Failed`, no `MainLBU Video Failed`).
+
+Two facts the ROM settled that the documents left open:
+
+* **The panel is 4 lines by 20 columns.** Apple documents only the two
+  register addresses; its sample banner line is 23 characters and cannot be
+  what the machine writes. The ROM's line-select commands are `$80` / `$C0`
+  / `$94` / `$D4` — the canonical 4x20 DDRAM map, where `$94 - $80 = 20` is
+  exactly where line 0 ends — and every POST string it writes is padded to
+  exactly 20 characters.
+* **The controller is an HD44780.** Its initialisation is the textbook
+  power-on ritual (`$30 $30 $30 $38 $08 $0C $06 $38 $01`) and nothing else.
+
+A healthy 700/150 settles on:
+
+```
+  ROM vers.1.1.22
+0048 MB Parity RAM
+075MHz 604, 50MHzBus
+1024KB Level 2 Cache
+```
+
+The CPU figure is `075` rather than `150` because POST measures the clock
+by timing an instruction loop against the timebase, and the family models
+the 604 at CPI 2 — so the panel reports exactly half the profile's clock.
+That is a readout of a deliberate modelling choice (see `tnt_init`), not a
+defect, and the ladder asserts what the ROM actually prints so that changing
+it would show up as a deliberate change.
+
+## The L2 cache — and the size encoding, decoded
+
+These are the first machines in the repository to report an L2 cache, so
+they are the first to run the ROM's L2 test at all: every Macintosh TNT
+board answers Hammerhead `+$E0` with `$00`, which makes POST skip it.
+
+`hammerhead.c` had carried "bit `$80` = present, low 3 bits a size code
+(encoding unattested)" since the TNT work. The Network Server ROM prints
+the size it decoded on the LCD, so sweeping the register and reading line 3
+gives the answer outright: `$80` → 512 KB, `$81` → 256 KB, `$82` → 1 MB,
+`$83` → 4 MB, with bit 2 ignored. The size lives in bits 1:0, and 512 KB —
+not 256 — is code zero.
+
+The strapped bits also have to **survive a write**: the register is
+config/status and the ROM drops `$70` into it mid-test and reads it
+straight back, so plain store-and-readback would erase the cache the machine
+has and the report would come out `0000KB`.
+
+## SCSI — three buses, and a new device class
+
+The machine has **three** SCSI buses: two fast/wide 53C825A channels and the
+narrow 53C94 external chain the Macintosh boards already had. The 53C8xx is
+a genuinely new device class for this repository — it executes an
+instruction set out of host memory rather than being register-driven — and
+it has its own document: **docs/core/peripherals/scripts53c8xx.md**, which
+also records the two board facts the ROM gave up (`GPIO0` is a presence
+strap; the chip is strapped **little**-endian, not big).
+
+The two channels are separate namespaces in the object model:
+`machine.scsi` is channel 0 (bays 0-3, Open Firmware's `disk0`..`disk3`)
+and `machine.scsi2` is channel 1 (bays 4-6, plus the 700's two rear
+drives). This is the first machine here where a SCSI id does not identify a
+device on its own, and `scsi_init_named` exists for it.
+
+## Where Open Firmware puts a built-in device's BARs
+
+Each Bandit forwards 16 MB of PCI memory one-to-one at its base + 16 MB —
+its own `ranges` property says so — and Grand Central decodes the 128 KB at
+the bottom of Bandit 1's. On a Macintosh nothing else lands there. On a
+Network Server it is where **every** built-in device's BARs land: Open
+Firmware assigns the two 53C825As `$F3100000`/`$F3101000` and
+`$F3103000`/`$F3104000`, and Apple's own worked device-tree node shows a
+slot-6 card at `$F5100000` inside Bandit 2's. Without the window the
+firmware prints `Can't clear C825 interrupt!` and stops.
+
+`tnt_bandit_claim_memory` claims it for `TNT_BOARD_SHINER` only. It is
+arguably a gap on the Macintosh boards too, but turning 16 MB of
+previously-quiet address space into recoverable transfer errors on a
+boot-critical bridge is not a change to make without a Macintosh ROM ladder
+run to prove it.
+
+## The console is the screen
+
+Open Firmware's own `(install-console)` opens whatever `input-device` and
+`output-device` name and falls back to `ttya` only when one of them fails:
+
+```forth
+"input-device"  evaluate catch if 2drop ttya then  ['] input  catch …
+"output-device" evaluate catch if 2drop ttya then  ['] output catch …
+or if ttya io then
+```
+
+A Network Server ships with `input-device kbd` / `output-device screen`,
+and both its 54M30 and its ADB keyboard work, so **out of the box the
+console is the monitor** — the firmware's progress narration (`msg-write`)
+goes to ttya regardless, which is why the boot chatter appears on the
+serial port even when the console does not.
+
+Apple documents the alternative and it is `setenv`. The integration rows do
+exactly that, once, on the machine's own keyboard, and cold-boot; the Grand
+Central NVRAM part is non-volatile and the setting sticks for the same
+reason it does on the real machine. `tests/integration/lib/ans.script`
+wraps it.
+
+The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
+than its relocatable BAR, because this board installs no pull-down on MD51
+and the Alpine's "Enable Offset" bit therefore reads zero. Open Firmware
+still sizes and assigns the BAR — it lands at `$00010000`, above the 16 bits
+a Bandit even drives — while every real access goes to the fixed addresses.
+Without the fixed decode the firmware's write to `$3C4` takes a recoverable
+transfer error and the machine check takes down the rest of device
+installation with it.
+
+## Verification
+
+| Row | Tier | What it holds |
+|---|---|---|
+| `ans-rom-ladder` | unit | POST reaching the LCD, sizing memory, the CPU/bus and L2 banners, both keyswitch defaults, the active-low environmental register, and the absence of every published failure string whose device we model — on both profiles |
+| `ans-pci-slots` | unit | six sockets and three builtins, IDSELs, the rewired interrupt map, the raw config-cycle identities including the `$14` Revision ID that gates machine identity |
+| `ans-device-tree` | matrix | `dev / ls`, node properties and device aliases against Apple's published Listing 6-1, driven over the serial console |
+| `ans-scsi` | matrix | the SCRIPTS engine, through Open Firmware's own `probe-scsi1` and `probe-scsi2`, on both fast/wide channels |
+
+Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
+`probe-scsi2`, one per controller. `probe-scsi` and `probe-scsi-all` do not
+exist on it, so a row that typed those would prove nothing.

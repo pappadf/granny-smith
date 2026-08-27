@@ -7,42 +7,18 @@
 # was there; a missing node means a missing or wrong register, and an extra
 # one means we are pretending to be hardware this machine does not have.
 
-# --- Console plumbing --------------------------------------------------------
-# Open Firmware's console drops characters from a long burst delivered in
-# one go, so input goes in short chunks with a bounded run between them.
-def send(s) {
-    machine.scc.a.receive("${$s}")
-    scheduler.run 20000000
-}
+include "../lib/ans.script"
 
-# Complete the line and return everything the firmware printed in reply.
-def go() {
-    machine.scc.a.receive("\r")
-    scheduler.run 250000000
-    return machine.scc.a.sent()
-}
+# Console plumbing (chunked input, the prompt wait, and the two-cold-boot
+# serial-console setup) lives in the library — see its header for why a
+# Network Server's console is the screen until it is told otherwise.
+def send(s) { ans_send($s) }
+def go() { return ans_go() }
 
 def tree(model, ram_kb, bus_clock, l2_label) {
-    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
-
-    # POST, then Open Firmware's own bring-up: `_cold-init`, the device
-    # probe, `install-825s`, `install-54m30`, `install-console`.
-    #
-    # Run in bounded chunks until the firmware settles at its prompt, rather
-    # than guessing one number.  The 700 needs materially more instructions
-    # than the 500 for the same guest-visible progress — POST's delay loops
-    # are timed against the timebase, which ticks at bus/4, so a faster CPU
-    # on a faster bus spins MORE instructions per millisecond of the 1 ms
-    # settle it leaves between every LCD character.  A fixed budget tuned on
-    # the 500 silently under-runs the 700, which is exactly the R10 failure
-    # this row exists to catch.
-    let banner = ""
-    let spins = 0
-    while !contains($banner, "0 > ") && $spins < 20 {
-        scheduler.run 250000000
-        $banner = "${$banner}${machine.scc.a.sent()}"
-        $spins = $spins + 1
-    }
+    # Two cold boots: the machine's shipping console is the 54M30, and the
+    # row wants the serial port.  See lib/ans.script.
+    let banner = ans_boot_serial($model, $ram_kb)
     assert contains($banner, "OpenFirmware1.1.22") "S6: ${$model} Open Firmware did not announce itself"
     assert contains($banner, "0 > ") "S6: ${$model} no Open Firmware prompt"
     # The firmware's own default boot path, from NVRAM: the ANS boots AIX
@@ -53,14 +29,14 @@ def tree(model, ram_kb, bus_clock, l2_label) {
     # NOT asserted here: the verbose cold-boot narration this firmware
     # prints on its FIRST boot over a blank store — `TTYa initialized.`,
     # `SECURITY ShinerESB 1st-825 2nd-825 gc 53c94 mace escc …`, `_cold-init`,
-    # `install-console`.  That output is real and it is the most direct
+    # `install-console`.  That output is real, and it is the most direct
     # readout of `?esb` there is, but it appears only once: the Grand
-    # Central NVRAM part is NON-VOLATILE and its contents survive a
-    # machine.restart, so the SECOND profile in this row boots warm and
-    # goes straight to its boot attempt.  Asserting on it would make the row
-    # depend on which model ran first, which is precisely the kind of
-    # order-dependence R10 warns about.  `?esb` is read below from the
-    # firmware's own vocabulary instead, which is boot-order independent.
+    # Central NVRAM part is NON-VOLATILE and its contents survive a machine
+    # rebuild, so every boot after the first one goes straight to its boot
+    # attempt.  This row cold-boots twice by construction (the console
+    # setup), so asserting on it would depend on boot order — exactly the
+    # kind of order-dependence R10 warns about.  `?esb` is read below from
+    # the firmware's own vocabulary instead, which does not care.
 
     # --- S5: the flag, read back from the firmware's own vocabulary ---------
     send("?esb .")
@@ -180,7 +156,7 @@ def tree(model, ram_kb, bus_clock, l2_label) {
 
 # clock-frequency is printed in hex: 44 MHz = $029F6300, 50 MHz = $02FAF080.
 let bus_clock_lcd = "066MHz 604, 44MHzBus"
-tree("ans500", 32768, "029F6300", "0000KB Level 2 Cache")
+tree("ans500", 32768, "029F6300", "0512KB Level 2 Cache")
 let bus_clock_lcd = "075MHz 604, 50MHzBus"
-tree("ans700", 49152, "02FAF080", "0000KB Level 2 Cache")
+tree("ans700", 49152, "02FAF080", "1024KB Level 2 Cache")
 quit

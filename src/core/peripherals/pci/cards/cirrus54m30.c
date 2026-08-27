@@ -49,6 +49,7 @@
 #include "card.h"
 #include "log.h"
 #include "pci.h"
+#include "scheduler.h"
 #include "system.h"
 #include "system_config.h"
 
@@ -108,6 +109,7 @@ typedef struct c54m30 {
     uint8_t gr_index; // graphics-controller index latch (I/O +$0E)
     memory_interface_t fb_if;
     memory_interface_t io_if;
+    memory_interface_t vga_if; // the fixed legacy $3B0-$3DF block
 } c54m30_t;
 
 // ============================================================
@@ -148,6 +150,26 @@ static void fb_write32(void *ctx, uint32_t offset, uint32_t value) {
 }
 
 // ============================================================
+// The VGA I/O ranges — the relocatable one AND the legacy one
+// ============================================================
+// A VGA-compatible part answers the fixed legacy I/O ports whether or not
+// its relocatable window is enabled: "Enable Offset: If a pull-down is
+// installed on MD51, this bit will be read as a '1' and relocatable I/O
+// addressing will be enabled" (Alpine TRM §4.19), and this board installs
+// none.  So the BAR is sized and assigned by Open Firmware — it lands at
+// $00010000, above the 16 bits a Bandit even drives — while every actual
+// access goes to the legacy addresses.
+//
+// This is a STRAPPED decode rather than a BAR, which is exactly what
+// pci_device_add_fixed_region exists for (the Mach64 GX precedent).  It is
+// also load-bearing rather than cosmetic: without it the firmware's write
+// to $3C4 (the VGA sequencer index) lands on an unclaimed bus window, takes
+// a recoverable transfer error, and the machine check that follows takes
+// down the rest of Open Firmware's device installation with it.
+#define C54M30_VGA_IO_BASE 0x3B0u // $3B0-$3DF: the legacy VGA port block
+#define C54M30_VGA_IO_SPAN 0x030u
+
+// ============================================================
 // The relocatable VGA I/O range
 // ============================================================
 // A 512-byte window carrying the classic VGA register file plus the Alpine
@@ -157,9 +179,45 @@ static void fb_write32(void *ctx, uint32_t offset, uint32_t value) {
 // the device-tree node — so the honest model records what a guest writes and
 // logs, rather than inventing CRTC behaviour nothing has yet exercised.
 
+// Input Status Register 1 ($3BA mono / $3DA colour) — the one VGA register
+// that MUST NOT be store-and-readback, because software does not read it
+// for a value, it reads it for an EDGE.  Every VGA console waits on bit 3
+// (vertical retrace) or bit 0 (display enable inactive) before touching the
+// CRTC or the palette, and a register that never toggles turns that wait
+// into a hang with nothing to diagnose.
+//
+// The bits are derived from the scheduler's cycle count rather than from a
+// read counter, so the duty cycle is right for code that measures the
+// blanking interval as well as for code that merely waits for it — and so
+// the answer is a function of emulated time, which keeps a run
+// deterministic.
+#define C54M30_STATUS1_MONO   0xBAu // $3BA
+#define C54M30_STATUS1_COLOUR 0xDAu // $3DA
+#define C54M30_STAT_DE        0x01u // display enable INACTIVE (blanking)
+#define C54M30_STAT_VR        0x08u // vertical retrace in progress
+#define C54M30_FRAME_HZ       60u
+
+static uint8_t status1_value(c54m30_t *c) {
+    if (!c->cfg || !c->cfg->scheduler)
+        return 0;
+    uint64_t freq = c->cfg->machine ? c->cfg->machine->freq : 0;
+    if (!freq)
+        return 0;
+    uint64_t frame = freq / C54M30_FRAME_HZ;
+    uint64_t pos = scheduler_cpu_cycles(c->cfg->scheduler) % (frame ? frame : 1u);
+    // A ~7% vertical blanking interval, which is close enough to a real
+    // 640x480 timing for an edge-waiting loop and is not pretending to be
+    // a pixel-accurate raster.
+    bool vr = pos >= (frame - frame / 14u);
+    return (uint8_t)((vr ? (C54M30_STAT_VR | C54M30_STAT_DE) : 0u));
+}
+
 static uint8_t io_read8(void *ctx, uint32_t offset) {
     c54m30_t *c = (c54m30_t *)ctx;
-    return c->reg[offset & (C54M30_REGS - 1u)];
+    uint32_t port = offset & (C54M30_REGS - 1u);
+    if (port == C54M30_STATUS1_MONO || port == C54M30_STATUS1_COLOUR)
+        return status1_value(c);
+    return c->reg[port];
 }
 
 static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
@@ -184,6 +242,34 @@ static uint32_t io_read32(void *ctx, uint32_t offset) {
 static void io_write32(void *ctx, uint32_t offset, uint32_t value) {
     io_write16(ctx, offset, (uint16_t)(value >> 16));
     io_write16(ctx, offset + 2, (uint16_t)value);
+}
+
+// The legacy block, indexed by the real port number so both windows land
+// in one register file.
+static uint8_t vga_read8(void *ctx, uint32_t offset) {
+    return io_read8(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu);
+}
+
+static void vga_write8(void *ctx, uint32_t offset, uint8_t value) {
+    io_write8(ctx, (C54M30_VGA_IO_BASE + offset) & 0xFFu, value);
+}
+
+static uint16_t vga_read16(void *ctx, uint32_t offset) {
+    return (uint16_t)((vga_read8(ctx, offset) << 8) | vga_read8(ctx, offset + 1));
+}
+
+static void vga_write16(void *ctx, uint32_t offset, uint16_t value) {
+    vga_write8(ctx, offset, (uint8_t)(value >> 8));
+    vga_write8(ctx, offset + 1, (uint8_t)value);
+}
+
+static uint32_t vga_read32(void *ctx, uint32_t offset) {
+    return ((uint32_t)vga_read16(ctx, offset) << 16) | vga_read16(ctx, offset + 2);
+}
+
+static void vga_write32(void *ctx, uint32_t offset, uint32_t value) {
+    vga_write16(ctx, offset, (uint16_t)(value >> 16));
+    vga_write16(ctx, offset + 2, (uint16_t)value);
 }
 
 // ============================================================
@@ -274,8 +360,20 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, checkpoint_t 
     c->io_if.write_uint16 = io_write16;
     c->io_if.write_uint32 = io_write32;
 
+    c->vga_if.read_uint8 = vga_read8;
+    c->vga_if.read_uint16 = vga_read16;
+    c->vga_if.read_uint32 = vga_read32;
+    c->vga_if.write_uint8 = vga_write8;
+    c->vga_if.write_uint16 = vga_write16;
+    c->vga_if.write_uint32 = vga_write32;
+
     pci_bar_backing_iface(dev, C54M30_BAR_FB, &c->fb_if, c);
     pci_bar_backing_iface(dev, C54M30_BAR_IO, &c->io_if, c);
+    // The legacy VGA block: a contiguous strapped claim (match mask 0), not
+    // a BAR.  Faking a BAR for it would be worse than doing nothing —
+    // Open Firmware would size it, assign it, and invent an address the
+    // card does not decode.
+    pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &c->vga_if, c);
 
     LOG(1, "seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
     return dev;

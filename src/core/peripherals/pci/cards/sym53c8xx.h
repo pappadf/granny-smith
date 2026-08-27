@@ -170,11 +170,29 @@ typedef struct sym53c8xx {
     config_t *cfg; // the machine, for host-memory access
     int channel; // 0 or 1 — which of the board's two controllers
 
-    // The BIG_LIT/ strap.  True on the Apple Network Server: "the first
-    // byte of an aligned SCSI-to-PCI transfer routes to lane three and
-    // subsequent bytes to descending lanes."  A construction parameter,
-    // not a constant, because the SYM53C825AJ variant is little-endian only.
+    // The BIG_LIT/ strap.  FALSE on the Apple Network Server, which the
+    // ROM proves three ways (see the endianness note in sym53c825.c); a
+    // construction parameter rather than a constant because it is a wiring
+    // fact, and the SYM53C825AJ variant is little-endian only.  What it
+    // governs is the order the ENGINE assembles an instruction dword in;
+    // data payloads are a straight byte copy either way, because "the
+    // first byte in from the SCSI bus goes to address 0" in both modes.
     bool big_endian;
+
+    // The GPIO pins as this BOARD wires them.  GPIO[3:0] are inputs at
+    // power-up with an internal pull-down, so an unwired part reads zero —
+    // and on the Apple Network Server that is fatal, because Open
+    // Firmware's own `check-disabled` word is:
+    //
+    //     : check-disabled  … regs >gpreg xb@ 1 and 0=
+    //       if  "disabled" encode-string "status" property  then … ;
+    //
+    // GPIO0 LOW means "this fast/wide channel is not fitted", the node gets
+    // `status "disabled"`, and every later `open` of it fails with
+    // `Can't open SCSI host adapter`.  So the board pulls GPIO0 HIGH, and
+    // the strap is per-instance rather than a constant because it is a
+    // wiring fact, not a property of the part.
+    uint8_t gpio_strap;
 
     uint8_t reg[SYM825_REGS]; // the operating register file
     uint8_t dstat; // latched DMA-type causes (DSTAT's readable half)
@@ -192,6 +210,34 @@ typedef struct sym53c8xx {
     uint8_t target; // the selected target's SCSI id
     uint8_t phase; // the phase the target is currently presenting
     uint32_t insn_count; // instructions executed since power-on (diagnostics)
+
+    // --- The message conversation, which the shared bus model does not
+    // --- carry for an external initiator (the MESH front end owns the
+    // --- identical problem and solves it the same way).
+    //
+    // After a select-with-ATN the TARGET enters MESSAGE OUT to collect the
+    // initiator's IDENTIFY, but our bus model goes straight to COMMAND.  So
+    // the chip presents a VIRTUAL MESSAGE OUT phase until the script's
+    // Block Move has delivered the message, and a virtual MESSAGE IN when
+    // it has a reply to give (an SDTR/WDTR answer).  Both die with the
+    // connection.
+    uint8_t msgout_pending; // a virtual MSG OUT is being presented
+    uint8_t mo_buf[16]; // the message bytes the initiator has sent
+    uint8_t mo_len;
+    uint8_t mi_buf[8]; // the message bytes we are giving back
+    uint8_t mi_n, mi_rd;
+    uint8_t msgin_taken; // the bus model's MESSAGE IN byte was delivered
+    // The target has released the bus and the UNEXPECTED DISCONNECT that
+    // reports it is owed to the driver — but not until the script has
+    // halted, because the driver reads DCMD to find out WHERE the
+    // disconnect landed.  See sym53c8xx_start.
+    uint8_t disconnect_pending;
+    // Negotiated transfer parameters, per connection.  A fast/wide channel
+    // is expected to negotiate, and refusing outright would be a lie about
+    // what the hardware does; the emulated bus has no timing, so what is
+    // modelled is the CONVERSATION, not the rate.
+    uint8_t sync_period, sync_offset;
+    uint8_t wide; // 1 = 16-bit transfers agreed
 
     // The shared bus/target model this channel drives.  NULL until the
     // machine attaches one, which is what makes the engine unit-testable.
@@ -216,7 +262,19 @@ void sym53c8xx_checkpoint_restore(sym53c8xx_t *s, checkpoint_t *cp);
 // against a mock).
 void sym53c8xx_attach_bus(sym53c8xx_t *s, struct scsi *bus);
 
+// The chip behind a seated PCI device, or NULL when that device is not a
+// 53C8xx.  How the machine finds the two controllers its slot table seated
+// without reaching into a card's private state or learning its layout.
+sym53c8xx_t *sym53c8xx_from_device(struct pci_device *dev);
+
 // === Engine (scripts53c8xx.c) ===============================================
+
+// One `start()` runs until the script stops itself, and a runaway program
+// must not take the emulator with it.  The ceiling is far above any real
+// SCRIPT — Open Firmware's probe and AIX's driver both run a few dozen
+// instructions per connection — and hitting it raises the chip's own
+// watchdog cause rather than spinning.
+#define SYM825_INSN_BUDGET 200000
 
 // Begin (or resume) execution at DSP.  Called from the register file when
 // the driver writes DCNTL's START DMA bit or the high byte of DSP.  The

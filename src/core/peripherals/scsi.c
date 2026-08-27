@@ -587,9 +587,29 @@ static void run_cmd(scsi_t *scsi) {
         scsi->cmd.tl = scsi->buf.data[4];
         if (scsi->cmd.tl == 0)
             scsi->cmd.tl = 36; // default allocation length
+        scsi->cmd.lun = scsi->buf.data[1] >> 5;
         phase_data_in(scsi, scsi->cmd.tl);
 
         memset(scsi->buf.data, 0, scsi->cmd.tl);
+
+        // A LUN this target does not implement must still ANSWER — SCSI-2
+        // §8.2.5: "If the target is not capable of supporting a device on
+        // the specified logical unit, the target shall return the INQUIRY
+        // data with the peripheral qualifier set to the value required in
+        // 7.3.2" — qualifier 011b, device type 1Fh, so byte 0 reads $7F —
+        // "with a GOOD status".  Returning the LUN-0 device instead makes
+        // every target look like eight identical drives, which is what a
+        // prober that walks LUNs sees: the Apple Network Server's Open
+        // Firmware `probe-scsi1` listed `Unit 0` through `Unit 7` as the
+        // same disk before this was here, and AIX would have configured
+        // all eight.  Every device this emulator models is single-LUN.
+        if (scsi->cmd.lun != 0) {
+            scsi->buf.data[0] = 0x7Fu; // qualifier 011b + device type 1Fh
+            if (scsi->cmd.tl >= 5)
+                scsi->buf.data[4] = 0x1Fu; // additional length, as for a real one
+            LOG(2, "INQUIRY target=%d lun=%u -> not present ($7F)", target, scsi->cmd.lun);
+            break;
+        }
 
         if (scsi->devices[target].type == scsi_dev_cdrom) {
             // CD-ROM INQUIRY: device type 0x05, removable media
@@ -1694,6 +1714,10 @@ void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, con
 
 // Initialize the SCSI controller and optionally restore from checkpoint
 scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
+    return scsi_init_named(map, checkpoint, "scsi");
+}
+
+scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char *name) {
     scsi_t *scsi = (scsi_t *)malloc(sizeof(scsi_t));
     if (scsi == NULL)
         return NULL;
@@ -1789,11 +1813,13 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
     // singleton (mounted by scsi_class_register from shell_init) shares
     // the "scsi" name at root — detach it first so dispatch on the new
     // per-machine object isn't shadowed.
-    scsi_static_detach();
-    scsi->object = object_new(&scsi_class, scsi, "scsi");
+    bool primary = (name == NULL) || strcmp(name, "scsi") == 0;
+    if (primary)
+        scsi_static_detach();
+    scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
-        object_set_label(scsi->object, "SCSI");
-        object_set_order(scsi->object, 90);
+        object_set_label(scsi->object, primary ? "SCSI" : name);
+        object_set_order(scsi->object, primary ? 90 : 91);
         object_attach(machine_object(), scsi->object);
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
         if (scsi->bus_object)
@@ -2844,18 +2870,18 @@ static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m
 // `scsi.attach_hd(path, id)` — attach a hard-disk image at the given SCSI id.
 // Calls system_hd_attach directly.
 static value_t scsi_method_attach_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
     (void)m;
     (void)argc;
     int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_hd: id must be 0..6");
-    return val_bool(system_hd_attach(argv[0].s, (int)id) == 0);
+    // On THIS bus.  `machine.scsi2.attach_hd` has to reach the second
+    // fast/wide channel of an Apple Network Server, not the first one.
+    return val_bool(system_hd_attach_on((scsi_t *)object_data(self), argv[0].s, (int)id) == 0);
 }
 
 // `scsi.attach_cdrom(path, id)` — attach a CD-ROM image at the given SCSI id.
 static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
     (void)m;
     (void)argc;
     int64_t id = argv[1].i;
@@ -2863,7 +2889,8 @@ static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, 
         return val_err("scsi.attach_cdrom: id must be 0..6");
     if (!global_emulator)
         return val_err("scsi.attach_cdrom: emulator not initialised");
-    add_scsi_cdrom(global_emulator, argv[0].s, (int)id);
+    scsi_t *bus = (scsi_t *)object_data(self);
+    add_scsi_cdrom_on(global_emulator, bus ? bus : global_emulator->scsi, argv[0].s, (int)id);
     return val_bool(true);
 }
 

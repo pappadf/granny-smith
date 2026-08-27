@@ -577,7 +577,7 @@ static int do_create_hd(const char *path, const char *size_str) {
 
 // Attach a SCSI hard disk image. Delegates to add_scsi_drive().
 // Returns 0 on success, -1 on error.
-static int do_attach_hd(const char *path, int scsi_id) {
+static int do_attach_hd_on(struct scsi *bus, const char *path, int scsi_id) {
     if (scsi_id < 0 || scsi_id > 7) {
         printf("hd attach: invalid SCSI ID %d (expected 0..7)\n", scsi_id);
         return -1;
@@ -587,8 +587,12 @@ static int do_attach_hd(const char *path, int scsi_id) {
         printf("hd attach: emulator not initialized.\n");
         return -1;
     }
-    add_scsi_drive(config, path, scsi_id);
+    add_scsi_drive_on(config, bus ? bus : config->scsi, path, scsi_id);
     return 0;
+}
+
+static int do_attach_hd(const char *path, int scsi_id) {
+    return do_attach_hd_on(NULL, path, scsi_id);
 }
 
 // Initialize the setup system and register commands
@@ -812,8 +816,18 @@ void mac_reset(config_t *restrict sim) {
     scc_reset(sim->scc);
 }
 
-// Add a SCSI hard disk to the configuration
+// Add a SCSI hard disk to the configuration.
 void add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
+    add_scsi_drive_on(config, config ? config->scsi : NULL, filename, scsi_id);
+}
+
+// ...on a NAMED bus.  Every Macintosh has exactly one SCSI bus a guest can
+// see, so the call above — and every consumer of it — means `config->scsi`.
+// The Apple Network Servers are the first machines with more than one:
+// two fast/wide 53C825A channels carrying the backplane's bays between
+// them, reachable as `machine.scsi` and `machine.scsi2`.  Passing the bus
+// explicitly is what lets `machine.scsi2.attach_hd` mean what it says.
+void add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     // Persist volatile images to OPFS
     char *persistent_path = image_persist_volatile(filename);
     if (persistent_path)
@@ -841,7 +855,7 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
         sz, scsi_id);
 
     add_image(config, img);
-    scsi_add_device(config->scsi, scsi_id, best->vendor, best->product, best->revision, img, scsi_dev_hd, 512, false);
+    scsi_add_device(bus, scsi_id, best->vendor, best->product, best->revision, img, scsi_dev_hd, 512, false);
     // Block the VFS auto-mount cache from serving reads on the same file
     // while the emulator holds writable handles against it (§2.9).
     image_vfs_notify_attached(filename);
@@ -850,6 +864,11 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
 
 // Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
 void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
+    add_scsi_cdrom_on(config, config ? config->scsi : NULL, filename, scsi_id);
+}
+
+// ...on a NAMED bus; see add_scsi_drive_on.
+void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     // Persist volatile images to OPFS
     char *persistent_path = image_persist_volatile(filename);
     if (persistent_path)
@@ -893,7 +912,7 @@ void add_scsi_cdrom(struct config *restrict config, const char *filename, int sc
            filename, disk_size(img), cd_block_size, scsi_id);
 
     add_image(config, img);
-    scsi_add_device(config->scsi, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, cd_block_size, true);
+    scsi_add_device(bus, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, cd_block_size, true);
     image_vfs_notify_attached(filename);
     free(persistent_path);
 }
@@ -1196,6 +1215,11 @@ int system_fd_insert(const char *path, int drive, bool writable) {
 // Attach a SCSI hard-disk image at `scsi_id`. Returns 0 / negative.
 int system_hd_attach(const char *path, int scsi_id) {
     return do_attach_hd(path, scsi_id);
+}
+
+// ...on a NAMED bus (NULL = the machine's primary one).
+int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
+    return do_attach_hd_on(bus, path, scsi_id);
 }
 
 // Create a blank SCSI hard-disk image sized per `size_str` (a drive

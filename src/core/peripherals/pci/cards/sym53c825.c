@@ -43,13 +43,38 @@
 // arms); lower nibble 4 = the revision level, which CTEST3's V[3:0] field
 // must mirror.  An emulated 825A whose bit 4 is clear is not an ANS.
 //
-// ENDIANNESS IS A PIN, NOT A REGISTER.  The chip's `BIG_LIT/` pin selects
-// byte ordering, and this board straps it BIG-endian: "the first byte of an
-// aligned SCSI-to-PCI transfer routes to lane three and subsequent bytes to
-// descending lanes."  Assuming PCI little-endian scrambles every transfer.
-// The strap is a construction parameter rather than a constant because the
-// `SYM53C825AJ` variant is little-endian only (its BIG_LIT pin is a JTAG
-// signal), so a future socketed card may differ.
+// ENDIANNESS IS A PIN, AND THIS BOARD DOES NOT ASSERT IT.  The chip's
+// `BIG_LIT/` pin selects byte ordering, and Apple's developer note
+// describes what the big-endian setting does ("the first byte of an aligned
+// SCSI-to-PCI transfer routes to lane three and subsequent bytes to
+// descending lanes"), which reads like a statement about this board.  The
+// ROM says otherwise, three times over:
+//
+//   * its register accessors FLIP.  `see dsp!` at the Open Firmware prompt
+//     gives `: dsp!  regs >dsp rl!-flip ;` — a byte-reversed longword
+//     store, which is exactly what a big-endian host needs in order to
+//     write a LITTLE-endian chip register;
+//   * its byte offsets are NOT repositioned.  In big-endian mode the chip
+//     moves a byte register's address to `N ^ 3`; the ROM writes SCNTL1 at
+//     +$01, SCNTL3 at +$03, SCID at +$04, CTEST3 at +$1B and STIME0 at
+//     +$48 — every one of them the natural register number;
+//   * its SCRIPTS are stored byte-reversed in memory.  The buffer the
+//     driver hands DSP holds `00000240 00000000 06000002 …`, which is
+//     `40020000 00000000 02000006 …` read little-endian — a Select of
+//     target 2 followed by a six-byte Command block move.
+//
+// So the strap is LITTLE-endian here, and it stays a construction
+// parameter rather than a constant because it is a wiring fact: the
+// `SYM53C825AJ` variant is little-endian ONLY (its BIG_LIT pin is a JTAG
+// signal), and a socketed 53C8xx on some other board may be strapped the
+// other way.
+//
+// One consequence lands in this file rather than the engine: the operating
+// register file is byte-addressed with the register's LOW byte at its LOW
+// offset, while the host bus is big-endian and delivers a 32-bit store MSB
+// first.  So a wide access decomposes in BUS order and the register
+// reassembles in CHIP order — which is precisely the swap the ROM's
+// `-flip` words are compensating for, seen from the other side.
 
 #include "card.h"
 #include "log.h"
@@ -142,6 +167,12 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
         sym53c8xx_update_irq(s);
         return v;
     }
+    case SYM825_GPREG:
+        // GPIO[3:0] are INPUT pins at power-up; what a read returns is what
+        // the board drives onto them, not what software last wrote.  Only
+        // the bits GPCNTL declares as outputs read back the latch.
+        return (uint8_t)((s->reg[SYM825_GPREG] & s->reg[SYM825_GPCNTL]) |
+                         (s->gpio_strap & (uint8_t)~s->reg[SYM825_GPCNTL]));
     case SYM825_CTEST3:
         // V[3:0], the chip revision level, "should have the same value as
         // the lower nibble of the PCI Revision ID register" — 4 here.
@@ -223,22 +254,26 @@ static void regs_write8(void *ctx, uint32_t offset, uint8_t value) {
     sym825_reg_write(s, offset, value);
 }
 
+// Wider accesses decompose in BUS order — big-endian, MSB at the lowest
+// address — because that is what the processor bus delivers.  The register
+// file then reassembles them in CHIP order (low byte at the low offset),
+// which is the byte swap the ROM's `rl!-flip` performs from its side.
 static uint16_t regs_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)(regs_read8(ctx, offset) | ((uint16_t)regs_read8(ctx, offset + 1) << 8));
+    return (uint16_t)(((uint16_t)regs_read8(ctx, offset) << 8) | regs_read8(ctx, offset + 1));
 }
 
 static void regs_write16(void *ctx, uint32_t offset, uint16_t value) {
-    regs_write8(ctx, offset, (uint8_t)value);
-    regs_write8(ctx, offset + 1, (uint8_t)(value >> 8));
+    regs_write8(ctx, offset, (uint8_t)(value >> 8));
+    regs_write8(ctx, offset + 1, (uint8_t)value);
 }
 
 static uint32_t regs_read32(void *ctx, uint32_t offset) {
-    return (uint32_t)regs_read16(ctx, offset) | ((uint32_t)regs_read16(ctx, offset + 2) << 16);
+    return ((uint32_t)regs_read16(ctx, offset) << 16) | regs_read16(ctx, offset + 2);
 }
 
 static void regs_write32(void *ctx, uint32_t offset, uint32_t value) {
-    regs_write16(ctx, offset, (uint16_t)value);
-    regs_write16(ctx, offset + 2, (uint16_t)(value >> 16));
+    regs_write16(ctx, offset, (uint16_t)(value >> 16));
+    regs_write16(ctx, offset + 2, (uint16_t)value);
 }
 
 // The 4 KB SCRIPTS RAM: ordinary host-visible memory the engine can also
@@ -307,6 +342,12 @@ static const pci_device_ops_t sym825_ops = {
     .checkpoint_restore = sym825_checkpoint_restore,
     .name = sym825_name,
 };
+
+// Identify one of ours among the machine's seated devices: the config
+// declaration is the card's identity and no other device shares it.
+sym53c8xx_t *sym53c8xx_from_device(pci_device_t *dev) {
+    return (dev && dev->decl == &sym825_decl) ? (sym53c8xx_t *)dev->priv : NULL;
+}
 
 // Which channel a seated instance is.  The machine's slot table names the
 // same card kind twice, at IDSEL 17 and 18, so the factory derives the
