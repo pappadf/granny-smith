@@ -194,6 +194,7 @@ LOG_USE_CATEGORY_NAME("mach64");
 #define DW_DP_PIX_WIDTH       0xB4
 #define DW_DP_MIX             0xB5
 #define DW_DP_SRC             0xB6
+#define DW_CONTEXT_LOAD_CNTL  0xCB
 
 // DP_SRC: which generator feeds each of the three muxes in the pixel data
 // path (RRG p. 3-40).  Every draw operation colour-expands a MONOCHROME
@@ -1260,6 +1261,9 @@ static void mach64_engine_run(mach64_t *m) {
     }
     m->blits++;
     m->display.fb_dirty = true;
+    LOG(3, "op #%llu %ux%u at (%u,%u) mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X", (unsigned long long)m->blits,
+        width, height, dst_x, dst_y, op.mono_sel, op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix,
+        m->reg[DW_DP_FRGD_CLR], m->reg[DW_DP_BKGD_CLR]);
 }
 
 // Feed one dword of host data into the operation in flight.
@@ -1296,6 +1300,8 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
                 m->host_op.active = false;
                 m->blits++;
                 m->display.fb_dirty = true;
+                LOG(3, "op #%llu HOST %ux%u at (%u,%u)", (unsigned long long)m->blits, m->host_op.w, m->host_op.h,
+                    m->host_op.x0, m->host_op.y0);
                 return;
             }
             if (byte_align)
@@ -1308,20 +1314,33 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
 // engine's business, so the generic store below is skipped.
 static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
     switch (dw) {
-    case DW_DST_Y_X: // Y in 31:16, X in 15:0 — sets the trajectory origin
-        m->reg[DW_DST_Y] = (value >> 16) & 0xFFFFu;
-        m->reg[DW_DST_X] = value & 0xFFFFu;
+    // FIELD ORDER.  In ATI's combined `A_B` register names the FIRST-named
+    // field is the LOW halfword and the second is the HIGH halfword, so
+    // DST_Y_X is (X << 16) | Y and DST_HEIGHT_WIDTH is (WIDTH << 16) |
+    // HEIGHT.  Reading them the other way round is self-consistent for
+    // most traffic — a scrollbar drawn as four lines looks equally
+    // plausible transposed — which is exactly why it survived until
+    // something GEOMETRICALLY IMPOSSIBLE turned up: the desktop erase,
+    // $00140000/$028001C7, which transposed reads as a 640-pixel-tall
+    // rectangle on a 480-line screen.  Read correctly it is 640 x 455 at
+    // (0,20) — the desktop below the menu bar — followed by 638x2, 636x1,
+    // 634x1 and 630x1 at y = 475..479, the desktop's rounded bottom
+    // corners.  The SC_LEFT_RIGHT decode below always used this order and
+    // was corroborated independently ($027F0000 = left 0, right 639).
+    case DW_DST_Y_X:
+        m->reg[DW_DST_X] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_DST_Y] = value & 0xFFFFu;
         m->reg[dw] = value;
         return true;
-    case DW_DST_HEIGHT_WIDTH: // height in 31:16, width in 15:0 — and GO
-        m->reg[DW_DST_HEIGHT] = (value >> 16) & 0xFFFFu;
-        m->reg[DW_DST_WIDTH] = value & 0xFFFFu;
+    case DW_DST_HEIGHT_WIDTH: // and GO
+        m->reg[DW_DST_WIDTH] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_DST_HEIGHT] = value & 0xFFFFu;
         m->reg[dw] = value;
         mach64_engine_run(m);
         return true;
-    case DW_DST_X_WIDTH: // X in 31:16, width in 15:0 — and GO
-        m->reg[DW_DST_X] = (value >> 16) & 0xFFFFu;
-        m->reg[DW_DST_WIDTH] = value & 0xFFFFu;
+    case DW_DST_X_WIDTH: // and GO
+        m->reg[DW_DST_WIDTH] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_DST_X] = value & 0xFFFFu;
         m->reg[dw] = value;
         mach64_engine_run(m);
         return true;
@@ -1330,13 +1349,13 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
         mach64_engine_run(m);
         return true;
     case DW_SRC_Y_X:
-        m->reg[DW_SRC_Y] = (value >> 16) & 0xFFFFu;
-        m->reg[DW_SRC_X] = value & 0xFFFFu;
+        m->reg[DW_SRC_X] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_Y] = value & 0xFFFFu;
         m->reg[dw] = value;
         return true;
     case DW_SRC_HEIGHT1_WIDTH1:
-        m->reg[DW_SRC_HEIGHT1] = (value >> 16) & 0xFFFFu;
-        m->reg[DW_SRC_WIDTH1] = value & 0xFFFFu;
+        m->reg[DW_SRC_WIDTH1] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_HEIGHT1] = value & 0xFFFFu;
         m->reg[dw] = value;
         return true;
     // The combined scissor registers: high halfword is the far edge.
@@ -1348,6 +1367,38 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
     case DW_SC_TOP_BOTTOM:
         m->reg[DW_SC_BOTTOM] = (value >> 16) & 0xFFFFu;
         m->reg[DW_SC_TOP] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    case DW_CONTEXT_LOAD_CNTL:
+        // NOT MODELLED, and this is the largest known gap in the engine.
+        //
+        // The mach64 can save its whole draw-engine state to a 64-DWORD
+        // block in memory and reload it with one write (PRG, "Draw Engine
+        // Contexts"); DP_MIX is DWORD $16 of that block and DP_SRC is $17.
+        // System 7.6's ATI accelerator uses it almost exclusively: one boot
+        // issues 941 CONTEXT_LOAD_CNTL writes against 8 direct DP_SRC and 4
+        // DP_MIX writes.  Ignoring it leaves the data-path selectors at
+        // whatever was last written directly, so operations that should be
+        // a patterned two-colour fill run as "invert the destination" — the
+        // desktop erase is one of them, which is why the startup splash
+        // survives on screen.
+        //
+        // Two facts are still missing and neither should be guessed at:
+        //   * the CONTEXT_LOAD_CNTL field layout.  The driver writes
+        //     $00FFC008 / $00FFC00C / $00FFC01E / $00FFC038, and under the
+        //     RRG's bit chart (p. 3-15) those all decode as command 3,
+        //     "load and initiate Bresenham line", which cannot be right for
+        //     traffic that draws rectangles.  That chart is one of the
+        //     OCR'd bit-position tables, and its column alignment is not
+        //     trustworthy.
+        //   * where the blocks live.  ATI says "reverse order from top of
+        //     memory", but scanning every 256-byte boundary of VRAM for a
+        //     block whose DWORD 2 matches the live DST_OFF_PITCH finds
+        //     nothing, at any point in the boot.
+        //
+        // Until both are pinned from a readable source, loading a context
+        // from the wrong address would scribble arbitrary VRAM into the
+        // data path — strictly worse than leaving it alone.
         m->reg[dw] = value;
         return true;
     default:

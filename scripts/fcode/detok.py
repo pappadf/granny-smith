@@ -32,6 +32,7 @@
 #   detok.py ROM --registers           # just the register/aperture accesses
 #   detok.py ROM --strings             # just the string literals
 #   detok.py ROM --extract-fcode OUT   # write the raw FCode program out
+#   detok.py ROM --extract-driver OUT  # write the embedded ndrv (PEF) out
 
 import argparse
 import struct
@@ -421,6 +422,55 @@ def format_op(op, base, dictionary):
     return f"{raw}  {op.name}{note}"
 
 
+def extract_driver(ops):
+    """Reassemble the embedded Mac OS ndrv from the FCode token stream.
+
+    The PEF is NOT contiguous in the ROM.  It is published as the
+    `driver,AAPL,MacOS,PowerPC` property, built by a long chain of
+    encode-bytes over ordinary b(") string literals of at most 255 bytes
+    each — which is why the token walk passes straight through it instead
+    of needing to skip a data blob, and why `strings` on the ROM finds the
+    PEF header but not the driver.
+
+    Collect every literal from the one carrying the `Joy!peff` container
+    magic up to (not including) the property-name literal.  Returns
+    (bytes, literal_count) or (None, 0)."""
+    lits = [(i, o) for i, o in enumerate(ops) if o.name == 'b(")']
+    start = next((i for i, o in lits if o.operand.startswith("Joy!peff")), None)
+    end = next((i for i, o in lits if o.operand == "driver,AAPL,MacOS,PowerPC"), None)
+    if start is None:
+        return (None, 0)
+    blob = bytearray()
+    n = 0
+    for i, o in lits:
+        if i >= start and (end is None or i < end):
+            blob += o.operand.encode("latin-1")
+            n += 1
+    return (bytes(blob), n)
+
+
+def describe_pef(blob):
+    """Summarise a PEF container, and CHECK it — the section table has to
+    tile the file exactly, which is what proves the reassembly above put the
+    pieces back in the right order with nothing lost or duplicated."""
+    out = []
+    if len(blob) < 40 or blob[:8] != b"Joy!peff":
+        return ["not a PEF container"]
+    arch = blob[8:12].decode("latin-1")
+    nsec = struct.unpack_from(">H", blob, 32)[0]
+    out.append(f"PEF arch={arch} sections={nsec} size={len(blob)}")
+    kinds = {0: "code", 1: "unpackedData", 2: "patternData", 3: "constant", 4: "loader"}
+    end_of_last = 0
+    for i in range(nsec):
+        o = 40 + i * 28
+        _, _, total, _, clen, coff, kind = struct.unpack_from(">iIIIIIB", blob, o)
+        out.append(f"[{i}] {kinds.get(kind, kind):12s} containerOff=${coff:06X} len={clen} total={total}")
+        end_of_last = max(end_of_last, coff + clen)
+    out.append(f"section table tiles to {end_of_last} of {len(blob)} bytes"
+               + ("  OK" if end_of_last == len(blob) else "  MISMATCH — reassembly is wrong"))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="IEEE 1275 FCode detokenizer for PCI expansion ROMs")
     ap.add_argument("rom", help="PCI expansion-ROM image, or a raw FCode program")
@@ -430,6 +480,8 @@ def main():
     ap.add_argument("--strings", action="store_true", help="list string literals only")
     ap.add_argument("--calls", action="store_true", help="list $call-parent sites only")
     ap.add_argument("--extract-fcode", metavar="OUT", help="write the raw FCode program to OUT")
+    ap.add_argument("--extract-driver", metavar="OUT",
+                    help="write the embedded Mac OS ndrv (a PEF container) to OUT")
     ap.add_argument("--offset8", action="store_true", help="force 8-bit branch offsets")
     ap.add_argument("--offset16", action="store_true", help="force 16-bit branch offsets")
     ap.add_argument("--strict", action="store_true", help="exit non-zero if the walk does not verify")
@@ -457,6 +509,20 @@ def main():
         with open(args.extract_fcode, "wb") as f:
             f.write(body)
         print(f"wrote {len(body)} bytes of FCode to {args.extract_fcode}")
+        return 0
+
+    if args.extract_driver:
+        dt = Detokenizer(body, base, offset16=not args.offset8)
+        ops = dt.run()
+        blob, n = extract_driver(ops)
+        if blob is None:
+            print(f"{args.rom}: no embedded ndrv found", file=sys.stderr)
+            return 2
+        with open(args.extract_driver, "wb") as f:
+            f.write(blob)
+        print(f"wrote {len(blob)} bytes of ndrv (from {n} string literals) to {args.extract_driver}")
+        for line in describe_pef(blob):
+            print(f"  {line}")
         return 0
 
     # Settle the branch-offset width by walking, not by assuming: the wrong
