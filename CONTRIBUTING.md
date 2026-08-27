@@ -22,7 +22,7 @@ Thank you for your interest in contributing to Granny Smith! We welcome contribu
 The easiest way to get started is with the preconfigured devcontainer, which includes all prerequisites:
 
 - Open the repository in VS Code or GitHub Codespaces
-- The devcontainer image has Emscripten 4.0.10, Node.js 18.x, Playwright, and all build tools preinstalled
+- The devcontainer image has Emscripten 4.0.10, Node.js 22.x, Playwright, and all build tools preinstalled
 
 ### Manual Setup
 

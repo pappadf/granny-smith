@@ -40,8 +40,8 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 ## Tools and Environments
 
 **Devcontainer (recommended):**
-- Prebuilt image: `ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-nodeLTS`
-- All prerequisites preinstalled: Emscripten 4.0.10, Node.js 18.x, Playwright, build tools
+- Prebuilt image: `ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-node22`
+- All prerequisites preinstalled: Emscripten 4.0.10, Node.js 22.x, Playwright, build tools
 
 **Manual setup (outside devcontainer):**
 1. Install Emscripten 4.0.10:
