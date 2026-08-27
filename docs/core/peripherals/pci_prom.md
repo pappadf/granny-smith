@@ -128,7 +128,11 @@ boots.
   ROM file it was given and offers every `*.prom`. A test script's
   `rom="${$ROM}"` therefore makes the card ROMs discoverable with no path
   knowledge anywhere in core.
-* **web2** — a dropped file is probed against the media types in order
+* **web2** — `/opfs/images/prom/` is created at startup beside the other
+  media stores, and every file already in it is offered then, exactly as
+  the vROM store is: without that pass a `.prom` that persisted in an
+  earlier session is invisible after a reload and its card looks
+  uninstallable. A dropped file is probed against the media types in order
   (`rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd`; `app/web2/src/bus/upload.ts`),
   stored under `/opfs/images/prom/` named by its CRC, and offered through
   `prom.offer(path)` — the same hook `vrom.offer` provides, so a file

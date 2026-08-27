@@ -375,6 +375,18 @@ async function persist(
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
   const targetDir = info?.persistDir ?? descriptor.persistDir;
   const finalPath = `${targetDir}/${finalName}`;
+  // storage.cp does not create parent directories, and the category dirs are
+  // made once at startup — so a store added after a user's OPFS was first
+  // laid down has nowhere to copy to, and every upload of that kind fails
+  // with a bare "Failed to save". Create it here; it is a no-op when the
+  // directory already exists.
+  //
+  // Through vfs.mkdir, NOT the main-thread opfs.mkdirP: the copy below runs
+  // on the worker, and a main-thread OPFS mutation is not reliably visible
+  // to the worker's WasmFS (the same asymmetry that forces staging onto the
+  // worker — see stageUpload). Creating it on one side and copying on the
+  // other is exactly the bug this is fixing.
+  await gsEval('vfs.mkdir', [targetDir]);
   const ok = (await gsEval('storage.cp', [sourcePath, finalPath])) === true;
   if (!ok) {
     showNotification(`Failed to save ${originalName}`, 'error');
