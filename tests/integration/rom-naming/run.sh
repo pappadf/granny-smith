@@ -5,13 +5,18 @@
 #
 # Enumerate every file in $TEST_DATA/roms and drive a single headless
 # identify pass over all of them, then assert:
-#   1. every file is RECOGNISED by machine.rom.identify / machine.vrom.identify;
+#   1. every file is RECOGNISED by machine.rom.identify / vrom.identify /
+#      prom.identify;
 #   2. each file's basename == the canonical name the tooling grammar
 #      (scripts/rom_naming.py) derives from its content id — identify itself
 #      reports content facts only, no filenames;
 #   3. no two files share a checksum (CPU ROM) or Format-Block CRC (vROM).
 #
-# The identify surface is picked by extension (.rom → rom, .vrom → vrom).
+# The identify surface is picked by extension (.rom → rom, .vrom → vrom,
+# .prom → prom).  Each surface reports a content identity under its own key
+# — `checksum` for a CPU ROM, `crc` for a vROM or a PCI expansion ROM — and
+# the naming grammar keys on that, so adding a store means adding a case
+# here and nothing else.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
@@ -30,6 +35,7 @@ while IFS= read -r -d '' f; do
     case "$base" in
         *.rom)  obj="machine.rom.identify"  ;;
         *.vrom) obj="machine.vrom.identify" ;;
+        *.prom) obj="machine.prom.identify" ;;
         # The generated manifest (roms/README.md, proposal §4.4) and any other
         # docs legitimately live here — they are not ROM blobs, so skip them.
         README.md|*.md) continue ;;
