@@ -518,6 +518,42 @@ Without the fixed decode the firmware's write to `$3C4` takes a recoverable
 transfer error and the machine check takes down the rest of device
 installation with it.
 
+## The framebuffer — a mode that is derived, not configured
+
+Nothing tells the emulator what resolution to present. The part is a VGA, so
+the mode lives in the CRTC, the sequencer and the Cirrus extension registers;
+`cirrus54m30.c` reads one out of them. What Open Firmware 1.1.22 programs on
+this machine, captured by logging every port write across a cold boot:
+
+```
+SR01 = $01   8 dots per character clock
+SR07 = $F1   Cirrus extended mode, bits [3:1] = 000 = 8 bpp
+CR01 = $4F   horizontal display end 79   -> (79 + 1) * 8 = 640 pixels
+CR12 = $DF   vertical display end 223, with CR07 bit 1 as VDE bit 8
+                                          -> 479 + 1  = 480 lines
+CR13 = $50   offset 80, in eight-byte units in a 256-colour mode
+                                          -> 640 bytes per scan line
+GR05 = $40   256-colour shift mode
+```
+
+and 768 writes to the DAC data port — 256 entries of six-bit R, G, B, which
+the model expands to eight bits by replicating the top two into the bottom
+so `$3F` maps to `$FF` exactly.
+
+8 bpp is not a shortcut. Apple: the part "implements only a little-endian
+window into the packed-pixel frame buffer, hence Big Endian operating
+systems are limited to 8 bits per pixel" — and at one byte per pixel byte
+order does not matter, so the existing `PIXEL_8BPP` path is *correct* rather
+than merely convenient. Deeper colour needs a little-endian framebuffer
+window in `display_t`, which this repository does not have.
+
+One VGA register is deliberately not store-and-readback: **Input Status
+Register 1** (`$3BA`/`$3DA`). Software does not read it for a value, it
+reads it for an *edge* — every VGA console waits on the vertical-retrace or
+display-enable bit before touching the CRTC or the palette — so it is
+derived from the scheduler's clock, which keeps a run deterministic and
+keeps a waiting loop from becoming a hang.
+
 ## Verification
 
 | Row | Tier | What it holds |
@@ -526,6 +562,7 @@ installation with it.
 | `ans-pci-slots` | unit | six sockets and three builtins, IDSELs, the rewired interrupt map, the raw config-cycle identities including the `$14` Revision ID that gates machine identity |
 | `ans-device-tree` | matrix | `dev / ls`, node properties and device aliases against Apple's published Listing 6-1, driven over the serial console |
 | `ans-scsi` | matrix | the SCRIPTS engine, through Open Firmware's own `probe-scsi1` and `probe-scsi2`, on both fast/wide channels |
+| `ans-console` | matrix | the machine booted as it SHIPPED — console on the monitor — with the derived 640x480x8 mode and a golden of what Open Firmware draws |
 
 Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
 `probe-scsi2`, one per controller. `probe-scsi` and `probe-scsi-all` do not

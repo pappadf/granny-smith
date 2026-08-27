@@ -1,0 +1,42 @@
+# The 54M30 framebuffer, as Open Firmware's console
+# (proposal-apple-network-server-500-700 §5.8, ladder rung S14's instrument).
+
+include "../lib/mac.script"
+include "../lib/ans.script"
+
+# A shipping machine, with a blank store and nothing told to it: the console
+# is the monitor, which is what a Network Server does out of the box.
+machine.board.clear_nvram()
+machine.boot model="ans500" ram=32768 rom="${$ROM}"
+
+# POST, then Open Firmware's bring-up, then its own console install.  The
+# firmware's progress narration goes to ttya whatever the console is, so it
+# is still the bounded marker for "the interpreter is up" — and here the
+# fact that the row can watch it while the PICTURE comes up on the screen is
+# the point: the two narrators are independent.
+let chatter = ""
+let spins = 0
+while !contains($chatter, "install-console>") && $spins < 24 {
+    scheduler.run 250000000
+    $chatter = "${$chatter}${machine.scc.a.sent()}"
+    $spins = $spins + 1
+}
+assert contains($chatter, "install-console>") "Open Firmware never installed its console"
+# Let it draw its banner and settle at the prompt.
+scheduler.run 1000000000
+
+# --- The mode, derived from the CRTC and the sequencer --------------------
+# CR01 = $4F -> (79 + 1) * 8 = 640; CR12 = $DF with CR07 bit 1 as VDE bit 8
+# -> 479 + 1 = 480; SR07 = $F1 -> Cirrus extended mode, 8 bpp.
+assert machine.screen.width == 640 "the 54M30 mode is ${machine.screen.width} pixels wide"
+assert machine.screen.height == 480 "the 54M30 mode is ${machine.screen.height} lines tall"
+assert machine.screen.depth == 8 "Big-endian hosts are limited to 8 bpp on this part"
+
+# --- What a monitor would show -------------------------------------------
+# The firmware's banner, its boot attempt against the NVRAM default
+# (`disk2:aix`, with no disk attached) and its prompt — drawn by the ROM's
+# own VGA console driver into the framebuffer this model derives.
+check("of-console.png")
+
+echo "ans-console: Open Firmware's console rendered at ${machine.screen.width}x${machine.screen.height}x${machine.screen.depth}"
+quit
