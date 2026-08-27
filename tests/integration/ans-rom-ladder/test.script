@@ -15,7 +15,7 @@
 # The two profiles differ in the CPU card's clock, the L2 DIMM size and
 # TwoSuppliesH — and in nothing else an emulator can see, which is exactly
 # why both run (§13 R10).  Each row is a full cold boot.
-def ladder(model, ram_kb, ram_banner, cpu_banner, two_psu) {
+def ladder(model, ram_kb, ram_banner, cpu_banner, l2_banner, two_psu) {
     machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
 
     # --- S1: the reset vector -----------------------------------------------
@@ -84,6 +84,17 @@ def ladder(model, ram_kb, ram_banner, cpu_banner, two_psu) {
     # show up here as a deliberate change rather than a silent one.
     assert machine.lcd.line(2) == "${$cpu_banner}" "S4: ${$model} CPU banner is '${machine.lcd.line(2)}'"
 
+    # --- S4: the L2 cache DIMM, present for the first time -------------------
+    # Line 3 is POST's cache report, and it is the ROM DECODING Hammerhead
+    # +$E0 — presence in bit 7, the size in bits 1:0.  Every previous
+    # machine in this repository returned $00 there, which makes POST skip
+    # the L2 test entirely; these two profiles are the first to run it.
+    # The size codes were read off this very line by sweeping the register
+    # ($80 -> 512 KB, $81 -> 256 KB, $82 -> 1 MB, $83 -> 4 MB), so the
+    # assertion and the encoding come from the same source.
+    assert machine.lcd.line(3) == "${$l2_banner}" "S4: ${$model} L2 banner is '${machine.lcd.line(3)}'"
+    assert machine.board.l2_kb > 0 "S4: ${$model} the profile must declare a cache DIMM"
+
     # --- Negative assertions: the published failure strings -------------------
     # POST names our exact work when it fails, so absence is a real test.
     # Line 0 carries problem messages; a healthy machine never shows these.
@@ -91,6 +102,13 @@ def ladder(model, ram_kb, ram_banner, cpu_banner, two_psu) {
     assert machine.lcd.line(0) != "ParityAddrAtAddrFail" "S3: ${$model} parity address failure"
     assert machine.lcd.line(0) != "ROM SIMM Failed" "S3: ${$model} ROM SIMM test failed"
     assert machine.lcd.line(0) != "MainLBU NVRAM Failed" "S4: ${$model} NVRAM test failed"
+    assert machine.lcd.line(0) != "L2 Cache SIMM Failed" "S4: ${$model} the L2 cache test failed"
+    # The three POST failures the built-in PCI devices would report if their
+    # config space were wrong.  Absence is a real assertion here: each names
+    # a device we model, and each appeared for real before Phase C landed.
+    assert machine.lcd.line(0) != "MainLBU 825#1 Failed" "S5: ${$model} 53C825A #0 rejected by POST"
+    assert machine.lcd.line(0) != "MainLBU 825#2 Failed" "S5: ${$model} 53C825A #1 rejected by POST"
+    assert machine.lcd.line(0) != "MainLBU Video Failed" "S5: ${$model} the 54M30 was rejected by POST"
 
     # --- The GBUS island answered ---------------------------------------------
     # POST reads the Ethernet address PROM during `MainLBU Enet Setup`, and
@@ -101,10 +119,22 @@ def ladder(model, ram_kb, ram_banner, cpu_banner, two_psu) {
     echo "ans-rom-ladder ${$model}: lcd=[${machine.lcd.text}] pc=${machine.cpu.pc:08x} reg1=${machine.board.register1:08x}"
 }
 
-# The 500: 32 MB of parity DRAM, a 132 MHz card on a 44 MHz bus, one supply.
-ladder("ans500", 32768, "0032 MB Parity RAM", "066MHz 604, 44MHzBus", false)
-# The 700: 48 MB, a 150 MHz card on a 50 MHz bus, redundant supplies.
-ladder("ans700", 49152, "0048 MB Parity RAM", "075MHz 604, 50MHzBus", true)
+# --- The 512 MB ceiling, which is a ROM limit rather than a chipset one ------
+# "Production ROMs through (TBD) August 1996? provide decoding of up to 512
+# Mbytes", and the documented failure mode ABOVE it is a hang during the RAM
+# test rather than a clean error.  So the profile has to be less permissive
+# than the silicon, and refuse the configuration before the guest sees it.
+assert !machine.boot(model="ans500", rom="${$ROM}", ram=1048576) "S3: 1 GB must be rejected — the ROM decodes 512 MB"
+assert machine.boot(model="ans500", rom="${$ROM}", ram=524288) "S3: 512 MB must be accepted"
 
-echo "ans-rom-ladder: high-water rung S3-S4 reached on both profiles"
+# The 500: 32 MB of parity DRAM, a 132 MHz card on a 44 MHz bus, a 512 KB
+# cache DIMM, one supply.
+ladder("ans500", 32768, "0032 MB Parity RAM", "066MHz 604, 44MHzBus", "0512KB Level 2 Cache", false)
+# The 700: 48 MB, a 150 MHz card on a 50 MHz bus, 1 MB of cache, redundant
+# supplies.  At 50 MHz the ROM does NOT enable its "fast L2" mode — that is
+# for "bus speeds of 44 MHz or less" — which is the one place the smaller
+# machine is architecturally ahead of the larger one.
+ladder("ans700", 49152, "0048 MB Parity RAM", "075MHz 604, 50MHzBus", "1024KB Level 2 Cache", true)
+
+echo "ans-rom-ladder: high-water rung S4 reached on both profiles"
 quit

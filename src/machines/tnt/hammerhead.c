@@ -18,10 +18,19 @@
 //   +$B0  WhoAmI, byte — $10 = primary CPU, $08 = secondary (same source).
 //   +$C0  IntReg, byte — inter-processor interrupt; writable, and a no-op
 //         with one CPU.
-//   +$E0  L2 config/status, byte — bit $80 = cache present, low 3 bits a
-//         size code.  Reading $00 makes the ROM's .L2DataCacheTest skip the
-//         whole test, the safest no-L2 presentation (decoded from the
-//         shipping ROM's HWInit/POST disassembly).
+//   +$E0  L2 config/status, byte — bit $80 = cache present, bits 1:0 a size
+//         code.  Reading $00 makes the ROM's .L2DataCacheTest skip the whole
+//         test, the safest no-L2 presentation (decoded from the shipping
+//         ROM's HWInit/POST disassembly).  The SIZE CODE is no longer
+//         unattested: the Network Server ROM prints the size it decoded on
+//         the front-panel LCD, so sweeping the register and reading line 3
+//         gives the encoding directly —
+//
+//             $80 -> `0512KB Level 2 Cache`   $82 -> `1024KB Level 2 Cache`
+//             $81 -> `0256KB Level 2 Cache`   $83 -> `4096KB Level 2 Cache`
+//
+//         and bit $04 is ignored ($84-$87 repeat $80-$83).  So bits 1:0 are
+//         the size and 512 KB — not 256 — is code zero.
 //   +$F0  L2 flush/fill strobe, byte — written $80 / $00 around the fill
 //         walk; accepted with no side effect.
 //
@@ -51,6 +60,10 @@ LOG_USE_CATEGORY_NAME("hammerhead");
 #define HH_REG_L2CFG     0xE0u // L2 present/size
 #define HH_REG_L2STROBE  0xF0u // L2 flush/fill strobe
 
+// The bits of +$E0 that are a hardware strap rather than software state:
+// $80 = cache present, $03 = the size code.
+#define HH_L2CFG_STRAP_MASK 0x83u
+
 // The machine-identification register at +$20: bit 30 marks the 9500
 // (the 68k identification at ROM $FFC1484E tests it before BoxID), and
 // bit 31 marks the 7500/8500 class — Open Firmware folds the top byte
@@ -59,6 +72,29 @@ LOG_USE_CATEGORY_NAME("hammerhead");
 // neither bit is set.  The +$30 top byte feeds the AAPL,cpu-id low
 // nibble the same way (>>4); it is unattested and currently zero.
 #define HH_REG_MACHID 0x20u
+
+// The +$E0 strap for this board's cache DIMM: presence plus the size code
+// decoded above.  A board with no L2 reads $00, which is what makes the
+// ROM's .L2DataCacheTest skip the whole test — the Macintosh boards' answer
+// and, until the Network Servers, the only one this model ever gave.
+static uint8_t hh_l2cfg_strap(config_t *cfg) {
+    switch (tnt_board(cfg)->l2_kb) {
+    case 256u:
+        return 0x81u;
+    case 512u:
+        return 0x80u;
+    case 1024u:
+        return 0x82u;
+    case 4096u:
+        return 0x83u;
+    case 0u:
+        return 0x00u; // no cache DIMM fitted
+    default:
+        LOG(0, "board declares an L2 size of %u KB, which has no +$E0 size code; reporting no cache",
+            tnt_board(cfg)->l2_kb);
+        return 0x00u;
+    }
+}
 
 void tnt_hh_init(config_t *cfg) {
     tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
@@ -74,7 +110,7 @@ void tnt_hh_init(config_t *cfg) {
     hh->reg[HH_REG_MACHID >> 4] = tnt_board(cfg)->hh_r20;
     hh->reg[HH_REG_ARBCONFIG >> 4] = 0x00u; // TwoCPU clear: uniprocessor
     hh->reg[HH_REG_WHOAMI >> 4] = 0x10u << 24; // primary CPU
-    hh->reg[HH_REG_L2CFG >> 4] = 0x00u; // no L2: POST skips the test
+    hh->reg[HH_REG_L2CFG >> 4] = (uint32_t)hh_l2cfg_strap(cfg) << 24;
     // TEMP diagnostic (604 boot-wall hunt): present an L2 module.  Byte
     // registers live in lane 0, so the value is shifted to bits 31-24.
     // Bit $80 = present, low 3 bits = size code (encoding unattested; probe
@@ -125,6 +161,16 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     if (hh->l2cfg_sticky && (offset >> 4) == (HH_REG_L2CFG >> 4)) {
         LOG(2, "write +$%03X = $%02X dropped (GS_HH_L2CFG sticky)", offset, value);
         return;
+    }
+    // +$E0's presence bit and size code are a STRAP — what the cache DIMM
+    // socket reports, not something software sets.  The ROM writes the
+    // register (it drops $70 in there mid-test) and reads it straight back,
+    // so a plain store-and-readback would erase the cache the machine has
+    // and the size report would come out as `0000KB`.  The strapped bits
+    // therefore survive every write; the rest latch normally.
+    if (lane == 0 && (offset >> 4) == (HH_REG_L2CFG >> 4)) {
+        uint8_t strap = hh_l2cfg_strap(cfg);
+        value = (uint8_t)((value & (uint8_t)~HH_L2CFG_STRAP_MASK) | (strap & HH_L2CFG_STRAP_MASK));
     }
     uint32_t *reg = &hh->reg[offset >> 4];
     uint32_t shift = 8 * (3 - lane);
