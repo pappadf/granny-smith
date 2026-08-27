@@ -182,6 +182,12 @@ LOG_USE_CATEGORY_NAME("mach64");
 #define DW_SRC_WIDTH1         0x64
 #define DW_SRC_HEIGHT1        0x65
 #define DW_SRC_HEIGHT1_WIDTH1 0x66
+#define DW_SRC_X_START        0x67
+#define DW_SRC_Y_START        0x68
+#define DW_SRC_Y_X_START      0x69
+#define DW_SRC_WIDTH2         0x6A
+#define DW_SRC_HEIGHT2        0x6B
+#define DW_SRC_HEIGHT2_WIDTH2 0x6C
 #define DW_SRC_CNTL           0x6D
 #define DW_HOST_DATA0         0x80
 #define DW_HOST_DATA_LAST     0x8F
@@ -281,9 +287,48 @@ LOG_USE_CATEGORY_NAME("mach64");
 // Source-control bits.  They live at bit 0 upward in SRC_CNTL (the SDK's
 // SRC_PATTERN_ENABLE etc.) and at bit 16 upward in the combined
 // GUI_TRAJ_CNTL, which is the copy a context block carries.
-#define SRC_PATT_EN        0x01u // the source WRAPS at SRC_WIDTH1/SRC_HEIGHT1
+#define SRC_PATT_EN        0x01u
+#define SRC_PATT_ROT_EN    0x02u
 #define SRC_LINEAR_EN      0x04u
 #define GUI_TRAJ_SRC_SHIFT 16
+
+// The four source trajectories, selected by those three bits exactly as
+// RRG p. 3-86 tabulates them:
+//
+//   LINEAR  ROT  PATT   trajectory
+//     1      0    0     strictly linear
+//     0      0    0     unbounded Y      — the source advances 1:1
+//     0      0    1     general pattern  — it wraps every WIDTH1/HEIGHT1
+//     0      1    1     general pattern with rotation
+typedef enum mach64_traj {
+    SRC_TRAJ_UNBOUNDED = 0,
+    SRC_TRAJ_LINEAR,
+    SRC_TRAJ_PATTERN,
+    SRC_TRAJ_PATTERN_ROT,
+} mach64_traj_t;
+
+static mach64_traj_t mach64_src_traj(uint32_t src_cntl) {
+    if (src_cntl & SRC_LINEAR_EN)
+        return SRC_TRAJ_LINEAR;
+    if (src_cntl & SRC_PATT_ROT_EN)
+        return SRC_TRAJ_PATTERN_ROT;
+    if (src_cntl & SRC_PATT_EN)
+        return SRC_TRAJ_PATTERN;
+    return SRC_TRAJ_UNBOUNDED;
+}
+
+static const char *mach64_traj_name(mach64_traj_t t) {
+    switch (t) {
+    case SRC_TRAJ_LINEAR:
+        return "linear";
+    case SRC_TRAJ_PATTERN:
+        return "pattern";
+    case SRC_TRAJ_PATTERN_ROT:
+        return "pattern-rot";
+    default:
+        return "unbounded";
+    }
+}
 
 // CONFIG_CNTL has NO memory-mapped alias, so it has no natural dword
 // index.  It lives one slot above the 256-dword alias window, which the
@@ -484,6 +529,17 @@ typedef struct mach64 {
     bool bres_warned; // the Bresenham-line log is once-only
     bool in_context; // the operation in flight came from a context load
     uint64_t blits; // operations the engine has executed (diagnostics)
+    // Per-operation tallies of every way a pixel can fail to reach the
+    // framebuffer.  Each of those paths is a silent `return` in the pixel
+    // loop, and a blit that draws nothing at all looks exactly like a blit
+    // that was never issued — so the counts are logged beside the op.
+    struct {
+        uint32_t scissor; // clipped away
+        uint32_t off_dst; // destination outside VRAM
+        uint32_t off_src; // blit source outside VRAM
+        uint32_t vetoed; // the colour compare said "leave it"
+        uint32_t drawn; // reached mach64_put_pixel
+    } tally;
     // A host-data operation in flight.  Host data is a STREAM: the
     // trajectory is set up, then pixels arrive one HOST_DATA write at a
     // time until the rectangle is full (PRG, "Monochrome Expansion
@@ -1135,32 +1191,45 @@ static void mach64_put_pixel(mach64_t *m, int64_t at, uint32_t colour, uint32_t 
     }
 }
 
-// The monochrome mux: one bit per pixel, deciding which colour source and
-// which mix this pixel gets (RRG p. 3-40, PRG "Logical Pixel Data Path").
-static bool mach64_mono_bit(mach64_t *m, uint32_t mono_sel, uint32_t x, uint32_t y, uint32_t col, uint32_t row,
-                            const mach64_surface_t *src, uint32_t bpp) {
-    (void)col;
-    (void)row;
-    switch (mono_sel) {
-    case DP_MONO_ALWAYS_1:
-        return true;
-    case DP_MONO_PATTERN: {
-        // An 8 x 8 bit pattern held in PAT_REG0 (rows 0-3) and PAT_REG1
-        // (rows 4-7), addressed by the DESTINATION coordinates — which is
-        // what makes a dithered fill line up across separate operations.
-        uint32_t r = y & 7u;
-        uint32_t word = (r < 4u) ? m->reg[DW_PAT_REG0] : m->reg[DW_PAT_REG1];
-        uint32_t byte = (word >> (8u * (r & 3u))) & 0xFFu;
-        return ((byte >> (7u - (x & 7u))) & 1u) != 0;
+// One axis of the source trajectory.  Both axes are walked the same way;
+// only which registers feed them differs.
+//
+// General pattern (trajectory 3): the source restarts at `start` every
+// `len1` steps, so a small block tiles across a larger destination.
+//
+// General pattern with rotation (trajectory 4): the pattern block is
+// `len2` wide/tall and begins at `rot` (SRC_X_START / SRC_Y_START, "pattern
+// source X start for pattern rotation", RRG p. 3-96/3-98).  `len1` is NOT
+// the block's size here — it is "the horizontal distance (in pixels) from
+// DST_X to the right edge of a pattern block" (SRC_WIDTH1, RRG p. 3-93; the
+// same wording for SRC_HEIGHT1 and DST_Y on p. 3-88).  So the first `len1`
+// steps consume the tail of the block starting at `start`, and from then on
+// the source cycles over the whole block with period `len2`.  That is what
+// lets QuickDraw's desktop pattern keep its phase: the driver rotates the
+// tile instead of moving the destination.
+//
+// (For every operation this driver issues the two regions are contiguous —
+// start + len1 == rot + len2 — so the alternative reading, in which the
+// pair repeats as a unit, produces exactly the same walk.  This one is
+// chosen because it matches the RRG's description of len1 as a one-off
+// distance and needs only a counter and a comparator in hardware.)
+typedef struct mach64_axis {
+    uint32_t start; // SRC_X / SRC_Y
+    uint32_t len1; // SRC_WIDTH1 / SRC_HEIGHT1
+    uint32_t rot; // SRC_X_START / SRC_Y_START
+    uint32_t len2; // SRC_WIDTH2 / SRC_HEIGHT2
+    bool rotate;
+} mach64_axis_t;
+
+static uint32_t mach64_axis_at(const mach64_axis_t *a, uint32_t n) {
+    if (a->rotate && a->len2) {
+        if (n < a->len1)
+            return a->start + n;
+        return a->rot + ((n - a->len1) % a->len2);
     }
-    case DP_MONO_BLIT: {
-        // The blit source area read as one bit per pixel.
-        int64_t from = mach64_pixel_at(m, src, x, y, bpp);
-        return from >= 0 && mach64_get_pixel(m, from, bpp) != 0;
-    }
-    default:
-        return true;
-    }
+    if (a->len1)
+        return a->start + (n % a->len1);
+    return a->start + n;
 }
 
 // Everything the pixel loop needs, gathered once per operation.  The
@@ -1174,7 +1243,8 @@ typedef struct mach64_op {
     uint32_t frgd_mix, bkgd_mix;
     uint32_t sc_left, sc_right, sc_top, sc_bottom;
     uint32_t mask;
-    uint32_t src_x0, src_y0, src_w, src_h;
+    mach64_traj_t traj;
+    mach64_axis_t sx_axis, sy_axis;
     uint32_t cmp_fn, cmp_clr, cmp_msk;
     bool cmp_on_src;
 } mach64_op_t;
@@ -1193,28 +1263,54 @@ static void mach64_op_gather(mach64_t *m, mach64_op_t *op) {
     op->sc_top = m->reg[DW_SC_TOP] & 0xFFFFu;
     op->sc_bottom = m->reg[DW_SC_BOTTOM] & 0xFFFFu;
     op->mask = m->reg[DW_DP_WRITE_MSK];
-    op->src_x0 = m->reg[DW_SRC_X] & 0xFFFFu;
-    op->src_y0 = m->reg[DW_SRC_Y] & 0xFFFFu;
-    // The source window only WRAPS when the pattern source is enabled —
-    // "SRC_Y_END will be used only if this bit is enabled" (RRG p. 3-82,
-    // SRC_PATT_EN).  Without the gate, a plain screen-to-screen blit tiles
-    // whatever SRC_WIDTH1/SRC_HEIGHT1 happen to hold from some earlier
-    // pattern operation.  That is exactly what corrupted the Finder's
-    // repaint behind a closing dialog: a 477x220 restore from saved bits
-    // ran with a stale 7x4 source window, tiling a 28-pixel patch across
-    // the whole rectangle.
-    uint32_t src_cntl = m->reg[DW_SRC_CNTL] | (m->reg[DW_GUI_TRAJ_CNTL] >> GUI_TRAJ_SRC_SHIFT);
-    if (src_cntl & SRC_PATT_EN) {
-        op->src_w = m->reg[DW_SRC_WIDTH1] & 0xFFFFu;
-        op->src_h = m->reg[DW_SRC_HEIGHT1] & 0xFFFFu;
-    } else {
-        op->src_w = 0; // 0 = advance 1:1 with the destination
-        op->src_h = 0;
-    }
+    // Which source trajectory is in force decides whether the source
+    // window wraps at all, and what it wraps to.  Reading SRC_CNTL as a
+    // single "does it wrap" bit is not enough: a plain screen-to-screen
+    // blit would then tile whatever SRC_WIDTH1/SRC_HEIGHT1 happened to
+    // hold from an earlier pattern operation, and a rotated pattern would
+    // lose its phase after the first block.
+    op->traj = mach64_src_traj(m->reg[DW_SRC_CNTL]);
+    bool wraps = op->traj == SRC_TRAJ_PATTERN || op->traj == SRC_TRAJ_PATTERN_ROT;
+    op->sx_axis.start = m->reg[DW_SRC_X] & 0xFFFFu;
+    op->sy_axis.start = m->reg[DW_SRC_Y] & 0xFFFFu;
+    op->sx_axis.len1 = wraps ? m->reg[DW_SRC_WIDTH1] & 0xFFFFu : 0u;
+    op->sy_axis.len1 = wraps ? m->reg[DW_SRC_HEIGHT1] & 0xFFFFu : 0u;
+    op->sx_axis.rot = m->reg[DW_SRC_X_START] & 0xFFFFu;
+    op->sy_axis.rot = m->reg[DW_SRC_Y_START] & 0xFFFFu;
+    op->sx_axis.len2 = m->reg[DW_SRC_WIDTH2] & 0xFFFFu;
+    op->sy_axis.len2 = m->reg[DW_SRC_HEIGHT2] & 0xFFFFu;
+    op->sx_axis.rotate = op->sy_axis.rotate = op->traj == SRC_TRAJ_PATTERN_ROT;
     op->cmp_fn = CLR_CMP_FN(m->reg[DW_CLR_CMP_CNTL]);
     op->cmp_clr = m->reg[DW_CLR_CMP_CLR];
     op->cmp_msk = m->reg[DW_CLR_CMP_MSK];
     op->cmp_on_src = CLR_CMP_SRC(m->reg[DW_CLR_CMP_CNTL]) != 0;
+}
+
+// The monochrome mux: one bit per pixel, deciding which colour source and
+// which mix this pixel gets (RRG p. 3-40, PRG "Logical Pixel Data Path").
+static bool mach64_mono_bit(mach64_t *m, const mach64_op_t *op, uint32_t x, uint32_t y, uint32_t col, uint32_t row) {
+    switch (op->mono_sel) {
+    case DP_MONO_ALWAYS_1:
+        return true;
+    case DP_MONO_PATTERN: {
+        // An 8 x 8 bit pattern held in PAT_REG0 (rows 0-3) and PAT_REG1
+        // (rows 4-7), addressed by the DESTINATION coordinates — which is
+        // what makes a dithered fill line up across separate operations.
+        uint32_t r = y & 7u;
+        uint32_t word = (r < 4u) ? m->reg[DW_PAT_REG0] : m->reg[DW_PAT_REG1];
+        uint32_t byte = (word >> (8u * (r & 3u))) & 0xFFu;
+        return ((byte >> (7u - (x & 7u))) & 1u) != 0;
+    }
+    case DP_MONO_BLIT: {
+        // The blit source area read as one bit per pixel — off the source
+        // trajectory, the same walk the colour path uses.
+        int64_t from =
+            mach64_pixel_at(m, &op->src, mach64_axis_at(&op->sx_axis, col), mach64_axis_at(&op->sy_axis, row), op->bpp);
+        return from >= 0 && mach64_get_pixel(m, from, op->bpp) != 0;
+    }
+    default:
+        return true;
+    }
 }
 
 // One pixel through the whole data path: mono mux -> colour mux -> ALU ->
@@ -1222,11 +1318,15 @@ static void mach64_op_gather(mach64_t *m, mach64_op_t *op) {
 // the two paths source it differently (pattern/blit versus a host stream).
 static void mach64_emit(mach64_t *m, const mach64_op_t *op, uint32_t x, uint32_t y, uint32_t col, uint32_t row,
                         bool mono) {
-    if (x < op->sc_left || x > op->sc_right || y < op->sc_top || y > op->sc_bottom)
+    if (x < op->sc_left || x > op->sc_right || y < op->sc_top || y > op->sc_bottom) {
+        m->tally.scissor++;
         return;
+    }
     int64_t at = mach64_pixel_at(m, &op->dst, x, y, op->bpp);
-    if (at < 0)
+    if (at < 0) {
+        m->tally.off_dst++;
         return;
+    }
 
     uint32_t colour_sel = mono ? op->frgd_sel : op->bkgd_sel;
     uint32_t mix = mono ? op->frgd_mix : op->bkgd_mix;
@@ -1236,11 +1336,13 @@ static void mach64_emit(mach64_t *m, const mach64_op_t *op, uint32_t x, uint32_t
         source = m->reg[DW_DP_BKGD_CLR];
         break;
     case DP_SRC_BLIT: {
-        uint32_t sx = op->src_x0 + (op->src_w ? (col % op->src_w) : col);
-        uint32_t sy = op->src_y0 + (op->src_h ? (row % op->src_h) : row);
+        uint32_t sx = mach64_axis_at(&op->sx_axis, col);
+        uint32_t sy = mach64_axis_at(&op->sy_axis, row);
         int64_t from = mach64_pixel_at(m, &op->src, sx, sy, op->bpp);
-        if (from < 0)
+        if (from < 0) {
+            m->tally.off_src++;
             return;
+        }
         source = mach64_get_pixel(m, from, op->bpp);
         break;
     }
@@ -1256,12 +1358,33 @@ static void mach64_emit(mach64_t *m, const mach64_op_t *op, uint32_t x, uint32_t
     if (op->cmp_fn == CLR_CMP_NE || op->cmp_fn == CLR_CMP_EQ) {
         uint32_t probe = (op->cmp_on_src ? source : dest) & op->cmp_msk;
         bool equal = probe == (op->cmp_clr & op->cmp_msk);
-        if ((op->cmp_fn == CLR_CMP_EQ) == equal)
+        if ((op->cmp_fn == CLR_CMP_EQ) == equal) {
+            m->tally.vetoed++;
             return;
+        }
     } else if (op->cmp_fn == CLR_CMP_TRUE) {
+        m->tally.vetoed++;
         return;
     }
+    m->tally.drawn++;
     mach64_put_pixel(m, at, mach64_mix(mix, source, dest, op->bpp), op->bpp, op->mask);
+}
+
+// Render the per-operation tally for the log.  Anything other than "all
+// drawn" is worth seeing: a blit that was issued and drew nothing is the
+// failure mode that is hardest to spot from a screenshot.
+static const char *mach64_tally(const mach64_t *m) {
+    static char buf[96];
+    int n = snprintf(buf, sizeof buf, "drew=%u", m->tally.drawn);
+    if (m->tally.scissor)
+        n += snprintf(buf + n, sizeof buf - (size_t)n, " clipped=%u", m->tally.scissor);
+    if (m->tally.off_dst)
+        n += snprintf(buf + n, sizeof buf - (size_t)n, " off-dst=%u", m->tally.off_dst);
+    if (m->tally.off_src)
+        n += snprintf(buf + n, sizeof buf - (size_t)n, " off-src=%u", m->tally.off_src);
+    if (m->tally.vetoed)
+        snprintf(buf + n, sizeof buf - (size_t)n, " vetoed=%u", m->tally.vetoed);
+    return buf;
 }
 
 // Run one trajectory.  `width`/`height` come from whichever register wrote
@@ -1274,6 +1397,7 @@ static void mach64_engine_run(mach64_t *m) {
 
     mach64_op_t op;
     mach64_op_gather(m, &op);
+    memset(&m->tally, 0, sizeof m->tally);
     if ((op.frgd_mix > 0xFu && op.frgd_mix != DP_MIX_AVERAGE) && !m->mix_warned) {
         m->mix_warned = true;
         LOG(0,
@@ -1306,21 +1430,27 @@ static void mach64_engine_run(mach64_t *m) {
         uint32_t y = y_inc ? dst_y + row : dst_y - row;
         for (uint32_t col = 0; col < width; col++) {
             uint32_t x = x_inc ? dst_x + col : dst_x - col;
-            bool mono = mach64_mono_bit(m, op.mono_sel, x, y, col, row, &op.src, op.bpp);
+            bool mono = mach64_mono_bit(m, &op, x, y, col, row);
             mach64_emit(m, &op, x, y, col, row, mono);
         }
     }
     m->blits++;
     m->display.fb_dirty = true;
     if (op.frgd_sel == DP_SRC_BLIT || op.bkgd_sel == DP_SRC_BLIT || op.mono_sel == DP_MONO_BLIT)
-        LOG(3, "op #%llu %s %ux%u at (%u,%u) BLIT src=(%u,%u) win=%ux%u sc=[%u..%u,%u..%u] wmask=$%08X",
-            (unsigned long long)m->blits, m->in_context ? "CTX" : "DIR", width, height, dst_x, dst_y, op.src_x0,
-            op.src_y0, op.src_w, op.src_h, op.sc_left, op.sc_right, op.sc_top, op.sc_bottom, op.mask);
+        LOG(3,
+            "op #%llu %s %ux%u at (%u,%u) dst=$%X/%u BLIT src=(%u,%u) srcsurf=$%X/%u traj=%s "
+            "w1/h1=%ux%u rot=(%u,%u) w2/h2=%ux%u mono=%u frgd=%u/%X bkgd=%u/%X sc=[%u..%u,%u..%u] "
+            "wmask=$%08X cmp=%u/$%08X/$%08X %s",
+            (unsigned long long)m->blits, m->in_context ? "CTX" : "DIR", width, height, dst_x, dst_y, op.dst.base,
+            op.dst.pitch, op.sx_axis.start, op.sy_axis.start, op.src.base, op.src.pitch, mach64_traj_name(op.traj),
+            op.sx_axis.len1, op.sy_axis.len1, op.sx_axis.rot, op.sy_axis.rot, op.sx_axis.len2, op.sy_axis.len2,
+            op.mono_sel, op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix, op.sc_left, op.sc_right, op.sc_top,
+            op.sc_bottom, op.mask, op.cmp_fn, op.cmp_clr, op.cmp_msk, mach64_tally(m));
     else
-        LOG(3, "op #%llu %s %ux%u at (%u,%u) mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X wmask=$%08X",
-            (unsigned long long)m->blits, m->in_context ? "CTX" : "DIR", width, height, dst_x, dst_y, op.mono_sel,
-            op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix, m->reg[DW_DP_FRGD_CLR], m->reg[DW_DP_BKGD_CLR],
-            op.mask);
+        LOG(3, "op #%llu %s %ux%u at (%u,%u) dst=$%X/%u mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X wmask=$%08X %s",
+            (unsigned long long)m->blits, m->in_context ? "CTX" : "DIR", width, height, dst_x, dst_y, op.dst.base,
+            op.dst.pitch, op.mono_sel, op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix, m->reg[DW_DP_FRGD_CLR],
+            m->reg[DW_DP_BKGD_CLR], op.mask, mach64_tally(m));
 }
 
 // Feed one dword of host data into the operation in flight.
@@ -1357,8 +1487,8 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
                 m->host_op.active = false;
                 m->blits++;
                 m->display.fb_dirty = true;
-                LOG(3, "op #%llu HOST %ux%u at (%u,%u)", (unsigned long long)m->blits, m->host_op.w, m->host_op.h,
-                    m->host_op.x0, m->host_op.y0);
+                LOG(3, "op #%llu HOST %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits, m->host_op.w,
+                    m->host_op.h, m->host_op.x0, m->host_op.y0, op.dst.base, op.dst.pitch);
                 return;
             }
             if (byte_align)
@@ -1420,6 +1550,14 @@ static void mach64_context_apply(mach64_t *m, uint32_t index, uint32_t v) {
         m->reg[DW_SRC_WIDTH1] = (v >> 16) & 0xFFFFu;
         m->reg[DW_SRC_HEIGHT1] = v & 0xFFFFu;
         break;
+    case 0x0B:
+        m->reg[DW_SRC_X_START] = (v >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_Y_START] = v & 0xFFFFu;
+        break;
+    case 0x0C:
+        m->reg[DW_SRC_WIDTH2] = (v >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_HEIGHT2] = v & 0xFFFFu;
+        break;
     case 0x0D:
         m->reg[DW_PAT_REG0] = v;
         break;
@@ -1463,6 +1601,8 @@ static void mach64_context_apply(mach64_t *m, uint32_t index, uint32_t v) {
         break;
     case 0x1B:
         m->reg[DW_GUI_TRAJ_CNTL] = v;
+        m->reg[DW_DST_CNTL] = v & 0xFFFFu;
+        m->reg[DW_SRC_CNTL] = (v >> GUI_TRAJ_SRC_SHIFT) & 0x1Fu;
         break;
     default:
         break; // Bresenham terms, chain mask, reserved
@@ -1602,7 +1742,7 @@ static void mach64_engine_line(mach64_t *m) {
     uint32_t drawn = (cntl & DST_LAST_PEL) ? lnth : lnth - 1u;
     for (uint32_t i = 0; i < lnth; i++) {
         if (i < drawn && x >= 0 && y >= 0) {
-            bool mono = mach64_mono_bit(m, op.mono_sel, (uint32_t)x, (uint32_t)y, i, 0, &op.src, op.bpp);
+            bool mono = mach64_mono_bit(m, &op, (uint32_t)x, (uint32_t)y, i, 0);
             mach64_emit(m, &op, (uint32_t)x, (uint32_t)y, i, 0, mono);
         }
         bool turn = zero_is_negative ? (err > 0) : (err >= 0);
@@ -1682,6 +1822,16 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
         m->reg[DW_SRC_HEIGHT1] = value & 0xFFFFu;
         m->reg[dw] = value;
         return true;
+    case DW_SRC_Y_X_START:
+        m->reg[DW_SRC_X_START] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_Y_START] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    case DW_SRC_HEIGHT2_WIDTH2:
+        m->reg[DW_SRC_WIDTH2] = (value >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_HEIGHT2] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
     // The combined scissor registers: high halfword is the far edge.
     case DW_SC_LEFT_RIGHT:
         m->reg[DW_SC_RIGHT] = (value >> 16) & 0xFFFFu;
@@ -1691,6 +1841,28 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
     case DW_SC_TOP_BOTTOM:
         m->reg[DW_SC_BOTTOM] = (value >> 16) & 0xFFFFu;
         m->reg[DW_SC_TOP] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        return true;
+    // GUI_TRAJ_CNTL is not a register of its own: its low 16 bits ARE
+    // DST_CNTL and bits 20:16 ARE SRC_CNTL (RRG p. 3-62).  The accelerator
+    // writes only the combined register — DST_CNTL never appears in the
+    // trace at all — so a model that reads DST_CNTL directly sees whatever
+    // it held at reset.  With DST_X_DIR and DST_Y_DIR clear that is
+    // right-to-left, bottom-to-top: every trajectory walks off the left
+    // edge of its own rectangle and is clipped away.  The desktop erase
+    // drew 21 pixels of 291,200 that way.
+    case DW_GUI_TRAJ_CNTL:
+        m->reg[DW_DST_CNTL] = value & 0xFFFFu;
+        m->reg[DW_SRC_CNTL] = (value >> GUI_TRAJ_SRC_SHIFT) & 0x1Fu;
+        m->reg[dw] = value;
+        return true;
+    case DW_DST_CNTL:
+        m->reg[DW_GUI_TRAJ_CNTL] = (m->reg[DW_GUI_TRAJ_CNTL] & ~0xFFFFu) | (value & 0xFFFFu);
+        m->reg[dw] = value;
+        return true;
+    case DW_SRC_CNTL:
+        m->reg[DW_GUI_TRAJ_CNTL] =
+            (m->reg[DW_GUI_TRAJ_CNTL] & ~(0x1Fu << GUI_TRAJ_SRC_SHIFT)) | ((value & 0x1Fu) << GUI_TRAJ_SRC_SHIFT);
         m->reg[dw] = value;
         return true;
     case DW_CONTEXT_LOAD_CNTL:
