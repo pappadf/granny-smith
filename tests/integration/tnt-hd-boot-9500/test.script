@@ -1,0 +1,41 @@
+# TNT MESH disk boot on the pm9500, drawn by the Mach64 GX.
+#
+# The 9500 "requires a display card in a PCI slot" — it has no built-in
+# video — so this row stages one and asserts the whole chain end to end:
+# the card enumerates, Open Firmware assigns it, the ndrv in its own
+# expansion ROM drives it, and System 7.6 reaches the Finder on it.
+
+include "../lib/mac.script"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+machine.rtc.time = "2026-04-26T21:30:36"
+machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
+
+# The Control/Chaos entry is a BUILTIN_FALLBACK: with a display card in a
+# socket it stands down, and the machine is the single-display machine the
+# hardware is.
+assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "no onboard video when a display card is seated"
+
+# Through OF, POST, the 68k boot, the gray desktop, the SCSI scan,
+# driver-partition load, the boot-volume mount, the Mac OS splash, and the
+# full System 7.6 startup to the Finder desktop.
+scheduler.run 4000000000
+
+assert debug.mac.globals.read("BootDrive") == 0x8003 "BootDrive not set (driver match / mount failed)"
+assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
+
+# The screen is the CARD's, derived from the CRTC registers the card's own
+# driver programmed — not a machine framebuffer.
+assert machine.screen.width == 640 "640 pixels across"
+assert machine.screen.height == 480 "480 lines"
+assert machine.screen.depth == 8 "8 bpp"
+assert machine.pci.slot[1].card.framebuffer.depth == 8 "machine.screen.source resolves to the card's framebuffer"
+
+# The Finder desktop: menu bar, mounted "Macintosh HD" volume, Trash, the
+# control strip, and the Energy Saver first-boot dialog — every pixel of
+# it drawn through the Mach64's draw engine.  The menu-bar clock area is
+# excluded: it tracks the pinned RTC plus guest uptime.
+check_ex("finder-desktop.png", 0, 500, 20, 640)
+
+echo "tnt-hd-boot-9500: BootDrive=${debug.mac.globals.read("BootDrive"):04x} dserr=${debug.mac.globals.read("DSErrCode"):04x} ticks=${debug.mac.globals.read("Ticks")}"
+quit
