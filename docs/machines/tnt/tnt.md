@@ -74,17 +74,23 @@ DMA architecture:
   in `tnt.h` had this the other way round.)  Chaos claims no I/O window
   at all.
 
-  One window is still deliberately NOT claimed, and the `$48` register
-  says so (an OS derives the bridge's ranges from it, so the register
-  must describe what the model actually decodes):
+  `$90000000` has two claimants, and which one gets it is decided by what
+  actually seated rather than by machine name.  TN1062 pins 256 MB there
+  for **Bandit 2**; Chaos's VCI window is at the same address.  On real
+  hardware they never collide — a 9500 has no Chaos, a 7500/8500 has no
+  Bandit 2 — but our `pm9500` carries both, because Chaos is the stand-in
+  host for the onboard video the real machine does not have, and that
+  stand-in only materialises when no socket supplied a display card
+  (`PCI_SLOT_BUILTIN_FALLBACK`).
 
-  - **Bandit 2 has no memory-space window.**  TN1062 pins it at
-    `$90000000`, 256 MB — but our `pm9500` still carries Chaos (the
-    documented no-onboard-video deviation) whose VCI window is at that
-    same address.  On real hardware they never collide: a 9500 has no
-    Chaos, a 7500/8500 has no Bandit 2.  The claim lands with the Chaos
-    removal.  The 9500's Bandit-2 sockets still probe correctly meanwhile:
-    discovery is config cycles, and an unpopulated IDSEL reads all-ones.
+  So `tnt_bandit_claim_memory()` runs AFTER `pci_seat_slots()`: if the VCI
+  bus has a device, Chaos keeps the window it needs to reach that device's
+  apertures; if it is empty, Bandit 2 takes it.  The `$48` address-select
+  register follows by construction — a bridge advertises the range only if
+  it claimed it — because an OS derives the bridge's ranges from `$48` and
+  the register must describe what the model actually decodes.  When Chaos
+  leaves `pm9500` for good the condition collapses to "Bandit 2 always
+  claims it" with no other change.
 - **Grand Central** (`grand_central.c`) — the I/O controller: a 128 KB
   little-endian island at `$F3000000` (Bandit 1's pass-through MEMORY
   window — *not* its I/O window, which is at the bridge base).  Phase B populates the interrupt block (`+$20..$2C`), the

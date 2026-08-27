@@ -125,6 +125,11 @@ void *pci_bus_window_ctx(pci_bus_t *bus, int window);
 void pci_bus_add_device(pci_bus_t *bus, pci_device_t *dev, int device_num);
 pci_device_t *pci_bus_device(pci_bus_t *bus, int device_num);
 
+// Does this bus have anything seated on it at all?  A family asks after
+// pci_seat_slots() has run, when a decode decision depends on whether a
+// conditional device actually materialised.
+bool pci_bus_is_populated(const pci_bus_t *bus);
+
 // The whole config protocol, from a bridge adapter's point of view.
 // Absent (device, function) reads all-ones; writes vanish.
 uint32_t pci_bus_cfg_read(pci_bus_t *bus, int dev, uint32_t fn, uint32_t reg);

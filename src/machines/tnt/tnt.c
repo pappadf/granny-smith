@@ -485,6 +485,10 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // projects the whole topology into the object model.
     pci_seat_slots(cfg->pci, cp);
 
+    // The PCI memory windows come after the walk: $90000000 goes to Chaos
+    // or to Bandit 2 depending on whether the VCI bus seated anything.
+    tnt_bandit_claim_memory(cfg);
+
     // Substrate-private checkpoint tail: register files + NVRAM are plain
     // data; the CPU line is recomputed below.
     if (cp) {

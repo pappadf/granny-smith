@@ -232,13 +232,15 @@ the Apple Accelerated PCI Graphics Card
 (`src/core/peripherals/pci/cards/mach64gx.c`), which boots System 7.6 to a
 desktop on a Power Macintosh 9500.
 
-Not done, with reasons: the host-overlay BAR fast path (above); **Bandit
-2's memory window** — TN1062 pins it at `$90000000`, but our pm9500 still
-carries Chaos whose VCI window is at that same address, so the claim waits
-on removing Chaos from the 9500; PCI-PCI bridges (type-1 cycles keep
-returning all-ones — no subordinate buses exist on these machines); bus
-mastering (no modelled device masters, and the DBDMA hooks are the
-precedent when one does).
+Not done, with reasons: the host-overlay BAR fast path (above); PCI-PCI
+bridges (type-1 cycles keep returning all-ones — no subordinate buses
+exist on these machines); bus mastering (no modelled device masters, and
+the DBDMA hooks are the precedent when one does).
+
+`pci_bus_is_populated()` exists for one caller: a family that has to pick
+between two bridges claiming the same physical range, where the tie is
+broken by which bus actually seated something.  See the TNT doc for the
+`$90000000` case.
 
 ## See also
 

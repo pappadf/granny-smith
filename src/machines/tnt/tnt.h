@@ -128,6 +128,7 @@ typedef struct tnt_hammerhead {
 typedef struct tnt_bandit {
     uint32_t base; // bridge window base (identifies the instance in logs)
     bool is_chaos; // Chaos: restricted config space, writes ignored
+    bool claims_mem; // took the $90000000 memory window (Bandit 2 only)
     uint32_t cfg_addr; // config address port latch (LE value; 0 = idle)
     uint32_t mode_select; // config $50 (the $40 coherency bit latches)
     struct config *cfg; // back-pointer
@@ -334,6 +335,9 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value);
 // ports, one generic PCI bus per bridge, each bridge's own device-11
 // header and the PCI memory windows the buses claim.  Requires cfg->pci.
 void tnt_bandit_init(config_t *cfg);
+// The PCI memory windows, claimed AFTER pci_seat_slots(): which bridge
+// owns $90000000 depends on whether the VCI bus seated anything.
+void tnt_bandit_claim_memory(config_t *cfg);
 
 // === awacs.c ================================================================
 

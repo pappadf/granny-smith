@@ -660,6 +660,31 @@ TEST(test_slot_walk) {
     pci_root_delete(root);
 }
 
+// pci_bus_is_populated is the whole question behind "which bridge decodes
+// $90000000 on a 9500" (tnt_bandit_claim_memory): the two claimants never
+// coexist on real hardware, so the model breaks the tie on whether the bus
+// that would otherwise want it actually seated anything.
+TEST(test_bus_population) {
+    config_t *cfg = test_cfg();
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *empty = pci_bus_create(root, "empty", 0);
+    pci_bus_t *seated = pci_bus_create(root, "seated", 1);
+    device_reset();
+
+    ASSERT_TRUE(!pci_bus_is_populated(empty));
+    ASSERT_TRUE(!pci_bus_is_populated(seated));
+    pci_bus_add_device(seated, &g_dev, 13);
+    ASSERT_TRUE(pci_bus_is_populated(seated));
+    // A device on one bus must not make its sibling look populated — the
+    // decision is per-bus, and getting that wrong would hand the window to
+    // both bridges at once.
+    ASSERT_TRUE(!pci_bus_is_populated(empty));
+    // A NULL bus is "not populated" rather than a crash: a family asks this
+    // about a bus its board may not have created at all.
+    ASSERT_TRUE(!pci_bus_is_populated(NULL));
+    pci_root_delete(root);
+}
+
 int main(void) {
     RUN(test_header_assembly);
     RUN(test_command_masking);
@@ -674,6 +699,7 @@ int main(void) {
     RUN(test_card_fits_socket);
     RUN(test_staged_precedence_and_consumption);
     RUN(test_slot_walk);
+    RUN(test_bus_population);
     fprintf(stderr, "pci: all tests passed\n");
     return 0;
 }

@@ -168,6 +168,22 @@ machine.memory.poke.l(0xF4800000, 0x00200000)
 assert machine.memory.peek.l(0xF4C00000) == 0xFFFFFFFF "9500 socket D2 must read all-ones"
 machine.memory.poke.l(0xF4800000, 0x00000000)
 
+# --- Who owns $90000000 follows what actually seated. ------------------------
+# A real 9500 has no Chaos and Bandit 2 forwards 256 MB of PCI memory there
+# (TN1062).  This model still carries Chaos, because it is the stand-in host
+# for the onboard video the real machine does not have — and that stand-in
+# is exactly what is seated here, so Chaos keeps the range and Bandit 2
+# advertises none.  $48 is the bridge's address-select: upper halfword =
+# coarse 256 MB windows at n<<28, lower = fine 16 MB windows at $F0000000 |
+# n<<24.  Read little-endian through the config data port, so Bandit 2's
+# $F4/$F5-only decode ($00000030) reads back byte-swapped as $30000000.
+machine.memory.poke.l(0xF4800000, 0x48080000)
+assert machine.memory.peek.l(0xF4C00000) == 0x30000000 "Bandit 2 advertises no memory window while Chaos is populated"
+machine.memory.poke.l(0xF4800000, 0x00000000)
+# That Chaos's window is the one really decoding is already pinned above:
+# on the boot that ran OF's probe, Control's VRAM BAR was assigned at
+# $90000000 and the ladder's gray desktop is drawn through it.
+
 # --- A staged pick that does not FIT leaves the socket empty. ----------------
 # tnt_control is a soldered-down kind (BUILTIN attach), so it can never be
 # seated in a socket: compatibility is computed, not enumerated.

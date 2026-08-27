@@ -513,6 +513,15 @@ pci_device_t *pci_bus_device(pci_bus_t *bus, int device_num) {
     return bus->dev[device_num];
 }
 
+bool pci_bus_is_populated(const pci_bus_t *bus) {
+    if (!bus)
+        return false;
+    for (int i = 0; i < PCI_MAX_DEVICES; i++)
+        if (bus->dev[i])
+            return true;
+    return false;
+}
+
 uint32_t pci_bus_cfg_read(pci_bus_t *bus, int dev, uint32_t fn, uint32_t reg) {
     pci_device_t *d = pci_bus_device(bus, dev);
     // Absent device, or a function no multi-function device implements:

@@ -104,19 +104,14 @@ static uint32_t bandit_addr_select(const tnt_bandit_t *b) {
         return (0x0100u << 16) | 0x000Cu;
     case TNT_BANDIT2_BASE:
     default:
-        // Second bridge: its $F4 (config ports + PCI I/O) and $F5
-        // (pass-through memory) windows only.  Apple's own dump of a real
-        // 9500 (TN1062) shows Bandit 2 also forwarding 256 MB of memory at
-        // $90000000, which answers proposal-pci-architecture §14 Q5 — but
-        // this model cannot claim it yet, because our pm9500 still carries
-        // Chaos (the documented no-onboard-video deviation) and Chaos's own
-        // VCI memory window is at that same $90000000.  On real hardware
-        // they never collide: a 9500 has no Chaos and a 7500/8500 has no
-        // Bandit 2.  The claim lands with the Chaos removal
-        // (proposal-pci-mach64-gx-spinnaker §5 step 2), which is a separate
-        // gated change.  Until then the register and the decode stay
-        // consistent: we claim no memory window, so we advertise none.
-        return 0x0030u;
+        // Second bridge: $F4 (config ports + PCI I/O) and $F5
+        // (pass-through memory), plus — when it took the window — the
+        // 256 MB of PCI memory at $90000000 that Apple's own dump of a
+        // real 9500 shows it forwarding (TN1062; proposal-pci-architecture
+        // §14 Q5).  The register and the decode stay consistent by
+        // construction: it advertises the memory range only if
+        // tnt_bandit_claim_memory() actually claimed it.
+        return ((b->claims_mem ? 0x0200u : 0u) << 16) | 0x0030u;
     }
 }
 
@@ -340,21 +335,6 @@ void tnt_bandit_init(config_t *cfg) {
     if (tnt_board(cfg)->bandit_count >= 2)
         bandit2 = bridge_add(cfg, TNT_BANDIT2_BASE, false, TNT_PCI_BUS_2, "Bandit 2");
 
-    // Bandit 1's 256 MB PCI memory space and Chaos's 256 MB VCI memory
-    // space: the bus claims both, dispatches an access to whichever seated
-    // device's BAR decodes it, and takes the recoverable transfer error
-    // the probe idioms expect when none does.
-    //
-    // Bandit 2 claims no memory window: which range it forwards is still
-    // open (§14 Q5 — see bandit_addr_select), and its $48 says so too.
-    // Its slots probe correctly regardless: config cycles are the
-    // discovery path, and an unpopulated IDSEL reads all-ones.
-    //
-    pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, TNT_PCI_MEM1, 0x10000000u, TNT_PCI_MEM1, 0xFFFFFFFFu,
-                       "PCI memory (Bandit 1)");
-    pci_bus_add_window(pci_bus_by_index(cfg->pci, TNT_PCI_BUS_VCI), PCI_SPACE_MEM, TNT_PCI_MEM_VCI, 0x10000000u,
-                       TNT_PCI_MEM_VCI, 0xFFFFFFFFu, "VCI memory (Chaos)");
-
     // Each Bandit's PCI I/O window.  The bridge's own `ranges` property,
     // dumped from a real 9500 under Open Firmware 1.0.5 (Apple Technote
     // 1062, "Fundamentals of Open Firmware, Part II"), is the
@@ -391,4 +371,50 @@ void tnt_bandit_init(config_t *cfg) {
 
     // Grand Central's config presence at device 16 (grand_central.c).
     tnt_gc_pci_attach(cfg, bandit1->bus);
+}
+
+// The PCI MEMORY windows, claimed after the slot walk.
+//
+// Bandit 1's 256 MB at $80000000 is unconditional.  $90000000 is not:
+// two bridges claim it, and on real hardware they never coexist — a
+// 7500/8500 has Chaos and no second Bandit, a 9500 has a second Bandit
+// and no Chaos ("bridge 0 — Chaos/VCI on 7500/8500; absent on 9500").
+// Apple's dump of a real 9500 under Open Firmware 1.0.5 shows Bandit 2
+// forwarding it (TN1062), which is what proposal-pci-architecture §14 Q5
+// asked.
+//
+// Our pm9500 carries both, because Chaos is still the stand-in host for
+// the onboard video the real machine does not have — and that stand-in
+// only materialises when no socket supplied a display card
+// (PCI_SLOT_BUILTIN_FALLBACK).  So the tie is broken by what actually
+// seated rather than by machine name: if the VCI bus has a device, Chaos
+// keeps the window it needs to reach that device's apertures; if it is
+// empty, the range is free and Bandit 2 takes it.  That is why this runs
+// after pci_seat_slots() instead of beside the other windows.
+//
+// When Chaos leaves pm9500 for good (proposal-pci-mach64-gx-spinnaker §5
+// step 2, deliberately a separate PR), the condition collapses to "Bandit
+// 2 always claims it" with no other change.
+void tnt_bandit_claim_memory(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    tnt_bandit_t *bandit1 = NULL, *bandit2 = NULL;
+    for (int i = 0; i < st->bridge_count; i++) {
+        if (st->bridge[i].base == TNT_BANDIT1_BASE)
+            bandit1 = &st->bridge[i];
+        else if (st->bridge[i].base == TNT_BANDIT2_BASE)
+            bandit2 = &st->bridge[i];
+    }
+    if (bandit1)
+        pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, TNT_PCI_MEM1, 0x10000000u, TNT_PCI_MEM1, 0xFFFFFFFFu,
+                           "PCI memory (Bandit 1)");
+
+    pci_bus_t *vci = pci_bus_by_index(cfg->pci, TNT_PCI_BUS_VCI);
+    if (pci_bus_is_populated(vci)) {
+        pci_bus_add_window(vci, PCI_SPACE_MEM, TNT_PCI_MEM_VCI, 0x10000000u, TNT_PCI_MEM_VCI, 0xFFFFFFFFu,
+                           "VCI memory (Chaos)");
+    } else if (bandit2) {
+        pci_bus_add_window(bandit2->bus, PCI_SPACE_MEM, TNT_PCI_MEM_VCI, 0x10000000u, TNT_PCI_MEM_VCI, 0xFFFFFFFFu,
+                           "PCI memory (Bandit 2)");
+        bandit2->claims_mem = true;
+    }
 }
