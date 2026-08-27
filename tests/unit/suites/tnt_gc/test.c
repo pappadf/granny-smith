@@ -106,6 +106,43 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)offset;
     (void)value;
 }
+// The GBUS island and its front-panel LCD, which only a Shiner board has.
+// This suite drives a Macintosh Grand Central, whose `has_gbus` is false, so
+// these are the branches that are never taken.
+uint32_t tnt_gbus_boxid_bits(config_t *cfg) {
+    (void)cfg;
+    return 0;
+}
+uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
+uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
+uint8_t tnt_lcd_read8(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_lcd_write8(config_t *cfg, uint32_t offset, uint8_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
 uint8_t scsi_53c96_read(struct scsi_53c96 *c, uint32_t reg) {
     (void)c;
     (void)reg;
