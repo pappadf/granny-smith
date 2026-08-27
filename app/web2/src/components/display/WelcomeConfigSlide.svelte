@@ -359,9 +359,18 @@
   // Video-mode list for the *selected card*: its monitors × supported depths.
   // Ids/labels match what the C side emits ("<monitor>_<depth>bpp"), so the
   // boot-time `machine.nubus.video_mode` seed is unchanged.
+  //
+  // NuBus cards ONLY.  A PCI display card's monitor list is real, but the
+  // boot document has no field that carries it: video_mode is validated
+  // against the NuBus catalog (nubus_video_mode_known), so sending a PCI
+  // card's mode id fails the boot outright — "unknown video-mode id
+  // '14in_rgb_8bpp'".  The card does take a `monitor` staged option, but
+  // nothing reaches pci_staged_option_set from a boot document yet, so
+  // there is no honest way to offer the choice.  Until there is, the row
+  // stays hidden for a PCI pick and the card senses its default monitor.
   let videoModes = $derived.by(() => {
     const out: Array<{ id: string; label: string }> = [];
-    for (const m of (selectedCard ?? selectedPciCard)?.monitors ?? []) {
+    for (const m of selectedCard?.monitors ?? []) {
       for (const d of m.depths ?? []) {
         out.push({
           id: `${m.id}_${d}bpp`,
@@ -749,7 +758,10 @@
       // Seed the selected video mode (matches web-legacy's bootFromConfig).
       // Without it the card never seeds its slot-PRAM/video defaults and A/UX
       // hangs enabling its device drivers on real hardware.
-      videoMode: fixedVideo || !hasVideoModeChoice ? undefined : videoMode || undefined,
+      // Same rule as videoCard: only a NuBus pick has a video_mode the core
+      // will accept, so gate on selectedCard rather than on the negations.
+      videoMode:
+        fixedVideo || !selectedCard || !hasVideoModeChoice ? undefined : videoMode || undefined,
       ram,
       floppies: floppyPaths,
       hd: hdPath,
