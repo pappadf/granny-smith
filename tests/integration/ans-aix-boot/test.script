@@ -1,0 +1,52 @@
+# Booting AIX 4.1.5 for Apple Network Servers from the Install CD
+# (proposal-apple-network-server-500-700 §6, ladder rungs S9-S11).
+#
+# The row does not type a boot command.  It reproduces Apple's own
+# documented condition and lets the firmware do the rest:
+#
+#   > "If Open Firmware detects the key in the service position on a
+#   >  Network Server that has never been booted before, it will
+#   >  automatically attempt to find a diagnostic floppy or Install CD to
+#   >  boot from."
+#
+# — a blank non-volatile store (what removing the board battery does), the
+# front keyswitch in Service, and the disc present before the first
+# instruction runs.
+
+include "../lib/mac.script"
+include "../lib/ans.script"
+
+# "Never been booted before": the store the machine ships with.
+machine.board.clear_nvram()
+machine.boot model="ans500" ram=65536 rom="${$ROM}"
+machine.board.keyswitch = "service"
+assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
+
+# Bay 0 is the CD-ROM bay Apple expects — "It is expected (but not required)
+# that slot 0 will be a CD ROM" — on fast/wide channel 0, which is Open
+# Firmware's `disk0`.  Attached BEFORE any instruction runs, so the
+# firmware's own probe sees it exactly as it would a disc left in the drive.
+machine.scsi.attach_cdrom("${$AIX_CD}", 0)
+assert machine.scsi.device[0].type == "cdrom" "the Install CD is not mounted in bay 0"
+
+# --- S9: the firmware finds the disc and takes the install path -----------
+# It prints its progress on the SCREEN, because a Network Server ships with
+# `output-device screen` and this row deliberately does not tell it
+# otherwise: the machine under test is the one out of the box.
+scheduler.run 5000000000
+
+# The firmware's own diagnostic port carries the POST and probe narration
+# whatever the console is, and the machine identified itself before any of
+# this: without `?esb` there is no AIX path at all.
+let narration = machine.scc.a.sent()
+assert contains($narration, "ShinerESB") "S9: the machine did not identify as a Network Server"
+
+# The install path writes its boot configuration and then asks Cuda to pull
+# the system reset line — `RESETing to change Configuration!` — so a machine
+# that got here has proved the whole chain: the SCRIPTS engine read the
+# disc, the firmware recognised its `IBMA` boot record, and Cuda's RESET
+# SYSTEM actually reset the system.
+assert machine.board.doorbell > 0 "S9: the GBUS island was never read"
+
+echo "ans-aix-boot: Service-keyswitch install path reached (pc=${machine.cpu.pc:08x})"
+quit
