@@ -333,6 +333,34 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}"
 assert machine.pci.slot[7].card.name == "Control" "Control stands in when no display card is seated"
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
+# --- Card options reach the card through the boot document. -----------------
+# pci_option= carries "key=value" pairs to the same socket pci_card= names.
+# Which keys mean anything is the CARD's business: the generic layer stages
+# them and the kind's stage_option hook accepts or rejects each one, so no
+# card identity leaks into the boot path.  MEM_CNTL's MEM_SIZE field is the
+# card telling the driver how much VRAM it has, so it is the honest place
+# to read the answer back.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "2 MB is the soldered default"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 109-31600-00 expansion module makes it 4 MB"
+# Several options at once, and one the card senses for itself.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m,monitor=15in_multi"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "a comma-separated list must apply every pair"
+assert machine.pci.slot[1].card.monitor.id == "15in_multi" "...including the second one"
+# A malformed pair is dropped with a log, NOT fatal: this layer cannot tell
+# a typo from a key it simply does not know, and refusing the boot would
+# make every unknown option fatal.
+assert machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="bogus") "a malformed option must not fail the boot"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "and must leave the card at its default"
+
+# The card DECLARES what it will accept, so a frontend can offer a control
+# without knowing which card it is.
+assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].key == "vram" "the card must declare its option"
+assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].default_value == "2m" "...and what it does by default"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+
 # --- A card that requires an expansion ROM cannot boot without one. ---------
 # Strict resolution runs BEFORE the running machine is touched, so a
 # rejected boot leaves the current machine alive.

@@ -165,6 +165,19 @@ typedef enum pci_attach {
 
 // Per-driver descriptor — one static instance per registered driver,
 // listed in pci.c's explicit registry array.
+// One user-selectable card option, and the values it takes.  `values` is a
+// NULL-terminated list of ids; `labels` runs alongside it (same length) and
+// may be NULL, in which case the ids are shown.  `default_value` is the id
+// the card uses when nothing is staged, so a dialog can show what "leave it
+// alone" means rather than inventing a blank entry.
+typedef struct pci_card_option {
+    const char *key; // "vram" — what pci_option= carries
+    const char *label; // "Video Memory"
+    const char *const *values; // {"2m", "4m", NULL}
+    const char *const *labels; // {"2 MB", "4 MB (expansion module)", NULL}
+    const char *default_value;
+} pci_card_option_t;
+
 typedef struct pci_card_kind {
     const char *id; // "spinnaker"
     const char *display_name; // "Apple Accelerated PCI Graphics Card"
@@ -180,6 +193,14 @@ typedef struct pci_card_kind {
     const char *card_class;
     const struct nubus_monitor *monitors; // display cards only; NULL otherwise
     pci_card_factory_fn factory;
+
+    // What stage_option() will accept, DECLARED so a frontend can render a
+    // control for it without knowing what card this is.  Sentinel-
+    // terminated (an entry whose key is NULL ends the list); NULL means the
+    // card takes no options a user should be offered.  The card is still
+    // free to accept keys it does not advertise — this is the offered set,
+    // not the accepted set.
+    const struct pci_card_option *options;
 
     // The two seams NuBus lacked (proposal §5.1): the generic layer routes
     // staged options and attaches extra object children through the KIND,

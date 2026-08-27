@@ -87,6 +87,7 @@ typedef struct machine_config_record {
     char custom_mode[MC_ID_MAX]; // "WxHxD" custom resolution ("" = none)
     char monitor[MC_ID_MAX]; // built-in monitor strap ("" = machine default)
     char pci_card[MC_ID_MAX]; // wildcard PCI-socket card id ("" = slot default)
+    char pci_option[MC_PATH_MAX]; // "key=value[,key=value]" for that card
     char created[24]; // ISO8601 UTC, stamped by boot
     machine_config_vrom_t vroms[MC_MAX_VROMS]; // resolved picks, in load order
     int32_t n_vroms;
@@ -120,6 +121,12 @@ typedef struct boot_config {
     // Explicit PCI expansion-ROM pick, the sibling of vrom= for FCode
     // cards.  NULL auto-resolves from the offered .prom files.
     const char *prom;
+    // Options for that same card, as "key=value" pairs separated by commas
+    // ("vram=4m", "vram=4m,monitor=15in_multi").  Which keys mean anything
+    // is the CARD's business — the generic layer stages them and the kind's
+    // stage_option() hook accepts or rejects each one, so no card identity
+    // leaks into the boot path.
+    const char *pci_option;
 } boot_config_t;
 
 // Read-only view of the live record (never NULL; check ->valid).

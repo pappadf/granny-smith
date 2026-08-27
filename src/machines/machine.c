@@ -343,6 +343,27 @@ static value_t build_pci_card(const char *card_id) {
     const char *klass =
         (kind && kind->card_class) ? kind->card_class : ((kind && kind->monitors) ? "display" : "other");
     val_map_put(b, "class", val_str(klass));
+    // The options this card offers, declared by the KIND so the dialog can
+    // render a control per option without knowing which card it is.
+    value_t *opts = NULL;
+    size_t n_opts = 0, cap_opts = 0;
+    for (const pci_card_option_t *o = kind ? kind->options : NULL; o && o->key; o++) {
+        value_map_builder_t *ob = val_map_new();
+        val_map_put(ob, "key", val_str(o->key));
+        val_map_put(ob, "label", val_str(o->label ? o->label : o->key));
+        val_map_put(ob, "default_value", val_str(o->default_value ? o->default_value : ""));
+        value_t *vals = NULL;
+        size_t n_vals = 0, cap_vals = 0;
+        for (size_t i = 0; o->values && o->values[i]; i++) {
+            value_map_builder_t *vb = val_map_new();
+            val_map_put(vb, "id", val_str(o->values[i]));
+            val_map_put(vb, "label", val_str((o->labels && o->labels[i]) ? o->labels[i] : o->values[i]));
+            val_list_push(&vals, &n_vals, &cap_vals, val_map_finish(vb));
+        }
+        val_map_put(ob, "values", val_list(vals, n_vals));
+        val_list_push(&opts, &n_opts, &cap_opts, val_map_finish(ob));
+    }
+    val_map_put(b, "options", val_list(opts, n_opts));
     value_t *mons = NULL;
     size_t n_mons = 0, cap_mons = 0;
     if (kind && kind->monitors) {
@@ -624,6 +645,30 @@ static value_t validate_prom_resolution(const hw_profile_t *profile, const char 
     return val_none();
 }
 
+// Split pci_option="key=value[,key=value]" onto the wildcard socket — the
+// same slot pci_card= applies to.  Malformed pairs are dropped with a log
+// rather than failing the boot: which keys are meaningful is the card's
+// business (its stage_option hook), so this layer cannot tell a typo from
+// a key it simply does not know, and refusing the boot would make every
+// unknown option fatal.
+static void stage_pci_options(const char *spec) {
+    if (!spec || !*spec)
+        return;
+    char buf[MC_PATH_MAX];
+    snprintf(buf, sizeof buf, "%s", spec);
+    for (char *save = NULL, *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+        while (*tok == ' ')
+            tok++;
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok || !eq[1]) {
+            LOG(0, "machine.boot: pci_option '%s' is not key=value — ignored", tok);
+            continue;
+        }
+        *eq = '\0';
+        pci_staged_option_set(PCI_STAGED_WILDCARD, tok, eq + 1);
+    }
+}
+
 // Armed by machine.restart for the duration of its machine_boot_apply call:
 // carry the mounted media's open image handles across the teardown
 // (proposal-boot-vs-reset §3.3).  A plain machine.boot never transfers —
@@ -797,6 +842,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         nubus_staged_card_set(NUBUS_STAGED_WILDCARD, doc.video_card);
     if (doc.pci_card && *doc.pci_card)
         pci_staged_card_set(PCI_STAGED_WILDCARD, doc.pci_card);
+    stage_pci_options(doc.pci_option);
     if (doc.video_mode && *doc.video_mode)
         nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, doc.video_mode);
     if (doc.custom_mode && *doc.custom_mode)
@@ -861,6 +907,7 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     snprintf(w->custom_mode, sizeof(w->custom_mode), "%s", doc.custom_mode ? doc.custom_mode : "");
     snprintf(w->monitor, sizeof(w->monitor), "%s", doc.monitor ? doc.monitor : "");
     snprintf(w->pci_card, sizeof(w->pci_card), "%s", doc.pci_card ? doc.pci_card : "");
+    snprintf(w->pci_option, sizeof(w->pci_option), "%s", doc.pci_option ? doc.pci_option : "");
     stamp_created(w->created, sizeof(w->created));
     w->valid = true;
 
@@ -890,6 +937,7 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
         .monitor = argv[9].s,
         .pci_card = argv[10].s,
         .prom = argv[11].s,
+        .pci_option = argv[12].s,
     };
     value_t err = machine_boot_apply(&doc);
     if (val_is_error(&err))
@@ -931,6 +979,7 @@ static value_t machine_method_restart(struct object *self, const member_t *m, in
         .video_mode = snap.video_mode[0] ? snap.video_mode : NULL,
         .custom_mode = snap.custom_mode[0] ? snap.custom_mode : NULL,
         .pci_card = snap.pci_card[0] ? snap.pci_card : NULL,
+        .pci_option = snap.pci_option[0] ? snap.pci_option : NULL,
     };
     // Replay the user's per-slot picks: the document's wildcard covers only
     // the first socket, so without these a multi-card machine would come
@@ -987,63 +1036,68 @@ static const arg_decl_t machine_boot_args[] = {
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Machine model id (plus / se30 / ...); required"                    },
+     .doc = "Machine model id (plus / se30 / ...); required"                        },
     {.name = "ram",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_u32,
-     .doc = "RAM in KB (one of profile.ram_options); default: model default"    },
+     .doc = "RAM in KB (one of profile.ram_options); default: model default"        },
     {.name = "rom",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "ROM file path; required"                                           },
+     .doc = "ROM file path; required"                                               },
     {.name = "vrom",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Explicit declaration-ROM pick; default: auto-resolve from offers"  },
+     .doc = "Explicit declaration-ROM pick; default: auto-resolve from offers"      },
     {.name = "video_card",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Card id for the first NuBus socket; default: slot default"         },
+     .doc = "Card id for the first NuBus socket; default: slot default"             },
     {.name = "video_sense",
      .kind = V_UINT,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_sense,
-     .doc = "Monitor sense 0..7; default: card default"                         },
+     .doc = "Monitor sense 0..7; default: card default"                             },
     {.name = "video_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Video-mode id (see machine.profile); default: card default"        },
+     .doc = "Video-mode id (see machine.profile); default: card default"            },
     {.name = "rom2",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Lisa/XL second ROM chip (two-chip form); default: single-file rom" },
+     .doc = "Lisa/XL second ROM chip (two-chip form); default: single-file rom"     },
     {.name = "custom_mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Custom resolution WxHxD (generic 8_24 kind); default: none"        },
+     .doc = "Custom resolution WxHxD (generic 8_24 kind); default: none"            },
     {.name = "monitor",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
      .doc = "Monitor on the built-in port ('none' = unconnected, which hands "
-            "the screen to a NuBus card); default: model default"               },
+            "the screen to a NuBus card); default: model default"                   },
     {.name = "pci_card",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Card id for the first PCI socket; default: slot default"           },
+     .doc = "Card id for the first PCI socket; default: slot default"               },
     {.name = "prom",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
      .default_value = &k_unset_str,
-     .doc = "Explicit PCI expansion-ROM pick; default: auto-resolve from offers"},
+     .doc = "Explicit PCI expansion-ROM pick; default: auto-resolve from offers"    },
+    {.name = "pci_option",
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .default_value = &k_unset_str,
+     .doc = "Options for the PCI card, \"key=value[,key=value]\" (e.g. \"vram=4m\")"},
 };
 
 static const arg_decl_t machine_register_args[] = {

@@ -595,15 +595,31 @@ static const char *socket_card_id(const pci_slot_decl_t *s, bool is_first_socket
 // stage_option() hook.  A kind that rejects the key logs and the option is
 // dropped — the generic layer never learns a card's identity (the fix for
 // the NuBus stage_mode_for_kind wart, proposal §5.1).
-static void stage_options_for_kind(int slot, const pci_card_kind_t *kind) {
+static void stage_one_option(int slot, const pci_card_kind_t *kind, const char *key, const char *value) {
+    if (kind->stage_option && kind->stage_option(key, value))
+        return;
+    LOG(0, "staged option '%s'='%s' is not understood by slot %d card '%s' — ignored", key, value, slot, kind->id);
+}
+
+// `take_wildcard` is set for the machine's FIRST socket, which is also the
+// slot machine.boot's pci_card= applies to — so pci_option= reaches the
+// same card through the same rule.  A slot-specific option wins over the
+// wildcard's for the same key: naming a concrete slot is the more explicit
+// statement of the two.
+static void stage_options_for_kind(int slot, bool take_wildcard, const pci_card_kind_t *kind) {
     for (int i = 0; i < PCI_STAGED_OPTS; i++) {
         const char *key = s_staged[slot].opt[i].key;
-        const char *value = s_staged[slot].opt[i].value;
         if (!key[0])
             continue;
-        if (kind->stage_option && kind->stage_option(key, value))
+        stage_one_option(slot, kind, key, s_staged[slot].opt[i].value);
+    }
+    if (!take_wildcard || slot == PCI_STAGED_WILDCARD)
+        return;
+    for (int i = 0; i < PCI_STAGED_OPTS; i++) {
+        const char *key = s_staged[PCI_STAGED_WILDCARD].opt[i].key;
+        if (!key[0] || pci_staged_option_get(slot, key))
             continue;
-        LOG(0, "staged option '%s'='%s' is not understood by slot %d card '%s' — ignored", key, value, slot, kind->id);
+        stage_one_option(slot, kind, key, s_staged[PCI_STAGED_WILDCARD].opt[i].value);
     }
 }
 
@@ -675,7 +691,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 LOG(0, "slot %d names bus %d, which this machine does not have", s->slot, s->bus);
                 continue;
             }
-            stage_options_for_kind(s->slot, kind);
+            stage_options_for_kind(s->slot, s->slot == first_socket, kind);
             pci_device_t *dev = kind->factory(s->slot, root->cfg, cp);
             if (!dev) {
                 LOG(1, "slot %d card factory '%s' returned NULL", s->slot, kind->id);

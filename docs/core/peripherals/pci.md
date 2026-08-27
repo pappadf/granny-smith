@@ -237,16 +237,28 @@ bridges (type-1 cycles keep returning all-ones — no subordinate buses
 exist on these machines); bus mastering (no modelled device masters, and
 the DBDMA hooks are the precedent when one does).
 
-**Per-card staged options are not reachable from a boot document.**
-`pci_staged_option_set()` exists and cards implement `stage_option` (the
-Mach64 GX takes `monitor=` and `vram=`), but nothing calls it: there is no
-`machine.boot` field carrying per-slot options, so a frontend cannot offer
-those choices. The concrete consequence is that a PCI display card's
-monitor cannot be picked — `video_mode` is validated against the NuBus
-catalog (`nubus_video_mode_known`) and rejects a PCI card's mode ids, so
-the web UI hides the Video Mode row for a PCI pick and the card senses its
-default monitor. Wiring a `pci_option` field through the boot document is
-the missing piece.
+## Card options
+
+`machine.boot`'s `pci_option="key=value[,key=value]"` carries options to
+the card `pci_card=` names. The generic layer only splits and stages them;
+each pair is offered to the kind's `stage_option()` hook, which accepts or
+rejects it, so no card identity reaches the boot path. A malformed or
+unrecognised pair is logged and dropped rather than failing the boot —
+this layer cannot tell a typo from a key it does not know, and refusing
+would make every unknown option fatal.
+
+A kind also DECLARES the options a user should be offered
+(`pci_card_kind_t.options`), and `machine.profile` publishes them, so a
+frontend can render a control per option without knowing which card it is.
+Declaring is separate from accepting: a card may still take keys it does
+not advertise (the Mach64 GX accepts `monitor=` for debugging but offers
+only `vram=`, because it senses its monitor for itself).
+
+A PCI display card's video MODE is a different matter and still has no
+path: `video_mode` is validated against the NuBus catalog
+(`nubus_video_mode_known`) and rejects a PCI card's mode ids, so the web UI
+hides the Video Mode row for a PCI pick and the card uses the mode its
+driver programs.
 
 `pci_bus_is_populated()` exists for one caller: a family that has to pick
 between two bridges claiming the same physical range, where the tie is
