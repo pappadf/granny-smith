@@ -30,7 +30,7 @@ interface ImagesState {
 }
 
 export const images: ImagesState = $state({
-  collapsed: { rom: false, vrom: true, fd: false, hd: true, cd: true },
+  collapsed: { rom: false, vrom: true, prom: true, fd: false, hd: true, cd: true },
   mounted: {},
   fdDriveCount: -1,
   revision: 0,

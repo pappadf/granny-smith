@@ -126,6 +126,7 @@ class MockOpfs implements OpfsBackend {
     const fixtures: Record<ImageCategory, string[]> = {
       rom: ['plus-v3-4d1f8172.rom', 'iix-iicx-se30-97221136.rom'],
       vrom: ['ROM_97221136', 'ROM_SE30_VROM'],
+      prom: ['437584e0', '8c68216e'],
       fd: ['System_7.0_Install.dsk', 'Disk_Tools.dsk'],
       hd: ['hd1.img', 'hd2.img'],
       cd: ['system7.iso'],

@@ -128,8 +128,22 @@ boots.
   ROM file it was given and offers every `*.prom`. A test script's
   `rom="${$ROM}"` therefore makes the card ROMs discoverable with no path
   knowledge anywhere in core.
-* **web2** — uploaded files are offered through `prom.offer(path)`, the same
-  hook `vrom.offer` provides.
+* **web2** — a dropped file is probed against the media types in order
+  (`rom`, `vrom`, `prom`, `fd`, `cdrom`, `hd`; `app/web2/src/bus/upload.ts`),
+  stored under `/opfs/images/prom/` named by its CRC, and offered through
+  `prom.offer(path)` — the same hook `vrom.offer` provides, so a file
+  uploaded mid-session is visible to the next boot without a reload.  vROM
+  and PROM cannot claim each other's files even though both are commonly
+  32 KB: a vROM is keyed on a Format-Block CRC in its trailing bytes, a
+  PROM on a PCI Data Structure near its head.
+
+  The New Machine dialog's Display picker unions the machine's built-in
+  video, its NuBus video cards, and every **display-class PCI card** whose
+  expansion ROM is present; picking one sends `pci_card=` and `prom=` in
+  the boot document.  A machine with no built-in video and no NuBus video
+  slots — the Power Macintosh 9500 is the first — says so explicitly
+  ("requires a display card in a PCI slot") when no `.prom` has been
+  uploaded, rather than offering an empty picker.
 
 Fixtures live in `gs-test-data`'s flat `roms/` directory under the naming
 grammar in `scripts/rom_naming.py`:

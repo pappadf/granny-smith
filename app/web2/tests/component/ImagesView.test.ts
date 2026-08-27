@@ -7,7 +7,7 @@ import { images } from '@/state/images.svelte';
 beforeEach(() => {
   setOpfsBackend(new MockOpfs());
   // Open every category so we can see all rows in one render.
-  images.collapsed = { rom: false, vrom: false, fd: false, hd: false, cd: false };
+  images.collapsed = { rom: false, vrom: false, prom: false, fd: false, hd: false, cd: false };
   images.mounted = {};
 });
 
@@ -16,7 +16,7 @@ describe('ImagesView', () => {
     const { container } = render(ImagesView);
     await waitFor(() => {
       const titles = Array.from(container.querySelectorAll('.title')).map((e) => e.textContent);
-      expect(titles).toEqual(['ROM', 'VROM', 'Floppy Disk', 'Hard Disk', 'CD-ROM']);
+      expect(titles).toEqual(['ROM', 'VROM', 'PCI ROM', 'Floppy Disk', 'Hard Disk', 'CD-ROM']);
     });
   });
 

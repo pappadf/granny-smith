@@ -4,7 +4,7 @@
   import type { ImageCategory } from '@/bus/types';
 
   // Spec §4.3.3 fixes this order.
-  const CATEGORIES: ImageCategory[] = ['rom', 'vrom', 'fd', 'hd', 'cd'];
+  const CATEGORIES: ImageCategory[] = ['rom', 'vrom', 'prom', 'fd', 'hd', 'cd'];
 
   // Re-probe the floppy drive count when the panel opens (the active machine may
   // have changed) so a floppy badge can name its drive. Guest-initiated ejects
