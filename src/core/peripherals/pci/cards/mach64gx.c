@@ -134,26 +134,42 @@ LOG_USE_CATEGORY_NAME("mach64");
 #define DW_OVR_CLR               0x10
 #define DW_OVR_WID_LEFT_RIGHT    0x11
 #define DW_OVR_WID_TOP_BOTTOM    0x12
-#define DW_CUR_CLR0              0x18
-#define DW_CUR_CLR1              0x19
-#define DW_CUR_OFFSET            0x1A
-#define DW_CUR_HORZ_VERT_POSN    0x1B
-#define DW_CUR_HORZ_VERT_OFF     0x1C
-#define DW_SCRATCH_REG0          0x20
-#define DW_SCRATCH_REG1          0x21
-#define DW_CLOCK_CNTL            0x24
-#define DW_BUS_CNTL              0x28
-#define DW_MEM_CNTL              0x2C
-#define DW_MEM_VGA_WP_SEL        0x2D
-#define DW_MEM_VGA_RP_SEL        0x2E
-#define DW_DAC_REGS              0x30
-#define DW_DAC_CNTL              0x31
-#define DW_GEN_TEST_CNTL         0x34
-#define DW_CONFIG_CHIP_ID        0x38
-#define DW_CONFIG_STAT0          0x39
-#define DW_CONFIG_STAT1          0x3A
-#define DW_FIFO_STAT             0xC4
-#define DW_GUI_STAT              0xCE
+// Hardware cursor (PRG, "Hardware Cursor"; RRG pp. 3-27..3-30, 3-57).
+// A 64 x 64 block of 2-bit pixels in VRAM: 00 = colour 0, 01 = colour 1,
+// 10 = transparent, 11 = complement the pixel underneath.  The pitch is
+// ALWAYS 64 pixels — 16 bytes a line — whatever the cursor's real width,
+// and the pixels are in Intel order, so the leftmost is the LOW two bits
+// of the low byte.  CUR_HORZ_VERT_OFF says where inside that block the
+// visible part starts ("offset = 64 - size"), which is also how a cursor
+// whose hot spot has gone off the top or left edge is clipped.
+#define CUR_POSN_H(v)         ((v) & 0x7FFu) // CUR_HORZ_VERT_POSN bits 10:0
+#define CUR_POSN_V(v)         (((v) >> 16) & 0x7FFu) // ...and 26:16
+#define CUR_OFF_H(v)          ((v) & 0x3Fu) // CUR_HORZ_VERT_OFF bits 5:0
+#define CUR_OFF_V(v)          (((v) >> 16) & 0x3Fu) // ...and 21:16
+#define CUR_BASE(v)           (((v) & 0xFFFFFu) * 8u) // CUR_OFFSET: 64-bit words
+#define CUR_SIZE              64u
+#define CUR_LINE_BYTES        16u
+#define GEN_CUR_EN            0x80u // GEN_TEST_CNTL bit 7 (RRG p. 3-57)
+#define DW_CUR_CLR0           0x18
+#define DW_CUR_CLR1           0x19
+#define DW_CUR_OFFSET         0x1A
+#define DW_CUR_HORZ_VERT_POSN 0x1B
+#define DW_CUR_HORZ_VERT_OFF  0x1C
+#define DW_SCRATCH_REG0       0x20
+#define DW_SCRATCH_REG1       0x21
+#define DW_CLOCK_CNTL         0x24
+#define DW_BUS_CNTL           0x28
+#define DW_MEM_CNTL           0x2C
+#define DW_MEM_VGA_WP_SEL     0x2D
+#define DW_MEM_VGA_RP_SEL     0x2E
+#define DW_DAC_REGS           0x30
+#define DW_DAC_CNTL           0x31
+#define DW_GEN_TEST_CNTL      0x34
+#define DW_CONFIG_CHIP_ID     0x38
+#define DW_CONFIG_STAT0       0x39
+#define DW_CONFIG_STAT1       0x3A
+#define DW_FIFO_STAT          0xC4
+#define DW_GUI_STAT           0xCE
 
 // The draw engine occupies dwords $40 and up; its WRITES pass a 16-entry
 // command FIFO while everything below $40 is unFIFOed and reads never are
@@ -520,6 +536,8 @@ typedef struct mach64 {
     rgba8_t clut_view[256];
     uint8_t *blank;
     uint8_t *compose;
+    uint32_t scan_base; // VRAM byte offset the CRTC is scanning
+    bool scan_blanked; // ...or nothing, because the raster is off
     bool clut_dirty; // palette changed since the last scanout refresh
     bool irq_active; // the slot line this card is currently driving
     bool aperture_warned; // the "guest touched the BAR0 slack" log is once-only
@@ -2259,6 +2277,79 @@ static void mach64_clut_changed(mach64_t *m) {
         mach64_refresh_clut(m);
 }
 
+// Point the scanout at what the display controller is actually producing:
+// VRAM straight through, or a composite of VRAM and the hardware cursor.
+//
+// The cursor is a display-controller overlay, not something drawn into the
+// framebuffer, so the guest's pixels underneath it must survive — which is
+// why this composites into a separate buffer rather than touching VRAM.
+// It costs a frame copy, and only while the cursor is enabled: with
+// GEN_CUR_EN clear (the reset state, and what Mac OS leaves it at, since
+// QuickDraw draws its own cursor into the framebuffer) the scanout is the
+// same straight pointer into VRAM it always was.
+static void mach64_present(mach64_t *m) {
+    if (m->scan_blanked) {
+        m->display.bits = m->blank;
+        return;
+    }
+    uint32_t bpp = mach64_bytes_per_pixel(m);
+    uint32_t stride = m->display.stride;
+    uint32_t height = m->display.height;
+    uint32_t width = m->display.width;
+    uint8_t *frame = m->vram + m->scan_base;
+    if (!(m->reg[DW_GEN_TEST_CNTL] & GEN_CUR_EN)) {
+        m->display.bits = frame;
+        return;
+    }
+
+    size_t span = (size_t)stride * height;
+    if (span > m->vram_size)
+        span = m->vram_size;
+    memcpy(m->compose, frame, span);
+    m->display.bits = m->compose;
+
+    // "The mach64 will not display the cursor at all if either the
+    // horizontal or vertical cursor position is negative" — the driver
+    // saturates the position to zero and moves the offset instead, so a
+    // clipped cursor arrives here as a larger CUR_HORZ_VERT_OFF.
+    uint32_t px = CUR_POSN_H(m->reg[DW_CUR_HORZ_VERT_POSN]);
+    uint32_t py = CUR_POSN_V(m->reg[DW_CUR_HORZ_VERT_POSN]);
+    uint32_t ox = CUR_OFF_H(m->reg[DW_CUR_HORZ_VERT_OFF]);
+    uint32_t oy = CUR_OFF_V(m->reg[DW_CUR_HORZ_VERT_OFF]);
+    uint32_t src = CUR_BASE(m->reg[DW_CUR_OFFSET]);
+    if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > m->vram_size) {
+        LOG(1, "hardware cursor definition at $%06X runs past %u MB of VRAM — not drawn", src, m->vram_size >> 20);
+        return;
+    }
+
+    // In a pseudo-colour mode the cursor colours are palette INDICES; in a
+    // direct-colour mode they are 24-bit true colour in the upper bits
+    // (RRG p. 3-27).  Only the 8 bpp case is exercised by anything today.
+    bool indexed = m->display.format == PIXEL_8BPP;
+    uint32_t clr[2] = {indexed ? (m->reg[DW_CUR_CLR0] & 0xFFu) : (m->reg[DW_CUR_CLR0] >> 8),
+                       indexed ? (m->reg[DW_CUR_CLR1] & 0xFFu) : (m->reg[DW_CUR_CLR1] >> 8)};
+
+    for (uint32_t row = oy; row < CUR_SIZE; row++) {
+        uint32_t y = py + (row - oy);
+        if (y >= height)
+            break;
+        for (uint32_t col = ox; col < CUR_SIZE; col++) {
+            uint32_t x = px + (col - ox);
+            if (x >= width)
+                break;
+            uint8_t byte = m->vram[src + row * CUR_LINE_BYTES + (col >> 2)];
+            uint32_t v = (byte >> (2u * (col & 3u))) & 3u;
+            if (v == 2u)
+                continue; // transparent
+            uint8_t *at = m->compose + (size_t)y * stride + (size_t)x * bpp;
+            for (uint32_t i = 0; i < bpp; i++) {
+                uint32_t shift = 8u * (bpp - 1u - i);
+                at[i] = (v == 3u) ? (uint8_t)~at[i] : (uint8_t)(clr[v] >> shift);
+            }
+        }
+    }
+}
+
 static void mach64_update(mach64_t *m) {
     if (!m->blank)
         return; // registers poked before the buffers exist
@@ -2336,10 +2427,10 @@ static void mach64_update(mach64_t *m) {
         if (n > m->vram_size)
             n = m->vram_size;
         memset(m->blank, display_black_fill(format), n);
-        m->display.bits = m->blank;
-    } else {
-        m->display.bits = m->vram + base;
     }
+    m->scan_base = base;
+    m->scan_blanked = blanked;
+    mach64_present(m);
 
     if (format == PIXEL_8BPP) {
         mach64_refresh_clut(m);
@@ -2392,6 +2483,9 @@ static void mach64_on_vbl(pci_device_t *dev, config_t *cfg) {
     // Guest CPU writes into VRAM bypass the renderer, so every host frame
     // has to be re-uploaded regardless of whether the card raised anything.
     m->display.fb_dirty = true;
+    // The cursor moves by a register write with no CRTC involvement, so the
+    // composite has to be rebuilt per frame rather than only on a mode set.
+    mach64_present(m);
     if (m->clut_dirty) {
         m->clut_dirty = false;
         if (mach64_pix_width(m) == CRTC_PIX_8BPP)
@@ -2584,6 +2678,23 @@ static const pci_device_ops_t mach64_ops = {
 // Routed through the KIND's stage_option hook, so the generic layer never
 // learns this card's identity.  Returning false makes the generic layer
 // log the key as not understood and drop it.
+
+// What a frontend may offer.  The monitor list is deliberately NOT here:
+// this card SENSES its monitor over the DAC's ID pins (mach64_sense_step),
+// so forcing one is a debugging affordance rather than a configuration a
+// user should be handed — and offering it would invite the "why does my
+// display say 15 inches" question.  VRAM is a real, physical choice: the
+// 109-31600-00 expansion module.
+static const char *const mach64_vram_values[] = {"2m", "4m", NULL};
+static const char *const mach64_vram_labels[] = {"2 MB", "4 MB (expansion module)", NULL};
+static const pci_card_option_t mach64_options[] = {
+    {.key = "vram",
+     .label = "Video Memory",
+     .values = mach64_vram_values,
+     .labels = mach64_vram_labels,
+     .default_value = "2m"},
+    {.key = NULL},
+};
 
 static bool mach64_stage_option(const char *key, const char *value) {
     if (!key || !value)
@@ -3058,6 +3169,7 @@ const pci_card_kind_t mach64_gx_kind = {
     .card_class = "display",
     .monitors = mach64_monitors,
     .factory = mach64_factory,
+    .options = mach64_options,
     .stage_option = mach64_stage_option,
     .attach_objects = mach64_attach_objects,
 };

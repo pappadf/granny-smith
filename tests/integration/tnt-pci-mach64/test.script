@@ -164,6 +164,67 @@ assert machine.screen.source.stride == 640 "linebytes $280 — CRTC_PITCH x 8 x 
 # wins over the machine's built-in video.
 assert machine.pci.slot[1].card.framebuffer.depth == 8 "screen.source resolves to the card's framebuffer"
 
+# --- The hardware cursor is an overlay, not something drawn into VRAM. ------
+# A 64x64 block of 2-bit pixels: 00 = colour 0, 01 = colour 1, 10 =
+# transparent, 11 = complement (PRG, "Hardware Cursor").  The pitch is
+# always 64 pixels — 16 bytes a line — whatever the cursor's real width,
+# and pixels are in Intel order, so the leftmost is the LOW two bits of the
+# low byte.  CUR_HORZ_VERT_OFF picks where inside the block the visible
+# part starts, which is also how a cursor clipped by the top or left edge
+# of the screen is expressed ("offset = 64 - size").
+#
+# Using an offset of 56 makes the visible cursor the bottom-right 8x8 of
+# the block, so only those eight rows' last bytes need defining — the rest
+# of the block is never read.
+#
+# The test is an equality, not a "something changed": draw an 8x8 patch of
+# index $22 into the framebuffer and remember the screen checksum, put the
+# framebuffer back, then produce the SAME 8x8 with the cursor and require
+# the identical checksum.  That pins the pixel encoding, the line pitch,
+# the colour lookup and the position all at once — and reading VRAM back
+# afterwards proves the overlay never touched it.
+let CURDEF = 0x81180000
+let CURW = 0x30000
+for row in 56..64 {
+    machine.memory.poke.l($CURDEF + $row * 16 + 12, 0x00000000)
+}
+# The framebuffer patch at (200,300): CRTC base $200, pitch 640.
+for row in 300..308 {
+    machine.memory.poke.l(0x81000200 + $row * 640 + 200, 0x11111111)
+    machine.memory.poke.l(0x81000200 + $row * 640 + 204, 0x11111111)
+}
+let PITCH = machine.memory.peek.l(0x817FFC14)
+machine.memory.poke.l(0x817FFC14, $PITCH)
+let C_BASE = machine.screen.checksum(300, 200, 308, 208)
+for row in 300..308 {
+    machine.memory.poke.l(0x81000200 + $row * 640 + 200, 0x22222222)
+    machine.memory.poke.l(0x81000200 + $row * 640 + 204, 0x22222222)
+}
+machine.memory.poke.l(0x817FFC14, $PITCH)
+let C_WANT = machine.screen.checksum(300, 200, 308, 208)
+assert $C_WANT != $C_BASE "the reference patch must actually change the screen"
+for row in 300..308 {
+    machine.memory.poke.l(0x81000200 + $row * 640 + 200, 0x11111111)
+    machine.memory.poke.l(0x81000200 + $row * 640 + 204, 0x11111111)
+}
+machine.memory.poke.l(0x817FFC14, $PITCH)
+assert machine.screen.checksum(300, 200, 308, 208) == $C_BASE "restoring the patch must restore the screen"
+
+# CUR_CLR0 = index $22, CUR_OFFSET in 64-bit words, position (200,300),
+# offset 56 in both axes.  Registers are little-endian through the alias.
+machine.memory.poke.l(0x817FFC60, 0x22000000)
+machine.memory.poke.l(0x817FFC68, 0x00000300) # CUR_OFFSET = $30000 (LE)
+machine.memory.poke.l(0x817FFC6C, 0xC8002C01)
+machine.memory.poke.l(0x817FFC70, 0x38003800)
+let GT = machine.memory.peek.l(0x817FFCD0)
+machine.memory.poke.l(0x817FFCD0, 0x80000000 | $GT)
+machine.memory.poke.l(0x817FFC14, $PITCH)
+assert machine.screen.checksum(300, 200, 308, 208) == $C_WANT "the cursor must composite exactly like the drawn patch"
+assert machine.memory.peek.b(0x81000200 + 300 * 640 + 200) == 0x11 "and must NOT write through to the framebuffer"
+machine.memory.poke.l(0x817FFCD0, $GT)
+machine.memory.poke.l(0x817FFC14, $PITCH)
+assert machine.screen.checksum(300, 200, 308, 208) == $C_BASE "disabling the cursor must remove it cleanly"
+
 # --- A reversed blit walks its SOURCE backwards too. ------------------------
 # The source trajectory has no direction of its own: for a rectangular
 # destination "SRC_X_DIR and SRC_Y_DIR track DST_X_DIR@DST_CNTL and
