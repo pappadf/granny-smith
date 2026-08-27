@@ -145,6 +145,16 @@ def topology(model) {
     assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1]" "card registry"
     assert machine.pci.slot[1].card_id == "" "${$model} an empty socket starts with no staged pick"
 
+    # --- The machine survives being written down -----------------------------
+    # A Network Server has no Control, so it has no Control VRAM — and the
+    # checkpoint stream must not go looking for it.  It once did, and
+    # `checkpoint.save` took the emulator down with a null read, on the one
+    # board in the family where the buffer is absent.
+    assert checkpoint.save("${$WORK_DIR}/${$model}-slots.checkpoint") "${$model} checkpoint save"
+    assert checkpoint.load("${$WORK_DIR}/${$model}-slots.checkpoint") "${$model} checkpoint load"
+    assert machine.pci.slot[8].card.name == "53C825A #0" "${$model} the restored machine kept its fast/wide channels"
+    assert machine.pci.slot[7].card.name == "Cirrus 54M30" "${$model} the restored machine kept its video"
+
     echo "ans-pci-slots ${$model}: six sockets + three builtins, interrupt map and identities verified"
 }
 

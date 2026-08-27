@@ -555,10 +555,15 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
         pci_checkpoint_restore(cfg->pci, cp);
         system_read_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
         system_read_checkpoint_data(cp, &st->control, sizeof(st->control));
-        system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+        // Control's VRAM is only there on a board that has Control.  A
+        // Network Server's video is a PCI card in a socket, so `st->vram`
+        // is NULL and the block is absent from the stream on both sides.
+        if (st->vram)
+            system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
         via_redrive_outputs(cfg->via1);
         tnt_gc_recompute(cfg);
-        tnt_control_update(cfg); // rebuild the descriptor from restored regs
+        if (st->vram)
+            tnt_control_update(cfg); // rebuild the descriptor from restored regs
     }
 
     // SCSI (Phase E; appended at the end of the positional stream).  The
@@ -738,7 +743,8 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     pci_checkpoint_save(cfg->pci, cp);
     system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
     system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
-    system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+    if (st->vram)
+        system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
     // Phase-E SCSI block (mirrors the tnt_init append order exactly).
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
