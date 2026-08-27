@@ -810,7 +810,14 @@ static bool step(sym53c8xx_t *s) {
         break;
     default:
         if (type3 == 6) {
-            set_reg32(s, SYM825_TEMP, third);
+            // TEMP is NOT touched here.  It is the Call/Return link
+            // register, and the Network Server's own AIX driver calls a
+            // subroutine that patches its own instruction stream with a
+            // four-byte Memory Move and then returns: writing the
+            // destination address into TEMP sends that Return into the
+            // middle of the instruction the move had just patched.  The
+            // three-Dword form carries both addresses in the instruction,
+            // so it has no need of the register.
             exec_memory_move(s, insn, dsps, third);
         } else {
             exec_load_store(s, insn, dsps);

@@ -790,6 +790,28 @@ static struct display *tnt_display(config_t *cfg) {
     return d ? d : tnt_control_display(cfg);
 }
 
+// machine.restart handle transfer, with the Network Servers' SECOND SCSI
+// bus.  The standard transfer walks the floppies and `cfg->scsi`; on a
+// Shiner a medium in a rear bay is on `machine.scsi2`, and a transfer that
+// does not know that drops it — the handle stays on the tracked-image list
+// and system_destroy closes it, so the drive is simply gone after a
+// power-cycle, with every delta write in it.
+static int tnt_media_detach(config_t *cfg, media_slot_t *out, int max) {
+    int n = system_media_detach_std(cfg, out, max);
+    tnt_state_t *st = tnt_st(cfg);
+    if (st && st->scsi2)
+        n += system_media_detach_scsi_bus(cfg, st->scsi2, MEDIA_BUS_SCSI2, out + n, max - n);
+    return n;
+}
+
+static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
+    if (slot->bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_attach_scsi_bus(cfg, st ? st->scsi2 : NULL, slot);
+    }
+    return system_media_attach_std(cfg, slot);
+}
+
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand
 // Central external it reaches (23-25 on Bandit 1, 27-29 on Bandit 2 — the
 // 9500's own published external-interrupt assignment); the lines are
@@ -840,6 +862,6 @@ const machine_substrate_t tnt_substrate = {
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
     .display = tnt_display,
-    .media_detach = system_media_detach_std,
-    .media_attach = system_media_attach_std,
+    .media_detach = tnt_media_detach,
+    .media_attach = tnt_media_attach,
 };

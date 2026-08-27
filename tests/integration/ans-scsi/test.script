@@ -18,7 +18,10 @@ def probe(model, ram_kb) {
     # per controller, so a probe that answered on the wrong bus would show
     # up as the wrong device rather than as silence.
     machine.scsi.attach_hd("${$WORK_DIR}/ansdisk.img", 0)
-    machine.scsi2.attach_cdrom("${$WORK_DIR}/anscd.iso", 4)
+    # Any ISO answers INQUIRY as a removable read-only device, so this one
+    # is borrowed from the shared corpus rather than manufactured: what the
+    # row is proving is the bus the answer came back on, not the contents.
+    machine.scsi2.attach_cdrom("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso", 4)
 
     # --- S8: channel 0 --------------------------------------------------------
     ans_send("probe-sc")
@@ -57,8 +60,8 @@ def probe(model, ram_kb) {
     echo "ans-scsi ${$model}: SCRIPTS engine ran INQUIRY on both fast/wide channels"
 }
 
-# One disk and one CD image, created fresh in the work directory so the row
-# owns its media and leaves the shared corpus alone.
+# One disk, created fresh in the work directory so the row owns what it
+# writes to.
 assert storage.hd_create("${$WORK_DIR}/ansdisk.img", "500M") "could not create the test disk"
 
 probe("ans500", 32768)

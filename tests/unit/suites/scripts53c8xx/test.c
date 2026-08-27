@@ -727,6 +727,35 @@ TEST(test_memory_move) {
     ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
 }
 
+// A Memory Move inside a subroutine must leave the return address alone.
+// TEMP is the Call/Return link register and nothing else; the three-Dword
+// form carries both of its addresses in the instruction, so it has no
+// reason to touch it.
+//
+// The Network Server's AIX driver is exactly this program: it calls a
+// routine that patches its own instruction stream with a four-byte Memory
+// Move and then returns.  An engine that parks the destination address in
+// TEMP sends that Return into the middle of the instruction the move had
+// just rewritten.
+TEST(test_memory_move_preserves_temp) {
+    setup();
+    put_insn_word(0x1000, TC(1, TC_IF_TRUE)); // Call
+    put_insn_word(0x1004, 0x1800);
+    put_insn_word(0x1008, TC(3, 0)); // where the Return must land
+    put_insn_word(0x100C, 0x99999999u);
+
+    put_insn_word(0x1800, MEMORY_MOVE(4));
+    put_insn_word(0x1804, 0x2000); // source
+    put_insn_word(0x1808, 0x3000); // destination
+    put_insn_word(0x180C, TC(2, TC_IF_TRUE)); // Return
+    put_insn_word(0x1810, 0);
+
+    run_at(0x1000);
+
+    ASSERT_EQ_INT((int)reg32(SYM825_TEMP), 0x1008);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSPS), 0x99999999);
+}
+
 // NEGATIVE: "Both the source and destination addresses must start with the
 // same address alignment A[1:0].  If the source and destination are not
 // aligned, then an illegal instruction interrupt occurs."
@@ -879,6 +908,7 @@ int main(void) {
     RUN(test_transfer_control_conditions);
     RUN(test_transfer_control_interrupt_on_the_fly);
     RUN(test_memory_move);
+    RUN(test_memory_move_preserves_temp);
     RUN(test_memory_move_misaligned);
     RUN(test_load_and_store);
     RUN(test_load_dsa_relative);

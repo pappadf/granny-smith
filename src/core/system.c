@@ -938,18 +938,29 @@ int system_media_detach_std(config_t *cfg, media_slot_t *out, int max) {
         config_remove_image(cfg, img);
         n++;
     }
+    n += system_media_detach_scsi_bus(cfg, cfg->scsi, MEDIA_BUS_SCSI, out + n, max - n);
+    return n;
+}
+
+// Capture one SCSI bus's mounted media, tagged with the bus they came off.
+// Split out because a machine may have more than one visible bus and a SCSI
+// id does not identify a device on its own there (the Network Servers' two
+// fast/wide channels); a substrate with a second bus calls this again for
+// it.  Returns the count appended.
+int system_media_detach_scsi_bus(config_t *cfg, struct scsi *bus, media_bus_t which, media_slot_t *out, int max) {
+    int n = 0;
     for (unsigned id = 0; id < 8 && n < max; ++id) {
-        image_t *img = cfg->scsi ? scsi_device_image(cfg->scsi, id) : NULL;
+        image_t *img = bus ? scsi_device_image(bus, id) : NULL;
         if (!img)
             continue;
         media_slot_t *s = &out[n];
-        *s = (media_slot_t){.bus = MEDIA_BUS_SCSI, .unit = (int)id, .img = img};
-        s->scsi_type = scsi_device_type(cfg->scsi, id);
-        s->block_size = scsi_device_block_size(cfg->scsi, id);
-        s->read_only = scsi_device_read_only(cfg->scsi, id);
-        snprintf(s->vendor, sizeof(s->vendor), "%s", scsi_device_vendor(cfg->scsi, id));
-        snprintf(s->product, sizeof(s->product), "%s", scsi_device_product(cfg->scsi, id));
-        snprintf(s->revision, sizeof(s->revision), "%s", scsi_device_revision(cfg->scsi, id));
+        *s = (media_slot_t){.bus = which, .unit = (int)id, .img = img};
+        s->scsi_type = scsi_device_type(bus, id);
+        s->block_size = scsi_device_block_size(bus, id);
+        s->read_only = scsi_device_read_only(bus, id);
+        snprintf(s->vendor, sizeof(s->vendor), "%s", scsi_device_vendor(bus, id));
+        snprintf(s->product, sizeof(s->product), "%s", scsi_device_product(bus, id));
+        snprintf(s->revision, sizeof(s->revision), "%s", scsi_device_revision(bus, id));
         config_remove_image(cfg, img);
         n++;
     }
@@ -967,16 +978,22 @@ int system_media_attach_std(config_t *cfg, const media_slot_t *slot) {
         add_image(cfg, slot->img);
         return 0;
     case MEDIA_BUS_SCSI:
-        if (!cfg->scsi)
-            return -1;
-        add_image(cfg, slot->img);
-        scsi_add_device(cfg->scsi, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
-                        (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
-        image_vfs_notify_attached(image_get_filename(slot->img));
-        return 0;
+        return system_media_attach_scsi_bus(cfg, cfg->scsi, slot);
     default:
         return -1;
     }
+}
+
+// Hand one transferred medium back to a named SCSI bus.  The counterpart of
+// system_media_detach_scsi_bus, and the same reason for existing.
+int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_slot_t *slot) {
+    if (!bus)
+        return -1;
+    add_image(cfg, slot->img);
+    scsi_add_device(bus, slot->unit, slot->vendor, slot->product, slot->revision, slot->img,
+                    (enum scsi_device_type)slot->scsi_type, slot->block_size, slot->read_only);
+    image_vfs_notify_attached(image_get_filename(slot->img));
+    return 0;
 }
 
 // Save current machine state to a checkpoint file.

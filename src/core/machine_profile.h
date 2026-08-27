@@ -120,6 +120,11 @@ struct aux_cpu_slot {
 typedef enum media_bus {
     MEDIA_BUS_FLOPPY = 0, // unit = drive index
     MEDIA_BUS_SCSI, // unit = SCSI id; the device-identity fields apply
+    // A machine's SECOND SCSI bus, where it has one.  The Apple Network
+    // Servers carry two fast/wide channels and a SCSI id names a device on
+    // neither without saying which channel it is on, so the bus has to
+    // ride along with the medium.
+    MEDIA_BUS_SCSI2,
     MEDIA_BUS_PROFILE, // Lisa/XL parallel-port ProFile (unit unused)
 } media_bus_t;
 
@@ -142,8 +147,9 @@ typedef struct media_slot {
     char revision[5];
 } media_slot_t;
 
-// Transfer capacity: 2 floppy drives + 8 SCSI ids + 1 ProFile.
-#define MEDIA_SLOTS_MAX 12
+// Transfer capacity: 2 floppy drives + 8 SCSI ids on each of two buses +
+// 1 ProFile.
+#define MEDIA_SLOTS_MAX 20
 
 // Machine lifecycle + host-input vtable.  The behavior half of a machine
 // (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of

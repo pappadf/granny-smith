@@ -79,6 +79,10 @@ void config_remove_image(config_t *cfg, image_t *image);
 struct media_slot;
 int system_media_detach_std(config_t *cfg, struct media_slot *out, int max);
 int system_media_attach_std(config_t *cfg, const struct media_slot *slot);
+// One SCSI bus's worth of the same, for a machine with more than one.
+int system_media_detach_scsi_bus(config_t *cfg, struct scsi *bus, enum media_bus which, struct media_slot *out,
+                                 int max);
+int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const struct media_slot *slot);
 
 // === Generic Machine Lifecycle ===
 
