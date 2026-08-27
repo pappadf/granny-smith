@@ -1219,17 +1219,32 @@ typedef struct mach64_axis {
     uint32_t rot; // SRC_X_START / SRC_Y_START
     uint32_t len2; // SRC_WIDTH2 / SRC_HEIGHT2
     bool rotate;
+    bool reverse; // the destination walks this axis backwards, so we do too
 } mach64_axis_t;
 
+// The source trajectory's DIRECTION is not its own: for a rectangular
+// destination "SRC_X_DIR and SRC_Y_DIR track DST_X_DIR@DST_CNTL and
+// DST_Y_DIR@DST_CNTL" (PRG, Source Trajectories 2, 3 and 4 — the sentence
+// is repeated verbatim for each).  Both coordinates then name the FAR edge
+// of their rectangle and count inward.
+//
+// Getting this wrong is invisible until something overlaps.  A driver
+// scrolling a window DOWN copies upward-to-the-left and can walk forwards;
+// scrolling BACK UP it must copy in the opposite order or it overwrites
+// rows it has not read yet — so it clears the direction bits, and a model
+// that walks the source forwards regardless reads from entirely the wrong
+// place.  One pixel comes out right, the one at the starting corner where
+// n == 0, which is why the first scroll of a fresh window looks fine.
 static uint32_t mach64_axis_at(const mach64_axis_t *a, uint32_t n) {
+    uint32_t base, step;
     if (a->rotate && a->len2) {
-        if (n < a->len1)
-            return a->start + n;
-        return a->rot + ((n - a->len1) % a->len2);
+        base = (n < a->len1) ? a->start : a->rot;
+        step = (n < a->len1) ? n : ((n - a->len1) % a->len2);
+    } else {
+        base = a->start;
+        step = a->len1 ? (n % a->len1) : n;
     }
-    if (a->len1)
-        return a->start + (n % a->len1);
-    return a->start + n;
+    return a->reverse ? base - step : base + step;
 }
 
 // Everything the pixel loop needs, gathered once per operation.  The
@@ -1280,6 +1295,10 @@ static void mach64_op_gather(mach64_t *m, mach64_op_t *op) {
     op->sx_axis.len2 = m->reg[DW_SRC_WIDTH2] & 0xFFFFu;
     op->sy_axis.len2 = m->reg[DW_SRC_HEIGHT2] & 0xFFFFu;
     op->sx_axis.rotate = op->sy_axis.rotate = op->traj == SRC_TRAJ_PATTERN_ROT;
+    // Direction is the destination's (see mach64_axis_at).  DST_CNTL is
+    // authoritative here because GUI_TRAJ_CNTL writes now split into it.
+    op->sx_axis.reverse = (m->reg[DW_DST_CNTL] & DST_X_DIR) == 0;
+    op->sy_axis.reverse = (m->reg[DW_DST_CNTL] & DST_Y_DIR) == 0;
     op->cmp_fn = CLR_CMP_FN(m->reg[DW_CLR_CMP_CNTL]);
     op->cmp_clr = m->reg[DW_CLR_CMP_CLR];
     op->cmp_msk = m->reg[DW_CLR_CMP_MSK];

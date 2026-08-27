@@ -164,6 +164,59 @@ assert machine.screen.source.stride == 640 "linebytes $280 — CRTC_PITCH x 8 x 
 # wins over the machine's built-in video.
 assert machine.pci.slot[1].card.framebuffer.depth == 8 "screen.source resolves to the card's framebuffer"
 
+# --- A reversed blit walks its SOURCE backwards too. ------------------------
+# The source trajectory has no direction of its own: for a rectangular
+# destination "SRC_X_DIR and SRC_Y_DIR track DST_X_DIR@DST_CNTL and
+# DST_Y_DIR@DST_CNTL" (PRG, Source Trajectories 2/3/4).  Both coordinates
+# then name the FAR edge and count inward.
+#
+# Nothing on a freshly drawn screen shows this: a driver only clears the
+# direction bits when a copy OVERLAPS in the direction it is moving —
+# scrolling a window back up or back left — and a model that walks the
+# source forwards regardless still gets the single pixel at the starting
+# corner right, so the first scroll of a new window looks perfect.
+#
+# Driven through the register file directly rather than through the guest,
+# because the guest only produces this shape after a user scrolls twice.
+# The engine is set up from scratch here: surfaces at VRAM offset 0 with a
+# 640-pixel pitch, so the addresses below are BAR0 + y*640 + x.
+let AL = 0x817FFC00
+machine.memory.poke.l($AL + 0x100, 0x00000014)   # DST_OFF_PITCH: pitch 640, offset 0
+machine.memory.poke.l($AL + 0x180, 0x00000014)   # SRC_OFF_PITCH: the same surface
+machine.memory.poke.l($AL + 0x2D8, 0x00030000)   # DP_SRC: foreground = blit
+machine.memory.poke.l($AL + 0x2D4, 0x07000700)   # DP_MIX: source
+machine.memory.poke.l($AL + 0x2C8, 0xFFFFFFFF)   # DP_WRITE_MSK
+machine.memory.poke.l($AL + 0x2A8, 0x00007F02)   # SC_LEFT_RIGHT  0..639
+machine.memory.poke.l($AL + 0x2B4, 0x0000DF01)   # SC_TOP_BOTTOM  0..479
+machine.memory.poke.l($AL + 0x1B4, 0x00000000)   # SRC_CNTL: unbounded Y, no wrap
+
+# A known 8-pixel run at (100,100), and clear space to its right.
+machine.memory.poke.b(0x8100FA64, 1)
+machine.memory.poke.b(0x8100FA65, 2)
+machine.memory.poke.b(0x8100FA66, 3)
+machine.memory.poke.b(0x8100FA67, 4)
+machine.memory.poke.b(0x8100FA68, 5)
+machine.memory.poke.b(0x8100FA69, 6)
+machine.memory.poke.b(0x8100FA6A, 7)
+machine.memory.poke.b(0x8100FA6B, 8)
+
+# Shift it RIGHT by four, onto itself.  A left-to-right walk would read
+# bytes it has already overwritten; the driver therefore clears DST_X_DIR
+# and names the right-hand edge of each rectangle.
+machine.memory.poke.l($AL + 0x330, 0x00000000)   # GUI_TRAJ_CNTL: right-to-left, bottom-to-top
+machine.memory.poke.l($AL + 0x18C, 0x64006B00)   # SRC_Y_X       = (107,100)
+machine.memory.poke.l($AL + 0x198, 0x01000800)   # SRC_HEIGHT1_WIDTH1 = 8x1
+machine.memory.poke.l($AL + 0x10C, 0x64006F00)   # DST_Y_X       = (111,100)
+machine.memory.poke.l($AL + 0x118, 0x01000800)   # DST_HEIGHT_WIDTH  = 8x1 -> GO
+assert machine.memory.peek.b(0x8100FA68) == 1 "a reversed blit must copy its source, not read past it"
+assert machine.memory.peek.b(0x8100FA69) == 2 "reversed blit pixel 2"
+assert machine.memory.peek.b(0x8100FA6C) == 5 "reversed blit pixel 5"
+assert machine.memory.peek.b(0x8100FA6F) == 8 "reversed blit pixel 8"
+# ...and the four pixels the move vacated still hold the head of the run,
+# which is what a shift-by-four leaves behind.
+assert machine.memory.peek.b(0x8100FA64) == 1 "the vacated head is not cleared by a move"
+assert machine.memory.peek.b(0x8100FA67) == 4 "the vacated head is not cleared by a move"
+
 # --- With the card seated, Bandit 2 takes $90000000. ------------------------
 # The counterpart of the tnt-pci-slots row: a display card in a socket
 # retires the Control/Chaos fallback, the VCI bus seats nothing, and the
