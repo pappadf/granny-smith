@@ -285,7 +285,9 @@ uint16_t tnt_gbus_misc_read(config_t *cfg) {
 // Fail!`, …), and AIX's monitoring daemon is supposed to react.  An
 // injected fault therefore has a documented expected output.
 
-static const char *const keyswitch_names[] = {"locked", "service", "normal"};
+// The three positions, in the order the firmware values imply
+// ((reg >> 13) & 3): Locked = 1, Service = 2, Normal = 3.
+static const char *const keyswitch_names[] = {"locked", "service", "normal", NULL};
 
 static value_t board_attr_keyswitch(struct object *self, const member_t *m) {
     (void)m;
@@ -299,7 +301,18 @@ static value_t board_attr_keyswitch_set(struct object *self, const member_t *m, 
     tnt_gbus_t *g = gb((config_t *)object_data(self));
     if (!g)
         return val_err("keyswitch: no machine");
-    for (int i = 0; i < 3; i++) {
+    // The shell resolves a name against the declared table and hands back
+    // a V_ENUM, so the index is the answer; a raw string is accepted too,
+    // which is what a caller building the value itself passes.
+    if (v.kind == V_ENUM) {
+        bool ok = false;
+        int64_t i = val_as_i64(&v, &ok);
+        if (ok && i >= 0 && i <= ANS_KEY_NORMAL) {
+            g->keyswitch = (uint8_t)i;
+            return val_none();
+        }
+    }
+    for (int i = 0; i <= ANS_KEY_NORMAL; i++) {
         if (v.kind == V_STRING && v.s && strcmp(v.s, keyswitch_names[i]) == 0) {
             g->keyswitch = (uint8_t)i;
             return val_none();
@@ -427,7 +440,10 @@ static const member_t tnt_board_members[] = {
     {.kind = M_ATTR,
      .name = "keyswitch",
      .doc = "Front three-position keyswitch: locked | service | normal",
-     .attr = {.type = V_ENUM, .get = board_attr_keyswitch, .set = board_attr_keyswitch_set}},
+     .attr = {.type = V_ENUM,
+              .enum_values = keyswitch_names,
+              .get = board_attr_keyswitch,
+              .set = board_attr_keyswitch_set}},
     {.kind = M_ATTR,
      .name = "rear_key_locked",
      .doc = "Rear keyswitch locked — a power-on precondition, not software-visible",
