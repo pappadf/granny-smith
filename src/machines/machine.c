@@ -389,6 +389,13 @@ static value_t build_pci_slots(const hw_profile_t *p) {
         // not a picker.
         bool builtin = s->kind == PCI_SLOT_BUILTIN || s->kind == PCI_SLOT_BUILTIN_FALLBACK;
         val_map_put(b, "fixed", val_bool(builtin));
+        // ...and a FALLBACK builtin is not the machine's own hardware at
+        // all: it stands in only while no socket supplies a card of the
+        // same class, because the real machine has nothing there.  A
+        // frontend that cannot tell the two apart shows a Power Macintosh
+        // 9500 as having on-board video, which is the one thing that
+        // machine is documented not to have.
+        val_map_put(b, "fallback", val_bool(s->kind == PCI_SLOT_BUILTIN_FALLBACK));
         const char *default_card = builtin ? s->builtin_card_id : s->default_card;
         val_map_put(b, "default_card", val_str(default_card ? default_card : ""));
 

@@ -87,7 +87,15 @@
     pci_slots?: Array<{
       slot: number;
       label?: string;
+      // Soldered down rather than a socket — not a user choice.
       fixed: boolean;
+      // ...and a fixed slot that is only a STAND-IN: it exists solely
+      // because no socket has supplied a card of its class yet, because
+      // the real machine has nothing there.  The Power Macintosh 9500 is
+      // the case this exists for: its Control/Chaos entry is emulator
+      // scaffolding, not hardware, and calling it "on-board video" would
+      // state the opposite of what the machine is.
+      fallback?: boolean;
       default_card?: string;
       cards: Array<{
         id: string;
@@ -222,6 +230,11 @@
   let pciDisplayCards = $derived.by(() => {
     const out: NonNullable<MachineProfile['pci_slots']>[number]['cards'] = [];
     for (const slot of currentProfile?.pci_slots ?? []) {
+      // SOCKETS only. A fixed slot's card is soldered down and can never be
+      // staged into a socket — the core's own pci_card_fits_socket refuses
+      // it — so offering it here would put a choice in the picker that the
+      // boot path is guaranteed to reject.
+      if (slot.fixed) continue;
       for (const c of slot.cards ?? []) {
         if (c.class !== 'display' || out.some((seen) => seen.id === c.id)) continue;
         out.push(c);
@@ -229,6 +242,16 @@
     }
     return out;
   });
+
+  // A soldered-down display-class PCI card IS this machine's built-in
+  // video, and is named like it — unless it is a stand-in, which is not
+  // the machine's hardware and must not be presented as though it were.
+  let pciBuiltinDisplay = $derived(
+    (currentProfile?.pci_slots ?? [])
+      .filter((slot) => slot.fixed && !slot.fallback)
+      .flatMap((slot) => slot.cards ?? [])
+      .find((c) => c.class === 'display'),
+  );
   // A PCI card is offerable iff it needs no expansion ROM or one is present.
   // Unlike a NuBus vROM this is not a soft preference: the core refuses the
   // boot outright (requires_prom + strict resolution), so offering the card
@@ -239,24 +262,41 @@
   let pciCardOptions = $derived(
     availablePciCards.map((c) => ({ id: c.id, label: c.display_name ?? c.id })),
   );
-  // Every display-class PCI card the machine could take, whether or not its
-  // ROM is present — what the "needs a display card" hint counts.
-  let pciDisplayPossible = $derived(pciDisplayCards.length > 0);
-
-  // What the display picker offers: built-in first (it is the machine's own
-  // port and its default), then every installable NuBus card, then every
-  // installable display-class PCI card.  The union is the point: on a 9500
-  // the first two lists are empty and the third is the only way to a screen.
-  let displayOptions = $derived(
-    hasBuiltinVideo
+  // What the display picker offers, in the order a machine presents itself:
+  // its own built-in port first, then anything soldered to the PCI bus that
+  // amounts to built-in video, then every installable NuBus card, then every
+  // installable display-class PCI card.
+  //
+  // This follows the NuBus-only machines rather than inventing a shape.  A
+  // IIx / IIcx / IIfx has builtin_video {} and a non-fixed video slot: the
+  // dialog shows a "Display Card" picker and, when no vROM is present, says
+  // the card needs one.  A IIci has a FIXED video slot holding its soldered
+  // RBV video and offers no choice.  The PCI machines are the same two
+  // cases: a 7500/8500's Control is soldered (fixed), a 9500's sockets are
+  // sockets — so the 9500 behaves exactly like a IIfx, with a .prom in the
+  // place of a .vrom.
+  let displayOptions = $derived([
+    ...(hasBuiltinVideo
+      ? [{ id: BUILTIN_VIDEO_ID, label: builtinVideo?.display_name ?? 'Built-in video' }]
+      : []),
+    ...(pciBuiltinDisplay
       ? [
-          { id: BUILTIN_VIDEO_ID, label: builtinVideo?.display_name ?? 'Built-in video' },
-          ...cardOptions,
-          ...pciCardOptions,
+          {
+            id: pciBuiltinDisplay.id,
+            label: pciBuiltinDisplay.display_name ?? pciBuiltinDisplay.id,
+          },
         ]
-      : [...cardOptions, ...pciCardOptions],
-  );
+      : []),
+    ...cardOptions,
+    ...pciCardOptions,
+  ]);
   let builtinSelected = $derived(cardId === BUILTIN_VIDEO_ID);
+  // Whether the machine already has a screen without the user installing
+  // anything.  A stand-in fallback deliberately does NOT count: the 9500 has
+  // no on-board video, and the emulator's Control/Chaos stand-in exists so a
+  // cardless boot has somewhere to draw, not so the dialog can claim the
+  // machine has video it never shipped with.
+  let hasSolderedDisplay = $derived(hasBuiltinVideo || !!pciBuiltinDisplay);
   // Is the current pick a PCI card rather than a NuBus one?  The two travel
   // in different boot-document fields (pci_card= vs video_card=), so this
   // decides which one is filled in.
@@ -269,10 +309,10 @@
     selectedPciCard?.requires_prom ? (promsByCardId[cardId]?.[0] ?? null) : null,
   );
   // Only surface the picker when there's a real choice; a fixed/builtin
-  // single card (e.g. SE/30 onboard video) needs no dropdown.
-  // Show the picker when there is a real choice — or when the single option
-  // is an expansion card, because on a machine with no built-in video that
-  // row is the only place the screen's provenance is stated.
+  // single card (e.g. SE/30 onboard video) needs no dropdown.  A machine
+  // whose only display source is one expansion card is still a choice worth
+  // showing — it is the only place the screen's provenance is stated — so
+  // the single PCI option counts.
   let needsCardPicker = $derived(displayOptions.length > 1 || pciSelected);
   let selectedCard = $derived(availableCards.find((c) => c.id === cardId));
   // VROM row/handling is driven by the *selected card* (the SE/30-vs-IIci
@@ -285,16 +325,20 @@
   let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);
   // Model expects a video card but none is installable (every candidate card
   // needs a vROM and none is present). Drives the "upload a Video ROM" hint.
+  // ...one sentence for both buses, because it is one situation: the machine
+  // can take a display card, none is installable, and it has nothing
+  // soldered to fall back on.  Which ROM to ask for is the only difference,
+  // and that is decided by which bus had the candidates.
   let videoUnavailable = $derived(
-    slotCards.length > 0 && availableCards.length === 0 && !hasBuiltinVideo && !pciDisplayPossible,
+    !hasSolderedDisplay &&
+      displayOptions.length === 0 &&
+      (slotCards.length > 0 || pciDisplayCards.length > 0),
   );
-  // The 9500 case: the machine has no built-in video and no NuBus video
-  // slots at all, so a display-class PCI card is the ONLY way to a screen —
-  // and every candidate needs an expansion ROM we do not have.  This is a
-  // different sentence from videoUnavailable ("upload a Video ROM"), and
-  // saying the right one is the whole point of the row.
-  let needsDisplayCard = $derived(
-    !hasBuiltinVideo && slotCards.length === 0 && pciDisplayPossible && pciCardOptions.length === 0,
+  // A PCI expansion ROM (.prom) and a NuBus video ROM (.vrom) are different
+  // files from different places; naming the wrong one sends the user hunting
+  // for something that would not help.
+  let missingRomKind = $derived(
+    slotCards.length > 0 && availableCards.length === 0 ? 'Video ROM' : 'PCI expansion ROM',
   );
   // HD row label: the Lisa/XL parallel-port ProFile (hd_bus === 'profile') is
   // not on the SCSI bus, so its label comes from the bus, not scsi_slots (which
@@ -682,7 +726,14 @@
       vrom: vromPath,
       // The selected NuBus video card — the boot document's video_card=, so
       // the right card boots instead of the slot default (the 24AC-vs-8•24 bug).
-      videoCard: fixedVideo || builtinSelected || pciSelected ? undefined : cardId || undefined,
+      // Only a NuBus pick travels here.  `selectedCard` is looked up in the
+      // NuBus list, so built-in video, a socket PCI card and a soldered PCI
+      // card all miss it — which is the point: sending any of those as
+      // video_card would make the core hunt for a NuBus card that does not
+      // exist.  (An earlier version tested for those three cases one by one
+      // and missed the soldered PCI card, which then went out as
+      // video_card=tnt_control.)
+      videoCard: fixedVideo || !selectedCard ? undefined : cardId || undefined,
       // A display-class PCI card travels in its own field: the boot document
       // seats it into the first free socket, and the machine's BUILTIN
       // fallback video (the 9500's Control/Chaos stand-in) retires because a
@@ -765,11 +816,11 @@
             </div>
           </div>
         {/if}
-        {#if pciSelected}
+        {#if pciSelected && !hasSolderedDisplay}
           <div class="form-row">
             <span class="form-label"></span>
             <div class="form-help">
-              An expansion-slot card. The machine has no built-in video, so this card is the screen.
+              This model has no built-in video, so the card in the expansion slot is the screen.
             </div>
           </div>
         {/if}
@@ -778,17 +829,8 @@
         <div class="form-row">
           <span class="form-label">Display Card</span>
           <div class="form-help">
-            This model's display card needs a Video ROM. Drag-and-drop one (or add it via the Images
-            panel) to enable video.
-          </div>
-        </div>
-      {/if}
-      {#if needsDisplayCard}
-        <div class="form-row">
-          <span class="form-label">Display Card</span>
-          <div class="form-help">
-            {modelName} has no built-in video and requires a display card in a PCI slot. Drag-and-drop
-            the card's expansion ROM (a <code>.prom</code> file) to enable it.
+            This model's display card needs a {missingRomKind}. Drag-and-drop one (or add it via the
+            Images panel) to enable video.
           </div>
         </div>
       {/if}
