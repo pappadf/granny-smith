@@ -33,6 +33,11 @@ CANONICAL_NAMES = {
     "9feb69b3": "pm6100-pm7100-pm8100-9feb69b3.rom",  # Power Macintosh 6100/7100/8100 (1994-03 PDM ROM)
     "96cd923d": "pm7500-pm8500-pm9500-96cd923d.rom",  # Power Macintosh 7500/8500/9500 (1995-08 TNT ROM v1)
     "9630c68b": "pm7500-pm8500-pm9500-v2-9630c68b.rom",  # Power Macintosh 7500/8500/9500 (1995-08 TNT ROM v2)
+    # The Apple Network Servers.  The production image carries the SAME
+    # version string as the 9500 v2 ROM above, so only the checksum tells
+    # them apart (proposal-apple-network-server-500-700 §2.3).
+    "962f6c13": "ans500-ans700-962f6c13.rom",  # Apple Network Server 500/700 (Open Firmware 1.1.22, AIX)
+    "49b2be8f": "ans500-ans700-proto20-49b2be8f.rom",  # Apple Network Server 500/700 (2.0 prototype, Mac OS)
     "098917b2": "lisa2-revh-098917b2.rom",  # Apple Lisa 2 boot ROM rev H (computed checksum)
     "094c82f0": "macxl-3a-094c82f0.rom",  # Macintosh XL boot ROM "3A" (computed checksum)
     # --- Declaration ROMs / vROMs (*.vrom), keyed by Format-Block CRC -------

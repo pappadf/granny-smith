@@ -96,7 +96,7 @@ LOG_USE_CATEGORY_NAME("gc");
 // The BoxID as software sees it: the board's straps plus one presence bit
 // per POPULATED socket (bit n-1 for slot n, in the machine's declared slot
 // order).  The builtin VCI entry is not a socket and contributes nothing.
-static uint32_t tnt_boxid(config_t *cfg) {
+uint32_t tnt_gc_boxid(config_t *cfg) {
     uint32_t id = tnt_board(cfg)->boxid;
     for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
         if (d->kind != PCI_SLOT_SOCKET || d->slot < 1 || d->slot > 6)
@@ -360,8 +360,9 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
         return nvram_read(cfg, offset - OFF_NVDATA);
     case OFF_BOXID: {
         // Byte j of the little-endian register (the ROM reads it both as
-        // lwbrx and byte-wise).
-        uint8_t b = (uint8_t)(tnt_boxid(cfg) >> (8 * (offset & 3u)));
+        // lwbrx and byte-wise).  On the Network Servers this is Board
+        // Register 1 and the ROM reads bytes +0 and +1 only.
+        uint8_t b = (uint8_t)(tnt_gc_boxid(cfg) >> (8 * (offset & 3u)));
         LOG(3, "BoxID byte read +%u -> $%02X", offset & 3u, b);
         return b;
     }
@@ -371,11 +372,17 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
         // 53C94: sixteen byte-wide registers on $10 centres.
         return scsi_53c96_read(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu);
     case OFF_MESH:
-        return tnt_mesh_read(cfg, offset - OFF_MESH);
-    default:
-        LOG(1, "byte read of unwired island offset +$%05X", offset);
+        // Absent on the Network Servers (board delta #4): the aperture
+        // decodes nothing, so it falls through to the open-bus log.
+        if (tnt_board(cfg)->has_mesh)
+            return tnt_mesh_read(cfg, offset - OFF_MESH);
+        LOG(1, "byte read of the absent MESH aperture +$%05X", offset);
         return 0;
+    default:
+        break;
     }
+    LOG(1, "byte read of unwired island offset +$%05X", offset);
+    return 0;
 }
 
 void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
@@ -415,12 +422,15 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         scsi_53c96_write(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu, value);
         return;
     case OFF_MESH:
-        tnt_mesh_write(cfg, offset - OFF_MESH, value);
+        if (tnt_board(cfg)->has_mesh)
+            tnt_mesh_write(cfg, offset - OFF_MESH, value);
+        else
+            LOG(1, "byte write of the absent MESH aperture +$%05X = $%02X", offset, value);
         return;
     default:
-        LOG(1, "byte write of unwired island offset +$%05X = $%02X", offset, value);
-        return;
+        break;
     }
+    LOG(1, "byte write of unwired island offset +$%05X = $%02X", offset, value);
 }
 
 // 32-bit access: the LE register blocks.  `value` at this boundary is the
@@ -437,8 +447,8 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
     if ((offset & 0x1F000u) == OFF_AWACS)
         return TNT_LE32(tnt_awacs_read32(cfg, offset - OFF_AWACS));
     if ((offset & 0x1F000u) == OFF_BOXID) {
-        LOG(3, "BoxID read -> $%08X", tnt_boxid(cfg));
-        return TNT_LE32(tnt_boxid(cfg));
+        LOG(3, "BoxID read -> $%08X", tnt_gc_boxid(cfg));
+        return TNT_LE32(tnt_gc_boxid(cfg));
     }
     LOG(1, "long read of unwired island offset +$%05X", offset);
     return 0;

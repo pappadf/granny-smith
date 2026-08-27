@@ -527,7 +527,14 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
-    tnt_mesh_init(cfg); // DBDMA ch-10 port
+    // MESH is a Macintosh-only cell.  The Network Servers deleted it — two
+    // 53C825A PCI controllers carry the internal fast/wide buses instead —
+    // so the board flag gates construction, the island decode
+    // (grand_central.c) and DBDMA channel 10, which simply goes unused
+    // there along with TNT_INT_MESH.  The checkpoint stream still carries
+    // the (untouched) struct so it stays positional across both boards.
+    if (tnt_board(cfg)->has_mesh)
+        tnt_mesh_init(cfg); // DBDMA ch-10 port
     tnt_scsi0_port_init(cfg); // DBDMA ch-0 port (53C94 pdma)
 
     // Finish: debugger + scheduler start.
@@ -547,7 +554,8 @@ static void tnt_reset(config_t *cfg) {
     tnt_dbdma_reset(st->dbdma);
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
-    tnt_mesh_reset(cfg);
+    if (tnt_board(cfg)->has_mesh)
+        tnt_mesh_reset(cfg);
     if (st->scsi96)
         scsi_53c96_reset(st->scsi96);
     scc_reset(cfg->scc);

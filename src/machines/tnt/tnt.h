@@ -95,6 +95,41 @@ struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 #define TNT_PCI_BUS_2   1 // Bandit 2 (8500/9500)
 #define TNT_PCI_BUS_VCI 2 // Chaos, the display bus
 
+// === Grand Central external-interrupt map, Network Server personality =======
+// Apple, "Network Server Hardware Developer Notes", 1996, §4.2, p. 16: the
+// ANS "keeps the critical positions of PowerMac 9500; however, F/W SCSI
+// interrupts are moved to Bandit's positions."  Exactly three lines differ
+// from the Macintosh boards — EXT1 (was Reserved) takes BOTH Bandits'
+// ganged bus-timeout error line, and EXT2/EXT6 (were Ban1_Int/Ban2_Int)
+// take the two fast/wide 53C825A controllers.  The internal Grand Central
+// assignments (TNT_INT_SCSI0/MACE/SCCA/SCCB/AWACS/VIA1/SWIM3) are
+// explicitly unchanged; TNT_INT_MESH simply goes unused.
+//
+// NOTE the trap in §10: a slot's line does NOT follow its bridge.  Slot 3
+// sits on Bandit 2 but keeps EXT5 — the line a 9500 gives Bandit 1's third
+// slot — so the map is DATA in the profile's slot table, never derived.
+#define ANS_INT_ERROR    21 // EXT1: Error_Int, both Bandits ganged
+#define ANS_INT_FW0      22 // EXT2: FW0_Int — 53C825A #0 (IDSEL 17)
+#define ANS_INT_SLOT1    23 // EXT3
+#define ANS_INT_SLOT2    24 // EXT4
+#define ANS_INT_SLOT3    25 // EXT5 (on Bandit 2 — see above)
+#define ANS_INT_FW1      26 // EXT6: FW1_Int — 53C825A #1 (IDSEL 18)
+#define ANS_INT_SLOT4    27 // EXT7
+#define ANS_INT_SLOT5    28 // EXT8
+#define ANS_INT_SLOT6    29 // EXT9
+#define ANS_INT_SECTOPRI 30 // EXT10: the MP doorbell (GBUS $19000 access)
+
+// Which board personality a profile describes.  The ANS is a fourth board
+// on this family, not a new one: same Hammerhead, same two Bandits, same
+// Grand Central and its entire internal subtree, same 60x bus, same DBDMA
+// (Apple, ibid., §1: "much of the hardware detail which is fully documented
+// in the PowerMac family is not repeated here").  What differs is the
+// sixteen-item delta this enum selects.
+typedef enum tnt_board_kind {
+    TNT_BOARD_MAC = 0, // Power Macintosh 7500/8500/9500
+    TNT_BOARD_SHINER, // Apple Network Server 500/700 ("Shiner")
+} tnt_board_kind_t;
+
 // === Per-model board descriptor =============================================
 typedef struct tnt_board_desc {
     // BoxID power-on value (little-endian bit numbering — the guest reads
@@ -110,6 +145,31 @@ typedef struct tnt_board_desc {
     uint32_t hh_r20;
     uint32_t bus_hz; // processor (AR) bus clock: 50/40/44 MHz
     int bandit_count; // 1 (7500) or 2 (8500/9500)
+
+    // === The Network Server delta (Apple, ibid., §1.1 table) ================
+    tnt_board_kind_t kind; // MAC (default) or SHINER
+    // MESH, the internal fast-SCSI cell.  Delta #4: the ANS has no MESH at
+    // all — two 53C825A PCI controllers replace it — so the cell must not be
+    // constructed, must not decode island +$18000, and must not appear in
+    // the device tree.  A board flag rather than a #ifdef, because one
+    // binary serves both boards.
+    bool has_mesh;
+    // The GBUS island (delta #6/#9/#13/#14): Grand Central's Generic Bus
+    // chip selects, idle on a Macintosh, carrying the server's front-panel
+    // LCD, board registers, keyswitch, Ethernet PROM and NVRAM ports here.
+    bool has_gbus;
+    // Parity DRAM (delta #7).  Counterintuitively the FASTER configuration:
+    // "If parity is detected, 60 ns timing is set.  If parity is not
+    // detected, 70 ns timing is set" (ibid., §5).
+    bool has_parity;
+    // L2 cache DIMM size in KB; 0 = no cache DIMM.  The ANS's DIMM is
+    // "fit, form and function compatible with the PowerMac 8500 cache slot"
+    // — 512 KB on the 500, 1 MB on the 700 (ibid., §6).  Reported through
+    // Hammerhead +$E0.
+    uint32_t l2_kb;
+    // TwoSuppliesH — Board Register 1 bit 15, the redundant-PSU report and
+    // the one register-level difference between a 700 and a 500 (§5.6).
+    bool two_supplies;
 } tnt_board_desc_t;
 
 // === Hammerhead state (hammerhead.c) ========================================
@@ -394,5 +454,8 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level);
 void tnt_gc_pulse_event(config_t *cfg, int n);
 // Recompute ((events | levels) & mask) and drive the CPU external line.
 void tnt_gc_recompute(config_t *cfg);
+// Board Register 1 / BoxID as software reads it: the board straps, the live
+// PCI slot-presence pins, and (on a Network Server) the GBUS top byte.
+uint32_t tnt_gc_boxid(config_t *cfg);
 
 #endif // GS_MACHINES_TNT_H
