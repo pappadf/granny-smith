@@ -53,9 +53,11 @@ LOG_USE_CATEGORY_NAME("gc");
 #define OFF_SWIM3     0x15000u // SWIM3 floppy (Phase F)
 #define OFF_VIA       0x16000u // VIA1/Cuda: 16 byte regs on $200 centres (8 KB)
 #define OFF_MESH      0x18000u // MESH, internal bus (Phase E)
-#define OFF_EPROM     0x19000u // Ethernet address PROM (Phase F)
+#define OFF_EPROM     0x19000u // Ethernet address PROM (+ the ANS MP doorbell)
 #define OFF_BOXID     0x1A000u // machine-identification register (LE)
 #define OFF_RADACAL   0x1B000u // RAMDAC colormap bank (Phase D)
+#define OFF_LCDGB     0x1C000u // GBUS device 3: ANS front-panel LCD (lcd.c)
+#define OFF_BREG2     0x1E000u // ANS Board Register 2: environment (gbus.c)
 #define OFF_NVPORT    0x1D000u // NVRAM bank-select port
 #define OFF_NVDATA    0x1F000u // NVRAM data window: byte j at +j*$10
 
@@ -104,6 +106,12 @@ uint32_t tnt_gc_boxid(config_t *cfg) {
         if (pci_slot_device(cfg->pci, d->slot))
             id |= 1u << (d->slot - 1);
     }
+    // On a Network Server this same register is Board Register 1, and its
+    // top byte is live board state rather than straps: the two active-low
+    // keyswitch lines and TwoSuppliesH (gbus.c).  Bits 14 and 15 are NOT
+    // the Macintosh boards' "MESH present" / idle-high pair there.
+    if (tnt_board(cfg)->has_gbus)
+        id |= tnt_gbus_boxid_bits(cfg);
     return id;
 }
 
@@ -366,6 +374,15 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
         LOG(3, "BoxID byte read +%u -> $%02X", offset & 3u, b);
         return b;
     }
+    case OFF_LCDGB: // GBUS device 3 — LCD + timebase enable (ANS only)
+        if (tnt_board(cfg)->has_gbus)
+            return tnt_lcd_read8(cfg, offset - OFF_LCDGB);
+        break;
+    case OFF_EPROM: // Ethernet address PROM + MP doorbell (ANS only)
+    case OFF_BREG2: // Board Register 2 — the environmental halfword
+        if (tnt_board(cfg)->has_gbus)
+            return tnt_gbus_read8(cfg, offset);
+        break;
     case OFF_RADACAL:
         return tnt_control_rad_read(cfg, offset - OFF_RADACAL);
     case OFF_SCSI0:
@@ -418,6 +435,19 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
     case OFF_RADACAL:
         tnt_control_rad_write(cfg, offset - OFF_RADACAL, value);
         return;
+    case OFF_LCDGB: // GBUS device 3 — the write-only LCD ports (ANS only)
+        if (tnt_board(cfg)->has_gbus) {
+            tnt_lcd_write8(cfg, offset - OFF_LCDGB, value);
+            return;
+        }
+        break;
+    case OFF_EPROM:
+    case OFF_BREG2:
+        if (tnt_board(cfg)->has_gbus) {
+            tnt_gbus_write8(cfg, offset, value);
+            return;
+        }
+        break;
     case OFF_SCSI0:
         scsi_53c96_write(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu, value);
         return;
@@ -450,6 +480,18 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
         LOG(3, "BoxID read -> $%08X", tnt_gc_boxid(cfg));
         return TNT_LE32(tnt_gc_boxid(cfg));
     }
+    // The Network Server's GBUS blocks: Board Register 2 (a little-endian
+    // halfword like BoxID) and the Ethernet PROM's byte cells.
+    if (tnt_board(cfg)->has_gbus && ((offset & 0x1F000u) == OFF_BREG2 || (offset & 0x1F000u) == OFF_EPROM))
+        return tnt_gbus_read32(cfg, offset);
+    // The NVRAM data window's byte cells answering a longword cycle.  The
+    // production ANS ROM reads them this way; a byte-wide cell on this
+    // big-endian bus drives lane 0, which is the MOST significant byte of
+    // the longword.  Gated on the board because no Macintosh TNT ROM has
+    // ever been observed issuing the cycle, and widening their decode
+    // without a TNT ladder run to prove it would be a blind change.
+    if (tnt_board(cfg)->has_gbus && (offset & 0x1F000u) == OFF_NVDATA)
+        return (uint32_t)nvram_read(cfg, offset - OFF_NVDATA) << 24;
     LOG(1, "long read of unwired island offset +$%05X", offset);
     return 0;
 }

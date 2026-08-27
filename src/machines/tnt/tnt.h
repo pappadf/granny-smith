@@ -37,6 +37,7 @@
 
 #include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
 #include "display.h" // scanout descriptor (control.c presents through it)
+#include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
 #include "machine.h"
 #include "memory.h"
 #include "pci.h" // the generic PCI core: bus, device, config header
@@ -351,6 +352,12 @@ typedef struct tnt_state {
     pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
                                // by the bus: its factory allocated it)
     tnt_mesh_t mesh; // internal fast SCSI (mesh.c; bus = cfg->scsi)
+    // The Network Server's GBUS island (gbus.c / lcd.c).  Built only for
+    // TNT_BOARD_SHINER; inert and unread on the Macintosh boards.
+    tnt_gbus_t gbus;
+    tnt_lcd_t lcd;
+    struct object *board_object; // machine.board node (gbus.c)
+    struct object *lcd_object; // machine.lcd node (lcd.c)
     struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
     uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
     struct display display; // scanout descriptor (display.h)
@@ -457,5 +464,12 @@ void tnt_gc_recompute(config_t *cfg);
 // Board Register 1 / BoxID as software reads it: the board straps, the live
 // PCI slot-presence pins, and (on a Network Server) the GBUS top byte.
 uint32_t tnt_gc_boxid(config_t *cfg);
+
+// === gbus.c (GBUS device 3's non-LCD registers; lcd.c routes them here) ====
+
+void tnt_gbus_tben_write(config_t *cfg, uint16_t value);
+uint16_t tnt_gbus_tben_read(config_t *cfg);
+void tnt_gbus_misc_write(config_t *cfg, uint16_t value);
+uint16_t tnt_gbus_misc_read(config_t *cfg);
 
 #endif // GS_MACHINES_TNT_H

@@ -477,6 +477,15 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    // The Network Server's GBUS island — built before the memory layout so
+    // the LCD is answering from the very first POST write.  That ordering is
+    // the whole point of it: POST establishes its LCD path before it sizes
+    // DRAM, so the panel is the only narrator during the phase most likely
+    // to break.
+    if (tnt_board(cfg)->has_gbus) {
+        tnt_gbus_init(cfg);
+        tnt_lcd_init(cfg);
+    }
     tnt_memory_layout(cfg);
 
     // The PCI slot walk: seats every device the machine's slot table names
@@ -525,6 +534,8 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
     if (cp) {
         system_read_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
+        system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
+        system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
     // MESH is a Macintosh-only cell.  The Network Servers deleted it — two
@@ -556,6 +567,10 @@ static void tnt_reset(config_t *cfg) {
     tnt_control_reset(cfg);
     if (tnt_board(cfg)->has_mesh)
         tnt_mesh_reset(cfg);
+    if (tnt_board(cfg)->has_gbus) {
+        tnt_gbus_reset(cfg);
+        tnt_lcd_reset(cfg);
+    }
     if (st->scsi96)
         scsi_53c96_reset(st->scsi96);
     scc_reset(cfg->scc);
@@ -577,8 +592,11 @@ static void tnt_teardown(config_t *cfg) {
         memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
         tnt_nvram_carry_valid = true;
     }
-    if (st)
+    if (st) {
         tnt_awacs_teardown(cfg);
+        tnt_gbus_teardown(cfg);
+        tnt_lcd_teardown(cfg);
+    }
     // Deleting the PCI root tears down every seated device, which is what
     // frees Control's VRAM and display buffers (its ops->teardown).
     if (cfg->pci) {
@@ -668,6 +686,11 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     scsi_checkpoint(cfg->scsi, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
     system_write_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
+    // The GBUS island (Network Servers only; zeroed and unread elsewhere).
+    // Both blobs are plain data: the LCD's DDRAM and the board's keyswitch
+    // positions and injected environmental faults.
+    system_write_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
+    system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
 }
 
 // Frame tick (scheduler-paced, one per VBL frame-unit): the 60.15 Hz
