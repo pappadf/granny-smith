@@ -80,6 +80,17 @@ vi.mock('@/bus/emulator', async (importOriginal) => {
                     class: 'display',
                     requires_prom: true,
                     monitors: [],
+                    options: [
+                      {
+                        key: 'vram',
+                        label: 'Video Memory',
+                        default_value: '2m',
+                        values: [
+                          { id: '2m', label: '2 MB' },
+                          { id: '4m', label: '4 MB (expansion module)' },
+                        ],
+                      },
+                    ],
                   },
                 ],
               },
@@ -261,6 +272,52 @@ describe('WelcomeConfigSlide display-class PCI cards', () => {
     expect(cfg.videoCard).toBeUndefined();
     // There is no built-in port to unplug on this machine, so no override.
     expect(cfg.monitor).toBeUndefined();
+  });
+
+  it('renders a card-declared option and sends only a non-default pick', async () => {
+    const container = await ready();
+    const vram = await waitFor(() => {
+      const s = container.querySelector('#cfg-pciopt-vram') as HTMLSelectElement | null;
+      if (!s) throw new Error('no vram control');
+      return s;
+    });
+    // The dialog knows nothing about "vram" — the card declared it and the
+    // control is rendered from that declaration.
+    expect(Array.from(vram.options).map((o) => o.value)).toEqual(['2m', '4m']);
+    expect(vram.value).toBe('2m');
+
+    // Leaving it at the card's own default sends nothing: the boot record
+    // must not claim a choice the user did not make.
+    await fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    await waitFor(() => {
+      if (vi.mocked(initEmulator).mock.calls.length === 0) throw new Error('no boot yet');
+    });
+    expect(vi.mocked(initEmulator).mock.calls[0][0].pciOption).toBeUndefined();
+
+    // Choosing the other value does send it.
+    vi.mocked(initEmulator).mockClear();
+    await fireEvent.change(vram, { target: { value: '4m' } });
+    await fireEvent.submit(container.querySelector('form') as HTMLFormElement);
+    await waitFor(() => {
+      if (vi.mocked(initEmulator).mock.calls.length === 0) throw new Error('no second boot');
+    });
+    expect(vi.mocked(initEmulator).mock.calls[0][0].pciOption).toBe('vram=4m');
+  });
+
+  it("lists the machine's expansion slots, with the card in the first", async () => {
+    const container = await ready();
+    await waitFor(() => {
+      if (!container.querySelector('.slot-list')) throw new Error('no slot list');
+    });
+    const rows = Array.from(container.querySelectorAll('.slot-row')).map((r) =>
+      (r.textContent ?? '').replace(/\s+/g, ' ').trim(),
+    );
+    // Two sockets; the fixed VCI stand-in is not a slot the user populates.
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toContain('A1');
+    expect(rows[0]).toContain('Mach64 GX');
+    expect(rows[1]).toContain('B1');
+    expect(rows[1]).toContain('(empty)');
   });
 
   it('never offers a soldered stand-in as an installable card', async () => {

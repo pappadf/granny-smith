@@ -486,6 +486,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   // offer registry content-match among the files the platform published.
   if (config.pciCard) doc.pci_card = config.pciCard;
   if (config.prom && config.prom !== '(auto)') doc.prom = config.prom;
+  if (config.pciOption) doc.pci_option = config.pciOption;
   if (config.videoMode) doc.video_mode = config.videoMode;
   if (config.monitor) doc.monitor = config.monitor;
   const ok = await gsEval('machine.boot', doc);

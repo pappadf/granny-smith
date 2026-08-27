@@ -102,6 +102,15 @@
         display_name?: string;
         class?: string;
         requires_prom?: boolean;
+        // Options the CARD declares it will accept, so this dialog can
+        // render a control per option without knowing which card it is.
+        // They travel back as machine.boot's pci_option="key=value".
+        options?: Array<{
+          key: string;
+          label?: string;
+          default_value?: string;
+          values?: Array<{ id: string; label?: string }>;
+        }>;
         monitors?: Array<{
           id: string;
           name?: string;
@@ -150,6 +159,9 @@
   let hd = $state(NONE_SENTINEL);
   let cd = $state(NONE_SENTINEL);
   let videoMode = $state('');
+  // Chosen PCI card options, keyed by option key ("vram" -> "4m"). Cleared
+  // whenever the selected card changes, since the keys are the card's.
+  let pciOptions = $state<Record<string, string>>({});
 
   // Discovery state.
   let scanning = $state(true);
@@ -302,6 +314,29 @@
   // decides which one is filled in.
   let selectedPciCard = $derived(availablePciCards.find((c) => c.id === cardId));
   let pciSelected = $derived(!!selectedPciCard);
+  // The options the selected PCI card declares. Only a socket card can take
+  // them: a soldered one is not staged, so there is nothing to attach an
+  // option to.
+  let pciCardOptions_ = $derived(selectedPciCard?.options ?? []);
+  // Every PCI SOCKET the machine declares, for the Expansion Slots list.
+  // Sockets only — a fixed slot is soldered-down hardware, not a slot the
+  // user populates.
+  let pciSockets = $derived((currentProfile?.pci_slots ?? []).filter((sl) => !sl.fixed));
+  // machine.boot takes one wildcard card for the FIRST socket, so that is
+  // the only one this dialog can fill; the rest are shown as empty. A
+  // per-socket picker needs a per-slot boot field that does not exist yet.
+  let firstSocketLabel = $derived(pciSockets[0]?.label ?? '');
+  // "key=value,key=value" for machine.boot, omitting anything left at the
+  // card's own default so the boot record does not claim a choice the user
+  // did not make.
+  let pciOptionSpec = $derived(
+    pciCardOptions_
+      .map((o) => [o.key, pciOptions[o.key] ?? o.default_value ?? ''] as const)
+      .filter(([, v], i) => v && v !== (pciCardOptions_[i].default_value ?? ''))
+      .map(([k, v]) => `${k}=${v}`)
+      .join(','),
+  );
+
   // The expansion ROM handed to the core for the selected PCI card.  As with
   // the vROM, an explicit pick is preferred over letting the offer registry
   // content-match, so the user sees the file they uploaded actually used.
@@ -585,6 +620,14 @@
     }
   });
 
+  // The option keys belong to the selected card, so a card change starts
+  // them over rather than carrying a stale key into a different card.
+  $effect(() => {
+    const keys = pciCardOptions_.map((o) => o.key).join('|');
+    void keys;
+    pciOptions = {};
+  });
+
   // Keep videoMode valid for the selected card (resets on model or card change).
   $effect(() => {
     const list = videoModes;
@@ -749,6 +792,7 @@
       // socket supplied a display card.
       pciCard: pciSelected ? cardId : undefined,
       prom: pciSelected ? promPath : undefined,
+      pciOption: pciSelected && pciOptionSpec ? pciOptionSpec : undefined,
       // Which port the monitor is plugged into.  Choosing a NuBus card on a
       // machine that also has built-in video leaves the built-in port
       // unconnected, so the ROM turns built-in video off and the card is the
@@ -845,6 +889,48 @@
             Images panel) to enable video.
           </div>
         </div>
+      {/if}
+      {#if pciSockets.length > 0}
+        <div class="form-divider"></div>
+        <div class="form-row">
+          <span class="form-label">Expansion Slots</span>
+          <div class="slot-list">
+            {#each pciSockets as sl (sl.slot)}
+              <div class="slot-row">
+                <span class="slot-name">{sl.label ?? `Slot ${sl.slot}`}</span>
+                <span class="slot-card">
+                  {sl.label === firstSocketLabel && pciSelected
+                    ? (selectedPciCard?.display_name ?? cardId)
+                    : '(empty)'}
+                </span>
+              </div>
+            {/each}
+          </div>
+        </div>
+        {#if pciSockets.length > 1 && pciSelected}
+          <div class="form-row">
+            <span class="form-label"></span>
+            <div class="form-help">
+              A card is installed in the first socket. Filling the others needs a per-socket pick,
+              which the boot document does not carry yet.
+            </div>
+          </div>
+        {/if}
+        {#each pciCardOptions_ as opt (opt.key)}
+          <div class="form-row">
+            <label for="cfg-pciopt-{opt.key}">{opt.label ?? opt.key}</label>
+            <select
+              id="cfg-pciopt-{opt.key}"
+              value={pciOptions[opt.key] ?? opt.default_value ?? ''}
+              onchange={(e) =>
+                (pciOptions = { ...pciOptions, [opt.key]: (e.target as HTMLSelectElement).value })}
+            >
+              {#each opt.values ?? [] as v (v.id)}
+                <option value={v.id}>{v.label ?? v.id}</option>
+              {/each}
+            </select>
+          </div>
+        {/each}
       {/if}
       {#if videoModes.length > 1}
         <div class="form-row">
@@ -947,6 +1033,24 @@
     gap: 12px;
   }
   .form-row label,
+  .slot-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .slot-row {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .slot-name {
+    min-width: 3em;
+    opacity: 0.7;
+  }
+  .slot-card {
+    opacity: 0.9;
+  }
+
   .form-row .form-label {
     color: var(--gs-fg);
     opacity: 0.9;

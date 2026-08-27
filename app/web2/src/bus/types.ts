@@ -22,6 +22,8 @@ export interface MachineConfig {
   // boot document has a field for each.
   pciCard?: string;
   prom?: string;
+  // "key=value[,key=value]" for the staged PCI card (e.g. "vram=4m").
+  pciOption?: string;
   /** JMFB video-mode id (e.g. "13in_rgb_1bpp") — the boot document's
    *  `video_mode` field; the card factory consumes it during boot (sense
    *  lines + slot-PRAM/video defaults).  Without it the JMFB card never
