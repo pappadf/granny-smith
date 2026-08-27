@@ -40,6 +40,22 @@ const pci_card_kind_t mach64_gx_kind = {.id = "mach64_gx",
                                         .attach = PCI_ATTACH_PCI,
                                         .requires_prom = true,
                                         .card_class = "display"};
+// ...and the three soldered-down devices of the Apple Network Server, whose
+// real drivers live in cards/cirrus54m30.c and cards/sym53c825.c.  All
+// BUILTIN, so they never appear in a socket-fit row; they are here because
+// the registry is an explicit list and the linker wants every name in it.
+const pci_card_kind_t cirrus_54m30_kind = {.id = "cirrus_54m30",
+                                           .display_name = "Cirrus Logic 54M30 on-board video",
+                                           .attach = PCI_ATTACH_BUILTIN,
+                                           .card_class = "display"};
+const pci_card_kind_t sym53c825_ch0_kind = {.id = "sym53c825_0",
+                                            .display_name = "Symbios 53C825A fast/wide SCSI (channel 0)",
+                                            .attach = PCI_ATTACH_BUILTIN,
+                                            .card_class = "scsi"};
+const pci_card_kind_t sym53c825_ch1_kind = {.id = "sym53c825_1",
+                                            .display_name = "Symbios 53C825A fast/wide SCSI (channel 1)",
+                                            .attach = PCI_ATTACH_BUILTIN,
+                                            .card_class = "scsi"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;
