@@ -184,8 +184,14 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
 
 static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
     switch (reg) {
-    case SYM825_ISTAT:
-        s->reg[reg] = value;
+    case SYM825_ISTAT: {
+        // INTF is write-ONE-to-clear, and it is the one bit here a driver
+        // acknowledges rather than sets: a plain store of the value it just
+        // read would re-arm the very interrupt it is dismissing.
+        uint8_t intf = (uint8_t)(s->reg[SYM825_ISTAT] & SYM825_ISTAT_INTF);
+        if (value & SYM825_ISTAT_INTF)
+            intf = 0;
+        s->reg[reg] = (uint8_t)((value & (uint8_t)~SYM825_ISTAT_INTF) | intf);
         // A software reset clears the chip but not the PCI header (that is
         // RST#'s job) — SRST is self-clearing.
         if (value & SYM825_ISTAT_SRST) {
@@ -201,6 +207,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         if ((value & SYM825_ISTAT_SIGP) && s->waiting_reselect)
             sym53c8xx_start(s);
         return;
+    }
     case SYM825_DSTAT:
     case SYM825_SIST0:
     case SYM825_SIST1:

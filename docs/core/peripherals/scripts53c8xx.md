@@ -74,6 +74,13 @@ them:
   halts SCRIPTS and still sets its status bit: "the SCRIPTS still stop … but
   the IRQ/ pin is not asserted." Masking an interrupt on this part does not
   mean ignoring the event.
+* **`ISTAT`'s `INTF` drives the pin too, and nothing gates it.**
+  Interrupt-on-the-fly exists to tell a driver a command finished *without*
+  stopping SCRIPTS, so it has no enable bit and it is **write-one-to-clear**
+  rather than read-to-clear — a driver that stored back the ISTAT byte it
+  had just read would otherwise re-arm the interrupt it was dismissing. A
+  model that latches `INTF` without raising `IRQ/` leaves the driver waiting
+  forever on an interrupt a perfectly healthy script already sent.
 
 And the rule the DBDMA work paid for once already: **status must change
 synchronously with the control write.** A driver writes DSP (or `DCNTL`'s

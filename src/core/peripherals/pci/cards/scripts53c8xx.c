@@ -93,7 +93,13 @@ void sym53c8xx_update_irq(sym53c8xx_t *s) {
     // Enables gate only the PIN, never the latch (see the header comment).
     bool dma = (s->dstat & s->reg[SYM825_DIEN]) != 0;
     bool scsi = ((s->sist0 & s->reg[SYM825_SIEN0]) | (s->sist1 & s->reg[SYM825_SIEN1])) != 0;
-    bool want = (dma || scsi) && !(s->reg[SYM825_DCNTL] & SYM825_DCNTL_IRQD);
+    // Interrupt-on-the-fly drives the pin too, and it has no enable bit to
+    // gate it: the whole point of the instruction is to tell the driver a
+    // command finished WITHOUT stopping SCRIPTS, so a model that only
+    // latches INTF leaves the driver waiting on an interrupt that a
+    // perfectly healthy script already sent.
+    bool fly = (s->reg[SYM825_ISTAT] & SYM825_ISTAT_INTF) != 0;
+    bool want = (dma || scsi || fly) && !(s->reg[SYM825_DCNTL] & SYM825_DCNTL_IRQD);
     if (want == s->irq)
         return;
     s->irq = want;

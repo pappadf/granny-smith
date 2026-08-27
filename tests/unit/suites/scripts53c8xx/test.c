@@ -707,6 +707,23 @@ TEST(test_transfer_control_interrupt_on_the_fly) {
     run_at(0x1000);
     ASSERT_TRUE(s_c->reg[SYM825_ISTAT] & SYM825_ISTAT_INTF);
     ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x5C);
+    // ...and it drives the PIN, on its own.  The whole point of the
+    // instruction is to tell the driver a command finished WITHOUT
+    // stopping SCRIPTS; a model that only latches the bit leaves the
+    // driver waiting forever on an interrupt a healthy script already
+    // sent.  INTF has no enable bit to gate it.
+    //
+    // The program also ends on a plain INT, so retire that cause first:
+    // what is being proved is that INTF alone holds the pin up.
+    (void)take_dstat();
+    sym53c8xx_update_irq(s_c);
+    ASSERT_TRUE(s_c->irq);
+    // And the pin follows the latch back down when the driver acknowledges
+    // it.  (The write-ONE-to-clear decode itself belongs to the register
+    // file, in sym53c825.c, which this suite does not link.)
+    s_c->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_INTF;
+    sym53c8xx_update_irq(s_c);
+    ASSERT_TRUE(!s_c->irq);
 }
 
 // ============================================================================
