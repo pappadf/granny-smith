@@ -170,6 +170,10 @@ LOG_USE_CATEGORY_NAME("mach64");
 #define DW_DST_HEIGHT         0x45
 #define DW_DST_HEIGHT_WIDTH   0x46
 #define DW_DST_X_WIDTH        0x47
+#define DW_DST_BRES_LNTH      0x48
+#define DW_DST_BRES_ERR       0x49
+#define DW_DST_BRES_INC       0x4A
+#define DW_DST_BRES_DEC       0x4B
 #define DW_DST_CNTL           0x4C
 #define DW_SRC_OFF_PITCH      0x60
 #define DW_SRC_X              0x61
@@ -264,9 +268,22 @@ LOG_USE_CATEGORY_NAME("mach64");
 #define CLR_CMP_NE       4u // veto where the pixel differs from CLR_CMP_CLR
 #define CLR_CMP_EQ       5u // veto where it matches — the transparent blit
 #define CLR_CMP_SRC(v)   (((v) >> 24) & 3u) // 0 = compare the destination
-// DST_CNTL: which way the trajectory walks.  1 = increasing.
-#define DST_X_DIR 0x01u
-#define DST_Y_DIR 0x02u
+// DST_CNTL / GUI_TRAJ_CNTL trajectory bits.  GUI_TRAJ_CNTL is the combined
+// register (RRG p. 3-82) whose low bits ARE DST_CNTL's, which matters
+// because a context block carries GUI_TRAJ_CNTL (DWORD $1B) and no
+// DST_CNTL entry.  Values are ATI's own, from the SDK's DEFINES.H.
+#define DST_X_DIR     0x01u // 1 = left-to-right
+#define DST_Y_DIR     0x02u // 1 = top-to-bottom
+#define DST_Y_MAJOR   0x04u // Bresenham major axis: 1 = Y
+#define DST_LAST_PEL  0x20u // draw the final pixel of a line
+#define DST_BRES_SIGN 0x800u // 1 = an error term of 0 counts as negative
+
+// Source-control bits.  They live at bit 0 upward in SRC_CNTL (the SDK's
+// SRC_PATTERN_ENABLE etc.) and at bit 16 upward in the combined
+// GUI_TRAJ_CNTL, which is the copy a context block carries.
+#define SRC_PATT_EN        0x01u // the source WRAPS at SRC_WIDTH1/SRC_HEIGHT1
+#define SRC_LINEAR_EN      0x04u
+#define GUI_TRAJ_SRC_SHIFT 16
 
 // CONFIG_CNTL has NO memory-mapped alias, so it has no natural dword
 // index.  It lives one slot above the 256-dword alias window, which the
@@ -465,6 +482,7 @@ typedef struct mach64 {
     bool host_blit_warned; // the host-data-blit log is once-only
     bool mix_warned; // the unsupported-raster-op log is once-only
     bool bres_warned; // the Bresenham-line log is once-only
+    bool in_context; // the operation in flight came from a context load
     uint64_t blits; // operations the engine has executed (diagnostics)
     // A host-data operation in flight.  Host data is a STREAM: the
     // trajectory is set up, then pixels arrive one HOST_DATA write at a
@@ -552,6 +570,7 @@ static bool mach64_in_vblank(const mach64_t *m);
 static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value);
 static void mach64_host_feed(mach64_t *m, uint32_t value);
 static void mach64_engine_run(mach64_t *m);
+static void mach64_engine_line(mach64_t *m);
 static uint32_t mach64_bytes_per_pixel(const mach64_t *m);
 static void mach64_irq_sync(mach64_t *m);
 
@@ -1176,8 +1195,22 @@ static void mach64_op_gather(mach64_t *m, mach64_op_t *op) {
     op->mask = m->reg[DW_DP_WRITE_MSK];
     op->src_x0 = m->reg[DW_SRC_X] & 0xFFFFu;
     op->src_y0 = m->reg[DW_SRC_Y] & 0xFFFFu;
-    op->src_w = m->reg[DW_SRC_WIDTH1] & 0xFFFFu;
-    op->src_h = m->reg[DW_SRC_HEIGHT1] & 0xFFFFu;
+    // The source window only WRAPS when the pattern source is enabled —
+    // "SRC_Y_END will be used only if this bit is enabled" (RRG p. 3-82,
+    // SRC_PATT_EN).  Without the gate, a plain screen-to-screen blit tiles
+    // whatever SRC_WIDTH1/SRC_HEIGHT1 happen to hold from some earlier
+    // pattern operation.  That is exactly what corrupted the Finder's
+    // repaint behind a closing dialog: a 477x220 restore from saved bits
+    // ran with a stale 7x4 source window, tiling a 28-pixel patch across
+    // the whole rectangle.
+    uint32_t src_cntl = m->reg[DW_SRC_CNTL] | (m->reg[DW_GUI_TRAJ_CNTL] >> GUI_TRAJ_SRC_SHIFT);
+    if (src_cntl & SRC_PATT_EN) {
+        op->src_w = m->reg[DW_SRC_WIDTH1] & 0xFFFFu;
+        op->src_h = m->reg[DW_SRC_HEIGHT1] & 0xFFFFu;
+    } else {
+        op->src_w = 0; // 0 = advance 1:1 with the destination
+        op->src_h = 0;
+    }
     op->cmp_fn = CLR_CMP_FN(m->reg[DW_CLR_CMP_CNTL]);
     op->cmp_clr = m->reg[DW_CLR_CMP_CLR];
     op->cmp_msk = m->reg[DW_CLR_CMP_MSK];
@@ -1279,9 +1312,15 @@ static void mach64_engine_run(mach64_t *m) {
     }
     m->blits++;
     m->display.fb_dirty = true;
-    LOG(3, "op #%llu %ux%u at (%u,%u) mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X", (unsigned long long)m->blits,
-        width, height, dst_x, dst_y, op.mono_sel, op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix,
-        m->reg[DW_DP_FRGD_CLR], m->reg[DW_DP_BKGD_CLR]);
+    if (op.frgd_sel == DP_SRC_BLIT || op.bkgd_sel == DP_SRC_BLIT || op.mono_sel == DP_MONO_BLIT)
+        LOG(3, "op #%llu %s %ux%u at (%u,%u) BLIT src=(%u,%u) win=%ux%u sc=[%u..%u,%u..%u] wmask=$%08X",
+            (unsigned long long)m->blits, m->in_context ? "CTX" : "DIR", width, height, dst_x, dst_y, op.src_x0,
+            op.src_y0, op.src_w, op.src_h, op.sc_left, op.sc_right, op.sc_top, op.sc_bottom, op.mask);
+    else
+        LOG(3, "op #%llu %s %ux%u at (%u,%u) mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X wmask=$%08X",
+            (unsigned long long)m->blits, m->in_context ? "CTX" : "DIR", width, height, dst_x, dst_y, op.mono_sel,
+            op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix, m->reg[DW_DP_FRGD_CLR], m->reg[DW_DP_BKGD_CLR],
+            op.mask);
 }
 
 // Feed one dword of host data into the operation in flight.
@@ -1463,20 +1502,131 @@ static void mach64_context_load(mach64_t *m, uint32_t value) {
                 continue; // the block's own mask inhibits this DWORD
             mach64_context_apply(m, i, mach64_context_dword(m, base, i));
         }
-        LOG(4, "context load: ptr $%04X -> VRAM +$%06X mask $%08X cmd %u (DP_MIX $%08X DP_SRC $%08X)", ptr, base, mask,
+        LOG(2, "context load: ptr $%04X -> VRAM +$%06X mask $%08X cmd %u (DP_MIX $%08X DP_SRC $%08X)", ptr, base, mask,
             cmd, m->reg[DW_DP_MIX], m->reg[DW_DP_SRC]);
 
-        if (cmd == CTX_CMD_FILL) {
+        // A context command only draws if the BLOCK supplies the operands
+        // that draw needs — the trajectory for a fill, the Bresenham terms
+        // for a line.  This is not a licence taken with ATI's encoding; it
+        // is what the driver's own context masks force.  System 7.6's
+        // accelerator uses exactly two blocks:
+        //
+        //   $08C80000 (920x)  DP_WRITE_MASK, DP_MIX, DP_SRC, GUI_TRAJ_CNTL
+        //   $00018000  (21x)  SC_LEFT_RIGHT, SC_TOP_BOTTOM
+        //
+        // Neither carries DST_Y_X, DST_HEIGHT_WIDTH or DST_BRES_ERR/INC/DEC,
+        // and the driver never writes the Bresenham registers directly
+        // either.  A "load and initiate line" with no start point and no
+        // error terms would scribble on real silicon exactly as it does
+        // here — drawing them produced diagonal streaks across the whole
+        // desktop — so these are state loads whose command field this model
+        // does not fully understand.  Loading and not drawing is what the
+        // hardware visibly does; guessing new meanings for the command bits
+        // to justify it would be worse.
+        bool has_fill_traj = (mask & (1u << 4)) != 0;
+        bool has_line_terms = (mask & (7u << 5)) != 0;
+        if (cmd == CTX_CMD_FILL && has_fill_traj) {
+            m->in_context = true;
             mach64_engine_run(m);
-        } else if (cmd == CTX_CMD_LINE && !m->bres_warned) {
+            m->in_context = false;
+        } else if (cmd == CTX_CMD_LINE && has_line_terms) {
+            m->in_context = true;
+            mach64_engine_line(m);
+            m->in_context = false;
+        } else if (cmd != CTX_CMD_LOAD && !m->bres_warned) {
             m->bres_warned = true;
-            LOG(0, "draw engine: a context load asked for a Bresenham LINE, which this model does not "
-                   "draw (the DST_BRES_* terms are stored only).  Diagonal lines will be missing.");
+            LOG(1,
+                "context load: command %u asks for a draw but the block's mask $%08X supplies no "
+                "trajectory, so it is loaded without drawing",
+                cmd, mask);
         }
         // The CONTEXT_LOAD_CNTL entry continues or halts the chain.
         value = mach64_context_dword(m, base, 0x1C);
     }
     LOG(1, "context chain exceeded 64 hops — stopping");
+}
+
+// ============================================================
+// Bresenham lines
+// ============================================================
+//
+// Every one of the 941 context loads System 7.6's accelerator issues in a
+// boot is CONTEXT_LOAD_AND_DO_LINE — not one is a fill — so with lines
+// unimplemented the whole of that traffic drew nothing.
+//
+// The algorithm is ATI's, from the PRG's "Line Draw" section:
+//
+//     DST_BRES_ERR = 2 * min(|dx|,|dy|) - max(|dx|,|dy|)
+//     DST_BRES_INC = 2 * min(|dx|,|dy|)
+//     DST_BRES_DEC = 2 * [min(|dx|,|dy|) - max(|dx|,|dy|)]
+//     DST_BRES_LNTH = pixel count          (aliased to DST_WIDTH)
+//
+// with the direction and major-axis bits in DST_CNTL / GUI_TRAJ_CNTL.  The
+// terms are 18-bit and signed, and ATI's own sample writes DEC as
+// `0x3ffff - 2*(large-small)` — a ONE'S complement, so a sign-extended
+// read is one less than the true negative term.  That one-pixel bias is
+// invisible for the axis-aligned lines this driver actually draws (a
+// horizontal line has min = 0, so INC = 0 and the error never turns over),
+// and it is ATI's own encoding rather than something to second-guess.
+
+// Sign-extend one of the 18-bit Bresenham terms.
+static int32_t mach64_bres18(uint32_t v) {
+    v &= 0x3FFFFu;
+    return (v & 0x20000u) ? (int32_t)(v | 0xFFFC0000u) : (int32_t)v;
+}
+
+static void mach64_engine_line(mach64_t *m) {
+    uint32_t lnth = m->reg[DW_DST_WIDTH] & 0xFFFFu; // DST_BRES_LNTH aliases DST_WIDTH
+    if (!lnth)
+        return;
+
+    mach64_op_t op;
+    mach64_op_gather(m, &op);
+    if (op.mono_sel == DP_MONO_HOST || op.frgd_sel == DP_SRC_HOST || op.bkgd_sel == DP_SRC_HOST)
+        return; // a host-fed line would need the streaming cursor; not seen
+
+    uint32_t cntl = m->reg[DW_GUI_TRAJ_CNTL] | m->reg[DW_DST_CNTL];
+    int32_t xstep = (cntl & DST_X_DIR) ? 1 : -1;
+    int32_t ystep = (cntl & DST_Y_DIR) ? 1 : -1;
+    bool y_major = (cntl & DST_Y_MAJOR) != 0;
+    bool zero_is_negative = (cntl & DST_BRES_SIGN) != 0;
+
+    int32_t err = mach64_bres18(m->reg[DW_DST_BRES_ERR]);
+    int32_t inc = mach64_bres18(m->reg[DW_DST_BRES_INC]);
+    int32_t dec = mach64_bres18(m->reg[DW_DST_BRES_DEC]);
+    int32_t x = (int32_t)(m->reg[DW_DST_X] & 0xFFFFu);
+    int32_t y = (int32_t)(m->reg[DW_DST_Y] & 0xFFFFu);
+
+    // DST_LAST_PEL decides only whether the final pixel is drawn; the
+    // trajectory is the same either way (PRG).
+    uint32_t drawn = (cntl & DST_LAST_PEL) ? lnth : lnth - 1u;
+    for (uint32_t i = 0; i < lnth; i++) {
+        if (i < drawn && x >= 0 && y >= 0) {
+            bool mono = mach64_mono_bit(m, op.mono_sel, (uint32_t)x, (uint32_t)y, i, 0, &op.src, op.bpp);
+            mach64_emit(m, &op, (uint32_t)x, (uint32_t)y, i, 0, mono);
+        }
+        bool turn = zero_is_negative ? (err > 0) : (err >= 0);
+        if (turn) {
+            if (y_major)
+                x += xstep;
+            else
+                y += ystep;
+            err += dec;
+        } else {
+            err += inc;
+        }
+        if (y_major)
+            y += ystep;
+        else
+            x += xstep;
+    }
+    // The engine leaves the trajectory at the far end of the line.
+    m->reg[DW_DST_X] = (uint32_t)(x & 0xFFFF);
+    m->reg[DW_DST_Y] = (uint32_t)(y & 0xFFFF);
+    m->blits++;
+    m->display.fb_dirty = true;
+    LOG(3, "line #%llu %u px from (%d,%d) %s-major dir(%+d,%+d)", (unsigned long long)m->blits, lnth,
+        (int)(m->reg[DW_DST_X]), (int)(m->reg[DW_DST_Y]), y_major ? "Y" : "X", xstep, ystep);
 }
 
 // The engine's register writes.  Returns true when the write was the
@@ -1516,6 +1666,11 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
     case DW_DST_WIDTH: // supplies the width on its own — and GO
         m->reg[dw] = value;
         mach64_engine_run(m);
+        return true;
+    case DW_DST_BRES_LNTH: // aliased to DST_WIDTH, and starts a LINE
+        m->reg[DW_DST_WIDTH] = value & 0xFFFFu;
+        m->reg[dw] = value;
+        mach64_engine_line(m);
         return true;
     case DW_SRC_Y_X:
         m->reg[DW_SRC_X] = (value >> 16) & 0xFFFFu;
