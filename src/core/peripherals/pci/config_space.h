@@ -82,6 +82,13 @@ typedef struct pci_config_decl {
                             // (Control: the Chaos bus ignores config writes
                             // outside its two BAR offsets, so the device
                             // always decodes — proposal §6.2)
+    // Power-on value of the STATUS halfword ($06).  Strapped silicon facts,
+    // not software state: bits 10:9 are the DEVSEL timing the part drives,
+    // which Open Firmware publishes as the node's `devsel-speed` property.
+    // Zero (the default) means fast DEVSEL.  A real Mach64 GX in a real
+    // 9500 reports `devsel-speed 00000001` — medium, i.e. $0200 (Apple
+    // TN1062).
+    uint16_t status_reset;
     pci_bar_decl_t bar[PCI_NUM_BARS];
     uint32_t rom_size; // expansion-ROM BAR ($30); 0 = absent
 } pci_config_decl_t;

@@ -57,24 +57,43 @@ DMA architecture:
   access there reaches whichever seated device's BAR decodes it, and
   takes a recoverable transfer error when none does (the BART pattern).
 
-  Two windows are deliberately NOT claimed, and the `$48` register says
-  so in both cases (an OS derives the bridge's ranges from it, so the
-  register must describe what the model actually decodes):
+  Each Bandit also forwards an **8 MB PCI I/O window at its own base**
+  (`$F2000000`, `$F4000000`), driving only the low 16 address bits, so
+  the 64 KB I/O space aliases through it 128 times.  The bridge's own
+  `ranges` property, dumped from a real 9500 under Open Firmware (Apple
+  TN1062), is the specification:
 
-  - **Bandit 2 has no memory-space window.**  Which range it forwards is
-    unresolved — Apple's notes quote `$90000000` for both Bandit 2 and
-    Chaos, and a board carrying both cannot have them collide.  The
-    9500's Bandit-2 sockets still probe correctly: discovery is config
-    cycles, and an unpopulated IDSEL reads all-ones.
-  - **No PCI I/O window.**  The generic layer supports one, but nothing
-    on these machines decodes PCI I/O space — Grand Central is reached
-    by *pass-through memory* at `$F3000000`, not by I/O cycles — and
-    claiming `base+$000000..$7FFFFF` would turn today's silent reads
-    into faults for no modelled device's benefit.  It lands with the
-    first card that declares an I/O BAR.
+  ```
+  01000000 00000000 00000000  F2000000  00000000 00800000   I/O,  8 MB
+  02000000 00000000 F3000000  F3000000  00000000 01000000   mem, 16 MB
+  ```
+
+  So the two 16 MB windows above a Bandit are **not** interchangeable:
+  the bridge base carries PCI I/O, and the next 16 MB is pass-through
+  MEMORY — which is how Grand Central is reached.  (Earlier text here and
+  in `tnt.h` had this the other way round.)  Chaos claims no I/O window
+  at all.
+
+  `$90000000` has two claimants, and which one gets it is decided by what
+  actually seated rather than by machine name.  TN1062 pins 256 MB there
+  for **Bandit 2**; Chaos's VCI window is at the same address.  On real
+  hardware they never collide — a 9500 has no Chaos, a 7500/8500 has no
+  Bandit 2 — but our `pm9500` carries both, because Chaos is the stand-in
+  host for the onboard video the real machine does not have, and that
+  stand-in only materialises when no socket supplied a display card
+  (`PCI_SLOT_BUILTIN_FALLBACK`).
+
+  So `tnt_bandit_claim_memory()` runs AFTER `pci_seat_slots()`: if the VCI
+  bus has a device, Chaos keeps the window it needs to reach that device's
+  apertures; if it is empty, Bandit 2 takes it.  The `$48` address-select
+  register follows by construction — a bridge advertises the range only if
+  it claimed it — because an OS derives the bridge's ranges from `$48` and
+  the register must describe what the model actually decodes.  When Chaos
+  leaves `pm9500` for good the condition collapses to "Bandit 2 always
+  claims it" with no other change.
 - **Grand Central** (`grand_central.c`) — the I/O controller: a 128 KB
-  little-endian island at `$F3000000` (the base of Bandit 1's PCI I/O
-  window).  Phase B populates the interrupt block (`+$20..$2C`), the
+  little-endian island at `$F3000000` (Bandit 1's pass-through MEMORY
+  window — *not* its I/O window, which is at the bridge base).  Phase B populates the interrupt block (`+$20..$2C`), the
   VIA1/Cuda window (`+$16000`, 16 byte-wide registers on `$200` centres),
   both ESCC apertures (`+$12000` legacy / `+$13000` native, one shared
   Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
@@ -193,7 +212,7 @@ a Grand Central external:
 | Model | Sockets | Devices | GC interrupts | Builtin |
 |---|---|---|---|---|
 | 7500 / 8500 | A1 B1 C1 (Bandit 1) | 13 14 15 | 23 24 25 | VCI: Control @ dev 11 |
-| 9500 | A1 B1 C1 (Bandit 1) + D1 E1 F1 (Bandit 2) | 13 14 15 each bus | 23 24 25 / 27 28 29 | VCI: Control @ dev 11 |
+| 9500 | A1 B1 C1 (Bandit 1) + D2 E2 F2 (Bandit 2) | 13 14 15 each bus | 23 24 25 / 27 28 29 | VCI: Control @ dev 11 |
 
 The numbers are Apple's own 9500 external-interrupt table (External *N* =
 GC interrupt 20 + *N*).  They also settle the old 26-vs-30 puzzle: on a
@@ -230,9 +249,9 @@ $00000000-RAM top   DRAM, contiguous from 0 (OF sizes it; the tree is
 $80000000-$8FFFFFFF Bandit 1 PCI memory — empty: recoverable fault
 $90000000-$9FFFFFFF Chaos/VCI memory — likewise
 $F0000000-$F1FFFFFF Chaos bridge + display-bus device space
-$F2000000-$F2FFFFFF Bandit 1 (config ports at +$800000/+$C00000)
-$F3000000-$F3FFFFFF Bandit 1 PCI I/O — Grand Central at the base
-$F4000000-$F5FFFFFF Bandit 2 (8500/9500)
+$F2000000-$F2FFFFFF Bandit 1: PCI I/O (8 MB) + config ports at +$800000/+$C00000
+$F3000000-$F3FFFFFF Bandit 1 pass-through memory — Grand Central at the base
+$F4000000-$F5FFFFFF Bandit 2 (8500/9500): PCI I/O + ports, then pass-through
 $F8000000           Hammerhead register window
 $FFC00000-$FFFFFFFF the 4 MB ROM (reset vector $FFF00100)
 ```

@@ -55,6 +55,17 @@ typedef enum pci_slot_kind {
                          // NuBus-style EMPTY/ABSENT distinction)
     PCI_SLOT_BUILTIN, // soldered device the machine names (Control)
     PCI_SLOT_SOCKET, // physical connector — user-populatable
+    // A builtin that stands in only while no SOCKET supplies a card of the
+    // same class.  The Power Macintosh 9500 shipped with no onboard video
+    // at all — it "requires a display card in a PCI slot" — so the emulated
+    // machine fakes a Control/Chaos display purely so a cardless boot has
+    // somewhere to draw.  Seating a real display card must retire the fake,
+    // or the guest sees TWO monitors where the hardware has one.
+    //
+    // The test is by CLASS, not by name: the generic layer compares the
+    // fallback's card_class against the classes the sockets resolved, so it
+    // never learns any card's identity.
+    PCI_SLOT_BUILTIN_FALLBACK,
 } pci_slot_kind_t;
 
 // One entry in a machine's PCI slot table.  Sentinel-terminated arrays end
@@ -89,11 +100,8 @@ void pci_root_delete(pci_root_t *root);
 pci_bus_t *pci_bus_create(pci_root_t *root, const char *name, int index);
 pci_bus_t *pci_bus_by_index(pci_root_t *root, int index);
 
-// Which address space a bridge window forwards.
-typedef enum pci_space {
-    PCI_SPACE_MEM = 0,
-    PCI_SPACE_IO,
-} pci_space_t;
+// pci_space_t — which address space a window forwards / a region decodes —
+// is declared in card.h, beside the region types that use it.
 
 // Hand the bus one of the bridge's decode windows.  The bus claims
 // `map_base .. map_base+size-1` on the physical map: an access there is
@@ -117,6 +125,11 @@ void *pci_bus_window_ctx(pci_bus_t *bus, int window);
 void pci_bus_add_device(pci_bus_t *bus, pci_device_t *dev, int device_num);
 pci_device_t *pci_bus_device(pci_bus_t *bus, int device_num);
 
+// Does this bus have anything seated on it at all?  A family asks after
+// pci_seat_slots() has run, when a decode decision depends on whether a
+// conditional device actually materialised.
+bool pci_bus_is_populated(const pci_bus_t *bus);
+
 // The whole config protocol, from a bridge adapter's point of view.
 // Absent (device, function) reads all-ones; writes vanish.
 uint32_t pci_bus_cfg_read(pci_bus_t *bus, int dev, uint32_t fn, uint32_t reg);
@@ -134,6 +147,22 @@ void pci_bus_cfg_write(pci_bus_t *bus, int dev, uint32_t fn, uint32_t reg, uint3
 // does not exist yet (there is no removal counterpart to
 // memory_map_host_region), so it lands with the first card that wants it.
 void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t *iface, void *ctx);
+
+// Declare a region this device decodes WITHOUT a BAR — a legacy or
+// strapped decode, as on parts that predate BAR-based I/O.  See
+// pci_fixed_region_t (card.h) for the match semantics; in short, the
+// region answers `pci_addr` in [base, base+span) whose masked bits equal
+// match_value, which expresses both an ordinary contiguous claim
+// (match_mask 0) and ISA-style SPARSE decoding.  The handler is passed
+// `pci_addr - base`, so a card does its own sub-decode and the bus needs
+// no knowledge of the part's addressing.
+//
+// Faking an I/O BAR instead would be worse, not simpler: a BAR the card's
+// own `reg` property does not mention is one Open Firmware sizes, finds
+// and assigns — inventing an address the card does not decode and
+// consuming I/O space its firmware expects to own outright.
+void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t base, uint32_t span,
+                                 uint32_t match_mask, uint32_t match_value, const memory_interface_t *iface, void *ctx);
 
 // A device's decoded regions may have moved: re-derive them from the
 // header state.  Called by config_space.c on every BAR / command write and
@@ -210,5 +239,13 @@ void pci_objects_teardown_owned(pci_root_t *root);
 // declared order whose ops->display() returns non-NULL — or NULL.
 display_t *pci_primary_display(pci_root_t *root);
 pci_device_t *pci_primary_display_card(pci_root_t *root);
+
+// A display card may nominate one of the object nodes its kind attached as
+// the FRAMEBUFFER node — what `machine.screen.source` resolves to.  The
+// generic layer stores the nomination and hands back whichever belongs to
+// the current primary display, so it never has to test a card's identity
+// or guess which child is the framebuffer.
+void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *obj);
+struct object *pci_active_framebuffer_object(void);
 
 #endif // PCI_H

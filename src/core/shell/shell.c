@@ -531,6 +531,7 @@ int shell_init(void) {
     // a machine.
     extern void rom_init(void);
     extern void vrom_init(void);
+    extern void prom_init(void);
     extern void machine_init(void);
     extern void checkpoint_init(void);
     extern void archive_init(void);
@@ -542,6 +543,7 @@ int shell_init(void) {
     extern void scsi_class_register(void);
     rom_init();
     vrom_init();
+    prom_init();
     machine_init();
     checkpoint_init();
     archive_init();

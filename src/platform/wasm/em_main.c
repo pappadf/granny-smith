@@ -53,6 +53,7 @@
 #include "machine.h"
 #include "mouse.h"
 #include "platform.h"
+#include "prom.h"
 #include "scheduler.h"
 #include "shell.h"
 #include "system.h"
@@ -1275,6 +1276,7 @@ int main(int argc, char *argv[]) {
     mkdir("/opfs/images", 0777);
     mkdir("/opfs/images/rom", 0777);
     mkdir("/opfs/images/vrom", 0777);
+    mkdir("/opfs/images/prom", 0777);
     mkdir("/opfs/images/fd", 0777);
     mkdir("/opfs/images/fdhd", 0777);
     mkdir("/opfs/images/hd", 0777);
@@ -1300,6 +1302,24 @@ int main(int argc, char *argv[]) {
             vrom_offer(vrom_path);
         }
         closedir(vrom_dir);
+    }
+
+    // ...and the same pass over the persistent PCI expansion-ROM store, for
+    // the same reason: without it a .prom that persisted in an earlier
+    // session is invisible after a reload, and the card it drives looks
+    // uninstallable until the user uploads the file again.
+    DIR *prom_dir = opendir("/opfs/images/prom");
+    if (prom_dir) {
+        struct dirent *entry;
+        char prom_path[512];
+        while ((entry = readdir(prom_dir)) != NULL) {
+            if (entry->d_name[0] == '.')
+                continue;
+            if (snprintf(prom_path, sizeof(prom_path), "/opfs/images/prom/%s", entry->d_name) >= (int)sizeof(prom_path))
+                continue;
+            prom_offer(prom_path);
+        }
+        closedir(prom_dir);
     }
 
     // Volatile scratch space on memory backend (visible from all threads).

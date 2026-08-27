@@ -80,9 +80,11 @@ struct pci_root {
 // extern plus one entry.
 
 extern const pci_card_kind_t tnt_control_kind; // machines/tnt/control.c
+extern const pci_card_kind_t mach64_gx_kind; // peripherals/pci/cards/mach64gx.c
 
 static const pci_card_kind_t *const g_card_registry[] = {
     &tnt_control_kind,
+    &mach64_gx_kind,
     NULL,
 };
 
@@ -219,9 +221,18 @@ void pci_staged_clear_all(void) {
 // linear probe is deliberate — see pci.h's note on why v1 has no overlay
 // fast path.
 
-// Locate the backing that decodes `pci_addr` in `w`'s space.  Returns NULL
-// when nothing does; on success *sub receives the offset into the region.
-static const pci_bar_backing_t *window_locate(const pci_window_t *w, uint32_t pci_addr, uint32_t *sub) {
+// What answered a window access: the handler, its context and the offset
+// into the region.  BAR-derived and fixed regions both resolve to this, so
+// the six accessors below don't care which kind decoded.
+typedef struct pci_decode {
+    const memory_interface_t *iface;
+    void *ctx;
+    uint32_t sub;
+} pci_decode_t;
+
+// Locate whatever decodes `pci_addr` in `w`'s space.  False when nothing
+// does — which is the fault path, and the whole BART contract.
+static bool window_locate(const pci_window_t *w, uint32_t pci_addr, pci_decode_t *out) {
     const pci_bus_t *bus = w->bus;
     for (int d = 0; d < PCI_MAX_DEVICES; d++) {
         const pci_device_t *dev = bus->dev[d];
@@ -238,12 +249,30 @@ static const pci_bar_backing_t *window_locate(const pci_window_t *w, uint32_t pc
                 continue;
             uint32_t size = pci_cfg_bar_size(dev, b);
             if (pci_addr - bk->base < size) {
-                *sub = pci_addr - bk->base;
-                return bk;
+                out->iface = bk->iface;
+                out->ctx = bk->ctx;
+                out->sub = pci_addr - bk->base;
+                return true;
             }
         }
+        // Then the non-BAR regions: parts that predate BAR-based I/O decode
+        // at strapped addresses, and a sparse decoder answers only its own
+        // congruence class inside the span (card.h).
+        for (int r = 0; r < PCI_FIXED_REGIONS; r++) {
+            const pci_fixed_region_t *fr = &dev->fixed[r];
+            if (!fr->iface || !fr->mapped || fr->space != w->space)
+                continue;
+            if (pci_addr - fr->base >= fr->span)
+                continue;
+            if ((pci_addr & fr->match_mask) != fr->match_value)
+                continue;
+            out->iface = fr->iface;
+            out->ctx = fr->ctx;
+            out->sub = pci_addr - fr->base;
+            return true;
+        }
     }
-    return NULL;
+    return false;
 }
 
 // PCI address of a window offset, and the fault reporter for offsets no
@@ -259,68 +288,62 @@ static void window_fault(const pci_window_t *w, uint32_t offset, bool write) {
 
 static uint8_t window_read8(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFu;
     }
-    return bk->iface->read_uint8(bk->ctx, sub);
+    return d.iface->read_uint8(d.ctx, d.sub);
 }
 
 static uint16_t window_read16(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFFFu;
     }
-    return bk->iface->read_uint16(bk->ctx, sub);
+    return d.iface->read_uint16(d.ctx, d.sub);
 }
 
 static uint32_t window_read32(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFFFFFFFu;
     }
-    return bk->iface->read_uint32(bk->ctx, sub);
+    return d.iface->read_uint32(d.ctx, d.sub);
 }
 
 static void window_write8(void *ctx, uint32_t offset, uint8_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
     }
-    bk->iface->write_uint8(bk->ctx, sub, value);
+    d.iface->write_uint8(d.ctx, d.sub, value);
 }
 
 static void window_write16(void *ctx, uint32_t offset, uint16_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
     }
-    bk->iface->write_uint16(bk->ctx, sub, value);
+    d.iface->write_uint16(d.ctx, d.sub, value);
 }
 
 static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
-    uint32_t sub;
-    const pci_bar_backing_t *bk = window_locate(w, window_pci_addr(w, offset), &sub);
-    if (!bk) {
+    pci_decode_t d;
+    if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
     }
-    bk->iface->write_uint32(bk->ctx, sub, value);
+    d.iface->write_uint32(d.ctx, d.sub, value);
 }
 
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,
@@ -369,12 +392,50 @@ void pci_bar_backing_iface(pci_device_t *dev, int bar, const memory_interface_t 
     bk->base = 0;
 }
 
+void pci_device_add_fixed_region(pci_device_t *dev, pci_space_t space, uint32_t base, uint32_t span,
+                                 uint32_t match_mask, uint32_t match_value, const memory_interface_t *iface,
+                                 void *ctx) {
+    if (!dev || !iface || !span)
+        return;
+    for (int r = 0; r < PCI_FIXED_REGIONS; r++) {
+        pci_fixed_region_t *fr = &dev->fixed[r];
+        if (fr->iface)
+            continue;
+        fr->iface = iface;
+        fr->ctx = ctx;
+        fr->space = space;
+        fr->base = base;
+        fr->span = span;
+        fr->match_mask = match_mask;
+        fr->match_value = match_value;
+        fr->mapped = false; // pci_device_regions_changed applies the gate
+        return;
+    }
+    LOG(0, "%s: no free fixed-region slot (PCI_FIXED_REGIONS = %d)",
+        (dev->ops && dev->ops->name) ? dev->ops->name(dev) : "device", PCI_FIXED_REGIONS);
+}
+
 // Re-derive every decoded region of `dev` from its header state.  This is
 // the ONE place a BAR transition happens, so a device driver never has to
 // track where it currently answers.
 void pci_device_regions_changed(pci_device_t *dev) {
     if (!dev)
         return;
+    // Non-BAR regions have no latch to move: their address is strapped, so
+    // the only thing that changes is whether the command register enables
+    // the space they sit in.
+    for (int r = 0; r < PCI_FIXED_REGIONS; r++) {
+        pci_fixed_region_t *fr = &dev->fixed[r];
+        if (!fr->iface)
+            continue;
+        uint16_t gate = (fr->space == PCI_SPACE_IO) ? PCI_CMD_IO_SPACE : PCI_CMD_MEM_SPACE;
+        bool on = (dev->cfg.command & gate) != 0;
+        if (on == fr->mapped)
+            continue;
+        fr->mapped = on;
+        LOG(2, "%s: fixed %s region $%08X+$%X %s", (dev->ops && dev->ops->name) ? dev->ops->name(dev) : "device",
+            (fr->space == PCI_SPACE_IO) ? "I/O" : "memory", fr->base, fr->span, on ? "decodes" : "no longer decodes");
+    }
     for (int b = 0; b < PCI_BAR_SLOTS; b++) {
         pci_bar_backing_t *bk = &dev->backing[b];
         if (bk->kind == PCI_BACKING_NONE)
@@ -452,6 +513,15 @@ pci_device_t *pci_bus_device(pci_bus_t *bus, int device_num) {
     return bus->dev[device_num];
 }
 
+bool pci_bus_is_populated(const pci_bus_t *bus) {
+    if (!bus)
+        return false;
+    for (int i = 0; i < PCI_MAX_DEVICES; i++)
+        if (bus->dev[i])
+            return true;
+    return false;
+}
+
 uint32_t pci_bus_cfg_read(pci_bus_t *bus, int dev, uint32_t fn, uint32_t reg) {
     pci_device_t *d = pci_bus_device(bus, dev);
     // Absent device, or a function no multi-function device implements:
@@ -525,15 +595,31 @@ static const char *socket_card_id(const pci_slot_decl_t *s, bool is_first_socket
 // stage_option() hook.  A kind that rejects the key logs and the option is
 // dropped — the generic layer never learns a card's identity (the fix for
 // the NuBus stage_mode_for_kind wart, proposal §5.1).
-static void stage_options_for_kind(int slot, const pci_card_kind_t *kind) {
+static void stage_one_option(int slot, const pci_card_kind_t *kind, const char *key, const char *value) {
+    if (kind->stage_option && kind->stage_option(key, value))
+        return;
+    LOG(0, "staged option '%s'='%s' is not understood by slot %d card '%s' — ignored", key, value, slot, kind->id);
+}
+
+// `take_wildcard` is set for the machine's FIRST socket, which is also the
+// slot machine.boot's pci_card= applies to — so pci_option= reaches the
+// same card through the same rule.  A slot-specific option wins over the
+// wildcard's for the same key: naming a concrete slot is the more explicit
+// statement of the two.
+static void stage_options_for_kind(int slot, bool take_wildcard, const pci_card_kind_t *kind) {
     for (int i = 0; i < PCI_STAGED_OPTS; i++) {
         const char *key = s_staged[slot].opt[i].key;
-        const char *value = s_staged[slot].opt[i].value;
         if (!key[0])
             continue;
-        if (kind->stage_option && kind->stage_option(key, value))
+        stage_one_option(slot, kind, key, s_staged[slot].opt[i].value);
+    }
+    if (!take_wildcard || slot == PCI_STAGED_WILDCARD)
+        return;
+    for (int i = 0; i < PCI_STAGED_OPTS; i++) {
+        const char *key = s_staged[PCI_STAGED_WILDCARD].opt[i].key;
+        if (!key[0] || pci_staged_option_get(slot, key))
             continue;
-        LOG(0, "staged option '%s'='%s' is not understood by slot %d card '%s' — ignored", key, value, slot, kind->id);
+        stage_one_option(slot, kind, key, s_staged[PCI_STAGED_WILDCARD].opt[i].value);
     }
 }
 
@@ -550,6 +636,21 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 break;
             }
         }
+        // Which card classes the SOCKETS will supply.  Resolved in a first
+        // pass so a BUILTIN_FALLBACK can stand down before it is built —
+        // the machine's slot table lists the fallback last, but a socket
+        // card must win regardless of declaration order.
+        const char *socket_classes[PCI_MAX_SLOTS];
+        int n_socket_classes = 0;
+        for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
+            if (s->kind != PCI_SLOT_SOCKET)
+                continue;
+            bool ignored = false;
+            const pci_card_kind_t *k = pci_card_find(socket_card_id(s, s->slot == first_socket, &ignored));
+            if (k && k->card_class && n_socket_classes < PCI_MAX_SLOTS)
+                socket_classes[n_socket_classes++] = k->card_class;
+        }
+
         for (const pci_slot_decl_t *s = root->slots; s->slot != 0; s++) {
             const pci_card_kind_t *kind = NULL;
             bool explicit_pick = false; // did the USER name this card?
@@ -557,6 +658,20 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
             case PCI_SLOT_BUILTIN:
                 kind = pci_card_find(s->builtin_card_id);
                 break;
+            case PCI_SLOT_BUILTIN_FALLBACK: {
+                kind = pci_card_find(s->builtin_card_id);
+                if (!kind || !kind->card_class)
+                    break;
+                for (int i = 0; i < n_socket_classes; i++) {
+                    if (strcmp(socket_classes[i], kind->card_class) != 0)
+                        continue;
+                    LOG(1, "slot %d: '%s' stands down — a socket supplies a '%s' card", s->slot, kind->id,
+                        kind->card_class);
+                    kind = NULL;
+                    break;
+                }
+                break;
+            }
             case PCI_SLOT_SOCKET:
                 kind = pci_card_find(socket_card_id(s, s->slot == first_socket, &explicit_pick));
                 break;
@@ -576,7 +691,7 @@ void pci_seat_slots(pci_root_t *root, checkpoint_t *cp) {
                 LOG(0, "slot %d names bus %d, which this machine does not have", s->slot, s->bus);
                 continue;
             }
-            stage_options_for_kind(s->slot, kind);
+            stage_options_for_kind(s->slot, s->slot == first_socket, kind);
             pci_device_t *dev = kind->factory(s->slot, root->cfg, cp);
             if (!dev) {
                 LOG(1, "slot %d card factory '%s' returned NULL", s->slot, kind->id);

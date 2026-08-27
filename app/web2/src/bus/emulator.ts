@@ -481,6 +481,12 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
   if (config.rom && config.rom !== '(auto)') doc.rom = config.rom;
   if (config.vrom && config.vrom !== '(auto)') doc.vrom = config.vrom;
   if (config.videoCard) doc.video_card = config.videoCard;
+  // A PCI card is staged by id; '(auto)' for its expansion ROM means the
+  // same thing it does for a vROM — omit the field and let the core's
+  // offer registry content-match among the files the platform published.
+  if (config.pciCard) doc.pci_card = config.pciCard;
+  if (config.prom && config.prom !== '(auto)') doc.prom = config.prom;
+  if (config.pciOption) doc.pci_option = config.pciOption;
   if (config.videoMode) doc.video_mode = config.videoMode;
   if (config.monitor) doc.monitor = config.monitor;
   const ok = await gsEval('machine.boot', doc);

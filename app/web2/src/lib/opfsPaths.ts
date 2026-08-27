@@ -4,6 +4,11 @@
 
 export const ROMS_DIR = '/opfs/images/rom';
 export const VROMS_DIR = '/opfs/images/vrom';
+// PCI expansion ROMs (*.prom).  A separate store from VROMS_DIR because
+// the two are different objects with different identity rules — a vROM is
+// keyed on a NuBus Format-Block CRC, a PROM on a PCI Data Structure — and
+// the core offers them through separate registries.
+export const PROMS_DIR = '/opfs/images/prom';
 export const FD_DIR = '/opfs/images/fd';
 export const FDHD_DIR = '/opfs/images/fdhd';
 export const HD_DIR = '/opfs/images/hd';

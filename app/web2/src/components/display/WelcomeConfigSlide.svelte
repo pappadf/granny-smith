@@ -76,6 +76,50 @@
         }>;
       }>;
     }>;
+    // PCI sockets, same shape idea as video_slots but for the PCI bus: each
+    // declared socket carries the cards the registry says fit it, and each
+    // card carries the UI grouping hint `class` ('display', 'other', ...)
+    // plus its own requires_prom.  A machine with no PCI bus omits this.
+    //
+    // The 9500 is the first machine whose display can ONLY come from here:
+    // its builtin_video and video_slots are both empty, so without a
+    // display-class PCI card there is nothing to draw on.
+    pci_slots?: Array<{
+      slot: number;
+      label?: string;
+      // Soldered down rather than a socket — not a user choice.
+      fixed: boolean;
+      // ...and a fixed slot that is only a STAND-IN: it exists solely
+      // because no socket has supplied a card of its class yet, because
+      // the real machine has nothing there.  The Power Macintosh 9500 is
+      // the case this exists for: its Control/Chaos entry is emulator
+      // scaffolding, not hardware, and calling it "on-board video" would
+      // state the opposite of what the machine is.
+      fallback?: boolean;
+      default_card?: string;
+      cards: Array<{
+        id: string;
+        display_name?: string;
+        class?: string;
+        requires_prom?: boolean;
+        // Options the CARD declares it will accept, so this dialog can
+        // render a control per option without knowing which card it is.
+        // They travel back as machine.boot's pci_option="key=value".
+        options?: Array<{
+          key: string;
+          label?: string;
+          default_value?: string;
+          values?: Array<{ id: string; label?: string }>;
+        }>;
+        monitors?: Array<{
+          id: string;
+          name?: string;
+          width?: number;
+          height?: number;
+          depths?: number[];
+        }>;
+      }>;
+    }>;
   }
 
   // One identified VROM in OPFS: which card it provides (probed via
@@ -86,6 +130,17 @@
     path: string;
     cardId: string; // nubus card-kind id this blob provides
     compatible: string[]; // card ids this vROM can drive (usually [cardId])
+  }
+
+  // One identified PCI expansion ROM in OPFS: which card it provides
+  // (probed via prom.identify).  The sibling of VromEntry, kept separate for
+  // the same reason the two core modules are separate — a vROM and a PROM
+  // are different objects with different identity rules, and a card asks for
+  // one or the other, never "a ROM".
+  interface PromEntry {
+    path: string;
+    cardId: string; // PCI card-kind id this blob provides
+    compatible: string[];
   }
 
   // The pseudo card-id standing for "the machine's own built-in video port".
@@ -104,12 +159,17 @@
   let hd = $state(NONE_SENTINEL);
   let cd = $state(NONE_SENTINEL);
   let videoMode = $state('');
+  // Chosen PCI card options, keyed by option key ("vram" -> "4m"). Cleared
+  // whenever the selected card changes, since the keys are the card's.
+  let pciOptions = $state<Record<string, string>>({});
 
   // Discovery state.
   let scanning = $state(true);
   let allRoms = $state<RomEntry[]>([]);
   // VROMs in OPFS, each identified to the card it provides.
   let allVroms = $state<VromEntry[]>([]);
+  // PCI expansion ROMs in OPFS, likewise.
+  let allProms = $state<PromEntry[]>([]);
   // model id -> profile, populated lazily via gsEval('machine.profile').
   let profiles = $state<Record<string, MachineProfile>>({});
   // model id -> ROMs that boot this model.
@@ -167,20 +227,128 @@
   // card can use, so it round-trips through the same `cardId` state.
   let builtinVideo = $derived(currentProfile?.builtin_video);
   let hasBuiltinVideo = $derived(!!builtinVideo?.display_name);
-  // What the display picker offers: built-in first (it is the machine's own
-  // port and its default), then every installable NuBus card.
-  let displayOptions = $derived(
-    hasBuiltinVideo
-      ? [
-          { id: BUILTIN_VIDEO_ID, label: builtinVideo?.display_name ?? 'Built-in video' },
-          ...cardOptions,
-        ]
-      : cardOptions,
+
+  // --- Display-class PCI cards --------------------------------------------
+  // card-id -> the OPFS PROM files that provide it.
+  let promsByCardId = $derived.by(() => {
+    const out: Record<string, PromEntry[]> = {};
+    for (const p of allProms) (out[p.cardId] ??= []).push(p);
+    return out;
+  });
+  // Every distinct display-class card offered by any PCI socket.  Sockets
+  // are deduplicated by card id: the machine declares six of them and they
+  // all offer the same computed list, so the picker would otherwise show
+  // the same card six times.
+  let pciDisplayCards = $derived.by(() => {
+    const out: NonNullable<MachineProfile['pci_slots']>[number]['cards'] = [];
+    for (const slot of currentProfile?.pci_slots ?? []) {
+      // SOCKETS only. A fixed slot's card is soldered down and can never be
+      // staged into a socket — the core's own pci_card_fits_socket refuses
+      // it — so offering it here would put a choice in the picker that the
+      // boot path is guaranteed to reject.
+      if (slot.fixed) continue;
+      for (const c of slot.cards ?? []) {
+        if (c.class !== 'display' || out.some((seen) => seen.id === c.id)) continue;
+        out.push(c);
+      }
+    }
+    return out;
+  });
+
+  // A soldered-down display-class PCI card IS this machine's built-in
+  // video, and is named like it — unless it is a stand-in, which is not
+  // the machine's hardware and must not be presented as though it were.
+  let pciBuiltinDisplay = $derived(
+    (currentProfile?.pci_slots ?? [])
+      .filter((slot) => slot.fixed && !slot.fallback)
+      .flatMap((slot) => slot.cards ?? [])
+      .find((c) => c.class === 'display'),
   );
+  // A PCI card is offerable iff it needs no expansion ROM or one is present.
+  // Unlike a NuBus vROM this is not a soft preference: the core refuses the
+  // boot outright (requires_prom + strict resolution), so offering the card
+  // without its ROM would just produce a rejected boot.
+  let availablePciCards = $derived(
+    pciDisplayCards.filter((c) => !c.requires_prom || (promsByCardId[c.id]?.length ?? 0) > 0),
+  );
+  let pciCardOptions = $derived(
+    availablePciCards.map((c) => ({ id: c.id, label: c.display_name ?? c.id })),
+  );
+  // What the display picker offers, in the order a machine presents itself:
+  // its own built-in port first, then anything soldered to the PCI bus that
+  // amounts to built-in video, then every installable NuBus card, then every
+  // installable display-class PCI card.
+  //
+  // This follows the NuBus-only machines rather than inventing a shape.  A
+  // IIx / IIcx / IIfx has builtin_video {} and a non-fixed video slot: the
+  // dialog shows a "Display Card" picker and, when no vROM is present, says
+  // the card needs one.  A IIci has a FIXED video slot holding its soldered
+  // RBV video and offers no choice.  The PCI machines are the same two
+  // cases: a 7500/8500's Control is soldered (fixed), a 9500's sockets are
+  // sockets — so the 9500 behaves exactly like a IIfx, with a .prom in the
+  // place of a .vrom.
+  let displayOptions = $derived([
+    ...(hasBuiltinVideo
+      ? [{ id: BUILTIN_VIDEO_ID, label: builtinVideo?.display_name ?? 'Built-in video' }]
+      : []),
+    ...(pciBuiltinDisplay
+      ? [
+          {
+            id: pciBuiltinDisplay.id,
+            label: pciBuiltinDisplay.display_name ?? pciBuiltinDisplay.id,
+          },
+        ]
+      : []),
+    ...cardOptions,
+    ...pciCardOptions,
+  ]);
   let builtinSelected = $derived(cardId === BUILTIN_VIDEO_ID);
+  // Whether the machine already has a screen without the user installing
+  // anything.  A stand-in fallback deliberately does NOT count: the 9500 has
+  // no on-board video, and the emulator's Control/Chaos stand-in exists so a
+  // cardless boot has somewhere to draw, not so the dialog can claim the
+  // machine has video it never shipped with.
+  let hasSolderedDisplay = $derived(hasBuiltinVideo || !!pciBuiltinDisplay);
+  // Is the current pick a PCI card rather than a NuBus one?  The two travel
+  // in different boot-document fields (pci_card= vs video_card=), so this
+  // decides which one is filled in.
+  let selectedPciCard = $derived(availablePciCards.find((c) => c.id === cardId));
+  let pciSelected = $derived(!!selectedPciCard);
+  // The options the selected PCI card declares. Only a socket card can take
+  // them: a soldered one is not staged, so there is nothing to attach an
+  // option to.
+  let pciCardOptions_ = $derived(selectedPciCard?.options ?? []);
+  // Every PCI SOCKET the machine declares, for the Expansion Slots list.
+  // Sockets only — a fixed slot is soldered-down hardware, not a slot the
+  // user populates.
+  let pciSockets = $derived((currentProfile?.pci_slots ?? []).filter((sl) => !sl.fixed));
+  // machine.boot takes one wildcard card for the FIRST socket, so that is
+  // the only one this dialog can fill; the rest are shown as empty. A
+  // per-socket picker needs a per-slot boot field that does not exist yet.
+  let firstSocketLabel = $derived(pciSockets[0]?.label ?? '');
+  // "key=value,key=value" for machine.boot, omitting anything left at the
+  // card's own default so the boot record does not claim a choice the user
+  // did not make.
+  let pciOptionSpec = $derived(
+    pciCardOptions_
+      .map((o) => [o.key, pciOptions[o.key] ?? o.default_value ?? ''] as const)
+      .filter(([, v], i) => v && v !== (pciCardOptions_[i].default_value ?? ''))
+      .map(([k, v]) => `${k}=${v}`)
+      .join(','),
+  );
+
+  // The expansion ROM handed to the core for the selected PCI card.  As with
+  // the vROM, an explicit pick is preferred over letting the offer registry
+  // content-match, so the user sees the file they uploaded actually used.
+  let resolvedProm = $derived(
+    selectedPciCard?.requires_prom ? (promsByCardId[cardId]?.[0] ?? null) : null,
+  );
   // Only surface the picker when there's a real choice; a fixed/builtin
-  // single card (e.g. SE/30 onboard video) needs no dropdown.
-  let needsCardPicker = $derived(displayOptions.length > 1);
+  // single card (e.g. SE/30 onboard video) needs no dropdown.  A machine
+  // whose only display source is one expansion card is still a choice worth
+  // showing — it is the only place the screen's provenance is stated — so
+  // the single PCI option counts.
+  let needsCardPicker = $derived(displayOptions.length > 1 || pciSelected);
   let selectedCard = $derived(availableCards.find((c) => c.id === cardId));
   // VROM row/handling is driven by the *selected card* (the SE/30-vs-IIci
   // asymmetry): a card declares requires_vrom, not the machine.
@@ -192,8 +360,20 @@
   let resolvedVrom = $derived(needsVrom ? (vromsByCardId[cardId]?.[0] ?? null) : null);
   // Model expects a video card but none is installable (every candidate card
   // needs a vROM and none is present). Drives the "upload a Video ROM" hint.
+  // ...one sentence for both buses, because it is one situation: the machine
+  // can take a display card, none is installable, and it has nothing
+  // soldered to fall back on.  Which ROM to ask for is the only difference,
+  // and that is decided by which bus had the candidates.
   let videoUnavailable = $derived(
-    slotCards.length > 0 && availableCards.length === 0 && !hasBuiltinVideo,
+    !hasSolderedDisplay &&
+      displayOptions.length === 0 &&
+      (slotCards.length > 0 || pciDisplayCards.length > 0),
+  );
+  // A PCI expansion ROM (.prom) and a NuBus video ROM (.vrom) are different
+  // files from different places; naming the wrong one sends the user hunting
+  // for something that would not help.
+  let missingRomKind = $derived(
+    slotCards.length > 0 && availableCards.length === 0 ? 'Video ROM' : 'PCI expansion ROM',
   );
   // HD row label: the Lisa/XL parallel-port ProFile (hd_bus === 'profile') is
   // not on the SCSI bus, so its label comes from the bus, not scsi_slots (which
@@ -214,6 +394,15 @@
   // Video-mode list for the *selected card*: its monitors × supported depths.
   // Ids/labels match what the C side emits ("<monitor>_<depth>bpp"), so the
   // boot-time `machine.nubus.video_mode` seed is unchanged.
+  //
+  // NuBus cards ONLY.  A PCI display card's monitor list is real, but the
+  // boot document has no field that carries it: video_mode is validated
+  // against the NuBus catalog (nubus_video_mode_known), so sending a PCI
+  // card's mode id fails the boot outright — "unknown video-mode id
+  // '14in_rgb_8bpp'".  The card does take a `monitor` staged option, but
+  // nothing reaches pci_staged_option_set from a boot document yet, so
+  // there is no honest way to offer the choice.  Until there is, the row
+  // stays hidden for a PCI pick and the card senses its default monitor.
   let videoModes = $derived.by(() => {
     const out: Array<{ id: string; label: string }> = [];
     for (const m of selectedCard?.monitors ?? []) {
@@ -288,6 +477,25 @@
     };
   }
 
+  // Probe one PCI expansion ROM to the card it provides.  The sibling of
+  // identifyVrom, against the sibling core registry.
+  async function identifyProm(path: string): Promise<PromEntry | null> {
+    // prom.identify returns a native object (V_MAP) — no inner JSON.parse.
+    const r = await gsEval('machine.prom.identify', [path]);
+    if (!r || typeof r !== 'object' || 'error' in r) return null;
+    const parsed = r as {
+      recognised?: boolean;
+      card_id?: string;
+      compatible?: string[];
+    };
+    if (!parsed.recognised || !parsed.card_id) return null;
+    return {
+      path,
+      cardId: parsed.card_id,
+      compatible: Array.isArray(parsed.compatible) ? parsed.compatible : [parsed.card_id],
+    };
+  }
+
   async function resolveProfile(id: string): Promise<MachineProfile> {
     if (profiles[id]) return profiles[id];
     // machine.profile returns a native nested object — no inner JSON.parse.
@@ -319,9 +527,10 @@
   async function refreshOpfs() {
     scanning = true;
     try {
-      const [roms, vroms, fds, hds, cds] = await Promise.all([
+      const [roms, vroms, proms, fds, hds, cds] = await Promise.all([
         opfs.scanRoms().catch(() => []),
         opfs.scanImages('vrom').catch(() => []),
+        opfs.scanImages('prom').catch(() => []),
         opfs.scanImages('fd').catch(() => []),
         opfs.scanImages('hd').catch(() => []),
         opfs.scanImages('cd').catch(() => []),
@@ -337,6 +546,12 @@
       // card picker is then built from machine.profile filtered to these.
       allVroms = (await Promise.all(vroms.map((v) => identifyVrom(v.path)))).filter(
         (e): e is VromEntry => e !== null,
+      );
+
+      // ...and every PCI expansion ROM, which is what makes a display-class
+      // PCI card offerable at all.
+      allProms = (await Promise.all(proms.map((p) => identifyProm(p.path)))).filter(
+        (e): e is PromEntry => e !== null,
       );
 
       // Look up display names for every model surfaced by these ROMs.
@@ -384,8 +599,14 @@
   // Keep cardId valid for the current model: prefer the slot's default card,
   // else the first installable one. The picker may be hidden (single card),
   // so this is what submit relies on.
+  //
+  // This works off displayOptions — the UNION of built-in video, NuBus
+  // cards and display-class PCI cards — not just the NuBus list. On a
+  // machine whose only display comes from a PCI socket the union is the
+  // one-element list holding that card, and if this effect ignored it the
+  // dialog would silently boot with no card at all.
   $effect(() => {
-    const list = availableCards;
+    const list = displayOptions;
     const builtin = hasBuiltinVideo;
     if (builtin && cardId === BUILTIN_VIDEO_ID) return; // a valid pick
     if (!list.length) {
@@ -397,6 +618,14 @@
         ? BUILTIN_VIDEO_ID
         : (list.find((c) => c.id === defaultCardId)?.id ?? list[0].id);
     }
+  });
+
+  // The option keys belong to the selected card, so a card change starts
+  // them over rather than carrying a stale key into a different card.
+  $effect(() => {
+    const keys = pciCardOptions_.map((o) => o.key).join('|');
+    void keys;
+    pciOptions = {};
   });
 
   // Keep videoMode valid for the selected card (resets on model or card change).
@@ -519,6 +748,9 @@
     // means no explicit pick — the card factory content-matches among the
     // files the platform offered from the OPFS store.
     const vromPath = resolvedVrom ? resolvedVrom.path : '(auto)';
+    // Same contract for a PCI card's expansion ROM: an explicit pick when we
+    // have one, otherwise let the core's offer registry content-match.
+    const promPath = resolvedProm ? resolvedProm.path : '(auto)';
     // Resolve each pick back to the path it was scanned from (fdPaths etc.);
     // the category directory is only the fallback, since an fd listing can
     // also carry files from the legacy fdhd directory.
@@ -546,7 +778,21 @@
       vrom: vromPath,
       // The selected NuBus video card — the boot document's video_card=, so
       // the right card boots instead of the slot default (the 24AC-vs-8•24 bug).
-      videoCard: fixedVideo || builtinSelected ? undefined : cardId || undefined,
+      // Only a NuBus pick travels here.  `selectedCard` is looked up in the
+      // NuBus list, so built-in video, a socket PCI card and a soldered PCI
+      // card all miss it — which is the point: sending any of those as
+      // video_card would make the core hunt for a NuBus card that does not
+      // exist.  (An earlier version tested for those three cases one by one
+      // and missed the soldered PCI card, which then went out as
+      // video_card=tnt_control.)
+      videoCard: fixedVideo || !selectedCard ? undefined : cardId || undefined,
+      // A display-class PCI card travels in its own field: the boot document
+      // seats it into the first free socket, and the machine's BUILTIN
+      // fallback video (the 9500's Control/Chaos stand-in) retires because a
+      // socket supplied a display card.
+      pciCard: pciSelected ? cardId : undefined,
+      prom: pciSelected ? promPath : undefined,
+      pciOption: pciSelected && pciOptionSpec ? pciOptionSpec : undefined,
       // Which port the monitor is plugged into.  Choosing a NuBus card on a
       // machine that also has built-in video leaves the built-in port
       // unconnected, so the ROM turns built-in video off and the card is the
@@ -556,7 +802,10 @@
       // Seed the selected video mode (matches web-legacy's bootFromConfig).
       // Without it the card never seeds its slot-PRAM/video defaults and A/UX
       // hangs enabling its device drivers on real hardware.
-      videoMode: fixedVideo || !hasVideoModeChoice ? undefined : videoMode || undefined,
+      // Same rule as videoCard: only a NuBus pick has a video_mode the core
+      // will accept, so gate on selectedCard rather than on the negations.
+      videoMode:
+        fixedVideo || !selectedCard || !hasVideoModeChoice ? undefined : videoMode || undefined,
       ram,
       floppies: floppyPaths,
       hd: hdPath,
@@ -623,15 +872,65 @@
             </div>
           </div>
         {/if}
+        {#if pciSelected && !hasSolderedDisplay}
+          <div class="form-row">
+            <span class="form-label"></span>
+            <div class="form-help">
+              This model has no built-in video, so the card in the expansion slot is the screen.
+            </div>
+          </div>
+        {/if}
       {/if}
       {#if videoUnavailable}
         <div class="form-row">
           <span class="form-label">Display Card</span>
           <div class="form-help">
-            This model's display card needs a Video ROM. Drag-and-drop one (or add it via the Images
-            panel) to enable video.
+            This model's display card needs a {missingRomKind}. Drag-and-drop one (or add it via the
+            Images panel) to enable video.
           </div>
         </div>
+      {/if}
+      {#if pciSockets.length > 0}
+        <div class="form-divider"></div>
+        <div class="form-row">
+          <span class="form-label">Expansion Slots</span>
+          <div class="slot-list">
+            {#each pciSockets as sl (sl.slot)}
+              <div class="slot-row">
+                <span class="slot-name">{sl.label ?? `Slot ${sl.slot}`}</span>
+                <span class="slot-card">
+                  {sl.label === firstSocketLabel && pciSelected
+                    ? (selectedPciCard?.display_name ?? cardId)
+                    : '(empty)'}
+                </span>
+              </div>
+            {/each}
+          </div>
+        </div>
+        {#if pciSockets.length > 1 && pciSelected}
+          <div class="form-row">
+            <span class="form-label"></span>
+            <div class="form-help">
+              A card is installed in the first socket. Filling the others needs a per-socket pick,
+              which the boot document does not carry yet.
+            </div>
+          </div>
+        {/if}
+        {#each pciCardOptions_ as opt (opt.key)}
+          <div class="form-row">
+            <label for="cfg-pciopt-{opt.key}">{opt.label ?? opt.key}</label>
+            <select
+              id="cfg-pciopt-{opt.key}"
+              value={pciOptions[opt.key] ?? opt.default_value ?? ''}
+              onchange={(e) =>
+                (pciOptions = { ...pciOptions, [opt.key]: (e.target as HTMLSelectElement).value })}
+            >
+              {#each opt.values ?? [] as v (v.id)}
+                <option value={v.id}>{v.label ?? v.id}</option>
+              {/each}
+            </select>
+          </div>
+        {/each}
       {/if}
       {#if videoModes.length > 1}
         <div class="form-row">
@@ -734,6 +1033,24 @@
     gap: 12px;
   }
   .form-row label,
+  .slot-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .slot-row {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+  }
+  .slot-name {
+    min-width: 3em;
+    opacity: 0.7;
+  }
+  .slot-card {
+    opacity: 0.9;
+  }
+
   .form-row .form-label {
     color: var(--gs-fg);
     opacity: 0.9;

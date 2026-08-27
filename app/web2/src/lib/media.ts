@@ -2,9 +2,9 @@
 // OPFS, how to validate a candidate file via gsEval, and how to derive its
 // final filename. Mirrors app/web/js/media-types.js.
 
-import { ROMS_DIR, VROMS_DIR, FD_DIR, HD_DIR, CD_DIR } from './opfsPaths';
+import { ROMS_DIR, VROMS_DIR, PROMS_DIR, FD_DIR, HD_DIR, CD_DIR } from './opfsPaths';
 
-export type MediaTypeId = 'rom' | 'vrom' | 'fd' | 'hd' | 'cdrom';
+export type MediaTypeId = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cdrom';
 
 export interface ValidateResult {
   valid: boolean;
@@ -56,6 +56,23 @@ interface VromIdentifyResult {
   crc?: string;
 }
 
+// Shape returned by C-side `machine.prom.identify` — a PCI expansion ROM.
+// Deliberately the same shape as VromIdentifyResult, because to the UI the
+// two are the same question ("which card does this blob provide?"); the
+// identity rules behind them are not (see src/core/memory/prom.c: $55AA, a
+// reachable PCIR, code type 1 = Open Firmware, and a catalogued CRC-32 of
+// the whole chip image). An unrecognised file may still carry `reason`,
+// which is how "that is a PC/x86 option ROM" reaches the user instead of a
+// shrug.
+interface PromIdentifyResult {
+  recognised: boolean;
+  card_id?: string;
+  compatible?: string[];
+  size?: number;
+  crc?: string;
+  reason?: string;
+}
+
 async function parseRomIdentify(gsEval: GsEval, path: string): Promise<RomIdentifyResult | null> {
   // rom.identify returns a native object (V_MAP) — no inner JSON.parse.
   const r = await gsEval('machine.rom.identify', [path]);
@@ -104,6 +121,34 @@ export const MEDIA_TYPES: Record<MediaTypeId, MediaTypeDescriptor> = {
     // content-based (the core's offer registry), so the on-disk name never
     // matters — and the UI carries no naming grammar of its own. The
     // identify payload's crc is "0x"-prefixed; strip it for the filename.
+    nameFn(originalName, info) {
+      const crc = info?.checksum as string | undefined;
+      return crc ? crc.replace(/^0x/, '') : originalName;
+    },
+  },
+
+  prom: {
+    id: 'prom',
+    label: 'PCI expansion ROM',
+    persistDir: PROMS_DIR,
+    async validate(path, gsEval) {
+      // prom.identify returns a native object (V_MAP) — no inner JSON.parse.
+      const r = await gsEval('machine.prom.identify', [path]);
+      if (!r || typeof r !== 'object' || 'error' in (r as object)) return { valid: false };
+      const parsed = r as PromIdentifyResult;
+      if (!parsed.recognised) return { valid: false };
+      return {
+        valid: true,
+        info: {
+          cardId: parsed.card_id,
+          compatible: parsed.compatible,
+          checksum: parsed.crc,
+        },
+      };
+    },
+    // Stored by content hash, exactly like a vROM: discovery is the core's
+    // offer registry matching on content, so the on-disk name is a handle
+    // and never a fact the UI reasons about.
     nameFn(originalName, info) {
       const crc = info?.checksum as string | undefined;
       return crc ? crc.replace(/^0x/, '') : originalName;

@@ -1,0 +1,370 @@
+# The Apple Accelerated PCI Graphics Card (ATI Mach64 GX, "Spinnaker")
+# enumerating in socket A1 of a Power Macintosh 9500.
+#
+# THE ACCEPTANCE TARGET IS APPLE'S OWN HARDWARE.  Technote 1062 walks a
+# real 9500 under Open Firmware 1.0.5 and dumps this card's node:
+#
+#   vendor-id 00001002   device-id 00004758   revision-id 00000002
+#   class-code 00030000  interrupts 00000001  devsel-speed 00000001
+#   AAPL,interrupts 00000017        AAPL,slot-name A1
+#   reg 00006800 ... 0     02006810 ... 01000000
+#   assigned-addresses 82006810 00000000 81000000 00000000 01000000
+#
+# Everything below checks the emulated card produces that same structure.
+# Where the emulator cannot see the OF tree directly, the register state is
+# the proxy — the tree is DERIVED from it, which is the whole "the guest
+# enumerates, we answer" principle.
+#
+# Config-port note: the address and data ports are LITTLE-ENDIAN (the guest
+# drives them with lwbrx/stwbrx) and machine.memory.peek/poke are raw
+# big-endian bus views, so every literal here is the byte-swapped form of
+# the value software sees.  The one-hot IDSEL is the AD line wired to the
+# slot: socket A1 is device 13, so bit 13 -> LE $00002000 -> $00200000.
+
+# --- Expansion-ROM identification, before anything is seated. ---------------
+# Identity is the CRC-32 of the whole chip image; no filename is ever
+# inspected.  The two catalogued dumps of this card:
+assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").recognised "the -104 dump must be recognised"
+assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom").card_id == "mach64_gx" "and must provide the mach64_gx card"
+assert machine.prom.identify("${$TEST_DATA}/roms/mach64-gx-101-8c68216e.prom").card_id == "mach64_gx" "so must the earlier -101 programming"
+# ...and the failures, each told apart from the others.  A PC/x86 option
+# ROM is the predictable user error and must not be mistaken for "not a ROM".
+assert !machine.prom.identify("${$WORK_DIR}/fake-x86-vga.prom").recognised "an x86 option ROM must be rejected"
+assert !machine.prom.offer("${$WORK_DIR}/fake-x86-vga.prom") "...and must not register as an offer"
+assert !machine.prom.identify("${$WORK_DIR}/uncatalogued.prom").recognised "an uncatalogued OF ROM must be rejected"
+assert !machine.prom.identify("${$ROM}").recognised "a 4 MB CPU ROM is not an expansion ROM"
+
+# The frontend's ingest path, end to end: a persistent store that does not
+# exist yet is created, the staged file is copied into it, and the copy is
+# offered.  This is not hypothetical — the web UI shipped briefly with the
+# store directory missing from its startup mkdir list, and every upload of
+# a .prom died with a bare "Failed to save" because storage.cp does not
+# create parent directories.
+vfs.mkdir "${$WORK_DIR}/prom-store"
+assert storage.cp("${$TEST_DATA}/roms/mach64-gx-104-437584e0.prom", "${$WORK_DIR}/prom-store/437584e0") "a freshly created store must accept the copy"
+assert machine.prom.offer("${$WORK_DIR}/prom-store/437584e0") "and the stored copy must register as an offer"
+assert machine.prom.identify("${$WORK_DIR}/prom-store/437584e0").card_id == "mach64_gx" "identity survives the copy and the rename"
+
+# --- The card kind reaches the configuration layer from one declaration. ----
+assert machine.pci.cards() == "[tnt_control, mach64_gx]" "the card must be registered"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+
+assert machine.pci.slot[1].label == "A1" "the card sits in socket A1"
+assert machine.pci.slot[1].irq == 23 "A1's strapped INTA-D reaches Grand Central 23 (TN1062: AAPL,interrupts $17)"
+assert machine.pci.slot[1].card.name == "ATI Mach64 GX" "the card is seated"
+
+# --- The type-0 header, before a single instruction runs. -------------------
+# Device 13 on Bandit 1: vendor $1002 device $4758 -> LE dword $47581002.
+machine.memory.poke.l(0xF2800000, 0x00200000)
+assert machine.memory.peek.l(0xF2C00000) == 0x02105847 "vendor $1002 / device $4758"
+# Class $030000 (display / VGA-compatible), revision $02 -> LE $03000002.
+machine.memory.poke.l(0xF2800000, 0x08200000)
+assert machine.memory.peek.l(0xF2C00000) == 0x02000003 "class $030000, revision 2 (GX-2)"
+# Status halfword: medium DEVSEL (bits 10:9 = 01) is what OF publishes as
+# `devsel-speed 00000001`.  The generic header would otherwise say "fast".
+assert machine.pci.slot[1].card.config.status == 0x0200 "medium DEVSEL"
+# Interrupt pin 1 = INTA; the LINE is seeded from the slot table so the
+# header and the topology cannot disagree.
+assert machine.pci.slot[1].card.config.interrupt_line == 23 "the interrupt line follows the slot table"
+
+# The universal $FFFFFFFF sizing probe.  BAR0 is 16 MB of non-prefetchable
+# memory — the size the card's own `reg` property declares and the size
+# Apple's dump reports (02006810 ... 01000000).
+machine.memory.poke.l(0xF2800000, 0x10200000)
+machine.memory.poke.l(0xF2C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF2C00000) == 0x000000FF "BAR0 must size as 16 MB"
+# There is exactly ONE BAR.  BAR1 is unimplemented and reads zero — the
+# device exists, so it is not all-ones; only absent DEVICES read all-ones.
+machine.memory.poke.l(0xF2800000, 0x14200000)
+machine.memory.poke.l(0xF2C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF2C00000) == 0x00000000 "the card declares no second BAR"
+# ...and no I/O BAR either, which is exactly why its register file needs a
+# strapped (non-BAR) I/O decode.
+machine.memory.poke.l(0xF2800000, 0x18200000)
+machine.memory.poke.l(0xF2C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF2C00000) == 0x00000000 "the card declares no I/O BAR"
+# The expansion-ROM BAR at $30 sizes as the 32 KB physical chip.  Bit 0 is
+# the decode-enable bit, which is writable and reads back, so an all-ones
+# sizing write leaves it set: LE $FFFF8001.
+machine.memory.poke.l(0xF2800000, 0x30200000)
+machine.memory.poke.l(0xF2C00000, 0xFFFFFFFF)
+assert machine.memory.peek.l(0xF2C00000) == 0x0180FFFF "the ROM BAR must size as 32 KB"
+# Clear it again so the sizing probe does not leave the ROM decoding at an
+# address the firmware never assigned.
+machine.memory.poke.l(0xF2C00000, 0x00000000)
+machine.memory.poke.l(0xF2800000, 0x00000000)
+
+# --- The chip's own identity, before the guest touches it. ------------------
+assert machine.pci.slot[1].card.regs.chip_id == 0x020000D7 "CONFIG_CHIP_ID: 'GX', class 0, revision 2 (GX-2)"
+assert machine.pci.slot[1].card.regs.vram_size == 0x200000 "2 MB of VRAM, as Apple soldered down"
+assert machine.pci.slot[1].card.config.rom_size == 0x8000 "a 32 KB expansion ROM is loaded"
+assert machine.pci.slot[1].card.monitor.id == "14in_rgb" "the default strapped monitor"
+assert !machine.pci.slot[1].card.monitor.probed "nothing has sensed the monitor yet"
+
+# --- Now let the guest's own firmware run the card. -------------------------
+# Open Firmware probes Bandit 1, sizes and assigns the BARs, maps the
+# expansion ROM and byte-loads the card's FCode, which then brings the chip
+# up on its own.  Nothing below is emulator behaviour: it is the card's ROM
+# executing.
+scheduler.run 400000000
+
+# Open Firmware assigned BAR0 inside Bandit 1's 256 MB window — at exactly
+# the address Apple's own machine assigned it.
+assert machine.pci.slot[1].card.config.bar[0].base == 0x81000000 "OF must assign BAR0 at $81000000 (TN1062)"
+assert machine.pci.slot[1].card.config.bar[0].mapped "and the card must decode it"
+# The command register carries memory space; the card's FCode sets the I/O
+# bit while it programs CONFIG_CNTL and CLEARS it again on the way out, so
+# a settled card decodes memory only.
+assert (machine.pci.slot[1].card.config.command & 0x0002) != 0 "memory space enabled"
+
+# The card enabled its own aperture.  CONFIG_CNTL is the one mach64
+# register with NO memory-mapped alias, so this could only have been
+# written through PCI I/O space — which is the whole reason the Bandit I/O
+# window had to be claimed.
+assert machine.pci.slot[1].card.regs.aperture_size == 0x800000 "an 8 MB aperture is enabled"
+assert (machine.pci.slot[1].card.regs.config_cntl & 0x00080000) != 0 "CFG_VGA_DIS: the FCode disabled VGA"
+
+# The monitor-sense engine ran, and did NOT bail.  The card's FCode prints
+# "No monitor" and aborts only when the primary code is 7 AND the extended
+# code is $3F together — every pin floating in every configuration.  A 14"
+# AppleColor answers primary 6, extended $2B.
+#
+# $2B is worth stating twice: it is the same extended walk the repository
+# already records for this monitor on Control's completely unrelated sense
+# circuit (control.c).  Two independent circuits agreeing on one monitor is
+# what makes this engine trustworthy.
+assert machine.pci.slot[1].card.monitor.probed "the guest must have driven the monitor-ID pins"
+assert machine.pci.slot[1].card.monitor.sensed_primary == 6 "primary sense code 6"
+assert machine.pci.slot[1].card.monitor.sensed_extended == 0x2B "extended sense walk $2B"
+
+# The CRTC was programmed for 8 bpp extended (non-VGA) display, which is
+# what the card's own register-init table selects and what TN1062's node
+# reports as `depth 00000008`.
+assert ((machine.pci.slot[1].card.regs.crtc_gen_cntl >> 8) & 7) == 2 "CRTC_PIX_WIDTH = 2 = 8 bpp"
+assert (machine.pci.slot[1].card.regs.crtc_gen_cntl & 0x01000000) != 0 "CRTC_EXT_DISP_EN: not in VGA mode"
+
+# MEM_SIZE must agree with the buffer we allocated, or a driver offers
+# depths the framebuffer cannot hold.
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "MEM_CNTL MEM_SIZE = 2 = 2 MB"
+
+# --- The card DRAWS: the CRTC becomes a display descriptor. -----------------
+# Apple's dump reports width $280, height $1E0, depth 8 and linebytes $280
+# for this card, and every one of those is derived here from the CRTC
+# registers the guest programmed.  The linebytes value is what settles
+# CRTC_PITCH's field position: it is bits 31:22, and only the 10-bit read
+# gives the 80 that makes 80 x 8 = $280.
+assert machine.screen.width == 640 "640 pixels across (CRTC_H_DISP + 1, in characters)"
+assert machine.screen.height == 480 "480 lines (CRTC_V_DISP + 1)"
+assert machine.screen.depth == 8 "8 bpp, matching TN1062's depth 00000008"
+assert machine.screen.source.stride == 640 "linebytes $280 — CRTC_PITCH x 8 x bytes-per-pixel"
+
+# machine.screen.source is a reference edge to the framebuffer node of
+# whatever is currently driving the display.  A seated PCI display card
+# wins over the machine's built-in video.
+assert machine.pci.slot[1].card.framebuffer.depth == 8 "screen.source resolves to the card's framebuffer"
+
+# --- The hardware cursor is an overlay, not something drawn into VRAM. ------
+# A 64x64 block of 2-bit pixels: 00 = colour 0, 01 = colour 1, 10 =
+# transparent, 11 = complement (PRG, "Hardware Cursor").  The pitch is
+# always 64 pixels — 16 bytes a line — whatever the cursor's real width,
+# and pixels are in Intel order, so the leftmost is the LOW two bits of the
+# low byte.  CUR_HORZ_VERT_OFF picks where inside the block the visible
+# part starts, which is also how a cursor clipped by the top or left edge
+# of the screen is expressed ("offset = 64 - size").
+#
+# Using an offset of 56 makes the visible cursor the bottom-right 8x8 of
+# the block, so only those eight rows' last bytes need defining — the rest
+# of the block is never read.
+#
+# The test is an equality, not a "something changed": draw an 8x8 patch of
+# index $22 into the framebuffer and remember the screen checksum, put the
+# framebuffer back, then produce the SAME 8x8 with the cursor and require
+# the identical checksum.  That pins the pixel encoding, the line pitch,
+# the colour lookup and the position all at once — and reading VRAM back
+# afterwards proves the overlay never touched it.
+let CURDEF = 0x81180000
+let CURW = 0x30000
+for row in 56..64 {
+    machine.memory.poke.l($CURDEF + $row * 16 + 12, 0x00000000)
+}
+# The framebuffer patch at (200,300): CRTC base $200, pitch 640.
+for row in 300..308 {
+    machine.memory.poke.l(0x81000200 + $row * 640 + 200, 0x11111111)
+    machine.memory.poke.l(0x81000200 + $row * 640 + 204, 0x11111111)
+}
+let PITCH = machine.memory.peek.l(0x817FFC14)
+machine.memory.poke.l(0x817FFC14, $PITCH)
+let C_BASE = machine.screen.checksum(300, 200, 308, 208)
+for row in 300..308 {
+    machine.memory.poke.l(0x81000200 + $row * 640 + 200, 0x22222222)
+    machine.memory.poke.l(0x81000200 + $row * 640 + 204, 0x22222222)
+}
+machine.memory.poke.l(0x817FFC14, $PITCH)
+let C_WANT = machine.screen.checksum(300, 200, 308, 208)
+assert $C_WANT != $C_BASE "the reference patch must actually change the screen"
+for row in 300..308 {
+    machine.memory.poke.l(0x81000200 + $row * 640 + 200, 0x11111111)
+    machine.memory.poke.l(0x81000200 + $row * 640 + 204, 0x11111111)
+}
+machine.memory.poke.l(0x817FFC14, $PITCH)
+assert machine.screen.checksum(300, 200, 308, 208) == $C_BASE "restoring the patch must restore the screen"
+
+# CUR_CLR0 = index $22, CUR_OFFSET in 64-bit words, position (200,300),
+# offset 56 in both axes.  Registers are little-endian through the alias.
+machine.memory.poke.l(0x817FFC60, 0x22000000)
+machine.memory.poke.l(0x817FFC68, 0x00000300) # CUR_OFFSET = $30000 (LE)
+machine.memory.poke.l(0x817FFC6C, 0xC8002C01)
+machine.memory.poke.l(0x817FFC70, 0x38003800)
+let GT = machine.memory.peek.l(0x817FFCD0)
+machine.memory.poke.l(0x817FFCD0, 0x80000000 | $GT)
+machine.memory.poke.l(0x817FFC14, $PITCH)
+assert machine.screen.checksum(300, 200, 308, 208) == $C_WANT "the cursor must composite exactly like the drawn patch"
+assert machine.memory.peek.b(0x81000200 + 300 * 640 + 200) == 0x11 "and must NOT write through to the framebuffer"
+machine.memory.poke.l(0x817FFCD0, $GT)
+machine.memory.poke.l(0x817FFC14, $PITCH)
+assert machine.screen.checksum(300, 200, 308, 208) == $C_BASE "disabling the cursor must remove it cleanly"
+
+# --- A reversed blit walks its SOURCE backwards too. ------------------------
+# The source trajectory has no direction of its own: for a rectangular
+# destination "SRC_X_DIR and SRC_Y_DIR track DST_X_DIR@DST_CNTL and
+# DST_Y_DIR@DST_CNTL" (PRG, Source Trajectories 2/3/4).  Both coordinates
+# then name the FAR edge and count inward.
+#
+# Nothing on a freshly drawn screen shows this: a driver only clears the
+# direction bits when a copy OVERLAPS in the direction it is moving —
+# scrolling a window back up or back left — and a model that walks the
+# source forwards regardless still gets the single pixel at the starting
+# corner right, so the first scroll of a new window looks perfect.
+#
+# Driven through the register file directly rather than through the guest,
+# because the guest only produces this shape after a user scrolls twice.
+# The engine is set up from scratch here: surfaces at VRAM offset 0 with a
+# 640-pixel pitch, so the addresses below are BAR0 + y*640 + x.
+let AL = 0x817FFC00
+machine.memory.poke.l($AL + 0x100, 0x00000014)   # DST_OFF_PITCH: pitch 640, offset 0
+machine.memory.poke.l($AL + 0x180, 0x00000014)   # SRC_OFF_PITCH: the same surface
+machine.memory.poke.l($AL + 0x2D8, 0x00030000)   # DP_SRC: foreground = blit
+machine.memory.poke.l($AL + 0x2D4, 0x07000700)   # DP_MIX: source
+machine.memory.poke.l($AL + 0x2C8, 0xFFFFFFFF)   # DP_WRITE_MSK
+machine.memory.poke.l($AL + 0x2A8, 0x00007F02)   # SC_LEFT_RIGHT  0..639
+machine.memory.poke.l($AL + 0x2B4, 0x0000DF01)   # SC_TOP_BOTTOM  0..479
+machine.memory.poke.l($AL + 0x1B4, 0x00000000)   # SRC_CNTL: unbounded Y, no wrap
+
+# A known 8-pixel run at (100,100), and clear space to its right.
+machine.memory.poke.b(0x8100FA64, 1)
+machine.memory.poke.b(0x8100FA65, 2)
+machine.memory.poke.b(0x8100FA66, 3)
+machine.memory.poke.b(0x8100FA67, 4)
+machine.memory.poke.b(0x8100FA68, 5)
+machine.memory.poke.b(0x8100FA69, 6)
+machine.memory.poke.b(0x8100FA6A, 7)
+machine.memory.poke.b(0x8100FA6B, 8)
+
+# Shift it RIGHT by four, onto itself.  A left-to-right walk would read
+# bytes it has already overwritten; the driver therefore clears DST_X_DIR
+# and names the right-hand edge of each rectangle.
+machine.memory.poke.l($AL + 0x330, 0x00000000)   # GUI_TRAJ_CNTL: right-to-left, bottom-to-top
+machine.memory.poke.l($AL + 0x18C, 0x64006B00)   # SRC_Y_X       = (107,100)
+machine.memory.poke.l($AL + 0x198, 0x01000800)   # SRC_HEIGHT1_WIDTH1 = 8x1
+machine.memory.poke.l($AL + 0x10C, 0x64006F00)   # DST_Y_X       = (111,100)
+machine.memory.poke.l($AL + 0x118, 0x01000800)   # DST_HEIGHT_WIDTH  = 8x1 -> GO
+assert machine.memory.peek.b(0x8100FA68) == 1 "a reversed blit must copy its source, not read past it"
+assert machine.memory.peek.b(0x8100FA69) == 2 "reversed blit pixel 2"
+assert machine.memory.peek.b(0x8100FA6C) == 5 "reversed blit pixel 5"
+assert machine.memory.peek.b(0x8100FA6F) == 8 "reversed blit pixel 8"
+# ...and the four pixels the move vacated still hold the head of the run,
+# which is what a shift-by-four leaves behind.
+assert machine.memory.peek.b(0x8100FA64) == 1 "the vacated head is not cleared by a move"
+assert machine.memory.peek.b(0x8100FA67) == 4 "the vacated head is not cleared by a move"
+
+# --- With the card seated, Bandit 2 takes $90000000. ------------------------
+# The counterpart of the tnt-pci-slots row: a display card in a socket
+# retires the Control/Chaos fallback, the VCI bus seats nothing, and the
+# range Apple's own 9500 shows Bandit 2 forwarding (TN1062) is free for it
+# to claim.  $48's upper halfword is the coarse 256 MB decode, so bit 9 =
+# $90000000; read little-endian, $02000030 comes back as $30000002.
+machine.memory.poke.l(0xF4800000, 0x48080000)
+assert machine.memory.peek.l(0xF4C00000) == 0x30000002 "Bandit 2 must advertise the $90000000 window"
+machine.memory.poke.l(0xF4800000, 0x00000000)
+
+# --- The VBL reaches Grand Central 23, and the deassert edge clears it. -----
+# The card's slot line is LEVEL-sensitive: it is raised when a vertical
+# blank arrives with CRTC_VBLANK_INT_EN set, and held until the driver
+# acknowledges by writing 1 to CRTC_VBLANK_INT.  Sampling it while 7.6's
+# own driver is servicing VBLs would be a race — the line is low again
+# within a few instructions — so the source is masked off at Grand Central
+# first.  The card still asserts (a GC mask gates delivery, not the
+# source), and with nothing servicing it the level simply stands.
+#
+# Grand Central's interrupt block is read little-endian by the guest, so
+# register bit 23 ($00800000) appears in a big-endian peek as $00008000.
+# +$2C is Levels, +$24 is Mask.
+machine.memory.poke.l(0xF3000024, 0x00000000)
+
+# CRTC_INT_CNTL is dword $06 of the register file; the memory alias sits at
+# BAR0 + $7FFC00 for an 8 MB aperture, so $81000000 + $7FFC00 + $18.  Its
+# value is little-endian too: $06000000 here is EN|INT, and because
+# CRTC_VBLANK_INT is write-1-to-clear that write acknowledges the pending
+# interrupt while leaving the enable set.
+machine.memory.poke.l(0x817FFC18, 0x06000000)
+assert (machine.memory.peek.l(0xF300002C) & 0x00008000) == 0 "the line must be low once acknowledged"
+
+# One frame later the card has raised it again, and nothing can clear it.
+scheduler.run 20000000
+assert (machine.memory.peek.l(0xF300002C) & 0x00008000) != 0 "a vertical blank must raise Grand Central 23"
+
+# The deassert edge: acknowledging at the card drops the slot line, which
+# is the half a level-sensitive model gets wrong if it only ever asserts.
+machine.memory.poke.l(0x817FFC18, 0x06000000)
+assert (machine.memory.peek.l(0xF300002C) & 0x00008000) == 0 "acknowledging at the card must clear Grand Central 23"
+assert (machine.memory.peek.l(0x817FFC18) & 0x02000000) != 0 "and the acknowledge must not clear CRTC_VBLANK_INT_EN"
+
+# --- The authentic 9500: no onboard video. ----------------------------------
+# The real machine has none — it "requires a display card in a PCI slot" —
+# so the Control/Chaos entry is a BUILTIN_FALLBACK that stands in only
+# while no socket supplies a display card.  With the Mach64 seated it
+# retires, and the 9500 is the single-display machine the hardware is.
+assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "Control must stand down for a real display card"
+
+# ...and with no card staged it stands in again, so a cardless boot still
+# has somewhere to draw.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}"
+assert machine.pci.slot[7].card.name == "Control" "Control stands in when no display card is seated"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+
+# --- Card options reach the card through the boot document. -----------------
+# pci_option= carries "key=value" pairs to the same socket pci_card= names.
+# Which keys mean anything is the CARD's business: the generic layer stages
+# them and the kind's stage_option hook accepts or rejects each one, so no
+# card identity leaks into the boot path.  MEM_CNTL's MEM_SIZE field is the
+# card telling the driver how much VRAM it has, so it is the honest place
+# to read the answer back.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "2 MB is the soldered default"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 109-31600-00 expansion module makes it 4 MB"
+# Several options at once, and one the card senses for itself.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m,monitor=15in_multi"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "a comma-separated list must apply every pair"
+assert machine.pci.slot[1].card.monitor.id == "15in_multi" "...including the second one"
+# A malformed pair is dropped with a log, NOT fatal: this layer cannot tell
+# a typo from a key it simply does not know, and refusing the boot would
+# make every unknown option fatal.
+assert machine.boot(model="pm9500", ram=32768, rom="${$ROM}", pci_card="mach64_gx", pci_option="bogus") "a malformed option must not fail the boot"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "and must leave the card at its default"
+
+# The card DECLARES what it will accept, so a frontend can offer a control
+# without knowing which card it is.
+assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].key == "vram" "the card must declare its option"
+assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].default_value == "2m" "...and what it does by default"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+
+# --- A card that requires an expansion ROM cannot boot without one. ---------
+# Strict resolution runs BEFORE the running machine is touched, so a
+# rejected boot leaves the current machine alive.
+machine.prom.offer("${$WORK_DIR}/fake-x86-vga.prom")
+assert machine.id == "pm9500" "the machine survives"
+
+quit

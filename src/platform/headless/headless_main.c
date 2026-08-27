@@ -17,6 +17,7 @@
 #include "machine_config.h"
 #include "memory.h"
 #include "nubus.h"
+#include "prom.h"
 #include "rom.h"
 #include "scheduler.h"
 #include "script.h"
@@ -701,6 +702,42 @@ static void offer_sibling_vroms(const char *rom_path) {
     closedir(d);
 }
 
+// The same for PCI expansion ROMs: enumerate the ROM file's directory and
+// offer every *.prom to core, which identifies each by content and keeps
+// the ones it recognises.  A test script's rom="${$ROM}" therefore makes
+// the card ROMs discoverable with no path knowledge anywhere in core —
+// the platform owns the filesystem, core owns identity.
+static void offer_sibling_proms(const char *rom_path) {
+    const char *slash = strrchr(rom_path, '/');
+    char dir[1024];
+    if (slash) {
+        size_t dir_len = (size_t)(slash - rom_path);
+        if (dir_len == 0)
+            dir_len = 1; // ROM at filesystem root -> "/"
+        if (dir_len >= sizeof(dir))
+            return;
+        memcpy(dir, rom_path, dir_len);
+        dir[dir_len] = '\0';
+    } else {
+        strcpy(dir, "."); // bare filename -> the current directory
+    }
+    DIR *d = opendir(dir);
+    if (!d)
+        return;
+    struct dirent *entry;
+    char path[1200];
+    while ((entry = readdir(d)) != NULL) {
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (len < 6 || strcmp(name + len - 5, ".prom") != 0)
+            continue;
+        if (snprintf(path, sizeof(path), "%s/%s", dir, name) >= (int)sizeof(path))
+            continue;
+        prom_offer(path);
+    }
+    closedir(d);
+}
+
 int main(int argc, char *argv[]) {
     // Configuration from arguments
     const char *rom_file = NULL;
@@ -1019,6 +1056,7 @@ int main(int argc, char *argv[]) {
     // BEFORE the boot so the card factories can match them during machine
     // bring-up (offers persist across machine.boot).
     offer_sibling_vroms(rom_file);
+    offer_sibling_proms(rom_file);
 
     // Startup is the same boot-document path scripts use (machine.boot):
     // CLI args fill the document, machine_boot_apply validates and

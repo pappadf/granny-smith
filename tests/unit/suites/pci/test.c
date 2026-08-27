@@ -31,6 +31,15 @@
 // deliberately does not link — so it gets a factory-less stand-in.
 const pci_card_kind_t tnt_control_kind = {
     .id = "tnt_control", .display_name = "Control / Chaos on-board video", .attach = PCI_ATTACH_BUILTIN};
+// ...and the pluggable one, from core/peripherals/pci/cards/mach64gx.c, which
+// this suite also does not link (it would drag in the whole prom/object
+// stack).  requires_prom is kept true so the socket-fit and staged-pick
+// rows below exercise a card with a real ROM requirement.
+const pci_card_kind_t mach64_gx_kind = {.id = "mach64_gx",
+                                        .display_name = "Apple Accelerated PCI Graphics Card (ATI Mach64 GX)",
+                                        .attach = PCI_ATTACH_PCI,
+                                        .requires_prom = true,
+                                        .card_class = "display"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;
@@ -431,6 +440,120 @@ TEST(test_window_dispatch_and_faults) {
     pci_root_delete(root);
 }
 
+// A device that decodes I/O at STRAPPED addresses, with no I/O BAR — the
+// mach64 GX's arrangement, and the reason pci_device_add_fixed_region
+// exists.  Three things are pinned: a sparse region answers only its own
+// congruence class, an address inside the same window that is NOT in that
+// class still faults, and the command register's space-enable bit gates
+// the whole thing exactly as it gates a BAR.
+TEST(test_fixed_region_sparse_decode) {
+    config_t *cfg = test_cfg();
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    device_reset();
+    pci_bus_add_device(bus, &g_dev, 13);
+    pci_bus_add_window(bus, PCI_SPACE_IO, 0xF2000000u, 0x00800000u, 0, 0xFFFFu, "io");
+
+    // ISA-style sparse decoding: compare the low 10 bits against the base,
+    // use bits 15:10 as a register select.  64 KB span, base $2EC.
+    //
+    // The mask is $3FC, not $3FF: each selected register is 32 bits wide,
+    // so base+0..base+3 are byte lanes of the SAME register and all four
+    // must decode.  (Every strap-selectable base — $2EC / $1CC / $1C8 — is
+    // dword-aligned, so masking the low two bits off is exactly right.)
+    // The card's own FCode proves the lanes are used: it drives
+    // CONFIG_CNTL's upper halfword at $6AEE and reads the monitor-sense
+    // byte at DAC_CNTL+3 = $62EF.
+    pci_device_add_fixed_region(&g_dev, PCI_SPACE_IO, 0x0u, 0x10000u, 0x3FCu, 0x2ECu, &region_iface, &g_io);
+    const memory_interface_t *io_if = pci_bus_window_iface(bus, 0);
+    void *io_ctx = pci_bus_window_ctx(bus, 0);
+
+    // The command register has not enabled I/O space yet: nothing decodes,
+    // even at an address the match would accept.
+    g_bus_errors = 0;
+    io_if->read_uint32(io_ctx, 0x72ECu);
+    ASSERT_EQ_INT(g_bus_errors, 1);
+    ASSERT_EQ_INT(g_io.reads, 0);
+
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, PCI_CMD_IO_SPACE);
+
+    // Now the congruence class answers, and the handler is given the raw
+    // I/O address so the card can do its own (sel << 10) sub-decode.
+    g_bus_errors = 0;
+    ASSERT_TRUE(io_if->read_uint32(io_ctx, 0x72ECu) == 0xDEADBEEFu);
+    ASSERT_EQ_INT(g_bus_errors, 0);
+    ASSERT_EQ_INT(g_io.reads, 1);
+    ASSERT_EQ_INT((int)g_io.last_offset, 0x72EC);
+
+    // Byte and halfword accesses at base+2 / base+3 reach it too — the
+    // card's own FCode drives CONFIG_CNTL's upper halfword at $6AEE and
+    // the monitor-sense byte at DAC_CNTL+3 ($62EF).
+    io_if->write_uint16(io_ctx, 0x6AEEu, 0x000F);
+    ASSERT_EQ_INT((int)g_io.last_offset, 0x6AEE);
+    io_if->write_uint8(io_ctx, 0x62EFu, 0x07);
+    ASSERT_EQ_INT((int)g_io.last_offset, 0x62EF);
+    ASSERT_EQ_INT(g_io.writes, 2);
+
+    // An address in the same 64 KB window but a DIFFERENT congruence class
+    // is not ours: it must still fault.  (A contiguous "claim base..base+
+    // size" region would have swallowed all 64 KB here.)  $72E8 is the
+    // dword immediately below CONFIG_STAT0 and is NOT decoded.
+    g_bus_errors = 0;
+    g_io.reads = 0;
+    io_if->read_uint32(io_ctx, 0x72E8u);
+    ASSERT_EQ_INT(g_bus_errors, 1);
+    io_if->read_uint32(io_ctx, 0x7000u);
+    ASSERT_EQ_INT(g_bus_errors, 2);
+    ASSERT_EQ_INT(g_io.reads, 0);
+
+    // The gate flips decode back off — the card's own firmware clears the
+    // I/O-space bit when it is done probing.
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, 0);
+    g_bus_errors = 0;
+    io_if->read_uint32(io_ctx, 0x72ECu);
+    ASSERT_EQ_INT(g_bus_errors, 1);
+    ASSERT_EQ_INT(g_io.reads, 0);
+
+    // A fixed region lives in ONE space: a memory cycle at the same
+    // numeric address never reaches an I/O region.
+    pci_bus_add_window(bus, PCI_SPACE_MEM, 0x80000000u, 0x10000000u, 0x80000000u, 0xFFFFFFFFu, "mem");
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, PCI_CMD_IO_SPACE | PCI_CMD_MEM_SPACE);
+    const memory_interface_t *mem_if = pci_bus_window_iface(bus, 1);
+    void *mem_ctx = pci_bus_window_ctx(bus, 1);
+    g_bus_errors = 0;
+    mem_if->read_uint32(mem_ctx, 0x72ECu);
+    ASSERT_EQ_INT(g_bus_errors, 1);
+    ASSERT_EQ_INT(g_io.reads, 0);
+    pci_root_delete(root);
+}
+
+// A mask of zero makes the match vacuous, which is how the same mechanism
+// expresses an ordinary contiguous legacy claim.
+TEST(test_fixed_region_contiguous) {
+    config_t *cfg = test_cfg();
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    device_reset();
+    pci_bus_add_device(bus, &g_dev, 13);
+    pci_bus_add_window(bus, PCI_SPACE_IO, 0xF2000000u, 0x00800000u, 0, 0xFFFFu, "io");
+    pci_device_add_fixed_region(&g_dev, PCI_SPACE_IO, 0x3B0u, 0x30u, 0, 0, &region_iface, &g_io);
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, PCI_CMD_IO_SPACE);
+
+    const memory_interface_t *io_if = pci_bus_window_iface(bus, 0);
+    void *io_ctx = pci_bus_window_ctx(bus, 0);
+    // Inside the range, and the handler sees a BASE-RELATIVE offset.
+    g_bus_errors = 0;
+    io_if->read_uint8(io_ctx, 0x3B4u);
+    ASSERT_EQ_INT(g_io.reads, 1);
+    ASSERT_EQ_INT((int)g_io.last_offset, 4);
+    // Either side of it faults.
+    io_if->read_uint8(io_ctx, 0x3AFu);
+    io_if->read_uint8(io_ctx, 0x3E0u);
+    ASSERT_EQ_INT(g_bus_errors, 2);
+    ASSERT_EQ_INT(g_io.reads, 1);
+    pci_root_delete(root);
+}
+
 TEST(test_slot_interrupts) {
     config_t *cfg = test_cfg();
     pci_root_t *root = pci_root_create(cfg);
@@ -537,6 +660,31 @@ TEST(test_slot_walk) {
     pci_root_delete(root);
 }
 
+// pci_bus_is_populated is the whole question behind "which bridge decodes
+// $90000000 on a 9500" (tnt_bandit_claim_memory): the two claimants never
+// coexist on real hardware, so the model breaks the tie on whether the bus
+// that would otherwise want it actually seated anything.
+TEST(test_bus_population) {
+    config_t *cfg = test_cfg();
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *empty = pci_bus_create(root, "empty", 0);
+    pci_bus_t *seated = pci_bus_create(root, "seated", 1);
+    device_reset();
+
+    ASSERT_TRUE(!pci_bus_is_populated(empty));
+    ASSERT_TRUE(!pci_bus_is_populated(seated));
+    pci_bus_add_device(seated, &g_dev, 13);
+    ASSERT_TRUE(pci_bus_is_populated(seated));
+    // A device on one bus must not make its sibling look populated — the
+    // decision is per-bus, and getting that wrong would hand the window to
+    // both bridges at once.
+    ASSERT_TRUE(!pci_bus_is_populated(empty));
+    // A NULL bus is "not populated" rather than a crash: a family asks this
+    // about a bus its board may not have created at all.
+    ASSERT_TRUE(!pci_bus_is_populated(NULL));
+    pci_root_delete(root);
+}
+
 int main(void) {
     RUN(test_header_assembly);
     RUN(test_command_masking);
@@ -545,10 +693,13 @@ int main(void) {
     RUN(test_bar_map_transitions);
     RUN(test_absent_devices_read_all_ones);
     RUN(test_window_dispatch_and_faults);
+    RUN(test_fixed_region_sparse_decode);
+    RUN(test_fixed_region_contiguous);
     RUN(test_slot_interrupts);
     RUN(test_card_fits_socket);
     RUN(test_staged_precedence_and_consumption);
     RUN(test_slot_walk);
+    RUN(test_bus_population);
     fprintf(stderr, "pci: all tests passed\n");
     return 0;
 }

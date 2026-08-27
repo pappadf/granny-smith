@@ -30,6 +30,7 @@ typedef struct pci_slot_nodes {
     struct object *card;
     struct object *config;
     struct object *bar[PCI_BAR_SLOTS];
+    struct object *fb; // the card's nominated framebuffer node, if any
     pci_device_t *dev;
     int number; // instance data for the slot wrapper
     int bar_index[PCI_BAR_SLOTS]; // instance data for the bar nodes
@@ -534,6 +535,29 @@ void pci_objects_build(pci_root_t *root) {
         if (kind && kind->attach_objects)
             kind->attach_objects(n->dev, n->card);
     }
+}
+
+void pci_card_set_framebuffer_object(pci_device_t *dev, struct object *obj) {
+    if (!dev)
+        return;
+    for (int i = 0; i < PCI_OBJ_SLOTS; i++) {
+        if (g_slot_nodes[i].dev == dev) {
+            g_slot_nodes[i].fb = obj;
+            return;
+        }
+    }
+}
+
+struct object *pci_active_framebuffer_object(void) {
+    if (!g_obj_root)
+        return NULL;
+    pci_device_t *dev = pci_primary_display_card(g_obj_root);
+    if (!dev)
+        return NULL;
+    for (int i = 0; i < PCI_OBJ_SLOTS; i++)
+        if (g_slot_nodes[i].dev == dev)
+            return g_slot_nodes[i].fb;
+    return NULL;
 }
 
 void pci_objects_teardown(void) {

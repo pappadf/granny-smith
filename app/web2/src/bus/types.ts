@@ -17,6 +17,13 @@ export interface MachineConfig {
    *  card. The dialog derives this from the chosen card (whose vROM it
    *  auto-resolves), so the right card boots instead of the slot default. */
   videoCard?: string;
+  // A display-class PCI card and the expansion ROM that drives it.
+  // Separate from videoCard because they are different buses and the
+  // boot document has a field for each.
+  pciCard?: string;
+  prom?: string;
+  // "key=value[,key=value]" for the staged PCI card (e.g. "vram=4m").
+  pciOption?: string;
   /** JMFB video-mode id (e.g. "13in_rgb_1bpp") — the boot document's
    *  `video_mode` field; the card factory consumes it during boot (sense
    *  lines + slot-PRAM/video defaults).  Without it the JMFB card never
@@ -65,7 +72,7 @@ export interface RecentEntry {
   lastUsedAt: number;
 }
 
-export type ImageCategory = 'rom' | 'vrom' | 'fd' | 'hd' | 'cd';
+export type ImageCategory = 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd';
 
 // One checkpoint as surfaced by opfs.scanCheckpoints(). The dir name is
 // `<machine_id>-<created>` per docs/checkpointing.md; `label` and `machine`

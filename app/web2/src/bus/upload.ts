@@ -295,10 +295,17 @@ async function probeAndPersist(
   // disk" if VROM hasn't already claimed the file).
   //   rom    — exact size match against the ROM catalog
   //   vrom   — exact 32 KB match
+  //   prom   — $55AA + a reachable PCIR + Open Firmware code type
   //   fd     — exact floppy sizes (400/800/1440 KB ± DC42 header)
   //   cdrom  — ISO 9660 / HFS / APM signature inside the file
   //   hd     — permissive fallback
-  const ORDER: MediaTypeId[] = ['rom', 'vrom', 'fd', 'cdrom', 'hd'];
+  //
+  // vrom and prom cannot claim each other's files even though both are
+  // commonly 32 KB: a vROM is identified by a NuBus Format-Block CRC in
+  // its trailing bytes, a PROM by a PCI Data Structure near its head, so
+  // whichever runs first the other still fails. They sit adjacent anyway,
+  // ahead of the permissive hd fallback that would otherwise swallow both.
+  const ORDER: MediaTypeId[] = ['rom', 'vrom', 'prom', 'fd', 'cdrom', 'hd'];
   for (const id of ORDER) {
     const descriptor = MEDIA_TYPES[id];
     const result = await descriptor.validate(stagingPath, gsEval);
@@ -368,6 +375,18 @@ async function persist(
   const finalName = descriptor.nameFn ? descriptor.nameFn(originalName, info) : originalName;
   const targetDir = info?.persistDir ?? descriptor.persistDir;
   const finalPath = `${targetDir}/${finalName}`;
+  // storage.cp does not create parent directories, and the category dirs are
+  // made once at startup — so a store added after a user's OPFS was first
+  // laid down has nowhere to copy to, and every upload of that kind fails
+  // with a bare "Failed to save". Create it here; it is a no-op when the
+  // directory already exists.
+  //
+  // Through vfs.mkdir, NOT the main-thread opfs.mkdirP: the copy below runs
+  // on the worker, and a main-thread OPFS mutation is not reliably visible
+  // to the worker's WasmFS (the same asymmetry that forces staging onto the
+  // worker — see stageUpload). Creating it on one side and copying on the
+  // other is exactly the bug this is fixing.
+  await gsEval('vfs.mkdir', [targetDir]);
   const ok = (await gsEval('storage.cp', [sourcePath, finalPath])) === true;
   if (!ok) {
     showNotification(`Failed to save ${originalName}`, 'error');
@@ -381,6 +400,10 @@ async function persist(
   if (descriptor.id === 'vrom') {
     await gsEval('machine.vrom.offer', [finalPath]);
   }
+  // Same for a PCI expansion ROM, through its own registry.
+  if (descriptor.id === 'prom') {
+    await gsEval('machine.prom.offer', [finalPath]);
+  }
   // Notify inventory watchers (e.g. WelcomeConfigSlide's dropdown
   // refresh effect) that the OPFS image catalog has changed.
   bumpImagesRevision();
@@ -390,7 +413,8 @@ async function persist(
   // config dialog (sourced from machine.profile), so we don't duplicate that
   // knowledge here; the id is the identification signal.
   const cardId = info?.cardId as string | undefined;
-  const shown = cardId ? `${originalName} (Video ROM for '${cardId}')` : originalName;
+  const cardFor = descriptor.id === 'prom' ? 'PCI expansion ROM' : 'Video ROM';
+  const shown = cardId ? `${originalName} (${cardFor} for '${cardId}')` : originalName;
   showNotification(`${shown} uploaded`, 'info');
   return finalPath;
 }

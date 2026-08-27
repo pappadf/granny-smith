@@ -7,12 +7,18 @@
 // processor bus at 3:1, twelve DIMM slots to 1.5 GB (Apple, "Power
 // Macintosh 9500 Computer" Developer Note, 1995).
 //
-// Documented fidelity deviation: the real 9500 has NO onboard video — it
-// requires a PCI display card ("The computer requires a display card in a
-// PCI slot", ibid.).  The emulated pm9500 will populate Chaos/Control
-// like its siblings when the video phase lands, because an FCode-carrying
-// PCI framebuffer card is a substantial gated follow-up of its own; the
-// About-box/Gestalt row still proves identity.
+// The real 9500 has NO onboard video — it "requires a display card in a
+// PCI slot" (ibid.), and a real machine's Open Firmware device tree has no
+// /chaos node at all, only a dangling `vci0` devalias the shipping ROM is
+// perfectly happy with (Apple Technote 1062).
+//
+// So slot 7's Control/Chaos entry is a BUILTIN_FALLBACK: it stands in only
+// while no socket supplies a display card, purely so a cardless boot has
+// somewhere to draw.  Seat an Apple Accelerated PCI Graphics Card in a
+// socket and the fake retires, which is what the hardware looks like.
+// Removing Chaos from the machine altogether is the remaining step and is
+// deliberately separate — it changes what probe-pci walks on a
+// boot-critical path.
 
 #include "tnt.h"
 
@@ -33,15 +39,22 @@ static const struct scsi_slot pm9500_scsi_slots[] = {
 // Central externals 23/24/25 (Bandit 1) and 27/28/29 (Bandit 2), which is
 // Apple's own 9500 external-interrupt table verbatim.  Slot 7 carries the
 // Control/Chaos video deviation documented above.
+//
+// The slot LABELS come from each bridge's own `slot-names` property, dumped
+// live from a real 9500 under Open Firmware (Apple Technote 1062):
+// Bandit 1 publishes `0000E000 "A1" "B1" "C1"` and Bandit 2 publishes
+// `0000E000 "D2" "E2" "F2"`.  Phase 1 declared the second bank D1/E1/F1,
+// having judged the strings "not decidable from the token stream"; the
+// ROM's own property decides them.
 static const pci_slot_decl_t pm9500_pci_slots[] = {
     {.slot = 1, .kind = PCI_SLOT_SOCKET, .label = "A1", .bus = TNT_PCI_BUS_1, .device = 13, .int_line = 23},
     {.slot = 2, .kind = PCI_SLOT_SOCKET, .label = "B1", .bus = TNT_PCI_BUS_1, .device = 14, .int_line = 24},
     {.slot = 3, .kind = PCI_SLOT_SOCKET, .label = "C1", .bus = TNT_PCI_BUS_1, .device = 15, .int_line = 25},
-    {.slot = 4, .kind = PCI_SLOT_SOCKET, .label = "D1", .bus = TNT_PCI_BUS_2, .device = 13, .int_line = 27},
-    {.slot = 5, .kind = PCI_SLOT_SOCKET, .label = "E1", .bus = TNT_PCI_BUS_2, .device = 14, .int_line = 28},
-    {.slot = 6, .kind = PCI_SLOT_SOCKET, .label = "F1", .bus = TNT_PCI_BUS_2, .device = 15, .int_line = 29},
+    {.slot = 4, .kind = PCI_SLOT_SOCKET, .label = "D2", .bus = TNT_PCI_BUS_2, .device = 13, .int_line = 27},
+    {.slot = 5, .kind = PCI_SLOT_SOCKET, .label = "E2", .bus = TNT_PCI_BUS_2, .device = 14, .int_line = 28},
+    {.slot = 6, .kind = PCI_SLOT_SOCKET, .label = "F2", .bus = TNT_PCI_BUS_2, .device = 15, .int_line = 29},
     {.slot = 7,
-     .kind = PCI_SLOT_BUILTIN,
+     .kind = PCI_SLOT_BUILTIN_FALLBACK,
      .label = "VCI",
      .bus = TNT_PCI_BUS_VCI,
      .device = 11,

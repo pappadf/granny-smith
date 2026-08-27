@@ -485,6 +485,10 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // projects the whole topology into the object model.
     pci_seat_slots(cfg->pci, cp);
 
+    // The PCI memory windows come after the walk: $90000000 goes to Chaos
+    // or to Bandit 2 depending on whether the VCI bus seated anything.
+    tnt_bandit_claim_memory(cfg);
+
     // Substrate-private checkpoint tail: register files + NVRAM are plain
     // data; the CPU line is recomputed below.
     if (cp) {
@@ -675,9 +679,18 @@ static void tnt_trigger_vbl(config_t *cfg) {
     pci_tick_vbl(cfg->pci);
 }
 
-// Primary display: Control's scanout over its VRAM (control.c).
+// Primary display: the first display-capable PCI device in declared slot
+// order.  Control is itself a pci_device_t with a display op, seated in the
+// LAST declared slot (7 on the 9500, 4 on the 7500/8500), so this reads
+// "a seated video card when one exists, Control otherwise" with no
+// special-casing — the slot ordering was chosen for exactly this.
+//
+// The direct call survives as the fallback for the window between
+// tnt_control_init and slot seating, when the PCI object graph is not yet
+// answering.
 static struct display *tnt_display(config_t *cfg) {
-    return tnt_control_display(cfg);
+    struct display *d = pci_primary_display(cfg->pci);
+    return d ? d : tnt_control_display(cfg);
 }
 
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand

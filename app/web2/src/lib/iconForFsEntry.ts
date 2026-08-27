@@ -28,10 +28,11 @@ export function iconForFsEntry(e: OpfsEntry): IconName {
   return EXT_MAP[ext] ?? 'file';
 }
 
-export function iconForCategory(cat: 'rom' | 'vrom' | 'fd' | 'hd' | 'cd'): IconName {
+export function iconForCategory(cat: 'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd'): IconName {
   switch (cat) {
     case 'rom':
     case 'vrom':
+    case 'prom':
       return 'chip';
     case 'fd':
       return 'floppy';
@@ -42,17 +43,19 @@ export function iconForCategory(cat: 'rom' | 'vrom' | 'fd' | 'hd' | 'cd'): IconN
   }
 }
 
-export const CATEGORY_LABELS: Record<'rom' | 'vrom' | 'fd' | 'hd' | 'cd', string> = {
+export const CATEGORY_LABELS: Record<'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd', string> = {
   rom: 'ROM',
   vrom: 'VROM',
+  prom: 'PCI ROM',
   fd: 'Floppy Disk',
   hd: 'Hard Disk',
   cd: 'CD-ROM',
 };
 
-export const CATEGORY_ACCEPT: Record<'rom' | 'vrom' | 'fd' | 'hd' | 'cd', string> = {
+export const CATEGORY_ACCEPT: Record<'rom' | 'vrom' | 'prom' | 'fd' | 'hd' | 'cd', string> = {
   rom: '.rom,.bin',
   vrom: '.rom,.bin',
+  prom: '.prom,.rom,.bin',
   fd: '.dsk,.img,.dc42',
   hd: '.img,.hda',
   cd: '.iso,.toast,.cdr',

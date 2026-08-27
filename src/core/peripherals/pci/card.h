@@ -96,6 +96,43 @@ typedef struct pci_bar_backing {
     uint32_t base; // where it is decoded (valid while mapped)
 } pci_bar_backing_t;
 
+// Which address space a bridge window forwards / a region decodes.  Lives
+// here rather than in pci.h because a DEVICE's regions are described in
+// this header and pci.h includes it (so `#include "pci.h"` still sees it).
+typedef enum pci_space {
+    PCI_SPACE_MEM = 0,
+    PCI_SPACE_IO,
+} pci_space_t;
+
+// A region whose address is NOT BAR-derived: legacy or strapped decode, as
+// on parts that predate BAR-based I/O.  Decodes `pci_addr` iff it lies in
+// [base, base+span) AND (pci_addr & match_mask) == match_value.
+//
+// The match pair is what makes ISA-style SPARSE decoding expressible.  A
+// mach64 answers only the 64 addresses ((sel << 10) | $2EC) scattered
+// through the 64 KB I/O space — it compares just the low 10 bits and uses
+// bits 15:10 as a register select — so a plain "claim base..base+size"
+// region would have it swallow all 64 KB including addresses it does not
+// drive.  Here that is match_mask $3FF, match_value $2EC, span $10000.
+// A mask of 0 makes the match vacuous, which is an ordinary contiguous
+// claim.
+//
+// Gated by the command register's space-enable bit exactly like a BAR, so
+// a card software has not enabled decodes nothing.  The gate is derived
+// from cfg.command, so there is no new checkpointed state.
+#define PCI_FIXED_REGIONS 2
+
+typedef struct pci_fixed_region {
+    const memory_interface_t *iface; // NULL = unused entry
+    void *ctx;
+    pci_space_t space;
+    uint32_t base; // PCI address the region starts at
+    uint32_t span; // bytes it covers
+    uint32_t match_mask; // 0 = contiguous claim, no sparse match
+    uint32_t match_value;
+    bool mapped; // command register currently enables this space
+} pci_fixed_region_t;
+
 // One seated device.  Per-device private state hangs off `priv`; the bus
 // controller never reads it.
 struct pci_device {
@@ -109,6 +146,7 @@ struct pci_device {
     uint8_t *rom; // expansion-ROM image (FCode), or NULL
     size_t rom_size;
     pci_bar_backing_t backing[PCI_BAR_SLOTS]; // BARs 0..5 + the ROM BAR
+    pci_fixed_region_t fixed[PCI_FIXED_REGIONS]; // non-BAR strapped decode
 };
 
 // Per-card constructor.  The bus controller calls this once per populated
@@ -127,6 +165,19 @@ typedef enum pci_attach {
 
 // Per-driver descriptor — one static instance per registered driver,
 // listed in pci.c's explicit registry array.
+// One user-selectable card option, and the values it takes.  `values` is a
+// NULL-terminated list of ids; `labels` runs alongside it (same length) and
+// may be NULL, in which case the ids are shown.  `default_value` is the id
+// the card uses when nothing is staged, so a dialog can show what "leave it
+// alone" means rather than inventing a blank entry.
+typedef struct pci_card_option {
+    const char *key; // "vram" — what pci_option= carries
+    const char *label; // "Video Memory"
+    const char *const *values; // {"2m", "4m", NULL}
+    const char *const *labels; // {"2 MB", "4 MB (expansion module)", NULL}
+    const char *default_value;
+} pci_card_option_t;
+
 typedef struct pci_card_kind {
     const char *id; // "spinnaker"
     const char *display_name; // "Apple Accelerated PCI Graphics Card"
@@ -142,6 +193,14 @@ typedef struct pci_card_kind {
     const char *card_class;
     const struct nubus_monitor *monitors; // display cards only; NULL otherwise
     pci_card_factory_fn factory;
+
+    // What stage_option() will accept, DECLARED so a frontend can render a
+    // control for it without knowing what card this is.  Sentinel-
+    // terminated (an entry whose key is NULL ends the list); NULL means the
+    // card takes no options a user should be offered.  The card is still
+    // free to accept keys it does not advertise — this is the offered set,
+    // not the accepted set.
+    const struct pci_card_option *options;
 
     // The two seams NuBus lacked (proposal §5.1): the generic layer routes
     // staged options and attaches extra object children through the KIND,
