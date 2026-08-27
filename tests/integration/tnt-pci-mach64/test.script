@@ -153,6 +153,48 @@ assert machine.screen.source.stride == 640 "linebytes $280 — CRTC_PITCH x 8 x 
 # wins over the machine's built-in video.
 assert machine.pci.slot[1].card.framebuffer.depth == 8 "screen.source resolves to the card's framebuffer"
 
+# --- With the card seated, Bandit 2 takes $90000000. ------------------------
+# The counterpart of the tnt-pci-slots row: a display card in a socket
+# retires the Control/Chaos fallback, the VCI bus seats nothing, and the
+# range Apple's own 9500 shows Bandit 2 forwarding (TN1062) is free for it
+# to claim.  $48's upper halfword is the coarse 256 MB decode, so bit 9 =
+# $90000000; read little-endian, $02000030 comes back as $30000002.
+machine.memory.poke.l(0xF4800000, 0x48080000)
+assert machine.memory.peek.l(0xF4C00000) == 0x30000002 "Bandit 2 must advertise the $90000000 window"
+machine.memory.poke.l(0xF4800000, 0x00000000)
+
+# --- The VBL reaches Grand Central 23, and the deassert edge clears it. -----
+# The card's slot line is LEVEL-sensitive: it is raised when a vertical
+# blank arrives with CRTC_VBLANK_INT_EN set, and held until the driver
+# acknowledges by writing 1 to CRTC_VBLANK_INT.  Sampling it while 7.6's
+# own driver is servicing VBLs would be a race — the line is low again
+# within a few instructions — so the source is masked off at Grand Central
+# first.  The card still asserts (a GC mask gates delivery, not the
+# source), and with nothing servicing it the level simply stands.
+#
+# Grand Central's interrupt block is read little-endian by the guest, so
+# register bit 23 ($00800000) appears in a big-endian peek as $00008000.
+# +$2C is Levels, +$24 is Mask.
+machine.memory.poke.l(0xF3000024, 0x00000000)
+
+# CRTC_INT_CNTL is dword $06 of the register file; the memory alias sits at
+# BAR0 + $7FFC00 for an 8 MB aperture, so $81000000 + $7FFC00 + $18.  Its
+# value is little-endian too: $06000000 here is EN|INT, and because
+# CRTC_VBLANK_INT is write-1-to-clear that write acknowledges the pending
+# interrupt while leaving the enable set.
+machine.memory.poke.l(0x817FFC18, 0x06000000)
+assert (machine.memory.peek.l(0xF300002C) & 0x00008000) == 0 "the line must be low once acknowledged"
+
+# One frame later the card has raised it again, and nothing can clear it.
+scheduler.run 20000000
+assert (machine.memory.peek.l(0xF300002C) & 0x00008000) != 0 "a vertical blank must raise Grand Central 23"
+
+# The deassert edge: acknowledging at the card drops the slot line, which
+# is the half a level-sensitive model gets wrong if it only ever asserts.
+machine.memory.poke.l(0x817FFC18, 0x06000000)
+assert (machine.memory.peek.l(0xF300002C) & 0x00008000) == 0 "acknowledging at the card must clear Grand Central 23"
+assert (machine.memory.peek.l(0x817FFC18) & 0x02000000) != 0 "and the acknowledge must not clear CRTC_VBLANK_INT_EN"
+
 # --- The authentic 9500: no onboard video. ----------------------------------
 # The real machine has none — it "requires a display card in a PCI slot" —
 # so the Control/Chaos entry is a BUILTIN_FALLBACK that stands in only
