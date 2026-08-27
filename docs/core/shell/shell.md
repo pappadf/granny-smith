@@ -79,7 +79,10 @@ context:
   the `expr.c` grammar — C-like operators, object paths as bare
   identifiers, `$name` binding reads, `a..b` half-open integer ranges,
   and the builtins `try(EXPR, FALLBACK)`, `error(msg)`,
-  `range(start, stop[, step])`, `len(x)`.
+  `range(start, stop[, step])`, `len(x)`,
+  `contains(haystack, needle)` (substring test over two strings —
+  what a row uses to assert on a guest serial console's text, since
+  the machines that boot Unix narrate rather than draw).
 
 ## Strings and interpolation
 

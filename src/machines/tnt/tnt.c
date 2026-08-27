@@ -216,7 +216,7 @@ static void tnt_memory_layout(config_t *cfg) {
     st->gc_interface.write_uint8 = gc_write8;
     st->gc_interface.write_uint16 = gc_write16;
     st->gc_interface.write_uint32 = gc_write32;
-    memory_map_add(cfg->mem_map, TNT_GC_BASE, 0x00020000u, "Grand Central", &st->gc_interface, cfg);
+    memory_map_add(cfg->mem_map, TNT_GC_BASE, TNT_GC_ISLAND_SIZE, "Grand Central", &st->gc_interface, cfg);
 
     // Hammerhead: the register window (page granularity is ours; the file
     // answers $000..$7FF and logs above it).

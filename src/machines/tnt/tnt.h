@@ -74,14 +74,15 @@ struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 // so the bridge base carries PCI I/O and the next 16 MB is pass-through
 // MEMORY — which is how Grand Central is reached.  (This comment used to
 // call $F3000000 "the base of Bandit 1 PCI I/O"; it is the opposite.)
-#define TNT_CHAOS_BASE   0xF0000000u // Chaos bridge (config ports)
-#define TNT_BANDIT1_BASE 0xF2000000u // Bandit 1 bridge: config ports + PCI I/O
-#define TNT_GC_BASE      0xF3000000u // Grand Central: Bandit 1 pass-through memory
-#define TNT_BANDIT2_BASE 0xF4000000u // Bandit 2 bridge (8500/9500): ports + PCI I/O
-#define TNT_HH_BASE      0xF8000000u // Hammerhead register window (2 KB)
-#define TNT_ROM_BASE     0xFFC00000u // 4 MB ROM; reset vector $FFF00100
-#define TNT_PCI_MEM1     0x80000000u // Bandit 1 PCI memory space (256 MB)
-#define TNT_PCI_MEM_VCI  0x90000000u // Chaos/VCI PCI memory space (256 MB)
+#define TNT_CHAOS_BASE     0xF0000000u // Chaos bridge (config ports)
+#define TNT_BANDIT1_BASE   0xF2000000u // Bandit 1 bridge: config ports + PCI I/O
+#define TNT_GC_BASE        0xF3000000u // Grand Central: Bandit 1 pass-through memory
+#define TNT_GC_ISLAND_SIZE 0x00020000u // the 128 KB Grand Central decodes at that base
+#define TNT_BANDIT2_BASE   0xF4000000u // Bandit 2 bridge (8500/9500): ports + PCI I/O
+#define TNT_HH_BASE        0xF8000000u // Hammerhead register window (2 KB)
+#define TNT_ROM_BASE       0xFFC00000u // 4 MB ROM; reset vector $FFF00100
+#define TNT_PCI_MEM1       0x80000000u // Bandit 1 PCI memory space (256 MB)
+#define TNT_PCI_MEM_VCI    0x90000000u // Chaos/VCI PCI memory space (256 MB)
 // A Bandit's PCI I/O window: 8 MB at the bridge base, of which only the
 // low 16 address bits are driven, so the 64 KB I/O space aliases through
 // it 128 times (TN1062's `ranges`, above).

@@ -74,23 +74,28 @@ static const struct scsi_slot ans500_scsi_slots[] = {
 // Apple gives IDSELs in DECIMAL in §4.6.2/§7.1.1 and the matching unit
 // addresses in HEX in Listing 6-1 and the RAID boot commands; `device`
 // below is the decimal IDSEL AD line, which is what the config-cycle
-// encoding wants.  The labels follow Apple's own `AAPL,slot-name` form
-// (`SLOT6_PCI1` in the worked device-tree node of the Software Developer
-// Notes), read as "slot N, PCI connector 1".
+// encoding wants.
 //
-// The builtin devices — 54M30 video at IDSEL 15 and the two 53C825As at 17
-// and 18 — arrive with Phase C; Grand Central's own presence at IDSEL 16 is
-// attached by grand_central.c, not by this table, exactly as on the Macs.
+// The LABELS are the ROM's own, read out of each bridge node's
+// `slot-names` property under Open Firmware: Bandit 1 publishes
+// `00006000 "SLOT1_PCI0" "SLOT2_PCI0"` and Bandit 2 publishes
+// `0001E000 "SLOT3_PCI1" "SLOT4_PCI1" "SLOT5_PCI1" "SLOT6_PCI1"`.  Note
+// the bus number in the string is ZERO-based while Apple's own prose and
+// its `pci1`/`pci2` device aliases are one-based — which is why the
+// worked example in the Software Developer Notes shows a slot-SIX card as
+// `SLOT6_PCI1` and not `SLOT6_PCI2`.  The bitmask halves also confirm the
+// 2/4 split and the IDSELs: bits 13-14 on the first bridge, 13-16 on the
+// second.
 static const pci_slot_decl_t ans500_pci_slots[] = {
     {.slot = 1,
      .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT1_PCI1",
+     .label = "SLOT1_PCI0",
      .bus = TNT_PCI_BUS_1,
      .device = 13,
      .int_line = ANS_INT_SLOT1},
     {.slot = 2,
      .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT2_PCI1",
+     .label = "SLOT2_PCI0",
      .bus = TNT_PCI_BUS_1,
      .device = 14,
      .int_line = ANS_INT_SLOT2},
@@ -118,6 +123,37 @@ static const pci_slot_decl_t ans500_pci_slots[] = {
      .bus = TNT_PCI_BUS_2,
      .device = 16,
      .int_line = ANS_INT_SLOT6},
+    // The three soldered-down PCI devices, all on Bandit 1 (Apple, ibid.,
+    // §4.6.2 — the six-device bus).  Grand Central's own config presence at
+    // IDSEL 16 is attached by grand_central.c, not from this table, exactly
+    // as on the Macintosh boards.
+    //
+    // The 54M30 takes NO interrupt line: "the 54M30 does not have an
+    // interrupt" (ibid., §4.2), and allocating it a Grand Central external
+    // would corrupt the map.  The two 53C825As take EXT2 and EXT6, the two
+    // positions the Network Server freed by ganging both Bandits' error
+    // interrupts onto EXT1.
+    {.slot = 7,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "VIDEO",
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 0,
+     .builtin_card_id = "cirrus_54m30"},
+    {.slot = 8,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "FWSCSI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 17,
+     .int_line = ANS_INT_FW0,
+     .builtin_card_id = "sym53c825_0"},
+    {.slot = 9,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "FWSCSI1",
+     .bus = TNT_PCI_BUS_1,
+     .device = 18,
+     .int_line = ANS_INT_FW1,
+     .builtin_card_id = "sym53c825_1"},
     {0},
 };
 
