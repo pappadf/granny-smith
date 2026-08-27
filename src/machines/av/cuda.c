@@ -98,6 +98,11 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 #define CUDA_TICK_NS     1000000000.0
 // Delay before a Cuda-initiated SR byte lands (the firmware's ~25 us).
 #define CUDA_PUSH_DELAY_NS 25000.0
+// How long after a RESET SYSTEM command the reset line is asserted.  A real
+// Cuda takes milliseconds; what matters here is only that it is not zero,
+// so the guest instruction that asked for it has retired first (see
+// CMD_RESET).
+#define CUDA_RESET_DELAY_NS 100000.0
 
 // How long an unclaimed response waits before Cuda gives up on the host
 // (state SENDING with the attention byte still untaken).  Well above any
@@ -169,6 +174,7 @@ struct av_cuda {
 };
 
 static void cuda_tick_event(void *source, uint64_t data);
+static void cuda_reset_event(void *source, uint64_t data);
 static void cuda_autopoll_event(void *source, uint64_t data);
 static void cuda_push_event(void *source, uint64_t data);
 static void cuda_send_timeout_event(void *source, uint64_t data);
@@ -440,9 +446,30 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         LOG(1, "Cuda PwrDown (accept-and-log; no soft power model)");
         break;
     case CMD_RESET:
+        // RESET SYSTEM.  Cuda's own state goes back to power-on, and then
+        // it ASSERTS THE SYSTEM RESET LINE — that is the whole point of the
+        // command, and until this was here the model quietly reset only
+        // itself.  Open Firmware's `reset-all` is the caller that made it
+        // matter: on an Apple Network Server the Service-keyswitch install
+        // path ends `cd RESETing to change Configuration!` and then waits
+        // for the machine to come back, so a Cuda that accepted the command
+        // and did nothing left the firmware spinning forever, reporting
+        // `Can't reset-all` on its diagnostic port.  A Macintosh Restart
+        // takes the same path.
+        //
+        // The reset is DEFERRED by one scheduler event rather than driven
+        // from here: this runs inside the guest's own store to the VIA shift
+        // register, and resetting the CPU mid-instruction would have the
+        // dispatch loop advance the program counter afterwards, landing four
+        // bytes past the reset vector.  A scheduler event fires between
+        // instructions.  The delay is nominal — a real Cuda takes
+        // milliseconds to pull the line — and nothing observes it.
         cuda->autopoll_enabled = false;
         cuda->onesec_enabled = false;
         cuda->onesec_mode = 0;
+        LOG(1, "Cuda Reset: asserting the system reset line");
+        remove_event(cuda->sched, &cuda_reset_event, cuda);
+        scheduler_new_cpu_event(cuda->sched, &cuda_reset_event, cuda, 0, 0, (uint64_t)CUDA_RESET_DELAY_NS);
         break;
     case CMD_RDWRIIC: {
         // I2C master transaction (OS/CudaMgr.a SetTransferParams wire
@@ -677,6 +704,14 @@ static bool cuda_bus_idle(av_cuda_t *cuda) {
     // asserted, waiting for a TIP that never comes.  Both sides then wait
     // for each other forever.
     return cuda->state == CUDA_IDLE && !cuda->push_pending && (cuda->last_pb & PB_TIP) != 0;
+}
+
+// The deferred half of CMD_RESET (see there): assert the system reset line
+// now that the guest instruction that asked for it has retired.
+static void cuda_reset_event(void *source, uint64_t data) {
+    (void)source;
+    (void)data;
+    system_hardware_reset();
 }
 
 // 1-second tick: [attn, tickPkt] — drives the OS one-second timer.
