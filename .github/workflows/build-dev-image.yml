@@ -21,23 +21,43 @@ permissions:
   contents: read
   packages: write
 
+env:
+  IMAGE_NAME: ghcr.io/pappadf/granny-smith-dev
+  IMAGE_TAG: ubuntu24-emsdk4.0.10-node22
+  # The buildx layer cache lives in its OWN package, not in the dev-image
+  # package. `cache-to: mode=max` exports every intermediate layer on every
+  # build, and GHCR never garbage-collects; keeping that churn out of the
+  # dev-image package is what makes the multi-arch index safe to leave unpruned
+  # (see the prune job at the bottom).
+  CACHE_IMAGE: ghcr.io/pappadf/granny-smith-dev-cache
+  IMAGE_DESCRIPTION: "Dev image with Emscripten 4.0.10, Node 22, C/C++ toolchain"
+
 jobs:
+  # Each architecture is built on a runner of that architecture — no QEMU.
+  # Emulating the arm64 half (apt + pip + xz-extracting ~1.5 GB of emsdk) costs
+  # roughly 4x the wall-clock of a native build; arm64 runners are free for
+  # public repos, so there is no reason to pay it.
+  #
+  # Neither job pushes a tag: each pushes an anonymous, digest-only image
+  # (push-by-digest) and hands the digest to the merge job, which assembles the
+  # two into one multi-arch index under the real tags. Tagging per-arch would
+  # mean the two jobs race to own the same tag.
   build:
-    runs-on: ubuntu-24.04
+    name: Build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-
-      - name: Set image metadata
-        id: meta
-        run: |
-          IMAGE_NAME="ghcr.io/pappadf/granny-smith-dev"
-          TAG_BASE="ubuntu24-emsdk4.0.10-node22"
-          echo "image=${IMAGE_NAME}" >> $GITHUB_OUTPUT
-          echo "tag=${TAG_BASE}" >> $GITHUB_OUTPUT
-
-      - name: Set up QEMU (optional multi-arch)
-        uses: docker/setup-qemu-action@v4
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -49,59 +69,144 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & Push
+      - name: Build & push by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: .devcontainer/Dockerfile
-          push: true
-          # NOTE: add more platforms if you want multi-arch (e.g., linux/arm64)
-          platforms: linux/amd64
+          platforms: ${{ matrix.platform }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=Dev image with Emscripten 4.0.10, Node 22, C/C++ toolchain
+            org.opencontainers.image.description=${{ env.IMAGE_DESCRIPTION }}
             org.opencontainers.image.revision=${{ github.sha }}
-          tags: |
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
-            ${{ steps.meta.outputs.image }}:latest
-          cache-from: type=registry,ref=${{ steps.meta.outputs.image }}:cache
-          cache-to: type=registry,ref=${{ steps.meta.outputs.image }}:cache,mode=max
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          # Per-arch cache tags: the two architectures share no layers, so a
+          # single ref would have them overwrite each other every run.
+          cache-from: type=registry,ref=${{ env.CACHE_IMAGE }}:${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.CACHE_IMAGE }}:${{ matrix.arch }},mode=max
+
+      # The digest is passed to the merge job as an empty file named after it;
+      # artifacts are the only channel that survives across jobs on different
+      # runner architectures.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          test -n "$digest"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Merge manifest & push tags
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v7
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Labels set during the build land on the per-arch image configs, which
+      # GHCR does not read for a multi-arch package. The index-level
+      # annotations below are what keep the package linked to this repo and
+      # described on its GHCR page.
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          ls -1
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --annotation "index:org.opencontainers.image.description=${IMAGE_DESCRIPTION}" \
+            --annotation "index:org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+            -t "${IMAGE_NAME}:latest" \
+            $(printf "${IMAGE_NAME}@sha256:%s " *)
+
+      - name: Verify both platforms are present
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE_NAME}:${IMAGE_TAG}"
+          for want in linux/amd64 linux/arm64; do
+            docker buildx imagetools inspect --raw "${IMAGE_NAME}:${IMAGE_TAG}" \
+              | jq -e --arg w "$want" '
+                  [.manifests[] | select(.platform)
+                   | "\(.platform.os)/\(.platform.architecture)"] | index($w)' >/dev/null \
+              || { echo "::error::${want} missing from ${IMAGE_NAME}:${IMAGE_TAG}"; exit 1; }
+          done
 
       - name: Resolve digest for immutable pin
         id: digest
         run: |
-          DIGEST=$(skopeo inspect --no-tags docker://${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }} | jq -r '.Digest')
-          echo "digest=${DIGEST}" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          DIGEST=$(skopeo inspect --no-tags "docker://${IMAGE_NAME}:${IMAGE_TAG}" | jq -r '.Digest')
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
         env:
-          # skopeo is preinstalled on GitHub-hosted runners; if not, apt-get install skopeo -y
-          # jq is also available; otherwise apt-get install -y jq
-          # Nothing else required
+          # skopeo and jq are preinstalled on GitHub-hosted runners.
           XDG_RUNTIME_DIR: /tmp
 
-      - name: Save digest artifact
+      # The multi-arch index digest is the right value to pin in tests.yml &
+      # friends: it resolves to the correct per-arch image on any runner.
+      - name: Publish digest pin
         run: |
-          echo "${{ steps.meta.outputs.image }}@${{ steps.digest.outputs.digest }}" > image_digest.txt
-        shell: bash
+          PIN="${IMAGE_NAME}@${{ steps.digest.outputs.digest }}"
+          echo "$PIN" > image_digest.txt
+          {
+            echo "### Dev image published"
+            echo
+            echo "Platforms: \`linux/amd64\`, \`linux/arm64\`"
+            echo
+            echo "Immutable pin:"
+            echo
+            echo '```'
+            echo "$PIN"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      # GHCR never garbage-collects. Re-pushing a moving tag orphans the old
-      # version rather than removing it, and `cache-to: mode=max` exports every
-      # intermediate layer on every build, so versions accumulate indefinitely
-      # (that cache is the bulk of them, and is untagged).
-      #
-      # Only untagged versions are removed: the image is single-platform
-      # (linux/amd64), so there are no multi-arch child manifests that pruning
-      # could orphan — which is the usual way this action bites people. The
-      # buildx cache goes with them, so the next build is cold; `cache-to`
-      # rewrites it every run, so that costs time and nothing else.
-      #
-      # continue-on-error because this is housekeeping: a retention hiccup must
-      # not fail a build that has already pushed a good image. It shows up as a
-      # yellow step, so a persistent failure is still visible.
-      - name: Prune untagged dev images
+  # GHCR never garbage-collects, and `cache-to: mode=max` pushes a fresh set of
+  # layer blobs on every build, so the cache package would otherwise grow
+  # without bound. Only the cache package is pruned, and only its untagged
+  # versions: the two live cache entries are tagged (amd64/arm64) and survive.
+  #
+  # The dev-image package is deliberately NOT pruned. It is now a multi-arch
+  # index whose per-architecture children are untagged package versions —
+  # exactly the manifests `delete-only-untagged-versions` orphans, which is the
+  # usual way this action bites people. Real builds are rare (this workflow is
+  # path-filtered), so that package grows slowly enough to leave alone.
+  #
+  # continue-on-error because this is housekeeping: a retention hiccup must not
+  # fail a build that has already pushed a good image. It shows up as a yellow
+  # step, so a persistent failure is still visible.
+  prune-cache:
+    name: Prune untagged cache versions
+    needs: merge
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Prune untagged cache images
         uses: actions/delete-package-versions@v5
         continue-on-error: true
         with:
-          package-name: granny-smith-dev
+          package-name: granny-smith-dev-cache
           package-type: container
           delete-only-untagged-versions: true
           min-versions-to-keep: 10
