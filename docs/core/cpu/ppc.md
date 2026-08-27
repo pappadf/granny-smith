@@ -19,7 +19,7 @@ chapter/table in the code.
 ## Files — the shared decoder/disassembler pattern
 
 The module follows the house decode-template pattern (the 68K's
-`cpu_decode.h` model, proposal-heterogeneous-multi-cpu.md §3.3.1): one
+`cpu_decode.h` model, proposal-multi-cpu.md §3.3.1): one
 decode tree shared by the emulator and the disassembler, so the two cannot
 drift out of sync and each cross-checks the other.
 

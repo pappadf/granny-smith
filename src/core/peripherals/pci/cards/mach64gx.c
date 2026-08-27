@@ -239,15 +239,31 @@ LOG_USE_CATEGORY_NAME("mach64");
 // the destination; otherwise the destination data is written" (PRG), so a
 // TRUE comparison leaves the pixel alone — which is how a transparent blit
 // is expressed.
-#define DW_CLR_CMP_CLR  0xC0
-#define DW_CLR_CMP_MSK  0xC1
-#define DW_CLR_CMP_CNTL 0xC2
-#define CLR_CMP_FN(v)   ((v) & 7u)
-#define CLR_CMP_FALSE   0u // never veto
-#define CLR_CMP_TRUE    1u // always veto
-#define CLR_CMP_NE      4u // veto where the pixel differs from CLR_CMP_CLR
-#define CLR_CMP_EQ      5u // veto where it matches — the transparent blit
-#define CLR_CMP_SRC(v)  (((v) >> 24) & 3u) // 0 = compare the destination
+#define DW_CLR_CMP_CLR   0xC0
+#define DW_CLR_CMP_MSK   0xC1
+#define DW_CLR_CMP_CNTL  0xC2
+#define DW_CONTEXT_MASK  0xC8
+#define DW_GUI_TRAJ_CNTL 0xCC
+
+// CONTEXT_LOAD_CNTL fields.  The names and values are ATI's own, from the
+// SDK's DEFINES.H (CONTEXT_LOAD $10000, CONTEXT_LOAD_AND_DO_FILL $20000,
+// CONTEXT_LOAD_AND_DO_LINE $30000, CONTEXT_CMD_DISABLE $80000000), which
+// agrees with the RRG's bit chart on p. 3-15: DIS at 31, CMD at 17:16,
+// PTR at 14:0.
+#define CTX_CMD(v)       (((v) >> 16) & 3u)
+#define CTX_PTR(v)       ((v) & 0x7FFFu)
+#define CTX_DISABLE      0x80000000u
+#define CTX_CMD_NONE     0u
+#define CTX_CMD_LOAD     1u
+#define CTX_CMD_FILL     2u
+#define CTX_CMD_LINE     3u
+#define CTX_BLOCK_DWORDS 64u
+#define CLR_CMP_FN(v)    ((v) & 7u)
+#define CLR_CMP_FALSE    0u // never veto
+#define CLR_CMP_TRUE     1u // always veto
+#define CLR_CMP_NE       4u // veto where the pixel differs from CLR_CMP_CLR
+#define CLR_CMP_EQ       5u // veto where it matches — the transparent blit
+#define CLR_CMP_SRC(v)   (((v) >> 24) & 3u) // 0 = compare the destination
 // DST_CNTL: which way the trajectory walks.  1 = increasing.
 #define DST_X_DIR 0x01u
 #define DST_Y_DIR 0x02u
@@ -448,6 +464,7 @@ typedef struct mach64 {
     bool pix_width_warned; // the unsupported-depth log is once-only
     bool host_blit_warned; // the host-data-blit log is once-only
     bool mix_warned; // the unsupported-raster-op log is once-only
+    bool bres_warned; // the Bresenham-line log is once-only
     uint64_t blits; // operations the engine has executed (diagnostics)
     // A host-data operation in flight.  Host data is a STREAM: the
     // trajectory is set up, then pixels arrive one HOST_DATA write at a
@@ -534,6 +551,7 @@ static void mach64_update(mach64_t *m);
 static bool mach64_in_vblank(const mach64_t *m);
 static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value);
 static void mach64_host_feed(mach64_t *m, uint32_t value);
+static void mach64_engine_run(mach64_t *m);
 static uint32_t mach64_bytes_per_pixel(const mach64_t *m);
 static void mach64_irq_sync(mach64_t *m);
 
@@ -1310,6 +1328,157 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
     }
 }
 
+// ============================================================
+// Draw-engine contexts
+// ============================================================
+//
+// The mach64 can reload its whole draw-engine state from a 64-DWORD block
+// in video memory with a single register write, optionally initiating a
+// draw in the same operation (PRG, "Draw Engine Contexts").  System 7.6's
+// ATI accelerator uses this almost exclusively: one boot issues 941
+// CONTEXT_LOAD_CNTL writes against just 8 DP_SRC and 4 DP_MIX writes — and
+// those twelve are all at init, in a write-pattern / write-zero register
+// test that ENDS ON ZERO.  So without this, the data-path selectors sit at
+// zero for the whole session and every operation runs as "background
+// colour, mix 0 = not D" — an invert.  The desktop erase is one of them,
+// which is why the startup splash used to survive on screen.
+//
+// Every part of this is from a primary source rather than inferred:
+//   * the field layout — RRG p. 3-15, and ATI's own SDK constants;
+//   * the block layout — the PRG's DWORD-offset table, reproduced below;
+//   * the mask rule — "bit N inhibits DWORD N, except CONTEXT_MASK and
+//     CONTEXT_LOAD_CNTL which are always loaded" (PRG);
+//   * the address arithmetic — "64 DWORD chunks in reverse order from top
+//     of memory", verified against two blocks found in live VRAM: pointer
+//     $4008 lands on $1FF700 and $4028 on $1FD700, both of which hold
+//     DP_MIX = $00070007 at DWORD $16, the value the driver programmed at
+//     init and never wrote again.
+
+// Apply one context DWORD to the register file.  This deliberately does
+// NOT go through mach64_engine_write: a context load sets the trajectory
+// registers, it does not trigger a draw — the COMMAND does that.
+static void mach64_context_apply(mach64_t *m, uint32_t index, uint32_t v) {
+    switch (index) {
+    case 0x02:
+        m->reg[DW_DST_OFF_PITCH] = v;
+        break;
+    case 0x03:
+        m->reg[DW_DST_X] = (v >> 16) & 0xFFFFu;
+        m->reg[DW_DST_Y] = v & 0xFFFFu;
+        break;
+    case 0x04:
+        m->reg[DW_DST_WIDTH] = (v >> 16) & 0xFFFFu;
+        m->reg[DW_DST_HEIGHT] = v & 0xFFFFu;
+        break;
+    case 0x08:
+        m->reg[DW_SRC_OFF_PITCH] = v;
+        break;
+    case 0x09:
+        m->reg[DW_SRC_X] = (v >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_Y] = v & 0xFFFFu;
+        break;
+    case 0x0A:
+        m->reg[DW_SRC_WIDTH1] = (v >> 16) & 0xFFFFu;
+        m->reg[DW_SRC_HEIGHT1] = v & 0xFFFFu;
+        break;
+    case 0x0D:
+        m->reg[DW_PAT_REG0] = v;
+        break;
+    case 0x0E:
+        m->reg[DW_PAT_REG1] = v;
+        break;
+    case 0x0F:
+        m->reg[DW_SC_RIGHT] = (v >> 16) & 0xFFFFu;
+        m->reg[DW_SC_LEFT] = v & 0xFFFFu;
+        break;
+    case 0x10:
+        m->reg[DW_SC_BOTTOM] = (v >> 16) & 0xFFFFu;
+        m->reg[DW_SC_TOP] = v & 0xFFFFu;
+        break;
+    case 0x11:
+        m->reg[DW_DP_BKGD_CLR] = v;
+        break;
+    case 0x12:
+        m->reg[DW_DP_FRGD_CLR] = v;
+        break;
+    case 0x13:
+        m->reg[DW_DP_WRITE_MSK] = v;
+        break;
+    case 0x15:
+        m->reg[DW_DP_PIX_WIDTH] = v;
+        break;
+    case 0x16:
+        m->reg[DW_DP_MIX] = v;
+        break;
+    case 0x17:
+        m->reg[DW_DP_SRC] = v;
+        break;
+    case 0x18:
+        m->reg[DW_CLR_CMP_CLR] = v;
+        break;
+    case 0x19:
+        m->reg[DW_CLR_CMP_MSK] = v;
+        break;
+    case 0x1A:
+        m->reg[DW_CLR_CMP_CNTL] = v;
+        break;
+    case 0x1B:
+        m->reg[DW_GUI_TRAJ_CNTL] = v;
+        break;
+    default:
+        break; // Bresenham terms, chain mask, reserved
+    }
+}
+
+// A context DWORD out of VRAM.  The blocks are register images, so they
+// are stored LITTLE-endian — confirmed by DWORD $16 reading back as the
+// $00070007 the driver wrote to DP_MIX.
+static uint32_t mach64_context_dword(const mach64_t *m, uint32_t base, uint32_t index) {
+    uint32_t at = base + index * 4u;
+    if (at + 4u > m->vram_size)
+        return 0;
+    const uint8_t *b = m->vram + at;
+    return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
+
+static void mach64_context_load(mach64_t *m, uint32_t value) {
+    // Contexts may be CHAINED: each loaded block carries its own
+    // CONTEXT_LOAD_CNTL entry, and the chain runs until one is a no-op.
+    // Bound the walk so a corrupt block cannot hang the emulator.
+    for (int hop = 0; hop < 64; hop++) {
+        if (value & CTX_DISABLE)
+            return;
+        uint32_t cmd = CTX_CMD(value);
+        if (cmd == CTX_CMD_NONE)
+            return;
+        // "64 DWORD chunks in reverse order from top of memory", wrapping
+        // within video memory.
+        uint32_t ptr = CTX_PTR(value);
+        uint32_t base = (m->vram_size - ((ptr + 1u) * CTX_BLOCK_DWORDS * 4u)) % m->vram_size;
+        base &= ~0xFFu;
+
+        uint32_t mask = mach64_context_dword(m, base, 0);
+        for (uint32_t i = 2; i < 0x1Cu; i++) {
+            if (!(mask & (1u << i)))
+                continue; // the block's own mask inhibits this DWORD
+            mach64_context_apply(m, i, mach64_context_dword(m, base, i));
+        }
+        LOG(4, "context load: ptr $%04X -> VRAM +$%06X mask $%08X cmd %u (DP_MIX $%08X DP_SRC $%08X)", ptr, base, mask,
+            cmd, m->reg[DW_DP_MIX], m->reg[DW_DP_SRC]);
+
+        if (cmd == CTX_CMD_FILL) {
+            mach64_engine_run(m);
+        } else if (cmd == CTX_CMD_LINE && !m->bres_warned) {
+            m->bres_warned = true;
+            LOG(0, "draw engine: a context load asked for a Bresenham LINE, which this model does not "
+                   "draw (the DST_BRES_* terms are stored only).  Diagonal lines will be missing.");
+        }
+        // The CONTEXT_LOAD_CNTL entry continues or halts the chain.
+        value = mach64_context_dword(m, base, 0x1C);
+    }
+    LOG(1, "context chain exceeded 64 hops — stopping");
+}
+
 // The engine's register writes.  Returns true when the write was the
 // engine's business, so the generic store below is skipped.
 static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
@@ -1370,36 +1539,8 @@ static bool mach64_engine_write(mach64_t *m, int dw, uint32_t value) {
         m->reg[dw] = value;
         return true;
     case DW_CONTEXT_LOAD_CNTL:
-        // NOT MODELLED, and this is the largest known gap in the engine.
-        //
-        // The mach64 can save its whole draw-engine state to a 64-DWORD
-        // block in memory and reload it with one write (PRG, "Draw Engine
-        // Contexts"); DP_MIX is DWORD $16 of that block and DP_SRC is $17.
-        // System 7.6's ATI accelerator uses it almost exclusively: one boot
-        // issues 941 CONTEXT_LOAD_CNTL writes against 8 direct DP_SRC and 4
-        // DP_MIX writes.  Ignoring it leaves the data-path selectors at
-        // whatever was last written directly, so operations that should be
-        // a patterned two-colour fill run as "invert the destination" — the
-        // desktop erase is one of them, which is why the startup splash
-        // survives on screen.
-        //
-        // Two facts are still missing and neither should be guessed at:
-        //   * the CONTEXT_LOAD_CNTL field layout.  The driver writes
-        //     $00FFC008 / $00FFC00C / $00FFC01E / $00FFC038, and under the
-        //     RRG's bit chart (p. 3-15) those all decode as command 3,
-        //     "load and initiate Bresenham line", which cannot be right for
-        //     traffic that draws rectangles.  That chart is one of the
-        //     OCR'd bit-position tables, and its column alignment is not
-        //     trustworthy.
-        //   * where the blocks live.  ATI says "reverse order from top of
-        //     memory", but scanning every 256-byte boundary of VRAM for a
-        //     block whose DWORD 2 matches the live DST_OFF_PITCH finds
-        //     nothing, at any point in the boot.
-        //
-        // Until both are pinned from a readable source, loading a context
-        // from the wrong address would scribble arbitrary VRAM into the
-        // data path — strictly worse than leaving it alone.
         m->reg[dw] = value;
+        mach64_context_load(m, value);
         return true;
     default:
         if (dw >= DW_HOST_DATA0 && dw <= DW_HOST_DATA_LAST) {
@@ -1976,6 +2117,7 @@ static void mach64_reset(pci_device_t *dev, config_t *cfg) {
     m->aperture_warned = false;
     m->host_blit_warned = false;
     m->mix_warned = false;
+    m->bres_warned = false;
     m->host_op.active = false;
     // The scissor powers up wide open, so an operation from a driver that
     // never programs it is not clipped to a single pixel at the origin.
