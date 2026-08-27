@@ -563,7 +563,56 @@ keeps a waiting loop from becoming a hang.
 | `ans-device-tree` | matrix | `dev / ls`, node properties and device aliases against Apple's published Listing 6-1, driven over the serial console |
 | `ans-scsi` | matrix | the SCRIPTS engine, through Open Firmware's own `probe-scsi1` and `probe-scsi2`, on both fast/wide channels |
 | `ans-console` | matrix | the machine booted as it SHIPPED — console on the monitor — with the derived 640x480x8 mode and a golden of what Open Firmware draws |
+| `ans-macos-2rom` | matrix | the 2.0 prototype ROM booting Mac OS to the desktop on the same hardware model — two unrelated software stacks, one model |
+| `ans-aix-boot` | extended, fixture-gated | the documented Service-keyswitch install path, up to `bootapple` launching off the AIX 4.1.5 Install CD |
 
 Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
 `probe-scsi2`, one per controller. `probe-scsi` and `probe-scsi-all` do not
 exist on it, so a row that typed those would prove nothing.
+
+## Booting AIX — where this stands
+
+The Install CD boots, and the boot path is Apple's own rather than an
+invention. With a blank store, the front keyswitch in Service and the disc
+in bay 0 — the documented condition, *"a Network Server that has never been
+booted before"* — Open Firmware finds the disc, reads the EBCDIC `IBMA` IPL
+record in its block 0, writes a boot configuration, prints
+
+```
+cd
+RESETing to change Configuration!
+```
+
+asks Cuda to pull the system reset line, comes back through POST, and
+launches **`bootapple`**, Apple's own bootstrap:
+
+```
+bootapple: launched by "OpenFirmware1.1.22"
+bootapple: POST results AOK.  Code is  00010000
+bootapple: "AAPL,cpu-id" property is  39002089
+bootapple: model info is Power Macintosh,AAPL,ShinerESB;MacRISC
+bootapple: boot device is "/bandit/53c825@11/sd@0:aix"
+```
+
+Every line there is a fact about this model that Apple's bootstrap checked
+and accepted: POST's own recorded results, the CPU identity Hammerhead
+supplies, the root `compatible` the 53C825A probe set, and the boot path
+chosen off the disc.
+
+**That is ladder rung S9, and it is the current high-water mark.**
+`bootapple` then stalls before handing off to `bosboot`; rungs S10 to S13
+(the kernel, the BOS install, and a cold boot of the installed disk) are
+open. Two things about that are worth knowing before picking it up:
+
+* Getting *this* far took two fixes outside the family, both latent for
+  want of anything exercising them — Cuda's RESET SYSTEM actually
+  resetting the system, and `ppc_reset` not throwing away the CPU's time
+  binding. Expect the same shape again: the proposal's own R5 says the 604
+  core meets its first real Unix here, and MkLinux already found one
+  genuine defect of that class.
+* AIX 4.1.5 for the Network Server has **no public source**, so the TNT
+  reflex — disassemble the guest — is much more expensive. What the machine
+  gives instead is three narrators, and all three work: the front-panel LCD,
+  the Open Firmware console (serial or screen), and the device tree. The
+  fourth lever is `ans-macos-2rom`: any device can be cross-examined through
+  a stack we do understand.

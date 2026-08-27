@@ -811,6 +811,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "push", &cuda_push_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "sendto", &cuda_send_timeout_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "resend", &cuda_resend_event);
+        scheduler_new_event_type(cuda->sched, "cuda", cuda, "reset", &cuda_reset_event);
         scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
         scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, (uint64_t)CUDA_AUTOPOLL_NS);
         // A checkpoint taken with a push or abandonment watchdog in

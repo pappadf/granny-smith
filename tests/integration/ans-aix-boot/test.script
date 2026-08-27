@@ -1,5 +1,5 @@
 # Booting AIX 4.1.5 for Apple Network Servers from the Install CD
-# (proposal-apple-network-server-500-700 §6, ladder rungs S9-S11).
+# (proposal-apple-network-server-500-700 §6, ladder rungs S9-S13).
 #
 # The row does not type a boot command.  It reproduces Apple's own
 # documented condition and lets the firmware do the rest:
@@ -12,41 +12,83 @@
 # — a blank non-volatile store (what removing the board battery does), the
 # front keyswitch in Service, and the disc present before the first
 # instruction runs.
+#
+# CURRENT HIGH-WATER: **S9**.  The firmware finds the disc, reads its
+# `IBMA` boot record, writes its boot configuration, resets the machine
+# through Cuda, comes back, and launches `bootapple` — Apple's own
+# bootstrap — which announces itself, reports POST AOK, and names the boot
+# device.  It then stalls before handing off to `bosboot`; S10 onward is
+# open work and is NOT asserted here.  The row asserts what is reached, and
+# names the rung, so the next step forward shows up as a deliberate change
+# to this file rather than as a surprise.
+#
+# MEDIA: the 603 MB Install CD lives under
+# local/gs-docs/projects/ans-500-700/images/ and cannot be committed
+# (proposal §13 R8), so this row SKIPS cleanly where it is absent.
 
 include "../lib/mac.script"
 include "../lib/ans.script"
 
-# "Never been booted before": the store the machine ships with.
-machine.board.clear_nvram()
-machine.boot model="ans500" ram=65536 rom="${$ROM}"
-machine.board.keyswitch = "service"
-assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
+let ans_root = "../../../local/gs-docs/projects/ans-500-700"
+let aix_cd = "${$ans_root}/images/AIX_415_Install_CD.iso"
 
-# Bay 0 is the CD-ROM bay Apple expects — "It is expected (but not required)
-# that slot 0 will be a CD ROM" — on fast/wide channel 0, which is Open
-# Firmware's `disk0`.  Attached BEFORE any instruction runs, so the
-# firmware's own probe sees it exactly as it would a disc left in the drive.
-machine.scsi.attach_cdrom("${$AIX_CD}", 0)
-assert machine.scsi.device[0].type == "cdrom" "the Install CD is not mounted in bay 0"
+def aix_boot() {
+    # "Never been booted before": the store the machine ships with.
+    machine.board.clear_nvram()
+    machine.boot model="ans500" ram=65536 rom="${$ROM}"
+    machine.board.keyswitch = "service"
+    assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
 
-# --- S9: the firmware finds the disc and takes the install path -----------
-# It prints its progress on the SCREEN, because a Network Server ships with
-# `output-device screen` and this row deliberately does not tell it
-# otherwise: the machine under test is the one out of the box.
-scheduler.run 5000000000
+    # Bay 0 is the CD-ROM bay Apple expects — "It is expected (but not
+    # required) that slot 0 will be a CD ROM" — on fast/wide channel 0,
+    # which is Open Firmware's `disk0`.  Attached BEFORE any instruction
+    # runs, so the firmware's own probe sees it exactly as it would a disc
+    # left in the drive.
+    machine.scsi.attach_cdrom("${$aix_cd}", 0)
+    assert machine.scsi.device[0].type == "cdrom" "the Install CD is not mounted in bay 0"
 
-# The firmware's own diagnostic port carries the POST and probe narration
-# whatever the console is, and the machine identified itself before any of
-# this: without `?esb` there is no AIX path at all.
-let narration = machine.scc.a.sent()
-assert contains($narration, "ShinerESB") "S9: the machine did not identify as a Network Server"
+    # POST, Open Firmware, the Service-key disc hunt, the configuration
+    # write, the Cuda reset, POST again, and the hand-off to `bootapple`.
+    # In chunks: the budget is well past what a single `scheduler.run`
+    # argument holds.
+    for i in 0..4 {
+        scheduler.run 2000000000
+    }
 
-# The install path writes its boot configuration and then asks Cuda to pull
-# the system reset line — `RESETing to change Configuration!` — so a machine
-# that got here has proved the whole chain: the SCRIPTS engine read the
-# disc, the firmware recognised its `IBMA` boot record, and Cuda's RESET
-# SYSTEM actually reset the system.
-assert machine.board.doorbell > 0 "S9: the GBUS island was never read"
+    # --- The machine identified itself ---------------------------------
+    # The firmware's diagnostic port carries the POST and probe narration
+    # whatever the console is; without `?esb` there is no AIX path at all.
+    let narration = machine.scc.a.sent()
+    assert contains($narration, "ShinerESB") "S9: the machine did not identify as a Network Server"
+    # The GBUS island answered: POST reads the Ethernet address PROM, and
+    # every access to that chip select is also the MP doorbell.
+    assert machine.board.doorbell > 0 "S9: the GBUS island was never read"
 
-echo "ans-aix-boot: Service-keyswitch install path reached (pc=${machine.cpu.pc:08x})"
+    # --- S9: bootapple ---------------------------------------------------
+    # Apple's own bootstrap, launched by Open Firmware off the Install CD.
+    # Everything it prints is a fact about our model that it checked:
+    #
+    #   bootapple: launched by "OpenFirmware1.1.22"
+    #   bootapple: POST results AOK.  Code is  00010000
+    #   bootapple: "AAPL,cpu-id" property is  39002089
+    #   bootapple: model info is Power Macintosh,AAPL,ShinerESB;MacRISC
+    #   bootapple: boot device is "/bandit/53c825@11/sd@0:aix"
+    #
+    # — POST's own recorded results, the CPU identity Hammerhead supplies,
+    # the root `compatible` the 53C825A probe set, and the boot path the
+    # firmware chose off the disc.  It draws on the SCREEN, because a
+    # Network Server ships with `output-device screen` and this row
+    # deliberately does not tell it otherwise: the machine under test is the
+    # one out of the box.
+    check("bootapple.png")
+
+    echo "ans-aix-boot: bootapple launched from the Install CD (rung S9)"
+}
+
+if have_media($aix_cd) {
+    aix_boot()
+} else {
+    echo "skip: ans-aix-boot (the AIX 4.1.5 Install CD is not present — see gs-docs projects/ans-500-700)"
+}
+
 quit
