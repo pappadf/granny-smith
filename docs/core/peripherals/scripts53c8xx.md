@@ -165,9 +165,19 @@ SCSI host adapter`. The board pulls `GPIO0` high, so `gpio_strap` does too.
 ## What the model does not do
 
 * **Reselection.** There are no competing initiators and no disconnecting
-  targets on the shared bus model, so `Wait Reselect` takes its documented
-  escape hatch — the alternate address — rather than parking. A driver's
-  idle loop keeps moving.
+  targets on the shared bus model, so a reselection never arrives and
+  `Wait Reselect` parks forever unless the driver rings its doorbell.
+
+  Parking is the behaviour, not a shortcut around it. With `SIGP` clear
+  the part waits; with `SIGP` set it takes the instruction's alternate
+  address and clears the bit. So the engine stops with DSP pointing *at*
+  the instruction and raises nothing, and a write of `SIGP` re-executes
+  it. Taking the alternate address unconditionally looks like the
+  forgiving choice and is the opposite: a driver's idle script is a short
+  ring that ends in `Wait Reselect` and jumps back to its own start, so
+  the engine runs that ring at host speed until the watchdog stops it and
+  the driver waiting on the interrupt never gets one. That is exactly how
+  the Network Server's own AIX bootstrap hung.
 * **Target mode.** The part supports it; nothing this repository emulates
   uses it. A target-mode I/O instruction reports an illegal instruction
   rather than pretending.

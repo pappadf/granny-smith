@@ -269,6 +269,7 @@ static uint8_t take_dstat(void) {
 #define TABLE_MOVE(phase, off)   ((1u << 28) | ((uint32_t)(phase) << 24) | ((off) & 0x00FFFFFFu))
 #define IO_SELECT(id, atn)       ((1u << 30) | ((atn) ? (1u << 24) : 0u) | ((uint32_t)(id) << 16))
 #define IO_WAIT_DISCONNECT       ((1u << 30) | (1u << 27))
+#define IO_WAIT_RESELECT         ((1u << 30) | (2u << 27))
 #define IO_CLEAR(bits)           ((1u << 30) | (4u << 27) | (bits))
 #define IO_SET(bits)             ((1u << 30) | (3u << 27) | (bits))
 #define RW(opc, op, reg, imm)                                                                                          \
@@ -495,6 +496,51 @@ TEST(test_io_set_clear) {
     run_at(0x1000);
     ASSERT_TRUE(!(s_c->reg[SYM825_SCNTL1] & 0x04u));
     ASSERT_TRUE(!(s_c->reg[SYM825_SOCL] & 0x08u));
+}
+
+// Wait Reselect PARKS.  With SIGP clear the part waits for a reselection
+// that this bus can never deliver, so the engine stops with DSP pointing
+// AT the instruction and raises nothing at all.
+//
+// This is the shape of a real driver's idle script: a short ring that ends
+// in Wait Reselect and jumps back to its own start.  An engine that takes
+// the alternate address unconditionally runs that ring at host speed until
+// the watchdog stops it — which is exactly how the Network Server's own
+// driver hung, with no interrupt ever delivered.
+TEST(test_io_wait_reselect_parks) {
+    setup();
+    put_insn_word(0x1000, IO_WAIT_RESELECT);
+    put_insn_word(0x1004, 0x1800); // the alternate address
+    put_insn_word(0x1800, TC(3, 0));
+    put_insn_word(0x1804, 0x5A5A5A5Au);
+
+    run_at(0x1000);
+
+    ASSERT_TRUE(!s_c->running);
+    ASSERT_TRUE(s_c->waiting_reselect);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1000);
+    ASSERT_EQ_INT(take_dstat() & (uint8_t)~SYM825_DSTAT_DFE, 0);
+    ASSERT_EQ_INT(s_c->sist0 | s_c->sist1, 0);
+    ASSERT_EQ_INT(s_irq_asserts, 0);
+}
+
+// SIGP is the doorbell that gets it moving again: the parked instruction
+// is re-executed, sees the bit, CLEARS it, and takes its alternate
+// address.  A driver signals work exactly this way.
+TEST(test_io_wait_reselect_sigp) {
+    setup();
+    put_insn_word(0x1000, IO_WAIT_RESELECT);
+    put_insn_word(0x1004, 0x1800);
+    put_insn_word(0x1800, TC(3, 0));
+    put_insn_word(0x1804, 0x5A5A5A5Au);
+
+    s_c->reg[SYM825_ISTAT] |= SYM825_ISTAT_SIGP;
+    run_at(0x1000);
+
+    ASSERT_TRUE(!s_c->waiting_reselect);
+    ASSERT_TRUE(!(s_c->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP));
+    ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSPS), 0x5A5A5A5A);
 }
 
 // ============================================================================
@@ -824,6 +870,8 @@ int main(void) {
     RUN(test_io_selection_timeout);
     RUN(test_io_select_with_atn);
     RUN(test_io_set_clear);
+    RUN(test_io_wait_reselect_parks);
+    RUN(test_io_wait_reselect_sigp);
     RUN(test_read_write_alu);
     RUN(test_read_write_bad_register);
     RUN(test_transfer_control_jump_and_call);

@@ -194,6 +194,12 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
             return;
         }
         sym53c8xx_update_irq(s);
+        // SIGP is the driver's doorbell on a script parked at Wait
+        // Reselect: setting it is how the CPU tells an idle engine it has
+        // work.  The instruction is re-executed, sees the bit, clears it
+        // and takes its alternate address — the whole point of parking.
+        if ((value & SYM825_ISTAT_SIGP) && s->waiting_reselect)
+            sym53c8xx_start(s);
         return;
     case SYM825_DSTAT:
     case SYM825_SIST0:

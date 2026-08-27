@@ -206,6 +206,10 @@ typedef struct sym53c8xx {
     // mismatch and on any interrupt, because a real driver interleaves
     // with the SCSI bus.
     bool running; // SCRIPTS are executing
+    // Parked on a Wait Reselect with no reselection to be had.  DSP points
+    // AT the instruction, and the driver's SIGP doorbell is what starts
+    // the engine again (see exec_io).
+    bool waiting_reselect;
     bool connected; // a target is selected and the bus is not free
     uint8_t target; // the selected target's SCSI id
     uint8_t phase; // the phase the target is currently presenting

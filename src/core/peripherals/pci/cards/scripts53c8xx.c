@@ -547,14 +547,30 @@ static void exec_io(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
         disconnect(s);
         return;
     case 2: // Wait Reselect
-        // No competing initiators and no disconnecting targets on this
-        // bus, so a reselection never arrives.  The instruction's escape
-        // hatch is the documented one: the driver sets SIGP and the chip
-        // takes the alternate address.  Taking it unconditionally is what
-        // keeps a driver's idle loop moving instead of parking here.
-        LOG(4, "ch%d: Wait Reselect — no reselection is possible on this bus", s->channel);
-        s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
-        set_reg32(s, SYM825_DSP, alt);
+        // The driver's doorbell decides this instruction: "if the SIGP bit
+        // in the ISTAT register is set, then the SCRIPTS processor will
+        // fetch the next instruction from the alternate address" — and
+        // SIGP is cleared by the jump.
+        if (s->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP) {
+            s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
+            set_reg32(s, SYM825_DSP, alt);
+            return;
+        }
+        // With SIGP clear the part WAITS, and on this bus it waits
+        // forever: there are no disconnecting targets to reselect it.  So
+        // the engine parks exactly as the chip does — DSP rewound to point
+        // AT the instruction, no interrupt, nothing running — and the next
+        // write of SIGP re-executes it.
+        //
+        // Parking is not a detail.  A driver's idle script is a short ring
+        // that ends in Wait Reselect and jumps back to its own start; an
+        // engine that takes the alternate address unconditionally runs that
+        // ring at the speed of the host until the watchdog stops it, and the
+        // driver waiting on the interrupt never gets one.
+        LOG(4, "ch%d: Wait Reselect — parked (no SIGP)", s->channel);
+        set_reg32(s, SYM825_DSP, reg32(s, SYM825_DSP) - 8u);
+        s->waiting_reselect = true;
+        s->running = false;
         return;
     case 3: // Set
     case 4: { // Clear
@@ -815,6 +831,7 @@ void sym53c8xx_start(sym53c8xx_t *s) {
     if (!s)
         return;
     s->running = true;
+    s->waiting_reselect = false;
     // Clear the START bit: it is a strobe, not a mode.
     s->reg[SYM825_DCNTL] &= (uint8_t)~SYM825_DCNTL_STD;
     uint32_t budget = SYM825_INSN_BUDGET;
