@@ -667,7 +667,7 @@ out.
 
 ### What getting here cost, and what it says
 
-Twenty defects, and not one of them was in Network Server code — every
+Twenty-one defects, and all but one were in shared machinery — every
 single one was in shared machinery that no existing guest had pushed on.
 In order:
 
@@ -693,6 +693,7 @@ In order:
 | Hard disks did not serve IBM's SCSD VPD page, so AIX sized them at 0 MB | `core/peripherals/scsi.c` |
 | RESERVE/RELEASE answered ILLEGAL REQUEST, so AIX's disk open failed | `core/peripherals/scsi.c` |
 | A script that polls memory was declared a runaway and halted | `scripts53c8xx.c` |
+| Board Register 1 bit 8 read clear, so POST's second boot entered its serial diagnostic monitor | `tnt/ans500.c`, `ans700.c` |
 
 Two patterns are worth carrying forward.
 

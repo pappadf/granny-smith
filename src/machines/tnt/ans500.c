@@ -165,7 +165,14 @@ static const tnt_board_desc_t ans500_board = {
     // here — it is `Keyswitch LockedL` — and bit 15 is `TwoSuppliesH`, so
     // neither of the 9500's idle-high straps applies.  The keyswitch and
     // PSU bits are live state, contributed at read time by gbus.c.
-    .boxid = 0x0800u, // BoxId0 = 1, BoxId1 = 0
+    //
+    // Bit 8 idles HIGH on this board.  POST reads Board Register 1
+    // byte-reversed (`lwbrx`) on every boot whose store already carries
+    // its "RobG" signature, and `andi. r6,r6,0x100` decides: bit 8 clear
+    // sends it into the ROM's serial diagnostic monitor (`>` on ttya,
+    // T/A/Q commands, no timeout) instead of Open Firmware.  A Network
+    // Server that boots is a Network Server whose bit 8 reads set.
+    .boxid = 0x0800u | 0x0100u, // BoxId0 = 1, BoxId1 = 0; bit 8 high
     .hh_id = 0x39000000u, // $39 first byte = the TNT identification path
     // The ANS ROM is built from the 9500 v2 codebase and takes the 9500
     // arm of Hammerhead's +$20 selector (bit 30 SET); machine identity

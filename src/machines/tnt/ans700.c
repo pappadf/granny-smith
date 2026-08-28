@@ -125,7 +125,7 @@ static const pci_slot_decl_t ans700_pci_slots[] = {
 };
 
 static const tnt_board_desc_t ans700_board = {
-    .boxid = 0x0800u, // BoxId0 = 1, BoxId1 = 0 (see ans500.c)
+    .boxid = 0x0800u | 0x0100u, // BoxId0 = 1, BoxId1 = 0; bit 8 high (see ans500.c)
     .hh_id = 0x39000000u,
     .hh_r20 = 0x40000000u,
     .bus_hz = 50000000u, // ATTESTED: the machine prints "50 MHz Bus" itself
