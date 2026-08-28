@@ -971,17 +971,19 @@ void sym53c8xx_start(sym53c8xx_t *s) {
     // Clear the START bit: it is a strobe, not a mode.
     s->reg[SYM825_DCNTL] &= (uint8_t)~SYM825_DCNTL_STD;
     struct scheduler *sched = s->cfg ? s->cfg->scheduler : NULL;
-    // A driver that starts the engine has abandoned whatever the chip was
-    // arbitrating for.  The time-out owed to that selection must not land
-    // on the command it is starting now: it would report STO against a
-    // NEXUS for an entirely different target, and the driver — reasonably
-    // — completes that command with an error and follows a pointer set up
-    // for a device it never talked to.
-    if (s->select_timeout_armed) {
-        s->select_timeout_armed = false;
-        if (sched)
-            remove_event(sched, select_timeout_event, s);
-    }
+    // A chip that is arbitrating is BUSY, and it stays busy for the whole
+    // of STIME0's period whatever the driver does.  A start arriving in
+    // that window is not a second command running alongside the first —
+    // it is ignored, and the driver hears about the selection when the
+    // time-out lands.  SIGP is a level and stays set, so a script that
+    // parks on Wait Reselect afterwards still sees the doorbell.
+    //
+    // Running it would be worse than useless: the command in flight and
+    // the command just started would share one chip, and the time-out
+    // would eventually be reported against whichever NEXUS the driver had
+    // most recently written down.
+    if (s->select_timeout_armed)
+        return;
     if (!sched) {
         sym53c8xx_run(s); // no time to pass (the unit suite drives it directly)
         return;
