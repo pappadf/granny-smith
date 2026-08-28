@@ -528,18 +528,23 @@ TEST(test_io_selection_timeout) {
     s_target_present = 0;
     put_insn_word(0x1000, IO_SELECT(5, 0));
     put_insn_word(0x1004, 0x1800); // the alternate address
-    put_insn_word(0x1800, RW(7, 0, SYM825_SCRATCHA, 0x9C)); // the handler ran
+    put_insn_word(0x1800, RW(7, 0, SYM825_SCRATCHA, 0x9C)); // must NOT run
     put_insn_word(0x1804, 0);
     put_insn_word(0x1808, TC(3, 0));
     put_insn_word(0x180C, 0x5A5A5A5Au);
 
     run_at(0x1000);
 
+    // The cause latches and the engine stops where it stands.  The
+    // alternate address belongs to a reselection that beat the arbitration,
+    // not to a target that is not there, and a driver told the wrong one
+    // recovers a command it never issued.
     ASSERT_TRUE(s_c->sist1 & SYM825_SIST1_STO);
     ASSERT_TRUE(!s_c->connected);
-    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x9C);
-    ASSERT_EQ_INT((int)reg32(SYM825_DSPS), 0x5A5A5A5A);
-    ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
+    ASSERT_TRUE(!s_c->running);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1008);
+    ASSERT_EQ_INT(take_dstat(), 0);
 }
 
 // Select WITH ATN: the target enters MESSAGE OUT for the IDENTIFY, which
@@ -622,7 +627,6 @@ TEST(test_abort_drops_a_selection_in_flight) {
     // Arm a selection that will not answer, then abandon it.  (With no
     // scheduler the time-out is immediate, so drive the state directly.)
     s_c->select_timeout_armed = true;
-    s_c->select_timeout_alt = 0x1800;
     s_c->running = false;
 
     sym53c8xx_abort(s_c);

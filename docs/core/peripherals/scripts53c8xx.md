@@ -188,13 +188,25 @@ SCSI host adapter`. The board pulls `GPIO0` high, so `gpio_strap` does too.
 * **Target mode.** The part supports it; nothing this repository emulates
   uses it. A target-mode I/O instruction reports an illegal instruction
   rather than pretending.
-* **The Select instruction's alternate address is where a time-out goes.**
-  The cause latches in `SIST1` and the pin follows it, but the engine keeps
-  running there: that field is the script's own handler for a target that
-  is not present, and a driver reaches it no other way. AIX's `pscsidd`
-  records a phase code in the command's NEXUS at every step and decides
-  retry-versus-complete by reading it back; the code for "selection failed"
-  is written by the instructions at that address.
+* **The Select instruction's alternate address is NOT where a time-out
+  goes.** It belongs to the other way an arbitration can end: another
+  target — possibly the very one being selected — reselecting the chip
+  first. AIX's driver says so in its own words, in the script it assembles
+  for this instruction: "if during the selection, another target (including
+  the target we were trying to select) reselects the chip, then we jump to
+  the script at the address `failed_selection_hdlr`. This script does a
+  simple interrupt so that the process interrupt handler will see that this
+  script never got started and needs to be restarted at a later time."
+
+  A time-out is the opposite case — the command WAS issued, to a target
+  that is not there — and the chip reports it by latching `SIST1[STO]` and
+  HALTING where it stands. The driver's own handler then clears both FIFOs,
+  fails the command against the tag its NEXUS records, and restarts the
+  engine by writing `DSP` itself. Send a time-out to the alternate address
+  instead and the driver is told that a device it has never seen reselected
+  the bus: it recovers a command it never issued, against a tag nothing
+  allocated, and follows a null command pointer at interrupt level. That is
+  a kernel panic, and it is what the Network Server's AIX did.
 * **Transfer rates.** Synchronous and wide negotiation are *answered* —
   a fast/wide channel is expected to negotiate and a chip that always
   rejected would be lying about the part — but the emulated bus has no
@@ -231,7 +243,8 @@ any of them as instantaneous breaks a driver that is doing nothing wrong.
   the whole select-fail-report-retry cycle completes inside the driver's
   own doorbell write; the interrupt storm that follows never lets the
   clock tick, so the driver's own timers never expire and nothing ever
-  gives up.
+  gives up. Configuring a bus means selecting every target on it, and most
+  of them are not there: this is the common case, not the error case.
 * **A command does not complete inside the store that started it.**
   Writing DSP's high byte, strobing `DCNTL`'s START bit or ringing `SIGP`
   asks the chip to arbitrate, select, move a command out, move data, take

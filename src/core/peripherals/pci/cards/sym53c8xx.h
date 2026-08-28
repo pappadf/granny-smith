@@ -212,9 +212,8 @@ typedef struct sym53c8xx {
     bool waiting_reselect;
     // Arbitrating for a target that is not answering.  The engine is
     // stopped, nothing is reported yet, and STIME0's programmed period has
-    // to pass before the time-out lands at `select_timeout_alt`.
+    // to pass before the time-out latches in SIST1.
     bool select_timeout_armed;
-    uint32_t select_timeout_alt;
     bool start_pending; // the engine has been asked to run and has not yet
     bool connected; // a target is selected and the bus is not free
     uint8_t target; // the selected target's SCSI id

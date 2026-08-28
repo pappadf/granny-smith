@@ -522,8 +522,10 @@ static uint64_t select_timeout_ns(const sym53c8xx_t *s) {
     return 100000ull << (sel - 1u);
 }
 
-// The time-out lands: the cause latches, the pin follows it, and the
-// engine picks up at the instruction's alternate address.
+// The time-out lands: the cause latches, the pin follows it, and the engine
+// HALTS where it stands.  The alternate address is not this instruction's
+// error exit; it belongs to the one other thing that can end an arbitration,
+// and taking it here runs a handler written for a different accident.
 static void select_timeout_event(void *source, uint64_t data) {
     (void)data;
     sym53c8xx_t *s = (sym53c8xx_t *)source;
@@ -531,10 +533,10 @@ static void select_timeout_event(void *source, uint64_t data) {
         return;
     s->select_timeout_armed = false;
     LOG(3, "ch%d: select timed out", s->channel);
-    set_reg32(s, SYM825_DSP, s->select_timeout_alt);
+    s->connected = false;
+    s->running = false;
     s->sist1 |= SYM825_SIST1_STO;
     sym53c8xx_update_irq(s);
-    sym53c8xx_start(s);
 }
 
 // Start the wait.  With no scheduler underneath (the unit suite drives the
@@ -578,16 +580,17 @@ static void exec_io(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
         if (!s->bus || !scsi_external_select(s->bus, target)) {
             // Nobody home.  The chip WAITS — STIME0's programmed period, a
             // fifth of a second as this driver sets it — and only then
-            // reports, at the instruction's alternate address.  Both halves
-            // matter and neither is decoration.
+            // reports, halting where it stands.
             //
-            // The alternate address is the script's own handler for an
-            // absent target, and a driver reaches it no other way: AIX's
-            // `pscsidd` records a phase code in the command's NEXUS at every
-            // step, and the code for "selection failed" is written by the
-            // instructions AT that address.  Halt instead of going there and
-            // the NEXUS still reads "still selecting", so the driver retries
-            // the same target forever.
+            // It does NOT go to the alternate address.  That field is the
+            // script's handler for the other way an arbitration can end:
+            // another target — possibly the very one being selected —
+            // reselecting the chip first, which leaves a command that was
+            // never issued and must be re-queued.  A time-out leaves a
+            // command that WAS issued to a target that is not there, and a
+            // driver tells the two apart by which interrupt arrives.  Send a
+            // time-out to that handler and the driver is told a device it
+            // has never seen reselected the bus.
             //
             // The wait is what keeps the retry honest.  Reported instantly,
             // the whole select-fail-report-retry cycle completes INSIDE the
@@ -598,7 +601,6 @@ static void exec_io(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
             // gives up.  A quarter of a million retries per second is not a
             // slow machine; it is a machine that has stopped.
             LOG(3, "ch%d: select %d — arbitrating, no answer yet", s->channel, target);
-            s->select_timeout_alt = alt;
             s->select_timeout_armed = true;
             s->running = false;
             sym53c8xx_arm_select_timeout(s);
