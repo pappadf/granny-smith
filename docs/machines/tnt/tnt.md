@@ -657,13 +657,25 @@ dossier's findings 45 to 48 carry the full account.)
 After the second configuration pass the async adapter and tty come up
 (`831`, `874`, `727`), and then the BOS install takes the LCD over with
 its own codes — `c46`, `c42`, and `c31` as it puts **"Please define the
-System Console"** on the 54M30 framebuffer and waits for a key. **That is
-where the ladder currently stands: S11.**
+System Console"** on the 54M30 framebuffer and waits for a key.
 
-Rungs S12 and S13 (driving the install menus, the BOS install to disk, a
-cold boot of the installed disk) are open. The bring-up dossier's findings
-32 to 48 carry the full account of what is known and what has been ruled
-out.
+**The install runs to completion, and the installed system boots.** The
+graphics console has no keyboard under AIX (it never configures Cuda/ADB
+— finding 49), so the console is claimed on serial port B, where the
+same prompt appears; the BOS menus are driven there. A disk that AIX will
+install to needs three more things from the device model: IBM's SCSD
+INQUIRY page `$C7` (the size comes from it, not from READ CAPACITY),
+RESERVE/RELEASE, SEND DIAGNOSTIC, and WRITE AND VERIFY (finding 50–52),
+and the SCRIPTS engine must yield to the CPU while the script polls its
+completion mailbox (finding 51). With those, "Restoring base operating
+system" runs to "Base Operating System installation is complete" in
+about eleven guest minutes (`c54`…`c58`). The reboot needs Board
+Register 1 bit 8 high (finding 53) and the disk at SCSI id 2 — Open
+Firmware's default boot device is `disk2:aix` — and then comes up
+multi-user: `890 591 868`, "Multi-user initialization completed", the
+Installation Assistant, and **`AIX Version 4 … Console login:`** on the
+serial console. **Rung S13.** The bring-up dossier's findings 32 to 54
+carry the full account.
 
 ### What getting here cost, and what it says
 
