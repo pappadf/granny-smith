@@ -532,8 +532,9 @@ static void select_timeout_event(void *source, uint64_t data) {
     if (!s->select_timeout_armed)
         return;
     s->select_timeout_armed = false;
-    LOG(3, "ch%d: select timed out", s->channel);
+    LOG(3, "ch%d: select timed out (target %u)", s->channel, s->reg[SYM825_SDID] & 0x0Fu);
     s->connected = false;
+    publish_phase(s);
     s->running = false;
     s->sist1 |= SYM825_SIST1_STO;
     sym53c8xx_update_irq(s);

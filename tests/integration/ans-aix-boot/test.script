@@ -27,18 +27,23 @@
 # reads several hundred more blocks off the disc.
 #
 # Given the board's full 512 MB it goes further still: `723`, configuring
-# the CD-ROM drive, and `517`, attempting to mount the root file systems.
+# the CD-ROM drive, `517`, attempting to mount the root file systems, and
+# `512`, restoring the base customised device information — then a second
+# configuration pass over the adapters.
 #
-# It then panics, in the path AIX takes when a selection times out: its
-# interrupt handler completes the failed command and follows the tag's
-# command pointer — `target * 8 + LUN`, indexing `softc+$308` — into a page
-# that is not resident, which at interrupt level it cannot fault on.  The
-# panel says so in AIX's own format: `888` flashing with `102`, a crash
-# code (the PowerPC vector — `300`, a data storage interrupt) and a dump
-# status.  S11 onward (the AIX banner, the BOS install, a cold boot of the
-# installed disk) is open work and is NOT asserted here.  The row asserts
-# what is reached, and names the rung, so the next step forward shows up as
-# a deliberate change to this file rather than as a surprise.
+# It then panics.  `cfgmgr` probes every SCSI target, most of which are not
+# there, and AIX re-submits the INQUIRY to an absent target once per
+# selection time-out, indefinitely; when the buffer it keeps re-submitting
+# is finally reclaimed, the driver's own interrupt handler follows the
+# tag's command pointer — `target * 8 + LUN`, indexing `softc+$308` — into
+# a page that is no longer resident, which at interrupt level it cannot
+# fault on.  The panel says so in AIX's own format: `888` flashing with
+# `102`, a crash code (the PowerPC vector — `300`, a data storage
+# interrupt) and a dump status.  S11 onward (the AIX banner, the BOS
+# install, a cold boot of the installed disk) is open work and is NOT
+# asserted here.  The row asserts what is reached, and names the rung, so
+# the next step forward shows up as a deliberate change to this file rather
+# than as a surprise.
 #
 # MEDIA: the 603 MB Install CD lives under
 # local/gs-docs/projects/ans-500-700/images/ and cannot be committed
@@ -87,6 +92,7 @@ def aix_boot() {
     let saw_integrated = 0
     let saw_cdrom = 0
     let saw_mount = 0
+    let saw_base = 0
     for i in 0..600 {
         scheduler.run 20000000
         if contains(machine.lcd.text, "890") {
@@ -100,6 +106,9 @@ def aix_boot() {
         }
         if contains(machine.lcd.text, "517") {
             $saw_mount = 1
+        }
+        if contains(machine.lcd.text, "512") {
+            $saw_base = 1
         }
     }
 
@@ -137,8 +146,9 @@ def aix_boot() {
     #   868  The system is configuring the integrated SCSI adapter.
     #   723  The system is configuring a CD-ROM drive or other SCSI device.
     #   517  The system is attempting to mount the /(root) and /usr file systems.
+    #   512  The system is restoring the base customised device information.
     #
-    # Seeing all four is the claim, and it is a large one: `bootapple`
+    # Seeing all five is the claim, and it is a large one: `bootapple`
     # handed off, the kernel came up, and `cfgmgr` walked the device tree
     # through the 53C825As — `cfgpscsi` / `pscsidd`, the method and driver
     # the ODM extraction named before any of this booted — the 53C94, and
@@ -149,13 +159,14 @@ def aix_boot() {
     assert $saw_integrated == 1 "S10: the LCD never showed 868 (the integrated SCSI adapter)"
     assert $saw_cdrom == 1 "S10: the LCD never showed 723 (AIX configuring the CD-ROM drive)"
     assert $saw_mount == 1 "S10: the LCD never showed 517 (AIX attempting to mount the root file systems)"
+    assert $saw_base == 1 "S10: the LCD never showed 512 (AIX restoring the base device information)"
 
     # And the adapter answered: the driver's own commands went out over the
     # SCRIPTS engine and came back.  `machine.scsi.device[0]` is still the
     # disc it read them from.
     assert machine.scsi.device[0].type == "cdrom" "S10: the Install CD went away under AIX"
 
-    echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, and reaches the root mount — LCD 890, 868, 723, 517 (rung S10)"
+    echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, mounts the root file systems and restores the base device information — LCD 890, 868, 723, 517, 512 (rung S10)"
 }
 
 if have_media($aix_cd) {
