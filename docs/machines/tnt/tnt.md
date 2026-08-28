@@ -660,8 +660,8 @@ bus reset, and the unexpected-disconnect handler — and the time-out path
 reaches none of them.
 
 Rungs S11 to S13 (the AIX banner, the BOS install to disk, a cold boot of
-the installed disk) are open. The dossier's findings 32 to 38 carry the full
-account, and `HANDOVER.md` beside them is the way in.
+the installed disk) are open. The bring-up dossier's findings 32 to 38 carry
+the full account of what is known and what has been ruled out.
 
 ### What getting here cost, and what it says
 
