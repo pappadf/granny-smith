@@ -625,7 +625,9 @@ of the installed disk — are open.
 
 ### What getting here cost, and what it says
 
-Six defects, and only one of them was in Network Server code. In order:
+Eight defects, and not one of them was in Network Server code — every
+single one was in shared machinery that no existing guest had pushed on.
+In order:
 
 | Defect | Where |
 |---|---|
