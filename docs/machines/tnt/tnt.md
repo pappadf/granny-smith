@@ -616,6 +616,7 @@ a trace of the boot:
 538   passing control to a configuration method
 723   a CD-ROM drive or other SCSI device
 517   attempting to mount the /(root) and /usr file systems
+512   restoring the base customised device information
 ```
 
 — Apple's own table, in *What's New With the Network Server*. So the
@@ -634,19 +635,33 @@ memory figure is part of the fixture rather than a detail of it — 64 MB is
 a comfortable Macintosh number and it hid seven codes' worth of working
 machine.
 
-**That is where the ladder currently stands.** What stops it is the path
-AIX takes when a selection times out — which is every id with nothing on
-it, so most of the sixteen. Its interrupt handler completes the failed
-command and, in doing so, follows the tag's command pointer — the tag is
+— and then a second configuration pass over the adapters.
+
+**That is where the ladder currently stands.** What stops it is the first
+SCSI id with nothing on it, and a wide bus always has some. The driver and
+its SCRIPTS program share a command ring with two indices: the driver
+advances its write index on every post, and the script advances its read
+index only after a select has *succeeded*. A selection time-out halts the
+chip at the SELECT, so the entry is never consumed and the read index never
+moves; the driver's time-out handler fails the command and restarts the
+chip at the top of the script, which reads the same entry and selects the
+same absent target again. Every command posted after that one is
+unreachable, and when the buffer AIX keeps re-submitting is finally
+reclaimed the handler follows the tag's command pointer — the tag is
 `target * 8 + LUN`, indexing a table at `softc+$308` — into a page that is
-not resident; at interrupt level AIX cannot take that fault, and it
+no longer resident. At interrupt level AIX cannot take that fault, and it
 panics. The panel says so, in AIX's own format: `888` flashing alternately
 with `102` (unexpected system halt), the **crash code** — which is the
 PowerPC vector, `300` for a data storage interrupt — and a dump status.
 
+What resynchronises that ring on real hardware is the open question. Only
+three things write the script's index — the script itself on success, a SCSI
+bus reset, and the unexpected-disconnect handler — and the time-out path
+reaches none of them.
+
 Rungs S11 to S13 (the AIX banner, the BOS install to disk, a cold boot of
-the installed disk) are open. The dossier's findings 25 and 26 carry the
-full account of what is known and what has been ruled out.
+the installed disk) are open. The dossier's findings 32 to 38 carry the full
+account, and `HANDOVER.md` beside them is the way in.
 
 ### What getting here cost, and what it says
 
@@ -662,7 +677,7 @@ In order:
 | Memory Move clobbered TEMP, the Call/Return link | `scripts53c8xx.c` |
 | Interrupt-on-the-fly latched without driving `IRQ/` | `scripts53c8xx.c` |
 | A Wait Disconnect still reported UNEXPECTED DISCONNECT | `scripts53c8xx.c` |
-| A selection time-out halted instead of taking the alternate address | `scripts53c8xx.c` |
+| A selection time-out took the Select instruction's alternate address | `scripts53c8xx.c` |
 | A selection time-out was instantaneous instead of STIME0's 204.8 ms | `scripts53c8xx.c` |
 | A command completed inside the store that started it | `scripts53c8xx.c` |
 | A chip that was arbitrating accepted a second start | `scripts53c8xx.c` |
@@ -675,9 +690,9 @@ Two patterns are worth carrying forward.
 
 **Every one of the engine defects was the model being more helpful, or
 faster, than the part.** Jump instead of park, write TEMP, latch without
-asserting, report a disconnect the script had asked for, halt where the
-script wanted to handle it — and, four times over, do in no time at all
-something the hardware takes a fifth of a second to do. Each looked like
+asserting, report a disconnect the script had asked for, go somewhere
+useful on a time-out instead of stopping dead — and, four times over, do in
+no time at all something the hardware takes a fifth of a second to do. Each looked like
 the forgiving choice and each one broke a driver that was doing something
 perfectly ordinary.
 
