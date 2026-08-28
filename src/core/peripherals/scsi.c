@@ -385,6 +385,14 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
 // Execute a SCSI command after receiving it from the initiator
 static void run_cmd(scsi_t *scsi) {
     scsi->cmd.opcode = scsi->buf.data[0];
+    // WRITE AND VERIFY(10) (SCSI-2 §9.2.22) is WRITE(10) plus a medium
+    // verification that cannot fail against a disk image, and its CDB has
+    // the same layout — canonicalise it so every WRITE_10 path (dispatch,
+    // completion, read-only rejection) handles it.  AIX's LVM writes its
+    // bad-block directory with it and declares the directory "corrupted"
+    // when the command is refused.
+    if (scsi->cmd.opcode == CMD_WRITE_VERIFY)
+        scsi->cmd.opcode = CMD_WRITE_10;
     int target = scsi->bus.target & 7;
     // The command block as it arrived.  Most opcodes below say nothing at
     // all unless something goes wrong, which is exactly backwards when the

@@ -90,6 +90,7 @@
 #define CMD_READ_10          0x28
 #define CMD_WRITE_10         0x2A
 #define CMD_SEEK_10          0x2B
+#define CMD_WRITE_VERIFY     0x2E
 #define CMD_VERIFY           0x2F
 #define CMD_READ_SUB_CHANNEL 0x42
 #define CMD_READ_TOC         0x43
