@@ -998,6 +998,36 @@ void sym53c8xx_start(sym53c8xx_t *s) {
 // Lifecycle
 // ============================================================
 
+// The driver drove RST/.  Everything in flight on this channel is over:
+// the connection, the message conversation, the negotiated transfer
+// agreement (a reset target comes back asynchronous and narrow), and any
+// selection the chip was still arbitrating for.  The devices on the bus go
+// back to their power-on state, and the chip reports what it saw.
+void sym53c8xx_bus_reset(sym53c8xx_t *s) {
+    if (!s)
+        return;
+    if (s->bus) {
+        if (s->connected)
+            scsi_external_release(s->bus);
+        scsi_reset_pin(s->bus);
+    }
+    s->connected = false;
+    s->disconnect_pending = 0;
+    s->sync_period = 0;
+    s->sync_offset = 0;
+    s->wide = 0;
+    msg_session_reset(s);
+    s->select_timeout_armed = false;
+    s->start_pending = false;
+    s->running = false;
+    s->waiting_reselect = false;
+    if (s->cfg && s->cfg->scheduler) {
+        remove_event(s->cfg->scheduler, select_timeout_event, s);
+        remove_event(s->cfg->scheduler, script_start_event, s);
+    }
+    sym53c8xx_raise_scsi(s, SYM825_SIST0_RST, 0);
+}
+
 void sym53c8xx_chip_reset(sym53c8xx_t *s) {
     if (!s)
         return;

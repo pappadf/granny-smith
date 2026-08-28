@@ -56,6 +56,12 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
     return (addr < MEM_SIZE) ? s_mem[addr] : 0xFFu;
 }
 
+// The bus's own reset pin: nothing on the mock bus to reset.
+void scsi_reset_pin(struct scsi *bus);
+void scsi_reset_pin(struct scsi *bus) {
+    (void)bus;
+}
+
 // The scheduler the engine posts its selection time-out to.  There is none
 // here: with a NULL config the time-out is immediate, so these exist only
 // to satisfy the linker and are never reached.
@@ -600,6 +606,33 @@ TEST(test_io_wait_reselect_parks) {
     ASSERT_EQ_INT(s_irq_asserts, 0);
 }
 
+// The driver drove RST/.  Everything in flight is over — the connection,
+// the negotiated transfer agreement, the selection the chip was still
+// arbitrating for — and the chip reports what it saw on the bus.  AIX's
+// driver has a handler named for exactly that condition.
+TEST(test_bus_reset_ends_everything) {
+    setup();
+    // Get the chip connected and synchronous, then pull the line.
+    put_insn_word(0x1000, IO_SELECT(3, 0));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000);
+    (void)take_dstat();
+    s_c->sync_period = 25;
+    s_c->sync_offset = 16;
+    s_c->connected = true;
+
+    sym53c8xx_bus_reset(s_c);
+
+    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_RST);
+    ASSERT_TRUE(!s_c->connected);
+    ASSERT_TRUE(!s_c->running);
+    ASSERT_EQ_INT(s_c->sync_offset, 0);
+    ASSERT_EQ_INT(s_c->sync_period, 0);
+    ASSERT_EQ_INT(s_c->wide, 0);
+}
+
 // SIGP is the doorbell that gets it moving again: the parked instruction
 // is re-executed, sees the bit, CLEARS it, and takes its alternate
 // address.  A driver signals work exactly this way.
@@ -993,6 +1026,7 @@ int main(void) {
     RUN(test_io_selection_timeout);
     RUN(test_io_select_with_atn);
     RUN(test_io_set_clear);
+    RUN(test_bus_reset_ends_everything);
     RUN(test_io_wait_reselect_parks);
     RUN(test_io_wait_reselect_sigp);
     RUN(test_read_write_alu);

@@ -182,8 +182,33 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
     }
 }
 
+// SCNTL1's RST bit drives the SCSI RST/ line.  The driver pulses it — set,
+// wait, clear — and every device on the bus goes back to its power-on
+// state, which is how a driver recovers a bus it has lost track of.  The
+// chip sees its own RST/ like any other initiator would and reports it, so
+// the assertion raises SIST0[RST]; AIX's driver has a handler named for
+// exactly that (`bsc_scsi_reset_received`).
+#define SYM825_SCNTL1_RST 0x08u
+
+static void sym825_scntl1_write(sym53c8xx_t *s, uint8_t value) {
+    bool was = (s->reg[SYM825_SCNTL1] & SYM825_SCNTL1_RST) != 0;
+    bool now = (value & SYM825_SCNTL1_RST) != 0;
+    s->reg[SYM825_SCNTL1] = value;
+    if (now == was)
+        return;
+    if (!now) {
+        LOG(2, "ch%d: SCSI RST/ released", s->channel);
+        return;
+    }
+    LOG(2, "ch%d: SCSI RST/ asserted — resetting the bus", s->channel);
+    sym53c8xx_bus_reset(s);
+}
+
 static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
     switch (reg) {
+    case SYM825_SCNTL1:
+        sym825_scntl1_write(s, value);
+        return;
     case SYM825_ISTAT: {
         // INTF is write-ONE-to-clear, and it is the one bit here a driver
         // acknowledges rather than sets: a plain store of the value it just
