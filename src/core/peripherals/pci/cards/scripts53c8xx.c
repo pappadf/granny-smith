@@ -538,12 +538,25 @@ static void exec_io(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
             disconnect(s);
         msg_session_reset(s);
         if (!s->bus || !scsi_external_select(s->bus, target)) {
-            // Nobody home.  A selection time-out is a SIST1 cause and it
-            // sends the script to the instruction's alternate address —
-            // which is the whole point of that field.
+            // Nobody home.  The cause latches in SIST1 and the pin follows
+            // it, but the ENGINE KEEPS RUNNING at the instruction's
+            // alternate address: that field is the script's own handler for
+            // this, and a driver reaches it no other way.
+            //
+            // AIX's `pscsidd` is the proof.  Its script records a phase code
+            // in the command's NEXUS at every step, and its interrupt
+            // handler decides retry-versus-complete by reading that code
+            // back; the code for "selection failed" is written by the
+            // instructions AT the alternate address.  The handler then
+            // restarts the script from its own saved pointer and never from
+            // DSP, so an engine that halts here — leaving the NEXUS reading
+            // "still selecting" — makes the driver retry the same absent
+            // target forever.  It walks all sixteen ids at configuration
+            // time, so that is every boot.
             LOG(3, "ch%d: select %d timed out", s->channel, target);
             set_reg32(s, SYM825_DSP, alt);
-            sym53c8xx_raise_scsi(s, 0, SYM825_SIST1_STO);
+            s->sist1 |= SYM825_SIST1_STO;
+            sym53c8xx_update_irq(s);
             return;
         }
         s->connected = true;

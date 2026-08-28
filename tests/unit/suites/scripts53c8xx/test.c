@@ -485,20 +485,32 @@ TEST(test_block_move_table_indirect) {
 // NEGATIVE: nobody answers.  A selection time-out is a SIST1 cause AND it
 // sends the script to the instruction's alternate address — which is the
 // entire reason that field exists.
+// A selection time-out latches its cause and drives the pin, and the
+// engine KEEPS RUNNING at the instruction's alternate address.  That field
+// is the script's own handler for a target that is not there, and a driver
+// reaches it no other way: AIX's `pscsidd` records a phase code in the
+// command's NEXUS at every step and decides retry-versus-complete by
+// reading it back, and the code for "selection failed" is written by the
+// instructions at the alternate address.  Halt here and the NEXUS still
+// reads "still selecting", so the driver retries the same absent target
+// forever — and it walks all sixteen ids at configuration time.
 TEST(test_io_selection_timeout) {
     setup();
     s_target_present = 0;
     put_insn_word(0x1000, IO_SELECT(5, 0));
     put_insn_word(0x1004, 0x1800); // the alternate address
-    put_insn_word(0x1800, TC(3, 0));
-    put_insn_word(0x1804, 0x5A5A5A5Au);
+    put_insn_word(0x1800, RW(7, 0, SYM825_SCRATCHA, 0x9C)); // the handler ran
+    put_insn_word(0x1804, 0);
+    put_insn_word(0x1808, TC(3, 0));
+    put_insn_word(0x180C, 0x5A5A5A5Au);
 
     run_at(0x1000);
 
     ASSERT_TRUE(s_c->sist1 & SYM825_SIST1_STO);
     ASSERT_TRUE(!s_c->connected);
-    // Fatal, so it stopped AT the alternate address rather than running it.
-    ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1800);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x9C);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSPS), 0x5A5A5A5A);
+    ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
 }
 
 // Select WITH ATN: the target enters MESSAGE OUT for the IDENTIFY, which
