@@ -294,6 +294,13 @@ static void disconnect(sym53c8xx_t *s) {
     s->sync_period = 0;
     s->sync_offset = 0;
     s->wide = 0;
+    // A disconnect the script ASKED for is not unexpected.  The deferred
+    // UDC exists for scripts that never wait (Open Firmware's does not, and
+    // ends on it — see disconnect_deferred); a script whose Wait Disconnect
+    // consumes the same bus-free condition must not also be told the target
+    // vanished, or a driver that logs and recovers from UDC treats every
+    // successful command as a failure.
+    s->disconnect_pending = 0;
     publish_phase(s);
 }
 

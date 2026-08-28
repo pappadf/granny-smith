@@ -347,6 +347,47 @@ TEST(test_block_move_full_command) {
     ASSERT_EQ_INT(s_released, 1);
 }
 
+// The same command, but the script WAITS for the disconnect.  A disconnect
+// the script asked for is not unexpected, so no UDC is reported.
+//
+// Both shapes are real and they are opposites.  Open Firmware's driver
+// never waits and ends every command on the deferred UDC; AIX's `pscsidd`
+// ends its with a Wait Disconnect and logs UDC as an adapter error.  An
+// engine that raises it either way tells one of the two drivers that every
+// successful command failed.
+TEST(test_io_wait_disconnect_is_not_unexpected) {
+    setup();
+    memcpy(s_mem + 0x2000, "\x12\x00\x00\x00\x24\x00", 6);
+    memcpy(s_in, "ABCDEFGH", 8);
+    s_in_n = 8;
+    s_status_byte = 0x00;
+    s_message_byte = 0x00;
+
+    put_insn_word(0x1000, IO_SELECT(3, 0));
+    put_insn_word(0x1004, 0x0000BEEFu);
+    put_insn_word(0x1008, BLOCK_MOVE(SYM825_PHASE_COMMAND, 6));
+    put_insn_word(0x100C, 0x2000);
+    put_insn_word(0x1010, BLOCK_MOVE(SYM825_PHASE_DATA_IN, 8));
+    put_insn_word(0x1014, 0x3000);
+    put_insn_word(0x1018, BLOCK_MOVE(SYM825_PHASE_STATUS, 1));
+    put_insn_word(0x101C, 0x3100);
+    put_insn_word(0x1020, BLOCK_MOVE(SYM825_PHASE_MSG_IN, 1));
+    put_insn_word(0x1024, 0x3101);
+    put_insn_word(0x1028, IO_CLEAR(IO_BIT_ACK));
+    put_insn_word(0x102C, 0);
+    put_insn_word(0x1030, IO_WAIT_DISCONNECT);
+    put_insn_word(0x1034, 0);
+    put_insn_word(0x1038, TC(3, 0));
+    put_insn_word(0x103C, 0xCAFEBABEu);
+
+    run_at(0x1000);
+
+    ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
+    ASSERT_TRUE(!(s_c->sist0 & SYM825_SIST0_UDC));
+    ASSERT_TRUE(!s_c->connected);
+    ASSERT_EQ_INT(s_released, 1);
+}
+
 // SFBR takes the first byte of an INBOUND move, which is the whole basis of
 // the compare-and-branch idiom every driver uses.
 TEST(test_block_move_sfbr) {
@@ -909,6 +950,7 @@ TEST(test_checkpoint_roundtrip) {
 
 int main(void) {
     RUN(test_block_move_full_command);
+    RUN(test_io_wait_disconnect_is_not_unexpected);
     RUN(test_block_move_sfbr);
     RUN(test_block_move_phase_mismatch);
     RUN(test_block_move_short_transfer);
