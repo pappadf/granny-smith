@@ -247,7 +247,7 @@ for m in ans500 ans700; do
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"pci":true' "$m advertises PCI"
     assert_contains "$m" '"video_in":false' "$m has no video digitizer"
-    assert_contains "$m" '"ram_max":536870912' "$m caps RAM at the ROM's 512 MB decode limit"
+    assert_contains "$m" '"ram_max":524288' "$m caps RAM at the ROM's 512 MB decode limit (in KB, as every profile publishes it)"
     assert_contains "$m" '"has_cdrom":true' "$m boots its Install CD from a SCSI bay"
     # Seven hot-swap bays split across two fast/wide controllers; bay 0 is
     # Apple's expected CD-ROM position, so the HD rows start at 1.
@@ -255,8 +255,8 @@ for m in ans500 ans700; do
 done
 assert_contains ans500 '"freq":132000000' "ans500 runs a 132 MHz 604 card"
 assert_contains ans700 '"freq":150000000' "ans700 runs a 150 MHz 604 card"
-assert_contains ans500 '"ram_default":33554432' "ans500 ships with 32 MB of parity DRAM"
-assert_contains ans700 '"ram_default":50331648' "ans700 ships with 48 MB of parity DRAM"
+assert_contains ans500 '"ram_default":32768' "ans500 ships with 32 MB of parity DRAM"
+assert_contains ans700 '"ram_default":49152' "ans700 ships with 48 MB of parity DRAM"
 
 assert_contains q840av '"freq":40000000' "q840av runs at 40 MHz"
 assert_contains q660av '"freq":25000000' "q660av runs at 25 MHz"
