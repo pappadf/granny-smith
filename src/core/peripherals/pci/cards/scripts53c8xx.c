@@ -536,7 +536,12 @@ static void select_timeout_event(void *source, uint64_t data) {
     s->connected = false;
     publish_phase(s);
     s->running = false;
-    s->sist1 |= SYM825_SIST1_STO;
+    // TWO causes, and the ORDER is what a driver's recovery hangs off.  The
+    // arbitration ends with the bus going free, which the part reports
+    // FIRST as an unexpected disconnect; the time-out itself is stacked
+    // behind it and surfaces once the first level has been read clear.
+    s->sist0 |= SYM825_SIST0_UDC;
+    s->sist1_stacked |= SYM825_SIST1_STO;
     sym53c8xx_update_irq(s);
 }
 
@@ -1012,6 +1017,8 @@ void sym53c8xx_abort(sym53c8xx_t *s) {
     s->start_pending = false;
     s->waiting_reselect = false;
     s->running = false;
+    s->sist0_stacked = 0;
+    s->sist1_stacked = 0;
     if (s->cfg && s->cfg->scheduler) {
         remove_event(s->cfg->scheduler, select_timeout_event, s);
         remove_event(s->cfg->scheduler, script_start_event, s);
@@ -1042,6 +1049,8 @@ void sym53c8xx_bus_reset(sym53c8xx_t *s) {
     s->start_pending = false;
     s->running = false;
     s->waiting_reselect = false;
+    s->sist0_stacked = 0;
+    s->sist1_stacked = 0;
     if (s->cfg && s->cfg->scheduler) {
         remove_event(s->cfg->scheduler, select_timeout_event, s);
         remove_event(s->cfg->scheduler, script_start_event, s);
@@ -1058,6 +1067,8 @@ void sym53c8xx_chip_reset(sym53c8xx_t *s) {
     s->dstat = 0;
     s->sist0 = 0;
     s->sist1 = 0;
+    s->sist0_stacked = 0;
+    s->sist1_stacked = 0;
     s->running = false;
     s->waiting_reselect = false;
     s->connected = false;

@@ -539,12 +539,18 @@ TEST(test_io_selection_timeout) {
     // alternate address belongs to a reselection that beat the arbitration,
     // not to a target that is not there, and a driver told the wrong one
     // recovers a command it never issued.
-    ASSERT_TRUE(s_c->sist1 & SYM825_SIST1_STO);
+    ASSERT_EQ_INT(s_c->sist1, 0);
     ASSERT_TRUE(!s_c->connected);
     ASSERT_TRUE(!s_c->running);
     ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0);
     ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1008);
     ASSERT_EQ_INT(take_dstat(), 0);
+    // Two causes, not one: the arbitration ends with the bus going free,
+    // which the part reports as an unexpected disconnect -- held behind the
+    // time-out rather than latched alongside it, so a driver reading the
+    // pair as one 16-bit word sees the time-out on its own first.
+    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_UDC);
+    ASSERT_TRUE(s_c->sist1_stacked & SYM825_SIST1_STO);
 }
 
 // Select WITH ATN: the target enters MESSAGE OUT for the IDENTIFY, which

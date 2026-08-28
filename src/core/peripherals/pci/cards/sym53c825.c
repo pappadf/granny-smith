@@ -140,6 +140,19 @@ static const pci_config_decl_t sym825_decl = {
 // model that leaves the bits standing re-interrupts forever, and one that
 // clears them too eagerly loses the cause.
 
+// A held cause becomes the live one once the first level has been read
+// clear -- "When the first level of interrupts are cleared, all the
+// interrupts that came in afterward will move into the SIST0, SIST1, and
+// DSTAT" (LSI53C825A TM v3.1, Stacked Interrupts).
+static void sym825_unstack_sist(sym53c8xx_t *s) {
+    if (s->sist0 || s->sist1 || !(s->sist0_stacked | s->sist1_stacked))
+        return;
+    s->sist0 = s->sist0_stacked;
+    s->sist1 = s->sist1_stacked;
+    s->sist0_stacked = 0;
+    s->sist1_stacked = 0;
+}
+
 static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
     switch (reg) {
     case SYM825_ISTAT:
@@ -158,12 +171,14 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
     case SYM825_SIST0: {
         uint8_t v = s->sist0;
         s->sist0 = 0;
+        sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
         return v;
     }
     case SYM825_SIST1: {
         uint8_t v = s->sist1;
         s->sist1 = 0;
+        sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
         return v;
     }

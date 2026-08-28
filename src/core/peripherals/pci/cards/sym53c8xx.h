@@ -197,6 +197,19 @@ typedef struct sym53c8xx {
     uint8_t reg[SYM825_REGS]; // the operating register file
     uint8_t dstat; // latched DMA-type causes (DSTAT's readable half)
     uint8_t sist0, sist1; // latched SCSI-type causes
+    // A cause the part is holding behind the one already latched.  The
+    // 53C8xx stacks SCSI interrupts: "If the SIP or DIP bits in the ISTAT
+    // register are set (first level), then there is already at least one
+    // pending interrupt, and any future interrupts will be stacked in extra
+    // registers behind the SIST0, SIST1, and DSTAT registers (second
+    // level)."  A selection time-out is the case that matters here, because
+    // it is TWO causes: the arbitration ends with the bus going free, and
+    // the part reports that as an unexpected disconnect.  The LSI53C825A
+    // Technical Manual v3.1 says so in SIST0's own bit description --
+    // "This bit is also set if a selection time-out occurs (it may occur
+    // before, at the same time, or stacked after the STO interrupt, since
+    // this is not considered an expected disconnect)."
+    uint8_t sist0_stacked, sist1_stacked;
     bool irq; // the IRQ/ pin as this model currently drives it
 
     uint8_t script_ram[SYM825_SCRIPTS_RAM];

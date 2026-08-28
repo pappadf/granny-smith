@@ -245,6 +245,31 @@ any of them as instantaneous breaks a driver that is doing nothing wrong.
   clock tick, so the driver's own timers never expire and nothing ever
   gives up. Configuring a bus means selecting every target on it, and most
   of them are not there: this is the common case, not the error case.
+
+  **And a time-out is TWO causes, not one.** The arbitration ends with the
+  bus going free, and the part reports that as an unexpected disconnect.
+  The chip's own manual says so in `SIST0`'s bit description: "This bit is
+  also set if a selection time-out occurs (it may occur before, at the same
+  time, or stacked after the STO interrupt, since this is not considered an
+  expected disconnect)" (LSI53C825A Technical Manual v3.1, `SIST0[UDC]`).
+
+  All three orderings are permitted, and they are not interchangeable —
+  they lead a driver to different handlers. This model reports the
+  disconnect FIRST and stacks the time-out behind it, which is what carries
+  AIX's configuration manager furthest. Reporting them the other way round
+  — time-out first, disconnect stacked behind — deadlocks it: the
+  configuration manager stops with the SCRIPTS processor halted, the driver
+  never re-entered, and the machine taking nothing but decrementer
+  interrupts.
+
+  Stacking is the mechanism, and it is the part's, not an invention: "If
+  the SIP or DIP bits in the ISTAT register are set (first level), then
+  there is already at least one pending interrupt, and any future
+  interrupts will be stacked in extra registers behind the SIST0, SIST1,
+  and DSTAT registers (second level)... When the first level of interrupts
+  are cleared, all the interrupts that came in afterward will move into the
+  SIST0, SIST1, and DSTAT." Latching both at once instead hands a driver
+  that reads the pair as one 16-bit word two causes in a single word.
 * **A command does not complete inside the store that started it.**
   Writing DSP's high byte, strobing `DCNTL`'s START bit or ringing `SIGP`
   asks the chip to arbitrate, select, move a command out, move data, take
