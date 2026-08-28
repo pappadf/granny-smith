@@ -608,23 +608,37 @@ narrator AIX uses, and sampled as a sequence rather than a snapshot it is
 a trace of the boot:
 
 ```
-890   the system is configuring a SCSI-2 adapter     (the 53C825As)
-868   the system is configuring the integrated SCSI adapter   (the 53C94)
-538   the configuration manager is passing control to a configuration method
+510   the configuration manager has started
+811   the system planar
+812   the standard I/O adapter
+890   a SCSI-2 adapter                    (the 53C825As)
+868   the integrated SCSI adapter         (the 53C94)
+538   passing control to a configuration method
+723   a CD-ROM drive or other SCSI device
+517   attempting to mount the /(root) and /usr file systems
 ```
 
 — Apple's own table, in *What's New With the Network Server*. So the
-kernel is up, `cfgmgr` is walking the device tree, and it has configured
-the fast/wide controllers: `cfgpscsi`, driver `pscsidd`, exactly the pair
-the ODM extraction named before any of this booted. The driver negotiates
-synchronous transfer, takes INQUIRY (standard and vital-product-data),
-MODE SENSE and START STOP UNIT, and reads several hundred blocks off the
-Install CD.
+kernel is up, `cfgmgr` walks the device tree, configures the fast/wide
+controllers — `cfgpscsi`, driver `pscsidd`, exactly the pair the ODM
+extraction named before any of this booted — configures the narrow chain
+and the disc in bay 0, and goes looking for a root to mount. The driver
+negotiates synchronous transfer, takes INQUIRY (standard and
+vital-product-data), MODE SENSE and START STOP UNIT, and reads several
+hundred blocks off the Install CD.
+
+**Give it the memory.** That sequence is what 512 MB buys; at 64 MB the
+configuration manager does not survive its first pass over the SCSI
+adapters. The BOS install boots into a RAM filesystem, and a guest's
+memory figure is part of the fixture rather than a detail of it — 64 MB is
+a comfortable Macintosh number and it hid seven codes' worth of working
+machine.
 
 **That is where the ladder currently stands.** What stops it is the path
 AIX takes when a selection times out — which is every id with nothing on
 it, so most of the sixteen. Its interrupt handler completes the failed
-command and, in doing so, follows a per-index pointer into a page that is
+command and, in doing so, follows the tag's command pointer — the tag is
+`target * 8 + LUN`, indexing a table at `softc+$308` — into a page that is
 not resident; at interrupt level AIX cannot take that fault, and it
 panics. The panel says so, in AIX's own format: `888` flashing alternately
 with `102` (unexpected system halt), the **crash code** — which is the

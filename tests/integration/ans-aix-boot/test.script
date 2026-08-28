@@ -26,15 +26,19 @@
 # standard and vital-product-data — MODE SENSE and START STOP UNIT, and
 # reads several hundred more blocks off the disc.
 #
+# Given the board's full 512 MB it goes further still: `723`, configuring
+# the CD-ROM drive, and `517`, attempting to mount the root file systems.
+#
 # It then panics, in the path AIX takes when a selection times out: its
-# interrupt handler completes the failed command and follows a per-index
-# pointer into a page that is not resident, which at interrupt level it
-# cannot fault on.  The panel says so in AIX's own format — `888` flashing
-# with `102`, a crash code, and a dump status.  S11 onward (the AIX
-# banner, the BOS install, a cold boot of the installed disk) is open work
-# and is NOT asserted here.  The row asserts what is reached, and names
-# the rung, so the next step forward shows up as a deliberate change to
-# this file rather than as a surprise.
+# interrupt handler completes the failed command and follows the tag's
+# command pointer — `target * 8 + LUN`, indexing `softc+$308` — into a page
+# that is not resident, which at interrupt level it cannot fault on.  The
+# panel says so in AIX's own format: `888` flashing with `102`, a crash
+# code (the PowerPC vector — `300`, a data storage interrupt) and a dump
+# status.  S11 onward (the AIX banner, the BOS install, a cold boot of the
+# installed disk) is open work and is NOT asserted here.  The row asserts
+# what is reached, and names the rung, so the next step forward shows up as
+# a deliberate change to this file rather than as a surprise.
 #
 # MEDIA: the 603 MB Install CD lives under
 # local/gs-docs/projects/ans-500-700/images/ and cannot be committed
@@ -48,8 +52,16 @@ let aix_cd = "${$ans_root}/images/AIX_415_Install_CD.iso"
 
 def aix_boot() {
     # "Never been booted before": the store the machine ships with.
+    #
+    # 512 MB, the board's documented maximum, and not decoration: the BOS
+    # install boots into a RAM filesystem and this model gets materially
+    # further with the memory than without it.  At 64 MB the configuration
+    # manager does not survive its first pass over the SCSI adapters; at
+    # 512 MB it configures them, configures a CD-ROM drive and reaches the
+    # attempt to mount the root file systems.  The rungs below record
+    # exactly that.
     machine.board.clear_nvram()
-    machine.boot model="ans500" ram=65536 rom="${$ROM}"
+    machine.boot model="ans500" ram=524288 rom="${$ROM}"
     machine.board.keyswitch = "service"
     assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
 
@@ -73,13 +85,21 @@ def aix_boot() {
     # step forward.
     let saw_scsi2 = 0
     let saw_integrated = 0
-    for i in 0..300 {
-        scheduler.run 40000000
+    let saw_cdrom = 0
+    let saw_mount = 0
+    for i in 0..600 {
+        scheduler.run 20000000
         if contains(machine.lcd.text, "890") {
             $saw_scsi2 = 1
         }
         if contains(machine.lcd.text, "868") {
             $saw_integrated = 1
+        }
+        if contains(machine.lcd.text, "723") {
+            $saw_cdrom = 1
+        }
+        if contains(machine.lcd.text, "517") {
+            $saw_mount = 1
         }
     }
 
@@ -115,21 +135,27 @@ def aix_boot() {
     #
     #   890  The system is configuring a SCSI-2 adapter.
     #   868  The system is configuring the integrated SCSI adapter.
+    #   723  The system is configuring a CD-ROM drive or other SCSI device.
+    #   517  The system is attempting to mount the /(root) and /usr file systems.
     #
-    # Seeing BOTH is the claim: `bootapple` handed off, the kernel came up,
-    # `cfgmgr` walked the device tree to the 53C825A — `cfgpscsi` /
-    # `pscsidd`, the method and driver the ODM extraction named before any
-    # of this booted — configured it, and moved on.  The LCD is the
-    # only narrator AIX uses here, which is why it was built first.
+    # Seeing all four is the claim, and it is a large one: `bootapple`
+    # handed off, the kernel came up, and `cfgmgr` walked the device tree
+    # through the 53C825As — `cfgpscsi` / `pscsidd`, the method and driver
+    # the ODM extraction named before any of this booted — the 53C94, and
+    # the disc in bay 0, and then went looking for a root to mount.  The
+    # LCD is the only narrator AIX uses here, which is why it was built
+    # first.
     assert $saw_scsi2 == 1 "S10: the LCD never showed 890 (AIX configuring the SCSI-2 adapter)"
-    assert $saw_integrated == 1 "S10: the LCD never showed 868 (AIX moving on to the integrated SCSI adapter)"
+    assert $saw_integrated == 1 "S10: the LCD never showed 868 (the integrated SCSI adapter)"
+    assert $saw_cdrom == 1 "S10: the LCD never showed 723 (AIX configuring the CD-ROM drive)"
+    assert $saw_mount == 1 "S10: the LCD never showed 517 (AIX attempting to mount the root file systems)"
 
     # And the adapter answered: the driver's own commands went out over the
     # SCRIPTS engine and came back.  `machine.scsi.device[0]` is still the
     # disc it read them from.
     assert machine.scsi.device[0].type == "cdrom" "S10: the Install CD went away under AIX"
 
-    echo "ans-aix-boot: the AIX kernel configures the fast/wide adapters and moves on, LCD 890 then 868 (rung S10)"
+    echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, and reaches the root mount — LCD 890, 868, 723, 517 (rung S10)"
 }
 
 if have_media($aix_cd) {
