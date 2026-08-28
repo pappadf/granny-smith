@@ -188,12 +188,48 @@ SCSI host adapter`. The board pulls `GPIO0` high, so `gpio_strap` does too.
 * **Target mode.** The part supports it; nothing this repository emulates
   uses it. A target-mode I/O instruction reports an illegal instruction
   rather than pretending.
+* **The Select instruction's alternate address is where a time-out goes.**
+  The cause latches in `SIST1` and the pin follows it, but the engine keeps
+  running there: that field is the script's own handler for a target that
+  is not present, and a driver reaches it no other way. AIX's `pscsidd`
+  records a phase code in the command's NEXUS at every step and decides
+  retry-versus-complete by reading it back; the code for "selection failed"
+  is written by the instructions at that address.
 * **Transfer rates.** Synchronous and wide negotiation are *answered* —
   a fast/wide channel is expected to negotiate and a chip that always
   rejected would be lying about the part — but the emulated bus has no
   timing, so what is modelled is the agreement, not the rate it implies.
 * **The DMA FIFO.** `DFE` reads as permanently empty. Nothing observes the
   FIFO except error recovery, which this model never enters.
+
+## Time is part of the model
+
+Three things this engine does take time on the real part, and modelling
+any of them as instantaneous breaks a driver that is doing nothing wrong.
+
+* **A selection time-out waits.** `STIME0`'s low nibble picks it from a
+  fixed table — 0 disables it, 1 to 15 double from 100 µs to 1.6 s — and
+  AIX programs `$0C`, 204.8 ms. Report it the moment nobody answers and
+  the whole select-fail-report-retry cycle completes inside the driver's
+  own doorbell write; the interrupt storm that follows never lets the
+  clock tick, so the driver's own timers never expire and nothing ever
+  gives up.
+* **A command does not complete inside the store that started it.**
+  Writing DSP's high byte, strobing `DCNTL`'s START bit or ringing `SIGP`
+  asks the chip to arbitrate, select, move a command out, move data, take
+  status and interrupt. `SYM825_START_LATENCY_NS` stands for all of that
+  — a quarter of a millisecond, which is what a couple of kilobytes at ten
+  megabytes a second costs, and comfortably longer than any driver spends
+  in the critical section it started the command from. AIX queues under a
+  lock and its interrupt handler takes that same lock; a completion that
+  arrives too early panics the kernel.
+* **A chip that is arbitrating is busy.** A start arriving inside the
+  selection window is ignored, because the part is not free to take it.
+  `SIGP` is a level and stays set, so a script that parks on `Wait
+  Reselect` afterwards still sees the doorbell.
+
+None of this is about speed. It is the difference between a machine that
+is slow and a machine that has stopped.
 
 ## Runaway protection
 

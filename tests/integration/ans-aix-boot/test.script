@@ -17,17 +17,24 @@
 # `IBMA` boot record, writes its boot configuration, resets the machine
 # through Cuda, comes back, and launches `bootapple` — Apple's own
 # bootstrap — which announces itself, reports POST AOK, names the boot
-# device, reads 2.7 MB off the disc and jumps into the AIX kernel.  The
-# kernel runs `cfgmgr`, which reaches the 53C825A's configuration method
-# and says so on the front-panel LCD: `890`, which Apple's own table
-# translates as "the system is configuring a SCSI-2 adapter".  The driver
-# negotiates synchronous transfer, takes INQUIRY, MODE SENSE and START
-# STOP UNIT, and reads several hundred more blocks.
+# device, reads 2.7 MB off the disc and jumps into the AIX kernel.
 #
-# S11 onward (the AIX banner, the BOS install, a cold boot of the
-# installed disk) is open work and is NOT asserted here.  The row asserts
-# what is reached, and names the rung, so the next step forward shows up as
-# a deliberate change to this file rather than as a surprise.
+# The kernel runs `cfgmgr`, and the front-panel LCD counts it off in
+# Apple's own codes: `890` the SCSI-2 adapter (the 53C825As), `868` the
+# integrated SCSI adapter (the 53C94), `538` a configuration method.  The
+# fast/wide driver negotiates synchronous transfer, takes INQUIRY —
+# standard and vital-product-data — MODE SENSE and START STOP UNIT, and
+# reads several hundred more blocks off the disc.
+#
+# It then panics, in the path AIX takes when a selection times out: its
+# interrupt handler completes the failed command and follows a per-index
+# pointer into a page that is not resident, which at interrupt level it
+# cannot fault on.  The panel says so in AIX's own format — `888` flashing
+# with `102`, a crash code, and a dump status.  S11 onward (the AIX
+# banner, the BOS install, a cold boot of the installed disk) is open work
+# and is NOT asserted here.  The row asserts what is reached, and names
+# the rung, so the next step forward shows up as a deliberate change to
+# this file rather than as a surprise.
 #
 # MEDIA: the 603 MB Install CD lives under
 # local/gs-docs/projects/ans-500-700/images/ and cannot be committed
@@ -58,8 +65,22 @@ def aix_boot() {
     # write, the Cuda reset, POST again, the hand-off to `bootapple`, and
     # the AIX kernel's own device configuration.  In chunks: the budget is
     # well past what a single `scheduler.run` argument holds.
-    for i in 0..5 {
-        scheduler.run 2000000000
+    #
+    # The LCD is sampled as it goes, because it is a SEQUENCE and not a
+    # state: each configuration method shows its code for as long as it
+    # runs and is then replaced.  Asserting on whatever happens to be
+    # displayed at the end would pin the wrong thing and break on the next
+    # step forward.
+    let saw_scsi2 = 0
+    let saw_integrated = 0
+    for i in 0..300 {
+        scheduler.run 40000000
+        if contains(machine.lcd.text, "890") {
+            $saw_scsi2 = 1
+        }
+        if contains(machine.lcd.text, "868") {
+            $saw_integrated = 1
+        }
     }
 
     # --- The machine identified itself ---------------------------------
@@ -93,20 +114,22 @@ def aix_boot() {
     # Apple's own three-digit table (What's New With the Network Server):
     #
     #   890  The system is configuring a SCSI-2 adapter.
+    #   868  The system is configuring the integrated SCSI adapter.
     #
-    # Which is the whole claim in one number: `bootapple` handed off, the
-    # kernel came up, `cfgmgr` is walking the device tree, and it has
-    # reached the 53C825A — `cfgpscsi` / `pscsidd`, the method and driver
-    # the ODM extraction named before any of this booted.  The LCD is the
+    # Seeing BOTH is the claim: `bootapple` handed off, the kernel came up,
+    # `cfgmgr` walked the device tree to the 53C825A — `cfgpscsi` /
+    # `pscsidd`, the method and driver the ODM extraction named before any
+    # of this booted — configured it, and moved on.  The LCD is the
     # only narrator AIX uses here, which is why it was built first.
-    assert contains(machine.lcd.text, "890") "S10: the LCD does not show 890 (AIX configuring the SCSI-2 adapter)"
+    assert $saw_scsi2 == 1 "S10: the LCD never showed 890 (AIX configuring the SCSI-2 adapter)"
+    assert $saw_integrated == 1 "S10: the LCD never showed 868 (AIX moving on to the integrated SCSI adapter)"
 
     # And the adapter answered: the driver's own commands went out over the
     # SCRIPTS engine and came back.  `machine.scsi.device[0]` is still the
     # disc it read them from.
     assert machine.scsi.device[0].type == "cdrom" "S10: the Install CD went away under AIX"
 
-    echo "ans-aix-boot: the AIX kernel configures the fast/wide adapter, LCD 890 (rung S10)"
+    echo "ans-aix-boot: the AIX kernel configures the fast/wide adapters and moves on, LCD 890 then 868 (rung S10)"
 }
 
 if have_media($aix_cd) {

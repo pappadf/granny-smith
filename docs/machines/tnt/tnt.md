@@ -600,32 +600,43 @@ supplies, the root `compatible` the 53C825A probe set, and the boot path
 chosen off the disc. `bootapple` then reads about 2.7 MB off the disc —
 1 360 blocks, two at a time — and jumps into the AIX kernel.
 
-### The LCD is the narrator, and it reads 890
+### The LCD is the narrator, and it counts
 
-From there the machine stops printing and starts *displaying*. The
-front-panel LCD — built in Phase B because POST needs it — shows
+From here the machine stops printing and starts *displaying*. The
+front-panel LCD — built in Phase B because POST needs it — is the only
+narrator AIX uses, and sampled as a sequence rather than a snapshot it is
+a trace of the boot:
 
 ```
-         890
+890   the system is configuring a SCSI-2 adapter     (the 53C825As)
+868   the system is configuring the integrated SCSI adapter   (the 53C94)
+538   the configuration manager is passing control to a configuration method
 ```
 
-which Apple's own table in *What's New With the Network Server* translates:
+— Apple's own table, in *What's New With the Network Server*. So the
+kernel is up, `cfgmgr` is walking the device tree, and it has configured
+the fast/wide controllers: `cfgpscsi`, driver `pscsidd`, exactly the pair
+the ODM extraction named before any of this booted. The driver negotiates
+synchronous transfer, takes INQUIRY (standard and vital-product-data),
+MODE SENSE and START STOP UNIT, and reads several hundred blocks off the
+Install CD.
 
-> `890  The system is configuring a SCSI-2 adapter.`
+**That is where the ladder currently stands.** What stops it is the path
+AIX takes when a selection times out — which is every id with nothing on
+it, so most of the sixteen. Its interrupt handler completes the failed
+command and, in doing so, follows a per-index pointer into a page that is
+not resident; at interrupt level AIX cannot take that fault, and it
+panics. The panel says so, in AIX's own format: `888` flashing alternately
+with `102` (unexpected system halt), the **crash code** — which is the
+PowerPC vector, `300` for a data storage interrupt — and a dump status.
 
-So the kernel is up, `cfgmgr` is walking the device tree, and it has
-reached the 53C825A's configuration method: `cfgpscsi`, driver `pscsidd` —
-exactly the pair the ODM extraction named before any of this booted. The
-driver then negotiates synchronous transfer, asks the drive for its
-standard INQUIRY data and for vital-product-data page `$C7`, takes MODE
-SENSE and START STOP UNIT, and reads several hundred more blocks off the
-Install CD. **That is where the ladder currently stands**: rungs S10 to S13
-— the AIX banner on the console, the BOS install to disk, and a cold boot
-of the installed disk — are open.
+Rungs S11 to S13 (the AIX banner, the BOS install to disk, a cold boot of
+the installed disk) are open. The dossier's findings 25 and 26 carry the
+full account of what is known and what has been ruled out.
 
 ### What getting here cost, and what it says
 
-Eight defects, and not one of them was in Network Server code — every
+Twelve defects, and not one of them was in Network Server code — every
 single one was in shared machinery that no existing guest had pushed on.
 In order:
 
@@ -637,18 +648,38 @@ In order:
 | Memory Move clobbered TEMP, the Call/Return link | `scripts53c8xx.c` |
 | Interrupt-on-the-fly latched without driving `IRQ/` | `scripts53c8xx.c` |
 | A Wait Disconnect still reported UNEXPECTED DISCONNECT | `scripts53c8xx.c` |
+| A selection time-out halted instead of taking the alternate address | `scripts53c8xx.c` |
+| A selection time-out was instantaneous instead of STIME0's 204.8 ms | `scripts53c8xx.c` |
+| A command completed inside the store that started it | `scripts53c8xx.c` |
+| A chip that was arbitrating accepted a second start | `scripts53c8xx.c` |
 | Grand Central's mode-1 latch ignored the mask | `grand_central.c` |
 | INQUIRY overstated its length and ignored EVPD | `core/peripherals/scsi.c` |
 
 Two patterns are worth carrying forward.
 
-**Every one of the engine defects was the model being more helpful than the
-part.** Jump instead of park, write TEMP, latch without asserting, report a
-disconnect the script had asked for. Each looked like the forgiving choice
-and each one broke a driver that was doing something perfectly ordinary.
+**Every one of the engine defects was the model being more helpful, or
+faster, than the part.** Jump instead of park, write TEMP, latch without
+asserting, report a disconnect the script had asked for, halt where the
+script wanted to handle it — and, four times over, do in no time at all
+something the hardware takes a fifth of a second to do. Each looked like
+the forgiving choice and each one broke a driver that was doing something
+perfectly ordinary.
+
+The timing ones deserve their own sentence, because they are the least
+obvious and did the most damage. **Zero is a wrong answer for how long
+anything takes.** A selection time-out reported the instant nobody answers
+completes the whole select-fail-report-retry cycle inside the driver's own
+doorbell write; the interrupt storm that follows never lets the clock tick,
+so the driver's timers never expire and nothing gives up. A command that
+completes inside the store that started it re-enters the driver's interrupt
+handler while it still holds its own lock, and AIX panics on the assertion
+that catches exactly that. Neither is a performance question. Both are the
+difference between a machine that is slow and a machine that has stopped.
+
 The Open Firmware driver never noticed any of them because it never waits,
-never calls, never uses interrupt-on-the-fly and never asks for a VPD page:
-one guest agreeing with a model proves much less than it feels like it does.
+never calls, never uses interrupt-on-the-fly, never asks for a VPD page,
+polls with interrupts masked and holds no locks: one guest agreeing with a
+model proves much less than it feels like it does.
 
 **The machine's own instruments are better than any amount of reasoning.**
 `see <word>` at the Open Firmware prompt settled every question the ROM
@@ -659,9 +690,17 @@ replaced an afternoon of guessing about where AIX had got to. On this
 machine, read the LCD first.
 
 AIX 4.1.5 for the Network Server has **no public source**, so the TNT
-reflex — disassemble the guest — is expensive. But `pscsidd` ships
-uncompressed on the Install CD with its symbol table intact, and its
-SCRIPTS labels (`phase_reselect`, `sync_nego`, `reqack_too_large`,
+reflex — disassemble the guest — looks expensive. It is not. `pscsidd`
+and `pscsiddpin` ship **uncompressed** on the Install CD, and although
+their XCOFF symbol tables are stripped, every function still carries its
+AIX **traceback table**: a zero word, a fixed header, and the function's
+own name, sitting after its last instruction. Fifty lines of scanner
+recover 24 and 44 named functions with their addresses, and from there the
+interrupt handler reads directly. That is how `bsc_intr`'s dispatch on
+`SIST0:SIST1` — read as one 16-bit value, masked `$048F` — was settled,
+and it is the technique to reach for on any AIX binary.
+
+Its SCRIPTS labels (`phase_reselect`, `sync_nego`, `reqack_too_large`,
 `tpf_too_small`, `patcha`…`patchg`) are a specification of what the engine
 still has to get right. Its C side has `bsc_ioctl_sleep` and
 `e_sleep_thread`: the configuration method issues an ioctl and **sleeps**,
