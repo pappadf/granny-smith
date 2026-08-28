@@ -267,6 +267,8 @@ void sym53c8xx_chip_reset(sym53c8xx_t *s);
 // The driver drove RST/: the bus goes back to its power-on state and the
 // chip reports SIST0[RST].
 void sym53c8xx_bus_reset(sym53c8xx_t *s);
+// ISTAT's ABRT bit: abandon whatever the chip is doing and report it.
+void sym53c8xx_abort(sym53c8xx_t *s);
 void sym53c8xx_checkpoint_save(sym53c8xx_t *s, checkpoint_t *cp);
 void sym53c8xx_checkpoint_restore(sym53c8xx_t *s, checkpoint_t *cp);
 

@@ -998,6 +998,24 @@ void sym53c8xx_start(sym53c8xx_t *s) {
 // Lifecycle
 // ============================================================
 
+// ISTAT's ABRT bit: the driver has abandoned whatever the chip is doing.
+// Any selection still arbitrating is dropped, the engine stops wherever it
+// is, and the cause is reported so the driver's recovery has something to
+// act on.  The bus is left alone — an abort is not a reset.
+void sym53c8xx_abort(sym53c8xx_t *s) {
+    if (!s)
+        return;
+    s->select_timeout_armed = false;
+    s->start_pending = false;
+    s->waiting_reselect = false;
+    s->running = false;
+    if (s->cfg && s->cfg->scheduler) {
+        remove_event(s->cfg->scheduler, select_timeout_event, s);
+        remove_event(s->cfg->scheduler, script_start_event, s);
+    }
+    sym53c8xx_raise_dma(s, SYM825_DSTAT_ABRT);
+}
+
 // The driver drove RST/.  Everything in flight on this channel is over:
 // the connection, the message conversation, the negotiated transfer
 // agreement (a reset target comes back asynchronous and narrow), and any

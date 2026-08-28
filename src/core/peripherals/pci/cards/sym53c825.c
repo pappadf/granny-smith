@@ -224,6 +224,18 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
             sym53c8xx_chip_reset(s);
             return;
         }
+        // ABRT is the driver's escape from an operation that is not going
+        // to finish on its own — the one thing it can do to a chip that is
+        // arbitrating for a target which will never answer.  The operation
+        // is abandoned and the cause reported; without it the driver's
+        // recovery has nothing to act on, and whatever the chip was doing
+        // lands later, against a command the driver has already given up
+        // on and freed.
+        if (value & SYM825_ISTAT_ABRT) {
+            LOG(2, "ch%d: ABRT — the driver is abandoning the current operation", s->channel);
+            sym53c8xx_abort(s);
+            return;
+        }
         sym53c8xx_update_irq(s);
         // SIGP is the driver's doorbell on a script parked at Wait
         // Reselect: setting it is how the CPU tells an idle engine it has

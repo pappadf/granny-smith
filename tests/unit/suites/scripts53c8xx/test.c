@@ -606,6 +606,34 @@ TEST(test_io_wait_reselect_parks) {
     ASSERT_EQ_INT(s_irq_asserts, 0);
 }
 
+// ABRT is the driver's escape from an operation that will not finish on
+// its own — the one thing it can do to a chip arbitrating for a target
+// that is never going to answer.  Without it the driver's recovery has
+// nothing to act on and the selection lands later, against a command it
+// has already given up on.
+TEST(test_abort_drops_a_selection_in_flight) {
+    setup();
+    s_target_present = 0;
+    put_insn_word(0x1000, IO_SELECT(5, 0));
+    put_insn_word(0x1004, 0x1800);
+    put_insn_word(0x1800, TC(3, 0));
+    put_insn_word(0x1804, 0x5A5A5A5Au);
+
+    // Arm a selection that will not answer, then abandon it.  (With no
+    // scheduler the time-out is immediate, so drive the state directly.)
+    s_c->select_timeout_armed = true;
+    s_c->select_timeout_alt = 0x1800;
+    s_c->running = false;
+
+    sym53c8xx_abort(s_c);
+
+    ASSERT_TRUE(take_dstat() & SYM825_DSTAT_ABRT);
+    ASSERT_TRUE(!s_c->select_timeout_armed);
+    ASSERT_TRUE(!s_c->running);
+    // An abort is not a reset: the bus is left alone.
+    ASSERT_TRUE(!(s_c->sist0 & SYM825_SIST0_RST));
+}
+
 // The driver drove RST/.  Everything in flight is over — the connection,
 // the negotiated transfer agreement, the selection the chip was still
 // arbitrating for — and the chip reports what it saw on the bus.  AIX's
@@ -1026,6 +1054,7 @@ int main(void) {
     RUN(test_io_selection_timeout);
     RUN(test_io_select_with_atn);
     RUN(test_io_set_clear);
+    RUN(test_abort_drops_a_selection_in_flight);
     RUN(test_bus_reset_ends_everything);
     RUN(test_io_wait_reselect_parks);
     RUN(test_io_wait_reselect_sigp);
