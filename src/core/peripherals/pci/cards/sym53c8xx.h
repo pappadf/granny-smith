@@ -210,6 +210,11 @@ typedef struct sym53c8xx {
     // AT the instruction, and the driver's SIGP doorbell is what starts
     // the engine again (see exec_io).
     bool waiting_reselect;
+    // Arbitrating for a target that is not answering.  The engine is
+    // stopped, nothing is reported yet, and STIME0's programmed period has
+    // to pass before the time-out lands at `select_timeout_alt`.
+    bool select_timeout_armed;
+    uint32_t select_timeout_alt;
     bool connected; // a target is selected and the bus is not free
     uint8_t target; // the selected target's SCSI id
     uint8_t phase; // the phase the target is currently presenting

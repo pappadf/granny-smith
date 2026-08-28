@@ -56,6 +56,29 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
     return (addr < MEM_SIZE) ? s_mem[addr] : 0xFFu;
 }
 
+// The scheduler the engine posts its selection time-out to.  There is none
+// here: with a NULL config the time-out is immediate, so these exist only
+// to satisfy the linker and are never reached.
+struct scheduler;
+struct event;
+struct event *scheduler_new_cpu_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
+                                      uint64_t data, uint64_t cycles, uint64_t ns);
+struct event *scheduler_new_cpu_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
+                                      uint64_t data, uint64_t cycles, uint64_t ns) {
+    (void)scheduler, (void)cb, (void)source, (void)data, (void)cycles, (void)ns;
+    return 0;
+}
+void remove_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source);
+void remove_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source) {
+    (void)scheduler, (void)cb, (void)source;
+}
+void scheduler_new_event_type(struct scheduler *scheduler, const char *source_name, void *source,
+                              const char *event_name, void (*cb)(void *, uint64_t));
+void scheduler_new_event_type(struct scheduler *scheduler, const char *source_name, void *source,
+                              const char *event_name, void (*cb)(void *, uint64_t)) {
+    (void)scheduler, (void)source_name, (void)source, (void)event_name, (void)cb;
+}
+
 void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
     if (addr < MEM_SIZE)
         s_mem[addr] = value;

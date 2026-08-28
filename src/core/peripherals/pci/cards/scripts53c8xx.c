@@ -37,6 +37,7 @@
 #include "log.h"
 #include "memory.h"
 #include "pci.h"
+#include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
 #include "system_config.h"
@@ -511,6 +512,43 @@ static void exec_block_move(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
     }
 }
 
+// STIME0's low nibble selects the selection/reselection time-out from a
+// fixed table: 0 disables it, and 1..15 double from 100 microseconds to
+// 1.6 seconds (LSI53C825A TM v3.1, STIME0).  AIX programs $0C — 204.8 ms.
+static uint64_t select_timeout_ns(const sym53c8xx_t *s) {
+    unsigned sel = s->reg[SYM825_STIME0] & 0x0Fu;
+    if (sel == 0)
+        return 0;
+    return 100000ull << (sel - 1u);
+}
+
+// The time-out lands: the cause latches, the pin follows it, and the
+// engine picks up at the instruction's alternate address.
+static void select_timeout_event(void *source, uint64_t data) {
+    (void)data;
+    sym53c8xx_t *s = (sym53c8xx_t *)source;
+    if (!s->select_timeout_armed)
+        return;
+    s->select_timeout_armed = false;
+    LOG(3, "ch%d: select timed out", s->channel);
+    set_reg32(s, SYM825_DSP, s->select_timeout_alt);
+    s->sist1 |= SYM825_SIST1_STO;
+    sym53c8xx_update_irq(s);
+    sym53c8xx_start(s);
+}
+
+// Start the wait.  With no scheduler underneath (the unit suite drives the
+// engine directly) there is no time to pass, so the time-out is immediate.
+static void sym53c8xx_arm_select_timeout(sym53c8xx_t *s) {
+    uint64_t ns = select_timeout_ns(s);
+    struct scheduler *sched = s->cfg ? s->cfg->scheduler : NULL;
+    if (!sched || ns == 0) {
+        select_timeout_event(s, 0);
+        return;
+    }
+    scheduler_new_cpu_event(sched, select_timeout_event, s, 0, 0, ns);
+}
+
 // ============================================================
 // I/O instructions
 // ============================================================
@@ -538,25 +576,32 @@ static void exec_io(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
             disconnect(s);
         msg_session_reset(s);
         if (!s->bus || !scsi_external_select(s->bus, target)) {
-            // Nobody home.  The cause latches in SIST1 and the pin follows
-            // it, but the ENGINE KEEPS RUNNING at the instruction's
-            // alternate address: that field is the script's own handler for
-            // this, and a driver reaches it no other way.
+            // Nobody home.  The chip WAITS — STIME0's programmed period, a
+            // fifth of a second as this driver sets it — and only then
+            // reports, at the instruction's alternate address.  Both halves
+            // matter and neither is decoration.
             //
-            // AIX's `pscsidd` is the proof.  Its script records a phase code
-            // in the command's NEXUS at every step, and its interrupt
-            // handler decides retry-versus-complete by reading that code
-            // back; the code for "selection failed" is written by the
-            // instructions AT the alternate address.  The handler then
-            // restarts the script from its own saved pointer and never from
-            // DSP, so an engine that halts here — leaving the NEXUS reading
-            // "still selecting" — makes the driver retry the same absent
-            // target forever.  It walks all sixteen ids at configuration
-            // time, so that is every boot.
-            LOG(3, "ch%d: select %d timed out", s->channel, target);
-            set_reg32(s, SYM825_DSP, alt);
-            s->sist1 |= SYM825_SIST1_STO;
-            sym53c8xx_update_irq(s);
+            // The alternate address is the script's own handler for an
+            // absent target, and a driver reaches it no other way: AIX's
+            // `pscsidd` records a phase code in the command's NEXUS at every
+            // step, and the code for "selection failed" is written by the
+            // instructions AT that address.  Halt instead of going there and
+            // the NEXUS still reads "still selecting", so the driver retries
+            // the same target forever.
+            //
+            // The wait is what keeps the retry honest.  Reported instantly,
+            // the whole select-fail-report-retry cycle completes INSIDE the
+            // driver's own doorbell write — its interrupt handler sees the
+            // result of a command it has not finished issuing — and the
+            // storm of interrupts that follows never lets the clock tick,
+            // so the driver's own timers never expire and nothing ever
+            // gives up.  A quarter of a million retries per second is not a
+            // slow machine; it is a machine that has stopped.
+            LOG(3, "ch%d: select %d — arbitrating, no answer yet", s->channel, target);
+            s->select_timeout_alt = alt;
+            s->select_timeout_armed = true;
+            s->running = false;
+            sym53c8xx_arm_select_timeout(s);
             return;
         }
         s->connected = true;
@@ -905,10 +950,16 @@ void sym53c8xx_chip_reset(sym53c8xx_t *s) {
     s->sist0 = 0;
     s->sist1 = 0;
     s->running = false;
+    s->waiting_reselect = false;
     s->connected = false;
     s->target = 0;
     s->phase = SYM825_PHASE_MSG_OUT;
     s->insn_count = 0;
+    // A reset abandons an arbitration in progress; the time-out it was
+    // waiting for must not land on the reset chip.
+    s->select_timeout_armed = false;
+    if (s->cfg && s->cfg->scheduler)
+        remove_event(s->cfg->scheduler, select_timeout_event, s);
     // The chip's own SCSI ID.  7 is the initiator convention on every SCSI
     // bus this repository models, and on this board it is what leaves ids
     // 0-6 for the drive bays the backplane wires.
@@ -934,6 +985,11 @@ sym53c8xx_t *sym53c8xx_new(config_t *cfg, int channel) {
     // ROM's own `check-disabled` at the Open Firmware prompt, after the
     // node came up `status "disabled"` with the chip otherwise perfect.
     s->gpio_strap = 0x01u;
+    // The selection time-out is a scheduled event, so the checkpoint has to
+    // know its name (one per channel, since both chips post their own).
+    if (cfg && cfg->scheduler)
+        scheduler_new_event_type(cfg->scheduler, channel ? "53c825-1" : "53c825-0", s, "select-timeout",
+                                 select_timeout_event);
     sym53c8xx_chip_reset(s);
     return s;
 }
