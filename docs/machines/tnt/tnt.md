@@ -597,22 +597,73 @@ bootapple: boot device is "/bandit/53c825@11/sd@0:aix"
 Every line there is a fact about this model that Apple's bootstrap checked
 and accepted: POST's own recorded results, the CPU identity Hammerhead
 supplies, the root `compatible` the 53C825A probe set, and the boot path
-chosen off the disc.
+chosen off the disc. `bootapple` then reads about 2.7 MB off the disc —
+1 360 blocks, two at a time — and jumps into the AIX kernel.
 
-**That is ladder rung S9, and it is the current high-water mark.**
-`bootapple` then stalls before handing off to `bosboot`; rungs S10 to S13
-(the kernel, the BOS install, and a cold boot of the installed disk) are
-open. Two things about that are worth knowing before picking it up:
+### The LCD is the narrator, and it reads 890
 
-* Getting *this* far took two fixes outside the family, both latent for
-  want of anything exercising them — Cuda's RESET SYSTEM actually
-  resetting the system, and `ppc_reset` not throwing away the CPU's time
-  binding. Expect the same shape again: the proposal's own R5 says the 604
-  core meets its first real Unix here, and MkLinux already found one
-  genuine defect of that class.
-* AIX 4.1.5 for the Network Server has **no public source**, so the TNT
-  reflex — disassemble the guest — is much more expensive. What the machine
-  gives instead is three narrators, and all three work: the front-panel LCD,
-  the Open Firmware console (serial or screen), and the device tree. The
-  fourth lever is `ans-macos-2rom`: any device can be cross-examined through
-  a stack we do understand.
+From there the machine stops printing and starts *displaying*. The
+front-panel LCD — built in Phase B because POST needs it — shows
+
+```
+         890
+```
+
+which Apple's own table in *What's New With the Network Server* translates:
+
+> `890  The system is configuring a SCSI-2 adapter.`
+
+So the kernel is up, `cfgmgr` is walking the device tree, and it has
+reached the 53C825A's configuration method: `cfgpscsi`, driver `pscsidd` —
+exactly the pair the ODM extraction named before any of this booted. The
+driver then negotiates synchronous transfer, asks the drive for its
+standard INQUIRY data and for vital-product-data page `$C7`, takes MODE
+SENSE and START STOP UNIT, and reads several hundred more blocks off the
+Install CD. **That is where the ladder currently stands**: rungs S10 to S13
+— the AIX banner on the console, the BOS install to disk, and a cold boot
+of the installed disk — are open.
+
+### What getting here cost, and what it says
+
+Six defects, and only one of them was in Network Server code. In order:
+
+| Defect | Where |
+|---|---|
+| Cuda's RESET SYSTEM only reset Cuda | `av/cuda.c` |
+| `ppc_reset` threw away the CPU's time binding | `cpu/ppc/ppc.c` |
+| `Wait Reselect` jumped instead of parking | `scripts53c8xx.c` |
+| Memory Move clobbered TEMP, the Call/Return link | `scripts53c8xx.c` |
+| Interrupt-on-the-fly latched without driving `IRQ/` | `scripts53c8xx.c` |
+| A Wait Disconnect still reported UNEXPECTED DISCONNECT | `scripts53c8xx.c` |
+| Grand Central's mode-1 latch ignored the mask | `grand_central.c` |
+| INQUIRY overstated its length and ignored EVPD | `core/peripherals/scsi.c` |
+
+Two patterns are worth carrying forward.
+
+**Every one of the engine defects was the model being more helpful than the
+part.** Jump instead of park, write TEMP, latch without asserting, report a
+disconnect the script had asked for. Each looked like the forgiving choice
+and each one broke a driver that was doing something perfectly ordinary.
+The Open Firmware driver never noticed any of them because it never waits,
+never calls, never uses interrupt-on-the-fly and never asks for a VPD page:
+one guest agreeing with a model proves much less than it feels like it does.
+
+**The machine's own instruments are better than any amount of reasoning.**
+`see <word>` at the Open Firmware prompt settled every question the ROM
+could answer. Level-5 SCRIPTS logging over a whole boot costs one
+200 000-line file and shows the runaway loop outright. And three digits on
+a four-line character LCD, cross-referenced against a table Apple printed,
+replaced an afternoon of guessing about where AIX had got to. On this
+machine, read the LCD first.
+
+AIX 4.1.5 for the Network Server has **no public source**, so the TNT
+reflex — disassemble the guest — is expensive. But `pscsidd` ships
+uncompressed on the Install CD with its symbol table intact, and its
+SCRIPTS labels (`phase_reselect`, `sync_nego`, `reqack_too_large`,
+`tpf_too_small`, `patcha`…`patchg`) are a specification of what the engine
+still has to get right. Its C side has `bsc_ioctl_sleep` and
+`e_sleep_thread`: the configuration method issues an ioctl and **sleeps**,
+so a command that never completes shows up as a completely idle machine
+rather than as anything resembling a crash. The fourth lever remains
+`ans-macos-2rom`: any device can be cross-examined through a stack we do
+understand.
