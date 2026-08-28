@@ -284,10 +284,22 @@ sym53c8xx_t *sym53c8xx_from_device(struct pci_device *dev);
 // SCRIPT — Open Firmware's probe and AIX's driver both run a few dozen
 // instructions per connection — and hitting it raises the chip's own
 // watchdog cause rather than spinning.
-// How long the chip takes to get going once a driver asks.  Long enough
-// that the driver has left the critical section it asked from, short
-// enough that a polled driver just spins once more.
-#define SYM825_START_LATENCY_NS 20000ull
+// How long a SCSI transaction takes, from the driver asking to the chip
+// interrupting.  Arbitration, selection, the message and command phases, a
+// couple of kilobytes of data at ten megabytes a second, status and
+// disconnect: a quarter of a millisecond is what that costs on a real
+// fast/wide bus, and it is also comfortably longer than any driver spends
+// inside the critical section it started the command from.
+//
+// Zero is the wrong answer and not by a little.  A completion that lands
+// inside the store that launched it re-enters the driver's own interrupt
+// handler, and AIX's kernel panics on the lock that catches exactly that.
+// A completion that lands twenty microseconds later re-enters it a little
+// further along, which panics just the same.  This model does not carry
+// disconnect/reselect, so one constant stands in for the target's whole
+// share of the transaction; it is a floor on how fast I/O can appear to
+// complete, and that floor is the point.
+#define SYM825_START_LATENCY_NS 250000ull
 
 #define SYM825_INSN_BUDGET 200000
 

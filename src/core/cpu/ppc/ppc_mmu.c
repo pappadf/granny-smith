@@ -467,7 +467,8 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
 static void raise_dsi(ppc_t *p, uint32_t ea, uint32_t dsisr) {
     p->dar = ea;
     p->dsisr = dsisr;
-    LOG(4, "DSI: ea $%08X dsisr $%08X pc $%08X r24 $%08X", ea, dsisr, p->instruction_pc, p->gpr[24]);
+    LOG(4, "DSI: ea $%08X dsisr $%08X pc $%08X r14 $%08X r25 $%08X r28 $%08X r31 $%08X sr0 $%08X", ea, dsisr,
+        p->instruction_pc, p->gpr[14], p->gpr[25], p->gpr[28], p->gpr[31], p->sr[0]);
     ppc_exception(p, PPC_VEC_DSI, 0, p->instruction_pc);
 }
 

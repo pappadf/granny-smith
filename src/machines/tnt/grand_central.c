@@ -178,6 +178,9 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level) {
         if (was && (gc->int_mask & bit))
             gc->int_latch |= bit;
     }
+    if (was != level)
+        LOG(3, "source %d %s (events=$%08X levels=$%08X mask=$%08X latch=$%08X)", n, level ? "asserted" : "cleared",
+            gc->int_events, gc->int_levels, gc->int_mask, gc->int_latch);
     tnt_gc_recompute(cfg);
 }
 

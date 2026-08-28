@@ -971,6 +971,17 @@ void sym53c8xx_start(sym53c8xx_t *s) {
     // Clear the START bit: it is a strobe, not a mode.
     s->reg[SYM825_DCNTL] &= (uint8_t)~SYM825_DCNTL_STD;
     struct scheduler *sched = s->cfg ? s->cfg->scheduler : NULL;
+    // A driver that starts the engine has abandoned whatever the chip was
+    // arbitrating for.  The time-out owed to that selection must not land
+    // on the command it is starting now: it would report STO against a
+    // NEXUS for an entirely different target, and the driver — reasonably
+    // — completes that command with an error and follows a pointer set up
+    // for a device it never talked to.
+    if (s->select_timeout_armed) {
+        s->select_timeout_armed = false;
+        if (sched)
+            remove_event(sched, select_timeout_event, s);
+    }
     if (!sched) {
         sym53c8xx_run(s); // no time to pass (the unit suite drives it directly)
         return;
