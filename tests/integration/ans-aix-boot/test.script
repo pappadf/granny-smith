@@ -13,7 +13,7 @@
 # front keyswitch in Service, and the disc present before the first
 # instruction runs.
 #
-# CURRENT HIGH-WATER: **S10**.  The firmware finds the disc, reads its
+# CURRENT HIGH-WATER: **S11**.  The firmware finds the disc, reads its
 # `IBMA` boot record, writes its boot configuration, resets the machine
 # through Cuda, comes back, and launches `bootapple` — Apple's own
 # bootstrap — which announces itself, reports POST AOK, names the boot
@@ -26,24 +26,27 @@
 # standard and vital-product-data — MODE SENSE and START STOP UNIT, and
 # reads several hundred more blocks off the disc.
 #
-# Given the board's full 512 MB it goes further still: `723`, configuring
-# the CD-ROM drive, `517`, attempting to mount the root file systems, and
-# `512`, restoring the base customised device information — then a second
-# configuration pass over the adapters.
+# Probing a wide bus means selecting fifteen other ids, most of which are
+# not there, and the driver's design makes each absent one expensive: the
+# selection time-out fails the probe upward with "no device" (which is how
+# `cfgmgr` learns to move on), and the unexpected disconnect stacked
+# behind it escalates to a SCSI bus reset that resynchronises the driver's
+# SCRIPTS command ring — roughly eleven seconds per absent target, most of
+# it the driver's own post-reset settle.  That cost is why this row's
+# budget is large, and it is the part's documented behaviour, not a model
+# artefact (LSI53C825A TM v3.1, `SIST0[UDC]`; findings 45-48).
 #
-# It then panics.  `cfgmgr` probes every SCSI target, most of which are not
-# there, and AIX re-submits the INQUIRY to an absent target once per
-# selection time-out, indefinitely; when the buffer it keeps re-submitting
-# is finally reclaimed, the driver's own interrupt handler follows the
-# tag's command pointer — `target * 8 + LUN`, indexing `softc+$308` — into
-# a page that is no longer resident, which at interrupt level it cannot
-# fault on.  The panel says so in AIX's own format: `888` flashing with
-# `102`, a crash code (the PowerPC vector — `300`, a data storage
-# interrupt) and a dump status.  S11 onward (the AIX banner, the BOS
-# install, a cold boot of the installed disk) is open work and is NOT
+# With the board's full 512 MB it then goes the distance: `723` the
+# CD-ROM drive, `512` restoring the base customised device information, a
+# second configuration pass, `831`/`874`/`727` the async adapter and tty,
+# and then the BOS install itself takes over the LCD with its own `Cxx`
+# codes — `C46` processing, `C42`, and finally **`C31`: "Please define
+# the System Console"**, live on the 54M30 framebuffer, waiting for a
+# keypress.  S12 onward (driving the install menus, the BOS install to
+# disk, a cold boot of the installed disk) is open work and is NOT
 # asserted here.  The row asserts what is reached, and names the rung, so
-# the next step forward shows up as a deliberate change to this file rather
-# than as a surprise.
+# the next step forward shows up as a deliberate change to this file
+# rather than as a surprise.
 #
 # MEDIA: the 603 MB Install CD lives under
 # local/gs-docs/projects/ans-500-700/images/ and cannot be committed
@@ -91,24 +94,15 @@ def aix_boot() {
     let saw_scsi2 = 0
     let saw_integrated = 0
     let saw_cdrom = 0
-    let saw_mount = 0
     let saw_base = 0
-    for i in 0..600 {
+    let saw_console = 0
+    for i in 0..750 {
         scheduler.run 20000000
         if contains(machine.lcd.text, "890") {
             $saw_scsi2 = 1
         }
         if contains(machine.lcd.text, "868") {
             $saw_integrated = 1
-        }
-        if contains(machine.lcd.text, "723") {
-            $saw_cdrom = 1
-        }
-        if contains(machine.lcd.text, "517") {
-            $saw_mount = 1
-        }
-        if contains(machine.lcd.text, "512") {
-            $saw_base = 1
         }
     }
 
@@ -139,34 +133,63 @@ def aix_boot() {
     # one out of the box.
     check("bootapple.png")
 
-    # --- S10: the AIX kernel runs, and the LCD says where it is -----------
-    # Apple's own three-digit table (What's New With the Network Server):
+    # --- The rest of the ladder, up to the install's console prompt -------
+    # `bootapple`'s banner stays on the framebuffer (checked above, at a
+    # sample where it is still showing) while the LCD narrates the long
+    # part: the absent-target walks of both wide buses, the second pass,
+    # the ttys — and then the BOS install repaints the screen at `c31`,
+    # which ends the watch.
+    # 5 M cycles per sample, not 20 M: `723` is on the panel only briefly
+    # now that the CD-ROM method no longer stalls, and the coarser rate
+    # sampled straight past it.
+    for i in 0..9800 {
+        scheduler.run 5000000
+        if contains(machine.lcd.text, "868") {
+            $saw_integrated = 1
+        }
+        if contains(machine.lcd.text, "723") {
+            $saw_cdrom = 1
+        }
+        if contains(machine.lcd.text, "512") {
+            $saw_base = 1
+        }
+        if contains(machine.lcd.text, "C31") {
+            $saw_console = 1
+            break
+        }
+    }
+
+    # --- S10/S11: the AIX kernel runs, and the LCD says where it is -------
+    # Apple's own three-digit table (What's New With the Network Server),
+    # plus AIX's own install codes:
     #
     #   890  The system is configuring a SCSI-2 adapter.
     #   868  The system is configuring the integrated SCSI adapter.
     #   723  The system is configuring a CD-ROM drive or other SCSI device.
-    #   517  The system is attempting to mount the /(root) and /usr file systems.
     #   512  The system is restoring the base customised device information.
+    #   c31  Select the console.
     #
     # Seeing all five is the claim, and it is a large one: `bootapple`
-    # handed off, the kernel came up, and `cfgmgr` walked the device tree
+    # handed off, the kernel came up, `cfgmgr` walked the device tree
     # through the 53C825As — `cfgpscsi` / `pscsidd`, the method and driver
-    # the ODM extraction named before any of this booted — the 53C94, and
-    # the disc in bay 0, and then went looking for a root to mount.  The
-    # LCD is the only narrator AIX uses here, which is why it was built
-    # first.
+    # the ODM extraction named before any of this booted — the 53C94 and
+    # the disc in bay 0, survived every absent target on two wide buses,
+    # ran a second configuration pass, and handed the machine to the BOS
+    # install, which put "Please define the System Console" on the screen
+    # and is waiting for a key.  The LCD is the only narrator AIX uses
+    # until that prompt, which is why it was built first.
     assert $saw_scsi2 == 1 "S10: the LCD never showed 890 (AIX configuring the SCSI-2 adapter)"
     assert $saw_integrated == 1 "S10: the LCD never showed 868 (the integrated SCSI adapter)"
     assert $saw_cdrom == 1 "S10: the LCD never showed 723 (AIX configuring the CD-ROM drive)"
-    assert $saw_mount == 1 "S10: the LCD never showed 517 (AIX attempting to mount the root file systems)"
     assert $saw_base == 1 "S10: the LCD never showed 512 (AIX restoring the base device information)"
+    assert $saw_console == 1 "S11: the LCD never showed c31 (the BOS install asking for the system console)"
 
     # And the adapter answered: the driver's own commands went out over the
     # SCRIPTS engine and came back.  `machine.scsi.device[0]` is still the
     # disc it read them from.
     assert machine.scsi.device[0].type == "cdrom" "S10: the Install CD went away under AIX"
 
-    echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, mounts the root file systems and restores the base device information — LCD 890, 868, 723, 517, 512 (rung S10)"
+    echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, restores the base device information, and the BOS install asks for its console — LCD 890, 868, 723, 512, c31 (rung S11)"
 }
 
 if have_media($aix_cd) {

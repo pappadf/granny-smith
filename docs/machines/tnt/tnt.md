@@ -615,8 +615,11 @@ a trace of the boot:
 868   the integrated SCSI adapter         (the 53C94)
 538   passing control to a configuration method
 723   a CD-ROM drive or other SCSI device
-517   attempting to mount the /(root) and /usr file systems
 512   restoring the base customised device information
+831   an async (serial) adapter
+874   a tty
+c46   the BOS install: normal processing
+c31   the BOS install: select the system console
 ```
 
 — Apple's own table, in *What's New With the Network Server*. So the
@@ -635,37 +638,36 @@ memory figure is part of the fixture rather than a detail of it — 64 MB is
 a comfortable Macintosh number and it hid seven codes' worth of working
 machine.
 
-— and then a second configuration pass over the adapters.
+**Absent targets are the expensive case, and that is the part's design.**
+Probing a wide bus means selecting fifteen other ids, most of which are
+not there. Each one costs a selection time-out — two causes, in the
+part's own order: the STO first, which the driver's handler fails upward
+with "no device" so `cfgmgr` moves on, and the unexpected disconnect
+stacked behind it, whose handler escalates through `bsc_cleanup_reset` to
+a SCSI bus reset and `bsc_scsi_reset_received` — the one routine that
+resynchronises the driver's SCRIPTS command ring, running exactly as
+designed. With the driver's own post-reset settle that is roughly eleven
+seconds per absent target, which is why the `890` phase dominates the
+boot's wall clock. (For two sessions this looked like an unsolvable ring
+stall ending in an `888`/`102`/`300` panic; the model was merging the two
+causes into one 16-bit SIST read, through a mechanism no real bus access
+has, and every measured ordering was an artefact of that merge — the
+dossier's findings 45 to 48 carry the full account.)
 
-**That is where the ladder currently stands.** What stops it is the first
-SCSI id with nothing on it, and a wide bus always has some. The driver and
-its SCRIPTS program share a command ring with two indices: the driver
-advances its write index on every post, and the script advances its read
-index only after a select has *succeeded*. A selection time-out halts the
-chip at the SELECT, so the entry is never consumed and the read index never
-moves; the driver's time-out handler fails the command and restarts the
-chip at the top of the script, which reads the same entry and selects the
-same absent target again. Every command posted after that one is
-unreachable, and when the buffer AIX keeps re-submitting is finally
-reclaimed the handler follows the tag's command pointer — the tag is
-`target * 8 + LUN`, indexing a table at `softc+$308` — into a page that is
-no longer resident. At interrupt level AIX cannot take that fault, and it
-panics. The panel says so, in AIX's own format: `888` flashing alternately
-with `102` (unexpected system halt), the **crash code** — which is the
-PowerPC vector, `300` for a data storage interrupt — and a dump status.
+After the second configuration pass the async adapter and tty come up
+(`831`, `874`, `727`), and then the BOS install takes the LCD over with
+its own codes — `c46`, `c42`, and `c31` as it puts **"Please define the
+System Console"** on the 54M30 framebuffer and waits for a key. **That is
+where the ladder currently stands: S11.**
 
-What resynchronises that ring on real hardware is the open question. Only
-three things write the script's index — the script itself on success, a SCSI
-bus reset, and the unexpected-disconnect handler — and the time-out path
-reaches none of them.
-
-Rungs S11 to S13 (the AIX banner, the BOS install to disk, a cold boot of
-the installed disk) are open. The bring-up dossier's findings 32 to 38 carry
-the full account of what is known and what has been ruled out.
+Rungs S12 and S13 (driving the install menus, the BOS install to disk, a
+cold boot of the installed disk) are open. The bring-up dossier's findings
+32 to 48 carry the full account of what is known and what has been ruled
+out.
 
 ### What getting here cost, and what it says
 
-Fourteen defects, and not one of them was in Network Server code — every
+Seventeen defects, and not one of them was in Network Server code — every
 single one was in shared machinery that no existing guest had pushed on.
 In order:
 
@@ -685,6 +687,9 @@ In order:
 | `ISTAT`'s ABRT bit did not abandon the operation in flight | `scripts53c8xx.c` |
 | Grand Central's mode-1 latch ignored the mask | `grand_central.c` |
 | INQUIRY overstated its length and ignored EVPD | `core/peripherals/scsi.c` |
+| A stacked SIST cause surfaced between the byte lanes of one 16-bit read | `sym53c825.c` |
+| The time-out's two causes came disconnect-first; the driver needs STO first, UDC stacked | `scripts53c8xx.c` |
+| Reading `CTEST2` did not return or clear `ISTAT`'s SIGP doorbell | `sym53c825.c`, `scripts53c8xx.c` |
 
 Two patterns are worth carrying forward.
 
