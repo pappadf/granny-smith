@@ -386,6 +386,13 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
 static void run_cmd(scsi_t *scsi) {
     scsi->cmd.opcode = scsi->buf.data[0];
     int target = scsi->bus.target & 7;
+    // The command block as it arrived.  Most opcodes below say nothing at
+    // all unless something goes wrong, which is exactly backwards when the
+    // question is "what did the guest ask for?" — the answer a guest's
+    // driver hung on is usually the command before the one that failed.
+    LOG(4, "CDB target=%d: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X", target, scsi->buf.data[0],
+        scsi->buf.data[1], scsi->buf.data[2], scsi->buf.data[3], scsi->buf.data[4], scsi->buf.data[5],
+        scsi->buf.data[6], scsi->buf.data[7], scsi->buf.data[8], scsi->buf.data[9]);
 
     // Check for pending UNIT ATTENTION on first non-exempt command
     // INQUIRY and REQUEST SENSE are exempt per SCSI spec
@@ -587,6 +594,14 @@ static void run_cmd(scsi_t *scsi) {
         scsi->cmd.tl = scsi->buf.data[4];
         if (scsi->cmd.tl == 0)
             scsi->cmd.tl = 36; // default allocation length
+        // The allocation length is a CEILING, not a request: "the target
+        // shall terminate the DATA IN phase when [it] has transferred all
+        // available data" (SCSI-2 §7.5.3).  The standard response this
+        // model builds is 36 bytes, so a driver that offers more gets 36
+        // and a residual — which is what a real drive gives it, and what
+        // the additional-length byte below has to agree with.
+        if (scsi->cmd.tl > 36)
+            scsi->cmd.tl = 36;
         scsi->cmd.lun = scsi->buf.data[1] >> 5;
         phase_data_in(scsi, scsi->cmd.tl);
 
@@ -617,7 +632,7 @@ static void run_cmd(scsi_t *scsi) {
             scsi->buf.data[1] = 0x80; // removable media bit (RMB)
             scsi->buf.data[2] = 0x01; // SCSI-1 (ANSI version)
             scsi->buf.data[3] = 0x01; // response data format: CCS
-            scsi->buf.data[4] = 0x31; // additional length: 49 bytes
+            scsi->buf.data[4] = 0x1F; // additional length: 31 -> 36 total
             // Bytes 5-7: zero
             if (scsi->cmd.tl >= 36) {
                 memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
@@ -630,7 +645,7 @@ static void run_cmd(scsi_t *scsi) {
             scsi->buf.data[1] = 0x00; // non-removable media
             scsi->buf.data[2] = 0x01; // SCSI-1 (ANSI version)
             scsi->buf.data[3] = 0x01; // response data format: CCS
-            scsi->buf.data[4] = 0x31; // additional length: 49 bytes
+            scsi->buf.data[4] = 0x1F; // additional length: 31 -> 36 total
             if (scsi->cmd.tl >= 36) {
                 memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
                 memcpy(scsi->buf.data + 16, scsi->devices[target].product_id, 16);
