@@ -202,6 +202,24 @@ SCSI host adapter`. The board pulls `GPIO0` high, so `gpio_strap` does too.
 * **The DMA FIFO.** `DFE` reads as permanently empty. Nothing observes the
   FIFO except error recovery, which this model never enters.
 
+## The two escapes a driver in trouble reaches for
+
+Both are single bits, both were defined and never acted on, and a driver
+that has lost track of its bus has nothing else:
+
+* **`SCNTL1`'s `RST` bit drives the SCSI reset line.** The driver pulses
+  it, and every device on the bus goes back to its power-on state. The
+  chip sees its own `RST/` like any other initiator would, so the
+  assertion reports `SIST0[RST]` — AIX's driver has a handler named for
+  exactly that, `bsc_scsi_reset_received`, and its watchdog escalates
+  through `bsc_command_reset_scsi_bus` to reach it. A reset also forgets
+  the negotiated transfer agreement: a reset target comes back
+  asynchronous and narrow.
+* **`ISTAT`'s `ABRT` bit abandons the operation in flight** and reports
+  `DSTAT[ABRT]`. It is the only thing a driver can do to a chip that is
+  arbitrating for a target which will never answer. The bus is left
+  alone — an abort is not a reset.
+
 ## Time is part of the model
 
 Three things this engine does take time on the real part, and modelling

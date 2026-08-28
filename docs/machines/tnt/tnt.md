@@ -650,7 +650,7 @@ full account of what is known and what has been ruled out.
 
 ### What getting here cost, and what it says
 
-Twelve defects, and not one of them was in Network Server code — every
+Fourteen defects, and not one of them was in Network Server code — every
 single one was in shared machinery that no existing guest had pushed on.
 In order:
 
@@ -666,6 +666,8 @@ In order:
 | A selection time-out was instantaneous instead of STIME0's 204.8 ms | `scripts53c8xx.c` |
 | A command completed inside the store that started it | `scripts53c8xx.c` |
 | A chip that was arbitrating accepted a second start | `scripts53c8xx.c` |
+| `SCNTL1`'s RST bit did not drive the SCSI reset line | `scripts53c8xx.c` |
+| `ISTAT`'s ABRT bit did not abandon the operation in flight | `scripts53c8xx.c` |
 | Grand Central's mode-1 latch ignored the mask | `grand_central.c` |
 | INQUIRY overstated its length and ignored EVPD | `core/peripherals/scsi.c` |
 
