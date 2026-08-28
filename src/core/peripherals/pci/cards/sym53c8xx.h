@@ -210,6 +210,11 @@ typedef struct sym53c8xx {
     // before, at the same time, or stacked after the STO interrupt, since
     // this is not considered an expected disconnect)."
     uint8_t sist0_stacked, sist1_stacked;
+    // Non-zero while a wider host access is decomposing into byte lanes.
+    // The lanes of one transaction are captured together on the real part,
+    // so a held cause may move into SIST0/SIST1 only after the access ends
+    // — never between the two bytes of a 16-bit read.
+    uint8_t reg_access_depth;
     bool irq; // the IRQ/ pin as this model currently drives it
 
     uint8_t script_ram[SYM825_SCRIPTS_RAM];

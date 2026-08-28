@@ -511,18 +511,10 @@ TEST(test_block_move_table_indirect) {
 // 2. I/O instructions
 // ============================================================================
 
-// NEGATIVE: nobody answers.  A selection time-out is a SIST1 cause AND it
-// sends the script to the instruction's alternate address — which is the
-// entire reason that field exists.
-// A selection time-out latches its cause and drives the pin, and the
-// engine KEEPS RUNNING at the instruction's alternate address.  That field
-// is the script's own handler for a target that is not there, and a driver
-// reaches it no other way: AIX's `pscsidd` records a phase code in the
-// command's NEXUS at every step and decides retry-versus-complete by
-// reading it back, and the code for "selection failed" is written by the
-// instructions at the alternate address.  Halt here and the NEXUS still
-// reads "still selecting", so the driver retries the same absent target
-// forever — and it walks all sixteen ids at configuration time.
+// NEGATIVE: nobody answers.  A selection time-out latches SIST1's STO and
+// HALTS the engine where it stands; the alternate address belongs to a
+// reselection that beat the arbitration, never to a target that is not
+// there (Symbios Programming Guide v2.1, Select).
 TEST(test_io_selection_timeout) {
     setup();
     s_target_present = 0;
@@ -539,18 +531,20 @@ TEST(test_io_selection_timeout) {
     // alternate address belongs to a reselection that beat the arbitration,
     // not to a target that is not there, and a driver told the wrong one
     // recovers a command it never issued.
-    ASSERT_EQ_INT(s_c->sist1, 0);
+    ASSERT_EQ_INT(s_c->sist0, 0);
     ASSERT_TRUE(!s_c->connected);
     ASSERT_TRUE(!s_c->running);
     ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0);
     ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1008);
     ASSERT_EQ_INT(take_dstat(), 0);
-    // Two causes, not one: the arbitration ends with the bus going free,
-    // which the part reports as an unexpected disconnect -- held behind the
-    // time-out rather than latched alongside it, so a driver reading the
-    // pair as one 16-bit word sees the time-out on its own first.
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_UDC);
-    ASSERT_TRUE(s_c->sist1_stacked & SYM825_SIST1_STO);
+    // Two causes, not one: the time-out is the event and latches first;
+    // the disconnect that ends the arbitration is its consequence and is
+    // STACKED behind it ("it may occur before, at the same time, or
+    // stacked after the STO interrupt" — LSI53C825A TM v3.1, SIST0 UDC).
+    // A driver reading the pair as one 16-bit word sees the time-out on
+    // its own first; the disconnect surfaces as a fresh interrupt after.
+    ASSERT_TRUE(s_c->sist1 & SYM825_SIST1_STO);
+    ASSERT_TRUE(s_c->sist0_stacked & SYM825_SIST0_UDC);
 }
 
 // Select WITH ATN: the target enters MESSAGE OUT for the IDENTIFY, which

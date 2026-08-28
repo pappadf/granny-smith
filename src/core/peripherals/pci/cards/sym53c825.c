@@ -145,6 +145,12 @@ static const pci_config_decl_t sym825_decl = {
 // interrupts that came in afterward will move into the SIST0, SIST1, and
 // DSTAT" (LSI53C825A TM v3.1, Stacked Interrupts).
 static void sym825_unstack_sist(sym53c8xx_t *s) {
+    // Both lanes of a wider access are captured together, so the held cause
+    // must NOT move in between the byte reads of one 16-bit access — the
+    // driver reads SIST0/SIST1 as one 16-bit word and would see the first
+    // cause and the stacked one merged, which no real transaction can return.
+    if (s->reg_access_depth)
+        return;
     if (s->sist0 || s->sist1 || !(s->sist0_stacked | s->sist1_stacked))
         return;
     s->sist0 = s->sist0_stacked;
@@ -188,6 +194,17 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
         // the bits GPCNTL declares as outputs read back the latch.
         return (uint8_t)((s->reg[SYM825_GPREG] & s->reg[SYM825_GPCNTL]) |
                          (s->gpio_strap & (uint8_t)~s->reg[SYM825_GPCNTL]));
+    case SYM825_CTEST2:
+        // Bit 6 mirrors ISTAT's SIGP, and reading the register CLEARS it —
+        // "Reading this register clears the SIGP bit in the ISTAT register"
+        // (LSI53C825A TM v3.1, CTEST2).  The dispatcher's own
+        // `MOVE CTEST2 | 0x00 TO CTEST2` consumes the doorbell this way.
+        {
+            uint8_t v =
+                (uint8_t)((s->reg[SYM825_CTEST2] & ~0x40u) | ((s->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP) ? 0x40u : 0u));
+            s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
+            return v;
+        }
     case SYM825_CTEST3:
         // V[3:0], the chip revision level, "should have the same value as
         // the lower nibble of the PCI Revision ID register" — 4 here.
@@ -324,7 +341,17 @@ static void regs_write8(void *ctx, uint32_t offset, uint8_t value) {
 // file then reassembles them in CHIP order (low byte at the low offset),
 // which is the byte swap the ROM's `rl!-flip` performs from its side.
 static uint16_t regs_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)(((uint16_t)regs_read8(ctx, offset) << 8) | regs_read8(ctx, offset + 1));
+    sym53c8xx_t *s = (sym53c8xx_t *)ctx;
+    s->reg_access_depth++;
+    uint16_t v = (uint16_t)(((uint16_t)regs_read8(ctx, offset) << 8) | regs_read8(ctx, offset + 1));
+    s->reg_access_depth--;
+    // The transaction is over: a cause held behind a just-cleared first
+    // level may surface now, re-asserting the pin as a NEW interrupt.
+    if (!s->reg_access_depth) {
+        sym825_unstack_sist(s);
+        sym53c8xx_update_irq(s);
+    }
+    return v;
 }
 
 static void regs_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -333,7 +360,15 @@ static void regs_write16(void *ctx, uint32_t offset, uint16_t value) {
 }
 
 static uint32_t regs_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)regs_read16(ctx, offset) << 16) | regs_read16(ctx, offset + 2);
+    sym53c8xx_t *s = (sym53c8xx_t *)ctx;
+    s->reg_access_depth++;
+    uint32_t v = ((uint32_t)regs_read16(ctx, offset) << 16) | regs_read16(ctx, offset + 2);
+    s->reg_access_depth--;
+    if (!s->reg_access_depth) {
+        sym825_unstack_sist(s);
+        sym53c8xx_update_irq(s);
+    }
+    return v;
 }
 
 static void regs_write32(void *ctx, uint32_t offset, uint32_t value) {

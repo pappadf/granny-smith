@@ -537,11 +537,16 @@ static void select_timeout_event(void *source, uint64_t data) {
     publish_phase(s);
     s->running = false;
     // TWO causes, and the ORDER is what a driver's recovery hangs off.  The
-    // arbitration ends with the bus going free, which the part reports
-    // FIRST as an unexpected disconnect; the time-out itself is stacked
-    // behind it and surfaces once the first level has been read clear.
-    s->sist0 |= SYM825_SIST0_UDC;
-    s->sist1_stacked |= SYM825_SIST1_STO;
+    // time-out is the event and lands first; the disconnect that ends the
+    // arbitration is its consequence and is STACKED behind it, surfacing as
+    // a fresh interrupt once the first level has been read clear — "it may
+    // occur before, at the same time, or stacked after the STO interrupt"
+    // (LSI53C825A TM v3.1, SIST0 UDC bit).  AIX's driver only works with
+    // this order: the STO handler is the one that fails the probe with "no
+    // device", and the trailing UDC handler is the one that resets the bus
+    // and resynchronises the SCRIPTS command ring.
+    s->sist1 |= SYM825_SIST1_STO;
+    s->sist0_stacked |= SYM825_SIST0_UDC;
     sym53c8xx_update_irq(s);
 }
 
@@ -698,6 +703,14 @@ static void exec_read_write(sym53c8xx_t *s, uint32_t insn) {
     // combined without a temporary).
     uint8_t acc = (opc == 5) ? s->reg[SYM825_SFBR] : s->reg[ra];
     uint8_t data = use_sfbr ? s->reg[SYM825_SFBR] : imm;
+    // A SCRIPTS read of CTEST2 has the same side effect as a host read:
+    // bit 6 mirrors ISTAT's SIGP and the read CLEARS it (LSI53C825A TM
+    // v3.1, CTEST2) — the dispatcher's `MOVE CTEST2 | 0x00 TO CTEST2`
+    // consumes the driver's doorbell exactly this way.
+    if (opc != 5 && ra == SYM825_CTEST2) {
+        acc = (uint8_t)((acc & ~0x40u) | ((s->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP) ? 0x40u : 0u));
+        s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
+    }
     bool carry_in = (s->reg[SYM825_SCNTL1] & 0x04u) != 0;
     uint8_t result = acc;
     bool carry_out = carry_in;

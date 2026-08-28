@@ -185,6 +185,13 @@ SCSI host adapter`. The board pulls `GPIO0` high, so `gpio_strap` does too.
   the engine runs that ring at host speed until the watchdog stops it and
   the driver waiting on the interrupt never gets one. That is exactly how
   the Network Server's own AIX bootstrap hung.
+
+  The doorbell has a second consumer: reading `CTEST2` — from the host or
+  as a SCRIPTS operand — returns `SIGP` in bit 6 and CLEARS it ("Reading
+  this register clears the SIGP bit in the ISTAT register", LSI53C825A
+  Technical Manual v3.1). AIX's dispatcher opens with
+  `MOVE CTEST2 | 0x00 TO CTEST2` for precisely this — IBM's comment reads
+  "clear sigp if it was set, we are going to interrupt the host anyway".
 * **Target mode.** The part supports it; nothing this repository emulates
   uses it. A target-mode I/O instruction reports an illegal instruction
   rather than pretending.
@@ -255,12 +262,18 @@ any of them as instantaneous breaks a driver that is doing nothing wrong.
 
   All three orderings are permitted, and they are not interchangeable —
   they lead a driver to different handlers. This model reports the
-  disconnect FIRST and stacks the time-out behind it, which is what carries
-  AIX's configuration manager furthest. Reporting them the other way round
-  — time-out first, disconnect stacked behind — deadlocks it: the
-  configuration manager stops with the SCRIPTS processor halted, the driver
-  never re-entered, and the machine taking nothing but decrementer
-  interrupts.
+  TIME-OUT first and stacks the disconnect behind it, and AIX's driver
+  only works with that order, because it splits recovery across the two
+  handlers: the time-out handler is the one that fails the probe upward
+  with "no device" (which is how the configuration manager learns a
+  target is absent and moves on), and the trailing disconnect handler —
+  entered with the command's NEXUS phase still reading "selecting" — is
+  the one that escalates through `bsc_cleanup_reset` to a SCSI bus reset
+  and `bsc_scsi_reset_received`, the only routine that resynchronises the
+  driver's SCRIPTS command ring. Deliver the disconnect first and the
+  chip reset it triggers wipes the stacked time-out: the probe is never
+  failed, the driver re-queues it as an innocent reset victim, and the
+  configuration manager retries the same absent target forever.
 
   Stacking is the mechanism, and it is the part's, not an invention: "If
   the SIP or DIP bits in the ISTAT register are set (first level), then
@@ -270,6 +283,15 @@ any of them as instantaneous breaks a driver that is doing nothing wrong.
   are cleared, all the interrupts that came in afterward will move into the
   SIST0, SIST1, and DSTAT." Latching both at once instead hands a driver
   that reads the pair as one 16-bit word two causes in a single word.
+
+  **And the unstack must not happen inside one wider read.** The register
+  file decomposes a 16-bit access into byte lanes, and an unstack run at
+  the end of the `SIST0` lane hands the held cause to the `SIST1` lane of
+  the SAME transaction — both causes in one word again, through a
+  mechanism no real transaction has, since the lanes of one access are
+  captured together on the part. The held cause may move in only after
+  the whole access completes (`reg_access_depth` in the register file),
+  where it re-asserts the pin as a fresh interrupt.
 * **A command does not complete inside the store that started it.**
   Writing DSP's high byte, strobing `DCNTL`'s START bit or ringing `SIGP`
   asks the chip to arbitrate, select, move a command out, move data, take
