@@ -906,13 +906,14 @@ static bool step(sym53c8xx_t *s) {
     return s->running;
 }
 
-void sym53c8xx_start(sym53c8xx_t *s) {
+// Run the engine until the script stops it.  Called from the scheduler a
+// short time after the driver asks for it — never inside the store that
+// asked (see sym53c8xx_start).
+static void sym53c8xx_run(sym53c8xx_t *s) {
     if (!s)
         return;
     s->running = true;
     s->waiting_reselect = false;
-    // Clear the START bit: it is a strobe, not a mode.
-    s->reg[SYM825_DCNTL] &= (uint8_t)~SYM825_DCNTL_STD;
     uint32_t budget = SYM825_INSN_BUDGET;
     while (s->running && budget--) {
         if (!step(s))
@@ -934,6 +935,50 @@ void sym53c8xx_start(sym53c8xx_t *s) {
         s->running = false;
         sym53c8xx_raise_dma(s, SYM825_DSTAT_WTD);
     }
+}
+
+// The engine start event: the latency between the driver asking and the
+// chip having done it.
+static void script_start_event(void *source, uint64_t data) {
+    (void)data;
+    sym53c8xx_t *s = (sym53c8xx_t *)source;
+    s->start_pending = false;
+    sym53c8xx_run(s);
+}
+
+// A driver asks the engine to run by writing DSP's high byte, by strobing
+// DCNTL's START bit, or by ringing SIGP at a parked script.  The chip then
+// arbitrates, selects, moves the command out, moves the data, takes status
+// and interrupts — all of which takes time, and NONE of which happens
+// inside the store that asked for it.
+//
+// Modelling that as instantaneous is not a harmless simplification, and
+// AIX is where it stops being one.  Its driver queues a command under a
+// lock and writes DSP; run the whole transaction inside that store and the
+// completion interrupt arrives while the lock is still held, so the
+// interrupt handler tries to take a lock its own caller owns.  The kernel
+// checks for exactly that — `twi 4,r4,0` against the held bit — and the
+// machine panics with LED 888 / 102 / 700, a program interrupt.  Open
+// Firmware never noticed because it polls with interrupts masked and holds
+// no locks.
+//
+// So the start is a scheduler event a few microseconds out: long enough
+// that the caller has left its critical section, short enough to be
+// invisible to a polled driver, which simply spins one more time.
+void sym53c8xx_start(sym53c8xx_t *s) {
+    if (!s)
+        return;
+    // Clear the START bit: it is a strobe, not a mode.
+    s->reg[SYM825_DCNTL] &= (uint8_t)~SYM825_DCNTL_STD;
+    struct scheduler *sched = s->cfg ? s->cfg->scheduler : NULL;
+    if (!sched) {
+        sym53c8xx_run(s); // no time to pass (the unit suite drives it directly)
+        return;
+    }
+    if (s->start_pending)
+        return;
+    s->start_pending = true;
+    scheduler_new_cpu_event(sched, script_start_event, s, 0, 0, SYM825_START_LATENCY_NS);
 }
 
 // ============================================================
@@ -958,8 +1003,11 @@ void sym53c8xx_chip_reset(sym53c8xx_t *s) {
     // A reset abandons an arbitration in progress; the time-out it was
     // waiting for must not land on the reset chip.
     s->select_timeout_armed = false;
-    if (s->cfg && s->cfg->scheduler)
+    s->start_pending = false;
+    if (s->cfg && s->cfg->scheduler) {
         remove_event(s->cfg->scheduler, select_timeout_event, s);
+        remove_event(s->cfg->scheduler, script_start_event, s);
+    }
     // The chip's own SCSI ID.  7 is the initiator convention on every SCSI
     // bus this repository models, and on this board it is what leaves ids
     // 0-6 for the drive bays the backplane wires.
@@ -987,9 +1035,11 @@ sym53c8xx_t *sym53c8xx_new(config_t *cfg, int channel) {
     s->gpio_strap = 0x01u;
     // The selection time-out is a scheduled event, so the checkpoint has to
     // know its name (one per channel, since both chips post their own).
-    if (cfg && cfg->scheduler)
-        scheduler_new_event_type(cfg->scheduler, channel ? "53c825-1" : "53c825-0", s, "select-timeout",
-                                 select_timeout_event);
+    if (cfg && cfg->scheduler) {
+        const char *who = channel ? "53c825-1" : "53c825-0";
+        scheduler_new_event_type(cfg->scheduler, who, s, "select-timeout", select_timeout_event);
+        scheduler_new_event_type(cfg->scheduler, who, s, "script-start", script_start_event);
+    }
     sym53c8xx_chip_reset(s);
     return s;
 }

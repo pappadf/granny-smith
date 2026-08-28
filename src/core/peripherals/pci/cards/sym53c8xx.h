@@ -215,6 +215,7 @@ typedef struct sym53c8xx {
     // to pass before the time-out lands at `select_timeout_alt`.
     bool select_timeout_armed;
     uint32_t select_timeout_alt;
+    bool start_pending; // the engine has been asked to run and has not yet
     bool connected; // a target is selected and the bus is not free
     uint8_t target; // the selected target's SCSI id
     uint8_t phase; // the phase the target is currently presenting
@@ -283,6 +284,11 @@ sym53c8xx_t *sym53c8xx_from_device(struct pci_device *dev);
 // SCRIPT — Open Firmware's probe and AIX's driver both run a few dozen
 // instructions per connection — and hitting it raises the chip's own
 // watchdog cause rather than spinning.
+// How long the chip takes to get going once a driver asks.  Long enough
+// that the driver has left the critical section it asked from, short
+// enough that a polled driver just spins once more.
+#define SYM825_START_LATENCY_NS 20000ull
+
 #define SYM825_INSN_BUDGET 200000
 
 // Begin (or resume) execution at DSP.  Called from the register file when
