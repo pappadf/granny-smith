@@ -216,9 +216,16 @@ typedef struct tnt_gc {
     uint32_t int_events;
     uint32_t int_mask;
     uint32_t int_levels; // live source levels (mirror of the source state)
+    // The mode-1 output latch, PER SOURCE: a bit is set by that source's
+    // enabled change and cleared by the $80000000 acknowledge, and the CPU
+    // line follows `latch & mask`.  Per-source rather than a single flag
+    // because masking a source has to quiet it: AIX services the fast/wide
+    // controllers by polling and leaves their externals masked, so a single
+    // sticky flag left the line asserted for a source the guest had
+    // deliberately turned off and the machine took nothing but external
+    // interrupts from then on.
+    uint32_t int_latch;
     uint8_t int_mode1; // Clear-mode 1 selected (see above)
-    uint8_t int_latch; // mode-1 output latch: set by enabled source edges,
-                       // cleared by the $80000000 acknowledge
     uint8_t nvram_bank; // +$1D000 bank-select port (bank = offset / 32)
     uint8_t nvram[TNT_NVRAM_SIZE];
 } tnt_gc_t;

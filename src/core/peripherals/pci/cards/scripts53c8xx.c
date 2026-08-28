@@ -715,6 +715,7 @@ static void exec_transfer(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
             // its own ISTAT bit and execution continues.
             s->reg[SYM825_ISTAT] |= SYM825_ISTAT_INTF;
             sym53c8xx_update_irq(s);
+            LOG(3, "ch%d: INTFLY vector $%08X", s->channel, dsps);
             return;
         }
         LOG(3, "ch%d: INT vector $%08X", s->channel, dsps);

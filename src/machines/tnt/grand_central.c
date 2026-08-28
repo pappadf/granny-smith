@@ -123,18 +123,24 @@ void tnt_gc_recompute(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_gc_t *gc = &st->gc;
     // Clear-mode 1 (the NanoKernel's scheme, selected by the $80000000
-    // acknowledge): the CPU line is an OUTPUT LATCH — set by any CHANGE
-    // of an enabled level source (assertion or deassertion; see
-    // tnt_gc_set_source) or by an enabled event edge, cleared by the
-    // acknowledge, re-asserted only by the NEXT change.  The handler
-    // classifies from Levels & Mask; a level a guest leaves unserviced
-    // does not re-fire until its next change, and the kernel's rfi does
-    // not land straight back in the handler.
+    // acknowledge): the CPU line is an OUTPUT LATCH, held PER SOURCE — a
+    // source's bit is set by any CHANGE of it while enabled (assertion or
+    // deassertion; see tnt_gc_set_source) or by an enabled event edge,
+    // cleared by the acknowledge, re-asserted only by the NEXT change.
+    // The handler classifies from Levels & Mask; a level a guest leaves
+    // unserviced does not re-fire until its next change, and the kernel's
+    // rfi does not land straight back in the handler.
+    //
+    // The mask gates the OUTPUT and not just the latching, because a guest
+    // that masks a source has to be able to quiet it: AIX polls the
+    // fast/wide SCSI controllers and leaves their externals masked, and a
+    // latch the mask could not reach held the line up for a source the
+    // guest had deliberately turned off.
     // Mode 0 (power-on; the MkLinux scheme): combinational
     // ((events | levels) & mask), with Events cleared by explicit W1C.
     bool line;
     if (gc->int_mode1)
-        line = gc->int_latch != 0;
+        line = (gc->int_latch & gc->int_mask) != 0;
     else
         line = ((gc->int_events | gc->int_levels) & gc->int_mask) != 0;
     ppc_set_ext_irq(cfg->ppc, line);
@@ -144,7 +150,7 @@ void tnt_gc_recompute(config_t *cfg) {
 static void gc_edge(tnt_gc_t *gc, uint32_t bit) {
     gc->int_events |= bit;
     if (gc->int_mask & bit)
-        gc->int_latch = 1;
+        gc->int_latch |= bit;
 }
 
 void tnt_gc_set_source(config_t *cfg, int n, bool level) {
@@ -170,7 +176,7 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level) {
         // the 68k emulator redelivers the stale level forever and the
         // boot's base context never runs again after its first unmask.
         if (was && (gc->int_mask & bit))
-            gc->int_latch = 1;
+            gc->int_latch |= bit;
     }
     tnt_gc_recompute(cfg);
 }
@@ -185,7 +191,7 @@ void tnt_gc_pulse_event(config_t *cfg, int n) {
 // little-endian register value (the dispatcher swaps at the bus edge).
 static uint32_t int_read(config_t *cfg, uint32_t offset) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
-    LOG(4, "int read +$%02X (events=$%08X levels=$%08X mask=$%08X latch=%d)", offset, gc->int_events, gc->int_levels,
+    LOG(4, "int read +$%02X (events=$%08X levels=$%08X mask=$%08X latch=$%08X)", offset, gc->int_events, gc->int_levels,
         gc->int_mask, gc->int_latch);
     switch (offset) {
     case INT_EVENTS:
@@ -226,8 +232,7 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
         // moment the controller may assert for it).
         uint32_t newly = value & ~gc->int_mask;
         gc->int_mask = value;
-        if ((gc->int_events | gc->int_levels) & newly)
-            gc->int_latch = 1;
+        gc->int_latch |= (gc->int_events | gc->int_levels) & newly;
         LOG(3, "mask = $%08X (pc=%08X)", value, ppc_get_pc(cfg->ppc));
         break;
     }
