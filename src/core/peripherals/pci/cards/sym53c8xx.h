@@ -325,6 +325,15 @@ sym53c8xx_t *sym53c8xx_from_device(struct pci_device *dev);
 
 #define SYM825_INSN_BUDGET 200000
 
+// How long a still-running script waits before its next execution quantum.
+// The SCRIPTS processor and the host CPU are CONCURRENT on the real part; a
+// script that polls memory (AIX's completion-mailbox handshake does, with a
+// LOAD / test / jump-back loop) spins on the bus while the CPU services the
+// interrupt that will satisfy it.  This engine runs a quantum and then
+// yields for this long so that guest time — and the guest's interrupt
+// handler — can run.
+#define SYM825_YIELD_NS 20000ull
+
 // Begin (or resume) execution at DSP.  Called from the register file when
 // the driver writes DCNTL's START DMA bit or the high byte of DSP.  The
 // status registers MUST reflect the outcome by the time this returns: the

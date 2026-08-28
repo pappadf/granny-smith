@@ -305,6 +305,16 @@ any of them as instantaneous breaks a driver that is doing nothing wrong.
   selection window is ignored, because the part is not free to take it.
   `SIGP` is a level and stays set, so a script that parks on `Wait
   Reselect` afterwards still sees the doorbell.
+* **The SCRIPTS processor and the host CPU are concurrent.** AIX's script
+  POLLS its completion mailbox — `LOAD` the word, test a byte, jump back —
+  until the host's interrupt handler consumes it, which can only happen if
+  guest time passes while the script spins. Run the script synchronously
+  to completion and that loop is indistinguishable from a runaway; halt it
+  (the old behaviour) and the chip is dead with the driver's every
+  subsequent doorbell rung at a parked corpse — a permanent hang wearing
+  a watchdog's clothes. So the instruction budget YIELDS: the engine stops
+  stepping, keeps DSP, and resumes a few microseconds of guest time later.
+  Only the schedulerless unit harness still reports `DSTAT[WTD]`.
 
 None of this is about speed. It is the difference between a machine that
 is slow and a machine that has stopped.

@@ -927,6 +927,9 @@ static bool step(sym53c8xx_t *s) {
     return s->running;
 }
 
+// The engine start/resume event (defined below); the yield path schedules it.
+static void script_start_event(void *source, uint64_t data);
+
 // Run the engine until the script stops it.  Called from the scheduler a
 // short time after the driver asks for it — never inside the store that
 // asked (see sym53c8xx_start).
@@ -948,8 +951,28 @@ static void sym53c8xx_run(sym53c8xx_t *s) {
         sym53c8xx_raise_scsi(s, SYM825_SIST0_UDC, 0);
     }
     if (s->running) {
-        // A program that never stopped.  The chip's own watchdog cause is
-        // the honest report, and it halts the engine — far better than
+        struct scheduler *sched = s->cfg ? s->cfg->scheduler : NULL;
+        if (sched) {
+            // Still running after a full quantum.  Not a runaway: the
+            // SCRIPTS processor and the host CPU are concurrent on the real
+            // part, and AIX's script POLLS its completion mailbox in a
+            // LOAD / test / jump-back loop until the CPU's interrupt
+            // handler consumes it — which can only happen if guest time
+            // passes.  Yield and resume from the same DSP a little later;
+            // the start_pending guard coalesces this with any DSP write
+            // the driver makes meanwhile, and an ABRT cancels it.
+            LOG(4, "ch%d: SCRIPTS yielding after %u instructions (DSP $%08X)", s->channel, SYM825_INSN_BUDGET,
+                reg32(s, SYM825_DSP));
+            s->running = false;
+            if (!s->start_pending) {
+                s->start_pending = true;
+                scheduler_new_cpu_event(sched, script_start_event, s, 0, 0, SYM825_YIELD_NS);
+            }
+            return;
+        }
+        // No scheduler under the engine (the unit suite drives it
+        // directly), so there is no time to yield into: a program that
+        // never stops gets the chip's own watchdog cause — far better than
         // taking the emulator down with the guest.
         LOG(0, "ch%d: SCRIPTS ran %u instructions without halting; stopping (DSP $%08X)", s->channel,
             SYM825_INSN_BUDGET, reg32(s, SYM825_DSP));

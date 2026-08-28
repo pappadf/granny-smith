@@ -667,7 +667,7 @@ out.
 
 ### What getting here cost, and what it says
 
-Seventeen defects, and not one of them was in Network Server code — every
+Twenty defects, and not one of them was in Network Server code — every
 single one was in shared machinery that no existing guest had pushed on.
 In order:
 
@@ -690,6 +690,9 @@ In order:
 | A stacked SIST cause surfaced between the byte lanes of one 16-bit read | `sym53c825.c` |
 | The time-out's two causes came disconnect-first; the driver needs STO first, UDC stacked | `scripts53c8xx.c` |
 | Reading `CTEST2` did not return or clear `ISTAT`'s SIGP doorbell | `sym53c825.c`, `scripts53c8xx.c` |
+| Hard disks did not serve IBM's SCSD VPD page, so AIX sized them at 0 MB | `core/peripherals/scsi.c` |
+| RESERVE/RELEASE answered ILLEGAL REQUEST, so AIX's disk open failed | `core/peripherals/scsi.c` |
+| A script that polls memory was declared a runaway and halted | `scripts53c8xx.c` |
 
 Two patterns are worth carrying forward.
 
