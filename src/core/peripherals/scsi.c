@@ -603,6 +603,39 @@ static void run_cmd(scsi_t *scsi) {
         if (scsi->cmd.tl > 36)
             scsi->cmd.tl = 36;
         scsi->cmd.lun = scsi->buf.data[1] >> 5;
+
+        // EVPD: the command is asking for a VITAL PRODUCT DATA page, not
+        // the standard inquiry data, and answering with the standard data
+        // is not a harmless approximation — the initiator parses the reply
+        // as the page it asked for.  SCSI-2 §8.2.5.1: a target that does
+        // not support the requested page "shall return CHECK CONDITION
+        // status with the sense key set to ILLEGAL REQUEST and an
+        // additional sense code of INVALID FIELD IN CDB".  Only page $00,
+        // the list of supported pages, is answerable here, and this model's
+        // list has exactly one entry: page $00 itself.
+        //
+        // AIX's `pscsidd` asks for page $C7 during device configuration,
+        // which is where this started.
+        if (scsi->buf.data[1] & 0x01u) {
+            uint8_t page = scsi->buf.data[2];
+            if (page != 0x00u) {
+                LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
+                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+                break;
+            }
+            unsigned n = scsi->cmd.tl < 5u ? scsi->cmd.tl : 5u;
+            phase_data_in(scsi, n);
+            memset(scsi->buf.data, 0, n);
+            if (n >= 1)
+                scsi->buf.data[0] =
+                    (uint8_t)(scsi->devices[target].type == scsi_dev_cdrom ? 0x05u : 0x00u); // device type
+            if (n >= 4)
+                scsi->buf.data[3] = 0x01u; // page length: one supported page
+            if (n >= 5)
+                scsi->buf.data[4] = 0x00u; // ...which is page $00
+            break;
+        }
+
         phase_data_in(scsi, scsi->cmd.tl);
 
         memset(scsi->buf.data, 0, scsi->cmd.tl);
