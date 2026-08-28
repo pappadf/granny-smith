@@ -594,14 +594,6 @@ static void run_cmd(scsi_t *scsi) {
         scsi->cmd.tl = scsi->buf.data[4];
         if (scsi->cmd.tl == 0)
             scsi->cmd.tl = 36; // default allocation length
-        // The allocation length is a CEILING, not a request: "the target
-        // shall terminate the DATA IN phase when [it] has transferred all
-        // available data" (SCSI-2 §7.5.3).  The standard response this
-        // model builds is 36 bytes, so a driver that offers more gets 36
-        // and a residual — which is what a real drive gives it, and what
-        // the additional-length byte below has to agree with.
-        if (scsi->cmd.tl > 36)
-            scsi->cmd.tl = 36;
         scsi->cmd.lun = scsi->buf.data[1] >> 5;
 
         // EVPD: the command is asking for a VITAL PRODUCT DATA page, not
@@ -610,31 +602,86 @@ static void run_cmd(scsi_t *scsi) {
         // as the page it asked for.  SCSI-2 §8.2.5.1: a target that does
         // not support the requested page "shall return CHECK CONDITION
         // status with the sense key set to ILLEGAL REQUEST and an
-        // additional sense code of INVALID FIELD IN CDB".  Only page $00,
-        // the list of supported pages, is answerable here, and this model's
-        // list has exactly one entry: page $00 itself.
+        // additional sense code of INVALID FIELD IN CDB".
         //
-        // AIX's `pscsidd` asks for page $C7 during device configuration,
-        // which is where this started.
+        // Two pages are served: $00, the list of supported pages, and —
+        // for hard disks — IBM's vendor page $C7, the "Self-Configuring
+        // SCSI Device" contract.  AIX's configuration methods classify an
+        // otherwise-unknown drive by asking for page $C7 and checking for
+        // the keyword "SCDD" (`sccheck.c`, AIX 4.1.3); a drive that
+        // answers is configured entirely from the page — capacity, queue
+        // depth, reset delay, command timeouts — where one that does not
+        // is an "Other SCSI Disk" whose size the BOS install reads as
+        // zero and refuses to install to.
         if (scsi->buf.data[1] & 0x01u) {
             uint8_t page = scsi->buf.data[2];
-            if (page != 0x00u) {
-                LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
-                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+            bool is_disk = scsi->devices[target].type != scsi_dev_cdrom;
+            if (page == 0x00u) {
+                // Page $00: the supported-pages list — itself, plus $C7 on disks.
+                uint8_t pg0[6] = {0, 0, 0, 2, 0x00u, 0xC7u};
+                pg0[0] = (uint8_t)(is_disk ? 0x00u : 0x05u); // device type
+                if (!is_disk)
+                    pg0[3] = 1; // CD-ROMs list only page $00
+                unsigned n0 = (unsigned)(4 + pg0[3]);
+                unsigned n = scsi->cmd.tl < n0 ? scsi->cmd.tl : n0;
+                LOG(2, "INQUIRY target=%d EVPD page $00 -> %u bytes", target, n);
+                phase_data_in(scsi, n);
+                memcpy(scsi->buf.data, pg0, n);
                 break;
             }
-            unsigned n = scsi->cmd.tl < 5u ? scsi->cmd.tl : 5u;
-            phase_data_in(scsi, n);
-            memset(scsi->buf.data, 0, n);
-            if (n >= 1)
-                scsi->buf.data[0] =
-                    (uint8_t)(scsi->devices[target].type == scsi_dev_cdrom ? 0x05u : 0x00u); // device type
-            if (n >= 4)
-                scsi->buf.data[3] = 0x01u; // page length: one supported page
-            if (n >= 5)
-                scsi->buf.data[4] = 0x00u; // ...which is page $00
+            if (page == 0xC7u && is_disk) {
+                // The disk SCSD page, byte-for-byte per the chart in IBM's
+                // `cfghscsi.h` (struct disk_scsd_inqry_data): 4-byte page
+                // header + 113 bytes of self-description.
+                image_t *image = scsi->devices[target].image;
+                uint32_t cap_mb = image ? (uint32_t)(disk_size(image) / (1024u * 1024u)) : 0u;
+                uint8_t pg[117];
+                memset(pg, 0, sizeof(pg));
+                pg[1] = 0xC7u; // page code
+                pg[3] = 113u; // page length
+                pg[4] = 4u; // SCDD id length
+                memcpy(&pg[5], "SCDD", 4); // the keyword the classifier checks
+                pg[9] = 1u; // one LUN
+                pg[10] = (uint8_t)(cap_mb >> 24); // capacity in MB, big-endian
+                pg[11] = (uint8_t)(cap_mb >> 16);
+                pg[12] = (uint8_t)(cap_mb >> 8);
+                pg[13] = (uint8_t)cap_mb;
+                pg[20] = 1u; // queue depth 1: this model queues nothing
+                pg[23] = 100u; // ready 100 ms after a bus-device reset
+                pg[33] = 0x02u; // technology: supported SCSI disk
+                pg[34] = 0x01u; // interface: single-ended
+                pg[36] = 30u; // read/write timeout, seconds
+                pg[38] = 120u; // write buffer
+                pg[40] = 120u; // read buffer
+                pg[42] = 120u; // send diagnostics
+                pg[43] = (uint8_t)(600u >> 8); // format unit
+                pg[44] = (uint8_t)600u;
+                pg[46] = 60u; // start unit
+                pg[48] = 120u; // reassign block
+                pg[59] = 3u; // OS identifier length...
+                memcpy(&pg[60], "AIX", 3); // ...and the identifier itself
+                pg[72] = 3u; // max retry count
+                unsigned n = scsi->cmd.tl < sizeof(pg) ? scsi->cmd.tl : (unsigned)sizeof(pg);
+                LOG(2, "INQUIRY target=%d EVPD page $C7 -> %u bytes (%u MB)", target, n, cap_mb);
+                phase_data_in(scsi, n);
+                memcpy(scsi->buf.data, pg, n);
+                break;
+            }
+            LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
             break;
         }
+
+        // The allocation length is a CEILING, not a request: "the target
+        // shall terminate the DATA IN phase when [it] has transferred all
+        // available data" (SCSI-2 §7.5.3).  The standard response this
+        // model builds is 36 bytes, so a driver that offers more gets 36
+        // and a residual — which is what a real drive gives it, and what
+        // the additional-length byte below has to agree with.  (The EVPD
+        // pages above have their own lengths; this cap is the standard
+        // response's only.)
+        if (scsi->cmd.tl > 36)
+            scsi->cmd.tl = 36;
 
         phase_data_in(scsi, scsi->cmd.tl);
 
@@ -692,6 +739,21 @@ static void run_cmd(scsi_t *scsi) {
         // MODE SELECT(6) byte 4 is the parameter list length.  Zero means
         // no data phase — A/UX's HD driver issues this as a no-op probe.
         int param_len = scsi->buf.data[4];
+        if (param_len == 0)
+            phase_status(scsi, STATUS_GOOD);
+        else
+            phase_data_out(scsi, param_len);
+        break;
+    }
+
+    case CMD_SEND_DIAGNOSTIC: {
+        // SEND DIAGNOSTIC (SCSI-2 §8.2.15): the self-test of an emulated
+        // drive always passes.  Bytes 3-4 are the parameter list length; a
+        // non-zero list is accepted and discarded.  AIX's BOS install runs
+        // this against every target disk as its "preliminary diagnostic
+        // test" and refuses to install to a drive that fails it.
+        int param_len = (scsi->buf.data[3] << 8) | scsi->buf.data[4];
+        LOG(1, "command: SEND DIAGNOSTIC (len=%d)", param_len);
         if (param_len == 0)
             phase_status(scsi, STATUS_GOOD);
         else
@@ -830,6 +892,17 @@ static void run_cmd(scsi_t *scsi) {
     case CMD_VERIFY:
         // Verify data on disc — no-op (always succeeds)
         LOG(1, "command: VERIFY");
+        phase_status(scsi, STATUS_GOOD);
+        break;
+
+    case CMD_RESERVE:
+    case CMD_RELEASE:
+        // RESERVE/RELEASE (SCSI-2 §9.2.10-11): with a single initiator the
+        // reservation can never conflict, so both always succeed.  AIX's
+        // scdisk reserves the disk in its open path and fails the open —
+        // errno EINVAL, an unusable hdisk — when the reservation does not
+        // take.
+        LOG(1, "command: %s", scsi->cmd.opcode == CMD_RESERVE ? "RESERVE" : "RELEASE");
         phase_status(scsi, STATUS_GOOD);
         break;
 
