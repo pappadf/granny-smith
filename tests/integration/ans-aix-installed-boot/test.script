@@ -29,8 +29,9 @@
 include "../lib/mac.script"
 include "../lib/ans.script"
 
-let ans_root = "../../../local/gs-docs/projects/ans-500-700"
-let aix_disk = "${$ans_root}/images/aix415-lp240s-installed.img"
+# The golden lives in gs-test-data (systems/aix_4_1_5_lp240s_234mb.img.7z,
+# extracted in place by fetch-test-data.sh), like the MkLinux disks.
+let aix_disk = "../../data/systems/aix_4_1_5_lp240s_234mb.img"
 
 def installed_boot() {
     machine.board.clear_nvram()
@@ -93,7 +94,7 @@ def installed_boot() {
 if have_media($aix_disk) {
     installed_boot()
 } else {
-    echo "skip: ans-aix-installed-boot (the installed AIX 4.1.5 disk image is not present — see gs-docs projects/ans-500-700, handover 114)"
+    echo "skip: ans-aix-installed-boot (the installed AIX 4.1.5 disk image is not present — run scripts/fetch-test-data.sh)"
 }
 
 quit

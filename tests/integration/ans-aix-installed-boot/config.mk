@@ -8,8 +8,9 @@
 # Installation Assistant completed, shut down with `shutdown -F` typed on
 # that console and exported flattened with
 # `machine.scsi.device[2].image.export`.  It is
-# copyrighted AIX and cannot be committed (proposal §13 R8), so this row is
-# media-gated like ans-aix-boot: it skips cleanly when the image is absent.
+# copyrighted AIX and cannot live in this repository (proposal §13 R8); it
+# is in the private gs-test-data (systems/aix_4_1_5_lp240s_234mb.img.7z,
+# 14.5 MB) and the row skips cleanly when it has not been fetched.
 #
 # The boot path is the machine's own: blank non-volatile store, key in
 # Normal, disk in bay 2 — Open Firmware's default boot device is
