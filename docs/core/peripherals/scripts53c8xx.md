@@ -218,14 +218,15 @@ SCSI host adapter`. The board pulls `GPIO0` high, so `gpio_strap` does too.
   a fast/wide channel is expected to negotiate and a chip that always
   rejected would be lying about the part — but the emulated bus has no
   timing, so what is modelled is the agreement, not the rate it implies.
-* **The DMA FIFO.** `DFE` reads as permanently empty. Nothing observes the
-  FIFO except error recovery, which this model never enters.
-
-## The two escapes a driver in trouble reaches for
-
-Both are single bits, both were defined and never acted on, and a driver
-that has lost track of its bus has nothing else:
-
+* **The DMA FIFO** carries no data: the engine moves bytes straight between
+  the bus model and host memory, and `DFE` reads empty whenever the test
+  path below holds nothing.  What IS modelled is the diagnostic path --
+  CTEST4's `FBL2` + `FBL[1:0]` steer CTEST6 writes and reads to one of four
+  byte lanes, 134 deep (the 536-byte part), CTEST1 reports each lane's
+  bottom-empty (`FMT`) and top-full (`FFL`), CTEST3's `CLF` empties it --
+  because the Network Server Diagnostic Utility fills every lane to the
+  brim, expects CTEST1 = `$0F`, drains it and expects every byte back,
+  with `$AA` and again with `$55`.
 * **`SCNTL1`'s `RST` bit drives the SCSI reset line.** The driver pulses
   it, and every device on the bus goes back to its power-on state. The
   chip sees its own `RST/` like any other initiator would, so the

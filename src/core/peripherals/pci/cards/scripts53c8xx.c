@@ -1100,6 +1100,8 @@ void sym53c8xx_chip_reset(sym53c8xx_t *s) {
     // Power-on / SRST.  The SCRIPTS RAM is host memory and survives, as it
     // does on the part; everything else returns to its reset value.
     memset(s->reg, 0, sizeof(s->reg));
+    memset(s->dfifo_n, 0, sizeof(s->dfifo_n));
+    memset(s->dfifo_rd, 0, sizeof(s->dfifo_rd));
     s->dstat = 0;
     s->sist0 = 0;
     s->sist1 = 0;

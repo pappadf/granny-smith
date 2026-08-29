@@ -46,6 +46,7 @@ typedef struct checkpoint checkpoint_t;
 
 // === Geometry ===============================================================
 #define SYM825_REGS        128 // implemented operating registers (0x00-0x7F)
+#define SYM825_DFIFO_DEPTH 134 // the 536-byte DMA FIFO: 4 lanes x 134
 #define SYM825_SCRIPTS_RAM 4096u // the internal SCRIPTS RAM behind BAR 2
 
 // === Operating register offsets =============================================
@@ -265,6 +266,14 @@ typedef struct sym53c8xx {
     // modelled is the CONVERSATION, not the rate.
     uint8_t sync_period, sync_offset;
     uint8_t wide; // 1 = 16-bit transfers agreed
+    // The DMA FIFO as the CTEST4/CTEST6 test path sees it: four byte lanes,
+    // 134 deep (536 bytes), loaded at the top and unloaded from the bottom.
+    // Data transfers never pass through it (the engine moves bytes straight
+    // between the bus model and host memory); it exists for diagnostics
+    // that fill it lane by lane and read CTEST1's FMT/FFL flags back.
+    uint8_t dfifo[4][SYM825_DFIFO_DEPTH];
+    uint8_t dfifo_n[4]; // bytes held per lane
+    uint8_t dfifo_rd[4]; // bottom (next byte out) index per lane
 
     // The shared bus/target model this channel drives.  NULL until the
     // machine attaches one, which is what makes the engine unit-testable.

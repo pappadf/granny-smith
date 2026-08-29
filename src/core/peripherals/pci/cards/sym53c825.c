@@ -159,8 +159,71 @@ static void sym825_unstack_sist(sym53c8xx_t *s) {
     s->sist1_stacked = 0;
 }
 
+// --- The DMA FIFO test path (CTEST1 / CTEST4 / CTEST6) ----------------------
+//
+// "Writing to [CTEST6] writes data to the appropriate byte lane of the DMA
+// FIFO as determined by the FBL bits in CTEST4.  Reading this register
+// unloads data from the appropriate byte lane ... Data written to the FIFO
+// is loaded into the top of the FIFO.  Data read out of the FIFO is taken
+// from the bottom" (LSI53C825A TM v3.1, CTEST6).  CTEST4's FBL2 enables the
+// lane steering and FBL[1:0] names the lane; CTEST1 reports, per lane, the
+// bottom byte empty (FMT[3:0]) and the top byte full (FFL[3:0]); CTEST3's
+// CLF empties the whole FIFO.  The Network Server Diagnostic Utility fills
+// all four lanes to the brim, expects CTEST1 = $0F, drains them and expects
+// every byte back -- twice, with $AA and $55.
+
+static bool dfifo_all_empty(const sym53c8xx_t *s) {
+    return !(s->dfifo_n[0] | s->dfifo_n[1] | s->dfifo_n[2] | s->dfifo_n[3]);
+}
+
+static void dfifo_clear(sym53c8xx_t *s) {
+    memset(s->dfifo_n, 0, sizeof(s->dfifo_n));
+    memset(s->dfifo_rd, 0, sizeof(s->dfifo_rd));
+}
+
+static unsigned dfifo_lane(const sym53c8xx_t *s) {
+    return s->reg[SYM825_CTEST4] & 0x03u;
+}
+
+static uint8_t dfifo_ctest1(const sym53c8xx_t *s) {
+    uint8_t v = 0;
+    for (unsigned lane = 0; lane < 4; lane++) {
+        if (s->dfifo_n[lane] == 0)
+            v |= (uint8_t)(0x10u << lane); // FMT: bottom byte empty
+        if (s->dfifo_n[lane] >= SYM825_DFIFO_DEPTH)
+            v |= (uint8_t)(0x01u << lane); // FFL: top byte full
+    }
+    return v;
+}
+
+static void dfifo_push(sym53c8xx_t *s, uint8_t value) {
+    unsigned lane = dfifo_lane(s);
+    if (s->dfifo_n[lane] >= SYM825_DFIFO_DEPTH) {
+        LOG(2, "ch%d: CTEST6 write $%02X with lane %u full -- dropped", s->channel, value, lane);
+        return;
+    }
+    s->dfifo[lane][(s->dfifo_rd[lane] + s->dfifo_n[lane]) % SYM825_DFIFO_DEPTH] = value;
+    s->dfifo_n[lane]++;
+}
+
+static uint8_t dfifo_pop(sym53c8xx_t *s) {
+    unsigned lane = dfifo_lane(s);
+    if (s->dfifo_n[lane] == 0) {
+        LOG(2, "ch%d: CTEST6 read with lane %u empty", s->channel, lane);
+        return 0;
+    }
+    uint8_t v = s->dfifo[lane][s->dfifo_rd[lane]];
+    s->dfifo_rd[lane] = (uint8_t)((s->dfifo_rd[lane] + 1) % SYM825_DFIFO_DEPTH);
+    s->dfifo_n[lane]--;
+    return v;
+}
+
 static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
     switch (reg) {
+    case SYM825_CTEST1:
+        return dfifo_ctest1(s);
+    case SYM825_CTEST6:
+        return dfifo_pop(s);
     case SYM825_ISTAT:
         // The summary register: DIP and SIP are live views of whether the
         // DMA and SCSI cause registers hold anything, never stored state.
@@ -169,7 +232,7 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
     case SYM825_DSTAT: {
         // Read-to-clear.  DFE (DMA FIFO empty) is a live condition and is
         // not part of the latched cause, so it survives the read.
-        uint8_t v = (uint8_t)(s->dstat | SYM825_DSTAT_DFE);
+        uint8_t v = (uint8_t)(s->dstat | (dfifo_all_empty(s) ? SYM825_DSTAT_DFE : 0u));
         s->dstat = 0;
         sym53c8xx_update_irq(s);
         return v;
@@ -238,6 +301,18 @@ static void sym825_scntl1_write(sym53c8xx_t *s, uint8_t value) {
 
 static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
     switch (reg) {
+    case SYM825_CTEST3:
+        // CLF (bit 2) empties the DMA FIFO; the bit is a strobe and reads
+        // back clear.  The rest of the low nibble latches (FM, WRIE, ...).
+        if (value & 0x04u) {
+            LOG(2, "ch%d: CTEST3 CLF -- DMA FIFO cleared", s->channel);
+            dfifo_clear(s);
+        }
+        s->reg[reg] = (uint8_t)(value & (uint8_t)~0x04u);
+        return;
+    case SYM825_CTEST6:
+        dfifo_push(s, value);
+        return;
     case SYM825_SCNTL1:
         sym825_scntl1_write(s, value);
         return;
