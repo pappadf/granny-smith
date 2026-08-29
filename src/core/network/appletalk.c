@@ -210,7 +210,13 @@ void llap_in(const uint8_t *buf, size_t len) {
     switch (header.type) {
 
     case LLAP_ENQ:
-        assert(len == LLAP_HEADER_SIZE);
+        if (len != LLAP_HEADER_SIZE) {
+            // Control frames are exactly 3 bytes; drop wire junk instead of
+            // dying on it (guest drivers do emit malformed traffic).
+            LOG(5, "LLAP ENQ with bad length %zu discarded", len);
+            g_atalk_stats.crc_errors++;
+            break;
+        }
         LOG(11, "LLAP ENQ src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         // Reply with ACK if this ENQ targets our node (dynamic node ID probe/ack).
         if (header.dst == LLAP_HOST_NODE) {
@@ -224,7 +230,11 @@ void llap_in(const uint8_t *buf, size_t len) {
         break;
 
     case LLAP_RTS:
-        assert(len == LLAP_HEADER_SIZE);
+        if (len != LLAP_HEADER_SIZE) {
+            LOG(5, "LLAP RTS with bad length %zu discarded", len);
+            g_atalk_stats.crc_errors++;
+            break;
+        }
         LOG(11, "LLAP RTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
         // Respond with CTS for directed traffic addressed to us so the sender may transmit.
         if (header.dst == LLAP_HOST_NODE) {

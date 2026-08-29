@@ -142,9 +142,10 @@ struct av_cuda {
     // CudaInit sync then needs an IDLE transport, exactly as real Cuda's
     // own transaction timeout provides).
     bool send_timeout_pending;
-    // A response the host sync-aborted mid-flight is RE-PRESENTED once
-    // the sync completes: the abort resets the TRANSPORT, not the
-    // firmware's output queue.  Load-bearing on TNT — its ROM sends the
+    // A response the host sync-aborted mid-flight — or one the send
+    // watchdog above reaped unclaimed — is RE-PRESENTED once the bus
+    // settles: the abort resets the TRANSPORT, not the firmware's output
+    // queue.  Load-bearing on TNT — its ROM sends the
     // ADB SendReset through the early polled driver, then installs the
     // interrupt driver (VIA reinit + CudaInit sync) with the reply still
     // in flight; the ADB Manager's command stays outstanding forever
@@ -271,7 +272,7 @@ static void cuda_resend_event(void *source, uint64_t data) {
     cuda->resend_pending = false;
     if (cuda->state != CUDA_IDLE || cuda->tx_len < 4)
         return; // the host moved on (or a later sync flushed the queue)
-    LOG(2, "re-presenting the sync-aborted response (%d bytes)", cuda->tx_len);
+    LOG(2, "re-presenting the parked response (%d bytes)", cuda->tx_len);
     cuda_begin_send(cuda);
     // No abandonment watchdog on a re-presented reply: the host is
     // mid-driver-install with interrupts masked (that is WHY the abort
@@ -280,8 +281,19 @@ static void cuda_resend_event(void *source, uint64_t data) {
     cuda_send_progress(cuda);
 }
 
-// The host never took the attention byte: drop the response and return
-// the transport to idle, as the firmware's own transaction timeout does.
+// The host never took the attention byte: return the transport to idle,
+// as the firmware's own transaction timeout does.  The response itself is
+// NOT thrown away (a tick aside): real Cuda simply keeps TREQ asserted
+// until the host engages, and a host that is merely busy — Mac OS 8.1
+// legitimately sits at IPL 1 for >100 ms spin-waiting on serial DMA — must
+// still get its data.  An autopoll packet's ADB data was consumed from the
+// device queue when the packet was built, so dropping it loses real input;
+// worse, the attention byte already reached the VIA SR, and 8.1's CudaMgr
+// folds that orphan byte into its next receive session, desynchronizing
+// the ADB stream (the corrupted session count eventually overruns the ADB
+// Manager's 12-byte stack buffer and crashes the machine).  So: reap the
+// transport for the handoff case the timeout exists for, and re-present
+// the packet once the bus settles, exactly like a sync-aborted reply.
 static void cuda_send_timeout_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
@@ -290,10 +302,17 @@ static void cuda_send_timeout_event(void *source, uint64_t data) {
     cuda->send_timeout_pending = false;
     if (cuda->state != CUDA_SENDING || cuda->tx_idx != 0)
         return;
-    LOG(2, "response abandoned by host — transport reset to idle");
     cuda->state = CUDA_IDLE;
     cuda_cancel_push(cuda);
     cuda_set_treq(cuda, true);
+    if (cuda->tx_buf[1] == PKT_TICK) {
+        LOG(2, "tick unclaimed by host — transport reset to idle, tick dropped");
+        return;
+    }
+    LOG(2, "response unclaimed by host — transport reset to idle, parked for re-presentation");
+    cuda->resend_pending = true;
+    remove_event(cuda->sched, &cuda_resend_event, cuda);
+    scheduler_new_cpu_event(cuda->sched, &cuda_resend_event, cuda, 0, 0, (uint64_t)CUDA_RESEND_DELAY_NS);
 }
 
 // Lay down the 4-byte response header [attn, pktType, flags, cmd].

@@ -55,6 +55,10 @@ int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len);
 // and a frame we originate has somewhere to go.
 bool scc_sdlc_ready(const scc_t *restrict scc);
 
+// A DMA engine finished feeding a transmit frame into channel `ch` (0 = A,
+// 1 = B): flush it as a Tx underrun/EOM would on real hardware.
+void scc_dma_tx_complete(scc_t *restrict scc, unsigned int ch);
+
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scc_get_memory_interface(scc_t *scc);
 

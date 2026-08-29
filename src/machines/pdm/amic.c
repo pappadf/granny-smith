@@ -21,6 +21,7 @@
 
 #include "log.h"
 #include "ppc.h"
+#include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
@@ -47,12 +48,15 @@ LOG_USE_CATEGORY_NAME("amic");
 #define OFF_DMA   0x31000u // DMA register file (through $322xx)
 
 // DMA channel control bits (common vocabulary)
-#define DMA_RST 0x01u
-#define DMA_RUN 0x02u
-#define DMA_IE  0x08u
-#define DMA_IF  0x80u
+#define DMA_RST    0x01u
+#define DMA_RUN    0x02u
+#define DMA_IE     0x08u
+#define DMA_PAUSE  0x10u
+#define DMA_FROZEN 0x20u
+#define DMA_IF     0x80u
 
 static void pdm_scsi_pump_arm(config_t *cfg); // SCSI DMA service loop (below)
+static void pdm_scc_tx_arm(config_t *cfg, int idx); // SCC transmit engine (below)
 
 // ============================================================
 // Interrupt fabric
@@ -485,8 +489,19 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
                 ch->count = (uint16_t)((ch->count & 0x00FFu) | ((value & 0x1Fu) << 8));
             else if (r == 5)
                 ch->count = (uint16_t)((ch->count & 0xFF00u) | value);
-            else if (r == 8)
+            else if (r == 8) {
                 dma_ctrl_write(cfg, ch, value, 0x70u); // keep RELOAD/FROZEN/PAUSE
+                // PAUSE freezes the engine between quanta; nothing is ever in
+                // flight mid-slot here, so FROZEN mirrors it immediately (the
+                // pause protocol is "set PAUSE, poll until FROZEN reads 1").
+                if (ch->ctrl & DMA_PAUSE)
+                    ch->ctrl |= DMA_FROZEN;
+                else
+                    ch->ctrl &= (uint8_t)~DMA_FROZEN;
+                int idx = (int)((off - 0x1080u) >> 4);
+                if (idx == 0 || idx == 2)
+                    pdm_scc_tx_arm(cfg, idx);
+            }
         }
         return;
     }
@@ -616,6 +631,77 @@ static void pdm_scsi_pump_arm(config_t *cfg) {
 }
 
 // ============================================================
+// SCC: the AMIC DMA transmit engine
+// ============================================================
+// One-shot transmit channels (register blocks $1080 / $10A0): the driver
+// fills the channel's 8 KB ring inside the DMA window, writes the 13-bit
+// count and sets RUN; the engine hands the bytes to the ESCC's write path
+// (they assemble in its SDLC frame buffer exactly as CPU data writes
+// would) and IF sets at terminal count.  Mac OS 8.1's SerialDMA HAL polls
+// IF with no IE — before this engine existed nothing ever set it, and a
+// LocalTalk transmit (the printing setup's NBP LaserWriter lookup) spun
+// its full LLAP timeout (~130 ms) at IPL 1, starving VIA1 interrupt
+// service and desynchronizing the Cuda/ADB byte stream.
+//
+// The whole frame is delivered in one slot after the wire time of `count`
+// SDLC bytes at LocalTalk's 230.4 kbps.  The Rx channels stay unmodeled:
+// inbound frames still arrive only through the chip's Rx register path,
+// so an Rx DMA model is needed before a DMA-era guest can hear replies.
+#define PDM_SCC_TX_BYTE_NS 35000.0 // one SDLC byte at 230.4 kbps
+
+// Fixed 8 KB ring bases inside the DMA window, per register block
+// ($1080/$1090/$10A0/$10B0).  Apple's equates name the blocks TxA RxA
+// TxB RxB, but the ring pairing is crossed (amic.md §6.1/§7.2 caveat):
+// the $10A0 block the guest drives for the printer port reads its frame
+// from window+$20000 (measured live from the 8.1 SerialDMA HAL).
+static const uint32_t pdm_scc_ring[4] = {0x24000u, 0x22000u, 0x20000u, 0x26000u};
+
+// Deliver a completed transmit: feed `count` ring bytes to the ESCC, flush
+// the SDLC frame (Tx underrun/EOM), and set IF at terminal count.
+static void pdm_scc_tx_complete(config_t *cfg, int idx) {
+    pdm_amic_t *a = &pdm_st(cfg)->amic;
+    pdm_dma_ch_t *ch = &a->scc[idx];
+    if (!(ch->ctrl & DMA_RUN) || (ch->ctrl & DMA_IF))
+        return; // stopped (or already complete) since the event was armed
+    const memory_interface_t *mi = scc_get_memory_interface(cfg->scc);
+    uint32_t data_off = (idx == 0) ? 6u : 4u; // ESCC aData / bData
+    uint32_t ring = dma_window_base(a) + pdm_scc_ring[idx];
+    uint16_t n = ch->count;
+    for (uint16_t i = 0; i < n; i++) {
+        uint8_t *host = dma_host_ptr(ring + ((ch->addr + i) & 0x1FFFu));
+        mi->write_uint8(cfg->scc, data_off, host ? *host : 0xFFu);
+    }
+    scc_dma_tx_complete(cfg->scc, idx == 0 ? 0u : 1u);
+    ch->addr = (ch->addr + n) & 0x1FFFu; // address low bytes read back as the live ring index
+    ch->count = 0;
+    ch->ctrl |= DMA_IF; // terminal count
+    LOG(3, "scc tx dma ch%d delivered %u bytes", idx, n);
+    pdm_amic_recompute(cfg);
+}
+
+// Per-channel event trampolines (distinct callbacks so each channel owns
+// its own scheduler event identity).
+static void pdm_scc_tx_a_event(void *source, uint64_t data) {
+    (void)data;
+    pdm_scc_tx_complete((config_t *)source, 0);
+}
+
+static void pdm_scc_tx_b_event(void *source, uint64_t data) {
+    (void)data;
+    pdm_scc_tx_complete((config_t *)source, 2);
+}
+
+// Ctrl-write hook: (re)arm a starting transmit's completion event, or
+// cancel it when the channel is stopped or reset.
+static void pdm_scc_tx_arm(config_t *cfg, int idx) {
+    pdm_dma_ch_t *ch = &pdm_st(cfg)->amic.scc[idx];
+    event_callback_t fn = (idx == 0) ? pdm_scc_tx_a_event : pdm_scc_tx_b_event;
+    remove_event(cfg->scheduler, fn, cfg);
+    if ((ch->ctrl & DMA_RUN) && !(ch->ctrl & (DMA_IF | DMA_PAUSE)) && ch->count > 0)
+        scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)(ch->count * PDM_SCC_TX_BYTE_NS));
+}
+
+// ============================================================
 // Floppy: the AMIC DMA pump behind SWIM3
 // ============================================================
 // Unlike the SCSI channels there is no free-running service loop here.
@@ -715,6 +801,8 @@ void pdm_amic_start_vbl(config_t *cfg) {
 void pdm_amic_register_events(config_t *cfg) {
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "vbl", pdm_vbl_event);
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scsi_pump", pdm_scsi_pump_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_tx_a", pdm_scc_tx_a_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_tx_b", pdm_scc_tx_b_event);
 }
 
 // ============================================================

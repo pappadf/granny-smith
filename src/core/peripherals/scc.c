@@ -520,6 +520,15 @@ static void tx_underrun(ch_t *ch) {
     }
 }
 
+// A DMA engine reached terminal count on a transmit: the Tx FIFO runs dry
+// and the closing CRC/flag goes out — the same underrun/EOM event the WR0
+// "reset Tx underrun" command fakes for CPU-driven transmits.
+void scc_dma_tx_complete(scc_t *restrict scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return;
+    tx_underrun(&scc->ch[ch]);
+}
+
 // command register
 static void wr0(ch_t *ch, uint8_t value) {
     ch->pointer = value & 7;
@@ -861,6 +870,20 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
     case 0x03:
         wr3(&scc->ch[ch], value);
         break;
+
+    case 0x05: {
+        // WR5 - Tx parameters/control.  Clearing Tx Enable (bit 3) mid-SDLC
+        // is a frame boundary: on real silicon the Tx FIFO drains at wire
+        // speed and the closing CRC/flag goes out.  Mac OS 8.1's LLAP driver
+        // ends every PIO frame this way (it never issues the WR0
+        // underrun-reset command the classic mpp driver uses), so without
+        // this flush its ENQ/RTS probes glue together in tx.buf.
+        ch_t *c = &scc->ch[ch];
+        if (SDLC_MODE(c) && (c->wr[5] & 0x08) && !(value & 0x08))
+            tx_underrun(c);
+        c->wr[5] = value;
+        break;
+    }
 
     case 0x08:
         wr8(&scc->ch[ch], value);
