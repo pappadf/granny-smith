@@ -120,11 +120,10 @@ def topology(model) {
         assert ((cfg1($d, 0x3C) >> 8) & 0xFF) == 1 "${$model} 53C825A at IDSEL ${$d}: interrupt pin"
     }
 
-    # Grand Central's config presence at IDSEL 16 answers ALL-ONES to every
-    # register — a named device rather than an accident of a literal, which
-    # is what makes flipping it to a real header a two-line change if the
-    # chip's config identity is ever recovered.
-    assert cfg1(16, 0x00) == 0xFFFFFFFF "${$model} Grand Central config presence"
+    # Grand Central's config header at IDSEL 16: Apple's $106B, device
+    # $0002 — the identity the Network Server Diagnostic Utility's PCI
+    # bridge test insists on ("Grand Central not found" otherwise).
+    assert cfg1(16, 0x00) == 0x0002106B "${$model} Grand Central config identity"
 
     # Empty sockets read all-ones and swallow writes; that IS the entire
     # empty-slot model, and the reason a probe never hangs.

@@ -751,6 +751,9 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     tnt_dbdma_checkpoint(st->dbdma, cp);
+    // The floppy drive and media, where floppy_init reads them back on a
+    // restore (right after the DBDMA engine, before the board state).
+    floppy_checkpoint(cfg->floppy, cp);
     // Substrate-private tail (mirrored by the restore block in tnt_init).
     system_write_checkpoint_data(cp, &st->hh, sizeof(st->hh));
     system_write_checkpoint_data(cp, &st->gc, sizeof(st->gc));
