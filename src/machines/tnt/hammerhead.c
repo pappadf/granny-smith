@@ -34,13 +34,34 @@
 //   +$F0  L2 flush/fill strobe, byte — written $80 / $00 around the fill
 //         walk; accepted with no side effect.
 //
-// Everything else is accept-and-readback.  The DRAM bank base registers
-// exist (Apple, "Power Macintosh 7500 and 8500 Computers" Developer Note,
-// 1995: software initialises "the address mode bits in the bank base
-// registers" while sizing RAM) but their offsets are unattested — risk R1
-// of the proposal.  Every access is therefore logged, so ladder rung T5
-// (Open Firmware memory sizing) records the sequence the model must be
-// fitted to.
+//   +$1C0..+$4F0  the DRAM BANK BASE registers, a pair per bank for 26
+//         banks (Apple, "Power Macintosh 7500 and 8500 Computers"
+//         Developer Note, 1995: software initialises "the address mode
+//         bits in the bank base registers" while sizing RAM).  Fitted to
+//         the Network Server ROM's POST (the sizing loop at $FFF04468 and
+//         the pair-merging pass at $FFF046C0): bank k has its "A" word at
+//         +$1C0+$20k and its "B" word at +$1D0+$20k; B[31:24] is the base
+//         address in 4 MB units and A[24] is address bit 30, so the bank
+//         decodes from base = (B[31:24] << 22) | (A[24] << 30).  A[25] is
+//         toggled around the probe (an address-mode bit, indifferent here)
+//         and A[26] marks a bank interleaved with its neighbour (POST
+//         sets it on equal-sized adjacent banks; the union of the two is
+//         contiguous either way, so it changes nothing in the decode).
+//         POST's power-on table puts bank k at k x 64 MB, probes each
+//         window top-down in 1 MB steps for the highest address that
+//         holds a pattern and then upward for the alias, and re-bases
+//         the banks it found contiguously from 0 -- so a bank must show
+//         its DIMM, ALIASED, through a 64 MB window at whatever base its
+//         registers name, and an empty bank must read nothing back
+//         (tnt_hh_remap).  The merging pass then pairs adjacent
+//         equal-sized banks (2k, 2k+1): the LOWER bank's A[26] is set and
+//         the UPPER bank's base is rewritten to the END of the pair, so
+//         the pair decodes as one region of twice the size from the lower
+//         base -- interleaved on the board, contiguous to software.  The sizes it finds are cached in NVRAM
+//         ($1048 + 8k: base, size) for Open Firmware's `dimm-sizes` and
+//         the diagnostic utility's hardware configuration.
+//
+// Everything else is accept-and-readback, and every access is logged.
 
 #include "tnt.h"
 
@@ -73,6 +94,21 @@ LOG_USE_CATEGORY_NAME("hammerhead");
 // nibble the same way (>>4); it is unattested and currently zero.
 #define HH_REG_MACHID 0x20u
 
+// The bank base register pairs.
+#define HH_BANK_A(k)     (0x1C0u + 0x20u * (k)) // A word: bit 24 = base bit 30, 25 = mode, 26 = interleaved
+#define HH_BANK_A_ILV    0x04000000u // A[26]: this bank and the next form an interleaved pair
+#define HH_BANK_B(k)     (0x1D0u + 0x20u * (k)) // B word: bits 31:24 = base >> 22
+#define HH_BANK_REGS_END 0x500u
+#define HH_BANK_WINDOW   0x04000000u // 64 MB: the most a bank decodes, and POST's probe window
+#define HH_DECODE_TOP    0x80000000u // DRAM decode space; PCI and the islands live above
+
+// Where the DIMM slots sit among the banks (the ROM's `set-dimm-sizes`:
+// slot pair i is banks 2+4i..5+4i, side A = the even banks, side B = the
+// odd ones, each DIMM's two sides summed).  A DIMM here occupies its
+// first bank whole; the second stays empty.
+#define HH_DIMM_PAIRS            4
+#define HH_DIMM_BANK(pair, side) (2u + 4u * (pair) + (side))
+
 // The +$E0 strap for this board's cache DIMM: presence plus the size code
 // decoded above.  A board with no L2 reads $00, which is what makes the
 // ROM's .L2DataCacheTest skip the whole test — the Macintosh boards' answer
@@ -96,9 +132,85 @@ static uint8_t hh_l2cfg_strap(config_t *cfg) {
     }
 }
 
+// Carve the profile's RAM into DIMM pairs (Apple fits the Network Server's
+// slots in matched pairs): the largest power-of-two DIMM that fits half
+// the remainder, up to 64 MB, per pair -- 64 MB is 32+32 in slot pair 1,
+// 48 MB is 16+16 then 8+8, 512 MB fills all four pairs with 64+64.
+static void hh_bank_inventory(config_t *cfg) {
+    tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
+    uint32_t rest = cfg->ram_size;
+    uint32_t off = 0;
+    for (unsigned pair = 0; pair < HH_DIMM_PAIRS && rest >= 0x200000u; pair++) {
+        uint32_t half = rest / 2;
+        uint32_t dimm = HH_BANK_WINDOW;
+        while (dimm > half)
+            dimm >>= 1;
+        for (unsigned side = 0; side < 2; side++) {
+            hh->bank_size[HH_DIMM_BANK(pair, side)] = dimm;
+            hh->bank_host_off[HH_DIMM_BANK(pair, side)] = off;
+            off += dimm;
+        }
+        rest -= 2 * dimm;
+    }
+    if (rest)
+        LOG(0, "RAM size $%X does not decompose into DIMM pairs; $%X unmapped", cfg->ram_size, rest);
+}
+
+static uint32_t hh_bank_base(const tnt_hammerhead_t *hh, unsigned k) {
+    uint32_t a = hh->reg[HH_BANK_A(k) >> 4];
+    uint32_t b = hh->reg[HH_BANK_B(k) >> 4];
+    return ((b >> 24) << 22) | ((a & 0x01000000u) ? 0x40000000u : 0u);
+}
+
+// Rebuild the DRAM decode from the bank registers: every bank with a DIMM
+// shows it, aliased, through a window from its base up to the next bank's
+// base or 64 MB, whichever comes first; everything else in the decode
+// space reads nothing (cleared pages read 0, which fails POST's pattern
+// compare -- the "empty banks must not echo" requirement the sizing loop
+// depends on).
+void tnt_hh_remap(config_t *cfg) {
+    tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
+    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    for (uint32_t p = 0; p < (HH_DECODE_TOP >> PAGE_SHIFT); p++)
+        tnt_clear_page(p);
+    for (unsigned k = 0; k < TNT_HH_BANKS; k++) {
+        uint32_t size = hh->bank_size[k];
+        // An interleaved pair is decoded by its lower bank, as one region
+        // of both banks' storage (adjacent in host RAM by construction);
+        // the upper bank's own base register then only marks the end.
+        bool ilv_lower = (hh->reg[HH_BANK_A(k) >> 4] & HH_BANK_A_ILV) && k + 1 < TNT_HH_BANKS &&
+                         hh->bank_size[k + 1] == size && hh->bank_host_off[k + 1] == hh->bank_host_off[k] + size;
+        bool ilv_upper = k > 0 && (hh->reg[HH_BANK_A(k - 1) >> 4] & HH_BANK_A_ILV) && hh->bank_size[k - 1] == size &&
+                         hh->bank_host_off[k] == hh->bank_host_off[k - 1] + size;
+        if (ilv_lower)
+            size *= 2;
+        if (!size || ilv_upper)
+            continue;
+        uint32_t base = hh_bank_base(hh, k);
+        if (base >= HH_DECODE_TOP)
+            continue;
+        uint32_t window = ilv_lower ? 2 * HH_BANK_WINDOW : HH_BANK_WINDOW;
+        for (unsigned j = 0; j < TNT_HH_BANKS; j++) {
+            if (j == k)
+                continue;
+            uint32_t other = hh_bank_base(hh, j);
+            if (other > base && other - base < window)
+                window = other - base;
+        }
+        if (base + window > HH_DECODE_TOP)
+            window = HH_DECODE_TOP - base;
+        uint8_t *host = ram + hh->bank_host_off[k];
+        uint32_t first = base >> PAGE_SHIFT;
+        for (uint32_t p = 0; p < (window >> PAGE_SHIFT); p++)
+            tnt_fill_page(first + p, host + ((p << PAGE_SHIFT) % size), true);
+        LOG(3, "bank %u: $%X bytes at $%08X (window $%X)", k, size, base, window);
+    }
+}
+
 void tnt_hh_init(config_t *cfg) {
     tnt_hammerhead_t *hh = &tnt_st(cfg)->hh;
     memset(hh, 0, sizeof(*hh));
+    hh_bank_inventory(cfg);
     // Power-on values for the registers software reads before writing.
     // Byte-wide registers live in LANE 0 of their $10-centre longword
     // (bits 31-24 — the byte a lbz of the register address returns).
@@ -180,4 +292,7 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     // written (accept-and-readback everywhere else).
     if ((offset >> 4) == (HH_REG_ID >> 4))
         hh->reg[HH_REG_ID >> 4] = (hh->reg[HH_REG_ID >> 4] & 0x0000FFFFu) | (tnt_board(cfg)->hh_id & 0xFFFF0000u);
+    // A bank base moved: the DRAM decode follows it.
+    if (offset >= HH_BANK_A(0) && offset < HH_BANK_REGS_END && lane == 0)
+        tnt_hh_remap(cfg);
 }

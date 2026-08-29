@@ -200,11 +200,11 @@ static void chaos_probe_write32(void *ctx, uint32_t offset, uint32_t value) {
 static void tnt_memory_layout(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
 
-    // RAM: contiguous at 0 (the profile's size; Open Firmware discovers
-    // it and publishes /memory's reg — the tree is the contract).
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
-    for (uint32_t p = 0; p < (cfg->ram_size >> PAGE_SHIFT); p++)
-        tnt_fill_page(p, ram + (p << PAGE_SHIFT), true);
+    // RAM: wherever the Hammerhead's bank base registers put the DIMMs
+    // (hammerhead.c).  POST sizes them and re-bases them contiguously
+    // from 0; Open Firmware then publishes /memory's reg -- the tree is
+    // the contract.
+    tnt_hh_remap(cfg);
 
     // ROM: 4 MB at $FFC00000 (direct read-only pages).
     uint8_t *rom = ram_native_pointer(cfg->mem_map, cfg->ram_size);
@@ -515,6 +515,7 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, cp);
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
+    tnt_scc_dma_init(cfg);
     tnt_dbdma_set_memory_hooks(st->dbdma, tnt_dbdma_mem_read, tnt_dbdma_mem_write, cfg);
     tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
 
@@ -553,6 +554,7 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // data; the CPU line is recomputed below.
     if (cp) {
         system_read_checkpoint_data(cp, &st->hh, sizeof(st->hh));
+        tnt_hh_remap(cfg);
         system_read_checkpoint_data(cp, &st->gc, sizeof(st->gc));
         for (int i = 0; i < st->bridge_count; i++) {
             system_read_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));

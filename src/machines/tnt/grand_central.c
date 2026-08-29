@@ -315,40 +315,36 @@ void tnt_gc_init(config_t *cfg) {
 // ============================================================
 // Apple's own device tree calls it /gc@10, and Open Firmware does issue a
 // command + BAR write at IDSEL 16 during probe-slots (handover-phase-d
-// §1).  What that write lands on is a documented open question
-// (proposal-pci-architecture §14 Q7): the chip's real config identity is
-// unrecovered, and the boot we have is known-good with a device that
-// accepts every write and answers every config read ALL-ONES.  So that is
-// exactly what this device does — as a named device instead of an
-// accident of a `dev != 11` literal, which makes flipping it to a real
-// header a two-line change once the identity is known.
+// §1).  What that write lands on was a documented open question
+// (proposal-pci-architecture §14 Q7) until the diagnostic utility's bridge
+// test named the vendor; the header below is the generic type-0 one with
+// Grand Central's ids.
 //
 // Note also what Grand Central is NOT: its 128 KB island at $F3000000 is
 // reached by PASS-THROUGH MEMORY cycles, not through a BAR (ANS developer
 // note §4.2.1), so tnt.c maps it at a fixed address and no BAR is
 // declared here.
-static bool gc_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
-    (void)dev;
-    (void)reg;
-    *out = 0xFFFFFFFFu;
-    return true;
-}
-
 static const char *gc_pci_name(const pci_device_t *dev) {
     (void)dev;
     return "Grand Central";
 }
 
+// The identity, recovered from the Network Server Diagnostic Utility's
+// PCI bridge test (`CheckPCI`): it reads config dword 0 of IDSEL 16 on
+// Bandit 1 and reports "Grand Central not found" unless the vendor is
+// Apple ($106B); the device id is Apple's Grand Central number ($0002 --
+// Bandit is $0001, O'Hare $0007), the class the "unassigned" $FF0000 the
+// part reports.  No BARs (see above); the command register latches.
 static const pci_config_decl_t gc_decl = {
-    // No ids and no class: every config read answers all-ones above.
+    .vendor_id = 0x106Bu,
+    .device_id = 0x0002u,
+    .revision = 0x02u,
+    .class_code = 0xFF0000u,
     .header_type = 0x00u,
-    // The command register still latches what the firmware writes, so the
-    // model is honest about accepting the cycle.
     .command_writable = PCI_CMD_IO_SPACE | PCI_CMD_MEM_SPACE | PCI_CMD_MASTER,
 };
 
 static const pci_device_ops_t gc_pci_ops = {
-    .cfg_read = gc_cfg_read,
     .name = gc_pci_name,
 };
 
@@ -369,6 +365,69 @@ static uint32_t escc_pins(uint32_t off) {
     uint32_t ab = (off >> 5) & 1u; // A channel at +$20
     uint32_t dc = (off >> 4) & 1u; // data register at +$10
     return (ab << 1) | (dc << 2);
+}
+
+// --- The ESCC's four DBDMA channels ------------------------------------------
+//
+// Grand Central gives each SCC channel a transmit and a receive DBDMA
+// channel (4/5 for A, 6/7 for B).  An OUTPUT command hands the port a run
+// of bytes, which go to the channel's data register one at a time -- the
+// same path as a CPU store to it, so local loopback (WR14 LOOP) and the
+// cross-channel cable behave as they do under PIO; an INPUT command asks
+// for what the channel has received, which the port serves from the
+// receive queue and kicks again whenever a data register is written.
+// (Bytes arriving from the host side -- `machine.scc.a.receive` -- reach
+// an INPUT program at its next kick; the diagnostic utility's DMA tests
+// are loopbacks and never wait on that.)  Fitted to the Network Server
+// Diagnostic Utility's serial DMA tests (SccDMA: channel 4 OUTPUT of an
+// 80-byte pattern, channel 5 INPUT of the loopback, byte-for-byte compare).
+
+#define SCC_DMA_TX(ch) (4u + 2u * (ch))
+#define SCC_DMA_RX(ch) (5u + 2u * (ch))
+
+static uint32_t scc_data_pins(unsigned ch) {
+    // The cell's address pins: A/B on bit 1 (A = 1), D/C on bit 2 -- so
+    // channel 0 (A) data is 6, channel 1 (B) data is 4 (escc_pins).
+    return (ch == 0 ? 2u : 0u) | 4u;
+}
+
+static void scc_dma_kick_rx(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (!st->dbdma)
+        return;
+    for (unsigned ch = 0; ch < 2; ch++)
+        if (tnt_dbdma_active(st->dbdma, SCC_DMA_RX(ch)))
+            tnt_dbdma_kick(st->dbdma, SCC_DMA_RX(ch));
+}
+
+static int scc_port_out(void *ctx, const uint8_t *buf, int len) {
+    tnt_scc_dma_ctx_t *c = (tnt_scc_dma_ctx_t *)ctx;
+    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
+    for (int n = 0; n < len; n++)
+        mi->write_uint8(c->cfg->scc, scc_data_pins(c->ch), buf[n]);
+    scc_dma_kick_rx(c->cfg);
+    return len;
+}
+
+static int scc_port_in(void *ctx, uint8_t *buf, int len) {
+    tnt_scc_dma_ctx_t *c = (tnt_scc_dma_ctx_t *)ctx;
+    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
+    int n = 0;
+    while (n < len && scc_channel_rx_pending(c->cfg->scc, c->ch) > 0)
+        buf[n++] = mi->read_uint8(c->cfg->scc, scc_data_pins(c->ch));
+    return n;
+}
+
+void tnt_scc_dma_init(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    for (unsigned ch = 0; ch < 2; ch++) {
+        st->scc_dma_ctx[ch].cfg = cfg;
+        st->scc_dma_ctx[ch].ch = ch;
+        tnt_dbdma_port_t tx = {.out = scc_port_out, .in = NULL, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
+        tnt_dbdma_port_t rx = {.out = NULL, .in = scc_port_in, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
+        tnt_dbdma_set_port(st->dbdma, SCC_DMA_TX(ch), &tx);
+        tnt_dbdma_set_port(st->dbdma, SCC_DMA_RX(ch), &rx);
+    }
 }
 
 uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
@@ -438,6 +497,7 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         return;
     case OFF_ESCC:
         scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, escc_pins(offset - OFF_ESCC), value);
+        scc_dma_kick_rx(cfg);
         return;
     case OFF_NVPORT:
         // The bank-select port is ONE byte-wide cell on the $10 centre.

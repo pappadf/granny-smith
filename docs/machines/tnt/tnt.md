@@ -246,8 +246,12 @@ byte-access only.
 ## Memory model
 
 ```
-$00000000-RAM top   DRAM, contiguous from 0 (OF sizes it; the tree is
-                    the contract afterwards)
+$00000000-RAM top   DRAM -- wherever the Hammerhead bank base registers
+                    (+$1C0..+$4F0, hammerhead.c) put the DIMMs: POST
+                    probes each bank in its power-on 64 MB window, sizes
+                    it, re-bases the banks contiguously from 0 and
+                    caches the sizes in NVRAM; OF publishes the result
+                    and the tree is the contract afterwards
 $80000000-$8FFFFFFF Bandit 1 PCI memory — empty: recoverable fault
 $90000000-$9FFFFFFF Chaos/VCI memory — likewise
 $F0000000-$F1FFFFFF Chaos bridge + display-bus device space
@@ -593,6 +597,39 @@ Mac OS on the 7500/8500/9500 sees the change too: with the chip present
 the `.Sony` driver owns drive numbers 1–2 and the SCSI startup volume
 lands at `$23` rather than `$03` — the `tnt-hd-boot*` rows assert the
 new number.
+
+## The diagnostic utility -- what it accepted, and what it found
+
+Apple's *Network Server Diagnostic Utility 1.1* (the floppy the
+`ans-diag-floppy` row boots) is a hardware test suite written against
+the real board by people with its schematics, and it exercises paths no
+operating system touches.  Its "complete system test" is the closest
+thing this machine has to a conformance suite, so the model was fitted
+until it accepted the machine.  What it tests, and what each test cost:
+
+| Test | Verdict now | What it took |
+|---|---|---|
+| PCI bridges: Bandit 1, Bandit 2, Grand Central, both 53C825s by config identity | pass | Grand Central's config header answered all-ones ("Grand Central not found"); it now carries Apple's identity, `$106B:$0002`, class `$FF0000` (grand_central.c) |
+| Hardware configuration: memory per DIMM slot | 64 MB, 32 + 32 in slots 1A/1B | It read 0 MB everywhere, and the memory test then ran off the end of the map into a Data Access Exception.  The sizes come from POST's NVRAM table (`$1048 + 8k`: base, size per bank; `set-dimm-sizes` sums each slot's two banks), which POST fills from what its probe finds through the Hammerhead's **bank base registers** -- unmodelled until now.  hammerhead.c: 26 banks, `B[31:24]` = base >> 22, `A[24]` = base bit 30, `A[26]` = interleaved with the next bank; a bank shows its DIMM aliased through a 64 MB window at its base, an empty one reads nothing.  POST's power-on table puts bank k at k x 64 MB, its probe writes a pattern at the top of each window and walks down, then up for the alias, and it re-bases what it found contiguously from 0 and pairs equal neighbours as interleaved (the upper bank's base then marks the pair's end).  The profile's RAM is carved into matched DIMM pairs, 64 MB each at most, from slot pair 1 |
+| POST result: parity | `$00010000`, "All memory (RAM) has parity" | POST's parity test writes every address's value at that address and reads it back with checking on; the bank model made it pass for the first time (before, the address-at-address pass hit a bank it could not see, the LCD said `ParityAddrAtAddrFail`, and `ans-rom-ladder` caught it) |
+| 53C825 x 2: presence, init, registers, DMA FIFO | pass | "Cleared FIFO not indicating empty" / "FIFO not full": the DMA FIFO test path -- CTEST3 CLF, CTEST4 FBL lane steering, CTEST6 push/pop, CTEST1 FMT/FFL, 4 lanes x 134 deep (sym53c825.c) |
+| LCD, NVRAM, 54M30 controller + VRAM | pass | nothing |
+| Serial: PIO loopbacks A and B | pass | nothing (WR14 LOOP was already modelled) |
+| Serial: DBDMA loopbacks A and B | pass | the ESCC's four DBDMA channels (4/5 A tx/rx, 6/7 B tx/rx) were not wired; grand_central.c gives them ports on the SCC's data registers |
+| Serial: SDLC DBDMA loopback | **fails** | the utility expects the 80th received byte of its 80-byte SDLC frame to be `$28` -- not the data byte, not any CRC-CCITT variant of the frame -- and the model delivers the data byte.  What the real ESCC does at the end of a DMA-fed SDLC frame in local loopback is not understood; left as the one open item |
+| Serial with the loopback connector | needs the cable | the model has the cable (`scc_set_external_loopback`); the row does not plug it in |
+| Keyboard input | pass | `*` left Shift down for good: `keyboard.type()` queued Shift-down and the key in one report and the utility takes one transition per report -- now paced in guest time (docs/core/peripherals/keyboard.md) |
+
+Two things it said that were not defects.  "Raid Card installed in
+server -- test skipped" came only after the memory-test exception: the
+utility restarts its `main` with the exception code in the register
+that otherwise carries `CheckRaidCardBit`'s answer (GPREG bit 0 of the
+first 53C825, low = RAID card fitted), so the message was the crash
+talking.  And "Memory (RAM) has NO parity" on a first boot after
+`clear_nvram()` is what a real machine says after a battery change:
+Open Firmware wipes the DIMM table when it initialises a virgin store,
+and the utility reads 0 MB until the next boot -- which is why the row
+boots twice.
 
 ## Verification
 

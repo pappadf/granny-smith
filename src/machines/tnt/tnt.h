@@ -181,9 +181,15 @@ typedef struct tnt_board_desc {
 // one non-LE block), store-and-readback with a handful of special offsets.
 #define TNT_HH_REGS 128
 
+#define TNT_HH_BANKS 26 // DRAM banks with a base-register pair each (+$1C0..+$4F0)
 typedef struct tnt_hammerhead {
     uint32_t reg[TNT_HH_REGS]; // raw store; specials overlay on read
     bool l2cfg_sticky; // TEMP diagnostic: +$E0 ignores writes (GS_HH_L2CFG)
+    // The DIMMs, as banks: bytes of DRAM behind each bank (0 = no DIMM
+    // side there) and where in host RAM that bank's storage starts.
+    // Carved from the profile's RAM size at init (hammerhead.c).
+    uint32_t bank_size[TNT_HH_BANKS];
+    uint32_t bank_host_off[TNT_HH_BANKS];
 } tnt_hammerhead_t;
 
 // === Bandit / Chaos state (bandit.c) ========================================
@@ -344,6 +350,13 @@ typedef struct tnt_mesh {
 
 // The byte ring between the SWIM3 engine (which pushes/pulls one byte at
 // a time) and DBDMA channel 1 (which moves runs of bytes per descriptor).
+// The ESCC's DBDMA channels (4/5 = A tx/rx, 6/7 = B tx/rx; grand_central.c):
+// one port context per SCC channel.
+typedef struct tnt_scc_dma_ctx {
+    config_t *cfg;
+    unsigned ch;
+} tnt_scc_dma_ctx_t;
+
 #define TNT_FDRING_SIZE 4096u
 typedef struct tnt_fdring {
     uint8_t buf[TNT_FDRING_SIZE];
@@ -376,6 +389,7 @@ typedef struct tnt_state {
     // re-bound after a restore (tnt_swim3_bind).
     swim3_t swim3;
     tnt_fdring_t fdring;
+    tnt_scc_dma_ctx_t scc_dma_ctx[2]; // the ESCC DBDMA ports' contexts (rebuilt at init)
     // The Network Server's GBUS island (gbus.c / lcd.c).  Built only for
     // TNT_BOARD_SHINER; inert and unread on the Macintosh boards.
     tnt_gbus_t gbus;
@@ -423,6 +437,7 @@ void tnt_clear_page(uint32_t page_index);
 void tnt_hh_init(config_t *cfg); // power-on register state + map claim
 uint8_t tnt_hh_read(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
 void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value);
+void tnt_hh_remap(config_t *cfg); // rebuild the DRAM decode from the bank registers
 
 // === bandit.c ===============================================================
 
@@ -454,6 +469,8 @@ void tnt_mesh_init(config_t *cfg); // power-on state + DBDMA ch-10 port
 // after a restore) points the shared model at the drive, the scheduler and
 // the DBDMA movers; register_events before scheduler_start.
 void tnt_swim3_init(config_t *cfg);
+
+void tnt_scc_dma_init(config_t *cfg); // attach the ESCC's four DBDMA ports (after tnt_dbdma_init)
 void tnt_swim3_bind(config_t *cfg);
 void tnt_swim3_register_events(config_t *cfg);
 uint8_t tnt_swim3_read(config_t *cfg, uint32_t off); // off from +$15000

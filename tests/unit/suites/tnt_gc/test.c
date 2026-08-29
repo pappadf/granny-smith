@@ -134,6 +134,14 @@ void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     (void)value;
 }
 // SWIM3 window: the floppy is not part of this suite's fixture.
+// grand_central.c's ESCC DBDMA ports ask the SCC how much it has received;
+// this suite never runs a DMA program, so no bytes are ever pending.
+unsigned scc_channel_rx_pending(const struct scc *scc, unsigned int ch) {
+    (void)scc;
+    (void)ch;
+    return 0;
+}
+
 uint8_t tnt_swim3_read(config_t *cfg, uint32_t off) {
     (void)cfg;
     (void)off;
