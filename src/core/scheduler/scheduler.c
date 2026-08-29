@@ -172,6 +172,13 @@ struct scheduler {
     uint32_t sprint_total; // instructions planned for current sprint
     uint32_t sprint_burndown; // instructions remaining in current sprint
 
+    // Cycles still owed to the VBL frame-unit in progress (0 = no frame open,
+    // so the next scheduler_run_frame starts one by pulsing the VBL line).
+    // Deliberately after event_types: like the pacing estimators it is live
+    // run-loop state, so a restore starts a fresh frame rather than resuming
+    // one recorded in the checkpoint.
+    uint64_t frame_cycles_left;
+
     // Pointers last
     sched_cpu_if_t cpu; // the main-CPU seam (copied at init; ctx outlives us)
     event_t *cpu_events; // priority queue sorted by timestamp
@@ -716,6 +723,7 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
         s->vbl_acc_error = 0.0;
         s->host_secs_per_vbl = NAN;
         s->host_secs_per_loop = 1.0 / 60.0;
+        s->frame_cycles_left = 0; // restore begins a fresh VBL frame-unit
 
         // Reconstruct instruction count from restored cycle counter. Cycles
         // are the sole ground truth for time; total_instructions is
@@ -1398,14 +1406,44 @@ void scheduler_run_usecs(struct scheduler *restrict s, uint64_t usecs) {
 // Run one VBL frame-unit: pulse the VBL line then run exactly one VBL period.
 // The atomic step every target's run loop is built from (see the header).  The
 // caller decides how many frame-units to run and at what pace; this just does
-// one.  scheduler_run() clamps to the next event, so a run_stop_event or a
-// breakpoint inside the period stops the frame early (running goes false), and
-// the caller's loop sees it.
+// one.  The run clamps to the next event, so a run_stop_event or a breakpoint
+// inside the period stops the frame early (running goes false), and the
+// caller's loop sees it.
+//
+// A frame stopped early is RESUMED by the next call, not restarted: the VBL
+// line is pulsed once per VBL period of *emulated* time, never once per call.
+// Pulsing per call is what a run loop naturally does when every frame runs to
+// completion, but `scheduler.run N` (small N), a breakpoint and a daemon
+// client sending mid-run all end a frame early — and re-pulsing then hands the
+// guest a 60 Hz tick it never earned.  Driving the emulator in 1000-instruction
+// steps used to run guest time ~600x fast, which perturbs exactly the timing-
+// sensitive guest code an instruction-stepped debug session is trying to
+// observe.  frame_cycles_left carries the unfinished remainder.
 void scheduler_run_frame(struct scheduler *restrict s, config_t *config) {
     GS_ASSERT(s != NULL);
     GS_ASSERT(config != NULL);
-    trigger_vbl(config);
-    scheduler_run(s, MAC_VBL_PERIOD);
+
+    if (s->frame_cycles_left == 0) {
+        trigger_vbl(config);
+        // Open a new frame.  Sized through the instruction budget
+        // scheduler_run(MAC_VBL_PERIOD) would have computed, so a frame that
+        // runs to completion consumes a bit-identical cycle budget.
+        uint64_t frame_instructions =
+            (uint64_t)(MAC_VBL_PERIOD * (double)s->frequency * 256.0 / (double)s->cpi_eff_x256);
+        s->frame_cycles_left = (frame_instructions * s->cpi_eff_x256) >> 8;
+        if (s->frame_cycles_left == 0)
+            s->frame_cycles_left = 1; // degenerate config: still make progress
+    }
+
+    // Cycles back to instructions, rounding up so the budget never falls short
+    // of the remainder (a resumed tail may overshoot by under one instruction).
+    uint64_t instructions = ((s->frame_cycles_left << 8) + s->cpi_eff_x256 - 1) / s->cpi_eff_x256;
+
+    uint64_t before = scheduler_cpu_cycles(s);
+    scheduler_run_instructions(s, instructions);
+    uint64_t advanced = scheduler_cpu_cycles(s) - before;
+
+    s->frame_cycles_left = (advanced < s->frame_cycles_left) ? s->frame_cycles_left - advanced : 0;
 }
 
 // Main loop iteration for real-time emulation with VBL-based timing

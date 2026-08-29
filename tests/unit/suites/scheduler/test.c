@@ -240,6 +240,14 @@ static void ping_event(void *source, uint64_t data) {
     scheduler_new_cpu_event(g_sched, ping_event, source, 0, 77777, 0);
 }
 
+// Stops the run mid-frame, the way the shell's `scheduler.run N` budget event
+// and a debugger breakpoint do.
+static void stop_event(void *source, uint64_t data) {
+    (void)source;
+    (void)data;
+    scheduler_stop(g_sched);
+}
+
 static scheduler_t *fresh_scheduler(bool with_ping) {
     g_now = 0.0;
     g_secs_per_instr = 0.0;
@@ -494,6 +502,50 @@ TEST(test_cpi_mode_independent) {
 }
 
 // --- Accelerated mode (fixed multiplier via fractional effective CPI) --------
+
+// A frame-unit cut short is RESUMED, not restarted: the VBL line pulses once
+// per VBL period of emulated time however finely the caller steps.  Regression
+// guard for the headless debug path — `scheduler.run N` with a small N (and a
+// breakpoint, and a daemon client sending mid-run) stops the frame early, and
+// re-pulsing on the next call used to hand the guest one 60 Hz tick per call.
+// Measured on a live pm6100: 10 M instructions run as 10,000 x 1000 advanced
+// the guest's Ticks by 6385 instead of 11.
+TEST(test_short_runs_dont_multiply_vbls) {
+    const int frames = 20;
+
+    // Reference: whole frame-units back to back — one VBL each, by definition.
+    scheduler_t *s = fresh_scheduler(false);
+    for (int f = 0; f < frames; f++)
+        scheduler_run_frame(s, TEST_CFG);
+    uint64_t whole_cycles = scheduler_cpu_cycles(s);
+    uint64_t whole_vbls = g_vbls;
+    teardown(s);
+    ASSERT_TRUE(whole_vbls == (uint64_t)frames);
+    ASSERT_TRUE(whole_cycles > 0);
+
+    // Same emulated span, chopped: every frame-unit is interrupted 16 times.
+    const uint64_t chop = 16;
+    uint64_t slice = whole_cycles / ((uint64_t)frames * chop);
+    ASSERT_TRUE(slice > 0);
+
+    s = fresh_scheduler(false);
+    scheduler_new_event_type(s, "test", &g_dummy_cfg, "stop", stop_event);
+    uint64_t calls = 0;
+    while (scheduler_cpu_cycles(s) < whole_cycles) {
+        scheduler_new_cpu_event(s, stop_event, &g_dummy_cfg, 0, slice, 0);
+        scheduler_run_frame(s, TEST_CFG);
+        calls++;
+    }
+    uint64_t chopped_vbls = g_vbls;
+    teardown(s);
+
+    // The chopping really happened (many more calls than frame-units)...
+    ASSERT_TRUE(calls > (uint64_t)frames * (chop / 2));
+    // ...but the guest still saw one VBL per elapsed period, not one per call.
+    // The frame in flight at the loop's exit may add one.
+    ASSERT_TRUE(chopped_vbls >= whole_vbls);
+    ASSERT_TRUE(chopped_vbls <= whole_vbls + 1);
+}
 
 // Timebase invariance — the core correctness property of accelerated mode:
 // the cycle timebase (which VIA φ2, sound and SCC divide down from) must not
@@ -840,6 +892,7 @@ int main(void) {
     RUN(test_mode_switch_estimator_reset);
     RUN(test_single_timeline_across_modes);
     RUN(test_cpi_mode_independent);
+    RUN(test_short_runs_dont_multiply_vbls);
     RUN(test_accelerated_timebase_invariant);
     RUN(test_accelerated_budget_exact);
     RUN(test_accelerated_mode_switch_hygiene);
