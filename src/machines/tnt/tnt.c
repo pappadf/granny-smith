@@ -34,6 +34,7 @@
 #include "adb.h"
 #include "checkpoint_images.h"
 #include "debug.h"
+#include "floppy.h"
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
@@ -507,12 +508,20 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // SCSI ch 0/10, ...) registers its port as it lands; until then a
     // channel's data commands stall honestly.
     st->dbdma = tnt_dbdma_init(cp);
+    // The internal SuperDrive behind SWIM3: the shared floppy module owns
+    // the drive and media, the shared SWIM3 model (core/peripherals) the
+    // chip, and swim3.c here binds the two to Grand Central and DBDMA
+    // channel 1.  No memory map of its own: the island decodes it.
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, cp);
+    tnt_swim3_bind(cfg);
+    tnt_swim3_init(cfg);
     tnt_dbdma_set_memory_hooks(st->dbdma, tnt_dbdma_mem_read, tnt_dbdma_mem_write, cfg);
     tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
 
     // The AWACS sound face on channel 8 (Open Firmware's beep is the
     // first exerciser, long before the 68k chime).
     tnt_awacs_register_events(cfg);
+    tnt_swim3_register_events(cfg);
     tnt_awacs_init(cfg);
     tnt_awacs_reset(cfg);
 
@@ -591,6 +600,9 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
         system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
         system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
+        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+        system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+        tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
     // MESH is a Macintosh-only cell.  The Network Servers deleted it — two
@@ -665,6 +677,10 @@ static void tnt_teardown(config_t *cfg) {
     if (st && st->scsi96) {
         scsi_53c96_delete(st->scsi96);
         st->scsi96 = NULL;
+    }
+    if (cfg->floppy) {
+        floppy_delete(cfg->floppy);
+        cfg->floppy = NULL;
     }
     if (cfg->scsi) {
         scsi_delete(cfg->scsi);
@@ -757,6 +773,10 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // positions and injected environmental faults.
     system_write_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
     system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
+    // The floppy controller and its DBDMA byte ring (swim3.c); the drive
+    // itself is in the images block above.
+    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
 }
 
 // Frame tick (scheduler-paced, one per VBL frame-unit): the 60.15 Hz
@@ -833,19 +853,19 @@ static void tnt_update_ipl(config_t *cfg, int source, bool active) {
     LOG(1, "update_ipl source=%d active=%d (TNT sources drive Grand Central directly)", source, active);
 }
 
-// Floppy: the internal SuperDrive arrives with the SWIM3/DBDMA datapath
-// (Phase F); until then the bay refuses media and reports itself occupied.
+// Floppy: the one internal SuperDrive behind SWIM3 (swim3.c).  Drive 1 is
+// the only bay the family has — no external port — so slot 1 refuses
+// whatever the caller asks.
 static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    (void)cfg;
-    (void)drive;
-    (void)disk;
-    return -1;
+    if (!cfg->floppy || drive != 0)
+        return -1;
+    return floppy_insert(cfg->floppy, drive, disk);
 }
 
 static bool tnt_fd_present(config_t *cfg, int drive) {
-    (void)cfg;
-    (void)drive;
-    return true; // no usable bay yet: report occupied so nothing targets it
+    if (!cfg->floppy || drive != 0)
+        return true; // no such bay: report it occupied so nothing targets it
+    return floppy_is_inserted(cfg->floppy, drive);
 }
 
 const machine_substrate_t tnt_substrate = {

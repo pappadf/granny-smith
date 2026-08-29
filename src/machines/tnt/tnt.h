@@ -46,6 +46,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "swim3.h"
+
 struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
 struct tnt_dbdma; // the DBDMA engine (dbdma.h)
 struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
@@ -340,6 +342,14 @@ typedef struct tnt_mesh {
                          // target no longer REQs — busfree must succeed)
 } tnt_mesh_t;
 
+// The byte ring between the SWIM3 engine (which pushes/pulls one byte at
+// a time) and DBDMA channel 1 (which moves runs of bytes per descriptor).
+#define TNT_FDRING_SIZE 4096u
+typedef struct tnt_fdring {
+    uint8_t buf[TNT_FDRING_SIZE];
+    uint32_t head, tail; // free-running; count = tail - head
+} tnt_fdring_t;
+
 // === Family state ===========================================================
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
@@ -360,6 +370,12 @@ typedef struct tnt_state {
     pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
                                // by the bus: its factory allocated it)
     tnt_mesh_t mesh; // internal fast SCSI (mesh.c; bus = cfg->scsi)
+    // The internal SuperDrive: the shared SWIM3 model behind Grand Central
+    // +$15000, fed by DBDMA channel 1 through a byte ring (swim3.c).  Both
+    // are plain data, checkpointed in the tail; the chip's pointer tail is
+    // re-bound after a restore (tnt_swim3_bind).
+    swim3_t swim3;
+    tnt_fdring_t fdring;
     // The Network Server's GBUS island (gbus.c / lcd.c).  Built only for
     // TNT_BOARD_SHINER; inert and unread on the Macintosh boards.
     tnt_gbus_t gbus;
@@ -431,6 +447,17 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value);
 // === mesh.c =================================================================
 
 void tnt_mesh_init(config_t *cfg); // power-on state + DBDMA ch-10 port
+
+// === swim3.c (tnt) ==========================================================
+// The floppy: Grand Central +$15000 on $10 centres, interrupt 19, DBDMA
+// channel 1.  init attaches the channel port; bind (after floppy_init and
+// after a restore) points the shared model at the drive, the scheduler and
+// the DBDMA movers; register_events before scheduler_start.
+void tnt_swim3_init(config_t *cfg);
+void tnt_swim3_bind(config_t *cfg);
+void tnt_swim3_register_events(config_t *cfg);
+uint8_t tnt_swim3_read(config_t *cfg, uint32_t off); // off from +$15000
+void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 void tnt_mesh_reset(config_t *cfg);
 // Island access for the +$18000 block (byte registers on $10 centres).
 uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset);

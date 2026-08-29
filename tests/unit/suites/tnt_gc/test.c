@@ -133,6 +133,18 @@ void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
     (void)offset;
     (void)value;
 }
+// SWIM3 window: the floppy is not part of this suite's fixture.
+uint8_t tnt_swim3_read(config_t *cfg, uint32_t off) {
+    (void)cfg;
+    (void)off;
+    return 0;
+}
+void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
+    (void)cfg;
+    (void)off;
+    (void)value;
+}
+
 uint8_t tnt_lcd_read8(config_t *cfg, uint32_t offset) {
     (void)cfg;
     (void)offset;

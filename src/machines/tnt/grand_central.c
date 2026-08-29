@@ -50,7 +50,7 @@ LOG_USE_CATEGORY_NAME("gc");
 #define OFF_SCCLEG    0x12000u // SCC legacy aperture (Phase F)
 #define OFF_ESCC      0x13000u // ESCC: channel B at +0, channel A at +$20 (Phase F)
 #define OFF_AWACS     0x14000u // AWACS codec + sound control (Phase D)
-#define OFF_SWIM3     0x15000u // SWIM3 floppy (Phase F)
+#define OFF_SWIM3     0x15000u // SWIM3 floppy: 16 regs on $10 centres (swim3.c)
 #define OFF_VIA       0x16000u // VIA1/Cuda: 16 byte regs on $200 centres (8 KB)
 #define OFF_MESH      0x18000u // MESH, internal bus (Phase E)
 #define OFF_EPROM     0x19000u // Ethernet address PROM (+ the ANS MP doorbell)
@@ -409,6 +409,9 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
     case OFF_SCSI0:
         // 53C94: sixteen byte-wide registers on $10 centres.
         return scsi_53c96_read(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu);
+    case OFF_SWIM3:
+        // SWIM3: sixteen byte-wide registers on $10 centres (swim3.c).
+        return tnt_swim3_read(cfg, offset - OFF_SWIM3);
     case OFF_MESH:
         // Absent on the Network Servers (board delta #4): the aperture
         // decodes nothing, so it falls through to the open-bus log.
@@ -471,6 +474,9 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         break;
     case OFF_SCSI0:
         scsi_53c96_write(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu, value);
+        return;
+    case OFF_SWIM3:
+        tnt_swim3_write(cfg, offset - OFF_SWIM3, value);
         return;
     case OFF_MESH:
         if (tnt_board(cfg)->has_mesh)

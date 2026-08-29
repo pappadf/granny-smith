@@ -99,8 +99,10 @@ DMA architecture:
   Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
   port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
   DBDMA channel windows (`+$8000+n*$100`).  Phase D adds AWACS
-  (`+$14000`) and the RaDACal RAMDAC (`+$1B000`, control.c); SCSI, MACE
-  and SWIM3 apertures log and read open bus until their phases land.
+  (`+$14000`) and the RaDACal RAMDAC (`+$1B000`, control.c); the SWIM3
+  aperture (`+$15000`, swim3.c) is the shared floppy controller on DBDMA
+  channel 1; SCSI and MACE apertures log and read open bus until their
+  phases land.
 - **DBDMA** (`dbdma.c`) — the descriptor-based DMA engine, Phase C: one
   implementation, eleven channels (channel *n* raises Grand Central
   interrupt *n*), each a little-endian register file (`channelControl`
@@ -276,7 +278,7 @@ sample-exact golden WAV, the interrupt fabric's mode-1 discipline
 visible in the registers, and the ROM's native control driver painting
 the 640x480 gray desktop into the Control VRAM aperture against a
 screen golden).  The run parks hunting for boot media (Phase E's
-frontier; no SCSI/floppy data paths yet).  The interrupt-fabric and engine semantics
+frontier; no SCSI data path yet — the floppy path came later, see "The floppy" below).  The interrupt-fabric and engine semantics
 are additionally unit-pinned in `tests/unit/suites/tnt_gc` (the MkLinux
 initialisation sequence and events-driven acknowledge, the NanoKernel's
 `$80000000` mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA
@@ -553,6 +555,44 @@ reads it for an *edge* — every VGA console waits on the vertical-retrace or
 display-enable bit before touching the CRTC or the palette — so it is
 derived from the scheduler's clock, which keeps a run deterministic and
 keeps a waiting loop from becoming a hang.
+
+## The floppy
+
+The SWIM3 at Grand Central `+$15000` is the same chip the 6100/7100/8100
+carry, so it is the same model: `src/core/peripherals/swim3.c` /
+`swim3_xfer.c` (documented in
+[docs/core/peripherals/swim3.md](../../core/peripherals/swim3.md)),
+promoted out of the PDM tree for this board.  What this family adds is in
+`tnt/swim3.c`: the registers on `$10` centres (index = offset >> 4), the
+IRQ pin on Grand Central interrupt 19, and the data path on **DBDMA
+channel 1**.  The engine and the DMA engine meet in the middle — the
+SWIM3 engine *pushes* decoded bytes as a sector passes under the head,
+a DBDMA INPUT command *pulls* up to N bytes from the device port — so a
+4 KB byte ring (`tnt_fdring_t`, checkpointed with the board) sits
+between them: reads fill the ring and kick the channel, writes drain it.
+
+The customer that drove the work is not Mac OS but Open Firmware's own
+`swim3` package, which is what a Network Server boots a floppy with: the
+Service position of the keyswitch makes the firmware's `diag-device`
+(`cd disk6 fd:diags`) the boot path, and `boot fd:diags` does the same
+by hand.  Apple's *Network Server Diagnostic Utility 1.1* (a bootable
+1440 KB HFS floppy carrying an XCOFF `diags`) now loads and runs on the
+emulated 500: its Level One menu, hardware configuration and POST-result
+screens come up on the 54M30 and answer the ADB keyboard.  The package
+drives the chip differently from the `.Sony` driver in four ways the
+model had to learn, each a defect until it did:
+
+| What the firmware does | What the model did | Fix |
+|---|---|---|
+| samples a sense read at Handshake **bit 3** (the ERS's "Sense — direct read of rddata input"; Linux does the same) | answered only on bit 2, the `.Sony` driver's bit — every sense read 0, `open` ended in `BAD DISK` | a sense read answers on both bits |
+| selects the head by setting SEL/CA to address 4 or 12 and starting the transfer, never reading the sense there | routed the head only on a sense read — side 0 for every side-1 block, `can't OPEN` after the catalog | route on every Phase / HeadSelect write |
+| reads a track's tail in one transfer: `FirstSector = n`, `SectorsToXfer = spt − n + 1` | matched every sector against `FirstSector`, so the second never came — `READ TIMEOUT` | "accessed continuously" (ERS reg `$E`): after the first match the rest are the next headers, no match required |
+| — | a service slot a fraction of a nanosecond early re-delivered the header just served, and the continuous transfer handed the duplicate on as the next sector — a corrupted `diags` load, `DEFAULT CATCH!` | round the slot delay up; nudge the header index |
+
+Mac OS on the 7500/8500/9500 sees the change too: with the chip present
+the `.Sony` driver owns drive numbers 1–2 and the SCSI startup volume
+lands at `$23` rather than `$03` — the `tnt-hd-boot*` rows assert the
+new number.
 
 ## Verification
 
