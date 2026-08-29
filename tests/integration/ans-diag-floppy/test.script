@@ -1,0 +1,60 @@
+# The Network Server Diagnostic Utility, booted from the internal floppy
+# (see config.mk).
+
+include "../lib/mac.script"
+include "../lib/ans.script"
+
+# The image lives in gs-test-data (systems/ans_diagnostic_utility_1_1.img.7z,
+# extracted in place by fetch-test-data.sh), like the AIX disk.
+let diag_fd = "../../data/systems/ans_diagnostic_utility_1_1.img"
+
+def diag_boot() {
+    machine.board.clear_nvram()
+    machine.boot model="ans500" ram=65536 rom="${$ROM}"
+
+    # Service: Open Firmware boots `diag-device` (`cd disk6 fd:diags`)
+    # instead of `boot-device`, no typed command.
+    machine.board.keyswitch = "service"
+    assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
+
+    # The diagnostic floppy in the internal drive, write-locked: the
+    # golden image is never written.
+    machine.floppy.drive[0].insert "${$diag_fd}" true
+
+    # POST, Open Firmware's bring-up, the firmware's swim3 package reading
+    # `diags` off the floppy a track at a time, the XCOFF load, and the
+    # utility's own start-up: its banner, the hardware configuration it
+    # found (a 66 MHz 604, 512 K L2, no parity), and the Level One menu at
+    # its prompt.  ~12 G instructions on the 500.
+    # (Polled with try(): there is no framebuffer to compare against
+    # until the firmware has programmed the 54M30's mode.)
+    let spent = 0
+    let seen = false
+    if $REGEN_MODE == "1" {
+        scheduler.run 12000000000
+        $spent = 12000000000
+    }
+    while !$seen && $spent < 40000000000 {
+        scheduler.run 500000000
+        $spent = $spent + 500000000
+        $seen = try(machine.screen.matches("level-one-menu.png"), false)
+    }
+    let settled = wait_stable(3000000000)
+    check("level-one-menu.png")
+
+    # The utility takes its commands from the ADB keyboard: "2" is "Show
+    # the Power-On Self Test results".
+    machine.adb.keyboard.type("2\n")
+    scheduler.run 800000000
+    check("post-results.png")
+
+    echo "ans-diag-floppy: the Network Server Diagnostic Utility 1.1 boots from the internal floppy in Service position (${$spent} instructions to the Level One menu) and answers the ADB keyboard"
+}
+
+if have_media($diag_fd) {
+    diag_boot()
+} else {
+    echo "skip: ans-diag-floppy (the Network Server Diagnostic Utility floppy image is not present — run scripts/fetch-test-data.sh)"
+}
+
+quit
