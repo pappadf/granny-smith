@@ -29,6 +29,13 @@ def pick_port(preferred, host='localhost', tries=20):
     raise SystemExit(f"No free port in {preferred}..{preferred + tries - 1}")
 
 class Handler(SimpleHTTPRequestHandler):
+    # HTTP/1.1 with keep-alive: the browser closes the connection when it has
+    # everything.  Under HTTP/1.0 the server closed right after the last byte,
+    # and an editor's port forwarder (VS Code's, between a devcontainer and
+    # the host browser) tore the client side down on that EOF before it had
+    # drained its buffer -- large assets arrived short, Chrome reported
+    # ERR_CONTENT_LENGTH_MISMATCH, and the bytes had in fact all left here.
+    protocol_version = 'HTTP/1.1'
     # Optional fallback directory; set by main() on the class.
     fallback_root = None
     # Default query string appended when redirecting "/" to "/index.html".
