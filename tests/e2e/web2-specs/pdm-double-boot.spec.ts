@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 
-// web2 e2e: a configured pm6100 must boot exactly ONCE — including on an
-// image that earlier sessions already wrote to.
+// web2 e2e: a configured pm6100 must boot exactly ONCE, every time — the
+// PRAM-seeding regression test.
 //
-// Repro spec for the reported "double boot" on the Power Macintosh 6100
-// with a Mac OS 8.1 HD image: boot with a chime, run a few seconds (the
-// report pins it right after the RAM test, at the first HD access), reboot
-// with a second chime, then boot for real.
+// The reported "double boot" (chime, ~45 s of RAM test + drive wait,
+// second chime at the first HD access, then a real boot) was Mac OS 8.1
+// booting with blank PRAM: it selects its DR 68k emulator (MMFlags bit 5)
+// and soft-RESTARTS — a jump back into the ROM boot with no CPU reset and
+// no machine.boot, which is why only the second chime betrays it.  A real
+// Mac does this once ever (its PRAM is battery-backed); a browser session
+// that hands the guest blank PRAM does it on every boot.  bus/emulator.ts
+// now seeds a deterministic, valid PRAM (validity tokens, Start Manager
+// defaults, the configured boot device, the DR flag) on every boot, so
+// every boot — including the very first — is a single-chime boot.
 //
-// A pristine-profile first boot did NOT reproduce (verified: one chime,
-// one boot banner, monotonic instr_count, no reset-vector re-entry), so
-// this spec recreates the user's actual situation: the image in OPFS has
-// been booted before — with the session ending mid-run, the way every
-// session ended while the ADB crash was live.  Phase 1 boots the virgin
-// image fast-forwarded deep into the 8.1 boot (real disk writes land in
-// the image's OPFS state), then shuts down mid-run.  Phase 2 re-does the
-// user's setup — New Machine, pm6100, 24 MB, same HD — at real-time speed
-// with every detector armed from t=0:
+// Phase 1 boots the virgin image fast-forwarded deep into 8.1, then shuts
+// down mid-run.  Phase 2 re-does the user's setup — New Machine, pm6100,
+// 24 MB, same HD — at real-time speed with every detector armed from t=0,
+// and must hear exactly ONE chime:
 //  - AUDIO: an AnalyserNode tapped onto everything that connects to the
 //    AudioContext destination logs output RMS every ~100 ms; a boot chime
 //    is one loud burst, the symptom is two a few seconds apart.
@@ -203,7 +204,7 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   // so probe both plausible ids) and sample instr_count out to ~60 s.
   await terminalRun(page, 'debug.logpoints.add addr=0xFFF00100 message="RESETVEC"');
   const samples: number[] = [];
-  while (Date.now() - started < 60_000) {
+  while (Date.now() - started < 80_000) {
     const v = await terminalEval(page, 'scheduler.instr_count');
     if (v !== null) {
       const n = Number(v);
@@ -217,7 +218,10 @@ test('pm6100 + Mac OS 8.1 HD boots exactly once — also on a previously-used im
   const rmsLog = await page.evaluate(
     () => (window as unknown as { __rmsLog: RmsSample[] }).__rmsLog,
   );
-  const bursts = burstStarts(rmsLog.filter((s) => s.t >= t0 && s.t <= t0 + 30_000));
+  // The blank-PRAM re-chime lands ~45-50 s in at real-time pacing (RAM
+  // test + the ROM's 20 s drive wait + the first HD access), so the audio
+  // window must reach well past it.
+  const bursts = burstStarts(rmsLog.filter((s) => s.t >= t0 && s.t <= t0 + 75_000));
 
   console.log(`phase 2 boot banners: ${banners}`);
   console.log(
