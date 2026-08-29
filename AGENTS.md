@@ -85,6 +85,18 @@ the devcontainer image.)
   (requires test data from `scripts/fetch-test-data.sh`)
 - In general, no need to run unit tests unless explicitly asked
 
+**What to test locally, and what to leave to CI.** Test what you work
+on: the row for the specific use case, and the rows of the specific
+machine family whose code you modified (a change to shared machinery —
+`av/cuda.c`, the SCSI model, the SCRIPTS engine — means the rows of every
+family that uses it). Beyond that, broad testing — `make integration-test`
+over all rows — is in general left to CI: push the branch and open (or
+update) a PR, and CI runs the whole suite while the local machine stays
+free for the next piece of work. A full local run blocks the development
+container for an hour or more and finds the same failures CI would.
+Opening a PR is what triggers CI; it does not mean the branch is to be
+merged now. `gh pr checks <n>` reads the result.
+
 ### STOP. READ THIS BEFORE RUNNING ANY TEST.
 
 > **ABSOLUTE RULE — NO EXCEPTIONS, EVER:**
