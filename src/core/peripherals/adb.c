@@ -61,6 +61,15 @@ LOG_USE_CATEGORY_NAME("adb");
 // 11 ms to match real hardware timing.
 #define ADB_AUTOPOLL_INTERVAL (11 * 1000 * 1000)
 
+// Spacing between the key events keyboard.type() queues, in nanoseconds.
+// A real keyboard reports two key transitions in one Talk R0 only when both
+// happened inside one poll interval; a typist's Shift-down and the key it
+// shifts never do.  Queued back to back they would, and a guest that reads
+// one transition per report (the Network Server Diagnostic Utility does)
+// then sees Shift go down and never come up.  4 ms per event is a brisk
+// 125 events/s — faster than any typist, slower than any poll loop.
+#define ADB_TYPE_SPACING ((uint64_t)4 * 1000 * 1000)
+
 // Default ADB device addresses assigned at power-on
 #define KBD_DEFAULT_ADDR   2
 #define MOUSE_DEFAULT_ADDR 3
@@ -173,6 +182,11 @@ struct adb {
     bool reply_from_mouse; // reply_buf holds freshly-consumed mouse deltas
     int mouse_reply_dx, mouse_reply_dy; // the consumed deltas (for abort restore)
 
+    // keyboard.type() pacing: the scheduler time the next typed key event
+    // may be queued, so consecutive calls keep typing at a human rate
+    // rather than landing in one report (adb_typed_key_deferred).
+    uint64_t type_next_ns;
+
     // === Pointers last (not checkpointed) ===
     via_t *via;
     struct scheduler *scheduler;
@@ -186,6 +200,10 @@ static void adb_reset(adb_t *adb);
 static void adb_deliver_next_byte(adb_t *adb);
 static void adb_deliver_next_byte_deferred(void *source, uint64_t data);
 static void adb_shift_complete_deferred(void *source, uint64_t data);
+static void adb_typed_key_deferred(void *source, uint64_t data);
+
+// The controller the keyboard object types into (one machine at a time).
+static adb_t *s_adb_current;
 static void adb_autopoll_deferred(void *source, uint64_t data);
 static void adb_decode_command(adb_t *adb, uint8_t cmd);
 
@@ -827,6 +845,10 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
     // Register the auto-poll event type (IDLE-state Talk R0 repetition)
     scheduler_new_event_type(scheduler, "adb", adb, "autopoll", &adb_autopoll_deferred);
 
+    // Register the paced keyboard.type() key event
+    scheduler_new_event_type(scheduler, "adb", adb, "typed", &adb_typed_key_deferred);
+    s_adb_current = adb;
+
     // Set device register 3 defaults and clear all queues/deltas
     adb_reset(adb);
     adb->state = ADB_STATE_IDLE;
@@ -850,6 +872,8 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 
 // Frees all resources associated with an ADB controller instance
 void adb_delete(adb_t *adb) {
+    if (s_adb_current == adb)
+        s_adb_current = NULL;
     if (!adb)
         return;
     free(adb);
@@ -1259,23 +1283,46 @@ static value_t keyboard_method_type(struct object *self, const member_t *m, int 
                        "type fewer characters per call",
                        cost, KEYBOARD_TYPE_MAX_BYTES);
 
+    adb_t *adb = s_adb_current;
+    if (!adb || !adb->scheduler)
+        return val_err("keyboard.type: the machine has no keyboard");
+
+    // Pace the events in guest time (ADB_TYPE_SPACING apart), continuing
+    // from where the previous call left off so a line typed in pieces
+    // still arrives one transition at a time.
+    // The first transition lands one spacing out (never "now": a zero
+    // delay is not a schedulable event).
+    uint64_t now = (uint64_t)scheduler_time_ns(adb->scheduler);
+    uint64_t at = adb->type_next_ns > now + ADB_TYPE_SPACING ? adb->type_next_ns : now + ADB_TYPE_SPACING;
     uint64_t typed = 0;
     for (const char *p = text; *p; p++) {
         bool shift = false;
         int code = debug_mac_resolve_ascii(*p, &shift);
-        char hexbuf[8];
-        snprintf(hexbuf, sizeof(hexbuf), "0x%02x", (unsigned)code);
-        if (shift)
-            system_input_key("shift", true);
-        if (system_input_key(hexbuf, true) < 0)
-            return val_err("keyboard.type: the machine has no keyboard");
-        system_input_key(hexbuf, false);
-        if (shift)
-            system_input_key("shift", false);
+        // data: bit 0 = down, bits 8:1 = the ADB keycode
+        if (shift) {
+            scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, (ADB_KEY_SHIFT << 1) | 1u, 0,
+                                    at - now);
+            at += ADB_TYPE_SPACING;
+        }
+        scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, ((uint64_t)code << 1) | 1u, 0, at - now);
+        at += ADB_TYPE_SPACING;
+        scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, (uint64_t)code << 1, 0, at - now);
+        at += ADB_TYPE_SPACING;
+        if (shift) {
+            scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, ADB_KEY_SHIFT << 1, 0, at - now);
+            at += ADB_TYPE_SPACING;
+        }
         typed++;
     }
-    LOG(3, "keyboard.type: %llu character(s)", (unsigned long long)typed);
+    adb->type_next_ns = at;
+    LOG(3, "keyboard.type: %llu character(s), paced to %llu ns", (unsigned long long)typed, (unsigned long long)at);
     return val_uint(8, typed);
+}
+
+// A keyboard.type() key transition coming due.
+static void adb_typed_key_deferred(void *source, uint64_t data) {
+    adb_t *adb = (adb_t *)source;
+    adb_keyboard_event(adb, (data & 1u) ? key_down : key_up, (int)((data >> 1) & 0xFFu));
 }
 
 static const arg_decl_t keyboard_type_args[] = {

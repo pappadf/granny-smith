@@ -41,11 +41,18 @@ table.
 `type(text)` walks a US-layout ASCII→keycode table
 (`debug_mac_resolve_ascii()`), holding Shift for the characters that need it;
 a newline in the string types Return and a tab types Tab, so a whole command
-line ends itself. It queues every event at once with no guest time in
-between, and the ADB keyboard ring holds 128 bytes — two per character, four
-when shifted — so it **refuses** anything over 96 bytes' worth rather than
-letting the ring's drop-oldest overflow silently eat the head of the line.
-Type a line at a time and let the guest run.
+line ends itself. On the ADB keyboard the transitions are **paced in guest
+time**, 4 ms apart (`ADB_TYPE_SPACING`), continuing from wherever the
+previous call left off: a real keyboard packs two key transitions into one
+Talk R0 report only when both happened inside a poll interval, and a
+typist's Shift-down and the key it shifts never do — queued back to back
+they did, and a guest that takes one transition per report (the Network
+Server Diagnostic Utility) saw Shift go down and never come up, so every
+key after a `*` arrived shifted. The ring holds 128 bytes — two per
+character, four when shifted — so a call **refuses** anything over 96
+bytes' worth rather than letting the ring's drop-oldest overflow silently
+eat the head of the line. Type a line at a time and let the guest run; a
+line of *n* characters has landed after roughly 8·*n* ms of guest time.
 
 A guest may not agree with the ADB keycode a name resolves to. MkLinux DR3
 and AIX 4.1.5 on the Network Server are the cases in this tree: their ADB
