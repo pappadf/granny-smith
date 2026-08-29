@@ -3,8 +3,11 @@
 #
 # The media is a disk image the BOS install itself produced — AIX 4.1.5
 # installed from the Install CD onto a Quantum LP240S (234 MB, the smallest
-# catalog drive the stock layout fits), shut down with `shutdown -F` and
-# exported flattened with `machine.scsi.device[2].image.export`.  It is
+# catalog drive the stock layout fits), its console moved to the graphics
+# display (`chcons /dev/lft0`), keyboard and mouse configured, the
+# Installation Assistant completed, shut down with `shutdown -F` typed on
+# that console and exported flattened with
+# `machine.scsi.device[2].image.export`.  It is
 # copyrighted AIX and cannot be committed (proposal §13 R8), so this row is
 # media-gated like ans-aix-boot: it skips cleanly when the image is absent.
 #
@@ -14,7 +17,7 @@
 # told.  No CD, no typed command.
 
 TEST_NAME := ANS AIX installed boot
-TEST_DESC := Cold-boots an installed AIX 4.1.5 disk through Open Firmware's default disk2:aix to the login prompt
+TEST_DESC := Cold-boots an installed AIX 4.1.5 disk through Open Firmware's default disk2:aix to the login prompt on the graphics console, and logs in from the ADB keyboard
 
 # 4 MB Apple Network Server 500/700 ROM, Open Firmware 1.1.22.
 TEST_ROM := roms/ans500-ans700-962f6c13.rom

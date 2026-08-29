@@ -1,24 +1,30 @@
 # Cold boot of an installed AIX 4.1.5 (proposal-apple-network-server-500-700
 # §6, rung S13).  See config.mk for what the media is and why it is gated.
 #
-# RUNG S13.  A Network Server with AIX on the disk in bay 2 and the key in
-# Normal boots it with no help: POST, Open Firmware's default boot device
-# `disk2:aix`, the kernel, cfgmgr over both fast/wide channels (LCD 890 /
-# 868), "Multi-user initialization completed" and `Console login:` on the
-# system console — which this installation set to serial port B during
-# its own install, so the whole narration is readable on `machine.scc.b`.
+# RUNG S13, ON THE MONITOR.  A Network Server with AIX on the disk in bay 2
+# and the key in Normal boots it with no help: POST, Open Firmware's default
+# boot device `disk2:aix`, the kernel, cfgmgr over both fast/wide channels
+# (LCD 890 / 868), and `Console login:` — on the 54M30 graphics console,
+# which this installation made its system console (`chcons /dev/lft0`).
+# The row then logs in as root from the emulated ADB keyboard and matches
+# the shell it gets.  Both screens are pixel goldens drawn by the guest.
 #
-# Two prompts sit between multi-user and the login on a freshly installed
-# system, and the row answers them the way a person at the terminal would:
-# the terminal-type question (`vt100`) and the Installation Assistant
-# (Esc+0, "Exit").  Both are AIX's first-boot behaviour, not the
-# emulator's.
+# What the two matches prove, in order: the installed system came up
+# multi-user with its LFT console on the display; the keyboard adapter was
+# defined by cfgcuda from Cuda's device list (finding 57), the keyboard
+# attached to the LFT, and a typed line went through Cuda autopoll, the
+# kernel's ADB manager, kbddd and the LFT into a login (finding 58).
+#
+# The image's Installation Assistant has already been completed, so no
+# first-boot prompts stand between multi-user and the login.  The banner's
+# "Last login" line is the previous login stored in the image, not the
+# clock, so it is stable.
 #
 # BUDGET.  A Normal-key cold boot is slow by the machine's design — POST
 # runs its full memory test, and cfgmgr pays one selection time-out plus a
 # bus reset for every absent id on two wide buses (finding 48).  Sampled
-# in 500 M-cycle strides; ~260 strides to the login prompt on the
-# reference host.
+# in 500 M-cycle strides and polled against the login golden; ~260
+# strides to the prompt on the reference host, capped at 400.
 
 include "../lib/mac.script"
 include "../lib/ans.script"
@@ -40,11 +46,7 @@ def installed_boot() {
 
     let saw_scsi2 = 0
     let saw_integrated = 0
-    let saw_multiuser = 0
     let saw_login = 0
-    let answered_term = 0
-    let exited_assistant = 0
-    let console = ""
     for i in 0..400 {
         scheduler.run 500000000
         if contains(machine.lcd.text, "890") {
@@ -53,38 +55,39 @@ def installed_boot() {
         if contains(machine.lcd.text, "868") {
             $saw_integrated = 1
         }
-        $console = "${$console}${machine.scc.b.sent()}"
-        if contains($console, "Multi-user initialization completed") {
-            $saw_multiuser = 1
-        }
-        if $answered_term == 0 && contains($console, ">>> Choice []:") {
-            machine.scc.b.receive("vt100\r")
-            $answered_term = 1
-        }
-        if $exited_assistant == 0 && contains($console, "Installation Assistant") {
-            machine.scc.b.receive("\x1b0")
-            $exited_assistant = 1
-        }
-        if contains($console, "Console login:") {
-            $saw_login = 1
-            break
+        # The 54M30 has no framebuffer until Open Firmware opens it (a few
+        # G cycles in); the screen node cannot be asked before that.  The
+        # frame's top four text rows carry the subsystem PIDs (`0513-059
+        # The syslogd Subsystem has been started. Subsystem PID is 3320.`)
+        # and one of them differs from boot to boot, so the compare
+        # excludes them.
+        if $i >= 20 {
+            if machine.screen.matches("console-login.png", 0, 0, 64, 640) {
+                $saw_login = 1
+                break
+            }
         }
     }
 
-    # --- S13: the installed system came up ---------------------------------
+    # --- S13: the installed system came up, on the monitor -----------------
     assert $saw_scsi2 == 1 "S13: the LCD never showed 890 (cfgmgr configuring the SCSI-2 adapter)"
     assert $saw_integrated == 1 "S13: the LCD never showed 868 (the integrated SCSI adapter)"
-    assert $saw_multiuser == 1 "S13: the console never reported 'Multi-user initialization completed'"
-    assert $saw_login == 1 "S13: the console never reached 'Console login:'"
-    # A clean shutdown left clean filesystems: the boot-time check is
-    # suppressed rather than run, and no JFS log replay is reported.
-    assert contains($console, "Unmounted cleanly") "S13: the boot-time filesystem check did not report a clean unmount"
-    assert !contains($console, "Halt completed") "S13: the system halted instead of coming up"
+    if $saw_login == 0 {
+        # Leave the frame the row did see next to the golden, for the diff.
+        machine.screen.save "console-login-actual.png"
+    }
+    assert $saw_login == 1 "S13: the graphics console never showed 'Console login:' (see console-login-actual.png)"
+    check_ex("console-login.png", 0, 0, 64, 640)
+
+    # --- The ADB keyboard: log in as root (the install set no password) ----
+    machine.adb.keyboard.type "root\n"
+    scheduler.run 3000000000
+    check("root-shell.png")
 
     # And the disk is still the one it booted from.
     assert machine.scsi.device[2].type == "hd" "S13: the boot disk went away under AIX"
 
-    echo "ans-aix-installed-boot: an installed AIX 4.1.5 cold-boots through Open Firmware's disk2:aix to 'Console login:' (rung S13)"
+    echo "ans-aix-installed-boot: an installed AIX 4.1.5 cold-boots through Open Firmware's disk2:aix to 'Console login:' on the graphics console, and root logs in from the ADB keyboard (rung S13)"
 }
 
 if have_media($aix_disk) {
