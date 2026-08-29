@@ -258,13 +258,24 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
 // so it is live from reset; the contents survive machine reset (it is
 // non-volatile) and are checkpointed with the family blob.
 
+// The data window decodes FIVE address bits for the cell — (offset >> 4) &
+// $1F — and ignores the rest, so the window WRAPS every $200 bytes rather
+// than ending.  POST leans on that: its NVRAM pattern test writes 4-byte
+// values at cells $1D..$1F with its plain "+$10 per byte" accessor, so the
+// last byte lands at +$200 and must alias cell 0 of the same bank (as the
+// part wires it) for the read-back to match.  A model that dropped it
+// failed every warm boot's "MainLBU NVRAM" test.
+static uint32_t nvram_cell(uint32_t offset) {
+    return (offset >> 4) & 0x1Fu;
+}
+
 static uint8_t nvram_read(config_t *cfg, uint32_t offset) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
-    if ((offset & 0xFu) != 0 || offset >= 32u * 0x10u) {
+    if ((offset & 0xFu) != 0) {
         LOG(2, "NVRAM data read off-centre +$%03X", offset);
         return 0xFF;
     }
-    uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + (offset >> 4)) % TNT_NVRAM_SIZE;
+    uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + nvram_cell(offset)) % TNT_NVRAM_SIZE;
     if (idx >= 0x1300u && idx < 0x1400u)
         LOG(4, "XPRAM read nv[$%04X] -> $%02X", idx, gc->nvram[idx]);
     return gc->nvram[idx];
@@ -272,13 +283,15 @@ static uint8_t nvram_read(config_t *cfg, uint32_t offset) {
 
 static void nvram_write(config_t *cfg, uint32_t offset, uint8_t value) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
-    if ((offset & 0xFu) != 0 || offset >= 32u * 0x10u) {
+    if ((offset & 0xFu) != 0) {
         LOG(2, "NVRAM data write off-centre +$%03X = $%02X", offset, value);
         return;
     }
-    uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + (offset >> 4)) % TNT_NVRAM_SIZE;
+    uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + nvram_cell(offset)) % TNT_NVRAM_SIZE;
     if (idx >= 0x1300u && idx < 0x1400u)
         LOG(4, "XPRAM write nv[$%04X] = $%02X (pc=%08X)", idx, value, ppc_get_pc(cfg->ppc));
+    else
+        LOG(3, "NVRAM write nv[$%04X] = $%02X (pc=%08X)", idx, value, ppc_get_pc(cfg->ppc));
     gc->nvram[idx] = value;
 }
 
