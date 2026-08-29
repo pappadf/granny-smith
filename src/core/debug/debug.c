@@ -3618,6 +3618,29 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
 // the path-form dispatcher (and hence the headless script runner)
 // propagates non-zero out, failing the integration test.  Use
 // `screen.match_or_save` for the non-fatal diagnostic flow.
+// Parse the optional exclude rectangle shared by `screen.match` and
+// `screen.matches`: either just the reference (whole-screen compare) or the
+// reference plus all four region edges (top, left, bottom, right) — reject
+// anything in between.  Returns NULL through *err_out on a bad call.
+static const int *screen_parse_exclude_rect(const char *who, const display_t *d, int argc, const value_t *argv,
+                                            int rect[4], value_t *err_out) {
+    if (argc == 5) {
+        int top = (int)argv[1].i, left = (int)argv[2].i, bottom = (int)argv[3].i, right = (int)argv[4].i;
+        if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > (int)d->height || right > (int)d->width) {
+            *err_out = val_err("%s: invalid exclude region for (0,0)-(%u,%u)", who, d->width, d->height);
+            return NULL;
+        }
+        rect[0] = top;
+        rect[1] = left;
+        rect[2] = bottom;
+        rect[3] = right;
+        return rect;
+    }
+    if (argc != 1)
+        *err_out = val_err("%s: expected (reference) or (reference, top, left, bottom, right)", who);
+    return NULL;
+}
+
 static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -3625,23 +3648,11 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
     const display_t *d = system_display();
     if (!d || !d->bits)
         return val_err("screen.match: framebuffer not available");
-    // Optional exclude rectangle: ref + (top, left, bottom, right).  Either
-    // just the reference (whole-screen compare, exactly as before) or the
-    // reference plus all four region edges — reject anything in between.
     int rect[4];
-    const int *exclude_rect = NULL;
-    if (argc == 5) {
-        int top = (int)argv[1].i, left = (int)argv[2].i, bottom = (int)argv[3].i, right = (int)argv[4].i;
-        if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > (int)d->height || right > (int)d->width)
-            return val_err("screen.match: invalid exclude region for (0,0)-(%u,%u)", d->width, d->height);
-        rect[0] = top;
-        rect[1] = left;
-        rect[2] = bottom;
-        rect[3] = right;
-        exclude_rect = rect;
-    } else if (argc != 1) {
-        return val_err("screen.match: expected (reference) or (reference, top, left, bottom, right)");
-    }
+    value_t err = val_none();
+    const int *exclude_rect = screen_parse_exclude_rect("screen.match", d, argc, argv, rect, &err);
+    if (!exclude_rect && argc != 1)
+        return err;
     int result = match_framebuffer_with_png(d, ref, exclude_rect);
     if (result < 0) {
         printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
@@ -3655,22 +3666,26 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
     return val_err("screen.match: screen does not match '%s'", ref);
 }
 
-// `screen.matches(reference)` — the non-fatal twin of `screen.match`:
-// same comparison, V_BOOL result, no abort, no diff artifacts, and no
-// per-call output (it is a polling primitive — wait_match() in the
-// integration library calls it every few million cycles).  An
-// unreadable reference is still a hard error: polling against a
-// missing golden would spin to the ceiling and report a timeout
-// instead of the actual mistake.
+// `screen.matches(reference[, top, left, bottom, right])` — the non-fatal
+// twin of `screen.match`: same comparison (including the optional exclude
+// rectangle), V_BOOL result, no abort, no diff artifacts, and no per-call
+// output (it is a polling primitive — wait_match() in the integration
+// library calls it every few million cycles).  An unreadable reference is
+// still a hard error: polling against a missing golden would spin to the
+// ceiling and report a timeout instead of the actual mistake.
 static value_t screen_method_matches(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    (void)argc;
     const char *ref = argv[0].s;
     const display_t *d = system_display();
     if (!d || !d->bits)
         return val_err("screen.matches: framebuffer not available");
-    int result = match_framebuffer_with_png(d, ref, NULL);
+    int rect[4];
+    value_t err = val_none();
+    const int *exclude_rect = screen_parse_exclude_rect("screen.matches", d, argc, argv, rect, &err);
+    if (!exclude_rect && argc != 1)
+        return err;
+    int result = match_framebuffer_with_png(d, ref, exclude_rect);
     if (result < 0)
         return val_err("screen.matches: cannot load reference '%s'", ref);
     return val_bool(result == 0);
@@ -3817,6 +3832,10 @@ static const arg_decl_t screen_match_args[] = {
 };
 static const arg_decl_t screen_matches_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
+    {.name = "top", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region top edge"},
+    {.name = "left", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region left edge"},
+    {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
+    {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -3867,8 +3886,8 @@ static const member_t screen_members[] = {
             "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_match}},
     {.kind = M_METHOD,
      .name = "matches",
-     .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive)",
-     .method = {.args = screen_matches_args, .nargs = 1, .result = V_BOOL, .fn = screen_method_matches}},
+     .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_matches}},
     {.kind = M_METHOD,
      .name = "match_or_save",
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",
