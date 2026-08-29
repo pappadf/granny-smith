@@ -485,6 +485,13 @@ export async function seedPram(model: string, scsiId = 0): Promise<void> {
   // Stamp the two boot-ROM validity tokens ($A8 + 'NuMc') so the ROM's
   // PRAMInit leaves the seeded bytes alone (pram.md §3).
   await gsEval('machine.rtc.pram.validate');
+  // XPRAM $01 is the Start Manager wait byte (StartSearch.a): bits 0-4 =
+  // spin-up timeout seconds (0 = pristine -> 20 s default), bit 7 =
+  // disable the dynamic wait.  On single-Curio machines the startup-device
+  // poll can never succeed (a ROM HAL bug — scsi-53c96.md §8.2), so the
+  // wait always runs to full expiry before the drive-queue fallback boots;
+  // our disk is ready instantly, so skip the wait outright.
+  await gsEvalLine('machine.rtc.pram.poke 0x01 0x80:1');
   // Start Manager defaults (pram.md §4.2): default OS, and the boot
   // device as the SCSI driver refnum (-(33+id)) of the configured disk so
   // the Start Manager goes straight to it.
