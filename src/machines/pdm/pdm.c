@@ -365,6 +365,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     pdm_amic_init(cfg);
     pdm_amic_register_events(cfg);
     pdm_awacs_register_events(cfg);
+    pdm_swim3_bind(cfg);
     pdm_swim3_register_events(cfg);
     pdm_swim3_xfer_register_events(cfg);
     pdm_memory_layout(cfg);
@@ -374,6 +375,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
         system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
+        pdm_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
         system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
         pdm_hmc_remap(cfg);
