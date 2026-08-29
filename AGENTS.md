@@ -62,7 +62,7 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 68K fragments — `src/core/peripherals/nubus/vrom68k/`. Any m68k-targeted
 binutils works; override `M68K_AS`/`M68K_OBJCOPY` if yours differ. Shipped in
 the devcontainer image.)  
-**Local server:** `scripts/dev_server.py` or `python3 -m http.server 8080`  
+**Local server:** `make run` (builds, then `scripts/dev_server.py` on :8080 — or the next free port if another checkout already holds it; each port is its own browser origin, so parallel instances do not share OPFS, localStorage or service workers). `RUN_PORT=n` to choose.  
 **CI:** GitHub Actions workflows in `.github/workflows/`
 
 ## Building and Testing

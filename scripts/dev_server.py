@@ -4,9 +4,29 @@ from __future__ import annotations
 Usage: python scripts/dev_server.py --root build --port 8080
        python scripts/dev_server.py --root build --port 8080 --fallback-root .
 """
-import argparse, os, urllib.parse
+import argparse, os, socket, urllib.parse
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
+
+
+def pick_port(preferred, host='localhost', tries=20):
+    """The preferred port, or the first free one above it.
+
+    Two checkouts of this project served at once (two editors, two
+    branches) must not share an origin: OPFS access handles are exclusive
+    per origin, the checkpoint machine id lives in localStorage, and a COI
+    service worker registered by one would control the other.  A different
+    port is a different origin, so `make run` simply takes the next one.
+    """
+    for port in range(preferred, preferred + tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((host, port))
+            except OSError:
+                continue
+            return port
+    raise SystemExit(f"No free port in {preferred}..{preferred + tries - 1}")
 
 class Handler(SimpleHTTPRequestHandler):
     # Optional fallback directory; set by main() on the class.
@@ -66,7 +86,14 @@ def main():
                     help='Default URL query string appended when redirecting / to /index.html')
     ap.add_argument('--no-coi-headers', action='store_true',
                     help='Skip COOP/COEP headers (let the service worker inject them instead)')
+    ap.add_argument('--strict-port', action='store_true',
+                    help='Fail if --port is taken instead of moving to the next free one')
     a = ap.parse_args()
+    if not a.strict_port:
+        port = pick_port(a.port)
+        if port != a.port:
+            print(f"Port {a.port} is in use (another instance?); using {port}")
+        a.port = port
     root = os.path.abspath(a.root)
     if not os.path.isdir(root):
         raise SystemExit(f"Missing root '{root}'. Run make first.")
@@ -77,7 +104,8 @@ def main():
     if a.no_coi_headers:
         Handler.no_coi_headers = True
     url = f"http://localhost:{a.port}"
-    parts = [f"Serving {root}"]
+    parts = [f"Serving UI on {url} --"]
+    parts.append(f"root {root}")
     if a.fallback_root:
         parts.append(f"(fallback: {Handler.fallback_root})")
     parts.append(f"on {url}")
@@ -88,7 +116,10 @@ def main():
     # worker fetches at once and a pthread worker can hold a connection while
     # it blocks; on the single-threaded HTTPServer any one of those stalled
     # every other request (a reload that never completed).
-    httpd = ThreadingHTTPServer(('localhost', a.port), partial(Handler, directory=root))
+    try:
+        httpd = ThreadingHTTPServer(('localhost', a.port), partial(Handler, directory=root))
+    except OSError as e:
+        raise SystemExit(f"Cannot listen on port {a.port}: {e.strerror} (drop --strict-port to take the next free one)")
     httpd.daemon_threads = True
     try: httpd.serve_forever()
     except KeyboardInterrupt: print('\nStop')
