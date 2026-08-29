@@ -23,7 +23,7 @@
 # 110 KB) and the row skips cleanly when it has not been fetched.
 
 TEST_NAME := ANS diagnostic floppy
-TEST_DESC := Boots the Network Server Diagnostic Utility 1.1 from the internal floppy with the keyswitch in Service, and drives its menu from the ADB keyboard
+TEST_DESC := Boots the Network Server Diagnostic Utility 1.1 from the internal floppy with the keyswitch in Service, drives it from the ADB keyboard, and runs its complete system test
 
 # 4 MB Apple Network Server 500/700 ROM, Open Firmware 1.1.22.
 TEST_ROM := roms/ans500-ans700-962f6c13.rom
