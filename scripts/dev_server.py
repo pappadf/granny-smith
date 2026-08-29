@@ -5,7 +5,7 @@ Usage: python scripts/dev_server.py --root build --port 8080
        python scripts/dev_server.py --root build --port 8080 --fallback-root .
 """
 import argparse, os, urllib.parse
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 from functools import partial
 
 class Handler(SimpleHTTPRequestHandler):
@@ -84,7 +84,12 @@ def main():
     print(' '.join(parts))
     if a.default_params:
         print(f"Open: {url}/index.html?{a.default_params}")
-    httpd = HTTPServer(('localhost', a.port), partial(Handler, directory=root))
+    # One thread per connection.  A COOP/COEP page opens several module and
+    # worker fetches at once and a pthread worker can hold a connection while
+    # it blocks; on the single-threaded HTTPServer any one of those stalled
+    # every other request (a reload that never completed).
+    httpd = ThreadingHTTPServer(('localhost', a.port), partial(Handler, directory=root))
+    httpd.daemon_threads = True
     try: httpd.serve_forever()
     except KeyboardInterrupt: print('\nStop')
 
