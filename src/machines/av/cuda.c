@@ -76,6 +76,7 @@ LOG_USE_CATEGORY_NAME("cuda");
 #define CMD_RDWRIIC    0x22 // I2C master transaction (DMSD/VDC — video-in.md §2)
 #define CMD_RESET      0x11 // cold reset
 #define CMD_SETAUTOP   0x14 // set autopoll rate
+#define CMD_RDDEVLIST  0x1A // read the ADB device list (16-bit address bitmap)
 #define CMD_WR1SECMODE 0x1B // 1-second-interrupt mode
 
 // Error codes returned in an errorPkt (firmware: $12C4 dispatch).
@@ -98,6 +99,17 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 #define CUDA_TICK_NS     1000000000.0
 // Delay before a Cuda-initiated SR byte lands (the firmware's ~25 us).
 #define CUDA_PUSH_DELAY_NS 25000.0
+// How long after the host negates ByteAck at the end of a sync cycle Cuda
+// takes to negate TREQ.  The firmware is a microcontroller reacting to a
+// pin, not a combinational path: a host that polls TREQ the instant after
+// raising ByteAck sees it still asserted.  AIX's cuda_sync leans on
+// exactly that -- after raising ByteAck it waits for TREQ LOW, then for
+// the idle-acknowledge byte -- and a model that negated TREQ inside the
+// host's own store failed every sync, so cuda_reset gave up before
+// enable_via_intr and the keyboard never interrupted.  The Macintosh
+// CudaInit waits for TREQ HIGH here with a 10 ms timeout, so a few
+// microseconds of latency is invisible to it.
+#define CUDA_SYNC_TREQ_NS 8000.0
 // How long after a RESET SYSTEM command the reset line is asserted.  A real
 // Cuda takes milliseconds; what matters here is only that it is not zero,
 // so the guest instruction that asked for it has retired first (see
@@ -105,10 +117,18 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 #define CUDA_RESET_DELAY_NS 100000.0
 
 // How long an unclaimed response waits before Cuda gives up on the host
-// (state SENDING with the attention byte still untaken).  Well above any
-// live host's attention latency (microseconds), well below the OF-to-68k
-// handoff gap (~7 ms of guest time on the TNT boot).
-#define CUDA_SEND_ABANDON_NS 5000000.0
+// (state SENDING with the attention byte still untaken).  A live host
+// takes the attention byte in microseconds -- but not every host is a
+// Macintosh: AIX's Cuda transport on the Network Server sends a Talk R3
+// from its keyboard configuration and comes back for the reply tens of
+// milliseconds later, and a 5 ms watchdog reaped it first.  The reply
+// gone, the driver synced three times to recover (which silences
+// autopoll) and never re-enabled it: a keyboard that could never speak.
+// The OF-to-68k handoff on the TNT Macintosh boot, the case this watchdog
+// was written for, is covered separately -- the 68k's CudaInit sync into
+// an unread response is recognised from the SENDING state -- so the
+// watchdog only has to be finite.
+#define CUDA_SEND_ABANDON_NS 1000000000.0
 
 // Transfer state.
 typedef enum {
@@ -136,6 +156,7 @@ struct av_cuda {
     bool treq_high; // level we drive on TREQ (PB3); true = idle
     bool push_pending; // a delayed SR push is scheduled
     uint8_t push_byte; // byte the delayed push will deliver
+    bool push_last; // ...and it is the last byte of a response (TREQ negates with it)
 
     bool autopoll_enabled;
     bool onesec_enabled;
@@ -157,6 +178,8 @@ struct av_cuda {
     // response nobody reads is reaped by the abandonment watchdog above
     // (which is how the OF-era leftover stays harmless).
     bool resend_pending;
+    // TREQ negation owed at the end of a sync cycle (see CUDA_SYNC_TREQ_NS).
+    bool treq_release_pending;
 
     // --- pointers / callbacks (not checkpointed) ---
     struct via *via1;
@@ -179,6 +202,7 @@ static void cuda_autopoll_event(void *source, uint64_t data);
 static void cuda_push_event(void *source, uint64_t data);
 static void cuda_send_timeout_event(void *source, uint64_t data);
 static void cuda_resend_event(void *source, uint64_t data);
+static void cuda_treq_release_event(void *source, uint64_t data);
 
 // === TREQ / SR helpers ======================================================
 
@@ -192,6 +216,7 @@ static void cuda_set_treq(av_cuda_t *cuda, bool high) {
 static void cuda_push_delayed(av_cuda_t *cuda, uint8_t byte) {
     cuda->push_pending = true;
     cuda->push_byte = byte;
+    cuda->push_last = false;
     remove_event(cuda->sched, &cuda_push_event, cuda);
     scheduler_new_cpu_event(cuda->sched, &cuda_push_event, cuda, 0, 0, (uint64_t)CUDA_PUSH_DELAY_NS);
 }
@@ -214,6 +239,9 @@ static void cuda_push_event(void *source, uint64_t data) {
     if (!cuda->push_pending)
         return;
     cuda->push_pending = false;
+    if (cuda->push_last)
+        cuda_set_treq(cuda, true); // the last response byte carries TREQ negated
+    cuda->push_last = false;
     via_input_sr(cuda->via1, cuda->push_byte);
 }
 
@@ -284,6 +312,17 @@ static void cuda_resend_event(void *source, uint64_t data) {
     // happened), and the reply must survive until its unmask.  The next
     // sync still clears it if the host never engages.
     cuda_send_progress(cuda);
+}
+
+// End of a sync cycle: Cuda negates TREQ a few microseconds after the host
+// negated ByteAck (the idle acknowledge byte follows separately).
+static void cuda_treq_release_event(void *source, uint64_t data) {
+    (void)data;
+    av_cuda_t *cuda = (av_cuda_t *)source;
+    if (!cuda->treq_release_pending)
+        return;
+    cuda->treq_release_pending = false;
+    cuda_set_treq(cuda, true);
 }
 
 // The host never took the attention byte: drop the response and return
@@ -437,6 +476,23 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
     case CMD_SETAUTOP:
         cuda->autopoll_enabled = true; // setting a rate implies autopoll
         break;
+    case CMD_RDDEVLIST: {
+        // The firmware's autopoll list: one bit per ADB address that answered
+        // during its bus scan, high byte first.  Mac OS never asks; AIX's
+        // cfgcuda does, and defines its keyboard and mouse adapters from the
+        // bits (address 2 -> cudaka0, address 3 -> cudama0) -- a zero list is
+        // a machine without a keyboard, and its graphics console configures
+        // without one.  Report the devices where they live now (see the
+        // autopoll event for why the model is asked rather than shadowed).
+        uint16_t list = 0;
+        if (cuda->adb)
+            list = (uint16_t)((1u << (adb_keyboard_address(cuda->adb) & 0xF)) |
+                              (1u << (adb_mouse_address(cuda->adb) & 0xF)));
+        cuda->tx_buf[n++] = (uint8_t)(list >> 8);
+        cuda->tx_buf[n++] = (uint8_t)list;
+        LOG(2, "RdDevList -> $%04X", list);
+        break;
+    }
     case CMD_WR1SECMODE:
         cuda->onesec_mode = (data_len >= 1) ? data[0] : 0;
         cuda->onesec_enabled = cuda->onesec_mode != 0;
@@ -603,7 +659,12 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         }
         cuda->rx_len = 0;
         cuda->state = CUDA_SYNC;
-        cuda->autopoll_enabled = false;
+        // The sync resets the TRANSPORT.  It does NOT clear the autopoll
+        // setting: AIX's kernel enables autopoll, then runs cuda_reset --
+        // a sync cycle -- and never sends APoll again, and its keyboard
+        // works on the real machine.  (The Macintosh ROM re-enables
+        // autopoll explicitly after its CudaInit sync either way.)  The
+        // one-second tick is still silenced, as CudaInit documents.
         cuda->onesec_enabled = false;
         cuda->onesec_mode = 0;
         cuda_set_treq(cuda, false);
@@ -639,8 +700,7 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
             if (cuda->tx_idx == 0 && cuda->tx_buf[1] != PKT_TICK && !(cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL))
                 cuda->resend_pending = true;
             cuda->state = CUDA_SYNC;
-            cuda->autopoll_enabled = false;
-            cuda->onesec_enabled = false;
+            cuda->onesec_enabled = false; // autopoll survives a sync (see above)
             cuda_set_treq(cuda, false);
             cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
             break;
@@ -652,7 +712,17 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
             cuda_set_treq(cuda, true);
             cuda_push_delayed(cuda, 0x00);
         } else if (tip_fall && cuda->tx_idx == 0) {
-            cuda_advance_tx(cuda); // host accepted the attention byte
+            // Host accepted the attention byte.  The first real byte
+            // follows after Cuda's think time, NOT inside this store: AIX's
+            // handler asserts TIP first and reads the attention byte from
+            // the SR afterwards, and a byte clocked synchronously here
+            // would overwrite it -- the handler then waits for a byte that
+            // has already been and gone, with TIP held low, forever.
+            if (cuda->tx_idx + 1 < cuda->tx_len) {
+                cuda->tx_idx++;
+                cuda_push_delayed(cuda, cuda->tx_buf[cuda->tx_idx]);
+                cuda->push_last = (cuda->tx_idx == cuda->tx_len - 1);
+            }
         } else if (ba_toggle) {
             if (cuda->tx_idx == cuda->tx_len - 1 && tip_new) {
                 // Polled no-TIP read (the TNT ROM's early-boot driver):
@@ -677,7 +747,9 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         // (the host clears the SR interrupt first — a synchronous push
         // would be eaten and CudaInit would reach DeadCuda).
         if (!ba_old && ba_new) {
-            cuda_set_treq(cuda, true);
+            cuda->treq_release_pending = true;
+            remove_event(cuda->sched, &cuda_treq_release_event, cuda);
+            scheduler_new_cpu_event(cuda->sched, &cuda_treq_release_event, cuda, 0, 0, (uint64_t)CUDA_SYNC_TREQ_NS);
             cuda_push_delayed(cuda, 0x00);
             cuda->state = CUDA_IDLE;
             LOG(2, "sync cycle: terminated");
@@ -749,6 +821,8 @@ static void cuda_tick_event(void *source, uint64_t data) {
 static void cuda_autopoll_event(void *source, uint64_t data) {
     (void)data;
     av_cuda_t *cuda = (av_cuda_t *)source;
+    LOG(4, "autopoll gate: enabled=%d adb=%d state=%d push=%d pb=$%02X", cuda->autopoll_enabled, cuda->adb != NULL,
+        cuda->state, cuda->push_pending, cuda->last_pb);
     if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda)) {
         // Poll the devices where they live NOW: an OS's ADB init can move
         // them off the default addresses via Listen R3 and leave them there
@@ -812,6 +886,7 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "sendto", &cuda_send_timeout_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "resend", &cuda_resend_event);
         scheduler_new_event_type(cuda->sched, "cuda", cuda, "reset", &cuda_reset_event);
+        scheduler_new_event_type(cuda->sched, "cuda", cuda, "treqrel", &cuda_treq_release_event);
         scheduler_new_cpu_event(cuda->sched, &cuda_tick_event, cuda, 0, 0, (uint64_t)CUDA_TICK_NS);
         scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, (uint64_t)CUDA_AUTOPOLL_NS);
         // A checkpoint taken with a push or abandonment watchdog in
@@ -820,6 +895,8 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
             scheduler_new_cpu_event(cuda->sched, &cuda_push_event, cuda, 0, 0, (uint64_t)CUDA_PUSH_DELAY_NS);
         if (cuda->send_timeout_pending)
             scheduler_new_cpu_event(cuda->sched, &cuda_send_timeout_event, cuda, 0, 0, (uint64_t)CUDA_SEND_ABANDON_NS);
+        if (cuda->treq_release_pending)
+            scheduler_new_cpu_event(cuda->sched, &cuda_treq_release_event, cuda, 0, 0, (uint64_t)CUDA_SYNC_TREQ_NS);
     }
 
     LOG(1, "Cuda init (firmware Cuda 2.37)");

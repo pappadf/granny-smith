@@ -660,11 +660,17 @@ its own codes — `c46`, `c42`, and `c31` as it puts **"Please define the
 System Console"** on the 54M30 framebuffer and waits for a key.
 
 **The install runs to completion, and the installed system boots.** The
-graphics console has no keyboard under AIX (it never configures Cuda/ADB
-— finding 49), so the console is claimed on serial port B, where the
-same prompt appears; the BOS menus are driven there. A disk that AIX will
-install to needs three more things from the device model: IBM's SCSD
-INQUIRY page `$C7` (the size comes from it, not from READ CAPACITY),
+graphics console had no keyboard under AIX at first: the kernel's Cuda
+transport is not the Macintosh ROM's, and four places where the model had
+encoded the Mac's tolerance rather than the part's behaviour kept it from
+ever enabling the VIA's shift-register interrupt (finding 56); and even
+with keys arriving, `cfgcuda` never defined a keyboard adapter because it
+defines them from Cuda's device list — pseudo-command `$1A`, RdDevList,
+which the Macintosh never sends and the model did not answer (finding
+57). So the install is driven on serial port B, where the same "define the
+console" prompt appears; the BOS menus are driven there. A disk that AIX
+will install to needs three more things from the device model: IBM's
+SCSD INQUIRY page `$C7` (the size comes from it, not from READ CAPACITY),
 RESERVE/RELEASE, SEND DIAGNOSTIC, and WRITE AND VERIFY (finding 50–52),
 and the SCRIPTS engine must yield to the CPU while the script polls its
 completion mailbox (finding 51). With those, "Restoring base operating
@@ -673,14 +679,24 @@ about eleven guest minutes (`c54`…`c58`). The reboot needs Board
 Register 1 bit 8 high (finding 53) and the disk at SCSI id 2 — Open
 Firmware's default boot device is `disk2:aix` — and then comes up
 multi-user: `890 591 868`, "Multi-user initialization completed", the
-Installation Assistant, and **`AIX Version 4 … Console login:`** on the
-serial console. **Rung S13.** The bring-up dossier's findings 32 to 54
-carry the full account.
+Installation Assistant, and **`AIX Version 4 … Console login:`**.
+**Rung S13.**
+
+With RdDevList answered, cfgmgr brings up `cudaka0`, `kbd0`, `cudama0`
+and `mouse0`, the LFT attaches the keyboard, and the installed system
+runs with its console on the 54M30: the Installation Assistant, the login
+prompt and a root shell are all on the monitor, driven from the emulated
+ADB keyboard (finding 58 — note that AIX, like MkLinux, reads the cursor
+keys at their raw ADB codes `$3B`–`$3E`; `keyboard.md` has the
+convention). That is what the `ans-aix-installed-boot` row asserts: the
+login screen and the logged-in screen as pixel goldens, with `root` typed
+in between. The bring-up dossier's findings 32 to 58 carry the full
+account.
 
 ### What getting here cost, and what it says
 
-Twenty-one defects, and all but one were in shared machinery — every
-single one was in shared machinery that no existing guest had pushed on.
+Twenty-six defects, and every single one was in shared machinery that no
+existing guest had pushed on.
 In order:
 
 | Defect | Where |
@@ -706,6 +722,11 @@ In order:
 | RESERVE/RELEASE answered ILLEGAL REQUEST, so AIX's disk open failed | `core/peripherals/scsi.c` |
 | A script that polls memory was declared a runaway and halted | `scripts53c8xx.c` |
 | Board Register 1 bit 8 read clear, so POST's second boot entered its serial diagnostic monitor | `tnt/ans500.c`, `ans700.c` |
+| Cuda negated TREQ inside the host's own ByteAck store at the end of a sync, so AIX's `cuda_sync` never saw it low | `av/cuda.c` |
+| A sync cycle cleared Cuda's autopoll setting, which AIX enables once and never again | `av/cuda.c` |
+| The first response byte after the attention byte was clocked inside the TIP store, overwriting the attention byte AIX had not yet read | `av/cuda.c` |
+| A 5 ms abandonment watchdog reaped replies AIX comes back for tens of milliseconds later | `av/cuda.c` |
+| RdDevList (`$1A`) was not answered, so `cfgcuda` found no keyboard or mouse and the LFT configured without one | `av/cuda.c` |
 
 Two patterns are worth carrying forward.
 

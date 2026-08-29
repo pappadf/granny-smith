@@ -47,11 +47,13 @@ when shifted — so it **refuses** anything over 96 bytes' worth rather than
 letting the ring's drop-oldest overflow silently eat the head of the line.
 Type a line at a time and let the guest run.
 
-A guest may not agree with the ADB keycode a name resolves to. MkLinux DR3 is
-the case in this tree: its ADB driver reads the arrow cluster at `$3B`–`$3E`
-and claims `$7B`–`$7E` as the right-hand modifier keys, so `press("down")`
-(which is `$7D`, correct for Mac OS) taps right-Control there and
-`press(0x3D)` is the down arrow. When a guest disagrees, press the keycode.
+A guest may not agree with the ADB keycode a name resolves to. MkLinux DR3
+and AIX 4.1.5 on the Network Server are the cases in this tree: their ADB
+drivers read the arrow cluster at `$3B`–`$3E` and claim `$7B`–`$7E` as the
+right-hand modifier keys (AIX's `kbddd` table maps `$7D` to key position 64,
+right Control), so `press("down")` (which is `$7D`, correct for Mac OS) taps
+right-Control there and `press(0x3D)` is the down arrow. When a guest
+disagrees, press the keycode.
 
 ---
 
