@@ -105,6 +105,10 @@ struct floppy_slot {
 struct scsi_slot {
     const char *label; // "SCSI HD0"; NULL terminates the array
     int id; // Conventional SCSI bus id for this slot
+    // The bay the firmware boots from by default, when that is not the
+    // first one listed (the Network Server's Open Firmware boots
+    // `disk2:aix`, bay 2).  The configuration dialog preselects it.
+    bool boot;
 };
 
 // One auxiliary CPU core on a machine (heterogeneous multi-CPU): a

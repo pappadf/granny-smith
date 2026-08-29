@@ -42,7 +42,7 @@ static const uint32_t ans700_ram_options_kb[] = {16384, 32768, 49152, 65536, 131
 // devices, respectively."
 static const struct scsi_slot ans700_scsi_slots[] = {
     {.label = "Bay 1 (fast/wide 0)", .id = 1},
-    {.label = "Bay 2 (fast/wide 0)", .id = 2},
+    {.label = "Bay 2 (fast/wide 0)", .id = 2, .boot = true}, // Open Firmware's default: disk2:aix
     {.label = "Bay 3 (fast/wide 0)", .id = 3},
     {0},
 };

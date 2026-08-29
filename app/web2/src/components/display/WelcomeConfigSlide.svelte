@@ -34,7 +34,7 @@
     ram_options?: number[]; // KB
     ram_default?: number; // KB
     floppy_slots?: Array<{ label?: string; kind?: string }>;
-    scsi_slots?: Array<{ label?: string; id?: number }>;
+    scsi_slots?: Array<{ label?: string; id?: number; boot?: boolean }>;
     // How the hard disk attaches: 'scsi' (default) or 'profile' (Lisa/XL
     // parallel-port ProFile). Drives the HD row label and the attach call.
     hd_bus?: string;
@@ -157,6 +157,10 @@
   let romPath = $state('');
   let floppies = $state<string[]>([]);
   let hd = $state(NONE_SENTINEL);
+  // The bay (SCSI id) the hard disk attaches at, when the model has more than
+  // one to offer; null = the model's default (the slot flagged `boot`, else
+  // the first).  Reset whenever the model changes, since the ids are its.
+  let hdIdOverride = $state<number | null>(null);
   let cd = $state(NONE_SENTINEL);
   let videoMode = $state('');
   // Chosen PCI card options, keyed by option key ("vram" -> "4m"). Cleared
@@ -383,6 +387,20 @@
       ? 'ProFile'
       : (currentProfile?.scsi_slots?.[0]?.label ?? 'SCSI HD 0'),
   );
+  // Every SCSI bay the model lists, with the id the attach must use.  A
+  // machine whose bays do not start at id 0 (the Network Server's run 1..3
+  // and its firmware boots bay 2) is exactly why the id is never assumed.
+  let hdSlots = $derived(
+    (currentProfile?.scsi_slots ?? []).filter(
+      (s): s is { label?: string; id: number; boot?: boolean } => typeof s.id === 'number',
+    ),
+  );
+  let hdDefaultId = $derived((hdSlots.find((s) => s.boot) ?? hdSlots[0])?.id ?? 0);
+  let hdId = $derived(hdIdOverride ?? hdDefaultId);
+  $effect(() => {
+    void modelId;
+    hdIdOverride = null;
+  });
   // Only machines whose profile advertises a CD-ROM (has_cdrom) show the CD row.
   let hasCdrom = $derived(currentProfile?.has_cdrom === true);
   let ramOptions = $derived.by(() => {
@@ -810,6 +828,7 @@
       floppies: floppyPaths,
       hd: hdPath,
       hdBus: currentProfile?.hd_bus === 'profile' ? 'profile' : 'scsi',
+      hdId,
       cd: cdPath,
     });
     setWelcomeSlide('home');
@@ -966,13 +985,28 @@
         </div>
       {/each}
       <div class="form-row">
-        <label for="cfg-hd">{hdSlotLabel}</label>
+        <label for="cfg-hd">{hdSlots.length > 1 ? 'Hard disk' : hdSlotLabel}</label>
         <select id="cfg-hd" value={hd} onchange={onHdChange}>
           {#each hdOptions as opt, i (i)}
             <option>{opt}</option>
           {/each}
         </select>
       </div>
+      {#if hdSlots.length > 1}
+        <!-- Which bay it sits in: the firmware's default boot bay is preselected. -->
+        <div class="form-row">
+          <label for="cfg-hd-bay">Bay</label>
+          <select
+            id="cfg-hd-bay"
+            value={String(hdId)}
+            onchange={(e) => (hdIdOverride = Number((e.target as HTMLSelectElement).value))}
+          >
+            {#each hdSlots as slot (slot.id)}
+              <option value={String(slot.id)}>{slot.label ?? `SCSI id ${slot.id}`}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
       {#if hasCdrom}
         <div class="form-row">
           <label for="cfg-cd">SCSI CD-ROM</label>

@@ -498,6 +498,7 @@ static value_t build_profile(const hw_profile_t *p) {
             value_map_builder_t *sb = val_map_new();
             val_map_put(sb, "label", val_str(s->label));
             val_map_put(sb, "id", val_int((int64_t)s->id));
+            val_map_put(sb, "boot", val_bool(s->boot));
             val_list_push(&scsis, &n_scsis, &cap_scsis, val_map_finish(sb));
         }
     }
