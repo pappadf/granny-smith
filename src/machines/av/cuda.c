@@ -117,18 +117,21 @@ static const uint8_t cuda_rejected_cmds[] = {0x04, 0x05, 0x06, 0x0F, 0x15, 0x17,
 #define CUDA_RESET_DELAY_NS 100000.0
 
 // How long an unclaimed response waits before Cuda gives up on the host
-// (state SENDING with the attention byte still untaken).  A live host
-// takes the attention byte in microseconds -- but not every host is a
-// Macintosh: AIX's Cuda transport on the Network Server sends a Talk R3
-// from its keyboard configuration and comes back for the reply tens of
-// milliseconds later, and a 5 ms watchdog reaped it first.  The reply
-// gone, the driver synced three times to recover (which silences
-// autopoll) and never re-enabled it: a keyboard that could never speak.
-// The OF-to-68k handoff on the TNT Macintosh boot, the case this watchdog
-// was written for, is covered separately -- the 68k's CudaInit sync into
-// an unread response is recognised from the SENDING state -- so the
-// watchdog only has to be finite.
-#define CUDA_SEND_ABANDON_NS 1000000000.0
+// (state SENDING with the attention byte still untaken).  Bounded from
+// both sides by real guests:
+//   * AIX's Cuda transport on the Network Server sends a Talk R3 from its
+//     keyboard configuration and comes back for the reply 5.4 ms later;
+//     a 5 ms watchdog reaped it first, the driver synced three times to
+//     recover and the keyboard never spoke.  So: longer than that.
+//   * MkLinux DR3 on the TNT Macintoshes inherits the Booter's last
+//     unread response at the hand-off; a watchdog long enough for that
+//     response to outlive the hand-off (1 s certainly does) delivers it
+//     to the kernel's driver, whose keyboard then never works
+//     (mklinux-boot, pm7500).  So: shorter than the hand-off.
+// 20 ms satisfies both.  (The OF-to-68k handoff on the TNT Macintosh boot,
+// the case this watchdog was first written for, is also recognised from
+// the SENDING state at the 68k's CudaInit sync.)
+#define CUDA_SEND_ABANDON_NS 20000000.0
 
 // Transfer state.
 typedef enum {
