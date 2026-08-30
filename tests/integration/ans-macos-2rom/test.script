@@ -1,0 +1,45 @@
+# The Network Server's 2.0 prototype ROM, running Mac OS on the same
+# hardware model that runs AIX
+# (proposal-apple-network-server-500-700 §5.1, ladder rung S14).
+#
+# There is no ROM image that boots both operating systems: the production
+# image has no Mac OS Toolbox at all, and this prototype has no AIX.  That
+# is exactly what makes the pair valuable — one hardware model, two entirely
+# unrelated software stacks, so a modelling error that BOTH tolerate is
+# genuinely invisible and one that only one tolerates surfaces here.
+
+include "../lib/mac.script"
+
+# A virgin machine: the store the production ROM writes is not this ROM's,
+# and POST caches its memory configuration in there.
+machine.board.clear_nvram()
+machine.boot model="ans500" ram=32768 rom="${$ROM}"
+
+# --- S1: the same reset vector, a different image ------------------------
+assert machine.cpu.pc == 0xFFF00100 "S14: reset vector != $FFF00100"
+
+# The Mac OS bring-up: no front-panel POST at all — this ROM never touches
+# the LCD — then the Start Manager, the video driver, and QuickDraw.
+scheduler.run 1500000000
+
+# --- S14: the desktop, on the 54M30 ---------------------------------------
+# The same 640x480 8 bpp mode the AIX firmware programs, reached by a
+# completely different driver: this ROM's own native video code rather than
+# Open Firmware's console.  A mode derivation that only worked for one of
+# them would show up right here.
+assert machine.screen.width == 640 "S14: mode is ${machine.screen.width} pixels wide"
+assert machine.screen.height == 480 "S14: mode is ${machine.screen.height} lines tall"
+assert machine.screen.depth == 8 "S14: mode is ${machine.screen.depth} bpp"
+
+# The gray desktop with the boot arrow cursor — QuickDraw painting through
+# the framebuffer this model derives from the VGA registers.
+check("macos-desktop.png")
+
+# This ROM does NOT drive the front panel.  Asserted rather than assumed:
+# the LCD is the production firmware's instrument, and a Mac OS ROM having
+# quietly written to it would mean the panel's decode was answering
+# something it should not.
+assert machine.lcd.writes == 0 "S14: the Mac OS ROM must not write the front-panel LCD"
+
+echo "ans-macos-2rom: Mac OS desktop on the Network Server hardware model at ${machine.screen.width}x${machine.screen.height}x${machine.screen.depth}"
+quit

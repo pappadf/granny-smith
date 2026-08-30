@@ -385,7 +385,22 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
 // Execute a SCSI command after receiving it from the initiator
 static void run_cmd(scsi_t *scsi) {
     scsi->cmd.opcode = scsi->buf.data[0];
+    // WRITE AND VERIFY(10) (SCSI-2 §9.2.22) is WRITE(10) plus a medium
+    // verification that cannot fail against a disk image, and its CDB has
+    // the same layout — canonicalise it so every WRITE_10 path (dispatch,
+    // completion, read-only rejection) handles it.  AIX's LVM writes its
+    // bad-block directory with it and declares the directory "corrupted"
+    // when the command is refused.
+    if (scsi->cmd.opcode == CMD_WRITE_VERIFY)
+        scsi->cmd.opcode = CMD_WRITE_10;
     int target = scsi->bus.target & 7;
+    // The command block as it arrived.  Most opcodes below say nothing at
+    // all unless something goes wrong, which is exactly backwards when the
+    // question is "what did the guest ask for?" — the answer a guest's
+    // driver hung on is usually the command before the one that failed.
+    LOG(4, "CDB target=%d: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X", target, scsi->buf.data[0],
+        scsi->buf.data[1], scsi->buf.data[2], scsi->buf.data[3], scsi->buf.data[4], scsi->buf.data[5],
+        scsi->buf.data[6], scsi->buf.data[7], scsi->buf.data[8], scsi->buf.data[9]);
 
     // Check for pending UNIT ATTENTION on first non-exempt command
     // INQUIRY and REQUEST SENSE are exempt per SCSI spec
@@ -587,9 +602,117 @@ static void run_cmd(scsi_t *scsi) {
         scsi->cmd.tl = scsi->buf.data[4];
         if (scsi->cmd.tl == 0)
             scsi->cmd.tl = 36; // default allocation length
+        scsi->cmd.lun = scsi->buf.data[1] >> 5;
+
+        // EVPD: the command is asking for a VITAL PRODUCT DATA page, not
+        // the standard inquiry data, and answering with the standard data
+        // is not a harmless approximation — the initiator parses the reply
+        // as the page it asked for.  SCSI-2 §8.2.5.1: a target that does
+        // not support the requested page "shall return CHECK CONDITION
+        // status with the sense key set to ILLEGAL REQUEST and an
+        // additional sense code of INVALID FIELD IN CDB".
+        //
+        // Two pages are served: $00, the list of supported pages, and —
+        // for hard disks — IBM's vendor page $C7, the "Self-Configuring
+        // SCSI Device" contract.  AIX's configuration methods classify an
+        // otherwise-unknown drive by asking for page $C7 and checking for
+        // the keyword "SCDD" (`sccheck.c`, AIX 4.1.3); a drive that
+        // answers is configured entirely from the page — capacity, queue
+        // depth, reset delay, command timeouts — where one that does not
+        // is an "Other SCSI Disk" whose size the BOS install reads as
+        // zero and refuses to install to.
+        if (scsi->buf.data[1] & 0x01u) {
+            uint8_t page = scsi->buf.data[2];
+            bool is_disk = scsi->devices[target].type != scsi_dev_cdrom;
+            if (page == 0x00u) {
+                // Page $00: the supported-pages list — itself, plus $C7 on disks.
+                uint8_t pg0[6] = {0, 0, 0, 2, 0x00u, 0xC7u};
+                pg0[0] = (uint8_t)(is_disk ? 0x00u : 0x05u); // device type
+                if (!is_disk)
+                    pg0[3] = 1; // CD-ROMs list only page $00
+                unsigned n0 = (unsigned)(4 + pg0[3]);
+                unsigned n = scsi->cmd.tl < n0 ? scsi->cmd.tl : n0;
+                LOG(2, "INQUIRY target=%d EVPD page $00 -> %u bytes", target, n);
+                phase_data_in(scsi, n);
+                memcpy(scsi->buf.data, pg0, n);
+                break;
+            }
+            if (page == 0xC7u && is_disk) {
+                // The disk SCSD page, byte-for-byte per the chart in IBM's
+                // `cfghscsi.h` (struct disk_scsd_inqry_data): 4-byte page
+                // header + 113 bytes of self-description.
+                image_t *image = scsi->devices[target].image;
+                uint32_t cap_mb = image ? (uint32_t)(disk_size(image) / (1024u * 1024u)) : 0u;
+                uint8_t pg[117];
+                memset(pg, 0, sizeof(pg));
+                pg[1] = 0xC7u; // page code
+                pg[3] = 113u; // page length
+                pg[4] = 4u; // SCDD id length
+                memcpy(&pg[5], "SCDD", 4); // the keyword the classifier checks
+                pg[9] = 1u; // one LUN
+                pg[10] = (uint8_t)(cap_mb >> 24); // capacity in MB, big-endian
+                pg[11] = (uint8_t)(cap_mb >> 16);
+                pg[12] = (uint8_t)(cap_mb >> 8);
+                pg[13] = (uint8_t)cap_mb;
+                pg[20] = 1u; // queue depth 1: this model queues nothing
+                pg[23] = 100u; // ready 100 ms after a bus-device reset
+                pg[33] = 0x02u; // technology: supported SCSI disk
+                pg[34] = 0x01u; // interface: single-ended
+                pg[36] = 30u; // read/write timeout, seconds
+                pg[38] = 120u; // write buffer
+                pg[40] = 120u; // read buffer
+                pg[42] = 120u; // send diagnostics
+                pg[43] = (uint8_t)(600u >> 8); // format unit
+                pg[44] = (uint8_t)600u;
+                pg[46] = 60u; // start unit
+                pg[48] = 120u; // reassign block
+                pg[59] = 3u; // OS identifier length...
+                memcpy(&pg[60], "AIX", 3); // ...and the identifier itself
+                pg[72] = 3u; // max retry count
+                unsigned n = scsi->cmd.tl < sizeof(pg) ? scsi->cmd.tl : (unsigned)sizeof(pg);
+                LOG(2, "INQUIRY target=%d EVPD page $C7 -> %u bytes (%u MB)", target, n, cap_mb);
+                phase_data_in(scsi, n);
+                memcpy(scsi->buf.data, pg, n);
+                break;
+            }
+            LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+            break;
+        }
+
+        // The allocation length is a CEILING, not a request: "the target
+        // shall terminate the DATA IN phase when [it] has transferred all
+        // available data" (SCSI-2 §7.5.3).  The standard response this
+        // model builds is 36 bytes, so a driver that offers more gets 36
+        // and a residual — which is what a real drive gives it, and what
+        // the additional-length byte below has to agree with.  (The EVPD
+        // pages above have their own lengths; this cap is the standard
+        // response's only.)
+        if (scsi->cmd.tl > 36)
+            scsi->cmd.tl = 36;
+
         phase_data_in(scsi, scsi->cmd.tl);
 
         memset(scsi->buf.data, 0, scsi->cmd.tl);
+
+        // A LUN this target does not implement must still ANSWER — SCSI-2
+        // §8.2.5: "If the target is not capable of supporting a device on
+        // the specified logical unit, the target shall return the INQUIRY
+        // data with the peripheral qualifier set to the value required in
+        // 7.3.2" — qualifier 011b, device type 1Fh, so byte 0 reads $7F —
+        // "with a GOOD status".  Returning the LUN-0 device instead makes
+        // every target look like eight identical drives, which is what a
+        // prober that walks LUNs sees: the Apple Network Server's Open
+        // Firmware `probe-scsi1` listed `Unit 0` through `Unit 7` as the
+        // same disk before this was here, and AIX would have configured
+        // all eight.  Every device this emulator models is single-LUN.
+        if (scsi->cmd.lun != 0) {
+            scsi->buf.data[0] = 0x7Fu; // qualifier 011b + device type 1Fh
+            if (scsi->cmd.tl >= 5)
+                scsi->buf.data[4] = 0x1Fu; // additional length, as for a real one
+            LOG(2, "INQUIRY target=%d lun=%u -> not present ($7F)", target, scsi->cmd.lun);
+            break;
+        }
 
         if (scsi->devices[target].type == scsi_dev_cdrom) {
             // CD-ROM INQUIRY: device type 0x05, removable media
@@ -597,7 +720,7 @@ static void run_cmd(scsi_t *scsi) {
             scsi->buf.data[1] = 0x80; // removable media bit (RMB)
             scsi->buf.data[2] = 0x01; // SCSI-1 (ANSI version)
             scsi->buf.data[3] = 0x01; // response data format: CCS
-            scsi->buf.data[4] = 0x31; // additional length: 49 bytes
+            scsi->buf.data[4] = 0x1F; // additional length: 31 -> 36 total
             // Bytes 5-7: zero
             if (scsi->cmd.tl >= 36) {
                 memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
@@ -610,7 +733,7 @@ static void run_cmd(scsi_t *scsi) {
             scsi->buf.data[1] = 0x00; // non-removable media
             scsi->buf.data[2] = 0x01; // SCSI-1 (ANSI version)
             scsi->buf.data[3] = 0x01; // response data format: CCS
-            scsi->buf.data[4] = 0x31; // additional length: 49 bytes
+            scsi->buf.data[4] = 0x1F; // additional length: 31 -> 36 total
             if (scsi->cmd.tl >= 36) {
                 memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
                 memcpy(scsi->buf.data + 16, scsi->devices[target].product_id, 16);
@@ -624,6 +747,21 @@ static void run_cmd(scsi_t *scsi) {
         // MODE SELECT(6) byte 4 is the parameter list length.  Zero means
         // no data phase — A/UX's HD driver issues this as a no-op probe.
         int param_len = scsi->buf.data[4];
+        if (param_len == 0)
+            phase_status(scsi, STATUS_GOOD);
+        else
+            phase_data_out(scsi, param_len);
+        break;
+    }
+
+    case CMD_SEND_DIAGNOSTIC: {
+        // SEND DIAGNOSTIC (SCSI-2 §8.2.15): the self-test of an emulated
+        // drive always passes.  Bytes 3-4 are the parameter list length; a
+        // non-zero list is accepted and discarded.  AIX's BOS install runs
+        // this against every target disk as its "preliminary diagnostic
+        // test" and refuses to install to a drive that fails it.
+        int param_len = (scsi->buf.data[3] << 8) | scsi->buf.data[4];
+        LOG(1, "command: SEND DIAGNOSTIC (len=%d)", param_len);
         if (param_len == 0)
             phase_status(scsi, STATUS_GOOD);
         else
@@ -762,6 +900,17 @@ static void run_cmd(scsi_t *scsi) {
     case CMD_VERIFY:
         // Verify data on disc — no-op (always succeeds)
         LOG(1, "command: VERIFY");
+        phase_status(scsi, STATUS_GOOD);
+        break;
+
+    case CMD_RESERVE:
+    case CMD_RELEASE:
+        // RESERVE/RELEASE (SCSI-2 §9.2.10-11): with a single initiator the
+        // reservation can never conflict, so both always succeed.  AIX's
+        // scdisk reserves the disk in its open path and fails the open —
+        // errno EINVAL, an unusable hdisk — when the reservation does not
+        // take.
+        LOG(1, "command: %s", scsi->cmd.opcode == CMD_RESERVE ? "RESERVE" : "RELEASE");
         phase_status(scsi, STATUS_GOOD);
         break;
 
@@ -1694,6 +1843,10 @@ void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, con
 
 // Initialize the SCSI controller and optionally restore from checkpoint
 scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
+    return scsi_init_named(map, checkpoint, "scsi");
+}
+
+scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char *name) {
     scsi_t *scsi = (scsi_t *)malloc(sizeof(scsi_t));
     if (scsi == NULL)
         return NULL;
@@ -1789,11 +1942,13 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
     // singleton (mounted by scsi_class_register from shell_init) shares
     // the "scsi" name at root — detach it first so dispatch on the new
     // per-machine object isn't shadowed.
-    scsi_static_detach();
-    scsi->object = object_new(&scsi_class, scsi, "scsi");
+    bool primary = (name == NULL) || strcmp(name, "scsi") == 0;
+    if (primary)
+        scsi_static_detach();
+    scsi->object = object_new(&scsi_class, scsi, primary ? "scsi" : name);
     if (scsi->object) {
-        object_set_label(scsi->object, "SCSI");
-        object_set_order(scsi->object, 90);
+        object_set_label(scsi->object, primary ? "SCSI" : name);
+        object_set_order(scsi->object, primary ? 90 : 91);
         object_attach(machine_object(), scsi->object);
         scsi->bus_object = object_new(&scsi_bus_class, scsi, "bus");
         if (scsi->bus_object)
@@ -2844,18 +2999,18 @@ static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m
 // `scsi.attach_hd(path, id)` — attach a hard-disk image at the given SCSI id.
 // Calls system_hd_attach directly.
 static value_t scsi_method_attach_hd(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
     (void)m;
     (void)argc;
     int64_t id = argv[1].i;
     if (id < 0 || id > 6)
         return val_err("scsi.attach_hd: id must be 0..6");
-    return val_bool(system_hd_attach(argv[0].s, (int)id) == 0);
+    // On THIS bus.  `machine.scsi2.attach_hd` has to reach the second
+    // fast/wide channel of an Apple Network Server, not the first one.
+    return val_bool(system_hd_attach_on((scsi_t *)object_data(self), argv[0].s, (int)id) == 0);
 }
 
 // `scsi.attach_cdrom(path, id)` — attach a CD-ROM image at the given SCSI id.
 static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
     (void)m;
     (void)argc;
     int64_t id = argv[1].i;
@@ -2863,7 +3018,8 @@ static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, 
         return val_err("scsi.attach_cdrom: id must be 0..6");
     if (!global_emulator)
         return val_err("scsi.attach_cdrom: emulator not initialised");
-    add_scsi_cdrom(global_emulator, argv[0].s, (int)id);
+    scsi_t *bus = (scsi_t *)object_data(self);
+    add_scsi_cdrom_on(global_emulator, bus ? bus : global_emulator->scsi, argv[0].s, (int)id);
     return val_bool(true);
 }
 

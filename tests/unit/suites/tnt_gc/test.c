@@ -106,6 +106,63 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
     (void)offset;
     (void)value;
 }
+// The GBUS island and its front-panel LCD, which only a Shiner board has.
+// This suite drives a Macintosh Grand Central, whose `has_gbus` is false, so
+// these are the branches that are never taken.
+uint32_t tnt_gbus_boxid_bits(config_t *cfg) {
+    (void)cfg;
+    return 0;
+}
+uint8_t tnt_gbus_read8(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_gbus_write8(config_t *cfg, uint32_t offset, uint8_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
+uint32_t tnt_gbus_read32(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_gbus_write32(config_t *cfg, uint32_t offset, uint32_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
+// SWIM3 window: the floppy is not part of this suite's fixture.
+// grand_central.c's ESCC DBDMA ports ask the SCC how much it has received;
+// this suite never runs a DMA program, so no bytes are ever pending.
+unsigned scc_channel_rx_pending(const struct scc *scc, unsigned int ch) {
+    (void)scc;
+    (void)ch;
+    return 0;
+}
+
+uint8_t tnt_swim3_read(config_t *cfg, uint32_t off) {
+    (void)cfg;
+    (void)off;
+    return 0;
+}
+void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
+    (void)cfg;
+    (void)off;
+    (void)value;
+}
+
+uint8_t tnt_lcd_read8(config_t *cfg, uint32_t offset) {
+    (void)cfg;
+    (void)offset;
+    return 0;
+}
+void tnt_lcd_write8(config_t *cfg, uint32_t offset, uint8_t value) {
+    (void)cfg;
+    (void)offset;
+    (void)value;
+}
 uint8_t scsi_53c96_read(struct scsi_53c96 *c, uint32_t reg) {
     (void)c;
     (void)reg;
@@ -306,6 +363,38 @@ TEST(test_mode1_unmask_pending) {
     ASSERT_EQ_INT(s_line, 0);
 }
 
+// Mode 1: MASKING a source quiets it, latched change and all.  The latch
+// is held per source and the mask gates the OUTPUT, not just the latching.
+//
+// This is the shape of a guest that services a device by POLLING and wants
+// its external turned off — AIX does exactly that with the Network
+// Servers' fast/wide SCSI controllers.  With a single sticky flag the line
+// stayed up for a source the guest had deliberately masked, the guest's
+// handler found nothing of its own pending, returned, and was re-entered
+// immediately: the machine took nothing but external interrupts from then
+// on.
+TEST(test_mode1_mask_quiets_a_latched_source) {
+    fixture();
+    reg_write(R_MASK, (1u << TNT_INT_VIA1) | (1u << TNT_INT_MESH));
+    reg_write(R_CLEAR, 0x80000000u); // select mode 1
+    // Both change while enabled, so both are latched.
+    tnt_gc_set_source(&s_cfg, TNT_INT_MESH, true);
+    tnt_gc_set_source(&s_cfg, TNT_INT_VIA1, true);
+    ASSERT_EQ_INT(s_line, 1);
+    // The guest turns MESH off but keeps VIA1: still asserted, for VIA1.
+    reg_write(R_MASK, 1u << TNT_INT_VIA1);
+    ASSERT_EQ_INT(s_line, 1);
+    // Now it turns VIA1 off too.  Nothing enabled is latched, so the line
+    // must drop even though MESH's level is still standing.
+    reg_write(R_MASK, 0);
+    ASSERT_EQ_INT(s_line, 0);
+    ASSERT_EQ_INT((int)(reg_read(R_LEVELS) >> TNT_INT_MESH) & 1, 1);
+    // Re-enabling MESH re-asserts: its level is pending, which is the
+    // unmask-of-pending edge.
+    reg_write(R_MASK, 1u << TNT_INT_MESH);
+    ASSERT_EQ_INT(s_line, 1);
+}
+
 // Banked NVRAM through both apertures, byte and stwbrx bank selects.
 TEST(test_nvram_banking) {
     fixture();
@@ -372,6 +461,7 @@ int main(void) {
     RUN(test_mode0_pulse_w1c);
     RUN(test_mode1_latch);
     RUN(test_mode1_unmask_pending);
+    RUN(test_mode1_mask_quiets_a_latched_source);
     RUN(test_nvram_banking);
     RUN(test_boxid);
     RUN(test_dbdma_island_routing);

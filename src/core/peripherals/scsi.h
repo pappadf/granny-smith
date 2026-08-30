@@ -47,6 +47,24 @@ void scsi_class_register(void);
 
 scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint);
 
+// A SECOND (third, …) bus on the same machine, mounted under its own name.
+//
+// Every Macintosh this emulator models has exactly one SCSI bus a guest can
+// see, so `scsi_init` mounts itself at `machine.scsi` and everything —
+// `hd=`, `cd=`, the configuration dialog, every existing row — resolves
+// there.  The Apple Network Servers are the first machines with more than
+// one: two fast/wide 53C825A channels carrying seven hot-swap bays between
+// them, plus the narrow 53C94 external chain, and Open Firmware gives each
+// its own probe word (`probe-scsi1` / `probe-scsi2`).
+//
+// So a second instance mounts at `machine.<name>` instead, and `scsi_init`
+// is `scsi_init_named(map, cp, "scsi")`.  Nothing about the first bus
+// changes, which is the point: a name is the smallest thing that can carry
+// this, and inventing a `machine.scsi.bus[N]` collection would have to
+// rename the existing `machine.scsi.bus` node (the live phase/target view)
+// out from under every consumer of it.
+scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char *name);
+
 void scsi_delete(scsi_t *scsi);
 
 // Chip /RESET (68k RESET instruction → bus /RESET line): reset the controller

@@ -34,6 +34,7 @@
 #include "adb.h"
 #include "checkpoint_images.h"
 #include "debug.h"
+#include "floppy.h"
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
@@ -44,6 +45,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "sym53c8xx.h" // the fast/wide controllers the ANS slot table seats
 #include "via.h"
 
 #include <assert.h>
@@ -198,11 +200,11 @@ static void chaos_probe_write32(void *ctx, uint32_t offset, uint32_t value) {
 static void tnt_memory_layout(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
 
-    // RAM: contiguous at 0 (the profile's size; Open Firmware discovers
-    // it and publishes /memory's reg — the tree is the contract).
-    uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
-    for (uint32_t p = 0; p < (cfg->ram_size >> PAGE_SHIFT); p++)
-        tnt_fill_page(p, ram + (p << PAGE_SHIFT), true);
+    // RAM: wherever the Hammerhead's bank base registers put the DIMMs
+    // (hammerhead.c).  POST sizes them and re-bases them contiguously
+    // from 0; Open Firmware then publishes /memory's reg -- the tree is
+    // the contract.
+    tnt_hh_remap(cfg);
 
     // ROM: 4 MB at $FFC00000 (direct read-only pages).
     uint8_t *rom = ram_native_pointer(cfg->mem_map, cfg->ram_size);
@@ -216,7 +218,7 @@ static void tnt_memory_layout(config_t *cfg) {
     st->gc_interface.write_uint8 = gc_write8;
     st->gc_interface.write_uint16 = gc_write16;
     st->gc_interface.write_uint32 = gc_write32;
-    memory_map_add(cfg->mem_map, TNT_GC_BASE, 0x00020000u, "Grand Central", &st->gc_interface, cfg);
+    memory_map_add(cfg->mem_map, TNT_GC_BASE, TNT_GC_ISLAND_SIZE, "Grand Central", &st->gc_interface, cfg);
 
     // Hammerhead: the register window (page granularity is ours; the file
     // answers $000..$7FF and logs above it).
@@ -362,6 +364,28 @@ static void tnt_scsi0_port_init(config_t *cfg) {
     tnt_dbdma_set_port(tnt_st(cfg)->dbdma, 0, &port);
 }
 
+// Hand each fast/wide controller the bus it drives.  The two 53C825As are
+// PCI cards the slot table seated (slots 8 and 9 in the Network Server
+// profiles), so this runs after pci_seat_slots and after both bus objects
+// exist.  Channel 0 gets cfg->scsi — the bus every existing consumer knows
+// — and channel 1 gets the second one.  A Macintosh board seats neither
+// card and this does nothing.
+static void tnt_fwscsi_attach(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    struct scsi *bus[2] = {cfg->scsi, st->scsi2};
+    for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
+        sym53c8xx_t *chip = sym53c8xx_from_device(pci_slot_device(cfg->pci, d->slot));
+        if (!chip)
+            continue;
+        if (chip->channel < 0 || chip->channel > 1) {
+            LOG(0, "53C825A in slot %d declares channel %d, which no bus serves", d->slot, chip->channel);
+            continue;
+        }
+        sym53c8xx_attach_bus(chip, bus[chip->channel]);
+        LOG(1, "fast/wide channel %d bound to %s", chip->channel, chip->channel ? "machine.scsi2" : "machine.scsi");
+    }
+}
+
 // ============================================================
 // Substrate lifecycle
 // ============================================================
@@ -380,6 +404,25 @@ static void tnt_scsi0_port_init(config_t *cfg) {
 // (the gc blob holds the store).
 static uint8_t tnt_nvram_carry[TNT_NVRAM_SIZE];
 static bool tnt_nvram_carry_valid;
+
+// Clear the non-volatile store — what pulling the battery does.
+//
+// Apple, Network Server Hardware Developer Notes, §2.7: "Removal of a
+// battery from the Main Logic Board will reset all parameter and NVRAM to
+// default values."  It is the machine's own documented way back to a virgin
+// configuration, and it is a real need rather than a test convenience: the
+// ROM caches its DIMM sizing and its Open Firmware environment in there, so
+// a store written by one model is not necessarily meaningful to another.
+// The process-lifetime carry goes with it, or the next machine built in
+// this process would inherit what was just erased.
+void tnt_nvram_clear(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (st)
+        memset(st->gc.nvram, 0, TNT_NVRAM_SIZE);
+    memset(tnt_nvram_carry, 0, TNT_NVRAM_SIZE);
+    tnt_nvram_carry_valid = false;
+    LOG(1, "NVRAM cleared (battery removed)");
+}
 
 static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = calloc(1, sizeof(*st));
@@ -465,18 +508,36 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // SCSI ch 0/10, ...) registers its port as it lands; until then a
     // channel's data commands stall honestly.
     st->dbdma = tnt_dbdma_init(cp);
+    // The internal SuperDrive behind SWIM3: the shared floppy module owns
+    // the drive and media, the shared SWIM3 model (core/peripherals) the
+    // chip, and swim3.c here binds the two to Grand Central and DBDMA
+    // channel 1.  No memory map of its own: the island decodes it.
+    cfg->floppy = floppy_init(FLOPPY_TYPE_SWIM3, NULL, cfg->scheduler, cp);
+    tnt_swim3_bind(cfg);
+    tnt_swim3_init(cfg);
+    tnt_scc_dma_init(cfg);
     tnt_dbdma_set_memory_hooks(st->dbdma, tnt_dbdma_mem_read, tnt_dbdma_mem_write, cfg);
     tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
 
     // The AWACS sound face on channel 8 (Open Firmware's beep is the
     // first exerciser, long before the 68k chime).
     tnt_awacs_register_events(cfg);
+    tnt_swim3_register_events(cfg);
     tnt_awacs_init(cfg);
     tnt_awacs_reset(cfg);
 
     // Board state + memory map.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    // The Network Server's GBUS island — built before the memory layout so
+    // the LCD is answering from the very first POST write.  That ordering is
+    // the whole point of it: POST establishes its LCD path before it sizes
+    // DRAM, so the panel is the only narrator during the phase most likely
+    // to break.
+    if (tnt_board(cfg)->has_gbus) {
+        tnt_gbus_init(cfg);
+        tnt_lcd_init(cfg);
+    }
     tnt_memory_layout(cfg);
 
     // The PCI slot walk: seats every device the machine's slot table names
@@ -493,6 +554,7 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // data; the CPU line is recomputed below.
     if (cp) {
         system_read_checkpoint_data(cp, &st->hh, sizeof(st->hh));
+        tnt_hh_remap(cfg);
         system_read_checkpoint_data(cp, &st->gc, sizeof(st->gc));
         for (int i = 0; i < st->bridge_count; i++) {
             system_read_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
@@ -504,10 +566,15 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
         pci_checkpoint_restore(cfg->pci, cp);
         system_read_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
         system_read_checkpoint_data(cp, &st->control, sizeof(st->control));
-        system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+        // Control's VRAM is only there on a board that has Control.  A
+        // Network Server's video is a PCI card in a socket, so `st->vram`
+        // is NULL and the block is absent from the stream on both sides.
+        if (st->vram)
+            system_read_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
         via_redrive_outputs(cfg->via1);
         tnt_gc_recompute(cfg);
-        tnt_control_update(cfg); // rebuild the descriptor from restored regs
+        if (st->vram)
+            tnt_control_update(cfg); // rebuild the descriptor from restored regs
     }
 
     // SCSI (Phase E; appended at the end of the positional stream).  The
@@ -521,14 +588,38 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
     cfg->scsi = scsi_init(NULL, cp);
+    // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
+    // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
+    // aliases), so `hd=` / `cd=` and every existing consumer of
+    // `machine.scsi` keep landing where the boot disk goes.  Channel 1
+    // (`scsi-int2`, bays 4-6 plus the 700's two rear drives) mounts beside
+    // it as `machine.scsi2`.
+    if (tnt_board(cfg)->kind == TNT_BOARD_SHINER)
+        st->scsi2 = scsi_init_named(NULL, cp, "scsi2");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
     if (cp) {
         system_read_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
+        system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
+        system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
+        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+        system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
+        tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
     }
-    tnt_mesh_init(cfg); // DBDMA ch-10 port
+    // MESH is a Macintosh-only cell.  The Network Servers deleted it — two
+    // 53C825A PCI controllers carry the internal fast/wide buses instead —
+    // so the board flag gates construction, the island decode
+    // (grand_central.c) and DBDMA channel 10, which simply goes unused
+    // there along with TNT_INT_MESH.  The checkpoint stream still carries
+    // the (untouched) struct so it stays positional across both boards.
+    if (tnt_board(cfg)->has_mesh)
+        tnt_mesh_init(cfg); // DBDMA ch-10 port
     tnt_scsi0_port_init(cfg); // DBDMA ch-0 port (53C94 pdma)
+    // Hand each 53C825A its bus.  The controllers are PCI cards seated by
+    // the slot walk, so this runs after it — and after the buses exist,
+    // which is why it is here rather than in the card factory.
+    tnt_fwscsi_attach(cfg);
 
     // Finish: debugger + scheduler start.
     cfg->debugger = debug_init();
@@ -547,7 +638,12 @@ static void tnt_reset(config_t *cfg) {
     tnt_dbdma_reset(st->dbdma);
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
-    tnt_mesh_reset(cfg);
+    if (tnt_board(cfg)->has_mesh)
+        tnt_mesh_reset(cfg);
+    if (tnt_board(cfg)->has_gbus) {
+        tnt_gbus_reset(cfg);
+        tnt_lcd_reset(cfg);
+    }
     if (st->scsi96)
         scsi_53c96_reset(st->scsi96);
     scc_reset(cfg->scc);
@@ -569,8 +665,11 @@ static void tnt_teardown(config_t *cfg) {
         memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
         tnt_nvram_carry_valid = true;
     }
-    if (st)
+    if (st) {
         tnt_awacs_teardown(cfg);
+        tnt_gbus_teardown(cfg);
+        tnt_lcd_teardown(cfg);
+    }
     // Deleting the PCI root tears down every seated device, which is what
     // frees Control's VRAM and display buffers (its ops->teardown).
     if (cfg->pci) {
@@ -581,9 +680,17 @@ static void tnt_teardown(config_t *cfg) {
         scsi_53c96_delete(st->scsi96);
         st->scsi96 = NULL;
     }
+    if (cfg->floppy) {
+        floppy_delete(cfg->floppy);
+        cfg->floppy = NULL;
+    }
     if (cfg->scsi) {
         scsi_delete(cfg->scsi);
         cfg->scsi = NULL;
+    }
+    if (st && st->scsi2) {
+        scsi_delete(st->scsi2);
+        st->scsi2 = NULL;
     }
     if (st && st->dbdma) {
         tnt_dbdma_delete(st->dbdma);
@@ -644,6 +751,9 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     tnt_dbdma_checkpoint(st->dbdma, cp);
+    // The floppy drive and media, where floppy_init reads them back on a
+    // restore (right after the DBDMA engine, before the board state).
+    floppy_checkpoint(cfg->floppy, cp);
     // Substrate-private tail (mirrored by the restore block in tnt_init).
     system_write_checkpoint_data(cp, &st->hh, sizeof(st->hh));
     system_write_checkpoint_data(cp, &st->gc, sizeof(st->gc));
@@ -654,12 +764,24 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     pci_checkpoint_save(cfg->pci, cp);
     system_write_checkpoint_data(cp, &st->awacs, sizeof(st->awacs));
     system_write_checkpoint_data(cp, &st->control, sizeof(st->control));
-    system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
+    if (st->vram)
+        system_write_checkpoint_data(cp, st->vram, TNT_VRAM_SIZE);
     // Phase-E SCSI block (mirrors the tnt_init append order exactly).
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
+    if (st->scsi2)
+        scsi_checkpoint(st->scsi2, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
     system_write_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
+    // The GBUS island (Network Servers only; zeroed and unread elsewhere).
+    // Both blobs are plain data: the LCD's DDRAM and the board's keyswitch
+    // positions and injected environmental faults.
+    system_write_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
+    system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
+    // The floppy controller and its DBDMA byte ring (swim3.c); the drive
+    // itself is in the images block above.
+    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+    system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
 }
 
 // Frame tick (scheduler-paced, one per VBL frame-unit): the 60.15 Hz
@@ -693,6 +815,28 @@ static struct display *tnt_display(config_t *cfg) {
     return d ? d : tnt_control_display(cfg);
 }
 
+// machine.restart handle transfer, with the Network Servers' SECOND SCSI
+// bus.  The standard transfer walks the floppies and `cfg->scsi`; on a
+// Shiner a medium in a rear bay is on `machine.scsi2`, and a transfer that
+// does not know that drops it — the handle stays on the tracked-image list
+// and system_destroy closes it, so the drive is simply gone after a
+// power-cycle, with every delta write in it.
+static int tnt_media_detach(config_t *cfg, media_slot_t *out, int max) {
+    int n = system_media_detach_std(cfg, out, max);
+    tnt_state_t *st = tnt_st(cfg);
+    if (st && st->scsi2)
+        n += system_media_detach_scsi_bus(cfg, st->scsi2, MEDIA_BUS_SCSI2, out + n, max - n);
+    return n;
+}
+
+static int tnt_media_attach(config_t *cfg, const media_slot_t *slot) {
+    if (slot->bus == MEDIA_BUS_SCSI2) {
+        tnt_state_t *st = tnt_st(cfg);
+        return system_media_attach_scsi_bus(cfg, st ? st->scsi2 : NULL, slot);
+    }
+    return system_media_attach_std(cfg, slot);
+}
+
 // A PCI slot's strapped INTA-D line.  The slot table names the Grand
 // Central external it reaches (23-25 on Bandit 1, 27-29 on Bandit 2 — the
 // 9500's own published external-interrupt assignment); the lines are
@@ -714,19 +858,19 @@ static void tnt_update_ipl(config_t *cfg, int source, bool active) {
     LOG(1, "update_ipl source=%d active=%d (TNT sources drive Grand Central directly)", source, active);
 }
 
-// Floppy: the internal SuperDrive arrives with the SWIM3/DBDMA datapath
-// (Phase F); until then the bay refuses media and reports itself occupied.
+// Floppy: the one internal SuperDrive behind SWIM3 (swim3.c).  Drive 1 is
+// the only bay the family has — no external port — so slot 1 refuses
+// whatever the caller asks.
 static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
-    (void)cfg;
-    (void)drive;
-    (void)disk;
-    return -1;
+    if (!cfg->floppy || drive != 0)
+        return -1;
+    return floppy_insert(cfg->floppy, drive, disk);
 }
 
 static bool tnt_fd_present(config_t *cfg, int drive) {
-    (void)cfg;
-    (void)drive;
-    return true; // no usable bay yet: report occupied so nothing targets it
+    if (!cfg->floppy || drive != 0)
+        return true; // no such bay: report it occupied so nothing targets it
+    return floppy_is_inserted(cfg->floppy, drive);
 }
 
 const machine_substrate_t tnt_substrate = {
@@ -743,6 +887,6 @@ const machine_substrate_t tnt_substrate = {
     .input_mouse_move = mac_input_mouse_move,
     .input_mouse_button = mac_input_mouse_button,
     .display = tnt_display,
-    .media_detach = system_media_detach_std,
-    .media_attach = system_media_attach_std,
+    .media_detach = tnt_media_detach,
+    .media_attach = tnt_media_attach,
 };

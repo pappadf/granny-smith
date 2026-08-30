@@ -59,24 +59,39 @@ static const char *const PDM_COMPATIBLE[] = {"pm6100", "pm7100", "pm8100", NULL}
 // image also serves the unemulated 7200).  Two revisions exist, differing
 // only in the HWInit and Mac68KROM components.
 static const char *const TNT_COMPATIBLE[] = {"pm7500", "pm8500", "pm9500", NULL};
+// Apple Network Server 500/700 shared 4 MB ROM.  TRAP: the production ANS
+// ROM carries the SAME version string as the Power Macintosh 9500 v2 ROM
+// above it — family word $077D4EFA at offset 8, revision $28F2 at offset
+// 18, byte for byte.  ONLY the checksum at offset 0 tells them apart, which
+// is also direct evidence that the ANS ROM is built from the 9500 v2
+// codebase.  Never identify an ANS ROM by version.
+static const char *const ANS_COMPATIBLE[] = {"ans500", "ans700", NULL};
 
 // Master ROM signature table.  Content facts only — the canonical fixture
 // filenames live in tooling (scripts/rom_naming.py), not here.
 static const rom_info_t ROM_TABLE[] = {
-    {"Macintosh Plus (Rev 1, Lonely Hearts)",   PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024,  0          },
-    {"Macintosh Plus (Rev 2, Lonely Heifers)",  PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024,  0          },
-    {"Macintosh Plus (Rev 3, Loud Harmonicas)", PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024,  0          },
-    {"Universal IIx/IIcx/SE/30 ROM",            UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024,  0          },
-    {"Macintosh IIfx ROM",                      IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024,  0          },
-    {"Macintosh IIci ROM",                      IICI_COMPATIBLE,      0x368CADFE, 512 * 1024,  0          },
-    {"Macintosh IIsi ROM",                      IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024,  0          },
-    {"Quadra 700/900 ROM",                      Q700_Q900_COMPATIBLE, 0x420DBFF3, 1024 * 1024, 0          },
-    {"Quadra 950 ROM",                          Q950_COMPATIBLE,      0x3DC27823, 1024 * 1024, 0          },
-    {"Quadra 840AV/660AV ROM",                  AV_COMPATIBLE,        0x5BF10FD1, 2048 * 1024, 0          },
+    {"Macintosh Plus (Rev 1, Lonely Hearts)",                    PLUS_COMPATIBLE,      0x4D1EEEE1, 128 * 1024,  0          },
+    {"Macintosh Plus (Rev 2, Lonely Heifers)",                   PLUS_COMPATIBLE,      0x4D1EEAE1, 128 * 1024,  0          },
+    {"Macintosh Plus (Rev 3, Loud Harmonicas)",                  PLUS_COMPATIBLE,      0x4D1F8172, 128 * 1024,  0          },
+    {"Universal IIx/IIcx/SE/30 ROM",                             UNIVERSAL_COMPATIBLE, 0x97221136, 256 * 1024,  0          },
+    {"Macintosh IIfx ROM",                                       IIFX_COMPATIBLE,      0x4147DD77, 512 * 1024,  0          },
+    {"Macintosh IIci ROM",                                       IICI_COMPATIBLE,      0x368CADFE, 512 * 1024,  0          },
+    {"Macintosh IIsi ROM",                                       IISI_COMPATIBLE,      0x36B7FB6C, 512 * 1024,  0          },
+    {"Quadra 700/900 ROM",                                       Q700_Q900_COMPATIBLE, 0x420DBFF3, 1024 * 1024, 0          },
+    {"Quadra 950 ROM",                                           Q950_COMPATIBLE,      0x3DC27823, 1024 * 1024, 0          },
+    {"Quadra 840AV/660AV ROM",                                   AV_COMPATIBLE,        0x5BF10FD1, 2048 * 1024, 0          },
     // The stored checksum covers the 3 MB 68k half only (checksum_span).
-    {"Power Macintosh 6100/7100/8100 ROM",      PDM_COMPATIBLE,       0x9FEB69B3, 4096 * 1024, 3072 * 1024},
-    {"Power Macintosh 7500/8500/9500 ROM (v1)", TNT_COMPATIBLE,       0x96CD923D, 4096 * 1024, 3072 * 1024},
-    {"Power Macintosh 7500/8500/9500 ROM (v2)", TNT_COMPATIBLE,       0x9630C68B, 4096 * 1024, 3072 * 1024},
+    {"Power Macintosh 6100/7100/8100 ROM",                       PDM_COMPATIBLE,       0x9FEB69B3, 4096 * 1024, 3072 * 1024},
+    {"Power Macintosh 7500/8500/9500 ROM (v1)",                  TNT_COMPATIBLE,       0x96CD923D, 4096 * 1024, 3072 * 1024},
+    {"Power Macintosh 7500/8500/9500 ROM (v2)",                  TNT_COMPATIBLE,       0x9630C68B, 4096 * 1024, 3072 * 1024},
+    // The Network Server ROMs.  The production image runs Open Firmware
+    // 1.1.22 and boots AIX; it carries NO Mac OS Toolbox.  The 2.0
+    // prototype is the mirror image — Mac OS only, no AIX — and exercises
+    // the same hardware model through an entirely different software stack
+    // (proposal §5.1, ladder rung S14).  Both span 3 MB of a 4 MB image,
+    // the family convention.
+    {"Apple Network Server 500/700 ROM (Open Firmware 1.1.22)",  ANS_COMPATIBLE,       0x962F6C13, 4096 * 1024, 3072 * 1024},
+    {"Apple Network Server 500/700 ROM (2.0 prototype, Mac OS)", ANS_COMPATIBLE,       0x49B2BE8F, 4096 * 1024, 3072 * 1024},
 };
 
 #define ROM_TABLE_COUNT (sizeof(ROM_TABLE) / sizeof(ROM_TABLE[0]))

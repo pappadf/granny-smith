@@ -1,0 +1,201 @@
+# Booting AIX 4.1.5 for Apple Network Servers from the Install CD
+# (proposal-apple-network-server-500-700 §6, ladder rungs S9-S13).
+#
+# The row does not type a boot command.  It reproduces Apple's own
+# documented condition and lets the firmware do the rest:
+#
+#   > "If Open Firmware detects the key in the service position on a
+#   >  Network Server that has never been booted before, it will
+#   >  automatically attempt to find a diagnostic floppy or Install CD to
+#   >  boot from."
+#
+# — a blank non-volatile store (what removing the board battery does), the
+# front keyswitch in Service, and the disc present before the first
+# instruction runs.
+#
+# CURRENT HIGH-WATER: **S11**.  The firmware finds the disc, reads its
+# `IBMA` boot record, writes its boot configuration, resets the machine
+# through Cuda, comes back, and launches `bootapple` — Apple's own
+# bootstrap — which announces itself, reports POST AOK, names the boot
+# device, reads 2.7 MB off the disc and jumps into the AIX kernel.
+#
+# The kernel runs `cfgmgr`, and the front-panel LCD counts it off in
+# Apple's own codes: `890` the SCSI-2 adapter (the 53C825As), `868` the
+# integrated SCSI adapter (the 53C94), `538` a configuration method.  The
+# fast/wide driver negotiates synchronous transfer, takes INQUIRY —
+# standard and vital-product-data — MODE SENSE and START STOP UNIT, and
+# reads several hundred more blocks off the disc.
+#
+# Probing a wide bus means selecting fifteen other ids, most of which are
+# not there, and the driver's design makes each absent one expensive: the
+# selection time-out fails the probe upward with "no device" (which is how
+# `cfgmgr` learns to move on), and the unexpected disconnect stacked
+# behind it escalates to a SCSI bus reset that resynchronises the driver's
+# SCRIPTS command ring — roughly eleven seconds per absent target, most of
+# it the driver's own post-reset settle.  That cost is why this row's
+# budget is large, and it is the part's documented behaviour, not a model
+# artefact (LSI53C825A TM v3.1, `SIST0[UDC]`; findings 45-48).
+#
+# With the board's full 512 MB it then goes the distance: `723` the
+# CD-ROM drive, `512` restoring the base customised device information, a
+# second configuration pass, `831`/`874`/`727` the async adapter and tty,
+# and then the BOS install itself takes over the LCD with its own `Cxx`
+# codes — `C46` processing, `C42`, and finally **`C31`: "Please define
+# the System Console"**, live on the 54M30 framebuffer, waiting for a
+# keypress.  S12 onward (driving the install menus, the BOS install to
+# disk, a cold boot of the installed disk) is open work and is NOT
+# asserted here.  The row asserts what is reached, and names the rung, so
+# the next step forward shows up as a deliberate change to this file
+# rather than as a surprise.
+#
+# MEDIA: the 603 MB Install CD lives under
+# local/gs-docs/projects/ans-500-700/images/ and cannot be committed
+# (proposal §13 R8), so this row SKIPS cleanly where it is absent.
+
+include "../lib/mac.script"
+include "../lib/ans.script"
+
+let ans_root = "../../../local/gs-docs/projects/ans-500-700"
+let aix_cd = "${$ans_root}/images/AIX_415_Install_CD.iso"
+
+def aix_boot() {
+    # "Never been booted before": the store the machine ships with.
+    #
+    # 512 MB, the board's documented maximum, and not decoration: the BOS
+    # install boots into a RAM filesystem and this model gets materially
+    # further with the memory than without it.  At 64 MB the configuration
+    # manager does not survive its first pass over the SCSI adapters; at
+    # 512 MB it configures them, configures a CD-ROM drive and reaches the
+    # attempt to mount the root file systems.  The rungs below record
+    # exactly that.
+    machine.board.clear_nvram()
+    machine.boot model="ans500" ram=524288 rom="${$ROM}"
+    machine.board.keyswitch = "service"
+    assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
+
+    # Bay 0 is the CD-ROM bay Apple expects — "It is expected (but not
+    # required) that slot 0 will be a CD ROM" — on fast/wide channel 0,
+    # which is Open Firmware's `disk0`.  Attached BEFORE any instruction
+    # runs, so the firmware's own probe sees it exactly as it would a disc
+    # left in the drive.
+    machine.scsi.attach_cdrom("${$aix_cd}", 0)
+    assert machine.scsi.device[0].type == "cdrom" "the Install CD is not mounted in bay 0"
+
+    # POST, Open Firmware, the Service-key disc hunt, the configuration
+    # write, the Cuda reset, POST again, the hand-off to `bootapple`, and
+    # the AIX kernel's own device configuration.  In chunks: the budget is
+    # well past what a single `scheduler.run` argument holds.
+    #
+    # The LCD is sampled as it goes, because it is a SEQUENCE and not a
+    # state: each configuration method shows its code for as long as it
+    # runs and is then replaced.  Asserting on whatever happens to be
+    # displayed at the end would pin the wrong thing and break on the next
+    # step forward.
+    let saw_scsi2 = 0
+    let saw_integrated = 0
+    let saw_cdrom = 0
+    let saw_base = 0
+    let saw_console = 0
+    for i in 0..750 {
+        scheduler.run 20000000
+        if contains(machine.lcd.text, "890") {
+            $saw_scsi2 = 1
+        }
+        if contains(machine.lcd.text, "868") {
+            $saw_integrated = 1
+        }
+    }
+
+    # --- The machine identified itself ---------------------------------
+    # The firmware's diagnostic port carries the POST and probe narration
+    # whatever the console is; without `?esb` there is no AIX path at all.
+    let narration = machine.scc.a.sent()
+    assert contains($narration, "ShinerESB") "S9: the machine did not identify as a Network Server"
+    # The GBUS island answered: POST reads the Ethernet address PROM, and
+    # every access to that chip select is also the MP doorbell.
+    assert machine.board.doorbell > 0 "S9: the GBUS island was never read"
+
+    # --- S9: bootapple ---------------------------------------------------
+    # Apple's own bootstrap, launched by Open Firmware off the Install CD.
+    # Everything it prints is a fact about our model that it checked:
+    #
+    #   bootapple: launched by "OpenFirmware1.1.22"
+    #   bootapple: POST results AOK.  Code is  00010000
+    #   bootapple: "AAPL,cpu-id" property is  39002089
+    #   bootapple: model info is Power Macintosh,AAPL,ShinerESB;MacRISC
+    #   bootapple: boot device is "/bandit/53c825@11/sd@0:aix"
+    #
+    # — POST's own recorded results, the CPU identity Hammerhead supplies,
+    # the root `compatible` the 53C825A probe set, and the boot path the
+    # firmware chose off the disc.  It draws on the SCREEN, because a
+    # Network Server ships with `output-device screen` and this row
+    # deliberately does not tell it otherwise: the machine under test is the
+    # one out of the box.
+    check("bootapple.png")
+
+    # --- The rest of the ladder, up to the install's console prompt -------
+    # `bootapple`'s banner stays on the framebuffer (checked above, at a
+    # sample where it is still showing) while the LCD narrates the long
+    # part: the absent-target walks of both wide buses, the second pass,
+    # the ttys — and then the BOS install repaints the screen at `c31`,
+    # which ends the watch.
+    # 5 M cycles per sample, not 20 M: `723` is on the panel only briefly
+    # now that the CD-ROM method no longer stalls, and the coarser rate
+    # sampled straight past it.
+    for i in 0..9800 {
+        scheduler.run 5000000
+        if contains(machine.lcd.text, "868") {
+            $saw_integrated = 1
+        }
+        if contains(machine.lcd.text, "723") {
+            $saw_cdrom = 1
+        }
+        if contains(machine.lcd.text, "512") {
+            $saw_base = 1
+        }
+        if contains(machine.lcd.text, "C31") {
+            $saw_console = 1
+            break
+        }
+    }
+
+    # --- S10/S11: the AIX kernel runs, and the LCD says where it is -------
+    # Apple's own three-digit table (What's New With the Network Server),
+    # plus AIX's own install codes:
+    #
+    #   890  The system is configuring a SCSI-2 adapter.
+    #   868  The system is configuring the integrated SCSI adapter.
+    #   723  The system is configuring a CD-ROM drive or other SCSI device.
+    #   512  The system is restoring the base customised device information.
+    #   c31  Select the console.
+    #
+    # Seeing all five is the claim, and it is a large one: `bootapple`
+    # handed off, the kernel came up, `cfgmgr` walked the device tree
+    # through the 53C825As — `cfgpscsi` / `pscsidd`, the method and driver
+    # the ODM extraction named before any of this booted — the 53C94 and
+    # the disc in bay 0, survived every absent target on two wide buses,
+    # ran a second configuration pass, and handed the machine to the BOS
+    # install, which put "Please define the System Console" on the screen
+    # and is waiting for a key.  The LCD is the only narrator AIX uses
+    # until that prompt, which is why it was built first.
+    assert $saw_scsi2 == 1 "S10: the LCD never showed 890 (AIX configuring the SCSI-2 adapter)"
+    assert $saw_integrated == 1 "S10: the LCD never showed 868 (the integrated SCSI adapter)"
+    assert $saw_cdrom == 1 "S10: the LCD never showed 723 (AIX configuring the CD-ROM drive)"
+    assert $saw_base == 1 "S10: the LCD never showed 512 (AIX restoring the base device information)"
+    assert $saw_console == 1 "S11: the LCD never showed c31 (the BOS install asking for the system console)"
+
+    # And the adapter answered: the driver's own commands went out over the
+    # SCRIPTS engine and came back.  `machine.scsi.device[0]` is still the
+    # disc it read them from.
+    assert machine.scsi.device[0].type == "cdrom" "S10: the Install CD went away under AIX"
+
+    echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, restores the base device information, and the BOS install asks for its console — LCD 890, 868, 723, 512, c31 (rung S11)"
+}
+
+if have_media($aix_cd) {
+    aix_boot()
+} else {
+    echo "skip: ans-aix-boot (the AIX 4.1.5 Install CD is not present — see gs-docs projects/ans-500-700)"
+}
+
+quit

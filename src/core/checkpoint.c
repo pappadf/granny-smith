@@ -40,10 +40,12 @@ static const char CHECKPOINT_MAGIC_V3[] = "GSCHKPT3";
 #define QUICK_BUF_CAPACITY (8 * 1024 * 1024)
 
 // Upper bound on a single read-path malloc driven by an on-disk size field.
-// Real checkpoints are bounded by RAM (max 128 MiB on supported machines)
-// plus headers; 256 MiB is roughly 2x worst-case.  A corrupt header claiming
-// > 256 MiB is rejected rather than driving an OOM on 32-bit (WASM) builds.
-#define CHECKPOINT_MAX_ALLOC ((size_t)256 * 1024 * 1024)
+// Real checkpoints are bounded by RAM — 512 MiB on the largest supported
+// machine (the Apple Network Server), whose barely-compressible RAM block
+// RLE-encodes to just over its raw size; 1 GiB is roughly 2x worst-case.
+// A corrupt header claiming more is rejected rather than driving an OOM
+// on 32-bit (WASM) builds.
+#define CHECKPOINT_MAX_ALLOC ((size_t)1024 * 1024 * 1024)
 
 // Persistent write buffer for quick checkpoints (allocated once, reused)
 static uint8_t *g_quick_write_buf = NULL;

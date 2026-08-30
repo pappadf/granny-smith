@@ -1,0 +1,61 @@
+# machine.restart on a machine with two SCSI buses
+# (proposal-apple-network-server-500-700 §8 Phase F).
+#
+# What the row is for: the standard media transfer walks the floppies and
+# `cfg->scsi`.  A Network Server's rear bays are on `machine.scsi2`, and
+# nothing else in the repository has a second bus, so the gap can only be
+# seen here — as a drive that quietly does not come back.
+#
+# No instructions are run.  The contract under test is the rebuild, not the
+# boot, and the ROM ladder rows already own the boot.
+
+def restarts(model, ram_kb) {
+    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
+
+    # One medium per channel, so a transfer that confused the two would
+    # show up as the wrong device rather than as silence.
+    assert storage.hd_create("${$WORK_DIR}/${$model}-bay0.img", "80M") "could not create the channel 0 disk"
+    assert storage.hd_create("${$WORK_DIR}/${$model}-bay4.img", "80M") "could not create the channel 1 disk"
+    machine.scsi.attach_hd("${$WORK_DIR}/${$model}-bay0.img", 0)
+    machine.scsi2.attach_hd("${$WORK_DIR}/${$model}-bay4.img", 4)
+    assert machine.scsi.device[0].type == "hd" "${$model}: channel 0 bay 0 not mounted"
+    assert machine.scsi2.device[4].type == "hd" "${$model}: channel 1 bay 4 not mounted"
+
+    # Everything that must survive the power-cycle.
+    let created0 = machine.config.created
+    let ch0_stem = machine.scsi.device[0].image.path
+    let ch0_file = machine.scsi.device[0].image.filename
+    let ch1_stem = machine.scsi2.device[4].image.path
+    let ch1_file = machine.scsi2.device[4].image.filename
+
+    machine.restart
+
+    assert machine.created "${$model}: the machine came back"
+    assert machine.id == "${$model}" "${$model}: same model"
+    assert machine.ram == $ram_kb "${$model}: same RAM"
+    assert machine.config.created == $created0 "${$model}: created stamp preserved"
+    # Both builtins are back on Bandit 1 — the rebuild is a rebuild, not a
+    # bare reset.
+    assert machine.pci.slot[8].card.name == "53C825A #0" "${$model}: fast/wide channel 0 not rebuilt"
+    assert machine.pci.slot[9].card.name == "53C825A #1" "${$model}: fast/wide channel 1 not rebuilt"
+
+    # Both media still attached, on the SAME buses, as the SAME open
+    # instances.  An equal instance stem is the write-durability proof: a
+    # reopen would mint a fresh delta and discard every write since the
+    # attach.
+    assert machine.scsi.device[0].image.present "${$model}: channel 0 medium gone"
+    assert machine.scsi.device[0].image.filename == $ch0_file "${$model}: channel 0 is a different medium"
+    assert machine.scsi.device[0].image.path == $ch0_stem "${$model}: channel 0 was reopened, not transferred"
+    assert machine.scsi2.device[4].image.present "${$model}: channel 1 medium gone"
+    assert machine.scsi2.device[4].image.filename == $ch1_file "${$model}: channel 1 is a different medium"
+    assert machine.scsi2.device[4].image.path == $ch1_stem "${$model}: channel 1 was reopened, not transferred"
+    # And they did not swap buses on the way through.
+    assert try(machine.scsi.device[4].type, none) == none "${$model}: channel 1's drive landed on channel 0"
+    assert try(machine.scsi2.device[0].type, none) == none "${$model}: channel 0's drive landed on channel 1"
+
+    echo "ans-machine-restart ${$model}: both fast/wide channels kept their media across the power-cycle"
+}
+
+restarts("ans500", 32768)
+restarts("ans700", 49152)
+quit

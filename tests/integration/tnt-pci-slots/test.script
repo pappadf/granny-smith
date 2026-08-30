@@ -45,7 +45,7 @@ assert machine.pci.slot[4].device == 11 "Control IDSEL"
 assert machine.pci.slot[4].card.name == "Control" "Control not seated from the slot table"
 # The registry is an explicit list; adding a card driver is one extern plus
 # one entry, and every compatible socket is offered it with no machine edit.
-assert machine.pci.cards() == "[tnt_control, mach64_gx]" "card registry"
+assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1]" "card registry"
 
 # --- Staged picks: the surface exists and starts clear. ----------------------
 assert machine.pci.slot[1].card_id == "" "an empty socket must start with no staged pick"

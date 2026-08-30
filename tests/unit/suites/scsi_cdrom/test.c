@@ -65,6 +65,16 @@ int system_hd_attach(const char *path, int scsi_id) {
 void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
     (void)config, (void)filename, (void)scsi_id;
 }
+// The bus-explicit forms, which `scsi.attach_hd` / `scsi.attach_cdrom` call
+// so a machine with more than one visible SCSI bus (the Apple Network
+// Servers' two fast/wide channels) can attach to the one it was asked for.
+int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
+    (void)bus, (void)path, (void)scsi_id;
+    return -1;
+}
+void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+    (void)config, (void)bus, (void)filename, (void)scsi_id;
+}
 
 #define CD_BLOCK  2048u
 #define CD_BLOCKS 4096u // 8 MB of scratch medium
@@ -185,6 +195,73 @@ TEST(read6_max_blocks_cdrom) {
 
 // Out-of-range must still be refused — growing the buffer must not have turned
 // the bounds check into a read past the end of the medium.
+// INQUIRY: what the target has, and only pages it actually has.
+//
+// The allocation length is a ceiling — "the target shall terminate the DATA
+// IN phase when it has transferred all available data" — so a driver that
+// offers 255 bytes gets the 36 this model builds, and the additional-length
+// byte has to agree with that.  AIX's `pscsidd` opens with exactly that
+// command.
+TEST(inquiry_standard_is_36_bytes) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t cdb[6] = {0x12, 0x00, 0x00, 0x00, 0xFF, 0x00};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_data_in, scsi_get_bus_phase(scsi));
+    uint8_t buf[64] = {0};
+    size_t n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b)) {
+        if (n < sizeof(buf))
+            buf[n] = b;
+        n++;
+    }
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_EQ_INT(36, (int)n);
+    ASSERT_EQ_INT(0x05, buf[0]); // CD-ROM
+    ASSERT_EQ_INT(0x80, buf[1]); // removable
+    ASSERT_EQ_INT(0x1F, buf[4]); // additional length: 31 more -> 36 total
+}
+
+// EVPD asks for a VITAL PRODUCT DATA page, and answering with the standard
+// data is not a harmless approximation: the initiator parses the reply as
+// the page it asked for.  A page this model does not have must be refused —
+// SCSI-2 §8.2.5.1, ILLEGAL REQUEST / INVALID FIELD IN CDB.  AIX asks for
+// page $C7 while configuring the device.
+TEST(inquiry_evpd_unsupported_page_is_refused) {
+    scsi_t *scsi = attach_disc();
+    const uint8_t cdb[6] = {0x12, 0x01, 0xC7, 0x00, 0xFF, 0x00};
+    ASSERT_EQ_INT(scsi_status, issue_cdb6(scsi, cdb));
+}
+
+// Page $00 is the list of supported pages, and this model supports exactly
+// one: page $00.
+TEST(inquiry_evpd_page_zero_lists_itself) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t cdb[6] = {0x12, 0x01, 0x00, 0x00, 0xFF, 0x00};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_data_in, scsi_get_bus_phase(scsi));
+    uint8_t buf[8] = {0};
+    size_t n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b)) {
+        if (n < sizeof(buf))
+            buf[n] = b;
+        n++;
+    }
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_EQ_INT(5, (int)n);
+    ASSERT_EQ_INT(0x05, buf[0]); // CD-ROM
+    ASSERT_EQ_INT(0x00, buf[1]); // page code $00
+    ASSERT_EQ_INT(0x01, buf[3]); // one page in the list
+    ASSERT_EQ_INT(0x00, buf[4]); // ...page $00
+}
+
 TEST(read6_past_end_still_refused) {
     scsi_t *scsi = attach_disc();
     size_t n = read6(scsi, CD_BLOCKS - 4, 200, NULL);
@@ -198,6 +275,9 @@ int main(void) {
     RUN(read6_over_buf_limit_cdrom);
     RUN(read6_max_blocks_cdrom);
     RUN(read6_past_end_still_refused);
+    RUN(inquiry_standard_is_36_bytes);
+    RUN(inquiry_evpd_unsupported_page_is_refused);
+    RUN(inquiry_evpd_page_zero_lists_itself);
     unlink(g_path);
     printf("[scsi_cdrom] all tests passed\n");
     return 0;

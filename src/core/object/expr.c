@@ -915,6 +915,28 @@ static value_t eval_builtin_len(int argc, const value_t *argv) {
     }
 }
 
+// contains(haystack, needle) — is `needle` a substring of `haystack`?
+//
+// The one string predicate the language was missing, and it exists because
+// of what the newest machines narrate rather than draw: a guest serial
+// console is the primary observable for a machine with no Mac OS screen
+// (MkLinux, AIX on the Apple Network Servers, Open Firmware itself), and
+// `machine.scc.a.sent()` hands a script that console's text.  Without this
+// a row could count the text's length but not say anything about it.
+//
+// Both arguments must be strings — a substring test over a number would be
+// a coercion nobody asked for.  An empty needle is contained in anything,
+// which is what strstr() says and what every other language agrees on.
+static value_t eval_builtin_contains(int argc, const value_t *argv) {
+    if (argc != 2)
+        return val_err("contains: expected (haystack, needle)");
+    if (argv[0].kind != V_STRING || argv[1].kind != V_STRING)
+        return val_err("contains: both arguments must be strings");
+    const char *hay = argv[0].s ? argv[0].s : "";
+    const char *needle = argv[1].s ? argv[1].s : "";
+    return val_bool(strstr(hay, needle) != NULL);
+}
+
 static value_t eval_builtin_error(int argc, const value_t *argv) {
     if (argc != 1 || argv[0].kind != V_STRING)
         return val_err("error: expected (message)");
@@ -1103,7 +1125,8 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
         if (call_open && strchr(path_buf, '.') == NULL) {
             if (strcmp(path_buf, "try") == 0)
                 return eval_builtin_try(L, ctx);
-            if (strcmp(path_buf, "range") == 0 || strcmp(path_buf, "len") == 0 || strcmp(path_buf, "error") == 0) {
+            if (strcmp(path_buf, "range") == 0 || strcmp(path_buf, "len") == 0 || strcmp(path_buf, "error") == 0 ||
+                strcmp(path_buf, "contains") == 0) {
                 value_t *argv = NULL;
                 call_named_t *named = NULL;
                 int argc = 0, named_n = 0;
@@ -1116,6 +1139,8 @@ static value_t parse_primary(lex_t *L, const expr_ctx_t *ctx) {
                     r = eval_builtin_range(argc, argv);
                 else if (strcmp(path_buf, "len") == 0)
                     r = eval_builtin_len(argc, argv);
+                else if (strcmp(path_buf, "contains") == 0)
+                    r = eval_builtin_contains(argc, argv);
                 else
                     r = eval_builtin_error(argc, argv);
                 free_call_args(argv, argc, named, named_n);

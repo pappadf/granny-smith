@@ -24,6 +24,7 @@
 #include "display.h"
 #include "machine.h"
 #include "memory.h"
+#include "swim3.h"
 #include "system_config.h"
 
 #include <stdbool.h>
@@ -102,37 +103,11 @@ typedef struct pdm_dma_ch {
 } pdm_dma_ch_t;
 
 // SWIM3 floppy controller ($50F16000, 16 byte-wide registers at stride
-// $200): the register file, the Sony drive-sense/strobe protocol, and the
-// media transfer engine (swim3.c + swim3_xfer.c).  Drive and media state
-// itself lives in the shared floppy module (cfg->floppy); what is kept
-// here is only what the chip owns.
-typedef struct pdm_swim3 {
-    // reg 1 Timer: a 1 us countdown (SWIM3-ERS:76).  `timer` is the loaded
-    // value, `timer_start_ns` the scheduler time of the load; the running
-    // count reads back live and TIMER_DONE fires at zero (swim3.c).  The
-    // 7.5 .Sony driver never touches it; Copland's floppy plugin is built
-    // on it (SwimIIISmallWait polls it — gs-docs/projects/copland).
-    uint8_t timer;
-    uint8_t timer_running;
-    uint64_t timer_start_ns;
-    uint8_t param; // reg 3 ParamData
-    uint8_t phase; // reg 4 CA0-2/LSTRB lines (probe loopback readback)
-    uint8_t setup; // reg 5 (bit 7 SoftReset self-clears)
-    uint8_t mode; // reg 6 read; written via Zeroes ($C00) / Ones ($E00)
-    uint8_t intr; // reg 8, read-to-clear
-    uint8_t step, ctrack, csect, gap, sector, nsect; // regs 9-14 storage
-    uint8_t intmask; // reg 15, R/W
-    uint8_t error; // reg 2, read-to-clear
-    uint8_t motor_on; // drive-1 spindle latch (strobe-controlled)
-    uint8_t mfm_mode; // drive mode latch; forgotten at motor-off (§11.12)
-    uint8_t step_dir; // step-direction latch (sense addr 0); 1 = outward
-    uint8_t fmt_byte; // reg 12 read side: 4th address-field byte
-    // --- transfer engine (swim3_xfer.c) ---
-    uint8_t engine_running; // an engine event is armed (GO seen)
-    uint8_t xfer_side; // head the sense address last routed (0/1)
-    uint8_t eject_pending; // wEjectOn strobed; the media goes at the timeout
-    uint32_t fmt_sectors; // sectors the last format stream declared
-} pdm_swim3_t;
+// $200): the shared model (core/peripherals/swim3.h), bound to the AMIC
+// floppy DMA channel and the pseudo-VIA2 interrupt bank in pdm/swim3.c.
+// Drive and media state lives in the shared floppy module (cfg->floppy);
+// the struct is checkpointed positionally inside pdm_amic_t and re-bound
+// with pdm_swim3_bind() after a restore.
 
 typedef struct pdm_amic {
     // Interrupt control register $50F2A000
@@ -167,7 +142,7 @@ typedef struct pdm_amic {
     double snd_half_start_ns; // when the in-flight output half began playing
     uint32_t snd_halves; // output half-buffers rendered since power-on
     int32_t snd_peak; // loudest |sample| pushed to the host since power-on
-    pdm_swim3_t swim3; // floppy controller register file (swim3.c)
+    swim3_t swim3; // floppy controller (core/peripherals/swim3.c)
 } pdm_amic_t;
 
 // === Monitor sense strap (ariel.c) ==========================================
@@ -334,6 +309,38 @@ bool pdm_amic_fd_dma_running(config_t *cfg);
 bool pdm_amic_fd_dma_to_device(config_t *cfg);
 bool pdm_amic_fd_dma_get(config_t *cfg, uint8_t *out);
 bool pdm_amic_fd_dma_put(config_t *cfg, uint8_t value);
+
+// === bart.c =================================================================
+// The NuBus '90 bridge: the $F0000000 register file, the slot-space windows,
+// and the recoverable faults an empty slot answers with.  Call from the
+// family memory layout, BEFORE nubus_init builds the cards.
+void pdm_bart_init(config_t *cfg);
+// A card's /NMRQ, which reaches the CPU through AMIC and not through BART.
+void pdm_bart_slot_irq(config_t *cfg, int slot, bool active);
+
+// === awacs.c ================================================================
+// The AWACS codec + AMIC sound engine: the $50F14000 register block, the
+// command-port handshake, and the output datapath (half-buffer render into
+// the host audio stream).  State lives in pdm_amic_t; these are the
+// behavior.
+void pdm_awacs_register_events(config_t *cfg); // before scheduler_start
+void pdm_awacs_init(config_t *cfg); // staging buffer + machine.sound node
+void pdm_awacs_teardown(config_t *cfg);
+uint8_t pdm_awacs_read(config_t *cfg, uint32_t offset); // block offsets 0..$1F
+void pdm_awacs_write(config_t *cfg, uint32_t offset, uint8_t value);
+// Combinational ICR mirror bytes ($50F2A008/$50F2A00A): per-channel flag
+// AND enable summaries the interrupt fabric folds into the DMA source bit.
+uint8_t pdm_awacs_irq_summary(pdm_amic_t *a); // the $0A sound byte
+
+// === swim3.c ================================================================
+// The PDM face of the shared SWIM3 model: island offsets 0..$1FFF from
+// $50F16000 (index = offset >> 9), the AMIC DMA movers and the pseudo-VIA2
+// interrupt sink.
+uint8_t pdm_swim3_read(config_t *cfg, uint32_t off);
+void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
+void pdm_swim3_bind(config_t *cfg); // after floppy_init and after a restore
+void pdm_swim3_register_events(config_t *cfg); // before scheduler_start
+void pdm_swim3_xfer_register_events(config_t *cfg); // before scheduler_start
 
 // === bart.c =================================================================
 // The NuBus '90 bridge: the $F0000000 register file, the slot-space windows,

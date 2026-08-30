@@ -16,7 +16,7 @@ mkdir -p "$WORK_DIR"
 # Every model in machine.c's builtin_machines[].  Keep in sync when a machine
 # is registered: a missing model is silently un-snapshotted, which is how the
 # Quadras went uncovered from the mcu/ family landing until 2026-07.
-MODELS="plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 lisa macxl"
+MODELS="plus se30 iicx iix iifx iici iisi q700 q900 q950 q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 lisa macxl"
 
 : > "$SCRIPT"
 for m in $MODELS; do

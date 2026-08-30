@@ -62,6 +62,8 @@ static const tnt_board_desc_t pm7500_board = {
     .hh_r20 = 0x80000000u,
     .bus_hz = 50000000u, // 2:1 bus (100 MHz 601 card)
     .bandit_count = 1,
+    .kind = TNT_BOARD_MAC,
+    .has_mesh = true, // the internal fast-SCSI cell (absent on the Network Servers)
 };
 
 const hw_profile_t machine_pm7500 = {

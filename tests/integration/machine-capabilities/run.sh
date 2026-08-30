@@ -18,7 +18,7 @@ OUT="$WORK_DIR/profiles.txt"
 SCRIPT="$WORK_DIR/profiles.script"
 mkdir -p "$WORK_DIR"
 
-MODELS="plus se30 iicx iix iifx iici iisi q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 lisa macxl"
+MODELS="plus se30 iicx iix iifx iici iisi q840av q660av pm6100 pm7100 pm8100 pm7500 pm8500 pm9500 ans500 ans700 lisa macxl"
 
 : > "$SCRIPT"
 for m in $MODELS; do
@@ -170,7 +170,7 @@ for m in pm6100 pm7100 pm8100; do
     assert_contains "$m" '"has_cdrom":true' "$m offers the Curio-bus CD bay"
     assert_contains "$m" '"cdrom_id":3' "$m puts the CD at SCSI ID 3"
     assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
-    assert_contains "$m" '"scsi_slots":[{"label":"SCSI HD0","id":0},{"label":"SCSI HD1","id":1}]' "$m offers the two Curio SCSI HD slots (Phase G)"
+    assert_contains "$m" '"scsi_slots":[{"label":"SCSI HD0","id":0,"boot":false},{"label":"SCSI HD1","id":1,"boot":false}]' "$m offers the two Curio SCSI HD slots (Phase G)"
 done
 # NuBus splits the family in two, and that split is the point of these
 # rows.  The 7100 and 8100 carry BART and three connectors on the logic
@@ -226,11 +226,37 @@ for m in pm7500 pm8500 pm9500; do
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy bay before Phase F"
-    assert_contains "$m" '"scsi_slots":[{"label":"Internal HD0","id":0},{"label":"Internal HD1","id":1}]' "$m offers the two internal MESH HD slots (Phase E)"
+    assert_contains "$m" '"scsi_slots":[{"label":"Internal HD0","id":0,"boot":false},{"label":"Internal HD1","id":1,"boot":false}]' "$m offers the two internal MESH HD slots (Phase E)"
 done
 assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
 assert_contains pm8500 '"freq":120000000' "pm8500 runs at 120 MHz"
 assert_contains pm9500 '"freq":132000000' "pm9500 runs at 132 MHz"
+
+# The Apple Network Servers — the same TNT substrate with the Macintosh
+# removed (proposal-apple-network-server-500-700 §3.1).  Both are plain
+# 604s and both advertise PCI; what distinguishes them in the profile is
+# the CPU clock, the shipping memory size and the 512 MB ROM decode
+# ceiling that replaces the 9500's 1.5 GB (§5.9 — being LESS permissive
+# than the silicon is the faithful choice, because above it the guest
+# hangs during the RAM test rather than reporting an error).
+for m in ans500 ans700; do
+    assert_contains "$m" '"model":604' "$m is a PowerPC 604"
+    assert_contains "$m" '"kind":"ppc_604"' "$m has the 604 split-BAT MMU"
+    assert_contains "$m" '"fpu":true' "$m has the FPU datapath"
+    assert_contains "$m" '"address_bits":32' "$m is 32-bit"
+    assert_contains "$m" '"nubus":false' "$m has no NuBus"
+    assert_contains "$m" '"pci":true' "$m advertises PCI"
+    assert_contains "$m" '"video_in":false' "$m has no video digitizer"
+    assert_contains "$m" '"ram_max":524288' "$m caps RAM at the ROM's 512 MB decode limit (in KB, as every profile publishes it)"
+    assert_contains "$m" '"has_cdrom":true' "$m boots its Install CD from a SCSI bay"
+    # Seven hot-swap bays split across two fast/wide controllers; bay 0 is
+    # Apple's expected CD-ROM position, so the HD rows start at 1.
+    assert_contains "$m" '"scsi_slots":[{"label":"Bay 1 (fast/wide 0)","id":1,"boot":false},{"label":"Bay 2 (fast/wide 0)","id":2,"boot":true},{"label":"Bay 3 (fast/wide 0)","id":3,"boot":false}]' "$m offers the fast/wide drive bays"
+done
+assert_contains ans500 '"freq":132000000' "ans500 runs a 132 MHz 604 card"
+assert_contains ans700 '"freq":150000000' "ans700 runs a 150 MHz 604 card"
+assert_contains ans500 '"ram_default":32768' "ans500 ships with 32 MB of parity DRAM"
+assert_contains ans700 '"ram_default":49152' "ans700 ships with 48 MB of parity DRAM"
 
 assert_contains q840av '"freq":40000000' "q840av runs at 40 MHz"
 assert_contains q660av '"freq":25000000' "q660av runs at 25 MHz"

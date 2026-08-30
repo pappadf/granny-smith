@@ -1,0 +1,162 @@
+# Apple Network Server PCI topology and the built-in device identities
+# (proposal-apple-network-server-500-700 §5.2 / §5.3 / §5.7 / §5.8).
+#
+# Config-port note, inherited verbatim from `tnt-pci-slots`: the Bandit
+# address and data ports are LITTLE-ENDIAN (the guest drives them with
+# lwbrx/stwbrx) while machine.memory.peek/poke are raw big-endian bus
+# views, so every literal below is the byte-swapped form of the value
+# software sees.  The one-hot IDSEL is the physical AD line wired to that
+# slot's IDSEL pin: device N is bit N.
+
+# A byte-swapped 32-bit value — the bus view of a little-endian port.
+def swap32(v) {
+    return ((($v >> 24) & 0xFF)) | ((($v >> 16) & 0xFF) << 8) | ((($v >> 8) & 0xFF) << 16) | (($v & 0xFF) << 24)
+}
+
+# One type-0 config read on Bandit 1, returned in software's byte order.
+def cfg1(dev, off) {
+    machine.memory.poke.l(0xF2800000, swap32((1 << $dev) | $off))
+    return swap32(machine.memory.peek.l(0xF2C00000))
+}
+
+# One type-0 config read on Bandit 2.
+def cfg2(dev, off) {
+    machine.memory.poke.l(0xF4800000, swap32((1 << $dev) | $off))
+    return swap32(machine.memory.peek.l(0xF4C00000))
+}
+
+def topology(model) {
+    machine.boot model="${$model}" ram=32768 rom="${$ROM}"
+
+    # --- The profile, as the configuration layer sees it ---------------------
+    assert machine.profile("${$model}").capabilities.pci "${$model} must advertise PCI"
+
+    # --- The six PCI sockets -------------------------------------------------
+    # Apple settles the split in two places: "The Network Server uses two
+    # separate PCI buses for on-board I/O (and two slots) and card expansion
+    # (four slots)" and "For PCI Bus 2, PCI Slot 3 is moved to the second
+    # Bandit."  Independently confirmed by the six per-slot Open Firmware
+    # boot commands printed in "Using the PCI RAID Card", which show slots
+    # 1-2 on `pci1` at @d/@e and slots 3-6 on `pci2` at @d/@e/@f/@10.
+    #
+    # The labels are the ROM's own `slot-names` strings.  Note the bus
+    # number in them is zero-based while Apple's prose and its device
+    # aliases are one-based.
+    assert machine.pci.slot[1].label == "SLOT1_PCI0" "${$model} slot 1 label"
+    assert machine.pci.slot[1].bus == 0 "${$model} slot 1 is on Bandit 1"
+    assert machine.pci.slot[1].device == 13 "${$model} slot 1 IDSEL"
+    assert machine.pci.slot[2].label == "SLOT2_PCI0" "${$model} slot 2 label"
+    assert machine.pci.slot[2].bus == 0 "${$model} slot 2 is on Bandit 1"
+    assert machine.pci.slot[2].device == 14 "${$model} slot 2 IDSEL"
+    assert machine.pci.slot[3].label == "SLOT3_PCI1" "${$model} slot 3 label"
+    assert machine.pci.slot[3].bus == 1 "${$model} slot 3 moved to Bandit 2"
+    assert machine.pci.slot[3].device == 13 "${$model} slot 3 IDSEL"
+    assert machine.pci.slot[4].bus == 1 "${$model} slot 4 is on Bandit 2"
+    assert machine.pci.slot[4].device == 14 "${$model} slot 4 IDSEL"
+    assert machine.pci.slot[5].bus == 1 "${$model} slot 5 is on Bandit 2"
+    assert machine.pci.slot[5].device == 15 "${$model} slot 5 IDSEL"
+    assert machine.pci.slot[6].label == "SLOT6_PCI1" "${$model} slot 6 label"
+    assert machine.pci.slot[6].bus == 1 "${$model} slot 6 is on Bandit 2"
+    assert machine.pci.slot[6].device == 16 "${$model} slot 6 IDSEL"
+
+    # --- The interrupt rewiring, which is the boot-critical delta ------------
+    # Apple's table (Hardware Developer Notes §4.2, p. 16) against the 9500's:
+    # exactly three lines move.  EXT1, previously Reserved, takes BOTH
+    # Bandits' ganged bus-timeout error interrupt; EXT2 and EXT6, previously
+    # Ban1_Int and Ban2_Int, take the two fast/wide SCSI controllers.
+    #
+    # THE TRAP: slot 3 sits on Bandit 2 but keeps EXT5 (Grand Central 25) —
+    # the line a 9500 gives Bandit 1's THIRD slot.  A model that derives a
+    # slot's line from its bridge is wrong for exactly this one slot and
+    # right for the other five, which is the worst failure shape available.
+    assert machine.pci.slot[1].irq == 23 "${$model} slot 1 on EXT3"
+    assert machine.pci.slot[2].irq == 24 "${$model} slot 2 on EXT4"
+    assert machine.pci.slot[3].irq == 25 "${$model} slot 3 keeps EXT5 despite moving bridge"
+    assert machine.pci.slot[4].irq == 27 "${$model} slot 4 on EXT7"
+    assert machine.pci.slot[5].irq == 28 "${$model} slot 5 on EXT8"
+    assert machine.pci.slot[6].irq == 29 "${$model} slot 6 on EXT9"
+
+    # --- The three soldered-down devices on Bandit 1 -------------------------
+    # Six devices on one bridge with no PCI-to-PCI bridge: two sockets, the
+    # 54M30 at IDSEL 15, Grand Central at 16 (attached by grand_central.c,
+    # so it has no slot entry), and the two 53C825As at 17 and 18.
+    assert machine.pci.slot[7].label == "VIDEO" "${$model} builtin video slot"
+    assert machine.pci.slot[7].bus == 0 "${$model} the 54M30 is on Bandit 1"
+    assert machine.pci.slot[7].device == 15 "${$model} 54M30 IDSEL"
+    # "The 54M30 does not have an interrupt" — allocating it a Grand Central
+    # external would corrupt the map, so it declares none.
+    assert machine.pci.slot[7].irq == 0 "${$model} the 54M30 must claim no interrupt line"
+    assert machine.pci.slot[7].card.name == "Cirrus 54M30" "${$model} 54M30 not seated"
+    assert machine.pci.slot[8].bus == 0 "${$model} 53C825A #0 is on Bandit 1"
+    assert machine.pci.slot[8].device == 17 "${$model} 53C825A #0 IDSEL"
+    assert machine.pci.slot[8].irq == 22 "${$model} 53C825A #0 on EXT2 (FW0_Int)"
+    assert machine.pci.slot[8].card.name == "53C825A #0" "${$model} 53C825A #0 not seated"
+    assert machine.pci.slot[9].bus == 0 "${$model} 53C825A #1 is on Bandit 1"
+    assert machine.pci.slot[9].device == 18 "${$model} 53C825A #1 IDSEL"
+    assert machine.pci.slot[9].irq == 26 "${$model} 53C825A #1 on EXT6 (FW1_Int)"
+    assert machine.pci.slot[9].card.name == "53C825A #1" "${$model} 53C825A #1 not seated"
+
+    # --- Raw config cycles, before a single instruction runs -----------------
+    # The 54M30: Cirrus Logic $1013 / $00A0, class $030000 (VGA display).
+    # Corroborated three ways — the ROM's own `54m30-config`, the Alpine
+    # family TRM's PCI ID reset value, and AIX 4.1.5's driver fileset
+    # `devices.pci.pci1013+a0`.
+    assert cfg1(15, 0x00) == 0x00A01013 "${$model} 54M30 vendor/device"
+    assert (cfg1(15, 0x08) >> 8) == 0x030000 "${$model} 54M30 class code"
+
+    # The two 53C825As: Symbios $1000 / $0003, class $010000 (SCSI).
+    # THE REVISION ID IS MACHINE IDENTITY.  The "A" is a die revision, not a
+    # separate device ID, so the ROM carries a dedicated probe that tests
+    # BIT 4 of the Revision ID; $14 is the plain 53C825A's value (the 825AE
+    # is $26, whose bit 4 is clear).  Get this wrong and `?esb-evt2` never
+    # arms, the ROM does not take the Network Server path, and the machine
+    # is not an ANS at all.
+    for d in [17, 18] {
+        assert cfg1($d, 0x00) == 0x00031000 "${$model} 53C825A at IDSEL ${$d}: vendor/device"
+        assert (cfg1($d, 0x08) >> 8) == 0x010000 "${$model} 53C825A at IDSEL ${$d}: class code"
+        assert (cfg1($d, 0x08) & 0xFF) == 0x14 "${$model} 53C825A at IDSEL ${$d}: Revision ID must be \$14"
+        assert (cfg1($d, 0x08) & 0x10) == 0x10 "${$model} 53C825A at IDSEL ${$d}: Revision ID bit 4 gates 825a?"
+        # INTA, which the board straps to Grand Central EXT2 / EXT6.
+        assert ((cfg1($d, 0x3C) >> 8) & 0xFF) == 1 "${$model} 53C825A at IDSEL ${$d}: interrupt pin"
+    }
+
+    # Grand Central's config header at IDSEL 16: Apple's $106B, device
+    # $0002 — the identity the Network Server Diagnostic Utility's PCI
+    # bridge test insists on ("Grand Central not found" otherwise).
+    assert cfg1(16, 0x00) == 0x0002106B "${$model} Grand Central config identity"
+
+    # Empty sockets read all-ones and swallow writes; that IS the entire
+    # empty-slot model, and the reason a probe never hangs.
+    for d in [13, 14] {
+        assert cfg1($d, 0x00) == 0xFFFFFFFF "${$model} empty socket at Bandit 1 IDSEL ${$d}"
+    }
+    for d in [13, 14, 15, 16] {
+        assert cfg2($d, 0x00) == 0xFFFFFFFF "${$model} empty socket at Bandit 2 IDSEL ${$d}"
+    }
+    # Devices below 11 do not exist on either primary bus, and NOTHING sits
+    # at IDSEL 17/18 on Bandit 2 — the fast/wide controllers are Bandit 1's.
+    assert cfg1(8, 0x00) == 0xFFFFFFFF "${$model} Bandit 1 device 8 must not exist"
+    assert cfg2(17, 0x00) == 0xFFFFFFFF "${$model} Bandit 2 has no fast/wide controller"
+
+    # --- The card registry ---------------------------------------------------
+    # Adding a card driver is one extern plus one entry; the ANS work added
+    # three, and none of them may be offered on a socket (all BUILTIN).
+    assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1]" "card registry"
+    assert machine.pci.slot[1].card_id == "" "${$model} an empty socket starts with no staged pick"
+
+    # --- The machine survives being written down -----------------------------
+    # A Network Server has no Control, so it has no Control VRAM — and the
+    # checkpoint stream must not go looking for it.  It once did, and
+    # `checkpoint.save` took the emulator down with a null read, on the one
+    # board in the family where the buffer is absent.
+    assert checkpoint.save("${$WORK_DIR}/${$model}-slots.checkpoint") "${$model} checkpoint save"
+    assert checkpoint.load("${$WORK_DIR}/${$model}-slots.checkpoint") "${$model} checkpoint load"
+    assert machine.pci.slot[8].card.name == "53C825A #0" "${$model} the restored machine kept its fast/wide channels"
+    assert machine.pci.slot[7].card.name == "Cirrus 54M30" "${$model} the restored machine kept its video"
+
+    echo "ans-pci-slots ${$model}: six sockets + three builtins, interrupt map and identities verified"
+}
+
+topology("ans500")
+topology("ans700")
+quit

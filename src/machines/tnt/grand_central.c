@@ -50,12 +50,14 @@ LOG_USE_CATEGORY_NAME("gc");
 #define OFF_SCCLEG    0x12000u // SCC legacy aperture (Phase F)
 #define OFF_ESCC      0x13000u // ESCC: channel B at +0, channel A at +$20 (Phase F)
 #define OFF_AWACS     0x14000u // AWACS codec + sound control (Phase D)
-#define OFF_SWIM3     0x15000u // SWIM3 floppy (Phase F)
+#define OFF_SWIM3     0x15000u // SWIM3 floppy: 16 regs on $10 centres (swim3.c)
 #define OFF_VIA       0x16000u // VIA1/Cuda: 16 byte regs on $200 centres (8 KB)
 #define OFF_MESH      0x18000u // MESH, internal bus (Phase E)
-#define OFF_EPROM     0x19000u // Ethernet address PROM (Phase F)
+#define OFF_EPROM     0x19000u // Ethernet address PROM (+ the ANS MP doorbell)
 #define OFF_BOXID     0x1A000u // machine-identification register (LE)
 #define OFF_RADACAL   0x1B000u // RAMDAC colormap bank (Phase D)
+#define OFF_LCDGB     0x1C000u // GBUS device 3: ANS front-panel LCD (lcd.c)
+#define OFF_BREG2     0x1E000u // ANS Board Register 2: environment (gbus.c)
 #define OFF_NVPORT    0x1D000u // NVRAM bank-select port
 #define OFF_NVDATA    0x1F000u // NVRAM data window: byte j at +j*$10
 
@@ -96,7 +98,7 @@ LOG_USE_CATEGORY_NAME("gc");
 // The BoxID as software sees it: the board's straps plus one presence bit
 // per POPULATED socket (bit n-1 for slot n, in the machine's declared slot
 // order).  The builtin VCI entry is not a socket and contributes nothing.
-static uint32_t tnt_boxid(config_t *cfg) {
+uint32_t tnt_gc_boxid(config_t *cfg) {
     uint32_t id = tnt_board(cfg)->boxid;
     for (const pci_slot_decl_t *d = cfg->machine->pci_slots; d && d->slot; d++) {
         if (d->kind != PCI_SLOT_SOCKET || d->slot < 1 || d->slot > 6)
@@ -104,6 +106,12 @@ static uint32_t tnt_boxid(config_t *cfg) {
         if (pci_slot_device(cfg->pci, d->slot))
             id |= 1u << (d->slot - 1);
     }
+    // On a Network Server this same register is Board Register 1, and its
+    // top byte is live board state rather than straps: the two active-low
+    // keyswitch lines and TwoSuppliesH (gbus.c).  Bits 14 and 15 are NOT
+    // the Macintosh boards' "MESH present" / idle-high pair there.
+    if (tnt_board(cfg)->has_gbus)
+        id |= tnt_gbus_boxid_bits(cfg);
     return id;
 }
 
@@ -115,18 +123,24 @@ void tnt_gc_recompute(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_gc_t *gc = &st->gc;
     // Clear-mode 1 (the NanoKernel's scheme, selected by the $80000000
-    // acknowledge): the CPU line is an OUTPUT LATCH — set by any CHANGE
-    // of an enabled level source (assertion or deassertion; see
-    // tnt_gc_set_source) or by an enabled event edge, cleared by the
-    // acknowledge, re-asserted only by the NEXT change.  The handler
-    // classifies from Levels & Mask; a level a guest leaves unserviced
-    // does not re-fire until its next change, and the kernel's rfi does
-    // not land straight back in the handler.
+    // acknowledge): the CPU line is an OUTPUT LATCH, held PER SOURCE — a
+    // source's bit is set by any CHANGE of it while enabled (assertion or
+    // deassertion; see tnt_gc_set_source) or by an enabled event edge,
+    // cleared by the acknowledge, re-asserted only by the NEXT change.
+    // The handler classifies from Levels & Mask; a level a guest leaves
+    // unserviced does not re-fire until its next change, and the kernel's
+    // rfi does not land straight back in the handler.
+    //
+    // The mask gates the OUTPUT and not just the latching, because a guest
+    // that masks a source has to be able to quiet it: AIX polls the
+    // fast/wide SCSI controllers and leaves their externals masked, and a
+    // latch the mask could not reach held the line up for a source the
+    // guest had deliberately turned off.
     // Mode 0 (power-on; the MkLinux scheme): combinational
     // ((events | levels) & mask), with Events cleared by explicit W1C.
     bool line;
     if (gc->int_mode1)
-        line = gc->int_latch != 0;
+        line = (gc->int_latch & gc->int_mask) != 0;
     else
         line = ((gc->int_events | gc->int_levels) & gc->int_mask) != 0;
     ppc_set_ext_irq(cfg->ppc, line);
@@ -136,7 +150,7 @@ void tnt_gc_recompute(config_t *cfg) {
 static void gc_edge(tnt_gc_t *gc, uint32_t bit) {
     gc->int_events |= bit;
     if (gc->int_mask & bit)
-        gc->int_latch = 1;
+        gc->int_latch |= bit;
 }
 
 void tnt_gc_set_source(config_t *cfg, int n, bool level) {
@@ -162,8 +176,11 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level) {
         // the 68k emulator redelivers the stale level forever and the
         // boot's base context never runs again after its first unmask.
         if (was && (gc->int_mask & bit))
-            gc->int_latch = 1;
+            gc->int_latch |= bit;
     }
+    if (was != level)
+        LOG(3, "source %d %s (events=$%08X levels=$%08X mask=$%08X latch=$%08X)", n, level ? "asserted" : "cleared",
+            gc->int_events, gc->int_levels, gc->int_mask, gc->int_latch);
     tnt_gc_recompute(cfg);
 }
 
@@ -177,7 +194,7 @@ void tnt_gc_pulse_event(config_t *cfg, int n) {
 // little-endian register value (the dispatcher swaps at the bus edge).
 static uint32_t int_read(config_t *cfg, uint32_t offset) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
-    LOG(4, "int read +$%02X (events=$%08X levels=$%08X mask=$%08X latch=%d)", offset, gc->int_events, gc->int_levels,
+    LOG(4, "int read +$%02X (events=$%08X levels=$%08X mask=$%08X latch=$%08X)", offset, gc->int_events, gc->int_levels,
         gc->int_mask, gc->int_latch);
     switch (offset) {
     case INT_EVENTS:
@@ -218,8 +235,7 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
         // moment the controller may assert for it).
         uint32_t newly = value & ~gc->int_mask;
         gc->int_mask = value;
-        if ((gc->int_events | gc->int_levels) & newly)
-            gc->int_latch = 1;
+        gc->int_latch |= (gc->int_events | gc->int_levels) & newly;
         LOG(3, "mask = $%08X (pc=%08X)", value, ppc_get_pc(cfg->ppc));
         break;
     }
@@ -242,13 +258,24 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
 // so it is live from reset; the contents survive machine reset (it is
 // non-volatile) and are checkpointed with the family blob.
 
+// The data window decodes FIVE address bits for the cell — (offset >> 4) &
+// $1F — and ignores the rest, so the window WRAPS every $200 bytes rather
+// than ending.  POST leans on that: its NVRAM pattern test writes 4-byte
+// values at cells $1D..$1F with its plain "+$10 per byte" accessor, so the
+// last byte lands at +$200 and must alias cell 0 of the same bank (as the
+// part wires it) for the read-back to match.  A model that dropped it
+// failed every warm boot's "MainLBU NVRAM" test.
+static uint32_t nvram_cell(uint32_t offset) {
+    return (offset >> 4) & 0x1Fu;
+}
+
 static uint8_t nvram_read(config_t *cfg, uint32_t offset) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
-    if ((offset & 0xFu) != 0 || offset >= 32u * 0x10u) {
+    if ((offset & 0xFu) != 0) {
         LOG(2, "NVRAM data read off-centre +$%03X", offset);
         return 0xFF;
     }
-    uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + (offset >> 4)) % TNT_NVRAM_SIZE;
+    uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + nvram_cell(offset)) % TNT_NVRAM_SIZE;
     if (idx >= 0x1300u && idx < 0x1400u)
         LOG(4, "XPRAM read nv[$%04X] -> $%02X", idx, gc->nvram[idx]);
     return gc->nvram[idx];
@@ -256,13 +283,15 @@ static uint8_t nvram_read(config_t *cfg, uint32_t offset) {
 
 static void nvram_write(config_t *cfg, uint32_t offset, uint8_t value) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
-    if ((offset & 0xFu) != 0 || offset >= 32u * 0x10u) {
+    if ((offset & 0xFu) != 0) {
         LOG(2, "NVRAM data write off-centre +$%03X = $%02X", offset, value);
         return;
     }
-    uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + (offset >> 4)) % TNT_NVRAM_SIZE;
+    uint32_t idx = ((uint32_t)gc->nvram_bank * 32u + nvram_cell(offset)) % TNT_NVRAM_SIZE;
     if (idx >= 0x1300u && idx < 0x1400u)
         LOG(4, "XPRAM write nv[$%04X] = $%02X (pc=%08X)", idx, value, ppc_get_pc(cfg->ppc));
+    else
+        LOG(3, "NVRAM write nv[$%04X] = $%02X (pc=%08X)", idx, value, ppc_get_pc(cfg->ppc));
     gc->nvram[idx] = value;
 }
 
@@ -286,40 +315,36 @@ void tnt_gc_init(config_t *cfg) {
 // ============================================================
 // Apple's own device tree calls it /gc@10, and Open Firmware does issue a
 // command + BAR write at IDSEL 16 during probe-slots (handover-phase-d
-// §1).  What that write lands on is a documented open question
-// (proposal-pci-architecture §14 Q7): the chip's real config identity is
-// unrecovered, and the boot we have is known-good with a device that
-// accepts every write and answers every config read ALL-ONES.  So that is
-// exactly what this device does — as a named device instead of an
-// accident of a `dev != 11` literal, which makes flipping it to a real
-// header a two-line change once the identity is known.
+// §1).  What that write lands on was a documented open question
+// (proposal-pci-architecture §14 Q7) until the diagnostic utility's bridge
+// test named the vendor; the header below is the generic type-0 one with
+// Grand Central's ids.
 //
 // Note also what Grand Central is NOT: its 128 KB island at $F3000000 is
 // reached by PASS-THROUGH MEMORY cycles, not through a BAR (ANS developer
 // note §4.2.1), so tnt.c maps it at a fixed address and no BAR is
 // declared here.
-static bool gc_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
-    (void)dev;
-    (void)reg;
-    *out = 0xFFFFFFFFu;
-    return true;
-}
-
 static const char *gc_pci_name(const pci_device_t *dev) {
     (void)dev;
     return "Grand Central";
 }
 
+// The identity, recovered from the Network Server Diagnostic Utility's
+// PCI bridge test (`CheckPCI`): it reads config dword 0 of IDSEL 16 on
+// Bandit 1 and reports "Grand Central not found" unless the vendor is
+// Apple ($106B); the device id is Apple's Grand Central number ($0002 --
+// Bandit is $0001, O'Hare $0007), the class the "unassigned" $FF0000 the
+// part reports.  No BARs (see above); the command register latches.
 static const pci_config_decl_t gc_decl = {
-    // No ids and no class: every config read answers all-ones above.
+    .vendor_id = 0x106Bu,
+    .device_id = 0x0002u,
+    .revision = 0x02u,
+    .class_code = 0xFF0000u,
     .header_type = 0x00u,
-    // The command register still latches what the firmware writes, so the
-    // model is honest about accepting the cycle.
     .command_writable = PCI_CMD_IO_SPACE | PCI_CMD_MEM_SPACE | PCI_CMD_MASTER,
 };
 
 static const pci_device_ops_t gc_pci_ops = {
-    .cfg_read = gc_cfg_read,
     .name = gc_pci_name,
 };
 
@@ -342,6 +367,69 @@ static uint32_t escc_pins(uint32_t off) {
     return (ab << 1) | (dc << 2);
 }
 
+// --- The ESCC's four DBDMA channels ------------------------------------------
+//
+// Grand Central gives each SCC channel a transmit and a receive DBDMA
+// channel (4/5 for A, 6/7 for B).  An OUTPUT command hands the port a run
+// of bytes, which go to the channel's data register one at a time -- the
+// same path as a CPU store to it, so local loopback (WR14 LOOP) and the
+// cross-channel cable behave as they do under PIO; an INPUT command asks
+// for what the channel has received, which the port serves from the
+// receive queue and kicks again whenever a data register is written.
+// (Bytes arriving from the host side -- `machine.scc.a.receive` -- reach
+// an INPUT program at its next kick; the diagnostic utility's DMA tests
+// are loopbacks and never wait on that.)  Fitted to the Network Server
+// Diagnostic Utility's serial DMA tests (SccDMA: channel 4 OUTPUT of an
+// 80-byte pattern, channel 5 INPUT of the loopback, byte-for-byte compare).
+
+#define SCC_DMA_TX(ch) (4u + 2u * (ch))
+#define SCC_DMA_RX(ch) (5u + 2u * (ch))
+
+static uint32_t scc_data_pins(unsigned ch) {
+    // The cell's address pins: A/B on bit 1 (A = 1), D/C on bit 2 -- so
+    // channel 0 (A) data is 6, channel 1 (B) data is 4 (escc_pins).
+    return (ch == 0 ? 2u : 0u) | 4u;
+}
+
+static void scc_dma_kick_rx(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (!st->dbdma)
+        return;
+    for (unsigned ch = 0; ch < 2; ch++)
+        if (tnt_dbdma_active(st->dbdma, SCC_DMA_RX(ch)))
+            tnt_dbdma_kick(st->dbdma, SCC_DMA_RX(ch));
+}
+
+static int scc_port_out(void *ctx, const uint8_t *buf, int len) {
+    tnt_scc_dma_ctx_t *c = (tnt_scc_dma_ctx_t *)ctx;
+    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
+    for (int n = 0; n < len; n++)
+        mi->write_uint8(c->cfg->scc, scc_data_pins(c->ch), buf[n]);
+    scc_dma_kick_rx(c->cfg);
+    return len;
+}
+
+static int scc_port_in(void *ctx, uint8_t *buf, int len) {
+    tnt_scc_dma_ctx_t *c = (tnt_scc_dma_ctx_t *)ctx;
+    const memory_interface_t *mi = scc_get_memory_interface(c->cfg->scc);
+    int n = 0;
+    while (n < len && scc_channel_rx_pending(c->cfg->scc, c->ch) > 0)
+        buf[n++] = mi->read_uint8(c->cfg->scc, scc_data_pins(c->ch));
+    return n;
+}
+
+void tnt_scc_dma_init(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    for (unsigned ch = 0; ch < 2; ch++) {
+        st->scc_dma_ctx[ch].cfg = cfg;
+        st->scc_dma_ctx[ch].ch = ch;
+        tnt_dbdma_port_t tx = {.out = scc_port_out, .in = NULL, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
+        tnt_dbdma_port_t rx = {.out = NULL, .in = scc_port_in, .s_bits = NULL, .ctx = &st->scc_dma_ctx[ch]};
+        tnt_dbdma_set_port(st->dbdma, SCC_DMA_TX(ch), &tx);
+        tnt_dbdma_set_port(st->dbdma, SCC_DMA_RX(ch), &rx);
+    }
+}
+
 uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
     uint32_t block = offset & 0x1F000u;
     switch (block) {
@@ -360,22 +448,41 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
         return nvram_read(cfg, offset - OFF_NVDATA);
     case OFF_BOXID: {
         // Byte j of the little-endian register (the ROM reads it both as
-        // lwbrx and byte-wise).
-        uint8_t b = (uint8_t)(tnt_boxid(cfg) >> (8 * (offset & 3u)));
+        // lwbrx and byte-wise).  On the Network Servers this is Board
+        // Register 1 and the ROM reads bytes +0 and +1 only.
+        uint8_t b = (uint8_t)(tnt_gc_boxid(cfg) >> (8 * (offset & 3u)));
         LOG(3, "BoxID byte read +%u -> $%02X", offset & 3u, b);
         return b;
     }
+    case OFF_LCDGB: // GBUS device 3 — LCD + timebase enable (ANS only)
+        if (tnt_board(cfg)->has_gbus)
+            return tnt_lcd_read8(cfg, offset - OFF_LCDGB);
+        break;
+    case OFF_EPROM: // Ethernet address PROM + MP doorbell (ANS only)
+    case OFF_BREG2: // Board Register 2 — the environmental halfword
+        if (tnt_board(cfg)->has_gbus)
+            return tnt_gbus_read8(cfg, offset);
+        break;
     case OFF_RADACAL:
         return tnt_control_rad_read(cfg, offset - OFF_RADACAL);
     case OFF_SCSI0:
         // 53C94: sixteen byte-wide registers on $10 centres.
         return scsi_53c96_read(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu);
+    case OFF_SWIM3:
+        // SWIM3: sixteen byte-wide registers on $10 centres (swim3.c).
+        return tnt_swim3_read(cfg, offset - OFF_SWIM3);
     case OFF_MESH:
-        return tnt_mesh_read(cfg, offset - OFF_MESH);
-    default:
-        LOG(1, "byte read of unwired island offset +$%05X", offset);
+        // Absent on the Network Servers (board delta #4): the aperture
+        // decodes nothing, so it falls through to the open-bus log.
+        if (tnt_board(cfg)->has_mesh)
+            return tnt_mesh_read(cfg, offset - OFF_MESH);
+        LOG(1, "byte read of the absent MESH aperture +$%05X", offset);
         return 0;
+    default:
+        break;
     }
+    LOG(1, "byte read of unwired island offset +$%05X", offset);
+    return 0;
 }
 
 void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
@@ -390,6 +497,7 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         return;
     case OFF_ESCC:
         scc_get_memory_interface(cfg->scc)->write_uint8(cfg->scc, escc_pins(offset - OFF_ESCC), value);
+        scc_dma_kick_rx(cfg);
         return;
     case OFF_NVPORT:
         // The bank-select port is ONE byte-wide cell on the $10 centre.
@@ -411,16 +519,35 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
     case OFF_RADACAL:
         tnt_control_rad_write(cfg, offset - OFF_RADACAL, value);
         return;
+    case OFF_LCDGB: // GBUS device 3 — the write-only LCD ports (ANS only)
+        if (tnt_board(cfg)->has_gbus) {
+            tnt_lcd_write8(cfg, offset - OFF_LCDGB, value);
+            return;
+        }
+        break;
+    case OFF_EPROM:
+    case OFF_BREG2:
+        if (tnt_board(cfg)->has_gbus) {
+            tnt_gbus_write8(cfg, offset, value);
+            return;
+        }
+        break;
     case OFF_SCSI0:
         scsi_53c96_write(tnt_st(cfg)->scsi96, ((offset - OFF_SCSI0) >> 4) & 0xFu, value);
         return;
+    case OFF_SWIM3:
+        tnt_swim3_write(cfg, offset - OFF_SWIM3, value);
+        return;
     case OFF_MESH:
-        tnt_mesh_write(cfg, offset - OFF_MESH, value);
+        if (tnt_board(cfg)->has_mesh)
+            tnt_mesh_write(cfg, offset - OFF_MESH, value);
+        else
+            LOG(1, "byte write of the absent MESH aperture +$%05X = $%02X", offset, value);
         return;
     default:
-        LOG(1, "byte write of unwired island offset +$%05X = $%02X", offset, value);
-        return;
+        break;
     }
+    LOG(1, "byte write of unwired island offset +$%05X = $%02X", offset, value);
 }
 
 // 32-bit access: the LE register blocks.  `value` at this boundary is the
@@ -437,9 +564,21 @@ uint32_t tnt_gc_read32(config_t *cfg, uint32_t offset) {
     if ((offset & 0x1F000u) == OFF_AWACS)
         return TNT_LE32(tnt_awacs_read32(cfg, offset - OFF_AWACS));
     if ((offset & 0x1F000u) == OFF_BOXID) {
-        LOG(3, "BoxID read -> $%08X", tnt_boxid(cfg));
-        return TNT_LE32(tnt_boxid(cfg));
+        LOG(3, "BoxID read -> $%08X", tnt_gc_boxid(cfg));
+        return TNT_LE32(tnt_gc_boxid(cfg));
     }
+    // The Network Server's GBUS blocks: Board Register 2 (a little-endian
+    // halfword like BoxID) and the Ethernet PROM's byte cells.
+    if (tnt_board(cfg)->has_gbus && ((offset & 0x1F000u) == OFF_BREG2 || (offset & 0x1F000u) == OFF_EPROM))
+        return tnt_gbus_read32(cfg, offset);
+    // The NVRAM data window's byte cells answering a longword cycle.  The
+    // production ANS ROM reads them this way; a byte-wide cell on this
+    // big-endian bus drives lane 0, which is the MOST significant byte of
+    // the longword.  Gated on the board because no Macintosh TNT ROM has
+    // ever been observed issuing the cycle, and widening their decode
+    // without a TNT ladder run to prove it would be a blind change.
+    if (tnt_board(cfg)->has_gbus && (offset & 0x1F000u) == OFF_NVDATA)
+        return (uint32_t)nvram_read(cfg, offset - OFF_NVDATA) << 24;
     LOG(1, "long read of unwired island offset +$%05X", offset);
     return 0;
 }

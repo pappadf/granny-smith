@@ -1,0 +1,127 @@
+# tests/integration/lib/ans.script — shared helpers for the Apple Network
+# Server rows (proposal-apple-network-server-500-700).
+#
+# Pull in with `include "../lib/ans.script"`.
+#
+# WHY A LIBRARY AT ALL.  Two things about this machine are awkward exactly
+# once and identical in every row that talks to its firmware:
+#
+#  1. THE CONSOLE IS THE SCREEN BY DEFAULT, and the rows need the serial
+#     port.  Open Firmware's own `(install-console)` is
+#
+#         "input-device" evaluate catch if 2drop ttya then  ['] input catch …
+#         "output-device" evaluate catch if 2drop ttya then ['] output catch …
+#         or if ttya io then
+#
+#     — it opens whatever `input-device` and `output-device` name, and only
+#     falls back to `ttya` when one of them fails to open.  A Network Server
+#     ships with `input-device kbd` / `output-device screen`, and its 54M30
+#     video and ADB keyboard both work, so out of the box the console is the
+#     monitor.  Apple documents the alternative and it is `setenv`: the rows
+#     type the two variables on the machine's own keyboard, exactly as a
+#     technician would, and cold-boot.  The Grand Central NVRAM part is
+#     non-volatile and carries across a rebuild, so the setting sticks — on
+#     the emulated machine for the same reason it does on the real one.
+#
+#     (The ROM's own progress narration — `msg-write` — goes to ttya
+#     unconditionally, which is why the boot chatter is on the serial port
+#     even when the console is not.)
+#
+#  2. OPEN FIRMWARE'S CONSOLE DROPS CHARACTERS from a long burst delivered
+#     in one go, so command text is fed a few characters at a time with a
+#     bounded run between chunks.
+
+# --- Console plumbing --------------------------------------------------------
+
+# Feed a short chunk of command text to Open Firmware's console.
+def ans_send(s) {
+    machine.scc.a.receive("${$s}")
+    scheduler.run 20000000
+}
+
+# Complete the line and return everything the firmware printed in reply.
+def ans_go() {
+    machine.scc.a.receive("\r")
+    scheduler.run 400000000
+    return machine.scc.a.sent()
+}
+
+# Run the machine in bounded chunks until Open Firmware settles at its
+# prompt, and return everything it said on the way.  Chunks rather than one
+# guessed budget: the 700 needs materially more instructions than the 500
+# for the same guest-visible progress, because POST's delay loops are timed
+# against the timebase (bus/4) and a faster card spins more instructions per
+# millisecond of the 1 ms settle it leaves between LCD characters.
+def ans_wait_prompt() {
+    let out = ""
+    let spins = 0
+    while !contains($out, "0 > ") && $spins < 24 {
+        scheduler.run 250000000
+        $out = "${$out}${machine.scc.a.sent()}"
+        $spins = $spins + 1
+    }
+    assert contains($out, "0 > ") "Open Firmware never reached its prompt on ttya"
+    return $out
+}
+
+# Boot `model` with the serial port as the Open Firmware console, and leave
+# the machine sitting at the `0 >` prompt.  Returns the second boot's output.
+#
+# Two cold boots by construction: the first one comes up on the SCREEN (the
+# machine's shipping configuration), takes Apple's documented terminal setup
+# on the ADB keyboard, and the second one — against the now-configured
+# non-volatile store — comes up on ttya.
+def ans_boot_serial(model, ram_kb) {
+    # Start from a virgin non-volatile store — what removing the logic
+    # board's battery does, and what "a Network Server that has never been
+    # booted before" means in Apple's own service documentation.
+    #
+    # This is not tidiness.  POST caches its memory configuration in NVRAM
+    # (`init-mem-config`, `set-dimm-sizes`, `nv-dimm-size@`,
+    # `dimm-size-tbl!`), and the store is non-volatile across a machine
+    # rebuild, so a 700 booting against a table an ans500 wrote sizes its
+    # 48 MB correctly and then HANGS at `Jumping To RAM Prog.` — the point
+    # where POST relocates into RAM and starts trusting the cached
+    # configuration.  Every row here runs both profiles, so without this the
+    # second one wedges.  `try` because the first call has no machine yet.
+    let cleared = try(machine.board.clear_nvram(), none)
+    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
+
+    # The firmware's own progress narration (`msg-write`) goes to ttya
+    # whatever the console is, so `install-console>` is a bounded,
+    # model-independent marker for "the interpreter is up".  A machine whose
+    # store ALREADY names ttya skips the narration entirely and goes
+    # straight to its boot attempt and prompt, which is why both markers are
+    # watched: this helper has to be idempotent, because the store is
+    # non-volatile and the second model in a row inherits the first's setup.
+    let out = ""
+    let spins = 0
+    while !contains($out, "0 > ") && !contains($out, "install-console>") && $spins < 24 {
+        scheduler.run 250000000
+        $out = "${$out}${machine.scc.a.sent()}"
+        $spins = $spins + 1
+    }
+    # Give a console that IS ttya a moment to print its prompt before
+    # concluding that it is not.
+    let settle = 0
+    while !contains($out, "0 > ") && $settle < 5 {
+        scheduler.run 250000000
+        $out = "${$out}${machine.scc.a.sent()}"
+        $settle = $settle + 1
+    }
+    if contains($out, "0 > ") {
+        return $out
+    }
+
+    # The console is the screen.  Apple's documented terminal setup, typed on
+    # the machine's own keyboard; the ADB enumeration has to have finished
+    # before a keystroke lands, which the settle above has covered.
+    assert contains($out, "install-console>") "Open Firmware never installed its console"
+    machine.adb.keyboard.type("setenv output-device ttya\n")
+    scheduler.run 400000000
+    machine.adb.keyboard.type("setenv input-device ttya\n")
+    scheduler.run 400000000
+    let ignored = machine.scc.a.sent()
+    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
+    return ans_wait_prompt()
+}

@@ -645,11 +645,32 @@ void ppc_reset(ppc_t *p) {
     struct object *keep_fpu = p->fpu_object;
     struct object *keep_mmu = p->mmu_object;
     int keep_model = p->cpu_model;
+    // The TIME BINDING survives a reset, for the same reason the object
+    // handles and the model do: it is not processor state, it is how this
+    // core is wired to the machine's clock.  A reset line does not unbind a
+    // CPU from its oscillator.
+    //
+    // This mattered the moment anything actually asserted the line.  Cuda's
+    // RESET SYSTEM is the first thing to do so on a PowerPC machine here —
+    // the Apple Network Server's firmware resets itself mid-install — and
+    // with the binding zeroed, tick_mul is 0, ppc_ticks_now stops advancing,
+    // the timebase freezes, and the first firmware delay loop after the
+    // reset spins forever with the machine apparently alive.
+    struct scheduler *keep_sched = p->scheduler;
+    uint32_t keep_tick_mul = p->tick_mul, keep_tick_div = p->tick_div;
     memset(p, 0, sizeof(*p));
     p->cpu_object = keep_cpu;
     p->fpu_object = keep_fpu;
     p->mmu_object = keep_mmu;
     p->cpu_model = keep_model;
+    p->scheduler = keep_sched;
+    p->tick_mul = keep_tick_mul;
+    p->tick_div = keep_tick_div;
+    // Both counters restart from NOW rather than from tick zero: they are
+    // derived as (ticks_now - base), and a base of zero would have the
+    // timebase read out as however long the machine had been running.
+    p->rtc_base_ticks = ppc_ticks_now(p);
+    p->dec_base_ticks = p->rtc_base_ticks;
     if (ppc_is_604(p)) {
         p->msr = PPC_MSR_EP; // $00000040 (IP only)
         p->pvr = 0x00040103u; // 604, revision 1.3 (chosen constant; the kernel keys on the $0004 half)
@@ -670,6 +691,8 @@ void ppc_reset(ppc_t *p) {
     p->instruction_pc = p->pc;
     ppc_mmu_invalidate_all(p); // translation state gone with the SRs/BATs
     ppc_context_sync(p); // the fetch-side BAT view starts out cleared too
+    if (p->tick_mul)
+        ppc_dec_arm(p); // the decrementer's expiry event, against the new base
 }
 
 // === `$reg` aliases (main-CPU privilege per cores.md) =======================
