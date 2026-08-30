@@ -59,6 +59,11 @@ bool scc_sdlc_ready(const scc_t *restrict scc);
 // 1 = B): flush it as a Tx underrun/EOM would on real hardware.
 void scc_dma_tx_complete(scc_t *restrict scc, unsigned int ch);
 
+// A DMA engine drains up to `n` received bytes from channel `ch`'s FIFO
+// (0 = A, 1 = B) into `dst`, with the same status side effects as CPU data
+// reads.  Returns the count transferred.
+size_t scc_dma_rx(scc_t *restrict scc, unsigned int ch, uint8_t *dst, size_t n);
+
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scc_get_memory_interface(scc_t *scc);
 

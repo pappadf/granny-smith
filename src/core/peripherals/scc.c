@@ -563,6 +563,24 @@ void scc_dma_tx_complete(scc_t *restrict scc, unsigned int ch) {
     tx_underrun(&scc->ch[ch]);
 }
 
+// A DMA engine reading the receive FIFO: each byte goes through the same
+// path as an RR8 read, so Rx Available, hunt, end-of-frame and the Special
+// Receive Condition all track exactly as for CPU-driven reads.  A LocalTalk
+// driver programs the DMA for the frame's remaining DATA bytes only and
+// then finishes the frame BY HAND — it waits for Rx Character Available,
+// reads RR1 for the end-of-frame status and pops the CRC bytes itself (the
+// PDM .MPP's post-ReadRest sequence) — so the transfer must leave those
+// trailing bytes in the FIFO.
+size_t scc_dma_rx(scc_t *restrict scc, unsigned int ch, uint8_t *dst, size_t n) {
+    if (!scc || ch > 1)
+        return 0;
+    ch_t *c = &scc->ch[ch];
+    size_t moved = 0;
+    while (moved < n && !RX_EMPTY(c))
+        dst[moved++] = rr8(c);
+    return moved;
+}
+
 // command register
 static void wr0(ch_t *ch, uint8_t value) {
     ch->pointer = value & 7;

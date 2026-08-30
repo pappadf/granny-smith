@@ -57,6 +57,9 @@ LOG_USE_CATEGORY_NAME("amic");
 
 static void pdm_scsi_pump_arm(config_t *cfg); // SCSI DMA service loop (below)
 static void pdm_scc_tx_arm(config_t *cfg, int idx); // SCC transmit engine (below)
+static void pdm_scc_rx_arm(config_t *cfg, int idx); // SCC receive engine (below)
+static void pdm_scc_rx_a_event(void *source, uint64_t data);
+static void pdm_scc_rx_b_event(void *source, uint64_t data);
 
 // ============================================================
 // Interrupt fabric
@@ -509,6 +512,8 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
                 int idx = (int)((off - 0x1080u) >> 4);
                 if (idx == 0 || idx == 2)
                     pdm_scc_tx_arm(cfg, idx);
+                else
+                    pdm_scc_rx_arm(cfg, idx);
             }
         }
         return;
@@ -709,6 +714,66 @@ static void pdm_scc_tx_arm(config_t *cfg, int idx) {
         scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)(ch->count * PDM_SCC_TX_BYTE_NS));
 }
 
+// Receive channels (register blocks $1090 / $10B0).  The PDM-era .MPP LAP
+// code reads a frame's 5-byte header (LLAP + DDP length) through the ESCC
+// by hand, then hands the REST to this engine: RST, the remaining byte
+// count, RUN, and a poll of IF — its "ReadRest".  The engine drains that
+// many bytes from the ESCC receive FIFO into the channel's ring and sets
+// IF at terminal count; the frame's payload then sits at the ring start
+// (RST rewound the offset) where the driver's buffer pointer expects it.
+// Delivered after the wire time of `count` bytes, like the transmit side.
+#define PDM_SCC_RX_POLL_NS 200000.0 // re-check cadence while the FIFO is still short
+
+static void pdm_scc_rx_complete(config_t *cfg, int idx) {
+    pdm_amic_t *a = &pdm_st(cfg)->amic;
+    pdm_dma_ch_t *ch = &a->scc[idx];
+    if (!(ch->ctrl & DMA_RUN) || (ch->ctrl & DMA_IF))
+        return; // stopped (or already complete) since the event was armed
+    uint32_t ring = dma_window_base(a) + pdm_scc_ring[idx];
+    unsigned scc_ch = (idx == 1) ? 0u : 1u; // ESCC A / B
+    unsigned moved = 0;
+    while (ch->count) {
+        uint8_t byte;
+        if (scc_dma_rx(cfg->scc, scc_ch, &byte, 1) == 0)
+            break; // FIFO empty: the rest has not arrived yet
+        uint32_t phys = ring + ((ch->addr + ch->xfer_off) & 0x1FFFu);
+        uint8_t *host = dma_host_ptr(phys);
+        if (host && g_page_table[phys >> PAGE_SHIFT].writable)
+            *host = byte;
+        ch->xfer_off = (uint16_t)((ch->xfer_off + 1) & 0x1FFFu);
+        ch->count--;
+        moved++;
+    }
+    if (ch->count == 0) {
+        ch->ctrl |= DMA_IF; // terminal count
+        LOG(3, "scc rx dma ch%d delivered %u bytes", idx, moved);
+        pdm_amic_recompute(cfg);
+    } else {
+        // Short of the count: look again once more bytes can have arrived.
+        event_callback_t fn = (idx == 1) ? pdm_scc_rx_a_event : pdm_scc_rx_b_event;
+        scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)PDM_SCC_RX_POLL_NS);
+    }
+}
+
+static void pdm_scc_rx_a_event(void *source, uint64_t data) {
+    (void)data;
+    pdm_scc_rx_complete((config_t *)source, 1);
+}
+
+static void pdm_scc_rx_b_event(void *source, uint64_t data) {
+    (void)data;
+    pdm_scc_rx_complete((config_t *)source, 3);
+}
+
+// Ctrl-write hook for the receive channels: (re)arm on RUN, cancel on stop.
+static void pdm_scc_rx_arm(config_t *cfg, int idx) {
+    pdm_dma_ch_t *ch = &pdm_st(cfg)->amic.scc[idx];
+    event_callback_t fn = (idx == 1) ? pdm_scc_rx_a_event : pdm_scc_rx_b_event;
+    remove_event(cfg->scheduler, fn, cfg);
+    if ((ch->ctrl & DMA_RUN) && !(ch->ctrl & (DMA_IF | DMA_PAUSE)) && ch->count > 0)
+        scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)(ch->count * PDM_SCC_TX_BYTE_NS));
+}
+
 // ============================================================
 // Floppy: the AMIC DMA pump behind SWIM3
 // ============================================================
@@ -811,6 +876,8 @@ void pdm_amic_register_events(config_t *cfg) {
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scsi_pump", pdm_scsi_pump_event);
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_tx_a", pdm_scc_tx_a_event);
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_tx_b", pdm_scc_tx_b_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_rx_a", pdm_scc_rx_a_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_rx_b", pdm_scc_rx_b_event);
 }
 
 // ============================================================
