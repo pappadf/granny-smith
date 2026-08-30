@@ -510,10 +510,24 @@ goes to ttya regardless, which is why the boot chatter appears on the
 serial port even when the console does not.
 
 Apple documents the alternative and it is `setenv`. The integration rows do
-exactly that, once, on the machine's own keyboard, and cold-boot; the Grand
-Central NVRAM part is non-volatile and the setting sticks for the same
-reason it does on the real machine. `tests/integration/lib/ans.script`
-wraps it.
+exactly that, once, on the machine's own keyboard, and cold-boot with
+`machine.restart`; the Grand Central NVRAM part is non-volatile and the
+setting sticks for the same reason it does on the real machine.
+`tests/integration/lib/ans.script` wraps it.
+
+**Which rebuild the store survives.** The carry follows the power switch:
+`machine.restart` rebuilds *this* machine, so the soldered part comes back
+with it, while `machine.boot` builds a *new* machine and hands it a virgin
+store (proposal-boot-vs-reset §2 — a machine inherits nothing it was not
+given). That is not bookkeeping. A run stopped part-way through Open
+Firmware's format of a virgin store — a bounded `scheduler.run`, a client
+that walked away mid-run — leaves the store torn, and a machine built on a
+torn store never reaches a boot: it sits in the ROM's serial-console read
+loop behind a black screen. Carrying such a store into the next
+`machine.boot` made that look like a broken model or an unbootable disk.
+A row that wants the same chip across two cold boots says so with
+`machine.restart` (ans-diag-floppy's DIMM table, `ans_boot_serial`'s
+console setting); `machine.board.clear_nvram()` is still the battery pull.
 
 The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
 than its relocatable BAR, because this board installs no pull-down on MD51

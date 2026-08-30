@@ -19,7 +19,11 @@ def diag_boot() {
     machine.boot model="ans500" ram=65536 rom="${$ROM}"
     machine.board.keyswitch = "service"
     scheduler.run 2000000000
-    machine.boot model="ans500" ram=65536 rom="${$ROM}"
+    # The SECOND boot is the same machine coming up again, not a new one, so
+    # it is a power-cycle: machine.restart carries the soldered NVRAM part
+    # (and with it POST's DIMM table) across the rebuild, where machine.boot
+    # now hands the new machine a virgin store.
+    machine.restart
 
     # Service: Open Firmware boots `diag-device` (`cd disk6 fd:diags`)
     # instead of `boot-device`, no typed command.

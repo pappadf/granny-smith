@@ -84,6 +84,8 @@ def ans_boot_serial(model, ram_kb) {
     # where POST relocates into RAM and starts trusting the cached
     # configuration.  Every row here runs both profiles, so without this the
     # second one wedges.  `try` because the first call has no machine yet.
+    # (machine.boot below now starts from a virgin store on its own; the
+    # explicit battery pull stays as the row's stated precondition.)
     let cleared = try(machine.board.clear_nvram(), none)
     machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
 
@@ -122,6 +124,11 @@ def ans_boot_serial(model, ram_kb) {
     machine.adb.keyboard.type("setenv input-device ttya\n")
     scheduler.run 400000000
     let ignored = machine.scc.a.sent()
-    machine.boot model="${$model}" ram=$ram_kb rom="${$ROM}"
+    # Cold-boot the SAME machine so the new console setting takes effect:
+    # machine.restart is the power switch, and the soldered NVRAM part (with
+    # the setenv just written into it) survives it.  A machine.boot would
+    # build a NEW machine, which starts from a virgin store and would come
+    # back on the screen console again.
+    machine.restart
     return ans_wait_prompt()
 }
