@@ -808,16 +808,17 @@ static bool cuda_bus_idle(av_cuda_t *cuda) {
     // asserted, waiting for a TIP that never comes.  Both sides then wait
     // for each other forever.
     //
-    // A response parked for re-presentation (reaped by the abandonment
-    // watchdog or sync-aborted) is still the head of the firmware's output
-    // queue: starting an autopoll or tick packet ahead of it would push a
-    // second attention byte while the first still sits unread in the SR —
-    // Mac OS 8.1's CudaMgr folds that orphan byte into its next receive
-    // session and the desynchronised ADB stream overruns the ADB Manager's
-    // stack buffer (the Finder dies mid AFP copy: the driver spins at IPL 1
-    // on serial DMA for >100 ms, every autopoll gets reaped, and a moving
-    // mouse supplies a fresh autopoll every 11 ms).
-    return cuda->state == CUDA_IDLE && !cuda->push_pending && !cuda->resend_pending && (cuda->last_pb & PB_TIP) != 0;
+    // A response parked for re-presentation does NOT gate the bus.  It is
+    // tempting to treat it as the head of the firmware's output queue and
+    // hold autopoll/tick behind it, but the host is by definition not
+    // listening (that is why the packet was reaped), so the gate stalls all
+    // unsolicited traffic for as long as the guest stays away — and Copland's
+    // boot, which leans on the tick, crawls to a halt (pm7100-copland-boot).
+    // Reaps that pile up like that were a symptom of the AMIC receive DMA
+    // charging a frame's wire time twice, starving VIA1 service for 20 ms at
+    // a stretch; that is fixed in amic.c, and the 8.1 AFP copy now runs with
+    // zero packets reaped.
+    return cuda->state == CUDA_IDLE && !cuda->push_pending && (cuda->last_pb & PB_TIP) != 0;
 }
 
 // The deferred half of CMD_RESET (see there): assert the system reset line
