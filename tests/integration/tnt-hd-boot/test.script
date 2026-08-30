@@ -20,7 +20,9 @@ scheduler.run 2500000000
 # The boot-driver selection matched (XPRAM $77 "Default OS" = 1 through
 # the banked NVRAM against the DDM's ddType) and the volume mounted:
 # BootDrive carries the boot drive number instead of the scan's $FFFF.
-assert debug.mac.globals.read("BootDrive") == 0x8003 "BootDrive not set (driver match / mount failed)"
+# ($23, not $03: the .Sony driver owns the floppy drive and its drive
+# numbers now that the SWIM3 is wired, and the SCSI volume lands after it.)
+assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive not set (driver match / mount failed)"
 
 # Startup completed without a system error: DSErrCode was explicitly
 # cleared by the running system (the scan-era sentinel is $FFFF; the

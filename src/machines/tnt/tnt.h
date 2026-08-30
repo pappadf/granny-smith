@@ -37,6 +37,7 @@
 
 #include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
 #include "display.h" // scanout descriptor (control.c presents through it)
+#include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
 #include "machine.h"
 #include "memory.h"
 #include "pci.h" // the generic PCI core: bus, device, config header
@@ -44,6 +45,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+
+#include "swim3.h"
 
 struct av_cuda; // the shared behavioral Cuda model (machines/av/cuda.h)
 struct tnt_dbdma; // the DBDMA engine (dbdma.h)
@@ -73,14 +76,15 @@ struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 // so the bridge base carries PCI I/O and the next 16 MB is pass-through
 // MEMORY — which is how Grand Central is reached.  (This comment used to
 // call $F3000000 "the base of Bandit 1 PCI I/O"; it is the opposite.)
-#define TNT_CHAOS_BASE   0xF0000000u // Chaos bridge (config ports)
-#define TNT_BANDIT1_BASE 0xF2000000u // Bandit 1 bridge: config ports + PCI I/O
-#define TNT_GC_BASE      0xF3000000u // Grand Central: Bandit 1 pass-through memory
-#define TNT_BANDIT2_BASE 0xF4000000u // Bandit 2 bridge (8500/9500): ports + PCI I/O
-#define TNT_HH_BASE      0xF8000000u // Hammerhead register window (2 KB)
-#define TNT_ROM_BASE     0xFFC00000u // 4 MB ROM; reset vector $FFF00100
-#define TNT_PCI_MEM1     0x80000000u // Bandit 1 PCI memory space (256 MB)
-#define TNT_PCI_MEM_VCI  0x90000000u // Chaos/VCI PCI memory space (256 MB)
+#define TNT_CHAOS_BASE     0xF0000000u // Chaos bridge (config ports)
+#define TNT_BANDIT1_BASE   0xF2000000u // Bandit 1 bridge: config ports + PCI I/O
+#define TNT_GC_BASE        0xF3000000u // Grand Central: Bandit 1 pass-through memory
+#define TNT_GC_ISLAND_SIZE 0x00020000u // the 128 KB Grand Central decodes at that base
+#define TNT_BANDIT2_BASE   0xF4000000u // Bandit 2 bridge (8500/9500): ports + PCI I/O
+#define TNT_HH_BASE        0xF8000000u // Hammerhead register window (2 KB)
+#define TNT_ROM_BASE       0xFFC00000u // 4 MB ROM; reset vector $FFF00100
+#define TNT_PCI_MEM1       0x80000000u // Bandit 1 PCI memory space (256 MB)
+#define TNT_PCI_MEM_VCI    0x90000000u // Chaos/VCI PCI memory space (256 MB)
 // A Bandit's PCI I/O window: 8 MB at the bridge base, of which only the
 // low 16 address bits are driven, so the 64 KB I/O space aliases through
 // it 128 times (TN1062's `ranges`, above).
@@ -94,6 +98,41 @@ struct scsi_53c96; // the external-bus SCSI chip (core scsi_53c96.h)
 #define TNT_PCI_BUS_1   0 // Bandit 1 (all machines)
 #define TNT_PCI_BUS_2   1 // Bandit 2 (8500/9500)
 #define TNT_PCI_BUS_VCI 2 // Chaos, the display bus
+
+// === Grand Central external-interrupt map, Network Server personality =======
+// Apple, "Network Server Hardware Developer Notes", 1996, §4.2, p. 16: the
+// ANS "keeps the critical positions of PowerMac 9500; however, F/W SCSI
+// interrupts are moved to Bandit's positions."  Exactly three lines differ
+// from the Macintosh boards — EXT1 (was Reserved) takes BOTH Bandits'
+// ganged bus-timeout error line, and EXT2/EXT6 (were Ban1_Int/Ban2_Int)
+// take the two fast/wide 53C825A controllers.  The internal Grand Central
+// assignments (TNT_INT_SCSI0/MACE/SCCA/SCCB/AWACS/VIA1/SWIM3) are
+// explicitly unchanged; TNT_INT_MESH simply goes unused.
+//
+// NOTE the trap in §10: a slot's line does NOT follow its bridge.  Slot 3
+// sits on Bandit 2 but keeps EXT5 — the line a 9500 gives Bandit 1's third
+// slot — so the map is DATA in the profile's slot table, never derived.
+#define ANS_INT_ERROR    21 // EXT1: Error_Int, both Bandits ganged
+#define ANS_INT_FW0      22 // EXT2: FW0_Int — 53C825A #0 (IDSEL 17)
+#define ANS_INT_SLOT1    23 // EXT3
+#define ANS_INT_SLOT2    24 // EXT4
+#define ANS_INT_SLOT3    25 // EXT5 (on Bandit 2 — see above)
+#define ANS_INT_FW1      26 // EXT6: FW1_Int — 53C825A #1 (IDSEL 18)
+#define ANS_INT_SLOT4    27 // EXT7
+#define ANS_INT_SLOT5    28 // EXT8
+#define ANS_INT_SLOT6    29 // EXT9
+#define ANS_INT_SECTOPRI 30 // EXT10: the MP doorbell (GBUS $19000 access)
+
+// Which board personality a profile describes.  The ANS is a fourth board
+// on this family, not a new one: same Hammerhead, same two Bandits, same
+// Grand Central and its entire internal subtree, same 60x bus, same DBDMA
+// (Apple, ibid., §1: "much of the hardware detail which is fully documented
+// in the PowerMac family is not repeated here").  What differs is the
+// sixteen-item delta this enum selects.
+typedef enum tnt_board_kind {
+    TNT_BOARD_MAC = 0, // Power Macintosh 7500/8500/9500
+    TNT_BOARD_SHINER, // Apple Network Server 500/700 ("Shiner")
+} tnt_board_kind_t;
 
 // === Per-model board descriptor =============================================
 typedef struct tnt_board_desc {
@@ -110,6 +149,31 @@ typedef struct tnt_board_desc {
     uint32_t hh_r20;
     uint32_t bus_hz; // processor (AR) bus clock: 50/40/44 MHz
     int bandit_count; // 1 (7500) or 2 (8500/9500)
+
+    // === The Network Server delta (Apple, ibid., §1.1 table) ================
+    tnt_board_kind_t kind; // MAC (default) or SHINER
+    // MESH, the internal fast-SCSI cell.  Delta #4: the ANS has no MESH at
+    // all — two 53C825A PCI controllers replace it — so the cell must not be
+    // constructed, must not decode island +$18000, and must not appear in
+    // the device tree.  A board flag rather than a #ifdef, because one
+    // binary serves both boards.
+    bool has_mesh;
+    // The GBUS island (delta #6/#9/#13/#14): Grand Central's Generic Bus
+    // chip selects, idle on a Macintosh, carrying the server's front-panel
+    // LCD, board registers, keyswitch, Ethernet PROM and NVRAM ports here.
+    bool has_gbus;
+    // Parity DRAM (delta #7).  Counterintuitively the FASTER configuration:
+    // "If parity is detected, 60 ns timing is set.  If parity is not
+    // detected, 70 ns timing is set" (ibid., §5).
+    bool has_parity;
+    // L2 cache DIMM size in KB; 0 = no cache DIMM.  The ANS's DIMM is
+    // "fit, form and function compatible with the PowerMac 8500 cache slot"
+    // — 512 KB on the 500, 1 MB on the 700 (ibid., §6).  Reported through
+    // Hammerhead +$E0.
+    uint32_t l2_kb;
+    // TwoSuppliesH — Board Register 1 bit 15, the redundant-PSU report and
+    // the one register-level difference between a 700 and a 500 (§5.6).
+    bool two_supplies;
 } tnt_board_desc_t;
 
 // === Hammerhead state (hammerhead.c) ========================================
@@ -117,9 +181,15 @@ typedef struct tnt_board_desc {
 // one non-LE block), store-and-readback with a handful of special offsets.
 #define TNT_HH_REGS 128
 
+#define TNT_HH_BANKS 26 // DRAM banks with a base-register pair each (+$1C0..+$4F0)
 typedef struct tnt_hammerhead {
     uint32_t reg[TNT_HH_REGS]; // raw store; specials overlay on read
     bool l2cfg_sticky; // TEMP diagnostic: +$E0 ignores writes (GS_HH_L2CFG)
+    // The DIMMs, as banks: bytes of DRAM behind each bank (0 = no DIMM
+    // side there) and where in host RAM that bank's storage starts.
+    // Carved from the profile's RAM size at init (hammerhead.c).
+    uint32_t bank_size[TNT_HH_BANKS];
+    uint32_t bank_host_off[TNT_HH_BANKS];
 } tnt_hammerhead_t;
 
 // === Bandit / Chaos state (bandit.c) ========================================
@@ -154,9 +224,16 @@ typedef struct tnt_gc {
     uint32_t int_events;
     uint32_t int_mask;
     uint32_t int_levels; // live source levels (mirror of the source state)
+    // The mode-1 output latch, PER SOURCE: a bit is set by that source's
+    // enabled change and cleared by the $80000000 acknowledge, and the CPU
+    // line follows `latch & mask`.  Per-source rather than a single flag
+    // because masking a source has to quiet it: AIX services the fast/wide
+    // controllers by polling and leaves their externals masked, so a single
+    // sticky flag left the line asserted for a source the guest had
+    // deliberately turned off and the machine took nothing but external
+    // interrupts from then on.
+    uint32_t int_latch;
     uint8_t int_mode1; // Clear-mode 1 selected (see above)
-    uint8_t int_latch; // mode-1 output latch: set by enabled source edges,
-                       // cleared by the $80000000 acknowledge
     uint8_t nvram_bank; // +$1D000 bank-select port (bank = offset / 32)
     uint8_t nvram[TNT_NVRAM_SIZE];
 } tnt_gc_t;
@@ -271,6 +348,21 @@ typedef struct tnt_mesh {
                          // target no longer REQs — busfree must succeed)
 } tnt_mesh_t;
 
+// The byte ring between the SWIM3 engine (which pushes/pulls one byte at
+// a time) and DBDMA channel 1 (which moves runs of bytes per descriptor).
+// The ESCC's DBDMA channels (4/5 = A tx/rx, 6/7 = B tx/rx; grand_central.c):
+// one port context per SCC channel.
+typedef struct tnt_scc_dma_ctx {
+    config_t *cfg;
+    unsigned ch;
+} tnt_scc_dma_ctx_t;
+
+#define TNT_FDRING_SIZE 4096u
+typedef struct tnt_fdring {
+    uint8_t buf[TNT_FDRING_SIZE];
+    uint32_t head, tail; // free-running; count = tail - head
+} tnt_fdring_t;
+
 // === Family state ===========================================================
 typedef struct tnt_state {
     tnt_hammerhead_t hh;
@@ -291,7 +383,24 @@ typedef struct tnt_state {
     pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
                                // by the bus: its factory allocated it)
     tnt_mesh_t mesh; // internal fast SCSI (mesh.c; bus = cfg->scsi)
+    // The internal SuperDrive: the shared SWIM3 model behind Grand Central
+    // +$15000, fed by DBDMA channel 1 through a byte ring (swim3.c).  Both
+    // are plain data, checkpointed in the tail; the chip's pointer tail is
+    // re-bound after a restore (tnt_swim3_bind).
+    swim3_t swim3;
+    tnt_fdring_t fdring;
+    tnt_scc_dma_ctx_t scc_dma_ctx[2]; // the ESCC DBDMA ports' contexts (rebuilt at init)
+    // The Network Server's GBUS island (gbus.c / lcd.c).  Built only for
+    // TNT_BOARD_SHINER; inert and unread on the Macintosh boards.
+    tnt_gbus_t gbus;
+    tnt_lcd_t lcd;
+    struct object *board_object; // machine.board node (gbus.c)
+    struct object *lcd_object; // machine.lcd node (lcd.c)
     struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
+    // The Network Servers' second fast/wide bus (`machine.scsi2`, Open
+    // Firmware's `scsi-int2` / `probe-scsi2`), carrying backplane bays 4-6.
+    // NULL on the Macintosh boards, which have exactly one visible bus.
+    struct scsi *scsi2;
     uint8_t *vram; // TNT_VRAM_SIZE host buffer (bank 2 at +$200000)
     struct display display; // scanout descriptor (display.h)
     rgba8_t clut_view[256]; // materialized CLUT for the renderer
@@ -328,6 +437,7 @@ void tnt_clear_page(uint32_t page_index);
 void tnt_hh_init(config_t *cfg); // power-on register state + map claim
 uint8_t tnt_hh_read(config_t *cfg, uint32_t offset); // window offsets 0..$7FF
 void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value);
+void tnt_hh_remap(config_t *cfg); // rebuild the DRAM decode from the bank registers
 
 // === bandit.c ===============================================================
 
@@ -352,6 +462,19 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value);
 // === mesh.c =================================================================
 
 void tnt_mesh_init(config_t *cfg); // power-on state + DBDMA ch-10 port
+
+// === swim3.c (tnt) ==========================================================
+// The floppy: Grand Central +$15000 on $10 centres, interrupt 19, DBDMA
+// channel 1.  init attaches the channel port; bind (after floppy_init and
+// after a restore) points the shared model at the drive, the scheduler and
+// the DBDMA movers; register_events before scheduler_start.
+void tnt_swim3_init(config_t *cfg);
+
+void tnt_scc_dma_init(config_t *cfg); // attach the ESCC's four DBDMA ports (after tnt_dbdma_init)
+void tnt_swim3_bind(config_t *cfg);
+void tnt_swim3_register_events(config_t *cfg);
+uint8_t tnt_swim3_read(config_t *cfg, uint32_t off); // off from +$15000
+void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
 void tnt_mesh_reset(config_t *cfg);
 // Island access for the +$18000 block (byte registers on $10 centres).
 uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset);
@@ -394,5 +517,19 @@ void tnt_gc_set_source(config_t *cfg, int n, bool level);
 void tnt_gc_pulse_event(config_t *cfg, int n);
 // Recompute ((events | levels) & mask) and drive the CPU external line.
 void tnt_gc_recompute(config_t *cfg);
+// Clear the non-volatile store and its process-lifetime carry: the
+// documented effect of removing the logic board's battery (tnt.c).
+void tnt_nvram_clear(config_t *cfg);
+
+// Board Register 1 / BoxID as software reads it: the board straps, the live
+// PCI slot-presence pins, and (on a Network Server) the GBUS top byte.
+uint32_t tnt_gc_boxid(config_t *cfg);
+
+// === gbus.c (GBUS device 3's non-LCD registers; lcd.c routes them here) ====
+
+void tnt_gbus_tben_write(config_t *cfg, uint16_t value);
+uint16_t tnt_gbus_tben_read(config_t *cfg);
+void tnt_gbus_misc_write(config_t *cfg, uint16_t value);
+uint16_t tnt_gbus_misc_read(config_t *cfg);
 
 #endif // GS_MACHINES_TNT_H

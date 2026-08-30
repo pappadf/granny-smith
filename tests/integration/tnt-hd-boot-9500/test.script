@@ -21,7 +21,9 @@ assert try(machine.pci.slot[7].card.name, "(empty)") == "(empty)" "no onboard vi
 # full System 7.6 startup to the Finder desktop.
 scheduler.run 4000000000
 
-assert debug.mac.globals.read("BootDrive") == 0x8003 "BootDrive not set (driver match / mount failed)"
+# ($23, not $03: the .Sony driver owns the floppy drive and its drive
+# numbers now that the SWIM3 is wired, and the SCSI volume lands after it.)
+assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive not set (driver match / mount failed)"
 assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
 
 # The screen is the CARD's, derived from the CRTC registers the card's own

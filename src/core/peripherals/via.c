@@ -357,8 +357,15 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
     uint8_t ret = 0;
     uint8_t rs = (addr >> 9) & 15; // register select
 
-    // VIA is on the upper byte of the 16-bit wide data bus
-    GS_ASSERT(!(addr & 1));
+    // VIA is on the upper byte of the 16-bit wide data bus, so the odd
+    // halves of its cells are not the chip.  A guest — or a debugger's
+    // memory scan — may read one anyway, and that is not the emulator's
+    // business to die over: the bus floats and reads back as the last
+    // thing on it, which this model has always presented as zero.
+    if (addr & 1) {
+        LOG(3, "odd-address read at $%08X: the VIA is on the upper byte only", addr);
+        return 0;
+    }
 
     // VIA's 4 RS (register select) lines are connected to line 9-12 of the address bus
     switch (rs) {
@@ -463,8 +470,12 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
     via_t *via = (via_t *)v;
     uint8_t rs = (addr >> 9) & 15; // register select
 
-    // VIA is on the upper byte of the 16-bit wide data bus
-    GS_ASSERT(!(addr & 1));
+    // The odd halves of the VIA's cells are not the chip (see the read
+    // side): the write goes nowhere rather than taking the emulator down.
+    if (addr & 1) {
+        LOG(3, "odd-address write at $%08X = $%02X: the VIA is on the upper byte only", addr, value);
+        return;
+    }
 
     // VIA's 4 RS (register select)lines are connected to line 9-12 of the address bus
     switch (rs) {

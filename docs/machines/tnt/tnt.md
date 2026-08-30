@@ -99,8 +99,10 @@ DMA architecture:
   Z8530 core), BoxID (`+$1A000`), the banked NVRAM (`+$1D000` bank
   port / `+$1F000` data window on `$10` centres, 8 KB), and the eleven
   DBDMA channel windows (`+$8000+n*$100`).  Phase D adds AWACS
-  (`+$14000`) and the RaDACal RAMDAC (`+$1B000`, control.c); SCSI, MACE
-  and SWIM3 apertures log and read open bus until their phases land.
+  (`+$14000`) and the RaDACal RAMDAC (`+$1B000`, control.c); the SWIM3
+  aperture (`+$15000`, swim3.c) is the shared floppy controller on DBDMA
+  channel 1; SCSI and MACE apertures log and read open bus until their
+  phases land.
 - **DBDMA** (`dbdma.c`) — the descriptor-based DMA engine, Phase C: one
   implementation, eleven channels (channel *n* raises Grand Central
   interrupt *n*), each a little-endian register file (`channelControl`
@@ -244,8 +246,12 @@ byte-access only.
 ## Memory model
 
 ```
-$00000000-RAM top   DRAM, contiguous from 0 (OF sizes it; the tree is
-                    the contract afterwards)
+$00000000-RAM top   DRAM -- wherever the Hammerhead bank base registers
+                    (+$1C0..+$4F0, hammerhead.c) put the DIMMs: POST
+                    probes each bank in its power-on 64 MB window, sizes
+                    it, re-bases the banks contiguously from 0 and
+                    caches the sizes in NVRAM; OF publishes the result
+                    and the tree is the contract afterwards
 $80000000-$8FFFFFFF Bandit 1 PCI memory — empty: recoverable fault
 $90000000-$9FFFFFFF Chaos/VCI memory — likewise
 $F0000000-$F1FFFFFF Chaos bridge + display-bus device space
@@ -276,7 +282,7 @@ sample-exact golden WAV, the interrupt fabric's mode-1 discipline
 visible in the registers, and the ROM's native control driver painting
 the 640x480 gray desktop into the Control VRAM aperture against a
 screen golden).  The run parks hunting for boot media (Phase E's
-frontier; no SCSI/floppy data paths yet).  The interrupt-fabric and engine semantics
+frontier; no SCSI data path yet — the floppy path came later, see "The floppy" below).  The interrupt-fabric and engine semantics
 are additionally unit-pinned in `tests/unit/suites/tnt_gc` (the MkLinux
 initialisation sequence and events-driven acknowledge, the NanoKernel's
 `$80000000` mode-1 latch semantics, NVRAM banking, BoxID, island DBDMA
@@ -315,3 +321,540 @@ Known open items at this phase:
 - The `interruptableDeviceTable` / per-channel SCC interrupt split: the
   shared Z8530's single INT line currently fans to Grand Central
   interrupts 15 and 16 together (both 68k IPL 4); split with Phase F.
+
+---
+
+# The Apple Network Servers — a fourth board on this family
+
+`src/machines/tnt/ans500.c` / `ans700.c` add two machines to `tnt` that are
+**not Macintoshes**: the Apple Network Server 500/132 and 700/150
+("Shiner"), Apple's only non-Macintosh computers, which boot Apple's
+production **Open Firmware 1.1.22** ROM (`$962F6C13`) and run **AIX 4.1.5
+for Apple Network Servers**. They carry no Mac OS Toolbox at all.
+
+That the family name now covers two non-Macintoshes is the honest cost of
+the right decision. The reasoning is Apple's own: the ANS's Grand Central
+address is *"defined by the current OpenFirmware and Expansion Manager code
+for the TNT ROM releases"*; its ROM is built from the 9500 v2 codebase and
+carries the same version string; its entire internal I/O subtree is the
+9500's. Apple's developer note opens by declining to re-document any of it —
+
+> *"This specification is unfortunately not one-stop shopping, owing to the
+> architectural origins of the Network Servers in the PowerMac 9500 family.
+> Therefore much of the hardware detail which is fully documented in the
+> PowerMac family is not repeated here. Instead, unique hardware interfaces
+> are described."*
+
+— so a separate `src/machines/shiner/` would either duplicate
+`hammerhead.c` / `bandit.c` / `grand_central.c` / `dbdma.c` or export them
+across a family boundary the hardware does not have.
+`tnt_board_desc_t.kind` is the seam instead, exactly as it already
+distinguishes a 7500 from a 9500.
+
+Sources: Apple, *Network Server Hardware Developer Notes* (1996); Apple,
+*Network Server Developer's Reference Guide* (1996), ch. 6 and 7; Apple,
+*Network Server Theory of Operations*; the shipping ROM itself — which on
+this machine is an unusually good oracle, because Open Firmware 1.1.22 has
+**named Forth words** and `see <word>` decompiles them at the prompt.
+
+## What differs from a 9500
+
+Apple enumerates it, so this table is scope rather than survey. Four items
+are boot-critical.
+
+| Delta | Where |
+|---|---|
+| Three Grand Central external interrupt lines re-purposed; both Bandits ganged onto `Error_Int` | `tnt.h` `ANS_INT_*` |
+| Slots 1-2 on Bandit 1, slots 3-6 on Bandit 2 — **six devices on Bandit 1**, no P2P bridge | the profiles' slot tables |
+| Two 53C825A fast/wide SCSI controllers at IDSEL 17/18 | `pci/cards/sym53c825.c` |
+| **MESH removed** | `tnt_board_desc_t.has_mesh` |
+| Cirrus 54M30 PCI video at IDSEL 15, no interrupt | `pci/cards/cirrus54m30.c` |
+| The GBUS island: front-panel LCD, keyswitch, board registers, Ethernet PROM | `gbus.c`, `lcd.c` |
+| Parity DRAM, 8 DIMM slots, a 512 MB **ROM decode** ceiling | the profiles |
+| An L2 cache DIMM that is actually present | `hammerhead.c` `+$E0` |
+
+`ANS_INT_*` carries the one trap worth repeating: **a slot's interrupt line
+does not follow its bridge.** Slot 3 sits on Bandit 2 but keeps EXT5 — the
+line a 9500 gives Bandit 1's third slot — so a model that derives the line
+from the bus is wrong for exactly one slot and right for the other five,
+which is the worst failure shape available. The map is data in the profile.
+
+## The GBUS island
+
+Grand Central's Generic Bus provides *"six chip selects and write enable
+which the Network Server uses for devices such as NVRAM, Ethernet PROM,
+board registers, and the LCD."* On a Macintosh those chip selects are
+mostly idle; here they are the server. See `gbus.h` for the address map and
+the bit tables.
+
+Three properties, all of them silent when wrong:
+
+* **Every bit is ACTIVE LOW** unless its name ends in `H`. A healthy
+  machine reads all-ones, not zero.
+* **Board Register 2 is POLLED and never interrupts** — Apple is explicit —
+  so a static healthy value satisfies both the ROM and AIX with no event
+  plumbing at all. Its eight environmental bits are exposed as *writable*
+  object attributes (`machine.board.temp_warn`, …) because injection is the
+  only way to exercise the path, and POST prints a published string for
+  each one.
+* **There are two keyswitches.** The rear one gates power and the sliding
+  logic-board drawer and is a power-on precondition; the front
+  three-position one is what software reads, in Board Register 1 bits 13/14.
+  Both default to LOCKED (`machine.board.keyswitch`, `.rear_key_locked`).
+
+## The front-panel LCD, and why it is built first
+
+`lcd.c` models a write-only HD44780-class panel behind two registers on
+GBUS device 3. It is built before anything else because the *Theory of
+Operations* puts it before memory — *"It is the job of POST to initialize
+the hardware into a working state and establish a software path to the
+LCD"* — so it is the machine's only output device during exactly the phase
+most likely to break. Apple published the strings POST writes, so
+`machine.lcd.text` turns POST into a self-describing test harness, asserted
+both positively (the expected progress message appeared) and negatively (no
+`MainLBU 825#1 Failed`, no `MainLBU Video Failed`).
+
+Two facts the ROM settled that the documents left open:
+
+* **The panel is 4 lines by 20 columns.** Apple documents only the two
+  register addresses; its sample banner line is 23 characters and cannot be
+  what the machine writes. The ROM's line-select commands are `$80` / `$C0`
+  / `$94` / `$D4` — the canonical 4x20 DDRAM map, where `$94 - $80 = 20` is
+  exactly where line 0 ends — and every POST string it writes is padded to
+  exactly 20 characters.
+* **The controller is an HD44780.** Its initialisation is the textbook
+  power-on ritual (`$30 $30 $30 $38 $08 $0C $06 $38 $01`) and nothing else.
+
+A healthy 700/150 settles on:
+
+```
+  ROM vers.1.1.22
+0048 MB Parity RAM
+075MHz 604, 50MHzBus
+1024KB Level 2 Cache
+```
+
+The CPU figure is `075` rather than `150` because POST measures the clock
+by timing an instruction loop against the timebase, and the family models
+the 604 at CPI 2 — so the panel reports exactly half the profile's clock.
+That is a readout of a deliberate modelling choice (see `tnt_init`), not a
+defect, and the ladder asserts what the ROM actually prints so that changing
+it would show up as a deliberate change.
+
+## The L2 cache — and the size encoding, decoded
+
+These are the first machines in the repository to report an L2 cache, so
+they are the first to run the ROM's L2 test at all: every Macintosh TNT
+board answers Hammerhead `+$E0` with `$00`, which makes POST skip it.
+
+`hammerhead.c` had carried "bit `$80` = present, low 3 bits a size code
+(encoding unattested)" since the TNT work. The Network Server ROM prints
+the size it decoded on the LCD, so sweeping the register and reading line 3
+gives the answer outright: `$80` → 512 KB, `$81` → 256 KB, `$82` → 1 MB,
+`$83` → 4 MB, with bit 2 ignored. The size lives in bits 1:0, and 512 KB —
+not 256 — is code zero.
+
+The strapped bits also have to **survive a write**: the register is
+config/status and the ROM drops `$70` into it mid-test and reads it
+straight back, so plain store-and-readback would erase the cache the machine
+has and the report would come out `0000KB`.
+
+## SCSI — three buses, and a new device class
+
+The machine has **three** SCSI buses: two fast/wide 53C825A channels and the
+narrow 53C94 external chain the Macintosh boards already had. The 53C8xx is
+a genuinely new device class for this repository — it executes an
+instruction set out of host memory rather than being register-driven — and
+it has its own document: **docs/core/peripherals/scripts53c8xx.md**, which
+also records the two board facts the ROM gave up (`GPIO0` is a presence
+strap; the chip is strapped **little**-endian, not big).
+
+The two channels are separate namespaces in the object model:
+`machine.scsi` is channel 0 (bays 0-3, Open Firmware's `disk0`..`disk3`)
+and `machine.scsi2` is channel 1 (bays 4-6, plus the 700's two rear
+drives). This is the first machine here where a SCSI id does not identify a
+device on its own, and `scsi_init_named` exists for it.
+
+## Where Open Firmware puts a built-in device's BARs
+
+Each Bandit forwards 16 MB of PCI memory one-to-one at its base + 16 MB —
+its own `ranges` property says so — and Grand Central decodes the 128 KB at
+the bottom of Bandit 1's. On a Macintosh nothing else lands there. On a
+Network Server it is where **every** built-in device's BARs land: Open
+Firmware assigns the two 53C825As `$F3100000`/`$F3101000` and
+`$F3103000`/`$F3104000`, and Apple's own worked device-tree node shows a
+slot-6 card at `$F5100000` inside Bandit 2's. Without the window the
+firmware prints `Can't clear C825 interrupt!` and stops.
+
+`tnt_bandit_claim_memory` claims it for `TNT_BOARD_SHINER` only. It is
+arguably a gap on the Macintosh boards too, but turning 16 MB of
+previously-quiet address space into recoverable transfer errors on a
+boot-critical bridge is not a change to make without a Macintosh ROM ladder
+run to prove it.
+
+## The console is the screen
+
+Open Firmware's own `(install-console)` opens whatever `input-device` and
+`output-device` name and falls back to `ttya` only when one of them fails:
+
+```forth
+"input-device"  evaluate catch if 2drop ttya then  ['] input  catch …
+"output-device" evaluate catch if 2drop ttya then  ['] output catch …
+or if ttya io then
+```
+
+A Network Server ships with `input-device kbd` / `output-device screen`,
+and both its 54M30 and its ADB keyboard work, so **out of the box the
+console is the monitor** — the firmware's progress narration (`msg-write`)
+goes to ttya regardless, which is why the boot chatter appears on the
+serial port even when the console does not.
+
+Apple documents the alternative and it is `setenv`. The integration rows do
+exactly that, once, on the machine's own keyboard, and cold-boot; the Grand
+Central NVRAM part is non-volatile and the setting sticks for the same
+reason it does on the real machine. `tests/integration/lib/ans.script`
+wraps it.
+
+The 54M30 also answers the **legacy** VGA I/O block (`$3B0`-`$3DF`) rather
+than its relocatable BAR, because this board installs no pull-down on MD51
+and the Alpine's "Enable Offset" bit therefore reads zero. Open Firmware
+still sizes and assigns the BAR — it lands at `$00010000`, above the 16 bits
+a Bandit even drives — while every real access goes to the fixed addresses.
+Without the fixed decode the firmware's write to `$3C4` takes a recoverable
+transfer error and the machine check takes down the rest of device
+installation with it.
+
+## The framebuffer — a mode that is derived, not configured
+
+Nothing tells the emulator what resolution to present. The part is a VGA, so
+the mode lives in the CRTC, the sequencer and the Cirrus extension registers;
+`cirrus54m30.c` reads one out of them. What Open Firmware 1.1.22 programs on
+this machine, captured by logging every port write across a cold boot:
+
+```
+SR01 = $01   8 dots per character clock
+SR07 = $F1   Cirrus extended mode, bits [3:1] = 000 = 8 bpp
+CR01 = $4F   horizontal display end 79   -> (79 + 1) * 8 = 640 pixels
+CR12 = $DF   vertical display end 223, with CR07 bit 1 as VDE bit 8
+                                          -> 479 + 1  = 480 lines
+CR13 = $50   offset 80, in eight-byte units in a 256-colour mode
+                                          -> 640 bytes per scan line
+GR05 = $40   256-colour shift mode
+```
+
+and 768 writes to the DAC data port — 256 entries of six-bit R, G, B, which
+the model expands to eight bits by replicating the top two into the bottom
+so `$3F` maps to `$FF` exactly.
+
+8 bpp is not a shortcut. Apple: the part "implements only a little-endian
+window into the packed-pixel frame buffer, hence Big Endian operating
+systems are limited to 8 bits per pixel" — and at one byte per pixel byte
+order does not matter, so the existing `PIXEL_8BPP` path is *correct* rather
+than merely convenient. Deeper colour needs a little-endian framebuffer
+window in `display_t`, which this repository does not have.
+
+One VGA register is deliberately not store-and-readback: **Input Status
+Register 1** (`$3BA`/`$3DA`). Software does not read it for a value, it
+reads it for an *edge* — every VGA console waits on the vertical-retrace or
+display-enable bit before touching the CRTC or the palette — so it is
+derived from the scheduler's clock, which keeps a run deterministic and
+keeps a waiting loop from becoming a hang.
+
+## The floppy
+
+The SWIM3 at Grand Central `+$15000` is the same chip the 6100/7100/8100
+carry, so it is the same model: `src/core/peripherals/swim3.c` /
+`swim3_xfer.c` (documented in
+[docs/core/peripherals/swim3.md](../../core/peripherals/swim3.md)),
+promoted out of the PDM tree for this board.  What this family adds is in
+`tnt/swim3.c`: the registers on `$10` centres (index = offset >> 4), the
+IRQ pin on Grand Central interrupt 19, and the data path on **DBDMA
+channel 1**.  The engine and the DMA engine meet in the middle — the
+SWIM3 engine *pushes* decoded bytes as a sector passes under the head,
+a DBDMA INPUT command *pulls* up to N bytes from the device port — so a
+4 KB byte ring (`tnt_fdring_t`, checkpointed with the board) sits
+between them: reads fill the ring and kick the channel, writes drain it.
+
+The customer that drove the work is not Mac OS but Open Firmware's own
+`swim3` package, which is what a Network Server boots a floppy with: the
+Service position of the keyswitch makes the firmware's `diag-device`
+(`cd disk6 fd:diags`) the boot path, and `boot fd:diags` does the same
+by hand.  Apple's *Network Server Diagnostic Utility 1.1* (a bootable
+1440 KB HFS floppy carrying an XCOFF `diags`) now loads and runs on the
+emulated 500: its Level One menu, hardware configuration and POST-result
+screens come up on the 54M30 and answer the ADB keyboard.  The package
+drives the chip differently from the `.Sony` driver in four ways the
+model had to learn, each a defect until it did:
+
+| What the firmware does | What the model did | Fix |
+|---|---|---|
+| samples a sense read at Handshake **bit 3** (the ERS's "Sense — direct read of rddata input"; Linux does the same) | answered only on bit 2, the `.Sony` driver's bit — every sense read 0, `open` ended in `BAD DISK` | a sense read answers on both bits |
+| selects the head by setting SEL/CA to address 4 or 12 and starting the transfer, never reading the sense there | routed the head only on a sense read — side 0 for every side-1 block, `can't OPEN` after the catalog | route on every Phase / HeadSelect write |
+| reads a track's tail in one transfer: `FirstSector = n`, `SectorsToXfer = spt − n + 1` | matched every sector against `FirstSector`, so the second never came — `READ TIMEOUT` | "accessed continuously" (ERS reg `$E`): after the first match the rest are the next headers, no match required |
+| — | a service slot a fraction of a nanosecond early re-delivered the header just served, and the continuous transfer handed the duplicate on as the next sector — a corrupted `diags` load, `DEFAULT CATCH!` | round the slot delay up; nudge the header index |
+
+Mac OS on the 7500/8500/9500 sees the change too: with the chip present
+the `.Sony` driver owns drive numbers 1–2 and the SCSI startup volume
+lands at `$23` rather than `$03` — the `tnt-hd-boot*` rows assert the
+new number.
+
+## The diagnostic utility -- what it accepted, and what it found
+
+Apple's *Network Server Diagnostic Utility 1.1* (the floppy the
+`ans-diag-floppy` row boots) is a hardware test suite written against
+the real board by people with its schematics, and it exercises paths no
+operating system touches.  Its "complete system test" is the closest
+thing this machine has to a conformance suite, so the model was fitted
+until it accepted the machine.  What it tests, and what each test cost:
+
+| Test | Verdict now | What it took |
+|---|---|---|
+| PCI bridges: Bandit 1, Bandit 2, Grand Central, both 53C825s by config identity | pass | Grand Central's config header answered all-ones ("Grand Central not found"); it now carries Apple's identity, `$106B:$0002`, class `$FF0000` (grand_central.c) |
+| Hardware configuration: memory per DIMM slot | 64 MB, 32 + 32 in slots 1A/1B | It read 0 MB everywhere, and the memory test then ran off the end of the map into a Data Access Exception.  The sizes come from POST's NVRAM table (`$1048 + 8k`: base, size per bank; `set-dimm-sizes` sums each slot's two banks), which POST fills from what its probe finds through the Hammerhead's **bank base registers** -- unmodelled until now.  hammerhead.c: 26 banks, `B[31:24]` = base >> 22, `A[24]` = base bit 30, `A[26]` = interleaved with the next bank; a bank shows its DIMM aliased through a 64 MB window at its base, an empty one reads nothing.  POST's power-on table puts bank k at k x 64 MB, its probe writes a pattern at the top of each window and walks down, then up for the alias, and it re-bases what it found contiguously from 0 and pairs equal neighbours as interleaved (the upper bank's base then marks the pair's end).  The profile's RAM is carved into matched DIMM pairs, 64 MB each at most, from slot pair 1 |
+| POST result: parity | `$00010000`, "All memory (RAM) has parity" | POST's parity test writes every address's value at that address and reads it back with checking on; the bank model made it pass for the first time (before, the address-at-address pass hit a bank it could not see, the LCD said `ParityAddrAtAddrFail`, and `ans-rom-ladder` caught it) |
+| 53C825 x 2: presence, init, registers, DMA FIFO | pass | "Cleared FIFO not indicating empty" / "FIFO not full": the DMA FIFO test path -- CTEST3 CLF, CTEST4 FBL lane steering, CTEST6 push/pop, CTEST1 FMT/FFL, 4 lanes x 134 deep (sym53c825.c) |
+| LCD, NVRAM, 54M30 controller + VRAM | pass | nothing |
+| Serial: PIO loopbacks A and B | pass | nothing (WR14 LOOP was already modelled) |
+| Serial: DBDMA loopbacks A and B | pass | the ESCC's four DBDMA channels (4/5 A tx/rx, 6/7 B tx/rx) were not wired; grand_central.c gives them ports on the SCC's data registers |
+| Serial: SDLC DBDMA loopback | **fails** | the utility expects the 80th received byte of its 80-byte SDLC frame to be `$28` -- not the data byte, not any CRC-CCITT variant of the frame -- and the model delivers the data byte.  What the real ESCC does at the end of a DMA-fed SDLC frame in local loopback is not understood; left as the one open item |
+| Serial with the loopback connector | needs the cable | the model has the cable (`scc_set_external_loopback`); the row does not plug it in |
+| Keyboard input | pass | `*` left Shift down for good: `keyboard.type()` queued Shift-down and the key in one report and the utility takes one transition per report -- now paced in guest time (docs/core/peripherals/keyboard.md) |
+
+Two things it said that were not defects.  "Raid Card installed in
+server -- test skipped" came only after the memory-test exception: the
+utility restarts its `main` with the exception code in the register
+that otherwise carries `CheckRaidCardBit`'s answer (GPREG bit 0 of the
+first 53C825, low = RAID card fitted), so the message was the crash
+talking.  And "Memory (RAM) has NO parity" on a first boot after
+`clear_nvram()` is what a real machine says after a battery change:
+Open Firmware wipes the DIMM table when it initialises a virgin store,
+and the utility reads 0 MB until the next boot -- which is why the row
+boots twice.
+
+## Verification
+
+| Row | Tier | What it holds |
+|---|---|---|
+| `ans-rom-ladder` | unit | POST reaching the LCD, sizing memory, the CPU/bus and L2 banners, both keyswitch defaults, the active-low environmental register, and the absence of every published failure string whose device we model — on both profiles |
+| `ans-pci-slots` | unit | six sockets and three builtins, IDSELs, the rewired interrupt map, the raw config-cycle identities including the `$14` Revision ID that gates machine identity |
+| `ans-device-tree` | matrix | `dev / ls`, node properties and device aliases against Apple's published Listing 6-1, driven over the serial console |
+| `ans-scsi` | matrix | the SCRIPTS engine, through Open Firmware's own `probe-scsi1` and `probe-scsi2`, on both fast/wide channels |
+| `ans-console` | matrix | the machine booted as it SHIPPED — console on the monitor — with the derived 640x480x8 mode and a golden of what Open Firmware draws |
+| `ans-macos-2rom` | matrix | the 2.0 prototype ROM booting Mac OS to the desktop on the same hardware model — two unrelated software stacks, one model |
+| `ans-aix-boot` | extended, fixture-gated | the documented Service-keyswitch install path, up to `bootapple` launching off the AIX 4.1.5 Install CD |
+
+Note the probe words: this machine has `probe-scsi0`, `probe-scsi1` and
+`probe-scsi2`, one per controller. `probe-scsi` and `probe-scsi-all` do not
+exist on it, so a row that typed those would prove nothing.
+
+## Booting AIX — where this stands
+
+The Install CD boots, and the boot path is Apple's own rather than an
+invention. With a blank store, the front keyswitch in Service and the disc
+in bay 0 — the documented condition, *"a Network Server that has never been
+booted before"* — Open Firmware finds the disc, reads the EBCDIC `IBMA` IPL
+record in its block 0, writes a boot configuration, prints
+
+```
+cd
+RESETing to change Configuration!
+```
+
+asks Cuda to pull the system reset line, comes back through POST, and
+launches **`bootapple`**, Apple's own bootstrap:
+
+```
+bootapple: launched by "OpenFirmware1.1.22"
+bootapple: POST results AOK.  Code is  00010000
+bootapple: "AAPL,cpu-id" property is  39002089
+bootapple: model info is Power Macintosh,AAPL,ShinerESB;MacRISC
+bootapple: boot device is "/bandit/53c825@11/sd@0:aix"
+```
+
+Every line there is a fact about this model that Apple's bootstrap checked
+and accepted: POST's own recorded results, the CPU identity Hammerhead
+supplies, the root `compatible` the 53C825A probe set, and the boot path
+chosen off the disc. `bootapple` then reads about 2.7 MB off the disc —
+1 360 blocks, two at a time — and jumps into the AIX kernel.
+
+### The LCD is the narrator, and it counts
+
+From here the machine stops printing and starts *displaying*. The
+front-panel LCD — built in Phase B because POST needs it — is the only
+narrator AIX uses, and sampled as a sequence rather than a snapshot it is
+a trace of the boot:
+
+```
+510   the configuration manager has started
+811   the system planar
+812   the standard I/O adapter
+890   a SCSI-2 adapter                    (the 53C825As)
+868   the integrated SCSI adapter         (the 53C94)
+538   passing control to a configuration method
+723   a CD-ROM drive or other SCSI device
+512   restoring the base customised device information
+831   an async (serial) adapter
+874   a tty
+c46   the BOS install: normal processing
+c31   the BOS install: select the system console
+```
+
+— Apple's own table, in *What's New With the Network Server*. So the
+kernel is up, `cfgmgr` walks the device tree, configures the fast/wide
+controllers — `cfgpscsi`, driver `pscsidd`, exactly the pair the ODM
+extraction named before any of this booted — configures the narrow chain
+and the disc in bay 0, and goes looking for a root to mount. The driver
+negotiates synchronous transfer, takes INQUIRY (standard and
+vital-product-data), MODE SENSE and START STOP UNIT, and reads several
+hundred blocks off the Install CD.
+
+**Give it the memory.** That sequence is what 512 MB buys; at 64 MB the
+configuration manager does not survive its first pass over the SCSI
+adapters. The BOS install boots into a RAM filesystem, and a guest's
+memory figure is part of the fixture rather than a detail of it — 64 MB is
+a comfortable Macintosh number and it hid seven codes' worth of working
+machine.
+
+**Absent targets are the expensive case, and that is the part's design.**
+Probing a wide bus means selecting fifteen other ids, most of which are
+not there. Each one costs a selection time-out — two causes, in the
+part's own order: the STO first, which the driver's handler fails upward
+with "no device" so `cfgmgr` moves on, and the unexpected disconnect
+stacked behind it, whose handler escalates through `bsc_cleanup_reset` to
+a SCSI bus reset and `bsc_scsi_reset_received` — the one routine that
+resynchronises the driver's SCRIPTS command ring, running exactly as
+designed. With the driver's own post-reset settle that is roughly eleven
+seconds per absent target, which is why the `890` phase dominates the
+boot's wall clock. (For two sessions this looked like an unsolvable ring
+stall ending in an `888`/`102`/`300` panic; the model was merging the two
+causes into one 16-bit SIST read, through a mechanism no real bus access
+has, and every measured ordering was an artefact of that merge — the
+dossier's findings 45 to 48 carry the full account.)
+
+After the second configuration pass the async adapter and tty come up
+(`831`, `874`, `727`), and then the BOS install takes the LCD over with
+its own codes — `c46`, `c42`, and `c31` as it puts **"Please define the
+System Console"** on the 54M30 framebuffer and waits for a key.
+
+**The install runs to completion, and the installed system boots.** The
+graphics console had no keyboard under AIX at first: the kernel's Cuda
+transport is not the Macintosh ROM's, and four places where the model had
+encoded the Mac's tolerance rather than the part's behaviour kept it from
+ever enabling the VIA's shift-register interrupt (finding 56); and even
+with keys arriving, `cfgcuda` never defined a keyboard adapter because it
+defines them from Cuda's device list — pseudo-command `$1A`, RdDevList,
+which the Macintosh never sends and the model did not answer (finding
+57). So the install is driven on serial port B, where the same "define the
+console" prompt appears; the BOS menus are driven there. A disk that AIX
+will install to needs three more things from the device model: IBM's
+SCSD INQUIRY page `$C7` (the size comes from it, not from READ CAPACITY),
+RESERVE/RELEASE, SEND DIAGNOSTIC, and WRITE AND VERIFY (finding 50–52),
+and the SCRIPTS engine must yield to the CPU while the script polls its
+completion mailbox (finding 51). With those, "Restoring base operating
+system" runs to "Base Operating System installation is complete" in
+about eleven guest minutes (`c54`…`c58`). The reboot needs Board
+Register 1 bit 8 high (finding 53) and the disk at SCSI id 2 — Open
+Firmware's default boot device is `disk2:aix` — and then comes up
+multi-user: `890 591 868`, "Multi-user initialization completed", the
+Installation Assistant, and **`AIX Version 4 … Console login:`**.
+**Rung S13.**
+
+With RdDevList answered, cfgmgr brings up `cudaka0`, `kbd0`, `cudama0`
+and `mouse0`, the LFT attaches the keyboard, and the installed system
+runs with its console on the 54M30: the Installation Assistant, the login
+prompt and a root shell are all on the monitor, driven from the emulated
+ADB keyboard (finding 58 — note that AIX, like MkLinux, reads the cursor
+keys at their raw ADB codes `$3B`–`$3E`; `keyboard.md` has the
+convention). That is what the `ans-aix-installed-boot` row asserts: the
+login screen and the logged-in screen as pixel goldens, with `root` typed
+in between. The bring-up dossier's findings 32 to 58 carry the full
+account.
+
+### What getting here cost, and what it says
+
+Twenty-six defects, and every single one was in shared machinery that no
+existing guest had pushed on.
+In order:
+
+| Defect | Where |
+|---|---|
+| Cuda's RESET SYSTEM only reset Cuda | `av/cuda.c` |
+| `ppc_reset` threw away the CPU's time binding | `cpu/ppc/ppc.c` |
+| `Wait Reselect` jumped instead of parking | `scripts53c8xx.c` |
+| Memory Move clobbered TEMP, the Call/Return link | `scripts53c8xx.c` |
+| Interrupt-on-the-fly latched without driving `IRQ/` | `scripts53c8xx.c` |
+| A Wait Disconnect still reported UNEXPECTED DISCONNECT | `scripts53c8xx.c` |
+| A selection time-out took the Select instruction's alternate address | `scripts53c8xx.c` |
+| A selection time-out was instantaneous instead of STIME0's 204.8 ms | `scripts53c8xx.c` |
+| A command completed inside the store that started it | `scripts53c8xx.c` |
+| A chip that was arbitrating accepted a second start | `scripts53c8xx.c` |
+| `SCNTL1`'s RST bit did not drive the SCSI reset line | `scripts53c8xx.c` |
+| `ISTAT`'s ABRT bit did not abandon the operation in flight | `scripts53c8xx.c` |
+| Grand Central's mode-1 latch ignored the mask | `grand_central.c` |
+| INQUIRY overstated its length and ignored EVPD | `core/peripherals/scsi.c` |
+| A stacked SIST cause surfaced between the byte lanes of one 16-bit read | `sym53c825.c` |
+| The time-out's two causes came disconnect-first; the driver needs STO first, UDC stacked | `scripts53c8xx.c` |
+| Reading `CTEST2` did not return or clear `ISTAT`'s SIGP doorbell | `sym53c825.c`, `scripts53c8xx.c` |
+| Hard disks did not serve IBM's SCSD VPD page, so AIX sized them at 0 MB | `core/peripherals/scsi.c` |
+| RESERVE/RELEASE answered ILLEGAL REQUEST, so AIX's disk open failed | `core/peripherals/scsi.c` |
+| A script that polls memory was declared a runaway and halted | `scripts53c8xx.c` |
+| Board Register 1 bit 8 read clear, so POST's second boot entered its serial diagnostic monitor | `tnt/ans500.c`, `ans700.c` |
+| Cuda negated TREQ inside the host's own ByteAck store at the end of a sync, so AIX's `cuda_sync` never saw it low | `av/cuda.c` |
+| A sync cycle cleared Cuda's autopoll setting, which AIX enables once and never again | `av/cuda.c` |
+| The first response byte after the attention byte was clocked inside the TIP store, overwriting the attention byte AIX had not yet read | `av/cuda.c` |
+| A 5 ms abandonment watchdog reaped replies AIX comes back for tens of milliseconds later | `av/cuda.c` |
+| RdDevList (`$1A`) was not answered, so `cfgcuda` found no keyboard or mouse and the LFT configured without one | `av/cuda.c` |
+
+Two patterns are worth carrying forward.
+
+**Every one of the engine defects was the model being more helpful, or
+faster, than the part.** Jump instead of park, write TEMP, latch without
+asserting, report a disconnect the script had asked for, go somewhere
+useful on a time-out instead of stopping dead — and, four times over, do in
+no time at all something the hardware takes a fifth of a second to do. Each looked like
+the forgiving choice and each one broke a driver that was doing something
+perfectly ordinary.
+
+The timing ones deserve their own sentence, because they are the least
+obvious and did the most damage. **Zero is a wrong answer for how long
+anything takes.** A selection time-out reported the instant nobody answers
+completes the whole select-fail-report-retry cycle inside the driver's own
+doorbell write; the interrupt storm that follows never lets the clock tick,
+so the driver's timers never expire and nothing gives up. A command that
+completes inside the store that started it re-enters the driver's interrupt
+handler while it still holds its own lock, and AIX panics on the assertion
+that catches exactly that. Neither is a performance question. Both are the
+difference between a machine that is slow and a machine that has stopped.
+
+The Open Firmware driver never noticed any of them because it never waits,
+never calls, never uses interrupt-on-the-fly, never asks for a VPD page,
+polls with interrupts masked and holds no locks: one guest agreeing with a
+model proves much less than it feels like it does.
+
+**The machine's own instruments are better than any amount of reasoning.**
+`see <word>` at the Open Firmware prompt settled every question the ROM
+could answer. Level-5 SCRIPTS logging over a whole boot costs one
+200 000-line file and shows the runaway loop outright. And three digits on
+a four-line character LCD, cross-referenced against a table Apple printed,
+replaced an afternoon of guessing about where AIX had got to. On this
+machine, read the LCD first.
+
+AIX 4.1.5 for the Network Server has **no public source**, so the TNT
+reflex — disassemble the guest — looks expensive. It is not. `pscsidd`
+and `pscsiddpin` ship **uncompressed** on the Install CD, and although
+their XCOFF symbol tables are stripped, every function still carries its
+AIX **traceback table**: a zero word, a fixed header, and the function's
+own name, sitting after its last instruction. Fifty lines of scanner
+recover 24 and 44 named functions with their addresses, and from there the
+interrupt handler reads directly. That is how `bsc_intr`'s dispatch on
+`SIST0:SIST1` — read as one 16-bit value, masked `$048F` — was settled,
+and it is the technique to reach for on any AIX binary.
+
+Its SCRIPTS labels (`phase_reselect`, `sync_nego`, `reqack_too_large`,
+`tpf_too_small`, `patcha`…`patchg`) are a specification of what the engine
+still has to get right. Its C side has `bsc_ioctl_sleep` and
+`e_sleep_thread`: the configuration method issues an ioctl and **sleeps**,
+so a command that never completes shows up as a completely idle machine
+rather than as anything resembling a crash. The fourth lever remains
+`ans-macos-2rom`: any device can be cross-examined through a stack we do
+understand.

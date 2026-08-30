@@ -46,6 +46,9 @@ export interface MachineConfig {
    *  Lisa/XL parallel-port ProFile — profile.attach). Sourced from the model's
    *  `machine.profile(id).hd_bus`. */
   hdBus?: 'scsi' | 'profile';
+  /** SCSI id (bay) to attach `hd` at. Chosen in the dialog from the model's
+   *  `scsi_slots`; defaults to the slot flagged `boot`, else the first one. */
+  hdId?: number;
   cd: string;
 }
 

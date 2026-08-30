@@ -16,7 +16,19 @@
     <script>
       if ('serviceWorker' in navigator) {
         const isLocalhost = ['localhost', '127.0.0.1', ''].includes(location.hostname);
-        if (!crossOriginIsolated && !isLocalhost) {
+        if (isLocalhost) {
+          // A dev server (scripts/dev_server.py, Vite) sends the COOP/COEP
+          // headers itself.  A worker registered by an earlier build would
+          // still be controlling this origin and re-wrapping every
+          // response -- which is how a 2 MB main.wasm streamed through it
+          // ends in ERR_CONTENT_LENGTH_MISMATCH on reload.  Unregister
+          // anything stale; the change takes effect on the next load.
+          // (Only here: on a static host the worker IS what isolates the
+          // page, and crossOriginIsolated is true BECAUSE it is running.)
+          navigator.serviceWorker.getRegistrations().then((regs) => {
+            for (const reg of regs) reg.unregister();
+          });
+        } else if (!crossOriginIsolated) {
           navigator.serviceWorker.register('./coi-serviceworker.js').then(
             (reg) => {
               if (reg.active && navigator.serviceWorker.controller) return;

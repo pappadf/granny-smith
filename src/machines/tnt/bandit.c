@@ -408,6 +408,42 @@ void tnt_bandit_claim_memory(config_t *cfg) {
         pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, TNT_PCI_MEM1, 0x10000000u, TNT_PCI_MEM1, 0xFFFFFFFFu,
                            "PCI memory (Bandit 1)");
 
+    // THE PASS-THROUGH MEMORY REGION, and where Open Firmware actually puts
+    // an on-board device's BARs.
+    //
+    // Each bridge forwards 16 MB of PCI MEMORY, one-to-one, at its base +
+    // 16 MB — Apple's own `ranges` property on a real machine (TN1062):
+    //
+    //     02000000 00000000 F3000000  F3000000  00000000 01000000
+    //
+    // Grand Central decodes the 128 KB at the bottom of Bandit 1's, which
+    // is how the island is reached and why tnt.c maps it directly; the rest
+    // was never claimed by anything, because on the Macintosh boards
+    // nothing lands there.  On the Network Servers it is where EVERY
+    // built-in device's BARs land: Open Firmware assigns the two 53C825As
+    // $F3100000/$F3101000 and $F3103000/$F3104000, and Apple's own worked
+    // device-tree node in the Software Developer Notes shows a slot-6 card
+    // at $F5100000/$F5101000 — inside Bandit 2's.
+    //
+    // Claimed for the Network Servers only.  The window is a Bandit fact
+    // rather than a board one, so this is arguably a gap on the Macintosh
+    // boards too — but claiming it there turns every unclaimed access in
+    // 16 MB of previously-quiet address space into a recoverable transfer
+    // error on a boot-critical bridge, which is not a change to make
+    // without a Macintosh ROM ladder run to prove it.  Widening it is a
+    // separate piece of work with its own evidence.
+    if (tnt_board(cfg)->kind == TNT_BOARD_SHINER) {
+        // Above the Grand Central island only: tnt.c has already claimed
+        // the bottom 128 KB, and the two claims must not overlap.
+        if (bandit1)
+            pci_bus_add_window(bandit1->bus, PCI_SPACE_MEM, TNT_GC_BASE + TNT_GC_ISLAND_SIZE,
+                               0x01000000u - TNT_GC_ISLAND_SIZE, TNT_GC_BASE + TNT_GC_ISLAND_SIZE, 0xFFFFFFFFu,
+                               "PCI pass-through memory (Bandit 1)");
+        if (bandit2)
+            pci_bus_add_window(bandit2->bus, PCI_SPACE_MEM, TNT_BANDIT2_BASE + 0x01000000u, 0x01000000u,
+                               TNT_BANDIT2_BASE + 0x01000000u, 0xFFFFFFFFu, "PCI pass-through memory (Bandit 2)");
+    }
+
     pci_bus_t *vci = pci_bus_by_index(cfg->pci, TNT_PCI_BUS_VCI);
     if (pci_bus_is_populated(vci)) {
         pci_bus_add_window(vci, PCI_SPACE_MEM, TNT_PCI_MEM_VCI, 0x10000000u, TNT_PCI_MEM_VCI, 0xFFFFFFFFu,

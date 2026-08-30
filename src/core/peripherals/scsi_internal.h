@@ -80,13 +80,17 @@
 #define CMD_SEEK_6           0x0B
 #define CMD_INQUIRY          0x12
 #define CMD_MODE_SELECT      0x15
+#define CMD_RESERVE          0x16
+#define CMD_RELEASE          0x17
 #define CMD_MODE_SENSE       0x1A
 #define CMD_START_STOP_UNIT  0x1B
+#define CMD_SEND_DIAGNOSTIC  0x1D
 #define CMD_PREVENT_ALLOW    0x1E
 #define CMD_READ_CAPACITY    0x25
 #define CMD_READ_10          0x28
 #define CMD_WRITE_10         0x2A
 #define CMD_SEEK_10          0x2B
+#define CMD_WRITE_VERIFY     0x2E
 #define CMD_VERIFY           0x2F
 #define CMD_READ_SUB_CHANNEL 0x42
 #define CMD_READ_TOC         0x43

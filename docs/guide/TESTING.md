@@ -227,6 +227,17 @@ detectors), guest-tick choreography (`run_ticks`, `double_click`,
 milestone rows), addressing-mode asserts (`assert_addr`), and
 machine-read coverage records (`@@COV` lines).
 
+A second, machine-specific library sits beside it:
+`tests/integration/lib/ans.script`, for the Apple Network Servers. Those
+rows drive Open Firmware over the guest serial console rather than reading a
+screen, and two things about that machine are awkward exactly once and
+identical in every row — its console is the *monitor* until the firmware is
+told otherwise (`ans_boot_serial`, which types Apple's documented `setenv`
+pair on the machine's own ADB keyboard and cold-boots), and its console
+drops characters from a long input burst (`ans_send` feeds it in chunks).
+See the library's header; the reasoning is worth reading before writing a
+row against a machine that narrates instead of drawing.
+
 Suite variables are passed via `TEST_VARS`:
 
 ```bash

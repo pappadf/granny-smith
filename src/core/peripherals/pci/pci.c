@@ -81,11 +81,16 @@ struct pci_root {
 
 extern const pci_card_kind_t tnt_control_kind; // machines/tnt/control.c
 extern const pci_card_kind_t mach64_gx_kind; // peripherals/pci/cards/mach64gx.c
+extern const pci_card_kind_t cirrus_54m30_kind; // peripherals/pci/cards/cirrus54m30.c
+// The Network Server's two fast/wide SCSI controllers.  Two kinds rather
+// than one because a factory takes no channel argument and the board's two
+// controllers are genuinely distinct devices — different IDSELs, different
+// Grand Central lines, different drive bays (cards/sym53c825.c).
+extern const pci_card_kind_t sym53c825_ch0_kind;
+extern const pci_card_kind_t sym53c825_ch1_kind;
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind,
-    &mach64_gx_kind,
-    NULL,
+    &tnt_control_kind, &mach64_gx_kind, &cirrus_54m30_kind, &sym53c825_ch0_kind, &sym53c825_ch1_kind, NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {

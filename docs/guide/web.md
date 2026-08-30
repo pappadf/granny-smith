@@ -307,10 +307,14 @@ full surface.
   drive-size catalog. These drive the New Machine dialog's "Create blank
   image…" option.
 - **`machine.profile(id)`** → JSON profile with `name`, `needs_vrom`,
-  `ram_options[]`, `ram_default`, `floppy_slots[]`, `scsi_slots[]`,
-  `has_cdrom`, … — drives the slot-specific rows in the New Machine
-  dialog (Video ROM hidden when `needs_vrom: false`, RAM dropdown built
-  from `ram_options`, floppy rows = `floppy_slots.length`).
+  `ram_options[]`, `ram_default`, `floppy_slots[]`, `scsi_slots[]`
+  (`{label, id, boot}` — `boot` marks the bay the firmware boots from
+  when it is not the first listed), `has_cdrom`, … — drives the
+  slot-specific rows in the New Machine dialog (Video ROM hidden when
+  `needs_vrom: false`, RAM dropdown built from `ram_options`, floppy rows
+  = `floppy_slots.length`, a Bay selector when `scsi_slots` has more
+  than one entry, preselecting the `boot` bay; the hard disk attaches at
+  that id, never at an assumed 0).
 - **`machine.videoin.source`** (`none`/`pattern`/`file`/`host`) plus the
   read-only `connected` / `fields` — the AV video digitizer's host source.
   The camera toolbar button sets `host`; the button itself is gated on

@@ -77,8 +77,16 @@ are the 5-byte `[attn][errorPkt][code][pktType][cmd]` (the host reads the
 fifth byte only for `errorPkt`).
 
 Implemented: RdTime/WrTime against the RTC, RdPram/WrPram and Rd6805/Wr6805
-over the PRAM window, APoll/SetAutopoll, Wr1SecMode, Reset, and accept-and-log
-for the rest.
+over the PRAM window, APoll/SetAutopoll, Wr1SecMode, Reset, RdDevList (`$1A`,
+the 16-bit bitmap of ADB addresses the firmware polls, high byte first —
+built from where the keyboard and mouse live now), and accept-and-log for
+the rest.
+
+RdDevList is the command the Macintosh never sends and AIX cannot do
+without: its `cfgcuda` method defines the keyboard and mouse adapters from
+the bits (address 2 → `cudaka0`, 3 → `cudama0`).  A model that answers zero
+describes a machine with no keyboard, and the graphics console configures
+without one — output only, forever.
 
 **Twelve of Apple's pseudo-commands are rejected by this firmware** —
 `$04 $05 $06 $0F $15 $17 $18 $1C $1D $1E $1F $20` — returning an `errorPkt`

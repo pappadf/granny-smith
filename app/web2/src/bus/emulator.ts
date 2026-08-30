@@ -422,6 +422,23 @@ export function getLastBootConfig(): MachineConfig | null {
   return lastBootConfig;
 }
 
+// The SCSI id a hard disk attached outside the dialog should take: the
+// running model's slot flagged `boot` (the Network Server's bay 2, where its
+// firmware looks for `disk2:aix`), else its first slot, else 0.
+export async function defaultHdId(): Promise<number> {
+  try {
+    const model = await gsEval('machine.id');
+    if (typeof model !== 'string' || !model) return 0;
+    const r = await gsEval('machine.profile', [model]);
+    if (!r || typeof r !== 'object' || 'error' in r) return 0;
+    const slots = (r as { scsi_slots?: Array<{ id?: number; boot?: boolean }> }).scsi_slots ?? [];
+    const pick = slots.find((s) => s.boot) ?? slots[0];
+    return typeof pick?.id === 'number' ? pick.id : 0;
+  } catch {
+    return 0;
+  }
+}
+
 // Read a model's capability probe from `machine.profile().capabilities` and
 // apply it to the shared machine state. Replaces the old display-name regex
 // that silently misclassified any MMU machine whose name didn't match the
@@ -504,7 +521,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
       // Lisa/XL: the hard disk is the parallel-port ProFile, not a SCSI device.
       await gsEval('machine.hd.attach', [config.hd, true]);
     } else {
-      await gsEval('machine.scsi.attach_hd', [config.hd, 0]);
+      await gsEval('machine.scsi.attach_hd', [config.hd, config.hdId ?? 0]);
     }
   }
   if (config.cd && config.cd !== '(none)') {

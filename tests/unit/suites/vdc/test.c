@@ -343,7 +343,10 @@ static int cuda_xact(const uint8_t *cmd, int cmd_len, uint8_t *resp, int max) {
         av_cuda_via1_shift_input(s_st.cuda, cmd[i]);
     pb((uint8_t)(s_pb | PB_TIP)); // negate TIP → Cuda processes + sends attn
     ASSERT_EQ_INT(1, s_sr_count); // the attention byte is in the SR
-    pb((uint8_t)(s_pb & ~PB_TIP)); // accept: assert TIP (clocks byte 2)
+    pb((uint8_t)(s_pb & ~PB_TIP)); // accept: assert TIP
+    // Byte 2 follows after Cuda's think time (a scheduled push), not
+    // inside the TIP store: fire the recorded Cuda events to land it.
+    fire_events(s_st.cuda);
     // Toggle BYTEACK for each further byte until TREQ rises with the last.
     while (s_treq == 0 && s_sr_count < max)
         pb((uint8_t)(s_pb ^ PB_BYTEACK));

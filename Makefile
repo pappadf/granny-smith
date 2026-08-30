@@ -10,7 +10,7 @@
 #   integration-test-valgrind  Run integration tests under Valgrind
 #   e2e-test                   Run Playwright end-to-end tests
 #   test                       Run unit + integration tests
-#   run                        Build and start HTTP server on :8080
+#   run                        Build and serve the UI on :8080 (or the next free port)
 #   clean                      Remove all build artifacts (wasm, headless,
 #                              unit, integration, e2e)
 #   help                       Show available targets
@@ -299,13 +299,15 @@ endif
 # `make run` serves the web2 UI (app/web2/dist/). Depends on `all` so the
 # WASM build runs first; ui2 then copies the fresh build artifacts into the
 # dist directory.
+# The port is a preference: if 8080 is taken (another checkout's `make run`
+# in another editor), the server moves to the next free one and prints the
+# URL it actually took.  Override with RUN_PORT=8090.
+RUN_PORT ?= 8080
 run: all ui2
 ifneq ($(strip $(RUN_PARAMS)),)
-	@echo "Serving UI on http://localhost:8080"
-	python3 scripts/dev_server.py --root $(WEB2_DIST) --port 8080 $(RUN_SERVER_FLAGS) --default-params '$(RUN_QS)'
+	python3 scripts/dev_server.py --root $(WEB2_DIST) --port $(RUN_PORT) $(RUN_SERVER_FLAGS) --default-params '$(RUN_QS)'
 else
-	@echo "Serving UI on http://localhost:8080"
-	python3 scripts/dev_server.py --root $(WEB2_DIST) --port 8080
+	python3 scripts/dev_server.py --root $(WEB2_DIST) --port $(RUN_PORT)
 endif
 
 # -- Headless native build --
@@ -431,7 +433,7 @@ help:
 	@echo "  debug                      Build WASM emulator (debug)"
 	@echo "  sanitize                   Build WASM emulator (sanitizers)"
 	@echo "  headless                   Build native headless CLI"
-	@echo "  run                        Build the UI and serve on :8080"
+	@echo "  run                        Build the UI and serve on :8080 (next free port if taken; RUN_PORT=n)"
 	@echo ""
 	@echo "UI targets (app/web2 — Svelte 5 + Vite + TS):"
 	@echo "  ui2                        Build the Svelte UI (production)"
