@@ -174,6 +174,14 @@ implementation must not slow down unrelated accesses, so the design is:
 - When a logpoint is removed, `memory_logpoint_uninstall()` decrements the
   refcount; if it reaches zero, the SoA entry is rebuilt from the cold-path
   page entry (or left zero so the next access re-fills via MMU).
+- **Device pages are covered too.** A page that dispatches to a device has no
+  host backing, so the route above — which reads through `pe->host_base` —
+  cannot see it. The device dispatch sites therefore go through the
+  `dev_read8/16/32` / `dev_write8/16/32` wrappers, which notify the hook with
+  the value the device answered (or was given). Device pages never sit in the
+  SoA fast path anyway, so this costs the nothing-armed load and nothing more.
+  Without it a logpoint on an I/O register reported zero events forever, which
+  reads exactly like "the guest never touches this register".
 
 The fast-path inline accessors in `memory.h` are unchanged — there are no extra
 branches or memory loads on the hot path. Only pages with active logpoints
@@ -183,6 +191,7 @@ Hooks and helpers:
 - `g_mem_logpoint_page_count` — per-page refcount (in `memory.h`)
 - `g_mem_logpoint_hook` — function pointer set by debug.c (`debug_memory_logpoint_hook`)
 - `memory_logpoint_install(start_page, end_page)` / `..._uninstall(...)` — page refcount helpers
+- `dev_read8/16/32`, `dev_write8/16/32` (memory.c) — device dispatch + hook notify
 
 ## Key Files
 
