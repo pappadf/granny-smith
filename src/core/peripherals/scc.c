@@ -168,11 +168,13 @@ struct scc {
     struct object *channel_b; // scc.b child
 };
 
-#define SDLC_MODE(ch)  ((ch->wr[4] >> 4 & 3) == 2)
-#define TX_EMPTY(ch)   (ch->tx.len == 0)
-#define RX_EMPTY(ch)   (ch->rx.head == ch->rx.tail)
-#define RX_LEN(ch)     (ch->rx.head - ch->rx.tail)
-#define RX_ENABLED(ch) (ch->wr[3] & 1)
+#define SDLC_MODE(ch) ((ch->wr[4] >> 4 & 3) == 2)
+#define TX_EMPTY(ch)  (ch->tx.len == 0)
+#define RX_EMPTY(ch)  (ch->rx.head == ch->rx.tail)
+#define RX_LEN(ch)    (ch->rx.head - ch->rx.tail)
+// A delivered SDLC frame occupies data + this many CRC trailer bytes in the FIFO.
+#define SCC_RX_TRAILER_BYTES 2
+#define RX_ENABLED(ch)       (ch->wr[3] & 1)
 
 // transmit/receive buffer status and external status
 #define RR0_TX_UNDERRUN_EOM   0x40
@@ -329,6 +331,11 @@ void check_rx(ch_t *ch) {
     if (ch->sdlc_in.len == 0)
         return;
 
+    // Never overwrite a frame the driver is still reading (see
+    // scc_schedule_rx_if_ready); the drain re-offers this one.
+    if (RX_LEN(ch) > SCC_RX_TRAILER_BYTES)
+        return;
+
     // in address search mode - only report frames that matches (or broadcasts)
     if (ch->wr[3] & WR3_ADDRESS_SEARCH) {
         if (ch->sdlc_in.buf[0] != 0xFF && ch->sdlc_in.buf[0] != ch->wr[6]) {
@@ -421,6 +428,17 @@ static void scc_schedule_rx_if_ready(ch_t *ch) {
             return;
     }
     if (ch->pending_rx.count == 0)
+        return;
+    // The FIFO still holds the previous frame's DATA: hold the next one back
+    // until the driver has read it (the drain path re-schedules).
+    // Dispatching on top of unread bytes replaced them — a directed LLAP
+    // burst (ATP response, 8 frames) lost every frame whose successor's RTS
+    // arrived before the driver had read it, and the AFP copy crawled on
+    // retries.  Only the data counts: a driver may leave the CRC trailer of
+    // a control frame unread (the .MPP answers lapRTS with lapCTS and then
+    // waits, at interrupt level, for the data frame that must follow) — a
+    // gate on those trailer bytes deadlocks it, freezing the guest.
+    if (RX_LEN(ch) > SCC_RX_TRAILER_BYTES)
         return;
     // Real SCC re-enters hunt automatically once ready; mirror that here so queued frames flow
     bool hunt_before = (ch->rr[0] & RR0_SYNC_HUNT) != 0;
@@ -672,6 +690,11 @@ static void wr3(ch_t *ch, uint8_t value) {
     bool hunt_requested = false;
     if (enter_hunt_cmd && (ch->wr[3] & WR3_RX_ENABLE) && sync_mode) {
         ch->rr[0] |= RR0_SYNC_HUNT;
+        // Enter Hunt re-arms the receiver's sync search; it does NOT touch
+        // the FIFO.  The .MPP writes WR3 $DD right after answering lapRTS
+        // with lapCTS — by which time our data frame (delivered the instant
+        // the CTS went out) is already sitting in the FIFO.  Flushing here
+        // threw that frame away and left the driver spinning on RR0 for it.
         hunt_requested = true;
     }
 

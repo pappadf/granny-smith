@@ -159,12 +159,145 @@ static void log_hex(int level, const char *tag, const uint8_t *data, size_t len)
 // guest.  Control frames and broadcasts stay direct (broadcasts open
 // with an ungated lapRTS to $FF on the wire; our transport delivers
 // whole frames, so the preamble is not needed there).
-static struct {
-    bool pending;
+//
+// A FIFO, not a single slot: an ATP response arrives here as a burst of up
+// to eight directed frames, and every one of them has to complete its own
+// RTS/CTS exchange in turn — a single parking slot would drop all but the
+// last and stall every multi-packet transfer (the AFP file copy hung on
+// exactly that).  One frame is in flight at a time; the next RTS goes out
+// when the previous frame's CTS-triggered send has happened.
+#define LLAP_RTS_QUEUE_DEPTH 32
+
+typedef struct {
     uint8_t dst;
     size_t len;
     uint8_t buf[3 + LLAP_DATA_MAX_SIZE]; // header + payload
+} llap_queued_frame_t;
+
+static struct {
+    llap_queued_frame_t q[LLAP_RTS_QUEUE_DEPTH];
+    int head, count; // ring; q[head] is the frame whose RTS is on the wire
+    bool rts_out; // an RTS for q[head] has been sent and awaits its CTS
+    int attempts; // RTSs sent for q[head] without a CTS
+    uint32_t generation; // bumps on every RTS; a stale timeout is ignored
 } g_llap_rts;
+
+// A node that does not answer lapRTS with lapCTS is busy or gone.  Real
+// LLAP waits an interframe gap (200 us) for the CTS, retries the RTS up to
+// 32 times and then gives up on that frame — it does NOT hold every later
+// frame hostage.  Without the timeout a single unanswered RTS (the guest's
+// .MPP mid-hunt, or simply not listening yet) wedged the queue for good and
+// every subsequent directed frame — NBP replies included — was lost.
+// The wait is deliberately far longer than the real 200 us: an emulated
+// Mac Plus answers in ~500 us of guest time, and a retry that lands before
+// its CTS opens a duplicate exchange (two CTSs, one data frame) that leaves
+// the driver waiting for data that never comes.  The timeout only has to
+// unwedge a dead exchange, so a lazy 2 ms x 8 does that without ever racing
+// a live one.
+#define LLAP_RTS_TIMEOUT_NS   2000000.0
+#define LLAP_RTS_MAX_ATTEMPTS 8
+
+// LocalTalk is 230.4 kbit/s: ~35 us per byte on the wire.  Our transport
+// hands a whole frame to the guest's SCC at once, but the guest's driver
+// still spends the frame's real wire time taking it (the PDM's .MPP reads
+// the rest of a frame through the AMIC DMA engine, which paces itself at
+// that rate).  A lapRTS for the NEXT frame must not go out until the wire
+// would be free — on real LocalTalk it physically cannot — or it arrives
+// while the driver is inside ReadRest, is never answered, and the RTS
+// timeout below throws the frame away (the AFP copy lost every frame but
+// the first of each 8-frame ATP response that way).
+#define LLAP_BYTE_NS 35000.0
+#define LLAP_IFG_NS  200000.0 // interframe gap before the next dialog opens
+
+static int g_llap_rts_event_token;
+static int g_llap_kick_event_token;
+static double g_llap_wire_busy_until_ns; // scheduler time the wire frees up
+static void llap_rts_timeout_cb(void *source, uint64_t data);
+static void llap_rts_kick_cb(void *source, uint64_t data);
+static void llap_wire_send(const uint8_t *buf, size_t total);
+
+static void llap_rts_register_event(void) {
+    if (!g_scheduler)
+        return;
+    scheduler_new_event_type(g_scheduler, "llap", &g_llap_rts_event_token, "rts_timeout", &llap_rts_timeout_cb);
+    scheduler_new_event_type(g_scheduler, "llap", &g_llap_kick_event_token, "rts_kick", &llap_rts_kick_cb);
+}
+
+static void llap_rts_reset(void) {
+    if (g_scheduler) {
+        remove_event(g_scheduler, &llap_rts_timeout_cb, &g_llap_rts_event_token);
+        remove_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token);
+    }
+    memset(&g_llap_rts, 0, sizeof(g_llap_rts));
+    g_llap_wire_busy_until_ns = 0;
+}
+
+// A data frame of `total` bytes just went out: the wire stays busy for its
+// transmission time plus the interframe gap.
+static void llap_wire_note_busy(size_t total) {
+    if (!g_scheduler)
+        return;
+    double until = scheduler_time_ns(g_scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
+    if (until > g_llap_wire_busy_until_ns)
+        g_llap_wire_busy_until_ns = until;
+}
+
+static void llap_rts_kick(void);
+
+static void llap_rts_kick_cb(void *source, uint64_t data) {
+    (void)source;
+    (void)data;
+    llap_rts_kick();
+}
+
+// Put the RTS for the frame at the queue head on the wire (if any) — once
+// the wire is free.
+static void llap_rts_kick(void) {
+    if (g_llap_rts.rts_out || g_llap_rts.count == 0)
+        return;
+    if (g_scheduler) {
+        double now = scheduler_time_ns(g_scheduler);
+        if (now < g_llap_wire_busy_until_ns) {
+            // Never a zero-length wait: a sub-ns remainder truncates to 0,
+            // the event fires with time unchanged, and this re-arms forever.
+            uint64_t delay_ns = (uint64_t)(g_llap_wire_busy_until_ns - now);
+            if (delay_ns < 1000)
+                delay_ns = 1000;
+            remove_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token);
+            scheduler_new_cpu_event(g_scheduler, &llap_rts_kick_cb, &g_llap_kick_event_token, 0, 0, delay_ns);
+            return;
+        }
+    }
+    llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
+    uint8_t rts[3] = {f->dst, f->buf[1], LLAP_RTS};
+    g_llap_rts.rts_out = true;
+    g_llap_rts.attempts++;
+    g_llap_rts.generation++;
+    LOG(8, "LLAP tx: RTS to %02X, %zu-byte data queued for CTS (%d queued, attempt %d)", f->dst, f->len,
+        g_llap_rts.count, g_llap_rts.attempts);
+    llap_wire_send(rts, sizeof(rts));
+    if (g_scheduler) {
+        llap_rts_register_event();
+        scheduler_new_cpu_event(g_scheduler, &llap_rts_timeout_cb, &g_llap_rts_event_token, g_llap_rts.generation, 0,
+                                LLAP_RTS_TIMEOUT_NS);
+    }
+}
+
+static void llap_rts_timeout_cb(void *source, uint64_t data) {
+    (void)source;
+    if (!g_llap_rts.rts_out || data != g_llap_rts.generation)
+        return; // the CTS came (or a newer RTS is out): stale timeout
+    g_llap_rts.rts_out = false;
+    if (g_llap_rts.attempts >= LLAP_RTS_MAX_ATTEMPTS) {
+        llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
+        LOG(2, "LLAP tx: no CTS from %02X after %d RTS attempts, dropping a %zu-byte frame", f->dst,
+            g_llap_rts.attempts, f->len);
+        g_llap_rts.head = (g_llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
+        g_llap_rts.count--;
+        g_llap_rts.attempts = 0;
+    }
+    llap_rts_kick(); // retry this frame's RTS, or open the next frame's exchange
+}
 
 static void llap_wire_send(const uint8_t *buf, size_t total) {
     log_hex(11, "LLAP tx dump", buf, total);
@@ -205,16 +338,19 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
     size_t total = len + LLAP_HEADER_SIZE;
 
     // Directed DATA frames go through the RTS/CTS exchange (see g_llap_rts).
-    // A frame already parked is superseded — LLAP has no queue; the newer
-    // reply is the one that still matters.
     if (llap->dst != 0xFF && llap->type < 0x80) {
-        memcpy(g_llap_rts.buf, buf, total);
-        g_llap_rts.len = total;
-        g_llap_rts.dst = llap->dst;
-        g_llap_rts.pending = true;
-        uint8_t rts[3] = {llap->dst, llap->src, LLAP_RTS};
-        LOG(8, "LLAP tx: RTS to %02X, %zu-byte data parked for CTS", llap->dst, total);
-        llap_wire_send(rts, sizeof(rts));
+        if (g_llap_rts.count >= LLAP_RTS_QUEUE_DEPTH) {
+            // The wire cannot keep up; the upper layers (ATP) retransmit.
+            LOG(2, "LLAP tx: RTS queue full, dropping a %zu-byte frame to %02X", total, llap->dst);
+            return -1;
+        }
+        int slot = (g_llap_rts.head + g_llap_rts.count) % LLAP_RTS_QUEUE_DEPTH;
+        llap_queued_frame_t *f = &g_llap_rts.q[slot];
+        memcpy(f->buf, buf, total);
+        f->len = total;
+        f->dst = llap->dst;
+        g_llap_rts.count++;
+        llap_rts_kick();
         return 0;
     }
 
@@ -286,9 +422,16 @@ void llap_in(const uint8_t *buf, size_t len) {
     case LLAP_CTS:
         // The receiver granted our lapRTS: transmit the parked data frame.
         LOG(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
-        if (g_llap_rts.pending && header.src == g_llap_rts.dst && header.dst == LLAP_HOST_NODE) {
-            g_llap_rts.pending = false;
-            llap_wire_send(g_llap_rts.buf, g_llap_rts.len);
+        if (g_llap_rts.rts_out && g_llap_rts.count > 0 && header.dst == LLAP_HOST_NODE &&
+            header.src == g_llap_rts.q[g_llap_rts.head].dst) {
+            llap_queued_frame_t *f = &g_llap_rts.q[g_llap_rts.head];
+            g_llap_rts.rts_out = false;
+            g_llap_rts.attempts = 0;
+            g_llap_rts.head = (g_llap_rts.head + 1) % LLAP_RTS_QUEUE_DEPTH;
+            g_llap_rts.count--;
+            llap_wire_send(f->buf, f->len);
+            llap_wire_note_busy(f->len);
+            llap_rts_kick(); // next queued frame opens its own exchange (after the wire frees up)
         }
         break;
 
@@ -391,6 +534,8 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     g_scc = scc; // Store SCC dependency for later use
     g_scheduler = scheduler; // Store scheduler for ATP timers
     g_atalk_enabled = true;
+    llap_rts_reset(); // no RTS exchange survives a machine boot
+    llap_rts_register_event();
     memset(&g_atalk_stats, 0, sizeof(g_atalk_stats));
     asp_sessions_reset();
     atalk_server_init();
