@@ -139,6 +139,9 @@ bool scheduler_is_running(struct scheduler *restrict s);
 // Set scheduler pacing mode (paced/unthrottled/accelerated)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode);
 
+// Read the current pacing mode (paced when there is no scheduler)
+enum schedule_mode scheduler_get_mode(const struct scheduler *s);
+
 // Set the accelerated-mode CPU speed multiplier: 0 = auto (the adaptive
 // governor picks moment to moment, bounded by max_speed), any other value
 // pins a fixed multiplier (clamped to [1.0, 8.0]; stored as x256 fixed

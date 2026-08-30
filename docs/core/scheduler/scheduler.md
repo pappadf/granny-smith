@@ -876,7 +876,7 @@ The scheduler is an object-model citizen (`scheduler.*` paths in the typed shell
 |-----------------------------|------------------------------------------------------------|
 | `scheduler.run [N]`         | Start execution; optionally stop after N instructions.     |
 | `scheduler.stop`            | Stop execution immediately.                                |
-| `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; legacy aliases `real`/`hw` → paced, `max` → turbo, `accel` → accelerated). |
+| `scheduler.mode`            | Pacing mode: `"paced"` \| `"accelerated"` \| `"turbo"` (writable; legacy aliases `real`/`hw` → paced, `max` → turbo, `accel` → accelerated). Survives `machine.boot` / `machine.restart`: pacing is the host harness's setting (`--speed=`), not part of the machine's boot document, so the rebuild re-asserts it on the new machine's scheduler. |
 | `scheduler.cpi`             | Per-machine CPI constant; writable as a debug override (1..255). |
 | `scheduler.speed`           | Accelerated-mode multiplier in force (live). Write `0` for auto (adaptive governor) or 1.0 .. 8.0 to pin; persisted, but only takes effect in mode `accelerated`. |
 | `scheduler.speed_auto`      | RO: true while the adaptive governor is choosing the speed (`speed = 0`). |

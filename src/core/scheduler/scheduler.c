@@ -1114,6 +1114,11 @@ bool scheduler_is_running(struct scheduler *restrict s) {
     return s->running;
 }
 
+// Read the scheduler's pacing mode; a machine without a scheduler paces.
+enum schedule_mode scheduler_get_mode(const struct scheduler *s) {
+    return s ? s->mode : schedule_paced;
+}
+
 // Set the scheduler pacing mode (paced, unthrottled or accelerated)
 void scheduler_set_mode(struct scheduler *restrict s, enum schedule_mode mode) {
     if (!s)
