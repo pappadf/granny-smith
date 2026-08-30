@@ -3,76 +3,68 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning four CPU generations, from the 68000 Lisa 2 and Macintosh Plus, through the 68030 and 68040 Macintoshes, to the PowerPC 601 Power Macintosh 6100/7100/8100. It runs Mac OS and A/UX on the Macintosh — including a developer release of Copland (Mac OS 8) on the Power Macintosh — and the Lisa Office System, MacWorks XL, and Xenix on the Lisa 2 / Macintosh XL.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning everything from Lisa 2 to Power Macintosh and more that 15 computer models in between.
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
 > **Try it:** [Run Granny Smith in your browser](https://pappadf.github.io/gs-pages/latest/)
 > Use Chromium browser (Safari and Firefox have known issues)
 
-![A/UX 3.0.1 running on Macintosh IIfx](docs/assets/iifx_aux3.png)
+[![Live webcam video digitized by the emulated 840AV](https://i.ytimg.com/vi/zUiRTOQy7RM/hq720.jpg)](https://www.youtube.com/watch?v=zUiRTOQy7RM)
 
-## Emulated Machines
+## Emulated Computer Models
 
-Each machine is modeled faithfully: the original ROMs run unpatched, and all on-board devices the software touches are emulated in enough detail that even timing-sensitive, close-to-hardware diagnostics like Apple's MacTest suites pass.
+In all models, the original ROMs runs without patches, and all on-board devices the software touches are emulated in enough detail to allow original device drivers to work.
 
 - **Apple Lisa 2 and Macintosh XL**
-  - 68000 with Apple's custom MMU
-  - COPS keyboard/mouse/clock/power controller, 6504 floppy controller
-  - Sony floppy, ProFile HD, VIAs, SCC serial, video
-  - Tested with Lisa Office System 3.1, Xenix 3.0, MacWorks XL
 - **Macintosh Plus**
-  - 68000
-  - RTC, keyboard, mouse, IWM, Sony floppy, 5380 SCSI, PWM sound, VIA, SCC serial, video
-  - Tested with System 2 through System 7.1
-- **Macintosh SE/30, IIx, and IIcx** (the 68030 "GLUE" generation)
-  - 68030 with on-chip PMMU + 68882 FPU
-  - RTC, ADB, SWIM floppy, 5380 SCSI, ASC sound, VIAs, SCC serial, NuBus or built-in video
-  - Tested with System 6.0.3 through 7.5, and A/UX 3.0.1
+- **Macintosh SE/30, IIx, and IIcx** (the "GLUE" family)
 - **Macintosh IIfx**
-  - 68030 with on-chip PMMU + 68882 FPU
-  - OSS interrupt controller, FMC memory controller, IOPs (SCC, SWIM/ADB), SCSI DMA engine
-  - RTC, ADB, SWIM floppy, 5380 SCSI, ASC sound, VIA, SCC serial, NuBus
-  - Tested with System 6.0.8 through 7.6 and A/UX 3.0.1
-- **Macintosh IIci and IIsi** (the 68030 MDU generation)
-  - 68030 with on-chip PMMU + 68882 FPU
-  - RBV (VIA2 replacement and built-in video), Egret system manager on the IIsi
-  - RTC, ADB, SWIM floppy, 5380 SCSI, ASC sound, VIA, SCC serial, NuBus, video
-  - Tested with System 6.0.8 through 7.6
-- **Macintosh Quadra 700, 900, and 950** (the 68040 MCU generation)
-  - 68040 with on-chip MMU and FPU
-  - MCU memory controller, DAFB video controller, Caboose system manager and IOPs in 900/950
-  - RTC, ADB, SWIM floppy, 53C96 SCSI, EASC sound, SONIC Ethernet, VIAs, SCC serial, NuBus, video
-  - Tested with System 7.1 through 7.6
-- **Macintosh Quadra 840AV and Centris 660AV** (the 68040 AV generation)
-  - 68040 with on-chip MMU and FPU
-  - YMCA memory controller, PSC (interrupt controller and DMA), Cuda system manager, CIVIC video
-  - RTC, ADB, New Age floppy controller, 53C96 SCSI, MACE Ethernet, VIA, SCC serial
-  - Tested with System 7.1
-- **Power Macintosh 6100, 7100, and 8100** (the PowerPC 601 "PDM" generation)
-  - PowerPC 601 at 60 / 66 / 80 MHz, with integrated MMU and FPU
-  - HMC memory controller, AMIC I/O controller (DMA and interrupts), BART NuBus bridge (7100/8100), Ariel built-in video
-  - Cuda system manager, SWIM3 floppy, 53C96 SCSI, AWACS sound, VIA, SCC serial, NuBus on the 7100 and 8100
-  - Tested with System 7.5, and the Copland (Mac OS 8) Developer Release D11E4 on the 7100
+- **Macintosh IIci and IIsi** (the "MDU" family)
+- **Macintosh Quadra 700, 900, and 950** (the "MCU" family)
+- **Macintosh Quadra 840AV and Centris 660AV** (the "AV" family)
+- **Power Macintosh 6100, 7100, and 8100** (the "PDM" family)
+- **Power Macintosh 7500, 8500, and 9500** (the "TNT" family)
 
-## Emulated Display Cards
+## Emulated NuBus Display Cards
 
-NuBus display cards can be seated in any machine with free slots, including as a second display next to built-in video:
+NuBus display cards can be seated in any machine with free slots, including machines that already have built-in video. Each card runs either from a dump of the real declaration ROM or from a runtime-generated generic declaration ROM (no ROM dump is required); the generic ROM can also synthesize custom resolutions (e.g. 800×600)
 
-- **Apple Macintosh Display Card 8•24** - the standard "JMFB" card, up to 24-bit color
-- **Apple Macintosh Display Card 24AC** - 4 MB VRAM, 1-32 bpp, including its hardware QuickDraw fill/copy accelerator
-- **Apple Macintosh Display Card 8•24 GC** - the RISC-accelerated "GC" card; QuickDraw acceleration is emulated at the graphics-processor RPC level (and, authentically, its INIT declines to install on a 68040)
-- Each card runs either from a dump of its **real declaration ROM** or from a **runtime-generated generic declaration ROM**, so no ROM dump is required; the generic ROM can also synthesize custom resolutions (e.g. 800×600)
+- **Display Card 8•24** (the standard "JMFB" card)
+- **Display Card 24AC** (including hardware QuickDraw acceleration)
+- **Display Card 8•24 GC** (including hardware QuickDraw acceleration)
+
+## Emulated PCI Diplay Cards
+
+PCI cards require at this point a real ROM image to work.
+
+- **ATI Mach64 GX (Apple "Accelerated" PCI Card)** (including 2D hardware acceleration)
+
+## Verified Guest/Target Operating Systems
+
+The emulated computer models have been tested with various combinations of the following operating systems:
+
+- **Mac OS System 2 to 7.6**
+- **A/UX 3.0.1**
+- **Lisa Office System 3.1**
+- **Lisa Xenix 3.0**
+- **Lisa MacWorks XL 3.0**
+- **Copland D11E4**
+- **MkLinux DR3**
+
+## Work In Progress
+
+- Apple Network Server 500 and 700 running AIX 4.1.5
+- Power Macintosh 9500MP running BeOS
+- Voodoo2 PCI Card
 
 ## Project Principles
 
-Two principles guide the project: **model the hardware faithfully**, and **keep it simple**. That may sound like a contradiction, since faithful hardware emulation is rarely simple, but we try to make both work.
+Two principles guide the project: **stay true to the hardware**, and **keep it simple**. That may sound like a contradiction, as faithful hardware emulation rarely is simple, but we try to find a sweet spot between the two:
 
-Fidelity means compatibility is earned by behaving like the real machine, never by patching around differences. Machines boot their original, unpatched ROMs, and every on-board device the software touches is modeled. Chip behaviour is pinned against Apple documentation, chip datasheets, Apple's own system software sources, and the machines' own diagnostics, and CI boots every machine and matches screens and boot chimes against golden references.
+True to the hardware means that compatibility is achieved by behaving like the real underlying hardware, not by patching around differences. Machines boot their original, unpatched ROMs, and every needed on-board device the software touches is modeled. Chip behaviour is pinned against Apple documentation, chip datasheets, Apple's own system software sources.
 
-For users, simplicity means the emulator runs in the browser with no installation, sessions are checkpointed continuously in the background so closing or reloading the tab loses nothing, disk images can be dragged straight onto the screen (compressed `*.sit.hqx` archives included), and a built-in AFP file server bridges the browser/host filesystem into the guest OS.
-
-For developers, it means a highly portable C99 core with no special runtime requirements and no JIT or code generators: a ~550-line shared instruction decoder and one compact opcode header serve all three 68K generations, with a separate compact interpreter for the PowerPC 601, relying on the compiler and modern hardware for performance. Extensive automated tests (unit, headless integration, and Playwright end-to-end) keep it honest, and the hardware documentation is written in Markdown so it serves human developers and AI coding agents alike.
+Keeping it simple means for users that the emulator runs in the browser with no installation. For developers, it means a highly portable C99 core with no special runtime requirements, no JIT or code generators, relying on the compiler and modern hardware to acheive "enough" performance. Extensive automated tests keep verification simple, and the entire project has been created to be AI agent friendly.
 
 ## Getting Started
 
@@ -94,10 +86,7 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 - **Firefox** - works partially; some compatibility problems remain
 - **Ethernet** - the Quadras' SONIC and the AV machines' MACE controllers are modeled at the register/self-test level but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
 - **Sound input** - not modeled on any machine; the Quadras' EASC currently runs as an ASC-compatible core, and the AV machines' Singer/AWACS sound is not modeled at all
-- **AV floppy** - the 840AV/660AV New Age controller reports "no drive", so those two machines boot from SCSI only
-- **AV NuBus** - the 840AV's slots C/D/E and the 660AV's adapter slot are decoded but cannot be populated with the display cards above
 - **LaserWriter** - printer is identified, but print jobs don't complete correctly
-- **AFP** - file content access not yet implemented (mounting and browsing only)
 
 ## A Note on AI
 

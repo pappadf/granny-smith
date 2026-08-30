@@ -45,8 +45,12 @@ RUN git clone --depth=1 https://github.com/emscripten-core/emsdk ${EMSDK} \
  && rm -rf ${EMSDK}/.git \
  && printf 'source /opt/emsdk/emsdk_env.sh >/dev/null 2>&1 || true\n' > /etc/profile.d/emsdk.sh
 
-# Persist emscripten toolchain PATH for non-login shells (CI container steps)
-ENV PATH="/opt/emsdk:/opt/emsdk/upstream/emscripten:/opt/emsdk/node/$(ls /opt/emsdk/node | head -n 1)/bin:${PATH}"
+# Persist emscripten toolchain PATH for non-login shells (CI container steps).
+# emsdk's bundled node is deliberately absent: emcc resolves it from NODE_JS in
+# /opt/emsdk/.emscripten, so on PATH it would only shadow the NodeSource Node 22
+# installed above. (ENV does no command substitution, so the $(ls /opt/emsdk/node)
+# entry this line used to carry was never a real path anyway.)
+ENV PATH="/opt/emsdk:/opt/emsdk/upstream/emscripten:${PATH}"
 
 # Ensure non-login shells (like Docker RUN) can access emcc by sourcing env explicitly
 SHELL ["/bin/bash", "-lc"]
