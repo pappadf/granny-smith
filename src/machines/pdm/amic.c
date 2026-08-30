@@ -723,6 +723,9 @@ static void pdm_scc_tx_arm(config_t *cfg, int idx) {
 // (RST rewound the offset) where the driver's buffer pointer expects it.
 // Delivered after the wire time of `count` bytes, like the transmit side.
 #define PDM_SCC_RX_POLL_NS 200000.0 // re-check cadence while the FIFO is still short
+// Engine latency once every byte is already in the FIFO: a DMA burst, not
+// wire time.
+#define PDM_SCC_RX_READY_NS 10000.0
 
 static void pdm_scc_rx_complete(config_t *cfg, int idx) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
@@ -766,12 +769,27 @@ static void pdm_scc_rx_b_event(void *source, uint64_t data) {
 }
 
 // Ctrl-write hook for the receive channels: (re)arm on RUN, cancel on stop.
+//
+// Only the bytes that have NOT arrived yet cost wire time.  The LLAP
+// transport hands a frame to the ESCC whole and has already paced it onto
+// the wire (appletalk.c holds the next RTS for 35 us/byte + IFG), so the
+// driver arms "ReadRest" with the whole remainder already sitting in the
+// receive FIFO.  Charging the frame's wire time a second time here stalls
+// the engine for a full frame — and 8.1's LocalTalk driver polls DMAIF from
+// its `CheckDMA` loop at IPL 1, so every one of those stalls is 20 ms with
+// VIA1 interrupt service starved: Ticks stop, and an autopoll packet landing
+// in the blackout desynchronizes the Cuda byte stream (#124).
 static void pdm_scc_rx_arm(config_t *cfg, int idx) {
     pdm_dma_ch_t *ch = &pdm_st(cfg)->amic.scc[idx];
     event_callback_t fn = (idx == 1) ? pdm_scc_rx_a_event : pdm_scc_rx_b_event;
     remove_event(cfg->scheduler, fn, cfg);
-    if ((ch->ctrl & DMA_RUN) && !(ch->ctrl & (DMA_IF | DMA_PAUSE)) && ch->count > 0)
-        scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)(ch->count * PDM_SCC_TX_BYTE_NS));
+    if ((ch->ctrl & DMA_RUN) && !(ch->ctrl & (DMA_IF | DMA_PAUSE)) && ch->count > 0) {
+        unsigned have = scc_channel_rx_pending(cfg->scc, (idx == 1) ? 0u : 1u);
+        uint32_t missing = (ch->count > have) ? (uint32_t)(ch->count - have) : 0u;
+        double ns = missing ? missing * PDM_SCC_TX_BYTE_NS : PDM_SCC_RX_READY_NS;
+        LOG(4, "scc rx dma ch%d arm cnt=%u in fifo=%u, due in %.0f ns", idx, ch->count, have, ns);
+        scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)ns);
+    }
 }
 
 // ============================================================

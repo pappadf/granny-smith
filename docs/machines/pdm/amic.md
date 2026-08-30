@@ -89,5 +89,37 @@ The register surface stores and reads back with the documented semantics
 (RST self-clears and stops a channel; SCSI keeps DIR and the bus-speed
 field — bits 3:2 of `$50F32008` must stick, the ROM's AMIC-revision probe
 depends on it; SCSI FLUSH self-clears; the floppy channel's address
-resets to `$15000`; Enet Tx SET0/SET1 read 1 = "buffer free").  No data
-moves yet — transfer engines arrive with their devices.
+resets to `$15000`; Enet Tx SET0/SET1 read 1 = "buffer free").  The
+transfer engines live with their devices — SCSI and floppy in their own
+files, the SCC serial engines below.
+
+## SCC serial DMA engines
+
+Register blocks `$50F32080` / `$50F32090` / `$50F320A0` / `$50F320B0`
+(TxA / RxA / TxB / RxB) carry a 32-bit address, a 13-bit count and the
+control byte; each channel owns an 8 KB ring inside the DMA window.  The
+guest arms a channel by writing RST, the count and RUN, then polls DMAIF
+(bit 7) — Mac OS 8.1's SerialDMA HAL and the PDM `.MPP` LocalTalk driver
+both use IF with IE clear, so the completion flag, not an interrupt, is
+what ends a transfer.
+
+- **Transmit** is one-shot: at terminal count the engine hands the ring's
+  bytes to the ESCC write path, flushes the SDLC frame (Tx underrun/EOM)
+  and sets IF.  It is delivered after the wire time of `count` bytes —
+  35 µs each, one SDLC byte at LocalTalk's 230.4 kb/s.
+- **Receive** is the LAP driver's "ReadRest": it reads a frame's 5-byte
+  header through the ESCC by hand, then hands the remainder to the engine,
+  which drains that many bytes out of the receive FIFO into the ring (the
+  trailing CRC stays in the FIFO for the driver to pop) and sets IF.
+
+**Only bytes that have not arrived yet cost wire time.**  The LLAP
+transport hands a frame to the ESCC whole and has already paced it onto
+the wire (`appletalk.c` holds the next RTS for 35 µs/byte plus the
+inter-frame gap), so a receive channel is typically armed with its whole
+remainder already sitting in the FIFO; the arm charges wire time only for
+the shortfall, and a DMA-burst latency otherwise.  Charging the frame's
+wire time a second time stalls the engine for a full frame — and the 8.1
+LocalTalk driver polls DMAIF from its `CheckDMA` loop **at IPL 1**, so
+each of those stalls is ~20 ms with VIA1 interrupt service starved: `Ticks`
+stop, and a Cuda autopoll packet landing inside the blackout desynchronizes
+the ADB byte stream and wedges the guest (#124).
