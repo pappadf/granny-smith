@@ -161,6 +161,13 @@ void machine_config_object_init(struct object *machine_obj);
 // old machine still running — on rejection.
 value_t machine_boot_apply(const boot_config_t *doc);
 
+// True while machine_boot_apply is rebuilding the SAME machine for
+// machine.restart (a power-cycle), false while it is building a NEW machine
+// for machine.boot.  Non-volatile hardware that outlives the power switch —
+// the mounted media, the Caps Lock latch, the TNT's soldered NVRAM part —
+// is carried across a restart only; a machine.boot inherits nothing (§2).
+bool machine_boot_is_restart(void);
+
 #ifdef __cplusplus
 }
 #endif

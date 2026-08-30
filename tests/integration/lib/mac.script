@@ -219,9 +219,28 @@ def wait_global(name, want, ceiling) {
 # Run for `n` guest ticks (1/60 s each): interaction delays are guest-
 # time constraints (DoubleTime is in ticks), so choreography built on
 # this ports across CPU speeds unchanged.
+#
+# `Ticks` is maintained by the Mac OS interrupt handler, so it stops
+# advancing the moment the guest stops being Mac OS (the MkLinux Booter's
+# hand-off to the Mach kernel, a system error, a hung interrupt path) --
+# and an unbounded wait for it never ends.  The ceiling below is the same
+# rule wait_stable and wait_match already follow: an instruction budget,
+# and a loud failure when it is spent.  A tick costs ~65 k instructions
+# on an SE/30 and ~550 k on a 601/604 (freq / CPI over 60 Hz), so 4 M per
+# tick leaves the slowest-per-tick machine ~7x of headroom -- enough that
+# only a guest that has genuinely stopped keeping Ticks hits it.  The +30
+# floors short waits, which are the ones a stalled tick would trip first.
+let RUN_TICKS_BUDGET = 4000000
+
 def run_ticks(n) {
     let t0 = debug.mac.globals.read("Ticks")
-    while debug.mac.globals.read("Ticks") < $t0 + $n { scheduler.run 500000 }
+    let spent = 0
+    let ceiling = ($n + 30) * $RUN_TICKS_BUDGET
+    while debug.mac.globals.read("Ticks") < $t0 + $n {
+        assert $spent < $ceiling "run_ticks: Ticks did not advance ${$n} from ${$t0} within ${$ceiling} instructions - has the guest left Mac OS?"
+        scheduler.run 500000
+        $spent = $spent + 500000
+    }
 }
 
 # Move-press-release SINGLE click at screen coordinates. The move is a real

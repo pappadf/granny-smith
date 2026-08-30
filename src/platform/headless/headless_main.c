@@ -320,6 +320,56 @@ static int daemon_client_poll(int client_fd) {
     return 0;
 }
 
+// While a run is in flight the daemon is inside one client's dispatch, so a
+// second connection waits in the listen backlog until that dispatch returns.
+// For a bare `scheduler.run` that is a short wait; for a `scheduler.run`
+// inside a shell `while` loop it is forever, and the daemon looks wedged with
+// only kill -9 as a way out.  Answer such a connection out of band instead:
+// the run is stoppable from it, and anything else is refused with a note
+// rather than executed, since the shell is busy with the first client.
+static void daemon_serve_control_connection(void) {
+    struct pollfd pfd = {.fd = g_listen_fd, .events = POLLIN, .revents = 0};
+    if (g_listen_fd < 0 || poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN))
+        return;
+    int fd = accept(g_listen_fd, NULL, NULL);
+    if (fd < 0)
+        return;
+
+    // One line, and only what is already there: a control client that sends
+    // nothing must not stall the run it came to stop.
+    char line[256];
+    ssize_t n = recv(fd, line, sizeof(line) - 1, MSG_DONTWAIT);
+    if (n < 0)
+        n = 0;
+    line[n] = '\0';
+    for (char *p = line; *p; p++)
+        if (*p == '\n' || *p == '\r')
+            *p = '\0';
+    char *cmd = line;
+    while (*cmd == ' ')
+        cmd++;
+
+    const char *reply;
+    if (strcmp(cmd, "stop") == 0 || strcmp(cmd, "scheduler.stop") == 0 || strcmp(cmd, "shell.interrupt") == 0 ||
+        strcmp(cmd, "shell.interrupt()") == 0) {
+        // The two halves of the terminal's Ctrl-C: end the run in flight, and
+        // cancel the script loop that would otherwise start the next one.
+        scheduler_t *s = system_scheduler();
+        if (s)
+            scheduler_stop(s);
+        script_interrupt();
+        reply = "# run stopped by control connection\n";
+    } else if (strcmp(cmd, "quit") == 0) {
+        quit_requested = 1;
+        reply = "# quit requested\n";
+    } else {
+        reply = "# busy: a run is in flight on another connection; "
+                "this connection accepts only stop / shell.interrupt / quit\n";
+    }
+    (void)!write(fd, reply, strlen(reply));
+    close(fd);
+}
+
 // Pump the scheduler until it stops, emitting periodic heartbeat lines (IMP-105).
 // In daemon mode the heartbeat prevents nc -w timeouts; in script/stdin modes it
 // lets callers follow progress. Emits once per second with instruction count.
@@ -360,9 +410,13 @@ static void pump_scheduler_with_heartbeat(void) {
         if (g_daemon_mode && g_client_fd >= 0) {
             int s = daemon_client_poll(g_client_fd);
             if (s < 0) {
-                // Client gone — cancel the run rather than execute billions more
+                // Client gone — cancel the run rather than execute billions
+                // more.  Cancel the script too: a shell `while` loop would
+                // otherwise start the next `scheduler.run` immediately and
+                // spin on forever with nobody left to read its output.
                 fprintf(stderr, "# client disconnected, stopping run\n");
                 scheduler_stop(sched);
+                script_interrupt();
                 break;
             }
             if (s > 0) {
@@ -371,6 +425,8 @@ static void pump_scheduler_with_heartbeat(void) {
                 scheduler_stop(sched);
                 break;
             }
+            // A second client with something to say about this run.
+            daemon_serve_control_connection();
         }
     }
 }

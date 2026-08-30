@@ -38,6 +38,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_config.h" // machine_boot_is_restart (the NVRAM carry rule)
 #include "pci.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -402,6 +403,17 @@ static void tnt_fwscsi_attach(config_t *cfg) {
 // startup volume.  Real hardware behaves the same way; its NVRAM just
 // never starts blank twice.  A checkpoint restore overrides the carry
 // (the gc blob holds the store).
+//
+// The carry follows the power switch, i.e. machine.restart, and stops
+// at machine.boot: that builds a NEW machine, which inherits nothing it
+// was not given (proposal-boot-vs-reset §2).  The distinction is not
+// bookkeeping.  A run stopped part-way through Open Firmware's format of
+// a virgin store — a bounded `scheduler.run`, a client that walked away
+// mid-run — leaves the store torn, and a machine built on a torn store
+// stops in the ROM's serial-console read loop with a black screen and
+// no way back short of restarting the process.  Rows that DO want the
+// same chip across two cold boots (ans-diag-floppy's DIMM table) say so
+// with machine.restart.
 static uint8_t tnt_nvram_carry[TNT_NVRAM_SIZE];
 static bool tnt_nvram_carry_valid;
 
@@ -662,8 +674,15 @@ static void tnt_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     tnt_state_t *st = tnt_st(cfg);
     if (st) {
-        memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
-        tnt_nvram_carry_valid = true;
+        // Power-cycle (machine.restart): the soldered part comes back with
+        // the machine.  New machine (machine.boot): it gets a virgin store,
+        // and the previous machine's goes with the previous machine.
+        if (machine_boot_is_restart()) {
+            memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
+            tnt_nvram_carry_valid = true;
+        } else {
+            tnt_nvram_carry_valid = false;
+        }
     }
     if (st) {
         tnt_awacs_teardown(cfg);

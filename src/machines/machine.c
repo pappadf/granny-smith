@@ -15,6 +15,7 @@
 #include "object.h"
 #include "prom.h"
 #include "rom.h"
+#include "scheduler.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -676,6 +677,13 @@ static void stage_pci_options(const char *spec) {
 // a new machine starts with empty drives.
 static bool s_transfer_media = false;
 
+// Is machine_boot_apply rebuilding the same machine (machine.restart) rather
+// than building a new one?  Machine-specific teardown asks this before
+// carrying non-volatile hardware state across the rebuild (machine_config.h).
+bool machine_boot_is_restart(void) {
+    return s_transfer_media;
+}
+
 // Stamp the record's `created` field with the current UTC time (ISO8601).
 static void stamp_created(char *buf, size_t bufsize) {
     time_t now = time(NULL);
@@ -821,6 +829,17 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     media_slot_t media[MEDIA_SLOTS_MAX];
     int n_media = 0;
     bool caps_latched = false;
+    // Pacing is a property of the HOST harness, not of the emulated machine,
+    // so it survives the rebuild: without this the daemon's --speed= setting
+    // (and any scheduler.mode a script set) is silently discarded by the
+    // first machine.boot, and scheduler.mode then reads back 'paced' on a
+    // daemon launched --speed=max.
+    enum schedule_mode pacing = schedule_paced;
+    bool pacing_known = false;
+    if (global_emulator && global_emulator->scheduler) {
+        pacing = scheduler_get_mode(global_emulator->scheduler);
+        pacing_known = true;
+    }
     if (global_emulator) {
         if (s_transfer_media && global_emulator->machine->substrate->media_detach)
             n_media = global_emulator->machine->substrate->media_detach(global_emulator, media, MEDIA_SLOTS_MAX);
@@ -876,6 +895,11 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             image_close(media[i].img); // half-built machine; drop the transfer
         return val_err("machine.boot: machine created but ROM staging failed for '%s'", doc.rom);
     }
+
+    // The carried pacing (see above): re-assert it on the machine's own
+    // fresh scheduler, which was constructed in the default paced mode.
+    if (pacing_known && cfg->scheduler)
+        scheduler_set_mode(cfg->scheduler, pacing);
 
     // Hand the transferred media handles back through the device attach
     // paths (§3.3).  The rebuilt machine is the same model by construction
@@ -951,9 +975,10 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
 // §3.2): rebuild the machine described by the built-from record, taking no
 // configuration arguments, and keep the mounted media attached by
 // transferring the open image handles across the teardown (§3.3).  Errors
-// when no machine is running.  Runtime state that is not construction
-// configuration (scheduler mode, volume, host capture sources) is out of
-// scope — the frontend re-asserts it.
+// when no machine is running.  Host-side runtime state that is not
+// construction configuration (volume, host capture sources) is out of scope
+// — the frontend re-asserts it.  Scheduler pacing is the exception every
+// rebuild keeps: it is the harness's setting, not the machine's.
 static value_t machine_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
