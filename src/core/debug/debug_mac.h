@@ -15,6 +15,8 @@ const char *macos_atrap_name(uint16_t trap);
 
 // Initializes the Mac debug subsystem
 void debug_mac_init(void);
+struct scheduler;
+void debug_mac_register_scheduler_events(struct scheduler *sched);
 
 // Prints process information (same as 'pi' debugger command)
 void debug_mac_print_process_info(void);

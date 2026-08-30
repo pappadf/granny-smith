@@ -113,6 +113,9 @@ void scheduler_main_loop(config_t *restrict config, double now_msecs);
 // host-clock VBL, the headless pump calls it once per synthetic tick — so the
 // guest sees an identical [VBL, run-period, VBL, run-period, …] sequence on all
 // targets, differing only in how fast the host issues the ticks.
+// A frame cut short (instruction budget, breakpoint, daemon client input) is
+// resumed by the next call rather than restarted, so the VBL line is pulsed
+// once per VBL period of emulated time however finely the caller steps.
 void scheduler_run_frame(struct scheduler *restrict s, config_t *config);
 
 // Run the scheduler for a specified number of instructions

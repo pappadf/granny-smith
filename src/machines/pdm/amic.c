@@ -21,6 +21,7 @@
 
 #include "log.h"
 #include "ppc.h"
+#include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
@@ -47,12 +48,18 @@ LOG_USE_CATEGORY_NAME("amic");
 #define OFF_DMA   0x31000u // DMA register file (through $322xx)
 
 // DMA channel control bits (common vocabulary)
-#define DMA_RST 0x01u
-#define DMA_RUN 0x02u
-#define DMA_IE  0x08u
-#define DMA_IF  0x80u
+#define DMA_RST    0x01u
+#define DMA_RUN    0x02u
+#define DMA_IE     0x08u
+#define DMA_PAUSE  0x10u
+#define DMA_FROZEN 0x20u
+#define DMA_IF     0x80u
 
 static void pdm_scsi_pump_arm(config_t *cfg); // SCSI DMA service loop (below)
+static void pdm_scc_tx_arm(config_t *cfg, int idx); // SCC transmit engine (below)
+static void pdm_scc_rx_arm(config_t *cfg, int idx); // SCC receive engine (below)
+static void pdm_scc_rx_a_event(void *source, uint64_t data);
+static void pdm_scc_rx_b_event(void *source, uint64_t data);
 
 // ============================================================
 // Interrupt fabric
@@ -364,7 +371,10 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
             pdm_dma_ch_t *ch = &a->scc[(off - 0x1080) >> 4];
             uint32_t r = off & 0xFu;
             if (r < 4)
-                return addr_read_byte(ch->addr, r);
+                // The address bytes read back as addr + internal offset —
+                // the live ring pointer (MkLinux scc_amic.c reads the Rx
+                // ring index exactly this way).
+                return addr_read_byte(ch->addr + ch->xfer_off, r);
             if (r == 4)
                 return (uint8_t)((ch->count >> 8) & 0x1Fu);
             if (r == 5)
@@ -479,14 +489,32 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
         if (off >= 0x1080 && off < 0x10C0) {
             pdm_dma_ch_t *ch = &a->scc[(off - 0x1080) >> 4];
             uint32_t r = off & 0xFu;
-            if (r < 4)
+            LOG(4, "scc dma wr ch%u +%X = $%02X (addr=$%X cnt=%u ctrl=$%02X)", (unsigned)((off - 0x1080u) >> 4), r,
+                value, ch->addr, ch->count, ch->ctrl);
+            if (r < 4) {
                 addr_write_byte(&ch->addr, r, value);
-            else if (r == 4)
+                ch->xfer_off = 0; // an address write clears the internal offset
+            } else if (r == 4)
                 ch->count = (uint16_t)((ch->count & 0x00FFu) | ((value & 0x1Fu) << 8));
             else if (r == 5)
                 ch->count = (uint16_t)((ch->count & 0xFF00u) | value);
-            else if (r == 8)
+            else if (r == 8) {
+                if (value & DMA_RST)
+                    ch->xfer_off = 0; // RST rewinds the channel to its ring start
                 dma_ctrl_write(cfg, ch, value, 0x70u); // keep RELOAD/FROZEN/PAUSE
+                // PAUSE freezes the engine between quanta; nothing is ever in
+                // flight mid-slot here, so FROZEN mirrors it immediately (the
+                // pause protocol is "set PAUSE, poll until FROZEN reads 1").
+                if (ch->ctrl & DMA_PAUSE)
+                    ch->ctrl |= DMA_FROZEN;
+                else
+                    ch->ctrl &= (uint8_t)~DMA_FROZEN;
+                int idx = (int)((off - 0x1080u) >> 4);
+                if (idx == 0 || idx == 2)
+                    pdm_scc_tx_arm(cfg, idx);
+                else
+                    pdm_scc_rx_arm(cfg, idx);
+            }
         }
         return;
     }
@@ -616,6 +644,155 @@ static void pdm_scsi_pump_arm(config_t *cfg) {
 }
 
 // ============================================================
+// SCC: the AMIC DMA transmit engine
+// ============================================================
+// One-shot transmit channels (register blocks $1080 / $10A0): the driver
+// fills the channel's 8 KB ring inside the DMA window, writes the 13-bit
+// count and sets RUN; the engine hands the bytes to the ESCC's write path
+// (they assemble in its SDLC frame buffer exactly as CPU data writes
+// would) and IF sets at terminal count.  Mac OS 8.1's SerialDMA HAL polls
+// IF with no IE — before this engine existed nothing ever set it, and a
+// LocalTalk transmit (the printing setup's NBP LaserWriter lookup) spun
+// its full LLAP timeout (~130 ms) at IPL 1, starving VIA1 interrupt
+// service and desynchronizing the Cuda/ADB byte stream.
+//
+// The whole frame is delivered in one slot after the wire time of `count`
+// SDLC bytes at LocalTalk's 230.4 kbps.  The Rx channels stay unmodeled:
+// inbound frames still arrive only through the chip's Rx register path,
+// so an Rx DMA model is needed before a DMA-era guest can hear replies.
+#define PDM_SCC_TX_BYTE_NS 35000.0 // one SDLC byte at 230.4 kbps
+
+// Fixed 8 KB ring bases inside the DMA window, per register block
+// ($1080/$1090/$10A0/$10B0).  Apple's equates name the blocks TxA RxA
+// TxB RxB, but the ring pairing is crossed (amic.md §6.1/§7.2 caveat):
+// the $10A0 block the guest drives for the printer port reads its frame
+// from window+$20000 (measured live from the 8.1 SerialDMA HAL).
+static const uint32_t pdm_scc_ring[4] = {0x24000u, 0x22000u, 0x20000u, 0x26000u};
+
+// Deliver a completed transmit: feed `count` ring bytes to the ESCC, flush
+// the SDLC frame (Tx underrun/EOM), and set IF at terminal count.
+static void pdm_scc_tx_complete(config_t *cfg, int idx) {
+    pdm_amic_t *a = &pdm_st(cfg)->amic;
+    pdm_dma_ch_t *ch = &a->scc[idx];
+    if (!(ch->ctrl & DMA_RUN) || (ch->ctrl & DMA_IF))
+        return; // stopped (or already complete) since the event was armed
+    const memory_interface_t *mi = scc_get_memory_interface(cfg->scc);
+    uint32_t data_off = (idx == 0) ? 6u : 4u; // ESCC aData / bData
+    uint32_t ring = dma_window_base(a) + pdm_scc_ring[idx];
+    uint16_t n = ch->count;
+    for (uint16_t i = 0; i < n; i++) {
+        uint8_t *host = dma_host_ptr(ring + ((ch->addr + ch->xfer_off + i) & 0x1FFFu));
+        mi->write_uint8(cfg->scc, data_off, host ? *host : 0xFFu);
+    }
+    scc_dma_tx_complete(cfg->scc, idx == 0 ? 0u : 1u);
+    ch->xfer_off = (uint16_t)((ch->xfer_off + n) & 0x1FFFu); // live ring pointer advances
+    ch->count = 0;
+    ch->ctrl |= DMA_IF; // terminal count
+    LOG(3, "scc tx dma ch%d delivered %u bytes", idx, n);
+    pdm_amic_recompute(cfg);
+}
+
+// Per-channel event trampolines (distinct callbacks so each channel owns
+// its own scheduler event identity).
+static void pdm_scc_tx_a_event(void *source, uint64_t data) {
+    (void)data;
+    pdm_scc_tx_complete((config_t *)source, 0);
+}
+
+static void pdm_scc_tx_b_event(void *source, uint64_t data) {
+    (void)data;
+    pdm_scc_tx_complete((config_t *)source, 2);
+}
+
+// Ctrl-write hook: (re)arm a starting transmit's completion event, or
+// cancel it when the channel is stopped or reset.
+static void pdm_scc_tx_arm(config_t *cfg, int idx) {
+    pdm_dma_ch_t *ch = &pdm_st(cfg)->amic.scc[idx];
+    event_callback_t fn = (idx == 0) ? pdm_scc_tx_a_event : pdm_scc_tx_b_event;
+    remove_event(cfg->scheduler, fn, cfg);
+    if ((ch->ctrl & DMA_RUN) && !(ch->ctrl & (DMA_IF | DMA_PAUSE)) && ch->count > 0)
+        scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)(ch->count * PDM_SCC_TX_BYTE_NS));
+}
+
+// Receive channels (register blocks $1090 / $10B0).  The PDM-era .MPP LAP
+// code reads a frame's 5-byte header (LLAP + DDP length) through the ESCC
+// by hand, then hands the REST to this engine: RST, the remaining byte
+// count, RUN, and a poll of IF — its "ReadRest".  The engine drains that
+// many bytes from the ESCC receive FIFO into the channel's ring and sets
+// IF at terminal count; the frame's payload then sits at the ring start
+// (RST rewound the offset) where the driver's buffer pointer expects it.
+// Delivered after the wire time of `count` bytes, like the transmit side.
+#define PDM_SCC_RX_POLL_NS 200000.0 // re-check cadence while the FIFO is still short
+// Engine latency once every byte is already in the FIFO: a DMA burst, not
+// wire time.
+#define PDM_SCC_RX_READY_NS 10000.0
+
+static void pdm_scc_rx_complete(config_t *cfg, int idx) {
+    pdm_amic_t *a = &pdm_st(cfg)->amic;
+    pdm_dma_ch_t *ch = &a->scc[idx];
+    if (!(ch->ctrl & DMA_RUN) || (ch->ctrl & DMA_IF))
+        return; // stopped (or already complete) since the event was armed
+    uint32_t ring = dma_window_base(a) + pdm_scc_ring[idx];
+    unsigned scc_ch = (idx == 1) ? 0u : 1u; // ESCC A / B
+    unsigned moved = 0;
+    while (ch->count) {
+        uint8_t byte;
+        if (scc_dma_rx(cfg->scc, scc_ch, &byte, 1) == 0)
+            break; // FIFO empty: the rest has not arrived yet
+        uint32_t phys = ring + ((ch->addr + ch->xfer_off) & 0x1FFFu);
+        uint8_t *host = dma_host_ptr(phys);
+        if (host && g_page_table[phys >> PAGE_SHIFT].writable)
+            *host = byte;
+        ch->xfer_off = (uint16_t)((ch->xfer_off + 1) & 0x1FFFu);
+        ch->count--;
+        moved++;
+    }
+    if (ch->count == 0) {
+        ch->ctrl |= DMA_IF; // terminal count
+        LOG(3, "scc rx dma ch%d delivered %u bytes", idx, moved);
+        pdm_amic_recompute(cfg);
+    } else {
+        // Short of the count: look again once more bytes can have arrived.
+        event_callback_t fn = (idx == 1) ? pdm_scc_rx_a_event : pdm_scc_rx_b_event;
+        scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)PDM_SCC_RX_POLL_NS);
+    }
+}
+
+static void pdm_scc_rx_a_event(void *source, uint64_t data) {
+    (void)data;
+    pdm_scc_rx_complete((config_t *)source, 1);
+}
+
+static void pdm_scc_rx_b_event(void *source, uint64_t data) {
+    (void)data;
+    pdm_scc_rx_complete((config_t *)source, 3);
+}
+
+// Ctrl-write hook for the receive channels: (re)arm on RUN, cancel on stop.
+//
+// Only the bytes that have NOT arrived yet cost wire time.  The LLAP
+// transport hands a frame to the ESCC whole and has already paced it onto
+// the wire (appletalk.c holds the next RTS for 35 us/byte + IFG), so the
+// driver arms "ReadRest" with the whole remainder already sitting in the
+// receive FIFO.  Charging the frame's wire time a second time here stalls
+// the engine for a full frame — and 8.1's LocalTalk driver polls DMAIF from
+// its `CheckDMA` loop at IPL 1, so every one of those stalls is 20 ms with
+// VIA1 interrupt service starved: Ticks stop, and an autopoll packet landing
+// in the blackout desynchronizes the Cuda byte stream (#124).
+static void pdm_scc_rx_arm(config_t *cfg, int idx) {
+    pdm_dma_ch_t *ch = &pdm_st(cfg)->amic.scc[idx];
+    event_callback_t fn = (idx == 1) ? pdm_scc_rx_a_event : pdm_scc_rx_b_event;
+    remove_event(cfg->scheduler, fn, cfg);
+    if ((ch->ctrl & DMA_RUN) && !(ch->ctrl & (DMA_IF | DMA_PAUSE)) && ch->count > 0) {
+        unsigned have = scc_channel_rx_pending(cfg->scc, (idx == 1) ? 0u : 1u);
+        uint32_t missing = (ch->count > have) ? (uint32_t)(ch->count - have) : 0u;
+        double ns = missing ? missing * PDM_SCC_TX_BYTE_NS : PDM_SCC_RX_READY_NS;
+        LOG(4, "scc rx dma ch%d arm cnt=%u in fifo=%u, due in %.0f ns", idx, ch->count, have, ns);
+        scheduler_new_cpu_event(cfg->scheduler, fn, cfg, 0, 0, (uint64_t)ns);
+    }
+}
+
+// ============================================================
 // Floppy: the AMIC DMA pump behind SWIM3
 // ============================================================
 // Unlike the SCSI channels there is no free-running service loop here.
@@ -715,6 +892,10 @@ void pdm_amic_start_vbl(config_t *cfg) {
 void pdm_amic_register_events(config_t *cfg) {
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "vbl", pdm_vbl_event);
     scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scsi_pump", pdm_scsi_pump_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_tx_a", pdm_scc_tx_a_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_tx_b", pdm_scc_tx_b_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_rx_a", pdm_scc_rx_a_event);
+    scheduler_new_event_type(cfg->scheduler, "amic", cfg, "scc_rx_b", pdm_scc_rx_b_event);
 }
 
 // ============================================================

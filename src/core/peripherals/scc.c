@@ -121,6 +121,15 @@ struct ch {
     // previous DTR state for same-port CTS mirroring (loopback cable)
     bool loopback_prev_dtr;
 
+    // A Special Receive Condition (SDLC end-of-frame) is latched: it raises
+    // its own interrupt even in WR1 mode 1 ("first character or special")
+    // and selects the "special" status code in RR2B until the Error Reset
+    // command clears it.  Without this second interrupt a driver that got
+    // its first-character interrupt and drained the FIFO never learns the
+    // frame COMPLETED (the PDM native LocalTalk driver waits on exactly
+    // this; the classic 68k .MPP polls and never needs it).
+    bool rx_special;
+
     scc_t *scc;
 };
 
@@ -159,11 +168,13 @@ struct scc {
     struct object *channel_b; // scc.b child
 };
 
-#define SDLC_MODE(ch)  ((ch->wr[4] >> 4 & 3) == 2)
-#define TX_EMPTY(ch)   (ch->tx.len == 0)
-#define RX_EMPTY(ch)   (ch->rx.head == ch->rx.tail)
-#define RX_LEN(ch)     (ch->rx.head - ch->rx.tail)
-#define RX_ENABLED(ch) (ch->wr[3] & 1)
+#define SDLC_MODE(ch) ((ch->wr[4] >> 4 & 3) == 2)
+#define TX_EMPTY(ch)  (ch->tx.len == 0)
+#define RX_EMPTY(ch)  (ch->rx.head == ch->rx.tail)
+#define RX_LEN(ch)    (ch->rx.head - ch->rx.tail)
+// A delivered SDLC frame occupies data + this many CRC trailer bytes in the FIFO.
+#define SCC_RX_TRAILER_BYTES 2
+#define RX_ENABLED(ch)       (ch->wr[3] & 1)
 
 // transmit/receive buffer status and external status
 #define RR0_TX_UNDERRUN_EOM   0x40
@@ -176,6 +187,13 @@ struct scc {
 // special receive condition status
 #define RR1_END_OF_FRAME 0x80
 #define RR1_RX_OVERRUN   0x20
+// SDLC residue code for 8 bits per character, no residue (the I-field ends
+// on a character boundary): bits 3/2/1 = 0/1/1 (Z8530 UM Table 5-12).  A
+// good frame's EOF status therefore reads $87 (EOF | residue | All Sent),
+// CRC clear.  Strict LocalTalk drivers (the PDM native port driver)
+// validate the full status byte and discard frames whose residue says the
+// I-field ended mid-character; the classic 68k .MPP only checks CRC.
+#define RR1_RESIDUE_8BIT 0x06
 
 // interrupt pending register (only in ch a - always 0 in ch b)
 #define RR3_CHANNEL_B_EXT 0x01
@@ -313,6 +331,11 @@ void check_rx(ch_t *ch) {
     if (ch->sdlc_in.len == 0)
         return;
 
+    // Never overwrite a frame the driver is still reading (see
+    // scc_schedule_rx_if_ready); the drain re-offers this one.
+    if (RX_LEN(ch) > SCC_RX_TRAILER_BYTES)
+        return;
+
     // in address search mode - only report frames that matches (or broadcasts)
     if (ch->wr[3] & WR3_ADDRESS_SEARCH) {
         if (ch->sdlc_in.buf[0] != 0xFF && ch->sdlc_in.buf[0] != ch->wr[6]) {
@@ -327,7 +350,8 @@ void check_rx(ch_t *ch) {
 
     ch->rr[0] &= ~RR0_SYNC_HUNT;
     ch->rr[0] |= RR0_RX_CHAR_AVAILABLE;
-    ch->rr[1] &= ~RR1_END_OF_FRAME;
+    ch->rr[1] &= (uint8_t) ~(RR1_END_OF_FRAME | RR1_RESIDUE_8BIT);
+    ch->rx_special = false; // a new frame supersedes the last one's EOF latch
 
     size_t frame_len = ch->sdlc_in.len;
     uint8_t dest = ch->sdlc_in.buf[0];
@@ -405,6 +429,17 @@ static void scc_schedule_rx_if_ready(ch_t *ch) {
     }
     if (ch->pending_rx.count == 0)
         return;
+    // The FIFO still holds the previous frame's DATA: hold the next one back
+    // until the driver has read it (the drain path re-schedules).
+    // Dispatching on top of unread bytes replaced them — a directed LLAP
+    // burst (ATP response, 8 frames) lost every frame whose successor's RTS
+    // arrived before the driver had read it, and the AFP copy crawled on
+    // retries.  Only the data counts: a driver may leave the CRC trailer of
+    // a control frame unread (the .MPP answers lapRTS with lapCTS and then
+    // waits, at interrupt level, for the data frame that must follow) — a
+    // gate on those trailer bytes deadlocks it, freezing the guest.
+    if (RX_LEN(ch) > SCC_RX_TRAILER_BYTES)
+        return;
     // Real SCC re-enters hunt automatically once ready; mirror that here so queued frames flow
     bool hunt_before = (ch->rr[0] & RR0_SYNC_HUNT) != 0;
     if (!hunt_before)
@@ -454,9 +489,17 @@ static uint8_t rr2(scc_t *scc, int ch) {
         // [x] table 4-2 or 7-4: status encoded in the vector
         int irq_status[6] = {0x02, 0x00, 0x04, 0x0A, 0x08, 0x0C};
 
-        return irq_status[irq];
+        int v = irq_status[irq];
+        // A latched Special Receive Condition upgrades the rx status code
+        // (Ch B 010 -> 011, Ch A 110 -> 111; Z8530 UM Table 5-6) — this is
+        // how an RR2B-dispatching driver reaches its end-of-frame handler.
+        if (irq == 2 && scc->ch[1].rx_special)
+            v = 0x06;
+        else if (irq == 5 && scc->ch[0].rx_special)
+            v = 0x0E;
+        return v;
     } else
-        return 0x05; // if no interrupts pending, v3, v2, v1 = 011
+        return 0x06; // if no interrupts pending, V3,V2,V1 = 011 (UM §5.3.3)
 }
 
 static uint8_t rr8(ch_t *ch) {
@@ -489,8 +532,17 @@ static uint8_t rr8(ch_t *ch) {
     // SDLC mode handling
     assert(ch->index == 1);
 
-    if (RX_LEN(ch) < 3)
-        ch->rr[1] |= RR1_END_OF_FRAME;
+    if (RX_LEN(ch) < 3) {
+        bool was_eof = (ch->rr[1] & RR1_END_OF_FRAME) != 0;
+        ch->rr[1] |= RR1_END_OF_FRAME | RR1_RESIDUE_8BIT;
+        if (!was_eof && ((ch->wr[1] >> 3) & 3) != 0) {
+            // End of frame reached: raise the Special Receive Condition
+            // interrupt (fires in every rx interrupt mode but 0).
+            ch->rx_special = true;
+            ch->scc->ch[0].rr[3] |= ch->index ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX;
+            update_irqs(ch->scc);
+        }
+    }
 
     if (RX_LEN(ch) < 2)
         ch->rr[0] &= ~RR0_RX_CHAR_AVAILABLE;
@@ -518,6 +570,33 @@ static void tx_underrun(ch_t *ch) {
         process_packet(ch->tx.buf, ch->tx.len);
         ch->tx.len = 0;
     }
+}
+
+// A DMA engine reached terminal count on a transmit: the Tx FIFO runs dry
+// and the closing CRC/flag goes out — the same underrun/EOM event the WR0
+// "reset Tx underrun" command fakes for CPU-driven transmits.
+void scc_dma_tx_complete(scc_t *restrict scc, unsigned int ch) {
+    if (!scc || ch > 1)
+        return;
+    tx_underrun(&scc->ch[ch]);
+}
+
+// A DMA engine reading the receive FIFO: each byte goes through the same
+// path as an RR8 read, so Rx Available, hunt, end-of-frame and the Special
+// Receive Condition all track exactly as for CPU-driven reads.  A LocalTalk
+// driver programs the DMA for the frame's remaining DATA bytes only and
+// then finishes the frame BY HAND — it waits for Rx Character Available,
+// reads RR1 for the end-of-frame status and pops the CRC bytes itself (the
+// PDM .MPP's post-ReadRest sequence) — so the transfer must leave those
+// trailing bytes in the FIFO.
+size_t scc_dma_rx(scc_t *restrict scc, unsigned int ch, uint8_t *dst, size_t n) {
+    if (!scc || ch > 1)
+        return 0;
+    ch_t *c = &scc->ch[ch];
+    size_t moved = 0;
+    while (moved < n && !RX_EMPTY(c))
+        dst[moved++] = rr8(c);
+    return moved;
 }
 
 // command register
@@ -569,6 +648,13 @@ static void wr0(ch_t *ch, uint8_t value) {
 
     case 6: // error reset
         ch->rr[1] &= 0x0F;
+        // Error Reset also clears a latched Special Receive Condition and
+        // the rx interrupt it raised, unlocking the dispatcher.
+        if (ch->rx_special) {
+            ch->rx_special = false;
+            ch->scc->ch[0].rr[3] &= (uint8_t)(ch->index ? ~RR3_CHANNEL_B_RX : ~RR3_CHANNEL_A_RX);
+            update_irqs(ch->scc);
+        }
         break;
 
     case 7: // reset highest IUS (interrupt under service)
@@ -604,6 +690,11 @@ static void wr3(ch_t *ch, uint8_t value) {
     bool hunt_requested = false;
     if (enter_hunt_cmd && (ch->wr[3] & WR3_RX_ENABLE) && sync_mode) {
         ch->rr[0] |= RR0_SYNC_HUNT;
+        // Enter Hunt re-arms the receiver's sync search; it does NOT touch
+        // the FIFO.  The .MPP writes WR3 $DD right after answering lapRTS
+        // with lapCTS — by which time our data frame (delivered the instant
+        // the CTS went out) is already sitting in the FIFO.  Flushing here
+        // threw that frame away and left the driver spinning on RR0 for it.
         hunt_requested = true;
     }
 
@@ -861,6 +952,23 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
     case 0x03:
         wr3(&scc->ch[ch], value);
         break;
+
+    case 0x05: {
+        // WR5 - Tx parameters/control.  Clearing Tx Enable (bit 3) mid-SDLC
+        // is a frame boundary: on real silicon the Tx FIFO drains at wire
+        // speed and the closing CRC/flag goes out.  Mac OS 8.1's LLAP driver
+        // ends every PIO frame this way (it never issues the WR0
+        // underrun-reset command the classic mpp driver uses), so without
+        // this flush its ENQ/RTS probes glue together in tx.buf.
+        ch_t *c = &scc->ch[ch];
+        if (SDLC_MODE(c) && (c->wr[5] & 0x08) && !(value & 0x08))
+            tx_underrun(c);
+        c->wr[5] = value;
+        // DTR/RTS live in WR5 too: keep the loopback-cable mirroring the
+        // generic path does (MacTest's SCC handshake test reads them back).
+        update_loopback_signals(scc, ch);
+        break;
+    }
 
     case 0x08:
         wr8(&scc->ch[ch], value);

@@ -12,8 +12,11 @@
 
 #include "debug.h" // debug_trace_capture_log()
 #include "log.h"
+#include "ppc.h" // PowerPC pc / r24 for the PC decoration
 #include "scheduler.h" // cpu_instr_count()
 #include "shell.h"
+#include "system.h" // system_config() / system_cpu()
+#include "system_config.h" // config_t::ppc
 
 // Holds a single logging category node
 struct log_category {
@@ -340,13 +343,24 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
         indent_buf[indent_spaces] = '\0';
     }
 
-    // Determine PC value if needed
-    uint32_t pc_value = 0;
+    // Determine the PC decoration if needed.  On a PowerPC machine the
+    // main CPU is the 601/604 and the interesting "PC" for driver-level
+    // logs is usually the emulated 68k one, which the ROM's emulator keeps
+    // in r24 while 68k code runs — show both.
+    char pcstr[40] = "";
     if (c->show_pc) {
-        cpu_t *cpu = system_cpu();
-        if (cpu) {
-            extern uint32_t cpu_get_pc(cpu_t *restrict cpu);
-            pc_value = cpu_get_pc(cpu);
+        config_t *cfg = system_config();
+        if (cfg && cfg->ppc) {
+            snprintf(pcstr, sizeof(pcstr), "PC=%08x r24=%08x", (unsigned)ppc_get_pc(cfg->ppc),
+                     (unsigned)ppc_get_gpr(cfg->ppc, 24));
+        } else {
+            cpu_t *cpu = system_cpu();
+            uint32_t pc_value = 0;
+            if (cpu) {
+                extern uint32_t cpu_get_pc(cpu_t *restrict cpu);
+                pc_value = cpu_get_pc(cpu);
+            }
+            snprintf(pcstr, sizeof(pcstr), "PC=%08x", (unsigned)pc_value);
         }
     }
 
@@ -354,10 +368,9 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
     if (c->timestamp && c->show_pc) {
         unsigned long long t = (unsigned long long)cpu_instr_count();
         if (indent_spaces > 0)
-            snprintf(line, sizeof(line), "[%s] %d @%llu PC=%08x %s%s\n", name, level, t, (unsigned)pc_value, indent_buf,
-                     body);
+            snprintf(line, sizeof(line), "[%s] %d @%llu %s %s%s\n", name, level, t, pcstr, indent_buf, body);
         else
-            snprintf(line, sizeof(line), "[%s] %d @%llu PC=%08x %s\n", name, level, t, (unsigned)pc_value, body);
+            snprintf(line, sizeof(line), "[%s] %d @%llu %s %s\n", name, level, t, pcstr, body);
     } else if (c->timestamp) {
         unsigned long long t = (unsigned long long)cpu_instr_count();
         if (indent_spaces > 0)
@@ -366,9 +379,9 @@ void log_vemit(const log_category_t *cat, int level, const char *fmt, va_list ap
             snprintf(line, sizeof(line), "[%s] %d @%llu %s\n", name, level, t, body);
     } else if (c->show_pc) {
         if (indent_spaces > 0)
-            snprintf(line, sizeof(line), "[%s] %d PC=%08x %s%s\n", name, level, (unsigned)pc_value, indent_buf, body);
+            snprintf(line, sizeof(line), "[%s] %d %s %s%s\n", name, level, pcstr, indent_buf, body);
         else
-            snprintf(line, sizeof(line), "[%s] %d PC=%08x %s\n", name, level, (unsigned)pc_value, body);
+            snprintf(line, sizeof(line), "[%s] %d %s %s\n", name, level, pcstr, body);
     } else {
         if (indent_spaces > 0)
             snprintf(line, sizeof(line), "[%s] %d %s%s\n", name, level, indent_buf, body);

@@ -48,8 +48,10 @@ scheduler.run 8000000
 
 machine.adb.mouse.click false
 scheduler.run 100000000
-# Extra settle so the dialog finishes painting.
-scheduler.run 60000000
+# Extra settle so the dialog finishes painting.  Sized for the corrected
+# VBL cadence (scheduler 023b253): at 60 M the first checkbox click was
+# still swallowed.
+scheduler.run 160000000
 
 # Prime click: the first mouse click after this dialog opens is swallowed
 # under E-clock-synced ADB (the dialog consumes it on focus); a throwaway
@@ -112,15 +114,24 @@ scheduler.run 60000000
 
 # --- Continue with the normal MacTest flow ---------------------------------
 # Click Start (button center ~(188, 153)) — same coords as iicx-mactest.
+# The System's ADB mouse driver can re-post a stale button-down after a
+# no-data Talk (issue #122), leaving MBState at $00 so the next press is
+# not a transition.  Force it back to $80 (button up) before the click —
+# the same guard se30-mactest uses.
+machine.adb.mouse.click false "global"
 machine.adb.mouse.move 188 153 "global"
 scheduler.run 5000000
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
+scheduler.run 35000000
+# The driver's stale re-post (issue #122) lands ~35 M after the release
+# and leaves TrackControl waiting for an up that never comes; clear it.
+machine.adb.mouse.click false "global"
 
 # VIA -> ASC -> clock/PRAM -> SCSI tests run, then MacTest asks for the
-# first blank 800K diskette.
-scheduler.run 100000000
+# first blank 800K diskette (a modal wait, so overshooting is harmless).
+scheduler.run 140000000
 machine.screen.match insert-800k-internal.png
 
 machine.floppy.create "$WORK_DIR/blank800-int.dsk" 0
@@ -132,8 +143,10 @@ scheduler.run 5000000
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
+scheduler.run 35000000
+machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
 
-scheduler.run 300000000
+scheduler.run 265000000
 machine.screen.match insert-1.4mb-internal.png
 
 machine.adb.mouse.click false "global"
@@ -150,7 +163,9 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 
-scheduler.run 300000000
+scheduler.run 35000000
+machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
+scheduler.run 265000000
 # Second OK-click for the 1.44 MB INTERNAL disk.  Under the unified frame-VBL
 # cadence the HD disk's read/verify keeps MacTest out of its modal click-poll
 # longer than the 800K case, so the first OK-click (above) lands during the
@@ -161,7 +176,19 @@ scheduler.run 5000000
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
-scheduler.run 150000000
+scheduler.run 35000000
+machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
+scheduler.run 115000000
+# The stale re-post (issue #122) can land after this prompt opens and leave
+# its OK button tracking a phantom press.  Release it with the cursor OFF
+# the button (so TrackControl returns no-hit and the dialog stays), then
+# park the cursor back on OK for the golden.
+machine.adb.mouse.move 200 150 "global"
+scheduler.run 5000000
+machine.adb.mouse.click false "global"
+scheduler.run 10000000
+machine.adb.mouse.move 454 245 "global"
+scheduler.run 10000000
 machine.screen.match insert-800k-external.png
 
 machine.adb.mouse.click false "global"
@@ -189,11 +216,16 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 
-scheduler.run 300000000
+scheduler.run 35000000
+machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
+scheduler.run 265000000
 # Redundant mouse-up: guarantees the button is released before the match even
 # if the click-false above landed in a read window and was dropped.
 machine.adb.mouse.click false "global"
-scheduler.run 20000000
+# The external 800K test needs ~1.1 G instructions under the honest VBL
+# cadence (it is paced by the .Sony driver's VBL polling); the next prompt
+# is a modal wait, so a generous budget is harmless.
+scheduler.run 1200000000
 machine.screen.match insert-1.4mb-external.png
 
 machine.adb.mouse.click false "global"
@@ -207,7 +239,9 @@ machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
 
-scheduler.run 300000000
+scheduler.run 35000000
+machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
+scheduler.run 265000000
 # Second OK-click for the 1.44 MB EXTERNAL disk — same HD read-window timing as
 # the internal 1.44 MB step above; the first click lands too early under the
 # frame-VBL cadence, the follow-up click registers.
@@ -216,7 +250,9 @@ scheduler.run 5000000
 machine.adb.mouse.click true
 scheduler.run 5000000
 machine.adb.mouse.click false
-scheduler.run 150000000
+scheduler.run 35000000
+machine.adb.mouse.click false "global" # stale re-post guard (issue #122)
+scheduler.run 115000000
 machine.screen.match floppy-test-success.png
 
 

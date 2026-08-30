@@ -94,6 +94,12 @@ typedef struct pdm_dma_ch {
     uint32_t addr;
     uint16_t count;
     uint8_t ctrl;
+    // Internal transfer offset (SCC channels): RST and any address-register
+    // write zero it, transfers advance it, and the address bytes read back
+    // as addr+offset — the live ring pointer.  The 8.1 SerialDMA HAL never
+    // writes the address register at all; it relies on RST rewinding the
+    // channel to its ring start for every frame.
+    uint16_t xfer_off;
 } pdm_dma_ch_t;
 
 // SWIM3 floppy controller ($50F16000, 16 byte-wide registers at stride

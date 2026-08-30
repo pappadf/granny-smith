@@ -459,7 +459,7 @@ def row_av_tts() {
     assert machine.dsp.state == "running" "av-tts: DSP ${machine.dsp.state} after speech"
     assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died"
     assert machine.sound.overruns == 0 "av-tts: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-tts.wav", 47760)
+    check_sound("goldens/av-tts.wav", 67920)
     report_perf("suite-av/av-tts", scheduler.instr_count)
 }
 
@@ -525,7 +525,7 @@ def row_av_sound_in() {
     run_ticks(400)
     assert machine.dsp.emr == 0x8000 "av-sound-in: emr=${machine.dsp.emr:04x} after playback — kernel died"
     assert machine.sound.overruns == 0 "av-sound-in: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-sound-in.wav", 121680)
+    check_sound("goldens/av-sound-in.wav", 161280)
     click(377, 169) # Cancel — never Save
     run_ticks(100)
     report_perf("suite-av/av-sound-in", scheduler.instr_count)
@@ -606,31 +606,31 @@ def row_av_sr_command() {
 # golden, and the windoid caption to a screen golden.
 def row_av_sr_macro() {
     sr_bring_up()
-    # Two takes, and the first one is load-bearing: with a single take this
-    # row fails with "nothing was spoken back".  The first utterance warms
-    # the recognizer up — its AGC settles the codec's A/D gain and the
-    # endpointer's running cepstral mean converges on speech statistics —
-    # and only then does the second match.
-    sr_say($av_sr_date)
-
+    # One take.  This row used to need a throwaway warm-up utterance first
+    # (its recognition reliably missed, settling the AGC and the
+    # endpointer's cepstral mean for a second take) — but that tuning was
+    # captured under the pre-fix scheduler timing, where run_ticks() spans
+    # ran short of their nominal time.  With honest guest ticks the FIRST
+    # take recognizes, and a warm-up take would speak the answer before the
+    # capture opens (observed: windoid answered, capture peak 0).
+    #
     # The capture records the machine's OUTPUT, which is silent for as long
-    # as an utterance is being fed IN.  So open it for the second take only,
-    # and only from the point the utterance has finished playing: the answer
-    # lands ~0.4 s later, after the endpointer's 400 ms close and the host's
-    # language-model search.  Capturing the whole row would work equally
-    # well but would bury 2 s of speech in 11 s of digital silence.
+    # as an utterance is being fed IN.  So open it only from the point the
+    # utterance has finished playing: the answer lands after the
+    # endpointer's 400 ms close, the host's language-model search and the
+    # macro's AppleScript action.
     machine.audioin.load "${$av_sr_date}"
     machine.audioin.rewind
     run_ticks(180)
     machine.sound.capture.start
-    run_ticks(340)
+    run_ticks(700)
 
     assert machine.dsp.emr == 0x8000 "av-sr-macro: emr=${machine.dsp.emr:04x} after the utterance — kernel died"
     assert machine.sound.overruns == 0 "av-sr-macro: ${machine.sound.overruns} frame overruns"
     # The golden alone would still pass if a regen ever captured silence,
     # so assert the answer was actually SPOKEN before comparing it.
     assert machine.sound.capture.peak > 2000 "av-sr-macro: capture peak ${machine.sound.capture.peak} — nothing was spoken back"
-    check_sound("goldens/av-sr-macro.wav", 102000)
+    check_sound("goldens/av-sr-macro.wav", 279600)
     check("goldens/av-sr-macro.png")
     report_perf("suite-av/av-sr-macro", scheduler.instr_count)
 }

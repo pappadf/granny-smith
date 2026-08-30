@@ -135,7 +135,7 @@ scheduler.run 50000000
 machine.memory.poke.w 0x017A 0x8805
 scheduler.run 1500000
 machine.memory.poke.w 0x017A 0
-scheduler.run 11000000
+scheduler.run 63000000
 assert machine.rtc.pram.peek(0x48) == 0x82 "13in_rgb 4bpp savedMode rewritten by ROM"
 assert machine.memory.peek.l(0xf9200208) == 0x90 "13in_rgb 4bpp CLUTPBCR != 0x90"
 assert machine.memory.peek.l(0xf920000c) == 0x50 "13in_rgb 4bpp RowWords != 0x50"

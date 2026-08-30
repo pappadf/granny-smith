@@ -21,7 +21,7 @@
 // the whole file. This mirrors how move/delete route through the worker
 // (storage.mv/storage.rm).
 
-import { gsEval, isModuleReady, getModule, applyCapabilities } from './emulator';
+import { gsEval, isModuleReady, getModule, applyCapabilities, seedPram } from './emulator';
 import { opfs } from './opfs';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
@@ -436,6 +436,8 @@ async function maybeBootFromRom(romPath: string): Promise<void> {
   }
   // One boot document — the core validates and installs the ROM itself.
   await gsEval('machine.boot', { model, ram: ramKb, rom: romPath });
+  // Seed a valid PRAM, as every boot path does.
+  await seedPram(model, 0);
   machine.model = model;
   machine.ram = `${ramKb / 1024} MB`;
   await applyCapabilities(model);
