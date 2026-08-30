@@ -523,6 +523,10 @@ static void ddp_setup_reply(const ddp_header_t *request, ddp_header_t *reply) {
 // Lifecycle: Constructor
 // ============================================================================
 
+// ASP session sweep (defined below): registered eagerly in appletalk_init.
+static uint64_t g_asp_sweep_event_token;
+static void asp_sweep_cb(void *source, uint64_t data);
+
 void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint) {
     // A previous machine may still be installed (checkpoint restore builds the
     // new machine first).  Take it down now so this init starts from a clean
@@ -536,6 +540,11 @@ void appletalk_init(scheduler_t *scheduler, scc_t *scc, checkpoint_t *checkpoint
     g_atalk_enabled = true;
     llap_rts_reset(); // no RTS exchange survives a machine boot
     llap_rts_register_event();
+    // Register the lazily-armed types NOW: a checkpoint restore rebuilds
+    // the scheduler and replays the saved events before any session
+    // exists, and an event whose type is unknown fails the restore
+    // ("cannot restore event 'asp.session_sweep' — type not registered").
+    scheduler_new_event_type(g_scheduler, "asp", &g_asp_sweep_event_token, "session_sweep", &asp_sweep_cb);
     memset(&g_atalk_stats, 0, sizeof(g_atalk_stats));
     asp_sessions_reset();
     atalk_server_init();

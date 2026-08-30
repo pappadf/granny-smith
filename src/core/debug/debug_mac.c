@@ -347,6 +347,19 @@ uint64_t cmd_process_info(int argc, char *argv[]) {
     return 0;
 }
 
+static void mouse_guard_tick(void *source, uint64_t data);
+
+// Register this module's scheduler event types on a NEW scheduler (each
+// machine creation / checkpoint restore builds one).  The mouse guard arms
+// its event lazily on first use; a checkpoint saved with the guard armed
+// then failed to restore into a fresh scheduler ("cannot restore event
+// 'test.mouse_guard' — type not registered").
+void debug_mac_register_scheduler_events(scheduler_t *sched) {
+    if (!sched)
+        return;
+    scheduler_new_event_type(sched, "test", NULL, "mouse_guard", &mouse_guard_tick);
+}
+
 void debug_mac_init(void) {
     // Empty by design: all command registration moved to the typed
     // object-model bridge.  Kept as a stub for callers that expect a

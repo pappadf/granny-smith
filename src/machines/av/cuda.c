@@ -807,7 +807,17 @@ static bool cuda_bus_idle(av_cuda_t *cuda) {
     // transaction and go idle — while we sit in CUDA_SENDING with TREQ
     // asserted, waiting for a TIP that never comes.  Both sides then wait
     // for each other forever.
-    return cuda->state == CUDA_IDLE && !cuda->push_pending && (cuda->last_pb & PB_TIP) != 0;
+    //
+    // A response parked for re-presentation (reaped by the abandonment
+    // watchdog or sync-aborted) is still the head of the firmware's output
+    // queue: starting an autopoll or tick packet ahead of it would push a
+    // second attention byte while the first still sits unread in the SR —
+    // Mac OS 8.1's CudaMgr folds that orphan byte into its next receive
+    // session and the desynchronised ADB stream overruns the ADB Manager's
+    // stack buffer (the Finder dies mid AFP copy: the driver spins at IPL 1
+    // on serial DMA for >100 ms, every autopoll gets reaped, and a moving
+    // mouse supplies a fresh autopoll every 11 ms).
+    return cuda->state == CUDA_IDLE && !cuda->push_pending && !cuda->resend_pending && (cuda->last_pb & PB_TIP) != 0;
 }
 
 // The deferred half of CMD_RESET (see there): assert the system reset line
