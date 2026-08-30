@@ -964,6 +964,9 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
         if (SDLC_MODE(c) && (c->wr[5] & 0x08) && !(value & 0x08))
             tx_underrun(c);
         c->wr[5] = value;
+        // DTR/RTS live in WR5 too: keep the loopback-cable mirroring the
+        // generic path does (MacTest's SCC handshake test reads them back).
+        update_loopback_signals(scc, ch);
         break;
     }
 
