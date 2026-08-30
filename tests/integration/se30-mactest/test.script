@@ -76,6 +76,9 @@ machine.floppy.drive[0].insert ../../data/apps/MacTest-SE30.image true
 # Stop the mouse guard before the RAM test — it writes to RAM every 1ms,
 # corrupting test patterns and causing verify failures.
 machine.adb.mouse.move 0 0
+# Clear a stale MBState=$00 left by the guard's auto-clicks (issue #122):
+# MacTest will not start the RAM test while the mouse button reads down.
+machine.adb.mouse.click false "global"
 
 # The destructive RAM test fills + verifies all 4 MB with multiple patterns
 # (~4 min at 16 MHz). After all passes, the test code returns through the
