@@ -148,6 +148,31 @@ static void log_hex(int level, const char *tag, const uint8_t *data, size_t len)
 // ============================================================================
 
 // =============================== LLAP (LocalTalk) - lowest layer ===============================
+
+// One directed data frame parked for LocalTalk's RTS/CTS exchange: LLAP
+// requires a directed transmission to open with lapRTS and send the data
+// only after the receiver grants a lapCTS.  The classic 68k .MPP driver
+// happens to latch a bare data frame anyway, but Mac OS 8.1's native
+// PowerMac LocalTalk driver's receive state machine only accepts a data
+// frame it has granted — without the handshake every directed reply
+// (e.g. the Chooser's NBP LookupReply) is silently discarded by the
+// guest.  Control frames and broadcasts stay direct (broadcasts open
+// with an ungated lapRTS to $FF on the wire; our transport delivers
+// whole frames, so the preamble is not needed there).
+static struct {
+    bool pending;
+    uint8_t dst;
+    size_t len;
+    uint8_t buf[3 + LLAP_DATA_MAX_SIZE]; // header + payload
+} g_llap_rts;
+
+static void llap_wire_send(const uint8_t *buf, size_t total) {
+    log_hex(11, "LLAP tx dump", buf, total);
+    g_atalk_stats.llap_tx++;
+    if (g_scc)
+        scc_sdlc_send(g_scc, (uint8_t *)buf, total);
+}
+
 // Returns 0 on success, -1 if `len` exceeds the LLAP payload max (caller bug).
 // We refuse to transmit truncated frames rather than silently emit a corrupted
 // one — the peer would see a malformed LLAP and discard it anyway, but in
@@ -178,11 +203,22 @@ static int llap_send(const llap_header_t *llap, const uint8_t *data, size_t len)
     }
 
     size_t total = len + LLAP_HEADER_SIZE;
-    // Full LLAP tx hexdump at high verbosity
-    log_hex(11, "LLAP tx dump", buf, total);
-    g_atalk_stats.llap_tx++;
-    if (g_scc)
-        scc_sdlc_send(g_scc, buf, total);
+
+    // Directed DATA frames go through the RTS/CTS exchange (see g_llap_rts).
+    // A frame already parked is superseded — LLAP has no queue; the newer
+    // reply is the one that still matters.
+    if (llap->dst != 0xFF && llap->type < 0x80) {
+        memcpy(g_llap_rts.buf, buf, total);
+        g_llap_rts.len = total;
+        g_llap_rts.dst = llap->dst;
+        g_llap_rts.pending = true;
+        uint8_t rts[3] = {llap->dst, llap->src, LLAP_RTS};
+        LOG(8, "LLAP tx: RTS to %02X, %zu-byte data parked for CTS", llap->dst, total);
+        llap_wire_send(rts, sizeof(rts));
+        return 0;
+    }
+
+    llap_wire_send(buf, total);
     return 0;
 }
 
@@ -248,8 +284,12 @@ void llap_in(const uint8_t *buf, size_t len) {
         break;
 
     case LLAP_CTS:
-        // We may see CTS in response to our own RTS when we originate frames; ignore (optional trace).
+        // The receiver granted our lapRTS: transmit the parked data frame.
         LOG(8, "LLAP CTS src=%02X dst=%02X", (unsigned)header.src, (unsigned)header.dst);
+        if (g_llap_rts.pending && header.src == g_llap_rts.dst && header.dst == LLAP_HOST_NODE) {
+            g_llap_rts.pending = false;
+            llap_wire_send(g_llap_rts.buf, g_llap_rts.len);
+        }
         break;
 
     case LLAP_DDP_SHORT:

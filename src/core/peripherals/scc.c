@@ -121,6 +121,15 @@ struct ch {
     // previous DTR state for same-port CTS mirroring (loopback cable)
     bool loopback_prev_dtr;
 
+    // A Special Receive Condition (SDLC end-of-frame) is latched: it raises
+    // its own interrupt even in WR1 mode 1 ("first character or special")
+    // and selects the "special" status code in RR2B until the Error Reset
+    // command clears it.  Without this second interrupt a driver that got
+    // its first-character interrupt and drained the FIFO never learns the
+    // frame COMPLETED (the PDM native LocalTalk driver waits on exactly
+    // this; the classic 68k .MPP polls and never needs it).
+    bool rx_special;
+
     scc_t *scc;
 };
 
@@ -176,6 +185,13 @@ struct scc {
 // special receive condition status
 #define RR1_END_OF_FRAME 0x80
 #define RR1_RX_OVERRUN   0x20
+// SDLC residue code for 8 bits per character, no residue (the I-field ends
+// on a character boundary): bits 3/2/1 = 0/1/1 (Z8530 UM Table 5-12).  A
+// good frame's EOF status therefore reads $87 (EOF | residue | All Sent),
+// CRC clear.  Strict LocalTalk drivers (the PDM native port driver)
+// validate the full status byte and discard frames whose residue says the
+// I-field ended mid-character; the classic 68k .MPP only checks CRC.
+#define RR1_RESIDUE_8BIT 0x06
 
 // interrupt pending register (only in ch a - always 0 in ch b)
 #define RR3_CHANNEL_B_EXT 0x01
@@ -327,7 +343,8 @@ void check_rx(ch_t *ch) {
 
     ch->rr[0] &= ~RR0_SYNC_HUNT;
     ch->rr[0] |= RR0_RX_CHAR_AVAILABLE;
-    ch->rr[1] &= ~RR1_END_OF_FRAME;
+    ch->rr[1] &= (uint8_t) ~(RR1_END_OF_FRAME | RR1_RESIDUE_8BIT);
+    ch->rx_special = false; // a new frame supersedes the last one's EOF latch
 
     size_t frame_len = ch->sdlc_in.len;
     uint8_t dest = ch->sdlc_in.buf[0];
@@ -454,9 +471,17 @@ static uint8_t rr2(scc_t *scc, int ch) {
         // [x] table 4-2 or 7-4: status encoded in the vector
         int irq_status[6] = {0x02, 0x00, 0x04, 0x0A, 0x08, 0x0C};
 
-        return irq_status[irq];
+        int v = irq_status[irq];
+        // A latched Special Receive Condition upgrades the rx status code
+        // (Ch B 010 -> 011, Ch A 110 -> 111; Z8530 UM Table 5-6) — this is
+        // how an RR2B-dispatching driver reaches its end-of-frame handler.
+        if (irq == 2 && scc->ch[1].rx_special)
+            v = 0x06;
+        else if (irq == 5 && scc->ch[0].rx_special)
+            v = 0x0E;
+        return v;
     } else
-        return 0x05; // if no interrupts pending, v3, v2, v1 = 011
+        return 0x06; // if no interrupts pending, V3,V2,V1 = 011 (UM §5.3.3)
 }
 
 static uint8_t rr8(ch_t *ch) {
@@ -489,8 +514,17 @@ static uint8_t rr8(ch_t *ch) {
     // SDLC mode handling
     assert(ch->index == 1);
 
-    if (RX_LEN(ch) < 3)
-        ch->rr[1] |= RR1_END_OF_FRAME;
+    if (RX_LEN(ch) < 3) {
+        bool was_eof = (ch->rr[1] & RR1_END_OF_FRAME) != 0;
+        ch->rr[1] |= RR1_END_OF_FRAME | RR1_RESIDUE_8BIT;
+        if (!was_eof && ((ch->wr[1] >> 3) & 3) != 0) {
+            // End of frame reached: raise the Special Receive Condition
+            // interrupt (fires in every rx interrupt mode but 0).
+            ch->rx_special = true;
+            ch->scc->ch[0].rr[3] |= ch->index ? RR3_CHANNEL_B_RX : RR3_CHANNEL_A_RX;
+            update_irqs(ch->scc);
+        }
+    }
 
     if (RX_LEN(ch) < 2)
         ch->rr[0] &= ~RR0_RX_CHAR_AVAILABLE;
@@ -578,6 +612,13 @@ static void wr0(ch_t *ch, uint8_t value) {
 
     case 6: // error reset
         ch->rr[1] &= 0x0F;
+        // Error Reset also clears a latched Special Receive Condition and
+        // the rx interrupt it raised, unlocking the dispatcher.
+        if (ch->rx_special) {
+            ch->rx_special = false;
+            ch->scc->ch[0].rr[3] &= (uint8_t)(ch->index ? ~RR3_CHANNEL_B_RX : ~RR3_CHANNEL_A_RX);
+            update_irqs(ch->scc);
+        }
         break;
 
     case 7: // reset highest IUS (interrupt under service)

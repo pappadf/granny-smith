@@ -368,7 +368,10 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
             pdm_dma_ch_t *ch = &a->scc[(off - 0x1080) >> 4];
             uint32_t r = off & 0xFu;
             if (r < 4)
-                return addr_read_byte(ch->addr, r);
+                // The address bytes read back as addr + internal offset —
+                // the live ring pointer (MkLinux scc_amic.c reads the Rx
+                // ring index exactly this way).
+                return addr_read_byte(ch->addr + ch->xfer_off, r);
             if (r == 4)
                 return (uint8_t)((ch->count >> 8) & 0x1Fu);
             if (r == 5)
@@ -483,13 +486,18 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
         if (off >= 0x1080 && off < 0x10C0) {
             pdm_dma_ch_t *ch = &a->scc[(off - 0x1080) >> 4];
             uint32_t r = off & 0xFu;
-            if (r < 4)
+            LOG(4, "scc dma wr ch%u +%X = $%02X (addr=$%X cnt=%u ctrl=$%02X)", (unsigned)((off - 0x1080u) >> 4), r,
+                value, ch->addr, ch->count, ch->ctrl);
+            if (r < 4) {
                 addr_write_byte(&ch->addr, r, value);
-            else if (r == 4)
+                ch->xfer_off = 0; // an address write clears the internal offset
+            } else if (r == 4)
                 ch->count = (uint16_t)((ch->count & 0x00FFu) | ((value & 0x1Fu) << 8));
             else if (r == 5)
                 ch->count = (uint16_t)((ch->count & 0xFF00u) | value);
             else if (r == 8) {
+                if (value & DMA_RST)
+                    ch->xfer_off = 0; // RST rewinds the channel to its ring start
                 dma_ctrl_write(cfg, ch, value, 0x70u); // keep RELOAD/FROZEN/PAUSE
                 // PAUSE freezes the engine between quanta; nothing is ever in
                 // flight mid-slot here, so FROZEN mirrors it immediately (the
@@ -668,11 +676,11 @@ static void pdm_scc_tx_complete(config_t *cfg, int idx) {
     uint32_t ring = dma_window_base(a) + pdm_scc_ring[idx];
     uint16_t n = ch->count;
     for (uint16_t i = 0; i < n; i++) {
-        uint8_t *host = dma_host_ptr(ring + ((ch->addr + i) & 0x1FFFu));
+        uint8_t *host = dma_host_ptr(ring + ((ch->addr + ch->xfer_off + i) & 0x1FFFu));
         mi->write_uint8(cfg->scc, data_off, host ? *host : 0xFFu);
     }
     scc_dma_tx_complete(cfg->scc, idx == 0 ? 0u : 1u);
-    ch->addr = (ch->addr + n) & 0x1FFFu; // address low bytes read back as the live ring index
+    ch->xfer_off = (uint16_t)((ch->xfer_off + n) & 0x1FFFu); // live ring pointer advances
     ch->count = 0;
     ch->ctrl |= DMA_IF; // terminal count
     LOG(3, "scc tx dma ch%d delivered %u bytes", idx, n);
