@@ -153,6 +153,13 @@ struct av_cuda {
     // response nobody reads is reaped by the abandonment watchdog above
     // (which is how the OF-era leftover stays harmless).
     bool resend_pending;
+    // The packet on the wire is a timeout-reaped one being RE-PRESENTED to a
+    // host that was merely busy.  If that host then runs a CudaInit sync
+    // instead of taking it, it is a different driver generation (MkLinux's
+    // Cuda driver syncing over Mac OS's leftover RdTime reply) and the
+    // packet is stale: drop it at the sync rather than re-present it yet
+    // again — the second re-presentation derailed MkLinux's init.
+    bool tx_represented;
 
     // --- pointers / callbacks (not checkpointed) ---
     struct via *via1;
@@ -235,6 +242,7 @@ static void cuda_advance_tx(av_cuda_t *cuda) {
 // attention byte; the host asserts TIP to accept.
 static void cuda_begin_send(av_cuda_t *cuda) {
     cuda_cancel_push(cuda); // a stale idle-ack must not fire mid-response
+    cuda->tx_represented = false; // a fresh presentation (the resend path re-flags)
     cuda->state = CUDA_SENDING;
     cuda->tx_idx = 0;
     LOG(3, "send %d bytes: type=$%02X flags=$%02X cmd=$%02X", cuda->tx_len, cuda->tx_buf[1], cuda->tx_buf[2],
@@ -274,6 +282,7 @@ static void cuda_resend_event(void *source, uint64_t data) {
         return; // the host moved on (or a later sync flushed the queue)
     LOG(2, "re-presenting the parked response (%d bytes)", cuda->tx_len);
     cuda_begin_send(cuda);
+    cuda->tx_represented = true;
     // No abandonment watchdog on a re-presented reply: the host is
     // mid-driver-install with interrupts masked (that is WHY the abort
     // happened), and the reply must survive until its unmask.  The next
@@ -586,7 +595,7 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         // asynchronous sources (ticks, autopoll data) stay silenced — that
         // is half the point of the sync.
         if (cuda->state == CUDA_SENDING && cuda->tx_idx == 0 && cuda->tx_buf[1] != PKT_TICK &&
-            !(cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL)) {
+            !(cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL) && !cuda->tx_represented) {
             cuda->resend_pending = true; // tx_buf/tx_len kept for the resend
         } else {
             cuda->tx_len = 0;
@@ -628,7 +637,8 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
             // exactly as from idle.
             LOG(2, "sync cycle aborts an unread response");
             cuda_send_progress(cuda);
-            if (cuda->tx_idx == 0 && cuda->tx_buf[1] != PKT_TICK && !(cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL))
+            if (cuda->tx_idx == 0 && cuda->tx_buf[1] != PKT_TICK && !(cuda->tx_buf[2] & CUDA_FLAG_AUTOPOLL) &&
+                !cuda->tx_represented)
                 cuda->resend_pending = true;
             cuda->state = CUDA_SYNC;
             cuda->autopoll_enabled = false;

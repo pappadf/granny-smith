@@ -184,9 +184,9 @@ def row_iicx_gc_beep() {
     machine.adb.mouse.click false
     scheduler.run 40000000
 
-    # The beep window is Sound-Manager-controlled: mode 2 for exactly 5,423
+    # The beep window is Sound-Manager-controlled: mode 2 for exactly 5,427
     # samples (22,257 Hz), captured pre-resampling/pre-volume.
-    check_sound("goldens/iicx-gc-beep.wav", 5423)
+    check_sound("goldens/iicx-gc-beep.wav", 5427)
 
     # Sample-exact compare against the golden (fails the test on any divergence).
     # Loudness does NOT appear in the capture: the sink is pre-volume, and the

@@ -254,10 +254,13 @@ def sweep_cell(sense, sister, spid, w, h, settle, golden) {
     scheduler.run 1500000
     machine.memory.poke.w 0x017A 0
     # Settle budget is per-cell and MEASURED, not shared: the Welcome splash
-    # is a transient here, and the 21" 2 bpp cell reaches it ~5x later than
-    # its siblings (bare desktop at +11 M, splash at +60 M, gone again by
-    # +80 M). A single shared budget silently captured that cell's bare
-    # desktop. Runs are bit-reproducible, so a fixed instant is exact.
+    # is a transient here, and some cells reach it ~5x later than their
+    # siblings (splash at +7..+15 M for most; +59..+67 M for the 15" 2 bpp,
+    # 21" 1 bpp and 21" 2 bpp cells — bare desktop before, gone again
+    # after). A single shared budget silently captured a late cell's bare
+    # desktop. Runs are bit-reproducible, so a fixed instant is exact; re-
+    # measure every cell (1 M-step matches() sweep) whenever boot timing
+    # changes — the VBL-cadence fix in the scheduler moved three cells.
     scheduler.run $settle
     assert machine.screen.width == $w "jmfb-sweep ${$golden}: width != ${$w}"
     assert machine.screen.height == $h "jmfb-sweep ${$golden}: height != ${$h}"
@@ -279,13 +282,13 @@ def row_iix_jmfb_sweep() {
     # vs iix-portrait-603's golden: that row seeds the identical sense and
     # sPRAMRec and checks the same pre-System frame, so it cannot differ — its
     # 6.0.3-specific work is the desktop-geometry assertions that follow it.
-    sweep_cell(1, 0x002781a1a1000000:8, 0x81, 640, 870, 11000000, "goldens/iix-jmfb-15in_bw-640x870-2bpp.png")
+    sweep_cell(1, 0x002781a1a1000000:8, 0x81, 640, 870, 63000000, "goldens/iix-jmfb-15in_bw-640x870-2bpp.png")
     sweep_cell(1, 0x002782a1a1000000:8, 0x82, 640, 870, 11000000, "goldens/iix-jmfb-15in_bw-640x870-4bpp.png")
     sweep_cell(1, 0x002783a1a1000000:8, 0x83, 640, 870, 11000000, "goldens/iix-jmfb-15in_bw-640x870-8bpp.png")
     # 21" RGB (Kong), sense $0, 1152x870. References at >= 2 bpp carry Kong's
     # gamma pre-distortion — see iicx-video-modes' header for why that is
     # correct for a pre-CRT-response capture.
-    sweep_cell(0, 0x002780a7a7000000:8, 0x80, 1152, 870, 11000000, "goldens/iix-jmfb-21in_rgb-1152x870-1bpp.png")
+    sweep_cell(0, 0x002780a7a7000000:8, 0x80, 1152, 870, 63000000, "goldens/iix-jmfb-21in_rgb-1152x870-1bpp.png")
     sweep_cell(0, 0x002781a7a7000000:8, 0x81, 1152, 870, 60000000, "goldens/iix-jmfb-21in_rgb-1152x870-2bpp.png")
     sweep_cell(0, 0x002782a7a7000000:8, 0x82, 1152, 870, 11000000, "goldens/iix-jmfb-21in_rgb-1152x870-4bpp.png")
     sweep_cell(0, 0x002783a7a7000000:8, 0x83, 1152, 870, 11000000, "goldens/iix-jmfb-21in_rgb-1152x870-8bpp.png")

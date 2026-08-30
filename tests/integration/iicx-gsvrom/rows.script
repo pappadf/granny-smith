@@ -161,7 +161,7 @@ def row_gsvrom_sweep() {
     machine.memory.poke.w 0x017A 0x8805
     scheduler.run 1500000
     machine.memory.poke.w 0x017A 0
-    scheduler.run 11000000
+    scheduler.run 63000000
     assert machine.rtc.pram.peek(0x48) == 0x83       "21in_rgb 8bpp savedMode != 0x83"
     check("goldens/welcome-21in_rgb-1152x870-8bpp.png")
     report_row("7.0.1", "gsvrom", "rom-stage 1152x870x8 21in_rgb")
