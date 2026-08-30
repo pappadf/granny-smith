@@ -125,7 +125,15 @@ with `grep -v '^#'` if you don't want them.
 
 **Disconnect cancels a run.** If the driving client disconnects mid-run,
 the daemon detects EOF and stops the scheduler instead of burning the
-budget.
+budget — and cancels the script it was running, so a shell loop around
+the run stops with it rather than starting the next iteration.
+
+**A run inside a shell loop is stoppable too.** A `while` loop that
+calls `scheduler.run` is one statement to the daemon, so a second
+connection cannot reach the shell until the loop ends. It is answered
+out of band instead: `stop` (or `scheduler.stop` / `shell.interrupt` /
+`quit`) on that connection ends the run and cancels the loop, and
+anything else is refused with `# busy: ...` rather than executed.
 
 ## 4. The shell grammar
 
@@ -390,6 +398,10 @@ Arguments: `addr` (required), `mode` (`pc` default / `read` / `write`
 for read/write), `value` (fire only on matching value), `space`
 (`logical`/`physical`).
 
+**Device registers are covered.** A logpoint on an I/O address (say
+VIA1 port B at physical `$50F00000`) fires on every CPU access the
+device answers, the same as one on RAM.
+
 **Memory logpoints only see CPU accesses.** They hook the CPU
 read/write path, so they do **not** fire on bus-master DMA or other
 device-engine writes (e.g. the IIfx SCSI DMA writes straight to host
@@ -468,8 +480,13 @@ scheduler.run                                         # unbounded (until breakpo
 scheduler.run 1000000                                 # instruction-budgeted
 scheduler.stop                                        # halt; safe to send on a
                                                       # second connection mid-run
-scheduler.mode                                        # max / realtime / hardware
+scheduler.mode                                        # paced / accelerated / turbo
+scheduler.mode = "turbo"                              # writable
 ```
+
+`scheduler.mode` reflects the daemon's `--speed=` flag and survives
+`machine.boot`, so a daemon launched `--speed=max` still reads `turbo`
+after a script's own `machine.boot`.
 
 `debug.step N` is sugar for "run N instructions, then stop".
 
