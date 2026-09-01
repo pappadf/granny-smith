@@ -353,9 +353,20 @@ typedef struct voodoo2 {
     const voodoo2_raster_backend_t *raster;
 
     // Swap bookkeeping: swaps pending count until the frame boundary
-    // after issue retires them (status[30:28], fbiSwapHistory).
+    // after issue retires them (status[30:28], fbiSwapHistory), at which
+    // point the displayed buffer flips (status[11:10]).
     uint32_t swaps_pending;
     uint64_t swap_issue_frame;
+    uint32_t displayed_buffer; // physical colour buffer being scanned
+
+    // The display face (milestone 3d).  The card presents
+    // PIXEL_16BPP_565 in the display layer's big-endian convention;
+    // fb_ram is the card's little-endian domain, so scanout holds the
+    // converted raster (the conversion is this card's own edge, per
+    // docs/core/peripherals/pci.md "Endianness at a card's edge").
+    display_t display;
+    uint8_t *scanout;
+    bool driving; // last evaluated pass-through state (edge detection)
 
     // One-shot log guards.
     bool warned_narrow_reg;
@@ -445,8 +456,14 @@ static bool v2_in_vretrace(const voodoo2_t *v) {
 // count which retires at the frame boundary after issue.
 
 static void v2_retire_swaps(voodoo2_t *v) {
-    if (v->swaps_pending && v2_frame_number(v) != v->swap_issue_frame)
+    if (v->swaps_pending && v2_frame_number(v) != v->swap_issue_frame) {
+        // Each retired swap flips which physical buffer is scanned out
+        // (status[11:10]); an odd pending count nets one flip.
+        if (v->swaps_pending & 1u)
+            v->displayed_buffer ^= 1u;
         v->swaps_pending = 0;
+        v->display.fb_dirty = true;
+    }
 }
 
 static uint32_t v2_status(voodoo2_t *v) {
@@ -455,7 +472,7 @@ static uint32_t v2_status(voodoo2_t *v) {
     if (!v2_in_vretrace(v))
         s |= 1u << 6; // 0 = retrace ACTIVE [V2 p.29]
     // bits 7 (Chuck busy), 8 (Bruce busy), 9 (busy) stay 0: idle.
-    // bits 11:10 displayed buffer: 0 until the display lands.
+    s |= (v->displayed_buffer & 3u) << 10;
     s |= 0xFFFFu << 12; // memory FIFO free space: empty
     s |= (v->swaps_pending > 7u ? 7u : v->swaps_pending) << 28;
     return s;
@@ -589,12 +606,21 @@ static uint32_t v2_color_buffers(const voodoo2_t *v) {
 }
 
 // Physical byte address of a 16-bit pixel in a selected buffer.
-// `buffer` 0/1/2 = colour buffers, 3 = the aux/depth buffer.
+// `buffer` is the SOFTWARE select: 0 = front (the displayed buffer),
+// 1 = back (the other colour buffer), 3 = the aux/depth buffer.  The
+// front/back names follow the displayed buffer across swaps.
 static uint32_t v2_buffer_addr(const voodoo2_t *v, uint32_t buffer, uint32_t x, uint32_t y) {
     uint32_t mem_off_pages = (v->reg[R_FBIINIT2] >> FBIINIT2_MEMOFF_SHIFT) & FBIINIT2_MEMOFF_MASK;
     if (!mem_off_pages)
         mem_off_pages = 150u; // unprogrammed: one 640x480 16bpp buffer
-    uint32_t base = (buffer == 3u ? v2_color_buffers(v) : buffer) * mem_off_pages * 4096u;
+    uint32_t phys;
+    if (buffer == 3u)
+        phys = v2_color_buffers(v);
+    else if (buffer <= 1u)
+        phys = buffer ^ v->displayed_buffer;
+    else
+        phys = buffer;
+    uint32_t base = phys * mem_off_pages * 4096u;
     uint32_t stride = v2_tiles_in_x(v) * 32u * 2u;
     return (base + y * stride + x * 2u) & (V2_FB_SIZE - 1u);
 }
@@ -2762,6 +2788,12 @@ static void v2_reset(pci_device_t *dev, config_t *cfg) {
     v->si_process = 0;
     v->swaps_pending = 0;
     v->swap_issue_frame = 0;
+    v->displayed_buffer = 0;
+    // PCI RST# hands the monitor back: fbiInit0[0] returns to its
+    // pass-through strap, so the predicate reads false and Control (or
+    // whatever else) is the display again.
+    v->driving = false;
+    v->display.shape_dirty = true;
     v2_dac_reset(v);
 }
 
@@ -2771,6 +2803,7 @@ static void v2_teardown(pci_device_t *dev, config_t *cfg) {
     if (!v)
         return;
     free(v->fb_ram);
+    free(v->scanout);
     for (int t = 0; t < V2_NUM_TMUS; t++)
         free(v->tex_ram[t]);
     free(v);
@@ -2782,13 +2815,102 @@ static const char *v2_name(const pci_device_t *dev) {
     return "3dfx Voodoo2";
 }
 
-// The pass-through contract: this card is never the machine's display
-// device until it takes the monitor, and the take/release lands with the
-// display milestone — until then it always yields, which is also the
-// power-on truth (fbiInit0[0] straps to pass-through).
+// ============================================================
+// The pass-through switch and the display face (milestone 3d)
+// ============================================================
+
+static uint32_t v2_screen_width(const voodoo2_t *v) {
+    // videoDimensions packs (x-1) in the low field [V2 §5.47].
+    uint32_t w = (v->reg[R_VIDEODIM] & 0x7FFu) + 1u;
+    return (w > 1u && w <= 1024u) ? w : 640u;
+}
+
+// Does the card drive the monitor this frame?  fbiInit0[0] is the
+// vga_pass/vga_pass_n control (V2 p.67 §5.52); fbiInit6[29:28] can
+// override the pin outright on Voodoo2 (V2 p.73).  A card in video
+// reset, or with software blanking set (fbiInit1[12], which DEFAULTS to
+// blank), or with its output enables tristated (fbiInit1[16:13]), is
+// not driving anything whatever the pass-through bit says.
+//
+// Convention: 1 = the Voodoo drives the monitor.  The single bit drives
+// two complementary pins, so a convention has to be chosen; this is the
+// driver's (sstfb calls the bit DIS_VGA_PASSTHROUGH and SETS it to take
+// the display).  The fbiInit6 override maps accordingly: forcing
+// vga_pass_n low (2) drives, forcing it high (3) passes through.
+static bool v2_drives_monitor(const voodoo2_t *v) {
+    uint32_t ovr = (v->reg[R_FBIINIT6] >> 28) & 3u;
+    if (ovr == 2u)
+        return true;
+    if (ovr == 3u)
+        return false;
+    if (!(v->reg[R_FBIINIT0] & FBIINIT0_VGA_PASS))
+        return false;
+    if (v->reg[R_FBIINIT1] & FBIINIT1_VIDEO_RESET)
+        return false;
+    if (v->reg[R_FBIINIT1] & FBIINIT1_SW_BLANK)
+        return false;
+    if ((v->reg[R_FBIINIT1] & FBIINIT1_OUT_ENABLES) != FBIINIT1_OUT_ENABLES)
+        return false;
+    return true;
+}
+
+// Re-derive the descriptor and convert the displayed buffer into the
+// big-endian scanout raster the display layer consumes.  The internal
+// 33-entry gamma CLUT (clutData) is not applied — identity scanout, a
+// chosen simplification recorded in voodoo2.md.
+static void v2_display_update(voodoo2_t *v) {
+    uint32_t w = v2_screen_width(v), h = v2_screen_height(v);
+    if (v->display.width != w || v->display.height != h || v->display.stride != w * 2u) {
+        v->display.width = w;
+        v->display.height = h;
+        v->display.stride = w * 2u;
+        v->display.shape_dirty = true;
+    }
+    v->display.format = PIXEL_16BPP_565;
+    v->display.bits = v->scanout;
+    v->display.clut = NULL;
+    v->display.clut_len = 0;
+    v->display.crt_response = NULL;
+    for (uint32_t y = 0; y < h; y++) {
+        uint32_t src = v2_buffer_addr(v, 0u, 0u, y); // front = displayed
+        uint8_t *dst = v->scanout + (size_t)y * w * 2u;
+        for (uint32_t x = 0; x < w; x++) {
+            // Little-endian card domain -> the display layer's
+            // big-endian 5-6-5.
+            uint32_t at = (src + 2u * x) & (V2_FB_SIZE - 1u);
+            dst[2 * x] = v->fb_ram[(at + 1u) & (V2_FB_SIZE - 1u)];
+            dst[2 * x + 1] = v->fb_ram[at];
+        }
+    }
+    v->display.fb_dirty = true;
+}
+
+// The pass-through contract (§3.2): re-resolved every frame by
+// pci_primary_display_card(), which calls this as its test.  Returning
+// NULL yields the monitor to the 2D card; the ONE obligation on the
+// card is to flag shape_dirty on BOTH edges of the switch, because two
+// sources of different geometry share one screen texture.
 static display_t *v2_display(pci_device_t *dev) {
-    (void)dev;
-    return NULL;
+    voodoo2_t *v = (voodoo2_t *)dev->priv;
+    bool drives = v2_drives_monitor(v);
+    if (drives != v->driving) {
+        v->driving = drives;
+        v->display.shape_dirty = true;
+        if (drives)
+            v2_display_update(v);
+    }
+    return drives ? &v->display : NULL;
+}
+
+// Per-frame housekeeping while driving: retire due swaps and re-convert
+// the scanout (the guest may have drawn into the displayed buffer at
+// any time, so the raster is re-presented each frame).
+static void v2_on_vbl(pci_device_t *dev, config_t *cfg) {
+    (void)cfg;
+    voodoo2_t *v = (voodoo2_t *)dev->priv;
+    v2_retire_swaps(v);
+    if (v->driving)
+        v2_display_update(v);
 }
 
 // ============================================================
@@ -2813,6 +2935,9 @@ typedef struct v2_ckpt {
     uint8_t pad[3];
     uint32_t swaps_pending;
     uint64_t swap_issue_frame;
+    uint32_t displayed_buffer;
+    uint8_t driving;
+    uint8_t pad3[3];
     uint32_t tex_size;
 } v2_ckpt_t;
 
@@ -2843,6 +2968,8 @@ static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     c.dac_read_latch = v->dac_read_latch;
     c.swaps_pending = v->swaps_pending;
     c.swap_issue_frame = v->swap_issue_frame;
+    c.displayed_buffer = v->displayed_buffer;
+    c.driving = v->driving ? 1u : 0u;
     c.tex_size = v->tex_size;
     system_write_checkpoint_data(cp, &c, sizeof(c));
     system_write_checkpoint_data(cp, v->fb_ram, V2_FB_SIZE);
@@ -2889,9 +3016,16 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
         }
         v->tex_size = c.tex_size;
     }
+    v->displayed_buffer = c.displayed_buffer;
+    v->driving = c.driving != 0;
     system_read_checkpoint_data(cp, v->fb_ram, V2_FB_SIZE);
     for (int t = 0; t < V2_NUM_TMUS; t++)
         system_read_checkpoint_data(cp, v->tex_ram[t], v->tex_size);
+    // The scanout raster is derived state: rebuild it and flag both
+    // dirty bits so the renderer re-uploads whatever the restore shows.
+    v->display.shape_dirty = true;
+    if (v->driving)
+        v2_display_update(v);
 }
 
 static const pci_device_ops_t v2_ops = {
@@ -2899,6 +3033,7 @@ static const pci_device_ops_t v2_ops = {
     .reset = v2_reset,
     .name = v2_name,
     .display = v2_display,
+    .on_vbl = v2_on_vbl,
     .cfg_read = v2_cfg_read,
     .cfg_write = v2_cfg_write,
     .checkpoint_save = v2_checkpoint_save,
@@ -3119,10 +3254,117 @@ static const class_desc_t v2_dac_class = {
     .n_members = sizeof(dac_members) / sizeof(dac_members[0]),
 };
 
+static value_t fb_attr_width(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    return val_uint(4, v ? v2_screen_width(v) : 0);
+}
+static value_t fb_attr_height(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    return val_uint(4, v ? v2_screen_height(v) : 0);
+}
+static value_t fb_attr_depth(struct object *self, const member_t *m) {
+    (void)m;
+    (void)self;
+    return val_uint(4, 16); // the framebuffer is natively 5-6-5
+}
+static value_t fb_attr_stride(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    return val_uint(4, v ? v2_screen_width(v) * 2u : 0);
+}
+static value_t fb_attr_displayed(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    return val_uint(4, v ? v->displayed_buffer : 0);
+}
+
+static const member_t fb_members[] = {
+    {.kind = M_ATTR,
+     .name = "width",
+     .doc = "Active raster width in pixels (videoDimensions)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_width}    },
+    {.kind = M_ATTR,
+     .name = "height",
+     .doc = "Active raster height in lines",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_height}   },
+    {.kind = M_ATTR,
+     .name = "depth",
+     .doc = "Bits per pixel (always 16 — the framebuffer is 5-6-5)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_depth}    },
+    {.kind = M_ATTR,
+     .name = "stride",
+     .doc = "Scanout bytes per row",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_stride}   },
+    {.kind = M_ATTR,
+     .name = "displayed_buffer",
+     .doc = "Physical colour buffer being scanned (status[11:10])",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = fb_attr_displayed}},
+};
+static const class_desc_t v2_fb_class = {
+    .name = "voodoo2_fb",
+    .members = fb_members,
+    .n_members = sizeof(fb_members) / sizeof(fb_members[0]),
+};
+
+static value_t video_attr_drives(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    return val_bool(v && v2_drives_monitor(v));
+}
+static value_t video_attr_swaps_pending(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    if (!v)
+        return val_uint(4, 0);
+    v2_retire_swaps(v);
+    return val_uint(4, v->swaps_pending);
+}
+
+static const member_t video_members[] = {
+    {.kind = M_ATTR,
+     .name = "drives_monitor",
+     .doc = "The pass-through predicate: true while the Voodoo drives the monitor "
+            "(fbiInit0[0] set, video running, unblanked, outputs driven)",   .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = video_attr_drives}       },
+    {.kind = M_ATTR,
+     .name = "swaps_pending",
+     .doc = "swapbufferCMDs issued and not yet retired at a frame boundary",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = video_attr_swaps_pending}},
+};
+static const class_desc_t v2_video_class = {
+    .name = "voodoo2_video",
+    .members = video_members,
+    .n_members = sizeof(video_members) / sizeof(video_members[0]),
+};
+
 static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     if (!v || !card_node)
         return;
+    struct object *fb = object_new(&v2_fb_class, v, "framebuffer");
+    if (fb) {
+        object_set_label(fb, "Framebuffer");
+        object_set_order(fb, 10);
+        object_attach(card_node, fb);
+        // Nominate it: machine.screen.source resolves to whichever
+        // framebuffer node belongs to the current primary display, so
+        // it follows the pass-through switch automatically.
+        pci_card_set_framebuffer_object(dev, fb);
+    }
+    struct object *video = object_new(&v2_video_class, v, "video");
+    if (video) {
+        object_set_label(video, "Video / Pass-through");
+        object_set_order(video, 20);
+        object_attach(card_node, video);
+    }
     struct object *regs = object_new(&v2_regs_class, v, "regs");
     if (regs) {
         object_set_label(regs, "Registers");
@@ -3196,10 +3438,14 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
     v->raster = s_staged_null_raster ? &v2_null_backend : &v2_sw_backend;
     s_staged_null_raster = false;
     v->fb_ram = (uint8_t *)calloc(1, V2_FB_SIZE);
+    // Big-endian scanout raster for the display layer, sized for the
+    // widest mode the part reaches (1024-pixel logical line).
+    v->scanout = (uint8_t *)calloc(1, 1024u * 1024u * 2u);
     v->tex_ram[0] = (uint8_t *)calloc(1, v->tex_size);
     v->tex_ram[1] = (uint8_t *)calloc(1, v->tex_size);
-    if (!v->fb_ram || !v->tex_ram[0] || !v->tex_ram[1]) {
+    if (!v->fb_ram || !v->scanout || !v->tex_ram[0] || !v->tex_ram[1]) {
         free(v->fb_ram);
+        free(v->scanout);
         free(v->tex_ram[0]);
         free(v->tex_ram[1]);
         free(v);

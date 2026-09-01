@@ -25,6 +25,7 @@
 #include "memory.h"
 #include "mouse.h"
 #include "nubus.h"
+#include "pci.h" // staged-pick re-seeding on checkpoint restore
 #include "ppc.h" // ppc_debug_if (the PPC main-CPU debug seam)
 #include "rom.h"
 #include "root.h"
@@ -1104,6 +1105,25 @@ config_t *system_restore(const char *filename) {
         // through the checkpoint as device state instead; see dafb_checkpoint().
         if (restored_record.vrom[0])
             vrom_set_path(restored_record.vrom);
+        // The PCI half of the same rule: a checkpoint written with a
+        // socketed PCI card (and its options) must re-seat that card, or
+        // the slot resolves its default (usually empty) and the
+        // strictly-ordered PCI device stream misaligns on the first
+        // record the missing card wrote.
+        if (restored_record.pci_card[0])
+            pci_staged_card_set(PCI_STAGED_WILDCARD, restored_record.pci_card);
+        pci_staged_option_set_spec(PCI_STAGED_WILDCARD, restored_record.pci_option);
+        // ...and the explicit per-slot picks beyond the wildcard, the
+        // multi-card surface machine.restart already replays.
+        for (int i = 0; i < restored_record.n_slot_cards; i++) {
+            const machine_config_slot_card_t *e = &restored_record.slot_cards[i];
+            if (!e->explicit_pick)
+                continue;
+            if (e->bus_kind == MC_BUS_PCI)
+                pci_staged_card_set(e->slot, e->card_id);
+            else
+                nubus_staged_card_set(e->slot, e->card_id);
+        }
     }
 
     // Fresh vROM-pick list for the restore construction (the card loaders

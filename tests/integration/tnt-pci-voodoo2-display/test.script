@@ -1,0 +1,133 @@
+# The Voodoo2 pass-through switch against a live System 7.6 desktop
+# (proposal-pci-3dfx-voodoo2 §3.2, §4.8; milestone 3d).
+#
+# The mechanism under test is deliberately NOT new code: tnt_display()
+# resolves the screen through pci_primary_display_card(), which calls
+# every card's ops->display() fresh each frame.  The Voodoo2 answers
+# NULL while passing through and its descriptor while driving, so the
+# monitor follows fbiInit0[0] at frame granularity with no change to the
+# generic layer.  What this row pins is the whole visible consequence:
+# Control's desktop, the card's own raster, and the byte-identical
+# desktop again after release.
+
+include "../lib/mac.script"
+
+def swap32(v) {
+    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
+}
+def cfg_wr(reg, val) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    machine.memory.poke.l(0xF2C00000, swap32($val))
+    machine.memory.poke.l(0xF2800000, 0)
+}
+def cfg_rd(reg) {
+    machine.memory.poke.l(0xF2800000, swap32(0x00002000 | $reg))
+    let v = swap32(machine.memory.peek.l(0xF2C00000))
+    machine.memory.poke.l(0xF2800000, 0)
+    return $v
+}
+
+machine.boot model="pm8500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
+machine.rtc.time = "2026-04-26T21:30:36"
+machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
+
+# System 7.6 to the Finder — with the ROM-less card seated the whole
+# way.  Mac OS finds no driver for pci121a,2 and must not care (§1.10:
+# a missing/ignored Voodoo2 causes no boot problem).
+scheduler.run 2500000000
+assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive not set (driver match / mount failed)"
+assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
+
+# --- The idle card yields: Control draws the desktop. -----------------------
+assert !machine.pci.slot[1].card.video.drives_monitor "the card powers up passing through"
+assert machine.screen.depth == 32 "the desktop is Control's millions-of-colours mode"
+assert machine.screen.width == 640 "Control's 640x480"
+# Golden #1: the Finder desktop (menu-bar clock excluded — it tracks the
+# pinned RTC plus guest uptime).
+check_ex("finder-desktop.png", 0, 500, 20, 640)
+
+# --- The card takes the monitor. --------------------------------------------
+# Exactly what the Glide library does: enable Memory Space itself, open
+# the init gate, program the video, unblank, drive the outputs, and set
+# the pass-through bit.  (The guest keeps running underneath — the
+# takeover is asynchronous to it, like the real cable switch.)
+cfg_wr(0x04, cfg_rd(0x04) | 0x0002)
+cfg_wr(0x40, 0x00000003)
+let BAR = machine.pci.slot[1].card.config.bar[0].base
+def vreg_wr(off, val) {
+    machine.memory.poke.l($BAR + $off, swap32($val))
+}
+def vreg_rd(off) {
+    return swap32(machine.memory.peek.l($BAR + $off))
+}
+# 640x480 timing, front-buffer layout, LFB reads on.
+vreg_wr(0x220, (704 << 16) | 96)
+vreg_wr(0x224, (523 << 16) | 2)
+vreg_wr(0x208, (25 << 16) | 38)
+vreg_wr(0x20C, (480 << 16) | 639)
+vreg_wr(0x218, (vreg_rd(0x218) & 0xFFF007FF) | (150 << 11) | 0x400000)
+vreg_wr(0x214, (vreg_rd(0x214) & 0xFEFFFF0F) | 0xA0)
+vreg_wr(0x214, vreg_rd(0x214) | 0x8)
+# The card renders before it takes the screen: clear to a deep blue and
+# draw one gouraud triangle — unmistakably not a Macintosh desktop.
+vreg_wr(0x118, (0 << 16) | 640)
+vreg_wr(0x11C, (0 << 16) | 480)
+vreg_wr(0x148, 0x00000060)
+vreg_wr(0x130, 0x00000000)
+vreg_wr(0x110, 0x00000601)
+vreg_wr(0x124, 0x00000000)
+vreg_wr(0x110, 0x00000600)
+vreg_wr(0x104, 0x00000000)
+vreg_wr(0x008, 0x00000C80)
+vreg_wr(0x00C, 0x00000640)
+vreg_wr(0x010, 0x00000C80)
+vreg_wr(0x014, 0x00001400)
+vreg_wr(0x018, 0x00001E00)
+vreg_wr(0x01C, 0x00001400)
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x024, 0x00000000)
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x040, 0x00000000)
+vreg_wr(0x044, 0x00000600)
+vreg_wr(0x048, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00000000)
+vreg_wr(0x068, 0x00000C00)
+vreg_wr(0x080, 0x80000000)
+# NOW the switch: video out of reset, unblanked, outputs driven,
+# pass-through taken — the §4.8 predicate turns true in one place.
+vreg_wr(0x214, (vreg_rd(0x214) & 0xFFFFEEFF) | 0x1E000)
+vreg_wr(0x210, vreg_rd(0x210) | 0x1)
+assert machine.pci.slot[1].card.video.drives_monitor "the predicate reads true once everything is driven"
+# Let a frame pass so every consumer re-resolves the display chain.
+scheduler.run 20000000
+assert machine.screen.depth == 16 "the screen is now the Voodoo2's 5-6-5 raster"
+assert machine.screen.width == 640 "..at the card's programmed videoDimensions"
+assert machine.screen.height == 480 "..both axes"
+assert machine.screen.source.displayed_buffer == 0 "screen.source resolves to the CARD's framebuffer node"
+# Golden #2: the card's own rendering.
+check("voodoo2-frame.png")
+
+# --- A checkpoint taken while the card is driving restores exactly. ---------
+let CSUM = machine.screen.checksum(0, 0, 480, 640)
+assert checkpoint.save("${$WORK_DIR}/mid-frame.checkpoint") "checkpoint save"
+assert checkpoint.load("${$WORK_DIR}/mid-frame.checkpoint") "checkpoint load"
+assert machine.screen.depth == 16 "restored with the card still driving"
+assert machine.screen.checksum(0, 0, 480, 640) == $CSUM "the framebuffer checksum survives the round trip"
+
+# --- Release: the desktop comes back byte-identically. ----------------------
+# The shell's peek/poke bindings survive the restore; the card hands the
+# monitor back by clearing the one bit.
+machine.memory.poke.l(0xF2800000, swap32(0x00002004))
+machine.memory.poke.l(0xF2C00000, swap32(0x00000002))
+machine.memory.poke.l(0xF2800000, 0)
+vreg_wr(0x210, vreg_rd(0x210) & 0xFFFFFFFE)
+assert !machine.pci.slot[1].card.video.drives_monitor "released"
+scheduler.run 20000000
+assert machine.screen.depth == 32 "Control is the screen again"
+# THE strongest statement in the row: the same golden as before the
+# takeover, byte for byte — the takeover was non-destructive.
+check_ex("finder-desktop.png", 0, 500, 20, 640)
+
+echo "voodoo2-display: take/release round trip complete"
+quit

@@ -200,4 +200,15 @@ assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"
 machine.restart
 assert machine.pci.slot[7].card.name == "Control" "restart must re-seat the recorded slot card"
 
+# --- A "3d" card does NOT retire the 9500's builtin-fallback video. ----------
+# The Voodoo2 is a pass-through 3D accelerator: its PCI class code says
+# "display controller" but it must never be the machine's only video, so
+# its card_class is "3d" — and the BUILTIN_FALLBACK test is by class.
+# With one seated, the Control stand-in must remain, or a 9500 with only
+# a Voodoo2 would boot with no screen at all (proposal-pci-3dfx-voodoo2
+# §3.2, §8 Q10).
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
+assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the ROM-less card seats with no PROM staged"
+assert machine.pci.slot[7].card.name == "Control" "a 3d-class card must NOT retire the display fallback"
+
 quit

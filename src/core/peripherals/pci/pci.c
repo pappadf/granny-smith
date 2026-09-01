@@ -211,6 +211,22 @@ void pci_staged_option_set(int slot, const char *key, const char *value) {
     snprintf(free_slot->value, sizeof free_slot->value, "%s", value);
 }
 
+void pci_staged_option_set_spec(int slot, const char *spec) {
+    if (!spec || !*spec)
+        return;
+    char buf[PCI_OPT_VALUE_MAX * PCI_STAGED_OPTS * 2];
+    snprintf(buf, sizeof buf, "%s", spec);
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok) {
+            LOG(0, "pci option '%s' is not key=value — ignored", tok);
+            continue;
+        }
+        *eq = '\0';
+        pci_staged_option_set(slot, tok, eq + 1);
+    }
+}
+
 const char *pci_staged_option_get(int slot, const char *key) {
     if (!staged_slot_valid(slot) || !key)
         return NULL;

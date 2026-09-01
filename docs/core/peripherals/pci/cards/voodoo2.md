@@ -45,7 +45,23 @@ document grows as each group lands.
   with the software walker as the normative default and a null backend
   pinning the analytic-timing invariant.  See "The fill convention and
   the divergence list" below.
-- **3d — pass-through and display:** not yet landed.
+- **3d — pass-through and display (landed):** `v2_drives_monitor()` —
+  the one place the pass-through state is computed (fbiInit0[0] under
+  the driver's 1-= -drives convention, gated by video reset, software
+  blanking and the output enables, with the fbiInit6[29:28] override) —
+  and `v2_display()`, which returns the descriptor while driving and
+  NULL while passing through, flagging `shape_dirty` on both edges.
+  The scanout raster converts the displayed buffer to the display
+  layer's big-endian `PIXEL_16BPP_565` at the card's own edge;
+  swapbufferCMD retirement flips the front/back mapping.  Checkpoint
+  restore of a socketed card fixed in the GENERIC layer
+  (`system_restore` now re-seeds the PCI staged picks from the restored
+  record, the exact NuBus parallel that was already there).  web2's
+  Expansion Slots section gains the one non-display socket picker.
+  Gate: `tnt-pci-voodoo2-display` — take/release against a live 7.6
+  desktop with the release matching the pre-takeover golden
+  byte-identically, and a mid-drive checkpoint restoring to the same
+  framebuffer checksum.
 - **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`):** not yet landed.
 
 ## Provenance
@@ -169,6 +185,7 @@ divergences, each deliberate and localised:
 | 7 | Float-mirror→fixed conversion truncates toward zero | `v2_float_to_latch` | conversion rounding unspecified |
 | 8 | DAC power-on PLL N/P bytes (M bytes are the detection signature and exact) | `v2_dac_reset` | only the M values are documented |
 | 9 | trexInit0/1 opaque except the second-RAS size gate | `v2_tmu_addressable` | V2 p.85: "FIXME. See Bruce spec" |
+| 10 | The internal 33-entry gamma CLUT (clutData) is stored but not applied at scanout | `v2_display_update` | identity scanout keeps goldens self-consistent; revisit if a client visibly gammas |
 
 What is *not* on this list, because the hardware behaviour is documented
 and implemented faithfully: sub-pixel correction mutating the start
