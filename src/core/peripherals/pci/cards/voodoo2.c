@@ -1082,6 +1082,20 @@ static uint32_t v2_texel_expand(const voodoo2_t *v, int tmu, uint32_t raw) {
     }
 }
 
+// Pixel-provenance watch state (§9.2 instrument, GS_V2_WATCH="x,y"):
+// armed by the pixel pipe for the watched pixel so the texel fetches
+// that shade it can identify themselves.
+static int s_watch_x = -2, s_watch_y = -2;
+static bool s_watch_now;
+static void v2_watch_init(void) {
+    if (s_watch_x == -2) {
+        const char *w = getenv("GS_V2_WATCH");
+        s_watch_x = s_watch_y = -1;
+        if (w)
+            sscanf(w, "%d,%d", &s_watch_x, &s_watch_y);
+    }
+}
+
 // Fetch and expand the texel at integer (s,t) with clamp/wrap applied.
 static uint32_t v2_texel_fetch(const voodoo2_t *v, int tmu, int lod, int32_t s, int32_t t) {
     uint32_t w, h;
@@ -1102,7 +1116,10 @@ static uint32_t v2_texel_fetch(const voodoo2_t *v, int tmu, int lod, int32_t s, 
         raw = v->tex_ram[tmu][at & mask];
     else
         raw = v->tex_ram[tmu][at & mask] | ((uint32_t)v->tex_ram[tmu][(at + 1u) & mask] << 8);
-    return v2_texel_expand(v, tmu, raw);
+    uint32_t argb = v2_texel_expand(v, tmu, raw);
+    if (s_watch_now)
+        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X raw %04X argb %08X", tmu, lod, s, t, at, raw, argb);
+    return argb;
 }
 
 // Sample one TMU at texel-space (s,t) — point or bilinear per the
@@ -1216,6 +1233,13 @@ static uint16_t v2_fb_load(const voodoo2_t *v, uint32_t buffer, int32_t x, int32
 }
 
 static void v2_fb_store(voodoo2_t *v, uint32_t buffer, int32_t x, int32_t y, uint16_t px) {
+    // Pixel-provenance watch (§9.2 instrument): GS_V2_WATCH="x,y" logs
+    // every color-buffer store to that pixel with the state that shaded
+    // it — the tool that traces one wrong pixel back to its texture.
+    v2_watch_init();
+    if (x == s_watch_x && y == s_watch_y && buffer <= 1u)
+        LOG(1, "watch (%d,%d) buf %u px %04X fbzcp=%08X fbz=%08X alpha=%08X t0mode=%08X t0base=%08X", x, y, buffer, px,
+            v->reg[R_FBZCOLORPATH], v->reg[R_FBZMODE], v->reg[R_ALPHAMODE], v->tmu_reg[0][0], v->tmu_reg[0][3]);
     uint32_t at = v2_buffer_addr(v, buffer, (uint32_t)x, (uint32_t)y);
     v->fb_ram[at] = (uint8_t)px;
     v->fb_ram[(at + 1u) & (V2_FB_SIZE - 1u)] = (uint8_t)(px >> 8);
@@ -1277,6 +1301,8 @@ static uint32_t v2_blend_mul(uint32_t c, uint32_t f) {
 // pixel was written.  The caller has already applied clipping and
 // computed the iterated values and the texture chain.
 static bool v2_pixel_pipe(voodoo2_t *v, v2_pix_t *p) {
+    v2_watch_init();
+    s_watch_now = (p->x == s_watch_x && p->y == s_watch_y);
     uint32_t fbz = v->reg[R_FBZMODE];
     uint32_t fcp = v->reg[R_FBZCOLORPATH];
     uint32_t amode = v->reg[R_ALPHAMODE];
@@ -1847,6 +1873,12 @@ static void v2_clip_rect(const voodoo2_t *v, int32_t *x0, int32_t *x1, int32_t *
 }
 
 static void v2_sw_triangle(voodoo2_t *v, const voodoo2_tri_t *T) {
+    // Part of the §9.2 instrument: one line per drawn triangle with its
+    // pixel-space bbox and the state that will shade it — the line that
+    // lets a screen artifact be traced back to a texture and a mode.
+    LOG(5, "tri (%d,%d)(%d,%d)(%d,%d) fbzcp=%08X fbz=%08X alpha=%08X t0mode=%08X t0lod=%08X t0base=%08X", T->ax >> 4,
+        T->ay >> 4, T->bx >> 4, T->by >> 4, T->cx >> 4, T->cy >> 4, v->reg[R_FBZCOLORPATH], v->reg[R_FBZMODE],
+        v->reg[R_ALPHAMODE], v->tmu_reg[0][0], v->tmu_reg[0][1], v->tmu_reg[0][3]);
     // Orientation from the COMMAND's sign — a sign that disagrees with
     // the geometry fails every inside test and draws nothing.
     int64_t o = T->area_sign ? -1 : 1;
@@ -3656,6 +3688,27 @@ static value_t regs_method_tex_offset(struct object *self, const member_t *m, in
     return val_uint(4, v2_lod_offset(v, (int)tmu, (int)lod));
 }
 
+static const arg_decl_t regs_tex_save_args[] = {
+    {.name = "tmu",  .kind = V_INT,    .doc = "Which Bruce (0 or 1)"                     },
+    {.name = "path", .kind = V_STRING, .doc = "Host file to write the raw texture RAM to"},
+};
+static value_t regs_method_tex_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    voodoo2_t *v = node_card(self);
+    int64_t tmu = argv[0].i;
+    if (!v || tmu < 0 || tmu >= V2_NUM_TMUS)
+        return val_err("regs.tex_save: tmu 0..1");
+    FILE *f = fopen(argv[1].s, "wb");
+    if (!f)
+        return val_err("regs.tex_save: cannot open %s", argv[1].s);
+    size_t n = fwrite(v->tex_ram[tmu], 1, v->tex_size, f);
+    fclose(f);
+    if (n != v->tex_size)
+        return val_err("regs.tex_save: short write");
+    return val_uint(4, (uint32_t)n);
+}
+
 static const arg_decl_t regs_read_arg[] = {
     {.name = "offset", .kind = V_INT, .doc = "Register byte offset ($000-$3FC, V2 spec pp.22-26)"},
 };
@@ -3723,6 +3776,10 @@ static const member_t regs_members[] = {
      .name = "tex_offset",
      .doc = "Byte offset of a LOD level in the packed mip chain, per the TMU's live tLOD "
             "(the V2 p.118 size-table arithmetic; the spec's worked examples pin it)", .method = {.args = regs_tex_offset_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_offset}},
+    {.kind = M_METHOD,
+     .name = "tex_save",
+     .doc = "Dump a TMU's raw texture RAM to a host file (debug: offline texel forensics)",
+     .method = {.args = regs_tex_save_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_save}},
 };
 
 static const class_desc_t v2_regs_class = {

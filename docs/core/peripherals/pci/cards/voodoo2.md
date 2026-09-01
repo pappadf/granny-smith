@@ -263,8 +263,25 @@ the start block, and spot rows are pinned straight off the spec pages.
 the non-FIFO'd init/video/CMDFIFO-control block; level 5: **all**
 writes — direct register-face writes, LFB writes, one line per CMDFIFO
 packet (`fifo pkt @off type hdr len`), every register write the fifo
-parser issues (`fifo wr`), and SGRAM fills; level 6: register reads.
+parser issues (`fifo wr`), SGRAM fills, and one line per drawn
+triangle with its vertex positions and the shading state (`tri (..)
+fbzcp= fbz= alpha= t0mode= t0lod= t0base=`); level 6: register reads.
 `pc=on` stamps the guest PC.  The fifo lines exist because the entire
 Mac Glide render path travels through the CMDFIFO: a trace blind to it
 shows a card nobody is drawing on — the 3e diagnosis lost an hour to
 exactly that.
+
+Two further tools trace a single wrong pixel to its texels:
+
+- **`GS_V2_WATCH="x,y"`** (environment variable, needs
+  `debug.log voodoo2 1`): logs every colour-buffer store to that pixel
+  with the full shading state, and every texel fetch that fed it
+  (`watch texel tmuN lodN (s,t) addr raw argb`).
+- **`regs.tex_save(tmu, path)`**: dumps a TMU's raw texture RAM to a
+  host file for offline decoding.
+
+This pipeline settled the "magenta sky" question in one pass: the
+watched pixel's texels were byte-identical to the 4-4-4-4/5-6-5
+quantisation of Quake's own `sky1` miptex (extracted from `PAK0.PAK`
+and compared offline) — the pink is the AUTHENTIC id sky through the
+1.3 gamma ramp, not an artifact.
