@@ -3,7 +3,7 @@
 [![CI](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml/badge.svg)](https://github.com/pappadf/granny-smith/actions/workflows/tests.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning everything from Lisa 2 to Power Macintosh and more that 15 computer models in between.
+**Granny Smith** is a browser-first Macintosh and Apple Lisa emulator spanning everything from Lisa 2 to Power Macintosh 9500 and more that 15 computer models in between.
 
 > **See it:** [Demos of PlainTalk speech recognition, A/UX, Marathon, and more](GALLERY.md)
 
@@ -25,20 +25,21 @@ In all models, the original ROMs runs without patches, and all on-board devices 
 - **Macintosh Quadra 840AV and Centris 660AV** (the "AV" family)
 - **Power Macintosh 6100, 7100, and 8100** (the "PDM" family)
 - **Power Macintosh 7500, 8500, and 9500** (the "TNT" family)
+- **Apple Network Server 500 and 700** ("Shiner" based on the "TNT" family)
 
-## Emulated NuBus Display Cards
+## Emulated NuBus Cards
 
 NuBus display cards can be seated in any machine with free slots, including machines that already have built-in video. Each card runs either from a dump of the real declaration ROM or from a runtime-generated generic declaration ROM (no ROM dump is required); the generic ROM can also synthesize custom resolutions (e.g. 800×600)
 
-- **Display Card 8•24** (the standard "JMFB" card)
-- **Display Card 24AC** (including hardware QuickDraw acceleration)
-- **Display Card 8•24 GC** (including hardware QuickDraw acceleration)
+- **Apple Display Card 8•24** (the standard "JMFB" card)
+- **Apple Display Card 24AC** (including hardware QuickDraw acceleration)
+- **Apple Display Card 8•24 GC** (including hardware QuickDraw acceleration)
 
-## Emulated PCI Diplay Cards
-
-PCI cards require at this point a real ROM image to work.
+## Emulated PCI Cards
 
 - **ATI Mach64 GX (Apple "Accelerated" PCI Card)** (including 2D hardware acceleration)
+- **Cirrus Logic 54M30** (mainly used by ANS 700/500)
+- **Symbios Logic 53C825A** (fast/wide SCSI with the on-chip SCRIPTS DMA engine)
 
 ## Verified Guest/Target Operating Systems
 
@@ -51,10 +52,10 @@ The emulated computer models have been tested with various combinations of the f
 - **Lisa MacWorks XL 3.0**
 - **Copland D11E4**
 - **MkLinux DR3**
+- **AIX 4.1.5 for Apple Network Servers**
 
 ## Work In Progress
 
-- Apple Network Server 500 and 700 running AIX 4.1.5
 - Power Macintosh 9500MP running BeOS
 - Voodoo2 PCI Card
 
@@ -92,6 +93,15 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 
 This project allows the use of AI (my project, my rules). This is not limited to code generation or code review; it also includes documentation and reverse engineering of the hardware involved.
 There is no intention to track, at the file or commit level, which code was generated with AI assistance and which was not. I know that AI may be a red flag for some people, and I fully respect that.
+
+## Related Projects
+
+Sibling projects this one is built on:
+
+- **[powerpc-sail](https://github.com/pappadf/powerpc-sail)** - a formal, executable Sail specification of the PowerPC ISA, and the oracle the PowerPC vectors are generated from
+- **[powerpc-test](https://github.com/pappadf/powerpc-test)** - single-instruction test vectors for the PowerPC 601, generated from `powerpc-sail`; used here as the `third-party/powerpc-test` submodule
+- **[m68k-test](https://github.com/pappadf/m68k-test)** - the same idea for the 68k, generated from an `m68k-sail` model
+- **[peeler](https://github.com/pappadf/peeler)** - a C library for unpacking legacy Macintosh archive formats, which is what decompresses dropped-in disk images; vendored in-tree at [src/peeler](src/peeler)
 
 ## Acknowledgments
 
