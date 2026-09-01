@@ -82,6 +82,19 @@ assert (cfg_rd(0x4C) & 0x3F) == 0x3F "cfgStatus: the PCI FIFO reads empty throug
 assert (cfg_rd(0x4C) & 0x380) == 0 "cfgStatus: every busy bit reads idle"
 cfg_wr(0x50, 0xC0FFEE00)
 assert cfg_rd(0x50) == 0xC0FFEE00 "cfgScratch is a pure scratchpad"
+# siProcess ($54): the silicon-process monitor Glide uses to grade the
+# die INSIDE grSstQueryHardware — preload the PCI down-counter in bits
+# 27:16, set RUN (bit 28), poll bits 27:16 until the countdown drains,
+# then read the ring-oscillator count from bits 15:0 [Glide-src
+# init/util.c sst1InitMeasureSiProcess].  The model completes the
+# measurement at issue (the same idle contract as every busy bit, §8
+# Q3) — a frozen countdown here spins the shipped driver forever.
+cfg_wr(0x54, 0x0FFF0000)
+assert cfg_rd(0x54) == 0x0FFF0000 "siProcess in reset: the preload reads back, count zero"
+cfg_wr(0x54, 0x1FFF0000)
+assert cfg_rd(0x54) == 0x10001900 "siProcess NAND run: countdown drained at issue, count 6400"
+cfg_wr(0x54, 0x3FFF0000)
+assert cfg_rd(0x54) == 0x30001D00 "siProcess NOR run: countdown drained at issue, count 7424"
 # The undocumented offsets sstfb pokes must not fault (both specs call
 # $58-$FF reserved; we model no behaviour we cannot describe).
 cfg_wr(0xC0, 0x00000001)

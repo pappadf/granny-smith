@@ -12,12 +12,16 @@
 # config words through the texture path, and the memory sensing writes
 # sentinels that must alias exactly.
 #
-# KNOWN LIMIT (recorded, not hidden): after grSstQueryHardware succeeds,
-# Quake parks in an event loop with the display blanked BEFORE calling
-# grSstWinOpen.  The same wait, byte for byte, occurs with NO card
-# seated (the A/B control), so it is a guest-environment launch issue,
-# not a card behaviour — the rendered-frame half of this milestone is
-# blocked on it and tracked in voodoo2.md.
+# The row then keeps running into the game itself: Quake opens the
+# screen with grSstWinOpen, streams its whole render path through the
+# CMDFIFO (state groups, TSU setup vertices, packet-5 texture rows and
+# LFB spans, SGRAM-fill clears, fifo'd swaps), and the golden at the
+# bottom is a REAL in-game demo frame drawn by the 1997 driver.  Five
+# model gaps stood between "detection passes" and this frame — the
+# siProcess oscillator, the initEnable revision gate, the SGRAM fill,
+# the TSU's 16-bit float→12.4 truncation (the +786432 snap bias), and
+# packet-5 byte addressing — every one found by THIS software, none by
+# the hand-written tests (voodoo2.md §3e tells the story).
 
 include "../lib/mac.script"
 
@@ -45,7 +49,7 @@ assert len(find.str("3DfxGlideLib2.x", 0x100000, 0x300000)) == 1 "exactly one 3D
 assert len(find.str("MacCheckBoardsInSystem", 0x0, 0x4000000)) == 0 "Glide code is not resident before a client runs"
 
 # The card is untouched: Mac OS loads no driver for a ROM-less card.
-assert machine.pci.slot[1].card.regs.init_enable == 0x00012000 "initEnable untouched before the client runs"
+assert machine.pci.slot[1].card.regs.init_enable == 0x00014000 "initEnable untouched before the client runs (rev 4 CVG, fab 1)"
 assert (machine.pci.slot[1].card.config.command & 0x0002) == 0 "Memory Space still clear — nobody enabled it"
 
 # --- Launch Quake 3Dfx from the Finder. -------------------------------------
@@ -105,10 +109,12 @@ assert (machine.pci.slot[1].card.regs.init_enable & 0x3) == 0x3 "initEnable[1:0]
 assert (machine.pci.slot[1].card.regs.fbi_init0 & 0x8) != 0 "fbiInit0[3]: the PPC driver enabled byte swizzling"
 # ...enabled LFB reads for its memory probes...
 assert (machine.pci.slot[1].card.regs.fbi_init1 & 0x8) != 0 "fbiInit1[3]: LFB reads enabled"
-# ...detected the ICS5342 and set the 16 MHz bring-up clock (the full
-# graphics clock is a grSstWinOpen step)...
+# ...detected the ICS5342 and — the query no longer stalls anywhere, so
+# by this point grSstWinOpen has already run — programmed the FULL
+# graphics clock (the 16 MHz bring-up clock was an earlier step of the
+# same guest-driven PLL sequence)...
 let GKHZ = machine.pci.slot[1].card.dac.graphics_khz
-assert $GKHZ > 15000 && $GKHZ < 17000 "the DAC was programmed to the 16 MHz bring-up clock"
+assert $GKHZ > 40000 && $GKHZ < 60000 "the DAC runs the full graphics clock grSstWinOpen programmed"
 # ...and ran its render-based self-tests through the rasteriser: the
 # dither calibration (256 flat triangles, unique un-dither sums), the
 # TMU census (send-config triangles) and both TMUs' memory sensing.
@@ -120,6 +126,24 @@ assert machine.pci.slot[1].card.regs.read(0x15C) > 100000 "...and they filled pi
 assert (machine.pci.slot[1].card.regs.status & 0x380) == 0 "the card reports idle after the whole detection"
 
 echo "tnt-voodoo2-glide: grSstQueryHardware completed against the model"
+
+# --- ...and then the game RENDERS. ------------------------------------------
+# Keep running to the same instruction count as the reference frame:
+# by now Quake has opened the screen (grSstWinOpen), taken over the
+# monitor, and is deep in its attract demo, drawing thousands of
+# textured triangles per frame through the CMDFIFO's setup path.
+scheduler.run 1300000000
+assert machine.pci.slot[1].card.video.drives_monitor "the Voodoo drives the monitor in-game (pass-through switched)"
+assert (machine.pci.slot[1].card.regs.read(0x24C) & 0x100) != 0 "fbiInit7[8]: the guest enabled the CMDFIFO"
+assert machine.pci.slot[1].card.regs.read(0x25C) > 1000000 "the demo pushed over a million setup-path submissions"
+assert machine.pci.slot[1].card.regs.read(0x15C) > 100000 "...rasterised through the pixel pipeline"
+# The frame itself: a lit, textured, mip-mapped, dithered in-game demo
+# frame — inspected by hand at capture (health 82, ammo 60, the full
+# status bar).  Deterministic: the whole launch is scripted and the
+# scheduler is instruction-exact.
+check("quake-ingame.png")
+
+echo "tnt-voodoo2-glide: Quake renders in-game frames through the model"
 
 } else {
     echo "skip: tnt-voodoo2-glide (local/macos81voodoo2-quake-installed.img is not present on this machine)"

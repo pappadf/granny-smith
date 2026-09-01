@@ -14,7 +14,7 @@ uses under [`nubus/cards/`](../../nubus/cards/); retro-fitting a
 | | |
 |---|---|
 | **Card kind** | `voodoo2` |
-| **PCI ID** | `121A:0002`, class `$038000`, revision `$02` (pinned; real revision in `initEnable[15:12]`) |
+| **PCI ID** | `121A:0002`, class `$038000`, revision `$02` (pinned; real revision 4 in `initEnable[15:12]` — Glide requires config==2 AND initEnable rev ≥4, else the board is dropped from `grSstQueryHardware` after a fully successful bring-up) |
 | **ROM** | **none** — no expansion ROM, no FCode; OF builds a bare `pci121a,2` node and the guest's user-space Glide library claims the card by PCI ID |
 | **BAR** | one: BAR0, 16 MB prefetchable memory (registers / LFB / texture faces) |
 | **Memory** | option `memory=8m` (2 MB/TMU) or `12m` (4 MB/TMU); 4 MB framebuffer either way |
@@ -62,30 +62,47 @@ document grows as each group lands.
   desktop with the release matching the pre-takeover golden
   byte-identically, and a mid-drive checkpoint restoring to the same
   framebuffer checksum.
-- **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`) — detection
-  complete; rendering blocked on a non-card launch issue.**  Running
-  the SHIPPED 3dfx driver exposed three model gaps, all closed: the
-  **CMDFIFO engine** (V2 §11 — the proposal wrongly believed it off the
-  Glide 2.x path; Mac Glide's whole render path uses it and polls
-  `cmdFifoRdPtr` for room), **TMU send-config** (`trexInit1[18]` — how
-  software counts a board's TMUs, decoded from Glide's own use), and a
-  **calibratable dither** (Glide builds un-dither tables by rendering
-  all 256 values and requiring unique 4×4 tile sums — the previous
-  dither plateaued at the range ends and failed the driver's own
-  self-test).  With those, the real `3DfxGlideLib2.x` completes
-  **`grSstQueryHardware` end to end against the model**: Name-Registry
-  match on `pci121a,2`, Memory Space enabled by the driver itself, the
-  full §1.6 bring-up, ICS5342 detection, FBI memory sized 4 MB, dither
-  calibration, TMU census and both TMUs' memory sensed — gated by
-  `tests/integration/tnt-voodoo2-glide` (tier extended, media-gated on
-  the machine-local image).
-  **Known limit:** after the query succeeds, Quake parks in an event
-  loop with the display blanked *before* calling `grSstWinOpen`.  The
-  identical wait occurs with NO card seated (the A/B control), so it is
-  a guest-environment launch issue — likely an invisible launcher UI or
-  an unrelated subsystem wait on the blanked screen — not a card
-  behaviour.  The rendered-frame half of the milestone (grSstWinOpen,
-  in-game frames) is blocked on diagnosing that guest-side wait.
+- **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`) — COMPLETE:
+  detection AND real in-game rendering.**  Running the SHIPPED 3dfx
+  driver exposed eight model gaps, all closed, none found by the
+  hand-written tests.  Detection round: the **CMDFIFO engine** (V2 §11
+  — the proposal wrongly believed it off the Glide 2.x path; Mac
+  Glide's whole render path uses it and polls `cmdFifoRdPtr` for
+  room), **TMU send-config** (`trexInit1[18]` — how software counts a
+  board's TMUs), and a **calibratable dither** (unique 4×4 un-dither
+  tile sums demanded by the driver's own self-test).  Render round —
+  each one the difference between "the query passes" and a drawn
+  frame:
+  1. **siProcess (config `$54`)** — Glide measures the die's speed
+     grade through the ring-oscillator down-counter *inside*
+     `grSstQueryHardware`; read-as-written froze the countdown and the
+     guest polled forever (`v2_cfg_read`, divergence 11).
+  2. **initEnable[15:12] revision ≥ 4** — the board scan drops a CVG
+     below revision 4 *after* the whole bring-up succeeds; the query
+     then reports zero boards, Quake's GL wrapper leaves its screen
+     dims 0, every vertex collapses to one point, and the game runs
+     on a black screen (`V2_CHIP_REVISION`).
+  3. **The SGRAM fill** (`bltCommand` FRECTFILL) — grBufferClear
+     clears the page-aligned screen span with the 2D engine;
+     `fastfillCMD` only mops sub-page remainder rows.  The proposal's
+     "2D BLT is a non-goal" was wrong by exactly this one operation
+     (`v2_blt_go`).
+  4. **TSU float→12.4 truncation** — clients hand the setup unit
+     coordinates still carrying the `+786432.0` snap bias (3dfx's own
+     splash screen does); the conversion keeps only the low 16 bits,
+     as the classic latches do, or every triangle lands ~786k pixels
+     off-screen (`v2_setup_draw`).
+  5. **Packet-5 byte addressing** — the base word is a byte offset,
+     not a word address; the `<<2` smeared every texture row and LFB
+     span 4× apart (`v2_fifo_execute`).
+  With all eight, `Quake 3Dfx` launches from the Finder, the real
+  `3DfxGlideLib2.x` completes `grSstQueryHardware`, opens the screen
+  with `grSstWinOpen`, switches the pass-through, and plays its
+  attract demos at 640×480 — thousands of textured, mip-mapped, lit,
+  dithered triangles per frame through the CMDFIFO setup path, HUD
+  via packet-5 LFB spans — gated by
+  `tests/integration/tnt-voodoo2-glide` (tier extended, media-gated),
+  whose golden `quake-ingame.png` is a hand-inspected in-game frame.
 
 ## Provenance
 
@@ -209,6 +226,7 @@ divergences, each deliberate and localised:
 | 8 | DAC power-on PLL N/P bytes (M bytes are the detection signature and exact) | `v2_dac_reset` | only the M values are documented |
 | 9 | trexInit0/1 opaque except the second-RAS size gate | `v2_tmu_addressable` | V2 p.85: "FIXME. See Bruce spec" |
 | 10 | The internal 33-entry gamma CLUT (clutData) is stored but not applied at scanout | `v2_display_update` | identity scanout keeps goldens self-consistent; revisit if a client visibly gammas |
+| 11 | siProcess (config $54) completes its oscillator measurement at issue and reports fixed mid-grade counts (NAND 6400, NOR 7424) | `v2_cfg_read` | Glide polls the down-counter to zero inside grSstQueryHardware [Glide-src init/util.c]; a frozen counter spins the shipped driver forever — divergence 1 in config space |
 
 What is *not* on this list, because the hardware behaviour is documented
 and implemented faithfully: sub-pixel correction mutating the start
@@ -228,3 +246,15 @@ start/dX/dY made adjacent, parameters in start-block order) and must
 equal the transcription entry for entry, so a transposed row in either
 transcription fails; the gradient blocks are additionally pinned against
 the start block, and spot rows are pinned straight off the spec pages.
+
+## The trace instrument
+
+`debug.log voodoo2 "level=N [pc=on] [file=...]"` — level 4: writes to
+the non-FIFO'd init/video/CMDFIFO-control block; level 5: **all**
+writes — direct register-face writes, LFB writes, one line per CMDFIFO
+packet (`fifo pkt @off type hdr len`), every register write the fifo
+parser issues (`fifo wr`), and SGRAM fills; level 6: register reads.
+`pc=on` stamps the guest PC.  The fifo lines exist because the entire
+Mac Glide render path travels through the CMDFIFO: a trace blind to it
+shows a card nobody is drawing on — the 3e diagnosis lost an hour to
+exactly that.

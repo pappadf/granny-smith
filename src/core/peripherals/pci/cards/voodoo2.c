@@ -120,7 +120,15 @@ LOG_USE_CATEGORY_NAME("voodoo2");
 
 // The real revision (initEnable[15:12]) and fab id (initEnable[19:16]).
 // CVG production silicon; the PCI header's $02 is the pinned compat value.
-#define V2_CHIP_REVISION 0x2u
+// Chuck's REAL silicon revision, reported in initEnable[15:12].  This
+// is distinct from the config-space revision at $08, which is pinned
+// to $02 for Voodoo1 compatibility: the shipped Glide reads BOTH, and
+// its board scan requires config==2 (else it aborts the map) AND
+// initEnable revision >= 4 — a CVG below 4 is silently dropped from
+// the hardware list AFTER the entire bring-up succeeds, and
+// grSstQueryHardware reports no boards [Glide-src init/sst1init.c
+// sst1InitMapBoard; glide/src/gpci.c _grSstDetectResources].
+#define V2_CHIP_REVISION 0x4u
 #define V2_CHIP_FAB      0x1u
 
 // ============================================================
@@ -189,18 +197,28 @@ LOG_USE_CATEGORY_NAME("voodoo2");
 #define R_SETUPMODE     0x98 // ..0xA9: the on-chip setup block
 #define R_SDRAWTRICMD   0xA8
 #define R_SBEGINTRICMD  0xA9
-#define R_BLT_FIRST     0xB0 // ..0xBF: the 2D BitBLT engine (a NON-GOAL)
-#define R_TEXTUREMODE   0xC0 // TMU space begins: 0xC0..0xFF per TMU
-#define R_TLOD          0xC1
-#define R_TDETAIL       0xC2
-#define R_TEXBASE       0xC3
-#define R_TEXBASE_1     0xC4
-#define R_TEXBASE_2     0xC5
-#define R_TEXBASE_38    0xC6
-#define R_TREXINIT0     0xC7
-#define R_TREXINIT1     0xC8
-#define R_NCC0_FIRST    0xC9 // ..0xD4
-#define R_NCC1_FIRST    0xD5 // ..0xE0
+// The 2D BitBLT engine, 0xB0..0xBF.  The proposal called it a non-goal;
+// that was wrong by one operation: Mac Glide's grBufferClear clears the
+// screen with the SGRAM fill (FRECTFILL), so that one command is
+// modelled (v2_blt_go) and the rest stay registers-only.
+// Word indices from the vendor struct [Glide-src incsrc/cvgregs.h].
+#define R_BLT_FIRST   0xB0
+#define R_BLT_DSTBASE 0xB1
+#define R_BLT_DSTXY   0xB9
+#define R_BLT_SIZE    0xBA
+#define R_BLT_COLOR   0xBC
+#define R_BLT_COMMAND 0xBE
+#define R_TEXTUREMODE 0xC0 // TMU space begins: 0xC0..0xFF per TMU
+#define R_TLOD        0xC1
+#define R_TDETAIL     0xC2
+#define R_TEXBASE     0xC3
+#define R_TEXBASE_1   0xC4
+#define R_TEXBASE_2   0xC5
+#define R_TEXBASE_38  0xC6
+#define R_TREXINIT0   0xC7
+#define R_TREXINIT1   0xC8
+#define R_NCC0_FIRST  0xC9 // ..0xD4
+#define R_NCC1_FIRST  0xD5 // ..0xE0
 
 #define V2_NUM_REGS      256
 #define V2_TMU_REG_FIRST R_TEXTUREMODE
@@ -265,6 +283,19 @@ LOG_USE_CATEGORY_NAME("voodoo2");
 #define CFG_STATUS      0x4Cu
 #define CFG_SCRATCH     0x50u
 #define CFG_SIPROCESS   0x54u
+
+// siProcess fields [Glide-src init/sst1init.h]: bits 15:0 count the
+// selected ring-oscillator tree, 27:16 preload a PCI-clock down-counter,
+// 28 runs the measurement, 29 selects the NOR tree (NAND when clear).
+#define SIPROCESS_OSC_RUN   0x10000000u
+#define SIPROCESS_NOR_SEL   0x20000000u
+#define SIPROCESS_CTRL_MASK 0xF0000000u
+// Reported oscillator counts for a mid-grade CVG die.  The driver
+// treats a NAND count under 5000 as a "very slow process" and one
+// under 3000 as evidence of a 66 MHz PCI bus [Glide-src init/video.c,
+// init/util.c]; both trees sit comfortably above both thresholds.
+#define SIPROCESS_NAND_COUNT 6400u
+#define SIPROCESS_NOR_COUNT  7424u
 
 // lfbMode fields [V2 pp.50-57 §5.21]
 #define LFB_FMT(m)         ((m) & 0xFu)
@@ -2082,12 +2113,22 @@ static void v2_setup_draw(voodoo2_t *v) {
     } while (0)
     voodoo2_tri_t T;
     memset(&T, 0, sizeof(T));
-    T.ax = (int32_t)(x0 * 16.0f);
-    T.ay = (int32_t)(y0 * 16.0f);
-    T.bx = (int32_t)(x1 * 16.0f);
-    T.by = (int32_t)(y1 * 16.0f);
-    T.cx = (int32_t)(x2 * 16.0f);
-    T.cy = (int32_t)(y2 * 16.0f);
+    // The float→12.4 conversion keeps only the low 16 bits of the
+    // fixed result, exactly as the classic vertex latches do (v2_sx16
+    // over the float mirrors): clients hand the TSU coordinates still
+    // carrying the +786432.0 (3<<18) snap bias — 3dfx's own splash
+    // screen does, and so does Quake's GL wrapper — and the bias must
+    // self-cancel in the modular truncation or every triangle lands
+    // ~786k pixels off-screen and rasterises to nothing [Glide-src
+    // glide/src/gsplash.c SNAP_CONSTANT; guclip.c vertex_snap_constant].
+    // (The area and gradients above use float differences, where the
+    // bias cancels arithmetically.)
+    T.ax = (int16_t)(int64_t)(x0 * 16.0f);
+    T.ay = (int16_t)(int64_t)(y0 * 16.0f);
+    T.bx = (int16_t)(int64_t)(x1 * 16.0f);
+    T.by = (int16_t)(int64_t)(y1 * 16.0f);
+    T.cx = (int16_t)(int64_t)(x2 * 16.0f);
+    T.cy = (int16_t)(int64_t)(y2 * 16.0f);
     float ddx, ddy;
     if (sm & 1u) { // RGB
         V2_GRAD(r, ddx, ddy);
@@ -2262,6 +2303,42 @@ static uint32_t v2_float_to_latch(int fixed_idx, uint32_t bits) {
     default:
         return (uint32_t)(int32_t)(f * 4096.0); // 12.12 colour, 20.12 Z
     }
+}
+
+// The 2D engine's SGRAM block fill (bltCommand FRECTFILL + GO).  The
+// only 2D operation a held client issues: Mac Glide's grBufferClear
+// clears the page-aligned span of the screen with it, using fastfillCMD
+// solely for the sub-page remainder rows — often none — so without this
+// fill the screen simply never clears [Glide-src glide/src/gglide.c,
+// GLIDE_BLIT_CLEAR].  FRECTFILL works in page space, not pixel space:
+// each "row" is one 4 KB page, x counts 8-byte units, y counts pages,
+// and the 16-bit bltColor is replicated across the span [Glide-src
+// incsrc/cvgdefs.h SSTG_*; the V2 spec's 2D chapter is not in our
+// material].  The general blit commands stay unimplemented — nothing
+// we hold issues them; the LOG(2) records the gap if a client ever
+// does.  A memory fill, not the pixel pipeline: no stats counters.
+static void v2_blt_go(voodoo2_t *v) {
+    uint32_t cmd = v->reg[R_BLT_COMMAND] & 7u;
+    if (cmd != 3u) { // SSTG_FRECTFILL
+        LOG(2, "unimplemented 2D blit command %u ignored", cmd);
+        return;
+    }
+    uint32_t rows = ((v->reg[R_BLT_SIZE] >> 16) & 0xFFFu) + 1u;
+    uint32_t units = (v->reg[R_BLT_SIZE] & 0xFFFu) + 1u; // 8-byte units
+    uint32_t y0 = (v->reg[R_BLT_DSTXY] >> 16) & 0x1FFFu;
+    uint32_t x0 = v->reg[R_BLT_DSTXY] & 0x1FFFu;
+    uint32_t base = v->reg[R_BLT_DSTBASE] & (V2_FB_SIZE - 1u);
+    uint16_t color = (uint16_t)v->reg[R_BLT_COLOR];
+    LOG(5, "sgram fill: %u page-rows at page %u, %u units from x %u, color %04X", rows, y0, units, x0, color);
+    for (uint32_t r = 0; r < rows; r++) {
+        uint32_t addr = base + (y0 + r) * 4096u + x0 * 8u;
+        for (uint32_t i = 0; i < units * 4u; i++) { // four 565 pixels per unit
+            uint32_t a = (addr + i * 2u) & (V2_FB_SIZE - 1u);
+            v->fb_ram[a] = (uint8_t)color;
+            v->fb_ram[(a + 1u) & (V2_FB_SIZE - 1u)] = (uint8_t)(color >> 8);
+        }
+    }
+    v->display.fb_dirty = true;
 }
 
 // One register write, already decoded: `chip_mask` bit 0 = Chuck, bits
@@ -2447,6 +2524,11 @@ static void v2_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t val
     case 0xA7: // sT/Wtmu1
         v->sv_cur.t1 = v2_f32(value);
         return;
+    case R_BLT_COMMAND:
+        v->reg[idx] = value;
+        if (value & 0x80000000u) // SSTG_GO
+            v2_blt_go(v);
+        return;
     case R_CMDFIFO_BUMP:
         // Software-managed depth: the CPU announces N new words and the
         // parser runs (V2 §11.3.1.1).
@@ -2489,6 +2571,14 @@ static uint32_t v2_fifo_read32(const voodoo2_t *v, uint32_t addr) {
     return (uint32_t)v->fb_ram[addr] | ((uint32_t)v->fb_ram[(addr + 1) & (V2_FB_SIZE - 1u)] << 8) |
            ((uint32_t)v->fb_ram[(addr + 2) & (V2_FB_SIZE - 1u)] << 16) |
            ((uint32_t)v->fb_ram[(addr + 3) & (V2_FB_SIZE - 1u)] << 24);
+}
+
+// Register writes issued by the fifo parser, logged so a level-5 trace
+// really is "all writes" — the packet stream carries the entire render
+// path, and a trace blind to it reads as a card nobody is drawing on.
+static void v2_fifo_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t value) {
+    LOG(5, "fifo wr $%03X = %08X (chip %X)", idx * 4, value, chip_mask);
+    v2_reg_write(v, idx, chip_mask, value);
 }
 
 // Words per vertex of a packet-3 data group, from the parameter mask.
@@ -2549,6 +2639,7 @@ static void v2_fifo_execute(voodoo2_t *v) {
             return; // unknown type or incomplete packet: wait
         uint32_t type = w0 & 7u;
         uint32_t p = rd + 4;
+        LOG(5, "fifo pkt @%06X type %u hdr %08X len %u", rd, type, w0, len);
         switch (type) {
         case 0: {
             uint32_t func = (w0 >> 3) & 7u;
@@ -2567,14 +2658,14 @@ static void v2_fifo_execute(voodoo2_t *v) {
             uint32_t base = (w0 >> 3) & 0xFFFu;
             uint32_t chip = (base >> 8) & 0xFu, regn = base & 0xFFu;
             for (uint32_t i = 0; i < n; i++, p += 4)
-                v2_reg_write(v, (int)((regn + (inc ? i : 0u)) & 0xFFu), chip, v2_fifo_read32(v, p));
+                v2_fifo_reg_write(v, (int)((regn + (inc ? i : 0u)) & 0xFFu), chip, v2_fifo_read32(v, p));
             break;
         }
         case 2: {
             uint32_t mask = w0 >> 3;
             for (int n = 0; n < 29; n++) {
                 if (mask & (1u << n)) {
-                    v2_reg_write(v, R_BLT_FIRST + n, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, R_BLT_FIRST + n, 1u, v2_fifo_read32(v, p));
                     p += 4;
                 }
             }
@@ -2587,55 +2678,55 @@ static void v2_fifo_execute(voodoo2_t *v) {
             // feed vertices through the same begin/draw sequencing the
             // registers use.
             uint32_t smode = ((w0 >> 10) & 0xFFFu) | (((w0 >> 22) & 0xFu) << 16);
-            v2_reg_write(v, R_SETUPMODE, 1u, smode);
+            v2_fifo_reg_write(v, R_SETUPMODE, 1u, smode);
             uint32_t nvert = (w0 >> 6) & 0xFu;
             uint32_t cmd = (w0 >> 3) & 7u;
             uint32_t mask = (w0 >> 10) & 0xFFu;
             bool packed = (w0 >> 28) & 1u;
             for (uint32_t i = 0; i < nvert; i++) {
-                v2_reg_write(v, 0x99, 1u, v2_fifo_read32(v, p)); // sVx
+                v2_fifo_reg_write(v, 0x99, 1u, v2_fifo_read32(v, p)); // sVx
                 p += 4;
-                v2_reg_write(v, 0x9A, 1u, v2_fifo_read32(v, p)); // sVy
+                v2_fifo_reg_write(v, 0x9A, 1u, v2_fifo_read32(v, p)); // sVy
                 p += 4;
                 if (mask & 0x01u) {
                     if (packed) {
-                        v2_reg_write(v, 0x9B, 1u, v2_fifo_read32(v, p));
+                        v2_fifo_reg_write(v, 0x9B, 1u, v2_fifo_read32(v, p));
                         p += 4;
                     } else {
                         for (int c = 0; c < 3; c++, p += 4)
-                            v2_reg_write(v, 0x9C + c, 1u, v2_fifo_read32(v, p));
+                            v2_fifo_reg_write(v, 0x9C + c, 1u, v2_fifo_read32(v, p));
                     }
                 }
                 if ((mask & 0x02u) && !packed) {
-                    v2_reg_write(v, 0x9F, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0x9F, 1u, v2_fifo_read32(v, p));
                     p += 4;
                 }
                 if (mask & 0x04u) {
-                    v2_reg_write(v, 0xA0, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0xA0, 1u, v2_fifo_read32(v, p));
                     p += 4;
                 }
                 if (mask & 0x08u) {
-                    v2_reg_write(v, 0xA1, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0xA1, 1u, v2_fifo_read32(v, p));
                     p += 4;
                 }
                 if (mask & 0x10u) {
-                    v2_reg_write(v, 0xA2, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0xA2, 1u, v2_fifo_read32(v, p));
                     p += 4;
                 }
                 if (mask & 0x20u) {
-                    v2_reg_write(v, 0xA3, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0xA3, 1u, v2_fifo_read32(v, p));
                     p += 4;
-                    v2_reg_write(v, 0xA4, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0xA4, 1u, v2_fifo_read32(v, p));
                     p += 4;
                 }
                 if (mask & 0x40u) {
-                    v2_reg_write(v, 0xA5, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0xA5, 1u, v2_fifo_read32(v, p));
                     p += 4;
                 }
                 if (mask & 0x80u) {
-                    v2_reg_write(v, 0xA6, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0xA6, 1u, v2_fifo_read32(v, p));
                     p += 4;
-                    v2_reg_write(v, 0xA7, 1u, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, 0xA7, 1u, v2_fifo_read32(v, p));
                     p += 4;
                 }
                 // The implied command sequencing (V2 p.126): independent
@@ -2648,7 +2739,7 @@ static void v2_fifo_execute(voodoo2_t *v) {
                     begin = i == 0u;
                 else
                     begin = false;
-                v2_reg_write(v, begin ? R_SBEGINTRICMD : R_SDRAWTRICMD, 1u, 1u);
+                v2_fifo_reg_write(v, begin ? R_SBEGINTRICMD : R_SDRAWTRICMD, 1u, 1u);
             }
             break;
         }
@@ -2658,7 +2749,7 @@ static void v2_fifo_execute(voodoo2_t *v) {
             uint32_t chip = (base >> 8) & 0xFu, regn = base & 0xFFu;
             for (int n = 0; n < 14; n++) {
                 if (mask & (1u << n)) {
-                    v2_reg_write(v, (int)((regn + n) & 0xFFu), chip, v2_fifo_read32(v, p));
+                    v2_fifo_reg_write(v, (int)((regn + n) & 0xFFu), chip, v2_fifo_read32(v, p));
                     p += 4;
                 }
             }
@@ -2667,7 +2758,13 @@ static void v2_fifo_execute(voodoo2_t *v) {
         case 5: {
             uint32_t nwords = (w0 >> 3) & 0x7FFFFu;
             uint32_t space = w0 >> 30;
-            uint32_t base = (v2_fifo_read32(v, p) & 0x1FFFFFFu) << 2;
+            // The base word carries a BYTE offset within the target
+            // space, not a word address [Glide-src fxglide.h
+            // FIFO_LINEAR_WRITE_BEGIN: hdr2 = __addr &
+            // SSTCP_PKT5_BASEADDR, where __addr is tex_address -
+            // tex_ptr in bytes].  Texture rows arrive one packet per
+            // row at T<<9 strides; a scaled base smears every row.
+            uint32_t base = v2_fifo_read32(v, p) & 0x1FFFFFFu;
             p += 4;
             for (uint32_t i = 0; i < nwords; i++, p += 4) {
                 uint32_t d = v2_fifo_read32(v, p);
@@ -3046,8 +3143,23 @@ static bool v2_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
         *out = v->cfg_scratch;
         return true;
     case CFG_SIPROCESS:
-        // Manufacturing telemetry; read-as-written is sufficient.
-        *out = v->si_process;
+        // The silicon-process monitor.  Glide measures the die's speed
+        // grade with it INSIDE grSstQueryHardware: preload the PCI
+        // down-counter, set RUN, then poll bits 27:16 until the
+        // countdown drains and read the oscillator count from 15:0
+        // [Glide-src init/util.c sst1InitMeasureSiProcess].  A
+        // read-as-written model leaves the countdown frozen and that
+        // poll spins forever — this register follows the same contract
+        // as every busy bit on the card (§8 Q3): the measurement
+        // completes at issue.  Once RUN is set the countdown reads
+        // zero and the count reads the die-grade constant for the
+        // selected tree; in reset the preload reads back and the
+        // count is zero.
+        if (v->si_process & SIPROCESS_OSC_RUN)
+            *out = (v->si_process & SIPROCESS_CTRL_MASK) |
+                   ((v->si_process & SIPROCESS_NOR_SEL) ? SIPROCESS_NOR_COUNT : SIPROCESS_NAND_COUNT);
+        else
+            *out = v->si_process & 0xFFFF0000u;
         return true;
     default:
         return false;

@@ -29,7 +29,7 @@ cfg_wr(0x40, 0x00000001)
 assert (cfg_rd(0x40) & 0x3) == 0x1 "initEnable[0] set, [1] still clear"
 # The real revision lives in initEnable[15:12] (the PCI header's $02 is
 # pinned for Voodoo1 compatibility).
-assert ((cfg_rd(0x40) >> 12) & 0xF) == 2 "initEnable[15:12] carries the real revision"
+assert ((cfg_rd(0x40) >> 12) & 0xF) == 4 "initEnable[15:12] carries the real revision — Glide's board scan drops a CVG below 4"
 
 # --- Step 2: reset the snoop registers; stall on status. --------------------
 # busSnoop0/1 are WRITE-ONLY and read as zero (V2 §6.17) — there is no
