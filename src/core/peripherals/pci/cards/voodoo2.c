@@ -128,73 +128,79 @@ LOG_USE_CATEGORY_NAME("voodoo2");
 // scripts/voodoo2/voodoo2_regs.py --check
 // ============================================================
 
-#define R_STATUS       0x00
-#define R_INTRCTRL     0x01
-#define R_VERTEX_AX    0x02 // ..0x07: vertexAx..vertexCy
-#define R_TRIANGLECMD  0x20
-#define R_FTRIANGLECMD 0x40
-#define R_FBZCOLORPATH 0x41
-#define R_FOGMODE      0x42
-#define R_ALPHAMODE    0x43
-#define R_FBZMODE      0x44
-#define R_LFBMODE      0x45
-#define R_CLIPLR       0x46
-#define R_CLIPTB       0x47
-#define R_NOPCMD       0x48
-#define R_FASTFILLCMD  0x49
-#define R_SWAPBUFCMD   0x4A
-#define R_FOGCOLOR     0x4B
-#define R_ZACOLOR      0x4C
-#define R_CHROMAKEY    0x4D
-#define R_CHROMARANGE  0x4E
-#define R_USERINTRCMD  0x4F
-#define R_STIPPLE      0x50
-#define R_COLOR0       0x51
-#define R_COLOR1       0x52
-#define R_PIXELS_IN    0x53
-#define R_CHROMA_FAIL  0x54
-#define R_ZFUNC_FAIL   0x55
-#define R_AFUNC_FAIL   0x56
-#define R_PIXELS_OUT   0x57
-#define R_FOGTABLE     0x58 // ..0x77
-#define R_CMDFIFO_BASE 0x78 // ..0x7E, non-FIFO
-#define R_FBIINIT4     0x80
-#define R_VRETRACE     0x81
-#define R_BACKPORCH    0x82
-#define R_VIDEODIM     0x83
-#define R_FBIINIT0     0x84
-#define R_FBIINIT1     0x85
-#define R_FBIINIT2     0x86
-#define R_FBIINIT3     0x87
-#define R_HSYNC        0x88
-#define R_VSYNC        0x89
-#define R_CLUTDATA     0x8A
-#define R_DACDATA      0x8B
-#define R_MAXRGBDELTA  0x8C
-#define R_HBORDER      0x8D
-#define R_VBORDER      0x8E
-#define R_BORDERCOLOR  0x8F
-#define R_HVRETRACE    0x90
-#define R_FBIINIT5     0x91
-#define R_FBIINIT6     0x92
-#define R_FBIINIT7     0x93
-#define R_SWAPHISTORY  0x96
-#define R_TRIANGLESOUT 0x97
-#define R_SETUPMODE    0x98 // ..0xA9: the on-chip setup block
-#define R_SDRAWTRICMD  0xA8
-#define R_SBEGINTRICMD 0xA9
-#define R_BLT_FIRST    0xB0 // ..0xBF: the 2D BitBLT engine (a NON-GOAL)
-#define R_TEXTUREMODE  0xC0 // TMU space begins: 0xC0..0xFF per TMU
-#define R_TLOD         0xC1
-#define R_TDETAIL      0xC2
-#define R_TEXBASE      0xC3
-#define R_TEXBASE_1    0xC4
-#define R_TEXBASE_2    0xC5
-#define R_TEXBASE_38   0xC6
-#define R_TREXINIT0    0xC7
-#define R_TREXINIT1    0xC8
-#define R_NCC0_FIRST   0xC9 // ..0xD4
-#define R_NCC1_FIRST   0xD5 // ..0xE0
+#define R_STATUS        0x00
+#define R_INTRCTRL      0x01
+#define R_VERTEX_AX     0x02 // ..0x07: vertexAx..vertexCy
+#define R_TRIANGLECMD   0x20
+#define R_FTRIANGLECMD  0x40
+#define R_FBZCOLORPATH  0x41
+#define R_FOGMODE       0x42
+#define R_ALPHAMODE     0x43
+#define R_FBZMODE       0x44
+#define R_LFBMODE       0x45
+#define R_CLIPLR        0x46
+#define R_CLIPTB        0x47
+#define R_NOPCMD        0x48
+#define R_FASTFILLCMD   0x49
+#define R_SWAPBUFCMD    0x4A
+#define R_FOGCOLOR      0x4B
+#define R_ZACOLOR       0x4C
+#define R_CHROMAKEY     0x4D
+#define R_CHROMARANGE   0x4E
+#define R_USERINTRCMD   0x4F
+#define R_STIPPLE       0x50
+#define R_COLOR0        0x51
+#define R_COLOR1        0x52
+#define R_PIXELS_IN     0x53
+#define R_CHROMA_FAIL   0x54
+#define R_ZFUNC_FAIL    0x55
+#define R_AFUNC_FAIL    0x56
+#define R_PIXELS_OUT    0x57
+#define R_FOGTABLE      0x58 // ..0x77
+#define R_CMDFIFO_BASE  0x78 // ..0x7E, non-FIFO
+#define R_CMDFIFO_BUMP  0x79
+#define R_CMDFIFO_RDPTR 0x7A
+#define R_CMDFIFO_AMIN  0x7B
+#define R_CMDFIFO_AMAX  0x7C
+#define R_CMDFIFO_DEPTH 0x7D
+#define R_CMDFIFO_HOLES 0x7E
+#define R_FBIINIT4      0x80
+#define R_VRETRACE      0x81
+#define R_BACKPORCH     0x82
+#define R_VIDEODIM      0x83
+#define R_FBIINIT0      0x84
+#define R_FBIINIT1      0x85
+#define R_FBIINIT2      0x86
+#define R_FBIINIT3      0x87
+#define R_HSYNC         0x88
+#define R_VSYNC         0x89
+#define R_CLUTDATA      0x8A
+#define R_DACDATA       0x8B
+#define R_MAXRGBDELTA   0x8C
+#define R_HBORDER       0x8D
+#define R_VBORDER       0x8E
+#define R_BORDERCOLOR   0x8F
+#define R_HVRETRACE     0x90
+#define R_FBIINIT5      0x91
+#define R_FBIINIT6      0x92
+#define R_FBIINIT7      0x93
+#define R_SWAPHISTORY   0x96
+#define R_TRIANGLESOUT  0x97
+#define R_SETUPMODE     0x98 // ..0xA9: the on-chip setup block
+#define R_SDRAWTRICMD   0xA8
+#define R_SBEGINTRICMD  0xA9
+#define R_BLT_FIRST     0xB0 // ..0xBF: the 2D BitBLT engine (a NON-GOAL)
+#define R_TEXTUREMODE   0xC0 // TMU space begins: 0xC0..0xFF per TMU
+#define R_TLOD          0xC1
+#define R_TDETAIL       0xC2
+#define R_TEXBASE       0xC3
+#define R_TEXBASE_1     0xC4
+#define R_TEXBASE_2     0xC5
+#define R_TEXBASE_38    0xC6
+#define R_TREXINIT0     0xC7
+#define R_TREXINIT1     0xC8
+#define R_NCC0_FIRST    0xC9 // ..0xD4
+#define R_NCC1_FIRST    0xD5 // ..0xE0
 
 #define V2_NUM_REGS      256
 #define V2_TMU_REG_FIRST R_TEXTUREMODE
@@ -402,6 +408,7 @@ static bool v2_pixel_pipe(voodoo2_t *v, v2_pix_t *p);
 static void v2_clip_rect(const voodoo2_t *v, int32_t *x0, int32_t *x1, int32_t *y0, int32_t *y1);
 static uint32_t v2_iter_w8(int64_t it, bool clamp);
 static float v2_f32(uint32_t bits);
+static void v2_fifo_execute(struct voodoo2 *v);
 
 // ============================================================
 // Beam position — derived from the scheduler, the mach64_scanline idiom
@@ -1148,13 +1155,23 @@ static const uint8_t v2_dither2[2][2] = {
 static uint16_t v2_pack565(const voodoo2_t *v, int32_t x, int32_t y, uint32_t r, uint32_t g, uint32_t b) {
     uint32_t r5, g6, b5;
     if (v->reg[R_FBZMODE] & 0x100u) { // dithering enabled
+        // Linear-rescale ordered dither (CHOSEN — the spec names the
+        // modes but not the matrices; voodoo2.md's divergence list).
+        // The rule must keep the SUM over one 4x4 tile strictly
+        // increasing in the input value with no plateau at either end:
+        // Glide calibrates its un-dither tables by rendering each of
+        // the 256 values and requiring the 4x4 pixel sums to be UNIQUE
+        // (initSumTables' "non-unique r_sum" check), so a dither that
+        // saturates early fails the real driver's own self-test.
+        // The threshold multipliers (15 for the 5-bit channels, 13 for
+        // the 6-bit green) are the values for which the whole property
+        // set holds over all 256 inputs — verified exhaustively: unique
+        // strictly-increasing tile sums, 0 maps to all-0, 255 to
+        // all-max.
         uint32_t d = (v->reg[R_FBZMODE] & 0x800u) ? v2_dither2[y & 1][x & 1] * 4u : v2_dither4[y & 3][x & 3];
-        r5 = (r >> 3) + (((r & 7u) << 1) > d ? 1u : 0u);
-        g6 = (g >> 2) + (((g & 3u) << 2) > d ? 1u : 0u);
-        b5 = (b >> 3) + (((b & 7u) << 1) > d ? 1u : 0u);
-        r5 = r5 > 31u ? 31u : r5;
-        g6 = g6 > 63u ? 63u : g6;
-        b5 = b5 > 31u ? 31u : b5;
+        r5 = (r * 31u + 15u * d) / 255u;
+        g6 = (g * 63u + 13u * d) / 255u;
+        b5 = (b * 31u + 15u * d) / 255u;
     } else {
         r5 = r >> 3;
         g6 = g >> 2;
@@ -1637,6 +1654,30 @@ static uint32_t v2_texture_chain(voodoo2_t *v, const voodoo2_tri_t *T, int32_t d
     uint32_t chain = 0; // most-upstream c_other is zero
     for (int tmu = V2_NUM_TMUS - 1; tmu >= 0; tmu--) {
         uint32_t mode = v2_tmu_r(v, tmu, R_TEXTUREMODE);
+        uint32_t trex1 = v2_tmu_r(v, tmu, R_TREXINIT1);
+        if (trex1 & (1u << 18)) {
+            // "Send config": the TMU outputs its configuration word as
+            // colour instead of texels — the only way software can ask
+            // how many TMUs a board has (Glide's getTmuConfigData
+            // renders a triangle and un-dithers the result).  The bit
+            // layout is Bruce-internal; this encoding is derived from
+            // Glide's own decode: 7 bits per TMU at 7n (revision in the
+            // low 3), presence announced at bit 7n-1, and select 5
+            // returns {fab, new-revision} bytes at 8n.  [3dfx-src
+            // info.c; the Bruce spec nobody holds — divergence list]
+            uint32_t sel = (trex1 >> 23) & 7u;
+            uint32_t contrib = 0;
+            if (sel == 0u) {
+                contrib = 2u << (7 * tmu); // old revision
+                if (tmu >= 1)
+                    contrib |= 1u << (7 * tmu - 1); // presence flag
+            } else if (sel == 5u) {
+                contrib = ((1u << 4) | 1u) << (8 * tmu); // fab 1, rev+3 = 4
+            }
+            uint32_t rgb = (chain & 0xFFFFFFu) | contrib;
+            chain = 0xFF000000u | rgb;
+            continue;
+        }
         int64_t s_it = T->s[tmu] + T->dsdx[tmu] * dx + T->dsdy[tmu] * dy;
         int64_t t_it = T->t[tmu] + T->dtdx[tmu] * dx + T->dtdy[tmu] * dy;
         int64_t w_it = T->tw[tmu] + T->dtwdx[tmu] * dx + T->dtwdy[tmu] * dy;
@@ -2406,14 +2447,283 @@ static void v2_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t val
     case 0xA7: // sT/Wtmu1
         v->sv_cur.t1 = v2_f32(value);
         return;
+    case R_CMDFIFO_BUMP:
+        // Software-managed depth: the CPU announces N new words and the
+        // parser runs (V2 §11.3.1.1).
+        v->reg[R_CMDFIFO_DEPTH] += value & 0xFFFFu;
+        v2_fifo_execute(v);
+        return;
     default:
         break;
     }
-    if (idx >= R_CMDFIFO_BASE && idx <= R_CMDFIFO_BASE + 6 && !v->warned_cmdfifo) {
-        v->warned_cmdfifo = true;
-        LOG(2, "CMDFIFO register write — the CMDFIFO engine is not on the Glide 2.x path");
-    }
     v->reg[idx] = value;
+}
+
+// ============================================================
+// The CMDFIFO engine (V2 §11, pp.120-127)
+// ============================================================
+// With fbiInit7[8] set, the second 2 MB of the aperture becomes a
+// write-only command port: writes land in a circular buffer in offscreen
+// framebuffer memory (cmdFifoBaseAddr's page range), the hardware counts
+// them in (with hole counting for out-of-order CPU write buffers, or a
+// software-managed bump), and an on-chip parser executes the packet
+// stream, advancing cmdFifoRdPtr.  Mac Glide's whole RENDER path runs
+// through this engine — grSstWinOpen polls cmdFifoRdPtr for fifo room,
+// so a model that never advances it hangs the guest (the idle-contract
+// lesson, §12.3, in different clothes).
+//
+// The execution model is the synchronous one used everywhere else in
+// this file: after every fifo write (or bump), all COMPLETE packets are
+// parsed and executed immediately, so the read pointer is always caught
+// up and depth returns to zero.  Partial packets wait for their tail.
+
+static uint32_t v2_fifo_base_bytes(const voodoo2_t *v) {
+    return (v->reg[R_CMDFIFO_BASE] & 0x3FFu) << 12; // pageStart
+}
+static uint32_t v2_fifo_end_bytes(const voodoo2_t *v) {
+    return ((((v->reg[R_CMDFIFO_BASE] >> 16) & 0x3FFu) + 1u) << 12); // pageEnd, inclusive
+}
+
+static uint32_t v2_fifo_read32(const voodoo2_t *v, uint32_t addr) {
+    addr &= V2_FB_SIZE - 1u;
+    return (uint32_t)v->fb_ram[addr] | ((uint32_t)v->fb_ram[(addr + 1) & (V2_FB_SIZE - 1u)] << 8) |
+           ((uint32_t)v->fb_ram[(addr + 2) & (V2_FB_SIZE - 1u)] << 16) |
+           ((uint32_t)v->fb_ram[(addr + 3) & (V2_FB_SIZE - 1u)] << 24);
+}
+
+// Words per vertex of a packet-3 data group, from the parameter mask.
+static uint32_t v2_pkt3_vertex_words(uint32_t w0) {
+    uint32_t mask = (w0 >> 10) & 0xFFu;
+    bool packed = (w0 >> 28) & 1u;
+    uint32_t n = 2; // X, Y
+    if (mask & 0x01u)
+        n += packed ? 1u : 3u; // ARGB packed, or R,G,B
+    if ((mask & 0x02u) && !packed)
+        n += 1; // separate alpha
+    if (mask & 0x04u)
+        n += 1; // Z
+    if (mask & 0x08u)
+        n += 1; // Wb
+    if (mask & 0x10u)
+        n += 1; // W0
+    if (mask & 0x20u)
+        n += 2; // S0, T0
+    if (mask & 0x40u)
+        n += 1; // W1
+    if (mask & 0x80u)
+        n += 2; // S1, T1
+    return n;
+}
+
+// Total length in words of the packet whose header is `w0`, or 0 when
+// the type is unknown (the stream is broken; the parser stops).
+static uint32_t v2_packet_words(uint32_t w0) {
+    switch (w0 & 7u) {
+    case 0:
+        return ((w0 >> 3) & 7u) == 4u ? 2u : 1u; // JMP AGP takes 2 words
+    case 1:
+        return 1u + (w0 >> 16);
+    case 2:
+        return 1u + (uint32_t)__builtin_popcount(w0 >> 3);
+    case 3:
+        return 1u + ((w0 >> 6) & 0xFu) * v2_pkt3_vertex_words(w0) + ((w0 >> 29) & 7u);
+    case 4:
+        return 1u + (uint32_t)__builtin_popcount((w0 >> 15) & 0x3FFFu) + ((w0 >> 29) & 7u);
+    case 5:
+        return 2u + ((w0 >> 3) & 0x7FFFFu);
+    default:
+        return 0;
+    }
+}
+
+static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data);
+
+// Execute complete packets from the fifo until depth runs dry.
+static void v2_fifo_execute(voodoo2_t *v) {
+    int guard = 1 << 20; // a bounded parser, never a hung emulator
+    while (v->reg[R_CMDFIFO_DEPTH] > 0 && guard-- > 0) {
+        uint32_t rd = v->reg[R_CMDFIFO_RDPTR];
+        uint32_t w0 = v2_fifo_read32(v, rd);
+        uint32_t len = v2_packet_words(w0);
+        if (len == 0 || len > v->reg[R_CMDFIFO_DEPTH])
+            return; // unknown type or incomplete packet: wait
+        uint32_t type = w0 & 7u;
+        uint32_t p = rd + 4;
+        switch (type) {
+        case 0: {
+            uint32_t func = (w0 >> 3) & 7u;
+            if (func == 3u) { // JMP LOCAL FRAME BUFFER
+                v->reg[R_CMDFIFO_DEPTH] -= len;
+                v->reg[R_CMDFIFO_RDPTR] = ((w0 >> 6) & 0x7FFFFFu) << 2;
+                continue; // depth accounting done; do not fall through
+            }
+            // NOP (and the JSR/RET/AGP functions nothing on these
+            // machines uses) just advance.
+            break;
+        }
+        case 1: {
+            uint32_t n = w0 >> 16;
+            bool inc = (w0 >> 15) & 1u;
+            uint32_t base = (w0 >> 3) & 0xFFFu;
+            uint32_t chip = (base >> 8) & 0xFu, regn = base & 0xFFu;
+            for (uint32_t i = 0; i < n; i++, p += 4)
+                v2_reg_write(v, (int)((regn + (inc ? i : 0u)) & 0xFFu), chip, v2_fifo_read32(v, p));
+            break;
+        }
+        case 2: {
+            uint32_t mask = w0 >> 3;
+            for (int n = 0; n < 29; n++) {
+                if (mask & (1u << n)) {
+                    v2_reg_write(v, R_BLT_FIRST + n, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+            }
+            break;
+        }
+        case 3: {
+            // On-chip-setup vertices: write sSetupMode from the header
+            // (parameter mask into [11:0], the mode bits into [19:16] —
+            // the header's own layout, mapped onto §5.69's fields), then
+            // feed vertices through the same begin/draw sequencing the
+            // registers use.
+            uint32_t smode = ((w0 >> 10) & 0xFFFu) | (((w0 >> 22) & 0xFu) << 16);
+            v2_reg_write(v, R_SETUPMODE, 1u, smode);
+            uint32_t nvert = (w0 >> 6) & 0xFu;
+            uint32_t cmd = (w0 >> 3) & 7u;
+            uint32_t mask = (w0 >> 10) & 0xFFu;
+            bool packed = (w0 >> 28) & 1u;
+            for (uint32_t i = 0; i < nvert; i++) {
+                v2_reg_write(v, 0x99, 1u, v2_fifo_read32(v, p)); // sVx
+                p += 4;
+                v2_reg_write(v, 0x9A, 1u, v2_fifo_read32(v, p)); // sVy
+                p += 4;
+                if (mask & 0x01u) {
+                    if (packed) {
+                        v2_reg_write(v, 0x9B, 1u, v2_fifo_read32(v, p));
+                        p += 4;
+                    } else {
+                        for (int c = 0; c < 3; c++, p += 4)
+                            v2_reg_write(v, 0x9C + c, 1u, v2_fifo_read32(v, p));
+                    }
+                }
+                if ((mask & 0x02u) && !packed) {
+                    v2_reg_write(v, 0x9F, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+                if (mask & 0x04u) {
+                    v2_reg_write(v, 0xA0, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+                if (mask & 0x08u) {
+                    v2_reg_write(v, 0xA1, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+                if (mask & 0x10u) {
+                    v2_reg_write(v, 0xA2, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+                if (mask & 0x20u) {
+                    v2_reg_write(v, 0xA3, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                    v2_reg_write(v, 0xA4, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+                if (mask & 0x40u) {
+                    v2_reg_write(v, 0xA5, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+                if (mask & 0x80u) {
+                    v2_reg_write(v, 0xA6, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                    v2_reg_write(v, 0xA7, 1u, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+                // The implied command sequencing (V2 p.126): independent
+                // triangles B D D | B D D..., a new strip B D D D...,
+                // a continued strip D D D...
+                bool begin;
+                if (cmd == 0u)
+                    begin = (i % 3u) == 0u;
+                else if (cmd == 1u)
+                    begin = i == 0u;
+                else
+                    begin = false;
+                v2_reg_write(v, begin ? R_SBEGINTRICMD : R_SDRAWTRICMD, 1u, 1u);
+            }
+            break;
+        }
+        case 4: {
+            uint32_t mask = (w0 >> 15) & 0x3FFFu;
+            uint32_t base = (w0 >> 3) & 0xFFFu;
+            uint32_t chip = (base >> 8) & 0xFu, regn = base & 0xFFu;
+            for (int n = 0; n < 14; n++) {
+                if (mask & (1u << n)) {
+                    v2_reg_write(v, (int)((regn + n) & 0xFFu), chip, v2_fifo_read32(v, p));
+                    p += 4;
+                }
+            }
+            break;
+        }
+        case 5: {
+            uint32_t nwords = (w0 >> 3) & 0x7FFFFu;
+            uint32_t space = w0 >> 30;
+            uint32_t base = (v2_fifo_read32(v, p) & 0x1FFFFFFu) << 2;
+            p += 4;
+            for (uint32_t i = 0; i < nwords; i++, p += 4) {
+                uint32_t d = v2_fifo_read32(v, p);
+                if (space == 3u)
+                    v2_tex_write(v, (base + 4u * i) & (V2_OFF_TEX - 1u), d);
+                else if (space == 2u)
+                    v2_bar_write32(v, V2_OFF_LFB + ((base + 4u * i) & (V2_OFF_TEX - V2_OFF_LFB - 1u)), VOODOO2_LE32(d));
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        v->reg[R_CMDFIFO_DEPTH] -= len;
+        v->reg[R_CMDFIFO_RDPTR] = rd + len * 4u;
+        // Never run past the fifo's end page: software always JMPs back
+        // before that, so hitting it means a broken stream — park.
+        if (v->reg[R_CMDFIFO_RDPTR] >= v2_fifo_end_bytes(v))
+            v->reg[R_CMDFIFO_RDPTR] = v2_fifo_base_bytes(v);
+    }
+}
+
+// One write into the CMDFIFO port: store into the offscreen buffer,
+// account it (hole counting per the driver's-eye description on V2
+// p.123, or wait for the software bump when fbiInit7[10] disables it),
+// and run the parser.
+static void v2_cmdfifo_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
+    if (off & (1u << 18))
+        le_value = __builtin_bswap32(le_value); // per-access byte swizzle
+    uint32_t fb_addr = (v2_fifo_base_bytes(v) + (off & 0x3FFFCu)) & (V2_FB_SIZE - 1u);
+    v->fb_ram[fb_addr] = (uint8_t)le_value;
+    v->fb_ram[(fb_addr + 1) & (V2_FB_SIZE - 1u)] = (uint8_t)(le_value >> 8);
+    v->fb_ram[(fb_addr + 2) & (V2_FB_SIZE - 1u)] = (uint8_t)(le_value >> 16);
+    v->fb_ram[(fb_addr + 3) & (V2_FB_SIZE - 1u)] = (uint8_t)(le_value >> 24);
+    if (v->reg[R_FBIINIT7] & (1u << 10))
+        return; // software-managed: depth moves on cmdFifoBump only
+    uint32_t amin = v->reg[R_CMDFIFO_AMIN], amax = v->reg[R_CMDFIFO_AMAX];
+    if (fb_addr == amax + 4u || fb_addr == v2_fifo_base_bytes(v)) {
+        // In-order (or the explicit wrap back to the base after the
+        // guest's JMP packet): the common path.
+        v->reg[R_CMDFIFO_AMAX] = v->reg[R_CMDFIFO_AMIN] = fb_addr;
+        v->reg[R_CMDFIFO_DEPTH] += 1u;
+    } else if (fb_addr > amax + 4u) {
+        // A hole opened: count the skipped words, hold aMin back.
+        v->reg[R_CMDFIFO_HOLES] += (fb_addr - amax - 4u) >> 2;
+        v->reg[R_CMDFIFO_AMAX] = fb_addr;
+    } else {
+        // A hole filled.
+        if (v->reg[R_CMDFIFO_HOLES] > 0)
+            v->reg[R_CMDFIFO_HOLES] -= 1u;
+        if (v->reg[R_CMDFIFO_HOLES] == 0 && amax > amin) {
+            v->reg[R_CMDFIFO_DEPTH] += (amax - amin) >> 2;
+            v->reg[R_CMDFIFO_AMIN] = amax;
+        }
+    }
+    v2_fifo_execute(v);
 }
 
 // ============================================================
@@ -2449,10 +2759,15 @@ static void v2_reg_face_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
             return;
     }
     uint32_t chip_mask = (off >> 10) & 0xFu;
+    // The §9.2 instrument: writes to the non-FIFO'd init/video/DAC
+    // block at level 4, everything else at level 5 (read the offsets
+    // through scripts/voodoo2/voodoo2_regs.py for names).
+    LOG(idx >= R_CMDFIFO_BASE && idx < V2_TMU_REG_FIRST ? 4 : 5, "wr $%03X = %08X (chip %X)", idx * 4, le_value,
+        chip_mask);
     // With the CMDFIFO map enabled, direct writes outside the permitted
     // init/video/CMDFIFO set are accepted by the PCI slave and silently
     // dropped [V2 p.121].
-    if ((v->reg[R_FBIINIT7] & FBIINIT7_CMDFIFO_EN) && idx < R_CMDFIFO_BASE) {
+    if ((v->reg[R_FBIINIT7] & FBIINIT7_CMDFIFO_EN) && idx < R_CMDFIFO_BASE && idx != R_INTRCTRL) {
         if (!v->warned_cmdfifo) {
             v->warned_cmdfifo = true;
             LOG(2, "direct register write $%03X dropped while CMDFIFO mode is enabled", idx * 4);
@@ -2469,8 +2784,13 @@ static void v2_reg_face_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
 
 static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
     voodoo2_t *v = (voodoo2_t *)ctx;
-    if (off < V2_OFF_LFB)
+    if (off < V2_OFF_LFB) {
+        // With the CMDFIFO map, the second 2 MB is the write-only
+        // command port; reads from it return undefined data.
+        if ((v->reg[R_FBIINIT7] & FBIINIT7_CMDFIFO_EN) && off >= 0x200000u)
+            return 0xFFFFFFFFu;
         return VOODOO2_LE32(v2_reg_face_read(v, off));
+    }
     if (off < V2_OFF_TEX) {
         // LFB reads are gated by fbiInit1[3], which starts CLEAR so a
         // random powerup read cannot hang the machine [V2 p.68]; they
@@ -2491,6 +2811,7 @@ static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
             p1 = (uint16_t)(((p1 & 0x1Fu) << 11) | (p1 & 0x7E0u) | (p1 >> 11));
         }
         uint32_t le = (uint32_t)p0 | ((uint32_t)p1 << 16);
+        LOG(5, "lfb rd32 +%06X -> %08X", off, v2_lfb_read_transform(v, le));
         return VOODOO2_LE32(v2_lfb_read_transform(v, le));
     }
     // Texture memory is write-only; reads return undefined data
@@ -2506,7 +2827,10 @@ static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data) {
     voodoo2_t *v = (voodoo2_t *)ctx;
     uint32_t le = VOODOO2_LE32(data);
     if (off < V2_OFF_LFB) {
-        v2_reg_face_write(v, off, le);
+        if ((v->reg[R_FBIINIT7] & FBIINIT7_CMDFIFO_EN) && off >= 0x200000u)
+            v2_cmdfifo_write(v, off - 0x200000u, le);
+        else
+            v2_reg_face_write(v, off, le);
         return;
     }
     if (off < V2_OFF_TEX) {
@@ -2515,6 +2839,7 @@ static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data) {
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, true, &buffer, &x, &y);
         uint32_t t = v2_lfb_write_transform(v, le);
+        LOG(5, "lfb wr32 +%06X = %08X (lfbMode %05X buf %u x %u y %u)", off, le, mode, buffer, x, y);
         uint32_t r, g, b, a;
         switch (fmt) {
         case 0:
@@ -2593,6 +2918,7 @@ static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
         uint16_t p = v2_lfb_load16(v, buffer, x, y);
         if (buffer != 3u && (LFB_LANES(v->reg[R_LFBMODE]) & 1u))
             p = (uint16_t)(((p & 0x1Fu) << 11) | (p & 0x7E0u) | (p >> 11));
+        LOG(5, "lfb rd16 +%06X -> %04X (buf %u x %u y %u)", off, p, buffer, x, y);
         return VOODOO2_LE16(p);
     }
     if (!v->warned_tex_read) {
@@ -2614,6 +2940,7 @@ static void v2_bar_write16(void *ctx, uint32_t off, uint16_t data) {
     if (off < V2_OFF_TEX) {
         // A single 16-bit datum; the Glide memory-sizing probes drive
         // exactly this path [3dfx-src fbiMemSize].
+        LOG(5, "lfb wr16 +%06X = %04X (lfbMode %05X)", off, data, v->reg[R_LFBMODE]);
         uint32_t mode = v->reg[R_LFBMODE];
         uint32_t fmt = LFB_FMT(mode);
         uint32_t buffer, x, y;
