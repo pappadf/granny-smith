@@ -47,6 +47,14 @@ LOG_USE_CATEGORY_NAME("storage");
 
 #define STORAGE_SNAPSHOT_VERSION 2
 
+// Staging-buffer size for storage_save_state.  Streaming a disk one block at a
+// time costs a seek plus a read per 512-byte block — over 130 000 filesystem
+// round trips per 64 MB.  Under WASMFS/OPFS each of those is a synchronous
+// access-handle call, which is what made exporting a real hard disk take
+// minutes.  Batching contiguous same-source runs through a buffer this size
+// cuts the round trips by three orders of magnitude.
+#define STORAGE_STREAM_CHUNK_BYTES (4u * 1024 * 1024)
+
 // ============================================================================
 // Internal types
 // ============================================================================
@@ -661,20 +669,93 @@ int storage_restore_from_checkpoint(storage_t *storage, checkpoint_t *checkpoint
 // Public API: Streaming
 // ============================================================================
 
+// Where a block's data comes from.  This is the axis runs are coalesced
+// along: consecutive blocks with the same source sit contiguously in the same
+// file, so they can be read in one call.
+typedef enum {
+    BLOCK_SRC_DELTA, // modified — read from the delta
+    BLOCK_SRC_BASE, // unmodified — read from the base image
+    BLOCK_SRC_ZERO, // unmodified with no base file — reads as zeros
+} block_src_t;
+
+static block_src_t block_source(const storage_t *s, uint64_t block) {
+    if (bitmap_test(s->bitmap, (uint32_t)block))
+        return BLOCK_SRC_DELTA;
+    return s->base_fp ? BLOCK_SRC_BASE : BLOCK_SRC_ZERO;
+}
+
 int storage_save_state(storage_t *storage, void *context, storage_write_callback_t write_cb) {
     if (!storage || !context || !write_cb)
         return GS_ERROR;
 
-    uint8_t buffer[STORAGE_MAX_BLOCK_SIZE];
-    for (uint64_t block = 0; block < storage->block_count; block++) {
-        size_t offset = (size_t)block * storage->block_size;
-        int rc = storage_read_block(storage, offset, buffer);
-        if (rc != GS_SUCCESS)
-            return rc;
-        if (write_cb(context, buffer, storage->block_size) != 0)
+    // Chunk sized in whole blocks.  If the staging allocation fails, fall back
+    // to a single block so a memory-starved host still exports, just slowly.
+    uint64_t chunk_blocks = STORAGE_STREAM_CHUNK_BYTES / storage->block_size;
+    if (chunk_blocks == 0)
+        chunk_blocks = 1;
+    uint8_t *buffer = malloc((size_t)chunk_blocks * storage->block_size);
+    if (!buffer) {
+        chunk_blocks = 1;
+        buffer = malloc(storage->block_size);
+        if (!buffer)
             return GS_ERROR;
     }
-    return GS_SUCCESS;
+
+    int rc = GS_SUCCESS;
+    uint64_t block = 0;
+    while (block < storage->block_count) {
+        // Extend the run while the source stays the same, capped by the chunk.
+        block_src_t src = block_source(storage, block);
+        uint64_t max_run = storage->block_count - block;
+        if (max_run > chunk_blocks)
+            max_run = chunk_blocks;
+        uint64_t run = 1;
+        while (run < max_run && block_source(storage, block + run) == src)
+            run++;
+
+        size_t run_bytes = (size_t)run * storage->block_size;
+
+        if (src == BLOCK_SRC_ZERO) {
+            memset(buffer, 0, run_bytes);
+        } else {
+            FILE *fp = (src == BLOCK_SRC_DELTA) ? storage->delta_fp : storage->base_fp;
+            size_t origin = (src == BLOCK_SRC_DELTA) ? storage->data_offset : storage->base_data_offset;
+            fseek(fp, (long)(origin + (size_t)block * storage->block_size), SEEK_SET);
+            size_t got = fread(buffer, 1, run_bytes, fp);
+            if (got < run_bytes) {
+                // A short read on the base means the base file is shorter than
+                // the declared geometry; storage_read_block zero-fills and
+                // carries on, so match that.  The delta is written a block at a
+                // time and every bit-set block therefore lies within EOF, so a
+                // short read there is real corruption and stays an error.
+                if (src == BLOCK_SRC_DELTA) {
+                    rc = GS_ERROR;
+                    break;
+                }
+                // storage_read_block zeroes a block it could not read *in
+                // full*, so a base whose length is not a whole multiple of
+                // block_size must not leak its trailing partial block.
+                got -= got % storage->block_size;
+                memset(buffer + got, 0, run_bytes - got);
+            }
+        }
+
+        // One callback per block, not per run: the checkpoint stream is a
+        // record format whose reader asserts each record's size, and
+        // storage_load_state pulls it back a block at a time.
+        for (uint64_t i = 0; i < run; i++) {
+            if (write_cb(context, buffer + (size_t)i * storage->block_size, storage->block_size) != 0) {
+                rc = GS_ERROR;
+                break;
+            }
+        }
+        if (rc != GS_SUCCESS)
+            break;
+        block += run;
+    }
+
+    free(buffer);
+    return rc;
 }
 
 static int read_exact(storage_read_callback_t read_cb, void *context, void *buf, size_t size) {
