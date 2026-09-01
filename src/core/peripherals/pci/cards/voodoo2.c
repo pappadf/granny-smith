@@ -2744,6 +2744,7 @@ static uint32_t v2_reg_face_read(voodoo2_t *v, uint32_t off) {
             return 0;
     }
     uint32_t value = v2_reg_read(v, idx);
+    LOG(6, "rd $%03X -> %08X", idx * 4, value);
     if ((off & (1u << 20)) && (v->reg[R_FBIINIT0] & FBIINIT0_SWIZZLE_EN))
         value = __builtin_bswap32(value);
     return value;

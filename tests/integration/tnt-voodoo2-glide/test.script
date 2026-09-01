@@ -1,0 +1,127 @@
+# Milestone 3e: the SHIPPED Mac Glide driver against the Voodoo2 model
+# (proposal-pci-3dfx-voodoo2 §7).
+#
+# Everything in this row is the guest's own software doing the work:
+# CFM registers the four B5 extensions at boot, `Quake 3Dfx` imports
+# 3DfxGlideLib2.x, and the library walks the Name Registry, finds
+# pci121a,2, enables Memory Space itself, and runs 3dfx's own
+# initialisation — the sequence tnt-pci-voodoo2 replays by hand, here
+# executed by the binary 3dfx shipped.  The model has to satisfy the
+# driver's own SELF-TESTS to get this far: the un-dither calibration
+# demands unique 4x4 tile sums from the dither, the TMU census renders
+# config words through the texture path, and the memory sensing writes
+# sentinels that must alias exactly.
+#
+# KNOWN LIMIT (recorded, not hidden): after grSstQueryHardware succeeds,
+# Quake parks in an event loop with the display blanked BEFORE calling
+# grSstWinOpen.  The same wait, byte for byte, occurs with NO card
+# seated (the A/B control), so it is a guest-environment launch issue,
+# not a card behaviour — the rendered-frame half of this milestone is
+# blocked on it and tracked in voodoo2.md.
+
+include "../lib/mac.script"
+
+let img = "${$WORK_DIR}/quake.img"
+if have_media($img) {
+
+machine.boot model="pm7500" ram=65536 rom="${$ROM}" pci_card="voodoo2"
+machine.rtc.time = "2026-04-26T21:30:36"
+machine.scsi.attach_hd "${$img}" 0
+
+# Mac OS 8.1 to the Finder with the ROM-less card seated the whole way.
+scheduler.run 2600000000
+assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive not set (driver match / mount failed)"
+assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
+
+# --- Exactly ONE 3DfxGlideLib2.x fragment is registered (§8 Q12). -----------
+# The Quake CD ships a Voodoo1-era library under the SAME fragment name;
+# with both installed CFM may bind Glide to the library that cannot see
+# a Voodoo2, and the failure is silent.  The shipped image has the
+# collision removed; this pins it.  The CFM registry lives in the system
+# heap — one entry, holding the fragment name, in this window.
+assert len(find.str("3DfxGlideLib2.x", 0x100000, 0x300000)) == 1 "exactly one 3DfxGlideLib2.x registration"
+# ...and registered-not-prepared: no Glide code is resident at boot
+# (nothing imports it until a client launches — §1.10).
+assert len(find.str("MacCheckBoardsInSystem", 0x0, 0x4000000)) == 0 "Glide code is not resident before a client runs"
+
+# The card is untouched: Mac OS loads no driver for a ROM-less card.
+assert machine.pci.slot[1].card.regs.init_enable == 0x00012000 "initEnable untouched before the client runs"
+assert (machine.pci.slot[1].card.config.command & 0x0002) == 0 "Memory Space still clear — nobody enabled it"
+
+# --- Launch Quake 3Dfx from the Finder. -------------------------------------
+# Dismiss the image's dirty-shutdown notice and the Energy Saver
+# first-boot message (both close on Return), then navigate by
+# type-select + Cmd-O: volume -> Quake folder -> the app.
+machine.adb.keyboard.press 0x24
+scheduler.run 300000000
+machine.adb.keyboard.press 0x24
+scheduler.run 300000000
+machine.adb.mouse.move 60 380 "global"
+scheduler.run 5000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+machine.adb.keyboard.type "Macintosh HD"
+scheduler.run 50000000
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x1F
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+scheduler.run 200000000
+machine.adb.keyboard.type "Quake"
+scheduler.run 50000000
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x1F
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+scheduler.run 200000000
+machine.adb.keyboard.type "Quake 3Dfx"
+scheduler.run 50000000
+machine.adb.keyboard.down 0x37
+scheduler.run 2000000
+machine.adb.keyboard.press 0x1F
+scheduler.run 2000000
+machine.adb.keyboard.up 0x37
+
+# Give the client its whole detection run: CFM prepares GlideLib2.x,
+# MacCheckBoardsInSystem walks the Name Registry, and
+# grSstQueryHardware drives the full bring-up and self-tests.
+scheduler.run 3500000000
+
+# --- The REAL driver drove the card. ----------------------------------------
+# (No string-residency check here: under the image's virtual memory the
+# library's loader strings need not be physically resident after the
+# prepare — the card state below is the evidence that it ran.)
+# It enabled Memory Space itself through the Expansion Manager
+# (Apple p.97: cleared before the OS loads; the driver's job)...
+assert (machine.pci.slot[1].card.config.command & 0x0002) != 0 "the driver enabled Memory Space itself"
+# ...opened both initEnable gates (fbiInit writes + PCI FIFO)...
+assert (machine.pci.slot[1].card.regs.init_enable & 0x3) == 0x3 "initEnable[1:0] opened by the driver"
+# ...enabled the PPC byte-swizzle register path, exactly as 3dfx said a
+# big-endian host should (V2 p.52)...
+assert (machine.pci.slot[1].card.regs.fbi_init0 & 0x8) != 0 "fbiInit0[3]: the PPC driver enabled byte swizzling"
+# ...enabled LFB reads for its memory probes...
+assert (machine.pci.slot[1].card.regs.fbi_init1 & 0x8) != 0 "fbiInit1[3]: LFB reads enabled"
+# ...detected the ICS5342 and set the 16 MHz bring-up clock (the full
+# graphics clock is a grSstWinOpen step)...
+let GKHZ = machine.pci.slot[1].card.dac.graphics_khz
+assert $GKHZ > 15000 && $GKHZ < 17000 "the DAC was programmed to the 16 MHz bring-up clock"
+# ...and ran its render-based self-tests through the rasteriser: the
+# dither calibration (256 flat triangles, unique un-dither sums), the
+# TMU census (send-config triangles) and both TMUs' memory sensing.
+assert machine.pci.slot[1].card.regs.read(0x25C) > 200 "the driver's self-tests drew hundreds of triangles"
+assert machine.pci.slot[1].card.regs.read(0x15C) > 100000 "...and they filled pixels through the pipeline"
+# The idle contract held the whole way: every one of the driver's
+# unbounded status polls returned, or this row would never have reached
+# this line.
+assert (machine.pci.slot[1].card.regs.status & 0x380) == 0 "the card reports idle after the whole detection"
+
+echo "tnt-voodoo2-glide: grSstQueryHardware completed against the model"
+
+} else {
+    echo "skip: tnt-voodoo2-glide (local/macos81voodoo2-quake-installed.img is not present on this machine)"
+}
+quit

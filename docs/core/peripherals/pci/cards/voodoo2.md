@@ -62,7 +62,30 @@ document grows as each group lands.
   desktop with the release matching the pre-takeover golden
   byte-identically, and a mid-drive checkpoint restoring to the same
   framebuffer checksum.
-- **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`):** not yet landed.
+- **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`) — detection
+  complete; rendering blocked on a non-card launch issue.**  Running
+  the SHIPPED 3dfx driver exposed three model gaps, all closed: the
+  **CMDFIFO engine** (V2 §11 — the proposal wrongly believed it off the
+  Glide 2.x path; Mac Glide's whole render path uses it and polls
+  `cmdFifoRdPtr` for room), **TMU send-config** (`trexInit1[18]` — how
+  software counts a board's TMUs, decoded from Glide's own use), and a
+  **calibratable dither** (Glide builds un-dither tables by rendering
+  all 256 values and requiring unique 4×4 tile sums — the previous
+  dither plateaued at the range ends and failed the driver's own
+  self-test).  With those, the real `3DfxGlideLib2.x` completes
+  **`grSstQueryHardware` end to end against the model**: Name-Registry
+  match on `pci121a,2`, Memory Space enabled by the driver itself, the
+  full §1.6 bring-up, ICS5342 detection, FBI memory sized 4 MB, dither
+  calibration, TMU census and both TMUs' memory sensed — gated by
+  `tests/integration/tnt-voodoo2-glide` (tier extended, media-gated on
+  the machine-local image).
+  **Known limit:** after the query succeeds, Quake parks in an event
+  loop with the display blanked *before* calling `grSstWinOpen`.  The
+  identical wait occurs with NO card seated (the A/B control), so it is
+  a guest-environment launch issue — likely an invisible launcher UI or
+  an unrelated subsystem wait on the blanked screen — not a card
+  behaviour.  The rendered-frame half of the milestone (grSstWinOpen,
+  in-game frames) is blocked on diagnosing that guest-side wait.
 
 ## Provenance
 
