@@ -111,6 +111,7 @@ static inline uint32_t tlbie_class_mask(const ppc_t *p) {
 
 void ppc_mmu_flush_fetch(void) {
     g_ppc_fetch.span = 0;
+    g_ppc_fetch.blk = NULL;
     memset(g_ftlb, 0, sizeof(g_ftlb));
 }
 
@@ -651,6 +652,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = fe->host_adjust;
+            g_ppc_fetch.blk = NULL; // the predecoded loop re-derives the block
             *iw = LOAD_BE32((uint8_t *)(fe->host_adjust + pc));
             return true;
         }
@@ -695,6 +697,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = adj;
+            g_ppc_fetch.blk = NULL;
             *iw = LOAD_BE32((uint8_t *)(adj + pc));
             return true;
         }
@@ -707,6 +710,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = (uintptr_t)host - page;
+            g_ppc_fetch.blk = NULL;
             *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + pc));
             return true;
         }
@@ -716,6 +720,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     // fetch through the physical slow path so logpoints and device
     // semantics stay honest.  No window: every fetch here re-resolves.
     g_ppc_fetch.span = 0;
+    g_ppc_fetch.blk = NULL;
     *iw = memory_read_uint32_slow(pa & g_address_mask);
     return true;
 }

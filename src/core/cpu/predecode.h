@@ -95,6 +95,12 @@ void predecode_reset(void);
 // preceding ones an instruction could start in) and count toward demotion.
 void predecode_invalidate_host(const uint8_t *host, uint32_t len);
 
+// Decode histogram: decodes per id, per architecture (predecode.hist prints
+// the top entries with names).  Reset with the pool.
+void predecode_count_decode(pd_arch_t arch, uint16_t id);
+// Name hooks, installed by the cores (cpu.c / ppc.c): id → handler name.
+extern const char *(*g_pd_id_name[2])(uint16_t id);
+
 // Statistics (predecode.stats); plain counters, reset with the pool.
 typedef struct pd_stats {
     uint64_t lookups; // page transitions that consulted the pool

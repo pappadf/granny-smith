@@ -19,6 +19,7 @@
 #                               (included inside the executor's flat switch,
 #                               after the core's own OP_ bindings, so each
 #                               case runs whatever that core binds the name to)
+#   <prefix>_pd_t1_names.h      the leaf names by id, for predecode.hist
 #
 # Usage: gen_pd_cases.py --tree <decode.h> --prefix <cpu|ppc> --base <id> --out <dir>
 
@@ -59,6 +60,7 @@ def main():
         for n in names[1:]:
             f.write("    T1_%s,\n" % n[3:])
         f.write("    T1_END,\n")
+        f.write("    T1_FIRST = %d,\n" % args.base)
         f.write("};\n")
         f.write("#define %s_PD_T1_COUNT %d\n" % (guard, len(names)))
         f.write("#endif\n")
@@ -70,6 +72,15 @@ def main():
         f.write("// OP_ names undefined; T0 classifiers redefine the shapes they specialize.\n")
         for n in names:
             f.write("#undef %s\n#define %s return T1_%s\n" % (n, n, n[3:]))
+
+    names_path = os.path.join(args.out, "%s_pd_t1_names.h" % args.prefix)
+    with open(names_path, "w", encoding="utf-8") as f:
+        f.write(header)
+        f.write("// Leaf names by T1 id (index = id - base), for the decode histogram.\n")
+        f.write("static const char *const %s_pd_t1_names[%d] = {\n" % (args.prefix, len(names)))
+        for n in names:
+            f.write('    "%s",\n' % n[3:])
+        f.write("};\n")
 
     cases_path = os.path.join(args.out, "%s_pd_t1_cases.h" % args.prefix)
     with open(cases_path, "w", encoding="utf-8") as f:

@@ -81,7 +81,7 @@ static __attribute__((noinline)) void PD_DECODE_NAME(cpu_t *restrict cpu, pd_blo
         }
     }
     blk->e[idx] = e;
-    g_pd_stats.decodes++;
+    predecode_count_decode(PD_ARCH_68K, id);
 }
 
 // ============================================================================

@@ -92,11 +92,37 @@ static bool pd_d6_mem(int k) {
     return k >= 1 && k <= 5;
 }
 
+#include "cpu_pd_t1_names.h" // generated: leaf names by T1 id
+
+// Handler name for the decode histogram: control, T1 leaf, or T0 family
+// (+ shape slot) — a reviewer's view of which shapes the guest executes.
+static const char *cpu_pd_id_name(uint16_t id) {
+    static char buf[64];
+    if (id == PD_UNDECODED)
+        return "undecoded";
+    if (id == PD_CROSS)
+        return "cross";
+    if (id == PD_GENERIC)
+        return "generic";
+    if (id >= T1_FIRST && id < T1_END)
+        return cpu_pd_t1_names[id - T1_FIRST];
+    for (size_t i = 0; i < sizeof(pd_families) / sizeof(pd_families[0]); i++) {
+        const pd_family_desc_t *f = &pd_families[i];
+        if (id >= f->first && id <= f->last) {
+            int slot = id - f->first;
+            snprintf(buf, sizeof(buf), "%s+%d%s", f->name, slot, (g_cpu_pd_prop[id] & PD_P_TWIN) ? " (nf)" : "");
+            return buf;
+        }
+    }
+    return "?";
+}
+
 void cpu_pd_prop_init(void) {
     static bool done = false;
     if (done)
         return;
     done = true;
+    g_pd_id_name[PD_ARCH_68K] = cpu_pd_id_name;
     // Control and T1 ids: never overwriters, always able to fault.
     for (uint32_t i = 0; i < PD_ID_COUNT; i++)
         g_cpu_pd_prop[i] = PD_P_CANFAULT;

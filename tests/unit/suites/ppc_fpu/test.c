@@ -32,6 +32,7 @@
 #include "fpu_corpus.h"
 #include "harness.h"
 #include "memory.h"
+#include "predecode.h"
 
 #include <fenv.h>
 #include <math.h>
@@ -765,6 +766,11 @@ int main(void) {
     memory_populate_pages(ctx->memory, 0x40800000u, 0x40820000u);
     test_set_active_context(ctx);
 
+    // CPU_TEST_PREDECODE=1 routes the sprints through the predecoded loop.
+    {
+        const char *pd_env = getenv("CPU_TEST_PREDECODE");
+        predecode_set_enabled(pd_env && pd_env[0] == '1');
+    }
     P = ppc_init(NULL, CPU_MODEL_PPC601);
     if (!P) {
         printf("FAIL: ppc_init\n");

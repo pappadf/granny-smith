@@ -193,6 +193,54 @@ Hooks and helpers:
 - `memory_logpoint_install(start_page, end_page)` / `..._uninstall(...)` — page refcount helpers
 - `dev_read8/16/32`, `dev_write8/16/32` (memory.c) — device dispatch + hook notify
 
+## Code-Page Coherence
+
+The predecoded executors (`docs/core/cpu/predecode.md`) cache decoded
+instructions per host page; the memory layer keeps those caches coherent
+without a check on the fast path.
+
+- **Marks.** `memory_code_page_mark(host)` sets a per-page mark for the
+  host page (the flat RAM+ROM image is region 0 of `g_mem_code_regions`;
+  a card's host-backed window may register as another) and zeroes the
+  page's write entries in every SoA table it has aliases in.  Aliases are
+  found by a reverse scan over the 256-page chunks flagged in
+  `g_mem_soa_chunk`.  `memory_code_page_unmark` clears the mark; the
+  entries come back on the next refill.
+- **One planter.** Every site that plants a write entry —
+  `rebuild_soa_page`, `memory_populate_pages`, `memory_populate_ram_mirror`,
+  `mmu_fill_soa_entry` (68030), `user_soa_fill` (PowerPC), the PDM/TNT
+  glue — goes through `memory_write_fill(page, host, adjusted)`, which
+  sets the chunk flag and **declines on a marked page** (the store then
+  takes the slow path).  Do not write `g_*_write[]` directly.
+- **Slow-path notification.** The 8/16/32-bit slow write paths call
+  `memory_host_written(host, len)` when the target is marked (before the
+  store lands, so a block executing the page is invalidated before the
+  new word can be fetched).
+- **Direct host writers** — anything that writes the image without going
+  through the guest store paths — call `memory_host_written` themselves.
+  The inventory:
+
+| Writer | Where | Hook call |
+|---|---|---|
+| `memory.write` / debug pokes | `memory_debug_write_*` (memory.c) | after the store |
+| ROM installation | `memory_install_rom` (memory.c) | whole image |
+| Checkpoint restore of the image | `memory_map_init` + the restore path | generation bump (`g_mem_map_generation`) resets the pool |
+| PowerPC HTAB R/C write-back | `ppc_mmu.c` | `memory_host_written` |
+| AMIC DMA (SCSI, SCC, sound, floppy) | `amic.c` byte writers | `memory_host_written` |
+| DBDMA channels | `tnt.c` memcpy path | `memory_host_written` |
+| 53C8xx SCRIPTS engine | `scripts53c8xx.c` | `memory_host_written` |
+| IIfx / IOP DMA | `iifx.c`, `iop_swim.c` | `memory_host_written` |
+| Mac II / 030 glue mirrors | `mac030_glue.c` | `memory_write_fill` for the aliases; stores notify |
+
+A new device that DMA-writes guest memory through a host pointer must
+call `memory_host_written(host, len)` after the copy.  The debug-build
+audit in the executors (`PD_AUDIT_*`) traps on the first stale entry a
+missing call would leave behind.
+
+Counters: `g_mem_code_write_count` (stores that reached a marked page),
+`g_mem_slowpath_count` (every slow-path access; the elision level-2
+guard), both visible through `machine.memory`.
+
 ## Key Files
 
 | File | Purpose |

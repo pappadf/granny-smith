@@ -12,8 +12,8 @@ PDGEN_OUT := build/gen
 PDGEN_SCRIPT := scripts/gen_pd_cases.py
 PDGEN_CPU_TREE := src/core/cpu/cpu_decode.h
 PDGEN_PPC_TREE := src/core/cpu/ppc/ppc_decode.h
-PDGEN_CPU_HEADERS := $(PDGEN_OUT)/cpu_pd_t1_ids.h $(PDGEN_OUT)/cpu_pd_t1_classify.h $(PDGEN_OUT)/cpu_pd_t1_cases.h
-PDGEN_PPC_HEADERS := $(PDGEN_OUT)/ppc_pd_t1_ids.h $(PDGEN_OUT)/ppc_pd_t1_classify.h $(PDGEN_OUT)/ppc_pd_t1_cases.h
+PDGEN_CPU_HEADERS := $(PDGEN_OUT)/cpu_pd_t1_ids.h $(PDGEN_OUT)/cpu_pd_t1_classify.h $(PDGEN_OUT)/cpu_pd_t1_cases.h $(PDGEN_OUT)/cpu_pd_t1_names.h
+PDGEN_PPC_HEADERS := $(PDGEN_OUT)/ppc_pd_t1_ids.h $(PDGEN_OUT)/ppc_pd_t1_classify.h $(PDGEN_OUT)/ppc_pd_t1_cases.h $(PDGEN_OUT)/ppc_pd_t1_names.h
 PDGEN_HEADERS := $(PDGEN_CPU_HEADERS) $(PDGEN_PPC_HEADERS)
 
 # T1 ids start right after the shared control ids (PD_CONTROL_END = 16).

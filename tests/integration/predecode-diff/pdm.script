@@ -2,6 +2,8 @@
 # SCSI-scan wall the ROM ladder parks at.
 predecode.enabled = $PD
 predecode.elide = $ELIDE
+# Pinned before the boot: the PDM adopts a pre-boot rtc.time as its seed.
+machine.rtc.time = 3000000000
 machine.boot model="pm6100" ram=24576 rom="${$ROM}"
 scheduler.run 20000000
 echo "cp1 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"

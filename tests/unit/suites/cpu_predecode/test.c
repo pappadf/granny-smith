@@ -355,6 +355,44 @@ TEST(test_generation_reset) {
     predecode_set_enabled(false);
 }
 
+// === Benchmark (PD_BENCH=1: not a test; prints interpreter-loop MIPS) =======
+
+#include <time.h>
+
+static double now_s(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+
+// The program's inner loop runs forever with a large counter: a compact
+// mix of ALU, memory, compare/branch and DBRA — the study's alu/mem kernels.
+static void bench(void) {
+    emit(0x1000, 5, 0x7000, 0x223C, 0x7FFF, 0xFFFF, 0x2079); // MOVEQ #0,D0; MOVE.L #$7FFFFFFF,D1; MOVEA.L $2000.L,A0
+    emit(0x100A, 2, 0x0000, 0x2000); //   (the abs address)
+    emit(0x100E, 2, 0xD081, 0x30C1); // loop: ADD.L D1,D0; MOVE.W D1,(A0)+
+    emit(0x1012, 3, 0x0680, 0x0000, 0x0003); // ADDI.L #3,D0
+    emit(0x1018, 3, 0xB081, 0x6602, 0x4E71); // CMP.L D1,D0; BNE.S skip; NOP
+    emit(0x101E, 4, 0x4A80, 0x5388, 0x2208, 0x60EC); // skip: TST.L D0; SUBQ.L #1,A0; MOVE.L A0,D1; BRA.S loop
+    emit(0x2000, 2, 0x0000, 0x3000);
+    for (int pd = 0; pd <= 1; pd++) {
+        for (int level = 0; level <= (pd ? 2 : 0); level++) {
+            predecode_set_enabled(pd != 0);
+            predecode_set_elide(level);
+            predecode_reset();
+            reset_cpu(0x1000);
+            const uint32_t n = 50000000;
+            double t0 = now_s();
+            run(n, 100000);
+            double dt = now_s() - t0;
+            printf("bench: predecode=%d elide=%d  %.1f MIPS  (%u instructions in %.3f s)\n", pd, level, n / dt / 1e6, n,
+                   dt);
+        }
+    }
+    predecode_set_enabled(false);
+    predecode_set_elide(0);
+}
+
 // === Main ===================================================================
 
 int main(void) {
@@ -364,6 +402,10 @@ int main(void) {
         return 1;
     }
     CPU = test_get_cpu(CTX);
+    if (getenv("PD_BENCH")) {
+        bench();
+        return 0;
+    }
     RUN(test_basic_loop);
     RUN(test_differential);
     RUN(test_self_modifying);

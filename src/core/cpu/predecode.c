@@ -35,6 +35,19 @@ static uint32_t g_pd_demote_hold = 256; // allocations a demoted page stays on t
 
 pd_stats_t g_pd_stats;
 uint32_t g_pd_blocks_live = 0;
+const char *(*g_pd_id_name[2])(uint16_t id) = {NULL, NULL};
+
+// Decodes per id and architecture (256 KB each; the histogram behind the
+// specialization order of proposal §4.2/§6.2).
+static uint32_t *g_pd_hist[2];
+
+void predecode_count_decode(pd_arch_t arch, uint16_t id) {
+    if (!g_pd_hist[arch])
+        g_pd_hist[arch] = (uint32_t *)calloc(65536, sizeof(uint32_t));
+    if (g_pd_hist[arch])
+        g_pd_hist[arch][id]++;
+    g_pd_stats.decodes++;
+}
 
 static pd_block_t **g_pd_pool = NULL; // every block ever allocated, up to the cap
 static uint32_t g_pd_pool_count = 0;
@@ -124,6 +137,9 @@ void predecode_reset(void) {
     g_pd_pool_next = 0;
     g_pd_blocks_live = 0;
     memset(&g_pd_stats, 0, sizeof(g_pd_stats));
+    for (int a = 0; a < 2; a++)
+        if (g_pd_hist[a])
+            memset(g_pd_hist[a], 0, 65536 * sizeof(uint32_t));
     g_pd_generation = g_mem_map_generation;
 }
 
@@ -385,6 +401,42 @@ static value_t pd_attr_set(struct object *self, const member_t *m, value_t in) {
     }
 }
 
+// `predecode.hist([top])` — print the most-decoded ids (static shape
+// frequency of the code executed so far) with their names and tier.
+static value_t pd_method_hist(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    uint32_t top = (argc >= 1 && argv[0].u > 0) ? (uint32_t)argv[0].u : 40u;
+    for (int a = 0; a < 2; a++) {
+        if (!g_pd_hist[a])
+            continue;
+        uint64_t total = 0;
+        for (uint32_t i = 0; i < 65536; i++)
+            total += g_pd_hist[a][i];
+        if (!total)
+            continue;
+        printf("%s: %llu decoded entries\n", a == PD_ARCH_PPC ? "ppc" : "68k", (unsigned long long)total);
+        for (uint32_t n = 0; n < top; n++) {
+            uint32_t best = 0, best_i = 0;
+            for (uint32_t i = 0; i < 65536; i++)
+                if (g_pd_hist[a][i] > best) {
+                    best = g_pd_hist[a][i];
+                    best_i = i;
+                }
+            if (!best)
+                break;
+            const char *name = g_pd_id_name[a] ? g_pd_id_name[a]((uint16_t)best_i) : NULL;
+            printf("  %5.1f%% %9u  %-5u %s\n", 100.0 * best / (double)total, best, best_i, name ? name : "?");
+            g_pd_hist[a][best_i] = 0; // consumed; the histogram is a diagnostic snapshot
+        }
+    }
+    return val_none();
+}
+
+static const arg_decl_t pd_hist_args[] = {
+    {.name = "top", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "entries to print (default 40)"},
+};
+
 static value_t pd_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -436,6 +488,10 @@ static const member_t predecode_members[] = {
     PD_ATTR_RO("elided", PDA_ELIDED, "entries retargeted to a no-flags twin"),
     PD_ATTR_RO("suppressed_writes", PDA_SUPPRESSED_WRITES,
                "guest stores that hit a code page (slow path + invalidate)"),
+    {.kind = M_METHOD,
+     .name = "hist",
+     .doc = "Print the most-decoded ids with their names (static shape histogram; consumes the counts)",
+     .method = {.args = pd_hist_args, .nargs = 1, .result = V_NONE, .fn = pd_method_hist}                },
     {.kind = M_METHOD,
      .name = "reset",
      .doc = "Drop every block and zero the counters",

@@ -233,9 +233,9 @@ $(OBJ_DIR)/$(CORE_DIR)/build_id.o: FORCE
 $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 
 # The predecoded executors include the generated T1 headers.
-$(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68000.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68030.o \
+$(OBJ_DIR)/$(CORE_DIR)/cpu/cpu.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68000.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68030.o \
     $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
-$(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc_pd_run.o: $(PDGEN_PPC_HEADERS)
+$(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc.o $(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc_run.o: $(PDGEN_PPC_HEADERS)
 
 # Link all objects into the final WASM module
 $(OUTPUT): $(OBJ)

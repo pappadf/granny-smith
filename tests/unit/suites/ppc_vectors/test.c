@@ -44,6 +44,7 @@
 
 #include "harness.h"
 #include "memory.h"
+#include "predecode.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -89,6 +90,11 @@ static int custom_open(ppc_backend *self, char *err, size_t errlen) {
     memory_populate_pages(CTX->memory, 0x40800000u, 0x40820000u); // plants the RAM/ROM page tables
     test_set_active_context(CTX);
 
+    // CPU_TEST_PREDECODE=1 routes the sprints through the predecoded loop.
+    {
+        const char *pd_env = getenv("CPU_TEST_PREDECODE");
+        predecode_set_enabled(pd_env && pd_env[0] == '1');
+    }
     P = ppc_init(NULL, g_backend_model);
     if (!P) {
         snprintf(err, errlen, "ppc_init failed");
