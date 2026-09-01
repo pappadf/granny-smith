@@ -1130,6 +1130,23 @@ static int file_write_cb(void *ctx, const void *data, size_t size) {
     return (wrote == size) ? 0 : -1;
 }
 
+// storage_save_state emits a block at a time, so the destination stream sees
+// one small fwrite per block.  With stdio's default ~1 KB buffer that is still
+// a filesystem call every two blocks; a large buffer turns the whole export
+// into a handful of big writes.  Returns the buffer, which the caller must
+// keep alive until fclose and then free (NULL is harmless — the stream just
+// keeps its default buffering).
+#define IMAGE_EXPORT_BUFFER_BYTES (4u * 1024 * 1024)
+
+static char *stream_set_large_buffer(FILE *f) {
+    char *buf = malloc(IMAGE_EXPORT_BUFFER_BYTES);
+    if (buf && setvbuf(f, buf, _IOFBF, IMAGE_EXPORT_BUFFER_BYTES) != 0) {
+        free(buf);
+        return NULL;
+    }
+    return buf;
+}
+
 size_t image_save(image_t *image) {
     if (!image || !image->storage || !image->filename)
         return (size_t)-1;
@@ -1140,9 +1157,11 @@ size_t image_save(image_t *image) {
     FILE *f = fopen(image->filename, "wb");
     if (!f)
         return (size_t)-1;
+    char *iobuf = stream_set_large_buffer(f);
     storage_checkpoint(image->storage, NULL);
     int rc = storage_save_state(image->storage, f, file_write_cb);
     fclose(f);
+    free(iobuf);
     return (rc == GS_SUCCESS) ? 0 : (size_t)-1;
 }
 
@@ -1160,8 +1179,10 @@ int image_export_to(image_t *image, const char *dest_path) {
     FILE *f = fopen(dest_path, "wb");
     if (!f)
         return -1;
+    char *iobuf = stream_set_large_buffer(f);
     int rc = storage_save_state(image->storage, f, file_write_cb);
     fclose(f);
+    free(iobuf);
     if (rc != GS_SUCCESS) {
         remove(dest_path);
         return -1;

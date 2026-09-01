@@ -398,6 +398,174 @@ TEST(storage_block_size_validation) {
     teardown_sandbox();
 }
 
+// ============================================================================
+// storage_save_state run coalescing
+// ============================================================================
+//
+// storage_save_state batches contiguous same-source blocks into one read
+// instead of doing a seek+read per block.  storage_read_block still walks a
+// block at a time and is untouched by that change, so it serves as an
+// independent oracle: the streamed bytes must equal the per-block reads
+// concatenated, for every arrangement of base/delta/zero runs.
+
+// Stream `storage` to STATE_FILE, then assert the result is byte-identical to
+// block-by-block storage_read_block output.  Also asserts the stream is
+// emitted as one record per block, which the checkpoint format requires.
+static uint64_t g_stream_records;
+
+static int counting_write_cb(void *ctx, const void *data, size_t size) {
+    g_stream_records++;
+    return file_write_cb(ctx, data, size);
+}
+
+static void assert_stream_matches_per_block(storage_t *storage, uint64_t blocks, uint32_t bsize) {
+    FILE *state = fopen(STATE_FILE, "wb");
+    ASSERT_TRUE(state != NULL);
+    g_stream_records = 0;
+    ASSERT_OK(storage_save_state(storage, state, counting_write_cb));
+    fclose(state);
+
+    // One callback per block: storage_load_state reads the checkpoint stream a
+    // block at a time and its reader asserts each record's exact size.
+    ASSERT_EQ_INT((int)blocks, (int)g_stream_records);
+
+    state = fopen(STATE_FILE, "rb");
+    ASSERT_TRUE(state != NULL);
+    uint8_t *want = malloc(bsize);
+    uint8_t *got = malloc(bsize);
+    ASSERT_TRUE(want != NULL && got != NULL);
+    for (uint64_t lba = 0; lba < blocks; lba++) {
+        ASSERT_OK(storage_read_block(storage, (size_t)lba * bsize, want));
+        ASSERT_TRUE(fread(got, 1, bsize, state) == bsize);
+        ASSERT_TRUE(memcmp(want, got, bsize) == 0);
+    }
+    // Nothing beyond the last block.
+    ASSERT_TRUE(fread(got, 1, 1, state) == 0);
+    free(want);
+    free(got);
+    fclose(state);
+}
+
+// Write a spread of blocks chosen to exercise every run shape: a leading
+// unmodified run, isolated modified blocks, a modified run longer than one
+// staging chunk, an alternating stretch, and a modified final block.
+static void write_run_pattern(storage_t *storage, uint64_t blocks, uint32_t bsize) {
+    uint8_t *buf = malloc(bsize);
+    ASSERT_TRUE(buf != NULL);
+
+    // Isolated singles surrounded by base-sourced blocks.
+    const uint64_t singles[] = {1, 7, 100, 4095, 4096, 8191, 8192, 8193};
+    for (size_t i = 0; i < sizeof(singles) / sizeof(singles[0]); i++) {
+        if (singles[i] >= blocks)
+            continue;
+        fill_block_bs((size_t)singles[i], bsize, 0x30, buf);
+        ASSERT_OK(storage_write_block(storage, (size_t)singles[i] * bsize, buf));
+    }
+
+    // A modified run longer than one staging chunk (4 MB / bsize blocks), so
+    // the run must be split across chunks and rejoined without a gap.
+    uint64_t run_start = 9000;
+    uint64_t run_end = run_start + 10000;
+    if (run_end > blocks)
+        run_end = blocks;
+    for (uint64_t lba = run_start; lba < run_end; lba++) {
+        fill_block_bs((size_t)lba, bsize, 0x40, buf);
+        ASSERT_OK(storage_write_block(storage, (size_t)lba * bsize, buf));
+    }
+
+    // Alternating modified/unmodified — every run is length 1.
+    for (uint64_t lba = 200; lba < 400 && lba < blocks; lba += 2) {
+        fill_block_bs((size_t)lba, bsize, 0x50, buf);
+        ASSERT_OK(storage_write_block(storage, (size_t)lba * bsize, buf));
+    }
+
+    // First and last block modified — the boundaries of the walk.
+    fill_block_bs(0, bsize, 0x60, buf);
+    ASSERT_OK(storage_write_block(storage, 0, buf));
+    fill_block_bs((size_t)(blocks - 1), bsize, 0x60, buf);
+    ASSERT_OK(storage_write_block(storage, (size_t)(blocks - 1) * bsize, buf));
+
+    free(buf);
+}
+
+TEST(storage_save_state_run_patterns) {
+    setup_sandbox();
+    // 20000 blocks x 512 B is ~10 MB, spanning several 4 MB staging chunks.
+    const uint64_t blocks = 20000;
+    create_base_image_bs(BASE_FILE, blocks, STORAGE_BLOCK_SIZE, 0x11);
+
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+
+    // Fully unmodified: one enormous base-sourced run.
+    assert_stream_matches_per_block(storage, blocks, STORAGE_BLOCK_SIZE);
+
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_stream_matches_per_block(storage, blocks, STORAGE_BLOCK_SIZE);
+
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+TEST(storage_save_state_runs_532) {
+    // 532 does not divide the staging chunk evenly, so the chunk holds a
+    // partial-block remainder that must never be streamed.
+    setup_sandbox();
+    const uint64_t blocks = 20000;
+    create_base_image_bs(BASE_FILE, blocks, 532, 0x22);
+
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    config.block_size = 532;
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+
+    write_run_pattern(storage, blocks, 532);
+    assert_stream_matches_per_block(storage, blocks, 532);
+
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+TEST(storage_save_state_no_base) {
+    // No base file: unmodified blocks are the zero source, so runs alternate
+    // between zeros and the delta with no file behind the zeros.
+    setup_sandbox();
+    const uint64_t blocks = 12000;
+    storage_config_t config = make_config(NULL, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_stream_matches_per_block(storage, blocks, STORAGE_BLOCK_SIZE);
+
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
+TEST(storage_save_state_short_base) {
+    // A base shorter than the declared geometry, ending mid-block.  Blocks
+    // past EOF read as zeros, and the trailing partial block must read as all
+    // zeros too rather than leaking the bytes that are present.
+    setup_sandbox();
+    const uint64_t blocks = 12000;
+    const uint64_t base_blocks = 5000;
+    create_base_image_bs(BASE_FILE, base_blocks, STORAGE_BLOCK_SIZE, 0x33);
+    // Chop the last block in half so the base ends mid-block.
+    ASSERT_TRUE(truncate(BASE_FILE, (off_t)((base_blocks - 1) * STORAGE_BLOCK_SIZE + 200)) == 0);
+
+    storage_config_t config = make_config(BASE_FILE, DELTA_FILE, JOURNAL_FILE, blocks);
+    storage_t *storage = NULL;
+    ASSERT_OK(storage_new(&config, &storage));
+
+    assert_stream_matches_per_block(storage, blocks, STORAGE_BLOCK_SIZE);
+    write_run_pattern(storage, blocks, STORAGE_BLOCK_SIZE);
+    assert_stream_matches_per_block(storage, blocks, STORAGE_BLOCK_SIZE);
+
+    ASSERT_OK(storage_delete(storage));
+    teardown_sandbox();
+}
+
 int main(void) {
     RUN(storage_invalid_arguments);
     RUN(storage_basic_read_write);
@@ -407,5 +575,9 @@ int main(void) {
     RUN(storage_block_size_532);
     RUN(storage_block_size_other);
     RUN(storage_block_size_validation);
+    RUN(storage_save_state_run_patterns);
+    RUN(storage_save_state_runs_532);
+    RUN(storage_save_state_no_base);
+    RUN(storage_save_state_short_base);
     return 0;
 }
