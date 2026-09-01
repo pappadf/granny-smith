@@ -1,0 +1,16 @@
+# Power Macintosh 6100 ROM boot (PowerPC 601): three checkpoints up to the
+# SCSI-scan wall the ROM ladder parks at.
+predecode.enabled = $PD
+predecode.elide = $ELIDE
+machine.boot model="pm6100" ram=24576 rom="${$ROM}"
+scheduler.run 20000000
+echo "cp1 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+assert checkpoint.save("${$OUT}-1.gs") "save 1 failed"
+scheduler.run 80000000
+echo "cp2 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+assert checkpoint.save("${$OUT}-2.gs") "save 2 failed"
+scheduler.run 100000000
+echo "cp3 instr=${scheduler.instr_count} pc=${machine.cpu.pc:08x} msr=${machine.cpu.msr:08x}"
+assert checkpoint.save("${$OUT}-3.gs") "save 3 failed"
+echo "stats blocks=${predecode.blocks} allocs=${predecode.allocs} decodes=${predecode.decodes} inval=${predecode.invalidations} demotions=${predecode.demotions} suppressed=${predecode.suppressed_writes}"
+quit
