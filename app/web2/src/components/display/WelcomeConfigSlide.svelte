@@ -352,7 +352,9 @@
   let selectedExpansionCard = $derived(pciExpansionCards.find((c) => c.id === expansionCardId));
   let expansionSelected = $derived(!pciSelected && !!selectedExpansionCard);
   // Whichever card actually occupies the wildcard socket.
-  let activePciCard = $derived(selectedPciCard ?? (expansionSelected ? selectedExpansionCard : undefined));
+  let activePciCard = $derived(
+    selectedPciCard ?? (expansionSelected ? selectedExpansionCard : undefined),
+  );
   let pciCardOptions_ = $derived(activePciCard?.options ?? []);
   // machine.boot takes one wildcard card for the FIRST socket, so that is
   // the only one this dialog can fill; the rest are shown as empty. A
