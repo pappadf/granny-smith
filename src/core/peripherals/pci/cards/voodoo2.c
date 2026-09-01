@@ -73,7 +73,9 @@
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
+#include "voodoo2_raster.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -326,6 +328,30 @@ typedef struct voodoo2 {
     uint8_t *tex_ram[V2_NUM_TMUS];
     uint32_t tex_size; // per TMU
 
+    // Per-TMU triangle-parameter latches.  startS/T and their gradients
+    // are Bruce-only registers, startW/dWdX/dWdY go to Chuck AND the
+    // selected Bruces — so each Bruce keeps its own copy of the dword
+    // 0x02..0x1F latch range, routed by the chip-select field.
+    uint32_t tmu_param[V2_NUM_TMUS][0x20];
+
+    // NCC tables (two per TMU, 12 raw words each) and the 256-entry
+    // texture palette written through nccTable0's I/Q space [V2 §5.92].
+    uint32_t ncc[V2_NUM_TMUS][2][12];
+    uint32_t palette[V2_NUM_TMUS][256]; // 24-bit RGB entries
+
+    // The on-chip setup engine: the current vertex being assembled from
+    // sV*/sARGB/... writes, and the three-vertex window of the strip.
+    struct {
+        float x, y, r, g, b, a, z, wb, w0, s0, t0, w1, s1, t1;
+    } sv_cur, sv[3];
+    int sv_count; // vertices accumulated (0..3)
+    bool sv_flip; // strip ping-pong: odd triangles reverse the sign
+
+    // The raster backend (proposal §3.6).  The software walker is the
+    // default and only in-tree backend; null_raster exists to pin the
+    // analytic-timing invariant in the tests.
+    const voodoo2_raster_backend_t *raster;
+
     // Swap bookkeeping: swaps pending count until the frame boundary
     // after issue retires them (status[30:28], fbiSwapHistory).
     uint32_t swaps_pending;
@@ -336,13 +362,35 @@ typedef struct voodoo2 {
     bool warned_cfg_unknown;
     bool warned_tex_read;
     bool warned_cmdfifo;
-    bool warned_draw;
 
     memory_interface_t bar_if;
 } voodoo2_t;
 
-// Staged option (consumed by the factory, the mach64 idiom).
+// Staged options (consumed by the factory, the mach64 idiom).
 static uint32_t s_staged_tex_size = V2_TMU_2MB;
+static bool s_staged_null_raster = false; // pci_option="raster=null"
+
+// One pixel's state entering the back half of the pipeline (defined
+// here because the LFB path feeds pixels into the same pipeline the
+// rasteriser uses; the pipeline itself is with the rasteriser below).
+typedef struct v2_pix {
+    int32_t x, y; // screen pixel (top-left origin)
+    uint32_t r, g, b, a; // clamped/wrapped 8-bit iterated colour
+    uint32_t z16; // clamped 16-bit Z
+    int64_t z_raw, w_raw; // unclamped iterators (float depth, fog)
+    uint32_t w8; // clamped W byte for the ACU/fog
+    uint32_t tex_argb; // TMU0 chain output (0 when texture disabled)
+    bool have_tex;
+} v2_pix_t;
+
+static uint32_t v2_screen_height(const voodoo2_t *v);
+static uint16_t v2_pack565(const voodoo2_t *v, int32_t x, int32_t y, uint32_t r, uint32_t g, uint32_t b);
+static uint16_t v2_fb_load(const voodoo2_t *v, uint32_t buffer, int32_t x, int32_t y);
+static void v2_fb_store(voodoo2_t *v, uint32_t buffer, int32_t x, int32_t y, uint16_t px);
+static bool v2_pixel_pipe(voodoo2_t *v, v2_pix_t *p);
+static void v2_clip_rect(const voodoo2_t *v, int32_t *x0, int32_t *x1, int32_t *y0, int32_t *y1);
+static uint32_t v2_iter_w8(int64_t it, bool clamp);
+static float v2_f32(uint32_t bits);
 
 // ============================================================
 // Beam position — derived from the scheduler, the mach64_scanline idiom
@@ -552,20 +600,104 @@ static uint32_t v2_buffer_addr(const voodoo2_t *v, uint32_t buffer, uint32_t x, 
 }
 
 // Resolve an LFB-face access to (buffer, x, y).  Reads are always two
-// 16-bit pixels per doubleword whatever the write format [V2 p.56], and
-// v1 of this model carries the 16-bit-per-pixel formats — the ones every
-// held driver and probe uses; 32-bit LFB formats join with the
-// rasteriser milestone.
+// 16-bit pixels per doubleword whatever the write format [V2 p.56].
+// The Y origin here is lfbMode[13]'s — which governs ALL reads and the
+// bypass writes; pipeline-processed writes use fbzMode[17] instead
+// (V2 p.53), which the pipeline path applies itself.
 static void v2_lfb_locate(const voodoo2_t *v, uint32_t off, bool write, uint32_t *buffer, uint32_t *x, uint32_t *y) {
     uint32_t mode = v->reg[R_LFBMODE];
-    *x = (off >> 1) & 0x3FFu;
-    *y = (off >> 11) & 0x3FFu;
-    if (LFB_Y_ORIGIN(mode))
-        *y = (0x3FFu - *y) & 0x3FFu;
+    bool wide = write && (LFB_FMT(mode) >= 4u && LFB_FMT(mode) <= 5u);
+    *x = wide ? ((off >> 2) & 0x3FFu) : ((off >> 1) & 0x3FFu);
+    *y = wide ? ((off >> 12) & 0x3FFu) : ((off >> 11) & 0x3FFu);
+    // lfbMode[13]'s bottom origin governs all reads and BYPASS writes;
+    // a pipeline-processed write flips per fbzMode[17] inside
+    // v2_lfb_pixel instead (V2 p.53).
+    if (LFB_Y_ORIGIN(mode) && !(write && LFB_PIPELINE(mode))) {
+        uint32_t h = v2_screen_height(v);
+        *y = (h - 1u - *y) & 0x3FFu;
+    }
     if (write)
         *buffer = (LFB_FMT(mode) == LFB_FMT_ZZ) ? 3u : LFB_WRITE_BUF(mode);
     else
         *buffer = (LFB_READ_BUF(mode) == 2u) ? 3u : LFB_READ_BUF(mode);
+}
+
+// Expand one 16-bit LFB colour datum to 8-bit channels per the write
+// format and colour-lane selection (V2 §5.21.1).  Returns whether the
+// format carried an alpha.
+static bool v2_lfb_expand16(uint32_t fmt, uint32_t lanes, uint16_t d, uint32_t *r, uint32_t *g, uint32_t *b,
+                            uint32_t *a) {
+    bool bgr = lanes & 1u; // formats 1/3 exchange red and blue
+    uint32_t c1, c2, c3;
+    bool has_a = false;
+    if (fmt == 0u || fmt == 12u) { // 5-6-5
+        c1 = (d >> 11) & 0x1Fu;
+        c2 = (d >> 5) & 0x3Fu;
+        c3 = d & 0x1Fu;
+        c1 = (c1 << 3) | (c1 >> 2);
+        c2 = (c2 << 2) | (c2 >> 4);
+        c3 = (c3 << 3) | (c3 >> 2);
+        *a = 255;
+    } else { // x-5-5-5 or 1-5-5-5
+        c1 = (d >> 10) & 0x1Fu;
+        c2 = (d >> 5) & 0x1Fu;
+        c3 = d & 0x1Fu;
+        c1 = (c1 << 3) | (c1 >> 2);
+        c2 = (c2 << 3) | (c2 >> 2);
+        c3 = (c3 << 3) | (c3 >> 2);
+        if (fmt == 2u || fmt == 14u) {
+            *a = (d >> 15) ? 255u : 0u;
+            has_a = true;
+        } else {
+            *a = 255;
+        }
+    }
+    *r = bgr ? c3 : c1;
+    *g = c2;
+    *b = bgr ? c1 : c3;
+    return has_a;
+}
+
+// One pixel entering the LFB path: either written raw (bypass — only
+// dithering applies) or pushed through the full pixel pipeline with its
+// depth/alpha from the data or zaColor (lfbMode[8]; V2 p.51-52).
+static void v2_lfb_pixel(voodoo2_t *v, uint32_t buffer, uint32_t x, uint32_t y, uint32_t r, uint32_t g, uint32_t b,
+                         uint32_t a, bool has_z, uint16_t z, bool write_color, bool write_z) {
+    uint32_t mode = v->reg[R_LFBMODE];
+    if (!LFB_PIPELINE(mode)) {
+        if (write_color)
+            v2_fb_store(v, buffer, (int32_t)x, (int32_t)y, v2_pack565(v, (int32_t)x, (int32_t)y, r, g, b));
+        if (write_z)
+            v2_fb_store(v, 3u, (int32_t)x, (int32_t)y, z);
+        return;
+    }
+    // Pipeline-processed: the Y origin is fbzMode[17]'s, clipping
+    // applies, and depth/alpha default to zaColor when the format
+    // carried none.
+    int32_t px = (int32_t)x, py = (int32_t)y;
+    if ((v->reg[R_FBZMODE] >> 17) & 1u)
+        py = (int32_t)v2_screen_height(v) - 1 - py;
+    int32_t cx0, cx1, cy0, cy1;
+    v2_clip_rect(v, &cx0, &cx1, &cy0, &cy1);
+    if (px < cx0 || px >= cx1 || py < cy0 || py >= cy1)
+        return;
+    v2_pix_t p;
+    p.x = px;
+    p.y = py;
+    p.r = r;
+    p.g = g;
+    p.b = b;
+    p.a = a;
+    p.z16 = has_z ? z : (uint16_t)(v->reg[R_ZACOLOR] & 0xFFFFu);
+    p.z_raw = (int64_t)p.z16 << 12;
+    // The W handed to the pipeline: the 16 MSBs of the fraction come
+    // from the pixel's Z or from zaColor per lfbMode[14] (V2 p.53).
+    uint16_t wsrc = (mode & 0x4000u) ? (uint16_t)(v->reg[R_ZACOLOR] & 0xFFFFu) : p.z16;
+    p.w_raw = (int64_t)wsrc << 14;
+    p.w8 = v2_iter_w8(p.w_raw, (v->reg[R_FBZCOLORPATH] >> 28) & 1u);
+    p.tex_argb = 0;
+    p.have_tex = false;
+    v2_pixel_pipe(v, &p);
 }
 
 // The write transforms, applied in the documented order: byte swizzle
@@ -626,22 +758,1357 @@ static uint32_t v2_tmu_addressable(const voodoo2_t *v, int tmu) {
     return size;
 }
 
+// Per-TMU register shortcuts.
+static uint32_t v2_tmu_r(const voodoo2_t *v, int tmu, int idx) {
+    return v->tmu_reg[tmu][idx - V2_TMU_REG_FIRST];
+}
+
+// True when the TMU's format is one of the 8-bit texel formats (0-7).
+static bool v2_tmu_is8bit(const voodoo2_t *v, int tmu) {
+    return ((v2_tmu_r(v, tmu, R_TEXTUREMODE) >> 8) & 0xFu) < 8u;
+}
+
+// The size of one LOD level in bytes, from the spec's own table — kept
+// VERBATIM, because the small levels have alignment floors that pure
+// arithmetic gets wrong (V2 p.118: LOD 5 at 8:1 is 2^2 units, not 2^1).
+// Values are log2 of the size in 8-byte units for 16-bit texels; 8-bit
+// texels are half, which the table's own examples accumulate in
+// half-units ("a remaining half can not be used" by another texture).
+static uint32_t v2_lod_bytes(int lod, uint32_t aspect, bool is8) {
+    static const uint8_t log2_units[9][4] = {
+        {14, 13, 12, 11},
+        {12, 11, 10, 9 },
+        {10, 9,  8,  7 },
+        {8,  7,  6,  5 },
+        {6,  5,  4,  3 },
+        {4,  3,  2,  2 },
+        {2,  1,  1,  1 },
+        {0,  0,  0,  0 },
+        {0,  0,  0,  0 },
+    };
+    if (lod > 8)
+        lod = 8;
+    uint32_t bytes = 8u << log2_units[lod][aspect & 3u];
+    return is8 ? bytes / 2u : bytes;
+}
+
+// Byte offset of LOD `lod`'s data relative to where LOD 0 would start —
+// the mip chain packed contiguously, honouring lod_tsplit/lod_odd (a
+// split texture stores only every other level).  This function plus
+// v2_lod_bytes IS the address calculator the spec's three worked
+// examples pin (V2 p.118; asserted in the integration test).
+static uint32_t v2_lod_offset(const voodoo2_t *v, int tmu, int lod) {
+    uint32_t tlod = v2_tmu_r(v, tmu, R_TLOD);
+    uint32_t aspect = (tlod >> 21) & 3u;
+    bool is8 = v2_tmu_is8bit(v, tmu);
+    bool tsplit = (tlod >> 19) & 1u;
+    uint32_t odd = (tlod >> 18) & 1u;
+    uint32_t off = 0;
+    for (int l = 0; l < lod && l <= 8; l++) {
+        if (tsplit && ((uint32_t)l & 1u) != odd)
+            continue; // split textures skip the other parity's levels
+        off += v2_lod_bytes(l, aspect, is8);
+    }
+    return off;
+}
+
+// Width and height of LOD `lod` in texels (aspect and s-is-wider).
+static void v2_lod_dims(const voodoo2_t *v, int tmu, int lod, uint32_t *w, uint32_t *h) {
+    uint32_t tlod = v2_tmu_r(v, tmu, R_TLOD);
+    uint32_t aspect = (tlod >> 21) & 3u;
+    bool s_wider = (tlod >> 20) & 1u;
+    uint32_t major = 256u >> (lod > 8 ? 8 : lod);
+    if (!major)
+        major = 1;
+    uint32_t minor = major >> aspect;
+    if (!minor)
+        minor = 1;
+    *w = s_wider ? major : minor;
+    *h = s_wider ? minor : major;
+    if (aspect == 0u)
+        *w = *h = major; // square
+}
+
+// Base DRAM address of LOD `lod`: texBaseAddr (or the supplemental
+// registers under tmultibaseaddr) in 8-byte units, plus the packed-chain
+// offset.  texbaseaddr legitimately wraps below zero (V2 p.116); the
+// modulo of the addressable size makes that work.
+static uint32_t v2_tex_lod_base(const voodoo2_t *v, int tmu, int lod) {
+    uint32_t tlod = v2_tmu_r(v, tmu, R_TLOD);
+    int base_reg = R_TEXBASE;
+    if ((tlod >> 24) & 1u) { // tmultibaseaddr
+        if (lod == 1)
+            base_reg = R_TEXBASE_1;
+        else if (lod == 2)
+            base_reg = R_TEXBASE_2;
+        else if (lod >= 3)
+            base_reg = R_TEXBASE_38;
+    }
+    uint32_t base = (v2_tmu_r(v, tmu, base_reg) & 0x7FFFFu) * 8u;
+    if (base_reg == R_TEXBASE)
+        base += v2_lod_offset(v, tmu, lod);
+    else if (base_reg == R_TEXBASE_38 && lod > 3)
+        base += v2_lod_offset(v, tmu, lod) - v2_lod_offset(v, tmu, 3);
+    return base;
+}
+
+// DRAM byte address of texel (s,t) at `lod`.
+static uint32_t v2_texel_addr(const voodoo2_t *v, int tmu, int lod, uint32_t s, uint32_t t) {
+    uint32_t w, h;
+    v2_lod_dims(v, tmu, lod, &w, &h);
+    (void)h;
+    uint32_t texel_bytes = v2_tmu_is8bit(v, tmu) ? 1u : 2u;
+    uint32_t addr = v2_tex_lod_base(v, tmu, lod) + (t * w + s) * texel_bytes;
+    return addr & (v2_tmu_addressable(v, tmu) - 1u);
+}
+
+// A texture-aperture write [V2 p.119].  The PCI address is a FIELD
+// ENCODING, not a byte address: {TREX[22:21], LOD[20:17], T[16:9],
+// S[8:2], 0[1:0]} — two 16-bit or four 8-bit texels per 32-bit write,
+// with S right-aligned to bit 2 and T to bit 9 for smaller maps.
 static void v2_tex_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
     int tmu = (off >> 21) & 3u;
     if (tmu >= V2_NUM_TMUS)
         tmu &= 1; // only two Bruces are populated; the third select aliases
-    // tLOD[25]/[26]: the texture path's own swizzle and word swap.
-    uint32_t tlod = v->tmu_reg[tmu][R_TLOD - V2_TMU_REG_FIRST];
+    // tLOD[25]/[26]: the texture path's own swizzle and word swap, in
+    // that order (swizzle first — V2 p.83).
+    uint32_t tlod = v2_tmu_r(v, tmu, R_TLOD);
     if (tlod & (1u << 25))
         le_value = __builtin_bswap32(le_value);
     if (tlod & (1u << 26))
         le_value = (le_value >> 16) | (le_value << 16);
-    uint32_t at = (off & 0x1FFFFCu) & (v2_tmu_addressable(v, tmu) - 1u);
-    uint8_t *t = v->tex_ram[tmu];
-    t[at] = (uint8_t)le_value;
-    t[at + 1] = (uint8_t)(le_value >> 8);
-    t[at + 2] = (uint8_t)(le_value >> 16);
-    t[at + 3] = (uint8_t)(le_value >> 24);
+    uint32_t lod = (off >> 17) & 0xFu;
+    uint32_t t = (off >> 9) & 0xFFu;
+    bool is8 = v2_tmu_is8bit(v, tmu);
+    uint32_t mode = v2_tmu_r(v, tmu, R_TEXTUREMODE);
+    uint8_t *ram = v->tex_ram[tmu];
+    uint32_t mask = v2_tmu_addressable(v, tmu) - 1u;
+    uint32_t w, h;
+    v2_lod_dims(v, tmu, (int)lod, &w, &h);
+    (void)h;
+    if (!is8) {
+        // Two 16-bit texels: S[0] from the halves, S[7:1] from bits 8:2.
+        uint32_t s0 = ((off >> 2) & 0x7Fu) << 1;
+        for (uint32_t half = 0; half < 2u; half++) {
+            uint32_t s = s0 + half;
+            if (s >= w)
+                continue; // narrow maps inhibit the upper texels
+            uint32_t at = v2_texel_addr(v, tmu, (int)lod, s, t) & mask;
+            uint16_t px = (uint16_t)(le_value >> (16u * half));
+            ram[at] = (uint8_t)px;
+            ram[(at + 1u) & mask] = (uint8_t)(px >> 8);
+        }
+    } else if (mode & (1u << 31)) {
+        // seq_8_downld: four sequential 8-bit texels, S[7:2] from 8:3.
+        uint32_t s0 = ((off >> 3) & 0x3Fu) << 2;
+        for (uint32_t i = 0; i < 4u; i++) {
+            uint32_t s = s0 + i;
+            if (s >= w)
+                continue;
+            ram[v2_texel_addr(v, tmu, (int)lod, s, t) & mask] = (uint8_t)(le_value >> (8u * i));
+        }
+    } else {
+        // Even-address 8-bit download: four texels, S[1:0] from the
+        // byte lanes and S[7:2] from bits 8:3 (s[1] forced 0 in the
+        // encoding — V2 p.119).
+        uint32_t s0 = ((off >> 3) & 0x3Fu) << 2;
+        for (uint32_t i = 0; i < 4u; i++) {
+            uint32_t s = s0 + i;
+            if (s >= w)
+                continue;
+            ram[v2_texel_addr(v, tmu, (int)lod, s, t) & mask] = (uint8_t)(le_value >> (8u * i));
+        }
+    }
+}
+
+// --- NCC / palette decode ---------------------------------------------------
+
+// Decompress one 8-bit YIQ (4-2-2) texel through the selected NCC table
+// [V2 §5.92]: Y indexes the 16-entry Y ramp, I and Q index four 9-bit
+// signed RGB deltas each; sum and clamp.
+static uint32_t v2_ncc_decode(const voodoo2_t *v, int tmu, int table, uint8_t texel) {
+    const uint32_t *n = v->ncc[tmu][table];
+    uint32_t y = (texel >> 4) & 0xFu;
+    uint32_t i = (texel >> 2) & 0x3u;
+    uint32_t q = texel & 0x3u;
+    int32_t yv = (int32_t)((n[y >> 2] >> (8u * (y & 3u))) & 0xFFu);
+    // I/Q entries: {r[8:0], g[8:0], b[8:0]} in 26:0, 9-bit signed each.
+    int32_t ir = (int32_t)((n[4 + i] >> 18) & 0x1FFu) << 23 >> 23;
+    int32_t ig = (int32_t)((n[4 + i] >> 9) & 0x1FFu) << 23 >> 23;
+    int32_t ib = (int32_t)(n[4 + i] & 0x1FFu) << 23 >> 23;
+    int32_t qr = (int32_t)((n[8 + q] >> 18) & 0x1FFu) << 23 >> 23;
+    int32_t qg = (int32_t)((n[8 + q] >> 9) & 0x1FFu) << 23 >> 23;
+    int32_t qb = (int32_t)(n[8 + q] & 0x1FFu) << 23 >> 23;
+    int32_t r = yv + ir + qr, g = yv + ig + qg, b = yv + ib + qb;
+    r = r < 0 ? 0 : (r > 255 ? 255 : r);
+    g = g < 0 ? 0 : (g > 255 ? 255 : g);
+    b = b < 0 ? 0 : (b > 255 ? 255 : b);
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
+// Expand one raw texel to 32-bit ARGB per the tformat table (V2 p.81).
+// Format 10's green expansion is printed there as {g[5:0], r[5:4]} —
+// resolved as the obvious typo for {g[5:0], g[5:4]} (proposal §8 Q5).
+static uint32_t v2_texel_expand(const voodoo2_t *v, int tmu, uint32_t raw) {
+    uint32_t fmt = (v2_tmu_r(v, tmu, R_TEXTUREMODE) >> 8) & 0xFu;
+    int table = (v2_tmu_r(v, tmu, R_TEXTUREMODE) >> 5) & 1u; // tnccselect
+    uint32_t a, r, g, b, p;
+    switch (fmt) {
+    case 0: // 8-bit RGB 3-3-2
+        r = (raw >> 5) & 7u;
+        g = (raw >> 2) & 7u;
+        b = raw & 3u;
+        return 0xFF000000u | (((r << 5) | (r << 2) | (r >> 1)) << 16) | (((g << 5) | (g << 2) | (g >> 1)) << 8) |
+               (b << 6) | (b << 4) | (b << 2) | b;
+    case 1: // 8-bit YIQ
+        return 0xFF000000u | v2_ncc_decode(v, tmu, table, (uint8_t)raw);
+    case 2: // 8-bit alpha
+        return (raw << 24) | (raw << 16) | (raw << 8) | raw;
+    case 3: // 8-bit intensity
+        return 0xFF000000u | (raw << 16) | (raw << 8) | raw;
+    case 4: // 8-bit alpha-intensity 4-4
+        a = (raw >> 4) & 0xFu;
+        g = raw & 0xFu;
+        a = (a << 4) | a;
+        g = (g << 4) | g;
+        return (a << 24) | (g << 16) | (g << 8) | g;
+    case 5: // 8-bit palette to RGB
+        return 0xFF000000u | (v->palette[tmu][raw & 0xFFu] & 0xFFFFFFu);
+    case 6: { // 8-bit palette to RGBA (the P6 bit-slicing of V2 p.81)
+        p = v->palette[tmu][raw & 0xFFu];
+        uint32_t pr = (p >> 16) & 0xFFu, pg = (p >> 8) & 0xFFu, pb = p & 0xFFu;
+        a = ((pr >> 2) << 2) | (pr >> 6);
+        r = ((pr & 3u) << 6) | ((pg >> 4) << 2) | (pr & 3u);
+        g = ((pg & 0xFu) << 4) | ((pb >> 6) << 2) | ((pg >> 2) & 3u);
+        b = ((pb & 0x3Fu) << 2) | ((pb >> 4) & 3u);
+        return (a << 24) | (r << 16) | (g << 8) | b;
+    }
+    case 8: // 16-bit ARGB 8-3-3-2
+        a = (raw >> 8) & 0xFFu;
+        r = (raw >> 5) & 7u;
+        g = (raw >> 2) & 7u;
+        b = raw & 3u;
+        return (a << 24) | (((r << 5) | (r << 2) | (r >> 1)) << 16) | (((g << 5) | (g << 2) | (g >> 1)) << 8) |
+               (b << 6) | (b << 4) | (b << 2) | b;
+    case 9: // 16-bit AYIQ
+        return ((raw >> 8) << 24) | v2_ncc_decode(v, tmu, table, (uint8_t)raw);
+    case 10: // 16-bit RGB 5-6-5
+        r = (raw >> 11) & 0x1Fu;
+        g = (raw >> 5) & 0x3Fu;
+        b = raw & 0x1Fu;
+        return 0xFF000000u | (((r << 3) | (r >> 2)) << 16) | (((g << 2) | (g >> 4)) << 8) | (b << 3) | (b >> 2);
+    case 11: // 16-bit ARGB 1-5-5-5
+        a = (raw >> 15) ? 0xFFu : 0u;
+        r = (raw >> 10) & 0x1Fu;
+        g = (raw >> 5) & 0x1Fu;
+        b = raw & 0x1Fu;
+        return (a << 24) | (((r << 3) | (r >> 2)) << 16) | (((g << 3) | (g >> 2)) << 8) | (b << 3) | (b >> 2);
+    case 12: // 16-bit ARGB 4-4-4-4
+        a = (raw >> 12) & 0xFu;
+        r = (raw >> 8) & 0xFu;
+        g = (raw >> 4) & 0xFu;
+        b = raw & 0xFu;
+        return (((a << 4) | a) << 24) | (((r << 4) | r) << 16) | (((g << 4) | g) << 8) | (b << 4) | b;
+    case 13: // 16-bit alpha-intensity 8-8
+        a = (raw >> 8) & 0xFFu;
+        g = raw & 0xFFu;
+        return (a << 24) | (g << 16) | (g << 8) | g;
+    case 14: // 16-bit alpha-palette 8-8
+        return (((raw >> 8) & 0xFFu) << 24) | (v->palette[tmu][raw & 0xFFu] & 0xFFFFFFu);
+    default: // 7, 15: reserved — deterministically opaque black
+        return 0xFF000000u;
+    }
+}
+
+// Fetch and expand the texel at integer (s,t) with clamp/wrap applied.
+static uint32_t v2_texel_fetch(const voodoo2_t *v, int tmu, int lod, int32_t s, int32_t t) {
+    uint32_t w, h;
+    v2_lod_dims(v, tmu, lod, &w, &h);
+    uint32_t mode = v2_tmu_r(v, tmu, R_TEXTUREMODE);
+    if (mode & (1u << 6)) // tclamps
+        s = s < 0 ? 0 : (s >= (int32_t)w ? (int32_t)w - 1 : s);
+    else
+        s &= (int32_t)(w - 1u);
+    if (mode & (1u << 7)) // tclampt
+        t = t < 0 ? 0 : (t >= (int32_t)h ? (int32_t)h - 1 : t);
+    else
+        t &= (int32_t)(h - 1u);
+    uint32_t at = v2_texel_addr(v, tmu, lod, (uint32_t)s, (uint32_t)t);
+    uint32_t mask = v2_tmu_addressable(v, tmu) - 1u;
+    uint32_t raw;
+    if (v2_tmu_is8bit(v, tmu))
+        raw = v->tex_ram[tmu][at & mask];
+    else
+        raw = v->tex_ram[tmu][at & mask] | ((uint32_t)v->tex_ram[tmu][(at + 1u) & mask] << 8);
+    return v2_texel_expand(v, tmu, raw);
+}
+
+// Sample one TMU at texel-space (s,t) — point or bilinear per the
+// filter bits and whether the LOD clamped to lodmin.
+static uint32_t v2_tmu_sample(const voodoo2_t *v, int tmu, double s, double t, int lod, bool magnify) {
+    uint32_t mode = v2_tmu_r(v, tmu, R_TEXTUREMODE);
+    bool bilinear = magnify ? ((mode >> 2) & 1u) : ((mode >> 1) & 1u);
+    s = ldexp(s, -lod);
+    t = ldexp(t, -lod);
+    if (!bilinear) {
+        return v2_texel_fetch(v, tmu, lod, (int32_t)floor(s), (int32_t)floor(t));
+    }
+    // Bilinear: the four closest texels blended by the fractions of the
+    // sample point relative to texel centres.
+    double fs = s - 0.5, ft = t - 0.5;
+    int32_t s0 = (int32_t)floor(fs), t0 = (int32_t)floor(ft);
+    uint32_t frac_s = (uint32_t)((fs - s0) * 256.0) & 0xFFu;
+    uint32_t frac_t = (uint32_t)((ft - t0) * 256.0) & 0xFFu;
+    uint32_t c00 = v2_texel_fetch(v, tmu, lod, s0, t0);
+    uint32_t c10 = v2_texel_fetch(v, tmu, lod, s0 + 1, t0);
+    uint32_t c01 = v2_texel_fetch(v, tmu, lod, s0, t0 + 1);
+    uint32_t c11 = v2_texel_fetch(v, tmu, lod, s0 + 1, t0 + 1);
+    uint32_t out = 0;
+    for (int sh = 0; sh < 32; sh += 8) {
+        uint32_t a = (c00 >> sh) & 0xFFu, bch = (c10 >> sh) & 0xFFu;
+        uint32_t c = (c01 >> sh) & 0xFFu, d = (c11 >> sh) & 0xFFu;
+        uint32_t top = (a * (256u - frac_s) + bch * frac_s) >> 8;
+        uint32_t bot = (c * (256u - frac_s) + d * frac_s) >> 8;
+        out |= (((top * (256u - frac_t) + bot * frac_t) >> 8) & 0xFFu) << sh;
+    }
+    return out;
+}
+
+// ============================================================
+// The pixel pipeline — the fixed order of V2 p.15
+// ============================================================
+// texture (TMU1 -> TMU0) -> chroma -> colour/alpha combine -> fog ->
+// alpha test -> depth test -> alpha blend -> dither -> write masks.
+// All combine units share one 9x9 multiply shape (V2 pp.37-39, p.82):
+// truncate, no rounding, clamp 0-$FF.
+
+// The shared combine-unit shape: ((other - sub) * factor) >> 8 + add,
+// clamped, optionally inverted.  factor = reverse ? m+1 : 256-m — the
+// diagrams' XOR-with-NOT-reverse plus one.
+static uint32_t v2_combine(uint32_t other, uint32_t local, uint32_t m, uint32_t ctl_bits, uint32_t add_val) {
+    bool zero_other = ctl_bits & 1u;
+    bool sub_local = ctl_bits & 2u;
+    bool reverse = ctl_bits & 4u;
+    bool invert = ctl_bits & 8u;
+    int32_t acc = (int32_t)(zero_other ? 0u : other) - (int32_t)(sub_local ? local : 0u);
+    uint32_t f = (reverse ? m : (m ^ 0xFFu)) + 1u;
+    int32_t o = ((acc * (int32_t)f) >> 8) + (int32_t)add_val;
+    o = o < 0 ? 0 : (o > 255 ? 255 : o);
+    return invert ? ((uint32_t)o ^ 0xFFu) : (uint32_t)o;
+}
+
+// Screen height for the Y-origin flip, from videoDimensions.
+static uint32_t v2_screen_height(const voodoo2_t *v) {
+    uint32_t h = (v->reg[R_VIDEODIM] >> 16) & 0x7FFu;
+    return h ? h : 480u;
+}
+
+// Ordered-dither matrices.  The spec names 4x4 and 2x2 ordered dither
+// (fbzMode[8]/[11]) but does not print the matrices; these are the
+// classic Bayer orders, and the rule below is CHOSEN (documented in
+// voodoo2.md's divergence list): threshold on the truncated remainder,
+// monotonic and mean-preserving.
+static const uint8_t v2_dither4[4][4] = {
+    {0,  8,  2,  10},
+    {12, 4,  14, 6 },
+    {3,  11, 1,  9 },
+    {15, 7,  13, 5 }
+};
+static const uint8_t v2_dither2[2][2] = {
+    {0, 2},
+    {3, 1}
+};
+
+static uint16_t v2_pack565(const voodoo2_t *v, int32_t x, int32_t y, uint32_t r, uint32_t g, uint32_t b) {
+    uint32_t r5, g6, b5;
+    if (v->reg[R_FBZMODE] & 0x100u) { // dithering enabled
+        uint32_t d = (v->reg[R_FBZMODE] & 0x800u) ? v2_dither2[y & 1][x & 1] * 4u : v2_dither4[y & 3][x & 3];
+        r5 = (r >> 3) + (((r & 7u) << 1) > d ? 1u : 0u);
+        g6 = (g >> 2) + (((g & 3u) << 2) > d ? 1u : 0u);
+        b5 = (b >> 3) + (((b & 7u) << 1) > d ? 1u : 0u);
+        r5 = r5 > 31u ? 31u : r5;
+        g6 = g6 > 63u ? 63u : g6;
+        b5 = b5 > 31u ? 31u : b5;
+    } else {
+        r5 = r >> 3;
+        g6 = g >> 2;
+        b5 = b >> 3;
+    }
+    return (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+}
+
+// 16-bit raw framebuffer access at a physical (buffer, x, y).
+static uint16_t v2_fb_load(const voodoo2_t *v, uint32_t buffer, int32_t x, int32_t y) {
+    uint32_t at = v2_buffer_addr(v, buffer, (uint32_t)x, (uint32_t)y);
+    return (uint16_t)(v->fb_ram[at] | ((uint16_t)v->fb_ram[(at + 1u) & (V2_FB_SIZE - 1u)] << 8));
+}
+
+static void v2_fb_store(voodoo2_t *v, uint32_t buffer, int32_t x, int32_t y, uint16_t px) {
+    uint32_t at = v2_buffer_addr(v, buffer, (uint32_t)x, (uint32_t)y);
+    v->fb_ram[at] = (uint8_t)px;
+    v->fb_ram[(at + 1u) & (V2_FB_SIZE - 1u)] = (uint8_t)(px >> 8);
+}
+
+// The chosen 1/W -> 4.12 inverted-mantissa float (fbzMode[3]); the exact
+// hardware normalisation is not in our material, so this is documented
+// as chosen: exponent counts leading zeros below 1.0, mantissa is the
+// next 12 bits inverted so integer comparisons keep their sense.
+static uint16_t v2_depth_float(int64_t val) {
+    if (val <= 0)
+        return 0;
+    if (val >= (1ll << 30))
+        return 0;
+    uint64_t m = (uint64_t)val;
+    int e = 0;
+    while (m < (1ull << 29) && e < 15) {
+        m <<= 1;
+        e++;
+    }
+    uint16_t mant = (uint16_t)((m >> 17) & 0xFFFu);
+    return (uint16_t)(((uint32_t)e << 12) | (~mant & 0xFFFu));
+}
+
+// One alpha-blend factor (V2 §5.19.2), per channel where needed.
+static uint32_t v2_blend_factor(uint32_t code, bool is_src, uint32_t src_a, uint32_t dst_a, uint32_t other_c,
+                                uint32_t prefog_c) {
+    switch (code) {
+    case 0x0:
+        return 0;
+    case 0x1:
+        return src_a;
+    case 0x2:
+        return other_c; // "color": dst colour as src factor, src as dst
+    case 0x3:
+        return dst_a;
+    case 0x4:
+        return 255;
+    case 0x5:
+        return 255u - src_a;
+    case 0x6:
+        return 255u - other_c;
+    case 0x7:
+        return 255u - dst_a;
+    case 0xF:
+        // src: alpha-saturate; dst: colour before fog.
+        return is_src ? (src_a < 255u - dst_a ? src_a : 255u - dst_a) : prefog_c;
+    default:
+        return 0;
+    }
+}
+
+// factor multiply with the 255->256 promotion so AONE is exact.
+static uint32_t v2_blend_mul(uint32_t c, uint32_t f) {
+    return (c * (f + (f >> 7))) >> 8;
+}
+
+// The back half of the pipeline for one pixel.  Returns true if the
+// pixel was written.  The caller has already applied clipping and
+// computed the iterated values and the texture chain.
+static bool v2_pixel_pipe(voodoo2_t *v, v2_pix_t *p) {
+    uint32_t fbz = v->reg[R_FBZMODE];
+    uint32_t fcp = v->reg[R_FBZCOLORPATH];
+    uint32_t amode = v->reg[R_ALPHAMODE];
+
+    v->reg[R_PIXELS_IN] = (v->reg[R_PIXELS_IN] + 1u) & 0xFFFFFFu;
+
+    // Stipple (fbzMode[2]): rotate mode uses and rotates bit 31; pattern
+    // mode indexes the 4x8 pattern by <x,y> (V2 p.47).
+    if (fbz & 4u) {
+        bool masked;
+        if (fbz & 0x1000u) { // pattern mode
+            uint32_t row = (v->reg[R_STIPPLE] >> (8u * (p->y & 3))) & 0xFFu;
+            masked = !((row >> (7 - (p->x & 7))) & 1u);
+        } else {
+            masked = !(v->reg[R_STIPPLE] >> 31);
+            v->reg[R_STIPPLE] = (v->reg[R_STIPPLE] << 1) | (v->reg[R_STIPPLE] >> 31);
+        }
+        if (masked)
+            return false;
+    } else if (!(fbz & 0x1000u)) {
+        // The stipple register rotates in rotate mode even when masking
+        // is disabled (V2 p.47).
+        v->reg[R_STIPPLE] = (v->reg[R_STIPPLE] << 1) | (v->reg[R_STIPPLE] >> 31);
+    }
+
+    // c_other / a_other selection (fbzColorPath[1:0], [3:2]).
+    uint32_t oc_r, oc_g, oc_b, oa;
+    switch (fcp & 3u) {
+    case 1:
+        oc_r = (p->tex_argb >> 16) & 0xFFu;
+        oc_g = (p->tex_argb >> 8) & 0xFFu;
+        oc_b = p->tex_argb & 0xFFu;
+        break;
+    case 2:
+        oc_r = (v->reg[R_COLOR1] >> 16) & 0xFFu;
+        oc_g = (v->reg[R_COLOR1] >> 8) & 0xFFu;
+        oc_b = v->reg[R_COLOR1] & 0xFFu;
+        break;
+    default:
+        oc_r = p->r;
+        oc_g = p->g;
+        oc_b = p->b;
+        break;
+    }
+    switch ((fcp >> 2) & 3u) {
+    case 1:
+        oa = p->tex_argb >> 24;
+        break;
+    case 2:
+        oa = v->reg[R_COLOR1] >> 24;
+        break;
+    default:
+        oa = p->a;
+        break;
+    }
+
+    // Chroma-key / chroma-range on c_other, after texture, before the
+    // combine units (V2 p.46).
+    if (fbz & 2u) {
+        uint32_t key = v->reg[R_CHROMAKEY] & 0xFFFFFFu;
+        uint32_t c = (oc_r << 16) | (oc_g << 8) | oc_b;
+        bool match;
+        if (v->reg[R_CHROMARANGE] & (1u << 28)) {
+            // Range compare: key..range inclusive per channel (the
+            // mode bits select in/out of range; the inclusive band is
+            // the modelled behaviour).
+            uint32_t hi = v->reg[R_CHROMARANGE] & 0xFFFFFFu;
+            match = oc_b >= (key & 0xFFu) && oc_b <= (hi & 0xFFu) && oc_g >= ((key >> 8) & 0xFFu) &&
+                    oc_g <= ((hi >> 8) & 0xFFu) && oc_r >= ((key >> 16) & 0xFFu) && oc_r <= ((hi >> 16) & 0xFFu);
+        } else {
+            match = c == key;
+        }
+        if (match) {
+            v->reg[R_CHROMA_FAIL] = (v->reg[R_CHROMA_FAIL] + 1u) & 0xFFFFFFu;
+            return false;
+        }
+    }
+
+    // c_local / a_local (fbzColorPath[4], [6:5], override [7]).
+    uint32_t lc_r, lc_g, lc_b, la;
+    bool local_is_c0 = (fcp >> 4) & 1u;
+    if ((fcp >> 7) & 1u)
+        local_is_c0 = (p->tex_argb >> 31) & 1u; // texture alpha bit 7
+    if (local_is_c0) {
+        lc_r = (v->reg[R_COLOR0] >> 16) & 0xFFu;
+        lc_g = (v->reg[R_COLOR0] >> 8) & 0xFFu;
+        lc_b = v->reg[R_COLOR0] & 0xFFu;
+    } else {
+        lc_r = p->r;
+        lc_g = p->g;
+        lc_b = p->b;
+    }
+    switch ((fcp >> 5) & 3u) {
+    case 1:
+        la = v->reg[R_COLOR0] >> 24;
+        break;
+    case 2:
+        la = p->z16 >> 8; // clamped iterated Z, high byte (chosen)
+        break;
+    case 3:
+        la = p->w8;
+        break;
+    default:
+        la = p->a;
+        break;
+    }
+
+    // Colour Combine Unit (fbzColorPath[16:8]).
+    uint32_t cc_m_r, cc_m_g, cc_m_b;
+    switch ((fcp >> 10) & 7u) {
+    case 1:
+        cc_m_r = lc_r;
+        cc_m_g = lc_g;
+        cc_m_b = lc_b;
+        break;
+    case 2:
+        cc_m_r = cc_m_g = cc_m_b = oa;
+        break;
+    case 3:
+        cc_m_r = cc_m_g = cc_m_b = la;
+        break;
+    case 4:
+        cc_m_r = cc_m_g = cc_m_b = p->tex_argb >> 24;
+        break;
+    case 5:
+        cc_m_r = (p->tex_argb >> 16) & 0xFFu;
+        cc_m_g = (p->tex_argb >> 8) & 0xFFu;
+        cc_m_b = p->tex_argb & 0xFFu;
+        break;
+    default:
+        cc_m_r = cc_m_g = cc_m_b = 0;
+        break;
+    }
+    uint32_t cc_ctl = ((fcp >> 8) & 3u) | (((fcp >> 13) & 1u) << 2) | (((fcp >> 16) & 1u) << 3);
+    // The add mux: bit14 = cc_add_clocal, bit15 = cc_add_alocal.
+    uint32_t add_r, add_g, add_b;
+    if ((fcp >> 15) & 1u) {
+        add_r = add_g = add_b = la;
+    } else if ((fcp >> 14) & 1u) {
+        add_r = lc_r;
+        add_g = lc_g;
+        add_b = lc_b;
+    } else {
+        add_r = add_g = add_b = 0;
+    }
+    uint32_t out_r = v2_combine(oc_r, lc_r, cc_m_r, cc_ctl, add_r);
+    uint32_t out_g = v2_combine(oc_g, lc_g, cc_m_g, cc_ctl, add_g);
+    uint32_t out_b = v2_combine(oc_b, lc_b, cc_m_b, cc_ctl, add_b);
+
+    // Alpha Combine Unit (fbzColorPath[25:17]).
+    uint32_t ca_m;
+    switch ((fcp >> 19) & 7u) {
+    case 1:
+    case 3:
+        ca_m = la;
+        break;
+    case 2:
+        ca_m = oa;
+        break;
+    case 4:
+        ca_m = p->tex_argb >> 24;
+        break;
+    default:
+        ca_m = 0;
+        break;
+    }
+    uint32_t ca_ctl = ((fcp >> 17) & 3u) | (((fcp >> 22) & 1u) << 2) | (((fcp >> 25) & 1u) << 3);
+    uint32_t ca_add = ((fcp >> 24) & 1u) ? la : (((fcp >> 23) & 1u) ? la : 0u);
+    uint32_t out_a = v2_combine(oa, la, ca_m, ca_ctl, ca_add);
+
+    uint32_t prefog_r = out_r, prefog_g = out_g, prefog_b = out_b;
+
+    // Fog (fogMode; V2 §5.18).  The table indexing normalisation is
+    // chosen (documented): 4-bit exponent of 1/W below 1.0, next two
+    // bits of mantissa.
+    uint32_t fog = v->reg[R_FOGMODE];
+    if (fog & 1u) {
+        uint32_t fa; // fog alpha
+        switch ((fog >> 3) & 3u) {
+        case 1:
+            fa = p->a;
+            break;
+        case 2:
+            fa = p->z16 >> 8;
+            break;
+        case 3:
+            fa = p->w8;
+            break;
+        default: {
+            int64_t w = p->w_raw;
+            uint32_t idx = 0;
+            if (w > 0 && w < (1ll << 30)) {
+                uint64_t m = (uint64_t)w;
+                int e = 0;
+                while (m < (1ull << 29) && e < 15) {
+                    m <<= 1;
+                    e++;
+                }
+                idx = ((uint32_t)e << 2) | (uint32_t)((m >> 27) & 3u);
+                if (idx > 63u)
+                    idx = 63u;
+            }
+            // Two entries per fogTable word; the alpha is the entry's
+            // high byte, the low byte its 6.2 delta (interpolation not
+            // modelled — chosen).
+            uint32_t word = v->reg[R_FOGTABLE + (idx >> 1)];
+            fa = ((idx & 1u) ? (word >> 24) : (word >> 8)) & 0xFFu;
+            break;
+        }
+        }
+        uint32_t fr = (v->reg[R_FOGCOLOR] >> 16) & 0xFFu;
+        uint32_t fg = (v->reg[R_FOGCOLOR] >> 8) & 0xFFu;
+        uint32_t fb = v->reg[R_FOGCOLOR] & 0xFFu;
+        bool fogadd_zero = (fog >> 1) & 1u; // 1 = add zero instead of fog colour
+        bool fogmult_zero = (fog >> 2) & 1u; // 1 = multiply zero instead of Cin
+        uint32_t add_r2 = fogadd_zero ? 0u : v2_blend_mul(fr, fa);
+        uint32_t add_g2 = fogadd_zero ? 0u : v2_blend_mul(fg, fa);
+        uint32_t add_b2 = fogadd_zero ? 0u : v2_blend_mul(fb, fa);
+        uint32_t mul_r = fogmult_zero ? 0u : v2_blend_mul(out_r, 255u - fa);
+        uint32_t mul_g = fogmult_zero ? 0u : v2_blend_mul(out_g, 255u - fa);
+        uint32_t mul_b = fogmult_zero ? 0u : v2_blend_mul(out_b, 255u - fa);
+        out_r = mul_r + add_r2 > 255u ? 255u : mul_r + add_r2;
+        out_g = mul_g + add_g2 > 255u ? 255u : mul_g + add_g2;
+        out_b = mul_b + add_b2 > 255u ? 255u : mul_b + add_b2;
+    }
+
+    // Alpha test (alphaMode[3:0]) and the alpha-channel mask
+    // (fbzMode[13]) — both count fbiAfuncFail on rejection.
+    if (amode & 1u) {
+        uint32_t ref = amode >> 24;
+        bool pass;
+        switch ((amode >> 1) & 7u) {
+        case 0:
+            pass = false;
+            break;
+        case 1:
+            pass = out_a < ref;
+            break;
+        case 2:
+            pass = out_a == ref;
+            break;
+        case 3:
+            pass = out_a <= ref;
+            break;
+        case 4:
+            pass = out_a > ref;
+            break;
+        case 5:
+            pass = out_a != ref;
+            break;
+        case 6:
+            pass = out_a >= ref;
+            break;
+        default:
+            pass = true;
+            break;
+        }
+        if (!pass) {
+            v->reg[R_AFUNC_FAIL] = (v->reg[R_AFUNC_FAIL] + 1u) & 0xFFFFFFu;
+            return false;
+        }
+    }
+    if ((fbz & 0x2000u) && !(out_a & 1u)) {
+        v->reg[R_AFUNC_FAIL] = (v->reg[R_AFUNC_FAIL] + 1u) & 0xFFFFFFu;
+        return false;
+    }
+
+    // Depth test (fbzMode[7:3], [16], [20], [21]; V2 §5.20.1).
+    uint32_t depth_write = p->z16;
+    if (fbz & 0x10u) {
+        uint32_t src;
+        if (fbz & 8u)
+            src = v2_depth_float((fbz & 0x200000u) ? p->z_raw : p->w_raw);
+        else
+            src = p->z16;
+        if (fbz & 0x10000u) { // depth bias, signed zaColor[15:0]
+            int32_t biased = (int32_t)src + (int16_t)(v->reg[R_ZACOLOR] & 0xFFFFu);
+            src = biased < 0 ? 0u : (biased > 0xFFFF ? 0xFFFFu : (uint32_t)biased);
+        }
+        depth_write = src;
+        uint32_t cmp_src = (fbz & 0x100000u) ? (v->reg[R_ZACOLOR] & 0xFFFFu) : src;
+        uint32_t dst = v2_fb_load(v, 3u, p->x, p->y);
+        bool pass;
+        switch ((fbz >> 5) & 7u) {
+        case 0:
+            pass = false;
+            break;
+        case 1:
+            pass = cmp_src < dst;
+            break;
+        case 2:
+            pass = cmp_src == dst;
+            break;
+        case 3:
+            pass = cmp_src <= dst;
+            break;
+        case 4:
+            pass = cmp_src > dst;
+            break;
+        case 5:
+            pass = cmp_src != dst;
+            break;
+        case 6:
+            pass = cmp_src >= dst;
+            break;
+        default:
+            pass = true;
+            break;
+        }
+        if (!pass) {
+            v->reg[R_ZFUNC_FAIL] = (v->reg[R_ZFUNC_FAIL] + 1u) & 0xFFFFFFu;
+            return false;
+        }
+    }
+
+    uint32_t draw_buf = (fbz >> 14) & 3u;
+    if (draw_buf > 1u)
+        draw_buf = 0;
+
+    // Alpha blend (alphaMode[4], factors [23:8]).
+    if (amode & 0x10u) {
+        uint16_t dst565 = v2_fb_load(v, draw_buf, p->x, p->y);
+        uint32_t dr = ((dst565 >> 11) & 0x1Fu);
+        uint32_t dg = ((dst565 >> 5) & 0x3Fu);
+        uint32_t db = dst565 & 0x1Fu;
+        dr = (dr << 3) | (dr >> 2);
+        dg = (dg << 2) | (dg >> 4);
+        db = (db << 3) | (db >> 2);
+        uint32_t dst_a = 255; // destination alpha planes not enabled
+        uint32_t sf = (amode >> 8) & 0xFu, df = (amode >> 12) & 0xFu;
+        uint32_t nr = v2_blend_mul(out_r, v2_blend_factor(sf, true, out_a, dst_a, dr, 0)) +
+                      v2_blend_mul(dr, v2_blend_factor(df, false, out_a, dst_a, out_r, prefog_r));
+        uint32_t ng = v2_blend_mul(out_g, v2_blend_factor(sf, true, out_a, dst_a, dg, 0)) +
+                      v2_blend_mul(dg, v2_blend_factor(df, false, out_a, dst_a, out_g, prefog_g));
+        uint32_t nb = v2_blend_mul(out_b, v2_blend_factor(sf, true, out_a, dst_a, db, 0)) +
+                      v2_blend_mul(db, v2_blend_factor(df, false, out_a, dst_a, out_b, prefog_b));
+        out_r = nr > 255u ? 255u : nr;
+        out_g = ng > 255u ? 255u : ng;
+        out_b = nb > 255u ? 255u : nb;
+    }
+
+    // Write masks and the stores (fbzMode[9], [10]).
+    if (fbz & 0x200u)
+        v2_fb_store(v, draw_buf, p->x, p->y, v2_pack565(v, p->x, p->y, out_r, out_g, out_b));
+    if (fbz & 0x400u)
+        v2_fb_store(v, 3u, p->x, p->y, (uint16_t)depth_write);
+    v->reg[R_PIXELS_OUT] = (v->reg[R_PIXELS_OUT] + 1u) & 0xFFFFFFu;
+    return true;
+}
+
+// ============================================================
+// The software walker — the normative rasteriser backend
+// ============================================================
+// THE FILL CONVENTION IS CHOSEN, NOT KNOWN (V2 §7.2 defers the walk to
+// the SST-1 Programming Guide nobody holds; proposal §4.5, §8 Q1):
+// sample points at pixel integer coordinates, half-open top-left edge
+// inclusion, orientation from the command's area sign (a sign that
+// disagrees with the geometry draws nothing), and parameter iteration
+// from vertex A's truncated position.  Goldens record what THIS
+// rasteriser draws.
+
+// Clamp/wrap of an accumulated 12.12 colour iterator (V2 p.40).
+static uint32_t v2_iter_rgba(int64_t it, bool clamp) {
+    if (clamp) {
+        int64_t i = it >> 12;
+        return i < 0 ? 0u : (i > 255 ? 255u : (uint32_t)i);
+    }
+    uint32_t ipart = (uint32_t)(it >> 12) & 0xFFFu;
+    if (ipart == 0xFFFu)
+        return 0u;
+    if (ipart == 0x100u)
+        return 0xFFu;
+    return (uint32_t)(it >> 12) & 0xFFu;
+}
+
+// Clamp/wrap of an accumulated 20.12 Z iterator.
+static uint32_t v2_iter_z(int64_t it, bool clamp) {
+    if (clamp) {
+        int64_t i = it >> 12;
+        return i < 0 ? 0u : (i > 0xFFFF ? 0xFFFFu : (uint32_t)i);
+    }
+    uint32_t ipart = (uint32_t)(it >> 12) & 0xFFFFFu;
+    if (ipart == 0xFFFFFu)
+        return 0u;
+    if (ipart == 0x10000u)
+        return 0xFFFFu;
+    return (uint32_t)(it >> 12) & 0xFFFFu;
+}
+
+// Clamped W byte for the ACU/fog inputs (2.30 iterator; V2 pp.40-41).
+static uint32_t v2_iter_w8(int64_t it, bool clamp) {
+    if (clamp) {
+        int64_t i = it >> 30;
+        if (i < 0)
+            return 0u;
+        return it >= (1ll << 30) ? 0xFFu : (uint32_t)((it >> 22) & 0xFFu);
+    }
+    return (uint32_t)((it >> 22) & 0xFFu);
+}
+
+// The texture chain for one pixel: TMU1 samples and combines first, its
+// output feeding TMU0's c_other (single-pass multitexture).
+static uint32_t v2_texture_chain(voodoo2_t *v, const voodoo2_tri_t *T, int32_t dx, int32_t dy) {
+    uint32_t chain = 0; // most-upstream c_other is zero
+    for (int tmu = V2_NUM_TMUS - 1; tmu >= 0; tmu--) {
+        uint32_t mode = v2_tmu_r(v, tmu, R_TEXTUREMODE);
+        int64_t s_it = T->s[tmu] + T->dsdx[tmu] * dx + T->dsdy[tmu] * dy;
+        int64_t t_it = T->t[tmu] + T->dtdx[tmu] * dx + T->dtdy[tmu] * dy;
+        int64_t w_it = T->tw[tmu] + T->dtwdx[tmu] * dx + T->dtwdy[tmu] * dy;
+        double s, t, s1, t1, s2, t2;
+        if (mode & 1u) { // perspective correct
+            if ((mode & 8u) && w_it < 0) { // tclampw
+                s = t = 0.0;
+                s1 = t1 = s2 = t2 = 0.0;
+            } else {
+                double w = w_it ? (double)w_it : 1.0;
+                s = (double)s_it * 4096.0 / w;
+                t = (double)t_it * 4096.0 / w;
+                double wx = (w_it + T->dtwdx[tmu]) ? (double)(w_it + T->dtwdx[tmu]) : 1.0;
+                double wy = (w_it + T->dtwdy[tmu]) ? (double)(w_it + T->dtwdy[tmu]) : 1.0;
+                s1 = (double)(s_it + T->dsdx[tmu]) * 4096.0 / wx;
+                t1 = (double)(t_it + T->dtdx[tmu]) * 4096.0 / wx;
+                s2 = (double)(s_it + T->dsdy[tmu]) * 4096.0 / wy;
+                t2 = (double)(t_it + T->dtdy[tmu]) * 4096.0 / wy;
+            }
+        } else {
+            s = (double)s_it / 262144.0;
+            t = (double)t_it / 262144.0;
+            s1 = s + (double)T->dsdx[tmu] / 262144.0;
+            t1 = t + (double)T->dtdx[tmu] / 262144.0;
+            s2 = s + (double)T->dsdy[tmu] / 262144.0;
+            t2 = t + (double)T->dtdy[tmu] / 262144.0;
+        }
+        // Per-pixel LOD from the analytic texel-space steps (chosen —
+        // the hardware's exact LOD arithmetic is Bruce-spec material we
+        // do not hold).  4.2 fixed, biased and clamped per tLOD.
+        uint32_t tlod = v2_tmu_r(v, tmu, R_TLOD);
+        double stepx = (s1 - s) * (s1 - s) + (t1 - t) * (t1 - t);
+        double stepy = (s2 - s) * (s2 - s) + (t2 - t) * (t2 - t);
+        double step2 = stepx > stepy ? stepx : stepy;
+        int32_t lod4 = 0;
+        if (step2 > 1.0)
+            lod4 = (int32_t)(2.0 * log2(step2)); // 0.5*log2 in 4.2 units
+        int32_t bias = ((int32_t)((tlod >> 12) & 0x3Fu) << 26) >> 26; // 4.2 signed
+        lod4 += bias;
+        int32_t lodmin = (int32_t)(tlod & 0x3Fu);
+        int32_t lodmax = (int32_t)((tlod >> 6) & 0x3Fu);
+        if (lodmax > 32)
+            lodmax = 32;
+        bool magnify = lod4 <= lodmin;
+        lod4 = lod4 < lodmin ? lodmin : (lod4 > lodmax ? lodmax : lod4);
+        int level = lod4 >> 2;
+        if ((tlod >> 19) & 1u) { // split texture: snap to the loaded parity
+            uint32_t odd = (tlod >> 18) & 1u;
+            if (((uint32_t)level & 1u) != odd)
+                level += 1;
+        }
+        uint32_t texel = v2_tmu_sample(v, tmu, s, t, level, magnify);
+
+        // Texture Combine Unit (textureMode[29:12]; V2 p.82): c_local is
+        // this TMU's texel, c_other the downstream chain.
+        uint32_t lr = (texel >> 16) & 0xFFu, lg = (texel >> 8) & 0xFFu, lb = texel & 0xFFu, lA = texel >> 24;
+        uint32_t or_ = (chain >> 16) & 0xFFu, og = (chain >> 8) & 0xFFu, ob = chain & 0xFFu, oA = chain >> 24;
+        uint32_t m_r, m_g, m_b, m_a;
+        uint32_t lodfrac = (uint32_t)(lod4 & 3u) << 6;
+        switch ((mode >> 14) & 7u) {
+        case 1:
+            m_r = lr;
+            m_g = lg;
+            m_b = lb;
+            break;
+        case 2:
+            m_r = m_g = m_b = oA;
+            break;
+        case 3:
+            m_r = m_g = m_b = lA;
+            break;
+        case 4:
+            m_r = m_g = m_b = 0xFFu; // detail factor: not modelled, full
+            break;
+        case 5:
+            m_r = m_g = m_b = lodfrac;
+            break;
+        default:
+            m_r = m_g = m_b = 0;
+            break;
+        }
+        switch ((mode >> 23) & 7u) {
+        case 1:
+        case 3:
+            m_a = lA;
+            break;
+        case 2:
+            m_a = oA;
+            break;
+        case 4:
+            m_a = 0xFFu;
+            break;
+        case 5:
+            m_a = lodfrac;
+            break;
+        default:
+            m_a = 0;
+            break;
+        }
+        uint32_t tc_ctl = ((mode >> 12) & 3u) | (((mode >> 17) & 1u) << 2) | (((mode >> 20) & 1u) << 3);
+        uint32_t tca_ctl = ((mode >> 21) & 3u) | (((mode >> 26) & 1u) << 2) | (((mode >> 29) & 1u) << 3);
+        uint32_t tc_add_r, tc_add_g, tc_add_b;
+        if ((mode >> 19) & 1u) {
+            tc_add_r = tc_add_g = tc_add_b = lA; // tc_add_alocal
+        } else if ((mode >> 18) & 1u) {
+            tc_add_r = lr;
+            tc_add_g = lg;
+            tc_add_b = lb; // tc_add_clocal
+        } else {
+            tc_add_r = tc_add_g = tc_add_b = 0;
+        }
+        uint32_t tca_add = (((mode >> 28) & 1u) || ((mode >> 27) & 1u)) ? lA : 0u;
+        uint32_t rr = v2_combine(or_, lr, m_r, tc_ctl, tc_add_r);
+        uint32_t rg = v2_combine(og, lg, m_g, tc_ctl, tc_add_g);
+        uint32_t rb = v2_combine(ob, lb, m_b, tc_ctl, tc_add_b);
+        uint32_t ra = v2_combine(oA, lA, m_a, tca_ctl, tca_add);
+        chain = (ra << 24) | (rr << 16) | (rg << 8) | rb;
+    }
+    return chain;
+}
+
+// Clip rectangle in top-of-screen coordinates (always applied: the spec
+// says rendering outside the screen with clipping off is undefined, so
+// the model clips to the rectangle when enabled and to the raster
+// otherwise).
+static void v2_clip_rect(const voodoo2_t *v, int32_t *x0, int32_t *x1, int32_t *y0, int32_t *y1) {
+    if (v->reg[R_FBZMODE] & 1u) {
+        *x0 = (int32_t)((v->reg[R_CLIPLR] >> 16) & 0xFFFu);
+        *x1 = (int32_t)(v->reg[R_CLIPLR] & 0xFFFu);
+        *y0 = (int32_t)((v->reg[R_CLIPTB] >> 16) & 0xFFFu);
+        *y1 = (int32_t)(v->reg[R_CLIPTB] & 0xFFFu);
+    } else {
+        *x0 = 0;
+        *x1 = 1024;
+        *y0 = 0;
+        *y1 = (int32_t)v2_screen_height(v);
+    }
+}
+
+static void v2_sw_triangle(voodoo2_t *v, const voodoo2_tri_t *T) {
+    // Orientation from the COMMAND's sign — a sign that disagrees with
+    // the geometry fails every inside test and draws nothing.
+    int64_t o = T->area_sign ? -1 : 1;
+    int32_t ex[3][4] = {
+        {T->ax, T->ay, T->bx, T->by},
+        {T->bx, T->by, T->cx, T->cy},
+        {T->cx, T->cy, T->ax, T->ay}
+    };
+
+    int32_t minx = T->ax, maxx = T->ax, miny = T->ay, maxy = T->ay;
+    if (T->bx < minx)
+        minx = T->bx;
+    if (T->cx < minx)
+        minx = T->cx;
+    if (T->bx > maxx)
+        maxx = T->bx;
+    if (T->cx > maxx)
+        maxx = T->cx;
+    if (T->by < miny)
+        miny = T->by;
+    if (T->cy < miny)
+        miny = T->cy;
+    if (T->by > maxy)
+        maxy = T->by;
+    if (T->cy > maxy)
+        maxy = T->cy;
+
+    int32_t cx0, cx1, cy0, cy1;
+    v2_clip_rect(v, &cx0, &cx1, &cy0, &cy1);
+    int32_t x0 = minx >> 4, x1 = (maxx + 15) >> 4;
+    int32_t y0 = miny >> 4, y1 = (maxy + 15) >> 4;
+    if (x0 < cx0)
+        x0 = cx0;
+    if (x1 > cx1)
+        x1 = cx1;
+    if (y0 < cy0)
+        y0 = cy0;
+    if (y1 > cy1)
+        y1 = cy1;
+
+    bool clamp = (v->reg[R_FBZCOLORPATH] >> 28) & 1u;
+    bool tex_on = ((v->reg[R_FBZCOLORPATH] >> 27) & 1u) && !(v->reg[R_FBIINIT3] & FBIINIT3_TEXMAP_DIS);
+    bool y_flip = (v->reg[R_FBZMODE] >> 17) & 1u;
+    int32_t ax_i = T->ax >> 4, ay_i = T->ay >> 4;
+
+    for (int32_t y = y0; y < y1; y++) {
+        for (int32_t x = x0; x < x1; x++) {
+            int32_t sx = x << 4, sy = y << 4;
+            bool inside = true;
+            for (int e = 0; e < 3 && inside; e++) {
+                int64_t dxe = ex[e][2] - ex[e][0], dye = ex[e][3] - ex[e][1];
+                int64_t val = dxe * (sy - ex[e][1]) - dye * (sx - ex[e][0]);
+                int64_t t = o * val;
+                if (t > 0)
+                    continue;
+                if (t < 0) {
+                    inside = false;
+                } else {
+                    // Top-left inclusion, derived for this cross/orient
+                    // convention: a "left" edge descends (o*dy < 0 in
+                    // this sign convention), a "top" edge is horizontal
+                    // with o*dx > 0.
+                    bool topleft = (o * dye < 0) || (dye == 0 && o * dxe > 0);
+                    inside = topleft;
+                }
+            }
+            if (!inside)
+                continue;
+            int32_t dx = x - ax_i, dy = y - ay_i;
+            v2_pix_t p;
+            p.x = x;
+            p.y = y_flip ? (int32_t)v2_screen_height(v) - 1 - y : y;
+            p.r = v2_iter_rgba(T->r + (int64_t)T->drdx * dx + (int64_t)T->drdy * dy, clamp);
+            p.g = v2_iter_rgba(T->g + (int64_t)T->dgdx * dx + (int64_t)T->dgdy * dy, clamp);
+            p.b = v2_iter_rgba(T->b + (int64_t)T->dbdx * dx + (int64_t)T->dbdy * dy, clamp);
+            p.a = v2_iter_rgba(T->a + (int64_t)T->dadx * dx + (int64_t)T->dady * dy, clamp);
+            p.z_raw = T->z + (int64_t)T->dzdx * dx + (int64_t)T->dzdy * dy;
+            p.z16 = v2_iter_z(p.z_raw, clamp);
+            p.w_raw = T->w + T->dwdx * dx + T->dwdy * dy;
+            p.w8 = v2_iter_w8(p.w_raw, clamp);
+            p.have_tex = tex_on;
+            p.tex_argb = tex_on ? v2_texture_chain(v, T, dx, dy) : 0u;
+            v2_pixel_pipe(v, &p);
+        }
+    }
+}
+
+static void v2_sw_fastfill(voodoo2_t *v) {
+    // FASTFILL clears the clip rectangle with color1 (dithered) and/or
+    // zaColor[15:0], honouring only the write masks and draw-buffer
+    // select — the depth/alpha/blend stages are bypassed (V2 §5.24).
+    int32_t x0 = (int32_t)((v->reg[R_CLIPLR] >> 16) & 0xFFFu);
+    int32_t x1 = (int32_t)(v->reg[R_CLIPLR] & 0xFFFu);
+    int32_t y0 = (int32_t)((v->reg[R_CLIPTB] >> 16) & 0xFFFu);
+    int32_t y1 = (int32_t)(v->reg[R_CLIPTB] & 0xFFFu);
+    uint32_t fbz = v->reg[R_FBZMODE];
+    uint32_t draw_buf = (fbz >> 14) & 3u;
+    if (draw_buf > 1u)
+        draw_buf = 0;
+    bool y_flip = (fbz >> 17) & 1u;
+    uint32_t cr = (v->reg[R_COLOR1] >> 16) & 0xFFu;
+    uint32_t cg = (v->reg[R_COLOR1] >> 8) & 0xFFu;
+    uint32_t cb = v->reg[R_COLOR1] & 0xFFu;
+    uint16_t za = (uint16_t)(v->reg[R_ZACOLOR] & 0xFFFFu);
+    for (int32_t y = y0; y < y1; y++) {
+        int32_t py = y_flip ? (int32_t)v2_screen_height(v) - 1 - y : y;
+        for (int32_t x = x0; x < x1; x++) {
+            if (fbz & 0x200u)
+                v2_fb_store(v, draw_buf, x, py, v2_pack565(v, x, py, cr, cg, cb));
+            if (fbz & 0x400u)
+                v2_fb_store(v, 3u, x, py, za);
+        }
+    }
+}
+
+static void v2_sw_sync(voodoo2_t *v) {
+    (void)v; // the software walker renders directly into the shadow
+}
+
+static const voodoo2_raster_backend_t v2_sw_backend = {
+    .name = "sw",
+    .triangle = v2_sw_triangle,
+    .fastfill = v2_sw_fastfill,
+    .sync = v2_sw_sync,
+};
+
+// The null backend draws nothing; it exists so a test can pin invariant
+// 1 of the seam (§3.6): the guest-visible instruction stream must be
+// identical whichever backend is installed.
+static void v2_null_triangle(voodoo2_t *v, const voodoo2_tri_t *T) {
+    (void)v;
+    (void)T;
+}
+static const voodoo2_raster_backend_t v2_null_backend = {
+    .name = "null",
+    .triangle = v2_null_triangle,
+    .fastfill = v2_sw_fastfill, // fastfill stays: it is the clear path
+    .sync = v2_sw_sync,
+};
+
+// ============================================================
+// Triangle submission — both routes converge on voodoo2_tri_t
+// ============================================================
+
+// Sign extension helpers for the latch formats.
+static int32_t v2_sx16(uint32_t x) {
+    return (int32_t)(int16_t)x;
+}
+static int32_t v2_sx24(uint32_t x) {
+    return ((int32_t)(x << 8)) >> 8;
+}
+
+// The host-setup route: build the triangle from the Chuck and per-TMU
+// latches and hand it to the backend.  With sub-pixel correction
+// enabled (fbzColorPath[26]) the correction is applied TO THE LATCHES —
+// so a second triangle issued without resending its start parameters is
+// corrected twice, exactly as V2 p.40 documents the hardware doing
+// (proposal §8 Q9: a model that caches uncorrected values would be more
+// correct than the hardware and disagree with it).
+static void v2_triangle_cmd(voodoo2_t *v, bool sign_bit) {
+    if ((v->reg[R_FBZCOLORPATH] >> 26) & 1u) {
+        int32_t fx = v2_sx16(v->reg[0x02]) & 0xF;
+        int32_t fy = v2_sx16(v->reg[0x03]) & 0xF;
+        if (fx || fy) {
+            for (int i = 0; i < 8; i++) { // the 8 start parameters
+                int64_t s = (i < 5) ? v2_sx24(v->reg[0x08 + i]) : (int32_t)v->reg[0x08 + i];
+                int64_t ddx = (i < 5) ? v2_sx24(v->reg[0x10 + i]) : (int32_t)v->reg[0x10 + i];
+                int64_t ddy = (i < 5) ? v2_sx24(v->reg[0x18 + i]) : (int32_t)v->reg[0x18 + i];
+                v->reg[0x08 + i] = (uint32_t)(s - ((ddx * fx + ddy * fy) >> 4));
+            }
+            for (int t = 0; t < V2_NUM_TMUS; t++) {
+                for (int i = 5; i < 8; i++) { // S, T, W per TMU
+                    int64_t s = (int32_t)v->tmu_param[t][0x08 + i];
+                    int64_t ddx = (int32_t)v->tmu_param[t][0x10 + i];
+                    int64_t ddy = (int32_t)v->tmu_param[t][0x18 + i];
+                    v->tmu_param[t][0x08 + i] = (uint32_t)(s - ((ddx * fx + ddy * fy) >> 4));
+                }
+            }
+        }
+    }
+    voodoo2_tri_t T;
+    T.ax = v2_sx16(v->reg[0x02]);
+    T.ay = v2_sx16(v->reg[0x03]);
+    T.bx = v2_sx16(v->reg[0x04]);
+    T.by = v2_sx16(v->reg[0x05]);
+    T.cx = v2_sx16(v->reg[0x06]);
+    T.cy = v2_sx16(v->reg[0x07]);
+    T.r = v2_sx24(v->reg[0x08]);
+    T.g = v2_sx24(v->reg[0x09]);
+    T.b = v2_sx24(v->reg[0x0A]);
+    T.z = (int32_t)v->reg[0x0B];
+    T.a = v2_sx24(v->reg[0x0C]);
+    T.drdx = v2_sx24(v->reg[0x10]);
+    T.dgdx = v2_sx24(v->reg[0x11]);
+    T.dbdx = v2_sx24(v->reg[0x12]);
+    T.dzdx = (int32_t)v->reg[0x13];
+    T.dadx = v2_sx24(v->reg[0x14]);
+    T.drdy = v2_sx24(v->reg[0x18]);
+    T.dgdy = v2_sx24(v->reg[0x19]);
+    T.dbdy = v2_sx24(v->reg[0x1A]);
+    T.dzdy = (int32_t)v->reg[0x1B];
+    T.dady = v2_sx24(v->reg[0x1C]);
+    T.w = (int32_t)v->reg[0x0F];
+    T.dwdx = (int32_t)v->reg[0x17];
+    T.dwdy = (int32_t)v->reg[0x1F];
+    for (int t = 0; t < V2_NUM_TMUS; t++) {
+        T.s[t] = (int32_t)v->tmu_param[t][0x0D];
+        T.t[t] = (int32_t)v->tmu_param[t][0x0E];
+        T.tw[t] = (int32_t)v->tmu_param[t][0x0F];
+        T.dsdx[t] = (int32_t)v->tmu_param[t][0x15];
+        T.dtdx[t] = (int32_t)v->tmu_param[t][0x16];
+        T.dtwdx[t] = (int32_t)v->tmu_param[t][0x17];
+        T.dsdy[t] = (int32_t)v->tmu_param[t][0x1D];
+        T.dtdy[t] = (int32_t)v->tmu_param[t][0x1E];
+        T.dtwdy[t] = (int32_t)v->tmu_param[t][0x1F];
+    }
+    T.area_sign = sign_bit;
+    v->raster->triangle(v, &T);
+    v->reg[R_TRIANGLESOUT] = (v->reg[R_TRIANGLESOUT] + 1u) & 0xFFFFFFu;
+}
+
+// ============================================================
+// The on-chip setup engine (V2 §5.69-5.85)
+// ============================================================
+// The host writes per-vertex data only; the engine computes the
+// gradients, culls, and sequences strips and fans, then enters the SAME
+// walker.
+
+static float v2_f32(uint32_t bits) {
+    float f;
+    memcpy(&f, &bits, sizeof(f));
+    return f;
+}
+
+// Compute the gradients from the three float vertices and draw.
+static void v2_setup_draw(voodoo2_t *v) {
+    uint32_t sm = v->reg[R_SETUPMODE];
+    float x0 = v->sv[0].x, y0 = v->sv[0].y;
+    float x1 = v->sv[1].x, y1 = v->sv[1].y;
+    float x2 = v->sv[2].x, y2 = v->sv[2].y;
+    float area = (x1 - x0) * (y2 - y0) - (y1 - y0) * (x2 - x0);
+    bool sign = area < 0.0f;
+    if ((sm >> 16) & 1u) {
+        // fan mode keeps vertex 0; strips flip winding every other
+        // triangle unless the ping-pong correction is disabled.
+    }
+    bool strip_flip = v->sv_flip && !((sm >> 19) & 1u) && !((sm >> 16) & 1u);
+    bool eff_sign = sign ^ strip_flip;
+    if ((sm >> 17) & 1u) { // culling enabled: reject the matching sign
+        bool cull_sign = (sm >> 18) & 1u;
+        if (eff_sign == cull_sign)
+            return;
+    }
+    if (area == 0.0f)
+        return;
+    float ooa = 1.0f / area;
+#define V2_GRAD(field, dxout, dyout)                                                                                   \
+    do {                                                                                                               \
+        float p0 = v->sv[0].field, p1 = v->sv[1].field, p2 = v->sv[2].field;                                           \
+        dxout = ((p1 - p0) * (y2 - y0) - (p2 - p0) * (y1 - y0)) * ooa;                                                 \
+        dyout = ((p2 - p0) * (x1 - x0) - (p1 - p0) * (x2 - x0)) * ooa;                                                 \
+    } while (0)
+    voodoo2_tri_t T;
+    memset(&T, 0, sizeof(T));
+    T.ax = (int32_t)(x0 * 16.0f);
+    T.ay = (int32_t)(y0 * 16.0f);
+    T.bx = (int32_t)(x1 * 16.0f);
+    T.by = (int32_t)(y1 * 16.0f);
+    T.cx = (int32_t)(x2 * 16.0f);
+    T.cy = (int32_t)(y2 * 16.0f);
+    float ddx, ddy;
+    if (sm & 1u) { // RGB
+        V2_GRAD(r, ddx, ddy);
+        T.r = (int32_t)(v->sv[0].r * 4096.0f);
+        T.drdx = (int32_t)(ddx * 4096.0f);
+        T.drdy = (int32_t)(ddy * 4096.0f);
+        V2_GRAD(g, ddx, ddy);
+        T.g = (int32_t)(v->sv[0].g * 4096.0f);
+        T.dgdx = (int32_t)(ddx * 4096.0f);
+        T.dgdy = (int32_t)(ddy * 4096.0f);
+        V2_GRAD(b, ddx, ddy);
+        T.b = (int32_t)(v->sv[0].b * 4096.0f);
+        T.dbdx = (int32_t)(ddx * 4096.0f);
+        T.dbdy = (int32_t)(ddy * 4096.0f);
+    }
+    if (sm & 2u) { // alpha
+        V2_GRAD(a, ddx, ddy);
+        T.a = (int32_t)(v->sv[0].a * 4096.0f);
+        T.dadx = (int32_t)(ddx * 4096.0f);
+        T.dady = (int32_t)(ddy * 4096.0f);
+    }
+    if (sm & 4u) { // Z
+        V2_GRAD(z, ddx, ddy);
+        T.z = (int32_t)(v->sv[0].z * 4096.0f);
+        T.dzdx = (int32_t)(ddx * 4096.0f);
+        T.dzdy = (int32_t)(ddy * 4096.0f);
+    }
+    if (sm & 8u) { // global W
+        V2_GRAD(wb, ddx, ddy);
+        T.w = (int64_t)(v->sv[0].wb * 1073741824.0);
+        T.dwdx = (int64_t)(ddx * 1073741824.0);
+        T.dwdy = (int64_t)(ddy * 1073741824.0);
+    }
+    for (int t = 0; t < V2_NUM_TMUS; t++) {
+        int wbit = t == 0 ? 4 : 6, stbit = t == 0 ? 5 : 7;
+        if (sm & (1u << wbit)) {
+            if (t == 0)
+                V2_GRAD(w0, ddx, ddy);
+            else
+                V2_GRAD(w1, ddx, ddy);
+            T.tw[t] = (int64_t)((t == 0 ? v->sv[0].w0 : v->sv[0].w1) * 1073741824.0);
+            T.dtwdx[t] = (int64_t)(ddx * 1073741824.0);
+            T.dtwdy[t] = (int64_t)(ddy * 1073741824.0);
+        } else if (sm & 8u) {
+            T.tw[t] = T.w;
+            T.dtwdx[t] = T.dwdx;
+            T.dtwdy[t] = T.dwdy;
+        }
+        if (sm & (1u << stbit)) {
+            if (t == 0)
+                V2_GRAD(s0, ddx, ddy);
+            else
+                V2_GRAD(s1, ddx, ddy);
+            T.s[t] = (int64_t)((t == 0 ? v->sv[0].s0 : v->sv[0].s1) * 262144.0);
+            T.dsdx[t] = (int64_t)(ddx * 262144.0);
+            T.dsdy[t] = (int64_t)(ddy * 262144.0);
+            if (t == 0)
+                V2_GRAD(t0, ddx, ddy);
+            else
+                V2_GRAD(t1, ddx, ddy);
+            T.t[t] = (int64_t)((t == 0 ? v->sv[0].t0 : v->sv[0].t1) * 262144.0);
+            T.dtdx[t] = (int64_t)(ddx * 262144.0);
+            T.dtdy[t] = (int64_t)(ddy * 262144.0);
+        }
+    }
+#undef V2_GRAD
+    T.area_sign = eff_sign;
+    v->raster->triangle(v, &T);
+    v->reg[R_TRIANGLESOUT] = (v->reg[R_TRIANGLESOUT] + 1u) & 0xFFFFFFu;
+}
+
+static void v2_setup_vertex(voodoo2_t *v) {
+    uint32_t sm = v->reg[R_SETUPMODE];
+    if (v->sv_count < 3) {
+        v->sv[v->sv_count++] = v->sv_cur;
+        if (v->sv_count < 3)
+            return;
+        v->sv_flip = false;
+    } else if ((sm >> 16) & 1u) { // fan: keep vertex 0
+        v->sv[1] = v->sv[2];
+        v->sv[2] = v->sv_cur;
+    } else { // strip: slide the window, flipping winding
+        v->sv[0] = v->sv[1];
+        v->sv[1] = v->sv[2];
+        v->sv[2] = v->sv_cur;
+        v->sv_flip = !v->sv_flip;
+    }
+    v2_setup_draw(v);
 }
 
 // ============================================================
@@ -712,17 +2179,78 @@ static uint32_t v2_reg_read(voodoo2_t *v, int idx) {
     return v->reg[idx];
 }
 
+// Convert one IEEE-single float-mirror write into the corresponding
+// fixed-point latch value (truncation toward zero — the conversion
+// rounding is not in our material, so it is chosen and documented).
+static uint32_t v2_float_to_latch(int fixed_idx, uint32_t bits) {
+    double f = (double)v2_f32(bits);
+    if (fixed_idx >= 0x02 && fixed_idx <= 0x07)
+        return (uint32_t)(int32_t)(f * 16.0); // 12.4 vertices
+    switch (fixed_idx & 7) {
+    case 5:
+    case 6:
+        return (uint32_t)(int32_t)(f * 262144.0); // 14.18 S/W, T/W
+    case 7:
+        return (uint32_t)(int64_t)(f * 1073741824.0); // 2.30 1/W
+    default:
+        return (uint32_t)(int32_t)(f * 4096.0); // 12.12 colour, 20.12 Z
+    }
+}
+
 // One register write, already decoded: `chip_mask` bit 0 = Chuck, bits
 // 1..2 = the two Bruces (0 = everything) [V2 p.21 §5].
 static void v2_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t value) {
     if (chip_mask == 0)
         chip_mask = 0x7u; // 0 selects all chips
 
+    // Triangle-parameter latches (vertices, starts, gradients) route by
+    // chip select — startS/T and their gradients are Bruce-only, the
+    // rest go to Chuck and/or the selected Bruces; every chip keeps its
+    // own copy.  The float mirrors convert into the SAME latches.
+    if (idx >= 0x02 && idx <= 0x1F) {
+        if (chip_mask & 1u)
+            v->reg[idx] = value;
+        for (int t = 0; t < V2_NUM_TMUS; t++) {
+            if (chip_mask & (2u << t))
+                v->tmu_param[t][idx] = value;
+        }
+        return;
+    }
+    if (idx >= 0x22 && idx <= 0x3F) {
+        uint32_t conv = v2_float_to_latch(idx - 0x20, value);
+        if (chip_mask & 1u)
+            v->reg[idx - 0x20] = conv;
+        for (int t = 0; t < V2_NUM_TMUS; t++) {
+            if (chip_mask & (2u << t))
+                v->tmu_param[t][idx - 0x20] = conv;
+        }
+        return;
+    }
+
     // The TMU block routes by chip select; everything below is Chuck.
     if (idx >= V2_TMU_REG_FIRST) {
         for (int t = 0; t < V2_NUM_TMUS; t++) {
-            if (chip_mask & (2u << t))
-                v->tmu_reg[t][idx - V2_TMU_REG_FIRST] = value;
+            if (!(chip_mask & (2u << t)))
+                continue;
+            // NCC table writes with the data MSB set are PALETTE writes
+            // (V2 §5.92.2): index[7:1] from data 30:24 [3dfx-src: Glide
+            // writes 0x80000000 | (index & 0xFE) << 23 | RGB], index[0]
+            // from the I/Q register's address parity.
+            if (idx >= R_NCC0_FIRST && idx <= R_NCC0_FIRST + 11) {
+                int off = idx - R_NCC0_FIRST;
+                if (off >= 4 && (value & 0x80000000u)) {
+                    uint32_t pi = ((value >> 23) & 0xFEu) | ((uint32_t)off & 1u);
+                    v->palette[t][pi] = value & 0xFFFFFFu;
+                } else {
+                    v->ncc[t][0][off] = value;
+                }
+                continue;
+            }
+            if (idx >= R_NCC1_FIRST && idx <= R_NCC1_FIRST + 11) {
+                v->ncc[t][1][idx - R_NCC1_FIRST] = value;
+                continue;
+            }
+            v->tmu_reg[t][idx - V2_TMU_REG_FIRST] = value;
         }
         return;
     }
@@ -784,17 +2312,73 @@ static void v2_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t val
         return;
     }
     case R_TRIANGLECMD:
+        // Only bit 31 — the area sign — is used [V2 §5.16].
+        v2_triangle_cmd(v, (value >> 31) & 1u);
+        return;
     case R_FTRIANGLECMD:
+        // The IEEE mirror: the float's sign bit is the same bit 31.
+        v2_triangle_cmd(v, (value >> 31) & 1u);
+        return;
     case R_FASTFILLCMD:
+        v->raster->fastfill(v);
+        return;
     case R_SDRAWTRICMD:
+        v2_setup_vertex(v);
+        return;
     case R_SBEGINTRICMD:
-        // The draw path lands with the rasteriser milestone; a draw
-        // issued before then is logged once, completes "instantly", and
-        // leaves the statistics counters untouched.
-        if (!v->warned_draw) {
-            v->warned_draw = true;
-            LOG(2, "draw command reg $%03X issued — the rasteriser is not modelled yet", idx * 4);
-        }
+        // Begin a new strip at the current vertex; no drawing yet.
+        v->sv[0] = v->sv_cur;
+        v->sv_count = 1;
+        v->sv_flip = false;
+        return;
+    // The on-chip setup vertex registers assemble sv_cur (V2 §5.69+).
+    case 0x99: // sVx
+        v->sv_cur.x = v2_f32(value);
+        return;
+    case 0x9A: // sVy
+        v->sv_cur.y = v2_f32(value);
+        return;
+    case 0x9B: // sARGB: four packed bytes
+        v->sv_cur.a = (float)(value >> 24);
+        v->sv_cur.r = (float)((value >> 16) & 0xFFu);
+        v->sv_cur.g = (float)((value >> 8) & 0xFFu);
+        v->sv_cur.b = (float)(value & 0xFFu);
+        return;
+    case 0x9C: // sRed
+        v->sv_cur.r = v2_f32(value);
+        return;
+    case 0x9D: // sGreen
+        v->sv_cur.g = v2_f32(value);
+        return;
+    case 0x9E: // sBlue
+        v->sv_cur.b = v2_f32(value);
+        return;
+    case 0x9F: // sAlpha
+        v->sv_cur.a = v2_f32(value);
+        return;
+    case 0xA0: // sVz
+        v->sv_cur.z = v2_f32(value);
+        return;
+    case 0xA1: // sWb
+        v->sv_cur.wb = v2_f32(value);
+        return;
+    case 0xA2: // sWtmu0
+        v->sv_cur.w0 = v2_f32(value);
+        return;
+    case 0xA3: // sS/W0
+        v->sv_cur.s0 = v2_f32(value);
+        return;
+    case 0xA4: // sT/W0
+        v->sv_cur.t0 = v2_f32(value);
+        return;
+    case 0xA5: // sWtmu1
+        v->sv_cur.w1 = v2_f32(value);
+        return;
+    case 0xA6: // sS/Wtmu1
+        v->sv_cur.s1 = v2_f32(value);
+        return;
+    case 0xA7: // sT/Wtmu1
+        v->sv_cur.t1 = v2_f32(value);
         return;
     default:
         break;
@@ -864,12 +2448,23 @@ static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
     if (off < V2_OFF_TEX) {
         // LFB reads are gated by fbiInit1[3], which starts CLEAR so a
         // random powerup read cannot hang the machine [V2 p.68]; they
-        // return two 16-bit pixels whatever the write format [V2 p.56].
+        // return two 16-bit pixels whatever the write format [V2 p.56],
+        // are blocking (automatic in the synchronous model) and read
+        // through the authoritative shadow (the seam's invariant 2).
         if (!(v->reg[R_FBIINIT1] & FBIINIT1_LFB_READ_EN))
             return 0;
+        v->raster->sync(v);
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, false, &buffer, &x, &y);
-        uint32_t le = v2_lfb_load16(v, buffer, x, y) | ((uint32_t)v2_lfb_load16(v, buffer, x + 1u, y) << 16);
+        uint16_t p0 = v2_lfb_load16(v, buffer, x, y);
+        uint16_t p1 = v2_lfb_load16(v, buffer, x + 1u, y);
+        // Colour-lane selection applies to reads of the colour buffers:
+        // the BGR orderings exchange the red and blue fields [V2 p.115].
+        if (buffer != 3u && (LFB_LANES(v->reg[R_LFBMODE]) & 1u)) {
+            p0 = (uint16_t)(((p0 & 0x1Fu) << 11) | (p0 & 0x7E0u) | (p0 >> 11));
+            p1 = (uint16_t)(((p1 & 0x1Fu) << 11) | (p1 & 0x7E0u) | (p1 >> 11));
+        }
+        uint32_t le = (uint32_t)p0 | ((uint32_t)p1 << 16);
         return VOODOO2_LE32(v2_lfb_read_transform(v, le));
     }
     // Texture memory is write-only; reads return undefined data
@@ -889,12 +2484,64 @@ static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data) {
         return;
     }
     if (off < V2_OFF_TEX) {
+        uint32_t mode = v->reg[R_LFBMODE];
+        uint32_t fmt = LFB_FMT(mode);
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, true, &buffer, &x, &y);
         uint32_t t = v2_lfb_write_transform(v, le);
-        v2_lfb_store16(v, buffer, x, y, (uint16_t)t);
-        v2_lfb_store16(v, buffer, x + 1u, y, (uint16_t)(t >> 16));
-        return;
+        uint32_t r, g, b, a;
+        switch (fmt) {
+        case 0:
+        case 1:
+        case 2: { // two 16-bit colour pixels: left in the low half
+            bool ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)t, &r, &g, &b, &a);
+            v2_lfb_pixel(v, buffer, x, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), false, 0, true, false);
+            ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)(t >> 16), &r, &g, &b, &a);
+            v2_lfb_pixel(v, buffer, x + 1u, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), false, 0, true, false);
+            return;
+        }
+        case 4:
+        case 5: { // one 24/32-bit pixel; lanes reorder the byte channels
+            uint32_t lanes = LFB_LANES(mode);
+            if (lanes == 0u || fmt == 4u) { // ARGB (format 4 carries no A)
+                a = fmt == 5u ? t >> 24 : (v->reg[R_ZACOLOR] >> 24);
+                r = (t >> 16) & 0xFFu;
+                g = (t >> 8) & 0xFFu;
+                b = t & 0xFFu;
+            } else if (lanes == 1u) { // ABGR
+                a = t >> 24;
+                b = (t >> 16) & 0xFFu;
+                g = (t >> 8) & 0xFFu;
+                r = t & 0xFFu;
+            } else if (lanes == 2u) { // RGBA
+                r = t >> 24;
+                g = (t >> 16) & 0xFFu;
+                b = (t >> 8) & 0xFFu;
+                a = t & 0xFFu;
+            } else { // BGRA
+                b = t >> 24;
+                g = (t >> 16) & 0xFFu;
+                r = (t >> 8) & 0xFFu;
+                a = t & 0xFFu;
+            }
+            v2_lfb_pixel(v, buffer, x, y, r, g, b, a, false, 0, true, false);
+            return;
+        }
+        case 12:
+        case 13:
+        case 14: { // 16-bit depth + 16-bit colour (Z high after transform)
+            bool ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)t, &r, &g, &b, &a);
+            v2_lfb_pixel(v, buffer, x, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), true, (uint16_t)(t >> 16), true,
+                         true);
+            return;
+        }
+        case LFB_FMT_ZZ: // two depth values into the aux buffer
+            v2_lfb_store16(v, 3u, x, y, (uint16_t)t);
+            v2_lfb_store16(v, 3u, x + 1u, y, (uint16_t)(t >> 16));
+            return;
+        default: // reserved formats: the write vanishes
+            return;
+        }
     }
     v2_tex_write(v, off - V2_OFF_TEX, le);
 }
@@ -914,9 +2561,13 @@ static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
     if (off < V2_OFF_TEX) {
         if (!(v->reg[R_FBIINIT1] & FBIINIT1_LFB_READ_EN))
             return 0;
+        v->raster->sync(v);
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, false, &buffer, &x, &y);
-        return VOODOO2_LE16(v2_lfb_load16(v, buffer, x, y));
+        uint16_t p = v2_lfb_load16(v, buffer, x, y);
+        if (buffer != 3u && (LFB_LANES(v->reg[R_LFBMODE]) & 1u))
+            p = (uint16_t)(((p & 0x1Fu) << 11) | (p & 0x7E0u) | (p >> 11));
+        return VOODOO2_LE16(p);
     }
     if (!v->warned_tex_read) {
         v->warned_tex_read = true;
@@ -935,11 +2586,26 @@ static void v2_bar_write16(void *ctx, uint32_t off, uint16_t data) {
         return;
     }
     if (off < V2_OFF_TEX) {
-        // A single 16-bit pixel; the Glide memory-sizing probes drive
+        // A single 16-bit datum; the Glide memory-sizing probes drive
         // exactly this path [3dfx-src fbiMemSize].
+        uint32_t mode = v->reg[R_LFBMODE];
+        uint32_t fmt = LFB_FMT(mode);
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, true, &buffer, &x, &y);
-        v2_lfb_store16(v, buffer, x, y, VOODOO2_LE16(data));
+        uint16_t d = VOODOO2_LE16(data);
+        if (LFB_WR_SWIZZLE(mode))
+            d = (uint16_t)((d >> 8) | (d << 8));
+        if (fmt <= 2u) {
+            uint32_t r, g, b, a;
+            bool ha = v2_lfb_expand16(fmt, LFB_LANES(mode), d, &r, &g, &b, &a);
+            v2_lfb_pixel(v, buffer, x, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), false, 0, true, false);
+        } else if (fmt == LFB_FMT_ZZ) {
+            v2_lfb_store16(v, 3u, x, y, d);
+        } else {
+            // A halfword into a 32-bit format is not a defined bus
+            // shape; store raw into the write buffer (chosen).
+            v2_lfb_store16(v, buffer, x, y, d);
+        }
         return;
     }
     // Texture writes are dword transactions on real hardware; a halfword
@@ -964,6 +2630,7 @@ static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
     if (off < V2_OFF_TEX) {
         if (!(v->reg[R_FBIINIT1] & FBIINIT1_LFB_READ_EN))
             return 0;
+        v->raster->sync(v);
         uint32_t buffer, x, y;
         v2_lfb_locate(v, (off - V2_OFF_LFB) & ~1u, false, &buffer, &x, &y);
         uint16_t px = v2_lfb_load16(v, buffer, x, y);
@@ -1072,6 +2739,13 @@ static void v2_reset(pci_device_t *dev, config_t *cfg) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     memset(v->reg, 0, sizeof(v->reg));
     memset(v->tmu_reg, 0, sizeof(v->tmu_reg));
+    memset(v->tmu_param, 0, sizeof(v->tmu_param));
+    memset(v->ncc, 0, sizeof(v->ncc));
+    memset(v->palette, 0, sizeof(v->palette));
+    memset(&v->sv_cur, 0, sizeof(v->sv_cur));
+    memset(v->sv, 0, sizeof(v->sv));
+    v->sv_count = 0;
+    v->sv_flip = false;
     // Strapped power-on values [V2 pp.67-73].  fbiInit0[0]'s reset value
     // comes from the fb_addr_a[4] strap, modelled as 0: the board powers
     // on PASSING THROUGH, handing the monitor to the 2D card — which is
@@ -1124,6 +2798,13 @@ static display_t *v2_display(pci_device_t *dev) {
 typedef struct v2_ckpt {
     uint32_t reg[V2_NUM_REGS];
     uint32_t tmu_reg[V2_NUM_TMUS][64];
+    uint32_t tmu_param[V2_NUM_TMUS][0x20];
+    uint32_t ncc[V2_NUM_TMUS][2][12];
+    uint32_t palette[V2_NUM_TMUS][256];
+    float sv_cur[14], sv[3][14];
+    int32_t sv_count;
+    uint8_t sv_flip;
+    uint8_t pad2[3];
     uint32_t init_enable, bus_snoop[2], cfg_scratch, si_process;
     uint8_t dac_direct[8];
     uint8_t dac_pll[16][2];
@@ -1141,6 +2822,13 @@ static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     memset(&c, 0, sizeof(c));
     memcpy(c.reg, v->reg, sizeof(c.reg));
     memcpy(c.tmu_reg, v->tmu_reg, sizeof(c.tmu_reg));
+    memcpy(c.tmu_param, v->tmu_param, sizeof(c.tmu_param));
+    memcpy(c.ncc, v->ncc, sizeof(c.ncc));
+    memcpy(c.palette, v->palette, sizeof(c.palette));
+    memcpy(c.sv_cur, &v->sv_cur, sizeof(c.sv_cur));
+    memcpy(c.sv, v->sv, sizeof(c.sv));
+    c.sv_count = v->sv_count;
+    c.sv_flip = v->sv_flip ? 1u : 0u;
     c.init_enable = v->init_enable;
     c.bus_snoop[0] = v->bus_snoop[0];
     c.bus_snoop[1] = v->bus_snoop[1];
@@ -1168,6 +2856,13 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, &c, sizeof(c));
     memcpy(v->reg, c.reg, sizeof(v->reg));
     memcpy(v->tmu_reg, c.tmu_reg, sizeof(v->tmu_reg));
+    memcpy(v->tmu_param, c.tmu_param, sizeof(v->tmu_param));
+    memcpy(v->ncc, c.ncc, sizeof(v->ncc));
+    memcpy(v->palette, c.palette, sizeof(v->palette));
+    memcpy(&v->sv_cur, c.sv_cur, sizeof(v->sv_cur));
+    memcpy(v->sv, c.sv, sizeof(v->sv));
+    v->sv_count = c.sv_count;
+    v->sv_flip = c.sv_flip != 0;
     v->init_enable = c.init_enable;
     v->bus_snoop[0] = c.bus_snoop[0];
     v->bus_snoop[1] = c.bus_snoop[1];
@@ -1295,6 +2990,20 @@ static value_t regs_attr_tmu_size(struct object *self, const member_t *m) {
     return val_uint(4, v ? v->tex_size : 0);
 }
 
+static const arg_decl_t regs_tex_offset_args[] = {
+    {.name = "tmu", .kind = V_INT, .doc = "Which Bruce (0 or 1)"},
+    {.name = "lod", .kind = V_INT, .doc = "LOD level (0-8)"     },
+};
+static value_t regs_method_tex_offset(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    voodoo2_t *v = node_card(self);
+    int64_t tmu = argv[0].i, lod = argv[1].i;
+    if (!v || tmu < 0 || tmu >= V2_NUM_TMUS || lod < 0 || lod > 8)
+        return val_err("regs.tex_offset: tmu 0..1, lod 0..8");
+    return val_uint(4, v2_lod_offset(v, (int)tmu, (int)lod));
+}
+
 static const arg_decl_t regs_read_arg[] = {
     {.name = "offset", .kind = V_INT, .doc = "Register byte offset ($000-$3FC, V2 spec pp.22-26)"},
 };
@@ -1358,6 +3067,10 @@ static const member_t regs_members[] = {
      .name = "read",
      .doc = "Read any Chuck register by its byte offset",
      .method = {.args = regs_read_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_read}},
+    {.kind = M_METHOD,
+     .name = "tex_offset",
+     .doc = "Byte offset of a LOD level in the packed mip chain, per the TMU's live tLOD "
+            "(the V2 p.118 size-table arithmetic; the spec's worked examples pin it)", .method = {.args = regs_tex_offset_args, .nargs = 2, .result = V_UINT, .fn = regs_method_tex_offset}},
 };
 
 static const class_desc_t v2_regs_class = {
@@ -1452,6 +3165,13 @@ static bool v2_stage_option(const char *key, const char *value) {
         LOG(0, "unknown memory size '%s' — the card offers 8m, 12m", value);
         return true; // the key IS ours; the value was the problem
     }
+    if (strcmp(key, "raster") == 0) {
+        // Deliberately NOT in the advertised options: a test affordance
+        // that installs the null backend to pin the seam's
+        // analytic-timing invariant (voodoo2_raster.h).
+        s_staged_null_raster = strcmp(value, "null") == 0;
+        return true;
+    }
     return false;
 }
 
@@ -1473,6 +3193,8 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
 
     v->tex_size = s_staged_tex_size;
     s_staged_tex_size = V2_TMU_2MB;
+    v->raster = s_staged_null_raster ? &v2_null_backend : &v2_sw_backend;
+    s_staged_null_raster = false;
     v->fb_ram = (uint8_t *)calloc(1, V2_FB_SIZE);
     v->tex_ram[0] = (uint8_t *)calloc(1, v->tex_size);
     v->tex_ram[1] = (uint8_t *)calloc(1, v->tex_size);

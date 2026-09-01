@@ -34,10 +34,17 @@ document grows as each group lands.
   aperture, the register file with its gating rules, the ICS5342 DAC and
   PLL, LFB with memory-sizing aliasing, and the idle contract — gated by
   `tests/integration/tnt-pci-voodoo2` (below).
-- **3c — the rasteriser:** not yet landed.  Until it lands, draw
-  commands are accepted, logged once, and complete "instantly"; the
-  guest-visible TMU memory/config probe (which renders through the
-  texture pipeline) waits for it.
+- **3c — the rasteriser (landed):** both triangle paths (host setup and
+  the on-chip setup engine with strips/fans/culling), the full pixel
+  pipeline in the p.15 order, two TMUs with single-pass multitexture,
+  all fifteen texture formats with the NCC/palette decode, the packed
+  mip-chain address calculator (pinned by the spec's three worked
+  examples), the LFB's write formats/lanes/bypass-vs-pipeline split,
+  `fastfillCMD`, the five statistics counters, and the raster-backend
+  seam ([`voodoo2_raster.h`](../../../../../src/core/peripherals/pci/cards/voodoo2_raster.h))
+  with the software walker as the normative default and a null backend
+  pinning the analytic-timing invariant.  See "The fill convention and
+  the divergence list" below.
 - **3d — pass-through and display:** not yet landed.
 - **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`):** not yet landed.
 
@@ -130,6 +137,44 @@ probe before any instruction runs, the guest firmware's own assignment,
 and `glide-init.script`, a step-by-step replay of 3dfx's own bring-up
 order with every step's postcondition asserted in place and every wait
 bounded. The empty slot's all-ones read is the positive control.
+
+## The fill convention, and the divergence list (milestone 3c)
+
+**The triangle fill rule is CHOSEN, not known.**  V2 §7.2, on the
+TRIANGLE command, reads in full: *"TO BE COMPLETED. SEE THE SST-1
+PROGRAMMING GUIDE FOR A DETAILED EXPLANATION"* — and nobody holds that
+guide (proposal §8 Q1, §10 item 1).  The convention this rasteriser
+implements, derived from what the spec does give (the p.36 area formula
+and sign, 12.4 vertices, the sub-pixel rule):
+
+- sample points at pixel integer coordinates;
+- inside/outside by edge functions oriented by the **command's** area
+  sign (a sign that disagrees with the geometry draws nothing);
+- half-open top-left inclusion, so triangles sharing an edge tile with
+  no seam and no double-drawn pixel (asserted in the gate);
+- parameter iteration from vertex A's truncated position.
+
+Every pinned pixel value and count in `draw.script` records what *this*
+rasteriser draws — regression anchors, not hardware conformance.  The
+divergences, each deliberate and localised:
+
+| # | Divergence | Where | Why |
+|---|---|---|---|
+| 1 | Idle is inverted: work completes at issue, busy reads 0 | `v2_status` | the faithful failure mode is an unbounded guest spin (§8 Q3) |
+| 2 | The fill rule above | `v2_sw_triangle` | not specified at any price; §8 Q1 |
+| 3 | Dither thresholds (classic Bayer 4×4/2×2, remainder-threshold rule) | `v2_pack565` | the spec names the modes but not the matrices |
+| 4 | Per-pixel LOD from analytic texel-space steps | `v2_texture_chain` | the LOD arithmetic is Bruce-spec material nobody holds (§8 Q4) |
+| 5 | 1/W→4.12 float-depth normalisation | `v2_depth_float` | the exact normalisation is not in our material |
+| 6 | Fog table indexing (4-bit exponent + 2 mantissa bits, no inter-entry interpolation) | `v2_pixel_pipe` | normalisation unspecified; no held client uses fog |
+| 7 | Float-mirror→fixed conversion truncates toward zero | `v2_float_to_latch` | conversion rounding unspecified |
+| 8 | DAC power-on PLL N/P bytes (M bytes are the detection signature and exact) | `v2_dac_reset` | only the M values are documented |
+| 9 | trexInit0/1 opaque except the second-RAS size gate | `v2_tmu_addressable` | V2 p.85: "FIXME. See Bruce spec" |
+
+What is *not* on this list, because the hardware behaviour is documented
+and implemented faithfully: sub-pixel correction mutating the start
+latches per FIFO read (so resend-less triangles drift — §8 Q9, asserted),
+the reversed LFB transform orders, texture-memory aliasing under the
+sizing probes, and the initEnable gates.
 
 ## The register-name table (milestone 3a)
 

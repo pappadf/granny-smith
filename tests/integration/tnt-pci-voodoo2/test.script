@@ -143,6 +143,46 @@ assert vreg_rd(0x144) == vreg_rd(0x144 + 0xFC000) "the last wrap alias reaches t
 machine.memory.poke.l($BAR + 0x800000, 0x11223344)
 assert machine.memory.peek.l($BAR + 0x800000) == 0xFFFFFFFF "texture reads return undefined (all-ones) data"
 
+# --- The card draws (milestone 3c). -----------------------------------------
+include "draw.script"
+
+# --- Observations: LFB throughput, and the row's deterministic spend. --------
+# §3.4 wants the dispatcher-path cost "answered with a number rather
+# than a worry".  This shell-driven burst is an UPPER bound (it includes
+# the script interpreter); the escape hatch (a host-overlay fast path)
+# stays out of scope unless a guest-driven workload shows the need.
+include "../lib/mac.script"
+let T0 = scheduler.host_user_ns
+for i in 0..4096 {
+    machine.memory.poke.l($LFB + ($i << 2), 0x11111111)
+}
+let LFB_NS = scheduler.host_user_ns - $T0
+echo "lfb-throughput: 4096 dword LFB writes in ${$LFB_NS} ns (shell-driven upper bound)"
+report_perf("tnt-pci-voodoo2", scheduler.instr_count)
+
+# --- The raster seam: the null backend, and the timing invariant. ------------
+# pci_option="raster=null" installs the backend that draws nothing
+# (voodoo2_raster.h).  The guest-visible instruction stream must be
+# IDENTICAL under any backend — which the analytic-timing invariant
+# delivers by construction: a draw consumes no scheduled time on either
+# backend, and only the framebuffer contents differ.
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=null"
+cfg_wr(0x10, 0x81000000)
+cfg_wr(0x04, 0x0002)
+let BAR = machine.pci.slot[1].card.config.bar[0].base
+cfg_wr(0x40, 0x00000003)
+vreg_wr(0x008, 0x00000320)
+vreg_wr(0x00C, 0x00000320)
+vreg_wr(0x010, 0x00000320)
+vreg_wr(0x014, 0x00000420)
+vreg_wr(0x018, 0x00000420)
+vreg_wr(0x01C, 0x00000320)
+let NC0 = scheduler.cycles
+vreg_wr(0x080, 0x80000000)
+assert scheduler.cycles == $NC0 "null backend: a draw consumes no scheduled time"
+assert machine.pci.slot[1].card.regs.read(0x15C) == 0 "null backend: nothing was drawn — only CONTENTS may differ between backends"
+assert machine.pci.slot[1].card.regs.read(0x25C) == 1 "...but the triangle RETIRED: the guest-visible command stream is backend-independent"
+
 # --- The memory option: 8 MB and 12 MB boards. ------------------------------
 # Both SKUs carry the same 4 MB framebuffer (both reach 800x600); the
 # option changes texture capacity only.  The guest-visible TMU probe
