@@ -60,7 +60,7 @@ LOG_USE_CATEGORY_NAME("cpu");
 #include "cpu_ops.h"
 
 // Generate the cpu_run_68000 decoder function
-#define CPU_DECODER_NAME        cpu_run_68000
+#define CPU_DECODER_NAME        cpu_run_68000_switch
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 /* Saturating decrement on the trailing (*instructions)--: memory_io_penalty
@@ -146,3 +146,31 @@ LOG_USE_CATEGORY_NAME("cpu");
     assert(*instructions == 0)
 
 #include "cpu_decode.h"
+#undef CPU_DECODER_NAME
+#undef CPU_DECODER_ARGS
+#undef CPU_DECODER_RETURN_TYPE
+#undef CPU_DECODER_PROLOGUE
+#undef CPU_DECODER_EPILOGUE
+
+// ============================================================================
+// The predecoded executor (proposal-predecoded-interpreter-cores.md): the
+// one-instruction executor, the sprint loop over predecoded entries, and
+// the decode tree in its classifier role — three more instantiations of
+// the same template, sharing this file's macro bindings and op bodies.
+// ============================================================================
+#define PD_RUN_NAME      cpu_pd_run_68000
+#define PD_STEP_NAME     cpu_pd_step_68000
+#define PD_DECODE_NAME   cpu_pd_decode_68000
+#define PD_TREE_NAME     cpu_pd_tree_68000
+#define PD_CLASSIFY_NAME cpu_pd_classify_68000
+#define PD_HW_RESET(c)   ((void)0)
+#include "cpu_pd_run.h"
+
+// The core's entry point: the predecoded executor when enabled, else the
+// switch core (kept for A/B from the shell: machine.cpu.predecode = 0).
+void cpu_run_68000(cpu_t *restrict cpu, uint32_t *instructions) {
+    if (predecode_enabled() && g_lisa_mmu == NULL)
+        cpu_pd_run_68000(cpu, instructions);
+    else
+        cpu_run_68000_switch(cpu, instructions);
+}

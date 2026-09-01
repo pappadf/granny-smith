@@ -5,12 +5,7 @@
 #include <stdlib.h>
 
 // Custom assertion failure handler
-void gs_assert_fail(const char *expr,
-                    const char *file,
-                    int line,
-                    const char *func,
-                    const char *fmt,
-                    ...) {
+void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
     va_list ap;
     fprintf(stderr, "[unit] assertion failed: %s:%d", file ? file : "?", line);
     if (func)

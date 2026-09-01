@@ -430,7 +430,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
 // Generate the cpu_run_68040 decoder function using the shared template.
 // Prologue/epilogue mirror cpu_68030.c; the model checks inside the shared
 // exception helpers select the 040 frame formats (Format $7 access error).
-#define CPU_DECODER_NAME        cpu_run_68040
+#define CPU_DECODER_NAME        cpu_run_68040_switch
 #define CPU_DECODER_ARGS        cpu_t *restrict cpu, uint32_t *instructions
 #define CPU_DECODER_RETURN_TYPE void
 #define CPU_DECODER_PROLOGUE                                                                                           \
@@ -484,3 +484,31 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
     assert(*instructions == 0)
 
 #include "cpu_decode.h"
+#undef CPU_DECODER_NAME
+#undef CPU_DECODER_ARGS
+#undef CPU_DECODER_RETURN_TYPE
+#undef CPU_DECODER_PROLOGUE
+#undef CPU_DECODER_EPILOGUE
+
+// ============================================================================
+// The predecoded executor (proposal-predecoded-interpreter-cores.md): the
+// one-instruction executor, the sprint loop over predecoded entries, and
+// the decode tree in its classifier role — three more instantiations of
+// the same template, sharing this file's macro bindings and op bodies.
+// ============================================================================
+#define PD_RUN_NAME      cpu_pd_run_68040
+#define PD_STEP_NAME     cpu_pd_step_68040
+#define PD_DECODE_NAME   cpu_pd_decode_68040
+#define PD_TREE_NAME     cpu_pd_tree_68040
+#define PD_CLASSIFY_NAME cpu_pd_classify_68040
+#define PD_HW_RESET(c)   cpu_hardware_reset_040(c)
+#include "cpu_pd_run.h"
+
+// The core's entry point: the predecoded executor when enabled, else the
+// switch core (kept for A/B from the shell: machine.cpu.predecode = 0).
+void cpu_run_68040(cpu_t *restrict cpu, uint32_t *instructions) {
+    if (predecode_enabled())
+        cpu_pd_run_68040(cpu, instructions);
+    else
+        cpu_run_68040_switch(cpu, instructions);
+}

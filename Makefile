@@ -112,6 +112,10 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 
 include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 
+# -- Predecoded-core T1 headers (generated into build/gen/) --
+
+include src/core/cpu/pdgen.mk
+
 # -- Build mode (release | debug | sanitize) --
 
 MODE ?= release
@@ -165,7 +169,8 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(MACHINES_DIR)/compact \
             -I$(MACHINES_DIR)/lisa \
             -I$(PLATFORM_DIR) \
-            -I$(VROM68K_OUT)
+            -I$(VROM68K_OUT) \
+            -I$(PDGEN_OUT)
 
 # -- Compile flags (source -> object) --
 # -MMD -MP generates .d dependency files alongside each .o so that
@@ -226,6 +231,11 @@ $(OBJ_DIR)/$(CORE_DIR)/build_id.o: FORCE
 
 # gsvrom_data.c embeds the generated fragments header.
 $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
+
+# The predecoded executors include the generated T1 headers.
+$(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68000.o $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68030.o \
+    $(OBJ_DIR)/$(CORE_DIR)/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
+$(OBJ_DIR)/$(CORE_DIR)/cpu/ppc/ppc_pd_run.o: $(PDGEN_PPC_HEADERS)
 
 # Link all objects into the final WASM module
 $(OUTPUT): $(OBJ)

@@ -60,6 +60,13 @@ INCLUDE_FLAGS := -I$(UNIT_ROOT)/support \
                  -include $(UNIT_ROOT)/support/platform.h \
                  -include $(UNIT_ROOT)/support/log.h
 
+# The predecoded cores include generated T1 headers (scripts/gen_pd_cases.py);
+# they are produced once into $(WORKSPACE_ROOT)/build/gen for every suite.
+PDGEN_OUT := $(WORKSPACE_ROOT)/build/gen
+PDGEN_CPU_HEADERS := $(PDGEN_OUT)/cpu_pd_t1_ids.h $(PDGEN_OUT)/cpu_pd_t1_classify.h $(PDGEN_OUT)/cpu_pd_t1_cases.h
+PDGEN_PPC_HEADERS := $(PDGEN_OUT)/ppc_pd_t1_ids.h $(PDGEN_OUT)/ppc_pd_t1_classify.h $(PDGEN_OUT)/ppc_pd_t1_cases.h
+INCLUDE_FLAGS += -I$(PDGEN_OUT)
+
 CFLAGS  := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
 LDFLAGS ?=
 LDFLAGS += -rdynamic -lm
@@ -98,6 +105,7 @@ else ifeq ($(TEST_HARNESS),cpu)
               $(EMU_ROOT)/core/cpu/cpu_68000.c \
               $(EMU_ROOT)/core/cpu/cpu_68030.c \
               $(EMU_ROOT)/core/cpu/cpu_68040.c \
+              $(EMU_ROOT)/core/cpu/predecode.c \
               $(EMU_ROOT)/core/cpu/cpu_disasm.c \
               $(EMU_ROOT)/core/cpu/fpu.c \
               $(EMU_ROOT)/core/cpu/fpu_transc.c \
@@ -147,6 +155,16 @@ $(TARGET): $(OBJ)
 
 # Include auto-generated header dependency files
 -include $(DEP)
+
+# Generated T1 headers: every core object depends on its architecture's set.
+$(PDGEN_CPU_HEADERS) &: $(EMU_ROOT)/core/cpu/cpu_decode.h $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py
+	@mkdir -p $(PDGEN_OUT)
+	python3 $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py --tree $(EMU_ROOT)/core/cpu/cpu_decode.h --prefix cpu --base 16 --out $(PDGEN_OUT)
+$(PDGEN_PPC_HEADERS) &: $(EMU_ROOT)/core/cpu/ppc/ppc_decode.h $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py
+	@mkdir -p $(PDGEN_OUT)
+	python3 $(WORKSPACE_ROOT)/scripts/gen_pd_cases.py --tree $(EMU_ROOT)/core/cpu/ppc/ppc_decode.h --prefix ppc --base 16 --out $(PDGEN_OUT)
+$(OBJ_DIR)/src/core/cpu/cpu_68000.o $(OBJ_DIR)/src/core/cpu/cpu_68030.o $(OBJ_DIR)/src/core/cpu/cpu_68040.o: $(PDGEN_CPU_HEADERS)
+$(OBJ_DIR)/src/core/cpu/ppc/ppc_pd_run.o: $(PDGEN_PPC_HEADERS)
 
 # Run the test binary
 run: $(TARGET)

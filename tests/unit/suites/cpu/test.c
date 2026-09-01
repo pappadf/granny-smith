@@ -261,6 +261,9 @@ static const uint8_t *decode_test(const uint8_t *ptr, test_case_t *test) {
 // Test memory buffer for full 24-bit address space
 static uint8_t *test_memory_buffer = NULL;
 
+// True when CPU_TEST_MODEL=68030 points the vectors at the 68030 core.
+static bool g_test_model_is_68030 = false;
+
 // Initialize test memory - allocate a full 16MB buffer and set up page table
 static bool init_test_memory(void) {
     if (test_memory_buffer)
@@ -272,6 +275,10 @@ static bool init_test_memory(void) {
         return false;
     }
 
+    // The buffer replaces the memory map's image as the code region the
+    // predecoded executor may cache (CPU_TEST_PREDECODE=1).
+    memory_code_region_register(test_memory_buffer, TEST_MEM_SIZE);
+
     // Update the page table and SoA arrays to point to our test buffer for all pages
     // This makes the full 24-bit address space accessible
     if (g_page_table) {
@@ -280,16 +287,19 @@ static bool init_test_memory(void) {
             g_page_table[p].dev = NULL;
             g_page_table[p].dev_context = NULL;
             g_page_table[p].writable = true;
-            // Update SoA fast-path arrays with adjusted base
+            // Update SoA fast-path arrays with adjusted base (write entries
+            // through memory_write_fill: the predecoded executor's code-page
+            // marks must be able to find and suppress them)
             uintptr_t adjusted = (uintptr_t)(test_memory_buffer + (p << PAGE_SHIFT)) - ((uint32_t)p << PAGE_SHIFT);
+            uintptr_t wadj = memory_write_fill((uint32_t)p, test_memory_buffer + (p << PAGE_SHIFT), adjusted);
             if (g_supervisor_read)
                 g_supervisor_read[p] = adjusted;
             if (g_supervisor_write)
-                g_supervisor_write[p] = adjusted;
+                g_supervisor_write[p] = wadj;
             if (g_user_read)
                 g_user_read[p] = adjusted;
             if (g_user_write)
-                g_user_write[p] = adjusted;
+                g_user_write[p] = wadj;
         }
     }
 
@@ -646,6 +656,13 @@ static int run_test_file(const char *filepath, test_context_t *ctx, test_stats_t
             continue;
         }
 
+        // The vectors were generated for a 68000 and do not model the trace
+        // exception a T1-flagged instruction takes on a 68030 (the 68030
+        // core delivers it, the 68000 core does not): skip them there.
+        if (g_test_model_is_68030 && (test.initial.sr & 0x8000)) {
+            continue;
+        }
+
         stats->tests_run++;
 
         // Clear memory at addresses the test will check (to avoid stale data
@@ -771,6 +788,12 @@ TEST(cpu_single_step_tests) {
 }
 
 int main(void) {
+    // CPU_TEST_MODEL=68030 (read by the harness too): trace-flagged vectors are skipped there.
+    {
+        const char *model_env = getenv("CPU_TEST_MODEL");
+        g_test_model_is_68030 = model_env && strcmp(model_env, "68030") == 0;
+    }
+
     RUN(cpu_single_step_tests);
     return 0;
 }
