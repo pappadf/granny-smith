@@ -348,8 +348,10 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
             // side-effect-free debug translate.
             if (!nosideffect) {
                 uint32_t nlo = lo | 0x100u | ((store && allowed) ? 0x80u : 0u);
-                if (nlo != lo)
+                if (nlo != lo) {
+                    memory_host_written(pte + 4, 4); // a PTEG that is also cached code (absurd, but honest)
                     STORE_BE32(pte + 4, nlo);
+                }
                 lo = nlo;
             }
             if (!allowed)
@@ -454,8 +456,8 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
         g_fill_track[g_fill_track_count++] = lpage;
     uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << PAGE_SHIFT);
     g_user_read[lpage] = adjusted;
-    if (write_ok && pe->writable)
-        g_user_write[lpage] = adjusted;
+    if (write_ok && pe->writable) // refused on a predecoded code page (memory.h)
+        g_user_write[lpage] = memory_write_fill(lpage, pe->host_base, adjusted);
 }
 
 // ============================================================

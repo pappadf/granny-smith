@@ -610,6 +610,7 @@ static void pdm_scsi_pump_event(void *source, uint64_t data) {
             } else {
                 if (!g_page_table[ch->addr >> PAGE_SHIFT].writable)
                     break;
+                memory_host_written(host, 1); // DMA byte over cached code
                 *host = scsi_53c96_pdma_read8(c96);
             }
             ch->addr++;
@@ -741,8 +742,10 @@ static void pdm_scc_rx_complete(config_t *cfg, int idx) {
             break; // FIFO empty: the rest has not arrived yet
         uint32_t phys = ring + ((ch->addr + ch->xfer_off) & 0x1FFFu);
         uint8_t *host = dma_host_ptr(phys);
-        if (host && g_page_table[phys >> PAGE_SHIFT].writable)
+        if (host && g_page_table[phys >> PAGE_SHIFT].writable) {
+            memory_host_written(host, 1); // DMA byte over cached code
             *host = byte;
+        }
         ch->xfer_off = (uint16_t)((ch->xfer_off + 1) & 0x1FFFu);
         ch->count--;
         moved++;
@@ -849,6 +852,7 @@ bool pdm_amic_fd_dma_put(config_t *cfg, uint8_t value) {
     uint8_t *host = dma_host_ptr(ch->addr);
     if (!host || !g_page_table[ch->addr >> PAGE_SHIFT].writable)
         return false;
+    memory_host_written(host, 1); // DMA byte over cached code
     *host = value;
     fd_dma_advance(cfg, ch);
     return true;
