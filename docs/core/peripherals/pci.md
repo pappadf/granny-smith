@@ -267,6 +267,8 @@ broken by which bus actually seated something.  See the TNT doc for the
 
 ## See also
 
+- `docs/core/peripherals/pci/cards/` — per-card documents (the NuBus
+  `cards/` convention, adopted for PCI with the Voodoo2)
 - `docs/machines/tnt/tnt.md` — the bridge adapter, slot tables and the
   interrupt map
 - `docs/core/peripherals/pci_prom.md` — expansion-ROM identity and

@@ -37,6 +37,11 @@ typedef enum pixel_format {
                       // mode-data and the Designing Cards & Drivers
                       // "24bpp packed-pixel" terminology).  The 24-bit name
                       // describes the visible colour depth, not the storage.
+    PIXEL_16BPP_565, // direct: 5-6-5 RGB, big-endian (same byte order as
+                     // 5-5-5 above).  The natural format of the 3dfx
+                     // Voodoo2's framebuffer and of the Mach64's
+                     // CRTC_PIX_WIDTH=4 mode; appended after 32 bpp so the
+                     // existing formats keep their values.
 } pixel_format_t;
 
 // The byte a display source should fill fresh VRAM with so a cold boot

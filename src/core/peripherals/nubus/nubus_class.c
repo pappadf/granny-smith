@@ -105,6 +105,7 @@ static uint32_t node_fmt_bpp(pixel_format_t f) {
     case PIXEL_8BPP:
         return 8;
     case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
         return 16;
     case PIXEL_32BPP_XRGB:
         return 32;
@@ -124,6 +125,8 @@ static const char *node_fmt_name(pixel_format_t f) {
         return "8bpp_clut";
     case PIXEL_16BPP_555:
         return "16bpp_555";
+    case PIXEL_16BPP_565:
+        return "16bpp_565";
     case PIXEL_32BPP_XRGB:
         return "32bpp_xrgb";
     default:

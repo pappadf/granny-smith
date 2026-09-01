@@ -1246,6 +1246,7 @@ static unsigned framebuffer_format_bits(pixel_format_t f) {
     case PIXEL_8BPP:
         return 8;
     case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
         return 16;
     case PIXEL_32BPP_XRGB:
         return 32;
@@ -1372,6 +1373,17 @@ static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba
             uint8_t b5 = v & 0x1F;
             r = (uint8_t)((r5 << 3) | (r5 >> 2));
             g = (uint8_t)((g5 << 3) | (g5 >> 2));
+            b = (uint8_t)((b5 << 3) | (b5 >> 2));
+            break;
+        }
+        case PIXEL_16BPP_565: {
+            // big-endian 5-6-5: the 6-bit green replicates its top 2 bits
+            uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
+            uint8_t r5 = (v >> 11) & 0x1F;
+            uint8_t g6 = (v >> 5) & 0x3F;
+            uint8_t b5 = v & 0x1F;
+            r = (uint8_t)((r5 << 3) | (r5 >> 2));
+            g = (uint8_t)((g6 << 2) | (g6 >> 4));
             b = (uint8_t)((b5 << 3) | (b5 >> 2));
             break;
         }
@@ -1730,6 +1742,7 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     case PIXEL_4BPP_MSB:
     case PIXEL_8BPP:
     case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
     case PIXEL_32BPP_XRGB:
         break;
     default:
@@ -1799,6 +1812,7 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     case PIXEL_4BPP_MSB:
     case PIXEL_8BPP:
     case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
     case PIXEL_32BPP_XRGB:
         break;
     default:
@@ -1903,6 +1917,17 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
                 uint8_t b5 = v & 0x1F;
                 r = (uint8_t)((r5 << 3) | (r5 >> 2));
                 g = (uint8_t)((g5 << 3) | (g5 >> 2));
+                b = (uint8_t)((b5 << 3) | (b5 >> 2));
+                break;
+            }
+            case PIXEL_16BPP_565: {
+                // big-endian 5-6-5: green is 6 bits, replicate its top 2
+                uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
+                uint8_t r5 = (v >> 11) & 0x1F;
+                uint8_t g6 = (v >> 5) & 0x3F;
+                uint8_t b5 = v & 0x1F;
+                r = (uint8_t)((r5 << 3) | (r5 >> 2));
+                g = (uint8_t)((g6 << 2) | (g6 >> 4));
                 b = (uint8_t)((b5 << 3) | (b5 >> 2));
                 break;
             }
@@ -3774,6 +3799,7 @@ static value_t screen_attr_depth(struct object *self, const member_t *m) {
     case PIXEL_8BPP:
         return val_int(8);
     case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
         return val_int(16);
     case PIXEL_32BPP_XRGB:
         return val_int(32);

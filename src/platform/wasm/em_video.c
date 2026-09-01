@@ -50,7 +50,7 @@ static GLuint s_response_tex = 0; // 256x3 R8 texture — per-channel CRT respon
 // Per-format shader programs.  Indexed by pixel_format_t.  A NULL slot means
 // "no program for this format yet" — fall back to the 1bpp program with
 // black output to keep the renderer alive.
-#define NUM_FORMATS 6
+#define NUM_FORMATS 7
 static GLuint s_progs[NUM_FORMATS] = {0};
 
 // Per-program uniform locations, queried at link time.  -1 if the uniform
@@ -198,6 +198,36 @@ static const char *FS_16BPP =
     "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
     "}\n";
 
+// 16 bpp direct (PIXEL_16BPP_565): RRRRRGGGGGGBBBBB stored big-endian, so
+// the two bytes per pixel are [hi, lo] with hi = RRRRRGGG, lo = GGGBBBBB.
+// Same R8 texture walk as the 5-5-5 shader; the green channel is 6 bits
+// wide so it scales via /63 where red and blue scale via /31.
+static const char *FS_16BPP_565 =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "uniform sampler2D u_texture;\n"
+    "uniform sampler2D u_response;\n"
+    "uniform vec2 u_fb_size;\n"
+    "uniform float u_stride;\n"
+    "in  vec2 v_uv;\n"
+    "out vec4 fragColor;\n"
+    "void main() {\n"
+    "    vec2 px      = v_uv * u_fb_size;\n"
+    "    float x      = floor(px.x);\n"
+    "    float y      = floor(px.y);\n"
+    "    float row    = (y + 0.5) / u_fb_size.y;\n"
+    "    float hi     = floor(texture(u_texture, vec2((2.0 * x + 0.5) / u_stride, row)).r * 255.0 + 0.5);\n"
+    "    float lo     = floor(texture(u_texture, vec2((2.0 * x + 1.5) / u_stride, row)).r * 255.0 + 0.5);\n"
+    "    float v      = hi * 256.0 + lo;\n"
+    "    float r5     = floor(v / 2048.0);\n"
+    "    float g6     = mod(floor(v / 32.0), 64.0);\n"
+    "    float b5     = mod(v, 32.0);\n"
+    "    float r_out  = texture(u_response, vec2(r5 / 31.0, 0.5 / 3.0)).r;\n"
+    "    float g_out  = texture(u_response, vec2(g6 / 63.0, 1.5 / 3.0)).r;\n"
+    "    float b_out  = texture(u_response, vec2(b5 / 31.0, 2.5 / 3.0)).r;\n"
+    "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
+    "}\n";
+
 // Stub for 2/4 bpp indexed: same shape as 8bpp but unpacking a 2- or
 // 4-bit field per pixel from packed bytes.  v1 ships them as fallback
 // programs that emit grey so the canvas isn't blank when an
@@ -269,6 +299,7 @@ static void init_programs(void) {
     s_progs[PIXEL_8BPP] = link_program(VS_SHARED, FS_8BPP, &s_uniforms[PIXEL_8BPP]);
     s_progs[PIXEL_16BPP_555] = link_program(VS_SHARED, FS_16BPP, &s_uniforms[PIXEL_16BPP_555]);
     s_progs[PIXEL_32BPP_XRGB] = link_program(VS_SHARED, FS_32BPP, &s_uniforms[PIXEL_32BPP_XRGB]);
+    s_progs[PIXEL_16BPP_565] = link_program(VS_SHARED, FS_16BPP_565, &s_uniforms[PIXEL_16BPP_565]);
 }
 
 // Pick the GL program that best matches `format`, with a 1bpp fallback
@@ -306,6 +337,7 @@ static void allocate_fb_texture(pixel_format_t format, uint32_t stride, uint32_t
         src_fmt = GL_RED;
         break;
     case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
         internal = GL_R8; // step 6 / JMFB driver replaces this with RGB565
         src_fmt = GL_RED;
         tex_width = stride;
