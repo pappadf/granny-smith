@@ -484,11 +484,6 @@ static uint32_t v2_scanline(const voodoo2_t *v, uint32_t *out_vtotal) {
     return (uint32_t)(pos * vtotal / frame);
 }
 
-static uint64_t v2_frame_number(const voodoo2_t *v) {
-    uint64_t frame = v->cfg->machine->freq / 60u;
-    return frame ? scheduler_cpu_cycles(v->cfg->scheduler) / frame : 0;
-}
-
 // Vertical retrace is ACTIVE while the beam is inside vSyncOn lines at
 // the top of the frame; status[6] is 0 while active [V2 p.29].
 static bool v2_in_vretrace(const voodoo2_t *v) {
@@ -507,26 +502,15 @@ static bool v2_in_vretrace(const voodoo2_t *v) {
 // besides the FIFO constants is the retrace bit, and the swap-pending
 // count which retires at the frame boundary after issue.
 
-static void v2_retire_swaps(voodoo2_t *v) {
-    if (v->swaps_pending && v2_frame_number(v) != v->swap_issue_frame) {
-        // Each retired swap flips which physical buffer is scanned out
-        // (status[11:10]); an odd pending count nets one flip.
-        if (v->swaps_pending & 1u)
-            v->displayed_buffer ^= 1u;
-        v->swaps_pending = 0;
-        v->display.fb_dirty = true;
-    }
-}
-
 static uint32_t v2_status(voodoo2_t *v) {
-    v2_retire_swaps(v);
     uint32_t s = 0x3Fu; // PCI FIFO free space: empty
     if (!v2_in_vretrace(v))
         s |= 1u << 6; // 0 = retrace ACTIVE [V2 p.29]
     // bits 7 (Chuck busy), 8 (Bruce busy), 9 (busy) stay 0: idle.
     s |= (v->displayed_buffer & 3u) << 10;
     s |= 0xFFFFu << 12; // memory FIFO free space: empty
-    s |= (v->swaps_pending > 7u ? 7u : v->swaps_pending) << 28;
+    // Bits 30:28 (swaps pending) stay 0: swaps complete at issue
+    // (see R_SWAPBUFCMD), so nothing is ever pending.
     return s;
 }
 
@@ -2290,7 +2274,6 @@ static uint32_t v2_reg_read(voodoo2_t *v, int idx) {
         return (line << 16) | hpos;
     }
     case R_SWAPHISTORY:
-        v2_retire_swaps(v);
         return v->reg[R_SWAPHISTORY];
     default:
         break;
@@ -2469,12 +2452,22 @@ static void v2_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t val
         return;
     case R_SWAPBUFCMD: {
         // Queued like any command; [9] (new on Voodoo2) disables the
-        // actual swap [V2 p.58].  Synchronous model: the pending count
-        // stands until the next frame boundary retires it.
-        v2_retire_swaps(v);
+        // actual swap [V2 p.58].  The swap COMPLETES AT ISSUE — the
+        // same contract as every other command in this file — because
+        // on real hardware a fifo'd swapbufferCMD stalls execution of
+        // everything behind it in the CMDFIFO until vsync retires the
+        // swap, and Glide starts drawing the next frame the moment it
+        // issues the swap.  A model that executes those later draws
+        // instantly but defers the flip paints the NEXT frame's clear
+        // and world pass into the still-displayed buffer: Quake's
+        // supposedly-static view visibly strobes between a finished
+        // frame and a half-drawn one (unlit world, no view model) —
+        // how this contract was found.  With the flip at issue the
+        // pending count in status is always 0, which also means a
+        // client's grBufferNumPending() throttle never blocks.
         if (!(value & (1u << 9))) {
-            v->swaps_pending++;
-            v->swap_issue_frame = v2_frame_number(v);
+            v->displayed_buffer ^= 1u;
+            v->display.fb_dirty = true;
             // fbiSwapHistory shifts a 4-bit vsync count per swap.
             v->reg[R_SWAPHISTORY] = (v->reg[R_SWAPHISTORY] << 4) | 1u;
         }
@@ -3426,7 +3419,6 @@ static display_t *v2_display(pci_device_t *dev) {
 static void v2_on_vbl(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     voodoo2_t *v = (voodoo2_t *)dev->priv;
-    v2_retire_swaps(v);
     if (v->driving)
         v2_display_update(v);
 }
@@ -3848,7 +3840,7 @@ static value_t video_attr_swaps_pending(struct object *self, const member_t *m) 
     voodoo2_t *v = node_card(self);
     if (!v)
         return val_uint(4, 0);
-    v2_retire_swaps(v);
+    // Always 0: swaps complete at issue (see R_SWAPBUFCMD).
     return val_uint(4, v->swaps_pending);
 }
 

@@ -57,8 +57,8 @@ document grows as each group lands.
   gamma CLUT (interpolated per [Glide-src init/gamma.c]; bypassed
   until the guest programs it, since the power-on table is not in our
   material — Quake's 1.3 ramp is what retired the earlier
-  identity-scanout simplification); swapbufferCMD retirement flips the
-  front/back mapping.  Checkpoint
+  identity-scanout simplification); each swapbufferCMD flips the
+  front/back mapping at issue.  Checkpoint
   restore of a socketed card fixed in the GENERIC layer
   (`system_restore` now re-seeds the PCI staged picks from the restored
   record, the exact NuBus parallel that was already there).  web2's
@@ -166,8 +166,13 @@ Each rule lives in exactly one place in `voodoo2.c`:
   *composed*, never stored — FIFO fields read empty, busy bits read 0,
   the retrace bit and beam counters derive from the scheduler
   (`v2_scanline`, the `mach64_scanline` idiom) so anything spinning on
-  beam position advances, and the swap-pending count retires at the
-  frame boundary after issue.
+  beam position advances, and buffer swaps COMPLETE AT ISSUE — a
+  fifo'd swapbufferCMD stalls everything behind it until vsync on real
+  silicon, and Glide draws the next frame the moment it issues the
+  swap, so a deferred flip paints half-drawn frames into the displayed
+  buffer (Quake's static view strobed between a lit finished frame and
+  an unlit world-only pass until this was made instant; the pending
+  count in status therefore always reads 0).
 - **Register decode** (`v2_reg_face_*`): wrap aliases discarded, chip
   select routes TMU writes (reads always answer from Chuck), bit 21
   selects the alternate triangle mapping under `fbiInit3[0]`
