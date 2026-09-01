@@ -205,6 +205,17 @@ device: it can be seated in any PCI machine, so it must not reach for a
 family macro. A card whose registers are little-endian applies its own swap
 at its own edge and says so in its header comment.
 
+The Voodoo2 (`cards/voodoo2.c`) is the second worked example, and the
+richer one: on top of the physical little-endian edge sit three
+*guest-controlled* swizzle paths — the register file's per-access byte
+swizzle (`fbiInit0[3]` enables it, register **address bit 20** selects it,
+so a big-endian driver picks swizzled or raw per write by choosing an
+aliased address), the LFB's independent write and read swizzle/word-swap
+bits whose transform order *reverses* between directions, and the texture
+path's own pair in `tLOD`. The model honours the bits rather than
+assuming a big-endian host, because Mac Glide drives them from the
+application (`grLfbWriteColorSwizzle`).
+
 ## Slot kinds
 
 `PCI_SLOT_SOCKET` is a user-populatable connector; `PCI_SLOT_BUILTIN` is a
@@ -231,6 +242,16 @@ on both Bandits, non-BAR region decode, expansion-ROM provisioning
 the Apple Accelerated PCI Graphics Card
 (`src/core/peripherals/pci/cards/mach64gx.c`), which boots System 7.6 to a
 desktop on a Power Macintosh 9500.
+
+Phase 3 adds the **ROM-less socket-card path**, exercised for real by the
+3dfx Voodoo2 (`cards/voodoo2.c`, `docs/core/peripherals/pci/cards/voodoo2.md`):
+`rom_size = 0` and `requires_prom = false` were legal from Phase 1
+(§5.7's "no-ROM cards fall out for free") but the Voodoo2 is the first
+card to ride them — the guest's Open Firmware sizes and assigns the BAR,
+builds a generated `pciVVVV,DDDD` node, loads no driver, and leaves
+Memory Space Enable clear for the disk-loaded driver to set. A card that
+must never be the machine's display declares `card_class = "3d"` so the
+9500's `PCI_SLOT_BUILTIN_FALLBACK` Control is not retired by it.
 
 Not done, with reasons: the host-overlay BAR fast path (above); PCI-PCI
 bridges (type-1 cycles keep returning all-ones — no subordinate buses

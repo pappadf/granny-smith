@@ -56,6 +56,14 @@ const pci_card_kind_t sym53c825_ch1_kind = {.id = "sym53c825_1",
                                             .display_name = "Symbios 53C825A fast/wide SCSI (channel 1)",
                                             .attach = PCI_ATTACH_BUILTIN,
                                             .card_class = "scsi"};
+// ...and the ROM-less Voodoo2 (cards/voodoo2.c) — the first socket card
+// with requires_prom FALSE, kept that way here so socket-fit rows cover
+// a card with no ROM requirement.
+const pci_card_kind_t voodoo2_kind = {.id = "voodoo2",
+                                      .display_name = "3dfx Voodoo2",
+                                      .attach = PCI_ATTACH_PCI,
+                                      .requires_prom = false,
+                                      .card_class = "3d"};
 
 static uint32_t g_bus_error_addr;
 static int g_bus_errors;

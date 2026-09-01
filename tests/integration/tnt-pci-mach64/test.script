@@ -46,7 +46,7 @@ assert machine.prom.offer("${$WORK_DIR}/prom-store/437584e0") "and the stored co
 assert machine.prom.identify("${$WORK_DIR}/prom-store/437584e0").card_id == "mach64_gx" "identity survives the copy and the rename"
 
 # --- The card kind reaches the configuration layer from one declaration. ----
-assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1]" "the card must be registered"
+assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2]" "the card must be registered"
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 

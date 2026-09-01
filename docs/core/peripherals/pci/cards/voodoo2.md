@@ -28,8 +28,16 @@ document grows as each group lands.
 - **3a — substrate (landed):** `PIXEL_16BPP_565` in the display layer
   (below), the register-name table `scripts/voodoo2/voodoo2_regs.py`,
   this directory.
-- **3b — enumeration and bring-up:** not yet landed.
-- **3c — the rasteriser:** not yet landed.
+- **3b — enumeration and bring-up (landed):** the card model in
+  [`voodoo2.c`](../../../../../src/core/peripherals/pci/cards/voodoo2.c)
+  — config declaration, the vendor block at `$40`–`$57`, the three-face
+  aperture, the register file with its gating rules, the ICS5342 DAC and
+  PLL, LFB with memory-sizing aliasing, and the idle contract — gated by
+  `tests/integration/tnt-pci-voodoo2` (below).
+- **3c — the rasteriser:** not yet landed.  Until it lands, draw
+  commands are accepted, logged once, and complete "instantly"; the
+  guest-visible TMU memory/config probe (which renders through the
+  texture pipeline) waits for it.
 - **3d — pass-through and display:** not yet landed.
 - **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`):** not yet landed.
 
@@ -67,6 +75,61 @@ one bit of green on every pixel and make every golden a lossy record —
   raster and pins the expansion against fixtures computed independently
   in `make-fixtures.py`, with the same bytes reinterpreted as 5-5-5 as
   the positive control.
+
+## The model, milestone 3b — what is enforced where
+
+Each rule lives in exactly one place in `voodoo2.c`:
+
+- **Enumeration** is entirely the generic layer's: one declaration (BAR0
+  16 MB prefetchable, `rom_size = 0`, subsystem zero, only
+  `PCI_CMD_MEM_SPACE` writable). The guest's real Open Firmware sizes
+  and assigns the BAR and — this being a ROM-less card — loads no driver
+  and leaves Memory Space Enable **clear** (Apple, printed p.97); the
+  integration test observes exactly that, then sets the bit itself the
+  way the Glide library does through `ExpMgrConfigWrite*`.
+- **`initEnable[0]`** gates every `fbiInit*` write at the register
+  file's edge (`v2_reg_write`); `initEnable[2]` remaps `fbiInit2` reads
+  to the DAC read latch (`v2_reg_read`). `busSnoop0/1` are write-only
+  and read zero; `cfgStatus` aliases the live status register so a
+  driver can poll before mapping; the undocumented `$C0`/`$E0` writes
+  fall through to the generic reserved behaviour (no fault, logged once).
+- **The idle contract is inverted from silicon** (documented divergence,
+  proposal §8 Q3): work completes synchronously and `status` is
+  *composed*, never stored — FIFO fields read empty, busy bits read 0,
+  the retrace bit and beam counters derive from the scheduler
+  (`v2_scanline`, the `mach64_scanline` idiom) so anything spinning on
+  beam position advances, and the swap-pending count retires at the
+  frame boundary after issue.
+- **Register decode** (`v2_reg_face_*`): wrap aliases discarded, chip
+  select routes TMU writes (reads always answer from Chuck), bit 21
+  selects the alternate triangle mapping under `fbiInit3[0]`
+  (`v2_alt_to_std`, the same generation rule `voodoo2_regs.py --check`
+  validates), bit 20 selects the per-access byte swizzle under
+  `fbiInit0[3]`. Narrow register accesses are undefined bus behaviour:
+  logged once, reads all-ones.
+- **The ICS5342** is modelled exactly and alone: the PLL register file
+  behind write/read address latches with M-then-P/N data phases, the
+  three power-on M values Glide's detection checks (`$79`/`$55`/`$71`),
+  and `Fout = 14.318 MHz × (M+2)/(2^P (N+2))`. The AT&T/TI back-door
+  probes read the read-mask register and fail their ID compares — one
+  family answered correctly beats three answered halfway.
+- **Memory aliasing is load-bearing**: LFB addressing maps buffers
+  linearly (colour buffer K at K × `memOffset` pages, aux after them,
+  row stride `tilesInX`×64 bytes) and wraps modulo the 4 MB
+  framebuffer; texture writes wrap modulo the addressable TMU size,
+  which `trexInit0`'s second-RAS bit halves — because both Glide and
+  sstfb *size memory by watching which addresses alias*.
+- **LFB transforms** are two separate functions with the documented
+  opposite orders (writes swizzle→wordswap→lanes, reads
+  lanes→wordswap→swizzle, V2 p.53/p.56) — deliberately not one helper
+  with a direction flag, which is the shape in which the order gets
+  inverted by a later edit.
+
+Gate: `tests/integration/tnt-pci-voodoo2` (tier unit) — the config
+probe before any instruction runs, the guest firmware's own assignment,
+and `glide-init.script`, a step-by-step replay of 3dfx's own bring-up
+order with every step's postcondition asserted in place and every wait
+bounded. The empty slot's all-ones read is the positive control.
 
 ## The register-name table (milestone 3a)
 
