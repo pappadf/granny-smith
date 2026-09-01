@@ -397,13 +397,27 @@ typedef struct voodoo2 {
     uint32_t displayed_buffer; // physical colour buffer being scanned
 
     // The display face (milestone 3d).  The card presents
-    // PIXEL_16BPP_565 in the display layer's big-endian convention;
-    // fb_ram is the card's little-endian domain, so scanout holds the
-    // converted raster (the conversion is this card's own edge, per
+    // PIXEL_32BPP_XRGB: the 5-6-5 framebuffer expanded to the DAC's
+    // 8-bit-per-channel output through the gamma CLUT; fb_ram is the
+    // card's little-endian domain, so scanout holds the converted
+    // raster (the conversion is this card's own edge, per
     // docs/core/peripherals/pci.md "Endianness at a card's edge").
     display_t display;
     uint8_t *scanout;
     bool driving; // last evaluated pass-through state (edge detection)
+
+    // The video gamma CLUT: 33 entries of packed 00RRGGBB written
+    // through clutData (index in bits 29:24); the hardware linearly
+    // interpolates between every-8th entry to produce 256 corrected
+    // levels per channel [Glide-src init/gamma.c sst1InitGammaRGB].
+    // Until the guest first programs it the scanout bypasses the CLUT
+    // (the power-on table contents are not in our material; identity
+    // is the chosen stand-in).  gamma_lut is the derived 256-entry
+    // expansion, rebuilt when clut_dirty.
+    uint32_t clut[33];
+    bool clut_written;
+    bool clut_dirty;
+    uint8_t gamma_lut[3][256]; // [0]=R, [1]=G, [2]=B
 
     // One-shot log guards.
     bool warned_narrow_reg;
@@ -2425,11 +2439,22 @@ static void v2_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t val
         return;
     case R_CLUTDATA:
         // Ignored while the video unit is in reset [V2 p.75, p.129
-        // §12.5]; the gamma table itself is consumed by the display
-        // path when it lands.
+        // §12.5].  Entry index in bits 29:24 (0..32), packed 00RRGGBB
+        // in the low 24 [Glide-src init/gamma.c]; the display path
+        // interpolates the 33 entries into the per-channel gamma ramp.
         if (v->reg[R_FBIINIT1] & FBIINIT1_VIDEO_RESET)
             return;
         v->reg[R_CLUTDATA] = value;
+        {
+            uint32_t idx = (value >> 24) & 0x3Fu;
+            if (idx <= 32u) {
+                v->clut[idx] = value & 0xFFFFFFu;
+                v->clut_written = true;
+                v->clut_dirty = true;
+                if (v->driving)
+                    v->display.fb_dirty = true;
+            }
+        }
         return;
     case R_NOPCMD:
         // Flush (synchronous: nothing to flush); bit 0 clears the pixel
@@ -3226,6 +3251,13 @@ static void v2_reset(pci_device_t *dev, config_t *cfg) {
     v->bus_snoop[0] = v->bus_snoop[1] = 0;
     v->cfg_scratch = 0;
     v->si_process = 0;
+    // Identity gamma ramp until the guest programs one (bypassed by
+    // clut_written anyway; kept sane for debug reads).
+    for (uint32_t k = 0; k < 32u; k++)
+        v->clut[k] = (k << 3) * 0x010101u;
+    v->clut[32] = 0xFFFFFFu;
+    v->clut_written = false;
+    v->clut_dirty = true;
     v->swaps_pending = 0;
     v->swap_issue_frame = 0;
     v->displayed_buffer = 0;
@@ -3295,31 +3327,77 @@ static bool v2_drives_monitor(const voodoo2_t *v) {
 }
 
 // Re-derive the descriptor and convert the displayed buffer into the
-// big-endian scanout raster the display layer consumes.  The internal
-// 33-entry gamma CLUT (clutData) is not applied — identity scanout, a
-// chosen simplification recorded in voodoo2.md.
+// big-endian scanout raster the display layer consumes, through the
+// gamma CLUT — Quake visibly gammas (Glide loads a 1.3 ramp at
+// grSstWinOpen), which is exactly the trigger the old identity-scanout
+// simplification was documented to wait for.
+
+// Rebuild the 256-entry per-channel gamma ramp from the 33 CLUT
+// entries: entry k anchors input k*8, and the hardware linearly
+// interpolates the 8 steps to the next entry [Glide-src init/gamma.c
+// — "SST-1 performs linear interpolation between each gamma table
+// entry"].  The interpolation ROUNDING is not in our material; chosen
+// as (delta*frac + 4) >> 3, which reproduces an identity table exactly
+// on every segment but the last (whose top entry is 8-bit-clamped on
+// real silicon too — the vendor source's own "BUG Fix" comment fights
+// the same corner).
+static void v2_gamma_rebuild(voodoo2_t *v) {
+    for (int ch = 0; ch < 3; ch++) {
+        int sh = 16 - 8 * ch;
+        for (int i = 0; i < 256; i++) {
+            int k = i >> 3, f = i & 7;
+            int e0 = (int)((v->clut[k] >> sh) & 0xFFu);
+            int e1 = (int)((v->clut[k + 1] >> sh) & 0xFFu);
+            int out = e0 + (((e1 - e0) * f + 4) >> 3);
+            v->gamma_lut[ch][i] = (uint8_t)(out < 0 ? 0 : (out > 255 ? 255 : out));
+        }
+    }
+    v->clut_dirty = false;
+}
+
 static void v2_display_update(voodoo2_t *v) {
     uint32_t w = v2_screen_width(v), h = v2_screen_height(v);
-    if (v->display.width != w || v->display.height != h || v->display.stride != w * 2u) {
+    if (v->display.width != w || v->display.height != h || v->display.stride != w * 4u) {
         v->display.width = w;
         v->display.height = h;
-        v->display.stride = w * 2u;
+        v->display.stride = w * 4u;
         v->display.shape_dirty = true;
     }
-    v->display.format = PIXEL_16BPP_565;
+    // The DAC's output is 8 bits per channel AFTER the gamma CLUT, so
+    // the display face is 32 bpp: 5-6-5 from the framebuffer, expanded
+    // with the same replication rule the debug layer uses, then pushed
+    // through the interpolated ramp.  Until the guest programs the
+    // CLUT the ramp is bypassed (power-on contents not in our
+    // material), which keeps a non-gamma client's output bit-identical
+    // to the old 5-6-5 face.
+    v->display.format = PIXEL_32BPP_XRGB;
     v->display.bits = v->scanout;
     v->display.clut = NULL;
     v->display.clut_len = 0;
     v->display.crt_response = NULL;
+    if (v->clut_dirty)
+        v2_gamma_rebuild(v);
+    bool gamma = v->clut_written;
     for (uint32_t y = 0; y < h; y++) {
         uint32_t src = v2_buffer_addr(v, 0u, 0u, y); // front = displayed
-        uint8_t *dst = v->scanout + (size_t)y * w * 2u;
+        uint8_t *dst = v->scanout + (size_t)y * w * 4u;
         for (uint32_t x = 0; x < w; x++) {
-            // Little-endian card domain -> the display layer's
-            // big-endian 5-6-5.
+            // Little-endian card domain -> 5-6-5 -> 8-8-8.
             uint32_t at = (src + 2u * x) & (V2_FB_SIZE - 1u);
-            dst[2 * x] = v->fb_ram[(at + 1u) & (V2_FB_SIZE - 1u)];
-            dst[2 * x + 1] = v->fb_ram[at];
+            uint32_t px = (uint32_t)v->fb_ram[at] | ((uint32_t)v->fb_ram[(at + 1u) & (V2_FB_SIZE - 1u)] << 8);
+            uint32_t r5 = (px >> 11) & 0x1Fu, g6 = (px >> 5) & 0x3Fu, b5 = px & 0x1Fu;
+            uint8_t r8 = (uint8_t)((r5 << 3) | (r5 >> 2));
+            uint8_t g8 = (uint8_t)((g6 << 2) | (g6 >> 4));
+            uint8_t b8 = (uint8_t)((b5 << 3) | (b5 >> 2));
+            if (gamma) {
+                r8 = v->gamma_lut[0][r8];
+                g8 = v->gamma_lut[1][g8];
+                b8 = v->gamma_lut[2][b8];
+            }
+            dst[4 * x] = 0;
+            dst[4 * x + 1] = r8;
+            dst[4 * x + 2] = g8;
+            dst[4 * x + 3] = b8;
         }
     }
     v->display.fb_dirty = true;
@@ -3377,8 +3455,10 @@ typedef struct v2_ckpt {
     uint64_t swap_issue_frame;
     uint32_t displayed_buffer;
     uint8_t driving;
-    uint8_t pad3[3];
+    uint8_t clut_written;
+    uint8_t pad3[2];
     uint32_t tex_size;
+    uint32_t clut[33];
 } v2_ckpt_t;
 
 static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
@@ -3410,7 +3490,9 @@ static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     c.swap_issue_frame = v->swap_issue_frame;
     c.displayed_buffer = v->displayed_buffer;
     c.driving = v->driving ? 1u : 0u;
+    c.clut_written = v->clut_written ? 1u : 0u;
     c.tex_size = v->tex_size;
+    memcpy(c.clut, v->clut, sizeof(c.clut));
     system_write_checkpoint_data(cp, &c, sizeof(c));
     system_write_checkpoint_data(cp, v->fb_ram, V2_FB_SIZE);
     for (int t = 0; t < V2_NUM_TMUS; t++)
@@ -3458,6 +3540,9 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     }
     v->displayed_buffer = c.displayed_buffer;
     v->driving = c.driving != 0;
+    v->clut_written = c.clut_written != 0;
+    memcpy(v->clut, c.clut, sizeof(v->clut));
+    v->clut_dirty = true; // gamma_lut is derived state
     system_read_checkpoint_data(cp, v->fb_ram, V2_FB_SIZE);
     for (int t = 0; t < V2_NUM_TMUS; t++)
         system_read_checkpoint_data(cp, v->tex_ram[t], v->tex_size);
@@ -3880,7 +3965,7 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
     v->fb_ram = (uint8_t *)calloc(1, V2_FB_SIZE);
     // Big-endian scanout raster for the display layer, sized for the
     // widest mode the part reaches (1024-pixel logical line).
-    v->scanout = (uint8_t *)calloc(1, 1024u * 1024u * 2u);
+    v->scanout = (uint8_t *)calloc(1, 1024u * 1024u * 4u);
     v->tex_ram[0] = (uint8_t *)calloc(1, v->tex_size);
     v->tex_ram[1] = (uint8_t *)calloc(1, v->tex_size);
     if (!v->fb_ram || !v->scanout || !v->tex_ram[0] || !v->tex_ram[1]) {

@@ -101,7 +101,7 @@ vreg_wr(0x210, vreg_rd(0x210) | 0x1)
 assert machine.pci.slot[1].card.video.drives_monitor "the predicate reads true once everything is driven"
 # Let a frame pass so every consumer re-resolves the display chain.
 scheduler.run 20000000
-assert machine.screen.depth == 16 "the screen is now the Voodoo2's 5-6-5 raster"
+assert machine.screen.depth == 32 "the screen is the Voodoo2's DAC output: 5-6-5 expanded to 8-8-8 through the gamma CLUT"
 assert machine.screen.width == 640 "..at the card's programmed videoDimensions"
 assert machine.screen.height == 480 "..both axes"
 assert machine.screen.source.displayed_buffer == 0 "screen.source resolves to the CARD's framebuffer node"
@@ -112,7 +112,7 @@ check("voodoo2-frame.png")
 let CSUM = machine.screen.checksum(0, 0, 480, 640)
 assert checkpoint.save("${$WORK_DIR}/mid-frame.checkpoint") "checkpoint save"
 assert checkpoint.load("${$WORK_DIR}/mid-frame.checkpoint") "checkpoint load"
-assert machine.screen.depth == 16 "restored with the card still driving"
+assert machine.screen.depth == 32 "restored with the card still driving"
 assert machine.screen.checksum(0, 0, 480, 640) == $CSUM "the framebuffer checksum survives the round trip"
 
 # --- Release: the desktop comes back byte-identically. ----------------------

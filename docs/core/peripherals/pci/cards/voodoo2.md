@@ -51,9 +51,14 @@ document grows as each group lands.
   blanking and the output enables, with the fbiInit6[29:28] override) —
   and `v2_display()`, which returns the descriptor while driving and
   NULL while passing through, flagging `shape_dirty` on both edges.
-  The scanout raster converts the displayed buffer to the display
-  layer's big-endian `PIXEL_16BPP_565` at the card's own edge;
-  swapbufferCMD retirement flips the front/back mapping.  Checkpoint
+  The scanout raster converts the displayed buffer at the card's own
+  edge to the display layer's `PIXEL_32BPP_XRGB` — the DAC's 8-bit
+  per-channel output: 5-6-5 expanded and pushed through the 33-entry
+  gamma CLUT (interpolated per [Glide-src init/gamma.c]; bypassed
+  until the guest programs it, since the power-on table is not in our
+  material — Quake's 1.3 ramp is what retired the earlier
+  identity-scanout simplification); swapbufferCMD retirement flips the
+  front/back mapping.  Checkpoint
   restore of a socketed card fixed in the GENERIC layer
   (`system_restore` now re-seeds the PCI staged picks from the restored
   record, the exact NuBus parallel that was already there).  web2's
@@ -225,7 +230,7 @@ divergences, each deliberate and localised:
 | 7 | Float-mirror→fixed conversion truncates toward zero | `v2_float_to_latch` | conversion rounding unspecified |
 | 8 | DAC power-on PLL N/P bytes (M bytes are the detection signature and exact) | `v2_dac_reset` | only the M values are documented |
 | 9 | trexInit0/1 opaque except the second-RAS size gate | `v2_tmu_addressable` | V2 p.85: "FIXME. See Bruce spec" |
-| 10 | The internal 33-entry gamma CLUT (clutData) is stored but not applied at scanout | `v2_display_update` | identity scanout keeps goldens self-consistent; revisit if a client visibly gammas |
+| 10 | Gamma CLUT interpolation rounding is `(delta·frac + 4) >> 3`, and the CLUT is bypassed until the guest first programs it | `v2_gamma_rebuild`, `v2_display_update` | the 33-entry table and its linear interpolation are vendor-documented [Glide-src init/gamma.c], but the hardware's rounding and power-on contents are not in our material; Quake visibly gammas (Glide loads a 1.3 ramp at grSstWinOpen), which retired the earlier identity-scanout simplification |
 | 11 | siProcess (config $54) completes its oscillator measurement at issue and reports fixed mid-grade counts (NAND 6400, NOR 7424) | `v2_cfg_read` | Glide polls the down-counter to zero inside grSstQueryHardware [Glide-src init/util.c]; a frozen counter spins the shipped driver forever — divergence 1 in config space |
 
 What is *not* on this list, because the hardware behaviour is documented
