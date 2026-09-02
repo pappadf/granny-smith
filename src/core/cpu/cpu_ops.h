@@ -1962,7 +1962,13 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             unsigned _cond = _ext & 0x3F;                                                                              \
             _fpu->fpiar = cpu->instruction_pc;                                                                         \
             bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
-            if (_mode == 1) {                                                                                          \
+            /* BSUN (a non-aware predicate on a NAN) with BSUN enabled: the                                            \
+             * exception replaces the operation, as in FBcc.  Nothing else a                                           \
+             * conditional can raise, so stale enabled EXC bits do not trap. */                                        \
+            if ((_fpu->fpsr & FPEXC_BSUN) && (_fpu->fpcr & FPEXC_BSUN)) {                                              \
+                _fpu->fpsr |= FPACC_IOP;                                                                               \
+                fpu_check_exceptions(cpu, _fpu);                                                                       \
+            } else if (_mode == 1) {                                                                                   \
                 /* FDBcc: decrement Dn, branch if !cc && Dn != -1 */                                                   \
                 int16_t _disp = (int16_t)FETCH16();                                                                    \
                 if (!_cc) {                                                                                            \
@@ -1983,8 +1989,6 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
                 /* FScc: set byte at EA to $FF if cc, $00 otherwise */                                                 \
                 WRITE_EA(8, _mode, _reg, _cc ? 0xFF : 0x00);                                                           \
             }                                                                                                          \
-            /* Check for BSUN exception after instruction completes */                                                 \
-            fpu_check_exceptions(cpu, _fpu);                                                                           \
         }                                                                                                              \
     })
 

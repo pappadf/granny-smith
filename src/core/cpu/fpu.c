@@ -542,7 +542,7 @@ bool fpu_test_condition(fpu_state_t *fpu, unsigned predicate) {
     case 0x06:
         return !(nan_bit || z); // OGL/GL
     case 0x07:
-        return !nan_bit || z; // OR/GLE — hardware: Z overrides NAN for "ordered" check
+        return !nan_bit; // OR/GLE (MC68881UM Table 4-10: NAN-bar)
     case 0x08:
         return nan_bit; // UN/NGLE
     case 0x09:
@@ -556,7 +556,7 @@ bool fpu_test_condition(fpu_state_t *fpu, unsigned predicate) {
     case 0x0D:
         return nan_bit || z || n; // ULE/NLE
     case 0x0E:
-        return !z || nan_bit; // NE/SNE — hardware: NAN implies not-equal
+        return !z; // NE/SNE (MC68881UM Table 4-10: Z-bar)
     case 0x0F:
         return true; // T/ST
     }
@@ -646,22 +646,21 @@ int fpu_fsave(fpu_state_t *fpu, uint32_t addr) {
 // Read FRESTORE state frame from memory. Returns total frame size in bytes.
 int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     uint32_t header = memory_read_uint32(addr);
+    uint32_t version = header >> 24;
     uint32_t size = (header >> 16) & 0xFF;
 
-    if (size == 0) {
-        // Null frame: reset FPU to hardware-reset state (§6.4.2.1)
-        // When already in null state (e.g. after FSAVE), the programmer model
-        // was preserved by FSAVE and there is no pending operation to abort —
-        // only clear internal bookkeeping.  A full reset (data regs → NaN,
-        // control regs → 0) is only needed when aborting from an initialized
-        // (idle/busy) state.
-        if (fpu->initialized) {
-            for (int i = 0; i < 8; i++)
-                fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
-            fpu->fpcr = 0;
-            fpu->fpsr = 0;
-            fpu->fpiar = 0;
-        }
+    // The null frame is the format word with a zero version byte; its size
+    // byte is undefined (MC68881UM §6.4.2.1) and must not be consulted.
+    if (version == 0) {
+        // Null frame: "equivalent to a hardware reset of the FPCP" (§6.4.3,
+        // FRESTORE): the programmer's model goes to the reset state — NaNs in
+        // FP0-FP7, zeros in FPCR/FPSR/FPIAR — whether or not the FPU had been
+        // used since the last reset.
+        for (int i = 0; i < 8; i++)
+            fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
+        fpu->fpcr = 0;
+        fpu->fpsr = 0;
+        fpu->fpiar = 0;
         fpu->pre_exc_mask = 0;
         fpu->exceptional_operand = FP80_ZERO;
         fpu->initialized = false;
@@ -710,15 +709,12 @@ int fpu_frestore040(fpu_state_t *fpu, uint32_t addr) {
     uint32_t size = (header >> 16) & 0xFF;
 
     if (version == 0) {
-        // Null frame: reset to hardware-reset state (same discipline as the
-        // 6888x path — a full reset only when aborting an initialized state).
-        if (fpu->initialized) {
-            for (int i = 0; i < 8; i++)
-                fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
-            fpu->fpcr = 0;
-            fpu->fpsr = 0;
-            fpu->fpiar = 0;
-        }
+        // Null frame: the reset state, unconditionally (as on the 6888x path).
+        for (int i = 0; i < 8; i++)
+            fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
+        fpu->fpcr = 0;
+        fpu->fpsr = 0;
+        fpu->fpiar = 0;
         fpu->pre_exc_mask = 0;
         fpu->exceptional_operand = FP80_ZERO;
         fpu->initialized = false;
@@ -762,8 +758,10 @@ static float80_reg_t fpu_from_single(uint32_t bits) {
     if (exp == 0xFF) {
         if (frac == 0)
             return fp80_make(sign, 0x7FFF, 0);
-        // NaN: place fraction bits into extended mantissa (J-bit stays 0)
-        uint64_t mant = (uint64_t)frac << 40;
+        // NaN: place fraction bits into extended mantissa with the integer
+        // bit set (a don't-care for NaNs, MC68881UM §3.2.5; the FPU's own
+        // NaNs carry it, and so do m68k-test's and softfloat's conversions)
+        uint64_t mant = 0x8000000000000000ULL | ((uint64_t)frac << 40);
         return fp80_make(sign, 0x7FFF, mant);
     }
     if (exp == 0) {
@@ -907,8 +905,9 @@ static float80_reg_t fpu_from_double(uint64_t bits) {
     if (exp == 0x7FF) {
         if (frac == 0)
             return fp80_make(sign, 0x7FFF, 0);
-        // NaN: place fraction bits into extended mantissa (J-bit stays 0)
-        uint64_t mant = frac << 11;
+        // NaN: fraction bits into the extended mantissa, integer bit set (as
+        // in fpu_from_single)
+        uint64_t mant = 0x8000000000000000ULL | (frac << 11);
         return fp80_make(sign, 0x7FFF, mant);
     }
     if (exp == 0) {

@@ -19,7 +19,7 @@
 
 # --- 68030 (68882) -------------------------------------------------------
 68030 exception format-error -- FRESTORE accepts any frame: the version/size word is not validated
-68030 prefix fb   -- FBcc under randomized FPSR: condition evaluation with hardware-impossible FPCC combinations (NAN with Z), stale EXC bits accrued into AEXC by the model, and the core's post-instruction exception check firing on stale enabled EXC bits
+68030 prefix fb   -- FBcc on a NAN with a non-aware predicate: the model re-derives the whole AEXC byte from the (randomized, stale) EXC byte when it sets BSUN; the core accrues IOP only (the 2026-09-02 m68k-test note, item 4)
 68030 prefix fdb  -- FDBcc: as FBcc
 68030 prefix ftrap -- FTRAPcc: as FBcc
 68030 file fnop   -- FNOP is FBF: as FBcc
@@ -44,7 +44,6 @@
 68040 exception line-1111 -- the FP instructions the 68040 leaves to the FPSP (transcendentals, FMOVECR, FINT/FINTRZ, FSCALE, FMOD/FREM, FGETEXP/FGETMAN, FSINCOS) are computed in-line instead of taking the unimplemented-instruction exception
 68040 exception fp-unimplemented-data-type -- packed-decimal operands are converted in-line instead of taking the unimplemented-data-type exception
 68040 exception format-error -- FRESTORE accepts any frame
-68040 file frestore -- FRESTORE of a NULL frame while the FPU is already idle: the core keeps the programmer model, the model resets it (FP0-7 to NaN); the file's other vectors are the format-error rule's
 68040 prefix fb   -- FBcc: as on the 68030
 68040 prefix fdb  -- FDBcc: as on the 68030
 68040 prefix ftrap -- FTRAPcc: as on the 68030
