@@ -56,13 +56,17 @@ def file_rule(rules, member, mnemonic):
     return None
 
 
-def exception_rule(rules, member, vector):
-    """The first exception rule matching this vector's outcome, or None."""
+def exception_rule(rules, member, mnemonic, vector):
+    """The first exception rule matching this vector's outcome, or None.
+    A rule value of `mnemonic/exception` applies to that file only."""
     exc = vector.get("exception")
     if not exc:
         return None
     for r in rules:
-        if r["member"] == member and r["kind"] == "exception" and r["value"] == exc.get("name"):
+        if r["member"] != member or r["kind"] != "exception":
+            continue
+        scope, _, name = r["value"].rpartition("/")
+        if name == exc.get("name") and (not scope or scope == mnemonic):
             return r
     return None
 
@@ -97,7 +101,7 @@ def main():
                 continue
             kept = []
             for v in doc["vectors"]:
-                rule = exception_rule(rules, member, v)
+                rule = exception_rule(rules, member, mnemonic, v)
                 if rule:
                     rule["vectors"] += 1
                 else:

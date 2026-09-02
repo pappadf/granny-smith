@@ -178,6 +178,7 @@ extern uint32_t g_bus_error_address; // faulting logical address
 extern bool g_bus_error_rw; // true=read, false=write
 extern uint32_t g_bus_error_fc; // FC of the faulting access (1=user-data, 5=super-data)
 extern bool g_bus_error_is_pmmu; // true=PMMU descriptor fault (retry), false=bus timeout (skip)
+extern bool g_bus_error_is_address; // 68000 only: odd-address word/long operand access (vector 3, I/N clear)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
 // I/O cycle penalty: tracks extra bus wait-state cycles for I/O accesses.

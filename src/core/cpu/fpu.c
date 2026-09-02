@@ -588,7 +588,10 @@ static void fpu_to_extended(float80_reg_t val, uint32_t *word0, uint32_t *word1,
 // We store emulator-specific state in the CU internal registers area:
 //   +$08: pre_exc_mask (4 bytes) — which exceptions already fired pre-instruction
 
-#define FSAVE_VERSION 0x1F
+// The MC68882's frame version byte.  Motorola never published the values;
+// $1F (68881) and $20 (68882) are what the family's emulators report and
+// what m68k-sail's vectors assume, and FRESTORE checks a frame against it.
+#define FSAVE_VERSION 0x20
 // FSAVE_IDLE_SIZE defined in fpu.h ($38 = 56 bytes)
 #define FSAVE_BUSY_SIZE 0xD4 // MC68882 busy frame: 212 bytes payload (not generated)
 
@@ -649,8 +652,13 @@ int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     uint32_t version = header >> 24;
     uint32_t size = (header >> 16) & 0xFF;
 
-    // The null frame is the format word with a zero version byte; its size
-    // byte is undefined (MC68881UM §6.4.2.1) and must not be consulted.
+    // "The FPCP checks the version number and frame size values for
+    // validity and signals a format exception if they are not valid for
+    // this particular device" (§6.4.2): only the null frame (version 0, a
+    // wild card; its size byte is undefined, §6.4.2.1) and this part's own
+    // idle frame restore.  -1 tells the caller to raise the format error.
+    if (version != 0 && !(version == FSAVE_VERSION && size == FSAVE_IDLE_SIZE))
+        return -1;
     if (version == 0) {
         // Null frame: "equivalent to a hardware reset of the FPCP" (§6.4.3,
         // FRESTORE): the programmer's model goes to the reset state — NaNs in
@@ -708,6 +716,11 @@ int fpu_frestore040(fpu_state_t *fpu, uint32_t addr) {
     uint32_t version = header >> 24;
     uint32_t size = (header >> 16) & 0xFF;
 
+    // Valid frames: null (version 0), and the $41 frames the FPSP builds —
+    // idle ($00), unimplemented ($30) and busy ($60).  Anything else is a
+    // format error (-1 to the caller).
+    if (version != 0 && !(version == 0x41 && (size == 0x00 || size == 0x30 || size == 0x60)))
+        return -1;
     if (version == 0) {
         // Null frame: the reset state, unconditionally (as on the 6888x path).
         for (int i = 0; i < 8; i++)

@@ -13,16 +13,17 @@
 
 LOG_USE_CATEGORY_NAME("cpu");
 
-// 68000 memory access: direct (no MMU translation)
+// 68000 memory access: direct (no MMU translation); word/long operand
+// accesses go through the odd-address check (cpu_internal.h)
 #define D(n)                                         cpu->d[n]
 #define A(n)                                         cpu->a[n]
 #define PC                                           cpu->pc
 #define READ8(addr)                                  memory_read_uint8(addr)
-#define READ16(addr)                                 memory_read_uint16(addr)
-#define READ32(addr)                                 memory_read_uint32(addr)
+#define READ16(addr)                                 cpu_dread16(cpu, addr)
+#define READ32(addr)                                 cpu_dread32(cpu, addr)
 #define WRITE8(addr, x)                              memory_write_uint8(addr, x)
-#define WRITE16(addr, x)                             memory_write_uint16(addr, x)
-#define WRITE32(addr, x)                             memory_write_uint32(addr, x)
+#define WRITE16(addr, x)                             cpu_dwrite16(cpu, addr, x)
+#define WRITE32(addr, x)                             cpu_dwrite32(cpu, addr, x)
 #define FETCH8()                                     (uint8_t) fetch_16(cpu, true)
 #define FETCH16()                                    fetch_16(cpu, true)
 #define FETCH32()                                    fetch_32(cpu, true)
@@ -90,6 +91,10 @@ LOG_USE_CATEGORY_NAME("cpu");
          * mis-delivered as a line-F instead of demand-loading the segment).  No-op                                    \
          * for the Mac Plus, whose PC never exceeds 24 bits. */                                                        \
         cpu->pc &= 0x00FFFFFFu;                                                                                        \
+        if (__builtin_expect(cpu->pc & 1u, 0)) { /* odd PC: address error, the epilogue delivers */                    \
+            m68k_fetch_address_error(cpu);                                                                             \
+            break;                                                                                                     \
+        }                                                                                                              \
         uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
@@ -130,14 +135,17 @@ LOG_USE_CATEGORY_NAME("cpu");
     /* bus error; the Lisa OS BUS_ERR handler classifies/recovers (or terminates) it.   */                             \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \
         g_bus_error_pending = false;                                                                                   \
-        /* Group-0 (data) bus-error saved PC = faulting instruction + 2 (just past  */                                 \
-        /* the opcode word).  The decoder advanced cpu->pc to the *next* instruction */                                \
-        /* during operand decode; the real 68000 stacks PC pointing 2 bytes into the */                                \
-        /* faulting instruction.  Xenix's bus-error handler reads the word at         */                               \
-        /* (savedPC-2) to detect the C stack-growth probe `TST.B d16(A7)` (opcode     */                               \
-        /* 0x4A2F): with the next-instruction PC it read the displacement word, the   */                               \
-        /* probe went undetected, and mkfs was SIGSEGV'd instead of the stack grown.  */                               \
-        cpu->pc = cpu->instruction_pc + 2;                                                                             \
+        /* An address error stacks the PC the instruction had reached (its end,   */                                   \
+        /* every extension word fetched); a bus error the offset below.           */                                   \
+        if (!g_bus_error_is_address)                                                                                   \
+            /* Group-0 (data) bus-error saved PC = faulting instruction + 2 (just past  */                             \
+            /* the opcode word).  The decoder advanced cpu->pc to the *next* instruction */                            \
+            /* during operand decode; the real 68000 stacks PC pointing 2 bytes into the */                            \
+            /* faulting instruction.  Xenix's bus-error handler reads the word at         */                           \
+            /* (savedPC-2) to detect the C stack-growth probe `TST.B d16(A7)` (opcode     */                           \
+            /* 0x4A2F): with the next-instruction PC it read the displacement word, the   */                           \
+            /* probe went undetected, and mkfs was SIGSEGV'd instead of the stack grown.  */                           \
+            cpu->pc = cpu->instruction_pc + 2;                                                                         \
         exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);                                                 \
         g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;                                             \
         g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;                                          \

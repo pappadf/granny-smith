@@ -623,19 +623,19 @@
     VALID_EA(ea_any - ea_an);                                                                                          \
     uint32_t _move_src_an_save = (EA_MODE == 3 || EA_MODE == 4) ? cpu->a[EA_REG] : 0;                                  \
     LOAD_EA_WITH_UPDATE(size, src);                                                                                    \
+    UPDATE_NZ_CLEAR_CV(src); /* flags from the source, before the store: a faulting store leaves them set */           \
     WRITE_EA(size, opcode >> 6 & 7, opcode >> 9 & 7, src);                                                             \
     if (__builtin_expect(g_bus_error_pending, 0) && (EA_MODE == 3 || EA_MODE == 4))                                    \
-        cpu->a[EA_REG] = _move_src_an_save;                                                                            \
-    UPDATE_NZ_CLEAR_CV(src);
+        cpu->a[EA_REG] = _move_src_an_save;
 
 #define MOVEx(size)                                                                                                    \
     VALID_EA(ea_any);                                                                                                  \
     uint32_t _move_src_an_save = (EA_MODE == 3 || EA_MODE == 4) ? cpu->a[EA_REG] : 0;                                  \
     LOAD_EA_WITH_UPDATE(size, src);                                                                                    \
+    UPDATE_NZ_CLEAR_CV(src); /* flags from the source, before the store: a faulting store leaves them set */           \
     WRITE_EA(size, opcode >> 6 & 7, opcode >> 9 & 7, src);                                                             \
     if (__builtin_expect(g_bus_error_pending, 0) && (EA_MODE == 3 || EA_MODE == 4))                                    \
-        cpu->a[EA_REG] = _move_src_an_save;                                                                            \
-    UPDATE_NZ_CLEAR_CV(src);
+        cpu->a[EA_REG] = _move_src_an_save;
 
 #define MOVEA(size)                                                                                                    \
     VALID_EA(ea_any);                                                                                                  \
@@ -643,9 +643,9 @@
     AN = (int32_t)(int##size##_t)src;
 
 #define CLR(size)                                                                                                      \
-    STORE_EA(size, 0);                                                                                                 \
-    CC_N = CC_V = CC_C = 0;                                                                                            \
-    CC_Z = 1;
+    CC_N = CC_V = CC_C = 0; /* flags first: a faulting store leaves them set */                                        \
+    CC_Z = 1;                                                                                                          \
+    STORE_EA(size, 0);
 
 #define DBCC_DN_LABEL                                                                                                  \
     if (CC)                                                                                                            \
@@ -2071,13 +2071,13 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         } else                                                                                                         \
             SUPER({                                                                                                    \
                 fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                           \
-                if (EA_MODE == 3) {                                                                                    \
-                    /* (An)+ postincrement */                                                                          \
-                    int _sz = fpu_frestore(_fpu, AY);                                                                  \
-                    AY += (uint32_t)_sz;                                                                               \
-                } else {                                                                                               \
-                    uint32_t _ea = GET_EA;                                                                             \
-                    fpu_frestore(_fpu, _ea);                                                                           \
+                uint32_t _ea = (EA_MODE == 3) ? AY : GET_EA;                                                           \
+                int _sz = fpu_frestore(_fpu, _ea);                                                                     \
+                if (_sz < 0) {                                                                                         \
+                    /* not this part's frame: format error (vector 14), PC at the FRESTORE */                          \
+                    exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                              \
+                } else if (EA_MODE == 3) {                                                                             \
+                    AY += (uint32_t)_sz; /* (An)+ steps by the frame the format word declared */                       \
                 }                                                                                                      \
             })                                                                                                         \
     })

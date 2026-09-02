@@ -72,6 +72,11 @@ uint32_t g_bus_error_fc = 5;
 // where the handler expects skip-instruction semantics (e.g. Mac ROM RAM
 // and slot probes).  Selects Format $B vs Format $A dispatch.
 bool g_bus_error_is_pmmu = false;
+// The 68000 core raises its address errors through the same deferred path
+// (cpu_68000.c): this distinguishes them from a bus error at delivery.
+bool g_bus_error_is_address = false;
+uint32_t g_m68k_fault_regs[16]; // the 68000 register file at the address error (cpu_internal.h)
+uint8_t g_m68k_fault_ccr;
 uint32_t *g_bus_error_instr_ptr = NULL;
 // True while an inspection read/write is dispatching into a device handler.
 // Devices that answer a GUEST access by latching a bus error (the PDM's

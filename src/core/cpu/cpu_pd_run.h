@@ -532,9 +532,16 @@ PD_DEF_ST_INC_DEC(32)
     UINT(bits) _d = PD_RMW_##DST(bits, PD_DISP_LO);                                                                    \
     PD_OP_SUB(bits, _d, _s, FL, PD_STORE_DST_##DST)
 // --- CLR ea (D6P) ---
+// Flags before the store when they are live (a faulting store leaves them
+// set, as on the 68000); the E2 twin (FL = PD_FLM) keeps its after-the-fact
+// recompute, which is the only case where FL is not a constant.
 #define PD_B_CLR(bits, DST, FL)                                                                                        \
+    if ((FL) == 1) {                                                                                                   \
+        CC_N = CC_V = CC_C = 0;                                                                                        \
+        CC_Z = 1;                                                                                                      \
+    }                                                                                                                  \
     PD_STORE_DST_##DST(bits, 0);                                                                                       \
-    if (FL) {                                                                                                          \
+    if ((FL) != 1 && (FL)) {                                                                                           \
         CC_N = CC_V = CC_C = 0;                                                                                        \
         CC_Z = 1;                                                                                                      \
     }
@@ -542,8 +549,11 @@ PD_DEF_ST_INC_DEC(32)
 // --- MOVE (one family per destination shape, 7 source shapes) ---
 #define PD_B_MOVE(bits, SRC, DST, FL)                                                                                  \
     PD_SAVE_SRC_##SRC UINT(bits) _s = PD_LD_##SRC(bits);                                                               \
+    if ((FL) == 1) {                                                                                                   \
+        UPDATE_NZ_CLEAR_CV(_s);                                                                                        \
+    }                                                                                                                  \
     PD_ST_##DST(bits, _s, PD_MV_DDISP_##SRC);                                                                          \
-    PD_RESTORE_SRC_##SRC if (FL) {                                                                                     \
+    PD_RESTORE_SRC_##SRC if ((FL) != 1 && (FL)) {                                                                      \
         UPDATE_NZ_CLEAR_CV(_s);                                                                                        \
     }
 
@@ -1449,6 +1459,11 @@ t2_step:
     {
 #ifndef CPU_DECODER_IS_68030
         cpu->pc &= 0x00FFFFFFu; // 24-bit address bus (see cpu_68000.c)
+        if (__builtin_expect(cpu->pc & 1u, 0)) { // odd PC: address error, delivered at `done`
+            m68k_fetch_address_error(cpu);
+            ipc = cpu->instruction_pc;
+            goto done;
+        }
 #endif
         uint32_t fetch = memory_read_uint32(cpu->pc);
         uint16_t opcode = fetch >> 16;
@@ -1567,7 +1582,8 @@ done:
 #else
     if (__builtin_expect(g_bus_error_pending, 0)) {
         g_bus_error_pending = false;
-        cpu->pc = cpu->instruction_pc + 2;
+        if (!g_bus_error_is_address) // an address error keeps the PC the instruction reached
+            cpu->pc = cpu->instruction_pc + 2;
         exception_bus_error(cpu, g_bus_error_address, g_bus_error_rw);
         g_active_read = cpu->supervisor ? g_supervisor_read : g_user_read;
         g_active_write = cpu->supervisor ? g_supervisor_write : g_user_write;

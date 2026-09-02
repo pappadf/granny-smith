@@ -386,12 +386,13 @@ static void cpu_cache_op(cpu_t *cpu, uint16_t opcode) {
         } else                                                                                                         \
             SUPER({                                                                                                    \
                 fpu_state_t *_fpu = (fpu_state_t *)cpu->fpu;                                                           \
-                if (EA_MODE == 3) {                                                                                    \
-                    int _sz = fpu_frestore040(_fpu, AY);                                                               \
-                    AY += (uint32_t)_sz;                                                                               \
-                } else {                                                                                               \
-                    uint32_t _ea = GET_EA;                                                                             \
-                    fpu_frestore040(_fpu, _ea);                                                                        \
+                uint32_t _ea = (EA_MODE == 3) ? AY : GET_EA;                                                           \
+                int _sz = fpu_frestore040(_fpu, _ea);                                                                  \
+                if (_sz < 0) {                                                                                         \
+                    /* not this part's frame: format error (vector 14), PC at the FRESTORE */                          \
+                    exception(cpu, 0x038, cpu->instruction_pc, GET_SR());                                              \
+                } else if (EA_MODE == 3) {                                                                             \
+                    AY += (uint32_t)_sz; /* (An)+ steps by the frame the format word declared */                       \
                 }                                                                                                      \
             })                                                                                                         \
     })
