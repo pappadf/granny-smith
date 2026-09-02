@@ -981,6 +981,7 @@ top:
     if (*instructions == 0)
         goto done;
     ipc = page_lo + ((uint32_t)(cur - blk->e) << 1);
+    pd_dbg_trace(cpu, ipc);
     if (__builtin_expect(pd_slow, 0)) {
         g_pd_stats.generic_slowmode++;
         cpu->pc = ipc;
@@ -1450,6 +1451,8 @@ t2_step:
         uint16_t ext_word = fetch & 0xFFFF;
         cpu->instruction_pc = cpu->pc;
         ipc = cpu->pc;
+        if (!pd_slow)
+            pd_dbg_trace(cpu, ipc); // (the slow-mode path traced at top already)
 #ifndef CPU_DECODER_IS_68030
         if (__builtin_expect(!g_bus_error_pending, 1)) {
             cpu->ir = opcode;
