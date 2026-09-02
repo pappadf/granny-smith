@@ -59,7 +59,12 @@ static __attribute__((noinline)) void PD_DECODE_NAME(cpu_t *restrict cpu, pd_blo
     uint32_t len = 0;
     uint16_t id = PD_CLASSIFY_NAME(cpu, blk->host, idx, PD_ENTRIES_68K - idx, page_lo, &e, &len);
     e.id = id;
-    blk->raw16[idx] = LOAD_BE16(blk->host + (idx << 1)); // the word this entry was decoded from
+    // The words this entry was decoded from: the opcode and its extension
+    // words, so the debug audit can check every word a handler consumes.
+    // T1 entries carry the opcode and its first extension word; T0 shapes
+    // carry `len` words.
+    for (uint32_t w = 0; w < (len > 2 ? len : 2) && idx + w < PD_ENTRIES_68K; w++)
+        blk->raw16[idx + w] = LOAD_BE16(blk->host + ((idx + w) << 1));
     // Elision: retarget a definer whose NZVC result is dead on the sequential
     // path — the successor writes all four unconditionally, reads none, and
     // cannot fault or trap before writing them (§5.3 rule 2).  Level 1 keeps
@@ -1474,9 +1479,16 @@ relookup:
         uint32_t pc = cpu->pc & 0x00FFFFFFu;
 #endif
         pd_slow = cpu->last_bus_error_pc != 0 && !cpu->supervisor;
-        if (blk && (pc - page_lo) < MEM_PAGE_SIZE && !(pc & 1u)) {
+        // Same logical page: reuse the block only if the page still maps to
+        // the host page it was found on.  The mapping can change under a
+        // logical address without leaving the page: an RTE or MOVE to SR
+        // that drops to user mode swaps the active table (A/UX maps the
+        // same user page differently in the two spaces), and a PMOVE /
+        // PFLUSH through the generic step can remap it.
+        if (blk && (pc - page_lo) < MEM_PAGE_SIZE && !(pc & 1u) &&
+            g_active_read[pc >> PAGE_SHIFT] + page_lo == (uintptr_t)blk->host) {
             cur = blk->e + ((pc - page_lo) >> 1);
-            goto top; // same block, no memory access
+            goto top; // same block, same mapping: no memory access
         }
         if (!blk && pd_held && ((pc ^ page_lo) & ~(uint32_t)PAGE_MASK) == 0)
             goto t2_loop; // still on a page the pool declined (demoted, held, no region)

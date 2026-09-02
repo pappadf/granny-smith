@@ -364,7 +364,13 @@ relookup:
     // whether that page is decoded.
     {
         uint32_t pc = p->pc;
-        if (blk && (pc - page_lo) < MEM_PAGE_SIZE && !(pc & 3u)) {
+        // Same logical page: reuse the block only while the fetch window
+        // still stands behind it.  An rfi or mtmsr that changes IR/PR, or a
+        // TLB invalidation, flushes the window (ppc_mmu_flush_fetch) because
+        // the same logical page may now fetch from another physical page —
+        // the switch loop re-resolves on every fetch; this is its equivalent.
+        if (blk && (pc - page_lo) < MEM_PAGE_SIZE && !(pc & 3u) && g_ppc_fetch.span == MEM_PAGE_SIZE &&
+            g_ppc_fetch.lo == page_lo && g_ppc_fetch.blk == blk) {
             cur = blk->e + ((pc - page_lo) >> 2);
             goto top;
         }
