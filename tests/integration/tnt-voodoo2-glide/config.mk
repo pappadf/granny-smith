@@ -25,7 +25,7 @@ TEST_ROM := roms/pm7500-pm8500-pm9500-96cd923d.rom
 
 # Copied because the System writes to the volume; the copy only happens
 # when the fetched image exists (the skip path needs no media).
-TEST_SETUP := test ! -f ../../data/apps/quake_8_1_voodoo2.img || cp ../../data/apps/quake_8_1_voodoo2.img "$(WORK_DIR)/quake.img"
+TEST_SETUP := test ! -f "$(TEST_DATA)/apps/quake_8_1_voodoo2.img" || cp "$(TEST_DATA)/apps/quake_8_1_voodoo2.img" "$(WORK_DIR)/quake.img"
 
 TEST_ARGS := model=pm7500 ram=65536
 
