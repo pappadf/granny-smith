@@ -37,7 +37,8 @@ assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
 check_ex("finder-desktop.png", 0, 500, 20, 640)
 
 # Phase 0 throughput floor of the predecoded-cores proposal (604 interpreter
-# through OF, the 68K emulator and the System 7.6 boot; coarse).
-mips_floor("tnt-hd-boot", $t0, 15)
+# through OF, the 68K emulator and the System 7.6 boot: measured 76 MIPS on
+# the assert-enabled build, floor well below).
+mips_floor("tnt-hd-boot", $t0, 20)
 echo "tnt-hd-boot: BootDrive=${debug.mac.globals.read("BootDrive"):04x} dserr=${debug.mac.globals.read("DSErrCode"):04x} ticks=${debug.mac.globals.read("Ticks")}"
 quit

@@ -232,6 +232,15 @@ without a check on the fast path.
 | IIfx / IOP DMA | `iifx.c`, `iop_swim.c` | `memory_host_written` |
 | Mac II / 030 glue mirrors | `mac030_glue.c` | `memory_write_fill` for the aliases; stores notify |
 
+- **PowerPC user mode.** The user SoA tables are filled *logically*
+  (`user_soa_fill`), and a store whose write fill the marks refuse falls
+  back to a physical address that the inline accessor then uses to index
+  those logically-filled tables.  `user_phys_fallback` (ppc_mmu.c) keeps
+  the slot at that physical index empty — on the walk and on the
+  translation-TLB hit — so the access takes the physical slow path instead
+  of landing in whatever logical page sits at that index.  The evicted
+  page refills on its next slow access.
+
 A new device that DMA-writes guest memory through a host pointer must
 call `memory_host_written(host, len)` after the copy.  The debug-build
 audit in the executors (`PD_AUDIT_*`) traps on the first stale entry a

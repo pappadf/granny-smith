@@ -191,7 +191,9 @@ def aix_boot() {
     assert machine.scsi.device[0].type == "cdrom" "S10: the Install CD went away under AIX"
 
     # Phase 0 throughput floor of the predecoded-cores proposal (604
-    # interpreter through Open Firmware and the AIX kernel; coarse).
+    # interpreter through Open Firmware and the AIX kernel).  A guess, not a
+    # measurement: the ROM and the install CD are not in the local test data;
+    # lower it if the CI host misses it.
     mips_floor("ans-aix-boot", $t0, 15)
     echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, restores the base device information, and the BOS install asks for its console — LCD 890, 868, 723, 512, c31 (rung S11)"
 }
