@@ -588,10 +588,13 @@ static void fpu_to_extended(float80_reg_t val, uint32_t *word0, uint32_t *word1,
 // We store emulator-specific state in the CU internal registers area:
 //   +$08: pre_exc_mask (4 bytes) — which exceptions already fired pre-instruction
 
-// The MC68882's frame version byte.  Motorola never published the values;
-// $1F (68881) and $20 (68882) are what the family's emulators report and
-// what m68k-sail's vectors assume, and FRESTORE checks a frame against it.
-#define FSAVE_VERSION 0x20
+// The MC68882's frame version byte.  Motorola never published the values.
+// Mac OS treats the byte as meaningful (System 7.0.1's memory accounting
+// changes by 1 KB between $1F and $20 on a IIci), and $1F is what this
+// emulator has always written; m68k-sail assumes $20 for a 68882, so
+// FRESTORE accepts either as this part's own frame.
+#define FSAVE_VERSION     0x1F
+#define FSAVE_VERSION_ALT 0x20
 // FSAVE_IDLE_SIZE defined in fpu.h ($38 = 56 bytes)
 #define FSAVE_BUSY_SIZE 0xD4 // MC68882 busy frame: 212 bytes payload (not generated)
 
@@ -606,7 +609,7 @@ int fpu_fsave(fpu_state_t *fpu, uint32_t addr) {
         return 4;
     }
 
-    // +$00: Format word — version=$1F, size=$38 (MC68882 idle)
+    // +$00: Format word — version (FSAVE_VERSION), size=$38 (MC68882 idle)
     uint32_t header = ((uint32_t)FSAVE_VERSION << 24) | ((uint32_t)FSAVE_IDLE_SIZE << 16);
     memory_write_uint32(addr, header);
 
@@ -657,7 +660,7 @@ int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     // this particular device" (§6.4.2): only the null frame (version 0, a
     // wild card; its size byte is undefined, §6.4.2.1) and this part's own
     // idle frame restore.  -1 tells the caller to raise the format error.
-    if (version != 0 && !(version == FSAVE_VERSION && size == FSAVE_IDLE_SIZE))
+    if (version != 0 && !((version == FSAVE_VERSION || version == FSAVE_VERSION_ALT) && size == FSAVE_IDLE_SIZE))
         return -1;
     if (version == 0) {
         // Null frame: "equivalent to a hardware reset of the FPCP" (§6.4.3,
