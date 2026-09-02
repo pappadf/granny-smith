@@ -69,7 +69,7 @@ static pd_block_t *block_of(uint32_t page) {
     uintptr_t base = g_supervisor_read[page];
     if (!base)
         return NULL;
-    return predecode_lookup((uint8_t *)(base + (page << PAGE_SHIFT)), PD_ARCH_68K);
+    return predecode_lookup((uint8_t *)(base + (page << PAGE_SHIFT)), page << PAGE_SHIFT, PD_ARCH_68K);
 }
 
 // The POD part of cpu_t (everything before the pointers).

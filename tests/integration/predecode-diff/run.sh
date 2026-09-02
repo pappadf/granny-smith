@@ -71,6 +71,7 @@ row plus "$TEST_DATA/roms/plus-v3-4d1f8172.rom" plus.script 3 0 1 2 -- --var FD=
 row iicx "$TEST_DATA/roms/iix-iicx-se30-97221136.rom" iicx.script 3 0 2 -- --var HD="$HD_MARATHON"
 row pdm "$TEST_DATA/roms/pm6100-pm7100-pm8100-9feb69b3.rom" pdm.script 3 0 --
 row tnt "$TEST_DATA/roms/pm7500-pm8500-pm9500-96cd923d.rom" tnt.script 3 0 --
+row av "$TEST_DATA/roms/q840av-q660av-5bf10fd1.rom" av.script 3 0 2 -- --var HD="$TEST_DATA/systems/system_7_1_77mb_av.img"
 
 if [ "$fail" -ne 0 ]; then
     echo "predecode differential: FAILED"

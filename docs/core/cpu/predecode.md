@@ -124,7 +124,13 @@ Consequences the executor relies on:
   dropped quickly;
 - `memory_map_init` bumps `g_mem_map_generation`; the pool resets lazily
   on the next lookup, so a rebooted machine never sees blocks of the old
-  image.
+  image;
+- a block is keyed by host page but **decoded at one guest address**:
+  PC-relative operands and out-of-page branch targets are stored as
+  absolute addresses, so when the same host page executes through another
+  alias (the AV's ROM overlay at zero, a 24-bit mirror, a second BAT
+  mapping) the lookup re-decodes the block for that alias
+  (`predecode.realiases`).
 
 The **debug build** (`GS_DEBUG`) audits every T0/T1 dispatch against the
 raw shadow (`PD_AUDIT_68K` / `PD_AUDIT_PPC`) and traps on the first

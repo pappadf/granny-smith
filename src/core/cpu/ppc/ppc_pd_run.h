@@ -392,8 +392,8 @@ relookup:
             }
             if ((pc - g_ppc_fetch.lo) < g_ppc_fetch.span && g_ppc_fetch.span == MEM_PAGE_SIZE) {
                 if (!g_ppc_fetch.blk)
-                    g_ppc_fetch.blk =
-                        predecode_lookup((uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo), PD_ARCH_PPC);
+                    g_ppc_fetch.blk = predecode_lookup((uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo),
+                                                       g_ppc_fetch.lo, PD_ARCH_PPC);
                 blk = g_ppc_fetch.blk;
                 page_lo = g_ppc_fetch.lo;
                 if (blk) {

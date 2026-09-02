@@ -108,12 +108,22 @@ def compare(a, b, verbose):
             print("DIFF  %s:%d size %d vs %d" % (fa, la, len(da), len(db)))
             ok = False
             continue
+        # The 68040 MMU register file (cpu.c's second block, 48 bytes): MMUSR
+        # at +0x1c mirrors the LAST table walk (mmu040.c publishes it on every
+        # walk, not only on PTEST), and which accesses walk depends on the
+        # fast-path fill state — which the code-page marks change.  The guest
+        # only reads it from a bus-error handler, where both executors walked
+        # the same faulting address, so the word is not part of the timeline.
+        mmusr = range(0x1C, 0x20) if (fa.endswith("cpu.c") and len(da) == 48) else range(0)
         # Mask host pointers: 8-byte-aligned words that are pointer-shaped in
         # both files.
         bad = []
         n = len(da)
         k = 0
         while k < n:
+            if k in mmusr:
+                k += 1
+                continue
             if da[k] != db[k]:
                 w = k & ~7
                 if w + 8 <= n:

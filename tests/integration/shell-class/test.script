@@ -41,9 +41,10 @@ assert shell.complete("qu", 2).candidates == "[quit]" "line-start method prefix"
 # Mid-path: members of the resolved object, composed with the head so the
 # terminal performs one full-token replace — span covers the whole word.
 assert shell.complete("machine.cp", 10).candidates == "[machine.cpu.]" "mid-path object gets a dot"
-assert shell.complete("machine.cpu.p", 13).candidates == "[machine.cpu.pc]" "mid-path single match"
-assert shell.complete("machine.cpu.p", 13).span.start == 0 "mid-path span start"
-assert shell.complete("machine.cpu.p", 13).span.end == 13 "mid-path span end"
+# ("machine.cpu.p" alone is no longer single: machine.cpu.predecode joined pc.)
+assert shell.complete("machine.cpu.pc", 14).candidates == "[machine.cpu.pc]" "mid-path single match"
+assert shell.complete("machine.cpu.pc", 14).span.start == 0 "mid-path span start"
+assert shell.complete("machine.cpu.pc", 14).span.end == 14 "mid-path span end"
 assert shell.complete("machine.cpu.s", 13).candidates == "[machine.cpu.sr, machine.cpu.ssp, machine.cpu.sp]" "mid-path multi match"
 # Method-arg position dispatches by arg_decl kind: V_BOOL offers the
 # canonical spellings, followed by the `name=` named-argument forms

@@ -1169,6 +1169,7 @@ bool mmu_write_physical_uint8(mmu_state_t *mmu, uint32_t phys_addr, uint8_t valu
     uint8_t *host = phys_to_host(mmu, phys_addr);
     if (!host)
         return false;
+    memory_host_written(host, 1); // a bus master (the AV's DSP) writing over cached code
     *host = value;
     return true;
 }

@@ -1486,7 +1486,7 @@ relookup:
         if (!(pc & 1u)) {
             uintptr_t base = g_active_read[pc >> PAGE_SHIFT];
             if (base != 0) {
-                blk = predecode_lookup((uint8_t *)(base + page_lo), PD_ARCH_68K);
+                blk = predecode_lookup((uint8_t *)(base + page_lo), page_lo, PD_ARCH_68K);
                 if (!blk) {
                     g_pd_stats.relookup_nopool++;
                     pd_held = true;

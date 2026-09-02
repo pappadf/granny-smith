@@ -50,6 +50,8 @@ typedef enum pd_arch { PD_ARCH_68K = 0, PD_ARCH_PPC = 1 } pd_arch_t;
 // audit every dispatched entry against live memory through it.
 typedef struct pd_block {
     uint8_t *host; // key: host page pointer (page-aligned); NULL = free
+    uint32_t guest_lo; // guest address the entries were decoded at: PC-relative and out-of-page targets are absolute,
+                       // so another alias of the same host page re-decodes
     uint32_t region; // memory code region index the page lies in
     uint32_t page; // page index within that region
     uint32_t seq; // allocation sequence number (round-robin eviction)
@@ -104,7 +106,10 @@ void predecode_set_thrash(uint32_t limit, uint32_t window_lookups, uint32_t demo
 // outside every code region, the cache is disabled, or the page is
 // demoted (thrashing) — the caller then runs the generic tier until the
 // next page transition.  `host_page` must be page-aligned.
-pd_block_t *predecode_lookup(uint8_t *host_page, pd_arch_t arch);
+// The block for host_page as executed at guest address guest_lo (the page's
+// guest base).  A block found under another alias of the same host page is
+// re-decoded: entries hold absolute PC-relative and out-of-page targets.
+pd_block_t *predecode_lookup(uint8_t *host_page, uint32_t guest_lo, pd_arch_t arch);
 
 // Release a block (demotion or eviction): clears the page's code mark so
 // its write entries refill lazily.
@@ -133,6 +138,7 @@ typedef struct pd_stats {
     uint64_t invalidations; // invalidate calls that reset at least one entry
     uint64_t demotions; // blocks released for thrashing
     uint64_t elided; // entries retargeted to a no-flags twin
+    uint64_t realiases; // blocks re-decoded because the same host page ran at another guest address
     uint64_t generic_steps; // instructions run through the generic tier (uncached, demoted, PD_GENERIC)
     uint64_t generic_cross; // ...of which: PD_CROSS entries (the instruction straddles the page)
     uint64_t generic_declined; // ...of which: PD_GENERIC entries (the classifier declined the shape)

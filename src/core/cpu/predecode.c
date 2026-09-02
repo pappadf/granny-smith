@@ -197,7 +197,7 @@ static pd_block_t *block_take(void) {
     return blk;
 }
 
-pd_block_t *predecode_lookup(uint8_t *host_page, pd_arch_t arch) {
+pd_block_t *predecode_lookup(uint8_t *host_page, uint32_t guest_lo, pd_arch_t arch) {
     if (!g_pd_enabled)
         return NULL;
     if (__builtin_expect(g_mem_code_written_hook == NULL, 0))
@@ -230,6 +230,15 @@ pd_block_t *predecode_lookup(uint8_t *host_page, pd_arch_t arch) {
             g_pd_stats.demotions++;
             return NULL;
         }
+        if (__builtin_expect(blk->guest_lo != guest_lo, 0)) {
+            // Another alias of the same host page (a ROM overlay, a 24-bit
+            // mirror, a second BAT mapping): the entries' absolute targets
+            // belong to the old alias — decode again for this one.
+            memset(blk->e, 0, sizeof(blk->e));
+            blk->e[blk->arch == PD_ARCH_PPC ? PD_ENTRIES_PPC : PD_ENTRIES_68K].id = PD_PAGE_END;
+            blk->guest_lo = guest_lo;
+            g_pd_stats.realiases++;
+        }
         return blk;
     }
     if ((uint32_t)g_pd_stats.lookups - g_pd_demoted[r][page] > 0x80000000u) {
@@ -240,6 +249,7 @@ pd_block_t *predecode_lookup(uint8_t *host_page, pd_arch_t arch) {
     if (!blk)
         return NULL;
     blk->host = host_page;
+    blk->guest_lo = guest_lo;
     blk->region = (uint32_t)r;
     blk->page = page;
     blk->seq = ++g_pd_seq;
@@ -382,6 +392,7 @@ enum {
     PDA_ELIDED,
     PDA_SUPPRESSED_WRITES,
     PDA_THRASH_RATIO,
+    PDA_REALIASES,
     PDA_GENERIC_STEPS,
     PDA_GENERIC_CROSS,
     PDA_GENERIC_DECLINED,
@@ -423,6 +434,8 @@ static value_t pd_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_mem_code_write_count);
     case PDA_THRASH_RATIO:
         return val_uint(4, g_pd_thrash_ratio);
+    case PDA_REALIASES:
+        return val_uint(8, g_pd_stats.realiases);
     case PDA_GENERIC_STEPS:
         return val_uint(8, g_pd_stats.generic_steps);
     case PDA_GENERIC_CROSS:
@@ -556,6 +569,7 @@ static const member_t predecode_members[] = {
     PD_ATTR_RO("invalidations", PDA_INVALIDATIONS, "stores that reset at least one cached entry"),
     PD_ATTR_RO("demotions", PDA_DEMOTIONS, "blocks released for thrashing"),
     PD_ATTR_RO("elided", PDA_ELIDED, "entries retargeted to a no-flags twin"),
+    PD_ATTR_RO("realiases", PDA_REALIASES, "blocks re-decoded because their host page ran at another guest address"),
     PD_ATTR_RO("generic_steps", PDA_GENERIC_STEPS, "instructions run through the generic tier"),
     PD_ATTR_RO("generic_cross", PDA_GENERIC_CROSS, "...of which page-straddling instructions"),
     PD_ATTR_RO("generic_declined", PDA_GENERIC_DECLINED, "...of which shapes the classifier declined"),
