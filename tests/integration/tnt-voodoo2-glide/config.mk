@@ -23,7 +23,7 @@ TEST_ROM := roms/pm7500-pm8500-pm9500-96cd923d.rom
 
 # Copied because the System writes to the volume; the copy only happens
 # when the machine-local image exists (the skip path needs no media).
-TEST_SETUP := test ! -f ../../local/macos81voodoo2-quake-installed.img || cp ../../local/macos81voodoo2-quake-installed.img "$(WORK_DIR)/quake.img"
+TEST_SETUP := test ! -f ../../local/system_8_1_234mb_voodoo2_quake.img || cp ../../local/system_8_1_234mb_voodoo2_quake.img "$(WORK_DIR)/quake.img"
 
 TEST_ARGS := model=pm7500 ram=65536
 

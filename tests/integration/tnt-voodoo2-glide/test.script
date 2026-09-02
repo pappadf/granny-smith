@@ -146,6 +146,6 @@ check("quake-ingame.png")
 echo "tnt-voodoo2-glide: Quake renders in-game frames through the model"
 
 } else {
-    echo "skip: tnt-voodoo2-glide (local/macos81voodoo2-quake-installed.img is not present on this machine)"
+    echo "skip: tnt-voodoo2-glide (local/system_8_1_234mb_voodoo2_quake.img is not present on this machine)"
 }
 quit
