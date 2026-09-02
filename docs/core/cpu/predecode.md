@@ -80,7 +80,11 @@ re-trying the lookup after each step unless the pool declined the page.
 ### What the loop cannot see
 
 The invariants that keep the two executors byte-identical (the
-differential checkpoints under `tests/integration/predecode-diff/`):
+differential checkpoints under `tests/integration/predecode-diff/`, and
+at instruction granularity the `m68k_vectors` and `ppc_vectors` unit
+suites, which replay the m68k-test / powerpc-test conformance vectors
+with unlisted state randomized — `m68k_vectors` runs every vector
+through both executors and fails on any difference):
 
 - **Model epilogues are shared.**  `PD_ENTER` latches the 68000's `ir`
   for the illegal-instruction path, arms the `_sp0` audit, and runs the

@@ -140,8 +140,9 @@ uint64_t scheduler_cpu_cycles(scheduler_t *sched) {
 
 // /RESET-line stub: the single-step CPU test executes the RESET opcode, which
 // calls system_reset_devices().  No emulator peripherals exist in the isolated
-// harness, so this is a no-op.
-void system_reset_devices(void) {}
+// harness, so this is a no-op.  Weak so a suite that must observe the pulse
+// (m68k_vectors counts them for the `rsto` element) can override it.
+void __attribute__((weak)) system_reset_devices(void) {}
 
 // Keyboard stub for key injection command
 typedef enum { key_up, key_down } key_event_t;

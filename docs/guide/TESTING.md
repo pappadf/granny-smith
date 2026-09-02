@@ -8,7 +8,7 @@ emulator), and browser-based end-to-end tests (Playwright).
 
 | Tier | Command | Duration | Test Data Required |
 |------|---------|----------|--------------------|
-| Unit | `make -C tests/unit run` | 1–5 min | No (uses `third-party/single-step-tests`) |
+| Unit | `make -C tests/unit run` | 1–5 min | No (uses the `third-party/` vector submodules) |
 | Integration | `make integration-test` | 10–20 min (`-j` shortens) | Yes |
 | E2E | `make e2e-test` | 10–15 min | Yes |
 | Unit + Integration | `make test` | 2–7 min | Partially |
