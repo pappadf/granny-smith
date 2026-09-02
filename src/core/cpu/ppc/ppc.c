@@ -766,6 +766,9 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         return NULL;
     g_pd_id_name[PD_ARCH_PPC] = ppc_pd_id_name;
     assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604);
+    // The 601 keeps VXSOFT/VXSQRT as storage only (ppc_softfp.h).
+    g_ppc_fpscr_vx_any =
+        cpu_model == CPU_MODEL_PPC601 ? (PPC_FPSCR_VX_ANY & ~(PPC_FPSCR_VXSOFT | PPC_FPSCR_VXSQRT)) : PPC_FPSCR_VX_ANY;
 
     // The user SoA arrays carry this MMU's logical fills — the generic
     // identity-restore paths must leave them alone (memory.h).

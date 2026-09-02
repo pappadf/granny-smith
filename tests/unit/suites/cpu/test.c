@@ -62,9 +62,6 @@ static const char *excluded_instructions[] = {
     // CHK: When no exception occurs, the N, Z, V, C flags are undefined per
     // MC68000 documentation.
     "CHK",
-    // Bcc: Tests include Bcc.L (32-bit displacement, opcode byte 0xFF) which
-    // is a 68020+ feature. On 68000, this should be an illegal instruction.
-    "Bcc",
     NULL // sentinel
 };
 

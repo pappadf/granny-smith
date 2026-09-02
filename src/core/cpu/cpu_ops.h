@@ -566,10 +566,10 @@
     VALID_EA(ea_data);                                                                                                 \
     LOAD_EA_WITH_UPDATE(16, divisor);                                                                                  \
     UINT(32) dividend = DN;                                                                                            \
-    CLEAR_NZVC();                                                                                                      \
     if (!divisor) {                                                                                                    \
-        EXC_DIVIDE_BY_ZERO();                                                                                          \
+        EXC_DIVIDE_BY_ZERO(); /* trap before the CCR is touched */                                                     \
     } else {                                                                                                           \
+        CLEAR_NZVC();                                                                                                  \
         uint32_t quotient = DN / (uint16_t)divisor;                                                                    \
         if (quotient > UINT16_MAX) {                                                                                   \
             CC_V = CC_N = 1;                                                                                           \
@@ -585,10 +585,10 @@
     VALID_EA(ea_data);                                                                                                 \
     LOAD_EA_WITH_UPDATE(16, divisor);                                                                                  \
     INT(32) dividend = (INT(32))DN;                                                                                    \
-    CLEAR_NZVC();                                                                                                      \
     if (!divisor) {                                                                                                    \
-        EXC_DIVIDE_BY_ZERO();                                                                                          \
+        EXC_DIVIDE_BY_ZERO(); /* trap before the CCR is touched */                                                     \
     } else {                                                                                                           \
+        CLEAR_NZVC();                                                                                                  \
         int32_t q = (INT(32))DN / (int16_t)divisor;                                                                    \
         if (((int16_t)divisor == -1 && (INT(32))DN == INT32_MIN) || q > INT16_MAX || q < INT16_MIN) {                  \
             CC_V = CC_N = 1;                                                                                           \
@@ -1452,10 +1452,10 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         int _size64 = (_ext >> 10) & 1;                                                                                \
         VALID_EA(ea_data);                                                                                             \
         LOAD_EA_WITH_UPDATE(32, _divisor);                                                                             \
-        CLEAR_NZVC();                                                                                                  \
         if (!_divisor) {                                                                                               \
-            EXC_DIVIDE_BY_ZERO();                                                                                      \
+            EXC_DIVIDE_BY_ZERO(); /* trap before the CCR is touched */                                                 \
         } else {                                                                                                       \
+            CLEAR_NZVC();                                                                                              \
             if (_signed) {                                                                                             \
                 int64_t _dividend = _size64 ? (int64_t)(((uint64_t)D(_dr) << 32) | D(_dq)) : (int64_t)(int32_t)D(_dq); \
                 int64_t _q = _dividend / (int32_t)_divisor;                                                            \
@@ -1595,17 +1595,23 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         STORE_DN(8, opcode >> 9 & 7, ((_src >> 4) & 0xF0) | ((_src) & 0x0F));                                          \
     })
 
-// PACK -(AY),-(AX),#adj: from memory.  Each predec mutates An before the
-// access that may fault; snapshot both An and roll back on bus error so the
-// Format-$B retry restarts with pre-instruction values.
+// PACK -(AY),-(AX),#adj: from memory.  The source word is two byte accesses
+// through -(AY) (low byte first, so a plain An reads the word at AY-2), and
+// a byte predecrement of A7 moves it by 2, so PACK -(A7) consumes four bytes
+// of stack.  Each predec mutates An before the access that may fault;
+// snapshot both An and roll back on bus error so the Format-$B retry
+// restarts with pre-instruction values.
 #define OP_PACK_AY_AX                                                                                                  \
     OP({                                                                                                               \
         uint16_t _adj = FETCH16();                                                                                     \
         int _dx = opcode >> 9 & 7;                                                                                     \
         uint32_t _pack_ay_save = cpu->a[EA_REG];                                                                       \
         uint32_t _pack_ax_save = cpu->a[_dx];                                                                          \
-        A(EA_REG) -= 2;                                                                                                \
-        uint16_t _src = READ16(A(EA_REG));                                                                             \
+        uint32_t _pack_ay_dec = (EA_REG == 7) ? 2 : 1;                                                                 \
+        A(EA_REG) -= _pack_ay_dec;                                                                                     \
+        uint16_t _src = READ8(A(EA_REG));                                                                              \
+        A(EA_REG) -= _pack_ay_dec;                                                                                     \
+        _src |= (uint16_t)READ8(A(EA_REG)) << 8;                                                                       \
         _src = (uint16_t)(_src + _adj);                                                                                \
         A(_dx) -= (_dx == 7) ? 2 : 1; /* A7 byte predec keeps stack word-aligned */                                    \
         WRITE8(A(_dx), (uint8_t)(((_src >> 4) & 0xF0) | ((_src) & 0x0F)));                                             \
@@ -1624,8 +1630,10 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         STORE_DN(16, opcode >> 9 & 7, _res);                                                                           \
     })
 
-// UNPK -(AY),-(AX),#adj: from/to memory.  Same restart-safety concern as
-// OP_PACK_AY_AX — snapshot both An and roll back on bus error.
+// UNPK -(AY),-(AX),#adj: from/to memory.  The result word is two byte
+// accesses through -(AX) (low byte first; A7 moves by 2 per byte, as in
+// PACK).  Same restart-safety concern as OP_PACK_AY_AX — snapshot both An
+// and roll back on bus error.
 #define OP_UNPK_AY_AX                                                                                                  \
     OP({                                                                                                               \
         uint16_t _adj = FETCH16();                                                                                     \
@@ -1636,8 +1644,11 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         A(_sy) -= (_sy == 7) ? 2 : 1; /* A7 byte predec keeps stack word-aligned */                                    \
         uint8_t _b = READ8(A(_sy));                                                                                    \
         uint16_t _res = (uint16_t)((((_b >> 4) & 0xF) << 8) | ((_b) & 0xF)) + _adj;                                    \
-        A(_dx) -= 2;                                                                                                   \
-        WRITE16(A(_dx), _res);                                                                                         \
+        uint32_t _unpk_ax_dec = (_dx == 7) ? 2 : 1;                                                                    \
+        A(_dx) -= _unpk_ax_dec;                                                                                        \
+        WRITE8(A(_dx), (uint8_t)_res);                                                                                 \
+        A(_dx) -= _unpk_ax_dec;                                                                                        \
+        WRITE8(A(_dx), (uint8_t)(_res >> 8));                                                                          \
         if (__builtin_expect(g_bus_error_pending, 0)) {                                                                \
             cpu->a[_sy] = _unpk_ay_save;                                                                               \
             cpu->a[_dx] = _unpk_ax_save;                                                                               \
@@ -2072,23 +2083,31 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
 // OP_UNDEFINED: exception handling
 #define OP_UNDEFINED OP(EXC_ILLEGAL(); continue)
 
+// Bcc/BSR with displacement byte 0xFF: the 68000 has no 32-bit form, so the
+// byte is an 8-bit displacement of -1 (the decode tree routes 0xFF to the
+// .L arm for every model; the 68020+ bodies read the long displacement).
+#undef OP_BCC_L_DISPLACEMENT
+#define OP_BCC_L_DISPLACEMENT OP_BCC_B_DISPLACEMENT
+#undef OP_BSR_L_LABEL
+#define OP_BSR_L_LABEL OP_BSR_B_LABEL
+
 // Bit-field instructions: undefined on 68000
-#define OP_BFTST_DN  OP_UNDEFINED
-#define OP_BFTST_EA  OP_UNDEFINED
-#define OP_BFCHG_DN  OP_UNDEFINED
-#define OP_BFCHG_EA  OP_UNDEFINED
-#define OP_BFCLR_DN  OP_UNDEFINED
-#define OP_BFCLR_EA  OP_UNDEFINED
-#define OP_BFEXTS_DN OP_UNDEFINED
-#define OP_BFEXTS_EA OP_UNDEFINED
-#define OP_BFEXTU_DN OP_UNDEFINED
-#define OP_BFEXTU_EA OP_UNDEFINED
-#define OP_BFINS_DN  OP_UNDEFINED
-#define OP_BFINS_EA  OP_UNDEFINED
-#define OP_BFFFO_DN  OP_UNDEFINED
-#define OP_BFFFO_EA  OP_UNDEFINED
-#define OP_BFSET_DN  OP_UNDEFINED
-#define OP_BFSET_EA  OP_UNDEFINED
+#define OP_BFTST_DN    OP_UNDEFINED
+#define OP_BFTST_EA    OP_UNDEFINED
+#define OP_BFCHG_DN    OP_UNDEFINED
+#define OP_BFCHG_EA    OP_UNDEFINED
+#define OP_BFCLR_DN    OP_UNDEFINED
+#define OP_BFCLR_EA    OP_UNDEFINED
+#define OP_BFEXTS_DN   OP_UNDEFINED
+#define OP_BFEXTS_EA   OP_UNDEFINED
+#define OP_BFEXTU_DN   OP_UNDEFINED
+#define OP_BFEXTU_EA   OP_UNDEFINED
+#define OP_BFINS_DN    OP_UNDEFINED
+#define OP_BFINS_EA    OP_UNDEFINED
+#define OP_BFFFO_DN    OP_UNDEFINED
+#define OP_BFFFO_EA    OP_UNDEFINED
+#define OP_BFSET_DN    OP_UNDEFINED
+#define OP_BFSET_EA    OP_UNDEFINED
 
 // CHK.W: 68000 version (no CHK.L on 68000)
 #define OP_CHK_W_EA_DN                                                                                                 \
