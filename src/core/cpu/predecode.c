@@ -311,7 +311,11 @@ void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     // transitions.  The page keeps its block until the CPU's next lookup
     // (its executor may be running from it right now).
     uint32_t now = (uint32_t)g_pd_stats.lookups;
-    uint32_t budget = g_bus_error_instr_ptr ? *g_bus_error_instr_ptr : 0;
+    // The sprint budget is only readable while an executor is running from
+    // a block: the pointer the executors publish is their caller's local
+    // and dangles once the sprint returns (a DMA or debug write between
+    // sprints must not read it).
+    uint32_t budget = (blk == g_pd_current && g_bus_error_instr_ptr) ? *g_bus_error_instr_ptr : 0;
     if (now - blk->write_window > g_pd_thrash_window) {
         blk->write_window = now; // a fresh window starts at this store
         blk->writes = 0;

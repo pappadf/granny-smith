@@ -1478,6 +1478,11 @@ relookup:
 #else
         uint32_t pc = cpu->pc & 0x00FFFFFFu;
 #endif
+        // The bus address: the inline accessors apply g_address_mask to
+        // every access, and the fast-path tables are sized to it — a PC
+        // above the map (an exception through a stray vector, a 24-bit
+        // map under a 32-bit core) must not index past them.
+        uint32_t bus = pc & g_address_mask;
         pd_slow = cpu->last_bus_error_pc != 0 && !cpu->supervisor;
         // Same logical page: reuse the block only if the page still maps to
         // the host page it was found on.  The mapping can change under a
@@ -1486,7 +1491,7 @@ relookup:
         // same user page differently in the two spaces), and a PMOVE /
         // PFLUSH through the generic step can remap it.
         if (blk && (pc - page_lo) < MEM_PAGE_SIZE && !(pc & 1u) &&
-            g_active_read[pc >> PAGE_SHIFT] + page_lo == (uintptr_t)blk->host) {
+            g_active_read[bus >> PAGE_SHIFT] + (page_lo & g_address_mask) == (uintptr_t)blk->host) {
             cur = blk->e + ((pc - page_lo) >> 1);
             goto top; // same block, same mapping: no memory access
         }
@@ -1496,9 +1501,9 @@ relookup:
         pd_held = false;
         page_lo = pc & ~(uint32_t)PAGE_MASK;
         if (!(pc & 1u)) {
-            uintptr_t base = g_active_read[pc >> PAGE_SHIFT];
+            uintptr_t base = g_active_read[bus >> PAGE_SHIFT];
             if (base != 0) {
-                blk = predecode_lookup((uint8_t *)(base + page_lo), page_lo, PD_ARCH_68K);
+                blk = predecode_lookup((uint8_t *)(base + (page_lo & g_address_mask)), page_lo, PD_ARCH_68K);
                 if (!blk) {
                     g_pd_stats.relookup_nopool++;
                     pd_held = true;
@@ -1525,8 +1530,21 @@ t2_loop:
 
 done:
     // Materialize the architectural PC from the cursor (§3.4 step 7).
-    if (blk)
-        cpu->pc = page_lo + ((uint32_t)(cur - blk->e) << 1);
+    if (blk) {
+        uint32_t pc = page_lo + ((uint32_t)(cur - blk->e) << 1);
+#ifdef CPU_DECODER_IS_68030
+        cpu->pc = pc;
+#else
+        // The 68000 masks PC to its 24 address bits at each instruction's
+        // prologue, so the register keeps a control transfer's full 32-bit
+        // target until the next instruction runs (the switch core's
+        // observable order).  When the sprint ends on that transfer the
+        // cursor already agrees with the register modulo the mask: keep
+        // the register, as the switch core would.
+        if ((cpu->pc & 0x00FFFFFFu) != pc)
+            cpu->pc = pc;
+#endif
+    }
     cpu->instruction_pc = ipc;
     predecode_enter(NULL, *instructions);
     // --- sprint exit: the switch core's epilogue ---
