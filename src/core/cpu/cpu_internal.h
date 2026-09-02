@@ -353,14 +353,27 @@ static inline __attribute__((always_inline)) uint32_t calculate_ea(cpu_t *restri
 // switch core and the predecoded executor share one delivery path.  The
 // access itself is suppressed (a read yields 0).  The 68020+ cores map these
 // straight to the accessors: they handle misalignment in hardware.
-#ifndef CPU_DECODER_IS_68030
+// Only the 68000 core's own translation unit compiles the check
+// unconditionally; the shared units (fpu.c, cpu.c) test the model, since the
+// same helpers serve every core there.
+extern uint32_t g_m68k_fault_regs[16]; // the 68000 register file at an address error
+extern uint8_t g_m68k_fault_ccr;
+#if defined(CPU_DECODER_IS_68030)
+#define cpu_dread16(cpu, addr)     memory_read_uint16(addr)
+#define cpu_dread32(cpu, addr)     memory_read_uint32(addr)
+#define cpu_dwrite16(cpu, addr, x) memory_write_uint16(addr, x)
+#define cpu_dwrite32(cpu, addr, x) memory_write_uint32(addr, x)
+#else
+#ifdef CPU_DECODER_IS_68000
+#define CPU_IS_68000(cpu) 1
+#else
+#define CPU_IS_68000(cpu) ((cpu)->cpu_model == CPU_MODEL_68000)
+#endif
 // The register file and CCR as they stood at the fault: the instruction
 // stops there on hardware, but our op bodies run on (the suppressed read
 // yields 0), so delivery restores this snapshot and discards what the body
 // did after the fault — including the bus-error rollbacks, which are
 // 68030 retry semantics, not the 68000's.
-extern uint32_t g_m68k_fault_regs[16];
-extern uint8_t g_m68k_fault_ccr;
 static inline void m68k_raise_address_error(cpu_t *restrict cpu, uint32_t addr, bool rw, uint32_t fc) {
     g_bus_error_pending = true;
     g_bus_error_is_address = true;
@@ -373,7 +386,7 @@ static inline void m68k_raise_address_error(cpu_t *restrict cpu, uint32_t addr, 
         *g_bus_error_instr_ptr = 0; // end the sprint after this instruction
 }
 static inline bool m68k_address_error(cpu_t *restrict cpu, uint32_t addr, bool rw) {
-    if (__builtin_expect(!(addr & 1u), 1))
+    if (__builtin_expect(!(addr & 1u) || !CPU_IS_68000(cpu), 1))
         return false;
     if (!g_bus_error_pending)
         m68k_raise_address_error(cpu, addr, rw, cpu->supervisor ? 5u : 1u);
@@ -402,11 +415,6 @@ static inline void cpu_dwrite32(cpu_t *restrict cpu, uint32_t addr, uint32_t x) 
     if (!m68k_address_error(cpu, addr, false))
         memory_write_uint32(addr, x);
 }
-#else
-#define cpu_dread16(cpu, addr)     memory_read_uint16(addr)
-#define cpu_dread32(cpu, addr)     memory_read_uint32(addr)
-#define cpu_dwrite16(cpu, addr, x) memory_write_uint16(addr, x)
-#define cpu_dwrite32(cpu, addr, x) memory_write_uint32(addr, x)
 #endif
 
 static inline __attribute__((always_inline)) uint8_t read_ea_8(cpu_t *restrict cpu, uint16_t opcode, bool increment) {
@@ -713,13 +721,11 @@ static inline __attribute__((always_inline)) bool conditional_test(cpu_t *restri
 // zero), 6 (CHK/CHK2), 7 (TRAPV/TRAPcc), and 9 (trace) use Format $2 (adds
 // instruction address); all others use Format $0. Uses VBR on 68030.
 static inline void exception(cpu_t *restrict cpu, uint32_t vector, uint32_t pc, uint16_t sr) {
-#ifndef CPU_DECODER_IS_68030
     // A 68000 address error is pending: the instruction stopped at the
     // faulting access, so whatever it would have raised after it (CHK, a
     // divide by zero from the suppressed operand, TRAPV) never happens.
     if (__builtin_expect(g_bus_error_is_address, 0))
         return;
-#endif
     // Trace all exceptions (bus errors have their own dedicated path with richer info;
     // this records generic exceptions — illegal instruction, privilege violation,
     // trace, TRAPs, FPU, interrupts, etc. — that otherwise go untracked).
@@ -973,13 +979,11 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
     // its handler may legitimately retry the instruction.
     bool addr_err = g_bus_error_is_address;
     g_bus_error_is_address = false;
-#ifndef CPU_DECODER_IS_68030
     if (addr_err) {
         // Back to the state at the fault (see m68k_raise_address_error).
         memcpy(cpu->d, g_m68k_fault_regs, sizeof g_m68k_fault_regs);
         write_ccr(cpu, g_m68k_fault_ccr);
     }
-#endif
     if (!addr_err && cpu->last_bus_error_pc != 0 && cpu->last_bus_error_pc == faulting_pc) {
         cpu->halted = 1;
         cpu->last_bus_error_pc = 0;

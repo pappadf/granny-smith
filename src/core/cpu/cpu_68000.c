@@ -6,6 +6,7 @@
 // This file defines the 68000-specific memory access macros and includes
 // the shared cpu_ops.h and cpu_decode.h templates to generate cpu_run_68000().
 
+#define CPU_DECODER_IS_68000 1 // this unit is the 68000 core: odd-address checks compile unconditionally
 #include "cpu_internal.h"
 
 #include "log.h"

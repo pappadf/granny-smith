@@ -1961,11 +1961,12 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             uint16_t _ext = FETCH16();                                                                                 \
             unsigned _cond = _ext & 0x3F;                                                                              \
             _fpu->fpiar = cpu->instruction_pc;                                                                         \
+            bool _bsun = (_cond & 0x10) && (_fpu->fpsr & FPCC_NAN);                                                    \
             bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
-            /* BSUN (a non-aware predicate on a NAN) with BSUN enabled: the                                            \
-             * exception replaces the operation, as in FBcc.  Nothing else a                                           \
+            /* BSUN raised by THIS predicate (non-aware, NAN set) with BSUN enabled:                                   \
+             * the exception replaces the operation, as in FBcc.  Nothing else a                                       \
              * conditional can raise, so stale enabled EXC bits do not trap. */                                        \
-            if ((_fpu->fpsr & FPEXC_BSUN) && (_fpu->fpcr & FPEXC_BSUN)) {                                              \
+            if (_bsun && (_fpu->fpcr & FPEXC_BSUN)) {                                                                  \
                 _fpu->fpsr |= FPACC_IOP;                                                                               \
                 fpu_check_exceptions(cpu, _fpu);                                                                       \
             } else if (_mode == 1) {                                                                                   \
@@ -2007,9 +2008,11 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             /* Pre-instruction exception check (MC68882UM §6.1.4) */                                                  \
             if (fpu_pre_instruction_check(cpu, _fpu, true))                                                            \
                 break;                                                                                                 \
+            /* BSUN raised by THIS predicate (non-aware, NAN set) and enabled: the  */                                 \
+            /* exception replaces the branch; a stale BSUN bit does not re-trap.    */                                 \
+            bool _bsun = (_cond & 0x10) && (_fpu->fpsr & FPCC_NAN);                                                    \
             bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
-            /* If BSUN enabled and fired, take exception instead of branch */                                          \
-            if ((_fpu->fpsr & FPEXC_BSUN) && (_fpu->fpcr & FPEXC_BSUN)) {                                              \
+            if (_bsun && (_fpu->fpcr & FPEXC_BSUN)) {                                                                  \
                 _fpu->fpsr |= FPACC_IOP;                                                                               \
                 fpu_check_exceptions(cpu, _fpu);                                                                       \
             } else if (_cc) {                                                                                          \
@@ -2030,9 +2033,11 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
             int32_t _disp = (int32_t)FETCH32();                                                                        \
             unsigned _cond = opcode & 0x3F;                                                                            \
             _fpu->fpiar = cpu->instruction_pc;                                                                         \
+            /* BSUN raised by THIS predicate (non-aware, NAN set) and enabled: the  */                                 \
+            /* exception replaces the branch; a stale BSUN bit does not re-trap.    */                                 \
+            bool _bsun = (_cond & 0x10) && (_fpu->fpsr & FPCC_NAN);                                                    \
             bool _cc = fpu_test_condition(_fpu, _cond);                                                                \
-            /* If BSUN enabled and fired, take exception instead of branch */                                          \
-            if ((_fpu->fpsr & FPEXC_BSUN) && (_fpu->fpcr & FPEXC_BSUN)) {                                              \
+            if (_bsun && (_fpu->fpcr & FPEXC_BSUN)) {                                                                  \
                 _fpu->fpsr |= FPACC_IOP;                                                                               \
                 fpu_check_exceptions(cpu, _fpu);                                                                       \
             } else if (_cc) {                                                                                          \
