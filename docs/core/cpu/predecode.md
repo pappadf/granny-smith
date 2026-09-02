@@ -4,7 +4,9 @@ The 68K and PowerPC cores each have two executors behind one entry point
 (`cpu_run_68000/68030/68040`, `ppc_run`): the original big-switch decoder
 (`cpu_run_*_switch`, the `while` loop in `ppc_run`) and the **predecoded
 executor** this document describes.  `predecode.enabled` selects between
-them at run time; both are always built.  Source:
+them at run time (default 1, with `predecode.elide` at 2); both are always
+built, and the switch cores remain the reference the differential rows
+compare against.  Source:
 `src/core/cpu/predecode.[ch]` (the shared page cache), `cpu_pd_run.h` /
 `cpu_pd_classify.h` / `cpu_pd_ids.h` (68K), `ppc/ppc_pd_run.h` /
 `ppc_pd_classify.h` / `ppc_pd_ids.h` (PowerPC), `scripts/gen_pd_cases.py`
@@ -69,9 +71,11 @@ wherever a handler may observe them (exceptions, the interrupt poll, the
 generic step).  Anything that can leave the page (`PD_CROSS`, branches
 out, exceptions, a `PD_GENERIC` step) goes through `relookup`, which
 finds the target block through the active read table (68K) or the fetch
-window (PowerPC) and continues; pages without a host mapping (device
-windows), logpointed pages and demoted pages run through the generic step
-one instruction at a time.
+window (PowerPC — refilled right there on a transition, so a page change
+costs an ftlb hit and a pool lookup, not a generic step) and continues;
+pages without a host mapping (device windows), logpointed pages and
+demoted pages run through the generic step one instruction at a time,
+re-trying the lookup after each step unless the pool declined the page.
 
 ### What the loop cannot see
 
@@ -106,10 +110,18 @@ Consequences the executor relies on:
   checks the block's generation and the page's entry state at every
   redispatch, so it never runs a stale entry;
 - a page that keeps being written (a stack that briefly held code, a
-  data page a handler jumped through) **demotes**: after
-  `thrash_limit` suppressed stores within `thrash_window` lookups the
-  page stops being cached for `demote_hold` allocations and its write
-  entries come back (`predecode.demotions`);
+  data page a handler jumped through, a system-heap page that mixes
+  patches with the structures they work on) **demotes**.  The rule is
+  economic: a suppressed store costs roughly `thrash_ratio` instructions'
+  worth of predecode gain, so once a page took more than `thrash_limit`
+  stores within a window of `thrash_window` page transitions AND those
+  stores times the ratio exceed the instructions the page retired in the
+  window (the executors charge retired instructions to a block at every
+  block exit, `predecode_enter`), the page goes back to the generic tier
+  for `demote_hold` page transitions and its write entries come back
+  (`predecode.demotions`).  A hot loop that stores into its own page is
+  therefore kept; a data page a handler occasionally runs through is
+  dropped quickly;
 - `memory_map_init` bumps `g_mem_map_generation`; the pool resets lazily
   on the next lookup, so a rebooted machine never sees blocks of the old
   image.
@@ -154,11 +166,21 @@ CR writes are cheap.
 predecode.enabled           RW  select the executor (also machine.cpu.predecode)
 predecode.elide             RW  0 / 1 / 2 (68K only)
 predecode.pool_cap          RW  blocks in the pool (default 2048)
-predecode.thrash_limit      RW  suppressed stores per window before a page demotes (256)
+predecode.thrash_limit      RW  suppressed stores per window before the ratio rule applies (32)
 predecode.thrash_window     RW  the window, in pool lookups (4096)
-predecode.demote_hold       RW  allocations a demoted page stays on the generic tier (256)
+predecode.thrash_ratio      RW  stores x ratio > instructions retired in the window (64)
+predecode.demote_hold       RW  page transitions a demoted page stays on the generic tier (65536)
 predecode.blocks / lookups / allocs / evictions / decodes / invalidations /
 predecode.demotions / elided / suppressed_writes                                   RO
+predecode.generic_steps (+ generic_cross / generic_declined / generic_slowmode)    RO
+predecode.relookup_nomap / relookup_nopool (+ lookup_noregion / lookup_held)      RO
+
+The generic-tier counters are the tuning view: `generic_steps` is every
+instruction that ran through the one-instruction step executor, split by
+cause (a page-straddling entry, a declined shape, the executor's own slow
+mode), and the relookup counters say why a page transition found no
+block (no fast-path read entry yet, or the pool declined: no code region,
+or demoted and held).
 predecode.hist [top]        print the most-decoded ids with names (68K and PPC)
 predecode.reset             drop every block (the next lookup re-decodes)
 ```

@@ -70,6 +70,7 @@ HD_MARATHON="$TEST_DATA/apps/marathon_8_24gc.img"
 row plus "$TEST_DATA/roms/plus-v3-4d1f8172.rom" plus.script 3 0 1 2 -- --var FD="$FD_608"
 row iicx "$TEST_DATA/roms/iix-iicx-se30-97221136.rom" iicx.script 3 0 2 -- --var HD="$HD_MARATHON"
 row pdm "$TEST_DATA/roms/pm6100-pm7100-pm8100-9feb69b3.rom" pdm.script 3 0 --
+row tnt "$TEST_DATA/roms/pm7500-pm8500-pm9500-96cd923d.rom" tnt.script 3 0 --
 
 if [ "$fail" -ne 0 ]; then
     echo "predecode differential: FAILED"

@@ -337,7 +337,26 @@ TEST(test_demotion) {
     ASSERT_EQ_INT(20, (int)cpu_get_dn(CPU, 0));
     ASSERT_EQ_INT(20, memory_read_uint16(0x7800));
     ASSERT_TRUE(g_pd_stats.demotions >= 1);
-    predecode_set_thrash(256, 4096, 256);
+    predecode_set_thrash(32, 4096, 65536);
+    predecode_set_enabled(false);
+}
+
+// A one-word instruction in a page's last slot falls through to the next
+// page: the sentinel entry past the last slot hands over to the next block
+// (an entry decoded there would index the raw shadow out of bounds).
+TEST(test_page_end) {
+    predecode_set_enabled(true);
+    predecode_reset();
+    emit(0x1FFC, 2, 0x4E71, 0x4E71); // NOP; NOP (the last word of page 1)
+    emit(0x2000, 2, 0x7005, 0x60FE); // MOVEQ #5,D0; BRA.S self
+    reset_cpu(0x1FFC);
+    run(3, 3);
+    ASSERT_EQ_INT(5, (int)cpu_get_dn(CPU, 0));
+    ASSERT_EQ_INT(0x2002, (int)cpu_get_pc(CPU));
+    pd_block_t *blk = block_of(1);
+    ASSERT_TRUE(blk != NULL);
+    ASSERT_EQ_INT(PD_PAGE_END, blk->e[PD_ENTRIES_68K].id);
+    ASSERT_TRUE(block_of(2) != NULL);
     predecode_set_enabled(false);
 }
 
@@ -416,6 +435,7 @@ int main(void) {
     RUN(test_logpoint_page);
     RUN(test_eviction);
     RUN(test_demotion);
+    RUN(test_page_end);
     RUN(test_generation_reset);
     test_harness_destroy(CTX);
     printf("[PASS] All cpu_predecode tests passed\n");

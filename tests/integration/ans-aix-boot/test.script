@@ -70,6 +70,7 @@ def aix_boot() {
     # exactly that.
     machine.board.clear_nvram()
     machine.boot model="ans500" ram=524288 rom="${$ROM}"
+    let t0 = scheduler.host_user_ns
     machine.board.keyswitch = "service"
     assert machine.board.keyswitch == "service" "the front keyswitch did not take the Service position"
 
@@ -189,6 +190,9 @@ def aix_boot() {
     # disc it read them from.
     assert machine.scsi.device[0].type == "cdrom" "S10: the Install CD went away under AIX"
 
+    # Phase 0 throughput floor of the predecoded-cores proposal (604
+    # interpreter through Open Firmware and the AIX kernel; coarse).
+    mips_floor("ans-aix-boot", $t0, 15)
     echo "ans-aix-boot: AIX configures both SCSI adapters and the disc, restores the base device information, and the BOS install asks for its console — LCD 890, 868, 723, 512, c31 (rung S11)"
 }
 

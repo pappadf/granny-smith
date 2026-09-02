@@ -9,7 +9,9 @@
 # verbatim into a few structs; the host-side storage bookkeeping).
 #
 # Rows: plus (68000, System 6.0.8 floppy), iicx (68030 + PMMU, System 6 HD
-# with Marathon), pdm (PowerPC 601, the 6100 ROM boot to the SCSI-scan wall).
+# with Marathon), pdm (PowerPC 601, the 6100 ROM boot to the SCSI-scan wall),
+# tnt (PowerPC 604, the 7500 ROM boot through Open Firmware and POST — the
+# row whose ROM first ran an instruction off the end of a page).
 
 TEST_NAME := Predecode differential checkpoints
 TEST_DESC := Switch core vs predecoded core: byte-identical guest state at fixed instruction counts

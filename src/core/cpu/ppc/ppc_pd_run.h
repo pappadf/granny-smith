@@ -157,9 +157,18 @@ top:
             goto redispatch;
 
         case PD_CROSS:
-        case PD_GENERIC:
+            g_pd_stats.generic_cross++;
             p->pc = ipc;
             goto t2_step;
+        case PD_GENERIC:
+            g_pd_stats.generic_declined++;
+            p->pc = ipc;
+            goto t2_step;
+
+        case PD_PAGE_END:
+            // Fell off the page: no instruction ran; continue on the next page.
+            p->pc = ipc;
+            goto relookup;
 
             // ---- T0: register arithmetic and logic ----
             PPD_PAIR(PPD_ADD, PPD_B_ADD)
@@ -333,6 +342,7 @@ retire_relookup:
 
 t2_step:
     // Generic tier: the switch loop's iteration, verbatim.
+    g_pd_stats.generic_steps++;
     {
         p->instruction_pc = p->pc;
         ipc = p->pc;
@@ -362,17 +372,36 @@ relookup:
         // materializes from the cursor only while a block is current).
         blk = NULL;
         page_lo = pc & ~(uint32_t)PAGE_MASK;
+        predecode_enter(NULL, *instructions); // charge the page being left
         if (*instructions == 0)
             goto done;
-        if (!generic_only && !(pc & 3u) && (pc - g_ppc_fetch.lo) < g_ppc_fetch.span &&
-            g_ppc_fetch.span == MEM_PAGE_SIZE) {
-            if (!g_ppc_fetch.blk)
-                g_ppc_fetch.blk = predecode_lookup((uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo), PD_ARCH_PPC);
-            blk = g_ppc_fetch.blk;
-            page_lo = g_ppc_fetch.lo;
-            if (blk) {
-                cur = blk->e + ((pc - page_lo) >> 2);
-                goto top;
+        if (!generic_only && !(pc & 3u)) {
+            if ((pc - g_ppc_fetch.lo) >= g_ppc_fetch.span) {
+                // The window belongs to the page being left: refill it here
+                // (an ftlb hit for a page seen before) rather than through a
+                // generic step — the transition is the common case.
+                g_pd_stats.relookup_nomap++;
+                uint32_t iw;
+                p->instruction_pc = pc;
+                if (!ppc_fetch_fill(p, pc, &iw))
+                    goto relookup; // ISI raised; pc now at the vector
+                if (__builtin_expect(g_bus_error_pending, 0)) {
+                    ipc = pc;
+                    goto done; // fetch faulted; the epilogue delivers it
+                }
+            }
+            if ((pc - g_ppc_fetch.lo) < g_ppc_fetch.span && g_ppc_fetch.span == MEM_PAGE_SIZE) {
+                if (!g_ppc_fetch.blk)
+                    g_ppc_fetch.blk =
+                        predecode_lookup((uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo), PD_ARCH_PPC);
+                blk = g_ppc_fetch.blk;
+                page_lo = g_ppc_fetch.lo;
+                if (blk) {
+                    predecode_enter(blk, *instructions);
+                    cur = blk->e + ((pc - page_lo) >> 2);
+                    goto top;
+                }
+                g_pd_stats.relookup_nopool++;
             }
         }
         // No window for this page yet, a device window, a logpointed or
@@ -387,6 +416,7 @@ done:
     if (blk)
         p->pc = page_lo + ((uint32_t)(cur - blk->e) << 2);
     p->instruction_pc = ipc;
+    predecode_enter(NULL, *instructions);
     // Deferred data/fetch fault → machine check (the switch loop's epilogue).
     if (__builtin_expect(g_bus_error_pending, 0)) {
         g_bus_error_pending = false;

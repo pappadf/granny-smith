@@ -24,12 +24,14 @@ LOG_USE_CATEGORY_NAME("predecode");
 
 // === Switches and tunables ===
 
-static bool g_pd_enabled = false; // flipped to the predecoded executors once Phase C clears its gate
-static int g_pd_elide = 0; // flag-liveness elision level (68K); set with the E1/E2 milestones
+static bool g_pd_enabled = true; // the predecoded executors (predecode.enabled=0: the switch cores)
+static int g_pd_elide = 2; // flag-liveness elision level (68K): E2
 static uint32_t g_pd_pool_cap = 2048; // blocks (16 KB of 68K entries + 4 KB shadow each)
-static uint32_t g_pd_thrash_limit = 256; // stores into one page within the window → demote
+static uint32_t g_pd_thrash_limit = 32; // stores into one page within the window before the ratio rule applies
 static uint32_t g_pd_thrash_window = 4096; // the window, in pool lookups (page transitions)
-static uint32_t g_pd_demote_hold = 256; // allocations a demoted page stays on the generic tier
+static uint32_t g_pd_demote_hold = 65536; // pool lookups (page transitions) a demoted page stays on the generic tier
+static uint32_t g_pd_thrash_ratio = 64; // stores × ratio > instructions retired from the page → demote
+pd_block_t *g_pd_current = NULL;
 
 // === Pool state ===
 
@@ -57,6 +59,7 @@ static uint32_t g_pd_seq = 0; // allocation sequence
 // Per code region: page → block slot, and the demotion stamp per page.
 static pd_block_t **g_pd_slots[MEM_CODE_REGIONS_MAX];
 static uint32_t *g_pd_demoted[MEM_CODE_REGIONS_MAX];
+static uint8_t *g_pd_demote_count[MEM_CODE_REGIONS_MAX]; // demotions so far per page: the hold backs off
 static uint32_t g_pd_slot_pages[MEM_CODE_REGIONS_MAX];
 static uint32_t g_pd_generation = 0; // g_mem_map_generation the slots belong to
 
@@ -76,10 +79,14 @@ void predecode_set_elide(int level) {
     g_pd_elide = level < 0 ? 0 : level > 2 ? 2 : level;
 }
 
-void predecode_set_thrash(uint32_t limit, uint32_t window_lookups, uint32_t demote_hold_allocs) {
+void predecode_set_thrash(uint32_t limit, uint32_t window_lookups, uint32_t demote_hold_lookups) {
     g_pd_thrash_limit = limit;
     g_pd_thrash_window = window_lookups;
-    g_pd_demote_hold = demote_hold_allocs;
+    g_pd_demote_hold = demote_hold_lookups;
+}
+
+void predecode_set_thrash_ratio(uint32_t ratio) {
+    g_pd_thrash_ratio = ratio;
 }
 
 // Forget the per-region slot tables (the regions they index are gone).
@@ -87,8 +94,10 @@ static void slots_reset(void) {
     for (int r = 0; r < MEM_CODE_REGIONS_MAX; r++) {
         free(g_pd_slots[r]);
         free(g_pd_demoted[r]);
+        free(g_pd_demote_count[r]);
         g_pd_slots[r] = NULL;
         g_pd_demoted[r] = NULL;
+        g_pd_demote_count[r] = NULL;
         g_pd_slot_pages[r] = 0;
     }
 }
@@ -100,11 +109,14 @@ static bool slots_ensure(int r) {
     uint32_t pages = (uint32_t)((g_mem_code_regions[r].size + MEM_PAGE_SIZE - 1) >> PAGE_SHIFT);
     g_pd_slots[r] = (pd_block_t **)calloc(pages, sizeof(pd_block_t *));
     g_pd_demoted[r] = (uint32_t *)calloc(pages, sizeof(uint32_t));
-    if (!g_pd_slots[r] || !g_pd_demoted[r]) {
+    g_pd_demote_count[r] = (uint8_t *)calloc(pages, sizeof(uint8_t));
+    if (!g_pd_slots[r] || !g_pd_demoted[r] || !g_pd_demote_count[r]) {
         free(g_pd_slots[r]);
         free(g_pd_demoted[r]);
+        free(g_pd_demote_count[r]);
         g_pd_slots[r] = NULL;
         g_pd_demoted[r] = NULL;
+        g_pd_demote_count[r] = NULL;
         return false;
     }
     g_pd_slot_pages[r] = pages;
@@ -121,6 +133,8 @@ static void block_detach(pd_block_t *blk) {
     memory_code_page_unmark(blk->host);
     blk->host = NULL;
     blk->thrashed = false;
+    if (g_pd_current == blk)
+        g_pd_current = NULL;
     if (g_pd_blocks_live)
         g_pd_blocks_live--;
 }
@@ -136,6 +150,7 @@ void predecode_reset(void) {
     slots_reset();
     g_pd_pool_next = 0;
     g_pd_blocks_live = 0;
+    g_pd_current = NULL;
     memset(&g_pd_stats, 0, sizeof(g_pd_stats));
     for (int a = 0; a < 2; a++)
         if (g_pd_hist[a])
@@ -192,8 +207,10 @@ pd_block_t *predecode_lookup(uint8_t *host_page, pd_arch_t arch) {
     g_pd_stats.lookups++;
     uint32_t page;
     int r = memory_code_region_of(host_page, &page);
-    if (r < 0)
+    if (r < 0) {
+        g_pd_stats.lookup_noregion++;
         return NULL; // device window, card VRAM, declaration ROM: generic tier
+    }
     if (!g_pd_slots[r] && !slots_ensure(r))
         return NULL;
     if (page >= g_pd_slot_pages[r])
@@ -203,15 +220,22 @@ pd_block_t *predecode_lookup(uint8_t *host_page, pd_arch_t arch) {
         if (__builtin_expect(blk->thrashed, 0)) {
             // Demote: the page mixes hot stores with code — back to the
             // generic tier (today's speed) until the hold expires.
-            g_pd_demoted[r][page] = g_pd_seq + g_pd_demote_hold;
+            // The hold doubles with every demotion of the same page (a page
+            // that keeps coming back and thrashing is a data page).
+            uint8_t n = g_pd_demote_count[r] ? g_pd_demote_count[r][page] : 0;
+            g_pd_demoted[r][page] = (uint32_t)g_pd_stats.lookups + (g_pd_demote_hold << (n < 8 ? n : 8));
+            if (g_pd_demote_count[r] && n < 255)
+                g_pd_demote_count[r][page] = n + 1;
             block_detach(blk);
             g_pd_stats.demotions++;
             return NULL;
         }
         return blk;
     }
-    if (g_pd_demoted[r][page] > g_pd_seq)
-        return NULL; // still held on the generic tier
+    if ((uint32_t)g_pd_stats.lookups - g_pd_demoted[r][page] > 0x80000000u) {
+        g_pd_stats.lookup_held++;
+        return NULL; // still held on the generic tier (hold expiry ahead of the lookup count)
+    }
     blk = block_take();
     if (!blk)
         return NULL;
@@ -221,10 +245,15 @@ pd_block_t *predecode_lookup(uint8_t *host_page, pd_arch_t arch) {
     blk->seq = ++g_pd_seq;
     blk->writes = 0;
     blk->write_window = (uint32_t)g_pd_stats.lookups;
+    blk->execs = 0;
+    blk->enter_budget = 0;
     blk->arch = (uint32_t)arch;
     blk->thrashed = false;
     // All entries undecoded; the raw shadow is filled as entries decode.
+    // The sentinel past the last entry catches a straight-line fall-through
+    // off the page (an entry there would index the shadow out of bounds).
     memset(blk->e, 0, sizeof(blk->e));
+    blk->e[arch == PD_ARCH_PPC ? PD_ENTRIES_PPC : PD_ENTRIES_68K].id = PD_PAGE_END;
     g_pd_slots[r][page] = blk;
     memory_code_page_mark(host_page); // suppress the page's write entries
     g_pd_stats.allocs++;
@@ -272,11 +301,20 @@ void predecode_invalidate_host(const uint8_t *host, uint32_t len) {
     // transitions.  The page keeps its block until the CPU's next lookup
     // (its executor may be running from it right now).
     uint32_t now = (uint32_t)g_pd_stats.lookups;
+    uint32_t budget = g_bus_error_instr_ptr ? *g_bus_error_instr_ptr : 0;
     if (now - blk->write_window > g_pd_thrash_window) {
         blk->write_window = now; // a fresh window starts at this store
         blk->writes = 0;
+        blk->execs = 0;
+        if (blk == g_pd_current)
+            blk->enter_budget = budget;
     }
-    if (++blk->writes > g_pd_thrash_limit)
+    // Instructions retired from the page this window, including the ones
+    // of the current visit (the executor may be storing into its own page).
+    uint32_t execs = blk->execs;
+    if (blk == g_pd_current)
+        execs += blk->enter_budget - budget;
+    if (++blk->writes > g_pd_thrash_limit && (uint64_t)blk->writes * g_pd_thrash_ratio > execs)
         blk->thrashed = true;
 }
 
@@ -343,6 +381,15 @@ enum {
     PDA_DEMOTIONS,
     PDA_ELIDED,
     PDA_SUPPRESSED_WRITES,
+    PDA_THRASH_RATIO,
+    PDA_GENERIC_STEPS,
+    PDA_GENERIC_CROSS,
+    PDA_GENERIC_DECLINED,
+    PDA_GENERIC_SLOWMODE,
+    PDA_RELOOKUP_NOMAP,
+    PDA_RELOOKUP_NOPOOL,
+    PDA_LOOKUP_NOREGION,
+    PDA_LOOKUP_HELD,
 };
 
 static value_t pd_attr_get(struct object *self, const member_t *m) {
@@ -374,6 +421,24 @@ static value_t pd_attr_get(struct object *self, const member_t *m) {
         return val_uint(8, g_pd_stats.elided);
     case PDA_SUPPRESSED_WRITES:
         return val_uint(8, g_mem_code_write_count);
+    case PDA_THRASH_RATIO:
+        return val_uint(4, g_pd_thrash_ratio);
+    case PDA_GENERIC_STEPS:
+        return val_uint(8, g_pd_stats.generic_steps);
+    case PDA_GENERIC_CROSS:
+        return val_uint(8, g_pd_stats.generic_cross);
+    case PDA_GENERIC_DECLINED:
+        return val_uint(8, g_pd_stats.generic_declined);
+    case PDA_GENERIC_SLOWMODE:
+        return val_uint(8, g_pd_stats.generic_slowmode);
+    case PDA_RELOOKUP_NOMAP:
+        return val_uint(8, g_pd_stats.relookup_nomap);
+    case PDA_RELOOKUP_NOPOOL:
+        return val_uint(8, g_pd_stats.relookup_nopool);
+    case PDA_LOOKUP_NOREGION:
+        return val_uint(8, g_pd_stats.lookup_noregion);
+    case PDA_LOOKUP_HELD:
+        return val_uint(8, g_pd_stats.lookup_held);
     default:
         return val_err("unknown predecode attribute");
     }
@@ -395,6 +460,9 @@ static value_t pd_attr_set(struct object *self, const member_t *m, value_t in) {
         return val_none();
     case PDA_DEMOTE_HOLD:
         g_pd_demote_hold = (uint32_t)in.u;
+        return val_none();
+    case PDA_THRASH_RATIO:
+        g_pd_thrash_ratio = (uint32_t)in.u;
         return val_none();
     default:
         return val_err("read-only predecode attribute");
@@ -477,7 +545,9 @@ static const member_t predecode_members[] = {
     PD_ATTR_RW("pool_cap", PDA_POOL_CAP, "maximum blocks in the pool (setting it drops every block)"),
     PD_ATTR_RW("thrash_limit", PDA_THRASH_LIMIT, "stores into one code page within thrash_window before it is demoted"),
     PD_ATTR_RW("thrash_window", PDA_THRASH_WINDOW, "the demotion window, in page transitions"),
-    PD_ATTR_RW("demote_hold", PDA_DEMOTE_HOLD, "allocations a demoted page stays on the generic tier"),
+    PD_ATTR_RW("demote_hold", PDA_DEMOTE_HOLD, "page transitions a demoted page stays on the generic tier"),
+    PD_ATTR_RW("thrash_ratio", PDA_THRASH_RATIO,
+               "demote when stores x ratio exceed the instructions the page retired in the window"),
     PD_ATTR_RO("blocks", PDA_BLOCKS, "blocks currently holding a code page"),
     PD_ATTR_RO("lookups", PDA_LOOKUPS, "page transitions that consulted the pool"),
     PD_ATTR_RO("allocs", PDA_ALLOCS, "blocks allocated"),
@@ -486,6 +556,14 @@ static const member_t predecode_members[] = {
     PD_ATTR_RO("invalidations", PDA_INVALIDATIONS, "stores that reset at least one cached entry"),
     PD_ATTR_RO("demotions", PDA_DEMOTIONS, "blocks released for thrashing"),
     PD_ATTR_RO("elided", PDA_ELIDED, "entries retargeted to a no-flags twin"),
+    PD_ATTR_RO("generic_steps", PDA_GENERIC_STEPS, "instructions run through the generic tier"),
+    PD_ATTR_RO("generic_cross", PDA_GENERIC_CROSS, "...of which page-straddling instructions"),
+    PD_ATTR_RO("generic_declined", PDA_GENERIC_DECLINED, "...of which shapes the classifier declined"),
+    PD_ATTR_RO("generic_slowmode", PDA_GENERIC_SLOWMODE, "...of which the executor's slow mode (post-fault, trace)"),
+    PD_ATTR_RO("relookup_nomap", PDA_RELOOKUP_NOMAP, "page transitions with no fast-path read entry for the PC"),
+    PD_ATTR_RO("relookup_nopool", PDA_RELOOKUP_NOPOOL, "page transitions the pool declined (no region, held, full)"),
+    PD_ATTR_RO("lookup_noregion", PDA_LOOKUP_NOREGION, "...of which the host page lies in no code region"),
+    PD_ATTR_RO("lookup_held", PDA_LOOKUP_HELD, "...of which the page is demoted and held"),
     PD_ATTR_RO("suppressed_writes", PDA_SUPPRESSED_WRITES,
                "guest stores that hit a code page (slow path + invalidate)"),
     {.kind = M_METHOD,

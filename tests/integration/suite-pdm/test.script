@@ -101,6 +101,7 @@ def bart_exists() {
 
 # Shared post-boot facts + the two goldens for one model row.
 def pdm_75_row(model, ram_kb, boxflag, want_bart) {
+    let t0 = scheduler.host_user_ns
     boot_pdm_75($model, $ram_kb)
     assert machine.id == $model "${$model}: machine.id != ${$model}"
     assert machine.ram == $ram_kb "${$model}: machine.ram != ${$ram_kb}"
@@ -119,6 +120,9 @@ def pdm_75_row(model, ram_kb, boxflag, want_bart) {
     # About This Macintosh: the Gestalt machine name end-to-end.
     about_box()
     check_ex("goldens/${$model}-7.5-640x480-about.png", 0, 440, 20, 640)
+    # Phase 0 throughput floor of the predecoded-cores proposal: the 601
+    # interpreter under the 68K emulator, MMU on (coarse, well below healthy).
+    mips_floor("${$model}-75-hd", $t0, 10)
     report_row("7.5", "ariel", "hd-boot 53c96 about")
     report_perf("suite-pdm/${$model}-75-hd", scheduler.instr_count)
 }

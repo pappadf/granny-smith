@@ -970,6 +970,7 @@ void PD_RUN_NAME(cpu_t *restrict cpu, uint32_t *instructions) {
             *instructions = 1;
 #endif
     pd_block_t *blk = NULL; // the block of the page being executed (NULL: generic tier)
+    bool pd_held = false; // the current uncached page was declined by the pool (stay generic until it changes)
     pd_entry_t *cur = NULL; // the entry to dispatch next
     uint32_t page_lo = 1; // guest address of the page (odd: no page yet)
     uint32_t ipc = cpu->instruction_pc; // address of the instruction being dispatched
@@ -981,6 +982,7 @@ top:
         goto done;
     ipc = page_lo + ((uint32_t)(cur - blk->e) << 1);
     if (__builtin_expect(pd_slow, 0)) {
+        g_pd_stats.generic_slowmode++;
         cpu->pc = ipc;
         goto t2_step;
     }
@@ -1003,11 +1005,23 @@ top:
             goto redispatch;
 
         case PD_CROSS:
-        case PD_GENERIC:
-            // Generic tier: give the slot back, the T2 path takes it after its fetch.
+            g_pd_stats.generic_cross++;
             (*instructions)++;
             cpu->pc = ipc;
             goto t2_step;
+        case PD_GENERIC:
+            // Generic tier: give the slot back, the T2 path takes it after its fetch.
+            g_pd_stats.generic_declined++;
+            (*instructions)++;
+            cpu->pc = ipc;
+            goto t2_step;
+
+        case PD_PAGE_END:
+            // Fell off the page (a one-word instruction in the last slot):
+            // no instruction ran; continue on the next page.
+            (*instructions)++;
+            cpu->pc = ipc;
+            goto relookup;
 
             // ---- T0: MOVE ----
             PD_MV_SIZE(B, 8)
@@ -1426,6 +1440,7 @@ top:
 t2_step:
     // Generic tier: the switch core's per-instruction prologue, the one-
     // instruction executor, and a relookup from wherever the PC went.
+    g_pd_stats.generic_steps++;
     {
 #ifndef CPU_DECODER_IS_68030
         cpu->pc &= 0x00FFFFFFu; // 24-bit address bus (see cpu_68000.c)
@@ -1463,19 +1478,30 @@ relookup:
             cur = blk->e + ((pc - page_lo) >> 1);
             goto top; // same block, no memory access
         }
-        if (!blk && ((pc ^ page_lo) & ~(uint32_t)PAGE_MASK) == 0)
-            goto t2_loop; // still on an uncached page
+        if (!blk && pd_held && ((pc ^ page_lo) & ~(uint32_t)PAGE_MASK) == 0)
+            goto t2_loop; // still on a page the pool declined (demoted, held, no region)
         blk = NULL;
+        pd_held = false;
         page_lo = pc & ~(uint32_t)PAGE_MASK;
         if (!(pc & 1u)) {
             uintptr_t base = g_active_read[pc >> PAGE_SHIFT];
             if (base != 0) {
                 blk = predecode_lookup((uint8_t *)(base + page_lo), PD_ARCH_68K);
-                if (blk) {
-                    cur = blk->e + ((pc & PAGE_MASK) >> 1);
-                    goto top;
+                if (!blk) {
+                    g_pd_stats.relookup_nopool++;
+                    pd_held = true;
                 }
+            } else {
+                // No fast-path read entry yet (MMU page not walked, or a
+                // device window): the generic step's fetch fills it, and
+                // the next relookup finds the page — so no t2_loop shortcut.
+                g_pd_stats.relookup_nomap++;
             }
+        }
+        predecode_enter(blk, *instructions); // charge the page being left, open the new one
+        if (blk) {
+            cur = blk->e + ((pc & PAGE_MASK) >> 1);
+            goto top;
         }
         // Uncached (device window, logpointed, demoted) or an odd PC: the
         // generic tier until the page changes.
@@ -1490,6 +1516,7 @@ done:
     if (blk)
         cpu->pc = page_lo + ((uint32_t)(cur - blk->e) << 1);
     cpu->instruction_pc = ipc;
+    predecode_enter(NULL, *instructions);
     // --- sprint exit: the switch core's epilogue ---
 #ifdef CPU_DECODER_IS_68030
     if (__builtin_expect(g_bus_error_pending, 0)) {

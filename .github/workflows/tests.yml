@@ -130,6 +130,14 @@ jobs:
         run: |
           make -C tests/unit run
 
+      # The same suites through the other executor: the predecoded cores are
+      # the default (docs/core/cpu/predecode.md), CPU_TEST_PREDECODE=0 routes
+      # the conformance vectors through the switch cores that remain the
+      # reference and the predecode.enabled=0 fallback.
+      - name: Run unit tests (CPU, switch cores)
+        run: |
+          CPU_TEST_PREDECODE=0 make -C tests/unit run
+
       # Integration and e2e tests require proprietary test data.
       #
       # §5.4 tiers: unit is seconds, matrix is the per-machine boot suites,
