@@ -26,9 +26,10 @@ MEMBERS = ("68000", "68030", "68040")
 
 def load_exclusions(path):
     """Parse `<member> <kind> <value> -- <reason>` lines; kind is
-    `exception` (drop vectors whose exception name matches), `file`
-    (drop the mnemonic's whole file) or `prefix` (every file whose
-    mnemonic starts with the value)."""
+    `exception` (drop vectors whose exception name matches), `normal`
+    (drop the mnemonic's vectors that raise no exception), `file` (drop
+    the mnemonic's whole file) or `prefix` (every file whose mnemonic
+    starts with the value)."""
     rules = []
     with open(path) as f:
         for lineno, raw in enumerate(f, 1):
@@ -37,8 +38,8 @@ def load_exclusions(path):
                 continue
             head, _, reason = line.partition("--")
             parts = head.split()
-            if len(parts) != 3 or parts[1] not in ("exception", "file", "prefix"):
-                sys.exit(f"{path}:{lineno}: expected '<member> exception|file|prefix <value> -- <reason>'")
+            if len(parts) != 3 or parts[1] not in ("exception", "normal", "file", "prefix"):
+                sys.exit(f"{path}:{lineno}: expected '<member> exception|normal|file|prefix <value> -- <reason>'")
             rules.append({"member": parts[0], "kind": parts[1], "value": parts[2],
                           "reason": reason.strip(), "files": 0, "vectors": 0, "line": lineno})
     return rules
@@ -56,18 +57,22 @@ def file_rule(rules, member, mnemonic):
     return None
 
 
-def exception_rule(rules, member, mnemonic, vector):
-    """The first exception rule matching this vector's outcome, or None.
-    A rule value of `mnemonic/exception` applies to that file only."""
+def vector_rule(rules, member, mnemonic, vector):
+    """The first vector-level rule matching this vector's outcome, or None:
+    an `exception` rule names the exception (`mnemonic/exception` scopes
+    it to that file); a `normal` rule names the file whose exception-free
+    vectors are dropped."""
     exc = vector.get("exception")
-    if not exc:
-        return None
     for r in rules:
-        if r["member"] != member or r["kind"] != "exception":
+        if r["member"] != member:
             continue
-        scope, _, name = r["value"].rpartition("/")
-        if name == exc.get("name") and (not scope or scope == mnemonic):
-            return r
+        if r["kind"] == "normal":
+            if not exc and r["value"] == mnemonic:
+                return r
+        elif r["kind"] == "exception" and exc:
+            scope, _, name = r["value"].rpartition("/")
+            if name == exc.get("name") and (not scope or scope == mnemonic):
+                return r
     return None
 
 
@@ -101,7 +106,7 @@ def main():
                 continue
             kept = []
             for v in doc["vectors"]:
-                rule = exception_rule(rules, member, mnemonic, v)
+                rule = vector_rule(rules, member, mnemonic, v)
                 if rule:
                     rule["vectors"] += 1
                 else:

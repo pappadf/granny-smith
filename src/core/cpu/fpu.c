@@ -663,15 +663,23 @@ int fpu_frestore(fpu_state_t *fpu, uint32_t addr) {
     if (version != 0 && !((version == FSAVE_VERSION || version == FSAVE_VERSION_ALT) && size == FSAVE_IDLE_SIZE))
         return -1;
     if (version == 0) {
-        // Null frame: "equivalent to a hardware reset of the FPCP" (§6.4.3,
-        // FRESTORE): the programmer's model goes to the reset state — NaNs in
-        // FP0-FP7, zeros in FPCR/FPSR/FPIAR — whether or not the FPU had been
-        // used since the last reset.
-        for (int i = 0; i < 8; i++)
-            fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
-        fpu->fpcr = 0;
-        fpu->fpsr = 0;
-        fpu->fpiar = 0;
+        // Null frame: "a restore of the null state performs the reset
+        // function" (§6.4.2.1) -- but only from the idle/busy phase.  Once
+        // the FPCP is in the reset phase (hardware reset, a null restore, or
+        // an FSAVE, which leaves no instruction state behind) a null restore
+        // leaves the programmer's model alone: Apple's MacTest diagnostic
+        // (IIcx/IIci) does FREM; FSAVE; FRESTORE <null>; FRESTORE <idle
+        // frame> and expects FP0 to still hold the FREM result on a real
+        // 68882, and the 68882 idle frame carries no data registers to bring
+        // it back.  The m68k-sail model resets unconditionally (its FSAVE
+        // always writes a null frame); see the m68k_vectors exclusions.
+        if (fpu->initialized) {
+            for (int i = 0; i < 8; i++)
+                fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
+            fpu->fpcr = 0;
+            fpu->fpsr = 0;
+            fpu->fpiar = 0;
+        }
         fpu->pre_exc_mask = 0;
         fpu->exceptional_operand = FP80_ZERO;
         fpu->initialized = false;
@@ -725,12 +733,15 @@ int fpu_frestore040(fpu_state_t *fpu, uint32_t addr) {
     if (version != 0 && !(version == 0x41 && (size == 0x00 || size == 0x30 || size == 0x60)))
         return -1;
     if (version == 0) {
-        // Null frame: the reset state, unconditionally (as on the 6888x path).
-        for (int i = 0; i < 8; i++)
-            fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
-        fpu->fpcr = 0;
-        fpu->fpsr = 0;
-        fpu->fpiar = 0;
+        // Null frame: the reset state, from the idle/busy phase only (same
+        // discipline and evidence as the 6888x path above).
+        if (fpu->initialized) {
+            for (int i = 0; i < 8; i++)
+                fpu->fp[i] = (float80_reg_t){0x7FFF, 0xFFFFFFFFFFFFFFFFULL};
+            fpu->fpcr = 0;
+            fpu->fpsr = 0;
+            fpu->fpiar = 0;
+        }
         fpu->pre_exc_mask = 0;
         fpu->exceptional_operand = FP80_ZERO;
         fpu->initialized = false;

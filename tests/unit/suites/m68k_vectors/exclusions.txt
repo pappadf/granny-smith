@@ -5,6 +5,7 @@
 #
 #   <member> exception <name>   -- drop vectors whose outcome is that exception
 #   <member> exception <mnemonic>/<name> -- the same, in that mnemonic's file only
+#   <member> normal <mnemonic>  -- drop the mnemonic's vectors that raise no exception
 #   <member> file <mnemonic>    -- drop the mnemonic's whole file
 #   <member> prefix <text>      -- drop every mnemonic starting with the text
 #
@@ -30,12 +31,14 @@
 68030 file fsglmul -- as fsgldiv (FPSR accrued bits)
 68030 file fcmp   -- packed-decimal source conversion
 68030 file fintrz -- packed-decimal source conversion
+68030 normal frestore -- (no such vector in the smoke tier; two in a generated tier) null-frame restore: the model resets FP0-FP7/FPCR/FPSR/FPIAR unconditionally; the core only from the idle/busy phase, as a real 68882 does (Apple's MacTest: FREM; FSAVE; FRESTORE <null>; FRESTORE <idle> keeps FP0), and the model's FSAVE always writes a null frame, i.e. its vectors start in the reset phase (note item 20)
 
 # --- 68040 ---------------------------------------------------------------
 68040 exception line-1111 -- deliberate: the FP instructions the 68040 leaves to the FPSP (transcendentals, FMOVECR, FINT/FINTRZ, FSCALE, FMOD/FREM, FGETEXP/FGETMAN, FSINCOS) are computed in-line instead of taking the unimplemented-instruction exception (faster, and independent of the guest OS installing its FPSP; decision 2026-09-02)
 68040 exception fp-unimplemented-data-type -- deliberate: packed-decimal and denormalized/unnormalized operands are handled in-line instead of taking the unimplemented-data-type exception (as above)
 68040 prefix fs   -- the 68040's single-rounded FSxxx opcodes are incompletely implemented (results not rounded to single, some forms not executed)
 68040 prefix fd   -- the 68040's double-rounded FDxxx opcodes: as FSxxx
+68040 normal frestore -- as the 68030 null-frame rule
 68040 file fmove  -- FMOVE.D to memory of a value that denormalizes in double precision
 68040 file bfffo  -- register-offset form: the core writes the full 32-bit offset plus position to Dn, the model the offset modulo 32 (its CHOICE_bf_reg_offset_mod_32; MAME agrees with the model)
 68040 file cas2   -- duplicated compare/update registers (Dc1 = Dc2, Du1 = Du2): update ordering (the model ends with operand 1, the core and MAME with operand 2)
