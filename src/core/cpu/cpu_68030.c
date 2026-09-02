@@ -514,6 +514,7 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         uint16_t opcode = fetch >> 16;                                                                                 \
         uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         cpu->instruction_pc = cpu->pc;                                                                                 \
+        pd_dbg_trace(cpu, cpu->pc);                                                                                    \
         /* Double-fault tracking: a bus error on an instruction fetch leaves                                           \
          * last_bus_error_pc set so a retry at the SAME PC can be detected as                                          \
          * a true double fault.  The value must be cleared once the CPU has                                            \

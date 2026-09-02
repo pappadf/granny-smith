@@ -1022,6 +1022,37 @@ static __attribute__((noinline, cold)) void exception_bus_error(cpu_t *restrict 
 // Check if a pending interrupt should be serviced.  Level 7 is non-maskable on
 // the 68000 (taken even when the interrupt mask is 7) — the Lisa's parity-error
 // NMI relies on this; levels 1-6 are gated by the mask as usual.
+// TEMPORARY divergence probe: PD_TRACE_FROM=<instr> PD_TRACE_FILE=<path> dumps
+// pc + registers per instruction once the live instruction count passes FROM.
+#include <stdio.h>
+#include <stdlib.h>
+uint64_t cpu_instr_count(void);
+static inline void pd_dbg_trace(cpu_t *restrict cpu, uint32_t pc) {
+    static int armed = -1;
+    static uint64_t from;
+    static FILE *f;
+    static int lines;
+    if (armed < 0) {
+        const char *e = getenv("PD_TRACE_FROM");
+        armed = e ? 1 : 0;
+        if (armed) {
+            from = strtoull(e, NULL, 10);
+            f = fopen(getenv("PD_TRACE_FILE") ? getenv("PD_TRACE_FILE") : "pd-trace.txt", "w");
+        }
+    }
+    if (!armed || !f || lines > 6000 || cpu_instr_count() < from)
+        return;
+    lines++;
+    fprintf(f, "%08x sr=%04x", pc, cpu_get_sr(cpu));
+    for (int i = 0; i < 8; i++)
+        fprintf(f, " d%d=%08x", i, cpu->d[i]);
+    for (int i = 0; i < 8; i++)
+        fprintf(f, " a%d=%08x", i, cpu->a[i]);
+    fprintf(f, " n=%llu\n", (unsigned long long)cpu_instr_count());
+    if (lines == 6000)
+        fflush(f);
+}
+
 static inline void cpu_check_interrupt(cpu_t *restrict cpu) {
     if (cpu->ipl > cpu->interrupt_mask || cpu->ipl == 7) {
         uint16_t sr = cpu_get_sr(cpu);
