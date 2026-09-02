@@ -386,7 +386,14 @@ static inline void m68k_raise_address_error(cpu_t *restrict cpu, uint32_t addr, 
         *g_bus_error_instr_ptr = 0; // end the sprint after this instruction
 }
 static inline bool m68k_address_error(cpu_t *restrict cpu, uint32_t addr, bool rw) {
-    if (__builtin_expect(!(addr & 1u) || !CPU_IS_68000(cpu), 1))
+    if (__builtin_expect(!CPU_IS_68000(cpu), 0))
+        return false;
+    // Once an address error is pending the instruction has stopped: its
+    // later accesses (a store after a faulting read, the second operand of
+    // SUBX/CMPM) must not reach memory either.
+    if (__builtin_expect(g_bus_error_is_address, 0))
+        return true;
+    if (__builtin_expect(!(addr & 1u), 1))
         return false;
     if (!g_bus_error_pending)
         m68k_raise_address_error(cpu, addr, rw, cpu->supervisor ? 5u : 1u);
