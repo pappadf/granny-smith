@@ -391,6 +391,13 @@ relookup:
                 }
             }
             if ((pc - g_ppc_fetch.lo) < g_ppc_fetch.span && g_ppc_fetch.span == MEM_PAGE_SIZE) {
+                // The window's cached block may have been recycled by the
+                // pool since (eviction, demotion, reset): trust it only
+                // while it still holds this page.
+                if (g_ppc_fetch.blk &&
+                    (g_ppc_fetch.blk->host != (uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo) ||
+                     g_ppc_fetch.blk->guest_lo != g_ppc_fetch.lo))
+                    g_ppc_fetch.blk = NULL;
                 if (!g_ppc_fetch.blk)
                     g_ppc_fetch.blk = predecode_lookup((uint8_t *)(g_ppc_fetch.host_adjust + g_ppc_fetch.lo),
                                                        g_ppc_fetch.lo, PD_ARCH_PPC);
