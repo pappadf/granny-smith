@@ -48,6 +48,12 @@ void lisa_fdc_set_diskrom(lisa_fdc_t *fdc, uint8_t id);
 void lisa_fdc_delete(lisa_fdc_t *fdc);
 void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp);
 
+// Checkpoint restore: the filename of the diskette that was in the drive, or
+// NULL.  The caller looks it up in cfg->images and re-inserts it through the
+// normal path — the FDC does not own images.  Ownership of the string passes
+// to the caller.
+char *lisa_fdc_take_pending_media(lisa_fdc_t *fdc);
+
 // === Media ==================================================================
 
 // Attach / detach a 400 KB (or 800 KB) Sony floppy image.  Ownership stays with

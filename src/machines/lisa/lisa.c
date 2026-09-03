@@ -16,6 +16,7 @@
 #include "machine.h"
 #include "system_config.h"
 
+#include "checkpoint_images.h"
 #include "cops.h"
 #include "cpu.h"
 #include "debug.h"
@@ -882,7 +883,30 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // even base $00C000 so word/long accesses at the even base (used by Xenix's
     // boot loader) reach the controller; the iface models the odd-byte RAM.
     // FDIR completion is signalled on VIA1 PB4.
+    // Mirrors lisa_checkpoint_save: the image list lands before the FDC and
+    // the ProFile, both of which reference it.
+    if (checkpoint)
+        mac_checkpoint_restore_images(cfg, checkpoint);
+
     ls->fdc = lisa_fdc_init(cfg->scheduler, lisa_fdc_fdir, cfg, checkpoint);
+
+    // Put the saved diskette back in the drive.  lisa_fdc_init recorded only
+    // its name; the image itself came back in the list above, so match on it
+    // and go through the normal insert path (which also re-establishes the
+    // FDC's disk_cache entry).
+    if (checkpoint) {
+        char *media = lisa_fdc_take_pending_media(ls->fdc);
+        if (media) {
+            for (int i = 0; i < cfg->n_images; i++) {
+                const char *fn = cfg->images[i] ? image_get_filename(cfg->images[i]) : NULL;
+                if (fn && strcmp(fn, media) == 0) {
+                    lisa_fdc_insert(ls->fdc, cfg->images[i]);
+                    break;
+                }
+            }
+            free(media);
+        }
+    }
     lisa_mmu_map_io(ls->mmu, 0xC000, 0x800, &lisa_fdc_iface, ls->fdc);
     // PB4 carries the FDC's FDIR (drive interrupt request) line.  The 6504A drives
     // it — it is not a floating/pulled-up input — and at reset there is no pending
@@ -1040,6 +1064,9 @@ static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via1, cp);
     via_checkpoint(cfg->via2, cp);
     cops_checkpoint(ls ? ls->cops : NULL, cp);
+    // The image list before the two devices that reference it (the FDC records
+    // only which entry was in the drive; the ProFile carries its own image).
+    mac_checkpoint_save_images(cfg, cp);
     lisa_fdc_checkpoint(ls ? ls->fdc : NULL, cp);
     lisa_profile_checkpoint(ls ? ls->profile : NULL, cp);
     scc_checkpoint(cfg->scc, cp);

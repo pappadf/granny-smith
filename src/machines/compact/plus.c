@@ -379,14 +379,11 @@ static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via1, cp);
     mouse_checkpoint(cfg->mouse, cp);
 
-    // Checkpoint list of images (path + writable) before devices that reference them
-    {
-        uint32_t count = (uint32_t)cfg->n_images;
-        system_write_checkpoint_data(cp, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i) {
-            image_checkpoint(cfg->images[i], cp);
-        }
-    }
+    // Checkpoint list of images (path + writable) before devices that reference
+    // them.  Shared helper, matching the restore side in plus_init: this was an
+    // inline copy of mac_checkpoint_save_images byte for byte, so the two could
+    // have drifted apart silently.
+    mac_checkpoint_save_images(cfg, cp);
 
     scsi_checkpoint(cfg->scsi, cp);
     keyboard_checkpoint(cfg->keyboard, cp);

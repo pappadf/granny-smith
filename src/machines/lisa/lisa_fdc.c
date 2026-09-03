@@ -107,6 +107,13 @@ struct lisa_fdc {
     int n_cache;
 
     uint8_t ram[FDC_RAM_BYTES];
+
+    // Checkpoint restore only: the filename of the diskette that was in the
+    // drive when the checkpoint was written.  The FDC does NOT own images —
+    // cfg->images[] does — so lisa_init looks this up in the restored image
+    // list and re-inserts through the normal path.  Owned here, freed on
+    // delete or on hand-off.
+    char *pending_media;
 };
 
 // Guest PC for the floppy command/access trace (LOG level 1, category
@@ -488,8 +495,34 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     fdc->ram[196] = 0x10; // PM byte 4: BootVol=1 (built-in Sony), NormCont=0
     fdc->ram[254] = 0xFE; // PM bytes 62-63: PRAM validity checksum word
     fdc->ram[255] = 0x00;
-    if (cp)
-        lisa_fdc_checkpoint(fdc, cp);
+    // Checkpoint restore (init-reads convention, mirroring lisa_profile_init):
+    // read back exactly what lisa_fdc_checkpoint wrote, in the same order.
+    if (cp) {
+        uint8_t attached = 0;
+        system_read_checkpoint_data(cp, &attached, sizeof(attached));
+        if (attached) {
+            uint32_t len = 0;
+            system_read_checkpoint_data(cp, &len, sizeof(len));
+            if (len) {
+                char *name = (char *)malloc(len);
+                if (name) {
+                    system_read_checkpoint_data(cp, name, len);
+                    name[len - 1] = '\0';
+                    fdc->pending_media = name;
+                } else {
+                    // Keep the stream aligned even if the allocation fails.
+                    for (uint32_t k = 0; k < len; ++k) {
+                        char tmp;
+                        system_read_checkpoint_data(cp, &tmp, 1);
+                    }
+                }
+            }
+        }
+        int32_t sides = 1;
+        system_read_checkpoint_data(cp, &sides, sizeof(sides));
+        fdc->num_sides = (int)sides;
+        system_read_checkpoint_data(cp, fdc->ram, FDC_RAM_BYTES);
+    }
     return fdc;
 }
 
@@ -504,12 +537,49 @@ void lisa_fdc_set_diskrom(lisa_fdc_t *fdc, uint8_t id) {
 }
 
 void lisa_fdc_delete(lisa_fdc_t *fdc) {
+    if (fdc)
+        free(fdc->pending_media);
     free(fdc);
 }
 
+// SAVE path only (lisa_checkpoint_save).  The matching read lives in
+// lisa_fdc_init — the same init-reads split lisa_profile uses, and the reason
+// this is not one function walked in both directions: checkpoint_t carries no
+// direction, so the old shared stub only "worked" because it did nothing.
+//
+// The diskette itself is recorded by NAME, not by image_checkpoint: the ProFile
+// owns its image and can reopen it, but the FDC's image belongs to
+// cfg->images[] and is freed exactly once at shutdown, so a second owner here
+// would double-free.  mac_checkpoint_save_images (added to lisa_checkpoint_save
+// immediately above this call) carries the content; this only has to say which
+// entry was in the drive.
 void lisa_fdc_checkpoint(lisa_fdc_t *fdc, checkpoint_t *cp) {
-    // Symmetric no-op for now (same discipline as the MMU/COPS): the shared RAM
-    // is re-derived by the next command sequence.  Full save/restore: Step 9.
-    (void)fdc;
-    (void)cp;
+    uint8_t attached = (fdc && fdc->image) ? 1u : 0u;
+    system_write_checkpoint_data(cp, &attached, sizeof(attached));
+    if (attached) {
+        const char *fn = image_get_filename(fdc->image);
+        uint32_t len = fn ? (uint32_t)(strlen(fn) + 1) : 0u;
+        system_write_checkpoint_data(cp, &len, sizeof(len));
+        if (len)
+            system_write_checkpoint_data(cp, fn, len);
+    }
+    int32_t sides = fdc ? (int32_t)fdc->num_sides : 1;
+    system_write_checkpoint_data(cp, &sides, sizeof(sides));
+    // Controller RAM carries the battery-backed parameter memory (PRAM: boot
+    // device selection at byte 196, checksum at 254-255), which is guest-written
+    // and is NOT re-derived by the next command sequence the way the command
+    // scratch is.  Saving the whole region is what makes a restored Lisa boot
+    // the same volume the saved one was booting.
+    uint8_t empty[FDC_RAM_BYTES];
+    memset(empty, 0, sizeof(empty));
+    system_write_checkpoint_data(cp, fdc ? fdc->ram : empty, FDC_RAM_BYTES);
+}
+
+// Hand the restored diskette filename to the caller, which owns it from here.
+char *lisa_fdc_take_pending_media(lisa_fdc_t *fdc) {
+    if (!fdc)
+        return NULL;
+    char *m = fdc->pending_media;
+    fdc->pending_media = NULL;
+    return m;
 }
