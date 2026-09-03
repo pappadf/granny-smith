@@ -652,6 +652,11 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
     // over the bus-error range, and slot IRQs route through the substrate's
     // nubus_slot_irq into the VIA2 PA aggregate.
     cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
+    // The substrate tail was read by mcu_restore_private inside build_devices
+    // above, so the card block that mcu_checkpoint_save wrote after it reads
+    // back here.
+    if (cp)
+        nubus_checkpoint_restore(cfg->nubus, cp);
     // Project the cards' host regions (VRAM, declaration ROMs) into the
     // page table so CPU accesses resolve with the MMU off; the bus
     // resolver serves the 040 walker when it's on.  No Mode-24 aliases —
@@ -822,6 +827,11 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
     system_write_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));
     system_write_checkpoint_data(cp, &st->scsi_irq_or, sizeof(st->scsi_irq_or));
+    // Card-side display state (VRAM, palette, active mode) — last before the
+    // block below, so a machine that restores with fewer cards than it saved
+    // short-reads here without shifting anything that follows (mdu.c:190,
+    // pdm.c:537 use the same position).
+    nubus_checkpoint_save(cfg->nubus, cp);
 }
 
 // Restore the substrate-private checkpoint tail (mirrors the tail writes in

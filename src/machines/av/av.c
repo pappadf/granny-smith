@@ -733,6 +733,7 @@ static void av_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
         system_read_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
         system_read_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
+        nubus_checkpoint_restore(cfg->nubus, cp); // matches av_checkpoint_save
         if (!overlay)
             av_set_overlay(cfg, false);
         mmu_invalidate_tlb(st->bus_mmu);
@@ -875,6 +876,11 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
     system_write_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
     system_write_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
+    // Card-side display state (VRAM, palette, active mode) — last before the
+    // block below, so a machine that restores with fewer cards than it saved
+    // short-reads here without shifting anything that follows (mdu.c:190,
+    // pdm.c:537 use the same position).
+    nubus_checkpoint_save(cfg->nubus, cp);
 }
 
 // VBL tick: VIA1 CA1 pulse (60 Hz reference) + the PSC's own 60.15 Hz

@@ -131,6 +131,7 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
     if (cp) {
         if (board->ckpt_restore_extra)
             board->ckpt_restore_extra(cfg, cp);
+        nubus_checkpoint_restore(cfg->nubus, cp); // matches glue_checkpoint_save
         mmu_checkpoint_restore(st->mmu, cp);
         mmu_invalidate_tlb(st->mmu);
         g_mmu = st->mmu;
@@ -385,6 +386,11 @@ static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     const mac030_glue_board_t *board = glue_board(cfg);
     if (board->ckpt_save_extra)
         board->ckpt_save_extra(cfg, cp);
+    // Card-side display state (VRAM, palette, active mode) — last before the
+    // block below, so a machine that restores with fewer cards than it saved
+    // short-reads here without shifting anything that follows (mdu.c:190,
+    // pdm.c:537 use the same position).
+    nubus_checkpoint_save(cfg->nubus, cp);
     mmu_checkpoint_save(st->mmu, cp);
 }
 

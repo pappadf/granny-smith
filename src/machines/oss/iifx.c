@@ -1554,6 +1554,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
+        nubus_checkpoint_restore(cfg->nubus, checkpoint); // matches iifx_checkpoint_save
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
         g_mmu = st->mmu;
@@ -1675,6 +1676,11 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
     system_write_checkpoint_data(cp, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
     system_write_checkpoint_data(cp, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
+    // Card-side display state (VRAM, palette, active mode) — last before the
+    // block below, so a machine that restores with fewer cards than it saved
+    // short-reads here without shifting anything that follows (mdu.c:190,
+    // pdm.c:537 use the same position).
+    nubus_checkpoint_save(cfg->nubus, cp);
     mmu_checkpoint_save(st->mmu, cp);
 }
 

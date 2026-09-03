@@ -995,12 +995,80 @@ static const char *card_name_generic(const nubus_card_t *card) {
            "24 (generic video ROM)";
 }
 
+// === Checkpoint =============================================================
+// VRAM is a private calloc (card_init), not part of the RAM image
+// memory_map_checkpoint saves, so without these a restored machine comes back
+// with a blank screen and a default palette until the guest happens to redraw.
+//
+// The four pointer members (card, vram, vrom, vrom_path) and the construction
+// facts beside them (vrom_size, slot_base) are deliberately NOT in the stream:
+// they are rebuilt by card_init before the restore runs, and writing them back
+// from a checkpoint would install stale addresses.
+//
+// Save and restore share ONE field list, walked in both directions.  Two
+// hand-mirrored lists are how a checkpoint stream silently goes out of step.
+#define JMFB_CKPT_FIELDS(F)                                                                                            \
+    F(p->clut, sizeof(p->clut));                                                                                       \
+    F(&p->display.format, sizeof(p->display.format));                                                                  \
+    F(&p->display.width, sizeof(p->display.width));                                                                    \
+    F(&p->display.height, sizeof(p->display.height));                                                                  \
+    F(&p->display.stride, sizeof(p->display.stride));                                                                  \
+    F(&p->clut_idx, sizeof(p->clut_idx));                                                                              \
+    F(&p->clut_phase, sizeof(p->clut_phase));                                                                          \
+    F(p->clut_pending, sizeof(p->clut_pending));                                                                       \
+    F(&p->clut_long_hi, sizeof(p->clut_long_hi));                                                                      \
+    F(&p->jmfb_csr, sizeof(p->jmfb_csr));                                                                              \
+    F(&p->jmfb_lsr, sizeof(p->jmfb_lsr));                                                                              \
+    F(&p->jmfb_video_base, sizeof(p->jmfb_video_base));                                                                \
+    F(&p->jmfb_row_words, sizeof(p->jmfb_row_words));                                                                  \
+    F(&p->sw_ic_reg, sizeof(p->sw_ic_reg));                                                                            \
+    F(&p->sw_status_reg, sizeof(p->sw_status_reg));                                                                    \
+    F(&p->clut_pbcr, sizeof(p->clut_pbcr));                                                                            \
+    F(&p->endeavor_m, sizeof(p->endeavor_m));                                                                          \
+    F(&p->endeavor_n, sizeof(p->endeavor_n));                                                                          \
+    F(&p->endeavor_ext_clk, sizeof(p->endeavor_ext_clk));                                                              \
+    F(&p->endeavor_reserved, sizeof(p->endeavor_reserved));                                                            \
+    F(&p->sense_code, sizeof(p->sense_code));
+
+static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
+    jmfb_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    system_write_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
+#define F(ptr, len) system_write_checkpoint_data(cp, (ptr), (len))
+    JMFB_CKPT_FIELDS(F)
+#undef F
+}
+
+static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
+    jmfb_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    system_read_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
+#define F(ptr, len) system_read_checkpoint_data(cp, (ptr), (len))
+    JMFB_CKPT_FIELDS(F)
+#undef F
+
+    // stride and width are derived from row_words + the restored format.
+    recompute_stride(p);
+
+    // display.bits still points into p->vram (card_init set it and the buffer
+    // has not moved), but everything the frontend caches about this display is
+    // now stale.
+    p->display.shape_dirty = true;
+    p->display.clut_dirty = true;
+    p->display.fb_dirty = true;
+    p->display.response_dirty = true;
+}
+
 static const nubus_card_ops_t mdc_8_24_ops = {
     .init = card_init_real,
     .teardown = card_teardown,
     .on_vbl = card_on_vbl,
     .display = card_display,
     .name = card_name,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
 };
 
 static const nubus_card_ops_t jmfb_generic_ops = {
@@ -1009,6 +1077,8 @@ static const nubus_card_ops_t jmfb_generic_ops = {
     .on_vbl = card_on_vbl,
     .display = card_display,
     .name = card_name_generic,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
 };
 
 // === Factory + kind descriptor ==============================================
