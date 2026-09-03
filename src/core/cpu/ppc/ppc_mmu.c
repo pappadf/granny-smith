@@ -111,6 +111,7 @@ static inline uint32_t tlbie_class_mask(const ppc_t *p) {
 
 void ppc_mmu_flush_fetch(void) {
     g_ppc_fetch.span = 0;
+    g_ppc_fetch.blk = NULL;
     memset(g_ftlb, 0, sizeof(g_ftlb));
 }
 
@@ -348,8 +349,10 @@ static xl_result_t htab_search(ppc_t *p, uint32_t ea, uint32_t sr, bool user, bo
             // side-effect-free debug translate.
             if (!nosideffect) {
                 uint32_t nlo = lo | 0x100u | ((store && allowed) ? 0x80u : 0u);
-                if (nlo != lo)
+                if (nlo != lo) {
+                    memory_host_written(pte + 4, 4); // a PTEG that is also cached code (absurd, but honest)
                     STORE_BE32(pte + 4, nlo);
+                }
                 lo = nlo;
             }
             if (!allowed)
@@ -454,8 +457,26 @@ static void user_soa_fill(uint32_t ea, uint32_t pa, bool write_ok) {
         g_fill_track[g_fill_track_count++] = lpage;
     uintptr_t adjusted = (uintptr_t)pe->host_base - (lpage << PAGE_SHIFT);
     g_user_read[lpage] = adjusted;
-    if (write_ok && pe->writable)
-        g_user_write[lpage] = adjusted;
+    if (write_ok && pe->writable) // refused on a predecoded code page (memory.h)
+        g_user_write[lpage] = memory_write_fill(lpage, pe->host_base, adjusted);
+}
+
+// A physical fallback address (device page, logpointed page, or a page
+// whose write entry the code-page marks refused) is handed back to the
+// inline accessors, which in user mode index the LOGICALLY-filled user
+// tables — by that physical page number.  Whatever logical page happens
+// to sit at that index must not be on the fast path, or the access lands
+// in the wrong host page (the index-collision guard above generalized:
+// the marks make this the common case, not a logpoint corner).  The
+// evicted page refills itself on its next slow access.
+static void user_phys_fallback(uint32_t pa, bool store) {
+    uint32_t ppage = pa >> PAGE_SHIFT;
+    if (ppage >= g_page_count)
+        return;
+    if (store)
+        g_user_write[ppage] = 0;
+    else
+        g_user_read[ppage] = 0;
 }
 
 // ============================================================
@@ -504,6 +525,8 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
     xtlb_entry_t *te = &g_xtlb[(ea >> PAGE_SHIFT) & (XTLB_SIZE - 1)];
     if (!lp_watched && te->tag == tag && (!store || te->w_ok)) {
         *addr = te->pa_page | (ea & 0xFFFu);
+        if (user && dt)
+            user_phys_fallback(*addr, store); // the slot may have refilled since the miss
         return false;
     }
 
@@ -562,6 +585,7 @@ bool ppc_dxlate_slow(ppc_t *p, uint32_t iw, uint32_t *addr, bool store) {
             *addr = ea;
             return false;
         }
+        user_phys_fallback(out.pa, store);
     }
     // Not SoA-fillable (device page, logpointed, supervisor mode):
     // cache in the translation TLB and access physically.
@@ -624,6 +648,7 @@ int ppc_dxlate_dcbz(ppc_t *p, uint32_t iw, uint32_t *addr) {
             *addr = ea;
             return 0;
         }
+        user_phys_fallback(out.pa, true);
     }
     *addr = out.pa;
     return 0;
@@ -649,6 +674,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = fe->host_adjust;
+            g_ppc_fetch.blk = NULL; // the predecoded loop re-derives the block
             *iw = LOAD_BE32((uint8_t *)(fe->host_adjust + pc));
             return true;
         }
@@ -693,6 +719,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = adj;
+            g_ppc_fetch.blk = NULL;
             *iw = LOAD_BE32((uint8_t *)(adj + pc));
             return true;
         }
@@ -705,6 +732,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
             g_ppc_fetch.lo = page;
             g_ppc_fetch.span = MEM_PAGE_SIZE;
             g_ppc_fetch.host_adjust = (uintptr_t)host - page;
+            g_ppc_fetch.blk = NULL;
             *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + pc));
             return true;
         }
@@ -714,6 +742,7 @@ bool ppc_fetch_fill(ppc_t *p, uint32_t pc, uint32_t *iw) {
     // fetch through the physical slow path so logpoints and device
     // semantics stay honest.  No window: every fetch here re-resolves.
     g_ppc_fetch.span = 0;
+    g_ppc_fetch.blk = NULL;
     *iw = memory_read_uint32_slow(pa & g_address_mask);
     return true;
 }

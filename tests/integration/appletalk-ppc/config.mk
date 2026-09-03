@@ -24,7 +24,14 @@ TEST_ROM := roms/plus-v3-4d1f8172.rom
 
 # A private copy: the guest writes its Sharing Setup and Users & Groups
 # changes, and a shared image would carry them between runs.
-TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" "$(TEST_TMPDIR)/hd.img"
+#
+# The non-GC image: its 8*24 GC twin carries Apple's "8*24 GC" INIT, whose
+# entry point is a 68020 BSR.L that a 68000 decodes as an 8-bit displacement
+# and lands on an odd address -- an address error, and the bomb a real Plus
+# would show (the INIT is for the 8*24 GC card, which no Plus can hold).
+# Nothing in this row is about that extension (2026-09-03; suite-plus made
+# the same swap).
+TEST_SETUP := cp "$(TEST_DATA)/systems/system_7_1_20mb_24ac_cd_32bit.img" "$(TEST_TMPDIR)/hd.img"
 
 TEST_ARGS := ram=4096 hd=$(TEST_TMPDIR)/hd.img
 

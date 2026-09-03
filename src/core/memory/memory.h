@@ -178,6 +178,7 @@ extern uint32_t g_bus_error_address; // faulting logical address
 extern bool g_bus_error_rw; // true=read, false=write
 extern uint32_t g_bus_error_fc; // FC of the faulting access (1=user-data, 5=super-data)
 extern bool g_bus_error_is_pmmu; // true=PMMU descriptor fault (retry), false=bus timeout (skip)
+extern bool g_bus_error_is_address; // 68000 only: odd-address word/long operand access (vector 3, I/N clear)
 extern uint32_t *g_bus_error_instr_ptr; // points to decoder's instruction counter
 
 // I/O cycle penalty: tracks extra bus wait-state cycles for I/O accesses.
@@ -357,6 +358,98 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page);
 // On uninstall, the SoA stays empty and will refill lazily on next access.
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page);
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page);
+
+// === Code-page coherence (predecoded interpreter cores) ===
+// A predecoded instruction cache (src/core/cpu/predecode.c) keeps a derived
+// image of guest code per 4 KB *host* page.  Keeping it honest costs nothing
+// on the fast path: a page that holds a block is a "code page", and its
+// WRITE SoA entries are suppressed (zeroed, and refused by every refill
+// site) so any store into it takes the slow path, which invalidates the
+// cached entries before completing the write.  Direct host-memory writers
+// (DMA engines, debug pokes, ROM installs) report through
+// memory_host_written().  The template is the memory-logpoint machinery
+// above; see docs/core/cpu/predecode.md.
+
+// A host byte range that may carry code pages: region 0 is the flat
+// RAM+ROM image of the current memory map; unit tests register their own
+// buffers.  Marks are one byte per 4 KB page of the region.
+#define MEM_CODE_REGIONS_MAX 4
+typedef struct mem_code_region {
+    uint8_t *base; // host base of the region
+    uintptr_t size; // bytes
+    uint8_t *marks; // per page: nonzero = code page (write entries suppressed)
+} mem_code_region_t;
+extern mem_code_region_t g_mem_code_regions[MEM_CODE_REGIONS_MAX];
+extern int g_mem_code_region_count;
+
+// Bumped by every memory_map_init: derived caches keyed by host pointers
+// (the predecode pool) compare it and reset themselves.
+extern uint32_t g_mem_map_generation;
+
+// Per 256-page chunk of the logical address space: nonzero once any write
+// SoA entry was ever planted in that chunk.  Lets memory_code_page_mark
+// find the logical aliases of a host page by scanning only populated
+// chunks instead of the whole (1M-entry) arrays.
+extern uint8_t *g_mem_soa_chunk;
+
+// Count of guest stores that hit a code page (took the slow path and
+// invalidated), for predecode.stats.
+extern uint64_t g_mem_code_write_count;
+
+// Slow-path access counter (memory.slowpath_count).  Every slow path
+// increments it, which makes it the exactness guard of the predecoded
+// cores' elided memory forms (proposal §5.3 rule 3).
+extern uint64_t g_mem_slowpath_count;
+
+// Invalidation hook installed by the predecode pool: called with the host
+// range a store or host-side writer is about to change.  NULL = no cache.
+extern void (*g_mem_code_written_hook)(const uint8_t *host, uint32_t len);
+
+// Resolve a host pointer to its code region and page; -1 if outside every
+// region (device windows, card VRAM, declaration ROMs).
+static inline int memory_code_region_of(const uint8_t *host, uint32_t *page_out) {
+    for (int i = 0; i < g_mem_code_region_count; i++) {
+        uintptr_t off = (uintptr_t)host - (uintptr_t)g_mem_code_regions[i].base;
+        if (off < g_mem_code_regions[i].size) {
+            *page_out = (uint32_t)(off >> PAGE_SHIFT);
+            return i;
+        }
+    }
+    return -1;
+}
+
+// True when the host page holding `host` is a marked code page.
+static inline bool memory_host_is_code(const uint8_t *host) {
+    uint32_t page;
+    int r = memory_code_region_of(host, &page);
+    return r >= 0 && g_mem_code_regions[r].marks[page] != 0;
+}
+
+// The one way to plant a WRITE SoA entry: records the chunk for the
+// reverse scan and refuses the entry (returns 0) when the host page is a
+// code page.  `host` is any pointer into the host page being mapped.
+static inline uintptr_t memory_write_fill(uint32_t page_index, const uint8_t *host, uintptr_t adjusted) {
+    if (g_mem_soa_chunk)
+        g_mem_soa_chunk[page_index >> 8] = 1;
+    return memory_host_is_code(host) ? 0 : adjusted;
+}
+
+// Register a host buffer as a code region (unit tests; region 0 is the
+// image and is registered by memory_map_init).  Returns the region index
+// or -1 when the table is full.
+int memory_code_region_register(uint8_t *base, uintptr_t size);
+
+// Mark the host page as a code page: sets the mark and zeroes every write
+// SoA entry (supervisor and user) that currently maps to it.  Idempotent.
+void memory_code_page_mark(const uint8_t *host_page);
+
+// Drop the mark (block evicted/demoted); write entries refill lazily.
+void memory_code_page_unmark(const uint8_t *host_page);
+
+// A host-side writer (DMA, debug poke, ROM install, page-table R/C update)
+// changed `len` bytes at `host`: invalidate any cached code covering them.
+// Cheap when no page in the range is marked.
+void memory_host_written(const uint8_t *host, uint32_t len);
 
 // === Inline Accessors (SoA fast-path with adjusted-base trick) ===
 // Non-zero entry in g_active_read/write = adjusted host address.

@@ -244,17 +244,17 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         break;
 
     case 0x6: // 0110.xxxx.xxxx.xxxx
-        // Note: 68000 only supports Bcc.B (8-bit) and Bcc.W (16-bit) displacements
-        // The 0xFF case (32-bit displacement) is 68020+ only
+        // The 0xFF case is the 68020+ 32-bit displacement; the 68000 core binds
+        // the .L arms to the .B bodies (cpu_ops.h), where 0xFF is a displacement of -1.
         if ((((opcode) >> 8) & 0xF) == 0x1) {
             switch (opcode & 0x00FF) {
-            case 0xFF: OP_BSR_L_LABEL; break; // todo: make this 68020+ only
+            case 0xFF: OP_BSR_L_LABEL; break;
             case 0x00: OP_BSR_W_LABEL; break;
             default:   OP_BSR_B_LABEL; break;
             }
         } else {
             switch (opcode & 0x00FF) {
-            case 0xFF: OP_BCC_L_DISPLACEMENT; break; // todo: make this 68020+ only
+            case 0xFF: OP_BCC_L_DISPLACEMENT; break;
             case 0x00: OP_BCC_W_DISPLACEMENT; break;
             default:   OP_BCC_B_DISPLACEMENT; break;
             }

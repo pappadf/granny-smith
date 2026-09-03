@@ -312,10 +312,11 @@ static void iifx_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable
     if (g_user_read)
         g_user_read[page_index] = adjusted;
     if (writable) {
+        uintptr_t wadj = memory_write_fill(page_index, host_ptr, adjusted); // 0 on a predecoded code page
         if (g_supervisor_write)
-            g_supervisor_write[page_index] = adjusted;
+            g_supervisor_write[page_index] = wadj;
         if (g_user_write)
-            g_user_write[page_index] = adjusted;
+            g_user_write[page_index] = wadj;
     } else {
         if (g_supervisor_write)
             g_supervisor_write[page_index] = 0;

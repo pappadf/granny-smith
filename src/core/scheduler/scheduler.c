@@ -839,8 +839,17 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
 
     validate_cpu_events(scheduler);
 
-    // Save plain-data portion of struct
-    system_write_checkpoint_data(checkpoint, scheduler, offsetof(struct scheduler, event_types));
+    // Save plain-data portion of struct.  The host-timing fields (wall-clock
+    // relative, reset on restore) are written as zero so two checkpoints of
+    // the same guest timeline are byte-identical whatever the host clock
+    // said — the differential oracle of the predecoded cores depends on it.
+    struct scheduler pod;
+    memcpy(&pod, scheduler, offsetof(struct scheduler, event_types));
+    pod.previous_time = 0.0;
+    pod.vbl_acc_error = 0.0;
+    pod.host_secs_per_vbl = 0.0;
+    pod.host_secs_per_loop = 0.0;
+    system_write_checkpoint_data(checkpoint, &pod, offsetof(struct scheduler, event_types));
 
     // Convert event queue to checkpoint-friendly format (names instead of pointers)
     unsigned int num_events = num_events_in_queue(scheduler);

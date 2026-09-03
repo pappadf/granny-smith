@@ -1,0 +1,40 @@
+# Vectors the suite does not replay: known disagreements between this
+# emulator's cores and the m68k-sail model (see INTEGRATING.md §"When your
+# emulator disagrees" — each is a bug report for one side or the other,
+# not a predecode question: both executors fail them identically).
+#
+#   <member> exception <name>   -- drop vectors whose outcome is that exception
+#   <member> exception <mnemonic>/<name> -- the same, in that mnemonic's file only
+#   <member> normal <mnemonic>  -- drop the mnemonic's vectors that raise no exception
+#   <member> file <mnemonic>    -- drop the mnemonic's whole file
+#   <member> prefix <text>      -- drop every mnemonic starting with the text
+#
+# filter.py prints what each rule dropped; a rule that drops nothing is
+# flagged as stale.  Counts below are from the smoke tier at m68k-test
+# 742624d (model 0b5a0b2), which fixed or screened out the model-side items
+# of the first round.  The rules whose cause is suspected to be on the
+# vector/model side are written up, with the report fields, in
+# local/gs-docs/notes/2026-09-02-m68k-test-vector-disagreements.md; the rest
+# are this emulator's own gaps.
+
+# --- 68000 ---------------------------------------------------------------
+68000 exception ori/address-error -- an aborted read-modify-write through (An)+ leaves An un-incremented; the model increments it as part of the EA before the (faulting) read (one vector; 22 of a large tier's 907 address-error vectors are of this ordering class)
+
+# --- 68030 (68882) --------------------------------------------------------
+#
+# Nothing left: the FPU's operand classes -- denormalized and unnormalized
+# operands, single/double rounding precision, and the packed-decimal
+# conversions in both directions -- were finished on 2026-09-03, and a
+# locally generated 40-per-mnemonic 68030 tier over the FPU mnemonics passes
+# in full.
+68030 normal frestore -- (no such vector in the smoke tier; two in a generated tier) null-frame restore: the model resets FP0-FP7/FPCR/FPSR/FPIAR unconditionally; the core only from the idle/busy phase, as a real 68882 does (Apple's MacTest: FREM; FSAVE; FRESTORE <null>; FRESTORE <idle> keeps FP0), and the model's FSAVE always writes a null frame, i.e. its vectors start in the reset phase (note item 20)
+
+# --- 68040 ---------------------------------------------------------------
+# The single- and double-rounded FSxxx/FDxxx opcodes are implemented as of
+# 2026-09-03 (fpu.c, fpu_op_rounded_040) and no longer excluded -- with them
+# went two `prefix` rules that had also been dropping fsave, fscale, fsgldiv,
+# fsglmul, fsin, fsincos, fsinh, fsqrt, fsub, fdiv, fdbf and the Scc forms.
+68040 exception line-1111 -- deliberate: the FP instructions the 68040 leaves to the FPSP (transcendentals, FMOVECR, FINT/FINTRZ, FSCALE, FMOD/FREM, FGETEXP/FGETMAN, FSINCOS) are computed in-line instead of taking the unimplemented-instruction exception (faster, and independent of the guest OS installing its FPSP; decision 2026-09-02)
+68040 exception fp-unimplemented-data-type -- deliberate: packed-decimal and denormalized/unnormalized operands are handled in-line instead of taking the unimplemented-data-type exception (as above)
+68040 normal frestore -- as the 68030 null-frame rule
+68040 file cas2   -- duplicated compare/update registers (Dc1 = Dc2, Du1 = Du2): update ordering (the model ends with operand 1, the core and MAME with operand 2)

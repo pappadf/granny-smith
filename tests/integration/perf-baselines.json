@@ -307,6 +307,10 @@
     "suite-se30/se30-nomedia": {
       "instr": 277074596,
       "tolerance": 0.2
+    },
+    "perf-pdm/rom-boot": {
+      "instr": 199983600,
+      "tolerance": 0.2
     }
   }
 }

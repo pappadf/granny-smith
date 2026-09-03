@@ -246,6 +246,10 @@ void ppc_do_mtfsfi(ppc_t *p, uint32_t iw) {
     ppc_fp_trap_check(p);
 }
 
+// The invalid-operation bits the model summarizes into VX (ppc_softfp.h);
+// ppc_init narrows it for the 601.
+uint32_t g_ppc_fpscr_vx_any = PPC_FPSCR_VX_ANY;
+
 // mtfsb1 of an exception condition bit also sets FX: Table 2-1 bit 0 says
 // "every floating-point instruction implicitly sets FPSCR[FX] if that
 // instruction causes any of the floating-point exception bits to transition

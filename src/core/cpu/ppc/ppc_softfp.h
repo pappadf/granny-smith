@@ -66,10 +66,16 @@
     (PPC_FPSCR_VXSNAN | PPC_FPSCR_VXISI | PPC_FPSCR_VXIDI | PPC_FPSCR_VXZDZ | PPC_FPSCR_VXIMZ | PPC_FPSCR_VXVC |       \
      PPC_FPSCR_VXSOFT | PPC_FPSCR_VXSQRT | PPC_FPSCR_VXCVI)
 
+// The invalid-operation bits the active model implements.  The 601 has
+// VXSOFT and VXSQRT as storage only ("not implemented in the 601", 601UM
+// Table 2-1): writable and sticky, but neither summarized into VX nor an
+// exception condition for FX.  Set by ppc_init per model.
+extern uint32_t g_ppc_fpscr_vx_any;
+
 // The exception condition bits: bits 3-12 and 21-23 (601UM §2.2.3 -- FEX
 // and VX are summaries, not conditions).  A 0 -> 1 transition of any of
 // these implicitly sets FX.
-#define PPC_FPSCR_EXCEPTIONS (PPC_FPSCR_OX | PPC_FPSCR_UX | PPC_FPSCR_ZX | PPC_FPSCR_XX | PPC_FPSCR_VX_ANY)
+#define PPC_FPSCR_EXCEPTIONS (PPC_FPSCR_OX | PPC_FPSCR_UX | PPC_FPSCR_ZX | PPC_FPSCR_XX | g_ppc_fpscr_vx_any)
 
 // FPSCR bits mtfsf/mtfsfi/mtfsb0/mtfsb1 can NOT write: FEX and VX are
 // derived summaries ("cannot be explicitly set or reset", Table 2-1).
@@ -80,7 +86,7 @@
 //   FEX = (VX & VE) | (OX & OE) | (UX & UE) | (ZX & ZE) | (XX & XE)
 static inline uint32_t ppc_fpscr_derive(uint32_t f) {
     f &= ~(PPC_FPSCR_FEX | PPC_FPSCR_VX);
-    if (f & PPC_FPSCR_VX_ANY)
+    if (f & g_ppc_fpscr_vx_any)
         f |= PPC_FPSCR_VX;
     if (((f & PPC_FPSCR_VX) && (f & PPC_FPSCR_VE)) || ((f & PPC_FPSCR_OX) && (f & PPC_FPSCR_OE)) ||
         ((f & PPC_FPSCR_UX) && (f & PPC_FPSCR_UE)) || ((f & PPC_FPSCR_ZX) && (f & PPC_FPSCR_ZE)) ||

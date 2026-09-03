@@ -4,6 +4,7 @@
 #include "cpu.h"
 #include "harness.h"
 #include "memory.h"
+#include "predecode.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,6 +37,14 @@ test_context_t *test_harness_init(void) {
     const char *model_env = getenv("CPU_TEST_MODEL");
     if (model_env && strcmp(model_env, "68030") == 0)
         model = CPU_MODEL_68030;
+    // CPU_TEST_PREDECODE=1 routes every sprint through the predecoded
+    // executor (CI runs the conformance suites both ways); CPU_TEST_ELIDE
+    // picks the flag-liveness level (0/1/2) for that run.
+    const char *pd_env = getenv("CPU_TEST_PREDECODE");
+    predecode_set_enabled(pd_env && pd_env[0] == '1');
+    const char *el_env = getenv("CPU_TEST_ELIDE");
+    if (el_env && el_env[0])
+        predecode_set_elide(atoi(el_env));
     ctx->cpu = cpu_init(model, NULL);
     if (!ctx->cpu) {
         memory_map_delete(ctx->memory);

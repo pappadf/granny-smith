@@ -739,11 +739,36 @@ static uint32_t ppc_hook_logical_xlate(uint32_t addr, bool *ok) {
     return ppc_mmu_translate_debug(g_hook_ppc, addr, true, ok);
 }
 
+#include "ppc_pd_ids.h"
+#include "ppc_pd_t1_names.h" // generated: leaf names by T1 id
+
+// Handler name for the decode histogram (predecode.hist).
+static const char *ppc_pd_id_name(uint16_t id) {
+    static const char *const t0_names[] = {
+#define X(name) #name,
+        PPC_PD_T0(X)
+#undef X
+    };
+    if (id == PD_UNDECODED)
+        return "undecoded";
+    if (id == PD_GENERIC)
+        return "generic";
+    if (id >= T1_FIRST && id < T1_END)
+        return ppc_pd_t1_names[id - T1_FIRST];
+    if (id > PPD_FIRST && id < PPD_END)
+        return t0_names[id - PPD_FIRST - 1];
+    return "?";
+}
+
 ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     ppc_t *p = (ppc_t *)malloc(sizeof(ppc_t));
     if (!p)
         return NULL;
+    g_pd_id_name[PD_ARCH_PPC] = ppc_pd_id_name;
     assert(cpu_model == CPU_MODEL_PPC601 || cpu_model == CPU_MODEL_PPC604);
+    // The 601 keeps VXSOFT/VXSQRT as storage only (ppc_softfp.h).
+    g_ppc_fpscr_vx_any =
+        cpu_model == CPU_MODEL_PPC601 ? (PPC_FPSCR_VX_ANY & ~(PPC_FPSCR_VXSOFT | PPC_FPSCR_VXSQRT)) : PPC_FPSCR_VX_ANY;
 
     // The user SoA arrays carry this MMU's logical fills — the generic
     // identity-restore paths must leave them alone (memory.h).

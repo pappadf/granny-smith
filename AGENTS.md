@@ -28,14 +28,15 @@ case there is nothing to do.
 - `tests/unit`: Unit tests (native, suites in `suites/`, infrastructure in `support/`)
 - `tests/e2e`: Playwright end-to-end tests (specs in `specs/`, helpers in `helpers/`)
 - `third-party/`: External libraries (git submodules, e.g. single-step-tests,
-  powerpc-test)
+  powerpc-test, m68k-test)
 
 Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/core/*/` and documentation under `docs/core/<subsystem>/`; machine/family docs live under `docs/machines/<family>/`.
 
   - The `peeler` archive library now lives in-tree at `src/peeler/` (formerly a
     `third-party/peeler` submodule), so no submodule init is needed for it.
     `git submodule update --init --recursive` is still used for the remaining
-    submodules under `third-party/` (e.g. single-step-tests, powerpc-test).
+    submodules under `third-party/` (e.g. single-step-tests, powerpc-test,
+    m68k-test).
 
 ## Tools and Environments
 
@@ -74,7 +75,9 @@ the devcontainer image.)
 
 **Run tests:**
 - Unit tests (CPU): `make -C tests/unit run` (~1–5 min) — uses `third-party/single-step-tests`
-  (68k) and `third-party/powerpc-test` (601); both are submodules, so init them first
+  (68000, MAME-derived), `third-party/m68k-test` (68000/68030/68040, sail model) and
+  `third-party/powerpc-test` (601); all are submodules, so init them first.
+  `CPU_TEST_PREDECODE=1`/`0` routes the CPU suites through the predecoded or the switch executor
 - Integration tests: `make integration-test` (~10–20 min serial; add `-j$(nproc)` to parallelize, or `TIER=unit` / `TIER=matrix` for a subset — see docs/guide/TESTING.md) — builds headless emulator, runs tests in `tests/integration/`
 - Single integration test: `make integration-test-<name>` (e.g., `make integration-test-se30-format-hd`)
 - List available integration tests: `make -C tests/integration list`

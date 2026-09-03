@@ -793,6 +793,7 @@ static int16_t swim_read_blocks(iop_t *iop, int floppy_idx, uint32_t block_numbe
     uint8_t *dst = swim_host_dma_ptr(host_addr, byte_count);
     if (!dst)
         return MAC_ERR_PARAM;
+    memory_host_written(dst, (uint32_t)byte_count); // IOP DMA over cached code
     size_t got = disk_read_data(img, byte_offset, dst, byte_count);
     if (got != byte_count)
         return MAC_ERR_IO;
