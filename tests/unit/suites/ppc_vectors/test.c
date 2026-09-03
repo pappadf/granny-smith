@@ -320,10 +320,14 @@ static const char *find_vectors_dir(void) {
 }
 
 // Mnemonic files whose replay legitimately diverges under the 604 model
-// (TNT proposal §4.5: "the 601-only encodings masked out"): the POWER
+// (TNT proposal 4.5: "the 601-only encodings masked out"): the POWER
 // holdovers and MQ/RTC SPR moves trap; mtmsr/rfi mask differently; the
 // word-alignment classes and dcbz's cache-disabled rule fault where the
-// sail 601 model completes.  Everything else must replay bit-identically.
+// sail 601 model completes; and the FPSCR bits the 601 does not have.
+// Everything else must replay bit-identically.  These are all consequences
+// of replaying p601 vectors against a 604, not core bugs -- the model
+// generates per-core vectors since 715cfc1, and a p604 tier would need
+// none of this.
 static const char *const skip_604[] = {
     // POWER holdovers (program exception on the 604)
     "abs", "clcs", "div", "divs", "doz", "dozi", "lscbx", "maskg", "maskir", "mul", "nabs", "rlmi", "rrib", "sle",
@@ -334,7 +338,14 @@ static const char *const skip_604[] = {
     "lfd", "lfdu", "lfdux", "lfdx", "lfs", "lfsu", "lfsux", "lfsx", "stfd", "stfdu", "stfdux", "stfdx", "stfs", "stfsu",
     "stfsux", "stfsx", "lmw", "stmw", "lwarx", "stwcx_dot", "eciwx", "ecowx",
     // dcbz gates on HID0[DCE] (cleared in the vectors' fixed HID0)
-    "dcbz"};
+    "dcbz",
+    // FPSCR bits 21/22/29 (VXSOFT, VXSQRT, NI) do not exist on the 601 and
+    // do exist on every later core (MPCFPE32B Table 2-4; powerpc-test
+    // FORMAT.md 3.3, per-core since model 715cfc1).  A 601 vector that
+    // writes one asserts a no-op where the 604 sets the bit, summarizes it
+    // into VX and transitions FX -- e.g. `mtfsb1 0x16` (VXSQRT).  Only p604
+    // vectors can test these on the 604 pass; the 601 pass covers the files.
+    "mtfsb0", "mtfsb1", "mtfsf", "mtfsfi"};
 
 static int skip_under_604(const char *name) {
     for (size_t i = 0; i < sizeof skip_604 / sizeof skip_604[0]; i++)
