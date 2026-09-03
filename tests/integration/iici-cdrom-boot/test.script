@@ -61,11 +61,10 @@ def row_cd_device() {
     assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
     assert machine.scsi.device[3].medium_present "cd-device: no medium present"
     assert machine.scsi.device[3].vendor == "SONY    " "cd-device: unexpected vendor"
-    # Mastered at 512 bytes/block, and the device must say so: the block size
-    # comes from the disc's own DDM, not a hard-coded CD default.  Serving a
-    # 512-mastered image at 2048 multiplies every LBA by four and the machine
-    # does not boot at all.
-    assert machine.scsi.device[3].block_size == 512 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
+    # A CD-ROM drive presents 2048-byte blocks — the Mode 1 sector — whatever
+    # the disc's DDM says its partition map is addressed in.  A guest that
+    # wants 512-byte addressing asks for it with MODE SELECT (A/UX does).
+    assert machine.scsi.device[3].block_size == 2048 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)"
     # No other storage: the boot below can only come from the disc.  An empty
     # SCSI slot does not resolve as an object at all, so probe it with try()
     # rather than reading a type (shell v2 §7 — errors are not truth values).
