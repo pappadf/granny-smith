@@ -153,16 +153,12 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The Q700 bit-bangs the classic RTC on VIA1 (ref §14.4).
     rtc_set_via(cfg->rtc, cfg->via1);
 
-    // Model sense on VIA1 PA: $C0 | diagnostic bit — PA7/PA6 high, PA5..PA1
-    // low (the ROM's identify table matches PA & $56 == $40 for the Q700).
-    // PA0 is the diagnostic-mode switch and idles HIGH for a normal boot:
-    // driving it low sends the ROM into its serial test manager (observed
-    // during bring-up — endless SCC poll at $40847BFx with no fault).
-    via_input(cfg->via1, 0, 7, 1);
-    via_input(cfg->via1, 0, 6, 1);
-    for (int bit = 1; bit <= 5; bit++)
-        via_input(cfg->via1, 0, bit, 0);
-    via_input(cfg->via1, 0, 0, 1);
+    // Model sense on VIA1 PA from the board descriptor ($C0: the ROM's identify
+    // table matches PA & $56 == $40 for the Q700), plus the PA0 diagnostic
+    // strap.  These were eight hardcoded via_input calls that ignored
+    // desc->via1_pa_model entirely, leaving the field dead on this board while
+    // q900/q950 read it.
+    mcu_apply_via1_model_sense(cfg, desc);
     // CA1/CB1 idle high (tick + ADB clock reference edges).
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);

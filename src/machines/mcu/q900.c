@@ -182,9 +182,7 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // PA & $56 == $50 for the Q900 (InfoQuadra900: PA6=1, PA4=1, PA2=0,
     // PA1=0).  PA7 idles high (board default), PA0 is the diagnostic-mode
     // strap and must idle HIGH for a normal boot (same as the Q700).
-    for (int bit = 0; bit < 8; bit++)
-        via_input(cfg->via1, 0, bit, (desc->via1_pa_model >> bit) & 1);
-    via_input(cfg->via1, 0, 0, 1); // PA0 diagnostic strap high
+    mcu_apply_via1_model_sense(cfg, desc);
     // CA1 idles high (60 Hz tick reference edge); CA2 is the keyswitch
     // "secure" sense — high = not in the secure position.
     via_input_c(cfg->via1, 0, 0, 1);

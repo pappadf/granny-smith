@@ -177,6 +177,17 @@ void mcu_set_overlay(config_t *cfg, bool on);
 
 // Read the substrate-private checkpoint tail and re-drive derived IRQ lines;
 // each board's build_devices calls this at the end of its restore path.
+// Drive VIA1 port A to the board's model sense, then raise PA0.
+//
+// via1_pa_model carries the MODEL SENSE BITS ONLY -- the ROM's identify table
+// matches PA & $56, which does not include bit 0, and all three boards declare
+// the field with bit 0 clear ($C0 / $D0 / $90).  PA0 is the diagnostic-mode
+// strap and is a separate fact: it idles HIGH for a normal boot, and driving it
+// low sends the ROM into its serial test manager (an endless SCC poll at
+// $40847BFx with no fault, observed during Q700 bring-up).  Keeping the strap
+// out of the field is what lets the three boards declare the same kind of value.
+void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc);
+
 void mcu_restore_private(config_t *cfg, checkpoint_t *cp);
 
 // Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity):

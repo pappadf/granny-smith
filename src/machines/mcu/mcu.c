@@ -838,6 +838,12 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // mcu_checkpoint_save) and re-drive the derived interrupt lines.  Called at
 // the end of each board's build_devices on the restore path, after the
 // memory layout armed the overlay and parked the VIA input lines at idle.
+void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {
+    for (int bit = 0; bit < 8; bit++)
+        via_input(cfg->via1, 0, bit, (desc->via1_pa_model >> bit) & 1);
+    via_input(cfg->via1, 0, 0, 1); // PA0 diagnostic strap high (see mcu.h)
+}
+
 void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
     bool overlay = false;
