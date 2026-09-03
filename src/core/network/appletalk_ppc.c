@@ -143,23 +143,6 @@ static void ppc_start_browse_session(const ppc_machine_t *m);
 // Operations — field helpers
 // ============================================================================
 
-static void put32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-static void put16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-static uint32_t get32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-static uint16_t get16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
 // Pascal strings: one length byte then the characters, the whole field
 // transmitted whether used or not (§1).
 static void put_pstring(uint8_t *dst, size_t field_size, const char *s) {
@@ -186,15 +169,15 @@ static void get_pstring(const uint8_t *src, size_t field_size, char *out, size_t
 // A `PPCPortRec` (§2.1).  Ports we name are always the by-string kind.
 static void put_port_rec(uint8_t *dst, const char *name, const char *type) {
     memset(dst, 0, PPC_PORT_REC_SIZE);
-    put16(&dst[0], 0); // Roman script
+    WR_BE16(&dst[0], 0); // Roman script
     put_pstring(&dst[2], 33, name);
-    put16(&dst[36], PPC_KIND_BY_STRING);
+    WR_BE16(&dst[36], PPC_KIND_BY_STRING);
     put_pstring(&dst[38], 33, type);
 }
 
 static void get_port_rec(const uint8_t *src, char *name, size_t name_size, char *type, size_t type_size) {
     get_pstring(&src[2], 33, name, name_size);
-    if (get16(&src[36]) == PPC_KIND_BY_STRING) {
+    if (RD_BE16(&src[36]) == PPC_KIND_BY_STRING) {
         get_pstring(&src[38], 33, type, type_size);
     } else {
         // The creator-and-type variant overlays the same bytes (§2.1).
@@ -205,7 +188,7 @@ static void get_port_rec(const uint8_t *src, char *name, size_t name_size, char 
 // A `LocationNameRec` naming this host as an NBP entity (§2.2).
 static void put_location(uint8_t *dst, const char *object) {
     memset(dst, 0, PPC_LOCATION_SIZE);
-    put16(&dst[0], PPC_LOC_NBP);
+    WR_BE16(&dst[0], PPC_LOC_NBP);
     put_pstring(&dst[2], 33, object);
     put_pstring(&dst[36], 33, PPC_NBP_TYPE);
     put_pstring(&dst[70], 33, "*");
@@ -310,8 +293,8 @@ static int ppc_write_message(ppc_session_t *s, const uint8_t *msg, int len) {
 static int ppc_write_session_request(ppc_session_t *s, const char *dest_port, const char *dest_type) {
     uint8_t blk[PPC_SESSION_REQUEST_SIZE];
     memset(blk, 0, sizeof(blk));
-    put32(&blk[0], PPC_MSG_SREQ);
-    put32(&blk[4], 0); // user data, handed to the far side's PPCInform client
+    WR_BE32(&blk[0], PPC_MSG_SREQ);
+    WR_BE32(&blk[4], 0); // user data, handed to the far side's PPCInform client
     put_port_rec(&blk[8], g_host_port, PPC_NBP_TYPE);
     put_port_rec(&blk[80], dest_port, dest_type);
     put_location(&blk[152], g_host_port);
@@ -321,15 +304,15 @@ static int ppc_write_session_request(ppc_session_t *s, const char *dest_port, co
 
 static int ppc_write_accept(ppc_session_t *s) {
     uint8_t blk[PPC_ANSWER_SIZE];
-    put32(&blk[0], PPC_MSG_SAPT);
-    put32(&blk[4], 0);
+    WR_BE32(&blk[0], PPC_MSG_SAPT);
+    WR_BE32(&blk[4], 0);
     return ppc_write_message(s, blk, sizeof(blk));
 }
 
 static int ppc_write_reject(ppc_session_t *s, uint32_t reason) {
     uint8_t blk[PPC_ANSWER_SIZE];
-    put32(&blk[0], PPC_MSG_SREJ);
-    put32(&blk[4], reason);
+    WR_BE32(&blk[0], PPC_MSG_SREJ);
+    WR_BE32(&blk[4], reason);
     g_stats.sessions_refused++;
     LOG(3, "PPC: rejecting a session request, reason %u", (unsigned)reason);
     return ppc_write_message(s, blk, sizeof(blk));
@@ -340,9 +323,9 @@ static int ppc_write_reject(ppc_session_t *s, uint32_t reason) {
 static int ppc_write_list_request(ppc_session_t *s) {
     uint8_t blk[PPC_LIST_REQUEST_SIZE];
     memset(blk, 0, sizeof(blk));
-    put32(&blk[0], PPC_MSG_LPRT);
-    put16(&blk[4], 0); // start index: from the beginning
-    put16(&blk[6], PPC_LIST_REQUEST_COUNT);
+    WR_BE32(&blk[0], PPC_MSG_LPRT);
+    WR_BE16(&blk[4], 0); // start index: from the beginning
+    WR_BE16(&blk[6], PPC_LIST_REQUEST_COUNT);
     put_port_rec(&blk[8], "=", "=");
     put_pstring(&blk[80], 33, "");
     return ppc_write_message(s, blk, sizeof(blk));
@@ -355,9 +338,9 @@ int atalk_ppc_send_block(ppc_session_t *s, uint32_t creator, uint32_t type, uint
     if (len < 0 || len > PPC_MAX_MESSAGE - PPC_BLOCK_HEADER_SIZE)
         return -1;
     uint8_t hdr[PPC_BLOCK_HEADER_SIZE];
-    put32(&hdr[0], creator);
-    put32(&hdr[4], type);
-    put32(&hdr[8], user_data);
+    WR_BE32(&hdr[0], creator);
+    WR_BE32(&hdr[4], type);
+    WR_BE32(&hdr[8], user_data);
 
     // Header and payload are one client message, so they must not be split by
     // an EOM in between (§4.7).
@@ -500,8 +483,8 @@ int atalk_ppc_port_find(const char *name) {
 // A list-ports reply batch: zero or more PortInfoRecs, or the 6-byte trailer
 // that ends the enumeration (§4.6).
 static void ppc_handle_browse_reply(ppc_session_t *s, const uint8_t *msg, int len) {
-    if (len >= 4 && get32(msg) == PPC_MSG_LRSP) {
-        int actual = (len >= 6) ? get16(&msg[4]) : s->ports_collected;
+    if (len >= 4 && RD_BE32(msg) == PPC_MSG_LRSP) {
+        int actual = (len >= 6) ? RD_BE16(&msg[4]) : s->ports_collected;
         LOG(3, "PPC: '%s' listed %d port(s)", s->machine, actual);
         ppc_ports_sort();
         ppc_session_release(s, "the port list is complete", false);
@@ -529,8 +512,8 @@ static void ppc_handle_session_answer(ppc_session_t *s, const uint8_t *msg, int 
         ppc_session_release(s, "the far side answered with a runt block", true);
         return;
     }
-    uint32_t kind = get32(msg);
-    uint32_t detail = (len >= 8) ? get32(&msg[4]) : 0;
+    uint32_t kind = RD_BE32(msg);
+    uint32_t detail = (len >= 8) ? RD_BE32(&msg[4]) : 0;
 
     switch (kind) {
     case PPC_MSG_SAPT:
@@ -632,8 +615,8 @@ static void ppc_handle_list_request(ppc_session_t *s) {
         ppc_write_message(s, entry, sizeof(entry));
 
     uint8_t trailer[PPC_LIST_TRAILER_SIZE];
-    put32(&trailer[0], PPC_MSG_LRSP);
-    put16(&trailer[4], g_host_enabled ? 1 : 0);
+    WR_BE32(&trailer[0], PPC_MSG_LRSP);
+    WR_BE16(&trailer[4], g_host_enabled ? 1 : 0);
     ppc_write_message(s, trailer, sizeof(trailer));
 }
 
@@ -649,11 +632,11 @@ static void ppc_handle_message(ppc_session_t *s, const uint8_t *msg, int len) {
     }
     if (s->state != PPC_SESSION_OPEN) {
         // The responder's first message decides what this session is.
-        if (len >= 4 && get32(msg) == PPC_MSG_LPRT) {
+        if (len >= 4 && RD_BE32(msg) == PPC_MSG_LPRT) {
             ppc_handle_list_request(s);
             return;
         }
-        if (len >= 4 && get32(msg) == PPC_MSG_SREQ) {
+        if (len >= 4 && RD_BE32(msg) == PPC_MSG_SREQ) {
             ppc_handle_session_request(s, msg, len);
             return;
         }
@@ -666,9 +649,9 @@ static void ppc_handle_message(ppc_session_t *s, const uint8_t *msg, int len) {
         LOG(3, "PPC: session %u sent a %d-byte block, shorter than its header", (unsigned)s->id, len);
         return;
     }
-    uint32_t creator = get32(&msg[0]);
-    uint32_t type = get32(&msg[4]);
-    uint32_t user_data = get32(&msg[8]);
+    uint32_t creator = RD_BE32(&msg[0]);
+    uint32_t type = RD_BE32(&msg[4]);
+    uint32_t user_data = RD_BE32(&msg[8]);
     g_stats.blocks_in++;
     if (s->client && s->client->on_block)
         s->client->on_block(s->client_ctx, s, creator, type, user_data, msg + PPC_BLOCK_HEADER_SIZE,

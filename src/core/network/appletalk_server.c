@@ -91,23 +91,6 @@ static void afp_log_hex(const char *label, const uint8_t *buf, int len) {
 }
 
 // Common wire helpers (big-endian readers/writers)
-static uint16_t rd16be(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-static void wr16be(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-static void wr32be(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-static uint32_t rd32be(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | ((uint32_t)p[3]);
-}
-
 // ============================================================================
 // AFP opcodes and result codes
 // ============================================================================
@@ -323,8 +306,8 @@ static void vol_record_load(vol_t *v) {
     if (!f)
         return;
     uint8_t rec[8];
-    if (fread(rec, 1, sizeof(rec), f) == sizeof(rec) && rd32be(rec) == AFP_VOLREC_MAGIC)
-        v->backup_date = rd32be(rec + 4);
+    if (fread(rec, 1, sizeof(rec), f) == sizeof(rec) && RD_BE32(rec) == AFP_VOLREC_MAGIC)
+        v->backup_date = RD_BE32(rec + 4);
     fclose(f);
 }
 
@@ -336,8 +319,8 @@ static void vol_record_store(const vol_t *v) {
     if (!f)
         return;
     uint8_t rec[8];
-    wr32be(rec, AFP_VOLREC_MAGIC);
-    wr32be(rec + 4, v->backup_date);
+    WR_BE32(rec, AFP_VOLREC_MAGIC);
+    WR_BE32(rec + 4, v->backup_date);
     fwrite(rec, 1, sizeof(rec), f);
     fclose(f);
 }
@@ -693,11 +676,11 @@ int atalk_build_status_block(const char *server_name, const char *machine_type, 
         return -2;
     memset(buf, 0, total);
 
-    wr16be(&buf[0], (uint16_t)machine_type_off);
-    wr16be(&buf[2], (uint16_t)afp_versions_cnt_off);
-    wr16be(&buf[4], (uint16_t)uam_cnt_off);
-    wr16be(&buf[6], 0); // Volume Icon and Mask offset (none)
-    wr16be(&buf[8], afp_srvr_flags());
+    WR_BE16(&buf[0], (uint16_t)machine_type_off);
+    WR_BE16(&buf[2], (uint16_t)afp_versions_cnt_off);
+    WR_BE16(&buf[4], (uint16_t)uam_cnt_off);
+    WR_BE16(&buf[6], 0); // Volume Icon and Mask offset (none)
+    WR_BE16(&buf[8], afp_srvr_flags());
 
     pos = 10;
     pos += write_pstr(&buf[pos], server_name ? server_name : "");
@@ -1048,7 +1031,7 @@ static int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, c
         if (vpos + 1 + (int)long_len > out_max)
             return -1;
         if (pos_long_off >= 0)
-            wr16be(out + pos_long_off, (uint16_t)(vpos - pbase));
+            WR_BE16(out + pos_long_off, (uint16_t)(vpos - pbase));
         out[vpos++] = long_len;
         if (long_len) {
             memcpy(&out[vpos], nm, long_len);
@@ -1059,7 +1042,7 @@ static int afp_write_name_vars(uint8_t *out, int vpos, int out_max, int pbase, c
         if (vpos + 1 + (int)short_len > out_max)
             return -1;
         if (pos_short_off >= 0)
-            wr16be(out + pos_short_off, (uint16_t)(vpos - pbase));
+            WR_BE16(out + pos_short_off, (uint16_t)(vpos - pbase));
         out[vpos++] = short_len;
         if (short_len) {
             memcpy(&out[vpos], nm, short_len);
@@ -1087,38 +1070,38 @@ static bool afp_populate_param_area(bool is_dir, vol_t *vol, const char *rel_pat
         memcpy(out + ptr, meta.has_finder ? meta.finder : (const uint8_t[AFP_META_FINDER_SIZE]){0},
                AFP_META_FINDER_SIZE);
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 0)) >= 0)
-        wr16be(out + ptr, afp_attributes_of(full, st, &meta));
+        WR_BE16(out + ptr, afp_attributes_of(full, st, &meta));
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 1)) >= 0)
-        wr32be(out + ptr, afp_parent_cnid(vol, rel_path));
+        WR_BE32(out + ptr, afp_parent_cnid(vol, rel_path));
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 2)) >= 0) {
         // The create date is server-owned metadata; st_ctime is an inode
         // change time and is not it.  Fall back to the modification time so a
         // file that never went through AFP still reports something sane.
-        wr32be(out + ptr, meta.has_dates ? meta.create_date : afp_unix_time_to_afp(st->st_mtime));
+        WR_BE32(out + ptr, meta.has_dates ? meta.create_date : afp_unix_time_to_afp(st->st_mtime));
     }
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 3)) >= 0)
-        wr32be(out + ptr, afp_unix_time_to_afp(st->st_mtime)); // host is authoritative
+        WR_BE32(out + ptr, afp_unix_time_to_afp(st->st_mtime)); // host is authoritative
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 4)) >= 0)
-        wr32be(out + ptr, meta.has_dates ? meta.backup_date : AFP_DATE_NEVER);
+        WR_BE32(out + ptr, meta.has_dates ? meta.backup_date : AFP_DATE_NEVER);
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 8)) >= 0)
-        wr32be(out + ptr, afp_cnid_of(vol, rel_path));
+        WR_BE32(out + ptr, afp_cnid_of(vol, rel_path));
     if ((ptr = afp_param_field_ptr(is_dir, bm, pbase, 13)) >= 0)
         memset(out + ptr, 0, 6);
 
     if (!is_dir) {
         if ((ptr = afp_param_field_ptr(false, bm, pbase, 9)) >= 0)
-            wr32be(out + ptr, (uint32_t)st->st_size);
+            WR_BE32(out + ptr, (uint32_t)st->st_size);
         if ((ptr = afp_param_field_ptr(false, bm, pbase, 10)) >= 0)
-            wr32be(out + ptr, afp_meta_rsrc_len(full));
+            WR_BE32(out + ptr, afp_meta_rsrc_len(full));
     } else {
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 9)) >= 0)
-            wr16be(out + ptr, afp_count_offspring(full));
+            WR_BE16(out + ptr, afp_count_offspring(full));
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 10)) >= 0)
-            wr32be(out + ptr, 0); // Owner ID — guest-only server
+            WR_BE32(out + ptr, 0); // Owner ID — guest-only server
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 11)) >= 0)
-            wr32be(out + ptr, 0); // Group ID
+            WR_BE32(out + ptr, 0); // Group ID
         if ((ptr = afp_param_field_ptr(true, bm, pbase, 12)) >= 0)
-            wr32be(out + ptr, AFP_ACCESS_RIGHTS_ALL);
+            WR_BE32(out + ptr, AFP_ACCESS_RIGHTS_ALL);
     }
     return true;
 }
@@ -1211,7 +1194,7 @@ static int afp_write_vol_param_block(vol_t *v, uint16_t *bitmap_ptr, uint8_t *ou
         if (total_len > out_max)
             return 0;
     }
-    wr16be(out, bitmap);
+    WR_BE16(out, bitmap);
 
     struct stat root_st;
     bool have_root = stat(v->root, &root_st) == 0;
@@ -1221,39 +1204,39 @@ static int afp_write_vol_param_block(vol_t *v, uint16_t *bitmap_ptr, uint8_t *ou
     int p = param_start;
     int var_base = param_start + fixed_len;
     if (bitmap & 0x0001) {
-        wr16be(&out[p], afp_volume_attributes(v, afp21));
+        WR_BE16(&out[p], afp_volume_attributes(v, afp21));
         p += 2;
     }
     if (bitmap & 0x0002) {
-        wr16be(&out[p], 0x0002); // fixed directory-ID signature
+        WR_BE16(&out[p], 0x0002); // fixed directory-ID signature
         p += 2;
     }
     if (bitmap & 0x0004) {
-        wr32be(&out[p], have_root ? afp_unix_time_to_afp(root_st.st_ctime) : 0);
+        WR_BE32(&out[p], have_root ? afp_unix_time_to_afp(root_st.st_ctime) : 0);
         p += 4;
     }
     if (bitmap & 0x0008) {
-        wr32be(&out[p], have_root ? afp_unix_time_to_afp(root_st.st_mtime) : 0);
+        WR_BE32(&out[p], have_root ? afp_unix_time_to_afp(root_st.st_mtime) : 0);
         p += 4;
     }
     if (bitmap & 0x0010) {
-        wr32be(&out[p], v->backup_date ? v->backup_date : AFP_DATE_NEVER);
+        WR_BE32(&out[p], v->backup_date ? v->backup_date : AFP_DATE_NEVER);
         p += 4;
     }
     if (bitmap & 0x0020) {
-        wr16be(&out[p], v->vol_id);
+        WR_BE16(&out[p], v->vol_id);
         p += 2;
     }
     if (bitmap & 0x0040) {
-        wr32be(&out[p], bytes_free);
+        WR_BE32(&out[p], bytes_free);
         p += 4;
     }
     if (bitmap & 0x0080) {
-        wr32be(&out[p], bytes_total);
+        WR_BE32(&out[p], bytes_total);
         p += 4;
     }
     if (bitmap & 0x0100) {
-        wr16be(&out[p], (uint16_t)(var_base - param_start));
+        WR_BE16(&out[p], (uint16_t)(var_base - param_start));
         p += 2;
     }
     int vpos = var_base;
@@ -1541,7 +1524,7 @@ static uint32_t afp_cmd_get_srvr_parms(afp_ctx_t *ctx, const uint8_t *in, int in
         if (g_vols[i].in_use)
             count++;
 
-    wr32be(out, afp_unix_time_to_afp(time(NULL)));
+    WR_BE32(out, afp_unix_time_to_afp(time(NULL)));
     int pos = 4;
     out[pos++] = (uint8_t)count;
     for (int i = 0; i < AFP_MAX_VOLUMES; i++) {
@@ -1569,8 +1552,8 @@ static uint32_t afp_cmd_get_vol_parms(afp_ctx_t *ctx, const uint8_t *in, int in_
                                       int *out_len) {
     if (in_len < 5 || out_max < 2)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint16_t bitmap = rd16be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint16_t bitmap = RD_BE16(in + 3);
     vol_t *v = find_vol_by_id(vol_id);
     if (!v)
         return AFPERR_ParamErr;
@@ -1589,7 +1572,7 @@ static uint32_t afp_cmd_open_vol(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     if (in_len < 4)
         return AFPERR_ParamErr;
     afp_log_hex("AFP FPOpenVol req", in, in_len);
-    uint16_t bitmap = rd16be(in + 1);
+    uint16_t bitmap = RD_BE16(in + 1);
     char vol_name[33];
     int pos = afp_read_pstring(in, in_len, 3, vol_name, sizeof(vol_name));
     if (pos < 0)
@@ -1619,7 +1602,7 @@ static uint32_t afp_cmd_close_vol(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     (void)out_max;
     if (in_len < 3)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
+    uint16_t vol_id = RD_BE16(in + 1);
     vol_t *v = find_vol_by_id(vol_id);
     if (!v)
         return AFPERR_ParamErr;
@@ -1642,8 +1625,8 @@ static uint32_t afp_cmd_set_vol_parms(afp_ctx_t *ctx, const uint8_t *in, int in_
         *out_len = 0;
     if (in_len < 5)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint16_t bitmap = rd16be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint16_t bitmap = RD_BE16(in + 3);
     vol_t *v = find_vol_by_id(vol_id);
     if (!v)
         return AFPERR_ParamErr;
@@ -1651,7 +1634,7 @@ static uint32_t afp_cmd_set_vol_parms(afp_ctx_t *ctx, const uint8_t *in, int in_
         return AFPERR_BitmapErr; // backup date is the only settable parameter
     if (in_len < 9)
         return AFPERR_ParamErr;
-    v->backup_date = rd32be(in + 5);
+    v->backup_date = RD_BE32(in + 5);
     vol_record_store(v);
     LOG(10, "AFP FPSetVolParms: vol=0x%04X backupDate=%u", vol_id, v->backup_date);
     return AFPERR_NoErr;
@@ -1686,7 +1669,7 @@ static uint32_t afp_cmd_login(afp_ctx_t *ctx, const uint8_t *in, int in_len, uin
     atalk_asp_session_set_afp_version(ctx->session_id, ver);
     if (out_max < 2)
         return AFPERR_ParamErr;
-    wr16be(out, 0x0000); // guest login carries no user ID
+    WR_BE16(out, 0x0000); // guest login carries no user ID
     if (out_len)
         *out_len = 2;
     return AFPERR_NoErr;
@@ -1739,7 +1722,7 @@ static uint32_t afp_cmd_map_id(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     if (in_len < 5)
         return AFPERR_ParamErr;
     uint8_t subfunc = in[0];
-    uint32_t id = rd32be(in + 1);
+    uint32_t id = RD_BE32(in + 1);
     const char *name = (id == 0) ? "" : (subfunc == 1 ? "guest" : "staff");
     uint8_t name_len = (uint8_t)strlen(name);
     if (out_max < 1 + (int)name_len)
@@ -1758,7 +1741,7 @@ static uint32_t afp_cmd_map_name(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     (void)in;
     if (in_len < 1 || out_max < 4)
         return AFPERR_ParamErr;
-    wr32be(out, 0); // every name maps to the guest ID
+    WR_BE32(out, 0); // every name maps to the guest ID
     if (out_len)
         *out_len = 4;
     return AFPERR_NoErr;
@@ -1769,18 +1752,18 @@ static uint32_t afp_cmd_get_user_info(afp_ctx_t *ctx, const uint8_t *in, int in_
     (void)ctx;
     if (in_len < 5 || out_max < 6)
         return AFPERR_ParamErr;
-    uint16_t bitmap = (in_len >= 7) ? rd16be(in + 5) : 0x0003;
+    uint16_t bitmap = (in_len >= 7) ? RD_BE16(in + 5) : 0x0003;
     if (bitmap & ~0x0003u)
         return AFPERR_BitmapErr;
     int p = 0;
-    wr16be(out + p, bitmap);
+    WR_BE16(out + p, bitmap);
     p += 2;
     if (bitmap & 0x0001) {
-        wr32be(out + p, 0);
+        WR_BE32(out + p, 0);
         p += 4;
     }
     if (bitmap & 0x0002) {
-        wr32be(out + p, 0);
+        WR_BE32(out + p, 0);
         p += 4;
     }
     if (out_len)
@@ -1795,8 +1778,8 @@ static uint32_t afp_cmd_get_srvr_msg(afp_ctx_t *ctx, const uint8_t *in, int in_l
     (void)ctx;
     if (in_len < 5 || out_max < 4)
         return AFPERR_ParamErr;
-    uint16_t msg_type = rd16be(in + 1);
-    uint16_t bitmap = rd16be(in + 3);
+    uint16_t msg_type = RD_BE16(in + 1);
+    uint16_t bitmap = RD_BE16(in + 3);
     if (bitmap & ~0x0001u)
         return AFPERR_BitmapErr;
     if (msg_type > 1)
@@ -1808,8 +1791,8 @@ static uint32_t afp_cmd_get_srvr_msg(afp_ctx_t *ctx, const uint8_t *in, int in_l
         len = AFP_META_COMMENT_MAX;
     if (out_max < 4 + 1 + (int)len)
         return AFPERR_ParamErr;
-    wr16be(out + 0, msg_type);
-    wr16be(out + 2, bitmap);
+    WR_BE16(out + 0, msg_type);
+    WR_BE16(out + 2, bitmap);
     out[4] = (uint8_t)len;
     if (len)
         memcpy(out + 5, msg, len);
@@ -1829,8 +1812,8 @@ static uint32_t afp_cmd_open_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     (void)ctx;
     if (in_len < 10 || out_max < 4)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -1848,7 +1831,7 @@ static uint32_t afp_cmd_open_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     const afp_cat_entry_t *entry = afp_entry_for(vol, target_rel);
     if (!entry)
         return AFPERR_MiscErr;
-    wr32be(out, entry->cnid);
+    WR_BE32(out, entry->cnid);
     if (out_len)
         *out_len = 4;
     LOG(10, "AFP FPOpenDir: vol=0x%04X parent=0x%08X path='%s' → cnid=0x%08X", vol_id, dir_id,
@@ -1865,8 +1848,8 @@ static uint32_t afp_cmd_close_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     (void)out_max;
     if (in_len < 7)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
     vol_t *vol = find_vol_by_id(vol_id);
     if (!vol)
         return AFPERR_ParamErr;
@@ -1884,10 +1867,10 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_ctx_t *ctx, const uint8_t *in, in
     if (in_len < 11)
         return AFPERR_ParamErr;
     afp_log_hex("AFP FPGetFileDirParms req", in, in_len);
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
-    uint16_t file_bm = rd16be(in + 7);
-    uint16_t dir_bm = rd16be(in + 9);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t file_bm = RD_BE16(in + 7);
+    uint16_t dir_bm = RD_BE16(in + 9);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 12, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -1910,8 +1893,8 @@ static uint32_t afp_cmd_get_file_dir_parms(afp_ctx_t *ctx, const uint8_t *in, in
 
     if (out_max < 6)
         return AFPERR_ParamErr;
-    wr16be(out + 0, file_bm);
-    wr16be(out + 2, dir_bm);
+    WR_BE16(out + 0, file_bm);
+    WR_BE16(out + 2, dir_bm);
     out[4] = is_dir ? 0x80 : 0x00;
     out[5] = 0x00;
 
@@ -1958,9 +1941,9 @@ static void afp_apply_attribute_word(afp_meta_t *meta, uint16_t word) {
 static uint32_t afp_parse_set_parms(const uint8_t *in, int in_len) {
     if (in_len < 9)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
-    uint16_t bitmap = rd16be(in + 7);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t bitmap = RD_BE16(in + 7);
     char path[AFP_MAX_NAME];
     int pos = afp_read_pstring(in, in_len, 10, path, sizeof(path));
     if (pos < 0)
@@ -2013,23 +1996,23 @@ static uint32_t afp_parse_set_parms(const uint8_t *in, int in_len) {
         pos += width;
         switch (bit) {
         case 0: // Attributes
-            afp_apply_attribute_word(&meta, rd16be(field));
+            afp_apply_attribute_word(&meta, RD_BE16(field));
             touched = true;
             break;
         case 2: // Creation date
-            meta.create_date = rd32be(field);
+            meta.create_date = RD_BE32(field);
             meta.has_dates = true;
             touched = true;
             break;
         case 3: // Modification date — written through to the host too
-            new_mtime = rd32be(field);
+            new_mtime = RD_BE32(field);
             set_mtime = true;
             meta.modify_date = new_mtime;
             meta.has_dates = true;
             touched = true;
             break;
         case 4: // Backup date
-            meta.backup_date = rd32be(field);
+            meta.backup_date = RD_BE32(field);
             meta.has_dates = true;
             touched = true;
             break;
@@ -2110,10 +2093,10 @@ static uint32_t afp_cmd_open_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     if (in_len < 12)
         return AFPERR_ParamErr;
     bool is_resource = (in[0] & 0x80) != 0;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
-    uint16_t bitmap = rd16be(in + 7);
-    uint16_t access_mode = rd16be(in + 9);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t bitmap = RD_BE16(in + 7);
+    uint16_t access_mode = RD_BE16(in + 9);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 12, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -2145,8 +2128,8 @@ static uint32_t afp_cmd_open_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     afp_catalog_resolve_path(vol->catalog, target_rel, true, false);
     if (out_max < 4)
         return AFPERR_ParamErr;
-    wr16be(out + 0, bitmap);
-    wr16be(out + 2, fk ? afp_fork_ref(fk) : 0);
+    WR_BE16(out + 0, bitmap);
+    WR_BE16(out + 2, fk ? afp_fork_ref(fk) : 0);
 
     int pbase = 4;
     int p = pbase;
@@ -2189,7 +2172,7 @@ static uint32_t afp_cmd_close_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len
     (void)out_max;
     if (in_len < 3)
         return AFPERR_ParamErr;
-    afp_fork_t *fk = afp_fork_find(rd16be(in + 1));
+    afp_fork_t *fk = afp_fork_find(RD_BE16(in + 1));
     if (!fk)
         return AFPERR_ParamErr;
     afp_fork_close(fk);
@@ -2203,9 +2186,9 @@ static uint32_t afp_cmd_read(afp_ctx_t *ctx, const uint8_t *in, int in_len, uint
     (void)ctx;
     if (in_len < 11)
         return AFPERR_ParamErr;
-    uint16_t fork_ref = rd16be(in + 1);
-    uint32_t offset = rd32be(in + 3);
-    uint32_t req_count = rd32be(in + 7);
+    uint16_t fork_ref = RD_BE16(in + 1);
+    uint32_t offset = RD_BE32(in + 3);
+    uint32_t req_count = RD_BE32(in + 7);
     uint8_t newline_mask = (in_len > 11) ? in[11] : 0;
     uint8_t newline_char = (in_len > 12) ? in[12] : 0;
 
@@ -2256,9 +2239,9 @@ static uint32_t afp_cmd_write(afp_ctx_t *ctx, const uint8_t *in, int in_len, uin
     if (in_len < 11 || out_max < 4)
         return AFPERR_ParamErr;
     bool from_end = (in[0] & 0x80) != 0;
-    uint16_t fork_ref = rd16be(in + 1);
-    uint32_t offset = rd32be(in + 3);
-    uint32_t req_count = rd32be(in + 7);
+    uint16_t fork_ref = RD_BE16(in + 1);
+    uint32_t offset = RD_BE32(in + 3);
+    uint32_t req_count = RD_BE32(in + 7);
 
     afp_fork_t *fk = afp_fork_find(fork_ref);
     if (!fk)
@@ -2292,7 +2275,7 @@ static uint32_t afp_cmd_write(afp_ctx_t *ctx, const uint8_t *in, int in_len, uin
     if (st != AFP_FORK_OK)
         return afp_fork_status_to_err(st);
     g_afp_stats.bytes_written += written;
-    wr32be(out, start + written);
+    WR_BE32(out, start + written);
     if (out_len)
         *out_len = 4;
     LOG(2, "AFP FPWrite: ref=0x%04X off=%u req=%u wrote=%u", fork_ref, start, req_count, written);
@@ -2305,8 +2288,8 @@ static uint32_t afp_cmd_get_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in
     (void)ctx;
     if (in_len < 5 || out_max < 2)
         return AFPERR_ParamErr;
-    uint16_t fork_ref = rd16be(in + 1);
-    uint16_t bitmap = rd16be(in + 3);
+    uint16_t fork_ref = RD_BE16(in + 1);
+    uint16_t bitmap = RD_BE16(in + 3);
     afp_fork_t *fk = afp_fork_find(fork_ref);
     if (!fk)
         return AFPERR_ParamErr;
@@ -2317,7 +2300,7 @@ static uint32_t afp_cmd_get_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in
     if (stat(afp_fork_host_path(fk), &st) != 0)
         return AFPERR_ObjectNotFound;
 
-    wr16be(out + 0, bitmap);
+    WR_BE16(out + 0, bitmap);
     int pbase = 2;
     int p = pbase;
     if (bitmap) {
@@ -2329,7 +2312,7 @@ static uint32_t afp_cmd_get_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in
         // flush, and the data fork may have grown since the stat above.
         int lp = afp_param_field_ptr(false, bitmap, pbase, afp_fork_is_resource(fk) ? 10 : 9);
         if (lp >= 0)
-            wr32be(out + lp, afp_fork_length(fk));
+            WR_BE32(out + lp, afp_fork_length(fk));
         const char *name = afp_last_component(afp_fork_rel_path(fk));
         size_t nlen = name ? strlen(name) : 0;
         p = afp_write_name_vars(out, p, out_max, pbase, name ? name : "", bitmap, pos_long_off, pos_short_off,
@@ -2352,8 +2335,8 @@ static uint32_t afp_cmd_set_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in
     (void)out_max;
     if (in_len < 9)
         return AFPERR_ParamErr;
-    uint16_t fork_ref = rd16be(in + 1);
-    uint16_t bitmap = rd16be(in + 3);
+    uint16_t fork_ref = RD_BE16(in + 1);
+    uint16_t bitmap = RD_BE16(in + 3);
     afp_fork_t *fk = afp_fork_find(fork_ref);
     if (!fk)
         return AFPERR_ParamErr;
@@ -2361,7 +2344,7 @@ static uint32_t afp_cmd_set_fork_parms(afp_ctx_t *ctx, const uint8_t *in, int in
         return AFPERR_BitmapErr;
     if (!(bitmap & ((1u << 9) | (1u << 10))))
         return AFPERR_BitmapErr;
-    uint32_t new_len = rd32be(in + 5);
+    uint32_t new_len = RD_BE32(in + 5);
     afp_fork_status_t st = afp_fork_truncate(fk, new_len);
     if (st != AFP_FORK_OK)
         return afp_fork_status_to_err(st);
@@ -2378,7 +2361,7 @@ static uint32_t afp_cmd_flush(afp_ctx_t *ctx, const uint8_t *in, int in_len, uin
     (void)out_max;
     if (in_len < 3)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
+    uint16_t vol_id = RD_BE16(in + 1);
     if (!find_vol_by_id(vol_id))
         return AFPERR_ParamErr;
     afp_fork_flush_volume(vol_id);
@@ -2395,7 +2378,7 @@ static uint32_t afp_cmd_flush_fork(afp_ctx_t *ctx, const uint8_t *in, int in_len
     (void)out_max;
     if (in_len < 3)
         return AFPERR_ParamErr;
-    afp_fork_t *fk = afp_fork_find(rd16be(in + 1));
+    afp_fork_t *fk = afp_fork_find(RD_BE16(in + 1));
     if (!fk)
         return AFPERR_ParamErr;
     afp_fork_flush(fk);
@@ -2414,9 +2397,9 @@ static uint32_t afp_cmd_byte_range_lock(afp_ctx_t *ctx, const uint8_t *in, int i
     uint8_t flag = in[0];
     bool unlock = (flag & 0x01) != 0; // bit 0: 0 = lock, 1 = unlock
     bool end_relative = (flag & 0x80) != 0; // bit 7: offset measured from EOF
-    uint16_t fork_ref = rd16be(in + 1);
-    int32_t offset = (int32_t)rd32be(in + 3);
-    uint32_t length = rd32be(in + 7);
+    uint16_t fork_ref = RD_BE16(in + 1);
+    int32_t offset = (int32_t)RD_BE32(in + 3);
+    uint32_t length = RD_BE32(in + 7);
 
     afp_fork_t *fk = afp_fork_find(fork_ref);
     if (!fk)
@@ -2425,7 +2408,7 @@ static uint32_t afp_cmd_byte_range_lock(afp_ctx_t *ctx, const uint8_t *in, int i
     afp_fork_status_t st = afp_fork_range_lock(fk, unlock, end_relative, offset, length, &range_start);
     if (st != AFP_FORK_OK)
         return afp_fork_status_to_err(st);
-    wr32be(out, range_start);
+    WR_BE32(out, range_start);
     if (out_len)
         *out_len = 4;
     LOG(10, "AFP FPByteRangeLock: ref=0x%04X %s start=%u len=%u", fork_ref, unlock ? "unlock" : "lock", range_start,
@@ -2451,8 +2434,8 @@ static uint32_t afp_cmd_create_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len
     (void)ctx;
     if (in_len < 8 || out_max < 4)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -2481,7 +2464,7 @@ static uint32_t afp_cmd_create_dir(afp_ctx_t *ctx, const uint8_t *in, int in_len
     if (!entry)
         return AFPERR_MiscErr;
     afp_vol_touch(vol);
-    wr32be(out, entry->cnid);
+    WR_BE32(out, entry->cnid);
     if (out_len)
         *out_len = 4;
     LOG(10, "AFP FPCreateDir: '%s' → cnid=0x%08X", target_rel, entry->cnid);
@@ -2497,8 +2480,8 @@ static uint32_t afp_cmd_create_file(afp_ctx_t *ctx, const uint8_t *in, int in_le
     if (in_len < 8)
         return AFPERR_ParamErr;
     bool hard_create = (in[0] & 0x80) != 0;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -2566,8 +2549,8 @@ static uint32_t afp_cmd_delete(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     (void)out_max;
     if (in_len < 8)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -2647,8 +2630,8 @@ static uint32_t afp_cmd_rename(afp_ctx_t *ctx, const uint8_t *in, int in_len, ui
     (void)out_max;
     if (in_len < 8)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
     char old_name[AFP_MAX_NAME];
     int pos = afp_read_pstring(in, in_len, 8, old_name, sizeof(old_name));
     if (pos < 0 || pos >= in_len)
@@ -2712,9 +2695,9 @@ static uint32_t afp_cmd_move_and_rename(afp_ctx_t *ctx, const uint8_t *in, int i
     (void)out_max;
     if (in_len < 12)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t src_dir_id = rd32be(in + 3);
-    uint32_t dst_dir_id = rd32be(in + 7);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t src_dir_id = RD_BE32(in + 3);
+    uint32_t dst_dir_id = RD_BE32(in + 7);
     char src_path[AFP_MAX_NAME];
     int pos = afp_read_pstring(in, in_len, 12, src_path, sizeof(src_path));
     if (pos < 0 || pos >= in_len)
@@ -2824,10 +2807,10 @@ static uint32_t afp_cmd_copy_file(afp_ctx_t *ctx, const uint8_t *in, int in_len,
         return AFPERR_ParamErr;
     // Pad(1) SrcVolID(2) SrcDirID(4) DstVolID(2) DstDirID(4) — the two volume
     // IDs are not adjacent; the source's directory ID sits between them.
-    uint16_t src_vol_id = rd16be(in + 1);
-    uint32_t src_dir = rd32be(in + 3);
-    uint16_t dst_vol_id = rd16be(in + 7);
-    uint32_t dst_dir = rd32be(in + 9);
+    uint16_t src_vol_id = RD_BE16(in + 1);
+    uint32_t src_dir = RD_BE32(in + 3);
+    uint16_t dst_vol_id = RD_BE16(in + 7);
+    uint32_t dst_dir = RD_BE32(in + 9);
     char src_name[AFP_MAX_NAME];
     int pos = afp_read_pstring(in, in_len, 14, src_name, sizeof(src_name));
     if (pos < 0 || pos >= in_len)
@@ -2915,13 +2898,13 @@ static uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     if (in_len < 18)
         return AFPERR_ParamErr;
     afp_log_hex("AFP FPEnumerate req", in, in_len);
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
-    uint16_t file_bm = rd16be(in + 7);
-    uint16_t dir_bm = rd16be(in + 9);
-    uint16_t req_count = rd16be(in + 11);
-    uint16_t start_index = rd16be(in + 13);
-    uint16_t max_reply = rd16be(in + 15);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
+    uint16_t file_bm = RD_BE16(in + 7);
+    uint16_t dir_bm = RD_BE16(in + 9);
+    uint16_t req_count = RD_BE16(in + 11);
+    uint16_t start_index = RD_BE16(in + 13);
+    uint16_t max_reply = RD_BE16(in + 15);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 18, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -2963,9 +2946,9 @@ static uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     if (max_bytes < 6)
         return AFPERR_ParamErr;
 
-    wr16be(out + 0, file_bm);
-    wr16be(out + 2, dir_bm);
-    wr16be(out + 4, 0);
+    WR_BE16(out + 0, file_bm);
+    WR_BE16(out + 2, dir_bm);
+    WR_BE16(out + 4, 0);
     int w = 6;
     uint16_t actual = 0;
     uint16_t left = req_count ? req_count : UINT16_MAX;
@@ -3009,7 +2992,7 @@ static uint32_t afp_cmd_enumerate(afp_ctx_t *ctx, const uint8_t *in, int in_len,
         left--;
     }
 
-    wr16be(out + 4, actual);
+    WR_BE16(out + 4, actual);
     if (actual == 0)
         return AFPERR_ObjectNotFound;
     if (out_len)
@@ -3040,14 +3023,14 @@ static uint32_t afp_cmd_open_dt(afp_ctx_t *ctx, const uint8_t *in, int in_len, u
     (void)ctx;
     if (in_len < 3 || out_max < 2)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_id(rd16be(in + 1));
+    vol_t *v = find_vol_by_id(RD_BE16(in + 1));
     if (!v)
         return AFPERR_ParamErr;
     if (!v->dt_ref)
         v->dt_ref = g_next_dt_ref++;
     if (!v->desktop)
         v->desktop = afp_desktop_open(v->root);
-    wr16be(out, v->dt_ref);
+    WR_BE16(out, v->dt_ref);
     if (out_len)
         *out_len = 2;
     LOG(10, "AFP FPOpenDT: vol='%s' → DTRef=0x%04X", v->name, v->dt_ref);
@@ -3063,7 +3046,7 @@ static uint32_t afp_cmd_close_dt(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     (void)out_max;
     if (in_len < 3)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(rd16be(in + 1));
+    vol_t *v = find_vol_by_dt_ref(RD_BE16(in + 1));
     if (!v)
         return AFPERR_ParamErr;
     v->dt_ref = 0;
@@ -3082,12 +3065,12 @@ static uint32_t afp_cmd_add_icon(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     // IconTag(4) BitmapSize(2), then the bitmap streamed via ASP Write.
     if (in_len < 19)
         return AFPERR_ParamErr;
-    uint16_t dt_ref = rd16be(in + 1);
-    uint32_t creator = rd32be(in + 3);
-    uint32_t file_type = rd32be(in + 7);
+    uint16_t dt_ref = RD_BE16(in + 1);
+    uint32_t creator = RD_BE32(in + 3);
+    uint32_t file_type = RD_BE32(in + 7);
     uint8_t icon_type = in[11];
-    uint32_t icon_tag = rd32be(in + 13);
-    uint16_t icon_size = rd16be(in + 17);
+    uint32_t icon_tag = RD_BE32(in + 13);
+    uint16_t icon_size = RD_BE16(in + 17);
 
     vol_t *v = find_vol_by_dt_ref(dt_ref);
     if (!v || !v->desktop)
@@ -3119,13 +3102,13 @@ static uint32_t afp_cmd_get_icon(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     (void)ctx;
     if (in_len < 14)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(rd16be(in + 1));
+    vol_t *v = find_vol_by_dt_ref(RD_BE16(in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t creator = rd32be(in + 3);
-    uint32_t file_type = rd32be(in + 7);
+    uint32_t creator = RD_BE32(in + 3);
+    uint32_t file_type = RD_BE32(in + 7);
     uint8_t icon_type = in[11];
-    uint16_t req_size = rd16be(in + 12);
+    uint16_t req_size = RD_BE16(in + 12);
 
     const afp_icon_t *icon = afp_desktop_get_icon(v->desktop, creator, file_type, icon_type);
     if (!icon)
@@ -3147,19 +3130,19 @@ static uint32_t afp_cmd_get_icon_info(afp_ctx_t *ctx, const uint8_t *in, int in_
     (void)ctx;
     if (in_len < 9 || out_max < 12)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(rd16be(in + 1));
+    vol_t *v = find_vol_by_dt_ref(RD_BE16(in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t creator = rd32be(in + 3);
-    uint16_t index = rd16be(in + 7);
+    uint32_t creator = RD_BE32(in + 3);
+    uint16_t index = RD_BE16(in + 7);
     const afp_icon_t *icon = afp_desktop_icon_at(v->desktop, creator, index);
     if (!icon)
         return AFPERR_ItemNotFound;
-    wr32be(out + 0, icon->tag);
-    wr32be(out + 4, icon->file_type);
+    WR_BE32(out + 0, icon->tag);
+    WR_BE32(out + 4, icon->file_type);
     out[8] = icon->icon_type;
     out[9] = 0;
-    wr16be(out + 10, icon->size);
+    WR_BE16(out + 10, icon->size);
     if (out_len)
         *out_len = 12;
     return AFPERR_NoErr;
@@ -3174,12 +3157,12 @@ static uint32_t afp_cmd_add_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     (void)out_max;
     if (in_len < 15)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(rd16be(in + 1));
+    vol_t *v = find_vol_by_dt_ref(RD_BE16(in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t dir_id = rd32be(in + 3);
-    uint32_t creator = rd32be(in + 7);
-    uint32_t appl_tag = rd32be(in + 11);
+    uint32_t dir_id = RD_BE32(in + 3);
+    uint32_t creator = RD_BE32(in + 7);
+    uint32_t appl_tag = RD_BE32(in + 11);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 16, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -3211,11 +3194,11 @@ static uint32_t afp_cmd_remove_appl(afp_ctx_t *ctx, const uint8_t *in, int in_le
     (void)out_max;
     if (in_len < 11)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(rd16be(in + 1));
+    vol_t *v = find_vol_by_dt_ref(RD_BE16(in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t dir_id = rd32be(in + 3);
-    uint32_t creator = rd32be(in + 7);
+    uint32_t dir_id = RD_BE32(in + 3);
+    uint32_t creator = RD_BE32(in + 7);
     char path[AFP_MAX_NAME];
     uint32_t cnid = 0;
     if (in_len > 12 && afp_read_pstring(in, in_len, 12, path, sizeof(path)) >= 0 && path[0]) {
@@ -3240,12 +3223,12 @@ static uint32_t afp_cmd_get_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     (void)ctx;
     if (in_len < 9 || out_max < 6)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(rd16be(in + 1));
+    vol_t *v = find_vol_by_dt_ref(RD_BE16(in + 1));
     if (!v || !v->desktop)
         return AFPERR_ParamErr;
-    uint32_t creator = rd32be(in + 3);
-    uint16_t index = rd16be(in + 7);
-    uint16_t bitmap = (in_len >= 11) ? rd16be(in + 9) : 0;
+    uint32_t creator = RD_BE32(in + 3);
+    uint16_t index = RD_BE16(in + 7);
+    uint16_t bitmap = (in_len >= 11) ? RD_BE16(in + 9) : 0;
 
     const afp_appl_t *appl = afp_desktop_appl_at(v->desktop, creator, index);
     if (!appl)
@@ -3257,8 +3240,8 @@ static uint32_t afp_cmd_get_appl(afp_ctx_t *ctx, const uint8_t *in, int in_len, 
     if (!afp_stat_path(v, rel, &st))
         return AFPERR_ItemNotFound; // the application is gone; the mapping is stale
 
-    wr16be(out + 0, bitmap);
-    wr32be(out + 2, appl->tag);
+    WR_BE16(out + 0, bitmap);
+    WR_BE32(out + 2, appl->tag);
     int pbase = 6;
     int p = pbase;
     if (bitmap) {
@@ -3285,10 +3268,10 @@ static uint32_t afp_resolve_dt_target(const uint8_t *in, int in_len, vol_t **out
                                       int *out_pos) {
     if (in_len < 8)
         return AFPERR_ParamErr;
-    vol_t *v = find_vol_by_dt_ref(rd16be(in + 1));
+    vol_t *v = find_vol_by_dt_ref(RD_BE16(in + 1));
     if (!v)
         return AFPERR_ParamErr;
-    uint32_t dir_id = rd32be(in + 3);
+    uint32_t dir_id = RD_BE32(in + 3);
     char path[AFP_MAX_NAME];
     int pos = afp_read_pstring(in, in_len, 8, path, sizeof(path));
     if (pos < 0)
@@ -3413,8 +3396,8 @@ static uint32_t afp_cmd_create_id(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     (void)ctx;
     if (in_len < 8 || out_max < 4)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t dir_id = rd32be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t dir_id = RD_BE32(in + 3);
     char path[AFP_MAX_NAME];
     if (afp_read_pstring(in, in_len, 8, path, sizeof(path)) < 0)
         return AFPERR_ParamErr;
@@ -3434,7 +3417,7 @@ static uint32_t afp_cmd_create_id(afp_ctx_t *ctx, const uint8_t *in, int in_len,
         return AFPERR_MiscErr;
     uint32_t cnid = entry->cnid;
     bool existed = entry->has_file_id;
-    wr32be(out, cnid);
+    WR_BE32(out, cnid);
     if (out_len)
         *out_len = 4;
     if (existed)
@@ -3453,10 +3436,10 @@ static uint32_t afp_cmd_delete_id(afp_ctx_t *ctx, const uint8_t *in, int in_len,
     (void)out_max;
     if (in_len < 7)
         return AFPERR_ParamErr;
-    vol_t *vol = find_vol_by_id(rd16be(in + 1));
+    vol_t *vol = find_vol_by_id(RD_BE16(in + 1));
     if (!vol)
         return AFPERR_ParamErr;
-    uint32_t file_id = rd32be(in + 3);
+    uint32_t file_id = RD_BE32(in + 3);
     const afp_cat_entry_t *entry = afp_catalog_find(vol->catalog, file_id);
     if (!entry)
         return AFPERR_IDNotFound;
@@ -3477,11 +3460,11 @@ static uint32_t afp_cmd_resolve_id(afp_ctx_t *ctx, const uint8_t *in, int in_len
     (void)ctx;
     if (in_len < 9 || out_max < 2)
         return AFPERR_ParamErr;
-    vol_t *vol = find_vol_by_id(rd16be(in + 1));
+    vol_t *vol = find_vol_by_id(RD_BE16(in + 1));
     if (!vol)
         return AFPERR_ParamErr;
-    uint32_t file_id = rd32be(in + 3);
-    uint16_t bitmap = rd16be(in + 7);
+    uint32_t file_id = RD_BE32(in + 3);
+    uint16_t bitmap = RD_BE16(in + 7);
 
     const afp_cat_entry_t *entry = afp_catalog_find(vol->catalog, file_id);
     if (!entry || entry->is_dir || !entry->has_file_id)
@@ -3493,7 +3476,7 @@ static uint32_t afp_cmd_resolve_id(afp_ctx_t *ctx, const uint8_t *in, int in_len
     if (!afp_stat_path(vol, rel, &st))
         return AFPERR_IDNotFound; // dangling thread — the file is gone
 
-    wr16be(out + 0, bitmap);
+    WR_BE16(out + 0, bitmap);
     int pbase = 2;
     int p = pbase;
     if (bitmap) {
@@ -3530,9 +3513,9 @@ static uint32_t afp_cmd_exchange_files(afp_ctx_t *ctx, const uint8_t *in, int in
     (void)out_max;
     if (in_len < 12)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t src_dir = rd32be(in + 3);
-    uint32_t dst_dir = rd32be(in + 7);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t src_dir = RD_BE32(in + 3);
+    uint32_t dst_dir = RD_BE32(in + 7);
     char src_path[AFP_MAX_NAME];
     int pos = afp_read_pstring(in, in_len, 12, src_path, sizeof(src_path));
     if (pos < 0 || pos >= in_len)
@@ -3679,31 +3662,31 @@ static bool catsearch_parse_spec(const uint8_t *in, int in_len, int pos, uint32_
         switch (bit) {
         case 0:
             if (second)
-                spec->attrs_mask = rd16be(f);
+                spec->attrs_mask = RD_BE16(f);
             else
-                spec->attrs = rd16be(f);
+                spec->attrs = RD_BE16(f);
             break;
         case 1:
             if (!second)
-                spec->parent = rd32be(f);
+                spec->parent = RD_BE32(f);
             break;
         case 2:
             if (second)
-                spec->create_hi = rd32be(f);
+                spec->create_hi = RD_BE32(f);
             else
-                spec->create_lo = rd32be(f);
+                spec->create_lo = RD_BE32(f);
             break;
         case 3:
             if (second)
-                spec->modify_hi = rd32be(f);
+                spec->modify_hi = RD_BE32(f);
             else
-                spec->modify_lo = rd32be(f);
+                spec->modify_lo = RD_BE32(f);
             break;
         case 4:
             if (second)
-                spec->backup_hi = rd32be(f);
+                spec->backup_hi = RD_BE32(f);
             else
-                spec->backup_lo = rd32be(f);
+                spec->backup_lo = RD_BE32(f);
             break;
         case 5:
             memcpy(second ? spec->finder_mask : spec->finder, f, AFP_META_FINDER_SIZE);
@@ -3713,7 +3696,7 @@ static bool catsearch_parse_spec(const uint8_t *in, int in_len, int pos, uint32_
             // record's offset is followed.
             if (second)
                 break;
-            uint16_t off = rd16be(f);
+            uint16_t off = RD_BE16(f);
             int np = base + off;
             if (off == 0 || np >= pos + size)
                 break;
@@ -3728,15 +3711,15 @@ static bool catsearch_parse_spec(const uint8_t *in, int in_len, int pos, uint32_
         }
         case 9:
             if (second)
-                spec->dlen_hi = (width == 2) ? rd16be(f) : rd32be(f);
+                spec->dlen_hi = (width == 2) ? RD_BE16(f) : RD_BE32(f);
             else
-                spec->dlen_lo = (width == 2) ? rd16be(f) : rd32be(f);
+                spec->dlen_lo = (width == 2) ? RD_BE16(f) : RD_BE32(f);
             break;
         case 10:
             if (second)
-                spec->rlen_hi = rd32be(f);
+                spec->rlen_hi = RD_BE32(f);
             else
-                spec->rlen_lo = rd32be(f);
+                spec->rlen_lo = RD_BE32(f);
             break;
         default:
             break;
@@ -3818,13 +3801,13 @@ static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len
     (void)ctx;
     if (in_len < 35 || out_max < 24)
         return AFPERR_ParamErr;
-    uint16_t vol_id = rd16be(in + 1);
-    uint32_t req_matches = rd32be(in + 3);
+    uint16_t vol_id = RD_BE16(in + 1);
+    uint32_t req_matches = RD_BE32(in + 3);
     // in + 7: Reserved (must be zero)
     const uint8_t *catpos = in + 11; // 16 bytes
-    uint16_t file_bm = rd16be(in + 27);
-    uint16_t dir_bm = rd16be(in + 29);
-    uint32_t request_bm = rd32be(in + 31);
+    uint16_t file_bm = RD_BE16(in + 27);
+    uint16_t dir_bm = RD_BE16(in + 29);
+    uint32_t request_bm = RD_BE32(in + 31);
     int pos = 35;
 
     vol_t *vol = find_vol_by_id(vol_id);
@@ -3843,11 +3826,11 @@ static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len
 
     // CatPosition: a zero first word restarts the walk; otherwise it carries
     // the generation the client last saw plus the CNID it stopped at.
-    uint16_t pos_valid = rd16be(catpos);
+    uint16_t pos_valid = RD_BE16(catpos);
     uint32_t last_cnid = 0;
     if (pos_valid) {
-        uint32_t gen = rd32be(catpos + 4);
-        last_cnid = rd32be(catpos + 8);
+        uint32_t gen = RD_BE32(catpos + 4);
+        last_cnid = RD_BE32(catpos + 8);
         if (gen != afp_catalog_generation(vol->catalog))
             return AFPERR_CatalogChanged;
     } else {
@@ -3947,12 +3930,12 @@ static uint32_t afp_cmd_cat_search(afp_ctx_t *ctx, const uint8_t *in, int in_len
     }
 
     memset(out, 0, 16);
-    wr16be(out + 0, 1); // a real catalog position, not a hint
-    wr32be(out + 4, afp_catalog_generation(vol->catalog));
-    wr32be(out + 8, cursor);
-    wr16be(out + 16, file_bm);
-    wr16be(out + 18, dir_bm);
-    wr32be(out + 20, actual);
+    WR_BE16(out + 0, 1); // a real catalog position, not a hint
+    WR_BE32(out + 4, afp_catalog_generation(vol->catalog));
+    WR_BE32(out + 8, cursor);
+    WR_BE16(out + 16, file_bm);
+    WR_BE16(out + 18, dir_bm);
+    WR_BE32(out + 20, actual);
     if (out_len)
         *out_len = w;
     LOG(10, "AFP FPCatSearch: vol=0x%04X requestBm=0x%08X matches=%u cursor=0x%08X%s", vol_id, request_bm, actual,

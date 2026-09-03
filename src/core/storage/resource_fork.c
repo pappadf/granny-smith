@@ -16,6 +16,7 @@
 // to a static string, never abort.
 
 #include "resource_fork.h"
+#include "common.h"
 
 #include "macroman.h"
 #include "rsrc_dcmp.h"
@@ -26,14 +27,8 @@
 #include <string.h>
 
 // Big-endian field readers — the fork buffer is the on-disk layout verbatim.
-static uint16_t be_u16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-static uint32_t be_u32(const uint8_t *p) {
-    return (uint32_t)((p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]);
-}
 static int16_t be_i16(const uint8_t *p) {
-    return (int16_t)be_u16(p);
+    return (int16_t)RD_BE16(p);
 }
 
 // One parsed type entry: 4-CC plus a contiguous run of ref-list slots.
@@ -100,10 +95,10 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
 
     if (!fork_bytes || fork_len < 16)
         FAIL("fork too small for header");
-    uint32_t data_off = be_u32(fork_bytes + 0);
-    uint32_t map_off = be_u32(fork_bytes + 4);
-    uint32_t data_len = be_u32(fork_bytes + 8);
-    uint32_t map_len = be_u32(fork_bytes + 12);
+    uint32_t data_off = RD_BE32(fork_bytes + 0);
+    uint32_t map_off = RD_BE32(fork_bytes + 4);
+    uint32_t data_len = RD_BE32(fork_bytes + 8);
+    uint32_t map_len = RD_BE32(fork_bytes + 12);
     if ((uint64_t)data_off + data_len > fork_len)
         FAIL("data area out of range");
     if ((uint64_t)map_off + map_len > fork_len)
@@ -113,9 +108,9 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
 
     const uint8_t *map = fork_bytes + map_off;
     const uint8_t *data = fork_bytes + data_off;
-    uint16_t fork_attrs = be_u16(map + 22);
-    uint16_t type_list_off = be_u16(map + 24);
-    uint16_t name_list_off = be_u16(map + 26);
+    uint16_t fork_attrs = RD_BE16(map + 22);
+    uint16_t type_list_off = RD_BE16(map + 24);
+    uint16_t name_list_off = RD_BE16(map + 26);
     if ((uint32_t)type_list_off + 2 > map_len)
         FAIL("type-list offset out of range");
     // name_list_off may equal map_len exactly when no names are stored.
@@ -127,7 +122,7 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
         FAIL("out of memory");
     rf->fork_attrs = fork_attrs;
 
-    uint16_t num_types_m1 = be_u16(map + type_list_off);
+    uint16_t num_types_m1 = RD_BE16(map + type_list_off);
     // The off-by-one encoding means an empty fork stores 0xFFFF for the
     // num-types word; detect that explicitly so we don't allocate 64K
     // empty type slots.
@@ -151,8 +146,8 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
     for (size_t t = 0; t < rf->num_types; t++) {
         const uint8_t *te = map + type_list_off + 2 + 8 * t;
         memcpy(rf->types[t].cc, te + 0, 4);
-        uint16_t count_m1 = be_u16(te + 4);
-        uint16_t ref_off = be_u16(te + 6);
+        uint16_t count_m1 = RD_BE16(te + 4);
+        uint16_t ref_off = RD_BE16(te + 6);
         size_t num_res = (size_t)count_m1 + 1;
         rf->types[t].num_resources = num_res;
 
@@ -177,7 +172,7 @@ rfork_t *rfork_parse(const uint8_t *fork_bytes, size_t fork_len, const char **er
             uint32_t do24 = ((uint32_t)re[5] << 16) | ((uint32_t)re[6] << 8) | (uint32_t)re[7];
             if ((size_t)do24 + 4 > data_len)
                 FAIL("resource data offset out of range");
-            uint32_t rlen = be_u32(data + do24);
+            uint32_t rlen = RD_BE32(data + do24);
             if ((size_t)do24 + 4 + rlen > data_len)
                 FAIL("resource data length out of range");
 

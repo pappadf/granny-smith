@@ -14,6 +14,7 @@
 // emulator-invented hash, and no filename ever enters the comparison.
 
 #include "prom.h"
+#include "common.h"
 
 #include "log.h"
 #include "machine_profile.h"
@@ -44,10 +45,6 @@ LOG_USE_CATEGORY_NAME("prom");
 #define PCIR_MIN_LENGTH    0x18
 #define PROM_CODE_TYPE_X86 0x00
 #define PROM_CODE_TYPE_OF  0x01
-
-static uint16_t prom_le16(const uint8_t *p) {
-    return (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
-}
 
 // CRC-32 (IEEE), the identity key.  Bit-serial: this runs a handful of
 // times per boot over at most 256 KB, so a table would be pure weight.
@@ -146,7 +143,7 @@ static prom_id_result_t prom_validate(const uint8_t *buf, size_t size, prom_id_t
         return PROM_ID_NOT_A_PROM;
 
     // The PCI Data Structure must lie inside the image and carry 'PCIR'.
-    uint32_t pcir = prom_le16(buf + PROM_PCIR_POINTER);
+    uint32_t pcir = RD_LE16(buf + PROM_PCIR_POINTER);
     if ((size_t)pcir + PCIR_MIN_LENGTH > size)
         return PROM_ID_NOT_A_PROM;
     if (memcmp(buf + pcir, "PCIR", 4) != 0)
@@ -165,7 +162,7 @@ static prom_id_result_t prom_validate(const uint8_t *buf, size_t size, prom_id_t
 
     // The FCode program starts where the image's own halfword at $02 says,
     // and must begin with a start token (1275 §5.2.2.4).
-    uint32_t fcode_offset = prom_le16(buf + 0x02);
+    uint32_t fcode_offset = RD_LE16(buf + 0x02);
     if ((size_t)fcode_offset + 8 > size)
         return PROM_ID_NOT_A_PROM;
     uint8_t start = buf[fcode_offset];
@@ -174,8 +171,8 @@ static prom_id_result_t prom_validate(const uint8_t *buf, size_t size, prom_id_t
 
     if (out) {
         out->image_size = size;
-        out->vendor_id = prom_le16(buf + pcir + PCIR_VENDOR_ID);
-        out->device_id = prom_le16(buf + pcir + PCIR_DEVICE_ID);
+        out->vendor_id = RD_LE16(buf + pcir + PCIR_VENDOR_ID);
+        out->device_id = RD_LE16(buf + pcir + PCIR_DEVICE_ID);
         out->class_code = (uint32_t)buf[pcir + PCIR_CLASS_CODE] | ((uint32_t)buf[pcir + PCIR_CLASS_CODE + 1] << 8) |
                           ((uint32_t)buf[pcir + PCIR_CLASS_CODE + 2] << 16);
         out->fcode_offset = fcode_offset;

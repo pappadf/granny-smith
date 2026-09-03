@@ -39,6 +39,7 @@
 // only the in-flight byte cursor survives a stall.
 
 #include "dbdma.h"
+#include "common.h"
 
 #include "log.h"
 
@@ -149,16 +150,12 @@ void tnt_dbdma_set_port(tnt_dbdma_t *d, int chan, const tnt_dbdma_port_t *port) 
 // ============================================================
 
 // Compose a little-endian 32-bit field from raw guest bytes.
-static uint32_t le32(const uint8_t *p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
 // Read the descriptor at `addr` into its four little-endian words.
 static void desc_fetch(tnt_dbdma_t *d, uint32_t addr, uint32_t w[4]) {
     uint8_t raw[16];
     d->mem_read(d->mem_ctx, addr, raw, 16);
     for (int i = 0; i < 4; i++)
-        w[i] = le32(raw + 4 * i);
+        w[i] = RD_LE32(raw + 4 * i);
 }
 
 // Write one little-endian 32-bit descriptor field back to guest memory.
@@ -318,7 +315,7 @@ static void run_channel(tnt_dbdma_t *d, int n) {
             } else {
                 uint8_t raw[4] = {0, 0, 0, 0};
                 d->mem_read(d->mem_ctx, w[1], raw, len);
-                desc_store32(d, c->cmdptr + 8, le32(raw)); // into cmdDep
+                desc_store32(d, c->cmdptr + 8, RD_LE32(raw)); // into cmdDep
             }
             // cmdDep carries the quad, so these commands have no branch
             // target; a set b-modifier is a driver bug — log, don't jump.
