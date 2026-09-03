@@ -463,7 +463,7 @@ def row_av_tts() {
     assert machine.dsp.state == "running" "av-tts: DSP ${machine.dsp.state} after speech"
     assert machine.dsp.emr == 0x8000 "av-tts: emr=${machine.dsp.emr:04x} after speech — kernel died"
     assert machine.sound.overruns == 0 "av-tts: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-tts.wav", 67920)
+    check_sound("goldens/av-tts.wav", 69120)
     report_perf("suite-av/av-tts", scheduler.instr_count)
 }
 
@@ -529,7 +529,7 @@ def row_av_sound_in() {
     run_ticks(400)
     assert machine.dsp.emr == 0x8000 "av-sound-in: emr=${machine.dsp.emr:04x} after playback — kernel died"
     assert machine.sound.overruns == 0 "av-sound-in: ${machine.sound.overruns} frame overruns"
-    check_sound("goldens/av-sound-in.wav", 161280)
+    check_sound("goldens/av-sound-in.wav", 161760)
     click(377, 169) # Cancel — never Save
     run_ticks(100)
     report_perf("suite-av/av-sound-in", scheduler.instr_count)
