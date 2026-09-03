@@ -81,6 +81,61 @@ typedef struct lisa_state {
 #define MACXL_SCREEN_W 608
 #define MACXL_SCREEN_H 431
 
+// The Lisa-family board descriptor: the four facts that differ between the
+// Lisa 2 and the Macintosh XL, which is the same board sold with the "3A"
+// boot ROM and MacWorks.  Data only, no hooks, so hw_profile_t.board names
+// this directly -- the tnt/pdm shape rather than the mcu/av one, which
+// wraps its desc in a struct of function pointers.
+typedef struct lisa_board_desc {
+    uint32_t screen_w, screen_h; // raster: 720x364 Lisa 2, 608x431 XL
+    // Pixel aspect ratio (display.h).  The XL's 608x431 raster is square
+    // (1:1); the Lisa 2's native 720x364 raster has taller-than-wide pixels,
+    // so it takes a 2:3 pixel (2 host px wide, 3 high) -- at the 200% default
+    // zoom every Lisa-2 pixel maps to an exact 2x3 host block, which is sharp
+    // integer scaling and a close match to the true ~0.71 ratio.
+    uint8_t par_w, par_h;
+    // Lisa 2 DRAM is based high ($80000); the Macintosh XL keeps it low (0).
+    bool ram_high;
+    // LisaOS addresses VIA2 over the full $D800-$D9FF window (its ProFile
+    // driver uses base $D801); MacWorks XL uses only the $D901 alias and
+    // depends on the rest of that window staying unmapped, so the XL gets
+    // the narrow region.
+    uint32_t via2_base, via2_len;
+    // FDC diskrom byte the boot ROM senses.  $A0 => iob_sony => the SONY
+    // driver (boot-ROM SYSTYPE 1); left at 0 LisaOS mis-drives the floppy as
+    // a Twiggy and never completes boot.  The Macintosh XL path (MacWorks
+    // XL, iob_pepsi) keeps its empirically-correct 0: its loader-disk eject
+    // sequence only matches with SYSTYPE 0 (revisit when MacWorks's own
+    // machine-id handling is investigated).
+    uint8_t fdc_diskrom;
+} lisa_board_desc_t;
+
+static const lisa_board_desc_t lisa_board = {
+    .screen_w = LISA_SCREEN_W,
+    .screen_h = LISA_SCREEN_H,
+    .par_w = 2,
+    .par_h = 3,
+    .ram_high = true,
+    .via2_base = 0xD800,
+    .via2_len = 0x200,
+    .fdc_diskrom = 0xA0,
+};
+
+static const lisa_board_desc_t macxl_board = {
+    .screen_w = MACXL_SCREEN_W,
+    .screen_h = MACXL_SCREEN_H,
+    .par_w = 1,
+    .par_h = 1,
+    .ram_high = false,
+    .via2_base = 0xD901,
+    .via2_len = 16 * 8,
+    .fdc_diskrom = 0, // iob_pepsi
+};
+
+static const lisa_board_desc_t *lisa_board_of(const config_t *cfg) {
+    return (const lisa_board_desc_t *)cfg->machine->board;
+}
+
 static inline lisa_state_t *lisa_state(config_t *cfg) {
     return (lisa_state_t *)cfg->machine_context;
 }
@@ -106,18 +161,13 @@ static void lisa_refresh_framebuffer(config_t *cfg) {
 
 static void lisa_display_init(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
-    bool macxl = cfg->machine && cfg->machine->id && strcmp(cfg->machine->id, "macxl") == 0;
-    ls->display.width = macxl ? MACXL_SCREEN_W : LISA_SCREEN_W;
-    ls->display.height = macxl ? MACXL_SCREEN_H : LISA_SCREEN_H;
+    const lisa_board_desc_t *board = lisa_board_of(cfg);
+    ls->display.width = board->screen_w;
+    ls->display.height = board->screen_h;
     ls->display.stride = ls->display.width / 8;
     ls->display.format = PIXEL_1BPP_MSB;
-    // Pixel aspect ratio (display.h).  The XL's 608x431 raster is square (1:1);
-    // the Lisa 2's native 720x364 raster has taller-than-wide pixels.  Use a 2:3
-    // pixel (2 host px wide, 3 high) so at the 200% default zoom every Lisa-2
-    // pixel maps to an exact 2x3 host block — sharp integer scaling and a
-    // close match to the true ~0.71 ratio of the unmodified raster.
-    ls->display.par_w = macxl ? 1 : 2;
-    ls->display.par_h = macxl ? 1 : 3;
+    ls->display.par_w = board->par_w;
+    ls->display.par_h = board->par_h;
     ls->display.bits = NULL;
     ls->display.clut = NULL;
     ls->display.clut_len = 0;
@@ -791,8 +841,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // The segment MMU owns all translation; it reads/writes directly into the
     // flat RAM+ROM image the memory map allocated.  The ROM region is filled
     // later by rom.load_lisa(); the host pointer stays valid (same buffer).
-    // Lisa 2 DRAM is based high ($80000); the Macintosh XL keeps it low (0).
-    bool ram_high = !(cfg->machine && cfg->machine->id && strcmp(cfg->machine->id, "macxl") == 0);
+    bool ram_high = lisa_board_of(cfg)->ram_high;
     ls->mmu =
         lisa_mmu_init(ram_native_pointer(cfg->mem_map, 0), cfg->ram_size, (uint8_t *)memory_rom_bytes(cfg->mem_map),
                       memory_rom_size(cfg->mem_map), ram_high, checkpoint);
@@ -822,13 +871,8 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     ls->via1_map = (lisa_via_port_t){.via = cfg->via1, .vif = via_get_memory_interface(cfg->via1), .reg_shift = 1};
     ls->via2_map = (lisa_via_port_t){.via = cfg->via2, .vif = via_get_memory_interface(cfg->via2), .reg_shift = 3};
     lisa_mmu_map_io(ls->mmu, 0xDD81, 16 * 2, &lisa_via_iface, &ls->via1_map);
-    // LisaOS addresses VIA2 over the full $D800-$D9FF window (its ProFile driver
-    // uses base $D801); MacWorks XL uses only the $D901 alias and depends on the
-    // rest of that window staying unmapped, so give macxl the narrow $D901 region.
-    if (strcmp(cfg->machine->id, "macxl") == 0)
-        lisa_mmu_map_io(ls->mmu, 0xD901, 16 * 8, &lisa_via_iface, &ls->via2_map);
-    else
-        lisa_mmu_map_io(ls->mmu, 0xD800, 0x200, &lisa_via_iface, &ls->via2_map);
+    lisa_mmu_map_io(ls->mmu, lisa_board_of(cfg)->via2_base, lisa_board_of(cfg)->via2_len, &lisa_via_iface,
+                    &ls->via2_map);
 
     // COPS keyboard/mouse/clock/power microcontroller on VIA1 port A.
     ls->cops = cops_init(cfg->via1, cfg->scheduler, checkpoint);
@@ -860,8 +904,8 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // XL path (MacWorks XL, iob_pepsi) keeps its empirically-correct 0: its
     // loader-disk eject sequence only matches with SYSTYPE 0 (revisit when
     // MacWorks's own machine-id handling is investigated).
-    if (strcmp(cfg->machine->id, "macxl") != 0)
-        lisa_fdc_set_diskrom(ls->fdc, 0xA0); // iob_sony — Lisa 2/5
+    if (lisa_board_of(cfg)->fdc_diskrom)
+        lisa_fdc_set_diskrom(ls->fdc, lisa_board_of(cfg)->fdc_diskrom);
 
     // Expose the Sony drive so disks can be inserted/ejected at runtime
     // (floppy.drives[0].insert / .eject), e.g. swapping the MacWorks loader disk
@@ -1121,6 +1165,7 @@ const hw_profile_t machine_lisa = {
     .has_cdrom = false,
     .cdrom_id = 0,
 
+    .board = &lisa_board,
     .substrate = &lisa_substrate,
 };
 
@@ -1150,5 +1195,6 @@ const hw_profile_t machine_macxl = {
     .has_cdrom = false,
     .cdrom_id = 0,
 
+    .board = &macxl_board,
     .substrate = &lisa_substrate,
 };
