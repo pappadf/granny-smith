@@ -408,13 +408,21 @@ static void se30_post_nubus(config_t *cfg) {
     assert(se30->video_card != NULL);
     se30->vram = builtin_se30_video_vram(se30->video_card);
     se30->vrom = builtin_se30_video_vrom(se30->video_card);
-    if (!se30->vram || !se30->vrom) {
-        fprintf(stderr, "Error: SE/30 Video ROM not found.\n"
-                        "The SE/30 emulator requires a real VROM file for proper operation.\n"
-                        "Load one with machine.vrom.load, or make it available where the platform\n"
-                        "offers vROM files (e.g. next to the ROM file).\n");
-        exit(1);
-    }
+    // Unreachable by construction: card_init_common callocs both buffers and
+    // returns -1 if either fails, so a card that exists has them, and the
+    // assert above already covers a missing card.  An assert rather than the
+    // process kill this used to be -- machine_boot_apply's whole contract is
+    // that a rejected boot leaves the running machine untouched (it validates
+    // before system_destroy and closes transferred media if system_create
+    // fails), and exit(1) from inside substrate->init() defeated all of it:
+    // in the browser it killed the emulator, and a machine.restart's in-transit
+    // media handles went with it.
+    //
+    // The message it printed was also stale -- it demanded "a real VROM file"
+    // long after builtin_se30_video grew synthesise_vrom_fallback() precisely
+    // so the SE/30 keeps booting when no onboard-video vROM is offered, which
+    // is also why machine.c's validate_vrom_resolution exempts BUILTIN cards.
+    GS_ASSERTF(se30->vram && se30->vrom, "SE/30 slot-$E card has no %s", se30->vram ? "vROM" : "VRAM");
     memory_map_host_region(cfg->mem_map, "se30_vram", se30->vram, SE30_VRAM_BASE, SE30_VRAM_SIZE, /*writable*/ true);
     memory_map_host_region(cfg->mem_map, "se30_vrom", se30->vrom, SE30_VROM_PHYS, SE30_VROM_SIZE, /*writable*/ false);
     memory_map_host_region_alias(cfg->mem_map, SE30_VRAM_PHYS_ALT, SE30_VRAM_BASE);
