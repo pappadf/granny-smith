@@ -405,7 +405,7 @@ const hw_profile_t machine_iisi = {
 
     .address_bits = 32,
     .ram_default = 0x1100000, // 17 MB (1 MB Bank A + 16 MB Bank B)
-    .ram_max = 0x8000000, // Bank B window top ($04000000 + 64 MB)
+    .ram_max = 0x4100000, // 65 MB: 1 MB soldered Bank A + the 64 MB Bank B window
     .rom_size = 0x80000, // 512 KB
 
     .ram_options = iisi_ram_options_kb,
