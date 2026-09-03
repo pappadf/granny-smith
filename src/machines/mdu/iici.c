@@ -58,7 +58,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iici");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // I/O island offsets (private to the dispatcher)

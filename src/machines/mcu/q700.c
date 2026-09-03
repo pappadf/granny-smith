@@ -44,7 +44,7 @@
 #include <stdint.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("q700");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // VIA callbacks (direct IIci-like wiring; ref §14)

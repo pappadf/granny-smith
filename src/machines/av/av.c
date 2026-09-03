@@ -46,7 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("av");
+LOG_USE_CATEGORY_NAME("board");
 
 static inline const av_board_t *av_board(config_t *cfg) {
     return (const av_board_t *)cfg->machine->board;

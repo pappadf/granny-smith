@@ -40,7 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("mcu");
+LOG_USE_CATEGORY_NAME("board");
 
 static inline const mcu_board_t *mcu_board(config_t *cfg) {
     return (const mcu_board_t *)cfg->machine->board;

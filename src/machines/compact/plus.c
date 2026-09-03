@@ -39,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("plus");
+LOG_USE_CATEGORY_NAME("board");
 
 // Plus-specific peripheral state not shared with other machines.
 // Accessed through config_t.machine_context.

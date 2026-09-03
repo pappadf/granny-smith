@@ -60,7 +60,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iisi");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // I/O island offsets (private to the dispatcher) — MDU map

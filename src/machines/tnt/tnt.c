@@ -54,7 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("tnt");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Page-table helpers (the pdm_fill_page shape, kept local so the TNT

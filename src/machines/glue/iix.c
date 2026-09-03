@@ -51,7 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iix");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Forward declarations

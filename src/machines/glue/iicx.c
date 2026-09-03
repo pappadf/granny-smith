@@ -57,7 +57,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iicx");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Constants

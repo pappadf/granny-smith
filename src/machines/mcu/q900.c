@@ -54,7 +54,7 @@
 #include <stdint.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("q900");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // VIA callbacks (tower wiring: Caboose on VIA1, IOP IRQs on VIA2)

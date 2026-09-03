@@ -49,7 +49,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("se30");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Constants

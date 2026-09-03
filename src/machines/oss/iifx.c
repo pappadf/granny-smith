@@ -42,7 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iifx");
+LOG_USE_CATEGORY_NAME("board");
 
 // Top-level IIfx address-space constants.
 #define IIFX_RAM_WINDOW 0x04000000UL // 64 MB RAM decode window (mirrors installed RAM)

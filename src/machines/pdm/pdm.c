@@ -46,7 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("pdm");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Page-table helpers (the mac030_fill_page shape, kept local so the PDM

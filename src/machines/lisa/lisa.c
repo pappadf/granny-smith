@@ -40,7 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("lisa");
+LOG_USE_CATEGORY_NAME("board");
 
 // The two 6522 VIAs use Lisa register strides (VIA1 = 2, VIA2 = 8) rather than
 // the Mac's 0x200; via.c selects its register from address bits 9-12, so this
