@@ -453,10 +453,23 @@ static void run_cmd(scsi_t *scsi) {
     // absent image.  A machine with a CD bay carries the drive from power-on
     // (system_create), so this is the ordinary state between discs, not an
     // error path.
-    if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present &&
-        scsi_cmd_needs_medium(scsi->cmd.opcode)) {
-        scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
-        return;
+    //
+    // START UNIT joins them, and only in its START form (CDB byte 4 bit 0 —
+    // stopping or ejecting an empty drive is fine): a drive with no disc
+    // cannot spin one up, so it answers NOT READY.  The Network Server's
+    // Open Firmware depends on exactly that.  Its diag-device list is
+    // `cd disk6 fd:diags`, so it starts the CD first; told GOOD, it believes
+    // the drive came ready and issues READ, and READ's CHECK CONDITION
+    // reaches its SCRIPTS program as a DATA IN phase mismatch it never
+    // recovers from — the machine stalls at `cd` and never reaches the
+    // diagnostic floppy.  Told NOT READY, it reads the sense, gives up on
+    // the empty drive and boots the floppy, which is what the hardware does.
+    if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
+        bool start_unit = scsi->cmd.opcode == CMD_START_STOP_UNIT && (scsi->buf.data[4] & 0x01) != 0;
+        if (start_unit || scsi_cmd_needs_medium(scsi->cmd.opcode)) {
+            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
+            return;
+        }
     }
 
     switch (scsi->cmd.opcode) {
