@@ -20,21 +20,13 @@
 # --- 68000 ---------------------------------------------------------------
 68000 exception ori/address-error -- an aborted read-modify-write through (An)+ leaves An un-incremented; the model increments it as part of the EA before the (faulting) read (one vector; 22 of a large tier's 907 address-error vectors are of this ordering class)
 
-# --- 68030 (68882): operand classes the FPU does not handle yet ----------
+# --- 68030 (68882) --------------------------------------------------------
 #
-# The smoke tier is four vectors per mnemonic, so what is listed here is what
-# it happens to reach.  A locally generated 40-per-mnemonic 68030 tier at the
-# same pin also fails packed-decimal (.p) SOURCE operands in fabs, fadd, fmul,
-# fscale, fdiv, fsqrt and fsub, and the packed-decimal DESTINATION in fmove
-# ({k} factor) -- one gap (the packed conversions), reached through many
-# mnemonics.  Those files are not excluded, because the smoke tier's vectors
-# for them pass.
-68030 file fdiv   -- denormalized result representation (exponent 0 vs 1: the model normalizes at the extended minimum, this core denormalizes)
-68030 file fgetman -- unnormalized operand handling
-68030 file fsgldiv -- single-precision rounding of denormal operands
-68030 file fsglmul -- as fsgldiv (FPSR accrued bits)
-68030 file fcmp   -- packed-decimal source conversion
-68030 file fintrz -- packed-decimal source conversion
+# Nothing left: the FPU's operand classes -- denormalized and unnormalized
+# operands, single/double rounding precision, and the packed-decimal
+# conversions in both directions -- were finished on 2026-09-03, and a
+# locally generated 40-per-mnemonic 68030 tier over the FPU mnemonics passes
+# in full.
 68030 normal frestore -- (no such vector in the smoke tier; two in a generated tier) null-frame restore: the model resets FP0-FP7/FPCR/FPSR/FPIAR unconditionally; the core only from the idle/busy phase, as a real 68882 does (Apple's MacTest: FREM; FSAVE; FRESTORE <null>; FRESTORE <idle> keeps FP0), and the model's FSAVE always writes a null frame, i.e. its vectors start in the reset phase (note item 20)
 
 # --- 68040 ---------------------------------------------------------------
@@ -45,6 +37,5 @@
 68040 exception line-1111 -- deliberate: the FP instructions the 68040 leaves to the FPSP (transcendentals, FMOVECR, FINT/FINTRZ, FSCALE, FMOD/FREM, FGETEXP/FGETMAN, FSINCOS) are computed in-line instead of taking the unimplemented-instruction exception (faster, and independent of the guest OS installing its FPSP; decision 2026-09-02)
 68040 exception fp-unimplemented-data-type -- deliberate: packed-decimal and denormalized/unnormalized operands are handled in-line instead of taking the unimplemented-data-type exception (as above)
 68040 normal frestore -- as the 68030 null-frame rule
-68040 file fmove  -- FMOVE.D to memory of a value that denormalizes in double precision
 68040 file bfffo  -- register-offset form: the core writes the full 32-bit offset plus position to Dn, the model the offset modulo 32 (its CHOICE_bf_reg_offset_mod_32; MAME agrees with the model)
 68040 file cas2   -- duplicated compare/update registers (Dc1 = Dc2, Du1 = Du2): update ordering (the model ends with operand 1, the core and MAME with operand 2)
