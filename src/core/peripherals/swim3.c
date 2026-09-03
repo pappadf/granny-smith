@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
 // SWIM3 floppy controller — sixteen byte-wide registers, addressed here by
 // INDEX (the PDM decodes them on $200 centres at $50F16000, Grand Central
 // on $10 centres at +$15000; each board translates).  This file is the register file,
