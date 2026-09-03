@@ -210,6 +210,7 @@ const hw_profile_t machine_ans500 = {
 
     .ram_options = ans500_ram_options_kb,
     .scsi_slots = ans500_scsi_slots,
+    .floppy_slots = tnt_floppy_slots,
     // Bay 0 is the CD-ROM bay Apple expects, and it is the documented
     // install path: with the front keyswitch in Service on a machine that
     // has never been booted, Open Firmware "will automatically attempt to

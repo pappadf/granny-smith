@@ -212,9 +212,11 @@ assert_contains pm8100 '"freq":80000000' "pm8100 runs at 80 MHz"
 
 # The TNT family: the 7500 keeps the 601, the 8500/9500 are the first
 # 604 machines.  Phase E wired the internal MESH bus, so the two HD
-# slots are offered; floppy still waits on the SWIM3/DBDMA datapath
-# (Phase F).  No NuBus on a PCI machine; PCI slot capability arrives
-# with the pluggable-card follow-up.
+# slots are offered, and the SWIM3 + DBDMA-channel-1 floppy datapath is
+# complete too -- ans-diag-floppy boots the Network Server Diagnostic
+# Utility from drive 0 -- so the one internal SuperDrive is offered on
+# every board in the family.  No NuBus on a PCI machine; PCI slot
+# capability arrives with the pluggable-card follow-up.
 assert_contains pm7500 '"model":601' "pm7500 is a PowerPC 601"
 assert_contains pm7500 '"kind":"ppc_601"' "pm7500 has the 601 MMU"
 for m in pm8500 pm9500; do
@@ -225,7 +227,7 @@ for m in pm7500 pm8500 pm9500; do
     assert_contains "$m" '"fpu":true' "$m has the FPU datapath"
     assert_contains "$m" '"address_bits":32' "$m is 32-bit"
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
-    assert_contains "$m" '"floppy_slots":[]' "$m offers no floppy bay before Phase F"
+    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
     assert_contains "$m" '"scsi_slots":[{"label":"Internal HD0","id":0,"boot":false},{"label":"Internal HD1","id":1,"boot":false}]' "$m offers the two internal MESH HD slots (Phase E)"
 done
 assert_contains pm7500 '"freq":100000000' "pm7500 runs at 100 MHz"
@@ -247,6 +249,8 @@ for m in ans500 ans700; do
     assert_contains "$m" '"nubus":false' "$m has no NuBus"
     assert_contains "$m" '"pci":true' "$m advertises PCI"
     assert_contains "$m" '"video_in":false' "$m has no video digitizer"
+    # The bay the diagnostic floppy goes in (ans-diag-floppy).
+    assert_contains "$m" '"floppy_slots":[{"label":"Internal FD0","kind":"hd"}]' "$m offers the one internal SuperDrive"
     assert_contains "$m" '"ram_max":524288' "$m caps RAM at the ROM's 512 MB decode limit (in KB, as every profile publishes it)"
     assert_contains "$m" '"has_cdrom":true' "$m boots its Install CD from a SCSI bay"
     # Seven hot-swap bays split across two fast/wide controllers; bay 0 is

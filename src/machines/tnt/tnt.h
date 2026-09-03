@@ -427,6 +427,11 @@ static inline const tnt_board_desc_t *tnt_board(config_t *cfg) {
 
 extern const machine_substrate_t tnt_substrate;
 
+// The family's one internal SuperDrive bay, shared by all five profiles
+// (tnt.c).  The SWIM3 + DBDMA-channel-1 datapath behind it is complete and
+// exercised by tests/integration/ans-diag-floppy.
+extern const struct floppy_slot tnt_floppy_slots[];
+
 // Fill/clear one physical page in the AoS table + SoA fast-path arrays
 // (the pdm_fill_page shape; local so tnt stays free of 68K-family headers).
 void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);

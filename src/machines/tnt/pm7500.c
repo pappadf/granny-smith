@@ -81,6 +81,7 @@ const hw_profile_t machine_pm7500 = {
 
     .ram_options = pm7500_ram_options_kb,
     .scsi_slots = pm7500_scsi_slots,
+    .floppy_slots = tnt_floppy_slots,
 
     .pci_slots = pm7500_pci_slots,
 

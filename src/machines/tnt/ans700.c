@@ -153,6 +153,7 @@ const hw_profile_t machine_ans700 = {
 
     .ram_options = ans700_ram_options_kb,
     .scsi_slots = ans700_scsi_slots,
+    .floppy_slots = tnt_floppy_slots,
     .has_cdrom = true,
     .cdrom_id = 0,
 

@@ -882,6 +882,15 @@ static void tnt_update_ipl(config_t *cfg, int source, bool active) {
 // Floppy: the one internal SuperDrive behind SWIM3 (swim3.c).  Drive 1 is
 // the only bay the family has — no external port — so slot 1 refuses
 // whatever the caller asks.
+//
+// The slot table is declared once here rather than copied into each of the
+// five profiles: it is a fact about the TNT board, and tnt_fd_insert below
+// is what makes one slot the right count.
+const struct floppy_slot tnt_floppy_slots[] = {
+    {.label = "Internal FD0", .kind = FLOPPY_HD},
+    {0},
+};
+
 static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
     if (!cfg->floppy || drive != 0)
         return -1;
