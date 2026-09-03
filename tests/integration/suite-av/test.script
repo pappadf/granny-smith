@@ -197,8 +197,12 @@ def row_av_hd_device() {
     assert !machine.scsi.device[0].read_only "av-hd-device: disk came up read-only"
     assert machine.scsi.device[0].medium_present "av-hd-device: no medium present"
     assert machine.scsi.device[0].block_size == 512 "av-hd-device: block_size ${machine.scsi.device[0].block_size}, want 512 (from the image's DDM)"
-    # Nothing else on the bus: any boot below can only come from this disk.
-    assert try(machine.scsi.device[3].type, none) == none "av-hd-device: something is attached at SCSI 3"
+    # No other MEDIUM on the bus: any boot below can only come from this disk.
+    # The CD bay itself is always there — a machine with a CD drive carries it
+    # from power-on, empty or not, because SCSI is not hot-plug and a drive the
+    # boot scan never saw is one the guest will never poll (system_create).
+    assert machine.scsi.device[3].type == "cdrom" "av-hd-device: SCSI 3 is not the empty CD bay"
+    assert !machine.scsi.device[3].medium_present "av-hd-device: a disc is in the CD bay"
 }
 
 # golden-collision-ok: q840av-7.1-640x480x8-hd-finder.png q660av-7.1-640x480x8-hd-finder.png — both

@@ -750,6 +750,20 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
         break;
     }
 
+    // A machine with a CD bay has the DRIVE on the bus from power-on, disc or
+    // no disc.  SCSI is not hot-plug: the guest's CD driver claims its targets
+    // during the boot-time bus scan and polls only those, so a drive that
+    // materialises later — when the user picks Insert — is one nothing ever
+    // looks at, and the disc never mounts.  Registering it empty here makes a
+    // later insert an ordinary medium change (UNIT ATTENTION), which is what
+    // the driver notices and the Finder mounts on.
+    //
+    // Skip a slot that is already occupied: restoring a checkpoint rebuilds
+    // the bus from the saved state, and that device outranks a blank bay.
+    if (profile->has_cdrom && cfg->scsi && !scsi_device_present(cfg->scsi, (unsigned)profile->cdrom_id))
+        scsi_add_device(cfg->scsi, profile->cdrom_id, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048,
+                        true);
+
     // Stand up the object-model root (M2): attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
     // runtime state. The legacy shell remains primary.
