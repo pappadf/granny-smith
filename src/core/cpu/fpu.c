@@ -226,6 +226,15 @@ fpu_unpacked_t fpu_unpack(float80_reg_t reg) {
         // Infinity or NaN
         r.exponent = FPU_EXP_INF;
         r.mantissa_hi = reg.mantissa;
+    } else if (reg.mantissa == 0) {
+        // A zero mantissa with a non-zero exponent is an unnormalized ZERO,
+        // not a tiny number: "if the mantissa is zero, the number is a zero
+        // regardless of the exponent" (MC68881UM 3.2.2 on unnormalized
+        // numbers).  Verified against the m68k-sail model: FMOVE.X of
+        // $0004_0000_0000000000000000 delivers +0, and FADD of it leaves the
+        // destination alone -- neither denormalizes nor signals underflow.
+        r.exponent = FPU_EXP_ZERO;
+        r.mantissa_hi = 0;
     } else {
         // Normal number: unbiased exponent
         r.exponent = (int32_t)exp - FPU_EXP_BIAS;
@@ -491,6 +500,32 @@ float80_reg_t fpu_pack(fpu_state_t *fpu, fpu_unpacked_t val) {
         }
         uint16_t max_biased = (uint16_t)(max_exp + FPU_EXP_BIAS);
         return fp80_make(val.sign, max_biased, max_mant);
+    }
+
+    // A result that denormalized away entirely is a zero, not an exponent
+    // with an empty mantissa: the pre-denormalization above shifts the
+    // mantissa right by however far the target precision's minimum exponent
+    // is, and once every bit is gone the value IS zero (MC68881UM 3.2.3,
+    // "the result is a zero of the same sign").  Signalled as underflow and
+    // inexact by the paths above; only the encoding is settled here.
+    if (val.mantissa_hi == 0 && val.mantissa_lo == 0)
+        return fp80_make(val.sign, 0, 0);
+
+    // An underflowed single- or double-precision result is still stored in
+    // an extended register, whose exponent range is far wider: the rounding
+    // above gave the value its target-precision significand (and signalled
+    // UNFL/INEX2 against that precision's minimum, which is what the manual
+    // asks of the rounding precision), and the register then holds it
+    // normalized -- denormalizing is the destination format's business, and
+    // this destination is extended.  Only when the extended minimum is
+    // reached in turn does the stored value stay denormalized.
+    if (prec != 0 && !(val.mantissa_hi & 0x8000000000000000ULL)) {
+        int shift = clz64(val.mantissa_hi);
+        int32_t room = val.exponent - (-16383);
+        if ((int32_t)shift > room)
+            shift = room > 0 ? (int)room : 0;
+        val.mantissa_hi <<= shift;
+        val.exponent -= shift;
     }
 
     int32_t biased = val.exponent + FPU_EXP_BIAS;
@@ -2577,6 +2612,52 @@ bool fpu_pre_instruction_check(cpu_t *cpu, fpu_state_t *fpu, bool conditional) {
 }
 
 // Execute an FPU operation with source and destination register
+// The 68040's single- and double-rounded opcodes (M68000PRM, the opmode
+// tables of FMOVE/FSQRT/FABS/FNEG/FDIV/FADD/FMUL/FSUB): each pairs with a
+// base operation and rounds "to single or double precision, regardless of
+// the rounding precision selected in the floating-point control register"
+// (PRM §3, FSADD/FDADD).  The rounding precision governs the exponent range
+// as well as the mantissa, so forcing FPCR[PREC] around the base operation
+// is the whole implementation -- unlike FSGLDIV/FSGLMUL, which round the
+// mantissa to single but keep the extended exponent range and therefore
+// stay hand-written.
+//
+// Returns false for every other opmode, leaving `op` alone.
+static bool fpu_op_rounded_040(unsigned op, unsigned *base_out, unsigned *prec_out) {
+    unsigned base;
+    switch (op & ~0x04u) { // the double form is the single form + 4
+    case 0x40:
+        base = 0x00;
+        break; // FSMOVE / FDMOVE
+    case 0x41:
+        base = 0x04;
+        break; // FSSQRT / FDSQRT
+    case 0x58:
+        base = 0x18;
+        break; // FSABS  / FDABS
+    case 0x5A:
+        base = 0x1A;
+        break; // FSNEG  / FDNEG
+    case 0x60:
+        base = 0x20;
+        break; // FSDIV  / FDDIV
+    case 0x62:
+        base = 0x22;
+        break; // FSADD  / FDADD
+    case 0x63:
+        base = 0x23;
+        break; // FSMUL  / FDMUL
+    case 0x68:
+        base = 0x28;
+        break; // FSSUB  / FDSUB
+    default:
+        return false;
+    }
+    *base_out = base;
+    *prec_out = (op & 0x04u) ? 2u : 1u; // FPCR[PREC]: 1 = single, 2 = double
+    return true;
+}
+
 static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, unsigned dst) {
     fpu_unpacked_t a, b, result;
 
@@ -3364,6 +3445,19 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
     }
 }
 
+// Run one operation with the rounding precision an opcode forces, if any:
+// `prec` is 0 for "whatever FPCR says" and otherwise an FPCR[PREC] value.
+static void fpu_execute_op_prec(fpu_state_t *fpu, unsigned op, float80_reg_t src, unsigned dst, unsigned prec) {
+    if (prec == 0) {
+        fpu_execute_op(fpu, op, src, dst);
+        return;
+    }
+    uint32_t saved_fpcr = fpu->fpcr;
+    fpu->fpcr = (fpu->fpcr & ~0x00C0u) | ((prec & 3u) << 6);
+    fpu_execute_op(fpu, op, src, dst);
+    fpu->fpcr = saved_fpcr;
+}
+
 // ============================================================================
 // General FPU operation dispatcher (type=0)
 // ============================================================================
@@ -3387,6 +3481,15 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     unsigned dst_reg = (ext_word >> 7) & 7;
     unsigned op = ext_word & 0x7F;
 
+    // FSxxx/FDxxx are 68040 additions; on the 68881/68882 those opmodes are
+    // not defined and fall through to the unimplemented-opcode path below.
+    unsigned op_prec = 0;
+    if (cpu->cpu_model >= CPU_MODEL_68040) {
+        unsigned base;
+        if (fpu_op_rounded_040(op, &base, &op_prec))
+            op = base;
+    }
+
     // Update FPIAR for exception-generating operations (top3 < 4)
     // FMOVEM (top3 4-7) and FSAVE/FRESTORE do not update FPIAR
     if (top3 < 4)
@@ -3403,7 +3506,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
     case 0: // 000: FPn->FPn operation (register to register)
     {
         float80_reg_t src_val = fpu->fp[src_spec];
-        fpu_execute_op(fpu, op, src_val, dst_reg);
+        fpu_execute_op_prec(fpu, op, src_val, dst_reg, op_prec);
         break;
     }
 
@@ -3447,7 +3550,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
                 return;
             }
             float80_reg_t src_val = fpu_load_ea(cpu, opcode, src_spec);
-            fpu_execute_op(fpu, op, src_val, dst_reg);
+            fpu_execute_op_prec(fpu, op, src_val, dst_reg, op_prec);
         }
         break;
     }
