@@ -819,7 +819,13 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     // 24-bit address space, configured RAM, 16 KB interleaved boot ROM.
     cfg->mem_map = memory_map_init(cfg->machine->address_bits, cfg->ram_size, cfg->machine->rom_size, checkpoint);
 
-    cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
+    // The profile is the source of truth for the CPU model, as it is for the
+    // clock below and as mac030_build_core states for the II families.  Both
+    // profiles behind this substrate declare 68000, so this reads back exactly
+    // what the constant said -- but system_create derives cfg->cpu_arch from
+    // the profile unconditionally, so a profile that ever disagreed with a
+    // hardcoded core here would tag the machine with an arch it is not running.
+    cfg->cpu = cpu_init(cfg->machine->cpu_model, checkpoint);
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
     debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
