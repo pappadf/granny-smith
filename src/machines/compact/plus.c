@@ -195,6 +195,14 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // note attacks). CPI 10 rather than the threshold-exact 11 buys safety
     // margin for CPU-hungrier real-time guests. (The pre-two-modes
     // scheduler defaulted to CPI 4 here — a ~3x overclocked Plus.)
+    // The profile is the source of truth for the clock (machine_profile.h
+    // §freq), and it is what machine.profile exports to the frontend.  This
+    // line was missing: the Plus ran correctly only because the scheduler's
+    // own default happens to equal 7.8336 MHz exactly, so the exported value
+    // and the value actually used were two independent constants that agreed
+    // by coincidence.  The Lisa's comment above its own call records being
+    // bitten by that default.
+    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 10);
 
     // Restore global interrupt state after scheduler (same order as checkpoint_save)
