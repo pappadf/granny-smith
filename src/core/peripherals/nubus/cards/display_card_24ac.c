@@ -147,25 +147,6 @@ struct display_card_24ac_priv {
 // === Display-format helpers =================================================
 
 // Storage bits-per-pixel of a display format.
-static uint32_t format_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_8BPP:
-        return 8;
-    case PIXEL_16BPP_555:
-        return 16;
-    case PIXEL_32BPP_XRGB:
-        return 32;
-    default:
-        return 8;
-    }
-}
-
 // The depth code (cscSetMode's csMode[2:0]) matching a display format.  The
 // 24AC's depth ladder has NO 2-bpp mode (vrom RE: cscSetMode depth table at
 // chip 0x1F88 + CountTbl 0x2A28): code 0/1/2/3/4 = 1/4/8/16/32 bpp.  STATUS[2:0]
@@ -191,7 +172,7 @@ static uint8_t depth_code_for_format(pixel_format_t f) {
 // has no RowWords register; the driver lays VRAM out tightly, so stride =
 // width × bpp / 8.
 static void recompute_stride(display_card_24ac_priv_t *p) {
-    uint32_t bpp = format_bpp(p->display.format);
+    uint32_t bpp = display_bpp(p->display.format);
     p->display.stride = (p->display.width * bpp + 7u) / 8u;
 }
 
@@ -229,7 +210,7 @@ static void apply_mode_depth(display_card_24ac_priv_t *p, uint8_t mode_byte) {
         p->display.format = f;
         recompute_stride(p);
         p->display.shape_dirty = true;
-        LOG(2, "MODE depth → %u bpp (stride %u)", format_bpp(f), p->display.stride);
+        LOG(2, "MODE depth → %u bpp (stride %u)", display_bpp(f), p->display.stride);
     }
 }
 

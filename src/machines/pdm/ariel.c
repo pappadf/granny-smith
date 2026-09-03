@@ -128,22 +128,6 @@ static pixel_format_t pdm_depth_format(uint8_t code) {
     }
 }
 
-static uint32_t format_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_16BPP_555:
-        return 16;
-    case PIXEL_8BPP:
-    default:
-        return 8;
-    }
-}
-
 // Rebuild the depth-windowed palette view.  At reduced depth the hardware
 // feeds the DAC eight index lines with the unused low lines driven HIGH, so
 // a pixel value i reads CLUT entry (skip-1) + i*skip with skip =
@@ -153,7 +137,7 @@ static uint32_t format_bpp(pixel_format_t f) {
 static void pdm_video_refresh_clut(pdm_state_t *st) {
     pdm_amic_t *a = &st->amic;
     pdm_video_t *v = &st->video;
-    uint32_t bpp = format_bpp(v->display.format);
+    uint32_t bpp = display_bpp(v->display.format);
     if (bpp > 8)
         return; // direct format: CLUT bypassed
     uint32_t len = 1u << bpp;
@@ -186,7 +170,7 @@ void pdm_video_update(config_t *cfg) {
     v->display.width = w;
     v->display.height = h;
     v->display.format = f;
-    v->display.stride = w * format_bpp(f) / 8u;
+    v->display.stride = w * display_bpp(f) / 8u;
     v->display.par_w = 0;
     v->display.par_h = 0;
     v->display.crt_response = NULL;

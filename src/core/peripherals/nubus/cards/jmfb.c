@@ -160,25 +160,6 @@ static pixel_format_t depth_to_format(uint16_t pbcr) {
 // current display format.  PIXEL_32BPP_XRGB returns 32 because the
 // framebuffer stores 4 bytes/pixel; the RAMDAC bypass mode discards
 // one of those bytes during scan but the storage layout is XRGB.
-static uint32_t format_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_8BPP:
-        return 8;
-    case PIXEL_16BPP_555:
-        return 16;
-    case PIXEL_32BPP_XRGB:
-        return 32;
-    default:
-        return 8; // safe fallback
-    }
-}
-
 // Recompute display.stride AND display.width every time row_words or
 // the pixel format changes.  Width is a pure function of (row_words,
 // bpp); height is a property of the chosen monitor, fixed at JMFB
@@ -210,7 +191,7 @@ static void recompute_stride(jmfb_priv_t *p) {
         p->display.width = p->display.stride / 4u;
     } else {
         p->display.stride = (uint32_t)p->jmfb_row_words * 4u;
-        uint32_t bpp = format_bpp(p->display.format);
+        uint32_t bpp = display_bpp(p->display.format);
         if (bpp > 0)
             p->display.width = (uint32_t)p->jmfb_row_words * 32u / bpp;
     }

@@ -66,20 +66,6 @@ static pixel_format_t depth_to_format(int depth_code) {
     }
 }
 
-static uint32_t format_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_8BPP:
-    default:
-        return 8;
-    }
-}
-
 // Point display.clut at the slice of the 256-entry hardware CLUT the current
 // depth actually addresses.
 //
@@ -101,7 +87,7 @@ static uint32_t format_bpp(pixel_format_t f) {
 // as a uniform gray field even though the framebuffer and ScreenRow were
 // correct (ledger §5).
 static void rbv_video_apply_clut_window(rbv_video_priv_t *p) {
-    uint32_t bpp = format_bpp(p->display.format);
+    uint32_t bpp = display_bpp(p->display.format);
     uint32_t len = 1u << bpp; // 2, 4, 16 or 256
     if (len > 256)
         len = 256;
@@ -308,13 +294,13 @@ void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code) {
     // during machine init) would leave the power-on blank showing as white.
     bool pristine = display_raster_is_pristine(&p->display);
     p->display.format = f;
-    p->display.stride = RBV_VIDEO_WIDTH * format_bpp(f) / 8u;
+    p->display.stride = RBV_VIDEO_WIDTH * display_bpp(f) / 8u;
     if (pristine)
         display_blank_raster(&p->display);
     rbv_video_apply_clut_window(p);
     p->display.shape_dirty = true;
     p->display.fb_dirty = true;
-    LOG(2, "depth -> %u bpp (stride %u)", format_bpp(f), p->display.stride);
+    LOG(2, "depth -> %u bpp (stride %u)", display_bpp(f), p->display.stride);
 }
 
 void builtin_rbv_video_vdac_write(nubus_card_t *card, uint32_t off, uint8_t val) {

@@ -52,25 +52,6 @@ LOG_USE_CATEGORY_NAME("824gc");
 static pixel_format_t format_for_bpp(int bpp); // fwd (video-mode section)
 
 // === Display-format helpers (ported from jmfb.c) ============================
-static uint32_t format_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_8BPP:
-        return 8;
-    case PIXEL_16BPP_555:
-        return 16;
-    case PIXEL_32BPP_XRGB:
-        return 32;
-    default:
-        return 8;
-    }
-}
-
 // Map the ≤8 bpp depth field in CLUTPBCR (bits 3-4) to a pixel_format_t.
 static pixel_format_t depth_to_format(uint16_t pbcr) {
     switch ((pbcr >> 3) & 0x3) {
@@ -95,7 +76,7 @@ static void recompute_stride(display_card_824gc_priv_t *p) {
         p->display.width = p->display.stride / 4u;
     } else {
         p->display.stride = (uint32_t)p->jmfb_row_words * 4u;
-        uint32_t bpp = format_bpp(p->display.format);
+        uint32_t bpp = display_bpp(p->display.format);
         if (bpp > 0)
             p->display.width = (uint32_t)p->jmfb_row_words * 32u / bpp;
     }
@@ -305,7 +286,7 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_SIG, GC824_PUBLICOU_SIG);
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_MSTICKS, 0);
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_SENSE, p->sense_code);
-    dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_DEPTH, format_bpp(p->display.format));
+    dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_DEPTH, display_bpp(p->display.format));
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_ROWBYTES, p->display.stride);
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_VSIZE, p->display.height);
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_FBCFG, 0);
