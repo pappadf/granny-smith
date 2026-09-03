@@ -18,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("scsi96");
+LOG_USE_CATEGORY_NAME("53c96");
 
 // Register addresses (A3..A0)
 #define R_XFER_LO   0x0 // r: transfer counter / w: transfer count
@@ -624,7 +624,7 @@ scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkp
         *c = saved;
     }
     if (sched)
-        scheduler_new_event_type(sched, "scsi96", c, "select_timeout", select_timeout_event);
+        scheduler_new_event_type(sched, "53c96", c, "select_timeout", select_timeout_event);
     return c;
 }
 

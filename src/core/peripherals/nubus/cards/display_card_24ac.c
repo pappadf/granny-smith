@@ -51,7 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("display_card_24ac");
+LOG_USE_CATEGORY_NAME("24ac");
 
 // === Per-card private state =================================================
 

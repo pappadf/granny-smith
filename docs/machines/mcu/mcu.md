@@ -80,7 +80,7 @@ in a fresh process, must finish booting to the pixel-exact desktop.
 ## Debug surfaces
 
 - `debug.log board` — the machine/board glue (model-independent, so the same
-  spec works on every model); `debug.log dafb` / `debug.log scsi96` / `debug.log
+  spec works on every model); `debug.log dafb` / `debug.log 53c96` / `debug.log
   sonic` — per-chip categories; level 3 logs every register access.
 - `machine.cpu.mmu` — the 040 MMU inspector
   ([mmu040.md](../../core/memory/mmu040.md)).

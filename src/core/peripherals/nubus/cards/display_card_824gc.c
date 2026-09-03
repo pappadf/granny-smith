@@ -47,7 +47,7 @@
 
 #include "display_card_824gc_priv.h"
 
-LOG_USE_CATEGORY_NAME("gc824");
+LOG_USE_CATEGORY_NAME("824gc");
 
 static pixel_format_t format_for_bpp(int bpp); // fwd (video-mode section)
 
