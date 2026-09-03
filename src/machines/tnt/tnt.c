@@ -452,16 +452,7 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // No 68k MMU owns this machine's page table; host-backed regions that
     // core code registers on the bus map are filled through our filler.
     g_mem_host_fill = tnt_fill_page;
-    // TEMP diagnostic (604 boot-wall hunt): board-vs-CPU counterfactuals
-    // without profile edits.  Env-gated, inert otherwise.
-    int cpu_model = cfg->machine->cpu_model;
-    {
-        const char *s = getenv("GS_CPU_OVERRIDE");
-        if (s && strcmp(s, "601") == 0)
-            cpu_model = CPU_MODEL_PPC601;
-        else if (s && strcmp(s, "604") == 0)
-            cpu_model = CPU_MODEL_PPC604;
-    }
+    const int cpu_model = cfg->machine->cpu_model;
     cfg->ppc = ppc_init(cp, cpu_model);
     assert(cfg->ppc != NULL);
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
