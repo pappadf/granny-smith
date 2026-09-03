@@ -1777,9 +1777,10 @@ fpu_unpacked_t fpu_rom_constant(unsigned offset) {
         r.mantissa_lo = 0xA74D28CE329ACE52ULL;
         break; // 10^2048
     case 0x3F:
-        r.exponent = 13806;
+        r.exponent = 13606;
         r.mantissa_hi = 0xC46052028A20979AULL;
-        break; // 10^4096 (68882 RN value; math lo would over-round)
+        r.mantissa_lo = 0xC94C153F804A4A92ULL;
+        break; // 10^4096
     default:
         return r;
     }
@@ -1861,20 +1862,14 @@ static void fpu_store_ea(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, float80_
         // For FMOVE.X to memory, the 68882 normalizes abnormal representations
         // (pseudo-denormals, unnormals) through the internal pipeline, applying
         // FPCR precision/rounding. Normal values are written directly.
-        float80_reg_t store_val = val;
-        uint16_t bexp = FP80_EXP(val);
-        bool j_bit = (val.mantissa >> 63) & 1;
-        bool is_abnormal = false;
-        if (bexp == 0 && j_bit) {
-            is_abnormal = true; // pseudo-denormal
-        } else if (bexp != 0 && bexp != 0x7FFF && !j_bit && val.mantissa != 0) {
-            is_abnormal = true; // unnormal
-        }
-        if (is_abnormal) {
-            store_val = fpu_pack(fpu, fpu_unpack(val));
-        }
+        // The register goes to memory as it stands: an extended store is a
+        // copy, not a conversion, so a pseudo-denormal or an unnormal keeps
+        // its encoding and raises nothing.  (Normalization happens on the
+        // way IN, in fpu_unpack.)  Running these through the rounding
+        // pipeline used to signal UNFL/INEX2 that the model does not, and
+        // with those traps enabled it took an exception mid-store.
         uint32_t w0, w1, w2;
-        fpu_to_extended(store_val, &w0, &w1, &w2);
+        fpu_to_extended(val, &w0, &w1, &w2);
         uint32_t ea = calculate_ea(cpu, 12, ea_mode, ea_reg, true);
         memory_write_uint32(ea, w0);
         memory_write_uint32(ea + 4, w1);
@@ -2486,6 +2481,11 @@ fpu_unpacked_t fpu_op_div(fpu_state_t *fpu, fpu_unpacked_t a, fpu_unpacked_t b) 
         dividend_hi = (dividend_hi << 1) | (dividend_lo >> 63);
         dividend_lo <<= 1;
     }
+    // A remainder left over means the quotient continues past 128 bits: keep
+    // it as a sticky bit, or a division whose next bits happen to be zero
+    // looks exact and the inexact flags go missing.
+    if (carry || dividend_hi != 0 || dividend_lo != 0)
+        q_lo |= 1;
 
     // Sticky bit for remainder
     if (dividend_hi != 0 || dividend_lo != 0)
@@ -2835,10 +2835,17 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             fpu_update_cc(fpu, src);
             return;
         }
-        // Infinity and zero pass through unchanged
-        if (uv.exponent == FPU_EXP_INF || uv.exponent == FPU_EXP_ZERO) {
+        // Infinity passes through unchanged; a zero comes out canonical,
+        // since the operand may be an unnormalized zero whose exponent is
+        // not the zero encoding's.
+        if (uv.exponent == FPU_EXP_INF) {
             fpu->fp[dst] = src;
             fpu_update_cc(fpu, src);
+            return;
+        }
+        if (uv.exponent == FPU_EXP_ZERO) {
+            fpu->fp[dst] = fp80_make(uv.sign, 0, 0);
+            fpu_update_cc(fpu, fpu->fp[dst]);
             return;
         }
         // Already an integer if exponent >= 63 (all mantissa bits are integer)
@@ -3186,9 +3193,14 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
         // Step 7: subtract |Y| if last_subtract (before sign application)
         // Following FPSP: first adjust the unsigned remainder, then apply sign.
         if (last_subtract) {
-            // Y.sign stays false from step 1 — subtract unsigned |Y|
+            // Y.sign stays false from step 1 — subtract unsigned |Y|.  The
+            // subtraction is an internal step, so its own exception bits are
+            // dropped -- but only its own: INEX1 from converting a packed
+            // operand was raised before the instruction started and must
+            // survive.
+            uint32_t exc_before = fpu->fpsr & 0xFF00u;
             R = fpu_op_sub(fpu, R, Y);
-            fpu->fpsr &= ~0xFF00u;
+            fpu->fpsr = (fpu->fpsr & ~0xFF00u) | exc_before;
         }
 
         // Step 6: apply sign of dividend (FPSP fnegx if sign_x negative)
@@ -3281,25 +3293,18 @@ static void fpu_execute_op(fpu_state_t *fpu, unsigned op, float80_reg_t src, uns
             fpu_update_cc(fpu, fpu->fp[dst]);
             return;
         }
-        if (a.exponent == FPU_EXP_INF) {
-            // inf * 2^n = inf (but inf * 2^inf_neg = OPERR)
-            if (b.exponent == FPU_EXP_INF && b.sign) {
-                fpu->fpsr |= FPEXC_OPERR;
-                fpu->fp[dst] = FP80_QNAN;
-            } else {
-                fpu->fp[dst] = fpu_pack(fpu, a);
-            }
+        if (b.exponent == FPU_EXP_INF) {
+            // An infinite scale factor is an operand error whatever the
+            // destination is -- zero, finite or infinite (M68000PRM's FSCALE
+            // operation table; confirmed against the model for all four).
+            fpu->fpsr |= FPEXC_OPERR;
+            fpu->fp[dst] = FP80_QNAN;
             fpu_update_cc(fpu, fpu->fp[dst]);
             return;
         }
-        if (b.exponent == FPU_EXP_INF) {
-            // finite * 2^(+/-inf)
-            if (b.sign) {
-                fpu->fp[dst] = a.sign ? FP80_NEG_ZERO : FP80_ZERO;
-            } else {
-                fpu_unpacked_t inf = {a.sign, FPU_EXP_INF, 0, 0};
-                fpu->fp[dst] = fpu_pack(fpu, inf);
-            }
+        if (a.exponent == FPU_EXP_INF) {
+            // inf scaled by a finite amount is that infinity
+            fpu->fp[dst] = fpu_pack(fpu, a);
             fpu_update_cc(fpu, fpu->fp[dst]);
             return;
         }
@@ -3588,6 +3593,39 @@ static void fpu_execute_op_prec(fpu_state_t *fpu, unsigned op, float80_reg_t src
 // General FPU operation dispatcher (type=0)
 // ============================================================================
 
+// FMOVECR: load a ROM constant, rounded to the FPCR's precision and mode.
+// INEX2 comes from that rounding alone, which is why the table below has to
+// carry each constant's stored bits exactly: the ROM keeps extra bits for
+// some entries (pi, ln 2, 10^32) and not for others (log10(2), 10^64), and
+// only the former can be inexact.  Verified offset by offset against the
+// model under round-to-nearest and round-to-zero.
+static void fpu_movecr(fpu_state_t *fpu, unsigned op, unsigned dst_reg) {
+    fpu_unpacked_t val = fpu_rom_constant(op);
+    // fpu_rom_constant is the mathematically precise table, which is what
+    // the decimal scaling wants.  The ROM the programmer sees is not always
+    // that: some constants are stored truncated to 64 bits (log10(2),
+    // log10(e), 10^64, 10^1024), one is stored already rounded (10^2048),
+    // and their FMOVECR therefore cannot be inexact or round with the mode.
+    // Established against the model, offset by offset, under
+    // round-to-nearest and round-to-zero.
+    switch (op) {
+    case 0x0B: // log10(2)
+    case 0x0E: // log10(e)
+    case 0x39: // 10^64
+    case 0x3D: // 10^1024
+        val.mantissa_lo = 0;
+        break;
+    case 0x3E: // 10^2048
+        val.mantissa_hi = 0x9E8B3B5DC53D5DE5ULL;
+        val.mantissa_lo = 0;
+        break;
+    default:
+        break;
+    }
+    fpu->fp[dst_reg] = fpu_pack(fpu, val);
+    fpu_update_cc(fpu, fpu->fp[dst_reg]);
+}
+
 void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_word) {
     LOG(1, "fpu op PC=%08X opcode=%04X ext=%04X", cpu->instruction_pc, opcode, ext_word);
 
@@ -3638,12 +3676,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
 
     case 1: // 001: FMOVECR (bit 13 set, rm=0 dir=0)
     {
-        fpu_unpacked_t val = fpu_rom_constant(op);
-        fpu->fp[dst_reg] = fpu_pack(fpu, val);
-        fpu_update_cc(fpu, fpu->fp[dst_reg]);
-        // Transcendental and large-power constants are inexact in extended
-        if (op == 0x00 || (op >= 0x0B && op <= 0x0E) || op == 0x30 || op == 0x31 || op >= 0x38)
-            fpu->fpsr |= FPEXC_INEX2;
+        fpu_movecr(fpu, op, dst_reg);
         break;
     }
 
@@ -3653,13 +3686,7 @@ void fpu_general_op(cpu_t *cpu, fpu_state_t *fpu, uint16_t opcode, uint16_t ext_
         // FMOVECR encoding: ext_word bits [15:10] = 010111
         unsigned dir = (ext_word >> 14) & 1;
         if (dir && src_spec == 7) {
-            // FMOVECR: load ROM constant, apply FPCR rounding
-            fpu_unpacked_t val = fpu_rom_constant(op);
-            fpu->fp[dst_reg] = fpu_pack(fpu, val);
-            fpu_update_cc(fpu, fpu->fp[dst_reg]);
-            // Transcendental and large-power constants are inexact in extended
-            if (op == 0x00 || (op >= 0x0B && op <= 0x0E) || op == 0x30 || op == 0x31 || op >= 0x38)
-                fpu->fpsr |= FPEXC_INEX2;
+            fpu_movecr(fpu, op, dst_reg);
         } else {
             // An direct (mode 1) is never valid for FPU data operations
             unsigned ea_mode = (opcode >> 3) & 7;

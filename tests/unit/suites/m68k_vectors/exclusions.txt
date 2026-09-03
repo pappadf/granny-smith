@@ -37,5 +37,4 @@
 68040 exception line-1111 -- deliberate: the FP instructions the 68040 leaves to the FPSP (transcendentals, FMOVECR, FINT/FINTRZ, FSCALE, FMOD/FREM, FGETEXP/FGETMAN, FSINCOS) are computed in-line instead of taking the unimplemented-instruction exception (faster, and independent of the guest OS installing its FPSP; decision 2026-09-02)
 68040 exception fp-unimplemented-data-type -- deliberate: packed-decimal and denormalized/unnormalized operands are handled in-line instead of taking the unimplemented-data-type exception (as above)
 68040 normal frestore -- as the 68030 null-frame rule
-68040 file bfffo  -- register-offset form: the core writes the full 32-bit offset plus position to Dn, the model the offset modulo 32 (its CHOICE_bf_reg_offset_mod_32; MAME agrees with the model)
 68040 file cas2   -- duplicated compare/update registers (Dc1 = Dc2, Du1 = Du2): update ordering (the model ends with operand 1, the core and MAME with operand 2)

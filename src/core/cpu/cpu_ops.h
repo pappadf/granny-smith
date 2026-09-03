@@ -1180,7 +1180,10 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         } else {                                                                                                       \
             _pos = _w;                                                                                                 \
         }                                                                                                              \
-        D(_dn) = (uint32_t)_off + _pos;                                                                                \
+        /* A register field's offset counts modulo 32, and so does the       */                                        \
+        /* offset this instruction reports: `bfffo d7{d2:32},d4` with d2 =   */                                        \
+        /* 32 answers from bit 0, not bit 32.  The model and MAME agree.     */                                        \
+        D(_dn) = (uint32_t)(((_off % 32) + 32) % 32) + _pos;                                                           \
     })
 #define OP_BFFFO_EA                                                                                                    \
     OP({                                                                                                               \
