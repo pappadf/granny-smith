@@ -377,6 +377,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
         system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
+        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
         pdm_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
         system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
@@ -419,6 +420,9 @@ static void pdm_reset(config_t *cfg) {
     // with MSR[IR] on and AMIC state SURVIVING — that path is guest-driven
     // and becomes a first-class test row in Phase D.)
     ppc_reset(cfg->ppc);
+    // Note pdm_amic_init memsets the whole AMIC.  The SWIM3 model is
+    // deliberately NOT inside pdm_amic_t (pdm.h), so this cannot clear the
+    // chip's bound fd/sched/backend pointers the way it once did.
     pdm_amic_init(cfg);
     // BART's latches go back to power-on with it; the NuBus /RESET fan-out
     // to the cards themselves is the bus controller's (system_reset_devices).
@@ -525,6 +529,7 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // Substrate-private tail (mirrored by the restore block in pdm_init).
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
+    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
     system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
     system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
     // Card-side state (framebuffer, palette, mode) last — see the restore
