@@ -1045,9 +1045,9 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here
-    // every ~15 s and used to spam the terminal. `debug.log checkpoint 1`
+    // every ~15 s and used to spam the terminal. `debug.log ckpt 1`
     // restores the line; the status bar gets its own push (em_main.c).
-    LOG_WITH(log_register_category("checkpoint"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
+    LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
     return GS_SUCCESS;
 }
 

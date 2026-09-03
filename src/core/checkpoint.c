@@ -14,6 +14,7 @@
 #include "object.h"
 #include "system.h"
 #include "value.h"
+#include "debug/log.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -28,6 +29,8 @@ static const char CHECKPOINT_MAGIC_V3[] = "GSCHKPT3";
 
 // Both signatures share the same length
 #define CHECKPOINT_MAGIC_LEN 8
+
+LOG_USE_CATEGORY_NAME("ckpt");
 
 // Blocks >= this size use RLE compression (v2 only)
 #define RLE_THRESHOLD 64
@@ -174,7 +177,7 @@ static bool buf_append(checkpoint_t *cp, const void *data, size_t len) {
             new_cap = needed;
         uint8_t *new_buf = (uint8_t *)realloc(cp->buf, new_cap);
         if (!new_buf) {
-            printf("Error: Quick checkpoint buffer realloc failed (%zu bytes)\n", new_cap);
+            LOG(0, "Error: Quick checkpoint buffer realloc failed (%zu bytes)", new_cap);
             cp->error = true;
             return false;
         }
@@ -192,7 +195,7 @@ static bool buf_append(checkpoint_t *cp, const void *data, size_t len) {
 // Read raw bytes from the decompressed buffer, return true on success
 static bool buf_read(checkpoint_t *cp, void *data, size_t len) {
     if (cp->buf_pos + len > cp->buf_used) {
-        printf("Error: Quick checkpoint buffer underflow (%zu + %zu > %zu)\n", cp->buf_pos, len, cp->buf_used);
+        LOG(0, "Error: Quick checkpoint buffer underflow (%zu + %zu > %zu)", cp->buf_pos, len, cp->buf_used);
         cp->error = true;
         return false;
     }
@@ -206,7 +209,7 @@ static bool buf_read(checkpoint_t *cp, void *data, size_t len) {
 // Read a data block with size validation, source metadata, and RLE decompression
 void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
     if (!checkpoint || checkpoint->error || checkpoint->is_writing) {
-        printf("Error: Invalid checkpoint handle for reading\n");
+        LOG(0, "Error: Invalid checkpoint handle for reading");
         if (checkpoint)
             checkpoint->error = true;
         return;
@@ -218,8 +221,8 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         if (!buf_read(checkpoint, &stored_size, sizeof(stored_size)))
             return;
         if ((size_t)stored_size != size) {
-            printf("Error: v3 checkpoint size mismatch: expected %zu but got %u at %s:%d\n", size, stored_size,
-                   file ? file : "(unknown)", line);
+            LOG(0, "Error: v3 checkpoint size mismatch: expected %zu but got %u at %s:%d", size, stored_size,
+                file ? file : "(unknown)", line);
             checkpoint->error = true;
             return;
         }
@@ -234,7 +237,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     uint64_t stored_size = 0;
     size_t got = fread(&stored_size, 1, sizeof(stored_size), checkpoint->file);
     if (got != sizeof(stored_size)) {
-        printf("Error: Failed to read size header from checkpoint (got %zu)\n", got);
+        LOG(0, "Error: Failed to read size header from checkpoint (got %zu)", got);
         checkpoint->error = true;
         return;
     }
@@ -243,7 +246,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     uint32_t fname_len = 0;
     got = fread(&fname_len, 1, sizeof(fname_len), checkpoint->file);
     if (got != sizeof(fname_len)) {
-        printf("Error: Failed to read filename length from checkpoint (got %zu)\n", got);
+        LOG(0, "Error: Failed to read filename length from checkpoint (got %zu)", got);
         checkpoint->error = true;
         return;
     }
@@ -252,13 +255,13 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     if (fname_len > 0) {
         saved_file = (char *)malloc((size_t)fname_len + 1);
         if (!saved_file) {
-            printf("Error: Out of memory reading checkpoint filename\n");
+            LOG(0, "Error: Out of memory reading checkpoint filename");
             checkpoint->error = true;
             return;
         }
         got = fread(saved_file, 1, fname_len, checkpoint->file);
         if (got != fname_len) {
-            printf("Error: Failed to read filename from checkpoint (got %zu, expected %u)\n", got, fname_len);
+            LOG(0, "Error: Failed to read filename from checkpoint (got %zu, expected %u)", got, fname_len);
             free(saved_file);
             checkpoint->error = true;
             return;
@@ -269,7 +272,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     int32_t saved_line = 0;
     got = fread(&saved_line, 1, sizeof(saved_line), checkpoint->file);
     if (got != sizeof(saved_line)) {
-        printf("Error: Failed to read saved line from checkpoint (got %zu)\n", got);
+        LOG(0, "Error: Failed to read saved line from checkpoint (got %zu)", got);
         if (saved_file)
             free(saved_file);
         checkpoint->error = true;
@@ -280,9 +283,9 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     // 32-bit size_t may silently truncate a 5 GB stored_size and pretend
     // it matches a 1 GB `size` request. (F-1012)
     if (stored_size > (uint64_t)SIZE_MAX || (uint64_t)size != stored_size) {
-        printf("Error: Checkpoint size mismatch: expected %zu at %s:%d but file contains %llu at %s:%d\n", size,
-               file ? file : "(unknown)", line, (unsigned long long)stored_size, saved_file ? saved_file : "(unknown)",
-               saved_line);
+        LOG(0, "Error: Checkpoint size mismatch: expected %zu at %s:%d but file contains %llu at %s:%d", size,
+            file ? file : "(unknown)", line, (unsigned long long)stored_size, saved_file ? saved_file : "(unknown)",
+            saved_line);
         if (saved_file)
             free(saved_file);
         checkpoint->error = true;
@@ -293,7 +296,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     uint8_t flag = 0;
     got = fread(&flag, 1, 1, checkpoint->file);
     if (got != 1) {
-        printf("Error: Failed to read compression flag from checkpoint\n");
+        LOG(0, "Error: Failed to read compression flag from checkpoint");
         if (saved_file)
             free(saved_file);
         checkpoint->error = true;
@@ -304,7 +307,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         // Raw data: read directly
         size_t nread = fread(data, 1, size, checkpoint->file);
         if (nread != size) {
-            printf("Error: Failed to read %zu bytes from checkpoint (got %zu)\n", size, nread);
+            LOG(0, "Error: Failed to read %zu bytes from checkpoint (got %zu)", size, nread);
             checkpoint->error = true;
         }
     } else if (flag == 0x01) {
@@ -312,15 +315,15 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         uint64_t comp_size = 0;
         got = fread(&comp_size, 1, sizeof(comp_size), checkpoint->file);
         if (got != sizeof(comp_size)) {
-            printf("Error: Failed to read RLE compressed size from checkpoint\n");
+            LOG(0, "Error: Failed to read RLE compressed size from checkpoint");
             if (saved_file)
                 free(saved_file);
             checkpoint->error = true;
             return;
         }
         if (comp_size > CHECKPOINT_MAX_ALLOC) {
-            printf("Error: v2 RLE compressed size %llu exceeds CHECKPOINT_MAX_ALLOC (%zu)\n",
-                   (unsigned long long)comp_size, (size_t)CHECKPOINT_MAX_ALLOC);
+            LOG(0, "Error: v2 RLE compressed size %llu exceeds CHECKPOINT_MAX_ALLOC (%zu)",
+                (unsigned long long)comp_size, (size_t)CHECKPOINT_MAX_ALLOC);
             if (saved_file)
                 free(saved_file);
             checkpoint->error = true;
@@ -328,7 +331,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         }
         uint8_t *comp_buf = (uint8_t *)malloc((size_t)comp_size);
         if (!comp_buf) {
-            printf("Error: Out of memory for RLE decompression (%llu bytes)\n", (unsigned long long)comp_size);
+            LOG(0, "Error: Out of memory for RLE decompression (%llu bytes)", (unsigned long long)comp_size);
             if (saved_file)
                 free(saved_file);
             checkpoint->error = true;
@@ -336,8 +339,8 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         }
         got = fread(comp_buf, 1, (size_t)comp_size, checkpoint->file);
         if (got != (size_t)comp_size) {
-            printf("Error: Failed to read %llu RLE bytes from checkpoint (got %zu)\n", (unsigned long long)comp_size,
-                   got);
+            LOG(0, "Error: Failed to read %llu RLE bytes from checkpoint (got %zu)", (unsigned long long)comp_size,
+                got);
             free(comp_buf);
             if (saved_file)
                 free(saved_file);
@@ -346,8 +349,8 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         }
         // Decode RLE into output buffer
         if (!rle_decode(comp_buf, (size_t)comp_size, (uint8_t *)data, size)) {
-            printf("Error: RLE decompression failed for %zu-byte block at %s:%d\n", size, file ? file : "(unknown)",
-                   line);
+            LOG(0, "Error: RLE decompression failed for %zu-byte block at %s:%d", size, file ? file : "(unknown)",
+                line);
             free(comp_buf);
             if (saved_file)
                 free(saved_file);
@@ -356,7 +359,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         }
         free(comp_buf);
     } else {
-        printf("Error: Unknown compression flag 0x%02x in checkpoint\n", flag);
+        LOG(0, "Error: Unknown compression flag 0x%02x in checkpoint", flag);
         if (saved_file)
             free(saved_file);
         checkpoint->error = true;
@@ -371,7 +374,7 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
 void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
                                       int line) {
     if (!checkpoint || checkpoint->error || !checkpoint->is_writing) {
-        printf("Error: Invalid checkpoint handle for writing\n");
+        LOG(0, "Error: Invalid checkpoint handle for writing");
         if (checkpoint)
             checkpoint->error = true;
         return;
@@ -391,7 +394,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
     uint64_t store_size = (uint64_t)size;
     size_t w = fwrite(&store_size, 1, sizeof(store_size), checkpoint->file);
     if (w != sizeof(store_size)) {
-        printf("Error: Failed to write size header to checkpoint (wrote %zu)\n", w);
+        LOG(0, "Error: Failed to write size header to checkpoint (wrote %zu)", w);
         checkpoint->error = true;
         return;
     }
@@ -400,14 +403,14 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
     uint32_t fname_len = file ? (uint32_t)strlen(file) : 0;
     w = fwrite(&fname_len, 1, sizeof(fname_len), checkpoint->file);
     if (w != sizeof(fname_len)) {
-        printf("Error: Failed to write filename length to checkpoint (wrote %zu)\n", w);
+        LOG(0, "Error: Failed to write filename length to checkpoint (wrote %zu)", w);
         checkpoint->error = true;
         return;
     }
     if (fname_len > 0) {
         w = fwrite(file, 1, fname_len, checkpoint->file);
         if (w != fname_len) {
-            printf("Error: Failed to write filename to checkpoint (wrote %zu)\n", w);
+            LOG(0, "Error: Failed to write filename to checkpoint (wrote %zu)", w);
             checkpoint->error = true;
             return;
         }
@@ -416,7 +419,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
     int32_t iline = (int32_t)line;
     w = fwrite(&iline, 1, sizeof(iline), checkpoint->file);
     if (w != sizeof(iline)) {
-        printf("Error: Failed to write line number to checkpoint (wrote %zu)\n", w);
+        LOG(0, "Error: Failed to write line number to checkpoint (wrote %zu)", w);
         checkpoint->error = true;
         return;
     }
@@ -432,7 +435,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
         }
         size_t written = fwrite(data, 1, size, checkpoint->file);
         if (written != size) {
-            printf("Error: Failed to write %zu bytes to checkpoint (wrote %zu)\n", size, written);
+            LOG(0, "Error: Failed to write %zu bytes to checkpoint (wrote %zu)", size, written);
             checkpoint->error = true;
         }
     } else {
@@ -441,7 +444,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
         size_t comp_size = rle_encode((const uint8_t *)data, size, NULL, 0);
         uint8_t *comp_buf = (uint8_t *)malloc(comp_size);
         if (!comp_buf) {
-            printf("Error: Out of memory for RLE compression (%zu bytes)\n", comp_size);
+            LOG(0, "Error: Out of memory for RLE compression (%zu bytes)", comp_size);
             checkpoint->error = true;
             return;
         }
@@ -465,7 +468,7 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
         }
         w = fwrite(comp_buf, 1, comp_size, checkpoint->file);
         if (w != comp_size) {
-            printf("Error: Failed to write %zu RLE bytes to checkpoint (wrote %zu)\n", comp_size, w);
+            LOG(0, "Error: Failed to write %zu RLE bytes to checkpoint (wrote %zu)", comp_size, w);
             free(comp_buf);
             checkpoint->error = true;
             return;
@@ -501,7 +504,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
     char magic[CHECKPOINT_MAGIC_LEN];
     size_t got = fread(magic, 1, CHECKPOINT_MAGIC_LEN, cp->file);
     if (got != CHECKPOINT_MAGIC_LEN) {
-        printf("Error: %s is not a valid checkpoint (too short)\n", filename);
+        LOG(0, "Error: %s is not a valid checkpoint (too short)", filename);
         fclose(cp->file);
         free(cp);
         return NULL;
@@ -512,7 +515,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         char file_build_id[BUILD_ID_LEN + 1];
         got = fread(file_build_id, 1, BUILD_ID_LEN, cp->file);
         if (got != BUILD_ID_LEN) {
-            printf("Error: Failed to read build ID from %s\n", filename);
+            LOG(0, "Error: Failed to read build ID from %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -520,9 +523,9 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         file_build_id[BUILD_ID_LEN] = '\0';
         // Validate build ID matches the running application
         if (memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) != 0) {
-            printf("Error: Checkpoint build ID mismatch in %s\n", filename);
-            printf("  checkpoint: %s\n", file_build_id);
-            printf("  current:    %s\n", get_build_id());
+            LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
+            LOG(0, "  checkpoint: %s", file_build_id);
+            LOG(0, "  current:    %s", get_build_id());
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -530,7 +533,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         // Read machine model ID (fixed-size, null-padded)
         got = fread(cp->model_id, 1, MODEL_ID_LEN, cp->file);
         if (got != MODEL_ID_LEN) {
-            printf("Error: Failed to read model ID from %s\n", filename);
+            LOG(0, "Error: Failed to read model ID from %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -539,7 +542,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         // Read RAM size in KB (uint32_t, fixed 4 bytes)
         got = fread(&cp->ram_size_kb, 1, sizeof(cp->ram_size_kb), cp->file);
         if (got != sizeof(cp->ram_size_kb)) {
-            printf("Error: Failed to read RAM size from %s\n", filename);
+            LOG(0, "Error: Failed to read RAM size from %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -547,22 +550,22 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         uint64_t uncompressed_size = 0, compressed_size = 0;
         got = fread(&uncompressed_size, 1, sizeof(uncompressed_size), cp->file);
         if (got != sizeof(uncompressed_size)) {
-            printf("Error: Failed to read v3 uncompressed size from %s\n", filename);
+            LOG(0, "Error: Failed to read v3 uncompressed size from %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
         }
         got = fread(&compressed_size, 1, sizeof(compressed_size), cp->file);
         if (got != sizeof(compressed_size)) {
-            printf("Error: Failed to read v3 compressed size from %s\n", filename);
+            LOG(0, "Error: Failed to read v3 compressed size from %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
         }
         if (compressed_size > CHECKPOINT_MAX_ALLOC || uncompressed_size > CHECKPOINT_MAX_ALLOC) {
-            printf("Error: v3 size header (%llu / %llu) exceeds CHECKPOINT_MAX_ALLOC (%zu)\n",
-                   (unsigned long long)uncompressed_size, (unsigned long long)compressed_size,
-                   (size_t)CHECKPOINT_MAX_ALLOC);
+            LOG(0, "Error: v3 size header (%llu / %llu) exceeds CHECKPOINT_MAX_ALLOC (%zu)",
+                (unsigned long long)uncompressed_size, (unsigned long long)compressed_size,
+                (size_t)CHECKPOINT_MAX_ALLOC);
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -570,14 +573,14 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         // Allocate and read compressed data
         uint8_t *comp_buf = (uint8_t *)malloc((size_t)compressed_size);
         if (!comp_buf) {
-            printf("Error: Out of memory for v3 decompression (%llu bytes)\n", (unsigned long long)compressed_size);
+            LOG(0, "Error: Out of memory for v3 decompression (%llu bytes)", (unsigned long long)compressed_size);
             fclose(cp->file);
             free(cp);
             return NULL;
         }
         got = fread(comp_buf, 1, (size_t)compressed_size, cp->file);
         if (got != (size_t)compressed_size) {
-            printf("Error: Failed to read v3 compressed data from %s\n", filename);
+            LOG(0, "Error: Failed to read v3 compressed data from %s", filename);
             free(comp_buf);
             fclose(cp->file);
             free(cp);
@@ -586,8 +589,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         // Allocate decompressed buffer and decode
         cp->buf = (uint8_t *)malloc((size_t)uncompressed_size);
         if (!cp->buf) {
-            printf("Error: Out of memory for v3 decompressed data (%llu bytes)\n",
-                   (unsigned long long)uncompressed_size);
+            LOG(0, "Error: Out of memory for v3 decompressed data (%llu bytes)", (unsigned long long)uncompressed_size);
             free(comp_buf);
             fclose(cp->file);
             free(cp);
@@ -599,7 +601,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         } else {
             // RLE-compressed data: decode
             if (!rle_decode(comp_buf, (size_t)compressed_size, cp->buf, (size_t)uncompressed_size)) {
-                printf("Error: v3 RLE decompression failed for %s\n", filename);
+                LOG(0, "Error: v3 RLE decompression failed for %s", filename);
                 free(comp_buf);
                 free(cp->buf);
                 fclose(cp->file);
@@ -621,7 +623,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         char file_build_id[BUILD_ID_LEN + 1];
         got = fread(file_build_id, 1, BUILD_ID_LEN, cp->file);
         if (got != BUILD_ID_LEN) {
-            printf("Error: Failed to read build ID from %s\n", filename);
+            LOG(0, "Error: Failed to read build ID from %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -629,9 +631,9 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         file_build_id[BUILD_ID_LEN] = '\0';
         // Validate build ID matches the running application
         if (memcmp(file_build_id, get_build_id(), BUILD_ID_LEN) != 0) {
-            printf("Error: Checkpoint build ID mismatch in %s\n", filename);
-            printf("  checkpoint: %s\n", file_build_id);
-            printf("  current:    %s\n", get_build_id());
+            LOG(0, "Error: Checkpoint build ID mismatch in %s", filename);
+            LOG(0, "  checkpoint: %s", file_build_id);
+            LOG(0, "  current:    %s", get_build_id());
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -639,7 +641,7 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         // Read machine model ID (fixed-size, null-padded)
         got = fread(cp->model_id, 1, MODEL_ID_LEN, cp->file);
         if (got != MODEL_ID_LEN) {
-            printf("Error: Failed to read model ID from %s\n", filename);
+            LOG(0, "Error: Failed to read model ID from %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -648,14 +650,14 @@ checkpoint_t *checkpoint_open_read(const char *filename) {
         // Read RAM size in KB (uint32_t, fixed 4 bytes)
         got = fread(&cp->ram_size_kb, 1, sizeof(cp->ram_size_kb), cp->file);
         if (got != sizeof(cp->ram_size_kb)) {
-            printf("Error: Failed to read RAM size from %s\n", filename);
+            LOG(0, "Error: Failed to read RAM size from %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
         }
         cp->kind = CHECKPOINT_KIND_CONSOLIDATED;
     } else {
-        printf("Error: %s is not a valid Granny Smith checkpoint (bad signature)\n", filename);
+        LOG(0, "Error: %s is not a valid Granny Smith checkpoint (bad signature)", filename);
         fclose(cp->file);
         free(cp);
         return NULL;
@@ -705,7 +707,7 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
         if (!g_quick_write_buf) {
             g_quick_write_buf = (uint8_t *)malloc(QUICK_BUF_CAPACITY);
             if (!g_quick_write_buf) {
-                printf("Error: Failed to allocate quick checkpoint buffer (%d bytes)\n", QUICK_BUF_CAPACITY);
+                LOG(0, "Error: Failed to allocate quick checkpoint buffer (%d bytes)", QUICK_BUF_CAPACITY);
                 fclose(cp->file);
                 free(cp);
                 return NULL;
@@ -718,28 +720,28 @@ checkpoint_t *checkpoint_open_write(const char *filename, checkpoint_kind_t kind
     } else {
         // v2 consolidated: write magic + build ID + model ID immediately, data streamed per-block
         if (fwrite(CHECKPOINT_MAGIC_V2, 1, CHECKPOINT_MAGIC_LEN, cp->file) != CHECKPOINT_MAGIC_LEN) {
-            printf("Error: Failed to write checkpoint signature to %s\n", filename);
+            LOG(0, "Error: Failed to write checkpoint signature to %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
         }
         // Write build ID right after the magic signature
         if (fwrite(get_build_id(), 1, BUILD_ID_LEN, cp->file) != BUILD_ID_LEN) {
-            printf("Error: Failed to write build ID to %s\n", filename);
+            LOG(0, "Error: Failed to write build ID to %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
         }
         // Write machine model ID (fixed-size, null-padded)
         if (fwrite(cp->model_id, 1, MODEL_ID_LEN, cp->file) != MODEL_ID_LEN) {
-            printf("Error: Failed to write model ID to %s\n", filename);
+            LOG(0, "Error: Failed to write model ID to %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
         }
         // Write RAM size in KB (uint32_t, fixed 4 bytes)
         if (fwrite(&cp->ram_size_kb, 1, sizeof(cp->ram_size_kb), cp->file) != sizeof(cp->ram_size_kb)) {
-            printf("Error: Failed to write RAM size to %s\n", filename);
+            LOG(0, "Error: Failed to write RAM size to %s", filename);
             fclose(cp->file);
             free(cp);
             return NULL;
@@ -793,7 +795,7 @@ void checkpoint_close(checkpoint_t *checkpoint) {
         // Write raw payload directly in one call
         size_t w = fwrite(checkpoint->buf, 1, raw_size, checkpoint->file);
         if (w != raw_size) {
-            printf("Error: v3 write failed (wrote %zu of %zu)\n", w, raw_size);
+            LOG(0, "Error: v3 write failed (wrote %zu of %zu)", w, raw_size);
             checkpoint->error = true;
         }
     }
@@ -836,7 +838,7 @@ bool checkpoint_get_files_as_refs(void) {
 // Write a file to the checkpoint (either content or reference mode)
 void checkpoint_write_file_loc(checkpoint_t *checkpoint, const char *path, const char *file, int line) {
     if (!checkpoint || checkpoint->error || !checkpoint->is_writing) {
-        printf("Error: Invalid checkpoint handle for writing (file block)\n");
+        LOG(0, "Error: Invalid checkpoint handle for writing (file block)");
         if (checkpoint)
             checkpoint->error = true;
         return;
@@ -964,7 +966,7 @@ void checkpoint_write_file_loc(checkpoint_t *checkpoint, const char *path, const
                 // no honest payload to emit, and zero-padding the slot would
                 // silently corrupt restore (F-1017). Fail the checkpoint so
                 // the user sees the error rather than a half-written file.
-                printf("Error: cannot read '%s' for checkpoint write: source file missing\n", path);
+                LOG(0, "Error: cannot read '%s' for checkpoint write: source file missing", path);
                 checkpoint->error = true;
                 return;
             } else {
@@ -990,7 +992,7 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
     if (out_path)
         *out_path = NULL;
     if (!checkpoint || checkpoint->error || checkpoint->is_writing) {
-        printf("Error: Invalid checkpoint handle for reading (file block)\n");
+        LOG(0, "Error: Invalid checkpoint handle for reading (file block)");
         if (checkpoint)
             checkpoint->error = true;
         return 0;
@@ -1055,7 +1057,7 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
                     // or the source image was deleted post-checkpoint).
                     // Surface this rather than silently returning loaded=0,
                     // which a caller can't distinguish from "zero-byte file".
-                    printf("Warning: checkpoint references missing file '%s'\n", *out_path);
+                    LOG(0, "Warning: checkpoint references missing file '%s'", *out_path);
                     checkpoint->error = true;
                 }
             }
