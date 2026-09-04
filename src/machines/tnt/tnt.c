@@ -516,6 +516,8 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // SCSI ch 0/10, ...) registers its port as it lands; until then a
     // channel's data commands stall honestly.
     st->dbdma = tnt_dbdma_init(cp);
+    if (!st->dbdma)
+        return -1;
     // The internal SuperDrive behind SWIM3: the shared floppy module owns
     // the drive and media, the shared SWIM3 model (core/peripherals) the
     // chip, and swim3.c here binds the two to Grand Central and DBDMA

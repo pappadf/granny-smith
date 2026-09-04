@@ -491,7 +491,7 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value);
 // the machine's slot table names it, and pci_seat_slots runs its factory,
 // which is what calls the three functions below.
 void tnt_control_register_events(config_t *cfg); // event type (pre-start)
-void tnt_control_init(config_t *cfg); // VRAM, display, BAR backings
+int tnt_control_init(config_t *cfg); // VRAM, display, BAR backings; 0 on success
 void tnt_control_reset(config_t *cfg); // power-on registers (VRAM survives)
 void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);

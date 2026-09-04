@@ -573,7 +573,14 @@ static pci_device_t *control_factory(int slot_index, config_t *cfg, checkpoint_t
     pci_cfg_reset(dev);
     st->control_dev = dev;
     tnt_control_register_events(cfg);
-    tnt_control_init(cfg);
+    if (tnt_control_init(cfg) != 0) {
+        // The PCI layer logs and skips a NULL factory return, so the machine
+        // comes up without built-in video rather than dereferencing NULL
+        // framebuffers on the first scanout.
+        st->control_dev = NULL;
+        free(dev);
+        return NULL;
+    }
     tnt_control_reset(cfg);
     return dev;
 }
@@ -766,12 +773,19 @@ void tnt_control_reset(config_t *cfg) {
     tnt_control_update(cfg);
 }
 
-void tnt_control_init(config_t *cfg) {
+int tnt_control_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);
     st->compose = calloc(1, TNT_VRAM_SIZE);
-    assert(st->vram != NULL && st->blank != NULL && st->compose != NULL);
+    if (!st->vram || !st->blank || !st->compose) {
+        LOG(0, "Error: out of memory allocating Control's three %u-byte framebuffers", (unsigned)TNT_VRAM_SIZE);
+        free(st->vram);
+        free(st->blank);
+        free(st->compose);
+        st->vram = st->blank = st->compose = NULL;
+        return -1;
+    }
 
     // The two BAR-backed regions, handed to the bus: it maps them wherever
     // Open Firmware assigns the BARs and faults on everything else in the
@@ -796,6 +810,7 @@ void tnt_control_init(config_t *cfg) {
 
     tnt_control_update(cfg);
     st->display.response_dirty = true;
+    return 0;
 }
 
 void tnt_control_teardown(config_t *cfg) {

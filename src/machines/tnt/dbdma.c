@@ -104,7 +104,10 @@ struct tnt_dbdma {
 
 tnt_dbdma_t *tnt_dbdma_init(checkpoint_t *cp) {
     tnt_dbdma_t *d = calloc(1, sizeof(*d));
-    assert(d != NULL);
+    if (!d) {
+        LOG(0, "Error: out of memory allocating the DBDMA engine");
+        return NULL;
+    }
     if (cp)
         for (int n = 0; n < TNT_DBDMA_CHANNELS; n++)
             system_read_checkpoint_data(cp, &d->chan[n], sizeof(d->chan[n]));
