@@ -238,9 +238,9 @@ divergences, each deliberate and localised:
 | # | Divergence | Where | Why |
 |---|---|---|---|
 | 1 | Idle is inverted: work completes at issue, busy reads 0 | `v2_status` | the faithful failure mode is an unbounded guest spin (§8 Q3) |
-| 2 | The fill rule above | `v2_sw_triangle` | not specified at any price; §8 Q1 |
-| 3 | Dither thresholds (classic Bayer 4×4/2×2, remainder-threshold rule) | `v2_pack565` | the spec names the modes but not the matrices |
-| 4 | Per-pixel LOD from analytic texel-space steps | `v2_texture_chain` | the LOD arithmetic is Bruce-spec material nobody holds (§8 Q4) |
+| 2 | The fill rule above | `v2_sw_triangle` (`voodoo2_raster.c`) | not specified at any price; §8 Q1 |
+| 3 | Dither thresholds (classic Bayer 4×4/2×2, remainder-threshold rule) | `v2_pack565` (`voodoo2_raster.c`) | the spec names the modes but not the matrices |
+| 4 | Per-pixel LOD from analytic texel-space steps | `v2_texture_chain_full` (`voodoo2_raster.c`) | the LOD arithmetic is Bruce-spec material nobody holds (§8 Q4) |
 | 5 | 1/W→4.12 float-depth normalisation | `v2_depth_float` | the exact normalisation is not in our material |
 | 6 | Fog table indexing (4-bit exponent + 2 mantissa bits, no inter-entry interpolation) | `v2_pixel_pipe` | normalisation unspecified; no held client uses fog |
 | 7 | Float-mirror→fixed conversion truncates toward zero | `v2_float_to_latch` | conversion rounding unspecified |
@@ -254,6 +254,81 @@ and implemented faithfully: sub-pixel correction mutating the start
 latches per FIFO read (so resend-less triangles drift — §8 Q9, asserted),
 the reversed LFB transform orders, texture-memory aliasing under the
 sizing probes, and the initEnable gates.
+
+## The raster seam: commands, snapshot, backends
+
+`voodoo2_raster.h` is the seam between the card and its rasteriser,
+reshaped by two follow-on proposals (`proposal-voodoo2-walker-
+optimization`, `proposal-voodoo2-raster-thread`) into a command layer:
+
+- **The producer** (`voodoo2.c`) owns the register file and turns guest
+  traffic into commands: triangle, fastfill, LFB pixel, raw 16-bit
+  store, texture download (a packet-5 row per command), palette/NCC
+  word, SGRAM fill, statistics clear, stipple write.  Each command
+  names a slot in a ring of **draw-state snapshots** (`v2_draw_state_t`
+  — every register the pipeline reads, plus its per-draw decode: LOD
+  bases and dimensions, combine controls, buffer bases resolved against
+  the displayed buffer).  A snapshot is re-captured only when a state
+  register is written, and a slot is rewritten only after every command
+  that referenced it has retired.
+- **The executor** (`voodoo2_raster.c`, `v2_raster_execute`) renders a
+  command into the **target** (`v2_target_t`) it owns: the framebuffer,
+  the texture RAMs, the palettes and NCC tables, the five statistics
+  counters and the stipple register.  The TU never includes the card
+  struct — it *cannot* read a live register, which is the thread
+  proposal's "worker never reads live state" rule enforced by the
+  compiler.
+- **Backends** decide only *where* the executor runs:
+  `pci_option="raster=sw"` (default, inline, **normative** — it
+  produces every golden), `raster=null` (drops triangles; pins the
+  analytic-timing invariant), `raster=thread` (one worker pthread
+  draining a bounded SPSC ring; native builds only, wasm falls back to
+  `sw`).  `machine.pci.slot[N].card.regs.raster` reports which.
+
+**Observation fences.**  Invariant 2 of the seam — the shadow is
+authoritative when the guest looks — is a list of `v2_raster_sync()`
+call sites, every one guest-visible: LFB reads; reads of the five
+counters and of `stipple` (`v2_observe` retires the queue and mirrors
+the executor's copies into the register file); scanout
+(`v2_display_update`, the once-per-frame fence that bounds the
+worker's lag); checkpoint save/restore; reset; teardown; `tex_save`;
+the raw byte/halfword stores; and every CMDFIFO write while the fifo
+pages overlap a render buffer (the fifo ring lives inside `fb_ram`
+— `v2_check_fifo_overlap` re-evaluates the geometry whenever it is
+programmed and logs the overlapping configuration once).
+`fbiTrianglesOut` counts at *submission*, on the producer, and needs
+no fence — part of the contract.  Under `raster=thread` the level-5
+`tri` trace still comes from the producer; the `GS_V2_WATCH`
+instrument logs from inside the executor, so a thread backend refuses
+to start while it is armed and diagnosis uses the synchronous walker.
+
+**Equivalence is asserted, not assumed.**  `tnt-pci-voodoo2` replays
+its entire drawing section a second time on `raster=thread` against
+the same pinned pixel values and counts (including a rotate-mode
+stipple probe: nine of tri1's 136 pixels pass `$80000001`, the
+register ends at `$180`); `tnt-voodoo2-glide-thread` runs the Quake
+flow on the worker against the **same** in-game golden (a symlink into
+the sibling row).
+
+**The walker-optimization ladder** (bit-exact by construction; the
+three rows above are the oracle, `GS_V2_XCHECK=1` is the soak-run
+cross-check that recomputes every shortcut the long way and aborts on
+a mismatch):
+
+| rung | what | how it stays exact |
+|---|---|---|
+| snapshot | register decode, mip-chain address arithmetic and buffer bases hoisted per draw | same expressions, evaluated once |
+| dither | `v2_pack565`'s two divisions become `s_dith5/6[d][v]` lookups | tables built from the same expressions over the whole 16×256 domain |
+| fetch | one clamp/wrap per bilinear coordinate, a 2×2 raw fetch, 8-bit formats through a 256-entry expansion cache keyed by (format, NCC select, palette generation); `ldexp` becomes a multiply by an exact power of two | cache built by `v2_texel_expand`; power-of-two scaling is exact in IEEE double |
+| TMU skip (§3.2) | TMU1 not sampled when TMU0's combine consumes nothing from its chain input (`tc_zero_other`, `tca_zero_other`, no `a_other` mselect, not echoing config); the chain not run when `fbzColorPath` never reads `tex_argb` | dataflow: the dead value is multiplied by zero or never selected |
+| incremental (§3.3) | edge functions and every iterator evaluated in closed form at the first pixel of a row's inside run, then stepped by the X gradient; the row scan stops when the run ends | integer fixed point: `start + k·d` accumulated equals the closed form; a convex polygon's row is one interval |
+| pinned LOD (§3.4) | with `lodmin == lodmax` and equal min/mag filters the estimate (four divides and a `log2` per pixel) is never computed | the clamp pins `lod4` and `magnify` selects nothing |
+| inlining (§3.6) | the per-pixel leaf helpers are `always_inline`; the watch test is one predicted branch | no semantic content |
+
+Measured on the canonical launch (`scripts/voodoo2/bench.sh`, the
+glide row to its golden, 2-core devcontainer, release headless build):
+see the table in the proposal's completion record — the numbers are
+host-dependent and belong in commit messages, not here.
 
 ## The register-name table (milestone 3a)
 

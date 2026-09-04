@@ -41,6 +41,12 @@ LOG_USE_CATEGORY_NAME("voodoo2");
 
 #define V2_FB_MASK (V2_RASTER_FB_SIZE - 1u)
 
+// The per-pixel leaf helpers are forced inline (walker proposal §3.6;
+// the precedent is the PPC decoder's +34% from the same attribute):
+// -O2 across a TU this size otherwise leaves call boundaries in the
+// hottest loop of the emulator.
+#define V2_INLINE static inline __attribute__((always_inline))
+
 // One pixel's state entering the back half of the pipeline.
 typedef struct v2_pix {
     int32_t x, y; // screen pixel (top-left origin)
@@ -85,22 +91,23 @@ bool v2_raster_watch_armed(void) {
 // Physical byte address of a 16-bit pixel in a software-selected
 // buffer (0 front, 1 back, 3 aux); the bases were resolved by the
 // producer against the displayed buffer when the state was snapshotted.
-static uint32_t v2_fb_addr(const v2_draw_state_t *st, uint32_t buffer, uint32_t x, uint32_t y) {
+V2_INLINE uint32_t v2_fb_addr(const v2_draw_state_t *st, uint32_t buffer, uint32_t x, uint32_t y) {
     return (st->buf_base[buffer & 3u] + y * st->stride + x * 2u) & V2_FB_MASK;
 }
 
 // 16-bit raw framebuffer access at a physical (buffer, x, y).
-static uint16_t v2_fb_load(const v2_draw_state_t *st, const v2_target_t *tgt, uint32_t buffer, int32_t x, int32_t y) {
+V2_INLINE uint16_t v2_fb_load(const v2_draw_state_t *st, const v2_target_t *tgt, uint32_t buffer, int32_t x,
+                              int32_t y) {
     uint32_t at = v2_fb_addr(st, buffer, (uint32_t)x, (uint32_t)y);
     return (uint16_t)(tgt->fb[at] | ((uint16_t)tgt->fb[(at + 1u) & V2_FB_MASK] << 8));
 }
 
-static void v2_fb_store(const v2_draw_state_t *st, v2_target_t *tgt, uint32_t buffer, int32_t x, int32_t y,
-                        uint16_t px) {
+V2_INLINE void v2_fb_store(const v2_draw_state_t *st, v2_target_t *tgt, uint32_t buffer, int32_t x, int32_t y,
+                           uint16_t px) {
     // Pixel-provenance watch (§9.2 instrument): GS_V2_WATCH="x,y" logs
     // every color-buffer store to that pixel with the state that shaded
     // it — the tool that traces one wrong pixel back to its texture.
-    if (x == s_watch_x && y == s_watch_y && buffer <= 1u)
+    if (__builtin_expect(x == s_watch_x && y == s_watch_y && buffer <= 1u, 0))
         LOG(1, "watch (%d,%d) buf %u px %04X fbzcp=%08X fbz=%08X alpha=%08X t0mode=%08X t0base=%08X", x, y, buffer, px,
             st->fcp, st->fbz, st->amode, st->tmu[0].mode, st->tmu[0].texbase);
     uint32_t at = v2_fb_addr(st, buffer, (uint32_t)x, (uint32_t)y);
@@ -113,7 +120,7 @@ static void v2_fb_store(const v2_draw_state_t *st, v2_target_t *tgt, uint32_t bu
 // ============================================================
 
 // DRAM byte address of texel (s,t) at `lod`.
-static uint32_t v2_texel_addr(const v2_tmu_state_t *tm, int lod, uint32_t s, uint32_t t) {
+V2_INLINE uint32_t v2_texel_addr(const v2_tmu_state_t *tm, int lod, uint32_t s, uint32_t t) {
     uint32_t texel_bytes = tm->is8 ? 1u : 2u;
     uint32_t addr = tm->lod_base[lod] + (t * tm->lod_w[lod] + s) * texel_bytes;
     return addr & tm->mask;
@@ -215,7 +222,7 @@ static uint32_t v2_ncc_decode(const v2_target_t *tgt, int tmu, int table, uint8_
 // Expand one raw texel to 32-bit ARGB per the tformat table (V2 p.81).
 // Format 10's green expansion is printed there as {g[5:0], r[5:4]} —
 // resolved as the obvious typo for {g[5:0], g[5:4]} (proposal §8 Q5).
-static uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, uint32_t raw) {
+static inline uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, uint32_t raw) {
     uint32_t fmt = tm->fmt;
     int table = tm->ncc_table;
     uint32_t a, r, g, b, p;
@@ -286,41 +293,63 @@ static uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target_t *tgt
     }
 }
 
-// Fetch and expand the texel at integer (s,t) with clamp/wrap applied.
-static uint32_t v2_texel_fetch(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, int lod, int32_t s,
-                               int32_t t) {
-    uint32_t w = tm->lod_w[lod], h = tm->lod_h[lod];
-    if (tm->clamp_s)
-        s = s < 0 ? 0 : (s >= (int32_t)w ? (int32_t)w - 1 : s);
-    else
-        s &= (int32_t)(w - 1u);
-    if (tm->clamp_t)
-        t = t < 0 ? 0 : (t >= (int32_t)h ? (int32_t)h - 1 : t);
-    else
-        t &= (int32_t)(h - 1u);
-    uint32_t at = v2_texel_addr(tm, lod, (uint32_t)s, (uint32_t)t);
-    uint32_t mask = tm->mask;
-    uint32_t raw;
-    if (tm->is8)
-        raw = tgt->tex[tmu][at & mask];
-    else
-        raw = tgt->tex[tmu][at & mask] | ((uint32_t)tgt->tex[tmu][(at + 1u) & mask] << 8);
-    uint32_t argb = v2_texel_expand(tm, tgt, tmu, raw);
-    if (s_watch_now)
-        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, s, t, at,
-            tm->lod_base[lod], raw, argb);
-    return argb;
+// Clamp or wrap one texel coordinate against a level dimension.
+V2_INLINE uint32_t v2_tex_coord(int32_t c, uint32_t dim, bool clamp) {
+    if (clamp)
+        return (uint32_t)(c < 0 ? 0 : (c >= (int32_t)dim ? (int32_t)dim - 1 : c));
+    return (uint32_t)c & (dim - 1u);
 }
 
+// Read the raw texel at an already clamped/wrapped (s,t).
+V2_INLINE uint32_t v2_texel_raw(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, int lod, uint32_t s,
+                                uint32_t t) {
+    uint32_t at = v2_texel_addr(tm, lod, s, t);
+    const uint8_t *ram = tgt->tex[tmu];
+    if (tm->is8)
+        return ram[at];
+    return ram[at] | ((uint32_t)ram[(at + 1u) & tm->mask] << 8);
+}
+
+// The expansion cache for the 8-bit formats: 256 entries built by the
+// normative v2_texel_expand whenever the (format, NCC select, palette/
+// NCC generation) key changes — exact by construction, and the palette
+// and YIQ decodes leave the per-texel path.
+static const uint32_t *v2_expand_lut(const v2_tmu_state_t *tm, v2_target_t *tgt, int tmu) {
+    uint32_t key = 1u | ((uint32_t)tm->fmt << 1) | ((uint32_t)tm->ncc_table << 5) | (tgt->pal_gen[tmu] << 8);
+    if (tgt->lut_key[tmu] != key) {
+        for (uint32_t raw = 0; raw < 256u; raw++)
+            tgt->lut[tmu][raw] = v2_texel_expand(tm, tgt, tmu, raw);
+        tgt->lut_key[tmu] = key;
+    }
+    return tgt->lut[tmu];
+}
+
+// Exact powers of two: s * s_pow2neg[lod] == ldexp(s, -lod) bit for bit
+// (scaling by a power of two is exact in IEEE double; the texel
+// coordinates never approach the subnormal range).
+static const double s_pow2neg[V2_RASTER_LODS] = {1.0,      1.0 / 2,  1.0 / 4,   1.0 / 8,   1.0 / 16,
+                                                 1.0 / 32, 1.0 / 64, 1.0 / 128, 1.0 / 256, 1.0 / 512};
+
 // Sample one TMU at texel-space (s,t) — point or bilinear per the
-// filter bits and whether the LOD clamped to lodmin.
-static uint32_t v2_tmu_sample(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, double s, double t, int lod,
+// filter bits and whether the LOD clamped to lodmin.  The bilinear
+// footprint clamps/wraps each coordinate once and fetches the 2x2
+// block through the expansion cache for 8-bit formats.
+static uint32_t v2_tmu_sample(const v2_tmu_state_t *tm, v2_target_t *tgt, int tmu, double s, double t, int lod,
                               bool magnify) {
     bool bilinear = magnify ? tm->bilin_mag : tm->bilin_min;
-    s = ldexp(s, -lod);
-    t = ldexp(t, -lod);
+    s *= s_pow2neg[lod];
+    t *= s_pow2neg[lod];
+    uint32_t w = tm->lod_w[lod], h = tm->lod_h[lod];
+    const uint32_t *lut = tm->is8 ? v2_expand_lut(tm, tgt, tmu) : NULL;
     if (!bilinear) {
-        return v2_texel_fetch(tm, tgt, tmu, lod, (int32_t)floor(s), (int32_t)floor(t));
+        int32_t si = (int32_t)floor(s), ti = (int32_t)floor(t);
+        uint32_t sa = v2_tex_coord(si, w, tm->clamp_s), ta = v2_tex_coord(ti, h, tm->clamp_t);
+        uint32_t raw = v2_texel_raw(tm, tgt, tmu, lod, sa, ta);
+        uint32_t argb = lut ? lut[raw] : v2_texel_expand(tm, tgt, tmu, raw);
+        if (__builtin_expect(s_watch_now, 0))
+            LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sa,
+                (int)ta, v2_texel_addr(tm, lod, sa, ta), tm->lod_base[lod], raw, argb);
+        return argb;
     }
     // Bilinear: the four closest texels blended by the fractions of the
     // sample point relative to texel centres.
@@ -328,10 +357,32 @@ static uint32_t v2_tmu_sample(const v2_tmu_state_t *tm, const v2_target_t *tgt, 
     int32_t s0 = (int32_t)floor(fs), t0 = (int32_t)floor(ft);
     uint32_t frac_s = (uint32_t)((fs - s0) * 256.0) & 0xFFu;
     uint32_t frac_t = (uint32_t)((ft - t0) * 256.0) & 0xFFu;
-    uint32_t c00 = v2_texel_fetch(tm, tgt, tmu, lod, s0, t0);
-    uint32_t c10 = v2_texel_fetch(tm, tgt, tmu, lod, s0 + 1, t0);
-    uint32_t c01 = v2_texel_fetch(tm, tgt, tmu, lod, s0, t0 + 1);
-    uint32_t c11 = v2_texel_fetch(tm, tgt, tmu, lod, s0 + 1, t0 + 1);
+    uint32_t sa = v2_tex_coord(s0, w, tm->clamp_s), sb = v2_tex_coord(s0 + 1, w, tm->clamp_s);
+    uint32_t ta = v2_tex_coord(t0, h, tm->clamp_t), tb = v2_tex_coord(t0 + 1, h, tm->clamp_t);
+    uint32_t r00 = v2_texel_raw(tm, tgt, tmu, lod, sa, ta), r10 = v2_texel_raw(tm, tgt, tmu, lod, sb, ta);
+    uint32_t r01 = v2_texel_raw(tm, tgt, tmu, lod, sa, tb), r11 = v2_texel_raw(tm, tgt, tmu, lod, sb, tb);
+    uint32_t c00, c10, c01, c11;
+    if (lut) {
+        c00 = lut[r00];
+        c10 = lut[r10];
+        c01 = lut[r01];
+        c11 = lut[r11];
+    } else {
+        c00 = v2_texel_expand(tm, tgt, tmu, r00);
+        c10 = v2_texel_expand(tm, tgt, tmu, r10);
+        c01 = v2_texel_expand(tm, tgt, tmu, r01);
+        c11 = v2_texel_expand(tm, tgt, tmu, r11);
+    }
+    if (__builtin_expect(s_watch_now, 0)) {
+        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sa,
+            (int)ta, v2_texel_addr(tm, lod, sa, ta), tm->lod_base[lod], r00, c00);
+        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sb,
+            (int)ta, v2_texel_addr(tm, lod, sb, ta), tm->lod_base[lod], r10, c10);
+        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sa,
+            (int)tb, v2_texel_addr(tm, lod, sa, tb), tm->lod_base[lod], r01, c01);
+        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, (int)sb,
+            (int)tb, v2_texel_addr(tm, lod, sb, tb), tm->lod_base[lod], r11, c11);
+    }
     uint32_t out = 0;
     for (int sh = 0; sh < 32; sh += 8) {
         uint32_t a = (c00 >> sh) & 0xFFu, bch = (c10 >> sh) & 0xFFu;
@@ -354,7 +405,7 @@ static uint32_t v2_tmu_sample(const v2_tmu_state_t *tm, const v2_target_t *tgt, 
 // The shared combine-unit shape: ((other - sub) * factor) >> 8 + add,
 // clamped, optionally inverted.  factor = reverse ? m+1 : 256-m — the
 // diagrams' XOR-with-NOT-reverse plus one.
-static uint32_t v2_combine(uint32_t other, uint32_t local, uint32_t m, uint32_t ctl_bits, uint32_t add_val) {
+V2_INLINE uint32_t v2_combine(uint32_t other, uint32_t local, uint32_t m, uint32_t ctl_bits, uint32_t add_val) {
     bool zero_other = ctl_bits & 1u;
     bool sub_local = ctl_bits & 2u;
     bool reverse = ctl_bits & 4u;
@@ -382,7 +433,28 @@ static const uint8_t v2_dither2[2][2] = {
     {3, 1}
 };
 
-static uint16_t v2_pack565(const v2_draw_state_t *st, int32_t x, int32_t y, uint32_t r, uint32_t g, uint32_t b) {
+// The dither rule tabulated: s_dith5[d][v] = (v*31 + 15*d) / 255 and
+// s_dith6[d][v] = (v*63 + 13*d) / 255 for every threshold d (0..15) and
+// channel value v — built once from the SAME expressions, so the table
+// is exact by construction and the two integer divisions leave the
+// per-pixel path (walker proposal §3.5).
+static uint8_t s_dith5[16][256];
+static uint8_t s_dith6[16][256];
+
+static void v2_dither_tables_init(void) {
+    static bool ready;
+    if (ready)
+        return;
+    for (uint32_t d = 0; d < 16u; d++) {
+        for (uint32_t v = 0; v < 256u; v++) {
+            s_dith5[d][v] = (uint8_t)((v * 31u + 15u * d) / 255u);
+            s_dith6[d][v] = (uint8_t)((v * 63u + 13u * d) / 255u);
+        }
+    }
+    ready = true;
+}
+
+V2_INLINE uint16_t v2_pack565(const v2_draw_state_t *st, int32_t x, int32_t y, uint32_t r, uint32_t g, uint32_t b) {
     uint32_t r5, g6, b5;
     if (st->fbz & 0x100u) { // dithering enabled
         // Linear-rescale ordered dither (CHOSEN — the spec names the
@@ -399,9 +471,9 @@ static uint16_t v2_pack565(const v2_draw_state_t *st, int32_t x, int32_t y, uint
         // strictly-increasing tile sums, 0 maps to all-0, 255 to
         // all-max.
         uint32_t d = (st->fbz & 0x800u) ? v2_dither2[y & 1][x & 1] * 4u : v2_dither4[y & 3][x & 3];
-        r5 = (r * 31u + 15u * d) / 255u;
-        g6 = (g * 63u + 13u * d) / 255u;
-        b5 = (b * 31u + 15u * d) / 255u;
+        r5 = s_dith5[d][r & 0xFFu];
+        g6 = s_dith6[d][g & 0xFFu];
+        b5 = s_dith5[d][b & 0xFFu];
     } else {
         r5 = r >> 3;
         g6 = g >> 2;
@@ -414,7 +486,7 @@ static uint16_t v2_pack565(const v2_draw_state_t *st, int32_t x, int32_t y, uint
 // hardware normalisation is not in our material, so this is documented
 // as chosen: exponent counts leading zeros below 1.0, mantissa is the
 // next 12 bits inverted so integer comparisons keep their sense.
-static uint16_t v2_depth_float(int64_t val) {
+V2_INLINE uint16_t v2_depth_float(int64_t val) {
     if (val <= 0)
         return 0;
     if (val >= (1ll << 30))
@@ -430,8 +502,8 @@ static uint16_t v2_depth_float(int64_t val) {
 }
 
 // One alpha-blend factor (V2 §5.19.2), per channel where needed.
-static uint32_t v2_blend_factor(uint32_t code, bool is_src, uint32_t src_a, uint32_t dst_a, uint32_t other_c,
-                                uint32_t prefog_c) {
+V2_INLINE uint32_t v2_blend_factor(uint32_t code, bool is_src, uint32_t src_a, uint32_t dst_a, uint32_t other_c,
+                                   uint32_t prefog_c) {
     switch (code) {
     case 0x0:
         return 0;
@@ -458,7 +530,7 @@ static uint32_t v2_blend_factor(uint32_t code, bool is_src, uint32_t src_a, uint
 }
 
 // factor multiply with the 255->256 promotion so AONE is exact.
-static uint32_t v2_blend_mul(uint32_t c, uint32_t f) {
+V2_INLINE uint32_t v2_blend_mul(uint32_t c, uint32_t f) {
     return (c * (f + (f >> 7))) >> 8;
 }
 
@@ -832,7 +904,7 @@ static bool v2_pixel_pipe(const v2_draw_state_t *st, v2_target_t *tgt, v2_pix_t 
 // rasteriser draws.
 
 // Clamp/wrap of an accumulated 12.12 colour iterator (V2 p.40).
-static uint32_t v2_iter_rgba(int64_t it, bool clamp) {
+V2_INLINE uint32_t v2_iter_rgba(int64_t it, bool clamp) {
     if (clamp) {
         int64_t i = it >> 12;
         return i < 0 ? 0u : (i > 255 ? 255u : (uint32_t)i);
@@ -846,7 +918,7 @@ static uint32_t v2_iter_rgba(int64_t it, bool clamp) {
 }
 
 // Clamp/wrap of an accumulated 20.12 Z iterator.
-static uint32_t v2_iter_z(int64_t it, bool clamp) {
+V2_INLINE uint32_t v2_iter_z(int64_t it, bool clamp) {
     if (clamp) {
         int64_t i = it >> 12;
         return i < 0 ? 0u : (i > 0xFFFF ? 0xFFFFu : (uint32_t)i);
@@ -860,7 +932,7 @@ static uint32_t v2_iter_z(int64_t it, bool clamp) {
 }
 
 // Clamped W byte for the ACU/fog inputs (2.30 iterator; V2 pp.40-41).
-static uint32_t v2_iter_w8(int64_t it, bool clamp) {
+V2_INLINE uint32_t v2_iter_w8(int64_t it, bool clamp) {
     if (clamp) {
         int64_t i = it >> 30;
         if (i < 0)
@@ -872,7 +944,7 @@ static uint32_t v2_iter_w8(int64_t it, bool clamp) {
 
 // The texture chain for one pixel: TMU1 samples and combines first, its
 // output feeding TMU0's c_other (single-pass multitexture).
-static uint32_t v2_texture_chain(const v2_draw_state_t *st, const v2_target_t *tgt, const voodoo2_tri_t *T, int32_t dx,
+static uint32_t v2_texture_chain(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T, int32_t dx,
                                  int32_t dy) {
     uint32_t chain = 0; // most-upstream c_other is zero
     for (int tmu = V2_RASTER_TMUS - 1; tmu >= 0; tmu--) {
@@ -1392,6 +1464,7 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
     r->st_dirty = true;
     r->kind = V2_BACKEND_SW;
     v2_watch_init(); // the instrument reads its environment once, here
+    v2_dither_tables_init();
     if (kind && strcmp(kind, "null") == 0) {
         r->kind = V2_BACKEND_NULL;
     } else if (kind && strcmp(kind, "thread") == 0) {
