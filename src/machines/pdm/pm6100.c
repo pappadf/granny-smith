@@ -31,6 +31,11 @@ static const struct scsi_slot pm6100_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t pm6100_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = pm6100_scsi_slots},
+    {0},
+};
+
 static const pdm_board_desc_t pm6100_board = {
     .machine_id = 0x3010,
     .bus_hz = 30000000u, // 2:1 bus
@@ -54,7 +59,7 @@ const hw_profile_t machine_pm6100 = {
 
     .ram_options = pm6100_ram_options_kb,
     .floppy_slots = pm6100_floppy_slots,
-    .scsi_slots = pm6100_scsi_slots,
+    .scsi_buses = pm6100_scsi_buses,
     // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
     // (Phase G): no CD-specific hardware is involved, so the bay is
     // offered as soon as that bus exists.

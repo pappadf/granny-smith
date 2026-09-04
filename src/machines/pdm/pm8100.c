@@ -32,6 +32,11 @@ static const struct scsi_slot pm8100_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t pm8100_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = pm8100_scsi_slots},
+    {0},
+};
+
 // The three NuBus connectors behind BART: $C/$D/$E.
 //
 // This is what the SOFTWARE uses, and it is the thing that matters — the
@@ -84,7 +89,7 @@ const hw_profile_t machine_pm8100 = {
 
     .ram_options = pm8100_ram_options_kb,
     .floppy_slots = pm8100_floppy_slots,
-    .scsi_slots = pm8100_scsi_slots,
+    .scsi_buses = pm8100_scsi_buses,
     // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
     // (Phase G): no CD-specific hardware is involved, so the bay is
     // offered as soon as that bus exists.

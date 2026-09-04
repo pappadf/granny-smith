@@ -413,6 +413,11 @@ static const struct scsi_slot iici_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t iici_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = iici_scsi_slots},
+    {0},
+};
+
 // IIci board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body.
 static const mac030_mdu_board_t iici_mdu_board = {
@@ -437,7 +442,7 @@ const hw_profile_t machine_iici = {
 
     .ram_options = iici_ram_options_kb,
     .floppy_slots = iici_floppy_slots,
-    .scsi_slots = iici_scsi_slots,
+    .scsi_buses = iici_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
     // Built-in RBV video has no separate declaration ROM — the boot ROM

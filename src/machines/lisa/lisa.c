@@ -1165,6 +1165,11 @@ static const struct scsi_slot lisa_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t lisa_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = lisa_scsi_slots},
+    {0},
+};
+
 // Apple Lisa 2 hardware profile.
 static const machine_substrate_t lisa_substrate = {
     .init = lisa_init,
@@ -1197,7 +1202,7 @@ const hw_profile_t machine_lisa = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_slots = lisa_scsi_slots,
+    .scsi_buses = lisa_scsi_buses,
     .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,
@@ -1227,7 +1232,7 @@ const hw_profile_t machine_macxl = {
 
     .ram_options = lisa_ram_options_kb,
     .floppy_slots = lisa_floppy_slots,
-    .scsi_slots = lisa_scsi_slots,
+    .scsi_buses = lisa_scsi_buses,
     .hd_bus = HD_BUS_PROFILE, // parallel-port ProFile, not SCSI
     .has_cdrom = false,
     .cdrom_id = 0,

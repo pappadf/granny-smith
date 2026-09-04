@@ -518,6 +518,11 @@ static const struct scsi_slot plus_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t plus_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = plus_scsi_slots},
+    {0},
+};
+
 // Macintosh Plus hardware profile descriptor
 static const machine_substrate_t plus_substrate = {
     .init = plus_init,
@@ -552,7 +557,7 @@ const hw_profile_t machine_plus = {
     // Configuration-dialog shape
     .ram_options = plus_ram_options_kb,
     .floppy_slots = plus_floppy_slots,
-    .scsi_slots = plus_scsi_slots,
+    .scsi_buses = plus_scsi_buses,
     .has_cdrom = false, // Plus CD-ROM driver chain not yet integrated
     .cdrom_id = 3,
 

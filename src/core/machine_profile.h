@@ -127,12 +127,30 @@ struct floppy_slot {
 // One SCSI bus slot wired up by the machine's profile (HD0, HD1, …).
 struct scsi_slot {
     const char *label; // "SCSI HD0"; NULL terminates the array
-    int id; // Conventional SCSI bus id for this slot
+    int id; // SCSI id of this bay ON ITS BUS
     // The bay the firmware boots from by default, when that is not the
     // first one listed (the Network Server's Open Firmware boots
     // `disk2:aix`, bay 2).  The configuration dialog preselects it.
     bool boot;
 };
+
+// One SCSI bus a machine offers, carrying the bays that hang off it.
+//
+// The bays NEST under a bus rather than each carrying a flat bus index,
+// because a SCSI bus is a user-facing object: media attach through
+// `machine.<object>.attach_hd`, so the object name has to travel as data or
+// every consumer hardcodes the mapping (bus 1 -> "scsi2"), which is the same
+// family-knowledge-in-generic-code shape F-13 removed from the video port.
+//
+// PCI's pci_slot_decl_t does carry a flat `bus` index, and that is right
+// there: nothing outside the core ever addresses a PCI bus by name, so bus is
+// simply part of a slot's address alongside `device`.  The difference is the
+// attach path, not tidiness.
+typedef struct scsi_bus_decl {
+    const char *object; // object-model name — "scsi", "scsi2"
+    const char *label; // bus-level heading, e.g. "Front backplane (fast/wide 0)"
+    const struct scsi_slot *slots; // sentinel-terminated; NULL object ends the array
+} scsi_bus_decl_t;
 
 // One auxiliary CPU core on a machine (heterogeneous multi-CPU): a
 // peripheral processor executing real guest code on the main timeline
@@ -267,7 +285,7 @@ typedef struct hw_profile {
 
     // Floppy / SCSI slot tables.  Sentinel-terminated.
     const struct floppy_slot *floppy_slots;
-    const struct scsi_slot *scsi_slots;
+    const struct scsi_bus_decl *scsi_buses; // sentinel-terminated; NULL = no SCSI
 
     // Hard-disk attach interface (see hd_bus_t).  Default HD_BUS_SCSI (0): the
     // HD row attaches via scsi.attach_hd and takes its label from scsi_slots.

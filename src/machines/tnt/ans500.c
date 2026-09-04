@@ -56,6 +56,29 @@ static const struct scsi_slot ans500_scsi_slots[] = {
     {0},
 };
 
+// Bays 4-6 cable to the SECOND fast/wide controller, which the production
+// ROM's own device aliases settle: `disk0`..`disk3` resolve through
+// `/bandit/53c825@11`, `disk4` onward through `@12`.  That controller is
+// live -- tnt_fwscsi_attach binds channel 1 to machine.scsi2, and
+// ans-scsi drives a CD-ROM on it through Open Firmware's probe-scsi2 --
+// so the bays are declared rather than described.
+//
+// Bay 0 is Apple's expected CD-ROM position and is deliberately NOT declared
+// here: it is what hw_profile_t.cdrom_id addresses, which F-10 of the
+// 2026-09-03 review owns.
+static const struct scsi_slot ans500_scsi_slots_fw1[] = {
+    {.label = "Bay 5 (fast/wide 1)", .id = 4},
+    {.label = "Bay 6 (fast/wide 1)", .id = 5},
+    {.label = "Bay 7 (fast/wide 1)", .id = 6},
+    {0},
+};
+
+static const scsi_bus_decl_t ans500_scsi_buses[] = {
+    {.object = "scsi", .label = "Front backplane (fast/wide 0)", .slots = ans500_scsi_slots},
+    {.object = "scsi2", .label = "Front backplane (fast/wide 1)", .slots = ans500_scsi_slots_fw1},
+    {0},
+};
+
 // PCI topology (Apple, ibid., §4.6.2 and §7.1.1; independently confirmed by
 // the six per-slot Open Firmware boot commands printed in "Using the PCI
 // RAID Card").  Two facts here are boot-critical and are pure data:
@@ -209,7 +232,7 @@ const hw_profile_t machine_ans500 = {
     .rom_size = 0x400000, // 4 MB ($962F6C13 production / $49B2BE8F prototype)
 
     .ram_options = ans500_ram_options_kb,
-    .scsi_slots = ans500_scsi_slots,
+    .scsi_buses = ans500_scsi_buses,
     .floppy_slots = tnt_floppy_slots,
     // Bay 0 is the CD-ROM bay Apple expects, and it is the documented
     // install path: with the front keyswitch in Service on a machine that

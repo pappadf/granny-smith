@@ -33,6 +33,11 @@ static const struct scsi_slot q660av_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t q660av_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = q660av_scsi_slots},
+    {0},
+};
+
 static const av_board_desc_t q660av_board_desc = {
     .chipset = "YMCA+PSC",
     .rom_base = 0x40800000u,
@@ -75,7 +80,7 @@ const hw_profile_t machine_q660av = {
 
     .ram_options = q660av_ram_options_kb,
     .floppy_slots = q660av_floppy_slots,
-    .scsi_slots = q660av_scsi_slots,
+    .scsi_buses = q660av_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
     .has_video_in = true, // on-board DMSD/VDC digitizer (video-in.md)

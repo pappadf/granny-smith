@@ -265,6 +265,11 @@ static const struct scsi_slot q700_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t q700_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = q700_scsi_slots},
+    {0},
+};
+
 // NuBus topology (ref §10.3): two sockets, D and E; the PDS is mechanically
 // aligned with slot E (a PDS card precludes a NuBus card there — not modeled
 // as a constraint in v1).  The built-in DAFB video is pseudo-slot 9: its
@@ -314,7 +319,7 @@ const hw_profile_t machine_q700 = {
 
     .ram_options = q700_ram_options_kb,
     .floppy_slots = q700_floppy_slots,
-    .scsi_slots = q700_scsi_slots,
+    .scsi_buses = q700_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
 

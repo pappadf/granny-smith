@@ -1724,6 +1724,11 @@ static const struct scsi_slot iifx_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t iifx_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = iifx_scsi_slots},
+    {0},
+};
+
 static const machine_substrate_t iifx_substrate = {
     .init = iifx_init,
     .reset = iifx_reset,
@@ -1756,7 +1761,7 @@ const hw_profile_t machine_iifx = {
 
     .ram_options = iifx_ram_options_kb,
     .floppy_slots = iifx_floppy_slots,
-    .scsi_slots = iifx_scsi_slots,
+    .scsi_buses = iifx_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
 

@@ -494,18 +494,28 @@ static value_t build_profile(const hw_profile_t *p) {
     }
     val_map_put(b, "floppy_slots", val_list(flops, n_flops));
 
-    value_t *scsis = NULL;
-    size_t n_scsis = 0, cap_scsis = 0;
-    if (p->scsi_slots) {
-        for (const struct scsi_slot *s = p->scsi_slots; s->label; s++) {
+    // Buses, each carrying its own bays.  The `object` field is what a
+    // consumer attaches media through (machine.<object>.attach_hd), so no
+    // caller needs to know which machines have a second controller.
+    value_t *buses = NULL;
+    size_t n_buses = 0, cap_buses = 0;
+    for (const struct scsi_bus_decl *bus = p->scsi_buses; bus && bus->object; bus++) {
+        value_t *scsis = NULL;
+        size_t n_scsis = 0, cap_scsis = 0;
+        for (const struct scsi_slot *s = bus->slots; s && s->label; s++) {
             value_map_builder_t *sb = val_map_new();
             val_map_put(sb, "label", val_str(s->label));
             val_map_put(sb, "id", val_int((int64_t)s->id));
             val_map_put(sb, "boot", val_bool(s->boot));
             val_list_push(&scsis, &n_scsis, &cap_scsis, val_map_finish(sb));
         }
+        value_map_builder_t *bb = val_map_new();
+        val_map_put(bb, "object", val_str(bus->object));
+        val_map_put(bb, "label", val_str(bus->label));
+        val_map_put(bb, "slots", val_list(scsis, n_scsis));
+        val_list_push(&buses, &n_buses, &cap_buses, val_map_finish(bb));
     }
-    val_map_put(b, "scsi_slots", val_list(scsis, n_scsis));
+    val_map_put(b, "scsi_buses", val_list(buses, n_buses));
 
     val_map_put(b, "hd_bus", val_str(hd_bus_to_string(p->hd_bus)));
 

@@ -431,7 +431,9 @@ export async function defaultHdId(): Promise<number> {
     if (typeof model !== 'string' || !model) return 0;
     const r = await gsEval('machine.profile', [model]);
     if (!r || typeof r !== 'object' || 'error' in r) return 0;
-    const slots = (r as { scsi_slots?: Array<{ id?: number; boot?: boolean }> }).scsi_slots ?? [];
+    const buses =
+      (r as { scsi_buses?: Array<{ slots?: Array<{ id?: number; boot?: boolean }> }> }).scsi_buses ?? [];
+    const slots = buses.flatMap((bus) => bus.slots ?? []);
     const pick = slots.find((s) => s.boot) ?? slots[0];
     return typeof pick?.id === 'number' ? pick.id : 0;
   } catch {
@@ -566,7 +568,8 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
     } else {
       // A failed attach would boot the machine disk-less with no hint at
       // all — surface it (the boot itself still proceeds).
-      const hdOk = await gsEval('machine.scsi.attach_hd', [config.hd, config.hdId ?? 0]);
+      const busObject = config.hdBusObject || 'scsi';
+      const hdOk = await gsEval(`machine.${busObject}.attach_hd`, [config.hd, config.hdId ?? 0]);
       if (hdOk !== true) {
         showNotification(`Hard disk attach failed: ${gsErrorText(hdOk)}`, 'error');
       }

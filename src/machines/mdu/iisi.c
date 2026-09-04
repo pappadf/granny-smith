@@ -395,6 +395,11 @@ static const struct scsi_slot iisi_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t iisi_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = iisi_scsi_slots},
+    {0},
+};
+
 // IIsi board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body (Egret + 2-bank RAM live inside build_devices).
 static const mac030_mdu_board_t iisi_mdu_board = {
@@ -419,7 +424,7 @@ const hw_profile_t machine_iisi = {
 
     .ram_options = iisi_ram_options_kb,
     .floppy_slots = iisi_floppy_slots,
-    .scsi_slots = iisi_scsi_slots,
+    .scsi_buses = iisi_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
     // Built-in V8 video has no separate declaration ROM — the boot ROM drives

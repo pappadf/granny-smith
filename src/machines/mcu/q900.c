@@ -329,6 +329,11 @@ static const struct scsi_slot q900_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t q900_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = q900_scsi_slots},
+    {0},
+};
+
 // NuBus topology (ref §10.3): five NuBus '90 sockets A-E; the 040 PDS is
 // mechanically aligned with slot E.  Built-in DAFB video is pseudo-slot 9.
 static const nubus_slot_decl_t q900_nubus_slots[] = {
@@ -378,7 +383,7 @@ const hw_profile_t machine_q900 = {
 
     .ram_options = q900_ram_options_kb,
     .floppy_slots = q900_floppy_slots,
-    .scsi_slots = q900_scsi_slots,
+    .scsi_buses = q900_scsi_buses,
     .has_cdrom = true, // internal CD option shipped on the towers
     .cdrom_id = 3,
 

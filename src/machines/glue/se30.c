@@ -511,6 +511,11 @@ static const struct scsi_slot se30_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t se30_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = se30_scsi_slots},
+    {0},
+};
+
 const hw_profile_t machine_se30 = {
     .name = "Macintosh SE/30",
     .id = "se30",
@@ -529,7 +534,7 @@ const hw_profile_t machine_se30 = {
     // Configuration-dialog shape
     .ram_options = se30_ram_options_kb,
     .floppy_slots = se30_floppy_slots,
-    .scsi_slots = se30_scsi_slots,
+    .scsi_buses = se30_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
 

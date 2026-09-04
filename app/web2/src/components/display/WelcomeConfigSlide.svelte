@@ -34,7 +34,11 @@
     ram_options?: number[]; // KB
     ram_default?: number; // KB
     floppy_slots?: Array<{ label?: string; kind?: string }>;
-    scsi_slots?: Array<{ label?: string; id?: number; boot?: boolean }>;
+    scsi_buses?: Array<{
+      object?: string;
+      label?: string;
+      slots?: Array<{ label?: string; id?: number; boot?: boolean }>;
+    }>;
     // How the hard disk attaches: 'scsi' (default) or 'profile' (Lisa/XL
     // parallel-port ProFile). Drives the HD row label and the attach call.
     hd_bus?: string;
@@ -160,7 +164,7 @@
   // The bay (SCSI id) the hard disk attaches at, when the model has more than
   // one to offer; null = the model's default (the slot flagged `boot`, else
   // the first).  Reset whenever the model changes, since the ids are its.
-  let hdIdOverride = $state<number | null>(null);
+  let hdIdOverride = $state<string | null>(null); // "<bus object>:<id>"
   let cd = $state(NONE_SENTINEL);
   let videoMode = $state('');
   // Chosen PCI card options, keyed by option key ("vram" -> "4m"). Cleared
@@ -380,23 +384,32 @@
     slotCards.length > 0 && availableCards.length === 0 ? 'Video ROM' : 'PCI expansion ROM',
   );
   // HD row label: the Lisa/XL parallel-port ProFile (hd_bus === 'profile') is
-  // not on the SCSI bus, so its label comes from the bus, not scsi_slots (which
-  // is empty for those machines). SCSI machines keep their profile slot label.
+  // not on the SCSI bus, so its label comes from the bus, not the bay list
+  // (which is empty for those machines). SCSI machines keep their bay label.
   let hdSlotLabel = $derived(
     currentProfile?.hd_bus === 'profile'
       ? 'ProFile'
-      : (currentProfile?.scsi_slots?.[0]?.label ?? 'SCSI HD 0'),
+      : (currentProfile?.scsi_buses?.[0]?.slots?.[0]?.label ?? 'SCSI HD 0'),
   );
-  // Every SCSI bay the model lists, with the id the attach must use.  A
-  // machine whose bays do not start at id 0 (the Network Server's run 1..3
-  // and its firmware boots bay 2) is exactly why the id is never assumed.
+  // Every bay the model lists, flattened across its buses and carrying the
+  // bus object each one attaches through.  A machine whose bays do not start
+  // at id 0 (the Network Server's run 1..3, and its firmware boots bay 2) is
+  // why the id is never assumed; a machine with two controllers (the same
+  // Network Servers) is why the bus travels with the bay rather than being
+  // inferred.  Ids repeat ACROSS buses, so `key` — not `id` — identifies a
+  // bay.
   let hdSlots = $derived(
-    (currentProfile?.scsi_slots ?? []).filter(
-      (s): s is { label?: string; id: number; boot?: boolean } => typeof s.id === 'number',
+    (currentProfile?.scsi_buses ?? []).flatMap((bus) =>
+      (bus.slots ?? [])
+        .filter((s): s is { label?: string; id: number; boot?: boolean } => typeof s.id === 'number')
+        .map((s) => ({ ...s, busObject: bus.object ?? 'scsi', key: `${bus.object ?? 'scsi'}:${s.id}` })),
     ),
   );
-  let hdDefaultId = $derived((hdSlots.find((s) => s.boot) ?? hdSlots[0])?.id ?? 0);
-  let hdId = $derived(hdIdOverride ?? hdDefaultId);
+  let hdDefault = $derived(hdSlots.find((s) => s.boot) ?? hdSlots[0]);
+  let hdKey = $derived(hdIdOverride ?? hdDefault?.key ?? 'scsi:0');
+  let hdSelected = $derived(hdSlots.find((s) => s.key === hdKey) ?? hdDefault);
+  let hdId = $derived(hdSelected?.id ?? 0);
+  let hdBusObject = $derived(hdSelected?.busObject ?? 'scsi');
   $effect(() => {
     void modelId;
     hdIdOverride = null;
@@ -829,6 +842,7 @@
       hd: hdPath,
       hdBus: currentProfile?.hd_bus === 'profile' ? 'profile' : 'scsi',
       hdId,
+      hdBusObject,
       cd: cdPath,
     });
     setWelcomeSlide('home');
@@ -998,11 +1012,11 @@
           <label for="cfg-hd-bay">Bay</label>
           <select
             id="cfg-hd-bay"
-            value={String(hdId)}
-            onchange={(e) => (hdIdOverride = Number((e.target as HTMLSelectElement).value))}
+            value={hdKey}
+            onchange={(e) => (hdIdOverride = (e.target as HTMLSelectElement).value)}
           >
-            {#each hdSlots as slot (slot.id)}
-              <option value={String(slot.id)}>{slot.label ?? `SCSI id ${slot.id}`}</option>
+            {#each hdSlots as slot (slot.key)}
+              <option value={slot.key}>{slot.label ?? `SCSI id ${slot.id}`}</option>
             {/each}
           </select>
         </div>

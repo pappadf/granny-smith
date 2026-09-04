@@ -21,6 +21,11 @@ static const struct scsi_slot pm8500_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t pm8500_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = pm8500_scsi_slots},
+    {0},
+};
+
 // PCI topology (proposal-pci-architecture §6.1).  Three sockets on Bandit
 // 1 at IDSEL 13/14/15 — the ROM's own `slot-names` bitmask ($0000E000) on
 // the bandit node, corroborated by Apple's Network Server developer note
@@ -74,7 +79,7 @@ const hw_profile_t machine_pm8500 = {
     .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     .ram_options = pm8500_ram_options_kb,
-    .scsi_slots = pm8500_scsi_slots,
+    .scsi_buses = pm8500_scsi_buses,
     .floppy_slots = tnt_floppy_slots,
 
     .pci_slots = pm8500_pci_slots,
