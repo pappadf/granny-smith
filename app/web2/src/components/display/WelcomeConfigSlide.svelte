@@ -401,8 +401,14 @@
   let hdSlots = $derived(
     (currentProfile?.scsi_buses ?? []).flatMap((bus) =>
       (bus.slots ?? [])
-        .filter((s): s is { label?: string; id: number; boot?: boolean } => typeof s.id === 'number')
-        .map((s) => ({ ...s, busObject: bus.object ?? 'scsi', key: `${bus.object ?? 'scsi'}:${s.id}` })),
+        .filter(
+          (s): s is { label?: string; id: number; boot?: boolean } => typeof s.id === 'number',
+        )
+        .map((s) => ({
+          ...s,
+          busObject: bus.object ?? 'scsi',
+          key: `${bus.object ?? 'scsi'}:${s.id}`,
+        })),
     ),
   );
   let hdDefault = $derived(hdSlots.find((s) => s.boot) ?? hdSlots[0]);

@@ -432,7 +432,8 @@ export async function defaultHdId(): Promise<number> {
     const r = await gsEval('machine.profile', [model]);
     if (!r || typeof r !== 'object' || 'error' in r) return 0;
     const buses =
-      (r as { scsi_buses?: Array<{ slots?: Array<{ id?: number; boot?: boolean }> }> }).scsi_buses ?? [];
+      (r as { scsi_buses?: Array<{ slots?: Array<{ id?: number; boot?: boolean }> }> })
+        .scsi_buses ?? [];
     const slots = buses.flatMap((bus) => bus.slots ?? []);
     const pick = slots.find((s) => s.boot) ?? slots[0];
     return typeof pick?.id === 'number' ? pick.id : 0;
