@@ -44,7 +44,7 @@
 #include <stdint.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("q700");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // VIA callbacks (direct IIci-like wiring; ref §14)
@@ -145,7 +145,7 @@ static void q700_dafb_irq(void *context, bool active) {
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
 
-static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
+static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = q700_state(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
@@ -153,16 +153,12 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The Q700 bit-bangs the classic RTC on VIA1 (ref §14.4).
     rtc_set_via(cfg->rtc, cfg->via1);
 
-    // Model sense on VIA1 PA: $C0 | diagnostic bit — PA7/PA6 high, PA5..PA1
-    // low (the ROM's identify table matches PA & $56 == $40 for the Q700).
-    // PA0 is the diagnostic-mode switch and idles HIGH for a normal boot:
-    // driving it low sends the ROM into its serial test manager (observed
-    // during bring-up — endless SCC poll at $40847BFx with no fault).
-    via_input(cfg->via1, 0, 7, 1);
-    via_input(cfg->via1, 0, 6, 1);
-    for (int bit = 1; bit <= 5; bit++)
-        via_input(cfg->via1, 0, bit, 0);
-    via_input(cfg->via1, 0, 0, 1);
+    // Model sense on VIA1 PA from the board descriptor ($C0: the ROM's identify
+    // table matches PA & $56 == $40 for the Q700), plus the PA0 diagnostic
+    // strap.  These were eight hardcoded via_input calls that ignored
+    // desc->via1_pa_model entirely, leaving the field dead on this board while
+    // q900/q950 read it.
+    mcu_apply_via1_model_sense(cfg, desc);
     // CA1/CB1 idle high (tick + ADB clock reference edges).
     via_input_c(cfg->via1, 0, 0, 1);
     via_input_c(cfg->via1, 1, 0, 1);
@@ -200,7 +196,10 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     cfg->floppy = st->floppy;
 
     st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q700 maxed; base 512 KiB later)
-    assert(st->dafb != NULL);
+    if (!st->dafb) {
+        LOG(0, "Error: out of memory constructing the DAFB");
+        return -1;
+    }
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, q700_dafb_irq, cfg);
     // Consume unconditionally so a staged sense never leaks into a later
@@ -222,7 +221,10 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     st->bus_mmu =
         mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
-    assert(st->bus_mmu != NULL);
+    if (!st->bus_mmu) {
+        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+        return -1;
+    }
     g_mmu = st->bus_mmu;
     // Attach the CPU-owned 040 register file: translation now dispatches to
     // the mmu040 walker; `enabled` mirrors TC.E.  (The cpu.mmu debug object
@@ -241,6 +243,7 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     if (cp)
         mcu_restore_private(cfg, cp);
+    return 0;
 }
 
 // ============================================================
@@ -259,6 +262,11 @@ static const struct floppy_slot q700_floppy_slots[] = {
 static const struct scsi_slot q700_scsi_slots[] = {
     {.label = "SCSI HD0", .id = 0},
     {.label = "SCSI HD1", .id = 1},
+    {0},
+};
+
+static const scsi_bus_decl_t q700_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = q700_scsi_slots},
     {0},
 };
 
@@ -311,7 +319,7 @@ const hw_profile_t machine_q700 = {
 
     .ram_options = q700_ram_options_kb,
     .floppy_slots = q700_floppy_slots,
-    .scsi_slots = q700_scsi_slots,
+    .scsi_buses = q700_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
 

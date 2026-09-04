@@ -31,7 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("se30video");
+LOG_USE_CATEGORY_NAME("se30vid");
 
 #define SE30_VRAM_SIZE           0x00010000UL // 64 KB
 #define SE30_VROM_SIZE           0x00008000UL // 32 KB

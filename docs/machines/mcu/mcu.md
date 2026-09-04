@@ -26,7 +26,7 @@ Evidence labels below follow the DAFB-family implementation reference:
 - **MCU register file at `$5000E000` [U].** Register semantics are not
   publicly documented, so the file is **accept-and-log with readback**: 64
   longword slots latch writes and read back verbatim, and every first touch
-  is logged (`debug.log mcu`) so the ROM's access sequence itself becomes a
+  is logged (`debug.log board`) so the ROM's access sequence itself becomes a
   reverse-engineering artifact. The YANCC bridge file at `$50028000` gets
   the same policy.
 - **256 KiB I/O island at `$50000000`**, mirror mask `$3FFFF`, run on the
@@ -79,7 +79,8 @@ in a fresh process, must finish booting to the pixel-exact desktop.
 
 ## Debug surfaces
 
-- `debug.log mcu` / `debug.log dafb` / `debug.log scsi96` / `debug.log
+- `debug.log board` — the machine/board glue (model-independent, so the same
+  spec works on every model); `debug.log dafb` / `debug.log 53c96` / `debug.log
   sonic` — per-chip categories; level 3 logs every register access.
 - `machine.cpu.mmu` — the 040 MMU inspector
   ([mmu040.md](../../core/memory/mmu040.md)).

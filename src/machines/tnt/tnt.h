@@ -427,6 +427,11 @@ static inline const tnt_board_desc_t *tnt_board(config_t *cfg) {
 
 extern const machine_substrate_t tnt_substrate;
 
+// The family's one internal SuperDrive bay, shared by all five profiles
+// (tnt.c).  The SWIM3 + DBDMA-channel-1 datapath behind it is complete and
+// exercised by tests/integration/ans-diag-floppy.
+extern const struct floppy_slot tnt_floppy_slots[];
+
 // Fill/clear one physical page in the AoS table + SoA fast-path arrays
 // (the pdm_fill_page shape; local so tnt stays free of 68K-family headers).
 void tnt_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
@@ -486,7 +491,7 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value);
 // the machine's slot table names it, and pci_seat_slots runs its factory,
 // which is what calls the three functions below.
 void tnt_control_register_events(config_t *cfg); // event type (pre-start)
-void tnt_control_init(config_t *cfg); // VRAM, display, BAR backings
+int tnt_control_init(config_t *cfg); // VRAM, display, BAR backings; 0 on success
 void tnt_control_reset(config_t *cfg); // power-on registers (VRAM survives)
 void tnt_control_update(config_t *cfg); // re-derive the display descriptor
 void tnt_control_teardown(config_t *cfg);

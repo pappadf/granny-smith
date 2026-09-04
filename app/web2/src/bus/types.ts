@@ -47,8 +47,13 @@ export interface MachineConfig {
    *  `machine.profile(id).hd_bus`. */
   hdBus?: 'scsi' | 'profile';
   /** SCSI id (bay) to attach `hd` at. Chosen in the dialog from the model's
-   *  `scsi_slots`; defaults to the slot flagged `boot`, else the first one. */
+   *  `scsi_buses`; defaults to the bay flagged `boot`, else the first one. */
   hdId?: number;
+  /** Object-model name of the bus that bay is on — "scsi", "scsi2". Comes
+   *  from the model's `scsi_buses[].object`, so a machine with a second
+   *  controller (the Network Servers' two fast/wide channels) needs no
+   *  special case here. Defaults to "scsi". */
+  hdBusObject?: string;
   cd: string;
 }
 

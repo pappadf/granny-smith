@@ -37,6 +37,11 @@ static const struct scsi_slot q950_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t q950_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = q950_scsi_slots},
+    {0},
+};
+
 // Same five NuBus '90 sockets A-E as the Q900 (ref §10.3).
 static const nubus_slot_decl_t q950_nubus_slots[] = {
     {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
@@ -87,7 +92,7 @@ const hw_profile_t machine_q950 = {
 
     .ram_options = q950_ram_options_kb,
     .floppy_slots = q950_floppy_slots,
-    .scsi_slots = q950_scsi_slots,
+    .scsi_buses = q950_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
 

@@ -151,26 +151,6 @@ static void adsp_conn_release(adsp_stack_t *s, adsp_conn_t *c, const char *reaso
 // Operations — byte order and sequence arithmetic
 // ============================================================================
 
-static void put16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
-static void put32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
-static uint16_t get16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
-static uint32_t get32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
 // Sequence numbers wrap at 2^32 (12-7), so ordering is a signed difference.
 static bool seq_le(uint32_t a, uint32_t b) {
     return (int32_t)(b - a) >= 0;
@@ -198,10 +178,10 @@ static int adsp_emit(adsp_stack_t *s, const atalk_socket_addr_t *dest, uint8_t s
     if (body_len < 0 || body_len > ADSP_MAX_DATA)
         return -1;
 
-    put16(&pkt[0], src_cid);
-    put32(&pkt[2], first_seq);
-    put32(&pkt[6], next_seq);
-    put16(&pkt[10], wdw);
+    WR_BE16(&pkt[0], src_cid);
+    WR_BE32(&pkt[2], first_seq);
+    WR_BE32(&pkt[6], next_seq);
+    WR_BE16(&pkt[10], wdw);
     pkt[12] = desc;
     if (body_len > 0 && body)
         memcpy(&pkt[ADSP_HEADER_SIZE], body, (size_t)body_len);
@@ -229,9 +209,9 @@ static int adsp_send_control(adsp_stack_t *s, adsp_conn_t *c, uint8_t code, bool
 // the header (12-27).
 static int adsp_send_open(adsp_stack_t *s, adsp_conn_t *c, uint8_t code, uint16_t dest_cid) {
     uint8_t params[ADSP_OPEN_PARAMS_SIZE];
-    put16(&params[0], ADSP_VERSION);
-    put16(&params[2], dest_cid);
-    put32(&params[4], c->attn_recv_seq);
+    WR_BE16(&params[0], ADSP_VERSION);
+    WR_BE16(&params[2], dest_cid);
+    WR_BE32(&params[4], c->attn_recv_seq);
     uint8_t desc = (uint8_t)(ADSP_DESC_CONTROL | (code & ADSP_DESC_CODE_MASK));
     return adsp_emit(s, &c->remote, c->local_socket, c->local_cid, c->send_seq, c->recv_seq, c->recv_wdw, desc, params,
                      sizeof(params));
@@ -241,9 +221,9 @@ static int adsp_send_open(adsp_stack_t *s, adsp_conn_t *c, uint8_t code, uint16_
 // and the requester's ConnID in the destination field (12-27).
 static void adsp_send_denial(adsp_stack_t *s, const atalk_socket_addr_t *to, uint8_t local_socket, uint16_t dest_cid) {
     uint8_t params[ADSP_OPEN_PARAMS_SIZE];
-    put16(&params[0], ADSP_VERSION);
-    put16(&params[2], dest_cid);
-    put32(&params[4], 0);
+    WR_BE16(&params[0], ADSP_VERSION);
+    WR_BE16(&params[2], dest_cid);
+    WR_BE32(&params[4], 0);
     s->stats.open_denials++;
     adsp_emit(s, to, local_socket, 0, 0, 0, 0, (uint8_t)(ADSP_DESC_CONTROL | ADSP_CTL_OPEN_DENY), params,
               sizeof(params));
@@ -468,7 +448,7 @@ static void adsp_flush(adsp_stack_t *s, adsp_conn_t *c) {
 // packets reuse the header's sequence fields for the attention sub-channel.
 static void adsp_emit_attention(adsp_stack_t *s, adsp_conn_t *c) {
     uint8_t body[2 + ADSP_MAX_ATTN_DATA];
-    put16(&body[0], c->attn_code);
+    WR_BE16(&body[0], c->attn_code);
     if (c->attn_len > 0)
         memcpy(&body[2], c->attn_data, (size_t)c->attn_len);
     uint8_t desc = (uint8_t)(ADSP_DESC_ATTENTION | ADSP_DESC_ACK_REQ);
@@ -513,9 +493,9 @@ static void adsp_handle_open_dialog(adsp_stack_t *s, const atalk_socket_addr_t *
         LOG(3, "ADSP: open packet without open-connection parameters (len=%d)", body_len);
         return;
     }
-    uint16_t version = get16(&body[0]);
-    uint16_t dest_cid = get16(&body[2]);
-    uint32_t attn_recv = get32(&body[4]);
+    uint16_t version = RD_BE16(&body[0]);
+    uint16_t dest_cid = RD_BE16(&body[2]);
+    uint32_t attn_recv = RD_BE32(&body[4]);
 
     switch (code) {
     case ADSP_CTL_OPEN_REQ: {
@@ -646,7 +626,7 @@ static void adsp_handle_attention(adsp_stack_t *s, adsp_conn_t *c, uint8_t desc,
             (unsigned)c->attn_recv_seq);
         return;
     }
-    uint16_t code = get16(&body[0]);
+    uint16_t code = RD_BE16(&body[0]);
     c->attn_recv_seq++;
     s->stats.attentions_in++;
     // Acknowledge with an attention-control packet (no ack request, 12-12).
@@ -710,10 +690,10 @@ void adsp_input(adsp_stack_t *s, const atalk_socket_addr_t *from, uint8_t dst_so
         LOG(3, "ADSP: runt packet (%d bytes)", len);
         return;
     }
-    uint16_t src_cid = get16(&pkt[0]);
-    uint32_t pkt_first = get32(&pkt[2]);
-    uint32_t pkt_next = get32(&pkt[6]);
-    uint16_t pkt_wdw = get16(&pkt[10]);
+    uint16_t src_cid = RD_BE16(&pkt[0]);
+    uint32_t pkt_first = RD_BE32(&pkt[2]);
+    uint32_t pkt_next = RD_BE32(&pkt[6]);
+    uint16_t pkt_wdw = RD_BE16(&pkt[10]);
     uint8_t desc = pkt[12];
     const uint8_t *body = pkt + ADSP_HEADER_SIZE;
     int body_len = len - ADSP_HEADER_SIZE;

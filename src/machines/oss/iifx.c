@@ -42,7 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iifx");
+LOG_USE_CATEGORY_NAME("board");
 
 // Top-level IIfx address-space constants.
 #define IIFX_RAM_WINDOW 0x04000000UL // 64 MB RAM decode window (mirrors installed RAM)
@@ -289,7 +289,7 @@ static inline iifx_state_t *iifx_state(config_t *cfg) {
 }
 
 // Forward declarations for profile callbacks.
-static void iifx_init(config_t *cfg, checkpoint_t *checkpoint);
+static int iifx_init(config_t *cfg, checkpoint_t *checkpoint);
 static void iifx_teardown(config_t *cfg);
 static void iifx_reset(config_t *cfg);
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp);
@@ -417,8 +417,19 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
     if (!st->fmc_inverted_rom) {
         st->fmc_inverted_rom = malloc(rom_size);
-        if (!st->fmc_inverted_rom)
+        if (!st->fmc_inverted_rom) {
+            // Returning silently is not neutral: iifx_oss_control has already
+            // flipped its state bit, so the caller believes the invert was
+            // applied while these pages still point at the plain ROM.  Phase
+            // $90's comparison then fails and the ROM reports a bad logic
+            // board -- a hardware fault the user cannot act on.  We still
+            // cannot invert, but the log now says why the machine did that.
+            LOG(0,
+                "Error: out of memory building the %u-byte inverted ROM image; the phase-$90 invert "
+                "cannot be applied and POST will report a logic-board fault",
+                (unsigned)rom_size);
             return;
+        }
         for (uint32_t i = 0; i < rom_size; i++)
             st->fmc_inverted_rom[i] = (uint8_t)~rom_data[i];
     }
@@ -1388,9 +1399,10 @@ static void iifx_memory_layout_init(config_t *cfg) {
     // which the ROM sizes correctly as a single contiguous 32 MB region.
     uint32_t ram_pages = ram_size >> PAGE_SHIFT;
     uint32_t window_pages = IIFX_RAM_WINDOW >> PAGE_SHIFT;
-    uint32_t map_pages = (ram_pages > window_pages) ? ram_pages : window_pages;
-    for (uint32_t p = 0; p < map_pages && (int)p < g_page_count; p++)
-        iifx_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
+    // RAM larger than the decode window still maps in full (the ROM's
+    // descending probe walks above the window), so the span is the larger.
+    mac030_map_mirrored(0, (ram_pages > window_pages) ? ram_pages : window_pages, ram_base, ram_pages, iifx_fill_page,
+                        true);
 
     st->rom_interface = (memory_interface_t){
         .read_uint8 = iifx_rom_read_uint8,
@@ -1464,9 +1476,12 @@ static const mac030_board_desc_t iifx_board = {
 };
 
 // Initializes a Macintosh IIfx machine.
-static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
+static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iifx_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
 
     // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
@@ -1483,8 +1498,16 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     // the same relative place the save writes it (right after scc_checkpoint).
     appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 51, "via1", iifx_via1_output, iifx_via1_shift_out, iifx_via1_irq, cfg,
-                         checkpoint);
+    // Divisor derived from the profile clock rather than the literal 51 this
+    // used to carry -- via.h asks for exactly that, since a literal that suits
+    // one member of a family is wrong for any sibling with a different clock.
+    cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1", iifx_via1_output,
+                         iifx_via1_shift_out, iifx_via1_irq, cfg, checkpoint);
+    // Exact-rational phi2: the integer divisor above rounds, and on this
+    // substrate that rounding is not negligible -- 40 MHz lands 0.12% fast.  via_set_exact_clock
+    // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
+    // PowerPC families already do.
+    via_set_exact_clock(cfg->via1, cfg->machine->freq);
     rtc_set_via(cfg->rtc, cfg->via1);
 
     via_input(cfg->via1, 0, 7, 1);
@@ -1541,6 +1564,8 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iifx_io_bind(&st->iifx_io, cfg, st, &iifx_board);
 
     st->mmu = mac030_build_mmu(cfg, iifx_board.rom_base, iifx_board.rom_end);
+    if (!st->mmu)
+        return -1; // mac030_build_mmu reported the reason
     st->mmu->tt1 = 0xF00F8043;
 
     cfg->nubus = nubus_init(cfg, iifx_board.slots, checkpoint);
@@ -1554,6 +1579,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
         system_read_checkpoint_data(checkpoint, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
+        nubus_checkpoint_restore(cfg->nubus, checkpoint); // matches iifx_checkpoint_save
         mmu_checkpoint_restore(st->mmu, checkpoint);
         mmu_invalidate_tlb(st->mmu);
         g_mmu = st->mmu;
@@ -1567,6 +1593,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         cfg->irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
+    return 0;
 }
 
 // Tears down an IIfx machine.
@@ -1675,6 +1702,11 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->scsi_dma_addr, sizeof(st->scsi_dma_addr));
     system_write_checkpoint_data(cp, &st->scsi_dma_watchdog_reload, sizeof(st->scsi_dma_watchdog_reload));
     system_write_checkpoint_data(cp, &st->scsi_dma_fifo_word, sizeof(st->scsi_dma_fifo_word));
+    // Card-side display state (VRAM, palette, active mode) — last before the
+    // block below, so a machine that restores with fewer cards than it saved
+    // short-reads here without shifting anything that follows (mdu.c:190,
+    // pdm.c:537 use the same position).
+    nubus_checkpoint_save(cfg->nubus, cp);
     mmu_checkpoint_save(st->mmu, cp);
 }
 
@@ -1690,6 +1722,11 @@ static const struct floppy_slot iifx_floppy_slots[] = {
 static const struct scsi_slot iifx_scsi_slots[] = {
     {.label = "SCSI HD0", .id = 0},
     {.label = "SCSI HD1", .id = 1},
+    {0},
+};
+
+static const scsi_bus_decl_t iifx_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = iifx_scsi_slots},
     {0},
 };
 
@@ -1725,7 +1762,7 @@ const hw_profile_t machine_iifx = {
 
     .ram_options = iifx_ram_options_kb,
     .floppy_slots = iifx_floppy_slots,
-    .scsi_slots = iifx_scsi_slots,
+    .scsi_buses = iifx_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
 

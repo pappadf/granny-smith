@@ -13,6 +13,7 @@
 // only ever an opaque handle used to open the file.
 
 #include "vrom.h"
+#include "common.h"
 #include "declrom.h" // structural recognition of generated GS images
 
 #include "log.h"
@@ -61,10 +62,6 @@ bool vrom_probe_file(const char *path, size_t *out_size) {
 //   buf[size-12..size-9] CRC (big-endian)
 #define VROM_TESTPATTERN_OFF 6 // bytes from EOF to the first TestPattern byte
 #define VROM_CRC_OFF         12 // bytes from EOF to the first (MSB) CRC byte
-
-static uint32_t vrom_be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
 
 // Catalog of known VROM blobs.  Maps the declaration ROM's Format-Block CRC
 // to the nubus card-kind id the blob provides — content→hardware facts only,
@@ -142,7 +139,7 @@ static enum vrom_id_result vrom_identify_core(const char *path, vrom_id_t *out, 
     // Format Block is not a declaration ROM (don't trust a stray CRC match).
     const uint8_t *tp = tail + sizeof(tail) - VROM_TESTPATTERN_OFF;
     bool is_declrom = tp[0] == 0x5Au && tp[1] == 0x93u && tp[2] == 0x2Bu && tp[3] == 0xC7u;
-    uint32_t crc = vrom_be32(tail);
+    uint32_t crc = RD_BE32(tail);
     if (out_crc)
         *out_crc = crc;
     if (!is_declrom)

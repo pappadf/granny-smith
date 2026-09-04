@@ -46,7 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("pdm");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Page-table helpers (the mac030_fill_page shape, kept local so the PDM
@@ -263,9 +263,12 @@ static void pdm_scc_irq(void *context, bool active) {
 // Substrate lifecycle
 // ============================================================
 
-static void pdm_init(config_t *cfg, checkpoint_t *cp) {
+static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     pdm_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
 
     // Core: memory map, the 601, the scheduler on the PPC seam.  CPI is
@@ -278,7 +281,10 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     // declaration ROM — are filled through our own page filler.
     g_mem_host_fill = pdm_fill_page;
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
-    assert(cfg->ppc != NULL);
+    if (!cfg->ppc) {
+        LOG(0, "Error: out of memory constructing the PowerPC core");
+        return -1;
+    }
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
@@ -335,7 +341,10 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The behavioral Cuda (firmware 2.37 — the same 341S0788 part as the
     // AV machines) on the pseudo-VIA1 shift register + PB3/4/5.
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
-    assert(st->cuda != NULL);
+    if (!st->cuda) {
+        LOG(0, "Error: out of memory constructing the Cuda");
+        return -1;
+    }
 
     // Restore the image list before the devices that reference it (the
     // shape every other Mac family uses: floppy and SCSI both resolve
@@ -377,6 +386,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
         system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
+        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
         pdm_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
         system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
@@ -410,6 +420,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     // the checkpointed pending event through the registered type).
     if (!cp)
         pdm_amic_start_vbl(cfg);
+    return 0;
 }
 
 static void pdm_reset(config_t *cfg) {
@@ -419,6 +430,9 @@ static void pdm_reset(config_t *cfg) {
     // with MSR[IR] on and AMIC state SURVIVING — that path is guest-driven
     // and becomes a first-class test row in Phase D.)
     ppc_reset(cfg->ppc);
+    // Note pdm_amic_init memsets the whole AMIC.  The SWIM3 model is
+    // deliberately NOT inside pdm_amic_t (pdm.h), so this cannot clear the
+    // chip's bound fd/sched/backend pointers the way it once did.
     pdm_amic_init(cfg);
     // BART's latches go back to power-on with it; the NuBus /RESET fan-out
     // to the cards themselves is the bus controller's (system_reset_devices).
@@ -525,6 +539,7 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // Substrate-private tail (mirrored by the restore block in pdm_init).
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
+    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
     system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
     system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
     // Card-side state (framebuffer, palette, mode) last — see the restore

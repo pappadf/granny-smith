@@ -8,6 +8,7 @@
 // capture is active, records them pre-volume for golden-WAV test matching.
 
 #include "audio_out.h"
+#include "common.h"
 #include "log.h"
 #include "object.h"
 #include "platform.h"
@@ -114,29 +115,9 @@ int audio_out_channels(void) {
 // ============================================================================
 
 // Appends a 32-bit little-endian value to a byte buffer
-static void put_le32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v);
-    p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16);
-    p[3] = (uint8_t)(v >> 24);
-}
-
 // Appends a 16-bit little-endian value to a byte buffer
-static void put_le16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v);
-    p[1] = (uint8_t)(v >> 8);
-}
-
 // Reads a 32-bit little-endian value from a byte buffer
-static uint32_t get_le32(const uint8_t *p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-
 // Reads a 16-bit little-endian value from a byte buffer
-static uint16_t get_le16(const uint8_t *p) {
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
 // Writes an interleaved int16 sample buffer as a canonical 44-byte-header
 // PCM WAV file. Returns 0 on success, -1 on I/O error.
 //
@@ -149,18 +130,18 @@ int audio_wav_write(const char *path, const int16_t *samples, size_t nsamples, u
     uint8_t hdr[44];
 
     memcpy(hdr + 0, "RIFF", 4);
-    put_le32(hdr + 4, 36 + data_bytes);
+    WR_LE32(hdr + 4, 36 + data_bytes);
     memcpy(hdr + 8, "WAVE", 4);
     memcpy(hdr + 12, "fmt ", 4);
-    put_le32(hdr + 16, 16); // PCM fmt chunk size
-    put_le16(hdr + 20, 1); // audio format = PCM
-    put_le16(hdr + 22, (uint16_t)channels);
-    put_le32(hdr + 24, rate);
-    put_le32(hdr + 28, rate * (uint32_t)channels * 2); // byte rate
-    put_le16(hdr + 32, (uint16_t)(channels * 2)); // block align
-    put_le16(hdr + 34, 16); // bits per sample
+    WR_LE32(hdr + 16, 16); // PCM fmt chunk size
+    WR_LE16(hdr + 20, 1); // audio format = PCM
+    WR_LE16(hdr + 22, (uint16_t)channels);
+    WR_LE32(hdr + 24, rate);
+    WR_LE32(hdr + 28, rate * (uint32_t)channels * 2); // byte rate
+    WR_LE16(hdr + 32, (uint16_t)(channels * 2)); // block align
+    WR_LE16(hdr + 34, 16); // bits per sample
     memcpy(hdr + 36, "data", 4);
-    put_le32(hdr + 40, data_bytes);
+    WR_LE32(hdr + 40, data_bytes);
 
     FILE *f = fopen(path, "wb");
     if (!f)
@@ -170,7 +151,7 @@ int audio_wav_write(const char *path, const int16_t *samples, size_t nsamples, u
     int ok = fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr);
     for (size_t i = 0; ok && i < nsamples; i++) {
         uint8_t b[2];
-        put_le16(b, (uint16_t)samples[i]);
+        WR_LE16(b, (uint16_t)samples[i]);
         ok = fwrite(b, 1, 2, f) == 2;
     }
     if (fclose(f) != 0)
@@ -206,15 +187,15 @@ static int wav_read(const char *path, int16_t **samples, size_t *nsamples, uint3
         uint8_t ch[8];
         if (fread(ch, 1, 8, f) != 8)
             break; // end of file
-        uint32_t size = get_le32(ch + 4);
+        uint32_t size = RD_LE32(ch + 4);
         if (memcmp(ch, "fmt ", 4) == 0 && size >= 16) {
             uint8_t fmt[16];
             if (fread(fmt, 1, 16, f) != 16)
                 break;
-            uint16_t format = get_le16(fmt + 0);
-            fmt_channels = get_le16(fmt + 2);
-            fmt_rate = get_le32(fmt + 4);
-            uint16_t bits = get_le16(fmt + 14);
+            uint16_t format = RD_LE16(fmt + 0);
+            fmt_channels = RD_LE16(fmt + 2);
+            fmt_rate = RD_LE32(fmt + 4);
+            uint16_t bits = RD_LE16(fmt + 14);
             if (format != 1 || bits != 16) {
                 snprintf(errbuf, errlen, "'%s': only PCM int16 WAV supported (format=%u bits=%u)", path, format, bits);
                 fclose(f);
@@ -259,7 +240,7 @@ static int wav_read(const char *path, int16_t **samples, size_t *nsamples, uint3
         return -1;
     }
     for (size_t i = 0; i < n; i++)
-        out[i] = (int16_t)get_le16(data + i * 2);
+        out[i] = (int16_t)RD_LE16(data + i * 2);
     free(data);
 
     *samples = out;

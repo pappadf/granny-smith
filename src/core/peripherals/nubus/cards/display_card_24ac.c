@@ -51,7 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("display_card_24ac");
+LOG_USE_CATEGORY_NAME("24ac");
 
 // === Per-card private state =================================================
 
@@ -147,25 +147,6 @@ struct display_card_24ac_priv {
 // === Display-format helpers =================================================
 
 // Storage bits-per-pixel of a display format.
-static uint32_t format_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_8BPP:
-        return 8;
-    case PIXEL_16BPP_555:
-        return 16;
-    case PIXEL_32BPP_XRGB:
-        return 32;
-    default:
-        return 8;
-    }
-}
-
 // The depth code (cscSetMode's csMode[2:0]) matching a display format.  The
 // 24AC's depth ladder has NO 2-bpp mode (vrom RE: cscSetMode depth table at
 // chip 0x1F88 + CountTbl 0x2A28): code 0/1/2/3/4 = 1/4/8/16/32 bpp.  STATUS[2:0]
@@ -191,7 +172,7 @@ static uint8_t depth_code_for_format(pixel_format_t f) {
 // has no RowWords register; the driver lays VRAM out tightly, so stride =
 // width × bpp / 8.
 static void recompute_stride(display_card_24ac_priv_t *p) {
-    uint32_t bpp = format_bpp(p->display.format);
+    uint32_t bpp = display_bpp(p->display.format);
     p->display.stride = (p->display.width * bpp + 7u) / 8u;
 }
 
@@ -229,7 +210,7 @@ static void apply_mode_depth(display_card_24ac_priv_t *p, uint8_t mode_byte) {
         p->display.format = f;
         recompute_stride(p);
         p->display.shape_dirty = true;
-        LOG(2, "MODE depth → %u bpp (stride %u)", format_bpp(f), p->display.stride);
+        LOG(2, "MODE depth → %u bpp (stride %u)", display_bpp(f), p->display.stride);
     }
 }
 
@@ -1115,6 +1096,85 @@ static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp
     return card_init_common(card, cfg, cp, /*generic*/ true);
 }
 
+// === Checkpoint =============================================================
+// VRAM is a private calloc (card_init), not part of the RAM image
+// memory_map_checkpoint saves, so without these a restored machine comes back
+// with a blank screen and a default palette until the guest redraws.
+//
+// Excluded on purpose: the four pointer members (card, vram, vrom, vrom_path),
+// the construction facts beside them (vrom_size, slot_base), and the six
+// reg_ctx_t region bindings at the tail -- each of those holds a back-pointer
+// to this struct and is re-registered with the memory map by card_init, so
+// writing them back from a checkpoint would install stale addresses.
+//
+// Save and restore share ONE field list, walked in both directions.  Two
+// hand-mirrored lists are how a checkpoint stream silently goes out of step.
+#define CARD_24AC_CKPT_FIELDS(F)                                                                                       \
+    F(p->clut, sizeof(p->clut));                                                                                       \
+    F(&p->display.format, sizeof(p->display.format));                                                                  \
+    F(&p->display.width, sizeof(p->display.width));                                                                    \
+    F(&p->display.height, sizeof(p->display.height));                                                                  \
+    F(&p->display.stride, sizeof(p->display.stride));                                                                  \
+    F(&p->clut_idx, sizeof(p->clut_idx));                                                                              \
+    F(&p->clut_phase, sizeof(p->clut_phase));                                                                          \
+    F(&p->clut_pending, sizeof(p->clut_pending));                                                                      \
+    F(&p->vidctl, sizeof(p->vidctl));                                                                                  \
+    F(&p->mode_reg, sizeof(p->mode_reg));                                                                              \
+    F(&p->depth_reg, sizeof(p->depth_reg));                                                                            \
+    F(&p->status_busy, sizeof(p->status_busy));                                                                        \
+    F(&p->sense_primary, sizeof(p->sense_primary));                                                                    \
+    F(&p->sense_ext, sizeof(p->sense_ext));                                                                            \
+    F(&p->sense_last_write, sizeof(p->sense_last_write));                                                              \
+    F(&p->mon_width, sizeof(p->mon_width));                                                                            \
+    F(&p->mon_height, sizeof(p->mon_height));                                                                          \
+    F(&p->mon_sense_ext, sizeof(p->mon_sense_ext));                                                                    \
+    F(&p->mon_sense_primary, sizeof(p->mon_sense_primary));                                                            \
+    F(&p->vbl_enabled, sizeof(p->vbl_enabled));                                                                        \
+    F(&p->engine_enabled, sizeof(p->engine_enabled));                                                                  \
+    F(&p->engine_mode, sizeof(p->engine_mode));                                                                        \
+    F(&p->engine_operand, sizeof(p->engine_operand));                                                                  \
+    F(p->engine_pat, sizeof(p->engine_pat));                                                                           \
+    F(&p->engine_pat_len, sizeof(p->engine_pat_len));                                                                  \
+    F(&p->engine_copy_src, sizeof(p->engine_copy_src));                                                                \
+    F(&p->engine_copy_len, sizeof(p->engine_copy_len));                                                                \
+    F(&p->fill_ops, sizeof(p->fill_ops));                                                                              \
+    F(&p->fill_bytes, sizeof(p->fill_bytes));                                                                          \
+    F(&p->copy_ops, sizeof(p->copy_ops));                                                                              \
+    F(&p->copy_bytes, sizeof(p->copy_bytes));                                                                          \
+    F(&p->status_depth_code, sizeof(p->status_depth_code));                                                            \
+    F(&p->status_class_bit, sizeof(p->status_class_bit));                                                              \
+    F(&p->config_variant_bit, sizeof(p->config_variant_bit));
+
+static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
+    display_card_24ac_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    system_write_checkpoint_data(cp, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE);
+#define F(ptr, len) system_write_checkpoint_data(cp, (ptr), (len))
+    CARD_24AC_CKPT_FIELDS(F)
+#undef F
+}
+
+static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
+    display_card_24ac_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    system_read_checkpoint_data(cp, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE);
+#define F(ptr, len) system_read_checkpoint_data(cp, (ptr), (len))
+    CARD_24AC_CKPT_FIELDS(F)
+#undef F
+
+    // stride follows from the restored width and format.
+    recompute_stride(p);
+
+    // display.bits still points into p->vram (card_init set it and the buffer
+    // has not moved), but everything the frontend caches is now stale.
+    p->display.shape_dirty = true;
+    p->display.clut_dirty = true;
+    p->display.fb_dirty = true;
+    p->display.response_dirty = true;
+}
+
 static const nubus_card_ops_t display_card_24ac_ops = {
     .init = card_init_real,
     .teardown = card_teardown,
@@ -1122,6 +1182,8 @@ static const nubus_card_ops_t display_card_24ac_ops = {
     .on_vbl = card_on_vbl,
     .display = card_display,
     .name = card_name,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
 };
 
 static const nubus_card_ops_t display_card_24ac_generic_ops = {
@@ -1131,6 +1193,8 @@ static const nubus_card_ops_t display_card_24ac_generic_ops = {
     .on_vbl = card_on_vbl,
     .display = card_display,
     .name = card_name_generic,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
 };
 
 // === Factory + kind descriptor ==============================================

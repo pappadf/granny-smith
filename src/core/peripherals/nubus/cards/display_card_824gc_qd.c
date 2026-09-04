@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("gc824");
+LOG_USE_CATEGORY_NAME("824gc");
 
 // fwds (text section — used by gc_interp, defined after the rasterizers)
 static struct gc_cache_ent *gc_cache_find(struct gc_cache_ent *tab, int n, uint32_t key);

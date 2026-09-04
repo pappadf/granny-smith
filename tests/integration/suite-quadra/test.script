@@ -61,6 +61,13 @@ let q950_rom = "../../data/roms/q950-3dc27823.rom"
 #     VIA phi2 clock was corrected — this substrate had been running its timers
 #     1.6x fast, so a fixed instruction budget now spans different guest time.
 #     Reproducibility is unchanged; only the constant moved.)
+#
+#     It moved once more, to 58,779, when mcu_init adopted via_set_exact_clock
+#     (F-12). The integer divisor via_freq_factor_for_clock returns for 25 MHz
+#     is 32, giving phi2 = 781,250 Hz — 0.27% slow against the true 783,360 Hz;
+#     the exact rational removes that residue. Two frames in 58,777. Confirmed
+#     bit-reproducible at the new value the same way as the old: three separate
+#     processes, same count.
 #   * A sample-exact golden is nevertheless impossible here, for an unrelated
 #     reason: sound.match refuses the comparison with "sample rate changed
 #     mid-capture". The ASC reads a steady 22,257 Hz whenever it is sampled, so
@@ -75,7 +82,7 @@ def row_q700_chime() {
     machine.sound.capture.start
     scheduler.run 30000000
     machine.sound.capture.stop
-    assert machine.sound.capture.frames == 58777 "q700-chime: capture length ${machine.sound.capture.frames}, want 58777 (bit-reproducible across processes — a change here is a real change)"
+    assert machine.sound.capture.frames == 58779 "q700-chime: capture length ${machine.sound.capture.frames}, want 58779 (bit-reproducible across processes — a change here is a real change)"
     assert debug.mac.globals.read("MemTop") == 0x800000 "q700-chime: RAM sizing wrong"
     assert debug.mac.globals.read("ROMBase") == 0x40800000 "q700-chime: ROMBase wrong"
     let t0 = debug.mac.globals.read("Ticks")

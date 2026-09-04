@@ -343,6 +343,8 @@ void pdm_awacs_register_events(config_t *cfg) {
 void pdm_awacs_init(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     st->snd_stage = calloc(AWACS_MAX_FRAMES, 2 * sizeof(int16_t));
+    if (!st->snd_stage)
+        LOG(0, "Error: out of memory allocating the AWACS staging buffer; this machine plays no sound");
 
     // The shared host stream, opened at the AWACS master-clock family rate
     // (45.1584 MHz / 1024): everything the boot plays is 44.1 kHz, and

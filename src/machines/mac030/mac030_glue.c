@@ -35,8 +35,8 @@
 LOG_USE_CATEGORY_NAME("setup");
 
 // Construct the GLUE peripheral set in canonical order — see header.
-void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
-                                   const mac030_board_desc_t *desc) {
+int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
+                                  const mac030_board_desc_t *desc) {
     st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
     cfg->adb = st->adb;
 
@@ -56,6 +56,7 @@ void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_
     cfg->floppy = st->floppy;
 
     mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, st->floppy);
+    return 0;
 }
 
 // Create + attach the 68030 PMMU over a board's ROM window — see header.
@@ -65,7 +66,10 @@ struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t ro
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
     mmu_state_t *mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, rom_base, rom_end);
-    assert(mmu != NULL);
+    if (!mmu) {
+        LOG(0, "Error: out of memory constructing the PMMU");
+        return NULL; // mac030_build_mmu returns the MMU, not a status
+    }
     g_mmu = mmu;
     cpu_attach_mmu(cfg->cpu, mmu);
     return mmu;
@@ -86,9 +90,12 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp) {
 // hooks.  TT1 is uniform across the GLUE family ($F0..$FF supervisor identity);
 // it is set right after the PMMU is built (no MMU walk happens before
 // scheduler_start, so the exact moment is immaterial).
-void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board) {
+int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board) {
     mac030_glue_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
     st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
     st->last_via2_port_b = 0xFF; // PB2 starts high (IIcx soft-power; unused elsewhere)
@@ -116,9 +123,12 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
 
     board->setup_id(cfg);
 
-    mac030_glue_build_peripherals(cfg, cp, st, board->desc);
+    if (mac030_glue_build_peripherals(cfg, cp, st, board->desc) != 0)
+        return -1;
 
     st->mmu = mac030_build_mmu(cfg, board->desc->rom_base, board->desc->rom_end);
+    if (!st->mmu)
+        return -1; // mac030_build_mmu reported the reason
     st->mmu->tt1 = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
 
     cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
@@ -131,6 +141,7 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
     if (cp) {
         if (board->ckpt_restore_extra)
             board->ckpt_restore_extra(cfg, cp);
+        nubus_checkpoint_restore(cfg->nubus, cp); // matches glue_checkpoint_save
         mmu_checkpoint_restore(st->mmu, cp);
         mmu_invalidate_tlb(st->mmu);
         g_mmu = st->mmu;
@@ -140,6 +151,7 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
     }
 
     mac030_glue_finish(cfg, cp);
+    return 0;
 }
 
 // Build the shared II-family construction prefix.  Reads the CPU model from
@@ -152,6 +164,14 @@ void mac030_build_core(config_t *cfg, checkpoint_t *cp) {
     debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
     scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 4);
+}
+
+void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
+                         mac030_fill_fn fill, bool writable) {
+    if (size_pages == 0)
+        return; // a bank smaller than one page decodes nothing
+    for (uint32_t i = 0; i < window_pages && (int)(start_page + i) < g_page_count; i++)
+        fill(start_page + i, host + ((i % size_pages) << PAGE_SHIFT), writable);
 }
 
 // Populate one page in the AoS table + SoA fast-path arrays.  Read-only pages
@@ -339,8 +359,10 @@ static inline const mac030_glue_board_t *glue_board(config_t *cfg) {
     return (const mac030_glue_board_t *)cfg->machine->board;
 }
 
-static void glue_init(config_t *cfg, checkpoint_t *cp) {
-    mac030_glue_init(cfg, cp, glue_board(cfg));
+static int glue_init(config_t *cfg, checkpoint_t *cp) {
+    if (mac030_glue_init(cfg, cp, glue_board(cfg)) != 0)
+        return -1;
+    return 0;
 }
 
 static void glue_reset(config_t *cfg) {
@@ -385,6 +407,11 @@ static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     const mac030_glue_board_t *board = glue_board(cfg);
     if (board->ckpt_save_extra)
         board->ckpt_save_extra(cfg, cp);
+    // Card-side display state (VRAM, palette, active mode) — last before the
+    // block below, so a machine that restores with fewer cards than it saved
+    // short-reads here without shifting anything that follows (mdu.c:190,
+    // pdm.c:537 use the same position).
+    nubus_checkpoint_save(cfg->nubus, cp);
     mmu_checkpoint_save(st->mmu, cp);
 }
 

@@ -534,10 +534,14 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
 // Size limits for hd create
 #define HD_CREATE_MAX_SIZE (2ULL * 1024 * 1024 * 1024) // 2 GiB
 
-// Floppy sizes that should be rejected
-#define FLOPPY_400K  409600
-#define FLOPPY_800K  819200
-#define FLOPPY_1440K 1474560
+// Floppy sizes that should be rejected.  Named _BYTES because machine_profile.h
+// (included above) declares floppy_kind_t with FLOPPY_400K / FLOPPY_800K as
+// ENUM CONSTANTS: bare macros of the same name silently shadowed them for the
+// rest of this file, so anything here that later meant the kind would have got
+// a byte count instead.
+#define FLOPPY_400K_BYTES  409600
+#define FLOPPY_800K_BYTES  819200
+#define FLOPPY_1440K_BYTES 1474560
 
 // Create a new blank hard disk image at the given path.
 // Returns 0 on success, -1 on failure.
@@ -555,7 +559,7 @@ static int do_create_hd(const char *path, const char *size_str) {
         return -1;
     }
     // reject floppy-sized images
-    if (size == FLOPPY_400K || size == FLOPPY_800K || size == FLOPPY_1440K) {
+    if (size == FLOPPY_400K_BYTES || size == FLOPPY_800K_BYTES || size == FLOPPY_1440K_BYTES) {
         printf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
         return -1;
     }
@@ -735,8 +739,19 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
         cfg->ram_size = profile->ram_default;
     }
 
-    // Delegate all machine-specific initialisation to the profile
-    profile->substrate->init(cfg, checkpoint);
+    // Delegate all machine-specific initialisation to the profile.  A
+    // non-zero return means the machine could not be built (the only cause
+    // today is an allocation failure); tear down whatever it managed and
+    // report the failure rather than handing back a half-built config.  Every
+    // teardown tolerates a partially-constructed machine -- each guards its
+    // machine_context -- which is what makes this safe to call here.
+    if (profile->substrate->init(cfg, checkpoint) != 0) {
+        LOG(0, "Error: failed to construct %s", profile->name);
+        if (profile->substrate->teardown)
+            profile->substrate->teardown(cfg);
+        free(cfg);
+        return NULL;
+    }
 
     // Bind the main-CPU debug seam to whichever core the substrate built.
     switch (cfg->cpu_arch) {
@@ -1053,9 +1068,9 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here
-    // every ~15 s and used to spam the terminal. `debug.log checkpoint 1`
+    // every ~15 s and used to spam the terminal. `debug.log ckpt 1`
     // restores the line; the status bar gets its own push (em_main.c).
-    LOG_WITH(log_register_category("checkpoint"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
+    LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
     return GS_SUCCESS;
 }
 

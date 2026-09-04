@@ -5,6 +5,7 @@
 // Persistent per-volume CNID catalog (see afp_catalog.h).
 
 #include "afp_catalog.h"
+#include "common.h"
 
 #include "afp_meta.h"
 #include "log.h"
@@ -73,16 +74,6 @@ struct afp_catalog {
 };
 
 // --- big-endian helpers ----------------------------------------------------
-
-static void wr32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
 
 // CRC-32 (IEEE) over one record, so a torn tail write is detected on replay.
 static uint32_t crc32_buf(const uint8_t *data, size_t len) {
@@ -188,16 +179,16 @@ static size_t record_encode(uint8_t *buf, size_t cap, uint8_t op, uint32_t cnid,
         return 0;
     size_t p = 0;
     buf[p++] = op;
-    wr32(buf + p, cnid);
+    WR_BE32(buf + p, cnid);
     p += 4;
-    wr32(buf + p, parent);
+    WR_BE32(buf + p, parent);
     p += 4;
     buf[p++] = is_dir ? 1 : 0;
     buf[p++] = (uint8_t)nlen;
     if (nlen)
         memcpy(buf + p, name, nlen);
     p += nlen;
-    wr32(buf + p, crc32_buf(buf, p));
+    WR_BE32(buf + p, crc32_buf(buf, p));
     p += 4;
     return p;
 }
@@ -263,13 +254,13 @@ static bool log_load(afp_catalog_t *cat) {
     if (!f)
         return false; // no log yet — a fresh volume
     uint8_t hdr[12];
-    if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr) || rd32(hdr) != GSC_MAGIC) {
+    if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr) || RD_BE32(hdr) != GSC_MAGIC) {
         fclose(f);
         LOG(1, "AFP catalog: '%s' has no usable header — rebuilding", cat->log_path);
         return false;
     }
-    cat->generation = rd32(hdr + 4);
-    cat->next_cnid = rd32(hdr + 8);
+    cat->generation = RD_BE32(hdr + 4);
+    cat->next_cnid = RD_BE32(hdr + 8);
     if (cat->next_cnid < AFP_CNID_FIRST)
         cat->next_cnid = AFP_CNID_FIRST;
 
@@ -285,7 +276,7 @@ static bool log_load(afp_catalog_t *cat) {
         uint8_t whole[sizeof(fixed) + 255];
         memcpy(whole, fixed, sizeof(fixed));
         memcpy(whole + sizeof(fixed), body, nlen);
-        if (crc32_buf(whole, sizeof(fixed) + nlen) != rd32(body + nlen)) {
+        if (crc32_buf(whole, sizeof(fixed) + nlen) != RD_BE32(body + nlen)) {
             LOG(1, "AFP catalog: dropping torn tail record in '%s'", cat->log_path);
             break;
         }
@@ -293,7 +284,7 @@ static bool log_load(afp_catalog_t *cat) {
         size_t copy = nlen < sizeof(name) - 1 ? nlen : sizeof(name) - 1;
         memcpy(name, body, copy);
         name[copy] = '\0';
-        replay(cat, fixed[0], rd32(fixed + 1), rd32(fixed + 5), fixed[9] != 0, name);
+        replay(cat, fixed[0], RD_BE32(fixed + 1), RD_BE32(fixed + 5), fixed[9] != 0, name);
         cat->log_records++;
     }
     fclose(f);
@@ -310,9 +301,9 @@ static void log_compact(afp_catalog_t *cat) {
         return;
     cat->generation++;
     uint8_t hdr[12];
-    wr32(hdr, GSC_MAGIC);
-    wr32(hdr + 4, cat->generation);
-    wr32(hdr + 8, cat->next_cnid);
+    WR_BE32(hdr, GSC_MAGIC);
+    WR_BE32(hdr + 4, cat->generation);
+    WR_BE32(hdr + 8, cat->next_cnid);
     bool ok = fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr);
     size_t records = 0;
     for (size_t i = 0; ok && i < cat->len; i++) {
@@ -357,9 +348,9 @@ static void log_open_append(afp_catalog_t *cat, bool fresh) {
             return;
         }
         uint8_t hdr[12];
-        wr32(hdr, GSC_MAGIC);
-        wr32(hdr + 4, cat->generation);
-        wr32(hdr + 8, cat->next_cnid);
+        WR_BE32(hdr, GSC_MAGIC);
+        WR_BE32(hdr + 4, cat->generation);
+        WR_BE32(hdr + 8, cat->next_cnid);
         fwrite(hdr, 1, sizeof(hdr), f);
         fclose(f);
     }
@@ -377,9 +368,9 @@ static void log_sync_header(afp_catalog_t *cat) {
     if (!f)
         return;
     uint8_t hdr[12];
-    wr32(hdr, GSC_MAGIC);
-    wr32(hdr + 4, cat->generation);
-    wr32(hdr + 8, cat->next_cnid);
+    WR_BE32(hdr, GSC_MAGIC);
+    WR_BE32(hdr + 4, cat->generation);
+    WR_BE32(hdr + 8, cat->next_cnid);
     fwrite(hdr, 1, sizeof(hdr), f);
     fclose(f);
 }

@@ -5,6 +5,7 @@
 // AppleDouble sidecar metadata for the AFP server (see afp_meta.h).
 
 #include "afp_meta.h"
+#include "common.h"
 
 #include "appledouble.h"
 #include "log.h"
@@ -26,16 +27,6 @@ LOG_USE_CATEGORY_NAME("appletalk");
 #define AFP_META_SIDECAR_MAX (64u * 1024u * 1024u)
 
 // --- big-endian helpers ----------------------------------------------------
-
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-static void wr32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
 
 // --- time conversions ------------------------------------------------------
 
@@ -138,10 +129,10 @@ bool afp_meta_load(const char *host_path, afp_meta_t *out) {
 
     if (find_entry_extent(hdr, n, AD_ENTRY_DATES, &off, &len) && len >= 16 && fseek(f, (long)off, SEEK_SET) == 0 &&
         fread(buf, 1, 16, f) == 16) {
-        out->create_date = afp_date_from_ad((int32_t)rd32(buf + 0));
-        out->modify_date = afp_date_from_ad((int32_t)rd32(buf + 4));
-        out->backup_date = afp_date_from_ad((int32_t)rd32(buf + 8));
-        out->access_date = afp_date_from_ad((int32_t)rd32(buf + 12));
+        out->create_date = afp_date_from_ad((int32_t)RD_BE32(buf + 0));
+        out->modify_date = afp_date_from_ad((int32_t)RD_BE32(buf + 4));
+        out->backup_date = afp_date_from_ad((int32_t)RD_BE32(buf + 8));
+        out->access_date = afp_date_from_ad((int32_t)RD_BE32(buf + 12));
         out->has_dates = true;
     }
     if (find_entry_extent(hdr, n, AD_ENTRY_FINDER, &off, &len) && len >= AFP_META_FINDER_SIZE &&
@@ -210,9 +201,9 @@ static uint32_t read_entry_table(const char *sidecar, uint8_t *hdr, size_t hdr_c
         *out_got = got;
     if (got < 26)
         return 0;
-    if (rd32(hdr) != APPLEDOUBLE_MAGIC && rd32(hdr) != APPLESINGLE_MAGIC)
+    if (RD_BE32(hdr) != APPLEDOUBLE_MAGIC && RD_BE32(hdr) != APPLESINGLE_MAGIC)
         return 0;
-    if (rd32(hdr + 4) != APPLE_FORK_VERSION)
+    if (RD_BE32(hdr + 4) != APPLE_FORK_VERSION)
         return 0;
     uint32_t n = (uint32_t)((hdr[24] << 8) | hdr[25]);
     if (n > AD_MAX_ENTRIES)
@@ -227,12 +218,12 @@ static bool find_entry_extent(const uint8_t *hdr, uint32_t n_entries, uint32_t i
                               uint32_t *out_len) {
     for (uint32_t i = 0; i < n_entries; i++) {
         const uint8_t *d = hdr + 26 + (size_t)i * 12;
-        if (rd32(d) != id)
+        if (RD_BE32(d) != id)
             continue;
         if (out_off)
-            *out_off = rd32(d + 4);
+            *out_off = RD_BE32(d + 4);
         if (out_len)
-            *out_len = rd32(d + 8);
+            *out_len = RD_BE32(d + 8);
         return true;
     }
     return false;
@@ -283,10 +274,10 @@ static size_t build_meta_entries(const afp_meta_t *meta, ad_entry_t *entries, si
         n++;
     }
     if (meta->has_dates && n < cap) {
-        wr32(dates + 0, (uint32_t)ad_date_from_afp(meta->create_date));
-        wr32(dates + 4, (uint32_t)ad_date_from_afp(meta->modify_date));
-        wr32(dates + 8, (uint32_t)ad_date_from_afp(meta->backup_date));
-        wr32(dates + 12, (uint32_t)ad_date_from_afp(meta->access_date));
+        WR_BE32(dates + 0, (uint32_t)ad_date_from_afp(meta->create_date));
+        WR_BE32(dates + 4, (uint32_t)ad_date_from_afp(meta->modify_date));
+        WR_BE32(dates + 8, (uint32_t)ad_date_from_afp(meta->backup_date));
+        WR_BE32(dates + 12, (uint32_t)ad_date_from_afp(meta->access_date));
         entries[n].id = AD_ENTRY_DATES;
         entries[n].bytes = dates;
         entries[n].len = 16;
@@ -372,22 +363,22 @@ int afp_meta_store_stream(const char *host_path, const afp_meta_t *meta, FILE *r
     size_t off = hdr_len;
     uint8_t hdr[26 + 5 * 12];
     memset(hdr, 0, sizeof(hdr));
-    wr32(hdr + 0, APPLEDOUBLE_MAGIC);
-    wr32(hdr + 4, APPLE_FORK_VERSION);
+    WR_BE32(hdr + 0, APPLEDOUBLE_MAGIC);
+    WR_BE32(hdr + 4, APPLE_FORK_VERSION);
     hdr[24] = (uint8_t)(n >> 8);
     hdr[25] = (uint8_t)n;
     for (size_t i = 0; i < n_meta; i++) {
         uint8_t *d = hdr + 26 + i * 12;
-        wr32(d + 0, entries[i].id);
-        wr32(d + 4, (uint32_t)off);
-        wr32(d + 8, (uint32_t)entries[i].len);
+        WR_BE32(d + 0, entries[i].id);
+        WR_BE32(d + 4, (uint32_t)off);
+        WR_BE32(d + 8, (uint32_t)entries[i].len);
         off += entries[i].len;
     }
     if (rsrc_len) {
         uint8_t *d = hdr + 26 + n_meta * 12;
-        wr32(d + 0, AD_ENTRY_RSRC);
-        wr32(d + 4, (uint32_t)off);
-        wr32(d + 8, (uint32_t)rsrc_len);
+        WR_BE32(d + 0, AD_ENTRY_RSRC);
+        WR_BE32(d + 4, (uint32_t)off);
+        WR_BE32(d + 8, (uint32_t)rsrc_len);
     }
 
     char tmp[PATH_MAX];

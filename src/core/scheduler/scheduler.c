@@ -37,9 +37,14 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // 68000 Macs. Machines override this with one per-machine constant via
 // scheduler_set_cpi(); CPI never depends on the pacing mode.
 #define CYCLES_PER_INSTR_DEFAULT 12
-#define MAC_CPU_FREQUENCY        7833600.0
-#define MAX_EVENT_TYPES          64
-#define MAX_SANE_EVENTS          10000 // upper bound for event queue length sanity checks
+// Fallback clock, used only until a machine calls scheduler_set_frequency().
+// Every substrate now does so from hw_profile_t.freq -- five call sites, three
+// direct and the rest through mac030_build_core -- so no machine's timing
+// depends on this value any more.  It stays for the unit-test harness, which
+// builds a scheduler with no profile behind it.
+#define MAC_CPU_FREQUENCY 7833600.0
+#define MAX_EVENT_TYPES   64
+#define MAX_SANE_EVENTS   10000 // upper bound for event queue length sanity checks
 
 // Paced mode: hard cap on frame-units executed per host tick. A slow or
 // stalled host makes vbl_acc_error grow; without a cap, each oversized burst

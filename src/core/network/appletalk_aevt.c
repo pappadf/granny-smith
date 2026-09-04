@@ -144,28 +144,11 @@ static bool aevt_dispatch(aevt_event_t *ev, char *err, size_t err_len);
 // Operations — small helpers
 // ============================================================================
 
-static void put32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-static void put16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-static uint32_t get32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-static uint16_t get16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
 static uint32_t fourcc_of(const char *s) {
     uint8_t b[4];
     for (int i = 0; i < 4; i++)
         b[i] = (s && s[i]) ? (uint8_t)s[i] : (uint8_t)' ';
-    return get32(b);
+    return RD_BE32(b);
 }
 
 static void fourcc_str(uint32_t v, char out[5]) {
@@ -254,18 +237,18 @@ static bool aevt_write_event(ppc_session_t *s, const char *class4, const char *i
         return false;
     }
     memset(msg, 0, AEVT_HLE_HEADER_SIZE);
-    put16(&msg[0], AEVT_HLE_HEADER_SIZE);
-    put16(&msg[2], AEVT_HLE_VERSION);
-    put32(&msg[4], 0); // reserved
+    WR_BE16(&msg[0], AEVT_HLE_HEADER_SIZE);
+    WR_BE16(&msg[2], AEVT_HLE_VERSION);
+    WR_BE32(&msg[4], 0); // reserved
     // The embedded EventRecord is a header, not an event (§5.1).
-    put16(&msg[8], AEVT_HLE_WHAT);
-    put32(&msg[10], fourcc_of(class4)); // message = event class
-    put32(&msg[14], 0); // when: the receiver stamps it
-    put32(&msg[18], fourcc_of(id4)); // where = event ID
-    put16(&msg[22], is_reply ? AEVT_MODIFIER_REPLY : 0);
-    put32(&msg[24], return_id);
-    put32(&msg[28], 0); // posting options
-    put32(&msg[32], (uint32_t)stream_len);
+    WR_BE16(&msg[8], AEVT_HLE_WHAT);
+    WR_BE32(&msg[10], fourcc_of(class4)); // message = event class
+    WR_BE32(&msg[14], 0); // when: the receiver stamps it
+    WR_BE32(&msg[18], fourcc_of(id4)); // where = event ID
+    WR_BE16(&msg[22], is_reply ? AEVT_MODIFIER_REPLY : 0);
+    WR_BE32(&msg[24], return_id);
+    WR_BE32(&msg[28], 0); // posting options
+    WR_BE32(&msg[32], (uint32_t)stream_len);
     if (stream_len > 0)
         memcpy(&msg[AEVT_HLE_HEADER_SIZE], stream, (size_t)stream_len);
 
@@ -332,8 +315,8 @@ static void aevt_session_block(void *ctx, ppc_session_t *s, uint32_t creator, ui
         LOG(3, "AE: a %d-byte block is too short to be a high-level event", len);
         return;
     }
-    uint16_t header_len = get16(&payload[0]);
-    uint16_t version = get16(&payload[2]);
+    uint16_t header_len = RD_BE16(&payload[0]);
+    uint16_t version = RD_BE16(&payload[2]);
     if (header_len < AEVT_HLE_HEADER_SIZE || header_len > len) {
         LOG(3, "AE: high-level event header length %u is not usable", (unsigned)header_len);
         return;
@@ -341,14 +324,14 @@ static void aevt_session_block(void *ctx, ppc_session_t *s, uint32_t creator, ui
     if (version > AEVT_HLE_VERSION)
         LOG(3, "AE: high-level event version %u is newer than we know", (unsigned)version);
 
-    uint16_t modifiers = get16(&payload[22]);
-    uint32_t return_id = get32(&payload[24]);
-    uint32_t msg_len = get32(&payload[32]);
+    uint16_t modifiers = RD_BE16(&payload[22]);
+    uint32_t return_id = RD_BE32(&payload[24]);
+    uint32_t msg_len = RD_BE32(&payload[32]);
     // The class and ID live in the EventRecord overlay; the block header
     // carries them too, and we trust the overlay (§5.1).
     char class4[5], id4[5];
-    fourcc_str(get32(&payload[10]), class4);
-    fourcc_str(get32(&payload[18]), id4);
+    fourcc_str(RD_BE32(&payload[10]), class4);
+    fourcc_str(RD_BE32(&payload[18]), id4);
     if (class4[0] == '\0')
         fourcc_str(creator, class4);
     if (id4[0] == '\0')

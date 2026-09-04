@@ -9,6 +9,7 @@
 
 #include "mdu.h"
 #include "appletalk.h"
+#include "log.h"
 
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -36,6 +37,9 @@
 #include <assert.h>
 #include <stdlib.h>
 
+// The machine-level category every family substrate logs under (915a7ea).
+LOG_USE_CATEGORY_NAME("board");
+
 static inline const mac030_mdu_board_t *mdu_board(config_t *cfg) {
     return (const mac030_mdu_board_t *)cfg->machine->board;
 }
@@ -44,9 +48,12 @@ static inline mac030_mdu_state_t *mdu_st(config_t *cfg) {
     return (mac030_mdu_state_t *)cfg->machine_context;
 }
 
-void mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *board) {
+int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *board) {
     mac030_mdu_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
 
     // Shared II-family core (mem_map, cpu-from-profile, scheduler) + RTC + SCC +
@@ -72,16 +79,25 @@ void mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *
     // VIA timer test overshoot its interrupt-count window (ledger §9).
     cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          board->via1_output, board->via1_shift_out, mac030_glue_via1_irq, cfg, cp);
+    // Exact-rational phi2: the integer divisor above rounds, and on this
+    // substrate that rounding is not negligible -- the IIsi lands 1.80% slow, the IIci 0.27%.  via_set_exact_clock
+    // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
+    // PowerPC families already do.
+    via_set_exact_clock(cfg->via1, cfg->machine->freq);
 
     // Everything machine-specific (straps, ADB/Egret, SCSI, ASC, SWIM, RBV, MMU,
     // NuBus video, mdu_io_bind, bus-error, memory layout, checkpoint restore).
-    board->build_devices(cfg, cp);
+    if (board->build_devices(cfg, cp) != 0)
+        return -1;
 
     mac030_glue_finish(cfg, cp);
+    return 0;
 }
 
-static void mdu_init(config_t *cfg, checkpoint_t *cp) {
-    mac030_mdu_init(cfg, cp, mdu_board(cfg));
+static int mdu_init(config_t *cfg, checkpoint_t *cp) {
+    if (mac030_mdu_init(cfg, cp, mdu_board(cfg)) != 0)
+        return -1;
+    return 0;
 }
 
 static void mdu_reset(config_t *cfg) {

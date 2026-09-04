@@ -4,6 +4,7 @@
 // appledouble.c — see appledouble.h.
 
 #include "appledouble.h"
+#include "common.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -15,23 +16,6 @@
 #define AD_FILLER_OFF   8u // 16-byte filler starts here
 #define AD_NENTRIES_OFF 24u
 
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-static uint16_t rd16(const uint8_t *p) {
-    return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
-}
-static void wr32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-static void wr16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-
 static bool magic_ok(uint32_t magic) {
     return magic == APPLEDOUBLE_MAGIC || magic == APPLESINGLE_MAGIC;
 }
@@ -41,11 +25,11 @@ static bool magic_ok(uint32_t magic) {
 static bool header_valid(const uint8_t *buf, size_t len, uint16_t *n_out) {
     if (!buf || len < AD_HDR_FIXED)
         return false;
-    if (!magic_ok(rd32(buf)))
+    if (!magic_ok(RD_BE32(buf)))
         return false;
-    if (rd32(buf + 4) != APPLE_FORK_VERSION)
+    if (RD_BE32(buf + 4) != APPLE_FORK_VERSION)
         return false;
-    uint16_t n = rd16(buf + AD_NENTRIES_OFF);
+    uint16_t n = RD_BE16(buf + AD_NENTRIES_OFF);
     if (n == 0 || n > AD_MAX_ENTRIES)
         return false;
     // Descriptor table must fit.
@@ -55,9 +39,9 @@ static bool header_valid(const uint8_t *buf, size_t len, uint16_t *n_out) {
     // entry id must be non-zero (id 0 is invalid per the spec).
     for (uint16_t i = 0; i < n; i++) {
         const uint8_t *d = buf + AD_HDR_FIXED + (size_t)i * AD_DESC_SIZE;
-        uint32_t id = rd32(d);
-        uint32_t off = rd32(d + 4);
-        uint32_t elen = rd32(d + 8);
+        uint32_t id = RD_BE32(d);
+        uint32_t off = RD_BE32(d + 4);
+        uint32_t elen = RD_BE32(d + 8);
         if (id == 0)
             return false;
         if ((uint64_t)off + elen > (uint64_t)len)
@@ -78,14 +62,14 @@ int ad_parse(const uint8_t *buf, size_t len, ad_file_t *out) {
         return -EINVAL;
 
     memset(out, 0, sizeof(*out));
-    out->magic = rd32(buf);
-    out->version = rd32(buf + 4);
+    out->magic = RD_BE32(buf);
+    out->version = RD_BE32(buf + 4);
     out->n_entries = n;
     for (uint16_t i = 0; i < n; i++) {
         const uint8_t *d = buf + AD_HDR_FIXED + (size_t)i * AD_DESC_SIZE;
-        uint32_t id = rd32(d);
-        uint32_t off = rd32(d + 4);
-        uint32_t elen = rd32(d + 8);
+        uint32_t id = RD_BE32(d);
+        uint32_t off = RD_BE32(d + 4);
+        uint32_t elen = RD_BE32(d + 8);
         const uint8_t *bytes = elen ? buf + off : NULL;
         out->entries[i].id = id;
         out->entries[i].bytes = bytes;
@@ -131,18 +115,18 @@ int ad_build(bool applesingle, const ad_entry_t *entries, size_t n_entries, uint
     if (!buf)
         return -ENOMEM;
 
-    wr32(buf, applesingle ? APPLESINGLE_MAGIC : APPLEDOUBLE_MAGIC);
-    wr32(buf + 4, APPLE_FORK_VERSION);
+    WR_BE32(buf, applesingle ? APPLESINGLE_MAGIC : APPLEDOUBLE_MAGIC);
+    WR_BE32(buf + 4, APPLE_FORK_VERSION);
     // 16-byte filler stays zero (calloc).
     (void)AD_FILLER_OFF;
-    wr16(buf + AD_NENTRIES_OFF, (uint16_t)n_entries);
+    WR_BE16(buf + AD_NENTRIES_OFF, (uint16_t)n_entries);
 
     size_t payload = hdr;
     for (size_t i = 0; i < n_entries; i++) {
         uint8_t *d = buf + AD_HDR_FIXED + i * AD_DESC_SIZE;
-        wr32(d, entries[i].id);
-        wr32(d + 4, (uint32_t)payload);
-        wr32(d + 8, (uint32_t)entries[i].len);
+        WR_BE32(d, entries[i].id);
+        WR_BE32(d + 4, (uint32_t)payload);
+        WR_BE32(d + 8, (uint32_t)entries[i].len);
         if (entries[i].len)
             memcpy(buf + payload, entries[i].bytes, entries[i].len);
         payload += entries[i].len;

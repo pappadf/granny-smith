@@ -33,6 +33,11 @@ static const struct scsi_slot pm9500_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t pm9500_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = pm9500_scsi_slots},
+    {0},
+};
+
 // PCI topology (proposal-pci-architecture §6.1).  Six sockets — three on
 // each Bandit, all at IDSEL 13/14/15 on their own bus (the bandit node's
 // FCode instantiates twice) — with their strapped INTA-D lines on Grand
@@ -94,7 +99,8 @@ const hw_profile_t machine_pm9500 = {
     .rom_size = 0x400000, // 4 MB ($96CD923D / $9630C68B)
 
     .ram_options = pm9500_ram_options_kb,
-    .scsi_slots = pm9500_scsi_slots,
+    .scsi_buses = pm9500_scsi_buses,
+    .floppy_slots = tnt_floppy_slots,
 
     .pci_slots = pm9500_pci_slots,
 

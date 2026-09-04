@@ -51,7 +51,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iix");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Forward declarations
@@ -156,6 +156,11 @@ static const struct scsi_slot iix_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t iix_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = iix_scsi_slots},
+    {0},
+};
+
 const hw_profile_t machine_iix = {
     .name = "Macintosh IIx",
     .id = "iix",
@@ -171,7 +176,7 @@ const hw_profile_t machine_iix = {
 
     .ram_options = iix_ram_options_kb,
     .floppy_slots = iix_floppy_slots,
-    .scsi_slots = iix_scsi_slots,
+    .scsi_buses = iix_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
     // Same reasoning as IIcx: no built-in video, so the slot card's
