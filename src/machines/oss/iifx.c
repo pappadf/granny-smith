@@ -1483,8 +1483,16 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     // the same relative place the save writes it (right after scc_checkpoint).
     appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 51, "via1", iifx_via1_output, iifx_via1_shift_out, iifx_via1_irq, cfg,
-                         checkpoint);
+    // Divisor derived from the profile clock rather than the literal 51 this
+    // used to carry -- via.h asks for exactly that, since a literal that suits
+    // one member of a family is wrong for any sibling with a different clock.
+    cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1", iifx_via1_output,
+                         iifx_via1_shift_out, iifx_via1_irq, cfg, checkpoint);
+    // Exact-rational phi2: the integer divisor above rounds, and on this
+    // substrate that rounding is not negligible -- 40 MHz lands 0.12% fast.  via_set_exact_clock
+    // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
+    // PowerPC families already do.
+    via_set_exact_clock(cfg->via1, cfg->machine->freq);
     rtc_set_via(cfg->rtc, cfg->via1);
 
     via_input(cfg->via1, 0, 7, 1);

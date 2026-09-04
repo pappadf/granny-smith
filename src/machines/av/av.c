@@ -720,6 +720,11 @@ static void av_init(config_t *cfg, checkpoint_t *cp) {
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out, av_via1_irq, cfg, cp);
+    // Exact-rational phi2: the integer divisor above rounds, and on this
+    // substrate that rounding is not negligible -- the 840AV lands 0.12% fast, the 660AV 0.27% slow.
+    // via_set_exact_clock installs ticks = cycles x 783360/cpu_hz reduced, which is what the PowerPC families already
+    // do.
+    via_set_exact_clock(cfg->via1, cfg->machine->freq);
 
     // Machine-specific tail (shared for both AV leaves).
     board->build_devices(cfg, cp);

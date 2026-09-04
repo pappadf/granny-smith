@@ -72,6 +72,11 @@ void mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *
     // VIA timer test overshoot its interrupt-count window (ledger §9).
     cfg->via1 = via_init(NULL, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          board->via1_output, board->via1_shift_out, mac030_glue_via1_irq, cfg, cp);
+    // Exact-rational phi2: the integer divisor above rounds, and on this
+    // substrate that rounding is not negligible -- the IIsi lands 1.80% slow, the IIci 0.27%.  via_set_exact_clock
+    // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
+    // PowerPC families already do.
+    via_set_exact_clock(cfg->via1, cfg->machine->freq);
 
     // Everything machine-specific (straps, ADB/Egret, SCSI, ASC, SWIM, RBV, MMU,
     // NuBus video, mdu_io_bind, bus-error, memory layout, checkpoint restore).
