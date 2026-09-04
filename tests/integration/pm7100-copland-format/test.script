@@ -80,13 +80,13 @@ def phase1_host_desktop() {
     assert machine.scsi.device[1].vendor == "QUANTUM " "SCSI 1 unexpected vendor"
     assert machine.scsi.device[1].product == "LP240S GM240S01X" "SCSI 1 unexpected product"
     assert !machine.scsi.device[1].read_only "SCSI 1 target drive is read-only"
-    # ...and the disc is a CD, read-only, with the block size it powers on
-    # with: 512, read off the disc's own Driver Descriptor Map rather than a
-    # hard-coded CD default.  The guest's CD driver changes it later.
+    # ...and the disc is a CD, read-only, with the block size a CD-ROM drive
+    # powers on with: 2048, the Mode 1 sector, whatever unit the disc's own
+    # Driver Descriptor Map addresses its partition map in.
     assert machine.scsi.device[3].type == "cdrom" "SCSI 3 is not a CD-ROM"
     assert machine.scsi.device[3].read_only "SCSI 3 CD-ROM is not read-only"
     assert machine.scsi.device[3].medium_present "SCSI 3 has no medium"
-    assert machine.scsi.device[3].block_size == 512 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
+    assert machine.scsi.device[3].block_size == 2048 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)"
 
     # Chip init, bus scan, driver load, DQE post; parks in WaitForPollDrive.
     scheduler.run 360000000
@@ -114,11 +114,12 @@ def phase1_host_desktop() {
     # formatter has not run on it and the Finder cannot have mounted it.
     assert try(storage.partmap($target), none) == none "the target drive already carries a partition map"
 
-    # The CD's driver ran: Apple CD-ROM re-blocks the drive to 2048 bytes on
-    # mount (it attaches at the DDM's 512).  That is guest-side proof the disc
-    # was mounted by the System and not merely plugged into the bus — which is
-    # what phase 2 needs, since Drive Setup 2.0d5c2 is read off this volume.
-    assert machine.scsi.device[3].block_size == 2048 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (the CD driver never re-blocked it)"
+    # Still 2048 after the mount: Apple's CD driver works the drive at the
+    # Mode 1 sector and leaves it there.  This no longer PROVES the disc was
+    # mounted — it did when the bay attached at the DDM's 512 and the driver
+    # re-blocked it — but the auto-opened CD window in the golden below does,
+    # and phase 2 needs that anyway since Drive Setup 2.0d5c2 is read off it.
+    assert machine.scsi.device[3].block_size == 2048 "SCSI 3 block_size ${machine.scsi.device[3].block_size}, want 2048 (the CD driver re-blocked it)"
 
     # The desktop: `Macintosh HD`, the auto-opened `Mac OS 8 DDK 0.4` CD window
     # with its 9 items, and NO icon for the unformatted target drive.  The

@@ -842,7 +842,8 @@
       "height": 480,
       "depth": 16,
       "addr32": false,
-      "suite": "suite-quadra"
+      "suite": "suite-quadra",
+      "blocked": "#132 — System 7.1 on an MCU Quadra cannot launch the Finder with any second SCSI target on the bus, and the CD bay now is one (a machine with a CD drive carries it from power-on); row q950-71-hd is skipped until the defect is fixed"
     },
     {
       "machine": "q950",

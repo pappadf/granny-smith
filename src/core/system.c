@@ -750,6 +750,20 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
         break;
     }
 
+    // A machine with a CD bay has the DRIVE on the bus from power-on, disc or
+    // no disc.  SCSI is not hot-plug: the guest's CD driver claims its targets
+    // during the boot-time bus scan and polls only those, so a drive that
+    // materialises later — when the user picks Insert — is one nothing ever
+    // looks at, and the disc never mounts.  Registering it empty here makes a
+    // later insert an ordinary medium change (UNIT ATTENTION), which is what
+    // the driver notices and the Finder mounts on.
+    //
+    // Skip a slot that is already occupied: restoring a checkpoint rebuilds
+    // the bus from the saved state, and that device outranks a blank bay.
+    if (profile->has_cdrom && cfg->scsi && !scsi_device_present(cfg->scsi, (unsigned)profile->cdrom_id))
+        scsi_add_device(cfg->scsi, profile->cdrom_id, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048,
+                        true);
+
     // Stand up the object-model root (M2): attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
     // runtime state. The legacy shell remains primary.
@@ -884,29 +898,23 @@ void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
 
     img->type = image_cdrom;
 
-    // Present the disc at the block size it was MASTERED for, which its own
-    // Driver Descriptor Map records in sbBlkSize (block 0, 'ER' signature,
-    // bytes 2-3).  A pressed Apple system CD says 2048; a disk image laid out
-    // like a hard disk — including every image in tests/data/systems — says
-    // 512, and there are real 512-byte-block CDs too.  Serving a 512-mastered
-    // image at 2048 multiplies every LBA by four: the Start Manager reads the
-    // wrong sectors, finds no driver partition and the machine does not boot.
+    // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
+    // sector, not a property of the disc — so serve every disc at 2048 and let
+    // the guest ask for anything else.  A host that wants 512-byte addressing
+    // issues MODE SELECT with a block descriptor, which scsi_cdrom_mode_select
+    // already honours; A/UX does exactly that when it mounts its install CD.
     //
-    // This is what real hardware does as well.  An AppleCD drive powers up in
-    // 2048-byte mode and Apple's driver issues MODE SELECT to switch it to
-    // 512 for HFS discs (scsi_cdrom_mode_select already models that path);
-    // adopting sbBlkSize up front gets the boot blocks readable before any
-    // driver is loaded, which is the ordering the ROM needs.
+    // Do NOT adopt the sbBlkSize the disc's Driver Descriptor Map records
+    // (block 0, 'ER' signature, bytes 2-3).  That field is the unit the
+    // PARTITION MAP is addressed in — 512 on an HFS disc, including a raw hard
+    // disk image burned to CD — and not the drive's block length.  Conflating
+    // the two hands the Apple CD-ROM driver a 512-byte device when it is
+    // addressing 2048-byte sectors, so every sector number it computes lands a
+    // quarter of the way into the disc: it reads byte 8192 looking for the
+    // ISO 9660 descriptor at sector 16, never finds the partition map, and the
+    // Finder offers to initialize the disc.  Mapping the map's 512-byte units
+    // onto 2048-byte sectors is the driver's job, and it does it in software.
     uint16_t cd_block_size = 2048;
-    uint8_t ddm[512];
-    if (disk_read_data(img, 0, ddm, sizeof(ddm)) == sizeof(ddm) && ddm[0] == 'E' && ddm[1] == 'R') {
-        uint16_t sb = (uint16_t)((ddm[2] << 8) | ddm[3]);
-        if (sb == 512 || sb == 2048)
-            cd_block_size = sb;
-        else
-            printf("CD-ROM %s: Driver Descriptor Map declares an unsupported block size %u; using 2048\n", filename,
-                   sb);
-    }
 
     printf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, %u-byte blocks, SCSI ID: %d)\n",
            filename, disk_size(img), cd_block_size, scsi_id);

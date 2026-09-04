@@ -690,13 +690,24 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
         }
         cuda->rx_len = 0;
         cuda->state = CUDA_SYNC;
-        // The sync resets the TRANSPORT.  It does NOT clear the autopoll
-        // setting: AIX's kernel enables autopoll, then runs cuda_reset --
-        // a sync cycle -- and never sends APoll again, and its keyboard
-        // works on the real machine.  (The Macintosh ROM re-enables
-        // autopoll explicitly after its CudaInit sync either way.)  The
-        // one-second tick is still silenced, as CudaInit documents.
+        // The sync silences EVERY asynchronous source, autopoll included.
+        // That is the documented contract, not an inference: "CudaInit
+        // implies a SyncAck cycle which synchronizes Cuda to the system and
+        // disables all asynchronous messages sources (Auto Poll, RTC, Power
+        // Messages, Unknown)" (Apple, OS/Universal.a:484-511), and the host
+        // re-enables what it wants by command afterwards — the Macintosh
+        // ROM's ADB Manager with APoll $FF (StartInit.a:1500-1505), and AIX
+        // too: ans-aix-installed-boot types its root login through Cuda
+        // autopoll on this model, so the older "autopoll must survive the
+        // sync for AIX" exception was never needed.  Copland depends on it: its Cuda
+        // driver syncs, reads PRAM, registers its ADB client, and only THEN
+        // sends APoll on.  Leaving autopoll running across the sync let the
+        // next 11 ms tick hand it a keyboard packet (a latched Caps Lock)
+        // before that client existed; NotifyNewCudaEvent called a null
+        // handler, the exception went to the kernel debugger nub, and the
+        // machine spun forever with interrupts masked (pm7100-copland-boot).
         cuda->onesec_enabled = false;
+        cuda->autopoll_enabled = false;
         cuda->onesec_mode = 0;
         cuda_set_treq(cuda, false);
         cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
@@ -732,7 +743,8 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
                 !cuda->tx_represented)
                 cuda->resend_pending = true;
             cuda->state = CUDA_SYNC;
-            cuda->onesec_enabled = false; // autopoll survives a sync (see above)
+            cuda->onesec_enabled = false;
+            cuda->autopoll_enabled = false; // the sync silences autopoll too (see the main sync branch)
             cuda_set_treq(cuda, false);
             cuda_push_delayed(cuda, 0x00); // sync acknowledge byte
             break;
