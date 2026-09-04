@@ -23,6 +23,6 @@ void q900_via2_output(void *context, uint8_t port, uint8_t output);
 void q900_scc_irq(void *context, bool active);
 
 // The full tower device build (Caboose, IOPs, dual 53C96, DAFB, SONIC, …).
-void q900_build_devices(config_t *cfg, checkpoint_t *cp);
+int q900_build_devices(config_t *cfg, checkpoint_t *cp);
 
 #endif // GS_MACHINES_MCU_Q900_INTERNAL_H

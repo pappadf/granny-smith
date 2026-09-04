@@ -598,7 +598,7 @@ void av_via1_shift_out(void *context, uint8_t byte) {
 // Device construction (shared by both leaves)
 // ============================================================
 
-void av_build_devices(config_t *cfg, checkpoint_t *cp) {
+int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     av_state_t *st = av_st(cfg);
     const av_board_desc_t *desc = av_board(cfg)->desc;
 
@@ -620,16 +620,25 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The PSC interrupt controller + DMA engine (VIA2 window, L3-L6,
     // sndPhase, the 7 channels).
     st->psc = av_psc_init(cfg, cp);
-    assert(st->psc != NULL);
+    if (!st->psc) {
+        LOG(0, "Error: out of memory constructing the PSC");
+        return -1;
+    }
     av_psc_set_memory_hooks(st->psc, av_psc_mem_read, av_psc_mem_write, cfg);
 
     // The DSP3210 aux core on the PSC's dspOverRun reset latch, and the
     // Singer sound frame engine that feeds it EXT1 ticks.
     st->dsp = av_dsp_init(cfg, cp);
-    assert(st->dsp != NULL);
+    if (!st->dsp) {
+        LOG(0, "Error: out of memory constructing the DSP3210");
+        return -1;
+    }
     av_psc_set_dsp_hook(st->psc, av_dsp_overrun_hook, st->dsp);
     st->singer = av_singer_init(cfg, cp);
-    assert(st->singer != NULL);
+    if (!st->singer) {
+        LOG(0, "Error: out of memory constructing the Singer codec");
+        return -1;
+    }
 
     // ADB device state, serviced through Cuda packets (adb_iop_transact),
     // not the VIA shifter — pass NULL for the VIA (the IIsi/Egret pattern).
@@ -638,24 +647,39 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
-    assert(st->cuda != NULL);
+    if (!st->cuda) {
+        LOG(0, "Error: out of memory constructing the Cuda");
+        return -1;
+    }
 
     // New Age FDC stub ("no drive" — ST3 = $FF).
     st->fdc = av_new_age_init(cfg, cp);
-    assert(st->fdc != NULL);
+    if (!st->fdc) {
+        LOG(0, "Error: out of memory constructing the New Age FDC");
+        return -1;
+    }
 
     // MACE Ethernet register stub + address PROM (no wire).
     st->mace = av_mace_init(cfg, cp);
-    assert(st->mace != NULL);
+    if (!st->mace) {
+        LOG(0, "Error: out of memory constructing the MACE Ethernet");
+        return -1;
+    }
 
     // CIVIC + Sebastian video (Hi-Res 640x480 monitor, 2 MB VRAM).
     st->civic = av_civic_init(cfg, cp);
-    assert(st->civic != NULL);
+    if (!st->civic) {
+        LOG(0, "Error: out of memory constructing the CIVIC");
+        return -1;
+    }
 
     // The video digitizer (DMSD + VDC + frame engine), reached through
     // Cuda pseudo-command $22 and CIVIC's video-in gates.
     st->vdc = av_vdc_init(cfg, cp);
-    assert(st->vdc != NULL);
+    if (!st->vdc) {
+        LOG(0, "Error: out of memory constructing the VDC");
+        return -1;
+    }
     av_cuda_attach_vdc(st->cuda, st->vdc);
 
     if (cp)
@@ -682,7 +706,10 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     st->bus_mmu =
         mmu_init(ram_base, ram_size, desc->rom_base, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
-    assert(st->bus_mmu != NULL);
+    if (!st->bus_mmu) {
+        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+        return -1;
+    }
     g_mmu = st->bus_mmu;
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
@@ -698,6 +725,7 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // NuBus super-slot and slot space bus-errors on probes (the ROM's slot
     // scan expects it even with no cards).
     memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
+    return 0;
 }
 
 // ============================================================
@@ -738,7 +766,8 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     via_set_exact_clock(cfg->via1, cfg->machine->freq);
 
     // Machine-specific tail (shared for both AV leaves).
-    board->build_devices(cfg, cp);
+    if (board->build_devices(cfg, cp) != 0)
+        return -1;
 
     cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
 

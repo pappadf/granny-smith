@@ -663,7 +663,8 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
 
     // Machine-specific tail: straps, ADB, EASC, SWIM, DAFB, bus resolver,
     // memory layout, checkpoint restore.
-    board->build_devices(cfg, cp);
+    if (board->build_devices(cfg, cp) != 0)
+        return -1;
 
     // NuBus (Phase F): seat the declared slot cards; their windows layer
     // over the bus-error range, and slot IRQs route through the substrate's

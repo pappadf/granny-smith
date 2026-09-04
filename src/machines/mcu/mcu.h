@@ -100,7 +100,7 @@ typedef struct mcu_board {
     void (*via1_output)(void *context, uint8_t port, uint8_t value);
     void (*via1_shift_out)(void *context, uint8_t byte);
     void (*via2_output)(void *context, uint8_t port, uint8_t value);
-    void (*build_devices)(config_t *cfg, checkpoint_t *cp); // machine-specific tail
+    int (*build_devices)(config_t *cfg, checkpoint_t *cp); // machine-specific tail
     // SCC chip IRQ callback override (NULL → mac030_glue_scc_irq).  The towers
     // OR the SCC chip INT with the SCC IOP host INT onto the level-4 source
     // (ref §15.12), so they intercept the chip line here.

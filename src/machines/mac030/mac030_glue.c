@@ -35,8 +35,8 @@
 LOG_USE_CATEGORY_NAME("setup");
 
 // Construct the GLUE peripheral set in canonical order — see header.
-void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
-                                   const mac030_board_desc_t *desc) {
+int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
+                                  const mac030_board_desc_t *desc) {
     st->adb = adb_init(cfg->via1, cfg->scheduler, cp);
     cfg->adb = st->adb;
 
@@ -56,6 +56,7 @@ void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_
     cfg->floppy = st->floppy;
 
     mac030_glue_io_bind(&st->glue_io, cfg, desc, st->asc, st->floppy);
+    return 0;
 }
 
 // Create + attach the 68030 PMMU over a board's ROM window — see header.
@@ -65,7 +66,10 @@ struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t ro
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     uint32_t rom_size = cfg->machine->rom_size;
     mmu_state_t *mmu = mmu_init(ram_base, ram_size, cfg->machine->ram_max, rom_data, rom_size, rom_base, rom_end);
-    assert(mmu != NULL);
+    if (!mmu) {
+        LOG(0, "Error: out of memory constructing the PMMU");
+        return NULL; // mac030_build_mmu returns the MMU, not a status
+    }
     g_mmu = mmu;
     cpu_attach_mmu(cfg->cpu, mmu);
     return mmu;
@@ -119,9 +123,12 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
 
     board->setup_id(cfg);
 
-    mac030_glue_build_peripherals(cfg, cp, st, board->desc);
+    if (mac030_glue_build_peripherals(cfg, cp, st, board->desc) != 0)
+        return -1;
 
     st->mmu = mac030_build_mmu(cfg, board->desc->rom_base, board->desc->rom_end);
+    if (!st->mmu)
+        return -1; // mac030_build_mmu reported the reason
     st->mmu->tt1 = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
 
     cfg->nubus = nubus_init(cfg, board->desc->slots, cp);

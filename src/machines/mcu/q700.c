@@ -145,7 +145,7 @@ static void q700_dafb_irq(void *context, bool active) {
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
 
-static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
+static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = q700_state(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
@@ -196,7 +196,10 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     cfg->floppy = st->floppy;
 
     st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q700 maxed; base 512 KiB later)
-    assert(st->dafb != NULL);
+    if (!st->dafb) {
+        LOG(0, "Error: out of memory constructing the DAFB");
+        return -1;
+    }
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, q700_dafb_irq, cfg);
     // Consume unconditionally so a staged sense never leaks into a later
@@ -218,7 +221,10 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     st->bus_mmu =
         mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
-    assert(st->bus_mmu != NULL);
+    if (!st->bus_mmu) {
+        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+        return -1;
+    }
     g_mmu = st->bus_mmu;
     // Attach the CPU-owned 040 register file: translation now dispatches to
     // the mmu040 walker; `enabled` mirrors TC.E.  (The cpu.mmu debug object
@@ -237,6 +243,7 @@ static void q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     if (cp)
         mcu_restore_private(cfg, cp);
+    return 0;
 }
 
 // ============================================================

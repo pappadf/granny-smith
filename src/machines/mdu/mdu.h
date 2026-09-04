@@ -33,7 +33,7 @@ typedef struct mac030_mdu_board {
     // Build all machine-specific devices (everything after VIA1, before finish):
     // straps, ADB/Egret, SCSI, ASC, SWIM, RBV, MMU (+ any 2-bank), NuBus video,
     // mdu_io_bind, bus-error range, memory layout, and the checkpoint restore.
-    void (*build_devices)(config_t *cfg, checkpoint_t *cp);
+    int (*build_devices)(config_t *cfg, checkpoint_t *cp);
 } mac030_mdu_board_t;
 
 // The shared MDU init: allocate the unified state, build the II-family core +

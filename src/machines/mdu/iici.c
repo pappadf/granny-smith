@@ -307,7 +307,7 @@ static const mac030_board_desc_t iici_board = {
 
 // IIci device construction (mac030_mdu_board_t.build_devices): everything after
 // the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.
-static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
+static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     iici_state_t *st = iici_state(cfg);
     st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
     // The IIci bit-bangs the RTC on VIA1 (classic transceiver path).
@@ -342,7 +342,10 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // RBV chip (VIA2 replacement + video control).  Default monitor sense 6
     // = 13" RGB.  IRQ → IPL 2; RvPowerOff → scheduler stop.
     st->rbv = rbv_init(RBV_VARIANT_IICI, checkpoint);
-    assert(st->rbv != NULL);
+    if (!st->rbv) {
+        LOG(0, "Error: out of memory constructing the RBV");
+        return -1;
+    }
     rbv_set_irq_callback(st->rbv, iici_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
@@ -350,6 +353,8 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
     st->mmu = mac030_build_mmu(cfg, iici_board.rom_base, iici_board.rom_end);
+    if (!st->mmu)
+        return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as SE/30).
     st->mmu->tt1 = 0xF00F8043;
 
@@ -387,6 +392,7 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
+    return 0;
 }
 
 // ============================================================

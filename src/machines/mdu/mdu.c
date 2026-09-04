@@ -87,7 +87,8 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
 
     // Everything machine-specific (straps, ADB/Egret, SCSI, ASC, SWIM, RBV, MMU,
     // NuBus video, mdu_io_bind, bus-error, memory layout, checkpoint restore).
-    board->build_devices(cfg, cp);
+    if (board->build_devices(cfg, cp) != 0)
+        return -1;
 
     mac030_glue_finish(cfg, cp);
     return 0;

@@ -1563,6 +1563,8 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iifx_io_bind(&st->iifx_io, cfg, st, &iifx_board);
 
     st->mmu = mac030_build_mmu(cfg, iifx_board.rom_base, iifx_board.rom_end);
+    if (!st->mmu)
+        return -1; // mac030_build_mmu reported the reason
     st->mmu->tt1 = 0xF00F8043;
 
     cfg->nubus = nubus_init(cfg, iifx_board.slots, checkpoint);

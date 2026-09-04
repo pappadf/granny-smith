@@ -173,7 +173,7 @@ static void q900_dafb_irq(void *context, bool active) {
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
 
-void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
+int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = q900_state(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
@@ -243,7 +243,10 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Egret8 — ChkFirmware branches on the box flag, not the chip).  ADB
     // stays NULL here: tower ADB belongs to the SWIM IOP.
     st->caboose = egret_init(cfg->via1, cfg->rtc, NULL, cfg->scheduler, cp);
-    assert(st->caboose != NULL);
+    if (!st->caboose) {
+        LOG(0, "Error: out of memory constructing the Caboose");
+        return -1;
+    }
 
     // The two Apple PIC/IOPs.  The host aperture layout matches the IIfx
     // PIC exactly (shared HardwarePrivateEqu.a equates), so the IIfx bridge
@@ -255,7 +258,10 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
                             cfg->scheduler, cp);
 
     st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q900 maxed)
-    assert(st->dafb != NULL);
+    if (!st->dafb) {
+        LOG(0, "Error: out of memory constructing the DAFB");
+        return -1;
+    }
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, q900_dafb_irq, cfg);
     // Consume unconditionally so a staged sense never leaks into a later
@@ -278,7 +284,10 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     st->bus_mmu =
         mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
-    assert(st->bus_mmu != NULL);
+    if (!st->bus_mmu) {
+        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+        return -1;
+    }
     g_mmu = st->bus_mmu;
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
@@ -298,6 +307,7 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     if (cp)
         mcu_restore_private(cfg, cp);
+    return 0;
 }
 
 // ============================================================

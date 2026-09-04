@@ -263,7 +263,7 @@ static const mac030_board_desc_t iisi_board = {
 // IIsi device construction (mac030_mdu_board_t.build_devices): everything after
 // the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.  No
 // rtc_set_via — the IIsi drives the RTC through Egret, not the VIA1 transceiver.
-static void iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
+static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     iisi_state_t *st = iisi_state(cfg);
 
     // Machine-ID readback on VIA1 port A: PA6/PA4/PA2/PA1 = 0/1/1/1 for the
@@ -296,12 +296,18 @@ static void iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // Egret companion: owns ADB / RTC / PRAM / 1-sec tick / soft power-off via
     // the VIA1 shift register.  Created after via1/rtc/adb exist.
     st->egret = egret_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, checkpoint);
-    assert(st->egret != NULL);
+    if (!st->egret) {
+        LOG(0, "Error: out of memory constructing the Egret");
+        return -1;
+    }
     egret_set_power_off_callback(st->egret, iisi_power_off, cfg);
 
     // RBV chip in the V8/VISA variant.  Default monitor sense 6 = 13" RGB.
     st->rbv = rbv_init(RBV_VARIANT_V8_IISI, checkpoint);
-    assert(st->rbv != NULL);
+    if (!st->rbv) {
+        LOG(0, "Error: out of memory constructing the RBV");
+        return -1;
+    }
     rbv_set_irq_callback(st->rbv, iisi_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, iisi_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iisi_rbv_mode, cfg);
@@ -311,6 +317,8 @@ static void iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint32_t ram_size = cfg->ram_size;
     st->mmu = mac030_build_mmu(cfg, iisi_board.rom_base, iisi_board.rom_end);
+    if (!st->mmu)
+        return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as IIci).
     st->mmu->tt1 = 0xF00F8043;
 
@@ -362,6 +370,7 @@ static void iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
+    return 0;
 }
 
 // ============================================================

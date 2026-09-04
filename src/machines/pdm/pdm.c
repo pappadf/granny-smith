@@ -281,7 +281,10 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // declaration ROM — are filled through our own page filler.
     g_mem_host_fill = pdm_fill_page;
     cfg->ppc = ppc_init(cp, cfg->machine->cpu_model);
-    assert(cfg->ppc != NULL);
+    if (!cfg->ppc) {
+        LOG(0, "Error: out of memory constructing the PowerPC core");
+        return -1;
+    }
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
@@ -338,7 +341,10 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // The behavioral Cuda (firmware 2.37 — the same 341S0788 part as the
     // AV machines) on the pseudo-VIA1 shift register + PB3/4/5.
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
-    assert(st->cuda != NULL);
+    if (!st->cuda) {
+        LOG(0, "Error: out of memory constructing the Cuda");
+        return -1;
+    }
 
     // Restore the image list before the devices that reference it (the
     // shape every other Mac family uses: floppy and SCSI both resolve

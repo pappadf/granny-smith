@@ -87,8 +87,8 @@ void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, st
 // SWIM floppy, then bind the I/O dispatcher.  Stores the device handles in
 // the unified state and on config_t.  Call after VIA1/VIA2 exist.
 struct mac030_board_desc;
-void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
-                                   const struct mac030_board_desc *desc);
+int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
+                                  const struct mac030_board_desc *desc);
 
 // (mac030_build_mmu — the board-parameterised PMMU builder — is declared below,
 // next to mac030_board_desc_t which carries the ROM window it uses.)

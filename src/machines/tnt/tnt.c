@@ -457,7 +457,10 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     g_mem_host_fill = tnt_fill_page;
     const int cpu_model = cfg->machine->cpu_model;
     cfg->ppc = ppc_init(cp, cpu_model);
-    assert(cfg->ppc != NULL);
+    if (!cfg->ppc) {
+        LOG(0, "Error: out of memory constructing the PowerPC core");
+        return -1;
+    }
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
@@ -509,7 +512,10 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Mode3Clock tick is on, as on PDM: the guest clock lives behind
     // Cuda RdTime/PRAM here too and needs the real seed.
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
-    assert(st->cuda != NULL);
+    if (!st->cuda) {
+        LOG(0, "Error: out of memory constructing the Cuda");
+        return -1;
+    }
 
     // The DBDMA engine behind the island's +$8000 channel windows.  No
     // device ports are attached yet — each datapath phase (AWACS ch 8,
