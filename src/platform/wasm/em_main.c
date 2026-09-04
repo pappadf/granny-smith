@@ -349,15 +349,21 @@ static int map_dom_code_to_mac(const char *code, const char *key) {
         return 0x37; // Command (Windows key)
 
     // ── Arrow keys ──────────────────────────────────────────────────────────
-    // ADB virtual codes 0x7B-0x7E; keyboard.c translates to Mac Plus raw codes
+    // RAW scan codes 0x3B-0x3E, not the Extended-layout VIRTUAL codes
+    // 0x7B-0x7E: the ADB keyboard forwards register-0 scan codes to the
+    // guest untranslated, and raw 0x7B-0x7D on a real ADB keyboard are
+    // the RIGHT SHIFT/OPTION/CONTROL modifiers — sending those made
+    // arrows press phantom modifiers on every ADB machine (found by
+    // Quake ignoring the web UI's arrows while scripted 0x3D worked).
+    // keyboard.c (Mac Plus VIA path) accepts both sets.
     if (!strcmp(code, "ArrowLeft"))
-        return 0x7B;
+        return 0x3B;
     if (!strcmp(code, "ArrowRight"))
-        return 0x7C;
+        return 0x3C;
     if (!strcmp(code, "ArrowDown"))
-        return 0x7D;
+        return 0x3D;
     if (!strcmp(code, "ArrowUp"))
-        return 0x7E;
+        return 0x3E;
 
     // ── Numeric keypad ──────────────────────────────────────────────────────
     if (!strcmp(code, "NumpadDecimal"))

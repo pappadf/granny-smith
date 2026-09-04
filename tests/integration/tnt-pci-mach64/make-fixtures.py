@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-# Build the two negative PROM fixtures this row needs.
+# Build the fixtures this row needs: two negative PROMs, and the two
+# reference PNGs for the 5-6-5 display-format rows.
 #
-# Generated rather than committed: each is a handful of header bytes, and
-# what makes them useful is exactly what the header says, which is clearer
-# as code than as an opaque blob.
+# Generated rather than committed: each is a handful of header bytes (or a
+# raster derived from a stated formula), and what makes them useful is
+# exactly what the code says, which is clearer as code than as an opaque
+# blob.
 import struct
 import sys
+import zlib
 
 out_dir = sys.argv[1]
 
@@ -39,4 +42,57 @@ with open(f"{out_dir}/fake-x86-vga.prom", "wb") as f:
 with open(f"{out_dir}/uncatalogued.prom", "wb") as f:
     f.write(option_rom(0x01, with_fcode=True))
 
-print("tnt-pci-mach64: negative PROM fixtures written")
+
+# --- Reference PNGs for the 5-6-5 rows --------------------------------------
+#
+# The test script pokes the raster below into VRAM and the emulator's PNG
+# encoder expands it for screen.match; these fixtures are the INDEPENDENT
+# expansion of the same 16-bit words, computed here from the documented
+# rules, so a match proves the encoder — not that the encoder agrees with
+# itself.  Two interpretations of the identical bytes, because the
+# predictable bug is a 5-6-5 expander that silently falls through to the
+# neighbouring 5-5-5 case and looks exactly like success.
+
+W, H = 64, 32
+
+
+def pixel(x, y):
+    """The synthetic raster: every channel a different walk, all 16 bits used."""
+    return ((x & 31) << 11) | (((x + y) & 63) << 5) | (y & 31)
+
+
+def expand_565(v):
+    r5, g6, b5 = (v >> 11) & 31, (v >> 5) & 63, v & 31
+    return ((r5 << 3) | (r5 >> 2), (g6 << 2) | (g6 >> 4), (b5 << 3) | (b5 >> 2))
+
+
+def expand_555(v):
+    r5, g5, b5 = (v >> 10) & 31, (v >> 5) & 31, v & 31
+    return ((r5 << 3) | (r5 >> 2), (g5 << 3) | (g5 >> 2), (b5 << 3) | (b5 >> 2))
+
+
+def write_png(path, expand):
+    """Minimal RGBA PNG, matching what save_framebuffer_as_png emits."""
+    raw = bytearray()
+    for y in range(H):
+        raw.append(0)  # filter: none
+        for x in range(W):
+            r, g, b = expand(pixel(x, y))
+            raw += bytes((r, g, b, 255))
+
+    def chunk(tag, data):
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    ihdr = struct.pack(">IIBBBBB", W, H, 8, 6, 0, 0, 0)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(chunk(b"IHDR", ihdr))
+        f.write(chunk(b"IDAT", zlib.compress(bytes(raw))))
+        f.write(chunk(b"IEND", b""))
+
+
+write_png(f"{out_dir}/raster-565.png", expand_565)
+write_png(f"{out_dir}/raster-555.png", expand_555)
+
+print("tnt-pci-mach64: negative PROM and 5-6-5 raster fixtures written")

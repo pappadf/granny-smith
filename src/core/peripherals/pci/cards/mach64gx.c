@@ -2374,15 +2374,10 @@ static void mach64_update(mach64_t *m) {
         format = PIXEL_32BPP_XRGB;
         break;
     case CRTC_PIX_16BPP:
-        // 5,6,5.  display.h has no format for it, and Mac OS should never
-        // select it, so keep the previous mode rather than render wrong
-        // colours silently.  If this ever fires, PIXEL_16BPP_565 is a small
-        // addition — but we would want to know it fired.
-        if (!m->pix_width_warned) {
-            m->pix_width_warned = true;
-            LOG(0, "CRTC_PIX_WIDTH = 4 (5,6,5) has no display format here — keeping the previous mode");
-        }
-        return;
+        // 5,6,5.  Mac OS never selects it, but the depth is real on this
+        // chip and PIXEL_16BPP_565 exists now (added for the Voodoo2).
+        format = PIXEL_16BPP_565;
+        break;
     case 0:
         // The power-on state: nothing is programmed yet, so there is no
         // mode to derive and nothing has gone wrong.  Present the black

@@ -1,0 +1,280 @@
+# The card DRAWS — milestone 3c, driven entirely through the register
+# file (proposal §7).  Included by test.script after the bring-up replay.
+#
+# THE FILL CONVENTION IS OURS (proposal §4.5, §8 Q1): V2 §7.2 defers the
+# triangle walk to an SST-1 Programming Guide nobody holds, so the pinned
+# pixel values and counts below record what THIS rasteriser draws — they
+# are regression anchors, not hardware conformance, chosen as: sample
+# points at pixel integer coordinates, half-open top-left inclusion,
+# iteration from vertex A's truncated position.
+#
+# Wherever an EQUALITY exists it is preferred over a picture (§8 Q2):
+# the statistics counters against analytically-counted pixels, the LFB
+# round-trip identities, and the texture-layout offsets against the
+# spec's own worked examples.
+
+let LFB = $BAR + 0x400000
+def px(x, y) {
+    return swap16(machine.memory.peek.w($LFB + ($y << 11) + ($x << 1)))
+}
+def stat(off) {
+    return machine.pci.slot[1].card.regs.read($off)
+}
+# The right triangle used throughout: A=(50,50) B=(50,66) C=(66,50) in
+# 12.4 — legs of 16 pixels, area negative (clockwise per the spec's
+# p.36 formula), exactly sum(1..16)=136 pixels under our convention.
+def tri1_vertices() {
+    vreg_wr(0x008, 0x00000320)
+    vreg_wr(0x00C, 0x00000320)
+    vreg_wr(0x010, 0x00000320)
+    vreg_wr(0x014, 0x00000420)
+    vreg_wr(0x018, 0x00000420)
+    vreg_wr(0x01C, 0x00000320)
+}
+
+# A clean 640x480 stage: front-buffer layout, raw 5-6-5 LFB, no clip.
+# Also clear fbiInit3's TEXMAP_DISABLE, which the bring-up deliberately
+# set ("so if TMUs are hung, it will not affect FBI") and which real
+# Glide clears when it brings the TMUs up — a card with the bit still
+# set renders textured triangles BLACK, exactly as this model did before
+# this line existed.
+vreg_wr(0x21C, vreg_rd(0x21C) & 0xFFFFFFBF)
+vreg_wr(0x20C, (480 << 16) | 639)
+vreg_wr(0x218, (vreg_rd(0x218) & 0xFFF007FF) | (150 << 11) | 0x400000)
+vreg_wr(0x214, (vreg_rd(0x214) & 0xFEFFFF0F) | 0xA0)
+vreg_wr(0x248, vreg_rd(0x248) & 0xBFFFFFFF)
+vreg_wr(0x114, 0x00000000)
+vreg_wr(0x120, 0x00000003)
+
+# --- FASTFILL clears the clip rectangle, and ONLY the clip rectangle. -------
+# clip [10,42) x [5,21); colour1 pure red -> 565 $F800 (dither off);
+# zaColor $BEEF into the depth buffer.
+vreg_wr(0x118, (10 << 16) | 42)
+vreg_wr(0x11C, (5 << 16) | 21)
+vreg_wr(0x148, 0x00FF0000)
+vreg_wr(0x130, 0x0000BEEF)
+vreg_wr(0x110, 0x00000601)
+vreg_wr(0x124, 0x00000000)
+idle3
+assert px(10, 5) == 0xF800 "fastfill: top-left corner filled with color1"
+assert px(41, 20) == 0xF800 "fastfill: bottom-right inside corner filled"
+assert px(9, 5) == 0x0000 "fastfill: left of the rectangle untouched"
+assert px(42, 5) == 0x0000 "fastfill: the right edge is EXCLUSIVE"
+assert px(10, 4) == 0x0000 "fastfill: above the rectangle untouched"
+assert px(10, 21) == 0x0000 "fastfill: the high-Y edge is EXCLUSIVE"
+# ...and the depth buffer took zaColor, read through the aux select.
+vreg_wr(0x114, 0x00000080)
+assert px(10, 5) == 0xBEEF "fastfill: the depth buffer cleared to zaColor"
+assert px(9, 5) == 0x0000 "fastfill: depth outside the rectangle untouched"
+vreg_wr(0x114, 0x00000000)
+
+# --- One gouraud triangle, and the counters agree with the picture. ---------
+# R starts at 255 falling 8/px in X; G rises 8/px in Y.
+vreg_wr(0x110, 0x00000600)
+vreg_wr(0x104, 0x00000000)
+vreg_wr(0x120, 0x00000001)
+tri1_vertices
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x024, 0x00000000)
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x040, 0xFFFF8000)
+vreg_wr(0x044, 0x00000000)
+vreg_wr(0x048, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00008000)
+vreg_wr(0x068, 0x00000000)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert stat(0x15C) == 136 "fbiPixelsOut equals the analytic pixel count of the triangle"
+assert stat(0x14C) == 136 "fbiPixelsIn agrees — nothing was rejected"
+assert px(50, 50) == 0xF800 "gouraud: full red at vertex A"
+assert px(55, 52) == 0xD080 "gouraud: interpolated interior pixel (r 215, g 16)"
+assert px(65, 50) == 0x8000 "gouraud: last included column of the top row"
+assert px(66, 50) == 0x0000 "gouraud: the hypotenuse edge is EXCLUSIVE"
+assert px(49, 50) == 0x0000 "gouraud: left of vertex A untouched"
+
+# --- The complement triangle shares the hypotenuse: no seam, no overlap. ----
+# (50,66) (66,50) (66,66) — positive area, sign bit 0.  The two
+# triangles must tile the 16x16 square EXACTLY: 136 + 120 = 256 pixels,
+# each drawn once.
+vreg_wr(0x008, 0x00000320)
+vreg_wr(0x00C, 0x00000420)
+vreg_wr(0x010, 0x00000420)
+vreg_wr(0x014, 0x00000320)
+vreg_wr(0x018, 0x00000420)
+vreg_wr(0x01C, 0x00000420)
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x040, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00000000)
+vreg_wr(0x080, 0x00000000)
+idle3
+assert stat(0x15C) == 256 "the shared edge tiles exactly: no double-drawn pixel, no gap"
+assert px(57, 58) != 0x0000 "a pixel just below the seam was covered"
+assert px(58, 57) != 0x0000 "a pixel just above the seam was covered"
+assert px(65, 65) != 0x0000 "the far corner of the square was covered"
+
+# --- A depth-rejected triangle draws NOTHING and says so. -------------------
+# func = never: every pixel of the (still latched) complement triangle
+# fails, fbiZfuncFail counts all 120, and the framebuffer is untouched —
+# "a blit that draws nothing looks exactly like a blit never issued"
+# made assertable.
+let BEFORE = px(55, 52)
+vreg_wr(0x110, 0x00000610)
+vreg_wr(0x080, 0x00000000)
+idle3
+assert stat(0x154) == 120 "fbiZfuncFail counts every pixel the depth test rejected"
+assert stat(0x15C) == 256 "...and fbiPixelsOut did not move"
+assert px(55, 52) == $BEFORE "a depth-rejected triangle leaves the framebuffer byte-identical"
+vreg_wr(0x110, 0x00000600)
+
+# --- A textured triangle, format 10 (5-6-5). --------------------------------
+# A 1x1 texture at LOD 8 on TMU0, TC_REPLACE; TMU1 passes through.  The
+# texel is pure green $07E0, which survives expand->repack exactly.
+vreg_wr(0x304 | 0x800, 0x00000820)
+vreg_wr(0x300 | 0x800, 0x00041A00)
+vreg_wr(0x30C | 0x800, 0x00000000)
+vreg_wr(0x300 | 0x1000, 0x00000000)
+machine.memory.poke.l($BAR + 0x900000, swap32(0x000007E0))
+vreg_wr(0x02C | 0x800, 0x00020000)
+vreg_wr(0x030 | 0x800, 0x00020000)
+vreg_wr(0x054 | 0x800, 0x00000000)
+vreg_wr(0x058 | 0x800, 0x00000000)
+vreg_wr(0x074 | 0x800, 0x00000000)
+vreg_wr(0x078 | 0x800, 0x00000000)
+tri1_vertices
+vreg_wr(0x104, 0x08000005)
+vreg_wr(0x120, 0x00000001)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert stat(0x15C) == 136 "textured: the same 136 pixels"
+assert px(55, 52) == 0x07E0 "textured 5-6-5: the texel colour lands exactly"
+assert px(50, 50) == 0x07E0 "textured 5-6-5: vertex pixel too"
+
+# --- The same triangle, format 11 (1-5-5-5). --------------------------------
+# Texel $83E0: alpha 1, green 31 -> expands to the same full green.
+# Repaint the area black first so the assertion sees this draw.
+vreg_wr(0x300 | 0x800, 0x00041B00)
+machine.memory.poke.l($BAR + 0x900000, swap32(0x000083E0))
+vreg_wr(0x148, 0x00000000)
+vreg_wr(0x118, (50 << 16) | 67)
+vreg_wr(0x11C, (50 << 16) | 67)
+vreg_wr(0x110, 0x00000601)
+vreg_wr(0x124, 0x00000000)
+vreg_wr(0x110, 0x00000600)
+assert px(55, 52) == 0x0000 "stage cleared before the 1-5-5-5 draw"
+tri1_vertices
+vreg_wr(0x120, 0x00000001)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert px(55, 52) == 0x07E0 "textured 1-5-5-5: the 5-bit green expands to the same full green"
+
+# --- Two TMUs, single-pass multitexture. ------------------------------------
+# TMU1 supplies red through TC_REPLACE; TMU0 MODULATES it with a 50%
+# grey texel (mselect=c_local, reverse blend) — the result (dark red,
+# $8000) matches NEITHER texture alone, which is what proves both TMUs
+# contributed in one pass.
+vreg_wr(0x304 | 0x1000, 0x00000820)
+vreg_wr(0x300 | 0x1000, 0x00041A00)
+vreg_wr(0x30C | 0x1000, 0x00000000)
+machine.memory.poke.l($BAR + 0xB00000, swap32(0x0000F800))
+vreg_wr(0x300 | 0x800, 0x00024A00)
+machine.memory.poke.l($BAR + 0x900000, swap32(0x00008410))
+vreg_wr(0x02C | 0x1000, 0x00020000)
+vreg_wr(0x030 | 0x1000, 0x00020000)
+vreg_wr(0x054 | 0x1000, 0x00000000)
+vreg_wr(0x058 | 0x1000, 0x00000000)
+vreg_wr(0x074 | 0x1000, 0x00000000)
+vreg_wr(0x078 | 0x1000, 0x00000000)
+tri1_vertices
+vreg_wr(0x120, 0x00000001)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert px(55, 52) == 0x8000 "multitexture: red modulated by 50% grey is dark red — neither texture alone"
+
+# --- The LFB round trip: four swizzle combinations, identity each way. ------
+# Write with each (swizzle, wordswap) combination and read back with the
+# MATCHING combination: the round trip is the identity.  A MISMATCHED
+# read is NOT the identity.  This is the assertion that catches a
+# reversed transform order, and it needs no golden (proposal §4.5).
+vreg_wr(0x104, 0x00000000)
+let V = 0x12345678
+let A200 = $LFB + (200 << 11) + (100 << 1)
+vreg_wr(0x114, 0x00000000)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) == $V "LFB round trip: plain/plain is the identity"
+vreg_wr(0x114, 0x00008800)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) == $V "LFB round trip: wordswap/wordswap is the identity"
+vreg_wr(0x114, 0x00011000)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) == $V "LFB round trip: swizzle/swizzle is the identity"
+vreg_wr(0x114, 0x00019800)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) == $V "LFB round trip: both/both is the identity"
+# Mismatches must NOT round-trip — a model that ignored the bits would
+# pass all four identities above.
+vreg_wr(0x114, 0x00001000)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) != $V "LFB: swizzled write read raw is NOT the identity"
+vreg_wr(0x114, 0x00000800)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) != $V "LFB: word-swapped write read raw is NOT the identity"
+vreg_wr(0x114, 0x00000000)
+
+# --- The spec's own texture-layout arithmetic (V2 p.118 examples). ----------
+# Example 1: 16-bit, 1:1, no split — LOD 1 starts one LOD-0 above the
+# base: 2^14 units of 8 bytes.
+vreg_wr(0x304 | 0x800, 0x00000000)
+vreg_wr(0x300 | 0x800, 0x00000A00)
+assert machine.pci.slot[1].card.regs.tex_offset(0, 1) == 0x20000 "example 1: size of level 0 = 2^14 8-byte units"
+assert machine.pci.slot[1].card.regs.tex_offset(0, 3) == 0x2A000 "example 1 extended: levels 0-2 sum 2^14+2^12+2^10"
+# Example 2: 8-bit, 8:1 aspect — levels 0-3 sum (2^11+2^9+2^7+2^5)/2.
+vreg_wr(0x300 | 0x800, 0x00000200)
+vreg_wr(0x304 | 0x800, 0x00600000)
+assert machine.pci.slot[1].card.regs.tex_offset(0, 4) == 0x2A80 "example 2: 8-bit 8:1 levels 0-3 = $550 units"
+# Example 3: as example 2 but split, even levels only — levels 0,2 sum
+# (2^11+2^7)/2.
+vreg_wr(0x304 | 0x800, 0x00680000)
+assert machine.pci.slot[1].card.regs.tex_offset(0, 4) == 0x2200 "example 3: split even levels 0,2 = $440 units"
+
+# --- Q9: sub-pixel correction mutates the START LATCHES. --------------------
+# With correction enabled the hardware corrects the start registers as
+# they leave the FIFO, so a second triangle issued WITHOUT resending
+# them is corrected twice (V2 p.40, pp.128-129 §12.4).  Two identical
+# consecutive triangleCMDs must therefore NOT render identically.
+vreg_wr(0x104, 0x14000000)
+vreg_wr(0x008, 0x00000328)
+vreg_wr(0x00C, 0x00000328)
+vreg_wr(0x010, 0x00000328)
+vreg_wr(0x014, 0x00000430)
+vreg_wr(0x018, 0x00000430)
+vreg_wr(0x01C, 0x00000328)
+vreg_wr(0x020, 0x000F0000)
+vreg_wr(0x024, 0x00000000)
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x040, 0xFFFF8000)
+vreg_wr(0x044, 0x00000000)
+vreg_wr(0x048, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00000000)
+vreg_wr(0x068, 0x00000000)
+vreg_wr(0x080, 0x80000000)
+idle3
+let FIRST = px(52, 51)
+vreg_wr(0x080, 0x80000000)
+idle3
+let SECOND = px(52, 51)
+assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift (Q9)"
+vreg_wr(0x104, 0x00000000)
+
+# --- Invariant 1 of the raster seam: drawing consumes NO guest time. --------
+# Timing is analytic (voodoo2_raster.h): a triangle completes at issue
+# and the scheduler does not advance, so the guest's instruction stream
+# is backend-independent by construction.
+let C0 = scheduler.cycles
+vreg_wr(0x080, 0x80000000)
+idle3
+assert scheduler.cycles == $C0 "a triangle draw must not consume scheduled time"
+
+echo "draw: 3c drawing section complete"

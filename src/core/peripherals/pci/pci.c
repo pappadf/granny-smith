@@ -88,9 +88,16 @@ extern const pci_card_kind_t cirrus_54m30_kind; // peripherals/pci/cards/cirrus5
 // Grand Central lines, different drive bays (cards/sym53c825.c).
 extern const pci_card_kind_t sym53c825_ch0_kind;
 extern const pci_card_kind_t sym53c825_ch1_kind;
+extern const pci_card_kind_t voodoo2_kind; // peripherals/pci/cards/voodoo2.c
 
 static const pci_card_kind_t *const g_card_registry[] = {
-    &tnt_control_kind, &mach64_gx_kind, &cirrus_54m30_kind, &sym53c825_ch0_kind, &sym53c825_ch1_kind, NULL,
+    &tnt_control_kind,
+    &mach64_gx_kind,
+    &cirrus_54m30_kind,
+    &sym53c825_ch0_kind,
+    &sym53c825_ch1_kind,
+    &voodoo2_kind,
+    NULL,
 };
 
 const pci_card_kind_t *const *pci_card_registry(void) {
@@ -202,6 +209,22 @@ void pci_staged_option_set(int slot, const char *key, const char *value) {
     }
     snprintf(free_slot->key, sizeof free_slot->key, "%s", key);
     snprintf(free_slot->value, sizeof free_slot->value, "%s", value);
+}
+
+void pci_staged_option_set_spec(int slot, const char *spec) {
+    if (!spec || !*spec)
+        return;
+    char buf[PCI_OPT_VALUE_MAX * PCI_STAGED_OPTS * 2];
+    snprintf(buf, sizeof buf, "%s", spec);
+    for (char *tok = strtok(buf, ","); tok; tok = strtok(NULL, ",")) {
+        char *eq = strchr(tok, '=');
+        if (!eq || eq == tok) {
+            LOG(0, "pci option '%s' is not key=value — ignored", tok);
+            continue;
+        }
+        *eq = '\0';
+        pci_staged_option_set(slot, tok, eq + 1);
+    }
 }
 
 const char *pci_staged_option_get(int slot, const char *key) {

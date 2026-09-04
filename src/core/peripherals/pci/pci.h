@@ -181,6 +181,12 @@ const char *pci_staged_card_get(int slot);
 // One keyed option per slot, routed through the resolved kind's
 // stage_option() hook — the generic layer never learns a card's identity.
 void pci_staged_option_set(int slot, const char *key, const char *value);
+// Split a "key=value[,key=value]" option spec onto `slot` — the parsing
+// half of machine.boot's pci_option=, exported so checkpoint restore can
+// re-seed the SAVED option set (a 12 MB-board checkpoint must not
+// restore against the 8 MB default).  Malformed pairs are dropped with a
+// log, never fatal.
+void pci_staged_option_set_spec(int slot, const char *spec);
 const char *pci_staged_option_get(int slot, const char *key);
 void pci_staged_clear_all(void);
 

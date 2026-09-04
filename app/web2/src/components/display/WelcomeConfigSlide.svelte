@@ -324,12 +324,42 @@
   let pciSelected = $derived(!!selectedPciCard);
   // The options the selected PCI card declares. Only a socket card can take
   // them: a soldered one is not staged, so there is nothing to attach an
-  // option to.
-  let pciCardOptions_ = $derived(selectedPciCard?.options ?? []);
+  // option to.  A display pick and an expansion pick are mutually
+  // exclusive holders of the wildcard socket, so exactly one of them
+  // supplies the option list (activePciCard, defined with the expansion
+  // picker below).
   // Every PCI SOCKET the machine declares, for the Expansion Slots list.
   // Sockets only — a fixed slot is soldered-down hardware, not a slot the
   // user populates.
   let pciSockets = $derived((currentProfile?.pci_slots ?? []).filter((sl) => !sl.fixed));
+  // Every distinct NON-display card the sockets offer (the Voodoo2's
+  // class is "3d": a pass-through card that must never be the machine's
+  // display, so the Display picker rightly never lists it).  Deduplicated
+  // across sockets exactly like pciDisplayCards.
+  let pciExpansionCards = $derived.by(() => {
+    const out: NonNullable<MachineProfile['pci_slots']>[number]['cards'] = [];
+    for (const slot of currentProfile?.pci_slots ?? []) {
+      if (slot.fixed) continue;
+      for (const c of slot.cards ?? []) {
+        if (c.class === 'display' || out.some((seen) => seen.id === c.id)) continue;
+        if (c.requires_prom && (promsByCardId[c.id]?.length ?? 0) === 0) continue;
+        out.push(c);
+      }
+    }
+    return out;
+  });
+  // The one expansion pick this dialog can express: machine.boot's
+  // pci_card= reaches the FIRST socket, the same wildcard field a
+  // display-class PCI pick travels in — so the two picks are mutually
+  // exclusive, and the Display picker's choice wins the socket.
+  let expansionCardId = $state('');
+  let selectedExpansionCard = $derived(pciExpansionCards.find((c) => c.id === expansionCardId));
+  let expansionSelected = $derived(!pciSelected && !!selectedExpansionCard);
+  // Whichever card actually occupies the wildcard socket.
+  let activePciCard = $derived(
+    selectedPciCard ?? (expansionSelected ? selectedExpansionCard : undefined),
+  );
+  let pciCardOptions_ = $derived(activePciCard?.options ?? []);
   // machine.boot takes one wildcard card for the FIRST socket, so that is
   // the only one this dialog can fill; the rest are shown as empty. A
   // per-socket picker needs a per-slot boot field that does not exist yet.
@@ -349,7 +379,7 @@
   // the vROM, an explicit pick is preferred over letting the offer registry
   // content-match, so the user sees the file they uploaded actually used.
   let resolvedProm = $derived(
-    selectedPciCard?.requires_prom ? (promsByCardId[cardId]?.[0] ?? null) : null,
+    activePciCard?.requires_prom ? (promsByCardId[activePciCard.id]?.[0] ?? null) : null,
   );
   // Only surface the picker when there's a real choice; a fixed/builtin
   // single card (e.g. SE/30 onboard video) needs no dropdown.  A machine
@@ -657,6 +687,13 @@
     }
   });
 
+  // An expansion pick survives only while its card is still offered (a
+  // model change rebuilds the socket list).
+  $effect(() => {
+    if (expansionCardId && !pciExpansionCards.find((c) => c.id === expansionCardId))
+      expansionCardId = '';
+  });
+
   // The option keys belong to the selected card, so a card change starts
   // them over rather than carrying a stale key into a different card.
   $effect(() => {
@@ -827,9 +864,12 @@
       // seats it into the first free socket, and the machine's BUILTIN
       // fallback video (the 9500's Control/Chaos stand-in) retires because a
       // socket supplied a display card.
-      pciCard: pciSelected ? cardId : undefined,
+      // ...or a non-display socket card (the Voodoo2) from the Expansion
+      // Slots picker — the SAME wildcard field, so the two picks are
+      // mutually exclusive and the display pick wins the socket.
+      pciCard: pciSelected ? cardId : expansionSelected ? expansionCardId : undefined,
       prom: pciSelected ? promPath : undefined,
-      pciOption: pciSelected && pciOptionSpec ? pciOptionSpec : undefined,
+      pciOption: (pciSelected || expansionSelected) && pciOptionSpec ? pciOptionSpec : undefined,
       // Which port the monitor is plugged into.  Choosing a NuBus card on a
       // machine that also has built-in video leaves the built-in port
       // unconnected, so the ROM turns built-in video off and the card is the
@@ -937,11 +977,29 @@
             {#each pciSockets as sl (sl.slot)}
               <div class="slot-row">
                 <span class="slot-name">{sl.label ?? `Slot ${sl.slot}`}</span>
-                <span class="slot-card">
-                  {sl.label === firstSocketLabel && pciSelected
-                    ? (selectedPciCard?.display_name ?? cardId)
-                    : '(empty)'}
-                </span>
+                {#if sl.label === firstSocketLabel && !pciSelected && pciExpansionCards.length > 0}
+                  <!-- The one per-socket pick the boot document can carry:
+                       the wildcard pci_card= reaches the first socket.  Only
+                       non-display cards appear here; a display-class card is
+                       picked in the Display row and would occupy this same
+                       socket, which is why the two are mutually exclusive. -->
+                  <select
+                    id="cfg-expansion-card"
+                    value={expansionCardId}
+                    onchange={(e) => (expansionCardId = (e.target as HTMLSelectElement).value)}
+                  >
+                    <option value="">(empty)</option>
+                    {#each pciExpansionCards as c (c.id)}
+                      <option value={c.id}>{c.display_name ?? c.id}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <span class="slot-card">
+                    {sl.label === firstSocketLabel && pciSelected
+                      ? (selectedPciCard?.display_name ?? cardId)
+                      : '(empty)'}
+                  </span>
+                {/if}
               </div>
             {/each}
           </div>

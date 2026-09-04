@@ -1,0 +1,230 @@
+# The Glide bring-up sequence, replayed register by register.
+#
+# This is 3dfx's own initialisation order — sst1InitRegisters() and
+# sst1InitDacDetect() from the vendor's released Glide 2.x source
+# (glide2x/cvg/init/), expressed as shell-v2 accesses through the
+# aperture, with each step's POSTCONDITION asserted in place so the
+# first step that fails is the finding (proposal §6.2, §9.2).  It
+# exercises the whole init path without needing a guest driver or a
+# Mac OS image.
+#
+# Included by test.script AFTER it has enabled Memory Space and bound
+# $BAR to the aperture base.  Uses swap32/swap16/vreg_wr/vreg_rd/
+# cfg_wr/cfg_rd/idle3 defined there.
+#
+# Register offsets are the V2 spec's (pp.22-26), cross-validated by
+# scripts/voodoo2/voodoo2_regs.py --check.
+
+# --- Step 0: the initEnable gate, negatively first. -------------------------
+# Writes to fbiInit* are silently dropped while initEnable[0] is clear
+# (V2 §5.52) — the bit that bites: a model that always accepted these
+# would LOOK correct all the way to a wrong pass-through polarity.
+let INIT1_RESET = vreg_rd(0x214)
+assert $INIT1_RESET == 0x00201102 "fbiInit1 must hold its strapped power-on value"
+vreg_wr(0x214, 0xDEADBEEF)
+assert vreg_rd(0x214) == $INIT1_RESET "a gated fbiInit write must be silently dropped"
+
+# --- Step 1: enable fbiInit writes; FIFO writes stay off until reset. -------
+cfg_wr(0x40, 0x00000001)
+assert (cfg_rd(0x40) & 0x3) == 0x1 "initEnable[0] set, [1] still clear"
+# The real revision lives in initEnable[15:12] (the PCI header's $02 is
+# pinned for Voodoo1 compatibility).
+assert ((cfg_rd(0x40) >> 12) & 0xF) == 4 "initEnable[15:12] carries the real revision — Glide's board scan drops a CVG below 4"
+
+# --- Step 2: reset the snoop registers; stall on status. --------------------
+# busSnoop0/1 are WRITE-ONLY and read as zero (V2 §6.17) — there is no
+# VGA card to snoop in a Mac, but Glide writes them and they must not
+# fault.
+cfg_wr(0x44, 0xDEADDEAD)
+cfg_wr(0x48, 0xDEADDEAD)
+assert cfg_rd(0x44) == 0 "busSnoop0 is write-only and reads zero"
+assert cfg_rd(0x48) == 0 "busSnoop1 is write-only and reads zero"
+# Three status reads — the source stalls here because FBI could be hung.
+vreg_rd(0x000)
+vreg_rd(0x000)
+vreg_rd(0x000)
+
+# --- Step 3: preliminary fbiInit3, texture mapping disabled. ----------------
+# "so if TMUs are hung, it will not affect FBI" [sst1init.c]
+vreg_wr(0x21C, 0x001E4040)
+assert vreg_rd(0x21C) == 0x001E4040 "fbiInit3 accepts writes once the gate is open"
+
+# --- Step 4: video reset BEFORE graphics reset. -----------------------------
+# "Must reset video unit before graphics unit, otherwise video unit
+# could potentially hang waiting for the graphics unit" [sst1init.c]
+vreg_wr(0x214, vreg_rd(0x214) | 0x100)
+vreg_rd(0x000)
+vreg_rd(0x000)
+vreg_rd(0x000)
+
+# --- Step 5: graphics + PCI FIFO reset, then the ordered un-reset. ----------
+vreg_wr(0x210, vreg_rd(0x210) | 0x6)
+idle3
+# Un-reset the PCI FIFO first, then graphics — "THIS MUST BE PRESENT
+# OTHERWISE THE PCI FIFO WILL NEVER DRAIN!" [sst1init.c]
+vreg_wr(0x210, vreg_rd(0x210) & 0xFFFFFFFB)
+idle3
+vreg_wr(0x210, vreg_rd(0x210) & 0xFFFFFFFD)
+idle3
+
+# --- Step 6: all eight fbiInit defaults. ------------------------------------
+vreg_wr(0x210, 0x00000410)
+vreg_wr(0x214, 0x00201102)
+vreg_wr(0x218, 0x80000040)
+vreg_wr(0x21C, 0x001E4040)
+vreg_wr(0x200, 0x00000001)
+vreg_wr(0x244, 0x00000000)
+vreg_wr(0x248, 0x00000000)
+vreg_wr(0x24C, vreg_rd(0x24C) & 0xFF)
+idle3
+
+# --- Step 7: open the PCI FIFO. ---------------------------------------------
+cfg_wr(0x40, 0x00000003)
+assert (cfg_rd(0x40) & 0x3) == 0x3 "initEnable: fbiInit writes and FIFO writes enabled"
+
+# --- Step 8: DAC detection — the ICS5342 answers, exactly. ------------------
+# The read detour (V2 pp.75-76): write dacData with bit 11 set and the
+# address, then set initEnable[2] to remap fbiInit2 -> dacRead and read
+# the byte from fbiInit2[7:0].  Detection checks the power-on M values
+# of PLL registers GCLK1/VCLK1/VCLK7 [sst1init dac.c].
+vreg_wr(0x214, vreg_rd(0x214) | 0x100)
+vreg_wr(0x218, vreg_rd(0x218) & 0xFFBFFFFF)
+idle3
+cfg_wr(0x40, 0x00000005)
+def dac_wr(addr, data) {
+    vreg_wr(0x22C, (($addr & 7) << 8) | (($addr & 0x18) << 9) | ($data & 0xFF))
+}
+def dac_rd(addr) {
+    vreg_wr(0x22C, (($addr & 7) << 8) | (($addr & 0x18) << 9) | 0x800)
+    return vreg_rd(0x218) & 0xFF
+}
+dac_wr(7, 0xB)
+let GCLK1_M = dac_rd(5)
+dac_rd(5)
+dac_wr(7, 0x1)
+let VCLK1_M = dac_rd(5)
+dac_rd(5)
+dac_wr(7, 0x7)
+let VCLK7_M = dac_rd(5)
+dac_rd(5)
+assert $GCLK1_M == 0x79 "ICS5342: GCLK1 power-on M value"
+assert $VCLK1_M == 0x55 "ICS5342: VCLK1 power-on M value"
+assert $VCLK7_M == 0x71 "ICS5342: VCLK7 power-on M value"
+# ...and while the remap is on, fbiInit2's upper bits are undefined and
+# the register itself is unreadable — restore and check it comes back.
+cfg_wr(0x40, 0x00000003)
+assert (vreg_rd(0x218) & 0x80000000) != 0 "fbiInit2 reads its own value once the remap is off"
+
+# --- Step 9: the graphics PLL — program GCLK0 and switch to it. -------------
+# Fout = 14.318 MHz x (M+2) / (2^P x (N+2)); M=$49, P=1, N=4 -> ~89.5 MHz
+# core, the Voodoo2's clock class.  [proposal §4.4; sequence per
+# sst1InitSetGrxClkICS]
+cfg_wr(0x40, 0x00000005)
+dac_wr(4, 0xA)
+dac_wr(5, 0x49)
+dac_wr(5, 0x24)
+dac_wr(7, 0xE)
+let PLLCTRL = dac_rd(5)
+dac_wr(4, 0xE)
+dac_wr(5, $PLLCTRL & 0xEF)
+cfg_wr(0x40, 0x00000003)
+let GKHZ = machine.pci.slot[1].card.dac.graphics_khz
+assert $GKHZ > 85000 && $GKHZ < 95000 "the graphics PLL lands in the Voodoo2's clock class"
+
+# --- Step 10: LFB reads on, alternate mapping on, register swizzle on. ------
+vreg_wr(0x214, vreg_rd(0x214) | 0x8)
+vreg_wr(0x21C, vreg_rd(0x21C) | 0x1)
+vreg_wr(0x210, vreg_rd(0x210) | 0x8)
+
+# The ALTERNATE register mapping (V2 pp.27-29): with fbiInit3[0]=1 and
+# address bit 21, each parameter's start/dX/dY are adjacent.  startG
+# lives at $02C in the alternate map and $024 in the standard one; the
+# object model reads the latch back, which is what makes a write-only
+# register's routing observable.
+machine.memory.poke.l($BAR + 0x200000 + 0x02C, swap32(0x00123456))
+assert machine.pci.slot[1].card.regs.read(0x024) == 0x00123456 "an alternate-map write must land on the standard register"
+
+# The REGISTER swizzle path: fbiInit0[3] is only an enable — address bit
+# 20 selects per access.  A big-endian guest writing through the bit-20
+# alias gets its native value into the register; through the plain
+# address it must byte-swap itself.  color0 ($144) is R/W, so the round
+# trip closes both ways.
+machine.memory.poke.l($BAR + 0x100000 + 0x144, 0x11223344)
+assert machine.pci.slot[1].card.regs.read(0x144) == 0x11223344 "a bit-20 write carries the guest's native value"
+assert vreg_rd(0x144) == 0x11223344 "...and the unswizzled path sees the same register"
+assert machine.memory.peek.l($BAR + 0x100000 + 0x144) == 0x11223344 "a bit-20 read swizzles back to the native value"
+assert machine.memory.peek.l($BAR + 0x144) == swap32(0x11223344) "...while the plain address returns the little-endian lanes"
+
+# --- Step 11: video timing, 640x480@60, then unblank. -----------------------
+# Register packing per V2 §13: hSync = hSyncOff<<16 | hSyncOn, vSync
+# likewise, videoDimensions = y<<16 | (x-1); values from Glide's own
+# SST_VREZ_640X480_60 table.
+vreg_wr(0x220, (704 << 16) | 96)
+vreg_wr(0x224, (523 << 16) | 2)
+vreg_wr(0x208, (25 << 16) | 38)
+vreg_wr(0x20C, (480 << 16) | 639)
+# memOffset 150 pages, tilesInX 20 = {0, 1010, 0} across the three fields
+vreg_wr(0x218, (vreg_rd(0x218) & 0xFFF007FF) | (150 << 11) | 0x400000)
+vreg_wr(0x214, (vreg_rd(0x214) & 0xFEFFFF0F) | 0xA0)
+# Video out of reset, software blanking OFF, output enables driven —
+# nothing reaches a monitor until all of these move (V2 §5.53).
+vreg_wr(0x214, (vreg_rd(0x214) & 0xFFFFEEFF) | 0x1E000)
+
+# The beam advances: vRetrace and hvRetrace must move or a driver that
+# spins on beam position hangs (the CRTC_VLINE lesson from the Mach64).
+let L0 = (vreg_rd(0x240) >> 16) & 0x1FFF
+scheduler.run 200000
+let L1 = (vreg_rd(0x240) >> 16) & 0x1FFF
+assert $L0 != $L1 "the beam counters must advance"
+
+# --- Step 12: DRAM warm-up shape (fastfill through the FIFO'd path). --------
+# The draw itself lands with the rasteriser milestone; what this step
+# pins TODAY is that the whole command surface accepts writes and the
+# card reports idle after each — the §12.3 idiom, nopCMD then status.
+vreg_wr(0x104, 0x00000000)
+vreg_wr(0x108, 0x00000000)
+vreg_wr(0x110, 0x00000300)
+vreg_wr(0x118, 100)
+vreg_wr(0x11C, 100)
+vreg_wr(0x124, 0x00000000)
+vreg_wr(0x120, 0x00000001)
+idle3
+
+# --- Step 13: FBI memory sizing — the 4 MB branch, sentinels that must -------
+# NOT alias.  Glide sizes memory by writing sentinel pixels and watching
+# which addresses alias (fbiMemSize: the Z-buffer probe at 800x600 in
+# the upper 2 MB), so unpopulated memory must WRAP — and populated
+# memory must NOT.  Every retail Voodoo2 has the full 4 MB framebuffer,
+# so the 4 MB branch must succeed on both SKUs.
+# 800x600 banked layout: memOffset 247 pages, tilesInX 25 = {0, 1100, 1}.
+vreg_wr(0x218, (vreg_rd(0x218) & 0xFFF007FF) | (247 << 11) | 0x400000)
+vreg_wr(0x214, (vreg_rd(0x214) & 0xFEFFFF0F) | 0xC0)
+vreg_wr(0x248, vreg_rd(0x248) | 0x40000000)
+# lfbMode: format 15 (depth+depth -> the aux buffer), read the depth-aux
+# buffer back ($8F = fmt F | read-buffer 2).
+vreg_wr(0x114, 0x0000008F)
+idle3
+def lfb_put(x, y, v16) {
+    machine.memory.poke.w($BAR + 0x400000 + ($y << 11) + ($x << 1), swap16($v16))
+}
+def lfb_get(x, y) {
+    return swap16(machine.memory.peek.w($BAR + 0x400000 + ($y << 11) + ($x << 1)))
+}
+lfb_put(128, 100, 0xDEAD)
+lfb_put(0, 0, 0x0)
+lfb_put(798, 599, 0xFFFF)
+lfb_put(200, 200, 0x55AA)
+lfb_put(20, 20, 0xFFFF)
+lfb_put(400, 400, 0x0)
+idle3
+assert lfb_get(128, 100) == 0xDEAD "4 MB probe: the first sentinel survives"
+assert lfb_get(200, 200) == 0x55AA "4 MB probe: the second sentinel survives"
+assert lfb_get(0, 0) == 0x0 "4 MB probe: the scribble pixels hold their own values"
+assert lfb_get(798, 599) == 0xFFFF "4 MB probe: the far corner is distinct storage"
+
+# --- Step 14: the idle contract, stated as the driver states it. ------------
+# nopCMD, then status idle three consecutive times — with our bounded
+# ceiling, so a regression is a failure and never a hung suite.
+vreg_wr(0x120, 0x00000000)
+idle3
+echo "glide-init: bring-up replay complete"

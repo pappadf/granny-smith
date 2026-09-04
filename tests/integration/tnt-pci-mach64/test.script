@@ -46,7 +46,7 @@ assert machine.prom.offer("${$WORK_DIR}/prom-store/437584e0") "and the stored co
 assert machine.prom.identify("${$WORK_DIR}/prom-store/437584e0").card_id == "mach64_gx" "identity survives the copy and the rename"
 
 # --- The card kind reaches the configuration layer from one declaration. ----
-assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1]" "the card must be registered"
+assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2]" "the card must be registered"
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
@@ -319,6 +319,58 @@ assert (machine.memory.peek.l(0xF300002C) & 0x00008000) != 0 "a vertical blank m
 machine.memory.poke.l(0x817FFC18, 0x06000000)
 assert (machine.memory.peek.l(0xF300002C) & 0x00008000) == 0 "acknowledging at the card must clear Grand Central 23"
 assert (machine.memory.peek.l(0x817FFC18) & 0x02000000) != 0 "and the acknowledge must not clear CRTC_VBLANK_INT_EN"
+
+# --- 5-6-5 is a real mode (PIXEL_16BPP_565). --------------------------------
+# CRTC_PIX_WIDTH = 4 selects 5,6,5 — a depth this chip supports, Mac OS
+# never selects, and the model used to refuse ("keeping the previous
+# mode").  The Voodoo2's framebuffer is natively 5-6-5, so display.h now
+# has the format and the refusal became a mode.  Program a small raster
+# through the register alias, fill it with a synthetic pattern, and pin
+# the whole path against fixtures make-fixtures.py expands INDEPENDENTLY
+# from the documented rules: 5 bits replicate their top 3, the 6-bit
+# green replicates its top 2.
+#
+# The positive control is the point: the SAME framebuffer bytes are also
+# expanded under the 5-5-5 rule, and each mode must match its own fixture
+# and REJECT the other's — a format expander that silently falls through
+# to the neighbouring case is the predictable bug, and it looks exactly
+# like success until the two interpretations are required to differ.
+def swap32(v) {
+    return (($v & 0xFF) << 24) | (($v & 0xFF00) << 8) | (($v >> 8) & 0xFF00) | (($v >> 24) & 0xFF)
+}
+# 64x32, pitch 8 characters (64 px), framebuffer at VRAM offset 0.  The
+# alias is little-endian, so every literal goes through swap32.
+machine.memory.poke.l($AL + 0x00, swap32(0x00070009))
+machine.memory.poke.l($AL + 0x08, swap32(0x001F002C))
+machine.memory.poke.l($AL + 0x14, swap32(0x02000000))
+let GEN = machine.pci.slot[1].card.regs.crtc_gen_cntl
+machine.memory.poke.l($AL + 0x1C, swap32(($GEN & 0xFFFFF8FF) | 0x400))
+assert machine.screen.width == 64 "the reprogrammed CRTC must shape a 64-pixel raster"
+assert machine.screen.height == 32 "...32 lines high"
+assert machine.screen.depth == 16 "5,6,5 reports 16 bpp"
+assert machine.screen.source.stride == 128 "pitch 8 characters at 2 bytes per pixel"
+# The raster: pixel(x,y) = (x&31)<<11 | ((x+y)&63)<<5 | (y&31), written
+# big-endian two pixels per poke — the byte order PIXEL_16BPP_565 declares.
+for y in 0..32 {
+    for xw in 0..32 {
+        let X0 = 2 * $xw
+        let P0 = ((($X0) & 31) << 11) | ((($X0 + $y) & 63) << 5) | ($y & 31)
+        let P1 = ((($X0 + 1) & 31) << 11) | ((($X0 + 1 + $y) & 63) << 5) | ($y & 31)
+        machine.memory.poke.l(0x81000000 + ($y * 128) + ($xw * 4), ($P0 << 16) | $P1)
+    }
+}
+# The checksum is stable — same bytes, same answer — and the PNG encoder
+# expands to the RGB the rule says, not merely to something self-consistent.
+let C565 = machine.screen.checksum(0, 0, 32, 64)
+assert $C565 != 0 "the synthetic raster must not hash to nothing"
+assert machine.screen.checksum(0, 0, 32, 64) == $C565 "the 5-6-5 checksum must be stable"
+machine.screen.match "${$WORK_DIR}/raster-565.png"
+assert !machine.screen.matches("${$WORK_DIR}/raster-555.png") "the 5-5-5 expansion of the same bytes must NOT match"
+# Flip only the pixel-width field to 5-5-5: identical bytes, other rule.
+machine.memory.poke.l($AL + 0x1C, swap32(($GEN & 0xFFFFF8FF) | 0x300))
+assert machine.screen.depth == 16 "5,5,5 is also 16 bpp"
+machine.screen.match "${$WORK_DIR}/raster-555.png"
+assert !machine.screen.matches("${$WORK_DIR}/raster-565.png") "...and must reject the 5-6-5 expansion"
 
 # --- The authentic 9500: no onboard video. ----------------------------------
 # The real machine has none — it "requires a display card in a PCI slot" —

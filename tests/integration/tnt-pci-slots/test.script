@@ -45,7 +45,7 @@ assert machine.pci.slot[4].device == 11 "Control IDSEL"
 assert machine.pci.slot[4].card.name == "Control" "Control not seated from the slot table"
 # The registry is an explicit list; adding a card driver is one extern plus
 # one entry, and every compatible socket is offered it with no machine edit.
-assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1]" "card registry"
+assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2]" "card registry"
 
 # --- Staged picks: the surface exists and starts clear. ----------------------
 assert machine.pci.slot[1].card_id == "" "an empty socket must start with no staged pick"
@@ -199,5 +199,16 @@ assert machine.id == "pm9500" "machine survives the rejected boot"
 assert machine.config.slot_cards == "[{\"bus\":\"pci\",\"slot\":7,\"card_id\":\"tnt_control\",\"explicit\":false}]" "resolved slot picks recorded"
 machine.restart
 assert machine.pci.slot[7].card.name == "Control" "restart must re-seat the recorded slot card"
+
+# --- A "3d" card does NOT retire the 9500's builtin-fallback video. ----------
+# The Voodoo2 is a pass-through 3D accelerator: its PCI class code says
+# "display controller" but it must never be the machine's only video, so
+# its card_class is "3d" — and the BUILTIN_FALLBACK test is by class.
+# With one seated, the Control stand-in must remain, or a 9500 with only
+# a Voodoo2 would boot with no screen at all (proposal-pci-3dfx-voodoo2
+# §3.2, §8 Q10).
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
+assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the ROM-less card seats with no PROM staged"
+assert machine.pci.slot[7].card.name == "Control" "a 3d-class card must NOT retire the display fallback"
 
 quit
