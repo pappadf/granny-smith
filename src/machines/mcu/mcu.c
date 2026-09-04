@@ -40,7 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("mcu");
+LOG_USE_CATEGORY_NAME("board");
 
 static inline const mcu_board_t *mcu_board(config_t *cfg) {
     return (const mcu_board_t *)cfg->machine->board;
@@ -154,12 +154,8 @@ static void mcu_map_ram(config_t *cfg) {
             if (o != b && st->bank_size[o] && st->bank_start[o] > start && st->bank_start[o] < end)
                 end = st->bank_start[o];
 
-        uint8_t *bank = ram_base + st->bank_image_off[b];
-        uint32_t pages = (end - start) >> PAGE_SHIFT;
-        uint32_t size_pages = size >> PAGE_SHIFT;
-        uint32_t first = start >> PAGE_SHIFT;
-        for (uint32_t p = 0; p < pages && (int)(first + p) < g_page_count; p++)
-            mac030_fill_page(first + p, bank + ((p % size_pages) << PAGE_SHIFT), true);
+        mac030_map_mirrored(start >> PAGE_SHIFT, (end - start) >> PAGE_SHIFT, ram_base + st->bank_image_off[b],
+                            size >> PAGE_SHIFT, mac030_fill_page, true);
     }
 }
 
@@ -536,18 +532,26 @@ static uint8_t mcu_overlay_read8(void *ctx, uint32_t offset) {
     return mcu_rom_ptr(cfg, offset)[0];
 }
 
+// Composed from byte reads so every byte wraps within the mirror
+// independently, the shape iifx_rom_read_uint16/32 already use.  Indexing
+// p[1..3] off a single wrapped base instead would read past the end of the
+// RAM+ROM allocation when the base landed on the last bytes of a mirror
+// period -- the ROM sits at the top of that one calloc.
+//
+// That was not reachable: the memory dispatcher only calls a device's 16/32-bit
+// handler when (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2/-4 and splits anything
+// closer to a page end, and rom_size is a multiple of the 4 KiB page size, so
+// "within 3 bytes of a mirror top" is always also "within 3 bytes of a page
+// end".  Confirmed under ASAN: a long read at the top of a q700 mirror reaches
+// this handler only after being decomposed.  But that safety lives in another
+// file and depends on an unstated size relationship, so it is made local here.
+// (mcu_overlay_drop is idempotent, so the repeated call costs nothing.)
 static uint16_t mcu_overlay_read16(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    mcu_overlay_drop(cfg);
-    uint8_t *p = mcu_rom_ptr(cfg, offset);
-    return (uint16_t)((p[0] << 8) | p[1]);
+    return (uint16_t)((mcu_overlay_read8(ctx, offset) << 8) | mcu_overlay_read8(ctx, offset + 1));
 }
 
 static uint32_t mcu_overlay_read32(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    mcu_overlay_drop(cfg);
-    uint8_t *p = mcu_rom_ptr(cfg, offset);
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+    return ((uint32_t)mcu_overlay_read16(ctx, offset) << 16) | mcu_overlay_read16(ctx, offset + 2);
 }
 
 static void mcu_overlay_write8(void *ctx, uint32_t offset, uint8_t value) {
@@ -612,10 +616,13 @@ static void mcu_memory_layout_init(config_t *cfg) {
 // Substrate lifecycle
 // ============================================================
 
-static void mcu_init(config_t *cfg, checkpoint_t *cp) {
+static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     const mcu_board_t *board = mcu_board(cfg);
     mcu_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
     st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
 
@@ -643,15 +650,27 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
     cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
     cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, NULL, mac030_glue_via2_irq, cfg, cp);
+    // Exact-rational phi2: the integer divisor above rounds, and on this
+    // substrate that rounding is not negligible -- the Q950 lands 1.04% slow, the Q700/Q900 0.27%.  via_set_exact_clock
+    // installs ticks = cycles x 783360/cpu_hz reduced, which is what the
+    // PowerPC families already do.
+    via_set_exact_clock(cfg->via1, cfg->machine->freq);
+    via_set_exact_clock(cfg->via2, cfg->machine->freq);
 
     // Machine-specific tail: straps, ADB, EASC, SWIM, DAFB, bus resolver,
     // memory layout, checkpoint restore.
-    board->build_devices(cfg, cp);
+    if (board->build_devices(cfg, cp) != 0)
+        return -1;
 
     // NuBus (Phase F): seat the declared slot cards; their windows layer
     // over the bus-error range, and slot IRQs route through the substrate's
     // nubus_slot_irq into the VIA2 PA aggregate.
     cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
+    // The substrate tail was read by mcu_restore_private inside build_devices
+    // above, so the card block that mcu_checkpoint_save wrote after it reads
+    // back here.
+    if (cp)
+        nubus_checkpoint_restore(cfg->nubus, cp);
     // Project the cards' host regions (VRAM, declaration ROMs) into the
     // page table so CPU accesses resolve with the MMU off; the bus
     // resolver serves the 040 walker when it's on.  No Mode-24 aliases —
@@ -660,6 +679,7 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
     mmu_host_regions_fill_pages(st->bus_mmu, mac030_fill_page, /*mode24_alias*/ false);
 
     mac030_glue_finish(cfg, cp);
+    return 0;
 }
 
 static void mcu_reset(config_t *cfg) {
@@ -822,12 +842,23 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
     system_write_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));
     system_write_checkpoint_data(cp, &st->scsi_irq_or, sizeof(st->scsi_irq_or));
+    // Card-side display state (VRAM, palette, active mode) — last before the
+    // block below, so a machine that restores with fewer cards than it saved
+    // short-reads here without shifting anything that follows (mdu.c:190,
+    // pdm.c:537 use the same position).
+    nubus_checkpoint_save(cfg->nubus, cp);
 }
 
 // Restore the substrate-private checkpoint tail (mirrors the tail writes in
 // mcu_checkpoint_save) and re-drive the derived interrupt lines.  Called at
 // the end of each board's build_devices on the restore path, after the
 // memory layout armed the overlay and parked the VIA input lines at idle.
+void mcu_apply_via1_model_sense(config_t *cfg, const mcu_board_desc_t *desc) {
+    for (int bit = 0; bit < 8; bit++)
+        via_input(cfg->via1, 0, bit, (desc->via1_pa_model >> bit) & 1);
+    via_input(cfg->via1, 0, 0, 1); // PA0 diagnostic strap high (see mcu.h)
+}
+
 void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
     bool overlay = false;

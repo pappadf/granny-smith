@@ -57,7 +57,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iicx");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Constants
@@ -278,6 +278,11 @@ static const struct scsi_slot iicx_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t iicx_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = iicx_scsi_slots},
+    {0},
+};
+
 const hw_profile_t machine_iicx = {
     .name = "Macintosh IIcx",
     .id = "iicx",
@@ -293,7 +298,7 @@ const hw_profile_t machine_iicx = {
 
     .ram_options = iicx_ram_options_kb,
     .floppy_slots = iicx_floppy_slots,
-    .scsi_slots = iicx_scsi_slots,
+    .scsi_buses = iicx_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
     // The IIcx has no built-in video — its primary display comes from

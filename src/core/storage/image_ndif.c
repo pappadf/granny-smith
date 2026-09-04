@@ -5,6 +5,7 @@
 // NDIF 'bcem' block-map parser + chunk decoder — see image_ndif.h.
 
 #include "image_ndif.h"
+#include "common.h"
 
 #include "adc.h"
 #include "resource_fork.h"
@@ -28,10 +29,6 @@
 #define BCEM_OFF_CHUNKS     0x7C
 
 static const uint8_t BCEM_TYPE[4] = {'b', 'c', 'e', 'm'};
-
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
 
 // Locate the 'bcem' resource bytes in a parsed fork.  Prefers ID 128, then
 // falls back to the first 'bcem' present.  On success returns 0 and sets
@@ -90,10 +87,10 @@ int ndif_parse(const uint8_t *rfork, size_t rfork_len, ndif_map_t **out) {
         return -EINVAL;
     }
 
-    uint32_t sectors = rd32(b + BCEM_OFF_SECTORS);
-    uint32_t data_offset = rd32(b + BCEM_OFF_DATAOFFSET);
-    uint32_t crc = rd32(b + BCEM_OFF_CRC);
-    uint32_t n_entries = rd32(b + BCEM_OFF_CHUNKS);
+    uint32_t sectors = RD_BE32(b + BCEM_OFF_SECTORS);
+    uint32_t data_offset = RD_BE32(b + BCEM_OFF_DATAOFFSET);
+    uint32_t crc = RD_BE32(b + BCEM_OFF_CRC);
+    uint32_t n_entries = RD_BE32(b + BCEM_OFF_CHUNKS);
 
     // Bounds: the descriptor array must fit within the resource.
     if (n_entries == 0 || (uint64_t)n_entries * BCEM_ENTRY_SIZE > (uint64_t)(sz - BCEM_HEADER_SIZE)) {
@@ -124,21 +121,21 @@ int ndif_parse(const uint8_t *rfork, size_t rfork_len, ndif_map_t **out) {
     size_t nc = 0;
     for (uint32_t i = 0; i < n_entries; i++) {
         const uint8_t *e = arr + (size_t)i * BCEM_ENTRY_SIZE;
-        uint32_t word = rd32(e);
+        uint32_t word = RD_BE32(e);
         uint8_t type = (uint8_t)(word & 0xFF);
         if (type == NDIF_CHUNK_END)
             break;
         uint32_t sector = word >> 8;
         uint32_t next_sector = sectors;
         if (i + 1 < n_entries) {
-            uint32_t nword = rd32(arr + (size_t)(i + 1) * BCEM_ENTRY_SIZE);
+            uint32_t nword = RD_BE32(arr + (size_t)(i + 1) * BCEM_ENTRY_SIZE);
             next_sector = nword >> 8;
         }
         chunks[nc].sector = sector;
         chunks[nc].count = (next_sector > sector) ? (next_sector - sector) : 0;
         chunks[nc].type = type;
-        chunks[nc].offset = rd32(e + 4) + data_offset;
-        chunks[nc].length = rd32(e + 8);
+        chunks[nc].offset = RD_BE32(e + 4) + data_offset;
+        chunks[nc].length = RD_BE32(e + 8);
         nc++;
     }
 

@@ -1000,18 +1000,11 @@ static void init_crc32_table(void) {
 }
 
 // Write 32-bit big-endian value to buffer
-static void write_be32(uint8_t *p, uint32_t v) {
-    p[0] = (v >> 24) & 0xff;
-    p[1] = (v >> 16) & 0xff;
-    p[2] = (v >> 8) & 0xff;
-    p[3] = v & 0xff;
-}
-
 // Write a PNG chunk to file
 static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint32_t len) {
     uint8_t header[8];
     // Write length (big-endian)
-    write_be32(header, len);
+    WR_BE32(header, len);
     // Write type
     memcpy(header + 4, type, 4);
     if (fwrite(header, 1, 8, fp) != 8)
@@ -1035,7 +1028,7 @@ static int write_png_chunk(FILE *fp, const char *type, const uint8_t *data, uint
 
     // Write CRC (big-endian)
     uint8_t crc_buf[4];
-    write_be32(crc_buf, crc);
+    WR_BE32(crc_buf, crc);
     if (fwrite(crc_buf, 1, 4, fp) != 4)
         return -1;
 
@@ -1210,7 +1203,7 @@ static uint8_t *zlib_compress(const uint8_t *src, size_t len, size_t *out_len) {
         free(out);
         return NULL;
     }
-    write_be32(out + w.pos, adler);
+    WR_BE32(out + w.pos, adler);
     w.pos += 4;
 
     *out_len = w.pos;
@@ -1318,10 +1311,6 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
 // ────────────────────────────────────────────────────────────────────────────
 
 // Read 32-bit big-endian value from buffer
-static uint32_t read_be32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
 // Convert one row of a live framebuffer to packed RGBA (no PNG filter
 // byte).  Pulled out of save_framebuffer_as_png so screen.match can
 // compare any pixel format against an RGBA reference PNG without
@@ -1443,13 +1432,13 @@ static int load_png_to_rgba(const char *filename, int expected_width, int expect
     size_t idat_len = 0;
     size_t idat_capacity = 0;
     while (pos + 12 <= (size_t)file_size) {
-        uint32_t chunk_len = read_be32(file_data + pos);
+        uint32_t chunk_len = RD_BE32(file_data + pos);
         char chunk_type[5];
         memcpy(chunk_type, file_data + pos + 4, 4);
         chunk_type[4] = '\0';
         if (strcmp(chunk_type, "IHDR") == 0 && chunk_len >= 13) {
-            width = read_be32(file_data + pos + 8);
-            height = read_be32(file_data + pos + 12);
+            width = RD_BE32(file_data + pos + 8);
+            height = RD_BE32(file_data + pos + 12);
             bit_depth = file_data[pos + 16];
             color_type = file_data[pos + 17];
         } else if (strcmp(chunk_type, "IDAT") == 0) {
@@ -1602,14 +1591,14 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int ex
     size_t idat_capacity = 0;
 
     while (pos + 12 <= (size_t)file_size) {
-        uint32_t chunk_len = read_be32(file_data + pos);
+        uint32_t chunk_len = RD_BE32(file_data + pos);
         char chunk_type[5];
         memcpy(chunk_type, file_data + pos + 4, 4);
         chunk_type[4] = '\0';
 
         if (strcmp(chunk_type, "IHDR") == 0 && chunk_len >= 13) {
-            width = read_be32(file_data + pos + 8);
-            height = read_be32(file_data + pos + 12);
+            width = RD_BE32(file_data + pos + 8);
+            height = RD_BE32(file_data + pos + 12);
             bit_depth = file_data[pos + 16];
             color_type = file_data[pos + 17];
         } else if (strcmp(chunk_type, "IDAT") == 0) {
@@ -1847,8 +1836,8 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
     // IHDR chunk: width, height, bit depth, color type, compression, filter, interlace
     // bit depth = 8, color type = 6 (RGBA)
     uint8_t ihdr[13];
-    write_be32(ihdr, (uint32_t)width);
-    write_be32(ihdr + 4, (uint32_t)height);
+    WR_BE32(ihdr, (uint32_t)width);
+    WR_BE32(ihdr + 4, (uint32_t)height);
     ihdr[8] = 8; // bit depth (8 bits per channel)
     ihdr[9] = 6; // color type (RGBA)
     ihdr[10] = 0; // compression method (deflate)

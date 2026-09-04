@@ -61,11 +61,10 @@ def row_cd_device() {
     assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
     assert machine.scsi.device[3].medium_present "cd-device: no medium present"
     assert machine.scsi.device[3].vendor == "SONY    " "cd-device: unexpected vendor"
-    # Mastered at 512 bytes/block, and the device must say so: the block size
-    # comes from the disc's own DDM, not a hard-coded CD default.  Serving a
-    # 512-mastered image at 2048 multiplies every LBA by four and the machine
-    # does not boot at all.
-    assert machine.scsi.device[3].block_size == 512 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
+    # A CD-ROM drive presents 2048-byte blocks — the Mode 1 sector — whatever
+    # the disc's DDM says its partition map is addressed in.  A guest that
+    # wants 512-byte addressing asks for it with MODE SELECT (A/UX does).
+    assert machine.scsi.device[3].block_size == 2048 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)"
     # No other storage: the boot below can only come from the disc.  An empty
     # SCSI slot does not resolve as an object at all, so probe it with try()
     # rather than reading a type (shell v2 §7 — errors are not truth values).
@@ -122,7 +121,20 @@ def row_cd_desktop() {
 
 if row_on("cd-device") { row_end("cd-device", try(row_cd_device(), "FAILED")) }
 if row_on("cd-boot") { row_end("cd-boot", try(row_cd_boot(), "FAILED")) }
-if row_on("cd-desktop") { row_end("cd-desktop", try(row_cd_desktop(), "FAILED")) }
+# cd-desktop needs a disc MASTERED for CD, which `disc` is not: it is a hard
+# disk image, so its map is addressed in 512-byte units and its driver
+# partition holds a hard-disk driver.  A CD-ROM drive presents 2048-byte
+# blocks, so that driver talks the wrong block size to the drive and the boot
+# stops short of the Finder.  A real bootable Mac CD is mastered sbBlkSize=2048
+# and carries Apple_Driver43_CD instead (verified on the Mac OS 8.1 retail
+# disc, which boots a pm6100 to the desktop) — so this row wants such a disc
+# and skips cleanly until one is in gs-test-data, exactly like cd-2048 above.
+let boot_cd = "../../data/systems/mac_os_8_1_retail.iso"
+if row_on("cd-desktop") && have_media($boot_cd) {
+    row_end("cd-desktop", try(row_cd_desktop(), "FAILED"))
+} else {
+    echo "skip: cd-desktop (no CD-mastered bootable disc at ${$boot_cd})"
+}
 
 suite_done()
 quit

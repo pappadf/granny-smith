@@ -58,7 +58,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("iici");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // I/O island offsets (private to the dispatcher)
@@ -145,17 +145,10 @@ static void iici_memory_layout_init(config_t *cfg) {
     uint32_t bank_a_size, bank_b_size;
     iici_split_ram_banks(ram_size, &bank_a_size, &bank_b_size);
 
-    uint32_t bank_a_pages = bank_a_size >> PAGE_SHIFT;
-    uint32_t bank_a_window_pages = IICI_BANK_B_PHYS >> PAGE_SHIFT;
-    for (uint32_t p = 0; p < bank_a_window_pages && (int)p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % bank_a_pages) << PAGE_SHIFT), true);
-
     uint8_t *bank_b = ram_base + bank_a_size;
-    uint32_t bank_b_pages = bank_b_size >> PAGE_SHIFT;
-    uint32_t bank_b_start_page = IICI_BANK_B_PHYS >> PAGE_SHIFT;
-    uint32_t bank_b_window_pages = IICI_BANK_WINDOW >> PAGE_SHIFT;
-    for (uint32_t i = 0; bank_b_pages && i < bank_b_window_pages && (int)(bank_b_start_page + i) < g_page_count; i++)
-        mac030_fill_page(bank_b_start_page + i, bank_b + ((i % bank_b_pages) << PAGE_SHIFT), true);
+    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> PAGE_SHIFT, ram_base, bank_a_size >> PAGE_SHIFT, mac030_fill_page, true);
+    mac030_map_mirrored(IICI_BANK_B_PHYS >> PAGE_SHIFT, IICI_BANK_WINDOW >> PAGE_SHIFT, bank_b,
+                        bank_b_size >> PAGE_SHIFT, mac030_fill_page, true);
 
     // Teach the PMMU-side physical resolver the same two-bank layout so
     // table walks and TLB fills resolve Bank B (no-op when bank_b_size == 0
@@ -307,7 +300,7 @@ static const mac030_board_desc_t iici_board = {
 
 // IIci device construction (mac030_mdu_board_t.build_devices): everything after
 // the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.
-static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
+static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     iici_state_t *st = iici_state(cfg);
     st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
     // The IIci bit-bangs the RTC on VIA1 (classic transceiver path).
@@ -342,7 +335,10 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // RBV chip (VIA2 replacement + video control).  Default monitor sense 6
     // = 13" RGB.  IRQ → IPL 2; RvPowerOff → scheduler stop.
     st->rbv = rbv_init(RBV_VARIANT_IICI, checkpoint);
-    assert(st->rbv != NULL);
+    if (!st->rbv) {
+        LOG(0, "Error: out of memory constructing the RBV");
+        return -1;
+    }
     rbv_set_irq_callback(st->rbv, iici_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
@@ -350,6 +346,8 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
     st->mmu = mac030_build_mmu(cfg, iici_board.rom_base, iici_board.rom_end);
+    if (!st->mmu)
+        return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as SE/30).
     st->mmu->tt1 = 0xF00F8043;
 
@@ -387,6 +385,7 @@ static void iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         cpu_attach_mmu(cfg->cpu, st->mmu);
         via_redrive_outputs(cfg->via1);
     }
+    return 0;
 }
 
 // ============================================================
@@ -404,6 +403,11 @@ static const struct floppy_slot iici_floppy_slots[] = {
 static const struct scsi_slot iici_scsi_slots[] = {
     {.label = "SCSI HD0", .id = 0},
     {.label = "SCSI HD1", .id = 1},
+    {0},
+};
+
+static const scsi_bus_decl_t iici_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = iici_scsi_slots},
     {0},
 };
 
@@ -431,7 +435,7 @@ const hw_profile_t machine_iici = {
 
     .ram_options = iici_ram_options_kb,
     .floppy_slots = iici_floppy_slots,
-    .scsi_slots = iici_scsi_slots,
+    .scsi_buses = iici_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
     // Built-in RBV video has no separate declaration ROM — the boot ROM

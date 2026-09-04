@@ -257,8 +257,9 @@ def row_pdm_nubus_checkpoint() {
 # The plug contract for a CD-ROM on the Curio bus, which is what the profile's
 # has_cdrom claim rests on.  A CD is an ordinary SCSI target — no CD-specific
 # hardware sits behind it — so the assertions are the ones the IIci row makes:
-# CD-typed, read-only, medium present, and a block size taken from the disc's
-# own Driver Descriptor Map rather than a hard-coded CD default.
+# CD-typed, read-only, medium present, and the 2048-byte Mode 1 sector a
+# CD-ROM drive presents regardless of how the disc's partition map is
+# addressed.
 #
 # Deliberately device-level and boot-free: attaching a disc to a booting row
 # would put a CD icon on the desktop and invalidate the goldens above.
@@ -268,7 +269,7 @@ def row_pdm_cd_device() {
     assert machine.scsi.device[3].type == "cdrom" "cd-device: SCSI 3 is not a CD-ROM"
     assert machine.scsi.device[3].read_only "cd-device: CD-ROM is not read-only"
     assert machine.scsi.device[3].medium_present "cd-device: no medium present"
-    assert machine.scsi.device[3].block_size == 512 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 512 (from the disc's DDM)"
+    assert machine.scsi.device[3].block_size == 2048 "cd-device: block_size ${machine.scsi.device[3].block_size}, want 2048 (a CD-ROM's Mode 1 sector)"
     # The HD slots the same bus already served must be undisturbed by it.
     assert try(machine.scsi.device[0].type, none) == none "cd-device: something is attached at SCSI 0"
     report_row("7.5", "curio", "cd-device")

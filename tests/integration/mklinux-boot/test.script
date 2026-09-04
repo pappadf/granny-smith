@@ -157,10 +157,14 @@ def row_pm7100() {
     # console holds perfectly still while the SCSI probe runs, so it captures
     # `asc1: NCR 53C94 20 mhz SCSI ID 7` and calls that the login screen.  Both
     # other rows then "match" it and the suite goes green on a mid-boot frame.
-    # (Measured: that is exactly what happened.)  1.5 G is four times the
-    # slowest measured arrival of the real prompt, ~12 s of wall clock, and the
-    # only row that pays it.
-    scheduler.run 1500000000
+    # (Measured: that is exactly what happened.)  This is a fixed budget with
+    # room, ~19 s of wall clock, and the only row that pays it.
+    #
+    # It went from 1.5 G to 2.4 G when the CD bay joined the bus (system_create
+    # now carries the drive from power-on, empty or not): Linux probes the
+    # empty drive and waits out its NOT READY, which moved the prompt's
+    # arrival from well inside the old budget to a measured 2.61 G total.
+    scheduler.run 2400000000
     check("mklinux-login.png")
     assert try(machine.cpu.mmu.peek(0x17B, 1), none) == none "pm7100: still in the 68k address space"
     assert machine.screen.depth == 8 "pm7100: ${machine.screen.depth} bpp, want 8"

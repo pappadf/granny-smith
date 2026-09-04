@@ -39,7 +39,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("plus");
+LOG_USE_CATEGORY_NAME("board");
 
 // Plus-specific peripheral state not shared with other machines.
 // Accessed through config_t.machine_context.
@@ -167,10 +167,13 @@ static void plus_memory_layout_init(config_t *cfg) {
 
 // Initialise all Plus subsystems.
 // If checkpoint is non-NULL, each device restores state from it (same order as checkpoint_save).
-static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
+static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Allocate Plus-specific peripheral state
     plus_state_t *ps = malloc(sizeof(plus_state_t));
-    assert(ps != NULL);
+    if (!ps) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     memset(ps, 0, sizeof(plus_state_t));
     cfg->machine_context = ps;
 
@@ -180,7 +183,13 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Populate Plus-specific memory layout (RAM/ROM page table + Phase Read)
     plus_memory_layout_init(cfg);
 
-    cfg->cpu = cpu_init(CPU_MODEL_68000, checkpoint);
+    // The profile is the source of truth for the CPU model, as it is for the
+    // clock below and as mac030_build_core states for the II families.  Both
+    // profiles behind this substrate declare 68000, so this reads back exactly
+    // what the constant said -- but system_create derives cfg->cpu_arch from
+    // the profile unconditionally, so a profile that ever disagreed with a
+    // hardcoded core here would tag the machine with an arch it is not running.
+    cfg->cpu = cpu_init(cfg->machine->cpu_model, checkpoint);
 
     sched_cpu_if_t cpu_if = cpu_sched_if(cfg->cpu); // the 68K main-CPU seam adapter
     cfg->scheduler = scheduler_init(&cpu_if, checkpoint);
@@ -195,6 +204,14 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // note attacks). CPI 10 rather than the threshold-exact 11 buys safety
     // margin for CPU-hungrier real-time guests. (The pre-two-modes
     // scheduler defaulted to CPI 4 here — a ~3x overclocked Plus.)
+    // The profile is the source of truth for the clock (machine_profile.h
+    // §freq), and it is what machine.profile exports to the frontend.  This
+    // line was missing: the Plus ran correctly only because the scheduler's
+    // own default happens to equal 7.8336 MHz exactly, so the exported value
+    // and the value actually used were two independent constants that agreed
+    // by coincidence.  The Lisa's comment above its own call records being
+    // bitten by that default.
+    scheduler_set_frequency(cfg->scheduler, cfg->machine->freq);
     scheduler_set_cpi(cfg->scheduler, 10);
 
     // Restore global interrupt state after scheduler (same order as checkpoint_save)
@@ -281,6 +298,7 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         cfg->irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
+    return 0;
 }
 
 // Tear down all Plus resources in reverse init order.
@@ -379,14 +397,11 @@ static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via1, cp);
     mouse_checkpoint(cfg->mouse, cp);
 
-    // Checkpoint list of images (path + writable) before devices that reference them
-    {
-        uint32_t count = (uint32_t)cfg->n_images;
-        system_write_checkpoint_data(cp, &count, sizeof(count));
-        for (uint32_t i = 0; i < count; ++i) {
-            image_checkpoint(cfg->images[i], cp);
-        }
-    }
+    // Checkpoint list of images (path + writable) before devices that reference
+    // them.  Shared helper, matching the restore side in plus_init: this was an
+    // inline copy of mac_checkpoint_save_images byte for byte, so the two could
+    // have drifted apart silently.
+    mac_checkpoint_save_images(cfg, cp);
 
     scsi_checkpoint(cfg->scsi, cp);
     keyboard_checkpoint(cfg->keyboard, cp);
@@ -503,6 +518,11 @@ static const struct scsi_slot plus_scsi_slots[] = {
     {0},
 };
 
+static const scsi_bus_decl_t plus_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = plus_scsi_slots},
+    {0},
+};
+
 // Macintosh Plus hardware profile descriptor
 static const machine_substrate_t plus_substrate = {
     .init = plus_init,
@@ -537,7 +557,7 @@ const hw_profile_t machine_plus = {
     // Configuration-dialog shape
     .ram_options = plus_ram_options_kb,
     .floppy_slots = plus_floppy_slots,
-    .scsi_slots = plus_scsi_slots,
+    .scsi_buses = plus_scsi_buses,
     .has_cdrom = false, // Plus CD-ROM driver chain not yet integrated
     .cdrom_id = 3,
 

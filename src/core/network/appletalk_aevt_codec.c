@@ -18,6 +18,7 @@
 // ============================================================================
 
 #include "appletalk_aevt.h"
+#include "common.h"
 
 #include "log.h"
 #include "value.h"
@@ -40,26 +41,6 @@ LOG_USE_CATEGORY_NAME("ppc");
 // ============================================================================
 // Operations — small helpers
 // ============================================================================
-
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
-static uint16_t rd16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
-static void wr32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
-static void wr16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
 
 // Every stream item is padded to an even offset (§5.2).
 static int round_up_even(int n) {
@@ -118,8 +99,8 @@ static value_t decode_desc(rd_t *r, const char *type, const uint8_t *data, int l
 static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool keyed, int depth) {
     if (len < 8)
         return (rd_fail(r, "a %s descriptor is shorter than its header", keyed ? "record" : "list"), val_none());
-    uint32_t count = rd32(data);
-    uint32_t prefix = rd32(data + 4);
+    uint32_t count = RD_BE32(data);
+    uint32_t prefix = RD_BE32(data + 4);
     if (prefix != 0 && prefix != 4 && prefix < 8)
         return (rd_fail(r, "illegal factoring prefix size %u", (unsigned)prefix), val_none());
     if (prefix > (uint32_t)len - 8)
@@ -132,7 +113,7 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
     if (prefix >= 4)
         fourcc_read(data + 8, shared_type);
     if (prefix >= 8) {
-        fixed_len = (int)rd32(data + 12);
+        fixed_len = (int)RD_BE32(data + 12);
         if (fixed_len < 0)
             return (rd_fail(r, "negative factored item length"), val_none());
     }
@@ -170,7 +151,7 @@ static value_t decode_collection(rd_t *r, const uint8_t *data, int len, bool key
                 rd_fail(r, "item %u has no length", (unsigned)i);
                 break;
             }
-            item_len = (int)rd32(data + pos);
+            item_len = (int)RD_BE32(data + pos);
             pos += 4;
         } else {
             item_len = fixed_len;
@@ -256,19 +237,19 @@ static value_t decode_desc(rd_t *r, const char *type, const uint8_t *data, int l
     } else if (!strcmp(type, "long") || !strcmp(type, "magn")) {
         opaque = (len != 4);
         if (!opaque) {
-            body = val_int((int32_t)rd32(data));
+            body = val_int((int32_t)RD_BE32(data));
             have_body = true;
         }
     } else if (!strcmp(type, "shor")) {
         opaque = (len != 2);
         if (!opaque) {
-            body = val_int((int16_t)rd16(data));
+            body = val_int((int16_t)RD_BE16(data));
             have_body = true;
         }
     } else if (!strcmp(type, "comp")) {
         opaque = (len != 8);
         if (!opaque) {
-            body = val_int((int64_t)(((uint64_t)rd32(data) << 32) | rd32(data + 4)));
+            body = val_int((int64_t)(((uint64_t)RD_BE32(data) << 32) | RD_BE32(data + 4)));
             have_body = true;
         }
     } else if (!strcmp(type, "bool")) {
@@ -331,7 +312,7 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
         if (len < 8 || memcmp(stream, AEVT_SIGNATURE, 4) != 0) {
             rd_fail(&r, "the stream does not start with an %s header", AEVT_SIGNATURE);
         } else {
-            uint32_t version = rd32(stream + 4);
+            uint32_t version = RD_BE32(stream + 4);
             if (version != AEVT_VERSION)
                 rd_fail(&r, "unsupported AETF version 0x%08X", (unsigned)version);
             pos = 8;
@@ -356,7 +337,7 @@ value_t aevt_decode(const char *class4, const char *id4, const uint8_t *stream, 
             break;
         char type[5];
         fourcc_read(stream + pos + 4, type);
-        int dlen = (int)rd32(stream + pos + 8);
+        int dlen = (int)RD_BE32(stream + pos + 8);
         if (dlen < 0 || !rd_have(&r, pos + 12, dlen))
             break;
         value_t leaf = decode_desc(&r, type, stream + pos + 12, dlen, 0);
@@ -530,7 +511,7 @@ static void encode_desc(wr_t *w, const value_t *leaf, int depth) {
     encode_leaf_body(w, leaf, depth);
     if (w->bad)
         return;
-    wr32(w->out + len_at, (uint32_t)(w->pos - body_at));
+    WR_BE32(w->out + len_at, (uint32_t)(w->pos - body_at));
     wr_pad_even(w);
 }
 
@@ -544,8 +525,8 @@ static void encode_collection(wr_t *w, const value_t *v, bool keyed, int depth) 
         count = (v && v->kind == V_LIST) ? v->list.len : 0;
 
     uint8_t hdr[8];
-    wr32(&hdr[0], (uint32_t)count);
-    wr32(&hdr[4], 0);
+    WR_BE32(&hdr[0], (uint32_t)count);
+    WR_BE32(&hdr[4], 0);
     wr_bytes(w, hdr, 8);
 
     for (size_t i = 0; i < count && !w->bad; i++) {
@@ -605,17 +586,17 @@ static void encode_leaf_body(wr_t *w, const value_t *leaf, int depth) {
         wr_bytes(w, &nul, 1);
     } else if (!strcmp(type, "long") || !strcmp(type, "magn")) {
         uint8_t b[4];
-        wr32(b, (uint32_t)val_as_i64(data, NULL));
+        WR_BE32(b, (uint32_t)val_as_i64(data, NULL));
         wr_bytes(w, b, 4);
     } else if (!strcmp(type, "shor")) {
         uint8_t b[2];
-        wr16(b, (uint16_t)val_as_i64(data, NULL));
+        WR_BE16(b, (uint16_t)val_as_i64(data, NULL));
         wr_bytes(w, b, 2);
     } else if (!strcmp(type, "comp")) {
         uint8_t b[8];
         uint64_t u = (uint64_t)val_as_i64(data, NULL);
-        wr32(&b[0], (uint32_t)(u >> 32));
-        wr32(&b[4], (uint32_t)u);
+        WR_BE32(&b[0], (uint32_t)(u >> 32));
+        WR_BE32(&b[4], (uint32_t)u);
         wr_bytes(w, b, 8);
     } else if (!strcmp(type, "bool")) {
         uint8_t b = val_as_bool(data) ? 1 : 0;
@@ -649,7 +630,7 @@ int aevt_encode(const value_t *event, uint8_t *out, int out_max, char *err, size
     wr_t w = {.out = out, .max = out_max};
     wr_bytes(&w, AEVT_SIGNATURE, 4);
     uint8_t ver[4];
-    wr32(ver, AEVT_VERSION);
+    WR_BE32(ver, AEVT_VERSION);
     wr_bytes(&w, ver, 4);
 
     // Meta section first, then the terminator, then the parameters (§5.2).
@@ -964,8 +945,8 @@ static value_t tx_desc(tx_t *t, int depth) {
             n = 63;
         uint8_t body[2 + 4 + 64];
         memset(body, 0, sizeof(body));
-        wr16(&body[0], (uint16_t)vref);
-        wr32(&body[2], (uint32_t)parid);
+        WR_BE16(&body[0], (uint16_t)vref);
+        WR_BE32(&body[2], (uint32_t)parid);
         body[6] = (uint8_t)n;
         memcpy(&body[7], name, n);
         free(name);

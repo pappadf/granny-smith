@@ -54,7 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("tnt");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // Page-table helpers (the pdm_fill_page shape, kept local so the TNT
@@ -437,9 +437,12 @@ void tnt_nvram_clear(config_t *cfg) {
     LOG(1, "NVRAM cleared (battery removed)");
 }
 
-static void tnt_init(config_t *cfg, checkpoint_t *cp) {
+static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
     if (!cp && tnt_nvram_carry_valid)
         memcpy(st->gc.nvram, tnt_nvram_carry, TNT_NVRAM_SIZE);
@@ -452,18 +455,12 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // No 68k MMU owns this machine's page table; host-backed regions that
     // core code registers on the bus map are filled through our filler.
     g_mem_host_fill = tnt_fill_page;
-    // TEMP diagnostic (604 boot-wall hunt): board-vs-CPU counterfactuals
-    // without profile edits.  Env-gated, inert otherwise.
-    int cpu_model = cfg->machine->cpu_model;
-    {
-        const char *s = getenv("GS_CPU_OVERRIDE");
-        if (s && strcmp(s, "601") == 0)
-            cpu_model = CPU_MODEL_PPC601;
-        else if (s && strcmp(s, "604") == 0)
-            cpu_model = CPU_MODEL_PPC604;
-    }
+    const int cpu_model = cfg->machine->cpu_model;
     cfg->ppc = ppc_init(cp, cpu_model);
-    assert(cfg->ppc != NULL);
+    if (!cfg->ppc) {
+        LOG(0, "Error: out of memory constructing the PowerPC core");
+        return -1;
+    }
     sched_cpu_if_t cpu_if = ppc_sched_if(cfg->ppc);
     cfg->scheduler = scheduler_init(&cpu_if, cp);
     debug_mac_register_scheduler_events(cfg->scheduler); // before scheduler_start replays a restore
@@ -515,13 +512,18 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Mode3Clock tick is on, as on PDM: the guest clock lives behind
     // Cuda RdTime/PRAM here too and needs the real seed.
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, cfg->adb, cfg->scheduler, cp, /*mode3_clock=*/true);
-    assert(st->cuda != NULL);
+    if (!st->cuda) {
+        LOG(0, "Error: out of memory constructing the Cuda");
+        return -1;
+    }
 
     // The DBDMA engine behind the island's +$8000 channel windows.  No
     // device ports are attached yet — each datapath phase (AWACS ch 8,
     // SCSI ch 0/10, ...) registers its port as it lands; until then a
     // channel's data commands stall honestly.
     st->dbdma = tnt_dbdma_init(cp);
+    if (!st->dbdma)
+        return -1;
     // The internal SuperDrive behind SWIM3: the shared floppy module owns
     // the drive and media, the shared SWIM3 model (core/peripherals) the
     // chip, and swim3.c here binds the two to Grand Central and DBDMA
@@ -638,6 +640,7 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Finish: debugger + scheduler start.
     cfg->debugger = debug_init();
     scheduler_start(cfg->scheduler);
+    return 0;
 }
 
 static void tnt_reset(config_t *cfg) {
@@ -882,6 +885,15 @@ static void tnt_update_ipl(config_t *cfg, int source, bool active) {
 // Floppy: the one internal SuperDrive behind SWIM3 (swim3.c).  Drive 1 is
 // the only bay the family has — no external port — so slot 1 refuses
 // whatever the caller asks.
+//
+// The slot table is declared once here rather than copied into each of the
+// five profiles: it is a fact about the TNT board, and tnt_fd_insert below
+// is what makes one slot the right count.
+const struct floppy_slot tnt_floppy_slots[] = {
+    {.label = "Internal FD0", .kind = FLOPPY_HD},
+    {0},
+};
+
 static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
     if (!cfg->floppy || drive != 0)
         return -1;

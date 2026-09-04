@@ -46,7 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("av");
+LOG_USE_CATEGORY_NAME("board");
 
 static inline const av_board_t *av_board(config_t *cfg) {
     return (const av_board_t *)cfg->machine->board;
@@ -502,18 +502,26 @@ static uint8_t av_overlay_read8(void *ctx, uint32_t offset) {
     return av_rom_ptr(cfg, offset)[0];
 }
 
+// Composed from byte reads so every byte wraps within the mirror
+// independently, the shape iifx_rom_read_uint16/32 already use.  Indexing
+// p[1..3] off a single wrapped base instead would read past the end of the
+// RAM+ROM allocation when the base landed on the last bytes of a mirror
+// period -- the ROM sits at the top of that one calloc.
+//
+// That was not reachable: the memory dispatcher only calls a device's 16/32-bit
+// handler when (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2/-4 and splits anything
+// closer to a page end, and rom_size is a multiple of the 4 KiB page size, so
+// "within 3 bytes of a mirror top" is always also "within 3 bytes of a page
+// end".  Confirmed under ASAN: a long read at the top of a q700 mirror reaches
+// this handler only after being decomposed.  But that safety lives in another
+// file and depends on an unstated size relationship, so it is made local here.
+// (av_overlay_drop is idempotent, so the repeated call costs nothing.)
 static uint16_t av_overlay_read16(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    av_overlay_drop(cfg);
-    uint8_t *p = av_rom_ptr(cfg, offset);
-    return (uint16_t)((p[0] << 8) | p[1]);
+    return (uint16_t)((av_overlay_read8(ctx, offset) << 8) | av_overlay_read8(ctx, offset + 1));
 }
 
 static uint32_t av_overlay_read32(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    av_overlay_drop(cfg);
-    uint8_t *p = av_rom_ptr(cfg, offset);
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+    return ((uint32_t)av_overlay_read16(ctx, offset) << 16) | av_overlay_read16(ctx, offset + 2);
 }
 
 static void av_overlay_write8(void *ctx, uint32_t offset, uint8_t value) {
@@ -590,7 +598,7 @@ void av_via1_shift_out(void *context, uint8_t byte) {
 // Device construction (shared by both leaves)
 // ============================================================
 
-void av_build_devices(config_t *cfg, checkpoint_t *cp) {
+int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     av_state_t *st = av_st(cfg);
     const av_board_desc_t *desc = av_board(cfg)->desc;
 
@@ -612,16 +620,25 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The PSC interrupt controller + DMA engine (VIA2 window, L3-L6,
     // sndPhase, the 7 channels).
     st->psc = av_psc_init(cfg, cp);
-    assert(st->psc != NULL);
+    if (!st->psc) {
+        LOG(0, "Error: out of memory constructing the PSC");
+        return -1;
+    }
     av_psc_set_memory_hooks(st->psc, av_psc_mem_read, av_psc_mem_write, cfg);
 
     // The DSP3210 aux core on the PSC's dspOverRun reset latch, and the
     // Singer sound frame engine that feeds it EXT1 ticks.
     st->dsp = av_dsp_init(cfg, cp);
-    assert(st->dsp != NULL);
+    if (!st->dsp) {
+        LOG(0, "Error: out of memory constructing the DSP3210");
+        return -1;
+    }
     av_psc_set_dsp_hook(st->psc, av_dsp_overrun_hook, st->dsp);
     st->singer = av_singer_init(cfg, cp);
-    assert(st->singer != NULL);
+    if (!st->singer) {
+        LOG(0, "Error: out of memory constructing the Singer codec");
+        return -1;
+    }
 
     // ADB device state, serviced through Cuda packets (adb_iop_transact),
     // not the VIA shifter — pass NULL for the VIA (the IIsi/Egret pattern).
@@ -630,24 +647,39 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // The behavioral Cuda on VIA1's shift register + PB3/PB4/PB5.
     st->cuda = av_cuda_init(cfg->via1, cfg->rtc, st->adb, cfg->scheduler, cp, /*mode3_clock=*/false);
-    assert(st->cuda != NULL);
+    if (!st->cuda) {
+        LOG(0, "Error: out of memory constructing the Cuda");
+        return -1;
+    }
 
     // New Age FDC stub ("no drive" — ST3 = $FF).
     st->fdc = av_new_age_init(cfg, cp);
-    assert(st->fdc != NULL);
+    if (!st->fdc) {
+        LOG(0, "Error: out of memory constructing the New Age FDC");
+        return -1;
+    }
 
     // MACE Ethernet register stub + address PROM (no wire).
     st->mace = av_mace_init(cfg, cp);
-    assert(st->mace != NULL);
+    if (!st->mace) {
+        LOG(0, "Error: out of memory constructing the MACE Ethernet");
+        return -1;
+    }
 
     // CIVIC + Sebastian video (Hi-Res 640x480 monitor, 2 MB VRAM).
     st->civic = av_civic_init(cfg, cp);
-    assert(st->civic != NULL);
+    if (!st->civic) {
+        LOG(0, "Error: out of memory constructing the CIVIC");
+        return -1;
+    }
 
     // The video digitizer (DMSD + VDC + frame engine), reached through
     // Cuda pseudo-command $22 and CIVIC's video-in gates.
     st->vdc = av_vdc_init(cfg, cp);
-    assert(st->vdc != NULL);
+    if (!st->vdc) {
+        LOG(0, "Error: out of memory constructing the VDC");
+        return -1;
+    }
     av_cuda_attach_vdc(st->cuda, st->vdc);
 
     if (cp)
@@ -674,7 +706,10 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     st->bus_mmu =
         mmu_init(ram_base, ram_size, desc->rom_base, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
-    assert(st->bus_mmu != NULL);
+    if (!st->bus_mmu) {
+        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+        return -1;
+    }
     g_mmu = st->bus_mmu;
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
@@ -690,16 +725,20 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
     // NuBus super-slot and slot space bus-errors on probes (the ROM's slot
     // scan expects it even with no cards).
     memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
+    return 0;
 }
 
 // ============================================================
 // Substrate lifecycle
 // ============================================================
 
-static void av_init(config_t *cfg, checkpoint_t *cp) {
+static int av_init(config_t *cfg, checkpoint_t *cp) {
     const av_board_t *board = av_board(cfg);
     av_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
 
     // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
@@ -720,9 +759,15 @@ static void av_init(config_t *cfg, checkpoint_t *cp) {
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 =
         via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out, av_via1_irq, cfg, cp);
+    // Exact-rational phi2: the integer divisor above rounds, and on this
+    // substrate that rounding is not negligible -- the 840AV lands 0.12% fast, the 660AV 0.27% slow.
+    // via_set_exact_clock installs ticks = cycles x 783360/cpu_hz reduced, which is what the PowerPC families already
+    // do.
+    via_set_exact_clock(cfg->via1, cfg->machine->freq);
 
     // Machine-specific tail (shared for both AV leaves).
-    board->build_devices(cfg, cp);
+    if (board->build_devices(cfg, cp) != 0)
+        return -1;
 
     cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
 
@@ -733,6 +778,7 @@ static void av_init(config_t *cfg, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
         system_read_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
         system_read_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
+        nubus_checkpoint_restore(cfg->nubus, cp); // matches av_checkpoint_save
         if (!overlay)
             av_set_overlay(cfg, false);
         mmu_invalidate_tlb(st->bus_mmu);
@@ -740,6 +786,7 @@ static void av_init(config_t *cfg, checkpoint_t *cp) {
     }
 
     mac030_glue_finish(cfg, cp);
+    return 0;
 }
 
 static void av_reset(config_t *cfg) {
@@ -875,6 +922,11 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
     system_write_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
     system_write_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
+    // Card-side display state (VRAM, palette, active mode) — last before the
+    // block below, so a machine that restores with fewer cards than it saved
+    // short-reads here without shifting anything that follows (mdu.c:190,
+    // pdm.c:537 use the same position).
+    nubus_checkpoint_save(cfg->nubus, cp);
 }
 
 // VBL tick: VIA1 CA1 pulse (60 Hz reference) + the PSC's own 60.15 Hz

@@ -72,6 +72,25 @@ void mac030_glue_via2_irq(void *context, bool active);
 // of read-only pages.)
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
 
+// A page-filler, so families with their own (the IIfx) can share the mirroring
+// helper below.
+typedef void (*mac030_fill_fn)(uint32_t page_index, uint8_t *host_ptr, bool writable);
+
+// Map `window_pages` pages from `start_page`, mirroring `size_pages` pages of
+// host memory throughout — the shape every family's RAM-bank decode has: a
+// bank smaller than its decode window repeats, which is how the boot ROMs size
+// memory (they probe down from the window top and read where the address
+// wraps).
+//
+// The guard is the point.  Each family computed `size >> PAGE_SHIFT` and took
+// `p % that` with nothing checking it was non-zero, so a bank under 4 KB would
+// divide by zero.  Unreachable through machine.boot today, which validates
+// against ram_options, but iici_split_ram_banks' fallback is written to accept
+// arbitrary totals ("let the ROM's own sizing decide what it thinks of that"),
+// and a bank of zero pages decodes nothing rather than being undefined.
+void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
+                         mac030_fill_fn fill, bool writable);
+
 // Toggle the ROM/RAM overlay at $00000000.  `overlay_flag` points at the
 // machine's own rom_overlay bool; `rom_start` is the machine's ROM region
 // base (GLUE $40000000, MDU $40800000).
@@ -87,8 +106,8 @@ void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, st
 // SWIM floppy, then bind the I/O dispatcher.  Stores the device handles in
 // the unified state and on config_t.  Call after VIA1/VIA2 exist.
 struct mac030_board_desc;
-void mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
-                                   const struct mac030_board_desc *desc);
+int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_state_t *st,
+                                  const struct mac030_board_desc *desc);
 
 // (mac030_build_mmu — the board-parameterised PMMU builder — is declared below,
 // next to mac030_board_desc_t which carries the ROM window it uses.)
@@ -165,7 +184,7 @@ extern const machine_substrate_t glue_substrate;
 // core + RTC/SCC/VIA1/VIA2 + peripherals + PMMU + NuBus in canonical order,
 // applies the board's deltas via its hooks, and finishes.  A GLUE machine's
 // substrate.init is a one-liner that calls this with its board.
-void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board);
+int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board);
 
 // IRQ source bits driven into cfg->irq.  GLUE routes them to fixed IPLs:
 // VIA1→1, VIA2→2, SCC→4, NMI→7.  The per-machine SE30_IRQ_* / IICX_IRQ_*

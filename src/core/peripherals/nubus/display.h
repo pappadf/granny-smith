@@ -59,6 +59,29 @@ static inline uint8_t display_black_fill(pixel_format_t format) {
     return format == PIXEL_1BPP_MSB ? 0xFFu : 0x00u;
 }
 
+// Bits per pixel for a format.  A property of the encoding, not of the card
+// that scans it out, so it lives with the enum: five display sources each
+// carried a private copy of this switch, and two of them had fallen behind
+// the enum (Ariel had no 32 bpp case, the RBV built-in had neither 16 nor
+// 32), silently answering 8 for anything they had not been taught.
+static inline uint32_t display_bpp(pixel_format_t format) {
+    switch (format) {
+    case PIXEL_1BPP_MSB:
+        return 1;
+    case PIXEL_2BPP_MSB:
+        return 2;
+    case PIXEL_4BPP_MSB:
+        return 4;
+    case PIXEL_8BPP:
+        return 8;
+    case PIXEL_16BPP_555:
+        return 16;
+    case PIXEL_32BPP_XRGB:
+        return 32;
+    }
+    return 8; // unreachable for a valid pixel_format_t
+}
+
 // Single CLUT entry; rgba layout matches QuickDraw's RGBColor packed for
 // host consumption (alpha is always 255 on Mac displays).
 typedef struct rgba8 {

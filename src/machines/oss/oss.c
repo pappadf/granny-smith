@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("oss");
+LOG_USE_CATEGORY_NAME("board");
 
 // Number of software-visible OSS interrupt sources.
 #define OSS_NUM_SOURCES 15

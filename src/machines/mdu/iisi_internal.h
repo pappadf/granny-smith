@@ -76,5 +76,9 @@ static inline iisi_state_t *iisi_state(config_t *cfg) {
 #define IISI_BANK_A_SIZE 0x00100000UL // 1 MB soldered Bank A
 #define IISI_BANK_B_PHYS 0x04000000UL // Bank B physical base
 #define IISI_BANK_WINDOW 0x04000000UL // 64 MB per-bank mirror window
+// The window's TOP is $08000000 -- Bank B's base plus its window.  That is an
+// address, not an installed-RAM ceiling: the most this machine can hold is
+// Bank A + the window = 65 MB, which is what hw_profile_t.ram_max carries and
+// what iisi_ram_options_kb tops out at.  The two were confused once.
 
 #endif // IISI_INTERNAL_H

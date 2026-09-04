@@ -103,7 +103,7 @@ typedef struct av_board {
     const av_board_desc_t *desc;
     void (*via1_output)(void *context, uint8_t port, uint8_t value);
     void (*via1_shift_out)(void *context, uint8_t byte);
-    void (*build_devices)(config_t *cfg, checkpoint_t *cp); // machine tail
+    int (*build_devices)(config_t *cfg, checkpoint_t *cp); // machine tail
 } av_board_t;
 
 // Unified AV-family machine state.
@@ -152,7 +152,7 @@ extern const mac030_io_range_t av_io_ranges[];
 
 // Shared device construction for both leaves (the boards differ only in
 // their descriptor data).  Referenced from each leaf's av_board_t.
-void av_build_devices(config_t *cfg, checkpoint_t *cp);
+int av_build_devices(config_t *cfg, checkpoint_t *cp);
 
 // Shared VIA1 callbacks (identical wiring on both boards): port-B output and
 // SR shift-out carry the Cuda handshake.

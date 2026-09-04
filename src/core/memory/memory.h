@@ -15,6 +15,11 @@
 #include <stdint.h>
 
 // === Macros ===
+// Aligned big-endian access: these cast the pointer, so `p` must be
+// naturally aligned for its width.  Right for register windows and RAM
+// reached through the memory map.  For on-disk and on-wire buffers read
+// at arbitrary offsets, use common.h's RD_BE*/WR_BE* instead, which are
+// byte-wise and carry no alignment requirement.
 #define LOAD_BE8(p)  (*(const uint8_t *)(p))
 #define LOAD_BE16(p) (__builtin_bswap16(*(const uint16_t *)(p)))
 #define LOAD_BE32(p) (__builtin_bswap32(*(const uint32_t *)(p)))

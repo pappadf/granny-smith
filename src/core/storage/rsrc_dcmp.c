@@ -61,6 +61,7 @@
 //   the table buffer (where VarsList[N+1] is set when N is remembered).
 
 #include "rsrc_dcmp.h"
+#include "common.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -68,15 +69,8 @@
 
 // ---- Big-endian field readers --------------------------------------------
 
-static uint16_t be_u16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-static uint32_t be_u32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
-}
-
 bool rsrc_dcmp_is_compressed(const uint8_t *bytes, size_t len) {
-    return bytes && len >= 4 && be_u32(bytes) == RSRC_DCMP_MAGIC;
+    return bytes && len >= 4 && RD_BE32(bytes) == RSRC_DCMP_MAGIC;
 }
 
 // ---- Constant-word emit table (opcodes 0x4B..0xFD) ------------------------
@@ -236,11 +230,11 @@ static void vt_init(vt_t *vt, uint8_t *buf, size_t size) {
 static int vt_remember(vt_t *vt, const uint8_t *data, size_t len) {
     if (vt->size < 4)
         return -1;
-    uint16_t next_idx = be_u16(vt->buf);
+    uint16_t next_idx = RD_BE16(vt->buf);
     if (next_idx + 2 > vt->size)
         return -1; // index list would collide with the data area
     // Previous entry's offset = end of the new string.
-    uint16_t prev_off = be_u16(vt->buf + next_idx - 2);
+    uint16_t prev_off = RD_BE16(vt->buf + next_idx - 2);
     if (len > prev_off)
         return -1; // data area exhausted
     uint16_t new_off = (uint16_t)(prev_off - len);
@@ -265,14 +259,14 @@ static int vt_remember(vt_t *vt, const uint8_t *data, size_t len) {
 static int vt_fetch(const vt_t *vt, uint32_t idx, const uint8_t **data, size_t *len) {
     if (vt->size < 4)
         return -1;
-    uint16_t next_idx = be_u16(vt->buf);
+    uint16_t next_idx = RD_BE16(vt->buf);
     // VarsList[idx] is at byte offset 2 + idx*2; VarsList[idx+1] at +2*idx+4.
     size_t a_off = (size_t)2 + (size_t)idx * 2;
     size_t b_off = a_off + 2;
     if (b_off + 2 > next_idx)
         return -1;
-    uint16_t a = be_u16(vt->buf + a_off); // string end
-    uint16_t b = be_u16(vt->buf + b_off); // string start
+    uint16_t a = RD_BE16(vt->buf + a_off); // string end
+    uint16_t b = RD_BE16(vt->buf + b_off); // string start
     if (b > a || a > vt->size)
         return -1;
     *data = vt->buf + b;
@@ -1048,12 +1042,12 @@ uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, 
 
     if (!compressed || compressed_len < 18)
         FAIL("truncated header");
-    if (be_u32(compressed) != RSRC_DCMP_MAGIC)
+    if (RD_BE32(compressed) != RSRC_DCMP_MAGIC)
         FAIL("not compressed");
 
-    uint16_t hdr_len = be_u16(compressed + 4);
+    uint16_t hdr_len = RD_BE16(compressed + 4);
     uint8_t hdr_ver = compressed[6];
-    uint32_t actual_size = be_u32(compressed + 8);
+    uint32_t actual_size = RD_BE32(compressed + 8);
 
     if (hdr_len < 18 || hdr_len > compressed_len)
         FAIL("truncated header");
@@ -1063,9 +1057,9 @@ uint8_t *rsrc_dcmp_decompress(const uint8_t *compressed, size_t compressed_len, 
     // top of this file).
     int16_t dcmp_id;
     if (hdr_ver == 8) {
-        dcmp_id = (int16_t)be_u16(compressed + 14);
+        dcmp_id = (int16_t)RD_BE16(compressed + 14);
     } else if (hdr_ver == 9) {
-        dcmp_id = (int16_t)be_u16(compressed + 12);
+        dcmp_id = (int16_t)RD_BE16(compressed + 12);
     } else {
         FAIL("unsupported version");
     }

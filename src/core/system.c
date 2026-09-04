@@ -535,10 +535,14 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
 // Size limits for hd create
 #define HD_CREATE_MAX_SIZE (2ULL * 1024 * 1024 * 1024) // 2 GiB
 
-// Floppy sizes that should be rejected
-#define FLOPPY_400K  409600
-#define FLOPPY_800K  819200
-#define FLOPPY_1440K 1474560
+// Floppy sizes that should be rejected.  Named _BYTES because machine_profile.h
+// (included above) declares floppy_kind_t with FLOPPY_400K / FLOPPY_800K as
+// ENUM CONSTANTS: bare macros of the same name silently shadowed them for the
+// rest of this file, so anything here that later meant the kind would have got
+// a byte count instead.
+#define FLOPPY_400K_BYTES  409600
+#define FLOPPY_800K_BYTES  819200
+#define FLOPPY_1440K_BYTES 1474560
 
 // Create a new blank hard disk image at the given path.
 // Returns 0 on success, -1 on failure.
@@ -556,7 +560,7 @@ static int do_create_hd(const char *path, const char *size_str) {
         return -1;
     }
     // reject floppy-sized images
-    if (size == FLOPPY_400K || size == FLOPPY_800K || size == FLOPPY_1440K) {
+    if (size == FLOPPY_400K_BYTES || size == FLOPPY_800K_BYTES || size == FLOPPY_1440K_BYTES) {
         printf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
         return -1;
     }
@@ -736,8 +740,19 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
         cfg->ram_size = profile->ram_default;
     }
 
-    // Delegate all machine-specific initialisation to the profile
-    profile->substrate->init(cfg, checkpoint);
+    // Delegate all machine-specific initialisation to the profile.  A
+    // non-zero return means the machine could not be built (the only cause
+    // today is an allocation failure); tear down whatever it managed and
+    // report the failure rather than handing back a half-built config.  Every
+    // teardown tolerates a partially-constructed machine -- each guards its
+    // machine_context -- which is what makes this safe to call here.
+    if (profile->substrate->init(cfg, checkpoint) != 0) {
+        LOG(0, "Error: failed to construct %s", profile->name);
+        if (profile->substrate->teardown)
+            profile->substrate->teardown(cfg);
+        free(cfg);
+        return NULL;
+    }
 
     // Bind the main-CPU debug seam to whichever core the substrate built.
     switch (cfg->cpu_arch) {
@@ -750,6 +765,20 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
             cfg->cpu_dbg = ppc_debug_if(cfg->ppc);
         break;
     }
+
+    // A machine with a CD bay has the DRIVE on the bus from power-on, disc or
+    // no disc.  SCSI is not hot-plug: the guest's CD driver claims its targets
+    // during the boot-time bus scan and polls only those, so a drive that
+    // materialises later — when the user picks Insert — is one nothing ever
+    // looks at, and the disc never mounts.  Registering it empty here makes a
+    // later insert an ordinary medium change (UNIT ATTENTION), which is what
+    // the driver notices and the Finder mounts on.
+    //
+    // Skip a slot that is already occupied: restoring a checkpoint rebuilds
+    // the bus from the saved state, and that device outranks a blank bay.
+    if (profile->has_cdrom && cfg->scsi && !scsi_device_present(cfg->scsi, (unsigned)profile->cdrom_id))
+        scsi_add_device(cfg->scsi, profile->cdrom_id, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048,
+                        true);
 
     // Stand up the object-model root (M2): attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
@@ -885,29 +914,23 @@ void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
 
     img->type = image_cdrom;
 
-    // Present the disc at the block size it was MASTERED for, which its own
-    // Driver Descriptor Map records in sbBlkSize (block 0, 'ER' signature,
-    // bytes 2-3).  A pressed Apple system CD says 2048; a disk image laid out
-    // like a hard disk — including every image in tests/data/systems — says
-    // 512, and there are real 512-byte-block CDs too.  Serving a 512-mastered
-    // image at 2048 multiplies every LBA by four: the Start Manager reads the
-    // wrong sectors, finds no driver partition and the machine does not boot.
+    // A CD-ROM drive presents 2048-byte logical blocks — that is the Mode 1
+    // sector, not a property of the disc — so serve every disc at 2048 and let
+    // the guest ask for anything else.  A host that wants 512-byte addressing
+    // issues MODE SELECT with a block descriptor, which scsi_cdrom_mode_select
+    // already honours; A/UX does exactly that when it mounts its install CD.
     //
-    // This is what real hardware does as well.  An AppleCD drive powers up in
-    // 2048-byte mode and Apple's driver issues MODE SELECT to switch it to
-    // 512 for HFS discs (scsi_cdrom_mode_select already models that path);
-    // adopting sbBlkSize up front gets the boot blocks readable before any
-    // driver is loaded, which is the ordering the ROM needs.
+    // Do NOT adopt the sbBlkSize the disc's Driver Descriptor Map records
+    // (block 0, 'ER' signature, bytes 2-3).  That field is the unit the
+    // PARTITION MAP is addressed in — 512 on an HFS disc, including a raw hard
+    // disk image burned to CD — and not the drive's block length.  Conflating
+    // the two hands the Apple CD-ROM driver a 512-byte device when it is
+    // addressing 2048-byte sectors, so every sector number it computes lands a
+    // quarter of the way into the disc: it reads byte 8192 looking for the
+    // ISO 9660 descriptor at sector 16, never finds the partition map, and the
+    // Finder offers to initialize the disc.  Mapping the map's 512-byte units
+    // onto 2048-byte sectors is the driver's job, and it does it in software.
     uint16_t cd_block_size = 2048;
-    uint8_t ddm[512];
-    if (disk_read_data(img, 0, ddm, sizeof(ddm)) == sizeof(ddm) && ddm[0] == 'E' && ddm[1] == 'R') {
-        uint16_t sb = (uint16_t)((ddm[2] << 8) | ddm[3]);
-        if (sb == 512 || sb == 2048)
-            cd_block_size = sb;
-        else
-            printf("CD-ROM %s: Driver Descriptor Map declares an unsupported block size %u; using 2048\n", filename,
-                   sb);
-    }
 
     printf("Attaching SCSI CD-ROM: %s as SONY CD-ROM CDU-8002 (size: %zu bytes, %u-byte blocks, SCSI ID: %d)\n",
            filename, disk_size(img), cd_block_size, scsi_id);
@@ -1046,9 +1069,9 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
 
     double elapsed_ms = host_time_ms() - start_time;
     // Ambient by default — the browser's background auto-saves land here
-    // every ~15 s and used to spam the terminal. `debug.log checkpoint 1`
+    // every ~15 s and used to spam the terminal. `debug.log ckpt 1`
     // restores the line; the status bar gets its own push (em_main.c).
-    LOG_WITH(log_register_category("checkpoint"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
+    LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint saved to %s (%.2f ms)", filename, elapsed_ms);
     return GS_SUCCESS;
 }
 

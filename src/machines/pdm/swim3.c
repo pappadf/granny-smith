@@ -37,21 +37,21 @@ void pdm_swim3_bind(config_t *cfg) {
         .set_irq = pdm_fd_set_irq,
         .ctx = cfg,
     };
-    swim3_bind(&pdm_st(cfg)->amic.swim3, cfg->floppy, cfg->scheduler, &be);
+    swim3_bind(&pdm_st(cfg)->swim3, cfg->floppy, cfg->scheduler, &be);
 }
 
 void pdm_swim3_register_events(config_t *cfg) {
-    swim3_register_events(&pdm_st(cfg)->amic.swim3);
+    swim3_register_events(&pdm_st(cfg)->swim3);
 }
 
 void pdm_swim3_xfer_register_events(config_t *cfg) {
-    swim3_xfer_register_events(&pdm_st(cfg)->amic.swim3);
+    swim3_xfer_register_events(&pdm_st(cfg)->swim3);
 }
 
 uint8_t pdm_swim3_read(config_t *cfg, uint32_t off) {
-    return swim3_read(&pdm_st(cfg)->amic.swim3, (off >> 9) & 15u);
+    return swim3_read(&pdm_st(cfg)->swim3, (off >> 9) & 15u);
 }
 
 void pdm_swim3_write(config_t *cfg, uint32_t off, uint8_t value) {
-    swim3_write(&pdm_st(cfg)->amic.swim3, (off >> 9) & 15u, value);
+    swim3_write(&pdm_st(cfg)->swim3, (off >> 9) & 15u, value);
 }

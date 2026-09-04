@@ -76,6 +76,8 @@ static uint32_t awacs_rate(tnt_awacs_t *w) {
 static void awacs_render(config_t *cfg, const uint8_t *bytes, uint32_t nframes) {
     tnt_state_t *st = tnt_st(cfg);
     tnt_awacs_t *w = &st->awacs;
+    if (!st->snd_stage)
+        return; // no staging buffer: stay silent rather than write through NULL
     bool le = (w->byte_swap & 1u) != 0;
     bool mute;
     uint32_t gl, gr;
@@ -347,6 +349,8 @@ void tnt_awacs_reset(config_t *cfg) {
 void tnt_awacs_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     st->snd_stage = calloc(AWACS_CREDIT_CAP(44100) + 1, 2 * sizeof(int16_t));
+    if (!st->snd_stage)
+        LOG(0, "Error: out of memory allocating the AWACS staging buffer; this machine plays no sound");
 
     // The shared host stream, opened at the rate the boot actually uses:
     // Open Firmware programs 22 050 Hz (sound-control rate code 2) for

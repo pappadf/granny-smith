@@ -376,6 +376,43 @@ void scsi_set_sense(scsi_t *scsi, int target, uint8_t key, uint8_t asc, uint8_t 
     scsi->devices[target & 7].sense.ascq = ascq;
 }
 
+// Does this opcode touch the medium, as opposed to the drive itself?  An
+// empty CD bay must answer the drive-level commands normally — that is how a
+// guest tells an empty drive from a broken one — and fail only the ones that
+// need a disc.  INQUIRY, REQUEST SENSE, MODE SENSE/SELECT, START/STOP,
+// PREVENT/ALLOW, RESERVE/RELEASE and the diagnostics are all drive-level.
+static bool scsi_cmd_needs_medium(uint8_t opcode) {
+    switch (opcode) {
+    case CMD_REZERO_UNIT:
+    case CMD_FORMAT_UNIT:
+    case CMD_READ:
+    case CMD_WRITE:
+    case CMD_SEEK_6:
+    case CMD_READ_CAPACITY:
+    case CMD_READ_10:
+    case CMD_WRITE_10:
+    case CMD_SEEK_10:
+    case CMD_WRITE_VERIFY:
+    case CMD_VERIFY:
+    case CMD_READ_SUB_CHANNEL:
+    case CMD_READ_TOC:
+    case CMD_READ_HEADER:
+    case CMD_PLAY_AUDIO_10:
+    case CMD_PLAY_AUDIO_MSF:
+    case CMD_PAUSE_RESUME:
+    case CMD_SONY_READ_TOC:
+    case CMD_SONY_PLAYBACK_STATUS:
+    case CMD_SONY_PAUSE:
+    case CMD_SONY_PLAY_TRACK:
+    case CMD_SONY_PLAY_MSF:
+    case CMD_SONY_PLAY_AUDIO:
+    case CMD_SONY_PLAYBACK_CTRL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Return CHECK CONDITION, setting sense data on the current target
 void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t ascq) {
     scsi_set_sense(scsi, scsi->bus.target, sense_key, asc, ascq);
@@ -409,6 +446,30 @@ static void run_cmd(scsi_t *scsi) {
         scsi->devices[target].unit_attention = false;
         scsi_check_condition(scsi, SENSE_UNIT_ATTENTION, ASC_NOT_READY_TO_READY, 0x00);
         return;
+    }
+
+    // An empty CD bay is a real device on the bus with no disc in it: fail
+    // every command that needs the medium, before any of them reach for the
+    // absent image.  A machine with a CD bay carries the drive from power-on
+    // (system_create), so this is the ordinary state between discs, not an
+    // error path.
+    //
+    // START UNIT joins them, and only in its START form (CDB byte 4 bit 0 —
+    // stopping or ejecting an empty drive is fine): a drive with no disc
+    // cannot spin one up, so it answers NOT READY.  The Network Server's
+    // Open Firmware depends on exactly that.  Its diag-device list is
+    // `cd disk6 fd:diags`, so it starts the CD first; told GOOD, it believes
+    // the drive came ready and issues READ, and READ's CHECK CONDITION
+    // reaches its SCRIPTS program as a DATA IN phase mismatch it never
+    // recovers from — the machine stalls at `cd` and never reaches the
+    // diagnostic floppy.  Told NOT READY, it reads the sense, gives up on
+    // the empty drive and boots the floppy, which is what the hardware does.
+    if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
+        bool start_unit = scsi->cmd.opcode == CMD_START_STOP_UNIT && (scsi->buf.data[4] & 0x01) != 0;
+        if (start_unit || scsi_cmd_needs_medium(scsi->cmd.opcode)) {
+            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
+            return;
+        }
     }
 
     switch (scsi->cmd.opcode) {

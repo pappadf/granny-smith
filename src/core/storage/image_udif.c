@@ -6,6 +6,7 @@
 // image_udif.h.
 
 #include "image_udif.h"
+#include "common.h"
 
 #include "adc.h"
 #include "inflate.h"
@@ -59,12 +60,8 @@ _Static_assert(KOLY_OFF_SECTORS + 8 <= UDIF_TRAILER_SIZE, "koly offset outside t
 static const uint8_t KOLY_SIGNATURE[4] = {'k', 'o', 'l', 'y'};
 #define MISH_SIGNATURE 0x6D697368u // 'mish'
 
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
 static uint64_t rd64(const uint8_t *p) {
-    return ((uint64_t)rd32(p) << 32) | (uint64_t)rd32(p + 4);
+    return ((uint64_t)RD_BE32(p) << 32) | (uint64_t)RD_BE32(p + 4);
 }
 
 // CRC-32 (reflected, polynomial 0xEDB88320) — the same one zlib and PNG use,
@@ -95,8 +92,8 @@ bool udif_detect(const uint8_t *trailer, size_t len) {
         return false;
     // Version and header size are the two fields that separate a real trailer
     // from four incidental bytes of payload that happen to spell 'koly'.
-    return rd32(trailer + KOLY_OFF_VERSION) == KOLY_VERSION &&
-           rd32(trailer + KOLY_OFF_HEADER_SIZE) == UDIF_TRAILER_SIZE;
+    return RD_BE32(trailer + KOLY_OFF_VERSION) == KOLY_VERSION &&
+           RD_BE32(trailer + KOLY_OFF_HEADER_SIZE) == UDIF_TRAILER_SIZE;
 }
 
 int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out) {
@@ -111,9 +108,9 @@ int udif_parse_trailer(const uint8_t *trailer, size_t len, udif_trailer_t *out) 
     out->xml_offset = rd64(trailer + KOLY_OFF_XML_OFFSET);
     out->xml_length = rd64(trailer + KOLY_OFF_XML_LENGTH);
     out->sectors = rd64(trailer + KOLY_OFF_SECTORS);
-    out->segment_count = rd32(trailer + KOLY_OFF_SEGMENT_COUNT);
-    out->checksum_type = rd32(trailer + KOLY_OFF_CHECKSUM_TYPE);
-    out->checksum = rd32(trailer + KOLY_OFF_CHECKSUM);
+    out->segment_count = RD_BE32(trailer + KOLY_OFF_SEGMENT_COUNT);
+    out->checksum_type = RD_BE32(trailer + KOLY_OFF_CHECKSUM_TYPE);
+    out->checksum = RD_BE32(trailer + KOLY_OFF_CHECKSUM);
 
     // A spanned image keeps later chunks in sibling .dmgpart files we have no
     // way to reach from one path; say so rather than decode a truncated disk.
@@ -208,7 +205,7 @@ static bool extract_keyed_string(const char *from, const char *end, const char *
 static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
     if (len < MISH_HEADER_SIZE)
         return -EINVAL;
-    if (rd32(b + MISH_OFF_SIGNATURE) != MISH_SIGNATURE || rd32(b + MISH_OFF_VERSION) != MISH_VERSION)
+    if (RD_BE32(b + MISH_OFF_SIGNATURE) != MISH_SIGNATURE || RD_BE32(b + MISH_OFF_VERSION) != MISH_VERSION)
         return -EINVAL;
     // Every image seen in the wild stores its chunks at absolute data-fork
     // offsets and leaves this zero; a non-zero base would silently shift every
@@ -218,12 +215,12 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
 
     t->base_sector = rd64(b + MISH_OFF_SECTOR);
     t->sectors = rd64(b + MISH_OFF_SECTOR_COUNT);
-    t->checksum_type = rd32(b + MISH_OFF_CHECKSUM_TYPE);
-    t->checksum = rd32(b + MISH_OFF_CHECKSUM);
+    t->checksum_type = RD_BE32(b + MISH_OFF_CHECKSUM_TYPE);
+    t->checksum = RD_BE32(b + MISH_OFF_CHECKSUM);
 
     // NB: the u32 at 0x24 is the blkx resource ID, not a descriptor count —
     // the count lives at 0xC8, immediately before the entry array.
-    uint32_t n_entries = rd32(b + MISH_OFF_CHUNK_COUNT);
+    uint32_t n_entries = RD_BE32(b + MISH_OFF_CHUNK_COUNT);
     if ((uint64_t)n_entries * MISH_ENTRY_SIZE > (uint64_t)(len - MISH_HEADER_SIZE))
         return -EINVAL;
     if (n_entries == 0)
@@ -236,7 +233,7 @@ static int parse_mish(const uint8_t *b, size_t len, udif_table_t *t) {
     size_t nc = 0;
     for (uint32_t i = 0; i < n_entries; i++) {
         const uint8_t *e = b + MISH_HEADER_SIZE + (size_t)i * MISH_ENTRY_SIZE;
-        uint32_t type = rd32(e);
+        uint32_t type = RD_BE32(e);
         if (type == UDIF_CHUNK_END)
             break;
         if (type == UDIF_CHUNK_COMMENT)

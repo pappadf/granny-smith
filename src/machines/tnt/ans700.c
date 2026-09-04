@@ -47,6 +47,27 @@ static const struct scsi_slot ans700_scsi_slots[] = {
     {0},
 };
 
+// Bus 1 carries the same front bays 4-6 as the 500, PLUS the two rear bays
+// this model adds -- which is how Apple's count works out: "The buses
+// accommodate four, five, and seven SCSI devices, respectively."  Four on
+// bus 0 (the CD bay plus bays 1-3), five on bus 1 (front 4-6 plus the two
+// rear).  Until this the table was byte-identical to the 500's while the
+// comment above described a topology it did not express.
+static const struct scsi_slot ans700_scsi_slots_fw1[] = {
+    {.label = "Bay 5 (fast/wide 1)", .id = 4},
+    {.label = "Bay 6 (fast/wide 1)", .id = 5},
+    {.label = "Bay 7 (fast/wide 1)", .id = 6},
+    {.label = "Rear bay 1 (fast/wide 1)", .id = 0},
+    {.label = "Rear bay 2 (fast/wide 1)", .id = 1},
+    {0},
+};
+
+static const scsi_bus_decl_t ans700_scsi_buses[] = {
+    {.object = "scsi", .label = "Front backplane (fast/wide 0)", .slots = ans700_scsi_slots},
+    {.object = "scsi2", .label = "Front + rear bays (fast/wide 1)", .slots = ans700_scsi_slots_fw1},
+    {0},
+};
+
 // Identical to the 500's — same board, same backplane, same IDSELs, same
 // interrupt map.  Duplicated rather than shared because that is how this
 // family has always carried per-model topology (pm8500.c / pm9500.c), and
@@ -152,7 +173,8 @@ const hw_profile_t machine_ans700 = {
     .rom_size = 0x400000, // 4 MB ($962F6C13 production / $49B2BE8F prototype)
 
     .ram_options = ans700_ram_options_kb,
-    .scsi_slots = ans700_scsi_slots,
+    .scsi_buses = ans700_scsi_buses,
+    .floppy_slots = tnt_floppy_slots,
     .has_cdrom = true,
     .cdrom_id = 0,
 

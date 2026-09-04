@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+
 /*
  * dsp3210_dis.c — reference disassembler for the AT&T DSP3210
  *

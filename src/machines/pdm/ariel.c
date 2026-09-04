@@ -58,6 +58,35 @@ const pdm_monitor_kind_t pdm_monitors[] = {
 // on consumption so a forgotten setting cannot leak into the next machine.
 static uint8_t s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
 
+// hw_profile_t.builtin_video (machine_profile.h).  Two thin adapters over
+// pdm_monitors so the machine registry can publish and validate this port
+// without reaching into this family: the sense strap stays here.
+static bool pdm_builtin_monitor_at(size_t i, const char **id, const char **name) {
+    size_t n = 0;
+    for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++, n++) {
+        if (n == i) {
+            *id = m->id;
+            *name = m->name;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool pdm_builtin_stage_monitor(const char *id) {
+    const pdm_monitor_kind_t *m = pdm_monitor_lookup(id);
+    if (!m)
+        return false;
+    pdm_pending_monitor_set(m->sense);
+    return true;
+}
+
+const builtin_video_desc_t pdm_builtin_video = {
+    .display_name = "Built-in video (Ariel II)",
+    .monitor_at = pdm_builtin_monitor_at,
+    .stage_monitor = pdm_builtin_stage_monitor,
+};
+
 void pdm_pending_monitor_set(uint8_t sense) {
     s_pending_sense = (uint8_t)(sense & 0x07u);
 }
@@ -128,22 +157,6 @@ static pixel_format_t pdm_depth_format(uint8_t code) {
     }
 }
 
-static uint32_t format_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_16BPP_555:
-        return 16;
-    case PIXEL_8BPP:
-    default:
-        return 8;
-    }
-}
-
 // Rebuild the depth-windowed palette view.  At reduced depth the hardware
 // feeds the DAC eight index lines with the unused low lines driven HIGH, so
 // a pixel value i reads CLUT entry (skip-1) + i*skip with skip =
@@ -153,7 +166,7 @@ static uint32_t format_bpp(pixel_format_t f) {
 static void pdm_video_refresh_clut(pdm_state_t *st) {
     pdm_amic_t *a = &st->amic;
     pdm_video_t *v = &st->video;
-    uint32_t bpp = format_bpp(v->display.format);
+    uint32_t bpp = display_bpp(v->display.format);
     if (bpp > 8)
         return; // direct format: CLUT bypassed
     uint32_t len = 1u << bpp;
@@ -186,7 +199,7 @@ void pdm_video_update(config_t *cfg) {
     v->display.width = w;
     v->display.height = h;
     v->display.format = f;
-    v->display.stride = w * format_bpp(f) / 8u;
+    v->display.stride = w * display_bpp(f) / 8u;
     v->display.par_w = 0;
     v->display.par_h = 0;
     v->display.crt_response = NULL;
@@ -228,6 +241,8 @@ void pdm_video_init(config_t *cfg) {
     st->video.sense = s_pending_sense; // what machine.boot's monitor= staged
     s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
     st->video.blank = calloc(1, PDM_VIDEO_MAX_BYTES);
+    if (!st->video.blank)
+        LOG(0, "Error: out of memory allocating the blanked raster; the screen stays live while blanked");
     pdm_video_update(cfg);
     st->video.display.response_dirty = true;
 }

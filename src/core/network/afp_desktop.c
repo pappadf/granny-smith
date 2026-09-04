@@ -5,6 +5,7 @@
 // Persistent per-volume desktop database (see afp_desktop.h).
 
 #include "afp_desktop.h"
+#include "common.h"
 
 #include "afp_meta.h"
 #include "log.h"
@@ -56,23 +57,6 @@ struct afp_desktop {
 
 // --- big-endian helpers ----------------------------------------------------
 
-static void wr32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-static uint32_t rd32(const uint8_t *p) {
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-static void wr16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v >> 8);
-    p[1] = (uint8_t)v;
-}
-static uint16_t rd16(const uint8_t *p) {
-    return (uint16_t)((p[0] << 8) | p[1]);
-}
-
 // --- icon store ------------------------------------------------------------
 
 // icon record: op(1) creator(4) type(4) icon_type(1) tag(4) size(2) bitmap[size]
@@ -85,11 +69,11 @@ static void icon_log_append(afp_desktop_t *dt, uint8_t op, const afp_icon_t *ic)
         return;
     uint8_t hdr[DT_ICON_FIXED];
     hdr[0] = op;
-    wr32(hdr + 1, ic->creator);
-    wr32(hdr + 5, ic->file_type);
+    WR_BE32(hdr + 1, ic->creator);
+    WR_BE32(hdr + 5, ic->file_type);
     hdr[9] = ic->icon_type;
-    wr32(hdr + 10, ic->tag);
-    wr16(hdr + 14, ic->size);
+    WR_BE32(hdr + 10, ic->tag);
+    WR_BE16(hdr + 14, ic->size);
     bool ok = fwrite(hdr, 1, sizeof(hdr), dt->icon_log) == sizeof(hdr);
     if (ok && ic->size && ic->bitmap)
         ok = fwrite(ic->bitmap, 1, ic->size, dt->icon_log) == ic->size;
@@ -157,7 +141,7 @@ static void icon_load(afp_desktop_t *dt) {
     if (!f)
         return;
     uint8_t magic[4];
-    if (fread(magic, 1, 4, f) != 4 || rd32(magic) != DT_ICON_MAGIC) {
+    if (fread(magic, 1, 4, f) != 4 || RD_BE32(magic) != DT_ICON_MAGIC) {
         fclose(f);
         LOG(1, "AFP desktop: '%s' unreadable — starting a fresh icon store", dt->icon_path);
         remove(dt->icon_path);
@@ -167,13 +151,13 @@ static void icon_load(afp_desktop_t *dt) {
         uint8_t hdr[DT_ICON_FIXED];
         if (fread(hdr, 1, sizeof(hdr), f) != sizeof(hdr))
             break;
-        uint16_t size = rd16(hdr + 14);
+        uint16_t size = RD_BE16(hdr + 14);
         if (size > AFP_ICON_MAX_BYTES)
             break;
         uint8_t bitmap[AFP_ICON_MAX_BYTES];
         if (size && fread(bitmap, 1, size, f) != size)
             break;
-        icon_apply(dt, hdr[0], rd32(hdr + 1), rd32(hdr + 5), hdr[9], rd32(hdr + 10), bitmap, size);
+        icon_apply(dt, hdr[0], RD_BE32(hdr + 1), RD_BE32(hdr + 5), hdr[9], RD_BE32(hdr + 10), bitmap, size);
         dt->icon_records++;
     }
     fclose(f);
@@ -189,9 +173,9 @@ static void appl_log_append(afp_desktop_t *dt, uint8_t op, const afp_appl_t *a) 
         return;
     uint8_t rec[DT_APPL_FIXED];
     rec[0] = op;
-    wr32(rec + 1, a->creator);
-    wr32(rec + 5, a->cnid);
-    wr32(rec + 9, a->tag);
+    WR_BE32(rec + 1, a->creator);
+    WR_BE32(rec + 5, a->cnid);
+    WR_BE32(rec + 9, a->tag);
     if (fwrite(rec, 1, sizeof(rec), dt->appl_log) != sizeof(rec)) {
         LOG(1, "AFP desktop: APPL log write failed (%s)", strerror(errno));
         fclose(dt->appl_log);
@@ -248,7 +232,7 @@ static void appl_load(afp_desktop_t *dt) {
     if (!f)
         return;
     uint8_t magic[4];
-    if (fread(magic, 1, 4, f) != 4 || rd32(magic) != DT_APPL_MAGIC) {
+    if (fread(magic, 1, 4, f) != 4 || RD_BE32(magic) != DT_APPL_MAGIC) {
         fclose(f);
         LOG(1, "AFP desktop: '%s' unreadable — starting a fresh APPL store", dt->appl_path);
         remove(dt->appl_path);
@@ -258,7 +242,7 @@ static void appl_load(afp_desktop_t *dt) {
         uint8_t rec[DT_APPL_FIXED];
         if (fread(rec, 1, sizeof(rec), f) != sizeof(rec))
             break;
-        appl_apply(dt, rec[0], rd32(rec + 1), rd32(rec + 5), rd32(rec + 9));
+        appl_apply(dt, rec[0], RD_BE32(rec + 1), RD_BE32(rec + 5), RD_BE32(rec + 9));
         dt->appl_records++;
     }
     fclose(f);
@@ -278,7 +262,7 @@ static FILE *store_open(const char *path, uint32_t magic) {
             return NULL;
         }
         uint8_t m[4];
-        wr32(m, magic);
+        WR_BE32(m, magic);
         fwrite(m, 1, 4, f);
         fclose(f);
     }
@@ -332,18 +316,18 @@ static void desktop_compact(afp_desktop_t *dt) {
         FILE *f = fopen(tmp, "wb");
         if (f) {
             uint8_t m[4];
-            wr32(m, DT_ICON_MAGIC);
+            WR_BE32(m, DT_ICON_MAGIC);
             bool ok = fwrite(m, 1, 4, f) == 4;
             for (size_t i = 0; ok && i < dt->icon_len; i++) {
                 if (dt->icons[i].dead)
                     continue;
                 uint8_t hdr[DT_ICON_FIXED];
                 hdr[0] = DT_OP_PUT;
-                wr32(hdr + 1, dt->icons[i].v.creator);
-                wr32(hdr + 5, dt->icons[i].v.file_type);
+                WR_BE32(hdr + 1, dt->icons[i].v.creator);
+                WR_BE32(hdr + 5, dt->icons[i].v.file_type);
                 hdr[9] = dt->icons[i].v.icon_type;
-                wr32(hdr + 10, dt->icons[i].v.tag);
-                wr16(hdr + 14, dt->icons[i].v.size);
+                WR_BE32(hdr + 10, dt->icons[i].v.tag);
+                WR_BE16(hdr + 14, dt->icons[i].v.size);
                 ok = fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr);
                 if (ok && dt->icons[i].v.size)
                     ok = fwrite(dt->icons[i].bytes, 1, dt->icons[i].v.size, f) == dt->icons[i].v.size;
@@ -365,16 +349,16 @@ static void desktop_compact(afp_desktop_t *dt) {
         FILE *f = fopen(tmp, "wb");
         if (f) {
             uint8_t m[4];
-            wr32(m, DT_APPL_MAGIC);
+            WR_BE32(m, DT_APPL_MAGIC);
             bool ok = fwrite(m, 1, 4, f) == 4;
             for (size_t i = 0; ok && i < dt->appl_len; i++) {
                 if (dt->appls[i].dead)
                     continue;
                 uint8_t rec[DT_APPL_FIXED];
                 rec[0] = DT_OP_PUT;
-                wr32(rec + 1, dt->appls[i].v.creator);
-                wr32(rec + 5, dt->appls[i].v.cnid);
-                wr32(rec + 9, dt->appls[i].v.tag);
+                WR_BE32(rec + 1, dt->appls[i].v.creator);
+                WR_BE32(rec + 5, dt->appls[i].v.cnid);
+                WR_BE32(rec + 9, dt->appls[i].v.tag);
                 ok = fwrite(rec, 1, sizeof(rec), f) == sizeof(rec);
             }
             if (fclose(f) != 0)

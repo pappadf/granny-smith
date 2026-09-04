@@ -106,8 +106,15 @@ typedef struct pdm_dma_ch {
 // $200): the shared model (core/peripherals/swim3.h), bound to the AMIC
 // floppy DMA channel and the pseudo-VIA2 interrupt bank in pdm/swim3.c.
 // Drive and media state lives in the shared floppy module (cfg->floppy);
-// the struct is checkpointed positionally inside pdm_amic_t and re-bound
-// with pdm_swim3_bind() after a restore.
+// the struct is checkpointed as its own block and re-bound with
+// pdm_swim3_bind() after a restore.
+//
+// It sits in pdm_state_t rather than inside pdm_amic_t, matching TNT
+// (tnt.h).  It lived in the AMIC until a reset path was found clearing it:
+// pdm_amic_init() memsets the whole AMIC, so any reset that reached it
+// zeroed the chip's bound fd/sched/backend pointers with the registers.
+// Keeping it out of every struct a reset memsets is what makes that class
+// of bug unreachable rather than merely fixed.
 
 typedef struct pdm_amic {
     // Interrupt control register $50F2A000
@@ -142,7 +149,6 @@ typedef struct pdm_amic {
     double snd_half_start_ns; // when the in-flight output half began playing
     uint32_t snd_halves; // output half-buffers rendered since power-on
     int32_t snd_peak; // loudest |sample| pushed to the host since power-on
-    swim3_t swim3; // floppy controller (core/peripherals/swim3.c)
 } pdm_amic_t;
 
 // === Monitor sense strap (ariel.c) ==========================================
@@ -173,6 +179,11 @@ extern const pdm_monitor_kind_t pdm_monitors[];
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
 // Stage the strap for the NEXT machine built (machine.boot `monitor=`).
 void pdm_pending_monitor_set(uint8_t sense);
+
+// hw_profile_t.builtin_video for the three PDM leaves: the registry walks the
+// table above and stages a pick through this, so it needs no pdm_ symbol and
+// no knowledge of the sense strap.
+extern const builtin_video_desc_t pdm_builtin_video;
 
 // === Video presentation state (ariel.c) =====================================
 // Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
@@ -214,6 +225,7 @@ typedef struct pdm_bart {
 typedef struct pdm_state {
     pdm_hmc_t hmc;
     pdm_amic_t amic;
+    swim3_t swim3; // floppy controller (see above; NOT inside pdm_amic_t)
     struct av_cuda *cuda;
     // SCSI: [0] = the Curio 53C94 cell (all models, island +$10000, AMIC
     // DMA channel A, bus = cfg->scsi); [1] = the 8100's discrete 53CF96

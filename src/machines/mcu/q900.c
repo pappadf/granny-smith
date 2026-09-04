@@ -54,7 +54,7 @@
 #include <stdint.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("q900");
+LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
 // VIA callbacks (tower wiring: Caboose on VIA1, IOP IRQs on VIA2)
@@ -173,7 +173,7 @@ static void q900_dafb_irq(void *context, bool active) {
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
 
-void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
+int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = q900_state(cfg);
     const mcu_board_t *board = (const mcu_board_t *)cfg->machine->board;
     const mcu_board_desc_t *desc = board->desc;
@@ -182,9 +182,7 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // PA & $56 == $50 for the Q900 (InfoQuadra900: PA6=1, PA4=1, PA2=0,
     // PA1=0).  PA7 idles high (board default), PA0 is the diagnostic-mode
     // strap and must idle HIGH for a normal boot (same as the Q700).
-    for (int bit = 0; bit < 8; bit++)
-        via_input(cfg->via1, 0, bit, (desc->via1_pa_model >> bit) & 1);
-    via_input(cfg->via1, 0, 0, 1); // PA0 diagnostic strap high
+    mcu_apply_via1_model_sense(cfg, desc);
     // CA1 idles high (60 Hz tick reference edge); CA2 is the keyswitch
     // "secure" sense — high = not in the secure position.
     via_input_c(cfg->via1, 0, 0, 1);
@@ -245,7 +243,10 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     // Egret8 — ChkFirmware branches on the box flag, not the chip).  ADB
     // stays NULL here: tower ADB belongs to the SWIM IOP.
     st->caboose = egret_init(cfg->via1, cfg->rtc, NULL, cfg->scheduler, cp);
-    assert(st->caboose != NULL);
+    if (!st->caboose) {
+        LOG(0, "Error: out of memory constructing the Caboose");
+        return -1;
+    }
 
     // The two Apple PIC/IOPs.  The host aperture layout matches the IIfx
     // PIC exactly (shared HardwarePrivateEqu.a equates), so the IIfx bridge
@@ -257,7 +258,10 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
                             cfg->scheduler, cp);
 
     st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q900 maxed)
-    assert(st->dafb != NULL);
+    if (!st->dafb) {
+        LOG(0, "Error: out of memory constructing the DAFB");
+        return -1;
+    }
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, q900_dafb_irq, cfg);
     // Consume unconditionally so a staged sense never leaks into a later
@@ -280,7 +284,10 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
     st->bus_mmu =
         mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
-    assert(st->bus_mmu != NULL);
+    if (!st->bus_mmu) {
+        LOG(0, "Error: out of memory constructing the 040 bus MMU");
+        return -1;
+    }
     g_mmu = st->bus_mmu;
     mmu_attach_mmu040(st->bus_mmu, (mmu040_state_t *)cfg->cpu->mmu);
 
@@ -300,6 +307,7 @@ void q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     if (cp)
         mcu_restore_private(cfg, cp);
+    return 0;
 }
 
 // ============================================================
@@ -318,6 +326,11 @@ static const struct floppy_slot q900_floppy_slots[] = {
 static const struct scsi_slot q900_scsi_slots[] = {
     {.label = "SCSI HD0", .id = 0},
     {.label = "SCSI HD1", .id = 1},
+    {0},
+};
+
+static const scsi_bus_decl_t q900_scsi_buses[] = {
+    {.object = "scsi", .label = "SCSI", .slots = q900_scsi_slots},
     {0},
 };
 
@@ -370,7 +383,7 @@ const hw_profile_t machine_q900 = {
 
     .ram_options = q900_ram_options_kb,
     .floppy_slots = q900_floppy_slots,
-    .scsi_slots = q900_scsi_slots,
+    .scsi_buses = q900_scsi_buses,
     .has_cdrom = true, // internal CD option shipped on the towers
     .cdrom_id = 3,
 
