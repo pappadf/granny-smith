@@ -180,6 +180,11 @@ const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
 // Stage the strap for the NEXT machine built (machine.boot `monitor=`).
 void pdm_pending_monitor_set(uint8_t sense);
 
+// hw_profile_t.builtin_video for the three PDM leaves: the registry walks the
+// table above and stages a pick through this, so it needs no pdm_ symbol and
+// no knowledge of the sense strap.
+extern const builtin_video_desc_t pdm_builtin_video;
+
 // === Video presentation state (ariel.c) =====================================
 // Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
 // clut) and rebuilt on init, reset and checkpoint restore — never saved.

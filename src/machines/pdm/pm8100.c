@@ -91,7 +91,7 @@ const hw_profile_t machine_pm8100 = {
     .has_cdrom = true,
     .cdrom_id = 3,
 
-    .builtin_video = "Built-in video (Ariel II)",
+    .builtin_video = &pdm_builtin_video,
     .nubus_slots = pm8100_nubus_slots,
 
     .substrate = &pdm_substrate,

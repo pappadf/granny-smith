@@ -58,6 +58,35 @@ const pdm_monitor_kind_t pdm_monitors[] = {
 // on consumption so a forgotten setting cannot leak into the next machine.
 static uint8_t s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
 
+// hw_profile_t.builtin_video (machine_profile.h).  Two thin adapters over
+// pdm_monitors so the machine registry can publish and validate this port
+// without reaching into this family: the sense strap stays here.
+static bool pdm_builtin_monitor_at(size_t i, const char **id, const char **name) {
+    size_t n = 0;
+    for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++, n++) {
+        if (n == i) {
+            *id = m->id;
+            *name = m->name;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool pdm_builtin_stage_monitor(const char *id) {
+    const pdm_monitor_kind_t *m = pdm_monitor_lookup(id);
+    if (!m)
+        return false;
+    pdm_pending_monitor_set(m->sense);
+    return true;
+}
+
+const builtin_video_desc_t pdm_builtin_video = {
+    .display_name = "Built-in video (Ariel II)",
+    .monitor_at = pdm_builtin_monitor_at,
+    .stage_monitor = pdm_builtin_stage_monitor,
+};
+
 void pdm_pending_monitor_set(uint8_t sense) {
     s_pending_sense = (uint8_t)(sense & 0x07u);
 }

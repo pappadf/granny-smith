@@ -96,6 +96,29 @@ const char *hd_bus_to_string(hd_bus_t bus);
 
 // One floppy drive slot on a machine.  Sentinel-terminated arrays end at
 // the first entry whose `label` is NULL.
+// A substrate-published built-in display, owned by the family that models it.
+//
+// The registry (machines/machine.c) publishes this in machine.profile and
+// validates/stages `monitor=` through it, so a second family with built-in
+// video -- the TNT's Control, the AV's CIVIC -- gets its OWN monitor list
+// rather than the PDM's.  Before this was a descriptor it was a bare label
+// and the registry reached straight into pdm/pdm.h for the rest.
+//
+// The monitor list is a callback rather than an array so the family keeps
+// whatever per-monitor data it needs private: the PDM's table carries a
+// 3-bit sense strap the registry has no business seeing.
+typedef struct builtin_video_desc {
+    const char *display_name; // "Built-in video (Ariel II)"
+    // Enumerate what the port accepts: fill *id/*name for index i, or return
+    // false once past the end.
+    bool (*monitor_at)(size_t i, const char **id, const char **name);
+    // Stage the pick for the next machine built; false if id is not one of
+    // the above.  (On the staging channel this rides, and why it is a
+    // construction input rather than a post-boot write, see
+    // proposal-construction-inputs.md.)
+    bool (*stage_monitor)(const char *id);
+} builtin_video_desc_t;
+
 struct floppy_slot {
     const char *label; // "Internal FD0"; NULL terminates the array
     floppy_kind_t kind;
@@ -297,7 +320,7 @@ typedef struct hw_profile {
     // monitor port unconnected — which is what makes a NuBus card the only
     // screen.  NULL on machines whose built-in video is a BUILTIN slot
     // (SE/30, IIci) or which have none at all.
-    const char *builtin_video;
+    const struct builtin_video_desc *builtin_video;
 
     // Behavior: the lifecycle + host-input vtable for this machine.  Machines
     // of the same chipset family SHARE one substrate (glue_substrate /

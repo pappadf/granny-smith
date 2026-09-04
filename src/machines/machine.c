@@ -25,7 +25,6 @@
 #include "pci/pci.h"
 
 #include "mcu/dafb.h"
-#include "pdm/pdm.h" // the built-in monitor strap (profile.builtin_video)
 
 LOG_USE_CATEGORY_NAME("setup");
 
@@ -449,13 +448,16 @@ static value_t build_builtin_video(const hw_profile_t *p) {
     if (!p->builtin_video)
         return val_map_finish(b);
     val_map_put(b, "id", val_str("builtin"));
-    val_map_put(b, "display_name", val_str(p->builtin_video));
+    val_map_put(b, "display_name", val_str(p->builtin_video->display_name));
     value_t *mons = NULL;
     size_t n = 0, cap = 0;
-    for (const pdm_monitor_kind_t *m = pdm_monitors; m->id; m++) {
+    // The family owns its monitor list; this walks it without knowing the
+    // per-monitor data behind it (the PDM's sense strap).
+    const char *mid = NULL, *mname = NULL;
+    for (size_t i = 0; p->builtin_video->monitor_at && p->builtin_video->monitor_at(i, &mid, &mname); i++) {
         value_map_builder_t *mb = val_map_new();
-        val_map_put(mb, "id", val_str(m->id));
-        val_map_put(mb, "name", val_str(m->name));
+        val_map_put(mb, "id", val_str(mid));
+        val_map_put(mb, "name", val_str(mname));
         val_list_push(&mons, &n, &cap, val_map_finish(mb));
     }
     val_map_put(b, "monitors", val_list(mons, n));
@@ -784,7 +786,20 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     if (doc.monitor && *doc.monitor) {
         if (!profile->builtin_video)
             return val_err("machine.boot: model '%s' has no configurable built-in video port", profile->id);
-        if (!pdm_monitor_lookup(doc.monitor))
+        // Validated HERE, against the family's own list, because everything in
+        // machine_boot_apply must be rejected before the first side effect --
+        // a staged monitor that a later validation error leaves behind would
+        // be consumed by the NEXT boot.
+        bool known = false;
+        const char *mid = NULL, *mname = NULL;
+        for (size_t i = 0; profile->builtin_video->monitor_at && profile->builtin_video->monitor_at(i, &mid, &mname);
+             i++) {
+            if (strcmp(mid, doc.monitor) == 0) {
+                known = true;
+                break;
+            }
+        }
+        if (!known)
             return val_err("machine.boot: unknown monitor id '%s' (see machine.profile)", doc.monitor);
     }
     if (doc.custom_mode && *doc.custom_mode) {
@@ -872,9 +887,10 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
             jmfb_pending_sense_set((uint8_t)doc.video_sense);
         dafb_pending_sense_set((uint8_t)doc.video_sense); // built-in Quadra video
     }
-    // The built-in monitor strap: validated above, so the lookup succeeds.
+    // The built-in monitor strap, staged by whichever family owns this port.
+    // Validated above, so this cannot fail.
     if (doc.monitor && *doc.monitor)
-        pdm_pending_monitor_set(pdm_monitor_lookup(doc.monitor)->sense);
+        (void)profile->builtin_video->stage_monitor(doc.monitor);
 
     machine_config_reset_vroms();
     machine_config_reset_slot_cards();
