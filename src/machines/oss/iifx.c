@@ -289,7 +289,7 @@ static inline iifx_state_t *iifx_state(config_t *cfg) {
 }
 
 // Forward declarations for profile callbacks.
-static void iifx_init(config_t *cfg, checkpoint_t *checkpoint);
+static int iifx_init(config_t *cfg, checkpoint_t *checkpoint);
 static void iifx_teardown(config_t *cfg);
 static void iifx_reset(config_t *cfg);
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp);
@@ -1475,9 +1475,12 @@ static const mac030_board_desc_t iifx_board = {
 };
 
 // Initializes a Macintosh IIfx machine.
-static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
+static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     iifx_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
 
     // Build the shared II-family core (mem_map, cpu-from-profile, scheduler).
@@ -1587,6 +1590,7 @@ static void iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         cfg->irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
+    return 0;
 }
 
 // Tears down an IIfx machine.

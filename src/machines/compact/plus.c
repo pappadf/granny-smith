@@ -167,10 +167,13 @@ static void plus_memory_layout_init(config_t *cfg) {
 
 // Initialise all Plus subsystems.
 // If checkpoint is non-NULL, each device restores state from it (same order as checkpoint_save).
-static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
+static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // Allocate Plus-specific peripheral state
     plus_state_t *ps = malloc(sizeof(plus_state_t));
-    assert(ps != NULL);
+    if (!ps) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     memset(ps, 0, sizeof(plus_state_t));
     cfg->machine_context = ps;
 
@@ -295,6 +298,7 @@ static void plus_init(config_t *cfg, checkpoint_t *checkpoint) {
         cfg->irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
+    return 0;
 }
 
 // Tear down all Plus resources in reverse init order.

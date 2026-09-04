@@ -620,10 +620,13 @@ static void mcu_memory_layout_init(config_t *cfg) {
 // Substrate lifecycle
 // ============================================================
 
-static void mcu_init(config_t *cfg, checkpoint_t *cp) {
+static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     const mcu_board_t *board = mcu_board(cfg);
     mcu_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
     st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
 
@@ -679,6 +682,7 @@ static void mcu_init(config_t *cfg, checkpoint_t *cp) {
     mmu_host_regions_fill_pages(st->bus_mmu, mac030_fill_page, /*mode24_alias*/ false);
 
     mac030_glue_finish(cfg, cp);
+    return 0;
 }
 
 static void mcu_reset(config_t *cfg) {

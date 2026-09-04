@@ -165,7 +165,7 @@ extern const machine_substrate_t glue_substrate;
 // core + RTC/SCC/VIA1/VIA2 + peripherals + PMMU + NuBus in canonical order,
 // applies the board's deltas via its hooks, and finishes.  A GLUE machine's
 // substrate.init is a one-liner that calls this with its board.
-void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board);
+int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board);
 
 // IRQ source bits driven into cfg->irq.  GLUE routes them to fixed IPLs:
 // VIA1→1, VIA2→2, SCC→4, NMI→7.  The per-machine SE30_IRQ_* / IICX_IRQ_*

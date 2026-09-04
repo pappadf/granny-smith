@@ -86,9 +86,12 @@ void mac030_glue_finish(config_t *cfg, checkpoint_t *cp) {
 // hooks.  TT1 is uniform across the GLUE family ($F0..$FF supervisor identity);
 // it is set right after the PMMU is built (no MMU walk happens before
 // scheduler_start, so the exact moment is immaterial).
-void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board) {
+int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t *board) {
     mac030_glue_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
     st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
     st->last_via2_port_b = 0xFF; // PB2 starts high (IIcx soft-power; unused elsewhere)
@@ -141,6 +144,7 @@ void mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t
     }
 
     mac030_glue_finish(cfg, cp);
+    return 0;
 }
 
 // Build the shared II-family construction prefix.  Reads the CPU model from
@@ -340,8 +344,10 @@ static inline const mac030_glue_board_t *glue_board(config_t *cfg) {
     return (const mac030_glue_board_t *)cfg->machine->board;
 }
 
-static void glue_init(config_t *cfg, checkpoint_t *cp) {
-    mac030_glue_init(cfg, cp, glue_board(cfg));
+static int glue_init(config_t *cfg, checkpoint_t *cp) {
+    if (mac030_glue_init(cfg, cp, glue_board(cfg)) != 0)
+        return -1;
+    return 0;
 }
 
 static void glue_reset(config_t *cfg) {

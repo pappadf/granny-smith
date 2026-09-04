@@ -704,10 +704,13 @@ void av_build_devices(config_t *cfg, checkpoint_t *cp) {
 // Substrate lifecycle
 // ============================================================
 
-static void av_init(config_t *cfg, checkpoint_t *cp) {
+static int av_init(config_t *cfg, checkpoint_t *cp) {
     const av_board_t *board = av_board(cfg);
     av_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
 
     // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
@@ -754,6 +757,7 @@ static void av_init(config_t *cfg, checkpoint_t *cp) {
     }
 
     mac030_glue_finish(cfg, cp);
+    return 0;
 }
 
 static void av_reset(config_t *cfg) {

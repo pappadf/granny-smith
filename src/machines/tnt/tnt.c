@@ -437,9 +437,12 @@ void tnt_nvram_clear(config_t *cfg) {
     LOG(1, "NVRAM cleared (battery removed)");
 }
 
-static void tnt_init(config_t *cfg, checkpoint_t *cp) {
+static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
     if (!cp && tnt_nvram_carry_valid)
         memcpy(st->gc.nvram, tnt_nvram_carry, TNT_NVRAM_SIZE);
@@ -629,6 +632,7 @@ static void tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Finish: debugger + scheduler start.
     cfg->debugger = debug_init();
     scheduler_start(cfg->scheduler);
+    return 0;
 }
 
 static void tnt_reset(config_t *cfg) {

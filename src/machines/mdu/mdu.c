@@ -9,6 +9,7 @@
 
 #include "mdu.h"
 #include "appletalk.h"
+#include "log.h"
 
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -36,6 +37,9 @@
 #include <assert.h>
 #include <stdlib.h>
 
+// The machine-level category every family substrate logs under (915a7ea).
+LOG_USE_CATEGORY_NAME("board");
+
 static inline const mac030_mdu_board_t *mdu_board(config_t *cfg) {
     return (const mac030_mdu_board_t *)cfg->machine->board;
 }
@@ -44,9 +48,12 @@ static inline mac030_mdu_state_t *mdu_st(config_t *cfg) {
     return (mac030_mdu_state_t *)cfg->machine_context;
 }
 
-void mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *board) {
+int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *board) {
     mac030_mdu_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
 
     // Shared II-family core (mem_map, cpu-from-profile, scheduler) + RTC + SCC +
@@ -83,10 +90,13 @@ void mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *
     board->build_devices(cfg, cp);
 
     mac030_glue_finish(cfg, cp);
+    return 0;
 }
 
-static void mdu_init(config_t *cfg, checkpoint_t *cp) {
-    mac030_mdu_init(cfg, cp, mdu_board(cfg));
+static int mdu_init(config_t *cfg, checkpoint_t *cp) {
+    if (mac030_mdu_init(cfg, cp, mdu_board(cfg)) != 0)
+        return -1;
+    return 0;
 }
 
 static void mdu_reset(config_t *cfg) {

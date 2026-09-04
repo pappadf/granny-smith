@@ -810,9 +810,12 @@ static void lisa_register_power_object(config_t *cfg) {
 static void lisa_vbl_off(void *source, uint64_t data); // defined in the VBL section
 static void lisa_vbl_ack(void *source); // defined in the VBL section
 
-static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
+static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
     lisa_state_t *ls = (lisa_state_t *)malloc(sizeof(lisa_state_t));
-    assert(ls != NULL);
+    if (!ls) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     memset(ls, 0, sizeof(*ls));
     cfg->machine_context = ls;
 
@@ -969,6 +972,7 @@ static void lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
         cfg->irq = 0;
         cpu_set_ipl(cfg->cpu, 0);
     }
+    return 0;
 }
 
 static void lisa_teardown(config_t *cfg) {

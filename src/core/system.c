@@ -735,8 +735,19 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
         cfg->ram_size = profile->ram_default;
     }
 
-    // Delegate all machine-specific initialisation to the profile
-    profile->substrate->init(cfg, checkpoint);
+    // Delegate all machine-specific initialisation to the profile.  A
+    // non-zero return means the machine could not be built (the only cause
+    // today is an allocation failure); tear down whatever it managed and
+    // report the failure rather than handing back a half-built config.  Every
+    // teardown tolerates a partially-constructed machine -- each guards its
+    // machine_context -- which is what makes this safe to call here.
+    if (profile->substrate->init(cfg, checkpoint) != 0) {
+        LOG(0, "Error: failed to construct %s", profile->name);
+        if (profile->substrate->teardown)
+            profile->substrate->teardown(cfg);
+        free(cfg);
+        return NULL;
+    }
 
     // Bind the main-CPU debug seam to whichever core the substrate built.
     switch (cfg->cpu_arch) {

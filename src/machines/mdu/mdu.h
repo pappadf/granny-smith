@@ -39,7 +39,7 @@ typedef struct mac030_mdu_board {
 // The shared MDU init: allocate the unified state, build the II-family core +
 // RTC/SCC/VIA1, run the board's build_devices, then finish.  An MDU machine's
 // substrate is just &mdu_substrate; this is what its init resolves to.
-void mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *board);
+int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *board);
 
 // The one MDU+RBV-family substrate (IIci + IIsi).
 extern const machine_substrate_t mdu_substrate;

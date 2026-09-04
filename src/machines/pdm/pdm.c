@@ -263,9 +263,12 @@ static void pdm_scc_irq(void *context, bool active) {
 // Substrate lifecycle
 // ============================================================
 
-static void pdm_init(config_t *cfg, checkpoint_t *cp) {
+static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     pdm_state_t *st = calloc(1, sizeof(*st));
-    assert(st != NULL);
+    if (!st) {
+        LOG(0, "Error: out of memory allocating the machine state for %s", cfg->machine->name);
+        return -1;
+    }
     cfg->machine_context = st;
 
     // Core: memory map, the 601, the scheduler on the PPC seam.  CPI is
@@ -411,6 +414,7 @@ static void pdm_init(config_t *cfg, checkpoint_t *cp) {
     // the checkpointed pending event through the registered type).
     if (!cp)
         pdm_amic_start_vbl(cfg);
+    return 0;
 }
 
 static void pdm_reset(config_t *cfg) {

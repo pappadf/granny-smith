@@ -185,7 +185,13 @@ typedef struct media_slot {
 // were never dispatched: each init runs its own layout directly and restore
 // is folded into init.)
 typedef struct machine_substrate {
-    void (*init)(struct config *cfg, checkpoint_t *cp);
+    // Build the machine.  Returns 0 on success, non-zero on failure --
+    // matching the NuBus card layer's ops->init, which has always worked this
+    // way.  On failure system_create tears down what was built and returns
+    // NULL, which machine_boot_apply already handles, so a machine that cannot
+    // be constructed rejects the boot instead of leaving a half-built config
+    // for the caller to dereference.
+    int (*init)(struct config *cfg, checkpoint_t *cp);
     void (*reset)(struct config *cfg); // hardware RESET line
     void (*teardown)(struct config *cfg);
     void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
