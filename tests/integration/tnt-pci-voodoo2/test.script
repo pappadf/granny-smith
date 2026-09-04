@@ -196,6 +196,28 @@ assert scheduler.cycles == $NC0 "null backend: a draw consumes no scheduled time
 assert machine.pci.slot[1].card.regs.read(0x15C) == 0 "null backend: nothing was drawn — only CONTENTS may differ between backends"
 assert machine.pci.slot[1].card.regs.read(0x25C) == 1 "...but the triangle RETIRED: the guest-visible command stream is backend-independent"
 
+# --- The raster seam: the worker-thread backend is byte-identical. ----------
+# pci_option="raster=thread" runs the same executor on a worker pthread
+# behind a command queue (voodoo2_raster.h); every observation point —
+# LFB reads, the statistics counters, the stipple register, scanout,
+# checkpoints — fences first.  So the ENTIRE drawing section replays
+# here, on the thread backend, against the same pinned pixel values and
+# counts the walker just produced: the equivalence is asserted, not
+# assumed.  (On a build without the thread backend the option falls
+# back to the walker and the section degenerates to a repeat.)
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=thread"
+cfg_wr(0x10, 0x81000000)
+cfg_wr(0x04, 0x0002)
+let BAR = machine.pci.slot[1].card.config.bar[0].base
+echo "raster backend for the replay: ${machine.pci.slot[1].card.regs.raster}"
+include "glide-init.script"
+include "draw.script"
+# The null backend's invariant, restated on the thread backend: the
+# triangle retired on the producer (fbiTrianglesOut counts at
+# submission — part of the seam's contract) while the pixels were
+# produced elsewhere.
+assert machine.pci.slot[1].card.regs.read(0x25C) > 0 "thread backend: triangles retired at submission"
+
 # --- The memory option: 8 MB and 12 MB boards. ------------------------------
 # Both SKUs carry the same 4 MB framebuffer (both reach 800x600); the
 # option changes texture capacity only.  The guest-visible TMU probe

@@ -268,6 +268,32 @@ let SECOND = px(52, 51)
 assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift (Q9)"
 vreg_wr(0x104, 0x00000000)
 
+# --- Rotate-mode stipple: a per-pixel register mutation, pinned. ------------
+# fbzMode[2] with [12] clear: every pixel tests bit 31 of the stipple
+# register and then ROTATES it, masked or not (V2 p.47).  Over the 136
+# pixels of tri1 the pattern $80000001 passes only where a set bit sits
+# at 31 before its rotation — k = 0, 31 (mod 32) — nine pixels — and
+# ends up rotated 136 = 4x32+8 places: $00000180.  Both numbers are
+# observations of executor-owned state read back through the register
+# file, which is exactly what a backend that runs elsewhere must fence
+# for (voodoo2_raster.h, invariant 2).
+vreg_wr(0x104, 0x00000000)
+vreg_wr(0x140, 0x80000001)
+vreg_wr(0x110, 0x00000604)
+tri1_vertices
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x040, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+let PO0 = stat(0x15C)
+let PI0 = stat(0x14C)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert stat(0x14C) == $PI0 + 136 "stipple: every pixel of the triangle entered the pipeline"
+assert stat(0x15C) == $PO0 + 9 "stipple: nine pixels saw a set bit 31 before their rotation"
+assert stat(0x140) == 0x00000180 "stipple: the register rotated once per pixel, masked or not"
+vreg_wr(0x110, 0x00000600)
+vreg_wr(0x140, 0x00000000)
+
 # --- Invariant 1 of the raster seam: drawing consumes NO guest time. --------
 # Timing is analytic (voodoo2_raster.h): a triangle completes at issue
 # and the scheduler does not advance, so the guest's instruction stream
