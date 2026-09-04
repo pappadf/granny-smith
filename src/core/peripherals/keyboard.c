@@ -369,19 +369,27 @@ extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_ke
         raw_code = 0x75;
         break; // Option
 
-    // Arrow keys: need $79 prefix, then shared letter key code
+    // Arrow keys: need $79 prefix, then shared letter key code.  Both
+    // arrow code sets are accepted: 0x3B-0x3E are the RAW ADB scan
+    // codes (what the web layer and the ADB model use — on ADB
+    // keyboards raw 0x7B+ are the right-hand modifiers), 0x7B-0x7E
+    // the Extended-layout virtual codes kept for compatibility.
+    case 0x3B:
     case 0x7B:
         raw_code = 0x0D;
         needs_keypad_prefix = true;
         break; // Left (Z)
+    case 0x3C:
     case 0x7C:
         raw_code = 0x05;
         needs_keypad_prefix = true;
         break; // Right (D)
+    case 0x3D:
     case 0x7D:
         raw_code = 0x11;
         needs_keypad_prefix = true;
         break; // Down (C)
+    case 0x3E:
     case 0x7E:
         raw_code = 0x1B;
         needs_keypad_prefix = true;
