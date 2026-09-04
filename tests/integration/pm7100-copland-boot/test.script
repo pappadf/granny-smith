@@ -106,9 +106,15 @@ def row_plain_75_with_latch() {
 
 # MILESTONE 3-4 (plan §6.3), now enforced: the verbose boot console over the
 # Mac OS logo.  The microkernel is up by here — the console's own words are
-# "Microkernel initialization starting...complete."  The budget lands after
-# the ADB probe lines (measured: the frame is complete at 1.56 G and the run
-# is deterministic under the fixed RTC), and wait_stable settles any tail.
+# "Microkernel initialization starting...complete." — and the golden is the
+# frame wait_stable settles on once the servers start reporting in:
+# "ProcessServer: Launching System Process", "TrueTypeServer: TrueType is
+# Listening" and "Type 1 Scaler (OFA 2): Type 1 is Listening".  That third
+# line joined the golden when the CD bay went on the bus from power-on: the
+# bay's SCSI traffic moves the timeline enough that the console holds still
+# one line later than it used to.  (The same shift is what exposed the Cuda
+# sync/autopoll defect fixed in cuda.c — a boot that once stalled right at
+# the microkernel line now runs through to the Finder.)
 def row_copland_logo() {
     boot_image($img, true)
     wait_stable(900000000)
