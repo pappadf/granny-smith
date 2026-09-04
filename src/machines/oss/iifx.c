@@ -417,8 +417,19 @@ static void iifx_apply_fmc_rom_invert(config_t *cfg, bool enable) {
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
     if (!st->fmc_inverted_rom) {
         st->fmc_inverted_rom = malloc(rom_size);
-        if (!st->fmc_inverted_rom)
+        if (!st->fmc_inverted_rom) {
+            // Returning silently is not neutral: iifx_oss_control has already
+            // flipped its state bit, so the caller believes the invert was
+            // applied while these pages still point at the plain ROM.  Phase
+            // $90's comparison then fails and the ROM reports a bad logic
+            // board -- a hardware fault the user cannot act on.  We still
+            // cannot invert, but the log now says why the machine did that.
+            LOG(0,
+                "Error: out of memory building the %u-byte inverted ROM image; the phase-$90 invert "
+                "cannot be applied and POST will report a logic-board fault",
+                (unsigned)rom_size);
             return;
+        }
         for (uint32_t i = 0; i < rom_size; i++)
             st->fmc_inverted_rom[i] = (uint8_t)~rom_data[i];
     }

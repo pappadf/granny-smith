@@ -241,6 +241,8 @@ void pdm_video_init(config_t *cfg) {
     st->video.sense = s_pending_sense; // what machine.boot's monitor= staged
     s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
     st->video.blank = calloc(1, PDM_VIDEO_MAX_BYTES);
+    if (!st->video.blank)
+        LOG(0, "Error: out of memory allocating the blanked raster; the screen stays live while blanked");
     pdm_video_update(cfg);
     st->video.display.response_dirty = true;
 }
