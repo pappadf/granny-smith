@@ -69,7 +69,7 @@ document grows as each group lands.
   framebuffer checksum.
 - **3e — guest software (Mac OS 8.1 + `Quake 3Dfx`) — COMPLETE:
   detection AND real in-game rendering.**  Running the SHIPPED 3dfx
-  driver exposed eight model gaps, all closed, none found by the
+  driver exposed nine model gaps, all closed, none found by the
   hand-written tests.  Detection round: the **CMDFIFO engine** (V2 §11
   — the proposal wrongly believed it off the Glide 2.x path; Mac
   Glide's whole render path uses it and polls `cmdFifoRdPtr` for
@@ -100,7 +100,18 @@ document grows as each group lands.
   5. **Packet-5 byte addressing** — the base word is a byte offset,
      not a word address; the `<<2` smeared every texture row and LFB
      span 4× apart (`v2_fifo_execute`).
-  With all eight, `Quake 3Dfx` launches from the Finder, the real
+  6. **seq_8_downld S-decode** (`textureMode[31]`) — sequential 8-bit
+     downloads pack four texels per CONTIGUOUS word (S from address
+     bits 8:2); decoding them with the legacy even-address shift (8:3)
+     made every second word of a row overwrite the previous one.
+     Quake's I8 LIGHTMAP atlases came out shredded — surfaces went
+     near-black under broken lightmaps while every 16-bit texture
+     stayed correct — found by A/B against software-renderer
+     screenshots of the same scene, chased with the pixel-provenance
+     watch down to non-smooth atlas texels, and pinned against the
+     vendor download code's two address shifts [Glide-src gtexdl.c]
+     (`v2_tex_write`).
+  With all nine, `Quake 3Dfx` launches from the Finder, the real
   `3DfxGlideLib2.x` completes `grSstQueryHardware`, opens the screen
   with `grSstWinOpen`, switches the pass-through, and plays its
   attract demos at 640×480 — thousands of textured, mip-mapped, lit,
@@ -275,8 +286,12 @@ Two further tools trace a single wrong pixel to its texels:
 
 - **`GS_V2_WATCH="x,y"`** (environment variable, needs
   `debug.log voodoo2 1`): logs every colour-buffer store to that pixel
-  with the full shading state, and every texel fetch that fed it
-  (`watch texel tmuN lodN (s,t) addr raw argb`).
+  with the full shading state, every texel fetch that fed it
+  (`watch texel tmuN lodN (s,t) addr lodbase raw argb`), and one
+  pipe-internals line per pixel (`watch pipe tex= iter= cc= fogmode=
+  fogcolor= post=`) separating texture, combine, and fog stages.  The
+  watch is armed in the rasteriser walk, so fetch lines belong to
+  exactly the watched pixel.
 - **`regs.tex_save(tmu, path)`**: dumps a TMU's raw texture RAM to a
   host file for offline decoding.
 

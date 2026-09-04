@@ -961,8 +961,19 @@ static void v2_tex_write(voodoo2_t *v, uint32_t off, uint32_t le_value) {
             ram[(at + 1u) & mask] = (uint8_t)(px >> 8);
         }
     } else if (mode & (1u << 31)) {
-        // seq_8_downld: four sequential 8-bit texels, S[7:2] from 8:3.
-        uint32_t s0 = ((off >> 3) & 0x3Fu) << 2;
+        // seq_8_downld (textureMode[31]): four sequential 8-bit texels
+        // per word packed CONTIGUOUSLY — S[8:2] decodes from address
+        // bits 8:2, unlike the legacy even-address mode below where
+        // each word occupies an 8-byte slot (S from bits 8:3).  The
+        // vendor's download code switches its address shift between
+        // the two modes (sh=2 vs sh=3) [Glide-src gtexdl.c].  Decoding
+        // seq-8 with the legacy shift makes every second word of a row
+        // overwrite the previous one: half of each 8-bit texture stale
+        // — Quake's LIGHTMAP atlases (I8, uploaded seq-8 by the Mac
+        // driver) came out shredded, surfaces went near-black under
+        // their broken lightmaps, while all 16-bit textures stayed
+        // fine.
+        uint32_t s0 = ((off >> 2) & 0x7Fu) << 2;
         for (uint32_t i = 0; i < 4u; i++) {
             uint32_t s = s0 + i;
             if (s >= w)
@@ -1118,7 +1129,8 @@ static uint32_t v2_texel_fetch(const voodoo2_t *v, int tmu, int lod, int32_t s, 
         raw = v->tex_ram[tmu][at & mask] | ((uint32_t)v->tex_ram[tmu][(at + 1u) & mask] << 8);
     uint32_t argb = v2_texel_expand(v, tmu, raw);
     if (s_watch_now)
-        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X raw %04X argb %08X", tmu, lod, s, t, at, raw, argb);
+        LOG(1, "watch texel tmu%d lod%d (s,t)=(%d,%d) addr %06X lodbase %06X raw %04X argb %08X", tmu, lod, s, t, at,
+            v2_tex_lod_base(v, tmu, lod), raw, argb);
     return argb;
 }
 
@@ -1528,6 +1540,10 @@ static bool v2_pixel_pipe(voodoo2_t *v, v2_pix_t *p) {
         out_g = mul_g + add_g2 > 255u ? 255u : mul_g + add_g2;
         out_b = mul_b + add_b2 > 255u ? 255u : mul_b + add_b2;
     }
+    if (s_watch_now)
+        LOG(1, "watch pipe tex=%08X iter=(%u,%u,%u,%u) cc=(%u,%u,%u) fogmode=%08X fogcolor=%08X post=(%u,%u,%u)",
+            p->tex_argb, p->r, p->g, p->b, p->a, prefog_r, prefog_g, prefog_b, fog, v->reg[R_FOGCOLOR], out_r, out_g,
+            out_b);
 
     // Alpha test (alphaMode[3:0]) and the alpha-channel mask
     // (fbzMode[13]) — both count fbiAfuncFail on rejection.
@@ -1960,6 +1976,8 @@ static void v2_sw_triangle(voodoo2_t *v, const voodoo2_tri_t *T) {
             p.w_raw = T->w + T->dwdx * dx + T->dwdy * dy;
             p.w8 = v2_iter_w8(p.w_raw, clamp);
             p.have_tex = tex_on;
+            v2_watch_init();
+            s_watch_now = (p.x == s_watch_x && p.y == s_watch_y);
             p.tex_argb = tex_on ? v2_texture_chain(v, T, dx, dy) : 0u;
             v2_pixel_pipe(v, &p);
         }
