@@ -145,17 +145,10 @@ static void iici_memory_layout_init(config_t *cfg) {
     uint32_t bank_a_size, bank_b_size;
     iici_split_ram_banks(ram_size, &bank_a_size, &bank_b_size);
 
-    uint32_t bank_a_pages = bank_a_size >> PAGE_SHIFT;
-    uint32_t bank_a_window_pages = IICI_BANK_B_PHYS >> PAGE_SHIFT;
-    for (uint32_t p = 0; p < bank_a_window_pages && (int)p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % bank_a_pages) << PAGE_SHIFT), true);
-
     uint8_t *bank_b = ram_base + bank_a_size;
-    uint32_t bank_b_pages = bank_b_size >> PAGE_SHIFT;
-    uint32_t bank_b_start_page = IICI_BANK_B_PHYS >> PAGE_SHIFT;
-    uint32_t bank_b_window_pages = IICI_BANK_WINDOW >> PAGE_SHIFT;
-    for (uint32_t i = 0; bank_b_pages && i < bank_b_window_pages && (int)(bank_b_start_page + i) < g_page_count; i++)
-        mac030_fill_page(bank_b_start_page + i, bank_b + ((i % bank_b_pages) << PAGE_SHIFT), true);
+    mac030_map_mirrored(0, IICI_BANK_B_PHYS >> PAGE_SHIFT, ram_base, bank_a_size >> PAGE_SHIFT, mac030_fill_page, true);
+    mac030_map_mirrored(IICI_BANK_B_PHYS >> PAGE_SHIFT, IICI_BANK_WINDOW >> PAGE_SHIFT, bank_b,
+                        bank_b_size >> PAGE_SHIFT, mac030_fill_page, true);
 
     // Teach the PMMU-side physical resolver the same two-bank layout so
     // table walks and TLB fills resolve Bank B (no-op when bank_b_size == 0

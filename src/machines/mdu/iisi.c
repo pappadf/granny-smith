@@ -105,17 +105,14 @@ static void iisi_memory_layout_init(config_t *cfg) {
     // (the boot ROM sizes a bank by that wrap).  This static (MMU-off) page table
     // models the physical map the ROM probes before it builds its PMMU tree.
     uint32_t bank_a_pages = IISI_BANK_A_SIZE >> PAGE_SHIFT; // 1 MB / 4 KB = 256
-    uint32_t bank_a_window_pages = IISI_BANK_B_PHYS >> PAGE_SHIFT; // [0, $04000000)
-    for (uint32_t p = 0; p < bank_a_window_pages && (int)p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % bank_a_pages) << PAGE_SHIFT), true);
+    mac030_map_mirrored(0, IISI_BANK_B_PHYS >> PAGE_SHIFT, ram_base, bank_a_pages, mac030_fill_page, true);
 
     uint8_t *bank_b = ram_base + IISI_BANK_A_SIZE;
     uint32_t bank_b_size = (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0;
     uint32_t bank_b_pages = bank_b_size >> PAGE_SHIFT;
     uint32_t bank_b_start_page = IISI_BANK_B_PHYS >> PAGE_SHIFT;
     uint32_t bank_b_window_pages = IISI_BANK_WINDOW >> PAGE_SHIFT;
-    for (uint32_t i = 0; bank_b_pages && i < bank_b_window_pages && (int)(bank_b_start_page + i) < g_page_count; i++)
-        mac030_fill_page(bank_b_start_page + i, bank_b + ((i % bank_b_pages) << PAGE_SHIFT), true);
+    mac030_map_mirrored(bank_b_start_page, bank_b_window_pages, bank_b, bank_b_pages, mac030_fill_page, true);
 
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint32_t rom_start_page = IISI_ROM_START >> PAGE_SHIFT;

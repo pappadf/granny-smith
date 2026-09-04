@@ -72,6 +72,25 @@ void mac030_glue_via2_irq(void *context, bool active);
 // of read-only pages.)
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable);
 
+// A page-filler, so families with their own (the IIfx) can share the mirroring
+// helper below.
+typedef void (*mac030_fill_fn)(uint32_t page_index, uint8_t *host_ptr, bool writable);
+
+// Map `window_pages` pages from `start_page`, mirroring `size_pages` pages of
+// host memory throughout — the shape every family's RAM-bank decode has: a
+// bank smaller than its decode window repeats, which is how the boot ROMs size
+// memory (they probe down from the window top and read where the address
+// wraps).
+//
+// The guard is the point.  Each family computed `size >> PAGE_SHIFT` and took
+// `p % that` with nothing checking it was non-zero, so a bank under 4 KB would
+// divide by zero.  Unreachable through machine.boot today, which validates
+// against ram_options, but iici_split_ram_banks' fallback is written to accept
+// arbitrary totals ("let the ROM's own sizing decide what it thinks of that"),
+// and a bank of zero pages decodes nothing rather than being undefined.
+void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
+                         mac030_fill_fn fill, bool writable);
+
 // Toggle the ROM/RAM overlay at $00000000.  `overlay_flag` points at the
 // machine's own rom_overlay bool; `rom_start` is the machine's ROM region
 // base (GLUE $40000000, MDU $40800000).

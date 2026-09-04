@@ -166,6 +166,14 @@ void mac030_build_core(config_t *cfg, checkpoint_t *cp) {
     scheduler_set_cpi(cfg->scheduler, 4);
 }
 
+void mac030_map_mirrored(uint32_t start_page, uint32_t window_pages, uint8_t *host, uint32_t size_pages,
+                         mac030_fill_fn fill, bool writable) {
+    if (size_pages == 0)
+        return; // a bank smaller than one page decodes nothing
+    for (uint32_t i = 0; i < window_pages && (int)(start_page + i) < g_page_count; i++)
+        fill(start_page + i, host + ((i % size_pages) << PAGE_SHIFT), writable);
+}
+
 // Populate one page in the AoS table + SoA fast-path arrays.  Read-only pages
 // leave the write SoA entries at their zero-initialised value (slow path).
 void mac030_fill_page(uint32_t page_index, uint8_t *host_ptr, bool writable) {

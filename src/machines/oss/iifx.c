@@ -1399,9 +1399,10 @@ static void iifx_memory_layout_init(config_t *cfg) {
     // which the ROM sizes correctly as a single contiguous 32 MB region.
     uint32_t ram_pages = ram_size >> PAGE_SHIFT;
     uint32_t window_pages = IIFX_RAM_WINDOW >> PAGE_SHIFT;
-    uint32_t map_pages = (ram_pages > window_pages) ? ram_pages : window_pages;
-    for (uint32_t p = 0; p < map_pages && (int)p < g_page_count; p++)
-        iifx_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
+    // RAM larger than the decode window still maps in full (the ROM's
+    // descending probe walks above the window), so the span is the larger.
+    mac030_map_mirrored(0, (ram_pages > window_pages) ? ram_pages : window_pages, ram_base, ram_pages, iifx_fill_page,
+                        true);
 
     st->rom_interface = (memory_interface_t){
         .read_uint8 = iifx_rom_read_uint8,

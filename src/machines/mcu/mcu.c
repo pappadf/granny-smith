@@ -154,12 +154,8 @@ static void mcu_map_ram(config_t *cfg) {
             if (o != b && st->bank_size[o] && st->bank_start[o] > start && st->bank_start[o] < end)
                 end = st->bank_start[o];
 
-        uint8_t *bank = ram_base + st->bank_image_off[b];
-        uint32_t pages = (end - start) >> PAGE_SHIFT;
-        uint32_t size_pages = size >> PAGE_SHIFT;
-        uint32_t first = start >> PAGE_SHIFT;
-        for (uint32_t p = 0; p < pages && (int)(first + p) < g_page_count; p++)
-            mac030_fill_page(first + p, bank + ((p % size_pages) << PAGE_SHIFT), true);
+        mac030_map_mirrored(start >> PAGE_SHIFT, (end - start) >> PAGE_SHIFT, ram_base + st->bank_image_off[b],
+                            size >> PAGE_SHIFT, mac030_fill_page, true);
     }
 }
 
