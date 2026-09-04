@@ -502,18 +502,26 @@ static uint8_t av_overlay_read8(void *ctx, uint32_t offset) {
     return av_rom_ptr(cfg, offset)[0];
 }
 
+// Composed from byte reads so every byte wraps within the mirror
+// independently, the shape iifx_rom_read_uint16/32 already use.  Indexing
+// p[1..3] off a single wrapped base instead would read past the end of the
+// RAM+ROM allocation when the base landed on the last bytes of a mirror
+// period -- the ROM sits at the top of that one calloc.
+//
+// That was not reachable: the memory dispatcher only calls a device's 16/32-bit
+// handler when (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2/-4 and splits anything
+// closer to a page end, and rom_size is a multiple of the 4 KiB page size, so
+// "within 3 bytes of a mirror top" is always also "within 3 bytes of a page
+// end".  Confirmed under ASAN: a long read at the top of a q700 mirror reaches
+// this handler only after being decomposed.  But that safety lives in another
+// file and depends on an unstated size relationship, so it is made local here.
+// (av_overlay_drop is idempotent, so the repeated call costs nothing.)
 static uint16_t av_overlay_read16(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    av_overlay_drop(cfg);
-    uint8_t *p = av_rom_ptr(cfg, offset);
-    return (uint16_t)((p[0] << 8) | p[1]);
+    return (uint16_t)((av_overlay_read8(ctx, offset) << 8) | av_overlay_read8(ctx, offset + 1));
 }
 
 static uint32_t av_overlay_read32(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    av_overlay_drop(cfg);
-    uint8_t *p = av_rom_ptr(cfg, offset);
-    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+    return ((uint32_t)av_overlay_read16(ctx, offset) << 16) | av_overlay_read16(ctx, offset + 2);
 }
 
 static void av_overlay_write8(void *ctx, uint32_t offset, uint8_t value) {
