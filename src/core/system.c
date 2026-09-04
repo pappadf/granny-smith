@@ -534,10 +534,14 @@ int system_create_floppy(const char *path, bool high_density, int preferred) {
 // Size limits for hd create
 #define HD_CREATE_MAX_SIZE (2ULL * 1024 * 1024 * 1024) // 2 GiB
 
-// Floppy sizes that should be rejected
-#define FLOPPY_400K  409600
-#define FLOPPY_800K  819200
-#define FLOPPY_1440K 1474560
+// Floppy sizes that should be rejected.  Named _BYTES because machine_profile.h
+// (included above) declares floppy_kind_t with FLOPPY_400K / FLOPPY_800K as
+// ENUM CONSTANTS: bare macros of the same name silently shadowed them for the
+// rest of this file, so anything here that later meant the kind would have got
+// a byte count instead.
+#define FLOPPY_400K_BYTES  409600
+#define FLOPPY_800K_BYTES  819200
+#define FLOPPY_1440K_BYTES 1474560
 
 // Create a new blank hard disk image at the given path.
 // Returns 0 on success, -1 on failure.
@@ -555,7 +559,7 @@ static int do_create_hd(const char *path, const char *size_str) {
         return -1;
     }
     // reject floppy-sized images
-    if (size == FLOPPY_400K || size == FLOPPY_800K || size == FLOPPY_1440K) {
+    if (size == FLOPPY_400K_BYTES || size == FLOPPY_800K_BYTES || size == FLOPPY_1440K_BYTES) {
         printf("hd create: size %zu matches a floppy format, use fd create instead\n", size);
         return -1;
     }

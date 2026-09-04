@@ -1149,10 +1149,24 @@ static void lisa_trigger_vbl(config_t *cfg) {
 // boot ROM's memory sizing walks); the ROM's MAXADR ceiling is 2 MB.
 static const uint32_t lisa_ram_options_kb[] = {512, 1024, 2048, 0};
 
-// One Sony 400 KB 3.5" mechanism (the intelligent 6504A controller arrives in
-// Step 5).  Lisa 1's Twiggy drives are out of scope.
+// One Sony 3.5" mechanism on the 6504A intelligent controller.  Lisa 1's
+// Twiggy drives are out of scope.
+//
+// FLOPPY_800K, not FLOPPY_400K: `kind` names the HIGHEST format the drive
+// serves and readers derive the rest (machine_profile.h), and this one serves
+// both.  lisa_fdc_insert sizes the media itself -- num_sides = 2 above
+// 500000 bytes -- and reports the geometry the boot loader reads from the
+// controller's disk-type byte, which has an encoding for each: docs/machines/
+// lisa/lisa.md 13.2 records $FCC015 as "bit 0 set = Sony 400 KB single-sided
+// (800 blocks); bit 0 clear = Sony 800 KB double-sided (1600 blocks)".  So
+// 800 KB media is something the machine's own firmware protocol contemplates,
+// not something the model invented.
+//
+// Untested, though: every Lisa image in the tree is 400 KB, so the two-sided
+// branch has never run under a test.  Declaring 400K was the stronger claim
+// to have wrong -- it understated a drive the model demonstrably serves.
 static const struct floppy_slot lisa_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_400K},
+    {.label = "Internal FD0", .kind = FLOPPY_800K},
     {0},
 };
 
