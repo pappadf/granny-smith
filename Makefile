@@ -171,8 +171,15 @@ INCLUDES := -I$(CORE_DIR) \
 # -MMD -MP generates .d dependency files alongside each .o so that
 # header changes trigger the correct recompilations.
 
+# The browser build defaults the Voodoo2 to the WebGPU takeover
+# (proposal-voodoo2-webgpu-takeover §5.10): the card falls back to the
+# exact thread backend at creation when the browser has no WebGPU
+# device, so a browser without one behaves exactly as before.  Native
+# builds (Makefile.headless) keep the thread default; the New Machine
+# dialog's "Rasteriser" control overrides per boot either way.
 CFLAGS := -MMD -MP $(MODE_CFLAGS) \
           -pthread \
+          -DGS_V2_RASTER_DEFAULT='"webgpu"' \
           $(PEELER_INCLUDES) $(INCLUDES) $(EXTRA_CFLAGS)
 
 # -- Link flags (objects -> final binary) --

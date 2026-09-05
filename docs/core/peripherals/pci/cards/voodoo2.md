@@ -129,10 +129,12 @@ document grows as each group lands.
   `raster=webgpu`):** an ALTERNATIVE rasteriser for the browser — the
   host's GPU draws the guest's triangles from the same command stream,
   the software walker keeps the driver's bring-up and every fallback,
-  and the frame is presented on an overlay canvas.  A user choice in
-  the New Machine dialog (the card's `raster` option); the thread
-  backend stays the default everywhere.  See "The WebGPU takeover"
-  below, and divergences 12–16.
+  and the frame is presented on an overlay canvas.  The BROWSER
+  build's default (`-DGS_V2_RASTER_DEFAULT='"webgpu"'` in the wasm
+  Makefile), falling back to the thread backend at creation when the
+  browser has no WebGPU device; native builds keep the thread default,
+  and the New Machine dialog's "Rasteriser" control picks either per
+  boot.  See "The WebGPU takeover" below, and divergences 12–16.
 
 ## Provenance
 
@@ -404,9 +406,12 @@ the unknown remainder.
 in the browser, the host's GPU draws the guest's triangles.  An
 **alternative** to the software rasteriser, chosen per boot — the New
 Machine dialog's "Rasteriser" control on the card, or
-`pci_option="raster=webgpu"` — never a replacement: the thread backend
-(exact) stays the default on every build, and every native gate and
-golden is untouched.  What the user gets is a *rendering* of the scene
+`pci_option="raster=webgpu"` — never a replacement of the walker: the
+thread backend (exact) stays the default on native builds and the
+fallback everywhere, and every native gate and golden is untouched.
+The browser build defaults to `webgpu` (the wasm Makefile's
+`GS_V2_RASTER_DEFAULT`), which resolves to `thread` at creation when
+the browser has no WebGPU device.  What the user gets is a *rendering* of the scene
 the guest described, held to a tolerance; the model's frame is what
 native produces (§6 of the proposal, divergences 12–16 above).
 
