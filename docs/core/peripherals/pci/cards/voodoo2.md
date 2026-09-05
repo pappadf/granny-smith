@@ -496,7 +496,29 @@ back to the thread backend at creation, and `regs.raster` reports
 `thread` (asserted by `tnt-pci-voodoo2` natively and by the
 `voodoo2-webgpu` e2e in a browser launched without WebGPU).  The e2e
 runs on Chromium's software WebGPU adapter (`--enable-unsafe-webgpu
---use-webgpu-adapter=swiftshader`), so the gates need no GPU in CI.
+--use-webgpu-adapter=swiftshader`), so the gates need no GPU in CI —
+with one limit, measured: headless Chromium (the headless shell and
+the full binary alike) DESTROYS the WebGPU device on the first canvas
+present, from a worker or the main thread, so the e2e keeps the
+scheduler halted (no vblank, no present) and covers everything up to
+the present pass; the present itself and the gamma-ramp lookup it
+applies can only be seen in a real browser.  A device lost that way
+is handled: the translator drops to the walker and says so
+(`regs.gpu_stats` `lost=1`).
+
+**Gamma, measured.**  Quake's brightness reaches the card on both
+paths: at start (and again after a relaunch with the setting saved)
+the game loads a 33-entry table through `clutData` with the video
+unit running — a linear ramp at the shipped `gamma 0.805`, a curve
+after a change (`gamma 0.4` at the console: entry 16 = 150 for a
+128 input), applied at once and after the relaunch.  The effect is
+mild because the game's own curve is mild; the walker converts the
+scanout through it and the takeover presents through the same ramp.
+The game's table also writes entry 32 as 0 (its 256-entry source
+array read one past its end), so under the chosen interpolation the
+top segment falls from 248 towards 0 and inputs of 249–255 darken;
+what silicon does with a guest's bad top entry is not in our
+material (divergence 10).
 
 **Not delivered (deliberately):** the optional internal resolution
 scaling (§5.9) — the vertex path is ready for it (positions are

@@ -189,7 +189,7 @@ async function initDevice(cv: OffscreenCanvas): Promise<boolean> {
       Atomics.notify(ctrl, C_TAIL);
       Atomics.notify(ctrl, C_ACK);
     }
-    postMessage({ type: 'lost', reason: info.message });
+    postMessage({ type: 'lost', reason: `${info.reason}: ${info.message}` });
   });
   d.addEventListener('uncapturederror', (e) => {
     console.error('[voodoo2-gpu] uncaptured error:', (e as GPUUncapturedErrorEvent).error.message);
@@ -656,6 +656,15 @@ function onDraw(hdrOff: number): void {
 }
 
 function onPresent(id: number): void {
+  try {
+    presentInner(id);
+  } catch (e) {
+    console.error('[voodoo2-gpu] present failed:', e);
+    throw e;
+  }
+}
+
+function presentInner(id: number): void {
   const t = targets.get(id);
   if (!t?.color || !canvas || !context) return;
   endPass();

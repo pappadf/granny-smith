@@ -1602,6 +1602,11 @@ static void v2_reg_write(voodoo2_t *v, int idx, uint32_t chip_mask, uint32_t val
         // §12.5].  Entry index in bits 29:24 (0..32), packed 00RRGGBB
         // in the low 24 [Glide-src init/gamma.c]; the display path
         // interpolates the 33 entries into the per-channel gamma ramp.
+        // The §9.2 instrument at level 4 beside the init-block writes:
+        // a gamma table the guest loads that never shows is either
+        // dropped here or never arrives — this line tells which.
+        LOG(4, "clutData entry %u = %06X%s", (value >> 24) & 0x3Fu, value & 0xFFFFFFu,
+            (v->reg[R_FBIINIT1] & FBIINIT1_VIDEO_RESET) ? " (DROPPED: video unit in reset)" : "");
         if (v->reg[R_FBIINIT1] & FBIINIT1_VIDEO_RESET)
             return;
         v->reg[R_CLUTDATA] = value;
