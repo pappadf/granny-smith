@@ -960,8 +960,9 @@ V2_INLINE uint32_t v2_iter_w8(int64_t it, bool clamp) {
 
 // The texture chain for one pixel: TMU1 samples and combines first, its
 // output feeding TMU0's c_other (single-pass multitexture).
-static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T, int32_t dx,
-                                      int32_t dy, bool skip_tmu1) {
+static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T,
+                                      const int64_t *s_its, const int64_t *t_its, const int64_t *w_its,
+                                      bool skip_tmu1) {
     uint32_t chain = 0; // most-upstream c_other is zero
     for (int tmu = V2_RASTER_TMUS - 1; tmu >= 0; tmu--) {
         const v2_tmu_state_t *tm = &st->tmu[tmu];
@@ -998,9 +999,7 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
             chain = 0xFF000000u | rgb;
             continue;
         }
-        int64_t s_it = T->s[tmu] + T->dsdx[tmu] * dx + T->dsdy[tmu] * dy;
-        int64_t t_it = T->t[tmu] + T->dtdx[tmu] * dx + T->dtdy[tmu] * dy;
-        int64_t w_it = T->tw[tmu] + T->dtwdx[tmu] * dx + T->dtwdy[tmu] * dy;
+        int64_t s_it = s_its[tmu], t_it = t_its[tmu], w_it = w_its[tmu];
         double s, t, s1, t1, s2, t2;
         if (mode & 1u) { // perspective correct
             if ((mode & 8u) && w_it < 0) { // tclampw
@@ -1121,15 +1120,55 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
 
 // The texture chain for one pixel, with the dead-TMU shortcut — and,
 // under GS_V2_XCHECK, the unshortened chain beside it.
-V2_INLINE uint32_t v2_texture_chain(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T, int32_t dx,
-                                    int32_t dy) {
-    uint32_t chain = v2_texture_chain_full(st, tgt, T, dx, dy, st->skip_tmu1);
+V2_INLINE uint32_t v2_texture_chain(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T,
+                                    const int64_t *s_its, const int64_t *t_its, const int64_t *w_its) {
+    uint32_t chain = v2_texture_chain_full(st, tgt, T, s_its, t_its, w_its, st->skip_tmu1);
     if (__builtin_expect(s_xcheck && st->skip_tmu1, 0)) {
-        uint32_t full = v2_texture_chain_full(st, tgt, T, dx, dy, false);
+        uint32_t full = v2_texture_chain_full(st, tgt, T, s_its, t_its, w_its, false);
         if (full != chain)
             v2_xcheck_fail("texture chain (TMU1 skip)", chain, full);
     }
     return chain;
+}
+
+// The per-pixel iterators of one triangle: closed form at the first
+// pixel of a row's inside run, stepped by the X gradients along it
+// (walker proposal §3.3).  Integer fixed point throughout, so
+// `start + k*d` accumulated equals the closed form bit for bit.
+typedef struct v2_iters {
+    int64_t r, g, b, a, z, w;
+    int64_t s[V2_RASTER_TMUS], t[V2_RASTER_TMUS], tw[V2_RASTER_TMUS];
+} v2_iters_t;
+
+// Closed-form evaluation at pixel offset (dx,dy) from vertex A's
+// truncated position — the reference the incremental path must match.
+V2_INLINE void v2_iters_at(v2_iters_t *it, const voodoo2_tri_t *T, int32_t dx, int32_t dy) {
+    it->r = T->r + (int64_t)T->drdx * dx + (int64_t)T->drdy * dy;
+    it->g = T->g + (int64_t)T->dgdx * dx + (int64_t)T->dgdy * dy;
+    it->b = T->b + (int64_t)T->dbdx * dx + (int64_t)T->dbdy * dy;
+    it->a = T->a + (int64_t)T->dadx * dx + (int64_t)T->dady * dy;
+    it->z = T->z + (int64_t)T->dzdx * dx + (int64_t)T->dzdy * dy;
+    it->w = T->w + T->dwdx * dx + T->dwdy * dy;
+    for (int tmu = 0; tmu < V2_RASTER_TMUS; tmu++) {
+        it->s[tmu] = T->s[tmu] + T->dsdx[tmu] * dx + T->dsdy[tmu] * dy;
+        it->t[tmu] = T->t[tmu] + T->dtdx[tmu] * dx + T->dtdy[tmu] * dy;
+        it->tw[tmu] = T->tw[tmu] + T->dtwdx[tmu] * dx + T->dtwdy[tmu] * dy;
+    }
+}
+
+// One pixel to the right.
+V2_INLINE void v2_iters_step_x(v2_iters_t *it, const voodoo2_tri_t *T) {
+    it->r += T->drdx;
+    it->g += T->dgdx;
+    it->b += T->dbdx;
+    it->a += T->dadx;
+    it->z += T->dzdx;
+    it->w += T->dwdx;
+    for (int tmu = 0; tmu < V2_RASTER_TMUS; tmu++) {
+        it->s[tmu] += T->dsdx[tmu];
+        it->t[tmu] += T->dtdx[tmu];
+        it->tw[tmu] += T->dtwdx[tmu];
+    }
 }
 
 static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T) {
@@ -1141,6 +1180,21 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
         {T->bx, T->by, T->cx, T->cy},
         {T->cx, T->cy, T->ax, T->ay}
     };
+    // The three edge functions val_e(x,y) = dxe*(sy - ey1) - dye*(sx - ex0)
+    // with sx = x<<4, oriented by o: affine in the pixel coordinates,
+    // so along a row each steps by -16*o*dye per pixel.  The inclusion
+    // rule is on the sign: > 0 inside, < 0 outside, == 0 by top-left.
+    int64_t e_dxe[3], e_dye[3], e_stepx[3];
+    bool e_topleft[3];
+    for (int e = 0; e < 3; e++) {
+        e_dxe[e] = ex[e][2] - ex[e][0];
+        e_dye[e] = ex[e][3] - ex[e][1];
+        // Top-left inclusion, derived for this cross/orient convention:
+        // a "left" edge descends (o*dy < 0 in this sign convention), a
+        // "top" edge is horizontal with o*dx > 0.
+        e_topleft[e] = (o * e_dye[e] < 0) || (e_dye[e] == 0 && o * e_dxe[e] > 0);
+        e_stepx[e] = -16 * o * e_dye[e];
+    }
 
     int32_t minx = T->ax, maxx = T->ax, miny = T->ay, maxy = T->ay;
     if (T->bx < minx)
@@ -1179,46 +1233,75 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
     int32_t ax_i = T->ax >> 4, ay_i = T->ay >> 4;
 
     for (int32_t y = y0; y < y1; y++) {
+        int32_t sy = y << 4;
+        // Edge values at the row's first candidate pixel, closed form.
+        int64_t ev[3];
+        for (int e = 0; e < 3; e++)
+            ev[e] = o * (e_dxe[e] * (sy - ex[e][1]) - e_dye[e] * ((int64_t)(x0 << 4) - ex[e][0]));
+        int32_t dy = y - ay_i;
+        int32_t py = y_flip ? (int32_t)st->screen_h - 1 - y : y;
+        v2_iters_t it;
+        bool in_run = false; // the row's inside pixels form ONE interval
         for (int32_t x = x0; x < x1; x++) {
-            int32_t sx = x << 4, sy = y << 4;
             bool inside = true;
-            for (int e = 0; e < 3 && inside; e++) {
-                int64_t dxe = ex[e][2] - ex[e][0], dye = ex[e][3] - ex[e][1];
-                int64_t val = dxe * (sy - ex[e][1]) - dye * (sx - ex[e][0]);
-                int64_t t = o * val;
-                if (t > 0)
-                    continue;
-                if (t < 0) {
+            for (int e = 0; e < 3; e++) {
+                if (ev[e] < 0 || (ev[e] == 0 && !e_topleft[e])) {
                     inside = false;
-                } else {
-                    // Top-left inclusion, derived for this cross/orient
-                    // convention: a "left" edge descends (o*dy < 0 in
-                    // this sign convention), a "top" edge is horizontal
-                    // with o*dx > 0.
-                    bool topleft = (o * dye < 0) || (dye == 0 && o * dxe > 0);
-                    inside = topleft;
+                    break;
                 }
             }
-            if (!inside)
+            if (__builtin_expect(s_xcheck, 0)) {
+                // The reference test, pixel by pixel.
+                bool ref = true;
+                for (int e = 0; e < 3 && ref; e++) {
+                    int64_t val = e_dxe[e] * (sy - ex[e][1]) - e_dye[e] * ((int64_t)(x << 4) - ex[e][0]);
+                    int64_t t = o * val;
+                    if (t > 0)
+                        continue;
+                    ref = t < 0 ? false : e_topleft[e];
+                }
+                if (ref != inside)
+                    v2_xcheck_fail("edge test", inside, ref);
+            }
+            if (!inside) {
+                if (in_run)
+                    break; // left the interval: nothing more on this row
+                for (int e = 0; e < 3; e++)
+                    ev[e] += e_stepx[e];
                 continue;
-            int32_t dx = x - ax_i, dy = y - ay_i;
+            }
+            int32_t dx = x - ax_i;
+            if (!in_run) {
+                v2_iters_at(&it, T, dx, dy);
+                in_run = true;
+            } else {
+                v2_iters_step_x(&it, T);
+                if (__builtin_expect(s_xcheck, 0)) {
+                    v2_iters_t ref;
+                    v2_iters_at(&ref, T, dx, dy);
+                    if (memcmp(&ref, &it, sizeof(ref)) != 0)
+                        v2_xcheck_fail("iterators", (uint64_t)it.r, (uint64_t)ref.r);
+                }
+            }
             v2_pix_t p;
             p.x = x;
-            p.y = y_flip ? (int32_t)st->screen_h - 1 - y : y;
-            p.r = v2_iter_rgba(T->r + (int64_t)T->drdx * dx + (int64_t)T->drdy * dy, clamp);
-            p.g = v2_iter_rgba(T->g + (int64_t)T->dgdx * dx + (int64_t)T->dgdy * dy, clamp);
-            p.b = v2_iter_rgba(T->b + (int64_t)T->dbdx * dx + (int64_t)T->dbdy * dy, clamp);
-            p.a = v2_iter_rgba(T->a + (int64_t)T->dadx * dx + (int64_t)T->dady * dy, clamp);
-            p.z_raw = T->z + (int64_t)T->dzdx * dx + (int64_t)T->dzdy * dy;
+            p.y = py;
+            p.r = v2_iter_rgba(it.r, clamp);
+            p.g = v2_iter_rgba(it.g, clamp);
+            p.b = v2_iter_rgba(it.b, clamp);
+            p.a = v2_iter_rgba(it.a, clamp);
+            p.z_raw = it.z;
             p.z16 = v2_iter_z(p.z_raw, clamp);
-            p.w_raw = T->w + T->dwdx * dx + T->dwdy * dy;
+            p.w_raw = it.w;
             p.w8 = v2_iter_w8(p.w_raw, clamp);
             p.have_tex = tex_on;
             s_watch_now = (p.x == s_watch_x && p.y == s_watch_y);
             // The chain runs only when the pipeline reads its output
             // (uses_tex, §3.2) — or the watch wants to print it.
-            p.tex_argb = (tex_on && (uses_tex || s_watch_now)) ? v2_texture_chain(st, tgt, T, dx, dy) : 0u;
+            p.tex_argb = (tex_on && (uses_tex || s_watch_now)) ? v2_texture_chain(st, tgt, T, it.s, it.t, it.tw) : 0u;
             v2_pixel_pipe(st, tgt, &p);
+            for (int e = 0; e < 3; e++)
+                ev[e] += e_stepx[e];
         }
     }
 }
