@@ -73,6 +73,33 @@ LOG_USE_CATEGORY_NAME("bandit");
 #define BANDIT_MODE_SELECT 0x50u
 #define BANDIT_COHERENT    0x40u // mode-select bit every OS latches on
 
+// Mode-select's ENDIAN bit, at bit 24 (config byte 3, bit 0).  Set at
+// power-on = big-endian pass-through, the straight byte lanes every
+// Macintosh OS runs on; clear = the bridge reverses its eight byte lanes
+// for everything it FORWARDS -- the pass-through Grand Central island, the
+// PCI memory and I/O windows, and bus-master DMA on its way to host memory
+// (pci.h, pci_bus_set_lane_reverse).
+//
+// The bridge's own config ports are NOT reversed, and do not need to be:
+// the data port decodes eight bytes with `data + (offset & 3)` selecting
+// the config byte, so a 32-BIT access is invariant under the 604's
+// little-endian address munge (EA ^ 4 lands on offsets 4..7, which mask
+// back to config bytes 0..3 in the same order).  A BYTE access is not:
+// EA ^ 7 lands on port offset 7, which masks to config byte 3.
+//
+// That asymmetry is exactly how the firmware reaches this bit.  Running
+// the 604 in little-endian mode it does
+//
+//     50080000 caddr xl! xl@ drop  cdata xb@  0fe and  cdata xb!
+//
+// -- latch config $50 on the bridge's own device-11 header, then a BYTE
+// read/modify/write of the data port.  Munged, that byte access is config
+// byte 3, so `0fe and` clears bit 0 of byte 3, i.e. bit 24 of mode-select.
+// Verified in the emulator from the faulting effective addresses the ROM
+// generates in this sequence: DAR $F2C00007 for the byte access and
+// $F4800004 for the 32-bit address-port write.
+#define BANDIT_BIG_ENDIAN 0x01000000u
+
 // The bridge's own device-11 header.  A host bridge's command register is
 // not software-settable on this part (Apple documents only $48/$50), so no
 // command bits are writable and none are hardwired on: the bridge decodes
@@ -115,6 +142,37 @@ static uint32_t bandit_addr_select(const tnt_bandit_t *b) {
     }
 }
 
+// Is this bridge reversing its byte lanes (BANDIT_BIG_ENDIAN clear)?  Chaos
+// has no writable mode register and never does.
+static bool bandit_lanes_reversed(const tnt_bandit_t *b) {
+    return !b->is_chaos && (b->mode_select & BANDIT_BIG_ENDIAN) == 0;
+}
+
+// Project the mode register onto the bus: the windows and the bus masters
+// read the flag from there (pci.h).
+static void bandit_apply_mode(tnt_bandit_t *b) {
+    pci_bus_set_lane_reverse(b->bus, bandit_lanes_reversed(b));
+}
+
+// The lane reversal on the bridge's OWN config ports.  It applies here for
+// the same reason it applies to everything else the bridge drives: the
+// firmware's `set-caddr` composes a NATURAL one-hot config address
+// (1 << ((offset >> 11) & $1F)) and stores it with `xl!`, and `xl!`/`xl@`
+// are the BYTE-FLIPPING variants only in big-endian mode (the ROM patches
+// tokens 232-235 to `rl@-flip` / `rl!-flip` under `little? 0=`).  In
+// little-endian mode they are plain loads and stores, so the flip the
+// ports need has to come from the bridge.  An N-byte access at port offset
+// o is the straight access at o ^ (8-N) with its bytes reversed.
+static inline uint32_t port_offset(const tnt_bandit_t *b, uint32_t offset, uint32_t size) {
+    return bandit_lanes_reversed(b) ? (offset ^ (8u - size)) : offset;
+}
+static inline uint16_t port_val16(const tnt_bandit_t *b, uint16_t v) {
+    return bandit_lanes_reversed(b) ? __builtin_bswap16(v) : v;
+}
+static inline uint32_t port_val32(const tnt_bandit_t *b, uint32_t v) {
+    return bandit_lanes_reversed(b) ? __builtin_bswap32(v) : v;
+}
+
 // The bridge's quirk registers.  Everything else falls through to the
 // generic type-0 header (config_space.c).
 static bool bridge_cfg_read(pci_device_t *dev, uint32_t reg, uint32_t *out) {
@@ -139,7 +197,10 @@ static bool bridge_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uin
     // coherency handshake is "read, OR in $40, write, read back").
     uint32_t shift = 8u * (byte & 3u);
     b->mode_select = (b->mode_select & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-    LOG(2, "mode-select now $%08X (coherency %s)", b->mode_select, (b->mode_select & BANDIT_COHERENT) ? "on" : "off");
+    LOG(2, "mode-select now $%08X (coherency %s, lanes %s)", b->mode_select,
+        (b->mode_select & BANDIT_COHERENT) ? "on" : "off",
+        (b->mode_select & BANDIT_BIG_ENDIAN) ? "straight" : "reversed");
+    bandit_apply_mode(b);
     return true;
 }
 
@@ -210,34 +271,57 @@ static void config_write(tnt_bandit_t *b, uint32_t byte, uint32_t value, uint32_
 // The config ADDRESS port (base + $800000, 4 bytes, little-endian)
 // ============================================================
 
-static uint8_t addr_read8(void *ctx, uint32_t offset) {
-    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+// The straight (big-endian bus) view of the port.
+static uint8_t addr_raw_read8(tnt_bandit_t *b, uint32_t offset) {
     return (uint8_t)(b->cfg_addr >> (8 * (offset & 3u)));
 }
 
-static uint16_t addr_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((addr_read8(ctx, offset) << 8) | addr_read8(ctx, offset + 1));
-}
-
-static uint32_t addr_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)addr_read16(ctx, offset) << 16) | addr_read16(ctx, offset + 2);
-}
-
-static void addr_write8(void *ctx, uint32_t offset, uint8_t value) {
-    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+static void addr_raw_write8(tnt_bandit_t *b, uint32_t offset, uint8_t value) {
     uint32_t shift = 8 * (offset & 3u);
     b->cfg_addr = (b->cfg_addr & ~(0xFFu << shift)) | ((uint32_t)value << shift);
     LOG(3, "$%08X config addr = $%08X", b->base, b->cfg_addr);
 }
 
+static uint8_t addr_read8(void *ctx, uint32_t offset) {
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    return addr_raw_read8(b, port_offset(b, offset, 1));
+}
+
+static uint16_t addr_read16(void *ctx, uint32_t offset) {
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    offset = port_offset(b, offset, 2);
+    uint16_t v = (uint16_t)((addr_raw_read8(b, offset) << 8) | addr_raw_read8(b, offset + 1));
+    return port_val16(b, v);
+}
+
+static uint32_t addr_read32(void *ctx, uint32_t offset) {
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    offset = port_offset(b, offset, 4);
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < 4; i++)
+        v = (v << 8) | addr_raw_read8(b, offset + i);
+    return port_val32(b, v);
+}
+
+static void addr_write8(void *ctx, uint32_t offset, uint8_t value) {
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    addr_raw_write8(b, port_offset(b, offset, 1), value);
+}
+
 static void addr_write16(void *ctx, uint32_t offset, uint16_t value) {
-    addr_write8(ctx, offset, (uint8_t)(value >> 8));
-    addr_write8(ctx, offset + 1, (uint8_t)value);
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    offset = port_offset(b, offset, 2);
+    value = port_val16(b, value);
+    addr_raw_write8(b, offset, (uint8_t)(value >> 8));
+    addr_raw_write8(b, offset + 1, (uint8_t)value);
 }
 
 static void addr_write32(void *ctx, uint32_t offset, uint32_t value) {
-    addr_write16(ctx, offset, (uint16_t)(value >> 16));
-    addr_write16(ctx, offset + 2, (uint16_t)value);
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    offset = port_offset(b, offset, 4);
+    value = port_val32(b, value);
+    for (uint32_t i = 0; i < 4; i++)
+        addr_raw_write8(b, offset + i, (uint8_t)(value >> (24 - 8 * i)));
 }
 
 // ============================================================
@@ -246,36 +330,59 @@ static void addr_write32(void *ctx, uint32_t offset, uint32_t value) {
 // Byte j of the port is byte j of the little-endian config dword; the port
 // repeats across its 8 decoded bytes with (offset & 3) selecting the lane.
 
-static uint8_t data_read8(void *ctx, uint32_t offset) {
-    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+// The straight view of the port (see the address port for the pattern).
+static uint8_t data_raw_read8(tnt_bandit_t *b, uint32_t offset) {
     uint32_t v = config_read(b);
     uint8_t byte = (uint8_t)(v >> (8 * (offset & 3u)));
     LOG(3, "$%08X config data[%u] -> $%02X (addr $%08X)", b->base, offset & 7u, byte, b->cfg_addr);
     return byte;
 }
 
-static uint16_t data_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((data_read8(ctx, offset) << 8) | data_read8(ctx, offset + 1));
-}
-
-static uint32_t data_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)data_read16(ctx, offset) << 16) | data_read16(ctx, offset + 2);
-}
-
-static void data_write8(void *ctx, uint32_t offset, uint8_t value) {
-    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+static void data_raw_write8(tnt_bandit_t *b, uint32_t offset, uint8_t value) {
     LOG(3, "$%08X config data[%u] = $%02X (addr $%08X)", b->base, offset & 7u, value, b->cfg_addr);
     config_write(b, offset & 3u, value, 0xFFu);
 }
 
+static uint8_t data_read8(void *ctx, uint32_t offset) {
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    return data_raw_read8(b, port_offset(b, offset, 1));
+}
+
+static uint16_t data_read16(void *ctx, uint32_t offset) {
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    offset = port_offset(b, offset, 2);
+    uint16_t v = (uint16_t)((data_raw_read8(b, offset) << 8) | data_raw_read8(b, offset + 1));
+    return port_val16(b, v);
+}
+
+static uint32_t data_read32(void *ctx, uint32_t offset) {
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    offset = port_offset(b, offset, 4);
+    uint32_t v = 0;
+    for (uint32_t i = 0; i < 4; i++)
+        v = (v << 8) | data_raw_read8(b, offset + i);
+    return port_val32(b, v);
+}
+
+static void data_write8(void *ctx, uint32_t offset, uint8_t value) {
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    data_raw_write8(b, port_offset(b, offset, 1), value);
+}
+
 static void data_write16(void *ctx, uint32_t offset, uint16_t value) {
-    data_write8(ctx, offset, (uint8_t)(value >> 8));
-    data_write8(ctx, offset + 1, (uint8_t)value);
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    offset = port_offset(b, offset, 2);
+    value = port_val16(b, value);
+    data_raw_write8(b, offset, (uint8_t)(value >> 8));
+    data_raw_write8(b, offset + 1, (uint8_t)value);
 }
 
 static void data_write32(void *ctx, uint32_t offset, uint32_t value) {
-    data_write16(ctx, offset, (uint16_t)(value >> 16));
-    data_write16(ctx, offset + 2, (uint16_t)value);
+    tnt_bandit_t *b = (tnt_bandit_t *)ctx;
+    offset = port_offset(b, offset, 4);
+    value = port_val32(b, value);
+    for (uint32_t i = 0; i < 4; i++)
+        data_raw_write8(b, offset + i, (uint8_t)(value >> (24 - 8 * i)));
 }
 
 // ============================================================
@@ -310,6 +417,8 @@ static tnt_bandit_t *bridge_add(config_t *cfg, uint32_t base, bool is_chaos, int
     memory_map_add(cfg->mem_map, base + TNT_PCI_CFG_DATA, MEM_PAGE_SIZE, label, &b->data_if, b);
 
     b->bus = pci_bus_create(cfg->pci, name, bus_index);
+    b->mode_select = BANDIT_BIG_ENDIAN; // power-on: straight lanes
+    bandit_apply_mode(b);
     // The bridge's own header at device 11 (kPCIBridgeSelfDevice).  Chaos
     // gets none: through its restricted config space only $00-$0C are
     // readable, and today's model answers those from the CONTROL device
@@ -371,6 +480,28 @@ void tnt_bandit_init(config_t *cfg) {
 
     // Grand Central's config presence at device 16 (grand_central.c).
     tnt_gc_pci_attach(cfg, bandit1->bus);
+    // The island and its DBDMA engine sit behind Bandit 1: the board's
+    // direct mapping of them follows this bus's lane mode (tnt.c).
+    st->gc_bus = bandit1->bus;
+}
+
+// Power-on reset of every bridge's software-visible state: idle address
+// latch, straight lanes — and the bus told so.
+void tnt_bandit_reset(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    for (int i = 0; i < st->bridge_count; i++) {
+        st->bridge[i].cfg_addr = 0;
+        st->bridge[i].mode_select = BANDIT_BIG_ENDIAN;
+        bandit_apply_mode(&st->bridge[i]);
+    }
+}
+
+// After a checkpoint restore has refilled mode_select: re-project it onto
+// the buses, which are rebuilt rather than restored.
+void tnt_bandit_modes_restored(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    for (int i = 0; i < st->bridge_count; i++)
+        bandit_apply_mode(&st->bridge[i]);
 }
 
 // The PCI MEMORY windows, claimed after the slot walk.

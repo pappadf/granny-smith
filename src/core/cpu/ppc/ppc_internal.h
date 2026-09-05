@@ -33,9 +33,15 @@
 #define PPC_MSR_EP  0x0040u // exception prefix: 1 = $FFFnnnnn (bit 25)
 #define PPC_MSR_IT  0x0020u // instruction translation (bit 26)
 #define PPC_MSR_DT  0x0010u // data translation (bit 27)
-// 604-only MSR bits (604UM Table 4-3); ILE/LE stay unimplemented on both
-// models (big-endian Macs — TNT proposal §4.2).
+// 604-only MSR bits (604UM Table 4-3).
 #define PPC_MSR_POW 0x00040000u // power management enable (bit 13; accepted as a no-op idle hint)
+// Little-endian mode (604UM Table 4-3 bits 15/31; PEM §3.2.2).  LE selects
+// the address munging below for every data access and instruction fetch;
+// ILE is copied into LE on exception entry.  Implemented on the 604 only:
+// Apple's NT-era Open Firmware (`little-endian?` true) and the PowerPC NT
+// veneer/loaders run the 604 in this mode; the 601 Macs never leave BE.
+#define PPC_MSR_ILE 0x00010000u // exception little-endian mode (bit 15)
+#define PPC_MSR_LE  0x00000001u // little-endian mode (bit 31)
 #define PPC_MSR_BE  0x0200u // branch trace enable (bit 22)
 #define PPC_MSR_PM  0x0004u // performance monitor marked mode (bit 29)
 #define PPC_MSR_RI  0x0002u // recoverable interrupt (bit 30)
@@ -44,8 +50,8 @@
 #define PPC_MSR_MASK                                                                                                   \
     (PPC_MSR_EE | PPC_MSR_PR | PPC_MSR_FP | PPC_MSR_ME | PPC_MSR_FE0 | PPC_MSR_SE | PPC_MSR_FE1 | PPC_MSR_EP |         \
      PPC_MSR_IT | PPC_MSR_DT)
-// The 604 adds POW/BE/PM/RI (604UM Table 4-3).
-#define PPC_MSR_MASK_604 (PPC_MSR_MASK | PPC_MSR_POW | PPC_MSR_BE | PPC_MSR_PM | PPC_MSR_RI)
+// The 604 adds POW/BE/PM/RI and the little-endian pair ILE/LE (604UM Table 4-3).
+#define PPC_MSR_MASK_604 (PPC_MSR_MASK | PPC_MSR_POW | PPC_MSR_BE | PPC_MSR_PM | PPC_MSR_RI | PPC_MSR_ILE | PPC_MSR_LE)
 
 // === XER bits ===
 #define PPC_XER_SO      0x80000000u
@@ -201,9 +207,29 @@ static inline uint32_t ppc_msr_mask(const ppc_t *p) {
 }
 
 // MSR bits an exception entry preserves: ME and EP on both models, plus PM
-// on the 604 (unlisted in the 604UM per-exception MSR rows — unaltered).
+// and ILE on the 604 (unlisted in the 604UM per-exception MSR rows —
+// unaltered; LE itself is REPLACED by a copy of ILE, see ppc_exception).
 static inline uint32_t ppc_msr_exception_keep(const ppc_t *p) {
-    return PPC_MSR_ME | PPC_MSR_EP | (ppc_is_604(p) ? PPC_MSR_PM : 0u);
+    return PPC_MSR_ME | PPC_MSR_EP | (ppc_is_604(p) ? (PPC_MSR_PM | PPC_MSR_ILE) : 0u);
+}
+
+// === Little-endian mode (PEM §3.2.2 "PowerPC Byte Ordering"; 604UM §4.5.6) ===
+//
+// A 60x in LE mode does not reorder bytes: it MUNGES the low three bits of
+// every effective address — XOR 7 for a byte, 6 for a halfword, 4 for a
+// word, nothing for an aligned doubleword — and instruction fetch munges
+// like a word load.  Memory therefore holds the LE program's image with
+// every doubleword byte-reversed (code: the two words of each doubleword
+// swapped).  That is exactly the in-place transformation Apple's NT-era
+// Open Firmware performs on its own dictionary before flipping MSR[LE],
+// and the layout the PE veneer/SETUPLDR expect.  A misaligned access, or
+// any multiple/string instruction, takes the alignment exception in LE
+// mode (604UM §4.5.6).  `ea` stays architected (unmunged) everywhere the
+// instruction writes it back or reports it; only the address handed to
+// memory is munged.
+static inline uint32_t ppc_le_ea(const ppc_t *p, uint32_t ea, uint32_t size) {
+    // (8 - size) & 7 is 7/6/4/0 for size 1/2/4/8; the mask is all-ones in LE mode.
+    return ea ^ ((0u - (p->msr & PPC_MSR_LE)) & (8u - size) & 7u);
 }
 
 // True when iw is a floating-point load/store (601: alignment exception in
@@ -264,6 +290,7 @@ static inline void ppc_set_ca(ppc_t *p, int ca) {
 typedef struct ppc_fetch_window {
     uint32_t lo, span;
     uintptr_t host_adjust;
+    uint32_t le_xor; // 4 while MSR[LE] is set (fetch munges like a word load), else 0; refreshed by every refill
 } ppc_fetch_window_t;
 extern ppc_fetch_window_t g_ppc_fetch;
 
@@ -446,6 +473,11 @@ void ppc_do_stswx(ppc_t *p, uint32_t iw);
 void ppc_do_lscbx(ppc_t *p, uint32_t iw);
 void ppc_do_stwcx(ppc_t *p, uint32_t iw);
 void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store);
+// LE-mode doubleword FP access as two munged word accesses (PEM §3.2.2:
+// a word-aligned double is two word transfers; the high-order word sits
+// at the higher LE address).  Return true when an exception was raised.
+bool ppc_le_ld64(ppc_t *p, uint32_t iw, uint32_t ea, uint64_t *v);
+bool ppc_le_st64(ppc_t *p, uint32_t iw, uint32_t ea, uint64_t v);
 
 // FP surface (ppc_fpu.c): single<->double conversion in integer code
 // (WASM/native byte determinism, proposal §3.6), compares, the FPSCR
