@@ -1000,52 +1000,77 @@ static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tg
             continue;
         }
         int64_t s_it = s_its[tmu], t_it = t_its[tmu], w_it = w_its[tmu];
-        double s, t, s1, t1, s2, t2;
+        // The sample point (s,t): the perspective divide, or the plain
+        // 14.18 unscale.
+        double s, t;
+        bool w_clamped = (mode & 8u) && w_it < 0; // tclampw
+        double w = w_it ? (double)w_it : 1.0;
         if (mode & 1u) { // perspective correct
-            if ((mode & 8u) && w_it < 0) { // tclampw
+            if (w_clamped) {
                 s = t = 0.0;
-                s1 = t1 = s2 = t2 = 0.0;
             } else {
-                double w = w_it ? (double)w_it : 1.0;
                 s = (double)s_it * 4096.0 / w;
                 t = (double)t_it * 4096.0 / w;
-                double wx = (w_it + T->dtwdx[tmu]) ? (double)(w_it + T->dtwdx[tmu]) : 1.0;
-                double wy = (w_it + T->dtwdy[tmu]) ? (double)(w_it + T->dtwdy[tmu]) : 1.0;
-                s1 = (double)(s_it + T->dsdx[tmu]) * 4096.0 / wx;
-                t1 = (double)(t_it + T->dtdx[tmu]) * 4096.0 / wx;
-                s2 = (double)(s_it + T->dsdy[tmu]) * 4096.0 / wy;
-                t2 = (double)(t_it + T->dtdy[tmu]) * 4096.0 / wy;
             }
         } else {
             s = (double)s_it / 262144.0;
             t = (double)t_it / 262144.0;
-            s1 = s + (double)T->dsdx[tmu] / 262144.0;
-            t1 = t + (double)T->dtdx[tmu] / 262144.0;
-            s2 = s + (double)T->dsdy[tmu] / 262144.0;
-            t2 = t + (double)T->dtdy[tmu] / 262144.0;
         }
         // Per-pixel LOD from the analytic texel-space steps (chosen —
         // the hardware's exact LOD arithmetic is Bruce-spec material we
         // do not hold).  4.2 fixed, biased and clamped per tLOD.
-        uint32_t tlod = tm->tlod;
-        double stepx = (s1 - s) * (s1 - s) + (t1 - t) * (t1 - t);
-        double stepy = (s2 - s) * (s2 - s) + (t2 - t) * (t2 - t);
-        double step2 = stepx > stepy ? stepx : stepy;
-        int32_t lod4 = 0;
-        if (step2 > 1.0)
-            lod4 = (int32_t)(2.0 * log2(step2)); // 0.5*log2 in 4.2 units
-        int32_t bias = ((int32_t)((tlod >> 12) & 0x3Fu) << 26) >> 26; // 4.2 signed
-        lod4 += bias;
-        int32_t lodmin = (int32_t)(tlod & 0x3Fu);
-        int32_t lodmax = (int32_t)((tlod >> 6) & 0x3Fu);
-        if (lodmax > 32)
-            lodmax = 32;
-        bool magnify = lod4 <= lodmin;
-        lod4 = lod4 < lodmin ? lodmin : (lod4 > lodmax ? lodmax : lod4);
+        //
+        // Walker proposal §3.4: with lodmin == lodmax the clamp pins
+        // lod4 to lodmin whatever the estimate says, and when the two
+        // filter bits agree `magnify` selects nothing either — so the
+        // estimate (four more divides and a log2 per pixel) is never
+        // computed.  Quake pins the level of its lightmaps and most
+        // world textures.  Everything else takes the full path.
+        int32_t lod4;
+        bool magnify;
+        if (tm->lod_pinned && !s_xcheck) {
+            lod4 = tm->lodmin;
+            magnify = false; // moot: bilin_min == bilin_mag
+        } else {
+            double s1, t1, s2, t2;
+            if (mode & 1u) {
+                if (w_clamped) {
+                    s1 = t1 = s2 = t2 = 0.0;
+                } else {
+                    double wx = (w_it + T->dtwdx[tmu]) ? (double)(w_it + T->dtwdx[tmu]) : 1.0;
+                    double wy = (w_it + T->dtwdy[tmu]) ? (double)(w_it + T->dtwdy[tmu]) : 1.0;
+                    s1 = (double)(s_it + T->dsdx[tmu]) * 4096.0 / wx;
+                    t1 = (double)(t_it + T->dtdx[tmu]) * 4096.0 / wx;
+                    s2 = (double)(s_it + T->dsdy[tmu]) * 4096.0 / wy;
+                    t2 = (double)(t_it + T->dtdy[tmu]) * 4096.0 / wy;
+                }
+            } else {
+                s1 = s + (double)T->dsdx[tmu] / 262144.0;
+                t1 = t + (double)T->dtdx[tmu] / 262144.0;
+                s2 = s + (double)T->dsdy[tmu] / 262144.0;
+                t2 = t + (double)T->dtdy[tmu] / 262144.0;
+            }
+            double stepx = (s1 - s) * (s1 - s) + (t1 - t) * (t1 - t);
+            double stepy = (s2 - s) * (s2 - s) + (t2 - t) * (t2 - t);
+            double step2 = stepx > stepy ? stepx : stepy;
+            lod4 = 0;
+            if (step2 > 1.0)
+                lod4 = (int32_t)(2.0 * log2(step2)); // 0.5*log2 in 4.2 units
+            lod4 += tm->lodbias;
+            magnify = lod4 <= tm->lodmin;
+            lod4 = lod4 < tm->lodmin ? tm->lodmin : (lod4 > tm->lodmax ? tm->lodmax : lod4);
+            if (__builtin_expect(s_xcheck && tm->lod_pinned, 0)) {
+                // The shortcut's claim, checked: the pinned level and the
+                // filter the estimate would have selected.
+                if (lod4 != tm->lodmin)
+                    v2_xcheck_fail("pinned lod4", (uint64_t)tm->lodmin, (uint64_t)lod4);
+                if ((magnify ? tm->bilin_mag : tm->bilin_min) != tm->bilin_min)
+                    v2_xcheck_fail("pinned filter", tm->bilin_min, magnify ? tm->bilin_mag : tm->bilin_min);
+            }
+        }
         int level = lod4 >> 2;
-        if ((tlod >> 19) & 1u) { // split texture: snap to the loaded parity
-            uint32_t odd = (tlod >> 18) & 1u;
-            if (((uint32_t)level & 1u) != odd)
+        if (tm->tsplit) { // split texture: snap to the loaded parity
+            if (((uint32_t)level & 1u) != tm->lod_odd)
                 level += 1;
         }
         uint32_t texel = v2_tmu_sample(tm, tgt, tmu, s, t, level, magnify);
