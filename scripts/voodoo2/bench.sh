@@ -11,22 +11,27 @@
 # this is the instrument that does.  NOT a CI gate (host-dependent): a
 # tool for the before/after numbers in commit messages.
 #
-#   scripts/voodoo2/bench.sh [backend...]      default: sw thread null
+#   scripts/voodoo2/bench.sh [backend...]      default: sw thread
 #
 # Each run is the real row (build if stale, media-gated, golden
 # compared), so "PASS" beside a backend also says its frame was
-# byte-identical to the walker's golden; `null` draws nothing and is
-# EXPECTED to fail the golden — its time is the non-raster floor.
-# Full output of every run lands in tmp/bench-<backend>.log.
+# byte-identical to the walker's golden.  `null` is accepted but is NOT
+# a no-raster floor for this flow: with nothing drawn the shipped
+# driver's render-based self-tests (dither calibration, TMU census)
+# fail, grSstQueryHardware reports no board and the guest never reaches
+# the game — the row diverges after ~100 s, measuring a different
+# program.  Full output of every run lands in tmp/bench-<backend>.log.
 #
-# Reference rows (2-core devcontainer, release headless build):
-#   2026-09-04  main 9c6f25c   sw 12m38s real / 11m53s user
+# Reference rows (2-core devcontainer, release headless build, the row
+# to its golden; user time is the process total, both threads):
+#   2026-09-04  main 9c6f25c            sw 12m38s real / 11m53s user
+#   2026-09-05  voodoo2-raster-perf     sw  6m39s real /  6m31s user
 
 set -u
 cd "$(dirname "$0")/../.."
 
 BACKENDS=("$@")
-[ ${#BACKENDS[@]} -gt 0 ] || BACKENDS=(sw thread null)
+[ ${#BACKENDS[@]} -gt 0 ] || BACKENDS=(sw thread)
 
 mkdir -p tmp
 # One emulator at a time: stray instances share the storage cache and

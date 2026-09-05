@@ -119,6 +119,11 @@ document grows as each group lands.
   via packet-5 LFB spans — gated by
   `tests/integration/tnt-voodoo2-glide` (tier extended, media-gated),
   whose golden `quake-ingame.png` is a hand-inspected in-game frame.
+- **Raster performance (branch `voodoo2-raster-perf`):** the seam
+  becomes a command layer with a draw-state snapshot, the walker gets
+  its bit-exact optimization ladder (12m38s → 6m39s on the glide row,
+  golden unchanged), and an opt-in worker-thread backend
+  (`raster=thread`) lands behind it — see "The raster seam" below.
 
 ## Provenance
 
@@ -325,10 +330,39 @@ a mismatch):
 | pinned LOD (§3.4) | with `lodmin == lodmax` and equal min/mag filters the estimate (four divides and a `log2` per pixel) is never computed | the clamp pins `lod4` and `magnify` selects nothing |
 | inlining (§3.6) | the per-pixel leaf helpers are `always_inline`; the watch test is one predicted branch | no semantic content |
 
-Measured on the canonical launch (`scripts/voodoo2/bench.sh`, the
-glide row to its golden, 2-core devcontainer, release headless build):
-see the table in the proposal's completion record — the numbers are
-host-dependent and belong in commit messages, not here.
+Measured on the canonical launch (`scripts/voodoo2/bench.sh`: the
+glide row to its golden — Mac OS 8.1 boot, Finder launch, the attract
+demo to a fixed instruction count — devcontainer, release headless
+build; the row's own golden, counters and assertions passed at every
+step):
+
+| step | glide row, wall | user |
+|---|---|---|
+| before (`main` 9c6f25c) | 12m38s | 11m53s |
+| snapshot refactor | 9m24s | 8m59s |
+| + dither tables, 2×2 fetch, expand cache, inlining | 8m14s | 8m02s |
+| + TMU skip | 7m10s | 7m01s |
+| + incremental iteration | 6m55s | 6m44s |
+| + pinned LOD | **6m39s** | 6m31s |
+| `raster=thread`, same code | 6m38s | 8m36s |
+
+Two findings the numbers carry.  **The thread backend cannot show a
+wall-clock win on this box**: the devcontainer has ONE physical core
+with two SMT threads (`lscpu`), so the producer and the worker share
+one core's execution units.  The `GS_V2_STATS=1` decomposition of that
+run — 2.5 M commands, 2 076 fences of which 265 waited, 512 k
+queue-full waits totalling 179 s, 425 worker sleeps — says the design
+behaves as intended: the fences are rare and the worker is the longer
+pole per frame, which on a true multi-core host puts the row near the
+worker's time alone.  The backend stays opt-in, as the proposal
+specified.  **`raster=null` is not a no-raster floor for this flow**:
+with nothing drawn the shipped driver's render-based self-tests fail,
+`grSstQueryHardware` reports no board and Quake never opens the
+screen — the row diverges after ~100 s.  The thread proposal's "68%
+of host CPU is rasterisation" was measured that way and therefore
+compared two different programs; the honest figure on this host is
+whatever the ladder removed (at least the 6 minutes it took off) plus
+the unknown remainder.
 
 ## The register-name table (milestone 3a)
 

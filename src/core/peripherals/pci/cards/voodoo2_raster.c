@@ -33,6 +33,7 @@
 #define V2_HAVE_THREAD_BACKEND 1
 #include <pthread.h>
 #include <stdatomic.h>
+#include <time.h>
 #else
 #define V2_HAVE_THREAD_BACKEND 0
 #endif
@@ -1487,7 +1488,20 @@ typedef struct v2_thread {
     bool stop;
     bool started;
     pthread_t thr;
+    // GS_V2_STATS=1: the decomposition printed at teardown — how many
+    // commands, how often the producer fenced and how long it waited,
+    // how often the worker went to sleep, and the worker's own CPU time.
+    uint64_t n_submit, n_sync, n_sync_wait, n_room_wait, n_state_wait, n_worker_sleep;
+    uint64_t wait_ns;
+    double worker_cpu_s;
 } v2_thread_t;
+
+// Monotonic nanoseconds, for the stats.
+static uint64_t v2_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
 #endif
 
 struct v2_raster {
@@ -1508,6 +1522,26 @@ struct v2_raster {
 };
 
 #if V2_HAVE_THREAD_BACKEND
+// One iteration of a busy-wait: a pause hint where the ISA has one.
+static inline void v2_cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ volatile("yield");
+#else
+    __asm__ volatile("" ::: "memory");
+#endif
+}
+
+// How long a dry worker spins before it sleeps.  The commands are
+// small and arrive in bursts (a triangle every few microseconds of
+// producer time), so a worker that slept on every empty poll would pay
+// a futex wake and a context switch per command — measured: the
+// threaded row took LONGER than the synchronous one.  A short spin
+// catches the next command in the common case; the sleep path is for
+// the genuinely idle stretches (the guest not rendering).
+#define V2_WORKER_SPIN 4096
+
 // The worker: drain the ring, execute in order, retire, sleep when dry.
 static void *v2_worker_main(void *arg) {
     v2_raster_t *r = (v2_raster_t *)arg;
@@ -1515,7 +1549,12 @@ static void *v2_worker_main(void *arg) {
     for (;;) {
         uint64_t t = atomic_load_explicit(&th->tail, memory_order_relaxed);
         uint64_t h = atomic_load_explicit(&th->head, memory_order_acquire);
+        for (int spin = 0; h == t && spin < V2_WORKER_SPIN; spin++) {
+            v2_cpu_relax();
+            h = atomic_load_explicit(&th->head, memory_order_acquire);
+        }
         if (h == t) {
+            th->n_worker_sleep++;
             pthread_mutex_lock(&th->mu);
             atomic_store_explicit(&th->worker_idle, 1, memory_order_seq_cst);
             // Re-check under the lock: a producer that stored head after
@@ -1526,8 +1565,12 @@ static void *v2_worker_main(void *arg) {
             atomic_store_explicit(&th->worker_idle, 0, memory_order_seq_cst);
             bool stop = th->stop && atomic_load_explicit(&th->head, memory_order_seq_cst) == t;
             pthread_mutex_unlock(&th->mu);
-            if (stop)
+            if (stop) {
+                struct timespec ts;
+                clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+                th->worker_cpu_s = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
                 return NULL;
+            }
             continue;
         }
         const v2_cmd_t *cmd = &th->q[t & (V2_QUEUE_DEPTH - 1u)];
@@ -1545,12 +1588,14 @@ static void *v2_worker_main(void *arg) {
 static void v2_thread_wait_tail(v2_thread_t *th, uint64_t want) {
     if (atomic_load_explicit(&th->tail, memory_order_acquire) >= want)
         return;
+    uint64_t t0 = v2_now_ns();
     pthread_mutex_lock(&th->mu);
     atomic_store_explicit(&th->producer_waiting, 1, memory_order_seq_cst);
     while (atomic_load_explicit(&th->tail, memory_order_seq_cst) < want)
         pthread_cond_wait(&th->cv_done, &th->mu);
     atomic_store_explicit(&th->producer_waiting, 0, memory_order_seq_cst);
     pthread_mutex_unlock(&th->mu);
+    th->wait_ns += v2_now_ns() - t0;
 }
 
 static bool v2_thread_start(v2_raster_t *r) {
@@ -1585,6 +1630,14 @@ static void v2_thread_stop(v2_raster_t *r) {
     pthread_cond_broadcast(&th->cv_work);
     pthread_mutex_unlock(&th->mu);
     pthread_join(th->thr, NULL);
+    const char *stats = getenv("GS_V2_STATS");
+    if (stats && *stats && *stats != '0')
+        LOG(0,
+            "raster=thread stats: %llu commands, %llu syncs (%llu waited), %llu room waits, %llu state waits, "
+            "%.3f s waited total, %llu worker sleeps, worker cpu %.1f s",
+            (unsigned long long)th->n_submit, (unsigned long long)th->n_sync, (unsigned long long)th->n_sync_wait,
+            (unsigned long long)th->n_room_wait, (unsigned long long)th->n_state_wait, (double)th->wait_ns * 1e-9,
+            (unsigned long long)th->n_worker_sleep, th->worker_cpu_s);
     pthread_mutex_destroy(&th->mu);
     pthread_cond_destroy(&th->cv_work);
     pthread_cond_destroy(&th->cv_done);
@@ -1662,8 +1715,13 @@ void v2_raster_state_dirty(v2_raster_t *r) {
 
 void v2_raster_sync(v2_raster_t *r) {
 #if V2_HAVE_THREAD_BACKEND
-    if (r->kind == V2_BACKEND_THREAD)
-        v2_thread_wait_tail(&r->th, atomic_load_explicit(&r->th.head, memory_order_relaxed));
+    if (r->kind == V2_BACKEND_THREAD) {
+        uint64_t h = atomic_load_explicit(&r->th.head, memory_order_relaxed);
+        r->th.n_sync++;
+        if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < h)
+            r->th.n_sync_wait++;
+        v2_thread_wait_tail(&r->th, h);
+    }
 #else
     (void)r;
 #endif
@@ -1680,8 +1738,11 @@ void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd) {
         // retired — and let the producer fill it from the live registers.
         uint32_t next = (r->st_cur + 1u) & (V2_STATE_SLOTS - 1u);
 #if V2_HAVE_THREAD_BACKEND
-        if (r->kind == V2_BACKEND_THREAD && r->st_seq[next])
+        if (r->kind == V2_BACKEND_THREAD && r->st_seq[next]) {
+            if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < r->st_seq[next])
+                r->th.n_state_wait++;
             v2_thread_wait_tail(&r->th, r->st_seq[next]);
+        }
 #endif
         r->build(r->ctx, &r->st[next]);
         r->st_cur = next;
@@ -1702,8 +1763,12 @@ void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd) {
 #if V2_HAVE_THREAD_BACKEND
         v2_thread_t *th = &r->th;
         // Room: the slot we are about to write must have been retired.
-        if (seq >= V2_QUEUE_DEPTH)
+        th->n_submit++;
+        if (seq >= V2_QUEUE_DEPTH) {
+            if (atomic_load_explicit(&th->tail, memory_order_acquire) < seq + 1u - V2_QUEUE_DEPTH)
+                th->n_room_wait++;
             v2_thread_wait_tail(th, seq + 1u - V2_QUEUE_DEPTH);
+        }
         th->q[seq & (V2_QUEUE_DEPTH - 1u)] = *cmd;
         atomic_store_explicit(&th->head, seq + 1u, memory_order_seq_cst);
         if (atomic_load_explicit(&th->worker_idle, memory_order_seq_cst)) {
