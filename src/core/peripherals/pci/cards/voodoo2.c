@@ -456,7 +456,15 @@ static inline uint64_t v2_tsc(void) {
 
 // Staged options (consumed by the factory, the mach64 idiom).
 static uint32_t s_staged_tex_size = V2_TMU_2MB;
-static char s_staged_raster[16] = "sw"; // pci_option="raster=sw|null|thread"
+// The default backend: the normative walker on native builds (the gates
+// run there and goldens come from it), the worker thread in the browser
+// (voodoo2_raster.h; overridable per boot with pci_option="raster=...").
+#if defined(__EMSCRIPTEN__)
+#define V2_DEFAULT_RASTER "thread"
+#else
+#define V2_DEFAULT_RASTER "sw"
+#endif
+static char s_staged_raster[16] = V2_DEFAULT_RASTER; // pci_option="raster=sw|null|thread"
 
 static uint32_t v2_screen_height(const voodoo2_t *v);
 static void v2_clip_rect(const voodoo2_t *v, int32_t *x0, int32_t *x1, int32_t *y0, int32_t *y1);
@@ -3315,7 +3323,7 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
         s_tsc_run0 = v2_tsc();
         s_tsc_card = s_tsc_fifo = s_tsc_setup = s_tsc_lfb = s_tsc_tex = 0;
     }
-    snprintf(s_staged_raster, sizeof(s_staged_raster), "sw");
+    snprintf(s_staged_raster, sizeof(s_staged_raster), "%s", V2_DEFAULT_RASTER);
     if (!v->fb_ram || !v->scanout || !v->tex_ram[0] || !v->tex_ram[1] || !v->raster) {
         v2_raster_destroy(v->raster);
         free(v->fb_ram);

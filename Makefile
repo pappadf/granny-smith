@@ -185,6 +185,7 @@ LDFLAGS := $(MODE_CFLAGS) \
            -lopfs.js \
            -pthread \
            -sPROXY_TO_PTHREAD \
+           -sPTHREAD_POOL_SIZE=2 \
            -sOFFSCREENCANVAS_SUPPORT \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \

@@ -287,8 +287,12 @@ optimization`, `proposal-voodoo2-raster-thread`) into a command layer:
   `pci_option="raster=sw"` (default, inline, **normative** — it
   produces every golden), `raster=null` (drops triangles; pins the
   analytic-timing invariant), `raster=thread` (one worker pthread
-  draining a bounded SPSC ring; native builds only, wasm falls back to
-  `sw`).  `machine.pci.slot[N].card.regs.raster` reports which.
+  draining a bounded SPSC ring).  The walker is the default on native
+  builds, where the gates run; the browser build defaults to the thread
+  — the emulator already runs on one Web Worker, the rasteriser takes a
+  second, preallocated at link time (`-sPTHREAD_POOL_SIZE=2`), and the
+  `voodoo2-thread` e2e spec pins it.
+  `machine.pci.slot[N].card.regs.raster` reports which.
 
 **Observation fences.**  Invariant 2 of the seam — the shadow is
 authoritative when the guest looks — is a list of `v2_raster_sync()`

@@ -29,14 +29,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#if !defined(__EMSCRIPTEN__)
+// The thread backend builds everywhere the core builds: native pthreads,
+// and Emscripten's pthreads-on-Web-Workers — the wasm link preallocates
+// the worker (-sPTHREAD_POOL_SIZE) so the create below never has to
+// wait for the browser's main thread to spawn one.
 #define V2_HAVE_THREAD_BACKEND 1
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
-#else
-#define V2_HAVE_THREAD_BACKEND 0
-#endif
 
 LOG_USE_CATEGORY_NAME("voodoo2");
 
@@ -1566,7 +1566,7 @@ static void *v2_worker_main(void *arg) {
             bool stop = th->stop && atomic_load_explicit(&th->head, memory_order_seq_cst) == t;
             pthread_mutex_unlock(&th->mu);
             if (stop) {
-                struct timespec ts;
+                struct timespec ts = {0, 0}; // stays zero where the clock is unsupported (wasm)
                 clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
                 th->worker_cpu_s = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
                 return NULL;
@@ -1669,7 +1669,6 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
     if (kind && strcmp(kind, "null") == 0) {
         r->kind = V2_BACKEND_NULL;
     } else if (kind && strcmp(kind, "thread") == 0) {
-#if V2_HAVE_THREAD_BACKEND
         if (v2_raster_watch_armed()) {
             LOG(0, "raster=thread refused while GS_V2_WATCH is armed — using the synchronous walker");
         } else if (v2_thread_start(r)) {
@@ -1677,9 +1676,6 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
         } else {
             LOG(0, "raster=thread: could not start the worker thread — using the synchronous walker");
         }
-#else
-        LOG(1, "raster=thread is native-only; the wasm build uses the synchronous walker");
-#endif
     } else if (kind && strcmp(kind, "sw") != 0) {
         LOG(0, "unknown raster backend '%s' — using the synchronous walker", kind);
     }
