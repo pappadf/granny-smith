@@ -80,15 +80,16 @@ LOG_USE_CATEGORY_NAME("bandit");
 // PCI memory and I/O windows, and bus-master DMA on its way to host memory
 // (pci.h, pci_bus_set_lane_reverse).
 //
-// The bridge's own config ports are NOT reversed, and do not need to be:
-// the data port decodes eight bytes with `data + (offset & 3)` selecting
-// the config byte, so a 32-BIT access is invariant under the 604's
-// little-endian address munge (EA ^ 4 lands on offsets 4..7, which mask
-// back to config bytes 0..3 in the same order).  A BYTE access is not:
-// EA ^ 7 lands on port offset 7, which masks to config byte 3.
+// The bridge's own config ports reverse with the lanes (port_offset /
+// port_val32 below, and why: the firmware's `xl!`/`xl@` are only the
+// byte-flipping variants in big-endian mode).  A reversed 32-bit access is
+// the straight one at offset ^ 4 with its bytes reversed, and the data
+// port decodes eight bytes with (offset & 3) selecting the config byte,
+// so a reversed 32-bit access reads and writes the little-endian config
+// dword as-is; a BYTE access at munged EA ^ 7 lands on config byte 3.
 //
-// That asymmetry is exactly how the firmware reaches this bit.  Running
-// the 604 in little-endian mode it does
+// That is exactly how the firmware reaches this bit.  Running the 604 in
+// little-endian mode it does
 //
 //     50080000 caddr xl! xl@ drop  cdata xb@  0fe and  cdata xb!
 //

@@ -53,8 +53,12 @@ DMA architecture:
   when it enters a little-endian client, at which point the bridge
   reverses its eight byte lanes for everything it forwards — the
   pass-through Grand Central island, the PCI memory and I/O windows, and
-  bus-master DMA on its way to host memory — while leaving its own config
-  ports straight (which is how software reaches the bit at all).  That
+  bus-master DMA on its way to host memory — and its own config address
+  and data ports with them (the firmware's `set-caddr` stores a natural
+  one-hot address with `xl!`, which is the byte-flipping variant only in
+  big-endian mode, so in little-endian mode the flip has to come from the
+  bridge; a reversed 32-bit access simply reads and writes the
+  little-endian config dword as-is).  That
   hardware reversal is the counterpart to the 604's little-endian address
   munge: the two cancel, so a little-endian client reaches every PCI-side
   device with plain loads and stores.  It is what lets Apple's 2.26NT

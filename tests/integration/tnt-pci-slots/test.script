@@ -136,19 +136,27 @@ assert machine.memory.peek.l(0xF301A000) == 0x00E00000 "the $F3 window is pass-t
 # they read 0 while the board's own straps ($E000) stand.
 assert machine.memory.peek.l(0xF301A000) == 0x00E00000 "BoxID presence pins must be clear with empty sockets"
 
-# --- The endian bit reverses the pass-through byte lanes. ---------------------
+# --- The endian bit reverses the byte lanes, config ports included. -----------
 # Clearing mode-select bit 24 (what OF does for a little-endian client with
 # `... cdata xb@ 0fe and cdata xb!`, whose munged BYTE access lands on
 # config byte 3) makes Bandit 1 reverse its eight byte lanes for everything
-# it forwards -- so the same BoxID longword, read straight above as
-# $00E00000, now comes back byte-reversed.  The bridge's own config ports
-# stay straight throughout, which is how software reaches this bit at all.
+# it drives -- so the same BoxID longword, read straight above as
+# $00E00000, now comes back byte-reversed.  The bridge's OWN config ports
+# reverse too (bandit.c, port_offset): the firmware's `set-caddr` stores a
+# natural one-hot address with `xl!`, which is the byte-flipping variant
+# only in big-endian mode, so in little-endian mode the flip has to come
+# from the bridge.  Seen from this big-endian script, a reversed 32-bit
+# access therefore reads and writes the little-endian config dword AS-IS:
+# mode-select is now $00000040 (coherency on, endian bit clear), and
+# restoring the endian bit means writing $01000040, not $40000001.
 machine.memory.poke.l(0xF2800000, 0x50080000)
-machine.memory.poke.l(0xF2C00000, 0x40000000)   # byte 3 = $00: endian bit CLEARED
-assert machine.memory.peek.l(0xF2C00000) == 0x40000000 "the config port reads back straight even in reversed mode"
+machine.memory.poke.l(0xF2C00000, 0x40000000)   # straight write: byte 3 = $00, endian bit CLEARED
+assert machine.memory.peek.l(0xF2C00000) == 0x00000040 "in reversed mode the data port hands back the LE config dword as-is"
 assert machine.memory.peek.l(0xF301A000) != 0x00E00000 "clearing the endian bit reverses the island's lanes"
-machine.memory.poke.l(0xF2C00000, 0x40000001)   # restore the endian bit
+assert machine.memory.peek.l(0xF301A000) == 0x0000E000 "the island's longword comes back byte-reversed"
+machine.memory.poke.l(0xF2C00000, 0x01000040)   # reversed write: LE dword $01000040 = coherency + endian bit
 assert machine.memory.peek.l(0xF301A000) == 0x00E00000 "restoring the endian bit restores the straight view"
+assert machine.memory.peek.l(0xF2C00000) == 0x40000001 "and the data port is straight again ($01000040 seen big-endian)"
 
 # --- Open Firmware's own probe-slots assigns Control's BARs. -----------------
 # 200M instructions: NanoKernel init, then OF's probe-pci walk (Bandit 1 ->
