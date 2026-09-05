@@ -285,8 +285,19 @@ static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, ui
 
 // Channel completion -> Grand Central interrupt n (== channel n), an
 // edge event into the fabric (interrupt-map §2.1).
+// A DBDMA channel interrupt is a LEVEL, not a pulse: the channel holds
+// its request asserted — visible in Grand Central's Levels register —
+// until the host acknowledges it through the interrupt-clear register.
+// That is the only way Mac OS can see one at all: the NanoKernel's
+// ExtIntHandlerTNT classifies from Levels & Mask and never reads Events,
+// so a completion raised as a one-shot event reached the 68k side never.
+// The shipping sound driver shows the contract from the other end: it
+// acknowledges channel 8 (clear $100) before it starts a program, and
+// its completion handler acknowledges again — with a pulse model those
+// acknowledges cleared nothing, the handler never ran after the first
+// program parked, and every sound after the firmware beep was silence.
 static void tnt_dbdma_irq(void *ctx, int chan) {
-    tnt_gc_pulse_event((config_t *)ctx, chan);
+    tnt_gc_set_source((config_t *)ctx, chan, true);
 }
 
 // ============================================================

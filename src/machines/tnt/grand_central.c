@@ -228,6 +228,15 @@ static void int_write(config_t *cfg, uint32_t offset, uint32_t value) {
                 gc->int_latch = 0; // the acknowledge drops the line
         }
         LOG(3, "clear $%08X -> events $%08X (mode %d)", value, gc->int_events, gc->int_mode1);
+        // The DBDMA channels (sources 0-10) hold their completion request
+        // as a level until acknowledged here (tnt_dbdma_irq): the clear
+        // deasserts it, which in mode 1 is itself the change the
+        // NanoKernel needs to lower the posted IPL again.
+        for (int n = 0; n < TNT_DBDMA_CHANNELS; n++) {
+            uint32_t bit = 1u << n;
+            if ((value & bit) && (gc->int_levels & bit))
+                tnt_gc_set_source(cfg, n, false);
+        }
         break;
     case INT_MASK: {
         // Enabling a source whose event or level is already pending
