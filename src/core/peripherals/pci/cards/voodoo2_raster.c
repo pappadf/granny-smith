@@ -30,9 +30,13 @@
 #include <string.h>
 
 // The thread backend builds everywhere the core builds: native pthreads,
-// and Emscripten's pthreads-on-Web-Workers — the wasm link preallocates
-// the worker (-sPTHREAD_POOL_SIZE) so the create below never has to
-// wait for the browser's main thread to spawn one.  A build can leave
+// and Emscripten's pthreads-on-Web-Workers.  The wasm link deliberately
+// preallocates NO worker pool: a pool (-sPTHREAD_POOL_SIZE) made the
+// browser's startup ready gate flaky in CI whether or not main() waited
+// for it, while on-demand creation is the path the build always used
+// for its own proxied main thread — the creator here is a pthread, the
+// browser's main thread spawns the Worker asynchronously, and the first
+// fence simply waits on the queue until it is running.  A build can leave
 // it out entirely with -DGS_V2_THREAD_BACKEND=0 (EXTRA_CFLAGS): no
 // pthread code is compiled, raster=thread falls back to the walker
 // with a log line, and the default backend becomes the walker.

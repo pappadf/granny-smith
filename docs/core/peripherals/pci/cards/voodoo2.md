@@ -292,9 +292,9 @@ optimization`, `proposal-voodoo2-raster-thread`) into a command layer:
   build**: its output is byte-identical to the walker's (the rows below
   assert it), so the goldens are indifferent and the CPU emulation gets
   the overlap.  In the browser the rasteriser takes a second Web
-  Worker, preallocated at link time (`-sPTHREAD_POOL_SIZE=2`, with
-  `PTHREAD_POOL_DELAY_LOAD` so startup is not gated on the pool) and
-  the `voodoo2-thread` e2e spec pins it.  A build defaults to the
+  Worker, created on demand at the card's first boot (no preallocated
+  pool: both pool configurations made the startup ready gate flaky in
+  CI) and the `voodoo2-thread` e2e spec pins it.  A build defaults to the
   walker with `EXTRA_CFLAGS='-DGS_V2_RASTER_DEFAULT="sw"'`, or leaves
   the thread backend out entirely with `-DGS_V2_THREAD_BACKEND=0` (no
   pthread code compiled; `raster=thread` then falls back with a log
