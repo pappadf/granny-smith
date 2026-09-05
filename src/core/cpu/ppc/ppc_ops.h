@@ -214,8 +214,17 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define CHKA_ST(ea, sz, vexpr) uint32_t xa = ea; uint64_t sv_ = (vexpr); int sg_ = ppc_scalar_gate(p, iw, &xa, sz, true, &sv_); if (sg_ < 0) break
 #define LDV(bits)       (lg_ ? (uint##bits##_t)lv_ : READ(bits, xa))
 #define STV(bits)       do { if (!sg_) WRITE(bits, xa, (uint##bits##_t)sv_); } while (0) // gate already stored byte-wise when it split — but the op body (update forms) must still run
-#define XLT_LD(ea)      uint32_t xa = ea; if (ppc_dxlate(p, iw, &xa, false)) break
-#define XLT_ST(ea)      uint32_t xa = ea; if (ppc_dxlate(p, iw, &xa, true)) break
+// Byte accesses skip the scalar gate (no alignment class applies) but
+// still take the LE-mode munge; the word-sized external-control pair
+// carries its own size.
+#define XLT_LD(ea)      uint32_t xa = ppc_le_ea(p, ea, 1); if (ppc_dxlate(p, iw, &xa, false)) break
+#define XLT_ST(ea)      uint32_t xa = ppc_le_ea(p, ea, 1); if (ppc_dxlate(p, iw, &xa, true)) break
+#define XLT_LD4(ea)     uint32_t xa = ppc_le_ea(p, ea, 4); if (ppc_dxlate(p, iw, &xa, false)) break
+#define XLT_ST4(ea)     uint32_t xa = ppc_le_ea(p, ea, 4); if (ppc_dxlate(p, iw, &xa, true)) break
+// Doubleword FP transfers: the BE path is one 8-byte gate; LE mode goes
+// through ppc_le_ld64/st64 (two munged words).  Both declare v64_/s64_.
+#define LD64(ea)        uint64_t v64_; if (p->msr & PPC_MSR_LE) { if (ppc_le_ld64(p, iw, ea, &v64_)) break; } else { CHKA_LD(ea, 8); v64_ = FPR_LOAD64(); }
+#define ST64(ea, vexpr) uint64_t s64_ = (vexpr); if (p->msr & PPC_MSR_LE) { if (ppc_le_st64(p, iw, ea, s64_)) break; } else { CHKA_ST(ea, 8, s64_); FPR_STORE64(); }
 
 // Effective addresses (D-form, D-form update, X-form, X-form update)
 #define EA_D()  uint32_t ea = RA0 + SIMM32
@@ -434,8 +443,8 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 // --- external control (EAR-gated, 601UM eciwx/ecowx pages; the 604 adds
 //     the word-alignment requirement — 604UM §4.5.6) ---
 #define ECX_ALIGN()   if (ppc_is_604(p) && (ea & 3u)) { ppc_align_exception(p, iw, ea); break; }
-#define OP_ECIWX      OP(EA_X(); ECX_ALIGN(); if (!(p->ear & 0x80000000u)) { ppc_ecx_fault(p, ea, false); break; } XLT_LD(ea); GPR(RT) = READ(32, xa))
-#define OP_ECOWX      OP(EA_X(); ECX_ALIGN(); if (!(p->ear & 0x80000000u)) { ppc_ecx_fault(p, ea, true); break; } XLT_ST(ea); WRITE(32, xa, GPR(RT)))
+#define OP_ECIWX      OP(EA_X(); ECX_ALIGN(); if (!(p->ear & 0x80000000u)) { ppc_ecx_fault(p, ea, false); break; } XLT_LD4(ea); GPR(RT) = READ(32, xa))
+#define OP_ECOWX      OP(EA_X(); ECX_ALIGN(); if (!(p->ear & 0x80000000u)) { ppc_ecx_fault(p, ea, true); break; } XLT_ST4(ea); WRITE(32, xa, GPR(RT)))
 
 // --- strings ---
 #define OP_LSWI       OP(ppc_do_lswi(p, iw))
@@ -449,20 +458,20 @@ static inline void ppc_sra_mq_ca(ppc_t *p, uint32_t rot, uint32_t mask, uint32_t
 #define FPR_STORE64()  do { if (!sg_) { WRITE(32, xa, (uint32_t)(sv_ >> 32)); WRITE(32, xa + 4, (uint32_t)sv_); } } while (0)
 #define OP_LFS        OP(FP(); EA_D();  CHKA_LD(ea, 4); p->fpr[RT] = ppc_f32_to_f64(LDV(32)))
 #define OP_LFSU       OP(FP(); EA_DU(); CHKA_LD(ea, 4); UPD(); p->fpr[RT] = ppc_f32_to_f64(LDV(32)))
-#define OP_LFD        OP(FP(); EA_D();  CHKA_LD(ea, 8); p->fpr[RT] = FPR_LOAD64())
-#define OP_LFDU       OP(FP(); EA_DU(); CHKA_LD(ea, 8); UPD(); p->fpr[RT] = FPR_LOAD64())
+#define OP_LFD        OP(FP(); EA_D();  LD64(ea); p->fpr[RT] = v64_)
+#define OP_LFDU       OP(FP(); EA_DU(); LD64(ea); UPD(); p->fpr[RT] = v64_)
 #define OP_STFS       OP(FP(); EA_D();  CHKA_ST(ea, 4, ppc_f64_to_f32_store(p->fpr[RT])); STV(32))
 #define OP_STFSU      OP(FP(); EA_DU(); CHKA_ST(ea, 4, ppc_f64_to_f32_store(p->fpr[RT])); UPD(); STV(32))
-#define OP_STFD       OP(FP(); EA_D();  CHKA_ST(ea, 8, p->fpr[RT]); FPR_STORE64())
-#define OP_STFDU      OP(FP(); EA_DU(); CHKA_ST(ea, 8, p->fpr[RT]); UPD(); FPR_STORE64())
+#define OP_STFD       OP(FP(); EA_D();  ST64(ea, p->fpr[RT]))
+#define OP_STFDU      OP(FP(); EA_DU(); ST64(ea, p->fpr[RT]); UPD())
 #define OP_LFSX       OP(FP(); EA_X();  CHKA_LD(ea, 4); p->fpr[RT] = ppc_f32_to_f64(LDV(32)))
 #define OP_LFSUX      OP(FP(); EA_XU(); CHKA_LD(ea, 4); UPD(); p->fpr[RT] = ppc_f32_to_f64(LDV(32)))
-#define OP_LFDX       OP(FP(); EA_X();  CHKA_LD(ea, 8); p->fpr[RT] = FPR_LOAD64())
-#define OP_LFDUX      OP(FP(); EA_XU(); CHKA_LD(ea, 8); UPD(); p->fpr[RT] = FPR_LOAD64())
+#define OP_LFDX       OP(FP(); EA_X();  LD64(ea); p->fpr[RT] = v64_)
+#define OP_LFDUX      OP(FP(); EA_XU(); LD64(ea); UPD(); p->fpr[RT] = v64_)
 #define OP_STFSX      OP(FP(); EA_X();  CHKA_ST(ea, 4, ppc_f64_to_f32_store(p->fpr[RT])); STV(32))
 #define OP_STFSUX     OP(FP(); EA_XU(); CHKA_ST(ea, 4, ppc_f64_to_f32_store(p->fpr[RT])); UPD(); STV(32))
-#define OP_STFDX      OP(FP(); EA_X();  CHKA_ST(ea, 8, p->fpr[RT]); FPR_STORE64())
-#define OP_STFDUX     OP(FP(); EA_XU(); CHKA_ST(ea, 8, p->fpr[RT]); UPD(); FPR_STORE64())
+#define OP_STFDX      OP(FP(); EA_X();  ST64(ea, p->fpr[RT]))
+#define OP_STFDUX     OP(FP(); EA_XU(); ST64(ea, p->fpr[RT]); UPD())
 // stfiwx (604): store the FPR's low word untouched (PEM stfiwx page).
 #define OP_STFIWX     OP(M604(); FP(); EA_X(); CHKA_ST(ea, 4, (uint32_t)p->fpr[RT]); STV(32))
 

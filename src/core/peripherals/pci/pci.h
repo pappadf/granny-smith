@@ -119,6 +119,19 @@ void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, ui
 const memory_interface_t *pci_bus_window_iface(pci_bus_t *bus, int window);
 void *pci_bus_window_ctx(pci_bus_t *bus, int window);
 
+// Little-endian LANE REVERSAL on a bus.  A PowerPC in little-endian mode
+// does not reorder bytes; it XORs the low three address bits of every
+// access with 8-size (7/6/4 for a byte/halfword/word).  A host bridge that
+// wants PCI to look byte-address-invariant to such a client undoes that by
+// reversing its eight byte lanes: processor-bus byte n is PCI byte n^7.
+// The bridge adapter flips it from the chipset register the firmware
+// writes (Bandit mode-select, bandit.c); the window dispatch applies it —
+// an N-byte access at window offset o reaches PCI offset o^(8-N) with its
+// bytes reversed — and a bus master consults it (pci_bus_lane_reverse) so
+// the same reversal is applied on its way to host memory.
+void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on);
+bool pci_bus_lane_reverse(const pci_bus_t *bus);
+
 // Seat a device at `device_num` (its IDSEL AD line).  The bus does NOT
 // take ownership of devices registered this way by the family — only of
 // the ones its own slot walk created through a card factory.

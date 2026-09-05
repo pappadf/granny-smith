@@ -62,6 +62,7 @@ struct pci_bus {
     bool owns[PCI_MAX_DEVICES]; // seated by our slot walk: we free it
     pci_window_t window[PCI_MAX_WINDOWS];
     int window_count;
+    bool lane_reverse; // the bridge is reversing byte lanes (pci.h)
 };
 
 struct pci_root {
@@ -314,9 +315,17 @@ static void window_fault(const pci_window_t *w, uint32_t offset, bool write) {
     memory_signal_bus_error(w->map_base + offset, write);
 }
 
+// The lane reversal (pci.h): an N-byte access at offset o is the access at
+// o ^ (8-N) with its bytes reversed.  Applied once, here, before decode, so
+// no device model ever sees anything but PCI byte addresses and values.
+static inline uint32_t lane_offset(const pci_window_t *w, uint32_t offset, uint32_t size) {
+    return w->bus->lane_reverse ? (offset ^ (8u - size)) : offset;
+}
+
 static uint8_t window_read8(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    offset = lane_offset(w, offset, 1);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFu;
@@ -327,26 +336,31 @@ static uint8_t window_read8(void *ctx, uint32_t offset) {
 static uint16_t window_read16(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    offset = lane_offset(w, offset, 2);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFFFu;
     }
-    return d.iface->read_uint16(d.ctx, d.sub);
+    uint16_t v = d.iface->read_uint16(d.ctx, d.sub);
+    return w->bus->lane_reverse ? __builtin_bswap16(v) : v;
 }
 
 static uint32_t window_read32(void *ctx, uint32_t offset) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    offset = lane_offset(w, offset, 4);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, false);
         return 0xFFFFFFFFu;
     }
-    return d.iface->read_uint32(d.ctx, d.sub);
+    uint32_t v = d.iface->read_uint32(d.ctx, d.sub);
+    return w->bus->lane_reverse ? __builtin_bswap32(v) : v;
 }
 
 static void window_write8(void *ctx, uint32_t offset, uint8_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    offset = lane_offset(w, offset, 1);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
@@ -357,21 +371,23 @@ static void window_write8(void *ctx, uint32_t offset, uint8_t value) {
 static void window_write16(void *ctx, uint32_t offset, uint16_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    offset = lane_offset(w, offset, 2);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
     }
-    d.iface->write_uint16(d.ctx, d.sub, value);
+    d.iface->write_uint16(d.ctx, d.sub, w->bus->lane_reverse ? __builtin_bswap16(value) : value);
 }
 
 static void window_write32(void *ctx, uint32_t offset, uint32_t value) {
     const pci_window_t *w = (const pci_window_t *)ctx;
     pci_decode_t d;
+    offset = lane_offset(w, offset, 4);
     if (!window_locate(w, window_pci_addr(w, offset), &d)) {
         window_fault(w, offset, true);
         return;
     }
-    d.iface->write_uint32(d.ctx, d.sub, value);
+    d.iface->write_uint32(d.ctx, d.sub, w->bus->lane_reverse ? __builtin_bswap32(value) : value);
 }
 
 void pci_bus_add_window(pci_bus_t *bus, pci_space_t space, uint32_t map_base, uint32_t size, uint32_t pci_base,
@@ -405,6 +421,17 @@ void *pci_bus_window_ctx(pci_bus_t *bus, int window) {
     if (!bus || window < 0 || window >= bus->window_count)
         return NULL;
     return &bus->window[window];
+}
+
+void pci_bus_set_lane_reverse(pci_bus_t *bus, bool on) {
+    if (!bus || bus->lane_reverse == on)
+        return;
+    bus->lane_reverse = on;
+    LOG(1, "%s: byte lanes %s", bus->name, on ? "REVERSED (little-endian client)" : "straight (big-endian)");
+}
+
+bool pci_bus_lane_reverse(const pci_bus_t *bus) {
+    return bus && bus->lane_reverse;
 }
 
 // === Region backing =========================================================
