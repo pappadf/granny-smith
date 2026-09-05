@@ -196,6 +196,23 @@ assert scheduler.cycles == $NC0 "null backend: a draw consumes no scheduled time
 assert machine.pci.slot[1].card.regs.read(0x15C) == 0 "null backend: nothing was drawn — only CONTENTS may differ between backends"
 assert machine.pci.slot[1].card.regs.read(0x25C) == 1 "...but the triangle RETIRED: the guest-visible command stream is backend-independent"
 
+# --- The raster seam: the two backends are byte-identical. -----------------
+# The default backend is the worker thread — the same executor on a
+# pthread behind a command queue (voodoo2_raster.h), where every
+# observation point (LFB reads, the statistics counters, the stipple
+# register, scanout, checkpoints) fences first — so the drawing section
+# above ran on it.  Now the ENTIRE section replays on the NORMATIVE
+# synchronous walker, pci_option="raster=sw", against the same pinned
+# pixel values and counts: the equivalence is asserted, not assumed.
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=sw"
+cfg_wr(0x10, 0x81000000)
+cfg_wr(0x04, 0x0002)
+let BAR = machine.pci.slot[1].card.config.bar[0].base
+echo "raster backend for the replay: ${machine.pci.slot[1].card.regs.raster}"
+include "glide-init.script"
+include "draw.script"
+assert machine.pci.slot[1].card.regs.raster == "sw" "the replay ran on the normative walker"
+
 # --- The memory option: 8 MB and 12 MB boards. ------------------------------
 # Both SKUs carry the same 4 MB framebuffer (both reach 800x600); the
 # option changes texture capacity only.  The guest-visible TMU probe

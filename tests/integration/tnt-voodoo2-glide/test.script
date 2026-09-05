@@ -25,10 +25,19 @@
 
 include "../lib/mac.script"
 
+# The raster backend under test (voodoo2_raster.h): the build's default
+# (the worker thread) unless --var RASTER= says otherwise; the
+# tnt-voodoo2-glide-sw row runs the identical flow on the normative
+# synchronous walker against the SAME golden; RASTER=null is the
+# no-raster variant scripts/voodoo2/bench.sh can time (not a floor —
+# see the script).
+let RASTER = try($RASTER, "thread")
+
 let img = "${$WORK_DIR}/quake.img"
 if have_media($img) {
 
-machine.boot model="pm7500" ram=65536 rom="${$ROM}" pci_card="voodoo2"
+machine.boot model="pm7500" ram=65536 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=${$RASTER}"
+assert machine.pci.slot[1].card.regs.raster == $RASTER "the requested raster backend is installed"
 machine.rtc.time = "2026-04-26T21:30:36"
 machine.scsi.attach_hd "${$img}" 0
 

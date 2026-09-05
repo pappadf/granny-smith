@@ -119,6 +119,12 @@ document grows as each group lands.
   via packet-5 LFB spans — gated by
   `tests/integration/tnt-voodoo2-glide` (tier extended, media-gated),
   whose golden `quake-ingame.png` is a hand-inspected in-game frame.
+- **Raster performance (branch `voodoo2-raster-perf`):** the seam
+  becomes a command layer with a draw-state snapshot, the walker gets
+  its bit-exact optimization ladder (12m38s → 6m39s on the glide row,
+  golden unchanged), and a worker-thread backend (`raster=thread`,
+  the default on every build, byte-identical) lands behind it — see
+  "The raster seam" below.
 
 ## Provenance
 
@@ -238,9 +244,9 @@ divergences, each deliberate and localised:
 | # | Divergence | Where | Why |
 |---|---|---|---|
 | 1 | Idle is inverted: work completes at issue, busy reads 0 | `v2_status` | the faithful failure mode is an unbounded guest spin (§8 Q3) |
-| 2 | The fill rule above | `v2_sw_triangle` | not specified at any price; §8 Q1 |
-| 3 | Dither thresholds (classic Bayer 4×4/2×2, remainder-threshold rule) | `v2_pack565` | the spec names the modes but not the matrices |
-| 4 | Per-pixel LOD from analytic texel-space steps | `v2_texture_chain` | the LOD arithmetic is Bruce-spec material nobody holds (§8 Q4) |
+| 2 | The fill rule above | `v2_sw_triangle` (`voodoo2_raster.c`) | not specified at any price; §8 Q1 |
+| 3 | Dither thresholds (classic Bayer 4×4/2×2, remainder-threshold rule) | `v2_pack565` (`voodoo2_raster.c`) | the spec names the modes but not the matrices |
+| 4 | Per-pixel LOD from analytic texel-space steps | `v2_texture_chain_full` (`voodoo2_raster.c`) | the LOD arithmetic is Bruce-spec material nobody holds (§8 Q4) |
 | 5 | 1/W→4.12 float-depth normalisation | `v2_depth_float` | the exact normalisation is not in our material |
 | 6 | Fog table indexing (4-bit exponent + 2 mantissa bits, no inter-entry interpolation) | `v2_pixel_pipe` | normalisation unspecified; no held client uses fog |
 | 7 | Float-mirror→fixed conversion truncates toward zero | `v2_float_to_latch` | conversion rounding unspecified |
@@ -254,6 +260,130 @@ and implemented faithfully: sub-pixel correction mutating the start
 latches per FIFO read (so resend-less triangles drift — §8 Q9, asserted),
 the reversed LFB transform orders, texture-memory aliasing under the
 sizing probes, and the initEnable gates.
+
+## The raster seam: commands, snapshot, backends
+
+`voodoo2_raster.h` is the seam between the card and its rasteriser,
+reshaped by two follow-on proposals (`proposal-voodoo2-walker-
+optimization`, `proposal-voodoo2-raster-thread`) into a command layer:
+
+- **The producer** (`voodoo2.c`) owns the register file and turns guest
+  traffic into commands: triangle, fastfill, LFB pixel, raw 16-bit
+  store, texture download (a packet-5 row per command), palette/NCC
+  word, SGRAM fill, statistics clear, stipple write.  Each command
+  names a slot in a ring of **draw-state snapshots** (`v2_draw_state_t`
+  — every register the pipeline reads, plus its per-draw decode: LOD
+  bases and dimensions, combine controls, buffer bases resolved against
+  the displayed buffer).  A snapshot is re-captured only when a state
+  register is written, and a slot is rewritten only after every command
+  that referenced it has retired.
+- **The executor** (`voodoo2_raster.c`, `v2_raster_execute`) renders a
+  command into the **target** (`v2_target_t`) it owns: the framebuffer,
+  the texture RAMs, the palettes and NCC tables, the five statistics
+  counters and the stipple register.  The TU never includes the card
+  struct — it *cannot* read a live register, which is the thread
+  proposal's "worker never reads live state" rule enforced by the
+  compiler.
+- **Backends** decide only *where* the executor runs:
+  `pci_option="raster=sw"` (default, inline, **normative** — it
+  produces every golden), `raster=null` (drops triangles; pins the
+  analytic-timing invariant), `raster=thread` (one worker pthread
+  draining a bounded SPSC ring).  **The thread is the default on every
+  build**: its output is byte-identical to the walker's (the rows below
+  assert it), so the goldens are indifferent and the CPU emulation gets
+  the overlap.  In the browser the rasteriser takes a second Web
+  Worker, created on demand at the card's first boot (no preallocated
+  pool: both pool configurations made the startup ready gate flaky in
+  CI) and the `voodoo2-thread` e2e spec pins it.  A build defaults to the
+  walker with `EXTRA_CFLAGS='-DGS_V2_RASTER_DEFAULT="sw"'`, or leaves
+  the thread backend out entirely with `-DGS_V2_THREAD_BACKEND=0` (no
+  pthread code compiled; `raster=thread` then falls back with a log
+  line); any boot picks one with `pci_option`.  `machine.pci.slot[N].card.regs.raster`
+  reports which.
+
+**Observation fences.**  Invariant 2 of the seam — the shadow is
+authoritative when the guest looks — is a list of `v2_raster_sync()`
+call sites, every one guest-visible: LFB reads; reads of the five
+counters and of `stipple` (`v2_observe` retires the queue and mirrors
+the executor's copies into the register file); scanout
+(`v2_display_update`, the once-per-frame fence that bounds the
+worker's lag); checkpoint save/restore; reset; teardown; `tex_save`;
+the raw byte/halfword stores; and every CMDFIFO write while the fifo
+pages overlap a render buffer (the fifo ring lives inside `fb_ram`
+— `v2_check_fifo_overlap` re-evaluates the geometry whenever it is
+programmed and logs the overlapping configuration once).
+`fbiTrianglesOut` counts at *submission*, on the producer, and needs
+no fence — part of the contract.  Under `raster=thread` the level-5
+`tri` trace still comes from the producer; the `GS_V2_WATCH`
+instrument logs from inside the executor, so a thread backend refuses
+to start while it is armed and diagnosis uses the synchronous walker.
+
+**Equivalence is asserted, not assumed.**  `tnt-pci-voodoo2` draws
+its drawing section on the default (the thread) and replays it
+entirely on `raster=sw`, the normative walker, against the same pinned
+pixel values and counts (including a rotate-mode stipple probe: nine
+of tri1's 136 pixels pass `$80000001`, the register ends at `$180`);
+`tnt-voodoo2-glide` runs Quake on the default and `tnt-voodoo2-glide-sw`
+runs it on the walker against the **same** in-game golden (a symlink
+into the sibling row).
+
+**The walker-optimization ladder** (bit-exact by construction; the
+three rows above are the oracle, `GS_V2_XCHECK=1` is the soak-run
+cross-check that recomputes every shortcut the long way and aborts on
+a mismatch):
+
+| rung | what | how it stays exact |
+|---|---|---|
+| snapshot | register decode, mip-chain address arithmetic and buffer bases hoisted per draw | same expressions, evaluated once |
+| dither | `v2_pack565`'s two divisions become `s_dith5/6[d][v]` lookups | tables built from the same expressions over the whole 16×256 domain |
+| fetch | one clamp/wrap per bilinear coordinate, a 2×2 raw fetch, 8-bit formats through a 256-entry expansion cache keyed by (format, NCC select, palette generation); `ldexp` becomes a multiply by an exact power of two | cache built by `v2_texel_expand`; power-of-two scaling is exact in IEEE double |
+| TMU skip (§3.2) | TMU1 not sampled when TMU0's combine consumes nothing from its chain input (`tc_zero_other`, `tca_zero_other`, no `a_other` mselect, not echoing config); the chain not run when `fbzColorPath` never reads `tex_argb` | dataflow: the dead value is multiplied by zero or never selected |
+| incremental (§3.3) | edge functions and every iterator evaluated in closed form at the first pixel of a row's inside run, then stepped by the X gradient; the row scan stops when the run ends | integer fixed point: `start + k·d` accumulated equals the closed form; a convex polygon's row is one interval |
+| pinned LOD (§3.4) | with `lodmin == lodmax` and equal min/mag filters the estimate (four divides and a `log2` per pixel) is never computed | the clamp pins `lod4` and `magnify` selects nothing |
+| inlining (§3.6) | the per-pixel leaf helpers are `always_inline`; the watch test is one predicted branch | no semantic content |
+
+Measured on the canonical launch (`scripts/voodoo2/bench.sh`: the
+glide row to its golden — Mac OS 8.1 boot, Finder launch, the attract
+demo to a fixed instruction count — devcontainer, release headless
+build; the row's own golden, counters and assertions passed at every
+step):
+
+| step | glide row, wall | user |
+|---|---|---|
+| before (`main` 9c6f25c) | 12m38s | 11m53s |
+| snapshot refactor | 9m24s | 8m59s |
+| + dither tables, 2×2 fetch, expand cache, inlining | 8m14s | 8m02s |
+| + TMU skip | 7m10s | 7m01s |
+| + incremental iteration | 6m55s | 6m44s |
+| + pinned LOD | **6m39s** | 6m31s |
+| `raster=thread`, same code | 6m38s | 8m36s |
+
+Two findings the numbers carry.  **The thread backend cannot show a
+wall-clock win on this box**: the devcontainer has ONE physical core
+with two SMT threads (`lscpu`), so the producer and the worker share
+one core's execution units.  The `GS_V2_STATS=1` decomposition of that
+run — 2.5 M commands, 2 076 fences of which 265 waited, 512 k
+queue-full waits totalling 179 s, 425 worker sleeps — says the design
+behaves as intended: the fences are rare and the worker is the longer
+pole per frame, which on a true multi-core host puts the row near the
+worker's time alone.  The same switch prints the PRODUCER side: the
+card's aperture handlers took 42% of that run, of which 39% was the
+producer waiting for queue room inside submit — so the card's own
+producer-side work (fifo parsing, setup-engine gradients, LFB and
+texture command building) is about 3.5% of the run, and the rest of
+the producer's time is the PowerPC interpreter running the guest.
+Moving the parser or the setup engine onto the worker could therefore
+save at most a few percent, at the price of a worker-owned register
+file (every register-face read would fence); the worker itself is
+where the remaining time is.  The backend stays opt-in, as the
+proposal specified.  **`raster=null` is not a no-raster floor for this flow**:
+with nothing drawn the shipped driver's render-based self-tests fail,
+`grSstQueryHardware` reports no board and Quake never opens the
+screen — the row diverges after ~100 s.  The thread proposal's "68%
+of host CPU is rasterisation" was measured that way and therefore
+compared two different programs; the honest figure on this host is
+whatever the ladder removed (at least the 6 minutes it took off) plus
+the unknown remainder.
 
 ## The register-name table (milestone 3a)
 
