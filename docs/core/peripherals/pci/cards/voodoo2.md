@@ -354,8 +354,17 @@ run — 2.5 M commands, 2 076 fences of which 265 waited, 512 k
 queue-full waits totalling 179 s, 425 worker sleeps — says the design
 behaves as intended: the fences are rare and the worker is the longer
 pole per frame, which on a true multi-core host puts the row near the
-worker's time alone.  The backend stays opt-in, as the proposal
-specified.  **`raster=null` is not a no-raster floor for this flow**:
+worker's time alone.  The same switch prints the PRODUCER side: the
+card's aperture handlers took 42% of that run, of which 39% was the
+producer waiting for queue room inside submit — so the card's own
+producer-side work (fifo parsing, setup-engine gradients, LFB and
+texture command building) is about 3.5% of the run, and the rest of
+the producer's time is the PowerPC interpreter running the guest.
+Moving the parser or the setup engine onto the worker could therefore
+save at most a few percent, at the price of a worker-owned register
+file (every register-face read would fence); the worker itself is
+where the remaining time is.  The backend stays opt-in, as the
+proposal specified.  **`raster=null` is not a no-raster floor for this flow**:
 with nothing drawn the shipped driver's render-based self-tests fail,
 `grSstQueryHardware` reports no board and Quake never opens the
 screen — the row diverges after ~100 s.  The thread proposal's "68%

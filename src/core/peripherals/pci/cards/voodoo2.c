@@ -79,6 +79,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__x86_64__) || defined(__i386__)
+#include <x86intrin.h>
+#endif
 
 LOG_USE_CATEGORY_NAME("voodoo2");
 
@@ -435,6 +438,21 @@ typedef struct voodoo2 {
 
     memory_interface_t bar_if;
 } voodoo2_t;
+
+// GS_V2_STATS=1 — the producer side of the decomposition: TSC ticks
+// spent inside the card's aperture handlers (all of it), and the
+// buckets that could in principle move to a renderer thread — the
+// CMDFIFO parser, the setup engine's gradients, the LFB pixel path and
+// texture downloads.  Printed at teardown as fractions of the run.
+static bool s_prod_stats;
+static uint64_t s_tsc_run0, s_tsc_card, s_tsc_fifo, s_tsc_setup, s_tsc_lfb, s_tsc_tex;
+static inline uint64_t v2_tsc(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    return __rdtsc();
+#else
+    return 0;
+#endif
+}
 
 // Staged options (consumed by the factory, the mach64 idiom).
 static uint32_t s_staged_tex_size = V2_TMU_2MB;
@@ -1060,6 +1078,7 @@ static void v2_lfb_pixel(voodoo2_t *v, uint32_t buffer, uint32_t x, uint32_t y, 
 // field-encoded aperture offset `off` (V2 p.119), decoded by the
 // executor against the TMU state in force now.
 static void v2_tex_write_words(voodoo2_t *v, uint32_t off, const uint32_t *words, uint32_t n) {
+    uint64_t t0 = s_prod_stats ? v2_tsc() : 0;
     while (n > 0) {
         v2_cmd_t cmd;
         cmd.kind = V2_CMD_TEX_WRITE;
@@ -1071,6 +1090,8 @@ static void v2_tex_write_words(voodoo2_t *v, uint32_t off, const uint32_t *words
         words += cmd.u.tex.n;
         n -= cmd.u.tex.n;
     }
+    if (s_prod_stats)
+        s_tsc_tex += v2_tsc() - t0;
 }
 
 // Hand a converged triangle to the backend.  The §9.2 trace line — one
@@ -1184,7 +1205,14 @@ static float v2_f32(uint32_t bits) {
 }
 
 // Compute the gradients from the three float vertices and draw.
+static void v2_setup_draw_body(voodoo2_t *v);
 static void v2_setup_draw(voodoo2_t *v) {
+    uint64_t t0 = s_prod_stats ? v2_tsc() : 0;
+    v2_setup_draw_body(v);
+    if (s_prod_stats)
+        s_tsc_setup += v2_tsc() - t0;
+}
+static void v2_setup_draw_body(voodoo2_t *v) {
     uint32_t sm = v->reg[R_SETUPMODE];
     float x0 = v->sv[0].x, y0 = v->sv[0].y;
     float x1 = v->sv[1].x, y1 = v->sv[1].y;
@@ -1834,7 +1862,14 @@ static uint32_t v2_packet_words(uint32_t w0) {
 static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data);
 
 // Execute complete packets from the fifo until depth runs dry.
+static void v2_fifo_execute_body(voodoo2_t *v);
 static void v2_fifo_execute(voodoo2_t *v) {
+    uint64_t t0 = s_prod_stats ? v2_tsc() : 0;
+    v2_fifo_execute_body(v);
+    if (s_prod_stats)
+        s_tsc_fifo += v2_tsc() - t0;
+}
+static void v2_fifo_execute_body(voodoo2_t *v) {
     int guard = 1 << 20; // a bounded parser, never a hung emulator
     while (v->reg[R_CMDFIFO_DEPTH] > 0 && guard-- > 0) {
         uint32_t rd = v->reg[R_CMDFIFO_RDPTR];
@@ -2143,7 +2178,90 @@ static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
     return 0xFFFFFFFFu;
 }
 
+// One 32-bit LFB-face write, decoded per lfbMode's format and lanes
+// into one or two pixel commands.
+static void v2_lfb_write32(voodoo2_t *v, uint32_t off, uint32_t le) {
+    uint64_t t0 = s_prod_stats ? v2_tsc() : 0;
+    uint32_t mode = v->reg[R_LFBMODE];
+    uint32_t fmt = LFB_FMT(mode);
+    uint32_t buffer, x, y;
+    v2_lfb_locate(v, off - V2_OFF_LFB, true, &buffer, &x, &y);
+    uint32_t t = v2_lfb_write_transform(v, le);
+    LOG(5, "lfb wr32 +%06X = %08X (lfbMode %05X buf %u x %u y %u)", off, le, mode, buffer, x, y);
+    uint32_t r, g, b, a;
+    switch (fmt) {
+    case 0:
+    case 1:
+    case 2: { // two 16-bit colour pixels: left in the low half
+        bool ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)t, &r, &g, &b, &a);
+        v2_lfb_pixel(v, buffer, x, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), false, 0, true, false);
+        ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)(t >> 16), &r, &g, &b, &a);
+        v2_lfb_pixel(v, buffer, x + 1u, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), false, 0, true, false);
+        goto done;
+    }
+    case 4:
+    case 5: { // one 24/32-bit pixel; lanes reorder the byte channels
+        uint32_t lanes = LFB_LANES(mode);
+        if (lanes == 0u || fmt == 4u) { // ARGB (format 4 carries no A)
+            a = fmt == 5u ? t >> 24 : (v->reg[R_ZACOLOR] >> 24);
+            r = (t >> 16) & 0xFFu;
+            g = (t >> 8) & 0xFFu;
+            b = t & 0xFFu;
+        } else if (lanes == 1u) { // ABGR
+            a = t >> 24;
+            b = (t >> 16) & 0xFFu;
+            g = (t >> 8) & 0xFFu;
+            r = t & 0xFFu;
+        } else if (lanes == 2u) { // RGBA
+            r = t >> 24;
+            g = (t >> 16) & 0xFFu;
+            b = (t >> 8) & 0xFFu;
+            a = t & 0xFFu;
+        } else { // BGRA
+            b = t >> 24;
+            g = (t >> 16) & 0xFFu;
+            r = (t >> 8) & 0xFFu;
+            a = t & 0xFFu;
+        }
+        v2_lfb_pixel(v, buffer, x, y, r, g, b, a, false, 0, true, false);
+        goto done;
+    }
+    case 12:
+    case 13:
+    case 14: { // 16-bit depth + 16-bit colour (Z high after transform)
+        bool ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)t, &r, &g, &b, &a);
+        v2_lfb_pixel(v, buffer, x, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), true, (uint16_t)(t >> 16), true,
+                     true);
+        goto done;
+    }
+    case LFB_FMT_ZZ: // two depth values into the aux buffer
+        v2_lfb_store16(v, 3u, x, y, (uint16_t)t);
+        v2_lfb_store16(v, 3u, x + 1u, y, (uint16_t)(t >> 16));
+        goto done;
+    default: // reserved formats: the write vanishes
+        goto done;
+    }
+done:
+    if (s_prod_stats)
+        s_tsc_lfb += v2_tsc() - t0;
+}
+
+static void v2_bar_write32_body(void *ctx, uint32_t off, uint32_t data);
 static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data) {
+    if (!s_prod_stats) {
+        v2_bar_write32_body(ctx, off, data);
+        return;
+    }
+    // Nested: the fifo parser re-enters this handler for packet-5 LFB
+    // spans; only the OUTERMOST entry counts toward the card total.
+    static int depth;
+    uint64_t t0 = v2_tsc();
+    depth++;
+    v2_bar_write32_body(ctx, off, data);
+    if (--depth == 0)
+        s_tsc_card += v2_tsc() - t0;
+}
+static void v2_bar_write32_body(void *ctx, uint32_t off, uint32_t data) {
     voodoo2_t *v = (voodoo2_t *)ctx;
     uint32_t le = VOODOO2_LE32(data);
     if (off < V2_OFF_LFB) {
@@ -2154,65 +2272,8 @@ static void v2_bar_write32(void *ctx, uint32_t off, uint32_t data) {
         return;
     }
     if (off < V2_OFF_TEX) {
-        uint32_t mode = v->reg[R_LFBMODE];
-        uint32_t fmt = LFB_FMT(mode);
-        uint32_t buffer, x, y;
-        v2_lfb_locate(v, off - V2_OFF_LFB, true, &buffer, &x, &y);
-        uint32_t t = v2_lfb_write_transform(v, le);
-        LOG(5, "lfb wr32 +%06X = %08X (lfbMode %05X buf %u x %u y %u)", off, le, mode, buffer, x, y);
-        uint32_t r, g, b, a;
-        switch (fmt) {
-        case 0:
-        case 1:
-        case 2: { // two 16-bit colour pixels: left in the low half
-            bool ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)t, &r, &g, &b, &a);
-            v2_lfb_pixel(v, buffer, x, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), false, 0, true, false);
-            ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)(t >> 16), &r, &g, &b, &a);
-            v2_lfb_pixel(v, buffer, x + 1u, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), false, 0, true, false);
-            return;
-        }
-        case 4:
-        case 5: { // one 24/32-bit pixel; lanes reorder the byte channels
-            uint32_t lanes = LFB_LANES(mode);
-            if (lanes == 0u || fmt == 4u) { // ARGB (format 4 carries no A)
-                a = fmt == 5u ? t >> 24 : (v->reg[R_ZACOLOR] >> 24);
-                r = (t >> 16) & 0xFFu;
-                g = (t >> 8) & 0xFFu;
-                b = t & 0xFFu;
-            } else if (lanes == 1u) { // ABGR
-                a = t >> 24;
-                b = (t >> 16) & 0xFFu;
-                g = (t >> 8) & 0xFFu;
-                r = t & 0xFFu;
-            } else if (lanes == 2u) { // RGBA
-                r = t >> 24;
-                g = (t >> 16) & 0xFFu;
-                b = (t >> 8) & 0xFFu;
-                a = t & 0xFFu;
-            } else { // BGRA
-                b = t >> 24;
-                g = (t >> 16) & 0xFFu;
-                r = (t >> 8) & 0xFFu;
-                a = t & 0xFFu;
-            }
-            v2_lfb_pixel(v, buffer, x, y, r, g, b, a, false, 0, true, false);
-            return;
-        }
-        case 12:
-        case 13:
-        case 14: { // 16-bit depth + 16-bit colour (Z high after transform)
-            bool ha = v2_lfb_expand16(fmt, LFB_LANES(mode), (uint16_t)t, &r, &g, &b, &a);
-            v2_lfb_pixel(v, buffer, x, y, r, g, b, ha ? a : (v->reg[R_ZACOLOR] >> 24), true, (uint16_t)(t >> 16), true,
-                         true);
-            return;
-        }
-        case LFB_FMT_ZZ: // two depth values into the aux buffer
-            v2_lfb_store16(v, 3u, x, y, (uint16_t)t);
-            v2_lfb_store16(v, 3u, x + 1u, y, (uint16_t)(t >> 16));
-            return;
-        default: // reserved formats: the write vanishes
-            return;
-        }
+        v2_lfb_write32(v, off, le);
+        return;
     }
     uint32_t tex_off = off - V2_OFF_TEX;
     v2_tex_write_words(v, tex_off, &le, 1u);
@@ -2483,6 +2544,14 @@ static void v2_teardown(pci_device_t *dev, config_t *cfg) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
     if (!v)
         return;
+    if (s_prod_stats) {
+        double run = (double)(v2_tsc() - s_tsc_run0);
+        LOG(0,
+            "producer stats: card handlers %.1f%% of the run (fifo parse %.1f%%, setup engine %.1f%%, lfb %.1f%%, "
+            "tex %.1f%%)",
+            100.0 * (double)s_tsc_card / run, 100.0 * (double)s_tsc_fifo / run, 100.0 * (double)s_tsc_setup / run,
+            100.0 * (double)s_tsc_lfb / run, 100.0 * (double)s_tsc_tex / run);
+    }
     v2_raster_destroy(v->raster); // fences and joins the worker before the memories go
     free(v->fb_ram);
     free(v->scanout);
@@ -3240,6 +3309,12 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
     v->tgt.tex[0] = v->tex_ram[0];
     v->tgt.tex[1] = v->tex_ram[1];
     v->raster = v2_raster_create(s_staged_raster, &v->tgt, v2_build_state, v);
+    {
+        const char *st = getenv("GS_V2_STATS");
+        s_prod_stats = st && *st && *st != '0';
+        s_tsc_run0 = v2_tsc();
+        s_tsc_card = s_tsc_fifo = s_tsc_setup = s_tsc_lfb = s_tsc_tex = 0;
+    }
     snprintf(s_staged_raster, sizeof(s_staged_raster), "sw");
     if (!v->fb_ram || !v->scanout || !v->tex_ram[0] || !v->tex_ram[1] || !v->raster) {
         v2_raster_destroy(v->raster);
