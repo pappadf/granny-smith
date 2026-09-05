@@ -126,7 +126,9 @@ DMA architecture:
   which carries an interim instant-consume sink until the Phase D AWACS
   datapath: Open Firmware plays its boot beep through channel 8 and
   polls for completion, so a stalling channel would hang the boot in
-  firmware.
+  firmware.  A channel's interrupt command asserts a LEVEL on Grand
+  Central source n that the host's Clear write acknowledges (see "The
+  interrupt fabric").
 - **Cuda / VIA1** — the third instantiation of the shared behavioral Cuda
   (machines/av/cuda.c, firmware 2.37) on one real 6522 behind the island
   decode.  TNT-driven additions to the shared model: the polled no-TIP
@@ -198,6 +200,25 @@ selected by Clear-write bit 31 (`ifMode1Clear`):
 The mode-1 latch semantics are emulator-derived (pinned by the boot
 reaching a correct 60.15 Hz tick rate, and by the T11 desktop requiring
 the deassert-change law); revisit if a later rung contradicts them.
+
+**DBDMA channel completions are LEVELS, not pulses.**  A channel that
+executes an interrupt command holds its request asserted — visible in
+Levels — until the host acknowledges that bit through the Clear
+register (`tnt_dbdma_irq` → `tnt_gc_set_source`; the Clear write
+deasserts sources 0–10).  This is the only way Mac OS can see one:
+`ExtIntHandlerTNT` classifies from Levels & Mask and never reads
+Events, so a completion raised as a one-shot event (the model until
+the sound fix) reached the 68k side never.  The shipping sound driver
+states the contract from its end — it acknowledges channel 8
+(`Clear = $100`) before starting a program, and its completion handler
+acknowledges again.  With the pulse model the Sound Manager's first
+two-buffer program parked on its STOP and its handler never ran: the
+firmware beep played (Open Firmware polls), the 68k startup chime and
+every later sound — alert beeps, the Sound control panel, Quake — were
+silence.  With levels, all of them play (`tests/unit/suites/tnt_gc`
+`test_mode1_dbdma_level_ack`; `tnt-hd-boot` asserts the chime).  For
+mode 0 (MkLinux/Linux) nothing changes: their handlers acknowledge by
+writing the event bits, which deasserts the level too.
 
 ### PCI slot topology
 
@@ -313,9 +334,10 @@ community's "BoxID bits 11-12" reading:
 
 Known open items at this phase:
 
-- The 68k startup chime STILL does not play by the T11 desktop (the OF
-  beep is rung T10's instrument); the boot reaches its media hunt
-  chime-less — an open question for Phase E.
+- ~~The 68k startup chime STILL does not play by the T11 desktop~~ —
+  solved: DBDMA completions were modelled as pulses the NanoKernel's
+  Levels-classifying handler could not see ("The interrupt fabric"
+  above).  The chime, alert beeps and Quake's audio all play now.
 - The 7500's 601 RTC tick source keeps the PDM 7,833,600 Hz assumption
   until a ladder rung measures it (proposal §4.4).
 - The `interruptableDeviceTable` / per-channel SCC interrupt split: the

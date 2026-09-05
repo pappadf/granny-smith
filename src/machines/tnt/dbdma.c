@@ -394,6 +394,10 @@ static void partial_writeback(tnt_dbdma_t *d, int n) {
 uint32_t tnt_dbdma_reg_read(tnt_dbdma_t *d, int chan, uint32_t offset) {
     assert(chan >= 0 && chan < TNT_DBDMA_CHANNELS);
     dbdma_chan_t *c = &d->chan[chan];
+    // The register-level trace (level 4): every read, with the status it
+    // answers from — the instrument for a driver that polls something the
+    // model never changes.
+    LOG(4, "ch%d rd +$%02X (status $%04X cmdptr $%08X)", chan, offset & 0xFCu, status16(d, chan), c->cmdptr);
     switch (offset & 0xFCu) {
     case TNT_DBDMA_REG_CONTROL:
         return 0; // write-only in effect
@@ -418,6 +422,7 @@ uint32_t tnt_dbdma_reg_read(tnt_dbdma_t *d, int chan, uint32_t offset) {
 void tnt_dbdma_reg_write(tnt_dbdma_t *d, int chan, uint32_t offset, uint32_t value) {
     assert(chan >= 0 && chan < TNT_DBDMA_CHANNELS);
     dbdma_chan_t *c = &d->chan[chan];
+    LOG(4, "ch%d wr +$%02X = $%08X (status $%04X)", chan, offset & 0xFCu, value, status16(d, chan));
     switch (offset & 0xFCu) {
     case TNT_DBDMA_REG_CONTROL: {
         // Mask/value convention: only bits set in the upper half change,
@@ -462,7 +467,12 @@ void tnt_dbdma_reg_write(tnt_dbdma_t *d, int chan, uint32_t offset, uint32_t val
     }
     case TNT_DBDMA_REG_CMDPTRLO:
         // Loadable only while the channel is disarmed (drivers write it
-        // before setting RUN; hardware ignores it mid-program).
+        // before setting RUN; hardware ignores it mid-program).  The
+        // shipping ROM's native sound driver does write it once on a
+        // channel still parked on Open Firmware's beep STOP (RUN=1,
+        // ACTIVE=0) at its init; nothing ever starts that program — the
+        // Sound Manager's ring is loaded later with RUN cleared first —
+        // so the parked case stays ignored, as the T9 ladder rung pins.
         if (c->status & (TNT_DBDMA_RUN | TNT_DBDMA_ACTIVE)) {
             LOG(1, "ch%d cmdptr write $%08X ignored while running", chan, value);
             break;
