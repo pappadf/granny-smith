@@ -29,6 +29,16 @@ assert debug.mac.globals.read("BootDrive") == 0x8023 "BootDrive not set (driver 
 # old data-phase wall bombed here with $66 dsOldSystem).
 assert debug.mac.globals.read("DSErrCode") == 0 "system error during startup"
 
+# The 68k startup chime played: the Sound Manager's DBDMA ring on
+# channel 8 ran past the firmware beep's 51 928 frames and louder than
+# its peak (2 921).  It needs the channel's completion interrupt to
+# reach the 68k side — a LEVEL in Grand Central's Levels register, the
+# only thing the NanoKernel's handler classifies from; modelled as a
+# pulse, the ring parked after its first two buffers and the machine
+# was silent after the beep (the chime, alert beeps, every game).
+assert machine.sound.frames > 55000 "the startup chime never played (frames ${machine.sound.frames})"
+assert machine.sound.peak > 4000 "the startup chime was silent (peak ${machine.sound.peak})"
+
 # The Finder desktop: menu bar, mounted "Macintosh HD" volume, Trash,
 # and the Energy Saver first-boot dialog.  The menu-bar clock area is
 # excluded — it tracks the pinned RTC plus guest uptime, so it shifts
