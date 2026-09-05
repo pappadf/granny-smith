@@ -125,6 +125,14 @@ document grows as each group lands.
   golden unchanged), and a worker-thread backend (`raster=thread`,
   the default on every build, byte-identical) lands behind it — see
   "The raster seam" below.
+- **The WebGPU takeover (branch `voodoo2-webgpu-takeover`,
+  `raster=webgpu`):** an ALTERNATIVE rasteriser for the browser — the
+  host's GPU draws the guest's triangles from the same command stream,
+  the software walker keeps the driver's bring-up and every fallback,
+  and the frame is presented on an overlay canvas.  A user choice in
+  the New Machine dialog (the card's `raster` option); the thread
+  backend stays the default everywhere.  See "The WebGPU takeover"
+  below, and divergences 12–16.
 
 ## Provenance
 
@@ -254,6 +262,11 @@ divergences, each deliberate and localised:
 | 9 | trexInit0/1 opaque except the second-RAS size gate | `v2_tmu_addressable` | V2 p.85: "FIXME. See Bruce spec" |
 | 10 | Gamma CLUT interpolation rounding is `(delta·frac + 4) >> 3`, and the CLUT is bypassed until the guest first programs it | `v2_gamma_rebuild`, `v2_display_update` | the 33-entry table and its linear interpolation are vendor-documented [Glide-src init/gamma.c], but the hardware's rounding and power-on contents are not in our material; Quake visibly gammas (Glide loads a 1.3 ramp at grSstWinOpen), which retired the earlier identity-scanout simplification |
 | 11 | siProcess (config $54) completes its oscillator measurement at issue and reports fixed mid-grade counts (NAND 6400, NOR 7424) | `v2_cfg_read` | Glide polls the down-counter to zero inside grSstQueryHardware [Glide-src init/util.c]; a frozen counter spins the shipped driver forever — divergence 1 in config space |
+| 12 | **(takeover only)** texel filtering, LOD selection and the perspective divide are the shader's `f32` arithmetic, not the walker's `double`; the walker's own formulae, with the level and the 8-bit bilinear fractions computed the same way | `voodoo2.wgsl.ts` `tmu_sample`, `texture_chain` | the estimate can land one 4.2 step, or one texel fraction, from the walker's at exact boundaries — visibly equivalent, not identical; bound: ±1 LSB of 5-6-5 per channel on textured pixels |
+| 13 | **(takeover only)** blended draws hand the blender the 8-bit combine output and the attachment keeps the 8-bit result; the walker blends against the stored 5-6-5 and dithers after | `fs_main` (the `amode[4]` branch) | hardware blend state cannot dither; bound: ≤ 1 LSB of 5-6-5 per channel on blended pixels, opaque pixels exact |
+| 14 | **(takeover only)** `fbiPixelsIn`/`fbiPixelsOut` advance by the analytic covered area of each GPU-drawn triangle (clipped by the bounding box's visible fraction); `fbiChromaFail`/`fbiZfuncFail`/`fbiAfuncFail` do not move for them | `v2gpu_triangle` | the GPU cannot count per-pixel outcomes cheaply; the walker fallbacks count exactly; `fbiTrianglesOut` is the producer's and exact |
+| 15 | **(takeover only)** the stipple register does not rotate for GPU-drawn pixels in rotate mode with masking OFF (a rotate-mode MASK falls back to the walker, exactly) | `v2gpu_triangle` | a per-pixel-ordered register; no held client uses rotate mode |
+| 16 | **(takeover only)** the framebuffer shadow holds the GPU's pixels only after a fence read them back; raw byte/halfword stores into the LFB or texture apertures while engaged are not mirrored to the GPU | `v2_raster_sync_fb`, `v2_bar_write8` | every guest-visible read fences; the raw narrow stores are undefined bus shapes nothing held issues |
 
 What is *not* on this list, because the hardware behaviour is documented
 and implemented faithfully: sub-pixel correction mutating the start
@@ -384,6 +397,110 @@ of host CPU is rasterisation" was measured that way and therefore
 compared two different programs; the honest figure on this host is
 whatever the ladder removed (at least the 6 minutes it took off) plus
 the unknown remainder.
+
+## The WebGPU takeover (`raster=webgpu`)
+
+`proposal-voodoo2-webgpu-takeover` (branch `voodoo2-webgpu-takeover`):
+in the browser, the host's GPU draws the guest's triangles.  An
+**alternative** to the software rasteriser, chosen per boot — the New
+Machine dialog's "Rasteriser" control on the card, or
+`pci_option="raster=webgpu"` — never a replacement: the thread backend
+(exact) stays the default on every build, and every native gate and
+golden is untouched.  What the user gets is a *rendering* of the scene
+the guest described, held to a tolerance; the model's frame is what
+native produces (§6 of the proposal, divergences 12–16 above).
+
+**The shape.**  `raster=webgpu` is the thread backend with a
+*translator* in its worker
+([`voodoo2_gpu.c`](../../../../../src/core/peripherals/pci/cards/voodoo2_gpu.c)).
+While **engaged** the worker turns the same `v2_cmd_t` stream into
+records for a JS **GPU worker**
+([`app/web2/src/gpu/voodoo2Gpu.worker.ts`](../../../../../app/web2/src/gpu/voodoo2Gpu.worker.ts))
+through a byte ring in the wasm heap
+([`voodoo2_gpu_protocol.h`](../../../../../src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h),
+mirrored by `voodoo2Protocol.ts`): triangles become vertex-buffer
+entries under a pipeline key and a 512-byte uniform block (the raw
+registers plus the per-TMU decode of the snapshot), fastfills and SGRAM
+fills become fill draws, texture memory becomes a cache of `rgba8`
+mip chains converted from the shadow texture RAM by the normative
+`v2_texel_expand`, bypass LFB writes become texture uploads, and the
+card's vblank becomes a present through the gamma ramp onto an overlay
+canvas (`#screen3d`, shown exactly while engaged).  The GPU
+contributes coverage, interpolation, the depth compare
+(`depth16unorm`, exact codes) and the alpha blend; everything else in
+the p.15 pipe — texture chain, chroma key, colour/alpha combine, fog,
+alpha test, dither — is the fragment shader
+([`voodoo2.wgsl.ts`](../../../../../app/web2/src/gpu/voodoo2.wgsl.ts)),
+written in `u32` arithmetic beside the C, stage for stage.  Pipeline
+permutations are uniform branches; the pipeline cache holds only the
+blend/depth/write-mask combinations WebGPU bakes in (five for Quake).
+
+**Coverage is exact by construction.**  The walker samples pixel
+(x, y) at its integer coordinate; the GPU samples at (x + 0.5,
+y + 0.5).  Every vertex is shifted by (0.5, 0.5) in the vertex shader,
+so the GPU's centre test of the shifted triangle *is* the walker's
+integer test of the original; both use a top-left tie rule.  Each
+vertex carries the walker's iterators evaluated in closed form at its
+real 12.4 position relative to vertex A's truncated position — the
+plane the walker steps — so linear interpolation reproduces the
+walker's value at every pixel centre (`v2gpu_vertex`).  The e2e gate
+counts it: the 136-pixel triangle covers exactly 136 pixels on
+Chromium's software adapter, its complement exactly 120 more with no
+seam, and an interior gouraud pixel comes back with the walker's
+value.
+
+**Engagement (§5.1).**  The driver's bring-up renders and reads back
+hundreds of times (dither calibration, TMU census, memory sizing) —
+the walker does that exactly and in microseconds — so GPU mode
+engages on the edge where the card starts driving the monitor
+(`v2_display()`'s `drives` edge → `v2_raster_engage`) and disengages
+where it stops, on device loss, on a checkpoint restore, or on a
+**readback storm** (more than 16 readback bands in one present
+interval; re-engagement after 8 quiet vblanks).  Engaging uploads the
+shadow's colour and aux buffers (exact at that instant, by the fence
+audit); disengaging reads every target back so the walker continues
+from the GPU's pixels.
+
+**Fences (§5.7).**  The shadow is still what the guest reads, but
+under the takeover its *pixels* are current only where a fence read
+them back: `v2_raster_sync_fb(addr, len)` — LFB reads (one 64-row
+band of the buffer, cached per row until the next draw touches it),
+screenshots and checksums (`display_t.sync_pixels` → the displayed
+buffer), checkpoint save (everything) — is a readback of the covering
+rows; `v2_raster_sync` alone still makes the counters, the stipple
+register, the palettes and the texture RAM authoritative, as before.
+Each band is one GPU roundtrip (`copyTextureToBuffer` + `mapAsync`,
+~1–5 ms); Quake's in-game phase does none.
+
+**Fallbacks (§5.5).**  A rotate-mode stipple *mask*, the "colour
+before fog" destination blend factor and the zaColor depth compare
+are not expressible on the GPU: the translator reads the triangle's
+rows back, the walker executes the command against the shadow (so
+even its counters are exact), and the rectangle is uploaded again.
+Counted by reason in `regs.gpu_stats`, beside engagements, storms,
+readback bands, texture uploads and the worker's own frame/draw/
+pipeline counts; `regs.gpu_engaged` says whether the GPU presents
+right now.  The pixel-provenance watch (`GS_V2_WATCH`) refuses this
+backend as it refuses `thread`.
+
+**Availability.**  web2 starts the GPU worker at page load with the
+overlay canvas and writes whether a device exists into the bridge
+(`gpu_available`) before any machine boots; `raster=webgpu` without a
+device — or on a native build, which has no transport at all — falls
+back to the thread backend at creation, and `regs.raster` reports
+`thread` (asserted by `tnt-pci-voodoo2` natively and by the
+`voodoo2-webgpu` e2e in a browser launched without WebGPU).  The e2e
+runs on Chromium's software WebGPU adapter (`--enable-unsafe-webgpu
+--use-webgpu-adapter=swiftshader`), so the gates need no GPU in CI.
+
+**Not delivered (deliberately):** the optional internal resolution
+scaling (§5.9) — the vertex path is ready for it (positions are
+floats, the attachments are ours) but nothing uses it yet; the
+browser Quake visual gate (§7 gate 4) — the drawing-section gate runs
+every stage the shader has, but the full launch flow in the browser on
+a software adapter is many minutes and stays a manual check
+(`scripts/voodoo2/bench.sh` for native, the e2e for the takeover's
+mechanics).
 
 ## The register-name table (milestone 3a)
 

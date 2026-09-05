@@ -2170,9 +2170,11 @@ static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
         // through the authoritative shadow (the seam's invariant 2).
         if (!(v->reg[R_FBIINIT1] & FBIINIT1_LFB_READ_EN))
             return 0;
-        v2_raster_sync(v->raster);
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, false, &buffer, &x, &y);
+        // The fence names the bytes it wants: under the WebGPU takeover
+        // that is a readback of the row, elsewhere a plain sync.
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 4u);
         uint16_t p0 = v2_lfb_load16(v, buffer, x, y);
         uint16_t p1 = v2_lfb_load16(v, buffer, x + 1u, y);
         // Colour-lane selection applies to reads of the colour buffers:
@@ -2310,9 +2312,9 @@ static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
     if (off < V2_OFF_TEX) {
         if (!(v->reg[R_FBIINIT1] & FBIINIT1_LFB_READ_EN))
             return 0;
-        v2_raster_sync(v->raster);
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, false, &buffer, &x, &y);
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u);
         uint16_t p = v2_lfb_load16(v, buffer, x, y);
         if (buffer != 3u && (LFB_LANES(v->reg[R_LFBMODE]) & 1u))
             p = (uint16_t)(((p & 0x1Fu) << 11) | (p & 0x7E0u) | (p >> 11));
@@ -2383,9 +2385,9 @@ static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
     if (off < V2_OFF_TEX) {
         if (!(v->reg[R_FBIINIT1] & FBIINIT1_LFB_READ_EN))
             return 0;
-        v2_raster_sync(v->raster);
         uint32_t buffer, x, y;
         v2_lfb_locate(v, (off - V2_OFF_LFB) & ~1u, false, &buffer, &x, &y);
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u);
         uint16_t px = v2_lfb_load16(v, buffer, x, y);
         return (off & 1u) ? (uint8_t)(px >> 8) : (uint8_t)px;
     }
@@ -2507,7 +2509,10 @@ static bool v2_cfg_write(pci_device_t *dev, uint32_t reg, uint32_t byte, uint8_t
 static void v2_reset(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     voodoo2_t *v = (voodoo2_t *)dev->priv;
-    // Nothing may be in flight while the target is reset underneath it.
+    // Nothing may be in flight while the target is reset underneath it
+    // (and the WebGPU takeover, if engaged, drops its frame: PCI RST#
+    // hands the monitor back).
+    v2_raster_engage(v->raster, false, true);
     v2_raster_sync(v->raster);
     memset(v->reg, 0, sizeof(v->reg));
     memset(v->tmu_reg, 0, sizeof(v->tmu_reg));
@@ -2650,32 +2655,35 @@ static void v2_gamma_rebuild(voodoo2_t *v) {
     v->clut_dirty = false;
 }
 
-static void v2_display_update(voodoo2_t *v) {
-    uint32_t w = v2_screen_width(v), h = v2_screen_height(v);
-    if (v->display.width != w || v->display.height != h || v->display.stride != w * 4u) {
-        v->display.width = w;
-        v->display.height = h;
-        v->display.stride = w * 4u;
-        v->display.shape_dirty = true;
+// Hand the gamma ramp to the WebGPU takeover (a no-op elsewhere): the
+// interpolated CLUT once the guest has programmed it, identity before
+// — the same bypass rule the scanout conversion applies.
+static void v2_push_gamma(voodoo2_t *v) {
+    if (v->clut_dirty)
+        v2_gamma_rebuild(v);
+    if (v->clut_written) {
+        v2_raster_gamma(v->raster, (const uint8_t(*)[256])v->gamma_lut);
+        return;
     }
-    // The DAC's output is 8 bits per channel AFTER the gamma CLUT, so
-    // the display face is 32 bpp: 5-6-5 from the framebuffer, expanded
-    // with the same replication rule the debug layer uses, then pushed
-    // through the interpolated ramp.  Until the guest programs the
-    // CLUT the ramp is bypassed (power-on contents not in our
-    // material), which keeps a non-gamma client's output bit-identical
-    // to the old 5-6-5 face.
-    v->display.format = PIXEL_32BPP_XRGB;
-    v->display.bits = v->scanout;
-    v->display.clut = NULL;
-    v->display.clut_len = 0;
-    v->display.crt_response = NULL;
+    uint8_t identity[3][256];
+    for (int ch = 0; ch < 3; ch++)
+        for (int i = 0; i < 256; i++)
+            identity[ch][i] = (uint8_t)i;
+    v2_raster_gamma(v->raster, (const uint8_t(*)[256])identity);
+}
+
+// Convert the displayed buffer into the scanout raster (the walker-mode
+// frame, and the screenshot path under the takeover).
+static void v2_display_convert(voodoo2_t *v) {
+    uint32_t w = v2_screen_width(v), h = v2_screen_height(v);
     if (v->clut_dirty)
         v2_gamma_rebuild(v);
     bool gamma = v->clut_written;
     // Scanout reads the framebuffer: the once-per-frame fence that
-    // bounds how far a threaded backend may lag (thread proposal §5.5).
-    v2_raster_sync(v->raster);
+    // bounds how far a threaded backend may lag (thread proposal §5.5);
+    // under the takeover, the readback of the displayed buffer.
+    uint32_t stride = v2_tiles_in_x(v) * 32u * 2u;
+    v2_raster_sync_fb(v->raster, v2_buffer_addr(v, 0u, 0u, 0u), h * stride);
     for (uint32_t y = 0; y < h; y++) {
         uint32_t src = v2_buffer_addr(v, 0u, 0u, y); // front = displayed
         uint8_t *dst = v->scanout + (size_t)y * w * 4u;
@@ -2701,6 +2709,47 @@ static void v2_display_update(voodoo2_t *v) {
     v->display.fb_dirty = true;
 }
 
+// The display's on-demand pixel sync (display_t.sync_pixels): a
+// screenshot or checksum under the takeover reads the GPU back first.
+static void v2_display_sync_pixels(void *ctx) {
+    voodoo2_t *v = (voodoo2_t *)ctx;
+    if (v->driving && v->display.presented_externally)
+        v2_display_convert(v);
+}
+
+static void v2_display_update(voodoo2_t *v) {
+    uint32_t w = v2_screen_width(v), h = v2_screen_height(v);
+    if (v->display.width != w || v->display.height != h || v->display.stride != w * 4u) {
+        v->display.width = w;
+        v->display.height = h;
+        v->display.stride = w * 4u;
+        v->display.shape_dirty = true;
+    }
+    // The DAC's output is 8 bits per channel AFTER the gamma CLUT, so
+    // the display face is 32 bpp: 5-6-5 from the framebuffer, expanded
+    // with the same replication rule the debug layer uses, then pushed
+    // through the interpolated ramp.  Until the guest programs the
+    // CLUT the ramp is bypassed (power-on contents not in our
+    // material), which keeps a non-gamma client's output bit-identical
+    // to the old 5-6-5 face.
+    v->display.format = PIXEL_32BPP_XRGB;
+    v->display.bits = v->scanout;
+    v->display.clut = NULL;
+    v->display.clut_len = 0;
+    v->display.crt_response = NULL;
+    v->display.sync_pixels = v2_display_sync_pixels;
+    v->display.sync_ctx = v;
+    if (v->clut_dirty)
+        v2_push_gamma(v); // rebuilds gamma_lut, and the GPU gets the ramp
+    // Under the WebGPU takeover the GPU presents the frame itself: the
+    // scanout is not converted per frame (no fence, no pixel work on
+    // this thread) and the renderer skips its upload.
+    v->display.presented_externally = v2_raster_presents(v->raster);
+    if (v->display.presented_externally)
+        return;
+    v2_display_convert(v);
+}
+
 // The pass-through contract (§3.2): re-resolved every frame by
 // pci_primary_display_card(), which calls this as its test.  Returning
 // NULL yields the monitor to the 2D card; the ONE obligation on the
@@ -2712,8 +2761,16 @@ static display_t *v2_display(pci_device_t *dev) {
     if (drives != v->driving) {
         v->driving = drives;
         v->display.shape_dirty = true;
-        if (drives)
+        // The takeover's engagement rule (§5.1): GPU mode from the edge
+        // where the card drives the monitor to the edge where it stops,
+        // reading the GPU's pixels back into the shadow on the way out.
+        v2_raster_engage(v->raster, drives, false);
+        if (drives) {
+            v2_push_gamma(v);
             v2_display_update(v);
+        } else {
+            v->display.presented_externally = false;
+        }
     }
     return drives ? &v->display : NULL;
 }
@@ -2724,8 +2781,12 @@ static display_t *v2_display(pci_device_t *dev) {
 static void v2_on_vbl(pci_device_t *dev, config_t *cfg) {
     (void)cfg;
     voodoo2_t *v = (voodoo2_t *)dev->priv;
-    if (v->driving)
+    if (v->driving) {
+        // The takeover presents the displayed buffer itself (§5.8); the
+        // conversion below then sees presented_externally and returns.
+        v2_raster_present(v->raster, v2_buffer_addr(v, 0u, 0u, 0u));
         v2_display_update(v);
+    }
 }
 
 // ============================================================
@@ -2764,7 +2825,9 @@ static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     // the register file first: the memories and the registers below are
     // then one consistent observation.  (The queue itself is never
     // checkpointed — it is empty at every point a checkpoint can happen.)
+    // Under the takeover the whole framebuffer is read back as well.
     v2_observe(v);
+    v2_raster_sync_fb(v->raster, 0, V2_FB_SIZE);
     v2_ckpt_t c;
     memset(&c, 0, sizeof(c));
     memcpy(c.reg, v->reg, sizeof(c.reg));
@@ -2803,7 +2866,10 @@ static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
 
 static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     voodoo2_t *v = (voodoo2_t *)dev->priv;
-    // Nothing may be in flight while the target is replaced underneath it.
+    // Nothing may be in flight while the target is replaced underneath
+    // it; the takeover drops its frame (the restored shadow is the
+    // truth) and comes back up from the restored memories below.
+    v2_raster_engage(v->raster, false, true);
     v2_raster_sync(v->raster);
     v2_ckpt_t c;
     system_read_checkpoint_data(cp, &c, sizeof(c));
@@ -2865,8 +2931,11 @@ static void v2_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     // The scanout raster is derived state: rebuild it and flag both
     // dirty bits so the renderer re-uploads whatever the restore shows.
     v->display.shape_dirty = true;
-    if (v->driving)
+    if (v->driving) {
+        v2_raster_engage(v->raster, true, false);
+        v2_push_gamma(v);
         v2_display_update(v);
+    }
 }
 
 static const pci_device_ops_t v2_ops = {
@@ -2970,6 +3039,19 @@ static value_t regs_attr_raster(struct object *self, const member_t *m) {
     voodoo2_t *v = node_card(self);
     return val_str(v ? v2_raster_name(v->raster) : "");
 }
+static value_t regs_attr_gpu_engaged(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    return val_bool(v && v2_raster_presents(v->raster));
+}
+static value_t regs_attr_gpu_stats(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    static char buf[1024];
+    if (!v)
+        return val_str("");
+    return val_str(v2_raster_gpu_stats(v->raster, buf, sizeof(buf)));
+}
 
 static const arg_decl_t regs_tex_offset_args[] = {
     {.name = "tmu", .kind = V_INT, .doc = "Which Bruce (0 or 1)"},
@@ -3068,9 +3150,19 @@ static const member_t regs_members[] = {
      .attr = {.type = V_UINT, .get = regs_attr_tmu_size}},
     {.kind = M_ATTR,
      .name = "raster",
-     .doc = "The raster backend in use: sw (normative), null, or thread (pci_option=\"raster=...\")",
+     .doc = "The raster backend in use: sw (normative), null, thread, or webgpu (pci_option=\"raster=...\")",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = regs_attr_raster}},
+    {.kind = M_ATTR,
+     .name = "gpu_engaged",
+     .doc = "True while the WebGPU takeover draws and presents the card's frames (raster=webgpu, monitor driven)",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = regs_attr_gpu_engaged}},
+    {.kind = M_ATTR,
+     .name = "gpu_stats",
+     .doc = "The WebGPU takeover's counters: engagements, fallbacks by reason, readbacks, texture uploads (\"\" "
+            "elsewhere)", .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = regs_attr_gpu_stats}},
     {.kind = M_METHOD,
      .name = "read",
      .doc = "Read any Chuck register by its byte offset",
@@ -3264,8 +3356,23 @@ static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
 
 static const char *const v2_mem_values[] = {"8m", "12m", NULL};
 static const char *const v2_mem_labels[] = {"8 MB (2 MB per TMU)", "12 MB (4 MB per TMU)", NULL};
+// The rasteriser is a user choice in the browser (proposal-voodoo2-
+// webgpu-takeover): the exact software walker on its worker thread, or
+// the WebGPU takeover that renders the guest's triangles on the host's
+// GPU (approximate — a rendering of the scene, not the model's frame).
+// "null" stays unadvertised: a test affordance.  The default is the
+// thread backend everywhere; the takeover is an alternative, never a
+// replacement.
+static const char *const v2_raster_values[] = {"thread", "webgpu", "sw", NULL};
+static const char *const v2_raster_labels[] = {"Software (exact, worker thread)", "WebGPU (host GPU, approximate)",
+                                               "Software (exact, synchronous)", NULL};
 static const pci_card_option_t v2_options[] = {
     {.key = "memory", .label = "Board Memory", .values = v2_mem_values, .labels = v2_mem_labels, .default_value = "8m"},
+    {.key = "raster",
+     .label = "Rasteriser",
+     .values = v2_raster_values,
+     .labels = v2_raster_labels,
+     .default_value = V2_DEFAULT_RASTER},
     {.key = NULL},
 };
 
@@ -3285,10 +3392,9 @@ static bool v2_stage_option(const char *key, const char *value) {
         return true; // the key IS ours; the value was the problem
     }
     if (strcmp(key, "raster") == 0) {
-        // Deliberately NOT in the advertised options: "null" is the test
-        // affordance that pins the seam's analytic-timing invariant, and
-        // "thread" the opt-in worker backend (voodoo2_raster.h); the
-        // normative walker stays the default.
+        // Advertised as thread/webgpu/sw (v2_options); "null" — the test
+        // affordance that pins the seam's analytic-timing invariant —
+        // is accepted but not offered (voodoo2_raster.h).
         snprintf(s_staged_raster, sizeof(s_staged_raster), "%s", value);
         return true;
     }

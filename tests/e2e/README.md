@@ -41,6 +41,8 @@ tests/e2e/
 │   ├── perf-bench.spec.ts           # Accelerated + turbo throughput (tracked numbers)
 │   ├── scheduler-accelerated.spec.ts# Accelerated mode: faster CPU, real-time timebase
 │   ├── url-boot.spec.ts             # ?rom=… URL-parameter boot
+│   ├── voodoo2-thread.spec.ts       # Voodoo2 raster on a second Web Worker; LFB/counter fences
+│   ├── voodoo2-webgpu.spec.ts       # Voodoo2 WebGPU takeover: engagement, exact coverage, fallback
 │   └── vrom-offer-ingest.spec.ts    # Mid-session vROM upload is offered to "(auto)"
 │
 ├── ui-prod-smoke/                   # Production-bundle smoke (playwright.prod-smoke.config.ts)

@@ -108,6 +108,26 @@ construction, not through the bridge slot:
   attaches or stops the `MediaStreamTrack` on it, so the camera light
   is on only while the guest is capturing.
 
+- **`Module.onVoodooGpuAttach(ctrl, bytes)` / `onVoodooGpuDetach(ctrl)`**
+  — the Voodoo2 WebGPU takeover (`raster=webgpu`,
+  [`src/platform/wasm/em_gpu.c`](../src/platform/wasm/em_gpu.c)): the
+  emulator's raster pthread allocated a control block + op ring +
+  readback area at `ctrl` in the shared heap and wants the page's GPU
+  worker attached to it.  [`gpu/voodoo2Gpu.svelte.ts`](../app/web2/src/gpu/voodoo2Gpu.svelte.ts)
+  posts the wasm memory and the address to the worker
+  ([`gpu/voodoo2Gpu.worker.ts`](../app/web2/src/gpu/voodoo2Gpu.worker.ts)),
+  which then talks to the emulator through shared memory only —
+  `Atomics.waitAsync` on the ring's head, `Atomics.notify` on its tail
+  and the acknowledge word — while the C side waits with futexes.  The
+  worker is started once at page load with the `#screen3d` overlay
+  canvas (transferred), and writes whether a WebGPU device exists into
+  the bridge's `gpu_available` word so the core's backend choice is
+  honest at machine creation.  The page shows the overlay exactly
+  while GPU mode is engaged (the worker relays the MODE records it
+  consumes).  The protocol is
+  [`voodoo2_gpu_protocol.h`](../src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h)
+  / `voodoo2Protocol.ts`.
+
 These callbacks are the template for any future C→JS event: install on
 `Module.*`, fire from C with `MAIN_THREAD_*_EM_ASM`. No exports, no
 SAB plumbing, no JS-side timers. (A previous `onPromptChange` callback
@@ -127,8 +147,9 @@ offset   12   done       int32     flipped to 1 by worker on completion
 offset   16   result     int32     integer result code
 offset   20   path[1024] char[]    JS→C: request path
 offset 1044   args[8192] char[]    JS→C: JSON-encoded arg array
-offset 9236   output[16384] char[] C→JS: JSON-encoded response
-total       25620 bytes
+offset 9236   output[262144] char[] C→JS: JSON-encoded response
+offset 271380 gpu_available int32   JS→C: 1 once the page has a WebGPU device (Voodoo2 takeover)
+total       271384 bytes
 ```
 
 Only `pending=1` is in use. JS writes `path` / `args`, sets `pending`,

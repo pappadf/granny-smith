@@ -228,6 +228,21 @@ assert machine.pci.slot[1].card.regs.fb_size == 0x400000 "...same 4 MB framebuff
 # knowing which card this is.
 assert machine.profile("pm7500").pci_slots[0].cards[1].options[0].key == "memory" "the card declares its option"
 assert machine.profile("pm7500").pci_slots[0].cards[1].options[0].default_value == "8m" "...and its default"
+# ...and the rasteriser choice (proposal-voodoo2-webgpu-takeover): the
+# exact software walker on its thread (the default), the WebGPU
+# takeover, or the synchronous walker.  An ALTERNATIVE, never a
+# replacement: the default stays the thread backend.
+assert machine.profile("pm7500").pci_slots[0].cards[1].options[1].key == "raster" "the card declares its rasteriser option"
+assert machine.profile("pm7500").pci_slots[0].cards[1].options[1].default_value == "thread" "...defaulting to the exact worker thread"
+
+# --- The WebGPU takeover has no native transport: it falls back. ------------
+# raster=webgpu is the browser's alternative (the takeover proposal);
+# headless has no GPU worker to attach, so the backend reports the thread
+# backend it fell back to — honestly, at creation — and draws exactly.
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=webgpu"
+assert machine.pci.slot[1].card.regs.raster == "thread" "raster=webgpu without a GPU transport falls back to the thread backend"
+assert !machine.pci.slot[1].card.regs.gpu_engaged "...and GPU mode is never engaged"
+assert machine.pci.slot[1].card.regs.gpu_stats == "" "...with nothing to report"
 
 # --- The positive control: an EMPTY slot reads all-ones. --------------------
 # No "the card enumerated" assertion above is trusted until its negative

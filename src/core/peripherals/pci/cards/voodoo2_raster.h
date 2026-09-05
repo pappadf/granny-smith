@@ -46,6 +46,13 @@
 //           can default to sw with -DGS_V2_RASTER_DEFAULT='"sw"', or
 //           leave the backend out with -DGS_V2_THREAD_BACKEND=0; any
 //           boot can pick one with pci_option="raster=...".
+//   webgpu  the thread backend whose worker TRANSLATES for the
+//           browser's GPU while the card drives the monitor
+//           (voodoo2_gpu.c; proposal-voodoo2-webgpu-takeover): an
+//           ALTERNATIVE the user picks, approximate by design (the
+//           browser frame is a rendering of the scene, the model's
+//           frame is the walker's), falling back to `thread` wherever
+//           no GPU worker attaches (native builds, no WebGPU).
 //
 // Because queue order is submission order and every observation point
 // fences first, the thread backend's output is byte-identical to the
@@ -65,6 +72,7 @@
 #define VOODOO2_RASTER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define V2_RASTER_TMUS    2
@@ -170,6 +178,13 @@ typedef enum v2_cmd_kind {
     V2_CMD_BLT_FILL, // the SGRAM page-space rectangle fill (FRECTFILL)
     V2_CMD_STAT_CLEAR, // nopCMD[0]: zero the five statistics counters
     V2_CMD_STIPPLE, // a guest write to the stipple register
+    // The WebGPU takeover's own commands (voodoo2_gpu.c).  Ordered
+    // through the same queue as the draws they bracket; the executor
+    // ignores them, so on every other backend they are no-ops.
+    V2_CMD_GPU_ENGAGE, // u.gpu.flags: bit 0 = want GPU mode, bit 1 = read the GPU back first
+    V2_CMD_GPU_PRESENT, // u.gpu.addr: the displayed colour buffer's base; one per vblank
+    V2_CMD_GPU_GAMMA, // u.tex: one 192-byte chunk (off = chunk index) of the 3 x 256 gamma ramp
+    V2_CMD_GPU_READBACK, // u.gpu.addr/len: make the shadow authoritative over that byte range
 } v2_cmd_kind_t;
 
 #define V2_TEX_WRITE_MAX_WORDS 48
@@ -209,6 +224,9 @@ typedef struct v2_cmd {
         struct {
             uint32_t value;
         } stipple;
+        struct {
+            uint32_t flags, addr, len;
+        } gpu;
     } u;
 } v2_cmd_t;
 
@@ -230,10 +248,11 @@ typedef struct v2_raster v2_raster_t;
 // Producer callback: fill a draw-state slot from the live registers.
 typedef void (*v2_state_build_fn)(void *ctx, v2_draw_state_t *st);
 
-// Create a backend: `kind` is "sw", "null" or "thread" (unknown kinds
-// and an unavailable thread backend fall back to "sw" with a log
-// line).  `build` is called, with `ctx`, whenever a command needs a
-// fresher snapshot than the ring holds.
+// Create a backend: `kind` is "sw", "null", "thread" or "webgpu"
+// (unknown kinds and an unavailable thread backend fall back to "sw",
+// an unavailable webgpu transport to "thread", each with a log line).
+// `build` is called, with `ctx`, whenever a command needs a fresher
+// snapshot than the ring holds.
 v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build_fn build, void *ctx);
 // Fence, stop the worker if any, free.
 void v2_raster_destroy(v2_raster_t *r);
@@ -243,7 +262,33 @@ void v2_raster_state_dirty(v2_raster_t *r);
 // Submit one command (copied).  cmd->state is filled in here.
 void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd);
 // Retire every submitted command; on return the target is
-// authoritative and the producer may touch it directly.
+// authoritative — its counters, stipple, palettes/NCC tables and
+// texture RAM — and the producer may touch it directly.  Under the
+// WebGPU takeover the FRAMEBUFFER is the exception: pixels the GPU
+// drew reach the shadow only through v2_raster_sync_fb().
 void v2_raster_sync(v2_raster_t *r);
+// As v2_raster_sync, and additionally make the framebuffer bytes
+// [addr, addr + len) authoritative (a readback under the takeover; a
+// plain sync elsewhere).  LFB reads, screenshots and checkpoints use it.
+void v2_raster_sync_fb(v2_raster_t *r, uint32_t addr, uint32_t len);
+
+// --- the WebGPU takeover (proposal-voodoo2-webgpu-takeover) ---------------
+// No-ops on every backend but "webgpu".  The card calls them from the
+// producer side; each travels through the queue so it is ordered with
+// the draws around it.
+// The card started/stopped driving the monitor: GPU mode engages on
+// the rising edge and disengages (reading the GPU's pixels back into
+// the shadow unless `discard`) on the falling one.
+void v2_raster_engage(v2_raster_t *r, bool drives, bool discard);
+// One vblank while driving: present the displayed colour buffer at
+// `fb_base` (its physical byte address) through the gamma ramp.
+void v2_raster_present(v2_raster_t *r, uint32_t fb_base);
+// The gamma ramp changed: 3 x 256 bytes, [0]=R, [1]=G, [2]=B.
+void v2_raster_gamma(v2_raster_t *r, const uint8_t lut[3][256]);
+// True while the GPU is presenting the card's frames itself, i.e. the
+// scanout conversion and the display upload can be skipped.
+bool v2_raster_presents(const v2_raster_t *r);
+// A one-line status/statistics report of the takeover ("" elsewhere).
+const char *v2_raster_gpu_stats(v2_raster_t *r, char *buf, size_t n);
 
 #endif // VOODOO2_RASTER_H

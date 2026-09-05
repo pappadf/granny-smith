@@ -21,6 +21,8 @@
 // it by construction, and the goldens are the oracle.
 
 #include "voodoo2_raster.h"
+#include "voodoo2_gpu.h"
+#include "voodoo2_raster_priv.h"
 
 #include "log.h"
 
@@ -52,13 +54,11 @@
 
 LOG_USE_CATEGORY_NAME("voodoo2");
 
-#define V2_FB_MASK (V2_RASTER_FB_SIZE - 1u)
-
-// The per-pixel leaf helpers are forced inline (walker proposal §3.6;
-// the precedent is the PPC decoder's +34% from the same attribute):
+// V2_FB_MASK and the always_inline leaf helpers (walker proposal §3.6;
+// the precedent is the PPC decoder's +34% from the same attribute:
 // -O2 across a TU this size otherwise leaves call boundaries in the
-// hottest loop of the emulator.
-#define V2_INLINE static inline __attribute__((always_inline))
+// hottest loop of the emulator) live in voodoo2_raster_priv.h, shared
+// with the WebGPU translator.
 
 // One pixel's state entering the back half of the pipeline.
 typedef struct v2_pix {
@@ -117,12 +117,7 @@ bool v2_raster_watch_armed(void) {
 // Framebuffer addressing
 // ============================================================
 
-// Physical byte address of a 16-bit pixel in a software-selected
-// buffer (0 front, 1 back, 3 aux); the bases were resolved by the
-// producer against the displayed buffer when the state was snapshotted.
-V2_INLINE uint32_t v2_fb_addr(const v2_draw_state_t *st, uint32_t buffer, uint32_t x, uint32_t y) {
-    return (st->buf_base[buffer & 3u] + y * st->stride + x * 2u) & V2_FB_MASK;
-}
+// v2_fb_addr: voodoo2_raster_priv.h.
 
 // 16-bit raw framebuffer access at a physical (buffer, x, y).
 V2_INLINE uint16_t v2_fb_load(const v2_draw_state_t *st, const v2_target_t *tgt, uint32_t buffer, int32_t x,
@@ -148,12 +143,7 @@ V2_INLINE void v2_fb_store(const v2_draw_state_t *st, v2_target_t *tgt, uint32_t
 // Texture memory
 // ============================================================
 
-// DRAM byte address of texel (s,t) at `lod`.
-V2_INLINE uint32_t v2_texel_addr(const v2_tmu_state_t *tm, int lod, uint32_t s, uint32_t t) {
-    uint32_t texel_bytes = tm->is8 ? 1u : 2u;
-    uint32_t addr = tm->lod_base[lod] + (t * tm->lod_w[lod] + s) * texel_bytes;
-    return addr & tm->mask;
-}
+// v2_texel_addr: voodoo2_raster_priv.h.
 
 // A texture-aperture write [V2 p.119].  The PCI address is a FIELD
 // ENCODING, not a byte address: {TREX[22:21], LOD[20:17], T[16:9],
@@ -251,7 +241,7 @@ static uint32_t v2_ncc_decode(const v2_target_t *tgt, int tmu, int table, uint8_
 // Expand one raw texel to 32-bit ARGB per the tformat table (V2 p.81).
 // Format 10's green expansion is printed there as {g[5:0], r[5:4]} —
 // resolved as the obvious typo for {g[5:0], g[5:4]} (proposal §8 Q5).
-static inline uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, uint32_t raw) {
+uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, uint32_t raw) {
     uint32_t fmt = tm->fmt;
     int table = tm->ncc_table;
     uint32_t a, r, g, b, p;
@@ -322,28 +312,13 @@ static inline uint32_t v2_texel_expand(const v2_tmu_state_t *tm, const v2_target
     }
 }
 
-// Clamp or wrap one texel coordinate against a level dimension.
-V2_INLINE uint32_t v2_tex_coord(int32_t c, uint32_t dim, bool clamp) {
-    if (clamp)
-        return (uint32_t)(c < 0 ? 0 : (c >= (int32_t)dim ? (int32_t)dim - 1 : c));
-    return (uint32_t)c & (dim - 1u);
-}
-
-// Read the raw texel at an already clamped/wrapped (s,t).
-V2_INLINE uint32_t v2_texel_raw(const v2_tmu_state_t *tm, const v2_target_t *tgt, int tmu, int lod, uint32_t s,
-                                uint32_t t) {
-    uint32_t at = v2_texel_addr(tm, lod, s, t);
-    const uint8_t *ram = tgt->tex[tmu];
-    if (tm->is8)
-        return ram[at];
-    return ram[at] | ((uint32_t)ram[(at + 1u) & tm->mask] << 8);
-}
+// v2_tex_coord, v2_texel_raw: voodoo2_raster_priv.h.
 
 // The expansion cache for the 8-bit formats: 256 entries built by the
 // normative v2_texel_expand whenever the (format, NCC select, palette/
 // NCC generation) key changes — exact by construction, and the palette
 // and YIQ decodes leave the per-texel path.
-static const uint32_t *v2_expand_lut(const v2_tmu_state_t *tm, v2_target_t *tgt, int tmu) {
+const uint32_t *v2_expand_lut(const v2_tmu_state_t *tm, v2_target_t *tgt, int tmu) {
     uint32_t key = 1u | ((uint32_t)tm->fmt << 1) | ((uint32_t)tm->ncc_table << 5) | (tgt->pal_gen[tmu] << 8);
     if (tgt->lut_key[tmu] != key) {
         for (uint32_t raw = 0; raw < 256u; raw++)
@@ -1470,6 +1445,11 @@ void v2_raster_execute(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd
     case V2_CMD_STIPPLE:
         tgt->stipple = cmd->u.stipple.value;
         break;
+    case V2_CMD_GPU_ENGAGE:
+    case V2_CMD_GPU_PRESENT:
+    case V2_CMD_GPU_GAMMA:
+    case V2_CMD_GPU_READBACK:
+        break; // the takeover's own traffic: nothing for the walker
     }
 }
 
@@ -1480,7 +1460,12 @@ void v2_raster_execute(const v2_draw_state_t *st, v2_target_t *tgt, const v2_cmd
 #define V2_STATE_SLOTS 1024u // draw-state ring (power of two)
 #define V2_QUEUE_DEPTH 4096u // thread backend command ring (power of two)
 
-typedef enum v2_backend_kind { V2_BACKEND_SW, V2_BACKEND_NULL, V2_BACKEND_THREAD } v2_backend_kind_t;
+typedef enum v2_backend_kind {
+    V2_BACKEND_SW,
+    V2_BACKEND_NULL,
+    V2_BACKEND_THREAD,
+    V2_BACKEND_WEBGPU // the thread backend whose worker translates for the browser's GPU (voodoo2_gpu.c)
+} v2_backend_kind_t;
 
 #if V2_HAVE_THREAD_BACKEND
 // The worker thread and its bounded single-producer/single-consumer
@@ -1531,6 +1516,8 @@ struct v2_raster {
 #if V2_HAVE_THREAD_BACKEND
     v2_thread_t th;
 #endif
+    v2_gpu_t *gpu; // the WebGPU translator (V2_BACKEND_WEBGPU only)
+    char stats_buf[1024];
 };
 
 #if V2_HAVE_THREAD_BACKEND
@@ -1567,6 +1554,8 @@ static void *v2_worker_main(void *arg) {
         }
         if (h == t) {
             th->n_worker_sleep++;
+            if (r->gpu)
+                v2_gpu_idle(r->gpu); // publish the open draw range before sleeping
             pthread_mutex_lock(&th->mu);
             atomic_store_explicit(&th->worker_idle, 1, memory_order_seq_cst);
             // Re-check under the lock: a producer that stored head after
@@ -1586,7 +1575,10 @@ static void *v2_worker_main(void *arg) {
             continue;
         }
         const v2_cmd_t *cmd = &th->q[t & (V2_QUEUE_DEPTH - 1u)];
-        v2_raster_execute(&r->st[cmd->state], r->tgt, cmd);
+        if (r->gpu)
+            v2_gpu_execute(r->gpu, &r->st[cmd->state], r->tgt, cmd);
+        else
+            v2_raster_execute(&r->st[cmd->state], r->tgt, cmd);
         atomic_store_explicit(&th->tail, t + 1u, memory_order_seq_cst);
         if (atomic_load_explicit(&th->producer_waiting, memory_order_seq_cst)) {
             pthread_mutex_lock(&th->mu);
@@ -1693,6 +1685,25 @@ v2_raster_t *v2_raster_create(const char *kind, v2_target_t *tgt, v2_state_build
         LOG(1, "raster=thread: this build compiled the thread backend out (GS_V2_THREAD_BACKEND=0) — using the "
                "synchronous walker");
 #endif
+    } else if (kind && strcmp(kind, "webgpu") == 0) {
+        // The takeover: the thread backend with a translator in the
+        // worker.  The translator attaches the browser's GPU worker (or
+        // reports that it cannot); the pthread is started after it, so
+        // the worker finds r->gpu set from its first command.
+#if V2_HAVE_THREAD_BACKEND
+        if (v2_raster_watch_armed()) {
+            LOG(0, "raster=webgpu refused while GS_V2_WATCH is armed — using the synchronous walker");
+        } else {
+            r->gpu = v2_gpu_create(tgt);
+            if (v2_thread_start(r))
+                r->kind = r->gpu ? V2_BACKEND_WEBGPU : V2_BACKEND_THREAD;
+            else
+                LOG(0, "raster=webgpu: could not start the worker thread — using the synchronous walker");
+        }
+#else
+        LOG(1, "raster=webgpu: this build compiled the thread backend out (GS_V2_THREAD_BACKEND=0) — using the "
+               "synchronous walker");
+#endif
     } else if (kind && strcmp(kind, "sw") != 0) {
         LOG(0, "unknown raster backend '%s' — using the synchronous walker", kind);
     }
@@ -1703,9 +1714,10 @@ void v2_raster_destroy(v2_raster_t *r) {
     if (!r)
         return;
 #if V2_HAVE_THREAD_BACKEND
-    if (r->kind == V2_BACKEND_THREAD)
+    if (r->kind == V2_BACKEND_THREAD || r->kind == V2_BACKEND_WEBGPU)
         v2_thread_stop(r);
 #endif
+    v2_gpu_destroy(r->gpu); // after the worker joined: the translator's ring is idle
     free(r->st);
     free(r->st_seq);
     free(r);
@@ -1717,6 +1729,8 @@ const char *v2_raster_name(const v2_raster_t *r) {
         return "null";
     case V2_BACKEND_THREAD:
         return "thread";
+    case V2_BACKEND_WEBGPU:
+        return "webgpu";
     default:
         return "sw";
     }
@@ -1726,9 +1740,14 @@ void v2_raster_state_dirty(v2_raster_t *r) {
     r->st_dirty = true;
 }
 
+// Does the backend run the executor on the worker pthread?
+static inline bool v2_uses_thread(const v2_raster_t *r) {
+    return r->kind == V2_BACKEND_THREAD || r->kind == V2_BACKEND_WEBGPU;
+}
+
 void v2_raster_sync(v2_raster_t *r) {
 #if V2_HAVE_THREAD_BACKEND
-    if (r->kind == V2_BACKEND_THREAD) {
+    if (v2_uses_thread(r)) {
         uint64_t h = atomic_load_explicit(&r->th.head, memory_order_relaxed);
         r->th.n_sync++;
         if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < h)
@@ -1743,7 +1762,7 @@ void v2_raster_sync(v2_raster_t *r) {
 void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd) {
     uint64_t seq = 0;
 #if V2_HAVE_THREAD_BACKEND
-    if (r->kind == V2_BACKEND_THREAD)
+    if (v2_uses_thread(r))
         seq = atomic_load_explicit(&r->th.head, memory_order_relaxed);
 #endif
     if (r->st_dirty) {
@@ -1751,7 +1770,7 @@ void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd) {
         // retired — and let the producer fill it from the live registers.
         uint32_t next = (r->st_cur + 1u) & (V2_STATE_SLOTS - 1u);
 #if V2_HAVE_THREAD_BACKEND
-        if (r->kind == V2_BACKEND_THREAD && r->st_seq[next]) {
+        if (v2_uses_thread(r) && r->st_seq[next]) {
             if (atomic_load_explicit(&r->th.tail, memory_order_acquire) < r->st_seq[next])
                 r->th.n_state_wait++;
             v2_thread_wait_tail(&r->th, r->st_seq[next]);
@@ -1772,7 +1791,8 @@ void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd) {
     case V2_BACKEND_SW:
         v2_raster_execute(&r->st[r->st_cur], r->tgt, cmd);
         return;
-    case V2_BACKEND_THREAD: {
+    case V2_BACKEND_THREAD:
+    case V2_BACKEND_WEBGPU: {
 #if V2_HAVE_THREAD_BACKEND
         v2_thread_t *th = &r->th;
         // Room: the slot we are about to write must have been retired.
@@ -1793,4 +1813,68 @@ void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd) {
         return;
     }
     }
+}
+
+// ============================================================
+// The WebGPU takeover's producer-side face (voodoo2_raster.h)
+// ============================================================
+// Each call becomes a command through the queue, so it lands in order
+// with the draws around it; on every other backend they are no-ops.
+
+static void v2_submit_gpu(v2_raster_t *r, v2_cmd_kind_t kind, uint32_t flags, uint32_t addr, uint32_t len) {
+    v2_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.kind = (uint8_t)kind;
+    cmd.u.gpu.flags = flags;
+    cmd.u.gpu.addr = addr;
+    cmd.u.gpu.len = len;
+    v2_raster_submit(r, &cmd);
+}
+
+void v2_raster_sync_fb(v2_raster_t *r, uint32_t addr, uint32_t len) {
+    if (r->kind == V2_BACKEND_WEBGPU && v2_gpu_engaged(r->gpu))
+        v2_submit_gpu(r, V2_CMD_GPU_READBACK, 0, addr, len);
+    v2_raster_sync(r);
+}
+
+void v2_raster_engage(v2_raster_t *r, bool drives, bool discard) {
+    if (r->kind != V2_BACKEND_WEBGPU)
+        return;
+    v2_submit_gpu(r, V2_CMD_GPU_ENGAGE, (drives ? 1u : 0u) | (discard ? 0u : 2u), 0, 0);
+}
+
+void v2_raster_present(v2_raster_t *r, uint32_t fb_base) {
+    if (r->kind != V2_BACKEND_WEBGPU)
+        return;
+    v2_submit_gpu(r, V2_CMD_GPU_PRESENT, 0, fb_base, 0);
+}
+
+void v2_raster_gamma(v2_raster_t *r, const uint8_t lut[3][256]) {
+    if (r->kind != V2_BACKEND_WEBGPU)
+        return;
+    // Four 192-byte chunks: the command's texture-download payload is
+    // the largest one it carries.
+    const uint8_t *bytes = &lut[0][0];
+    for (uint32_t chunk = 0; chunk < 4u; chunk++) {
+        v2_cmd_t cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.kind = V2_CMD_GPU_GAMMA;
+        cmd.u.tex.off = chunk;
+        cmd.u.tex.n = V2_TEX_WRITE_MAX_WORDS;
+        memcpy(cmd.u.tex.words, bytes + chunk * 192u, 192u);
+        v2_raster_submit(r, &cmd);
+    }
+}
+
+bool v2_raster_presents(const v2_raster_t *r) {
+    return r->kind == V2_BACKEND_WEBGPU && v2_gpu_engaged(r->gpu);
+}
+
+const char *v2_raster_gpu_stats(v2_raster_t *r, char *buf, size_t n) {
+    if (r->kind != V2_BACKEND_WEBGPU) {
+        if (n)
+            buf[0] = 0;
+        return buf;
+    }
+    return v2_gpu_stats(r->gpu, buf, n);
 }

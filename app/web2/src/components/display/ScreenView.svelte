@@ -3,8 +3,16 @@
   import { machine } from '@/state/machine.svelte';
   import { bootstrap } from '@/bus/emulator';
   import { showNotification } from '@/state/toasts.svelte';
+  import { startVoodooGpu, gpuOverlay } from '@/gpu/voodoo2Gpu.svelte';
 
   let canvas: HTMLCanvasElement | undefined = $state(undefined);
+  // The Voodoo2 WebGPU takeover's overlay (proposal-voodoo2-webgpu-
+  // takeover §5.8): transferred to the GPU worker once at mount and
+  // shown exactly while the card drives the monitor in GPU mode, so the
+  // pass-through switch is literally which canvas is on top.  It takes
+  // no pointer events — input stays on #screen, where Emscripten's
+  // proxied handlers live.
+  let canvas3d: HTMLCanvasElement | undefined = $state(undefined);
 
   // CSS-driven scaling. The canvas's intrinsic resolution (width/height
   // attributes) stays at the emulator's framebuffer dimensions; the CSS
@@ -33,6 +41,9 @@
 
   onMount(() => {
     if (!canvas) return;
+    // The GPU worker starts before the module so its answer (a device or
+    // not) is in the bridge before any machine can boot.
+    if (canvas3d) void startVoodooGpu(canvas3d);
     // Boot the Module on first canvas mount. Subsequent mounts (component
     // re-render via DisplayContent routing) are no-ops thanks to the
     // moduleReady guard.
@@ -66,6 +77,15 @@
       height="342"
       style="width: {cssWidth}px; height: {cssHeight}px"
     ></canvas>
+    <canvas
+      id="screen3d"
+      class="overlay"
+      bind:this={canvas3d}
+      width="640"
+      height="480"
+      hidden={!gpuOverlay.visible}
+      style="width: {cssWidth}px; height: {cssHeight}px"
+    ></canvas>
   </div>
 </div>
 
@@ -90,5 +110,14 @@
     outline: none;
     /* Prevent OS touch-pan + page bounce on touch devices. */
     touch-action: none;
+  }
+  canvas.overlay {
+    position: absolute;
+    left: 0;
+    top: 0;
+    pointer-events: none;
+  }
+  canvas.overlay[hidden] {
+    display: none;
   }
 </style>

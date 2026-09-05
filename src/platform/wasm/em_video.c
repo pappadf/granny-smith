@@ -584,6 +584,17 @@ void em_video_update(void) {
     if (!d || !d->bits)
         return;
 
+    // A frame presented by someone else (the Voodoo2's WebGPU overlay):
+    // keep the canvas at the card's geometry so the page lays out the
+    // overlay over it, but never touch the pixels — the stale scanout
+    // underneath is hidden, and comparing it per frame would be wasted
+    // work.
+    if (d->presented_externally) {
+        if (d->shape_dirty && refresh_from_display(d, /*force_full*/ false))
+            draw();
+        return;
+    }
+
     // The producer-side dirty flags (fb_dirty / clut_dirty / response_dirty)
     // are undercomplete: pixel writes that come straight from emulated
     // CPU code (the ROM's RAM test, the OS painting between vsyncs,
