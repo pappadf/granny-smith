@@ -369,6 +369,7 @@ typedef struct tnt_state {
     tnt_gc_t gc;
     tnt_bandit_t bridge[TNT_MAX_BRIDGES];
     int bridge_count;
+    struct pci_bus *gc_bus; // Bandit 1's bus: the island's direct mapping follows its lane mode
     pci_device_t gc_dev; // Grand Central's config presence (device 16)
     struct av_cuda *cuda;
     struct tnt_dbdma *dbdma; // the 11-channel DMA engine (island +$8000)
@@ -450,6 +451,8 @@ void tnt_hh_remap(config_t *cfg); // rebuild the DRAM decode from the bank regis
 // ports, one generic PCI bus per bridge, each bridge's own device-11
 // header and the PCI memory windows the buses claim.  Requires cfg->pci.
 void tnt_bandit_init(config_t *cfg);
+void tnt_bandit_reset(config_t *cfg); // power-on: idle latches, straight lanes
+void tnt_bandit_modes_restored(config_t *cfg); // re-project restored mode registers onto the buses
 // The PCI memory windows, claimed AFTER pci_seat_slots(): which bridge
 // owns $90000000 depends on whether the VCI bus seated anything.
 void tnt_bandit_claim_memory(config_t *cfg);

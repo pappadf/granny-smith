@@ -456,6 +456,69 @@ TEST(test_window_dispatch_and_faults) {
     pci_root_delete(root);
 }
 
+// Little-endian byte-lane reversal on a bridge window (pci.h): a host
+// bridge feeding a little-endian client reverses its eight byte lanes so
+// PCI stays byte-address-invariant.  An N-byte access at window offset o
+// reaches PCI offset o ^ (8-N) with its bytes reversed; the device model
+// underneath never sees anything but plain PCI byte addresses and values.
+// (The Apple Network Server's Bandit does exactly this for its NT-capable
+// little-endian firmware.)
+TEST(test_window_lane_reversal) {
+    config_t *cfg = test_cfg();
+    pci_root_t *root = pci_root_create(cfg);
+    pci_bus_t *bus = pci_bus_create(root, "test", 0);
+    device_reset();
+    pci_bus_add_device(bus, &g_dev, 13);
+    pci_bus_add_window(bus, PCI_SPACE_MEM, 0x80000000u, 0x10000000u, 0x80000000u, 0xFFFFFFFFu, "mem");
+
+    // BAR0 (the register block) assigned and enabled at $80001000.
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0, 0x80001000u);
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0 + 4, 0x81000000u);
+    cfg_write_dword(&g_dev, PCI_CFG_BAR0 + 8, 0x00002000u);
+    cfg_write_dword(&g_dev, PCI_CFG_COMMAND, PCI_CMD_MEM_SPACE | PCI_CMD_IO_SPACE);
+
+    const memory_interface_t *mem_if = pci_bus_window_iface(bus, 0);
+    void *mem_ctx = pci_bus_window_ctx(bus, 0);
+
+    // Off by default; the register-region backing returns the sub-offset as
+    // an 8-bit read, so the offset the device saw is directly observable.
+    ASSERT_TRUE(!pci_bus_lane_reverse(bus));
+    mem_if->read_uint8(mem_ctx, 0x1040u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x40);
+
+    // Turn the reversal on and read the flag back.
+    pci_bus_set_lane_reverse(bus, true);
+    ASSERT_TRUE(pci_bus_lane_reverse(bus));
+
+    // A byte read at offset $1040 now reaches device offset $1040^7 = $1047.
+    mem_if->read_uint8(mem_ctx, 0x1040u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x47);
+
+    // A word read flips by 4 ($1040 -> $1044) and comes back byte-reversed:
+    // the region hands out $DEADBEEF, the window returns $EFBEADDE.
+    uint32_t v = mem_if->read_uint32(mem_ctx, 0x1040u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x44);
+    ASSERT_TRUE(v == 0xEFBEADDEu);
+
+    // A byte write flips by 7 and passes the value through unchanged.
+    mem_if->write_uint8(mem_ctx, 0x1010u, 0x5A);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x17);
+    ASSERT_EQ_INT((int)g_regs.last_value, 0x5A);
+
+    // A halfword write flips by 6 ($1010 -> $1016) and its two bytes swap.
+    mem_if->write_uint16(mem_ctx, 0x1010u, 0x1234);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x16);
+    ASSERT_EQ_INT((int)g_regs.last_value, 0x3412);
+
+    // Back to straight lanes: the transform is gone and the flag clears.
+    pci_bus_set_lane_reverse(bus, false);
+    ASSERT_TRUE(!pci_bus_lane_reverse(bus));
+    mem_if->read_uint8(mem_ctx, 0x1040u);
+    ASSERT_EQ_INT((int)g_regs.last_offset, 0x40);
+
+    pci_root_delete(root);
+}
+
 // A device that decodes I/O at STRAPPED addresses, with no I/O BAR — the
 // mach64 GX's arrangement, and the reason pci_device_add_fixed_region
 // exists.  Three things are pinned: a sparse region answers only its own
@@ -709,6 +772,7 @@ int main(void) {
     RUN(test_bar_map_transitions);
     RUN(test_absent_devices_read_all_ones);
     RUN(test_window_dispatch_and_faults);
+    RUN(test_window_lane_reversal);
     RUN(test_fixed_region_sparse_decode);
     RUN(test_fixed_region_contiguous);
     RUN(test_slot_interrupts);

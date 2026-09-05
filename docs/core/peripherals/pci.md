@@ -205,6 +205,27 @@ device: it can be seated in any PCI machine, so it must not reach for a
 family macro. A card whose registers are little-endian applies its own swap
 at its own edge and says so in its header comment.
 
+### Bridge byte-lane reversal for a little-endian client
+
+A host bridge can be told to reverse its eight byte lanes so that a CPU
+running in little-endian mode sees PCI as byte-address-invariant. Turn it
+on with `pci_bus_set_lane_reverse(bus, true)`; a bus master consults
+`pci_bus_lane_reverse(bus)`. When it is on, the window dispatch applies the
+reversal once, before decode: an N-byte access at window offset `o` reaches
+PCI offset `o ^ (8 - N)` with its bytes reversed, so no device model ever
+sees anything but plain PCI byte addresses and values. This is the
+hardware counterpart to the classic PowerPC little-endian *address munge*
+(the CPU XORs an access's low address bits by `8 - size` rather than
+reordering bytes); the two cancel, so a little-endian guest reaches every
+device behind the bridge with plain loads and stores. Anything that
+bypasses the CPU — bus-master DMA, and a family's direct mapping of a
+pass-through region — must apply the same `^7` byte reversal itself while
+the flag is set, because it never went through the window. The Apple
+Network Server's Bandit is the first user: its `$50` mode-select bit 0
+drives the flag (`machines/tnt/bandit.c`), and clearing it is how the
+2.26NT firmware brings the bridge into agreement with a little-endian
+Windows NT client.
+
 ## Slot kinds
 
 `PCI_SLOT_SOCKET` is a user-populatable connector; `PCI_SLOT_BUILTIN` is a

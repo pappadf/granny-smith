@@ -108,29 +108,65 @@ void tnt_clear_page(uint32_t page_index) {
 // access is not a natural size for anything in the chip — decompose into
 // bytes, big-endian, matching what the bus would deliver.
 
+//
+// The island is PCI pass-through memory behind Bandit 1, mapped directly
+// here for speed — so Bandit 1's byte-lane mode (bandit.c, pci.h) has to
+// be applied at this edge exactly as the bus windows apply it: with the
+// lanes reversed an N-byte access at offset o is the straight access at
+// o ^ (8-N) with its bytes reversed.
+
+// Is Bandit 1 reversing its lanes right now?
+static inline bool gc_lanes_reversed(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    return st && st->gc_bus && pci_bus_lane_reverse(st->gc_bus);
+}
+
 static uint8_t gc_read8(void *ctx, uint32_t offset) {
-    return tnt_gc_read8((config_t *)ctx, offset);
+    config_t *cfg = (config_t *)ctx;
+    if (gc_lanes_reversed(cfg))
+        offset ^= 7u;
+    return tnt_gc_read8(cfg, offset);
 }
 
 static void gc_write8(void *ctx, uint32_t offset, uint8_t value) {
-    tnt_gc_write8((config_t *)ctx, offset, value);
+    config_t *cfg = (config_t *)ctx;
+    if (gc_lanes_reversed(cfg))
+        offset ^= 7u;
+    tnt_gc_write8(cfg, offset, value);
 }
 
 static uint16_t gc_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((gc_read8(ctx, offset) << 8) | gc_read8(ctx, offset + 1));
+    config_t *cfg = (config_t *)ctx;
+    bool rev = gc_lanes_reversed(cfg);
+    if (rev)
+        offset ^= 6u;
+    uint16_t v = (uint16_t)((tnt_gc_read8(cfg, offset) << 8) | tnt_gc_read8(cfg, offset + 1));
+    return rev ? __builtin_bswap16(v) : v;
 }
 
 static void gc_write16(void *ctx, uint32_t offset, uint16_t value) {
-    gc_write8(ctx, offset, (uint8_t)(value >> 8));
-    gc_write8(ctx, offset + 1, (uint8_t)value);
+    config_t *cfg = (config_t *)ctx;
+    if (gc_lanes_reversed(cfg)) {
+        offset ^= 6u;
+        value = __builtin_bswap16(value);
+    }
+    tnt_gc_write8(cfg, offset, (uint8_t)(value >> 8));
+    tnt_gc_write8(cfg, offset + 1, (uint8_t)value);
 }
 
 static uint32_t gc_read32(void *ctx, uint32_t offset) {
-    return tnt_gc_read32((config_t *)ctx, offset);
+    config_t *cfg = (config_t *)ctx;
+    if (!gc_lanes_reversed(cfg))
+        return tnt_gc_read32(cfg, offset);
+    return __builtin_bswap32(tnt_gc_read32(cfg, offset ^ 4u));
 }
 
 static void gc_write32(void *ctx, uint32_t offset, uint32_t value) {
-    tnt_gc_write32((config_t *)ctx, offset, value);
+    config_t *cfg = (config_t *)ctx;
+    if (!gc_lanes_reversed(cfg))
+        tnt_gc_write32(cfg, offset, value);
+    else
+        tnt_gc_write32(cfg, offset ^ 4u, __builtin_bswap32(value));
 }
 
 // ============================================================
@@ -263,24 +299,44 @@ static void tnt_memory_layout(config_t *cfg) {
 // bus's slow path byte by byte.  The CPU MMU is deliberately not in the
 // path (the sonic/psc memory-hook precedent).
 
+//
+// The engine is a bus master behind Bandit 1, so its traffic crosses the
+// same reversed lanes as the CPU's when the bridge is in little-endian
+// mode: PCI byte n of the transfer is host byte n^7.  The RAM fast path
+// stays a memcpy in the straight case; the reversed case walks bytes (the
+// XOR never leaves the aligned 8-byte group, so a block inside RAM stays
+// inside RAM).
+
 static void tnt_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
+    bool rev = gc_lanes_reversed(cfg);
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(buf, ram_native_pointer(cfg->mem_map, 0) + phys, len);
+        const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        if (!rev)
+            memcpy(buf, ram + phys, len);
+        else
+            for (uint32_t i = 0; i < len; i++)
+                buf[i] = ram[(phys + i) ^ 7u];
         return;
     }
     for (uint32_t i = 0; i < len; i++)
-        buf[i] = memory_read_uint8_slow(phys + i);
+        buf[i] = memory_read_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i));
 }
 
 static void tnt_dbdma_mem_write(void *ctx, uint32_t phys, const uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
+    bool rev = gc_lanes_reversed(cfg);
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(ram_native_pointer(cfg->mem_map, 0) + phys, buf, len);
+        uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        if (!rev)
+            memcpy(ram + phys, buf, len);
+        else
+            for (uint32_t i = 0; i < len; i++)
+                ram[(phys + i) ^ 7u] = buf[i];
         return;
     }
     for (uint32_t i = 0; i < len; i++)
-        memory_write_uint8_slow(phys + i, buf[i]);
+        memory_write_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i), buf[i]);
 }
 
 // Channel completion -> Grand Central interrupt n (== channel n), an
@@ -576,6 +632,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
             system_read_checkpoint_data(cp, &st->bridge[i].cfg_addr, sizeof(st->bridge[i].cfg_addr));
             system_read_checkpoint_data(cp, &st->bridge[i].mode_select, sizeof(st->bridge[i].mode_select));
         }
+        tnt_bandit_modes_restored(cfg); // the buses are rebuilt, not restored
         // Every seated device's config header, in canonical (bus, device)
         // order; the restore replays each BAR transition so the decode is
         // rebuilt without any device code.
@@ -664,10 +721,7 @@ static void tnt_reset(config_t *cfg) {
     if (st->scsi96)
         scsi_53c96_reset(st->scsi96);
     scc_reset(cfg->scc);
-    for (int i = 0; i < st->bridge_count; i++) {
-        st->bridge[i].cfg_addr = 0;
-        st->bridge[i].mode_select = 0;
-    }
+    tnt_bandit_reset(cfg);
     // PCI RST#: every seated device's header back to power-on, which drops
     // the assigned BARs and with them the decode.
     pci_reset(cfg->pci);
