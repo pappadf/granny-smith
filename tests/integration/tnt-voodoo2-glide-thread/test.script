@@ -1,8 +1,0 @@
-# The tnt-voodoo2-glide flow on the worker-thread raster backend
-# (proposal-voodoo2-raster-thread §7): the sibling's script verbatim
-# with RASTER pinned to "thread", so every assertion — the driver's
-# self-tests, the counters, and the in-game golden — is an equivalence
-# check against the normative walker.
-
-let RASTER = "thread"
-include "../tnt-voodoo2-glide/test.script"

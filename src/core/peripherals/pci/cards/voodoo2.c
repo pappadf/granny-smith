@@ -456,14 +456,15 @@ static inline uint64_t v2_tsc(void) {
 
 // Staged options (consumed by the factory, the mach64 idiom).
 static uint32_t s_staged_tex_size = V2_TMU_2MB;
-// The default backend: the normative walker on native builds (the gates
-// run there and goldens come from it), the worker thread in the browser
-// (voodoo2_raster.h; overridable per boot with pci_option="raster=...").
-#if defined(__EMSCRIPTEN__)
-#define V2_DEFAULT_RASTER "thread"
-#else
-#define V2_DEFAULT_RASTER "sw"
+// The default backend is the worker thread on every build — its output
+// is byte-identical to the normative walker's (the gates assert it), so
+// the goldens are indifferent and the CPU emulation gets the overlap.
+// -DGS_V2_RASTER_DEFAULT='"sw"' (EXTRA_CFLAGS) makes a build default to
+// the synchronous walker; pci_option="raster=..." overrides per boot.
+#ifndef GS_V2_RASTER_DEFAULT
+#define GS_V2_RASTER_DEFAULT "thread"
 #endif
+#define V2_DEFAULT_RASTER GS_V2_RASTER_DEFAULT
 static char s_staged_raster[16] = V2_DEFAULT_RASTER; // pci_option="raster=sw|null|thread"
 
 static uint32_t v2_screen_height(const voodoo2_t *v);

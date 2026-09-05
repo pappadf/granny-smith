@@ -122,8 +122,9 @@ document grows as each group lands.
 - **Raster performance (branch `voodoo2-raster-perf`):** the seam
   becomes a command layer with a draw-state snapshot, the walker gets
   its bit-exact optimization ladder (12m38s → 6m39s on the glide row,
-  golden unchanged), and an opt-in worker-thread backend
-  (`raster=thread`) lands behind it — see "The raster seam" below.
+  golden unchanged), and a worker-thread backend (`raster=thread`,
+  the default on every build, byte-identical) lands behind it — see
+  "The raster seam" below.
 
 ## Provenance
 
@@ -287,12 +288,16 @@ optimization`, `proposal-voodoo2-raster-thread`) into a command layer:
   `pci_option="raster=sw"` (default, inline, **normative** — it
   produces every golden), `raster=null` (drops triangles; pins the
   analytic-timing invariant), `raster=thread` (one worker pthread
-  draining a bounded SPSC ring).  The walker is the default on native
-  builds, where the gates run; the browser build defaults to the thread
-  — the emulator already runs on one Web Worker, the rasteriser takes a
-  second, preallocated at link time (`-sPTHREAD_POOL_SIZE=2`), and the
-  `voodoo2-thread` e2e spec pins it.
-  `machine.pci.slot[N].card.regs.raster` reports which.
+  draining a bounded SPSC ring).  **The thread is the default on every
+  build**: its output is byte-identical to the walker's (the rows below
+  assert it), so the goldens are indifferent and the CPU emulation gets
+  the overlap.  In the browser the rasteriser takes a second Web
+  Worker, preallocated at link time (`-sPTHREAD_POOL_SIZE=2`, with
+  `PTHREAD_POOL_DELAY_LOAD` so startup is not gated on the pool) and
+  the `voodoo2-thread` e2e spec pins it.  A build defaults to the
+  walker with `EXTRA_CFLAGS='-DGS_V2_RASTER_DEFAULT="sw"'`; any boot
+  picks one with `pci_option`.  `machine.pci.slot[N].card.regs.raster`
+  reports which.
 
 **Observation fences.**  Invariant 2 of the seam — the shadow is
 authoritative when the guest looks — is a list of `v2_raster_sync()`
@@ -311,13 +316,14 @@ no fence — part of the contract.  Under `raster=thread` the level-5
 instrument logs from inside the executor, so a thread backend refuses
 to start while it is armed and diagnosis uses the synchronous walker.
 
-**Equivalence is asserted, not assumed.**  `tnt-pci-voodoo2` replays
-its entire drawing section a second time on `raster=thread` against
-the same pinned pixel values and counts (including a rotate-mode
-stipple probe: nine of tri1's 136 pixels pass `$80000001`, the
-register ends at `$180`); `tnt-voodoo2-glide-thread` runs the Quake
-flow on the worker against the **same** in-game golden (a symlink into
-the sibling row).
+**Equivalence is asserted, not assumed.**  `tnt-pci-voodoo2` draws
+its drawing section on the default (the thread) and replays it
+entirely on `raster=sw`, the normative walker, against the same pinned
+pixel values and counts (including a rotate-mode stipple probe: nine
+of tri1's 136 pixels pass `$80000001`, the register ends at `$180`);
+`tnt-voodoo2-glide` runs Quake on the default and `tnt-voodoo2-glide-sw`
+runs it on the walker against the **same** in-game golden (a symlink
+into the sibling row).
 
 **The walker-optimization ladder** (bit-exact by construction; the
 three rows above are the oracle, `GS_V2_XCHECK=1` is the soak-run

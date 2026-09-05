@@ -11,7 +11,7 @@
 # this is the instrument that does.  NOT a CI gate (host-dependent): a
 # tool for the before/after numbers in commit messages.
 #
-#   scripts/voodoo2/bench.sh [backend...]      default: sw thread
+#   scripts/voodoo2/bench.sh [backend...]      default: thread sw
 #
 # Each run is the real row (build if stale, media-gated, golden
 # compared), so "PASS" beside a backend also says its frame was
@@ -31,7 +31,7 @@ set -u
 cd "$(dirname "$0")/../.."
 
 BACKENDS=("$@")
-[ ${#BACKENDS[@]} -gt 0 ] || BACKENDS=(sw thread)
+[ ${#BACKENDS[@]} -gt 0 ] || BACKENDS=(thread sw)
 
 mkdir -p tmp
 # One emulator at a time: stray instances share the storage cache and

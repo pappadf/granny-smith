@@ -36,14 +36,15 @@
 // a worker thread must never read live card state (thread proposal
 // §4).  A backend is only WHERE the executor runs:
 //
-//   sw      the executor runs inline at submit (normative; the default
-//           on native builds, where the gates run)
+//   sw      the executor runs inline at submit — the NORMATIVE backend:
+//           it defines the semantics; the equivalence rows replay on it
 //   null    as sw, but TRIANGLE commands are dropped — pins invariant 1
 //   thread  commands go to a bounded SPSC queue drained by one worker
-//           pthread; sync() is a fence.  The default on the wasm build
-//           (the browser runs the emulator on one Web Worker and the
-//           rasteriser on a second, preallocated by the link; thread
-//           proposal §5.7), opt-in on native via pci_option.
+//           pthread; sync() is a fence.  The DEFAULT on every build
+//           (native pthreads; in the browser a second Web Worker,
+//           preallocated by the link — thread proposal §5.7).  A build
+//           can default to sw with -DGS_V2_RASTER_DEFAULT='"sw"'; any
+//           boot can pick one with pci_option="raster=...".
 //
 // Because queue order is submission order and every observation point
 // fences first, the thread backend's output is byte-identical to the

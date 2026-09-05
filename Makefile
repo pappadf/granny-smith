@@ -186,6 +186,7 @@ LDFLAGS := $(MODE_CFLAGS) \
            -pthread \
            -sPROXY_TO_PTHREAD \
            -sPTHREAD_POOL_SIZE=2 \
+           -sPTHREAD_POOL_DELAY_LOAD=1 \
            -sOFFSCREENCANVAS_SUPPORT \
            -sOFFSCREEN_FRAMEBUFFER \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \

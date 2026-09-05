@@ -101,8 +101,8 @@ test('the Voodoo2 rasterises on a second Web Worker, and the shadow is authorita
   await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
 
   // Re-boot with the card seated (the typed document, no option: the
-  // BROWSER DEFAULT is what this spec pins).  The machine stays halted —
-  // the guest never runs; the aperture is driven from here.
+  // build's DEFAULT backend is what this spec pins).  The aperture is
+  // driven from here with the guest halted.
   await terminalRun(page, `machine.boot model="pm7500" ram=32768 rom="${STORED_ROM}" pci_card="voodoo2"`);
   await page.waitForTimeout(1500);
   // Halt whatever the boot left running: the guest's own Open Firmware

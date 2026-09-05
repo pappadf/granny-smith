@@ -25,12 +25,13 @@
 
 include "../lib/mac.script"
 
-# The raster backend under test (voodoo2_raster.h): the normative
-# software walker by default; --var RASTER=thread runs the identical
-# flow on the worker-thread backend against the SAME golden (the
-# tnt-voodoo2-glide-thread row), --var RASTER=null is the no-raster
-# floor for scripts/voodoo2/bench.sh.
-let RASTER = try($RASTER, "sw")
+# The raster backend under test (voodoo2_raster.h): the build's default
+# (the worker thread) unless --var RASTER= says otherwise; the
+# tnt-voodoo2-glide-sw row runs the identical flow on the normative
+# synchronous walker against the SAME golden; RASTER=null is the
+# no-raster variant scripts/voodoo2/bench.sh can time (not a floor —
+# see the script).
+let RASTER = try($RASTER, "thread")
 
 let img = "${$WORK_DIR}/quake.img"
 if have_media($img) {
