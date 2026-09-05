@@ -461,8 +461,15 @@ static uint32_t s_staged_tex_size = V2_TMU_2MB;
 // the goldens are indifferent and the CPU emulation gets the overlap.
 // -DGS_V2_RASTER_DEFAULT='"sw"' (EXTRA_CFLAGS) makes a build default to
 // the synchronous walker; pci_option="raster=..." overrides per boot.
+// -DGS_V2_THREAD_BACKEND=0 compiles the thread backend out of
+// voodoo2_raster.c; the default then falls back to the walker at
+// create time, but say so here so the staged name is honest too.
 #ifndef GS_V2_RASTER_DEFAULT
+#if defined(GS_V2_THREAD_BACKEND) && !GS_V2_THREAD_BACKEND
+#define GS_V2_RASTER_DEFAULT "sw"
+#else
 #define GS_V2_RASTER_DEFAULT "thread"
+#endif
 #endif
 #define V2_DEFAULT_RASTER GS_V2_RASTER_DEFAULT
 static char s_staged_raster[16] = V2_DEFAULT_RASTER; // pci_option="raster=sw|null|thread"

@@ -295,8 +295,10 @@ optimization`, `proposal-voodoo2-raster-thread`) into a command layer:
   Worker, preallocated at link time (`-sPTHREAD_POOL_SIZE=2`, with
   `PTHREAD_POOL_DELAY_LOAD` so startup is not gated on the pool) and
   the `voodoo2-thread` e2e spec pins it.  A build defaults to the
-  walker with `EXTRA_CFLAGS='-DGS_V2_RASTER_DEFAULT="sw"'`; any boot
-  picks one with `pci_option`.  `machine.pci.slot[N].card.regs.raster`
+  walker with `EXTRA_CFLAGS='-DGS_V2_RASTER_DEFAULT="sw"'`, or leaves
+  the thread backend out entirely with `-DGS_V2_THREAD_BACKEND=0` (no
+  pthread code compiled; `raster=thread` then falls back with a log
+  line); any boot picks one with `pci_option`.  `machine.pci.slot[N].card.regs.raster`
   reports which.
 
 **Observation fences.**  Invariant 2 of the seam — the shadow is

@@ -43,7 +43,8 @@
 //           pthread; sync() is a fence.  The DEFAULT on every build
 //           (native pthreads; in the browser a second Web Worker,
 //           preallocated by the link — thread proposal §5.7).  A build
-//           can default to sw with -DGS_V2_RASTER_DEFAULT='"sw"'; any
+//           can default to sw with -DGS_V2_RASTER_DEFAULT='"sw"', or
+//           leave the backend out with -DGS_V2_THREAD_BACKEND=0; any
 //           boot can pick one with pci_option="raster=...".
 //
 // Because queue order is submission order and every observation point
