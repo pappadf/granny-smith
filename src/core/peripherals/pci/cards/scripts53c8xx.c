@@ -56,24 +56,47 @@ LOG_USE_CATEGORY_NAME("scripts");
 // say) takes the bus's slow path.  The CPU MMU is deliberately NOT in the
 // path — the same rule DBDMA follows.
 
+//
+// And the bridge in between: when the host bridge this chip sits behind is
+// reversing its byte lanes for a little-endian client (pci.h), PCI byte n
+// of a bus-master transfer is host byte n^7 — the XOR never leaves the
+// aligned 8-byte group, so a block inside RAM stays inside RAM.
+
+// Is the bridge in front of this chip reversing its lanes?
+static bool lanes_reversed(const sym53c8xx_t *s) {
+    return s->dev && s->dev->bus && pci_bus_lane_reverse(s->dev->bus);
+}
+
 void sym53c8xx_read_block(sym53c8xx_t *s, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = s->cfg;
+    bool rev = lanes_reversed(s);
     if (cfg && cfg->mem_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(buf, ram_native_pointer(cfg->mem_map, 0) + phys, len);
+        const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        if (!rev)
+            memcpy(buf, ram + phys, len);
+        else
+            for (uint32_t i = 0; i < len; i++)
+                buf[i] = ram[(phys + i) ^ 7u];
         return;
     }
     for (uint32_t i = 0; i < len; i++)
-        buf[i] = memory_read_uint8_slow(phys + i);
+        buf[i] = memory_read_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i));
 }
 
 void sym53c8xx_write_block(sym53c8xx_t *s, uint32_t phys, const uint8_t *buf, uint32_t len) {
     config_t *cfg = s->cfg;
+    bool rev = lanes_reversed(s);
     if (cfg && cfg->mem_map && phys < cfg->ram_size && len <= cfg->ram_size - phys) {
-        memcpy(ram_native_pointer(cfg->mem_map, 0) + phys, buf, len);
+        uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+        if (!rev)
+            memcpy(ram + phys, buf, len);
+        else
+            for (uint32_t i = 0; i < len; i++)
+                ram[(phys + i) ^ 7u] = buf[i];
         return;
     }
     for (uint32_t i = 0; i < len; i++)
-        memory_write_uint8_slow(phys + i, buf[i]);
+        memory_write_uint8_slow(rev ? ((phys + i) ^ 7u) : (phys + i), buf[i]);
 }
 
 // One big-endian longword of host memory.  SCRIPTS instructions are stored

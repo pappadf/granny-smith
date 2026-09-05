@@ -217,10 +217,34 @@ deltas, each keyed on `cpu_model`:
   same `rtcu/rtcl` slots at their rebase instant.  DEC decrements once
   per timebase tick.  `ppc_bind_time(p, s, freq_hz, tick_hz)` takes the
   tick rate explicitly: 7,833,600 on the 601 (PDM), bus/4 on the 604.
-- **MSR**: adds POW (accepted as a no-op idle hint), BE, PM, RI.
-  Exception entry keeps ME/EP/PM and clears the rest; `rfi` restores
-  MSR[16-31] only (POW survives).  ILE/LE stay unimplemented on both
-  models (big-endian Macs).
+- **MSR**: adds POW (accepted as a no-op idle hint), BE, PM, RI, and the
+  little-endian pair ILE/LE.  Exception entry keeps ME/EP/PM/ILE, clears
+  the rest, and REPLACES LE with a copy of ILE; `rfi` restores MSR[16-31]
+  only (POW and ILE survive).  The 601 masks ILE/LE off (its Macs never
+  leave big-endian).
+- **Little-endian mode** (PEM §3.2.2; 604UM §4.5.6): with MSR[LE] set the
+  core does what the silicon does — no byte reordering, only address
+  munging.  Every data EA has its low three bits XORed with 7/6/4 for a
+  byte/halfword/word (`ppc_le_ea`), a doubleword FP transfer becomes two
+  munged word accesses with the high word at the higher LE address
+  (`ppc_le_ld64/st64`), and instruction fetch munges like a word load
+  (`g_ppc_fetch.le_xor`, refreshed on every refill — every MSR write
+  flushes the window).  Memory therefore holds the LE program's image with
+  each doubleword byte-reversed (code: the two words of each doubleword
+  swapped).  Any access that is not naturally aligned, and every
+  lmw/stmw/lswi/lswx/stswi/stswx, takes the alignment exception with DAR
+  = the architected EA; update forms write back the unmunged EA.  Device
+  registers see the munged address like RAM does — the guest compensates
+  itself (Apple's Open Firmware `ar-rl@` is `little? if 4 xor then xl@`).
+  First user: the Apple Network Server's NT-era Open Firmware
+  (`little-endian? true` after the pe-loader's forced reboot), which
+  pair-swaps and byte-reverses its own dictionary in place before flipping
+  MSR[LE], then loads the PowerPC-LE `VENEER.EXE` (docs/machines/tnt/tnt.md).
+  On that machine the *bridge* carries the other half of the trick: Bandit
+  reverses its byte lanes for everything downstream (its `$50` mode-select
+  endian bit), so the CPU's address munge and the bridge's lane reversal
+  cancel and a little-endian client reaches PCI with plain loads and stores
+  — see "Bridge byte-lane reversal" in docs/core/peripherals/pci.md.
 - **MMU**: the ARCHITECTED BAT format (BEPI/BL/Vs/Vp upper,
   BRPN/WIMG/PP lower; blocks 128 KB–256 MB; PP-only protection) with
   four SPLIT pairs each way — fetch consults the IBATs (`batu/batl`),

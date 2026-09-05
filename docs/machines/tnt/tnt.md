@@ -47,8 +47,21 @@ DMA architecture:
   one-hot IDSEL, and the bridge's own device-11 header (vendor `$106B`,
   device `$0001`, revision 3) registered as an ordinary device with
   `$48` address-select and `$50` mode-select (latching coherency bit) as
-  its two quirk registers.  Devices 0-10 and empty IDSELs read all-ones
-  because nothing is registered there — not because of a literal.  Chaos
+  its two quirk registers.  Mode-select byte 0 bit 0 is the **endian
+  bit**: set at power-on for the straight byte lanes every Macintosh OS
+  runs on, cleared by the firmware (`... cdata xb@ 0fe and cdata xb!`)
+  when it enters a little-endian client, at which point the bridge
+  reverses its eight byte lanes for everything it forwards — the
+  pass-through Grand Central island, the PCI memory and I/O windows, and
+  bus-master DMA on its way to host memory — while leaving its own config
+  ports straight (which is how software reaches the bit at all).  That
+  hardware reversal is the counterpart to the 604's little-endian address
+  munge: the two cancel, so a little-endian client reaches every PCI-side
+  device with plain loads and stores.  It is what lets Apple's 2.26NT
+  Open Firmware keep its serial console across the mandatory
+  little-endian configuration reboot when booting Windows NT.  Devices
+  0-10 and empty IDSELs read all-ones because nothing is registered there
+  — not because of a literal.  Chaos
   config space is read-restricted (`$00-$0F`, `$14`, `$18`) and ignores
   writes outside its two BAR offsets; both quirks are applied in the
   adapter, around the generic dispatch, because they are facts about
