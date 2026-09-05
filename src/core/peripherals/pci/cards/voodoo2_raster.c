@@ -69,6 +69,12 @@ typedef struct v2_pix {
 
 static int s_watch_x = -2, s_watch_y = -2;
 static bool s_watch_now;
+// GS_V2_XCHECK=1: the soak-run cross-check for the dataflow rungs of
+// the walker-optimization proposal (§3.2, §3.3) — every shortcut is
+// recomputed the long way and a mismatch aborts.  Release builds keep
+// the code (the check is one predictable branch per pixel), so the
+// soak runs the exact binary that ships.
+static bool s_xcheck;
 
 static void v2_watch_init(void) {
     if (s_watch_x == -2) {
@@ -76,7 +82,17 @@ static void v2_watch_init(void) {
         s_watch_x = s_watch_y = -1;
         if (w)
             sscanf(w, "%d,%d", &s_watch_x, &s_watch_y);
+        const char *x = getenv("GS_V2_XCHECK");
+        s_xcheck = x && *x && *x != '0';
     }
+}
+
+// The cross-check's failure: loud, with both values, then abort — a
+// soak run that disagrees is a finding, not a warning.
+static void v2_xcheck_fail(const char *what, uint64_t fast, uint64_t slow) {
+    LOG(0, "GS_V2_XCHECK: %s differs — shortcut %llX, reference %llX", what, (unsigned long long)fast,
+        (unsigned long long)slow);
+    abort();
 }
 
 bool v2_raster_watch_armed(void) {
@@ -944,11 +960,19 @@ V2_INLINE uint32_t v2_iter_w8(int64_t it, bool clamp) {
 
 // The texture chain for one pixel: TMU1 samples and combines first, its
 // output feeding TMU0's c_other (single-pass multitexture).
-static uint32_t v2_texture_chain(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T, int32_t dx,
-                                 int32_t dy) {
+static uint32_t v2_texture_chain_full(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T, int32_t dx,
+                                      int32_t dy, bool skip_tmu1) {
     uint32_t chain = 0; // most-upstream c_other is zero
     for (int tmu = V2_RASTER_TMUS - 1; tmu >= 0; tmu--) {
         const v2_tmu_state_t *tm = &st->tmu[tmu];
+        // Walker proposal §3.2: when TMU0's combine provably consumes
+        // nothing from its chain input (both zero_other bits set, no
+        // mselect of a_other, not echoing config), the TMU1 sample is
+        // dead — its contribution is multiplied by zero or never
+        // selected — and the whole sample is skipped.  Quake's
+        // single-TMU configs hit this on every pixel.
+        if (tmu == 1 && skip_tmu1)
+            continue;
         uint32_t mode = tm->mode;
         uint32_t trex1 = tm->trex1;
         if (trex1 & (1u << 18)) {
@@ -1095,6 +1119,19 @@ static uint32_t v2_texture_chain(const v2_draw_state_t *st, v2_target_t *tgt, co
     return chain;
 }
 
+// The texture chain for one pixel, with the dead-TMU shortcut — and,
+// under GS_V2_XCHECK, the unshortened chain beside it.
+V2_INLINE uint32_t v2_texture_chain(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T, int32_t dx,
+                                    int32_t dy) {
+    uint32_t chain = v2_texture_chain_full(st, tgt, T, dx, dy, st->skip_tmu1);
+    if (__builtin_expect(s_xcheck && st->skip_tmu1, 0)) {
+        uint32_t full = v2_texture_chain_full(st, tgt, T, dx, dy, false);
+        if (full != chain)
+            v2_xcheck_fail("texture chain (TMU1 skip)", chain, full);
+    }
+    return chain;
+}
+
 static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const voodoo2_tri_t *T) {
     // Orientation from the COMMAND's sign — a sign that disagrees with
     // the geometry fails every inside test and draws nothing.
@@ -1137,6 +1174,7 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
 
     bool clamp = (st->fcp >> 28) & 1u;
     bool tex_on = st->tex_on;
+    bool uses_tex = st->uses_tex || s_xcheck; // the soak run computes everything
     bool y_flip = (st->fbz >> 17) & 1u;
     int32_t ax_i = T->ax >> 4, ay_i = T->ay >> 4;
 
@@ -1177,7 +1215,9 @@ static void v2_sw_triangle(const v2_draw_state_t *st, v2_target_t *tgt, const vo
             p.w8 = v2_iter_w8(p.w_raw, clamp);
             p.have_tex = tex_on;
             s_watch_now = (p.x == s_watch_x && p.y == s_watch_y);
-            p.tex_argb = tex_on ? v2_texture_chain(st, tgt, T, dx, dy) : 0u;
+            // The chain runs only when the pipeline reads its output
+            // (uses_tex, §3.2) — or the watch wants to print it.
+            p.tex_argb = (tex_on && (uses_tex || s_watch_now)) ? v2_texture_chain(st, tgt, T, dx, dy) : 0u;
             v2_pixel_pipe(st, tgt, &p);
         }
     }
