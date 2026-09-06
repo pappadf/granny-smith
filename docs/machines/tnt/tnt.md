@@ -584,6 +584,25 @@ order does not matter, so the existing `PIXEL_8BPP` path is *correct* rather
 than merely convenient. Deeper colour needs a little-endian framebuffer
 window in `display_t`, which this repository does not have.
 
+### The registers that are not memory
+
+Open Firmware and AIX both arrive knowing what the part is, so for a long
+time a flat byte array per register block was enough. A driver that has to
+*find* the chip needs four registers that do not behave like storage, and
+Windows NT's `cirrus.sys` reads all four before it will claim the adapter:
+
+| | behaviour | why a driver cares |
+|---|---|---|
+| `SR06` | writing `$12` unlocks the extensions and reads back `$12`; anything else locks them and reads back `$0F` | the round trip *is* the presence test |
+| `CR27` | read-only `$A0`: bits 7:2 the device (CL-GD5430, agreeing with the `$00A0` PCI ID), 1:0 the revision | the chip ID, and which mode tables apply |
+| `SR15` | bits 3:0 report the fitted DRAM — `2` is 1 MB | the driver sizes its mode list from this instead of probing, and rejects every mode that will not fit |
+| `$3CC` | reads back what `$3C2` (Miscellaneous Output) was given | bit 0 says whether the CRTC pair is at `$3D4/$3D5` or `$3B4/$3B5` |
+
+The monochrome CRTC pair `$3B4/$3B5` is folded onto the colour one whatever
+`$3C2` bit 0 says. Software that never writes Miscellaneous Output reads
+zero from `$3CC`, goes to the monochrome addresses, and would otherwise find
+nothing there.
+
 One VGA register is deliberately not store-and-readback: **Input Status
 Register 1** (`$3BA`/`$3DA`). Software does not read it for a value, it
 reads it for an *edge* — every VGA console waits on the vertical-retrace or
