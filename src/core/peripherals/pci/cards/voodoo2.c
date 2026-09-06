@@ -2657,6 +2657,16 @@ static bool v2_drives_monitor(const voodoo2_t *v) {
 // on every segment but the last (whose top entry is 8-bit-clamped on
 // real silicon too — the vendor source's own "BUG Fix" comment fights
 // the same corner).
+//
+// A segment that DESCENDS is clamped flat.  The spec requires the table
+// to be monotonically increasing (p.75) and says nothing about one that
+// is not; Quake's table writes entry 32 as 0 (its 256-entry source read
+// one past its end), and interpolating 248 towards 0 sent every
+// saturated channel — explosion cores, flames, fullbright particles —
+// to 31: white came out blue.  No Voodoo2 owner saw blue explosions, so
+// whatever the silicon does with a bad top entry, it is not that;
+// holding the segment at its lower entry is the least-surprising
+// reading of "monotonic".  Divergence 10.
 static void v2_gamma_rebuild(voodoo2_t *v) {
     for (int ch = 0; ch < 3; ch++) {
         int sh = 16 - 8 * ch;
@@ -2664,6 +2674,8 @@ static void v2_gamma_rebuild(voodoo2_t *v) {
             int k = i >> 3, f = i & 7;
             int e0 = (int)((v->clut[k] >> sh) & 0xFFu);
             int e1 = (int)((v->clut[k + 1] >> sh) & 0xFFu);
+            if (e1 < e0)
+                e1 = e0;
             int out = e0 + (((e1 - e0) * f + 4) >> 3);
             v->gamma_lut[ch][i] = (uint8_t)(out < 0 ? 0 : (out > 255 ? 255 : out));
         }
@@ -3097,6 +3109,27 @@ static value_t regs_method_tex_offset(struct object *self, const member_t *m, in
     return val_uint(4, v2_lod_offset(v, (int)tmu, (int)lod));
 }
 
+static const arg_decl_t regs_gamma_args[] = {
+    {.name = "channel", .kind = V_INT, .doc = "0 red, 1 green, 2 blue"     },
+    {.name = "input",   .kind = V_INT, .doc = "8-bit scanout value (0-255)"},
+};
+// The gamma ramp as the scanout (and the takeover's present) applies it:
+// the interpolated CLUT once the guest has programmed one, identity
+// before — the gate for the top segment's flat hold (divergence 10).
+static value_t regs_method_gamma(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    voodoo2_t *v = node_card(self);
+    int64_t ch = argv[0].i, in = argv[1].i;
+    if (!v || ch < 0 || ch > 2 || in < 0 || in > 255)
+        return val_err("regs.gamma: channel 0..2, input 0..255");
+    if (!v->clut_written)
+        return val_uint(4, (uint32_t)in);
+    if (v->clut_dirty)
+        v2_gamma_rebuild(v);
+    return val_uint(4, v->gamma_lut[ch][in]);
+}
+
 static const arg_decl_t regs_tex_save_args[] = {
     {.name = "tmu",  .kind = V_INT,    .doc = "Which Bruce (0 or 1)"                     },
     {.name = "path", .kind = V_STRING, .doc = "Host file to write the raw texture RAM to"},
@@ -3201,6 +3234,10 @@ static const member_t regs_members[] = {
      .name = "read",
      .doc = "Read any Chuck register by its byte offset",
      .method = {.args = regs_read_arg, .nargs = 1, .result = V_UINT, .fn = regs_method_read}},
+    {.kind = M_METHOD,
+     .name = "gamma",
+     .doc = "The video gamma ramp's output for an 8-bit input on a channel (0 r, 1 g, 2 b): the interpolated "
+            "33-entry CLUT once programmed, identity before", .method = {.args = regs_gamma_args, .nargs = 2, .result = V_UINT, .fn = regs_method_gamma}},
     {.kind = M_METHOD,
      .name = "tex_offset",
      .doc = "Byte offset of a LOD level in the packed mip chain, per the TMU's live tLOD "

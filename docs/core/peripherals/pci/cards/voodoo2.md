@@ -263,7 +263,7 @@ divergences, each deliberate and localised:
 | 7 | Float-mirror→fixed conversion truncates toward zero | `v2_float_to_latch` | conversion rounding unspecified |
 | 8 | DAC power-on PLL N/P bytes (M bytes are the detection signature and exact) | `v2_dac_reset` | only the M values are documented |
 | 9 | trexInit0/1 opaque except the second-RAS size gate | `v2_tmu_addressable` | V2 p.85: "FIXME. See Bruce spec" |
-| 10 | Gamma CLUT interpolation rounding is `(delta·frac + 4) >> 3`, and the CLUT is bypassed until the guest first programs it | `v2_gamma_rebuild`, `v2_display_update` | the 33-entry table and its linear interpolation are vendor-documented [Glide-src init/gamma.c], but the hardware's rounding and power-on contents are not in our material; Quake visibly gammas (Glide loads a 1.3 ramp at grSstWinOpen), which retired the earlier identity-scanout simplification |
+| 10 | Gamma CLUT interpolation rounding is `(delta·frac + 4) >> 3`, a descending segment is held flat at its lower entry, and the CLUT is bypassed until the guest first programs it | `v2_gamma_rebuild`, `v2_display_update` | the 33-entry table and its linear interpolation are vendor-documented [Glide-src init/gamma.c], but the hardware's rounding, power-on contents and treatment of a non-monotonic table (p.75 forbids one) are not in our material; Quake visibly gammas (Glide loads a 1.3 ramp at grSstWinOpen), and writes entry 32 as 0 — interpolated literally, every saturated channel went to 31 and explosion cores were blue |
 | 11 | siProcess (config $54) completes its oscillator measurement at issue and reports fixed mid-grade counts (NAND 6400, NOR 7424) | `v2_cfg_read` | Glide polls the down-counter to zero inside grSstQueryHardware [Glide-src init/util.c]; a frozen counter spins the shipped driver forever — divergence 1 in config space |
 | 12 | **(takeover only)** texel filtering, LOD selection and the perspective divide are the shader's `f32` arithmetic, not the walker's `double`; the walker's own formulae, with the level and the 8-bit bilinear fractions computed the same way | `voodoo2.wgsl.ts` `tmu_sample`, `texture_chain` | the estimate can land one 4.2 step, or one texel fraction, from the walker's at exact boundaries — visibly equivalent, not identical; bound: ±1 LSB of 5-6-5 per channel on textured pixels |
 | 13 | **(takeover only)** blended draws hand the blender the 8-bit combine output and the attachment keeps the 8-bit result; the walker blends against the stored 5-6-5 and dithers after | `fs_main` (the `amode[4]` branch) | hardware blend state cannot dither; bound: ≤ 1 LSB of 5-6-5 per channel on blended pixels, opaque pixels exact |
@@ -547,10 +547,14 @@ after a change (`gamma 0.4` at the console: entry 16 = 150 for a
 mild because the game's own curve is mild; the walker converts the
 scanout through it and the takeover presents through the same ramp.
 The game's table also writes entry 32 as 0 (its 256-entry source
-array read one past its end), so under the chosen interpolation the
-top segment falls from 248 towards 0 and inputs of 249–255 darken;
-what silicon does with a guest's bad top entry is not in our
-material (divergence 10).
+array read one past its end).  Interpolated literally, the top segment
+fell from 248 towards 0 and inputs of 249–255 darkened to ~31: every
+saturated channel — the white-yellow core of an explosion, a flame, a
+fullbright particle — came out blue, cyan or green, on both the walker's
+scanout and the takeover's present (the same ramp).  What silicon does
+with a guest's bad top entry is not in our material, but it is not
+that; a descending segment is now held flat at its lower entry
+(divergence 10).
 
 **Not delivered (deliberately):** the optional internal resolution
 scaling (§5.9) — the vertex path is ready for it (positions are
@@ -600,6 +604,11 @@ Two further tools trace a single wrong pixel to its texels:
   exactly the watched pixel.
 - **`regs.tex_save(tmu, path)`**: dumps a TMU's raw texture RAM to a
   host file for offline decoding.
+- **`regs.gamma(channel, input)`**: the video gamma ramp's output for an
+  8-bit input — the interpolated CLUT once the guest has programmed it,
+  identity before.  The blue-explosion diagnosis ended here: the
+  framebuffer word under a "blue" pixel was `FFF5` (white-yellow), and
+  `regs.gamma(0, 255)` was 31.
 
 This pipeline settled the "magenta sky" question in one pass: the
 watched pixel's texels were byte-identical to the 4-4-4-4/5-6-5
