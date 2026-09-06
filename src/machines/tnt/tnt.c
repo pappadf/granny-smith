@@ -682,6 +682,13 @@ static void tnt_teardown(config_t *cfg) {
         // Power-cycle (machine.restart): the soldered part comes back with
         // the machine.  New machine (machine.boot): it gets a virgin store,
         // and the previous machine's goes with the previous machine.
+        //
+        // This must read st->gc.nvram before anything tears Grand Central
+        // down.  GC is itself a pci_device_t (tnt_gc_pci_attach), and
+        // system_destroy now deletes the PCI root before calling us --
+        // harmless today because gc_pci_ops declares no .teardown and the
+        // store lives in st, not in a PCI allocation, but the coupling is
+        // real the moment that op appears.
         if (machine_boot_is_restart()) {
             memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
             tnt_nvram_carry_valid = true;
@@ -694,12 +701,10 @@ static void tnt_teardown(config_t *cfg) {
         tnt_gbus_teardown(cfg);
         tnt_lcd_teardown(cfg);
     }
-    // Deleting the PCI root tears down every seated device, which is what
-    // frees Control's VRAM and display buffers (its ops->teardown).
-    if (cfg->pci) {
-        pci_root_delete(cfg->pci);
-        cfg->pci = NULL;
-    }
+    // The PCI root is NOT deleted here: system_destroy owns both expansion
+    // buses and tears them down before calling this, which is what frees
+    // Control's VRAM and display buffers (its ops->teardown) and what puts
+    // the 53C825As in their graves before the buses they borrow below.
     if (st && st->scsi96) {
         scsi_53c96_delete(st->scsi96);
         st->scsi96 = NULL;
