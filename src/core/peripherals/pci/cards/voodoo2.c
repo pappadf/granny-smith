@@ -409,6 +409,12 @@ typedef struct voodoo2 {
     display_t display;
     uint8_t *scanout;
     bool driving; // last evaluated pass-through state (edge detection)
+    // regs.gpu_present: the takeover presents each vblank (default).
+    // Cleared, it keeps rendering but never touches the canvas — the
+    // diagnostic affordance for headless Chromium, which destroys the
+    // WebGPU device on the first canvas present, so a browser gate can
+    // still read the GPU's frames back through the shadow.
+    bool gpu_no_present;
 
     // The video gamma CLUT: 33 entries of packed 00RRGGBB written
     // through clutData (index in bits 29:24); the hardware linearly
@@ -2794,7 +2800,8 @@ static void v2_on_vbl(pci_device_t *dev, config_t *cfg) {
     if (v->driving) {
         // The takeover presents the displayed buffer itself (§5.8); the
         // conversion below then sees presented_externally and returns.
-        v2_raster_present(v->raster, v2_buffer_addr(v, 0u, 0u, 0u));
+        if (!v->gpu_no_present)
+            v2_raster_present(v->raster, v2_buffer_addr(v, 0u, 0u, 0u));
         v2_display_update(v);
     }
 }
@@ -3054,6 +3061,19 @@ static value_t regs_attr_gpu_engaged(struct object *self, const member_t *m) {
     voodoo2_t *v = node_card(self);
     return val_bool(v && v2_raster_presents(v->raster));
 }
+static value_t regs_attr_gpu_present_get(struct object *self, const member_t *m) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    return val_bool(v && !v->gpu_no_present);
+}
+static value_t regs_attr_gpu_present_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    voodoo2_t *v = node_card(self);
+    if (!v)
+        return val_err("regs.gpu_present: no card");
+    v->gpu_no_present = !in.b;
+    return val_none();
+}
 static value_t regs_attr_gpu_stats(struct object *self, const member_t *m) {
     (void)m;
     voodoo2_t *v = node_card(self);
@@ -3168,6 +3188,10 @@ static const member_t regs_members[] = {
      .doc = "True while the WebGPU takeover draws and presents the card's frames (raster=webgpu, monitor driven)",
      .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = regs_attr_gpu_engaged}},
+    {.kind = M_ATTR,
+     .name = "gpu_present",
+     .doc = "The WebGPU takeover presents each vblank (default true); false keeps it rendering without touching the "
+            "canvas — the headless-browser diagnostic (frames still read back through the shadow)", .attr = {.type = V_BOOL, .get = regs_attr_gpu_present_get, .set = regs_attr_gpu_present_set}},
     {.kind = M_ATTR,
      .name = "gpu_stats",
      .doc = "The WebGPU takeover's counters: engagements, fallbacks by reason, readbacks, texture uploads (\"\" "

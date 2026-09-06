@@ -101,6 +101,9 @@ export function onVoodooGpuAttach(ctrl: number): void {
   const memory =
     (mod as unknown as { wasmMemory?: WebAssembly.Memory }).wasmMemory ?? mod.HEAPU8.buffer;
   if (!(memory instanceof WebAssembly.Memory) && !(memory instanceof SharedArrayBuffer)) return;
+  // Diagnostics: the control block's address and the memory, for a page
+  // script to read HEAD/TAIL/ACK/STATUS when something stalls.
+  (window as unknown as { __v2gpu?: unknown }).__v2gpu = { memory, ctrl, worker };
   worker.postMessage({ type: 'attach', memory, ctrl });
 }
 

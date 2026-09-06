@@ -447,6 +447,13 @@ alpha test, dither — is the fragment shader
 written in `u32` arithmetic beside the C, stage for stage.  Pipeline
 permutations are uniform branches; the pipeline cache holds only the
 blend/depth/write-mask combinations WebGPU bakes in (five for Quake).
+Every draw binds *both* attachments, whatever its write masks: the
+shader writes `frag_depth`, and WebGPU rejects a pipeline that does so
+without a depth attachment — and an invalid pipeline poisons the whole
+command buffer it is encoded into.  (Quake's colour-only clear fill,
+bound without a depth side, took every draw of its submission down
+with it — the blue explosion cores and cyan flames of the first
+interactive runs.)  What lands is decided by the write masks alone.
 
 **Coverage is exact by construction.**  The walker samples pixel
 (x, y) at its integer coordinate; the GPU samples at (x + 0.5,
@@ -460,7 +467,14 @@ walker's value at every pixel centre (`v2gpu_vertex`).  The e2e gate
 counts it: the 136-pixel triangle covers exactly 136 pixels on
 Chromium's software adapter, its complement exactly 120 more with no
 seam, and an interior gouraud pixel comes back with the walker's
-value.
+value.  One case needs help: under the Y flip of fbzMode[17] the
+screen-space top-left rule the GPU applies is the walker's rule
+mirrored, so a horizontal edge lying exactly on a pixel row (every 2D
+quad Quake draws) ties the other way — the status bar sat one row
+high.  The translator settles those ties itself: a walker-"top" edge's
+row is added back as a one-row quad on the same plane, a bottom
+edge's row is cut by the scissor (`v2gpu_triangle`); the gate draws the
+136/120 pair flipped and counts both rows.
 
 **Engagement (§5.1).**  The driver's bring-up renders and reads back
 hundreds of times (dither calibration, TMU census, memory sizing) —
@@ -469,9 +483,14 @@ engages on the edge where the card starts driving the monitor
 (`v2_display()`'s `drives` edge → `v2_raster_engage`) and disengages
 where it stops, on device loss, on a checkpoint restore, or on a
 **readback storm** (more than 16 readback bands of the GUEST's own LFB
-reads in one present interval; re-engagement after 8 quiet vblanks —
-a checkpoint's or a screenshot's readback never counts, or web2's
-15-second background checkpoint would drop the GPU every time).
+reads in one present interval, or in a quarter second of host time
+when no present comes — a halted scheduler, a client that never swaps;
+re-engagement after 8 quiet vblanks — a checkpoint's or a screenshot's
+readback never counts, or web2's 15-second background checkpoint would
+drop the GPU every time).  The worker-wait budgets (attach 3 s, an
+acknowledgement 5 s) are host time too; they once counted wakeups,
+and a worker draining a backlog wakes the translator with every
+acknowledgement.
 The overlay canvas is shown only after the first present of an
 engagement and hidden only after the WebGL canvas underneath has drawn
 a fresh frame, so a stale frame is never what is on top.  Engaging uploads the

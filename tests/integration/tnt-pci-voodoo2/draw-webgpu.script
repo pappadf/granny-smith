@@ -76,6 +76,31 @@ assert px(10, 5) == 0xBEEF "fastfill: the depth buffer cleared to zaColor (a dep
 assert px(9, 5) == 0x0000 "fastfill: depth outside the rectangle untouched"
 vreg_wr(0x114, 0x00000000)
 
+# --- Fills with ONE write mask: colour only, then depth only. ---------------
+# Each is a draw whose pipeline has only one side to write — the case
+# that once built an invalid pipeline (a shader writing frag_depth with
+# no depth attachment), which WebGPU rejects along with every draw in
+# the same submission: Quake's per-frame colour clear, silently dropped.
+vreg_wr(0x118, (100 << 16) | 110)
+vreg_wr(0x11C, (100 << 16) | 110)
+vreg_wr(0x148, 0x000000FF)
+vreg_wr(0x130, 0x00001234)
+vreg_wr(0x110, 0x00000201)
+vreg_wr(0x124, 0x00000000)
+idle3
+assert px(105, 105) == 0x001F "colour-only fill: colour1 landed"
+vreg_wr(0x114, 0x00000080)
+assert px(105, 105) == 0x0000 "colour-only fill: the depth buffer untouched"
+vreg_wr(0x114, 0x00000000)
+vreg_wr(0x110, 0x00000401)
+vreg_wr(0x124, 0x00000000)
+idle3
+assert px(105, 105) == 0x001F "depth-only fill: the colour buffer untouched"
+vreg_wr(0x114, 0x00000080)
+assert px(105, 105) == 0x1234 "depth-only fill: zaColor landed in the depth buffer"
+vreg_wr(0x114, 0x00000000)
+vreg_wr(0x110, 0x00000601)
+
 # --- Gate 2: one gouraud triangle, coverage counted literally. --------------
 vreg_wr(0x110, 0x00000600)
 vreg_wr(0x104, 0x00000000)
@@ -136,6 +161,63 @@ assert px(65, 65) != 0x0000 "the far corner of the square was covered"
 # pixels is the same exact value.
 assert px(65, 65) == 0xF800 "the complement's flat colour lands exactly"
 assert px(58, 58) == 0xF800 "...on the seam too"
+
+# --- Y-flipped (fbzMode[17]): ties on a horizontal edge are the walker's,
+# decided IN WALKER SPACE.  The gate-2 triangle's edge A-C at y=50 is a
+# "top" edge (the interior at larger y): its row — screen row 479-50=429
+# — is drawn.  The complement's edge at y=66 is a bottom edge: screen row
+# 413 stays clear.  The GPU's own top-left rule runs in screen space,
+# where the flip swaps top and bottom; it would get both rows wrong by one
+# (Quake's status bar sat one row high).  Flat colours: red, then blue.
+vreg_wr(0x110, 0x00020600)
+tri1_vertices
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x040, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00000000)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert px(50, 429) == 0xF800 "flipped: the top edge's tie row (y=50, screen row 429) is drawn"
+assert px(65, 429) == 0xF800 "flipped: ...through its last included column"
+assert px(66, 429) == 0x0000 "flipped: ...and the hypotenuse corner stays exclusive"
+assert px(50, 413) == 0x0000 "flipped: vertex B's row (y=66, screen row 413) has no pixel"
+assert px(50, 428) == 0xF800 "flipped: the row above the tie row is interior"
+let N = 0
+for y in 405..436 {
+    for x in 48..70 {
+        if px($x, $y) == 0xF800 {
+            $N = $N + 1
+        }
+    }
+}
+assert $N == 136 "flipped: exactly the walker's 136 pixels, mirrored"
+vreg_wr(0x008, 0x00000320)
+vreg_wr(0x00C, 0x00000420)
+vreg_wr(0x010, 0x00000420)
+vreg_wr(0x014, 0x00000320)
+vreg_wr(0x018, 0x00000420)
+vreg_wr(0x01C, 0x00000420)
+vreg_wr(0x020, 0x00000000)
+vreg_wr(0x028, 0x000FF000)
+vreg_wr(0x080, 0x00000000)
+idle3
+assert px(60, 413) == 0x0000 "flipped: the bottom edge's tie row (y=66, screen row 413) stays clear"
+assert px(60, 414) == 0x001F "flipped: the row below it is the complement's"
+assert px(65, 414) == 0x001F "flipped: ...through its last column"
+assert px(66, 414) == 0x0000 "flipped: ...the vertical right edge exclusive"
+let N = 0
+for y in 405..436 {
+    for x in 48..70 {
+        if px($x, $y) == 0x001F {
+            $N = $N + 1
+        }
+    }
+}
+assert $N == 120 "flipped: the complement's 120 pixels, no seam, no overlap"
+assert px(58, 421) == 0x001F "flipped: the seam pixel (58,58) is the complement's, as unflipped — left/right ties do not mirror"
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x110, 0x00000600)
 
 # --- A depth-rejected triangle draws NOTHING. -------------------------------
 # func = never: the GPU's depth test rejects every pixel; the framebuffer

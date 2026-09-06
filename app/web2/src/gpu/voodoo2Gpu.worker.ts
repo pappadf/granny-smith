@@ -91,7 +91,10 @@ interface DetachMsg {
   type: 'detach';
   ctrl: number;
 }
-type InMsg = InitMsg | AttachMsg | DetachMsg;
+interface DebugMsg {
+  type: 'debug';
+}
+type InMsg = InitMsg | AttachMsg | DetachMsg | DebugMsg;
 
 // --- device state -------------------------------------------------------
 
@@ -130,6 +133,8 @@ let consumed = 0; // bytes consumed (mod 2^32)
 let attached = false;
 let lost = false;
 let loopRunning = false;
+let readbackPending = false; // a readback's mapAsync is in flight
+let lastKind = -1; // the last record kind consumed
 
 // --- GPU-side resources --------------------------------------------------
 
@@ -744,7 +749,9 @@ async function onReadback(seq: number, id: number, y0: number, y1: number): Prom
       );
     }
     d.queue.submit([enc.finish()]);
+    readbackPending = true;
     await staging.mapAsync(GPUMapMode.READ);
+    readbackPending = false;
     const src = new Uint8Array(staging.getMappedRange());
     const out = new Uint16Array(u8!.buffer, rbBase, t.w * rows);
     if (t.color) {
@@ -825,6 +832,7 @@ async function drain(head: number): Promise<boolean> {
       return false;
     }
     const p = (at >> 2) + 2; // payload word index
+    lastKind = kind;
     switch (kind) {
       case R_PAD:
         break;
@@ -964,5 +972,23 @@ self.onmessage = (ev: MessageEvent<InMsg>) => {
     attach(msg.memory, msg.ctrl);
   } else if (msg.type === 'detach') {
     if (ctrl && ctrlBase === msg.ctrl) detach();
+  } else if (msg.type === 'debug') {
+    // Diagnostics: where the worker is (answered even while a readback
+    // awaits, since the message handler is its own task).
+    postMessage({
+      type: 'debug',
+      attached,
+      lost,
+      loopRunning,
+      consumed,
+      head: ctrl ? Atomics.load(ctrl, C_HEAD) >>> 0 : -1,
+      ack: ctrl ? Atomics.load(ctrl, C_ACK) : -1,
+      status: ctrl ? Atomics.load(ctrl, C_STATUS) : -1,
+      readbackPending,
+      targets: targets.size,
+      textures: textures.size,
+      pipelines: pipelines.size,
+      lastKind,
+    });
   }
 };

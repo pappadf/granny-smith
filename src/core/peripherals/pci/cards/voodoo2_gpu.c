@@ -44,19 +44,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 LOG_USE_CATEGORY_NAME("voodoo2");
 
-#define V2GPU_MAX_TARGETS   8
-#define V2GPU_MAX_TEX       1024
-#define V2GPU_TEX_BYTES_CAP (64u << 20) // expanded texels held on the GPU
-#define V2GPU_PAGE_SHIFT    12 // texture-RAM dirty tracking granularity (4 KB)
-#define V2GPU_MAX_PAGES     (0x400000u >> V2GPU_PAGE_SHIFT) // 4 MB per TMU at most
-#define V2GPU_STORM_BANDS   16 // readback bands per present interval that disengage
-#define V2GPU_QUIET_FRAMES  8 // presents without a storm before re-engaging
-#define V2GPU_ATTACH_MS     3000
-#define V2GPU_ACK_MS        5000
-#define V2GPU_MAX_ROWS      1024
+#define V2GPU_MAX_TARGETS     8
+#define V2GPU_MAX_TEX         1024
+#define V2GPU_TEX_BYTES_CAP   (64u << 20) // expanded texels held on the GPU
+#define V2GPU_PAGE_SHIFT      12 // texture-RAM dirty tracking granularity (4 KB)
+#define V2GPU_MAX_PAGES       (0x400000u >> V2GPU_PAGE_SHIFT) // 4 MB per TMU at most
+#define V2GPU_STORM_BANDS     16 // readback bands per present interval that disengage
+#define V2GPU_STORM_WINDOW_MS 250.0 // ...or per this much host time when no present comes
+#define V2GPU_QUIET_FRAMES    8 // presents without a storm before re-engaging
+#define V2GPU_ATTACH_MS       3000
+#ifndef V2GPU_ACK_MS // overridable for a diagnostic build on a software adapter
+#define V2GPU_ACK_MS 5000
+#endif
+#define V2GPU_MAX_ROWS 1024
 
 // The fallback reasons, counted separately so a client that trips one
 // constantly is visible in the stats line.
@@ -131,6 +135,7 @@ struct v2_gpu {
     uint8_t gamma[3 * 256];
     // Readback storm detection.
     uint32_t bands_this_frame, quiet_frames;
+    double window_t0; // host time the storm window opened (a present, or a timeout)
     // Statistics.
     uint64_t n_engage, n_disengage, n_storm, n_lost;
     uint64_t n_tris, n_draws, n_fills, n_lfb_runs, n_lfb_pipe, n_presents;
@@ -150,6 +155,16 @@ static inline uint32_t v2gpu_load(v2_gpu_t *g, int word) {
 
 static inline void v2gpu_store(v2_gpu_t *g, int word, uint32_t v) {
     __atomic_store_n(&g->ctrl[word], v, __ATOMIC_SEQ_CST);
+}
+
+// Real elapsed milliseconds for the wait loops below: they bound TIME,
+// not wakeups — a worker draining a backlog acks continuously, and every
+// notify ends a 20 ms wait early (counted as 20 ms, a 5 s budget once
+// expired in well under a second on a busy software adapter).
+static double v2gpu_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
 }
 
 // The worker reported the device gone (or stopped answering): drop to
@@ -195,7 +210,7 @@ static void v2gpu_publish(v2_gpu_t *g) {
 // what was published; an open record between head and wr is never
 // larger than the ring).
 static bool v2gpu_wait_room(v2_gpu_t *g, uint32_t need) {
-    uint32_t waited = 0;
+    double t0 = v2gpu_now_ms();
     for (;;) {
         uint32_t tail = v2gpu_load(g, V2GPU_C_TAIL);
         uint32_t used = g->wr - tail;
@@ -205,8 +220,7 @@ static bool v2gpu_wait_room(v2_gpu_t *g, uint32_t need) {
             return false;
         v2gpu_publish(g); // the worker can only free what it can see
         gs_v2gpu_wait(&g->ctrl[V2GPU_C_TAIL], tail, 20);
-        waited += 20;
-        if (waited > V2GPU_ACK_MS) {
+        if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped consuming the op ring");
             return false;
         }
@@ -250,7 +264,7 @@ static bool v2gpu_emit(v2_gpu_t *g, uint32_t kind, const uint32_t *words, uint32
 // Publish and wait until the worker has acknowledged `seq`.
 static bool v2gpu_wait_ack(v2_gpu_t *g, uint32_t seq) {
     v2gpu_publish(g);
-    uint32_t waited = 0;
+    double t0 = v2gpu_now_ms();
     for (;;) {
         uint32_t ack = v2gpu_load(g, V2GPU_C_ACK);
         if ((int32_t)(ack - seq) >= 0)
@@ -258,8 +272,7 @@ static bool v2gpu_wait_ack(v2_gpu_t *g, uint32_t seq) {
         if (v2gpu_worker_lost(g))
             return false;
         gs_v2gpu_wait(&g->ctrl[V2GPU_C_ACK], ack, 20);
-        waited += 20;
-        if (waited > V2GPU_ACK_MS) {
+        if (v2gpu_now_ms() - t0 > (double)V2GPU_ACK_MS) {
             v2gpu_mark_lost(g, "the GPU worker stopped answering");
             return false;
         }
@@ -1009,14 +1022,23 @@ static bool v2gpu_fill(v2_gpu_t *g, const v2_draw_state_t *st, v2gpu_target_t *c
                        bool write_color, bool write_depth) {
     if (x0 >= x1 || y0 >= y1)
         return true;
-    v2gpu_target_t *dims = ct ? ct : dt;
-    if (!dims)
+    // Every draw binds BOTH attachments: the shader writes frag_depth, and
+    // WebGPU refuses a pipeline without a depth attachment for it (an
+    // invalid pipeline poisons the whole command buffer — Quake's per-frame
+    // colour clear, a fill with no depth side, once dropped every draw of
+    // its submission).  What lands is decided by the write masks.
+    if (!ct)
+        ct = v2gpu_target_for_buffer(g, st, ((st->fbz >> 14) & 3u) > 1u ? 0u : (st->fbz >> 14) & 3u);
+    if (!dt)
+        dt = v2gpu_target_for_buffer(g, st, 3);
+    if (!ct || !dt)
         return true;
+    v2gpu_target_t *dims = ct;
     v2gpu_draw_hdr_t hdr;
     memset(&hdr, 0, sizeof(hdr));
-    hdr.color_id = ct ? ct->id : 0;
-    hdr.depth_id = dt ? dt->id : 0;
-    hdr.pipe_key = v2gpu_pipe_key(st, true, write_color && ct, write_depth && dt);
+    hdr.color_id = ct->id;
+    hdr.depth_id = dt->id;
+    hdr.pipe_key = v2gpu_pipe_key(st, true, write_color, write_depth);
     hdr.sx0 = 0;
     hdr.sy0 = 0;
     hdr.sx1 = (int32_t)dims->w;
@@ -1045,9 +1067,9 @@ static bool v2gpu_fill(v2_gpu_t *g, const v2_draw_state_t *st, v2gpu_target_t *c
     }
     if (ry0 < 0)
         ry0 = 0;
-    if (write_color && ct)
+    if (write_color)
         v2gpu_rows_set(ct, (uint32_t)ry0, (uint32_t)ry1, false);
-    if (write_depth && dt)
+    if (write_depth)
         v2gpu_rows_set(dt, (uint32_t)ry0, (uint32_t)ry1, false);
     g->n_fills++;
     return true;
@@ -1176,18 +1198,62 @@ static void v2gpu_triangle(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *
     hdr.tex_id[1] = tex_id[1];
     hdr.pipe_key = v2gpu_pipe_key(st, false, false, false);
     v2gpu_scissor(st, ct, st->clip_x0, st->clip_x1, st->clip_y0, st->clip_y1, flip, &hdr);
+    // A y-flipped triangle with a horizontal edge ON a pixel row ties
+    // there, and the walker settles the tie in WALKER space: a "top" edge
+    // (o*dx > 0, the interior at larger y) includes its row, a bottom edge
+    // excludes it.  The GPU's top-left rule runs in screen space, where
+    // the flip has swapped top and bottom, so it would do the opposite —
+    // Quake's status bar, a flipped quad on integer rows, landed one row
+    // high.  A top edge's row is added back as a one-row quad on the same
+    // plane (its ends carry the corners' left/right ties); a bottom edge's
+    // row is cut with the scissor — the triangle has nothing else on it.
+    // Unflipped, the two rules coincide (§5.3); slanted edges never differ.
+    int32_t tie_y = INT32_MIN, tie_xa = 0, tie_xb = 0;
+    bool tie_top = false;
+    if (flip) {
+        const int32_t ex[3][4] = {
+            {T->ax, T->ay, T->bx, T->by},
+            {T->bx, T->by, T->cx, T->cy},
+            {T->cx, T->cy, T->ax, T->ay}
+        };
+        int64_t o = T->area_sign ? -1 : 1;
+        for (int e = 0; e < 3; e++) {
+            if (ex[e][1] != ex[e][3] || (ex[e][1] & 15))
+                continue;
+            tie_y = ex[e][1];
+            tie_top = o * (int64_t)(ex[e][2] - ex[e][0]) > 0;
+            tie_xa = ex[e][0] < ex[e][2] ? ex[e][0] : ex[e][2];
+            tie_xb = ex[e][0] < ex[e][2] ? ex[e][2] : ex[e][0];
+        }
+        if (tie_y != INT32_MIN && !tie_top) {
+            int32_t r = (int32_t)st->screen_h - 1 - (tie_y >> 4);
+            if (hdr.sy0 <= r)
+                hdr.sy0 = r + 1;
+        }
+    }
+    bool tie_row = tie_y != INT32_MIN && tie_top;
     if (hdr.sx0 >= hdr.sx1 || hdr.sy0 >= hdr.sy1)
         return;
     uint32_t uniform[V2GPU_U_WORDS];
     v2gpu_build_uniform(uniform, st, flags, 0, (float)ct->w, (float)ct->h, base_level, bound);
     uniform[V2GPU_U_STIPPLE] = tgt->stipple;
-    if (!v2gpu_draw_matches(g, &hdr, uniform, 3)) {
+    if (!v2gpu_draw_matches(g, &hdr, uniform, tie_row ? 9u : 3u)) {
         if (!v2gpu_open_draw(g, &hdr, uniform))
             return;
     }
     v2gpu_vertex(v2gpu_vertex_ptr(g), T, T->ax, T->ay);
     v2gpu_vertex(v2gpu_vertex_ptr(g), T, T->bx, T->by);
     v2gpu_vertex(v2gpu_vertex_ptr(g), T, T->cx, T->cy);
+    if (tie_row) {
+        // Half a pixel either side of the edge: the quad's own horizontal
+        // edges fall between sample rows, so only the tie row is covered.
+        v2gpu_vertex(v2gpu_vertex_ptr(g), T, tie_xa, tie_y - 8);
+        v2gpu_vertex(v2gpu_vertex_ptr(g), T, tie_xb, tie_y - 8);
+        v2gpu_vertex(v2gpu_vertex_ptr(g), T, tie_xa, tie_y + 8);
+        v2gpu_vertex(v2gpu_vertex_ptr(g), T, tie_xb, tie_y - 8);
+        v2gpu_vertex(v2gpu_vertex_ptr(g), T, tie_xb, tie_y + 8);
+        v2gpu_vertex(v2gpu_vertex_ptr(g), T, tie_xa, tie_y + 8);
+    }
     g->n_tris++;
     // The rows the triangle can touch belong to the GPU now.
     int32_t y0 = by0 < st->clip_y0 ? st->clip_y0 : by0, y1 = by1 > st->clip_y1 ? st->clip_y1 : by1;
@@ -1400,6 +1466,7 @@ static void v2gpu_lfb_pixel(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t 
 static void v2gpu_present(v2_gpu_t *g, const v2_draw_state_t *st, uint32_t fb_base) {
     g->frame++;
     g->bands_this_frame = 0;
+    g->window_t0 = v2gpu_now_ms();
     if (!atomic_load(&g->engaged)) {
         if (g->want && !g->lost && ++g->quiet_frames >= V2GPU_QUIET_FRAMES) {
             g->quiet_frames = 0;
@@ -1447,6 +1514,15 @@ static void v2gpu_readback_range(v2_gpu_t *g, uint32_t addr, uint32_t len, bool 
     if (!atomic_load(&g->engaged))
         return;
     v2gpu_close_all(g);
+    // The storm window is a present interval — or, when no present comes
+    // (a halted scheduler, a client that never swaps), a bounded slice of
+    // host time: a client reading the frame wholesale reads it in a
+    // burst, never spread over a quarter second.
+    double now = v2gpu_now_ms();
+    if (now - g->window_t0 > V2GPU_STORM_WINDOW_MS) {
+        g->bands_this_frame = 0;
+        g->window_t0 = now;
+    }
     uint32_t bands_before = g->bands_this_frame;
     uint32_t end = addr + len;
     for (int i = 0; i < V2GPU_MAX_TARGETS; i++) {
@@ -1620,9 +1696,9 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
         v2_gpu_destroy(g);
         return NULL;
     }
-    uint32_t waited = 0;
+    double t0 = v2gpu_now_ms();
     while (v2gpu_load(g, V2GPU_C_STATUS) != V2GPU_STATUS_ATTACHED) {
-        if (waited >= V2GPU_ATTACH_MS) {
+        if (v2gpu_now_ms() - t0 >= (double)V2GPU_ATTACH_MS) {
             LOG(0, "raster=webgpu: the GPU worker did not attach within %u ms — using the thread backend",
                 V2GPU_ATTACH_MS);
             gs_v2gpu_detach((void *)g->ctrl);
@@ -1630,7 +1706,6 @@ v2_gpu_t *v2_gpu_create(v2_target_t *tgt) {
             return NULL;
         }
         gs_v2gpu_wait(&g->ctrl[V2GPU_C_STATUS], V2GPU_STATUS_DETACHED, 20);
-        waited += 20;
     }
     g->attached = true;
     LOG(1, "raster=webgpu: GPU worker attached (op ring %u KB)", g->ring_size >> 10);
