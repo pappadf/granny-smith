@@ -141,7 +141,7 @@ def topology(model) {
     # --- The card registry ---------------------------------------------------
     # Adding a card driver is one extern plus one entry; the ANS work added
     # three, and none of them may be offered on a socket (all BUILTIN).
-    assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2]" "card registry"
+    assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu]" "card registry"
     assert machine.pci.slot[1].card_id == "" "${$model} an empty socket starts with no staged pick"
 
     # --- The machine survives being written down -----------------------------

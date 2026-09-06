@@ -13,11 +13,11 @@ uses under [`nubus/cards/`](../../nubus/cards/); retro-fitting a
 
 | | |
 |---|---|
-| **Card kind** | `voodoo2` |
+| **Card kind** | `voodoo2` (exact, rasterised in software on a worker thread) and `voodoo2_webgpu` (the same card rasterised by the host GPU; offered only where a WebGPU device exists) |
 | **PCI ID** | `121A:0002`, class `$038000`, revision `$02` (pinned; real revision 4 in `initEnable[15:12]` — Glide requires config==2 AND initEnable rev ≥4, else the board is dropped from `grSstQueryHardware` after a fully successful bring-up) |
 | **ROM** | **none** — no expansion ROM, no FCode; OF builds a bare `pci121a,2` node and the guest's user-space Glide library claims the card by PCI ID |
 | **BAR** | one: BAR0, 16 MB prefetchable memory (registers / LFB / texture faces) |
-| **Memory** | option `memory=8m` (2 MB/TMU) or `12m` (4 MB/TMU); 4 MB framebuffer either way |
+| **Memory** | the 12 MB SKU (4 MB/TMU); `pci_option="memory=8m"` gives the 8 MB one (unadvertised — nothing needs less; the tests and goldens use it); 4 MB framebuffer either way |
 | **Display** | drives the monitor only while pass-through is taken (`fbiInit0[0]`); never the machine's display device (`card_class = "3d"`) |
 
 ## Status
@@ -125,16 +125,17 @@ document grows as each group lands.
   golden unchanged), and a worker-thread backend (`raster=thread`,
   the default on every build, byte-identical) lands behind it — see
   "The raster seam" below.
-- **The WebGPU takeover (branch `voodoo2-webgpu-takeover`,
-  `raster=webgpu`):** an ALTERNATIVE rasteriser for the browser — the
-  host's GPU draws the guest's triangles from the same command stream,
-  the software walker keeps the driver's bring-up and every fallback,
-  and the frame is presented on an overlay canvas.  The BROWSER
-  build's default (`-DGS_V2_RASTER_DEFAULT='"webgpu"'` in the wasm
-  Makefile), falling back to the thread backend at creation when the
-  browser has no WebGPU device; native builds keep the thread default,
-  and the New Machine dialog's "Rasteriser" control picks either per
-  boot.  See "The WebGPU takeover" below, and divergences 12–16.
+- **The WebGPU takeover (branch `voodoo2-webgpu-takeover`):** an
+  ALTERNATIVE rasteriser for the browser — the host's GPU draws the
+  guest's triangles from the same command stream, the software walker
+  keeps the driver's bring-up and every fallback, and the frame is
+  presented on an overlay canvas.  Surfaced as a second CARD KIND,
+  `voodoo2_webgpu` ("3dfx Voodoo2 (WebGPU)"), beside the exact
+  `voodoo2`: the user picks a card, never a rasteriser, and the WebGPU
+  one is listed only where a WebGPU device exists.  Neither kind
+  advertises options; `memory=8m|12m` and `raster=thread|sw|null|
+  webgpu` stay accepted through `pci_option` for the tests and the
+  terminal.  See "The WebGPU takeover" below, and divergences 12–16.
 
 ## Provenance
 
@@ -400,18 +401,25 @@ compared two different programs; the honest figure on this host is
 whatever the ladder removed (at least the 6 minutes it took off) plus
 the unknown remainder.
 
-## The WebGPU takeover (`raster=webgpu`)
+## The WebGPU takeover (`voodoo2_webgpu`)
 
 `proposal-voodoo2-webgpu-takeover` (branch `voodoo2-webgpu-takeover`):
 in the browser, the host's GPU draws the guest's triangles.  An
-**alternative** to the software rasteriser, chosen per boot — the New
-Machine dialog's "Rasteriser" control on the card, or
-`pci_option="raster=webgpu"` — never a replacement of the walker: the
-thread backend (exact) stays the default on native builds and the
-fallback everywhere, and every native gate and golden is untouched.
-The browser build defaults to `webgpu` (the wasm Makefile's
-`GS_V2_RASTER_DEFAULT`), which resolves to `thread` at creation when
-the browser has no WebGPU device.  What the user gets is a *rendering* of the scene
+**alternative** to the software rasteriser, chosen as a CARD: the
+registry holds two kinds sharing one implementation, `voodoo2` (the
+exact card, its rasteriser the worker thread) and `voodoo2_webgpu`
+("3dfx Voodoo2 (WebGPU)", the same PCI identity with the host GPU as
+its rasteriser).  The guest cannot tell them apart — same ID, revision,
+register file and memories — so the driver's detection, the goldens and
+checkpoints carry across; a checkpoint records the card id, and the
+rasteriser was never part of it.  The WebGPU kind is registered on
+every build but OFFERED (`pci_card_kind_t.offered`) only where the page
+found a WebGPU device, so the New Machine dialog never lists a choice
+it cannot honour; named anyway — a checkpoint restored without WebGPU,
+a native row — it comes up as the exact card and `regs.raster` says
+so.  `pci_option="raster=..."` still overrides either kind per boot
+(the tests use it); nothing in the walker changes, and every native
+gate and golden is untouched.  What the user gets is a *rendering* of the scene
 the guest described, held to a tolerance; the model's frame is what
 native produces (§6 of the proposal, divergences 12–16 above).
 

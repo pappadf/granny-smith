@@ -4,7 +4,7 @@
 // web2 e2e: the Voodoo2's WebGPU TAKEOVER (proposal-voodoo2-webgpu-
 // takeover §7, gates 2 and 3).
 //
-// raster=webgpu is the browser's alternative to the software walker: the
+// "voodoo2_webgpu" is the browser's alternative to the software walker: the
 // emulator's raster pthread translates the card's command stream into
 // records a GPU worker turns into WebGPU render passes, and the GPU's
 // own rasteriser draws the guest's triangles onto an overlay canvas.
@@ -51,7 +51,7 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
   page,
 }) => {
   test.setTimeout(12 * 60 * 1000);
-  await bootWithCard(page, "webgpu");
+  await bootWithCard(page, "voodoo2_webgpu");
 
   // The backend the browser build installed: "webgpu" means the page
   // had a device and the GPU worker attached within the create-time

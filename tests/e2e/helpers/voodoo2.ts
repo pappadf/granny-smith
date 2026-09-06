@@ -9,37 +9,41 @@
 // the takeover's drawing section) the takeover spec stages into OPFS.
 // Two spec files because Playwright takes launchOptions per file, and
 // the two need different browsers (with and without WebGPU).
+//
+// The takeover is a CARD KIND, not an option: "voodoo2_webgpu" is the
+// same card with the host GPU as its rasteriser, offered by the New
+// Machine dialog only where a WebGPU device exists.
 
-import { expect, type Page } from '@playwright/test';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { gotoWeb2 } from './web2-fs';
+import { expect, type Page } from "@playwright/test";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { gotoWeb2 } from "./web2-fs";
 
-const DATA = path.resolve(__dirname, '../../data');
-const TNT_ROM = path.join(DATA, 'roms', 'pm7500-pm8500-pm9500-96cd923d.rom');
-const STORED_ROM = '/opfs/images/rom/96CD923D';
-const ROW = path.resolve(__dirname, '../../integration/tnt-pci-voodoo2');
+const DATA = path.resolve(__dirname, "../../data");
+const TNT_ROM = path.join(DATA, "roms", "pm7500-pm8500-pm9500-96cd923d.rom");
+const STORED_ROM = "/opfs/images/rom/96CD923D";
+const ROW = path.resolve(__dirname, "../../integration/tnt-pci-voodoo2");
 
 // The base launch args of playwright.web2.config.ts (software WebGL for
 // the app's probe) plus Chromium's software WebGPU adapter.  Flags land
 // per file, so the rest of the suite runs untouched.
 export const BASE_ARGS = [
-  '--use-gl=angle',
-  '--use-angle=swiftshader-webgl',
-  '--ignore-gpu-blocklist',
-  '--disable-dev-shm-usage',
+  "--use-gl=angle",
+  "--use-angle=swiftshader-webgl",
+  "--ignore-gpu-blocklist",
+  "--disable-dev-shm-usage",
 ];
 export const WEBGPU_ARGS = [
-  '--enable-unsafe-webgpu',
-  '--enable-features=Vulkan,WebGPU',
-  '--use-webgpu-adapter=swiftshader',
+  "--enable-unsafe-webgpu",
+  "--enable-features=Vulkan,WebGPU",
+  "--use-webgpu-adapter=swiftshader",
 ];
 
 export async function terminalRun(page: Page, line: string): Promise<void> {
-  const term = page.locator('.xterm');
+  const term = page.locator(".xterm");
   await term.click();
   await page.keyboard.type(line);
-  await page.keyboard.press('Enter');
+  await page.keyboard.press("Enter");
   await page.waitForTimeout(250);
 }
 
@@ -50,48 +54,56 @@ let probeSeq = 0;
 export async function probe(page: Page, expr: string): Promise<string> {
   for (let attempt = 0; attempt < 30; attempt++) {
     const key = `v2g${++probeSeq}`;
-    await terminalRun(page, `echo "${key}=[${'$'}{${expr}}]"`);
+    await terminalRun(page, `echo "${key}=[${"$"}{${expr}}]"`);
     await page.waitForTimeout(400);
-    const text = await page.locator('.xterm-rows').innerText();
+    const text = await page.locator(".xterm-rows").innerText();
     const m = text.match(new RegExp(`${key}=\\[([A-Za-z0-9_.-]+)\\]`));
     if (m) return m[1];
   }
   throw new Error(`terminal probe never answered: ${expr}`);
 }
 
-// Boot the 7500 with the card seated under the requested backend and
-// halt the guest, leaving the Terminal live.  The aperture is driven
-// from there.
-export async function bootWithCard(page: Page, rasterOption: string): Promise<void> {
+// Boot the 7500 with the requested card kind seated ("voodoo2" draws
+// exactly, "voodoo2_webgpu" on the host GPU) and halt the guest, leaving
+// the Terminal live.  The aperture is driven from there.
+export async function bootWithCard(page: Page, cardId: string): Promise<void> {
   await gotoWeb2(page);
   const [chooser] = await Promise.all([
-    page.waitForEvent('filechooser'),
-    page.getByRole('button', { name: 'Upload ROM...' }).click(),
+    page.waitForEvent("filechooser"),
+    page.getByRole("button", { name: "Upload ROM..." }).click(),
   ]);
   await chooser.setFiles(TNT_ROM);
   await expect(
-    page.locator('.toast .msg').filter({ hasText: 'pm7500-pm8500-pm9500-96cd923d.rom uploaded' }),
+    page
+      .locator(".toast .msg")
+      .filter({ hasText: "pm7500-pm8500-pm9500-96cd923d.rom uploaded" }),
   ).toBeVisible({ timeout: 60_000 });
-  await page.getByRole('button', { name: 'New Machine...' }).click();
-  const model = page.locator('#cfg-model');
-  await expect(model.locator('option[value="pm7500"]')).toHaveCount(1, { timeout: 30_000 });
-  await model.selectOption('pm7500');
-  await page.getByRole('button', { name: 'Start Machine' }).click();
-  await expect(page.locator('.toast .msg').filter({ hasText: 'Machine started' })).toBeVisible({
+  await page.getByRole("button", { name: "New Machine..." }).click();
+  const model = page.locator("#cfg-model");
+  await expect(model.locator('option[value="pm7500"]')).toHaveCount(1, {
+    timeout: 30_000,
+  });
+  await model.selectOption("pm7500");
+  await page.getByRole("button", { name: "Start Machine" }).click();
+  await expect(
+    page.locator(".toast .msg").filter({ hasText: "Machine started" }),
+  ).toBeVisible({
     timeout: 60_000,
   });
   await page.locator('button.ptab[data-tab="terminal"]').click();
-  await expect(page.locator('.xterm')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".xterm")).toBeVisible({ timeout: 15_000 });
   await terminalRun(
     page,
-    `machine.boot model="pm7500" ram=32768 rom="${STORED_ROM}" pci_card="voodoo2" pci_option="raster=${rasterOption}"`,
+    `machine.boot model="pm7500" ram=32768 rom="${STORED_ROM}" pci_card="${cardId}"`,
   );
   await page.waitForTimeout(1500);
   // Halt whatever the boot left running: the guest's own Open Firmware
   // would otherwise enumerate the bus underneath the config pokes.
-  await terminalRun(page, 'scheduler.stop');
-  expect(await probe(page, 'scheduler.running')).toBe('false');
-  expect(await probe(page, 'machine.pci.slot[1].card.regs.fb_size')).toBe('4194304');
+  await terminalRun(page, "scheduler.stop");
+  expect(await probe(page, "scheduler.running")).toBe("false");
+  expect(await probe(page, "machine.pci.slot[1].card.regs.fb_size")).toBe(
+    "4194304",
+  );
 }
 
 // The composed script: the row's own helpers, Memory Space and the BAR,
@@ -143,9 +155,13 @@ def idle3() {
   // counter check runs the scheduler, which this spec keeps halted (the
   // guest's firmware would otherwise enumerate the bus underneath us).
   const glideInit = fs
-    .readFileSync(path.join(ROW, 'glide-init.script'), 'utf8')
-    .replace(/# The beam advances:[\s\S]*?assert \$L0 != \$L1 "the beam counters must advance"\n/, '');
-  if (glideInit.includes('the beam counters must advance')) throw new Error('beam step not stripped');
+    .readFileSync(path.join(ROW, "glide-init.script"), "utf8")
+    .replace(
+      /# The beam advances:[\s\S]*?assert \$L0 != \$L1 "the beam counters must advance"\n/,
+      "",
+    );
+  if (glideInit.includes("the beam counters must advance"))
+    throw new Error("beam step not stripped");
   const takeMonitor = `
 # --- Take the monitor: the edge that engages GPU mode (§5.1). --------------
 vreg_wr(0x220, (704 << 16) | 96)
@@ -160,6 +176,6 @@ assert machine.pci.slot[1].card.video.drives_monitor "the card drives the monito
 let W = machine.screen.width
 assert $W == 640 "the screen is the card's"
 `;
-  const drawGpu = fs.readFileSync(path.join(ROW, 'draw-webgpu.script'), 'utf8');
-  return [helpers, glideInit, takeMonitor, drawGpu].join('\n');
+  const drawGpu = fs.readFileSync(path.join(ROW, "draw-webgpu.script"), "utf8");
+  return [helpers, glideInit, takeMonitor, drawGpu].join("\n");
 }

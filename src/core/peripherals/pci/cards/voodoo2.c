@@ -454,8 +454,12 @@ static inline uint64_t v2_tsc(void) {
 #endif
 }
 
-// Staged options (consumed by the factory, the mach64 idiom).
-static uint32_t s_staged_tex_size = V2_TMU_2MB;
+// Staged options (consumed by the factory, the mach64 idiom).  The board
+// is the 12 MB SKU (4 MB per TMU) unless pci_option="memory=8m" asks for
+// the 8 MB one: nothing needs less texture memory, so the choice is not
+// advertised — it exists for the tests that pin the sizing probe's
+// aliasing and for the goldens captured on the 8 MB board.
+static uint32_t s_staged_tex_size = V2_TMU_4MB;
 // The default backend is the worker thread on every build — its output
 // is byte-identical to the normative walker's (the gates assert it), so
 // the goldens are indifferent and the CPU emulation gets the overlap.
@@ -472,7 +476,8 @@ static uint32_t s_staged_tex_size = V2_TMU_2MB;
 #endif
 #endif
 #define V2_DEFAULT_RASTER GS_V2_RASTER_DEFAULT
-static char s_staged_raster[16] = V2_DEFAULT_RASTER; // pci_option="raster=sw|null|thread"
+static char s_staged_raster[16] = V2_DEFAULT_RASTER; // pci_option="raster=sw|null|thread|webgpu"
+static bool s_staged_raster_explicit; // ...named by the boot document (the WebGPU variant defers to it)
 
 static uint32_t v2_screen_height(const voodoo2_t *v);
 static void v2_clip_rect(const voodoo2_t *v, int32_t *x0, int32_t *x1, int32_t *y0, int32_t *y1);
@@ -3359,27 +3364,14 @@ static void v2_attach_objects(pci_device_t *dev, struct object *card_node) {
 // Options, factory, and the card kind
 // ============================================================
 
-static const char *const v2_mem_values[] = {"8m", "12m", NULL};
-static const char *const v2_mem_labels[] = {"8 MB (2 MB per TMU)", "12 MB (4 MB per TMU)", NULL};
-// The rasteriser is a user choice in the browser (proposal-voodoo2-
-// webgpu-takeover): the exact software walker on its worker thread, or
-// the WebGPU takeover that renders the guest's triangles on the host's
-// GPU (approximate — a rendering of the scene, not the model's frame).
-// "null" stays unadvertised: a test affordance.  The default is the
-// thread backend everywhere; the takeover is an alternative, never a
-// replacement.
-static const char *const v2_raster_values[] = {"thread", "webgpu", "sw", NULL};
-static const char *const v2_raster_labels[] = {"Software (exact, worker thread)", "WebGPU (host GPU, approximate)",
-                                               "Software (exact, synchronous)", NULL};
-static const pci_card_option_t v2_options[] = {
-    {.key = "memory", .label = "Board Memory", .values = v2_mem_values, .labels = v2_mem_labels, .default_value = "8m"},
-    {.key = "raster",
-     .label = "Rasteriser",
-     .values = v2_raster_values,
-     .labels = v2_raster_labels,
-     .default_value = V2_DEFAULT_RASTER},
-    {.key = NULL},
-};
+// No ADVERTISED options: the two the card accepts — the board memory
+// and the rasteriser — are not choices a user should have to make.
+// Nothing needs the 8 MB board, and the rasteriser is the difference
+// between the two REGISTERED KINDS below (proposal-voodoo2-webgpu-
+// takeover, simplified configuration): "voodoo2" draws exactly on its
+// worker thread, "voodoo2_webgpu" on the host GPU.  Both keys stay
+// accepted through pci_option for the tests and the terminal:
+// memory=8m|12m, raster=thread|sw|null|webgpu.
 
 static bool v2_stage_option(const char *key, const char *value) {
     if (!key || !value)
@@ -3397,10 +3389,8 @@ static bool v2_stage_option(const char *key, const char *value) {
         return true; // the key IS ours; the value was the problem
     }
     if (strcmp(key, "raster") == 0) {
-        // Advertised as thread/webgpu/sw (v2_options); "null" — the test
-        // affordance that pins the seam's analytic-timing invariant —
-        // is accepted but not offered (voodoo2_raster.h).
         snprintf(s_staged_raster, sizeof(s_staged_raster), "%s", value);
+        s_staged_raster_explicit = true;
         return true;
     }
     return false;
@@ -3423,7 +3413,7 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
     v->cfg = cfg;
 
     v->tex_size = s_staged_tex_size;
-    s_staged_tex_size = V2_TMU_2MB;
+    s_staged_tex_size = V2_TMU_4MB;
     v->fb_ram = (uint8_t *)calloc(1, V2_FB_SIZE);
     // Big-endian scanout raster for the display layer, sized for the
     // widest mode the part reaches (1024-pixel logical line).
@@ -3431,7 +3421,7 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
     v->tex_ram[0] = (uint8_t *)calloc(1, v->tex_size);
     v->tex_ram[1] = (uint8_t *)calloc(1, v->tex_size);
     // The raster target points at the memories; the backend is chosen
-    // by the staged option (the walker unless told otherwise).
+    // by the staged option (the kind's default unless told otherwise).
     v->tgt.fb = v->fb_ram;
     v->tgt.tex[0] = v->tex_ram[0];
     v->tgt.tex[1] = v->tex_ram[1];
@@ -3443,6 +3433,7 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
         s_tsc_card = s_tsc_fifo = s_tsc_setup = s_tsc_lfb = s_tsc_tex = 0;
     }
     snprintf(s_staged_raster, sizeof(s_staged_raster), "%s", V2_DEFAULT_RASTER);
+    s_staged_raster_explicit = false;
     if (!v->fb_ram || !v->scanout || !v->tex_ram[0] || !v->tex_ram[1] || !v->raster) {
         v2_raster_destroy(v->raster);
         free(v->fb_ram);
@@ -3469,6 +3460,22 @@ static pci_device_t *v2_factory(int slot_index, config_t *cfg, checkpoint_t *cp)
     return dev;
 }
 
+// The WebGPU variant: the same card, rasterised by the host's GPU unless
+// the boot document named a rasteriser itself.  Falls back to the exact
+// thread backend at creation where no GPU worker attaches (a checkpoint
+// restored without WebGPU, a native build), which regs.raster reports.
+static pci_device_t *v2_webgpu_factory(int slot_index, config_t *cfg, checkpoint_t *cp) {
+    if (!s_staged_raster_explicit)
+        snprintf(s_staged_raster, sizeof(s_staged_raster), "%s", "webgpu");
+    return v2_factory(slot_index, cfg, cp);
+}
+
+// Offered only where a WebGPU device exists (the page decides before any
+// machine boots); registered everywhere so the id resolves regardless.
+static bool v2_webgpu_offered(void) {
+    return gs_v2gpu_available();
+}
+
 const pci_card_kind_t voodoo2_kind = {
     .id = "voodoo2",
     .display_name = "3dfx Voodoo2",
@@ -3479,7 +3486,21 @@ const pci_card_kind_t voodoo2_kind = {
     .monitors = NULL, // it drives a monitor, but it is not the machine's
                       // display device
     .factory = v2_factory,
-    .options = v2_options,
+    .options = NULL,
     .stage_option = v2_stage_option,
     .attach_objects = v2_attach_objects,
+};
+
+const pci_card_kind_t voodoo2_webgpu_kind = {
+    .id = "voodoo2_webgpu",
+    .display_name = "3dfx Voodoo2 (WebGPU)",
+    .attach = PCI_ATTACH_PCI,
+    .requires_prom = false,
+    .card_class = "3d",
+    .monitors = NULL,
+    .factory = v2_webgpu_factory,
+    .options = NULL,
+    .stage_option = v2_stage_option,
+    .attach_objects = v2_attach_objects,
+    .offered = v2_webgpu_offered,
 };
