@@ -579,10 +579,32 @@ void em_video_init(void) {
     init_gl();
 }
 
+// The Voodoo2 WebGPU overlay sits over this canvas while the takeover
+// presents.  It is HIDDEN from here — after this canvas has drawn a
+// frame that is not the takeover's — never from the GPU worker at the
+// moment it stops presenting: at that moment the canvas underneath
+// still holds whatever was last uploaded before the takeover engaged,
+// a frame from a second or more ago, and hiding the overlay first
+// flashed it (the background checkpoint's disengage made it visible
+// every 15 s).  Shown the same way on the other side: the worker posts
+// the overlay visible only after its first present.
+static bool s_overlay_up;
+
+static void overlay_hide_if_up(void) {
+    if (!s_overlay_up)
+        return;
+    s_overlay_up = false;
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM({ if (typeof Module.onVoodooGpuOverlay === 'function') Module.onVoodooGpuOverlay(0); });
+    // clang-format on
+}
+
 void em_video_update(void) {
     display_t *d = system_display();
-    if (!d || !d->bits)
+    if (!d || !d->bits) {
+        overlay_hide_if_up(); // no display at all: nothing for the overlay to cover
         return;
+    }
 
     // A frame presented by someone else (the Voodoo2's WebGPU overlay):
     // keep the canvas at the card's geometry so the page lays out the
@@ -590,6 +612,7 @@ void em_video_update(void) {
     // underneath is hidden, and comparing it per frame would be wasted
     // work.
     if (d->presented_externally) {
+        s_overlay_up = true;
         if (d->shape_dirty && refresh_from_display(d, /*force_full*/ false))
             draw();
         return;
@@ -621,14 +644,17 @@ void em_video_update(void) {
     // format / stride) — must always be honoured. clut_dirty /
     // response_dirty change pixel mapping without changing fb bytes,
     // so we trust those flags directly.
-    if (!content_changed && !d->shape_dirty && !d->clut_dirty && !d->response_dirty)
+    if (!content_changed && !d->shape_dirty && !d->clut_dirty && !d->response_dirty) {
+        overlay_hide_if_up(); // the canvas already shows this frame
         return;
+    }
 
     if (content_changed)
         d->fb_dirty = true;
 
     if (refresh_from_display(d, /*force_full*/ false))
         draw();
+    overlay_hide_if_up(); // ...and now it shows a fresh one
 }
 
 void em_video_force_redraw(void) {

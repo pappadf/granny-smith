@@ -1831,9 +1831,9 @@ static void v2_submit_gpu(v2_raster_t *r, v2_cmd_kind_t kind, uint32_t flags, ui
     v2_raster_submit(r, &cmd);
 }
 
-void v2_raster_sync_fb(v2_raster_t *r, uint32_t addr, uint32_t len) {
+void v2_raster_sync_fb(v2_raster_t *r, uint32_t addr, uint32_t len, bool guest) {
     if (r->kind == V2_BACKEND_WEBGPU && v2_gpu_engaged(r->gpu))
-        v2_submit_gpu(r, V2_CMD_GPU_READBACK, 0, addr, len);
+        v2_submit_gpu(r, V2_CMD_GPU_READBACK, guest ? 1u : 0u, addr, len);
     v2_raster_sync(r);
 }
 

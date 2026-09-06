@@ -27,7 +27,12 @@ import {
   reapplyMicrophoneSource,
 } from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
-import { onVoodooGpuAttach, onVoodooGpuDetach, whenVoodooGpuReady } from '@/gpu/voodoo2Gpu.svelte';
+import {
+  onVoodooGpuAttach,
+  onVoodooGpuDetach,
+  onVoodooGpuOverlay,
+  whenVoodooGpuReady,
+} from '@/gpu/voodoo2Gpu.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
 import { resetDebugSections } from '@/state/debug.svelte';
@@ -97,6 +102,7 @@ interface EmscriptenModuleConfig {
   onAudioInInjected?(path: string): void;
   onVoodooGpuAttach?(ctrl: number, bytes: number): void;
   onVoodooGpuDetach?(ctrl: number): void;
+  onVoodooGpuOverlay?(visible: number): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -177,6 +183,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onAudioInInjected,
     onVoodooGpuAttach,
     onVoodooGpuDetach,
+    onVoodooGpuOverlay,
   });
 
   bridgePtr = Module._get_js_bridge();

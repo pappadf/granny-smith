@@ -280,6 +280,12 @@ vreg_wr(0x080, 0x80000000)
 idle3
 assert scheduler.cycles == $C0 "a triangle draw must not consume scheduled time"
 
+# --- A checkpoint reads everything back, and must NOT cost the engagement. --
+# web2 saves one every 15 s in the background: its full readback is not
+# the guest reading the framebuffer, so the storm detector ignores it.
+assert checkpoint.save("/tmp/v2-takeover.checkpoint") "checkpoint save under the takeover"
+assert machine.pci.slot[1].card.regs.gpu_engaged "a checkpoint's readback does not disengage the GPU"
+
 # --- Still engaged: no readback storm, no device loss along the way. --------
 assert machine.pci.slot[1].card.regs.gpu_engaged "GPU mode stayed engaged through the section"
 echo "gpu: ${machine.pci.slot[1].card.regs.gpu_stats}"

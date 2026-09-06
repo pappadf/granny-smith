@@ -104,6 +104,12 @@ export function onVoodooGpuAttach(ctrl: number): void {
   worker.postMessage({ type: 'attach', memory, ctrl });
 }
 
+// Module.onVoodooGpuOverlay(0): the display path drew a fresh frame on
+// the canvas underneath — the overlay may go.
+export function onVoodooGpuOverlay(visible: number): void {
+  gpuOverlay.visible = visible !== 0;
+}
+
 export function onVoodooGpuDetach(ctrl: number): void {
   gpuOverlay.visible = false;
   worker?.postMessage({ type: 'detach', ctrl });

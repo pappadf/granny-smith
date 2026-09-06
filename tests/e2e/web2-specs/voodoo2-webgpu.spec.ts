@@ -84,11 +84,13 @@ test("the takeover engages when the card takes the monitor, and the GPU covers e
   );
   expect(text, text).not.toMatch(/assert(ion)? failed/);
 
-  // The overlay is what the user sees: shown exactly while engaged.
-  await expect(page.locator("#screen3d")).toBeVisible();
+  // Engaged — but the overlay is shown only after the first PRESENT, and
+  // this spec never presents (headless Chromium would destroy the device),
+  // so it stays hidden while the GPU holds the frame.
   expect(await probe(page, "machine.pci.slot[1].card.regs.gpu_engaged")).toBe(
     "true",
   );
+  await expect(page.locator("#screen3d")).toBeHidden();
 
   // Release the monitor: GPU mode disengages, reading the frame back,
   // and the overlay hides.  (The script's shell functions persist.)

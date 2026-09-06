@@ -2184,7 +2184,7 @@ static uint32_t v2_bar_read32(void *ctx, uint32_t off) {
         v2_lfb_locate(v, off - V2_OFF_LFB, false, &buffer, &x, &y);
         // The fence names the bytes it wants: under the WebGPU takeover
         // that is a readback of the row, elsewhere a plain sync.
-        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 4u);
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 4u, true);
         uint16_t p0 = v2_lfb_load16(v, buffer, x, y);
         uint16_t p1 = v2_lfb_load16(v, buffer, x + 1u, y);
         // Colour-lane selection applies to reads of the colour buffers:
@@ -2324,7 +2324,7 @@ static uint16_t v2_bar_read16(void *ctx, uint32_t off) {
             return 0;
         uint32_t buffer, x, y;
         v2_lfb_locate(v, off - V2_OFF_LFB, false, &buffer, &x, &y);
-        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u);
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u, true);
         uint16_t p = v2_lfb_load16(v, buffer, x, y);
         if (buffer != 3u && (LFB_LANES(v->reg[R_LFBMODE]) & 1u))
             p = (uint16_t)(((p & 0x1Fu) << 11) | (p & 0x7E0u) | (p >> 11));
@@ -2397,7 +2397,7 @@ static uint8_t v2_bar_read8(void *ctx, uint32_t off) {
             return 0;
         uint32_t buffer, x, y;
         v2_lfb_locate(v, (off - V2_OFF_LFB) & ~1u, false, &buffer, &x, &y);
-        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u);
+        v2_raster_sync_fb(v->raster, v2_buffer_addr(v, buffer, x, y), 2u, true);
         uint16_t px = v2_lfb_load16(v, buffer, x, y);
         return (off & 1u) ? (uint8_t)(px >> 8) : (uint8_t)px;
     }
@@ -2693,7 +2693,7 @@ static void v2_display_convert(voodoo2_t *v) {
     // bounds how far a threaded backend may lag (thread proposal §5.5);
     // under the takeover, the readback of the displayed buffer.
     uint32_t stride = v2_tiles_in_x(v) * 32u * 2u;
-    v2_raster_sync_fb(v->raster, v2_buffer_addr(v, 0u, 0u, 0u), h * stride);
+    v2_raster_sync_fb(v->raster, v2_buffer_addr(v, 0u, 0u, 0u), h * stride, false);
     for (uint32_t y = 0; y < h; y++) {
         uint32_t src = v2_buffer_addr(v, 0u, 0u, y); // front = displayed
         uint8_t *dst = v->scanout + (size_t)y * w * 4u;
@@ -2837,7 +2837,7 @@ static void v2_checkpoint_save(pci_device_t *dev, checkpoint_t *cp) {
     // checkpointed — it is empty at every point a checkpoint can happen.)
     // Under the takeover the whole framebuffer is read back as well.
     v2_observe(v);
-    v2_raster_sync_fb(v->raster, 0, V2_FB_SIZE);
+    v2_raster_sync_fb(v->raster, 0, V2_FB_SIZE, false);
     v2_ckpt_t c;
     memset(&c, 0, sizeof(c));
     memcpy(c.reg, v->reg, sizeof(c.reg));

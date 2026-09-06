@@ -489,7 +489,11 @@ static void v2gpu_free_textures(v2_gpu_t *g) {
 // Engage GPU mode under the snapshot's geometry: the colour and aux
 // buffers go up from the shadow (exact at this instant — the fence
 // audit guarantees it), the page tracking resets.
+static void v2gpu_engage_ex(v2_gpu_t *g, const v2_draw_state_t *st, bool announce);
 static void v2gpu_engage(v2_gpu_t *g, const v2_draw_state_t *st) {
+    v2gpu_engage_ex(g, st, true);
+}
+static void v2gpu_engage_ex(v2_gpu_t *g, const v2_draw_state_t *st, bool announce) {
     if (g->lost || atomic_load(&g->engaged))
         return;
     g->geom_stride = st->stride;
@@ -508,7 +512,11 @@ static void v2gpu_engage(v2_gpu_t *g, const v2_draw_state_t *st) {
         memset(g->page_gen[t], 0, V2GPU_MAX_PAGES * sizeof(uint32_t));
     g->gen = 1;
     g->bands_this_frame = 0;
-    v2gpu_emit_mode(g, true, front->w, front->h);
+    // The page shows the overlay only after the first present that
+    // follows this record (the worker holds it back), so what appears
+    // is a new frame, never the canvas's last one.
+    if (announce)
+        v2gpu_emit_mode(g, true, front->w, front->h);
     v2gpu_publish(g);
     g->n_engage++;
     LOG(1, "webgpu: engaged (%ux%u, stride %u)", front->w, front->h, st->stride);
@@ -516,7 +524,11 @@ static void v2gpu_engage(v2_gpu_t *g, const v2_draw_state_t *st) {
 
 // Leave GPU mode: read every target back unless `discard`, then drop
 // every GPU resource.  The walker continues from the shadow.
+static void v2gpu_disengage_ex(v2_gpu_t *g, bool discard, bool announce);
 static void v2gpu_disengage(v2_gpu_t *g, bool discard) {
+    v2gpu_disengage_ex(g, discard, true);
+}
+static void v2gpu_disengage_ex(v2_gpu_t *g, bool discard, bool announce) {
     if (!atomic_load(&g->engaged))
         return;
     v2gpu_close_all(g);
@@ -534,7 +546,12 @@ static void v2gpu_disengage(v2_gpu_t *g, bool discard) {
             }
         }
         v2gpu_free_textures(g);
-        v2gpu_emit_mode(g, false, 0, 0);
+        // The overlay is HIDDEN by the display path, once the WebGL
+        // canvas underneath holds a fresh frame (em_video.c) — never
+        // here, where the canvas underneath is still stale.  The MODE
+        // record only tells the worker to stop presenting.
+        if (announce)
+            v2gpu_emit_mode(g, false, 0, 0);
         v2gpu_publish(g);
     }
     for (int i = 0; i < V2GPU_MAX_TARGETS; i++)
@@ -552,8 +569,8 @@ static bool v2gpu_check_geometry(v2_gpu_t *g, const v2_draw_state_t *st) {
     if (st->stride == g->geom_stride && st->screen_h == g->geom_h)
         return true;
     g->n_resync++;
-    v2gpu_disengage(g, false);
-    v2gpu_engage(g, st);
+    v2gpu_disengage_ex(g, false, false); // no overlay toggling: the same
+    v2gpu_engage_ex(g, st, false); // engagement continues under new geometry
     return atomic_load(&g->engaged) != 0;
 }
 
@@ -1421,11 +1438,16 @@ static void v2gpu_gamma_chunk(v2_gpu_t *g, const v2_cmd_t *cmd) {
 }
 
 // A fence wants the shadow bytes [addr, addr+len): read back the rows
-// of whichever targets cover them, and watch for a storm.
-static void v2gpu_readback_range(v2_gpu_t *g, uint32_t addr, uint32_t len) {
+// of whichever targets cover them — and, for the GUEST's own reads,
+// watch for a storm.  A checkpoint or a screenshot reads everything
+// back once; counting those would drop the GPU every 15 seconds under
+// web2's background checkpoint, and the walker frames in between would
+// flash the stale scanout underneath the overlay.
+static void v2gpu_readback_range(v2_gpu_t *g, uint32_t addr, uint32_t len, bool guest) {
     if (!atomic_load(&g->engaged))
         return;
     v2gpu_close_all(g);
+    uint32_t bands_before = g->bands_this_frame;
     uint32_t end = addr + len;
     for (int i = 0; i < V2GPU_MAX_TARGETS; i++) {
         v2gpu_target_t *t = &g->targets[i];
@@ -1438,6 +1460,8 @@ static void v2gpu_readback_range(v2_gpu_t *g, uint32_t addr, uint32_t len) {
         uint32_t y0 = (lo - tb) / g->geom_stride, y1 = (hi - 1u - tb) / g->geom_stride + 1u;
         v2gpu_readback_rows(g, t, y0, y1);
     }
+    if (!guest)
+        g->bands_this_frame = bands_before;
     if (g->bands_this_frame > V2GPU_STORM_BANDS) {
         // A client reading the framebuffer wholesale every frame: the
         // walker serves it better.  Come back after a quiet spell.
@@ -1509,7 +1533,7 @@ void v2_gpu_execute(v2_gpu_t *g, const v2_draw_state_t *st, v2_target_t *tgt, co
         v2gpu_gamma_chunk(g, cmd);
         return;
     case V2_CMD_GPU_READBACK:
-        v2gpu_readback_range(g, cmd->u.gpu.addr, cmd->u.gpu.len);
+        v2gpu_readback_range(g, cmd->u.gpu.addr, cmd->u.gpu.len, (cmd->u.gpu.flags & 1u) != 0);
         return;
     }
 }

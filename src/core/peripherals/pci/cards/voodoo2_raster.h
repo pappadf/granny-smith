@@ -269,8 +269,11 @@ void v2_raster_submit(v2_raster_t *r, v2_cmd_t *cmd);
 void v2_raster_sync(v2_raster_t *r);
 // As v2_raster_sync, and additionally make the framebuffer bytes
 // [addr, addr + len) authoritative (a readback under the takeover; a
-// plain sync elsewhere).  LFB reads, screenshots and checkpoints use it.
-void v2_raster_sync_fb(v2_raster_t *r, uint32_t addr, uint32_t len);
+// plain sync elsewhere).  LFB reads, screenshots and checkpoints use it;
+// `guest` marks the guest's own reads (LFB), the only ones the takeover
+// counts toward a readback storm — a checkpoint or a screenshot reads
+// everything back once and must never cost the GPU its engagement.
+void v2_raster_sync_fb(v2_raster_t *r, uint32_t addr, uint32_t len, bool guest);
 
 // --- the WebGPU takeover (proposal-voodoo2-webgpu-takeover) ---------------
 // No-ops on every backend but "webgpu".  The card calls them from the

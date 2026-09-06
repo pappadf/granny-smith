@@ -468,8 +468,13 @@ the walker does that exactly and in microseconds — so GPU mode
 engages on the edge where the card starts driving the monitor
 (`v2_display()`'s `drives` edge → `v2_raster_engage`) and disengages
 where it stops, on device loss, on a checkpoint restore, or on a
-**readback storm** (more than 16 readback bands in one present
-interval; re-engagement after 8 quiet vblanks).  Engaging uploads the
+**readback storm** (more than 16 readback bands of the GUEST's own LFB
+reads in one present interval; re-engagement after 8 quiet vblanks —
+a checkpoint's or a screenshot's readback never counts, or web2's
+15-second background checkpoint would drop the GPU every time).
+The overlay canvas is shown only after the first present of an
+engagement and hidden only after the WebGL canvas underneath has drawn
+a fresh frame, so a stale frame is never what is on top.  Engaging uploads the
 shadow's colour and aux buffers (exact at that instant, by the fence
 audit); disengaging reads every target back so the walker continues
 from the GPU's pixels.

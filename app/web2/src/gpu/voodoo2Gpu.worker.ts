@@ -693,6 +693,10 @@ function presentInner(id: number): void {
   usedInEncoder.add(`t${id}`);
   flush();
   stat(C_STAT_FRAMES, 1);
+  if (showAfterPresent) {
+    showAfterPresent = false;
+    postMessage({ type: 'mode', engaged: true, w: overlayW || t.w, h: overlayH || t.h });
+  }
 }
 
 function onGamma(payload: number): void {
@@ -771,8 +775,18 @@ function ack(seq: number): void {
   Atomics.notify(ctrl, C_ACK);
 }
 
+// The overlay is shown by the page only after the first present that
+// follows an engagement (so a new frame is what appears, never the
+// canvas's last one), and hidden by the display path underneath once
+// its own canvas holds a fresh frame (em_video.c) — never from here.
+let showAfterPresent = false;
+let overlayW = 0;
+let overlayH = 0;
+
 function onMode(engaged: number, w: number, h: number): void {
-  postMessage({ type: 'mode', engaged: engaged !== 0, w, h });
+  showAfterPresent = engaged !== 0;
+  overlayW = w;
+  overlayH = h;
 }
 
 function freeEverything(): void {
