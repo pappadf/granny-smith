@@ -38,6 +38,7 @@ NuBus display cards can be seated in any machine with free slots, including mach
 ## Emulated PCI Cards
 
 - **ATI Mach64 GX (Apple "Accelerated" PCI Card)** (including 2D hardware acceleration)
+- **3dfx Voodoo2** (full 3D with WebGPU acceleration)
 - **Cirrus Logic 54M30** (mainly used by ANS 700/500)
 - **Symbios Logic 53C825A** (fast/wide SCSI with the on-chip SCRIPTS DMA engine)
 
@@ -52,12 +53,15 @@ The emulated computer models have been tested with various combinations of the f
 - **Lisa MacWorks XL 3.0**
 - **Copland D11E4**
 - **MkLinux DR3**
-- **AIX 4.1.5 for Apple Network Servers**
+- **AIX 4.1.5**
 
 ## Work In Progress
 
+- New pre-decoded interpreter/execution model
 - Power Macintosh 9500MP running BeOS
-- Voodoo2 PCI Card
+- ATI Rage 128
+- PowerPC little-endian
+- ANS with Windows NT
 
 ## Project Principles
 
@@ -98,10 +102,12 @@ There is no intention to track, at the file or commit level, which code was gene
 
 Sibling projects this one is built on:
 
-- **[powerpc-sail](https://github.com/pappadf/powerpc-sail)** - a formal, executable Sail specification of the PowerPC ISA, and the oracle the PowerPC vectors are generated from
-- **[powerpc-test](https://github.com/pappadf/powerpc-test)** - single-instruction test vectors for the PowerPC 601, generated from `powerpc-sail`; used here as the `third-party/powerpc-test` submodule
-- **[m68k-test](https://github.com/pappadf/m68k-test)** - the same idea for the 68k, generated from an `m68k-sail` model
-- **[peeler](https://github.com/pappadf/peeler)** - a C library for unpacking legacy Macintosh archive formats, which is what decompresses dropped-in disk images; vendored in-tree at [src/peeler](src/peeler)
+- **[powerpc-sail](https://github.com/pappadf/powerpc-sail)** - a formal, executable Sail specification of the PowerPC ISA
+- **[powerpc-test](https://github.com/pappadf/powerpc-test)** - single-instruction test vectors for the PowerPC 601, generated from `powerpc-sail`
+- **[m68k-sail](https://github.com/pappadf/m68k-sail)** - a formal, executable Sail specification of the 68000 family (68000 to 68040 and the 68881/68882 FPUs), the 68k counterpart of `powerpc-sail`
+- **[m68k-test](https://github.com/pappadf/m68k-test)** - the same idea for the 68k, generated from the `m68k-sail` model
+- **[peeler](https://github.com/pappadf/peeler)** - a C library for unpacking legacy Macintosh archive formats
+- **[emu-core-bench](https://github.com/pappadf/emu-core-bench)** - measured comparisons of interpreter-core designs
 
 ## Acknowledgments
 
