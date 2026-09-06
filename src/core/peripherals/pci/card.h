@@ -207,6 +207,15 @@ typedef struct pci_card_kind {
     // never by testing card identity.  Both optional.
     bool (*stage_option)(const char *key, const char *value);
     void (*attach_objects)(pci_device_t *dev, struct object *card_node);
+
+    // Is the kind OFFERED on this host right now?  NULL means always.  A
+    // kind that needs a host facility (the Voodoo2's WebGPU variant needs
+    // a WebGPU device) answers false without it: machine.profile then
+    // leaves it out of the socket's card list, so a frontend never offers
+    // a choice it cannot honour.  The kind stays REGISTERED regardless —
+    // a boot document or a checkpoint may still name it, and the factory
+    // falls back on its own.
+    bool (*offered)(void);
 } pci_card_kind_t;
 
 // Registry accessors.  The registry is an explicit list in pci.c.

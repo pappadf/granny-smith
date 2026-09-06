@@ -176,6 +176,10 @@ rtc_t *system_rtc(void);
 // System-level framebuffer accessor: returns pointer to video RAM buffer.
 // Equivalent to system_display()->bits.
 uint8_t *system_framebuffer(void);
+// The active display after its pixels were made current: a card whose
+// frame lives elsewhere (the Voodoo2 under the WebGPU takeover) reads
+// it back first.  Use this, not system_display(), before READING bits.
+display_t *system_display_synced(void);
 
 // Forward declaration; full definition in nubus/display.h.
 struct display;
@@ -297,6 +301,19 @@ int gs_find_media(const char *dir_path, const char *dest);
 //   gs_video_in_state(active)— capture-engine on/off notification (the
 //                              guest gating the VDC clock); the browser
 //                              attaches/stops the camera track on it.
+// Host GPU-transport seam for the Voodoo2's WebGPU takeover
+// (voodoo2_gpu.c): the browser build attaches a GPU worker to a shared
+// region in the wasm heap and wakes it through Atomics; the defaults
+// in system.c model "no GPU" so native builds fall back to the thread
+// backend.  `ctrl` is the region's control block
+// (voodoo2_gpu_protocol.h); `wait` blocks the CALLING pthread until
+// *addr != expected or the timeout (returns 0 when woken).
+bool gs_v2gpu_available(void);
+bool gs_v2gpu_attach(void *ctrl, uint32_t bytes);
+void gs_v2gpu_detach(void *ctrl);
+int gs_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms);
+void gs_v2gpu_notify(volatile uint32_t *addr);
+
 bool gs_video_in_connected(void);
 int gs_video_in_frame(uint8_t *rgba);
 void gs_video_in_state(bool active);

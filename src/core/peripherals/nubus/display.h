@@ -146,7 +146,25 @@ typedef struct display {
     bool shape_dirty; // width/height/stride/format changed — texture needs reallocation
     bool clut_dirty; // CLUT entries changed
     bool response_dirty; // crt_response changed (effectively init-only today)
+
+    // The frame is being presented by someone else — the Voodoo2 under
+    // the WebGPU takeover shows its own frames on an overlay canvas —
+    // so `bits` is NOT refreshed per frame and the renderer must skip
+    // its pixel upload (shape changes still apply: the canvas keeps
+    // the card's geometry).  `sync_pixels` brings `bits` current on
+    // demand (a screenshot, a checksum): call display_sync_pixels()
+    // before READING bits.  NULL when bits are always current.
+    bool presented_externally;
+    void (*sync_pixels)(void *ctx);
+    void *sync_ctx;
 } display_t;
+
+// Make `bits` current before reading them (a no-op for every display
+// whose producer keeps them current).
+static inline void display_sync_pixels(display_t *d) {
+    if (d && d->sync_pixels)
+        d->sync_pixels(d->sync_ctx);
+}
 
 // Blank the visible raster of a fully-populated descriptor to black.
 //

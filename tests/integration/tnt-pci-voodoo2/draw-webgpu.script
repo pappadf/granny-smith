@@ -1,0 +1,374 @@
+# The drawing section under the WebGPU TAKEOVER (proposal-voodoo2-webgpu-
+# takeover §7, gates 2 and 3) — draw.script's cases replayed while the
+# browser's GPU draws them, with the expectations the takeover makes.
+# Run from the web2 e2e (tests/e2e/web2-specs/voodoo2-webgpu.spec.ts),
+# which composes this file after the bring-up replay (glide-init.script)
+# and the take-monitor sequence; never from a native row (there is no
+# GPU there — raster=webgpu falls back to the thread backend, which
+# test.script asserts).
+#
+# What is EXACT here, by construction, and asserted as in draw.script:
+#   - coverage: which pixels a triangle touches (the half-pixel shift
+#     makes the GPU's centre test the walker's integer test; gate 2 counts
+#     the 136 and 256 literally);
+#   - the iterated colour at interior pixels (a linear plane is
+#     interpolated exactly), the integer combine units, dither, the LFB
+#     bypass round trips, the depth compare (exact 16-bit codes);
+#   - point-sampled textures (1x1 levels) and the multitexture chain;
+#   - the walker fallbacks (a rotate-mode stipple mask): the walker draws
+#     them, so even their counters and the stipple register are exact.
+# What is NOT: the statistics counters of GPU-drawn triangles (analytic
+# approximations — voodoo2.md's divergence list), so the equalities
+# draw.script pins on fbiPixelsIn/Out/ZfuncFail are not asserted here.
+#
+# Preconditions: $BAR, swap16/vreg_wr/vreg_rd/idle3 defined; the bring-up
+# replayed; the card DRIVING the monitor with raster=webgpu.
+
+let LFB = $BAR + 0x400000
+def px(x, y) {
+    return swap16(machine.memory.peek.w($LFB + ($y << 11) + ($x << 1)))
+}
+def stat(off) {
+    return machine.pci.slot[1].card.regs.read($off)
+}
+def tri1_vertices() {
+    vreg_wr(0x008, 0x00000320)
+    vreg_wr(0x00C, 0x00000320)
+    vreg_wr(0x010, 0x00000320)
+    vreg_wr(0x014, 0x00000420)
+    vreg_wr(0x018, 0x00000420)
+    vreg_wr(0x01C, 0x00000320)
+}
+
+# --- Engagement (§5.1): the card drives the monitor, so GPU mode is on. -----
+# (A counter read is a fence: it retires the queued ENGAGE first.)
+let PO_START = stat(0x15C)
+assert machine.pci.slot[1].card.regs.raster == "webgpu" "the takeover backend is installed"
+assert machine.pci.slot[1].card.regs.gpu_engaged "GPU mode engaged when the card took the monitor"
+
+# The same 640x480 stage as draw.script.
+vreg_wr(0x21C, vreg_rd(0x21C) & 0xFFFFFFBF)
+vreg_wr(0x20C, (480 << 16) | 639)
+vreg_wr(0x218, (vreg_rd(0x218) & 0xFFF007FF) | (150 << 11) | 0x400000)
+vreg_wr(0x214, (vreg_rd(0x214) & 0xFEFFFF0F) | 0xA0)
+vreg_wr(0x248, vreg_rd(0x248) & 0xBFFFFFFF)
+vreg_wr(0x114, 0x00000000)
+vreg_wr(0x120, 0x00000003)
+
+# --- FASTFILL clears the clip rectangle, and ONLY the clip rectangle. -------
+# A fill draw on the GPU; the pixels come back through LFB reads, i.e.
+# readbacks of the rows they sit on (§5.7).
+vreg_wr(0x118, (10 << 16) | 42)
+vreg_wr(0x11C, (5 << 16) | 21)
+vreg_wr(0x148, 0x00FF0000)
+vreg_wr(0x130, 0x0000BEEF)
+vreg_wr(0x110, 0x00000601)
+vreg_wr(0x124, 0x00000000)
+idle3
+assert px(10, 5) == 0xF800 "fastfill: top-left corner filled with color1"
+assert px(41, 20) == 0xF800 "fastfill: bottom-right inside corner filled"
+assert px(9, 5) == 0x0000 "fastfill: left of the rectangle untouched"
+assert px(42, 5) == 0x0000 "fastfill: the right edge is EXCLUSIVE"
+assert px(10, 4) == 0x0000 "fastfill: above the rectangle untouched"
+assert px(10, 21) == 0x0000 "fastfill: the high-Y edge is EXCLUSIVE"
+vreg_wr(0x114, 0x00000080)
+assert px(10, 5) == 0xBEEF "fastfill: the depth buffer cleared to zaColor (a depth16 readback)"
+assert px(9, 5) == 0x0000 "fastfill: depth outside the rectangle untouched"
+vreg_wr(0x114, 0x00000000)
+
+# --- Fills with ONE write mask: colour only, then depth only. ---------------
+# Each is a draw whose pipeline has only one side to write — the case
+# that once built an invalid pipeline (a shader writing frag_depth with
+# no depth attachment), which WebGPU rejects along with every draw in
+# the same submission: Quake's per-frame colour clear, silently dropped.
+vreg_wr(0x118, (100 << 16) | 110)
+vreg_wr(0x11C, (100 << 16) | 110)
+vreg_wr(0x148, 0x000000FF)
+vreg_wr(0x130, 0x00001234)
+vreg_wr(0x110, 0x00000201)
+vreg_wr(0x124, 0x00000000)
+idle3
+assert px(105, 105) == 0x001F "colour-only fill: colour1 landed"
+vreg_wr(0x114, 0x00000080)
+assert px(105, 105) == 0x0000 "colour-only fill: the depth buffer untouched"
+vreg_wr(0x114, 0x00000000)
+vreg_wr(0x110, 0x00000401)
+vreg_wr(0x124, 0x00000000)
+idle3
+assert px(105, 105) == 0x001F "depth-only fill: the colour buffer untouched"
+vreg_wr(0x114, 0x00000080)
+assert px(105, 105) == 0x1234 "depth-only fill: zaColor landed in the depth buffer"
+vreg_wr(0x114, 0x00000000)
+vreg_wr(0x110, 0x00000601)
+
+# --- Gate 2: one gouraud triangle, coverage counted literally. --------------
+vreg_wr(0x110, 0x00000600)
+vreg_wr(0x104, 0x00000000)
+vreg_wr(0x120, 0x00000001)
+tri1_vertices
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x024, 0x00000000)
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x040, 0xFFFF8000)
+vreg_wr(0x044, 0x00000000)
+vreg_wr(0x048, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00008000)
+vreg_wr(0x068, 0x00000000)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert px(50, 50) == 0xF800 "gouraud: full red at vertex A"
+assert px(55, 52) == 0xD080 "gouraud: interpolated interior pixel (r 215, g 16) — the plane is exact"
+assert px(65, 50) == 0x8000 "gouraud: last included column of the top row"
+assert px(66, 50) == 0x0000 "gouraud: the hypotenuse edge is EXCLUSIVE"
+assert px(49, 50) == 0x0000 "gouraud: left of vertex A untouched"
+let N = 0
+for y in 48..70 {
+    for x in 48..70 {
+        if px($x, $y) != 0 {
+            $N = $N + 1
+        }
+    }
+}
+assert $N == 136 "gate 2: exactly 136 covered pixels — the half-pixel alignment reproduces the walker's convention"
+
+# --- The complement triangle shares the hypotenuse: no seam, no overlap. ----
+vreg_wr(0x008, 0x00000320)
+vreg_wr(0x00C, 0x00000420)
+vreg_wr(0x010, 0x00000420)
+vreg_wr(0x014, 0x00000320)
+vreg_wr(0x018, 0x00000420)
+vreg_wr(0x01C, 0x00000420)
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x040, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00000000)
+vreg_wr(0x080, 0x00000000)
+idle3
+let N = 0
+for y in 48..70 {
+    for x in 48..70 {
+        if px($x, $y) != 0 {
+            $N = $N + 1
+        }
+    }
+}
+assert $N == 256 "gate 2: the shared edge tiles exactly — 136 + 120, no double-drawn pixel, no gap"
+assert px(57, 58) != 0x0000 "a pixel just below the seam was covered"
+assert px(58, 57) != 0x0000 "a pixel just above the seam was covered"
+assert px(65, 65) != 0x0000 "the far corner of the square was covered"
+# The second triangle is flat red 255 everywhere: every one of its 120
+# pixels is the same exact value.
+assert px(65, 65) == 0xF800 "the complement's flat colour lands exactly"
+assert px(58, 58) == 0xF800 "...on the seam too"
+
+# --- Y-flipped (fbzMode[17]): ties on a horizontal edge are the walker's,
+# decided IN WALKER SPACE.  The gate-2 triangle's edge A-C at y=50 is a
+# "top" edge (the interior at larger y): its row — screen row 479-50=429
+# — is drawn.  The complement's edge at y=66 is a bottom edge: screen row
+# 413 stays clear.  The GPU's own top-left rule runs in screen space,
+# where the flip swaps top and bottom; it would get both rows wrong by one
+# (Quake's status bar sat one row high).  Flat colours: red, then blue.
+vreg_wr(0x110, 0x00020600)
+tri1_vertices
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x040, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00000000)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert px(50, 429) == 0xF800 "flipped: the top edge's tie row (y=50, screen row 429) is drawn"
+assert px(65, 429) == 0xF800 "flipped: ...through its last included column"
+assert px(66, 429) == 0x0000 "flipped: ...and the hypotenuse corner stays exclusive"
+assert px(50, 413) == 0x0000 "flipped: vertex B's row (y=66, screen row 413) has no pixel"
+assert px(50, 428) == 0xF800 "flipped: the row above the tie row is interior"
+let N = 0
+for y in 405..436 {
+    for x in 48..70 {
+        if px($x, $y) == 0xF800 {
+            $N = $N + 1
+        }
+    }
+}
+assert $N == 136 "flipped: exactly the walker's 136 pixels, mirrored"
+vreg_wr(0x008, 0x00000320)
+vreg_wr(0x00C, 0x00000420)
+vreg_wr(0x010, 0x00000420)
+vreg_wr(0x014, 0x00000320)
+vreg_wr(0x018, 0x00000420)
+vreg_wr(0x01C, 0x00000420)
+vreg_wr(0x020, 0x00000000)
+vreg_wr(0x028, 0x000FF000)
+vreg_wr(0x080, 0x00000000)
+idle3
+assert px(60, 413) == 0x0000 "flipped: the bottom edge's tie row (y=66, screen row 413) stays clear"
+assert px(60, 414) == 0x001F "flipped: the row below it is the complement's"
+assert px(65, 414) == 0x001F "flipped: ...through its last column"
+assert px(66, 414) == 0x0000 "flipped: ...the vertical right edge exclusive"
+let N = 0
+for y in 405..436 {
+    for x in 48..70 {
+        if px($x, $y) == 0x001F {
+            $N = $N + 1
+        }
+    }
+}
+assert $N == 120 "flipped: the complement's 120 pixels, no seam, no overlap"
+assert px(58, 421) == 0x001F "flipped: the seam pixel (58,58) is the complement's, as unflipped — left/right ties do not mirror"
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x110, 0x00000600)
+
+# --- A depth-rejected triangle draws NOTHING. -------------------------------
+# func = never: the GPU's depth test rejects every pixel; the framebuffer
+# is untouched.  (fbiZfuncFail does not move in GPU mode — approximate.)
+let BEFORE = px(55, 52)
+vreg_wr(0x110, 0x00000610)
+vreg_wr(0x080, 0x00000000)
+idle3
+assert px(55, 52) == $BEFORE "a depth-rejected triangle leaves the framebuffer byte-identical"
+vreg_wr(0x110, 0x00000600)
+
+# --- A textured triangle, format 10 (5-6-5), a 1x1 level: exact. -----------
+vreg_wr(0x304 | 0x800, 0x00000820)
+vreg_wr(0x300 | 0x800, 0x00041A00)
+vreg_wr(0x30C | 0x800, 0x00000000)
+vreg_wr(0x300 | 0x1000, 0x00000000)
+machine.memory.poke.l($BAR + 0x900000, swap32(0x000007E0))
+vreg_wr(0x02C | 0x800, 0x00020000)
+vreg_wr(0x030 | 0x800, 0x00020000)
+vreg_wr(0x054 | 0x800, 0x00000000)
+vreg_wr(0x058 | 0x800, 0x00000000)
+vreg_wr(0x074 | 0x800, 0x00000000)
+vreg_wr(0x078 | 0x800, 0x00000000)
+tri1_vertices
+vreg_wr(0x104, 0x08000005)
+vreg_wr(0x120, 0x00000001)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert px(55, 52) == 0x07E0 "textured 5-6-5: the texel colour lands exactly"
+assert px(50, 50) == 0x07E0 "textured 5-6-5: vertex pixel too"
+
+# --- The same triangle, format 11 (1-5-5-5). --------------------------------
+vreg_wr(0x300 | 0x800, 0x00041B00)
+machine.memory.poke.l($BAR + 0x900000, swap32(0x000083E0))
+vreg_wr(0x148, 0x00000000)
+vreg_wr(0x118, (50 << 16) | 67)
+vreg_wr(0x11C, (50 << 16) | 67)
+vreg_wr(0x110, 0x00000601)
+vreg_wr(0x124, 0x00000000)
+vreg_wr(0x110, 0x00000600)
+assert px(55, 52) == 0x0000 "stage cleared before the 1-5-5-5 draw"
+tri1_vertices
+vreg_wr(0x120, 0x00000001)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert px(55, 52) == 0x07E0 "textured 1-5-5-5: the 5-bit green expands to the same full green"
+
+# --- Two TMUs, single-pass multitexture: the chain is exact. ---------------
+vreg_wr(0x304 | 0x1000, 0x00000820)
+vreg_wr(0x300 | 0x1000, 0x00041A00)
+vreg_wr(0x30C | 0x1000, 0x00000000)
+machine.memory.poke.l($BAR + 0xB00000, swap32(0x0000F800))
+vreg_wr(0x300 | 0x800, 0x00024A00)
+machine.memory.poke.l($BAR + 0x900000, swap32(0x00008410))
+vreg_wr(0x02C | 0x1000, 0x00020000)
+vreg_wr(0x030 | 0x1000, 0x00020000)
+vreg_wr(0x054 | 0x1000, 0x00000000)
+vreg_wr(0x058 | 0x1000, 0x00000000)
+vreg_wr(0x074 | 0x1000, 0x00000000)
+vreg_wr(0x078 | 0x1000, 0x00000000)
+tri1_vertices
+vreg_wr(0x120, 0x00000001)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert px(55, 52) == 0x8000 "multitexture: red modulated by 50% grey is dark red — neither texture alone"
+
+# --- The LFB round trip: bypass writes mirrored to the GPU, read back. -----
+vreg_wr(0x104, 0x00000000)
+let V = 0x12345678
+let A200 = $LFB + (200 << 11) + (100 << 1)
+vreg_wr(0x114, 0x00000000)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) == $V "LFB round trip: plain/plain is the identity"
+vreg_wr(0x114, 0x00008800)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) == $V "LFB round trip: wordswap/wordswap is the identity"
+vreg_wr(0x114, 0x00011000)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) == $V "LFB round trip: swizzle/swizzle is the identity"
+vreg_wr(0x114, 0x00019800)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) == $V "LFB round trip: both/both is the identity"
+vreg_wr(0x114, 0x00001000)
+machine.memory.poke.l($A200, $V)
+assert machine.memory.peek.l($A200) != $V "LFB: swizzled write read raw is NOT the identity"
+vreg_wr(0x114, 0x00000000)
+
+# --- Q9: sub-pixel correction mutates the START LATCHES (producer-side). ----
+vreg_wr(0x104, 0x14000000)
+vreg_wr(0x008, 0x00000328)
+vreg_wr(0x00C, 0x00000328)
+vreg_wr(0x010, 0x00000328)
+vreg_wr(0x014, 0x00000430)
+vreg_wr(0x018, 0x00000430)
+vreg_wr(0x01C, 0x00000328)
+vreg_wr(0x020, 0x000F0000)
+vreg_wr(0x024, 0x00000000)
+vreg_wr(0x028, 0x00000000)
+vreg_wr(0x040, 0xFFFF8000)
+vreg_wr(0x044, 0x00000000)
+vreg_wr(0x048, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+vreg_wr(0x064, 0x00000000)
+vreg_wr(0x068, 0x00000000)
+vreg_wr(0x080, 0x80000000)
+idle3
+let FIRST = px(52, 51)
+vreg_wr(0x080, 0x80000000)
+idle3
+let SECOND = px(52, 51)
+assert $FIRST != $SECOND "sub-pixel correction is applied per FIFO read — resend-less triangles drift (Q9)"
+vreg_wr(0x104, 0x00000000)
+
+# --- Rotate-mode stipple: the walker FALLBACK, exact down to the counters. --
+# A per-pixel register the GPU cannot honour (§5.5): the translator reads
+# the touched rows back, the walker draws, the rectangle goes up again.
+# So the counters and the stipple register move exactly as draw.script
+# pins them — the fallback's own proof that it ran.
+vreg_wr(0x104, 0x00000000)
+vreg_wr(0x140, 0x80000001)
+vreg_wr(0x110, 0x00000604)
+tri1_vertices
+vreg_wr(0x020, 0x000FF000)
+vreg_wr(0x040, 0x00000000)
+vreg_wr(0x060, 0x00000000)
+let PO0 = stat(0x15C)
+let PI0 = stat(0x14C)
+let MASKED_BEFORE = px(51, 50)
+vreg_wr(0x080, 0x80000000)
+idle3
+assert stat(0x14C) == $PI0 + 136 "stipple fallback: every pixel of the triangle entered the walker's pipeline"
+assert stat(0x15C) == $PO0 + 9 "stipple fallback: nine pixels saw a set bit 31 before their rotation"
+assert stat(0x140) == 0x00000180 "stipple fallback: the register rotated once per pixel, masked or not"
+assert px(50, 50) == 0xF800 "stipple fallback: the first pixel (bit 31 set) was drawn, and uploaded back"
+assert px(51, 50) == $MASKED_BEFORE "stipple fallback: the second pixel was masked — whatever was there stays"
+vreg_wr(0x110, 0x00000600)
+vreg_wr(0x140, 0x00000000)
+
+# --- Invariant 1 of the raster seam: drawing consumes NO guest time. --------
+let C0 = scheduler.cycles
+vreg_wr(0x080, 0x80000000)
+idle3
+assert scheduler.cycles == $C0 "a triangle draw must not consume scheduled time"
+
+# --- A checkpoint reads everything back, and must NOT cost the engagement. --
+# web2 saves one every 15 s in the background: its full readback is not
+# the guest reading the framebuffer, so the storm detector ignores it.
+assert checkpoint.save("/tmp/v2-takeover.checkpoint") "checkpoint save under the takeover"
+assert machine.pci.slot[1].card.regs.gpu_engaged "a checkpoint's readback does not disengage the GPU"
+
+# --- Still engaged: no readback storm, no device loss along the way. --------
+assert machine.pci.slot[1].card.regs.gpu_engaged "GPU mode stayed engaged through the section"
+echo "gpu: ${machine.pci.slot[1].card.regs.gpu_stats}"
+echo "draw-webgpu: takeover drawing section complete"

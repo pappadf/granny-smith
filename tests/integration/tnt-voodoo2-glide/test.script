@@ -36,7 +36,9 @@ let RASTER = try($RASTER, "thread")
 let img = "${$WORK_DIR}/quake.img"
 if have_media($img) {
 
-machine.boot model="pm7500" ram=65536 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=${$RASTER}"
+# The 8 MB board: the golden was captured on it (texture memory size
+# changes where Glide places textures, so the command stream).
+machine.boot model="pm7500" ram=65536 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=${$RASTER},memory=8m"
 assert machine.pci.slot[1].card.regs.raster == $RASTER "the requested raster backend is installed"
 machine.rtc.time = "2026-04-26T21:30:36"
 machine.scsi.attach_hd "${$img}" 0

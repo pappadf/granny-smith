@@ -27,6 +27,7 @@
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/svelte": "^5.2.4",
     "@types/node": "^22.10.5",
+    "@webgpu/types": "^0.1.72",
     "eslint": "^9.18.0",
     "eslint-plugin-svelte": "^3.10.1",
     "globals": "^15.14.0",

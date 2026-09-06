@@ -3619,7 +3619,7 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
     size_t n = strlen(path);
     if (n < 4 || strcasecmp(path + n - 4, ".png") != 0)
         return val_err("screen.save: path must end in .png (got '%s')", path);
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.save: framebuffer not available");
     if (save_framebuffer_as_png(d, path) < 0)
@@ -3659,7 +3659,7 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
     (void)self;
     (void)m;
     const char *ref = argv[0].s;
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.match: framebuffer not available");
     int rect[4];
@@ -3691,7 +3691,7 @@ static value_t screen_method_matches(struct object *self, const member_t *m, int
     (void)self;
     (void)m;
     const char *ref = argv[0].s;
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.matches: framebuffer not available");
     int rect[4];
@@ -3710,7 +3710,7 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
     (void)m;
     const char *ref = argv[0].s;
     const char *actual = (argc >= 2 && argv[1].s && *argv[1].s) ? argv[1].s : NULL;
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.match_or_save: framebuffer not available");
     int result = match_framebuffer_with_png(d, ref, NULL);
@@ -3736,7 +3736,7 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
 static value_t screen_method_checksum(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const display_t *d = system_display();
+    const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.checksum: framebuffer not available");
     if (argc == 0)
