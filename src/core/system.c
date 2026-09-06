@@ -286,6 +286,12 @@ uint8_t *system_framebuffer(void) {
     return d ? (uint8_t *)d->bits : NULL;
 }
 
+display_t *system_display_synced(void) {
+    display_t *d = system_display();
+    display_sync_pixels(d);
+    return d;
+}
+
 // System-level display accessor.  Per proposal §3.3.2: a machine with
 // built-in video (substrate .display — Plus, Lisa, the MCU family's DAFB)
 // shows that factory display; glue030-family machines source theirs from
@@ -677,6 +683,32 @@ __attribute__((weak)) int gs_video_in_frame(uint8_t *rgba) {
 
 __attribute__((weak)) void gs_video_in_state(bool active) {
     (void)active;
+}
+
+// Host GPU-transport seam (system.h): no GPU on a native host.
+__attribute__((weak)) bool gs_v2gpu_available(void) {
+    return false;
+}
+
+__attribute__((weak)) bool gs_v2gpu_attach(void *ctrl, uint32_t bytes) {
+    (void)ctrl;
+    (void)bytes;
+    return false;
+}
+
+__attribute__((weak)) void gs_v2gpu_detach(void *ctrl) {
+    (void)ctrl;
+}
+
+__attribute__((weak)) int gs_v2gpu_wait(volatile uint32_t *addr, uint32_t expected, uint32_t timeout_ms) {
+    (void)addr;
+    (void)expected;
+    (void)timeout_ms;
+    return -1;
+}
+
+__attribute__((weak)) void gs_v2gpu_notify(volatile uint32_t *addr) {
+    (void)addr;
 }
 
 // Host audio-input seam: the defaults model "no microphone attached" —

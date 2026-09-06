@@ -429,8 +429,11 @@ static value_t build_pci_slots(const hw_profile_t *p) {
             // attachment fits this socket.  Adding a card driver offers it
             // on every compatible machine with no machine-side edit.
             for (const pci_card_kind_t *const *k = pci_card_registry(); *k; k++) {
-                if (pci_card_fits_socket(s, *k))
-                    val_list_push(&cards, &n_cards, &cap_cards, build_pci_card((*k)->id));
+                if (!pci_card_fits_socket(s, *k))
+                    continue;
+                if ((*k)->offered && !(*k)->offered())
+                    continue; // needs a host facility this host lacks
+                val_list_push(&cards, &n_cards, &cap_cards, build_pci_card((*k)->id));
             }
         }
         val_map_put(b, "cards", val_list(cards, n_cards));

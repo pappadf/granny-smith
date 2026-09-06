@@ -41,9 +41,10 @@ def cfg_rd(reg) {
 }
 
 # --- The kind is registered and seatable with no machine edit. --------------
-assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2]" "the card must be registered"
+assert machine.pci.cards() == "[tnt_control, mach64_gx, cirrus_54m30, sym53c825_0, sym53c825_1, voodoo2, voodoo2_webgpu]" "the card must be registered"
 
-machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
+# The 8 MB board: the row's pinned values were captured on it.
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="memory=8m"
 assert machine.pci.slot[1].label == "A1" "the card sits in socket A1"
 assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the card is seated"
 
@@ -179,7 +180,7 @@ report_perf("tnt-pci-voodoo2", scheduler.instr_count)
 # IDENTICAL under any backend — which the analytic-timing invariant
 # delivers by construction: a draw consumes no scheduled time on either
 # backend, and only the framebuffer contents differ.
-machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=null"
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=null,memory=8m"
 cfg_wr(0x10, 0x81000000)
 cfg_wr(0x04, 0x0002)
 let BAR = machine.pci.slot[1].card.config.bar[0].base
@@ -204,7 +205,7 @@ assert machine.pci.slot[1].card.regs.read(0x25C) == 1 "...but the triangle RETIR
 # above ran on it.  Now the ENTIRE section replays on the NORMATIVE
 # synchronous walker, pci_option="raster=sw", against the same pinned
 # pixel values and counts: the equivalence is asserted, not assumed.
-machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=sw"
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="raster=sw,memory=8m"
 cfg_wr(0x10, 0x81000000)
 cfg_wr(0x04, 0x0002)
 let BAR = machine.pci.slot[1].card.config.bar[0].base
@@ -213,21 +214,33 @@ include "glide-init.script"
 include "draw.script"
 assert machine.pci.slot[1].card.regs.raster == "sw" "the replay ran on the normative walker"
 
-# --- The memory option: 8 MB and 12 MB boards. ------------------------------
+# --- The board memory: 12 MB by default, the 8 MB SKU on request. ----------
 # Both SKUs carry the same 4 MB framebuffer (both reach 800x600); the
-# option changes texture capacity only.  The guest-visible TMU probe
-# renders through the texture pipeline and lands with the rasteriser
-# milestone; the configured capacity is asserted through the card node.
+# choice changes texture capacity only, and nothing needs less — so it
+# is NOT advertised (the dialog offers no memory control) but stays
+# accepted through pci_option for the sizing probe's aliasing and the
+# goldens captured on the 8 MB board.
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
 assert machine.pci.slot[1].card.regs.fb_size == 0x400000 "4 MB framebuffer"
-assert machine.pci.slot[1].card.regs.tmu_size == 0x200000 "8 MB board: 2 MB per TMU is the default"
-machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="memory=12m"
-assert machine.pci.slot[1].card.regs.tmu_size == 0x400000 "12 MB board: 4 MB per TMU by option"
+assert machine.pci.slot[1].card.regs.tmu_size == 0x400000 "12 MB board: 4 MB per TMU is the default"
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2" pci_option="memory=8m"
+assert machine.pci.slot[1].card.regs.tmu_size == 0x200000 "8 MB board: 2 MB per TMU by the unadvertised option"
 assert machine.pci.slot[1].card.regs.fb_size == 0x400000 "...same 4 MB framebuffer either way"
+assert len(machine.profile("pm7500").pci_slots[0].cards[1].options) == 0 "the card advertises no options: the choices are the two kinds"
 
-# The card declares the option so a frontend can offer it without
-# knowing which card this is.
-assert machine.profile("pm7500").pci_slots[0].cards[1].options[0].key == "memory" "the card declares its option"
-assert machine.profile("pm7500").pci_slots[0].cards[1].options[0].default_value == "8m" "...and its default"
+# --- The two kinds: "voodoo2" draws exactly, "voodoo2_webgpu" on the host GPU.
+# The WebGPU variant is REGISTERED everywhere (a boot document or a
+# checkpoint may name it) but OFFERED only where a WebGPU device exists:
+# headless has none, so the 7500's socket lists the exact card alone.
+assert machine.profile("pm7500").pci_slots[0].cards[1].id == "voodoo2" "the exact card is offered"
+assert len(machine.profile("pm7500").pci_slots[0].cards) == 2 "...and the WebGPU variant is not, without a device"
+# Named anyway, it comes up: the same card, whose rasteriser falls back
+# to the thread backend at creation — honestly — and draws exactly.
+machine.boot model="pm7500" ram=32768 rom="${$ROM}" pci_card="voodoo2_webgpu"
+assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the WebGPU variant is the same card"
+assert machine.pci.slot[1].card.regs.raster == "thread" "voodoo2_webgpu without a GPU transport falls back to the thread backend"
+assert !machine.pci.slot[1].card.regs.gpu_engaged "...and GPU mode is never engaged"
+assert machine.pci.slot[1].card.regs.gpu_stats == "" "...with nothing to report"
 
 # --- The positive control: an EMPTY slot reads all-ones. --------------------
 # No "the card enumerated" assertion above is trusted until its negative

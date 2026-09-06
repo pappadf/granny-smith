@@ -303,4 +303,29 @@ vreg_wr(0x080, 0x80000000)
 idle3
 assert scheduler.cycles == $C0 "a triangle draw must not consume scheduled time"
 
+# --- The video gamma CLUT (divergence 10): 33 entries, interpolated ---------
+# A non-identity table so a dropped write cannot pass as identity: the
+# `gamma 0.4` shape's entry 16 = 150, entry 17 = 156, a linear ramp
+# elsewhere, entry 31 = 250 — and entry 32 = 0, the shape Quake's table
+# has (its 256-entry source read one past its end).  Interpolated
+# literally the top segment fell from 250 towards 0 and every saturated
+# channel displayed as 31: explosion cores came out blue.  The segment
+# is held flat at its lower entry.
+for k in 0..16 {
+    vreg_wr(0x228, ($k << 24) | (($k * 8) << 16) | (($k * 8) << 8) | ($k * 8))
+}
+vreg_wr(0x228, (16 << 24) | 0x969696)
+vreg_wr(0x228, (17 << 24) | 0x9C9C9C)
+for k in 18..32 {
+    vreg_wr(0x228, ($k << 24) | (($k * 8) << 16) | (($k * 8) << 8) | ($k * 8))
+}
+vreg_wr(0x228, (31 << 24) | 0xFAFAFA)
+vreg_wr(0x228, (32 << 24) | 0x000000)
+assert machine.pci.slot[1].card.regs.gamma(0, 128) == 150 "gamma: entry 16 anchors input 128 (the table was taken — the video unit runs)"
+assert machine.pci.slot[1].card.regs.gamma(1, 132) == 153 "gamma: four steps into a segment interpolate, (6*4+4)>>3 = 3"
+assert machine.pci.slot[1].card.regs.gamma(2, 64) == 64 "gamma: the linear part is identity"
+assert machine.pci.slot[1].card.regs.gamma(0, 248) == 250 "gamma: entry 31 anchors input 248"
+assert machine.pci.slot[1].card.regs.gamma(0, 252) == 250 "gamma: a descending top segment is held flat..."
+assert machine.pci.slot[1].card.regs.gamma(1, 255) == 250 "gamma: ...through 255 — white stays white, not 31 (blue explosions)"
+
 echo "draw: 3c drawing section complete"

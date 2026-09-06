@@ -27,12 +27,18 @@ import {
   reapplyMicrophoneSource,
 } from '@/state/microphone.svelte';
 import { showNotification } from '@/state/toasts.svelte';
+import {
+  onVoodooGpuAttach,
+  onVoodooGpuDetach,
+  onVoodooGpuOverlay,
+  whenVoodooGpuReady,
+} from '@/gpu/voodoo2Gpu.svelte';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
 import { resetDebugSections } from '@/state/debug.svelte';
 import type { MachineConfig } from './types';
 
-const BRIDGE_VERSION = 6;
+const BRIDGE_VERSION = 7;
 const OFF_VERSION = 0;
 const OFF_READY = 4;
 const OFF_PENDING = 8;
@@ -40,6 +46,7 @@ const OFF_DONE = 12;
 const OFF_PATH = 20;
 const OFF_ARGS = 1044;
 const OFF_OUTPUT = 9236;
+const OFF_GPU_AVAILABLE = 271380; // int32: the Voodoo2 takeover has a WebGPU device
 const PATH_SIZE = 1024;
 const ARGS_SIZE = 8192;
 
@@ -93,6 +100,9 @@ interface EmscriptenModuleConfig {
   onAudioInReady?(ptr: number, len: number, rate: number): void;
   onAudioInState?(active: boolean): void;
   onAudioInInjected?(path: string): void;
+  onVoodooGpuAttach?(ctrl: number, bytes: number): void;
+  onVoodooGpuDetach?(ctrl: number): void;
+  onVoodooGpuOverlay?(visible: number): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -171,6 +181,9 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onAudioInReady,
     onAudioInState,
     onAudioInInjected,
+    onVoodooGpuAttach,
+    onVoodooGpuDetach,
+    onVoodooGpuOverlay,
   });
 
   bridgePtr = Module._get_js_bridge();
@@ -178,6 +191,13 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
   if (v !== BRIDGE_VERSION) {
     throw new Error(`js_bridge version mismatch: C=${v}, JS=${BRIDGE_VERSION}`);
   }
+  // Tell the core whether the Voodoo2 takeover has a WebGPU device
+  // (the worker was started by ScreenView before the module; its answer
+  // is normally in long before a machine boots).
+  void whenVoodooGpuReady().then((ok) => {
+    if (Module && bridgePtr)
+      Atomics.store(Module.HEAP32, (bridgePtr + OFF_GPU_AVAILABLE) >> 2, ok ? 1 : 0);
+  });
   moduleReady = true;
 
   // Activate per-machine checkpoint directory before anything that opens
