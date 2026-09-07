@@ -5,7 +5,9 @@
 // Shared GLUE-family lifecycle leaves — see mac030_glue.h.
 
 #include "mac030_glue.h"
+
 #include "appletalk.h"
+#include "machine_teardown.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_* substrate methods (shared by all Macs)
 #include "machine_profile.h" // machine_substrate_t
@@ -347,46 +349,7 @@ void mac030_glue_teardown(config_t *cfg, struct adb *adb, struct asc *asc, struc
         cfg->adb = NULL;
     }
 
-    // config_t-owned devices.
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via2) {
-        via_delete(cfg->via2);
-        cfg->via2 = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first — it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    machine_teardown_config_devices(cfg);
 }
 
 // ============================================================
