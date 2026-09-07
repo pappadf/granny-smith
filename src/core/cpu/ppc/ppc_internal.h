@@ -16,6 +16,7 @@
 
 #include "machine_profile.h" // CPU_MODEL_PPC601 / CPU_MODEL_PPC604
 #include "memory.h"
+#include "ppc_softfp.h" // FPSCR bit masks (leaf header: stdint only)
 
 #include <assert.h>
 #include <stdbool.h>
@@ -198,6 +199,27 @@ static inline bool ppc_is_604(const ppc_t *p) {
 // MSR bits the active model implements (mtmsr/rfi/pokes mask to this).
 static inline uint32_t ppc_msr_mask(const ppc_t *p) {
     return ppc_is_604(p) ? PPC_MSR_MASK_604 : PPC_MSR_MASK;
+}
+
+// FPSCR bits no "move to FPSCR" instruction may write on the active model.
+// Always FEX and VX (derived summaries — MPCFPE32B Table 2-1: "cannot alter
+// explicitly"), plus VXSOFT and VXSQRT on the 601, which 601UM Table 2-1
+// marks "Not implemented in the 601" (bits 21 and 22).
+//
+// Not implemented means the bits do not exist, not merely that hardware
+// never raises them: VXSOFT can ONLY ever be set by software — MPCFPE32B
+// bit 21, "can be altered only by the mcrfs, mtfsfi, mtfsf, mtfsb0, or
+// mtfsb1 instructions" — so if the 601 held the storage the bit would be
+// fully functional and there would be nothing to call unimplemented.  The
+// same row style marks VXSQRT, whose purpose is likewise to let software
+// simulate the fsqrt/frsqrte the 601 does not have (601UM Table 5-17).
+//
+// Consequence for mtfsb1: writing an unimplemented bit is a no-op, so it
+// causes no 0->1 transition and therefore does NOT set FX.  The 604 keeps
+// both bits — the 604UM has no FPSCR table of its own and defers to the
+// architecture, where bits 21 and 22 are ordinary sticky bits.
+static inline uint32_t ppc_fpscr_nowrite(const ppc_t *p) {
+    return PPC_FPSCR_UNWRITABLE | (ppc_is_604(p) ? 0u : (PPC_FPSCR_VXSOFT | PPC_FPSCR_VXSQRT));
 }
 
 // MSR bits an exception entry preserves: ME and EP on both models, plus PM
