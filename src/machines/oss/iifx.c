@@ -294,7 +294,7 @@ static void iifx_teardown(config_t *cfg);
 static void iifx_reset(config_t *cfg);
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp);
 static void iifx_memory_layout_init(config_t *cfg);
-static void iifx_update_ipl(config_t *cfg, int source, bool active);
+static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
 static void iifx_trigger_vbl(config_t *cfg);
 
 // Fills one page-table entry with a direct host mapping.
@@ -1361,11 +1361,25 @@ static void iifx_scsi_irq(void *context, bool irq, bool drq) {
 }
 
 // Handles external machine IRQ requests such as NuBus slots.
-static void iifx_update_ipl(config_t *cfg, int source, bool active) {
+// substrate.nubus_slot_irq — the OSS is its own interrupt controller and
+// aggregates the slots internally, so the umbrella edge is the chip's
+// business (the MDU/RBV shape).  Slots $9..$E are OSS source bits 0..5.
+//
+// This used to go the long way round: nubus.c dispatched to the shared
+// mac030_nubus_slot_irq_via_ipl, which converted the slot to a source mask
+// and called back out through substrate.update_ipl into a three-line
+// adapter here.  That indirection was the last survivor of nubus.c's old
+// "non-VIA2 path"; the IIfx was the only machine still using it, so both
+// hops and the vtable slot behind them are gone.
+static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    (void)umbrella_edge; // the OSS aggregates internally
+    int source = slot - 0x9;
+    if (source < 0 || source > 5)
+        return;
     iifx_state_t *st = iifx_state(cfg);
     if (!st || !st->oss)
         return;
-    oss_set_source_mask(st->oss, (uint16_t)source, active);
+    oss_set_source_mask(st->oss, (uint16_t)(1u << source), active);
 }
 
 // Pulses the IIfx 60 Hz sources.
@@ -1735,9 +1749,8 @@ static const machine_substrate_t iifx_substrate = {
     .reset = iifx_reset,
     .teardown = iifx_teardown,
     .checkpoint_save = iifx_checkpoint_save,
-    .update_ipl = iifx_update_ipl,
     .trigger_vbl = iifx_trigger_vbl,
-    .nubus_slot_irq = mac030_nubus_slot_irq_via_ipl,
+    .nubus_slot_irq = iifx_nubus_slot_irq, // slots $9-$E → OSS source bits 0-5
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,
     .input_key = mac_input_key,

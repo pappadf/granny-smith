@@ -198,7 +198,8 @@ typedef struct media_slot {
 
 // Machine lifecycle + host-input vtable.  The behavior half of a machine
 // (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of
-// these.  system.c / nubus.c dispatch through it; every hook is NULL-safe.
+// these.  system.c / nubus.c / pci.c dispatch through it; every hook is
+// NULL-safe.
 // (memory_layout_init and checkpoint_restore are deliberately absent — they
 // were never dispatched: each init runs its own layout directly and restore
 // is folded into init.)
@@ -214,15 +215,20 @@ typedef struct machine_substrate {
     void (*teardown)(struct config *cfg);
     void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 
-    void (*update_ipl)(struct config *cfg, int source, bool active); // NuBus IRQ routing
     void (*trigger_vbl)(struct config *cfg);
 
     // Drive NuBus slot `slot` ($9..$E) /NMRQ active/inactive.  `umbrella_edge`
     // is true when this transition flips the "any slot asserted" aggregate.
-    // Every NuBus machine implements it (GLUE → VIA2 port-A bit + CA1 on the
-    // umbrella edge; MDU/OSS → the chipset's own IRQ controller via update_ipl);
-    // keeps nubus.c machine-agnostic — no cfg->via2 poke (proposal §4.4).  NULL
-    // on non-NuBus machines (Plus / Lisa), which never reach it.
+    // Every NuBus machine implements it, and each converts the slot number to
+    // its own controller's numbering ITSELF: GLUE → VIA2 port-A bit + CA1 on
+    // the umbrella edge; MCU → VIA2 PA1-5 + /SLOTIRQ; MDU → the RBV's slot
+    // register; OSS → OSS source bits; AV → PSC SInt bits 3-5; PDM → BART.
+    // There is deliberately no shared "convert slot to an IRQ source mask"
+    // helper: slot numbering matches a machine's interrupt-source numbering
+    // only by coincidence, and the one that existed put a IIci's slot $C on
+    // its NMI source (mdu.c).  Keeps nubus.c machine-agnostic — no cfg->via2
+    // poke (proposal §4.4).  NULL on non-NuBus machines (Plus / Lisa), which
+    // never reach it.
     void (*nubus_slot_irq)(struct config *cfg, int slot, bool active, bool umbrella_edge);
 
     // Drive PCI slot `slot`'s strapped INTA-D line active/inactive.  The

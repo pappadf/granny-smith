@@ -895,13 +895,6 @@ static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
     tnt_gc_set_source(cfg, d->int_line, active);
 }
 
-// Chipset IRQ spine.  Nothing routes through it: every on-board source is
-// a Grand Central interrupt number (tnt_gc_set_source).
-static void tnt_update_ipl(config_t *cfg, int source, bool active) {
-    (void)cfg;
-    LOG(1, "update_ipl source=%d active=%d (TNT sources drive Grand Central directly)", source, active);
-}
-
 // Floppy: the one internal SuperDrive behind SWIM3 (swim3.c).  Drive 1 is
 // the only bay the family has — no external port — so slot 1 refuses
 // whatever the caller asks.
@@ -931,7 +924,6 @@ const machine_substrate_t tnt_substrate = {
     .reset = tnt_reset,
     .teardown = tnt_teardown,
     .checkpoint_save = tnt_checkpoint_save,
-    .update_ipl = tnt_update_ipl,
     .pci_slot_irq = tnt_pci_slot_irq,
     .trigger_vbl = tnt_trigger_vbl,
     .fd_insert = tnt_fd_insert,

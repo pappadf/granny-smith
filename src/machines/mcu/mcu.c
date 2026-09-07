@@ -909,7 +909,6 @@ const machine_substrate_t mcu_substrate = {
     .reset = mcu_reset,
     .teardown = mcu_teardown,
     .checkpoint_save = mcu_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl, // VIA1→1, VIA2→2, SCC→4, NMI→7 (ref §13)
     .trigger_vbl = mcu_trigger_vbl,
     .nubus_slot_irq = mcu_nubus_slot_irq, // slots → VIA2 PA1-PA5 + /SLOTIRQ aggregate
     .fd_insert = mac_fd_insert,

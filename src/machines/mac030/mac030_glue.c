@@ -271,18 +271,6 @@ void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbre
         via_input_c(cfg->via2, /*CA1*/ 0, /*pin*/ 0, active ? 0 : 1);
 }
 
-// substrate.nubus_slot_irq for chipsets whose own controller aggregates the
-// slots (MDU's RBV, OSS): route the slot source through the substrate's own
-// update_ipl, exactly as the former nubus.c non-VIA2 path did.
-void mac030_nubus_slot_irq_via_ipl(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge; // the controller aggregates internally
-    int source = slot - 0x9;
-    if (source < 0 || source > 5)
-        return;
-    if (cfg->machine->substrate->update_ipl)
-        cfg->machine->substrate->update_ipl(cfg, 1 << source, active);
-}
-
 // Family-shared teardown delete-chain.  Order matches the (identical)
 // per-machine teardowns; NuBus cards are already gone (system_destroy calls
 // nubus_delete before machine teardown — §6.2 ownership invariant).
@@ -436,7 +424,6 @@ const machine_substrate_t glue_substrate = {
     .reset = glue_reset,
     .teardown = glue_teardown,
     .checkpoint_save = glue_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = glue_trigger_vbl,
     .nubus_slot_irq = mac030_glue_nubus_slot_irq,
     .fd_insert = mac_fd_insert,

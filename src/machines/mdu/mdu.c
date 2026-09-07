@@ -209,14 +209,18 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 
 // substrate.nubus_slot_irq — the RBV aggregates NuBus slot interrupts itself
 // (RvSInt & RvSEnb -> RvAnySlot -> the chip's combined interrupt -> IPL 2), so a
-// slot source has to go to the chip rather than straight to update_ipl.
+// slot source has to go to the chip, not to a generic IPL setter.
 //
-// The shared mac030_nubus_slot_irq_via_ipl passes `1 << (slot - 9)` as the
-// machine's IRQ SOURCE mask, and on this family every one of those bits is
-// already spoken for: IICI_IRQ_VIA1/RBV/SCC/NMI are 1<<0 .. 1<<3.  So a card in
-// slot $C asserted the NMI source and the machine took a level-7 autovector
-// every few instructions forever — which is what "a 24AC beside the live
-// built-in RBV hangs the boot at Welcome" actually was (ledger §8).
+// Worth keeping as history, because it is why the generic path no longer
+// exists.  nubus.c once dispatched families like this one through a shared
+// shim that passed `1 << (slot - 9)` as the machine's IRQ SOURCE mask -- but
+// on this family every one of those bits is already spoken for:
+// IICI_IRQ_VIA1/RBV/SCC/NMI are 1<<0 .. 1<<3.  So a card in slot $C asserted
+// the NMI source and the machine took a level-7 autovector every few
+// instructions forever -- which is what "a 24AC beside the live built-in RBV
+// hangs the boot at Welcome" actually was (ledger §8).  Slot numbering only
+// coincidentally matches a machine's interrupt-source numbering; every family
+// now converts it itself.
 //
 // RvSInt numbering is logical: 0 is the built-in video (RvIRQ0, bit 6) and
 // 1..6 are RvIRQ1..6, so NuBus $9..$E map to 1..6.
@@ -245,7 +249,6 @@ const machine_substrate_t mdu_substrate = {
     .reset = mdu_reset,
     .teardown = mdu_teardown,
     .checkpoint_save = mdu_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = mdu_trigger_vbl,
     .nubus_slot_irq = mdu_nubus_slot_irq, // straight to the RBV's slot-interrupt register
     .fd_insert = mac_fd_insert,

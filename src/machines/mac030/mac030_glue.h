@@ -222,12 +222,6 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active);
 // pulses CA1.  (se30/iicx/iix.)
 void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
 
-// substrate.nubus_slot_irq for chipsets whose own IRQ controller aggregates the
-// slots (MDU's RBV, OSS): route the slot source through the substrate's own
-// update_ipl.  umbrella_edge is irrelevant (the controller aggregates
-// internally).  (iici/iisi/iifx.)
-void mac030_nubus_slot_irq_via_ipl(config_t *cfg, int slot, bool active, bool umbrella_edge);
-
 // Family-shared teardown delete-chain: scheduler_stop → mmu → floppy → asc →
 // adb → scsi → via2 → via1 → scc → rtc → scheduler → cpu → mem_map → debugger.
 // The machine-owned devices (which live in its private state, not config_t)

@@ -272,6 +272,31 @@ static void av_via1_irq(void *context, bool active) {
     av_update_ipl((config_t *)context, AV_IRQ_VIA1, active);
 }
 
+// substrate.nubus_slot_irq — the PSC aggregates NuBus slot interrupts itself,
+// so the bus drives one SInt source per slot and the PSC raises the VIA2
+// window's CA1 bit while any of them is asserted (psc.c psc_update_slot_bit).
+// The umbrella edge is therefore the chip's business, not ours, exactly as on
+// the MDU's RBV.
+//
+// Slots C/D/E map to SInt bits 3/4/5 (psc.h; the guest's PSCVIA2SlotInt reads
+// PSCVIA2SInt under mask ~$78 -- slots C/D/E plus on-board VBL on bit 6 --
+// and inverts, the register reading active-LOW).  So bit = slot - $9, and
+// av_psc_slot_source owns the inversion.
+//
+// No AV board declares a slot table yet (.slots = NULL on both, "declared but
+// unpopulated"), so nothing reaches this today.  It exists so the first AV
+// declaration-ROM card does not have to discover that its /NMRQ went nowhere.
+static void av_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    (void)umbrella_edge; // the PSC aggregates internally
+    av_state_t *st = (av_state_t *)cfg->machine_context;
+    if (!st || !st->psc)
+        return;
+    int bit = slot - 0x9;
+    if (bit < 3 || bit > 5) // only C/D/E exist on this family
+        return;
+    av_psc_slot_source(st->psc, bit, active);
+}
+
 // ============================================================
 // SCSI: the Curio's 53C96 at island $18000 ($10 register stride)
 // ============================================================
@@ -953,7 +978,7 @@ const machine_substrate_t av_substrate = {
     .reset = av_reset,
     .teardown = av_teardown,
     .checkpoint_save = av_checkpoint_save,
-    .update_ipl = av_update_ipl, // VIA1→1, VIA2→2, L3-L6→3-6, NMI→7
+    .nubus_slot_irq = av_nubus_slot_irq, // slots C/D/E → PSC SInt bits 3-5
     .trigger_vbl = av_trigger_vbl,
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,

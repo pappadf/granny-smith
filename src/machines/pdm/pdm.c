@@ -556,14 +556,6 @@ static void pdm_trigger_vbl(config_t *cfg) {
         nubus_tick_vbl(cfg->nubus);
 }
 
-// Chipset IRQ spine.  Nothing on this family routes through it: the NuBus
-// slots have their own hook below, and every on-board source is already an
-// AMIC ICR bit (pdm_amic_set_source).
-static void pdm_update_ipl(config_t *cfg, int source, bool active) {
-    (void)cfg;
-    LOG(1, "update_ipl source=%d active=%d (PDM sources drive the AMIC ICR directly)", source, active);
-}
-
 // A NuBus card's /NMRQ.  The umbrella edge is AMIC's own business (the
 // pseudo-VIA2 "any slot" bit is recomputed from the slot levels on every
 // read), so the bus controller's edge hint is not needed here.
@@ -597,7 +589,6 @@ const machine_substrate_t pdm_substrate = {
     .reset = pdm_reset,
     .teardown = pdm_teardown,
     .checkpoint_save = pdm_checkpoint_save,
-    .update_ipl = pdm_update_ipl,
     .nubus_slot_irq = pdm_nubus_slot_irq,
     .trigger_vbl = pdm_trigger_vbl,
     .fd_insert = pdm_fd_insert,
