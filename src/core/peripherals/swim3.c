@@ -26,7 +26,6 @@
 // on this emulator (`debug.log swim3 5`), not from its source.
 
 #include "swim3.h"
-#include "floppy.h"
 
 #include "floppy.h"
 #include "log.h"

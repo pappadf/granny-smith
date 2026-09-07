@@ -31,3 +31,16 @@ jobs:
         run: |
           find src -name '*.c' -o -name '*.h' \
             | xargs clang-format-18 --dry-run --Werror
+
+      # STYLE_GUIDE.md "File Structure": every source file begins with the
+      # two-line copyright notice.  The tree is clean; this keeps it that way
+      # (the 2026-09-03 review found four files missing it, and F-26 a fifth).
+      - name: Check SPDX headers (src/)
+        run: |
+          missing=$(find src \( -name '*.c' -o -name '*.h' \) \
+            -exec sh -c 'head -1 "$1" | grep -q "^// SPDX-License-Identifier:" || echo "$1"' _ {} \;)
+          if [ -n "$missing" ]; then
+            echo "Files whose first line is not an SPDX identifier:"
+            echo "$missing"
+            exit 1
+          fi
