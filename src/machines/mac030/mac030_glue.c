@@ -75,6 +75,58 @@ struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t ro
     return mmu;
 }
 
+// The GLUE family's memory layout — RAM, ROM and the I/O dispatcher.
+//
+// The SE/30, IIcx and IIx are one motherboard design with one GLUE, so this
+// was three copies of the same function differing only in the constant NAMES
+// (SE30_ROM_START vs IICX_ROM_START, both $40000000) and in a short tail.
+// The tail is what actually differs and stays per-board (memory_layout_tail):
+// the SE/30 maps its built-in video's VRAM/VROM; the IIcx and IIx fill page
+// entries for NuBus cards' host-backed regions.  Both then arm the overlay.
+//
+// The ROM window comes from the board descriptor, which already carried it
+// for mac030_build_mmu — so the duplicated per-machine #defines are gone.
+// I/O is the $10000000 window immediately above the ROM window on all three.
+void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
+    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+
+    uint32_t ram_size = cfg->ram_size;
+    uint32_t rom_size = cfg->machine->rom_size;
+    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
+    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size); // ROM follows RAM in the flat buffer
+
+    // --- RAM, with the SIMM address-line wrap the ROM's test depends on ---
+    //
+    // SIMMs ignore address bits above their capacity, so the byte at
+    // <ram_size> is the same cell as the byte at 0.  The ROM's
+    // ram_address_test writes to the top-of-RAM address and checks whether the
+    // pattern appears at a lower alias; without the mirror the write falls
+    // into unmapped space and the test reports a spurious address-bus error.
+    //
+    // Its table has two kinds of row: "BMI" rows (alias = $FFFFFFFF) that
+    // expect NO aliasing, and non-BMI rows that expect the wrap.  BMI rows are
+    // 1, 4 and 16 MB; every other total (2, 5, 8, 32, 64 …) expects the wrap,
+    // so those get one extra mirror.
+    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
+    bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
+    uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
+    for (uint32_t p = 0; p < map_end_page && p < g_page_count; p++)
+        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
+
+    // --- ROM, mirrored across the board's window (read-only) ---
+    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
+    uint32_t rom_start_page = desc->rom_base >> PAGE_SHIFT;
+    uint32_t rom_end_page = desc->rom_end >> PAGE_SHIFT;
+    if (rom_pages > 0) {
+        for (uint32_t p = rom_start_page; p < rom_end_page && p < g_page_count; p++)
+            mac030_fill_page(p, rom_data + (((p - rom_start_page) % rom_pages) << PAGE_SHIFT), false);
+    }
+
+    // --- I/O dispatcher, the window directly above the ROM window ---
+    mac030_io_fill_interface(&st->io_interface);
+    memory_map_add(cfg->mem_map, desc->rom_end, MAC030_GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
+}
+
 // Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.
 void mac030_glue_finish(config_t *cfg, checkpoint_t *cp) {
     cfg->debugger = debug_init();
@@ -136,7 +188,9 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         board->post_nubus(cfg);
 
     memory_set_bus_error_range(cfg->mem_map, board->desc->bus_err_lo, board->desc->bus_err_hi);
-    board->memory_layout(cfg);
+    mac030_glue_memory_layout(cfg, board->desc);
+    if (board->memory_layout_tail)
+        board->memory_layout_tail(cfg);
 
     if (cp) {
         if (board->ckpt_restore_extra)

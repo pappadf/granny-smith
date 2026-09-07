@@ -1426,8 +1426,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint16 = iifx_rom_write_uint16,
         .write_uint32 = iifx_rom_write_uint32,
     };
-    memory_map_add(cfg->mem_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "IIfx ROM switch", &st->rom_interface,
-                   cfg);
+    memory_map_add(cfg->mem_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->rom_interface, cfg);
 
     // Reads keep the machID pre-check (above the mirror) then delegate to the
     // shared engine; writes go straight to the engine.  ctx is the engine's
@@ -1440,7 +1439,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint16 = mac030_io_write_uint16,
         .write_uint32 = mac030_io_write_uint32,
     };
-    memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "IIfx I/O", &st->io_interface, &st->iifx_io);
+    memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "I/O", &st->io_interface, &st->iifx_io);
 
     // Project card host regions (VRAM/declaration ROMs) plus their Mode-24
     // slot aliases into the page table (shared helper; see iicx.c).

@@ -58,11 +58,8 @@ LOG_USE_CATEGORY_NAME("board");
 // SE/30 ROM region: 256 KB mirrored across 256 MB.  RAM occupies the
 // first 1 GiB (so RAM_END == ROM_START).
 #define SE30_ROM_START 0x40000000UL
-#define SE30_ROM_END   0x50000000UL
 
 // SE/30 I/O region: 256 MB, mirrored every $20000
-#define SE30_IO_BASE 0x50000000UL
-#define SE30_IO_SIZE 0x10000000UL
 // (I/O window offsets + the dispatcher are shared with IIcx/IIx — see
 // mac030_glue_io.c.)
 
@@ -155,63 +152,11 @@ static void se30_set_rom_overlay(config_t *cfg, bool overlay) {
 // VRAM: $FE000000-$FE00FFFF (64 KB, writable)
 // VROM: $FEFFE000-$FEFFFFFF (8 KB, read-only, synthesised declaration ROM)
 // ROM overlay at $00000000 is active on reset.
-static void se30_memory_layout_init(config_t *cfg) {
+// The SE/30's share of the memory layout: its built-in video.  RAM, the ROM
+// window and the I/O dispatcher are the family's (mac030_glue_memory_layout);
+// this is the part only a machine with a framebuffer on the board has.
+static void se30_memory_layout_tail(config_t *cfg) {
     se30_state_t *se30 = se30_state(cfg);
-
-    uint32_t ram_size = cfg->ram_size;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    // ROM data is stored immediately after RAM in the flat buffer
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-
-    // --- RAM pages: $00000000 - ram_size (writable, with SIMM aliasing) ---
-    //
-    // Physical RAM is mapped directly at $0.  An additional mirror of the full
-    // RAM image is placed immediately above, at ram_size .. 2*ram_size-1.
-    // This emulates the real SE/30 SIMM address-line wrapping: SIMMs ignore
-    // address bits above their capacity, so the byte at <ram_size> is the same
-    // physical cell as the byte at 0.  The ROM's ram_address_test writes to
-    // the top-of-RAM address and checks whether the pattern appears at a lower
-    // alias; without this mirror, the write falls into unmapped space and the
-    // test fails with a spurious address-bus error.
-    //
-    // The ROM's address test table uses BMI rows (alias=$FFFFFFFF) for 1, 4,
-    // and 16 MB — these expect NO aliasing at the boundary.  All other sizes
-    // (2, 5, 8, 32, 64 … MB) use non-BMI rows that expect the top-of-RAM
-    // write to alias back to a lower address.  We map one extra mirror for
-    // non-BMI sizes so the alias check succeeds.
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-
-    // Determine whether SIMM aliasing is needed.  The ROM's ram_address_test
-    // table has two kinds of entries: "BMI" rows (alias = $FFFFFFFF) that
-    // expect NO aliasing, and "non-BMI" rows (alias = an address) that
-    // expect the top-of-RAM write to alias back.  BMI rows correspond to
-    // the GLUE's standard bank sizes (1, 4, 16, 64 MB); non-BMI rows cover
-    // intermediate totals (2, 5, 8, 32 … MB).  We only need a mirror for
-    // sizes whose top-of-RAM entry is non-BMI.
-    // BMI rows in the ROM table: 1 MB ($100000), 4 MB ($400000), 16 MB ($1000000).
-    // All other sizes (including 64 MB) use non-BMI rows that expect aliasing.
-    bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
-    uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
-
-    for (uint32_t p = 0; p < map_end_page && (int)p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
-
-    // --- ROM pages: $40000000 - $4FFFFFFF (256 KB mirrored, read-only) ---
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = SE30_ROM_START >> PAGE_SHIFT;
-    uint32_t rom_end_page = SE30_ROM_END >> PAGE_SHIFT;
-
-    if (rom_pages > 0) {
-        for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
-            uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
-        }
-    }
-
-    // --- I/O dispatcher: $50000000 - $5FFFFFFF ---
-    mac030_io_fill_interface(&se30->io_interface);
-    memory_map_add(cfg->mem_map, SE30_IO_BASE, SE30_IO_SIZE, "SE/30 I/O", &se30->io_interface, &se30->glue_io);
 
     // --- VRAM: $FEE00000 - $FEE0FFFF (64 KB writable) ---
     // Mirror the 64 KB across the 1 MB decode window $FEE00000-$FEEFFFFF
@@ -462,7 +407,7 @@ static const mac030_glue_board_t se30_board = {
     .via2_output = se30_via2_output,
     .via2_shift_out = se30_via2_shift_out,
     .setup_id = se30_setup_id,
-    .memory_layout = se30_memory_layout_init,
+    .memory_layout_tail = se30_memory_layout_tail,
     .pre_devices = se30_pre_devices,
     .post_nubus = se30_post_nubus,
     .ckpt_restore_extra = se30_ckpt_restore_extra,

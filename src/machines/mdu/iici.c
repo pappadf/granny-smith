@@ -166,7 +166,7 @@ static void iici_memory_layout_init(config_t *cfg) {
     }
 
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "IIci I/O", &st->io_interface, &st->mdu_io);
+    memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // Wire the built-in framebuffer (a registered host region) and its
     // Mode-24 slot-$B alias into the page table — same machinery as the

@@ -583,7 +583,7 @@ static void mcu_memory_layout_init(config_t *cfg) {
     // through $53FFFFFF, current RE through $50FFFFFF — we register the
     // Apple-documented extent and let the mirror mask fold accesses; ref §6).
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, 0x50000000u, 0x04000000u, "MCU I/O", &st->io_interface, &st->io);
+    memory_map_add(cfg->mem_map, 0x50000000u, 0x04000000u, "I/O", &st->io_interface, &st->io);
 
     // DAFB registers at $F9800000; VRAM pages direct at $F9000000.
     memory_map_add(cfg->mem_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "DAFB regs",

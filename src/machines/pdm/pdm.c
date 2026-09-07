@@ -182,7 +182,7 @@ static void pdm_memory_layout(config_t *cfg) {
     st->io_interface.write_uint8 = pdm_io_write8;
     st->io_interface.write_uint16 = pdm_io_write16;
     st->io_interface.write_uint32 = pdm_io_write32;
-    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00050000u, "PDM I/O", &st->io_interface, cfg);
+    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00050000u, "I/O", &st->io_interface, cfg);
 
     // Machine-ID page.
     st->id_interface.read_uint8 = pdm_id_read8;

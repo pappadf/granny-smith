@@ -146,6 +146,16 @@ typedef struct mac030_board_desc {
     asc_mix_t asc_mix; // speaker fold of the ASC stereo pair (SE/30 sums; IIx/IIcx take A)
 } mac030_board_desc_t;
 
+// The I/O window sits directly above the ROM window and is 256 MB on every
+// GLUE machine ($50000000-$5FFFFFFF), so its base is desc->rom_end.
+#define MAC030_GLUE_IO_SIZE 0x10000000UL
+
+// The GLUE family's shared memory layout: RAM (with the SIMM address wrap the
+// ROM's ram_address_test needs), the ROM window from desc->rom_base/rom_end,
+// and the I/O dispatcher.  mac030_glue_init calls this, then the board's
+// memory_layout_tail.  One motherboard design, one function.
+void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
+
 // Create the 68030 PMMU over a board's ROM window, make it the global MMU and
 // attach it to the CPU.  Returns the MMU; the caller sets any TT registers.
 struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end);
@@ -165,7 +175,12 @@ typedef struct mac030_glue_board {
 
     void (*setup_id)(config_t *cfg); // machine-ID strap + VIA2 idle lines
 
-    void (*memory_layout)(config_t *cfg); // RAM/ROM/IO page-table setup + overlay
+    // Per-board remainder of the memory layout, run right after the shared
+    // mac030_glue_memory_layout() has done RAM, ROM and the I/O dispatcher:
+    // the SE/30 maps its built-in video's VRAM/VROM, the IIcx and IIx fill
+    // page entries for NuBus cards' host-backed regions, and both then arm
+    // the ROM overlay.  Optional, like the other tail hooks.
+    void (*memory_layout_tail)(config_t *cfg);
 
     void (*pre_devices)(config_t *cfg); // optional: before device construction (SE/30 VBL event type)
     void (*post_nubus)(config_t *cfg); // optional: after nubus_init (SE/30 VRAM/VROM wiring)

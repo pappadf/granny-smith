@@ -574,7 +574,7 @@ static void av_memory_layout(config_t *cfg) {
     // I/O island: the serialized window at $50F00000 plus its non-serialized
     // alias at $50F40000, folded by the $3FFFF mirror mask.
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00080000u, "AV I/O", &st->io_interface, &st->io);
+    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00080000u, "I/O", &st->io_interface, &st->io);
 
     // CPU-ID register page at $5FFFF000 (the register itself is $5FFFFFFC).
     st->cpuid_interface.read_uint8 = av_cpuid_read8;

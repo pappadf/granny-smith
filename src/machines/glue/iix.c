@@ -135,7 +135,7 @@ static const mac030_glue_board_t iix_board = {
     .via2_output = iix_via2_output,
     .via2_shift_out = iix_via2_shift_out,
     .setup_id = iix_setup_id,
-    .memory_layout = iicx_memory_layout_init,
+    .memory_layout_tail = iicx_memory_layout_tail,
 };
 
 // ============================================================

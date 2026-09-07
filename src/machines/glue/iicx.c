@@ -97,32 +97,12 @@ void iicx_set_rom_overlay(config_t *cfg, bool overlay) {
 // Memory layout
 // ============================================================
 
-void iicx_memory_layout_init(config_t *cfg) {
+// The IIcx/IIx share of the memory layout: NuBus cards' host-backed regions.
+// RAM, the ROM window and the I/O dispatcher are the family's
+// (mac030_glue_memory_layout); these two machines differ from the SE/30 only
+// in having card slots instead of a framebuffer on the board.
+void iicx_memory_layout_tail(config_t *cfg) {
     iicx_state_t *st = iicx_state(cfg);
-
-    uint32_t ram_size = cfg->ram_size;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-
-    uint32_t ram_pages = ram_size >> PAGE_SHIFT;
-    bool standard_bank = (ram_size == 1 * 1024 * 1024 || ram_size == 4 * 1024 * 1024 || ram_size == 16 * 1024 * 1024);
-    uint32_t map_end_page = standard_bank ? ram_pages : (ram_pages * 2);
-    for (uint32_t p = 0; p < map_end_page && (int)p < g_page_count; p++)
-        mac030_fill_page(p, ram_base + ((p % ram_pages) << PAGE_SHIFT), true);
-
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint32_t rom_start_page = IICX_ROM_START >> PAGE_SHIFT;
-    uint32_t rom_end_page = IICX_ROM_END >> PAGE_SHIFT;
-    if (rom_pages > 0) {
-        for (uint32_t p = rom_start_page; p < rom_end_page && (int)p < g_page_count; p++) {
-            uint32_t offset_in_rom = (p - rom_start_page) % rom_pages;
-            mac030_fill_page(p, rom_data + (offset_in_rom << PAGE_SHIFT), false);
-        }
-    }
-
-    mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, IICX_IO_BASE, IICX_IO_SIZE, "IIcx I/O", &st->io_interface, &st->glue_io);
 
     // Populate page-table entries for any host-backed slot regions
     // registered by NuBus cards (matches the SE/30 pattern of explicit
@@ -257,7 +237,7 @@ static const mac030_glue_board_t iicx_board = {
     .via2_output = iicx_via2_output,
     .via2_shift_out = iicx_via2_shift_out,
     .setup_id = iicx_setup_id,
-    .memory_layout = iicx_memory_layout_init,
+    .memory_layout_tail = iicx_memory_layout_tail,
 };
 
 // ============================================================
