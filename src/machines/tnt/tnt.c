@@ -32,6 +32,7 @@
 #include "dbdma.h"
 
 #include "adb.h"
+#include "appletalk.h"
 #include "checkpoint_images.h"
 #include "debug.h"
 #include "debug_mac.h"
@@ -488,6 +489,16 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     cfg->scc = scc_init(NULL, cfg->scheduler, tnt_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 15667200, 3672000);
 
+    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
+    // the SCC exists -- and, because the checkpoint stream is positional, in
+    // the same relative place the save writes it (right after scc_checkpoint).
+    // LocalTalk is the only AppleTalk path these machines have here: the
+    // Grand Central MACE window is a #define and nothing else, so there is no
+    // EtherTalk to prefer.  NOTE: the stack has only ever been exercised
+    // against a Mac Plus guest (tests/integration/appletalk-*), so this wires
+    // the family up rather than proving it -- see proposal-test-fixes.md.
+    appletalk_init(cfg->scheduler, cfg->scc, cp);
+
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
     // $200 centres.  Timer clock: 783.36 kHz is the classic rate and the
     // starting assumption — the actual TNT VIA input clock is pinned at
@@ -737,6 +748,9 @@ static void tnt_teardown(config_t *cfg) {
         via_delete(cfg->via1);
         cfg->via1 = NULL;
     }
+    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
+    // goes first -- it holds the scc pointer it was given at init.
+    appletalk_delete();
     if (cfg->scc) {
         scc_delete(cfg->scc);
         cfg->scc = NULL;
@@ -776,6 +790,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     scheduler_checkpoint(cfg->scheduler, cp);
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
     via_checkpoint(cfg->via1, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
