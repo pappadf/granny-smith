@@ -41,6 +41,7 @@
 #include "log.h"
 #include "mac_host_io.h"
 #include "machine_config.h" // machine_boot_is_restart (the NVRAM carry rule)
+#include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "pci.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -724,10 +725,19 @@ static void tnt_teardown(config_t *cfg) {
         floppy_delete(cfg->floppy);
         cfg->floppy = NULL;
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
+    // The four devices that used to sit between cfg->scsi and cfg->via1 in
+    // this family's own copy of the chain, kept in the same relative order and
+    // simply hoisted above the shared one (machine_teardown.h).  Only PDM and
+    // TNT have them, so they stay here rather than joining the shared chain.
+    //
+    // The single ordering change is that cfg->scsi is now freed after these
+    // four instead of before the first of them.  Safe on both counts that
+    // matter: none of scsi_delete(scsi2), tnt_dbdma_delete, av_cuda_delete or
+    // adb_delete reads cfg->scsi, and the controllers that DO hold the two
+    // buses are already gone -- MESH/53C96 just above, and the 53C825As with
+    // the PCI root, which system_destroy frees before this runs.  DBDMA still
+    // goes after the floppy and before the SCC whose channels it serves, and
+    // Cuda still goes before the via1, rtc and adb it was handed at init.
     if (st && st->scsi2) {
         scsi_delete(st->scsi2);
         st->scsi2 = NULL;
@@ -744,37 +754,7 @@ static void tnt_teardown(config_t *cfg) {
         adb_delete(cfg->adb);
         cfg->adb = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first -- it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->ppc) {
-        ppc_delete(cfg->ppc);
-        cfg->ppc = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;

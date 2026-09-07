@@ -33,6 +33,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "nubus.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -464,10 +465,15 @@ static void pdm_teardown(config_t *cfg) {
             }
         }
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
+    // The three devices that used to sit between cfg->scsi and cfg->via1 in
+    // this family's own copy of the chain.  They move above the shared chain
+    // (machine_teardown.h) rather than into it, because only PDM and TNT have
+    // them; the single ordering change is that cfg->scsi is now freed after
+    // these three instead of before.  That is safe: none of floppy_delete,
+    // av_cuda_delete or adb_delete reads a SCSI handle, the 53C96 controllers
+    // that DO hold the bus are already freed above, and scheduler_stop() ran
+    // first so nothing can fire in between.  Cuda still goes before the via1,
+    // rtc and adb it was handed at init, which is the ordering that matters.
     if (cfg->floppy) {
         floppy_delete(cfg->floppy);
         cfg->floppy = NULL;
@@ -480,37 +486,7 @@ static void pdm_teardown(config_t *cfg) {
         adb_delete(cfg->adb);
         cfg->adb = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first — it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->ppc) {
-        ppc_delete(cfg->ppc);
-        cfg->ppc = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
