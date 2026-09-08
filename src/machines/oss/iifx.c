@@ -1673,9 +1673,17 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via1, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
+    // Save order must mirror iifx_init's construction order exactly: the
+    // checkpoint stream is positional, with no per-block tag or size field, so
+    // a swapped pair does not fail loudly at the swap -- it cross-loads, and
+    // the size mismatch surfaces later at whichever block first disagrees.
+    // These three were saved asc -> adb -> floppy while init restores
+    // asc -> floppy -> adb (:1545, :1547, :1557), which made every
+    // checkpoint.load on this machine fail with "expected 9840 at
+    // floppy.c:708 but file contains 336 at adb.c:891".
     asc_checkpoint(st->asc, cp);
-    adb_checkpoint(st->adb, cp);
     floppy_checkpoint(st->floppy, cp);
+    adb_checkpoint(st->adb, cp);
     oss_checkpoint(st->oss, cp);
     iop_checkpoint(st->scc_iop, cp);
     iop_checkpoint(st->swim_iop, cp);

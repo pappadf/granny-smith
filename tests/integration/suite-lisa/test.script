@@ -29,6 +29,7 @@ if row_on("lisa-xenix-boot") { row_end("lisa-xenix-boot", try(row_lisa_xenix_boo
 if row_on("lisa-xenix-nofloppy") { row_end("lisa-xenix-nofloppy", try(row_lisa_xenix_nofloppy(), "FAILED")) }
 if row_on("xl-macworks-boot") { row_end("xl-macworks-boot", try(row_xl_macworks_boot(), "FAILED")) }
 if row_on("xl-no-media") { row_end("xl-no-media", try(row_xl_no_media(), "FAILED")) }
+if row_on("lisa-checkpoint") { row_end("lisa-checkpoint", try(row_lisa_checkpoint(), "FAILED")) }
 
 suite_done()
 quit

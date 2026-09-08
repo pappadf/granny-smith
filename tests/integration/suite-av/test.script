@@ -248,6 +248,35 @@ def row_q840av_71_hd_desktop() {
     report_perf("suite-av/q840av-71-hd-desktop", scheduler.instr_count)
 }
 
+# ---- av-checkpoint ----------------------------------------------------------
+# The AV family had no checkpoint round-trip anywhere in the tree.  Neither did
+# the IIfx, and the IIfx's was broken -- its save wrote asc -> adb -> floppy
+# while its init restored asc -> floppy -> adb, and nothing existed to catch a
+# positional stream going out of step.  This row is the AV's guard against the
+# same class of mistake: the family builds PSC, Cuda, CIVIC, Singer and the DSP
+# into its stream, none of which was ever save/restore tested.
+#
+# Save a settled desktop, boot a DIFFERENT configuration so a restore that
+# quietly kept the old machine cannot pass, load, and re-match the pre-save
+# golden once the restored guest is quiescent again.
+def row_av_checkpoint() {
+    machine.rtc.time = 3000000000
+    machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+    machine.scsi.attach_hd "${$av_hd}" 0
+    scheduler.run 600000000
+    wait_stable(1500000000)
+    check("goldens/q840av-7.1-640x480x8-hd-finder.png")
+    assert checkpoint.save("${$WORK_DIR}/suite-av.gsc") "av-checkpoint: save failed"
+    machine.boot model="q840av" ram=8192 rom="${$av_rom}"
+    assert checkpoint.load("${$WORK_DIR}/suite-av.gsc") "av-checkpoint: load failed"
+    assert machine.ram == 16384 "av-checkpoint: restored RAM size wrong"
+    assert machine.id == "q840av" "av-checkpoint: restored machine.id wrong"
+    scheduler.run 5000000
+    wait_stable(400000000)
+    check("goldens/q840av-7.1-640x480x8-hd-finder.png")
+    report_perf("suite-av/av-checkpoint", scheduler.instr_count)
+}
+
 # ---- q660av-71-hd-desktop ---------------------------------------------------
 # The same volume on the sibling board: 25 MHz, strap nibble $B, and no MUNI.
 def row_q660av_71_hd_desktop() {
@@ -834,6 +863,13 @@ if row_on("q660av-71-hd-desktop") {
         row_end("q660av-71-hd-desktop", try(row_q660av_71_hd_desktop(), "FAILED"))
     } else {
         echo "skip: q660av-71-hd-desktop — ${$av_hd} not fetched"
+    }
+}
+if row_on("av-checkpoint") {
+    if have_media($av_rom) && have_media($av_hd) {
+        row_end("av-checkpoint", try(row_av_checkpoint(), "FAILED"))
+    } else {
+        echo "skip: av-checkpoint — ${$av_hd} not fetched"
     }
 }
 if row_on("q840av-71-video-in") {

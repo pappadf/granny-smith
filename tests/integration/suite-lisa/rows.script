@@ -347,3 +347,34 @@ def row_xl_no_media() {
     check("goldens/xl-608x431x1-no-media.png")
     report_perf("suite-lisa/xl-no-media", scheduler.instr_count)
 }
+
+# ---- lisa-checkpoint --------------------------------------------------------
+# The Lisa/XL family had no checkpoint round-trip anywhere in the tree.  Neither
+# did the IIfx, and the IIfx's turned out to be broken -- its save wrote
+# asc -> adb -> floppy while its init restored asc -> floppy -> adb, and the
+# stream is positional with no per-block tag, so the blocks cross-loaded.
+# Nothing existed to catch it.  This row is the Lisa's guard against the same
+# class of mistake: the family serialises a segment MMU, COPS, its own FDC and
+# the ProFile parallel port, none of which was ever save/restore tested.
+#
+# Deliberately lean, and no golden.  A positional-stream mismatch fails at
+# LOAD with a size error naming both sites -- it does not need a booted OS to
+# surface, which is exactly how the IIfx bug was found.  Booting LOS here would
+# mean duplicating the ProFile + PRAM setup lisa-los31-profile carries, for a
+# stronger raster oracle than this row's purpose needs.  If the Lisa ever grows
+# a state bug that only a running OS reveals, that is the row to extend.
+def row_lisa_checkpoint() {
+    machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
+    scheduler.run 5000000
+    assert checkpoint.save("${$WORK_DIR}/suite-lisa.gsc") "lisa-checkpoint: save failed"
+    # A different RAM size, so a restore that quietly kept the old machine fails
+    # the assert below rather than passing by accident.
+    machine.boot model="lisa" ram=1024 rom="../../data/roms/lisa2-revh-098917b2.rom"
+    assert checkpoint.load("${$WORK_DIR}/suite-lisa.gsc") "lisa-checkpoint: load failed"
+    assert machine.id == "lisa" "lisa-checkpoint: restored machine.id wrong"
+    assert machine.ram == 2048 "lisa-checkpoint: restored RAM size wrong"
+    assert machine.rom.checksum == "098917B2" "lisa-checkpoint: restored rom.checksum wrong"
+    # The restored machine must keep executing, not just load.
+    scheduler.run 5000000
+    report_perf("suite-lisa/lisa-checkpoint", scheduler.instr_count)
+}
