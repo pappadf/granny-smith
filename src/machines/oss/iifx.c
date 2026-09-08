@@ -1594,12 +1594,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         via_redrive_outputs(cfg->via1);
     }
 
-    cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
-    if (!checkpoint) {
-        cfg->irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    }
+    mac030_glue_finish(cfg, checkpoint);
     return 0;
 }
 

@@ -353,15 +353,29 @@ typedef struct hw_profile {
     const struct builtin_video_desc *builtin_video;
 
     // Behavior: the lifecycle + host-input vtable for this machine.  Machines
-    // of the same chipset family SHARE one substrate (glue_substrate /
-    // mdu_substrate; iifx is bespoke).
+    // of the same chipset family SHARE one substrate (glue_substrate for
+    // SE/30-IIcx-IIx, mdu_substrate for IIci-IIsi, and so on).  A family with
+    // one machine still gets its own -- the IIfx and both PowerPC families --
+    // which is a statement about how many machines share the board, not about
+    // how much code the family writes for itself.
+    //
+    // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
+    // included, builds through mac030_build_core + mac030_build_lowspeed,
+    // checkpoints through mac030_checkpoint_save_core, and tears down through
+    // machine_teardown_config_devices.  What a family keeps for itself is what
+    // its hardware actually does differently -- for the IIfx, the OSS
+    // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA
+    // engine, and a ROM overlay that doubles as a trip-wire.
     const machine_substrate_t *substrate;
 
     // Per-machine board descriptor — chipset-family data the shared substrate
     // interprets (proposal §4.2.2/§4.4).  Typed by convention: the family
     // substrate casts it to its concrete type (mac030_glue_board_t for
-    // GLUE/MDU).  NULL for families whose substrate needs no board (Plus,
-    // Lisa, and the bespoke IIfx, which carry their data directly).
+    // GLUE/MDU).  NULL where a substrate serves exactly one machine and can
+    // therefore reach its data directly (Plus, Lisa, IIfx).  The IIfx does
+    // define a mac030_board_desc_t of its own -- it simply has no second
+    // machine to vary against, so routing it through here would add a cast
+    // without adding sharing.
     const void *board;
 } hw_profile_t;
 
