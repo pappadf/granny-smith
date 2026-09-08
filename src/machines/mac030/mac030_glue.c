@@ -152,6 +152,28 @@ void mac030_checkpoint_save_core(config_t *cfg, checkpoint_t *cp) {
     via_checkpoint(cfg->via2, cp);
 }
 
+// Build the low-speed spine every 68k family shares: the RTC, the SCC at the
+// Mac's clocks, and the AppleTalk stack that rides its LocalTalk channel.
+//
+// This is the READ side of the stream mac030_checkpoint_save_core() writes,
+// and the two must stay in step: construction order here is restore order,
+// because rtc_init, scc_init and appletalk_init each consume their own block
+// from the checkpoint as they build.  Keeping both halves in one function
+// each is the point -- when the save half was shared and the restore half was
+// copied per family, the IIfx drifted out of order and every checkpoint.load
+// on that machine failed.
+//
+// `scc_irq` is the only genuine per-family variation at this level; the VIAs
+// below it differ enough (one or two, different hooks, different IRQ sinks)
+// that they stay with each family.
+void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool)) {
+    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
+    cfg->scc = scc_init(NULL, cfg->scheduler, scc_irq ? scc_irq : mac030_glue_scc_irq, cfg, cp);
+    // 3.6864 MHz PCLK / 7.8336 MHz RTxC -- the same pair on every 68k Mac.
+    scc_set_clocks(cfg->scc, 7833600, 3686400);
+    appletalk_init(cfg->scheduler, cfg->scc, cp);
+}
+
 // Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.
 void mac030_glue_finish(config_t *cfg, checkpoint_t *cp) {
     cfg->debugger = debug_init();
@@ -183,14 +205,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, cp);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    mac030_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
 
     cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);

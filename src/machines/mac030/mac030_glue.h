@@ -156,6 +156,25 @@ typedef struct mac030_board_desc {
 // memory_layout_tail.  One motherboard design, one function.
 void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
 
+// Build the low-speed spine every 68k family shares: RTC, the SCC at the Mac's
+// clocks (3.6864 MHz PCLK / 7.8336 MHz RTxC), and the AppleTalk stack that
+// rides its LocalTalk channel.  Pass NULL for `scc_irq` to take the family
+// default (mac030_glue_scc_irq).
+//
+// This is the READ side of the stream mac030_checkpoint_save_core() writes
+// below, and the pairing is the point: rtc_init, scc_init and appletalk_init
+// each consume their own block from `cp` as they build, so construction order
+// here IS restore order.  While the save half was shared and the restore half
+// was copied into five families, the IIfx drifted out of order and every
+// checkpoint.load on that machine failed.  Change one of these two functions
+// and you must change the other.
+//
+// The VIAs are deliberately NOT here: one machine or two, different port
+// hooks, different IRQ sinks, and the GLUE machines' exact 20:1 clock ratio
+// versus the derived factor everyone else needs.  That variation is real, and
+// a parameter list long enough to absorb it would be longer than the code.
+void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool));
+
 // Write the head of a 68k family's checkpoint stream, in the one canonical
 // order:
 //

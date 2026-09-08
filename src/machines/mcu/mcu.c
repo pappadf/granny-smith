@@ -633,16 +633,10 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
     // Towers intercept the SCC chip INT (OR with the SCC IOP host INT);
-    // the Q700 routes it straight to the level-4 source.
-    cfg->scc = scc_init(NULL, cfg->scheduler, board->scc_irq ? board->scc_irq : mac030_glue_scc_irq, cfg, cp);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    // the Q700 routes it straight to the level-4 source, which is the
+    // family default the NULL branch selects.
+    mac030_build_lowspeed(cfg, cp, board->scc_irq);
 
     // Derived from the CPU clock (see the same note in mdu.c): the towers run
     // 25 MHz (Q700/Q900) and 33 MHz (Q950), so the previous hardcoded 20/21 —

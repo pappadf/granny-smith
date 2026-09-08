@@ -774,14 +774,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, av_scc_irq, cfg, cp);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    mac030_build_lowspeed(cfg, cp, av_scc_irq);
 
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 =

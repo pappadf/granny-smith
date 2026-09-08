@@ -64,14 +64,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, cp);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    mac030_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
 
     // Derived from the CPU clock, not hardcoded: this substrate serves the
     // 25 MHz IIci and the 20 MHz IIsi, so a single literal is wrong for one of

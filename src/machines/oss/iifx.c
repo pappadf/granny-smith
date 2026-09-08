@@ -1503,14 +1503,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, iifx_scc_irq, cfg, checkpoint);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
+    mac030_build_lowspeed(cfg, checkpoint, iifx_scc_irq);
 
     // Divisor derived from the profile clock rather than the literal 51 this
     // used to carry -- via.h asks for exactly that, since a literal that suits
