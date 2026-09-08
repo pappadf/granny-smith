@@ -889,14 +889,7 @@ static void av_teardown(config_t *cfg) {
 
 static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     av_state_t *st = av_st(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp); // includes the 040 MMU register file
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    mac030_checkpoint_save_core(cfg, cp);
     // Device order mirrors the checkpoint READS in av_build_devices — the
     // stream is sequential, so save and restore must walk it identically.
     av_psc_checkpoint(st->psc, cp);

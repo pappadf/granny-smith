@@ -156,6 +156,28 @@ typedef struct mac030_board_desc {
 // memory_layout_tail.  One motherboard design, one function.
 void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
 
+// Write the head of a 68k family's checkpoint stream, in the one canonical
+// order:
+//
+//   mem_map -> cpu -> scheduler -> cfg->irq -> rtc -> scc -> appletalk ->
+//   via1 -> via2
+//
+// The stream is positional -- no per-block tag, no size field -- so this
+// sequence IS the file format, and a family that replicated it could silently
+// write a different one by dropping a line.  That is not hypothetical: the
+// review's F-23 was exactly this, a copy that omitted appletalk_checkpoint.
+//
+// Each family calls this first, then writes its own devices in its own
+// construction order.  That ordering rule is the family's to keep: save must
+// mirror what its init reads back, because a swapped pair does not fail at
+// the swap, it cross-loads and dies later at whichever block first disagrees
+// on size (see the IIfx, which did exactly that).
+//
+// The PowerPC families do NOT use this: their stream substitutes
+// ppc_checkpoint for cpu_checkpoint and omits cfg->irq, because PDM and TNT
+// keep interrupt state in their own register blobs instead.
+void mac030_checkpoint_save_core(config_t *cfg, checkpoint_t *cp);
+
 // Create the 68030 PMMU over a board's ROM window, make it the global MMU and
 // attach it to the CPU.  Returns the MMU; the caller sets any TT registers.
 struct mmu_state *mac030_build_mmu(config_t *cfg, uint32_t rom_base, uint32_t rom_end);

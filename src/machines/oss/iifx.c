@@ -1663,14 +1663,7 @@ static void iifx_teardown(config_t *cfg) {
 // Saves an IIfx checkpoint.
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     iifx_state_t *st = iifx_state(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    mac030_checkpoint_save_core(cfg, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     // Save order must mirror iifx_init's construction order exactly: the

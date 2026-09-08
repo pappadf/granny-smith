@@ -129,6 +129,29 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
     memory_map_add(cfg->mem_map, desc->rom_end, MAC030_GLUE_IO_SIZE, "I/O", &st->io_interface, &st->glue_io);
 }
 
+// The head of every 68k family's checkpoint stream, in the one order -- see
+// the header.  Nine writes that were replicated across five families, which
+// made a replicated FILE FORMAT: the stream is positional, so those nine
+// lines ARE the layout, and a family that dropped one silently wrote a
+// different format (the review's F-23: TNT's copy omitted appletalk).
+//
+// via2 is written unconditionally on purpose.  via_checkpoint(NULL, cp)
+// returns before writing anything, so a single-VIA machine emits nothing
+// here -- byte-identical to the four families that used to omit the call --
+// and the restore side stays symmetric because those families never call
+// via_init() for a second VIA either.
+void mac030_checkpoint_save_core(config_t *cfg, checkpoint_t *cp) {
+    memory_map_checkpoint(cfg->mem_map, cp);
+    cpu_checkpoint(cfg->cpu, cp); // on the 040 families this carries the MMU register file too
+    scheduler_checkpoint(cfg->scheduler, cp);
+    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
+    rtc_checkpoint(cfg->rtc, cp);
+    scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
+    via_checkpoint(cfg->via1, cp);
+    via_checkpoint(cfg->via2, cp);
+}
+
 // Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.
 void mac030_glue_finish(config_t *cfg, checkpoint_t *cp) {
     cfg->debugger = debug_init();
@@ -393,15 +416,7 @@ static void glue_teardown(config_t *cfg) {
 
 static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
-    via_checkpoint(cfg->via2, cp);
+    mac030_checkpoint_save_core(cfg, cp);
     adb_checkpoint(st->adb, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
