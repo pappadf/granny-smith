@@ -141,7 +141,6 @@ typedef struct mac030_board_desc {
     // the read floats — and checks bit 4.  With a 0 fill the bit read clear and
     // the machine was condemned as a bad logic board (ledger §9).
     uint8_t io_unmapped_read;
-    const struct nubus_slot_decl *slots; // NuBus slot table
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
     asc_mix_t asc_mix; // speaker fold of the ASC stereo pair (SE/30 sums; IIx/IIcx take A)
 } mac030_board_desc_t;

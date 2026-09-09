@@ -249,7 +249,6 @@ static const mac030_board_desc_t iisi_board = {
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = iisi_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
 };
@@ -329,7 +328,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     mmu_set_ram_bank_b(st->mmu, IISI_BANK_A_SIZE, ram_base + IISI_BANK_A_SIZE, IISI_BANK_B_PHYS,
                        (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0, IISI_BANK_WINDOW);
 
-    cfg->nubus = nubus_init(cfg, iisi_board.slots, checkpoint);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
     st->video_card = nubus_card(cfg->nubus, 0xE);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);

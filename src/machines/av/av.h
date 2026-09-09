@@ -92,7 +92,6 @@ typedef struct av_board_desc {
     const mac030_io_range_t *io_ranges; // ordered I/O window table
     uint32_t io_mirror_mask; // island mirror mask ($3FFFF: $50F40000 alias)
     uint8_t io_unmapped_read; // unmapped-read value inside the island
-    const struct nubus_slot_decl *slots; // NuBus slot table (NULL: no cards yet)
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
     uint8_t strap_nibble; // YMCA machine-ID straps ($F 840AV, $B 660AV)
     bool muni_present; // false → bus-error on MUNI_Control (660AV default)

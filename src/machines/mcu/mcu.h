@@ -85,7 +85,6 @@ typedef struct mcu_board_desc {
     const mac030_io_range_t *io_ranges; // ordered I/O window table
     uint32_t io_mirror_mask; // I/O island mirror mask ($3FFFF)
     uint8_t io_unmapped_read; // unmapped-read value inside the island
-    const struct nubus_slot_decl *slots; // NuBus slot table (NULL until Phase F)
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
     uint32_t ram_onboard_size; // soldered RAM forming bank A (Q700: 4 MB; 0 = SIMM banks only)
     uint8_t ram_bank_count; // physical banks the board decodes (Q700: 2, towers: 4)

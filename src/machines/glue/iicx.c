@@ -225,7 +225,6 @@ static const mac030_board_desc_t iicx_desc = {
     .io_ranges = glue_io_ranges,
     .io_mirror_mask = MAC030_GLUE_IO_MIRROR,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = iicx_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
     .asc_mix = ASC_MIX_CH_A, // internal speaker takes the left channel

@@ -280,7 +280,6 @@ static const mcu_board_desc_t q700_board_desc = {
     .ram_onboard_size = 0x00400000u, // 4 MB soldered = bank A; SIMM bank B follows
     .ram_bank_count = 2, // 4 MB soldered + one four-SIMM bank
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = q700_nubus_slots,
     .bus_err_lo = 0xF1000000u,
     .bus_err_hi = 0xFEFFFFFFu,
     .via1_pa_model = 0xC0, // Q700 model sense (ref §7.4 [R])

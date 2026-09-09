@@ -290,7 +290,6 @@ static const mac030_board_desc_t iici_board = {
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = iici_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
 };
@@ -352,7 +351,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as SE/30).
     st->mmu->tt1 = 0xF00F8043;
 
-    cfg->nubus = nubus_init(cfg, iici_board.slots, checkpoint);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
     st->video_card = nubus_card(cfg->nubus, 0xB);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);

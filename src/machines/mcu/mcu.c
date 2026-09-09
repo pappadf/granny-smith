@@ -660,7 +660,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // NuBus (Phase F): seat the declared slot cards; their windows layer
     // over the bus-error range, and slot IRQs route through the substrate's
     // nubus_slot_irq into the VIA2 PA aggregate.
-    cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
     // The substrate tail was read by mcu_restore_private inside build_devices
     // above, so the card block that mcu_checkpoint_save wrote after it reads
     // back here.

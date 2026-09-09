@@ -1485,7 +1485,6 @@ static const mac030_board_desc_t iifx_board = {
     .io_ranges = iifx_io_ranges_tbl,
     .io_mirror_mask = IIFX_IO_MIRROR,
     .io_unmapped_read = 0xff,
-    .slots = iifx_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
 };
@@ -1576,7 +1575,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         return -1; // mac030_build_mmu reported the reason
     st->mmu->tt1 = 0xF00F8043;
 
-    cfg->nubus = nubus_init(cfg, iifx_board.slots, checkpoint);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
     memory_set_bus_error_range(cfg->mem_map, iifx_board.bus_err_lo, iifx_board.bus_err_hi);
 
     iifx_memory_layout_init(cfg);

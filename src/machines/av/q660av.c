@@ -40,7 +40,6 @@ static const av_board_desc_t q660av_board_desc = {
     .io_ranges = av_io_ranges,
     .io_mirror_mask = 0x0003FFFFu,
     .io_unmapped_read = 0xFF,
-    .slots = NULL, // single slot E rides the (absent) MUNI adapter
     .bus_err_lo = 0xA0000000u,
     .bus_err_hi = 0xFEFFFFFFu,
     .strap_nibble = 0xB, // Tempest25 straps %1011 (ymca.md §2)

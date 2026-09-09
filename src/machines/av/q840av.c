@@ -40,7 +40,6 @@ static const av_board_desc_t q840av_board_desc = {
     .io_ranges = av_io_ranges,
     .io_mirror_mask = 0x0003FFFFu, // 256 KiB island + the $50F40000 alias
     .io_unmapped_read = 0xFF, // undecoded island reads float high
-    .slots = NULL, // no NuBus cards in scope (slots C/D/E physically exist)
     .bus_err_lo = 0xA0000000u, // NuBus super-slots + slot space bus-error
     .bus_err_hi = 0xFEFFFFFFu,
     .strap_nibble = 0xF, // Cyclone40 straps %1111 (ymca.md §2)

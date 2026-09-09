@@ -223,7 +223,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         return -1; // mac030_build_mmu reported the reason
     st->mmu->tt1 = 0xF00F8043; // supervisor-only identity map for NuBus $F0..$FF
 
-    cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
     if (board->post_nubus)
         board->post_nubus(cfg);
 

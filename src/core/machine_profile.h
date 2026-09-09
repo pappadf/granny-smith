@@ -329,9 +329,20 @@ typedef struct hw_profile {
     // the card registry (nubus_card_fits_socket), not listed here.
     // Used by machine.profile to enumerate cards per slot and build
     // the per-card video-mode catalog the configuration dialog needs.
-    // NULL for non-NuBus machines (Plus, …).  The machine's `init`
-    // callback passes this same pointer to nubus_init() so the
-    // runtime view and the profile view are guaranteed identical.
+    // NULL for non-NuBus machines (Plus, …).  Every machine's `init` passes
+    // THIS pointer to nubus_init(), so the runtime view and the profile view
+    // are the same object -- not two initialisers that have to agree.
+    //
+    // They used to be two.  Eleven machines wrote the table into their board
+    // descriptor as well, and this comment claimed the views were "guaranteed
+    // identical" when the guarantee was really a hand-maintained invariant
+    // nothing checked (the review's F-33; they did all agree, as it happens).
+    // The two feed different consumers -- the profile drives the config
+    // dialog and validate_vrom_resolution, nubus_init builds what the guest
+    // sees -- so a divergence would have offered a card for a socket that
+    // never gets populated.  Reading the profile directly is what makes the
+    // sentence above true rather than aspirational; the same is already so
+    // for pci_slots, which the TNT reads from here.
     const struct nubus_slot_decl *nubus_slots;
 
     // PCI slot declarations — sentinel-terminated array of pci_slot_decl_t

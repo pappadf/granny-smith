@@ -789,7 +789,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     if (board->build_devices(cfg, cp) != 0)
         return -1;
 
-    cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
 
     // Substrate-private checkpoint tail.
     if (cp) {
