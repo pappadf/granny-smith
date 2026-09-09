@@ -31,6 +31,7 @@
 // ROM ($49B2BE8F) is the mirror image — Mac OS only, no AIX — and both
 // identify against the same hardware model (rom.c).
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // Eight DIMM slots in four interleaved bank pairs (against the 9500's
@@ -233,7 +234,7 @@ const hw_profile_t machine_ans500 = {
 
     .ram_options = ans500_ram_options_kb,
     .scsi_buses = ans500_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     // Bay 0 is the CD-ROM bay Apple expects, and it is the documented
     // install path: with the front keyswitch in Service on a machine that
     // has never been booted, Open Firmware "will automatically attempt to

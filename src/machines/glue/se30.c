@@ -18,6 +18,7 @@
 #include "mac_host_io.h"
 #include "machine.h"
 #include "mmu_checkpoint.h"
+#include "slot_tables.h"
 #include "system_config.h" // full config_t definition
 
 #include "adb.h"
@@ -444,20 +445,8 @@ static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp) {
 // SE/30 configuration-dialog metadata.
 static const uint32_t se30_ram_options_kb[] = {1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const struct floppy_slot se30_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {.label = "External FD1", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot se30_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t se30_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = se30_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -478,7 +467,7 @@ const hw_profile_t machine_se30 = {
 
     // Configuration-dialog shape
     .ram_options = se30_ram_options_kb,
-    .floppy_slots = se30_floppy_slots,
+    .floppy_slots = mac_floppy_slots_2hd,
     .scsi_buses = se30_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,

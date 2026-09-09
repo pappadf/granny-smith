@@ -14,6 +14,7 @@
 
 #include "mac_host_io.h"
 #include "machine.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
@@ -254,19 +255,8 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 // configurations (ref §8.3 [R][U] — extended sizes, flagged as such).
 static const uint32_t q700_ram_options_kb[] = {4096, 8192, 20480, 36864, 69632, 0};
 
-static const struct floppy_slot q700_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot q700_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t q700_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = q700_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -318,7 +308,7 @@ const hw_profile_t machine_q700 = {
     .rom_size = 0x100000, // 1 MB
 
     .ram_options = q700_ram_options_kb,
-    .floppy_slots = q700_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = q700_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,

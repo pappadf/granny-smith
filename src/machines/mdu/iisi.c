@@ -26,6 +26,7 @@
 #include "machine.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
@@ -380,20 +381,8 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 // a "must reach past the framebuffer" floor.  Offer the System-7-capable sizes.
 static const uint32_t iisi_ram_options_kb[] = {5120, 9216, 17408, 66560, 0}; // 5/9/17/65 MB
 
-static const struct floppy_slot iisi_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {.label = "External FD1", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot iisi_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t iisi_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = iisi_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -420,7 +409,7 @@ const hw_profile_t machine_iisi = {
     .rom_size = 0x80000, // 512 KB
 
     .ram_options = iisi_ram_options_kb,
-    .floppy_slots = iisi_floppy_slots,
+    .floppy_slots = mac_floppy_slots_2hd,
     .scsi_buses = iisi_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,

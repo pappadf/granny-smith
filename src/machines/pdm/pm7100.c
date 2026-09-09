@@ -9,6 +9,7 @@
 // modeled, so that window reads as an empty slot).
 
 #include "pdm.h"
+#include "slot_tables.h"
 
 #include "nubus.h"
 
@@ -18,20 +19,11 @@ static const uint32_t pm7100_ram_options_kb[] = {8192, 16384, 24576, 40960, 7372
 // One internal manual-inject SuperDrive behind SWIM3, and no external
 // port — the PDM family has no second bay (Apple, "Power Macintosh
 // Computers" Developer Note, Table 3-7).
-static const struct floppy_slot pm7100_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
 
 // One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
-static const struct scsi_slot pm7100_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm7100_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm7100_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -85,7 +77,7 @@ const hw_profile_t machine_pm7100 = {
     .rom_size = 0x400000, // 4 MB ($9FEB69B3)
 
     .ram_options = pm7100_ram_options_kb,
-    .floppy_slots = pm7100_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = pm7100_scsi_buses,
     // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
     // (Phase G): no CD-specific hardware is involved, so the bay is

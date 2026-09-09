@@ -10,6 +10,7 @@
 #include "machine.h"
 #include "machine_teardown.h"
 #include "mmu_checkpoint.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
@@ -1684,20 +1685,8 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // Machine descriptor data.
 static const uint32_t iifx_ram_options_kb[] = {4096, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const struct floppy_slot iifx_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {.label = "External FD1", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot iifx_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t iifx_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = iifx_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -1731,7 +1720,7 @@ const hw_profile_t machine_iifx = {
     .rom_size = 0x080000,
 
     .ram_options = iifx_ram_options_kb,
-    .floppy_slots = iifx_floppy_slots,
+    .floppy_slots = mac_floppy_slots_2hd,
     .scsi_buses = iifx_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,

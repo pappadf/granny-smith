@@ -13,6 +13,7 @@
 
 #include "machine.h"
 #include "nubus.h"
+#include "slot_tables.h"
 
 #include <stdint.h>
 
@@ -27,14 +28,8 @@ static const struct floppy_slot q840av_floppy_slots[] = {
     {0},
 };
 
-static const struct scsi_slot q840av_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t q840av_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = q840av_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 

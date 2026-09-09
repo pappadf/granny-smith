@@ -22,6 +22,7 @@
 
 #include "mac_host_io.h"
 #include "machine.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
@@ -318,19 +319,8 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 // totals with the 4 MB base configuration.
 static const uint32_t q900_ram_options_kb[] = {4096, 8192, 16384, 20480, 32768, 65536, 0};
 
-static const struct floppy_slot q900_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot q900_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t q900_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = q900_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -382,7 +372,7 @@ const hw_profile_t machine_q900 = {
     .rom_size = 0x100000, // 1 MB (shared 420DBFF3 image)
 
     .ram_options = q900_ram_options_kb,
-    .floppy_slots = q900_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = q900_scsi_buses,
     .has_cdrom = true, // internal CD option shipped on the towers
     .cdrom_id = 3,

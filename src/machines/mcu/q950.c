@@ -19,6 +19,7 @@
 
 #include "machine.h"
 #include "nubus.h"
+#include "slot_tables.h"
 
 #include <stdint.h>
 
@@ -26,19 +27,8 @@
 // 256 MB later-system maximum (ref §18.3 [A]).
 static const uint32_t q950_ram_options_kb[] = {8192, 16384, 20480, 32768, 65536, 131072, 262144, 0};
 
-static const struct floppy_slot q950_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot q950_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t q950_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = q950_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -91,7 +81,7 @@ const hw_profile_t machine_q950 = {
     .rom_size = 0x100000, // 1 MB (3DC27823)
 
     .ram_options = q950_ram_options_kb,
-    .floppy_slots = q950_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = q950_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,

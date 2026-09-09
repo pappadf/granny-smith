@@ -10,6 +10,7 @@
 
 #include "mac_host_io.h"
 #include "machine.h"
+#include "slot_tables.h"
 #include "system_config.h" // full config_t definition
 
 #include "appletalk.h"
@@ -512,14 +513,8 @@ static const struct floppy_slot plus_floppy_slots[] = {
     {0},
 };
 
-static const struct scsi_slot plus_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t plus_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = plus_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 

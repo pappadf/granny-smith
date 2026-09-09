@@ -10,6 +10,7 @@
 // devices attached — media land on the standard Curio bus).
 
 #include "pdm.h"
+#include "slot_tables.h"
 
 #include "nubus.h"
 
@@ -19,21 +20,12 @@ static const uint32_t pm8100_ram_options_kb[] = {8192, 16384, 40960, 73728, 1392
 // One internal manual-inject SuperDrive behind SWIM3, and no external
 // port — the PDM family has no second bay (Apple, "Power Macintosh
 // Computers" Developer Note, Table 3-7).
-static const struct floppy_slot pm8100_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
 
 // Media attach to the standard Curio bus (SCSI Manager bus 1 on this
 // model); the fast 53CF96 bus scans empty.
-static const struct scsi_slot pm8100_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm8100_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm8100_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -88,7 +80,7 @@ const hw_profile_t machine_pm8100 = {
     .rom_size = 0x400000, // 4 MB ($9FEB69B3)
 
     .ram_options = pm8100_ram_options_kb,
-    .floppy_slots = pm8100_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = pm8100_scsi_buses,
     // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
     // (Phase G): no CD-specific hardware is involved, so the bay is

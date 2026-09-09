@@ -49,6 +49,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "slot_tables.h"
 #include "sym53c8xx.h" // the fast/wide controllers the ANS slot table seats
 #include "via.h"
 
@@ -879,11 +880,18 @@ static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
 // the only bay the family has — no external port — so slot 1 refuses
 // whatever the caller asks.
 //
-// The slot table is declared once here rather than copied into each of the
-// five profiles: it is a fact about the TNT board, and tnt_fd_insert below
-// is what makes one slot the right count.
-const struct floppy_slot tnt_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
+// The board's one internal SuperDrive is the same shape the Quadras and the
+// PDM Power Macs present, so the five profiles reference the shared
+// mac_floppy_slots_1hd (slot_tables.h) rather than the TNT keeping a seventh
+// identical copy.  tnt_fd_insert below is what makes one slot the right count.
+
+// The internal bus's two bays, shared by the three Power Macintosh profiles
+// (the Network Servers declare backplane bays instead).  Labelled "Internal"
+// rather than the generic "SCSI HD0/HD1" because this family has a second,
+// fast/wide bus a user can also attach to.
+const struct scsi_slot tnt_scsi_slots_internal[] = {
+    {.label = "Internal HD0", .id = 0},
+    {.label = "Internal HD1", .id = 1},
     {0},
 };
 

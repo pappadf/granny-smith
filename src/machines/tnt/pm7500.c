@@ -7,6 +7,7 @@
 // MESH + 53C94 SCSI, Control/Chaos onboard video, 50 MHz processor bus
 // (Apple, "Power Macintosh 7500 and 8500 Computers" Developer Note, 1995).
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
@@ -14,14 +15,9 @@ static const uint32_t pm7500_ram_options_kb[] = {16384, 32768, 65536, 131072, 26
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // external 53C94 chain is present but empty until the CD-ROM phase.
-static const struct scsi_slot pm7500_scsi_slots[] = {
-    {.label = "Internal HD0", .id = 0},
-    {.label = "Internal HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm7500_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm7500_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = tnt_scsi_slots_internal},
     {0},
 };
 
@@ -86,7 +82,7 @@ const hw_profile_t machine_pm7500 = {
 
     .ram_options = pm7500_ram_options_kb,
     .scsi_buses = pm7500_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm7500_pci_slots,
 

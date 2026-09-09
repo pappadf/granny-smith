@@ -29,6 +29,7 @@
 // enable fast L2 — that mode is for "bus speeds of 44 MHz or less" — which
 // is the one place the 500 is architecturally ahead of the 700.
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // Eight DIMM slots in four interleaved bank pairs; 512 MB is the ROM's
@@ -174,7 +175,7 @@ const hw_profile_t machine_ans700 = {
 
     .ram_options = ans700_ram_options_kb,
     .scsi_buses = ans700_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .has_cdrom = true,
     .cdrom_id = 0,
 

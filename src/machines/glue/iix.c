@@ -19,6 +19,7 @@
 #include "mac_host_io.h"
 #include "machine.h"
 #include "mmu_checkpoint.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
@@ -144,20 +145,8 @@ static const mac030_glue_board_t iix_board = {
 
 static const uint32_t iix_ram_options_kb[] = {1024, 2048, 4096, 5120, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const struct floppy_slot iix_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {.label = "External FD1", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot iix_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t iix_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = iix_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -175,7 +164,7 @@ const hw_profile_t machine_iix = {
     .rom_size = 0x040000, // 256 KB
 
     .ram_options = iix_ram_options_kb,
-    .floppy_slots = iix_floppy_slots,
+    .floppy_slots = mac_floppy_slots_2hd,
     .scsi_buses = iix_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
