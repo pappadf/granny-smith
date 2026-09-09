@@ -328,7 +328,15 @@ static const char *const skip_604[] = {
     "lfd", "lfdu", "lfdux", "lfdx", "lfs", "lfsu", "lfsux", "lfsx", "stfd", "stfdu", "stfdux", "stfdx", "stfs", "stfsu",
     "stfsux", "stfsx", "lmw", "stmw", "lwarx", "stwcx_dot", "eciwx", "ecowx",
     // dcbz gates on HID0[DCE] (cleared in the vectors' fixed HID0)
-    "dcbz"};
+    "dcbz",
+    // FPSCR bits 21 (VXSOFT) and 22 (VXSQRT).  601UM Table 2-1 marks both
+    // "Not implemented in the 601"; the architecture (MPCFPE32B Table 2-1)
+    // defines them as ordinary sticky bits, so the 604 has them and the 601
+    // does not -- which is what ppc_fpscr_nowrite() models.  These vectors
+    // carry the 601 answer (their FPSCR representation has no vxsoft/vxsqrt
+    // member at all), so on the 604 `mtfsb1 22` correctly sets VXSQRT and
+    // with it FX, and the recorded fx=0 no longer applies.
+    "mtfsb1"};
 
 static int skip_under_604(const char *name) {
     for (size_t i = 0; i < sizeof skip_604 / sizeof skip_604[0]; i++)
