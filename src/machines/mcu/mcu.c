@@ -409,10 +409,10 @@ void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, v
     io->iface[MAC030_DEV_ASC] = asc_get_memory_interface((asc_t *)asc);
     io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
 
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
+    io->ranges = desc->common.io_ranges;
+    io->mirror_mask = desc->common.io_mirror_mask;
     io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
+    io->unmapped_read = desc->common.io_unmapped_read;
 }
 
 // ============================================================
@@ -459,8 +459,8 @@ static void mcu_fill_rom_aperture(config_t *cfg) {
     uint32_t rom_size = cfg->machine->rom_size;
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
+    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++)
         mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
 }
@@ -500,13 +500,13 @@ static void mcu_overlay_arm(config_t *cfg) {
 
     // Route the aperture through the trigger device: reuse memory_map_add's
     // page plumbing once, then re-point the pages manually on later arms.
-    uint32_t start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
+    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
         g_page_table[p].host_base = NULL;
         g_page_table[p].dev = &st->overlay_interface;
         g_page_table[p].dev_context = cfg;
-        g_page_table[p].base_addr = desc->rom_base;
+        g_page_table[p].base_addr = desc->common.rom_base;
         g_page_table[p].writable = false;
         if (g_supervisor_read)
             g_supervisor_read[p] = 0;
@@ -607,8 +607,8 @@ static void mcu_memory_layout_init(config_t *cfg) {
     st->overlay_interface.write_uint8 = mcu_overlay_write8;
     st->overlay_interface.write_uint16 = mcu_overlay_write16;
     st->overlay_interface.write_uint32 = mcu_overlay_write32;
-    memory_map_add(cfg->mem_map, desc->rom_base, desc->rom_end - desc->rom_base, "ROM aperture", &st->overlay_interface,
-                   cfg);
+    memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
+                   &st->overlay_interface, cfg);
 
     mcu_overlay_arm(cfg);
 }

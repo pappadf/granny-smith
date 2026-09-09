@@ -124,6 +124,19 @@ struct nubus_slot_decl;
 // helpers — mac030_build_mmu (ROM window), the family I/O bind (io_ranges +
 // mirror + unmapped), nubus_init (slots) and the bus-error range.  Pure data;
 // the family-specific device construction stays a code path (see each init).
+// The field set every 68k board descriptor shares, and that the shared code
+// reads: mac030_io_* takes io_ranges / io_mirror_mask / io_unmapped_read,
+// mac030_build_mmu takes rom_base / rom_end, and memory_set_bus_error_range
+// takes the bus-error pair.  The MCU and AV descriptors EMBED this rather
+// than redeclaring the fields (the review's F-32) -- which is what lets
+// mcu_io_bind and av_io_bind hand &desc->common to mac030_glue_io_bind
+// instead of each carrying its own copy of the same four assignments.
+//
+// Keeping it in one struct also keeps its documentation in one place.  The
+// io_unmapped_read note below is load-bearing and was previously written out
+// here while the other two descriptors said only "unmapped-read value inside
+// the island", so a reader of mcu.h or av.h had no way to know the field
+// mattered.
 typedef struct mac030_board_desc {
     const char *chipset; // "GLUE" / "MDU+RBV" / "OSS+FMC" (tracing/diagnostics)
     uint32_t rom_base, rom_end; // MMU ROM window (GLUE $40000000-$50000000; MDU/OSS differ)

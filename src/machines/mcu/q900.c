@@ -283,8 +283,8 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    st->bus_mmu =
-        mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
+    st->bus_mmu = mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->common.rom_base,
+                           desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
@@ -304,7 +304,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_memory_layout(cfg);
 
     // Slot probing bus-errors in the NuBus windows.
-    memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
 
     if (cp)
         mcu_restore_private(cfg, cp);
@@ -336,15 +336,18 @@ static const nubus_slot_decl_t q900_nubus_slots[] = {
 };
 
 static const mcu_board_desc_t q900_board_desc = {
-    .chipset = "MCU+DAFB",
-    .rom_base = 0x40000000u,
-    .rom_end = 0x50000000u,
-    .io_ranges = mcu_q900_io_ranges,
+    .common =
+        {
+                 .chipset = "MCU+DAFB",
+                 .rom_base = 0x40000000u,
+                 .rom_end = 0x50000000u,
+                 .io_ranges = mcu_q900_io_ranges,
+                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
+            .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+            .bus_err_lo = 0xF1000000u,
+                 .bus_err_hi = 0xFEFFFFFFu,
+                 },
     .ram_bank_count = 4, // sixteen SIMM sockets = four four-SIMM banks
-    .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .bus_err_lo = 0xF1000000u,
-    .bus_err_hi = 0xFEFFFFFFu,
     .via1_pa_model = 0xD0, // Q900 model sense: PA & $56 == $50 (InfoQuadra900)
 };
 

@@ -43,15 +43,18 @@ static const nubus_slot_decl_t q950_nubus_slots[] = {
 };
 
 static const mcu_board_desc_t q950_board_desc = {
-    .chipset = "MCU+DAFB",
-    .rom_base = 0x40000000u,
-    .rom_end = 0x50000000u,
-    .io_ranges = mcu_q900_io_ranges, // identical tower island decode
+    .common =
+        {
+                 .chipset = "MCU+DAFB",
+                 .rom_base = 0x40000000u,
+                 .rom_end = 0x50000000u,
+                 .io_ranges = mcu_q900_io_ranges, // identical tower island decode
+            .io_mirror_mask = 0x0003FFFFu,
+                 .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+            .bus_err_lo = 0xF1000000u,
+                 .bus_err_hi = 0xFEFFFFFFu,
+                 },
     .ram_bank_count = 4, // sixteen SIMM sockets = four four-SIMM banks
-    .io_mirror_mask = 0x0003FFFFu,
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .bus_err_lo = 0xF1000000u,
-    .bus_err_hi = 0xFEFFFFFFu,
     .via1_pa_model = 0x90, // Q950 model sense: PA & $56 == $10 (InfoQuadra950)
     .dafb_version = 3, // "DAFB 3" — the driver's 16bpp-always-allowed check
     .has_ac842a = true, // AC842a RAMDAC: PCBR1 + x555 16-bit mode

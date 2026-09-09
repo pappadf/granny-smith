@@ -80,12 +80,9 @@ struct sonic;
 // The MCU-family board descriptor: per-machine hardware data consumed by the
 // shared substrate (parallel to mac030_board_desc_t).
 typedef struct mcu_board_desc {
-    const char *chipset; // "MCU+DAFB" (tracing/diagnostics)
-    uint32_t rom_base, rom_end; // ROM aperture ($40000000-$50000000)
-    const mac030_io_range_t *io_ranges; // ordered I/O window table
-    uint32_t io_mirror_mask; // I/O island mirror mask ($3FFFF)
-    uint8_t io_unmapped_read; // unmapped-read value inside the island
-    uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
+    // The eight fields the shared 68k code reads -- see mac030_board_desc_t.
+    // Embedded, not repeated: one definition, one place to document it.
+    mac030_board_desc_t common;
     uint32_t ram_onboard_size; // soldered RAM forming bank A (Q700: 4 MB; 0 = SIMM banks only)
     uint8_t ram_bank_count; // physical banks the board decodes (Q700: 2, towers: 4)
     uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950; ref §7.4 [R])
@@ -164,6 +161,14 @@ extern const mac030_io_range_t mcu_q700_io_ranges[];
 extern const mac030_io_range_t mcu_q900_io_ranges[];
 
 // Bind the family device set + board tables into the shared I/O engine.
+// Bind the MCU's I/O dispatcher.  Deliberately NOT a call through to
+// mac030_glue_io_bind, even though desc->common is now the same type it takes
+// (F-32 removed that barrier, and F-36 proposes the merge): the two bind
+// different device sets.  The GLUE version also binds MAC030_DEV_SCSI, and
+// neither this family's window table nor the AV's ever routes to that device
+// index -- both decode a 53C96 through their own windows instead -- so
+// delegating would install a handle nothing consults.  Merging these is a
+// question about device sets, not about the descriptor type.
 void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy);
 
 // Install the family memory layout: I/O island, DAFB apertures, ROM-aperture

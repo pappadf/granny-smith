@@ -87,12 +87,9 @@ struct scsi_53c96;
 // The AV-family board descriptor: per-machine hardware data consumed by the
 // shared substrate (parallel to mcu_board_desc_t).
 typedef struct av_board_desc {
-    const char *chipset; // "YMCA+PSC" (tracing/diagnostics)
-    uint32_t rom_base, rom_end; // ROM aperture ($40800000-$40A00000)
-    const mac030_io_range_t *io_ranges; // ordered I/O window table
-    uint32_t io_mirror_mask; // island mirror mask ($3FFFF: $50F40000 alias)
-    uint8_t io_unmapped_read; // unmapped-read value inside the island
-    uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
+    // The eight fields the shared 68k code reads -- see mac030_board_desc_t.
+    // Embedded, not repeated: one definition, one place to document it.
+    mac030_board_desc_t common;
     uint8_t strap_nibble; // YMCA machine-ID straps ($F 840AV, $B 660AV)
     bool muni_present; // false → bus-error on MUNI_Control (660AV default)
 } av_board_desc_t;

@@ -34,14 +34,17 @@ static const scsi_bus_decl_t q660av_scsi_buses[] = {
 };
 
 static const av_board_desc_t q660av_board_desc = {
-    .chipset = "YMCA+PSC",
-    .rom_base = 0x40800000u,
-    .rom_end = 0x40A00000u,
-    .io_ranges = av_io_ranges,
-    .io_mirror_mask = 0x0003FFFFu,
-    .io_unmapped_read = 0xFF,
-    .bus_err_lo = 0xA0000000u,
-    .bus_err_hi = 0xFEFFFFFFu,
+    .common =
+        {
+                 .chipset = "YMCA+PSC",
+                 .rom_base = 0x40800000u,
+                 .rom_end = 0x40A00000u,
+                 .io_ranges = av_io_ranges,
+                 .io_mirror_mask = 0x0003FFFFu,
+                 .io_unmapped_read = 0xFF,
+                 .bus_err_lo = 0xA0000000u,
+                 .bus_err_hi = 0xFEFFFFFFu,
+                 },
     .strap_nibble = 0xB, // Tempest25 straps %1011 (ymca.md §2)
     .muni_present = false, // no NuBus adapter: MUNI_Control bus-errors
 };

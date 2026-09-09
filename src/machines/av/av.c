@@ -234,10 +234,10 @@ static void av_io_bind(mac030_io_t *io, config_t *cfg, const av_board_desc_t *de
         io->handle[MAC030_DEV_SCC] = cfg->scc;
         io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
     }
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
+    io->ranges = desc->common.io_ranges;
+    io->mirror_mask = desc->common.io_mirror_mask;
     io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
+    io->unmapped_read = desc->common.io_unmapped_read;
 }
 
 // ============================================================
@@ -463,8 +463,8 @@ static void av_fill_rom_aperture(config_t *cfg) {
     uint32_t rom_size = cfg->machine->rom_size;
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
+    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++)
         mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
 }
@@ -497,13 +497,13 @@ static void av_overlay_arm(config_t *cfg) {
 
     // Route the aperture through the trigger device (page plumbing was done
     // once by memory_map_add; later arms re-point the pages manually).
-    uint32_t start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
+    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
         g_page_table[p].host_base = NULL;
         g_page_table[p].dev = &st->overlay_interface;
         g_page_table[p].dev_context = cfg;
-        g_page_table[p].base_addr = desc->rom_base;
+        g_page_table[p].base_addr = desc->common.rom_base;
         g_page_table[p].writable = false;
         if (g_supervisor_read)
             g_supervisor_read[p] = 0;
@@ -595,8 +595,8 @@ static void av_memory_layout(config_t *cfg) {
     st->overlay_interface.write_uint8 = av_overlay_write8;
     st->overlay_interface.write_uint16 = av_overlay_write16;
     st->overlay_interface.write_uint32 = av_overlay_write32;
-    memory_map_add(cfg->mem_map, desc->rom_base, desc->rom_end - desc->rom_base, "ROM aperture", &st->overlay_interface,
-                   cfg);
+    memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
+                   &st->overlay_interface, cfg);
 
     av_overlay_arm(cfg);
 }
@@ -731,8 +731,8 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    st->bus_mmu =
-        mmu_init(ram_base, ram_size, desc->rom_base, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
+    st->bus_mmu = mmu_init(ram_base, ram_size, desc->common.rom_base, rom_data, cfg->machine->rom_size,
+                           desc->common.rom_base, desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
@@ -751,7 +751,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // NuBus super-slot and slot space bus-errors on probes (the ROM's slot
     // scan expects it even with no cards).
-    memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
     return 0;
 }
 
