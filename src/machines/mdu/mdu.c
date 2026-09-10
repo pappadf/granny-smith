@@ -84,7 +84,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     if (board->build_devices(cfg, cp) != 0)
         return -1;
 
-    mac030_glue_finish(cfg, cp);
+    mac030_glue_finish(cfg, cp, &st->mdu_io);
     return 0;
 }
 

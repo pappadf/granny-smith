@@ -393,10 +393,7 @@ const mac030_io_range_t mcu_q900_io_ranges[] = {
 };
 
 void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
+    mac030_io_install(io, cfg, &desc->common);
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->handle[MAC030_DEV_VIA2] = cfg->via2;
     io->handle[MAC030_DEV_SCC] = cfg->scc;
@@ -408,11 +405,6 @@ void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, v
     io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
     io->iface[MAC030_DEV_ASC] = asc_get_memory_interface((asc_t *)asc);
     io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
-
-    io->ranges = desc->common.io_ranges;
-    io->mirror_mask = desc->common.io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->common.io_unmapped_read;
 }
 
 // ============================================================
@@ -673,7 +665,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // shadow RAM at $00s00000 on large-memory configurations.
     mmu_host_regions_fill_pages(st->bus_mmu, mac030_fill_page, /*mode24_alias*/ false);
 
-    mac030_glue_finish(cfg, cp);
+    mac030_glue_finish(cfg, cp, &st->io);
     return 0;
 }
 

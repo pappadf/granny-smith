@@ -15,11 +15,14 @@
 
 #include "asc.h"
 #include "floppy.h"
+#include "log.h"
 #include "scc.h"
 #include "scsi.h"
 #include "via.h"
 
 #include <stdbool.h>
+
+LOG_USE_CATEGORY_NAME("setup"); // the validation diagnostic is a setup-time check
 
 // ============================================================
 // The engine
@@ -119,6 +122,45 @@ void mac030_io_fill_interface(memory_interface_t *iface) {
     iface->write_uint32 = mac030_io_write_uint32;
 }
 
+// Names for the validation diagnostic, indexed by mac030_dev_t.
+static const char *const mac030_dev_names[MAC030_DEV_COUNT] = {
+    [MAC030_DEV_VIA1] = "VIA1",         [MAC030_DEV_VIA2] = "VIA2", [MAC030_DEV_SCC] = "SCC",
+    [MAC030_DEV_SCSI] = "SCSI",         [MAC030_DEV_ASC] = "ASC",   [MAC030_DEV_FLOPPY] = "FLOPPY",
+    [MAC030_DEV_RBV] = "RBV",           [MAC030_DEV_VDAC] = "VDAC", [MAC030_DEV_SCC_IOP] = "SCC_IOP",
+    [MAC030_DEV_SWIM_IOP] = "SWIM_IOP", [MAC030_DEV_OSS] = "OSS",
+};
+
+void mac030_io_install(mac030_io_t *io, config_t *cfg, const struct mac030_board_desc *desc) {
+    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
+        io->handle[i] = NULL;
+        io->iface[i] = NULL;
+    }
+    io->ranges = desc->io_ranges;
+    io->mirror_mask = desc->io_mirror_mask;
+    io->cfg = cfg;
+    io->unmapped_read = desc->io_unmapped_read;
+}
+
+int mac030_io_validate(const mac030_io_t *io, const char *machine_id) {
+    if (!io || !io->ranges)
+        return 0;
+    int unbound = 0;
+    for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
+        if (r->read_fn || r->write_fn) // handler-row: no device slot to bind
+            continue;
+        if (io->iface[r->device])
+            continue;
+        const char *dev =
+            (r->device < MAC030_DEV_COUNT && mac030_dev_names[r->device]) ? mac030_dev_names[r->device] : "?";
+        LOG(0,
+            "Error: %s I/O window '%s' ($%05X-$%05X) routes to %s, which this machine never bound "
+            "-- the window will read $%02X forever",
+            machine_id, r->debug_name ? r->debug_name : "(unnamed)", r->base, r->end, dev, io->unmapped_read);
+        unbound++;
+    }
+    return unbound;
+}
+
 // ============================================================
 // GLUE family tables
 // ============================================================
@@ -159,10 +201,7 @@ const mac030_io_range_t *mac030_glue_io_ranges(void) {
 
 void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc,
                          void *floppy) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
+    mac030_io_install(io, cfg, desc);
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->handle[MAC030_DEV_VIA2] = cfg->via2;
     io->handle[MAC030_DEV_SCC] = cfg->scc;
@@ -176,11 +215,6 @@ void mac030_glue_io_bind(mac030_io_t *io, config_t *cfg, const struct mac030_boa
     io->iface[MAC030_DEV_SCSI] = scsi_get_memory_interface(cfg->scsi);
     io->iface[MAC030_DEV_ASC] = asc_get_memory_interface((asc_t *)asc);
     io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
-
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
 }
 
 // ============================================================

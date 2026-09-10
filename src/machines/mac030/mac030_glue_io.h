@@ -115,9 +115,24 @@ void mac030_io_write_uint32(void *ctx, uint32_t addr, uint32_t value);
 // Fill `iface` with the six engine entry-points (shared by all families).
 void mac030_io_fill_interface(memory_interface_t *iface);
 
-// --- The GLUE family's tables ----------------------------------------------
-
 struct mac030_board_desc;
+
+// Install a board's window table, mirror mask and unmapped-read value, and
+// clear every device slot.  Every family bind opens with this; the family then
+// fills only the slots its own chips occupy.  Pass the shared base descriptor
+// (`&desc->common` for the families that wrap it).
+void mac030_io_install(mac030_io_t *io, struct config *cfg, const struct mac030_board_desc *desc);
+
+// Check that every device row in the installed table has a bound interface.
+// A row naming a chip nobody built is not a crash any more (the dispatcher
+// falls back to unmapped_read), which makes it silent: the machine boots and
+// the window just reads $FF forever.  This is the thing that says so.  Called
+// from mac030_glue_finish once the machine is fully built -- and it takes the
+// engine as a parameter precisely so a new family cannot forget to run it.
+// Returns the number of unbound rows found, logging each.
+int mac030_io_validate(const mac030_io_t *io, const char *machine_id);
+
+// --- The GLUE family's tables ----------------------------------------------
 
 // Cache the GLUE device interfaces and install the board's window table +
 // mirror + unmapped-read value.  Call after rtc/scc/via/scsi/asc/floppy are up,

@@ -209,20 +209,13 @@ const mac030_io_range_t av_io_ranges[] = {
 
 // Bind the family device set + board tables into the shared I/O engine.
 static void av_io_bind(mac030_io_t *io, config_t *cfg, const av_board_desc_t *desc) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
+    mac030_io_install(io, cfg, &desc->common);
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->iface[MAC030_DEV_VIA1] = via_get_memory_interface(cfg->via1);
     if (cfg->scc) {
         io->handle[MAC030_DEV_SCC] = cfg->scc;
         io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
     }
-    io->ranges = desc->common.io_ranges;
-    io->mirror_mask = desc->common.io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->common.io_unmapped_read;
 }
 
 // ============================================================
@@ -790,7 +783,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
         via_redrive_outputs(cfg->via1);
     }
 
-    mac030_glue_finish(cfg, cp);
+    mac030_glue_finish(cfg, cp, &st->io);
     return 0;
 }
 

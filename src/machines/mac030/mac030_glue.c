@@ -175,7 +175,11 @@ void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void
 }
 
 // Finish init: debugger, scheduler start, cold-boot IRQ/IPL reset.
-void mac030_glue_finish(config_t *cfg, checkpoint_t *cp) {
+void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io) {
+    // Every family's I/O table is checked here, once the machine is fully
+    // built.  This is a parameter rather than a lookup so a new family cannot
+    // quietly skip it -- see mac030_io_validate.
+    mac030_io_validate(io, cfg->machine->id);
     cfg->debugger = debug_init();
     scheduler_start(cfg->scheduler);
     if (!cp) {
@@ -244,7 +248,7 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         via_redrive_outputs(cfg->via2);
     }
 
-    mac030_glue_finish(cfg, cp);
+    mac030_glue_finish(cfg, cp, &st->glue_io);
     return 0;
 }
 

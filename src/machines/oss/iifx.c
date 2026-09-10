@@ -1189,10 +1189,7 @@ static const mac030_io_range_t iifx_io_ranges_tbl[] = {
 // Cache device handles/interfaces and install the IIfx table.  Call after the
 // devices + their cached interfaces (st->*_iface) are up.
 static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st, const mac030_board_desc_t *desc) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
+    mac030_io_install(io, cfg, desc);
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->handle[MAC030_DEV_SCC_IOP] = st->scc_iop;
     io->handle[MAC030_DEV_SCSI] = cfg->scsi;
@@ -1206,11 +1203,6 @@ static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st, const
     io->iface[MAC030_DEV_ASC] = st->asc_iface;
     io->iface[MAC030_DEV_SWIM_IOP] = st->swim_iop_iface;
     io->iface[MAC030_DEV_OSS] = st->oss_iface;
-
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
 }
 
 // Read entry-points: the machine-ID register sits above the I/O mirror, so it
@@ -1580,7 +1572,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         via_redrive_outputs(cfg->via1);
     }
 
-    mac030_glue_finish(cfg, checkpoint);
+    mac030_glue_finish(cfg, checkpoint, &st->iifx_io);
     return 0;
 }
 

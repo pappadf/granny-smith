@@ -112,9 +112,11 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
 // (mac030_build_mmu — the board-parameterised PMMU builder — is declared below,
 // next to mac030_board_desc_t which carries the ROM window it uses.)
 
-// Finish init: create the debugger, start the scheduler, and zero the IRQ/IPL
-// on a cold boot (left intact on checkpoint restore).
-void mac030_glue_finish(config_t *cfg, checkpoint_t *cp);
+// Finish init: validate the family's I/O table against the devices it bound,
+// create the debugger, start the scheduler, and zero the IRQ/IPL on a cold
+// boot (left intact on checkpoint restore).  `io` is the family's engine (NULL
+// only for a family that has none).
+void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io);
 
 struct nubus_slot_decl;
 
