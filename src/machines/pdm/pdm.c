@@ -50,6 +50,45 @@
 LOG_USE_CATEGORY_NAME("board");
 
 // ============================================================
+// The family's NuBus topology (shared by the 7100 and the 8100)
+// ============================================================
+
+// Apple's own comparison table gives the family as 6100 = 1*, 7100 = 3,
+// 8100 = 3 ("NuBus slots", Developer Note vol. 1), and its prose treats all
+// four 7100/8100 variants as one: "The Power Macintosh 7100/66, 7100/66AV,
+// 8100/80, and 8100/80AV contain three NuBus slots."  Hence one table.  The
+// 6100's asterisk is the optional PDS adapter that carries the bridge itself
+// -- see pm6100.c, which declares no slots AND no BART.
+//
+// The three NuBus connectors behind BART: $C/$D/$E.
+//
+// This is what the SOFTWARE uses, and it is the thing that matters — the
+// slot number selects the address window a card answers in, the sResource
+// the Slot Manager enumerates, and the pseudo-VIA2 interrupt bit the OS
+// enables.  Measured on the shipping ROM: a booted 8100 enables slot-
+// interrupt bits $38, i.e. bits 3/4/5, which under the Mac II bit = slot-9
+// numbering are exactly $C/$D/$E — always those three, whichever connector
+// holds a card — with bit 6 the built-in video VBL (it appears in the mask
+// only when built-in video exists).  The ROM's own PDM slot-interrupt path
+// masks the slot bits with $78, bits 3-6, agreeing.
+//
+// An earlier revision of this file declared $B/$C/$D from the schematic
+// silkscreen (051-0333 rev A sheet 22, where the 96-pin connectors
+// J11/J12/J13 are labelled NuBus Slot B, C and D).  That numbering is a
+// board-level label, not the slot ID the software uses: a card staged into
+// $B lands on interrupt bit 2, which nothing enables and nothing services,
+// so its /NMRQ latched and stayed latched forever.  The Slot Manager then
+// never ran that slot's VBL task queue — which, when the card is the main
+// screen, is where the cursor task lives, so the mouse stopped moving.
+// Each ships empty; the user stages a card per slot.
+const struct nubus_slot_decl pdm_nubus_slots_cde[] = {
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {0},
+};
+
+// ============================================================
 // Page-table helpers (the mac030_fill_page shape, kept local so the PDM
 // family does not pull 68K-family headers)
 // ============================================================

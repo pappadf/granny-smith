@@ -24,6 +24,7 @@
 #include "display.h"
 #include "machine.h"
 #include "memory.h"
+#include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
 #include "swim3.h"
 #include "system_config.h"
 
@@ -185,6 +186,11 @@ void pdm_pending_monitor_set(uint8_t sense);
 // table above and stages a pick through this, so it needs no pdm_ symbol and
 // no knowledge of the sense strap.
 extern const builtin_video_desc_t pdm_builtin_video;
+
+// The three NuBus connectors behind BART ($C/$D/$E), shared by the 7100
+// and the 8100 (pdm.c).  The 6100 declares NULL and no BART instead --
+// its single slot needs the optional PDS adapter, which carries the bridge.
+extern const struct nubus_slot_decl pdm_nubus_slots_cde[];
 
 // === Video presentation state (ariel.c) =====================================
 // Everything here is DERIVED from the amic register file (vid_mode/vid_depth/
