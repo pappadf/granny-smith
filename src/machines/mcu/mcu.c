@@ -11,6 +11,7 @@
 #include "appletalk.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
+#include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "mmu040.h"
 
 #include "adb.h"
@@ -392,10 +393,7 @@ const mac030_io_range_t mcu_q900_io_ranges[] = {
 };
 
 void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
+    mac030_io_install(io, cfg, &desc->common);
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->handle[MAC030_DEV_VIA2] = cfg->via2;
     io->handle[MAC030_DEV_SCC] = cfg->scc;
@@ -407,11 +405,6 @@ void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, v
     io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
     io->iface[MAC030_DEV_ASC] = asc_get_memory_interface((asc_t *)asc);
     io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
-
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
 }
 
 // ============================================================
@@ -430,6 +423,51 @@ void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
     st->slot_pa_mask = active ? (st->slot_pa_mask | bit) : (st->slot_pa_mask & (uint8_t)~bit);
     via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low line
     via_input_c(cfg->via2, /*CA1*/ 0, 0, st->slot_pa_mask ? 0 : 1); // /SLOTIRQ = OR of sources
+}
+
+// ============================================================
+// DAFB construction (shared by every MCU board)
+// ============================================================
+
+// DAFB video interrupt -> VIA2 PA6 (active-low) through the family /SLOTIRQ
+// aggregate on CA1 (ref S11.18/S13.3), alongside the NuBus slot sources.
+// This was two byte-identical per-machine callbacks until F-40.
+static void mcu_dafb_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    mcu_slot_irq_source(cfg, 6, active);
+}
+
+int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
+    mcu_state_t *st = mcu_st(cfg);
+    const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
+
+    st->dafb = dafb_init(desc->dafb_vram_size, cp);
+    if (!st->dafb) {
+        LOG(0, "Error: out of memory constructing the DAFB");
+        return -1;
+    }
+    dafb_attach_scheduler(st->dafb, cfg->scheduler);
+    dafb_set_irq_callback(st->dafb, mcu_dafb_irq, cfg);
+
+    // Consume unconditionally so a staged sense never leaks into a later
+    // boot, but only APPLY it on a cold build: on a restore, dafb_init()
+    // has already read the saved sense out of the checkpoint, and this
+    // call would otherwise overwrite it with the default.
+    uint8_t staged_sense = dafb_consume_pending_sense(); // default 6 = 13" RGB
+    if (!cp)
+        dafb_set_monitor_sense(st->dafb, staged_sense);
+
+    dafb_set_version(st->dafb, desc->dafb_version); // 3 on the Q950 (DAFB 3)
+    dafb_set_ac842a(st->dafb, desc->has_ac842a); // AC842a x555 on the Q950
+
+    // TurboSCSI DRQ observation: channel 0 = internal.  The towers add a
+    // second 53C96 for the external bus on channel 1 -- the ONE genuine
+    // per-machine difference in this function (the Q700 has "one NCR 53C96
+    // shared by internal and external connectors").
+    dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
+    if (st->scsi96_ext)
+        dafb_set_scsi_drq_query(st->dafb, 1, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96_ext);
+    return 0;
 }
 
 // substrate.nubus_slot_irq: a NuBus card's /NMRQ maps to VIA2 PA(slot-9)
@@ -458,8 +496,8 @@ static void mcu_fill_rom_aperture(config_t *cfg) {
     uint32_t rom_size = cfg->machine->rom_size;
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
+    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++)
         mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
 }
@@ -499,13 +537,13 @@ static void mcu_overlay_arm(config_t *cfg) {
 
     // Route the aperture through the trigger device: reuse memory_map_add's
     // page plumbing once, then re-point the pages manually on later arms.
-    uint32_t start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
+    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
         g_page_table[p].host_base = NULL;
         g_page_table[p].dev = &st->overlay_interface;
         g_page_table[p].dev_context = cfg;
-        g_page_table[p].base_addr = desc->rom_base;
+        g_page_table[p].base_addr = desc->common.rom_base;
         g_page_table[p].writable = false;
         if (g_supervisor_read)
             g_supervisor_read[p] = 0;
@@ -583,7 +621,7 @@ static void mcu_memory_layout_init(config_t *cfg) {
     // through $53FFFFFF, current RE through $50FFFFFF — we register the
     // Apple-documented extent and let the mirror mask fold accesses; ref §6).
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, 0x50000000u, 0x04000000u, "MCU I/O", &st->io_interface, &st->io);
+    memory_map_add(cfg->mem_map, 0x50000000u, 0x04000000u, "I/O", &st->io_interface, &st->io);
 
     // DAFB registers at $F9800000; VRAM pages direct at $F9000000.
     memory_map_add(cfg->mem_map, DAFB_REG_BASE, DAFB_REG_APERTURE, "DAFB regs",
@@ -606,8 +644,8 @@ static void mcu_memory_layout_init(config_t *cfg) {
     st->overlay_interface.write_uint8 = mcu_overlay_write8;
     st->overlay_interface.write_uint16 = mcu_overlay_write16;
     st->overlay_interface.write_uint32 = mcu_overlay_write32;
-    memory_map_add(cfg->mem_map, desc->rom_base, desc->rom_end - desc->rom_base, "ROM aperture", &st->overlay_interface,
-                   cfg);
+    memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
+                   &st->overlay_interface, cfg);
 
     mcu_overlay_arm(cfg);
 }
@@ -632,16 +670,10 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
     // Towers intercept the SCC chip INT (OR with the SCC IOP host INT);
-    // the Q700 routes it straight to the level-4 source.
-    cfg->scc = scc_init(NULL, cfg->scheduler, board->scc_irq ? board->scc_irq : mac030_glue_scc_irq, cfg, cp);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    // the Q700 routes it straight to the level-4 source, which is the
+    // family default the NULL branch selects.
+    mac030_build_lowspeed(cfg, cp, board->scc_irq);
 
     // Derived from the CPU clock (see the same note in mdu.c): the towers run
     // 25 MHz (Q700/Q900) and 33 MHz (Q950), so the previous hardcoded 20/21 —
@@ -665,7 +697,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // NuBus (Phase F): seat the declared slot cards; their windows layer
     // over the bus-error range, and slot IRQs route through the substrate's
     // nubus_slot_irq into the VIA2 PA aggregate.
-    cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
     // The substrate tail was read by mcu_restore_private inside build_devices
     // above, so the card block that mcu_checkpoint_save wrote after it reads
     // back here.
@@ -678,7 +710,7 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     // shadow RAM at $00s00000 on large-memory configurations.
     mmu_host_regions_fill_pages(st->bus_mmu, mac030_fill_page, /*mode24_alias*/ false);
 
-    mac030_glue_finish(cfg, cp);
+    mac030_glue_finish(cfg, cp, &st->io);
     return 0;
 }
 
@@ -752,45 +784,9 @@ static void mcu_teardown(config_t *cfg) {
             cfg->adb = NULL;
         }
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via2) {
-        via_delete(cfg->via2);
-        cfg->via2 = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first — it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    // The config_t-owned devices, in the family-shared canonical order
+    // (machine_teardown.h).  Was a byte-identical copy in five families.
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -799,15 +795,7 @@ static void mcu_teardown(config_t *cfg) {
 
 static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp); // includes the 040 MMU register file
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
-    via_checkpoint(cfg->via2, cp);
+    mac030_checkpoint_save_core(cfg, cp);
     adb_checkpoint(st->adb, cp);
     mac_checkpoint_save_images(cfg, cp);
     // Device order mirrors the build_devices construction order exactly
@@ -909,7 +897,6 @@ const machine_substrate_t mcu_substrate = {
     .reset = mcu_reset,
     .teardown = mcu_teardown,
     .checkpoint_save = mcu_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl, // VIA1→1, VIA2→2, SCC→4, NMI→7 (ref §13)
     .trigger_vbl = mcu_trigger_vbl,
     .nubus_slot_irq = mcu_nubus_slot_irq, // slots → VIA2 PA1-PA5 + /SLOTIRQ aggregate
     .fd_insert = mac_fd_insert,

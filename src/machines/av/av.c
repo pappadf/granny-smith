@@ -13,6 +13,8 @@
 #include "av.h"
 #include "appletalk.h"
 
+#include "machine_teardown.h" // the shared config_t-owned delete chain
+
 #include "civic.h"
 #include "cuda.h"
 #include "dsp.h"
@@ -54,21 +56,6 @@ static inline const av_board_t *av_board(config_t *cfg) {
 
 static inline av_state_t *av_st(config_t *cfg) {
     return (av_state_t *)cfg->machine_context;
-}
-
-// Raise a plain bus-timeout exception from a device window (the 660AV's
-// MUNI_Control probe; same shape as the IIfx FMC probe window).
-static void av_bus_error(uint32_t addr, bool read) {
-    if (g_bus_error_pending)
-        return;
-    g_bus_error_pending = 1;
-    g_bus_error_address = addr;
-    g_bus_error_rw = read ? 1 : 0;
-    g_bus_error_fc =
-        read ? ((g_active_read == g_supervisor_read) ? 5 : 1) : ((g_active_write == g_supervisor_write) ? 5 : 1);
-    g_bus_error_is_pmmu = 0;
-    if (g_bus_error_instr_ptr)
-        *g_bus_error_instr_ptr = 0;
 }
 
 // ============================================================
@@ -124,7 +111,7 @@ static uint8_t av_muni_read(config_t *cfg, uint32_t addr) {
     uint32_t off = addr & 0x3FFu;
     uint32_t reg = off & ~3u;
     if (reg == AV_MUNI_CONTROL && !av_board(cfg)->desc->muni_present) {
-        av_bus_error(addr, true);
+        memory_signal_bus_error(addr, false);
         return 0xFF;
     }
     uint32_t v = (reg == AV_MUNI_CONTROL) ? st->muni_control : (reg == AV_MUNI_INTCNTRL) ? st->muni_intcntrl : 0;
@@ -138,7 +125,7 @@ static void av_muni_write(config_t *cfg, uint32_t addr, uint8_t value) {
     uint32_t shift = 8 * (3 - (off & 3));
     if (reg == AV_MUNI_CONTROL) {
         if (!av_board(cfg)->desc->muni_present) {
-            av_bus_error(addr, false);
+            memory_signal_bus_error(addr, true);
             return;
         }
         st->muni_control = (st->muni_control & ~(0xFFu << shift)) | ((uint32_t)value << shift);
@@ -222,20 +209,13 @@ const mac030_io_range_t av_io_ranges[] = {
 
 // Bind the family device set + board tables into the shared I/O engine.
 static void av_io_bind(mac030_io_t *io, config_t *cfg, const av_board_desc_t *desc) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
+    mac030_io_install(io, cfg, &desc->common);
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->iface[MAC030_DEV_VIA1] = via_get_memory_interface(cfg->via1);
     if (cfg->scc) {
         io->handle[MAC030_DEV_SCC] = cfg->scc;
         io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
     }
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
 }
 
 // ============================================================
@@ -270,6 +250,31 @@ void av_update_ipl(config_t *cfg, int source, bool active) {
 // VIA1 interrupt line → IPL 1.
 static void av_via1_irq(void *context, bool active) {
     av_update_ipl((config_t *)context, AV_IRQ_VIA1, active);
+}
+
+// substrate.nubus_slot_irq — the PSC aggregates NuBus slot interrupts itself,
+// so the bus drives one SInt source per slot and the PSC raises the VIA2
+// window's CA1 bit while any of them is asserted (psc.c psc_update_slot_bit).
+// The umbrella edge is therefore the chip's business, not ours, exactly as on
+// the MDU's RBV.
+//
+// Slots C/D/E map to SInt bits 3/4/5 (psc.h; the guest's PSCVIA2SlotInt reads
+// PSCVIA2SInt under mask ~$78 -- slots C/D/E plus on-board VBL on bit 6 --
+// and inverts, the register reading active-LOW).  So bit = slot - $9, and
+// av_psc_slot_source owns the inversion.
+//
+// No AV board declares a slot table yet (.slots = NULL on both, "declared but
+// unpopulated"), so nothing reaches this today.  It exists so the first AV
+// declaration-ROM card does not have to discover that its /NMRQ went nowhere.
+static void av_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    (void)umbrella_edge; // the PSC aggregates internally
+    av_state_t *st = (av_state_t *)cfg->machine_context;
+    if (!st || !st->psc)
+        return;
+    int bit = slot - 0x9;
+    if (bit < 3 || bit > 5) // only C/D/E exist on this family
+        return;
+    av_psc_slot_source(st->psc, bit, active);
 }
 
 // ============================================================
@@ -436,8 +441,8 @@ static void av_fill_rom_aperture(config_t *cfg) {
     uint32_t rom_size = cfg->machine->rom_size;
     uint32_t rom_pages = rom_size >> PAGE_SHIFT;
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
+    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++)
         mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
 }
@@ -470,13 +475,13 @@ static void av_overlay_arm(config_t *cfg) {
 
     // Route the aperture through the trigger device (page plumbing was done
     // once by memory_map_add; later arms re-point the pages manually).
-    uint32_t start_page = desc->rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->rom_end >> PAGE_SHIFT;
+    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
+    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
     for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
         g_page_table[p].host_base = NULL;
         g_page_table[p].dev = &st->overlay_interface;
         g_page_table[p].dev_context = cfg;
-        g_page_table[p].base_addr = desc->rom_base;
+        g_page_table[p].base_addr = desc->common.rom_base;
         g_page_table[p].writable = false;
         if (g_supervisor_read)
             g_supervisor_read[p] = 0;
@@ -549,7 +554,7 @@ static void av_memory_layout(config_t *cfg) {
     // I/O island: the serialized window at $50F00000 plus its non-serialized
     // alias at $50F40000, folded by the $3FFFF mirror mask.
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00080000u, "AV I/O", &st->io_interface, &st->io);
+    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00080000u, "I/O", &st->io_interface, &st->io);
 
     // CPU-ID register page at $5FFFF000 (the register itself is $5FFFFFFC).
     st->cpuid_interface.read_uint8 = av_cpuid_read8;
@@ -568,8 +573,8 @@ static void av_memory_layout(config_t *cfg) {
     st->overlay_interface.write_uint8 = av_overlay_write8;
     st->overlay_interface.write_uint16 = av_overlay_write16;
     st->overlay_interface.write_uint32 = av_overlay_write32;
-    memory_map_add(cfg->mem_map, desc->rom_base, desc->rom_end - desc->rom_base, "ROM aperture", &st->overlay_interface,
-                   cfg);
+    memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
+                   &st->overlay_interface, cfg);
 
     av_overlay_arm(cfg);
 }
@@ -612,10 +617,8 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     via_input(cfg->via1, 0, 7, 1);
     // Port B: PB3 is Cuda TREQ (active-low, idle high).
     via_input(cfg->via1, 1, 3, 1);
-    // CA1 (60 Hz) and the Cuda CB1/CB2 lines idle high.
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via1, 1, 0, 1);
-    via_input_c(cfg->via1, 1, 1, 1);
+    // CA1 (60 Hz) and the Cuda CB1/CB2 lines idle high -- the VIA's own
+    // power-on state now, so this no longer has to say so (F-50).
 
     // The PSC interrupt controller + DMA engine (VIA2 window, L3-L6,
     // sndPhase, the 7 channels).
@@ -704,8 +707,8 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    st->bus_mmu =
-        mmu_init(ram_base, ram_size, desc->rom_base, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
+    st->bus_mmu = mmu_init(ram_base, ram_size, desc->common.rom_base, rom_data, cfg->machine->rom_size,
+                           desc->common.rom_base, desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
@@ -724,7 +727,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // NuBus super-slot and slot space bus-errors on probes (the ROM's slot
     // scan expects it even with no cards).
-    memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
     return 0;
 }
 
@@ -747,14 +750,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, av_scc_irq, cfg, cp);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    mac030_build_lowspeed(cfg, cp, av_scc_irq);
 
     uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
     cfg->via1 =
@@ -769,7 +765,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     if (board->build_devices(cfg, cp) != 0)
         return -1;
 
-    cfg->nubus = nubus_init(cfg, board->desc->slots, cp);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, cp);
 
     // Substrate-private checkpoint tail.
     if (cp) {
@@ -785,7 +781,7 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
         via_redrive_outputs(cfg->via1);
     }
 
-    mac030_glue_finish(cfg, cp);
+    mac030_glue_finish(cfg, cp, &st->io);
     return 0;
 }
 
@@ -851,41 +847,9 @@ static void av_teardown(config_t *cfg) {
             st->bus_mmu = NULL;
         }
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first — it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    // The config_t-owned devices, in the family-shared canonical order
+    // (machine_teardown.h).  Was a byte-identical copy in five families.
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -894,14 +858,7 @@ static void av_teardown(config_t *cfg) {
 
 static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     av_state_t *st = av_st(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp); // includes the 040 MMU register file
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    mac030_checkpoint_save_core(cfg, cp);
     // Device order mirrors the checkpoint READS in av_build_devices — the
     // stream is sequential, so save and restore must walk it identically.
     av_psc_checkpoint(st->psc, cp);
@@ -953,7 +910,7 @@ const machine_substrate_t av_substrate = {
     .reset = av_reset,
     .teardown = av_teardown,
     .checkpoint_save = av_checkpoint_save,
-    .update_ipl = av_update_ipl, // VIA1→1, VIA2→2, L3-L6→3-6, NMI→7
+    .nubus_slot_irq = av_nubus_slot_irq, // slots C/D/E → PSC SInt bits 3-5
     .trigger_vbl = av_trigger_vbl,
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,

@@ -7,6 +7,7 @@
 // MESH + 53C94 SCSI, Control/Chaos onboard video, 50 MHz processor bus
 // (Apple, "Power Macintosh 7500 and 8500 Computers" Developer Note, 1995).
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
@@ -14,14 +15,9 @@ static const uint32_t pm7500_ram_options_kb[] = {16384, 32768, 65536, 131072, 26
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // external 53C94 chain is present but empty until the CD-ROM phase.
-static const struct scsi_slot pm7500_scsi_slots[] = {
-    {.label = "Internal HD0", .id = 0},
-    {.label = "Internal HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm7500_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm7500_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = tnt_scsi_slots_internal},
     {0},
 };
 
@@ -86,7 +82,28 @@ const hw_profile_t machine_pm7500 = {
 
     .ram_options = pm7500_ram_options_kb,
     .scsi_buses = pm7500_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    // Factory configuration: internal CD-ROM on SCSI ID 3, the era's Apple
+    // convention (internal hard disk 0, CD-ROM 3, controller 7).  "Most
+    // configurations also include a built-in CD-ROM drive" (Power Macintosh
+    // 7500/8500 Developer Note, S1).
+    //
+    // has_cdrom stays FALSE, and that is not an oversight -- it is the reason
+    // the CD bay cannot be offered yet.  On the real machine the CD sits on the
+    // SLOW 5 MB/s Curio 53C94 bus, the one also brought out to the external
+    // DB-25, not on the 10 MB/s MESH bus that carries the internal hard disk
+    // ("a SCSI bus for external SCSI devices and for the internal CD-ROM
+    // drive", ibid. S3).  We build the 53C94 with NO bus attached (tnt.c), so
+    // there is nowhere correct to put it -- and system.c:779 registers an empty
+    // bay on cfg->scsi the moment has_cdrom is true, which on these machines is
+    // MESH.  Measured: doing that seats a SONY CD-ROM at id 3 on the boot bus
+    // and breaks tnt-voodoo2-glide's Mac OS 8.1 startup.
+    //
+    // cdrom_id carries the factory answer so it is right the day the 53C94
+    // gets a chain: ID 3, the era's Apple convention (internal hard disk 0,
+    // CD-ROM 3, controller 7).
+    .has_cdrom = false,
+    .cdrom_id = 3,
+    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm7500_pci_slots,
 

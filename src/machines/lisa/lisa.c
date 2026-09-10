@@ -861,6 +861,12 @@ static int lisa_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // Two 6522 VIAs (reused unchanged).  map=NULL: the machine registers the
     // interface itself.  freq_factor 4 = 68000/4 ≈ 1.27 MHz (docs/machines/lisa/lisa.md §10).
+    //
+    // Deliberately NOT via_freq_factor_for_clock(): that helper divides by the
+    // 783.36 kHz φ2 every Macintosh 6522 runs at, and would return 7 here.  The
+    // Lisa's VIAs are clocked from the CPU at /4, a different quantity, so this
+    // is the one family where a literal is the correct answer rather than a
+    // stale one.
     cfg->via1 =
         via_init(NULL, cfg->scheduler, 4, "via1", lisa_via1_output, lisa_via_shift_out, lisa_via1_irq, cfg, checkpoint);
     cfg->via2 =

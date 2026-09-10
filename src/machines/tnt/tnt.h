@@ -430,7 +430,15 @@ extern const machine_substrate_t tnt_substrate;
 // The family's one internal SuperDrive bay, shared by all five profiles
 // (tnt.c).  The SWIM3 + DBDMA-channel-1 datapath behind it is complete and
 // exercised by tests/integration/ans-diag-floppy.
-extern const struct floppy_slot tnt_floppy_slots[];
+extern const struct scsi_slot tnt_scsi_slots_internal[];
+
+// The Shiner backplane, shared by both Network Server profiles (tnt.c).
+// See the derivation there -- and the five reasons it is not the 9500's.
+extern const pci_slot_decl_t ans_pci_slots[];
+
+// The Network Servers' shared front backplane on fast/wide 0 (tnt.c).
+// The second controller stays per-model -- that is where the bays differ.
+extern const struct scsi_slot ans_scsi_slots_fw0[];
 
 // Fill/clear one physical page in the AoS table + SoA fast-path arrays
 // (the pdm_fill_page shape; local so tnt stays free of 68K-family headers).

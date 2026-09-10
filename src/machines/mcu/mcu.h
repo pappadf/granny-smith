@@ -80,18 +80,22 @@ struct sonic;
 // The MCU-family board descriptor: per-machine hardware data consumed by the
 // shared substrate (parallel to mac030_board_desc_t).
 typedef struct mcu_board_desc {
-    const char *chipset; // "MCU+DAFB" (tracing/diagnostics)
-    uint32_t rom_base, rom_end; // ROM aperture ($40000000-$50000000)
-    const mac030_io_range_t *io_ranges; // ordered I/O window table
-    uint32_t io_mirror_mask; // I/O island mirror mask ($3FFFF)
-    uint8_t io_unmapped_read; // unmapped-read value inside the island
-    const struct nubus_slot_decl *slots; // NuBus slot table (NULL until Phase F)
-    uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
+    // The eight fields the shared 68k code reads -- see mac030_board_desc_t.
+    // Embedded, not repeated: one definition, one place to document it.
+    mac030_board_desc_t common;
     uint32_t ram_onboard_size; // soldered RAM forming bank A (Q700: 4 MB; 0 = SIMM banks only)
     uint8_t ram_bank_count; // physical banks the board decodes (Q700: 2, towers: 4)
     uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950; ref §7.4 [R])
     uint8_t dafb_version; // DAFB_Test bits 11:9 (0 = Q700/Q900, 3 = Q950 "DAFB 3"; ref §11.8)
     bool has_ac842a; // AC842a RAMDAC (PCBR1 + x555 16-bit mode; Q950 only)
+    // VRAM fitted, into the fixed 2 MiB CPU aperture every board decodes.
+    // The BASE configurations genuinely differ -- the Q700 has one soldered
+    // 512 KiB bank plus three optional 256 KiB-SIMM-pair banks, the towers
+    // ship 1 MiB -- and all three expand to 2 MiB.  We currently model every
+    // board MAXED, so these agree by choice rather than by hardware; this
+    // field is what makes that a decision rather than a magic number, and
+    // what a base-configuration model would change.
+    uint32_t dafb_vram_size;
 } mcu_board_desc_t;
 
 // Per-machine hooks + data, named by hw_profile_t.board.
@@ -165,6 +169,14 @@ extern const mac030_io_range_t mcu_q700_io_ranges[];
 extern const mac030_io_range_t mcu_q900_io_ranges[];
 
 // Bind the family device set + board tables into the shared I/O engine.
+// Bind the MCU's I/O dispatcher.  Deliberately NOT a call through to
+// mac030_glue_io_bind, even though desc->common is now the same type it takes
+// (F-32 removed that barrier, and F-36 proposes the merge): the two bind
+// different device sets.  The GLUE version also binds MAC030_DEV_SCSI, and
+// neither this family's window table nor the AV's ever routes to that device
+// index -- both decode a 53C96 through their own windows instead -- so
+// delegating would install a handle nothing consults.  Merging these is a
+// question about device sets, not about the descriptor type.
 void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy);
 
 // Install the family memory layout: I/O island, DAFB apertures, ROM-aperture
@@ -192,6 +204,18 @@ void mcu_restore_private(config_t *cfg, checkpoint_t *cp);
 
 // Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity):
 // sets the active-low PA input and re-resolves the CA1 aggregate (ref §13.3).
+// Build the DAFB and everything that hangs off it, for every MCU board.
+// The Q700 and the towers differ in exactly ONE thing here -- the towers
+// have a second 53C96 whose DRQ feeds TurboSCSI channel 1 -- so that is the
+// only conditional.  Everything else that looked per-machine was not: the
+// two boards' DAFB IRQ callbacks were byte-identical, and the version /
+// AC842a setters were applied only on the tower path even though the Q700
+// has the same registers (DAFB 343S0128-01 is "Q700 and Q900; version
+// values 0, 1, or 2"; only the Q950 is DAFB II, version 3).  Applying them
+// from the descriptor unconditionally is what makes the Q700 honour its own
+// board data instead of coinciding with dafb_init()'s zeroed defaults.
+int mcu_build_dafb(config_t *cfg, checkpoint_t *cp);
+
 void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active);
 
 #endif // GS_MACHINES_MCU_H

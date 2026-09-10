@@ -8,6 +8,7 @@
 // processor bus at 3:1 (Apple, "Power Macintosh 7500 and 8500 Computers"
 // Developer Note, 1995).
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // 168-pin DIMMs in 8 slots, interleaved in pairs; 1 GB architectural max.
@@ -15,14 +16,9 @@ static const uint32_t pm8500_ram_options_kb[] = {16384, 32768, 65536, 131072, 26
 
 // The internal fast-SCSI (MESH) bus carries the boot disks; the
 // external 53C94 chain is present but empty until the CD-ROM phase.
-static const struct scsi_slot pm8500_scsi_slots[] = {
-    {.label = "Internal HD0", .id = 0},
-    {.label = "Internal HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm8500_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm8500_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = tnt_scsi_slots_internal},
     {0},
 };
 
@@ -80,7 +76,9 @@ const hw_profile_t machine_pm8500 = {
 
     .ram_options = pm8500_ram_options_kb,
     .scsi_buses = pm8500_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    .has_cdrom = false, // no 53C94 chain to hang it on -- see pm7500.c
+    .cdrom_id = 3, // the factory answer, ready for when there is one
+    .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm8500_pci_slots,
 

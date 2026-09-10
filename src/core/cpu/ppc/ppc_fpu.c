@@ -230,7 +230,7 @@ void ppc_do_mcrfs(ppc_t *p, uint32_t iw) {
 // are never writable and re-derive.  mtfsb0/mtfsb1 (folios 10-131/132):
 // bits 1 and 2 cannot be explicitly written.
 void ppc_do_mtfsf(ppc_t *p, uint32_t iw) {
-    uint32_t m = ppc_crm_mask((iw >> 17) & 0xFFu) & ~PPC_FPSCR_UNWRITABLE;
+    uint32_t m = ppc_crm_mask((iw >> 17) & 0xFFu) & ~ppc_fpscr_nowrite(p);
     p->fpscr = ppc_fpscr_derive(((uint32_t)p->fpr[PPC_RB(iw)] & m) | (p->fpscr & ~m));
     if (PPC_RC(iw))
         ppc_set_cr_field(p, 1, p->fpscr >> 28);
@@ -239,7 +239,7 @@ void ppc_do_mtfsf(ppc_t *p, uint32_t iw) {
 
 void ppc_do_mtfsfi(ppc_t *p, uint32_t iw) {
     uint32_t sh = 28 - 4 * PPC_CRFD(iw);
-    uint32_t m = (0xFu << sh) & ~PPC_FPSCR_UNWRITABLE;
+    uint32_t m = (0xFu << sh) & ~ppc_fpscr_nowrite(p);
     p->fpscr = ppc_fpscr_derive(((((iw >> 12) & 0xFu) << sh) & m) | (p->fpscr & ~m));
     if (PPC_RC(iw))
         ppc_set_cr_field(p, 1, p->fpscr >> 28);
@@ -253,10 +253,15 @@ void ppc_do_mtfsfi(ppc_t *p, uint32_t iw) {
 // registers altered" line names only FPSCR[crbD], but that list also omits
 // the derived VX, so it reads as a summary rather than an exhaustive action
 // list — unlike §5.4.7.4.1, which IS one and does override the same table
-// for FR/FI on disabled overflow.  powerpc-test's model agrees.)
+// for FR/FI on disabled overflow.)
+//
+// The transition rule is what makes this conditional: ppc_fpscr_raise sets
+// FX only when the bit was previously 0.  And on the 601, VXSOFT and VXSQRT
+// are not implemented at all (ppc_fpscr_nowrite), so mtfsb1 of either is a
+// no-op there and sets nothing — FX included.
 void ppc_do_mtfsb(ppc_t *p, uint32_t iw, bool set) {
     uint32_t bit = 0x80000000u >> PPC_RT(iw);
-    if (!(bit & PPC_FPSCR_UNWRITABLE)) {
+    if (!(bit & ppc_fpscr_nowrite(p))) {
         if (!set)
             p->fpscr &= ~bit;
         else if (bit & PPC_FPSCR_EXCEPTIONS)

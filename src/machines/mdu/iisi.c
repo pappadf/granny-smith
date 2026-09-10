@@ -22,20 +22,17 @@
 // RBV, Mode-24 framebuffer aliasing) matches the IIci.
 
 #include "mac030_glue.h"
-#include "mac_host_io.h"
 #include "machine.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
 #include "checkpoint_images.h"
-#include "checkpoint_machine.h"
 #include "cpu.h"
-#include "cpu_internal.h" // for cpu->mmu field
-#include "debug.h"
 #include "egret.h"
 #include "floppy.h"
 #include "iisi_internal.h"
@@ -45,11 +42,8 @@
 #include "mmu.h"
 #include "nubus.h"
 #include "rbv.h"
-#include "rtc.h"
-#include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
-#include "shell.h"
 #include "via.h"
 
 #include <assert.h>
@@ -61,14 +55,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("board");
-
-// ============================================================
-// I/O island offsets (private to the dispatcher) — MDU map
-// ============================================================
-
-// ============================================================
-// SoA page helper (same logic as the IIci helper)
-// ============================================================
 
 // ============================================================
 // ROM overlay
@@ -125,7 +111,7 @@ static void iisi_memory_layout_init(config_t *cfg) {
     }
 
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, IISI_IO_BASE, IISI_IO_SIZE, "IIsi I/O", &st->io_interface, &st->mdu_io);
+    memory_map_add(cfg->mem_map, IISI_IO_BASE, IISI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // No separate VRAM aperture to wire: the on-board frame buffer IS the bottom
     // of Bank A (physical 0).  The OS reaches the screen through its PMMU tree
@@ -135,10 +121,6 @@ static void iisi_memory_layout_init(config_t *cfg) {
     st->rom_overlay = false;
     iisi_set_rom_overlay(cfg, true);
 }
-
-// ============================================================
-// Interrupt routing
-// ============================================================
 
 // ============================================================
 // RBV / SCC / SCSI / Egret callbacks
@@ -219,10 +201,6 @@ static void iisi_via1_shift_out(void *context, uint8_t byte) {
 }
 
 // ============================================================
-// VBL trigger
-// ============================================================
-
-// ============================================================
 // Slot table
 // ============================================================
 //
@@ -241,14 +219,13 @@ static const nubus_slot_decl_t iisi_slots[] = {
 // at init by the shared helpers.  Shares the MDU window table + 18-bit mirror
 // with the IIci; ROM at $40800000.  (The IIsi's two-bank RAM layout is set up
 // in iisi_init after mac030_build_mmu — it isn't board-descriptor data.)
-static const mac030_board_desc_t iisi_board = {
+static const mac030_board_desc_t iisi_board_desc = {
     .chipset = "MDU+RBV",
     .rom_base = IISI_ROM_START,
     .rom_end = IISI_ROM_END,
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = iisi_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
 };
@@ -313,7 +290,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint32_t ram_size = cfg->ram_size;
-    st->mmu = mac030_build_mmu(cfg, iisi_board.rom_base, iisi_board.rom_end);
+    st->mmu = mac030_build_mmu(cfg, iisi_board_desc.rom_base, iisi_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as IIci).
@@ -328,13 +305,13 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     mmu_set_ram_bank_b(st->mmu, IISI_BANK_A_SIZE, ram_base + IISI_BANK_A_SIZE, IISI_BANK_B_PHYS,
                        (ram_size > IISI_BANK_A_SIZE) ? (ram_size - IISI_BANK_A_SIZE) : 0, IISI_BANK_WINDOW);
 
-    cfg->nubus = nubus_init(cfg, iisi_board.slots, checkpoint);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
     st->video_card = nubus_card(cfg->nubus, 0xE);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
 
     // Bind device handles + the board's I/O window table for the shared engine.
-    mdu_io_bind(&st->mdu_io, cfg, &iisi_board, st->asc, st->floppy, st->rbv, st->video_card);
+    mdu_io_bind(&st->mdu_io, cfg, &iisi_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
 
     // On-board video reads its frame buffer from the BOTTOM of Bank A — physical
     // 0 (Developer Note §8.2; VideoInfoMacIIsi screen physical base = 0).  Point
@@ -356,7 +333,7 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     // NuBus expansion / slot space bus-errors on unmapped reads.  There is no
     // addressable card in slot $E (built-in video is main DRAM mapped by the OS),
     // so the $FExxxxxx slot aperture legitimately bus-errors when probed.
-    memory_set_bus_error_range(cfg->mem_map, iisi_board.bus_err_lo, iisi_board.bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, iisi_board_desc.bus_err_lo, iisi_board_desc.bus_err_hi);
 
     iisi_memory_layout_init(cfg);
 
@@ -380,27 +357,15 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 // a "must reach past the framebuffer" floor.  Offer the System-7-capable sizes.
 static const uint32_t iisi_ram_options_kb[] = {5120, 9216, 17408, 66560, 0}; // 5/9/17/65 MB
 
-static const struct floppy_slot iisi_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {.label = "External FD1", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot iisi_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t iisi_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = iisi_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
 // IIsi board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body (Egret + 2-bank RAM live inside build_devices).
-static const mac030_mdu_board_t iisi_mdu_board = {
-    .desc = &iisi_board,
+static const mac030_mdu_board_t iisi_board = {
+    .desc = &iisi_board_desc,
     .via1_output = iisi_via1_output,
     .via1_shift_out = iisi_via1_shift_out,
     .build_devices = iisi_build_devices,
@@ -420,7 +385,7 @@ const hw_profile_t machine_iisi = {
     .rom_size = 0x80000, // 512 KB
 
     .ram_options = iisi_ram_options_kb,
-    .floppy_slots = iisi_floppy_slots,
+    .floppy_slots = mac_floppy_slots_2hd,
     .scsi_buses = iisi_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
@@ -430,5 +395,5 @@ const hw_profile_t machine_iisi = {
     .nubus_slots = iisi_slots,
 
     .substrate = &mdu_substrate, // shared MDU+RBV-family substrate
-    .board = &iisi_mdu_board,
+    .board = &iisi_board,
 };

@@ -241,6 +241,37 @@ def row_iifx_8m() {
     report_perf("suite-iifx/iifx-8m", scheduler.instr_count)
 }
 
+# ---- iifx-checkpoint ---------------------------------------------------------
+# The IIfx had no checkpoint round-trip anywhere in the tree, and it was broken:
+# iifx_checkpoint_save wrote asc -> adb -> floppy while iifx_init restores
+# asc -> floppy -> adb.  The stream is positional with no per-block tag, so the
+# blocks cross-loaded and every load died with
+#   "expected 9840 at floppy.c:708 but file contains 336 at adb.c:891".
+# A save/restore pair is the only thing that catches that class of mistake, so
+# the family that had the bug is now the family that tests for it.
+#
+# Modelled on suite-iici's checkpoint row: save a settled desktop, boot a
+# DIFFERENT configuration so a stale machine cannot pass by accident, load, and
+# re-match the pre-save golden once the restored guest is quiescent again.
+def row_iifx_checkpoint() {
+    machine.boot model="iifx" ram=16384 video_card="mdc_8_24" rom="${$ROM}"
+    machine.floppy.drive[0].insert "${$sys_701}"
+    scheduler.run 200000000
+    wait_stable(900000000)
+    check("goldens/iifx-7.0.1-640x480x1-finder.png")
+    assert checkpoint.save("${$WORK_DIR}/suite-iifx.gsc") "iifx-checkpoint: save failed"
+    # A different RAM size, so a restore that quietly kept the old machine fails
+    # the assert below rather than passing on the golden.
+    machine.boot model="iifx" ram=8192 video_card="mdc_8_24" rom="${$ROM}"
+    assert checkpoint.load("${$WORK_DIR}/suite-iifx.gsc") "iifx-checkpoint: load failed"
+    assert machine.ram == 16384 "iifx-checkpoint: restored RAM size wrong"
+    assert machine.id == "iifx" "iifx-checkpoint: restored machine.id wrong"
+    scheduler.run 5000000
+    wait_stable(400000000)
+    check("goldens/iifx-7.0.1-640x480x1-finder.png")
+    report_perf("suite-iifx/iifx-checkpoint", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("iifx-chime") { row_end("iifx-chime", try(row_iifx_chime(), "FAILED")) }
@@ -263,6 +294,7 @@ if row_on("iifx-aux3-login") {
     }
 }
 if row_on("iifx-8m") { row_end("iifx-8m", try(row_iifx_8m(), "FAILED")) }
+if row_on("iifx-checkpoint") { row_end("iifx-checkpoint", try(row_iifx_checkpoint(), "FAILED")) }
 
 suite_done()
 quit

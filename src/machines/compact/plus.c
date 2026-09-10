@@ -10,6 +10,7 @@
 
 #include "mac_host_io.h"
 #include "machine.h"
+#include "slot_tables.h"
 #include "system_config.h" // full config_t definition
 
 #include "appletalk.h"
@@ -235,8 +236,16 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
                             // class can find it via cfg->sound (M7f)
 
-    cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, 10, "via1", plus_via_output, plus_via_shift_out, plus_via_irq,
-                         cfg, checkpoint);
+    // 7.8336 MHz / 783.36 kHz = exactly 10, so this is the literal it replaces.
+    cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
+                         plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
+
+    // VIA1 PA3 is the SCC's W/REQ line on a Plus, and it is held LOW at boot
+    // until the SCC comes out of reset.  This used to be the core VIA's port-A
+    // default (0xF7), which made one machine's boot condition every machine's
+    // -- and on the II family the same pin is a NuBus slot /NMRQ, so each of
+    // them had to raise it back up or slot $C asserted forever (F-50).
+    via_input(cfg->via1, /*port A*/ 0, /*PA3*/ 3, 0);
 
     rtc_set_via(cfg->rtc, cfg->via1);
 
@@ -512,14 +521,8 @@ static const struct floppy_slot plus_floppy_slots[] = {
     {0},
 };
 
-static const struct scsi_slot plus_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t plus_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = plus_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 

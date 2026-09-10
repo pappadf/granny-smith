@@ -13,6 +13,7 @@
 
 #include "machine.h"
 #include "nubus.h"
+#include "slot_tables.h"
 
 #include <stdint.h>
 
@@ -27,27 +28,23 @@ static const struct floppy_slot q840av_floppy_slots[] = {
     {0},
 };
 
-static const struct scsi_slot q840av_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t q840av_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = q840av_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
 static const av_board_desc_t q840av_board_desc = {
-    .chipset = "YMCA+PSC",
-    .rom_base = 0x40800000u,
-    .rom_end = 0x40A00000u,
-    .io_ranges = av_io_ranges,
-    .io_mirror_mask = 0x0003FFFFu, // 256 KiB island + the $50F40000 alias
-    .io_unmapped_read = 0xFF, // undecoded island reads float high
-    .slots = NULL, // no NuBus cards in scope (slots C/D/E physically exist)
-    .bus_err_lo = 0xA0000000u, // NuBus super-slots + slot space bus-error
-    .bus_err_hi = 0xFEFFFFFFu,
+    .common =
+        {
+                 .chipset = "YMCA+PSC",
+                 .rom_base = 0x40800000u,
+                 .rom_end = 0x40A00000u,
+                 .io_ranges = av_io_ranges,
+                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island + the $50F40000 alias
+            .io_unmapped_read = 0xFF, // undecoded island reads float high
+            .bus_err_lo = 0xA0000000u, // NuBus super-slots + slot space bus-error
+            .bus_err_hi = 0xFEFFFFFFu,
+                 },
     .strap_nibble = 0xF, // Cyclone40 straps %1111 (ymca.md §2)
     .muni_present = true,
 };

@@ -32,6 +32,7 @@
 #include "machine_profile.h"
 #include "object.h"
 #include "scheduler.h"
+#include "sound_surface.h"
 #include "system.h"
 #include "value.h"
 
@@ -147,10 +148,12 @@ static void pdm_awacs_out_event(void *source, uint64_t data) {
     LOG(2, "sndout half %d complete (snd18=$%02X)", a->snd_out_buf, a->snd[0x18]);
     awacs_render_half(cfg, a->snd_out_buf);
     uint8_t flag = a->snd_out_buf == 0 ? 0x40u : 0x80u; // bit 6 <-> +$10000
-    if (a->snd[0x18] & flag)
+    if (a->snd[0x18] & flag) {
         a->snd[0x18] |= 0x20u; // over/underrun: ERR instead of the IF
-    else
+        a->snd_underruns++; // surfaced as machine.sound.overruns
+    } else {
         a->snd[0x18] |= flag;
+    }
     a->snd_out_buf ^= 1u;
     a->snd_half_start_ns = scheduler_time_ns(cfg->scheduler);
     pdm_amic_recompute(cfg);
@@ -255,82 +258,72 @@ void pdm_awacs_write(config_t *cfg, uint32_t off, uint8_t value) {
 }
 
 // ============================================================
-// machine.sound — the object node
+// machine.sound — the shared surface (sound_surface.h)
 // ============================================================
+//
+// Volume and mute were computed here all along and never surfaced: the render
+// path calls awacs_speaker_gains() every half-buffer, applies the ladder
+// itself, and pushes a hardcoded 7 to audio_out ("attenuation already
+// applied").  So the level existed and simply had nowhere to be read from.
+// It is now reported on the 0..7 Sound control panel scale, derived from the
+// codec's attenuation index (sound_volume_from_atten).
+//
+// in_enabled reports false because the AWACS input path is not modelled yet --
+// not because the hardware lacks one.  The register map has an input
+// sub-frame field, and a Power Mac has a Sound In jack.  When that path lands
+// this reads true with no change here.
 
-static inline pdm_amic_t *snd_amic(struct object *self) {
-    config_t *cfg = (config_t *)object_data(self);
+static pdm_amic_t *snd_amic_ctx(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
     return cfg && cfg->machine_context ? &pdm_st(cfg)->amic : NULL;
 }
 
-static value_t snd_attr_rate(struct object *self, const member_t *m) {
-    (void)m;
-    pdm_amic_t *a = snd_amic(self);
-    return val_uint(4, a ? awacs_rate(a) : 0);
+static uint32_t pdm_snd_sample_rate(void *ctx) {
+    pdm_amic_t *a = snd_amic_ctx(ctx);
+    return a ? awacs_rate(a) : 0;
 }
 
-static value_t snd_attr_out_enabled(struct object *self, const member_t *m) {
-    (void)m;
-    pdm_amic_t *a = snd_amic(self);
-    return val_bool(a && (a->snd[0x10] & 0x01u));
+// The codec's left attenuation index (register 4, bits 6-9) is the guest's
+// level; left and right move together under the Sound control panel.
+static uint32_t pdm_snd_volume(void *ctx) {
+    pdm_amic_t *a = snd_amic_ctx(ctx);
+    return a ? sound_volume_from_atten((a->codec[4] >> 6) & 15u) : 0;
 }
 
-static value_t snd_attr_frames(struct object *self, const member_t *m) {
-    (void)m;
-    pdm_amic_t *a = snd_amic(self);
-    return val_uint(4, a ? a->snd_halves : 0);
+static bool pdm_snd_muted(void *ctx) {
+    pdm_amic_t *a = snd_amic_ctx(ctx);
+    if (!a)
+        return true;
+    bool mute;
+    uint32_t gl, gr;
+    awacs_speaker_gains(a->codec, &gl, &gr, &mute);
+    return mute;
 }
 
-static value_t snd_attr_peak(struct object *self, const member_t *m) {
-    (void)m;
-    pdm_amic_t *a = snd_amic(self);
-    return val_int(a ? a->snd_peak : 0);
+static bool pdm_snd_out_enabled(void *ctx) {
+    pdm_amic_t *a = snd_amic_ctx(ctx);
+    return a && (a->snd[0x10] & 0x01u);
 }
 
-static value_t snd_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1)
-        return val_err("match: want a golden WAV path");
-    return audio_out_match_value(argv[0].s);
+static bool pdm_snd_in_enabled(void *ctx) {
+    (void)ctx;
+    return false; // AWACS sound input is not modelled yet
 }
 
-static const arg_decl_t snd_match_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "golden WAV to compare the last capture against"},
-};
+static uint64_t pdm_snd_frames(void *ctx) {
+    pdm_amic_t *a = snd_amic_ctx(ctx);
+    return a ? a->snd_halves : 0;
+}
 
-static const member_t pdm_sound_members[] = {
-    {.kind = M_ATTR,
-     .name = "sample_rate",
-     .doc = "Codec sample rate from the +$10 rate field (44100/22050)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = snd_attr_rate, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "out_enabled",
-     .doc = "Output RUN bit — sound-out DMA running",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = snd_attr_out_enabled, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "frames",
-     .doc = "Output half-buffers rendered since power-on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = snd_attr_frames, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "peak",
-     .doc = "Loudest |sample| pushed to the host since power-on (0 = only silence)",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = snd_attr_peak, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "match",
-     .doc = "Sample-exact compare of the last capture against a golden WAV",
-     .method = {.args = snd_match_args, .nargs = 1, .result = V_BOOL, .fn = snd_method_match}},
-};
+static int32_t pdm_snd_peak(void *ctx) {
+    pdm_amic_t *a = snd_amic_ctx(ctx);
+    return a ? a->snd_peak : 0;
+}
 
-static const class_desc_t pdm_sound_class = {
-    .name = "sound",
-    .members = pdm_sound_members,
-    .n_members = sizeof(pdm_sound_members) / sizeof(pdm_sound_members[0]),
-};
+static uint64_t pdm_snd_overruns(void *ctx) {
+    pdm_amic_t *a = snd_amic_ctx(ctx);
+    return a ? a->snd_underruns : 0;
+}
 
 // ============================================================
 // Lifecycle
@@ -352,13 +345,18 @@ void pdm_awacs_init(config_t *cfg) {
     // mid-capture rate switch invalidates golden matching).
     audio_out_open(44100, 2);
 
-    st->snd_object = object_new(&pdm_sound_class, cfg, "sound");
-    if (st->snd_object) {
-        object_set_label(st->snd_object, "Sound");
-        object_set_order(st->snd_object, 110);
-        object_attach(machine_object(), st->snd_object);
-        audio_out_capture_attach(st->snd_object);
-    }
+    const sound_surface_t surface = {
+        .sample_rate = pdm_snd_sample_rate,
+        .volume = pdm_snd_volume,
+        .muted = pdm_snd_muted,
+        .out_enabled = pdm_snd_out_enabled,
+        .in_enabled = pdm_snd_in_enabled,
+        .frames = pdm_snd_frames,
+        .peak = pdm_snd_peak,
+        .overruns = pdm_snd_overruns,
+        .ctx = cfg,
+    };
+    st->snd_object = sound_object_new(&surface);
 }
 
 void pdm_awacs_teardown(config_t *cfg) {

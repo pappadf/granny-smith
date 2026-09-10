@@ -19,6 +19,7 @@
 #include "audio_out.h"
 #include "object.h"
 #include "rbv.h"
+#include "sound_surface.h"
 #include "test_assert.h"
 #include "value.h"
 
@@ -109,6 +110,17 @@ value_t audio_out_match_value(const char *golden_wav) {
 }
 
 // --- object model / values: inert ---
+// asc.c presents machine.sound through the shared surface (sound_surface.h);
+// this suite links asc.c but not the surface, so it is stubbed inert like the
+// object model below.  asc_init already handles a NULL object.
+struct object *sound_object_new(const sound_surface_t *s) {
+    (void)s;
+    return NULL;
+}
+void sound_object_delete(struct object *o) {
+    (void)o;
+}
+
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {
     (void)cls;
     (void)instance_data;

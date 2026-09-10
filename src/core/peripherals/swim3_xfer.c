@@ -36,7 +36,6 @@
 // nibblisation, the 3-byte checksum); and the byte streams the ROM's own
 // .Sony driver puts on the DMA channel, observed on this emulator.
 
-#include "floppy.h"
 #include "swim3.h"
 
 #include "floppy.h"

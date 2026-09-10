@@ -28,6 +28,7 @@
 #include "mmu.h"
 #include "object.h"
 #include "scheduler.h"
+#include "sound_surface.h"
 #include "system.h"
 #include "value.h"
 
@@ -87,6 +88,7 @@ struct av_singer {
     // white noise, indistinguishable by ear from one delivering rubbish.
     // One number here separates them.
     uint8_t ain_monitor; // periodic level logging
+    int32_t out_peak; // loudest |sample| driven to the host since power-on (machine.sound.peak)
     int32_t ain_peak; // peak |sample| in the last completed window
     int32_t ain_level; // RMS in the last completed window
     double ain_sumsq; // accumulator for the window in progress
@@ -141,7 +143,6 @@ struct av_singer {
     double adv_floor; // running noise-floor estimate (RMS counts)
 };
 
-extern const class_desc_t av_singer_sound_class;
 extern const class_desc_t av_audioin_class;
 extern const class_desc_t av_audioin_capture_class;
 
@@ -203,6 +204,11 @@ static void singer_stage_output(av_singer_t *s, uint32_t base, uint32_t nframes)
             r = (int16_t)mmu_read_physical_uint16(g_mmu, addr + 2);
             l = (int16_t)(((int32_t)l * (int32_t)gl) >> 16);
             r = (int16_t)(((int32_t)r * (int32_t)gr) >> 16);
+            int32_t al = l < 0 ? -l : l, ar = r < 0 ? -r : r;
+            if (al > s->out_peak)
+                s->out_peak = al;
+            if (ar > s->out_peak)
+                s->out_peak = ar;
         }
         s->stage[i * 2] = l;
         s->stage[i * 2 + 1] = r;
@@ -1091,85 +1097,53 @@ const class_desc_t av_audioin_capture_class = {
 // machine.sound — the object node
 // ============================================================
 
-static value_t snd_attr_rate(struct object *self, const member_t *m) {
-    (void)m;
-    av_singer_t *s = singer_self(self);
-    return val_uint(4, s ? singer_rate(s) : 0);
+// === machine.sound surface (sound_surface.h) =================================
+//
+// The Singer is the one engine that already modelled sound INPUT, which is why
+// in_enabled and overruns were on its class and nowhere else.  They are part
+// of the shared vocabulary now, so the AWACS machines present them too --
+// reading false and 0 until their input path is written.
+//
+// Volume and mute come from singerCtl the same way singer_stage_output reads
+// them: the pLeftAtten ladder index on the 0..7 slider scale, and pMute.
+
+static uint32_t av_snd_sample_rate(void *ctx) {
+    av_singer_t *s = (av_singer_t *)ctx;
+    return s ? singer_rate(s) : 0;
 }
-
-static value_t snd_attr_out_enabled(struct object *self, const member_t *m) {
-    (void)m;
-    av_singer_t *s = singer_self(self);
-    return val_bool(s && (av_psc_snd_read16(singer_st(s)->psc, 0x00) & SND_OUT_EN));
+static uint32_t av_snd_volume(void *ctx) {
+    av_singer_t *s = (av_singer_t *)ctx;
+    if (!s)
+        return 0;
+    uint32_t ctl = av_psc_snd_read32(singer_st(s)->psc, 0x04);
+    return sound_volume_from_atten((ctl >> 8) & 15u); // pLeftAtten
 }
-
-static value_t snd_attr_in_enabled(struct object *self, const member_t *m) {
-    (void)m;
-    av_singer_t *s = singer_self(self);
-    return val_bool(s && (av_psc_snd_read16(singer_st(s)->psc, 0x00) & SND_IN_EN));
+static bool av_snd_muted(void *ctx) {
+    av_singer_t *s = (av_singer_t *)ctx;
+    if (!s)
+        return true;
+    return (av_psc_snd_read32(singer_st(s)->psc, 0x04) & (1u << 22)) != 0; // pMute
 }
-
-static value_t snd_attr_frames(struct object *self, const member_t *m) {
-    (void)m;
-    av_singer_t *s = singer_self(self);
-    return val_uint(8, s ? s->frames : 0);
+static bool av_snd_out_enabled(void *ctx) {
+    av_singer_t *s = (av_singer_t *)ctx;
+    return s && (av_psc_snd_read16(singer_st(s)->psc, 0x00) & SND_OUT_EN);
 }
-
-static value_t snd_attr_overruns(struct object *self, const member_t *m) {
-    (void)m;
-    av_singer_t *s = singer_self(self);
-    return val_uint(4, s ? s->overruns : 0);
+static bool av_snd_in_enabled(void *ctx) {
+    av_singer_t *s = (av_singer_t *)ctx;
+    return s && (av_psc_snd_read16(singer_st(s)->psc, 0x00) & SND_IN_EN);
 }
-
-static value_t snd_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1)
-        return val_err("match: want a golden WAV path");
-    return audio_out_match_value(argv[0].s);
+static uint64_t av_snd_frames(void *ctx) {
+    av_singer_t *s = (av_singer_t *)ctx;
+    return s ? s->frames : 0;
 }
-
-static const arg_decl_t snd_match_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "golden WAV to compare the last capture against"},
-};
-
-static const member_t av_singer_sound_members[] = {
-    {.kind = M_ATTR,
-     .name = "sample_rate",
-     .doc = "Codec sample rate from sndComCtl (24000/32000/48000)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = snd_attr_rate, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "out_enabled",
-     .doc = "pSndOutEn — sound output DMA running",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = snd_attr_out_enabled, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "in_enabled",
-     .doc = "pSndInEn — sound input DMA running",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = snd_attr_in_enabled, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "frames",
-     .doc = "Sound frames the engine has ticked since power-on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = snd_attr_frames, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "overruns",
-     .doc = "Frame boundaries that passed with the DSP tick unserviced",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = snd_attr_overruns, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "match",
-     .doc = "Sample-exact compare of the last capture against a golden WAV",
-     .method = {.args = snd_match_args, .nargs = 1, .result = V_BOOL, .fn = snd_method_match}},
-};
-
-const class_desc_t av_singer_sound_class = {
-    .name = "sound",
-    .members = av_singer_sound_members,
-    .n_members = sizeof(av_singer_sound_members) / sizeof(av_singer_sound_members[0]),
-};
+static int32_t av_snd_peak(void *ctx) {
+    av_singer_t *s = (av_singer_t *)ctx;
+    return s ? s->out_peak : 0;
+}
+static uint64_t av_snd_overruns(void *ctx) {
+    av_singer_t *s = (av_singer_t *)ctx;
+    return s ? s->overruns : 0;
+}
 
 // ============================================================
 // Lifecycle
@@ -1207,13 +1181,18 @@ av_singer_t *av_singer_init(config_t *cfg, checkpoint_t *cp) {
     s->open_rate = singer_rate(s);
     audio_out_open(s->open_rate, 2);
 
-    s->object = object_new(&av_singer_sound_class, s, "sound");
-    if (s->object) {
-        object_set_label(s->object, "Sound");
-        object_set_order(s->object, 110);
-        object_attach(machine_object(), s->object);
-        audio_out_capture_attach(s->object);
-    }
+    const sound_surface_t surface = {
+        .sample_rate = av_snd_sample_rate,
+        .volume = av_snd_volume,
+        .muted = av_snd_muted,
+        .out_enabled = av_snd_out_enabled,
+        .in_enabled = av_snd_in_enabled,
+        .frames = av_snd_frames,
+        .peak = av_snd_peak,
+        .overruns = av_snd_overruns,
+        .ctx = s,
+    };
+    s->object = sound_object_new(&surface);
 
     if (!s->ain_gain)
         s->ain_gain = 100; // unity on a fresh machine

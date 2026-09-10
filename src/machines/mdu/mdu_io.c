@@ -70,10 +70,7 @@ const mac030_io_range_t *mdu_io_ranges(void) {
 
 void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct mac030_board_desc *desc, void *asc, void *floppy, void *rbv,
                  struct nubus_card *video_card) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
+    mac030_io_install(io, cfg, desc);
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->handle[MAC030_DEV_SCC] = cfg->scc;
     io->handle[MAC030_DEV_SCSI] = cfg->scsi;
@@ -89,9 +86,4 @@ void mdu_io_bind(mdu_io_t *io, config_t *cfg, const struct mac030_board_desc *de
     io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
     io->iface[MAC030_DEV_RBV] = rbv_get_memory_interface((rbv_t *)rbv);
     io->iface[MAC030_DEV_VDAC] = &mdu_vdac_iface;
-
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
 }

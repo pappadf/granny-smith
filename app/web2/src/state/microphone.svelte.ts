@@ -73,6 +73,13 @@ const LABEL_OFF = 32; // char label[64] — the chosen capture device
 const LABEL_MAX = 63;
 
 let stream: MediaStream | null = null;
+// Frames captured since the user turned the microphone on, across any graph
+// rebuild. The ring's own `wr` is zeroed by resetRing() whenever the graph is
+// rebuilt, so it answers "how long since the last rebuild?", not "has the
+// browser been delivering audio?" -- and a diagnostic that reads like the
+// second while meaning the first is how a dead capture path gets mistaken for
+// a failing recognizer.
+let capturedTotal = 0;
 let audioCtx: AudioContext | null = null;
 let node: AudioWorkletNode | ScriptProcessorNode | null = null;
 let source: MediaStreamAudioSourceNode | null = null;
@@ -167,10 +174,19 @@ export function micStats(): {
   consumed: number;
   underruns: number;
   overruns: number;
+  captured: number;
 } {
   const heap = getModuleHeap();
   if (!heap || !shmPtr)
-    return { ptr: shmPtr, rate: 0, produced: 0, consumed: 0, underruns: 0, overruns: 0 };
+    return {
+      ptr: shmPtr,
+      rate: 0,
+      produced: 0,
+      consumed: 0,
+      underruns: 0,
+      overruns: 0,
+      captured: capturedTotal,
+    };
   const hdr = shmPtr >> 2;
   return {
     ptr: shmPtr,
@@ -179,6 +195,7 @@ export function micStats(): {
     consumed: Atomics.load(heap.i32, hdr + 2),
     underruns: Atomics.load(heap.i32, hdr + 4),
     overruns: Atomics.load(heap.i32, hdr + 5),
+    captured: capturedTotal, // session-cumulative; `produced` is per-graph
   };
 }
 
@@ -189,6 +206,10 @@ export function micStats(): {
 function pushSamples(block: Float32Array): void {
   const heap = getModuleHeap();
   if (!heap || !shmPtr || !ringLen) return;
+  // Mic live but the guest is not recording: keep the graph up (rebuilding it
+  // is what broke recognition) and simply do not queue audio it never asked
+  // for. Cheap, and it leaves the ring exactly where the guest left it.
+  if (!microphone.guestActive) return;
   const hdr = shmPtr >> 2;
   let wr = Atomics.load(heap.i32, hdr + 1);
   const n = Math.min(block.length, ringLen);
@@ -210,6 +231,7 @@ function pushSamples(block: Float32Array): void {
   }
   wr += n;
   Atomics.store(heap.i32, hdr + 1, wr);
+  capturedTotal += n;
 }
 
 // --- Capture graph ----------------------------------------------------------
@@ -358,9 +380,11 @@ function stopStream(): void {
     stream = null;
   }
   microphone.live = false;
+  capturedTotal = 0; // a new session starts when the user turns the mic back on
 }
 
-// Reconcile the physical microphone with (enabled && guestActive).
+// Reconcile the physical microphone with the user's toggle alone. It is
+// deliberately NOT gated on guestActive -- see syncStreamInner.
 //
 // Serialised, and it matters: the two callers — the user's toggle and the
 // guest's pSndInEn gate — routinely fire within a tick of each other, and
@@ -386,7 +410,16 @@ async function syncStream(): Promise<void> {
 }
 
 async function syncStreamInner(): Promise<void> {
-  const want = microphone.enabled && microphone.guestActive;
+  // The USER's toolbar toggle owns the stream; the guest's DMA state does NOT.
+  // Casper's endpointer opens and closes input DMA continuously while it
+  // listens -- that is what an endpointer does -- and binding the capture
+  // graph to it tore down the MediaStream, AudioContext and worklet on every
+  // close, paid an async getUserMedia round-trip before a single sample could
+  // flow again on every open, and reset the ring counters each time. The
+  // utterance arrived shredded across those gaps and recognition failed, with
+  // `produced` reporting time-since-last-rebuild rather than the session.
+  // `guestActive` now gates only whether samples are WRITTEN (see pushSamples).
+  const want = microphone.enabled;
   if (want && !stream) {
     const s = await acquireStream();
     if (!s) {

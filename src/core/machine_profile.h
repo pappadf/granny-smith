@@ -198,7 +198,8 @@ typedef struct media_slot {
 
 // Machine lifecycle + host-input vtable.  The behavior half of a machine
 // (proposal §4.4): hw_profile_t is pure descriptor DATA and points at one of
-// these.  system.c / nubus.c dispatch through it; every hook is NULL-safe.
+// these.  system.c / nubus.c / pci.c dispatch through it; every hook is
+// NULL-safe.
 // (memory_layout_init and checkpoint_restore are deliberately absent — they
 // were never dispatched: each init runs its own layout directly and restore
 // is folded into init.)
@@ -210,19 +211,39 @@ typedef struct machine_substrate {
     // be constructed rejects the boot instead of leaving a half-built config
     // for the caller to dereference.
     int (*init)(struct config *cfg, checkpoint_t *cp);
-    void (*reset)(struct config *cfg); // hardware RESET line
+    // Hardware RESET line, reached through system_hardware_reset().
+    //
+    // NULL on the `compact` (Plus) and `lisa` substrates, and that is a GAP,
+    // not a statement about the hardware: both machines physically reset -- the
+    // Plus from the programmer's switch, and either from a guest executing the
+    // 68000 RESET opcode -- and today the call silently does nothing on them.
+    // Owned by proposal-reset-and-nonvolatile-state.md, whose S1.2 is "Reset
+    // already means four different things, and no two families agree".
+    //
+    // Distinguish this from `nubus_slot_irq` and `pci_slot_irq` below, which
+    // are NULL because the bus genuinely is not on the board.  A NULL that
+    // means "no such hardware" and a NULL that means "not written yet" must
+    // not read the same way here, or this header becomes the reason nobody
+    // notices the second kind.
+    void (*reset)(struct config *cfg);
     void (*teardown)(struct config *cfg);
     void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 
-    void (*update_ipl)(struct config *cfg, int source, bool active); // NuBus IRQ routing
     void (*trigger_vbl)(struct config *cfg);
 
     // Drive NuBus slot `slot` ($9..$E) /NMRQ active/inactive.  `umbrella_edge`
     // is true when this transition flips the "any slot asserted" aggregate.
-    // Every NuBus machine implements it (GLUE → VIA2 port-A bit + CA1 on the
-    // umbrella edge; MDU/OSS → the chipset's own IRQ controller via update_ipl);
-    // keeps nubus.c machine-agnostic — no cfg->via2 poke (proposal §4.4).  NULL
-    // on non-NuBus machines (Plus / Lisa), which never reach it.
+    // Every NuBus machine implements it, and each converts the slot number to
+    // its own controller's numbering ITSELF: GLUE → VIA2 port-A bit + CA1 on
+    // the umbrella edge; MCU → VIA2 PA1-5 + /SLOTIRQ; MDU → the RBV's slot
+    // register; OSS → OSS source bits; AV → PSC SInt bits 3-5; PDM → BART.
+    // There is deliberately no shared "convert slot to an IRQ source mask"
+    // helper: slot numbering matches a machine's interrupt-source numbering
+    // only by coincidence, and the one that existed put a IIci's slot $C on
+    // its NMI source (mdu.c).  Keeps nubus.c machine-agnostic — no cfg->via2
+    // poke (proposal §4.4).  NULL on the three substrates with no NuBus --
+    // `compact` (Plus), `lisa`, and `tnt`, which is PCI -- and they never
+    // reach it.
     void (*nubus_slot_irq)(struct config *cfg, int slot, bool active, bool umbrella_edge);
 
     // Drive PCI slot `slot`'s strapped INTA-D line active/inactive.  The
@@ -233,11 +254,19 @@ typedef struct machine_substrate {
     // NULL on machines without PCI slots.
     void (*pci_slot_irq)(struct config *cfg, int slot, bool active);
 
-    // Floppy insertion + host-input injection + primary display, implemented by
-    // EVERY substrate (Macs route to the shared mac_* helpers / NuBus video;
-    // Lisa to its FDC / COPS) — one uniform path, no NULL-and-fallback
-    // (proposal §4.4).  `display` may still be NULL on machines that surface
-    // their framebuffer through the NuBus primary-display path instead.
+    // Floppy insertion + host-input injection + primary display.  The first
+    // five ARE bound by all 9 substrates (Macs route to the shared mac_*
+    // helpers, the Lisa to its FDC / COPS), so the NULL guards on them in
+    // system.c are defence-in-depth rather than a fallback path -- do not
+    // delete them, but do not read them as evidence that a substrate may skip
+    // these either.
+    //
+    // `display` is NULL on 3 of 9 and that IS a fallback: system_display()
+    // takes the substrate's answer when it has one and drops through to
+    // nubus_primary_display() otherwise -- including when a bound hook returns
+    // NULL.  Deliberate: built-in video wins, else the NuBus primary.  (This
+    // paragraph used to claim "one uniform path, no NULL-and-fallback" and
+    // then describe the fallback two lines later.)
     int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
     bool (*fd_present)(struct config *cfg, int drive);
     int (*input_key)(struct config *cfg, const char *key, bool down);
@@ -283,9 +312,22 @@ typedef struct hw_profile {
     // Zero-terminated array; the last valid entry is followed by 0.
     const uint32_t *ram_options;
 
-    // Floppy / SCSI slot tables.  Sentinel-terminated.
+    // Floppy / SCSI slot tables, sentinel-terminated.
+    //
+    // ALWAYS point these at a table; say "this machine has none" with an EMPTY
+    // one, `{ {0} }`, not with NULL.  All 22 profiles do, and the reason to
+    // keep it that way is that an empty table has a declaration to hang the
+    // explanation on -- q840av_floppy_slots carries "New Age reports 'no drive'
+    // (ST3 = $FF) -- no floppy slots offered until a real New Age model lands",
+    // which an absent field could not say.  The Lisa spells "no SCSI bays" the
+    // same way, with a bus whose slot table is empty.
+    //
+    // The consumers stay NULL-safe (build_profile guards both) as
+    // defence-in-depth, not as a second supported spelling -- do not read those
+    // guards as licence to leave a profile's table out (F-20, and F-51 for the
+    // same distinction on the substrate hooks).
     const struct floppy_slot *floppy_slots;
-    const struct scsi_bus_decl *scsi_buses; // sentinel-terminated; NULL = no SCSI
+    const struct scsi_bus_decl *scsi_buses;
 
     // Hard-disk attach interface (see hd_bus_t).  Default HD_BUS_SCSI (0): the
     // HD row attaches via scsi.attach_hd and takes its label from scsi_slots.
@@ -323,9 +365,20 @@ typedef struct hw_profile {
     // the card registry (nubus_card_fits_socket), not listed here.
     // Used by machine.profile to enumerate cards per slot and build
     // the per-card video-mode catalog the configuration dialog needs.
-    // NULL for non-NuBus machines (Plus, …).  The machine's `init`
-    // callback passes this same pointer to nubus_init() so the
-    // runtime view and the profile view are guaranteed identical.
+    // NULL for non-NuBus machines (Plus, …).  Every machine's `init` passes
+    // THIS pointer to nubus_init(), so the runtime view and the profile view
+    // are the same object -- not two initialisers that have to agree.
+    //
+    // They used to be two.  Eleven machines wrote the table into their board
+    // descriptor as well, and this comment claimed the views were "guaranteed
+    // identical" when the guarantee was really a hand-maintained invariant
+    // nothing checked (the review's F-33; they did all agree, as it happens).
+    // The two feed different consumers -- the profile drives the config
+    // dialog and validate_vrom_resolution, nubus_init builds what the guest
+    // sees -- so a divergence would have offered a card for a socket that
+    // never gets populated.  Reading the profile directly is what makes the
+    // sentence above true rather than aspirational; the same is already so
+    // for pci_slots, which the TNT reads from here.
     const struct nubus_slot_decl *nubus_slots;
 
     // PCI slot declarations — sentinel-terminated array of pci_slot_decl_t
@@ -347,15 +400,48 @@ typedef struct hw_profile {
     const struct builtin_video_desc *builtin_video;
 
     // Behavior: the lifecycle + host-input vtable for this machine.  Machines
-    // of the same chipset family SHARE one substrate (glue_substrate /
-    // mdu_substrate; iifx is bespoke).
+    // of the same chipset family SHARE one substrate (glue_substrate for
+    // SE/30-IIcx-IIx, mdu_substrate for IIci-IIsi, and so on).  A family with
+    // one machine still gets its own -- the IIfx and both PowerPC families --
+    // which is a statement about how many machines share the board, not about
+    // how much code the family writes for itself.
+    //
+    // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
+    // included, builds through mac030_build_core + mac030_build_lowspeed,
+    // checkpoints through mac030_checkpoint_save_core, and tears down through
+    // machine_teardown_config_devices.  What a family keeps for itself is what
+    // its hardware actually does differently -- for the IIfx, the OSS
+    // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA
+    // engine, and a ROM overlay that doubles as a trip-wire.
     const machine_substrate_t *substrate;
 
     // Per-machine board descriptor — chipset-family data the shared substrate
     // interprets (proposal §4.2.2/§4.4).  Typed by convention: the family
-    // substrate casts it to its concrete type (mac030_glue_board_t for
-    // GLUE/MDU).  NULL for families whose substrate needs no board (Plus,
-    // Lisa, and the bespoke IIfx, which carry their data directly).
+    // substrate casts it to its concrete type.  NULL where a substrate serves
+    // exactly one machine and can therefore reach its data directly (Plus,
+    // IIfx).  The IIfx does define a mac030_board_desc_t of its own -- it
+    // simply has no second machine to vary against, so routing it through here
+    // would add a cast without adding sharing.
+    //
+    // WHAT IT POINTS AT differs by family, because the families differ in
+    // whether their machines vary in behaviour or only in data:
+    //
+    //   * Two-level (GLUE, MDU, MCU, AV) -- a board OBJECT carrying per-machine
+    //     hooks plus a `.desc` pointer to the data.  These families need hooks
+    //     because their members genuinely differ in behaviour: each GLUE board
+    //     wires different signals to VIA2's pins, and the SE/30 has built-in
+    //     video where the IIcx and IIx have NuBus.
+    //   * One-level (PDM, TNT, Lisa) -- the DESCRIPTOR itself, pure data with
+    //     no function pointers.  Their members are the same board with
+    //     different clocks, banks and one or two option bits, so the variation
+    //     fits in a field and is read as a branch (`pdm_board(cfg)->has_fast_scsi`,
+    //     `tnt_board(cfg)->kind == TNT_BOARD_SHINER`) rather than a hook.
+    //
+    // NAMING follows from that, and holds tree-wide (F-48):
+    //   <model>_board       -- whatever THIS field points at
+    //   <model>_board_desc  -- a descriptor that is not itself that thing
+    // So a two-level family has both; a one-level family has only <model>_board;
+    // and iifx_board_desc is a descriptor no profile points at.
     const void *board;
 } hw_profile_t;
 

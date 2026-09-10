@@ -8,7 +8,9 @@
 #include "mac030_glue.h"
 #include "mac_host_io.h"
 #include "machine.h"
+#include "machine_teardown.h"
 #include "mmu_checkpoint.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
@@ -294,7 +296,7 @@ static void iifx_teardown(config_t *cfg);
 static void iifx_reset(config_t *cfg);
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp);
 static void iifx_memory_layout_init(config_t *cfg);
-static void iifx_update_ipl(config_t *cfg, int source, bool active);
+static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
 static void iifx_trigger_vbl(config_t *cfg);
 
 // Fills one page-table entry with a direct host mapping.
@@ -508,20 +510,6 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
             iifx_fill_page(p, rom_data + ((guest - (uint32_t)IIFX_ROM_START) % rom_size), false);
         }
     }
-}
-
-// Raises a plain bus-timeout exception for the FMC probe window.
-static void iifx_bus_error(uint32_t addr, bool read) {
-    if (g_bus_error_pending)
-        return;
-    g_bus_error_pending = 1;
-    g_bus_error_address = addr;
-    g_bus_error_rw = read ? 1 : 0;
-    g_bus_error_fc =
-        read ? ((g_active_read == g_supervisor_read) ? 5 : 1) : ((g_active_write == g_supervisor_write) ? 5 : 1);
-    g_bus_error_is_pmmu = 0;
-    if (g_bus_error_instr_ptr)
-        *g_bus_error_instr_ptr = 0;
 }
 
 // Reads one byte from the ROM device and drops the overlay.
@@ -1113,13 +1101,13 @@ static void iifx_scsidma_pump(config_t *cfg) {
 // BIU30 does when the parity controller / RPU is absent, reporting the address.
 static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t addr) {
     (void)cfg;
-    iifx_bus_error(IIFX_IO_BASE + addr, true);
+    memory_signal_bus_error(IIFX_IO_BASE + addr, false);
     return 0xff;
 }
 static void iifx_io_berr_write(config_t *cfg, uint32_t addr, uint8_t value) {
     (void)cfg;
     (void)value;
-    iifx_bus_error(IIFX_IO_BASE + addr, false);
+    memory_signal_bus_error(IIFX_IO_BASE + addr, true);
 }
 
 // SCSI-DMA engine ($08000).
@@ -1201,10 +1189,7 @@ static const mac030_io_range_t iifx_io_ranges_tbl[] = {
 // Cache device handles/interfaces and install the IIfx table.  Call after the
 // devices + their cached interfaces (st->*_iface) are up.
 static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st, const mac030_board_desc_t *desc) {
-    for (int i = 0; i < MAC030_DEV_COUNT; i++) {
-        io->handle[i] = NULL;
-        io->iface[i] = NULL;
-    }
+    mac030_io_install(io, cfg, desc);
     io->handle[MAC030_DEV_VIA1] = cfg->via1;
     io->handle[MAC030_DEV_SCC_IOP] = st->scc_iop;
     io->handle[MAC030_DEV_SCSI] = cfg->scsi;
@@ -1218,11 +1203,6 @@ static void iifx_io_bind(mac030_io_t *io, config_t *cfg, iifx_state_t *st, const
     io->iface[MAC030_DEV_ASC] = st->asc_iface;
     io->iface[MAC030_DEV_SWIM_IOP] = st->swim_iop_iface;
     io->iface[MAC030_DEV_OSS] = st->oss_iface;
-
-    io->ranges = desc->io_ranges;
-    io->mirror_mask = desc->io_mirror_mask;
-    io->cfg = cfg;
-    io->unmapped_read = desc->io_unmapped_read;
 }
 
 // Read entry-points: the machine-ID register sits above the I/O mirror, so it
@@ -1361,11 +1341,25 @@ static void iifx_scsi_irq(void *context, bool irq, bool drq) {
 }
 
 // Handles external machine IRQ requests such as NuBus slots.
-static void iifx_update_ipl(config_t *cfg, int source, bool active) {
+// substrate.nubus_slot_irq — the OSS is its own interrupt controller and
+// aggregates the slots internally, so the umbrella edge is the chip's
+// business (the MDU/RBV shape).  Slots $9..$E are OSS source bits 0..5.
+//
+// This used to go the long way round: nubus.c dispatched to the shared
+// mac030_nubus_slot_irq_via_ipl, which converted the slot to a source mask
+// and called back out through substrate.update_ipl into a three-line
+// adapter here.  That indirection was the last survivor of nubus.c's old
+// "non-VIA2 path"; the IIfx was the only machine still using it, so both
+// hops and the vtable slot behind them are gone.
+static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+    (void)umbrella_edge; // the OSS aggregates internally
+    int source = slot - 0x9;
+    if (source < 0 || source > 5)
+        return;
     iifx_state_t *st = iifx_state(cfg);
     if (!st || !st->oss)
         return;
-    oss_set_source_mask(st->oss, (uint16_t)source, active);
+    oss_set_source_mask(st->oss, (uint16_t)(1u << source), active);
 }
 
 // Pulses the IIfx 60 Hz sources.
@@ -1412,8 +1406,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint16 = iifx_rom_write_uint16,
         .write_uint32 = iifx_rom_write_uint32,
     };
-    memory_map_add(cfg->mem_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "IIfx ROM switch", &st->rom_interface,
-                   cfg);
+    memory_map_add(cfg->mem_map, IIFX_ROM_START, IIFX_ROM_END - IIFX_ROM_START, "ROM switch", &st->rom_interface, cfg);
 
     // Reads keep the machID pre-check (above the mirror) then delegate to the
     // shared engine; writes go straight to the engine.  ctx is the engine's
@@ -1426,7 +1419,7 @@ static void iifx_memory_layout_init(config_t *cfg) {
         .write_uint16 = mac030_io_write_uint16,
         .write_uint32 = mac030_io_write_uint32,
     };
-    memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "IIfx I/O", &st->io_interface, &st->iifx_io);
+    memory_map_add(cfg->mem_map, IIFX_IO_BASE, IIFX_IO_SIZE, "I/O", &st->io_interface, &st->iifx_io);
 
     // Project card host regions (VRAM/declaration ROMs) plus their Mode-24
     // slot aliases into the page table (shared helper; see iicx.c).
@@ -1463,14 +1456,13 @@ static const nubus_slot_decl_t iifx_slots[] = {
 // at init by the shared helpers.  ROM at $40000000; the 18-bit $40000 I/O
 // mirror; the IIfx window table (device-rows + handler-rows); 0xFF on an
 // unmapped read.
-static const mac030_board_desc_t iifx_board = {
+static const mac030_board_desc_t iifx_board_desc = {
     .chipset = "OSS+FMC",
     .rom_base = IIFX_ROM_START,
     .rom_end = IIFX_ROM_END,
     .io_ranges = iifx_io_ranges_tbl,
     .io_mirror_mask = IIFX_IO_MIRROR,
     .io_unmapped_read = 0xff,
-    .slots = iifx_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
 };
@@ -1489,14 +1481,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, checkpoint, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, iifx_scc_irq, cfg, checkpoint);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
+    mac030_build_lowspeed(cfg, checkpoint, iifx_scc_irq);
 
     // Divisor derived from the profile clock rather than the literal 51 this
     // used to carry -- via.h asks for exactly that, since a literal that suits
@@ -1561,15 +1546,15 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // All device interfaces are cached — install the board's I/O window table
     // into the shared-engine context registered above.
-    iifx_io_bind(&st->iifx_io, cfg, st, &iifx_board);
+    iifx_io_bind(&st->iifx_io, cfg, st, &iifx_board_desc);
 
-    st->mmu = mac030_build_mmu(cfg, iifx_board.rom_base, iifx_board.rom_end);
+    st->mmu = mac030_build_mmu(cfg, iifx_board_desc.rom_base, iifx_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
     st->mmu->tt1 = 0xF00F8043;
 
-    cfg->nubus = nubus_init(cfg, iifx_board.slots, checkpoint);
-    memory_set_bus_error_range(cfg->mem_map, iifx_board.bus_err_lo, iifx_board.bus_err_hi);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
+    memory_set_bus_error_range(cfg->mem_map, iifx_board_desc.bus_err_lo, iifx_board_desc.bus_err_hi);
 
     iifx_memory_layout_init(cfg);
 
@@ -1587,12 +1572,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         via_redrive_outputs(cfg->via1);
     }
 
-    cfg->debugger = debug_init();
-    scheduler_start(cfg->scheduler);
-    if (!checkpoint) {
-        cfg->irq = 0;
-        cpu_set_ipl(cfg->cpu, 0);
-    }
+    mac030_glue_finish(cfg, checkpoint, &st->iifx_io);
     return 0;
 }
 
@@ -1637,41 +1617,9 @@ static void iifx_teardown(config_t *cfg) {
             cfg->adb = NULL;
         }
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first — it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    // The config_t-owned devices, in the family-shared canonical order
+    // (machine_teardown.h).  Was a byte-identical copy in five families.
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -1681,19 +1629,20 @@ static void iifx_teardown(config_t *cfg) {
 // Saves an IIfx checkpoint.
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     iifx_state_t *st = iifx_state(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    mac030_checkpoint_save_core(cfg, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
+    // Save order must mirror iifx_init's construction order exactly: the
+    // checkpoint stream is positional, with no per-block tag or size field, so
+    // a swapped pair does not fail loudly at the swap -- it cross-loads, and
+    // the size mismatch surfaces later at whichever block first disagrees.
+    // These three were saved asc -> adb -> floppy while init restores
+    // asc -> floppy -> adb (:1545, :1547, :1557), which made every
+    // checkpoint.load on this machine fail with "expected 9840 at
+    // floppy.c:708 but file contains 336 at adb.c:891".
     asc_checkpoint(st->asc, cp);
-    adb_checkpoint(st->adb, cp);
     floppy_checkpoint(st->floppy, cp);
+    adb_checkpoint(st->adb, cp);
     oss_checkpoint(st->oss, cp);
     iop_checkpoint(st->scc_iop, cp);
     iop_checkpoint(st->swim_iop, cp);
@@ -1713,20 +1662,8 @@ static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // Machine descriptor data.
 static const uint32_t iifx_ram_options_kb[] = {4096, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const struct floppy_slot iifx_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {.label = "External FD1", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot iifx_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t iifx_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = iifx_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -1735,9 +1672,8 @@ static const machine_substrate_t iifx_substrate = {
     .reset = iifx_reset,
     .teardown = iifx_teardown,
     .checkpoint_save = iifx_checkpoint_save,
-    .update_ipl = iifx_update_ipl,
     .trigger_vbl = iifx_trigger_vbl,
-    .nubus_slot_irq = mac030_nubus_slot_irq_via_ipl,
+    .nubus_slot_irq = iifx_nubus_slot_irq, // slots $9-$E → OSS source bits 0-5
     .fd_insert = mac_fd_insert,
     .fd_present = mac_fd_present,
     .input_key = mac_input_key,
@@ -1761,7 +1697,7 @@ const hw_profile_t machine_iifx = {
     .rom_size = 0x080000,
 
     .ram_options = iifx_ram_options_kb,
-    .floppy_slots = iifx_floppy_slots,
+    .floppy_slots = mac_floppy_slots_2hd,
     .scsi_buses = iifx_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,

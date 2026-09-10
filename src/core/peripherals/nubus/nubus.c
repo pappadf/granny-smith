@@ -546,8 +546,10 @@ void nubus_reset(nubus_bus_t *bus) {
 
 // Drive a slot's /NMRQ line through the machine substrate (proposal §4.4): the
 // bus owns the slot-IRQ aggregate mask and the umbrella transition, the chipset
-// owns HOW the line reaches the CPU (GLUE → VIA2; MDU/OSS → its own IRQ
-// controller).  nubus.c stays machine-agnostic — no cfg->via2 here.
+// owns HOW the line reaches the CPU (GLUE/MCU → VIA2; MDU → the RBV; OSS →
+// the OSS; AV → the PSC; PDM → BART), including converting the slot number
+// into whatever its controller numbers sources by.  nubus.c stays
+// machine-agnostic — no cfg->via2 here.
 static void nubus_route_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
     if (cfg && cfg->machine && cfg->machine->substrate->nubus_slot_irq)
         cfg->machine->substrate->nubus_slot_irq(cfg, slot, active, umbrella_edge);

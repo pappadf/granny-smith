@@ -31,6 +31,7 @@
 // ROM ($49B2BE8F) is the mirror image — Mac OS only, no AIX — and both
 // identify against the same hardware model (rom.c).
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // Eight DIMM slots in four interleaved bank pairs (against the 9500's
@@ -40,21 +41,6 @@
 // mode above it is a HANG during the RAM test rather than a clean error.
 // Being less permissive than the silicon is the faithful choice here.
 static const uint32_t ans500_ram_options_kb[] = {16384, 32768, 49152, 65536, 131072, 262144, 524288, 0};
-
-// The SCSI backplane: "seven slots with hot swap.  It is expected (but not
-// required) that slot 0 will be a CD ROM."  Bay numbering runs top to
-// bottom with 0 uppermost, and the production ROM's own device aliases
-// settle which controller owns which bay — `disk0`..`disk3` resolve
-// through `/bandit/53c825@11`, `disk4` onward through `@12`.  Until the
-// SCRIPTS engine lands (Phase E) these are descriptive: the bays name the
-// controller they cable to so the configuration UI does not imply a flat
-// bus that this machine has never had.
-static const struct scsi_slot ans500_scsi_slots[] = {
-    {.label = "Bay 1 (fast/wide 0)", .id = 1},
-    {.label = "Bay 2 (fast/wide 0)", .id = 2, .boot = true}, // Open Firmware's default: disk2:aix
-    {.label = "Bay 3 (fast/wide 0)", .id = 3},
-    {0},
-};
 
 // Bays 4-6 cable to the SECOND fast/wide controller, which the production
 // ROM's own device aliases settle: `disk0`..`disk3` resolve through
@@ -74,109 +60,8 @@ static const struct scsi_slot ans500_scsi_slots_fw1[] = {
 };
 
 static const scsi_bus_decl_t ans500_scsi_buses[] = {
-    {.object = "scsi", .label = "Front backplane (fast/wide 0)", .slots = ans500_scsi_slots},
+    {.object = "scsi", .label = "Front backplane (fast/wide 0)", .slots = ans_scsi_slots_fw0},
     {.object = "scsi2", .label = "Front backplane (fast/wide 1)", .slots = ans500_scsi_slots_fw1},
-    {0},
-};
-
-// PCI topology (Apple, ibid., §4.6.2 and §7.1.1; independently confirmed by
-// the six per-slot Open Firmware boot commands printed in "Using the PCI
-// RAID Card").  Two facts here are boot-critical and are pure data:
-//
-//   * The split is 2/4, not the 9500's 3/3: "The Network Server uses two
-//     separate PCI buses for on-board I/O (and two slots) and card
-//     expansion (four slots)" — "For PCI Bus 2, PCI Slot 3 is moved to the
-//     second Bandit."  Bandit 1 therefore carries SIX devices with no
-//     PCI-to-PCI bridge: two sockets plus the 54M30, Grand Central and both
-//     53C825As.
-//   * A slot's interrupt does NOT follow its bridge.  Slot 3 sits on Bandit
-//     2 but keeps EXT5 (ANS_INT_SLOT3) — the line a 9500 gives Bandit 1's
-//     third slot.  Deriving the line from the bus is wrong for exactly one
-//     slot, which is the worst possible failure shape, so the map is data.
-//
-// Apple gives IDSELs in DECIMAL in §4.6.2/§7.1.1 and the matching unit
-// addresses in HEX in Listing 6-1 and the RAID boot commands; `device`
-// below is the decimal IDSEL AD line, which is what the config-cycle
-// encoding wants.
-//
-// The LABELS are the ROM's own, read out of each bridge node's
-// `slot-names` property under Open Firmware: Bandit 1 publishes
-// `00006000 "SLOT1_PCI0" "SLOT2_PCI0"` and Bandit 2 publishes
-// `0001E000 "SLOT3_PCI1" "SLOT4_PCI1" "SLOT5_PCI1" "SLOT6_PCI1"`.  Note
-// the bus number in the string is ZERO-based while Apple's own prose and
-// its `pci1`/`pci2` device aliases are one-based — which is why the
-// worked example in the Software Developer Notes shows a slot-SIX card as
-// `SLOT6_PCI1` and not `SLOT6_PCI2`.  The bitmask halves also confirm the
-// 2/4 split and the IDSELs: bits 13-14 on the first bridge, 13-16 on the
-// second.
-static const pci_slot_decl_t ans500_pci_slots[] = {
-    {.slot = 1,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT1_PCI0",
-     .bus = TNT_PCI_BUS_1,
-     .device = 13,
-     .int_line = ANS_INT_SLOT1},
-    {.slot = 2,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT2_PCI0",
-     .bus = TNT_PCI_BUS_1,
-     .device = 14,
-     .int_line = ANS_INT_SLOT2},
-    {.slot = 3,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT3_PCI1",
-     .bus = TNT_PCI_BUS_2,
-     .device = 13,
-     .int_line = ANS_INT_SLOT3},
-    {.slot = 4,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT4_PCI1",
-     .bus = TNT_PCI_BUS_2,
-     .device = 14,
-     .int_line = ANS_INT_SLOT4},
-    {.slot = 5,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT5_PCI1",
-     .bus = TNT_PCI_BUS_2,
-     .device = 15,
-     .int_line = ANS_INT_SLOT5},
-    {.slot = 6,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT6_PCI1",
-     .bus = TNT_PCI_BUS_2,
-     .device = 16,
-     .int_line = ANS_INT_SLOT6},
-    // The three soldered-down PCI devices, all on Bandit 1 (Apple, ibid.,
-    // §4.6.2 — the six-device bus).  Grand Central's own config presence at
-    // IDSEL 16 is attached by grand_central.c, not from this table, exactly
-    // as on the Macintosh boards.
-    //
-    // The 54M30 takes NO interrupt line: "the 54M30 does not have an
-    // interrupt" (ibid., §4.2), and allocating it a Grand Central external
-    // would corrupt the map.  The two 53C825As take EXT2 and EXT6, the two
-    // positions the Network Server freed by ganging both Bandits' error
-    // interrupts onto EXT1.
-    {.slot = 7,
-     .kind = PCI_SLOT_BUILTIN,
-     .label = "VIDEO",
-     .bus = TNT_PCI_BUS_1,
-     .device = 15,
-     .int_line = 0,
-     .builtin_card_id = "cirrus_54m30"},
-    {.slot = 8,
-     .kind = PCI_SLOT_BUILTIN,
-     .label = "FWSCSI0",
-     .bus = TNT_PCI_BUS_1,
-     .device = 17,
-     .int_line = ANS_INT_FW0,
-     .builtin_card_id = "sym53c825_0"},
-    {.slot = 9,
-     .kind = PCI_SLOT_BUILTIN,
-     .label = "FWSCSI1",
-     .bus = TNT_PCI_BUS_1,
-     .device = 18,
-     .int_line = ANS_INT_FW1,
-     .builtin_card_id = "sym53c825_1"},
     {0},
 };
 
@@ -233,7 +118,7 @@ const hw_profile_t machine_ans500 = {
 
     .ram_options = ans500_ram_options_kb,
     .scsi_buses = ans500_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     // Bay 0 is the CD-ROM bay Apple expects, and it is the documented
     // install path: with the front keyswitch in Service on a machine that
     // has never been booted, Open Firmware "will automatically attempt to
@@ -241,7 +126,7 @@ const hw_profile_t machine_ans500 = {
     .has_cdrom = true,
     .cdrom_id = 0,
 
-    .pci_slots = ans500_pci_slots,
+    .pci_slots = ans_pci_slots,
 
     .substrate = &tnt_substrate,
     .board = &ans500_board,

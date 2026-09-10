@@ -13,6 +13,7 @@
 
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
+#include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "mdu_io.h" // mac030_mdu_state_t + mdu_io_bind
 
 #include "adb.h"
@@ -63,14 +64,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     if (cp)
         system_read_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
 
-    cfg->rtc = rtc_init(cfg->scheduler, cp, true);
-    cfg->scc = scc_init(NULL, cfg->scheduler, mac030_glue_scc_irq, cfg, cp);
-    scc_set_clocks(cfg->scc, 7833600, 3686400);
-
-    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
-    // the SCC exists — and, because the checkpoint stream is positional, in
-    // the same relative place the save writes it (right after scc_checkpoint).
-    appletalk_init(cfg->scheduler, cfg->scc, cp);
+    mac030_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
 
     // Derived from the CPU clock, not hardcoded: this substrate serves the
     // 25 MHz IIci and the 20 MHz IIsi, so a single literal is wrong for one of
@@ -90,7 +84,7 @@ int mac030_mdu_init(config_t *cfg, checkpoint_t *cp, const mac030_mdu_board_t *b
     if (board->build_devices(cfg, cp) != 0)
         return -1;
 
-    mac030_glue_finish(cfg, cp);
+    mac030_glue_finish(cfg, cp, &st->mdu_io);
     return 0;
 }
 
@@ -140,43 +134,9 @@ static void mdu_teardown(config_t *cfg) {
             cfg->adb = NULL;
         }
     }
-    // cfg->nubus is freed by system_destroy (nubus_delete runs before machine
-    // teardown), matching the GLUE lifecycle.
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first — it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    // The config_t-owned devices, in the family-shared canonical order
+    // (machine_teardown.h).  Was a byte-identical copy in five families.
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -185,14 +145,7 @@ static void mdu_teardown(config_t *cfg) {
 
 static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mac030_mdu_state_t *st = mdu_st(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    mac030_checkpoint_save_core(cfg, cp);
     adb_checkpoint(st->adb, cp);
     if (st->egret) // IIsi only; IIci leaves egret NULL
         egret_checkpoint(st->egret, cp);
@@ -209,14 +162,18 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 
 // substrate.nubus_slot_irq — the RBV aggregates NuBus slot interrupts itself
 // (RvSInt & RvSEnb -> RvAnySlot -> the chip's combined interrupt -> IPL 2), so a
-// slot source has to go to the chip rather than straight to update_ipl.
+// slot source has to go to the chip, not to a generic IPL setter.
 //
-// The shared mac030_nubus_slot_irq_via_ipl passes `1 << (slot - 9)` as the
-// machine's IRQ SOURCE mask, and on this family every one of those bits is
-// already spoken for: IICI_IRQ_VIA1/RBV/SCC/NMI are 1<<0 .. 1<<3.  So a card in
-// slot $C asserted the NMI source and the machine took a level-7 autovector
-// every few instructions forever — which is what "a 24AC beside the live
-// built-in RBV hangs the boot at Welcome" actually was (ledger §8).
+// Worth keeping as history, because it is why the generic path no longer
+// exists.  nubus.c once dispatched families like this one through a shared
+// shim that passed `1 << (slot - 9)` as the machine's IRQ SOURCE mask -- but
+// on this family every one of those bits is already spoken for:
+// IICI_IRQ_VIA1/RBV/SCC/NMI are 1<<0 .. 1<<3.  So a card in slot $C asserted
+// the NMI source and the machine took a level-7 autovector every few
+// instructions forever -- which is what "a 24AC beside the live built-in RBV
+// hangs the boot at Welcome" actually was (ledger §8).  Slot numbering only
+// coincidentally matches a machine's interrupt-source numbering; every family
+// now converts it itself.
 //
 // RvSInt numbering is logical: 0 is the built-in video (RvIRQ0, bit 6) and
 // 1..6 are RvIRQ1..6, so NuBus $9..$E map to 1..6.
@@ -245,7 +202,6 @@ const machine_substrate_t mdu_substrate = {
     .reset = mdu_reset,
     .teardown = mdu_teardown,
     .checkpoint_save = mdu_checkpoint_save,
-    .update_ipl = mac030_glue_update_ipl,
     .trigger_vbl = mdu_trigger_vbl,
     .nubus_slot_irq = mdu_nubus_slot_irq, // straight to the RBV's slot-interrupt register
     .fd_insert = mac_fd_insert,

@@ -22,6 +22,7 @@
 
 #include "mac_host_io.h"
 #include "machine.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
@@ -163,12 +164,6 @@ static void q900_sonic_mem_write(void *context, uint32_t phys, uint32_t value, u
         mmu_write_physical_uint32(g_mmu, phys, value);
 }
 
-// DAFB video interrupt → VIA2 PA6 through the /SLOTIRQ aggregate.
-static void q900_dafb_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    mcu_slot_irq_source(cfg, 6, active);
-}
-
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
@@ -257,33 +252,16 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(st->floppy), st->floppy, q900_swim_iop_irq, cfg,
                             cfg->scheduler, cp);
 
-    st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q900 maxed)
-    if (!st->dafb) {
-        LOG(0, "Error: out of memory constructing the DAFB");
+    if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
-    }
-    dafb_attach_scheduler(st->dafb, cfg->scheduler);
-    dafb_set_irq_callback(st->dafb, q900_dafb_irq, cfg);
-    // Consume unconditionally so a staged sense never leaks into a later
-    // boot, but only APPLY it on a cold build: on a restore, dafb_init()
-    // has already read the saved sense out of the checkpoint, and this
-    // call would otherwise overwrite it with the default.
-    uint8_t staged_sense = dafb_consume_pending_sense(); // default 6 = 13" RGB
-    if (!cp)
-        dafb_set_monitor_sense(st->dafb, staged_sense);
-    dafb_set_version(st->dafb, desc->dafb_version); // 3 on the Q950 (DAFB 3)
-    dafb_set_ac842a(st->dafb, desc->has_ac842a); // AC842a x555 on the Q950
-    // TurboSCSI DRQ observation: channel 0 = internal, channel 1 = external.
-    dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
-    dafb_set_scsi_drq_query(st->dafb, 1, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96_ext);
 
     // Bus-side physical resolver for the 040 walker (flat RAM model +
     // ROM-aperture mirrors; identical to the Q700 arrangement).
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    st->bus_mmu =
-        mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
+    st->bus_mmu = mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->common.rom_base,
+                           desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
@@ -303,7 +281,7 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     mcu_memory_layout(cfg);
 
     // Slot probing bus-errors in the NuBus windows.
-    memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
 
     if (cp)
         mcu_restore_private(cfg, cp);
@@ -318,25 +296,20 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 // totals with the 4 MB base configuration.
 static const uint32_t q900_ram_options_kb[] = {4096, 8192, 16384, 20480, 32768, 65536, 0};
 
-static const struct floppy_slot q900_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot q900_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t q900_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = q900_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
 // NuBus topology (ref §10.3): five NuBus '90 sockets A-E; the 040 PDS is
 // mechanically aligned with slot E.  Built-in DAFB video is pseudo-slot 9.
-static const nubus_slot_decl_t q900_nubus_slots[] = {
+// The tower's five NuBus '90 sockets $A-$E, shared with the Q950: same
+// Eclipse board, and Apple says five for both -- "expansion opportunities are
+// provided by five NuBus slots and one processor-direct slot" (Quadra 900
+// Developer Note) and "five NuBus expansion slots with NuBus '90 features"
+// (Quadra 950 Developer Note).  The Q700 keeps its own two-socket table: its
+// note says "two NuBus slots and one processor-direct slot".
+const nubus_slot_decl_t q900_nubus_slots[] = {
     {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
     {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
     {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
@@ -346,17 +319,20 @@ static const nubus_slot_decl_t q900_nubus_slots[] = {
 };
 
 static const mcu_board_desc_t q900_board_desc = {
-    .chipset = "MCU+DAFB",
-    .rom_base = 0x40000000u,
-    .rom_end = 0x50000000u,
-    .io_ranges = mcu_q900_io_ranges,
+    .common =
+        {
+                 .chipset = "MCU+DAFB",
+                 .rom_base = 0x40000000u,
+                 .rom_end = 0x50000000u,
+                 .io_ranges = mcu_q900_io_ranges,
+                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
+            .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+            .bus_err_lo = 0xF1000000u,
+                 .bus_err_hi = 0xFEFFFFFFu,
+                 },
     .ram_bank_count = 4, // sixteen SIMM sockets = four four-SIMM banks
-    .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = q900_nubus_slots,
-    .bus_err_lo = 0xF1000000u,
-    .bus_err_hi = 0xFEFFFFFFu,
     .via1_pa_model = 0xD0, // Q900 model sense: PA & $56 == $50 (InfoQuadra900)
+    .dafb_vram_size = 0x00200000u, // modelled maxed; ships 1 MiB, expands to 2
 };
 
 static const mcu_board_t q900_board = {
@@ -382,7 +358,7 @@ const hw_profile_t machine_q900 = {
     .rom_size = 0x100000, // 1 MB (shared 420DBFF3 image)
 
     .ram_options = q900_ram_options_kb,
-    .floppy_slots = q900_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = q900_scsi_buses,
     .has_cdrom = true, // internal CD option shipped on the towers
     .cdrom_id = 3,

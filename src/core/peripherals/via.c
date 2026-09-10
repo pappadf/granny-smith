@@ -676,11 +676,33 @@ via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t
     via->memory_interface.write_uint16 = &via_write_uint16;
     via->memory_interface.write_uint32 = &via_write_uint32;
 
-    // Port A defaults to all-1s except bit 3 (0xF7 = ~0x08). On a Plus that
-    // bit is the SCC W/REQ line, pulled low at boot before the SCC is taken
-    // out of reset. Port B defaults to all-1s (idle high) for everything.
-    via->ports[0].input = 0xF7;
+    // Both ports idle high, and so do all four control lines.  This is the
+    // 6522 at power-on with the pull-ups every Macintosh board fits: nothing
+    // is asserting.  It used to be 0xF7 on port A -- the Plus's SCC W/REQ line
+    // held low before the SCC leaves reset -- which made one machine's boot
+    // condition the family default, and every II-family machine then had to
+    // raise VIA2 PA3 back up because there the same pin is a NuBus slot
+    // /NMRQ: leaving it low meant slot $C asserted an interrupt forever.
+    // plus.c now drives its own W/REQ line (F-50).
+    //
+    // The four CONTROL lines had the mirror-image bug: they came up at 0,
+    // which for an active-low input reads as ASSERTED, so the SE/30, IIcx, IIx
+    // and AV each parked CA1/CA2/CB2 high by hand at init.  They idle high on
+    // the pull-ups and the first assertion is a falling edge, so starting them
+    // high is the faithful model and deletes all four workarounds.
+    //
+    // It is a behaviour change: the first falling edge now lands where it
+    // should instead of one transition late, which moves two capture windows
+    // -- suite-iicx/iicx-gc-beep 5427 -> 5423 frames and suite-plus/plus-beep
+    // 15432 -> 15116.  Both goldens were re-cut, having been listened to
+    // against the originals first: the waveform is the same beep, earlier in
+    // the window (HANDOVER S4.4).
+    via->ports[0].input = 0xFF;
     via->ports[1].input = 0xFF;
+    via->ports[0].ctrl[0] = 1; // CA1
+    via->ports[0].ctrl[1] = 1; // CA2
+    via->ports[1].ctrl[0] = 1; // CB1
+    via->ports[1].ctrl[1] = 1; // CB2
 
     // Register event types for checkpointing under the per-instance name
     // ("via1", "via2") so multi-VIA machines don't collide.

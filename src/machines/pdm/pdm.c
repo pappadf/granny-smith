@@ -33,6 +33,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "nubus.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -47,6 +48,45 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("board");
+
+// ============================================================
+// The family's NuBus topology (shared by the 7100 and the 8100)
+// ============================================================
+
+// Apple's own comparison table gives the family as 6100 = 1*, 7100 = 3,
+// 8100 = 3 ("NuBus slots", Developer Note vol. 1), and its prose treats all
+// four 7100/8100 variants as one: "The Power Macintosh 7100/66, 7100/66AV,
+// 8100/80, and 8100/80AV contain three NuBus slots."  Hence one table.  The
+// 6100's asterisk is the optional PDS adapter that carries the bridge itself
+// -- see pm6100.c, which declares no slots AND no BART.
+//
+// The three NuBus connectors behind BART: $C/$D/$E.
+//
+// This is what the SOFTWARE uses, and it is the thing that matters — the
+// slot number selects the address window a card answers in, the sResource
+// the Slot Manager enumerates, and the pseudo-VIA2 interrupt bit the OS
+// enables.  Measured on the shipping ROM: a booted 8100 enables slot-
+// interrupt bits $38, i.e. bits 3/4/5, which under the Mac II bit = slot-9
+// numbering are exactly $C/$D/$E — always those three, whichever connector
+// holds a card — with bit 6 the built-in video VBL (it appears in the mask
+// only when built-in video exists).  The ROM's own PDM slot-interrupt path
+// masks the slot bits with $78, bits 3-6, agreeing.
+//
+// An earlier revision of this file declared $B/$C/$D from the schematic
+// silkscreen (051-0333 rev A sheet 22, where the 96-pin connectors
+// J11/J12/J13 are labelled NuBus Slot B, C and D).  That numbering is a
+// board-level label, not the slot ID the software uses: a card staged into
+// $B lands on interrupt bit 2, which nothing enables and nothing services,
+// so its /NMRQ latched and stayed latched forever.  The Slot Manager then
+// never ran that slot's VBL task queue — which, when the card is the main
+// screen, is where the cursor task lives, so the mouse stopped moving.
+// Each ships empty; the user stages a card per slot.
+const struct nubus_slot_decl pdm_nubus_slots_cde[] = {
+    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
+    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {0},
+};
 
 // ============================================================
 // Page-table helpers (the mac030_fill_page shape, kept local so the PDM
@@ -182,7 +222,7 @@ static void pdm_memory_layout(config_t *cfg) {
     st->io_interface.write_uint8 = pdm_io_write8;
     st->io_interface.write_uint16 = pdm_io_write16;
     st->io_interface.write_uint32 = pdm_io_write32;
-    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00050000u, "PDM I/O", &st->io_interface, cfg);
+    memory_map_add(cfg->mem_map, 0x50F00000u, 0x00050000u, "I/O", &st->io_interface, cfg);
 
     // Machine-ID page.
     st->id_interface.read_uint8 = pdm_id_read8;
@@ -464,10 +504,15 @@ static void pdm_teardown(config_t *cfg) {
             }
         }
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
+    // The three devices that used to sit between cfg->scsi and cfg->via1 in
+    // this family's own copy of the chain.  They move above the shared chain
+    // (machine_teardown.h) rather than into it, because only PDM and TNT have
+    // them; the single ordering change is that cfg->scsi is now freed after
+    // these three instead of before.  That is safe: none of floppy_delete,
+    // av_cuda_delete or adb_delete reads a SCSI handle, the 53C96 controllers
+    // that DO hold the bus are already freed above, and scheduler_stop() ran
+    // first so nothing can fire in between.  Cuda still goes before the via1,
+    // rtc and adb it was handed at init, which is the ordering that matters.
     if (cfg->floppy) {
         floppy_delete(cfg->floppy);
         cfg->floppy = NULL;
@@ -480,37 +525,7 @@ static void pdm_teardown(config_t *cfg) {
         adb_delete(cfg->adb);
         cfg->adb = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    // The AppleTalk stack is a client of the SCC's LocalTalk channel, so it
-    // goes first — it holds the scc pointer it was given at init.
-    appletalk_delete();
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->ppc) {
-        ppc_delete(cfg->ppc);
-        cfg->ppc = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -556,14 +571,6 @@ static void pdm_trigger_vbl(config_t *cfg) {
         nubus_tick_vbl(cfg->nubus);
 }
 
-// Chipset IRQ spine.  Nothing on this family routes through it: the NuBus
-// slots have their own hook below, and every on-board source is already an
-// AMIC ICR bit (pdm_amic_set_source).
-static void pdm_update_ipl(config_t *cfg, int source, bool active) {
-    (void)cfg;
-    LOG(1, "update_ipl source=%d active=%d (PDM sources drive the AMIC ICR directly)", source, active);
-}
-
 // A NuBus card's /NMRQ.  The umbrella edge is AMIC's own business (the
 // pseudo-VIA2 "any slot" bit is recomputed from the slot levels on every
 // read), so the bus controller's edge hint is not needed here.
@@ -597,7 +604,6 @@ const machine_substrate_t pdm_substrate = {
     .reset = pdm_reset,
     .teardown = pdm_teardown,
     .checkpoint_save = pdm_checkpoint_save,
-    .update_ipl = pdm_update_ipl,
     .nubus_slot_irq = pdm_nubus_slot_irq,
     .trigger_vbl = pdm_trigger_vbl,
     .fd_insert = pdm_fd_insert,

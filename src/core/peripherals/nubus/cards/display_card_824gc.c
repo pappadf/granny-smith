@@ -1265,8 +1265,158 @@ static const char *card_name_generic(const nubus_card_t *card) {
            "24 GC (generic video ROM)";
 }
 
+// === Checkpoint ==============================================================
+//
+// The scalar state is ONE range (see display_card_824gc_priv.h: field order is
+// the format).  Everything below that line is handled here, explicitly.
+//
+// `regs` is 64 MB of card-local register window and is overwhelmingly zero, so
+// it goes as non-zero 4 KB pages rather than wholesale -- 64 MB per checkpoint
+// against ~4 MB for vram+dram+sram combined would be absurd.
+#define GC824_CKPT_PAGE 4096u
+
+static void ckpt_save_sparse(checkpoint_t *cp, const uint8_t *buf, uint32_t size) {
+    uint32_t pages = size / GC824_CKPT_PAGE, live = 0;
+    for (uint32_t i = 0; i < pages; i++) {
+        const uint8_t *pg = buf + (size_t)i * GC824_CKPT_PAGE;
+        for (uint32_t b = 0; b < GC824_CKPT_PAGE; b++)
+            if (pg[b]) {
+                live++;
+                break;
+            }
+    }
+    system_write_checkpoint_data(cp, &live, sizeof(live));
+    for (uint32_t i = 0; i < pages; i++) {
+        const uint8_t *pg = buf + (size_t)i * GC824_CKPT_PAGE;
+        uint32_t b = 0;
+        while (b < GC824_CKPT_PAGE && !pg[b])
+            b++;
+        if (b == GC824_CKPT_PAGE)
+            continue;
+        system_write_checkpoint_data(cp, &i, sizeof(i));
+        system_write_checkpoint_data(cp, (void *)(uintptr_t)pg, GC824_CKPT_PAGE);
+    }
+}
+
+static void ckpt_restore_sparse(checkpoint_t *cp, uint8_t *buf, uint32_t size) {
+    memset(buf, 0, size); // pages absent from the stream are zero by definition
+    uint32_t live = 0;
+    system_read_checkpoint_data(cp, &live, sizeof(live));
+    for (uint32_t n = 0; n < live; n++) {
+        uint32_t i = 0;
+        system_read_checkpoint_data(cp, &i, sizeof(i));
+        if ((uint64_t)i * GC824_CKPT_PAGE + GC824_CKPT_PAGE > size)
+            return; // a short/again-corrupt stream must not write past the buffer
+        system_read_checkpoint_data(cp, buf + (size_t)i * GC824_CKPT_PAGE, GC824_CKPT_PAGE);
+    }
+}
+
+// A host-keyed cache entry: {key, size, bytes}.  Serialised, NOT flushed --
+// see the note in display_card_824gc_priv.h.
+static void ckpt_save_cache(checkpoint_t *cp, uint32_t key, uint32_t size, const uint8_t *data) {
+    if (!data)
+        size = 0;
+    system_write_checkpoint_data(cp, &key, sizeof(key));
+    system_write_checkpoint_data(cp, &size, sizeof(size));
+    if (size)
+        system_write_checkpoint_data(cp, (void *)(uintptr_t)data, size);
+}
+
+static uint8_t *ckpt_restore_cache(checkpoint_t *cp, uint32_t *key, uint32_t *size, uint8_t *old) {
+    free(old);
+    system_read_checkpoint_data(cp, key, sizeof(*key));
+    system_read_checkpoint_data(cp, size, sizeof(*size));
+    if (!*size)
+        return NULL;
+    uint8_t *d = (uint8_t *)calloc(1, *size);
+    if (!d) {
+        *key = 0;
+        *size = 0;
+        return NULL;
+    }
+    system_read_checkpoint_data(cp, d, *size);
+    return d;
+}
+
+static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
+    display_card_824gc_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    system_write_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
+    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+
+    system_write_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
+    system_write_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
+    system_write_checkpoint_data(cp, p->dram, GC824_DRAM_SIZE);
+    ckpt_save_sparse(cp, p->regs, GC824_REGS_SIZE);
+
+    for (int i = 0; i < 4; i++) {
+        const struct gc_pixpat *pp = &p->gc_pixpats[i];
+        uint32_t bytes = pp->key ? (uint32_t)pp->w * pp->h * 4u : 0u;
+        ckpt_save_cache(cp, pp->key, bytes, (const uint8_t *)pp->pix);
+    }
+    for (int i = 0; i < 8; i++)
+        ckpt_save_cache(cp, p->gc_fonts[i].key, p->gc_fonts[i].size, p->gc_fonts[i].data);
+    for (int i = 0; i < 4; i++)
+        ckpt_save_cache(cp, p->gc_wtabs[i].key, p->gc_wtabs[i].size, p->gc_wtabs[i].data);
+
+    // The clip/vis REGIONS are guest state (ops $6A/$6C replace them); the two
+    // masks derive from them and are rebuilt below on restore.
+    system_write_checkpoint_data(cp, p->gc_cliprgn, GC824_RGN_MAX);
+    system_write_checkpoint_data(cp, p->gc_visrgn, GC824_RGN_MAX);
+}
+
+static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
+    display_card_824gc_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    system_read_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
+    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+
+    system_read_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
+    system_read_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
+    system_read_checkpoint_data(cp, p->dram, GC824_DRAM_SIZE);
+    ckpt_restore_sparse(cp, p->regs, GC824_REGS_SIZE);
+
+    for (int i = 0; i < 4; i++) {
+        struct gc_pixpat *pp = &p->gc_pixpats[i];
+        uint32_t bytes = 0;
+        pp->pix = (uint32_t *)ckpt_restore_cache(cp, &pp->key, &bytes, (uint8_t *)pp->pix);
+    }
+    for (int i = 0; i < 8; i++)
+        p->gc_fonts[i].data = ckpt_restore_cache(cp, &p->gc_fonts[i].key, &p->gc_fonts[i].size, p->gc_fonts[i].data);
+    for (int i = 0; i < 4; i++)
+        p->gc_wtabs[i].data = ckpt_restore_cache(cp, &p->gc_wtabs[i].key, &p->gc_wtabs[i].size, p->gc_wtabs[i].data);
+
+    system_read_checkpoint_data(cp, p->gc_cliprgn, GC824_RGN_MAX);
+    system_read_checkpoint_data(cp, p->gc_visrgn, GC824_RGN_MAX);
+
+    // gc_cur_wt / gc_cur_strike point INTO the caches above, so they are
+    // re-resolved rather than restored -- the buffers just moved.
+    p->gc_cur_wt = NULL;
+    p->gc_cur_strike = NULL;
+    for (int i = 0; i < 4; i++)
+        if (p->gc_wtabs[i].key && p->gc_wtabs[i].data)
+            p->gc_cur_wt = p->gc_wtabs[i].data;
+    for (int i = 0; i < 8; i++)
+        if (p->gc_fonts[i].key && p->gc_fonts[i].data) {
+            p->gc_cur_strike = p->gc_fonts[i].data;
+            break;
+        }
+
+    recompute_stride(p);
+    gc824_clip_rebuild(p); // masks derive from the restored regions
+
+    p->display.shape_dirty = true;
+    p->display.clut_dirty = true;
+    p->display.fb_dirty = true;
+    p->display.response_dirty = true;
+}
+
 static const nubus_card_ops_t display_card_824gc_ops = {
     .init = card_init_real,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
     .teardown = card_teardown,
     .reset = card_reset,
     .on_vbl = card_on_vbl,
@@ -1276,6 +1426,8 @@ static const nubus_card_ops_t display_card_824gc_ops = {
 
 static const nubus_card_ops_t display_card_824gc_generic_ops = {
     .init = card_init_generic,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
     .teardown = card_teardown,
     .reset = card_reset,
     .on_vbl = card_on_vbl,

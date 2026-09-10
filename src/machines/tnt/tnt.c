@@ -32,6 +32,7 @@
 #include "dbdma.h"
 
 #include "adb.h"
+#include "appletalk.h"
 #include "checkpoint_images.h"
 #include "debug.h"
 #include "debug_mac.h"
@@ -40,6 +41,7 @@
 #include "log.h"
 #include "mac_host_io.h"
 #include "machine_config.h" // machine_boot_is_restart (the NVRAM carry rule)
+#include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "pci.h"
 #include "ppc.h"
 #include "rtc.h"
@@ -47,6 +49,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "slot_tables.h"
 #include "sym53c8xx.h" // the fast/wide controllers the ANS slot table seats
 #include "via.h"
 
@@ -499,6 +502,16 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     cfg->scc = scc_init(NULL, cfg->scheduler, tnt_scc_irq, cfg, cp);
     scc_set_clocks(cfg->scc, 15667200, 3672000);
 
+    // AppleTalk rides the SCC's LocalTalk channel, so it is built as soon as
+    // the SCC exists -- and, because the checkpoint stream is positional, in
+    // the same relative place the save writes it (right after scc_checkpoint).
+    // LocalTalk is the only AppleTalk path these machines have here: the
+    // Grand Central MACE window is a #define and nothing else, so there is no
+    // EtherTalk to prefer.  NOTE: the stack has only ever been exercised
+    // against a Mac Plus guest (tests/integration/appletalk-*), so this wires
+    // the family up rather than proving it -- see proposal-test-fixes.md.
+    appletalk_init(cfg->scheduler, cfg->scc, cp);
+
     // VIA1: one real 6522 behind the Grand Central decode, byte-wide on
     // $200 centres.  Timer clock: 783.36 kHz is the classic rate and the
     // starting assumption — the actual TNT VIA input clock is pinned at
@@ -693,6 +706,13 @@ static void tnt_teardown(config_t *cfg) {
         // Power-cycle (machine.restart): the soldered part comes back with
         // the machine.  New machine (machine.boot): it gets a virgin store,
         // and the previous machine's goes with the previous machine.
+        //
+        // This must read st->gc.nvram before anything tears Grand Central
+        // down.  GC is itself a pci_device_t (tnt_gc_pci_attach), and
+        // system_destroy now deletes the PCI root before calling us --
+        // harmless today because gc_pci_ops declares no .teardown and the
+        // store lives in st, not in a PCI allocation, but the coupling is
+        // real the moment that op appears.
         if (machine_boot_is_restart()) {
             memcpy(tnt_nvram_carry, st->gc.nvram, TNT_NVRAM_SIZE);
             tnt_nvram_carry_valid = true;
@@ -705,12 +725,10 @@ static void tnt_teardown(config_t *cfg) {
         tnt_gbus_teardown(cfg);
         tnt_lcd_teardown(cfg);
     }
-    // Deleting the PCI root tears down every seated device, which is what
-    // frees Control's VRAM and display buffers (its ops->teardown).
-    if (cfg->pci) {
-        pci_root_delete(cfg->pci);
-        cfg->pci = NULL;
-    }
+    // The PCI root is NOT deleted here: system_destroy owns both expansion
+    // buses and tears them down before calling this, which is what frees
+    // Control's VRAM and display buffers (its ops->teardown) and what puts
+    // the 53C825As in their graves before the buses they borrow below.
     if (st && st->scsi96) {
         scsi_53c96_delete(st->scsi96);
         st->scsi96 = NULL;
@@ -719,10 +737,19 @@ static void tnt_teardown(config_t *cfg) {
         floppy_delete(cfg->floppy);
         cfg->floppy = NULL;
     }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
-    }
+    // The four devices that used to sit between cfg->scsi and cfg->via1 in
+    // this family's own copy of the chain, kept in the same relative order and
+    // simply hoisted above the shared one (machine_teardown.h).  Only PDM and
+    // TNT have them, so they stay here rather than joining the shared chain.
+    //
+    // The single ordering change is that cfg->scsi is now freed after these
+    // four instead of before the first of them.  Safe on both counts that
+    // matter: none of scsi_delete(scsi2), tnt_dbdma_delete, av_cuda_delete or
+    // adb_delete reads cfg->scsi, and the controllers that DO hold the two
+    // buses are already gone -- MESH/53C96 just above, and the 53C825As with
+    // the PCI root, which system_destroy frees before this runs.  DBDMA still
+    // goes after the floppy and before the SCC whose channels it serves, and
+    // Cuda still goes before the via1, rtc and adb it was handed at init.
     if (st && st->scsi2) {
         scsi_delete(st->scsi2);
         st->scsi2 = NULL;
@@ -739,34 +766,7 @@ static void tnt_teardown(config_t *cfg) {
         adb_delete(cfg->adb);
         cfg->adb = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->ppc) {
-        ppc_delete(cfg->ppc);
-        cfg->ppc = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    machine_teardown_config_devices(cfg);
     if (st) {
         free(st);
         cfg->machine_context = NULL;
@@ -782,6 +782,7 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     scheduler_checkpoint(cfg->scheduler, cp);
     rtc_checkpoint(cfg->rtc, cp);
     scc_checkpoint(cfg->scc, cp);
+    appletalk_checkpoint(cp);
     via_checkpoint(cfg->via1, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
@@ -886,22 +887,163 @@ static void tnt_pci_slot_irq(config_t *cfg, int slot, bool active) {
     tnt_gc_set_source(cfg, d->int_line, active);
 }
 
-// Chipset IRQ spine.  Nothing routes through it: every on-board source is
-// a Grand Central interrupt number (tnt_gc_set_source).
-static void tnt_update_ipl(config_t *cfg, int source, bool active) {
-    (void)cfg;
-    LOG(1, "update_ipl source=%d active=%d (TNT sources drive Grand Central directly)", source, active);
-}
-
 // Floppy: the one internal SuperDrive behind SWIM3 (swim3.c).  Drive 1 is
 // the only bay the family has — no external port — so slot 1 refuses
 // whatever the caller asks.
 //
-// The slot table is declared once here rather than copied into each of the
-// five profiles: it is a fact about the TNT board, and tnt_fd_insert below
-// is what makes one slot the right count.
-const struct floppy_slot tnt_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
+// The board's one internal SuperDrive is the same shape the Quadras and the
+// PDM Power Macs present, so the five profiles reference the shared
+// mac_floppy_slots_1hd (slot_tables.h) rather than the TNT keeping a seventh
+// identical copy.  tnt_fd_insert below is what makes one slot the right count.
+
+// The internal bus's two bays, shared by the three Power Macintosh profiles
+// (the Network Servers declare backplane bays instead).  Labelled "Internal"
+// rather than the generic "SCSI HD0/HD1" because this family has a second,
+// fast/wide bus a user can also attach to.
+const struct scsi_slot tnt_scsi_slots_internal[] = {
+    {.label = "Internal HD0", .id = 0},
+    {.label = "Internal HD1", .id = 1},
+    {0},
+};
+
+// The Network Servers' front backplane on the FIRST fast/wide controller,
+// shared by both models -- same backplane, same IDs, and Open Firmware's
+// default boot device (disk2:aix) is bay 2 on both.
+//
+// The backplane is "seven slots with hot swap.  It is expected (but not
+// required) that slot 0 will be a CD ROM."  Bay numbering runs top to bottom
+// with 0 uppermost, and the production ROM's own device aliases settle which
+// controller owns which bay -- `disk0`..`disk3` resolve through
+// `/bandit/53c825@11`, `disk4` onward through `@12`.  Bay 0 is Apple's
+// expected CD-ROM position and is deliberately NOT declared here: it is what
+// hw_profile_t.cdrom_id addresses.
+//
+// Their SECOND controller is deliberately NOT shared: the 700 hangs two rear
+// bays off it and the 500 does not, and that is the "More drive Bays" half of
+// Apple's own four-way split between the models (Network Server Hardware
+// Developer Notes, 1996, S1.1.2).  Merging those two tables would delete a
+// modelled hardware difference -- see ans700.c.
+const struct scsi_slot ans_scsi_slots_fw0[] = {
+    {.label = "Bay 1 (fast/wide 0)", .id = 1},
+    {.label = "Bay 2 (fast/wide 0)", .id = 2, .boot = true}, // Open Firmware's default: disk2:aix
+    {.label = "Bay 3 (fast/wide 0)", .id = 3},
+    {0},
+};
+
+// The Shiner backplane -- the PCI topology of BOTH Network Servers, which
+// share one board ("Shiner LE" = 500/132, "Shiner HE" = 700/150).  The two
+// models differ only in clock, L2 size, supply count and drive bays; not one
+// of those is visible here, which is why this is one table and not two.
+//
+// It is NOT the 9500's, despite the ANS being a 9500 derivative everywhere
+// else (same Hammerhead, same two Bandits, same Grand Central).  Before
+// merging this with pm9500_pci_slots, note that all five of these differ:
+//
+//   * the split is 2/4 across the Bandits, not 3/3
+//   * bus 2 carries a FOURTH IDSEL (16) that no Power Macintosh uses
+//   * bus 1 IDSEL 15 is a soldered VIDEO device here, a socket ("C1") there
+//   * three builtins (VIDEO + two 53C825As) against the Power Macs' one VCI,
+//     because MESH is gone and video moved onto the bus
+//   * the labels are Open Firmware's own slot-names, not Mac OS's A1..F2
+//
+// PCI topology (Apple, ibid., §4.6.2 and §7.1.1; independently confirmed by
+// the six per-slot Open Firmware boot commands printed in "Using the PCI
+// RAID Card").  Two facts here are boot-critical and are pure data:
+//
+//   * The split is 2/4, not the 9500's 3/3: "The Network Server uses two
+//     separate PCI buses for on-board I/O (and two slots) and card
+//     expansion (four slots)" — "For PCI Bus 2, PCI Slot 3 is moved to the
+//     second Bandit."  Bandit 1 therefore carries SIX devices with no
+//     PCI-to-PCI bridge: two sockets plus the 54M30, Grand Central and both
+//     53C825As.
+//   * A slot's interrupt does NOT follow its bridge.  Slot 3 sits on Bandit
+//     2 but keeps EXT5 (ANS_INT_SLOT3) — the line a 9500 gives Bandit 1's
+//     third slot.  Deriving the line from the bus is wrong for exactly one
+//     slot, which is the worst possible failure shape, so the map is data.
+//
+// Apple gives IDSELs in DECIMAL in §4.6.2/§7.1.1 and the matching unit
+// addresses in HEX in Listing 6-1 and the RAID boot commands; `device`
+// below is the decimal IDSEL AD line, which is what the config-cycle
+// encoding wants.
+//
+// The LABELS are the ROM's own, read out of each bridge node's
+// `slot-names` property under Open Firmware: Bandit 1 publishes
+// `00006000 "SLOT1_PCI0" "SLOT2_PCI0"` and Bandit 2 publishes
+// `0001E000 "SLOT3_PCI1" "SLOT4_PCI1" "SLOT5_PCI1" "SLOT6_PCI1"`.  Note
+// the bus number in the string is ZERO-based while Apple's own prose and
+// its `pci1`/`pci2` device aliases are one-based — which is why the
+// worked example in the Software Developer Notes shows a slot-SIX card as
+// `SLOT6_PCI1` and not `SLOT6_PCI2`.  The bitmask halves also confirm the
+// 2/4 split and the IDSELs: bits 13-14 on the first bridge, 13-16 on the
+// second.
+const pci_slot_decl_t ans_pci_slots[] = {
+    {.slot = 1,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT1_PCI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 13,
+     .int_line = ANS_INT_SLOT1},
+    {.slot = 2,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT2_PCI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 14,
+     .int_line = ANS_INT_SLOT2},
+    {.slot = 3,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT3_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 13,
+     .int_line = ANS_INT_SLOT3},
+    {.slot = 4,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT4_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 14,
+     .int_line = ANS_INT_SLOT4},
+    {.slot = 5,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT5_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 15,
+     .int_line = ANS_INT_SLOT5},
+    {.slot = 6,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT6_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 16,
+     .int_line = ANS_INT_SLOT6},
+    // The three soldered-down PCI devices, all on Bandit 1 (Apple, ibid.,
+    // §4.6.2 — the six-device bus).  Grand Central's own config presence at
+    // IDSEL 16 is attached by grand_central.c, not from this table, exactly
+    // as on the Macintosh boards.
+    //
+    // The 54M30 takes NO interrupt line: "the 54M30 does not have an
+    // interrupt" (ibid., §4.2), and allocating it a Grand Central external
+    // would corrupt the map.  The two 53C825As take EXT2 and EXT6, the two
+    // positions the Network Server freed by ganging both Bandits' error
+    // interrupts onto EXT1.
+    {.slot = 7,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "VIDEO",
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 0,
+     .builtin_card_id = "cirrus_54m30"},
+    {.slot = 8,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "FWSCSI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 17,
+     .int_line = ANS_INT_FW0,
+     .builtin_card_id = "sym53c825_0"},
+    {.slot = 9,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "FWSCSI1",
+     .bus = TNT_PCI_BUS_1,
+     .device = 18,
+     .int_line = ANS_INT_FW1,
+     .builtin_card_id = "sym53c825_1"},
     {0},
 };
 
@@ -922,7 +1064,6 @@ const machine_substrate_t tnt_substrate = {
     .reset = tnt_reset,
     .teardown = tnt_teardown,
     .checkpoint_save = tnt_checkpoint_save,
-    .update_ipl = tnt_update_ipl,
     .pci_slot_irq = tnt_pci_slot_irq,
     .trigger_vbl = tnt_trigger_vbl,
     .fd_insert = tnt_fd_insert,

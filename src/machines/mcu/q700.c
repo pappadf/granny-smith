@@ -14,6 +14,7 @@
 
 #include "mac_host_io.h"
 #include "machine.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
@@ -134,13 +135,6 @@ static void q700_sonic_mem_write(void *context, uint32_t phys, uint32_t value, u
         mmu_write_physical_uint32(g_mmu, phys, value);
 }
 
-// DAFB video interrupt → VIA2 PA6 (active-low) through the family /SLOTIRQ
-// aggregate on CA1 (ref §11.18/§13.3), alongside the NuBus slot sources.
-static void q700_dafb_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    mcu_slot_irq_source(cfg, 6, active);
-}
-
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
@@ -195,22 +189,8 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
     cfg->floppy = st->floppy;
 
-    st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q700 maxed; base 512 KiB later)
-    if (!st->dafb) {
-        LOG(0, "Error: out of memory constructing the DAFB");
+    if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
-    }
-    dafb_attach_scheduler(st->dafb, cfg->scheduler);
-    dafb_set_irq_callback(st->dafb, q700_dafb_irq, cfg);
-    // Consume unconditionally so a staged sense never leaks into a later
-    // boot, but only APPLY it on a cold build: on a restore, dafb_init()
-    // has already read the saved sense out of the checkpoint, and this
-    // call would otherwise overwrite it with the default.
-    uint8_t staged_sense = dafb_consume_pending_sense(); // default 6 = 13" RGB
-    if (!cp)
-        dafb_set_monitor_sense(st->dafb, staged_sense);
-    // TurboSCSI channel 0 observes the 53C96's DRQ (control-reg bit 9).
-    dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
 
     // Bus-side physical resolver for the 040 walker: RAM at 0, the 1 MiB ROM
     // mirroring through the aperture.  ram_size_max is the full 1 GiB RAM
@@ -219,8 +199,8 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     uint32_t ram_size = cfg->ram_size;
     uint8_t *ram_base = ram_native_pointer(cfg->mem_map, 0);
     uint8_t *rom_data = ram_native_pointer(cfg->mem_map, ram_size);
-    st->bus_mmu =
-        mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->rom_base, desc->rom_end);
+    st->bus_mmu = mmu_init(ram_base, ram_size, 0x40000000u, rom_data, cfg->machine->rom_size, desc->common.rom_base,
+                           desc->common.rom_end);
     if (!st->bus_mmu) {
         LOG(0, "Error: out of memory constructing the 040 bus MMU");
         return -1;
@@ -239,7 +219,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Slot probing bus-errors in the NuBus windows (needed by the ROM's
     // slot scan even with no cards; the mapped VRAM aperture wins first).
-    memory_set_bus_error_range(cfg->mem_map, desc->bus_err_lo, desc->bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, desc->common.bus_err_lo, desc->common.bus_err_hi);
 
     if (cp)
         mcu_restore_private(cfg, cp);
@@ -254,19 +234,8 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
 // configurations (ref §8.3 [R][U] — extended sizes, flagged as such).
 static const uint32_t q700_ram_options_kb[] = {4096, 8192, 20480, 36864, 69632, 0};
 
-static const struct floppy_slot q700_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot q700_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t q700_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = q700_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -282,18 +251,23 @@ static const nubus_slot_decl_t q700_nubus_slots[] = {
 };
 
 static const mcu_board_desc_t q700_board_desc = {
-    .chipset = "MCU+DAFB",
-    .rom_base = 0x40000000u,
-    .rom_end = 0x50000000u,
-    .io_ranges = mcu_q700_io_ranges,
-    .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
+    .common =
+        {
+                 .chipset = "MCU+DAFB",
+                 .rom_base = 0x40000000u,
+                 .rom_end = 0x50000000u,
+                 .io_ranges = mcu_q700_io_ranges,
+                 .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
+            .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
+            .bus_err_lo = 0xF1000000u,
+                 .bus_err_hi = 0xFEFFFFFFu,
+                 },
     .ram_onboard_size = 0x00400000u, // 4 MB soldered = bank A; SIMM bank B follows
     .ram_bank_count = 2, // 4 MB soldered + one four-SIMM bank
-    .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = q700_nubus_slots,
-    .bus_err_lo = 0xF1000000u,
-    .bus_err_hi = 0xFEFFFFFFu,
     .via1_pa_model = 0xC0, // Q700 model sense (ref §7.4 [R])
+    // Modelled maxed.  Base is 512 KiB soldered plus three optional
+    // 256 KiB-SIMM-pair banks (DAFB reference S16.1).
+    .dafb_vram_size = 0x00200000u,
 };
 
 static const mcu_board_t q700_board = {
@@ -318,7 +292,7 @@ const hw_profile_t machine_q700 = {
     .rom_size = 0x100000, // 1 MB
 
     .ram_options = q700_ram_options_kb,
-    .floppy_slots = q700_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = q700_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,

@@ -44,8 +44,8 @@
 #define PPC_FPSCR_C      0x00010000u // bit 15: result class descriptor
 #define PPC_FPSCR_FPCC   0x0000F000u // bits 16-19: FL/FG/FE/FU
 #define PPC_FPSCR_FPRF   0x0001F000u // bits 15-19: C + FPCC
-#define PPC_FPSCR_VXSOFT 0x00000400u // bit 21: software-request invalid (601: storage only)
-#define PPC_FPSCR_VXSQRT 0x00000200u // bit 22: invalid sqrt (601: storage only)
+#define PPC_FPSCR_VXSOFT 0x00000400u // bit 21: software-request invalid (not on the 601)
+#define PPC_FPSCR_VXSQRT 0x00000200u // bit 22: invalid sqrt (not on the 601)
 #define PPC_FPSCR_VXCVI  0x00000100u // bit 23: invalid integer convert
 #define PPC_FPSCR_VE     0x00000080u // bit 24: invalid-op exception enable
 #define PPC_FPSCR_OE     0x00000040u // bit 25: overflow exception enable

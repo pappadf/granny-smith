@@ -18,6 +18,7 @@
 #include "nubus.h"
 #include "rbv.h"
 
+#include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,12 +31,12 @@ LOG_USE_CATEGORY_NAME("rbvvid");
 
 // === Per-card private state =================================================
 
+// Field order IS the checkpoint format (the via_t / adb_t / asc_t idiom): the
+// scalars go as ONE range ending at `display`.  A scalar added above that line
+// is checkpointed automatically; a POINTER added above it restores a stale
+// address, so the pointers and construction facts sit below the marker.
 typedef struct {
-    rbv_t *rbv; // RBV chip — set post-init by the machine (slot-0 IRQ)
-    uint8_t *fb; // framebuffer buffer (registered by the machine at $FBB00000)
-    bool fb_external; // true if fb points at machine-owned memory (don't free)
     rgba8_t clut[256]; // 256-entry palette fed by the VDAC
-    display_t display;
 
     // VDAC (Bt450) write state: an address write resets the R/G/B counter;
     // three data writes load one entry, then the index auto-increments.
@@ -43,7 +44,20 @@ typedef struct {
     uint8_t vdac_phase; // 0 = R, 1 = G, 2 = B
     uint8_t vdac_rgb[3]; // accumulated R/G/B for the in-progress entry
     uint8_t vdac_pix_mask; // pixel read mask (accept-and-log)
+
+    // --- Pointers and construction facts last; NOT in the range above ---
+    // `display` leads them because it embeds `bits`/`clut` pointers of its own;
+    // its scalar head is checkpointed separately as offsetof(display_t, bits).
+    display_t display;
+    rbv_t *rbv; // RBV chip — set post-init by the machine (slot-0 IRQ)
+    uint8_t *fb; // framebuffer buffer (registered by the machine at $FBB00000)
+    bool fb_external; // true if fb points at machine-owned memory (don't free)
 } rbv_video_priv_t;
+
+// The layout above is load-bearing.  If this fires, a member moved across the
+// boundary: re-check what the checkpoint range now covers before updating it.
+_Static_assert(offsetof(rbv_video_priv_t, display) < offsetof(rbv_video_priv_t, rbv),
+               "RBV-video checkpoint range must end before the pointer block");
 
 // VDAC register offsets (RBV's Bt450) — see HardwarePrivateEqu.a:927-931.
 #define VDAC_WADDR 0x0 // vDACwAddReg — set CLUT index
@@ -197,15 +211,8 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     // already covered by the RAM image; only a card-owned buffer needs saving.
     if (!p->fb_external)
         system_write_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
-    system_write_checkpoint_data(cp, p->clut, sizeof(p->clut));
-    system_write_checkpoint_data(cp, &p->display.format, sizeof(p->display.format));
-    system_write_checkpoint_data(cp, &p->display.width, sizeof(p->display.width));
-    system_write_checkpoint_data(cp, &p->display.height, sizeof(p->display.height));
-    system_write_checkpoint_data(cp, &p->display.stride, sizeof(p->display.stride));
-    system_write_checkpoint_data(cp, &p->vdac_idx, sizeof(p->vdac_idx));
-    system_write_checkpoint_data(cp, &p->vdac_phase, sizeof(p->vdac_phase));
-    system_write_checkpoint_data(cp, p->vdac_rgb, sizeof(p->vdac_rgb));
-    system_write_checkpoint_data(cp, &p->vdac_pix_mask, sizeof(p->vdac_pix_mask));
+    system_write_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
+    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -214,15 +221,8 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
         return;
     if (!p->fb_external)
         system_read_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
-    system_read_checkpoint_data(cp, p->clut, sizeof(p->clut));
-    system_read_checkpoint_data(cp, &p->display.format, sizeof(p->display.format));
-    system_read_checkpoint_data(cp, &p->display.width, sizeof(p->display.width));
-    system_read_checkpoint_data(cp, &p->display.height, sizeof(p->display.height));
-    system_read_checkpoint_data(cp, &p->display.stride, sizeof(p->display.stride));
-    system_read_checkpoint_data(cp, &p->vdac_idx, sizeof(p->vdac_idx));
-    system_read_checkpoint_data(cp, &p->vdac_phase, sizeof(p->vdac_phase));
-    system_read_checkpoint_data(cp, p->vdac_rgb, sizeof(p->vdac_rgb));
-    system_read_checkpoint_data(cp, &p->vdac_pix_mask, sizeof(p->vdac_pix_mask));
+    system_read_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
+    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
 
     // The CLUT window depends on the restored depth, so recompute it.
     rbv_video_apply_clut_window(p);

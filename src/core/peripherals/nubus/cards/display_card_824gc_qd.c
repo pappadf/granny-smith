@@ -1173,7 +1173,7 @@ static void gc_mask_and_region(uint8_t *mask, const uint8_t *rgn, uint32_t maxle
 }
 // Rebuild the effective drawable mask = clipRgn ∩ visRgn (each region is the
 // CURRENT one — the ops replace, not accumulate).
-static void gc_clip_rebuild(display_card_824gc_priv_t *p) {
+void gc824_clip_rebuild(display_card_824gc_priv_t *p) {
     memset(p->gc_clipmask, 0xFF, (size_t)GC824_CLIP_STRIDE * GC824_CLIP_ROWS);
     if (p->gc_cliprgn_len)
         gc_mask_and_region(p->gc_clipmask, p->gc_cliprgn, p->gc_cliprgn_len, p->gc_rgn_ox, p->gc_rgn_oy);
@@ -1196,7 +1196,7 @@ static void gc_clip_set_region(display_card_824gc_priv_t *p, int is_vis, uint32_
     }
     p->gc_rgn_ox = (int16_t)ox;
     p->gc_rgn_oy = (int16_t)oy;
-    gc_clip_rebuild(p);
+    gc824_clip_rebuild(p);
 }
 
 // Compute the byte advance for an opcode record at DRAM offset `off`.

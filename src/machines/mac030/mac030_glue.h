@@ -112,9 +112,11 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
 // (mac030_build_mmu — the board-parameterised PMMU builder — is declared below,
 // next to mac030_board_desc_t which carries the ROM window it uses.)
 
-// Finish init: create the debugger, start the scheduler, and zero the IRQ/IPL
-// on a cold boot (left intact on checkpoint restore).
-void mac030_glue_finish(config_t *cfg, checkpoint_t *cp);
+// Finish init: validate the family's I/O table against the devices it bound,
+// create the debugger, start the scheduler, and zero the IRQ/IPL on a cold
+// boot (left intact on checkpoint restore).  `io` is the family's engine (NULL
+// only for a family that has none).
+void mac030_glue_finish(config_t *cfg, checkpoint_t *cp, const mac030_io_t *io);
 
 struct nubus_slot_decl;
 
@@ -124,6 +126,19 @@ struct nubus_slot_decl;
 // helpers — mac030_build_mmu (ROM window), the family I/O bind (io_ranges +
 // mirror + unmapped), nubus_init (slots) and the bus-error range.  Pure data;
 // the family-specific device construction stays a code path (see each init).
+// The field set every 68k board descriptor shares, and that the shared code
+// reads: mac030_io_* takes io_ranges / io_mirror_mask / io_unmapped_read,
+// mac030_build_mmu takes rom_base / rom_end, and memory_set_bus_error_range
+// takes the bus-error pair.  The MCU and AV descriptors EMBED this rather
+// than redeclaring the fields (the review's F-32) -- which is what lets
+// mcu_io_bind and av_io_bind hand &desc->common to mac030_glue_io_bind
+// instead of each carrying its own copy of the same four assignments.
+//
+// Keeping it in one struct also keeps its documentation in one place.  The
+// io_unmapped_read note below is load-bearing and was previously written out
+// here while the other two descriptors said only "unmapped-read value inside
+// the island", so a reader of mcu.h or av.h had no way to know the field
+// mattered.
 typedef struct mac030_board_desc {
     const char *chipset; // "GLUE" / "MDU+RBV" / "OSS+FMC" (tracing/diagnostics)
     uint32_t rom_base, rom_end; // MMU ROM window (GLUE $40000000-$50000000; MDU/OSS differ)
@@ -141,10 +156,60 @@ typedef struct mac030_board_desc {
     // the read floats — and checks bit 4.  With a 0 fill the bit read clear and
     // the machine was condemned as a bad logic board (ledger §9).
     uint8_t io_unmapped_read;
-    const struct nubus_slot_decl *slots; // NuBus slot table
     uint32_t bus_err_lo, bus_err_hi; // unmapped-region bus-error window
     asc_mix_t asc_mix; // speaker fold of the ASC stereo pair (SE/30 sums; IIx/IIcx take A)
 } mac030_board_desc_t;
+
+// The I/O window sits directly above the ROM window and is 256 MB on every
+// GLUE machine ($50000000-$5FFFFFFF), so its base is desc->rom_end.
+#define MAC030_GLUE_IO_SIZE 0x10000000UL
+
+// The GLUE family's shared memory layout: RAM (with the SIMM address wrap the
+// ROM's ram_address_test needs), the ROM window from desc->rom_base/rom_end,
+// and the I/O dispatcher.  mac030_glue_init calls this, then the board's
+// memory_layout_tail.  One motherboard design, one function.
+void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
+
+// Build the low-speed spine every 68k family shares: RTC, the SCC at the Mac's
+// clocks (3.6864 MHz PCLK / 7.8336 MHz RTxC), and the AppleTalk stack that
+// rides its LocalTalk channel.  Pass NULL for `scc_irq` to take the family
+// default (mac030_glue_scc_irq).
+//
+// This is the READ side of the stream mac030_checkpoint_save_core() writes
+// below, and the pairing is the point: rtc_init, scc_init and appletalk_init
+// each consume their own block from `cp` as they build, so construction order
+// here IS restore order.  While the save half was shared and the restore half
+// was copied into five families, the IIfx drifted out of order and every
+// checkpoint.load on that machine failed.  Change one of these two functions
+// and you must change the other.
+//
+// The VIAs are deliberately NOT here: one machine or two, different port
+// hooks, different IRQ sinks, and the GLUE machines' exact 20:1 clock ratio
+// versus the derived factor everyone else needs.  That variation is real, and
+// a parameter list long enough to absorb it would be longer than the code.
+void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool));
+
+// Write the head of a 68k family's checkpoint stream, in the one canonical
+// order:
+//
+//   mem_map -> cpu -> scheduler -> cfg->irq -> rtc -> scc -> appletalk ->
+//   via1 -> via2
+//
+// The stream is positional -- no per-block tag, no size field -- so this
+// sequence IS the file format, and a family that replicated it could silently
+// write a different one by dropping a line.  That is not hypothetical: the
+// review's F-23 was exactly this, a copy that omitted appletalk_checkpoint.
+//
+// Each family calls this first, then writes its own devices in its own
+// construction order.  That ordering rule is the family's to keep: save must
+// mirror what its init reads back, because a swapped pair does not fail at
+// the swap, it cross-loads and dies later at whichever block first disagrees
+// on size (see the IIfx, which did exactly that).
+//
+// The PowerPC families do NOT use this: their stream substitutes
+// ppc_checkpoint for cpu_checkpoint and omits cfg->irq, because PDM and TNT
+// keep interrupt state in their own register blobs instead.
+void mac030_checkpoint_save_core(config_t *cfg, checkpoint_t *cp);
 
 // Create the 68030 PMMU over a board's ROM window, make it the global MMU and
 // attach it to the CPU.  Returns the MMU; the caller sets any TT registers.
@@ -165,12 +230,15 @@ typedef struct mac030_glue_board {
 
     void (*setup_id)(config_t *cfg); // machine-ID strap + VIA2 idle lines
 
-    void (*memory_layout)(config_t *cfg); // RAM/ROM/IO page-table setup + overlay
+    // Per-board remainder of the memory layout, run right after the shared
+    // mac030_glue_memory_layout() has done RAM, ROM and the I/O dispatcher:
+    // the SE/30 maps its built-in video's VRAM/VROM, the IIcx and IIx fill
+    // page entries for NuBus cards' host-backed regions, and both then arm
+    // the ROM overlay.  Optional, like the other tail hooks.
+    void (*memory_layout_tail)(config_t *cfg);
 
     void (*pre_devices)(config_t *cfg); // optional: before device construction (SE/30 VBL event type)
     void (*post_nubus)(config_t *cfg); // optional: after nubus_init (SE/30 VRAM/VROM wiring)
-    void (*ckpt_restore_extra)(config_t *cfg, checkpoint_t *cp); // optional: extra restore (SE/30 VRAM/VROM)
-    void (*ckpt_save_extra)(config_t *cfg, checkpoint_t *cp); // optional: extra save, symmetric (SE/30 VRAM/VROM)
     void (*trigger_vbl)(config_t *cfg); // optional VBL override; NULL → the default GLUE NuBus VBL
 } mac030_glue_board_t;
 
@@ -221,12 +289,6 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active);
 // port-A bit (active-low; slot $9→PA0 .. $E→PA5), and the umbrella OR-line edge
 // pulses CA1.  (se30/iicx/iix.)
 void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
-
-// substrate.nubus_slot_irq for chipsets whose own IRQ controller aggregates the
-// slots (MDU's RBV, OSS): route the slot source through the substrate's own
-// update_ipl.  umbrella_edge is irrelevant (the controller aggregates
-// internally).  (iici/iisi/iifx.)
-void mac030_nubus_slot_irq_via_ipl(config_t *cfg, int slot, bool active, bool umbrella_edge);
 
 // Family-shared teardown delete-chain: scheduler_stop → mmu → floppy → asc →
 // adb → scsi → via2 → via1 → scc → rtc → scheduler → cpu → mem_map → debugger.

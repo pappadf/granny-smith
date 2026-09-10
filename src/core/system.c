@@ -848,9 +848,20 @@ void system_destroy(config_t *config) {
     // pinned a fresh emulator that still references the rom object.
     root_uninstall_if(config);
 
-    // Tear down NuBus before peripherals so cards (which hold device
-    // pointers via cfg->via2 etc.) free cleanly first.  No-op when nubus
-    // is NULL (Plus today; future 68000-family machines).
+    // Tear down the expansion buses before the peripherals, so cards --
+    // which hold pointers to devices the substrate owns -- free cleanly
+    // first.  NuBus cards hold cfg->via2 and friends; the Network
+    // Servers' two 53C825As borrow cfg->scsi and machine.scsi2, so a card
+    // outliving its bus is a use-after-free either way.  Both are no-ops
+    // when the machine has no such bus.
+    //
+    // The order BETWEEN the two is not load-bearing: no profile declares
+    // both nubus_slots and pci_slots, so a machine has at most one of
+    // these.  Do not read a dependency into it.
+    if (config->pci) {
+        pci_root_delete(config->pci);
+        config->pci = NULL;
+    }
     if (config->nubus) {
         nubus_delete(config->nubus);
         config->nubus = NULL;

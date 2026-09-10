@@ -29,23 +29,12 @@
 // enable fast L2 — that mode is for "bus speeds of 44 MHz or less" — which
 // is the one place the 500 is architecturally ahead of the 700.
 
+#include "slot_tables.h"
 #include "tnt.h"
 
 // Eight DIMM slots in four interleaved bank pairs; 512 MB is the ROM's
 // decode ceiling (see ans500.c).  48 MB is this model's shipping default.
 static const uint32_t ans700_ram_options_kb[] = {16384, 32768, 49152, 65536, 131072, 262144, 524288, 0};
-
-// The 700 adds two REAR drive bays, and they cable to fast/wide bus 1
-// (IDs 0 and 1) rather than to the front backplane — so on a 700 bus 0
-// carries four devices and bus 1 carries five.  Apple's own count of the
-// three SCSI buses: "The buses accommodate four, five, and seven SCSI
-// devices, respectively."
-static const struct scsi_slot ans700_scsi_slots[] = {
-    {.label = "Bay 1 (fast/wide 0)", .id = 1},
-    {.label = "Bay 2 (fast/wide 0)", .id = 2, .boot = true}, // Open Firmware's default: disk2:aix
-    {.label = "Bay 3 (fast/wide 0)", .id = 3},
-    {0},
-};
 
 // Bus 1 carries the same front bays 4-6 as the 500, PLUS the two rear bays
 // this model adds -- which is how Apple's count works out: "The buses
@@ -63,85 +52,8 @@ static const struct scsi_slot ans700_scsi_slots_fw1[] = {
 };
 
 static const scsi_bus_decl_t ans700_scsi_buses[] = {
-    {.object = "scsi", .label = "Front backplane (fast/wide 0)", .slots = ans700_scsi_slots},
+    {.object = "scsi", .label = "Front backplane (fast/wide 0)", .slots = ans_scsi_slots_fw0},
     {.object = "scsi2", .label = "Front + rear bays (fast/wide 1)", .slots = ans700_scsi_slots_fw1},
-    {0},
-};
-
-// Identical to the 500's — same board, same backplane, same IDSELs, same
-// interrupt map.  Duplicated rather than shared because that is how this
-// family has always carried per-model topology (pm8500.c / pm9500.c), and
-// because the `ans-pci-slots` row asserts every entry of BOTH profiles, so
-// drift between the two copies is a test failure rather than a surprise.
-// See ans500.c for the derivation and the two boot-critical traps.
-static const pci_slot_decl_t ans700_pci_slots[] = {
-    {.slot = 1,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT1_PCI0",
-     .bus = TNT_PCI_BUS_1,
-     .device = 13,
-     .int_line = ANS_INT_SLOT1},
-    {.slot = 2,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT2_PCI0",
-     .bus = TNT_PCI_BUS_1,
-     .device = 14,
-     .int_line = ANS_INT_SLOT2},
-    {.slot = 3,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT3_PCI1",
-     .bus = TNT_PCI_BUS_2,
-     .device = 13,
-     .int_line = ANS_INT_SLOT3},
-    {.slot = 4,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT4_PCI1",
-     .bus = TNT_PCI_BUS_2,
-     .device = 14,
-     .int_line = ANS_INT_SLOT4},
-    {.slot = 5,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT5_PCI1",
-     .bus = TNT_PCI_BUS_2,
-     .device = 15,
-     .int_line = ANS_INT_SLOT5},
-    {.slot = 6,
-     .kind = PCI_SLOT_SOCKET,
-     .label = "SLOT6_PCI1",
-     .bus = TNT_PCI_BUS_2,
-     .device = 16,
-     .int_line = ANS_INT_SLOT6},
-    // The three soldered-down PCI devices, all on Bandit 1 (Apple, ibid.,
-    // §4.6.2 — the six-device bus).  Grand Central's own config presence at
-    // IDSEL 16 is attached by grand_central.c, not from this table, exactly
-    // as on the Macintosh boards.
-    //
-    // The 54M30 takes NO interrupt line: "the 54M30 does not have an
-    // interrupt" (ibid., §4.2), and allocating it a Grand Central external
-    // would corrupt the map.  The two 53C825As take EXT2 and EXT6, the two
-    // positions the Network Server freed by ganging both Bandits' error
-    // interrupts onto EXT1.
-    {.slot = 7,
-     .kind = PCI_SLOT_BUILTIN,
-     .label = "VIDEO",
-     .bus = TNT_PCI_BUS_1,
-     .device = 15,
-     .int_line = 0,
-     .builtin_card_id = "cirrus_54m30"},
-    {.slot = 8,
-     .kind = PCI_SLOT_BUILTIN,
-     .label = "FWSCSI0",
-     .bus = TNT_PCI_BUS_1,
-     .device = 17,
-     .int_line = ANS_INT_FW0,
-     .builtin_card_id = "sym53c825_0"},
-    {.slot = 9,
-     .kind = PCI_SLOT_BUILTIN,
-     .label = "FWSCSI1",
-     .bus = TNT_PCI_BUS_1,
-     .device = 18,
-     .int_line = ANS_INT_FW1,
-     .builtin_card_id = "sym53c825_1"},
     {0},
 };
 
@@ -174,11 +86,11 @@ const hw_profile_t machine_ans700 = {
 
     .ram_options = ans700_ram_options_kb,
     .scsi_buses = ans700_scsi_buses,
-    .floppy_slots = tnt_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .has_cdrom = true,
     .cdrom_id = 0,
 
-    .pci_slots = ans700_pci_slots,
+    .pci_slots = ans_pci_slots,
 
     .substrate = &tnt_substrate,
     .board = &ans700_board,

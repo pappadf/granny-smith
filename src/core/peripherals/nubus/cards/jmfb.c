@@ -34,6 +34,7 @@
 #include "system.h"
 #include "system_config.h"
 
+#include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -72,15 +73,13 @@ static char s_pending_custom_mode[40] = "";
 
 // === Per-card private state =================================================
 
+// Field order IS the checkpoint format (the via_t / adb_t / asc_t idiom): every
+// scalar the card must restore comes first, and the checkpoint is one range
+// ending at `display`.  Add a scalar above that line and it is saved
+// automatically; add a POINTER above it and a stale address is restored, which
+// is why the pointers and the construction facts sit below with a marker.
 typedef struct {
-    nubus_card_t *card; // back-pointer for IRQ helpers
-    uint8_t *vram; // 2 MB
-    uint8_t *vrom; // 32 KB declaration ROM bytes
-    char *vrom_path; // path the VROM was loaded from
-    uint32_t vrom_size; // typically 32 KB; 0 if no VROM loaded
-    uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
     rgba8_t clut[256];
-    display_t display;
 
     // RAMDAC sub-state for CLUT writes — three sequential long writes
     // to CLUTDataReg load one palette entry.  After the third write,
@@ -127,7 +126,23 @@ typedef struct {
     // bus controller.  Default 13" RGB (sense `110` → bits 9..11 of
     // JMFBCSR = 0x0C00).
     uint8_t sense_code;
+
+    // --- Pointers and construction facts last; NOT part of the range above ---
+    // `display` leads them because it embeds `bits`/`clut` pointers of its own;
+    // its scalar head is checkpointed separately as offsetof(display_t, bits).
+    display_t display;
+    nubus_card_t *card; // back-pointer for IRQ helpers
+    uint8_t *vram; // 2 MB
+    uint8_t *vrom; // 32 KB declaration ROM bytes
+    char *vrom_path; // path the VROM was loaded from
+    uint32_t vrom_size; // typically 32 KB; 0 if no VROM loaded
+    uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
 } jmfb_priv_t;
+
+// The layout above is load-bearing.  If this fires, a member moved across the
+// boundary: re-check what the checkpoint range now covers before updating it.
+_Static_assert(offsetof(jmfb_priv_t, display) < offsetof(jmfb_priv_t, card),
+               "jmfb checkpoint range must end before the pointer block");
 
 // === Helpers ================================================================
 
@@ -1007,37 +1022,13 @@ static const char *card_name_generic(const nubus_card_t *card) {
 //
 // Save and restore share ONE field list, walked in both directions.  Two
 // hand-mirrored lists are how a checkpoint stream silently goes out of step.
-#define JMFB_CKPT_FIELDS(F)                                                                                            \
-    F(p->clut, sizeof(p->clut));                                                                                       \
-    F(&p->display.format, sizeof(p->display.format));                                                                  \
-    F(&p->display.width, sizeof(p->display.width));                                                                    \
-    F(&p->display.height, sizeof(p->display.height));                                                                  \
-    F(&p->display.stride, sizeof(p->display.stride));                                                                  \
-    F(&p->clut_idx, sizeof(p->clut_idx));                                                                              \
-    F(&p->clut_phase, sizeof(p->clut_phase));                                                                          \
-    F(p->clut_pending, sizeof(p->clut_pending));                                                                       \
-    F(&p->clut_long_hi, sizeof(p->clut_long_hi));                                                                      \
-    F(&p->jmfb_csr, sizeof(p->jmfb_csr));                                                                              \
-    F(&p->jmfb_lsr, sizeof(p->jmfb_lsr));                                                                              \
-    F(&p->jmfb_video_base, sizeof(p->jmfb_video_base));                                                                \
-    F(&p->jmfb_row_words, sizeof(p->jmfb_row_words));                                                                  \
-    F(&p->sw_ic_reg, sizeof(p->sw_ic_reg));                                                                            \
-    F(&p->sw_status_reg, sizeof(p->sw_status_reg));                                                                    \
-    F(&p->clut_pbcr, sizeof(p->clut_pbcr));                                                                            \
-    F(&p->endeavor_m, sizeof(p->endeavor_m));                                                                          \
-    F(&p->endeavor_n, sizeof(p->endeavor_n));                                                                          \
-    F(&p->endeavor_ext_clk, sizeof(p->endeavor_ext_clk));                                                              \
-    F(&p->endeavor_reserved, sizeof(p->endeavor_reserved));                                                            \
-    F(&p->sense_code, sizeof(p->sense_code));
-
 static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     jmfb_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return;
     system_write_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
-#define F(ptr, len) system_write_checkpoint_data(cp, (ptr), (len))
-    JMFB_CKPT_FIELDS(F)
-#undef F
+    system_write_checkpoint_data(cp, p, offsetof(jmfb_priv_t, display));
+    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -1045,9 +1036,8 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_read_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
-#define F(ptr, len) system_read_checkpoint_data(cp, (ptr), (len))
-    JMFB_CKPT_FIELDS(F)
-#undef F
+    system_read_checkpoint_data(cp, p, offsetof(jmfb_priv_t, display));
+    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
 
     // stride and width are derived from row_words + the restored format.
     recompute_stride(p);

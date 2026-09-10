@@ -20,20 +20,17 @@
 //   * ADB / RTC use the classic VIA1 path (no Egret) — identical to IIcx.
 
 #include "mac030_glue.h"
-#include "mac_host_io.h"
 #include "machine.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
+#include "slot_tables.h"
 #include "system_config.h"
 
 #include "adb.h"
 #include "asc.h"
 #include "builtin_rbv_video.h"
 #include "checkpoint_images.h"
-#include "checkpoint_machine.h"
 #include "cpu.h"
-#include "cpu_internal.h" // for cpu->mmu field
-#include "debug.h"
 #include "floppy.h"
 #include "iici_internal.h"
 #include "image.h"
@@ -42,12 +39,9 @@
 #include "mmu.h"
 #include "nubus.h"
 #include "rbv.h"
-#include "rom.h"
 #include "rtc.h"
-#include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
-#include "shell.h"
 #include "via.h"
 
 #include <assert.h>
@@ -59,14 +53,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("board");
-
-// ============================================================
-// I/O island offsets (private to the dispatcher)
-// ============================================================
-
-// ============================================================
-// SoA page helper (same logic as the SE/30 / IIcx helper)
-// ============================================================
 
 // ============================================================
 // ROM overlay
@@ -166,7 +152,7 @@ static void iici_memory_layout_init(config_t *cfg) {
     }
 
     mac030_io_fill_interface(&st->io_interface);
-    memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "IIci I/O", &st->io_interface, &st->mdu_io);
+    memory_map_add(cfg->mem_map, IICI_IO_BASE, IICI_IO_SIZE, "I/O", &st->io_interface, &st->mdu_io);
 
     // Wire the built-in framebuffer (a registered host region) and its
     // Mode-24 slot-$B alias into the page table — same machinery as the
@@ -177,10 +163,6 @@ static void iici_memory_layout_init(config_t *cfg) {
     st->rom_overlay = false;
     iici_set_rom_overlay(cfg, true);
 }
-
-// ============================================================
-// Interrupt routing
-// ============================================================
 
 // ============================================================
 // RBV / SCC / SCSI callbacks
@@ -282,14 +264,13 @@ static const nubus_slot_decl_t iici_slots[] = {
 // The IIci board descriptor (proposal §4.2.2): MDU+RBV hardware data, consumed
 // at init by the shared helpers.  ROM at $40800000; the 18-bit $40000 I/O
 // mirror; the shared MDU window table.
-static const mac030_board_desc_t iici_board = {
+static const mac030_board_desc_t iici_board_desc = {
     .chipset = "MDU+RBV",
     .rom_base = IICI_ROM_START,
     .rom_end = IICI_ROM_END,
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .slots = iici_slots,
     .bus_err_lo = 0xF9000000,
     .bus_err_hi = 0xFEFFFFFF,
 };
@@ -345,13 +326,13 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_monitor_sense(st->rbv, 6);
     asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
-    st->mmu = mac030_build_mmu(cfg, iici_board.rom_base, iici_board.rom_end);
+    st->mmu = mac030_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as SE/30).
     st->mmu->tt1 = 0xF00F8043;
 
-    cfg->nubus = nubus_init(cfg, iici_board.slots, checkpoint);
+    cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
     st->video_card = nubus_card(cfg->nubus, 0xB);
     assert(st->video_card != NULL);
     builtin_rbv_video_set_rbv(st->video_card, st->rbv);
@@ -362,7 +343,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         nubus_checkpoint_restore(cfg->nubus, checkpoint);
 
     // Bind device handles + the board's I/O window table for the shared engine.
-    mdu_io_bind(&st->mdu_io, cfg, &iici_board, st->asc, st->floppy, st->rbv, st->video_card);
+    mdu_io_bind(&st->mdu_io, cfg, &iici_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
 
     // Register the built-in framebuffer at the slot-$B aperture so the boot
     // ROM's VideoInfoMDU screen base ($FBB08000) and its Mode-24 alias land
@@ -374,7 +355,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     // NuBus expansion slots $9..$E bus-error on unmapped reads; the mapped
     // built-in video aperture at $FBxxxxxx resolves ahead of this range.
-    memory_set_bus_error_range(cfg->mem_map, iici_board.bus_err_lo, iici_board.bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, iici_board_desc.bus_err_lo, iici_board_desc.bus_err_hi);
 
     iici_memory_layout_init(cfg);
 
@@ -394,27 +375,15 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
 static const uint32_t iici_ram_options_kb[] = {1024, 2048, 4096, 5120, 8192, 16384, 32768, 65536, 131072, 0};
 
-static const struct floppy_slot iici_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {.label = "External FD1", .kind = FLOPPY_HD},
-    {0},
-};
-
-static const struct scsi_slot iici_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
-
 static const scsi_bus_decl_t iici_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = iici_scsi_slots},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
 // IIci board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body.
-static const mac030_mdu_board_t iici_mdu_board = {
-    .desc = &iici_board,
+static const mac030_mdu_board_t iici_board = {
+    .desc = &iici_board_desc,
     .via1_output = iici_via1_output,
     .via1_shift_out = iici_via1_shift_out,
     .build_devices = iici_build_devices,
@@ -434,7 +403,7 @@ const hw_profile_t machine_iici = {
     .rom_size = 0x80000, // 512 KB
 
     .ram_options = iici_ram_options_kb,
-    .floppy_slots = iici_floppy_slots,
+    .floppy_slots = mac_floppy_slots_2hd,
     .scsi_buses = iici_scsi_buses,
     .has_cdrom = true,
     .cdrom_id = 3,
@@ -444,5 +413,5 @@ const hw_profile_t machine_iici = {
     .nubus_slots = iici_slots,
 
     .substrate = &mdu_substrate, // shared MDU+RBV-family substrate
-    .board = &iici_mdu_board,
+    .board = &iici_board,
 };

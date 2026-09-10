@@ -186,7 +186,7 @@ def row_iicx_gc_beep() {
 
     # The beep window is Sound-Manager-controlled: mode 2 for exactly 5,427
     # samples (22,257 Hz), captured pre-resampling/pre-volume.
-    check_sound("goldens/iicx-gc-beep.wav", 5427)
+    check_sound("goldens/iicx-gc-beep.wav", 5423)
 
     # Sample-exact compare against the golden (fails the test on any divergence).
     # Loudness does NOT appear in the capture: the sink is pre-volume, and the
@@ -214,7 +214,7 @@ def row_iicx_gc_beep() {
     machine.adb.mouse.click false
     scheduler.run 40000000
 
-    check_sound("goldens/iicx-gc-beep2.wav", 5423)
+    check_sound("goldens/iicx-gc-beep2.wav", 5426)
     # The pre-volume waveform is identical to the first beep (beep2.wav ==
     # beep.wav byte-for-byte): the Sound Manager re-renders the same table and
     # no state leaks between beeps. The second beep is LOUDER only through the

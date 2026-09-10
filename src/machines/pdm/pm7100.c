@@ -9,6 +9,7 @@
 // modeled, so that window reads as an empty slot).
 
 #include "pdm.h"
+#include "slot_tables.h"
 
 #include "nubus.h"
 
@@ -18,48 +19,11 @@ static const uint32_t pm7100_ram_options_kb[] = {8192, 16384, 24576, 40960, 7372
 // One internal manual-inject SuperDrive behind SWIM3, and no external
 // port — the PDM family has no second bay (Apple, "Power Macintosh
 // Computers" Developer Note, Table 3-7).
-static const struct floppy_slot pm7100_floppy_slots[] = {
-    {.label = "Internal FD0", .kind = FLOPPY_HD},
-    {0},
-};
 
 // One standard 5 MB/s bus (the Curio 53C94 cell), internal + external.
-static const struct scsi_slot pm7100_scsi_slots[] = {
-    {.label = "SCSI HD0", .id = 0},
-    {.label = "SCSI HD1", .id = 1},
-    {0},
-};
 
 static const scsi_bus_decl_t pm7100_scsi_buses[] = {
-    {.object = "scsi", .label = "SCSI", .slots = pm7100_scsi_slots},
-    {0},
-};
-
-// The three NuBus connectors behind BART: $C/$D/$E.
-//
-// This is what the SOFTWARE uses, and it is the thing that matters — the
-// slot number selects the address window a card answers in, the sResource
-// the Slot Manager enumerates, and the pseudo-VIA2 interrupt bit the OS
-// enables.  Measured on the shipping ROM: a booted 8100 enables slot-
-// interrupt bits $38, i.e. bits 3/4/5, which under the Mac II bit = slot-9
-// numbering are exactly $C/$D/$E — always those three, whichever connector
-// holds a card — with bit 6 the built-in video VBL (it appears in the mask
-// only when built-in video exists).  The ROM's own PDM slot-interrupt path
-// masks the slot bits with $78, bits 3-6, agreeing.
-//
-// An earlier revision of this file declared $B/$C/$D from the schematic
-// silkscreen (051-0333 rev A sheet 22, where the 96-pin connectors
-// J11/J12/J13 are labelled NuBus Slot B, C and D).  That numbering is a
-// board-level label, not the slot ID the software uses: a card staged into
-// $B lands on interrupt bit 2, which nothing enables and nothing services,
-// so its /NMRQ latched and stayed latched forever.  The Slot Manager then
-// never ran that slot's VBL task queue — which, when the card is the main
-// screen, is where the cursor task lives, so the mouse stopped moving.
-// Each ships empty; the user stages a card per slot.
-static const struct nubus_slot_decl pm7100_nubus_slots[] = {
-    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
+    {.object = "scsi", .label = "SCSI", .slots = mac_scsi_slots_hd01},
     {0},
 };
 
@@ -85,7 +49,7 @@ const hw_profile_t machine_pm7100 = {
     .rom_size = 0x400000, // 4 MB ($9FEB69B3)
 
     .ram_options = pm7100_ram_options_kb,
-    .floppy_slots = pm7100_floppy_slots,
+    .floppy_slots = mac_floppy_slots_1hd,
     .scsi_buses = pm7100_scsi_buses,
     // The AppleCD 300i rides the same Curio 53C96 bus as the HD slots
     // (Phase G): no CD-specific hardware is involved, so the bay is
@@ -94,7 +58,7 @@ const hw_profile_t machine_pm7100 = {
     .cdrom_id = 3,
 
     .builtin_video = &pdm_builtin_video,
-    .nubus_slots = pm7100_nubus_slots,
+    .nubus_slots = pdm_nubus_slots_cde,
 
     .substrate = &pdm_substrate,
     .board = &pm7100_board,
