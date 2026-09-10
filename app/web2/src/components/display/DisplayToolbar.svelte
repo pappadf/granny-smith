@@ -146,11 +146,15 @@
     return () => clearInterval(t);
   });
 
+  // `live` means the capture graph is up, which is now true whenever the user
+  // has the microphone on — it no longer follows the guest's input DMA, because
+  // tearing the graph down on every endpointer close is what broke recognition.
+  // So "(recording)" has to ask the guest, not the graph.
   const micTitle = $derived(
     microphone.enabled
-      ? microphone.live
+      ? microphone.guestActive
         ? `Microphone connected (recording)${micDetail} — click to choose input`
-        : 'Microphone connected — click to choose input'
+        : `Microphone connected${micDetail} — click to choose input`
       : 'Connect microphone to the sound input',
   );
 
@@ -299,7 +303,7 @@
     {#if machine.audioIn}
       <button
         class="tbtn"
-        class:cam-live={microphone.live}
+        class:cam-live={microphone.guestActive}
         title={micTitle}
         aria-label={micTitle}
         aria-pressed={microphone.enabled}

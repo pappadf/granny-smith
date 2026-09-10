@@ -621,6 +621,10 @@ def sr_say(path) {
 # the two takes produce.
 def row_av_sr_command() {
     sr_bring_up()
+    # Two utterances, and both are required: Casper's AGC settles on the first
+    # and recognises the second.  Deterministic, not a hedge against a flaky
+    # recognizer -- with one sr_say this row fails every time, with two it
+    # passes every time at exactly 1506469288 instructions.
     sr_say($av_sr_trash)
     sr_say($av_sr_trash)
 
