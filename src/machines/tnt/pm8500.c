@@ -76,6 +76,8 @@ const hw_profile_t machine_pm8500 = {
 
     .ram_options = pm8500_ram_options_kb,
     .scsi_buses = pm8500_scsi_buses,
+    .has_cdrom = false, // no 53C94 chain to hang it on -- see pm7500.c
+    .cdrom_id = 3, // the factory answer, ready for when there is one
     .floppy_slots = mac_floppy_slots_1hd,
 
     .pci_slots = pm8500_pci_slots,

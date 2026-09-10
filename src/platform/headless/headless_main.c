@@ -165,7 +165,8 @@ static void print_usage(const char *program) {
     printf("  rom=<file>      ROM image file (required)\n");
     printf("  ram=<kb>        RAM size in kilobytes (default: machine-specific)\n");
     printf("  hd=<file>       Hard disk image file (optional, can specify multiple)\n");
-    printf("  cdrom=<file>    CD-ROM image file (optional, SCSI ID 3+)\n");
+    printf("  cdrom=<file>    CD-ROM image file (optional; SCSI ID comes from the model's\n");
+    printf("                  CD bay -- 3 on a Macintosh, 0 on a Network Server)\n");
     printf("  fd=<file>       Floppy disk image file (optional, can specify multiple)\n");
     printf("  fd0=<file>      Floppy disk image for drive 0 (internal)\n");
     printf("  fd1=<file>      Floppy disk image for drive 1 (external)\n");
@@ -1157,9 +1158,17 @@ int main(int argc, char *argv[]) {
             printf("Attached HD[%d]: %s\n", i, hd_files[i]);
     }
 
-    // Attach CD-ROM images (default SCSI ID starts at 3)
+    // Attach CD-ROM images, seeded from the MODEL's own CD bay rather than a
+    // hardcoded 3.  hw_profile_t.cdrom_id is a per-model fact -- 3 on every
+    // Macintosh, 0 on the Network Servers, where bay 0 is Apple's expected
+    // CD-ROM position and the documented Service-mode install path.  The web
+    // dialog has always read it through machine.profile; this path hardcoded
+    // 3, so the two front ends disagreed on exactly the models where the
+    // answer is not 3, and an ANS install disc could not be placed with `cd=`
+    // at all (F-11).
+    int cdrom_base = profile ? profile->cdrom_id : 3;
     for (int i = 0; i < cdrom_count; i++) {
-        int cdrom_id = 3 + i; // default SCSI IDs 3, 4, 5, ...
+        int cdrom_id = cdrom_base + i;
         add_scsi_cdrom(global_emulator, cdrom_files[i], cdrom_id);
         if (!quiet)
             printf("Attached CD-ROM[%d]: %s (SCSI ID %d)\n", i, cdrom_files[i], cdrom_id);
