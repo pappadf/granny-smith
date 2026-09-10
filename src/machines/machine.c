@@ -788,8 +788,13 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     // for the monitors that answer the EXTENDED (tie-matrix) probe instead
     // (dafb.h's DAFB_SENSE_INDEXED_*).  Only the DAFB models the extended
     // range today, so the JMFB is staged from the passive part only.
-    if (doc.video_sense >= (int)DAFB_SENSE_INDEXED_MAX)
-        return val_err("machine.boot: video_sense must be 0..%u (got %d)", DAFB_SENSE_INDEXED_MAX - 1u,
+    // Both bounds.  The ceiling was checked and the floor was not, so any
+    // negative other than the -1 "unset" sentinel fell through to the
+    // `video_sense >= 0` staging guard below and was silently ignored --
+    // demonstrated: video_sense=-7 booted with no diagnostic, and presents to
+    // the caller as "my video_sense= was ignored".
+    if (doc.video_sense < -1 || doc.video_sense >= (int)DAFB_SENSE_INDEXED_MAX)
+        return val_err("machine.boot: video_sense must be 0..%u, or -1 for unset (got %d)", DAFB_SENSE_INDEXED_MAX - 1u,
                        doc.video_sense);
     if (doc.video_mode && *doc.video_mode && !nubus_video_mode_known(doc.video_mode))
         return val_err("machine.boot: unknown video-mode id '%s'", doc.video_mode);

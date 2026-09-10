@@ -211,7 +211,21 @@ typedef struct machine_substrate {
     // be constructed rejects the boot instead of leaving a half-built config
     // for the caller to dereference.
     int (*init)(struct config *cfg, checkpoint_t *cp);
-    void (*reset)(struct config *cfg); // hardware RESET line
+    // Hardware RESET line, reached through system_hardware_reset().
+    //
+    // NULL on the `compact` (Plus) and `lisa` substrates, and that is a GAP,
+    // not a statement about the hardware: both machines physically reset -- the
+    // Plus from the programmer's switch, and either from a guest executing the
+    // 68000 RESET opcode -- and today the call silently does nothing on them.
+    // Owned by proposal-reset-and-nonvolatile-state.md, whose S1.2 is "Reset
+    // already means four different things, and no two families agree".
+    //
+    // Distinguish this from `nubus_slot_irq` and `pci_slot_irq` below, which
+    // are NULL because the bus genuinely is not on the board.  A NULL that
+    // means "no such hardware" and a NULL that means "not written yet" must
+    // not read the same way here, or this header becomes the reason nobody
+    // notices the second kind.
+    void (*reset)(struct config *cfg);
     void (*teardown)(struct config *cfg);
     void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 
@@ -227,8 +241,9 @@ typedef struct machine_substrate {
     // helper: slot numbering matches a machine's interrupt-source numbering
     // only by coincidence, and the one that existed put a IIci's slot $C on
     // its NMI source (mdu.c).  Keeps nubus.c machine-agnostic — no cfg->via2
-    // poke (proposal §4.4).  NULL on non-NuBus machines (Plus / Lisa), which
-    // never reach it.
+    // poke (proposal §4.4).  NULL on the three substrates with no NuBus --
+    // `compact` (Plus), `lisa`, and `tnt`, which is PCI -- and they never
+    // reach it.
     void (*nubus_slot_irq)(struct config *cfg, int slot, bool active, bool umbrella_edge);
 
     // Drive PCI slot `slot`'s strapped INTA-D line active/inactive.  The
@@ -239,11 +254,19 @@ typedef struct machine_substrate {
     // NULL on machines without PCI slots.
     void (*pci_slot_irq)(struct config *cfg, int slot, bool active);
 
-    // Floppy insertion + host-input injection + primary display, implemented by
-    // EVERY substrate (Macs route to the shared mac_* helpers / NuBus video;
-    // Lisa to its FDC / COPS) — one uniform path, no NULL-and-fallback
-    // (proposal §4.4).  `display` may still be NULL on machines that surface
-    // their framebuffer through the NuBus primary-display path instead.
+    // Floppy insertion + host-input injection + primary display.  The first
+    // five ARE bound by all 9 substrates (Macs route to the shared mac_*
+    // helpers, the Lisa to its FDC / COPS), so the NULL guards on them in
+    // system.c are defence-in-depth rather than a fallback path -- do not
+    // delete them, but do not read them as evidence that a substrate may skip
+    // these either.
+    //
+    // `display` is NULL on 3 of 9 and that IS a fallback: system_display()
+    // takes the substrate's answer when it has one and drops through to
+    // nubus_primary_display() otherwise -- including when a bound hook returns
+    // NULL.  Deliberate: built-in video wins, else the NuBus primary.  (This
+    // paragraph used to claim "one uniform path, no NULL-and-fallback" and
+    // then describe the fallback two lines later.)
     int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
     bool (*fd_present)(struct config *cfg, int drive);
     int (*input_key)(struct config *cfg, const char *key, bool down);
