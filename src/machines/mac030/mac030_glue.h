@@ -239,8 +239,6 @@ typedef struct mac030_glue_board {
 
     void (*pre_devices)(config_t *cfg); // optional: before device construction (SE/30 VBL event type)
     void (*post_nubus)(config_t *cfg); // optional: after nubus_init (SE/30 VRAM/VROM wiring)
-    void (*ckpt_restore_extra)(config_t *cfg, checkpoint_t *cp); // optional: extra restore (SE/30 VRAM/VROM)
-    void (*ckpt_save_extra)(config_t *cfg, checkpoint_t *cp); // optional: extra save, symmetric (SE/30 VRAM/VROM)
     void (*trigger_vbl)(config_t *cfg); // optional VBL override; NULL → the default GLUE NuBus VBL
 } mac030_glue_board_t;
 

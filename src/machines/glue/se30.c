@@ -369,11 +369,6 @@ static void se30_post_nubus(config_t *cfg) {
 
 // Restore the card-owned VRAM/VROM bytes from a checkpoint (before the shared
 // MMU-register restore that mac030_glue_init performs).
-static void se30_ckpt_restore_extra(config_t *cfg, checkpoint_t *cp) {
-    se30_state_t *se30 = se30_state(cfg);
-    system_read_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
-    checkpoint_read_file(cp, se30->vrom, SE30_VROM_SIZE, NULL);
-}
 
 // SE/30 board: GLUE family with built-in slot-$E video; bus-error window covers
 // only slots $9..$D (slot $E is the mapped built-in video).
@@ -389,9 +384,6 @@ static const mac030_board_desc_t se30_board_desc = {
     .asc_mix = ASC_MIX_SUM, // SE/30 board sums both channels to the speaker
 };
 
-// VRAM + VROM save (symmetric with se30_ckpt_restore_extra); defined below.
-static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp);
-
 static const mac030_glue_board_t se30_board = {
     .desc = &se30_board_desc,
     .via1_output = se30_via1_output,
@@ -402,32 +394,19 @@ static const mac030_glue_board_t se30_board = {
     .memory_layout_tail = se30_memory_layout_tail,
     .pre_devices = se30_pre_devices,
     .post_nubus = se30_post_nubus,
-    .ckpt_restore_extra = se30_ckpt_restore_extra,
-    .ckpt_save_extra = se30_ckpt_save_extra, // built-in slot-$E video VRAM + VROM
     .trigger_vbl = se30_trigger_vbl, // built-in video VBL (slot-$E assert)
 };
 
 // ============================================================
 // Checkpoint
 // ============================================================
-
-// SE/30 board ckpt_save_extra hook: the built-in slot-$E video's VRAM + VROM,
-// written immediately before the MMU block — symmetric with the restore order
-// in se30_ckpt_restore_extra (the shared glue_checkpoint_save handles the rest
-// of the machine state).
-static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp) {
-    se30_state_t *se30 = se30_state(cfg);
-
-    // Save VRAM contents.  The bytes are owned by the slot-$E card; se30->vram
-    // is a borrowed pointer into that buffer, so the memcpy hits the right
-    // backing store.
-    system_write_checkpoint_data(cp, se30->vram, SE30_VRAM_SIZE);
-
-    // Save VROM (content embedded in consolidated checkpoints, path reference in
-    // quick).  The path lives on the card too.
-    const char *vrom_path = builtin_se30_video_vrom_path(se30->video_card);
-    checkpoint_write_file(cp, vrom_path ? vrom_path : "");
-}
+//
+// Nothing here any more.  The built-in slot-$E video's VRAM and VROM used to be
+// hand-serialised through the board's ckpt_save_extra / ckpt_restore_extra
+// hooks -- a per-machine workaround for a generic mechanism that was missing.
+// builtin_se30_video.c implements the ordinary NuBus card checkpoint ops now,
+// so the shared nubus_checkpoint_save/_restore carry them and both hooks are
+// gone from mac030_glue_board_t (F-03).
 
 // ============================================================
 // Machine descriptor

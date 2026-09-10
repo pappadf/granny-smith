@@ -244,8 +244,6 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         board->memory_layout_tail(cfg);
 
     if (cp) {
-        if (board->ckpt_restore_extra)
-            board->ckpt_restore_extra(cfg, cp);
         nubus_checkpoint_restore(cfg->nubus, cp); // matches glue_checkpoint_save
         mmu_checkpoint_restore(st->mmu, cp);
         mmu_invalidate_tlb(st->mmu);
@@ -448,11 +446,6 @@ static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     scsi_checkpoint(cfg->scsi, cp);
     asc_checkpoint(st->asc, cp);
     floppy_checkpoint(st->floppy, cp);
-    // SE/30 inserts its VRAM + VROM here, symmetric with ckpt_restore_extra,
-    // immediately before the MMU block.
-    const mac030_glue_board_t *board = glue_board(cfg);
-    if (board->ckpt_save_extra)
-        board->ckpt_save_extra(cfg, cp);
     // Card-side display state (VRAM, palette, active mode) — last before the
     // block below, so a machine that restores with fewer cards than it saved
     // short-reads here without shifting anything that follows (mdu.c:190,

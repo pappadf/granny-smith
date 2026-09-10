@@ -26,6 +26,7 @@
 #include "system.h"
 #include "system_config.h"
 
+#include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,13 +40,26 @@ LOG_USE_CATEGORY_NAME("se30vid");
 #define SE30_FB_ALTERNATE_OFFSET 0x0040
 
 // Per-card private state.  Hangs off card->priv.
+// Field order IS the checkpoint format (the via_t / adb_t / asc_t idiom): the
+// scalar state goes as ONE range ending at `display`.  A scalar added above
+// that line is checkpointed automatically; a POINTER added above it restores a
+// stale address, so the pointers sit below the marker.
 typedef struct {
+    bool main_buf; // true: primary, false: alternate
+
+    // --- Pointers last; NOT in the range above ---
+    // `display` leads them because it embeds `bits`/`clut` pointers of its own;
+    // its scalar head is checkpointed separately as offsetof(display_t, bits).
+    display_t display;
     uint8_t *vram;
     uint8_t *vrom;
     char *vrom_path; // path the VROM was loaded from; NULL if synthesised
-    bool main_buf; // true: primary, false: alternate
-    display_t display;
 } se30_priv_t;
+
+// The layout above is load-bearing.  If this fires, a member moved across the
+// boundary: re-check what the checkpoint range now covers before updating it.
+_Static_assert(offsetof(se30_priv_t, display) < offsetof(se30_priv_t, vram),
+               "SE/30 built-in video checkpoint range must end before the pointer block");
 
 // === VROM loading / synth (moved verbatim from se30.c) ======================
 
@@ -258,8 +272,49 @@ static const char *card_name_generic(const nubus_card_t *card) {
     return "Macintosh SE/30 Built-in Video (generic video ROM)";
 }
 
+// === Checkpoint ==============================================================
+//
+// This card owns the SE/30's slot-$E VRAM and its declaration ROM, and until
+// now se30.c hand-serialised both through the board's ckpt_save_extra /
+// ckpt_restore_extra hook pair -- a per-machine workaround for a generic
+// mechanism that was missing (F-03).  The mechanism exists; the workaround is
+// retired, and the same two objects go through the ordinary card ops in the
+// same order, so the bytes are unchanged and only their position in the stream
+// moves (checkpoints are build-id locked, so that is not a compatibility
+// concern).
+//
+// The VROM goes as a FILE reference: a path in a quick checkpoint, embedded
+// content in a consolidated one.  It cannot simply be reloaded at restore --
+// this card synthesises its VROM when no file backs it (`vrom_path` NULL).
+static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
+    se30_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    system_write_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
+    checkpoint_write_file(cp, p->vrom_path ? p->vrom_path : "");
+    system_write_checkpoint_data(cp, p, offsetof(se30_priv_t, display));
+    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+}
+
+static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
+    se30_priv_t *p = card ? card->priv : NULL;
+    if (!p)
+        return;
+    system_read_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
+    checkpoint_read_file(cp, p->vrom, SE30_VROM_SIZE, NULL);
+    system_read_checkpoint_data(cp, p, offsetof(se30_priv_t, display));
+    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+
+    p->display.shape_dirty = true;
+    p->display.clut_dirty = true;
+    p->display.fb_dirty = true;
+    p->display.response_dirty = true;
+}
+
 static const nubus_card_ops_t builtin_se30_video_ops = {
     .init = card_init_real,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
     .teardown = card_teardown,
     .on_vbl = NULL, // VBL slot-IRQ flow stays in se30_trigger_vbl for v1
     .display = card_display,
@@ -268,6 +323,8 @@ static const nubus_card_ops_t builtin_se30_video_ops = {
 
 static const nubus_card_ops_t builtin_se30_video_generic_ops = {
     .init = card_init_generic,
+    .checkpoint_save = card_checkpoint_save,
+    .checkpoint_restore = card_checkpoint_restore,
     .teardown = card_teardown,
     .on_vbl = NULL,
     .display = card_display,
