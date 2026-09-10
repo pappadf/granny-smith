@@ -48,6 +48,7 @@ static const mcu_board_desc_t q950_board_desc = {
     .via1_pa_model = 0x90, // Q950 model sense: PA & $56 == $10 (InfoQuadra950)
     .dafb_version = 3, // "DAFB 3" — the driver's 16bpp-always-allowed check
     .has_ac842a = true, // AC842a RAMDAC: PCBR1 + x555 16-bit mode
+    .dafb_vram_size = 0x00200000u, // modelled maxed; ships 1 MiB (80 ns), expands to 2
 };
 
 static const mcu_board_t q950_board = {

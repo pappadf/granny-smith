@@ -88,6 +88,14 @@ typedef struct mcu_board_desc {
     uint8_t via1_pa_model; // VIA1 PA model sense ($C0 Q700, $D0 Q900, $90 Q950; ref §7.4 [R])
     uint8_t dafb_version; // DAFB_Test bits 11:9 (0 = Q700/Q900, 3 = Q950 "DAFB 3"; ref §11.8)
     bool has_ac842a; // AC842a RAMDAC (PCBR1 + x555 16-bit mode; Q950 only)
+    // VRAM fitted, into the fixed 2 MiB CPU aperture every board decodes.
+    // The BASE configurations genuinely differ -- the Q700 has one soldered
+    // 512 KiB bank plus three optional 256 KiB-SIMM-pair banks, the towers
+    // ship 1 MiB -- and all three expand to 2 MiB.  We currently model every
+    // board MAXED, so these agree by choice rather than by hardware; this
+    // field is what makes that a decision rather than a magic number, and
+    // what a base-configuration model would change.
+    uint32_t dafb_vram_size;
 } mcu_board_desc_t;
 
 // Per-machine hooks + data, named by hw_profile_t.board.
@@ -196,6 +204,18 @@ void mcu_restore_private(config_t *cfg, checkpoint_t *cp);
 
 // Drive one /SLOTIRQ source (VIA2 PA bit 0-6, `active` in source polarity):
 // sets the active-low PA input and re-resolves the CA1 aggregate (ref §13.3).
+// Build the DAFB and everything that hangs off it, for every MCU board.
+// The Q700 and the towers differ in exactly ONE thing here -- the towers
+// have a second 53C96 whose DRQ feeds TurboSCSI channel 1 -- so that is the
+// only conditional.  Everything else that looked per-machine was not: the
+// two boards' DAFB IRQ callbacks were byte-identical, and the version /
+// AC842a setters were applied only on the tower path even though the Q700
+// has the same registers (DAFB 343S0128-01 is "Q700 and Q900; version
+// values 0, 1, or 2"; only the Q950 is DAFB II, version 3).  Applying them
+// from the descriptor unconditionally is what makes the Q700 honour its own
+// board data instead of coinciding with dafb_init()'s zeroed defaults.
+int mcu_build_dafb(config_t *cfg, checkpoint_t *cp);
+
 void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active);
 
 #endif // GS_MACHINES_MCU_H

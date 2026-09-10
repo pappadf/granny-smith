@@ -425,6 +425,51 @@ void mcu_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
     via_input_c(cfg->via2, /*CA1*/ 0, 0, st->slot_pa_mask ? 0 : 1); // /SLOTIRQ = OR of sources
 }
 
+// ============================================================
+// DAFB construction (shared by every MCU board)
+// ============================================================
+
+// DAFB video interrupt -> VIA2 PA6 (active-low) through the family /SLOTIRQ
+// aggregate on CA1 (ref S11.18/S13.3), alongside the NuBus slot sources.
+// This was two byte-identical per-machine callbacks until F-40.
+static void mcu_dafb_irq(void *context, bool active) {
+    config_t *cfg = (config_t *)context;
+    mcu_slot_irq_source(cfg, 6, active);
+}
+
+int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
+    mcu_state_t *st = mcu_st(cfg);
+    const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
+
+    st->dafb = dafb_init(desc->dafb_vram_size, cp);
+    if (!st->dafb) {
+        LOG(0, "Error: out of memory constructing the DAFB");
+        return -1;
+    }
+    dafb_attach_scheduler(st->dafb, cfg->scheduler);
+    dafb_set_irq_callback(st->dafb, mcu_dafb_irq, cfg);
+
+    // Consume unconditionally so a staged sense never leaks into a later
+    // boot, but only APPLY it on a cold build: on a restore, dafb_init()
+    // has already read the saved sense out of the checkpoint, and this
+    // call would otherwise overwrite it with the default.
+    uint8_t staged_sense = dafb_consume_pending_sense(); // default 6 = 13" RGB
+    if (!cp)
+        dafb_set_monitor_sense(st->dafb, staged_sense);
+
+    dafb_set_version(st->dafb, desc->dafb_version); // 3 on the Q950 (DAFB 3)
+    dafb_set_ac842a(st->dafb, desc->has_ac842a); // AC842a x555 on the Q950
+
+    // TurboSCSI DRQ observation: channel 0 = internal.  The towers add a
+    // second 53C96 for the external bus on channel 1 -- the ONE genuine
+    // per-machine difference in this function (the Q700 has "one NCR 53C96
+    // shared by internal and external connectors").
+    dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
+    if (st->scsi96_ext)
+        dafb_set_scsi_drq_query(st->dafb, 1, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96_ext);
+    return 0;
+}
+
 // substrate.nubus_slot_irq: a NuBus card's /NMRQ maps to VIA2 PA(slot-9)
 // (slot $A→PA1 .. $E→PA5; ref §13.3).  Slot 9 is the built-in video and
 // never arrives here — DAFB drives PA6 directly through the aggregate.

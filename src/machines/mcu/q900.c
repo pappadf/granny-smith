@@ -164,12 +164,6 @@ static void q900_sonic_mem_write(void *context, uint32_t phys, uint32_t value, u
         mmu_write_physical_uint32(g_mmu, phys, value);
 }
 
-// DAFB video interrupt → VIA2 PA6 through the /SLOTIRQ aggregate.
-static void q900_dafb_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    mcu_slot_irq_source(cfg, 6, active);
-}
-
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
@@ -258,25 +252,8 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->swim_iop = iop_init(SwimIopNum, floppy_get_memory_interface(st->floppy), st->floppy, q900_swim_iop_irq, cfg,
                             cfg->scheduler, cp);
 
-    st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q900 maxed)
-    if (!st->dafb) {
-        LOG(0, "Error: out of memory constructing the DAFB");
+    if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
-    }
-    dafb_attach_scheduler(st->dafb, cfg->scheduler);
-    dafb_set_irq_callback(st->dafb, q900_dafb_irq, cfg);
-    // Consume unconditionally so a staged sense never leaks into a later
-    // boot, but only APPLY it on a cold build: on a restore, dafb_init()
-    // has already read the saved sense out of the checkpoint, and this
-    // call would otherwise overwrite it with the default.
-    uint8_t staged_sense = dafb_consume_pending_sense(); // default 6 = 13" RGB
-    if (!cp)
-        dafb_set_monitor_sense(st->dafb, staged_sense);
-    dafb_set_version(st->dafb, desc->dafb_version); // 3 on the Q950 (DAFB 3)
-    dafb_set_ac842a(st->dafb, desc->has_ac842a); // AC842a x555 on the Q950
-    // TurboSCSI DRQ observation: channel 0 = internal, channel 1 = external.
-    dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
-    dafb_set_scsi_drq_query(st->dafb, 1, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96_ext);
 
     // Bus-side physical resolver for the 040 walker (flat RAM model +
     // ROM-aperture mirrors; identical to the Q700 arrangement).
@@ -355,6 +332,7 @@ static const mcu_board_desc_t q900_board_desc = {
                  },
     .ram_bank_count = 4, // sixteen SIMM sockets = four four-SIMM banks
     .via1_pa_model = 0xD0, // Q900 model sense: PA & $56 == $50 (InfoQuadra900)
+    .dafb_vram_size = 0x00200000u, // modelled maxed; ships 1 MiB, expands to 2
 };
 
 static const mcu_board_t q900_board = {

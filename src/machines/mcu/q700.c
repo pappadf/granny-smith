@@ -135,13 +135,6 @@ static void q700_sonic_mem_write(void *context, uint32_t phys, uint32_t value, u
         mmu_write_physical_uint32(g_mmu, phys, value);
 }
 
-// DAFB video interrupt → VIA2 PA6 (active-low) through the family /SLOTIRQ
-// aggregate on CA1 (ref §11.18/§13.3), alongside the NuBus slot sources.
-static void q700_dafb_irq(void *context, bool active) {
-    config_t *cfg = (config_t *)context;
-    mcu_slot_irq_source(cfg, 6, active);
-}
-
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
@@ -196,22 +189,8 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     st->floppy = floppy_init(FLOPPY_TYPE_SWIM, NULL, cfg->scheduler, cp);
     cfg->floppy = st->floppy;
 
-    st->dafb = dafb_init(0x00200000u, cp); // 2 MiB VRAM (Q700 maxed; base 512 KiB later)
-    if (!st->dafb) {
-        LOG(0, "Error: out of memory constructing the DAFB");
+    if (mcu_build_dafb(cfg, cp) != 0)
         return -1;
-    }
-    dafb_attach_scheduler(st->dafb, cfg->scheduler);
-    dafb_set_irq_callback(st->dafb, q700_dafb_irq, cfg);
-    // Consume unconditionally so a staged sense never leaks into a later
-    // boot, but only APPLY it on a cold build: on a restore, dafb_init()
-    // has already read the saved sense out of the checkpoint, and this
-    // call would otherwise overwrite it with the default.
-    uint8_t staged_sense = dafb_consume_pending_sense(); // default 6 = 13" RGB
-    if (!cp)
-        dafb_set_monitor_sense(st->dafb, staged_sense);
-    // TurboSCSI channel 0 observes the 53C96's DRQ (control-reg bit 9).
-    dafb_set_scsi_drq_query(st->dafb, 0, (dafb_drq_query_fn)scsi_53c96_dreq, st->scsi96);
 
     // Bus-side physical resolver for the 040 walker: RAM at 0, the 1 MiB ROM
     // mirroring through the aperture.  ram_size_max is the full 1 GiB RAM
@@ -286,6 +265,9 @@ static const mcu_board_desc_t q700_board_desc = {
     .ram_onboard_size = 0x00400000u, // 4 MB soldered = bank A; SIMM bank B follows
     .ram_bank_count = 2, // 4 MB soldered + one four-SIMM bank
     .via1_pa_model = 0xC0, // Q700 model sense (ref §7.4 [R])
+    // Modelled maxed.  Base is 512 KiB soldered plus three optional
+    // 256 KiB-SIMM-pair banks (DAFB reference S16.1).
+    .dafb_vram_size = 0x00200000u,
 };
 
 static const mcu_board_t q700_board = {
