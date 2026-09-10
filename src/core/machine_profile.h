@@ -312,9 +312,22 @@ typedef struct hw_profile {
     // Zero-terminated array; the last valid entry is followed by 0.
     const uint32_t *ram_options;
 
-    // Floppy / SCSI slot tables.  Sentinel-terminated.
+    // Floppy / SCSI slot tables, sentinel-terminated.
+    //
+    // ALWAYS point these at a table; say "this machine has none" with an EMPTY
+    // one, `{ {0} }`, not with NULL.  All 22 profiles do, and the reason to
+    // keep it that way is that an empty table has a declaration to hang the
+    // explanation on -- q840av_floppy_slots carries "New Age reports 'no drive'
+    // (ST3 = $FF) -- no floppy slots offered until a real New Age model lands",
+    // which an absent field could not say.  The Lisa spells "no SCSI bays" the
+    // same way, with a bus whose slot table is empty.
+    //
+    // The consumers stay NULL-safe (build_profile guards both) as
+    // defence-in-depth, not as a second supported spelling -- do not read those
+    // guards as licence to leave a profile's table out (F-20, and F-51 for the
+    // same distinction on the substrate hooks).
     const struct floppy_slot *floppy_slots;
-    const struct scsi_bus_decl *scsi_buses; // sentinel-terminated; NULL = no SCSI
+    const struct scsi_bus_decl *scsi_buses;
 
     // Hard-disk attach interface (see hd_bus_t).  Default HD_BUS_SCSI (0): the
     // HD row attaches via scsi.attach_hd and takes its label from scsi_slots.
