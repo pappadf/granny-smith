@@ -164,7 +164,10 @@ check("marathon-arrival-8bpp-640x480.png")
 machine.sound.capture.start
 scheduler.run 90000000
 machine.sound.capture.stop
-assert machine.sound.mode == 1 "ASC not in FIFO mode during hand-off"
+# The ASC's chip registers moved to machine.sound.asc when the five sound
+# engines were put behind one machine.sound contract: mode and the FIFO
+# counters are ASC internals, not something a Plus or an AWACS machine has.
+assert machine.sound.asc.mode == 1 "ASC not in FIFO mode during hand-off"
 assert machine.sound.capture.peak > 4000 "no in-game background music (capture.peak at silence floor)"
 
 # --- Gameplay: instrument loading pushes the HUD to ~+215M after Begin --------

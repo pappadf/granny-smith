@@ -149,6 +149,7 @@ typedef struct pdm_amic {
     double snd_half_start_ns; // when the in-flight output half began playing
     uint32_t snd_halves; // output half-buffers rendered since power-on
     int32_t snd_peak; // loudest |sample| pushed to the host since power-on
+    uint64_t snd_underruns; // half-buffers the guest never consumed (machine.sound.overruns)
 } pdm_amic_t;
 
 // === Monitor sense strap (ariel.c) ==========================================

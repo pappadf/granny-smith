@@ -35,6 +35,7 @@
 #include "log.h"
 #include "object.h"
 #include "scheduler.h"
+#include "sound_surface.h"
 #include "value.h"
 
 #include <stdlib.h>
@@ -246,81 +247,73 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value) {
 // ============================================================
 // machine.sound — the object node (the PDM surface, TNT plumbing)
 // ============================================================
+// machine.sound — the shared surface (sound_surface.h)
+// ============================================================
+//
+// As on the PDM: the render path already calls awacs_speaker_gains() and
+// applies the ladder before pushing a hardcoded 7 to audio_out, so volume and
+// mute existed here and had nowhere to be read from.  Both are now reported.
+//
+// in_enabled is false because the input path is not modelled.  The hardware
+// has one -- the TNT sound-control register's bits 0-3 are the Input SubFrame
+// Select field (awacs-sound.md §2.1), and an 8500 has a Sound In jack -- so
+// this is a gap to close, not a property of the machine.
 
-static inline tnt_awacs_t *snd_awacs(struct object *self) {
-    config_t *cfg = (config_t *)object_data(self);
+static tnt_awacs_t *snd_awacs_ctx(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
     return cfg && cfg->machine_context ? &tnt_st(cfg)->awacs : NULL;
 }
 
-static value_t snd_attr_rate(struct object *self, const member_t *m) {
-    (void)m;
-    tnt_awacs_t *w = snd_awacs(self);
-    return val_uint(4, w ? awacs_rate(w) : 0);
+static uint32_t tnt_snd_sample_rate(void *ctx) {
+    tnt_awacs_t *w = snd_awacs_ctx(ctx);
+    return w ? awacs_rate(w) : 0;
 }
 
-static value_t snd_attr_out_enabled(struct object *self, const member_t *m) {
-    (void)m;
-    config_t *cfg = (config_t *)object_data(self);
-    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
-    return val_bool(st && st->dbdma && tnt_dbdma_active(st->dbdma, 8));
+static uint32_t tnt_snd_volume(void *ctx) {
+    tnt_awacs_t *w = snd_awacs_ctx(ctx);
+    return w ? sound_volume_from_atten((w->codec[4] >> 6) & 15u) : 0;
 }
 
-static value_t snd_attr_frames(struct object *self, const member_t *m) {
-    (void)m;
-    tnt_awacs_t *w = snd_awacs(self);
-    return val_uint(8, w ? w->frames_pushed : 0);
+static bool tnt_snd_muted(void *ctx) {
+    tnt_awacs_t *w = snd_awacs_ctx(ctx);
+    if (!w)
+        return true;
+    bool mute;
+    uint32_t gl, gr;
+    awacs_speaker_gains(w->codec, &gl, &gr, &mute);
+    return mute;
 }
 
-static value_t snd_attr_peak(struct object *self, const member_t *m) {
-    (void)m;
-    tnt_awacs_t *w = snd_awacs(self);
-    return val_int(w ? w->peak : 0);
+static bool tnt_snd_out_enabled(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
+    tnt_state_t *st = cfg && cfg->machine_context ? tnt_st(cfg) : NULL;
+    return st && st->dbdma && tnt_dbdma_active(st->dbdma, 8);
 }
 
-static value_t snd_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    if (argc < 1)
-        return val_err("match: want a golden WAV path");
-    return audio_out_match_value(argv[0].s);
+static bool tnt_snd_in_enabled(void *ctx) {
+    (void)ctx;
+    return false; // AWACS sound input is not modelled yet
 }
 
-static const arg_decl_t snd_match_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "golden WAV to compare the last capture against"},
-};
+static uint64_t tnt_snd_frames(void *ctx) {
+    tnt_awacs_t *w = snd_awacs_ctx(ctx);
+    return w ? w->frames_pushed : 0;
+}
 
-static const member_t tnt_sound_members[] = {
-    {.kind = M_ATTR,
-     .name = "sample_rate",
-     .doc = "Codec sample rate from the sound-control rate field",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = snd_attr_rate, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "out_enabled",
-     .doc = "DBDMA channel 8 armed and mid-program",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = snd_attr_out_enabled, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "frames",
-     .doc = "Frames rendered into the host stream since power-on",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = snd_attr_frames, .set = NULL}},
-    {.kind = M_ATTR,
-     .name = "peak",
-     .doc = "Loudest |sample| pushed to the host since power-on (0 = only silence)",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = snd_attr_peak, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "match",
-     .doc = "Sample-exact compare of the last capture against a golden WAV",
-     .method = {.args = snd_match_args, .nargs = 1, .result = V_BOOL, .fn = snd_method_match}},
-};
+static int32_t tnt_snd_peak(void *ctx) {
+    tnt_awacs_t *w = snd_awacs_ctx(ctx);
+    return w ? w->peak : 0;
+}
 
-static const class_desc_t tnt_sound_class = {
-    .name = "sound",
-    .members = tnt_sound_members,
-    .n_members = sizeof(tnt_sound_members) / sizeof(tnt_sound_members[0]),
-};
+// The DBDMA path has no underrun detection yet: the engine renders whatever
+// the channel's program points at, and a starved program simply stops rather
+// than raising a flag.  The PDM's AMIC does detect it (an unconsumed half sets
+// the ERR bit), so this reads 0 where that one reads a real count -- another
+// gap the uniform surface makes visible instead of hiding.
+static uint64_t tnt_snd_overruns(void *ctx) {
+    (void)ctx;
+    return 0;
+}
 
 // ============================================================
 // Lifecycle
@@ -364,13 +357,18 @@ void tnt_awacs_init(config_t *cfg) {
     tnt_dbdma_port_t port = {.out = awacs_port_out, .ctx = cfg};
     tnt_dbdma_set_port(st->dbdma, 8, &port);
 
-    st->snd_object = object_new(&tnt_sound_class, cfg, "sound");
-    if (st->snd_object) {
-        object_set_label(st->snd_object, "Sound");
-        object_set_order(st->snd_object, 110);
-        object_attach(machine_object(), st->snd_object);
-        audio_out_capture_attach(st->snd_object);
-    }
+    const sound_surface_t surface = {
+        .sample_rate = tnt_snd_sample_rate,
+        .volume = tnt_snd_volume,
+        .muted = tnt_snd_muted,
+        .out_enabled = tnt_snd_out_enabled,
+        .in_enabled = tnt_snd_in_enabled,
+        .frames = tnt_snd_frames,
+        .peak = tnt_snd_peak,
+        .overruns = tnt_snd_overruns,
+        .ctx = cfg,
+    };
+    st->snd_object = sound_object_new(&surface);
 }
 
 void tnt_awacs_teardown(config_t *cfg) {

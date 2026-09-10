@@ -11,6 +11,7 @@
 #include "object.h"
 #include "platform.h"
 #include "scheduler.h"
+#include "sound_surface.h"
 #include "system.h"
 #include "system_config.h"
 #include "value.h"
@@ -19,7 +20,6 @@ LOG_USE_CATEGORY_NAME("sound");
 
 // Forward declaration — class descriptor is at the bottom of the file but
 // sound_init / sound_delete reference it.
-extern const class_desc_t sound_class;
 
 #include <assert.h>
 #include <stddef.h>
@@ -71,6 +71,11 @@ struct sound {
     // loses <64 frames of host-side audio, never guest state)
     int out_count;
     int16_t out_buf[SOUND_PUSH_BATCH];
+    // Host-stream statistics, for machine.sound.  Transient like the batch
+    // above: a restore resets them, which is why they count "since power-on"
+    // and not "since boot".
+    uint64_t frames_pushed;
+    int32_t peak;
 };
 
 static void sound_flush(sound_t *sound);
@@ -137,6 +142,12 @@ void sound_mute(sound_t *sound, bool muted) {
 static void sound_flush(sound_t *sound) {
     if (sound->out_count <= 0)
         return;
+    for (int i = 0; i < sound->out_count; i++) {
+        int32_t a = sound->out_buf[i] < 0 ? -(int32_t)sound->out_buf[i] : (int32_t)sound->out_buf[i];
+        if (a > sound->peak)
+            sound->peak = a;
+    }
+    sound->frames_pushed += (uint64_t)sound->out_count;
     audio_out_push(sound->out_buf, sound->out_count, (int)sound->volume);
     sound->out_count = 0;
 }
@@ -206,6 +217,47 @@ void sound_vbl(sound_t *restrict sound) {
     sound_scan_batch(sound);
 }
 
+// === machine.sound surface (sound_surface.h) =================================
+//
+// The Plus PWM has no DMA engine and no input path: `out_enabled` is the gate
+// itself (the buffer is scanned whenever sound is on), `in_enabled` is false
+// because the machine has no sound-input hardware at all, and `overruns` is 0
+// because there is no producer/consumer boundary to overrun -- the VBL scan
+// pushes whatever the buffer holds.
+
+static uint32_t plus_snd_sample_rate(void *ctx) {
+    return sound_get_sample_rate((sound_t *)ctx);
+}
+static uint32_t plus_snd_volume(void *ctx) {
+    return sound_get_volume((sound_t *)ctx);
+}
+static void plus_snd_set_volume(void *ctx, uint32_t v) {
+    sound_volume((sound_t *)ctx, (unsigned)v);
+}
+static bool plus_snd_muted(void *ctx) {
+    return !sound_get_enabled((sound_t *)ctx);
+}
+static void plus_snd_set_muted(void *ctx, bool muted) {
+    sound_enable((sound_t *)ctx, !muted);
+}
+static bool plus_snd_out_enabled(void *ctx) {
+    return sound_get_enabled((sound_t *)ctx);
+}
+static bool plus_snd_in_enabled(void *ctx) {
+    (void)ctx;
+    return false; // no sound-input hardware on a Plus
+}
+static uint64_t plus_snd_frames(void *ctx) {
+    return ((sound_t *)ctx)->frames_pushed;
+}
+static int32_t plus_snd_peak(void *ctx) {
+    return ((sound_t *)ctx)->peak;
+}
+static uint64_t plus_snd_overruns(void *ctx) {
+    (void)ctx;
+    return 0; // the VBL scan cannot overrun: it pushes what is there
+}
+
 // Initializes the sound subsystem
 sound_t *sound_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpoint) {
     sound_t *sound = (sound_t *)malloc(sizeof(sound_t));
@@ -242,14 +294,20 @@ sound_t *sound_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *che
     }
 
     // Object-tree binding — instance_data is the sound itself.
-    sound->object = object_new(&sound_class, sound, "sound");
-    if (sound->object) {
-        object_set_label(sound->object, "Sound");
-        object_set_order(sound->object, 110);
-        object_attach(machine_object(), sound->object);
-        // Deterministic capture sink for golden-WAV tests (sound.capture.*)
-        audio_out_capture_attach(sound->object);
-    }
+    const sound_surface_t surface = {
+        .sample_rate = plus_snd_sample_rate,
+        .volume = plus_snd_volume,
+        .muted = plus_snd_muted,
+        .out_enabled = plus_snd_out_enabled,
+        .in_enabled = plus_snd_in_enabled,
+        .frames = plus_snd_frames,
+        .peak = plus_snd_peak,
+        .overruns = plus_snd_overruns,
+        .set_muted = plus_snd_set_muted,
+        .set_volume = plus_snd_set_volume,
+        .ctx = sound,
+    };
+    sound->object = sound_object_new(&surface);
 
     return sound;
 }
@@ -259,9 +317,7 @@ void sound_delete(sound_t *sound) {
     if (!sound)
         return;
     if (sound->object) {
-        audio_out_capture_detach();
-        object_detach(sound->object);
-        object_delete(sound->object);
+        sound_object_delete(sound->object);
         sound->object = NULL;
     }
     free(sound);
@@ -286,104 +342,3 @@ void sound_checkpoint(sound_t *restrict sound, checkpoint_t *checkpoint) {
 //
 // instance_data is the sound_t* itself; lifetime is tied to
 // sound_init / sound_delete.
-
-static sound_t *sound_self_from(struct object *self) {
-    return (sound_t *)object_data(self);
-}
-
-static value_t sound_attr_enabled_get(struct object *self, const member_t *m) {
-    (void)m;
-    return val_bool(sound_get_enabled(sound_self_from(self)));
-}
-static value_t sound_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
-    sound_t *sound = sound_self_from(self);
-    if (!sound) {
-        value_free(&in);
-        return val_err("sound not available");
-    }
-    sound_enable(sound, in.b);
-    return val_none();
-}
-
-static value_t sound_attr_volume_get(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(1, sound_get_volume(sound_self_from(self)));
-}
-static value_t sound_attr_volume_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
-    sound_t *sound = sound_self_from(self);
-    if (!sound)
-        return val_err("sound not available");
-    uint64_t v = in.u;
-    if (v >= 8)
-        return val_err("sound.volume: must be 0..7 (got %llu)", (unsigned long long)v);
-    sound_volume(sound, (unsigned)v);
-    return val_none();
-}
-
-static value_t sound_attr_sample_rate(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, sound_get_sample_rate(sound_self_from(self)));
-}
-
-static value_t sound_method_mute(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    sound_t *sound = sound_self_from(self);
-    if (!sound)
-        return val_err("sound not available");
-    sound_mute(sound, argv[0].b);
-    return val_none();
-}
-
-// `sound.match(reference)` — sample-exact compare of the last capture against
-// a golden PCM WAV (the audio analog of screen.match). Delegates to the
-// shared capture sink in audio_out.c; a mismatch returns val_err so the
-// headless script runner fails the integration test.
-static value_t sound_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    return audio_out_match_value(argv[0].s);
-}
-
-static const arg_decl_t sound_mute_args[] = {
-    {.name = "muted", .kind = V_BOOL, .doc = "true to mute, false to unmute"},
-};
-
-static const arg_decl_t sound_match_args[] = {
-    {.name = "reference", .kind = V_STRING, .doc = "Reference WAV path (PCM int16)"},
-};
-
-static const member_t sound_members[] = {
-    {.kind = M_ATTR,
-     .name = "enabled",
-     .doc = "Sound output gate (writable mirror of mute)",
-     .flags = 0,
-     .attr = {.type = V_BOOL, .get = sound_attr_enabled_get, .set = sound_attr_enabled_set}},
-    {.kind = M_ATTR,
-     .name = "volume",
-     .doc = "Output level (0..7)",
-     .flags = 0,
-     .attr = {.type = V_UINT, .get = sound_attr_volume_get, .set = sound_attr_volume_set}},
-    {.kind = M_ATTR,
-     .name = "sample_rate",
-     .doc = "Output sample rate in Hz",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = sound_attr_sample_rate, .set = NULL}},
-    {.kind = M_METHOD,
-     .name = "mute",
-     .doc = "Mute or unmute the sound output",
-     .method = {.args = sound_mute_args, .nargs = 1, .result = V_NONE, .fn = sound_method_mute}},
-    {.kind = M_METHOD,
-     .name = "match",
-     .doc = "Compare the last capture against a reference WAV (true if identical)",
-     .method = {.args = sound_match_args, .nargs = 1, .result = V_BOOL, .fn = sound_method_match}},
-};
-
-const class_desc_t sound_class = {
-    .name = "sound",
-    .members = sound_members,
-    .n_members = sizeof(sound_members) / sizeof(sound_members[0]),
-};
