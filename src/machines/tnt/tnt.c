@@ -895,6 +895,147 @@ const struct scsi_slot tnt_scsi_slots_internal[] = {
     {0},
 };
 
+// The Network Servers' front backplane on the FIRST fast/wide controller,
+// shared by both models -- same backplane, same IDs, and Open Firmware's
+// default boot device (disk2:aix) is bay 2 on both.
+//
+// The backplane is "seven slots with hot swap.  It is expected (but not
+// required) that slot 0 will be a CD ROM."  Bay numbering runs top to bottom
+// with 0 uppermost, and the production ROM's own device aliases settle which
+// controller owns which bay -- `disk0`..`disk3` resolve through
+// `/bandit/53c825@11`, `disk4` onward through `@12`.  Bay 0 is Apple's
+// expected CD-ROM position and is deliberately NOT declared here: it is what
+// hw_profile_t.cdrom_id addresses.
+//
+// Their SECOND controller is deliberately NOT shared: the 700 hangs two rear
+// bays off it and the 500 does not, and that is the "More drive Bays" half of
+// Apple's own four-way split between the models (Network Server Hardware
+// Developer Notes, 1996, S1.1.2).  Merging those two tables would delete a
+// modelled hardware difference -- see ans700.c.
+const struct scsi_slot ans_scsi_slots_fw0[] = {
+    {.label = "Bay 1 (fast/wide 0)", .id = 1},
+    {.label = "Bay 2 (fast/wide 0)", .id = 2, .boot = true}, // Open Firmware's default: disk2:aix
+    {.label = "Bay 3 (fast/wide 0)", .id = 3},
+    {0},
+};
+
+// The Shiner backplane -- the PCI topology of BOTH Network Servers, which
+// share one board ("Shiner LE" = 500/132, "Shiner HE" = 700/150).  The two
+// models differ only in clock, L2 size, supply count and drive bays; not one
+// of those is visible here, which is why this is one table and not two.
+//
+// It is NOT the 9500's, despite the ANS being a 9500 derivative everywhere
+// else (same Hammerhead, same two Bandits, same Grand Central).  Before
+// merging this with pm9500_pci_slots, note that all five of these differ:
+//
+//   * the split is 2/4 across the Bandits, not 3/3
+//   * bus 2 carries a FOURTH IDSEL (16) that no Power Macintosh uses
+//   * bus 1 IDSEL 15 is a soldered VIDEO device here, a socket ("C1") there
+//   * three builtins (VIDEO + two 53C825As) against the Power Macs' one VCI,
+//     because MESH is gone and video moved onto the bus
+//   * the labels are Open Firmware's own slot-names, not Mac OS's A1..F2
+//
+// PCI topology (Apple, ibid., §4.6.2 and §7.1.1; independently confirmed by
+// the six per-slot Open Firmware boot commands printed in "Using the PCI
+// RAID Card").  Two facts here are boot-critical and are pure data:
+//
+//   * The split is 2/4, not the 9500's 3/3: "The Network Server uses two
+//     separate PCI buses for on-board I/O (and two slots) and card
+//     expansion (four slots)" — "For PCI Bus 2, PCI Slot 3 is moved to the
+//     second Bandit."  Bandit 1 therefore carries SIX devices with no
+//     PCI-to-PCI bridge: two sockets plus the 54M30, Grand Central and both
+//     53C825As.
+//   * A slot's interrupt does NOT follow its bridge.  Slot 3 sits on Bandit
+//     2 but keeps EXT5 (ANS_INT_SLOT3) — the line a 9500 gives Bandit 1's
+//     third slot.  Deriving the line from the bus is wrong for exactly one
+//     slot, which is the worst possible failure shape, so the map is data.
+//
+// Apple gives IDSELs in DECIMAL in §4.6.2/§7.1.1 and the matching unit
+// addresses in HEX in Listing 6-1 and the RAID boot commands; `device`
+// below is the decimal IDSEL AD line, which is what the config-cycle
+// encoding wants.
+//
+// The LABELS are the ROM's own, read out of each bridge node's
+// `slot-names` property under Open Firmware: Bandit 1 publishes
+// `00006000 "SLOT1_PCI0" "SLOT2_PCI0"` and Bandit 2 publishes
+// `0001E000 "SLOT3_PCI1" "SLOT4_PCI1" "SLOT5_PCI1" "SLOT6_PCI1"`.  Note
+// the bus number in the string is ZERO-based while Apple's own prose and
+// its `pci1`/`pci2` device aliases are one-based — which is why the
+// worked example in the Software Developer Notes shows a slot-SIX card as
+// `SLOT6_PCI1` and not `SLOT6_PCI2`.  The bitmask halves also confirm the
+// 2/4 split and the IDSELs: bits 13-14 on the first bridge, 13-16 on the
+// second.
+const pci_slot_decl_t ans_pci_slots[] = {
+    {.slot = 1,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT1_PCI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 13,
+     .int_line = ANS_INT_SLOT1},
+    {.slot = 2,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT2_PCI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 14,
+     .int_line = ANS_INT_SLOT2},
+    {.slot = 3,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT3_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 13,
+     .int_line = ANS_INT_SLOT3},
+    {.slot = 4,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT4_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 14,
+     .int_line = ANS_INT_SLOT4},
+    {.slot = 5,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT5_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 15,
+     .int_line = ANS_INT_SLOT5},
+    {.slot = 6,
+     .kind = PCI_SLOT_SOCKET,
+     .label = "SLOT6_PCI1",
+     .bus = TNT_PCI_BUS_2,
+     .device = 16,
+     .int_line = ANS_INT_SLOT6},
+    // The three soldered-down PCI devices, all on Bandit 1 (Apple, ibid.,
+    // §4.6.2 — the six-device bus).  Grand Central's own config presence at
+    // IDSEL 16 is attached by grand_central.c, not from this table, exactly
+    // as on the Macintosh boards.
+    //
+    // The 54M30 takes NO interrupt line: "the 54M30 does not have an
+    // interrupt" (ibid., §4.2), and allocating it a Grand Central external
+    // would corrupt the map.  The two 53C825As take EXT2 and EXT6, the two
+    // positions the Network Server freed by ganging both Bandits' error
+    // interrupts onto EXT1.
+    {.slot = 7,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "VIDEO",
+     .bus = TNT_PCI_BUS_1,
+     .device = 15,
+     .int_line = 0,
+     .builtin_card_id = "cirrus_54m30"},
+    {.slot = 8,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "FWSCSI0",
+     .bus = TNT_PCI_BUS_1,
+     .device = 17,
+     .int_line = ANS_INT_FW0,
+     .builtin_card_id = "sym53c825_0"},
+    {.slot = 9,
+     .kind = PCI_SLOT_BUILTIN,
+     .label = "FWSCSI1",
+     .bus = TNT_PCI_BUS_1,
+     .device = 18,
+     .int_line = ANS_INT_FW1,
+     .builtin_card_id = "sym53c825_1"},
+    {0},
+};
+
 static int tnt_fd_insert(config_t *cfg, int drive, struct image *disk) {
     if (!cfg->floppy || drive != 0)
         return -1;
