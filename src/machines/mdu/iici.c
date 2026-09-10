@@ -264,7 +264,7 @@ static const nubus_slot_decl_t iici_slots[] = {
 // The IIci board descriptor (proposal §4.2.2): MDU+RBV hardware data, consumed
 // at init by the shared helpers.  ROM at $40800000; the 18-bit $40000 I/O
 // mirror; the shared MDU window table.
-static const mac030_board_desc_t iici_board = {
+static const mac030_board_desc_t iici_board_desc = {
     .chipset = "MDU+RBV",
     .rom_base = IICI_ROM_START,
     .rom_end = IICI_ROM_END,
@@ -326,7 +326,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_monitor_sense(st->rbv, 6);
     asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 
-    st->mmu = mac030_build_mmu(cfg, iici_board.rom_base, iici_board.rom_end);
+    st->mmu = mac030_build_mmu(cfg, iici_board_desc.rom_base, iici_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
     // TT1 identity-maps NuBus space $F0-$FF for supervisor FCs (same as SE/30).
@@ -343,7 +343,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
         nubus_checkpoint_restore(cfg->nubus, checkpoint);
 
     // Bind device handles + the board's I/O window table for the shared engine.
-    mdu_io_bind(&st->mdu_io, cfg, &iici_board, st->asc, st->floppy, st->rbv, st->video_card);
+    mdu_io_bind(&st->mdu_io, cfg, &iici_board_desc, st->asc, st->floppy, st->rbv, st->video_card);
 
     // Register the built-in framebuffer at the slot-$B aperture so the boot
     // ROM's VideoInfoMDU screen base ($FBB08000) and its Mode-24 alias land
@@ -355,7 +355,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
 
     // NuBus expansion slots $9..$E bus-error on unmapped reads; the mapped
     // built-in video aperture at $FBxxxxxx resolves ahead of this range.
-    memory_set_bus_error_range(cfg->mem_map, iici_board.bus_err_lo, iici_board.bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, iici_board_desc.bus_err_lo, iici_board_desc.bus_err_hi);
 
     iici_memory_layout_init(cfg);
 
@@ -382,8 +382,8 @@ static const scsi_bus_decl_t iici_scsi_buses[] = {
 
 // IIci board: the shared mdu_substrate reads its data descriptor + VIA1 hooks
 // + the device-construction body.
-static const mac030_mdu_board_t iici_mdu_board = {
-    .desc = &iici_board,
+static const mac030_mdu_board_t iici_board = {
+    .desc = &iici_board_desc,
     .via1_output = iici_via1_output,
     .via1_shift_out = iici_via1_shift_out,
     .build_devices = iici_build_devices,
@@ -413,5 +413,5 @@ const hw_profile_t machine_iici = {
     .nubus_slots = iici_slots,
 
     .substrate = &mdu_substrate, // shared MDU+RBV-family substrate
-    .board = &iici_mdu_board,
+    .board = &iici_board,
 };

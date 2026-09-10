@@ -1456,7 +1456,7 @@ static const nubus_slot_decl_t iifx_slots[] = {
 // at init by the shared helpers.  ROM at $40000000; the 18-bit $40000 I/O
 // mirror; the IIfx window table (device-rows + handler-rows); 0xFF on an
 // unmapped read.
-static const mac030_board_desc_t iifx_board = {
+static const mac030_board_desc_t iifx_board_desc = {
     .chipset = "OSS+FMC",
     .rom_base = IIFX_ROM_START,
     .rom_end = IIFX_ROM_END,
@@ -1546,15 +1546,15 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
 
     // All device interfaces are cached — install the board's I/O window table
     // into the shared-engine context registered above.
-    iifx_io_bind(&st->iifx_io, cfg, st, &iifx_board);
+    iifx_io_bind(&st->iifx_io, cfg, st, &iifx_board_desc);
 
-    st->mmu = mac030_build_mmu(cfg, iifx_board.rom_base, iifx_board.rom_end);
+    st->mmu = mac030_build_mmu(cfg, iifx_board_desc.rom_base, iifx_board_desc.rom_end);
     if (!st->mmu)
         return -1; // mac030_build_mmu reported the reason
     st->mmu->tt1 = 0xF00F8043;
 
     cfg->nubus = nubus_init(cfg, cfg->machine->nubus_slots, checkpoint);
-    memory_set_bus_error_range(cfg->mem_map, iifx_board.bus_err_lo, iifx_board.bus_err_hi);
+    memory_set_bus_error_range(cfg->mem_map, iifx_board_desc.bus_err_lo, iifx_board_desc.bus_err_hi);
 
     iifx_memory_layout_init(cfg);
 

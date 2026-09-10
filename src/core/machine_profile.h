@@ -381,12 +381,31 @@ typedef struct hw_profile {
 
     // Per-machine board descriptor — chipset-family data the shared substrate
     // interprets (proposal §4.2.2/§4.4).  Typed by convention: the family
-    // substrate casts it to its concrete type (mac030_glue_board_t for
-    // GLUE/MDU).  NULL where a substrate serves exactly one machine and can
-    // therefore reach its data directly (Plus, Lisa, IIfx).  The IIfx does
-    // define a mac030_board_desc_t of its own -- it simply has no second
-    // machine to vary against, so routing it through here would add a cast
-    // without adding sharing.
+    // substrate casts it to its concrete type.  NULL where a substrate serves
+    // exactly one machine and can therefore reach its data directly (Plus,
+    // IIfx).  The IIfx does define a mac030_board_desc_t of its own -- it
+    // simply has no second machine to vary against, so routing it through here
+    // would add a cast without adding sharing.
+    //
+    // WHAT IT POINTS AT differs by family, because the families differ in
+    // whether their machines vary in behaviour or only in data:
+    //
+    //   * Two-level (GLUE, MDU, MCU, AV) -- a board OBJECT carrying per-machine
+    //     hooks plus a `.desc` pointer to the data.  These families need hooks
+    //     because their members genuinely differ in behaviour: each GLUE board
+    //     wires different signals to VIA2's pins, and the SE/30 has built-in
+    //     video where the IIcx and IIx have NuBus.
+    //   * One-level (PDM, TNT, Lisa) -- the DESCRIPTOR itself, pure data with
+    //     no function pointers.  Their members are the same board with
+    //     different clocks, banks and one or two option bits, so the variation
+    //     fits in a field and is read as a branch (`pdm_board(cfg)->has_fast_scsi`,
+    //     `tnt_board(cfg)->kind == TNT_BOARD_SHINER`) rather than a hook.
+    //
+    // NAMING follows from that, and holds tree-wide (F-48):
+    //   <model>_board       -- whatever THIS field points at
+    //   <model>_board_desc  -- a descriptor that is not itself that thing
+    // So a two-level family has both; a one-level family has only <model>_board;
+    // and iifx_board_desc is a descriptor no profile points at.
     const void *board;
 } hw_profile_t;
 

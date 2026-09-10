@@ -198,7 +198,7 @@ static void iicx_setup_id(config_t *cfg) {
 }
 
 // IIcx board: GLUE family, three NuBus slots, VIA2 PB2 soft-power.
-static const mac030_board_desc_t iicx_desc = {
+static const mac030_board_desc_t iicx_board_desc = {
     .chipset = "GLUE",
     .rom_base = 0x40000000UL,
     .rom_end = 0x50000000UL,
@@ -211,7 +211,7 @@ static const mac030_board_desc_t iicx_desc = {
 };
 
 static const mac030_glue_board_t iicx_board = {
-    .desc = &iicx_desc,
+    .desc = &iicx_board_desc,
     .via1_output = iicx_via1_output,
     .via1_shift_out = iicx_via1_shift_out,
     .via2_output = iicx_via2_output,

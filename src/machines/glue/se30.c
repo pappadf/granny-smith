@@ -373,7 +373,7 @@ static void se30_ckpt_restore_extra(config_t *cfg, checkpoint_t *cp) {
 
 // SE/30 board: GLUE family with built-in slot-$E video; bus-error window covers
 // only slots $9..$D (slot $E is the mapped built-in video).
-static const mac030_board_desc_t se30_desc = {
+static const mac030_board_desc_t se30_board_desc = {
     .chipset = "GLUE",
     .rom_base = 0x40000000UL,
     .rom_end = 0x50000000UL,
@@ -389,7 +389,7 @@ static const mac030_board_desc_t se30_desc = {
 static void se30_ckpt_save_extra(config_t *cfg, checkpoint_t *cp);
 
 static const mac030_glue_board_t se30_board = {
-    .desc = &se30_desc,
+    .desc = &se30_board_desc,
     .via1_output = se30_via1_output,
     .via1_shift_out = se30_via1_shift_out,
     .via2_output = se30_via2_output,
