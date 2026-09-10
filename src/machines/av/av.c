@@ -58,21 +58,6 @@ static inline av_state_t *av_st(config_t *cfg) {
     return (av_state_t *)cfg->machine_context;
 }
 
-// Raise a plain bus-timeout exception from a device window (the 660AV's
-// MUNI_Control probe; same shape as the IIfx FMC probe window).
-static void av_bus_error(uint32_t addr, bool read) {
-    if (g_bus_error_pending)
-        return;
-    g_bus_error_pending = 1;
-    g_bus_error_address = addr;
-    g_bus_error_rw = read ? 1 : 0;
-    g_bus_error_fc =
-        read ? ((g_active_read == g_supervisor_read) ? 5 : 1) : ((g_active_write == g_supervisor_write) ? 5 : 1);
-    g_bus_error_is_pmmu = 0;
-    if (g_bus_error_instr_ptr)
-        *g_bus_error_instr_ptr = 0;
-}
-
 // ============================================================
 // YMCA register file ($50F30400; ymca.md §1)
 // ============================================================
@@ -126,7 +111,7 @@ static uint8_t av_muni_read(config_t *cfg, uint32_t addr) {
     uint32_t off = addr & 0x3FFu;
     uint32_t reg = off & ~3u;
     if (reg == AV_MUNI_CONTROL && !av_board(cfg)->desc->muni_present) {
-        av_bus_error(addr, true);
+        memory_signal_bus_error(addr, false);
         return 0xFF;
     }
     uint32_t v = (reg == AV_MUNI_CONTROL) ? st->muni_control : (reg == AV_MUNI_INTCNTRL) ? st->muni_intcntrl : 0;
@@ -140,7 +125,7 @@ static void av_muni_write(config_t *cfg, uint32_t addr, uint8_t value) {
     uint32_t shift = 8 * (3 - (off & 3));
     if (reg == AV_MUNI_CONTROL) {
         if (!av_board(cfg)->desc->muni_present) {
-            av_bus_error(addr, false);
+            memory_signal_bus_error(addr, true);
             return;
         }
         st->muni_control = (st->muni_control & ~(0xFFu << shift)) | ((uint32_t)value << shift);

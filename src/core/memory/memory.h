@@ -75,11 +75,35 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base);
 
 // Latch a deferred bus error for a DEVICE-decoded access the hardware
-// terminates with a transfer error — the PDM's BART slot windows, where an
-// empty slot answers a probe with a recoverable fault instead of data.  The
-// CPU seam delivers it at the sprint boundary (68k bus error / 601 machine
-// check).  No-op while an inspection access is in flight, so `memory.peek`
-// of an empty slot never perturbs the guest.
+// terminates with a transfer error.  The CPU seam delivers it at the sprint
+// boundary (68k bus error / 601 machine check).  No-op while an inspection
+// access is in flight, so `memory.peek` of such a window never perturbs the
+// guest.
+//
+// What this models is a BUS TIMEOUT, not a decode failure: on real hardware
+// no chip "returns" a bus error.  A cycle completes only if some responder
+// asserts acknowledge (/DSACK on 68020/030, /TA on 68040); if none does, the
+// glue's watchdog fires and asserts the error instead.  Hence the two
+// distinct behaviours a machine must choose between for an address with no
+// chip behind it, per the address-map legend in Guide to the Macintosh Family
+// Hardware 2e p.121:
+//
+//   * DECODED but unpopulated ("light-shaded: decoded but might not be
+//     used") — the decoder acknowledges anyway, the cycle completes, and the
+//     data bus floats to the pull-ups.  Reads return $FF; NO fault.  This is
+//     what mac030_board_desc_t.io_unmapped_read models.
+//   * NOT DECODED ("unshaded") — nothing acknowledges, the watchdog times
+//     out, bus error.  This is what bus_err_lo/bus_err_hi model for whole
+//     regions, and what THIS function models for an individual device window
+//     whose responder is absent on a particular model.
+//
+// Documented watchdogs: IIfx OSS "bus time-out logic" (DSACK asserted only
+// for the shaded I/O spaces); Q900/950 Relayer 15.5 us @ 33 MHz, 20.5 us
+// @ 25 MHz; AV MCA 16 us, 32 us in NuBus space; PDM AMIC 40 us; NuBus
+// 25.6 us.  Callers today: the PDM's BART slot windows (empty slot), the
+// IIfx FMC/RPU probe windows, and the 660AV's absent MUNI — the AV devnote
+// states it outright ("if the CPU, PSC, or MUNI does not respond to a cycle
+// start signal within a critical time, the MCA ... issues a bus error").
 void memory_signal_bus_error(uint32_t addr, bool write);
 
 // Physical page-fill hook for machines whose page table is not owned by a

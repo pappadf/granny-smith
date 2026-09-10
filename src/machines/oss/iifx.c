@@ -512,20 +512,6 @@ static void iifx_set_rom_overlay(config_t *cfg, bool overlay) {
     }
 }
 
-// Raises a plain bus-timeout exception for the FMC probe window.
-static void iifx_bus_error(uint32_t addr, bool read) {
-    if (g_bus_error_pending)
-        return;
-    g_bus_error_pending = 1;
-    g_bus_error_address = addr;
-    g_bus_error_rw = read ? 1 : 0;
-    g_bus_error_fc =
-        read ? ((g_active_read == g_supervisor_read) ? 5 : 1) : ((g_active_write == g_supervisor_write) ? 5 : 1);
-    g_bus_error_is_pmmu = 0;
-    if (g_bus_error_instr_ptr)
-        *g_bus_error_instr_ptr = 0;
-}
-
 // Reads one byte from the ROM device and drops the overlay.
 static uint8_t iifx_rom_read_uint8(void *ctx, uint32_t addr) {
     config_t *cfg = (config_t *)ctx;
@@ -1115,13 +1101,13 @@ static void iifx_scsidma_pump(config_t *cfg) {
 // BIU30 does when the parity controller / RPU is absent, reporting the address.
 static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t addr) {
     (void)cfg;
-    iifx_bus_error(IIFX_IO_BASE + addr, true);
+    memory_signal_bus_error(IIFX_IO_BASE + addr, false);
     return 0xff;
 }
 static void iifx_io_berr_write(config_t *cfg, uint32_t addr, uint8_t value) {
     (void)cfg;
     (void)value;
-    iifx_bus_error(IIFX_IO_BASE + addr, false);
+    memory_signal_bus_error(IIFX_IO_BASE + addr, true);
 }
 
 // SCSI-DMA engine ($08000).

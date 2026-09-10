@@ -58,6 +58,11 @@ uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr) {
                 memory_io_penalty(r->penalty);
             if (r->read_fn)
                 return r->read_fn(io->cfg, addr);
+            // A device-row whose chip this model does not build: the window is
+            // decoded (we got here) but unpopulated, so the cycle is still
+            // acknowledged and the bus floats — see memory_signal_bus_error.
+            if (!io->iface[r->device])
+                return io->unmapped_read;
             return io->iface[r->device]->read_uint8(io->handle[r->device], io_sub_offset(r, offset, true));
         }
     }
@@ -88,7 +93,7 @@ void mac030_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
                 memory_io_penalty(r->penalty);
             if (r->write_fn)
                 r->write_fn(io->cfg, addr, value);
-            else
+            else if (io->iface[r->device]) // unpopulated device-row: acknowledged, dropped
                 io->iface[r->device]->write_uint8(io->handle[r->device], io_sub_offset(r, offset, false), value);
             return;
         }
