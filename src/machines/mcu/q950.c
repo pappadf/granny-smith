@@ -32,16 +32,6 @@ static const scsi_bus_decl_t q950_scsi_buses[] = {
     {0},
 };
 
-// Same five NuBus '90 sockets A-E as the Q900 (ref §10.3).
-static const nubus_slot_decl_t q950_nubus_slots[] = {
-    {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xD, .kind = NUBUS_SLOT_SOCKET},
-    {.slot = 0xE, .kind = NUBUS_SLOT_SOCKET},
-    {0},
-};
-
 static const mcu_board_desc_t q950_board_desc = {
     .common =
         {
@@ -88,7 +78,7 @@ const hw_profile_t machine_q950 = {
     .has_cdrom = true,
     .cdrom_id = 3,
 
-    .nubus_slots = q950_nubus_slots,
+    .nubus_slots = q900_nubus_slots, // same Eclipse board (q900_internal.h)
 
     .substrate = &mcu_substrate,
     .board = &q950_board,

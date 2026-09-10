@@ -326,7 +326,13 @@ static const scsi_bus_decl_t q900_scsi_buses[] = {
 
 // NuBus topology (ref §10.3): five NuBus '90 sockets A-E; the 040 PDS is
 // mechanically aligned with slot E.  Built-in DAFB video is pseudo-slot 9.
-static const nubus_slot_decl_t q900_nubus_slots[] = {
+// The tower's five NuBus '90 sockets $A-$E, shared with the Q950: same
+// Eclipse board, and Apple says five for both -- "expansion opportunities are
+// provided by five NuBus slots and one processor-direct slot" (Quadra 900
+// Developer Note) and "five NuBus expansion slots with NuBus '90 features"
+// (Quadra 950 Developer Note).  The Q700 keeps its own two-socket table: its
+// note says "two NuBus slots and one processor-direct slot".
+const nubus_slot_decl_t q900_nubus_slots[] = {
     {.slot = 0xA, .kind = NUBUS_SLOT_SOCKET},
     {.slot = 0xB, .kind = NUBUS_SLOT_SOCKET},
     {.slot = 0xC, .kind = NUBUS_SLOT_SOCKET},
