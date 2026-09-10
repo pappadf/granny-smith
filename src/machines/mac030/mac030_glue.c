@@ -211,9 +211,16 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
 
     mac030_build_lowspeed(cfg, cp, NULL); // NULL: the family-default SCC IRQ
 
-    cfg->via1 = via_init(NULL, cfg->scheduler, 20, "via1", board->via1_output, board->via1_shift_out,
+    // Derived, not the literal 20 this used to pass.  Every GLUE machine is
+    // 15.6672 MHz so the number is unchanged -- but 20 was exactly the stale
+    // inherited divisor mdu.c:68-72 and mcu.c:639-641 both record being burned
+    // by ("correct for the 16 MHz IIcx this code was adapted from, and 1.6x
+    // too fast on a IIci"), and a GLUE sibling on another clock would inherit
+    // it the same way.
+    uint8_t via_ff = via_freq_factor_for_clock(cfg->machine->freq);
+    cfg->via1 = via_init(NULL, cfg->scheduler, via_ff, "via1", board->via1_output, board->via1_shift_out,
                          mac030_glue_via1_irq, cfg, cp);
-    cfg->via2 = via_init(NULL, cfg->scheduler, 20, "via2", board->via2_output, board->via2_shift_out,
+    cfg->via2 = via_init(NULL, cfg->scheduler, via_ff, "via2", board->via2_output, board->via2_shift_out,
                          mac030_glue_via2_irq, cfg, cp);
     rtc_set_via(cfg->rtc, cfg->via1);
 
