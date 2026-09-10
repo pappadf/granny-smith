@@ -7,7 +7,7 @@
 #include "sound_surface.h"
 
 #include "audio_out.h"
-#include "machine.h"
+#include "machine_profile.h" // machine_object()
 #include "object.h"
 #include "value.h"
 
