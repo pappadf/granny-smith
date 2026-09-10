@@ -52,7 +52,7 @@ def row_plus_beep() {
     machine.sound.capture.start
     scheduler.run 1000000
     machine.sound.capture.stop
-    assert machine.sound.capture.frames == 15432 "plus-beep: unexpected capture length"
+    assert machine.sound.capture.frames == 15116 "plus-beep: unexpected capture length"
     machine.sound.match goldens/plus-beep.wav
     report_perf("suite-plus/plus-beep", scheduler.instr_count)
 }

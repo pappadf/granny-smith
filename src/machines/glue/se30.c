@@ -308,13 +308,17 @@ static void se30_pre_devices(config_t *cfg) {
 
 // Machine-ID straps: PA6 = 1 / PB3 = 0 (SE/30 signature); VIA2 PA3 high; PB6
 // reports the sound jack inserted; control lines idle high.
+// Only the board's genuine straps: everything else this used to write --
+// VIA2 PA0-PA5 and the CA1/CA2/CB2 control lines -- is now the VIA's own
+// idle-high power-on state (F-50).
 static void se30_setup_id(config_t *cfg) {
-    via_input(cfg->via2, 1, 3, 0);
-    via_input(cfg->via2, 0, 3, 1);
+    via_input(cfg->via2, 1, 3, 0); // PB3
+    // PB6 = v2SNDEXT, and on the SE/30 it is TIED LOW in hardware "so that the
+    // Sound Manager always operates in stereo mode ... the SE/30 sound circuit
+    // includes a mixer to convert the stereo signal to mono for the internal
+    // speaker" (Guide to the Macintosh Family Hardware 2e, VIA2 port B).  This
+    // models a solder strap, which is why the IIcx and IIx do NOT write it.
     via_input(cfg->via2, 1, 6, 0);
-    via_input_c(cfg->via2, 0, 0, 1); // CA1: NuBus slot IRQ
-    via_input_c(cfg->via2, 0, 1, 1); // CA2: SCSI DRQ
-    via_input_c(cfg->via2, 1, 1, 1); // CB2: SCSI IRQ
 }
 
 // SE/30 slot table: slot $E is the built-in video card; $9..$B are empty PDS

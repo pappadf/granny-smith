@@ -82,19 +82,13 @@ static const nubus_slot_decl_t iix_slots[] = {
 // Init / Teardown
 // ============================================================
 
-// Machine-ID straps: PA6 = 0, PB3 = 0 (IIx); VIA2 slot-IRQ PA lines idle high.
+// Machine-ID straps: VIA1 PA6 = 0 and VIA2 PB3 = 0 identify the IIx.  Both are
+// driven because both differ from the VIA's idle-high power-on state; the
+// slot-IRQ PA lines and the CA1/CA2/CB2 control lines this used to park are
+// that state already (F-50).
 static void iix_setup_id(config_t *cfg) {
-    via_input(cfg->via1, 0, 6, 0);
-    via_input(cfg->via2, 1, 3, 0);
-    via_input(cfg->via2, 0, 0, 1);
-    via_input(cfg->via2, 0, 1, 1);
-    via_input(cfg->via2, 0, 2, 1);
-    via_input(cfg->via2, 0, 3, 1);
-    via_input(cfg->via2, 0, 4, 1);
-    via_input(cfg->via2, 0, 5, 1);
-    via_input_c(cfg->via2, 0, 0, 1);
-    via_input_c(cfg->via2, 0, 1, 1);
-    via_input_c(cfg->via2, 1, 1, 1);
+    via_input(cfg->via1, 0, 6, 0); // VIA1 PA6
+    via_input(cfg->via2, 1, 3, 0); // PB3
 }
 
 // IIx board: GLUE family, six NuBus slots, no soft-power / sound-jack.

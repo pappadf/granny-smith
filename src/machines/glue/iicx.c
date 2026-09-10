@@ -181,20 +181,21 @@ static const nubus_slot_decl_t iicx_slots[] = {
 // Init / Teardown
 // ============================================================
 
-// Machine-ID straps: PA6 = 1, PB3 = 1 (IIcx); VIA2 slot-IRQ PA lines idle
-// high; PB6 reports the sound jack inserted (active-low).
+// Machine-ID straps.  The IIcx is VIA1 PA6 = 1 and VIA2 PB3 = 1; only PB3 is
+// written, because PA6 = 1 is now the VIA's idle-high power-on state (F-50) --
+// the IIx, which needs PA6 = 0, is the one that has to drive it.
+//
+// This used to write VIA2 PA0-PA5 and the CA1/CA2/CB2 control lines too, all
+// of which are the idle-high default now.  It also drove PB6 (v2SNDEXT)
+// low, claiming a plug is permanently inserted in the external sound jack.
+// That had no hardware basis: the Guide gives one ASC circuit for "Macintosh
+// II, Macintosh IIx, Macintosh IIcx, Macintosh IIci and Macintosh IIfx" and
+// never separates the IIcx from the IIx, and PB6 reports a RUNTIME condition
+// rather than a board strap.  The SE/30 keeps its PB6 write because there the
+// pin really is tied low in hardware.  Removing it is golden-neutral: the
+// iicx-chime capture still matches sample-exactly at 15,359 frames.
 static void iicx_setup_id(config_t *cfg) {
-    via_input(cfg->via2, 1, 3, 1);
-    via_input(cfg->via2, 0, 0, 1);
-    via_input(cfg->via2, 0, 1, 1);
-    via_input(cfg->via2, 0, 2, 1);
-    via_input(cfg->via2, 0, 3, 1);
-    via_input(cfg->via2, 0, 4, 1);
-    via_input(cfg->via2, 0, 5, 1);
-    via_input(cfg->via2, 1, 6, 0);
-    via_input_c(cfg->via2, 0, 0, 1);
-    via_input_c(cfg->via2, 0, 1, 1);
-    via_input_c(cfg->via2, 1, 1, 1);
+    via_input(cfg->via2, 1, 3, 1); // PB3
 }
 
 // IIcx board: GLUE family, three NuBus slots, VIA2 PB2 soft-power.

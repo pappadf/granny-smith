@@ -617,10 +617,8 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     via_input(cfg->via1, 0, 7, 1);
     // Port B: PB3 is Cuda TREQ (active-low, idle high).
     via_input(cfg->via1, 1, 3, 1);
-    // CA1 (60 Hz) and the Cuda CB1/CB2 lines idle high.
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via1, 1, 0, 1);
-    via_input_c(cfg->via1, 1, 1, 1);
+    // CA1 (60 Hz) and the Cuda CB1/CB2 lines idle high -- the VIA's own
+    // power-on state now, so this no longer has to say so (F-50).
 
     // The PSC interrupt controller + DMA engine (VIA2 window, L3-L6,
     // sndPhase, the 7 channels).
