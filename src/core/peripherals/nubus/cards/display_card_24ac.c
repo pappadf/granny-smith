@@ -46,6 +46,7 @@
 #include "system.h"
 #include "system_config.h"
 
+#include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,15 +67,13 @@ typedef struct {
     uint32_t region_off; // slot-relative base of this region
 } reg_ctx_t;
 
+// Field order IS the checkpoint format (the via_t / adb_t / asc_t idiom): the
+// scalars the card must restore come first and go as ONE range ending at
+// `display`.  A scalar added above that line is checkpointed automatically; a
+// POINTER added above it restores a stale address, which is why every pointer,
+// construction fact and region context sits below the marker.
 struct display_card_24ac_priv {
-    nubus_card_t *card; // back-pointer for IRQ helpers
-    uint8_t *vram; // DISPLAY_CARD_24AC_VRAM_SIZE
-    uint8_t *vrom; // 128 KB bus-space declaration ROM
-    char *vrom_path; // path the VROM was loaded from
-    uint32_t vrom_size; // 128 KB; 0 if no VROM loaded
-    uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
     rgba8_t clut[256];
-    display_t display;
 
     // CLUT / RAMDAC write sub-state.  Both the init (0xC8000E/0xC8000A)
     // and runtime (0xC8001E/0xC8001A) index/data pairs feed this; an index
@@ -135,6 +134,17 @@ struct display_card_24ac_priv {
     bool status_class_bit; // STATUS[3] — card-class / VRAM-organisation
     bool config_variant_bit; // CONFIG[0] — geometry variant
 
+    // --- Pointers and construction facts last; NOT in the range above ---
+    // `display` leads them because it embeds `bits`/`clut` pointers of its own;
+    // its scalar head is checkpointed separately as offsetof(display_t, bits).
+    display_t display;
+    nubus_card_t *card; // back-pointer for IRQ helpers
+    uint8_t *vram; // DISPLAY_CARD_24AC_VRAM_SIZE
+    uint8_t *vrom; // 128 KB bus-space declaration ROM
+    char *vrom_path; // path the VROM was loaded from
+    uint32_t vrom_size; // 128 KB; 0 if no VROM loaded
+    uint32_t slot_base; // physical bus base (== nubus_slot_base(slot))
+
     // Region contexts (one per registered register/engine region).
     reg_ctx_t ctx_clut; // 0xC80000 — CLUT / RAMDAC
     reg_ctx_t ctx_d00; // 0xD00000 — STATUS + VIDCTL
@@ -143,6 +153,11 @@ struct display_card_24ac_priv {
     reg_ctx_t ctx_operand; // 0x3FE000 — engine operand aperture
     reg_ctx_t ctx_active; // 0x400000 — engine active-bank alias
 };
+
+// The layout above is load-bearing.  If this fires, a member moved across the
+// boundary: re-check what the checkpoint range now covers before updating it.
+_Static_assert(offsetof(struct display_card_24ac_priv, display) < offsetof(struct display_card_24ac_priv, card),
+               "24AC checkpoint range must end before the pointer block");
 
 // === Display-format helpers =================================================
 
@@ -1109,50 +1124,13 @@ static int card_init_generic(nubus_card_t *card, config_t *cfg, checkpoint_t *cp
 //
 // Save and restore share ONE field list, walked in both directions.  Two
 // hand-mirrored lists are how a checkpoint stream silently goes out of step.
-#define CARD_24AC_CKPT_FIELDS(F)                                                                                       \
-    F(p->clut, sizeof(p->clut));                                                                                       \
-    F(&p->display.format, sizeof(p->display.format));                                                                  \
-    F(&p->display.width, sizeof(p->display.width));                                                                    \
-    F(&p->display.height, sizeof(p->display.height));                                                                  \
-    F(&p->display.stride, sizeof(p->display.stride));                                                                  \
-    F(&p->clut_idx, sizeof(p->clut_idx));                                                                              \
-    F(&p->clut_phase, sizeof(p->clut_phase));                                                                          \
-    F(&p->clut_pending, sizeof(p->clut_pending));                                                                      \
-    F(&p->vidctl, sizeof(p->vidctl));                                                                                  \
-    F(&p->mode_reg, sizeof(p->mode_reg));                                                                              \
-    F(&p->depth_reg, sizeof(p->depth_reg));                                                                            \
-    F(&p->status_busy, sizeof(p->status_busy));                                                                        \
-    F(&p->sense_primary, sizeof(p->sense_primary));                                                                    \
-    F(&p->sense_ext, sizeof(p->sense_ext));                                                                            \
-    F(&p->sense_last_write, sizeof(p->sense_last_write));                                                              \
-    F(&p->mon_width, sizeof(p->mon_width));                                                                            \
-    F(&p->mon_height, sizeof(p->mon_height));                                                                          \
-    F(&p->mon_sense_ext, sizeof(p->mon_sense_ext));                                                                    \
-    F(&p->mon_sense_primary, sizeof(p->mon_sense_primary));                                                            \
-    F(&p->vbl_enabled, sizeof(p->vbl_enabled));                                                                        \
-    F(&p->engine_enabled, sizeof(p->engine_enabled));                                                                  \
-    F(&p->engine_mode, sizeof(p->engine_mode));                                                                        \
-    F(&p->engine_operand, sizeof(p->engine_operand));                                                                  \
-    F(p->engine_pat, sizeof(p->engine_pat));                                                                           \
-    F(&p->engine_pat_len, sizeof(p->engine_pat_len));                                                                  \
-    F(&p->engine_copy_src, sizeof(p->engine_copy_src));                                                                \
-    F(&p->engine_copy_len, sizeof(p->engine_copy_len));                                                                \
-    F(&p->fill_ops, sizeof(p->fill_ops));                                                                              \
-    F(&p->fill_bytes, sizeof(p->fill_bytes));                                                                          \
-    F(&p->copy_ops, sizeof(p->copy_ops));                                                                              \
-    F(&p->copy_bytes, sizeof(p->copy_bytes));                                                                          \
-    F(&p->status_depth_code, sizeof(p->status_depth_code));                                                            \
-    F(&p->status_class_bit, sizeof(p->status_class_bit));                                                              \
-    F(&p->config_variant_bit, sizeof(p->config_variant_bit));
-
 static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     display_card_24ac_priv_t *p = card ? card->priv : NULL;
     if (!p)
         return;
     system_write_checkpoint_data(cp, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE);
-#define F(ptr, len) system_write_checkpoint_data(cp, (ptr), (len))
-    CARD_24AC_CKPT_FIELDS(F)
-#undef F
+    system_write_checkpoint_data(cp, p, offsetof(struct display_card_24ac_priv, display));
+    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -1160,9 +1138,8 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_read_checkpoint_data(cp, p->vram, DISPLAY_CARD_24AC_VRAM_SIZE);
-#define F(ptr, len) system_read_checkpoint_data(cp, (ptr), (len))
-    CARD_24AC_CKPT_FIELDS(F)
-#undef F
+    system_read_checkpoint_data(cp, p, offsetof(struct display_card_24ac_priv, display));
+    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
 
     // stride follows from the restored width and format.
     recompute_stride(p);

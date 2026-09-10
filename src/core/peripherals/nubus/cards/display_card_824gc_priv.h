@@ -19,6 +19,7 @@
 #include "nubus.h"
 
 #include <stdbool.h>
+#include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
 
 // Clip/blit mask geometry (1 bit per pixel over the largest screen mode) and
@@ -49,19 +50,14 @@ typedef struct {
     uint32_t region_base; // absolute physical base of this region
 } gc_reg_ctx_t;
 
+// Field order IS the checkpoint format (the via_t / adb_t / asc_t idiom).  Every
+// scalar the card must restore comes first, and card_checkpoint_save writes the
+// single range ending at `card`.  A scalar added above that line is checkpointed
+// automatically; a POINTER added above it restores a stale address, so every
+// pointer, construction fact, heap cache and region context lives below the
+// marker and is handled explicitly.
 struct display_card_824gc_priv {
-    nubus_card_t *card; // back-pointer for IRQ helpers
-    uint32_t slot_base; // standard slot space base ($Fs000000)
-    uint32_t super_base; // super-slot space base ($s0000000)
-    uint32_t gcp_base; // GCQD "gcp" CB window (standard slot; = card+$16C+$8C00)
-
-    // --- Display half (standard slot space) ---
-    uint8_t *vram; // GC824_VRAM_SIZE
-    uint8_t *vrom; // GC824_DECLROM_BUS_SIZE
-    char *vrom_path;
-    uint32_t vrom_size;
     rgba8_t clut[256];
-    display_t display;
     // JMFB-family register shadows (subset the video driver drives).
     uint16_t jmfb_csr;
     uint16_t jmfb_video_base;
@@ -84,15 +80,10 @@ struct display_card_824gc_priv {
     uint8_t acdc_addr; // current palette index (auto-increments per entry)
     uint8_t acdc_phase; // 0=R,1=G,2=B; reset on ADDR-port write
     uint8_t acdc_rgb[3]; // R,G,B bytes accumulated for the current entry
-
-    // --- Accelerator (super-slot space) ---
-    uint8_t *sram; // GC824_SRAM_SIZE (firmware code sink; plain RAM)
-    uint8_t *dram; // GC824_DRAM_SIZE (firmware data + comm regions)
-    uint8_t *regs; // GC824_REGS_SIZE — MFB / config / ACDC register space
-                   // (card-local 0x04000000..0x07FFFFFF), backed as RAM so the
-                   // video driver's write-then-read-back register probes and
-                   // ACDC CLUT accesses behave; the few semantic registers
-                   // (alive, MFB heartbeat, attach, kick) are intercepted.
+                         // (card-local 0x04000000..0x07FFFFFF), backed as RAM so the
+                         // video driver's write-then-read-back register probes and
+                         // ACDC CLUT accesses behave; the few semantic registers
+                         // (alive, MFB heartbeat, attach, kick) are intercepted.
 
     gc_state_t state;
     bool booted; // boot handshake completed (CB published)
@@ -128,17 +119,6 @@ struct display_card_824gc_priv {
     uint8_t gc_pat_kind[4]; // 0 = classic 1-bit; 2 = RGB 2x2 dither (op $74);
                             // 3 = cached PixPat tile (op $72)
     uint32_t gc_pat_cell[4][4]; // RGBPat resolved device pixels, cell 0..3
-    // Type-5 cache: PixPats downloaded via func $0C (CachePixPat), keyed by
-    // the HOST PixPat Handle (the card keys its cache the same way — the
-    // host passes no card address and consumes none back).  The tile is
-    // expanded at cache time (PATCONVERT): every pixel resolved through the
-    // pattern's OWN ColorTable to a device pixel at the CURRENT screen depth.
-    struct gc_pixpat {
-        uint32_t key; // PixPat host Handle; 0 = free
-        uint16_t w, h; // tile bounds (powers of two — enforced at cache time)
-        uint8_t fmt; // pixel_format_t the tile was resolved at
-        uint32_t *pix; // w*h device pixels, row-major
-    } gc_pixpats[4];
     int gc_pixpat_rr;
     uint8_t gc_pat_pp[4]; // active gc_pixpats index per slot (kind 3)
     uint8_t gc_pat_slot; // active pattern slot selected by opWhichPat ($73)
@@ -163,6 +143,57 @@ struct display_card_824gc_priv {
                           // drained batch is single-origin, but it never
                           // re-stages the port record ($23AC)
     int16_t gc_pen_w, gc_pen_h; // pen size (opPenSize $6E)
+    int gc_font_rr, gc_wtab_rr; // round-robin replacement cursors
+    uint32_t gc_cur_strike_size;
+    uint8_t gc_font_info[26]; // op $67 font-info block (style/scale fields)
+
+    int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bounding box
+    uint32_t gc_cliprgn_len, gc_visrgn_len;
+    int16_t gc_rgn_ox, gc_rgn_oy; // port origin the stored regions carry
+    uint64_t draw_count; // primitives rasterized (introspection)
+    bool gc_accel; // func $2D accepted the port → interpret its queue (stage 2)
+
+    // ==================================================================
+    // NOT in the checkpoint range above.  Handled explicitly, or not at all:
+    //   * vram / sram / dram / regs -- CONTENTS saved beside the range
+    //   * gc_pixpats / gc_fonts / gc_wtabs -- host-keyed caches, serialised
+    //     as {key,size,bytes}.  NOT flushed on restore: a font-cache miss
+    //     logs "text will drop" and the host never re-downloads, because it
+    //     believes the card still holds it.  gc824_font_caches_flush() is for
+    //     GC-OS bring-up and PQDInit fault recovery, where the host KNOWS the
+    //     caches are gone; a checkpoint restore is not such a moment.
+    //   * gc_cur_wt / gc_cur_strike -- point INTO those caches; recomputed
+    //   * display / card / ctx_* -- embed pointers card_init rebuilds
+    //   * force_decline -- a harness switch, not guest state (see below)
+    // ==================================================================
+
+    nubus_card_t *card; // back-pointer for IRQ helpers
+    uint32_t slot_base; // standard slot space base ($Fs000000)
+    uint32_t super_base; // super-slot space base ($s0000000)
+    uint32_t gcp_base; // GCQD "gcp" CB window (standard slot; = card+$16C+$8C00)
+
+    // --- Display half (standard slot space) ---
+    uint8_t *vram; // GC824_VRAM_SIZE
+    uint8_t *vrom; // GC824_DECLROM_BUS_SIZE
+    char *vrom_path;
+    uint32_t vrom_size;
+    display_t display;
+
+    // --- Accelerator (super-slot space) ---
+    uint8_t *sram; // GC824_SRAM_SIZE (firmware code sink; plain RAM)
+    uint8_t *dram; // GC824_DRAM_SIZE (firmware data + comm regions)
+    uint8_t *regs; // GC824_REGS_SIZE — MFB / config / ACDC register space
+    // Type-5 cache: PixPats downloaded via func $0C (CachePixPat), keyed by
+    // the HOST PixPat Handle (the card keys its cache the same way — the
+    // host passes no card address and consumes none back).  The tile is
+    // expanded at cache time (PATCONVERT): every pixel resolved through the
+    // pattern's OWN ColorTable to a device pixel at the CURRENT screen depth.
+    struct gc_pixpat {
+        uint32_t key; // PixPat host Handle; 0 = free
+        uint16_t w, h; // tile bounds (powers of two — enforced at cache time)
+        uint8_t fmt; // pixel_format_t the tile was resolved at
+        uint32_t *pix; // w*h device pixels, row-major
+    } gc_pixpats[4];
 
     // --- Text (func $30 FontDownload + ops $67/$06; proposal §3.10) ---
     // The host downloads font data into card caches: type 8 = strikes (raw
@@ -175,23 +206,14 @@ struct display_card_824gc_priv {
         uint8_t *data;
         uint32_t size;
     } gc_fonts[8], gc_wtabs[4]; // type 8 / type 10
-    int gc_font_rr, gc_wtab_rr; // round-robin replacement cursors
     uint8_t *gc_cur_wt; // current width table (points into gc_wtabs)
     uint8_t *gc_cur_strike; // current strike (points into gc_fonts)
-    uint32_t gc_cur_strike_size;
-    uint8_t gc_font_info[26]; // op $67 font-info block (style/scale fields)
-
-    int16_t gc_clip_t, gc_clip_l, gc_clip_b, gc_clip_r; // clip ∩ vis bounding box
     uint8_t *gc_clipmask; // 1 bit/pixel drawable mask (clipRgn ∩ visRgn), stride 80
     // The CURRENT clip and vis region records (raw QD region bytes) — each
     // op $6A/$6C REPLACES its region (QuickDraw semantics), so the effective
     // mask is rebuilt as clip ∩ vis, not intersected cumulatively.
     uint8_t *gc_cliprgn, *gc_visrgn; // 4 KB each; length 0 = wide open
-    uint32_t gc_cliprgn_len, gc_visrgn_len;
-    int16_t gc_rgn_ox, gc_rgn_oy; // port origin the stored regions carry
     uint8_t *gc_blitmask; // 1 bit/pixel per-blit mask (func $15 rgnA∩rgnB∩rgnC)
-    uint64_t draw_count; // primitives rasterized (introspection)
-    bool gc_accel; // func $2D accepted the port → interpret its queue (stage 2)
     bool force_decline; // harness switch (gc.force_decline): decline the drawing
                         // funcs ($2D/$15/$30) so the ROM path renders everything —
                         // the differential test oracle (proposal §4.1).  Not guest
@@ -202,6 +224,12 @@ struct display_card_824gc_priv {
     gc_reg_ctx_t ctx_super; // whole super-slot space (SRAM/DRAM/ctl/comm)
     gc_reg_ctx_t ctx_gcp; // GCQD CB window (standard slot; aliases DRAM CB)
 };
+
+// The layout above is load-bearing: card_checkpoint_save writes the range that
+// ends at `card`.  If this fires, a member crossed the boundary -- re-check what
+// the range now covers before touching it.
+_Static_assert(offsetof(struct display_card_824gc_priv, card) < offsetof(struct display_card_824gc_priv, display),
+               "`card` must lead the non-checkpointed block: it is the range boundary");
 
 // === DRAM big-endian accessors ==============================================
 // The comm protocol is big-endian longwords; the DRAM buffer holds them
@@ -242,6 +270,11 @@ void gc824_pixpats_flush(display_card_824gc_priv_t *p, uint32_t key);
 int gc824_font_download(display_card_824gc_priv_t *p);
 // Flush the font caches (PQDInit, boot, teardown).
 void gc824_font_caches_flush(display_card_824gc_priv_t *p);
+
+// Rebuild the drawable mask from the CURRENT clip and vis regions.  Exposed
+// because a checkpoint restore brings the regions back and must derive the
+// mask from them rather than serialise it.
+void gc824_clip_rebuild(display_card_824gc_priv_t *p);
 // Reset the interpreter's per-cycle QuickDraw drawing state (queue reset).
 void gc824_reset_draw_state(display_card_824gc_priv_t *p);
 
