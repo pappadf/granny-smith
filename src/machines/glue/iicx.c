@@ -22,32 +22,20 @@
 // VIA/ID hooks) on top of it.  iix.c reuses these via iicx_internal.h.
 
 #include "mac030_glue.h"
-#include "mac_host_io.h"
 #include "machine.h"
-#include "mmu_checkpoint.h"
 #include "slot_tables.h"
 #include "system_config.h" // full config_t
 
 #include "adb.h"
 #include "asc.h"
-#include "checkpoint_images.h"
-#include "checkpoint_machine.h"
-#include "cpu.h"
-#include "cpu_internal.h" // for cpu->mmu field
-#include "debug.h"
 #include "floppy.h"
 #include "iicx_internal.h" // shared IIcx/IIx internals
-#include "image.h"
 #include "log.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
-#include "rom.h"
 #include "rtc.h"
-#include "scc.h"
 #include "scheduler.h"
-#include "scsi.h"
-#include "shell.h"
 #include "via.h"
 
 #include <assert.h>
@@ -74,10 +62,6 @@ LOG_USE_CATEGORY_NAME("board");
 
 static void iicx_via2_output(void *context, uint8_t port, uint8_t output);
 static void iicx_via2_shift_out(void *context, uint8_t byte);
-
-// ============================================================
-// SoA page helper (mirrors the SE/30 helper — same logic)
-// ============================================================
 
 // ============================================================
 // ROM overlay
@@ -118,10 +102,6 @@ void iicx_memory_layout_tail(config_t *cfg) {
     st->rom_overlay = false;
     iicx_set_rom_overlay(cfg, true);
 }
-
-// ============================================================
-// Interrupt routing
-// ============================================================
 
 // ============================================================
 // VIA / SCC callbacks

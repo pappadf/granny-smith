@@ -22,7 +22,6 @@
 // RBV, Mode-24 framebuffer aliasing) matches the IIci.
 
 #include "mac030_glue.h"
-#include "mac_host_io.h"
 #include "machine.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
@@ -33,10 +32,7 @@
 #include "asc.h"
 #include "builtin_rbv_video.h"
 #include "checkpoint_images.h"
-#include "checkpoint_machine.h"
 #include "cpu.h"
-#include "cpu_internal.h" // for cpu->mmu field
-#include "debug.h"
 #include "egret.h"
 #include "floppy.h"
 #include "iisi_internal.h"
@@ -46,11 +42,8 @@
 #include "mmu.h"
 #include "nubus.h"
 #include "rbv.h"
-#include "rtc.h"
-#include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
-#include "shell.h"
 #include "via.h"
 
 #include <assert.h>
@@ -62,14 +55,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("board");
-
-// ============================================================
-// I/O island offsets (private to the dispatcher) — MDU map
-// ============================================================
-
-// ============================================================
-// SoA page helper (same logic as the IIci helper)
-// ============================================================
 
 // ============================================================
 // ROM overlay
@@ -136,10 +121,6 @@ static void iisi_memory_layout_init(config_t *cfg) {
     st->rom_overlay = false;
     iisi_set_rom_overlay(cfg, true);
 }
-
-// ============================================================
-// Interrupt routing
-// ============================================================
 
 // ============================================================
 // RBV / SCC / SCSI / Egret callbacks
@@ -218,10 +199,6 @@ static void iisi_via1_shift_out(void *context, uint8_t byte) {
     if (st->egret)
         egret_via1_shift_input(st->egret, byte);
 }
-
-// ============================================================
-// VBL trigger
-// ============================================================
 
 // ============================================================
 // Slot table

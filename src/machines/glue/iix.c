@@ -16,32 +16,14 @@
 //     same memory layout, same VBL trigger.
 
 #include "mac030_glue.h"
-#include "mac_host_io.h"
 #include "machine.h"
-#include "mmu_checkpoint.h"
 #include "slot_tables.h"
 #include "system_config.h"
 
-#include "adb.h"
 #include "asc.h"
-#include "checkpoint_images.h"
-#include "checkpoint_machine.h"
-#include "cpu.h"
-#include "cpu_internal.h"
-#include "debug.h"
-#include "floppy.h"
 #include "iicx_internal.h"
-#include "image.h"
 #include "log.h"
-#include "memory.h"
-#include "mmu.h"
 #include "nubus.h"
-#include "rom.h"
-#include "rtc.h"
-#include "scc.h"
-#include "scheduler.h"
-#include "scsi.h"
-#include "shell.h"
 #include "via.h"
 
 #include <assert.h>

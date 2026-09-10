@@ -15,32 +15,20 @@
 
 #include "mac030_glue.h"
 #include "mac030_glue_io.h"
-#include "mac_host_io.h"
 #include "machine.h"
-#include "mmu_checkpoint.h"
 #include "slot_tables.h"
 #include "system_config.h" // full config_t definition
 
 #include "adb.h"
 #include "asc.h"
 #include "builtin_se30_video.h" // SE/30 built-in video as a NuBus card (slot $E)
-#include "checkpoint_images.h"
-#include "checkpoint_machine.h"
-#include "cpu.h"
-#include "cpu_internal.h" // for cpu->mmu field
-#include "debug.h"
 #include "floppy.h"
 #include "image.h"
 #include "log.h"
 #include "memory.h"
-#include "mmu.h"
 #include "nubus.h"
-#include "rom.h"
 #include "rtc.h"
-#include "scc.h"
 #include "scheduler.h"
-#include "scsi.h"
-#include "shell.h"
 #include "via.h"
 
 #include <assert.h>

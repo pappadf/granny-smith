@@ -20,7 +20,6 @@
 //   * ADB / RTC use the classic VIA1 path (no Egret) — identical to IIcx.
 
 #include "mac030_glue.h"
-#include "mac_host_io.h"
 #include "machine.h"
 #include "mdu.h" // mdu_substrate + mac030_mdu_board_t
 #include "mmu_checkpoint.h"
@@ -31,10 +30,7 @@
 #include "asc.h"
 #include "builtin_rbv_video.h"
 #include "checkpoint_images.h"
-#include "checkpoint_machine.h"
 #include "cpu.h"
-#include "cpu_internal.h" // for cpu->mmu field
-#include "debug.h"
 #include "floppy.h"
 #include "iici_internal.h"
 #include "image.h"
@@ -43,12 +39,9 @@
 #include "mmu.h"
 #include "nubus.h"
 #include "rbv.h"
-#include "rom.h"
 #include "rtc.h"
-#include "scc.h"
 #include "scheduler.h"
 #include "scsi.h"
-#include "shell.h"
 #include "via.h"
 
 #include <assert.h>
@@ -60,14 +53,6 @@
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("board");
-
-// ============================================================
-// I/O island offsets (private to the dispatcher)
-// ============================================================
-
-// ============================================================
-// SoA page helper (same logic as the SE/30 / IIcx helper)
-// ============================================================
 
 // ============================================================
 // ROM overlay
@@ -178,10 +163,6 @@ static void iici_memory_layout_init(config_t *cfg) {
     st->rom_overlay = false;
     iici_set_rom_overlay(cfg, true);
 }
-
-// ============================================================
-// Interrupt routing
-// ============================================================
 
 // ============================================================
 // RBV / SCC / SCSI callbacks
