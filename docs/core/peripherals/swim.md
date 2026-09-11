@@ -53,6 +53,17 @@
 This document describes the SWIM (Sander-Wozniak Integrated Machine) floppy
 controller chip and the SuperDrive (FDHD) mechanism, with the explicit goal of
 enabling the implementation of a behaviorally exact emulator of the subsystem.
+
+> **Authority.** Where this document and a primary source disagree, **the
+> primary source wins** and this document is the thing to fix. The primary
+> sources live in `local/gs-docs/library/floppy/` — the Apple ISM ASIC spec
+> rev 4.1 (1987) for the ISM register file, the SWIM User's Reference rev 1.5
+> (1988) for programming sequences and sample code, the IWM spec rev 19 (1982),
+> and the SWIM2 / SWIM3 ERS documents. This document has been wrong against them
+> at least three times (the Handshake CRC polarity, the Error register's
+> per-mode definitions, and the sense-register table — see 02-floppy F-42), each
+> time in a way that would have broken working code if "fixed" to match. Quote
+> the source when recording a contract here.
 The scope includes:
 
 - The **SWIM chip** as seen by the CPU, in both IWM-compatible and ISM modes
@@ -626,7 +637,7 @@ Read-only status register for real-time transfer coordination.
 | Bit | Name | Description |
 |-----|------|-------------|
 | 0 | Mark | Next byte in FIFO is a mark byte |
-| 1 | CRC Error | 0 = CRC over received data + CRC bytes is not zero |
+| 1 | CRC Error | **1** = CRC over received data + CRC bytes is **not** zero (error); 0 = CRC zero (valid) |
 | 2 | RDDATA | Current state of RDDATA input pin |
 | 3 | SENSE | Current state of SENSE input pin |
 | 4 | MotorOn | 1 if MotorOn set or motor-off timer active |
@@ -646,8 +657,15 @@ and other diagnostic software, this bit is used to poll the TACH/INDEX signal
 the desired sense key before reading this bit.
 
 **Bit 1 (CRC Error)** is valid on the second CRC byte. After reading a complete
-field including both CRC bytes, this bit indicates whether the CRC matched (1=OK,
-0=error).
+field including both CRC bytes, the bit is **0 when the CRC register went to zero
+(the field is good)** and **1 when it did not (error)**. ISM ASIC spec, Handshake
+Register $7: "DATA BIT 1 = 0 CRC ZERO — Indicates that the CRC Register became all
+zeroes when the second CRC byte passed through the register."
+
+An earlier revision of this document stated the opposite polarity in four places.
+It is an *error* bit: set means error. Apple's own sample code (SWIM User's
+Reference, "Read MFM Address Field") confirms it —
+`AND #%00000010` / `BNE CRCError`.
 
 The DAT1BYTE pin on the 44-pin PLCC package directly reflects bit 7.
 
@@ -970,8 +988,8 @@ Equivalently, this is a standard CRC-CCITT-16 MSB-first computation.
 
 When receiving data, running the received data bytes plus the two CRC bytes
 through the CRC generator produces a zero remainder if the data is error-free.
-The Handshake register bit 1 reflects this: it reads 1 when the CRC is zero
-(valid) after processing the second CRC byte.
+The Handshake register bit 1 reflects this: it reads **0** when the CRC is zero
+(valid) after processing the second CRC byte, and 1 when it is not.
 
 ### CRC Insertion During Writes
 
@@ -1612,7 +1630,7 @@ MFM reading uses the ISM's hardware mark detection and FIFO:
 7. **Read field data:** Read track, side, sector, block-size bytes via rData.
    Read 2 CRC bytes via rData.
 8. **Check CRC:** After reading the second CRC byte, check Handshake bit 1. If
-   1, CRC is valid.
+   **0**, CRC is valid; 1 means a CRC error.
 9. **Read data field:** If the address field matches the desired sector, continue
    to the next mark sequence ($A1 $A1 $A1 $FB), then read 512 data bytes via
    rData, followed by 2 CRC bytes. Verify CRC.
@@ -1859,9 +1877,9 @@ error condition occurs first wins.
 
 | Bit | Value | Name | Condition |
 |-----|-------|------|-----------|
-| 0 | $01 | Underrun | CPU too slow providing write data; FIFO emptied |
+| 0 | $01 | Underrun | Write mode: FIFO emptied, CPU has not written the next byte. Read mode: FIFO holds two bytes and the CPU is not reading them fast enough |
 | 1 | $02 | Mark Error | Mark byte read from Data register instead of Mark register |
-| 2 | $04 | Overrun | CPU too slow consuming read data; FIFO overflowed |
+| 2 | $04 | Overrun | Write mode: CPU writing faster than the FIFO requests bytes. Read mode: CPU reading bytes faster than they become available |
 | 3 | $08 | Correction Error | ECM correction value out of acceptable range |
 | 4 | $10 | Too Narrow | Flux transition before MIN cell time |
 | 5 | $20 | Too Wide | No transition before MIN + boundary + RPT timeout |
@@ -1870,8 +1888,10 @@ error condition occurs first wins.
 
 ### Practical Notes
 
-- Underrun and overrun are mutually exclusive in practice (one applies during
-  writes, the other during reads)
+- Both bits are defined in **both** directions (ISM ASIC spec, Error Register
+  $2) — underrun is not "the write error" and overrun is not "the read error".
+  Only one can be set at a time, because once any error bit is set no other can
+  be until the register is cleared
 - Mark error (bit 1) is the most commonly encountered error in normal operation;
   it occurs when software reads a mark byte from the wrong register
 - Error bits 3–6 are only relevant when the Error Correction Machine is enabled
