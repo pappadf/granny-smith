@@ -1472,6 +1472,119 @@ static void test_604_alignment(void) {
     CHECK_EQ(P->gpr[3], 0x33445566u);
 }
 
+// Little-endian mode (604UM Table 4-3 ILE/LE; PEM §3.2.2).  The 60x does
+// not reorder bytes in LE mode: it munges the low EA bits (XOR 7/6/4 for
+// byte/halfword/word), so memory holds the LE program's image with every
+// doubleword byte-reversed — and instruction fetch munges like a word load,
+// so the two instructions of each doubleword swap places.  This is what
+// Apple's NT-capable Open Firmware does to its own dictionary before it
+// flips MSR[LE], and what the little-endian NT veneer expects of the CPU.
+static void test_604_little_endian(void) {
+    // Two LE instructions at LE addresses $1000/$1004 land physically at
+    // $1004/$1000.  The LE program's view of $2000..$2007 is the bytes
+    // 44 33 22 11 88 77 66 55 (words $11223344 then $55667788), which the
+    // doubleword-reversed image stores as BE words $55667788, $11223344.
+    fresh604();
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_LE);
+    memory_write_uint32(0x2000, 0x55667788u);
+    memory_write_uint32(0x2004, 0x11223344u);
+    P->gpr[4] = 0x2000u;
+    memory_write_uint32(0x1004, e_d(32, 3, 4, 0)); // lwz r3,0(r4)   (LE address $1000)
+    memory_write_uint32(0x1000, e_d(40, 5, 4, 0)); // lhz r5,0(r4)   (LE address $1004)
+    run_at(0x1000, 2);
+    CHECK_EQ(P->pc, 0x1008u); // both fetched in LE order, no fault
+    CHECK_EQ(P->gpr[3], 0x11223344u); // the LE word at $2000
+    CHECK_EQ(P->gpr[5], 0x3344u); // the LE halfword at $2000
+    // Bytes: LE $2000 is the LSB of $11223344; LE $2003 its MSB; LE $2007 = $55.
+    memory_write_uint32(0x1004, e_d(34, 3, 4, 0)); // lbz r3,0(r4)
+    memory_write_uint32(0x1000, e_d(34, 5, 4, 3)); // lbz r5,3(r4)
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0x44u);
+    CHECK_EQ(P->gpr[5], 0x11u);
+    memory_write_uint32(0x1004, e_d(34, 3, 4, 7)); // lbz r3,7(r4)
+    memory_write_uint32(0x1000, e_d(42, 5, 4, 6)); // lha r5,6(r4) -> $5566 sign-extended
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0x55u);
+    CHECK_EQ(P->gpr[5], 0x00005566u);
+    // Stores munge the same way: stw to LE $2004 lands at physical $2000;
+    // stb to LE $200B lands at physical $200C.
+    P->gpr[6] = 0xAABBCCDDu;
+    P->gpr[7] = 0xEEu;
+    memory_write_uint32(0x200C, 0);
+    memory_write_uint32(0x1004, e_d(36, 6, 4, 4)); // stw r6,4(r4)
+    memory_write_uint32(0x1000, e_d(38, 7, 4, 0xB)); // stb r7,11(r4)
+    run_at(0x1000, 2);
+    CHECK_EQ(memory_read_uint32(0x2000), 0xAABBCCDDu);
+    CHECK_EQ(memory_read_uint32(0x200C), 0xEE000000u);
+    CHECK_EQ(memory_read_uint32(0x2004), 0x11223344u); // untouched
+    // lwbrx reads big-endian data from the LE program's point of view.
+    memory_write_uint32(0x1004, e_x(3, 0, 4, 534, 0)); // lwbrx r3,0,r4
+    memory_write_uint32(0x1000, e_x(5, 0, 4, 790, 0)); // lhbrx r5,0,r4
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0x44332211u);
+    CHECK_EQ(P->gpr[5], 0x4433u);
+    // Update forms write back the ARCHITECTED (unmunged) EA.
+    P->gpr[4] = 0x2000u;
+    memory_write_uint32(0x1004, e_d(33, 3, 4, 4)); // lwzu r3,4(r4)
+    memory_write_uint32(0x1000, e_d(35, 5, 4, 1)); // lbzu r5,1(r4)
+    run_at(0x1000, 2);
+    CHECK_EQ(P->gpr[3], 0xAABBCCDDu); // the LE word at $2004 (stored above)
+    CHECK_EQ(P->gpr[4], 0x2005u);
+    CHECK_EQ(P->gpr[5], 0xCCu); // LE byte $2005 = byte 1 (from the LSB) of $AABBCCDD
+    // Doubleword FP: a doubleword-aligned lfd reads the BE image as-is
+    // (hi word at LE $2004, lo at LE $2000); a word-aligned one is two
+    // munged word accesses.
+    P->gpr[4] = 0x2000u;
+    memory_write_uint32(0x2000, 0x55667788u);
+    memory_write_uint32(0x2004, 0x11223344u);
+    memory_write_uint32(0x2008, 0xDDEEFF00u);
+    memory_write_uint32(0x200C, 0x99AABBCCu);
+    memory_write_uint32(0x1004, e_d(50, 3, 4, 0)); // lfd f3,0(r4)
+    memory_write_uint32(0x1000, e_d(50, 4, 4, 4)); // lfd f4,4(r4)
+    run_at(0x1000, 2);
+    CHECK(P->fpr[3] == 0x5566778811223344ull);
+    CHECK(P->fpr[4] == 0x99AABBCC55667788ull); // hi from LE $2008 (phys $200C), lo from LE $2004 (phys $2000)
+    memory_write_uint32(0x1004,
+                        e_d(54, 4, 4, 8)); // stfd f4,8(r4): hi -> LE $200C (phys $2008), lo -> LE $2008 (phys $200C)
+    memory_write_uint32(0x1000, 0x60000000u); // nop
+    run_at(0x1000, 2);
+    CHECK_EQ(memory_read_uint32(0x2008), 0x99AABBCCu);
+    CHECK_EQ(memory_read_uint32(0x200C), 0x55667788u);
+    // Alignment (604UM §4.5.6): a misaligned scalar and any multiple/string
+    // instruction take the alignment exception in LE mode, DAR = the EA.
+    P->gpr[4] = 0x2002u;
+    memory_write_uint32(0x1004, e_d(32, 3, 4, 0)); // lwz r3,0(r4) misaligned
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    CHECK_EQ(P->dar, 0x2002u);
+    CHECK_EQ(P->msr & PPC_MSR_LE, 0u); // ILE clear: the handler runs big-endian
+    CHECK_EQ(P->srr1 & PPC_MSR_LE, PPC_MSR_LE); // ... and rfi will restore LE
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_LE);
+    P->gpr[4] = 0x2000u;
+    memory_write_uint32(0x1004, e_d(46, 29, 4, 0)); // lmw r29,0(r4), aligned
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_LE);
+    memory_write_uint32(0x1004, e_x(3, 4, 4, 597, 0)); // lswi r3,r4,4
+    run_at(0x1000, 1);
+    CHECK_EQ(P->pc, 0x00000600u);
+    // Exception entry copies ILE into LE; the handler's fetch is munged
+    // accordingly (the vector's first two words swap).  rfi brings the
+    // interrupted endianness back from SRR1.
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_ILE); // BE with LE handlers
+    memory_write_uint32(0x1000, 0x44000002u); // sc (BE fetch)
+    memory_write_uint32(0x0C04, e_d(14, 3, 0, 0x77)); // li r3,$77  at LE $0C00
+    memory_write_uint32(0x0C00, 0x4C000064u); // rfi          at LE $0C04
+    run_at(0x1000, 3); // sc, li, rfi
+    CHECK_EQ(P->gpr[3], 0x77u); // the handler ran in LE
+    CHECK_EQ(P->pc, 0x1004u); // rfi returned...
+    CHECK_EQ(P->msr & (PPC_MSR_LE | PPC_MSR_ILE), PPC_MSR_ILE); // ...to BE, ILE kept
+    // The 601 never leaves big-endian: LE/ILE are masked off its MSR.
+    fresh();
+    ppc_set_msr(P, PPC_MSR_ME | PPC_MSR_FP | PPC_MSR_LE | PPC_MSR_ILE);
+    CHECK_EQ(P->msr, PPC_MSR_ME | PPC_MSR_FP);
+}
+
 // TEA machine check on the 604: SRR1[13] set, SRR1[30] cleared, MSR[ME]
 // cleared on entry (604UM Tables 4-2/4-8).
 static void test_604_machine_check(void) {
@@ -1633,6 +1746,7 @@ int main(void) {
     test_604_timebase();
     test_604_sprs();
     test_604_alignment();
+    test_604_little_endian();
     test_604_machine_check();
     test_604_optional_fp();
 

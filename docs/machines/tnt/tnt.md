@@ -47,8 +47,25 @@ DMA architecture:
   one-hot IDSEL, and the bridge's own device-11 header (vendor `$106B`,
   device `$0001`, revision 3) registered as an ordinary device with
   `$48` address-select and `$50` mode-select (latching coherency bit) as
-  its two quirk registers.  Devices 0-10 and empty IDSELs read all-ones
-  because nothing is registered there — not because of a literal.  Chaos
+  its two quirk registers.  Mode-select byte 0 bit 0 is the **endian
+  bit**: set at power-on for the straight byte lanes every Macintosh OS
+  runs on, cleared by the firmware (`... cdata xb@ 0fe and cdata xb!`)
+  when it enters a little-endian client, at which point the bridge
+  reverses its eight byte lanes for everything it forwards — the
+  pass-through Grand Central island, the PCI memory and I/O windows, and
+  bus-master DMA on its way to host memory — and its own config address
+  and data ports with them (the firmware's `set-caddr` stores a natural
+  one-hot address with `xl!`, which is the byte-flipping variant only in
+  big-endian mode, so in little-endian mode the flip has to come from the
+  bridge; a reversed 32-bit access simply reads and writes the
+  little-endian config dword as-is).  That
+  hardware reversal is the counterpart to the 604's little-endian address
+  munge: the two cancel, so a little-endian client reaches every PCI-side
+  device with plain loads and stores.  It is what lets Apple's 2.26NT
+  Open Firmware keep its serial console across the mandatory
+  little-endian configuration reboot when booting Windows NT.  Devices
+  0-10 and empty IDSELs read all-ones because nothing is registered there
+  — not because of a literal.  Chaos
   config space is read-restricted (`$00-$0F`, `$14`, `$18`) and ignores
   writes outside its two BAR offsets; both quirks are applied in the
   adapter, around the generic dispatch, because they are facts about
@@ -588,6 +605,25 @@ systems are limited to 8 bits per pixel" — and at one byte per pixel byte
 order does not matter, so the existing `PIXEL_8BPP` path is *correct* rather
 than merely convenient. Deeper colour needs a little-endian framebuffer
 window in `display_t`, which this repository does not have.
+
+### The registers that are not memory
+
+Open Firmware and AIX both arrive knowing what the part is, so for a long
+time a flat byte array per register block was enough. A driver that has to
+*find* the chip needs four registers that do not behave like storage, and
+Windows NT's `cirrus.sys` reads all four before it will claim the adapter:
+
+| | behaviour | why a driver cares |
+|---|---|---|
+| `SR06` | writing `$12` unlocks the extensions and reads back `$12`; anything else locks them and reads back `$0F` | the round trip *is* the presence test |
+| `CR27` | read-only `$A0`: bits 7:2 the device (CL-GD5430, agreeing with the `$00A0` PCI ID), 1:0 the revision | the chip ID, and which mode tables apply |
+| `SR15` | bits 3:0 report the fitted DRAM — `2` is 1 MB | the driver sizes its mode list from this instead of probing, and rejects every mode that will not fit |
+| `$3CC` | reads back what `$3C2` (Miscellaneous Output) was given | bit 0 says whether the CRTC pair is at `$3D4/$3D5` or `$3B4/$3B5` |
+
+The monochrome CRTC pair `$3B4/$3B5` is folded onto the colour one whatever
+`$3C2` bit 0 says. Software that never writes Miscellaneous Output reads
+zero from `$3CC`, goes to the monochrome addresses, and would otherwise find
+nothing there.
 
 One VGA register is deliberately not store-and-readback: **Input Status
 Register 1** (`$3BA`/`$3DA`). Software does not read it for a value, it
