@@ -423,9 +423,12 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
 
     int drv = DRIVE_INDEX(floppy);
 
-    // Mode register is WRITE ONLY
+    // Mode register is WRITE ONLY.  Guest-reachable -- any code can set Q6 and
+    // Q7 and then read -- so it logs rather than asserting (02-floppy F-32);
+    // GS_ASSERT pauses the scheduler and continues, which turns a wrong guest
+    // instruction into an emulator hang.
     if (IWM_Q6(floppy) && IWM_Q7(floppy))
-        GS_ASSERT(0);
+        LOG(2, "IWM: read of the write-only mode register (Q6=Q7=1)");
 
     // Read status register: Q6=1, Q7=0
     if (IWM_Q6(floppy) && !IWM_Q7(floppy)) {
@@ -513,8 +516,10 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
         return ret;
     }
 
-    GS_ASSERT(0);
-    return 0;
+    // Every Q6/Q7 combination is handled above; this is unreachable.  Open bus
+    // rather than an assert, for the same reason as the cases above.
+    LOG(2, "IWM: unhandled register read (lines=0x%02X)", floppy->iwm_lines);
+    return 0xFF;
 }
 
 // Writes a byte to the IWM register at the specified offset

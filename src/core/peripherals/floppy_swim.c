@@ -835,20 +835,21 @@ static uint8_t swim_read_uint8(void *ctx, uint32_t addr) {
     return floppy_swim_read((floppy_t *)ctx, addr);
 }
 
-// Memory interface handler for 16-bit reads (not supported)
+// The chip is on one byte of the data bus, so a wide access reaches nothing.
+// These used to GS_ASSERT(0) -- which prints and PAUSES THE SCHEDULER rather
+// than aborting, so any guest executing `move.w $D80000,d0`, buggy or hostile,
+// halted the emulator and surfaced in CI as an unexplained hang (02-floppy
+// F-32).  Log it and return open bus, as grand_central.c does.
 static uint16_t swim_read_uint16(void *ctx, uint32_t addr) {
     (void)ctx;
-    (void)addr;
-    GS_ASSERT(0);
-    return 0;
+    LOG(1, "%s: 16-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);
+    return 0xFFFF;
 }
 
-// Memory interface handler for 32-bit reads (not supported)
 static uint32_t swim_read_uint32(void *ctx, uint32_t addr) {
     (void)ctx;
-    (void)addr;
-    GS_ASSERT(0);
-    return 0;
+    LOG(1, "%s: 32-bit access at 0x%08X is not decoded; reading open bus", "''' + name + r'''", addr);
+    return 0xFFFFFFFFu;
 }
 
 // Memory interface handler for 8-bit writes
@@ -856,20 +857,16 @@ static void swim_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
     floppy_swim_write((floppy_t *)ctx, addr, value);
 }
 
-// Memory interface handler for 16-bit writes (not supported)
 static void swim_write_uint16(void *ctx, uint32_t addr, uint16_t value) {
     (void)ctx;
-    (void)addr;
     (void)value;
-    GS_ASSERT(0);
+    LOG(1, "%s: 16-bit write at 0x%08X is not decoded; dropped", "''' + name + r'''", addr);
 }
 
-// Memory interface handler for 32-bit writes (not supported)
 static void swim_write_uint32(void *ctx, uint32_t addr, uint32_t value) {
     (void)ctx;
-    (void)addr;
     (void)value;
-    GS_ASSERT(0);
+    LOG(1, "%s: 32-bit write at 0x%08X is not decoded; dropped", "''' + name + r'''", addr);
 }
 
 // ============================================================================
