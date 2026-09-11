@@ -219,6 +219,77 @@ TEST(test_track_round_trip) {
 }
 
 // ---------------------------------------------------------------------------
+// MFM sector layout
+// ---------------------------------------------------------------------------
+
+typedef struct {
+    uint8_t buf[2048];
+    bool marks[2048];
+    int pos;
+} mfm_capture_t;
+
+static void mfm_capture(void *ctx, uint8_t byte, bool is_mark) {
+    mfm_capture_t *c = ctx;
+    if (c->pos >= (int)sizeof c->buf)
+        return;
+    c->marks[c->pos] = is_mark;
+    c->buf[c->pos++] = byte;
+}
+
+// The IBM System-34 sector the SuperDrive lays down, written twice before
+// (02-floppy F-20) with identical field order and values but different sinks.
+// This pins the field order so the one description cannot drift.
+TEST(test_mfm_sector_layout) {
+    uint8_t data[512];
+    for (int i = 0; i < 512; i++)
+        data[i] = (uint8_t)(i + 5);
+
+    mfm_capture_t c;
+    memset(&c, 0, sizeof c);
+    floppy_mfm_emit_sector(mfm_capture, &c, 3, 1, 7, data, 80, true);
+
+    int p = 0;
+    for (int i = 0; i < 12; i++)
+        ASSERT_EQ_INT(c.buf[p++], 0x00); // sync
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_INT(c.buf[p], 0xA1); // address mark, clock-suppressed
+        ASSERT_TRUE(c.marks[p]);
+        p++;
+    }
+    ASSERT_EQ_INT(c.buf[p], 0xFE);
+    ASSERT_TRUE(!c.marks[p]);
+    p++;
+    ASSERT_EQ_INT(c.buf[p++], 3); // cylinder
+    ASSERT_EQ_INT(c.buf[p++], 1); // head
+    ASSERT_EQ_INT(c.buf[p++], 7); // sector, 1-based as it appears on disk
+    ASSERT_EQ_INT(c.buf[p++], 0x02); // size code: 512-byte sectors
+    p += 2; // header CRC
+    for (int i = 0; i < 22; i++)
+        ASSERT_EQ_INT(c.buf[p++], 0x4E); // gap 2
+    for (int i = 0; i < 12; i++)
+        ASSERT_EQ_INT(c.buf[p++], 0x00);
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_INT(c.buf[p], 0xA1);
+        ASSERT_TRUE(c.marks[p]);
+        p++;
+    }
+    ASSERT_EQ_INT(c.buf[p++], 0xFB); // data mark
+    ASSERT_TRUE(memcmp(c.buf + p, data, 512) == 0);
+    p += 512 + 2; // data + CRC
+    for (int i = 0; i < 80; i++)
+        ASSERT_EQ_INT(c.buf[p++], 0x4E); // gap 3
+    ASSERT_EQ_INT(c.pos, p);
+
+    // Gap 3 and the CRC fields are the two per-caller parameters: SWIM3's raw
+    // capture uses 54 and emits no CRC.  Both must change the length by
+    // exactly what they say and nothing else.
+    mfm_capture_t d;
+    memset(&d, 0, sizeof d);
+    floppy_mfm_emit_sector(mfm_capture, &d, 3, 1, 7, data, 54, false);
+    ASSERT_EQ_INT(d.pos, c.pos - (80 - 54) - 4);
+}
+
+// ---------------------------------------------------------------------------
 // Per-sector write-through
 // ---------------------------------------------------------------------------
 
@@ -480,6 +551,7 @@ int main(void) {
     RUN(test_triplet_forms_agree);
     RUN(test_media_descriptor);
     RUN(test_media_sector_offset);
+    RUN(test_mfm_sector_layout);
     RUN(test_write_through_detects_sector_boundary);
     RUN(test_register_strides);
     printf("All floppy tests passed\n");

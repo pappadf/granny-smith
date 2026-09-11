@@ -84,4 +84,29 @@ void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t
 // Converts a GCR codeword to its 6-bit value, or GCR_BAD_CODEWORD.
 uint8_t decode_gcr(uint8_t gcr_codeword);
 
+// === MFM sector layout ======================================================
+//
+// One description of the IBM System-34 sector the SuperDrive lays down, for
+// every controller.  It was written twice (02-floppy F-20): once in
+// floppy_swim.c filling a byte buffer with a parallel mark array, once in
+// swim3_xfer.c emitting (clock, data) pairs into a DMA stream.  Identical field
+// order and values; they differed only in output SINK -- and, unexplained, in
+// gap-3 length and whether CRC bytes were emitted at all.
+//
+// Those two remain parameters rather than being unified to one value: gap 3 is
+// format-dependent and nothing in the SWIM or SWIM3 specs in
+// local/gs-docs/library/floppy pins the numbers these two chose, so preserving
+// each caller's behaviour is the honest option until a source settles it.
+// Recorded as an open question in proposal-floppy-controller-unification.
+
+// Emits one byte of the layout.  `is_mark` marks the $A1/$C2 bytes written
+// with a missing clock transition.
+typedef void (*floppy_mfm_emit_fn)(void *ctx, uint8_t byte, bool is_mark);
+
+// Lays down one complete MFM sector: sync, address mark, C/H/S/N, CRC, gap 2,
+// sync, data mark, 512 data bytes, CRC, gap 3.  `sector` is 1-based, as it
+// appears in the header.  `emit_crc` false omits both CRC fields.
+void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int side, int sector, const uint8_t *data,
+                            int gap3_len, bool emit_crc);
+
 #endif // FLOPPY_GEOMETRY_H

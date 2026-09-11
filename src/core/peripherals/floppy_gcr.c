@@ -603,6 +603,66 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const u
 #undef GCR_OR_FAIL
 }
 
+// === MFM sector layout (floppy_geometry.h) ==================================
+
+#define MFM_CRC_INIT 0xFFFFu
+
+static uint16_t mfm_crc_byte(uint16_t crc, uint8_t byte) {
+    crc ^= (uint16_t)byte << 8;
+    for (int i = 0; i < 8; i++)
+        crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+    return crc;
+}
+
+void floppy_mfm_emit_sector(floppy_mfm_emit_fn emit, void *ctx, int track, int side, int sector, const uint8_t *data,
+                            int gap3_len, bool emit_crc) {
+    if (!emit)
+        return;
+
+    // Address field: 12 x $00 sync, 3 x $A1 (marked), $FE, C/H/S/N, CRC.
+    for (int i = 0; i < 12; i++)
+        emit(ctx, 0x00, false);
+    for (int i = 0; i < 3; i++)
+        emit(ctx, 0xA1, true);
+    emit(ctx, 0xFE, false);
+    const uint8_t hdr[4] = {(uint8_t)track, (uint8_t)side, (uint8_t)sector, 0x02}; // 0x02 = 512-byte sectors
+    for (int i = 0; i < 4; i++)
+        emit(ctx, hdr[i], false);
+    if (emit_crc) {
+        uint16_t crc = MFM_CRC_INIT;
+        crc = mfm_crc_byte(crc, 0xA1);
+        crc = mfm_crc_byte(crc, 0xFE);
+        for (int i = 0; i < 4; i++)
+            crc = mfm_crc_byte(crc, hdr[i]);
+        emit(ctx, (uint8_t)(crc >> 8), false);
+        emit(ctx, (uint8_t)(crc & 0xFF), false);
+    }
+
+    // Gap 2, then the data field: sync, 3 x $A1 (marked), $FB, 512 bytes, CRC.
+    for (int i = 0; i < 22; i++)
+        emit(ctx, 0x4E, false);
+    for (int i = 0; i < 12; i++)
+        emit(ctx, 0x00, false);
+    for (int i = 0; i < 3; i++)
+        emit(ctx, 0xA1, true);
+    emit(ctx, 0xFB, false);
+    for (int i = 0; i < 512; i++)
+        emit(ctx, data[i], false);
+    if (emit_crc) {
+        uint16_t crc = MFM_CRC_INIT;
+        crc = mfm_crc_byte(crc, 0xA1);
+        crc = mfm_crc_byte(crc, 0xFB);
+        for (int i = 0; i < 512; i++)
+            crc = mfm_crc_byte(crc, data[i]);
+        emit(ctx, (uint8_t)(crc >> 8), false);
+        emit(ctx, (uint8_t)(crc & 0xFF), false);
+    }
+
+    // Gap 3 (inter-sector).
+    for (int i = 0; i < gap3_len; i++)
+        emit(ctx, 0x4E, false);
+}
+
 // Per-sector write-through for the GCR path.
 //
 // The ISM path (ism_write_capture_flush) and SWIM3 (swim3_write_sector) both

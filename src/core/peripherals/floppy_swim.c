@@ -122,6 +122,22 @@ static bool ism_encoding_matches(const floppy_t *floppy, const image_t *img) {
     return gcr_framing != m.mfm;
 }
 
+// Sink for floppy_mfm_emit_sector: fills the ISM's byte buffer and its
+// parallel mark array, stopping at the buffer's capacity.
+typedef struct mfm_buf_sink {
+    uint8_t *buf;
+    bool *marks;
+    int pos;
+} mfm_buf_sink_t;
+
+static void mfm_buf_emit(void *ctx, uint8_t byte, bool is_mark) {
+    mfm_buf_sink_t *sink = ctx;
+    if (sink->pos >= MFM_SECTOR_BUF_SIZE)
+        return;
+    sink->marks[sink->pos] = is_mark;
+    sink->buf[sink->pos++] = byte;
+}
+
 static void mfm_build_sector(floppy_t *floppy) {
     int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
     image_t *img = floppy->disk[drv];
@@ -167,77 +183,14 @@ static void mfm_build_sector(floppy_t *floppy) {
         return;
     }
 
-    // Build the sector buffer: address field + gap + data field
-    uint8_t *buf = floppy->mfm_sector_buf;
-    bool *marks = floppy->mfm_sector_mark;
-    int pos = 0;
-
-    memset(marks, 0, MFM_SECTOR_BUF_SIZE);
-
-    // Sync bytes (12 x $00)
-    for (int i = 0; i < 12; i++)
-        buf[pos++] = 0x00;
-
-    // Address mark: 3x mark $A1 + $FE
-    marks[pos] = true;
-    buf[pos++] = 0xA1;
-    marks[pos] = true;
-    buf[pos++] = 0xA1;
-    marks[pos] = true;
-    buf[pos++] = 0xA1;
-    buf[pos++] = 0xFE;
-
-    // Address field: cylinder, side, sector, size code
-    buf[pos++] = (uint8_t)track;
-    buf[pos++] = (uint8_t)side;
-    buf[pos++] = (uint8_t)sector;
-    buf[pos++] = 0x02; // 512 bytes/sector
-
-    // CRC over last mark byte + $FE + 4 address bytes
-    uint16_t crc = CRC_INIT;
-    crc = crc_ccitt_byte(crc, 0xA1);
-    crc = crc_ccitt_byte(crc, 0xFE);
-    crc = crc_ccitt_byte(crc, (uint8_t)track);
-    crc = crc_ccitt_byte(crc, (uint8_t)side);
-    crc = crc_ccitt_byte(crc, (uint8_t)sector);
-    crc = crc_ccitt_byte(crc, 0x02);
-    buf[pos++] = (uint8_t)(crc >> 8);
-    buf[pos++] = (uint8_t)(crc & 0xFF);
-
-    // Gap2 (22 x $4E)
-    for (int i = 0; i < 22; i++)
-        buf[pos++] = 0x4E;
-
-    // Sync bytes (12 x $00)
-    for (int i = 0; i < 12; i++)
-        buf[pos++] = 0x00;
-
-    // Data mark: 3x mark $A1 + $FB
-    marks[pos] = true;
-    buf[pos++] = 0xA1;
-    marks[pos] = true;
-    buf[pos++] = 0xA1;
-    marks[pos] = true;
-    buf[pos++] = 0xA1;
-    buf[pos++] = 0xFB;
-
-    // Sector data (512 bytes)
-    memcpy(&buf[pos], sector_data, 512);
-    pos += 512;
-
-    // CRC over last data mark byte + sector data
-    crc = CRC_INIT;
-    crc = crc_ccitt_byte(crc, 0xA1);
-    crc = crc_ccitt_byte(crc, 0xFB);
-    for (int i = 0; i < 512; i++)
-        crc = crc_ccitt_byte(crc, sector_data[i]);
-    buf[pos++] = (uint8_t)(crc >> 8);
-    buf[pos++] = (uint8_t)(crc & 0xFF);
-
-    // Gap3 (inter-sector gap)
-    int gap3_len = (sectors_per_track == 18) ? 101 : 80;
-    for (int i = 0; i < gap3_len; i++)
-        buf[pos++] = 0x4E;
+    // Fill the sector buffer from the one MFM layout (floppy_geometry.h).
+    // This used to be ~70 lines laying the fields down by hand, a second
+    // description of the same format as swim3_xfer.c's (02-floppy F-20).
+    mfm_buf_sink_t sink = {floppy->mfm_sector_buf, floppy->mfm_sector_mark, 0};
+    memset(sink.marks, 0, MFM_SECTOR_BUF_SIZE);
+    floppy_mfm_emit_sector(mfm_buf_emit, &sink, track, side, sector, sector_data, (sectors_per_track == 18) ? 101 : 80,
+                           true);
+    int pos = sink.pos;
 
     floppy->mfm_buf_len = (uint16_t)pos;
     floppy->mfm_buf_pos = 0;

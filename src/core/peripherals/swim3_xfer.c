@@ -477,6 +477,21 @@ static bool raw_pair(swim3_t *sw, uint8_t flag, uint8_t data) {
     return dma_put(sw, flag) && dma_put(sw, data);
 }
 
+// Sink for floppy_mfm_emit_sector: each byte goes out as a (clock, data) pair
+// on the raw-capture stream.  `ok` goes false when the DMA channel closes.
+typedef struct {
+    swim3_t *sw;
+    bool ok;
+} swim3_raw_sink_t;
+
+static void swim3_raw_emit(void *ctx, uint8_t byte, bool is_mark) {
+    swim3_raw_sink_t *sink = ctx;
+    if (!sink->ok)
+        return;
+    if (!raw_pair(sink->sw, is_mark ? 0x80 : 0x00, byte))
+        sink->ok = false;
+}
+
 // Reconstruct one track's byte stream, oldest field first, into the DMA
 // window.  Stops as soon as the channel closes (terminal count).
 static void swim3_raw_track(swim3_t *sw, const swim3_media_t *m, int track, int side) {
@@ -487,35 +502,14 @@ static void swim3_raw_track(swim3_t *sw, const swim3_media_t *m, int track, int 
         if (!swim3_read_sector(m, track, side, s, data, tag))
             return;
         if (m->mfm) {
-            for (int i = 0; i < 12; i++) // sync
-                if (!raw_pair(sw, 0x00, 0x00))
-                    return;
-            for (int i = 0; i < 3; i++) // address mark
-                if (!raw_pair(sw, 0x80, 0xA1))
-                    return;
-            if (!raw_pair(sw, 0x80, 0xFE))
+            // One MFM layout for every controller (02-floppy F-20).  The sink
+            // pairs each byte with its clock byte: $80 for the $A1 marks
+            // (missing clock transition), $00 otherwise.  Gap 3 and the absent
+            // CRC fields stay this caller's choices -- see the header.
+            swim3_raw_sink_t sink = {sw, true};
+            floppy_mfm_emit_sector(swim3_raw_emit, &sink, track, side, s + 1, data, 54, false);
+            if (!sink.ok)
                 return;
-            uint8_t hdr[4] = {(uint8_t)track, (uint8_t)side, (uint8_t)(s + 1), 0x02};
-            for (int i = 0; i < 4; i++)
-                if (!raw_pair(sw, 0x00, hdr[i]))
-                    return;
-            for (int i = 0; i < 22; i++) // gap 2
-                if (!raw_pair(sw, 0x00, 0x4E))
-                    return;
-            for (int i = 0; i < 12; i++)
-                if (!raw_pair(sw, 0x00, 0x00))
-                    return;
-            for (int i = 0; i < 3; i++) // data mark
-                if (!raw_pair(sw, 0x80, 0xA1))
-                    return;
-            if (!raw_pair(sw, 0x80, 0xFB))
-                return;
-            for (int i = 0; i < SECTOR_BYTES; i++)
-                if (!raw_pair(sw, 0x00, data[i]))
-                    return;
-            for (int i = 0; i < 54; i++) // gap 3
-                if (!raw_pair(sw, 0x00, 0x4E))
-                    return;
         } else {
             // The 6-to-8 GCR codeword table, shared (02-floppy F-18): this used
             // to be a byte-identical second copy, kept here only because the
