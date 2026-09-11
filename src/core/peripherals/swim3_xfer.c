@@ -654,8 +654,11 @@ static void swim3_arm(swim3_t *sw, double delay_ns) {
 
 static void swim3_stop(swim3_t *sw) {
     sw->xfer_any = 0; // GO dropped: the next GO starts at FirstSector again
-    if (!sw->engine_running)
-        return;
+    // Unconditional: `engine_running` is a record of what we armed, and a
+    // caller that wipes the register file before stopping (SoftReset, swim3.c)
+    // destroys that record first — an `if (!engine_running) return` here let
+    // the armed event outlive the reset.  remove_event on a non-armed event is
+    // a no-op, so the flag never has to be trusted for correctness.
     remove_event(sw->sched, swim3_engine_event, sw);
     sw->engine_running = 0;
 }
