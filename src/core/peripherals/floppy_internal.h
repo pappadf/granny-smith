@@ -5,11 +5,16 @@
 // Internal shared types, constants, and struct definition for the unified
 // floppy subsystem (IWM + SWIM). This header is NOT part of the public API;
 // include it only from floppy*.c files.
+//
+// The Sony zone geometry that machine files legitimately need lives in the
+// public floppy_geometry.h instead -- lisa_fdc.c used to include THIS header
+// for it, in violation of the rule above (02-floppy F-29).
 
 #ifndef FLOPPY_INTERNAL_H
 #define FLOPPY_INTERNAL_H
 
 #include "floppy.h" // FLOPPY_NUM_DRIVES, FLOPPY_TYPE_*
+#include "floppy_geometry.h" // zone helpers + floppy_media_t (public API)
 #include "image.h"
 #include "memory.h"
 #include "scheduler.h"
@@ -34,8 +39,8 @@
 // ============================================================================
 
 #define NUM_DRIVES FLOPPY_NUM_DRIVES // see floppy.h
-#define NUM_TRACKS 80
-#define NUM_SIDES  2
+#define NUM_TRACKS FLOPPY_NUM_TRACKS // see floppy_geometry.h
+#define NUM_SIDES  FLOPPY_NUM_SIDES // see floppy_geometry.h
 
 // Time in nanoseconds for motor spin-up (400 ms)
 #define MOTOR_SPINUP_TIME_NS (400ULL * 1000000ULL)

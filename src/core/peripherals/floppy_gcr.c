@@ -69,11 +69,84 @@ size_t iwm_disk_image_offset(int track, int side, int num_sides) {
     return offset;
 }
 
+// ============================================================================
+// Public geometry API (floppy_geometry.h)
+// ============================================================================
+
+int floppy_zone_sectors_per_track(int track) {
+    return iwm_sectors_per_track(track);
+}
+int floppy_zone_rpm(int track) {
+    return iwm_track_rpm(track);
+}
+size_t floppy_zone_track_length(int track) {
+    return iwm_track_length(track);
+}
+size_t floppy_zone_image_offset(int track, int side, int num_sides) {
+    return iwm_disk_image_offset(track, side, num_sides);
+}
+
+// Keyed on image_t::type, which classify_image() derives from the exact byte
+// size -- the only classifier that was ever right (02-floppy F-17 preferred
+// swim3_media's version, and this is it, promoted).
+bool floppy_media_from_image(image_t *img, floppy_media_t *out) {
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    if (!img)
+        return false;
+    out->img = img;
+    switch (img->type) {
+    case image_fd_hd: // 1440K MFM: 18 sectors/track, both sides, HD media
+        out->mfm = true;
+        out->hd = true;
+        out->sides = 2;
+        out->mfm_spt = 18;
+        out->fmt_byte = 0x02; // MFM size code 2 = 512-byte sectors
+        break;
+    case image_fd_dd_mfm: // 720K MFM: 9 sectors/track on DD media
+        out->mfm = true;
+        out->sides = 2;
+        out->mfm_spt = 9;
+        out->fmt_byte = 0x02;
+        break;
+    case image_fd_ds: // 800K GCR: double-sided, interleave 2
+        out->sides = 2;
+        out->fmt_byte = 0x22;
+        break;
+    case image_fd_ss: // 400K GCR: single-sided
+        out->sides = 1;
+        out->fmt_byte = 0x02;
+        break;
+    default:
+        out->img = NULL;
+        return false;
+    }
+    out->valid = true;
+    return true;
+}
+
+int floppy_media_spt(const floppy_media_t *m, int track) {
+    if (!m || !m->valid)
+        return 0;
+    return m->mfm ? m->mfm_spt : floppy_zone_sectors_per_track(track);
+}
+
+// MFM tracks are uniform; GCR tracks shrink towards the spindle, so their
+// offset accumulates by zone.
+size_t floppy_media_sector_offset(const floppy_media_t *m, int track, int side, int sector) {
+    if (!m || !m->valid)
+        return 0;
+    if (m->mfm)
+        return ((size_t)(track * m->sides + side) * (size_t)m->mfm_spt + (size_t)sector) * FLOPPY_SECTOR_BYTES;
+    return floppy_zone_image_offset(track, side, m->sides) + (size_t)sector * FLOPPY_SECTOR_BYTES;
+}
+
 // Determines the number of sides based on disk image type
 int iwm_image_num_sides(image_t *img) {
     if (!img)
         return 2; // Default to double-sided if unknown
-    // Single-sided 400KB disk has type image_fd_ss
+    // Only the 400K disk is single-sided; 720K, 800K and 1440K are not.
     return (img->type == image_fd_ss) ? 1 : 2;
 }
 
@@ -262,9 +335,11 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
     // same as "not GCR" and let the caller take its no-data branch.
     if (!img)
         return NULL;
-    // HD disks use MFM encoding, not GCR — reject them so the ROM
-    // falls through to the ISM (SWIM) read path
-    if (img->type == image_fd_hd)
+    // MFM media is not GCR — reject it so the ROM falls through to the ISM
+    // (SWIM) read path.  This used to test `== image_fd_hd`, so a 720K disk
+    // (which classified as a hard disk before F-04) was GCR-encoded from
+    // MFM-laid-out bytes and handed to the IWM as if it were an 800K disk.
+    if (image_is_mfm_floppy(img->type))
         return NULL;
     GS_ASSERT(drive->track < NUM_TRACKS);
 

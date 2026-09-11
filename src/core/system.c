@@ -482,7 +482,7 @@ int system_probe_floppy(const char *path) {
         return 1;
     }
 
-    if (disk->type != image_fd_ss && disk->type != image_fd_ds && disk->type != image_fd_hd) {
+    if (!image_is_floppy(disk->type)) {
         printf("%s: Valid disk image but not a floppy (size: %zu bytes)\n", path, disk->raw_size);
         image_close(disk);
         free(persistent_path);
@@ -494,6 +494,8 @@ int system_probe_floppy(const char *path) {
         type_str = "single-sided 400KB";
     else if (disk->type == image_fd_ds)
         type_str = "double-sided 800KB";
+    else if (disk->type == image_fd_dd_mfm)
+        type_str = "double-density 720KB MFM";
     else if (disk->type == image_fd_hd)
         type_str = "high-density 1440KB";
 

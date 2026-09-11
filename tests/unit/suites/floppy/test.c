@@ -245,6 +245,82 @@ TEST(test_register_strides) {
         ASSERT_EQ_INT((int)((off >> 9) & 0x0F), 0);
 }
 
+// ---------------------------------------------------------------------------
+// Media descriptor
+// ---------------------------------------------------------------------------
+
+// The four Macintosh floppy capacities, each pinning an encoding, a side count
+// and a sector layout.  720K is the one that used to be missing: it classified
+// as a hard disk, so the GCR path encoded MFM-laid-out bytes as if they were an
+// 800K disk, the media senses reported DD GCR, and floppy.identify said "not a
+// floppy" (02-floppy F-04).
+TEST(test_media_descriptor) {
+    struct {
+        enum image_type type;
+        bool mfm, hd;
+        int sides, mfm_spt;
+    } cases[] = {
+        {image_fd_ss,     false, false, 1, 0 },
+        {image_fd_ds,     false, false, 2, 0 },
+        {image_fd_dd_mfm, true,  false, 2, 9 },
+        {image_fd_hd,     true,  true,  2, 18},
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        image_t img;
+        memset(&img, 0, sizeof img);
+        img.type = cases[i].type;
+        floppy_media_t m;
+        ASSERT_TRUE(floppy_media_from_image(&img, &m));
+        ASSERT_TRUE(m.valid);
+        ASSERT_EQ_INT(m.mfm, cases[i].mfm);
+        ASSERT_EQ_INT(m.hd, cases[i].hd);
+        ASSERT_EQ_INT(m.sides, cases[i].sides);
+        ASSERT_EQ_INT(m.mfm_spt, cases[i].mfm_spt);
+        ASSERT_TRUE(m.img == &img);
+        // The predicate callers should ask with, rather than == image_fd_hd.
+        ASSERT_EQ_INT(image_is_mfm_floppy(cases[i].type), cases[i].mfm);
+        ASSERT_TRUE(image_is_floppy(cases[i].type));
+    }
+
+    // An empty drive and a hard disk are both "not a floppy geometry".
+    floppy_media_t m;
+    ASSERT_TRUE(!floppy_media_from_image(NULL, &m));
+    ASSERT_TRUE(!m.valid);
+    image_t hd;
+    memset(&hd, 0, sizeof hd);
+    hd.type = image_hd;
+    ASSERT_TRUE(!floppy_media_from_image(&hd, &m));
+    ASSERT_TRUE(!image_is_floppy(image_hd));
+}
+
+// MFM tracks are uniform; GCR tracks are zoned.  Both must agree with the
+// zone helpers, since the engine reaches sectors through this one function.
+TEST(test_media_sector_offset) {
+    image_t img;
+    memset(&img, 0, sizeof img);
+    floppy_media_t m;
+
+    img.type = image_fd_hd; // 1440K: 18 spt, uniform
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_EQ_INT(floppy_media_spt(&m, 0), 18);
+    ASSERT_EQ_INT(floppy_media_spt(&m, 79), 18);
+    ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 0, 0, 0), 0);
+    ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 0, 1, 0), 18 * 512);
+    ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 1, 0, 0), 2 * 18 * 512);
+
+    img.type = image_fd_dd_mfm; // 720K: 9 spt
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_EQ_INT(floppy_media_spt(&m, 40), 9);
+    ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 1, 0, 0), 2 * 9 * 512);
+
+    img.type = image_fd_ds; // 800K GCR: zoned, and the offset accumulates
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_EQ_INT(floppy_media_spt(&m, 0), 12);
+    ASSERT_EQ_INT(floppy_media_spt(&m, 79), 8);
+    ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 0, 1, 0), 12 * 512);
+    ASSERT_EQ_INT((int)floppy_media_sector_offset(&m, 0, 0, 3), 3 * 512);
+}
+
 int main(void) {
     RUN(test_sectors_per_track);
     RUN(test_track_rpm);
@@ -255,6 +331,8 @@ int main(void) {
     RUN(test_sector_round_trip);
     RUN(test_sector_round_trip_edge_payloads);
     RUN(test_track_round_trip);
+    RUN(test_media_descriptor);
+    RUN(test_media_sector_offset);
     RUN(test_register_strides);
     printf("All floppy tests passed\n");
     return 0;

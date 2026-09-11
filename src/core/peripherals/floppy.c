@@ -168,6 +168,9 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
             // HD disks: 1 INDEX pulse per revolution (200ms cycle)
             // 800K disks: 2 INDEX pulses per revolution (100ms cycle)
             image_t *img = floppy->disk[drv];
+            // 1440K only: the deviation from swim.md's "2 pulses per
+            // revolution unconditionally" is justified by MacTest for HD
+            // media specifically, so 720K MFM stays on the 2/rev path.
             bool is_hd = (img && img->type == image_fd_hd);
             double ns_per_cycle = is_hd ? ns_per_rev : (ns_per_rev / 2.0);
             double index_high_ns = 2.0 * 1e6; // 2ms HIGH pulse
@@ -984,6 +987,9 @@ static value_t floppy_method_identify(struct object *self, const member_t *m, in
         break;
     case image_fd_ds:
         density = "800K";
+        break;
+    case image_fd_dd_mfm:
+        density = "720K";
         break;
     case image_fd_hd:
         density = "1.4MB";

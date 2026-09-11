@@ -138,6 +138,8 @@ static enum image_type classify_image(size_t raw_size) {
         return image_fd_ss;
     if (raw_size == 800 * 1024)
         return image_fd_ds;
+    if (raw_size == 720 * 1024)
+        return image_fd_dd_mfm;
     if (raw_size == 1440 * 1024)
         return image_fd_hd;
     return image_hd;

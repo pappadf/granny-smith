@@ -706,6 +706,10 @@ static void swim_format_masks(const image_t *img, uint16_t *current, uint16_t *a
         } else if (img->type == image_fd_ds) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_800K);
             all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | cur;
+        } else if (img->type == image_fd_dd_mfm) {
+            cur = SWIM_FMT_MASK(SWIM_FMT_BIT_720K);
+            // DD media: any DD capacity, but not 1440K -- that needs HD media.
+            all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | SWIM_FMT_MASK(SWIM_FMT_BIT_800K) | cur;
         } else if (img->type == image_fd_hd) {
             cur = SWIM_FMT_MASK(SWIM_FMT_BIT_1440K);
             // HD media takes every floppy capacity.
@@ -730,8 +734,12 @@ static void swim_fill_drive_status(iop_t *iop, int floppy_idx) {
     image_t *img = (floppy && floppy_idx >= 0) ? floppy_drive_image(floppy, (unsigned)floppy_idx) : NULL;
     bool present = img != NULL;
     bool writable = present && img->writable;
-    bool is_hd = present && img->type == image_fd_hd;
-    bool is_ds = present && (img->type == image_fd_ds || img->type == image_fd_hd);
+    // MfmDrive/MfmDisk ask "is this MFM media"; MfmFormat asks "is it 1440K"
+    // ($FF = 1440K, $00 = 720K -- IOP SWIM Driver ERS).  One flag used to
+    // drive both, so a 720K disk could never have been reported correctly.
+    bool is_mfm = present && image_is_mfm_floppy(img->type);
+    bool is_1440 = present && img->type == image_fd_hd;
+    bool is_ds = present && img->type != image_fd_ss;
 
     int track = (floppy && floppy_idx >= 0) ? floppy_drive_track(floppy, (unsigned)floppy_idx) : 0;
     if (track < 0)
@@ -745,8 +753,8 @@ static void swim_fill_drive_status(iop_t *iop, int floppy_idx) {
     iop->ram[pl + SIM_NEW_INTERFACE] = 0xFF; // SuperDrive-class interface
     swim_ram_write_be16(iop, pl + SIM_DISK_ERRORS, 0);
     iop->ram[pl + SIM_MFM_DRIVE] = 0xFF; // is a SuperDrive
-    iop->ram[pl + SIM_MFM_DISK] = (uint8_t)(is_hd ? 0xFF : 0x00);
-    iop->ram[pl + SIM_MFM_FORMAT] = (uint8_t)(is_hd ? 0xFF : 0x00);
+    iop->ram[pl + SIM_MFM_DISK] = (uint8_t)(is_mfm ? 0xFF : 0x00);
+    iop->ram[pl + SIM_MFM_FORMAT] = (uint8_t)(is_1440 ? 0xFF : 0x00);
     iop->ram[pl + SIM_DISK_CONTROLLER] = 0xFF; // is a SWIM, not IWM
     uint16_t current, allowed;
     swim_format_masks(img, &current, &allowed);

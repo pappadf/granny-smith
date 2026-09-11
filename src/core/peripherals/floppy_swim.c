@@ -87,6 +87,17 @@ static uint8_t ism_fifo_pop(floppy_t *floppy, bool *is_mark_out) {
 // MFM Sector-Level Emulation
 // ============================================================================
 
+// MFM sectors per track for the medium.  Three copies of
+// `disk_size(img) > 1000000 ? 18 : 9` used to live in this file (02-floppy
+// F-17); they happened to give the right answer for 720K only because 737,280
+// is under the threshold.  The geometry now comes from one place.
+static int ism_mfm_spt(image_t *img) {
+    floppy_media_t m;
+    if (!floppy_media_from_image(img, &m) || !m.mfm)
+        return 9; // a GCR disk reaching the MFM path: DD layout, as before
+    return m.mfm_spt;
+}
+
 // Builds an MFM sector in the sector buffer for the current track/side/sector
 static void mfm_build_sector(floppy_t *floppy) {
     int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
@@ -102,13 +113,7 @@ static void mfm_build_sector(floppy_t *floppy) {
     int side = floppy->mfm_cur_side;
     int sector = floppy->mfm_cur_sector; // 1-based
 
-    // Determine sectors per track from disk size
-    size_t disk_sz = disk_size(img);
-    int sectors_per_track;
-    if (disk_sz > 1000000) // > ~1MB = 1440K
-        sectors_per_track = 18;
-    else
-        sectors_per_track = 9;
+    int sectors_per_track = ism_mfm_spt(img);
 
     if (sector < 1 || sector > sectors_per_track) {
         floppy->mfm_buf_len = 0;
@@ -119,7 +124,7 @@ static void mfm_build_sector(floppy_t *floppy) {
     // block = (track * 2 + side) * sectors_per_track + (sector - 1)
     size_t block = (size_t)(track * 2 + side) * sectors_per_track + (sector - 1);
     size_t offset = block * 512;
-    if (offset + 512 > disk_sz) {
+    if (offset + 512 > disk_size(img)) {
         floppy->mfm_buf_len = 0;
         return;
     }
@@ -205,8 +210,12 @@ static void mfm_build_sector(floppy_t *floppy) {
 
     floppy->mfm_buf_len = (uint16_t)pos;
     floppy->mfm_buf_pos = 0;
+    // mfm_cur_track is what ism_write_capture_flush later uses as the WRITE
+    // target, so refreshing it here is what let a head step between ACTION and
+    // the flush redirect a captured sector to the new track (02-floppy F-45).
+    // `side` is read from mfm_cur_side at the top of this function, so assigning
+    // it back was a self-assignment that made the data flow unreadable.
     floppy->mfm_cur_track = (uint8_t)track;
-    floppy->mfm_cur_side = (uint8_t)side;
 
     LOG(4, "SWIM ISM: Built MFM sector T=%d S=%d Sec=%d (%d bytes)", track, side, sector, pos);
 }
@@ -215,8 +224,7 @@ static void mfm_build_sector(floppy_t *floppy) {
 static void mfm_advance_sector(floppy_t *floppy) {
     int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
     image_t *img = floppy->disk[drv];
-    size_t disk_sz = img ? disk_size(img) : 0;
-    int sectors_per_track = (disk_sz > 1000000) ? 18 : 9;
+    int sectors_per_track = ism_mfm_spt(img);
 
     floppy->mfm_cur_sector++;
     if (floppy->mfm_cur_sector > sectors_per_track)
@@ -290,9 +298,7 @@ static void ism_write_capture_flush(floppy_t *floppy) {
     int side = floppy->mfm_cur_side;
     int sector = floppy->mfm_cur_sector; // 1-based
 
-    // Determine sectors per track from disk size
-    size_t disk_sz = disk_size(img);
-    int sectors_per_track = (disk_sz > 1000000) ? 18 : 9;
+    int sectors_per_track = ism_mfm_spt(img);
 
     if (sector < 1 || sector > sectors_per_track) {
         LOG(2, "ISM write: invalid sector %d (max %d)", sector, sectors_per_track);
@@ -302,8 +308,8 @@ static void ism_write_capture_flush(floppy_t *floppy) {
     // MFM layout: block = (track * 2 + side) * sectors_per_track + (sector - 1)
     size_t block = (size_t)(track * 2 + side) * sectors_per_track + (sector - 1);
     size_t offset = block * 512;
-    if (offset + 512 > disk_sz) {
-        LOG(2, "ISM write: offset %zu + 512 > disk size %zu", offset, disk_sz);
+    if (offset + 512 > disk_size(img)) {
+        LOG(2, "ISM write: offset %zu + 512 > disk size %zu", offset, disk_size(img));
         return;
     }
 

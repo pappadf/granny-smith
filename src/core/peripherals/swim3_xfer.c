@@ -39,6 +39,7 @@
 #include "swim3.h"
 
 #include "floppy.h"
+#include "floppy_geometry.h"
 #include "image.h"
 #include "log.h"
 #include "scheduler.h"
@@ -66,79 +67,30 @@ LOG_USE_CATEGORY_NAME("swim3");
 
 // === Media geometry =========================================================
 
-// What the disk in the drive looks like to the engine.  Everything here is
-// derived from the image's size: the four Macintosh floppy capacities each
-// pin an encoding, a side count and a sector layout.
-typedef struct swim3_media {
-    image_t *img;
-    bool mfm; // MFM-formatted media (720K / 1440K); otherwise GCR
-    bool hd; // 2 MB (HD) media — what sense address 15 reports
-    int sides;
-    int mfm_spt; // MFM sectors per track (GCR varies by zone)
-    uint8_t fmt_byte; // the address field's 4th byte: MFM size code / GCR format
-} swim3_media_t;
+// The medium in the drive, as floppy_geometry.h derives it once for every
+// controller.  This file used to carry its own exact-size switch and its own
+// copies of the zone helpers (02-floppy F-17/F-19); the classifier was the
+// only one of the four that was right, so it was promoted rather than deleted.
+typedef floppy_media_t swim3_media_t;
 
-// GCR speed zones: 12 sectors on the outermost 16 tracks, one fewer per
-// zone inward, with the spindle speeding up to keep the bit rate constant.
-static int gcr_sectors_per_track(int track) {
-    return 12 - (track >> 4);
-}
+// GCR speed zones come from floppy_geometry.h.  The local gcr_rpm() masked the
+// zone index with & 7 over a five-entry table (02-floppy F-31), which reads
+// like a bounds guard while being wider than the array.
+#define gcr_sectors_per_track floppy_zone_sectors_per_track
+#define gcr_rpm               floppy_zone_rpm
 
-static int gcr_rpm(int track) {
-    static const int rpm[5] = {394, 429, 472, 525, 590};
-    return rpm[(track >> 4) & 7];
-}
-
-// Fill *m from the disk currently in the drive; false when the drive is
-// empty or holds something that is not a floppy geometry we can present.
+// Fill *m from the disk currently in the drive; false when the drive is empty
+// or holds something that is not a floppy geometry we can present.
 static bool swim3_media(swim3_t *sw, swim3_media_t *m) {
-    memset(m, 0, sizeof(*m));
-    m->img = sw->fd ? floppy_drive_image(sw->fd, FD) : NULL;
-    if (!m->img)
-        return false;
-    switch (disk_size(m->img)) {
-    case 1440u * 1024u: // MFM 1.44 MB: 18 sectors/track, both sides, HD media
-        m->mfm = true;
-        m->hd = true;
-        m->sides = 2;
-        m->mfm_spt = 18;
-        m->fmt_byte = 0x02; // MFM size code 2 = 512-byte sectors
-        break;
-    case 720u * 1024u: // MFM 720K: 9 sectors/track on DD media
-        m->mfm = true;
-        m->sides = 2;
-        m->mfm_spt = 9;
-        m->fmt_byte = 0x02;
-        break;
-    case 800u * 1024u: // GCR 800K: double-sided, interleave 2
-        m->sides = 2;
-        m->fmt_byte = 0x22;
-        break;
-    case 400u * 1024u: // GCR 400K: single-sided
-        m->sides = 1;
-        m->fmt_byte = 0x02;
-        break;
-    default:
-        return false;
-    }
-    return true;
+    return floppy_media_from_image(sw->fd ? floppy_drive_image(sw->fd, FD) : NULL, m);
 }
 
 static int swim3_spt(const swim3_media_t *m, int track) {
-    return m->mfm ? m->mfm_spt : gcr_sectors_per_track(track);
+    return floppy_media_spt(m, track);
 }
 
-// Byte offset of one sector inside the image.  MFM tracks are uniform;
-// GCR tracks shrink towards the spindle, so their offset accumulates.
 static size_t swim3_sector_offset(const swim3_media_t *m, int track, int side, int sector) {
-    if (m->mfm)
-        return ((size_t)(track * m->sides + side) * (size_t)m->mfm_spt + (size_t)sector) * SECTOR_BYTES;
-    size_t off = 0;
-    for (int t = 0; t < track; t++)
-        off += (size_t)m->sides * (size_t)gcr_sectors_per_track(t) * SECTOR_BYTES;
-    if (side && m->sides > 1)
-        off += (size_t)gcr_sectors_per_track(track) * SECTOR_BYTES;
-    return off + (size_t)sector * SECTOR_BYTES;
+    return floppy_media_sector_offset(m, track, side, sector);
 }
 
 bool swim3_media_is_hd(swim3_t *sw) {
