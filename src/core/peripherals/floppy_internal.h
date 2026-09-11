@@ -215,7 +215,9 @@ struct floppy {
     floppy_drive_t drives[NUM_DRIVES]; // drive state machines
 
     // SWIM-only fields (unused when type == FLOPPY_TYPE_IWM)
-    int cstin_delay[NUM_DRIVES]; // disk insertion detection delay
+    int cstin_delay[NUM_DRIVES]; // UNUSED: no insertion delay is modelled.
+                                 // Kept so the checkpoint layout is unchanged;
+                                 // see the /CSTIN case in floppy_disk_status.
 
     // SWIM mode tracking
     bool in_ism_mode; // true = ISM mode active

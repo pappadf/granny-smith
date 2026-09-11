@@ -76,6 +76,57 @@ static int floppy_rddata_bit(floppy_t *floppy, floppy_drive_t *drive, int drv, i
     return (data[byte_pos] >> bit_idx) & 1;
 }
 
+// Moves a drive's head, for every controller.
+//
+// `model_settle` says whether the CONTROLLER models the post-seek settle and
+// the zone-crossing speed change.  The IWM and SWIM do: the drive deasserts
+// /READY while the head settles and while the motor re-reaches the new zone's
+// RPM, and their drivers poll it.  SWIM3 does NOT, and that is hardware, not a
+// gap -- the SWIM3 ERS is explicit: "Depending on the number of tracks moved
+// and motor speed zones crossed a timeout is required before accessing the
+// drive after stepping.  This is left to the software."  The chip paces the
+// step pulses (80 us apart) and raises step_done; the settle is the driver's
+// business (02-floppy F-22).
+static void floppy_drive_seek(floppy_t *floppy, unsigned drv, bool outward, int count, bool model_settle) {
+    if (!floppy || drv >= NUM_DRIVES || count <= 0)
+        return;
+    floppy_drive_t *drive = &floppy->drives[drv];
+    int old_rpm = iwm_track_rpm(drive->track);
+
+    // The head stops against the mechanical stops rather than running off the
+    // platter -- recalibrate is exactly "step outward 80 and look".
+    int track = drive->track + (outward ? -count : count);
+    if (track < 0)
+        track = 0;
+    if (track > NUM_TRACKS - 1)
+        track = NUM_TRACKS - 1;
+
+    drive->_dirtn = outward;
+    drive->track = track;
+    drive->offset = 0;
+
+    if (!model_settle) {
+        LOG(4, "Drive %u: seek %s %d -> track %d", drv, outward ? "out" : "in", count, track);
+        return;
+    }
+
+    drive->step_settle_count = 1;
+    remove_event_by_data(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv);
+    scheduler_new_cpu_event(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv, 0,
+                            STEP_SETTLE_TIME_NS);
+
+    // Zone-crossing step: the motor must change RPM, so /READY deasserts.
+    if (old_rpm != iwm_track_rpm(drive->track)) {
+        drive->speed_settling = true;
+        remove_event_by_data(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv);
+        scheduler_new_cpu_event(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv, 0,
+                                SPEED_SETTLE_TIME_NS);
+        LOG(1, "Drive %u: Step track %d ZONE CHANGE (%d->%d RPM), speed_settling=1", drv, drive->track, old_rpm,
+            iwm_track_rpm(drive->track));
+    }
+    LOG(3, "Drive %u: Step to track %d (%s)", drv, drive->track, outward ? "outward" : "inward");
+}
+
 // Returns the current disk status based on IWM CA lines and SEL signal.
 // The VIA-based SEL signal is part of the sense-line address, not drive
 // selection.  The caller may pass a SEL-derived drive index, but the status
@@ -136,12 +187,14 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         break;
     case 0x08: // /CSTIN: zero when disk in drive
         desc = "/CSTIN";
-        if (floppy->type == FLOPPY_TYPE_SWIM && floppy->cstin_delay[drv] > 0) {
-            floppy->cstin_delay[drv]--;
-            ret = 1; // report no disk during insertion delay
-        } else {
-            ret = (floppy->disk[drv] == NULL);
-        }
+        // No insertion delay is modelled.  There used to be a cstin_delay
+        // countdown here, but the only writer set it to 0, so the branch was
+        // unreachable and the feature did not exist -- while the field was
+        // still checkpointed and the decrement meant a DEBUGGER read of this
+        // sense line would have mutated it (02-floppy F-12).  If the delay is
+        // ever wanted, it needs a writer and a scheduler event, not a
+        // read-side counter.
+        ret = (floppy->disk[drv] == NULL);
         break;
     case 0x09: // /WRTPRT: zero when write protected
         desc = "/WRTPRT";
@@ -264,30 +317,7 @@ void floppy_disk_control(floppy_t *floppy) {
         } else {
             // STEP (CA0=1, CA1=0, CA2=0)
             if (!IWM_CA2(floppy)) {
-                int old_rpm = iwm_track_rpm(drive->track);
-                // _dirtn: 0=inward (higher tracks), 1=outward (lower tracks)
-                if (drive->_dirtn) {
-                    if (drive->track > 0)
-                        drive->track--;
-                } else {
-                    if (drive->track < NUM_TRACKS - 1)
-                        drive->track++;
-                }
-                drive->offset = 0;
-                drive->step_settle_count = 1;
-                remove_event_by_data(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv);
-                scheduler_new_cpu_event(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv, 0,
-                                        STEP_SETTLE_TIME_NS);
-                // Zone-crossing step: motor must change RPM, /READY deasserts
-                if (old_rpm != iwm_track_rpm(drive->track)) {
-                    drive->speed_settling = true;
-                    remove_event_by_data(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv);
-                    scheduler_new_cpu_event(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv, 0,
-                                            SPEED_SETTLE_TIME_NS);
-                    LOG(1, "Drive %d: Step track %d→%d ZONE CHANGE (%d→%d RPM), speed_settling=1", drv,
-                        drive->track + (drive->_dirtn ? 1 : -1), drive->track, old_rpm, iwm_track_rpm(drive->track));
-                }
-                LOG(3, "Drive %d: Step to track %d (%s)", drv, drive->track, drive->_dirtn ? "outward" : "inward");
+                floppy_drive_seek(floppy, (unsigned)drv, drive->_dirtn, 1, true);
             }
         }
     } else {
@@ -591,11 +621,10 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
 
     floppy->disk[drive] = disk;
 
-    // SWIM: simulate disk insertion delay
-    if (floppy->type == FLOPPY_TYPE_SWIM)
-        floppy->cstin_delay[drive] = 0;
-
-    current_drive(floppy)->offset = 0;
+    // The drive being loaded, not whichever the IWM SELECT line happens to
+    // point at: this used to leave a stale offset on the freshly loaded drive
+    // and clobber the other drive's in-progress read position (02-floppy F-12).
+    floppy->drives[drive].offset = 0;
     const char *name = disk ? image_get_filename(disk) : NULL;
     LOG(1, "Drive %d: Inserted disk '%s' (writable=%d)", drive, name ? name : "<unnamed>", disk ? disk->writable : 0);
 
@@ -685,20 +714,9 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
 // === SWIM III drive controls ================================================
 
 void floppy_swim3_step(floppy_t *floppy, unsigned drive, bool outward, int count) {
-    if (!floppy || drive >= NUM_DRIVES || count <= 0)
-        return;
-    floppy_drive_t *d = &floppy->drives[drive];
-    int track = d->track + (outward ? -count : count);
-    // The head stops against the mechanical stops rather than running off
-    // the platter — recalibrate is exactly "step outward 80 and look".
-    if (track < 0)
-        track = 0;
-    if (track > NUM_TRACKS - 1)
-        track = NUM_TRACKS - 1;
-    d->_dirtn = outward;
-    d->track = track;
-    d->offset = 0;
-    LOG(4, "Drive %u: SWIM3 seek %s %d -> track %d", drive, outward ? "out" : "in", count, track);
+    // SWIM3 paces the step pulses itself and the settle is the driver's
+    // business -- see floppy_drive_seek.
+    floppy_drive_seek(floppy, drive, outward, count, false);
 }
 
 void floppy_swim3_set_motor(floppy_t *floppy, unsigned drive, bool on) {
@@ -789,10 +807,13 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     floppy->scheduler = scheduler;
 
     if (type == FLOPPY_TYPE_SWIM3) {
-        // SWIM3 has no memory-mapped register file of its own: the PDM
-        // decodes it through the AMIC island, and the controller model
-        // (src/machines/pdm/swim3.c) drives this drive state directly.
-        scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);
+        // SWIM3 has no memory-mapped register file of its own: the board
+        // decodes it (AMIC island on the PDM, Grand Central on the TNT) and
+        // the controller model drives this drive state directly.  No
+        // motor_spinup event type is registered: nothing on the SWIM3 path
+        // consults motor_spinning_up -- swim3.c reads the motor LATCH through
+        // floppy_drive_motor_on -- so the type used to be registered and never
+        // armed (02-floppy F-22).
     } else if (type == FLOPPY_TYPE_SWIM) {
         scheduler_new_event_type(scheduler, "swim", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
         floppy_swim_setup(floppy, map);

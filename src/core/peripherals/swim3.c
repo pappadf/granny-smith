@@ -31,7 +31,13 @@
 #include "log.h"
 #include "scheduler.h"
 
-LOG_USE_CATEGORY_NAME("swim3");
+// One log category for the whole subsystem -- drive mechanics AND every
+// controller (02-floppy F-21).  `debug.log swim 10` on an SE/30 used to turn on
+// the ISM register trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush
+// or eject, because those live in floppy.c under a different name; the same
+// split hid the DBDMA ring from `debug.log swim3 10` on a 7500.  Level
+// convention: 1-2 state changes, 3-5 per-operation, 6+ per-register/per-byte.
+LOG_USE_CATEGORY_NAME("floppy");
 
 // Register indices (offset >> 9)
 #define R_DATA    0

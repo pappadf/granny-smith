@@ -18,7 +18,13 @@
 
 #include "image.h"
 
-LOG_USE_CATEGORY_NAME("swim");
+// One log category for the whole subsystem -- drive mechanics AND every
+// controller (02-floppy F-21).  `debug.log swim 10` on an SE/30 used to turn on
+// the ISM register trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush
+// or eject, because those live in floppy.c under a different name; the same
+// split hid the DBDMA ring from `debug.log swim3 10` on a 7500.  Level
+// convention: 1-2 state changes, 3-5 per-operation, 6+ per-register/per-byte.
+LOG_USE_CATEGORY_NAME("floppy");
 
 // IWM->ISM mode switch pattern
 const uint8_t ISM_SWITCH_PATTERN[4] = {1, 0, 1, 1};
@@ -431,7 +437,7 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
             floppy->ism_error |= ISM_ERR_MARK_IN_DATA;
         LOG(7, "ISM rData: 0x%02X (mark=%d, fifo=%d)", byte, is_mark, floppy->ism_fifo_count);
         if (floppy->ism_mode & ISM_MODE_ACTION)
-            LOG(2, "ISM rData: 0x%02X mark=%d crc=0x%04X err=0x%02X", byte, is_mark, floppy->ism_crc,
+            LOG(6, "ISM rData: 0x%02X mark=%d crc=0x%04X err=0x%02X", byte, is_mark, floppy->ism_crc,
                 floppy->ism_error);
         return byte;
     }
@@ -443,7 +449,7 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
         uint8_t byte = ism_fifo_pop(floppy, &is_mark);
         LOG(7, "ISM rMark: 0x%02X (mark=%d, fifo=%d)", byte, is_mark, floppy->ism_fifo_count);
         if (floppy->ism_mode & ISM_MODE_ACTION)
-            LOG(2, "ISM rMark: 0x%02X mark=%d crc=0x%04X err=0x%02X", byte, is_mark, floppy->ism_crc,
+            LOG(6, "ISM rMark: 0x%02X mark=%d crc=0x%04X err=0x%02X", byte, is_mark, floppy->ism_crc,
                 floppy->ism_error);
         return byte;
     }
@@ -533,7 +539,7 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
 
         LOG(7, "ISM rHandshake: 0x%02X (fifo=%d, err=0x%02X)", hdshk, floppy->ism_fifo_count, floppy->ism_error);
         if (floppy->ism_mode & ISM_MODE_ACTION)
-            LOG(2, "ISM rHdshk: 0x%02X mark=%d crc_nz=%d err=%d fifo=%d pos=%d/%d", hdshk,
+            LOG(6, "ISM rHdshk: 0x%02X mark=%d crc_nz=%d err=%d fifo=%d pos=%d/%d", hdshk,
                 !!(hdshk & ISM_HDSHK_MARK_BYTE), !!(hdshk & ISM_HDSHK_CRC_NZ), !!(hdshk & ISM_HDSHK_ERROR),
                 floppy->ism_fifo_count, floppy->mfm_buf_pos, floppy->mfm_buf_len);
         return hdshk;
@@ -682,7 +688,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         // Zeroes ($6) location occurs or a /Reset occurs."  wOnes ($7)
         // deliberately does NOT -- do not symmetrise these two cases.
         floppy->ism_param_idx = 0;
-        LOG(2, "ISM wZeros: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, floppy->ism_mode,
+        LOG(5, "ISM wZeros: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, floppy->ism_mode,
             floppy->mfm_buf_pos, floppy->mfm_buf_len);
 
         // Reset write capture when WRITE or ACTION is cleared
@@ -716,7 +722,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     case 7: { // wOnes: set specified bits in mode register
         uint8_t old_mode = floppy->ism_mode;
         floppy->ism_mode |= byte;
-        LOG(2, "ISM wOnes: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, floppy->ism_mode,
+        LOG(5, "ISM wOnes: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, floppy->ism_mode,
             floppy->mfm_buf_pos, floppy->mfm_buf_len);
 
         // Reset write capture when WRITE transitions on
