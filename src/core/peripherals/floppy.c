@@ -265,7 +265,7 @@ void floppy_disk_control(floppy_t *floppy) {
             if (IWM_CA2(floppy)) {
                 LOG(1, "Drive %d: Eject requested", drv);
                 iwm_flush_modified_tracks(drive, floppy->disk[drv], drv);
-                memset(drive->tracks, 0, sizeof(drive->tracks));
+                floppy_drive_drop_tracks(floppy, (unsigned)drv);
                 floppy->disk[drv] = NULL;
                 LOG(1, "Drive %d: Ejected", drv);
             }
@@ -613,6 +613,24 @@ image_t *floppy_drive_image(const floppy_t *floppy, unsigned drive) {
     return floppy->disk[drive];
 }
 
+// Frees and clears a drive's cached GCR track buffers.  iwm_track_data
+// malloc()s a buffer per (side, track) on first touch; zeroing the array
+// without freeing first leaks every one of them -- up to ~1.2 MB for a
+// fully-read double-sided 800K disk, on a fixed-size wasm heap.
+void floppy_drive_drop_tracks(floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return;
+    floppy_drive_t *d = &floppy->drives[drive];
+    for (int s = 0; s < NUM_SIDES; s++) {
+        for (int t = 0; t < NUM_TRACKS; t++) {
+            free(d->tracks[s][t].data);
+            d->tracks[s][t].data = NULL;
+            d->tracks[s][t].size = 0;
+            d->tracks[s][t].modified = false;
+        }
+    }
+}
+
 bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])
         return false;
@@ -622,7 +640,7 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     // The image_t* itself is owned by cfg->images and freed at system
     // teardown; calling image_close here would double-free.
     iwm_flush_modified_tracks(&floppy->drives[drive], floppy->disk[drive], (int)drive);
-    memset(floppy->drives[drive].tracks, 0, sizeof(floppy->drives[drive].tracks));
+    floppy_drive_drop_tracks(floppy, drive);
     floppy->disk[drive] = NULL;
     return true;
 }
@@ -812,11 +830,7 @@ void floppy_delete(floppy_t *floppy) {
     // Flush and free track data for both drives
     for (int d = 0; d < NUM_DRIVES; d++) {
         iwm_flush_modified_tracks(&floppy->drives[d], floppy->disk[d], d);
-        for (int s = 0; s < NUM_SIDES; s++) {
-            for (int t = 0; t < NUM_TRACKS; t++) {
-                free(floppy->drives[d].tracks[s][t].data);
-            }
-        }
+        floppy_drive_drop_tracks(floppy, (unsigned)d);
     }
     free(floppy);
 }

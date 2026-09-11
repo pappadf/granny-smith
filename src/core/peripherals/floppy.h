@@ -43,6 +43,12 @@ bool floppy_is_inserted(floppy_t *floppy, int drive);
 void floppy_set_sel_signal(floppy_t *floppy, bool sel);
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
+// Frees and clears a drive's cached GCR track buffers.  Call after writing to
+// the drive's image behind the controller's back (the IIfx/Q900 IOP block
+// path), so the next read re-encodes from the image rather than serving stale
+// nibbles; also used by the eject paths, which must not leak the buffers.
+// Does NOT flush modified tracks — the caller decides whether they matter.
+void floppy_drive_drop_tracks(floppy_t *floppy, unsigned drive);
 
 // === M7e — object-model accessors ===========================================
 //
