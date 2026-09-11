@@ -718,11 +718,6 @@ static void swim3_read_slot(swim3_t *sw, const swim3_media_t *m) {
     double delay = 0;
     int idx = swim3_next_header(sw, m, track, &delay);
 
-    if (side >= m->sides) {
-        swim3_arm(sw, delay); // head 1 of a single-sided disk: no fields
-        return;
-    }
-
     uint8_t hdr_sect = m->mfm ? (uint8_t)(idx + 1) : (uint8_t)idx;
     sw->ctrack = (uint8_t)((track & 0x7F) | (side ? 0x80 : 0));
     sw->csect = (uint8_t)(hdr_sect | 0x80); // bit 7 = Last_ID_valid
@@ -757,10 +752,6 @@ static void swim3_write_slot(swim3_t *sw, const swim3_media_t *m) {
     double delay = 0;
     int idx = swim3_next_header(sw, m, track, &delay);
 
-    if (side >= m->sides) {
-        swim3_arm(sw, delay);
-        return;
-    }
     uint8_t hdr_sect = m->mfm ? (uint8_t)(idx + 1) : (uint8_t)idx;
     sw->ctrack = (uint8_t)((track & 0x7F) | (side ? 0x80 : 0));
     sw->csect = (uint8_t)(hdr_sect | 0x80);
@@ -790,7 +781,7 @@ static void swim3_write_slot(swim3_t *sw, const swim3_media_t *m) {
 // layout it declares plus each data field it carries.
 static void swim3_format_slot(swim3_t *sw, const swim3_media_t *m) {
     int track = floppy_drive_track(sw->fd, FD);
-    int side = sw->xfer_side < m->sides ? sw->xfer_side : 0;
+    int side = sw->xfer_side;
     swim3_parse_t p = {.m = m, .track = track, .side = side, .sector = -1, .format = true};
     swim3_parse_stream(sw, &p);
     sw->fmt_sectors = (uint32_t)p.sectors_written;
@@ -803,7 +794,7 @@ static void swim3_format_slot(swim3_t *sw, const swim3_media_t *m) {
 // the AMIC DMA interrupt) or when the driver clears GO.
 static void swim3_raw_slot(swim3_t *sw, const swim3_media_t *m) {
     int track = floppy_drive_track(sw->fd, FD);
-    int side = sw->xfer_side < m->sides ? sw->xfer_side : 0;
+    int side = sw->xfer_side;
     LOG(3, "raw capture track %d side %d", track, side);
     swim3_raw_track(sw, m, track, side);
     swim3_stop(sw);
@@ -834,6 +825,18 @@ static void swim3_engine_event(void *source, uint64_t data) {
         return;
     }
     floppy_swim3_set_side(sw->fd, FD, sw->xfer_side);
+
+    // Head 1 of single-sided media has no surface under it, so -- exactly as
+    // above -- the head sees nothing.  Checked once here rather than per slot:
+    // read and write each skipped their slot, but format and raw silently
+    // REMAPPED side 1 onto side 0 (02-floppy F-37), so formatting side 1 of a
+    // 400K disk overwrote side 0's data and a raw capture of side 1 returned
+    // side 0's bytes as if they were genuine.  One check cannot disagree with
+    // itself the way four did.
+    if (sw->xfer_side >= m.sides) {
+        swim3_arm(sw, 5.0e6);
+        return;
+    }
 
     if (sw->setup & SWIM3_S_COPYPROT)
         swim3_raw_slot(sw, &m);
