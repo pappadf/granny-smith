@@ -165,7 +165,10 @@ extern const uint8_t ISM_SWITCH_PATTERN[4];
 typedef struct floppy_track {
     size_t size; // encoded track size
     bool modified; // true if track has been written to
-    uint8_t *data; // pointer to encoded GCR data (excluded from checkpoint)
+    uint8_t *data; // pointer to encoded GCR data.  NOT excluded from the
+                   // checkpoint: this field sits inside FLOPPY_CHECKPOINT_SIZE,
+                   // so 320 host pointers are written to every save file and
+                   // replaced on restore from the per-track has_data byte.
 } floppy_track_t;
 
 // Represents a physical floppy drive with head position and motor state
@@ -296,7 +299,11 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
 extern const uint8_t gcr_codewords[];
 
 // ============================================================================
-// Shared IWM Core Functions (defined in floppy.c, used by floppy_swim.c)
+// Shared drive/IWM functions (defined in floppy.c).
+// floppy_disk_status, floppy_disk_control and floppy_update_iwm_lines really
+// are shared with floppy_swim.c.  floppy_iwm_read/floppy_iwm_write are NOT:
+// floppy_swim.c carries its own near-identical copies (02-floppy F-10), and
+// only floppy_iwm.c calls these.
 // ============================================================================
 
 // Returns the current disk status based on IWM CA lines and SEL signal

@@ -52,6 +52,10 @@ typedef enum {
     MAC030_IO_NORMAL = 0, // sub = offset - base
     MAC030_IO_MASK_A0, // sub = (offset - base) & ~1  — the 6522 ignores A0
     MAC030_IO_FIXED, // sub = read ? read_off : write_off — SCSI pseudo-DMA
+    MAC030_IO_STRIDE_512, // sub = ((offset - base) >> 9) & 0x0F — the SWIM/IWM
+                          // window: the chip's A0-A3 are wired to A9-A12.  A
+                          // wiring fact, declared as data, exactly like
+                          // MAC030_IO_MASK_A0 above.
 } mac030_io_xform_t;
 
 // One decoded I/O window.  The engine walks an ordered, sentinel-terminated

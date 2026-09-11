@@ -79,7 +79,7 @@ static bool drive1_selected(swim3_t *sw) {
 // The {SEL,CA2,CA1,CA0} drive-register address currently addressed: SEL is
 // mode bit 5 (HeadSelect), CA0-2 are Phase bits 0-2 (§5).
 static uint32_t drive_addr(swim3_t *sw) {
-    return ((sw->mode & SWIM3_M_HEADSEL) ? 8u : 0u) | (sw->phase & 7u);
+    return ((sw->mode & SWIM3_M_HEADSEL) ? 8u : 0u) | (sw->phase & SWIM3_PH_CA_MASK);
 }
 
 // The drive's sense response for the currently addressed register (§5.2).
@@ -339,7 +339,7 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
         break;
     case R_PHASE: {
         // LSTRB is bit 3; a rising edge strobes the addressed drive latch.
-        uint8_t rose = (uint8_t)(value & ~sw->phase & 0x08u);
+        uint8_t rose = (uint8_t)(value & ~sw->phase & SWIM3_PH_LSTRB);
         sw->phase = value;
         route_head(sw);
         if (rose)
@@ -347,7 +347,7 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
         break;
     }
     case R_SETUP:
-        if (value & 0x80u) {
+        if (value & SWIM3_S_SOFTRESET) {
             // SoftReset (self-clearing): registers return to their reset
             // state (§3.10) and any running engine stops with them.
             swim3_t z = {0};

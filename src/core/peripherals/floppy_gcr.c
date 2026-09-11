@@ -33,7 +33,7 @@ const uint8_t gcr_codewords[] = {0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6,
 // Returns the approximate GCR-encoded length for a track
 size_t iwm_track_length(int track) {
     // just approximative numbers
-    size_t length[] = {9320, 8559, 7780, 6994, 6224};
+    static const size_t length[] = {9320, 8559, 7780, 6994, 6224};
 
     GS_ASSERT(track < 80);
 
@@ -222,7 +222,7 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
     // [7]: sectors are typically interleaved 2:1 because of the write recovery time.
     // Sector sequencing for 2:1 interleave, by speed group. -1 is "sector not
     // present at this radius" (outer tracks have more sectors than inner ones).
-    int interleave[NUM_SPEED_GROUPS][12] = {
+    static const int interleave[NUM_SPEED_GROUPS][12] = {
         // Group 0 (outermost, 12 sectors): tracks  0-15
         {0, 6, 1, 7, 2, 8, 3, 9, 4,  10, 5,  11},
         // Group 1 (11 sectors):              tracks 16-31
@@ -464,7 +464,6 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
             uint8_t *p = t->data;
             uint8_t *end = t->data + t->size;
             int num_sides = iwm_image_num_sides(img);
-            size_t disk_sz = disk_size(img);
 
             while (p + 730 < end) { // require enough space for a sector
                 if (p[0] == 0xD5 && p[1] == 0xAA && p[2] == 0x96) {
@@ -508,13 +507,18 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
                     uint8_t *next = decode_sector(tag, buf, p, &hdr_track, &hdr_side, &hdr_sector);
 
                     // Sanity-check header values and that they match loop indices
-                    if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < NUM_SIDES) {
-                        // Use original 2-side calculation, but for single-sided disks
-                        // map side 1 writes to side 0 if offset would exceed disk size
-                        size_t off = iwm_disk_image_offset(hdr_track, hdr_side, 2) + (size_t)hdr_sector * 512u;
-                        if (off + 512 > disk_sz && num_sides == 1) {
-                            off = iwm_disk_image_offset(hdr_track, 0, 1) + (size_t)hdr_sector * 512u;
-                        }
+                    // hdr_sector comes from a 6-bit GCR nibble the guest wrote,
+                    // so it is 0..63 while a track holds at most 12 sectors.
+                    // Unchecked, a header claiming sector 40 wrote 20 KB past
+                    // the start of its own track, into neighbouring tracks'
+                    // data -- arbitrary corruption of a mounted writable image
+                    // from one track write (02-floppy F-13).  SWIM3 checks.
+                    if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < NUM_SIDES &&
+                        hdr_sector >= 0 && hdr_sector < iwm_sectors_per_track(hdr_track)) {
+                        // num_sides is the image's real side count; the old
+                        // code hardcoded 2 here and fell back to side 0 only
+                        // when the offset happened to run past the end.
+                        size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
                         if (off + 512 <= disk_size(img)) {
                             disk_write_data(img, off, buf, 512);
                             LOG(5, "Drive %d: Write sector track=%d side=%d sector=%d", drive_index, hdr_track,

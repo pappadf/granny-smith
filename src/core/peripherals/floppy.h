@@ -46,6 +46,12 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk);
 bool floppy_is_inserted(floppy_t *floppy, int drive);
 // Sets the VIA-driven SEL signal for head selection
 void floppy_set_sel_signal(floppy_t *floppy, bool sel);
+// The SWIM register file, addressed by INDEX (0-15).  Whoever owns the bus
+// window maps addresses onto the index -- the chip never sees an address.
+// Mirrors swim3_read / swim3_write.
+uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg);
+void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t value);
+
 // Get the memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *floppy_get_memory_interface(floppy_t *floppy);
 // Frees and clears a drive's cached GCR track buffers.  Call after writing to

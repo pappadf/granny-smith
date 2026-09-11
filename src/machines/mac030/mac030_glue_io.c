@@ -44,6 +44,8 @@ static inline uint32_t io_sub_offset(const mac030_io_range_t *r, uint32_t offset
         return (offset - r->base) & ~1u;
     case MAC030_IO_FIXED:
         return is_read ? r->read_off : r->write_off;
+    case MAC030_IO_STRIDE_512:
+        return ((offset - r->base) >> 9) & 0x0Fu;
     case MAC030_IO_NORMAL:
     default:
         return offset - r->base;
@@ -191,7 +193,7 @@ const mac030_io_range_t glue_io_ranges[] = {
     {0x12000, 0x14000, MAC030_DEV_SCSI, GLUE_SCSI_IO_PENALTY, MAC030_IO_FIXED, 0, 0x201 | SCSI_BLIND_SEL, NULL, NULL,
      "scsi_blind"},
     {0x14000, 0x16000, MAC030_DEV_ASC, GLUE_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
-    {0x16000, 0x18000, MAC030_DEV_FLOPPY, GLUE_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim"},
+    {0x16000, 0x18000, MAC030_DEV_FLOPPY, GLUE_SWIM_IO_PENALTY, MAC030_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
     {0}, // sentinel: end == 0
 };
 

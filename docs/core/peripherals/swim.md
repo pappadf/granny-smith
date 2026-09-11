@@ -1039,31 +1039,42 @@ depending on the address set by CA0/CA1/CA2/SEL.
 
 ### Address Encoding
 
-The 4-bit drive register address is encoded as: **CA1–CA0–SEL–CA2**
+The 4-bit drive register address is the CA lines plus SEL, keyed as
+**`SEL<<3 | CA2<<2 | CA1<<1 | CA0`**.
+
+> **Corrected 2026-09-11 (02-floppy F-42).** An earlier revision of this table
+> numbered its "Addr" column in the reverse bit order and, decoded that way, put
+> mfmDrv where /TKO belongs, omitted /TKO and TACH entirely, and listed /WRTPRT
+> twice. It is the most consulted table in this document, and "fixing" the code
+> to match it would have broken every SE/30 boot. The key column below is
+> written out explicitly so the ordering cannot be misread again, and matches
+> `floppy_disk_status` (`floppy.c`) and Apple's canonical Sony table.
 
 ### Sense Registers (Read)
 
 Drive status is read by setting CA0/CA1/CA2/SEL to select the desired register,
 then reading SENSE (IWM Status bit 7) or Handshake bit 3 (ISM mode).
 
-| Addr | CA2-CA1-CA0-SEL | Register | Description |
-|------|-----------------|----------|-------------|
-| 0 | 0-0-0-0 | DIRTN | Current step direction |
-| 1 | 0-0-0-1 | /CSTIN | 0 = disk in place |
-| 2 | 0-0-1-0 | /STEP | 0 = head currently stepping |
-| 3 | 0-0-1-1 | /WRTPRT | 0 = disk write-protected |
-| 4 | 0-1-0-0 | /MOTORON | 0 = motor running |
-| 5 | 0-1-0-1 | mfmDrv | 1 = SuperDrive (FDHD capable) |
-| 6 | 0-1-1-0 | /WRTPRT | 0 = write protected (alternate) |
-| 8 | 1-0-0-0 | RDDATA0 | Read data, lower head |
-| 9 | 1-0-0-1 | RDDATA1 | Read data, upper head |
-| 10 | 1-1-0-0 | SIDES | Drive capability: 0 = single-sided, 1 = double-sided |
-| 11 | 1-1-0-1 | /READY | 0 = drive ready |
-| 13 | 1-1-1-0 | /DRVIN | 0 = drive exists |
-| 14 | 1-1-1-1 | TACH/INDEX | See [Tachometer / INDEX Signal](#tachometer--index-signal) |
-| 15 | — | NEWINTF | New interface / twoMeg sense |
+| Addr | SEL | CA2 | CA1 | CA0 | Register | Description |
+|------|-----|-----|-----|-----|----------|-------------|
+| `$0` | 0 | 0 | 0 | 0 | /DIRTN | Step direction: 0 = inward |
+| `$1` | 0 | 0 | 0 | 1 | /STEP | 0 = head currently stepping |
+| `$2` | 0 | 0 | 1 | 0 | /MOTORON | 0 = motor running |
+| `$3` | 0 | 0 | 1 | 1 | EJECT | Eject state (unlatched output; reads as 1) |
+| `$4` | 0 | 1 | 0 | 0 | RDDATA0 | Read data, side 0 |
+| `$5` | 0 | 1 | 0 | 1 | mfmDrv | 1 = SuperDrive (FDHD capable). IWM: reserved |
+| `$6` | 0 | 1 | 1 | 0 | /SIDES | 0 = double-sided drive |
+| `$7` | 0 | 1 | 1 | 1 | /DRVIN | 0 = drive exists |
+| `$8` | 1 | 0 | 0 | 0 | /CSTIN | 0 = disk in place |
+| `$9` | 1 | 0 | 0 | 1 | /WRTPRT | 0 = disk write-protected |
+| `$A` | 1 | 0 | 1 | 0 | /TKO | 0 = head on track 0 |
+| `$B` | 1 | 0 | 1 | 1 | TACH / INDEX | GCR: 60 pulses/rev. ISM: INDEX |
+| `$C` | 1 | 1 | 0 | 0 | RDDATA1 | Read data, side 1 |
+| `$D` | 1 | 1 | 0 | 1 | /DRVEXIST | 1 = physical drive present (ISM mode) |
+| `$E` | 1 | 1 | 1 | 0 | /READY | 0 = drive ready |
+| `$F` | 1 | 1 | 1 | 1 | NEWINTF | New interface / twoMeg sense |
 
-**Register 0111 (TACH/INDEX) dual-mode behavior:** This register changes its
+**Register `$B` (TACH/INDEX) dual-mode behavior:** This register changes its
 function depending on the drive's operating mode. In GCR mode, it reports the
 high-frequency FG tachometer signal (60 pulses/revolution). In ISM mode with
 motor on, it reports a low-frequency INDEX signal (2 pulses/revolution). See

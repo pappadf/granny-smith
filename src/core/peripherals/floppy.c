@@ -307,12 +307,18 @@ void floppy_disk_control(floppy_t *floppy) {
 
             if (was_off && now_on) {
                 drive->motor_spinning_up = true;
-                remove_event(floppy->scheduler, spinup_cb, floppy);
+                // By data, not by (callback, source): remove_event drops EVERY
+                // event with that pair whatever its data, so on a two-drive
+                // machine spinning up drive 1 cancelled drive 0's pending
+                // spin-up and left it motor_spinning_up forever -- /READY stuck
+                // at 1 for the rest of the run.  Matches the step-settle and
+                // speed-settle arms above.
+                remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
                 scheduler_new_cpu_event(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv, 0, MOTOR_SPINUP_TIME_NS);
                 LOG(2, "Drive %d: Motor ON (spinning up)", drv);
             } else if (!was_off && !now_on) {
                 drive->motor_spinning_up = false;
-                remove_event(floppy->scheduler, spinup_cb, floppy);
+                remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
                 LOG(2, "Drive %d: Motor OFF", drv);
             } else {
                 LOG(4, "Drive %d: Motor %s (no change)", drv, drive->_motoron ? "off" : "on");
@@ -689,6 +695,59 @@ void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side) {
 // Lifecycle (Init / Delete / Checkpoint)
 // ============================================================================
 
+// Clamps checkpoint-supplied state that later code indexes with.  A checkpoint
+// is an untrusted file: the container validates per-block SIZES, not contents,
+// so a correctly-sized block with edited fields passes every existing check.
+//
+// Clamp rather than reject: by the time this runs the rest of the machine (RAM,
+// CPU, SCSI) is already restored and there is no unwind, so continuing from a
+// sane head position beats half-succeeding.  The LOG(1) lines are the point --
+// they turn a corrupt checkpoint from a mysterious hang into one grep.
+//
+// Order matters: `track` is clamped first because the `offset` bound derives
+// from it.
+static void floppy_validate_restored_state(floppy_t *floppy) {
+    for (int d = 0; d < NUM_DRIVES; d++) {
+        floppy_drive_t *drv = &floppy->drives[d];
+        // Signed on purpose: iwm_track_data's GS_ASSERT checks only the upper
+        // bound, and tracks[] is the last field of floppy_drive_t, so an
+        // out-of-range index yields a floppy_track_t-shaped view of adjacent
+        // memory whose `data` is then read AND written.
+        if (drv->track < 0 || drv->track >= NUM_TRACKS) {
+            LOG(1, "Drive %d: restored track %d out of range, clamping", d, drv->track);
+            drv->track = (drv->track < 0) ? 0 : NUM_TRACKS - 1;
+        }
+        // Both read paths index before they wrap.
+        int trk_len = (int)iwm_track_length(drv->track);
+        if (drv->offset < 0 || drv->offset >= trk_len) {
+            LOG(1, "Drive %d: restored offset %d outside track (len %d), resetting", d, drv->offset, trk_len);
+            drv->offset = 0;
+        }
+        if (drv->data_side != 0 && drv->data_side != 1)
+            drv->data_side = 0;
+    }
+
+    if (floppy->ism_fifo_count > ISM_FIFO_SIZE) {
+        LOG(1, "SWIM: restored ism_fifo_count %u > %d, draining", floppy->ism_fifo_count, ISM_FIFO_SIZE);
+        floppy->ism_fifo_count = 0;
+    }
+    // mfm_buf_len == 0 is this module's own "buffer invalid, rebuild from the
+    // image" sentinel (swim_handle_action_set sets it on a side/track change
+    // and honours it by calling mfm_build_sector), so zeroing re-derives.
+    // Truncating to the buffer size would hand the guest stale sector bytes.
+    if (floppy->mfm_buf_len > MFM_SECTOR_BUF_SIZE) {
+        LOG(1, "SWIM: restored mfm_buf_len %u > %d, discarding sector buffer", floppy->mfm_buf_len,
+            MFM_SECTOR_BUF_SIZE);
+        floppy->mfm_buf_len = 0;
+        floppy->mfm_buf_pos = 0;
+    }
+    if (floppy->mfm_buf_pos > floppy->mfm_buf_len)
+        floppy->mfm_buf_pos = floppy->mfm_buf_len;
+    // ism_write_pos and ism_param_idx are deliberately NOT clamped: every use
+    // of the first is guarded by `< 512` before its store, and every use of the
+    // second masks with & 0x0F.  Neither can index out of range.
+}
+
 // Initializes a floppy controller of the given type and maps it to memory
 floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint) {
     floppy_t *floppy = malloc(sizeof(floppy_t));
@@ -722,14 +781,13 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     if (checkpoint) {
         LOG(3, "Floppy: Restoring from checkpoint");
 
-        // Clear track data pointers before restoring (they will be overwritten)
-        for (int d = 0; d < NUM_DRIVES; d++)
-            for (int s = 0; s < NUM_SIDES; s++)
-                for (int t = 0; t < NUM_TRACKS; t++)
-                    floppy->drives[d].tracks[s][t].data = NULL;
-
-        // Read plain-data portion
+        // Read plain-data portion.  NOTE: tracks[][].data is inside this
+        // prefix, so the memcpy restores 320 host pointers out of the file.
+        // Every one of them is replaced below -- save writes has_data from
+        // `data != NULL`, so a NULL at save restores as NULL -- but nothing
+        // here may dereference one before that loop runs.
         system_read_checkpoint_data(checkpoint, floppy, FLOPPY_CHECKPOINT_SIZE);
+        floppy_validate_restored_state(floppy);
 
         // Restore disk images by filename
         for (int i = 0; i < NUM_DRIVES; i++) {

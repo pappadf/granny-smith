@@ -20,10 +20,6 @@
 
 LOG_USE_CATEGORY_NAME("swim");
 
-// SWIM base address on SE/30 and mapped window size
-#define SWIM_BASE_ADDR 0x50016000
-#define SWIM_MAP_SIZE  0x2000 // 16 registers x 512-byte stride = 8 KB
-
 // IWM->ISM mode switch pattern
 const uint8_t ISM_SWITCH_PATTERN[4] = {1, 0, 1, 1};
 
@@ -395,6 +391,7 @@ static uint8_t swim_iwm_read(floppy_t *floppy, uint32_t offset) {
                         drive->offset, byte);
                     return byte;
                 }
+                LOG(9, "Drive %d: Skipping MSB=0 byte 0x%02X at offset %d", drv, byte, drive->offset - 1);
             }
             LOG(6, "Drive %d: No valid GCR byte found on track", drv);
             return 0x00;
@@ -806,7 +803,11 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     case 6: { // wZeros: clear specified bits in mode register
         uint8_t old_mode = floppy->ism_mode;
         floppy->ism_mode &= ~byte;
-        floppy->ism_param_idx = 0; // any access to addr 6 resets param counter
+        // ISM ASIC spec, Parameter Data Register $3: "The increment counter
+        // presets the addresses to zero any time that a write to the Write
+        // Zeroes ($6) location occurs or a /Reset occurs."  wOnes ($7)
+        // deliberately does NOT -- do not symmetrise these two cases.
+        floppy->ism_param_idx = 0;
         LOG(2, "ISM wZeros: 0x%02X (mode: 0x%02X -> 0x%02X) pos=%d/%d", byte, old_mode, floppy->ism_mode,
             floppy->mfm_buf_pos, floppy->mfm_buf_len);
 
@@ -863,7 +864,8 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 // ============================================================================
 
 // Reads from the SWIM at the given register offset (0-15)
-static uint8_t swim_read(floppy_t *floppy, uint32_t offset) {
+uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg) {
+    uint32_t offset = reg & 0x0Fu;
     GS_ASSERT(offset < 16);
 
     // Track Q6/Q7 line state even in ISM mode, so the IWM status register
@@ -900,7 +902,8 @@ static uint8_t swim_read(floppy_t *floppy, uint32_t offset) {
 }
 
 // Writes to the SWIM at the given register offset (0-15)
-static void swim_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
+void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t byte) {
+    uint32_t offset = reg & 0x0Fu;
     GS_ASSERT(offset < 16);
 
     if (floppy->in_ism_mode) {
@@ -915,14 +918,19 @@ static void swim_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 }
 
 // ============================================================================
-// SWIM Memory Interface (SE/30 address decoding)
+// SWIM Memory Interface -- INDEX-ADDRESSED
 // ============================================================================
+//
+// `addr` here is a REGISTER INDEX (0-15), not a bus address.  Whoever owns the
+// window maps addresses onto it: the GLUE/MDU/MCU I/O tables via
+// MAC030_IO_STRIDE_512 (the chip's A0-A3 are wired to A9-A12), and the IIfx /
+// Q900 IOP via swim_bypass_addr() (2-byte centres from +$20).  This file used
+// to bake the SE/30's `(addr >> 9) & 0x0F` in, which is why every register
+// aliased to index 0 through the IOP bypass (02-floppy F-03).
 
 // Memory interface handler for 8-bit reads
 static uint8_t swim_read_uint8(void *ctx, uint32_t addr) {
-    floppy_t *s = (floppy_t *)ctx;
-    uint32_t offset = (addr >> 9) & 0x0F;
-    return swim_read(s, offset);
+    return floppy_swim_read((floppy_t *)ctx, addr);
 }
 
 // Memory interface handler for 16-bit reads (not supported)
@@ -943,9 +951,7 @@ static uint32_t swim_read_uint32(void *ctx, uint32_t addr) {
 
 // Memory interface handler for 8-bit writes
 static void swim_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
-    floppy_t *s = (floppy_t *)ctx;
-    uint32_t offset = (addr >> 9) & 0x0F;
-    swim_write(s, offset, value);
+    floppy_swim_write((floppy_t *)ctx, addr, value);
 }
 
 // Memory interface handler for 16-bit writes (not supported)
@@ -982,7 +988,10 @@ void floppy_swim_motor_spinup_callback(void *source, uint64_t data) {
     LOG(3, "Drive %d: Motor spin-up complete, now ready", drive_index);
 }
 
-// Sets up SWIM memory interface callbacks and ISM initial state
+// Sets up SWIM memory interface callbacks and ISM initial state.
+// `map` is always NULL: every SWIM machine decodes its own window and reaches
+// the chip through floppy_get_memory_interface().  The parameter stays for
+// signature symmetry with floppy_iwm_setup.
 void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
     // ISM initial state (chip powers up in IWM mode)
     floppy->in_ism_mode = false;
@@ -999,7 +1008,5 @@ void floppy_swim_setup(floppy_t *floppy, memory_map_t *map) {
     floppy->memory_interface.write_uint16 = &swim_write_uint16;
     floppy->memory_interface.write_uint32 = &swim_write_uint32;
 
-    // Register with memory map if provided (NULL = machine handles registration)
-    if (map)
-        memory_map_add(map, SWIM_BASE_ADDR, SWIM_MAP_SIZE, "swim", &floppy->memory_interface, floppy);
+    (void)map;
 }
