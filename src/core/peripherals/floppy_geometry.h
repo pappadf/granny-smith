@@ -63,4 +63,25 @@ int floppy_media_spt(const floppy_media_t *m, int track);
 // Byte offset of one sector in the image.
 size_t floppy_media_sector_offset(const floppy_media_t *m, int track, int side, int sector);
 
+// decode_gcr() returns this for a byte that is not one of the 64 legal GCR
+// codewords.  It is out of the 6-bit range, so a caller that ignores it still
+// cannot silently fold a corrupt nibble into valid data.
+#define GCR_BAD_CODEWORD 0xFFu
+
+// The 64-entry 6-to-8 GCR codeword table, and the Apple rotate-add-xor
+// checksum chain.  Both existed twice -- the table byte-identically, the chain
+// once as dst-capturing macros and once as these functions (02-floppy F-18).
+// The chain is subtle (the carry feed between ca/cb/cc, and the final
+// pair-not-triplet case), so one implementation with a unit test beats two
+// that happen to agree.
+extern const uint8_t gcr_codewords[];
+
+// Three bytes -> four six-bit values, advancing the checksum registers.
+void gcr_encode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst);
+// Four six-bit values -> three bytes, advancing the checksum registers.
+void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst);
+
+// Converts a GCR codeword to its 6-bit value, or GCR_BAD_CODEWORD.
+uint8_t decode_gcr(uint8_t gcr_codeword);
+
 #endif // FLOPPY_GEOMETRY_H

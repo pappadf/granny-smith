@@ -140,12 +140,15 @@ TEST(test_sector_round_trip) {
                 ASSERT_TRUE(mark != NULL);
                 uint8_t out[512], out_tag[12];
                 int d_track = -1, d_side = -1, d_sector = -1;
-                uint8_t *next = decode_sector(out_tag, out, mark, &d_track, &d_side, &d_sector);
+                uint8_t *next = decode_sector(out_tag, out, mark, end, &d_track, &d_side, &d_sector);
                 ASSERT_TRUE(next != NULL);
                 ASSERT_EQ_INT(d_track, track);
                 ASSERT_EQ_INT(d_side, side);
                 ASSERT_EQ_INT(d_sector, sector);
                 ASSERT_TRUE(memcmp(out, data, 512) == 0);
+                // Tags round-trip too: the GCR path used to synthesise zeros
+                // on encode and discard them on decode (02-floppy F-14).
+                ASSERT_TRUE(memcmp(out_tag, tag, 12) == 0);
             }
         }
     }
@@ -168,7 +171,7 @@ TEST(test_sector_round_trip_edge_payloads) {
         ASSERT_TRUE(mark != NULL);
 
         int d_track = -1, d_side = -1, d_sector = -1;
-        ASSERT_TRUE(decode_sector(out_tag, out, mark, &d_track, &d_side, &d_sector) != NULL);
+        ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &d_track, &d_side, &d_sector) != NULL);
         ASSERT_EQ_INT(d_track, 3);
         ASSERT_EQ_INT(d_sector, 5);
         ASSERT_EQ_INT(d_side, 1);
@@ -187,7 +190,7 @@ TEST(test_track_round_trip) {
         for (int i = 0; i < spt * 512; i++)
             sectors[i] = (uint8_t)(i ^ track);
 
-        encode_track(buf, len, track, 0, sectors, 2);
+        encode_track(buf, len, track, 0, sectors, 2, NULL, 0);
 
         // Every sector number must appear exactly once in the encoded track.
         int seen[16] = {0};
@@ -197,7 +200,8 @@ TEST(test_track_round_trip) {
             if (p[0] == 0xD5 && p[1] == 0xAA && p[2] == 0x96) {
                 uint8_t out[512], out_tag[12];
                 int d_track = -1, d_side = -1, d_sector = -1;
-                uint8_t *next = decode_sector(out_tag, out, p, &d_track, &d_side, &d_sector);
+                uint8_t *next = decode_sector(out_tag, out, p, end, &d_track, &d_side, &d_sector);
+                ASSERT_TRUE(next != NULL);
                 ASSERT_EQ_INT(d_track, track);
                 ASSERT_TRUE(d_sector >= 0 && d_sector < spt);
                 seen[d_sector]++;
@@ -243,6 +247,92 @@ TEST(test_register_strides) {
     // every register.  Pinned so the collapse cannot come back unnoticed.
     for (unsigned off = 0x20u; off <= 0x3Fu; off++)
         ASSERT_EQ_INT((int)((off >> 9) & 0x0F), 0);
+}
+
+// Everything decode_sector walks is whatever the guest wrote through the data
+// register, so it must REFUSE malformed input rather than assert on it: under
+// GS_FAST the asserts vanish and corrupt nibbles reached the user's image; in
+// every other build gs_assert_fail prints, pauses the scheduler and then
+// CONTINUES (02-floppy F-07).  It must also never read past `end` (F-06).
+TEST(test_decode_sector_rejects_corruption) {
+    static uint8_t buf[16384];
+    uint8_t data[512], tag[12], out[512], out_tag[12];
+    memset(data, 0x5A, sizeof data);
+    memset(tag, 0x11, sizeof tag);
+    int t = -1, sd = -1, sc = -1;
+
+    // A good sector, as the control.
+    memset(buf, 0xFF, sizeof buf);
+    uint8_t *end = encode_sector(buf, tag, data, 10, 4, 0, 2);
+    uint8_t *mark = find_address_mark(buf, end);
+    ASSERT_TRUE(mark != NULL);
+    ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) != NULL);
+
+    // A corrupted header checksum must be refused.
+    mark[7] ^= 0x01;
+    ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) == NULL);
+    mark[7] ^= 0x01;
+
+    // A byte that is not a legal codeword must be refused, not aliased.  $16
+    // is exactly the case the old `& 0x7F` lookup folded onto $96.
+    ASSERT_EQ_INT(decode_gcr(0x16), GCR_BAD_CODEWORD);
+    ASSERT_EQ_INT(decode_gcr(0x00), GCR_BAD_CODEWORD);
+    ASSERT_EQ_INT(decode_gcr(0x95), GCR_BAD_CODEWORD);
+    uint8_t save = mark[3];
+    mark[3] = 0x16;
+    ASSERT_TRUE(decode_sector(out_tag, out, mark, end, &t, &sd, &sc) == NULL);
+    mark[3] = save;
+
+    // Truncating the buffer must be refused at every length, never read past.
+    for (const uint8_t *e = mark; e < end; e += 17)
+        ASSERT_TRUE(decode_sector(out_tag, out, mark, e, &t, &sd, &sc) == NULL);
+
+    // And a buffer of pure garbage must never decode.
+    memset(buf, 0xD5, sizeof buf);
+    ASSERT_TRUE(decode_sector(out_tag, out, buf, buf + sizeof buf, &t, &sd, &sc) == NULL);
+}
+
+// The two forms of the checksum chain must agree.  ENCODE_TRIPLET is the
+// whole-track variant (advances a source pointer, captures in place);
+// gcr_encode_triplet is the DMA-stream variant SWIM3 uses.  They were two
+// independent transcriptions of the same subtle algorithm with nothing holding
+// them together (02-floppy F-18); this is what holds them together.
+TEST(test_triplet_forms_agree) {
+    uint8_t src[3 * 64];
+    for (unsigned i = 0; i < sizeof src; i++)
+        src[i] = (uint8_t)(i * 31 + 7);
+
+    // Function form over the whole buffer.
+    uint8_t fn_out[4 * 64];
+    uint16_t fa = 0, fb = 0, fc = 0;
+    for (unsigned i = 0; i < sizeof src; i += 3)
+        gcr_encode_triplet(src + i, &fa, &fb, &fc, fn_out + (i / 3) * 4);
+
+    // Macro form over the same buffer.
+    uint8_t mac_out[4 * 64];
+    uint8_t *dst = mac_out;
+    const uint8_t *sp = src;
+    uint16_t ma = 0, mb = 0, mc = 0;
+    uint8_t ba, bb, bc;
+    for (unsigned i = 0; i < sizeof src; i += 3)
+        ENCODE_TRIPLET(sp, ma, mb, mc, ba, bb, bc);
+
+    // The macro emits ENCODED disk bytes (its GCR() applies the 6-to-8 table);
+    // the function emits the raw six-bit values the DMA stream carries.  Same
+    // chain, different output form -- so map one onto the other.
+    for (unsigned i = 0; i < sizeof fn_out; i++)
+        ASSERT_EQ_INT(mac_out[i], gcr_codewords[fn_out[i] & 0x3F]);
+    // ...and the checksum registers must have advanced identically.
+    ASSERT_EQ_INT((int)(fa & 0xFF), (int)(ma & 0xFF));
+    ASSERT_EQ_INT((int)(fb & 0xFF), (int)(mb & 0xFF));
+    ASSERT_EQ_INT((int)(fc & 0xFF), (int)(mc & 0xFF));
+
+    // Decode agrees too: the function form must invert the macro's output.
+    uint8_t back[3 * 64];
+    uint16_t da = 0, db = 0, dc = 0;
+    for (unsigned i = 0; i < sizeof src; i += 3)
+        gcr_decode_triplet(fn_out + (i / 3) * 4, &da, &db, &dc, back + i);
+    ASSERT_TRUE(memcmp(back, src, sizeof src) == 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +421,8 @@ int main(void) {
     RUN(test_sector_round_trip);
     RUN(test_sector_round_trip_edge_payloads);
     RUN(test_track_round_trip);
+    RUN(test_decode_sector_rejects_corruption);
+    RUN(test_triplet_forms_agree);
     RUN(test_media_descriptor);
     RUN(test_media_sector_offset);
     RUN(test_register_strides);

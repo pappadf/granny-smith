@@ -30,6 +30,22 @@ size_t disk_write_data(image_t *disk, size_t offset, uint8_t *buf, size_t size) 
     return 0;
 }
 
+size_t disk_read_tag(image_t *disk, size_t sector, uint8_t *buf, size_t size) {
+    (void)disk;
+    (void)sector;
+    (void)buf;
+    (void)size;
+    return 0;
+}
+
+size_t disk_write_tag(image_t *disk, size_t sector, const uint8_t *buf, size_t size) {
+    (void)disk;
+    (void)sector;
+    (void)buf;
+    (void)size;
+    return 0;
+}
+
 size_t disk_size(image_t *disk) {
     (void)disk;
     return 0;

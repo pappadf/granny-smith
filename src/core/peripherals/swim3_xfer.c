@@ -150,24 +150,6 @@ int swim3_index_pulse(swim3_t *sw) {
 // checksum is Apple's rotate-add-xor chain; hardware verifies it and the
 // driver verifies it again in software, so it must be right.
 
-// Encode three bytes into four six-bit values, advancing the checksum.
-static void gcr_encode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst) {
-    *cc = (uint16_t)((*cc << 1) | ((*cc >> 7) & 1));
-    *ca &= 0xFF;
-    *ca = (uint16_t)(*ca + src[0] + (*cc & 1));
-    uint8_t ba = (uint8_t)(src[0] ^ *cc);
-    *cb &= 0xFF;
-    *cb = (uint16_t)(*cb + src[1] + ((*ca >> 8) & 1));
-    uint8_t bb = (uint8_t)(src[1] ^ *ca);
-    *cc &= 0xFF;
-    *cc = (uint16_t)(*cc + src[2] + ((*cb >> 8) & 1));
-    uint8_t bc = (uint8_t)(src[2] ^ *cb);
-    dst[0] = (uint8_t)(((ba >> 2) & 0x30) | ((bb >> 4) & 0x0C) | ((bc >> 6) & 0x03));
-    dst[1] = (uint8_t)(ba & 0x3F);
-    dst[2] = (uint8_t)(bb & 0x3F);
-    dst[3] = (uint8_t)(bc & 0x3F);
-}
-
 // tag[12] + data[512] -> 703 six-bit values.
 static void gcr_nibblize(const uint8_t *tag, const uint8_t *data, uint8_t *out) {
     uint16_t ca = 0, cb = 0, cc = 0;
@@ -193,23 +175,6 @@ static void gcr_nibblize(const uint8_t *tag, const uint8_t *data, uint8_t *out) 
     *dst++ = (uint8_t)(c[0] & 0x3F);
     *dst++ = (uint8_t)(c[1] & 0x3F);
     *dst++ = (uint8_t)(c[2] & 0x3F);
-}
-
-// Decode four six-bit values back into three bytes, advancing the checksum.
-static void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst) {
-    uint8_t ba = (uint8_t)(((src[0] << 2) & 0xC0) | (src[1] & 0x3F));
-    uint8_t bb = (uint8_t)(((src[0] << 4) & 0xC0) | (src[2] & 0x3F));
-    uint8_t bc = (uint8_t)(((src[0] << 6) & 0xC0) | (src[3] & 0x3F));
-    *cc = (uint16_t)((*cc << 1) | ((*cc >> 7) & 1));
-    dst[0] = (uint8_t)(ba ^ *cc);
-    *ca &= 0xFF;
-    *ca = (uint16_t)(*ca + dst[0] + (*cc & 1));
-    dst[1] = (uint8_t)(bb ^ *ca);
-    *cb &= 0xFF;
-    *cb = (uint16_t)(*cb + dst[1] + ((*ca >> 8) & 1));
-    dst[2] = (uint8_t)(bc ^ *cb);
-    *cc &= 0xFF;
-    *cc = (uint16_t)(*cc + dst[2] + ((*cb >> 8) & 1));
 }
 
 // 703 six-bit values -> tag[12] + data[512].  Returns false when the
@@ -546,16 +511,10 @@ static void swim3_raw_track(swim3_t *sw, const swim3_media_t *m, int track, int 
                 if (!raw_pair(sw, 0x00, 0x4E))
                     return;
         } else {
-            // The 6-to-8 GCR codeword table.  The shared floppy module has
-            // the same 64 bytes, but only behind its private header, and
-            // this is the one place a machine model needs the ENCODED form
-            // (raw capture is the only path that sees disk bytes rather
-            // than the values either side of the chip's converter).
-            static const uint8_t gcr6[64] = {
-                0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6, 0xA7, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB2, 0xB3,
-                0xB4, 0xB5, 0xB6, 0xB7, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xCB, 0xCD, 0xCE, 0xCF, 0xD3,
-                0xD6, 0xD7, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE5, 0xE6, 0xE7, 0xE9, 0xEA, 0xEB, 0xEC,
-                0xED, 0xEE, 0xEF, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF};
+            // The 6-to-8 GCR codeword table, shared (02-floppy F-18): this used
+            // to be a byte-identical second copy, kept here only because the
+            // shared one lived behind a private header.
+            const uint8_t *gcr6 = gcr_codewords;
             uint8_t side_enc = (uint8_t)((side << 5) | ((track >> 6) & 0x1F));
             uint8_t hdr[5] = {(uint8_t)track, (uint8_t)s, side_enc, m->fmt_byte,
                               (uint8_t)(track ^ s ^ side_enc ^ m->fmt_byte)};

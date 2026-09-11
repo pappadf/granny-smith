@@ -215,6 +215,44 @@ int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const ch
         GCR3(ba, bb, bc);                                                                                              \
     } while (0)
 
+// The checksum chain in function form.  floppy_gcr.c's ENCODE_TRIPLET /
+// DECODE_TRIPLET macros are the whole-track variant of the same algorithm --
+// they advance a source pointer and capture into a destination in place, which
+// is what encode_sector/decode_sector want; these are the DMA-stream variant
+// SWIM3 wants.  tests/unit/suites/floppy pins that the two agree.
+void gcr_encode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst) {
+    *cc = (uint16_t)((*cc << 1) | ((*cc >> 7) & 1));
+    *ca &= 0xFF;
+    *ca = (uint16_t)(*ca + src[0] + (*cc & 1));
+    uint8_t ba = (uint8_t)(src[0] ^ *cc);
+    *cb &= 0xFF;
+    *cb = (uint16_t)(*cb + src[1] + ((*ca >> 8) & 1));
+    uint8_t bb = (uint8_t)(src[1] ^ *ca);
+    *cc &= 0xFF;
+    *cc = (uint16_t)(*cc + src[2] + ((*cb >> 8) & 1));
+    uint8_t bc = (uint8_t)(src[2] ^ *cb);
+    dst[0] = (uint8_t)(((ba >> 2) & 0x30) | ((bb >> 4) & 0x0C) | ((bc >> 6) & 0x03));
+    dst[1] = (uint8_t)(ba & 0x3F);
+    dst[2] = (uint8_t)(bb & 0x3F);
+    dst[3] = (uint8_t)(bc & 0x3F);
+}
+
+void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst) {
+    uint8_t ba = (uint8_t)(((src[0] << 2) & 0xC0) | (src[1] & 0x3F));
+    uint8_t bb = (uint8_t)(((src[0] << 4) & 0xC0) | (src[2] & 0x3F));
+    uint8_t bc = (uint8_t)(((src[0] << 6) & 0xC0) | (src[3] & 0x3F));
+    *cc = (uint16_t)((*cc << 1) | ((*cc >> 7) & 1));
+    dst[0] = (uint8_t)(ba ^ *cc);
+    *ca &= 0xFF;
+    *ca = (uint16_t)(*ca + dst[0] + (*cc & 1));
+    dst[1] = (uint8_t)(bb ^ *ca);
+    *cb &= 0xFF;
+    *cb = (uint16_t)(*cb + dst[1] + ((*ca >> 8) & 1));
+    dst[2] = (uint8_t)(bc ^ *cb);
+    *cc &= 0xFF;
+    *cc = (uint16_t)(*cc + dst[2] + ((*cb >> 8) & 1));
+}
+
 // Encodes a sector to GCR format with header and data fields
 static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *data, int track, int sector, int side,
                               int num_sides) {
@@ -283,7 +321,8 @@ static uint8_t *encode_sector(uint8_t *dst, const uint8_t *tag, const uint8_t *d
 }
 
 // Encodes an entire track with interleaved sectors to GCR format
-static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data, int num_sides) {
+static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, const uint8_t *data, int num_sides,
+                         image_t *img, size_t first_block) {
     GS_ASSERT(data != NULL);
 
     int i;
@@ -308,14 +347,21 @@ static void encode_track(uint8_t *dst, size_t trk_length, int track, int side, c
         {0, 4, 1, 5, 2, 6, 3, 7, -1, -1, -1, -1},
     };
 
-    // just assume an empty tag for now
-    uint8_t tag[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
-
     // go through all sectors in track (note: "i" is not the sector number)
     for (i = 0; i < num_sectors; i++) {
 
         int sector = interleave[track >> 4][i];
         GS_ASSERT(sector != -1);
+
+        // The 12 GCR tag bytes carry the HFS/MFS scavenger metadata.  This path
+        // used to synthesise zeros ("just assume an empty tag for now"), so a
+        // DiskCopy 4.2 image with tags lost them on any read through the
+        // IWM/SWIM path -- and the same image behaved differently on a IIci and
+        // a 7100, which does round-trip them (02-floppy F-14).
+        uint8_t tag[12];
+        memset(tag, 0, sizeof tag);
+        if (img)
+            disk_read_tag(img, first_block + (size_t)sector, tag, sizeof tag);
 
         dst = encode_sector(dst, tag, data + sector * 512, track, sector, side, num_sides);
     }
@@ -380,7 +426,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
             free(sector_data);
             return NULL;
         }
-        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides);
+        encode_track(track->data, track->size, drive->track, sel, sector_data, num_sides, img, track_offset / 512u);
         free(sector_data);
     }
 
@@ -423,38 +469,72 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
         (cc) += (bc) + ((cb) >> 8 & 1);                                                                                \
     } while (0)
 
-// Converts a GCR codeword to its 6-bit value using a lookup table
+// Converts a GCR codeword to its 6-bit value, or GCR_BAD_CODEWORD.
+//
+// The table is 256 entries keyed on the WHOLE byte.  It used to be a lazily
+// malloc'd 128 keyed on `codeword & 0x7F` -- and since every legal codeword has
+// bit 7 set ($96..$FF), that aliased 64 illegal bytes onto legal values ($16 ->
+// $96, $1F -> $9F, ...), defeating the very check meant to catch corrupt
+// nibbles (02-floppy F-33).  The old table was also never freed and made the
+// function non-reentrant.
 uint8_t decode_gcr(uint8_t gcr_codeword) {
-    static uint8_t *decode_table = NULL;
-
-    if (decode_table == NULL) {
-        decode_table = (uint8_t *)malloc(128);
-        GS_ASSERT(decode_table != NULL);
-        memset(decode_table, 0xFF, 128);
+    static uint8_t decode_table[256];
+    static bool built = false;
+    if (!built) {
+        memset(decode_table, GCR_BAD_CODEWORD, sizeof decode_table);
         for (int i = 0; i < (int)sizeof(gcr_codewords); i++)
-            decode_table[gcr_codewords[i] & 0x7F] = i;
+            decode_table[gcr_codewords[i]] = (uint8_t)i;
+        built = true;
     }
-
-    GS_ASSERT(decode_table[gcr_codeword & 0x7F] < 64);
-    return decode_table[gcr_codeword & 0x7F];
+    return decode_table[gcr_codeword];
 }
 
 // Decodes a GCR sector back to tag and data buffers with checksum verification
-static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, int *track_out, int *side_out,
-                              int *sector_out) {
+// Every byte this walks is whatever the guest wrote into the track buffer
+// through the IWM/SWIM data register, so NOTHING here may assert: GS_ASSERT
+// prints and pauses the scheduler and then CONTINUES, so a guest that writes a
+// plausible header with a bad checksum used to halt the emulator from inside a
+// flush; and under GS_FAST the asserts vanish entirely and corrupt nibbles were
+// written to the user's disk image as data (02-floppy F-07).
+//
+// Returns NULL on any malformed field, having consumed nothing the caller
+// relies on; the caller skips the sector and rescans.  `end` bounds every read
+// (02-floppy F-06): the old scan guard allowed 730 bytes from the mark while
+// the worst case here is 817 -- 10 header bytes, a data-mark search of up to
+// 100, then 4 + 16 + 680 + 3 + 4 -- so up to ~87 bytes past the end of the
+// malloc'd track buffer were read on every flush.
+static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const uint8_t *end, int *track_out,
+                              int *side_out, int *sector_out) {
+#define NEED(n)                                                                                                        \
+    do {                                                                                                               \
+        if (src + (n) > end)                                                                                           \
+            return NULL;                                                                                               \
+    } while (0)
+#define GCR_OR_FAIL(dst)                                                                                               \
+    do {                                                                                                               \
+        NEED(1);                                                                                                       \
+        uint8_t v_ = decode_gcr(*src++);                                                                               \
+        if (v_ == GCR_BAD_CODEWORD)                                                                                    \
+            return NULL;                                                                                               \
+        (dst) = v_;                                                                                                    \
+    } while (0)
+
     // Read and verify header marks
-    GS_ASSERT(*src++ == 0xD5);
-    GS_ASSERT(*src++ == 0xAA);
-    GS_ASSERT(*src++ == 0x96);
+    NEED(3);
+    if (src[0] != 0xD5 || src[1] != 0xAA || src[2] != 0x96)
+        return NULL;
+    src += 3;
 
     // Decode header fields
-    uint8_t track = decode_gcr(*src++);
-    uint8_t sector = decode_gcr(*src++);
-    uint8_t side = decode_gcr(*src++);
-    uint8_t format = decode_gcr(*src++);
-    uint8_t checksum = decode_gcr(*src++);
+    uint8_t track, sector, side, format, checksum;
+    GCR_OR_FAIL(track);
+    GCR_OR_FAIL(sector);
+    GCR_OR_FAIL(side);
+    GCR_OR_FAIL(format);
+    GCR_OR_FAIL(checksum);
 
-    GS_ASSERT(checksum == (track ^ sector ^ side ^ format));
+    if (checksum != (track ^ sector ^ side ^ format))
+        return NULL;
 
     track = (side << 6 & 0x40) | (track & 0x3F);
     side = side >> 5 & 1;
@@ -466,17 +546,30 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, int *tr
     if (sector_out)
         *sector_out = (int)sector;
 
-    GS_ASSERT(*src++ == 0xDE);
-    GS_ASSERT(*src++ == 0xAA);
+    NEED(2);
+    if (src[0] != 0xDE || src[1] != 0xAA)
+        return NULL;
+    src += 2;
 
-    // Find data field marks
-    uint8_t *end = src + 100;
-    while (src < end && (src[0] != 0xD5 || src[1] != 0xAA || src[2] != 0xAD))
+    // Find the data field's mark, within the gap the encoder leaves (6 bytes
+    // nominally) and never past the end of the track buffer.
+    const uint8_t *search_end = src + 100;
+    if (search_end > end)
+        search_end = end;
+    while (src + 3 <= search_end && (src[0] != 0xD5 || src[1] != 0xAA || src[2] != 0xAD))
         src++;
-    GS_ASSERT(src < end);
+    if (src + 3 > search_end)
+        return NULL;
     src += 3;
 
-    GS_ASSERT(decode_gcr(*src++) == sector);
+    uint8_t data_sector;
+    GCR_OR_FAIL(data_sector);
+    if (data_sector != sector)
+        return NULL;
+
+    // Everything below reads a fixed 703 six-bit values plus the 3-byte
+    // checksum, so one bound covers the rest.
+    NEED(16 + 680 + 3 + 4);
 
     // Decode data with checksum verification
     uint16_t ca = 0, cb = 0, cc = 0;
@@ -502,11 +595,12 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, int *tr
 
     // Verify checksum
     READ_GCR3(src, ba, bb, bc);
-    GS_ASSERT((ca & 0xFF) == ba);
-    GS_ASSERT((cb & 0xFF) == bb);
-    GS_ASSERT((cc & 0xFF) == bc);
+    if ((ca & 0xFF) != ba || (cb & 0xFF) != bb || (cc & 0xFF) != bc)
+        return NULL;
 
     return src;
+#undef NEED
+#undef GCR_OR_FAIL
 }
 
 // Writes any modified GCR tracks back to the underlying disk image
@@ -540,72 +634,47 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
             uint8_t *end = t->data + t->size;
             int num_sides = iwm_image_num_sides(img);
 
-            while (p + 730 < end) { // require enough space for a sector
+            // decode_sector bounds every read against `end` and returns
+            // NULL on anything malformed, so the scan only has to find a
+            // plausible mark.  The old guard was `p + 730 < end`, ~87 bytes
+            // short of the decoder's 817-byte worst case (02-floppy F-06).
+            while (p + 3 <= end) {
                 if (p[0] == 0xD5 && p[1] == 0xAA && p[2] == 0x96) {
-                    // Validate header checksum before attempting full decode.
-                    // MacTest writes test patterns that may corrupt the data
-                    // field while leaving headers intact; skip those sectors.
-                    uint8_t h_trk = decode_gcr(p[3]);
-                    uint8_t h_sec = decode_gcr(p[4]);
-                    uint8_t h_sid = decode_gcr(p[5]);
-                    uint8_t h_fmt = decode_gcr(p[6]);
-                    uint8_t h_chk = decode_gcr(p[7]);
-                    if (h_chk != (h_trk ^ h_sec ^ h_sid ^ h_fmt)) {
-                        p++;
-                        continue; // header checksum bad → skip
-                    }
-                    // Find data field marks (D5 AA AD) within next 100 bytes
-                    uint8_t *dscan = p + 8;
-                    uint8_t *dlimit = dscan + 100;
-                    if (dlimit > end)
-                        dlimit = end;
-                    while (dscan + 2 < dlimit && (dscan[0] != 0xD5 || dscan[1] != 0xAA || dscan[2] != 0xAD))
-                        dscan++;
-                    if (dscan + 2 >= dlimit || dscan[0] != 0xD5) {
-                        p++;
-                        continue; // no data field → skip
-                    }
-                    // Verify sector number in data field matches header
-                    if (decode_gcr(dscan[3]) != h_sec) {
-                        LOG(4,
-                            "Drive %d: Skip corrupt sector track=%d side=%d sector=%d "
-                            "(data field mismatch)",
-                            drive_index, (h_sid << 6 & 0x40) | (h_trk & 0x3F), h_sid >> 5 & 1, h_sec);
+                    uint8_t tag[12];
+                    uint8_t buf[512];
+                    int hdr_track = 0, hdr_side = 0, hdr_sector = 0;
+                    uint8_t *next = decode_sector(tag, buf, p, end, &hdr_track, &hdr_side, &hdr_sector);
+                    if (!next) {
+                        // Guest-written bytes that do not form a sector: skip
+                        // and rescan.  Level 4 because a formatter in progress
+                        // produces these legitimately.
+                        LOG(4, "Drive %d: Skip undecodable sector at +%zu", drive_index, (size_t)(p - t->data));
                         p++;
                         continue;
                     }
 
-                    // Found a valid header; decode this sector to temp buffers
-                    uint8_t tag[12];
-                    uint8_t buf[512];
-                    int hdr_track = 0, hdr_side = 0, hdr_sector = 0;
-                    uint8_t *next = decode_sector(tag, buf, p, &hdr_track, &hdr_side, &hdr_sector);
-
-                    // Sanity-check header values and that they match loop indices
                     // hdr_sector comes from a 6-bit GCR nibble the guest wrote,
                     // so it is 0..63 while a track holds at most 12 sectors.
                     // Unchecked, a header claiming sector 40 wrote 20 KB past
                     // the start of its own track, into neighbouring tracks'
                     // data -- arbitrary corruption of a mounted writable image
-                    // from one track write (02-floppy F-13).  SWIM3 checks.
+                    // from one track write (02-floppy F-13).
                     if (hdr_track >= 0 && hdr_track < NUM_TRACKS && hdr_side >= 0 && hdr_side < NUM_SIDES &&
                         hdr_sector >= 0 && hdr_sector < iwm_sectors_per_track(hdr_track)) {
-                        // num_sides is the image's real side count; the old
-                        // code hardcoded 2 here and fell back to side 0 only
-                        // when the offset happened to run past the end.
                         size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
                         if (off + 512 <= disk_size(img)) {
                             disk_write_data(img, off, buf, 512);
+                            // The 12 GCR tag bytes carry HFS/MFS scavenger
+                            // metadata; SWIM3 round-trips them and this path
+                            // used to decode them into a local and throw them
+                            // away (02-floppy F-14).
+                            disk_write_tag(img, off / 512u, tag, sizeof tag);
                             LOG(5, "Drive %d: Write sector track=%d side=%d sector=%d", drive_index, hdr_track,
                                 hdr_side, hdr_sector);
                         }
                     }
 
-                    // Advance pointer
-                    if (next > p)
-                        p = next;
-                    else
-                        p++;
+                    p = (next > p) ? next : p + 1;
                 } else {
                     p++;
                 }

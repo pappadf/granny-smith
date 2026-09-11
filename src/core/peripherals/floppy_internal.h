@@ -300,8 +300,7 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
 // Writes any modified GCR tracks back to the underlying disk image
 void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_index);
 
-// GCR codeword table (6-bit to 8-bit)
-extern const uint8_t gcr_codewords[];
+// gcr_codewords / decode_gcr / the triplet chain are public: floppy_geometry.h.
 
 // ============================================================================
 // Shared drive/IWM functions (defined in floppy.c).
