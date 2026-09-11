@@ -105,6 +105,23 @@ static int ism_mfm_spt(image_t *img) {
 }
 
 // Builds an MFM sector in the sector buffer for the current track/side/sector
+// Is the chip framing the encoding this disk actually carries?
+//
+// ISM ASIC spec, Setup register $5: bit 2 sets GCR mode, and bit 6 ("the read
+// and write Trans-Space logic bypassed") "must be set whenever the GCR mode is
+// set".  Neither bit was ever read: wSetup just stored the byte, and
+// mfm_build_sector synthesised an MFM address+data field unconditionally
+// (02-floppy F-09).  SWIM3 builds its whole format-detection walk on exactly
+// this predicate -- a mismatch means the head finds nothing it recognises,
+// which is how MFM1440K/MFM720K/GCR800K/GCR400K probes reject the wrong modes.
+static bool ism_encoding_matches(const floppy_t *floppy, const image_t *img) {
+    floppy_media_t m;
+    if (!floppy_media_from_image((image_t *)img, &m))
+        return false;
+    bool gcr_framing = (floppy->ism_setup & ISM_SETUP_GCR) != 0;
+    return gcr_framing != m.mfm;
+}
+
 static void mfm_build_sector(floppy_t *floppy) {
     int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
     image_t *img = floppy->disk[drv];
@@ -118,6 +135,14 @@ static void mfm_build_sector(floppy_t *floppy) {
     // Use the latched side value (set when ACTION transitions 0→1)
     int side = floppy->mfm_cur_side;
     int sector = floppy->mfm_cur_sector; // 1-based
+
+    // The chip must be framing MFM to present MFM fields.  A wrong-mode probe
+    // used to get a plausible-looking address field it should never have seen.
+    if (!ism_encoding_matches(floppy, img)) {
+        floppy->mfm_buf_len = 0;
+        LOG(3, "ISM: framing does not match media (setup=0x%02X), no fields under the head", floppy->ism_setup);
+        return;
+    }
 
     int sectors_per_track = ism_mfm_spt(img);
 
@@ -517,23 +542,34 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
         if (floppy->ism_error != 0)
             hdshk |= ISM_HDSHK_ERROR;
 
-        // Bits 6-7: FIFO status
+        // Bits 6-7: FIFO status.  PURE -- reading the handshake register must
+        // not move data (02-floppy F-25).  This used to drain the FIFO
+        // outright in write mode and call mfm_fill_fifo in read mode, which
+        // can advance the sector and perform a disk_read_data; so a debugger
+        // read, a logpoint or the object model touching the register changed
+        // emulated state, and the amount of data delivered depended on how
+        // many times the guest polled rather than on time.  SWIM3 gets this
+        // right: its engine is scheduler-driven and its register reads are
+        // pure.
+        //
+        // The write side no longer needs a drain here because wData/wMark now
+        // hand the byte to the shifter as they take it (see below).
         if (floppy->ism_mode & ISM_MODE_WRITE) {
-            // Write mode: drain FIFO when ACTION is active
-            if (floppy->ism_mode & ISM_MODE_ACTION)
-                floppy->ism_fifo_count = 0;
             int space = ISM_FIFO_SIZE - floppy->ism_fifo_count;
             if (space >= 1)
                 hdshk |= ISM_HDSHK_DAT1BYTE;
             if (space >= 2)
                 hdshk |= ISM_HDSHK_DAT2BYTE;
         } else {
-            // Read mode: refill FIFO first if reading
-            if (floppy->ism_mode & ISM_MODE_ACTION)
-                mfm_fill_fifo(floppy);
-            if (floppy->ism_fifo_count >= 1)
+            // A byte is available if the FIFO holds one, or the sector buffer
+            // still has bytes the next rData would pull in.  Same answer the
+            // old refill produced, without performing it.
+            int avail = floppy->ism_fifo_count;
+            if ((floppy->ism_mode & ISM_MODE_ACTION) && floppy->mfm_buf_len > 0)
+                avail = ISM_FIFO_SIZE;
+            if (avail >= 1)
                 hdshk |= ISM_HDSHK_DAT1BYTE;
-            if (floppy->ism_fifo_count >= 2)
+            if (avail >= 2)
                 hdshk |= ISM_HDSHK_DAT2BYTE;
         }
 
@@ -598,6 +634,27 @@ static void swim_handle_fifo_clear(floppy_t *floppy, uint8_t old_mode) {
     }
 }
 
+// The write shifter takes a byte from the FIFO as it arrives.
+//
+// This model has no flux-level engine, so the FIFO's only observable role on
+// the write side is the handshake's free-space report.  Handing the byte on
+// here keeps that report truthful without the handshake register draining the
+// FIFO as a side effect of being READ (02-floppy F-25).
+//
+// A queued CRC token (wCRC) shifts out after the byte it was queued behind,
+// which is what the ISM ASIC spec describes.
+static void ism_fifo_take_for_shifter(floppy_t *floppy) {
+    if (!(floppy->ism_mode & ISM_MODE_ACTION))
+        return;
+    if (floppy->ism_fifo_count > 0)
+        floppy->ism_fifo_count--;
+    if (floppy->ism_crc_pending && floppy->ism_fifo_count == 0) {
+        floppy->ism_crc_pending = false;
+        floppy->ism_crc = CRC_INIT; // the field is closed; the next one restarts
+        LOG(6, "ISM: CRC token shifted out");
+    }
+}
+
 // Writes to the ISM register file
 static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     GS_ASSERT(offset <= 7);
@@ -608,6 +665,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             if (!floppy->ism_error)
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
+        ism_fifo_take_for_shifter(floppy);
         floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
         // Capture sector data during WRITE+ACTION
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
@@ -638,6 +696,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             if (!floppy->ism_error)
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
+        ism_fifo_take_for_shifter(floppy);
         floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
         // Track $A1 mark bytes for write capture state machine
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
@@ -651,11 +710,21 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 
     case 2: // wCRC (ACTION=1) or wIWMConfig (ACTION=0)
         if (floppy->ism_mode & ISM_MODE_ACTION) {
-            uint8_t crc_hi = (uint8_t)(floppy->ism_crc >> 8);
-            uint8_t crc_lo = (uint8_t)(floppy->ism_crc & 0xFF);
-            ism_fifo_push(floppy, crc_hi, false);
-            ism_fifo_push(floppy, crc_lo, false);
-            LOG(6, "ISM wCRC: appended CRC 0x%04X", floppy->ism_crc);
+            // ISM ASIC spec, $2 WRITE: "A write to this location will set a
+            // STATUS IN THE FIFO which will cause the CRC bytes to be written
+            // on the disk.  Since the status bit moves through the FIFO, the
+            // CRC bytes will shift out after the last bit of data is written."
+            //
+            // It is a token, not two data bytes.  The old code pushed the two
+            // bytes literally AND discarded both push return values -- unlike
+            // every other push site, which checks and sets an error -- so with
+            // a byte already in a two-entry FIFO the CRC low byte, or both,
+            // vanished with no error flag and the field reached the disk with
+            // no CRC (02-floppy F-34).  Modelling it as a token makes the
+            // capacity question disappear: the token rides with the entry
+            // rather than occupying one.
+            floppy->ism_crc_pending = true;
+            LOG(6, "ISM wCRC: queued CRC token (crc=0x%04X)", floppy->ism_crc);
         } else {
             floppy->ism_iwm_config = byte;
             LOG(6, "ISM wIWMConfig: 0x%02X", byte);

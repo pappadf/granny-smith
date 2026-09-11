@@ -133,6 +133,14 @@
 #define ISM_SETUP_MOTOR_TMO  0x80
 
 // ISM error register bits
+// UNDERRUN is defined by the ISM ASIC spec in BOTH directions -- write mode:
+// the FIFO emptied and the processor has not written another byte; read mode:
+// the FIFO holds two bytes and the processor is not reading them fast enough.
+// Both conditions require the transfer engine to be producing or consuming on
+// its own clock, which this model does not have (the ISM path is CPU-paced,
+// unlike SWIM3's scheduler-driven engine), so it is never set.  That is the
+// surviving half of 02-floppy F-24; the rest of that finding is false -- the
+// two ISM_ERR_OVERRUN assignments are both correct per the same spec.
 #define ISM_ERR_UNDERRUN     0x01
 #define ISM_ERR_MARK_IN_DATA 0x02
 #define ISM_ERR_OVERRUN      0x04
@@ -244,6 +252,7 @@ struct floppy {
 
     // ISM CRC state
     uint16_t ism_crc; // running CRC-CCITT-16
+    bool ism_crc_pending; // a wCRC token is riding the FIFO (ISM spec $2 WRITE)
 
     // MFM sector-level emulation state
     uint8_t mfm_sector_buf[MFM_SECTOR_BUF_SIZE]; // pre-built sector data

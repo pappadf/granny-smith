@@ -1137,7 +1137,7 @@ static const arg_decl_t floppy_create_args[] = {
 static const member_t floppy_members[] = {
     {.kind = M_ATTR,
      .name = "type",
-     .doc = "Controller type: iwm (Plus) or swim (SE/30)",
+     .doc = "Controller type: iwm (Plus), swim (SE/30-class) or swim3 (PowerMac)",
      .flags = VAL_RO,
      .attr = {.type = V_ENUM, .get = floppy_attr_type, .set = NULL}},
     {.kind = M_ATTR,
@@ -1222,6 +1222,38 @@ static value_t floppy_disk_attr_present(struct object *self, const member_t *m) 
     return val_bool(floppy && floppy_is_inserted(floppy, (int)slot));
 }
 
+// Write-protect is user-visible state the UI had no way to read back, and
+// density is what distinguishes the four capacities the drive can hold
+// (02-floppy F-41).  Both come straight from the medium.
+static value_t floppy_disk_attr_writable(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
+    return val_bool(img && img->writable);
+}
+
+static value_t floppy_disk_attr_density(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
+    if (!img)
+        return val_str("");
+    switch (img->type) {
+    case image_fd_ss:
+        return val_str("400k");
+    case image_fd_ds:
+        return val_str("800k");
+    case image_fd_dd_mfm:
+        return val_str("720k");
+    case image_fd_hd:
+        return val_str("1440k");
+    default:
+        return val_str("");
+    }
+}
+
 static value_t floppy_disk_attr_path(struct object *self, const member_t *m) {
     (void)m;
     unsigned slot = 0;
@@ -1259,6 +1291,16 @@ static const member_t floppy_disk_members[] = {
      .doc = "True if a disk is inserted",
      .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = floppy_disk_attr_present, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "writable",
+     .doc = "False when the medium is write-protected",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = floppy_disk_attr_writable, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "density",
+     .doc = "Medium capacity: 400k, 800k, 720k or 1440k",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = floppy_disk_attr_density, .set = NULL}},
     {.kind = M_ATTR,
      .name = "path",
      .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",
