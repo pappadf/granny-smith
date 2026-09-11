@@ -160,19 +160,12 @@ int iwm_tach_signal(struct scheduler *scheduler, floppy_drive_t *drive, const ch
         return 1;
     }
 
-    // Calculate revolution period in nanoseconds based on track RPM
     double now_ns = scheduler_time_ns(scheduler);
-    int rpm = iwm_track_rpm(drive->track);
-    double ns_per_rev = (60.0 / rpm) * 1e9;
-
-    // 60 pulses per revolution = 120 state changes (high/low) per revolution
-    double ns_per_half_pulse = ns_per_rev / 120.0;
-    double pos_in_rev = fmod(now_ns, ns_per_rev);
-    int half_pulse_index = (int)(pos_in_rev / ns_per_half_pulse);
+    double ns_per_rev = (60.0 / (double)iwm_track_rpm(drive->track)) * 1e9;
 
     if (reason)
         *reason = "calculated";
-    return (half_pulse_index % 2) == 0 ? 1 : 0;
+    return floppy_index_signal(FLOPPY_INDEX_GCR_TACH, now_ns, ns_per_rev, 60);
 }
 
 // ============================================================================
@@ -601,6 +594,34 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const u
     return src;
 #undef NEED
 #undef GCR_OR_FAIL
+}
+
+// === Index / tachometer (floppy_geometry.h) =================================
+
+int floppy_index_signal(floppy_index_mode_t mode, double now_ns, double rev_ns, int pulses_per_rev) {
+    if (rev_ns <= 0.0)
+        return 0;
+    double pos_in_rev = fmod(now_ns, rev_ns);
+
+    switch (mode) {
+    case FLOPPY_INDEX_ISM: {
+        // A short HIGH spike from the inductive sensor detecting the hub mark,
+        // then a long LOW phase.  The asymmetric duty cycle is load-bearing:
+        // MacTest's MEASURE_SPEED counts VIA T2 overflows during the LOW phase.
+        double ns_per_cycle = rev_ns / (double)(pulses_per_rev > 0 ? pulses_per_rev : 1);
+        double pos_in_cycle = fmod(pos_in_rev, ns_per_cycle);
+        return (pos_in_cycle < 2.0e6) ? 1 : 0; // 2 ms HIGH
+    }
+    case FLOPPY_INDEX_SWIM3_MFM:
+        return (pos_in_rev < rev_ns / 50.0) ? 1 : 0; // one short mark per rev
+    case FLOPPY_INDEX_GCR_TACH:
+    default: {
+        // 60 pulses per revolution = 120 half-pulses, a square wave.
+        double ns_per_half_pulse = rev_ns / 120.0;
+        int half_pulse_index = (int)(pos_in_rev / ns_per_half_pulse);
+        return (half_pulse_index % 2) == 0 ? 1 : 0;
+    }
+    }
 }
 
 // === MFM sector layout (floppy_geometry.h) ==================================

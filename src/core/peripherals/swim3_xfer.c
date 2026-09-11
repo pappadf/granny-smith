@@ -143,9 +143,8 @@ int swim3_index_pulse(swim3_t *sw) {
     int track = floppy_drive_track(sw->fd, FD);
     double now = scheduler_time_ns(sw->sched);
     double rev_ns = swim3_rev_ns(&m, track);
-    if (m.mfm)
-        return fmod(now, rev_ns) < rev_ns / 50.0 ? 1 : 0; // a short 1/rev mark
-    return ((uint64_t)(now / (rev_ns / 120.0)) & 1u) ? 1 : 0; // 60 pulses/rev
+    // One index/tach model for every controller (02-floppy F-23).
+    return floppy_index_signal(m.mfm ? FLOPPY_INDEX_SWIM3_MFM : FLOPPY_INDEX_GCR_TACH, now, rev_ns, 60);
 }
 
 // === GCR nibble codec =======================================================

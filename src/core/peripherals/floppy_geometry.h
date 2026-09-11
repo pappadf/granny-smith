@@ -84,6 +84,29 @@ void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t
 // Converts a GCR codeword to its 6-bit value, or GCR_BAD_CODEWORD.
 uint8_t decode_gcr(uint8_t gcr_codeword);
 
+// === Index / tachometer =====================================================
+//
+// Sense register $B carries a different signal depending on how the drive is
+// being driven, and each controller had its own model of it (02-floppy F-23):
+// the IWM's FG tachometer, the ISM's low-frequency INDEX, and SWIM3's again.
+// Three answers for one register, with three different "no motion" polarities.
+// One function, with the mode as a parameter and each mode's numbers preserved.
+typedef enum {
+    FLOPPY_INDEX_GCR_TACH, // FG tachometer: 60 pulses/rev, square, zoned RPM
+    FLOPPY_INDEX_ISM, // ISM INDEX: short ~2 ms HIGH spike at 300 RPM
+    FLOPPY_INDEX_SWIM3_MFM, // SWIM3 MFM: one short mark per revolution
+} floppy_index_mode_t;
+
+// `rev_ns` is the revolution period; `pulses_per_rev` applies to the ISM mode
+// (1 for HD media, 2 otherwise -- see the caller).  `high` is unused for the
+// square-wave tach.
+//
+// NOTE the polarity difference between modes is preserved, not unified: the
+// IWM tach reads 1 when the motor is off and SWIM3's reads 0, and no source in
+// local/gs-docs/library/floppy settles which is right for a stopped spindle.
+// Recorded as an open question in proposal-floppy-controller-unification.
+int floppy_index_signal(floppy_index_mode_t mode, double now_ns, double rev_ns, int pulses_per_rev);
+
 // === MFM sector layout ======================================================
 //
 // One description of the IBM System-34 sector the SuperDrive lays down, for

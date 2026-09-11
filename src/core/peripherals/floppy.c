@@ -230,11 +230,7 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
             // revolution unconditionally" is justified by MacTest for HD
             // media specifically, so 720K MFM stays on the 2/rev path.
             bool is_hd = (img && img->type == image_fd_hd);
-            double ns_per_cycle = is_hd ? ns_per_rev : (ns_per_rev / 2.0);
-            double index_high_ns = 2.0 * 1e6; // 2ms HIGH pulse
-            double pos_in_rev = fmod(now_ns, ns_per_rev);
-            double pos_in_cycle = fmod(pos_in_rev, ns_per_cycle);
-            ret = (pos_in_cycle < index_high_ns) ? 1 : 0;
+            ret = floppy_index_signal(FLOPPY_INDEX_ISM, now_ns, ns_per_rev, is_hd ? 1 : 2);
             desc = is_hd ? "INDEX(HD)" : "INDEX(800K)";
         } else {
             const char *tach_reason = NULL;
