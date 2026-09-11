@@ -774,6 +774,34 @@ static uint8_t *swim_host_dma_ptr(uint32_t host_addr, size_t byte_count) {
     return ram_native_pointer(cfg->mem_map, host_addr);
 }
 
+// Block size of the .Sony block interface, in bytes.
+#define SWIM_BLOCK_BYTES 512u
+
+// Converts a guest-supplied (block, count) pair into a byte range, or returns
+// false when the range cannot be represented or leaves the medium.
+//
+// Both fields arrive as big-endian longs in IOP shared RAM, which the guest
+// writes, so both are arbitrary 32-bit values as far as this layer knows.
+// Everything is computed in uint64_t and bounds-checked BEFORE narrowing:
+// size_t is 32 bits on the wasm build, so `(size_t)block * 512` wraps for any
+// block >= 2^23 and would place the transfer at the wrong image offset with
+// the range check still passing.
+//
+// Read, write and verify all go through here so their arithmetic cannot drift
+// apart again — verify previously computed `(size_t)(blk + cnt) * 512`, whose
+// 32-bit addition wrapped before the cast on every platform.
+static bool swim_block_range(image_t *img, uint32_t block, uint32_t count, size_t *offset, size_t *bytes) {
+    uint64_t off = (uint64_t)block * SWIM_BLOCK_BYTES;
+    uint64_t len = (uint64_t)count * SWIM_BLOCK_BYTES;
+    if (off + len > (uint64_t)disk_size(img))
+        return false;
+    if (offset)
+        *offset = (size_t)off; // bounded by disk_size above, so the narrowing is safe
+    if (bytes)
+        *bytes = (size_t)len;
+    return true;
+}
+
 // Copies `count` blocks (512 bytes each) starting at `block_number` from
 // the floppy image at `floppy_idx` (0-based) into host RAM at `host_addr`.
 // Returns a MacOS-level error code (0 on success, offLinErr/paramErr on
@@ -784,10 +812,8 @@ static int16_t swim_read_blocks(iop_t *iop, int floppy_idx, uint32_t block_numbe
     if (!img)
         return MAC_ERR_OFFLINE;
 
-    size_t total = disk_size(img);
-    size_t byte_offset = (size_t)block_number * 512u;
-    size_t byte_count = (size_t)count * 512u;
-    if (byte_offset + byte_count > total)
+    size_t byte_offset, byte_count;
+    if (!swim_block_range(img, block_number, count, &byte_offset, &byte_count))
         return MAC_ERR_PARAM;
 
     uint8_t *dst = swim_host_dma_ptr(host_addr, byte_count);
@@ -808,10 +834,8 @@ static int16_t swim_write_blocks(iop_t *iop, int floppy_idx, uint32_t block_numb
     if (!img->writable)
         return MAC_ERR_W_PR;
 
-    size_t total = disk_size(img);
-    size_t byte_offset = (size_t)block_number * 512u;
-    size_t byte_count = (size_t)count * 512u;
-    if (byte_offset + byte_count > total)
+    size_t byte_offset, byte_count;
+    if (!swim_block_range(img, block_number, count, &byte_offset, &byte_count))
         return MAC_ERR_PARAM;
 
     uint8_t *src = swim_host_dma_ptr(host_addr, byte_count);
@@ -843,7 +867,7 @@ static void swim_handle_read(iop_t *iop, bool verify_only) {
         image_t *img = (floppy && idx >= 0) ? floppy_drive_image(floppy, (unsigned)idx) : NULL;
         if (!img)
             rc = MAC_ERR_OFFLINE;
-        else if ((size_t)(blk + cnt) * 512u > disk_size(img))
+        else if (!swim_block_range(img, blk, cnt, NULL, NULL))
             rc = MAC_ERR_PARAM;
         else
             rc = MAC_ERR_NO_ERR;
