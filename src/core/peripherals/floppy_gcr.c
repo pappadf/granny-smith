@@ -603,6 +603,88 @@ static uint8_t *decode_sector(uint8_t *tag, uint8_t *data, uint8_t *src, const u
 #undef GCR_OR_FAIL
 }
 
+// Per-sector write-through for the GCR path.
+//
+// The ISM path (ism_write_capture_flush) and SWIM3 (swim3_write_sector) both
+// write a sector to the image the moment it completes.  The GCR path did not:
+// guest writes accumulated in the heap track buffer and reached the image only
+// on EJECT or machine teardown (iwm_flush_modified_tracks).  Same subsystem,
+// three write paths, two policies, and no recorded rationale -- the deferral
+// dates to the original SE/30 commit and was never revisited.
+//
+// What it cost: a crash, a kill or a closed browser tab lost every floppy write
+// since insertion, while the identical operation on a SCSI disk survived (both
+// sit on the same delta-file storage engine and are checkpointed the same way);
+// and the image was stale while the disk was mounted, which matters because the
+// IIfx/Q900 IOP reads the same image directly.
+//
+// The legitimate part of the old argument is that you cannot write through per
+// BYTE -- the guest supplies GCR nibbles one at a time and nothing is decodable
+// until a whole sector's data field has arrived.  That justifies buffering to
+// SECTOR granularity, which is what this does, and is exactly what the ISM path
+// already does.
+//
+// Detection is cheap because the on-disk form is self-delimiting: a sector is
+// D5 AA 96, five header nibbles, DE AA, a gap, D5 AA AD, 704 six-bit values,
+// DE AA.  We remember where the last address mark passed under the head, and on
+// each DE AA try to decode from there.  decode_sector already validates every
+// field and bounds every read, so a partial or malformed sector simply fails
+// and nothing is written -- matching the ISM path's refusal to flush an
+// incomplete sector.
+//
+// The track buffer still exists and is still checkpointed: nibbles that never
+// complete a sector (a format in progress, copy-protection patterns that
+// deliberately do not form valid sectors) have no representation in the image
+// at all, which is why "just flush at checkpoint time" is not a substitute.
+void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int side) {
+    if (!img || !img->writable)
+        return;
+    floppy_track_t *t = &drive->tracks[side][drive->track];
+    if (!t->data || t->size == 0)
+        return;
+
+    int pos = drive->offset; // one past the byte just written
+    if (pos < 3 || (size_t)pos > t->size)
+        return;
+
+    const uint8_t *d = t->data;
+
+    // An address mark just passed: remember where this sector starts.
+    if (d[pos - 3] == 0xD5 && d[pos - 2] == 0xAA && d[pos - 1] == 0x96) {
+        drive->write_hdr_start = pos - 3;
+        return;
+    }
+
+    // A field just ended.  If it is the data field of the sector we are
+    // tracking, it is now complete.
+    if (!(d[pos - 2] == 0xDE && d[pos - 1] == 0xAA))
+        return;
+    int start = drive->write_hdr_start;
+    if (start < 0 || start >= pos)
+        return;
+
+    uint8_t tag[12];
+    uint8_t buf[512];
+    int hdr_track = 0, hdr_side = 0, hdr_sector = 0;
+    if (!decode_sector(tag, buf, t->data + start, t->data + pos, &hdr_track, &hdr_side, &hdr_sector))
+        return; // header field only, or a partial/corrupt sector: nothing to do
+
+    drive->write_hdr_start = -1;
+
+    int num_sides = iwm_image_num_sides(img);
+    if (hdr_track < 0 || hdr_track >= NUM_TRACKS || hdr_side < 0 || hdr_side >= NUM_SIDES || hdr_sector < 0 ||
+        hdr_sector >= iwm_sectors_per_track(hdr_track))
+        return;
+    size_t off = iwm_disk_image_offset(hdr_track, hdr_side, num_sides) + (size_t)hdr_sector * 512u;
+    if (off + 512 > disk_size(img))
+        return;
+
+    disk_write_data(img, off, buf, 512);
+    disk_write_tag(img, off / 512u, tag, sizeof tag);
+    t->modified = false; // this sector is in the image now
+    LOG(5, "Drive %d: Wrote through track=%d side=%d sector=%d", drive_index, hdr_track, hdr_side, hdr_sector);
+}
+
 // Writes any modified GCR tracks back to the underlying disk image
 void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_index) {
     if (!img) {

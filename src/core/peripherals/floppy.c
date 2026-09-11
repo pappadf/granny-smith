@@ -104,6 +104,7 @@ static void floppy_drive_seek(floppy_t *floppy, unsigned drv, bool outward, int 
     drive->_dirtn = outward;
     drive->track = track;
     drive->offset = 0;
+    drive->write_hdr_start = -1; // a seek abandons any sector mid-write
 
     if (!model_settle) {
         LOG(4, "Drive %u: seek %s %d -> track %d", drv, outward ? "out" : "in", count, track);
@@ -564,8 +565,14 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             LOG(5, "Drive %d: Track %d side %d marked dirty", drv, drive->track, floppy->sel);
         }
 
-        if ((size_t)drive->offset >= trk_len_w)
+        // Per-sector write-through: the byte just written may have completed
+        // a sector (see iwm_write_through).
+        iwm_write_through(drive, floppy->disk[drv], drv, floppy->sel ? 1 : 0);
+
+        if ((size_t)drive->offset >= trk_len_w) {
             drive->offset = 0;
+            drive->write_hdr_start = -1; // a wrap invalidates the tracked start
+        }
     } else {
         // Write mode register.  On the SWIM this is also where the IWM->ISM
         // entry sequence is watched for.
@@ -768,6 +775,8 @@ static void floppy_validate_restored_state(floppy_t *floppy) {
         }
         if (drv->data_side != 0 && drv->data_side != 1)
             drv->data_side = 0;
+        if (drv->write_hdr_start < -1 || drv->write_hdr_start >= (int)iwm_track_length(drv->track))
+            drv->write_hdr_start = -1;
     }
 
     if (floppy->ism_fifo_count > ISM_FIFO_SIZE) {
@@ -800,6 +809,8 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     }
 
     memset(floppy, 0, sizeof(floppy_t));
+    for (int d = 0; d < NUM_DRIVES; d++)
+        floppy->drives[d].write_hdr_start = -1;
     floppy->type = type;
     static const char *const type_name[] = {"IWM", "SWIM", "SWIM3"};
     LOG(2, "Floppy: Controller created (type=%s)", type_name[type >= 0 && type <= 2 ? type : 0]);
@@ -951,8 +962,36 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
         return;
     LOG(13, "Floppy: Checkpointing controller");
 
-    // Write plain-data portion
-    system_write_checkpoint_data(checkpoint, floppy, FLOPPY_CHECKPOINT_SIZE);
+    // Write the plain-data portion through a scrubbed copy.
+    //
+    // floppy_track_t::data sits INSIDE this prefix (it is a field of
+    // floppy_drive_t, which is a field of floppy_t before the `disk` boundary),
+    // so a straight memcpy wrote 320 live heap pointers -- 2560 bytes of ASLR
+    // addresses -- into every save file, and the restore then read them back
+    // over the pointers it had just carefully NULLed (02-floppy F-01).  The
+    // per-track loop below replaces them, so nothing depended on the values;
+    // they were pure leak, pure noise to the RLE, and a trap for any future
+    // reader.  Scrubbing a copy fixes it without moving the field and churning
+    // every `drive->tracks[...]` call site.
+    uint8_t *prefix = malloc(FLOPPY_CHECKPOINT_SIZE);
+    if (!prefix) {
+        LOG(1, "Floppy: checkpoint allocation failed");
+        return;
+    }
+    memcpy(prefix, floppy, FLOPPY_CHECKPOINT_SIZE);
+    const size_t ptr_bytes = sizeof(((floppy_track_t *)0)->data);
+    for (int d = 0; d < NUM_DRIVES; d++) {
+        for (int s = 0; s < NUM_SIDES; s++) {
+            for (int t = 0; t < NUM_TRACKS; t++) {
+                size_t off =
+                    offsetof(floppy_t, drives) + (size_t)d * sizeof(floppy_drive_t) + offsetof(floppy_drive_t, tracks) +
+                    ((size_t)s * NUM_TRACKS + (size_t)t) * sizeof(floppy_track_t) + offsetof(floppy_track_t, data);
+                memset(prefix + off, 0, ptr_bytes);
+            }
+        }
+    }
+    system_write_checkpoint_data(checkpoint, prefix, FLOPPY_CHECKPOINT_SIZE);
+    free(prefix);
 
     // Write disk filenames for each drive
     for (int i = 0; i < NUM_DRIVES; i++) {
@@ -968,7 +1007,14 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
         for (int s = 0; s < NUM_SIDES; s++) {
             for (int t = 0; t < NUM_TRACKS; t++) {
                 floppy_track_t *trk = &floppy->drives[d].tracks[s][t];
-                uint8_t has_data = (trk->data != NULL);
+                // Only the RESIDUE is saved: nibbles the guest wrote that have
+                // not reached the image.  A clean cached track is derived data
+                // -- iwm_track_data re-encodes it from the image on the next
+                // touch, which is exactly the post-restore state -- so saving
+                // it wrote up to ~1.2 MB per drive of reconstructible bytes.
+                // Sectors that completed are already in the image, because the
+                // GCR path now writes them through (iwm_write_through).
+                uint8_t has_data = (trk->data != NULL && trk->modified);
                 system_write_checkpoint_data(checkpoint, &has_data, 1);
                 if (has_data)
                     system_write_checkpoint_data(checkpoint, trk->data, trk->size);

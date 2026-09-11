@@ -186,6 +186,9 @@ typedef struct floppy_drive {
     int track; // current head position (0-79)
     int offset; // byte offset within current track
     int data_side; // latched head side for data I/O
+    int write_hdr_start; // offset of the D5 AA 96 of the sector being written,
+                         // or -1 when no header has passed under the head since
+                         // the last completed sector (GCR write-through)
     floppy_track_t tracks[NUM_SIDES][NUM_TRACKS]; // GCR encoded track data
 } floppy_drive_t;
 
@@ -301,6 +304,11 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
 
 // Writes any modified GCR tracks back to the underlying disk image
 void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_index);
+
+// Called after each byte the guest writes into a GCR track buffer.  When the
+// byte completes a decodable sector, writes that sector through to the image.
+// See the comment at the definition (floppy_gcr.c) for why this exists.
+void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int side);
 
 // gcr_codewords / decode_gcr / the triplet chain are public: floppy_geometry.h.
 

@@ -219,6 +219,61 @@ TEST(test_track_round_trip) {
 }
 
 // ---------------------------------------------------------------------------
+// Per-sector write-through
+// ---------------------------------------------------------------------------
+
+// The GCR path used to hold guest writes in the heap track buffer until EJECT,
+// while the ISM path and SWIM3 both wrote each sector through as it completed.
+// The detector must fire exactly once, on the byte that completes the sector,
+// and must refuse anything partial -- matching the ISM path, which will not
+// flush a sector of fewer than 512 bytes.
+TEST(test_write_through_detects_sector_boundary) {
+    static uint8_t track[16384];
+    uint8_t data[512], tag[12];
+    for (int i = 0; i < 512; i++)
+        data[i] = (uint8_t)(i ^ 0x3C);
+    for (int i = 0; i < 12; i++)
+        tag[i] = (uint8_t)(i + 1);
+
+    memset(track, 0xFF, sizeof track);
+    uint8_t *end = encode_sector(track, tag, data, 7, 2, 1, 2);
+    size_t len = (size_t)(end - track);
+
+    // Walk the encoded sector one byte at a time, as a guest writing through
+    // the data register does, and count how often a complete sector is
+    // decodable from the tracked header start.
+    int completions = 0;
+    size_t completion_at = 0;
+    int hdr_start = -1;
+    for (size_t pos = 1; pos <= len; pos++) {
+        if (pos >= 3 && track[pos - 3] == 0xD5 && track[pos - 2] == 0xAA && track[pos - 1] == 0x96) {
+            hdr_start = (int)pos - 3;
+            continue;
+        }
+        if (pos < 2 || !(track[pos - 2] == 0xDE && track[pos - 1] == 0xAA) || hdr_start < 0)
+            continue;
+        uint8_t out[512], out_tag[12];
+        int t = -1, sd = -1, sc = -1;
+        if (decode_sector(out_tag, out, track + hdr_start, track + pos, &t, &sd, &sc)) {
+            completions++;
+            completion_at = pos;
+            ASSERT_EQ_INT(t, 7);
+            ASSERT_EQ_INT(sd, 1);
+            ASSERT_EQ_INT(sc, 2);
+            ASSERT_TRUE(memcmp(out, data, 512) == 0);
+            ASSERT_TRUE(memcmp(out_tag, tag, 12) == 0);
+            hdr_start = -1;
+        }
+    }
+
+    // Exactly one completion, and not before the sector is fully written.  The
+    // header field also ends in DE AA, so a detector that did not require a
+    // decodable DATA field would fire early -- that is the case this pins.
+    ASSERT_EQ_INT(completions, 1);
+    ASSERT_TRUE(completion_at > 700);
+}
+
+// ---------------------------------------------------------------------------
 // Address -> register decode
 // ---------------------------------------------------------------------------
 
@@ -425,6 +480,7 @@ int main(void) {
     RUN(test_triplet_forms_agree);
     RUN(test_media_descriptor);
     RUN(test_media_sector_offset);
+    RUN(test_write_through_detects_sector_boundary);
     RUN(test_register_strides);
     printf("All floppy tests passed\n");
     return 0;
