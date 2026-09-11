@@ -9,6 +9,7 @@
 #ifndef FLOPPY_INTERNAL_H
 #define FLOPPY_INTERNAL_H
 
+#include "floppy.h" // FLOPPY_NUM_DRIVES, FLOPPY_TYPE_*
 #include "image.h"
 #include "memory.h"
 #include "scheduler.h"
@@ -32,7 +33,7 @@
 // Drive and Track Geometry
 // ============================================================================
 
-#define NUM_DRIVES 2
+#define NUM_DRIVES FLOPPY_NUM_DRIVES // see floppy.h
 #define NUM_TRACKS 80
 #define NUM_SIDES  2
 

@@ -424,6 +424,18 @@ static int do_insert_fd(const char *path, int preferred, int writable_flag) {
     // An explicit drive is a request, not a hint: fail rather than silently
     // load the disk into the other drive (a caller feeding a guest that is
     // waiting on drive 1 must never have its disk land in drive 0).
+    //
+    // Validate it against the documented contract first.  The occupancy test
+    // below is a two-way branch on `preferred == 0`, so any other value takes
+    // the drive-1 arm and then falls through into `target = preferred`
+    // verbatim -- which is how an out-of-range drive would reach
+    // floppy_insert.
+    if (preferred < -1 || preferred >= FLOPPY_NUM_DRIVES) {
+        printf("fd insert: no such floppy drive %d.\n", preferred);
+        image_close(disk);
+        free(persistent_path);
+        return -1;
+    }
     if (preferred != -1) {
         if (preferred == 0 ? !d0_free : !d1_free) {
             printf("fd insert: floppy drive %d is already occupied.\n", preferred);

@@ -16,6 +16,11 @@
 
 #include <stdbool.h>
 
+// Drive slots on the controller: 0 = internal, 1 = external/second bay.
+// Public because callers outside the module validate a drive index against it
+// (system.c's `fd insert`); floppy_internal.h's NUM_DRIVES is defined from it.
+#define FLOPPY_NUM_DRIVES 2
+
 // === Controller Types ===
 #define FLOPPY_TYPE_IWM   0 // IWM-only (Mac Plus)
 #define FLOPPY_TYPE_SWIM  1 // SWIM dual-mode IWM+ISM (SE/30)

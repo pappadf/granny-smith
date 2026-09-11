@@ -545,7 +545,13 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
 
 // Inserts a disk image into the specified drive
 int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
-    GS_ASSERT(drive < NUM_DRIVES);
+    // Reachable from user input (fd insert, machine.floppy.drive[N].insert),
+    // so the bound is a real check rather than a GS_ASSERT: the assert was
+    // signed (a negative index passed it), compiles out under GS_FAST, and
+    // even when enabled gs_assert_fail returns and execution continues into
+    // the subscript.  Matches floppy_drive_eject below.
+    if (!floppy || drive < 0 || drive >= NUM_DRIVES)
+        return -1;
 
     if (floppy->disk[drive] != NULL) {
         LOG(2, "Drive %d: Insert failed - disk already present", drive);
@@ -567,8 +573,8 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
 
 // Returns whether a disk is currently inserted in the specified drive
 bool floppy_is_inserted(floppy_t *floppy, int drive) {
-    GS_ASSERT(drive < NUM_DRIVES);
-
+    if (!floppy || drive < 0 || drive >= NUM_DRIVES)
+        return false;
     return floppy->disk[drive] != NULL;
 }
 
