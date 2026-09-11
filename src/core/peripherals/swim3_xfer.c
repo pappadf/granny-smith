@@ -683,6 +683,31 @@ static bool encoding_matches(const swim3_t *sw, const swim3_media_t *m) {
     return gcr_framing != m->mfm;
 }
 
+// A sector transaction failed (unreadable sector, or the DMA channel would
+// not move a byte).  The ERS is explicit about all three consequences:
+//
+//   "Any error will cause a multiple sector request to be terminated. This
+//    should be checked when the sectors_done interrupt is received."
+//   reg $E: "The number of untransferred sectors will be retained here after
+//    an error has occurred."
+//
+// So: do NOT decrement SectorsToXfer -- a driver reads it after an error to
+// learn how far it got; DO raise sectors_done, because that is when the
+// driver is expected to look at the error register; and stop the engine,
+// rather than walking on to the next header as this used to.  The error bit
+// itself was already set by the failing call.
+//
+// Deliberately not modelled (no on-disk error behaviour exists for headers,
+// so no header read can fail): the ERS's address-mark CRC rules -- a CRC
+// error during an address-mark read leaves CurSect unchanged with
+// last_id_valid false, and suppresses any transaction that mark would have
+// started.
+static void swim3_fail_transfer(swim3_t *sw) {
+    LOG(3, "transfer terminated by error $%02X, %u sector(s) untransferred", sw->error, sw->nsect);
+    swim3_raise(sw, SWIM3_INT_DONE);
+    swim3_stop(sw);
+}
+
 // One read-mode service slot: the next address header passes under the
 // head.  While GO is set the position registers update and idIntNum fires
 // on every header (ERS §36); a header that matches FirstSector with
@@ -712,8 +737,11 @@ static void swim3_read_slot(swim3_t *sw, const swim3_media_t *m) {
     // the difference.
     if (sw->nsect > 0 && (sw->xfer_any || sector_match(sw->sector, hdr_sect)) && sw->be.dma_running(sw->be.ctx)) {
         LOG(4, "read track %d side %d sector %d", track, side, idx);
-        swim3_stream_read(sw, m, track, side, idx);
-        sw->nsect--; // hardware decrements per completed sector (§3.7)
+        if (!swim3_stream_read(sw, m, track, side, idx)) {
+            swim3_fail_transfer(sw);
+            return;
+        }
+        sw->nsect--; // hardware decrements per COMPLETED sector (ERS reg $E)
         sw->xfer_any = sw->nsect > 0;
         if (sw->nsect == 0)
             swim3_raise(sw, SWIM3_INT_DONE);
@@ -744,7 +772,12 @@ static void swim3_write_slot(swim3_t *sw, const swim3_media_t *m) {
     }
     LOG(4, "write track %d side %d sector %d", track, side, idx);
     swim3_parse_t p = {.m = m, .track = track, .side = side, .sector = idx, .format = false};
-    swim3_parse_stream(sw, &p);
+    if (!swim3_parse_stream(sw, &p)) {
+        // The channel closed before the stream's terminating "99 08": the
+        // sector was not written through, so it did not complete.
+        swim3_fail_transfer(sw);
+        return;
+    }
     sw->nsect--;
     sw->xfer_any = sw->nsect > 0;
     if (sw->nsect == 0)
