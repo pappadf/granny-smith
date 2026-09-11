@@ -48,6 +48,34 @@ static floppy_drive_t *current_drive(floppy_t *floppy) {
     return &floppy->drives[IWM_SELECT(floppy) ? 1 : 0];
 }
 
+// One read-head bit, for either side.
+//
+// On real hardware SENSE reflects raw flux as the disk spins continuously, so
+// the byte and bit position come from emulated time.  GCR flux timing:
+// ~16.3 us/byte at 489.6 kbit/s, ~2 us/cell.
+//
+// Everything is computed in uint64: the side-0 copy of this was fixed for
+// `(int)` truncation once emulated time passes ~2.1 s, and the side-1 copy --
+// the same four lines, pasted -- was not (02-floppy F-15).  After ~35 s
+// `now_ns / 2040.0` exceeds INT_MAX and casting the out-of-range double is
+// undefined behaviour, so the side-1 sense line returned a constant and any
+// software polling RDDATA1 for a double-sided read stalled.  Extracted so
+// there is one copy to fix.
+static int floppy_rddata_bit(floppy_t *floppy, floppy_drive_t *drive, int drv, int side) {
+    enum { GCR_NS_PER_BYTE = 16340, GCR_NS_PER_BIT = 2040 };
+    uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
+    unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
+
+    uint8_t *data = iwm_track_data(drive, floppy->disk[drv], side, floppy->scheduler);
+    if (!data) {
+        // MFM media: no GCR track data, so simulate time-varying flux.
+        return (bit_idx < 4) ? 1 : 0;
+    }
+    size_t trk_len = iwm_track_length(drive->track);
+    size_t byte_pos = (size_t)((now_ns / GCR_NS_PER_BYTE) % trk_len);
+    return (data[byte_pos] >> bit_idx) & 1;
+}
+
 // Returns the current disk status based on IWM CA lines and SEL signal.
 // The VIA-based SEL signal is part of the sense-line address, not drive
 // selection.  The caller may pass a SEL-derived drive index, but the status
@@ -81,33 +109,9 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         ret = 0;
         break;
     case 0x04: // RDDATA: data from side 0
-    {
-        // Return the current data bit from the read head.  On real hardware,
-        // the SENSE line reflects raw GCR/MFM flux data as the disk spins
-        // continuously.  Derive the byte position from scheduler time to
-        // simulate disk rotation (the head sees different data over time).
-        // GCR flux timing constants: ~16.3 µs/byte at 489.6 kbit/s; ~2 µs/cell.
-        // Routed through uint64 to dodge `(int)` truncation when emulated time
-        // exceeds ~2.1 s (`now_ns` outgrows int32). The modulo lands on trk_len
-        // either way, so the high bits don't change observable behaviour, but
-        // the math is now wrap-free.
-        enum { GCR_NS_PER_BYTE = 16340, GCR_NS_PER_BIT = 2040 };
-        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], 0, floppy->scheduler);
-        if (data) {
-            size_t trk_len = iwm_track_length(drive->track);
-            uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
-            size_t byte_pos = (size_t)((now_ns / GCR_NS_PER_BYTE) % trk_len);
-            unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
-            ret = (data[byte_pos] >> bit_idx) & 1;
-        } else {
-            // HD (MFM) disk: no GCR track data, simulate time-varying flux
-            uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
-            unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
-            ret = (bit_idx < 4) ? 1 : 0;
-        }
+        ret = floppy_rddata_bit(floppy, drive, drv, 0);
         desc = "RDDATA side0";
         break;
-    }
     case 0x05: // IWM: reserved; SWIM: mfmDrv (SuperDrive present)
         if (floppy->type == FLOPPY_TYPE_SWIM) {
             desc = "mfmDrv";
@@ -188,24 +192,9 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         return ret;
     }
     case 0x0C: // RDDATA: data from side 1
-    {
-        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], 1, floppy->scheduler);
-        if (data) {
-            size_t trk_len = iwm_track_length(drive->track);
-            double now_ns = scheduler_time_ns(floppy->scheduler);
-            double ns_per_byte = 16340.0;
-            int byte_pos = (int)(now_ns / ns_per_byte) % (int)trk_len;
-            int bit_idx = (int)(now_ns / 2040.0) & 7;
-            ret = (data[byte_pos] >> bit_idx) & 1;
-        } else {
-            // HD (MFM) disk: simulate time-varying flux
-            double now_ns = scheduler_time_ns(floppy->scheduler);
-            int bit_idx = (int)(now_ns / 2040.0) & 7;
-            ret = (bit_idx < 4) ? 1 : 0;
-        }
+        ret = floppy_rddata_bit(floppy, drive, drv, 1);
         desc = "RDDATA side1";
         break;
-    }
     case 0x0D: // /DRVEXIST: 1 when physical drive present (ISM mode only)
         desc = "/DRVEXIST";
         // MacTest's CHECK_DRIVE_STATUS reads this twice: once with the SWIM
@@ -438,6 +427,15 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
         }
 
         if (!IWM_ENABLE(floppy)) {
+            // The SWIM echoes the last byte the CPU put on the data bus; the
+            // plain IWM floats high.  One of the three real differences
+            // between the two register files (02-floppy F-10).
+            if (floppy->type == FLOPPY_TYPE_SWIM) {
+                uint8_t val = floppy->iwm_latch_valid ? floppy->iwm_write_latch : 0xFF;
+                floppy->iwm_latch_valid = false;
+                LOG(6, "Drive %d: Reading data (disabled) echo = 0x%02X", drv, val);
+                return val;
+            }
             LOG(6, "Drive %d: Reading data (disabled) = 0xFF", drv);
             return 0xFF;
         }
@@ -450,8 +448,14 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
         floppy_drive_t *drive = current_drive(floppy);
         uint8_t *data = iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
         if (!data) {
-            LOG(1, "Drive %d: Read failed - no track data", drv);
-            return 0xFF;
+            // MFM media in the drive, or an allocation failure.  The SWIM
+            // returns 0x00 so the ROM's GCR sync detection fails and it falls
+            // through to the ISM path; the plain IWM floats high.  Whether
+            // these should differ at all is an open question (02-floppy F-10,
+            // proposal Q2) -- preserved per-variant rather than guessed.
+            uint8_t no_data = (floppy->type == FLOPPY_TYPE_SWIM) ? 0x00 : 0xFF;
+            LOG(5, "Drive %d: No GCR track data (MFM disk or alloc failure)", drv);
+            return no_data;
         }
 
         size_t trk_len = iwm_track_length(drive->track);
@@ -490,6 +494,12 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
 void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     floppy_update_iwm_lines(floppy, offset);
 
+    // The SWIM latches every data-bus byte for the echo above.
+    if (floppy->type == FLOPPY_TYPE_SWIM) {
+        floppy->iwm_write_latch = byte;
+        floppy->iwm_latch_valid = true;
+    }
+
     if (!IWM_Q6(floppy) || !IWM_Q7(floppy))
         return;
 
@@ -505,6 +515,15 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             return;
         }
 
+        // Bound before the store and wrap with >=, matching the read path.
+        // This used to store unchecked and then wrap with `==`, so any path
+        // leaving offset > trk_len turned the write into an unbounded walk off
+        // the end of the heap track buffer -- the equality could never fire
+        // again (02-floppy F-16).  offset is checkpointed plain data, so a
+        // corrupt checkpoint supplied one directly until F-02's validator.
+        size_t trk_len_w = iwm_track_length(drive->track);
+        if (drive->offset < 0 || (size_t)drive->offset >= trk_len_w)
+            drive->offset = 0;
         data[drive->offset++] = byte;
         LOG(8, "Drive %d: Writing data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, floppy->sel,
             drive->offset - 1, byte);
@@ -515,10 +534,13 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             LOG(5, "Drive %d: Track %d side %d marked dirty", drv, drive->track, floppy->sel);
         }
 
-        if (drive->offset == (int)iwm_track_length(drive->track))
+        if ((size_t)drive->offset >= trk_len_w)
             drive->offset = 0;
     } else {
-        // Write mode register
+        // Write mode register.  On the SWIM this is also where the IWM->ISM
+        // entry sequence is watched for.
+        if (floppy->type == FLOPPY_TYPE_SWIM && floppy_swim_mode_write_hook(floppy, byte))
+            return;
         floppy->mode = byte;
         LOG(4, "IWM: Mode register = 0x%02X", byte);
     }

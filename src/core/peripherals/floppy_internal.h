@@ -303,11 +303,12 @@ void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_in
 // gcr_codewords / decode_gcr / the triplet chain are public: floppy_geometry.h.
 
 // ============================================================================
-// Shared drive/IWM functions (defined in floppy.c).
-// floppy_disk_status, floppy_disk_control and floppy_update_iwm_lines really
-// are shared with floppy_swim.c.  floppy_iwm_read/floppy_iwm_write are NOT:
-// floppy_swim.c carries its own near-identical copies (02-floppy F-10), and
-// only floppy_iwm.c calls these.
+// Shared drive/IWM functions (defined in floppy.c), genuinely shared with
+// floppy_swim.c.  floppy_iwm_read/floppy_iwm_write ARE the SWIM's IWM-mode
+// register file: the SWIM used to carry its own near-identical copy, with the
+// three real differences (the data-bus echo latch, the ISM entry-sequence
+// watcher and the no-track-data return value) buried in 77 lines of drift
+// (02-floppy F-10).  Those three are now explicit inside the shared core.
 // ============================================================================
 
 // Returns the current disk status based on IWM CA lines and SEL signal
@@ -318,6 +319,12 @@ void floppy_disk_control(floppy_t *floppy);
 
 // Motor spin-up callback (needed for scheduler event registration)
 void floppy_motor_spinup_callback(void *source, uint64_t data);
+
+// The SWIM's mode-register write hook: tracks bit 6 for the IWM->ISM 4-write
+// entry sequence.  Returns true when it consumed the write (the switch
+// completed), false when the caller should store the byte as the mode
+// register.  Defined in floppy_swim.c; the IWM has no equivalent.
+bool floppy_swim_mode_write_hook(floppy_t *floppy, uint8_t byte);
 
 // Updates IWM state lines from register offset (even=clear, odd=set)
 void floppy_update_iwm_lines(floppy_t *floppy, int offset);

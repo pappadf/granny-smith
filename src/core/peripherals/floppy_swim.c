@@ -324,160 +324,28 @@ static void ism_write_capture_flush(floppy_t *floppy) {
 // SWIM IWM-Mode Read/Write (with mode-switch detection and echo behavior)
 // ============================================================================
 
-// Reads from the IWM register (SWIM in IWM mode)
-static uint8_t swim_iwm_read(floppy_t *floppy, uint32_t offset) {
-    GS_ASSERT(offset < 16);
+// The SWIM's mode-register write hook (floppy_internal.h).  Watches bit 6 of
+// four consecutive mode writes for the IWM->ISM entry sequence; returns true
+// when the switch completed and the caller must NOT store the byte.
+bool floppy_swim_mode_write_hook(floppy_t *floppy, uint8_t byte) {
+    uint8_t bit6 = (byte >> 6) & 1;
 
-    floppy_update_iwm_lines(floppy, offset);
+    if (bit6 == ISM_SWITCH_PATTERN[floppy->mode_switch_count]) {
+        floppy->mode_switch_count++;
+        LOG(5, "SWIM: Mode switch sequence %d/4 (bit6=%d)", floppy->mode_switch_count, bit6);
 
-    int drv = DRIVE_INDEX(floppy);
-
-    // Mode register is WRITE ONLY
-    if (IWM_Q6(floppy) && IWM_Q7(floppy))
-        GS_ASSERT(0);
-
-    // Read status register: Q6=1, Q7=0
-    if (IWM_Q6(floppy) && !IWM_Q7(floppy)) {
-        uint8_t status = floppy->mode & IWM_STATUS_MODE;
-        if (IWM_ENABLE(floppy))
-            status |= IWM_STATUS_ENABLE;
-        if (floppy_disk_status(floppy, drv))
-            status |= IWM_STATUS_SENSE;
-        LOG(8, "  status=0x%02X (enable=%d mode=0x%02X)", status, IWM_ENABLE(floppy) ? 1 : 0,
-            floppy->mode & IWM_STATUS_MODE);
-        return status;
-    }
-
-    // Read handshake register: Q6=0, Q7=1
-    if (!IWM_Q6(floppy) && IWM_Q7(floppy)) {
-        uint8_t hdshk = IWM_HDSHK_RES | IWM_HDSHK_WRITE | IWM_HDSHK_WB_EMTPY;
-        LOG(6, "Drive %d: Reading handshake = 0x%02X", drv, hdshk);
-        return hdshk;
-    }
-
-    // Read data register: Q6=0, Q7=0
-    if (!IWM_Q6(floppy) && !IWM_Q7(floppy)) {
-        if (!(floppy->mode & IWM_MODE_ASYNC)) {
-            LOG(6, "Drive %d: Sync read mode not implemented = 0x00", drv);
-            return 0;
-        }
-
-        if (!IWM_ENABLE(floppy)) {
-            // SWIM echo: return the last written data bus byte if latch is valid
-            uint8_t val = floppy->iwm_latch_valid ? floppy->iwm_write_latch : 0xFF;
-            floppy->iwm_latch_valid = false;
-            LOG(6, "Drive %d: Reading data (disabled) echo = 0x%02X", drv, val);
-            return val;
-        }
-
-        if (floppy->disk[drv] == NULL) {
-            LOG(6, "Drive %d: Reading data (no disk) = 0x00", drv);
-            return 0x00;
-        }
-
-        floppy_drive_t *drive = &floppy->drives[drv];
-        int side = floppy->sel ? 1 : 0;
-        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], side, floppy->scheduler);
-        if (!data) {
-            // HD/MFM disk in drive: return 0x00 so IWM GCR sync detection fails
-            LOG(5, "Drive %d: No GCR track data (MFM disk)", drv);
-            return 0x00;
-        }
-
-        size_t trk_len = iwm_track_length(drive->track);
-
-        // IWM latch mode: only bytes with MSB=1 are latched (valid GCR bytes)
-        if (floppy->mode & IWM_MODE_LATCH) {
-            for (size_t i = 0; i < trk_len; i++) {
-                uint8_t byte = data[drive->offset++];
-                if (drive->offset >= (int)trk_len)
-                    drive->offset = 0;
-                if (byte & 0x80) {
-                    LOG(8, "Drive %d: Reading data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, side,
-                        drive->offset, byte);
-                    return byte;
-                }
-                LOG(9, "Drive %d: Skipping MSB=0 byte 0x%02X at offset %d", drv, byte, drive->offset - 1);
-            }
-            LOG(6, "Drive %d: No valid GCR byte found on track", drv);
-            return 0x00;
-        }
-
-        // Non-latch mode: return raw bytes
-        uint8_t ret = data[drive->offset++];
-        if (drive->offset >= (int)trk_len)
-            drive->offset = 0;
-        LOG(8, "Drive %d: Reading data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, side, drive->offset,
-            ret);
-        return ret;
-    }
-
-    GS_ASSERT(0);
-    return 0;
-}
-
-// Writes a byte to the IWM register (SWIM in IWM mode), with mode-switch detection
-static void swim_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
-    floppy_update_iwm_lines(floppy, offset);
-
-    // SWIM latches every data bus byte for echo detection (unlike plain IWM)
-    floppy->iwm_write_latch = byte;
-    floppy->iwm_latch_valid = true;
-
-    if (!IWM_Q6(floppy) || !IWM_Q7(floppy))
-        return;
-
-    int drv = DRIVE_INDEX(floppy);
-
-    if (IWM_ENABLE(floppy)) {
-        // Write data to disk
-        floppy_drive_t *drive = &floppy->drives[drv];
-        int side = floppy->sel ? 1 : 0;
-        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], side, floppy->scheduler);
-        if (!data) {
-            LOG(1, "Drive %d: Write failed - no track data", drv);
-            return;
-        }
-
-        data[drive->offset++] = byte;
-        LOG(8, "Drive %d: Writing data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, side, drive->offset - 1,
-            byte);
-
-        floppy_track_t *trk = &drive->tracks[side][drive->track];
-        if (!trk->modified) {
-            trk->modified = true;
-            LOG(5, "Drive %d: Track %d side %d marked dirty", drv, drive->track, side);
-        }
-
-        if (drive->offset == (int)iwm_track_length(drive->track))
-            drive->offset = 0;
-    } else {
-        // Write IWM mode register — track bit 6 for ISM switch sequence
-        uint8_t bit6 = (byte >> 6) & 1;
-
-        if (bit6 == ISM_SWITCH_PATTERN[floppy->mode_switch_count]) {
-            floppy->mode_switch_count++;
-            LOG(5, "SWIM: Mode switch sequence %d/4 (bit6=%d)", floppy->mode_switch_count, bit6);
-
-            if (floppy->mode_switch_count == 4) {
-                // 4-write sequence complete: switch to ISM mode
-                floppy->in_ism_mode = true;
-                floppy->mode_switch_count = 0;
-                swim_ism_reset(floppy);
-                LOG(2, "SWIM: Switched to ISM mode");
-                return;
-            }
-        } else {
-            // Mismatch: reset sequence
+        if (floppy->mode_switch_count == 4) {
+            floppy->in_ism_mode = true;
             floppy->mode_switch_count = 0;
-            // Check if this byte starts a new sequence
-            if (bit6 == ISM_SWITCH_PATTERN[0])
-                floppy->mode_switch_count = 1;
+            swim_ism_reset(floppy);
+            LOG(2, "SWIM: Switched to ISM mode");
+            return true;
         }
-
-        floppy->mode = byte;
-        LOG(4, "SWIM IWM: Mode register = 0x%02X", byte);
+    } else {
+        // Mismatch: reset the sequence, but this byte may start a new one.
+        floppy->mode_switch_count = (bit6 == ISM_SWITCH_PATTERN[0]) ? 1 : 0;
     }
+    return false;
 }
 
 // ============================================================================
@@ -895,7 +763,7 @@ uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg) {
         // register (rStatus) instead of the actual SENSE bit, breaking
         // speed measurement and other sense-line diagnostics.
         if (IWM_Q6(floppy) && !IWM_Q7(floppy)) {
-            return swim_iwm_read(floppy, offset);
+            return floppy_iwm_read(floppy, offset);
         }
         if (offset < 8) {
             LOG(7, "ISM: Read from write-only address %d", offset);
@@ -903,7 +771,7 @@ uint8_t floppy_swim_read(floppy_t *floppy, unsigned reg) {
         }
         return swim_ism_read(floppy, offset);
     } else {
-        return swim_iwm_read(floppy, offset);
+        return floppy_iwm_read(floppy, offset);
     }
 }
 
@@ -919,7 +787,7 @@ void floppy_swim_write(floppy_t *floppy, unsigned reg, uint8_t byte) {
         }
         swim_ism_write(floppy, offset, byte);
     } else {
-        swim_iwm_write(floppy, offset, byte);
+        floppy_iwm_write(floppy, offset, byte);
     }
 }
 
