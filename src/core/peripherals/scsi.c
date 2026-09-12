@@ -2563,6 +2563,15 @@ void scsi_delete(scsi_t *scsi) {
         object_delete(scsi->bus_object);
         scsi->bus_object = NULL;
     }
+    // Only the instance mounted at `machine.scsi` displaced the static
+    // singleton on the way in (see the `primary` gate in scsi_init_named), so
+    // only that instance may restore it on the way out.  A machine with a
+    // second bus deletes two instances; restoring unconditionally would
+    // re-attach a singleton named "scsi" while the other bus is still
+    // attached, and since object_attach head-pushes, the singleton would then
+    // shadow a live bus for whatever teardown order happens to run next.
+    bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0;
+
     if (scsi->object) {
         object_detach(scsi->object);
         object_delete(scsi->object);
@@ -2577,7 +2586,8 @@ void scsi_delete(scsi_t *scsi) {
     // Restore the pre-machine static singleton so the next round of
     // upload validation (e.g. the Welcome view after stopping a
     // machine) keeps resolving `scsi.identify_hd` / `identify_cdrom`.
-    scsi_class_register();
+    if (primary)
+        scsi_class_register();
 }
 
 // ============================================================================
