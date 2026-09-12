@@ -412,11 +412,13 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_MEDIUM_NOT_PRESENT, 0x00);
             return;
         }
-        // Mark medium as not present (eject)
+        // Mark medium as not present (eject).  No unit attention: removal is
+        // not one of the four causes the CDU-541 manual 4.1.3 lists, and its
+        // UNIT ATTENTION table has no code for it.  The empty bay is a
+        // persistent NOT READY condition instead -- see the eject path in
+        // scsi.c for why the lifetime matters, not just the code.
         scsi->devices[target].medium_present = false;
         scsi->devices[target].image = NULL;
-        scsi->devices[target].unit_attention = true;
-        scsi_set_sense(scsi, target, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
     }
     // Start=1 (spin up) or Start=0,LoEj=0 (spin down): no-op
     phase_status(scsi, STATUS_GOOD);

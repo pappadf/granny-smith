@@ -269,12 +269,167 @@ TEST(read6_past_end_still_refused) {
     scsi_delete(scsi);
 }
 
+// ===========================================================================
+// F-08: UNIT ATTENTION must report the cause that was staged, and removal is
+// not one of the causes at all.
+// ===========================================================================
+//
+// AUTHORITY: Sony CDU-541 SCSI manual S4.1.3 -- the drive we advertise is a
+// SONY CD-ROM CDU-8002 (system.c), so its sense vocabulary is the one that
+// applies, not SCSI-2's.  The unit attention condition arises on power-on, a
+// reset, "the insertion of a caddy with the successful recovery of the table
+// of contents", or MODE SELECT from another initiator.  Its UNIT ATTENTION
+// (6h) table holds exactly three codes: 0x28 caddy inserted, 0x29 power-on or
+// reset, 0x2A mode parameters changed.  Removal appears in neither list, and
+// 0x3A does not appear anywhere in this drive's sense tables -- an empty bay
+// is NOT READY (2h) with vendor code 0xB0, "Caddy not inserted in drive".
+
+// Read one sense block with REQUEST SENSE.  Exempt from the UNIT ATTENTION
+// gate, so it reports without being swallowed.
+static void request_sense(scsi_t *scsi, uint8_t out[18]) {
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t cdb[6] = {0x03, 0, 0, 0, 18, 0};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    size_t n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        if (n < 18)
+            out[n++] = b;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+}
+
+// Issue START/STOP UNIT.  flags bit 0 = Start, bit 1 = LoEj, so 0x02 is
+// "stop and eject" (CDU-541 manual S5.2.33).
+static int start_stop(scsi_t *scsi, uint8_t flags) {
+    const uint8_t cdb[6] = {0x1B, 0, 0, 0, flags, 0};
+    return issue_cdb6(scsi, cdb);
+}
+
+// A freshly inserted disc reports 0x28 "caddy inserted" -- not a hardcoded
+// constant, but the cause staged at the point of insertion.
+TEST(unit_attention_on_insert_reports_caddy_inserted) {
+    scsi_t *scsi = scsi_init(NULL, NULL);
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_open_readonly(g_path);
+    ASSERT_TRUE(img != NULL);
+    scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, CD_BLOCK, true);
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_UNIT_ATTENTION);
+    ASSERT_EQ_INT(sense[12], 0x28); // not ready to ready transition
+    ASSERT_EQ_INT(sense[13], 0x00);
+    scsi_delete(scsi);
+}
+
+// The bug: eject staged UNIT ATTENTION / 0x3A, and the gate then overwrote it
+// with 0x28 -- telling a guest that had just ejected a disc that one had
+// arrived.  Removal now raises no unit attention at all, and the empty bay is
+// reported as the persistent NOT READY condition the drive actually uses.
+TEST(eject_reports_not_ready_not_media_arrived) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status); // stop + LoEj = eject
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    issue_cdb6(scsi, tur);
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    ASSERT_EQ_INT(sense[12], ASC_SONY_CADDY_NOT_INSERTED); // 0xB0, not 0x3A
+    scsi_delete(scsi);
+}
+
+// UNIT ATTENTION is a one-shot cleared by the first CHECK CONDITION; NOT READY
+// is a state.  Modelling an empty bay as the former meant the second command
+// after an eject succeeded against a drive with no disc in it.  Every command
+// that needs the medium must keep failing for as long as the bay is empty.
+TEST(empty_bay_keeps_failing_not_just_once) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        issue_cdb6(scsi, tur);
+        uint8_t sense[18] = {0};
+        request_sense(scsi, sense);
+        ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    }
+    scsi_delete(scsi);
+}
+
+// CDU-541 S4.1.3: "If an STOP UNIT command (with LoEj set) is received from an
+// initiator with a pending unit attention condition the controller will
+// perform the command and will not clear the unit attention condition."  A
+// Sony extension -- ANSI X3.131-1986 S6.1.3 has no such carve-out.  Without it,
+// ejecting a disc that was only just inserted fails, swallowed by the insert's
+// own still-pending attention.
+TEST(eject_is_exempt_from_pending_unit_attention) {
+    scsi_t *scsi = scsi_init(NULL, NULL);
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_open_readonly(g_path);
+    ASSERT_TRUE(img != NULL);
+    scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, CD_BLOCK, true);
+    // UNIT ATTENTION deliberately left pending -- no command burns it first.
+
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+
+    // The eject must have actually happened, not been swallowed by the gate.
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+
+    // ...and it must NOT have cleared the attention: S4.1.3 says the controller
+    // "will perform the command and will not clear the unit attention
+    // condition".  So the insert's 0x28 is still owed to the next command.
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    issue_cdb6(scsi, tur);
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_UNIT_ATTENTION);
+    ASSERT_EQ_INT(sense[12], 0x28);
+
+    // Only once that is burned does the empty bay show through.
+    issue_cdb6(scsi, tur);
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    ASSERT_EQ_INT(sense[12], ASC_SONY_CADDY_NOT_INSERTED);
+    scsi_delete(scsi);
+}
+
+// INQUIRY is exempt in both the ANSI text and Sony's, and must NOT clear the
+// condition -- the attention still has to be reported to the next real command.
+TEST(inquiry_does_not_clear_unit_attention) {
+    scsi_t *scsi = scsi_init(NULL, NULL);
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_open_readonly(g_path);
+    ASSERT_TRUE(img != NULL);
+    scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, CD_BLOCK, true);
+
+    const uint8_t inq[6] = {0x12, 0, 0, 0, 36, 0};
+    ASSERT_EQ_INT(issue_cdb6(scsi, inq), scsi_data_in); // executes normally
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_UNIT_ATTENTION); // still pending
+    ASSERT_EQ_INT(sense[12], 0x28);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(read6_at_buf_limit);
     RUN(read6_over_buf_limit_cdrom);
     RUN(read6_max_blocks_cdrom);
     RUN(read6_past_end_still_refused);
+    RUN(unit_attention_on_insert_reports_caddy_inserted);
+    RUN(eject_reports_not_ready_not_media_arrived);
+    RUN(empty_bay_keeps_failing_not_just_once);
+    RUN(eject_is_exempt_from_pending_unit_attention);
+    RUN(inquiry_does_not_clear_unit_attention);
     RUN(inquiry_standard_is_36_bytes);
     RUN(inquiry_evpd_unsupported_page_is_refused);
     RUN(inquiry_evpd_page_zero_lists_itself);

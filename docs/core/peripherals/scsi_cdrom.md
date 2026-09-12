@@ -620,19 +620,35 @@ The sense buffer is populated when a command terminates with CHECK CONDITION sta
 
 ### 6.4 UNIT ATTENTION
 
-UNIT ATTENTION is a per-initiator condition. It is set on:
+UNIT ATTENTION is a per-initiator condition. The drive we advertise is a
+`SONY CD-ROM CDU-8002`, so the authority is the Sony CDU-541 SCSI manual
+§4.1.3, which names exactly four causes:
 
-1. **Power-on / reset:** ASC/ASCQ `0x29/0x00`
-2. **Media change (insert):** ASC/ASCQ `0x28/0x00`
-3. **Media removal:** ASC/ASCQ `0x3A/0x00`
+1. **Power-on:** ASC/ASCQ `0x29/0x00`
+2. **Reset (or BUS DEVICE RESET):** ASC/ASCQ `0x29/0x00`
+3. **Media change (insertion of a caddy with successful TOC recovery):**
+   ASC/ASCQ `0x28/0x00`
 4. **MODE SELECT from another initiator:** ASC/ASCQ `0x2A/0x00`
+
+**Media removal is NOT a unit attention condition.** It appears in neither
+§4.1.3's list of causes nor the drive's UNIT ATTENTION (6h) sense-code table,
+which holds only `0x28`, `0x29` and `0x2A`. An empty bay is a *persistent*
+NOT READY (2h) state — the CDU-541 reports vendor code `0xB0`, "Caddy not
+inserted in drive"; `0x3A` MEDIUM NOT PRESENT does not appear anywhere in this
+drive's tables. The distinction matters beyond the code: a unit attention is a
+one-shot cleared by the first CHECK CONDITION, so modelling removal as one
+lets the *second* command after an eject succeed against an empty drive.
 
 **Clearing behavior:**
 - The condition persists until the initiator sends a command that receives CHECK CONDITION
 - If the next command from that initiator is REQUEST SENSE, the UNIT ATTENTION sense key is returned and the condition is cleared
 - If any other command is received, CHECK CONDITION is returned and the condition is cleared
 - **INQUIRY does not clear UNIT ATTENTION** — it executes normally with the condition still pending
-- **START/STOP UNIT with LoEj=1** does not clear UNIT ATTENTION — it executes normally
+- **START/STOP UNIT with LoEj=1** does not clear UNIT ATTENTION — it executes
+  normally (§4.1.3). This is a Sony extension: ANSI X3.131-1986 §6.1.3 exempts
+  only INQUIRY and REQUEST SENSE, and says any other command "shall not be
+  performed". Without the carve-out, ejecting a disc that was only just
+  inserted fails, swallowed by the insert's own pending attention.
 
 **Priority (when multiple conditions pending):**
 1. Power on / reset (highest)

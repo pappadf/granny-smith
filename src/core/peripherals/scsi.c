@@ -553,12 +553,31 @@ static void run_cmd(scsi_t *scsi) {
         scsi->buf.data[1], scsi->buf.data[2], scsi->buf.data[3], scsi->buf.data[4], scsi->buf.data[5],
         scsi->buf.data[6], scsi->buf.data[7], scsi->buf.data[8], scsi->buf.data[9]);
 
-    // Check for pending UNIT ATTENTION on first non-exempt command
-    // INQUIRY and REQUEST SENSE are exempt per SCSI spec
+    // Pending UNIT ATTENTION, reported on the first command that is not exempt.
+    //
+    // Three commands are exempt, per the CDU-541 manual 4.1.3: INQUIRY and
+    // REQUEST SENSE (also ANSI X3.131-1986 6.1.3), plus STOP UNIT with LoEj
+    // set -- "the controller will perform the command and will not clear the
+    // unit attention condition".  That third one is a Sony extension; the ANSI
+    // text has no such carve-out.  Without it, ejecting a disc that was only
+    // just inserted fails, because the insert's own UNIT ATTENTION is still
+    // pending and swallows the eject.
+    bool stop_unit_eject = scsi->cmd.opcode == CMD_START_STOP_UNIT && (scsi->buf.data[4] & 0x03) == 0x02;
     if (scsi->devices[target].unit_attention && scsi->cmd.opcode != CMD_INQUIRY &&
-        scsi->cmd.opcode != CMD_REQUEST_SENSE) {
+        scsi->cmd.opcode != CMD_REQUEST_SENSE && !stop_unit_eject) {
         scsi->devices[target].unit_attention = false;
-        scsi_check_condition(scsi, SENSE_UNIT_ATTENTION, ASC_NOT_READY_TO_READY, 0x00);
+        // Report the condition that was staged when the attention was raised,
+        // rather than inventing one here.  The CDU-541 recognises exactly three
+        // UNIT ATTENTION codes -- 0x28 caddy inserted, 0x29 power-on/reset,
+        // 0x2A mode parameters changed -- and which one applies is known only
+        // at the point the condition arises.  Hardcoding 0x28 told a guest that
+        // had just ejected a disc that a disc had arrived.
+        uint8_t asc = ASC_NOT_READY_TO_READY, ascq = 0x00;
+        if (scsi->devices[target].sense.key == SENSE_UNIT_ATTENTION) {
+            asc = scsi->devices[target].sense.asc;
+            ascq = scsi->devices[target].sense.ascq;
+        }
+        scsi_check_condition(scsi, SENSE_UNIT_ATTENTION, asc, ascq);
         return;
     }
 
@@ -581,7 +600,7 @@ static void run_cmd(scsi_t *scsi) {
     if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
         bool start_unit = scsi->cmd.opcode == CMD_START_STOP_UNIT && (scsi->buf.data[4] & 0x01) != 0;
         if (start_unit || scsi_cmd_needs_medium(scsi->cmd.opcode)) {
-            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
+            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
             return;
         }
     }
@@ -592,7 +611,7 @@ static void run_cmd(scsi_t *scsi) {
         LOG(1, "command: TEST UNIT READY");
         // Check if medium is present for CD-ROM
         if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
-            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
+            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
         } else {
             phase_status(scsi, STATUS_GOOD);
         }
@@ -2060,9 +2079,15 @@ void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, con
     else
         memset(scsi->devices[scsi_id].revision, ' ', 4);
 
-    // CD-ROM attach triggers UNIT ATTENTION (media changed)
-    if (type == scsi_dev_cdrom && image != NULL)
+    // Inserting a caddy and recovering its TOC is the media-change cause the
+    // CDU-541 manual 4.1.3 names, and 0x28 "Not ready to ready transition
+    // (caddy inserted)" is the code it reports.  Stage it here, where the cause
+    // is known, so the UNIT ATTENTION gate in run_cmd can simply report what is
+    // pending instead of guessing.
+    if (type == scsi_dev_cdrom && image != NULL) {
         scsi->devices[scsi_id].unit_attention = true;
+        scsi_set_sense(scsi, scsi_id, SENSE_UNIT_ATTENTION, ASC_NOT_READY_TO_READY, 0x00);
+    }
 }
 
 // Initialize the SCSI controller and optionally restore from checkpoint
@@ -2497,8 +2522,14 @@ int scsi_eject_device(scsi_t *scsi, int id) {
         return 0;
     scsi->devices[id].medium_present = false;
     scsi->devices[id].image = NULL;
-    scsi->devices[id].unit_attention = true;
-    scsi_set_sense(scsi, id, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
+    // Removal raises NO unit attention.  The CDU-541 manual 4.1.3 lists exactly
+    // four causes -- power-on, reset, *insertion* of a caddy with successful TOC
+    // recovery, and MODE SELECT from another initiator -- and its UNIT ATTENTION
+    // table has no code for removal.  An empty bay is a persistent NOT READY
+    // state instead, handled in run_cmd for as long as it lasts.  That lifetime
+    // is the point: a UNIT ATTENTION is a one-shot cleared by the first CHECK
+    // CONDITION, so a guest that ejected, took one error and retried used to
+    // find the second command succeeding against an empty drive.
     return 1;
 }
 
