@@ -114,18 +114,33 @@ static int ism_mfm_spt(image_t *img) {
 // (02-floppy F-09).  SWIM3 builds its whole format-detection walk on exactly
 // this predicate.
 //
-// GATING THE ISM PATH ON IT DOES NOT WORK HERE, and that is the finding's
-// unstated cost.  Tried and reverted (2026-09-11): with the gate in place,
-// se30-mactest stops matching its `insert-1.4mb-floppy` golden -- the 800K step
-// before it still passes, so the model is reaching this path with HD media and
-// a Setup register whose GCR bit does not say what the finding assumes it says.
-// Whatever MacTest leaves in Setup, the model has no business concluding "the
-// head sees nothing" from it while the rest of the mode model is missing.
+// THE PREDICATE IS CORRECT AND CANNOT BE APPLIED YET.  Measured, not guessed:
+// instrumenting it over se30-mactest without acting on it shows it would refuse
+// 2,621 sector builds, every one of them
 //
-// Kept, unused, because the predicate itself is right and is what a future ISM
-// engine needs.  Do not wire it in without rerunning se30-mactest,
-// se30-format-hd, se30-cdrom, iicx-mactest and iici-aux3-8bpp -- the extended
-// tier, not the matrix: none of these are matrix rows.
+//     setup=0x20 (GCR bit CLEAR, i.e. MFM framing) over type=image_fd_ds
+//
+// -- MacTest drives the ISM with 800K GCR media while the chip is framing MFM,
+// and the model happily serves it MFM fields.  ism_mfm_spt() even has a
+// fallback for exactly this ("a GCR disk reaching the MFM path"), which is the
+// same incoherence written down somewhere else.
+//
+// So the blocker is not the Setup bit.  It is that this model has NO NOTION OF
+// WHAT ENCODING IS CURRENTLY LAID DOWN ON A MEDIUM: floppy_media_t::mfm means
+// "a disk of this CAPACITY is conventionally MFM", derived from the file size,
+// not "this disk currently carries MFM".  A predicate over the chip's framing
+// and the medium's encoding needs the second, and there is nowhere to get it.
+//
+// Implementing F-09 therefore means giving the ISM path a real GCR mode -- the
+// S_GCR framing SWIM2 has -- so that GCR framing over GCR media produces GCR
+// fields, and a genuine mismatch produces nothing.  That is a new capability,
+// not a gate in front of the existing one.  The IOP protocol's
+// CurrentFormat/FormatsAllowed is the shape of the missing state.
+//
+// Kept, unused, because it is what that work will need.  Do not wire it in
+// without rerunning se30-mactest, se30-format-hd, se30-cdrom, iicx-mactest and
+// iici-aux3-8bpp -- the EXTENDED tier, not the matrix: none of these are matrix
+// rows, which is why the matrix was green while the gate was in.
 __attribute__((unused)) static bool ism_encoding_matches(const floppy_t *floppy, const image_t *img) {
     floppy_media_t m;
     if (!floppy_media_from_image((image_t *)img, &m))
