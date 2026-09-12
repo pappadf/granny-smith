@@ -1158,6 +1158,16 @@ sym53c8xx_t *sym53c8xx_new(config_t *cfg, int channel) {
 }
 
 void sym53c8xx_delete(sym53c8xx_t *s) {
+    if (!s)
+        return;
+    // Both events carry `s` as their source, and the card is freed before the
+    // scheduler, so either one still queued outlives this free and fires into
+    // released memory.  sym53c8xx_abort, _bus_reset and _chip_reset all drop
+    // them correctly; the destructor was the one place that did not.
+    if (s->cfg && s->cfg->scheduler) {
+        remove_event(s->cfg->scheduler, select_timeout_event, s);
+        remove_event(s->cfg->scheduler, script_start_event, s);
+    }
     free(s);
 }
 

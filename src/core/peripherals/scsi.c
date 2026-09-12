@@ -1254,6 +1254,12 @@ static void command_complete(scsi_t *scsi) {
 // Per the NCR 5380 Design Manual, RST clears all registers and logic
 // *except* the IRQ interrupt latch and the ASSERT RST bit in ICR.
 static void scsi_reset(scsi_t *scsi) {
+    // A reset abandons any pseudo-DMA transfer in flight, so the DRQ pulse it
+    // was waiting on must not land on the reset chip -- the same reasoning
+    // phase_free already applies, and that sym53c8xx_chip_reset applies to its
+    // own two events.
+    scsi_cancel_drq_service(scsi);
+
     scsi->bus.phase = scsi_bus_free;
     scsi->reg.csr = 0;
     scsi->reg.bsr = 0;
@@ -2639,6 +2645,13 @@ struct image *scsi_device_image(const scsi_t *scsi, unsigned which) {
 void scsi_delete(scsi_t *scsi) {
     if (!scsi)
         return;
+
+    // Drop the queued DRQ service event BEFORE anything else.  Its `source` is
+    // this scsi_t, and every machine deletes SCSI before the scheduler
+    // (machine_teardown.c, plus.c, tnt.c, mcu.c), so a queued pulse outlives
+    // the free below and fires into released memory on the next tick.  The
+    // 53C96 destructor has always done this; this one never did.
+    scsi_cancel_drq_service(scsi);
     // Tear down per-slot entry objects (never attached to the tree),
     // then the named children, then the top-level node.
     for (int i = 0; i < 8; i++) {
