@@ -194,6 +194,12 @@ typedef struct floppy_drive {
     int track; // current head position (0-79)
     int offset; // byte offset within current track
     int data_side; // latched head side for data I/O
+    int cur_format; // floppy_format_t: what the medium in this drive carries
+                    // NOW.  Seeded from the image on insert and updated by the
+                    // paths that lay a format down, because the image's size
+                    // only tells you the medium's class -- a DD disk is 800K
+                    // GCR or 720K MFM depending on what was last written.
+    bool cur_format_known; // false = fall back to the image-implied format
     int write_hdr_start; // offset of the D5 AA 96 of the sector being written,
                          // or -1 when no header has passed under the head since
                          // the last completed sector (GCR write-through)

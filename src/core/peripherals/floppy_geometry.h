@@ -42,20 +42,59 @@ size_t floppy_zone_track_length(int track);
 // Byte offset of a (track, side) in a GCR image laid out by zone.
 size_t floppy_zone_image_offset(int track, int side, int num_sides);
 
-// What the medium in the drive is.  Derived once, from the image.
+// The FORMAT a medium carries: what was last written on it.  Distinct from the
+// medium's physical class (DD or HD, the `hd` field below), which is a property
+// of the disk itself and cannot change.
+//
+// These are two different facts and the model used to derive both from the
+// image's byte size, which can only ever tell you the first.  An 800K image and
+// a 720K image are not two kinds of media: they are ONE kind -- double density
+// -- carrying two different formats, and a DD disk moves between them every
+// time it is reformatted.  Conflating them is why 02-floppy F-09's predicate
+// could not be applied: it compares the chip's framing against the medium's
+// encoding, and only `format` answers that.
+typedef enum {
+    FLOPPY_FMT_GCR_400K, // DD, single-sided Apple GCR
+    FLOPPY_FMT_GCR_800K, // DD, double-sided Apple GCR
+    FLOPPY_FMT_MFM_720K, // DD, IBM MFM
+    FLOPPY_FMT_MFM_1440K, // HD, IBM MFM
+} floppy_format_t;
+
+// True when the format is one the ISM frames as MFM rather than GCR.
+static inline bool floppy_format_is_mfm(floppy_format_t f) {
+    return f == FLOPPY_FMT_MFM_720K || f == FLOPPY_FMT_MFM_1440K;
+}
+
+// What the medium in the drive is.
 typedef struct floppy_media {
     image_t *img; // the medium itself; NULL when the drive is empty
     bool valid; // false = empty drive, or a size this driver cannot present
-    bool mfm; // MFM framing rather than Apple GCR
-    bool hd; // high-density media (1440K)
+    floppy_format_t format; // what is written on it NOW
+    bool mfm; // == floppy_format_is_mfm(format), for brevity at call sites
+    bool hd; // physical class: high-density media.  NOT a format.
     int sides; // 1 for a 400K disk, 2 otherwise
     int mfm_spt; // sectors per track on MFM media; 0 for GCR (zoned)
     uint8_t fmt_byte; // the sector header's format byte
 } floppy_media_t;
 
-// Fills *out from the image.  Returns false (and a zeroed *out) for an empty
-// drive or a size that is not a floppy geometry.
+// Fills *out from the image alone -- the medium's class, and the format its
+// size implies.  That implied format is only a starting guess: it is what a
+// disk image made elsewhere most likely carries.  Use floppy_media_current()
+// wherever the medium may have been reformatted since it was inserted.
 bool floppy_media_from_image(image_t *img, floppy_media_t *out);
+
+// Fills in everything that follows from a format (sides, spt, format byte).
+void floppy_media_apply_format(floppy_media_t *m, floppy_format_t format);
+
+// The format a medium is CURRENTLY carrying, tracked per drive from the format
+// operations the guest performs.  Falls back to the image-implied format when
+// nothing has reformatted the disk since it was inserted.
+struct floppy;
+bool floppy_media_current(struct floppy *floppy, unsigned drive, floppy_media_t *out);
+
+// Records that `drive`'s medium now carries `format`.  Called by the paths that
+// lay a format down.
+void floppy_media_set_format(struct floppy *floppy, unsigned drive, floppy_format_t format);
 
 // Sectors per track for this medium: uniform on MFM, zoned on GCR.
 int floppy_media_spt(const floppy_media_t *m, int track);

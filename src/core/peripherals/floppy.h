@@ -72,6 +72,8 @@ int floppy_get_type(const floppy_t *floppy); // FLOPPY_TYPE_IWM | _SWIM | _SWIM3
 bool floppy_get_sel(const floppy_t *floppy); // VIA-driven head-select signal
 
 int floppy_drive_track(const floppy_t *floppy, unsigned drive);
+// The format the medium currently carries (floppy_format_t), or -1 if unknown.
+int floppy_drive_format(const floppy_t *floppy, unsigned drive);
 int floppy_drive_side(const floppy_t *floppy, unsigned drive);
 bool floppy_drive_motor_on(const floppy_t *floppy, unsigned drive);
 const char *floppy_drive_disk_path(const floppy_t *floppy, unsigned drive);

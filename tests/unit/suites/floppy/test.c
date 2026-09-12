@@ -509,6 +509,52 @@ TEST(test_media_descriptor) {
     ASSERT_TRUE(!image_is_floppy(image_hd));
 }
 
+// The medium's CLASS and its FORMAT are different facts.  An 800K image and a
+// 720K image are one kind of media -- double density -- carrying two different
+// formats, and a DD disk moves between them every time it is reformatted.  The
+// model used to derive both from the file's byte size, which can only ever say
+// the first; that is why 02-floppy F-09's framing predicate could not be
+// applied.
+TEST(test_media_class_vs_format) {
+    image_t img;
+    memset(&img, 0, sizeof img);
+    floppy_media_t m;
+
+    // Every DD format shares one class.
+    const enum image_type dd[] = {image_fd_ss, image_fd_ds, image_fd_dd_mfm};
+    for (unsigned i = 0; i < sizeof dd / sizeof dd[0]; i++) {
+        img.type = dd[i];
+        ASSERT_TRUE(floppy_media_from_image(&img, &m));
+        ASSERT_TRUE(!m.hd); // class: double density
+    }
+    img.type = image_fd_hd;
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_TRUE(m.hd);
+
+    // The format that a size implies is only the starting guess.
+    img.type = image_fd_ds;
+    ASSERT_TRUE(floppy_media_from_image(&img, &m));
+    ASSERT_EQ_INT(m.format, FLOPPY_FMT_GCR_800K);
+    ASSERT_TRUE(!m.mfm);
+
+    // Reformatting that same DD medium as MFM changes the format, not the
+    // class -- and everything derived from the format follows.
+    floppy_media_apply_format(&m, FLOPPY_FMT_MFM_720K);
+    ASSERT_EQ_INT(m.format, FLOPPY_FMT_MFM_720K);
+    ASSERT_TRUE(m.mfm);
+    ASSERT_TRUE(!m.hd); // still a DD disk
+    ASSERT_EQ_INT(m.mfm_spt, 9);
+    ASSERT_EQ_INT(m.sides, 2);
+    ASSERT_EQ_INT(floppy_media_spt(&m, 0), 9);
+    ASSERT_EQ_INT(floppy_media_spt(&m, 79), 9); // uniform, unlike GCR
+
+    // floppy_format_is_mfm is the predicate the ISM framing check compares to.
+    ASSERT_TRUE(!floppy_format_is_mfm(FLOPPY_FMT_GCR_400K));
+    ASSERT_TRUE(!floppy_format_is_mfm(FLOPPY_FMT_GCR_800K));
+    ASSERT_TRUE(floppy_format_is_mfm(FLOPPY_FMT_MFM_720K));
+    ASSERT_TRUE(floppy_format_is_mfm(FLOPPY_FMT_MFM_1440K));
+}
+
 // MFM tracks are uniform; GCR tracks are zoned.  Both must agree with the
 // zone helpers, since the engine reaches sectors through this one function.
 TEST(test_media_sector_offset) {
@@ -550,6 +596,7 @@ int main(void) {
     RUN(test_decode_sector_rejects_corruption);
     RUN(test_triplet_forms_agree);
     RUN(test_media_descriptor);
+    RUN(test_media_class_vs_format);
     RUN(test_media_sector_offset);
     RUN(test_mfm_sector_layout);
     RUN(test_write_through_detects_sector_boundary);

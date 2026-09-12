@@ -57,3 +57,20 @@ double scheduler_time_ns(struct scheduler *restrict scheduler) {
     (void)scheduler;
     return 0.0;
 }
+
+// floppy_media_current() consults the drive for the format its medium
+// currently carries; these tests drive the geometry helpers directly with
+// images they own, so the drive side is stubbed out.
+struct floppy;
+
+image_t *floppy_drive_image(const struct floppy *floppy, unsigned drive) {
+    (void)floppy;
+    (void)drive;
+    return NULL;
+}
+
+int floppy_drive_format(const struct floppy *floppy, unsigned drive) {
+    (void)floppy;
+    (void)drive;
+    return -1;
+}

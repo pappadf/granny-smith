@@ -633,6 +633,9 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
     // point at: this used to leave a stale offset on the freshly loaded drive
     // and clobber the other drive's in-progress read position (02-floppy F-12).
     floppy->drives[drive].offset = 0;
+    // A new medium: what it carries is whatever its image implies, until
+    // something writes a format.
+    floppy->drives[drive].cur_format_known = false;
     const char *name = disk ? image_get_filename(disk) : NULL;
     LOG(1, "Drive %d: Inserted disk '%s' (writable=%d)", drive, name ? name : "<unnamed>", disk ? disk->writable : 0);
 
@@ -669,6 +672,27 @@ int floppy_drive_side(const floppy_t *floppy, unsigned drive) {
         return 0;
     return floppy->drives[drive].data_side;
 }
+// The format this drive's medium currently carries, or -1 when nothing has
+// written one since it was inserted (use the image-implied format then).
+int floppy_drive_format(const floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES || !floppy->drives[drive].cur_format_known)
+        return -1;
+    return floppy->drives[drive].cur_format;
+}
+
+void floppy_media_set_format(floppy_t *floppy, unsigned drive, floppy_format_t format) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return;
+    floppy_drive_t *d = &floppy->drives[drive];
+    if (d->cur_format_known && d->cur_format == (int)format)
+        return;
+    LOG(3, "Drive %u: medium now carries format %d", drive, (int)format);
+    d->cur_format = (int)format;
+    d->cur_format_known = true;
+    // The GCR cache holds nibbles of the OLD format.
+    floppy_drive_drop_tracks(floppy, drive);
+}
+
 bool floppy_drive_motor_on(const floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES)
         return false;

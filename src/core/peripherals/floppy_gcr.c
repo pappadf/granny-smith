@@ -89,6 +89,36 @@ size_t floppy_zone_image_offset(int track, int side, int num_sides) {
 // Keyed on image_t::type, which classify_image() derives from the exact byte
 // size -- the only classifier that was ever right (02-floppy F-17 preferred
 // swim3_media's version, and this is it, promoted).
+// Fills in everything that follows from a format: side count, sectors per
+// track, the header's format byte, and the MFM/GCR framing flag.
+void floppy_media_apply_format(floppy_media_t *m, floppy_format_t format) {
+    m->format = format;
+    m->mfm = floppy_format_is_mfm(format);
+    switch (format) {
+    case FLOPPY_FMT_MFM_1440K:
+        m->sides = 2;
+        m->mfm_spt = 18;
+        m->fmt_byte = 0x02; // MFM size code 2 = 512-byte sectors
+        break;
+    case FLOPPY_FMT_MFM_720K:
+        m->sides = 2;
+        m->mfm_spt = 9;
+        m->fmt_byte = 0x02;
+        break;
+    case FLOPPY_FMT_GCR_800K:
+        m->sides = 2;
+        m->mfm_spt = 0;
+        m->fmt_byte = 0x22; // 0x22 = double-sided GCR
+        break;
+    case FLOPPY_FMT_GCR_400K:
+    default:
+        m->sides = 1;
+        m->mfm_spt = 0;
+        m->fmt_byte = 0x02;
+        break;
+    }
+}
+
 bool floppy_media_from_image(image_t *img, floppy_media_t *out) {
     if (!out)
         return false;
@@ -97,32 +127,35 @@ bool floppy_media_from_image(image_t *img, floppy_media_t *out) {
         return false;
     out->img = img;
     switch (img->type) {
-    case image_fd_hd: // 1440K MFM: 18 sectors/track, both sides, HD media
-        out->mfm = true;
-        out->hd = true;
-        out->sides = 2;
-        out->mfm_spt = 18;
-        out->fmt_byte = 0x02; // MFM size code 2 = 512-byte sectors
+    case image_fd_hd:
+        out->hd = true; // the only HD class we model
+        floppy_media_apply_format(out, FLOPPY_FMT_MFM_1440K);
         break;
-    case image_fd_dd_mfm: // 720K MFM: 9 sectors/track on DD media
-        out->mfm = true;
-        out->sides = 2;
-        out->mfm_spt = 9;
-        out->fmt_byte = 0x02;
+    case image_fd_dd_mfm:
+        floppy_media_apply_format(out, FLOPPY_FMT_MFM_720K);
         break;
-    case image_fd_ds: // 800K GCR: double-sided, interleave 2
-        out->sides = 2;
-        out->fmt_byte = 0x22;
+    case image_fd_ds:
+        floppy_media_apply_format(out, FLOPPY_FMT_GCR_800K);
         break;
-    case image_fd_ss: // 400K GCR: single-sided
-        out->sides = 1;
-        out->fmt_byte = 0x02;
+    case image_fd_ss:
+        floppy_media_apply_format(out, FLOPPY_FMT_GCR_400K);
         break;
     default:
         out->img = NULL;
         return false;
     }
     out->valid = true;
+    return true;
+}
+
+bool floppy_media_current(struct floppy *floppy, unsigned drive, floppy_media_t *out) {
+    if (!floppy_media_from_image(floppy_drive_image(floppy, drive), out))
+        return false;
+    // The image gives the class and a starting guess at the format; the drive
+    // overrides the format once something has actually written one.
+    int known = floppy_drive_format(floppy, drive);
+    if (known >= 0)
+        floppy_media_apply_format(out, (floppy_format_t)known);
     return true;
 }
 

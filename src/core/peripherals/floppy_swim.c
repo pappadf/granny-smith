@@ -97,11 +97,13 @@ static uint8_t ism_fifo_pop(floppy_t *floppy, bool *is_mark_out) {
 // `disk_size(img) > 1000000 ? 18 : 9` used to live in this file (02-floppy
 // F-17); they happened to give the right answer for 720K only because 737,280
 // is under the threshold.  The geometry now comes from one place.
-static int ism_mfm_spt(image_t *img) {
+static int ism_mfm_spt(floppy_t *floppy, int drv) {
     floppy_media_t m;
-    if (!floppy_media_from_image(img, &m) || !m.mfm)
-        return 9; // a GCR disk reaching the MFM path: DD layout, as before
-    return m.mfm_spt;
+    if (!floppy_media_current(floppy, (unsigned)drv, &m))
+        return 9;
+    // A medium whose current format is GCR reaching the MFM path is a disk
+    // being formatted: the DD layout is what the guest is about to write.
+    return m.mfm ? m.mfm_spt : 9;
 }
 
 // Builds an MFM sector in the sector buffer for the current track/side/sector
@@ -141,9 +143,9 @@ static int ism_mfm_spt(image_t *img) {
 // without rerunning se30-mactest, se30-format-hd, se30-cdrom, iicx-mactest and
 // iici-aux3-8bpp -- the EXTENDED tier, not the matrix: none of these are matrix
 // rows, which is why the matrix was green while the gate was in.
-__attribute__((unused)) static bool ism_encoding_matches(const floppy_t *floppy, const image_t *img) {
+static bool ism_encoding_matches(floppy_t *floppy, int drv) {
     floppy_media_t m;
-    if (!floppy_media_from_image((image_t *)img, &m))
+    if (!floppy_media_current(floppy, (unsigned)drv, &m))
         return false;
     bool gcr_framing = (floppy->ism_setup & ISM_SETUP_GCR) != 0;
     return gcr_framing != m.mfm;
@@ -179,7 +181,23 @@ static void mfm_build_sector(floppy_t *floppy) {
     int side = floppy->mfm_cur_side;
     int sector = floppy->mfm_cur_sector; // 1-based
 
-    int sectors_per_track = ism_mfm_spt(img);
+    // The chip must be framing what this medium actually carries (02-floppy
+    // F-09).  READ path only: a WRITE is how a format gets laid down, so
+    // gating writes on the format already present would make the first format
+    // of a disk impossible -- the medium could never change its encoding.
+    //
+    // Applying this at all only became possible once the medium's CURRENT
+    // format was tracked separately from its physical class: the predicate
+    // compares the chip's framing against what is WRITTEN on the disk, and the
+    // image's byte size can only ever say what KIND of disk it is.
+    if (!ism_encoding_matches(floppy, drv)) {
+        floppy->mfm_buf_len = 0;
+        LOG(4, "ISM: framing (setup=0x%02X) does not match the medium's format; no fields under the head",
+            floppy->ism_setup);
+        return;
+    }
+
+    int sectors_per_track = ism_mfm_spt(floppy, drv);
 
     if (sector < 1 || sector > sectors_per_track) {
         floppy->mfm_buf_len = 0;
@@ -227,7 +245,7 @@ static void mfm_build_sector(floppy_t *floppy) {
 static void mfm_advance_sector(floppy_t *floppy) {
     int drv = (floppy->ism_mode & ISM_MODE_DRIVE2) ? 1 : 0;
     image_t *img = floppy->disk[drv];
-    int sectors_per_track = ism_mfm_spt(img);
+    int sectors_per_track = ism_mfm_spt(floppy, drv);
 
     floppy->mfm_cur_sector++;
     if (floppy->mfm_cur_sector > sectors_per_track)
@@ -391,11 +409,15 @@ static void ism_write_capture_flush(floppy_t *floppy) {
         return;
     }
 
+    floppy_media_t m;
+    if (!floppy_media_current(floppy, (unsigned)drv, &m))
+        return;
+
     int track = floppy->mfm_cur_track;
     int side = floppy->mfm_cur_side;
     int sector = floppy->mfm_cur_sector; // 1-based
 
-    int sectors_per_track = ism_mfm_spt(img);
+    int sectors_per_track = ism_mfm_spt(floppy, drv);
 
     if (sector < 1 || sector > sectors_per_track) {
         LOG(2, "ISM write: invalid sector %d (max %d)", sector, sectors_per_track);
@@ -409,6 +431,13 @@ static void ism_write_capture_flush(floppy_t *floppy) {
         LOG(2, "ISM write: offset %zu + 512 > disk size %zu", offset, disk_size(img));
         return;
     }
+
+    // Writing an MFM data field IS laying MFM down on this medium.  Until this
+    // ran, the model only knew the medium's CLASS (from the image size) and
+    // guessed its format; now it knows.  This is what lets the framing
+    // predicate work at all -- MacTest formats a DD disk as MFM, which the
+    // image's 800K size can never express (02-floppy F-09).
+    floppy_media_set_format(floppy, (unsigned)drv, m.hd ? FLOPPY_FMT_MFM_1440K : FLOPPY_FMT_MFM_720K);
 
     size_t written = disk_write_data(img, offset, floppy->ism_write_buf, 512);
     LOG(3, "ISM write: flushed T=%d S=%d Sec=%d (%zu bytes written)", track, side, sector, written);
