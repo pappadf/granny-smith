@@ -141,6 +141,21 @@
 // unlike SWIM3's scheduler-driven engine), so it is never set.  That is the
 // surviving half of 02-floppy F-24; the rest of that finding is false -- the
 // two ISM_ERR_OVERRUN assignments are both correct per the same spec.
+// UNDERRUN is defined by the ISM ASIC spec in BOTH directions: write mode --
+// the FIFO emptied and the processor has not written another byte; read mode --
+// the FIFO holds two bytes and the processor is not reading them fast enough.
+// NEITHER direction is raised, and the reasons differ:
+//   read  -- the condition is now detectable (the paced engine can find the
+//            FIFO full), but on the chip a full FIFO means the byte is LOST,
+//            and this engine merely skips the delivery.  Raising the bit is
+//            therefore stricter than the model's own behaviour, and it fires on
+//            every normal transfer because the emulated CPU's poll loop takes
+//            more than one 16 us slot.  Verified: doing so breaks
+//            se30-format-hd, se30-mactest and iicx-mactest.
+//   write -- writes are drained at the register rather than paced (see
+//            ism_write_shifter_take), so a shifter that does not run on a clock
+//            can never find the FIFO empty.
+// Both want more fidelity than this model has.  02-floppy F-24.
 #define ISM_ERR_UNDERRUN     0x01
 #define ISM_ERR_MARK_IN_DATA 0x02
 #define ISM_ERR_OVERRUN      0x04
@@ -282,6 +297,7 @@ struct floppy {
 
     // Object-tree binding — lifetime tied to floppy_init / floppy_delete.
     struct object *object; // top-level floppy node
+    struct object *controller_object; // floppy.controller node (the register file)
     struct object *drives_object; // floppy.drive collection child
     struct object *drive_objects[NUM_DRIVES]; // per-drive entry objects
     struct object *disk_objects[NUM_DRIVES]; // per-drive medium (disk) nodes — drive[N].disk

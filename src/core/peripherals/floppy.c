@@ -23,6 +23,7 @@ extern const class_desc_t floppy_class;
 extern const class_desc_t floppy_drive_class;
 extern const class_desc_t floppy_disk_class;
 extern const class_desc_t floppy_drives_collection_class;
+extern const class_desc_t floppy_controller_class;
 
 #include <assert.h>
 #include <math.h>
@@ -126,6 +127,56 @@ static void floppy_drive_seek(floppy_t *floppy, unsigned drv, bool outward, int 
             iwm_track_rpm(drive->track));
     }
     LOG(3, "Drive %u: Step to track %d (%s)", drv, drive->track, outward ? "outward" : "inward");
+}
+
+// Sets a drive's motor, for every controller.
+//
+// `model_spinup` says whether the CONTROLLER models the spin-up period during
+// which the drive deasserts /READY.  The IWM and SWIM do, and their drivers
+// poll it.  SWIM3 does not -- nothing on that path consults motor_spinning_up
+// (swim3.c reads the motor LATCH through floppy_drive_motor_on), so modelling
+// it there would model nothing observable.  Stated rather than left to be
+// inferred from two separate entry points (02-floppy F-22).
+static void floppy_drive_motor(floppy_t *floppy, unsigned drv, bool on, bool model_spinup) {
+    if (!floppy || drv >= NUM_DRIVES)
+        return;
+    floppy_drive_t *drive = &floppy->drives[drv];
+    bool was_off = drive->_motoron;
+    drive->_motoron = !on; // the signal is active low: false = running
+
+    if (!model_spinup) {
+        if (was_off == on) // i.e. the latch actually changed
+            LOG(4, "Drive %u: motor %s", drv, on ? "on" : "off");
+        return;
+    }
+
+    event_callback_t spinup_cb =
+        (floppy->type == FLOPPY_TYPE_SWIM) ? floppy_swim_motor_spinup_callback : floppy_motor_spinup_callback;
+
+    if (was_off && on) {
+        drive->motor_spinning_up = true;
+        // By data, not by (callback, source): remove_event drops EVERY event
+        // with that pair whatever its data, so on a two-drive machine spinning
+        // up drive 1 cancelled drive 0's pending spin-up and left it
+        // motor_spinning_up forever -- /READY stuck at 1 for the rest of the
+        // run (02-floppy F-05).
+        remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
+        scheduler_new_cpu_event(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv, 0, MOTOR_SPINUP_TIME_NS);
+        LOG(2, "Drive %u: Motor ON (spinning up)", drv);
+    } else if (!was_off && !on) {
+        drive->motor_spinning_up = false;
+        remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
+        LOG(2, "Drive %u: Motor OFF", drv);
+    } else {
+        LOG(4, "Drive %u: Motor %s (no change)", drv, drive->_motoron ? "off" : "on");
+    }
+}
+
+// Latches the head side used for data I/O, for every controller.
+static void floppy_drive_latch_side(floppy_t *floppy, unsigned drv, int side) {
+    if (!floppy || drv >= NUM_DRIVES)
+        return;
+    floppy->drives[drv].data_side = side ? 1 : 0;
 }
 
 // Returns the current disk status based on IWM CA lines and SEL signal.
@@ -294,9 +345,6 @@ void floppy_disk_control(floppy_t *floppy) {
     floppy_drive_t *drive = &floppy->drives[drv];
 
     // Determine the correct motor callback based on controller type
-    event_callback_t spinup_cb =
-        (floppy->type == FLOPPY_TYPE_SWIM) ? floppy_swim_motor_spinup_callback : floppy_motor_spinup_callback;
-
     // Commands only when SEL is low
     if (floppy->sel)
         return;
@@ -320,28 +368,7 @@ void floppy_disk_control(floppy_t *floppy) {
     } else {
         if (IWM_CA1(floppy)) {
             // MOTORON (CA0=0, CA1=1): CA2 sets motor state
-            bool was_off = drive->_motoron;
-            drive->_motoron = IWM_CA2(floppy);
-            bool now_on = !drive->_motoron;
-
-            if (was_off && now_on) {
-                drive->motor_spinning_up = true;
-                // By data, not by (callback, source): remove_event drops EVERY
-                // event with that pair whatever its data, so on a two-drive
-                // machine spinning up drive 1 cancelled drive 0's pending
-                // spin-up and left it motor_spinning_up forever -- /READY stuck
-                // at 1 for the rest of the run.  Matches the step-settle and
-                // speed-settle arms above.
-                remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
-                scheduler_new_cpu_event(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv, 0, MOTOR_SPINUP_TIME_NS);
-                LOG(2, "Drive %d: Motor ON (spinning up)", drv);
-            } else if (!was_off && !now_on) {
-                drive->motor_spinning_up = false;
-                remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
-                LOG(2, "Drive %d: Motor OFF", drv);
-            } else {
-                LOG(4, "Drive %d: Motor %s (no change)", drv, drive->_motoron ? "off" : "on");
-            }
+            floppy_drive_motor(floppy, (unsigned)drv, !IWM_CA2(floppy), true);
         } else {
             // DIRTN (CA0=0, CA1=0): CA2 sets direction
             drive->_dirtn = IWM_CA2(floppy);
@@ -605,7 +632,7 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
         floppy->sel = sel;
         // Only update the current drive's data side when not actively reading/writing
         if (!IWM_ENABLE(floppy))
-            floppy->drives[DRIVE_INDEX(floppy)].data_side = sel;
+            floppy_drive_latch_side(floppy, (unsigned)DRIVE_INDEX(floppy), sel);
     } else {
         LOG(6, "SEL signal: %s -> %s", floppy->sel ? "high" : "low", sel ? "high" : "low");
         floppy->sel = sel;
@@ -752,18 +779,11 @@ void floppy_swim3_step(floppy_t *floppy, unsigned drive, bool outward, int count
 }
 
 void floppy_swim3_set_motor(floppy_t *floppy, unsigned drive, bool on) {
-    if (!floppy || drive >= NUM_DRIVES)
-        return;
-    floppy_drive_t *d = &floppy->drives[drive];
-    if (d->_motoron != !on)
-        LOG(4, "Drive %u: SWIM3 motor %s", drive, on ? "on" : "off");
-    d->_motoron = !on; // the signal is active low: false = running
+    floppy_drive_motor(floppy, drive, on, false);
 }
 
 void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side) {
-    if (!floppy || drive >= NUM_DRIVES)
-        return;
-    floppy->drives[drive].data_side = side ? 1 : 0;
+    floppy_drive_latch_side(floppy, drive, side);
 }
 
 // ============================================================================
@@ -926,6 +946,11 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         object_set_label(floppy->object, "Floppy");
         object_set_order(floppy->object, 80);
         object_attach(machine_object(), floppy->object);
+        floppy->controller_object = object_new(&floppy_controller_class, floppy, "controller");
+        if (floppy->controller_object) {
+            object_set_label(floppy->controller_object, "Controller");
+            object_attach(floppy->object, floppy->controller_object);
+        }
         floppy->drives_object = object_new(&floppy_drives_collection_class, floppy, "drive");
         if (floppy->drives_object) {
             object_set_label(floppy->drives_object, "Drives");
@@ -967,6 +992,11 @@ void floppy_delete(floppy_t *floppy) {
         object_detach(floppy->drives_object);
         object_delete(floppy->drives_object);
         floppy->drives_object = NULL;
+    }
+    if (floppy->controller_object) {
+        object_detach(floppy->controller_object);
+        object_delete(floppy->controller_object);
+        floppy->controller_object = NULL;
     }
     if (floppy->object) {
         object_detach(floppy->object);
@@ -1185,6 +1215,107 @@ const class_desc_t floppy_class = {
     .name = "floppy",
     .members = floppy_members,
     .n_members = sizeof(floppy_members) / sizeof(floppy_members[0]),
+};
+
+// --- Controller node: the live register file, per variant -------------------
+//
+// 02-floppy F-41: the object model exposed nothing variant-specific at all, so
+// a floppy problem could only be inspected by raising a log category and
+// reading a trace -- while AGENTS.md positions the object tree as THE debugging
+// surface and the headless shell as the primary tool.  The register files are
+// plain data and trivially exposable.
+//
+// Members read as zero on a variant that has no such register; `type` on the
+// parent says which variant is in front of you.
+
+static value_t floppy_ctrl_attr_ism_mode(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_mode : 0);
+}
+static value_t floppy_ctrl_attr_ism_setup(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_setup : 0);
+}
+static value_t floppy_ctrl_attr_ism_error(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_error : 0);
+}
+static value_t floppy_ctrl_attr_ism_phase(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_phase : 0);
+}
+static value_t floppy_ctrl_attr_in_ism(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_bool(f && f->in_ism_mode);
+}
+static value_t floppy_ctrl_attr_fifo_count(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_fifo_count : 0);
+}
+static value_t floppy_ctrl_attr_iwm_lines(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->iwm_lines : 0);
+}
+static value_t floppy_ctrl_attr_iwm_mode(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->mode : 0);
+}
+
+static const member_t floppy_controller_members[] = {
+    {.kind = M_ATTR,
+     .name = "iwm_lines",
+     .doc = "IWM state lines: CA0-CA2, LSTRB, ENABLE, SELECT, Q6, Q7 (IWM and SWIM)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_iwm_lines, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "iwm_mode",
+     .doc = "IWM mode register (IWM and SWIM)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_iwm_mode, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "in_ism_mode",
+     .doc = "SWIM: true once the 4-write entry sequence has switched the chip to ISM",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = floppy_ctrl_attr_in_ism, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "ism_mode",
+     .doc = "SWIM: ISM mode/status register",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_mode, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "ism_setup",
+     .doc = "SWIM: ISM setup register (bit 2 = GCR framing)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_setup, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "ism_error",
+     .doc = "SWIM: ISM error register (read-clears on the guest side; reading it here does not)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_error, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "ism_phase",
+     .doc = "SWIM: ISM phase register (drive control lines and their directions)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_phase, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "ism_fifo_count",
+     .doc = "SWIM: bytes currently in the 2-byte ISM FIFO",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_fifo_count, .set = NULL}},
+};
+
+const class_desc_t floppy_controller_class = {
+    .name = "floppy_controller",
+    .members = floppy_controller_members,
+    .n_members = sizeof(floppy_controller_members) / sizeof(floppy_controller_members[0]),
 };
 
 // --- Per-drive entry class -------------------------------------------------

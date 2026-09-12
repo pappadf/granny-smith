@@ -346,8 +346,25 @@ void floppy_swim_service_callback(void *source, uint64_t data) {
         // The read head delivers ONE byte per slot.  Not mfm_fill_fifo(): that
         // tops the FIFO up to capacity, so the following slot would always find
         // it full.
-        if (floppy->ism_fifo_count < ISM_FIFO_SIZE)
+        if (floppy->ism_fifo_count < ISM_FIFO_SIZE) {
             mfm_deliver_byte(floppy);
+        }
+        // The FIFO being full here IS the documented read underrun -- "the FIFO
+        // has two bytes to be read, but the processor is not reading them fast
+        // enough" (ISM ASIC spec, Error register $2) -- and the paced engine is
+        // what made that state expressible at all.  ISM_ERR_UNDERRUN is still
+        // NOT raised, and tried-and-reverted is why: the emulated CPU's
+        // poll-and-read loop routinely takes more than one 16 us slot, so the
+        // bit fires on every normal transfer and se30-format-hd, se30-mactest
+        // and iicx-mactest all stop reaching their goldens.
+        //
+        // The deeper reason it is a false positive HERE: on the chip, a full
+        // FIFO at the read head means the byte is LOST.  This engine just skips
+        // the delivery, so nothing is lost and there is nothing to report.
+        // Raising the bit would be stricter than the model's own behaviour.
+        // Making it truthful means modelling the dropped byte -- at which point
+        // reads genuinely fail, which is a fidelity step well beyond this
+        // finding.  See ISM_ERR_UNDERRUN in floppy_internal.h.
     }
 
     floppy_swim_service_arm(floppy);
