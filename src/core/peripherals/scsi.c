@@ -378,6 +378,25 @@ void phase_data_in(scsi_t *scsi, int bytes) {
     // for command phase.
 }
 
+// Arm DATA IN for a response bounded by the CDB's allocation length.  See the
+// declaration in scsi_internal.h for why zero means zero.
+int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
+    if (alloc < 0)
+        alloc = 0;
+    int len = alloc < have ? alloc : have;
+    if (len <= 0) {
+        // Nothing to transfer: no DATA IN phase at all, GOOD status.  Matches
+        // what MODE SELECT already does for a zero parameter-list length, and
+        // avoids parking the bus in DATA IN with bytes the initiator never
+        // allocated for -- every exit from DATA IN is guarded by buf.size == 0,
+        // so a phase armed with data nobody drains does not leave on its own.
+        phase_status(scsi, STATUS_GOOD);
+        return 0;
+    }
+    phase_data_in(scsi, len);
+    return len;
+}
+
 // Transition SCSI bus to data-out phase (initiator to target)
 void phase_data_out(scsi_t *scsi, int bytes) {
     assert(scsi->bus.phase == scsi_command);
@@ -805,10 +824,12 @@ static void run_cmd(scsi_t *scsi) {
         // device type, not from the backing image.  Asserting on image != NULL
         // would crash any future probe of a present-but-empty target.
 
-        // [6]: byte 4 is the "allocation length"
+        // [6]: byte 4 is the "allocation length".  Zero is a legal probe
+        // meaning "send nothing" -- ANSI X3.131-1986's INQUIRY section (Table
+        // 7-8) is explicit: "An allocation length of zero indicates that no
+        // INQUIRY data shall be transferred.  This condition shall not be
+        // considered as an error."  This used to substitute 36.
         scsi->cmd.tl = scsi->buf.data[4];
-        if (scsi->cmd.tl == 0)
-            scsi->cmd.tl = 36; // default allocation length
         scsi->cmd.lun = scsi->buf.data[1] >> 5;
 
         // EVPD: the command is asking for a VITAL PRODUCT DATA page, not
@@ -837,11 +858,10 @@ static void run_cmd(scsi_t *scsi) {
                 pg0[0] = (uint8_t)(is_disk ? 0x00u : 0x05u); // device type
                 if (!is_disk)
                     pg0[3] = 1; // CD-ROMs list only page $00
-                unsigned n0 = (unsigned)(4 + pg0[3]);
-                unsigned n = scsi->cmd.tl < n0 ? scsi->cmd.tl : n0;
-                LOG(2, "INQUIRY target=%d EVPD page $00 -> %u bytes", target, n);
-                phase_data_in(scsi, n);
-                memcpy(scsi->buf.data, pg0, n);
+                int n = scsi_data_in_alloc(scsi, 4 + pg0[3], scsi->cmd.tl);
+                LOG(2, "INQUIRY target=%d EVPD page $00 -> %d bytes", target, n);
+                if (n > 0)
+                    memcpy(scsi->buf.data, pg0, (size_t)n);
                 break;
             }
             if (page == 0xC7u && is_disk) {
@@ -876,10 +896,10 @@ static void run_cmd(scsi_t *scsi) {
                 pg[59] = 3u; // OS identifier length...
                 memcpy(&pg[60], "AIX", 3); // ...and the identifier itself
                 pg[72] = 3u; // max retry count
-                unsigned n = scsi->cmd.tl < sizeof(pg) ? scsi->cmd.tl : (unsigned)sizeof(pg);
-                LOG(2, "INQUIRY target=%d EVPD page $C7 -> %u bytes (%u MB)", target, n, cap_mb);
-                phase_data_in(scsi, n);
-                memcpy(scsi->buf.data, pg, n);
+                int n = scsi_data_in_alloc(scsi, (int)sizeof(pg), scsi->cmd.tl);
+                LOG(2, "INQUIRY target=%d EVPD page $C7 -> %d bytes (%u MB)", target, n, cap_mb);
+                if (n > 0)
+                    memcpy(scsi->buf.data, pg, (size_t)n);
                 break;
             }
             LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
@@ -895,10 +915,9 @@ static void run_cmd(scsi_t *scsi) {
         // the additional-length byte below has to agree with.  (The EVPD
         // pages above have their own lengths; this cap is the standard
         // response's only.)
-        if (scsi->cmd.tl > 36)
-            scsi->cmd.tl = 36;
-
-        phase_data_in(scsi, scsi->cmd.tl);
+        scsi->cmd.tl = scsi_data_in_alloc(scsi, 36, scsi->cmd.tl);
+        if (scsi->cmd.tl == 0)
+            break; // zero allocation: already in STATUS, nothing to fill
 
         memset(scsi->buf.data, 0, scsi->cmd.tl);
 
@@ -1060,9 +1079,10 @@ static void run_cmd(scsi_t *scsi) {
             }
             resp[0] = (uint8_t)(total - 1); // mode data length excludes itself
 
-            // Allocation length 0 is legal and means "no data" (SCSI-2 §7.5.3).
-            int n = alloc_len < total ? alloc_len : total;
-            phase_data_in(scsi, n);
+            // Allocation length 0 is legal and means "no data".  This path
+            // always had it right; it now shares the helper with everything
+            // else that carries an allocation length.
+            int n = scsi_data_in_alloc(scsi, total, alloc_len);
             if (n > 0)
                 memcpy(scsi->buf.data, resp, (size_t)n);
         }

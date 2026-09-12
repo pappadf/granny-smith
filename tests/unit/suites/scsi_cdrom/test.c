@@ -510,6 +510,113 @@ TEST(allow_on_empty_drive_is_accepted) {
     scsi_delete(scsi);
 }
 
+// ===========================================================================
+// F-10: an allocation length of zero means zero.
+// ===========================================================================
+//
+// AUTHORITY: the allocation length is a ceiling, never a request.  The CDU-541
+// manual S4.2.6 states it once for every CDB that carries one, in the section
+// describing "the common parts of the CDB": "An allocation length of zero
+// indicates that no sense data will be transferred.  This condition will not be
+// considered as an error."  ANSI X3.131-1986 says the same per command --
+// INQUIRY (Table 7-8): "An allocation length of zero indicates that no INQUIRY
+// data shall be transferred.  This condition shall not be considered as an
+// error."
+//
+// Four different behaviours used to share this subsystem: five CD-ROM handlers
+// sent the WHOLE response on zero, REQUEST SENSE substituted 18, INQUIRY
+// substituted 36, and only the HD MODE SENSE path sent nothing.
+//
+// The consequence was not a wrong byte count but a stuck bus.  A handler that
+// armed DATA IN with bytes the initiator never allocated for left the bus
+// there: every exit from DATA IN is guarded by buf.size == 0, so a phase full
+// of undrained bytes does not leave on its own.  These tests therefore assert
+// the PHASE, not just the length -- a zero-allocation command must land in
+// STATUS with no data phase at all.
+
+// Issue a 6-byte CDB with byte 4 as the allocation length; return the phase the
+// target ends up in without draining anything.
+static int phase_after_cdb6(scsi_t *scsi, const uint8_t cdb[6]) {
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    int phase = scsi_get_bus_phase(scsi);
+    scsi_external_release(scsi);
+    return phase;
+}
+
+// Same for a 10-byte CDB, whose allocation length is bytes 7-8.
+static int phase_after_cdb10(scsi_t *scsi, const uint8_t cdb[10]) {
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    int phase = scsi_get_bus_phase(scsi);
+    scsi_external_release(scsi);
+    return phase;
+}
+
+TEST(zero_allocation_length_transfers_nothing) {
+    scsi_t *scsi = attach_disc();
+
+    // opcode, then the CDB with its allocation length field zeroed.
+    const uint8_t inquiry[6] = {0x12, 0, 0, 0, 0, 0};
+    const uint8_t mode_sense[6] = {0x1A, 0, 0x3F, 0, 0, 0}; // page 0x3F = all
+    const uint8_t request_sense[6] = {0x03, 0, 0, 0, 0, 0};
+    ASSERT_EQ_INT(phase_after_cdb6(scsi, inquiry), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb6(scsi, mode_sense), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb6(scsi, request_sense), scsi_status);
+
+    // READ TOC (0x43), READ SUB-CHANNEL (0x42), READ HEADER (0x44) and the
+    // Sony READ TOC (0xC1) all carry theirs in bytes 7-8.
+    const uint8_t read_toc[10] = {0x43, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t read_subch[10] = {0x42, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t read_header[10] = {0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t read_toc_sony[10] = {0xC1, 0, 0, 0, 0, 1, 0, 0, 0, 0};
+    ASSERT_EQ_INT(phase_after_cdb10(scsi, read_toc), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb10(scsi, read_subch), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb10(scsi, read_header), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb10(scsi, read_toc_sony), scsi_status);
+    scsi_delete(scsi);
+}
+
+// The ceiling must still work in both directions: a short allocation truncates,
+// and an over-generous one gets the response's own length, not the ceiling.
+// Without this, "return 0 always" would pass the test above.
+TEST(allocation_length_is_a_ceiling_not_a_request) {
+    scsi_t *scsi = attach_disc();
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense); // drain, so INQUIRY below is the live command
+
+    // INQUIRY offering 5 bytes gets exactly 5 of the 36 available.
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t inq5[6] = {0x12, 0, 0, 0, 5, 0};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, inq5[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    int n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        n++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_EQ_INT(n, 5);
+
+    // Offering 255 gets the 36 the response actually holds, not 255.
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t inq255[6] = {0x12, 0, 0, 0, 255, 0};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, inq255[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    n = 0;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        n++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_EQ_INT(n, 36);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(read6_at_buf_limit);
@@ -525,6 +632,8 @@ int main(void) {
     RUN(allow_then_eject_succeeds);
     RUN(prevent_on_empty_drive_is_refused);
     RUN(allow_on_empty_drive_is_accepted);
+    RUN(zero_allocation_length_transfers_nothing);
+    RUN(allocation_length_is_a_ceiling_not_a_request);
     RUN(inquiry_standard_is_36_bytes);
     RUN(inquiry_evpd_unsupported_page_is_refused);
     RUN(inquiry_evpd_page_zero_lists_itself);

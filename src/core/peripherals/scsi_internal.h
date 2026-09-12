@@ -357,6 +357,33 @@ void phase_status(scsi_t *scsi, uint8_t status);
 // Transition SCSI bus to message-in phase
 void phase_message_in(scsi_t *scsi, uint8_t message);
 
+// Arm a DATA IN phase for a response of `have` bytes against the allocation
+// length `alloc` the CDB carried.  Returns the number of bytes armed; 0 means
+// the bus went straight to STATUS GOOD and there is no buffer for the caller to
+// fill.
+//
+// AUTHORITY: an allocation length is a ceiling, never a request.  ANSI
+// X3.131-1986 says so once per command -- "the target shall terminate the DATA
+// IN phase when allocation length bytes have been transferred or when all
+// available data have been transferred to the initiator, whichever is less" --
+// and the Sony CDU-541 manual S4.2.6 states it once for every CDB that carries
+// one, in the section describing "the common parts of the CDB":
+//
+//   "An allocation length of zero indicates that no sense data will be
+//    transferred.  This condition will not be considered as an error."
+//
+// So zero means zero.  It is a legal probe, not a cue to send the whole
+// response (what five CD-ROM handlers used to do) and not a cue to substitute a
+// default (INQUIRY substituted 36, REQUEST SENSE 18).  ANSI's REQUEST SENSE
+// section is the one place that names a non-zero answer for a zero allocation
+// -- "four bytes of sense data shall be transferred" -- but those four bytes
+// are the NONEXTENDED sense format (Table 7-4), which this model does not
+// implement: S7.1.2's implementors note frames it as how a target supporting
+// both formats picks between them.  Returning four bytes of our extended ($70)
+// block would be a truncated header, not that format, so zero is both the more
+// faithful answer and the one the drive we advertise documents.
+int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc);
+
 // ============================================================================
 // CD-ROM Device Functions (defined in scsi_cdrom.c, called from scsi.c)
 // ============================================================================

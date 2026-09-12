@@ -331,6 +331,39 @@ TEST(test_cdb_length_by_group_code) {
     scsi_delete(scsi);
 }
 
+// F-10: an allocation length of zero means zero, on the HD paths too.
+//
+// The HD MODE SENSE path in scsi.c always had this right and documented why;
+// INQUIRY, a few lines above it, substituted 36.  Both now share
+// scsi_data_in_alloc().  A zero-allocation command must land in STATUS with no
+// data phase at all -- arming DATA IN with bytes the initiator never allocated
+// for strands the bus, because every exit from DATA IN is guarded by
+// buf.size == 0.
+TEST(test_zero_allocation_length_transfers_nothing) {
+    scsi_t *scsi = attach_disk();
+
+    static const struct {
+        const char *what;
+        uint8_t cdb[6];
+    } cases[] = {
+        {"INQUIRY",             {0x12, 0, 0, 0, 0, 0}   },
+        {"MODE SENSE page $3F", {0x1A, 0, 0x3F, 0, 0, 0}},
+        {"MODE SENSE page $03", {0x1A, 0, 0x03, 0, 0, 0}},
+        {"REQUEST SENSE",       {0x03, 0, 0, 0, 0, 0}   },
+    };
+
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+        for (int b = 0; b < 6; b++)
+            scsi_push_data_out_byte(scsi, cases[i].cdb[b]);
+        ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+        scsi_external_status_byte(scsi);
+        scsi_external_message_byte(scsi);
+        scsi_external_release(scsi);
+    }
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(test_write_in_range_lands);
@@ -341,6 +374,7 @@ int main(void) {
     RUN(test_large_lba_does_not_wrap);
     RUN(test_read10_large_lba_does_not_wrap);
     RUN(test_cdb_length_by_group_code);
+    RUN(test_zero_allocation_length_transfers_nothing);
     unlink(g_path);
     printf("All scsi_bounds tests passed\n");
     return 0;
