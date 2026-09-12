@@ -118,24 +118,41 @@
 // Sense keys
 #define SENSE_NO_SENSE        0x00
 #define SENSE_NOT_READY       0x02
+#define SENSE_MEDIUM_ERROR    0x03
 #define SENSE_ILLEGAL_REQUEST 0x05
 #define SENSE_UNIT_ATTENTION  0x06
 #define SENSE_DATA_PROTECT    0x07
 
 // Additional sense codes (ASC)
 #define ASC_NO_ASC               0x00
+#define ASC_WRITE_FAULT          0x03
 #define ASC_INVALID_OPCODE       0x20
 #define ASC_LBA_OUT_OF_RANGE     0x21
 #define ASC_INVALID_FIELD_IN_CDB 0x24
 #define ASC_WRITE_PROTECTED      0x27
 #define ASC_NOT_READY_TO_READY   0x28
 #define ASC_MEDIUM_NOT_PRESENT   0x3A
+// The drive we advertise is a SONY CD-ROM CDU-8002 (system.c), so its sense
+// vocabulary is the CDU-541 manual's, not SCSI-2's.  That manual's NOT READY
+// (2h) table has no 0x3A at all -- an empty bay is vendor code 0xB0, "Caddy not
+// inserted in drive" (CDU-541 SCSI manual, sense code tables).  Apple's CD-ROM
+// driver was written against these drives, so 0xB0 is what it expects to see.
+#define ASC_SONY_CADDY_NOT_INSERTED 0xB0
+// Refusing an eject because PREVENT MEDIUM REMOVAL is latched.  CDU-541 manual
+// S5.2.33: "the sense key will be set to ILLEGAL REQUEST, and the additional
+// sense code set to PREVENT BIT SET", which its ILLEGAL REQUEST (5h) table
+// numbers 0x80.  SCSI-2's 0x53/0x02 MEDIUM REMOVAL PREVENTED is a different
+// vocabulary and does not appear anywhere in this drive's tables.
+#define ASC_SONY_PREVENT_BIT_SET 0x80
 #define ASC_INCOMPATIBLE_MEDIUM  0x30
 
 // Block size and buffer limits
-#define BLOCK_SIZE   512
-#define BUF_LIMIT    (BLOCK_SIZE * 256)
-#define MAX_CMD_SIZE 10
+#define BLOCK_SIZE 512
+#define BUF_LIMIT  (BLOCK_SIZE * 256)
+// Largest CDB cmd_size() can ask for: a group 5 (twelve-byte) command.  This
+// only sizes the expected-byte count for the COMMAND phase; buf.data itself is
+// a BUF_LIMIT allocation, so the slot costs nothing.
+#define MAX_CMD_SIZE 12
 
 // ============================================================================
 // Type Definitions
@@ -339,6 +356,33 @@ void phase_status(scsi_t *scsi, uint8_t status);
 
 // Transition SCSI bus to message-in phase
 void phase_message_in(scsi_t *scsi, uint8_t message);
+
+// Arm a DATA IN phase for a response of `have` bytes against the allocation
+// length `alloc` the CDB carried.  Returns the number of bytes armed; 0 means
+// the bus went straight to STATUS GOOD and there is no buffer for the caller to
+// fill.
+//
+// AUTHORITY: an allocation length is a ceiling, never a request.  ANSI
+// X3.131-1986 says so once per command -- "the target shall terminate the DATA
+// IN phase when allocation length bytes have been transferred or when all
+// available data have been transferred to the initiator, whichever is less" --
+// and the Sony CDU-541 manual S4.2.6 states it once for every CDB that carries
+// one, in the section describing "the common parts of the CDB":
+//
+//   "An allocation length of zero indicates that no sense data will be
+//    transferred.  This condition will not be considered as an error."
+//
+// So zero means zero.  It is a legal probe, not a cue to send the whole
+// response (what five CD-ROM handlers used to do) and not a cue to substitute a
+// default (INQUIRY substituted 36, REQUEST SENSE 18).  ANSI's REQUEST SENSE
+// section is the one place that names a non-zero answer for a zero allocation
+// -- "four bytes of sense data shall be transferred" -- but those four bytes
+// are the NONEXTENDED sense format (Table 7-4), which this model does not
+// implement: S7.1.2's implementors note frames it as how a target supporting
+// both formats picks between them.  Returning four bytes of our extended ($70)
+// block would be a truncated header, not that format, so zero is both the more
+// faithful answer and the one the drive we advertise documents.
+int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc);
 
 // ============================================================================
 // CD-ROM Device Functions (defined in scsi_cdrom.c, called from scsi.c)

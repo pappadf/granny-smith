@@ -269,12 +269,371 @@ TEST(read6_past_end_still_refused) {
     scsi_delete(scsi);
 }
 
+// ===========================================================================
+// F-08: UNIT ATTENTION must report the cause that was staged, and removal is
+// not one of the causes at all.
+// ===========================================================================
+//
+// AUTHORITY: Sony CDU-541 SCSI manual S4.1.3 -- the drive we advertise is a
+// SONY CD-ROM CDU-8002 (system.c), so its sense vocabulary is the one that
+// applies, not SCSI-2's.  The unit attention condition arises on power-on, a
+// reset, "the insertion of a caddy with the successful recovery of the table
+// of contents", or MODE SELECT from another initiator.  Its UNIT ATTENTION
+// (6h) table holds exactly three codes: 0x28 caddy inserted, 0x29 power-on or
+// reset, 0x2A mode parameters changed.  Removal appears in neither list, and
+// 0x3A does not appear anywhere in this drive's sense tables -- an empty bay
+// is NOT READY (2h) with vendor code 0xB0, "Caddy not inserted in drive".
+
+// Read one sense block with REQUEST SENSE.  Exempt from the UNIT ATTENTION
+// gate, so it reports without being swallowed.
+static void request_sense(scsi_t *scsi, uint8_t out[18]) {
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t cdb[6] = {0x03, 0, 0, 0, 18, 0};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    size_t n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        if (n < 18)
+            out[n++] = b;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+}
+
+// Issue START/STOP UNIT.  flags bit 0 = Start, bit 1 = LoEj, so 0x02 is
+// "stop and eject" (CDU-541 manual S5.2.33).
+static int start_stop(scsi_t *scsi, uint8_t flags) {
+    const uint8_t cdb[6] = {0x1B, 0, 0, 0, flags, 0};
+    return issue_cdb6(scsi, cdb);
+}
+
+// A freshly inserted disc reports 0x28 "caddy inserted" -- not a hardcoded
+// constant, but the cause staged at the point of insertion.
+TEST(unit_attention_on_insert_reports_caddy_inserted) {
+    scsi_t *scsi = scsi_init(NULL, NULL);
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_open_readonly(g_path);
+    ASSERT_TRUE(img != NULL);
+    scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, CD_BLOCK, true);
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_UNIT_ATTENTION);
+    ASSERT_EQ_INT(sense[12], 0x28); // not ready to ready transition
+    ASSERT_EQ_INT(sense[13], 0x00);
+    scsi_delete(scsi);
+}
+
+// The bug: eject staged UNIT ATTENTION / 0x3A, and the gate then overwrote it
+// with 0x28 -- telling a guest that had just ejected a disc that one had
+// arrived.  Removal now raises no unit attention at all, and the empty bay is
+// reported as the persistent NOT READY condition the drive actually uses.
+TEST(eject_reports_not_ready_not_media_arrived) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status); // stop + LoEj = eject
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    issue_cdb6(scsi, tur);
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    ASSERT_EQ_INT(sense[12], ASC_SONY_CADDY_NOT_INSERTED); // 0xB0, not 0x3A
+    scsi_delete(scsi);
+}
+
+// UNIT ATTENTION is a one-shot cleared by the first CHECK CONDITION; NOT READY
+// is a state.  Modelling an empty bay as the former meant the second command
+// after an eject succeeded against a drive with no disc in it.  Every command
+// that needs the medium must keep failing for as long as the bay is empty.
+TEST(empty_bay_keeps_failing_not_just_once) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        issue_cdb6(scsi, tur);
+        uint8_t sense[18] = {0};
+        request_sense(scsi, sense);
+        ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    }
+    scsi_delete(scsi);
+}
+
+// CDU-541 S4.1.3: "If an STOP UNIT command (with LoEj set) is received from an
+// initiator with a pending unit attention condition the controller will
+// perform the command and will not clear the unit attention condition."  A
+// Sony extension -- ANSI X3.131-1986 S6.1.3 has no such carve-out.  Without it,
+// ejecting a disc that was only just inserted fails, swallowed by the insert's
+// own still-pending attention.
+TEST(eject_is_exempt_from_pending_unit_attention) {
+    scsi_t *scsi = scsi_init(NULL, NULL);
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_open_readonly(g_path);
+    ASSERT_TRUE(img != NULL);
+    scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, CD_BLOCK, true);
+    // UNIT ATTENTION deliberately left pending -- no command burns it first.
+
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+
+    // The eject must have actually happened, not been swallowed by the gate.
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+
+    // ...and it must NOT have cleared the attention: S4.1.3 says the controller
+    // "will perform the command and will not clear the unit attention
+    // condition".  So the insert's 0x28 is still owed to the next command.
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    issue_cdb6(scsi, tur);
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_UNIT_ATTENTION);
+    ASSERT_EQ_INT(sense[12], 0x28);
+
+    // Only once that is burned does the empty bay show through.
+    issue_cdb6(scsi, tur);
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    ASSERT_EQ_INT(sense[12], ASC_SONY_CADDY_NOT_INSERTED);
+    scsi_delete(scsi);
+}
+
+// INQUIRY is exempt in both the ANSI text and Sony's, and must NOT clear the
+// condition -- the attention still has to be reported to the next real command.
+TEST(inquiry_does_not_clear_unit_attention) {
+    scsi_t *scsi = scsi_init(NULL, NULL);
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_open_readonly(g_path);
+    ASSERT_TRUE(img != NULL);
+    scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, CD_BLOCK, true);
+
+    const uint8_t inq[6] = {0x12, 0, 0, 0, 36, 0};
+    ASSERT_EQ_INT(issue_cdb6(scsi, inq), scsi_data_in); // executes normally
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_UNIT_ATTENTION); // still pending
+    ASSERT_EQ_INT(sense[12], 0x28);
+    scsi_delete(scsi);
+}
+
+// ===========================================================================
+// F-09: a refused eject must say the prevent bit is set, not that the drive is
+// empty.
+// ===========================================================================
+//
+// AUTHORITY: CDU-541 SCSI manual S5.2.33 -- "If a PREVENT MEDIUM REMOVAL
+// command has been issued, a request to eject the disc will be terminated with
+// a CHECK CONDITION status.  The sense key will be set to ILLEGAL REQUEST, and
+// the additional sense code set to PREVENT BIT SET", which its ILLEGAL REQUEST
+// (5h) table numbers 0x80.  The old code reported 0x3A MEDIUM NOT PRESENT --
+// "the drive is empty" -- which is the opposite of the truth and a reason for a
+// driver to stop retrying.  SCSI-2's 0x53/0x02 is a different vocabulary and
+// appears nowhere in this drive's tables.
+
+// PREVENT/ALLOW MEDIUM REMOVAL: CDB byte 4 bit 0 is the prevent bit.
+static int prevent_allow(scsi_t *scsi, bool prevent) {
+    const uint8_t cdb[6] = {0x1E, 0, 0, 0, (uint8_t)(prevent ? 1 : 0), 0};
+    return issue_cdb6(scsi, cdb);
+}
+
+TEST(eject_while_prevented_reports_prevent_bit_set) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status); // eject: must be refused
+
+    // The disc is still in the drive.
+    ASSERT_TRUE(scsi_device_medium_present(scsi, TARGET));
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_ILLEGAL_REQUEST);
+    ASSERT_EQ_INT(sense[12], ASC_SONY_PREVENT_BIT_SET); // 0x80, not 0x3A or 0x53
+    ASSERT_EQ_INT(sense[13], 0x00);
+    scsi_delete(scsi);
+}
+
+// ALLOW must lift the lock, so the same eject then succeeds.  Without this the
+// test above would pass against a drive that simply never ejects.
+TEST(allow_then_eject_succeeds) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+    ASSERT_TRUE(scsi_device_medium_present(scsi, TARGET));
+
+    ASSERT_EQ_INT(prevent_allow(scsi, false), scsi_status);
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+    scsi_delete(scsi);
+}
+
+// CDU-541 S5.2.14: "If a PREVENT MEDIUM REMOVAL command is issued without the
+// drive being in the ready condition [the] command will be terminated with a
+// CHECK CONDITION status.  The sense key will be set to NOT READY."  The ready
+// condition is a caddy inserted with its TOC recovered (S4.1.4).  Locking an
+// empty drive used to be accepted, which then made the next inserted disc
+// unejectable for no reason the guest could see.
+TEST(prevent_on_empty_drive_is_refused) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status); // eject first
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    ASSERT_EQ_INT(sense[12], ASC_SONY_CADDY_NOT_INSERTED);
+    scsi_delete(scsi);
+}
+
+// ALLOW is deliberately NOT refused on an empty drive: S5.2.14's sentence names
+// PREVENT only, and a driver tidying up after an eject has every reason to send
+// it.
+TEST(allow_on_empty_drive_is_accepted) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+
+    // Drain first.  Sense data persists until REQUEST SENSE reads it, so
+    // without this the assertion below would be reading whatever the last
+    // CHECK CONDITION left behind rather than this command's outcome.
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+
+    ASSERT_EQ_INT(prevent_allow(scsi, false), scsi_status);
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, 0x00); // NO SENSE: nothing was raised
+    scsi_delete(scsi);
+}
+
+// ===========================================================================
+// F-10: an allocation length of zero means zero.
+// ===========================================================================
+//
+// AUTHORITY: the allocation length is a ceiling, never a request.  The CDU-541
+// manual S4.2.6 states it once for every CDB that carries one, in the section
+// describing "the common parts of the CDB": "An allocation length of zero
+// indicates that no sense data will be transferred.  This condition will not be
+// considered as an error."  ANSI X3.131-1986 says the same per command --
+// INQUIRY (Table 7-8): "An allocation length of zero indicates that no INQUIRY
+// data shall be transferred.  This condition shall not be considered as an
+// error."
+//
+// Four different behaviours used to share this subsystem: five CD-ROM handlers
+// sent the WHOLE response on zero, REQUEST SENSE substituted 18, INQUIRY
+// substituted 36, and only the HD MODE SENSE path sent nothing.
+//
+// The consequence was not a wrong byte count but a stuck bus.  A handler that
+// armed DATA IN with bytes the initiator never allocated for left the bus
+// there: every exit from DATA IN is guarded by buf.size == 0, so a phase full
+// of undrained bytes does not leave on its own.  These tests therefore assert
+// the PHASE, not just the length -- a zero-allocation command must land in
+// STATUS with no data phase at all.
+
+// Issue a 6-byte CDB with byte 4 as the allocation length; return the phase the
+// target ends up in without draining anything.
+static int phase_after_cdb6(scsi_t *scsi, const uint8_t cdb[6]) {
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    int phase = scsi_get_bus_phase(scsi);
+    scsi_external_release(scsi);
+    return phase;
+}
+
+// Same for a 10-byte CDB, whose allocation length is bytes 7-8.
+static int phase_after_cdb10(scsi_t *scsi, const uint8_t cdb[10]) {
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    int phase = scsi_get_bus_phase(scsi);
+    scsi_external_release(scsi);
+    return phase;
+}
+
+TEST(zero_allocation_length_transfers_nothing) {
+    scsi_t *scsi = attach_disc();
+
+    // opcode, then the CDB with its allocation length field zeroed.
+    const uint8_t inquiry[6] = {0x12, 0, 0, 0, 0, 0};
+    const uint8_t mode_sense[6] = {0x1A, 0, 0x3F, 0, 0, 0}; // page 0x3F = all
+    const uint8_t request_sense[6] = {0x03, 0, 0, 0, 0, 0};
+    ASSERT_EQ_INT(phase_after_cdb6(scsi, inquiry), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb6(scsi, mode_sense), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb6(scsi, request_sense), scsi_status);
+
+    // READ TOC (0x43), READ SUB-CHANNEL (0x42), READ HEADER (0x44) and the
+    // Sony READ TOC (0xC1) all carry theirs in bytes 7-8.
+    const uint8_t read_toc[10] = {0x43, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t read_subch[10] = {0x42, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t read_header[10] = {0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    const uint8_t read_toc_sony[10] = {0xC1, 0, 0, 0, 0, 1, 0, 0, 0, 0};
+    ASSERT_EQ_INT(phase_after_cdb10(scsi, read_toc), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb10(scsi, read_subch), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb10(scsi, read_header), scsi_status);
+    ASSERT_EQ_INT(phase_after_cdb10(scsi, read_toc_sony), scsi_status);
+    scsi_delete(scsi);
+}
+
+// The ceiling must still work in both directions: a short allocation truncates,
+// and an over-generous one gets the response's own length, not the ceiling.
+// Without this, "return 0 always" would pass the test above.
+TEST(allocation_length_is_a_ceiling_not_a_request) {
+    scsi_t *scsi = attach_disc();
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense); // drain, so INQUIRY below is the live command
+
+    // INQUIRY offering 5 bytes gets exactly 5 of the 36 available.
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t inq5[6] = {0x12, 0, 0, 0, 5, 0};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, inq5[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    int n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        n++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_EQ_INT(n, 5);
+
+    // Offering 255 gets the 36 the response actually holds, not 255.
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t inq255[6] = {0x12, 0, 0, 0, 255, 0};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, inq255[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    n = 0;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        n++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_EQ_INT(n, 36);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(read6_at_buf_limit);
     RUN(read6_over_buf_limit_cdrom);
     RUN(read6_max_blocks_cdrom);
     RUN(read6_past_end_still_refused);
+    RUN(unit_attention_on_insert_reports_caddy_inserted);
+    RUN(eject_reports_not_ready_not_media_arrived);
+    RUN(empty_bay_keeps_failing_not_just_once);
+    RUN(eject_is_exempt_from_pending_unit_attention);
+    RUN(inquiry_does_not_clear_unit_attention);
+    RUN(eject_while_prevented_reports_prevent_bit_set);
+    RUN(allow_then_eject_succeeds);
+    RUN(prevent_on_empty_drive_is_refused);
+    RUN(allow_on_empty_drive_is_accepted);
+    RUN(zero_allocation_length_transfers_nothing);
+    RUN(allocation_length_is_a_ceiling_not_a_request);
     RUN(inquiry_standard_is_36_bytes);
     RUN(inquiry_evpd_unsupported_page_is_refused);
     RUN(inquiry_evpd_page_zero_lists_itself);

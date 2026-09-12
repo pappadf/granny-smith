@@ -155,12 +155,10 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
         data_len = 255;
     buf[0] = (uint8_t)data_len;
 
-    // Clamp to allocation length
-    int len = pos;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
+    // Bound by the allocation length.  Zero means zero -- CDU-541 manual
+    // S4.2.6 -- where this used to read `alloc_len > 0 &&`, i.e. send the whole
+    // response to a probe that allocated nothing for it.
+    scsi_data_in_alloc(scsi, pos, alloc_len);
 }
 
 // ============================================================================
@@ -204,11 +202,19 @@ void scsi_cdrom_mode_select(scsi_t *scsi) {
 void scsi_cdrom_request_sense(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
     int alloc_len = scsi->buf.data[4];
-    if (alloc_len == 0)
-        alloc_len = 18; // default sense data length
 
-    int len = alloc_len < 18 ? alloc_len : 18;
-    phase_data_in(scsi, len);
+    // Zero means zero here too.  ANSI X3.131-1986's REQUEST SENSE section is
+    // the one place a zero allocation names a non-zero answer -- "four bytes of
+    // sense data shall be transferred" -- but those four bytes are the
+    // NONEXTENDED sense format (Table 7-4), which this model does not
+    // implement: S7.1.2's implementors note frames the rule as how a target
+    // supporting BOTH formats selects between them.  Four bytes of our extended
+    // ($70) block would be a truncated header, not that format.  The CDU-541
+    // manual S4.2.6, which governs the drive we advertise, has no exception at
+    // all.  This used to substitute 18.
+    int len = scsi_data_in_alloc(scsi, 18, alloc_len);
+    if (len == 0)
+        return;
 
     memset(scsi->buf.data, 0, len);
 
@@ -270,12 +276,9 @@ void scsi_cdrom_read_toc(scsi_t *scsi) {
     toc[18] = (total >> 8) & 0xFF;
     toc[19] = total & 0xFF;
 
-    int len = 20;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
-    memcpy(scsi->buf.data, toc, len);
+    int len = scsi_data_in_alloc(scsi, 20, alloc_len);
+    if (len > 0)
+        memcpy(scsi->buf.data, toc, (size_t)len);
 }
 
 // Handle the Sony vendor READ TOC (C1h) — returns the CDU-541 "TOC Data Format"
@@ -337,12 +340,9 @@ void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
     toc[2] = 0x01; // first track number
     toc[3] = 0x01; // last track number
 
-    int len = pos;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
-    memcpy(scsi->buf.data, toc, len);
+    int len = scsi_data_in_alloc(scsi, pos, alloc_len);
+    if (len > 0)
+        memcpy(scsi->buf.data, toc, (size_t)len);
 }
 
 // ============================================================================
@@ -358,12 +358,9 @@ void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
     memset(resp, 0, sizeof(resp));
     resp[1] = 0x15; // audio status: no current audio status info
 
-    int len = 4;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
-    memcpy(scsi->buf.data, resp, len);
+    int len = scsi_data_in_alloc(scsi, 4, alloc_len);
+    if (len > 0)
+        memcpy(scsi->buf.data, resp, (size_t)len);
 }
 
 // ============================================================================
@@ -387,12 +384,9 @@ void scsi_cdrom_read_header(scsi_t *scsi) {
     resp[6] = (lba >> 8) & 0xFF;
     resp[7] = lba & 0xFF;
 
-    int len = 8;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
-    memcpy(scsi->buf.data, resp, len);
+    int len = scsi_data_in_alloc(scsi, 8, alloc_len);
+    if (len > 0)
+        memcpy(scsi->buf.data, resp, (size_t)len);
 }
 
 // ============================================================================
@@ -407,16 +401,23 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
     bool loej = (flags & 0x02) != 0;
 
     if (!start && loej) {
-        // Eject: check if removal is prevented
+        // Eject: check if removal is prevented.  CDU-541 manual S5.2.33 -- "a
+        // request to eject the disc will be terminated with a CHECK CONDITION
+        // status.  The sense key will be set to ILLEGAL REQUEST, and the
+        // additional sense code set to PREVENT BIT SET".  This used to report
+        // 0x3A MEDIUM NOT PRESENT, which tells the driver the drive is empty --
+        // the opposite of the truth, and a reason to stop retrying.
         if (scsi->devices[target].prevent_removal) {
-            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_MEDIUM_NOT_PRESENT, 0x00);
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_SONY_PREVENT_BIT_SET, 0x00);
             return;
         }
-        // Mark medium as not present (eject)
+        // Mark medium as not present (eject).  No unit attention: removal is
+        // not one of the four causes the CDU-541 manual 4.1.3 lists, and its
+        // UNIT ATTENTION table has no code for it.  The empty bay is a
+        // persistent NOT READY condition instead -- see the eject path in
+        // scsi.c for why the lifetime matters, not just the code.
         scsi->devices[target].medium_present = false;
         scsi->devices[target].image = NULL;
-        scsi->devices[target].unit_attention = true;
-        scsi_set_sense(scsi, target, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
     }
     // Start=1 (spin up) or Start=0,LoEj=0 (spin down): no-op
     phase_status(scsi, STATUS_GOOD);
@@ -429,6 +430,23 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
 // Handle PREVENT/ALLOW MEDIUM REMOVAL command for CD-ROM
 void scsi_cdrom_prevent_allow(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
-    scsi->devices[target].prevent_removal = (scsi->buf.data[4] & 0x01) != 0;
+    bool prevent = (scsi->buf.data[4] & 0x01) != 0;
+
+    // CDU-541 manual S5.2.14: "If a PREVENT MEDIUM REMOVAL command is issued
+    // without the drive being in the ready condition [the] command will be
+    // terminated with a CHECK CONDITION status.  The sense key will be set to
+    // NOT READY and the appropriate additional sense code will be set."  The
+    // ready condition is a caddy inserted with its TOC recovered (S4.1.4), so
+    // the appropriate code for an empty bay is 0xB0.
+    //
+    // ALLOW is not covered by that sentence and is not refused: unlocking a
+    // drive that has nothing in it is harmless, and a driver tidying up after
+    // an eject has every reason to send it.
+    if (prevent && !scsi->devices[target].medium_present) {
+        scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
+        return;
+    }
+
+    scsi->devices[target].prevent_removal = prevent;
     phase_status(scsi, STATUS_GOOD);
 }

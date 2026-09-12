@@ -289,6 +289,20 @@ def row_q900_75_hd() {
     machine.rtc.time = 3000000000
     machine.boot model="q900" ram=16384 rom="${$quadra_rom}"
     machine.scsi.attach_hd "${$hd_75}" 0
+    # The Q900 is the only 68k machine with two SCSI buses, and both used to
+    # mount as `machine.scsi`.  object_attach head-pushes and the lookup takes
+    # the first match, so `machine.scsi` silently addressed the *external*
+    # chain: the disk this row just attached went on the empty bus, while a
+    # `hd=` disk went on the internal one and was unreachable from the object
+    # tree entirely.  Both boot -- the ROM probes both 53C96s -- which is
+    # exactly why nothing caught it.  Pin the two buses as distinct and
+    # correctly addressed.
+    assert machine.scsi.device[0].id == 0 "q900-75-hd: boot disk not on machine.scsi"
+    # `machine.scsi2` must resolve as its own node -- that it is reachable at
+    # all is the proof the second bus no longer shares the first one's name.
+    # (Its device slots are deliberately not asserted: the external chain is
+    # empty, and an empty slot does not resolve.)
+    machine.scsi2
     scheduler.run 600000000
     wait_stable(1500000000)
     assert machine.id == "q900" "q900-75-hd: machine.id != q900"

@@ -55,9 +55,58 @@ LOG_USE_CATEGORY_NAME("scsi");
 // Static Helpers
 // ============================================================================
 
-// Determine the length of a SCSI command based on its opcode
+// Determine the length of a SCSI command from its group code -- the top three
+// bits of the opcode.
+//
+// ANSI X3.131-1986 (SCSI-1) section 6.2.1 defines groups 0, 1 and 5 as six-,
+// ten- and twelve-byte commands and leaves groups 2, 3 and 4 reserved.  The
+// Am53C94 datasheet (STATREG bit 3, "Group Code Valid") documents how a real
+// target of this era sizes the groups the standard left open, and that is what
+// we follow:
+//
+//   group 0  $00-$1F   6   SCSI-1.
+//   group 1  $20-$3F  10   SCSI-1.
+//   group 2  $40-$5F  10   SCSI-2.  The 53C94 does this only with its S2FE bit
+//                              set, but the CD-ROM audio commands we implement
+//                              ($42 READ SUB-CHANNEL through $4B PAUSE/RESUME)
+//                              live here, so for us it is unconditional.
+//   group 3  $60-$7F   6   Reserved; the chip treats reserved groups as
+//                              six-byte commands.
+//   group 4  $80-$9F   6   Reserved, likewise.  Sixteen-byte group 4 commands
+//                              are a SCSI-3 invention, later than any machine
+//                              or drive we model.
+//   group 5  $A0-$BF  12   SCSI-1.
+//   group 6  $C0-$DF  10   Vendor unique.  The chip guesses six, but the device
+//                              defines the true length and ours is a Sony
+//                              CDU-541, whose vendor commands are ten-byte CDBs
+//                              (CDU-541 SCSI manual section 5.2.23: READ TOC
+//                              $C1 runs byte 0 through byte 9).
+//   group 7  $E0-$FF  10   Vendor unique; "always treated as ten byte".
+//
+// This is not a cosmetic table.  run_cmd() fires the instant the accumulated
+// byte count matches, so an undersized answer dispatches the command early and
+// spills the tail of the CDB into whichever phase follows.  An opcode we do not
+// implement still has to be *counted* correctly, so that run_cmd can decline it
+// with ILLEGAL REQUEST / INVALID OPCODE instead of corrupting the next phase.
 static int cmd_size(uint8_t opcode) {
-    return opcode < 0x20 ? 6 : 10;
+    switch (opcode >> 5) {
+    case 0:
+        return 6;
+    case 1:
+        return 10;
+    case 2:
+        return 10;
+    case 3:
+        return 6;
+    case 4:
+        return 6;
+    case 5:
+        return 12;
+    case 6:
+        return 10;
+    default:
+        return 10; // group 7
+    }
 }
 
 // Compute the CDR value from the current loopback state.
@@ -257,23 +306,52 @@ static void phase_free(scsi_t *scsi) {
     scsi_update_irq(scsi);
 }
 
+static const char *const SCSI_PHASE_NAMES[] = {
+    "bus_free", "arbitration", "selection", "reselection", "command",
+    "data_in",  "data_out",    "status",    "message_in",  "message_out",
+};
+
+static const char *phase_name(int p) {
+    return (p >= 0 && p < (int)(sizeof(SCSI_PHASE_NAMES) / sizeof(SCSI_PHASE_NAMES[0]))) ? SCSI_PHASE_NAMES[p] : "?";
+}
+
+// A guest drives every one of these transitions through the 5380 register
+// file, so "the bus is in the phase this transition starts from" is not an
+// invariant the model can assume -- it is a request that may be malformed.
+// Declining is what the rest of the file already does (see the CHECK CONDITION
+// comment on the INQUIRY path: "the guest may legitimately try").
+//
+// These used to be assert()s.  That was wrong in both directions: the default
+// headless build keeps assertions live (Makefile.headless: "No -DNDEBUG"), so
+// a guest could abort CI with five byte-writes to one register, while the
+// GS_FAST/NDEBUG builds compiled the check out and walked on regardless.  A
+// logged early return is the same behaviour in every build mode.
+#define PHASE_REQUIRE(scsi, cond)                                                                                      \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            LOG(1, "scsi: %s declined from phase %s (guest drove an out-of-order transition)", __func__,               \
+                phase_name((scsi)->bus.phase));                                                                        \
+            return;                                                                                                    \
+        }                                                                                                              \
+    } while (0)
+
 // Transition SCSI bus to arbitration phase
 static void phase_arbitration(scsi_t *scsi) {
-    assert(scsi->bus.phase == scsi_bus_free);
+    PHASE_REQUIRE(scsi, scsi->bus.phase == scsi_bus_free);
 
     scsi->bus.phase = scsi_arbitration;
 }
 
 // Transition SCSI bus to selection phase (from arbitration or bus-free for non-arbitrated selection)
 static void phase_selection(scsi_t *scsi) {
-    assert(scsi->bus.phase == scsi_arbitration || scsi->bus.phase == scsi_bus_free);
+    PHASE_REQUIRE(scsi, scsi->bus.phase == scsi_arbitration || scsi->bus.phase == scsi_bus_free);
 
     scsi->bus.phase = scsi_selection;
 }
 
 // Transition SCSI bus to command phase
 static void phase_command(scsi_t *scsi) {
-    assert(scsi->bus.phase == scsi_selection);
+    PHASE_REQUIRE(scsi, scsi->bus.phase == scsi_selection);
 
     // by not asserting MSG, we indicate that we don't support any messages (other than command complete)
     // i.e. go directly to the command phase
@@ -298,6 +376,25 @@ void phase_data_in(scsi_t *scsi, int bytes) {
     // Skip scsi_update_irq: prevents spurious phase-mismatch IRQ when
     // run_cmd fires during pseudo-DMA ODR write with MR_DMA still set
     // for command phase.
+}
+
+// Arm DATA IN for a response bounded by the CDB's allocation length.  See the
+// declaration in scsi_internal.h for why zero means zero.
+int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
+    if (alloc < 0)
+        alloc = 0;
+    int len = alloc < have ? alloc : have;
+    if (len <= 0) {
+        // Nothing to transfer: no DATA IN phase at all, GOOD status.  Matches
+        // what MODE SELECT already does for a zero parameter-list length, and
+        // avoids parking the bus in DATA IN with bytes the initiator never
+        // allocated for -- every exit from DATA IN is guarded by buf.size == 0,
+        // so a phase armed with data nobody drains does not leave on its own.
+        phase_status(scsi, STATUS_GOOD);
+        return 0;
+    }
+    phase_data_in(scsi, len);
+    return len;
 }
 
 // Transition SCSI bus to data-out phase (initiator to target)
@@ -419,6 +516,42 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
     phase_status(scsi, STATUS_CHECK_CONDITION);
 }
 
+// Does the command's [lba, lba + tl) block range fit inside the medium?
+//
+// One answer for READ and WRITE on both CDB lengths.  WRITE had none at all:
+// its only guards were two assert()s in command_complete, and assert is
+// compiled out by -DNDEBUG in the release wasm profile (Makefile:131), so an
+// out-of-range WRITE reached disk_write_data, which drops the unbacked tail --
+// and the SCSI layer then reported STATUS GOOD.  Silent data loss reported as
+// success (03-scsi F-02).
+//
+// Everything is computed in uint64_t because size_t is 32 bits on wasm32,
+// where `(size_t)lba * blk_sz` wraps: a READ(10) at lba 0x00400000 with
+// 2048-byte blocks gives 0x800000000, which truncates to 0, so the old check
+// passed and the wrong blocks were served as valid data (03-scsi F-04).
+static bool scsi_lba_range_ok(const scsi_t *scsi, int target, size_t *off_out, size_t *cnt_out) {
+    const image_t *img = scsi->devices[target].image;
+    if (!img)
+        return false;
+    // Through uint32_t first: cmd.lba and cmd.tl are `int`, and the 10-byte
+    // decode builds them with `data[2] << 24`, which overflows a signed int for
+    // any byte >= 0x80.  A CDB of FF FF FF FF lands as -1, and casting that
+    // straight to uint64_t sign-extends to 0xFFFF...FFFF, whose product with
+    // the block size wraps and passes any bound.  (Found by the scsi_bounds
+    // unit test, against the first version of THIS function.)
+    uint64_t blk = scsi->devices[target].block_size;
+    uint64_t off = (uint64_t)(uint32_t)scsi->cmd.lba * blk;
+    uint64_t cnt = (uint64_t)(uint32_t)scsi->cmd.tl * blk;
+    if (off + cnt > (uint64_t)img->raw_size)
+        return false;
+    // Both are bounded by raw_size above, so narrowing is safe.
+    if (off_out)
+        *off_out = (size_t)off;
+    if (cnt_out)
+        *cnt_out = (size_t)cnt;
+    return true;
+}
+
 // Execute a SCSI command after receiving it from the initiator
 static void run_cmd(scsi_t *scsi) {
     scsi->cmd.opcode = scsi->buf.data[0];
@@ -439,12 +572,31 @@ static void run_cmd(scsi_t *scsi) {
         scsi->buf.data[1], scsi->buf.data[2], scsi->buf.data[3], scsi->buf.data[4], scsi->buf.data[5],
         scsi->buf.data[6], scsi->buf.data[7], scsi->buf.data[8], scsi->buf.data[9]);
 
-    // Check for pending UNIT ATTENTION on first non-exempt command
-    // INQUIRY and REQUEST SENSE are exempt per SCSI spec
+    // Pending UNIT ATTENTION, reported on the first command that is not exempt.
+    //
+    // Three commands are exempt, per the CDU-541 manual 4.1.3: INQUIRY and
+    // REQUEST SENSE (also ANSI X3.131-1986 6.1.3), plus STOP UNIT with LoEj
+    // set -- "the controller will perform the command and will not clear the
+    // unit attention condition".  That third one is a Sony extension; the ANSI
+    // text has no such carve-out.  Without it, ejecting a disc that was only
+    // just inserted fails, because the insert's own UNIT ATTENTION is still
+    // pending and swallows the eject.
+    bool stop_unit_eject = scsi->cmd.opcode == CMD_START_STOP_UNIT && (scsi->buf.data[4] & 0x03) == 0x02;
     if (scsi->devices[target].unit_attention && scsi->cmd.opcode != CMD_INQUIRY &&
-        scsi->cmd.opcode != CMD_REQUEST_SENSE) {
+        scsi->cmd.opcode != CMD_REQUEST_SENSE && !stop_unit_eject) {
         scsi->devices[target].unit_attention = false;
-        scsi_check_condition(scsi, SENSE_UNIT_ATTENTION, ASC_NOT_READY_TO_READY, 0x00);
+        // Report the condition that was staged when the attention was raised,
+        // rather than inventing one here.  The CDU-541 recognises exactly three
+        // UNIT ATTENTION codes -- 0x28 caddy inserted, 0x29 power-on/reset,
+        // 0x2A mode parameters changed -- and which one applies is known only
+        // at the point the condition arises.  Hardcoding 0x28 told a guest that
+        // had just ejected a disc that a disc had arrived.
+        uint8_t asc = ASC_NOT_READY_TO_READY, ascq = 0x00;
+        if (scsi->devices[target].sense.key == SENSE_UNIT_ATTENTION) {
+            asc = scsi->devices[target].sense.asc;
+            ascq = scsi->devices[target].sense.ascq;
+        }
+        scsi_check_condition(scsi, SENSE_UNIT_ATTENTION, asc, ascq);
         return;
     }
 
@@ -467,7 +619,7 @@ static void run_cmd(scsi_t *scsi) {
     if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
         bool start_unit = scsi->cmd.opcode == CMD_START_STOP_UNIT && (scsi->buf.data[4] & 0x01) != 0;
         if (start_unit || scsi_cmd_needs_medium(scsi->cmd.opcode)) {
-            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
+            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
             return;
         }
     }
@@ -478,7 +630,7 @@ static void run_cmd(scsi_t *scsi) {
         LOG(1, "command: TEST UNIT READY");
         // Check if medium is present for CD-ROM
         if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
-            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_MEDIUM_NOT_PRESENT, 0x00);
+            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
         } else {
             phase_status(scsi, STATUS_GOOD);
         }
@@ -561,15 +713,24 @@ static void run_cmd(scsi_t *scsi) {
                 scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, (size_t)scsi->cmd.tl * blk_sz);
 
         if (scsi->cmd.opcode == CMD_WRITE) {
+            // Reject here, at CDB decode, not at command_complete: refusing
+            // after the initiator has already pushed a whole data-out phase is
+            // a late phase change some initiators do not recover from (the
+            // Network Server's SCRIPTS program is one -- see the empty-CD-bay
+            // note above).
+            if (!scsi_lba_range_ok(scsi, target, NULL, NULL)) {
+                LOG(1, "SCSI WRITE out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target, scsi->cmd.lba,
+                    scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
+                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+                break;
+            }
             phase_data_out(scsi, blk_sz * scsi->cmd.tl);
         } else {
             phase_data_in(scsi, scsi->cmd.tl * blk_sz);
-            size_t byte_off = (size_t)scsi->cmd.lba * blk_sz;
-            size_t byte_cnt = (size_t)scsi->cmd.tl * blk_sz;
-            // bounds check: reject out-of-range reads
-            if (byte_off + byte_cnt > scsi->devices[target].image->raw_size) {
-                LOG(1, "SCSI READ out of range: target=%d lba=%u byte_off=%zu byte_cnt=%zu raw_size=%zu", target,
-                    scsi->cmd.lba, byte_off, byte_cnt, scsi->devices[target].image->raw_size);
+            size_t byte_off = 0, byte_cnt = 0;
+            if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
+                LOG(1, "SCSI READ out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target, scsi->cmd.lba,
+                    scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
                 scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
                 break;
             }
@@ -626,15 +787,19 @@ static void run_cmd(scsi_t *scsi) {
                 (size_t)scsi->cmd.tl * blk_sz);
 
         if (scsi->cmd.opcode == CMD_WRITE_10) {
+            if (!scsi_lba_range_ok(scsi, target, NULL, NULL)) {
+                LOG(1, "SCSI WRITE_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target,
+                    scsi->cmd.lba, scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
+                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+                break;
+            }
             phase_data_out(scsi, blk_sz * scsi->cmd.tl);
         } else {
             phase_data_in(scsi, scsi->cmd.tl * blk_sz);
-            size_t byte_off = (size_t)scsi->cmd.lba * blk_sz;
-            size_t byte_cnt = (size_t)scsi->cmd.tl * blk_sz;
-            // bounds check: reject out-of-range reads
-            if (byte_off + byte_cnt > scsi->devices[target].image->raw_size) {
-                LOG(1, "SCSI READ_10 out of range: target=%d lba=%u byte_off=%zu byte_cnt=%zu raw_size=%zu", target,
-                    scsi->cmd.lba, byte_off, byte_cnt, scsi->devices[target].image->raw_size);
+            size_t byte_off = 0, byte_cnt = 0;
+            if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
+                LOG(1, "SCSI READ_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target,
+                    scsi->cmd.lba, scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
                 scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
                 break;
             }
@@ -659,10 +824,12 @@ static void run_cmd(scsi_t *scsi) {
         // device type, not from the backing image.  Asserting on image != NULL
         // would crash any future probe of a present-but-empty target.
 
-        // [6]: byte 4 is the "allocation length"
+        // [6]: byte 4 is the "allocation length".  Zero is a legal probe
+        // meaning "send nothing" -- ANSI X3.131-1986's INQUIRY section (Table
+        // 7-8) is explicit: "An allocation length of zero indicates that no
+        // INQUIRY data shall be transferred.  This condition shall not be
+        // considered as an error."  This used to substitute 36.
         scsi->cmd.tl = scsi->buf.data[4];
-        if (scsi->cmd.tl == 0)
-            scsi->cmd.tl = 36; // default allocation length
         scsi->cmd.lun = scsi->buf.data[1] >> 5;
 
         // EVPD: the command is asking for a VITAL PRODUCT DATA page, not
@@ -691,11 +858,10 @@ static void run_cmd(scsi_t *scsi) {
                 pg0[0] = (uint8_t)(is_disk ? 0x00u : 0x05u); // device type
                 if (!is_disk)
                     pg0[3] = 1; // CD-ROMs list only page $00
-                unsigned n0 = (unsigned)(4 + pg0[3]);
-                unsigned n = scsi->cmd.tl < n0 ? scsi->cmd.tl : n0;
-                LOG(2, "INQUIRY target=%d EVPD page $00 -> %u bytes", target, n);
-                phase_data_in(scsi, n);
-                memcpy(scsi->buf.data, pg0, n);
+                int n = scsi_data_in_alloc(scsi, 4 + pg0[3], scsi->cmd.tl);
+                LOG(2, "INQUIRY target=%d EVPD page $00 -> %d bytes", target, n);
+                if (n > 0)
+                    memcpy(scsi->buf.data, pg0, (size_t)n);
                 break;
             }
             if (page == 0xC7u && is_disk) {
@@ -730,10 +896,10 @@ static void run_cmd(scsi_t *scsi) {
                 pg[59] = 3u; // OS identifier length...
                 memcpy(&pg[60], "AIX", 3); // ...and the identifier itself
                 pg[72] = 3u; // max retry count
-                unsigned n = scsi->cmd.tl < sizeof(pg) ? scsi->cmd.tl : (unsigned)sizeof(pg);
-                LOG(2, "INQUIRY target=%d EVPD page $C7 -> %u bytes (%u MB)", target, n, cap_mb);
-                phase_data_in(scsi, n);
-                memcpy(scsi->buf.data, pg, n);
+                int n = scsi_data_in_alloc(scsi, (int)sizeof(pg), scsi->cmd.tl);
+                LOG(2, "INQUIRY target=%d EVPD page $C7 -> %d bytes (%u MB)", target, n, cap_mb);
+                if (n > 0)
+                    memcpy(scsi->buf.data, pg, (size_t)n);
                 break;
             }
             LOG(2, "INQUIRY target=%d EVPD page $%02X unsupported", target, page);
@@ -749,10 +915,9 @@ static void run_cmd(scsi_t *scsi) {
         // the additional-length byte below has to agree with.  (The EVPD
         // pages above have their own lengths; this cap is the standard
         // response's only.)
-        if (scsi->cmd.tl > 36)
-            scsi->cmd.tl = 36;
-
-        phase_data_in(scsi, scsi->cmd.tl);
+        scsi->cmd.tl = scsi_data_in_alloc(scsi, 36, scsi->cmd.tl);
+        if (scsi->cmd.tl == 0)
+            break; // zero allocation: already in STATUS, nothing to fill
 
         memset(scsi->buf.data, 0, scsi->cmd.tl);
 
@@ -914,9 +1079,10 @@ static void run_cmd(scsi_t *scsi) {
             }
             resp[0] = (uint8_t)(total - 1); // mode data length excludes itself
 
-            // Allocation length 0 is legal and means "no data" (SCSI-2 §7.5.3).
-            int n = alloc_len < total ? alloc_len : total;
-            phase_data_in(scsi, n);
+            // Allocation length 0 is legal and means "no data".  This path
+            // always had it right; it now shares the helper with everything
+            // else that carries an allocation length.
+            int n = scsi_data_in_alloc(scsi, total, alloc_len);
             if (n > 0)
                 memcpy(scsi->buf.data, resp, (size_t)n);
         }
@@ -1041,14 +1207,29 @@ static void command_complete(scsi_t *scsi) {
 
     case CMD_WRITE:
     case CMD_WRITE_10: {
-        assert(scsi->cmd.tl * blk_sz == scsi->buf.size);
-        size_t device_bytes = disk_size(scsi->devices[target].image);
-        assert(((size_t)scsi->cmd.lba + scsi->cmd.tl) * blk_sz <= device_bytes);
+        // run_cmd already refused an out-of-range range at CDB decode; this is
+        // the check for a data phase that did not deliver what was asked for.
+        // Both used to be assert()s, which -DNDEBUG removes from the release
+        // wasm build -- so the failure they were meant to catch became a silent
+        // short write reported as STATUS GOOD (03-scsi F-02).
+        size_t byte_off = 0, byte_cnt = 0;
+        if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
+            LOG(1, "SCSI WRITE: refusing tl=%u blk_sz=%u (%zu bytes) against buf.size=%zu raw_size=%zu", scsi->cmd.tl,
+                blk_sz, byte_cnt, scsi->buf.size, disk_size(scsi->devices[target].image));
+            scsi->buf.max = scsi->buf.size = 0;
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+            return;
+        }
 
-        disk_write_data(scsi->devices[target].image, (size_t)scsi->cmd.lba * blk_sz, scsi->buf.data,
-                        (size_t)scsi->cmd.tl * blk_sz);
-
+        // And report a short write rather than discarding the count: an
+        // in-bounds backing-store failure is a MEDIUM ERROR, not success.
+        size_t wrote = disk_write_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
         scsi->buf.max = scsi->buf.size = 0;
+        if (wrote != byte_cnt) {
+            LOG(1, "SCSI WRITE: storage took %zu of %zu bytes at offset %zu", wrote, byte_cnt, byte_off);
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_WRITE_FAULT, 0x00);
+            return;
+        }
     } break;
 
     case CMD_MODE_SELECT:
@@ -1148,23 +1329,37 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     // if BSY is released in the selection phase, than it marks the end of selection
     if (bits_cleared & ICR_BSY && scsi->reg.icr & ICR_SEL) {
 
-        assert(scsi->bus.phase == scsi_selection);
+        // Only meaningful as the end of a selection.  A guest that re-drives
+        // SEL/BSY from a later phase is usually a driver retrying a bus it
+        // thinks is hung; decline the selection and leave the live transaction
+        // alone rather than starting a second one on top of it.
+        //
+        // Declined by skipping this block, NOT by returning: one ICR write can
+        // clear BSY and set ACK in the same store, and the ACK half is still a
+        // legitimate request that the blocks below must see.  (This is also
+        // what the shipping NDEBUG build already did, the assert having been
+        // compiled out -- minus the selection work, which it wrongly ran.)
+        if (scsi->bus.phase != scsi_selection) {
+            LOG(1, "scsi: BSY released with SEL set in phase %s -- not a selection, ignored",
+                phase_name(scsi->bus.phase));
+        } else {
 
-        // Non-arbitrated selection: A/UX's SCSI driver (and Apple's SCSI Manager
-        // on real hardware) drives SEL without first setting MR_ARBITRATE, so
-        // bus.initiator was never captured.  Mac hosts are wired to ID 7, so
-        // default to 7 when arbitration was skipped.
-        if (scsi->bus.initiator >= 8)
-            scsi->bus.initiator = 7;
+            // Non-arbitrated selection: A/UX's SCSI driver (and Apple's SCSI Manager
+            // on real hardware) drives SEL without first setting MR_ARBITRATE, so
+            // bus.initiator was never captured.  Mac hosts are wired to ID 7, so
+            // default to 7 when arbitration was skipped.
+            if (scsi->bus.initiator >= 8)
+                scsi->bus.initiator = 7;
 
-        // ODR will contain the "OR" of target and initiator ID
-        scsi->bus.target = platform_ntz32(scsi->reg.odr & ~(1 << scsi->bus.initiator));
+            // ODR will contain the "OR" of target and initiator ID
+            scsi->bus.target = platform_ntz32(scsi->reg.odr & ~(1 << scsi->bus.initiator));
 
-        // [6]: target will assert BSY - if no target, the bus will be free again
-        if (!scsi->devices[scsi->bus.target & 7].image)
-            phase_free(scsi);
-        else
-            phase_command(scsi);
+            // [6]: target will assert BSY - if no target, the bus will be free again
+            if (!scsi->devices[scsi->bus.target & 7].image)
+                phase_free(scsi);
+            else
+                phase_command(scsi);
+        }
     }
 
     // if ACK is reset
@@ -1319,8 +1514,15 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // driver expected a data phase — the NCR 5380 signals this as a
         // phase mismatch IRQ so the driver can recover), or during command
         // (A/UX's SCSI driver uses pseudo-DMA to push command bytes).
-        assert(scsi->bus.phase == scsi_command || scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out ||
-               scsi->bus.phase == scsi_status || scsi->bus.phase == scsi_message_in);
+        //
+        // Anywhere else -- BUS FREE most commonly -- arming DMA is a no-op on
+        // real silicon: there is no REQ/ACK partner, so nothing transfers.
+        // Record the mode bit (already done above) but skip the DRQ wiring.
+        if (scsi->bus.phase != scsi_command && scsi->bus.phase != scsi_data_in && scsi->bus.phase != scsi_data_out &&
+            scsi->bus.phase != scsi_status && scsi->bus.phase != scsi_message_in) {
+            LOG(1, "scsi: MR.DMA set in phase %s -- no transfer partner, DRQ not armed", phase_name(scsi->bus.phase));
+            return;
+        }
 
         // if we're reading in data, and there is more in the buffer - then assert request signal
         if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0) {
@@ -1897,9 +2099,15 @@ void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, con
     else
         memset(scsi->devices[scsi_id].revision, ' ', 4);
 
-    // CD-ROM attach triggers UNIT ATTENTION (media changed)
-    if (type == scsi_dev_cdrom && image != NULL)
+    // Inserting a caddy and recovering its TOC is the media-change cause the
+    // CDU-541 manual 4.1.3 names, and 0x28 "Not ready to ready transition
+    // (caddy inserted)" is the code it reports.  Stage it here, where the cause
+    // is known, so the UNIT ATTENTION gate in run_cmd can simply report what is
+    // pending instead of guessing.
+    if (type == scsi_dev_cdrom && image != NULL) {
         scsi->devices[scsi_id].unit_attention = true;
+        scsi_set_sense(scsi, scsi_id, SENSE_UNIT_ATTENTION, ASC_NOT_READY_TO_READY, 0x00);
+    }
 }
 
 // Initialize the SCSI controller and optionally restore from checkpoint
@@ -2334,8 +2542,14 @@ int scsi_eject_device(scsi_t *scsi, int id) {
         return 0;
     scsi->devices[id].medium_present = false;
     scsi->devices[id].image = NULL;
-    scsi->devices[id].unit_attention = true;
-    scsi_set_sense(scsi, id, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
+    // Removal raises NO unit attention.  The CDU-541 manual 4.1.3 lists exactly
+    // four causes -- power-on, reset, *insertion* of a caddy with successful TOC
+    // recovery, and MODE SELECT from another initiator -- and its UNIT ATTENTION
+    // table has no code for removal.  An empty bay is a persistent NOT READY
+    // state instead, handled in run_cmd for as long as it lasts.  That lifetime
+    // is the point: a UNIT ATTENTION is a one-shot cleared by the first CHECK
+    // CONDITION, so a guest that ejected, took one error and retried used to
+    // find the second command succeeding against an empty drive.
     return 1;
 }
 
@@ -2450,6 +2664,15 @@ void scsi_delete(scsi_t *scsi) {
         object_delete(scsi->bus_object);
         scsi->bus_object = NULL;
     }
+    // Only the instance mounted at `machine.scsi` displaced the static
+    // singleton on the way in (see the `primary` gate in scsi_init_named), so
+    // only that instance may restore it on the way out.  A machine with a
+    // second bus deletes two instances; restoring unconditionally would
+    // re-attach a singleton named "scsi" while the other bus is still
+    // attached, and since object_attach head-pushes, the singleton would then
+    // shadow a live bus for whatever teardown order happens to run next.
+    bool primary = scsi->object && strcmp(object_name(scsi->object), "scsi") == 0;
+
     if (scsi->object) {
         object_detach(scsi->object);
         object_delete(scsi->object);
@@ -2464,7 +2687,8 @@ void scsi_delete(scsi_t *scsi) {
     // Restore the pre-machine static singleton so the next round of
     // upload validation (e.g. the Welcome view after stopping a
     // machine) keeps resolving `scsi.identify_hd` / `identify_cdrom`.
-    scsi_class_register();
+    if (primary)
+        scsi_class_register();
 }
 
 // ============================================================================
@@ -2864,11 +3088,6 @@ const class_desc_t scsi_device_class = {
 };
 
 // --- bus child class -------------------------------------------------------
-
-static const char *const SCSI_PHASE_NAMES[] = {
-    "bus_free", "arbitration", "selection", "reselection", "command",
-    "data_in",  "data_out",    "status",    "message_in",  "message_out",
-};
 
 static value_t scsi_bus_attr_phase(struct object *self, const member_t *m) {
     (void)m;

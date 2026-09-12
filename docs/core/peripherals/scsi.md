@@ -483,14 +483,38 @@ Modern emulation abstracts away CHS addressing in favour of LBA.
 
 ### 8.2 Command Descriptor Blocks (CDBs)
 
-SCSI groups opcodes by CDB length:
+The top three bits of the opcode are its *group code*, and the group code fixes
+the CDB's length. ANSI X3.131-1986 (SCSI-1) §6.2.1 defines groups 0, 1 and 5 and
+leaves 2, 3 and 4 reserved; the Am53C94 datasheet (STATREG bit 3, "Group Code
+Valid") records how a target of this era sizes the rest. `cmd_size()` in
+`scsi.c` implements the combined table:
 
-* **Group 0 (6-byte)** — opcodes `0x00–0x1F`; most core SCSI-1
-  commands.
-* **Group 1 (10-byte)** — opcodes `0x20–0x5F`; READ(10), WRITE(10),
-  READ CAPACITY(10), VERIFY(10), etc.
-* **Group 5 (12-byte)** — opcodes `0xA0–0xBF`; READ(12), WRITE(12),
-  some optical/other.
+| Group | Opcodes     | Length | Source                                                     |
+| ----- | ----------- | ------ | ---------------------------------------------------------- |
+| 0     | `0x00–0x1F` | 6      | SCSI-1. Most core commands: READ(6), WRITE(6), INQUIRY, …  |
+| 1     | `0x20–0x3F` | 10     | SCSI-1. READ(10), WRITE(10), READ CAPACITY, VERIFY, …      |
+| 2     | `0x40–0x5F` | 10     | SCSI-2. The CD-ROM audio set (`0x42`–`0x4B`) lives here.   |
+| 3     | `0x60–0x7F` | 6      | Reserved; the 53C94 treats reserved groups as 6-byte.      |
+| 4     | `0x80–0x9F` | 6      | Reserved, likewise. 16-byte group 4 is a SCSI-3 addition.  |
+| 5     | `0xA0–0xBF` | 12     | SCSI-1. READ(12), WRITE(12), some optical.                 |
+| 6     | `0xC0–0xDF` | 10     | Vendor unique. Ours is a Sony CDU-541 (see §Sony below).   |
+| 7     | `0xE0–0xFF` | 10     | Vendor unique; the 53C94 always treats these as 10-byte.   |
+
+Group 2 is conditional on real hardware — the 53C94 sizes it at 10 bytes only
+when its S2FE bit is set, and treats it as reserved otherwise — but the audio
+commands we implement are group 2, so we size it at 10 unconditionally.
+
+Group 6 is the one place the chip's default is wrong for us. The 53C94 guesses
+six bytes for group 6, but a vendor group's length is defined by the device, and
+the device we model is a Sony CDU-541 whose vendor commands are 10-byte CDBs
+(CDU-541 SCSI manual §5.2.23: READ TOC `0xC1` runs byte 0 through byte 9).
+
+Length matters beyond bookkeeping: `run_cmd()` dispatches the moment the
+accumulated byte count matches, so an undersized entry dispatches the command
+early and spills the remainder of the CDB into the following bus phase. An
+opcode we do not implement must still be counted correctly, so that it can be
+declined with ILLEGAL REQUEST / INVALID OPCODE rather than corrupting whatever
+comes next.
 
 #### Common 6-byte (Group 0) layout
 
