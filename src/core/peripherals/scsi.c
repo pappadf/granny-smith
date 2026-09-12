@@ -419,6 +419,42 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
     phase_status(scsi, STATUS_CHECK_CONDITION);
 }
 
+// Does the command's [lba, lba + tl) block range fit inside the medium?
+//
+// One answer for READ and WRITE on both CDB lengths.  WRITE had none at all:
+// its only guards were two assert()s in command_complete, and assert is
+// compiled out by -DNDEBUG in the release wasm profile (Makefile:131), so an
+// out-of-range WRITE reached disk_write_data, which drops the unbacked tail --
+// and the SCSI layer then reported STATUS GOOD.  Silent data loss reported as
+// success (03-scsi F-02).
+//
+// Everything is computed in uint64_t because size_t is 32 bits on wasm32,
+// where `(size_t)lba * blk_sz` wraps: a READ(10) at lba 0x00400000 with
+// 2048-byte blocks gives 0x800000000, which truncates to 0, so the old check
+// passed and the wrong blocks were served as valid data (03-scsi F-04).
+static bool scsi_lba_range_ok(const scsi_t *scsi, int target, size_t *off_out, size_t *cnt_out) {
+    const image_t *img = scsi->devices[target].image;
+    if (!img)
+        return false;
+    // Through uint32_t first: cmd.lba and cmd.tl are `int`, and the 10-byte
+    // decode builds them with `data[2] << 24`, which overflows a signed int for
+    // any byte >= 0x80.  A CDB of FF FF FF FF lands as -1, and casting that
+    // straight to uint64_t sign-extends to 0xFFFF...FFFF, whose product with
+    // the block size wraps and passes any bound.  (Found by the scsi_bounds
+    // unit test, against the first version of THIS function.)
+    uint64_t blk = scsi->devices[target].block_size;
+    uint64_t off = (uint64_t)(uint32_t)scsi->cmd.lba * blk;
+    uint64_t cnt = (uint64_t)(uint32_t)scsi->cmd.tl * blk;
+    if (off + cnt > (uint64_t)img->raw_size)
+        return false;
+    // Both are bounded by raw_size above, so narrowing is safe.
+    if (off_out)
+        *off_out = (size_t)off;
+    if (cnt_out)
+        *cnt_out = (size_t)cnt;
+    return true;
+}
+
 // Execute a SCSI command after receiving it from the initiator
 static void run_cmd(scsi_t *scsi) {
     scsi->cmd.opcode = scsi->buf.data[0];
@@ -561,15 +597,24 @@ static void run_cmd(scsi_t *scsi) {
                 scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, (size_t)scsi->cmd.tl * blk_sz);
 
         if (scsi->cmd.opcode == CMD_WRITE) {
+            // Reject here, at CDB decode, not at command_complete: refusing
+            // after the initiator has already pushed a whole data-out phase is
+            // a late phase change some initiators do not recover from (the
+            // Network Server's SCRIPTS program is one -- see the empty-CD-bay
+            // note above).
+            if (!scsi_lba_range_ok(scsi, target, NULL, NULL)) {
+                LOG(1, "SCSI WRITE out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target, scsi->cmd.lba,
+                    scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
+                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+                break;
+            }
             phase_data_out(scsi, blk_sz * scsi->cmd.tl);
         } else {
             phase_data_in(scsi, scsi->cmd.tl * blk_sz);
-            size_t byte_off = (size_t)scsi->cmd.lba * blk_sz;
-            size_t byte_cnt = (size_t)scsi->cmd.tl * blk_sz;
-            // bounds check: reject out-of-range reads
-            if (byte_off + byte_cnt > scsi->devices[target].image->raw_size) {
-                LOG(1, "SCSI READ out of range: target=%d lba=%u byte_off=%zu byte_cnt=%zu raw_size=%zu", target,
-                    scsi->cmd.lba, byte_off, byte_cnt, scsi->devices[target].image->raw_size);
+            size_t byte_off = 0, byte_cnt = 0;
+            if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
+                LOG(1, "SCSI READ out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target, scsi->cmd.lba,
+                    scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
                 scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
                 break;
             }
@@ -626,15 +671,19 @@ static void run_cmd(scsi_t *scsi) {
                 (size_t)scsi->cmd.tl * blk_sz);
 
         if (scsi->cmd.opcode == CMD_WRITE_10) {
+            if (!scsi_lba_range_ok(scsi, target, NULL, NULL)) {
+                LOG(1, "SCSI WRITE_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target,
+                    scsi->cmd.lba, scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
+                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+                break;
+            }
             phase_data_out(scsi, blk_sz * scsi->cmd.tl);
         } else {
             phase_data_in(scsi, scsi->cmd.tl * blk_sz);
-            size_t byte_off = (size_t)scsi->cmd.lba * blk_sz;
-            size_t byte_cnt = (size_t)scsi->cmd.tl * blk_sz;
-            // bounds check: reject out-of-range reads
-            if (byte_off + byte_cnt > scsi->devices[target].image->raw_size) {
-                LOG(1, "SCSI READ_10 out of range: target=%d lba=%u byte_off=%zu byte_cnt=%zu raw_size=%zu", target,
-                    scsi->cmd.lba, byte_off, byte_cnt, scsi->devices[target].image->raw_size);
+            size_t byte_off = 0, byte_cnt = 0;
+            if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
+                LOG(1, "SCSI READ_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target,
+                    scsi->cmd.lba, scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
                 scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
                 break;
             }
@@ -1041,14 +1090,29 @@ static void command_complete(scsi_t *scsi) {
 
     case CMD_WRITE:
     case CMD_WRITE_10: {
-        assert(scsi->cmd.tl * blk_sz == scsi->buf.size);
-        size_t device_bytes = disk_size(scsi->devices[target].image);
-        assert(((size_t)scsi->cmd.lba + scsi->cmd.tl) * blk_sz <= device_bytes);
+        // run_cmd already refused an out-of-range range at CDB decode; this is
+        // the check for a data phase that did not deliver what was asked for.
+        // Both used to be assert()s, which -DNDEBUG removes from the release
+        // wasm build -- so the failure they were meant to catch became a silent
+        // short write reported as STATUS GOOD (03-scsi F-02).
+        size_t byte_off = 0, byte_cnt = 0;
+        if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
+            LOG(1, "SCSI WRITE: refusing tl=%u blk_sz=%u (%zu bytes) against buf.size=%zu raw_size=%zu", scsi->cmd.tl,
+                blk_sz, byte_cnt, scsi->buf.size, disk_size(scsi->devices[target].image));
+            scsi->buf.max = scsi->buf.size = 0;
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+            return;
+        }
 
-        disk_write_data(scsi->devices[target].image, (size_t)scsi->cmd.lba * blk_sz, scsi->buf.data,
-                        (size_t)scsi->cmd.tl * blk_sz);
-
+        // And report a short write rather than discarding the count: an
+        // in-bounds backing-store failure is a MEDIUM ERROR, not success.
+        size_t wrote = disk_write_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
         scsi->buf.max = scsi->buf.size = 0;
+        if (wrote != byte_cnt) {
+            LOG(1, "SCSI WRITE: storage took %zu of %zu bytes at offset %zu", wrote, byte_cnt, byte_off);
+            scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_WRITE_FAULT, 0x00);
+            return;
+        }
     } break;
 
     case CMD_MODE_SELECT:

@@ -118,12 +118,14 @@
 // Sense keys
 #define SENSE_NO_SENSE        0x00
 #define SENSE_NOT_READY       0x02
+#define SENSE_MEDIUM_ERROR    0x03
 #define SENSE_ILLEGAL_REQUEST 0x05
 #define SENSE_UNIT_ATTENTION  0x06
 #define SENSE_DATA_PROTECT    0x07
 
 // Additional sense codes (ASC)
 #define ASC_NO_ASC               0x00
+#define ASC_WRITE_FAULT          0x03
 #define ASC_INVALID_OPCODE       0x20
 #define ASC_LBA_OUT_OF_RANGE     0x21
 #define ASC_INVALID_FIELD_IN_CDB 0x24
