@@ -274,6 +274,63 @@ TEST(test_read10_large_lba_does_not_wrap) {
     scsi_delete(scsi);
 }
 
+// F-03: cmd_size() decodes the CDB length from the opcode's group code, and
+// run_cmd() fires the instant the accumulated count matches.  Size a group
+// wrong and the command dispatches early, leaving the unread tail of the CDB to
+// be consumed by whatever phase comes next.  The old table was
+// `opcode < 0x20 ? 6 : 10`, which gets group 5 (twelve-byte) wrong by two bytes
+// and groups 3 and 4 wrong by four.
+//
+// Every opcode below is deliberately one we do NOT implement, so the outcome is
+// always CHECK CONDITION / INVALID OPCODE and the phase after the final byte is
+// STATUS.  That makes the phase itself the assertion: while the target is still
+// short of a full CDB it must stay in COMMAND phase, and it must leave on the
+// byte the group code says is the last one.  See the AUTHORITY comment on
+// cmd_size() in scsi.c for where these lengths come from.
+TEST(test_cdb_length_by_group_code) {
+    static const struct {
+        uint8_t opcode;
+        int len;
+    } cases[] = {
+        {0x1F, 6 }, // group 0: six-byte              (ANSI X3.131-1986)
+        {0x3F, 10}, // group 1: ten-byte              (ANSI X3.131-1986)
+        {0x5F, 10}, // group 2: ten-byte              (SCSI-2 / 53C94 S2FE)
+        {0x7F, 6 }, // group 3: reserved -> six-byte  (53C94)
+        {0x9F, 6 }, // group 4: reserved -> six-byte  (53C94; 16-byte is SCSI-3)
+        {0xBF, 12}, // group 5: twelve-byte           (ANSI X3.131-1986)
+        {0xDF, 10}, // group 6: vendor, ten-byte      (Sony CDU-541)
+        {0xFF, 10}, // group 7: vendor, ten-byte      (53C94)
+    };
+
+    scsi_t *scsi = attach_disk();
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+        scsi_push_data_out_byte(scsi, cases[i].opcode);
+
+        // Every byte before the last must leave the target in COMMAND phase.
+        for (int b = 1; b < cases[i].len; b++) {
+            ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_command);
+            scsi_push_data_out_byte(scsi, 0x00);
+        }
+
+        // ...and the last byte must complete the command, not a byte sooner or
+        // later.  An unimplemented opcode is declined, so that means STATUS.
+        ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+        ASSERT_EQ_INT(scsi_external_status_byte(scsi), STATUS_CHECK_CONDITION);
+        scsi_external_message_byte(scsi);
+        scsi_external_release(scsi);
+    }
+
+    // The bus must be clean afterwards: if any of those CDBs had dispatched
+    // early, its leftover bytes would have been swallowed by the next phase and
+    // this TEST UNIT READY would not come back GOOD.  (TUR is the probe to use
+    // here because it carries no data phase -- issue() only drains DATA OUT, so
+    // a successful READ would park in DATA IN and never reach STATUS.)
+    const uint8_t tur[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    ASSERT_EQ_INT(issue(scsi, tur, 6, NULL, 0), STATUS_GOOD);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(test_write_in_range_lands);
@@ -283,6 +340,7 @@ int main(void) {
     RUN(test_read_range);
     RUN(test_large_lba_does_not_wrap);
     RUN(test_read10_large_lba_does_not_wrap);
+    RUN(test_cdb_length_by_group_code);
     unlink(g_path);
     printf("All scsi_bounds tests passed\n");
     return 0;

@@ -135,9 +135,12 @@
 #define ASC_INCOMPATIBLE_MEDIUM  0x30
 
 // Block size and buffer limits
-#define BLOCK_SIZE   512
-#define BUF_LIMIT    (BLOCK_SIZE * 256)
-#define MAX_CMD_SIZE 10
+#define BLOCK_SIZE 512
+#define BUF_LIMIT  (BLOCK_SIZE * 256)
+// Largest CDB cmd_size() can ask for: a group 5 (twelve-byte) command.  This
+// only sizes the expected-byte count for the COMMAND phase; buf.data itself is
+// a BUF_LIMIT allocation, so the slot costs nothing.
+#define MAX_CMD_SIZE 12
 
 // ============================================================================
 // Type Definitions

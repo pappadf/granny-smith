@@ -55,9 +55,58 @@ LOG_USE_CATEGORY_NAME("scsi");
 // Static Helpers
 // ============================================================================
 
-// Determine the length of a SCSI command based on its opcode
+// Determine the length of a SCSI command from its group code -- the top three
+// bits of the opcode.
+//
+// ANSI X3.131-1986 (SCSI-1) section 6.2.1 defines groups 0, 1 and 5 as six-,
+// ten- and twelve-byte commands and leaves groups 2, 3 and 4 reserved.  The
+// Am53C94 datasheet (STATREG bit 3, "Group Code Valid") documents how a real
+// target of this era sizes the groups the standard left open, and that is what
+// we follow:
+//
+//   group 0  $00-$1F   6   SCSI-1.
+//   group 1  $20-$3F  10   SCSI-1.
+//   group 2  $40-$5F  10   SCSI-2.  The 53C94 does this only with its S2FE bit
+//                              set, but the CD-ROM audio commands we implement
+//                              ($42 READ SUB-CHANNEL through $4B PAUSE/RESUME)
+//                              live here, so for us it is unconditional.
+//   group 3  $60-$7F   6   Reserved; the chip treats reserved groups as
+//                              six-byte commands.
+//   group 4  $80-$9F   6   Reserved, likewise.  Sixteen-byte group 4 commands
+//                              are a SCSI-3 invention, later than any machine
+//                              or drive we model.
+//   group 5  $A0-$BF  12   SCSI-1.
+//   group 6  $C0-$DF  10   Vendor unique.  The chip guesses six, but the device
+//                              defines the true length and ours is a Sony
+//                              CDU-541, whose vendor commands are ten-byte CDBs
+//                              (CDU-541 SCSI manual section 5.2.23: READ TOC
+//                              $C1 runs byte 0 through byte 9).
+//   group 7  $E0-$FF  10   Vendor unique; "always treated as ten byte".
+//
+// This is not a cosmetic table.  run_cmd() fires the instant the accumulated
+// byte count matches, so an undersized answer dispatches the command early and
+// spills the tail of the CDB into whichever phase follows.  An opcode we do not
+// implement still has to be *counted* correctly, so that run_cmd can decline it
+// with ILLEGAL REQUEST / INVALID OPCODE instead of corrupting the next phase.
 static int cmd_size(uint8_t opcode) {
-    return opcode < 0x20 ? 6 : 10;
+    switch (opcode >> 5) {
+    case 0:
+        return 6;
+    case 1:
+        return 10;
+    case 2:
+        return 10;
+    case 3:
+        return 6;
+    case 4:
+        return 6;
+    case 5:
+        return 12;
+    case 6:
+        return 10;
+    default:
+        return 10; // group 7
+    }
 }
 
 // Compute the CDR value from the current loopback state.
