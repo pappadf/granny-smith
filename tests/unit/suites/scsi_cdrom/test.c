@@ -419,6 +419,97 @@ TEST(inquiry_does_not_clear_unit_attention) {
     scsi_delete(scsi);
 }
 
+// ===========================================================================
+// F-09: a refused eject must say the prevent bit is set, not that the drive is
+// empty.
+// ===========================================================================
+//
+// AUTHORITY: CDU-541 SCSI manual S5.2.33 -- "If a PREVENT MEDIUM REMOVAL
+// command has been issued, a request to eject the disc will be terminated with
+// a CHECK CONDITION status.  The sense key will be set to ILLEGAL REQUEST, and
+// the additional sense code set to PREVENT BIT SET", which its ILLEGAL REQUEST
+// (5h) table numbers 0x80.  The old code reported 0x3A MEDIUM NOT PRESENT --
+// "the drive is empty" -- which is the opposite of the truth and a reason for a
+// driver to stop retrying.  SCSI-2's 0x53/0x02 is a different vocabulary and
+// appears nowhere in this drive's tables.
+
+// PREVENT/ALLOW MEDIUM REMOVAL: CDB byte 4 bit 0 is the prevent bit.
+static int prevent_allow(scsi_t *scsi, bool prevent) {
+    const uint8_t cdb[6] = {0x1E, 0, 0, 0, (uint8_t)(prevent ? 1 : 0), 0};
+    return issue_cdb6(scsi, cdb);
+}
+
+TEST(eject_while_prevented_reports_prevent_bit_set) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status); // eject: must be refused
+
+    // The disc is still in the drive.
+    ASSERT_TRUE(scsi_device_medium_present(scsi, TARGET));
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_ILLEGAL_REQUEST);
+    ASSERT_EQ_INT(sense[12], ASC_SONY_PREVENT_BIT_SET); // 0x80, not 0x3A or 0x53
+    ASSERT_EQ_INT(sense[13], 0x00);
+    scsi_delete(scsi);
+}
+
+// ALLOW must lift the lock, so the same eject then succeeds.  Without this the
+// test above would pass against a drive that simply never ejects.
+TEST(allow_then_eject_succeeds) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+    ASSERT_TRUE(scsi_device_medium_present(scsi, TARGET));
+
+    ASSERT_EQ_INT(prevent_allow(scsi, false), scsi_status);
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+    scsi_delete(scsi);
+}
+
+// CDU-541 S5.2.14: "If a PREVENT MEDIUM REMOVAL command is issued without the
+// drive being in the ready condition [the] command will be terminated with a
+// CHECK CONDITION status.  The sense key will be set to NOT READY."  The ready
+// condition is a caddy inserted with its TOC recovered (S4.1.4).  Locking an
+// empty drive used to be accepted, which then made the next inserted disc
+// unejectable for no reason the guest could see.
+TEST(prevent_on_empty_drive_is_refused) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status); // eject first
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    ASSERT_EQ_INT(sense[12], ASC_SONY_CADDY_NOT_INSERTED);
+    scsi_delete(scsi);
+}
+
+// ALLOW is deliberately NOT refused on an empty drive: S5.2.14's sentence names
+// PREVENT only, and a driver tidying up after an eject has every reason to send
+// it.
+TEST(allow_on_empty_drive_is_accepted) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(start_stop(scsi, 0x02), scsi_status);
+
+    // Drain first.  Sense data persists until REQUEST SENSE reads it, so
+    // without this the assertion below would be reading whatever the last
+    // CHECK CONDITION left behind rather than this command's outcome.
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+
+    ASSERT_EQ_INT(prevent_allow(scsi, false), scsi_status);
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, 0x00); // NO SENSE: nothing was raised
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(read6_at_buf_limit);
@@ -430,6 +521,10 @@ int main(void) {
     RUN(empty_bay_keeps_failing_not_just_once);
     RUN(eject_is_exempt_from_pending_unit_attention);
     RUN(inquiry_does_not_clear_unit_attention);
+    RUN(eject_while_prevented_reports_prevent_bit_set);
+    RUN(allow_then_eject_succeeds);
+    RUN(prevent_on_empty_drive_is_refused);
+    RUN(allow_on_empty_drive_is_accepted);
     RUN(inquiry_standard_is_36_bytes);
     RUN(inquiry_evpd_unsupported_page_is_refused);
     RUN(inquiry_evpd_page_zero_lists_itself);

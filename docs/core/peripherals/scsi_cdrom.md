@@ -593,30 +593,73 @@ The sense buffer is populated when a command terminates with CHECK CONDITION sta
 
 ### 6.3 Additional Sense Codes (ASC/ASCQ)
 
-| ASC | ASCQ | Meaning | Context |
-|-----|------|---------|---------|
-| `0x20` | `0x00` | Invalid Command Operation Code | Unsupported opcode |
-| `0x21` | `0x00` | Logical Block Address Out of Range | LBA exceeds capacity |
-| `0x24` | `0x00` | Invalid Field in CDB | Bad parameter in command |
-| `0x26` | `0x00` | Invalid Field in Parameter List | Bad MODE SELECT data |
-| `0x27` | `0x00` | Write Protected | Write to CD-ROM |
-| `0x28` | `0x00` | Not Ready to Ready Change | Media inserted (UNIT ATTENTION) |
-| `0x29` | `0x00` | Power On, Reset, or Bus Device Reset | Power-on/reset (UNIT ATTENTION) |
-| `0x2A` | `0x00` | Parameters Changed | MODE SELECT from another initiator |
-| `0x30` | `0x00` | Incompatible Medium Installed | Wrong disc type |
-| `0x3A` | `0x00` | Medium Not Present | No disc in drive |
-| `0x53` | `0x02` | Medium Removal Prevented | Eject while locked |
-| `0x64` | `0x00` | Illegal Mode for This Track | Data command on audio track (or vice versa) |
+The drive we advertise is a `SONY CD-ROM CDU-8002`, so the codes below are the
+CDU-541 manual's (§5.4, Tables 5-48 and 5-49), reproduced by sense key. They are
+**not** the SCSI-2 set. Where the two differ the drive's own value is what a
+period driver expects, because Apple's CD-ROM driver was written against these
+drives.
 
-**Additional CDU-8002-specific ASCs** (documented in Sony CDU-541 manual, not yet implemented but reserved for future use):
+Codes at `0x80` and above are Sony vendor codes. Several conditions that SCSI-2
+gives a standard number live only in that vendor range here — an empty bay is
+`0xB0`, not `0x3A`; a refused eject is `0x80`, not `0x53/0x02`.
 
-| ASC | ASCQ | Meaning | Context |
-|-----|------|---------|--------|
-| `0x04` | `0x00` | Logical Unit Not Ready | TOC read in progress |
-| `0x57` | `0x00` | Unable to Recover TOC | TOC unreadable |
-| `0x63` | `0x00` | End of User Area Encountered on This Track | Read past track boundary |
-| `0xB9` | `0x00` | Audio Play Operation Aborted | Audio address not valid |
-| `0x4E` | `0x00` | Overlapped Commands Attempted | Command while previous still executing |
+| Sense key | ASC | Meaning |
+|-----------|-----|---------|
+| NO SENSE (0h) | `0x00` | No additional sense information |
+| RECOVERED ERROR (1h) | `0x17` | CIRC recovered data error |
+| | `0x18` | L-EC recovered data error |
+| NOT READY (2h) | `0x04` | Unit off line |
+| | `0xB0` | Caddy not inserted in drive |
+| | `0xB1` | Unable to recover TOC |
+| | `0xB2` | Caddy load/eject failed |
+| | `0xB7` | TOC read in progress |
+| MEDIUM ERROR (3h) | `0x02` | Error occurred during seek operation |
+| | `0x11` | L-EC uncorrectable data error (L-EC on) |
+| | `0xB3` | CIRC unrecovered data error (L-EC off) |
+| HARDWARE ERROR (4h) | `0x08` | Logical unit communication failure |
+| | `0x09` | Tracking servo failure |
+| | `0x10` | Controller data buffer failure |
+| | `0x11` | Data path failure (Sony bus data error) |
+| | `0x12` | Power on failure |
+| | `0x13` | Internal controller failure |
+| | `0x14` | Interface parity error |
+| | `0xB4` | Focus servo failure |
+| | `0xB5` | Spindle servo failure |
+| | `0xB6` | Caddy load mechanism failed |
+| ILLEGAL REQUEST (5h) | `0x20` | Invalid command operation code |
+| | `0x21` | Logical block address not valid |
+| | `0x22` | Illegal function for CD-ROM |
+| | `0x24` | Illegal value in CDB (other than opcode or LBA) |
+| | `0x25` | Invalid logical unit number |
+| | `0x26` | Invalid field in parameter list |
+| | `0x80` | Prevent bit is set |
+| | `0x81` | Logical unit is reserved |
+| | `0x82` | End of user area encountered on this track |
+| | `0x84` | Illegal mode for this track |
+| | `0x85` | Audio address not valid |
+| UNIT ATTENTION (6h) | `0x28` | Not ready to ready transition (caddy inserted) |
+| | `0x29` | Power on, reset or BUS DEVICE RESET occurred |
+| | `0x2A` | Mode select parameters changed |
+| ABORTED COMMAND (Bh) | `0x43` | Unsuccessful message retry |
+| | `0x45` | Reselect failure |
+| | `0x48` | Initiator detected error |
+| | `0x49` | Message out error |
+| | `0x83` | Overlapped commands attempted |
+
+ASCQ is `0x00` throughout — the CDU-541 reports only byte 12 of the sense data
+and does not qualify these with byte 13.
+
+Codes we do not currently emit (`0x22`, `0x25`, `0x81`, `0x82`, `0x84`, `0x85`,
+the servo and hardware-failure set, and the whole ABORTED COMMAND group) are
+listed for completeness; they belong to conditions this model does not simulate.
+
+> **History.** This table previously reproduced the SCSI-2 set, including
+> `0x53/0x02` MEDIUM REMOVAL PREVENTED and `0x3A` MEDIUM NOT PRESENT, and
+> carried a block of five "CDU-8002-specific" codes (`0x04` TOC read in
+> progress, `0x57`, `0x63`, `0xB9`, `0x4E`) attributed to the CDU-541 manual.
+> None of the five is that manual's value for the condition named. The wrong
+> table was not merely inert: it is where the code's `0x3A`-on-refused-eject
+> (F-09) and `0x3A`-on-empty-bay (F-08) came from.
 
 ### 6.4 UNIT ATTENTION
 

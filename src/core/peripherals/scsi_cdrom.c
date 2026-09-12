@@ -407,9 +407,14 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
     bool loej = (flags & 0x02) != 0;
 
     if (!start && loej) {
-        // Eject: check if removal is prevented
+        // Eject: check if removal is prevented.  CDU-541 manual S5.2.33 -- "a
+        // request to eject the disc will be terminated with a CHECK CONDITION
+        // status.  The sense key will be set to ILLEGAL REQUEST, and the
+        // additional sense code set to PREVENT BIT SET".  This used to report
+        // 0x3A MEDIUM NOT PRESENT, which tells the driver the drive is empty --
+        // the opposite of the truth, and a reason to stop retrying.
         if (scsi->devices[target].prevent_removal) {
-            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_MEDIUM_NOT_PRESENT, 0x00);
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_SONY_PREVENT_BIT_SET, 0x00);
             return;
         }
         // Mark medium as not present (eject).  No unit attention: removal is
@@ -431,6 +436,23 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
 // Handle PREVENT/ALLOW MEDIUM REMOVAL command for CD-ROM
 void scsi_cdrom_prevent_allow(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
-    scsi->devices[target].prevent_removal = (scsi->buf.data[4] & 0x01) != 0;
+    bool prevent = (scsi->buf.data[4] & 0x01) != 0;
+
+    // CDU-541 manual S5.2.14: "If a PREVENT MEDIUM REMOVAL command is issued
+    // without the drive being in the ready condition [the] command will be
+    // terminated with a CHECK CONDITION status.  The sense key will be set to
+    // NOT READY and the appropriate additional sense code will be set."  The
+    // ready condition is a caddy inserted with its TOC recovered (S4.1.4), so
+    // the appropriate code for an empty bay is 0xB0.
+    //
+    // ALLOW is not covered by that sentence and is not refused: unlocking a
+    // drive that has nothing in it is harmless, and a driver tidying up after
+    // an eject has every reason to send it.
+    if (prevent && !scsi->devices[target].medium_present) {
+        scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
+        return;
+    }
+
+    scsi->devices[target].prevent_removal = prevent;
     phase_status(scsi, STATUS_GOOD);
 }

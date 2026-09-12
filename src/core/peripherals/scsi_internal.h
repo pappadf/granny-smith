@@ -138,7 +138,13 @@
 // inserted in drive" (CDU-541 SCSI manual, sense code tables).  Apple's CD-ROM
 // driver was written against these drives, so 0xB0 is what it expects to see.
 #define ASC_SONY_CADDY_NOT_INSERTED 0xB0
-#define ASC_INCOMPATIBLE_MEDIUM     0x30
+// Refusing an eject because PREVENT MEDIUM REMOVAL is latched.  CDU-541 manual
+// S5.2.33: "the sense key will be set to ILLEGAL REQUEST, and the additional
+// sense code set to PREVENT BIT SET", which its ILLEGAL REQUEST (5h) table
+// numbers 0x80.  SCSI-2's 0x53/0x02 MEDIUM REMOVAL PREVENTED is a different
+// vocabulary and does not appear anywhere in this drive's tables.
+#define ASC_SONY_PREVENT_BIT_SET 0x80
+#define ASC_INCOMPATIBLE_MEDIUM  0x30
 
 // Block size and buffer limits
 #define BLOCK_SIZE 512
