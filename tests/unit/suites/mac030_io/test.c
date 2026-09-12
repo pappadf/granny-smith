@@ -95,6 +95,25 @@ static void expect_window(const mac030_io_range_t *ranges, uint32_t mirror, uint
     ASSERT_EQ_INT(r->xform, xform);
 }
 
+// The stride is only useful if it actually produces a register index.  Every
+// one of the SWIM's sixteen registers must be reachable and distinct: baking
+// the SE/30 decode into the chip instead is what collapsed all sixteen on to
+// index 0 through the IIfx/Q900 IOP bypass (02-floppy F-03).
+TEST(test_swim_window_decodes_register_index) {
+    const mac030_io_range_t *g = mac030_glue_io_ranges();
+    int seen[16] = {0};
+    for (unsigned reg = 0; reg < 16; reg++) {
+        uint32_t offset = 0x16000u + (reg << 9);
+        const mac030_io_range_t *r = mac030_io_decode(g, GLUE_MIRROR, offset);
+        ASSERT_TRUE(r != NULL);
+        ASSERT_EQ_INT(r->device, MAC030_DEV_FLOPPY);
+        ASSERT_EQ_INT((int)(((offset - r->base) >> 9) & 0x0Fu), (int)reg);
+        seen[reg]++;
+    }
+    for (int i = 0; i < 16; i++)
+        ASSERT_EQ_INT(seen[i], 1);
+}
+
 TEST(test_glue_addr_map) {
     const mac030_io_range_t *g = mac030_glue_io_ranges();
     // VIA windows: A0-masked, E-clock penalty 16.
@@ -106,8 +125,11 @@ TEST(test_glue_addr_map) {
     expect_window(g, GLUE_MIRROR, 0x04000, MAC030_DEV_SCC, "scc", 2, MAC030_IO_NORMAL);
     expect_window(g, GLUE_MIRROR, 0x10000, MAC030_DEV_SCSI, "scsi_reg", 2, MAC030_IO_NORMAL);
     expect_window(g, GLUE_MIRROR, 0x14000, MAC030_DEV_ASC, "asc", 2, MAC030_IO_NORMAL);
-    expect_window(g, GLUE_MIRROR, 0x16000, MAC030_DEV_FLOPPY, "swim", 2, MAC030_IO_NORMAL);
-    expect_window(g, GLUE_MIRROR, 0x17FFF, MAC030_DEV_FLOPPY, "swim", 2, MAC030_IO_NORMAL);
+    // The SWIM window carries its own stride: the chip's A0-A3 are wired to
+    // A9-A12, so the table decodes the register index rather than handing the
+    // chip a bus offset (02-floppy F-03/F-44).
+    expect_window(g, GLUE_MIRROR, 0x16000, MAC030_DEV_FLOPPY, "swim", 2, MAC030_IO_STRIDE_512);
+    expect_window(g, GLUE_MIRROR, 0x17FFF, MAC030_DEV_FLOPPY, "swim", 2, MAC030_IO_STRIDE_512);
     // SCSI pseudo-DMA "blind" windows: fixed register (read 0 / write $201).
     expect_window(g, GLUE_MIRROR, 0x06000, MAC030_DEV_SCSI, "scsi_drq", 2, MAC030_IO_FIXED);
     expect_window(g, GLUE_MIRROR, 0x12000, MAC030_DEV_SCSI, "scsi_blind", 2, MAC030_IO_FIXED);
@@ -140,7 +162,7 @@ TEST(test_mdu_addr_map) {
     expect_window(m, MDU_MIRROR, 0x10000, MAC030_DEV_SCSI, "scsi_reg", 2, MAC030_IO_NORMAL);
     expect_window(m, MDU_MIRROR, 0x12000, MAC030_DEV_SCSI, "scsi_blind", 2, MAC030_IO_FIXED);
     expect_window(m, MDU_MIRROR, 0x14000, MAC030_DEV_ASC, "asc", 2, MAC030_IO_NORMAL);
-    expect_window(m, MDU_MIRROR, 0x16000, MAC030_DEV_FLOPPY, "swim", 2, MAC030_IO_NORMAL);
+    expect_window(m, MDU_MIRROR, 0x16000, MAC030_DEV_FLOPPY, "swim", 2, MAC030_IO_STRIDE_512);
     // The two MDU-only windows: VDAC ($24000) + RBV ($26000).
     expect_window(m, MDU_MIRROR, 0x24000, MAC030_DEV_VDAC, "vdac", 2, MAC030_IO_NORMAL);
     expect_window(m, MDU_MIRROR, 0x26000, MAC030_DEV_RBV, "rbv", 2, MAC030_IO_NORMAL);
@@ -176,6 +198,7 @@ TEST(test_irq_priority) {
 
 int main(void) {
     RUN(test_glue_addr_map);
+    RUN(test_swim_window_decodes_register_index);
     RUN(test_mdu_addr_map);
     RUN(test_irq_single_sources);
     RUN(test_irq_priority);

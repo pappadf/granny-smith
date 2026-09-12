@@ -173,6 +173,26 @@ static int scc_bypass_addr(uint32_t offset) {
     }
 }
 
+// Converts SWIM IOP bypass offsets to the chip's sixteen-register index.  The
+// PIC exposes device registers at chip offsets $10-$1F (IIfx PIC spec §7.1,
+// "the same low-nibble device map used by the IOP at $40-$4F"), and the board
+// places PIC registers on 2-byte centres on the 68k bus -- which is what
+// iop_regs.h already encodes ($00/$01/$02/$04 -> 0x00/0x02/0x04/0x08).  So the
+// sixteen registers land at +$20, +$22 ... +$3E.
+//
+// Without this the SWIM's own memory_interface_t applied the SE/30's window
+// decode, (addr >> 9) & 0x0F, to an offset of 0..0x1F -- and (0x1F >> 9) == 0,
+// so every register aliased to index 0 for both reads and writes on the IIfx
+// and the Q900, which have no direct SWIM window at all (02-floppy F-03).
+//
+// Odd offsets are the filler byte of each 2-byte slot and decode to nothing,
+// exactly as scc_bypass_addr treats the SCC's unused offsets.
+static int swim_bypass_addr(uint32_t offset) {
+    if (offset < iopBypassBase || offset > iopBypassEnd || (offset & 1u))
+        return -1;
+    return (int)(((offset - iopBypassBase) >> 1) & 0x0Fu);
+}
+
 static uint8_t iop_bypass_read(iop_t *iop, uint32_t offset) {
     if (!iop->bypass_iface || !iop->bypass_device)
         return 0xff;
@@ -182,7 +202,10 @@ static uint8_t iop_bypass_read(iop_t *iop, uint32_t offset) {
             return iop->bypass_iface->read_uint8(iop->bypass_device, (uint32_t)addr);
         return 0xff;
     }
-    return iop->bypass_iface->read_uint8(iop->bypass_device, offset - iopBypassBase);
+    int reg = swim_bypass_addr(offset);
+    if (reg < 0)
+        return 0xff;
+    return iop->bypass_iface->read_uint8(iop->bypass_device, (uint32_t)reg);
 }
 
 static void iop_bypass_write(iop_t *iop, uint32_t offset, uint8_t value) {
@@ -194,7 +217,9 @@ static void iop_bypass_write(iop_t *iop, uint32_t offset, uint8_t value) {
             iop->bypass_iface->write_uint8(iop->bypass_device, (uint32_t)addr, value);
         return;
     }
-    iop->bypass_iface->write_uint8(iop->bypass_device, offset - iopBypassBase, value);
+    int reg = swim_bypass_addr(offset);
+    if (reg >= 0)
+        iop->bypass_iface->write_uint8(iop->bypass_device, (uint32_t)reg, value);
 }
 
 // ============================================================================

@@ -19,7 +19,30 @@ struct config;
 typedef struct config config_t;
 
 // === Type Definitions ===
-enum image_type { image_other, image_fd_ss, image_fd_ds, image_fd_hd, image_hd, image_cdrom };
+// Floppy kinds are named by capacity because that is what distinguishes them
+// on the wire; the encoding follows from it.  image_fd_dd_mfm (720K) was
+// missing, so a 737,280-byte floppy classified as a hard disk and every
+// consumer got a wrong answer (02-floppy F-04).  Ask "is this MFM media?" with
+// image_is_mfm_floppy(), never `type == image_fd_hd`.
+enum image_type {
+    image_other,
+    image_fd_ss, // 400K GCR, single-sided
+    image_fd_ds, // 800K GCR, double-sided
+    image_fd_dd_mfm, // 720K MFM, double-density
+    image_fd_hd, // 1440K MFM, high-density
+    image_hd,
+    image_cdrom
+};
+
+// True for media the drive reads with MFM framing rather than Apple GCR.
+static inline bool image_is_mfm_floppy(enum image_type t) {
+    return t == image_fd_dd_mfm || t == image_fd_hd;
+}
+
+// True for any floppy geometry, GCR or MFM.
+static inline bool image_is_floppy(enum image_type t) {
+    return t == image_fd_ss || t == image_fd_ds || image_is_mfm_floppy(t);
+}
 
 // Per-image geometry.  The default openers use { .block_size = 512 }; devices
 // with a different on-disk block (e.g. the Lisa ProFile's 532-byte block) open

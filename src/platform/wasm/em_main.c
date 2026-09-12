@@ -922,7 +922,7 @@ int gs_find_media(const char *dir_path, const char *dest) {
         // Try as floppy image
         image_t *img = image_open_readonly(full);
         if (img) {
-            bool is_floppy = (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd);
+            bool is_floppy = image_is_floppy(img->type);
             image_close(img);
             if (is_floppy) {
                 snprintf(found_path, sizeof(found_path), "%s", full);

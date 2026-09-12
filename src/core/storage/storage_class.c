@@ -83,7 +83,7 @@ static value_t storage_image_attr_writable(struct object *self, const member_t *
 // Designated-initialiser table keyed by `image_type` so a future enum
 // reorder (or a value inserted out of order) keeps the labels aligned.
 static const char *const STORAGE_IMAGE_TYPE_NAMES[] = {
-    [image_other] = "other", [image_fd_ss] = "fd_ss", [image_fd_ds] = "fd_ds",
+    [image_other] = "other", [image_fd_ss] = "fd_ss", [image_fd_ds] = "fd_ds", [image_fd_dd_mfm] = "fd_720k_mfm",
     [image_fd_hd] = "fd_hd", [image_hd] = "hd",       [image_cdrom] = "cdrom",
 };
 

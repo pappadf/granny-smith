@@ -39,6 +39,7 @@
 #include "swim3.h"
 
 #include "floppy.h"
+#include "floppy_geometry.h"
 #include "image.h"
 #include "log.h"
 #include "scheduler.h"
@@ -46,7 +47,13 @@
 #include <math.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("swim3");
+// One log category for the whole subsystem -- drive mechanics AND every
+// controller (02-floppy F-21).  `debug.log swim 10` on an SE/30 used to turn on
+// the ISM register trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush
+// or eject, because those live in floppy.c under a different name; the same
+// split hid the DBDMA ring from `debug.log swim3 10` on a 7500.  Level
+// convention: 1-2 state changes, 3-5 per-operation, 6+ per-register/per-byte.
+LOG_USE_CATEGORY_NAME("floppy");
 
 // The internal drive is always drive 1; PDM has no second drive.
 #define FD 0u
@@ -66,79 +73,30 @@ LOG_USE_CATEGORY_NAME("swim3");
 
 // === Media geometry =========================================================
 
-// What the disk in the drive looks like to the engine.  Everything here is
-// derived from the image's size: the four Macintosh floppy capacities each
-// pin an encoding, a side count and a sector layout.
-typedef struct swim3_media {
-    image_t *img;
-    bool mfm; // MFM-formatted media (720K / 1440K); otherwise GCR
-    bool hd; // 2 MB (HD) media — what sense address 15 reports
-    int sides;
-    int mfm_spt; // MFM sectors per track (GCR varies by zone)
-    uint8_t fmt_byte; // the address field's 4th byte: MFM size code / GCR format
-} swim3_media_t;
+// The medium in the drive, as floppy_geometry.h derives it once for every
+// controller.  This file used to carry its own exact-size switch and its own
+// copies of the zone helpers (02-floppy F-17/F-19); the classifier was the
+// only one of the four that was right, so it was promoted rather than deleted.
+typedef floppy_media_t swim3_media_t;
 
-// GCR speed zones: 12 sectors on the outermost 16 tracks, one fewer per
-// zone inward, with the spindle speeding up to keep the bit rate constant.
-static int gcr_sectors_per_track(int track) {
-    return 12 - (track >> 4);
-}
+// GCR speed zones come from floppy_geometry.h.  The local gcr_rpm() masked the
+// zone index with & 7 over a five-entry table (02-floppy F-31), which reads
+// like a bounds guard while being wider than the array.
+#define gcr_sectors_per_track floppy_zone_sectors_per_track
+#define gcr_rpm               floppy_zone_rpm
 
-static int gcr_rpm(int track) {
-    static const int rpm[5] = {394, 429, 472, 525, 590};
-    return rpm[(track >> 4) & 7];
-}
-
-// Fill *m from the disk currently in the drive; false when the drive is
-// empty or holds something that is not a floppy geometry we can present.
+// Fill *m from the disk currently in the drive; false when the drive is empty
+// or holds something that is not a floppy geometry we can present.
 static bool swim3_media(swim3_t *sw, swim3_media_t *m) {
-    memset(m, 0, sizeof(*m));
-    m->img = sw->fd ? floppy_drive_image(sw->fd, FD) : NULL;
-    if (!m->img)
-        return false;
-    switch (disk_size(m->img)) {
-    case 1440u * 1024u: // MFM 1.44 MB: 18 sectors/track, both sides, HD media
-        m->mfm = true;
-        m->hd = true;
-        m->sides = 2;
-        m->mfm_spt = 18;
-        m->fmt_byte = 0x02; // MFM size code 2 = 512-byte sectors
-        break;
-    case 720u * 1024u: // MFM 720K: 9 sectors/track on DD media
-        m->mfm = true;
-        m->sides = 2;
-        m->mfm_spt = 9;
-        m->fmt_byte = 0x02;
-        break;
-    case 800u * 1024u: // GCR 800K: double-sided, interleave 2
-        m->sides = 2;
-        m->fmt_byte = 0x22;
-        break;
-    case 400u * 1024u: // GCR 400K: single-sided
-        m->sides = 1;
-        m->fmt_byte = 0x02;
-        break;
-    default:
-        return false;
-    }
-    return true;
+    return floppy_media_from_image(sw->fd ? floppy_drive_image(sw->fd, FD) : NULL, m);
 }
 
 static int swim3_spt(const swim3_media_t *m, int track) {
-    return m->mfm ? m->mfm_spt : gcr_sectors_per_track(track);
+    return floppy_media_spt(m, track);
 }
 
-// Byte offset of one sector inside the image.  MFM tracks are uniform;
-// GCR tracks shrink towards the spindle, so their offset accumulates.
 static size_t swim3_sector_offset(const swim3_media_t *m, int track, int side, int sector) {
-    if (m->mfm)
-        return ((size_t)(track * m->sides + side) * (size_t)m->mfm_spt + (size_t)sector) * SECTOR_BYTES;
-    size_t off = 0;
-    for (int t = 0; t < track; t++)
-        off += (size_t)m->sides * (size_t)gcr_sectors_per_track(t) * SECTOR_BYTES;
-    if (side && m->sides > 1)
-        off += (size_t)gcr_sectors_per_track(track) * SECTOR_BYTES;
-    return off + (size_t)sector * SECTOR_BYTES;
+    return floppy_media_sector_offset(m, track, side, sector);
 }
 
 bool swim3_media_is_hd(swim3_t *sw) {
@@ -185,9 +143,8 @@ int swim3_index_pulse(swim3_t *sw) {
     int track = floppy_drive_track(sw->fd, FD);
     double now = scheduler_time_ns(sw->sched);
     double rev_ns = swim3_rev_ns(&m, track);
-    if (m.mfm)
-        return fmod(now, rev_ns) < rev_ns / 50.0 ? 1 : 0; // a short 1/rev mark
-    return ((uint64_t)(now / (rev_ns / 120.0)) & 1u) ? 1 : 0; // 60 pulses/rev
+    // One index/tach model for every controller (02-floppy F-23).
+    return floppy_index_signal(m.mfm ? FLOPPY_INDEX_SWIM3_MFM : FLOPPY_INDEX_GCR_TACH, now, rev_ns, 60);
 }
 
 // === GCR nibble codec =======================================================
@@ -197,24 +154,6 @@ int swim3_index_pulse(swim3_t *sw) {
 // pair, and the three checksum registers — 699 + 4 = 703 values.  The
 // checksum is Apple's rotate-add-xor chain; hardware verifies it and the
 // driver verifies it again in software, so it must be right.
-
-// Encode three bytes into four six-bit values, advancing the checksum.
-static void gcr_encode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst) {
-    *cc = (uint16_t)((*cc << 1) | ((*cc >> 7) & 1));
-    *ca &= 0xFF;
-    *ca = (uint16_t)(*ca + src[0] + (*cc & 1));
-    uint8_t ba = (uint8_t)(src[0] ^ *cc);
-    *cb &= 0xFF;
-    *cb = (uint16_t)(*cb + src[1] + ((*ca >> 8) & 1));
-    uint8_t bb = (uint8_t)(src[1] ^ *ca);
-    *cc &= 0xFF;
-    *cc = (uint16_t)(*cc + src[2] + ((*cb >> 8) & 1));
-    uint8_t bc = (uint8_t)(src[2] ^ *cb);
-    dst[0] = (uint8_t)(((ba >> 2) & 0x30) | ((bb >> 4) & 0x0C) | ((bc >> 6) & 0x03));
-    dst[1] = (uint8_t)(ba & 0x3F);
-    dst[2] = (uint8_t)(bb & 0x3F);
-    dst[3] = (uint8_t)(bc & 0x3F);
-}
 
 // tag[12] + data[512] -> 703 six-bit values.
 static void gcr_nibblize(const uint8_t *tag, const uint8_t *data, uint8_t *out) {
@@ -241,23 +180,6 @@ static void gcr_nibblize(const uint8_t *tag, const uint8_t *data, uint8_t *out) 
     *dst++ = (uint8_t)(c[0] & 0x3F);
     *dst++ = (uint8_t)(c[1] & 0x3F);
     *dst++ = (uint8_t)(c[2] & 0x3F);
-}
-
-// Decode four six-bit values back into three bytes, advancing the checksum.
-static void gcr_decode_triplet(const uint8_t *src, uint16_t *ca, uint16_t *cb, uint16_t *cc, uint8_t *dst) {
-    uint8_t ba = (uint8_t)(((src[0] << 2) & 0xC0) | (src[1] & 0x3F));
-    uint8_t bb = (uint8_t)(((src[0] << 4) & 0xC0) | (src[2] & 0x3F));
-    uint8_t bc = (uint8_t)(((src[0] << 6) & 0xC0) | (src[3] & 0x3F));
-    *cc = (uint16_t)((*cc << 1) | ((*cc >> 7) & 1));
-    dst[0] = (uint8_t)(ba ^ *cc);
-    *ca &= 0xFF;
-    *ca = (uint16_t)(*ca + dst[0] + (*cc & 1));
-    dst[1] = (uint8_t)(bb ^ *ca);
-    *cb &= 0xFF;
-    *cb = (uint16_t)(*cb + dst[1] + ((*ca >> 8) & 1));
-    dst[2] = (uint8_t)(bc ^ *cb);
-    *cc &= 0xFF;
-    *cc = (uint16_t)(*cc + dst[2] + ((*cb >> 8) & 1));
 }
 
 // 703 six-bit values -> tag[12] + data[512].  Returns false when the
@@ -554,6 +476,21 @@ static bool raw_pair(swim3_t *sw, uint8_t flag, uint8_t data) {
     return dma_put(sw, flag) && dma_put(sw, data);
 }
 
+// Sink for floppy_mfm_emit_sector: each byte goes out as a (clock, data) pair
+// on the raw-capture stream.  `ok` goes false when the DMA channel closes.
+typedef struct {
+    swim3_t *sw;
+    bool ok;
+} swim3_raw_sink_t;
+
+static void swim3_raw_emit(void *ctx, uint8_t byte, bool is_mark) {
+    swim3_raw_sink_t *sink = ctx;
+    if (!sink->ok)
+        return;
+    if (!raw_pair(sink->sw, is_mark ? 0x80 : 0x00, byte))
+        sink->ok = false;
+}
+
 // Reconstruct one track's byte stream, oldest field first, into the DMA
 // window.  Stops as soon as the channel closes (terminal count).
 static void swim3_raw_track(swim3_t *sw, const swim3_media_t *m, int track, int side) {
@@ -564,46 +501,19 @@ static void swim3_raw_track(swim3_t *sw, const swim3_media_t *m, int track, int 
         if (!swim3_read_sector(m, track, side, s, data, tag))
             return;
         if (m->mfm) {
-            for (int i = 0; i < 12; i++) // sync
-                if (!raw_pair(sw, 0x00, 0x00))
-                    return;
-            for (int i = 0; i < 3; i++) // address mark
-                if (!raw_pair(sw, 0x80, 0xA1))
-                    return;
-            if (!raw_pair(sw, 0x80, 0xFE))
+            // One MFM layout for every controller (02-floppy F-20).  The sink
+            // pairs each byte with its clock byte: $80 for the $A1 marks
+            // (missing clock transition), $00 otherwise.  Gap 3 and the absent
+            // CRC fields stay this caller's choices -- see the header.
+            swim3_raw_sink_t sink = {sw, true};
+            floppy_mfm_emit_sector(swim3_raw_emit, &sink, track, side, s + 1, data, 54, false);
+            if (!sink.ok)
                 return;
-            uint8_t hdr[4] = {(uint8_t)track, (uint8_t)side, (uint8_t)(s + 1), 0x02};
-            for (int i = 0; i < 4; i++)
-                if (!raw_pair(sw, 0x00, hdr[i]))
-                    return;
-            for (int i = 0; i < 22; i++) // gap 2
-                if (!raw_pair(sw, 0x00, 0x4E))
-                    return;
-            for (int i = 0; i < 12; i++)
-                if (!raw_pair(sw, 0x00, 0x00))
-                    return;
-            for (int i = 0; i < 3; i++) // data mark
-                if (!raw_pair(sw, 0x80, 0xA1))
-                    return;
-            if (!raw_pair(sw, 0x80, 0xFB))
-                return;
-            for (int i = 0; i < SECTOR_BYTES; i++)
-                if (!raw_pair(sw, 0x00, data[i]))
-                    return;
-            for (int i = 0; i < 54; i++) // gap 3
-                if (!raw_pair(sw, 0x00, 0x4E))
-                    return;
         } else {
-            // The 6-to-8 GCR codeword table.  The shared floppy module has
-            // the same 64 bytes, but only behind its private header, and
-            // this is the one place a machine model needs the ENCODED form
-            // (raw capture is the only path that sees disk bytes rather
-            // than the values either side of the chip's converter).
-            static const uint8_t gcr6[64] = {
-                0x96, 0x97, 0x9A, 0x9B, 0x9D, 0x9E, 0x9F, 0xA6, 0xA7, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF, 0xB2, 0xB3,
-                0xB4, 0xB5, 0xB6, 0xB7, 0xB9, 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xCB, 0xCD, 0xCE, 0xCF, 0xD3,
-                0xD6, 0xD7, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE5, 0xE6, 0xE7, 0xE9, 0xEA, 0xEB, 0xEC,
-                0xED, 0xEE, 0xEF, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE, 0xFF};
+            // The 6-to-8 GCR codeword table, shared (02-floppy F-18): this used
+            // to be a byte-identical second copy, kept here only because the
+            // shared one lived behind a private header.
+            const uint8_t *gcr6 = gcr_codewords;
             uint8_t side_enc = (uint8_t)((side << 5) | ((track >> 6) & 0x1F));
             uint8_t hdr[5] = {(uint8_t)track, (uint8_t)s, side_enc, m->fmt_byte,
                               (uint8_t)(track ^ s ^ side_enc ^ m->fmt_byte)};
@@ -654,8 +564,11 @@ static void swim3_arm(swim3_t *sw, double delay_ns) {
 
 static void swim3_stop(swim3_t *sw) {
     sw->xfer_any = 0; // GO dropped: the next GO starts at FirstSector again
-    if (!sw->engine_running)
-        return;
+    // Unconditional: `engine_running` is a record of what we armed, and a
+    // caller that wipes the register file before stopping (SoftReset, swim3.c)
+    // destroys that record first — an `if (!engine_running) return` here let
+    // the armed event outlive the reset.  remove_event on a non-armed event is
+    // a no-op, so the flag never has to be trusted for correctness.
     remove_event(sw->sched, swim3_engine_event, sw);
     sw->engine_running = 0;
 }
@@ -680,6 +593,31 @@ static bool encoding_matches(const swim3_t *sw, const swim3_media_t *m) {
     return gcr_framing != m->mfm;
 }
 
+// A sector transaction failed (unreadable sector, or the DMA channel would
+// not move a byte).  The ERS is explicit about all three consequences:
+//
+//   "Any error will cause a multiple sector request to be terminated. This
+//    should be checked when the sectors_done interrupt is received."
+//   reg $E: "The number of untransferred sectors will be retained here after
+//    an error has occurred."
+//
+// So: do NOT decrement SectorsToXfer -- a driver reads it after an error to
+// learn how far it got; DO raise sectors_done, because that is when the
+// driver is expected to look at the error register; and stop the engine,
+// rather than walking on to the next header as this used to.  The error bit
+// itself was already set by the failing call.
+//
+// Deliberately not modelled (no on-disk error behaviour exists for headers,
+// so no header read can fail): the ERS's address-mark CRC rules -- a CRC
+// error during an address-mark read leaves CurSect unchanged with
+// last_id_valid false, and suppresses any transaction that mark would have
+// started.
+static void swim3_fail_transfer(swim3_t *sw) {
+    LOG(3, "transfer terminated by error $%02X, %u sector(s) untransferred", sw->error, sw->nsect);
+    swim3_raise(sw, SWIM3_INT_DONE);
+    swim3_stop(sw);
+}
+
 // One read-mode service slot: the next address header passes under the
 // head.  While GO is set the position registers update and idIntNum fires
 // on every header (ERS §36); a header that matches FirstSector with
@@ -689,11 +627,6 @@ static void swim3_read_slot(swim3_t *sw, const swim3_media_t *m) {
     int side = sw->xfer_side;
     double delay = 0;
     int idx = swim3_next_header(sw, m, track, &delay);
-
-    if (side >= m->sides) {
-        swim3_arm(sw, delay); // head 1 of a single-sided disk: no fields
-        return;
-    }
 
     uint8_t hdr_sect = m->mfm ? (uint8_t)(idx + 1) : (uint8_t)idx;
     sw->ctrack = (uint8_t)((track & 0x7F) | (side ? 0x80 : 0));
@@ -709,8 +642,11 @@ static void swim3_read_slot(swim3_t *sw, const swim3_media_t *m) {
     // the difference.
     if (sw->nsect > 0 && (sw->xfer_any || sector_match(sw->sector, hdr_sect)) && sw->be.dma_running(sw->be.ctx)) {
         LOG(4, "read track %d side %d sector %d", track, side, idx);
-        swim3_stream_read(sw, m, track, side, idx);
-        sw->nsect--; // hardware decrements per completed sector (§3.7)
+        if (!swim3_stream_read(sw, m, track, side, idx)) {
+            swim3_fail_transfer(sw);
+            return;
+        }
+        sw->nsect--; // hardware decrements per COMPLETED sector (ERS reg $E)
         sw->xfer_any = sw->nsect > 0;
         if (sw->nsect == 0)
             swim3_raise(sw, SWIM3_INT_DONE);
@@ -726,10 +662,6 @@ static void swim3_write_slot(swim3_t *sw, const swim3_media_t *m) {
     double delay = 0;
     int idx = swim3_next_header(sw, m, track, &delay);
 
-    if (side >= m->sides) {
-        swim3_arm(sw, delay);
-        return;
-    }
     uint8_t hdr_sect = m->mfm ? (uint8_t)(idx + 1) : (uint8_t)idx;
     sw->ctrack = (uint8_t)((track & 0x7F) | (side ? 0x80 : 0));
     sw->csect = (uint8_t)(hdr_sect | 0x80);
@@ -741,7 +673,12 @@ static void swim3_write_slot(swim3_t *sw, const swim3_media_t *m) {
     }
     LOG(4, "write track %d side %d sector %d", track, side, idx);
     swim3_parse_t p = {.m = m, .track = track, .side = side, .sector = idx, .format = false};
-    swim3_parse_stream(sw, &p);
+    if (!swim3_parse_stream(sw, &p)) {
+        // The channel closed before the stream's terminating "99 08": the
+        // sector was not written through, so it did not complete.
+        swim3_fail_transfer(sw);
+        return;
+    }
     sw->nsect--;
     sw->xfer_any = sw->nsect > 0;
     if (sw->nsect == 0)
@@ -754,7 +691,7 @@ static void swim3_write_slot(swim3_t *sw, const swim3_media_t *m) {
 // layout it declares plus each data field it carries.
 static void swim3_format_slot(swim3_t *sw, const swim3_media_t *m) {
     int track = floppy_drive_track(sw->fd, FD);
-    int side = sw->xfer_side < m->sides ? sw->xfer_side : 0;
+    int side = sw->xfer_side;
     swim3_parse_t p = {.m = m, .track = track, .side = side, .sector = -1, .format = true};
     swim3_parse_stream(sw, &p);
     sw->fmt_sectors = (uint32_t)p.sectors_written;
@@ -767,7 +704,7 @@ static void swim3_format_slot(swim3_t *sw, const swim3_media_t *m) {
 // the AMIC DMA interrupt) or when the driver clears GO.
 static void swim3_raw_slot(swim3_t *sw, const swim3_media_t *m) {
     int track = floppy_drive_track(sw->fd, FD);
-    int side = sw->xfer_side < m->sides ? sw->xfer_side : 0;
+    int side = sw->xfer_side;
     LOG(3, "raw capture track %d side %d", track, side);
     swim3_raw_track(sw, m, track, side);
     swim3_stop(sw);
@@ -798,6 +735,18 @@ static void swim3_engine_event(void *source, uint64_t data) {
         return;
     }
     floppy_swim3_set_side(sw->fd, FD, sw->xfer_side);
+
+    // Head 1 of single-sided media has no surface under it, so -- exactly as
+    // above -- the head sees nothing.  Checked once here rather than per slot:
+    // read and write each skipped their slot, but format and raw silently
+    // REMAPPED side 1 onto side 0 (02-floppy F-37), so formatting side 1 of a
+    // 400K disk overwrote side 0's data and a raw capture of side 1 returned
+    // side 0's bytes as if they were genuine.  One check cannot disagree with
+    // itself the way four did.
+    if (sw->xfer_side >= m.sides) {
+        swim3_arm(sw, 5.0e6);
+        return;
+    }
 
     if (sw->setup & SWIM3_S_COPYPROT)
         swim3_raw_slot(sw, &m);

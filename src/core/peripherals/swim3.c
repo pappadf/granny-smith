@@ -31,7 +31,13 @@
 #include "log.h"
 #include "scheduler.h"
 
-LOG_USE_CATEGORY_NAME("swim3");
+// One log category for the whole subsystem -- drive mechanics AND every
+// controller (02-floppy F-21).  `debug.log swim 10` on an SE/30 used to turn on
+// the ISM register trace but NOT stepping, motor, /TKO, /TACH, GCR encode/flush
+// or eject, because those live in floppy.c under a different name; the same
+// split hid the DBDMA ring from `debug.log swim3 10` on a 7500.  Level
+// convention: 1-2 state changes, 3-5 per-operation, 6+ per-register/per-byte.
+LOG_USE_CATEGORY_NAME("floppy");
 
 // Register indices (offset >> 9)
 #define R_DATA    0
@@ -79,7 +85,7 @@ static bool drive1_selected(swim3_t *sw) {
 // The {SEL,CA2,CA1,CA0} drive-register address currently addressed: SEL is
 // mode bit 5 (HeadSelect), CA0-2 are Phase bits 0-2 (§5).
 static uint32_t drive_addr(swim3_t *sw) {
-    return ((sw->mode & SWIM3_M_HEADSEL) ? 8u : 0u) | (sw->phase & 7u);
+    return ((sw->mode & SWIM3_M_HEADSEL) ? 8u : 0u) | (sw->phase & SWIM3_PH_CA_MASK);
 }
 
 // The drive's sense response for the currently addressed register (§5.2).
@@ -339,7 +345,7 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
         break;
     case R_PHASE: {
         // LSTRB is bit 3; a rising edge strobes the addressed drive latch.
-        uint8_t rose = (uint8_t)(value & ~sw->phase & 0x08u);
+        uint8_t rose = (uint8_t)(value & ~sw->phase & SWIM3_PH_LSTRB);
         sw->phase = value;
         route_head(sw);
         if (rose)
@@ -347,7 +353,7 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
         break;
     }
     case R_SETUP:
-        if (value & 0x80u) {
+        if (value & SWIM3_S_SOFTRESET) {
             // SoftReset (self-clearing): registers return to their reset
             // state (§3.10) and any running engine stops with them.
             swim3_t z = {0};

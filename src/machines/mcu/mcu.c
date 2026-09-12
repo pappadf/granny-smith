@@ -358,7 +358,7 @@ const mac030_io_range_t mcu_q700_io_ranges[] = {
     {0x0F000, 0x0F100, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_read, mcu_scsi_write, "scsi_53c96"},
     {0x0F100, 0x0F102, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma"},
     {0x14000, 0x16000, MAC030_DEV_ASC, MCU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
-    {0x1E000, 0x20000, MAC030_DEV_FLOPPY, MCU_SWIM_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim"},
+    {0x1E000, 0x20000, MAC030_DEV_FLOPPY, MCU_SWIM_IO_PENALTY, MAC030_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
     {0x28000, 0x2A000, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc"},
     {0}, // sentinel: end == 0
 };

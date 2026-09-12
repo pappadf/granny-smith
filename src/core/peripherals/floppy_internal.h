@@ -5,10 +5,16 @@
 // Internal shared types, constants, and struct definition for the unified
 // floppy subsystem (IWM + SWIM). This header is NOT part of the public API;
 // include it only from floppy*.c files.
+//
+// The Sony zone geometry that machine files legitimately need lives in the
+// public floppy_geometry.h instead -- lisa_fdc.c used to include THIS header
+// for it, in violation of the rule above (02-floppy F-29).
 
 #ifndef FLOPPY_INTERNAL_H
 #define FLOPPY_INTERNAL_H
 
+#include "floppy.h" // FLOPPY_NUM_DRIVES, FLOPPY_TYPE_*
+#include "floppy_geometry.h" // zone helpers + floppy_media_t (public API)
 #include "image.h"
 #include "memory.h"
 #include "scheduler.h"
@@ -32,9 +38,9 @@
 // Drive and Track Geometry
 // ============================================================================
 
-#define NUM_DRIVES 2
-#define NUM_TRACKS 80
-#define NUM_SIDES  2
+#define NUM_DRIVES FLOPPY_NUM_DRIVES // see floppy.h
+#define NUM_TRACKS FLOPPY_NUM_TRACKS // see floppy_geometry.h
+#define NUM_SIDES  FLOPPY_NUM_SIDES // see floppy_geometry.h
 
 // Time in nanoseconds for motor spin-up (400 ms)
 #define MOTOR_SPINUP_TIME_NS (400ULL * 1000000ULL)
@@ -127,6 +133,29 @@
 #define ISM_SETUP_MOTOR_TMO  0x80
 
 // ISM error register bits
+// UNDERRUN is defined by the ISM ASIC spec in BOTH directions -- write mode:
+// the FIFO emptied and the processor has not written another byte; read mode:
+// the FIFO holds two bytes and the processor is not reading them fast enough.
+// Both conditions require the transfer engine to be producing or consuming on
+// its own clock, which this model does not have (the ISM path is CPU-paced,
+// unlike SWIM3's scheduler-driven engine), so it is never set.  That is the
+// surviving half of 02-floppy F-24; the rest of that finding is false -- the
+// two ISM_ERR_OVERRUN assignments are both correct per the same spec.
+// UNDERRUN is defined by the ISM ASIC spec in BOTH directions: write mode --
+// the FIFO emptied and the processor has not written another byte; read mode --
+// the FIFO holds two bytes and the processor is not reading them fast enough.
+// NEITHER direction is raised, and the reasons differ:
+//   read  -- the condition is now detectable (the paced engine can find the
+//            FIFO full), but on the chip a full FIFO means the byte is LOST,
+//            and this engine merely skips the delivery.  Raising the bit is
+//            therefore stricter than the model's own behaviour, and it fires on
+//            every normal transfer because the emulated CPU's poll loop takes
+//            more than one 16 us slot.  Verified: doing so breaks
+//            se30-format-hd, se30-mactest and iicx-mactest.
+//   write -- writes are drained at the register rather than paced (see
+//            ism_write_shifter_take), so a shifter that does not run on a clock
+//            can never find the FIFO empty.
+// Both want more fidelity than this model has.  02-floppy F-24.
 #define ISM_ERR_UNDERRUN     0x01
 #define ISM_ERR_MARK_IN_DATA 0x02
 #define ISM_ERR_OVERRUN      0x04
@@ -164,7 +193,10 @@ extern const uint8_t ISM_SWITCH_PATTERN[4];
 typedef struct floppy_track {
     size_t size; // encoded track size
     bool modified; // true if track has been written to
-    uint8_t *data; // pointer to encoded GCR data (excluded from checkpoint)
+    uint8_t *data; // pointer to encoded GCR data.  NOT excluded from the
+                   // checkpoint: this field sits inside FLOPPY_CHECKPOINT_SIZE,
+                   // so 320 host pointers are written to every save file and
+                   // replaced on restore from the per-track has_data byte.
 } floppy_track_t;
 
 // Represents a physical floppy drive with head position and motor state
@@ -177,6 +209,15 @@ typedef struct floppy_drive {
     int track; // current head position (0-79)
     int offset; // byte offset within current track
     int data_side; // latched head side for data I/O
+    int cur_format; // floppy_format_t: what the medium in this drive carries
+                    // NOW.  Seeded from the image on insert and updated by the
+                    // paths that lay a format down, because the image's size
+                    // only tells you the medium's class -- a DD disk is 800K
+                    // GCR or 720K MFM depending on what was last written.
+    bool cur_format_known; // false = fall back to the image-implied format
+    int write_hdr_start; // offset of the D5 AA 96 of the sector being written,
+                         // or -1 when no header has passed under the head since
+                         // the last completed sector (GCR write-through)
     floppy_track_t tracks[NUM_SIDES][NUM_TRACKS]; // GCR encoded track data
 } floppy_drive_t;
 
@@ -206,7 +247,9 @@ struct floppy {
     floppy_drive_t drives[NUM_DRIVES]; // drive state machines
 
     // SWIM-only fields (unused when type == FLOPPY_TYPE_IWM)
-    int cstin_delay[NUM_DRIVES]; // disk insertion detection delay
+    int cstin_delay[NUM_DRIVES]; // UNUSED: no insertion delay is modelled.
+                                 // Kept so the checkpoint layout is unchanged;
+                                 // see the /CSTIN case in floppy_disk_status.
 
     // SWIM mode tracking
     bool in_ism_mode; // true = ISM mode active
@@ -230,6 +273,7 @@ struct floppy {
 
     // ISM CRC state
     uint16_t ism_crc; // running CRC-CCITT-16
+    bool ism_service_armed; // an ISM transfer service slot is pending
 
     // MFM sector-level emulation state
     uint8_t mfm_sector_buf[MFM_SECTOR_BUF_SIZE]; // pre-built sector data
@@ -253,6 +297,7 @@ struct floppy {
 
     // Object-tree binding — lifetime tied to floppy_init / floppy_delete.
     struct object *object; // top-level floppy node
+    struct object *controller_object; // floppy.controller node (the register file)
     struct object *drives_object; // floppy.drive collection child
     struct object *drive_objects[NUM_DRIVES]; // per-drive entry objects
     struct object *disk_objects[NUM_DRIVES]; // per-drive medium (disk) nodes — drive[N].disk
@@ -291,11 +336,20 @@ uint8_t *iwm_track_data(floppy_drive_t *drive, image_t *img, int sel, struct sch
 // Writes any modified GCR tracks back to the underlying disk image
 void iwm_flush_modified_tracks(floppy_drive_t *drive, image_t *img, int drive_index);
 
-// GCR codeword table (6-bit to 8-bit)
-extern const uint8_t gcr_codewords[];
+// Called after each byte the guest writes into a GCR track buffer.  When the
+// byte completes a decodable sector, writes that sector through to the image.
+// See the comment at the definition (floppy_gcr.c) for why this exists.
+void iwm_write_through(floppy_drive_t *drive, image_t *img, int drive_index, int side);
+
+// gcr_codewords / decode_gcr / the triplet chain are public: floppy_geometry.h.
 
 // ============================================================================
-// Shared IWM Core Functions (defined in floppy.c, used by floppy_swim.c)
+// Shared drive/IWM functions (defined in floppy.c), genuinely shared with
+// floppy_swim.c.  floppy_iwm_read/floppy_iwm_write ARE the SWIM's IWM-mode
+// register file: the SWIM used to carry its own near-identical copy, with the
+// three real differences (the data-bus echo latch, the ISM entry-sequence
+// watcher and the no-track-data return value) buried in 77 lines of drift
+// (02-floppy F-10).  Those three are now explicit inside the shared core.
 // ============================================================================
 
 // Returns the current disk status based on IWM CA lines and SEL signal
@@ -306,6 +360,12 @@ void floppy_disk_control(floppy_t *floppy);
 
 // Motor spin-up callback (needed for scheduler event registration)
 void floppy_motor_spinup_callback(void *source, uint64_t data);
+
+// The SWIM's mode-register write hook: tracks bit 6 for the IWM->ISM 4-write
+// entry sequence.  Returns true when it consumed the write (the switch
+// completed), false when the caller should store the byte as the mode
+// register.  Defined in floppy_swim.c; the IWM has no equivalent.
+bool floppy_swim_mode_write_hook(floppy_t *floppy, uint8_t byte);
 
 // Updates IWM state lines from register offset (even=clear, odd=set)
 void floppy_update_iwm_lines(floppy_t *floppy, int offset);
@@ -332,5 +392,9 @@ void floppy_swim_setup(floppy_t *floppy, memory_map_t *map);
 
 // SWIM motor spin-up callback (separate for scheduler event identity)
 void floppy_swim_motor_spinup_callback(void *source, uint64_t data);
+
+// The ISM transfer engine's service slot: one byte per bit-cell time.
+void floppy_swim_service_callback(void *source, uint64_t data);
+void floppy_swim_service_arm(floppy_t *floppy);
 
 #endif // FLOPPY_INTERNAL_H

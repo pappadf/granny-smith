@@ -14,7 +14,7 @@
 #include "lisa_fdc.h"
 
 #include "cpu.h" // cpu_get_pc — guest PC for the floppy command trace
-#include "floppy_internal.h" // iwm_sectors_per_track / iwm_disk_image_offset (Sony geometry)
+#include "floppy_geometry.h" // Sony zone geometry (public API, not the controller internals)
 #include "image.h"
 #include "log.h"
 #include "system.h" // system_cpu — current CPU for the floppy command trace
@@ -178,7 +178,7 @@ static void fdc_update_disktype(lisa_fdc_t *fdc) {
 
 // Map (track, side, sector) to a byte offset in the image (Sony 5-zone layout).
 static size_t fdc_block_offset(const lisa_fdc_t *fdc, int track, int side, int sector) {
-    return iwm_disk_image_offset(track, side, fdc->num_sides) + (size_t)sector * 512u;
+    return floppy_zone_image_offset(track, side, fdc->num_sides) + (size_t)sector * 512u;
 }
 
 // Execute the RWTS command currently in the command block.
@@ -195,7 +195,7 @@ static void fdc_execute_rwts(lisa_fdc_t *fdc) {
         fdc->ram[FDC_STATUS] = 0x07; // DRVERR: no disk in drive
         return;
     }
-    if (track < 0 || track > 79 || sector < 0 || sector >= iwm_sectors_per_track(track)) {
+    if (track < 0 || track > 79 || sector < 0 || sector >= floppy_zone_sectors_per_track(track)) {
         fdc->ram[FDC_STATUS] = 0x17; // unreadable
         LOG(2, "fdc unreadable: rwts=%02x trk=%d sec=%d side=%d (out of Sony geometry)", rwts, track, sector, side);
         return;

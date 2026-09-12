@@ -23,6 +23,7 @@ extern const class_desc_t floppy_class;
 extern const class_desc_t floppy_drive_class;
 extern const class_desc_t floppy_disk_class;
 extern const class_desc_t floppy_drives_collection_class;
+extern const class_desc_t floppy_controller_class;
 
 #include <assert.h>
 #include <math.h>
@@ -46,6 +47,136 @@ static void floppy_speed_settle_callback(void *src, uint64_t data);
 // Returns pointer to the currently selected drive based on IWM SELECT line
 static floppy_drive_t *current_drive(floppy_t *floppy) {
     return &floppy->drives[IWM_SELECT(floppy) ? 1 : 0];
+}
+
+// One read-head bit, for either side.
+//
+// On real hardware SENSE reflects raw flux as the disk spins continuously, so
+// the byte and bit position come from emulated time.  GCR flux timing:
+// ~16.3 us/byte at 489.6 kbit/s, ~2 us/cell.
+//
+// Everything is computed in uint64: the side-0 copy of this was fixed for
+// `(int)` truncation once emulated time passes ~2.1 s, and the side-1 copy --
+// the same four lines, pasted -- was not (02-floppy F-15).  After ~35 s
+// `now_ns / 2040.0` exceeds INT_MAX and casting the out-of-range double is
+// undefined behaviour, so the side-1 sense line returned a constant and any
+// software polling RDDATA1 for a double-sided read stalled.  Extracted so
+// there is one copy to fix.
+static int floppy_rddata_bit(floppy_t *floppy, floppy_drive_t *drive, int drv, int side) {
+    enum { GCR_NS_PER_BYTE = 16340, GCR_NS_PER_BIT = 2040 };
+    uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
+    unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
+
+    uint8_t *data = iwm_track_data(drive, floppy->disk[drv], side, floppy->scheduler);
+    if (!data) {
+        // MFM media: no GCR track data, so simulate time-varying flux.
+        return (bit_idx < 4) ? 1 : 0;
+    }
+    size_t trk_len = iwm_track_length(drive->track);
+    size_t byte_pos = (size_t)((now_ns / GCR_NS_PER_BYTE) % trk_len);
+    return (data[byte_pos] >> bit_idx) & 1;
+}
+
+// Moves a drive's head, for every controller.
+//
+// `model_settle` says whether the CONTROLLER models the post-seek settle and
+// the zone-crossing speed change.  The IWM and SWIM do: the drive deasserts
+// /READY while the head settles and while the motor re-reaches the new zone's
+// RPM, and their drivers poll it.  SWIM3 does NOT, and that is hardware, not a
+// gap -- the SWIM3 ERS is explicit: "Depending on the number of tracks moved
+// and motor speed zones crossed a timeout is required before accessing the
+// drive after stepping.  This is left to the software."  The chip paces the
+// step pulses (80 us apart) and raises step_done; the settle is the driver's
+// business (02-floppy F-22).
+static void floppy_drive_seek(floppy_t *floppy, unsigned drv, bool outward, int count, bool model_settle) {
+    if (!floppy || drv >= NUM_DRIVES || count <= 0)
+        return;
+    floppy_drive_t *drive = &floppy->drives[drv];
+    int old_rpm = iwm_track_rpm(drive->track);
+
+    // The head stops against the mechanical stops rather than running off the
+    // platter -- recalibrate is exactly "step outward 80 and look".
+    int track = drive->track + (outward ? -count : count);
+    if (track < 0)
+        track = 0;
+    if (track > NUM_TRACKS - 1)
+        track = NUM_TRACKS - 1;
+
+    drive->_dirtn = outward;
+    drive->track = track;
+    drive->offset = 0;
+    drive->write_hdr_start = -1; // a seek abandons any sector mid-write
+
+    if (!model_settle) {
+        LOG(4, "Drive %u: seek %s %d -> track %d", drv, outward ? "out" : "in", count, track);
+        return;
+    }
+
+    drive->step_settle_count = 1;
+    remove_event_by_data(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv);
+    scheduler_new_cpu_event(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv, 0,
+                            STEP_SETTLE_TIME_NS);
+
+    // Zone-crossing step: the motor must change RPM, so /READY deasserts.
+    if (old_rpm != iwm_track_rpm(drive->track)) {
+        drive->speed_settling = true;
+        remove_event_by_data(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv);
+        scheduler_new_cpu_event(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv, 0,
+                                SPEED_SETTLE_TIME_NS);
+        LOG(1, "Drive %u: Step track %d ZONE CHANGE (%d->%d RPM), speed_settling=1", drv, drive->track, old_rpm,
+            iwm_track_rpm(drive->track));
+    }
+    LOG(3, "Drive %u: Step to track %d (%s)", drv, drive->track, outward ? "outward" : "inward");
+}
+
+// Sets a drive's motor, for every controller.
+//
+// `model_spinup` says whether the CONTROLLER models the spin-up period during
+// which the drive deasserts /READY.  The IWM and SWIM do, and their drivers
+// poll it.  SWIM3 does not -- nothing on that path consults motor_spinning_up
+// (swim3.c reads the motor LATCH through floppy_drive_motor_on), so modelling
+// it there would model nothing observable.  Stated rather than left to be
+// inferred from two separate entry points (02-floppy F-22).
+static void floppy_drive_motor(floppy_t *floppy, unsigned drv, bool on, bool model_spinup) {
+    if (!floppy || drv >= NUM_DRIVES)
+        return;
+    floppy_drive_t *drive = &floppy->drives[drv];
+    bool was_off = drive->_motoron;
+    drive->_motoron = !on; // the signal is active low: false = running
+
+    if (!model_spinup) {
+        if (was_off == on) // i.e. the latch actually changed
+            LOG(4, "Drive %u: motor %s", drv, on ? "on" : "off");
+        return;
+    }
+
+    event_callback_t spinup_cb =
+        (floppy->type == FLOPPY_TYPE_SWIM) ? floppy_swim_motor_spinup_callback : floppy_motor_spinup_callback;
+
+    if (was_off && on) {
+        drive->motor_spinning_up = true;
+        // By data, not by (callback, source): remove_event drops EVERY event
+        // with that pair whatever its data, so on a two-drive machine spinning
+        // up drive 1 cancelled drive 0's pending spin-up and left it
+        // motor_spinning_up forever -- /READY stuck at 1 for the rest of the
+        // run (02-floppy F-05).
+        remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
+        scheduler_new_cpu_event(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv, 0, MOTOR_SPINUP_TIME_NS);
+        LOG(2, "Drive %u: Motor ON (spinning up)", drv);
+    } else if (!was_off && !on) {
+        drive->motor_spinning_up = false;
+        remove_event_by_data(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv);
+        LOG(2, "Drive %u: Motor OFF", drv);
+    } else {
+        LOG(4, "Drive %u: Motor %s (no change)", drv, drive->_motoron ? "off" : "on");
+    }
+}
+
+// Latches the head side used for data I/O, for every controller.
+static void floppy_drive_latch_side(floppy_t *floppy, unsigned drv, int side) {
+    if (!floppy || drv >= NUM_DRIVES)
+        return;
+    floppy->drives[drv].data_side = side ? 1 : 0;
 }
 
 // Returns the current disk status based on IWM CA lines and SEL signal.
@@ -81,33 +212,9 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         ret = 0;
         break;
     case 0x04: // RDDATA: data from side 0
-    {
-        // Return the current data bit from the read head.  On real hardware,
-        // the SENSE line reflects raw GCR/MFM flux data as the disk spins
-        // continuously.  Derive the byte position from scheduler time to
-        // simulate disk rotation (the head sees different data over time).
-        // GCR flux timing constants: ~16.3 µs/byte at 489.6 kbit/s; ~2 µs/cell.
-        // Routed through uint64 to dodge `(int)` truncation when emulated time
-        // exceeds ~2.1 s (`now_ns` outgrows int32). The modulo lands on trk_len
-        // either way, so the high bits don't change observable behaviour, but
-        // the math is now wrap-free.
-        enum { GCR_NS_PER_BYTE = 16340, GCR_NS_PER_BIT = 2040 };
-        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], 0, floppy->scheduler);
-        if (data) {
-            size_t trk_len = iwm_track_length(drive->track);
-            uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
-            size_t byte_pos = (size_t)((now_ns / GCR_NS_PER_BYTE) % trk_len);
-            unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
-            ret = (data[byte_pos] >> bit_idx) & 1;
-        } else {
-            // HD (MFM) disk: no GCR track data, simulate time-varying flux
-            uint64_t now_ns = (uint64_t)scheduler_time_ns(floppy->scheduler);
-            unsigned bit_idx = (unsigned)((now_ns / GCR_NS_PER_BIT) & 7);
-            ret = (bit_idx < 4) ? 1 : 0;
-        }
+        ret = floppy_rddata_bit(floppy, drive, drv, 0);
         desc = "RDDATA side0";
         break;
-    }
     case 0x05: // IWM: reserved; SWIM: mfmDrv (SuperDrive present)
         if (floppy->type == FLOPPY_TYPE_SWIM) {
             desc = "mfmDrv";
@@ -132,12 +239,14 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         break;
     case 0x08: // /CSTIN: zero when disk in drive
         desc = "/CSTIN";
-        if (floppy->type == FLOPPY_TYPE_SWIM && floppy->cstin_delay[drv] > 0) {
-            floppy->cstin_delay[drv]--;
-            ret = 1; // report no disk during insertion delay
-        } else {
-            ret = (floppy->disk[drv] == NULL);
-        }
+        // No insertion delay is modelled.  There used to be a cstin_delay
+        // countdown here, but the only writer set it to 0, so the branch was
+        // unreachable and the feature did not exist -- while the field was
+        // still checkpointed and the decrement meant a DEBUGGER read of this
+        // sense line would have mutated it (02-floppy F-12).  If the delay is
+        // ever wanted, it needs a writer and a scheduler event, not a
+        // read-side counter.
+        ret = (floppy->disk[drv] == NULL);
         break;
     case 0x09: // /WRTPRT: zero when write protected
         desc = "/WRTPRT";
@@ -168,12 +277,11 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
             // HD disks: 1 INDEX pulse per revolution (200ms cycle)
             // 800K disks: 2 INDEX pulses per revolution (100ms cycle)
             image_t *img = floppy->disk[drv];
+            // 1440K only: the deviation from swim.md's "2 pulses per
+            // revolution unconditionally" is justified by MacTest for HD
+            // media specifically, so 720K MFM stays on the 2/rev path.
             bool is_hd = (img && img->type == image_fd_hd);
-            double ns_per_cycle = is_hd ? ns_per_rev : (ns_per_rev / 2.0);
-            double index_high_ns = 2.0 * 1e6; // 2ms HIGH pulse
-            double pos_in_rev = fmod(now_ns, ns_per_rev);
-            double pos_in_cycle = fmod(pos_in_rev, ns_per_cycle);
-            ret = (pos_in_cycle < index_high_ns) ? 1 : 0;
+            ret = floppy_index_signal(FLOPPY_INDEX_ISM, now_ns, ns_per_rev, is_hd ? 1 : 2);
             desc = is_hd ? "INDEX(HD)" : "INDEX(800K)";
         } else {
             const char *tach_reason = NULL;
@@ -185,24 +293,9 @@ int floppy_disk_status(floppy_t *floppy, int drv) {
         return ret;
     }
     case 0x0C: // RDDATA: data from side 1
-    {
-        uint8_t *data = iwm_track_data(drive, floppy->disk[drv], 1, floppy->scheduler);
-        if (data) {
-            size_t trk_len = iwm_track_length(drive->track);
-            double now_ns = scheduler_time_ns(floppy->scheduler);
-            double ns_per_byte = 16340.0;
-            int byte_pos = (int)(now_ns / ns_per_byte) % (int)trk_len;
-            int bit_idx = (int)(now_ns / 2040.0) & 7;
-            ret = (data[byte_pos] >> bit_idx) & 1;
-        } else {
-            // HD (MFM) disk: simulate time-varying flux
-            double now_ns = scheduler_time_ns(floppy->scheduler);
-            int bit_idx = (int)(now_ns / 2040.0) & 7;
-            ret = (bit_idx < 4) ? 1 : 0;
-        }
+        ret = floppy_rddata_bit(floppy, drive, drv, 1);
         desc = "RDDATA side1";
         break;
-    }
     case 0x0D: // /DRVEXIST: 1 when physical drive present (ISM mode only)
         desc = "/DRVEXIST";
         // MacTest's CHECK_DRIVE_STATUS reads this twice: once with the SWIM
@@ -252,9 +345,6 @@ void floppy_disk_control(floppy_t *floppy) {
     floppy_drive_t *drive = &floppy->drives[drv];
 
     // Determine the correct motor callback based on controller type
-    event_callback_t spinup_cb =
-        (floppy->type == FLOPPY_TYPE_SWIM) ? floppy_swim_motor_spinup_callback : floppy_motor_spinup_callback;
-
     // Commands only when SEL is low
     if (floppy->sel)
         return;
@@ -265,58 +355,20 @@ void floppy_disk_control(floppy_t *floppy) {
             if (IWM_CA2(floppy)) {
                 LOG(1, "Drive %d: Eject requested", drv);
                 iwm_flush_modified_tracks(drive, floppy->disk[drv], drv);
-                memset(drive->tracks, 0, sizeof(drive->tracks));
+                floppy_drive_drop_tracks(floppy, (unsigned)drv);
                 floppy->disk[drv] = NULL;
                 LOG(1, "Drive %d: Ejected", drv);
             }
         } else {
             // STEP (CA0=1, CA1=0, CA2=0)
             if (!IWM_CA2(floppy)) {
-                int old_rpm = iwm_track_rpm(drive->track);
-                // _dirtn: 0=inward (higher tracks), 1=outward (lower tracks)
-                if (drive->_dirtn) {
-                    if (drive->track > 0)
-                        drive->track--;
-                } else {
-                    if (drive->track < NUM_TRACKS - 1)
-                        drive->track++;
-                }
-                drive->offset = 0;
-                drive->step_settle_count = 1;
-                remove_event_by_data(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv);
-                scheduler_new_cpu_event(floppy->scheduler, floppy_step_settle_callback, floppy, (uint64_t)drv, 0,
-                                        STEP_SETTLE_TIME_NS);
-                // Zone-crossing step: motor must change RPM, /READY deasserts
-                if (old_rpm != iwm_track_rpm(drive->track)) {
-                    drive->speed_settling = true;
-                    remove_event_by_data(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv);
-                    scheduler_new_cpu_event(floppy->scheduler, floppy_speed_settle_callback, floppy, (uint64_t)drv, 0,
-                                            SPEED_SETTLE_TIME_NS);
-                    LOG(1, "Drive %d: Step track %d→%d ZONE CHANGE (%d→%d RPM), speed_settling=1", drv,
-                        drive->track + (drive->_dirtn ? 1 : -1), drive->track, old_rpm, iwm_track_rpm(drive->track));
-                }
-                LOG(3, "Drive %d: Step to track %d (%s)", drv, drive->track, drive->_dirtn ? "outward" : "inward");
+                floppy_drive_seek(floppy, (unsigned)drv, drive->_dirtn, 1, true);
             }
         }
     } else {
         if (IWM_CA1(floppy)) {
             // MOTORON (CA0=0, CA1=1): CA2 sets motor state
-            bool was_off = drive->_motoron;
-            drive->_motoron = IWM_CA2(floppy);
-            bool now_on = !drive->_motoron;
-
-            if (was_off && now_on) {
-                drive->motor_spinning_up = true;
-                remove_event(floppy->scheduler, spinup_cb, floppy);
-                scheduler_new_cpu_event(floppy->scheduler, spinup_cb, floppy, (uint64_t)drv, 0, MOTOR_SPINUP_TIME_NS);
-                LOG(2, "Drive %d: Motor ON (spinning up)", drv);
-            } else if (!was_off && !now_on) {
-                drive->motor_spinning_up = false;
-                remove_event(floppy->scheduler, spinup_cb, floppy);
-                LOG(2, "Drive %d: Motor OFF", drv);
-            } else {
-                LOG(4, "Drive %d: Motor %s (no change)", drv, drive->_motoron ? "off" : "on");
-            }
+            floppy_drive_motor(floppy, (unsigned)drv, !IWM_CA2(floppy), true);
         } else {
             // DIRTN (CA0=0, CA1=0): CA2 sets direction
             drive->_dirtn = IWM_CA2(floppy);
@@ -398,9 +450,12 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
 
     int drv = DRIVE_INDEX(floppy);
 
-    // Mode register is WRITE ONLY
+    // Mode register is WRITE ONLY.  Guest-reachable -- any code can set Q6 and
+    // Q7 and then read -- so it logs rather than asserting (02-floppy F-32);
+    // GS_ASSERT pauses the scheduler and continues, which turns a wrong guest
+    // instruction into an emulator hang.
     if (IWM_Q6(floppy) && IWM_Q7(floppy))
-        GS_ASSERT(0);
+        LOG(2, "IWM: read of the write-only mode register (Q6=Q7=1)");
 
     // Read status register: Q6=1, Q7=0
     if (IWM_Q6(floppy) && !IWM_Q7(floppy)) {
@@ -429,6 +484,15 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
         }
 
         if (!IWM_ENABLE(floppy)) {
+            // The SWIM echoes the last byte the CPU put on the data bus; the
+            // plain IWM floats high.  One of the three real differences
+            // between the two register files (02-floppy F-10).
+            if (floppy->type == FLOPPY_TYPE_SWIM) {
+                uint8_t val = floppy->iwm_latch_valid ? floppy->iwm_write_latch : 0xFF;
+                floppy->iwm_latch_valid = false;
+                LOG(6, "Drive %d: Reading data (disabled) echo = 0x%02X", drv, val);
+                return val;
+            }
             LOG(6, "Drive %d: Reading data (disabled) = 0xFF", drv);
             return 0xFF;
         }
@@ -441,8 +505,14 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
         floppy_drive_t *drive = current_drive(floppy);
         uint8_t *data = iwm_track_data(drive, floppy->disk[drv], floppy->sel, floppy->scheduler);
         if (!data) {
-            LOG(1, "Drive %d: Read failed - no track data", drv);
-            return 0xFF;
+            // MFM media in the drive, or an allocation failure.  The SWIM
+            // returns 0x00 so the ROM's GCR sync detection fails and it falls
+            // through to the ISM path; the plain IWM floats high.  Whether
+            // these should differ at all is an open question (02-floppy F-10,
+            // proposal Q2) -- preserved per-variant rather than guessed.
+            uint8_t no_data = (floppy->type == FLOPPY_TYPE_SWIM) ? 0x00 : 0xFF;
+            LOG(5, "Drive %d: No GCR track data (MFM disk or alloc failure)", drv);
+            return no_data;
         }
 
         size_t trk_len = iwm_track_length(drive->track);
@@ -473,13 +543,21 @@ uint8_t floppy_iwm_read(floppy_t *floppy, uint32_t offset) {
         return ret;
     }
 
-    GS_ASSERT(0);
-    return 0;
+    // Every Q6/Q7 combination is handled above; this is unreachable.  Open bus
+    // rather than an assert, for the same reason as the cases above.
+    LOG(2, "IWM: unhandled register read (lines=0x%02X)", floppy->iwm_lines);
+    return 0xFF;
 }
 
 // Writes a byte to the IWM register at the specified offset
 void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     floppy_update_iwm_lines(floppy, offset);
+
+    // The SWIM latches every data-bus byte for the echo above.
+    if (floppy->type == FLOPPY_TYPE_SWIM) {
+        floppy->iwm_write_latch = byte;
+        floppy->iwm_latch_valid = true;
+    }
 
     if (!IWM_Q6(floppy) || !IWM_Q7(floppy))
         return;
@@ -496,6 +574,15 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             return;
         }
 
+        // Bound before the store and wrap with >=, matching the read path.
+        // This used to store unchecked and then wrap with `==`, so any path
+        // leaving offset > trk_len turned the write into an unbounded walk off
+        // the end of the heap track buffer -- the equality could never fire
+        // again (02-floppy F-16).  offset is checkpointed plain data, so a
+        // corrupt checkpoint supplied one directly until F-02's validator.
+        size_t trk_len_w = iwm_track_length(drive->track);
+        if (drive->offset < 0 || (size_t)drive->offset >= trk_len_w)
+            drive->offset = 0;
         data[drive->offset++] = byte;
         LOG(8, "Drive %d: Writing data track=%d side=%d offset=%d = 0x%02X", drv, drive->track, floppy->sel,
             drive->offset - 1, byte);
@@ -506,10 +593,19 @@ void floppy_iwm_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             LOG(5, "Drive %d: Track %d side %d marked dirty", drv, drive->track, floppy->sel);
         }
 
-        if (drive->offset == (int)iwm_track_length(drive->track))
+        // Per-sector write-through: the byte just written may have completed
+        // a sector (see iwm_write_through).
+        iwm_write_through(drive, floppy->disk[drv], drv, floppy->sel ? 1 : 0);
+
+        if ((size_t)drive->offset >= trk_len_w) {
             drive->offset = 0;
+            drive->write_hdr_start = -1; // a wrap invalidates the tracked start
+        }
     } else {
-        // Write mode register
+        // Write mode register.  On the SWIM this is also where the IWM->ISM
+        // entry sequence is watched for.
+        if (floppy->type == FLOPPY_TYPE_SWIM && floppy_swim_mode_write_hook(floppy, byte))
+            return;
         floppy->mode = byte;
         LOG(4, "IWM: Mode register = 0x%02X", byte);
     }
@@ -536,7 +632,7 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
         floppy->sel = sel;
         // Only update the current drive's data side when not actively reading/writing
         if (!IWM_ENABLE(floppy))
-            floppy->drives[DRIVE_INDEX(floppy)].data_side = sel;
+            floppy_drive_latch_side(floppy, (unsigned)DRIVE_INDEX(floppy), sel);
     } else {
         LOG(6, "SEL signal: %s -> %s", floppy->sel ? "high" : "low", sel ? "high" : "low");
         floppy->sel = sel;
@@ -545,7 +641,13 @@ void floppy_set_sel_signal(floppy_t *floppy, bool sel) {
 
 // Inserts a disk image into the specified drive
 int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
-    GS_ASSERT(drive < NUM_DRIVES);
+    // Reachable from user input (fd insert, machine.floppy.drive[N].insert),
+    // so the bound is a real check rather than a GS_ASSERT: the assert was
+    // signed (a negative index passed it), compiles out under GS_FAST, and
+    // even when enabled gs_assert_fail returns and execution continues into
+    // the subscript.  Matches floppy_drive_eject below.
+    if (!floppy || drive < 0 || drive >= NUM_DRIVES)
+        return -1;
 
     if (floppy->disk[drive] != NULL) {
         LOG(2, "Drive %d: Insert failed - disk already present", drive);
@@ -554,11 +656,13 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
 
     floppy->disk[drive] = disk;
 
-    // SWIM: simulate disk insertion delay
-    if (floppy->type == FLOPPY_TYPE_SWIM)
-        floppy->cstin_delay[drive] = 0;
-
-    current_drive(floppy)->offset = 0;
+    // The drive being loaded, not whichever the IWM SELECT line happens to
+    // point at: this used to leave a stale offset on the freshly loaded drive
+    // and clobber the other drive's in-progress read position (02-floppy F-12).
+    floppy->drives[drive].offset = 0;
+    // A new medium: what it carries is whatever its image implies, until
+    // something writes a format.
+    floppy->drives[drive].cur_format_known = false;
     const char *name = disk ? image_get_filename(disk) : NULL;
     LOG(1, "Drive %d: Inserted disk '%s' (writable=%d)", drive, name ? name : "<unnamed>", disk ? disk->writable : 0);
 
@@ -567,8 +671,8 @@ int floppy_insert(floppy_t *floppy, int drive, image_t *disk) {
 
 // Returns whether a disk is currently inserted in the specified drive
 bool floppy_is_inserted(floppy_t *floppy, int drive) {
-    GS_ASSERT(drive < NUM_DRIVES);
-
+    if (!floppy || drive < 0 || drive >= NUM_DRIVES)
+        return false;
     return floppy->disk[drive] != NULL;
 }
 
@@ -595,6 +699,27 @@ int floppy_drive_side(const floppy_t *floppy, unsigned drive) {
         return 0;
     return floppy->drives[drive].data_side;
 }
+// The format this drive's medium currently carries, or -1 when nothing has
+// written one since it was inserted (use the image-implied format then).
+int floppy_drive_format(const floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES || !floppy->drives[drive].cur_format_known)
+        return -1;
+    return floppy->drives[drive].cur_format;
+}
+
+void floppy_media_set_format(floppy_t *floppy, unsigned drive, floppy_format_t format) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return;
+    floppy_drive_t *d = &floppy->drives[drive];
+    if (d->cur_format_known && d->cur_format == (int)format)
+        return;
+    LOG(3, "Drive %u: medium now carries format %d", drive, (int)format);
+    d->cur_format = (int)format;
+    d->cur_format_known = true;
+    // The GCR cache holds nibbles of the OLD format.
+    floppy_drive_drop_tracks(floppy, drive);
+}
+
 bool floppy_drive_motor_on(const floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES)
         return false;
@@ -613,6 +738,24 @@ image_t *floppy_drive_image(const floppy_t *floppy, unsigned drive) {
     return floppy->disk[drive];
 }
 
+// Frees and clears a drive's cached GCR track buffers.  iwm_track_data
+// malloc()s a buffer per (side, track) on first touch; zeroing the array
+// without freeing first leaks every one of them -- up to ~1.2 MB for a
+// fully-read double-sided 800K disk, on a fixed-size wasm heap.
+void floppy_drive_drop_tracks(floppy_t *floppy, unsigned drive) {
+    if (!floppy || drive >= NUM_DRIVES)
+        return;
+    floppy_drive_t *d = &floppy->drives[drive];
+    for (int s = 0; s < NUM_SIDES; s++) {
+        for (int t = 0; t < NUM_TRACKS; t++) {
+            free(d->tracks[s][t].data);
+            d->tracks[s][t].data = NULL;
+            d->tracks[s][t].size = 0;
+            d->tracks[s][t].modified = false;
+        }
+    }
+}
+
 bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     if (!floppy || drive >= NUM_DRIVES || !floppy->disk[drive])
         return false;
@@ -622,7 +765,7 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
     // The image_t* itself is owned by cfg->images and freed at system
     // teardown; calling image_close here would double-free.
     iwm_flush_modified_tracks(&floppy->drives[drive], floppy->disk[drive], (int)drive);
-    memset(floppy->drives[drive].tracks, 0, sizeof(floppy->drives[drive].tracks));
+    floppy_drive_drop_tracks(floppy, drive);
     floppy->disk[drive] = NULL;
     return true;
 }
@@ -630,40 +773,77 @@ bool floppy_drive_eject(floppy_t *floppy, unsigned drive) {
 // === SWIM III drive controls ================================================
 
 void floppy_swim3_step(floppy_t *floppy, unsigned drive, bool outward, int count) {
-    if (!floppy || drive >= NUM_DRIVES || count <= 0)
-        return;
-    floppy_drive_t *d = &floppy->drives[drive];
-    int track = d->track + (outward ? -count : count);
-    // The head stops against the mechanical stops rather than running off
-    // the platter — recalibrate is exactly "step outward 80 and look".
-    if (track < 0)
-        track = 0;
-    if (track > NUM_TRACKS - 1)
-        track = NUM_TRACKS - 1;
-    d->_dirtn = outward;
-    d->track = track;
-    d->offset = 0;
-    LOG(4, "Drive %u: SWIM3 seek %s %d -> track %d", drive, outward ? "out" : "in", count, track);
+    // SWIM3 paces the step pulses itself and the settle is the driver's
+    // business -- see floppy_drive_seek.
+    floppy_drive_seek(floppy, drive, outward, count, false);
 }
 
 void floppy_swim3_set_motor(floppy_t *floppy, unsigned drive, bool on) {
-    if (!floppy || drive >= NUM_DRIVES)
-        return;
-    floppy_drive_t *d = &floppy->drives[drive];
-    if (d->_motoron != !on)
-        LOG(4, "Drive %u: SWIM3 motor %s", drive, on ? "on" : "off");
-    d->_motoron = !on; // the signal is active low: false = running
+    floppy_drive_motor(floppy, drive, on, false);
 }
 
 void floppy_swim3_set_side(floppy_t *floppy, unsigned drive, int side) {
-    if (!floppy || drive >= NUM_DRIVES)
-        return;
-    floppy->drives[drive].data_side = side ? 1 : 0;
+    floppy_drive_latch_side(floppy, drive, side);
 }
 
 // ============================================================================
 // Lifecycle (Init / Delete / Checkpoint)
 // ============================================================================
+
+// Clamps checkpoint-supplied state that later code indexes with.  A checkpoint
+// is an untrusted file: the container validates per-block SIZES, not contents,
+// so a correctly-sized block with edited fields passes every existing check.
+//
+// Clamp rather than reject: by the time this runs the rest of the machine (RAM,
+// CPU, SCSI) is already restored and there is no unwind, so continuing from a
+// sane head position beats half-succeeding.  The LOG(1) lines are the point --
+// they turn a corrupt checkpoint from a mysterious hang into one grep.
+//
+// Order matters: `track` is clamped first because the `offset` bound derives
+// from it.
+static void floppy_validate_restored_state(floppy_t *floppy) {
+    for (int d = 0; d < NUM_DRIVES; d++) {
+        floppy_drive_t *drv = &floppy->drives[d];
+        // Signed on purpose: iwm_track_data's GS_ASSERT checks only the upper
+        // bound, and tracks[] is the last field of floppy_drive_t, so an
+        // out-of-range index yields a floppy_track_t-shaped view of adjacent
+        // memory whose `data` is then read AND written.
+        if (drv->track < 0 || drv->track >= NUM_TRACKS) {
+            LOG(1, "Drive %d: restored track %d out of range, clamping", d, drv->track);
+            drv->track = (drv->track < 0) ? 0 : NUM_TRACKS - 1;
+        }
+        // Both read paths index before they wrap.
+        int trk_len = (int)iwm_track_length(drv->track);
+        if (drv->offset < 0 || drv->offset >= trk_len) {
+            LOG(1, "Drive %d: restored offset %d outside track (len %d), resetting", d, drv->offset, trk_len);
+            drv->offset = 0;
+        }
+        if (drv->data_side != 0 && drv->data_side != 1)
+            drv->data_side = 0;
+        if (drv->write_hdr_start < -1 || drv->write_hdr_start >= (int)iwm_track_length(drv->track))
+            drv->write_hdr_start = -1;
+    }
+
+    if (floppy->ism_fifo_count > ISM_FIFO_SIZE) {
+        LOG(1, "SWIM: restored ism_fifo_count %u > %d, draining", floppy->ism_fifo_count, ISM_FIFO_SIZE);
+        floppy->ism_fifo_count = 0;
+    }
+    // mfm_buf_len == 0 is this module's own "buffer invalid, rebuild from the
+    // image" sentinel (swim_handle_action_set sets it on a side/track change
+    // and honours it by calling mfm_build_sector), so zeroing re-derives.
+    // Truncating to the buffer size would hand the guest stale sector bytes.
+    if (floppy->mfm_buf_len > MFM_SECTOR_BUF_SIZE) {
+        LOG(1, "SWIM: restored mfm_buf_len %u > %d, discarding sector buffer", floppy->mfm_buf_len,
+            MFM_SECTOR_BUF_SIZE);
+        floppy->mfm_buf_len = 0;
+        floppy->mfm_buf_pos = 0;
+    }
+    if (floppy->mfm_buf_pos > floppy->mfm_buf_len)
+        floppy->mfm_buf_pos = floppy->mfm_buf_len;
+    // ism_write_pos and ism_param_idx are deliberately NOT clamped: every use
+    // of the first is guarded by `< 512` before its store, and every use of the
+    // second masks with & 0x0F.  Neither can index out of range.
+}
 
 // Initializes a floppy controller of the given type and maps it to memory
 floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint) {
@@ -674,6 +854,8 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     }
 
     memset(floppy, 0, sizeof(floppy_t));
+    for (int d = 0; d < NUM_DRIVES; d++)
+        floppy->drives[d].write_hdr_start = -1;
     floppy->type = type;
     static const char *const type_name[] = {"IWM", "SWIM", "SWIM3"};
     LOG(2, "Floppy: Controller created (type=%s)", type_name[type >= 0 && type <= 2 ? type : 0]);
@@ -681,12 +863,16 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     floppy->scheduler = scheduler;
 
     if (type == FLOPPY_TYPE_SWIM3) {
-        // SWIM3 has no memory-mapped register file of its own: the PDM
-        // decodes it through the AMIC island, and the controller model
-        // (src/machines/pdm/swim3.c) drives this drive state directly.
-        scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);
+        // SWIM3 has no memory-mapped register file of its own: the board
+        // decodes it (AMIC island on the PDM, Grand Central on the TNT) and
+        // the controller model drives this drive state directly.  No
+        // motor_spinup event type is registered: nothing on the SWIM3 path
+        // consults motor_spinning_up -- swim3.c reads the motor LATCH through
+        // floppy_drive_motor_on -- so the type used to be registered and never
+        // armed (02-floppy F-22).
     } else if (type == FLOPPY_TYPE_SWIM) {
-        scheduler_new_event_type(scheduler, "swim", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
+        scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
+        scheduler_new_event_type(scheduler, "floppy", floppy, "ism_service", &floppy_swim_service_callback);
         floppy_swim_setup(floppy, map);
     } else {
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);
@@ -698,14 +884,13 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
     if (checkpoint) {
         LOG(3, "Floppy: Restoring from checkpoint");
 
-        // Clear track data pointers before restoring (they will be overwritten)
-        for (int d = 0; d < NUM_DRIVES; d++)
-            for (int s = 0; s < NUM_SIDES; s++)
-                for (int t = 0; t < NUM_TRACKS; t++)
-                    floppy->drives[d].tracks[s][t].data = NULL;
-
-        // Read plain-data portion
+        // Read plain-data portion.  NOTE: tracks[][].data is inside this
+        // prefix, so the memcpy restores 320 host pointers out of the file.
+        // Every one of them is replaced below -- save writes has_data from
+        // `data != NULL`, so a NULL at save restores as NULL -- but nothing
+        // here may dereference one before that loop runs.
         system_read_checkpoint_data(checkpoint, floppy, FLOPPY_CHECKPOINT_SIZE);
+        floppy_validate_restored_state(floppy);
 
         // Restore disk images by filename
         for (int i = 0; i < NUM_DRIVES; i++) {
@@ -761,6 +946,11 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         object_set_label(floppy->object, "Floppy");
         object_set_order(floppy->object, 80);
         object_attach(machine_object(), floppy->object);
+        floppy->controller_object = object_new(&floppy_controller_class, floppy, "controller");
+        if (floppy->controller_object) {
+            object_set_label(floppy->controller_object, "Controller");
+            object_attach(floppy->object, floppy->controller_object);
+        }
         floppy->drives_object = object_new(&floppy_drives_collection_class, floppy, "drive");
         if (floppy->drives_object) {
             object_set_label(floppy->drives_object, "Drives");
@@ -803,6 +993,11 @@ void floppy_delete(floppy_t *floppy) {
         object_delete(floppy->drives_object);
         floppy->drives_object = NULL;
     }
+    if (floppy->controller_object) {
+        object_detach(floppy->controller_object);
+        object_delete(floppy->controller_object);
+        floppy->controller_object = NULL;
+    }
     if (floppy->object) {
         object_detach(floppy->object);
         object_delete(floppy->object);
@@ -812,11 +1007,7 @@ void floppy_delete(floppy_t *floppy) {
     // Flush and free track data for both drives
     for (int d = 0; d < NUM_DRIVES; d++) {
         iwm_flush_modified_tracks(&floppy->drives[d], floppy->disk[d], d);
-        for (int s = 0; s < NUM_SIDES; s++) {
-            for (int t = 0; t < NUM_TRACKS; t++) {
-                free(floppy->drives[d].tracks[s][t].data);
-            }
-        }
+        floppy_drive_drop_tracks(floppy, (unsigned)d);
     }
     free(floppy);
 }
@@ -827,8 +1018,36 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
         return;
     LOG(13, "Floppy: Checkpointing controller");
 
-    // Write plain-data portion
-    system_write_checkpoint_data(checkpoint, floppy, FLOPPY_CHECKPOINT_SIZE);
+    // Write the plain-data portion through a scrubbed copy.
+    //
+    // floppy_track_t::data sits INSIDE this prefix (it is a field of
+    // floppy_drive_t, which is a field of floppy_t before the `disk` boundary),
+    // so a straight memcpy wrote 320 live heap pointers -- 2560 bytes of ASLR
+    // addresses -- into every save file, and the restore then read them back
+    // over the pointers it had just carefully NULLed (02-floppy F-01).  The
+    // per-track loop below replaces them, so nothing depended on the values;
+    // they were pure leak, pure noise to the RLE, and a trap for any future
+    // reader.  Scrubbing a copy fixes it without moving the field and churning
+    // every `drive->tracks[...]` call site.
+    uint8_t *prefix = malloc(FLOPPY_CHECKPOINT_SIZE);
+    if (!prefix) {
+        LOG(1, "Floppy: checkpoint allocation failed");
+        return;
+    }
+    memcpy(prefix, floppy, FLOPPY_CHECKPOINT_SIZE);
+    const size_t ptr_bytes = sizeof(((floppy_track_t *)0)->data);
+    for (int d = 0; d < NUM_DRIVES; d++) {
+        for (int s = 0; s < NUM_SIDES; s++) {
+            for (int t = 0; t < NUM_TRACKS; t++) {
+                size_t off =
+                    offsetof(floppy_t, drives) + (size_t)d * sizeof(floppy_drive_t) + offsetof(floppy_drive_t, tracks) +
+                    ((size_t)s * NUM_TRACKS + (size_t)t) * sizeof(floppy_track_t) + offsetof(floppy_track_t, data);
+                memset(prefix + off, 0, ptr_bytes);
+            }
+        }
+    }
+    system_write_checkpoint_data(checkpoint, prefix, FLOPPY_CHECKPOINT_SIZE);
+    free(prefix);
 
     // Write disk filenames for each drive
     for (int i = 0; i < NUM_DRIVES; i++) {
@@ -844,7 +1063,14 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
         for (int s = 0; s < NUM_SIDES; s++) {
             for (int t = 0; t < NUM_TRACKS; t++) {
                 floppy_track_t *trk = &floppy->drives[d].tracks[s][t];
-                uint8_t has_data = (trk->data != NULL);
+                // Only the RESIDUE is saved: nibbles the guest wrote that have
+                // not reached the image.  A clean cached track is derived data
+                // -- iwm_track_data re-encodes it from the image on the next
+                // touch, which is exactly the post-restore state -- so saving
+                // it wrote up to ~1.2 MB per drive of reconstructible bytes.
+                // Sectors that completed are already in the image, because the
+                // GCR path now writes them through (iwm_write_through).
+                uint8_t has_data = (trk->data != NULL && trk->modified);
                 system_write_checkpoint_data(checkpoint, &has_data, 1);
                 if (has_data)
                     system_write_checkpoint_data(checkpoint, trk->data, trk->size);
@@ -907,6 +1133,9 @@ static value_t floppy_method_identify(struct object *self, const member_t *m, in
     case image_fd_ds:
         density = "800K";
         break;
+    case image_fd_dd_mfm:
+        density = "720K";
+        break;
     case image_fd_hd:
         density = "1.4MB";
         break;
@@ -964,7 +1193,7 @@ static const arg_decl_t floppy_create_args[] = {
 static const member_t floppy_members[] = {
     {.kind = M_ATTR,
      .name = "type",
-     .doc = "Controller type: iwm (Plus) or swim (SE/30)",
+     .doc = "Controller type: iwm (Plus), swim (SE/30-class) or swim3 (PowerMac)",
      .flags = VAL_RO,
      .attr = {.type = V_ENUM, .get = floppy_attr_type, .set = NULL}},
     {.kind = M_ATTR,
@@ -986,6 +1215,107 @@ const class_desc_t floppy_class = {
     .name = "floppy",
     .members = floppy_members,
     .n_members = sizeof(floppy_members) / sizeof(floppy_members[0]),
+};
+
+// --- Controller node: the live register file, per variant -------------------
+//
+// 02-floppy F-41: the object model exposed nothing variant-specific at all, so
+// a floppy problem could only be inspected by raising a log category and
+// reading a trace -- while AGENTS.md positions the object tree as THE debugging
+// surface and the headless shell as the primary tool.  The register files are
+// plain data and trivially exposable.
+//
+// Members read as zero on a variant that has no such register; `type` on the
+// parent says which variant is in front of you.
+
+static value_t floppy_ctrl_attr_ism_mode(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_mode : 0);
+}
+static value_t floppy_ctrl_attr_ism_setup(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_setup : 0);
+}
+static value_t floppy_ctrl_attr_ism_error(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_error : 0);
+}
+static value_t floppy_ctrl_attr_ism_phase(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_phase : 0);
+}
+static value_t floppy_ctrl_attr_in_ism(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_bool(f && f->in_ism_mode);
+}
+static value_t floppy_ctrl_attr_fifo_count(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->ism_fifo_count : 0);
+}
+static value_t floppy_ctrl_attr_iwm_lines(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->iwm_lines : 0);
+}
+static value_t floppy_ctrl_attr_iwm_mode(struct object *self, const member_t *m) {
+    (void)m;
+    floppy_t *f = (floppy_t *)object_data(self);
+    return val_int(f ? f->mode : 0);
+}
+
+static const member_t floppy_controller_members[] = {
+    {.kind = M_ATTR,
+     .name = "iwm_lines",
+     .doc = "IWM state lines: CA0-CA2, LSTRB, ENABLE, SELECT, Q6, Q7 (IWM and SWIM)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_iwm_lines, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "iwm_mode",
+     .doc = "IWM mode register (IWM and SWIM)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_iwm_mode, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "in_ism_mode",
+     .doc = "SWIM: true once the 4-write entry sequence has switched the chip to ISM",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = floppy_ctrl_attr_in_ism, .set = NULL}   },
+    {.kind = M_ATTR,
+     .name = "ism_mode",
+     .doc = "SWIM: ISM mode/status register",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_mode, .set = NULL}  },
+    {.kind = M_ATTR,
+     .name = "ism_setup",
+     .doc = "SWIM: ISM setup register (bit 2 = GCR framing)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_setup, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "ism_error",
+     .doc = "SWIM: ISM error register (read-clears on the guest side; reading it here does not)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_error, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "ism_phase",
+     .doc = "SWIM: ISM phase register (drive control lines and their directions)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_ism_phase, .set = NULL} },
+    {.kind = M_ATTR,
+     .name = "ism_fifo_count",
+     .doc = "SWIM: bytes currently in the 2-byte ISM FIFO",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = floppy_ctrl_attr_fifo_count, .set = NULL}},
+};
+
+const class_desc_t floppy_controller_class = {
+    .name = "floppy_controller",
+    .members = floppy_controller_members,
+    .n_members = sizeof(floppy_controller_members) / sizeof(floppy_controller_members[0]),
 };
 
 // --- Per-drive entry class -------------------------------------------------
@@ -1049,6 +1379,38 @@ static value_t floppy_disk_attr_present(struct object *self, const member_t *m) 
     return val_bool(floppy && floppy_is_inserted(floppy, (int)slot));
 }
 
+// Write-protect is user-visible state the UI had no way to read back, and
+// density is what distinguishes the four capacities the drive can hold
+// (02-floppy F-41).  Both come straight from the medium.
+static value_t floppy_disk_attr_writable(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
+    return val_bool(img && img->writable);
+}
+
+static value_t floppy_disk_attr_density(struct object *self, const member_t *m) {
+    (void)m;
+    unsigned slot = 0;
+    floppy_t *floppy = floppy_drive_floppy(self, &slot);
+    image_t *img = floppy ? floppy_drive_image(floppy, slot) : NULL;
+    if (!img)
+        return val_str("");
+    switch (img->type) {
+    case image_fd_ss:
+        return val_str("400k");
+    case image_fd_ds:
+        return val_str("800k");
+    case image_fd_dd_mfm:
+        return val_str("720k");
+    case image_fd_hd:
+        return val_str("1440k");
+    default:
+        return val_str("");
+    }
+}
+
 static value_t floppy_disk_attr_path(struct object *self, const member_t *m) {
     (void)m;
     unsigned slot = 0;
@@ -1086,6 +1448,16 @@ static const member_t floppy_disk_members[] = {
      .doc = "True if a disk is inserted",
      .flags = VAL_RO,
      .attr = {.type = V_BOOL, .get = floppy_disk_attr_present, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "writable",
+     .doc = "False when the medium is write-protected",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = floppy_disk_attr_writable, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "density",
+     .doc = "Medium capacity: 400k, 800k, 720k or 1440k",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = floppy_disk_attr_density, .set = NULL}},
     {.kind = M_ATTR,
      .name = "path",
      .doc = "Storage-instance stem of the live image (the delta), not the source file — see filename",

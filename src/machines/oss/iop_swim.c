@@ -171,11 +171,29 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 #define SIM_DISK_CONTROLLER 17 // byte: $FF = SWIM, $00 = IWM
 #define SIM_CURRENT_FORMAT  18 // word: current-format bit mask
 #define SIM_FORMATS_ALLOWED 20 // word: allowable-format bit mask
-// Data-transfer layout (Read / Write / ReadVerify / Format):
+// Data-transfer layout (Read / Write / ReadVerify).  NOT Format: that request
+// has its own +$04 overlay, below (IOP SWIM Driver ERS, "Format").
 #define SIM_BUFFER_ADDR  4 // long: host RAM target/source address
 #define SIM_BLOCK_NUMBER 8 // long: starting block number (512-byte blocks)
 #define SIM_BLOCK_COUNT  12 // long: number of blocks to transfer
 #define SIM_MFS_TAG_DATA 16 // 12 bytes: MFS tag bytes (read/write)
+// Format-request layout (xmtReqFormat only), overlapping the same union:
+#define SIM_FMT_KIND       4 // word: BIT NUMBER of the format kind to use
+#define SIM_FMT_HDR_BYTE   6 // byte: sector-header format byte (0 = default)
+#define SIM_FMT_INTERLEAVE 7 // byte: sector interleave (0 = default)
+#define SIM_FMT_DATA_ADDR  8 // long: host RAM address of fill data (0 = zeros)
+#define SIM_FMT_TAG_ADDR   12 // long: host RAM address of fill tags (0 = zeros)
+
+// Bit numbers within the CurrentFormat / FormatsAllowed masks (IOP SWIM
+// Driver ERS, DriveStatus).  Bit 0 is the HD-20, so the floppy capacities
+// start at bit 1 -- the model previously numbered them from 0, citing
+// IM:VI "GetFormatList", and reported every mask one place too low.
+#define SWIM_FMT_BIT_HD20  0
+#define SWIM_FMT_BIT_400K  1
+#define SWIM_FMT_BIT_800K  2
+#define SWIM_FMT_BIT_720K  3
+#define SWIM_FMT_BIT_1440K 4
+#define SWIM_FMT_MASK(bit) ((uint16_t)(1u << (bit)))
 
 // MacOS error codes used in SIM_ERROR_CODE.
 #define MAC_ERR_NO_ERR  0 // noErr
@@ -269,6 +287,10 @@ static bool swim_post_rcv2_event(iop_t *iop, uint8_t event, uint8_t drive);
 // ============================================================================
 //  Endian helpers — IOP RAM and host RAM are both big-endian on Mac.
 // ============================================================================
+
+static uint16_t swim_ram_read_be16(const iop_t *iop, uint32_t off) {
+    return (uint16_t)((iop->ram[off] << 8) | iop->ram[off + 1]);
+}
 
 static uint32_t swim_ram_read_be32(const iop_t *iop, uint32_t off) {
     return ((uint32_t)iop->ram[off] << 24) | ((uint32_t)iop->ram[off + 1] << 16) | ((uint32_t)iop->ram[off + 2] << 8) |
@@ -663,6 +685,44 @@ static bool swim_validate_drive(iop_t *iop, int *out_floppy_idx, uint8_t *out_dr
     return true;
 }
 
+// CurrentFormat / FormatsAllowed for the medium in the drive (NULL = empty).
+// Bit numbering is the ERS's, not IM:VI's -- see SWIM_FMT_BIT_* above.  The
+// policy is unchanged from before the numbering fix: a disk can be reformatted
+// to any capacity its media supports, and an empty SuperDrive accepts the
+// whole floppy family.
+//
+// Derived from image_t::type, which is what classify_image() produced; a 720K
+// image is misclassified as a hard disk there (02-floppy F-04), so it reaches
+// this function as "not a floppy" and reports no formats at all.  Fixing that
+// belongs to the media descriptor in proposal-floppy-controller-unification.
+static void swim_format_masks(const image_t *img, uint16_t *current, uint16_t *allowed) {
+    uint16_t cur = 0;
+    uint16_t all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | SWIM_FMT_MASK(SWIM_FMT_BIT_800K) |
+                   SWIM_FMT_MASK(SWIM_FMT_BIT_720K) | SWIM_FMT_MASK(SWIM_FMT_BIT_1440K);
+    if (img) {
+        if (img->type == image_fd_ss) {
+            cur = SWIM_FMT_MASK(SWIM_FMT_BIT_400K);
+            all = cur;
+        } else if (img->type == image_fd_ds) {
+            cur = SWIM_FMT_MASK(SWIM_FMT_BIT_800K);
+            all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | cur;
+        } else if (img->type == image_fd_dd_mfm) {
+            cur = SWIM_FMT_MASK(SWIM_FMT_BIT_720K);
+            // DD media: any DD capacity, but not 1440K -- that needs HD media.
+            all = SWIM_FMT_MASK(SWIM_FMT_BIT_400K) | SWIM_FMT_MASK(SWIM_FMT_BIT_800K) | cur;
+        } else if (img->type == image_fd_hd) {
+            cur = SWIM_FMT_MASK(SWIM_FMT_BIT_1440K);
+            // HD media takes every floppy capacity.
+        } else {
+            all = 0; // present, but not a geometry this driver can present
+        }
+    }
+    if (current)
+        *current = cur;
+    if (allowed)
+        *allowed = all;
+}
+
 // Fills the DriveStatus and ExtDriveStatus fields of XmtMsg[2] from the
 // floppy module's live state.  Mirrors the firmware's $58xx status-build
 // path: track, write-protect, in-place, installed, sides, format.
@@ -674,8 +734,12 @@ static void swim_fill_drive_status(iop_t *iop, int floppy_idx) {
     image_t *img = (floppy && floppy_idx >= 0) ? floppy_drive_image(floppy, (unsigned)floppy_idx) : NULL;
     bool present = img != NULL;
     bool writable = present && img->writable;
-    bool is_hd = present && img->type == image_fd_hd;
-    bool is_ds = present && (img->type == image_fd_ds || img->type == image_fd_hd);
+    // MfmDrive/MfmDisk ask "is this MFM media"; MfmFormat asks "is it 1440K"
+    // ($FF = 1440K, $00 = 720K -- IOP SWIM Driver ERS).  One flag used to
+    // drive both, so a 720K disk could never have been reported correctly.
+    bool is_mfm = present && image_is_mfm_floppy(img->type);
+    bool is_1440 = present && img->type == image_fd_hd;
+    bool is_ds = present && img->type != image_fd_ss;
 
     int track = (floppy && floppy_idx >= 0) ? floppy_drive_track(floppy, (unsigned)floppy_idx) : 0;
     if (track < 0)
@@ -689,28 +753,11 @@ static void swim_fill_drive_status(iop_t *iop, int floppy_idx) {
     iop->ram[pl + SIM_NEW_INTERFACE] = 0xFF; // SuperDrive-class interface
     swim_ram_write_be16(iop, pl + SIM_DISK_ERRORS, 0);
     iop->ram[pl + SIM_MFM_DRIVE] = 0xFF; // is a SuperDrive
-    iop->ram[pl + SIM_MFM_DISK] = (uint8_t)(is_hd ? 0xFF : 0x00);
-    iop->ram[pl + SIM_MFM_FORMAT] = (uint8_t)(is_hd ? 0xFF : 0x00);
+    iop->ram[pl + SIM_MFM_DISK] = (uint8_t)(is_mfm ? 0xFF : 0x00);
+    iop->ram[pl + SIM_MFM_FORMAT] = (uint8_t)(is_1440 ? 0xFF : 0x00);
     iop->ram[pl + SIM_DISK_CONTROLLER] = 0xFF; // is a SWIM, not IWM
-    // Per IM:VI §3 "GetFormatList" — bit masks of supported GCR/MFM
-    // capacities.  Bit 0 = 400K, bit 1 = 800K, bit 2 = 720K, bit 3 = 1440K.
-    uint16_t allowed = 0;
-    uint16_t current = 0;
-    if (present) {
-        if (img->type == image_fd_ss) {
-            allowed = 0x0001;
-            current = 0x0001;
-        } else if (img->type == image_fd_ds) {
-            allowed = 0x0003;
-            current = 0x0002;
-        } else if (img->type == image_fd_hd) {
-            allowed = 0x000F;
-            current = 0x0008;
-        }
-    } else {
-        // Empty SuperDrive can accept anything in the SuperDrive family.
-        allowed = 0x000F;
-    }
+    uint16_t current, allowed;
+    swim_format_masks(img, &current, &allowed);
     swim_ram_write_be16(iop, pl + SIM_CURRENT_FORMAT, current);
     swim_ram_write_be16(iop, pl + SIM_FORMATS_ALLOWED, allowed);
 }
@@ -774,6 +821,34 @@ static uint8_t *swim_host_dma_ptr(uint32_t host_addr, size_t byte_count) {
     return ram_native_pointer(cfg->mem_map, host_addr);
 }
 
+// Block size of the .Sony block interface, in bytes.
+#define SWIM_BLOCK_BYTES 512u
+
+// Converts a guest-supplied (block, count) pair into a byte range, or returns
+// false when the range cannot be represented or leaves the medium.
+//
+// Both fields arrive as big-endian longs in IOP shared RAM, which the guest
+// writes, so both are arbitrary 32-bit values as far as this layer knows.
+// Everything is computed in uint64_t and bounds-checked BEFORE narrowing:
+// size_t is 32 bits on the wasm build, so `(size_t)block * 512` wraps for any
+// block >= 2^23 and would place the transfer at the wrong image offset with
+// the range check still passing.
+//
+// Read, write and verify all go through here so their arithmetic cannot drift
+// apart again — verify previously computed `(size_t)(blk + cnt) * 512`, whose
+// 32-bit addition wrapped before the cast on every platform.
+static bool swim_block_range(image_t *img, uint32_t block, uint32_t count, size_t *offset, size_t *bytes) {
+    uint64_t off = (uint64_t)block * SWIM_BLOCK_BYTES;
+    uint64_t len = (uint64_t)count * SWIM_BLOCK_BYTES;
+    if (off + len > (uint64_t)disk_size(img))
+        return false;
+    if (offset)
+        *offset = (size_t)off; // bounded by disk_size above, so the narrowing is safe
+    if (bytes)
+        *bytes = (size_t)len;
+    return true;
+}
+
 // Copies `count` blocks (512 bytes each) starting at `block_number` from
 // the floppy image at `floppy_idx` (0-based) into host RAM at `host_addr`.
 // Returns a MacOS-level error code (0 on success, offLinErr/paramErr on
@@ -784,10 +859,8 @@ static int16_t swim_read_blocks(iop_t *iop, int floppy_idx, uint32_t block_numbe
     if (!img)
         return MAC_ERR_OFFLINE;
 
-    size_t total = disk_size(img);
-    size_t byte_offset = (size_t)block_number * 512u;
-    size_t byte_count = (size_t)count * 512u;
-    if (byte_offset + byte_count > total)
+    size_t byte_offset, byte_count;
+    if (!swim_block_range(img, block_number, count, &byte_offset, &byte_count))
         return MAC_ERR_PARAM;
 
     uint8_t *dst = swim_host_dma_ptr(host_addr, byte_count);
@@ -808,10 +881,8 @@ static int16_t swim_write_blocks(iop_t *iop, int floppy_idx, uint32_t block_numb
     if (!img->writable)
         return MAC_ERR_W_PR;
 
-    size_t total = disk_size(img);
-    size_t byte_offset = (size_t)block_number * 512u;
-    size_t byte_count = (size_t)count * 512u;
-    if (byte_offset + byte_count > total)
+    size_t byte_offset, byte_count;
+    if (!swim_block_range(img, block_number, count, &byte_offset, &byte_count))
         return MAC_ERR_PARAM;
 
     uint8_t *src = swim_host_dma_ptr(host_addr, byte_count);
@@ -820,6 +891,9 @@ static int16_t swim_write_blocks(iop_t *iop, int floppy_idx, uint32_t block_numb
     size_t wrote = disk_write_data(img, byte_offset, src, byte_count);
     if (wrote != byte_count)
         return MAC_ERR_IO;
+    // Same reason as the format path: this wrote the medium without going
+    // through the controller, so the drive's cached GCR nibbles are stale.
+    floppy_drive_drop_tracks(floppy, (unsigned)floppy_idx);
     return MAC_ERR_NO_ERR;
 }
 
@@ -843,7 +917,7 @@ static void swim_handle_read(iop_t *iop, bool verify_only) {
         image_t *img = (floppy && idx >= 0) ? floppy_drive_image(floppy, (unsigned)idx) : NULL;
         if (!img)
             rc = MAC_ERR_OFFLINE;
-        else if ((size_t)(blk + cnt) * 512u > disk_size(img))
+        else if (!swim_block_range(img, blk, cnt, NULL, NULL))
             rc = MAC_ERR_PARAM;
         else
             rc = MAC_ERR_NO_ERR;
@@ -872,8 +946,75 @@ static void swim_handle_write(iop_t *iop) {
     swim_slot2_complete(iop, rc);
 }
 
-// Format / FormatVerify: we don't simulate sector-by-sector formatting;
-// just clear the image (Format) or treat as a no-op (FormatVerify).
+// Carries out an xmtReqFormat.  The request has its own +$04 overlay (ERS,
+// "Format"): a format KIND, a sector-header byte, an interleave, and optional
+// host RAM addresses for the sector data and tags to stamp across the disk --
+// the Disk Duplicator's one-pass format-and-write.  None of it was decoded
+// before; the handler zero-filled and reported success whatever was asked for.
+//
+// FormatKind is a BIT NUMBER into the FormatsAllowed mask, not a mask.
+// Capacity belongs to the image -- storage_t is built on a fixed block_count --
+// so a kind the medium cannot be is REFUSED rather than honoured; previously
+// the guest was told a 1440K format of an 800K disk had succeeded.
+//
+// HdrFmtKind and FmtInterleave are read but not acted on: this model does not
+// lay down sector headers, so there is nothing for them to change. They are
+// named here so the next reader sees the payload is fully accounted for.
+static int16_t swim_do_format(iop_t *iop, floppy_t *floppy, int idx, image_t *img) {
+    if (!img->writable)
+        return MAC_ERR_W_PR;
+
+    uint32_t pl = IOPMsgPayload(IOPXmtMsgBase, SWIM_SLOT);
+    uint16_t kind = swim_ram_read_be16(iop, pl + SIM_FMT_KIND);
+    uint16_t allowed = 0;
+    swim_format_masks(img, NULL, &allowed);
+    if (kind > 15u || !((allowed >> kind) & 1u)) {
+        LOG(2, "SWIM IOP: Format kind %u not among allowed formats $%04X", kind, allowed);
+        return MAC_ERR_PARAM;
+    }
+
+    uint8_t fill[512];
+    uint8_t tags[12];
+    memset(fill, 0, sizeof fill);
+    memset(tags, 0, sizeof tags);
+
+    uint32_t data_addr = swim_ram_read_be32(iop, pl + SIM_FMT_DATA_ADDR);
+    if (data_addr) {
+        const uint8_t *src = swim_host_dma_ptr(data_addr, sizeof fill);
+        if (!src)
+            return MAC_ERR_PARAM;
+        memcpy(fill, src, sizeof fill);
+    }
+    uint32_t tag_addr = swim_ram_read_be32(iop, pl + SIM_FMT_TAG_ADDR);
+    if (tag_addr) {
+        const uint8_t *src = swim_host_dma_ptr(tag_addr, sizeof tags);
+        if (!src)
+            return MAC_ERR_PARAM;
+        memcpy(tags, src, sizeof tags);
+    }
+
+    int16_t rc = MAC_ERR_NO_ERR;
+    size_t total = disk_size(img);
+    for (size_t off = 0; off < total; off += 512) {
+        if (disk_write_data(img, off, fill, sizeof fill) != sizeof fill) {
+            rc = MAC_ERR_IO;
+            break;
+        }
+        // Only when the caller supplied tags: an image with no tag area
+        // should not be given one as a side effect of a format.
+        if (tag_addr)
+            disk_write_tag(img, off / 512, tags, sizeof tags);
+    }
+
+    // The medium was rewritten behind the controller's back, so the GCR track
+    // cache must not go on serving pre-format nibbles (02-floppy F-28).
+    floppy_drive_drop_tracks(floppy, (unsigned)idx);
+    return rc;
+}
+
+// Format / FormatVerify.  FormatVerify carries no format kind of its own
+// (ERS) and this model has no on-disk error behaviour to check, so it is a
+// no-op that returns updated drive status.
 static void swim_handle_format(iop_t *iop, bool verify_only) {
     int idx;
     uint8_t drvnum;
@@ -888,22 +1029,7 @@ static void swim_handle_format(iop_t *iop, bool verify_only) {
         swim_slot2_complete(iop, MAC_ERR_OFFLINE);
         return;
     }
-    int16_t rc = MAC_ERR_NO_ERR;
-    if (!verify_only) {
-        if (!img->writable) {
-            rc = MAC_ERR_W_PR;
-        } else {
-            uint8_t zeros[512];
-            memset(zeros, 0, sizeof zeros);
-            size_t total = disk_size(img);
-            for (size_t off = 0; off < total; off += 512) {
-                if (disk_write_data(img, off, zeros, sizeof zeros) != sizeof zeros) {
-                    rc = MAC_ERR_IO;
-                    break;
-                }
-            }
-        }
-    }
+    int16_t rc = verify_only ? MAC_ERR_NO_ERR : swim_do_format(iop, floppy, idx, img);
     LOG(3, "SWIM IOP: %s drive=%d → %d", verify_only ? "FormatVerify" : "Format", drvnum, rc);
     swim_slot2_complete(iop, rc);
 }

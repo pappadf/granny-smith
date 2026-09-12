@@ -133,6 +133,12 @@ void swim3_raise(swim3_t *sw, uint8_t bits);
 #define SWIM3_S_GCR        0x04u
 #define SWIM3_S_DISGCRCONV 0x10u
 #define SWIM3_S_IBMDRIVE   0x20u
+#define SWIM3_S_CLOCKDIV2  0x08u // Setup: internal clock / 2
+#define SWIM3_S_GCRWRITES  0x40u // Setup: GCR write framing
+#define SWIM3_S_SOFTRESET  0x80u // Setup: self-clearing soft reset
+// Phase register: the same lines the IWM names CA0..CA2 / LSTRB.
+#define SWIM3_PH_CA_MASK 0x07u
+#define SWIM3_PH_LSTRB   0x08u
 
 // Error register bits (§7.3)
 #define SWIM3_E_UNDERRUN 0x01u

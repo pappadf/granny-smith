@@ -2985,7 +2985,7 @@ static value_t scsi_method_identify_hd(struct object *self, const member_t *m, i
         printf("invalid SCSI HD image: cannot open %s\n", path);
         return val_bool(false);
     }
-    if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
+    if (image_is_floppy(img->type)) {
         printf("invalid SCSI HD image: size matches floppy (%zu bytes)\n", img->raw_size);
         image_close(img);
         return val_bool(false);
@@ -3013,7 +3013,7 @@ static value_t scsi_method_identify_cdrom(struct object *self, const member_t *m
         printf("invalid CD-ROM image: cannot open %s\n", path);
         return val_bool(false);
     }
-    if (img->type == image_fd_ss || img->type == image_fd_ds || img->type == image_fd_hd) {
+    if (image_is_floppy(img->type)) {
         printf("invalid CD-ROM image: floppy-sized (%zu bytes)\n", img->raw_size);
         image_close(img);
         return val_bool(false);
