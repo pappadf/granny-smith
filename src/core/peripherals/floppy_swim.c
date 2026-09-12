@@ -243,6 +243,100 @@ static void mfm_fill_fifo(floppy_t *floppy) {
     }
 }
 
+// Delivers exactly one byte from the sector buffer into the FIFO, advancing to
+// the next sector when this one is spent.  The whole-buffer mfm_fill_fifo()
+// above stays for the ACTION-set prime, where the FIFO is filled in one go
+// before the engine starts.
+static void mfm_deliver_byte(floppy_t *floppy) {
+    if (floppy->mfm_buf_pos >= floppy->mfm_buf_len) {
+        if (floppy->mfm_buf_len == 0)
+            return;
+        mfm_advance_sector(floppy);
+        if (floppy->mfm_buf_pos >= floppy->mfm_buf_len)
+            return;
+    }
+    uint8_t byte = floppy->mfm_sector_buf[floppy->mfm_buf_pos];
+    bool mark = floppy->mfm_sector_mark[floppy->mfm_buf_pos];
+    ism_fifo_push(floppy, byte, mark);
+    floppy->mfm_buf_pos++;
+}
+
+// The write shifter takes each byte as it arrives.
+//
+// DELIBERATELY NOT PACED, unlike the read side.  This model has no flux-level
+// engine, so the FIFO's only observable role on the write side is the
+// handshake's free-space report, and taking the byte here keeps that report
+// truthful WITHOUT the handshake register draining the FIFO as a side effect
+// of being read -- which is the half of 02-floppy F-25 that matters here.
+//
+// Pacing writes at the real 16 us/byte was tried and reverted: MacTest formats
+// an 800K disk through ISM write mode, roughly a million bytes, which at the
+// real rate is ~16 s of emulated time and overruns se30-mactest's and
+// iicx-mactest's 250M-cycle budgets.  Write TIMING is not modelled here (no
+// more than the rest of this path models flux), and making it so is a change
+// to what those rows are allowed to take, which is their owners' call.
+static void ism_write_shifter_take(floppy_t *floppy) {
+    if (!floppy->in_ism_mode || !(floppy->ism_mode & ISM_MODE_ACTION))
+        return;
+    if (floppy->ism_fifo_count > 0)
+        floppy->ism_fifo_count--;
+}
+
+// === ISM transfer engine ====================================================
+//
+// The ISM moves one byte per bit-cell time, on its own clock, and the FIFO is
+// the buffer between that clock and the CPU.  Modelling it that way is what
+// lets rHandshake be what the hardware is -- a STATUS register -- instead of
+// the thing that pumps the transfer (02-floppy F-25).
+//
+// MFM at 500 kbit/s is 16 us per byte (swim.md: "a new byte arrives every 16
+// microseconds", and the 2-byte FIFO extends the allowable CPU latency to
+// ~32 us before an overrun).
+#define ISM_BYTE_NS 16000.0
+
+void floppy_swim_service_callback(void *source, uint64_t data) {
+    floppy_t *floppy = (floppy_t *)source;
+    (void)data;
+    floppy->ism_service_armed = false;
+    // Both conditions: the chip can LEAVE ISM mode with ACTION still set in
+    // ism_mode (wZeros clears bit 6 and the other bits keep their values), and
+    // an engine that only checked ACTION then re-armed itself forever --
+    // pumping mfm_build_sector, and with it a disk_read_data, every slot for
+    // the rest of the run.
+    if (!floppy->in_ism_mode || !(floppy->ism_mode & ISM_MODE_ACTION))
+        return;
+
+    if (floppy->ism_mode & ISM_MODE_WRITE) {
+        // Nothing to do: the write side is drained at wData/wMark, not paced.
+        // See the note there.
+    } else {
+        // The read head delivers ONE byte per slot.  Not mfm_fill_fifo(): that
+        // tops the FIFO up to capacity, so the following slot would always find
+        // it full.
+        if (floppy->ism_fifo_count < ISM_FIFO_SIZE)
+            mfm_deliver_byte(floppy);
+    }
+
+    floppy_swim_service_arm(floppy);
+}
+
+// Arms the next service slot while ACTION is set; idempotent.
+void floppy_swim_service_arm(floppy_t *floppy) {
+    if (!floppy->in_ism_mode || !(floppy->ism_mode & ISM_MODE_ACTION) || !floppy->scheduler)
+        return;
+    if (floppy->ism_service_armed)
+        return;
+    floppy->ism_service_armed = true;
+    scheduler_new_cpu_event(floppy->scheduler, floppy_swim_service_callback, floppy, 0, 0, (uint64_t)ISM_BYTE_NS);
+}
+
+static void floppy_swim_service_stop(floppy_t *floppy) {
+    if (!floppy->scheduler)
+        return;
+    remove_event(floppy->scheduler, floppy_swim_service_callback, floppy);
+    floppy->ism_service_armed = false;
+}
+
 // Skips non-mark bytes at the start of the MFM sector buffer to simulate
 // the SWIM hardware's automatic mark search after ACTION is set
 static void mfm_skip_to_mark(floppy_t *floppy) {
@@ -410,9 +504,6 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
 
     switch (offset) {
     case 8: { // rData: pop data byte from FIFO
-        if ((floppy->ism_mode & ISM_MODE_ACTION) && !(floppy->ism_mode & ISM_MODE_WRITE))
-            mfm_fill_fifo(floppy);
-
         bool is_mark = false;
         uint8_t byte = ism_fifo_pop(floppy, &is_mark);
         if (is_mark && !floppy->ism_error)
@@ -594,7 +685,7 @@ static void swim_handle_action_set(floppy_t *floppy, uint8_t old_mode) {
             }
             // Skip sync/gap bytes to next mark (SWIM auto mark search)
             mfm_skip_to_mark(floppy);
-            mfm_fill_fifo(floppy);
+            mfm_fill_fifo(floppy); // prime; the service slot takes it from here
             LOG(5, "ISM: ACTION set for read (pos=%d/%d)", floppy->mfm_buf_pos, floppy->mfm_buf_len);
         }
     }
@@ -622,6 +713,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             if (!floppy->ism_error)
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
+        ism_write_shifter_take(floppy);
         floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
         // Capture sector data during WRITE+ACTION
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
@@ -652,6 +744,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             if (!floppy->ism_error)
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
+        ism_write_shifter_take(floppy);
         floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
         // Track $A1 mark bytes for write capture state machine
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
@@ -733,6 +826,7 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
         // If bit 6 was cleared: switch back to IWM mode
         if ((old_mode & ISM_MODE_ISM_IWM) && !(floppy->ism_mode & ISM_MODE_ISM_IWM)) {
             floppy->in_ism_mode = false;
+            floppy_swim_service_stop(floppy);
             floppy->mode_switch_count = 0;
 
             // Carry ISM phase lines back to IWM state
@@ -746,6 +840,10 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 
         swim_handle_fifo_clear(floppy, old_mode);
         swim_handle_action_set(floppy, old_mode);
+        if (floppy->ism_mode & ISM_MODE_ACTION)
+            floppy_swim_service_arm(floppy);
+        else if (old_mode & ISM_MODE_ACTION)
+            floppy_swim_service_stop(floppy);
         break;
     }
     case 7: { // wOnes: set specified bits in mode register
@@ -760,6 +858,10 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
 
         swim_handle_fifo_clear(floppy, old_mode);
         swim_handle_action_set(floppy, old_mode);
+        if (floppy->ism_mode & ISM_MODE_ACTION)
+            floppy_swim_service_arm(floppy);
+        else if (old_mode & ISM_MODE_ACTION)
+            floppy_swim_service_stop(floppy);
         break;
     }
     default:

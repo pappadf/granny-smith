@@ -827,7 +827,8 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         // floppy_drive_motor_on -- so the type used to be registered and never
         // armed (02-floppy F-22).
     } else if (type == FLOPPY_TYPE_SWIM) {
-        scheduler_new_event_type(scheduler, "swim", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
+        scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_swim_motor_spinup_callback);
+        scheduler_new_event_type(scheduler, "floppy", floppy, "ism_service", &floppy_swim_service_callback);
         floppy_swim_setup(floppy, map);
     } else {
         scheduler_new_event_type(scheduler, "floppy", floppy, "motor_spinup", &floppy_motor_spinup_callback);

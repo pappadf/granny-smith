@@ -252,6 +252,7 @@ struct floppy {
 
     // ISM CRC state
     uint16_t ism_crc; // running CRC-CCITT-16
+    bool ism_service_armed; // an ISM transfer service slot is pending
 
     // MFM sector-level emulation state
     uint8_t mfm_sector_buf[MFM_SECTOR_BUF_SIZE]; // pre-built sector data
@@ -369,5 +370,9 @@ void floppy_swim_setup(floppy_t *floppy, memory_map_t *map);
 
 // SWIM motor spin-up callback (separate for scheduler event identity)
 void floppy_swim_motor_spinup_callback(void *source, uint64_t data);
+
+// The ISM transfer engine's service slot: one byte per bit-cell time.
+void floppy_swim_service_callback(void *source, uint64_t data);
+void floppy_swim_service_arm(floppy_t *floppy);
 
 #endif // FLOPPY_INTERNAL_H
