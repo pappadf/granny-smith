@@ -306,23 +306,52 @@ static void phase_free(scsi_t *scsi) {
     scsi_update_irq(scsi);
 }
 
+static const char *const SCSI_PHASE_NAMES[] = {
+    "bus_free", "arbitration", "selection", "reselection", "command",
+    "data_in",  "data_out",    "status",    "message_in",  "message_out",
+};
+
+static const char *phase_name(int p) {
+    return (p >= 0 && p < (int)(sizeof(SCSI_PHASE_NAMES) / sizeof(SCSI_PHASE_NAMES[0]))) ? SCSI_PHASE_NAMES[p] : "?";
+}
+
+// A guest drives every one of these transitions through the 5380 register
+// file, so "the bus is in the phase this transition starts from" is not an
+// invariant the model can assume -- it is a request that may be malformed.
+// Declining is what the rest of the file already does (see the CHECK CONDITION
+// comment on the INQUIRY path: "the guest may legitimately try").
+//
+// These used to be assert()s.  That was wrong in both directions: the default
+// headless build keeps assertions live (Makefile.headless: "No -DNDEBUG"), so
+// a guest could abort CI with five byte-writes to one register, while the
+// GS_FAST/NDEBUG builds compiled the check out and walked on regardless.  A
+// logged early return is the same behaviour in every build mode.
+#define PHASE_REQUIRE(scsi, cond)                                                                                      \
+    do {                                                                                                               \
+        if (!(cond)) {                                                                                                 \
+            LOG(1, "scsi: %s declined from phase %s (guest drove an out-of-order transition)", __func__,               \
+                phase_name((scsi)->bus.phase));                                                                        \
+            return;                                                                                                    \
+        }                                                                                                              \
+    } while (0)
+
 // Transition SCSI bus to arbitration phase
 static void phase_arbitration(scsi_t *scsi) {
-    assert(scsi->bus.phase == scsi_bus_free);
+    PHASE_REQUIRE(scsi, scsi->bus.phase == scsi_bus_free);
 
     scsi->bus.phase = scsi_arbitration;
 }
 
 // Transition SCSI bus to selection phase (from arbitration or bus-free for non-arbitrated selection)
 static void phase_selection(scsi_t *scsi) {
-    assert(scsi->bus.phase == scsi_arbitration || scsi->bus.phase == scsi_bus_free);
+    PHASE_REQUIRE(scsi, scsi->bus.phase == scsi_arbitration || scsi->bus.phase == scsi_bus_free);
 
     scsi->bus.phase = scsi_selection;
 }
 
 // Transition SCSI bus to command phase
 static void phase_command(scsi_t *scsi) {
-    assert(scsi->bus.phase == scsi_selection);
+    PHASE_REQUIRE(scsi, scsi->bus.phase == scsi_selection);
 
     // by not asserting MSG, we indicate that we don't support any messages (other than command complete)
     // i.e. go directly to the command phase
@@ -1261,23 +1290,37 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     // if BSY is released in the selection phase, than it marks the end of selection
     if (bits_cleared & ICR_BSY && scsi->reg.icr & ICR_SEL) {
 
-        assert(scsi->bus.phase == scsi_selection);
+        // Only meaningful as the end of a selection.  A guest that re-drives
+        // SEL/BSY from a later phase is usually a driver retrying a bus it
+        // thinks is hung; decline the selection and leave the live transaction
+        // alone rather than starting a second one on top of it.
+        //
+        // Declined by skipping this block, NOT by returning: one ICR write can
+        // clear BSY and set ACK in the same store, and the ACK half is still a
+        // legitimate request that the blocks below must see.  (This is also
+        // what the shipping NDEBUG build already did, the assert having been
+        // compiled out -- minus the selection work, which it wrongly ran.)
+        if (scsi->bus.phase != scsi_selection) {
+            LOG(1, "scsi: BSY released with SEL set in phase %s -- not a selection, ignored",
+                phase_name(scsi->bus.phase));
+        } else {
 
-        // Non-arbitrated selection: A/UX's SCSI driver (and Apple's SCSI Manager
-        // on real hardware) drives SEL without first setting MR_ARBITRATE, so
-        // bus.initiator was never captured.  Mac hosts are wired to ID 7, so
-        // default to 7 when arbitration was skipped.
-        if (scsi->bus.initiator >= 8)
-            scsi->bus.initiator = 7;
+            // Non-arbitrated selection: A/UX's SCSI driver (and Apple's SCSI Manager
+            // on real hardware) drives SEL without first setting MR_ARBITRATE, so
+            // bus.initiator was never captured.  Mac hosts are wired to ID 7, so
+            // default to 7 when arbitration was skipped.
+            if (scsi->bus.initiator >= 8)
+                scsi->bus.initiator = 7;
 
-        // ODR will contain the "OR" of target and initiator ID
-        scsi->bus.target = platform_ntz32(scsi->reg.odr & ~(1 << scsi->bus.initiator));
+            // ODR will contain the "OR" of target and initiator ID
+            scsi->bus.target = platform_ntz32(scsi->reg.odr & ~(1 << scsi->bus.initiator));
 
-        // [6]: target will assert BSY - if no target, the bus will be free again
-        if (!scsi->devices[scsi->bus.target & 7].image)
-            phase_free(scsi);
-        else
-            phase_command(scsi);
+            // [6]: target will assert BSY - if no target, the bus will be free again
+            if (!scsi->devices[scsi->bus.target & 7].image)
+                phase_free(scsi);
+            else
+                phase_command(scsi);
+        }
     }
 
     // if ACK is reset
@@ -1432,8 +1475,15 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // driver expected a data phase — the NCR 5380 signals this as a
         // phase mismatch IRQ so the driver can recover), or during command
         // (A/UX's SCSI driver uses pseudo-DMA to push command bytes).
-        assert(scsi->bus.phase == scsi_command || scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out ||
-               scsi->bus.phase == scsi_status || scsi->bus.phase == scsi_message_in);
+        //
+        // Anywhere else -- BUS FREE most commonly -- arming DMA is a no-op on
+        // real silicon: there is no REQ/ACK partner, so nothing transfers.
+        // Record the mode bit (already done above) but skip the DRQ wiring.
+        if (scsi->bus.phase != scsi_command && scsi->bus.phase != scsi_data_in && scsi->bus.phase != scsi_data_out &&
+            scsi->bus.phase != scsi_status && scsi->bus.phase != scsi_message_in) {
+            LOG(1, "scsi: MR.DMA set in phase %s -- no transfer partner, DRQ not armed", phase_name(scsi->bus.phase));
+            return;
+        }
 
         // if we're reading in data, and there is more in the buffer - then assert request signal
         if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0) {
@@ -2987,11 +3037,6 @@ const class_desc_t scsi_device_class = {
 };
 
 // --- bus child class -------------------------------------------------------
-
-static const char *const SCSI_PHASE_NAMES[] = {
-    "bus_free", "arbitration", "selection", "reselection", "command",
-    "data_in",  "data_out",    "status",    "message_in",  "message_out",
-};
 
 static value_t scsi_bus_attr_phase(struct object *self, const member_t *m) {
     (void)m;
