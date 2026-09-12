@@ -252,7 +252,6 @@ struct floppy {
 
     // ISM CRC state
     uint16_t ism_crc; // running CRC-CCITT-16
-    bool ism_crc_pending; // a wCRC token is riding the FIFO (ISM spec $2 WRITE)
 
     // MFM sector-level emulation state
     uint8_t mfm_sector_buf[MFM_SECTOR_BUF_SIZE]; // pre-built sector data

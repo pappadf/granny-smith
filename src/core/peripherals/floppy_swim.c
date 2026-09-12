@@ -109,12 +109,24 @@ static int ism_mfm_spt(image_t *img) {
 //
 // ISM ASIC spec, Setup register $5: bit 2 sets GCR mode, and bit 6 ("the read
 // and write Trans-Space logic bypassed") "must be set whenever the GCR mode is
-// set".  Neither bit was ever read: wSetup just stored the byte, and
-// mfm_build_sector synthesised an MFM address+data field unconditionally
+// set".  Neither bit is read anywhere: wSetup just stores the byte and
+// mfm_build_sector synthesises an MFM address+data field unconditionally
 // (02-floppy F-09).  SWIM3 builds its whole format-detection walk on exactly
-// this predicate -- a mismatch means the head finds nothing it recognises,
-// which is how MFM1440K/MFM720K/GCR800K/GCR400K probes reject the wrong modes.
-static bool ism_encoding_matches(const floppy_t *floppy, const image_t *img) {
+// this predicate.
+//
+// GATING THE ISM PATH ON IT DOES NOT WORK HERE, and that is the finding's
+// unstated cost.  Tried and reverted (2026-09-11): with the gate in place,
+// se30-mactest stops matching its `insert-1.4mb-floppy` golden -- the 800K step
+// before it still passes, so the model is reaching this path with HD media and
+// a Setup register whose GCR bit does not say what the finding assumes it says.
+// Whatever MacTest leaves in Setup, the model has no business concluding "the
+// head sees nothing" from it while the rest of the mode model is missing.
+//
+// Kept, unused, because the predicate itself is right and is what a future ISM
+// engine needs.  Do not wire it in without rerunning se30-mactest,
+// se30-format-hd, se30-cdrom, iicx-mactest and iici-aux3-8bpp -- the extended
+// tier, not the matrix: none of these are matrix rows.
+__attribute__((unused)) static bool ism_encoding_matches(const floppy_t *floppy, const image_t *img) {
     floppy_media_t m;
     if (!floppy_media_from_image((image_t *)img, &m))
         return false;
@@ -151,14 +163,6 @@ static void mfm_build_sector(floppy_t *floppy) {
     // Use the latched side value (set when ACTION transitions 0→1)
     int side = floppy->mfm_cur_side;
     int sector = floppy->mfm_cur_sector; // 1-based
-
-    // The chip must be framing MFM to present MFM fields.  A wrong-mode probe
-    // used to get a plausible-looking address field it should never have seen.
-    if (!ism_encoding_matches(floppy, img)) {
-        floppy->mfm_buf_len = 0;
-        LOG(3, "ISM: framing does not match media (setup=0x%02X), no fields under the head", floppy->ism_setup);
-        return;
-    }
 
     int sectors_per_track = ism_mfm_spt(img);
 
@@ -495,19 +499,38 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
         if (floppy->ism_error != 0)
             hdshk |= ISM_HDSHK_ERROR;
 
-        // Bits 6-7: FIFO status.  PURE -- reading the handshake register must
-        // not move data (02-floppy F-25).  This used to drain the FIFO
-        // outright in write mode and call mfm_fill_fifo in read mode, which
-        // can advance the sector and perform a disk_read_data; so a debugger
-        // read, a logpoint or the object model touching the register changed
-        // emulated state, and the amount of data delivered depended on how
-        // many times the guest polled rather than on time.  SWIM3 gets this
-        // right: its engine is scheduler-driven and its register reads are
-        // pure.
+        // Bits 6-7: FIFO status.
         //
-        // The write side no longer needs a drain here because wData/wMark now
-        // hand the byte to the shifter as they take it (see below).
+        // READING THIS REGISTER MOVES DATA, and that is 02-floppy F-25: in
+        // write mode it drains the FIFO, and in read mode it calls
+        // mfm_fill_fifo, which can advance the sector and perform a
+        // disk_read_data.  The finding is right that this is wrong -- SWIM3,
+        // which is scheduler-driven, keeps its register reads pure.
+        //
+        // TRIED AND REVERTED (2026-09-11).  Making it pure -- reporting
+        // availability without performing the refill, and having wData/wMark
+        // hand each byte to the shifter instead of the drain -- builds, passes
+        // every unit test, and BREAKS THE MACHINE: se30-format-hd,
+        // se30-mactest, se30-cdrom, iicx-mactest and iici-aux3-8bpp all stop
+        // reaching their goldens, because the SE/30 ROM's transfer loop relies
+        // on the handshake read to pump the transfer and rData's own refill is
+        // not enough in the sequence the ROM actually uses.
+        //
+        // So F-25 cannot be fixed by making this register pure.  It needs what
+        // the proposal calls for and this branch deliberately did not attempt:
+        // a scheduler-paced service slot at the data rate (16 us/byte at
+        // 500 kbit/s), the way swim3_xfer.c works, so that data moves on its
+        // own clock and the register has something truthful to report without
+        // doing the work.  That is the real shape of the fix, and it is now
+        // known to be the ONLY shape -- which is more than the finding knew.
         if (floppy->ism_mode & ISM_MODE_WRITE) {
+            // Drains the FIFO as a side effect of being READ.  This is the
+            // defect F-25 names and it is REAL -- a debugger read, a logpoint
+            // or the object model touching this register changes emulated
+            // state, and throughput depends on poll count rather than time.
+            // It cannot be removed on its own: see the note above rHandshake.
+            if (floppy->ism_mode & ISM_MODE_ACTION)
+                floppy->ism_fifo_count = 0;
             int space = ISM_FIFO_SIZE - floppy->ism_fifo_count;
             if (space >= 1)
                 hdshk |= ISM_HDSHK_DAT1BYTE;
@@ -517,9 +540,11 @@ static uint8_t swim_ism_read(floppy_t *floppy, uint32_t offset) {
             // A byte is available if the FIFO holds one, or the sector buffer
             // still has bytes the next rData would pull in.  Same answer the
             // old refill produced, without performing it.
+            // Likewise: reading the status register is what pumps the read
+            // transfer in this model.
+            if (floppy->ism_mode & ISM_MODE_ACTION)
+                mfm_fill_fifo(floppy);
             int avail = floppy->ism_fifo_count;
-            if ((floppy->ism_mode & ISM_MODE_ACTION) && floppy->mfm_buf_len > 0)
-                avail = ISM_FIFO_SIZE;
             if (avail >= 1)
                 hdshk |= ISM_HDSHK_DAT1BYTE;
             if (avail >= 2)
@@ -587,27 +612,6 @@ static void swim_handle_fifo_clear(floppy_t *floppy, uint8_t old_mode) {
     }
 }
 
-// The write shifter takes a byte from the FIFO as it arrives.
-//
-// This model has no flux-level engine, so the FIFO's only observable role on
-// the write side is the handshake's free-space report.  Handing the byte on
-// here keeps that report truthful without the handshake register draining the
-// FIFO as a side effect of being READ (02-floppy F-25).
-//
-// A queued CRC token (wCRC) shifts out after the byte it was queued behind,
-// which is what the ISM ASIC spec describes.
-static void ism_fifo_take_for_shifter(floppy_t *floppy) {
-    if (!(floppy->ism_mode & ISM_MODE_ACTION))
-        return;
-    if (floppy->ism_fifo_count > 0)
-        floppy->ism_fifo_count--;
-    if (floppy->ism_crc_pending && floppy->ism_fifo_count == 0) {
-        floppy->ism_crc_pending = false;
-        floppy->ism_crc = CRC_INIT; // the field is closed; the next one restarts
-        LOG(6, "ISM: CRC token shifted out");
-    }
-}
-
 // Writes to the ISM register file
 static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
     GS_ASSERT(offset <= 7);
@@ -618,7 +622,6 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             if (!floppy->ism_error)
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
-        ism_fifo_take_for_shifter(floppy);
         floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
         // Capture sector data during WRITE+ACTION
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
@@ -649,7 +652,6 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             if (!floppy->ism_error)
                 floppy->ism_error |= ISM_ERR_OVERRUN;
         }
-        ism_fifo_take_for_shifter(floppy);
         floppy->ism_crc = crc_ccitt_byte(floppy->ism_crc, byte);
         // Track $A1 mark bytes for write capture state machine
         if ((floppy->ism_mode & (ISM_MODE_WRITE | ISM_MODE_ACTION)) == (ISM_MODE_WRITE | ISM_MODE_ACTION)) {
@@ -676,8 +678,13 @@ static void swim_ism_write(floppy_t *floppy, uint32_t offset, uint8_t byte) {
             // no CRC (02-floppy F-34).  Modelling it as a token makes the
             // capacity question disappear: the token rides with the entry
             // rather than occupying one.
-            floppy->ism_crc_pending = true;
-            LOG(6, "ISM wCRC: queued CRC token (crc=0x%04X)", floppy->ism_crc);
+            // The token rides the FIFO and the CRC bytes shift out after the
+            // last data byte.  With no flux-level engine the token and an
+            // immediate emission are indistinguishable, so what is modelled is
+            // the observable part: the field closes here and the next one
+            // starts a fresh CRC.
+            LOG(6, "ISM wCRC: CRC 0x%04X emitted, field closed", floppy->ism_crc);
+            floppy->ism_crc = CRC_INIT;
         } else {
             floppy->ism_iwm_config = byte;
             LOG(6, "ISM wIWMConfig: 0x%02X", byte);
