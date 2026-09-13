@@ -191,6 +191,16 @@ struct scsi {
         scsi_phase_t saved_phase; // phase before MESSAGE OUT (for return)
         int initiator;
         int target;
+        // REQ and BSY are bus signals, not chip state.  They used to be
+        // stored only inside the 5380's CSR, which is why the bus wrote that
+        // register on every phase change.
+        bool req;
+        bool bsy;
+        // The byte the target is currently presenting on the data lines --
+        // the status byte, then the completion message.  Also wire state: the
+        // 5380 returns it from CDR, the external-initiator API reads it
+        // directly, and it used to be stored in the 5380's register.
+        uint8_t data;
     } bus;
 
     struct {
@@ -376,7 +386,6 @@ const char *phase_name(int p);
 void phase_selection(scsi_t *scsi);
 void run_cmd(scsi_t *scsi);
 void scsi_buf_ensure(scsi_t *scsi, size_t bytes);
-bool scsi_phase_match(scsi_t *scsi);
 
 // 5380 services the bus calls back into.  Three of these are the chip's
 // interrupt and DRQ wiring, which the bus pokes when a phase changes; the
@@ -386,6 +395,8 @@ void scsi_cancel_drq_service(scsi_t *scsi);
 void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer_gate);
 void scsi_update_drq(scsi_t *scsi);
 void scsi_update_irq(scsi_t *scsi);
+bool scsi_5380_dma_mode(const scsi_t *scsi);
+void scsi_5380_entered_status(scsi_t *scsi, bool from_data_in);
 
 // ============================================================================
 // Phase Transition Helpers (defined in scsi_bus.c, used by scsi_cdrom.c)

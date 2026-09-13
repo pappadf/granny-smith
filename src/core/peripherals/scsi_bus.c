@@ -101,24 +101,6 @@ int cmd_size(uint8_t opcode) {
     }
 }
 
-// Compute BSR phase-match bit: true when bus phase matches TCR
-bool scsi_phase_match(scsi_t *scsi) {
-    // TCR bits 2:0 = MSG, C/D, I/O  (written by initiator)
-    // CSR bits 4:2 = MSG, C/D, I/O  (actual bus signals)
-    // In loopback mode, CSR is computed dynamically from ICR/TCR — use
-    // the live bus signals rather than the stored csr register.
-    uint8_t csr = scsi->reg.csr;
-    if (scsi->loopback && (scsi->reg.mr & MR_TARGET)) {
-        if (scsi->reg.tcr & 0x01)
-            csr |= CSR_IO;
-        if (scsi->reg.tcr & 0x02)
-            csr |= CSR_CD;
-        if (scsi->reg.tcr & 0x04)
-            csr |= CSR_MSG;
-    }
-    return ((csr >> 2) & 7) == (scsi->reg.tcr & 7);
-}
-
 // Ensure the staging buffer can hold at least `bytes`.  The buffer starts at
 // BUF_LIMIT and grows (never shrinks) so a single READ/WRITE larger than 256
 // blocks — e.g. the Apple SCSI driver's multi-block writes during a System 7.1
@@ -150,7 +132,8 @@ uint8_t next_byte(scsi_t *scsi) {
 // Transition SCSI bus to the free/idle state
 void phase_free(scsi_t *scsi) {
     scsi->bus.phase = scsi_bus_free;
-    scsi->reg.csr = 0;
+    scsi->bus.req = false;
+    scsi->bus.bsy = false;
     scsi->end_of_dma = false;
     scsi_cancel_drq_service(scsi);
     scsi_update_drq(scsi);
@@ -206,7 +189,7 @@ void phase_command(scsi_t *scsi) {
 
     // by not asserting MSG, we indicate that we don't support any messages (other than command complete)
     // i.e. go directly to the command phase
-    scsi->reg.csr = CSR_CD + CSR_REQ + CSR_BSY;
+    scsi->bus.req = scsi->bus.bsy = true;
 
     // reset the buffer - will hold the command
     scsi->buf.max = MAX_CMD_SIZE;
@@ -220,7 +203,7 @@ void phase_data_in(scsi_t *scsi, int bytes) {
     assert(scsi->bus.phase == scsi_command);
 
     scsi->bus.phase = scsi_data_in;
-    scsi->reg.csr = CSR_IO + CSR_REQ + CSR_BSY;
+    scsi->bus.req = scsi->bus.bsy = true;
     scsi_buf_ensure(scsi, (size_t)bytes);
     scsi->buf.size = scsi->buf.max = bytes;
     scsi->buf.pos = 0; // fresh fill: deliver from the front
@@ -253,7 +236,7 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     assert(scsi->bus.phase == scsi_command);
 
     scsi->bus.phase = scsi_data_out;
-    scsi->reg.csr = CSR_REQ + CSR_BSY;
+    scsi->bus.req = scsi->bus.bsy = true;
     scsi_buf_ensure(scsi, (size_t)bytes);
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
@@ -272,7 +255,7 @@ void phase_message_out(scsi_t *scsi) {
     scsi->bus.saved_phase = scsi->bus.phase;
     scsi->bus.phase = scsi_message_out;
     // MSG + C/D + REQ + BSY, no I/O (direction is initiator → target)
-    scsi->reg.csr = CSR_MSG + CSR_CD + CSR_REQ + CSR_BSY;
+    scsi->bus.req = scsi->bus.bsy = true;
     scsi_update_irq(scsi);
 }
 
@@ -284,27 +267,15 @@ void phase_status(scsi_t *scsi, uint8_t status) {
     bool was_data_in = (scsi->bus.phase == scsi_data_in);
 
     scsi->bus.phase = scsi_status;
-    scsi->reg.csr = CSR_IO + CSR_CD + CSR_REQ + CSR_BSY;
-    scsi->reg.cdr = status;
-    // Signal end-of-DMA to the IRQ logic if DMA was active
-    if (scsi->reg.mr & MR_DMA)
-        scsi->end_of_dma = true;
+    scsi->bus.req = scsi->bus.bsy = true;
+    scsi->bus.data = status;
 
-    // When transitioning from data-in with DMA active, skip scsi_update_irq.
-    // On real NCR 5380 hardware the target changes bus phase only AFTER
-    // the final ACK handshake completes — the phase-mismatch IRQ fires
-    // asynchronously, not during the register read that returns the last
-    // data byte.  A/UX's pseudo-DMA loop (scsiin) runs at IPL 0 and
-    // would service the IRQ immediately, causing a nested scsidintr that
-    // stamps SST_MORE.  Mac OS runs its pseudo-DMA at IPL >= 2, so the
-    // IRQ is masked and harmlessly deferred; skipping it has no effect.
-    // The host clears MR_DMA next (write_mr), which fires scsi_update_irq
-    // with DMA off — the correct post-transfer notification.
-    if (was_data_in && (scsi->reg.mr & MR_DMA)) {
-        return;
-    }
-
-    scsi_update_irq(scsi);
+    // Entering STATUS is a wire event; what a controller makes of it is its
+    // own business.  The 5380 latches end-of-DMA here and, coming out of DATA
+    // IN under DMA, deliberately withholds the interrupt -- reasoning that
+    // belongs with the chip and used to sit in this function, reading the
+    // chip's mode register to get it.
+    scsi_5380_entered_status(scsi, was_data_in);
 }
 
 // Transition SCSI bus to message-in phase
@@ -312,8 +283,8 @@ void phase_message_in(scsi_t *scsi, uint8_t message) {
     assert(scsi->bus.phase == scsi_status);
 
     scsi->bus.phase = scsi_message_in;
-    scsi->reg.csr = CSR_IO + CSR_CD + CSR_MSG + CSR_REQ + CSR_BSY;
-    scsi->reg.cdr = message;
+    scsi->bus.req = scsi->bus.bsy = true;
+    scsi->bus.data = message;
     scsi_update_irq(scsi);
 }
 
@@ -1225,11 +1196,11 @@ bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out) {
     // driver aborts the transfer with only the first segment delivered,
     // and the rest of a multi-page read is left as stale RAM — the source
     // of the residual "bad block" garbage on large (>1 segment) reads.
-    if (scsi->reg.mr & MR_DMA) {
+    if (scsi_5380_dma_mode(scsi)) {
         if (scsi->buf.size > 0)
-            scsi->reg.csr |= CSR_REQ;
+            scsi->bus.req = true;
         else
-            scsi->reg.csr &= ~CSR_REQ;
+            scsi->bus.req = false;
     }
     // Eagerly transition to STATUS when the SCSI command's data has
     // been fully delivered (buf empty).  On real hardware the target
@@ -1313,7 +1284,7 @@ void scsi_external_data_in_complete(scsi_t *scsi) {
 int scsi_external_status_byte(scsi_t *scsi) {
     if (!scsi || scsi->bus.phase != scsi_status)
         return -1;
-    int status = scsi->reg.cdr;
+    int status = scsi->bus.data;
     phase_message_in(scsi, 0x00); // COMMAND COMPLETE
     return status;
 }
@@ -1321,7 +1292,7 @@ int scsi_external_status_byte(scsi_t *scsi) {
 int scsi_external_message_byte(scsi_t *scsi) {
     if (!scsi || scsi->bus.phase != scsi_message_in)
         return -1;
-    return scsi->reg.cdr;
+    return scsi->bus.data;
 }
 
 void scsi_external_release(scsi_t *scsi) {
@@ -1350,6 +1321,34 @@ int scsi_eject_device(scsi_t *scsi, int id) {
     // CONDITION, so a guest that ejected, took one error and retried used to
     // find the second command succeeding against an empty drive.
     return 1;
+}
+
+// The three phase lines, as ANSI X3.131-1986 Table 5-1 encodes them.
+uint8_t scsi_phase_wire_bits(int phase) {
+    switch (phase) {
+    case scsi_data_out:
+        return 0x0; // -  -  -
+    case scsi_data_in:
+        return 0x1; // -  -  I/O
+    case scsi_command:
+        return 0x2; // -  C/D -
+    case scsi_status:
+        return 0x3; // -  C/D I/O
+    case scsi_message_out:
+        return 0x6; // MSG C/D -
+    case scsi_message_in:
+        return 0x7; // MSG C/D I/O
+    default:
+        return 0x0; // bus free / arbitration / selection assert none of them
+    }
+}
+
+bool scsi_bus_req(const scsi_t *scsi) {
+    return scsi && scsi->bus.req;
+}
+
+bool scsi_bus_bsy(const scsi_t *scsi) {
+    return scsi && scsi->bus.bsy;
 }
 
 int scsi_get_bus_phase(const scsi_t *scsi) {

@@ -270,6 +270,21 @@ int scsi_eject_device(scsi_t *scsi, int id);
 //   0=bus_free, 1=arbitration, 2=selection, 3=reselection, 4=command,
 //   5=data_in, 6=data_out, 7=status, 8=message_in, 9=message_out
 int scsi_get_bus_phase(const scsi_t *scsi);
+
+// The three phase lines -- MSG (bit 2), C/D (bit 1), I/O (bit 0) -- as ANSI
+// X3.131-1986 encodes them (Table 5-1: data out 000, data in 001, command 010,
+// status 011, message out 110, message in 111).
+//
+// This is a property of the WIRE, so it lives here and every controller maps it
+// into its own register layout: the 5380 shifts it into CSR bits 4:2, the
+// 53C96 reports it directly in STATREG bits 2:0.  Three chips used to carry
+// three copies of this table.
+uint8_t scsi_phase_wire_bits(int phase);
+
+// REQ and BSY as they currently stand on the bus.  Also wire state, also read
+// by more than one chip.
+bool scsi_bus_req(const scsi_t *scsi);
+bool scsi_bus_bsy(const scsi_t *scsi);
 int scsi_get_bus_target(const scsi_t *scsi);
 int scsi_get_bus_initiator(const scsi_t *scsi);
 
