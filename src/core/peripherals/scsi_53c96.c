@@ -15,6 +15,7 @@
 #include "scsi.h"
 #include "system.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -652,20 +653,18 @@ scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkp
     if (!c)
         return NULL;
     c->sched = sched;
-    c->clock_hz = clock_hz;
     chip_reset(c);
     if (cp) {
-        // Restore the plain-data prefix; pointers/callbacks re-bind after.
-        scsi_53c96_t saved;
-        system_read_checkpoint_data(cp, &saved, sizeof(saved));
-        saved.sched = sched;
-        saved.clock_hz = clock_hz;
-        saved.irq_cb = NULL;
-        saved.irq_ctx = NULL;
-        saved.bus = NULL; // re-attached by the machine after restore
-        saved.xfer_mode = XFER_IDLE; // mid-transfer restore lands in Phase I
-        *c = saved;
+        // Read straight into the chip: the block stops before `sched`, so the
+        // pointers this calloc left NULL stay NULL and are re-bound by the
+        // machine (scsi_53c96_attach_bus, scsi_53c96_set_irq_callback).
+        system_read_checkpoint_data(cp, c, offsetof(scsi_53c96_t, sched));
+        c->xfer_mode = XFER_IDLE; // mid-transfer restore lands in Phase I
     }
+    // The machine's clock wins over whatever the checkpoint carried: it is a
+    // property of the board this chip is being built into, not of the saved
+    // session.
+    c->clock_hz = clock_hz;
     // The selection time-out's scheduler event belongs to the bus now
     // (scsi_bus_arm_select_timeout).  The one exception is a chip with no bus
     // attached -- the Power Macintosh's empty 53C94 chain -- which still needs
@@ -690,7 +689,17 @@ void scsi_53c96_delete(scsi_53c96_t *c) {
 void scsi_53c96_checkpoint(scsi_53c96_t *c, checkpoint_t *cp) {
     if (!c || !cp)
         return;
-    system_write_checkpoint_data(cp, c, sizeof(*c));
+    // The plain-data block only, bounded by the first pointer -- the same shape
+    // via_t, scc_t, rtc_t and struct scsi use.
+    //
+    // This used to be sizeof(*c), which put `sched`, `bus`, `irq_cb` and
+    // `irq_ctx` into the file: 32 of 88 bytes were host addresses, measured.
+    // The restore overwrote them on the way back in, so it was never unsafe --
+    // but it made checkpoints depend on ASLR, so the same machine saved twice
+    // produced different files and "save, save again, diff" could not be used
+    // to verify anything.  The struct was already ordered for this; only the
+    // bound was wrong.
+    system_write_checkpoint_data(cp, c, offsetof(scsi_53c96_t, sched));
 }
 
 void scsi_53c96_set_irq_callback(scsi_53c96_t *c, scsi_53c96_irq_cb cb, void *context) {

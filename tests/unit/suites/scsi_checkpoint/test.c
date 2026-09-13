@@ -23,6 +23,7 @@
 
 #include "scheduler.h"
 #include "scsi.h"
+#include "scsi_53c96.h"
 #include "scsi_internal.h"
 #include "test_assert.h"
 
@@ -299,10 +300,85 @@ TEST(test_busless_round_trip_is_symmetric) {
     scsi_delete(a);
 }
 
+// ============================================================================
+// F-21: no host pointers in the stream
+// ============================================================================
+//
+// scsi_53c96_checkpoint wrote sizeof(*c) -- the whole struct, pointers and all.
+// The restore overwrote them coming back in, so it was never unsafe, but it put
+// ASLR-dependent host addresses in the file: measured at 32 of 88 bytes on a
+// Quadra.  The same machine saved twice produced different files, so "save,
+// save again, diff" could not verify anything.
+//
+// The struct was already ordered plain-data-first; only the bound was wrong.
+
+// Does the recorded stream contain this pointer's bytes anywhere?
+static bool stream_contains_pointer(const void *p) {
+    uintptr_t v = (uintptr_t)p;
+    if (!v)
+        return false; // a NULL is not a leak
+    for (size_t i = 0; i + sizeof(v) <= s_cp_w; i++)
+        if (memcmp(s_cp_buf + i, &v, sizeof(v)) == 0)
+            return true;
+    return false;
+}
+
+static void dummy_irq(void *ctx, bool level) {
+    (void)ctx, (void)level;
+}
+
+TEST(test_53c96_writes_no_host_pointers) {
+    scsi_t *bus = scsi_init(NULL);
+    scsi_53c96_t *c = scsi_53c96_init(NULL, 25000000, NULL);
+    ASSERT_TRUE(c != NULL);
+    scsi_53c96_attach_bus(c, bus);
+    scsi_53c96_set_irq_callback(c, dummy_irq, bus);
+
+    cp_reset();
+    scsi_53c96_checkpoint(c, (checkpoint_t *)1);
+
+    // Every pointer the chip is holding, and the chip's own address.
+    ASSERT_TRUE(!stream_contains_pointer(bus));
+    ASSERT_TRUE(!stream_contains_pointer((void *)(uintptr_t)dummy_irq));
+    ASSERT_TRUE(!stream_contains_pointer(c));
+
+    scsi_53c96_delete(c);
+    scsi_delete(bus);
+}
+
+// ...and the programmer-visible state still survives, so the narrower bound did
+// not cost anything.  Driven through the register file, because struct
+// scsi_53c96 is private to its translation unit -- which is the right way to
+// test it anyway: these are the bytes a driver can actually observe.
+TEST(test_53c96_state_survives_a_round_trip) {
+    scsi_53c96_t *a = scsi_53c96_init(NULL, 25000000, NULL);
+    ASSERT_TRUE(a != NULL);
+    scsi_53c96_write(a, 0x8, 0x47); // Config 1: bus ID + parity enables
+    scsi_53c96_write(a, 0xB, 0x08); // Config 2: SCSI-2 features
+    scsi_53c96_write(a, 0xC, 0x04); // Config 3
+    scsi_53c96_write(a, 0x0, 0x34); // transfer count low
+    scsi_53c96_write(a, 0x1, 0x12); // transfer count high
+
+    cp_reset();
+    scsi_53c96_checkpoint(a, (checkpoint_t *)1);
+    cp_rewind();
+
+    scsi_53c96_t *b = scsi_53c96_init(NULL, 25000000, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(scsi_53c96_read(b, 0x8), 0x47);
+    ASSERT_EQ_INT(scsi_53c96_read(b, 0xB), 0x08);
+    ASSERT_EQ_INT(scsi_53c96_read(b, 0xC), 0x04);
+
+    scsi_53c96_delete(b);
+    scsi_53c96_delete(a);
+}
+
 int main(void) {
     RUN(test_device_state_survives_a_round_trip);
     RUN(test_5380_state_survives_a_round_trip);
     RUN(test_busless_round_trip_is_symmetric);
+    RUN(test_53c96_writes_no_host_pointers);
+    RUN(test_53c96_state_survives_a_round_trip);
     printf("All scsi_checkpoint tests passed\n");
     return 0;
 }

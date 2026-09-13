@@ -60,6 +60,7 @@ SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/scsi.c \
         $(EMU_ROOT)/core/peripherals/scsi_bus.c \
         $(EMU_ROOT)/core/peripherals/scsi_cdrom.c \
+        $(EMU_ROOT)/core/peripherals/scsi_53c96.c \
         $(EMU_ROOT)/core/object/object.c \
         $(EMU_ROOT)/core/object/value.c \
         $(EMU_ROOT)/core/object/meta.c \
