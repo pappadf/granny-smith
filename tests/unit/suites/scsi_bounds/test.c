@@ -364,6 +364,56 @@ TEST(test_zero_allocation_length_transfers_nothing) {
     scsi_delete(scsi);
 }
 
+// F-13: a REJECTED read must not touch the staging buffer.
+//
+// phase_data_in calls scsi_buf_ensure, which reallocs the staging buffer to the
+// full requested size -- and the buffer never shrinks.  With the phase change
+// before the range check, a READ(10) of tl=0xFFFF against this 32 KB medium was
+// correctly refused with CHECK CONDITION and still left a 32 MB buffer behind
+// for the life of the machine (134 MB at a CD-ROM's 2048-byte blocks).  Measured
+// before the fix: cap 131072 -> 33553920 from one refused CDB.
+//
+// So the assertion is on buf.cap, the thing that actually leaked, not just on
+// the status byte -- the status was already right.
+TEST(test_rejected_read_does_not_grow_buffer) {
+    scsi_t *scsi = attach_disk();
+    size_t cap_before = scsi->buf.cap;
+
+    // READ(10), 65535 blocks: 32 MB, against a 32 KB medium.
+    ASSERT_EQ_INT(read10_status(scsi, 0, 0xFFFF), STATUS_CHECK_CONDITION);
+    ASSERT_TRUE(scsi->buf.cap == cap_before);
+
+    // READ(6), 256 blocks (tl=0): 128 KB -- exactly BUF_LIMIT, so the medium
+    // is the only thing that makes it invalid.  Pins the 6-byte path too.
+    ASSERT_EQ_INT(read6_status(scsi, BLOCKS - 1, 0), STATUS_CHECK_CONDITION);
+    ASSERT_TRUE(scsi->buf.cap == cap_before);
+
+    // And the bus is in STATUS, not parked in DATA IN with stale bytes.
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_bus_free); // released by issue()
+    scsi_delete(scsi);
+}
+
+// A VALID large read still grows the buffer -- the reorder must not have made
+// the range check reject legitimate transfers bigger than BUF_LIMIT.  (Those
+// are real: the Apple SCSI driver issues them writing the System file.)  This
+// medium is only 32 KB, so the biggest valid read is the whole disk.
+TEST(test_valid_read_still_transfers) {
+    scsi_t *scsi = attach_disk();
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t cdb[10] = {0x28, 0, 0, 0, 0, 0, 0, (uint8_t)(BLOCKS >> 8), (uint8_t)BLOCKS, 0};
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    size_t n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        n++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_TRUE(n == (size_t)BLOCKS * BLK);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(test_write_in_range_lands);
@@ -375,6 +425,8 @@ int main(void) {
     RUN(test_read10_large_lba_does_not_wrap);
     RUN(test_cdb_length_by_group_code);
     RUN(test_zero_allocation_length_transfers_nothing);
+    RUN(test_rejected_read_does_not_grow_buffer);
+    RUN(test_valid_read_still_transfers);
     unlink(g_path);
     printf("All scsi_bounds tests passed\n");
     return 0;

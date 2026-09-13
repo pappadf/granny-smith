@@ -708,32 +708,41 @@ static void run_cmd(scsi_t *scsi) {
         // already does (see scsi_buf_ensure in phase_data_in/out).  Promote
         // both operands before the multiply so an overflow can't slip past a
         // 32-bit-int host.
-        if ((size_t)scsi->cmd.tl * (size_t)blk_sz > BUF_LIMIT)
+        // Validate the range BEFORE any phase change, for READ and WRITE alike.
+        // phase_data_in/out call scsi_buf_ensure, which reallocs the staging
+        // buffer to the full requested size -- and the buffer never shrinks.
+        // With the check second, a READ(10) of tl=0xFFFF against a 32 KB
+        // medium was correctly refused with CHECK CONDITION and STILL left a
+        // 32 MB staging buffer behind for the life of the machine (134 MB at a
+        // CD-ROM's 2048-byte blocks), from one CDB the code already knew was
+        // invalid.  And if that realloc fails, GS_ASSERTF continues (and is
+        // compiled out under GS_FAST), so buf.data becomes NULL and the copy
+        // below writes through it.  Nothing may grow the buffer until the
+        // request is known to be sane.
+        //
+        // For WRITE there is a second reason: refusing after the initiator has
+        // already pushed a whole data-out phase is a late phase change some
+        // initiators do not recover from (the Network Server's SCRIPTS program
+        // is one -- see the empty-CD-bay note above).
+        size_t byte_off = 0, byte_cnt = 0;
+        if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
+            LOG(1, "SCSI %s out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
+                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
+                disk_size(scsi->devices[target].image));
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+            break;
+        }
+
+        // Past the check, the size is known to fit the medium.  Narrate the
+        // legitimately large ones: the Apple SCSI driver does issue these.
+        if (byte_cnt > BUF_LIMIT)
             LOG(2, "SCSI %s large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
-                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, (size_t)scsi->cmd.tl * blk_sz);
+                scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, byte_cnt);
 
         if (scsi->cmd.opcode == CMD_WRITE) {
-            // Reject here, at CDB decode, not at command_complete: refusing
-            // after the initiator has already pushed a whole data-out phase is
-            // a late phase change some initiators do not recover from (the
-            // Network Server's SCRIPTS program is one -- see the empty-CD-bay
-            // note above).
-            if (!scsi_lba_range_ok(scsi, target, NULL, NULL)) {
-                LOG(1, "SCSI WRITE out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target, scsi->cmd.lba,
-                    scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
-                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
-                break;
-            }
-            phase_data_out(scsi, blk_sz * scsi->cmd.tl);
+            phase_data_out(scsi, (int)byte_cnt);
         } else {
-            phase_data_in(scsi, scsi->cmd.tl * blk_sz);
-            size_t byte_off = 0, byte_cnt = 0;
-            if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
-                LOG(1, "SCSI READ out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target, scsi->cmd.lba,
-                    scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
-                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
-                break;
-            }
+            phase_data_in(scsi, (int)byte_cnt);
             size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
             assert(n == byte_cnt);
             // TEMP DIAG (GS_DEVDIR): dump what storage delivered for the /dev
@@ -781,28 +790,29 @@ static void run_cmd(scsi_t *scsi) {
         // — the Apple SCSI driver does exactly this writing the System file
         // during a System 7.1 install.  The staging buffer grows to fit (see
         // scsi_buf_ensure in phase_data_in/out); no cap, no assert.
-        if ((size_t)scsi->cmd.tl * (size_t)blk_sz > BUF_LIMIT)
+        // Range check first, then the phase change -- see the 6-byte path
+        // above for why the order matters.  The largest product that can
+        // reach here is 65535 blocks x 2048 bytes = 134,215,680, which fits
+        // the int that phase_data_in/out take; a block size of 32 KB or more
+        // would overflow it, so cast from the checked size_t rather than
+        // recomputing the multiply in int.
+        size_t byte_off = 0, byte_cnt = 0;
+        if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
+            LOG(1, "SCSI %s_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
+                scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
+                disk_size(scsi->devices[target].image));
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+            break;
+        }
+
+        if (byte_cnt > BUF_LIMIT)
             LOG(2, "SCSI %s_10 large transfer: tl=%u blk_sz=%u (%zu bytes > BUF_LIMIT)",
-                scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", scsi->cmd.tl, blk_sz,
-                (size_t)scsi->cmd.tl * blk_sz);
+                scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", scsi->cmd.tl, blk_sz, byte_cnt);
 
         if (scsi->cmd.opcode == CMD_WRITE_10) {
-            if (!scsi_lba_range_ok(scsi, target, NULL, NULL)) {
-                LOG(1, "SCSI WRITE_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target,
-                    scsi->cmd.lba, scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
-                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
-                break;
-            }
-            phase_data_out(scsi, blk_sz * scsi->cmd.tl);
+            phase_data_out(scsi, (int)byte_cnt);
         } else {
-            phase_data_in(scsi, scsi->cmd.tl * blk_sz);
-            size_t byte_off = 0, byte_cnt = 0;
-            if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
-                LOG(1, "SCSI READ_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu", target,
-                    scsi->cmd.lba, scsi->cmd.tl, blk_sz, disk_size(scsi->devices[target].image));
-                scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
-                break;
-            }
+            phase_data_in(scsi, (int)byte_cnt);
             size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
             assert(n == byte_cnt);
         }
