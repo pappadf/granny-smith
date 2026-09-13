@@ -111,6 +111,22 @@ void scsi_bus_reset(scsi_t *bus);
 //
 // With no scheduler underneath (the unit suites drive the models directly)
 // there is no time to pass, so the callback fires immediately.
+//
+// ACROSS A CHECKPOINT: a restore lands the bus with NO selection in flight.
+//
+// The armed callback is a host function pointer and its context a host
+// address; neither can cross a checkpoint (that is F-21's whole subject), so
+// they sit below the bus's plain-data line and are not written.  A controller
+// that was waiting on a time-out therefore comes back as though the wait had
+// been abandoned, and it is the driver's own timer that recovers -- which is
+// the same thing that happens on real hardware when a machine is reset out of
+// an arbitration.
+//
+// This is stated here, once, because the wait is shared: every controller that
+// arms one inherits this answer rather than deciding its own.  The 53C825 is
+// the exception that proves it -- it keeps a private timer for the stacked
+// STO/UDC ordering AIX depends on, and so has to normalise itself
+// (sym53c8xx_checkpoint_restore).
 typedef void (*scsi_select_timeout_fn)(void *ctx);
 void scsi_bus_arm_select_timeout(scsi_t *bus, uint64_t ns, scsi_select_timeout_fn fn, void *ctx);
 void scsi_bus_cancel_select_timeout(scsi_t *bus);

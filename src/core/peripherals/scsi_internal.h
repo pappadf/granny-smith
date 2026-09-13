@@ -277,6 +277,12 @@ struct scsi {
     image_t *device_images[8];
 
     // An armed selection time-out, if a controller is waiting on one.
+    //
+    // Below the plain-data line deliberately: fn is a host function pointer and
+    // ctx a host address, so neither may be written to a checkpoint, and
+    // seltmo_registered names a scheduler registration belonging to THIS
+    // process.  A restore therefore lands with nothing armed -- the contract is
+    // spelled out on scsi_bus_arm_select_timeout() in scsi.h.
     scsi_select_timeout_fn seltmo_fn;
     void *seltmo_ctx;
     bool seltmo_registered;

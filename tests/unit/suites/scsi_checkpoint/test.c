@@ -373,12 +373,51 @@ TEST(test_53c96_state_survives_a_round_trip) {
     scsi_53c96_delete(a);
 }
 
+// The shared selection time-out does not cross a checkpoint, and must not try.
+//
+// F-18 moved the wait into the bus so every controller uses one implementation.
+// That makes its restore behaviour shared too: the armed callback is a host
+// function pointer and its context a host address, so neither may be written
+// (F-21), and a restore lands with nothing armed.  Stated once on
+// scsi_bus_arm_select_timeout() in scsi.h; pinned here so it stays true.
+static void dummy_seltmo(void *ctx) {
+    (void)ctx;
+}
+
+TEST(test_armed_select_timeout_does_not_cross_a_checkpoint) {
+    scsi_t *a = scsi_init(NULL);
+    ASSERT_TRUE(a != NULL);
+    // Set the fields directly: with no scheduler under the suite the arming
+    // helper reports immediately rather than leaving anything armed, which is
+    // itself the documented no-scheduler behaviour.
+    a->seltmo_fn = dummy_seltmo;
+    a->seltmo_ctx = a;
+    a->seltmo_registered = true;
+
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+
+    // Neither the callback nor its context reached the stream.
+    ASSERT_TRUE(!stream_contains_pointer((void *)(uintptr_t)dummy_seltmo));
+    ASSERT_TRUE(!stream_contains_pointer(a));
+
+    cp_rewind();
+    scsi_t *b = scsi_init((checkpoint_t *)1);
+    ASSERT_TRUE(b->seltmo_fn == NULL);
+    ASSERT_TRUE(b->seltmo_ctx == NULL);
+    ASSERT_TRUE(!b->seltmo_registered); // a scheduler registration is per-process
+
+    scsi_delete(b);
+    scsi_delete(a);
+}
+
 int main(void) {
     RUN(test_device_state_survives_a_round_trip);
     RUN(test_5380_state_survives_a_round_trip);
     RUN(test_busless_round_trip_is_symmetric);
     RUN(test_53c96_writes_no_host_pointers);
     RUN(test_53c96_state_survives_a_round_trip);
+    RUN(test_armed_select_timeout_does_not_cross_a_checkpoint);
     printf("All scsi_checkpoint tests passed\n");
     return 0;
 }
