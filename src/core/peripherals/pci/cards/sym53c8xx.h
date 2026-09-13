@@ -195,9 +195,25 @@ typedef struct sym53c8xx {
     // wiring fact, not a property of the part.
     uint8_t gpio_strap;
 
-    uint8_t reg[SYM825_REGS]; // the operating register file
-    uint8_t dstat; // latched DMA-type causes (DSTAT's readable half)
-    uint8_t sist0, sist1; // latched SCSI-type causes
+    // The operating register file: ONE byte per register address, and the only
+    // storage for any of them.
+    //
+    // DSTAT, SIST0 and SIST1 used to live here AND in three separate fields
+    // beside this array, with the array slots never written by anything.  The
+    // host path read the fields; the SCRIPTS engine, which addresses registers
+    // by number, read the slots -- so a script asking for the interrupt cause
+    // got a byte the emulator had never written.  Two storages for one register
+    // cannot be kept in step, so there is now one.
+    //
+    // The access rule that replaces the split: everything GUEST-facing goes
+    // through sym825_reg_read/sym825_reg_write, which own the side effects
+    // (read-to-clear, computed bits, the FIFO windows, the engine-start
+    // strobes).  Internal model code indexes this array directly when it needs
+    // a NON-destructive look at a latch -- sym53c8xx_update_irq has to test
+    // DSTAT/SIST0/SIST1 against their masks without clearing the very cause it
+    // is evaluating, which is what forced the split in the first place.  That
+    // is an access discipline, not a reason for a second copy.
+    uint8_t reg[SYM825_REGS];
     // A cause the part is holding behind the one already latched.  The
     // 53C8xx stacks SCSI interrupts: "If the SIP or DIP bits in the ISTAT
     // register are set (first level), then there is already at least one

@@ -92,8 +92,8 @@ void sym53c8xx_update_irq(sym53c8xx_t *s) {
     if (!s)
         return;
     // Enables gate only the PIN, never the latch (see the header comment).
-    bool dma = (s->dstat & s->reg[SYM825_DIEN]) != 0;
-    bool scsi = ((s->sist0 & s->reg[SYM825_SIEN0]) | (s->sist1 & s->reg[SYM825_SIEN1])) != 0;
+    bool dma = (s->reg[SYM825_DSTAT] & s->reg[SYM825_DIEN]) != 0;
+    bool scsi = ((s->reg[SYM825_SIST0] & s->reg[SYM825_SIEN0]) | (s->reg[SYM825_SIST1] & s->reg[SYM825_SIEN1])) != 0;
     // Interrupt-on-the-fly drives the pin too, and it has no enable bit to
     // gate it: the whole point of the instruction is to tell the driver a
     // command finished WITHOUT stopping SCRIPTS, so a model that only
@@ -113,7 +113,7 @@ void sym53c8xx_update_irq(sym53c8xx_t *s) {
 }
 
 void sym53c8xx_raise_dma(sym53c8xx_t *s, uint8_t dstat_bits) {
-    s->dstat |= dstat_bits;
+    s->reg[SYM825_DSTAT] |= dstat_bits;
     // Every DSTAT cause except the single-step marker halts the engine.
     if (dstat_bits & ~SYM825_DSTAT_SSI)
         s->running = false;
@@ -121,8 +121,8 @@ void sym53c8xx_raise_dma(sym53c8xx_t *s, uint8_t dstat_bits) {
 }
 
 void sym53c8xx_raise_scsi(sym53c8xx_t *s, uint8_t sist0_bits, uint8_t sist1_bits) {
-    s->sist0 |= sist0_bits;
-    s->sist1 |= sist1_bits;
+    s->reg[SYM825_SIST0] |= sist0_bits;
+    s->reg[SYM825_SIST1] |= sist1_bits;
     // "When the LSI53C825A is operating in Initiator mode, only the Function
     // Complete (CMP), Selected (SEL), Reselected (RSL), General Purpose
     // Timer Expired (GEN), and Handshake-to-Handshake Timer Expired (HTH)
@@ -545,7 +545,7 @@ static void select_timeout_event(void *source, uint64_t data) {
     // this order: the STO handler is the one that fails the probe with "no
     // device", and the trailing UDC handler is the one that resets the bus
     // and resynchronises the SCRIPTS command ring.
-    s->sist1 |= SYM825_SIST1_STO;
+    s->reg[SYM825_SIST1] |= SYM825_SIST1_STO;
     s->sist0_stacked |= SYM825_SIST0_UDC;
     sym53c8xx_update_irq(s);
 }
@@ -1099,12 +1099,12 @@ void sym53c8xx_chip_reset(sym53c8xx_t *s) {
         return;
     // Power-on / SRST.  The SCRIPTS RAM is host memory and survives, as it
     // does on the part; everything else returns to its reset value.
-    memset(s->reg, 0, sizeof(s->reg));
+    memset(s->reg, 0, sizeof(s->reg)); // DSTAT/SIST0/SIST1 included
     memset(s->dfifo_n, 0, sizeof(s->dfifo_n));
     memset(s->dfifo_rd, 0, sizeof(s->dfifo_rd));
-    s->dstat = 0;
-    s->sist0 = 0;
-    s->sist1 = 0;
+    // The stacked causes are a second level the part really has -- extra
+    // registers behind SIST0/SIST1 with no address of their own -- so they are
+    // separate state rather than a duplicate of anything, and clear here.
     s->sist0_stacked = 0;
     s->sist1_stacked = 0;
     s->running = false;
@@ -1179,10 +1179,9 @@ void sym53c8xx_attach_bus(sym53c8xx_t *s, struct scsi *bus) {
 void sym53c8xx_checkpoint_save(sym53c8xx_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
+    // DSTAT, SIST0 and SIST1 ride in s->reg with every other register; they
+    // used to be streamed a second time from their own fields.
     system_write_checkpoint_data(cp, s->reg, sizeof(s->reg));
-    system_write_checkpoint_data(cp, &s->dstat, sizeof(s->dstat));
-    system_write_checkpoint_data(cp, &s->sist0, sizeof(s->sist0));
-    system_write_checkpoint_data(cp, &s->sist1, sizeof(s->sist1));
     system_write_checkpoint_data(cp, s->script_ram, sizeof(s->script_ram));
     system_write_checkpoint_data(cp, &s->running, sizeof(s->running));
     system_write_checkpoint_data(cp, &s->connected, sizeof(s->connected));
@@ -1193,10 +1192,9 @@ void sym53c8xx_checkpoint_save(sym53c8xx_t *s, checkpoint_t *cp) {
 void sym53c8xx_checkpoint_restore(sym53c8xx_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
+    // DSTAT, SIST0 and SIST1 ride in s->reg with every other register; they
+    // used to be streamed a second time from their own fields.
     system_read_checkpoint_data(cp, s->reg, sizeof(s->reg));
-    system_read_checkpoint_data(cp, &s->dstat, sizeof(s->dstat));
-    system_read_checkpoint_data(cp, &s->sist0, sizeof(s->sist0));
-    system_read_checkpoint_data(cp, &s->sist1, sizeof(s->sist1));
     system_read_checkpoint_data(cp, s->script_ram, sizeof(s->script_ram));
     system_read_checkpoint_data(cp, &s->running, sizeof(s->running));
     system_read_checkpoint_data(cp, &s->connected, sizeof(s->connected));

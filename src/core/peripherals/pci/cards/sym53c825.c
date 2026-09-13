@@ -151,10 +151,10 @@ static void sym825_unstack_sist(sym53c8xx_t *s) {
     // cause and the stacked one merged, which no real transaction can return.
     if (s->reg_access_depth)
         return;
-    if (s->sist0 || s->sist1 || !(s->sist0_stacked | s->sist1_stacked))
+    if (s->reg[SYM825_SIST0] || s->reg[SYM825_SIST1] || !(s->sist0_stacked | s->sist1_stacked))
         return;
-    s->sist0 = s->sist0_stacked;
-    s->sist1 = s->sist1_stacked;
+    s->reg[SYM825_SIST0] = s->sist0_stacked;
+    s->reg[SYM825_SIST1] = s->sist1_stacked;
     s->sist0_stacked = 0;
     s->sist1_stacked = 0;
 }
@@ -228,25 +228,26 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
         // The summary register: DIP and SIP are live views of whether the
         // DMA and SCSI cause registers hold anything, never stored state.
         return (uint8_t)((s->reg[SYM825_ISTAT] & ~(SYM825_ISTAT_DIP | SYM825_ISTAT_SIP)) |
-                         (s->dstat ? SYM825_ISTAT_DIP : 0u) | ((s->sist0 | s->sist1) ? SYM825_ISTAT_SIP : 0u));
+                         (s->reg[SYM825_DSTAT] ? SYM825_ISTAT_DIP : 0u) |
+                         ((s->reg[SYM825_SIST0] | s->reg[SYM825_SIST1]) ? SYM825_ISTAT_SIP : 0u));
     case SYM825_DSTAT: {
         // Read-to-clear.  DFE (DMA FIFO empty) is a live condition and is
         // not part of the latched cause, so it survives the read.
-        uint8_t v = (uint8_t)(s->dstat | (dfifo_all_empty(s) ? SYM825_DSTAT_DFE : 0u));
-        s->dstat = 0;
+        uint8_t v = (uint8_t)(s->reg[SYM825_DSTAT] | (dfifo_all_empty(s) ? SYM825_DSTAT_DFE : 0u));
+        s->reg[SYM825_DSTAT] = 0;
         sym53c8xx_update_irq(s);
         return v;
     }
     case SYM825_SIST0: {
-        uint8_t v = s->sist0;
-        s->sist0 = 0;
+        uint8_t v = s->reg[SYM825_SIST0];
+        s->reg[SYM825_SIST0] = 0;
         sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
         return v;
     }
     case SYM825_SIST1: {
-        uint8_t v = s->sist1;
-        s->sist1 = 0;
+        uint8_t v = s->reg[SYM825_SIST1];
+        s->reg[SYM825_SIST1] = 0;
         sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
         return v;

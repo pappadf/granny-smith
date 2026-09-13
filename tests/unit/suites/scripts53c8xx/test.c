@@ -288,8 +288,8 @@ static void run_at(uint32_t addr) {
 
 // Read and clear DSTAT the way a driver does, ignoring the live DFE bit.
 static uint8_t take_dstat(void) {
-    uint8_t v = s_c->dstat;
-    s_c->dstat = 0;
+    uint8_t v = s_c->reg[SYM825_DSTAT];
+    s_c->reg[SYM825_DSTAT] = 0;
     return v;
 }
 
@@ -371,7 +371,7 @@ TEST(test_block_move_full_command) {
     // The target let go: an UNEXPECTED DISCONNECT, reported only once the
     // script had halted, so DCMD holds the INT opcode $98 (see the engine's
     // disconnect_deferred).
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_UDC);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST0] & SYM825_SIST0_UDC);
     ASSERT_EQ_INT(s_c->reg[SYM825_DCMD], 0x98);
     ASSERT_EQ_INT(s_released, 1);
 }
@@ -412,7 +412,7 @@ TEST(test_io_wait_disconnect_is_not_unexpected) {
     run_at(0x1000);
 
     ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
-    ASSERT_TRUE(!(s_c->sist0 & SYM825_SIST0_UDC));
+    ASSERT_TRUE(!(s_c->reg[SYM825_SIST0] & SYM825_SIST0_UDC));
     ASSERT_TRUE(!s_c->connected);
     ASSERT_EQ_INT(s_released, 1);
 }
@@ -452,7 +452,7 @@ TEST(test_block_move_phase_mismatch) {
     run_at(0x1000);
 
     ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1008); // rewound to the instruction
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_MA);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST0] & SYM825_SIST0_MA);
     ASSERT_EQ_INT(s_mem[0x3000], 0xEE); // nothing moved
     ASSERT_EQ_INT((int)reg32(SYM825_DBC) & 0x00FFFFFF, 4); // the count it wanted
     // A phase mismatch is FATAL: SCRIPTS stop.
@@ -482,7 +482,7 @@ TEST(test_block_move_short_transfer) {
     run_at(0x1010);
 
     ASSERT_EQ_INT(memcmp(s_mem + 0x3000, "XY", 2), 0);
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_MA);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST0] & SYM825_SIST0_MA);
 }
 
 // Table indirect: both the count and the buffer address come from a
@@ -531,7 +531,7 @@ TEST(test_io_selection_timeout) {
     // alternate address belongs to a reselection that beat the arbitration,
     // not to a target that is not there, and a driver told the wrong one
     // recovers a command it never issued.
-    ASSERT_EQ_INT(s_c->sist0, 0);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SIST0], 0);
     ASSERT_TRUE(!s_c->connected);
     ASSERT_TRUE(!s_c->running);
     ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0);
@@ -543,7 +543,7 @@ TEST(test_io_selection_timeout) {
     // stacked after the STO interrupt" — LSI53C825A TM v3.1, SIST0 UDC).
     // A driver reading the pair as one 16-bit word sees the time-out on
     // its own first; the disconnect surfaces as a fresh interrupt after.
-    ASSERT_TRUE(s_c->sist1 & SYM825_SIST1_STO);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST1] & SYM825_SIST1_STO);
     ASSERT_TRUE(s_c->sist0_stacked & SYM825_SIST0_UDC);
 }
 
@@ -607,7 +607,7 @@ TEST(test_io_wait_reselect_parks) {
     ASSERT_TRUE(s_c->waiting_reselect);
     ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1000);
     ASSERT_EQ_INT(take_dstat() & (uint8_t)~SYM825_DSTAT_DFE, 0);
-    ASSERT_EQ_INT(s_c->sist0 | s_c->sist1, 0);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SIST0] | s_c->reg[SYM825_SIST1], 0);
     ASSERT_EQ_INT(s_irq_asserts, 0);
 }
 
@@ -635,7 +635,7 @@ TEST(test_abort_drops_a_selection_in_flight) {
     ASSERT_TRUE(!s_c->select_timeout_armed);
     ASSERT_TRUE(!s_c->running);
     // An abort is not a reset: the bus is left alone.
-    ASSERT_TRUE(!(s_c->sist0 & SYM825_SIST0_RST));
+    ASSERT_TRUE(!(s_c->reg[SYM825_SIST0] & SYM825_SIST0_RST));
 }
 
 // The driver drove RST/.  Everything in flight is over — the connection,
@@ -657,7 +657,7 @@ TEST(test_bus_reset_ends_everything) {
 
     sym53c8xx_bus_reset(s_c);
 
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_RST);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST0] & SYM825_SIST0_RST);
     ASSERT_TRUE(!s_c->connected);
     ASSERT_TRUE(!s_c->running);
     ASSERT_EQ_INT(s_c->sync_offset, 0);
@@ -992,7 +992,7 @@ TEST(test_masking_gates_the_pin_not_the_halt) {
     put_insn_word(0x1004, 0x2000);
     put_insn_word(0x1008, 0x3001); // misaligned: illegal instruction
     run_at(0x1000);
-    ASSERT_TRUE(s_c->dstat & SYM825_DSTAT_IID); // the cause latched
+    ASSERT_TRUE(s_c->reg[SYM825_DSTAT] & SYM825_DSTAT_IID); // the cause latched
     ASSERT_TRUE(!s_c->running); // and it halted
     ASSERT_EQ_INT(s_irq_asserts, 0); // but the pin stayed quiet
 }
@@ -1033,7 +1033,7 @@ TEST(test_checkpoint_roundtrip) {
     s_c->reg[SYM825_SCID] = 7;
     set_reg32(SYM825_DSA, 0xC0FFEE00u);
     s_c->script_ram[0x100] = 0xA7;
-    s_c->sist0 = SYM825_SIST0_CMP;
+    s_c->reg[SYM825_SIST0] = SYM825_SIST0_CMP;
     sym53c8xx_checkpoint_save(s_c, (checkpoint_t *)1);
 
     sym53c8xx_delete(s_c);
@@ -1045,7 +1045,7 @@ TEST(test_checkpoint_roundtrip) {
     ASSERT_EQ_INT(s_c->reg[SYM825_SCID], 7);
     ASSERT_EQ_INT((int)reg32(SYM825_DSA), (int)0xC0FFEE00u);
     ASSERT_EQ_INT(s_c->script_ram[0x100], 0xA7);
-    ASSERT_EQ_INT(s_c->sist0, SYM825_SIST0_CMP);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SIST0], SYM825_SIST0_CMP);
 }
 
 int main(void) {
