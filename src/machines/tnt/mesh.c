@@ -813,8 +813,10 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
         if (value & BS1_RST) {
             // SCSI bus reset: everything back to bus-free.
             LOG(2, "bus reset via bus_status1");
-            if (cfg->scsi)
+            if (cfg->scsi) {
                 scsi_external_release(cfg->scsi);
+                scsi_bus_reset(cfg->scsi);
+            }
             m->connected = 0;
             m->msgout_pending = 0;
             m->active = 0;

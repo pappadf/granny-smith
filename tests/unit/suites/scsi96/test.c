@@ -148,6 +148,16 @@ void scsi_external_release(struct scsi *bus) {
     mb.phase = MB_free;
 }
 
+// The device side of a bus reset (F-17): the chip calls it, the bus implements
+// it.  This suite drives the 53C96 against a mock bus with no scsi_t behind it,
+// so there are no targets to return to a power-on state -- count the call, so a
+// test can assert the chip made it.
+int g_bus_resets;
+void scsi_bus_reset(struct scsi *bus) {
+    (void)bus;
+    g_bus_resets++;
+}
+
 // ============================================================
 // Chip register helpers
 // ============================================================

@@ -71,6 +71,23 @@ void scsi_delete(scsi_t *scsi);
 // to its power-on state, IRQ latch cleared.  See system_reset_devices.
 void scsi_reset_pin(scsi_t *scsi);
 
+// The device side of a SCSI bus reset: what every target on the wire sees when
+// RST/ is pulsed, whichever controller pulsed it.
+//
+// RST/ is one signal, and nothing in the NCR 5380 design manual, the NCR
+// 53C94/95/96 data manual, the LSI53C825A technical manual or ANSI X3.131-1986
+// says a target behaves differently according to who asserted it.  So there is
+// one implementation, in the bus, and each chip model calls it and then resets
+// its OWN registers -- two different jobs that used to be tangled together in
+// scsi_reset_pin() (which resets a 5380, and which the 53C825 engine was
+// calling on machines that have no 5380).
+//
+// Per ANSI X3.131-1986 S5.2.2.1 and S6.1.3 this clears uncompleted commands,
+// returns operating modes (MODE SELECT block size, PREVENT/ALLOW MEDIUM
+// REMOVAL) to their defaults, and raises UNIT ATTENTION 0x29 on every
+// populated target.
+void scsi_bus_reset(scsi_t *bus);
+
 void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint);
 
 // === Device Types ===

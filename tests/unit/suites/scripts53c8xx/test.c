@@ -149,6 +149,16 @@ void pci_cfg_reset(struct pci_device *dev) {
     (void)dev;
 }
 
+// The device side of a bus reset (F-17): the card calls it, the bus implements
+// it.  This suite drives the engine against a MOCK target with no scsi_t behind
+// it, so there is nothing on the wire to return to a power-on state -- record
+// the call and move on.
+static int s_bus_resets;
+void scsi_bus_reset(struct scsi *bus) {
+    (void)bus;
+    s_bus_resets++;
+}
+
 // ============================================================================
 // Mock SCSI target
 // ============================================================================

@@ -1137,7 +1137,9 @@ void sym53c8xx_bus_reset(sym53c8xx_t *s) {
     if (s->bus) {
         if (s->connected)
             scsi_external_release(s->bus);
-        scsi_reset_pin(s->bus);
+        // Was scsi_reset_pin(), which reset a 5380 register file -- on a
+        // machine that has no 5380.  The wire is all this card can reset.
+        scsi_bus_reset(s->bus);
     }
     s->connected = false;
     s->disconnect_pending = 0;

@@ -211,7 +211,10 @@ void system_reset_devices(void) {
     if (!cfg)
         return;
     if (cfg->scsi)
-        scsi_reset_pin(cfg->scsi); // NCR 5380 → bus-free, registers cleared
+        // Warm restart is a RESET condition on the wire: the bus goes free and
+        // every target returns to its power-on state (scsi_bus_reset, called
+        // from scsi_reset), and on a 5380 machine the chip's registers clear too.
+        scsi_reset_pin(cfg->scsi);
     if (cfg->nubus)
         nubus_reset(cfg->nubus); // each populated card → power-on state
 }

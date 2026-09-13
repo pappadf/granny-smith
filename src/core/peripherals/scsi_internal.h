@@ -131,7 +131,11 @@
 #define ASC_INVALID_FIELD_IN_CDB 0x24
 #define ASC_WRITE_PROTECTED      0x27
 #define ASC_NOT_READY_TO_READY   0x28
-#define ASC_MEDIUM_NOT_PRESENT   0x3A
+// "Power on, reset or BUS DEVICE RESET occurred" -- the third of the three
+// codes the CDU-541 manual lists under UNIT ATTENTION (6h), and what a bus
+// reset raises on every target (ANSI X3.131-1986 S6.1.3).
+#define ASC_POWER_ON_OR_RESET  0x29
+#define ASC_MEDIUM_NOT_PRESENT 0x3A
 // The drive we advertise is a SONY CD-ROM CDU-8002 (system.c), so its sense
 // vocabulary is the CDU-541 manual's, not SCSI-2's.  That manual's NOT READY
 // (2h) table has no 0x3A at all -- an empty bay is vendor code 0xB0, "Caddy not
@@ -220,6 +224,12 @@ struct scsi {
         enum scsi_device_type type;
         bool read_only;
         uint16_t block_size; // 512 for HD, 2048 for CD-ROM (switchable)
+        // What block_size returns to on a hard RESET.  MODE SELECT can change
+        // the live one at runtime -- A/UX switches the CD-ROM to 512-byte
+        // blocks that way -- and ANSI X3.131-1986 S5.2.2.1 requires a reset to
+        // "Return any SCSI device operating modes (MODE SELECT, PREVENT/ALLOW
+        // MEDIUM REMOVAL commands, etc) to their default conditions".
+        uint16_t default_block_size;
         bool unit_attention; // pending UNIT ATTENTION
         bool medium_present; // true when disc is loaded
         bool prevent_removal; // PREVENT/ALLOW MEDIUM REMOVAL state
@@ -342,10 +352,50 @@ struct scsi {
 };
 
 // ============================================================================
-// Phase Transition Helpers (defined in scsi.c, used by scsi_cdrom.c)
+// The seam between the bus (scsi_bus.c) and the NCR 5380 (scsi.c)
+// ============================================================================
+//
+// These two lists ARE the coupling, written down so it can be seen and reduced.
+// Every other controller -- the 53C96, the 53C825 SCRIPTS engine, MESH -- needs
+// none of the first list: they drive the bus through the initiator API in
+// scsi.h (select / push / pop / status / message / release) and read phase
+// through scsi_get_bus_phase().  The 5380 needs twelve bus internals because it
+// grew up inside the bus's own translation unit rather than as a client of it.
+//
+// Narrowing the first list is the measure of progress on that.
+
+// Bus internals the 5380 still reaches for.
+int cmd_size(uint8_t opcode);
+void command_complete(scsi_t *scsi);
+uint8_t next_byte(scsi_t *scsi);
+void phase_arbitration(scsi_t *scsi);
+void phase_command(scsi_t *scsi);
+void phase_free(scsi_t *scsi);
+void phase_message_out(scsi_t *scsi);
+const char *phase_name(int p);
+void phase_selection(scsi_t *scsi);
+void run_cmd(scsi_t *scsi);
+void scsi_buf_ensure(scsi_t *scsi, size_t bytes);
+bool scsi_phase_match(scsi_t *scsi);
+
+// 5380 services the bus calls back into.  Three of these are the chip's
+// interrupt and DRQ wiring, which the bus pokes when a phase changes; the
+// fourth is the pseudo-DMA byte path.  A bus that did not know which chip was
+// attached would not need any of them -- see the notes in scsi_bus.c.
+void scsi_cancel_drq_service(scsi_t *scsi);
+void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer_gate);
+void scsi_update_drq(scsi_t *scsi);
+void scsi_update_irq(scsi_t *scsi);
+
+// ============================================================================
+// Phase Transition Helpers (defined in scsi_bus.c, used by scsi_cdrom.c)
 // ============================================================================
 
 // Transition SCSI bus to data-in phase (target to initiator)
+// Phase names, indexed by scsi_phase_t.  Defined in scsi_bus.c; the object
+// model in scsi.c renders the enum from the same table.
+extern const char *const SCSI_PHASE_NAMES[];
+
 void phase_data_in(scsi_t *scsi, int bytes);
 
 // Transition SCSI bus to data-out phase (initiator to target)

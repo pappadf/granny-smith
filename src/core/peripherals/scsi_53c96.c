@@ -282,8 +282,12 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         break;
     case 0x03: // Reset SCSI bus
         c->xfer_mode = XFER_IDLE;
-        if (c->bus)
+        if (c->bus) {
             scsi_external_release(c->bus);
+            // Every target on the wire goes back to its power-on state; this
+            // chip's own state is the two lines around it.
+            scsi_bus_reset(c->bus);
+        }
         // Interrupt only when reset reporting is enabled (Config 1 bit 6 = 0).
         if (!(c->config1 & 0x40))
             post_interrupt(c, IR_SCSI_RST);
