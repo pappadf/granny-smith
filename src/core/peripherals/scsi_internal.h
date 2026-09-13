@@ -221,7 +221,6 @@ struct scsi {
         unsigned char vendor_id[8 + 1];
         unsigned char product_id[16 + 1];
         unsigned char revision[4 + 1];
-        image_t *image;
         enum scsi_device_type type;
         bool read_only;
         uint16_t block_size; // 512 for HD, 2048 for CD-ROM (switchable)
@@ -241,6 +240,12 @@ struct scsi {
         } sense;
     } devices[8];
 
+    // A loopback/terminator card fitted to the bus.  A property of the WIRE --
+    // a card is plugged in or it is not -- even though the only thing that can
+    // observe it is a chip reading its own data register.  Last field of the
+    // plain-data block, so it rides the single checkpoint write with the rest.
+    bool loopback;
+
     /* Buffer metadata and pointer (data is a pointer, so placed after POD fields)
      * Note: max/size are part of the non-pointer metadata but the struct contains
      * a pointer, so buf is placed after the POD region and handled separately.
@@ -253,11 +258,6 @@ struct scsi {
         size_t pos; // data-in read cursor: index of the next byte to deliver
     } buf;
 
-    // A loopback/terminator card fitted to the bus.  A property of the WIRE --
-    // a card is plugged in or it is not -- even though the only thing that can
-    // observe it is a chip reading its own data register.
-    bool loopback;
-
     // The NCR 5380 driving this bus, or NULL on the machines that have none.
     // The Quadras, the AVs, the PowerMacs and the Network Servers all used to
     // carry a full 5380 register file inside this struct and never touch it,
@@ -267,6 +267,15 @@ struct scsi {
     // the dependency should run.  The other three controllers need no such
     // pointer: they are pure clients, driving the bus through scsi.h and
     // reading it through scsi_get_bus_phase().
+    // ---- NOT saved -------------------------------------------------------
+
+    // The medium in each slot.  Held out here rather than inside devices[] so
+    // that array stays pure plain data and rides in the single block above --
+    // a pointer in the middle of it is what forced this file's checkpoint to
+    // be a hand-written per-field loop, and what let fields be forgotten.
+    // The filename is saved separately and the image re-opened on restore.
+    image_t *device_images[8];
+
     // An armed selection time-out, if a controller is waiting on one.
     scsi_select_timeout_fn seltmo_fn;
     void *seltmo_ctx;
@@ -292,8 +301,11 @@ struct scsi {
 // engine and MESH.  It used to BE the bus: this register file and all of the
 // pin, DMA and priming state below lived inside struct scsi.
 struct scsi_5380 {
-    scsi_t *bus;
-
+    // ---- plain data, saved as one block ----------------------------------
+    // Everything up to the first pointer is written in a single
+    // system_write_checkpoint_data() call, the same shape via_t, scc_t and
+    // rtc_t use.  Adding a field here is enough to make it survive a restore;
+    // adding one below the line is a deliberate statement that it should not.
     struct {
         uint8_t cdr;
         uint8_t odr;
@@ -305,94 +317,38 @@ struct scsi_5380 {
         uint8_t bsr;
     } reg;
 
-    memory_map_t *memory_map;
-    memory_interface_t memory_interface;
-
-    // VIA2 for interrupt delivery (SE/30); NULL on Plus
-    via_t *via;
-
-    // Machine-specific IRQ/DRQ delivery callback (IIfx routes through
-    // OSS source 9 instead of VIA2). NULL on machines that drive VIA2
-    // via the `via` pointer above (SE/30) or that poll SCSI (Plus).
-    scsi_irq_fn irq_cb;
-    void *irq_cb_ctx;
-
     // Tracked output pin states (active-low: true = asserted = pin driven low)
     bool irq_active;
     bool drq_active;
-
-    // One-time guard: the autonomous DRQ service scheduler event type has been
-    // registered with the scheduler (see scsi_schedule_drq_service).
-    bool drq_evt_registered;
-    // Buffer size at the last DRQ re-pulse; used to detect the host beginning to
-    // drain a block so the re-pulse stops (one wake per block).
+    // Buffer size at the last DRQ re-pulse; used to detect the host beginning
+    // to drain a block so the re-pulse stops (one wake per block).
     size_t drq_pulse_last_size;
-
     // Internal end-of-DMA flag (phase changed while DMA active)
     bool end_of_dma;
-
-    // BLIND/DMA-write priming gate (NCR 5380 §6.8.1 / §10.2 / DCD-3 SE/30
-    // SCSI map): on real hardware, a pseudo-DMA send transfer doesn't
-    // begin until the host writes the "Start DMA Send" register (port 5).
-    // ODR-alias writes that occur AFTER MR.DMA is enabled but BEFORE
-    // Start DMA Send is written are absorbed by the chip's data register
-    // but never reach the SCSI bus.  A/UX's SCSI driver exploits this by
-    // issuing a `CLR.B ([$5B20E,])` primer write to the BLIND pseudo-DMA
-    // region (PC $1004B888 in the retail kernel) before the byte loop,
-    // assuming the chip will discard it.  We model this by gating the
-    // ODR-alias buf push on `dma_write_armed`, which is cleared on
-    // MR.DMA enable and set on Start DMA Send (case DMA in write_uint8).
-    // See docs/ncr_5380.md §3.3 / §3.6.
     bool dma_write_armed;
-
-    // Primer-slot gate for the data_out phase.  On real NCR 5380 hardware
-    // an ODR-alias write that lands BEFORE the target asserts REQ is
-    // overwritten by the next write — only the most-recent ODR value is
-    // transmitted on REQ.  A/UX's SCSI driver exploits this by issuing a
-    // `CLR.B ([$5B20E,])` primer write to the BLIND/DRQ pseudo-DMA
-    // region (retail-kernel PC $1004B888) immediately before the byte
-    // loop, assuming the chip will discard the $00.  Our emulator pushes
-    // every ODR-alias write into buf.data instantly, so without a gate
-    // the primer lands at buf[0] and shifts the entire 8 KB transfer
-    // by +1 (manifests as `☐Untitled` in the A/UX 3.0.1 Easy Install
-    // dialog — see notes/60-aux3-volname-root-cause.md).
-    //
-    // The MacOS Installer also writes data_out in pseudo-DMA mode but
-    // does NOT issue a primer; its first byte is real data.  The
-    // distinguishing signal is the PC: A/UX's primer is a CLR.B at a
-    // distinct kernel PC, while the byte-loop body is at unrelated PCs;
-    // MacOS writes all bytes from one tight loop.  We detect the primer
-    // by holding the first data_out byte in a slot and deciding on the
-    // second write: if the held byte is $00 and the second byte comes
-    // from a different PC, the held byte was a primer and is discarded;
-    // otherwise it is a legitimate first data byte and is pushed
-    // ahead of the second.
     uint8_t primer_byte; // value of the held first byte
     uint32_t primer_pc; // PC at which the held byte was written
     bool primer_held; // true while a held first byte awaits decision
-
-    // Bus-master DATA OUT: true once the external SCSIDMA engine has begun
-    // supplying payload bytes for the current command (scsi_push_data_out_
-    // byte).  Reset by phase_data_out.  On the engine's FIRST byte we discard
-    // any bytes already in buf — those are the A/UX scsiout CLR.B "primer"
-    // ($00) written to the blind port (iHSKEN) before the bus-master transfer
-    // starts.  On real hardware that primer sits in ODR and is overwritten by
-    // the engine's first byte before the target REQs, so it never reaches the
-    // bus; committing it would shift the whole transfer one byte (mis-aligning
-    // scattered multi-block writes — the "bad block" corruption).  Pure-iHSKEN
-    // writes (e.g. Mac OS) never run the engine, so this never fires for them.
     bool dma_out_engine_started;
-
-    // Loopback mode: simulate passive SCSI terminator (test card)
-    bool loopback;
-
-    // CDR pipeline delay: the NCR 5380's bus drivers take 2 register-write
-    // cycles to propagate, so CDR reads the bus state from before the
-    // second-to-last register write.  Modeled as a 3-element ring buffer.
     uint8_t cdr_pipeline[3];
     int cdr_idx;
 
-    // Object-tree binding — lifetime tied to scsi_init / scsi_delete.
+    // ---- NOT saved -------------------------------------------------------
+    // Deliberately below the line rather than merely omitted.
+    //
+    // drq_evt_registered records that this PROCESS registered the DRQ service
+    // event type with its scheduler.  Restoring it as true would make a fresh
+    // process skip the registration and lose the event entirely, so it must
+    // start false and be re-established by the first schedule.
+    bool drq_evt_registered;
+
+    // Runtime pointers: re-bound by the machine after a restore.
+    scsi_t *bus;
+    memory_map_t *memory_map;
+    memory_interface_t memory_interface;
+    via_t *via;
+    scsi_irq_fn irq_cb;
+    void *irq_cb_ctx;
 };
 
 // ============================================================================

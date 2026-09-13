@@ -100,8 +100,8 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     // Block descriptor (8 bytes) — always present (A/UX requires it)
     uint16_t blk_sz = scsi->devices[target].block_size;
     uint32_t blocks = 0;
-    if (scsi->devices[target].image)
-        blocks = (uint32_t)(disk_size(scsi->devices[target].image) / blk_sz);
+    if (scsi->device_images[target])
+        blocks = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
 
     buf[3] = 8; // block descriptor length
     buf[pos + 0] = 0; // density code
@@ -269,8 +269,8 @@ void scsi_cdrom_read_toc(scsi_t *scsi) {
     // LBA = total blocks
     uint16_t blk_sz = scsi->devices[target].block_size;
     uint32_t total = 0;
-    if (scsi->devices[target].image)
-        total = (uint32_t)(disk_size(scsi->devices[target].image) / blk_sz);
+    if (scsi->device_images[target])
+        total = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
     toc[16] = (total >> 24) & 0xFF;
     toc[17] = (total >> 16) & 0xFF;
     toc[18] = (total >> 8) & 0xFF;
@@ -303,8 +303,8 @@ void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
     // The lead-out CD address is the disc's total block count.
     uint16_t blk_sz = scsi->devices[target].block_size;
     uint32_t total = 0;
-    if (scsi->devices[target].image)
-        total = (uint32_t)(disk_size(scsi->devices[target].image) / blk_sz);
+    if (scsi->device_images[target])
+        total = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
 
     // Include track 1 only when the requested starting track covers it; AAh (or
     // any value past our single track) asks for just the lead-out.  Track 0 is
@@ -417,7 +417,7 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
         // persistent NOT READY condition instead -- see the eject path in
         // scsi.c for why the lifetime matters, not just the code.
         scsi->devices[target].medium_present = false;
-        scsi->devices[target].image = NULL;
+        scsi->device_images[target] = NULL;
     }
     // Start=1 (spin up) or Start=0,LoEj=0 (spin down): no-op
     phase_status(scsi, STATUS_GOOD);

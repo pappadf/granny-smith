@@ -1,0 +1,308 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) pappadf
+//
+// SCSI checkpoint round-trip.
+//
+// 03-scsi F-20.  The save was a plain-data prefix that stopped at `devices`,
+// plus a hand-written per-field loop over the eight device records -- and the
+// loop forgot fields.  sense, prevent_removal and default_block_size were all
+// silently dropped.
+//
+// That is not theoretical: instrumenting the save path showed suite-quadra
+// checkpointing its CD-ROM twice with non-zero sense, once as
+// NOT READY / 0xB0 ("caddy not inserted") and once as
+// UNIT ATTENTION / 0x29 ("power on, reset or BUS DEVICE RESET occurred").
+// unit_attention IS saved and the sense explaining it is not, so after a
+// restore the driver asks REQUEST SENSE and is told 0x28 -- "a disc was
+// inserted" -- when the truth was "the bus was reset".
+//
+// The fix moves the image pointers out of the device records into
+// device_images[], so the whole plain-data region saves in ONE write, the way
+// via_t, scc_t and rtc_t do.  This suite exists so the next field added to
+// that region is caught if it does not survive.
+
+#include "scheduler.h"
+#include "scsi.h"
+#include "scsi_internal.h"
+#include "test_assert.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// ============================================================
+// A recording checkpoint stream
+// ============================================================
+
+static uint8_t s_cp_buf[262144];
+static size_t s_cp_w, s_cp_r;
+
+static void cp_rewind(void) {
+    s_cp_r = 0;
+}
+static void cp_reset(void) {
+    s_cp_w = s_cp_r = 0;
+}
+
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+    (void)cp, (void)file, (void)line;
+    ASSERT_TRUE(s_cp_w + size <= sizeof(s_cp_buf));
+    memcpy(s_cp_buf + s_cp_w, data, size);
+    s_cp_w += size;
+}
+
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+    (void)cp, (void)file, (void)line;
+    ASSERT_TRUE(s_cp_r + size <= s_cp_w);
+    memcpy(data, s_cp_buf + s_cp_r, size);
+    s_cp_r += size;
+}
+
+// ============================================================
+// Link stubs
+// ============================================================
+
+config_t *global_emulator = NULL;
+
+void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
+                    void *context) {
+    (void)mem, (void)addr, (void)size, (void)name, (void)iface, (void)context;
+}
+uint32_t cpu_get_pc(cpu_t *restrict cpu) {
+    (void)cpu;
+    return 0;
+}
+void via_input_c(via_t *via, int port, int c, bool value) {
+    (void)via, (void)port, (void)c, (void)value;
+}
+// No image is re-opened here: these tests care about the register and device
+// state around the medium, not the medium itself.
+image_t *setup_get_image_by_filename(const char *filename) {
+    (void)filename;
+    return NULL;
+}
+int system_hd_attach(const char *path, int scsi_id) {
+    (void)path, (void)scsi_id;
+    return -1;
+}
+void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
+    (void)config, (void)filename, (void)scsi_id;
+}
+int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
+    (void)bus, (void)path, (void)scsi_id;
+    return -1;
+}
+void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+    (void)config, (void)bus, (void)filename, (void)scsi_id;
+}
+// No scheduler here: these tests never let time pass.
+struct scheduler *system_scheduler(void) {
+    return NULL;
+}
+void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
+    (void)s, (void)sn, (void)src, (void)en, (void)cb;
+}
+event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
+                                 uint64_t cycles, uint64_t ns) {
+    (void)s, (void)cb, (void)src, (void)data, (void)cycles, (void)ns;
+    return NULL;
+}
+void remove_event(struct scheduler *restrict s, event_callback_t cb, void *src) {
+    (void)s, (void)cb, (void)src;
+}
+// The medium itself is out of scope here: these tests stage the state AROUND a
+// device, not its contents, and setup_get_image_by_filename() returns NULL so
+// no image is ever opened.
+size_t disk_read_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+    (void)img, (void)off, (void)buf, (void)len;
+    return 0;
+}
+size_t disk_write_data(image_t *img, size_t off, uint8_t *buf, size_t len) {
+    (void)img, (void)off, (void)buf, (void)len;
+    return 0;
+}
+size_t disk_size(image_t *img) {
+    (void)img;
+    return 0;
+}
+const char *image_get_filename(const image_t *img) {
+    (void)img;
+    return NULL;
+}
+const char *image_path(const image_t *img) {
+    (void)img;
+    return NULL;
+}
+image_t *image_open_readonly(const char *path) {
+    (void)path;
+    return NULL;
+}
+void image_close(image_t *img) {
+    (void)img;
+}
+int image_export_to(image_t *img, const char *path) {
+    (void)img, (void)path;
+    return -1;
+}
+int drive_catalog_count(void) {
+    return 0;
+}
+const struct drive_model *drive_catalog_get(int i) {
+    (void)i;
+    return NULL;
+}
+const struct drive_model *drive_catalog_find_closest(size_t bytes) {
+    (void)bytes;
+    return NULL;
+}
+
+struct cpu *system_cpu(void) {
+    return NULL;
+}
+struct object *machine_object(void) {
+    return NULL;
+}
+void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
+    (void)expr, (void)file, (void)line, (void)func, (void)fmt;
+}
+unsigned platform_ntz32(uint32_t v) {
+    unsigned n = 0;
+    if (!v)
+        return 32;
+    while (!(v & 1u)) {
+        v >>= 1;
+        n++;
+    }
+    return n;
+}
+
+// ============================================================
+// Tests
+// ============================================================
+
+// Stage state across the whole plain-data region, round-trip it, compare.
+//
+// Every field here was chosen because losing it changes what a driver is told:
+// sense is what REQUEST SENSE reports, prevent_removal decides whether an
+// eject is refused, default_block_size is what a bus reset restores to, and
+// loopback is whether the diagnostic card is fitted.
+TEST(test_device_state_survives_a_round_trip) {
+    scsi_t *a = scsi_init(NULL);
+    ASSERT_TRUE(a != NULL);
+    scsi_add_device(a, 3, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048, true);
+
+    // The exact case measured in suite-quadra: a pending attention whose cause
+    // is the bus reset, not a media change.
+    a->devices[3].unit_attention = true;
+    a->devices[3].sense.key = SENSE_UNIT_ATTENTION;
+    a->devices[3].sense.asc = ASC_POWER_ON_OR_RESET;
+    a->devices[3].sense.ascq = 0x00;
+    a->devices[3].prevent_removal = true;
+    a->devices[3].block_size = 512; // A/UX switches the CD to 512-byte blocks
+    a->loopback = true;
+    a->bus.phase = scsi_data_in;
+    a->cmd.opcode = 0x28;
+    a->cmd.lba = 0x1234;
+
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+    cp_rewind();
+
+    scsi_t *b = scsi_init((checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+
+    ASSERT_EQ_INT(b->devices[3].sense.key, SENSE_UNIT_ATTENTION);
+    ASSERT_EQ_INT(b->devices[3].sense.asc, ASC_POWER_ON_OR_RESET);
+    ASSERT_EQ_INT(b->devices[3].sense.ascq, 0x00);
+    ASSERT_TRUE(b->devices[3].unit_attention);
+    ASSERT_TRUE(b->devices[3].prevent_removal);
+    ASSERT_EQ_INT(b->devices[3].block_size, 512);
+    ASSERT_EQ_INT(b->devices[3].default_block_size, 2048); // what a reset restores to
+    ASSERT_TRUE(b->loopback);
+    ASSERT_EQ_INT(b->bus.phase, scsi_data_in);
+    ASSERT_EQ_INT(b->cmd.opcode, 0x28);
+    ASSERT_EQ_INT(b->cmd.lba, 0x1234);
+
+    scsi_delete(b);
+    scsi_delete(a);
+}
+
+// The 5380's own block: pin levels and the pseudo-DMA gates.  Losing these
+// restores a chip that says it is driving no interrupt and has no transfer in
+// flight, whatever it was actually doing.
+TEST(test_5380_state_survives_a_round_trip) {
+    scsi_t *a = scsi_init(NULL);
+    ASSERT_TRUE(scsi_5380_attach(a, NULL) != NULL);
+    a->chip5380->reg.mr = MR_DMA;
+    a->chip5380->reg.icr = ICR_ACK;
+    a->chip5380->end_of_dma = true;
+    a->chip5380->dma_write_armed = true;
+    a->chip5380->primer_held = true;
+    a->chip5380->primer_byte = 0x5A;
+    a->chip5380->primer_pc = 0xDEADBEEF;
+    a->chip5380->cdr_idx = 2;
+    a->chip5380->drq_evt_registered = true; // must NOT come back
+
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+    cp_rewind();
+
+    scsi_t *b = scsi_init((checkpoint_t *)1);
+    ASSERT_TRUE(scsi_5380_attach(b, (checkpoint_t *)1) != NULL);
+
+    ASSERT_EQ_INT(b->chip5380->reg.mr, MR_DMA);
+    ASSERT_EQ_INT(b->chip5380->reg.icr, ICR_ACK);
+    // irq_active/drq_active are deliberately NOT asserted here.  They are
+    // tracked PIN levels, derived from the register file, the bus phase and the
+    // buffer -- all of which the block above restores -- so the restore
+    // recomputes them through scsi_update_irq/_drq and re-drives the machine's
+    // wiring with the answer.  Restoring a cached output over a recomputed one
+    // would be the worse of the two.
+    ASSERT_TRUE(b->chip5380->end_of_dma);
+    ASSERT_TRUE(b->chip5380->dma_write_armed);
+    ASSERT_TRUE(b->chip5380->primer_held);
+    ASSERT_EQ_INT(b->chip5380->primer_byte, 0x5A);
+    ASSERT_EQ_INT(b->chip5380->primer_pc, 0xDEADBEEF);
+    ASSERT_EQ_INT(b->chip5380->cdr_idx, 2);
+
+    // Below the line in struct scsi_5380, and for a reason: it records that
+    // THIS process registered the DRQ event type.  Coming back true would make
+    // a fresh process skip the registration and lose the event.
+    ASSERT_TRUE(!b->chip5380->drq_evt_registered);
+
+    scsi_delete(b);
+    scsi_delete(a);
+}
+
+// A bus with no 5380 -- a Quadra, a PowerMac -- writes no chip block, and the
+// restore must not go looking for one.
+TEST(test_busless_round_trip_is_symmetric) {
+    scsi_t *a = scsi_init(NULL);
+    scsi_add_device(a, 0, "GS", "SCRATCH", "1.0", NULL, scsi_dev_hd, 512, false);
+    a->devices[0].sense.key = SENSE_NOT_READY;
+    a->devices[0].sense.asc = ASC_SONY_CADDY_NOT_INSERTED;
+
+    cp_reset();
+    scsi_checkpoint(a, (checkpoint_t *)1);
+    size_t written = s_cp_w;
+    cp_rewind();
+
+    scsi_t *b = scsi_init((checkpoint_t *)1);
+    ASSERT_EQ_INT(b->devices[0].sense.key, SENSE_NOT_READY);
+    ASSERT_EQ_INT(b->devices[0].sense.asc, ASC_SONY_CADDY_NOT_INSERTED);
+    ASSERT_TRUE(b->chip5380 == NULL);
+    // The whole stream was consumed: no chip block was written, and none read.
+    ASSERT_TRUE(s_cp_r == written);
+
+    scsi_delete(b);
+    scsi_delete(a);
+}
+
+int main(void) {
+    RUN(test_device_state_survives_a_round_trip);
+    RUN(test_5380_state_survives_a_round_trip);
+    RUN(test_busless_round_trip_is_symmetric);
+    printf("All scsi_checkpoint tests passed\n");
+    return 0;
+}

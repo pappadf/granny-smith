@@ -477,7 +477,7 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             scsi->bus.target = platform_ntz32(scsi->chip5380->reg.odr & ~(1 << scsi->bus.initiator));
 
             // [6]: target will assert BSY - if no target, the bus will be free again
-            if (!scsi->devices[scsi->bus.target & 7].image)
+            if (!scsi->device_images[scsi->bus.target & 7])
                 phase_free(scsi);
             else
                 phase_command(scsi);
@@ -1234,8 +1234,15 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     chip->memory_interface.write_uint16 = &write_uint16;
     chip->memory_interface.write_uint32 = &write_uint32;
 
-    if (checkpoint)
-        system_read_checkpoint_data(checkpoint, &chip->reg, sizeof(chip->reg));
+    if (checkpoint) {
+        // The chip's plain-data block, matching the single write in
+        // scsi_checkpoint.  Stops at drq_evt_registered, which belongs to this
+        // process's scheduler and must start false -- see scsi_internal.h.
+        system_read_checkpoint_data(checkpoint, chip, offsetof(scsi_5380_t, drq_evt_registered));
+        // Re-drive the restored pin levels into the machine's wiring.
+        scsi_update_irq(bus);
+        scsi_update_drq(bus);
+    }
     return chip;
 }
 
@@ -1266,32 +1273,32 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
 
     // If checkpoint provided, restore plain-data portion first
     if (checkpoint) {
-        size_t data_size = offsetof(scsi_t, devices);
-        system_read_checkpoint_data(checkpoint, scsi, data_size);
+        // One read, mirroring the single write in scsi_checkpoint: bus
+        // signals, the command block, all eight device records (sense,
+        // prevent_removal, default_block_size and all) and loopback.
+        //
+        // buf.data was allocated above and everything from buf onward is a
+        // pointer, so the block stops there.
+        system_read_checkpoint_data(checkpoint, scsi, offsetof(scsi_t, buf));
 
-        // Restore device vendor/product strings, extended fields, and image filename
         for (int i = 0; i < 8; i++) {
-            // vendor_id and product_id are fixed-size arrays inside devices[i]
-            system_read_checkpoint_data(checkpoint, scsi->devices[i].vendor_id, sizeof(scsi->devices[i].vendor_id));
-            system_read_checkpoint_data(checkpoint, scsi->devices[i].product_id, sizeof(scsi->devices[i].product_id));
-
-            // Extended fields: revision, type, block_size, read_only, unit_attention
-            system_read_checkpoint_data(checkpoint, scsi->devices[i].revision, sizeof(scsi->devices[i].revision));
-            system_read_checkpoint_data(checkpoint, &scsi->devices[i].type, sizeof(scsi->devices[i].type));
-            system_read_checkpoint_data(checkpoint, &scsi->devices[i].block_size, sizeof(scsi->devices[i].block_size));
-            system_read_checkpoint_data(checkpoint, &scsi->devices[i].read_only, sizeof(scsi->devices[i].read_only));
-            system_read_checkpoint_data(checkpoint, &scsi->devices[i].unit_attention,
-                                        sizeof(scsi->devices[i].unit_attention));
-
-            // Backward compat: default HD values for old checkpoints missing these fields
+            // Backward compat: default HD values for old checkpoints missing
+            // these fields.
             if (scsi->devices[i].block_size == 0)
                 scsi->devices[i].block_size = 512;
+            if (scsi->devices[i].default_block_size == 0)
+                scsi->devices[i].default_block_size = scsi->devices[i].block_size;
             if (scsi->devices[i].type == scsi_dev_none && scsi->devices[i].vendor_id[0] != 0)
                 scsi->devices[i].type = scsi_dev_hd;
 
+            // The medium: re-opened by name.  medium_present is deliberately
+            // recomputed rather than restored -- it means "is there an image in
+            // this slot", and after a restore that is only knowable by whether
+            // the lookup succeeded.  Eject clears the image too (see
+            // scsi_eject_device), so the two cannot disagree.
             uint32_t len = 0;
             system_read_checkpoint_data(checkpoint, &len, sizeof(len));
-            scsi->devices[i].image = NULL;
+            scsi->device_images[i] = NULL;
             scsi->devices[i].medium_present = false;
             if (len > 0) {
                 char *name = (char *)malloc(len);
@@ -1299,7 +1306,7 @@ scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
                     system_read_checkpoint_data(checkpoint, name, len);
                     image_t *img = setup_get_image_by_filename(name);
                     if (img) {
-                        scsi->devices[i].image = img;
+                        scsi->device_images[i] = img;
                         scsi->devices[i].medium_present = true;
                     }
                     free(name);
@@ -1639,36 +1646,36 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     if (!scsi || !checkpoint)
         return;
 
-    // Save contiguous plain-data portion up to devices (devices contains pointers)
-    size_t data_size = offsetof(scsi_t, devices);
-    system_write_checkpoint_data(checkpoint, scsi, data_size);
+    // One write for the whole plain-data region, the way via_t, scc_t and
+    // rtc_t do it: bus signals, the command block, all eight device records
+    // and the loopback flag.  Everything below `buf` in struct scsi is a
+    // pointer and is re-bound by the machine after a restore.
+    //
+    // This used to stop at `devices` and hand-copy eight fields per slot,
+    // because an image_t* sat in the middle of the device record.  Moving
+    // those pointers out to device_images[] is what lets the block be whole --
+    // and what stops fields being forgotten: sense, prevent_removal and
+    // default_block_size were all silently dropped by the old loop, so a
+    // checkpoint taken between a CHECK CONDITION and the driver's REQUEST
+    // SENSE restored as NO SENSE.
+    system_write_checkpoint_data(checkpoint, scsi, offsetof(scsi_t, buf));
 
-    // Save vendor/product strings, extended fields, and per-device image filename
+    // The medium in each slot, by name.  The image itself is re-opened on
+    // restore; only the filename is meaningful across processes.
     for (int i = 0; i < 8; i++) {
-        system_write_checkpoint_data(checkpoint, scsi->devices[i].vendor_id, sizeof(scsi->devices[i].vendor_id));
-        system_write_checkpoint_data(checkpoint, scsi->devices[i].product_id, sizeof(scsi->devices[i].product_id));
-
-        // Extended fields: revision, type, block_size, read_only, unit_attention
-        system_write_checkpoint_data(checkpoint, scsi->devices[i].revision, sizeof(scsi->devices[i].revision));
-        system_write_checkpoint_data(checkpoint, &scsi->devices[i].type, sizeof(scsi->devices[i].type));
-        system_write_checkpoint_data(checkpoint, &scsi->devices[i].block_size, sizeof(scsi->devices[i].block_size));
-        system_write_checkpoint_data(checkpoint, &scsi->devices[i].read_only, sizeof(scsi->devices[i].read_only));
-        system_write_checkpoint_data(checkpoint, &scsi->devices[i].unit_attention,
-                                     sizeof(scsi->devices[i].unit_attention));
-
-        const char *name = scsi->devices[i].image ? image_get_filename(scsi->devices[i].image) : NULL;
+        const char *name = scsi->device_images[i] ? image_get_filename(scsi->device_images[i]) : NULL;
         uint32_t len = 0;
         if (name && *name)
             len = (uint32_t)strlen(name) + 1; // include NUL
         system_write_checkpoint_data(checkpoint, &len, sizeof(len));
-        if (len) {
+        if (len)
             system_write_checkpoint_data(checkpoint, name, len);
-        }
     }
 
-    // Save buf metadata and contents.  Persist the full staged region
-    // [0 .. pos + size) and the read cursor so an in-flight transfer (now
-    // possibly larger than BUF_LIMIT) round-trips exactly.
+    // buf is its own case: the metadata is plain data but `data` is a pointer
+    // to a variable-length region.  Persist the full staged span
+    // [0 .. pos + size) and the read cursor so an in-flight transfer (possibly
+    // larger than BUF_LIMIT) round-trips exactly.
     system_write_checkpoint_data(checkpoint, &scsi->buf.max, sizeof(scsi->buf.max));
     system_write_checkpoint_data(checkpoint, &scsi->buf.size, sizeof(scsi->buf.size));
     system_write_checkpoint_data(checkpoint, &scsi->buf.pos, sizeof(scsi->buf.pos));
@@ -1676,14 +1683,12 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     if (used && scsi->buf.data)
         system_write_checkpoint_data(checkpoint, scsi->buf.data, used);
 
-    // The attached 5380's register file, if there is one.  It used to ride
-    // inside the plain-data prefix above, because the chip lived in this
-    // struct; now it is its own allocation and is streamed here, last, to
-    // match the order the restore reads it (scsi_init_named for the bus, then
-    // scsi_5380_attach for the chip).  A machine either has a 5380 or does
-    // not, deterministically per model, so save and restore always agree.
+    // The attached 5380, if there is one: its own plain-data block, same shape.
+    // Streamed last to match the order the restore reads it (scsi_init_named
+    // for the bus, then scsi_5380_attach for the chip).  A machine either has a
+    // 5380 or does not, deterministically per model, so the two always agree.
     if (scsi->chip5380)
-        system_write_checkpoint_data(checkpoint, &scsi->chip5380->reg, sizeof(scsi->chip5380->reg));
+        system_write_checkpoint_data(checkpoint, scsi->chip5380, offsetof(scsi_5380_t, drq_evt_registered));
 }
 
 // === Object-model class descriptors =========================================

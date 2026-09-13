@@ -348,7 +348,7 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
 // 2048-byte blocks gives 0x800000000, which truncates to 0, so the old check
 // passed and the wrong blocks were served as valid data (03-scsi F-04).
 static bool scsi_lba_range_ok(const scsi_t *scsi, int target, size_t *off_out, size_t *cnt_out) {
-    const image_t *img = scsi->devices[target].image;
+    const image_t *img = scsi->device_images[target];
     if (!img)
         return false;
     // Through uint32_t first: cmd.lba and cmd.tl are `int`, and the 10-byte
@@ -500,7 +500,7 @@ void run_cmd(scsi_t *scsi) {
 
         LOG(1, "SCSI %s target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
             scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-            scsi->devices[target].image ? scsi->devices[target].image->raw_size : 0);
+            scsi->device_images[target] ? scsi->device_images[target]->raw_size : 0);
 
         if (getenv("GS_IIFX_SHIM_TRACE"))
             fprintf(stdout, "SCSI_%s_6 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE ? "WR" : "RD",
@@ -546,7 +546,7 @@ void run_cmd(scsi_t *scsi) {
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
             LOG(1, "SCSI %s out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
                 scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-                disk_size(scsi->devices[target].image));
+                disk_size(scsi->device_images[target]));
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             break;
         }
@@ -561,7 +561,7 @@ void run_cmd(scsi_t *scsi) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
             phase_data_in(scsi, (int)byte_cnt);
-            size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
+            size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
             assert(n == byte_cnt);
             // TEMP DIAG (GS_DEVDIR): dump what storage delivered for the /dev
             // directory read (abs LBA 68698). Valid head: 00 00 3C 00 00 0C 00 01 2E.
@@ -618,7 +618,7 @@ void run_cmd(scsi_t *scsi) {
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
             LOG(1, "SCSI %s_10 out of range: target=%d lba=%u tl=%u blk_sz=%u raw_size=%zu",
                 scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
-                disk_size(scsi->devices[target].image));
+                disk_size(scsi->device_images[target]));
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             break;
         }
@@ -631,7 +631,7 @@ void run_cmd(scsi_t *scsi) {
             phase_data_out(scsi, (int)byte_cnt);
         } else {
             phase_data_in(scsi, (int)byte_cnt);
-            size_t n = disk_read_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
+            size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
             assert(n == byte_cnt);
         }
         break;
@@ -696,7 +696,7 @@ void run_cmd(scsi_t *scsi) {
                 // The disk SCSD page, byte-for-byte per the chart in IBM's
                 // `cfghscsi.h` (struct disk_scsd_inqry_data): 4-byte page
                 // header + 113 bytes of self-description.
-                image_t *image = scsi->devices[target].image;
+                image_t *image = scsi->device_images[target];
                 uint32_t cap_mb = image ? (uint32_t)(disk_size(image) / (1024u * 1024u)) : 0u;
                 uint8_t pg[117];
                 memset(pg, 0, sizeof(pg));
@@ -836,7 +836,7 @@ void run_cmd(scsi_t *scsi) {
             // only want the header.
             uint8_t page_code = scsi->buf.data[2] & 0x3F;
             int alloc_len = scsi->buf.data[4];
-            uint32_t blocks = (uint32_t)(disk_size(scsi->devices[target].image) / 512);
+            uint32_t blocks = (uint32_t)(disk_size(scsi->device_images[target]) / 512);
 
             // Vendor-specific page 0x30 carries Apple's drive-identification
             // string.  This — not the INQUIRY vendor/product ID — is what
@@ -937,7 +937,7 @@ void run_cmd(scsi_t *scsi) {
         // discontinuity; for a flat disk image that's the device's last LBA,
         // identical to PMI=0.  Don't assert on guest-supplied PMI — a
         // well-formed initiator may legitimately set it.
-        image_t *image = scsi->devices[target].image;
+        image_t *image = scsi->device_images[target];
         uint16_t blk_sz = scsi->devices[target].block_size;
         size_t sz = disk_size(image) / blk_sz;
 
@@ -1043,7 +1043,7 @@ void command_complete(scsi_t *scsi) {
         size_t byte_off = 0, byte_cnt = 0;
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
             LOG(1, "SCSI WRITE: refusing tl=%u blk_sz=%u (%zu bytes) against buf.size=%zu raw_size=%zu", scsi->cmd.tl,
-                blk_sz, byte_cnt, scsi->buf.size, disk_size(scsi->devices[target].image));
+                blk_sz, byte_cnt, scsi->buf.size, disk_size(scsi->device_images[target]));
             scsi->buf.max = scsi->buf.size = 0;
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             return;
@@ -1051,7 +1051,7 @@ void command_complete(scsi_t *scsi) {
 
         // And report a short write rather than discarding the count: an
         // in-bounds backing-store failure is a MEDIUM ERROR, not success.
-        size_t wrote = disk_write_data(scsi->devices[target].image, byte_off, scsi->buf.data, byte_cnt);
+        size_t wrote = disk_write_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
         scsi->buf.max = scsi->buf.size = 0;
         if (wrote != byte_cnt) {
             LOG(1, "SCSI WRITE: storage took %zu of %zu bytes at offset %zu", wrote, byte_cnt, byte_off);
@@ -1197,7 +1197,7 @@ void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, con
     // scsi_id 7 is reserved for the Mac initiator; only targets 0..6 are valid.
     GS_ASSERTF(scsi_id < 7, "scsi_add_device: scsi_id %d is the initiator slot, expected 0..6", scsi_id);
 
-    scsi->devices[scsi_id].image = image;
+    scsi->device_images[scsi_id] = image;
     scsi->devices[scsi_id].type = type;
     scsi->devices[scsi_id].block_size = block_size;
     scsi->devices[scsi_id].default_block_size = block_size;
@@ -1369,10 +1369,10 @@ void scsi_external_release(scsi_t *scsi) {
 int scsi_eject_device(scsi_t *scsi, int id) {
     if (!scsi || id < 0 || id > 6)
         return -1;
-    if (!scsi->devices[id].image && !scsi->devices[id].medium_present)
+    if (!scsi->device_images[id] && !scsi->devices[id].medium_present)
         return 0;
     scsi->devices[id].medium_present = false;
-    scsi->devices[id].image = NULL;
+    scsi->device_images[id] = NULL;
     // Removal raises NO unit attention.  The CDU-541 manual 4.1.3 lists exactly
     // four causes -- power-on, reset, *insertion* of a caddy with successful TOC
     // recovery, and MODE SELECT from another initiator -- and its UNIT ATTENTION
@@ -1462,5 +1462,5 @@ struct image *scsi_device_image(const scsi_t *scsi, unsigned which) {
         return NULL;
     if (!scsi->devices[which].medium_present)
         return NULL;
-    return scsi->devices[which].image;
+    return scsi->device_images[which];
 }
