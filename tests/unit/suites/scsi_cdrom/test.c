@@ -617,6 +617,53 @@ TEST(allocation_length_is_a_ceiling_not_a_request) {
     scsi_delete(scsi);
 }
 
+// F-24: the two Apple vendor page $30 strings differ, and that is pinned here
+// so it stays a decision rather than a drift.
+//
+// The emitter is shared; the content is not.  The hard-disk string is verified
+// against HD SC Setup, which requests the page four times during a format.
+// This one is verified by nothing -- no test in this tree requests it, counted
+// at zero calls across se30-cdrom and iici-cdrom-boot -- so pinning the exact
+// bytes is the most that can honestly be done: if someone changes it, they are
+// changing something no other test covers, and this will say so.
+TEST(apple_vendor_page_30_bytes_are_pinned) {
+    scsi_t *scsi = attach_disc();
+
+    // MODE SENSE(6), page $30, enough allocation for the whole page.
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    const uint8_t cdb[6] = {0x1A, 0x00, 0x30, 0x00, 0xFF, 0x00};
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+
+    uint8_t resp[64];
+    size_t n = 0;
+    uint8_t b;
+    while (scsi_pop_data_in_byte(scsi, &b))
+        if (n < sizeof resp)
+            resp[n++] = b;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+
+    // Find page $30 past the 4-byte mode header and the 8-byte block descriptor.
+    size_t p = 4 + (size_t)resp[3];
+    ASSERT_TRUE(p + 2 <= n);
+    ASSERT_EQ_INT(resp[p], 0x30); // page code
+    ASSERT_EQ_INT(resp[p + 1], 30); // page length: 30, not the HD's 20
+
+    // 41 50 50 4C 45 20 43 4F 4D 50 55 54 45 52 2C 20 49 4E 43 20 20 20
+    // -- "APPLE COMPUTER, INC" then THREE SPACES, and no trailing period.
+    ASSERT_EQ_INT(memcmp(resp + p + 2, "APPLE COMPUTER, INC   ", 22), 0);
+    // The string starts at p+2, so its 20th byte -- where the hard disk's
+    // form carries a trailing '.' -- is p+21 here, and is a space.
+    ASSERT_TRUE(resp[p + 21] == ' ');
+
+    // 22 bytes of string inside a 30-byte page leaves 8 zeros.
+    for (size_t i = 24; i < 32; i++)
+        ASSERT_EQ_INT(resp[p + i], 0x00);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(read6_at_buf_limit);
@@ -632,6 +679,7 @@ int main(void) {
     RUN(allow_then_eject_succeeds);
     RUN(prevent_on_empty_drive_is_refused);
     RUN(allow_on_empty_drive_is_accepted);
+    RUN(apple_vendor_page_30_bytes_are_pinned);
     RUN(zero_allocation_length_transfers_nothing);
     RUN(allocation_length_is_a_ceiling_not_a_request);
     RUN(inquiry_standard_is_36_bytes);

@@ -768,26 +768,19 @@ void run_cmd(scsi_t *scsi) {
             break;
         }
 
-        if (scsi->devices[target].type == scsi_dev_cdrom) {
-            // CD-ROM INQUIRY: device type 0x05, removable media
-            scsi->buf.data[0] = 0x05; // CD-ROM device type
-            scsi->buf.data[1] = 0x80; // removable media bit (RMB)
+        // The standard INQUIRY response.  A CD-ROM and a hard disk differ in
+        // exactly two bytes -- the peripheral device type, and whether the
+        // medium is removable -- and agreed on the other thirty-four, which is
+        // why this was two twenty-six-line branches that had to be kept in
+        // step by hand.
+        {
+            bool is_cdrom = scsi->devices[target].type == scsi_dev_cdrom;
+            scsi->buf.data[0] = is_cdrom ? 0x05u : 0x00u; // CD-ROM / direct-access
+            scsi->buf.data[1] = is_cdrom ? 0x80u : 0x00u; // RMB: removable medium
             scsi->buf.data[2] = 0x01; // SCSI-1 (ANSI version)
             scsi->buf.data[3] = 0x01; // response data format: CCS
             scsi->buf.data[4] = 0x1F; // additional length: 31 -> 36 total
             // Bytes 5-7: zero
-            if (scsi->cmd.tl >= 36) {
-                memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
-                memcpy(scsi->buf.data + 16, scsi->devices[target].product_id, 16);
-                memcpy(scsi->buf.data + 32, scsi->devices[target].revision, 4);
-            }
-        } else {
-            // Hard disk INQUIRY: device type 0x00
-            scsi->buf.data[0] = 0x00; // direct-access device
-            scsi->buf.data[1] = 0x00; // non-removable media
-            scsi->buf.data[2] = 0x01; // SCSI-1 (ANSI version)
-            scsi->buf.data[3] = 0x01; // response data format: CCS
-            scsi->buf.data[4] = 0x1F; // additional length: 31 -> 36 total
             if (scsi->cmd.tl >= 36) {
                 memcpy(scsi->buf.data + 8, scsi->devices[target].vendor_id, 8);
                 memcpy(scsi->buf.data + 16, scsi->devices[target].product_id, 16);
@@ -900,10 +893,13 @@ void run_cmd(scsi_t *scsi) {
                 total += 24;
             }
             if (page_code == 0x30 || page_code == 0x3F) {
-                resp[total] = 0x30; // page code
-                resp[total + 1] = (uint8_t)apple_id_len; // page length
-                memcpy(resp + total + 2, apple_id, (size_t)apple_id_len);
-                total += 2 + apple_id_len;
+                // Page control 0 ("current values") unconditionally: this path
+                // masks the CDB with 0x3F above and so never sees bits 7:6, so
+                // it has never distinguished current / changeable / default /
+                // saved.  Preserved as-is here rather than quietly changed --
+                // it is a gap in the HD MODE SENSE, not part of this change.
+                total +=
+                    scsi_build_apple_page_30(resp + total, /*page_control=*/0, apple_id, apple_id_len, apple_id_len);
             }
             resp[0] = (uint8_t)(total - 1); // mode data length excludes itself
 
@@ -1190,6 +1186,42 @@ void scsi_bus_reset(scsi_t *bus) {
         scsi_set_sense(bus, i, SENSE_UNIT_ATTENTION, ASC_POWER_ON_OR_RESET, 0x00);
     }
     LOG(2, "bus reset: devices returned to their power-on state");
+}
+
+// Emit Apple's vendor-identification MODE SENSE page $30.
+//
+// Apple never published this page; what is known of it comes from the drivers
+// that read it.  It is the mechanism that is shared here, NOT the content --
+// the hard-disk and CD-ROM identification strings differ, and the evidence for
+// each is different in kind:
+//
+//   HD  "APPLE COMPUTER, INC." -- 20 bytes, trailing period.  This one is
+//       load-bearing and verified: HD SC Setup requests it four times during
+//       se30-format-hd, and it is what the formatter gates on when deciding
+//       whether a mechanism is an Apple-shipped drive.
+//
+//   CD  "APPLE COMPUTER, INC   " -- 22 bytes, no period, three trailing
+//       spaces, padded to a 30-byte page.  UNVERIFIED: no test in this tree
+//       requests it.  Instrumenting build_page_30 across se30-cdrom and
+//       iici-cdrom-boot counted ZERO calls, which matches the CDU-8002 being a
+//       1991 SCSI-1 drive while page $30 arrived with System 7.5+ drivers.
+//
+// So the two are NOT known to be the same string, and are deliberately not
+// forced to be.  Making them agree would mean changing the untested side to
+// match the tested one on an assumption nothing here can check.  If a later
+// image does exercise the CD-ROM gate, that is the moment to find out.
+//
+// `id_len` is the page length: the payload that follows the two-byte header.
+// Bytes beyond the string are left zero, which is the padding both forms use.
+int scsi_build_apple_page_30(uint8_t *buf, int page_control, const char *id, int id_len, int page_len) {
+    buf[0] = 0x30; // page code
+    buf[1] = (uint8_t)page_len;
+    memset(buf + 2, 0, (size_t)page_len);
+    // Page control 1 is "changeable values", and nothing here is changeable,
+    // so the mask stays all-zero.
+    if (page_control != 1)
+        memcpy(buf + 2, id, (size_t)id_len);
+    return 2 + page_len;
 }
 
 void scsi_add_device(scsi_t *restrict scsi, int scsi_id, const char *vendor, const char *product, const char *revision,

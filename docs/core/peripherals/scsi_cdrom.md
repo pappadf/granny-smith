@@ -501,8 +501,8 @@ The Immd bit controls whether audio play commands return status immediately (Imm
 |------|-------|-------|
 | 0 | Page Code | `0x30` |
 | 1 | Page Length | `0x1E` (30 bytes) |
-| 2-24 | Identification String | `"APPLE COMPUTER, INC   "` (23 bytes ASCII) |
-| 25-31 | Zero Padding | `0x00` x 7 |
+| 2-23 | Identification String | `"APPLE COMPUTER, INC   "` (22 bytes ASCII) |
+| 24-31 | Zero Padding | `0x00` x 8 |
 
 ASCII hex of the identification string: `41 50 50 4C 45 20 43 4F 4D 50 55 54 45 52 2C 20 49 4E 43 20 20 20`.
 
@@ -512,6 +512,19 @@ ASCII hex of the identification string: `41 50 50 4C 45 20 43 4F 4D 50 55 54 45 
 - PC=2 (default): Return the string as above
 
 This page is the **primary authentication gate** for the Apple CD-ROM driver. Beyond the INQUIRY whitelist, the driver sends MODE SENSE for page 0x30 and verifies the Apple identification string. Drives that fail this check are rejected by the driver.
+
+> **Unverified, and unexercised.** Nothing in this tree requests this page.
+> Instrumenting the emitter across `se30-cdrom` and `iici-cdrom-boot` counts
+> **zero** calls, which is consistent with the historical note below: our
+> CD-ROM images predate the mechanism. The byte string above therefore rests on
+> the same footing as the rest of this section — reconstruction, not a cited
+> source — and no test would notice if it were wrong.
+>
+> The hard-disk path emits a **different** string: `"APPLE COMPUTER, INC."`,
+> 20 bytes with a trailing period, in a 20-byte page. That one *is* exercised —
+> HD SC Setup requests it four times during `se30-format-hd`. The two are not
+> known to be the same string and are deliberately not forced to agree; see
+> `scsi_build_apple_page_30()` in `scsi_bus.c`.
 
 **Historical note:** The real CDU-8002 (SCSI-1 era, 1991) may predate this mechanism — the Sony CDU-541 manual does not document page 0x30, and early Apple drivers relied solely on INQUIRY product strings. However, later Apple drivers (System 7.5+) request page 0x30 from all drives, and we implement it for broad compatibility. This rationale should be noted in a code comment.
 

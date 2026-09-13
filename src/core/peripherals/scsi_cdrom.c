@@ -58,22 +58,21 @@ static int build_page_09(uint8_t *buf) {
     return 16;
 }
 
-// Build Mode Page 0x30: Apple Vendor Page (32 bytes).
-// The real CDU-8002 (1991, SCSI-1) may predate this mechanism, but Apple's
-// later drivers (System 7.5+) request page 0x30 even from older drives.
-// QEMU enables it unconditionally. We do the same for compatibility.
+// Mode page $30, Apple's vendor identification, in the CD-ROM's form.
+//
+// The emitter is shared with the hard-disk path (scsi_build_apple_page_30);
+// the STRING is not, and deliberately so -- see the comment there for the
+// evidence behind each.  In short: the HD form is verified against HD SC
+// Setup, this one is not verified by anything.  No test in this tree requests
+// it; instrumenting this function across se30-cdrom and iici-cdrom-boot counts
+// zero calls, which fits the CDU-8002 being a 1991 SCSI-1 drive while page $30
+// arrived with System 7.5+ drivers.
+//
+// 22 bytes of string inside a 30-byte page, so the remaining 8 are zero.  The
+// string carries no trailing period, unlike the hard disk's.
 static int build_page_30(uint8_t *buf, int page_control) {
-    buf[0] = 0x30; // page code
-    buf[1] = 0x1E; // page length = 30 bytes
-    if (page_control == 1) {
-        // Changeable values: return all zeros
-        memset(buf + 2, 0, 30);
-    } else {
-        // Current/default values: Apple vendor string
-        memcpy(buf + 2, "APPLE COMPUTER, INC   ", 22);
-        memset(buf + 24, 0, 8);
-    }
-    return 32;
+    static const char apple_cd_id[] = "APPLE COMPUTER, INC   ";
+    return scsi_build_apple_page_30(buf, page_control, apple_cd_id, (int)sizeof(apple_cd_id) - 1, 30);
 }
 
 // ============================================================================

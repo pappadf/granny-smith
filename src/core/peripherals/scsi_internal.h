@@ -445,6 +445,11 @@ void phase_message_in(scsi_t *scsi, uint8_t message);
 // faithful answer and the one the drive we advertise documents.
 int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc);
 
+// Emit Apple's vendor-identification MODE SENSE page $30 into `buf`.  Shared by
+// the hard-disk and CD-ROM paths; the identification STRING is not shared, and
+// the reason is written out at the definition in scsi_bus.c.
+int scsi_build_apple_page_30(uint8_t *buf, int page_control, const char *id, int id_len, int page_len);
+
 // ============================================================================
 // CD-ROM Device Functions (defined in scsi_cdrom.c, called from scsi.c)
 // ============================================================================
