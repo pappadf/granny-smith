@@ -10,6 +10,7 @@
 
 #include "scsi_53c96.h"
 
+#include "byte_fifo.h"
 #include "log.h"
 #include "scheduler.h"
 #include "scsi.h"
@@ -85,9 +86,7 @@ struct scsi_53c96 {
     // Programmer-visible register file
     uint16_t xfer_count; // write side (reload value)
     uint16_t xfer_counter; // read side (live counter)
-    uint8_t fifo[FIFO_DEPTH];
-    uint8_t fifo_count;
-    uint8_t fifo_rd; // read cursor (bottom of FIFO)
+    BYTE_FIFO(FIFO_DEPTH) fifo;
     uint8_t command; // last executed command
     uint8_t status;
     uint8_t dest_id;
@@ -224,30 +223,28 @@ static uint64_t select_timeout_ns(scsi_53c96_t *c) {
     return ticks * 1000000000ull / c->clock_hz;
 }
 
-// FIFO helpers.  The bottom element and flags clear on chip reset; contents
-// otherwise persist (ch. 4, FIFO register).
+// The ring itself is byte_fifo.h's; what is 53C96-specific is what happens at
+// the ends, and both ends are specified.  Manual ch. 4, FIFO Register
+// (read/write address 02): "The bottom FIFO element and the FIFO flags are
+// initialized to zero during hardware reset, software reset chip and the
+// beginning of bus initiated selection or reselection.  The contents of the
+// rest of the FIFO are not changed by any reset, but when the flags are zero,
+// successive FIFO reads will access the bottom register."
 static void fifo_flush(scsi_53c96_t *c) {
-    c->fifo_count = 0;
-    c->fifo_rd = 0;
-    c->fifo[0] = 0;
+    byte_fifo_clear(&c->fifo);
+    c->fifo.buf[0] = 0; // the bottom element, zeroed with the flags
 }
 
 static void fifo_push(scsi_53c96_t *c, uint8_t v) {
-    if (c->fifo_count >= FIFO_DEPTH) {
+    if (!byte_fifo_push(&c->fifo, v))
         c->status |= ST_GE; // top of FIFO overwritten (gross error)
-        return;
-    }
-    c->fifo[(c->fifo_rd + c->fifo_count) % FIFO_DEPTH] = v;
-    c->fifo_count++;
 }
 
 static uint8_t fifo_pop(scsi_53c96_t *c) {
-    uint8_t v = c->fifo[c->fifo_rd];
-    if (c->fifo_count > 0) {
-        c->fifo_count--;
-        c->fifo_rd = (uint8_t)((c->fifo_rd + 1) % FIFO_DEPTH);
-    }
-    return v; // empty FIFO re-reads the bottom register
+    uint8_t v;
+    if (!byte_fifo_pop(&c->fifo, &v))
+        return c->fifo.buf[c->fifo.rd]; // flags zero: reads access the bottom register
+    return v;
 }
 
 // Chip reset: same effect as hardware reset (ch. 5).  Time-out, transfer
@@ -333,7 +330,7 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         // Message byte(s) first for the ATN variants (IDENTIFY etc.) —
         // informational to the v1 target model; consumed from the FIFO.
         int msg_bytes = (code == 0x41) ? 0 : (code == 0x46) ? 3 : 1;
-        for (int i = 0; i < msg_bytes && c->fifo_count > 0; i++)
+        for (int i = 0; i < msg_bytes && byte_fifo_count(&c->fifo) > 0; i++)
             (void)fifo_pop(c);
         if (code == 0x43) {
             // Select-with-ATN-and-stop: halt after the message byte.
@@ -344,7 +341,7 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         }
         // CDB from the FIFO; run_cmd dispatches on the full CDB and moves
         // the bus out of COMMAND phase.
-        while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
+        while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
             scsi_push_data_out_byte(c->bus, fifo_pop(c));
         if (scsi_get_bus_phase(c->bus) != scsi_command) {
             c->seq_step = 4; // completed the whole select sequence
@@ -432,7 +429,7 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
                 if (dma) {
                     c->xfer_mode = XFER_DATA_OUT; // aperture writes push the payload
                 } else {
-                    while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
+                    while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
                         scsi_push_data_out_byte(c->bus, fifo_pop(c));
                     refresh_phase(c);
                     post_interrupt(c, IR_BUS_SERVICE);
@@ -459,7 +456,7 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
                 if (dma) {
                     c->xfer_mode = XFER_CMD_OUT;
                 } else {
-                    while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
+                    while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
                         scsi_push_data_out_byte(c->bus, fifo_pop(c));
                     refresh_phase(c);
                     post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
@@ -550,7 +547,7 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
         // pseudo-DMA read is armed (capped at the 16-byte FIFO width), else
         // the command/status FIFO count.  Upper 3 bits duplicate seq step.
         uint32_t avail = (c->xfer_mode == XFER_DATA_IN) ? (c->counter_live < FIFO_DEPTH ? c->counter_live : FIFO_DEPTH)
-                                                        : c->fifo_count;
+                                                        : byte_fifo_count(&c->fifo);
         return (uint8_t)(((c->seq_step & 7) << 5) | (avail & 0x1F));
     }
     case R_CONFIG1:

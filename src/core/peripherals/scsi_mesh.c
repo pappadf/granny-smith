@@ -189,26 +189,26 @@ static void mesh_select_timed_out(void *ctx) {
     raise_exception(m, EXC_SELTO);
 }
 
+// The ring is byte_fifo.h's; only the ends are MESH's.  Unlike the 53C96 --
+// whose overflow and empty-read are both spelled out in the NCR manual -- what
+// real MESH silicon does at either end is documented NOWHERE.  There is no
+// Apple datasheet, and none of the three driver corpora (Linux, NetBSD,
+// MkLinux) exercises it, because a driver that respects `fifo_count` never
+// reaches either end.  Both choices below are ours, and defensive: measured
+// across a 7.6 boot, 64,053 pushes and 64,053 pops hit neither.
 static void fifo_clear(mesh_t *m) {
-    m->fifo_rd = 0;
-    m->fifo_n = 0;
+    byte_fifo_clear(&m->fifo);
 }
 
 static void fifo_push(mesh_t *m, uint8_t v) {
-    if (m->fifo_n >= MESH_FIFO) {
+    if (!byte_fifo_push(&m->fifo, v))
         LOG(1, "FIFO overflow (byte $%02X dropped)", v);
-        return;
-    }
-    m->fifo[(m->fifo_rd + m->fifo_n) % MESH_FIFO] = v;
-    m->fifo_n++;
 }
 
 static uint8_t fifo_pop(mesh_t *m) {
-    if (m->fifo_n == 0)
-        return 0; // empty FIFO re-reads as zero
-    uint8_t v = m->fifo[m->fifo_rd];
-    m->fifo_rd = (uint8_t)((m->fifo_rd + 1) % MESH_FIFO);
-    m->fifo_n--;
+    uint8_t v;
+    if (!byte_fifo_pop(&m->fifo, &v))
+        return 0; // our choice: an empty FIFO reads as zero
     return v;
 }
 
@@ -314,7 +314,7 @@ static void msgout_complete(mesh_t *m) {
 static void pump_out(mesh_t *m) {
     if (!m->connected)
         return; // no target: bytes stay in the FIFO
-    while (m->remaining > 0 && m->fifo_n > 0) {
+    while (m->remaining > 0 && byte_fifo_count(&m->fifo) > 0) {
         uint8_t b = fifo_pop(m);
         if (m->active == CMD_MSGOUT) {
             LOG(3, "msgout byte $%02X absorbed", b);
@@ -354,7 +354,7 @@ static void pump_out(mesh_t *m) {
 
 // Fill the FIFO from the bus for non-DMA DATAIN.
 static void pump_in(mesh_t *m) {
-    while (m->remaining > 0 && m->fifo_n < MESH_FIFO) {
+    while (m->remaining > 0 && !byte_fifo_full(&m->fifo)) {
         uint8_t b;
         if (!m->bus || !scsi_pop_data_in_byte(m->bus, &b)) {
             // Target has no more data: it leaves DATA IN — a short
@@ -431,7 +431,7 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
     uint8_t cmd = value & 0x0Fu;
     bool dma = (value & SEQ_DMA_MODE) != 0;
     m->sequence = value;
-    LOG(3, "sequence $%02X (count=%u fifo=%u conn=%d)", value, count, m->fifo_n, m->connected);
+    LOG(3, "sequence $%02X (count=%u fifo=%u conn=%d)", value, count, byte_fifo_count(&m->fifo), m->connected);
 
     // Starting a sequence command clears the PREVIOUS command's cause
     // latches: the ROM's native driver reads exception unconditionally
@@ -534,9 +534,9 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
         } else {
             pump_in(m);
         }
-        LOG(3, "datain first bytes: %02X %02X %02X %02X (fifo_n=%u remaining=%u)", m->fifo[m->fifo_rd],
-            m->fifo[(m->fifo_rd + 1) % MESH_FIFO], m->fifo[(m->fifo_rd + 2) % MESH_FIFO],
-            m->fifo[(m->fifo_rd + 3) % MESH_FIFO], m->fifo_n, m->remaining);
+        LOG(3, "datain first bytes: %02X %02X %02X %02X (fifo_n=%u remaining=%u)", byte_fifo_peek(&m->fifo, 0),
+            byte_fifo_peek(&m->fifo, 1), byte_fifo_peek(&m->fifo, 2), byte_fifo_peek(&m->fifo, 3),
+            byte_fifo_count(&m->fifo), m->remaining);
         return;
 
     case CMD_STATUS: {
@@ -773,7 +773,7 @@ static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
     case MR_BUS_STATUS1:
         return m->connected ? BS1_BSY : 0;
     case MR_FIFO_COUNT:
-        return m->fifo_n;
+        return byte_fifo_count(&m->fifo);
     case MR_EXCEPTION:
         return m->exception;
     case MR_ERROR:

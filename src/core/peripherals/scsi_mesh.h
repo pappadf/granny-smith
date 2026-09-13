@@ -17,6 +17,7 @@
 #ifndef SCSI_MESH_H
 #define SCSI_MESH_H
 
+#include "byte_fifo.h"
 #include "common.h"
 
 #include <stdbool.h>
@@ -46,8 +47,7 @@ typedef struct mesh {
     // exactly what makes that unsafe -- it is how F-21's host addresses got
     // into the 53C96's checkpoint -- so the bound is explicit from the start.
 
-    uint8_t fifo[MESH_FIFO];
-    uint8_t fifo_rd, fifo_n;
+    BYTE_FIFO(MESH_FIFO) fifo;
     uint8_t sequence; // last written sequence-command byte
     uint8_t bus0_atn; // explicitly driven ATN (bus_status0 write)
     uint8_t exception, error; // W1C cause latches
