@@ -42,6 +42,7 @@
 #include "system.h"
 #include "system_config.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1245,27 +1246,33 @@ void sym53c8xx_attach_bus(sym53c8xx_t *s, struct scsi *bus) {
 void sym53c8xx_checkpoint_save(sym53c8xx_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
-    // DSTAT, SIST0 and SIST1 ride in s->reg with every other register; they
-    // used to be streamed a second time from their own fields.
-    system_write_checkpoint_data(cp, s->reg, sizeof(s->reg));
-    system_write_checkpoint_data(cp, s->script_ram, sizeof(s->script_ram));
-    system_write_checkpoint_data(cp, &s->running, sizeof(s->running));
-    system_write_checkpoint_data(cp, &s->connected, sizeof(s->connected));
-    system_write_checkpoint_data(cp, &s->target, sizeof(s->target));
-    system_write_checkpoint_data(cp, &s->phase, sizeof(s->phase));
+    // One write for the whole plain-data region -- registers, SCRIPTS RAM, the
+    // stacked interrupt causes, the message session, the sync/wide agreement,
+    // the DMA FIFO lanes and the parked-on-reselect flag.
+    //
+    // This used to name six members by hand and lost everything else.  See
+    // sym53c8xx.h for what sits below the line and why.
+    system_write_checkpoint_data(cp, s, offsetof(sym53c8xx_t, running));
 }
 
 void sym53c8xx_checkpoint_restore(sym53c8xx_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
-    // DSTAT, SIST0 and SIST1 ride in s->reg with every other register; they
-    // used to be streamed a second time from their own fields.
-    system_read_checkpoint_data(cp, s->reg, sizeof(s->reg));
-    system_read_checkpoint_data(cp, s->script_ram, sizeof(s->script_ram));
-    system_read_checkpoint_data(cp, &s->running, sizeof(s->running));
-    system_read_checkpoint_data(cp, &s->connected, sizeof(s->connected));
-    system_read_checkpoint_data(cp, &s->target, sizeof(s->target));
-    system_read_checkpoint_data(cp, &s->phase, sizeof(s->phase));
+    system_read_checkpoint_data(cp, s, offsetof(sym53c8xx_t, running));
+
+    // The engine comes back HALTED with DSP intact, whatever it was doing.
+    // running is always false at save time anyway (it lives only inside
+    // sym53c8xx_run), but start_pending and select_timeout_armed can both be
+    // true, and each names a scheduler event this process does not have.
+    // Leaving them set would make sym53c8xx_start() return early forever.
+    //
+    // Halted-with-DSP-intact is a state a driver already knows how to leave:
+    // it is where every interrupt puts the chip, and the driver restarts it by
+    // writing DSP or strobing DCNTL[STD].
+    s->running = false;
+    s->start_pending = false;
+    s->select_timeout_armed = false;
+
     s->irq = !s->irq; // force the pin to be re-derived
     sym53c8xx_update_irq(s);
 }

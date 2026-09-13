@@ -167,134 +167,62 @@ typedef struct checkpoint checkpoint_t;
 
 // === Chip state =============================================================
 typedef struct sym53c8xx {
-    struct pci_device *dev; // the seated PCI device (back-pointer)
-    config_t *cfg; // the machine, for host-memory access
+    // ---- plain data, saved as one block ----------------------------------
+    // Everything up to the first pointer is written in a single
+    // system_write_checkpoint_data() call, the same shape via_t, scc_t, rtc_t,
+    // struct scsi and scsi_53c96_t use.  Before this the checkpoint listed six
+    // members by hand and lost the rest: the stacked interrupt causes, the
+    // whole message session, the synchronous/wide agreement, the DMA FIFO
+    // lanes, the parked-on-reselect flag and the instruction counter.
     int channel; // 0 or 1 — which of the board's two controllers
-
-    // The BIG_LIT/ strap.  FALSE on the Apple Network Server, which the
-    // ROM proves three ways (see the endianness note in sym53c825.c); a
-    // construction parameter rather than a constant because it is a wiring
-    // fact, and the SYM53C825AJ variant is little-endian only.  What it
-    // governs is the order the ENGINE assembles an instruction dword in;
-    // data payloads are a straight byte copy either way, because "the
-    // first byte in from the SCSI bus goes to address 0" in both modes.
     bool big_endian;
-
-    // The GPIO pins as this BOARD wires them.  GPIO[3:0] are inputs at
-    // power-up with an internal pull-down, so an unwired part reads zero —
-    // and on the Apple Network Server that is fatal, because Open
-    // Firmware's own `check-disabled` word is:
-    //
-    //     : check-disabled  … regs >gpreg xb@ 1 and 0=
-    //       if  "disabled" encode-string "status" property  then … ;
-    //
-    // GPIO0 LOW means "this fast/wide channel is not fitted", the node gets
-    // `status "disabled"`, and every later `open` of it fails with
-    // `Can't open SCSI host adapter`.  So the board pulls GPIO0 HIGH, and
-    // the strap is per-instance rather than a constant because it is a
-    // wiring fact, not a property of the part.
     uint8_t gpio_strap;
-
-    // The operating register file: ONE byte per register address, and the only
-    // storage for any of them.
-    //
-    // DSTAT, SIST0 and SIST1 used to live here AND in three separate fields
-    // beside this array, with the array slots never written by anything.  The
-    // host path read the fields; the SCRIPTS engine, which addresses registers
-    // by number, read the slots -- so a script asking for the interrupt cause
-    // got a byte the emulator had never written.  Two storages for one register
-    // cannot be kept in step, so there is now one.
-    //
-    // The access rule that replaces the split: everything GUEST-facing goes
-    // through sym825_reg_read/sym825_reg_write, which own the side effects
-    // (read-to-clear, computed bits, the FIFO windows, the engine-start
-    // strobes).  Internal model code indexes this array directly when it needs
-    // a NON-destructive look at a latch -- sym53c8xx_update_irq has to test
-    // DSTAT/SIST0/SIST1 against their masks without clearing the very cause it
-    // is evaluating, which is what forced the split in the first place.  That
-    // is an access discipline, not a reason for a second copy.
     uint8_t reg[SYM825_REGS];
-    // A cause the part is holding behind the one already latched.  The
-    // 53C8xx stacks SCSI interrupts: "If the SIP or DIP bits in the ISTAT
-    // register are set (first level), then there is already at least one
-    // pending interrupt, and any future interrupts will be stacked in extra
-    // registers behind the SIST0, SIST1, and DSTAT registers (second
-    // level)."  A selection time-out is the case that matters here, because
-    // it is TWO causes: the arbitration ends with the bus going free, and
-    // the part reports that as an unexpected disconnect.  The LSI53C825A
-    // Technical Manual v3.1 says so in SIST0's own bit description --
-    // "This bit is also set if a selection time-out occurs (it may occur
-    // before, at the same time, or stacked after the STO interrupt, since
-    // this is not considered an expected disconnect)."
     uint8_t sist0_stacked, sist1_stacked;
-    // Non-zero while a wider host access is decomposing into byte lanes.
-    // The lanes of one transaction are captured together on the real part,
-    // so a held cause may move into SIST0/SIST1 only after the access ends
-    // — never between the two bytes of a 16-bit read.
     uint8_t reg_access_depth;
     bool irq; // the IRQ/ pin as this model currently drives it
-
     uint8_t script_ram[SYM825_SCRIPTS_RAM];
-
-    // Engine state (scripts53c8xx.c).  Execution is STEPPED, not
-    // run-to-completion: the engine yields on wait-for-reselect, on phase
-    // mismatch and on any interrupt, because a real driver interleaves
-    // with the SCSI bus.
-    bool running; // SCRIPTS are executing
-    // Parked on a Wait Reselect with no reselection to be had.  DSP points
-    // AT the instruction, and the driver's SIGP doorbell is what starts
-    // the engine again (see exec_io).
+    // The script parked on Wait Reselect.  Restoring this matters: it is what
+    // the SIGP doorbell tests before it will start the engine, so a restore
+    // that lost it left a parked script the driver could no longer ring.
     bool waiting_reselect;
-    // Arbitrating for a target that is not answering.  The engine is
-    // stopped, nothing is reported yet, and STIME0's programmed period has
-    // to pass before the time-out latches in SIST1.
-    bool select_timeout_armed;
-    bool start_pending; // the engine has been asked to run and has not yet
     bool connected; // a target is selected and the bus is not free
     uint8_t target; // the selected target's SCSI id
     uint8_t phase; // the phase the target is currently presenting
     uint32_t insn_count; // instructions executed since power-on (diagnostics)
-
-    // --- The message conversation, which the shared bus model does not
-    // --- carry for an external initiator (the MESH front end owns the
-    // --- identical problem and solves it the same way).
-    //
-    // After a select-with-ATN the TARGET enters MESSAGE OUT to collect the
-    // initiator's IDENTIFY, but our bus model goes straight to COMMAND.  So
-    // the chip presents a VIRTUAL MESSAGE OUT phase until the script's
-    // Block Move has delivered the message, and a virtual MESSAGE IN when
-    // it has a reply to give (an SDTR/WDTR answer).  Both die with the
-    // connection.
     uint8_t msgout_pending; // a virtual MSG OUT is being presented
     uint8_t mo_buf[16]; // the message bytes the initiator has sent
     uint8_t mo_len;
     uint8_t mi_buf[8]; // the message bytes we are giving back
     uint8_t mi_n, mi_rd;
     uint8_t msgin_taken; // the bus model's MESSAGE IN byte was delivered
-    // The target has released the bus and the UNEXPECTED DISCONNECT that
-    // reports it is owed to the driver — but not until the script has
-    // halted, because the driver reads DCMD to find out WHERE the
-    // disconnect landed.  See sym53c8xx_start.
     uint8_t disconnect_pending;
-    // Negotiated transfer parameters, per connection.  A fast/wide channel
-    // is expected to negotiate, and refusing outright would be a lie about
-    // what the hardware does; the emulated bus has no timing, so what is
-    // modelled is the CONVERSATION, not the rate.
     uint8_t sync_period, sync_offset;
     uint8_t wide; // 1 = 16-bit transfers agreed
-    // The DMA FIFO as the CTEST4/CTEST6 test path sees it: four byte lanes,
-    // 134 deep (536 bytes), loaded at the top and unloaded from the bottom.
-    // Data transfers never pass through it (the engine moves bytes straight
-    // between the bus model and host memory); it exists for diagnostics
-    // that fill it lane by lane and read CTEST1's FMT/FFL flags back.
     uint8_t dfifo[4][SYM825_DFIFO_DEPTH];
     uint8_t dfifo_n[4]; // bytes held per lane
     uint8_t dfifo_rd[4]; // bottom (next byte out) index per lane
 
-    // The shared bus/target model this channel drives.  NULL until the
-    // machine attaches one, which is what makes the engine unit-testable.
-    struct scsi *bus;
+    // ---- NOT saved: a restore lands the engine halted, DSP intact ---------
+    // Below the line deliberately, because each of these names a scheduler
+    // event, and a restored process has no such event queued.
+    //
+    // start_pending and select_timeout_armed both make sym53c8xx_start()
+    // return early.  Restoring either as true would leave the engine
+    // permanently unstartable: the flag says "an event is coming" and none is.
+    //
+    // running is never true here at all -- it is set only inside
+    // sym53c8xx_run() and cleared on every exit from it -- so a checkpoint
+    // cannot observe a script mid-execution.  It sits below the line to record
+    // that invariant rather than to preserve a value.
+    bool running; // SCRIPTS are executing
+    bool select_timeout_armed;
+    bool start_pending; // the engine has been asked to run and has not yet
 
+    // ---- runtime pointers: re-bound by the machine after a restore --------
+    struct pci_device *dev; // the seated PCI device (back-pointer)
+    config_t *cfg; // the machine, for host-memory access
+    struct scsi *bus;
     memory_interface_t regs_if; // BAR 0 (I/O) and BAR 1 (memory)
     memory_interface_t ram_if; // BAR 2 (SCRIPTS RAM)
 } sym53c8xx_t;

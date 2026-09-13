@@ -1295,6 +1295,103 @@ TEST(test_single_step_needs_clear_then_start) {
     ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SSI);
 }
 
+// F-22: everything that makes the engine resumable has to come back.
+//
+// The save used to name six members by hand -- reg, script_ram, running,
+// connected, target, phase -- and lost the rest.  Each field below is here
+// because losing it changes what the driver sees on the other side.
+TEST(test_checkpoint_keeps_the_whole_engine) {
+    setup();
+    s_cp_w = s_cp_r = 0;
+
+    // The stacked interrupt causes.  scripts53c8xx.md argues at length that
+    // their ORDER is load-bearing for AIX: the time-out lands first and the
+    // disconnect surfaces behind it.  Losing the stack drops the second half.
+    s_c->sist0_stacked = SYM825_SIST0_UDC;
+    s_c->sist1_stacked = 0x02;
+
+    // The message session: what the initiator has sent us and what we owe back.
+    s_c->mo_buf[0] = 0x01;
+    s_c->mo_buf[1] = 0x03;
+    s_c->mo_len = 2;
+    s_c->mi_buf[0] = 0x80;
+    s_c->mi_n = 1;
+    s_c->mi_rd = 0;
+    s_c->msgout_pending = 1;
+    s_c->msgin_taken = 1;
+    s_c->disconnect_pending = 1;
+
+    // The negotiated agreement.  Losing this silently reverts a synchronous,
+    // wide target to asynchronous narrow without telling either end.
+    s_c->sync_period = 25;
+    s_c->sync_offset = 8;
+    s_c->wide = 1;
+
+    // The DMA FIFO lanes and the diagnostic counter.
+    s_c->dfifo[1][0] = 0xEE;
+    s_c->dfifo_n[1] = 1;
+    s_c->dfifo_rd[1] = 0;
+    s_c->insn_count = 12345;
+
+    // Parked on Wait Reselect: the SIGP doorbell tests exactly this before it
+    // will start the engine.
+    s_c->waiting_reselect = true;
+
+    sym53c8xx_checkpoint_save(s_c, (checkpoint_t *)1);
+    sym53c8xx_delete(s_c);
+    s_c = sym53c8xx_new(NULL, 0);
+    ASSERT_TRUE(s_c != NULL);
+    sym53c8xx_checkpoint_restore(s_c, (checkpoint_t *)1);
+
+    ASSERT_EQ_INT(s_c->sist0_stacked, SYM825_SIST0_UDC);
+    ASSERT_EQ_INT(s_c->sist1_stacked, 0x02);
+    ASSERT_EQ_INT(s_c->mo_buf[0], 0x01);
+    ASSERT_EQ_INT(s_c->mo_buf[1], 0x03);
+    ASSERT_EQ_INT(s_c->mo_len, 2);
+    ASSERT_EQ_INT(s_c->mi_buf[0], 0x80);
+    ASSERT_EQ_INT(s_c->mi_n, 1);
+    ASSERT_EQ_INT(s_c->msgout_pending, 1);
+    ASSERT_EQ_INT(s_c->msgin_taken, 1);
+    ASSERT_EQ_INT(s_c->disconnect_pending, 1);
+    ASSERT_EQ_INT(s_c->sync_period, 25);
+    ASSERT_EQ_INT(s_c->sync_offset, 8);
+    ASSERT_EQ_INT(s_c->wide, 1);
+    ASSERT_EQ_INT(s_c->dfifo[1][0], 0xEE);
+    ASSERT_EQ_INT(s_c->dfifo_n[1], 1);
+    ASSERT_EQ_INT((int)s_c->insn_count, 12345);
+    ASSERT_TRUE(s_c->waiting_reselect);
+}
+
+// ...and the scheduler-linked flags must NOT come back.
+//
+// start_pending and select_timeout_armed each say "an event is coming", and a
+// restored process has none queued.  Restoring either as true makes
+// sym53c8xx_start() return early forever, so the engine could never run again.
+// The restore normalises to halted with DSP intact -- where every interrupt
+// already leaves the chip, and a state the driver knows how to leave.
+TEST(test_checkpoint_lands_the_engine_halted) {
+    setup();
+    s_cp_w = s_cp_r = 0;
+    set_reg32(SYM825_DSP, 0x00001000u);
+    s_c->start_pending = true;
+    s_c->select_timeout_armed = true;
+
+    sym53c8xx_checkpoint_save(s_c, (checkpoint_t *)1);
+    sym53c8xx_delete(s_c);
+    s_c = sym53c8xx_new(NULL, 0);
+    sym53c8xx_checkpoint_restore(s_c, (checkpoint_t *)1);
+
+    ASSERT_TRUE(!s_c->running);
+    ASSERT_TRUE(!s_c->start_pending);
+    ASSERT_TRUE(!s_c->select_timeout_armed);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x00001000); // DSP intact
+
+    // And the engine is startable: with no scheduler under it, start runs it
+    // directly, which is exactly what a driver's DSP write would do.
+    sym53c8xx_start(s_c);
+    ASSERT_TRUE(s_c->insn_count > 0);
+}
+
 int main(void) {
     RUN(test_block_move_full_command);
     RUN(test_io_wait_disconnect_is_not_unexpected);
@@ -1325,6 +1422,8 @@ int main(void) {
     RUN(test_nonfatal_scsi_cause);
     RUN(test_runaway_watchdog);
     RUN(test_checkpoint_roundtrip);
+    RUN(test_checkpoint_keeps_the_whole_engine);
+    RUN(test_checkpoint_lands_the_engine_halted);
     RUN(test_script_read_of_a_status_register_sees_the_latch);
     RUN(test_script_read_of_ctest2_consumes_sigp);
     RUN(test_store_of_sist0_reads_it_to_clear);
