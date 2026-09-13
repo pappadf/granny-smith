@@ -79,6 +79,12 @@ static void mock_run_cdb(void) {
         uint32_t lba =
             ((uint32_t)mb.cdb[2] << 24) | ((uint32_t)mb.cdb[3] << 16) | ((uint32_t)mb.cdb[4] << 8) | mb.cdb[5];
         mock_fill_read(lba, ((uint32_t)mb.cdb[7] << 8) | mb.cdb[8]);
+    } else if (mb.cdb[0] == 0x0A) { // WRITE(6) -- the target now expects bytes
+        uint32_t tl = mb.cdb[4] ? mb.cdb[4] : 256;
+        mb.data_len = (size_t)tl * MOCK_BLOCK;
+        if (mb.data_len > sizeof(mb.data))
+            mb.data_len = sizeof(mb.data);
+        mb.phase = MB_data_out;
     } else {
         mb.phase = MB_status; // no data phase
     }
@@ -109,6 +115,13 @@ void scsi_push_data_out_byte(struct scsi *bus, uint8_t byte) {
         int need = mb.cdb[0] < 0x20 ? 6 : 10;
         if (mb.cdb_len >= need)
             mock_run_cdb();
+    } else if (mb.phase == MB_data_out) {
+        // Record the payload in arrival order so a test can prove not just
+        // that the right bytes arrived but that they arrived in sequence.
+        if (mb.data_pos < mb.data_len)
+            mb.data[mb.data_pos++] = byte;
+        if (mb.data_pos >= mb.data_len)
+            mb.phase = MB_status;
     }
 }
 
@@ -182,6 +195,7 @@ void scsi_bus_cancel_select_timeout(struct scsi *bus) {
 #define R_COMMAND   0x3
 #define R_STATUS    0x4
 #define R_INTERRUPT 0x5
+#define R_FIFOFLAGS 0x7
 
 static scsi_53c96_t *chip;
 static bool irq_level;
@@ -453,6 +467,98 @@ TEST(flush_preserves_paused_select) {
     teardown();
 }
 
+// A DATA OUT transfer whose first byte the driver preloaded into the FIFO.
+//
+// This is the Quadra ROM's Duff's-device blind write, read off a live Q700 at
+// $00096400:
+//
+//     SUBQ.L #$1,D2           ; take one byte off the count...
+//     MOVE.B (A2)+,$20(A3)    ; ...and preload it into the FIFO register
+//     BRA    loop             ; then program the (now even) count and DMA the rest
+//
+// The FIFO is the chip's datapath, not a side buffer, so that byte is the
+// first one on the wire.  We used to leave it sitting in the FIFO and send
+// only the DMA stream: every block lost its leading byte, the FIFO filled
+// after 16 of them and never drained, and every later preload set ST_GE --
+// "the top of the FIFO is overwritten", the manual's gross error.  Measured on
+// suite-quadra: 64 spurious gross errors, 124 status reads that saw the bit,
+// and 75 whole blocks of write traffic the driver retried because of it.
+TEST(dma_data_out_sends_the_byte_preloaded_into_the_fifo) {
+    setup();
+
+    // Select and deliver WRITE(6) of one block.
+    wr(R_COMMAND, 0x01); // flush FIFO
+    wr(R_STATUS, 0); // dest ID 0
+    wr(R_INTERRUPT, 0xA7);
+    wr(R_XFER_LO, 6);
+    wr(R_XFER_HI, 0);
+    wr(R_COMMAND, 0xC1); // DMA select without ATN
+    uint8_t cdb[6] = {0x0A, 0, 0, 0, 1, 0};
+    for (int i = 0; i < 6; i++)
+        wr(R_FIFO, cdb[i]);
+    ASSERT_EQ_INT(MB_data_out, mb.phase);
+    (void)take_int();
+
+    // The driver's shape: one byte into the FIFO, count = 511 for the rest.
+    wr(R_FIFO, 0xA5);
+    ASSERT_EQ_INT(1, rd(R_FIFOFLAGS) & 0x1F); // the chip is holding it
+    wr(R_XFER_LO, (uint8_t)((MOCK_BLOCK - 1) & 0xFF));
+    wr(R_XFER_HI, (uint8_t)((MOCK_BLOCK - 1) >> 8));
+    wr(R_COMMAND, 0x90); // DMA Transfer Information
+
+    // Arming the transfer must have put the preloaded byte on the wire, ahead
+    // of anything the aperture carries, and emptied the FIFO.
+    ASSERT_EQ_INT(1, (int)mb.data_pos);
+    ASSERT_EQ_INT(0xA5, mb.data[0]);
+    ASSERT_EQ_INT(0, rd(R_FIFOFLAGS) & 0x1F);
+    ASSERT_TRUE(!(rd(R_STATUS) & 0x40)); // and no gross error
+
+    // The remaining 511 arrive through the aperture, in order behind it.
+    for (int i = 1; i < MOCK_BLOCK; i++)
+        scsi_53c96_pdma_write8(chip, (uint8_t)(i * 3 + 1));
+    ASSERT_EQ_INT(MOCK_BLOCK, (int)mb.data_pos); // the block is complete
+    ASSERT_EQ_INT(0xA5, mb.data[0]);
+    for (int i = 1; i < MOCK_BLOCK; i++)
+        ASSERT_EQ_INT((uint8_t)(i * 3 + 1), mb.data[i]);
+}
+
+// Sixteen preloaded blocks in a row used to be exactly what it took to wedge
+// the FIFO, so the seventeenth raised a gross error the guest could see.
+TEST(repeated_preloads_do_not_wedge_the_fifo) {
+    setup();
+
+    for (int round = 0; round < 20; round++) {
+        wr(R_COMMAND, 0x01);
+        wr(R_STATUS, 0);
+        wr(R_INTERRUPT, 0xA7);
+        wr(R_XFER_LO, 6);
+        wr(R_XFER_HI, 0);
+        wr(R_COMMAND, 0xC1);
+        uint8_t cdb[6] = {0x0A, 0, 0, 0, 1, 0};
+        for (int i = 0; i < 6; i++)
+            wr(R_FIFO, cdb[i]);
+        (void)take_int();
+
+        wr(R_FIFO, (uint8_t)(0x40 + round));
+        wr(R_XFER_LO, (uint8_t)((MOCK_BLOCK - 1) & 0xFF));
+        wr(R_XFER_HI, (uint8_t)((MOCK_BLOCK - 1) >> 8));
+        wr(R_COMMAND, 0x90);
+        for (int i = 1; i < MOCK_BLOCK; i++)
+            scsi_53c96_pdma_write8(chip, 0x5A);
+
+        ASSERT_EQ_INT((uint8_t)(0x40 + round), mb.data[0]);
+        ASSERT_EQ_INT(0, rd(R_FIFOFLAGS) & 0x1F); // never accumulates
+        ASSERT_TRUE(!(rd(R_STATUS) & 0x40)); // never a gross error
+        (void)take_int();
+        wr(R_COMMAND, 0x11);
+        (void)take_int();
+        (void)rd(R_FIFO);
+        (void)rd(R_FIFO);
+        wr(R_COMMAND, 0x12);
+        (void)take_int();
+    }
+}
+
 int main(void) {
     RUN(reset_defaults);
     RUN(select_timeout_no_device);
@@ -460,6 +566,8 @@ int main(void) {
     RUN(read6_multi_block);
     RUN(read6_partial_last_chunk);
     RUN(read_odd_length_fifo_residual);
+    RUN(dma_data_out_sends_the_byte_preloaded_into_the_fifo);
+    RUN(repeated_preloads_do_not_wedge_the_fifo);
     RUN(status_reflects_live_phase);
     RUN(flush_preserves_paused_select);
     printf("[scsi96] all tests passed\n");

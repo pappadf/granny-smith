@@ -428,6 +428,13 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
             } else if (ph == scsi_data_out) {
                 if (dma) {
                     c->xfer_mode = XFER_DATA_OUT; // aperture writes push the payload
+                    // Anything the driver preloaded into the FIFO belongs to
+                    // THIS transfer and goes out first.  The FIFO is the
+                    // chip's datapath, not a side buffer.  It is NOT counted
+                    // against the transfer counter: the driver already took
+                    // it off the count before writing it.
+                    while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
+                        scsi_push_data_out_byte(c->bus, fifo_pop(c));
                 } else {
                     while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
                         scsi_push_data_out_byte(c->bus, fifo_pop(c));
