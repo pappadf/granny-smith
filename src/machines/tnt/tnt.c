@@ -627,7 +627,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // in a later phase.
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
     // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
     // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
     // aliases), so `hd=` / `cd=` and every existing consumer of
@@ -635,7 +635,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // (`scsi-int2`, bays 4-6 plus the 700's two rear drives) mounts beside
     // it as `machine.scsi2`.
     if (tnt_board(cfg)->kind == TNT_BOARD_SHINER)
-        st->scsi2 = scsi_init_named(NULL, cp, "scsi2");
+        st->scsi2 = scsi_init_named(cp, "scsi2");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
     if (cp) {

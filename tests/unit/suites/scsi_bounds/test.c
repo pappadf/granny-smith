@@ -107,7 +107,7 @@ static void make_disk(void) {
 }
 
 static scsi_t *attach_disk(void) {
-    scsi_t *scsi = scsi_init(NULL, NULL);
+    scsi_t *scsi = scsi_init(NULL);
     ASSERT_TRUE(scsi != NULL);
     image_t *img = image_create(g_path, NULL);
     ASSERT_TRUE(img != NULL);

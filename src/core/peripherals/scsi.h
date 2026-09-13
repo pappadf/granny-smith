@@ -45,7 +45,7 @@ typedef enum scsi_phase {
 // shell_init alongside rom_init. Idempotent.
 void scsi_class_register(void);
 
-scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint);
+scsi_t *scsi_init(checkpoint_t *checkpoint);
 
 // A SECOND (third, …) bus on the same machine, mounted under its own name.
 //
@@ -63,7 +63,7 @@ scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint);
 // this, and inventing a `machine.scsi.bus[N]` collection would have to
 // rename the existing `machine.scsi.bus` node (the live phase/target view)
 // out from under every consumer of it.
-scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char *name);
+scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name);
 
 void scsi_delete(scsi_t *scsi);
 
@@ -74,7 +74,7 @@ void scsi_delete(scsi_t *scsi);
 // IIsi) and the IIfx.  Everything else -- Quadras, AVs, PowerMacs, Network
 // Servers -- drives the bus with a 53C96, a 53C825 or MESH and needs no 5380.
 typedef struct scsi_5380 scsi_5380_t;
-scsi_5380_t *scsi_5380_attach(scsi_t *bus, memory_map_t *map, checkpoint_t *checkpoint);
+scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint);
 
 void scsi_reset_pin(scsi_t *scsi);
 

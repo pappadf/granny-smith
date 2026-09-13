@@ -258,8 +258,8 @@ static int iisi_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    cfg->scsi = scsi_init(NULL, checkpoint);
-    scsi_5380_attach(cfg->scsi, NULL, checkpoint); // IIsi: NCR 5380
+    cfg->scsi = scsi_init(checkpoint);
+    scsi_5380_attach(cfg->scsi, checkpoint); // IIsi: NCR 5380
     scsi_set_irq_callback(cfg->scsi, iisi_scsi_irq, cfg);
     setup_images(cfg);
 

@@ -73,6 +73,9 @@ static void plus_update_ipl(config_t *sim, int level, bool value);
 // ============================================================
 
 // Plus ROM start in the 24-bit address space (== Plus RAM top of 4 MB)
+#define PLUS_SCSI_BASE 0x500000UL
+#define PLUS_SCSI_SIZE 0x100000UL
+
 #define PLUS_ROM_START 0x400000UL
 // Plus ROM region end (1.5 MB window covers all ROM mirrors)
 #define PLUS_ROM_END 0x580000UL
@@ -258,10 +261,23 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    cfg->scsi = scsi_init(NULL, checkpoint);
-    // The Plus has an NCR 5380, and it is the one machine whose chip
-    // registers its own window in the memory map.
-    scsi_5380_attach(cfg->scsi, cfg->mem_map, checkpoint);
+    cfg->scsi = scsi_init(checkpoint);
+    scsi_5380_attach(cfg->scsi, checkpoint);
+    // Where the 5380 answers is this machine's decode, not the chip model's.
+    //
+    // Guide to the Macintosh Family Hardware, 2nd ed., ch. 3: the SCSI
+    // controller's eight registers are selected by A6 through A4, while "A18
+    // through A10, A8, A7, and A3 through A1 have no significance for the SCSI
+    // in the Macintosh Plus computer, so there are thousands of possible
+    // addresses that will access the same register" -- which is why a whole
+    // megabyte answers rather than the 128 bytes the register file occupies.
+    //
+    // scsi_5380_attach() used to do this itself, from inside src/core, with
+    // this address compiled into the chip model.  Every other 5380 machine
+    // already took scsi_get_memory_interface() and placed it with its own
+    // decode (mac030_glue_io.c, mdu_io.c, iifx.c); the Plus now does the same.
+    memory_map_add(cfg->mem_map, PLUS_SCSI_BASE, PLUS_SCSI_SIZE, "scsi",
+                   (memory_interface_t *)scsi_get_memory_interface(cfg->scsi), cfg->scsi);
 
     setup_images(cfg);
 

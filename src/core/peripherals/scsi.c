@@ -1212,12 +1212,13 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 
 // Give this bus a 5380, and hand back the chip.
 //
-// `map`, when non-NULL, is the machine's memory map and the chip registers its
-// own window in it.  The Macintosh Plus is the only machine that does that
-// here; every other 5380 machine decodes the address itself and asks for the
-// interface with scsi_get_memory_interface().  (That hard-coded window is
-// F-19's subject -- a Plus address inside src/core -- and is left as it was.)
-scsi_5380_t *scsi_5380_attach(scsi_t *bus, memory_map_t *map, checkpoint_t *checkpoint) {
+// Where the chip answers in the address space is the MACHINE's business, not
+// this file's: callers take scsi_get_memory_interface() and place it wherever
+// their decode puts it.  This function used to take a memory map and register
+// $500000/$100000 in it -- a Macintosh Plus address hard-coded inside
+// src/core, which every other 5380 machine already bypassed by doing its own
+// decode (mac030_glue_io.c, mdu_io.c, iifx.c).
+scsi_5380_t *scsi_5380_attach(scsi_t *bus, checkpoint_t *checkpoint) {
     if (!bus)
         return NULL;
     scsi_5380_t *chip = (scsi_5380_t *)malloc(sizeof(scsi_5380_t));
@@ -1233,20 +1234,17 @@ scsi_5380_t *scsi_5380_attach(scsi_t *bus, memory_map_t *map, checkpoint_t *chec
     chip->memory_interface.write_uint16 = &write_uint16;
     chip->memory_interface.write_uint32 = &write_uint32;
 
-    if (map)
-        memory_map_add(map, 0x00500000, 0x00100000, "scsi", &chip->memory_interface, bus);
-
     if (checkpoint)
         system_read_checkpoint_data(checkpoint, &chip->reg, sizeof(chip->reg));
     return chip;
 }
 
 // Initialize the SCSI controller and optionally restore from checkpoint
-scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
-    return scsi_init_named(map, checkpoint, "scsi");
+scsi_t *scsi_init(checkpoint_t *checkpoint) {
+    return scsi_init_named(checkpoint, "scsi");
 }
 
-scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char *name) {
+scsi_t *scsi_init_named(checkpoint_t *checkpoint, const char *name) {
     scsi_t *scsi = (scsi_t *)malloc(sizeof(scsi_t));
     if (scsi == NULL)
         return NULL;
@@ -1256,7 +1254,6 @@ scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char 
     // A bus, and nothing else.  Machines that have an NCR 5380 attach one with
     // scsi_5380_attach(); the Quadras, the AVs, the PowerMacs and the Network
     // Servers do not, and no longer carry a register file they never touch.
-    (void)map;
 
     scsi->bus.phase = scsi_bus_free;
 

@@ -690,7 +690,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // SCSI: the bus/target model carries the disks and CD; the 53C96 chip
     // model fronts it through the external-initiator API.
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, av_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);

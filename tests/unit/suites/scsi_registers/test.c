@@ -102,11 +102,11 @@ static void make_disk(void) {
 }
 
 static scsi_t *attach_disk(void) {
-    scsi_t *scsi = scsi_init(NULL, NULL);
+    scsi_t *scsi = scsi_init(NULL);
     ASSERT_TRUE(scsi != NULL);
     // These tests drive the 5380's register file, so the bus needs one
     // attached -- a bus on its own has no registers to write.
-    ASSERT_TRUE(scsi_5380_attach(scsi, NULL, NULL) != NULL);
+    ASSERT_TRUE(scsi_5380_attach(scsi, NULL) != NULL);
     image_t *img = image_create(g_path, NULL);
     ASSERT_TRUE(img != NULL);
     scsi_add_device(scsi, TARGET, "GS", "SCRATCH", "1.0", img, scsi_dev_hd, BLK, false);
