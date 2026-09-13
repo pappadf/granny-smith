@@ -112,11 +112,37 @@ void sym53c8xx_update_irq(sym53c8xx_t *s) {
         pci_deassert_irq(s->dev);
 }
 
+// Which latched causes hold the engine halted.
+//
+// LSI53C825A TM v3.1 S2.4.13.3: "All DMA interrupts (indicated by the DIP bit in
+// Interrupt Status (ISTAT) and one or more bits in DMA Status (DSTAT) being set)
+// are fatal."  Every DSTAT bit, single-step included -- DCNTL's SSM description
+// spells that case out: "To restart the LSI53C825A after it generates a SCRIPTS
+// Step interrupt, read the ISTAT and DSTAT registers to recognize and clear the
+// interrupt.  Then set the START DMA bit."
+//
+// "When the LSI53C825A is operating in Initiator mode, only the Function
+// Complete (CMP), Selected (SEL), Reselected (RSL), General Purpose Timer
+// Expired (GEN), and Handshake-to-Handshake Timer Expired (HTH) interrupts are
+// nonfatal."  Those five latch without stopping SCRIPTS, so they must not hold
+// a restart either.
+//
+// DFE is not a cause at all -- it is a live condition the DSTAT accessor mixes
+// in at read time and never stores, so it cannot appear here.
+#define SYM825_SIST0_NONFATAL (SYM825_SIST0_CMP | SYM825_SIST0_SEL | SYM825_SIST0_RSL)
+#define SYM825_SIST1_NONFATAL (SYM825_SIST1_GEN | SYM825_SIST1_HTH)
+
+static bool fatal_cause_latched(const sym53c8xx_t *s) {
+    return s->reg[SYM825_DSTAT] != 0 || (s->reg[SYM825_SIST0] & (uint8_t)~SYM825_SIST0_NONFATAL) != 0 ||
+           (s->reg[SYM825_SIST1] & (uint8_t)~SYM825_SIST1_NONFATAL) != 0;
+}
+
 void sym53c8xx_raise_dma(sym53c8xx_t *s, uint8_t dstat_bits) {
     s->reg[SYM825_DSTAT] |= dstat_bits;
-    // Every DSTAT cause except the single-step marker halts the engine.
-    if (dstat_bits & ~SYM825_DSTAT_SSI)
-        s->running = false;
+    // Every DMA cause is fatal (S2.4.13.3), single-step included -- the
+    // single-step path stops the engine itself before raising SSI, so this
+    // covers the rest.
+    s->running = false;
     sym53c8xx_update_irq(s);
 }
 
@@ -127,9 +153,7 @@ void sym53c8xx_raise_scsi(sym53c8xx_t *s, uint8_t sist0_bits, uint8_t sist1_bits
     // Complete (CMP), Selected (SEL), Reselected (RSL), General Purpose
     // Timer Expired (GEN), and Handshake-to-Handshake Timer Expired (HTH)
     // interrupts are nonfatal."  Everything else stops SCRIPTS.
-    uint8_t nonfatal0 = SYM825_SIST0_CMP | SYM825_SIST0_SEL | SYM825_SIST0_RSL;
-    uint8_t nonfatal1 = SYM825_SIST1_GEN | SYM825_SIST1_HTH;
-    if ((sist0_bits & ~nonfatal0) || (sist1_bits & ~nonfatal1))
+    if ((sist0_bits & (uint8_t)~SYM825_SIST0_NONFATAL) || (sist1_bits & (uint8_t)~SYM825_SIST1_NONFATAL))
         s->running = false;
     sym53c8xx_update_irq(s);
 }
@@ -1044,6 +1068,30 @@ void sym53c8xx_start(sym53c8xx_t *s) {
     // most recently written down.
     if (s->select_timeout_armed)
         return;
+    // A cause the driver has not read yet holds the engine where it stopped.
+    // LSI53C825A TM v3.1, SCSI SCRIPTS mode: "Once an interrupt is generated,
+    // the LSI53C825A halts all operations until the interrupt is serviced.
+    // Then, the start address of the next SCRIPTS instruction may be written to
+    // the DMA SCRIPTS Pointer (DSP) register to restart the automatic fetching
+    // and execution of instructions."  Serviced means read: DSTAT/SIST0/SIST1
+    // are read-to-clear, and the sample ISR does exactly that before restarting.
+    //
+    // Without this, a DSP or DCNTL[STD] write arriving before the driver reads
+    // the status resumed from whatever DSP held, cause still latched -- the
+    // engine ran on past an error nobody had looked at.
+    //
+    // Only FATAL causes hold it.  The five non-fatal SCSI interrupts latch
+    // without stopping SCRIPTS in the first place, so blocking a restart on
+    // them would stall a chip that never halted.
+    //
+    // The budget-yield path does not come through here: it schedules
+    // script_start_event directly, because a yield is the same execution
+    // continuing rather than the driver restarting after an interrupt.
+    if (fatal_cause_latched(s)) {
+        LOG(3, "ch%d: start ignored -- DSTAT $%02X SIST0 $%02X SIST1 $%02X not serviced yet", s->channel,
+            s->reg[SYM825_DSTAT], s->reg[SYM825_SIST0], s->reg[SYM825_SIST1]);
+        return;
+    }
     if (!sched) {
         sym53c8xx_run(s); // no time to pass (the unit suite drives it directly)
         return;
