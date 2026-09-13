@@ -95,6 +95,26 @@ void scsi_reset_pin(scsi_t *scsi);
 // populated target.
 void scsi_bus_reset(scsi_t *bus);
 
+// Arm a selection time-out: nobody answered, so tell me again in `ns`.
+//
+// "Wait, then report" is bus behaviour -- a target either asserts BSY within
+// the period or it does not -- while the period itself and what gets reported
+// are per-chip.  So the wait lives here and the chip supplies both ends.
+//
+// Why it must be a wait at all, from docs/core/peripherals/scripts53c8xx.md:
+// "Report it the moment nobody answers and the whole select-fail-report-retry
+// cycle completes inside the driver's own doorbell write; the interrupt storm
+// that follows never lets the clock tick, so the driver's own timers never
+// expire and nothing ever gives up.  Configuring a bus means selecting every
+// target on it, and most of them are not there: this is the common case, not
+// the error case."
+//
+// With no scheduler underneath (the unit suites drive the models directly)
+// there is no time to pass, so the callback fires immediately.
+typedef void (*scsi_select_timeout_fn)(void *ctx);
+void scsi_bus_arm_select_timeout(scsi_t *bus, uint64_t ns, scsi_select_timeout_fn fn, void *ctx);
+void scsi_bus_cancel_select_timeout(scsi_t *bus);
+
 void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint);
 
 // === Device Types ===

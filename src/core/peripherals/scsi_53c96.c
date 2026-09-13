@@ -177,12 +177,51 @@ static void post_interrupt(scsi_53c96_t *c, uint8_t bits) {
 // Selection time-out event: no target responded to a select sequence.
 // The chip disconnects and raises the Disconnect interrupt (ch. 5, select
 // sequences: "if the target does not respond within the time-out period").
-static void select_timeout_event(void *source, uint64_t data) {
+static void select_timeout_cb(void *source);
+
+// Scheduler thunk for the no-bus case above.
+static void busless_select_timeout_event(void *source, uint64_t data) {
     (void)data;
+    select_timeout_cb(source);
+}
+
+static void select_timeout_cb(void *source) {
     scsi_53c96_t *c = (scsi_53c96_t *)source;
     LOG(3, "select timeout fires (dest=%u)", c->dest_id);
     c->seq_step = 0; // no progress through the selection algorithm
     post_interrupt(c, IR_DISCONNECT);
+}
+
+// Wait out the selection period, then report.
+//
+// The wait belongs to the bus -- every controller needs the same one, and
+// reporting synchronously inside the driver's own register write is the defect
+// F-18 is about.  The period and the reporting stay here, because those are
+// this chip's.
+//
+// The exception is a chip with NO bus attached, which is how the Power
+// Macintosh models its empty 53C94 chain (tnt.c attaches no bus at all, so
+// every select finds nothing).  There is no bus object to hold the event, so
+// the chip schedules it itself.  Losing this is what made tnt-hd-boot fail to
+// find a boot drive: the timeout simply never arrived and the driver's scan
+// never finished.
+static uint64_t select_timeout_ns(scsi_53c96_t *c);
+
+static void arm_select_timeout(scsi_53c96_t *c) {
+    if (c->bus) {
+        scsi_bus_arm_select_timeout(c->bus, select_timeout_ns(c), select_timeout_cb, c);
+        return;
+    }
+    if (!c->sched) {
+        select_timeout_cb(c);
+        return;
+    }
+    uint64_t ns = select_timeout_ns(c);
+    remove_event(c->sched, busless_select_timeout_event, c);
+    if (ns != 0)
+        scheduler_new_cpu_event(c->sched, busless_select_timeout_event, c, 0, 0, ns);
+    else
+        scheduler_new_cpu_event(c->sched, busless_select_timeout_event, c, 0, 1, 0);
 }
 
 // Selection time-out in nanoseconds: RV * 8192 * clock-conversion / clock
@@ -244,8 +283,7 @@ static void chip_reset(scsi_53c96_t *c) {
     if (c->bus)
         scsi_external_release(c->bus);
     set_int(c, false);
-    if (c->sched)
-        remove_event(c->sched, select_timeout_event, c);
+    scsi_bus_cancel_select_timeout(c->bus);
 }
 
 void scsi_53c96_reset(scsi_53c96_t *c) {
@@ -298,32 +336,16 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
     case 0x46: // Select with ATN3
     {
         if (!c->bus || !scsi_external_select(c->bus, c->dest_id)) {
-            // No device at the destination ID: selection time-out.
-            if (c->sched) {
-                uint64_t to_ns = select_timeout_ns(c);
-                if (to_ns != 0) {
-                    scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 0, to_ns);
-                } else {
-                    // Timeout register still zero: the driver selected before
-                    // programming address 05, which MkLinux DR3's 53c94 driver
-                    // does on every empty ID of its bus scan.  The datasheet
-                    // formula (RV * 8192 * CCF / clock) then yields zero, and
-                    // the scheduler requires exactly one of cycles/ns to be
-                    // non-zero.
-                    //
-                    // ONE CYCLE, not a substituted default.  A zero-delay
-                    // insert already landed on the current timestamp and fired
-                    // at the next queue drain, so one cycle is that same
-                    // behaviour spelled legally.  Handing it the ANSI 250 ms
-                    // instead would invent a wait the guest never asked for and
-                    // stretch every empty ID of that scan.
-                    scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 1, 0);
-                }
-            } else {
-                select_timeout_event(c, 0);
-            }
+            // No device at the destination ID: wait out the period the driver
+            // programmed, then report.  The wait itself is the bus's (every
+            // controller needs the same one); the period and what gets
+            // reported are this chip's.  The zero-period case -- MkLinux DR3
+            // selects before programming address 05 -- is handled there.
+            arm_select_timeout(c);
             break;
         }
+        // A target answered; nothing is owed.
+        scsi_bus_cancel_select_timeout(c->bus);
         // Message byte(s) first for the ATN variants (IDENTIFY etc.) —
         // informational to the v1 target model; consumed from the FIFO.
         int msg_bytes = (code == 0x41) ? 0 : (code == 0x46) ? 3 : 1;
@@ -644,16 +666,24 @@ scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkp
         saved.xfer_mode = XFER_IDLE; // mid-transfer restore lands in Phase I
         *c = saved;
     }
+    // The selection time-out's scheduler event belongs to the bus now
+    // (scsi_bus_arm_select_timeout).  The one exception is a chip with no bus
+    // attached -- the Power Macintosh's empty 53C94 chain -- which still needs
+    // an event type of its own.
     if (sched)
-        scheduler_new_event_type(sched, "53c96", c, "select_timeout", select_timeout_event);
+        scheduler_new_event_type(sched, "53c96", c, "select_timeout", busless_select_timeout_event);
     return c;
 }
 
 void scsi_53c96_delete(scsi_53c96_t *c) {
     if (!c)
         return;
+    // Any time-out this chip armed is queued on the BUS now, so it must be
+    // cancelled through the bus -- see F-11/F-12: an event outliving its
+    // source is the class of bug this destructor exists to avoid.
+    scsi_bus_cancel_select_timeout(c->bus);
     if (c->sched)
-        remove_event(c->sched, select_timeout_event, c);
+        remove_event(c->sched, busless_select_timeout_event, c);
     free(c);
 }
 

@@ -1076,6 +1076,67 @@ void command_complete(scsi_t *scsi) {
 }
 
 // Add a SCSI device to the bus at the specified SCSI ID
+
+// ============================================================================
+// Selection time-out
+// ============================================================================
+
+static void scsi_bus_seltmo_event(void *source, uint64_t data) {
+    (void)data;
+    scsi_t *bus = (scsi_t *)source;
+    scsi_select_timeout_fn fn = bus->seltmo_fn;
+    void *ctx = bus->seltmo_ctx;
+    bus->seltmo_fn = NULL;
+    bus->seltmo_ctx = NULL;
+    if (fn)
+        fn(ctx);
+}
+
+void scsi_bus_arm_select_timeout(scsi_t *bus, uint64_t ns, scsi_select_timeout_fn fn, void *ctx) {
+    if (!bus || !fn)
+        return;
+    scheduler_t *s = system_scheduler();
+    if (!s) {
+        // No scheduler underneath: the unit suites drive the models directly,
+        // and there is no time for a wait to pass in.
+        fn(ctx);
+        return;
+    }
+    if (!bus->seltmo_registered) {
+        scheduler_new_event_type(s, "scsi", bus, "select_timeout", &scsi_bus_seltmo_event);
+        bus->seltmo_registered = true;
+    }
+    bus->seltmo_fn = fn;
+    bus->seltmo_ctx = ctx;
+    remove_event(s, &scsi_bus_seltmo_event, bus);
+    if (ns != 0) {
+        scheduler_new_cpu_event(s, &scsi_bus_seltmo_event, bus, 0, 0, ns);
+        return;
+    }
+    // A zero period: the driver selected before programming its time-out
+    // register, which MkLinux DR3's 53c94 driver does on every empty ID of its
+    // bus scan.  ONE CYCLE, not a substituted default -- a zero-delay insert
+    // already landed on the current timestamp and fired at the next queue
+    // drain, so one cycle is that same behaviour spelled legally.  Handing it
+    // ANSI's 250 ms instead would invent a wait the guest never asked for and
+    // stretch every empty ID of that scan.
+    //
+    // What it must NOT do is call back synchronously: that would complete the
+    // select-fail-report-retry cycle inside the driver's own register write,
+    // which is the whole thing this helper exists to prevent.
+    scheduler_new_cpu_event(s, &scsi_bus_seltmo_event, bus, 0, 1, 0);
+}
+
+void scsi_bus_cancel_select_timeout(scsi_t *bus) {
+    if (!bus)
+        return;
+    bus->seltmo_fn = NULL;
+    bus->seltmo_ctx = NULL;
+    scheduler_t *s = system_scheduler();
+    if (s)
+        remove_event(s, &scsi_bus_seltmo_event, bus);
+}
+
 // A SCSI bus reset, as every device on the wire sees it.
 //
 // RST/ is one signal.  Nothing in the NCR 5380 design manual, the NCR
@@ -1109,6 +1170,7 @@ void scsi_bus_reset(scsi_t *bus) {
         return;
 
     // (1) Whatever was in flight is abandoned, and the wire goes free.
+    scsi_bus_cancel_select_timeout(bus);
     phase_free(bus);
     bus->buf.size = bus->buf.max = 0;
     bus->buf.pos = 0;

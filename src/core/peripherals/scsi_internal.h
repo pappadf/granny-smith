@@ -267,6 +267,11 @@ struct scsi {
     // the dependency should run.  The other three controllers need no such
     // pointer: they are pure clients, driving the bus through scsi.h and
     // reading it through scsi_get_bus_phase().
+    // An armed selection time-out, if a controller is waiting on one.
+    scsi_select_timeout_fn seltmo_fn;
+    void *seltmo_ctx;
+    bool seltmo_registered;
+
     scsi_5380_t *chip5380;
 
     struct object *object; // top-level scsi node

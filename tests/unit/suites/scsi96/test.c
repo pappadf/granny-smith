@@ -158,6 +158,20 @@ void scsi_bus_reset(struct scsi *bus) {
     g_bus_resets++;
 }
 
+// The selection time-out wait belongs to the bus (F-18); the chip supplies the
+// period and the reporting.  This suite has no bus and no scheduler, so there
+// is no time for a wait to pass in -- report straight away, which is what the
+// real helper does when it finds no scheduler underneath.
+void scsi_bus_arm_select_timeout(struct scsi *bus, uint64_t ns, void (*fn)(void *), void *ctx) {
+    (void)bus, (void)ns;
+    if (fn)
+        fn(ctx);
+}
+
+void scsi_bus_cancel_select_timeout(struct scsi *bus) {
+    (void)bus;
+}
+
 // ============================================================
 // Chip register helpers
 // ============================================================

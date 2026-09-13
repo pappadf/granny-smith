@@ -159,6 +159,39 @@ static void raise_exception(config_t *cfg, uint8_t cause) {
     raise_int(cfg, INT_EXCEPTION);
 }
 
+// How long the driver asked us to wait for a target to answer.
+//
+// MR_SEL_TIMEOUT is programmed in units of 10 ms.  There is no MESH manual in
+// gs-docs to cite for that, but two things agree on it: Mac OS programs 25,
+// and 25 x 10 ms is 250 ms, which is the selection time-out ANSI X3.131-1986
+// specifies and what Linux's drivers/scsi/mesh.c writes for the same reason.
+//
+// A zero period means the driver disabled the wait; scsi_bus_arm_select_timeout
+// reports immediately in that case, which is what disabling it means.
+static uint64_t mesh_select_timeout_ns(const tnt_mesh_t *m) {
+    return (uint64_t)m->sel_timeout * 10ull * 1000000ull;
+}
+
+// The period elapsed and nobody answered.
+//
+// This used to run synchronously inside the sequence-register write that
+// issued SELECT.  A Mac OS bus scan selects every target twice -- measured at
+// twelve time-outs per boot on tnt-hd-boot, all of them for targets that are
+// simply not fitted -- so this is the ordinary path, not the error path, and
+// completing the whole select-fail-report-retry cycle inside the driver's own
+// doorbell write is what docs/machines/tnt/tnt.md warns about: "the interrupt
+// storm that follows never lets the clock tick, so the driver's timers never
+// expire and nothing gives up".
+static void mesh_select_timed_out(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
+    tnt_mesh_t *m = mesh(cfg);
+    if (!m)
+        return;
+    LOG(2, "select timed out after %u ms", (unsigned)m->sel_timeout * 10u);
+    m->connected = 0;
+    raise_exception(cfg, EXC_SELTO);
+}
+
 static void fifo_clear(tnt_mesh_t *m) {
     m->fifo_rd = 0;
     m->fifo_n = 0;
@@ -446,12 +479,15 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
     case CMD_SELECT: {
         int target = m->dest_id & 7u;
         if (!cfg->scsi || !scsi_external_select(cfg->scsi, target)) {
-            // Nobody home: selection timeout exception (§3.3).
-            LOG(2, "select %d: timeout", target);
+            // Nobody home.  Report it after the period the driver programmed,
+            // NOT inside this register write -- see mesh_select_timed_out.
+            LOG(2, "select %d: nobody answered, waiting out the period", target);
             m->connected = 0;
-            raise_exception(cfg, EXC_SELTO);
+            scsi_bus_arm_select_timeout(cfg->scsi, mesh_select_timeout_ns(m), mesh_select_timed_out, cfg);
             return;
         }
+        // A target answered, so any wait from a previous attempt is moot.
+        scsi_bus_cancel_select_timeout(cfg->scsi);
         LOG(2, "select %d: connected", target);
         m->connected = 1;
         m->active = 0; // a parked transfer command is superseded
@@ -815,7 +851,7 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
             LOG(2, "bus reset via bus_status1");
             if (cfg->scsi) {
                 scsi_external_release(cfg->scsi);
-                scsi_bus_reset(cfg->scsi);
+                scsi_bus_reset(cfg->scsi); // also abandons any armed select time-out
             }
             m->connected = 0;
             m->msgout_pending = 0;
