@@ -1441,24 +1441,6 @@ int scsi_eject_device(scsi_t *scsi, int id) {
 }
 
 // The three phase lines, as ANSI X3.131-1986 Table 5-1 encodes them.
-uint8_t scsi_phase_wire_bits(int phase) {
-    switch (phase) {
-    case scsi_data_out:
-        return 0x0; // -  -  -
-    case scsi_data_in:
-        return 0x1; // -  -  I/O
-    case scsi_command:
-        return 0x2; // -  C/D -
-    case scsi_status:
-        return 0x3; // -  C/D I/O
-    case scsi_message_out:
-        return 0x6; // MSG C/D -
-    case scsi_message_in:
-        return 0x7; // MSG C/D I/O
-    default:
-        return 0x0; // bus free / arbitration / selection assert none of them
-    }
-}
 
 bool scsi_bus_req(const scsi_t *scsi) {
     return scsi && scsi->bus.req;

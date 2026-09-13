@@ -204,8 +204,38 @@ TEST(test_bus_still_usable_after_declines) {
     scsi_delete(scsi);
 }
 
+// ANSI X3.131-1986 Table 5-1, the encoding every controller publishes: the 5380
+// in CSR bits 4:2, the 53C96 in STATREG bits 2:0, the 53C825 in SSTAT1/SBCL,
+// MESH in bus_status0.  Four chips carried four copies of this table and one of
+// them had a hole in it -- MESH reported MESSAGE OUT as 0x00, DATA OUT.  Now
+// there is one table, so this pins it.
+TEST(phase_wire_bits_match_ansi_table_5_1) {
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_data_out), 0x0); // -   -   -
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_data_in), 0x1); // -   -   I/O
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_command), 0x2); // -   C/D -
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_status), 0x3); // -   C/D I/O
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_message_out), 0x6); // MSG C/D -
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_message_in), 0x7); // MSG C/D I/O
+
+    // 0x4 and 0x5 are ANSI reserved and must never be produced.
+    for (int p = 0; p <= 9; p++) {
+        uint8_t v = scsi_phase_wire_bits(p);
+        ASSERT_TRUE(v != 0x4 && v != 0x5);
+    }
+
+    // Outside an information transfer phase the three lines are deasserted, so
+    // the field reads 000 -- not a sentinel.  Both the NCR 53C94/95/96 manual
+    // (STATREG) and the SYM53C825A manual (SBCL) describe these bits as an
+    // unlatched, true representation of the bus.
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_bus_free), 0x0);
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_arbitration), 0x0);
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_selection), 0x0);
+    ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_reselection), 0x0);
+}
+
 int main(void) {
     make_disk();
+    RUN(phase_wire_bits_match_ansi_table_5_1);
     RUN(test_reselect_from_command_is_declined);
     RUN(test_dma_mode_in_bus_free_is_declined);
     RUN(test_arbitrate_outside_bus_free_is_declined);

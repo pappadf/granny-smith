@@ -330,10 +330,51 @@ int scsi_get_bus_phase(const scsi_t *scsi);
 // status 011, message out 110, message in 111).
 //
 // This is a property of the WIRE, so it lives here and every controller maps it
-// into its own register layout: the 5380 shifts it into CSR bits 4:2, the
-// 53C96 reports it directly in STATREG bits 2:0.  Three chips used to carry
-// three copies of this table.
-uint8_t scsi_phase_wire_bits(int phase);
+// into its own register layout: the 5380 shifts it into CSR bits 4:2, the 53C96
+// reports it directly in STATREG bits 2:0, the 53C825 in SSTAT1/SBCL, MESH in
+// bus_status0.  All four used to carry their own copy of this table.
+//
+// Non-transfer phases return 000, because that is what the deasserted lines
+// read as -- see the definition for the two manuals that say so in as many
+// words.  A chip that presents a phase the bus is NOT in (the 53C825 and MESH
+// both fake MESSAGE OUT between select-with-ATN and the IDENTIFY) layers that
+// on top itself: a virtual phase is chip state, not wire state.
+//
+// Inline, and deliberately: it is a pure six-entry constant of the wire with
+// no state behind it, a 53C96 boot calls it forty million times, and living in
+// the header means a suite that mocks the bus still gets the REAL table
+// instead of a private copy that can drift from it.
+static inline uint8_t scsi_phase_wire_bits(int phase) {
+    switch (phase) {
+    case scsi_data_out:
+        return 0x0; // -  -  -
+    case scsi_data_in:
+        return 0x1; // -  -  I/O
+    case scsi_command:
+        return 0x2; // -  C/D -
+    case scsi_status:
+        return 0x3; // -  C/D I/O
+    case scsi_message_out:
+        return 0x6; // MSG C/D -
+    case scsi_message_in:
+        return 0x7; // MSG C/D I/O
+    default:
+        // NOT a fallback.  Outside an information transfer phase the three
+        // lines are simply deasserted, and every chip that publishes them says
+        // so in the same words: the NCR 53C94/95/96 data manual, Status
+        // Register (read address 04), "the phase bits are not normally
+        // latched"; the SYM53C825A data manual, SBCL (register 0B), "these bits
+        // are not latched; they are a true representation of what is on the
+        // SCSI bus at the time the register is read".
+        //
+        // So 000 during BUS FREE is what real hardware shows -- there is no
+        // "invalid phase" encoding to report instead (X3.131 leaves 100 and 101
+        // reserved, and they are not it).  Resist making this -1 and pushing
+        // the choice back out to the chips: they have nothing to choose, and
+        // three of them choosing separately is what this function replaced.
+        return 0x0;
+    }
+}
 
 // REQ and BSY as they currently stand on the bus.  Also wire state, also read
 // by more than one chip.

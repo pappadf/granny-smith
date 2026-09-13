@@ -274,29 +274,21 @@ static void msgout_complete(sym53c8xx_t *s) {
 
 // The SCSI phase as the INITIATOR sees it, in the chip's own 3-bit
 // encoding: the two virtual overlays first, then the shared bus model.
+_Static_assert(SYM825_PHASE_DATA_OUT == 0u && SYM825_PHASE_DATA_IN == 1u && SYM825_PHASE_COMMAND == 2u &&
+                   SYM825_PHASE_STATUS == 3u && SYM825_PHASE_MSG_OUT == 6u && SYM825_PHASE_MSG_IN == 7u,
+               "SYM825_PHASE_* must stay the X3.131 wire encoding that scsi_phase_wire_bits() returns");
+
 static uint8_t chip_phase(sym53c8xx_t *s) {
     if (s->msgout_pending)
         return SYM825_PHASE_MSG_OUT;
     if (msgin_pending(s))
         return SYM825_PHASE_MSG_IN;
-    if (!s->bus)
-        return SYM825_PHASE_MSG_IN;
-    switch (scsi_get_bus_phase(s->bus)) {
-    case scsi_command:
-        return SYM825_PHASE_COMMAND;
-    case scsi_data_in:
-        return SYM825_PHASE_DATA_IN;
-    case scsi_data_out:
-        return SYM825_PHASE_DATA_OUT;
-    case scsi_status:
-        return SYM825_PHASE_STATUS;
-    case scsi_message_in:
-        return SYM825_PHASE_MSG_IN;
-    case scsi_message_out:
-        return SYM825_PHASE_MSG_OUT;
-    default:
-        return SYM825_PHASE_MSG_IN;
-    }
+    // Below the overlays it is just the wire.  SSTAT1 and SBCL report the
+    // MSG/C-D/I-O lines unlatched -- SBCL (register 0B): "these bits are not
+    // latched; they are a true representation of what is on the SCSI bus at the
+    // time the register is read" -- and the SYM825_PHASE_* codes ARE the wire
+    // encoding, so there is nothing to translate.
+    return scsi_phase_wire_bits(scsi_get_bus_phase(s->bus));
 }
 
 // Publish the live phase where a driver expects to read it: SSTAT1's low

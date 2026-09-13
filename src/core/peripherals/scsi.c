@@ -66,9 +66,8 @@ static uint8_t csr_from_bus(scsi_t *scsi) {
 // where THIS chip reports the comparison.  The wire has no notion of a
 // "phase mismatch" -- it just has a phase.  It spent a while in the bus's
 // translation unit, which is how a bus ended up reading a chip's registers.
-static // Compute BSR phase-match bit: true when bus phase matches TCR
-    bool
-    scsi_phase_match(scsi_t *scsi) {
+// Compute BSR phase-match bit: true when bus phase matches TCR.
+static bool scsi_phase_match(scsi_t *scsi) {
     // TCR bits 2:0 = MSG, C/D, I/O  (written by initiator)
     // CSR bits 4:2 = MSG, C/D, I/O  (actual bus signals)
     // In loopback mode, CSR is computed dynamically from ICR/TCR — use

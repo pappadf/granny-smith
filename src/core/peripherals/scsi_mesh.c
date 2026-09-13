@@ -728,22 +728,12 @@ static uint8_t phase_bits(mesh_t *m) {
         return 0x06u; // MSG OUT — the virtual post-select-with-ATN phase
     if (msgin_pending(m))
         return 0x07u; // MSG IN — the target has an SDTR to deliver
-    if (!m->bus)
-        return 0;
-    switch (scsi_get_bus_phase(m->bus)) {
-    case scsi_command:
-        return 0x02u;
-    case scsi_data_in:
-        return 0x01u;
-    case scsi_data_out:
-        return 0x00u;
-    case scsi_status:
-        return 0x03u;
-    case scsi_message_in:
-        return 0x07u;
-    default:
-        return 0;
-    }
+    // Below the overlays it is just the wire, in the same MSG/C-D/I-O order.
+    // The copy this replaced had no MESSAGE OUT case at all, so that phase read
+    // back as 0x00 -- DATA OUT.  Unreachable today (only the 5380 drives the
+    // bus into MESSAGE OUT), but wrong, and wrong in the one direction a
+    // transfer-phase encoding must never be.
+    return scsi_phase_wire_bits(scsi_get_bus_phase(m->bus));
 }
 
 static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset);

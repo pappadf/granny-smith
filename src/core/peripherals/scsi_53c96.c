@@ -124,32 +124,15 @@ struct scsi_53c96 {
 #define XFER_DATA_IN  2
 #define XFER_DATA_OUT 3
 
-// Map the bus model's phase to the 53C96 status-register phase field
-// (MSG/CD/IO wire encoding; Figure 4-2).
-static uint8_t phase_bits(int p) {
-    switch (p) {
-    case scsi_data_out:
-        return 0x0;
-    case scsi_data_in:
-        return 0x1;
-    case scsi_command:
-        return 0x2;
-    case scsi_status:
-        return 0x3;
-    case scsi_message_out:
-        return 0x6;
-    case scsi_message_in:
-        return 0x7;
-    default:
-        return 0x0;
-    }
-}
-
 // Refresh the status-register phase field from the live bus.
+//
+// STATREG bits 2:0 ARE the MSG/C-D/I-O lines (Figure 4-2), unlatched unless
+// Config 2 bit 6 says otherwise, so this is a straight copy of the wire -- no
+// 53C96-specific encoding to apply and no table of its own to keep.
 static void refresh_phase(scsi_53c96_t *c) {
     if (!c->bus)
         return;
-    c->status = (uint8_t)((c->status & ~ST_PHASE) | phase_bits(scsi_get_bus_phase(c->bus)));
+    c->status = (uint8_t)((c->status & ~ST_PHASE) | scsi_phase_wire_bits(scsi_get_bus_phase(c->bus)));
 }
 
 static void pdma_out_byte(scsi_53c96_t *c, uint8_t value);
