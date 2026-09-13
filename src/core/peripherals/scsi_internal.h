@@ -183,6 +183,8 @@ typedef struct {
     int slot;
 } scsi_device_link_t;
 
+typedef struct scsi_5380 scsi_5380_t;
+
 struct scsi {
 
     /* Plain POD fields first (no pointers) */
@@ -202,17 +204,6 @@ struct scsi {
         // directly, and it used to be stored in the 5380's register.
         uint8_t data;
     } bus;
-
-    struct {
-        uint8_t cdr;
-        uint8_t odr;
-        uint8_t icr;
-        uint8_t mr;
-        uint8_t tcr;
-        uint8_t csr;
-        uint8_t ser;
-        uint8_t bsr;
-    } reg;
 
     struct { // information about current/pending command
         uint8_t opcode; // opcode
@@ -262,7 +253,53 @@ struct scsi {
         size_t pos; // data-in read cursor: index of the next byte to deliver
     } buf;
 
-    /* Runtime-only pointers and interfaces last */
+    // A loopback/terminator card fitted to the bus.  A property of the WIRE --
+    // a card is plugged in or it is not -- even though the only thing that can
+    // observe it is a chip reading its own data register.
+    bool loopback;
+
+    // The NCR 5380 driving this bus, or NULL on the machines that have none.
+    // The Quadras, the AVs, the PowerMacs and the Network Servers all used to
+    // carry a full 5380 register file inside this struct and never touch it,
+    // because the chip and the wire were one allocation.
+    //
+    // This is the bus knowing what is attached to it, which is the direction
+    // the dependency should run.  The other three controllers need no such
+    // pointer: they are pure clients, driving the bus through scsi.h and
+    // reading it through scsi_get_bus_phase().
+    scsi_5380_t *chip5380;
+
+    struct object *object; // top-level scsi node
+    struct object *bus_object; // scsi.bus child
+    struct object *devices_object; // scsi.device collection
+    struct object *device_objects[8]; // per-slot entry objects
+    struct object *image_objects[8]; // per-slot medium (image) nodes — device[N].image
+    // Per-slot back-link used as instance_data on each device entry
+    // object so accessors can recover (scsi, slot) cheaply.
+    scsi_device_link_t device_links[8];
+};
+
+// ============================================================================
+// The NCR 5380
+// ============================================================================
+//
+// A controller attached to a bus, exactly like the 53C96, the 53C825 SCRIPTS
+// engine and MESH.  It used to BE the bus: this register file and all of the
+// pin, DMA and priming state below lived inside struct scsi.
+struct scsi_5380 {
+    scsi_t *bus;
+
+    struct {
+        uint8_t cdr;
+        uint8_t odr;
+        uint8_t icr;
+        uint8_t mr;
+        uint8_t tcr;
+        uint8_t csr;
+        uint8_t ser;
+        uint8_t bsr;
+    } reg;
+
     memory_map_t *memory_map;
     memory_interface_t memory_interface;
 
@@ -351,14 +388,6 @@ struct scsi {
     int cdr_idx;
 
     // Object-tree binding — lifetime tied to scsi_init / scsi_delete.
-    struct object *object; // top-level scsi node
-    struct object *bus_object; // scsi.bus child
-    struct object *devices_object; // scsi.device collection
-    struct object *device_objects[8]; // per-slot entry objects
-    struct object *image_objects[8]; // per-slot medium (image) nodes — device[N].image
-    // Per-slot back-link used as instance_data on each device entry
-    // object so accessors can recover (scsi, slot) cheaply.
-    scsi_device_link_t device_links[8];
 };
 
 // ============================================================================
@@ -397,6 +426,10 @@ void scsi_update_drq(scsi_t *scsi);
 void scsi_update_irq(scsi_t *scsi);
 bool scsi_5380_dma_mode(const scsi_t *scsi);
 void scsi_5380_entered_status(scsi_t *scsi, bool from_data_in);
+void scsi_5380_entered_data_out(scsi_t *bus);
+void scsi_5380_bus_freed(scsi_t *bus);
+void scsi_5380_dma_push_byte(scsi_t *bus, uint8_t byte);
+void scsi_bus_accept_data_out_byte(scsi_t *scsi, uint8_t value);
 
 // ============================================================================
 // Phase Transition Helpers (defined in scsi_bus.c, used by scsi_cdrom.c)

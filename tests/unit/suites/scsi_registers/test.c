@@ -104,6 +104,9 @@ static void make_disk(void) {
 static scsi_t *attach_disk(void) {
     scsi_t *scsi = scsi_init(NULL, NULL);
     ASSERT_TRUE(scsi != NULL);
+    // These tests drive the 5380's register file, so the bus needs one
+    // attached -- a bus on its own has no registers to write.
+    ASSERT_TRUE(scsi_5380_attach(scsi, NULL, NULL) != NULL);
     image_t *img = image_create(g_path, NULL);
     ASSERT_TRUE(img != NULL);
     scsi_add_device(scsi, TARGET, "GS", "SCRATCH", "1.0", img, scsi_dev_hd, BLK, false);
@@ -113,7 +116,7 @@ static scsi_t *attach_disk(void) {
 // Write one 5380 register the way the guest does.  Register select is A4-A6
 // (see the decode in scsi.c write_uint8), so the register index shifts left 4.
 static void wr(scsi_t *scsi, int reg, uint8_t val) {
-    scsi->memory_interface.write_uint8(scsi, (uint32_t)(reg << 4), val);
+    scsi_get_memory_interface(scsi)->write_uint8(scsi, (uint32_t)(reg << 4), val);
 }
 
 // The finding's first named sequence: select normally, then drive SEL/BSY a

@@ -1511,6 +1511,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
         mac_checkpoint_restore_images(cfg, checkpoint);
 
     cfg->scsi = scsi_init(NULL, checkpoint);
+    scsi_5380_attach(cfg->scsi, NULL, checkpoint); // IIfx: NCR 5380 behind the OSS
     setup_images(cfg);
 
     st->asc = asc_init(NULL, cfg->scheduler, checkpoint);

@@ -258,7 +258,10 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     if (checkpoint)
         mac_checkpoint_restore_images(cfg, checkpoint);
 
-    cfg->scsi = scsi_init(cfg->mem_map, checkpoint);
+    cfg->scsi = scsi_init(NULL, checkpoint);
+    // The Plus has an NCR 5380, and it is the one machine whose chip
+    // registers its own window in the memory map.
+    scsi_5380_attach(cfg->scsi, cfg->mem_map, checkpoint);
 
     setup_images(cfg);
 

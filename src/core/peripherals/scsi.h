@@ -69,6 +69,13 @@ void scsi_delete(scsi_t *scsi);
 
 // Chip /RESET (68k RESET instruction → bus /RESET line): reset the controller
 // to its power-on state, IRQ latch cleared.  See system_reset_devices.
+// Attach an NCR 5380 to this bus.  Only the machines that have one call this:
+// the Plus, the 68030 glue machines (SE/30, IIcx, IIx), the MDU machines (IIci,
+// IIsi) and the IIfx.  Everything else -- Quadras, AVs, PowerMacs, Network
+// Servers -- drives the bus with a 53C96, a 53C825 or MESH and needs no 5380.
+typedef struct scsi_5380 scsi_5380_t;
+scsi_5380_t *scsi_5380_attach(scsi_t *bus, memory_map_t *map, checkpoint_t *checkpoint);
+
 void scsi_reset_pin(scsi_t *scsi);
 
 // The device side of a SCSI bus reset: what every target on the wire sees when

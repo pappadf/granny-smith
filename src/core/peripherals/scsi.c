@@ -50,12 +50,14 @@ extern const class_desc_t scsi_image_class;
 //
 // The remaining bits ARE this chip's own: SEL and RST as it is driving them.
 static uint8_t csr_from_bus(scsi_t *scsi) {
+    if (!scsi || !scsi->chip5380)
+        return 0;
     uint8_t v = (uint8_t)(scsi_phase_wire_bits(scsi->bus.phase) << 2);
     if (scsi_bus_req(scsi))
         v |= CSR_REQ;
     if (scsi_bus_bsy(scsi))
         v |= CSR_BSY;
-    return (uint8_t)(v | (scsi->reg.csr & (CSR_SEL | CSR_RST)));
+    return (uint8_t)(v | (scsi->chip5380->reg.csr & (CSR_SEL | CSR_RST)));
 }
 // Does the bus's actual phase match the one the initiator programmed into TCR?
 //
@@ -72,15 +74,15 @@ static // Compute BSR phase-match bit: true when bus phase matches TCR
     // In loopback mode, CSR is computed dynamically from ICR/TCR — use
     // the live bus signals rather than the stored csr register.
     uint8_t csr = csr_from_bus(scsi);
-    if (scsi->loopback && (scsi->reg.mr & MR_TARGET)) {
-        if (scsi->reg.tcr & 0x01)
+    if (scsi->loopback && (scsi->chip5380->reg.mr & MR_TARGET)) {
+        if (scsi->chip5380->reg.tcr & 0x01)
             csr |= CSR_IO;
-        if (scsi->reg.tcr & 0x02)
+        if (scsi->chip5380->reg.tcr & 0x02)
             csr |= CSR_CD;
-        if (scsi->reg.tcr & 0x04)
+        if (scsi->chip5380->reg.tcr & 0x04)
             csr |= CSR_MSG;
     }
-    return ((csr >> 2) & 7) == (scsi->reg.tcr & 7);
+    return ((csr >> 2) & 7) == (scsi->chip5380->reg.tcr & 7);
 }
 
 // ============================================================================
@@ -104,26 +106,26 @@ LOG_USE_CATEGORY_NAME("scsi");
 static uint8_t compute_loopback_cdr(scsi_t *scsi) {
     uint8_t val = 0;
     // ODR driven onto data bus when DB asserted or in target mode
-    if ((scsi->reg.icr & ICR_DB) || (scsi->reg.mr & MR_TARGET))
-        val |= scsi->reg.odr;
+    if ((scsi->chip5380->reg.icr & ICR_DB) || (scsi->chip5380->reg.mr & MR_TARGET))
+        val |= scsi->chip5380->reg.odr;
     // Loopback card wiring: ICR control signal → data bus pin
-    if (scsi->reg.icr & ICR_ATN)
+    if (scsi->chip5380->reg.icr & ICR_ATN)
         val |= 0x40; // ATN → DB6
-    if (scsi->reg.icr & ICR_ACK)
+    if (scsi->chip5380->reg.icr & ICR_ACK)
         val |= 0x20; // ACK → DB5
-    if (scsi->reg.icr & ICR_BSY)
+    if (scsi->chip5380->reg.icr & ICR_BSY)
         val |= 0x04; // BSY → DB2
-    if (scsi->reg.icr & ICR_SEL)
+    if (scsi->chip5380->reg.icr & ICR_SEL)
         val |= 0x10; // SEL → DB4
     // Target mode: TCR signals → data bus pins
-    if (scsi->reg.mr & MR_TARGET) {
-        if (scsi->reg.tcr & 0x01)
+    if (scsi->chip5380->reg.mr & MR_TARGET) {
+        if (scsi->chip5380->reg.tcr & 0x01)
             val |= 0x80; // I/O → DB7
-        if (scsi->reg.tcr & 0x02)
+        if (scsi->chip5380->reg.tcr & 0x02)
             val |= 0x02; // C/D → DB1
-        if (scsi->reg.tcr & 0x04)
+        if (scsi->chip5380->reg.tcr & 0x04)
             val |= 0x08; // MSG → DB3
-        if (scsi->reg.tcr & 0x08)
+        if (scsi->chip5380->reg.tcr & 0x08)
             val |= 0x01; // REQ → DB0
     }
     return val;
@@ -133,18 +135,23 @@ static uint8_t compute_loopback_cdr(scsi_t *scsi) {
 // The NCR 5380 asserts /IRQ on phase mismatch during DMA, end of DMA,
 // loss of BSY during DMA, or bus reset detection.
 void scsi_update_irq(scsi_t *scsi) {
+    // A bus with no 5380 attached -- a Quadra, an AV, a PowerMac, a Network
+    // Server -- has nothing here to update.
+    if (!scsi || !scsi->chip5380)
+        return;
+
     // Phase mismatch during DMA mode is the primary IRQ source
     bool irq = false;
-    if (scsi->reg.mr & MR_DMA) {
+    if (scsi->chip5380->reg.mr & MR_DMA) {
         if (!scsi_phase_match(scsi))
             irq = true; // phase mismatch during DMA
-        if (scsi->end_of_dma)
+        if (scsi->chip5380->end_of_dma)
             irq = true; // end of DMA
     }
 
-    if (irq == scsi->irq_active)
+    if (irq == scsi->chip5380->irq_active)
         return;
-    scsi->irq_active = irq;
+    scsi->chip5380->irq_active = irq;
 
     // Latch BSR bit 4 (BSR_INT, "Interrupt Request Active") on the
     // rising edge of /IRQ.  On real NCR 5380 hardware this bit
@@ -157,31 +164,36 @@ void scsi_update_irq(scsi_t *scsi) {
     // this is invisible to Mac OS.  Do NOT clear on falling edge —
     // real hardware latches until RESET-read.
     if (irq)
-        scsi->reg.bsr |= BSR_INT;
+        scsi->chip5380->reg.bsr |= BSR_INT;
 
     // Drive VIA2 CB2: active-low (0 = asserted)
-    if (scsi->via)
-        via_input_c(scsi->via, 1, 1, !irq);
+    if (scsi->chip5380->via)
+        via_input_c(scsi->chip5380->via, 1, 1, !irq);
     // Or deliver via the machine-specific callback (IIfx → OSS source 9)
-    if (scsi->irq_cb)
-        scsi->irq_cb(scsi->irq_cb_ctx, irq, scsi->drq_active);
+    if (scsi->chip5380->irq_cb)
+        scsi->chip5380->irq_cb(scsi->chip5380->irq_cb_ctx, irq, scsi->chip5380->drq_active);
 }
 
 // Drive VIA2 CA2 (SCSI /DRQ) based on DMA data readiness.
 // Asserted when DMA mode is enabled and data is available for transfer.
 void scsi_update_drq(scsi_t *scsi) {
-    bool drq = (scsi->reg.bsr & BSR_DR) != 0;
-
-    if (drq == scsi->drq_active)
+    // A bus with no 5380 attached -- a Quadra, an AV, a PowerMac, a Network
+    // Server -- has nothing here to update.
+    if (!scsi || !scsi->chip5380)
         return;
-    scsi->drq_active = drq;
+
+    bool drq = (scsi->chip5380->reg.bsr & BSR_DR) != 0;
+
+    if (drq == scsi->chip5380->drq_active)
+        return;
+    scsi->chip5380->drq_active = drq;
 
     // Drive VIA2 CA2: active-low (0 = asserted)
-    if (scsi->via)
-        via_input_c(scsi->via, 0, 1, !drq);
+    if (scsi->chip5380->via)
+        via_input_c(scsi->chip5380->via, 0, 1, !drq);
     // Or deliver via the machine-specific callback (IIfx → OSS source 9)
-    if (scsi->irq_cb)
-        scsi->irq_cb(scsi->irq_cb_ctx, scsi->irq_active, drq);
+    if (scsi->chip5380->irq_cb)
+        scsi->chip5380->irq_cb(scsi->chip5380->irq_cb_ctx, scsi->chip5380->irq_active, drq);
 }
 
 // DRQ "data ready" wake delay, in CPU cycles.  Per the Guide to the Macintosh
@@ -206,17 +218,17 @@ static void scsi_schedule_drq_service(scsi_t *scsi);
 static void scsi_drq_service(void *source, uint64_t data) {
     scsi_t *scsi = (scsi_t *)source;
     (void)data;
-    if (!(scsi->reg.mr & MR_DMA) || scsi->bus.phase != scsi_data_in || scsi->buf.size == 0)
+    if (!(scsi->chip5380->reg.mr & MR_DMA) || scsi->bus.phase != scsi_data_in || scsi->buf.size == 0)
         return; // transfer drained / DMA off / phase changed → nothing to wake for
 
-    if (scsi->buf.size != scsi->drq_pulse_last_size)
+    if (scsi->buf.size != scsi->chip5380->drq_pulse_last_size)
         return; // host has already started draining the block → no wake needed
 
     // Create a single fresh CA2 edge: drop then re-assert DRQ (host reads pop
     // bytes regardless of the DRQ level, so the momentary drop is harmless).
-    scsi->reg.bsr &= ~BSR_DR;
+    scsi->chip5380->reg.bsr &= ~BSR_DR;
     scsi_update_drq(scsi);
-    scsi->reg.bsr |= BSR_DR;
+    scsi->chip5380->reg.bsr |= BSR_DR;
     scsi_update_drq(scsi); // false→true ⇒ active CA2 edge ⇒ VIA2 IFR ⇒ SCSI IRQ
 }
 
@@ -224,16 +236,21 @@ static void scsi_schedule_drq_service(scsi_t *scsi) {
     scheduler_t *s = system_scheduler();
     if (!s)
         return; // no scheduler (unit tests): fall back to poll-driven behaviour
-    if (!scsi->drq_evt_registered) {
+    if (!scsi->chip5380->drq_evt_registered) {
         scheduler_new_event_type(s, "scsi", scsi, "drq_service", &scsi_drq_service);
-        scsi->drq_evt_registered = true;
+        scsi->chip5380->drq_evt_registered = true;
     }
-    scsi->drq_pulse_last_size = scsi->buf.size;
+    scsi->chip5380->drq_pulse_last_size = scsi->buf.size;
     remove_event(s, &scsi_drq_service, scsi);
     scheduler_new_cpu_event(s, &scsi_drq_service, scsi, 0, SCSI_DRQ_PULSE_CYCLES, 0);
 }
 
 void scsi_cancel_drq_service(scsi_t *scsi) {
+    // A bus with no 5380 attached -- a Quadra, an AV, a PowerMac, a Network
+    // Server -- has nothing here to update.
+    if (!scsi || !scsi->chip5380)
+        return;
+
     scheduler_t *s = system_scheduler();
     if (s)
         remove_event(s, &scsi_drq_service, scsi);
@@ -258,21 +275,21 @@ static void scsi_reset(scsi_t *scsi) {
     scsi_cancel_drq_service(scsi);
 
     scsi->bus.phase = scsi_bus_free;
-    scsi->reg.csr = 0;
-    scsi->reg.bsr = 0;
-    scsi->reg.mr = 0;
-    scsi->reg.tcr = 0;
-    scsi->reg.odr = 0;
+    scsi->chip5380->reg.csr = 0;
+    scsi->chip5380->reg.bsr = 0;
+    scsi->chip5380->reg.mr = 0;
+    scsi->chip5380->reg.tcr = 0;
+    scsi->chip5380->reg.odr = 0;
     scsi->bus.data = 0;
     scsi->buf.size = 0;
-    scsi->end_of_dma = false;
-    scsi->dma_write_armed = false;
-    scsi->primer_held = false;
+    scsi->chip5380->end_of_dma = false;
+    scsi->chip5380->dma_write_armed = false;
+    scsi->chip5380->primer_held = false;
     // RST generates a non-maskable interrupt that survives the reset
-    scsi->reg.bsr |= BSR_INT;
+    scsi->chip5380->reg.bsr |= BSR_INT;
     // Flush the CDR pipeline so post-reset reads return $00
-    scsi->cdr_pipeline[0] = scsi->cdr_pipeline[1] = scsi->cdr_pipeline[2] = 0;
-    scsi->cdr_idx = 0;
+    scsi->chip5380->cdr_pipeline[0] = scsi->chip5380->cdr_pipeline[1] = scsi->chip5380->cdr_pipeline[2] = 0;
+    scsi->chip5380->cdr_idx = 0;
     scsi_update_drq(scsi);
     scsi_update_irq(scsi);
 }
@@ -291,8 +308,14 @@ static void scsi_reset(scsi_t *scsi) {
 void scsi_reset_pin(scsi_t *scsi) {
     if (!scsi)
         return;
+    // A warm restart calls this for every machine (system_reset_devices), and
+    // most machines have no 5380: reset the wire, and stop.
+    if (!scsi->chip5380) {
+        scsi_bus_reset(scsi);
+        return;
+    }
     scsi_reset(scsi);
-    scsi->reg.bsr &= ~BSR_INT; // chip reset clears the IRQ latch (no bus-RST NMI)
+    scsi->chip5380->reg.bsr &= ~BSR_INT; // chip reset clears the IRQ latch (no bus-RST NMI)
     scsi_update_irq(scsi);
 }
 
@@ -308,16 +331,19 @@ void scsi_reset_pin(scsi_t *scsi) {
 // leaving REQ asserted while the buffer still holds data is what keeps A/UX's
 // multi-segment reads from stalling after the first segment.
 bool scsi_5380_dma_mode(const scsi_t *scsi) {
-    return scsi && (scsi->reg.mr & MR_DMA) != 0;
+    return scsi && scsi->chip5380 && (scsi->chip5380->reg.mr & MR_DMA) != 0;
 }
 
 // The bus has entered STATUS phase.  `from_data_in` says whether it came
 // straight out of DATA IN.
 void scsi_5380_entered_status(scsi_t *scsi, bool from_data_in) {
-    if (!scsi)
+    if (!scsi || !scsi->chip5380) {
+        // No 5380 on this bus: nothing latches end-of-DMA and there is no
+        // interrupt of this chip's to raise.
         return;
-    if (scsi->reg.mr & MR_DMA)
-        scsi->end_of_dma = true;
+    }
+    if (scsi->chip5380->reg.mr & MR_DMA)
+        scsi->chip5380->end_of_dma = true;
 
     // Coming out of data-in with DMA active, skip scsi_update_irq.  On real
     // NCR 5380 hardware the target changes bus phase only AFTER the final ACK
@@ -329,10 +355,59 @@ void scsi_5380_entered_status(scsi_t *scsi, bool from_data_in) {
     // deferred; skipping it has no effect.  The host clears MR_DMA next
     // (write_mr), which fires scsi_update_irq with DMA off — the correct
     // post-transfer notification.
-    if (from_data_in && (scsi->reg.mr & MR_DMA))
+    if (from_data_in && (scsi->chip5380->reg.mr & MR_DMA))
         return;
 
     scsi_update_irq(scsi);
+}
+
+// Entering DATA OUT: a fresh payload, so the priming gates re-arm.
+void scsi_5380_entered_data_out(scsi_t *bus) {
+    scsi_5380_t *chip = bus ? bus->chip5380 : NULL;
+    if (!chip)
+        return;
+    chip->primer_held = false;
+    // New command: the bus-master engine has not yet supplied any payload, so
+    // the next push will discard any iHSKEN primer first.
+    chip->dma_out_engine_started = false;
+}
+
+// The bus went free; nothing is in flight for this chip any more.
+void scsi_5380_bus_freed(scsi_t *bus) {
+    scsi_5380_t *chip = bus ? bus->chip5380 : NULL;
+    if (!chip)
+        return;
+    chip->end_of_dma = false;
+}
+
+// One byte of a bus-master DATA OUT, through this chip's handshake model.
+//
+// Engine-supersedes-primer: the external SCSIDMA engine is the authoritative
+// data source for a bus-master DATA OUT.  On its FIRST byte for this command,
+// discard whatever is already in buf -- the A/UX scsiout glue writes a CLR.B
+// "primer" ($00) to the blind port (iHSKEN, committed via
+// scsi_hsken_data_out_byte) before arming the engine.  On real hardware that
+// primer is absorbed by the chip before any target REQs, so it never lands on
+// the bus.  Keeping it would shift the whole transfer one byte (scattered
+// multi-block writes land misaligned -> "bad block").  Fires once per command
+// (first segment only): subsequent SG segments see dma_out_engine_started=true
+// and append normally.  Pure-iHSKEN writes never run the engine, so this never
+// disturbs them.
+//
+// dma_write_armed is set so the "Start DMA Send" arm gate passes: the IIfx SDMA
+// wrapper does not write the chip's $50 port -- it moves bytes with its own
+// bus-master controller -- so the chip-side arm flag would otherwise never be
+// set and every pushed byte would be absorbed silently.
+void scsi_5380_dma_push_byte(scsi_t *bus, uint8_t byte) {
+    scsi_5380_t *chip = bus ? bus->chip5380 : NULL;
+    if (!chip)
+        return;
+    if (bus->bus.phase == scsi_data_out && !chip->dma_out_engine_started) {
+        chip->dma_out_engine_started = true;
+        bus->buf.size = 0;
+    }
+    chip->dma_write_armed = true;
+    scsi_odr_auto_handshake_byte(bus, byte, /*apply_primer_gate=*/false);
 }
 
 // ============================================================================
@@ -341,13 +416,13 @@ void scsi_5380_entered_status(scsi_t *scsi, bool from_data_in) {
 
 // Write to the initiator command register
 static void write_icr(scsi_t *scsi, uint8_t val) {
-    uint8_t bits_set = val & (val ^ scsi->reg.icr);
-    uint8_t bits_cleared = ~val & (val ^ scsi->reg.icr);
+    uint8_t bits_set = val & (val ^ scsi->chip5380->reg.icr);
+    uint8_t bits_cleared = ~val & (val ^ scsi->chip5380->reg.icr);
 
-    SCSI_TRACE("write_icr: val=0x%02X old=0x%02X set=0x%02X clr=0x%02X phase=%d", val, scsi->reg.icr, bits_set,
-               bits_cleared, scsi->bus.phase);
+    SCSI_TRACE("write_icr: val=0x%02X old=0x%02X set=0x%02X clr=0x%02X phase=%d", val, scsi->chip5380->reg.icr,
+               bits_set, bits_cleared, scsi->bus.phase);
 
-    scsi->reg.icr = val;
+    scsi->chip5380->reg.icr = val;
 
     // In loopback mode (passive terminator), skip bus state-machine
     // transitions — the diagnostic is testing register I/O, not device
@@ -362,7 +437,7 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
         if (bits_cleared & ICR_RST) {
             // RST deassertion: final chip reset, ICR latch cleared
             scsi_reset(scsi);
-            scsi->reg.icr = 0;
+            scsi->chip5380->reg.icr = 0;
         }
         return;
     }
@@ -374,7 +449,7 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     }
 
     // if BSY is released in the selection phase, than it marks the end of selection
-    if (bits_cleared & ICR_BSY && scsi->reg.icr & ICR_SEL) {
+    if (bits_cleared & ICR_BSY && scsi->chip5380->reg.icr & ICR_SEL) {
 
         // Only meaningful as the end of a selection.  A guest that re-drives
         // SEL/BSY from a later phase is usually a driver retrying a bus it
@@ -399,7 +474,7 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
                 scsi->bus.initiator = 7;
 
             // ODR will contain the "OR" of target and initiator ID
-            scsi->bus.target = platform_ntz32(scsi->reg.odr & ~(1 << scsi->bus.initiator));
+            scsi->bus.target = platform_ntz32(scsi->chip5380->reg.odr & ~(1 << scsi->bus.initiator));
 
             // [6]: target will assert BSY - if no target, the bus will be free again
             if (!scsi->devices[scsi->bus.target & 7].image)
@@ -424,7 +499,7 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
             phase_free(scsi);
         else if (scsi->bus.phase == scsi_message_out) {
             // Process the message byte received from the initiator.
-            uint8_t msg = scsi->reg.odr;
+            uint8_t msg = scsi->chip5380->reg.odr;
             SCSI_TRACE("write_icr: MESSAGE OUT byte=0x%02X", msg);
             if (msg >= 0x80) {
                 // IDENTIFY: LUN in bits 0-2, disconnect privilege in bit 6.
@@ -460,7 +535,7 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
         // if a command - save the next byte in the buffer
         if (scsi->bus.phase == scsi_command) {
             assert(scsi->buf.size < scsi->buf.max);
-            scsi->buf.data[scsi->buf.size++] = scsi->reg.odr;
+            scsi->buf.data[scsi->buf.size++] = scsi->chip5380->reg.odr;
         } else if (scsi->bus.phase == scsi_status)
             ;
         else if (scsi->bus.phase == scsi_message_in)
@@ -472,7 +547,7 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
         else if (scsi->bus.phase == scsi_data_out) {
             // programmed I/O: save ODR byte to buffer
             assert(scsi->buf.size < scsi->buf.max);
-            scsi->buf.data[scsi->buf.size++] = scsi->reg.odr;
+            scsi->buf.data[scsi->buf.size++] = scsi->chip5380->reg.odr;
         }
         // ACK on bus_free is harmless (e.g. SCSI diagnostics)
 
@@ -503,10 +578,10 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
 
 // Write to the mode register
 static void write_mr(scsi_t *scsi, uint8_t val) {
-    uint8_t bits_set = val & (val ^ scsi->reg.mr);
-    uint8_t bits_cleared = ~val & (val ^ scsi->reg.mr);
+    uint8_t bits_set = val & (val ^ scsi->chip5380->reg.mr);
+    uint8_t bits_cleared = ~val & (val ^ scsi->chip5380->reg.mr);
 
-    scsi->reg.mr = val;
+    scsi->chip5380->reg.mr = val;
 
     // In loopback mode, just store the register — no arbitration or DMA
     if (scsi->loopback)
@@ -519,13 +594,13 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         phase_arbitration(scsi);
 
         // [1]: The results of the arbitration phase may be determined by reading the status bits LA and AIP
-        scsi->reg.icr |= ICR_AIP;
+        scsi->chip5380->reg.icr |= ICR_AIP;
 
         // Let's assume that we always win arbitration.
         // That is, LA is always cleard, and our own ID is always in the data register
-        scsi->reg.icr &= ~ICR_LA;
-        scsi->bus.data = scsi->reg.odr;
-        scsi->bus.initiator = platform_ntz32(scsi->reg.odr);
+        scsi->chip5380->reg.icr &= ~ICR_LA;
+        scsi->bus.data = scsi->chip5380->reg.odr;
+        scsi->bus.initiator = platform_ntz32(scsi->chip5380->reg.odr);
 
         // Assert BSY on the bus after winning arbitration.  The NCR 5380
         // drives BSY when it becomes bus master; the ROM polls CSR_BSY
@@ -534,9 +609,9 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
     }
 
     if (bits_cleared & MR_DMA) {
-        scsi->reg.bsr &= ~BSR_DR;
-        scsi->end_of_dma = false;
-        scsi->dma_write_armed = false;
+        scsi->chip5380->reg.bsr &= ~BSR_DR;
+        scsi->chip5380->end_of_dma = false;
+        scsi->chip5380->dma_write_armed = false;
         // If data-in transfer completed (buffer drained) while DMA was
         // active, transition to status now.  The bus stayed in data_in
         // during DMA so the pseudo-DMA loop could see a clean BSR
@@ -554,7 +629,7 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // arms the gate later by writing "Start DMA Send" (port 5).  Until
         // then, any ODR-alias writes are primer/setup writes that real
         // hardware would not transmit to the SCSI bus.
-        scsi->dma_write_armed = false;
+        scsi->chip5380->dma_write_armed = false;
 
         // DMA mode can be set during data_in/data_out (normal), during
         // status/message_in (if command returned CHECK CONDITION before the
@@ -573,7 +648,7 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
 
         // if we're reading in data, and there is more in the buffer - then assert request signal
         if (scsi->bus.phase == scsi_data_in && scsi->buf.size != 0) {
-            scsi->reg.bsr |= BSR_DR;
+            scsi->chip5380->reg.bsr |= BSR_DR;
             // Arm the autonomous DRQ "data ready" service so an interrupt-driven
             // host (A/UX) that sleeps waiting for the block is woken even when
             // the CPU is STOP-halted.  No effect on poll/byte-count hosts (Mac
@@ -584,7 +659,7 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // if we're writing out data (command bytes or data-out), and there is
         // room in the buffer, assert request signal
         if ((scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) && scsi->buf.size < scsi->buf.max)
-            scsi->reg.bsr |= BSR_DR;
+            scsi->chip5380->reg.bsr |= BSR_DR;
 
         // Status byte ready: A/UX's SPH_STAT reads the status byte via
         // pseudo-DMA.  On real NCR 5380 hardware, DRQ only asserts when
@@ -596,7 +671,7 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
         // and the chip instead raises a phase-mismatch IRQ so the driver
         // can recover.
         if (scsi->bus.phase == scsi_status && scsi_phase_match(scsi))
-            scsi->reg.bsr |= BSR_DR;
+            scsi->chip5380->reg.bsr |= BSR_DR;
 
         scsi_update_drq(scsi);
         scsi_update_irq(scsi);
@@ -620,7 +695,7 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         // This models the NCR 5380's internal propagation delay: bus
         // driver outputs update 2 register-write cycles after the write.
         if (scsi->loopback) {
-            uint8_t val = scsi->cdr_pipeline[(scsi->cdr_idx + 1) % 3];
+            uint8_t val = scsi->chip5380->cdr_pipeline[(scsi->chip5380->cdr_idx + 1) % 3];
             SCSI_TRACE("  SCSI RD CDR -> 0x%02X (pipeline)", val);
             return val;
         }
@@ -629,12 +704,12 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 scsi->bus.data = next_byte(scsi);
                 // In DMA mode, deassert REQ after each byte to simulate
                 // the real NCR 5380 handshake gap between bytes
-                if (scsi->reg.mr & MR_DMA) {
+                if (scsi->chip5380->reg.mr & MR_DMA) {
                     scsi->bus.req = false;
                 }
             } else
                 phase_status(scsi, STATUS_GOOD);
-        } else if (scsi->bus.phase == scsi_status && (scsi->reg.mr & MR_DMA) && scsi_phase_match(scsi)) {
+        } else if (scsi->bus.phase == scsi_status && (scsi->chip5380->reg.mr & MR_DMA) && scsi_phase_match(scsi)) {
             // Status byte consumed via pseudo-DMA read.  Only valid when
             // DRQ is asserted (phase_match true) — on real hardware the
             // pseudo-DMA ACK handshake only fires when the chip has
@@ -652,16 +727,16 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         return scsi->bus.data;
 
     case ICR:
-        SCSI_TRACE("  SCSI RD ICR -> 0x%02X", scsi->reg.icr);
-        return scsi->reg.icr;
+        SCSI_TRACE("  SCSI RD ICR -> 0x%02X", scsi->chip5380->reg.icr);
+        return scsi->chip5380->reg.icr;
 
     case MR:
-        SCSI_TRACE("  SCSI RD MR -> 0x%02X", scsi->reg.mr);
-        return scsi->reg.mr;
+        SCSI_TRACE("  SCSI RD MR -> 0x%02X", scsi->chip5380->reg.mr);
+        return scsi->chip5380->reg.mr;
 
     case TCR:
-        SCSI_TRACE("  SCSI RD TCR -> 0x%02X", scsi->reg.tcr);
-        return scsi->reg.tcr;
+        SCSI_TRACE("  SCSI RD TCR -> 0x%02X", scsi->chip5380->reg.tcr);
+        return scsi->chip5380->reg.tcr;
 
     case CSR:
         // Deferred phase transition (CSR-side only).
@@ -672,25 +747,25 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         if (scsi->loopback) {
             uint8_t val = csr_from_bus(scsi);
             // ICR-driven control signals reflected on the bus
-            if (scsi->reg.icr & ICR_BSY)
+            if (scsi->chip5380->reg.icr & ICR_BSY)
                 val |= CSR_BSY;
-            if (scsi->reg.icr & ICR_SEL)
+            if (scsi->chip5380->reg.icr & ICR_SEL)
                 val |= CSR_SEL;
-            if (scsi->reg.icr & ICR_RST)
+            if (scsi->chip5380->reg.icr & ICR_RST)
                 val |= CSR_RST;
             // Target mode: TCR drives I/O, C/D, MSG, REQ onto the bus
-            if (scsi->reg.mr & MR_TARGET) {
-                if (scsi->reg.tcr & 0x01)
+            if (scsi->chip5380->reg.mr & MR_TARGET) {
+                if (scsi->chip5380->reg.tcr & 0x01)
                     val |= CSR_IO;
-                if (scsi->reg.tcr & 0x02)
+                if (scsi->chip5380->reg.tcr & 0x02)
                     val |= CSR_CD;
-                if (scsi->reg.tcr & 0x04)
+                if (scsi->chip5380->reg.tcr & 0x04)
                     val |= CSR_MSG;
-                if (scsi->reg.tcr & 0x08)
+                if (scsi->chip5380->reg.tcr & 0x08)
                     val |= CSR_REQ;
             }
-            SCSI_TRACE("  SCSI RD CSR -> 0x%02X (icr=0x%02X tcr=0x%02X mr=0x%02X)", val, scsi->reg.icr, scsi->reg.tcr,
-                       scsi->reg.mr);
+            SCSI_TRACE("  SCSI RD CSR -> 0x%02X (icr=0x%02X tcr=0x%02X mr=0x%02X)", val, scsi->chip5380->reg.icr,
+                       scsi->chip5380->reg.tcr, scsi->chip5380->reg.mr);
             return val;
         }
         return csr_from_bus(scsi);
@@ -707,20 +782,22 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         // data_in across partial arms" change left end_of_dma asserted
         // without BSR_EDMA visible to the kernel.
         if (scsi->loopback) {
-            uint8_t val = scsi->reg.bsr;
+            uint8_t val = scsi->chip5380->reg.bsr;
             // ICR-driven signals readable via BSR
-            if (scsi->reg.icr & ICR_ACK)
+            if (scsi->chip5380->reg.icr & ICR_ACK)
                 val |= BSR_ACK;
-            if (scsi->reg.icr & ICR_ATN)
+            if (scsi->chip5380->reg.icr & ICR_ATN)
                 val |= BSR_ATN;
             val |= (scsi_phase_match(scsi) ? BSR_PM : 0);
-            if (scsi->end_of_dma)
+            if (scsi->chip5380->end_of_dma)
                 val |= BSR_EDMA;
-            SCSI_TRACE("  SCSI RD BSR -> 0x%02X (icr=0x%02X bsr_stored=0x%02X pm=%d edma=%d)", val, scsi->reg.icr,
-                       scsi->reg.bsr, scsi_phase_match(scsi), scsi->end_of_dma);
+            SCSI_TRACE("  SCSI RD BSR -> 0x%02X (icr=0x%02X bsr_stored=0x%02X pm=%d edma=%d)", val,
+                       scsi->chip5380->reg.icr, scsi->chip5380->reg.bsr, scsi_phase_match(scsi),
+                       scsi->chip5380->end_of_dma);
             return val;
         }
-        return scsi->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0) | (scsi->end_of_dma ? BSR_EDMA : 0);
+        return scsi->chip5380->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0) |
+               (scsi->chip5380->end_of_dma ? BSR_EDMA : 0);
 
     case RESET:
         // Reading the Reset Parity/Interrupt register clears BSR bits
@@ -743,8 +820,8 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         // scsi.c clears end_of_dma).  Doc-92's fix removed that
         // unconditional transition, so we need to clear end_of_dma here
         // (on RESET-read) to mirror real-hardware EOP-ACK semantics.
-        scsi->reg.bsr &= ~(0x04 | BSR_INT | 0x20);
-        scsi->end_of_dma = false;
+        scsi->chip5380->reg.bsr &= ~(0x04 | BSR_INT | 0x20);
+        scsi->chip5380->end_of_dma = false;
         scsi_update_irq(scsi);
         return 0xff;
     }
@@ -823,10 +900,15 @@ static uint32_t read_uint32(void *scsi, uint32_t addr) {
 //   apply_primer_gate=false.
 //
 void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer_gate) {
+    // A bus with no 5380 attached -- a Quadra, an AV, a PowerMac, a Network
+    // Server -- has nothing here to update.
+    if (!scsi || !scsi->chip5380)
+        return;
+
     // ODR always latches the byte, regardless of phase.  This mirrors real
     // chip behavior — the ODR is just an 8-bit register.  Whether anything
     // happens NEXT depends on the gates below.
-    scsi->reg.odr = value;
+    scsi->chip5380->reg.odr = value;
 
     // ── GATE 1: phase gate ──────────────────────────────────────────────
     // Only initiator-driven phases (the host writes data onto the bus)
@@ -845,7 +927,7 @@ void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer
     // is OFF entirely (Mac OS's PIO command-byte path uses ICR/ACK rather
     // than pseudo-DMA), this gate is bypassed — ICR.ACK assertion provides
     // the handshake instead.
-    if ((scsi->reg.mr & MR_DMA) && !scsi->dma_write_armed)
+    if ((scsi->chip5380->reg.mr & MR_DMA) && !scsi->chip5380->dma_write_armed)
         return;
 
     // ── GATE 3: primer-slot gate ────────────────────────────────────────
@@ -989,10 +1071,10 @@ void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer
         cpu_t *cpu = system_cpu();
         uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
         // First byte of this DATA_OUT phase: hold it, don't push yet.
-        if (!scsi->primer_held && scsi->buf.size == 0) {
-            scsi->primer_byte = value;
-            scsi->primer_pc = pc;
-            scsi->primer_held = true;
+        if (!scsi->chip5380->primer_held && scsi->buf.size == 0) {
+            scsi->chip5380->primer_byte = value;
+            scsi->chip5380->primer_pc = pc;
+            scsi->chip5380->primer_held = true;
             return;
         }
         // Second byte arriving: decide whether the held byte was a primer.
@@ -1003,12 +1085,12 @@ void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer
         //       different instructions)
         // Anything else: held byte was real data, push it before falling
         // through to push the current byte.
-        if (scsi->primer_held) {
-            scsi->primer_held = false;
-            bool is_primer = (scsi->primer_byte == 0x00 && scsi->primer_pc != pc);
+        if (scsi->chip5380->primer_held) {
+            scsi->chip5380->primer_held = false;
+            bool is_primer = (scsi->chip5380->primer_byte == 0x00 && scsi->chip5380->primer_pc != pc);
             if (!is_primer) {
                 assert(scsi->buf.size < scsi->buf.max);
-                scsi->buf.data[scsi->buf.size++] = scsi->primer_byte;
+                scsi->buf.data[scsi->buf.size++] = scsi->chip5380->primer_byte;
             }
             // fall through to push current byte
         }
@@ -1039,8 +1121,8 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
         // Advance CDR pipeline: capture current bus state BEFORE this write
         // takes effect.  The NCR 5380 bus drivers update 2 write-cycles
         // after the register write, so CDR reads lag by 2 writes.
-        scsi->cdr_pipeline[scsi->cdr_idx] = compute_loopback_cdr(scsi);
-        scsi->cdr_idx = (scsi->cdr_idx + 1) % 3;
+        scsi->chip5380->cdr_pipeline[scsi->chip5380->cdr_idx] = compute_loopback_cdr(scsi);
+        scsi->chip5380->cdr_idx = (scsi->chip5380->cdr_idx + 1) % 3;
 
         static const char *regnames[] = {"ODR", "ICR", "MR", "TCR", "SER", "DMA", "TDMA", "IDMA"};
         SCSI_TRACE("  SCSI WR %s (reg %d) = 0x%02X", regnames[addr >> 4 & 7], (int)(addr >> 4 & 7), value);
@@ -1065,7 +1147,7 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
             bool blind = (addr & SCSI_BLIND_SEL) != 0;
             scsi_odr_auto_handshake_byte(scsi, value, /*apply_primer_gate=*/blind);
         } else
-            scsi->reg.odr = value;
+            scsi->chip5380->reg.odr = value;
         break;
 
     case ICR:
@@ -1077,7 +1159,7 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
         break;
 
     case TCR:
-        scsi->reg.tcr = value;
+        scsi->chip5380->reg.tcr = value;
         // boot code seems to read only 256 bytes of block 0 and 1 (not a full block),
         // and then jump directly to "status" by asserting C/D and I/O in TCR
         if (scsi->bus.phase == scsi_data_in && (value & 7) == 3)
@@ -1087,15 +1169,15 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
         break;
 
     case SER:
-        scsi->reg.ser = value;
+        scsi->chip5380->reg.ser = value;
         break;
 
     case DMA:
-        scsi->reg.bsr |= BSR_DR;
+        scsi->chip5380->reg.bsr |= BSR_DR;
         // Start DMA Send (NCR 5380 §6.8.1): the host writes this register
         // to begin a pseudo-DMA send — until then, ODR-alias writes are
         // primer/setup writes that do not transfer.  Arm the gate.
-        scsi->dma_write_armed = true;
+        scsi->chip5380->dma_write_armed = true;
         scsi_update_drq(scsi);
         break;
 
@@ -1124,6 +1206,41 @@ static void write_uint32(void *scsi, uint32_t addr, uint32_t value) {
 // Lifecycle: Constructor
 // ============================================================================
 
+// ============================================================================
+// Attaching the NCR 5380 to a bus
+// ============================================================================
+
+// Give this bus a 5380, and hand back the chip.
+//
+// `map`, when non-NULL, is the machine's memory map and the chip registers its
+// own window in it.  The Macintosh Plus is the only machine that does that
+// here; every other 5380 machine decodes the address itself and asks for the
+// interface with scsi_get_memory_interface().  (That hard-coded window is
+// F-19's subject -- a Plus address inside src/core -- and is left as it was.)
+scsi_5380_t *scsi_5380_attach(scsi_t *bus, memory_map_t *map, checkpoint_t *checkpoint) {
+    if (!bus)
+        return NULL;
+    scsi_5380_t *chip = (scsi_5380_t *)malloc(sizeof(scsi_5380_t));
+    GS_ASSERTF(chip != NULL, "scsi_5380_attach: out of memory");
+    memset(chip, 0, sizeof(*chip));
+    chip->bus = bus;
+    bus->chip5380 = chip;
+
+    chip->memory_interface.read_uint8 = &read_uint8;
+    chip->memory_interface.read_uint16 = &read_uint16;
+    chip->memory_interface.read_uint32 = &read_uint32;
+    chip->memory_interface.write_uint8 = &write_uint8;
+    chip->memory_interface.write_uint16 = &write_uint16;
+    chip->memory_interface.write_uint32 = &write_uint32;
+
+    if (map)
+        memory_map_add(map, 0x00500000, 0x00100000, "scsi", &chip->memory_interface, bus);
+
+    if (checkpoint)
+        system_read_checkpoint_data(checkpoint, &chip->reg, sizeof(chip->reg));
+    return chip;
+}
+
 // Initialize the SCSI controller and optionally restore from checkpoint
 scsi_t *scsi_init(memory_map_t *map, checkpoint_t *checkpoint) {
     return scsi_init_named(map, checkpoint, "scsi");
@@ -1136,17 +1253,10 @@ scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char 
 
     memset(scsi, 0, sizeof(scsi_t));
 
-    scsi->memory_interface.read_uint8 = &read_uint8;
-    scsi->memory_interface.read_uint16 = &read_uint16;
-    scsi->memory_interface.read_uint32 = &read_uint32;
-
-    scsi->memory_interface.write_uint8 = &write_uint8;
-    scsi->memory_interface.write_uint16 = &write_uint16;
-    scsi->memory_interface.write_uint32 = &write_uint32;
-
-    // Register with memory map if provided (NULL = machine handles registration)
-    if (map)
-        memory_map_add(map, 0x00500000, 0x00100000, "scsi", &scsi->memory_interface, scsi);
+    // A bus, and nothing else.  Machines that have an NCR 5380 attach one with
+    // scsi_5380_attach(); the Quadras, the AVs, the PowerMacs and the Network
+    // Servers do not, and no longer carry a register file they never touch.
+    (void)map;
 
     scsi->bus.phase = scsi_bus_free;
 
@@ -1261,24 +1371,30 @@ scsi_t *scsi_init_named(memory_map_t *map, checkpoint_t *checkpoint, const char 
 
 // Return the SCSI memory-mapped I/O interface for machine-level address decode
 const memory_interface_t *scsi_get_memory_interface(scsi_t *scsi) {
-    return &scsi->memory_interface;
+    if (!scsi || !scsi->chip5380)
+        return NULL;
+    return &scsi->chip5380->memory_interface;
 }
 
 // Connect SCSI interrupt outputs to VIA2 (CB2 = /IRQ, CA2 = /DRQ)
 void scsi_set_via(scsi_t *scsi, via_t *via) {
-    scsi->via = via;
+    if (!scsi || !scsi->chip5380)
+        return;
+    scsi->chip5380->via = via;
 }
 
 // Install a machine-specific IRQ/DRQ delivery callback (IIfx → OSS source 9).
 // Mutually exclusive with scsi_set_via; the chip emulator invokes whichever
 // is installed.
 void scsi_set_irq_callback(scsi_t *scsi, scsi_irq_fn cb, void *context) {
-    scsi->irq_cb = cb;
-    scsi->irq_cb_ctx = context;
+    if (!scsi || !scsi->chip5380)
+        return;
+    scsi->chip5380->irq_cb = cb;
+    scsi->chip5380->irq_cb_ctx = context;
     // Replay current state so the machine wiring observes the chip's
     // present IRQ/DRQ before any further transitions.
     if (cb)
-        cb(context, scsi->irq_active, scsi->drq_active);
+        cb(context, scsi->chip5380->irq_active, scsi->chip5380->drq_active);
 }
 
 // Push a single byte into scsi->buf for a data-out transfer, bypassing
@@ -1317,6 +1433,8 @@ void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte) {
 // ============================================================================
 
 void scsi_signal_eop(scsi_t *scsi) {
+    if (!scsi || !scsi->chip5380)
+        return;
     // External DMA controllers (IIfx wrapper, etc.) drive the chip's EOP
     // input when their byte count reaches zero.  On real hardware the
     // chip latches end_of_dma and asserts /IRQ via the same path used
@@ -1325,7 +1443,7 @@ void scsi_signal_eop(scsi_t *scsi) {
     // call just re-evaluates /IRQ.
     if (!scsi)
         return;
-    scsi->end_of_dma = true;
+    scsi->chip5380->end_of_dma = true;
     // Set TCR bit 7 (LBS — "Last Byte Sent/ACK'd") to indicate the chip
     // has fully drained its DMA path.  A/UX's dma_ackdrop at $1004A24E
     // reads `TCR & 0x80` to decide whether to subtract 1 from the
@@ -1338,7 +1456,7 @@ void scsi_signal_eop(scsi_t *scsi) {
     // exercise this code path (uses VIA2-based pseudo-DMA), so setting
     // TCR bit 7 is invisible to Mac OS.  The bit is cleared by the next
     // CPU write to TCR (write_uint8 case TCR replaces the register).
-    scsi->reg.tcr |= 0x80;
+    scsi->chip5380->reg.tcr |= 0x80;
     // A wrapper EOP means the SCSIDMA engine finished the byte COUNT it was
     // armed with — i.e. ONE scatter-gather segment — NOT necessarily the whole
     // SCSI command.  A SCSI READ streams its full transfer length (tl*blk_sz)
@@ -1394,11 +1512,11 @@ void scsi_signal_eop(scsi_t *scsi) {
 }
 
 bool scsi_get_mr_dma(const scsi_t *scsi) {
-    return scsi && (scsi->reg.mr & MR_DMA) != 0;
+    return scsi && scsi->chip5380 && (scsi->chip5380->reg.mr & MR_DMA) != 0;
 }
 
 bool scsi_get_irq_active(const scsi_t *scsi) {
-    return scsi && scsi->irq_active;
+    return scsi && scsi->chip5380 && scsi->chip5380->irq_active;
 }
 
 // Enable or disable loopback mode (passive SCSI terminator / test card)
@@ -1502,6 +1620,10 @@ void scsi_delete(scsi_t *scsi) {
         free(scsi->buf.data);
         scsi->buf.data = NULL;
     }
+    if (scsi->chip5380) {
+        free(scsi->chip5380);
+        scsi->chip5380 = NULL;
+    }
     free(scsi);
 
     // Restore the pre-machine static singleton so the next round of
@@ -1556,6 +1678,15 @@ void scsi_checkpoint(scsi_t *restrict scsi, checkpoint_t *checkpoint) {
     size_t used = scsi->buf.pos + scsi->buf.size;
     if (used && scsi->buf.data)
         system_write_checkpoint_data(checkpoint, scsi->buf.data, used);
+
+    // The attached 5380's register file, if there is one.  It used to ride
+    // inside the plain-data prefix above, because the chip lived in this
+    // struct; now it is its own allocation and is streamed here, last, to
+    // match the order the restore reads it (scsi_init_named for the bus, then
+    // scsi_5380_attach for the chip).  A machine either has a 5380 or does
+    // not, deterministically per model, so save and restore always agree.
+    if (scsi->chip5380)
+        system_write_checkpoint_data(checkpoint, &scsi->chip5380->reg, sizeof(scsi->chip5380->reg));
 }
 
 // === Object-model class descriptors =========================================

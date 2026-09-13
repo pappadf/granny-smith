@@ -134,7 +134,7 @@ void phase_free(scsi_t *scsi) {
     scsi->bus.phase = scsi_bus_free;
     scsi->bus.req = false;
     scsi->bus.bsy = false;
-    scsi->end_of_dma = false;
+    scsi_5380_bus_freed(scsi);
     scsi_cancel_drq_service(scsi);
     scsi_update_drq(scsi);
     scsi_update_irq(scsi);
@@ -240,12 +240,8 @@ void phase_data_out(scsi_t *scsi, int bytes) {
     scsi_buf_ensure(scsi, (size_t)bytes);
     scsi->buf.max = bytes;
     scsi->buf.size = 0;
-    // Arm the primer-slot gate.  See scsi_internal.h `primer_held` etc.
-    scsi->primer_held = false;
-    // New command: the bus-master engine has not yet supplied any payload, so
-    // the next scsi_push_data_out_byte() will discard any iHSKEN primer first.
-    scsi->dma_out_engine_started = false;
-    // Same rationale as phase_data_in.
+    // Entering DATA OUT resets a 5380's priming state, if there is one.
+    scsi_5380_entered_data_out(scsi);
 }
 
 // Transition SCSI bus to message-out phase (initiator to target).
@@ -1222,42 +1218,45 @@ bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out) {
     return true;
 }
 
-void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte) {
-    // External DMA-side push.  Same body and semantics as the iHSKEN-
-    // wrapper-driven path: ODR latches the byte, the auto-handshake gate
-    // model decides whether it commits to buf, and phase-completion
-    // dispatch fires when applicable.  apply_primer_gate=false: bus-
-    // master transfers don't generate the CLR.B-then-data primer pattern
-    // the gate exists to filter.
-    //
-    // Set dma_write_armed=true so scsi_odr_auto_handshake_byte's GATE 2
-    // ("Start DMA Send" arm gate) passes.  The IIfx SDMA wrapper does
-    // not write to the chip's $50 ("Start DMA Send") port — it transfers
-    // bytes via its own bus-master controller — so the chip-side arm
-    // flag would otherwise never be set, and every byte we push would
-    // be absorbed silently by GATE 2.  That would leave the chip's buf
-    // empty after a SCSI WRITE, command_complete would never fire,
-    // phase would stay at data_out, and scsiirq would see BSR_PM set +
-    // CSR_BSY set = SI_UNK = state-table panic.
+// Take one DATA OUT / COMMAND byte onto the bus.
+//
+// This is the wire's half: stage the byte, and when the phase's expected count
+// is reached, dispatch -- run_cmd for a complete CDB, command_complete for a
+// complete payload.  No chip is involved.
+void scsi_bus_accept_data_out_byte(scsi_t *scsi, uint8_t value) {
     if (!scsi)
         return;
-    // Engine-supersedes-primer: the external SCSIDMA engine is the authoritative
-    // data source for a bus-master DATA OUT.  On its FIRST byte for this command,
-    // discard whatever is already in buf — the A/UX scsiout glue writes a CLR.B
-    // "primer" ($00) to the blind port (iHSKEN, committed via
-    // scsi_hsken_data_out_byte) before arming the engine.  On real hardware that
-    // primer sits in ODR and is overwritten by the engine's first byte before the
-    // target ever REQs, so it never lands on the bus.  Keeping it would shift the
-    // whole transfer one byte (scattered multi-block writes land misaligned →
-    // "bad block").  Fires once per command (first segment only): subsequent SG
-    // segments see dma_out_engine_started=true and append normally.  Pure-iHSKEN
-    // writes never run the engine, so this never disturbs them.
-    if (scsi->bus.phase == scsi_data_out && !scsi->dma_out_engine_started) {
-        scsi->dma_out_engine_started = true;
-        scsi->buf.size = 0;
+    assert(scsi->buf.size < scsi->buf.max);
+    scsi->buf.data[scsi->buf.size++] = value;
+
+    if (scsi->bus.phase == scsi_command) {
+        if (scsi->buf.size == cmd_size(scsi->buf.data[0]))
+            run_cmd(scsi);
+    } else if (scsi->buf.size == scsi->buf.max) {
+        command_complete(scsi);
     }
-    scsi->dma_write_armed = true;
-    scsi_odr_auto_handshake_byte(scsi, byte, /*apply_primer_gate=*/false);
+}
+
+// A bus-master front-end pushing one byte of a DATA OUT transfer.
+//
+// All four controllers call this.  Until the bus was separated from the 5380 it
+// ran unconditionally through that chip's auto-handshake model -- ODR, the
+// BLIND priming gate, the "Start DMA Send" arm gate -- which meant a Quadra's
+// 53C96, a Power Macintosh's SCRIPTS engine and MESH were all pushing bytes
+// through the register semantics of a chip their machines do not contain.  It
+// worked only because this function set the arm flag first, so every gate
+// happened to pass.
+//
+// Now the 5380 path is taken only when there is a 5380: the IIfx's SDMA engine
+// genuinely needs it (see scsi_5380_dma_push_byte).  Everyone else goes
+// straight onto the wire, which is what they were effectively doing anyway.
+void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte) {
+    if (!scsi)
+        return;
+    if (scsi->chip5380)
+        scsi_5380_dma_push_byte(scsi, byte);
+    else
+        scsi_bus_accept_data_out_byte(scsi, byte);
 }
 
 bool scsi_external_select(scsi_t *scsi, int target) {
