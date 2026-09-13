@@ -34,8 +34,31 @@ LOG_USE_CATEGORY_NAME("53c96");
 #define R_TEST      0xA // w (test mode)
 #define R_CONFIG2   0xB
 #define R_CONFIG3   0xC
-#define R_CONFIG4   0xD // 53C96 only
-#define R_TC_HIGH   0xE // 24-bit count extension (Config 2 feature)
+// 0xD and 0xE are NOT registers on this part, and 0xF is one we do not model.
+//
+// The NCR 53C94/95/96 Data Manual's Appendix A register summary lists the whole
+// file: Status 04, Interrupt 05, Sequence Step 06, Config 1 08, Test 0A,
+// Config 2 0B, Config 3 0C, and write register 0F.  The AMD Am53C94/96
+// datasheet (the second source for the same part) agrees -- its map runs 00-0C
+// then jumps to 0F.  There is no Configuration 4 and no transfer-count
+// extension: the counter is flatly two bytes, "Writing a zero to this register
+// sets a maximum transfer count of 65536 bytes".
+//
+// This file used to declare R_CONFIG4 0xD ("53C96 only") and R_TC_HIGH 0xE
+// ("24-bit count extension (Config 2 feature)").  Both describe the later
+// NCR/Emulex FAS216 family, not the part Apple shipped -- the Quadra 900
+// developer note names it: "two NCR 53C96 ICs".
+//
+// 0x0F is real and unmodelled: NCR calls it "Reserve FIFO byte (refer to
+// Config 2 Bit 7)", the AMD datasheet calls the same register DALREG, the Data
+// Alignment Register, gated by CR2 bit 7 (DAE).  It only matters for initiator
+// synchronous data-in landing on a misaligned boundary.  No guest touches it --
+// instrumented reads and writes across suite-quadra, q900-checkpoint,
+// tnt-hd-boot and ans-scsi saw 0x0F neither read nor written, and 0x0D neither
+// read nor written either.  0x0E IS read (11 times in suite-quadra, once in
+// tnt-hd-boot, at raw address 0x0E rather than through decode aliasing); it
+// returns 0 from the default case, which is what it did before and what the
+// manual tells software to expect of a reserved address.
 
 // Status register bits (Figure 4-2)
 #define ST_INT   0x80
@@ -75,7 +98,6 @@ struct scsi_53c96 {
     uint8_t config1;
     uint8_t config2;
     uint8_t config3;
-    uint8_t config4;
     uint8_t clock_conv;
 
     bool int_line; // INT output level
@@ -527,8 +549,6 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
         return c->config2;
     case R_CONFIG3:
         return c->config3;
-    case R_CONFIG4:
-        return c->config4;
     default:
         return 0;
     }
@@ -595,9 +615,6 @@ void scsi_53c96_write(scsi_53c96_t *c, uint32_t reg, uint8_t value) {
         break;
     case R_CONFIG3:
         c->config3 = value;
-        break;
-    case R_CONFIG4:
-        c->config4 = value;
         break;
     default:
         break;
