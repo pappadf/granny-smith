@@ -137,6 +137,18 @@ void pci_deassert_irq(struct pci_device *dev) {
     s_irq_deasserts++;
 }
 
+// sym53c825.c is linked for its register file (F-14: the engine and the host
+// share one set of accessors), which drags in the two PCI entry points it uses
+// to publish its BAR windows and reset its config header.  Neither is on any
+// path this suite drives -- there is no PCI bus here.
+void pci_bar_backing_iface(struct pci_device *dev, int bar, const memory_interface_t *iface, void *ctx) {
+    (void)dev, (void)bar, (void)iface, (void)ctx;
+}
+
+void pci_cfg_reset(struct pci_device *dev) {
+    (void)dev;
+}
+
 // ============================================================================
 // Mock SCSI target
 // ============================================================================
@@ -1048,6 +1060,105 @@ TEST(test_checkpoint_roundtrip) {
     ASSERT_EQ_INT(s_c->reg[SYM825_SIST0], SYM825_SIST0_CMP);
 }
 
+// ============================================================================
+// 9. The engine and the host share one register file (F-14)
+// ============================================================================
+//
+// The engine addresses registers by 7-bit number and used to index s->reg[]
+// straight, so it saw none of the side effects the host BAR windows implement.
+// Both now go through sym53c8xx_reg_read/sym53c8xx_reg_write.
+
+// A script reading DSTAT must get the latched cause, and the read must CLEAR
+// it -- the same read-to-clear a host read gets.  Before the fix this read a
+// byte nothing in the emulator ever wrote: DSTAT lived in its own field, and
+// the array slot the engine indexed was permanently whatever reset left.
+TEST(test_script_read_of_dstat_sees_the_latch) {
+    setup();
+    // Latch a cause the program's own trailing INT will not re-raise: INT sets
+    // SIR, so testing SIR here would read a bit that comes back on its own.
+    s_c->reg[SYM825_DSTAT] = SYM825_DSTAT_MDPE;
+
+    // MOVE DSTAT | 0x00 TO SFBR -- opcode 110, operator 010 (OR), which is how
+    // a register reaches SFBR (the guide's own abort example spends CTEST2
+    // exactly this way).
+    put_insn_word(0x1000, RW(6, 2, SYM825_DSTAT, 0x00));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000);
+
+    ASSERT_TRUE(s_c->reg[SYM825_SFBR] & SYM825_DSTAT_MDPE); // the engine saw it
+    ASSERT_TRUE(!(s_c->reg[SYM825_DSTAT] & SYM825_DSTAT_MDPE)); // and cleared it
+}
+
+// The CTEST2 doorbell, which was the ONE side effect hand-copied into the
+// engine.  It has to keep working now that the copy is gone -- this is the
+// idiom both the AIX and Mac OS dispatchers use, and ans-macos-2rom spends it
+// 22 times per run.
+TEST(test_script_read_of_ctest2_consumes_sigp) {
+    setup();
+    s_c->reg[SYM825_ISTAT] |= SYM825_ISTAT_SIGP;
+
+    put_insn_word(0x1000, RW(7, 2, SYM825_CTEST2, 0x00)); // MOVE CTEST2|0 TO CTEST2
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000);
+
+    ASSERT_TRUE(!(s_c->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP)); // doorbell spent
+}
+
+// A STORE of a read-to-clear register moves the latched value out to memory
+// AND clears it, because each byte of a Load/Store is an ordinary register
+// access on the part.  The old memcpy over s->reg[] did neither: it copied the
+// dead slot and left the latch alone.
+TEST(test_store_of_sist0_reads_it_to_clear) {
+    setup();
+    s_c->reg[SYM825_SIST0] = SYM825_SIST0_UDC;
+
+    // SIST0 is $42, so the memory address must share its byte alignment --
+    // "the register address and memory address must have the same byte
+    // alignment" -- hence $2102, not $2100.
+    put_insn_word(0x1000, STORE(SYM825_SIST0, 1));
+    put_insn_word(0x1004, 0x2102);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000);
+
+    ASSERT_EQ_INT(s_mem[0x2102], SYM825_SIST0_UDC); // the cause reached memory
+    ASSERT_EQ_INT(s_c->reg[SYM825_SIST0], 0); // and the latch is spent
+}
+
+// Plain storage must stay plain: SCRATCHA has no accessor case, so routing
+// through the accessors must not have changed it.  Guards against a fix that
+// "works" by giving every register a side effect.
+TEST(test_scratch_registers_are_still_plain) {
+    setup();
+    put_insn_word(0x1000, RW(7, 0, SYM825_SCRATCHA, 0x5A)); // MOVE 0x5A TO SCRATCHA
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, RW(6, 2, SYM825_SCRATCHA, 0x00)); // ...and read it back
+    put_insn_word(0x100C, 0);
+    put_insn_word(0x1010, TC(3, 0));
+    put_insn_word(0x1014, 0);
+    run_at(0x1000);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x5A); // undisturbed by the read
+    ASSERT_EQ_INT(s_c->reg[SYM825_SFBR], 0x5A);
+}
+
+// A script write to DCNTL[STD] or DSP must NOT re-enter sym53c8xx_start: those
+// strobes are reachable from inside the dispatch loop, where the engine is
+// already running.  The host keeps the side effect; the script records the
+// bits and moves on.
+TEST(test_script_write_to_dcntl_does_not_restart_the_engine) {
+    setup();
+    put_insn_word(0x1000, RW(7, 0, SYM825_DCNTL, SYM825_DCNTL_STD));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000); // must return, not recurse or re-arm
+    ASSERT_TRUE(!s_c->running);
+}
+
 int main(void) {
     RUN(test_block_move_full_command);
     RUN(test_io_wait_disconnect_is_not_unexpected);
@@ -1078,5 +1189,10 @@ int main(void) {
     RUN(test_nonfatal_scsi_cause);
     RUN(test_runaway_watchdog);
     RUN(test_checkpoint_roundtrip);
+    RUN(test_script_read_of_dstat_sees_the_latch);
+    RUN(test_script_read_of_ctest2_consumes_sigp);
+    RUN(test_store_of_sist0_reads_it_to_clear);
+    RUN(test_scratch_registers_are_still_plain);
+    RUN(test_script_write_to_dcntl_does_not_restart_the_engine);
     return 0;
 }

@@ -701,16 +701,20 @@ static void exec_read_write(sym53c8xx_t *s, uint32_t insn) {
     // it is the addressed register; the second operand is the immediate,
     // or SFBR when the D8 bit says so (which is how two registers are
     // combined without a temporary).
-    uint8_t acc = (opc == 5) ? s->reg[SYM825_SFBR] : s->reg[ra];
+    //
+    // Both operands come through the register accessor, so a SCRIPTS read sees
+    // exactly what a host read sees.  That is what makes CTEST2 work -- bit 6
+    // mirrors ISTAT's SIGP and the read CLEARS it (LSI53C825A TM v3.1), which
+    // the programming guide's own abort example relies on (`MOVE CTEST2 TO
+    // SFBR ; clear sig_p bit`), and which the AIX and Mac OS dispatchers spend
+    // as `MOVE CTEST2 | 0x00 TO CTEST2`.  That one register used to be
+    // hand-copied here; every other side effect was simply absent, because the
+    // engine indexed s->reg[] straight.
+    //
+    // SFBR is read raw: it is plain storage with no accessor case, and reading
+    // it through one would be a no-op with an extra branch.
+    uint8_t acc = (opc == 5) ? s->reg[SYM825_SFBR] : sym53c8xx_reg_read(s, ra);
     uint8_t data = use_sfbr ? s->reg[SYM825_SFBR] : imm;
-    // A SCRIPTS read of CTEST2 has the same side effect as a host read:
-    // bit 6 mirrors ISTAT's SIGP and the read CLEARS it (LSI53C825A TM
-    // v3.1, CTEST2) — the dispatcher's `MOVE CTEST2 | 0x00 TO CTEST2`
-    // consumes the driver's doorbell exactly this way.
-    if (opc != 5 && ra == SYM825_CTEST2) {
-        acc = (uint8_t)((acc & ~0x40u) | ((s->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP) ? 0x40u : 0u));
-        s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
-    }
     bool carry_in = (s->reg[SYM825_SCNTL1] & 0x04u) != 0;
     uint8_t result = acc;
     bool carry_out = carry_in;
@@ -757,7 +761,7 @@ static void exec_read_write(sym53c8xx_t *s, uint32_t insn) {
     if (opc == 6)
         s->reg[SYM825_SFBR] = result;
     else
-        s->reg[ra] = result;
+        sym53c8xx_reg_write(s, ra, result, true);
 }
 
 // ============================================================
@@ -859,10 +863,22 @@ static void exec_load_store(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
         sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
         return;
     }
-    if (load)
-        sym53c8xx_read_block(s, addr, &s->reg[ra], n);
-    else
-        sym53c8xx_write_block(s, addr, &s->reg[ra], n);
+    // Byte-wise through the accessors rather than a memcpy over s->reg[].  The
+    // instruction moves up to four bytes, and each one is an ordinary register
+    // access on the part: a LOAD into a register with a write side effect
+    // triggers it, and a STORE of DSTAT or SIST0 out to memory reads them
+    // read-to-clear, which is the whole point of those registers.  A memcpy
+    // over the array had neither.
+    uint8_t buf[4];
+    if (load) {
+        sym53c8xx_read_block(s, addr, buf, n);
+        for (uint32_t i = 0; i < n; i++)
+            sym53c8xx_reg_write(s, ra + i, buf[i], true);
+    } else {
+        for (uint32_t i = 0; i < n; i++)
+            buf[i] = sym53c8xx_reg_read(s, ra + i);
+        sym53c8xx_write_block(s, addr, buf, n);
+    }
 }
 
 // ============================================================

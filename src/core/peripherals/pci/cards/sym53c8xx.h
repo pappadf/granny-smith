@@ -378,6 +378,22 @@ void sym53c8xx_raise_scsi(sym53c8xx_t *s, uint8_t sist0_bits, uint8_t sist1_bits
 // store directly; anything else goes through the slow path.  Exposed so
 // the unit suite can substitute a mock.
 uint32_t sym53c8xx_read32(sym53c8xx_t *s, uint32_t phys);
+// The register file's guest-visible semantics, in one place (sym53c825.c).
+//
+// Every guest-facing access goes through these -- host MMIO through the BAR
+// windows, and the SCRIPTS engine's Read/Write and Load/Store instructions,
+// which address registers by 7-bit number.  The engine used to index s->reg[]
+// directly and so saw none of the side effects the host path implements:
+// read-to-clear on DSTAT/SIST0/SIST1, the computed DIP/SIP in ISTAT, the DMA
+// FIFO behind CTEST1/CTEST6, the strap mixed into GPREG, the revision in
+// CTEST3.  Only CTEST2's SIGP-clear had been hand-copied into the engine.
+//
+// `from_script` says which side is asking.  It changes nothing about what is
+// read or written -- only whether a write is allowed to (re)start the engine.
+// See the comment on the DSP/DCNTL cases for why that has to differ.
+uint8_t sym53c8xx_reg_read(sym53c8xx_t *s, uint32_t reg);
+void sym53c8xx_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value, bool from_script);
+
 void sym53c8xx_read_block(sym53c8xx_t *s, uint32_t phys, uint8_t *buf, uint32_t len);
 void sym53c8xx_write_block(sym53c8xx_t *s, uint32_t phys, const uint8_t *buf, uint32_t len);
 
