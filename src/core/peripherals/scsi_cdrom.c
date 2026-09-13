@@ -400,23 +400,20 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
     bool loej = (flags & 0x02) != 0;
 
     if (!start && loej) {
-        // Eject: check if removal is prevented.  CDU-541 manual S5.2.33 -- "a
-        // request to eject the disc will be terminated with a CHECK CONDITION
-        // status.  The sense key will be set to ILLEGAL REQUEST, and the
-        // additional sense code set to PREVENT BIT SET".  This used to report
-        // 0x3A MEDIUM NOT PRESENT, which tells the driver the drive is empty --
-        // the opposite of the truth, and a reason to stop retrying.
-        if (scsi->devices[target].prevent_removal) {
+        // Whether the medium may leave the drive is not this command's
+        // decision -- the same lock stops the eject button -- so ask the one
+        // function that owns it and translate the refusal into SCSI.
+        //
+        // CDU-541 manual S5.2.33: "a request to eject the disc will be
+        // terminated with a CHECK CONDITION status.  The sense key will be set
+        // to ILLEGAL REQUEST, and the additional sense code set to PREVENT BIT
+        // SET".  This used to report 0x3A MEDIUM NOT PRESENT, which tells the
+        // driver the drive is empty -- the opposite of the truth, and a reason
+        // to stop retrying.
+        if (scsi_eject_device(scsi, target) == -2) {
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_SONY_PREVENT_BIT_SET, 0x00);
             return;
         }
-        // Mark medium as not present (eject).  No unit attention: removal is
-        // not one of the four causes the CDU-541 manual 4.1.3 lists, and its
-        // UNIT ATTENTION table has no code for it.  The empty bay is a
-        // persistent NOT READY condition instead -- see the eject path in
-        // scsi.c for why the lifetime matters, not just the code.
-        scsi->devices[target].medium_present = false;
-        scsi->device_images[target] = NULL;
     }
     // Start=1 (spin up) or Start=0,LoEj=0 (spin down): no-op
     phase_status(scsi, STATUS_GOOD);

@@ -294,8 +294,19 @@ void scsi_set_loopback(scsi_t *scsi, bool enable);
 // Query whether SCSI loopback mode is active
 bool scsi_get_loopback(scsi_t *scsi);
 
-// Eject the medium at the given SCSI id (0..6). Returns 1 on successful
-// eject, 0 if the slot was already empty, -1 on bad arguments.
+// Eject the medium at the given SCSI id (0..6).  The one place that decides
+// whether a medium may leave a drive: both the guest's START/STOP UNIT and the
+// host's device[N].eject() come through here, because PREVENT MEDIUM REMOVAL
+// inhibits both routes (CDU-541 manual S5.2.14).
+//
+//   1  ejected
+//   0  the slot was already empty
+//  -1  bad arguments
+//  -2  refused: PREVENT MEDIUM REMOVAL is set
+//
+// Callers report the refusal in their own terms -- a SCSI initiator gets
+// CHECK CONDITION / ILLEGAL REQUEST / PREVENT BIT SET; the object model gets a
+// message.
 int scsi_eject_device(scsi_t *scsi, int id);
 
 // === M7d — object-model accessors ==========================================

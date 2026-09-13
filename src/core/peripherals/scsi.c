@@ -1795,8 +1795,13 @@ static value_t scsi_dev_method_eject(struct object *self, const member_t *m, int
     if (!scsi)
         return val_err("scsi.devices.N.eject: scsi controller not available");
     int rc = scsi_eject_device(scsi, (int)slot);
-    if (rc < 0)
+    if (rc == -1)
         return val_err("scsi.devices.N.eject: invalid SCSI ID %u", slot);
+    // The guest has locked the door.  A real eject button would not work
+    // either, so neither does this one -- say so rather than lying about
+    // having ejected.
+    if (rc == -2)
+        return val_err("scsi.devices[%u].eject: the guest has locked the drive (PREVENT MEDIUM REMOVAL)", slot);
     if (rc == 0)
         printf("scsi.devices[%u].eject: no medium present\n", slot);
     else

@@ -1403,8 +1403,32 @@ int scsi_eject_device(scsi_t *scsi, int id) {
         return -1;
     if (!scsi->device_images[id] && !scsi->devices[id].medium_present)
         return 0;
+
+    // PREVENT MEDIUM REMOVAL inhibits BOTH routes out of the drive, so the
+    // check lives here rather than in one caller.  CDU-541 manual S5.2.14: "A
+    // prevent bit of one will inhibit the removal of the caddy by use of a
+    // command through the interface OR BY USE OF THE EJECT BUTTON.  The
+    // emergency release mechanism will not be overridden."
+    //
+    // The guest's START/STOP UNIT used to consult the flag and the host's
+    // device[N].eject() did not, so the same locked drive answered differently
+    // depending on which side asked.  One rule, one place; the callers only
+    // translate the answer into their own vocabulary.
+    //
+    // (The emergency release -- the paperclip hole -- is the documented
+    // override, and is deliberately not modelled: nothing asks for it, and
+    // inventing a force path is how the two answers diverged in the first
+    // place.)
+    if (scsi->devices[id].prevent_removal)
+        return -2;
+
     scsi->devices[id].medium_present = false;
     scsi->device_images[id] = NULL;
+    // Deliberately NOT clearing prevent_removal: S5.2.14 terminates the lock on
+    // ALLOW, BUS DEVICE RESET or a reset condition, and never on removal.  It
+    // cannot be set here anyway -- the check above returned, and a locked-but-
+    // empty drive is unreachable now that both routes honour the lock (PREVENT
+    // on an empty drive is refused, and reset and attach clear it).
     // Removal raises NO unit attention.  The CDU-541 manual 4.1.3 lists exactly
     // four causes -- power-on, reset, *insertion* of a caddy with successful TOC
     // recovery, and MODE SELECT from another initiator -- and its UNIT ATTENTION

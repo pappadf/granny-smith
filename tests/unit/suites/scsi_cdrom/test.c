@@ -471,6 +471,58 @@ TEST(allow_then_eject_succeeds) {
     scsi_delete(scsi);
 }
 
+// The host's device[N].eject() -- the model of the front-panel button -- had no
+// test at all, and honoured no lock: a guest that had locked the drive still
+// lost its medium.  S5.2.14 inhibits removal "by use of a command through the
+// interface OR BY USE OF THE EJECT BUTTON", so both routes now ask the same
+// function and get the same answer.
+TEST(host_eject_honours_the_guest_lock) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+    ASSERT_EQ_INT(scsi_eject_device(scsi, TARGET), -2); // refused, not -1 or 1
+    ASSERT_TRUE(scsi_device_medium_present(scsi, TARGET));
+
+    // And the refusal is the lock, not a broken host path: ALLOW frees it.
+    ASSERT_EQ_INT(prevent_allow(scsi, false), scsi_status);
+    ASSERT_EQ_INT(scsi_eject_device(scsi, TARGET), 1);
+    ASSERT_TRUE(!scsi_device_medium_present(scsi, TARGET));
+    scsi_delete(scsi);
+}
+
+// The return codes are a contract the object model reads to tell "refused" from
+// "invalid id" from "nothing there"; collapsing any pair would make
+// scsi.devices.N.eject() report the wrong thing.
+TEST(host_eject_return_codes_are_distinct) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(scsi_eject_device(scsi, 7), -1); // 7 is the initiator
+    ASSERT_EQ_INT(scsi_eject_device(scsi, -1), -1); // out of range
+    ASSERT_EQ_INT(scsi_eject_device(NULL, TARGET), -1);
+    ASSERT_EQ_INT(scsi_eject_device(scsi, 1), 0); // a slot with no device
+
+    ASSERT_EQ_INT(scsi_eject_device(scsi, TARGET), 1); // the real thing
+    ASSERT_EQ_INT(scsi_eject_device(scsi, TARGET), 0); // already empty
+    scsi_delete(scsi);
+}
+
+// Removal does not lift the lock (S5.2.14 ends it on ALLOW, BUS DEVICE RESET or
+// a reset condition -- never on removal), and the model cannot reach a locked
+// empty drive by any other route either.
+TEST(eject_leaves_no_locked_empty_drive) {
+    scsi_t *scsi = attach_disc();
+
+    ASSERT_EQ_INT(prevent_allow(scsi, false), scsi_status);
+    ASSERT_EQ_INT(scsi_eject_device(scsi, TARGET), 1);
+
+    // PREVENT on the now-empty drive is refused, so the only way in is shut.
+    ASSERT_EQ_INT(prevent_allow(scsi, true), scsi_status);
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_NOT_READY);
+    scsi_delete(scsi);
+}
+
 // CDU-541 S5.2.14: "If a PREVENT MEDIUM REMOVAL command is issued without the
 // drive being in the ready condition [the] command will be terminated with a
 // CHECK CONDITION status.  The sense key will be set to NOT READY."  The ready
@@ -679,6 +731,9 @@ int main(void) {
     RUN(allow_then_eject_succeeds);
     RUN(prevent_on_empty_drive_is_refused);
     RUN(allow_on_empty_drive_is_accepted);
+    RUN(host_eject_honours_the_guest_lock);
+    RUN(host_eject_return_codes_are_distinct);
+    RUN(eject_leaves_no_locked_empty_drive);
     RUN(apple_vendor_page_30_bytes_are_pinned);
     RUN(zero_allocation_length_transfers_nothing);
     RUN(allocation_length_is_a_ceiling_not_a_request);
