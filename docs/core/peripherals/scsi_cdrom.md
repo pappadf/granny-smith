@@ -191,13 +191,22 @@ generic SCSI-2 table, which differs on the last row:
 | 1 | 1 | `0x03` | **Default values** |
 
 > **Corrected 2026-09-14.** This list previously said `0x03` was "Saved values
-> (not supported — return CHECK CONDITION, ILLEGAL REQUEST)", which is the
-> generic SCSI-2 behaviour and not this drive's. Table 5-5 maps `1 1` to Default
-> Values. The error was inherited by a review item (F-36) that proposed
+> (not supported — return CHECK CONDITION, ILLEGAL REQUEST)". That is neither
+> this drive's behaviour nor, as written, any standard's: Sony, *CDU-541
+> CD-ROM Drive SCSI Interface Manual* (March 1990), Table 5-5 maps page control
+> `1 1` to Default Values.
+>
+> The two standards bracket it and neither rescues the old text. ANSI
+> X3.131-1986 (SCSI-1) has no page control field at all — mode pages and PC are
+> SCSI-2 additions. ANSI X3.131-1994 (SCSI-2) §8.2.10.4 does require a
+> rejection when saved values are unimplemented, but with additional sense code
+> **SAVING PARAMETERS NOT SUPPORTED**, not ILLEGAL VALUE IN CDB — and it does
+> not apply here, because our INQUIRY reports ANSI version `0x01`, SCSI-1, for
+> every device.
+>
+> The error was inherited by a 2026-09-03 review item that proposed
 > implementing the rejection; it would have made the model less faithful, not
-> more. There is no SCSI-2 standard in `local/gs-docs/library` to appeal to —
-> only X3.131-1986, whose MODE SENSE has no page control field at all, because
-> mode pages and PC are SCSI-2 additions.
+> more.
 
 **Changeable values (PC=1)**, §5.2.3.2 verbatim: "The page requested will be
 returned with the bits that are allowed to be changed set to one. Parameters
