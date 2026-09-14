@@ -74,11 +74,11 @@ static bool scsi_phase_match(scsi_t *scsi) {
     // the live bus signals rather than the stored csr register.
     uint8_t csr = csr_from_bus(scsi);
     if (scsi->loopback && (scsi->chip5380->reg.mr & MR_TARGET)) {
-        if (scsi->chip5380->reg.tcr & 0x01)
+        if (scsi->chip5380->reg.tcr & TCR_IO)
             csr |= CSR_IO;
-        if (scsi->chip5380->reg.tcr & 0x02)
+        if (scsi->chip5380->reg.tcr & TCR_CD)
             csr |= CSR_CD;
-        if (scsi->chip5380->reg.tcr & 0x04)
+        if (scsi->chip5380->reg.tcr & TCR_MSG)
             csr |= CSR_MSG;
     }
     return ((csr >> 2) & 7) == (scsi->chip5380->reg.tcr & 7);
@@ -113,13 +113,13 @@ static uint8_t compute_loopback_cdr(scsi_t *scsi) {
         val |= 0x10; // SEL → DB4
     // Target mode: TCR signals → data bus pins
     if (scsi->chip5380->reg.mr & MR_TARGET) {
-        if (scsi->chip5380->reg.tcr & 0x01)
+        if (scsi->chip5380->reg.tcr & TCR_IO)
             val |= 0x80; // I/O → DB7
-        if (scsi->chip5380->reg.tcr & 0x02)
+        if (scsi->chip5380->reg.tcr & TCR_CD)
             val |= 0x02; // C/D → DB1
-        if (scsi->chip5380->reg.tcr & 0x04)
+        if (scsi->chip5380->reg.tcr & TCR_MSG)
             val |= 0x08; // MSG → DB3
-        if (scsi->chip5380->reg.tcr & 0x08)
+        if (scsi->chip5380->reg.tcr & TCR_REQ)
             val |= 0x01; // REQ → DB0
     }
     return val;
@@ -762,13 +762,13 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 val |= CSR_RST;
             // Target mode: TCR drives I/O, C/D, MSG, REQ onto the bus
             if (scsi->chip5380->reg.mr & MR_TARGET) {
-                if (scsi->chip5380->reg.tcr & 0x01)
+                if (scsi->chip5380->reg.tcr & TCR_IO)
                     val |= CSR_IO;
-                if (scsi->chip5380->reg.tcr & 0x02)
+                if (scsi->chip5380->reg.tcr & TCR_CD)
                     val |= CSR_CD;
-                if (scsi->chip5380->reg.tcr & 0x04)
+                if (scsi->chip5380->reg.tcr & TCR_MSG)
                     val |= CSR_MSG;
-                if (scsi->chip5380->reg.tcr & 0x08)
+                if (scsi->chip5380->reg.tcr & TCR_REQ)
                     val |= CSR_REQ;
             }
             return val;
@@ -822,7 +822,7 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         // scsi.c clears end_of_dma).  Doc-92's fix removed that
         // unconditional transition, so we need to clear end_of_dma here
         // (on RESET-read) to mirror real-hardware EOP-ACK semantics.
-        scsi->chip5380->reg.bsr &= ~(0x04 | BSR_INT | 0x20);
+        scsi->chip5380->reg.bsr &= ~(BSR_BE | BSR_INT | BSR_PE);
         scsi->chip5380->end_of_dma = false;
         scsi->chip5380->rst_irq = false; // S6.9 clears the IRQ latch, reset source included
         scsi_update_irq(scsi);
@@ -1331,7 +1331,7 @@ void scsi_signal_eop(scsi_t *scsi) {
     // exercise this code path (uses VIA2-based pseudo-DMA), so setting
     // TCR bit 7 is invisible to Mac OS.  The bit is cleared by the next
     // CPU write to TCR (write_uint8 case TCR replaces the register).
-    scsi->chip5380->reg.tcr |= 0x80;
+    scsi->chip5380->reg.tcr |= TCR_LBS;
     // A wrapper EOP means the SCSIDMA engine finished the byte COUNT it was
     // armed with — i.e. ONE scatter-gather segment — NOT necessarily the whole
     // SCSI command.  A SCSI READ streams its full transfer length (tl*blk_sz)

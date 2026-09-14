@@ -50,8 +50,19 @@
 #define MR_DMA       0x02
 #define MR_TARGET    0x40 // target mode
 
-// Target command register bits
-#define TCR_CD 0x02
+// Target command register bits (NCR 5380 S6.4, register 3).  The manual spells
+// the low four "ASSERT <signal>"; bits 0-2 carry the same MSG/C-D/I-O encoding
+// the wire uses, which is why scsi_phase_match() can compare them against
+// CSR[4..2] shifted down by two.
+#define TCR_IO  0x01 // bit 0: assert I/O
+#define TCR_CD  0x02 // bit 1: assert C/D
+#define TCR_MSG 0x04 // bit 2: assert MSG
+#define TCR_REQ 0x08 // bit 3: assert REQ ("no meaning when operating as an Initiator")
+// Bit 7 is an NCR 53C80 extension, not a 5380 bit: "The NCR 53C80 uses bit 7 of
+// this register to determine when the last byte of a DMA transfer is sent to
+// the SCSI bus.  This flag is necessary since the End of DMA bit in the Bus and
+// Status Register only reflects when the last byte was received from the DMA."
+#define TCR_LBS 0x80 // bit 7: last byte sent (53C80)
 
 // Current SCSI bus status register bits
 #define CSR_SEL 0x02
@@ -65,8 +76,10 @@
 // Bus and status register bits (NCR 5380/53C80 BSR, read-only register 5)
 #define BSR_ACK  0x01 // bit 0: ACK sensed on bus
 #define BSR_ATN  0x02 // bit 1: ATN sensed on bus
+#define BSR_BE   0x04 // bit 2: busy error (unexpected loss of BSY)
 #define BSR_PM   0x08 // bit 3: phase match (bus phase matches TCR)
 #define BSR_INT  0x10 // bit 4: interrupt request active (/IRQ asserted)
+#define BSR_PE   0x20 // bit 5: parity error
 #define BSR_DR   0x40 // bit 6: DMA request (data ready for DMA transfer)
 #define BSR_EDMA 0x80 // bit 7: end of DMA
 
