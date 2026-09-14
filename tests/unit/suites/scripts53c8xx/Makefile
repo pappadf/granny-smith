@@ -56,9 +56,14 @@ LDFLAGS ?=
 # BAR windows use, so the read-to-clear and side-effect semantics are exercised
 # rather than stubbed -- which is the point of F-14.  Its PCI surface stays out
 # of the way behind the pci_* stubs the test already supplies.
+# scsi_msgsession.c is the real IDENTIFY/SDTR/WDTR parser, shared with MESH.
+# It is pure logic with no emulator dependencies, so the suite links the actual
+# code rather than a stub -- a mocked message parser would not be the thing the
+# engine depends on.
 SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/pci/cards/scripts53c8xx.c \
-        $(EMU_ROOT)/core/peripherals/pci/cards/sym53c825.c
+        $(EMU_ROOT)/core/peripherals/pci/cards/sym53c825.c \
+        $(EMU_ROOT)/core/peripherals/scsi_msgsession.c
 
 ALL_SRCS := $(abspath $(SRCS))
 OBJ := $(foreach s,$(ALL_SRCS),$(OBJ_DIR)/$(patsubst $(WORKSPACE_ROOT)/%,%,$(patsubst %.c,%.o,$(s))))

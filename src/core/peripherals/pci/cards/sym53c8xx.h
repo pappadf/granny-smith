@@ -33,6 +33,7 @@
 #define PCI_SYM53C8XX_H
 
 #include "memory.h" // memory_interface_t (the BAR backings)
+#include "scsi_msgsession.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -191,10 +192,8 @@ typedef struct sym53c8xx {
     uint8_t phase; // the phase the target is currently presenting
     uint32_t insn_count; // instructions executed since power-on (diagnostics)
     uint8_t msgout_pending; // a virtual MSG OUT is being presented
-    uint8_t mo_buf[16]; // the message bytes the initiator has sent
-    uint8_t mo_len;
-    uint8_t mi_buf[8]; // the message bytes we are giving back
-    uint8_t mi_n, mi_rd;
+    // The IDENTIFY/SDTR/WDTR conversation, shared with MESH.
+    scsi_msgsession_t msg;
     uint8_t msgin_taken; // the bus model's MESSAGE IN byte was delivered
     uint8_t disconnect_pending;
     uint8_t sync_period, sync_offset;

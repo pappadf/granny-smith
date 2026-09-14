@@ -19,6 +19,7 @@
 
 #include "byte_fifo.h"
 #include "common.h"
+#include "scsi_msgsession.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -66,11 +67,9 @@ typedef struct mesh {
     // message-out bytes of the current session and the virtual
     // message-in queue the target speaks through.  All of it is
     // per-connection state.
-    uint8_t mo_buf[12];
-    uint8_t mo_len;
-    uint8_t mi_buf[8];
-    uint8_t mi_n, mi_rd;
-    uint8_t sdtr_await; // our SDTR request is out, awaiting the reply
+    // The IDENTIFY/SDTR conversation, shared with the 53C8xx SCRIPTS engine.
+    // MESH's capability limits live beside the code that applies them.
+    scsi_msgsession_t msg;
     uint8_t msgin_taken; // the bus message byte was delivered (MESSAGE IN
                          // lingers in the bus model until release, but the
                          // target no longer REQs — busfree must succeed)

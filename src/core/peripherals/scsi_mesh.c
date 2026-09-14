@@ -223,85 +223,40 @@ static void finish_command(mesh_t *m) {
 // SDTR message engine (see the "Sync negotiation" header block)
 // ============================================================
 
+// MESH can express a four-bit synchronous offset (sync_params 0xD0:
+// `offset = value >> 4`) and its transfer period is (x + 2) * 40 ns with
+// x == 0 meaning 100 ns, so 100 ns -- SDTR period 25 -- is the fastest it
+// runs.  Narrow part: it answers WDTR with 8-bit rather than agreeing.
+// [Linux/NetBSD/MkLinux mesh.h; there is no Apple datasheet]
+static const scsi_msg_caps_t MESH_MSG_CAPS = {.min_period = 25, .max_offset = 15, .wide = false};
+
 // A virtual MESSAGE IN is pending while queued bytes remain unread.
 static bool msgin_pending(mesh_t *m) {
-    return m->mi_rd < m->mi_n;
+    return scsi_msg_pending(&m->msg);
 }
 
-// Per-session message state: assembled message-out, virtual message-in,
-// and the awaiting-reply flag all die with the connection.
+// Per-session message state: assembled message-out, virtual message-in, and
+// the delivered flag all die with the connection.
 static void msg_session_reset(mesh_t *m) {
-    m->mo_len = 0;
-    m->mi_n = 0;
-    m->mi_rd = 0;
-    m->sdtr_await = 0;
+    scsi_msg_reset(&m->msg);
     m->msgin_taken = 0;
-}
-
-static void msgin_queue_sdtr(mesh_t *m, uint8_t period, uint8_t offset) {
-    m->mi_buf[0] = 0x01; // MESSAGE EXTENDED
-    m->mi_buf[1] = 0x03;
-    m->mi_buf[2] = 0x01; // SDTR
-    m->mi_buf[3] = period;
-    m->mi_buf[4] = offset;
-    m->mi_n = 5;
-    m->mi_rd = 0;
 }
 
 // A message-out sequence completed: parse what the initiator said.
 // Called after finish_command so the CMDDONE presentation is normal;
 // queueing a message-in flips the visible phase for the NEXT command.
 static void msgout_complete(mesh_t *m) {
+    scsi_msg_result_t r;
+    scsi_msg_complete(&m->msg, &MESH_MSG_CAPS, &r);
+    if (r.incomplete)
+        return; // more bytes still to come; nothing consumed
     int target = m->dest_id & 7;
-    const uint8_t *sdtr = NULL;
-    bool reject = false, incomplete = false, identify = false;
-    for (uint8_t i = 0; i < m->mo_len;) {
-        uint8_t b = m->mo_buf[i];
-        if (b & 0x80u) { // IDENTIFY family
-            identify = true;
-            i++;
-        } else if (b == 0x01u) { // MESSAGE EXTENDED
-            if (i + 2 > m->mo_len || i + 2 + m->mo_buf[i + 1] > m->mo_len) {
-                incomplete = true; // more bytes still to come
-                break;
-            }
-            if (m->mo_buf[i + 1] == 3 && m->mo_buf[i + 2] == 0x01u)
-                sdtr = &m->mo_buf[i + 3]; // period, offset
-            i = (uint8_t)(i + 2 + m->mo_buf[i + 1]);
-        } else {
-            if (b == 0x07u) // MESSAGE REJECT
-                reject = true;
-            i++;
-        }
-    }
-    if (sdtr) {
-        m->mo_len = 0;
-        if (m->sdtr_await) {
-            // The initiator's reply to our request: the agreement is
-            // whatever it answered — nothing more to say.
-            m->sdtr_await = 0;
-            LOG(2, "SDTR reply from initiator (period=%u offset=%u): target %d negotiated", sdtr[0], sdtr[1], target);
-        } else {
-            // Initiator-offered SDTR: answer within our limits through
-            // the virtual MESSAGE IN phase.
-            uint8_t period = sdtr[0] < MESH_SDTR_PERIOD ? MESH_SDTR_PERIOD : sdtr[0];
-            uint8_t offset = sdtr[1] > MESH_SDTR_OFFSET ? MESH_SDTR_OFFSET : sdtr[1];
-            msgin_queue_sdtr(m, period, offset);
-            LOG(2, "SDTR offer (period=%u offset=%u): responding (period=%u offset=%u)", sdtr[0], sdtr[1], period,
-                offset);
-        }
-    } else if (reject && m->sdtr_await) {
-        // Our request was rejected: async it is, and the exchange is
-        // over — drop anything still queued.
-        m->sdtr_await = 0;
-        m->mo_len = 0;
-        m->mi_n = 0;
-        m->mi_rd = 0;
-        LOG(2, "SDTR request rejected: target %d stays async", target);
-    } else if (!incomplete && identify) {
-        m->mo_len = 0; // identify(s) consumed; nothing to answer
-    }
-    (void)target;
+    if (r.sdtr)
+        LOG(2, "SDTR offer answered (period=%u offset=%u): target %d", r.period, r.offset, target);
+    if (r.wdtr)
+        LOG(2, "WDTR offer answered %s: target %d", r.wide ? "16-bit" : "8-bit", target);
+    if (r.rejected)
+        LOG(2, "MESSAGE REJECT from initiator: target %d", target);
 }
 
 // ============================================================
@@ -318,8 +273,8 @@ static void pump_out(mesh_t *m) {
         uint8_t b = fifo_pop(m);
         if (m->active == CMD_MSGOUT) {
             LOG(3, "msgout byte $%02X absorbed", b);
-            if (m->mo_len < sizeof(m->mo_buf))
-                m->mo_buf[m->mo_len++] = b;
+            if (!scsi_msg_collect(&m->msg, b))
+                LOG(1, "message-out overflow (byte $%02X dropped)", b);
         } else if (m->bus) {
             scsi_push_data_out_byte(m->bus, b);
         }
@@ -569,11 +524,11 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
             // Serve the virtual message (the SDTR conversation) first;
             // the phase reverts to the live bus once it drains.
             uint32_t n = count;
-            while (n-- > 0 && msgin_pending(m))
-                fifo_push(m, m->mi_buf[m->mi_rd++]);
+            uint8_t mb;
+            while (n-- > 0 && scsi_msg_next(&m->msg, &mb))
+                fifo_push(m, mb);
             if (!msgin_pending(m)) {
-                m->mi_n = 0;
-                m->mi_rd = 0;
+                scsi_msg_reset(&m->msg);
             }
             m->active = 0;
             raise_int(m, INT_CMDDONE);

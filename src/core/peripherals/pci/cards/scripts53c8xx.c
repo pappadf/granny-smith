@@ -214,61 +214,46 @@ static uint32_t fetch32(sym53c8xx_t *s, uint32_t phys) {
 // way (mesh.c "Sync negotiation"), and doing anything else here would mean
 // teaching the shared model about a conversation only two chips have.
 
+// The SYM53C825A's SXFER register (data manual, register 05) tops out at
+// offset 16 in its MO4-MO0 table, and the part does Fast SCSI, so 100 ns --
+// SDTR period 25 -- is its floor.  Wide part.
+//
+// This used to echo whatever the initiator offered, unclamped.  AIX asks for
+// period 25 / offset 16, exactly the maximum, so the echo happened to be
+// right; an initiator asking for more would have been told yes.
+static const scsi_msg_caps_t SYM_MSG_CAPS = {.min_period = 25, .max_offset = 16, .wide = true};
+
 static bool msgin_pending(const sym53c8xx_t *s) {
-    return s->mi_rd < s->mi_n;
+    return scsi_msg_pending(&s->msg);
 }
 
 static void msg_session_reset(sym53c8xx_t *s) {
-    s->mo_len = 0;
-    s->mi_n = 0;
-    s->mi_rd = 0;
+    scsi_msg_reset(&s->msg);
     s->msgin_taken = 0;
     s->msgout_pending = 0;
 }
 
-// Queue an EXTENDED MESSAGE reply for the script to read back.
-static void msgin_queue_ext(sym53c8xx_t *s, uint8_t code, uint8_t a, uint8_t b, bool two) {
-    s->mi_buf[0] = 0x01u; // EXTENDED MESSAGE
-    s->mi_buf[1] = two ? 0x03u : 0x02u; // length
-    s->mi_buf[2] = code;
-    s->mi_buf[3] = a;
-    if (two)
-        s->mi_buf[4] = b;
-    s->mi_n = two ? 5u : 4u;
-    s->mi_rd = 0;
-}
-
-// The script finished its MESSAGE OUT: parse what it said.  Both
-// negotiations are ANSWERED rather than rejected, because a fast/wide
-// channel is expected to negotiate and a chip that always rejected would
-// be lying about the part.  The emulated bus has no timing, so what is
-// modelled is the agreement, not the rate it implies.
+// The script finished its MESSAGE OUT: parse what it said.  Both negotiations
+// are ANSWERED rather than rejected, because a fast/wide channel is expected to
+// negotiate and a chip that always rejected would be lying about the part.  The
+// emulated bus has no timing, so what is modelled is the agreement, not the
+// rate it implies.
 static void msgout_complete(sym53c8xx_t *s) {
-    for (uint8_t i = 0; i < s->mo_len;) {
-        uint8_t b = s->mo_buf[i];
-        if (b & 0x80u) { // IDENTIFY
-            i++;
-        } else if (b == 0x01u) { // EXTENDED MESSAGE
-            if ((uint32_t)i + 2u > s->mo_len || (uint32_t)i + 2u + s->mo_buf[i + 1] > s->mo_len)
-                return; // still incomplete; more bytes are coming
-            uint8_t len = s->mo_buf[i + 1];
-            uint8_t code = s->mo_buf[i + 2];
-            if (code == 0x01u && len == 3) { // SDTR: period, offset
-                s->sync_period = s->mo_buf[i + 3];
-                s->sync_offset = s->mo_buf[i + 4];
-                LOG(3, "ch%d: SDTR agreed, period=%u offset=%u", s->channel, s->sync_period, s->sync_offset);
-                msgin_queue_ext(s, 0x01u, s->sync_period, s->sync_offset, true);
-            } else if (code == 0x03u && len == 2) { // WDTR: transfer width
-                s->wide = s->mo_buf[i + 3] ? 1u : 0u;
-                LOG(3, "ch%d: WDTR agreed, %s transfers", s->channel, s->wide ? "16-bit" : "8-bit");
-                msgin_queue_ext(s, 0x03u, s->wide, 0, false);
-            }
-            i = (uint8_t)(i + 2 + len);
-        } else {
-            i++; // a single-byte message with nothing to answer
-        }
+    scsi_msg_result_t r;
+    scsi_msg_complete(&s->msg, &SYM_MSG_CAPS, &r);
+    if (r.incomplete)
+        return; // still arriving; more bytes are coming
+    if (r.sdtr) {
+        s->sync_period = r.period;
+        s->sync_offset = r.offset;
+        LOG(3, "ch%d: SDTR agreed, period=%u offset=%u", s->channel, s->sync_period, s->sync_offset);
     }
-    s->mo_len = 0;
+    if (r.wdtr) {
+        s->wide = r.wide ? 1u : 0u;
+        LOG(3, "ch%d: WDTR agreed, %s transfers", s->channel, s->wide ? "16-bit" : "8-bit");
+    }
+    if (r.rejected)
+        LOG(3, "ch%d: MESSAGE REJECT from initiator", s->channel);
     s->msgout_pending = 0;
 }
 
@@ -389,8 +374,8 @@ static uint32_t block_move_bytes(sym53c8xx_t *s, uint8_t phase, uint32_t addr, u
             // side of this conversation is ours (see msgout_complete).
             sym53c8xx_read_block(s, addr + moved, buf, chunk);
             for (uint32_t i = 0; i < chunk; i++) {
-                if (s->mo_len < sizeof(s->mo_buf))
-                    s->mo_buf[s->mo_len++] = buf[i];
+                if (!scsi_msg_collect(&s->msg, buf[i]))
+                    LOG(2, "ch%d: message-out overflow (byte $%02X dropped)", s->channel, buf[i]);
             }
             moved += chunk;
             break;
@@ -442,8 +427,9 @@ static uint32_t block_move_bytes(sym53c8xx_t *s, uint8_t phase, uint32_t addr, u
         case SYM825_PHASE_MSG_IN: {
             for (uint32_t i = 0; i < chunk; i++) {
                 int msg;
-                if (msgin_pending(s)) {
-                    msg = s->mi_buf[s->mi_rd++];
+                uint8_t queued;
+                if (scsi_msg_next(&s->msg, &queued)) {
+                    msg = queued;
                 } else {
                     msg = scsi_external_message_byte(s->bus);
                     if (msg < 0) {

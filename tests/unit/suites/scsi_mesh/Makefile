@@ -45,16 +45,19 @@ LDFLAGS ?=
 # The test supplies the mock bus, the mock guest memory and a recording
 # checkpoint stream itself, so no stub modules are linked in.
 #
-# sym53c825.c comes along for the register file.  The engine addresses
-# registers by 7-bit number and now goes through the same accessors the host
-# BAR windows use, so the read-to-clear and side-effect semantics are exercised
-# rather than stubbed -- which is the point of F-14.  Its PCI surface stays out
-# of the way behind the pci_* stubs the test already supplies.
+# scsi_msgsession.c is the real IDENTIFY/SDTR/WDTR parser, shared with the
+# 53C8xx SCRIPTS engine: pure logic, no emulator dependencies, so the suite
+# links the actual code rather than a stub.
+#
+# (The paragraph that used to sit here described sym53c825.c's register file,
+# copied from the scripts53c8xx suite's Makefile.  That file is not in this
+# suite and never was.)
 SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/scsi.c \
         $(EMU_ROOT)/core/peripherals/scsi_bus.c \
         $(EMU_ROOT)/core/peripherals/scsi_cdrom.c \
         $(EMU_ROOT)/core/peripherals/scsi_mesh.c \
+        $(EMU_ROOT)/core/peripherals/scsi_msgsession.c \
         $(EMU_ROOT)/core/object/object.c \
         $(EMU_ROOT)/core/object/value.c \
         $(EMU_ROOT)/core/object/meta.c \

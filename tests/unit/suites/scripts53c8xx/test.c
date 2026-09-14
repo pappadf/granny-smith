@@ -1311,12 +1311,12 @@ TEST(test_checkpoint_keeps_the_whole_engine) {
     s_c->sist1_stacked = 0x02;
 
     // The message session: what the initiator has sent us and what we owe back.
-    s_c->mo_buf[0] = 0x01;
-    s_c->mo_buf[1] = 0x03;
-    s_c->mo_len = 2;
-    s_c->mi_buf[0] = 0x80;
-    s_c->mi_n = 1;
-    s_c->mi_rd = 0;
+    s_c->msg.out[0] = 0x01;
+    s_c->msg.out[1] = 0x03;
+    s_c->msg.out_len = 2;
+    s_c->msg.in[0] = 0x80;
+    s_c->msg.in_n = 1;
+    s_c->msg.in_rd = 0;
     s_c->msgout_pending = 1;
     s_c->msgin_taken = 1;
     s_c->disconnect_pending = 1;
@@ -1345,11 +1345,11 @@ TEST(test_checkpoint_keeps_the_whole_engine) {
 
     ASSERT_EQ_INT(s_c->sist0_stacked, SYM825_SIST0_UDC);
     ASSERT_EQ_INT(s_c->sist1_stacked, 0x02);
-    ASSERT_EQ_INT(s_c->mo_buf[0], 0x01);
-    ASSERT_EQ_INT(s_c->mo_buf[1], 0x03);
-    ASSERT_EQ_INT(s_c->mo_len, 2);
-    ASSERT_EQ_INT(s_c->mi_buf[0], 0x80);
-    ASSERT_EQ_INT(s_c->mi_n, 1);
+    ASSERT_EQ_INT(s_c->msg.out[0], 0x01);
+    ASSERT_EQ_INT(s_c->msg.out[1], 0x03);
+    ASSERT_EQ_INT(s_c->msg.out_len, 2);
+    ASSERT_EQ_INT(s_c->msg.in[0], 0x80);
+    ASSERT_EQ_INT(s_c->msg.in_n, 1);
     ASSERT_EQ_INT(s_c->msgout_pending, 1);
     ASSERT_EQ_INT(s_c->msgin_taken, 1);
     ASSERT_EQ_INT(s_c->disconnect_pending, 1);
