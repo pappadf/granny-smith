@@ -241,11 +241,17 @@ int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
 
 // The target is ready once its settle time has elapsed.
 //
-// Evaluated LAZILY, on every access that can observe it, rather than from a
-// scheduler event.  Events are delivered at sprint boundaries, so an event
-// would hold REQ low for however long the current sprint had left -- which is
-// unbounded, and long enough to swallow real payload.  A deadline compared
-// against the cycle counter is exact.
+// Evaluated lazily against the cycle counter rather than from a scheduler
+// event.  Not because an event would be imprecise -- it would not:
+// docs/core/scheduler/scheduler.md §1.2 lists "events fire with sprint-length
+// jitter" as a misconception, and sprints are sized to stop AT the next event,
+// so one lands on its cycle give or take the instruction-atomicity overshoot.
+//
+// The reason is ownership.  A scheduler event means a registration belonging to
+// one process, which has to sit below the checkpoint line and be re-armed on
+// restore -- the discipline seltmo_registered and drq_evt_registered already
+// carry.  A deadline is plain data: it rides in the saved block, and a
+// checkpoint taken mid-settle comes back mid-settle with nothing to re-arm.
 void scsi_bus_settle_poll(scsi_t *scsi) {
     if (!scsi || !scsi->bus.data_out_pending)
         return;
