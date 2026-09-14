@@ -110,6 +110,26 @@ static const pci_config_decl_t c54m30_decl = {
 #define C54M30_GR_REGS   0x20u
 #define C54M30_ATTR_REGS 0x20u
 
+// Two registers in those blocks are not RAM, and every Alpine driver leans
+// on both to decide the part is a Cirrus at all (TRM §4.4 and §4.16).
+//
+// SR06, "Unlock ALL Extensions": writing $12 unlocks the extension
+// registers and the register then READS BACK $12; writing anything else
+// locks them and it reads back $0F.  A driver's presence test is exactly
+// that round trip, so a plain byte of storage here fails it.
+#define C54M30_SR06_UNLOCK 0x12u
+#define C54M30_SR06_LOCKED 0x0Fu
+// CR27, "ID": read-only, bits 7:2 the device and 1:0 the die revision.
+// $A0 is the CL-GD5430 (the GD5430/5440-family die this card carries, and
+// the value that agrees with its $00A0 PCI device ID), revision 0.
+#define C54M30_CR27_ID 0xA0u
+// SR15, "DRAM Control": bits 3:0 report how much display memory the board
+// fits — 0 = 256 KB, 1 = 512 KB, 2 = 1 MB, 3 = 2 MB, 5 = 3 MB, 4 = 4 MB.
+// A driver sizes its mode list from this field instead of probing, so it
+// has to agree with the DRAM below, or every mode is judged too large.
+#define C54M30_SR15_MEMSIZE 0x2u // 1 MB
+_Static_assert(C54M30_VRAM == 0x00100000u, "C54M30_SR15_MEMSIZE must match the fitted DRAM");
+
 typedef struct c54m30 {
     pci_device_t *dev;
     config_t *cfg;
@@ -195,11 +215,11 @@ static void fb_write32(void *ctx, uint32_t offset, uint32_t value) {
 // The relocatable VGA I/O range
 // ============================================================
 // A 512-byte window carrying the classic VGA register file plus the Alpine
-// extensions, all reached through index/data port pairs.  Shadowed
-// store-and-readback: nothing on the boot path drives a mode through it —
-// POST reads the PCI ID and stops, and Open Firmware's `54m30-config` builds
-// the device-tree node — so the honest model records what a guest writes and
-// logs, rather than inventing CRTC behaviour nothing has yet exercised.
+// extensions, all reached through index/data port pairs.  Store-and-readback
+// for the mode registers, which the model reads a display geometry back out
+// of; the exceptions are the handful of registers that are not memory on the
+// real part — Input Status 1 below, and SR06 / SR15 / CR27 above, which a
+// driver uses to decide the chip is there and how much memory it has.
 
 // Input Status Register 1 ($3BA mono / $3DA colour) — the one VGA register
 // that MUST NOT be store-and-readback, because software does not read it
@@ -235,22 +255,45 @@ static uint8_t status1_value(c54m30_t *c) {
 }
 
 // The VGA port map, as low bytes of the legacy block.
-#define C54M30_ATTR       0xC0u // $3C0: attribute index/data, alternating
-#define C54M30_ATTR_READ  0xC1u // $3C1: attribute data read-back
-#define C54M30_SEQ_INDEX  0xC4u // $3C4 / $3C5
-#define C54M30_SEQ_DATA   0xC5u
-#define C54M30_DAC_RINDEX 0xC7u // $3C7: palette read index
-#define C54M30_DAC_WINDEX 0xC8u // $3C8: palette write index
-#define C54M30_DAC_DATA   0xC9u // $3C9: palette data, R-G-B per entry
-#define C54M30_GR_INDEX   0xCEu // $3CE / $3CF
-#define C54M30_GR_DATA    0xCFu
-#define C54M30_CRTC_INDEX 0xD4u // $3D4 / $3D5 (colour; $3B4/$3B5 mono)
-#define C54M30_CRTC_DATA  0xD5u
+#define C54M30_ATTR            0xC0u // $3C0: attribute index/data, alternating
+#define C54M30_ATTR_READ       0xC1u // $3C1: attribute data read-back
+#define C54M30_SEQ_INDEX       0xC4u // $3C4 / $3C5
+#define C54M30_SEQ_DATA        0xC5u
+#define C54M30_DAC_RINDEX      0xC7u // $3C7: palette read index
+#define C54M30_DAC_WINDEX      0xC8u // $3C8: palette write index
+#define C54M30_DAC_DATA        0xC9u // $3C9: palette data, R-G-B per entry
+#define C54M30_GR_INDEX        0xCEu // $3CE / $3CF
+#define C54M30_GR_DATA         0xCFu
+#define C54M30_CRTC_INDEX      0xD4u // $3D4 / $3D5 (colour; $3B4/$3B5 mono)
+#define C54M30_CRTC_DATA       0xD5u
+#define C54M30_CRTC_INDEX_MONO 0xB4u // $3B4 / $3B5: the monochrome CRTC pair
+#define C54M30_CRTC_DATA_MONO  0xB5u
+// Miscellaneous Output: written at $3C2, read back at $3CC.  Bit 0 is the
+// I/O Address Select that puts the CRTC pair and Input Status 1 at the
+// colour addresses; a driver reads $3CC to learn which pair to use, so the
+// read address has to answer with what was written rather than with the
+// zero a store-and-readback shadow would give it.  Both CRTC pairs are
+// decoded here whatever bit 0 says: no guest on this machine depends on the
+// pair it did not choose being dead, and answering both keeps software that
+// never writes $3C2 working.
+#define C54M30_MISC_WRITE 0xC2u
+#define C54M30_MISC_READ  0xCCu
+
+// Fold the monochrome CRTC addresses onto the colour ones.
+static uint32_t c54m30_port(uint32_t port) {
+    if (port == C54M30_CRTC_INDEX_MONO)
+        return C54M30_CRTC_INDEX;
+    if (port == C54M30_CRTC_DATA_MONO)
+        return C54M30_CRTC_DATA;
+    return port;
+}
 
 static uint8_t io_read8(void *ctx, uint32_t offset) {
     c54m30_t *c = (c54m30_t *)ctx;
-    uint32_t port = offset & (C54M30_REGS - 1u);
+    uint32_t port = c54m30_port(offset & (C54M30_REGS - 1u));
     switch (port) {
+    case C54M30_MISC_READ:
+        return c->reg[C54M30_MISC_WRITE];
     case C54M30_STATUS1_MONO:
     case C54M30_STATUS1_COLOUR:
         // Reading Input Status 1 also resets the attribute controller's
@@ -258,8 +301,12 @@ static uint8_t io_read8(void *ctx, uint32_t offset) {
         c->attr_data = false;
         return status1_value(c);
     case C54M30_SEQ_DATA:
+        if ((c->seq_index & (C54M30_SEQ_REGS - 1u)) == 0x15u)
+            return (uint8_t)((c->seq[0x15] & 0xF0u) | C54M30_SR15_MEMSIZE);
         return c->seq[c->seq_index & (C54M30_SEQ_REGS - 1u)];
     case C54M30_CRTC_DATA:
+        if ((c->crtc_index & (C54M30_CRTC_REGS - 1u)) == 0x27u)
+            return C54M30_CR27_ID;
         return c->crtc[c->crtc_index & (C54M30_CRTC_REGS - 1u)];
     case C54M30_GR_DATA:
         return c->gr[c->gr_index & (C54M30_GR_REGS - 1u)];
@@ -280,7 +327,7 @@ static uint8_t io_read8(void *ctx, uint32_t offset) {
 
 static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
     c54m30_t *c = (c54m30_t *)ctx;
-    uint32_t port = offset & (C54M30_REGS - 1u);
+    uint32_t port = c54m30_port(offset & (C54M30_REGS - 1u));
     c->reg[port] = value;
     LOG(5, "VGA I/O +$%03X = $%02X", port, value);
     switch (port) {
@@ -288,6 +335,10 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
         c->seq_index = value;
         return;
     case C54M30_SEQ_DATA:
+        if ((c->seq_index & (C54M30_SEQ_REGS - 1u)) == 0x06u) {
+            c->seq[0x06] = (value == C54M30_SR06_UNLOCK) ? C54M30_SR06_UNLOCK : C54M30_SR06_LOCKED;
+            return;
+        }
         c->seq[c->seq_index & (C54M30_SEQ_REGS - 1u)] = value;
         c54m30_update(c);
         return;
@@ -295,6 +346,8 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
         c->crtc_index = value;
         return;
     case C54M30_CRTC_DATA:
+        if ((c->crtc_index & (C54M30_CRTC_REGS - 1u)) == 0x27u)
+            return; // CR27 is the read-only ID
         c->crtc[c->crtc_index & (C54M30_CRTC_REGS - 1u)] = value;
         c54m30_update(c);
         return;
@@ -518,6 +571,7 @@ static void c54m30_reset(pci_device_t *dev, config_t *cfg) {
     memset(c->crtc, 0, sizeof(c->crtc));
     memset(c->gr, 0, sizeof(c->gr));
     memset(c->attr, 0, sizeof(c->attr));
+    c->seq[0x06] = C54M30_SR06_LOCKED; // extensions locked out of reset
     c->seq_index = 0;
     c->crtc_index = 0;
     c->gr_index = 0;

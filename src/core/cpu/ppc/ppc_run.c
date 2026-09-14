@@ -421,6 +421,20 @@ int ppc_scalar_gate(ppc_t *p, uint32_t iw, uint32_t *addr, uint32_t size, bool s
         ppc_align_exception(p, iw, ea);
         return -1;
     }
+    // Little-endian mode (604UM §4.5.6): any access that is not naturally
+    // aligned takes the alignment exception, and an aligned one never
+    // crosses a page — so the split path below is BE-only.  The address
+    // handed on is the munged one (ppc_le_ea); `ea` itself stays the
+    // architected EA the update forms write back.  (Doublewords arrive
+    // here only in BE: LE routes them through ppc_le_ld64/st64.)
+    if (p->msr & PPC_MSR_LE) {
+        if (ea & (size - 1u)) {
+            ppc_align_exception(p, iw, ea);
+            return -1;
+        }
+        *addr = ppc_le_ea(p, ea, size);
+        return ppc_dxlate(p, iw, addr, store) ? -1 : 0;
+    }
     // With translation off the identity map is contiguous and the normal
     // access handles any misalignment; translated page crossings go
     // byte-wise (pages need not be physically adjacent).
@@ -437,7 +451,8 @@ void ppc_do_lmw(ppc_t *p, uint32_t iw) {
     // 604: multiples must be word-aligned (604UM §4.5.6); aligned ones are
     // split per word below, so no further boundary rule applies.
     if (ppc_is_604(p)) {
-        if (ea & 3u) {
+        // LE mode: every multiple/string instruction faults (604UM §4.5.6).
+        if ((ea & 3u) || (p->msr & PPC_MSR_LE)) {
             ppc_align_exception(p, iw, ea);
             return;
         }
@@ -460,7 +475,7 @@ void ppc_do_stmw(ppc_t *p, uint32_t iw) {
     uint32_t rt = PPC_RT(iw), ra = PPC_RA(iw);
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + (uint32_t)PPC_SIMM(iw);
     if (ppc_is_604(p)) {
-        if (ea & 3u) {
+        if ((ea & 3u) || (p->msr & PPC_MSR_LE)) {
             ppc_align_exception(p, iw, ea);
             return;
         }
@@ -516,11 +531,20 @@ static void ppc_store_string(ppc_t *p, uint32_t iw, uint32_t ea, uint32_t rs, ui
     }
 }
 
+// String instructions in LE mode take the alignment exception outright
+// (604UM §4.5.6); the bit is never set on the 601.
+static inline bool ppc_string_le_fault(ppc_t *p, uint32_t iw, uint32_t ea) {
+    if (!(p->msr & PPC_MSR_LE))
+        return false;
+    ppc_align_exception(p, iw, ea);
+    return true;
+}
+
 void ppc_do_lswi(ppc_t *p, uint32_t iw) {
     uint32_t ra = PPC_RA(iw);
     uint32_t n = PPC_RB(iw) ? PPC_RB(iw) : 32u;
     uint32_t ea = ra ? p->gpr[ra] : 0u;
-    if (ppc_check_align_string(p, iw, ea, n, false))
+    if (ppc_string_le_fault(p, iw, ea) || ppc_check_align_string(p, iw, ea, n, false))
         return;
     ppc_load_string(p, iw, ea, PPC_RT(iw), n, ra ? (int)ra : -1, -1);
 }
@@ -529,6 +553,8 @@ void ppc_do_lswx(ppc_t *p, uint32_t iw) {
     uint32_t ra = PPC_RA(iw), rb = PPC_RB(iw);
     uint32_t n = p->xer & PPC_XER_BYTES;
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + p->gpr[rb];
+    if (ppc_string_le_fault(p, iw, ea))
+        return;
     if (n == 0)
         return;
     if (ppc_check_align_string(p, iw, ea, n, false))
@@ -540,7 +566,7 @@ void ppc_do_stswi(ppc_t *p, uint32_t iw) {
     uint32_t ra = PPC_RA(iw);
     uint32_t n = PPC_RB(iw) ? PPC_RB(iw) : 32u;
     uint32_t ea = ra ? p->gpr[ra] : 0u;
-    if (ppc_check_align_string(p, iw, ea, n, false))
+    if (ppc_string_le_fault(p, iw, ea) || ppc_check_align_string(p, iw, ea, n, false))
         return;
     ppc_store_string(p, iw, ea, PPC_RT(iw), n);
 }
@@ -549,6 +575,8 @@ void ppc_do_stswx(ppc_t *p, uint32_t iw) {
     uint32_t ra = PPC_RA(iw);
     uint32_t n = p->xer & PPC_XER_BYTES;
     uint32_t ea = (ra ? p->gpr[ra] : 0u) + p->gpr[PPC_RB(iw)];
+    if (ppc_string_le_fault(p, iw, ea))
+        return;
     if (n == 0)
         return;
     if (ppc_check_align_string(p, iw, ea, n, false))
@@ -605,7 +633,7 @@ void ppc_do_stwcx(ppc_t *p, uint32_t iw) {
     }
     if (ppc_check_align_scalar(p, iw, ea, 4)) // 601: misalignment alone is not a fault; see OP_LWARX
         return;
-    uint32_t xa = ea;
+    uint32_t xa = ppc_le_ea(p, ea, 4); // LE-mode word munge (a no-op with LE clear)
     if (ppc_dxlate(p, iw, &xa, true))
         return;
     if (p->reserve) {
@@ -624,6 +652,48 @@ void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store) {
     ppc_exception(p, PPC_VEC_DSI, 0, p->instruction_pc);
 }
 
+// === LE-mode doubleword FP access ===========================================
+
+// PEM §3.2.2: in LE mode a doubleword transfer that is only word-aligned is
+// performed as two word accesses, each munged (XOR 4) like any word; the
+// high-order word of the double lives at the HIGHER little-endian address.
+// A doubleword-aligned pair reduces to the BE layout (hi at ea, lo at ea+4),
+// which is why the image in memory is "doubleword byte-reversed".  Both
+// helpers run the words through the scalar gate, so an LE misalignment
+// (ea & 3) faults there and each word translates on its own.
+bool ppc_le_ld64(ppc_t *p, uint32_t iw, uint32_t ea, uint64_t *v) {
+    uint64_t hv = 0, lv = 0;
+    uint32_t xa = ea + 4; // high word: the higher LE address
+    int g = ppc_scalar_gate(p, iw, &xa, 4, false, &hv);
+    if (g < 0)
+        return true;
+    uint32_t hi = g ? (uint32_t)hv : memory_read_uint32(xa);
+    xa = ea;
+    g = ppc_scalar_gate(p, iw, &xa, 4, false, &lv);
+    if (g < 0)
+        return true;
+    uint32_t lo = g ? (uint32_t)lv : memory_read_uint32(xa);
+    *v = ((uint64_t)hi << 32) | lo;
+    return false;
+}
+
+bool ppc_le_st64(ppc_t *p, uint32_t iw, uint32_t ea, uint64_t v) {
+    uint64_t hv = v >> 32, lv = (uint32_t)v;
+    uint32_t xa = ea + 4;
+    int g = ppc_scalar_gate(p, iw, &xa, 4, true, &hv);
+    if (g < 0)
+        return true;
+    if (!g)
+        memory_write_uint32(xa, (uint32_t)hv);
+    xa = ea;
+    g = ppc_scalar_gate(p, iw, &xa, 4, true, &lv);
+    if (g < 0)
+        return true; // high word already stored: partial completion, as the 604UM allows
+    if (!g)
+        memory_write_uint32(xa, (uint32_t)lv);
+    return false;
+}
+
 // === Instruction fetch ======================================================
 
 // Fetch the instruction word at p->pc.  The one-page window in
@@ -634,7 +704,10 @@ void ppc_ecx_fault(ppc_t *p, uint32_t ea, bool store) {
 static inline bool ppc_fetch(ppc_t *p, uint32_t *iw) {
     uint32_t pc = p->pc;
     if (__builtin_expect(pc - g_ppc_fetch.lo < g_ppc_fetch.span, 1)) {
-        *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + pc));
+        // LE mode munges the fetch like a word load (XOR 4); le_xor is 0
+        // otherwise and is refreshed by every refill (an MSR write flushes
+        // the window), so the BE path pays one XOR against a cached field.
+        *iw = LOAD_BE32((uint8_t *)(g_ppc_fetch.host_adjust + (pc ^ g_ppc_fetch.le_xor)));
         return true;
     }
     return ppc_fetch_fill(p, pc, iw);

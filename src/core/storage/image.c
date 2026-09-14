@@ -1276,10 +1276,17 @@ static bool path_is_volatile(const char *path) {
 }
 
 // FNV-1a hash over the first 64 KB of data plus total file size → 8-char hex.
+// Hash the WHOLE file, not a prefix.  This names a cache entry under /opfs/images, and
+// `image_persist_volatile` skips the copy when an entry of that name and size already exists --
+// so a prefix hash means any image edited past its first 64 KB is served stale, silently and
+// forever.  That is not hypothetical: a veneer patched at offset 0x100000 of an 8 MB disk
+// hashed identically to the unpatched original, and the emulator kept booting the old one while
+// the file on disk plainly held the new bytes.  Reading the file costs a fraction of the copy
+// this hash exists to avoid, and the fast path still skips that copy.
 static uint32_t fnv1a_image_hash(FILE *f, size_t file_size) {
     uint32_t h = 0x811c9dc5u;
-    uint8_t buf[4096];
-    size_t remaining = file_size < 65536 ? file_size : 65536;
+    uint8_t buf[65536];
+    size_t remaining = file_size;
 
     fseek(f, 0, SEEK_SET);
     while (remaining > 0) {

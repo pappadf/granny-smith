@@ -137,6 +137,15 @@ void pci_deassert_irq(struct pci_device *dev) {
     s_irq_deasserts++;
 }
 
+// The engine consults its bridge's byte-lane mode before every host access;
+// the mock bus here is a plain big-endian one, so lanes are never reversed.
+struct pci_bus;
+bool pci_bus_lane_reverse(const struct pci_bus *bus);
+bool pci_bus_lane_reverse(const struct pci_bus *bus) {
+    (void)bus;
+    return false;
+}
+
 // ============================================================================
 // Mock SCSI target
 // ============================================================================

@@ -66,7 +66,11 @@ void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_
     ppc_context_sync(p); // taking an exception is context-synchronizing
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
-    p->msr &= ppc_msr_exception_keep(p);
+    // LE is replaced by a copy of ILE (PEM Table 6-x "MSR settings on
+    // exception"): the handler runs in the endianness the OS asked for.
+    // ILE is masked to zero on the 601, so this is a no-op there.
+    uint32_t le = (p->msr & PPC_MSR_ILE) ? PPC_MSR_LE : 0u;
+    p->msr = (p->msr & ppc_msr_exception_keep(p)) | le;
     ppc_update_active_maps(p);
     p->pc = ((p->msr & PPC_MSR_EP) ? 0xFFF00000u : 0u) + vector;
     // Record in the shared exception trace ring (§3.9c field mapping:
@@ -868,6 +872,10 @@ static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
     ppc_t *p = (ppc_t *)ctx;
     bool ok;
     uint32_t pa = ppc_mmu_translate_debug(p, pc, false, &ok);
+    // LE mode: show the word the CPU fetches (the fetch munge, pc ^ 4), so a
+    // listing of little-endian code reads in program order.
+    if (p->msr & PPC_MSR_LE)
+        pa ^= 4u;
     ppc_insn ins;
     ppc_disassemble_model(ok ? memory_debug_read_uint32(pa) : 0, pc, p->cpu_model, &ins);
     // debug.c splits on '\t'; ppc_disasm emits "mnemonic\toperands" already.
