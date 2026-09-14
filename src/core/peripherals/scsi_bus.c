@@ -559,10 +559,6 @@ void run_cmd(scsi_t *scsi) {
             scsi->cmd.opcode == CMD_WRITE ? "WRITE" : "READ", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz,
             scsi->device_images[target] ? scsi->device_images[target]->raw_size : 0);
 
-        if (getenv("GS_IIFX_SHIM_TRACE"))
-            fprintf(stdout, "SCSI_%s_6 tgt=%d lba=%u tl=%u blk_sz=%u\n", scsi->cmd.opcode == CMD_WRITE ? "WR" : "RD",
-                    target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
-
         // Reject writes on read-only devices (CD-ROM, etc.)
         if (scsi->cmd.opcode == CMD_WRITE && scsi->devices[target].read_only) {
             scsi_check_condition(scsi, SENSE_DATA_PROTECT, ASC_WRITE_PROTECTED, 0x00);
@@ -620,14 +616,6 @@ void run_cmd(scsi_t *scsi) {
             phase_data_in(scsi, (int)byte_cnt);
             size_t n = disk_read_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
             assert(n == byte_cnt);
-            // TEMP DIAG (GS_DEVDIR): dump what storage delivered for the /dev
-            // directory read (abs LBA 68698). Valid head: 00 00 3C 00 00 0C 00 01 2E.
-            if (getenv("GS_DEVDIR") && scsi->cmd.lba == 68698) {
-                fprintf(stderr, "[DEVDIR-STORAGE] lba=68698 n=%zu buf[0:24]=", n);
-                for (int i = 0; i < 24; i++)
-                    fprintf(stderr, "%02x ", scsi->buf.data[i]);
-                fprintf(stderr, "\n");
-            }
         }
         break;
     }
@@ -643,10 +631,6 @@ void run_cmd(scsi_t *scsi) {
 
         LOG(1, "SCSI %s(10) target=%d lba=%u tl=%u blk_sz=%u", scsi->cmd.opcode == CMD_WRITE_10 ? "WRITE" : "READ",
             target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
-
-        if (getenv("GS_IIFX_SHIM_TRACE"))
-            fprintf(stdout, "SCSI_%s_10 tgt=%d lba=%u tl=%u blk_sz=%u\n",
-                    scsi->cmd.opcode == CMD_WRITE_10 ? "WR" : "RD", target, scsi->cmd.lba, scsi->cmd.tl, blk_sz);
 
         // Reject writes on read-only devices
         if (scsi->cmd.opcode == CMD_WRITE_10 && scsi->devices[target].read_only) {
