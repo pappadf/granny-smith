@@ -195,12 +195,11 @@ void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte);
 // EOP and the initiator has acked the IRQ.
 bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out);
 
-// Push one byte into the chip's data-out / command buffer.  Mirrors the
-// chip's auto-handshake ODR alias semantics (apply_primer_gate=false —
-// the bus master does not generate the primer-then-data pattern that
-// the gate exists to filter).  When the buffer fills, the chip
-// dispatches: run_cmd() if currently in COMMAND phase, command_complete()
-// if currently in DATA_OUT phase.
+// Push one byte into the chip's data-out / command buffer.  Mirrors the chip's
+// auto-handshake ODR alias semantics: the byte is taken only if the target is
+// asking for one, so a byte offered before the target has entered DATA OUT
+// goes nowhere.  When the buffer fills, the chip dispatches: run_cmd() if
+// currently in COMMAND phase, command_complete() if currently in DATA_OUT.
 void scsi_push_data_out_byte(scsi_t *scsi, uint8_t byte);
 
 // Signal "end of DMA" from an external bus master.  Equivalent to the
@@ -235,13 +234,14 @@ uint16_t scsi_get_cmd_blk_sz(const scsi_t *scsi);
 #define SCSI_OPCODE_WRITE_6  0x0A // 6-byte WRITE CDB (CMD_WRITE)
 #define SCSI_OPCODE_WRITE_10 0x2A // 10-byte WRITE CDB (CMD_WRITE_10)
 
-// Pseudo-DMA ODR-alias register-address bits set by the machine GLUE/MDU decode
-// tables (the write_off handed to the chip's write_uint8).  Bit 0x200 selects
-// the auto-handshake ODR alias; bit 0x400 additionally marks the BLIND window
-// (vs the DRQ window) so the primer-slot gate is applied to BLIND writes only.
-// See the ODR case in scsi.c write_uint8.
-#define SCSI_PDMA_SEL  0x200 // pseudo-DMA ODR auto-handshake alias
-#define SCSI_BLIND_SEL 0x400 // BLIND pseudo-DMA window marker
+// Pseudo-DMA ODR-alias register-address bit set by the machine GLUE/MDU decode
+// tables (the write_off handed to the chip's write_uint8): bit 0x200 selects
+// the auto-handshake ODR alias.  There used to be a 0x400 companion marking the
+// BLIND window so a primer heuristic could be applied to it alone; both windows
+// now go through the same REQ handshake, and 0x400 also aliased a real Plus
+// address bit (A10, which the Guide documents as having "no significance for
+// the SCSI"), so it is gone.
+#define SCSI_PDMA_SEL 0x200 // pseudo-DMA ODR auto-handshake alias
 
 // ============================================================================
 // External-initiator API (53C96-class front-ends)

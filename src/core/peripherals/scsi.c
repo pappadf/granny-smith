@@ -283,7 +283,6 @@ static void scsi_reset(scsi_t *scsi) {
     scsi->buf.size = 0;
     scsi->chip5380->end_of_dma = false;
     scsi->chip5380->dma_write_armed = false;
-    scsi->chip5380->primer_held = false;
     // RST generates a non-maskable interrupt that survives the reset
     scsi->chip5380->reg.bsr |= BSR_INT;
     // Flush the CDR pipeline so post-reset reads return $00
@@ -365,7 +364,6 @@ void scsi_5380_entered_data_out(scsi_t *bus) {
     scsi_5380_t *chip = bus ? bus->chip5380 : NULL;
     if (!chip)
         return;
-    chip->primer_held = false;
     // New command: the bus-master engine has not yet supplied any payload, so
     // the next push will discard any iHSKEN primer first.
     chip->dma_out_engine_started = false;
@@ -406,7 +404,7 @@ void scsi_5380_dma_push_byte(scsi_t *bus, uint8_t byte) {
         bus->buf.size = 0;
     }
     chip->dma_write_armed = true;
-    scsi_odr_auto_handshake_byte(bus, byte, /*apply_primer_gate=*/false);
+    scsi_odr_auto_handshake_byte(bus, byte);
 }
 
 // ============================================================================
@@ -895,10 +893,9 @@ static uint32_t read_uint32(void *scsi, uint32_t addr) {
 //   block over the gate itself below for the full explanation of what
 //   it does, why it's structurally wrong, and why we keep it for now.
 //   Callers from path 1 (the chip's own pseudo-DMA alias) pass
-//   apply_primer_gate=true; callers from path 2 (IIfx iHSKEN) pass
-//   apply_primer_gate=false.
 //
-void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer_gate) {
+void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value) {
+    scsi_bus_settle_poll(scsi);
     // A bus with no 5380 attached -- a Quadra, an AV, a PowerMac, a Network
     // Server -- has nothing here to update.
     if (!scsi || !scsi->chip5380)
@@ -929,171 +926,25 @@ void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer
     if ((scsi->chip5380->reg.mr & MR_DMA) && !scsi->chip5380->dma_write_armed)
         return;
 
-    // ── GATE 3: primer-slot gate ────────────────────────────────────────
-    // ********************************************************************
-    // *  WORKAROUND — NOT A HARDWARE MODEL.  DO NOT TREAT AS REFERENCE.  *
-    // *  Background, mechanism, and exit plan documented below in full.  *
-    // ********************************************************************
+    // ── GATE 3: the target has to be asking ─────────────────────────────
+    // No REQ, no transfer.  A byte the initiator puts on the bus is only
+    // taken when the target is requesting one; the 5380 cannot complete a
+    // handshake on its own.
     //
-    // BACKGROUND
-    // ----------
-    // A/UX 3.0.1's SCSI driver, when about to send a DATA_OUT payload,
-    // executes a peculiar two-step pattern in its `scsiout` glue:
+    // This is what makes A/UX's blind primer disappear.  Its scsiout glue
+    // writes CLR.B $00 to the pseudo-DMA port the moment it issues the
+    // command -- measured at 112 cycles after the last CDB byte -- and then
+    // the real payload from a different loop 1196 cycles later.  A real disk
+    // has not entered DATA OUT that early and is not asserting REQ, so the
+    // primer goes nowhere.  Our target used to switch phase instantly, so it
+    // landed as payload byte 0 and shifted the whole transfer; see
+    // bus.data_out_pending in scsi_internal.h for the settle that fixes it.
     //
-    //     $1004B888  CLR.B  ([$5B20E,])         ; "primer" — write $00
-    //                                            ; to the BLIND port
-    //     $1004979C  MOVE.B (A2)+,([$5B20E,])   ; per-byte loop —
-    //                                            ; the real data
-    //
-    // On REAL hardware, the primer write does NOT make it to the bus:
-    // the BLIND port is the chip's pseudo-DMA alias.  A pseudo-DMA send
-    // doesn't transmit until the host writes "Start DMA Send", AND the
-    // target asserts REQ.  At the moment the kernel executes its CLR.B
-    // primer, the target has NOT yet asserted REQ — so the chip absorbs
-    // the byte into ODR and waits.  The next event is the target raising
-    // REQ for the FIRST real byte; the chip then transmits the held ODR
-    // ($00 from the primer) — but the kernel has ALREADY rewritten ODR
-    // with the first real byte via the MOVE.B loop.  Net result on real
-    // hardware: the primer byte is overwritten before it transmits;
-    // exactly one byte goes onto the bus per target REQ; everything
-    // lines up.
-    //
-    // In OUR emulator, the timing doesn't line up: we collapse "byte
-    // arrived in ODR" and "byte committed to the bus" into a single
-    // operation (the `scsi->buf.data[size++] = value` below).  So the
-    // primer $00 lands in buf.data[0], the first real byte lands in
-    // buf.data[1], everything shifts by one, and the last byte falls
-    // off the end at buf.size == buf.max.  Mac OS's "Untitled" dialog
-    // came out as "☐Untitled" (notes/60-aux3-volname-root-cause.md
-    // §6 documents the full chain).
-    //
-    // THE PROPER FIX
-    // --------------
-    // Model REQ/ACK/DRQ accurately:
-    //   - When a byte lands in ODR, do NOT push to buf.
-    //   - Push to buf only when the chip pulses ACK in response to a
-    //     target REQ.
-    //   - The target asserts REQ asynchronously (driven by the device
-    //     side's phase state machine), not by the host's writes.
-    // With that model, the primer write would naturally drop on its
-    // own — exactly as on real hardware — because the target hasn't
-    // asserted REQ yet at the moment the primer fires.
-    //
-    // Session 65 tried this (notes/60-aux3-volname-root-cause.md §7.4)
-    // and could not get it working in finite time: A/UX's pseudo-DMA
-    // byte loop is unrolled and writes multiple bytes per BSR poll,
-    // so any per-byte REQ-consumption scheme starved real data writes
-    // (17340 dropped bytes, "This disk is damaged" dialog).  A correct
-    // implementation needs an asynchronous REQ-pulse scheduler on the
-    // target side, which is a non-trivial chunk of new code.
-    //
-    // THE SHORTCUT WE TOOK (session 66, this gate)
-    // --------------------------------------------
-    // Instead of modeling hardware properly, we sniff the CPU's PC to
-    // identify the primer pattern by signature:
-    //
-    //   1. When the FIRST byte of a DATA_OUT phase arrives, don't push
-    //      it yet — hold it in `primer_byte` along with the writer's PC
-    //      in `primer_pc`.
-    //   2. When the SECOND byte arrives, compare the new PC against
-    //      `primer_pc`:
-    //       - If the held byte is $00 AND the new PC differs from the
-    //         held PC, treat the held byte as a primer and discard it.
-    //       - Otherwise the held byte was real data — push it to buf,
-    //         then push the new byte.
-    //   3. From the third byte onward, push directly (no holding).
-    //
-    // WHY THIS IS WRONG
-    // -----------------
-    // - **A real NCR 5380 cannot see the CPU's program counter.**  This
-    //   gate uses `cpu_get_pc()` from inside the chip emulator — a flat
-    //   layering violation that only works because the emulator happens
-    //   to have access to the CPU state.
-    // - **It's a pattern-matcher, not a state machine.**  It identifies
-    //   one specific guest-software shape ($00 byte from a different PC
-    //   than the next byte) and discards it.  Any other primer-byte
-    //   pattern — a non-zero primer, a primer-then-primer sequence, a
-    //   primer from the same PC as the first data byte — will not be
-    //   detected.
-    // - **It is brittle to compiler/loader changes.**  Anything that
-    //   shifts the PC of `$1004B888` (e.g. a different kernel build,
-    //   relocation, code patching) breaks the detection.  We hard-coded
-    //   the assumption that "first byte from PC X, second from PC Y,
-    //   X ≠ Y" indicates a primer.
-    // - **It applies even when the kernel writes a legitimate $00 first
-    //   byte** in some other DATA_OUT path.  As long as the next byte
-    //   comes from a different PC, that $00 will be silently dropped —
-    //   a corruption that's invisible to the guest.
-    //
-    // WHY IT WORKS SHORT-TERM
-    // -----------------------
-    // - Empirically the ONLY observed source of $00-first-byte DATA_OUT
-    //   writes on the SE/30 / IIcx code paths is A/UX's `$1004B888`
-    //   primer, and the observed real-data writes always come from a
-    //   different PC ($1004979C).  So the PC-discrimination correctly
-    //   separates "primer" from "real data" in every measured case.
-    // - The retail kernel binary is byte-stable across our test
-    //   configurations, so the PC assumption holds in practice.
-    // - It unblocked the A/UX 3.0.1 installer (notes/60 §13 "Session 66
-    //   FIXED") and we've shipped against it for many sessions.
-    //
-    // EXIT PLAN
-    // ---------
-    // Replace this whole block with proper REQ/ACK/DRQ modeling.  Notes
-    // for a future attempt:
-    //   - Add a `req_pending` flag set asynchronously by the target
-    //     side's bus phase state machine (one REQ per byte transferred).
-    //   - In this function, push to buf only when `req_pending == true`,
-    //     and clear `req_pending` after the push.
-    //   - The target side must emit REQs in time with what the real chip
-    //     would: one REQ pulse per buf-slot consumed during the
-    //     pseudo-DMA send.
-    //   - Be careful with A/UX's unrolled byte-write loop: it writes
-    //     several bytes per BSR poll, so REQ pulses must be queued or
-    //     batched, not strictly one-per-byte-instruction.
-    //   - When REQ/ACK is in place, this gate goes away entirely AND
-    //     `scsi_hsken_data_out_byte` becomes redundant — both paths just
-    //     deliver to ODR and let the handshake state machine decide.
-    //
-    // CALLERS
-    // -------
-    // - Chip's pseudo-DMA alias write (Mac OS / SE/30 A/UX path):
-    //     pass apply_primer_gate=true — primer pattern is observed here.
-    // - IIfx iHSKEN wrapper (scsi_hsken_data_out_byte):
-    //     pass apply_primer_gate=false — the IIfx kernel's iHSKEN write
-    //     loop does NOT exhibit the primer-then-data pattern (and we
-    //     don't have measurements showing it would benefit from the
-    //     gate; in fact applying it would risk dropping a legitimate
-    //     first $00 byte from that path).
-    //
-    if (apply_primer_gate && scsi->bus.phase == scsi_data_out) {
-        cpu_t *cpu = system_cpu();
-        uint32_t pc = cpu ? cpu_get_pc(cpu) : 0;
-        // First byte of this DATA_OUT phase: hold it, don't push yet.
-        if (!scsi->chip5380->primer_held && scsi->buf.size == 0) {
-            scsi->chip5380->primer_byte = value;
-            scsi->chip5380->primer_pc = pc;
-            scsi->chip5380->primer_held = true;
-            return;
-        }
-        // Second byte arriving: decide whether the held byte was a primer.
-        // A held byte is treated as a primer iff:
-        //   (a) it was $00 (matches the CLR.B kernel pattern)
-        //   (b) its writer PC differs from this byte's writer PC
-        //       (the kernel's primer site and data-loop site are
-        //       different instructions)
-        // Anything else: held byte was real data, push it before falling
-        // through to push the current byte.
-        if (scsi->chip5380->primer_held) {
-            scsi->chip5380->primer_held = false;
-            bool is_primer = (scsi->chip5380->primer_byte == 0x00 && scsi->chip5380->primer_pc != pc);
-            if (!is_primer) {
-                assert(scsi->buf.size < scsi->buf.max);
-                scsi->buf.data[scsi->buf.size++] = scsi->chip5380->primer_byte;
-            }
-            // fall through to push current byte
-        }
-    }
+    // What used to be here instead was a gate that compared the CPU's program
+    // counter across two writes to guess which byte was a primer.  A 5380
+    // cannot see the program counter.
+    if (!scsi->bus.req)
+        return;
 
     // ── Commit the byte to the buffer ──────────────────────────────────
     // After all three gates have either passed or been bypassed, the
@@ -1135,16 +986,11 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
     switch (addr >> 4 & 7) {
     case ODR:
         if (addr & SCSI_PDMA_SEL) {
-            // Pseudo-DMA ODR alias.  The GLUE/MDU decode marks the BLIND
-            // window with SCSI_BLIND_SEL and leaves the DRQ window without
-            // it.  The primer-slot gate is applied to the BLIND window ONLY:
-            // classic Mac OS drives its zero-filled block writes through the
-            // /DTACK-paced DRQ window, whose leading $00 must NOT be dropped
-            // (doing so corrupted System 6.0.8's HD SC Setup volume init).
-            // Only A/UX's SE/30 BLIND-window CLR.B $00 primer needs the gate.
-            // The IIfx iHSKEN wrapper calls in with apply_primer_gate=false.
-            bool blind = (addr & SCSI_BLIND_SEL) != 0;
-            scsi_odr_auto_handshake_byte(scsi, value, /*apply_primer_gate=*/blind);
+            // Pseudo-DMA ODR alias.  Both windows -- the /DTACK-paced DRQ one
+            // and the BLIND one -- go through the same handshake now: a byte
+            // is taken only if the target is asking for one.  There is nothing
+            // left for the decode to mark, so SCSI_BLIND_SEL is gone.
+            scsi_odr_auto_handshake_byte(scsi, value);
         } else
             scsi->chip5380->reg.odr = value;
         break;
@@ -1412,12 +1258,7 @@ void scsi_hsken_data_out_byte(scsi_t *scsi, uint8_t byte) {
     // a byte arrives at the chip's ODR with a successful REQ/ACK
     // handshake during whatever bus phase is currently active.  Share
     // the body via scsi_odr_auto_handshake_byte().  We pass
-    // apply_primer_gate=false because a *pure* iHSKEN write loop (e.g.
-    // Mac OS) does not exhibit the CLR.B-then-real-data primer pattern
-    // that the gate exists to filter.  For A/UX bus-master writes the
-    // CLR.B primer that DOES precede the payload is discarded instead by
-    // the engine-supersedes-primer rule in scsi_push_data_out_byte().
-    scsi_odr_auto_handshake_byte(scsi, byte, /*apply_primer_gate=*/false);
+    scsi_odr_auto_handshake_byte(scsi, byte);
 }
 
 // ============================================================================

@@ -109,6 +109,10 @@ void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
 struct scheduler *system_scheduler(void) {
     return NULL;
 }
+uint64_t scheduler_cpu_cycles(struct scheduler *restrict s) {
+    (void)s;
+    return 0;
+}
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;
 }
