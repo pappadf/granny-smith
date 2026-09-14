@@ -89,11 +89,6 @@ static bool scsi_phase_match(scsi_t *scsi) {
 // ============================================================================
 
 LOG_USE_CATEGORY_NAME("scsi");
-// SCSI loopback trace — enable selectively for debugging
-#define SCSI_TRACE(...)                                                                                                \
-    do {                                                                                                               \
-        (void)0;                                                                                                       \
-    } while (0)
 
 // ============================================================================
 // Static Helpers
@@ -445,9 +440,6 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     uint8_t bits_set = val & (val ^ scsi->chip5380->reg.icr);
     uint8_t bits_cleared = ~val & (val ^ scsi->chip5380->reg.icr);
 
-    SCSI_TRACE("write_icr: val=0x%02X old=0x%02X set=0x%02X clr=0x%02X phase=%d", val, scsi->chip5380->reg.icr,
-               bits_set, bits_cleared, scsi->bus.phase);
-
     scsi->chip5380->reg.icr = val;
 
     // In loopback mode (passive terminator), skip bus state-machine
@@ -469,7 +461,6 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     }
 
     if (bits_set & ICR_RST) {
-        SCSI_TRACE("write_icr: RST asserted -> scsi_reset");
         scsi_reset(scsi);
         return;
     }
@@ -526,7 +517,6 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
         else if (scsi->bus.phase == scsi_message_out) {
             // Process the message byte received from the initiator.
             uint8_t msg = scsi->chip5380->reg.odr;
-            SCSI_TRACE("write_icr: MESSAGE OUT byte=0x%02X", msg);
             if (msg >= 0x80) {
                 // IDENTIFY: LUN in bits 0-2, disconnect privilege in bit 6.
                 // Both branches of the saved_phase test currently complete with
@@ -582,7 +572,6 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     }
 
     if (bits_set & ICR_SEL) {
-        SCSI_TRACE("write_icr: SEL asserted, phase=%d -> selection", scsi->bus.phase);
         phase_selection(scsi);
     }
 
@@ -596,7 +585,6 @@ static void write_icr(scsi_t *scsi, uint8_t val) {
     if ((bits_set & ICR_ATN) && !(csr_from_bus(scsi) & CSR_REQ)) {
         if (scsi->bus.phase == scsi_data_in || scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_status ||
             scsi->bus.phase == scsi_message_in) {
-            SCSI_TRACE("write_icr: ATN asserted, phase=%d -> message_out", scsi->bus.phase);
             phase_message_out(scsi);
         }
     }
@@ -616,7 +604,6 @@ static void write_mr(scsi_t *scsi, uint8_t val) {
     // The ARBITRATE bit is set to start the arbitration process
     if (bits_set & MR_ARBITRATE) {
 
-        SCSI_TRACE("write_mr: ARBITRATE set, phase=%d -> arbitration", scsi->bus.phase);
         phase_arbitration(scsi);
 
         // [1]: The results of the arbitration phase may be determined by reading the status bits LA and AIP
@@ -720,11 +707,8 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         // the bus state from before the second-to-last register write.
         // This models the NCR 5380's internal propagation delay: bus
         // driver outputs update 2 register-write cycles after the write.
-        if (scsi->loopback) {
-            uint8_t val = scsi->chip5380->cdr_pipeline[(scsi->chip5380->cdr_idx + 1) % 3];
-            SCSI_TRACE("  SCSI RD CDR -> 0x%02X (pipeline)", val);
-            return val;
-        }
+        if (scsi->loopback)
+            return scsi->chip5380->cdr_pipeline[(scsi->chip5380->cdr_idx + 1) % 3];
         if (scsi->bus.phase == scsi_data_in) {
             if (scsi->buf.size != 0) {
                 scsi->bus.data = next_byte(scsi);
@@ -753,15 +737,12 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         return scsi->bus.data;
 
     case ICR:
-        SCSI_TRACE("  SCSI RD ICR -> 0x%02X", scsi->chip5380->reg.icr);
         return scsi->chip5380->reg.icr;
 
     case MR:
-        SCSI_TRACE("  SCSI RD MR -> 0x%02X", scsi->chip5380->reg.mr);
         return scsi->chip5380->reg.mr;
 
     case TCR:
-        SCSI_TRACE("  SCSI RD TCR -> 0x%02X", scsi->chip5380->reg.tcr);
         return scsi->chip5380->reg.tcr;
 
     case CSR:
@@ -790,8 +771,6 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
                 if (scsi->chip5380->reg.tcr & 0x08)
                     val |= CSR_REQ;
             }
-            SCSI_TRACE("  SCSI RD CSR -> 0x%02X (icr=0x%02X tcr=0x%02X mr=0x%02X)", val, scsi->chip5380->reg.icr,
-                       scsi->chip5380->reg.tcr, scsi->chip5380->reg.mr);
             return val;
         }
         return csr_from_bus(scsi);
@@ -817,9 +796,6 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
             val |= (scsi_phase_match(scsi) ? BSR_PM : 0);
             if (scsi->chip5380->end_of_dma)
                 val |= BSR_EDMA;
-            SCSI_TRACE("  SCSI RD BSR -> 0x%02X (icr=0x%02X bsr_stored=0x%02X pm=%d edma=%d)", val,
-                       scsi->chip5380->reg.icr, scsi->chip5380->reg.bsr, scsi_phase_match(scsi),
-                       scsi->chip5380->end_of_dma);
             return val;
         }
         return scsi->chip5380->reg.bsr | (scsi_phase_match(scsi) ? BSR_PM : 0) |
@@ -1003,9 +979,6 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
         // after the register write, so CDR reads lag by 2 writes.
         scsi->chip5380->cdr_pipeline[scsi->chip5380->cdr_idx] = compute_loopback_cdr(scsi);
         scsi->chip5380->cdr_idx = (scsi->chip5380->cdr_idx + 1) % 3;
-
-        static const char *regnames[] = {"ODR", "ICR", "MR", "TCR", "SER", "DMA", "TDMA", "IDMA"};
-        SCSI_TRACE("  SCSI WR %s (reg %d) = 0x%02X", regnames[addr >> 4 & 7], (int)(addr >> 4 & 7), value);
     }
 
     // [5]: on 68000, writes are to odd addresses (LDS). On 68030 (SE/30,
