@@ -256,6 +256,15 @@ int scsi_get_bus_phase(const struct scsi *scsi) {
     return s_phase;
 }
 
+// The mock target is always asking: it has no settle delay to model, so REQ is
+// asserted for as long as it is in a transfer phase.  The engine's "DATA OUT
+// armed but the target is not asking yet" wait therefore never fires here,
+// which is what lets these tests drive the instruction set directly.
+bool scsi_bus_req(const struct scsi *scsi) {
+    (void)scsi;
+    return s_phase != 0; // 0 == bus free in the shared phase enum
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================

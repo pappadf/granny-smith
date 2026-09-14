@@ -460,6 +460,8 @@ static uint32_t block_move_bytes(sym53c8xx_t *s, uint8_t phase, uint32_t addr, u
     return moved;
 }
 
+static void script_start_event(void *source, uint64_t data);
+
 static void exec_block_move(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
     uint8_t want = (uint8_t)((insn >> 24) & 7u);
     uint32_t count = insn & 0x00FFFFFFu;
@@ -493,6 +495,28 @@ static void exec_block_move(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
         set_reg32(s, SYM825_DSP, reg32(s, SYM825_DSP) - 8u);
         LOG(3, "ch%d: phase mismatch — script wants %u, target presents %u", s->channel, want, s->phase);
         sym53c8xx_raise_scsi(s, SYM825_SIST0_MA, 0);
+        return;
+    }
+
+    // The phase is right but the target may not be asking yet.  X3.131 5.1.5.1,
+    // DATA OUT: "the target shall request information by asserting REQ.  The
+    // initiator shall drive DB(7-0,P) ... and assert ACK."  REQ leads; an
+    // initiator that drives data before it is not handshaking, and a real
+    // SCRIPTS processor simply stalls on the handshake until the target asks.
+    //
+    // This is NOT a phase mismatch -- the script wants what the target is
+    // presenting -- so no interrupt is raised.  DSP is rewound to this
+    // instruction and the engine yields, exactly as it does after a full
+    // instruction quantum, and resumes when guest time has moved on.
+    if (want == SYM825_PHASE_DATA_OUT && !scsi_bus_req(s->bus)) {
+        set_reg32(s, SYM825_DSP, reg32(s, SYM825_DSP) - 8u);
+        s->running = false;
+        struct scheduler *sched = s->cfg ? s->cfg->scheduler : NULL;
+        if (sched && !s->start_pending) {
+            s->start_pending = true;
+            scheduler_new_cpu_event(sched, script_start_event, s, 0, 0, SYM825_YIELD_NS);
+        }
+        LOG(4, "ch%d: DATA OUT armed but target not yet asking — waiting for REQ", s->channel);
         return;
     }
 
@@ -947,7 +971,6 @@ static bool step(sym53c8xx_t *s) {
 }
 
 // The engine start/resume event (defined below); the yield path schedules it.
-static void script_start_event(void *source, uint64_t data);
 
 // Run the engine until the script stops it.  Called from the scheduler a
 // short time after the driver asks for it — never inside the store that
