@@ -516,6 +516,11 @@ static void exec_block_move(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
         return;
     }
 
+    // Level 4 names the host memory each transfer touches.  A bus master that
+    // delivers a payload to the wrong page corrupts whatever else lives there,
+    // and the only way to see that is to have the address of every move.
+    LOG(2, "ch%d: move phase %u addr $%08X count %u", s->channel, want, addr, count);
+
     bool sfbr_set = false;
     uint32_t moved = block_move_bytes(s, want, addr, count, &sfbr_set);
     set_dbc(s, count - moved);
