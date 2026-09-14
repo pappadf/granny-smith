@@ -231,17 +231,56 @@ int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc) {
     return len;
 }
 
-// Transition SCSI bus to data-out phase (initiator to target)
-void phase_data_out(scsi_t *scsi, int bytes) {
-    assert(scsi->bus.phase == scsi_command);
+// How long a target takes to turn a completed WRITE command into a DATA OUT
+// phase.  Chosen from measurement, the same way SCSI_DRQ_PULSE_CYCLES was:
+// A/UX's blind primer lands 112 cycles after the command completes, and the
+// earliest byte any polled driver writes is 464.  256 sits between them with
+// room on both sides, and the upper bound is soft -- a driver that polls for
+// the phase simply waits, which is what the hardware makes it do.
+#define SCSI_DATA_OUT_SETTLE_CYCLES 256
 
+// The target is ready once its settle time has elapsed.
+//
+// Evaluated LAZILY, on every access that can observe it, rather than from a
+// scheduler event.  Events are delivered at sprint boundaries, so an event
+// would hold REQ low for however long the current sprint had left -- which is
+// unbounded, and long enough to swallow real payload.  A deadline compared
+// against the cycle counter is exact.
+void scsi_bus_settle_poll(scsi_t *scsi) {
+    if (!scsi || !scsi->bus.data_out_pending)
+        return;
+    scheduler_t *sch = system_scheduler();
+    if (sch && scheduler_cpu_cycles(sch) < scsi->bus.data_out_ready_cy)
+        return; // still preparing
+    scsi->bus.data_out_pending = false;
     scsi->bus.phase = scsi_data_out;
     scsi->bus.req = scsi->bus.bsy = true;
-    scsi_buf_ensure(scsi, (size_t)bytes);
-    scsi->buf.max = bytes;
+    scsi_buf_ensure(scsi, (size_t)scsi->bus.data_out_bytes);
+    scsi->buf.max = scsi->bus.data_out_bytes;
     scsi->buf.size = 0;
     // Entering DATA OUT resets a 5380's priming state, if there is one.
     scsi_5380_entered_data_out(scsi);
+}
+
+// Transition SCSI bus to data-out phase (initiator to target).
+//
+// The phase does NOT change here -- see bus.data_out_pending in
+// scsi_internal.h.  The command is done, so REQ drops; the target spends
+// SCSI_DATA_OUT_SETTLE_CYCLES preparing, and anything the initiator offers in
+// that window is offered with no REQ to meet it and is not transferred.
+unsigned long g_f29_dataout_armed, g_f29_dataout_done;
+void phase_data_out(scsi_t *scsi, int bytes) {
+    g_f29_dataout_armed++;
+    assert(scsi->bus.phase == scsi_command);
+
+    scheduler_t *sch = system_scheduler();
+    scsi->bus.data_out_pending = true;
+    scsi->bus.data_out_bytes = bytes;
+    scsi->bus.data_out_ready_cy = sch ? scheduler_cpu_cycles(sch) + SCSI_DATA_OUT_SETTLE_CYCLES : 0;
+    scsi->bus.req = false; // the CDB is taken; nothing is being requested yet
+    scsi->bus.bsy = true; // ...but the target still owns the bus
+    if (!sch)
+        scsi_bus_settle_poll(scsi); // no scheduler (unit tests): ready at once
 }
 
 // Transition SCSI bus to message-out phase (initiator to target).
@@ -1024,6 +1063,7 @@ void run_cmd(scsi_t *scsi) {
 
 // Finalize a SCSI command after data transfer is complete
 void command_complete(scsi_t *scsi) {
+    g_f29_dataout_done++;
     int target = scsi->bus.target & 7;
     uint16_t blk_sz = scsi->devices[target].block_size;
 
@@ -1320,6 +1360,13 @@ bool scsi_pop_data_in_byte(scsi_t *scsi, uint8_t *out) {
 void scsi_bus_accept_data_out_byte(scsi_t *scsi, uint8_t value) {
     if (!scsi)
         return;
+    scsi_bus_settle_poll(scsi);
+    // No REQ, no transfer.  An initiator cannot complete a handshake the
+    // target is not asking for, so a byte offered here goes nowhere -- which is
+    // exactly what happens to A/UX's blind primer on real hardware, and why
+    // this model needs no knowledge of who wrote it.
+    if (!scsi->bus.req)
+        return;
     assert(scsi->buf.size < scsi->buf.max);
     scsi->buf.data[scsi->buf.size++] = value;
 
@@ -1327,6 +1374,8 @@ void scsi_bus_accept_data_out_byte(scsi_t *scsi, uint8_t value) {
         if (scsi->buf.size == cmd_size(scsi->buf.data[0]))
             run_cmd(scsi);
     } else if (scsi->buf.size == scsi->buf.max) {
+        extern unsigned long g_f29_dataout_done;
+        g_f29_dataout_done++;
         command_complete(scsi);
     }
 }
@@ -1443,6 +1492,7 @@ int scsi_eject_device(scsi_t *scsi, int id) {
 // The three phase lines, as ANSI X3.131-1986 Table 5-1 encodes them.
 
 bool scsi_bus_req(const scsi_t *scsi) {
+    scsi_bus_settle_poll((scsi_t *)scsi);
     return scsi && scsi->bus.req;
 }
 
@@ -1451,6 +1501,7 @@ bool scsi_bus_bsy(const scsi_t *scsi) {
 }
 
 int scsi_get_bus_phase(const scsi_t *scsi) {
+    scsi_bus_settle_poll((scsi_t *)scsi);
     return scsi ? (int)scsi->bus.phase : 0;
 }
 
