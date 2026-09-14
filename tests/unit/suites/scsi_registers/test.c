@@ -280,9 +280,51 @@ TEST(chip_reset_leaves_no_interrupt_behind) {
     scsi_delete(scsi);
 }
 
+// Start DMA Send (S6.8.1) initiates a send.  DRQ means "the data register is
+// ready to be read or written" (pin 22), so for a send it needs somewhere to
+// send: an initiator-out phase, a target asking, and room for the byte.
+//
+// This used to raise DRQ unconditionally, so a Start DMA Send issued with no
+// send to do -- in STATUS phase, say -- asserted DRQ and with it a VIA2 CA2
+// edge.  No guest was measured doing that, which is exactly why it needs a
+// test: nothing observable would notice it coming back.
+TEST(start_dma_send_asserts_drq_only_when_there_is_a_send_to_do) {
+    scsi_t *scsi = attach_disk();
+
+    // Park the bus in STATUS with nothing to send.  A Start DMA Send here is
+    // meaningless and must not raise DRQ.
+    scsi->bus.phase = scsi_status;
+    scsi->bus.req = true;
+    scsi->chip5380->reg.bsr &= (uint8_t)~BSR_DR;
+    wr(scsi, MR, MR_DMA);
+    wr(scsi, DMA, 0x00); // the write's data is meaningless per S6.8
+    ASSERT_TRUE((rd(scsi, BSR) & BSR_DR) == 0);
+    ASSERT_TRUE(!scsi->chip5380->drq_active);
+
+    scsi_delete(scsi);
+}
+
+// ...and the ordinary case still works: an out phase with the target asking.
+TEST(start_dma_send_asserts_drq_in_an_out_phase) {
+    scsi_t *scsi = attach_disk();
+
+    scsi->bus.phase = scsi_data_out;
+    scsi->bus.req = true;
+    scsi->buf.size = 0;
+    scsi->buf.max = 512;
+    scsi->chip5380->reg.bsr &= (uint8_t)~BSR_DR;
+    wr(scsi, MR, MR_DMA);
+    wr(scsi, DMA, 0x00);
+    ASSERT_TRUE((rd(scsi, BSR) & BSR_DR) != 0);
+
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(phase_wire_bits_match_ansi_table_5_1);
+    RUN(start_dma_send_asserts_drq_only_when_there_is_a_send_to_do);
+    RUN(start_dma_send_asserts_drq_in_an_out_phase);
     RUN(bus_reset_raises_an_irq_that_no_mode_bit_gates);
     RUN(chip_reset_leaves_no_interrupt_behind);
     RUN(test_reselect_from_command_is_declined);

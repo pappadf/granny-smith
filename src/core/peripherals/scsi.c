@@ -1055,11 +1055,32 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
         break;
 
     case DMA:
-        scsi->chip5380->reg.bsr |= BSR_DR;
-        // Start DMA Send (NCR 5380 §6.8.1): the host writes this register
-        // to begin a pseudo-DMA send — until then, ODR-alias writes are
-        // primer/setup writes that do not transfer.  Arm the gate.
+        // Start DMA Send (S6.8.1): "This register is written to initiate a DMA
+        // send, from the DMA to the SCSI bus."  Arm the gate -- until this
+        // write, ODR-alias writes are setup writes that do not transfer.
         scsi->chip5380->dma_write_armed = true;
+
+        // DRQ is "the data register is ready to be read or written" (pin 22).
+        // For a SEND that means an initiator-out phase and room for the byte --
+        // the same condition write_mr already applies when MR.DMA is set, which
+        // is the whole point: these are the only two places that raise DRQ and
+        // they used to disagree completely.  This one raised it unconditionally,
+        // so a Start DMA Send issued with no send to do -- in STATUS phase, say
+        // -- asserted DRQ and with it a VIA2 CA2 edge.
+        //
+        // Measured across iix-aux3-boot, suite-plus, suite-iici and
+        // se30-format-hd-apple230, every one of the 6,321 Start DMA Sends is
+        // already in COMMAND or DATA OUT, so this closes a hole rather than
+        // changing anything observed.
+        //
+        // Two things deliberately NOT tested here.  A phase-match test: S6.7
+        // bit 6 says "the DRQ signal does not reset when a phase mismatch
+        // interrupt occurs", so DRQ is a latch with two clear conditions (DACK,
+        // or MR.DMA cleared), not a signal recomputed from the phase.  And REQ:
+        // the ODR is one byte deep, so the chip is ready to be WRITTEN as soon
+        // as that byte is free -- it needs REQ to transmit, not to accept.
+        if ((scsi->bus.phase == scsi_data_out || scsi->bus.phase == scsi_command) && scsi->buf.size < scsi->buf.max)
+            scsi->chip5380->reg.bsr |= BSR_DR;
         scsi_update_drq(scsi);
         break;
 
