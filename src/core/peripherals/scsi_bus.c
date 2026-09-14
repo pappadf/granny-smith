@@ -252,14 +252,13 @@ void scsi_bus_settle_poll(scsi_t *scsi) {
     scheduler_t *sch = system_scheduler();
     if (sch && scheduler_cpu_cycles(sch) < scsi->bus.data_out_ready_cy)
         return; // still preparing
+    // Settled: X3.131 5.1.5 -- "the target shall continuously envelope the
+    // REQ/ACK handshake(s) with C/D, I/O and MSG in such a manner that these
+    // control signals are valid for a bus settle delay before the assertion of
+    // REQ of the first handshake".  The phase lines went valid in
+    // phase_data_out(); REQ goes true here.
     scsi->bus.data_out_pending = false;
-    scsi->bus.phase = scsi_data_out;
-    scsi->bus.req = scsi->bus.bsy = true;
-    scsi_buf_ensure(scsi, (size_t)scsi->bus.data_out_bytes);
-    scsi->buf.max = scsi->bus.data_out_bytes;
-    scsi->buf.size = 0;
-    // Entering DATA OUT resets a 5380's priming state, if there is one.
-    scsi_5380_entered_data_out(scsi);
+    scsi->bus.req = true;
 }
 
 // Transition SCSI bus to data-out phase (initiator to target).
@@ -268,19 +267,32 @@ void scsi_bus_settle_poll(scsi_t *scsi) {
 // scsi_internal.h.  The command is done, so REQ drops; the target spends
 // SCSI_DATA_OUT_SETTLE_CYCLES preparing, and anything the initiator offers in
 // that window is offered with no REQ to meet it and is not transferred.
-unsigned long g_f29_dataout_armed, g_f29_dataout_done;
 void phase_data_out(scsi_t *scsi, int bytes) {
-    g_f29_dataout_armed++;
     assert(scsi->bus.phase == scsi_command);
 
+    // X3.131 5.1.5: the target drives C/D, I/O and MSG and they must be "valid
+    // for a bus settle delay before the assertion of REQ of the first
+    // handshake".  So the phase goes valid HERE -- an initiator arming a
+    // transfer sees DATA OUT, which is what it must see -- and REQ, the signal
+    // that actually moves a byte, follows once the bus has settled.
+    //
+    // 5.1.5.1, DATA OUT: "the target shall request information by asserting
+    // REQ.  The initiator shall drive DB(7-0,P) ... and assert ACK."  REQ comes
+    // first; an initiator that drives data before it is not handshaking, and
+    // nothing is transferred.  That is what happens to A/UX's blind primer.
     scheduler_t *sch = system_scheduler();
+    scsi->bus.phase = scsi_data_out;
+    scsi->bus.bsy = true;
+    scsi->bus.req = false; // ...but not asking for a byte yet
     scsi->bus.data_out_pending = true;
-    scsi->bus.data_out_bytes = bytes;
     scsi->bus.data_out_ready_cy = sch ? scheduler_cpu_cycles(sch) + SCSI_DATA_OUT_SETTLE_CYCLES : 0;
-    scsi->bus.req = false; // the CDB is taken; nothing is being requested yet
-    scsi->bus.bsy = true; // ...but the target still owns the bus
+    scsi_buf_ensure(scsi, (size_t)bytes);
+    scsi->buf.max = bytes;
+    scsi->buf.size = 0;
+    // Entering DATA OUT resets a 5380's priming state, if there is one.
+    scsi_5380_entered_data_out(scsi);
     if (!sch)
-        scsi_bus_settle_poll(scsi); // no scheduler (unit tests): ready at once
+        scsi_bus_settle_poll(scsi); // no scheduler (unit tests): settled at once
 }
 
 // Transition SCSI bus to message-out phase (initiator to target).
@@ -1063,7 +1075,6 @@ void run_cmd(scsi_t *scsi) {
 
 // Finalize a SCSI command after data transfer is complete
 void command_complete(scsi_t *scsi) {
-    g_f29_dataout_done++;
     int target = scsi->bus.target & 7;
     uint16_t blk_sz = scsi->devices[target].block_size;
 
@@ -1374,8 +1385,6 @@ void scsi_bus_accept_data_out_byte(scsi_t *scsi, uint8_t value) {
         if (scsi->buf.size == cmd_size(scsi->buf.data[0]))
             run_cmd(scsi);
     } else if (scsi->buf.size == scsi->buf.max) {
-        extern unsigned long g_f29_dataout_done;
-        g_f29_dataout_done++;
         command_complete(scsi);
     }
 }

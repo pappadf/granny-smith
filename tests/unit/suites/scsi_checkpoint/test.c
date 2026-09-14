@@ -245,8 +245,8 @@ TEST(test_device_state_survives_a_round_trip) {
 TEST(test_a_pending_data_out_settle_survives_a_round_trip) {
     scsi_t *a = scsi_init(NULL);
     ASSERT_TRUE(scsi_5380_attach(a, NULL) != NULL);
+    a->bus.phase = scsi_data_out; // phase lines valid...
     a->bus.data_out_pending = true;
-    a->bus.data_out_bytes = 512;
     a->bus.data_out_ready_cy = 0x1234ABCDu;
     a->bus.req = false;
 
@@ -257,8 +257,8 @@ TEST(test_a_pending_data_out_settle_survives_a_round_trip) {
     scsi_t *b = scsi_init((checkpoint_t *)1);
     ASSERT_TRUE(scsi_5380_attach(b, (checkpoint_t *)1) != NULL);
 
+    ASSERT_EQ_INT((int)b->bus.phase, (int)scsi_data_out);
     ASSERT_TRUE(b->bus.data_out_pending);
-    ASSERT_EQ_INT(b->bus.data_out_bytes, 512);
     ASSERT_TRUE(b->bus.data_out_ready_cy == 0x1234ABCDu);
     ASSERT_TRUE(!b->bus.req); // still not asking for data
 

@@ -217,7 +217,6 @@ struct scsi {
         // data"; REQ is low throughout it, and a byte offered with REQ low is
         // not transferred -- that is the handshake, not a heuristic.
         bool data_out_pending;
-        int data_out_bytes; // buffer size the pending phase will arm
         uint64_t data_out_ready_cy; // cpu cycle at which the target is ready
     } bus;
 
