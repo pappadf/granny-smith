@@ -16,9 +16,19 @@
 // ============================================================================
 
 // Build Mode Page 0x01: Read Error Recovery Parameters (8 bytes)
-static int build_page_01(uint8_t *buf) {
+//
+// CDU-541 manual S5.2.3.2, changeable values: "The page requested will be
+// returned with the bits that are allowed to be changed set to one.
+// Parameters that are not changeable will be set to zero. ... The page
+// descriptor ... will always be returned even if none of parameters are
+// changeable within the page."  Nothing here is changeable, so PC=1 keeps the
+// header and zeroes the body.
+static int build_page_01(uint8_t *buf, int page_control) {
     buf[0] = 0x01; // page code
     buf[1] = 0x06; // page length
+    memset(buf + 2, 0, 6);
+    if (page_control == 1)
+        return 8;
     buf[2] = 0x00; // error recovery: no retries
     buf[3] = 0x01; // read retry count
     buf[4] = 0x00; // reserved
@@ -45,10 +55,12 @@ static int build_page_08(uint8_t *buf) {
 }
 
 // Build Mode Page 0x09: Audio Control Parameters (16 bytes)
-static int build_page_09(uint8_t *buf) {
+static int build_page_09(uint8_t *buf, int page_control) {
     buf[0] = 0x09; // page code
     buf[1] = 0x0E; // page length
     memset(buf + 2, 0, 14);
+    if (page_control == 1)
+        return 16; // nothing here is changeable: header, zero body
     // Output port 0 channel selection = 01 (left)
     buf[8] = 0x01;
     buf[9] = 0xFF; // volume
@@ -96,8 +108,26 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     // Mode parameter header (4 bytes)
     int pos = 4;
 
-    // Block descriptor (8 bytes) — always present (A/UX requires it)
+    // Block descriptor (8 bytes) — always present (A/UX requires it).
+    //
+    // Its block length answers to the page control field, which the rest of
+    // this command used to ignore.  CDU-541 manual S5.2.3: "The default block
+    // length is 2048 and is returned if default values are requested.  The
+    // current block length is returned if current values are requested.  A
+    // block length of FFh FFh FFh is returned if changeable values are
+    // requested."  Block length IS changeable on this drive -- Table 5-4 lists
+    // 256, 512, 1024, 2048 and 2336 -- so the changeable answer sets every bit
+    // of the field, not zero.
+    //
+    // The default matters in practice: A/UX switches the disc to 512-byte
+    // blocks (see the MODE SELECT path below), after which a PC=2 request must
+    // still answer 2048.
     uint16_t blk_sz = scsi->devices[target].block_size;
+    uint32_t reported_blk_sz = blk_sz;
+    if (page_control == 1)
+        reported_blk_sz = 0xFFFFFFu; // every bit of a changeable field
+    else if (page_control == 2 || page_control == 3)
+        reported_blk_sz = scsi->devices[target].default_block_size;
     uint32_t blocks = 0;
     if (scsi->device_images[target])
         blocks = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
@@ -108,15 +138,15 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     buf[pos + 2] = (blocks >> 8) & 0xFF;
     buf[pos + 3] = blocks & 0xFF;
     buf[pos + 4] = 0; // reserved
-    buf[pos + 5] = (blk_sz >> 16) & 0xFF; // block length
-    buf[pos + 6] = (blk_sz >> 8) & 0xFF;
-    buf[pos + 7] = blk_sz & 0xFF;
+    buf[pos + 5] = (reported_blk_sz >> 16) & 0xFF; // block length, per PC above
+    buf[pos + 6] = (reported_blk_sz >> 8) & 0xFF;
+    buf[pos + 7] = reported_blk_sz & 0xFF;
     pos += 8;
 
     // Append requested mode pages
     switch (page_code) {
     case 0x01:
-        pos += build_page_01(buf + pos);
+        pos += build_page_01(buf + pos, page_control);
         break;
     case 0x02:
         pos += build_page_02(buf + pos);
@@ -125,17 +155,17 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
         pos += build_page_08(buf + pos);
         break;
     case 0x09:
-        pos += build_page_09(buf + pos);
+        pos += build_page_09(buf + pos, page_control);
         break;
     case 0x30:
         pos += build_page_30(buf + pos, page_control);
         break;
     case 0x3F:
         // Return all pages
-        pos += build_page_01(buf + pos);
+        pos += build_page_01(buf + pos, page_control);
         pos += build_page_02(buf + pos);
         pos += build_page_08(buf + pos);
-        pos += build_page_09(buf + pos);
+        pos += build_page_09(buf + pos, page_control);
         pos += build_page_30(buf + pos, page_control);
         break;
     case 0x00:

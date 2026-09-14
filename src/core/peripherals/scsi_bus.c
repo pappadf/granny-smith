@@ -869,6 +869,24 @@ void run_cmd(scsi_t *scsi) {
             // Apple's formatters do issue short allocation lengths when they
             // only want the header.
             uint8_t page_code = scsi->buf.data[2] & 0x3F;
+            // CDB byte 2 bits 7:6 are the page control field, which this path
+            // used to mask off and never read -- so PC=1, "changeable values",
+            // answered with the current ones, telling the host every field was
+            // modifiable.
+            //
+            // Nothing in a hard disk's pages here is changeable, and neither is
+            // its block size: unlike the CD-ROM's, this device's MODE SELECT
+            // accepts the parameter list and discards it.  So the four controls
+            // collapse to two answers -- the values, or an all-zero changeable
+            // mask -- and PC=2 and PC=3 give the values, because current,
+            // default and saved are the same thing on a drive nothing changes.
+            //
+            // PC=3 is answered, not refused.  The drive this emulates says so:
+            // Sony CDU-541 manual Table 5-5 maps page control "1 1" to "Default
+            // Values", and X3.131-1986 has no page control field at all to
+            // appeal to instead.
+            int page_control = (scsi->buf.data[2] >> 6) & 0x03;
+            bool changeable = (page_control == 1);
             int alloc_len = scsi->buf.data[4];
             // Ask the device, the way READ CAPACITY and the CD-ROM's own MODE
             // SENSE both do.  This path used to divide by a literal 512 and
@@ -901,9 +919,13 @@ void run_cmd(scsi_t *scsi) {
             resp[5] = (blocks >> 16) & 0xFF;
             resp[6] = (blocks >> 8) & 0xFF;
             resp[7] = blocks & 0xFF;
-            resp[9] = (blk_sz >> 16) & 0xFF;
-            resp[10] = (blk_sz >> 8) & 0xFF;
-            resp[11] = blk_sz & 0xFF;
+            // ...or an all-zero changeable mask: this drive's block size
+            // cannot be changed, so no bit of the field is set.  (The CD-ROM
+            // answers FF FF FF here, because on that drive it can.)
+            uint32_t rep_blk = changeable ? 0u : blk_sz;
+            resp[9] = (rep_blk >> 16) & 0xFF;
+            resp[10] = (rep_blk >> 8) & 0xFF;
+            resp[11] = rep_blk & 0xFF;
 
             // A CHS geometry for the physical-layout pages.  READ CAPACITY
             // stays authoritative for the addressable block count — as on a
@@ -928,41 +950,48 @@ void run_cmd(scsi_t *scsi) {
             if (page_code == 0x03 || page_code == 0x3F) {
                 resp[total] = 0x03; // page code
                 resp[total + 1] = 0x16; // page length: 22 bytes follow
-                resp[total + 10] = (secs_per_track >> 8) & 0xFF; // sectors per track
-                resp[total + 11] = secs_per_track & 0xFF;
-                // Bytes per physical sector.  SCSI-2 S8.3.3 makes this the
-                // PHYSICAL sector size, which on real hardware need not equal
-                // the logical block length in the block descriptor above -- a
-                // 512-byte-logical drive may have 2048-byte physical sectors.
-                // The images behind these devices have no physical geometry
-                // distinct from their logical one, so the two are reported the
-                // same; that is a property of what we are modelling, not an
-                // assumption that they are always equal.
-                resp[total + 12] = (blk_sz >> 8) & 0xFF;
-                resp[total + 13] = blk_sz & 0xFF;
-                resp[total + 15] = 0x01; // interleave 1:1
-                resp[total + 20] = 0x40; // HSEC: hard-sectored, the usual for a fixed disk
+                // A page with no changeable fields is still RETURNED, with a
+                // zero body -- CDU-541 S5.2.3.2: "The page descriptor ... will
+                // always be returned even if none of parameters are changeable
+                // within the page."  resp is already zeroed, so PC=1 simply
+                // skips the value writes.
+                if (!changeable) {
+                    resp[total + 10] = (secs_per_track >> 8) & 0xFF; // sectors per track
+                    resp[total + 11] = secs_per_track & 0xFF;
+                    // Bytes per physical sector.  SCSI-2 S8.3.3 makes this the
+                    // PHYSICAL sector size, which on real hardware need not equal
+                    // the logical block length in the block descriptor above -- a
+                    // 512-byte-logical drive may have 2048-byte physical sectors.
+                    // The images behind these devices have no physical geometry
+                    // distinct from their logical one, so the two are reported the
+                    // same; that is a property of what we are modelling, not an
+                    // assumption that they are always equal.
+                    resp[total + 12] = (blk_sz >> 8) & 0xFF;
+                    resp[total + 13] = blk_sz & 0xFF;
+                    resp[total + 15] = 0x01; // interleave 1:1
+                    resp[total + 20] = 0x40; // HSEC: hard-sectored, the usual for a fixed disk
+                }
                 total += 24;
             }
             if (page_code == 0x04 || page_code == 0x3F) {
                 resp[total] = 0x04; // page code
                 resp[total + 1] = 0x16; // page length: 22 bytes follow
-                resp[total + 2] = (cylinders >> 16) & 0xFF; // number of cylinders
-                resp[total + 3] = (cylinders >> 8) & 0xFF;
-                resp[total + 4] = cylinders & 0xFF;
-                resp[total + 5] = (uint8_t)heads; // number of heads
-                resp[total + 20] = 0x15; // medium rotation rate: 5400 rpm
-                resp[total + 21] = 0x18;
+                if (!changeable) {
+                    resp[total + 2] = (cylinders >> 16) & 0xFF; // number of cylinders
+                    resp[total + 3] = (cylinders >> 8) & 0xFF;
+                    resp[total + 4] = cylinders & 0xFF;
+                    resp[total + 5] = (uint8_t)heads; // number of heads
+                    resp[total + 20] = 0x15; // medium rotation rate: 5400 rpm
+                    resp[total + 21] = 0x18;
+                }
                 total += 24;
             }
             if (page_code == 0x30 || page_code == 0x3F) {
-                // Page control 0 ("current values") unconditionally: this path
-                // masks the CDB with 0x3F above and so never sees bits 7:6, so
-                // it has never distinguished current / changeable / default /
-                // saved.  Preserved as-is here rather than quietly changed --
-                // it is a gap in the HD MODE SENSE, not part of this change.
-                total +=
-                    scsi_build_apple_page_30(resp + total, /*page_control=*/0, apple_id, apple_id_len, apple_id_len);
+                // This emitter has always honoured the page control field; it
+                // was the only page here that did, and it was being handed a
+                // hard-coded 0 because the CDB mask above dropped bits 7:6.
+                // Now that they are read, pass them.
+                total += scsi_build_apple_page_30(resp + total, page_control, apple_id, apple_id_len, apple_id_len);
             }
             resp[0] = (uint8_t)(total - 1); // mode data length excludes itself
 

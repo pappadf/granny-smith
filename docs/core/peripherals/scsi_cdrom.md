@@ -180,11 +180,42 @@ Where `pc_page` byte encodes: bits 7-6 = Page Control (PC), bits 5-0 = Page Code
 
 **The block descriptor must always be present**, regardless of the DBD bit in the CDB. A/UX does not set DBD and expects the descriptor. Omitting it causes A/UX to fail during SCSI bus enumeration.
 
-**Page Control (PC) values:**
-- `0x00` — Current values
-- `0x01` — Changeable values (return bitmask of modifiable fields)
-- `0x02` — Default values
-- `0x03` — Saved values (not supported — return CHECK CONDITION, ILLEGAL REQUEST)
+**Page Control (PC) values**, from the CDU-541 manual Table 5-5 — *not* the
+generic SCSI-2 table, which differs on the last row:
+
+| DB(7) | DB(6) | PC | Type of Parameter Values |
+| --- | --- | --- | --- |
+| 0 | 0 | `0x00` | Current values |
+| 0 | 1 | `0x01` | Changeable values |
+| 1 | 0 | `0x02` | Default values |
+| 1 | 1 | `0x03` | **Default values** |
+
+> **Corrected 2026-09-14.** This list previously said `0x03` was "Saved values
+> (not supported — return CHECK CONDITION, ILLEGAL REQUEST)", which is the
+> generic SCSI-2 behaviour and not this drive's. Table 5-5 maps `1 1` to Default
+> Values. The error was inherited by a review item (F-36) that proposed
+> implementing the rejection; it would have made the model less faithful, not
+> more. There is no SCSI-2 standard in `local/gs-docs/library` to appeal to —
+> only X3.131-1986, whose MODE SENSE has no page control field at all, because
+> mode pages and PC are SCSI-2 additions.
+
+**Changeable values (PC=1)**, §5.2.3.2 verbatim: "The page requested will be
+returned with the bits that are allowed to be changed set to one. Parameters
+that are not changeable will be set to zero. If any part of a field is
+changeable all bits in that field are set to one. The page descriptor as
+defined in this document will always be returned even if none of parameters are
+changeable within the page."
+
+So a page with nothing changeable is **returned with a zero body**, not omitted.
+
+**Block descriptor and PC**, §5.2.3: "The default block length is 2048 and is
+returned if default values are requested. The current block length is returned
+if current values are requested. A block length of `FFh FFh FFh` is returned if
+changeable values are requested." Block length *is* changeable on this drive
+(Table 5-4: 256, 512, 1024, 2048, 2336), which is why the changeable answer sets
+every bit rather than none. The hard-disk path answers zero there instead — its
+MODE SELECT discards the block descriptor, so its block size genuinely cannot
+be changed.
 
 **Supported mode pages:** See section 4.
 

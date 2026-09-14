@@ -480,10 +480,99 @@ TEST(mode_sense_and_read_capacity_agree_about_block_size) {
     scsi_delete(scsi);
 }
 
+// MODE SENSE page control.  PC=1 asks "which fields can I change?", and this
+// path used to ignore the field entirely and answer with the CURRENT values --
+// telling the host every field was modifiable.
+//
+// CDU-541 manual S5.2.3.2: "The page requested will be returned with the bits
+// that are allowed to be changed set to one.  Parameters that are not
+// changeable will be set to zero. ... The page descriptor ... will always be
+// returned even if none of parameters are changeable within the page."
+//
+// Nothing in a hard disk's pages here is changeable, so the answer is the page
+// headers with zero bodies -- present, not omitted.
+static void mode_sense(scsi_t *scsi, int pc, uint8_t page, uint8_t *out, size_t *got) {
+    const uint8_t cdb[6] = {0x1A, 0x00, (uint8_t)((pc << 6) | page), 0x00, 0x60, 0x00};
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    *got = 0;
+    while (*got < 0x60 && scsi_pop_data_in_byte(scsi, &out[*got]))
+        (*got)++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+}
+
+TEST(mode_sense_changeable_mask_reports_nothing_changeable) {
+    scsi_t *scsi = attach_disk();
+    uint8_t cur[0x60], chg[0x60];
+    size_t n_cur = 0, n_chg = 0;
+
+    mode_sense(scsi, 0, 0x3F, cur, &n_cur); // current values
+    mode_sense(scsi, 1, 0x3F, chg, &n_chg); // changeable mask
+
+    // Same shape: the pages are all still there.
+    ASSERT_EQ_INT((int)n_chg, (int)n_cur);
+    ASSERT_EQ_INT(chg[3], 8); // block descriptor still present
+
+    // The current view carries real geometry...
+    bool cur_has_values = false;
+    for (size_t i = 12; i < n_cur; i++)
+        if (cur[i] != 0)
+            cur_has_values = true;
+    ASSERT_TRUE(cur_has_values);
+
+    // ...and the changeable view carries page headers and nothing else.  Each
+    // page is <code><len> followed by len zero bytes.
+    size_t end = (size_t)chg[0] + 1; // mode data length excludes itself
+    ASSERT_TRUE(end <= n_chg);
+    size_t i = 12; // past header + block descriptor
+    int pages = 0;
+    while (i + 1 < end) {
+        uint8_t len = chg[i + 1];
+        // The three pages this device emits: format, geometry, Apple ident.
+        ASSERT_TRUE(chg[i] == 0x03 || chg[i] == 0x04 || chg[i] == 0x30);
+        for (uint8_t k = 0; k < len; k++)
+            ASSERT_EQ_INT(chg[i + 2 + k], 0); // body all zero: nothing changeable
+        i += 2u + len;
+        pages++;
+    }
+    ASSERT_EQ_INT(pages, 3);
+
+    // The block size is not changeable on a hard disk either -- its MODE SELECT
+    // discards the block descriptor -- so no bit of that field is set.
+    ASSERT_EQ_INT(chg[9], 0);
+    ASSERT_EQ_INT(chg[10], 0);
+    ASSERT_EQ_INT(chg[11], 0);
+    scsi_delete(scsi);
+}
+
+// PC=3 is answered, not refused: CDU-541 Table 5-5 maps page control "1 1" to
+// Default Values.  On a drive with nothing changeable that is the same answer
+// as PC=0 and PC=2.
+TEST(mode_sense_saved_values_are_answered_like_defaults) {
+    scsi_t *scsi = attach_disk();
+    uint8_t a[0x60], b[0x60], c[0x60];
+    size_t na = 0, nb = 0, nc = 0;
+
+    mode_sense(scsi, 0, 0x3F, a, &na); // current
+    mode_sense(scsi, 2, 0x3F, b, &nb); // default
+    mode_sense(scsi, 3, 0x3F, c, &nc); // saved
+
+    ASSERT_EQ_INT((int)nb, (int)na);
+    ASSERT_EQ_INT((int)nc, (int)na);
+    ASSERT_EQ_INT(memcmp(a, b, na), 0);
+    ASSERT_EQ_INT(memcmp(a, c, na), 0);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(test_write_in_range_lands);
     RUN(mode_sense_and_read_capacity_agree_about_block_size);
+    RUN(mode_sense_changeable_mask_reports_nothing_changeable);
+    RUN(mode_sense_saved_values_are_answered_like_defaults);
     RUN(test_write_past_end_is_refused);
     RUN(test_write_beyond_end_is_refused);
     RUN(test_write10_past_end_is_refused);
