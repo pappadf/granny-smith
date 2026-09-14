@@ -352,6 +352,15 @@ struct scsi_5380 {
     size_t drq_pulse_last_size;
     // Internal end-of-DMA flag (phase changed while DMA active)
     bool end_of_dma;
+    // A latched SCSI bus RST interrupt.  NCR 5380 design manual S8.3: "The NCR
+    // 5380 generates an interrupt when the RST signal (pin 16) transitions to
+    // true. ... This interrupt also occurs after setting the ASSERT RST bit
+    // (port 1, bit 7).  THIS INTERRUPT CANNOT BE DISABLED."  Held separately
+    // from the DMA-mode sources because it is the one source that does not
+    // consult the Mode Register -- a reset has just cleared MR, so deriving it
+    // from MR is how it went missing.  Cleared by reading the Reset
+    // Parity/Interrupt register (S6.9), like the other latches.
+    bool rst_irq;
     bool dma_write_armed;
     bool dma_out_engine_started;
     uint8_t cdr_pipeline[3];

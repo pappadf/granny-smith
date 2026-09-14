@@ -119,6 +119,11 @@ static void wr(scsi_t *scsi, int reg, uint8_t val) {
     scsi_get_memory_interface(scsi)->write_uint8(scsi, (uint32_t)(reg << 4), val);
 }
 
+// ...and read one back the same way.
+static uint8_t rd(scsi_t *scsi, int reg) {
+    return scsi_get_memory_interface(scsi)->read_uint8(scsi, (uint32_t)(reg << 4));
+}
+
 // The finding's first named sequence: select normally, then drive SEL/BSY a
 // second time.  The second BSY-release reaches the end-of-selection branch with
 // phase == command, which used to be `assert(phase == scsi_selection)`.
@@ -233,9 +238,53 @@ TEST(phase_wire_bits_match_ansi_table_5_1) {
     ASSERT_EQ_INT(scsi_phase_wire_bits(scsi_reselection), 0x0);
 }
 
+// NCR 5380 design manual S8.3: "The NCR 5380 generates an interrupt when the
+// RST signal (pin 16) transitions to true. ... This interrupt also occurs after
+// setting the ASSERT RST bit (port 1, bit 7).  THIS INTERRUPT CANNOT BE
+// DISABLED."
+//
+// It used to reach BSR[4] and stop there.  A bus reset clears the Mode
+// Register, and scsi_update_irq() derived /IRQ purely from MR-gated sources --
+// so the one source the manual says cannot be disabled was disabled by the
+// reset that caused it.
+TEST(bus_reset_raises_an_irq_that_no_mode_bit_gates) {
+    scsi_t *scsi = attach_disk();
+    // Mode register explicitly empty: no DMA, nothing enabled.  The reset
+    // interrupt must not care.
+    wr(scsi, MR, 0x00);
+    ASSERT_TRUE(!scsi->chip5380->irq_active);
+
+    wr(scsi, ICR, ICR_RST); // assert RST -- the bus reset
+    ASSERT_TRUE(scsi->chip5380->irq_active); // the PIN, not just the status bit
+    ASSERT_TRUE((rd(scsi, BSR) & BSR_INT) != 0);
+
+    // S6.9: reading the Reset Parity/Interrupt register clears the latch, and
+    // the pin follows it down.
+    (void)rd(scsi, RESET);
+    ASSERT_TRUE(!scsi->chip5380->irq_active);
+    ASSERT_TRUE((rd(scsi, BSR) & BSR_INT) == 0);
+    scsi_delete(scsi);
+}
+
+// A chip /RESET is not a bus RST: it clears the latch rather than setting one,
+// so a rebooting ROM sees an idle controller rather than an interrupt it never
+// caused.
+TEST(chip_reset_leaves_no_interrupt_behind) {
+    scsi_t *scsi = attach_disk();
+    wr(scsi, ICR, ICR_RST); // a bus reset first, so there IS a latch to clear
+    ASSERT_TRUE(scsi->chip5380->irq_active);
+
+    scsi_reset_pin(scsi); // the 68k RESET instruction
+    ASSERT_TRUE(!scsi->chip5380->irq_active);
+    ASSERT_TRUE((rd(scsi, BSR) & BSR_INT) == 0);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(phase_wire_bits_match_ansi_table_5_1);
+    RUN(bus_reset_raises_an_irq_that_no_mode_bit_gates);
+    RUN(chip_reset_leaves_no_interrupt_behind);
     RUN(test_reselect_from_command_is_declined);
     RUN(test_dma_mode_in_bus_free_is_declined);
     RUN(test_arbitrate_outside_bus_free_is_declined);

@@ -131,8 +131,28 @@ static uint8_t compute_loopback_cdr(scsi_t *scsi) {
 }
 
 // Drive VIA2 CB2 (SCSI /IRQ) based on current interrupt conditions.
-// The NCR 5380 asserts /IRQ on phase mismatch during DMA, end of DMA,
-// loss of BSY during DMA, or bus reset detection.
+//
+// The design manual's S8 lists SIX interrupt conditions.  Three are modelled
+// and three are not, and the ones that are not are named here rather than left
+// to be inferred from what the code happens to do:
+//
+//   S8.2 End of Process (EOP)     -- modelled, gated on MR.DMA
+//   S8.5 Bus Phase Mismatch       -- modelled, gated on MR.DMA
+//   S8.3 SCSI Bus Reset           -- modelled, and gated on NOTHING: "this
+//                                    interrupt cannot be disabled"
+//
+//   S8.1 Selection/Reselection    -- NOT modelled.  The Select Enable register
+//        is write-only-ignored (see the SER case in write_uint8): no target in
+//        this emulator ever disconnects, so nothing can ever reselect.  This
+//        is not a gap a guest currently notices -- measured on iix-aux3-boot,
+//        A/UX arms SER=$80 5,009 times and disarms it 11,257 times, yet sends
+//        ZERO IDENTIFY messages and asserts ATN zero times, so by X3.131 5.5
+//        ("bit 6 ... indicates that the initiator has the ability to
+//        accommodate disconnection and reconnection") it has never granted any
+//        target permission to disconnect.
+//   S8.4 Parity Error             -- NOT modelled; the bus carries no parity.
+//   S8.6 Loss of BSY              -- NOT modelled; gated on MR.MONITOR BUSY,
+//        which no guest in the corpus sets.
 void scsi_update_irq(scsi_t *scsi) {
     // A bus with no 5380 attached -- a Quadra, an AV, a PowerMac, a Network
     // Server -- has nothing here to update.
@@ -147,6 +167,10 @@ void scsi_update_irq(scsi_t *scsi) {
         if (scsi->chip5380->end_of_dma)
             irq = true; // end of DMA
     }
+    // S8.3, and deliberately outside the MR test: a bus reset clears the Mode
+    // Register, so any source derived from MR is dead the moment it is needed.
+    if (scsi->chip5380->rst_irq)
+        irq = true;
 
     if (irq == scsi->chip5380->irq_active)
         return;
@@ -283,8 +307,12 @@ static void scsi_reset(scsi_t *scsi) {
     scsi->buf.size = 0;
     scsi->chip5380->end_of_dma = false;
     scsi->chip5380->dma_write_armed = false;
-    // RST generates a non-maskable interrupt that survives the reset
+    // RST generates a non-maskable interrupt that survives the reset (S8.3).
+    // The BSR bit alone used to be it, which meant the condition reached the
+    // register and never the pin: scsi_update_irq derived /IRQ purely from
+    // MR-gated sources, and MR had just been cleared two lines above.
     scsi->chip5380->reg.bsr |= BSR_INT;
+    scsi->chip5380->rst_irq = true;
     // Flush the CDR pipeline so post-reset reads return $00
     scsi->chip5380->cdr_pipeline[0] = scsi->chip5380->cdr_pipeline[1] = scsi->chip5380->cdr_pipeline[2] = 0;
     scsi->chip5380->cdr_idx = 0;
@@ -314,6 +342,7 @@ void scsi_reset_pin(scsi_t *scsi) {
     }
     scsi_reset(scsi);
     scsi->chip5380->reg.bsr &= ~BSR_INT; // chip reset clears the IRQ latch (no bus-RST NMI)
+    scsi->chip5380->rst_irq = false;
     scsi_update_irq(scsi);
 }
 
@@ -819,6 +848,7 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
         // (on RESET-read) to mirror real-hardware EOP-ACK semantics.
         scsi->chip5380->reg.bsr &= ~(0x04 | BSR_INT | 0x20);
         scsi->chip5380->end_of_dma = false;
+        scsi->chip5380->rst_irq = false; // S6.9 clears the IRQ latch, reset source included
         scsi_update_irq(scsi);
         return 0xff;
     }
@@ -1014,6 +1044,13 @@ static void write_uint8(void *s, uint32_t addr, uint8_t value) {
         break;
 
     case SER:
+        // Select Enable.  Stored so a read-back sees what was written, and
+        // otherwise IGNORED: it exists to arm the S8.1 select/reselect
+        // interrupt, and nothing in this emulator can ever raise one.  A target
+        // may only disconnect if the initiator granted permission in IDENTIFY
+        // (X3.131 5.5, bit 6), our targets complete every command inline and
+        // never disconnect, and no reselection can follow a disconnect that did
+        // not happen.  See scsi_update_irq for the measurement.
         scsi->chip5380->reg.ser = value;
         break;
 
