@@ -348,8 +348,13 @@ static void av_scsi_pump_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
     av_state_t *st = av_st(cfg);
+    bool running = false;
     if (st && st->psc && st->scsi96 && cfg->scsi) {
         int dir = av_psc_dma_dir(st->psc, AV_PSC_DMA_SCSI);
+        // The channel being armed at all is what keeps the pump alive; a
+        // transfer that has not reached its first DREQ yet still counts.
+        running = dir >= 0;
+        bool mem_to_scsi = dir == 0;
         int moved = 0;
         while (dir >= 0 && moved < AV_SCSI_PUMP_MAX && av_scsi_data_phase(cfg) && scsi_53c96_dreq(st->scsi96)) {
             uint8_t byte;
@@ -365,7 +370,47 @@ static void av_scsi_pump_event(void *source, uint64_t data) {
             moved++;
             dir = av_psc_dma_dir(st->psc, AV_PSC_DMA_SCSI);
         }
+        if (moved)
+            running = true; // a pass that did work is asked again next tick
+        // Did the loop stop because the TARGET ran out?  Same rule the AMIC
+        // pump applies, and for the same reason -- this path had the identical
+        // structure and never asked (03-scsi F-42).
+        scsi_53c96_dma_end_if_short(st->scsi96, moved, mem_to_scsi, av_scsi_data_phase(cfg));
     }
+    // Re-arm only while there is something to pump.
+    //
+    // This used to re-arm unconditionally, from av_init onward, for the life
+    // of the machine.  The cost is not the wake-ups: scheduler.md S1.2 gives
+    // the sprint length as min(remaining_budget, cycles_to_next_event), so a
+    // permanently-scheduled 10 us event caps EVERY sprint at 10 us of guest
+    // time -- a few hundred cycles on a 660AV/840AV -- whether or not any SCSI
+    // transfer exists.  Measured across the AV suite: 129,200,000 firings in
+    // 1,292 s of guest time, of which 24,604 moved a byte.  One in 5,251.
+    if (running)
+        scheduler_new_cpu_event(cfg->scheduler, &av_scsi_pump_event, cfg, 0, 0, (uint64_t)AV_SCSI_PUMP_NS);
+}
+
+// Arm the pump when the PSC's SCSI channel is touched.
+//
+// Called on ANY write into that channel's register block, not on the bit that
+// starts it: av_psc_dma_ready wants !pause && ENABLED && cnt != 0, a driver may
+// assemble those three in any order, and arming on the last one to arrive means
+// guessing which that is.
+//
+// Which makes idempotence the whole job.  An already-running pump is LEFT
+// ALONE -- no remove-and-re-add, because that would restart its 10 us phase,
+// and this is called several times per transfer setup.  The first version did
+// remove-and-re-add and the repeated phase resets moved sprint boundaries
+// enough to change CPU/DSP interleaving: suite-av's av-sr-macro row spoke its
+// answer for 0.6 s instead of 2.3 s, RMS 528 against the golden's 1184.  The
+// pump's phase is an emulation artifact, so nothing may depend on it -- but
+// things downstream of sprint boundaries evidently do, and the cheapest way to
+// owe them nothing is never to move it.
+void av_scsi_pump_arm(config_t *cfg) {
+    if (!cfg || !cfg->scheduler)
+        return;
+    if (has_event(cfg->scheduler, &av_scsi_pump_event))
+        return; // already pumping: leave its cadence where it is
     scheduler_new_cpu_event(cfg->scheduler, &av_scsi_pump_event, cfg, 0, 0, (uint64_t)AV_SCSI_PUMP_NS);
 }
 
@@ -698,8 +743,10 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     av_psc_set_dreq_query(st->psc, (av_psc_dreq_fn)scsi_53c96_dreq, st->scsi96);
 
     // The PSC channel-0 pump (the hardware's DREQ/DACK engine).
+    // Registered, not armed: av_scsi_pump_arm() starts it when the guest
+    // programs the PSC's SCSI channel, and it stops itself when the channel
+    // goes idle.
     scheduler_new_event_type(cfg->scheduler, "av", cfg, "scsi_pump", &av_scsi_pump_event);
-    scheduler_new_cpu_event(cfg->scheduler, &av_scsi_pump_event, cfg, 0, 0, (uint64_t)AV_SCSI_PUMP_NS);
 
     // Bus-side physical resolver for the 040 walker: RAM decoded up to the
     // ROM base, the 2 MB ROM at $40800000.  ram aperture max = $40800000 so

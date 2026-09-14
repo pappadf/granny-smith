@@ -165,4 +165,9 @@ const mac030_irq_route_t *av_irq_routes(void);
 // Overlay control (checkpoint restore / tests); layout arms it by default.
 void av_set_overlay(config_t *cfg, bool on);
 
+// Wake the PSC SCSI bus-master pump.  It stops re-arming itself when the
+// channel goes idle, so the guest programming that channel (psc.c) starts it
+// again.
+void av_scsi_pump_arm(config_t *cfg);
+
 #endif // GS_MACHINES_AV_H

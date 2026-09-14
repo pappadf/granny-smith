@@ -841,6 +841,25 @@ bool scsi_53c96_dreq(scsi_53c96_t *c) {
 // §8.2.10 has the target send the lesser of the allocation length and the data
 // it holds — so the initiator must see the phase change and finish with a
 // residual, which is what this posts.
+// The phase gate closed on a transfer that is still armed: the target sent
+// less than the initiator asked for and has already moved on.  Unlike a CPU
+// draining the aperture, a bus-master pump never asks the chip for the byte
+// that would reveal this, so it tells the chip directly — which then posts the
+// phase-change interrupt the driver is waiting on instead of leaving DREQ
+// asserted forever.
+//
+// Gated on having moved at least one byte and on the read direction, so it can
+// only ever end a data-in transfer that genuinely ran out, never a selection
+// still streaming its CDB.
+//
+// The measured symptom, on the PDM where this was first needed: Drive Setup
+// 2.0d5c2 hanging at "Setting drive options..." because a MODE SENSE(6) asked
+// for 16 bytes and the drive had 12.
+void scsi_53c96_dma_end_if_short(scsi_53c96_t *c, int moved, bool mem_to_scsi, bool phase_ok) {
+    if (moved > 0 && !mem_to_scsi && !phase_ok && scsi_53c96_dreq(c))
+        scsi_53c96_dma_short_transfer(c);
+}
+
 void scsi_53c96_dma_short_transfer(scsi_53c96_t *c) {
     if (!c || !c->bus || c->xfer_mode != XFER_DATA_IN)
         return;

@@ -559,6 +559,102 @@ TEST(repeated_preloads_do_not_wedge_the_fifo) {
     }
 }
 
+// ============================================================
+// Bus-master short transfer (F-42)
+// ============================================================
+// A CPU draining the aperture discovers a short transfer by asking the chip
+// for a byte that is not there.  A bus-master pump never asks: it watches the
+// bus phase, and when the phase gate closes it simply stops looping.  So the
+// chip has to be told, or it leaves DREQ asserted and the driver waits for an
+// interrupt that never comes.  The PDM's measured symptom was Drive Setup
+// 2.0d5c2 hanging at "Setting drive options...".
+//
+// scsi_53c96_dma_end_if_short() is that rule, and these pin its gates: it must
+// fire when the target quit mid-read, and must NOT fire in the three cases a
+// pump legitimately stops for reasons of its own.
+
+// Leave the chip in the state a pump sees mid-read: DMA armed for `want`
+// bytes, DREQ up, target still in DATA IN with bytes to give.
+static void arm_dma_read(uint32_t want) {
+    wr(R_COMMAND, 0x01); // flush FIFO
+    wr(R_STATUS, 0); // dest ID 0
+    wr(R_INTERRUPT, 0xA7);
+    wr(R_XFER_LO, 6);
+    wr(R_XFER_HI, 0);
+    wr(R_COMMAND, 0xC1); // DMA select without ATN
+    uint8_t cdb[6] = {0x08, 0, 0, 0, 1, 0}; // READ(6), one block
+    for (int i = 0; i < 6; i++)
+        wr(R_FIFO, cdb[i]);
+    ASSERT_EQ_INT(MB_data_in, mb.phase);
+    (void)take_int();
+    wr(R_XFER_LO, (uint8_t)(want & 0xFF));
+    wr(R_XFER_HI, (uint8_t)(want >> 8));
+    wr(R_COMMAND, 0x90); // DMA Transfer Information
+    ASSERT_TRUE(scsi_53c96_dreq(chip));
+}
+
+// The real thing: the target leaves DATA IN with the transfer still armed.
+TEST(bus_master_short_transfer_ends_the_command) {
+    setup();
+    arm_dma_read(64);
+
+    // The pump moved some bytes, then saw the phase gate close.  Forcing the
+    // phase is exactly what a target does when it has nothing more to send.
+    mb.phase = MB_status;
+    ASSERT_TRUE(scsi_53c96_dreq(chip)); // ...and the chip is still asking
+
+    scsi_53c96_dma_end_if_short(chip, 12, false, false);
+
+    // The chip terminated the transfer and told the driver.
+    ASSERT_TRUE(irq_level);
+    ASSERT_TRUE(!scsi_53c96_dreq(chip));
+    (void)take_int();
+    teardown();
+}
+
+// A pump that moved nothing has learned nothing -- it may simply have been
+// called before the target was ready.  Ending the command here would kill a
+// transfer that had not started.
+TEST(short_transfer_ignores_a_pass_that_moved_nothing) {
+    setup();
+    arm_dma_read(64);
+    mb.phase = MB_status;
+
+    scsi_53c96_dma_end_if_short(chip, 0, false, false);
+
+    ASSERT_TRUE(!irq_level);
+    ASSERT_TRUE(scsi_53c96_dreq(chip)); // still armed, still asking
+    teardown();
+}
+
+// Writing the target is not reading it.  A selection still streaming its CDB
+// leaves the data phase all the time, and must not be cut short.
+TEST(short_transfer_ignores_the_write_direction) {
+    setup();
+    arm_dma_read(64);
+    mb.phase = MB_status;
+
+    scsi_53c96_dma_end_if_short(chip, 12, true, false);
+
+    ASSERT_TRUE(!irq_level);
+    ASSERT_TRUE(scsi_53c96_dreq(chip));
+    teardown();
+}
+
+// The ordinary reason a pump stops: it hit its own per-pass byte cap with the
+// target still in DATA IN and more to give.  Nothing is short about that.
+TEST(short_transfer_ignores_a_pump_that_stopped_on_its_own) {
+    setup();
+    arm_dma_read(64);
+    ASSERT_EQ_INT(MB_data_in, mb.phase); // the target has not moved
+
+    scsi_53c96_dma_end_if_short(chip, 2048, false, true);
+
+    ASSERT_TRUE(!irq_level);
+    ASSERT_TRUE(scsi_53c96_dreq(chip));
+    teardown();
+}
+
 int main(void) {
     RUN(reset_defaults);
     RUN(select_timeout_no_device);
@@ -568,6 +664,10 @@ int main(void) {
     RUN(read_odd_length_fifo_residual);
     RUN(dma_data_out_sends_the_byte_preloaded_into_the_fifo);
     RUN(repeated_preloads_do_not_wedge_the_fifo);
+    RUN(bus_master_short_transfer_ends_the_command);
+    RUN(short_transfer_ignores_a_pass_that_moved_nothing);
+    RUN(short_transfer_ignores_the_write_direction);
+    RUN(short_transfer_ignores_a_pump_that_stopped_on_its_own);
     RUN(status_reflects_live_phase);
     RUN(flush_preserves_paused_select);
     printf("[scsi96] all tests passed\n");

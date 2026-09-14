@@ -548,17 +548,27 @@ void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
     }
 
     // Channel control words + register sets.
+    //
+    // A write to the SCSI channel's own registers wakes its pump (av.c): the
+    // pump stops re-arming when the channel goes idle, so something has to
+    // start it again, and the guest programming the channel is that something.
+    // Both blocks below are hooked rather than just the enable bit -- see
+    // av_scsi_pump_arm for why the last write is the wrong one to wait for.
     if (off >= 0xC00 && off < 0xC00 + 0x10 * AV_PSC_DMA_CHANNELS) {
         int n = (int)((off - 0xC00) >> 4);
         uint32_t sub = off & 0xF;
         if (sub < 2)
             psc_ctrl_write(psc, n, sub, value);
+        if (n == AV_PSC_DMA_SCSI)
+            av_scsi_pump_arm(cfg);
         return;
     }
     if (off >= 0x1000 && off < 0x1000 + 0x20 * AV_PSC_DMA_CHANNELS) {
         int n = (int)((off - 0x1000) >> 5);
         int s = (int)((off >> 4) & 1);
         psc_set_write(psc, n, s, off & 0xF, value);
+        if (n == AV_PSC_DMA_SCSI)
+            av_scsi_pump_arm(cfg);
         return;
     }
 
