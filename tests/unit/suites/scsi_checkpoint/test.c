@@ -97,15 +97,9 @@ int system_hd_attach_on(struct scsi *bus, const char *path, int scsi_id) {
 void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     (void)config, (void)bus, (void)filename, (void)scsi_id;
 }
-// No scheduler here: these tests never let time pass.  A NULL scheduler means
-// a DATA OUT settle completes immediately (there is nothing to wait for), which
-// is what the bus does when it cannot read a clock.
+// No scheduler here: these tests never let time pass.
 struct scheduler *system_scheduler(void) {
     return NULL;
-}
-uint64_t scheduler_cpu_cycles(struct scheduler *restrict s) {
-    (void)s;
-    return 0;
 }
 void scheduler_new_event_type(struct scheduler *s, const char *sn, void *src, const char *en, event_callback_t cb) {
     (void)s, (void)sn, (void)src, (void)en, (void)cb;
@@ -235,37 +229,6 @@ TEST(test_device_state_survives_a_round_trip) {
     scsi_delete(a);
 }
 
-// A DATA OUT that has been commanded but not yet settled.  This used to be
-// three fields recording a held "primer" byte and the CPU program counter that
-// wrote it; the chip no longer looks at the program counter, and the state that
-// matters now belongs to the BUS: the target has taken the command and is
-// preparing, with REQ low until it is ready.  A checkpoint taken in that window
-// has to come back in it, or the restored machine starts accepting payload the
-// target never asked for.
-TEST(test_a_pending_data_out_settle_survives_a_round_trip) {
-    scsi_t *a = scsi_init(NULL);
-    ASSERT_TRUE(scsi_5380_attach(a, NULL) != NULL);
-    a->bus.data_out_pending = true;
-    a->bus.data_out_bytes = 512;
-    a->bus.data_out_ready_cy = 0x1234ABCDu;
-    a->bus.req = false;
-
-    cp_reset();
-    scsi_checkpoint(a, (checkpoint_t *)1);
-    cp_rewind();
-
-    scsi_t *b = scsi_init((checkpoint_t *)1);
-    ASSERT_TRUE(scsi_5380_attach(b, (checkpoint_t *)1) != NULL);
-
-    ASSERT_TRUE(b->bus.data_out_pending);
-    ASSERT_EQ_INT(b->bus.data_out_bytes, 512);
-    ASSERT_TRUE(b->bus.data_out_ready_cy == 0x1234ABCDu);
-    ASSERT_TRUE(!b->bus.req); // still not asking for data
-
-    scsi_delete(a);
-    scsi_delete(b);
-}
-
 // The 5380's own block: pin levels and the pseudo-DMA gates.  Losing these
 // restores a chip that says it is driving no interrupt and has no transfer in
 // flight, whatever it was actually doing.
@@ -276,6 +239,9 @@ TEST(test_5380_state_survives_a_round_trip) {
     a->chip5380->reg.icr = ICR_ACK;
     a->chip5380->end_of_dma = true;
     a->chip5380->dma_write_armed = true;
+    a->chip5380->primer_held = true;
+    a->chip5380->primer_byte = 0x5A;
+    a->chip5380->primer_pc = 0xDEADBEEF;
     a->chip5380->cdr_idx = 2;
     a->chip5380->drq_evt_registered = true; // must NOT come back
 
@@ -296,6 +262,9 @@ TEST(test_5380_state_survives_a_round_trip) {
     // would be the worse of the two.
     ASSERT_TRUE(b->chip5380->end_of_dma);
     ASSERT_TRUE(b->chip5380->dma_write_armed);
+    ASSERT_TRUE(b->chip5380->primer_held);
+    ASSERT_EQ_INT(b->chip5380->primer_byte, 0x5A);
+    ASSERT_EQ_INT(b->chip5380->primer_pc, 0xDEADBEEF);
     ASSERT_EQ_INT(b->chip5380->cdr_idx, 2);
 
     // Below the line in struct scsi_5380, and for a reason: it records that
@@ -444,7 +413,6 @@ TEST(test_armed_select_timeout_does_not_cross_a_checkpoint) {
 
 int main(void) {
     RUN(test_device_state_survives_a_round_trip);
-    RUN(test_a_pending_data_out_settle_survives_a_round_trip);
     RUN(test_5380_state_survives_a_round_trip);
     RUN(test_busless_round_trip_is_symmetric);
     RUN(test_53c96_writes_no_host_pointers);

@@ -203,22 +203,6 @@ struct scsi {
         // 5380 returns it from CDR, the external-initiator API reads it
         // directly, and it used to be stored in the 5380's register.
         uint8_t data;
-        // A target does not turn a WRITE command into a data phase the instant
-        // the last CDB byte lands: it has to prepare.  Our model used to, which
-        // is the whole reason the 5380 grew a primer gate -- A/UX writes a
-        // blind $00 to the pseudo-DMA port immediately after issuing the
-        // command, long before any real disk is ready, and on real hardware
-        // that byte goes nowhere because the target has not entered DATA OUT
-        // and is not asserting REQ.  Here it landed as payload byte 0 and
-        // shifted the transfer.
-        //
-        // So the transition is scheduled instead.  `data_out_pending` is the
-        // window between "the CDB is complete" and "the target is ready for
-        // data"; REQ is low throughout it, and a byte offered with REQ low is
-        // not transferred -- that is the handshake, not a heuristic.
-        bool data_out_pending;
-        int data_out_bytes; // buffer size the pending phase will arm
-        uint64_t data_out_ready_cy; // cpu cycle at which the target is ready
     } bus;
 
     struct { // information about current/pending command
@@ -303,12 +287,6 @@ struct scsi {
     void *seltmo_ctx;
     bool seltmo_registered;
 
-    // Likewise a scheduler registration belonging to THIS process, so it stays
-    // below the line: a restore starts false and the next phase_data_out()
-    // re-establishes it.  The PENDING state itself is above the line, because a
-    // checkpoint taken mid-settle must come back mid-settle.
-    bool data_out_evt_registered;
-
     scsi_5380_t *chip5380;
 
     struct object *object; // top-level scsi node
@@ -354,6 +332,9 @@ struct scsi_5380 {
     // Internal end-of-DMA flag (phase changed while DMA active)
     bool end_of_dma;
     bool dma_write_armed;
+    uint8_t primer_byte; // value of the held first byte
+    uint32_t primer_pc; // PC at which the held byte was written
+    bool primer_held; // true while a held first byte awaits decision
     bool dma_out_engine_started;
     uint8_t cdr_pipeline[3];
     int cdr_idx;
@@ -407,7 +388,7 @@ void scsi_buf_ensure(scsi_t *scsi, size_t bytes);
 // fourth is the pseudo-DMA byte path.  A bus that did not know which chip was
 // attached would not need any of them -- see the notes in scsi_bus.c.
 void scsi_cancel_drq_service(scsi_t *scsi);
-void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value);
+void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value, bool apply_primer_gate);
 void scsi_update_drq(scsi_t *scsi);
 void scsi_update_irq(scsi_t *scsi);
 bool scsi_5380_dma_mode(const scsi_t *scsi);
@@ -430,10 +411,6 @@ void phase_data_in(scsi_t *scsi, int bytes);
 
 // Transition SCSI bus to data-out phase (initiator to target)
 void phase_data_out(scsi_t *scsi, int bytes);
-
-// Let a pending DATA OUT settle become visible if its time has come.  Called
-// from every point that can observe the phase or offer a byte.
-void scsi_bus_settle_poll(scsi_t *scsi);
 
 // Transition SCSI bus to status phase
 void phase_status(scsi_t *scsi, uint8_t status);
