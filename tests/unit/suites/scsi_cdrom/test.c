@@ -832,6 +832,137 @@ TEST(mode_sense_retry_counts_default_to_zero) {
     scsi_delete(scsi);
 }
 
+// Drive a 10-byte CDB and collect the DATA IN bytes.
+static size_t issue_cdb10(scsi_t *scsi, const uint8_t cdb[10], uint8_t *out, size_t max, int *phase_out) {
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    *phase_out = scsi_get_bus_phase(scsi);
+    size_t n = 0;
+    if (*phase_out == scsi_data_in) {
+        uint8_t b;
+        while (scsi_pop_data_in_byte(scsi, &b))
+            if (n < max)
+                out[n++] = b;
+        scsi_external_data_in_complete(scsi);
+    }
+    if (scsi_get_bus_phase(scsi) == scsi_status) {
+        scsi_external_status_byte(scsi);
+        scsi_external_message_byte(scsi);
+    }
+    scsi_external_release(scsi);
+    return n;
+}
+
+// READ TOC's MSF bit (byte 1 bit 1).  CDU-541 S5.2.24: "the format of the CD
+// Address is determined by the MSF bit in the CDB"; X3.131-1994 Table 237 gives
+// the field as reserved / M / S / F.  It used to be ignored, so a driver asking
+// for MSF got an LBA and read it as minutes, seconds and frames.
+//
+// LBA 0 is 00:02:00 -- the Red Book two-second lead-in, 150 frames at 75 fps.
+TEST(read_toc_honours_the_msf_bit) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[32];
+    int phase = 0;
+
+    const uint8_t lba_cdb[10] = {0x43, 0x00, 0, 0, 0, 0, 0x01, 0x00, 0x14, 0x00};
+    size_t n = issue_cdb10(scsi, lba_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_TRUE(n >= 20);
+    ASSERT_EQ_INT(r[8], 0x00); // track 1 address, LBA 0
+    ASSERT_EQ_INT(r[9], 0x00);
+    ASSERT_EQ_INT(r[10], 0x00);
+    ASSERT_EQ_INT(r[11], 0x00);
+
+    const uint8_t msf_cdb[10] = {0x43, 0x02, 0, 0, 0, 0, 0x01, 0x00, 0x14, 0x00};
+    n = issue_cdb10(scsi, msf_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_TRUE(n >= 20);
+    ASSERT_EQ_INT(r[8], 0x00); // reserved
+    ASSERT_EQ_INT(r[9], 0x00); // M
+    ASSERT_EQ_INT(r[10], 0x02); // S -- the 150-frame lead-in
+    ASSERT_EQ_INT(r[11], 0x00); // F
+    scsi_delete(scsi);
+}
+
+// AAh asks for the lead-out alone, so the descriptor list is one entry shorter
+// -- and the TOC data length follows the REQUEST.  It does not follow the
+// allocation length: X3.131-1994 Table 261 calls it the length "available to be
+// transferred", which is how an initiator learns there is more to ask for.
+TEST(read_toc_lead_out_only_and_the_length_is_what_is_available) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[32];
+    int phase = 0;
+
+    const uint8_t all_cdb[10] = {0x43, 0x00, 0, 0, 0, 0, 0x01, 0x00, 0x14, 0x00};
+    size_t n = issue_cdb10(scsi, all_cdb, r, sizeof(r), &phase);
+    ASSERT_TRUE(n >= 4);
+    ASSERT_EQ_INT(r[1], 18); // header(2 past the length) + two 8-byte descriptors
+
+    const uint8_t leadout_cdb[10] = {0x43, 0x00, 0, 0, 0, 0, 0xAA, 0x00, 0x14, 0x00};
+    n = issue_cdb10(scsi, leadout_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_EQ_INT((int)n, 12); // header + ONE descriptor
+    ASSERT_EQ_INT(r[1], 10);
+    ASSERT_EQ_INT(r[6], 0xAA); // and it is the lead-out
+
+    // Truncating the transfer must NOT shrink the reported length.
+    const uint8_t short_cdb[10] = {0x43, 0x00, 0, 0, 0, 0, 0x01, 0x00, 0x04, 0x00};
+    n = issue_cdb10(scsi, short_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT((int)n, 4);
+    ASSERT_EQ_INT(r[1], 18); // still says 18 are available
+    scsi_delete(scsi);
+}
+
+// A track this disc does not have is refused.  CDU-541 S5.2.24 and X3.131-1994
+// S14.2.11 agree; they differ only on zero, which is taken as "from the first
+// track" so that 43h and the Sony C1h handler answer alike.
+TEST(read_toc_rejects_a_track_the_disc_does_not_have) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[32];
+    int phase = 0;
+
+    const uint8_t bad[10] = {0x43, 0x00, 0, 0, 0, 0, 0x09, 0x00, 0x14, 0x00};
+    (void)issue_cdb10(scsi, bad, r, sizeof(r), &phase);
+    ASSERT_TRUE(phase != scsi_data_in);
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_ILLEGAL_REQUEST);
+    ASSERT_EQ_INT(sense[12], ASC_INVALID_FIELD_IN_CDB);
+
+    // Zero is accepted, and means track 1.
+    const uint8_t zero[10] = {0x43, 0x00, 0, 0, 0, 0, 0x00, 0x00, 0x14, 0x00};
+    size_t n = issue_cdb10(scsi, zero, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_TRUE(n >= 20);
+    ASSERT_EQ_INT(r[6], 0x01);
+    scsi_delete(scsi);
+}
+
+// READ HEADER carries the same bit -- X3.131-1994 S14.1.5: "The READ HEADER,
+// READ SUB-CHANNEL and READ TABLE OF CONTENTS commands have this feature."
+TEST(read_header_honours_the_msf_bit) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[16];
+    int phase = 0;
+
+    // LBA 75 -> 00:03:00 once the 150-frame lead-in is added.
+    const uint8_t msf_cdb[10] = {0x44, 0x02, 0, 0, 0, 75, 0, 0x00, 0x08, 0x00};
+    size_t n = issue_cdb10(scsi, msf_cdb, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_TRUE(n >= 8);
+    ASSERT_EQ_INT(r[4], 0x00); // reserved
+    ASSERT_EQ_INT(r[5], 0x00); // M
+    ASSERT_EQ_INT(r[6], 0x03); // S
+    ASSERT_EQ_INT(r[7], 0x00); // F
+
+    const uint8_t lba_cdb[10] = {0x44, 0x00, 0, 0, 0, 75, 0, 0x00, 0x08, 0x00};
+    n = issue_cdb10(scsi, lba_cdb, r, sizeof(r), &phase);
+    ASSERT_TRUE(n >= 8);
+    ASSERT_EQ_INT(r[7], 75); // plain LBA
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(read6_at_buf_limit);
@@ -850,6 +981,10 @@ int main(void) {
     RUN(host_eject_honours_the_guest_lock);
     RUN(host_eject_return_codes_are_distinct);
     RUN(eject_leaves_no_locked_empty_drive);
+    RUN(read_toc_honours_the_msf_bit);
+    RUN(read_toc_lead_out_only_and_the_length_is_what_is_available);
+    RUN(read_toc_rejects_a_track_the_disc_does_not_have);
+    RUN(read_header_honours_the_msf_bit);
     RUN(mode_sense_page_07_is_returned);
     RUN(mode_sense_all_pages_includes_07_in_order);
     RUN(mode_sense_unimplemented_page_is_refused);

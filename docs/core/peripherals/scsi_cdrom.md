@@ -329,9 +329,18 @@ Store the prevent state per-device. When prevent=1, eject operations (START/STOP
 | 0 | Opcode `0x43` |
 | 1 | MSF bit (bit 1): 0 = LBA format, 1 = MSF format |
 | 2-5 | Reserved |
-| 6 | Starting Track/Session Number |
+| 6 | Starting Track |
 | 7-8 | Allocation Length (big-endian) |
-| 9 | Format (bits 7-6 of byte 2 in some implementations, or byte 9 bits 5-0) |
+| 9 | Control |
+
+> **Corrected 2026-09-14.** This row used to read "Format (bits 7-6 of byte 2 in
+> some implementations, or byte 9 bits 5-0)", and the code carried a
+> commented-out `format = data[2] & 0x0F` to match. **There is no format field
+> in this command.** ANSI X3.131-1994 Table 260 makes bytes 2-5 Reserved and
+> byte 9 the Control byte, and the Sony CDU-541 manual §5.2.24 agrees. Format
+> codes — and the Format 1 session info described below — are **MMC**, a later
+> standard than either authority for this drive, which reports ANSI version
+> `0x01` (SCSI-1) in INQUIRY.
 
 **Format 0 — TOC (default):**
 
@@ -369,9 +378,26 @@ Response for a single-track data disc:
 
 For data tracks: Control = `0x04` (data, no pre-emphasis, two-channel, copy prohibited). ADR = `0x01` (Q sub-channel encodes current position). Combined: `0x14`.
 
-**Format 1 — Session Info:**
+**Format 1 — Session Info:** *not applicable.* Retained here only to be
+explicitly withdrawn: this is an MMC feature reached through a format field that
+neither X3.131-1994 nor the CDU-541 manual defines for `0x43`. It is not
+implemented, and implementing it would mean adding a post-1994 feature to a
+drive that declares SCSI-1.
 
-Returns the first and last session numbers and the start address of the last session's first track. For a single-session disc, this is identical to the TOC header with the track 1 start address.
+**Starting track:** only `0x01` and `0xAA` (lead-out) can be satisfied by a
+single-session data disc; anything else is refused with CHECK CONDITION /
+ILLEGAL REQUEST / INVALID FIELD IN CDB, which both authorities require. They
+differ on **zero**: the CDU-541 manual lists it as invalid, X3.131-1994
+§14.2.11 says "if this value is zero, the table of contents data shall begin
+with the first track on the medium". We take the lenient reading, so that `0x43`
+and the Sony `0xC1` handler — which already did — answer the same question the
+same way.
+
+**TOC data length** is the length *available*, not the length transferred
+(X3.131-1994 Table 261; CDU-541 §5.2.24). It does not shrink when the allocation
+length truncates the response — that is how the initiator learns there is more
+to ask for — but it does follow the request: `0xAA` yields one descriptor, so 10
+rather than 18.
 
 **MSF conversion:** When MSF bit = 1, LBA addresses are converted to Minutes:Seconds:Frames format. The conversion from LBA to MSF (with the standard 2-second / 150-frame offset for lead-in):
 

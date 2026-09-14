@@ -312,44 +312,114 @@ void scsi_cdrom_request_sense(scsi_t *scsi) {
 // ============================================================================
 
 // Handle READ TOC command — return minimal single-track data TOC
+// A CD address in MSF form.  X3.131-1994 S14.1.5 and Table 237: the four-byte
+// address field becomes reserved / M / S / F when the CDB's MSF bit is set.
+//
+// The +150 is the Red Book two-second lead-in: LBA 0 is at 00:02:00, and a
+// frame is 1/75 s, so 2 * 75 = 150 frames separate the two origins.  X3.131
+// S14.1.5 states the ratios are the drive's to report ("The ratios of M field
+// units to S field units and S field units to F field units are reported in the
+// mode parameters page"), and 60/75 is what a CD is.
+static void lba_to_msf(uint32_t lba, uint8_t out[4]) {
+    uint32_t f = lba + 150u;
+    out[0] = 0x00; // reserved
+    out[1] = (uint8_t)(f / (60u * 75u)); // M
+    out[2] = (uint8_t)((f / 75u) % 60u); // S
+    out[3] = (uint8_t)(f % 75u); // F
+}
+
+// Write a CD address into a four-byte field, as an LBA or as MSF.
+static void put_cd_address(uint8_t *dst, uint32_t lba, bool msf) {
+    if (msf) {
+        lba_to_msf(lba, dst);
+        return;
+    }
+    dst[0] = (uint8_t)(lba >> 24);
+    dst[1] = (uint8_t)(lba >> 16);
+    dst[2] = (uint8_t)(lba >> 8);
+    dst[3] = (uint8_t)lba;
+}
+
 void scsi_cdrom_read_toc(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
     uint16_t alloc_len = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
-    // uint8_t format = scsi->buf.data[2] & 0x0F; // format code (unused for now)
+    // MSF: X3.131-1994 Table 260 puts it at byte 1 bit 1, and CDU-541 S5.2.24
+    // agrees -- "the format of the CD Address is determined by the MSF bit in
+    // the CDB".  Byte 2 is Reserved in BOTH; there is no format field here.
+    // (A commented-out `format = data[2] & 0x0F` used to sit on this line.
+    // Format codes and Format 1 session info are MMC, a later standard than
+    // either authority for this drive, which reports ANSI version 0x01.)
+    bool msf = (scsi->buf.data[1] & 0x02) != 0;
 
-    // For a single data session, return: header + track 1 + lead-out
-    uint8_t toc[20];
-    memset(toc, 0, sizeof(toc));
+    // Starting track (byte 6).  A single-session data disc has exactly track 1,
+    // so only 1h and AAh (lead-out) can be satisfied; anything else names a
+    // track this disc does not have.  Both authorities agree on the answer for
+    // that -- CDU-541 S5.2.24: "If the track number field is zero or is not
+    // valid for the disc inserted the command will be terminated with a CHECK
+    // CONDITION status.  The sense key is set to ILLEGAL REQUEST.  The
+    // additional sense code is set to ILLEGAL VALUE IN CDB."  X3.131-1994
+    // S14.2.11 says the same with INVALID FIELD IN CDB.
+    //
+    // They disagree about ZERO, and this takes the lenient reading:
+    //
+    //   CDU-541:      zero is invalid, listed alongside out-of-range.
+    //   X3.131-1994:  "If this value is zero, the table of contents data shall
+    //                  begin with the first track on the medium."
+    //
+    // Zero is accepted as "from the first track", for two reasons.  The Sony
+    // C1h handler below already does exactly that, deliberately, and one drive
+    // answering the same question two ways would be worse than either answer.
+    // And refusing a value a real driver may legitimately send, on a path with
+    // no test coverage at all -- measured zero calls across se30-cdrom,
+    // iici-cdrom-boot and iicx-mactest -- is the more expensive way to be
+    // wrong.
+    uint8_t start_track = scsi->buf.data[6];
+    if (start_track > 0x01 && start_track != 0xAA) {
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+        return;
+    }
 
-    // TOC header (4 bytes)
-    toc[0] = 0x00; // data length MSB
-    toc[1] = 0x12; // data length LSB (18 = 2 track descriptors * 8 + 2)
-    toc[2] = 0x01; // first track
-    toc[3] = 0x01; // last track
-
-    // Track 1 descriptor (8 bytes): data track at LBA 0
-    toc[4] = 0x00; // reserved
-    toc[5] = 0x14; // ADR=1, control=4 (data track, no copy permission)
-    toc[6] = 0x01; // track number
-    toc[7] = 0x00; // reserved
-    // LBA = 0 (bytes 8-11)
-
-    // Lead-out descriptor (8 bytes): track 0xAA at total blocks
-    toc[12] = 0x00; // reserved
-    toc[13] = 0x14; // ADR=1, control=4
-    toc[14] = 0xAA; // lead-out track
-    toc[15] = 0x00; // reserved
-    // LBA = total blocks
     uint16_t blk_sz = scsi->devices[target].block_size;
     uint32_t total = 0;
     if (scsi->device_images[target])
         total = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
-    toc[16] = (total >> 24) & 0xFF;
-    toc[17] = (total >> 16) & 0xFF;
-    toc[18] = (total >> 8) & 0xFF;
-    toc[19] = total & 0xFF;
 
-    int len = scsi_data_in_alloc(scsi, 20, alloc_len);
+    // A single data session: track 1 at LBA 0, then the lead-out.  AAh asks for
+    // the lead-out alone, so the descriptor list is one entry shorter.
+    uint8_t toc[20];
+    memset(toc, 0, sizeof(toc));
+    int pos = 4;
+
+    if (start_track <= 0x01) { // 0 means "from the first track"
+        toc[pos + 0] = 0x00; // reserved
+        toc[pos + 1] = 0x14; // ADR=1, control=4 (data track, no copy permission)
+        toc[pos + 2] = 0x01; // track number
+        toc[pos + 3] = 0x00; // reserved
+        put_cd_address(&toc[pos + 4], 0, msf);
+        pos += 8;
+    }
+    toc[pos + 0] = 0x00; // reserved
+    toc[pos + 1] = 0x14; // ADR=1, control=4
+    toc[pos + 2] = 0xAA; // lead-out track
+    toc[pos + 3] = 0x00; // reserved
+    put_cd_address(&toc[pos + 4], total, msf);
+    pos += 8;
+
+    // TOC header.  The data length is the length AVAILABLE for this request --
+    // X3.131-1994 Table 261: "the length in bytes of the following TOC data that
+    // is available to be transferred", CDU-541 S5.2.24: "the length in bytes of
+    // the available table of contents data.  The value of TOC data length does
+    // not include itself."
+    //
+    // So it does NOT shrink when the allocation length truncates the transfer;
+    // that is how the initiator learns there is more to ask for.  It does vary
+    // with the REQUEST: AAh yields one descriptor, 01h yields two.
+    toc[0] = 0x00;
+    toc[1] = (uint8_t)(pos - 2);
+    toc[2] = 0x01; // first track
+    toc[3] = 0x01; // last track
+
+    int len = scsi_data_in_alloc(scsi, pos, alloc_len);
     if (len > 0)
         memcpy(scsi->buf.data, toc, (size_t)len);
 }
@@ -443,6 +513,9 @@ void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
 // Handle READ HEADER — return mode 1 data for the requested LBA
 void scsi_cdrom_read_header(scsi_t *scsi) {
     uint16_t alloc_len = (uint16_t)(((uint16_t)scsi->buf.data[7] << 8) | scsi->buf.data[8]);
+    // X3.131-1994 S14.1.5: "The READ HEADER, READ SUB-CHANNEL and READ TABLE OF
+    // CONTENTS commands have this feature" -- the MSF bit, byte 1 bit 1.
+    bool msf = (scsi->buf.data[1] & 0x02) != 0;
     // Promote each byte to uint32_t before shifting so the high-byte shift
     // (`<< 24`) doesn't trip signed-overflow UB when data[2] > 0x7F.
     uint32_t lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
@@ -451,11 +524,7 @@ void scsi_cdrom_read_header(scsi_t *scsi) {
     uint8_t resp[8];
     memset(resp, 0, sizeof(resp));
     resp[0] = 0x01; // CD-ROM data mode 1
-    // Bytes 4-7: absolute block address
-    resp[4] = (lba >> 24) & 0xFF;
-    resp[5] = (lba >> 16) & 0xFF;
-    resp[6] = (lba >> 8) & 0xFF;
-    resp[7] = lba & 0xFF;
+    put_cd_address(&resp[4], lba, msf); // bytes 4-7: absolute address
 
     int len = scsi_data_in_alloc(scsi, 8, alloc_len);
     if (len > 0)
