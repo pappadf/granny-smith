@@ -1680,17 +1680,39 @@ static value_t scsi_dev_method_eject(struct object *self, const member_t *m, int
     return val_bool(rc != 0);
 }
 
-// `insert(path)` — mount a CD-ROM image into this slot.
+// `insert(path)` — mount an image into this slot, as the kind of device the
+// slot already is.
+//
+// This used to call add_scsi_cdrom() whatever was in the slot, so inserting
+// into a hard disk turned it into a read-only SONY CDU-8002 with 2048-byte
+// blocks -- a running machine's boot disk, mid-session (03-scsi F-45).
+//
+// eject() is deliberately type-agnostic (it doubles as "detach this disk", see
+// scsi_eject_device), which made the asymmetry easy to hit: eject a hard disk,
+// insert the same file back, and it returned as a CD-ROM.  The slot's type
+// survives an eject -- scsi_eject_device clears medium_present and the image
+// pointer and never the type -- so it is still here to be asked.
 static value_t scsi_dev_method_insert(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     (void)argc;
     unsigned slot = 0;
-    if (!scsi_dev_scsi(self, &slot))
+    scsi_t *scsi = scsi_dev_scsi(self, &slot);
+    if (!scsi)
         return val_err("scsi.devices.N.insert: scsi controller not available");
     if (!global_emulator)
         return val_err("scsi.devices.N.insert: emulator not initialised");
-    add_scsi_cdrom(global_emulator, argv[0].s, (int)slot);
-    return val_bool(true);
+    // Slot 7 is the initiator and scsi_add_device asserts against it.  No node
+    // for it can exist today -- scsi_devices_get hands out an entry only for a
+    // slot that is present, and nothing can populate 7 -- so this is a guard
+    // against a future path, not a reachable one, and it costs a comparison.
+    if (slot > 6)
+        return val_err("scsi.devices[%u].insert: %u is the initiator slot, expected 0..6", slot, slot);
+
+    if (scsi_device_type(scsi, slot) == scsi_dev_cdrom) {
+        add_scsi_cdrom_on(global_emulator, scsi, argv[0].s, (int)slot);
+        return val_bool(true);
+    }
+    return val_bool(system_hd_attach_on(scsi, argv[0].s, (int)slot) == 0);
 }
 
 // `info()` — human-readable summary of the device contents.
@@ -2128,8 +2150,7 @@ static value_t scsi_method_attach_cdrom(struct object *self, const member_t *m, 
     if (!global_emulator)
         return val_err("scsi.attach_cdrom: emulator not initialised");
     scsi_t *bus = (scsi_t *)object_data(self);
-    add_scsi_cdrom_on(global_emulator, bus ? bus : global_emulator->scsi, argv[0].s, (int)id);
-    return val_bool(true);
+    return val_bool(add_scsi_cdrom_on(global_emulator, bus ? bus : global_emulator->scsi, argv[0].s, (int)id));
 }
 
 // `scsi.hd_models` — V_LIST of {label, vendor, product, revision, size} maps
