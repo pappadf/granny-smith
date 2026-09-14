@@ -81,6 +81,8 @@ struct av_psc {
     // --- pointers (not checkpointed) ---
     config_t *cfg;
     av_psc_dreq_fn dreq_fn; // live SCSI DREQ, published in the VIA2 IFR
+    av_psc_chan_touch_fn scsi_touch_fn; // "the guest programmed the SCSI channel"
+    void *scsi_touch_ctx;
     void *dreq_ctx;
     av_psc_mem_read_fn mem_read; // guest-physical accessors for DMA
     av_psc_mem_write_fn mem_write;
@@ -295,6 +297,13 @@ static void psc_dma_complete(av_psc_t *psc, int n) {
     ch->active_set ^= 1;
     LOG(2, "DMA ch%d set %d complete; active set -> %d", n, s, ch->active_set);
     psc_update_dma_ipl(psc);
+}
+
+void av_psc_set_scsi_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx) {
+    if (!psc)
+        return;
+    psc->scsi_touch_fn = fn;
+    psc->scsi_touch_ctx = ctx;
 }
 
 void av_psc_set_dreq_query(av_psc_t *psc, av_psc_dreq_fn fn, void *ctx) {
@@ -549,26 +558,30 @@ void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
 
     // Channel control words + register sets.
     //
-    // A write to the SCSI channel's own registers wakes its pump (av.c): the
-    // pump stops re-arming when the channel goes idle, so something has to
-    // start it again, and the guest programming the channel is that something.
-    // Both blocks below are hooked rather than just the enable bit -- see
-    // av_scsi_pump_arm for why the last write is the wrong one to wait for.
+    // A write to the SCSI channel's own registers wakes its pump: the pump stops
+    // re-arming when the channel goes idle, so something has to start it again,
+    // and the guest programming the channel is that something.  Both blocks
+    // below are hooked rather than just the enable bit -- see the arm function
+    // in av.c for why the last write is the wrong one to wait for.
+    //
+    // Through a hook, not a call: this file is built and unit tested on its own
+    // (tests/unit/suites/psc), and knows nothing about what sits on the far end
+    // of a DMA channel.
     if (off >= 0xC00 && off < 0xC00 + 0x10 * AV_PSC_DMA_CHANNELS) {
         int n = (int)((off - 0xC00) >> 4);
         uint32_t sub = off & 0xF;
         if (sub < 2)
             psc_ctrl_write(psc, n, sub, value);
-        if (n == AV_PSC_DMA_SCSI)
-            av_scsi_pump_arm(cfg);
+        if (n == AV_PSC_DMA_SCSI && psc->scsi_touch_fn)
+            psc->scsi_touch_fn(psc->scsi_touch_ctx);
         return;
     }
     if (off >= 0x1000 && off < 0x1000 + 0x20 * AV_PSC_DMA_CHANNELS) {
         int n = (int)((off - 0x1000) >> 5);
         int s = (int)((off >> 4) & 1);
         psc_set_write(psc, n, s, off & 0xF, value);
-        if (n == AV_PSC_DMA_SCSI)
-            av_scsi_pump_arm(cfg);
+        if (n == AV_PSC_DMA_SCSI && psc->scsi_touch_fn)
+            psc->scsi_touch_fn(psc->scsi_touch_ctx);
         return;
     }
 

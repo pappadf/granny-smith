@@ -406,7 +406,8 @@ static void av_scsi_pump_event(void *source, uint64_t data) {
 // pump's phase is an emulation artifact, so nothing may depend on it -- but
 // things downstream of sprint boundaries evidently do, and the cheapest way to
 // owe them nothing is never to move it.
-void av_scsi_pump_arm(config_t *cfg) {
+void av_scsi_pump_arm(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
     if (!cfg || !cfg->scheduler)
         return;
     if (has_event(cfg->scheduler, &av_scsi_pump_event))
@@ -741,6 +742,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
     // The HAL polls PSC-VIA2 IFR bit 0 for the chip's DREQ (see psc.c).
     av_psc_set_dreq_query(st->psc, (av_psc_dreq_fn)scsi_53c96_dreq, st->scsi96);
+    av_psc_set_scsi_touch_hook(st->psc, av_scsi_pump_arm, cfg);
 
     // The PSC channel-0 pump (the hardware's DREQ/DACK engine).
     // Registered, not armed: av_scsi_pump_arm() starts it when the guest
