@@ -716,6 +716,122 @@ TEST(apple_vendor_page_30_bytes_are_pinned) {
     scsi_delete(scsi);
 }
 
+// Drive a MODE SENSE(6) and return the response bytes.
+static size_t mode_sense(scsi_t *scsi, int pc, uint8_t page, uint8_t *out, size_t max, int *phase_out) {
+    const uint8_t cdb[6] = {0x1A, 0x00, (uint8_t)((pc << 6) | page), 0x00, 0xF0, 0x00};
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    *phase_out = scsi_get_bus_phase(scsi);
+    size_t n = 0;
+    if (*phase_out == scsi_data_in) {
+        uint8_t b;
+        while (scsi_pop_data_in_byte(scsi, &b))
+            if (n < max)
+                out[n++] = b;
+        scsi_external_data_in_complete(scsi);
+    }
+    if (scsi_get_bus_phase(scsi) == scsi_status) {
+        scsi_external_status_byte(scsi);
+        scsi_external_message_byte(scsi);
+    }
+    scsi_external_release(scsi);
+    return n;
+}
+
+// CDU-541 manual Table 5-47 lists this drive's MODE SENSE pages as 01h, 02h,
+// 07h, 08h, 09h and 3Fh.  07h -- Verify Error Recovery Parameters -- was the
+// one we did not build, so asking for it fell through to the unknown-page case
+// and the host got GOOD status with no page at all.
+TEST(mode_sense_page_07_is_returned) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[0xF0];
+    int phase = 0;
+    size_t n = mode_sense(scsi, 0, 0x07, r, sizeof(r), &phase);
+
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_TRUE(n >= 12 + 8); // header + block descriptor + the page
+    ASSERT_EQ_INT(r[3], 8); // block descriptor present
+    ASSERT_EQ_INT(r[12], 0x07); // page code
+    ASSERT_EQ_INT(r[13], 0x06); // page length
+    scsi_delete(scsi);
+}
+
+// ...and it belongs in the "all pages" answer, in ascending order.  S5.2.3:
+// "If the page code is 3Fh, all implemented pages are requested to be returned
+// by the controller.  The pages are returned in ascending order."
+TEST(mode_sense_all_pages_includes_07_in_order) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[0xF0];
+    int phase = 0;
+    size_t n = mode_sense(scsi, 0, 0x3F, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+
+    uint8_t seen[8];
+    int count = 0;
+    size_t i = 12; // past header + block descriptor
+    size_t end = (size_t)r[0] + 1;
+    ASSERT_TRUE(end <= n);
+    while (i + 1 < end && count < 8) {
+        seen[count++] = r[i];
+        i += 2u + r[i + 1];
+    }
+    // Table 5-47's five, plus Apple's vendor page 30h, which is not Sony's and
+    // so is not in that table -- but it IS implemented here, and "all
+    // implemented pages" means all of them.  Ascending order puts it last.
+    ASSERT_EQ_INT(count, 6);
+    ASSERT_EQ_INT(seen[0], 0x01);
+    ASSERT_EQ_INT(seen[1], 0x02);
+    ASSERT_EQ_INT(seen[2], 0x07); // the one that was missing
+    ASSERT_EQ_INT(seen[3], 0x08);
+    ASSERT_EQ_INT(seen[4], 0x09);
+    ASSERT_EQ_INT(seen[5], 0x30);
+    scsi_delete(scsi);
+}
+
+// S5.2.3: "If the page code specified is not implemented the command will be
+// terminated with a CHECK CONDITION status.  The sense key will be set to
+// ILLEGAL REQUEST and the additional sense code set to ILLEGAL VALUE IN CDB."
+//
+// This used to answer GOOD with a header and no page, under a comment claiming
+// that was "like real hardware".  A host told everything went well then parses
+// whatever its own buffer held.
+TEST(mode_sense_unimplemented_page_is_refused) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[0xF0];
+    int phase = 0;
+    (void)mode_sense(scsi, 0, 0x25, r, sizeof(r), &phase); // 0x25: not in Table 5-47
+
+    ASSERT_TRUE(phase != scsi_data_in); // no data phase at all
+
+    uint8_t sense[18] = {0};
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_ILLEGAL_REQUEST);
+    ASSERT_EQ_INT(sense[12], ASC_INVALID_FIELD_IN_CDB);
+    scsi_delete(scsi);
+}
+
+// S5.3.1.1, in prose because Table 5-33 is a scanned image: "The read retry
+// count field specifies the number of times that the controller will attempt
+// its read recovery algorithm.  The default value is zero."  We emitted 1, and
+// scsi_cdrom.md said 3.
+TEST(mode_sense_retry_counts_default_to_zero) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[0xF0];
+    int phase = 0;
+
+    size_t n = mode_sense(scsi, 0, 0x01, r, sizeof(r), &phase);
+    ASSERT_TRUE(n >= 12 + 8);
+    ASSERT_EQ_INT(r[12], 0x01);
+    ASSERT_EQ_INT(r[15], 0x00); // read retry count
+
+    n = mode_sense(scsi, 0, 0x07, r, sizeof(r), &phase);
+    ASSERT_TRUE(n >= 12 + 8);
+    ASSERT_EQ_INT(r[12], 0x07);
+    ASSERT_EQ_INT(r[15], 0x00); // verify retry count -- "same as for read"
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(read6_at_buf_limit);
@@ -734,6 +850,10 @@ int main(void) {
     RUN(host_eject_honours_the_guest_lock);
     RUN(host_eject_return_codes_are_distinct);
     RUN(eject_leaves_no_locked_empty_drive);
+    RUN(mode_sense_page_07_is_returned);
+    RUN(mode_sense_all_pages_includes_07_in_order);
+    RUN(mode_sense_unimplemented_page_is_refused);
+    RUN(mode_sense_retry_counts_default_to_zero);
     RUN(apple_vendor_page_30_bytes_are_pinned);
     RUN(zero_allocation_length_transfers_nothing);
     RUN(allocation_length_is_a_ceiling_not_a_request);

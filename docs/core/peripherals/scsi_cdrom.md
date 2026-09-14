@@ -457,8 +457,15 @@ The CDU-8002 supports five standard mode pages plus the Apple vendor page. All p
 | 0 | Page Code | `0x01` |
 | 1 | Page Length | `0x06` |
 | 2 | Error Recovery Parameter | `0x00` (max recovery, report L-EC uncorrectable only) |
-| 3 | Read Retry Count | `0x03` |
+| 3 | Read Retry Count | `0x00` |
 | 4-7 | Reserved | `0x00` |
+
+> **Corrected 2026-09-14.** This said `0x03`, and the code emitted `0x01`.
+> Neither is the drive's. §5.3.1.1, in prose because Table 5-33 is a scanned
+> image: "The read retry count field specifies the number of times that the
+> controller will attempt its read recovery algorithm. **The default value is
+> zero.**" A 2026-09-03 review item proposed changing the code to match the `3`
+> here, which would have replaced one wrong value with another.
 
 The error recovery parameter byte encodes a combination of TB, RC, PER, DTE, and DCR bits per the Sony CDU-541 manual. For emulation, the default (`0x00`) means maximum error recovery with only uncorrectable errors reported.
 
@@ -490,10 +497,19 @@ Return all zeros — the emulator does not disconnect/reconnect.
 | 0 | Page Code | `0x07` |
 | 1 | Page Length | `0x06` |
 | 2 | Error Recovery Parameter | `0x00` |
-| 3 | Verify Retry Count | `0x03` |
+| 3 | Verify Retry Count | `0x00` |
 | 4-7 | Reserved | `0x00` |
 
-Same structure as page 0x01 but for VERIFY command error handling.
+Same structure as page 0x01 but for VERIFY command error handling — §5.3.1.3:
+"The implementation of error recovery procedures for verification operations is
+the same as for read operations on CD-ROM devices."
+
+> **Inferred, not read.** Table 5-41 is a scanned image in the OCR, so the field
+> layout above comes from that sentence plus page 0x01's table, not from the
+> page 0x07 table itself. ANSI X3.131-1994 (SCSI-2) §9.3.3.8 gives page 07h a
+> parameter length of `0Ah` rather than the `06h` used here; this drive declares
+> ANSI version `0x01` (SCSI-1) in INQUIRY and predates that standard by four
+> years, so the manual's structure is followed.
 
 ### 4.4 Page 0x08 — CD-ROM Parameters (6 bytes)
 
@@ -570,7 +586,23 @@ This page is the **primary authentication gate** for the Apple CD-ROM driver. Be
 
 ### 4.7 Page 0x3F — Return All Pages
 
-When page code `0x3F` is requested, concatenate all supported pages (0x01, 0x02, 0x07, 0x08, 0x09, 0x30) in ascending order after the mode parameter header and block descriptor.
+When page code `0x3F` is requested, concatenate all supported pages (0x01, 0x02,
+0x07, 0x08, 0x09, 0x30) in ascending order after the mode parameter header and
+block descriptor. §5.2.3: "If the page code is 3Fh, all implemented pages are
+requested to be returned by the controller. The pages are returned in ascending
+order."
+
+The drive's own list is **Table 5-47**: `01h, 02h, 07h, 08h, 09h, 3Fh`. Page
+0x30 is not in it, being Apple's vendor page rather than Sony's — but it is
+implemented here (see §5.1), and "all implemented pages" includes it. Ascending
+order puts it last.
+
+**An unimplemented page code is an error, not an empty answer.** §5.2.3: "If the
+page code specified is not implemented the command will be terminated with a
+CHECK CONDITION status. The sense key will be set to ILLEGAL REQUEST and the
+additional sense code set to ILLEGAL VALUE IN CDB." Page code `0x00` is the
+exception the code keeps: SCSI-2 defines `00h` as the vendor-specific page, and
+it is answered with the header and block descriptor alone.
 
 ---
 

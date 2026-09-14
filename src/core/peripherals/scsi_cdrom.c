@@ -29,12 +29,41 @@ static int build_page_01(uint8_t *buf, int page_control) {
     memset(buf + 2, 0, 6);
     if (page_control == 1)
         return 8;
-    buf[2] = 0x00; // error recovery: no retries
-    buf[3] = 0x01; // read retry count
+    buf[2] = 0x00; // error recovery parameter
+    // CDU-541 manual S5.3.1.1: "The read retry count field specifies the number
+    // of times that the controller will attempt its read recovery algorithm.
+    // The default value is ZERO."  This emitted 1, and scsi_cdrom.md S4.3 said
+    // 3; neither is the drive's.
+    buf[3] = 0x00; // read retry count
     buf[4] = 0x00; // reserved
     buf[5] = 0x00; // reserved
     buf[6] = 0x00; // reserved
     buf[7] = 0x00; // reserved
+    return 8;
+}
+
+// Build Mode Page 0x07: Verify Error Recovery Parameters (8 bytes)
+//
+// Table 5-47 lists this drive's MODE SENSE pages as 01h, 02h, 07h, 08h, 09h and
+// 3Fh; this one was missing, so a host asking for it -- or for all pages -- got
+// a GOOD status and no page.
+//
+// S5.3.1.3 gives it no table of its own that this OCR can read (Table 5-41 is a
+// scanned image), only the sentence that defines it: "The implementation of
+// error recovery procedures for verification operations is the same as for read
+// operations on CD-ROM devices."  So it is page 01's structure with page 01's
+// defaults and a different page code -- INFERRED FROM THAT PROSE, not read off
+// the table.  SCSI-2 S9.3.3.8 gives page 07h a parameter length of 0Ah rather
+// than the 06h used here; this drive declares SCSI-1 in INQUIRY and predates
+// that standard by four years, so the manual wins.
+static int build_page_07(uint8_t *buf, int page_control) {
+    buf[0] = 0x07; // page code
+    buf[1] = 0x06; // page length
+    memset(buf + 2, 0, 6);
+    if (page_control == 1)
+        return 8; // nothing changeable: header, zero body
+    buf[2] = 0x00; // error recovery parameter
+    buf[3] = 0x00; // verify retry count -- "the same as for read operations"
     return 8;
 }
 
@@ -151,6 +180,9 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     case 0x02:
         pos += build_page_02(buf + pos);
         break;
+    case 0x07:
+        pos += build_page_07(buf + pos, page_control);
+        break;
     case 0x08:
         pos += build_page_08(buf + pos);
         break;
@@ -164,6 +196,7 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
         // Return all pages
         pos += build_page_01(buf + pos, page_control);
         pos += build_page_02(buf + pos);
+        pos += build_page_07(buf + pos, page_control);
         pos += build_page_08(buf + pos);
         pos += build_page_09(buf + pos, page_control);
         pos += build_page_30(buf + pos, page_control);
@@ -172,8 +205,19 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
         // Vendor-specific page 0 — return just the header + block descriptor
         break;
     default:
-        // Unknown page — return just header + block descriptor (like real hardware)
-        break;
+        // CDU-541 manual S5.2.3: "If the page code specified is not implemented
+        // the command will be terminated with a CHECK CONDITION status.  The
+        // sense key will be set to ILLEGAL REQUEST and the additional sense code
+        // set to ILLEGAL VALUE IN CDB."
+        //
+        // This used to return header-plus-block-descriptor with GOOD status and
+        // a comment claiming that was "like real hardware".  It is the opposite:
+        // a host that asks for a page it does not get, and is told everything
+        // went well, parses whatever its own buffer held -- the failure the hard
+        // disk path's page 3/4 comment documents, where MkLinux DR3's rz driver
+        // derived a 14384-byte sector from the leftovers of its own INQUIRY.
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+        return;
     }
 
     // Fill in the mode data length (byte 0 = total length - 1). The field is
