@@ -414,9 +414,76 @@ TEST(test_valid_read_still_transfers) {
     scsi_delete(scsi);
 }
 
+// MODE SENSE and READ CAPACITY describe the same drive, so they have to agree
+// about how big its blocks are.  The HD MODE SENSE path used to divide by a
+// literal 512 and report a literal 512 while READ CAPACITY asked the device, so
+// a drive with any other block size would have been described two ways at once
+// -- and a host that believes the wrong one addresses the wrong blocks.
+//
+// 512 is the only size an HD can hold today (every creation path passes it, and
+// unlike the CD-ROM's, the HD's MODE SELECT discards the block descriptor), so
+// this attaches one directly at 1024 to exercise what the literals hid.
+TEST(mode_sense_and_read_capacity_agree_about_block_size) {
+    const uint16_t odd_blk = 1024;
+    scsi_t *scsi = scsi_init(NULL);
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_create(g_path, NULL);
+    ASSERT_TRUE(img != NULL);
+    scsi_add_device(scsi, TARGET, "GS", "SCRATCH", "1.0", img, scsi_dev_hd, odd_blk, false);
+
+    // READ CAPACITY(10): last LBA then block length, both big-endian.
+    const uint8_t cap_cdb[10] = {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    uint8_t cap[8];
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, cap_cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    for (int i = 0; i < 8; i++)
+        ASSERT_TRUE(scsi_pop_data_in_byte(scsi, &cap[i]));
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+
+    uint32_t cap_blk = ((uint32_t)cap[4] << 24) | ((uint32_t)cap[5] << 16) | ((uint32_t)cap[6] << 8) | cap[7];
+    uint32_t cap_last = ((uint32_t)cap[0] << 24) | ((uint32_t)cap[1] << 16) | ((uint32_t)cap[2] << 8) | cap[3];
+    ASSERT_EQ_INT((int)cap_blk, (int)odd_blk);
+
+    // MODE SENSE(6), all pages: header then an 8-byte block descriptor whose
+    // last three bytes are the block length and whose first four carry the
+    // count.
+    const uint8_t ms_cdb[6] = {0x1A, 0x00, 0x3F, 0x00, 0x40, 0x00};
+    uint8_t ms[0x40];
+    size_t got = 0;
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, ms_cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    while (got < sizeof(ms) && scsi_pop_data_in_byte(scsi, &ms[got]))
+        got++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+
+    ASSERT_TRUE(got >= 12);
+    ASSERT_EQ_INT(ms[3], 8); // a block descriptor is present
+    uint32_t ms_blk = ((uint32_t)ms[9] << 16) | ((uint32_t)ms[10] << 8) | ms[11];
+    uint32_t ms_blocks = ((uint32_t)ms[5] << 16) | ((uint32_t)ms[6] << 8) | ms[7];
+
+    // The two commands must describe the same geometry.
+    ASSERT_EQ_INT((int)ms_blk, (int)odd_blk);
+    ASSERT_EQ_INT((int)ms_blocks, (int)(cap_last + 1));
+
+    // Page 3's bytes-per-physical-sector comes from the same source: these
+    // images have no physical geometry distinct from their logical one.
+    ASSERT_TRUE(got >= 12 + 14);
+    uint32_t phys = ((uint32_t)ms[12 + 12] << 8) | ms[12 + 13];
+    ASSERT_EQ_INT((int)phys, (int)odd_blk);
+
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(test_write_in_range_lands);
+    RUN(mode_sense_and_read_capacity_agree_about_block_size);
     RUN(test_write_past_end_is_refused);
     RUN(test_write_beyond_end_is_refused);
     RUN(test_write10_past_end_is_refused);

@@ -870,7 +870,18 @@ void run_cmd(scsi_t *scsi) {
             // only want the header.
             uint8_t page_code = scsi->buf.data[2] & 0x3F;
             int alloc_len = scsi->buf.data[4];
-            uint32_t blocks = (uint32_t)(disk_size(scsi->device_images[target]) / 512);
+            // Ask the device, the way READ CAPACITY and the CD-ROM's own MODE
+            // SENSE both do.  This path used to divide by a literal 512 and
+            // report a literal 512, so a drive whose block_size was anything
+            // else would have had two commands describing it differently --
+            // and a host that believes the wrong one addresses the wrong
+            // blocks.  512 is the only value an HD can currently hold (every
+            // creation path passes it, and the HD's MODE SELECT discards the
+            // block descriptor rather than acting on it, unlike the CD-ROM's),
+            // so this changes nothing today; it stops the two from being able
+            // to disagree.
+            uint16_t blk_sz = scsi->devices[target].block_size;
+            uint32_t blocks = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
 
             // Vendor-specific page 0x30 carries Apple's drive-identification
             // string.  This — not the INQUIRY vendor/product ID — is what
@@ -883,13 +894,16 @@ void run_cmd(scsi_t *scsi) {
             memset(resp, 0, sizeof(resp));
             int total = 4 + 8; // mode parameter header + one block descriptor
             resp[3] = 8; // block descriptor length
-            // Block descriptor: number of blocks, then 512-byte block length
+            // Block descriptor: number of blocks, then the block length.  The
+            // count and the length have to come from the same source -- change
+            // one without the other and the drive reports a size it does not
+            // have.
             resp[5] = (blocks >> 16) & 0xFF;
             resp[6] = (blocks >> 8) & 0xFF;
             resp[7] = blocks & 0xFF;
-            resp[9] = 0x00;
-            resp[10] = 0x02;
-            resp[11] = 0x00;
+            resp[9] = (blk_sz >> 16) & 0xFF;
+            resp[10] = (blk_sz >> 8) & 0xFF;
+            resp[11] = blk_sz & 0xFF;
 
             // A CHS geometry for the physical-layout pages.  READ CAPACITY
             // stays authoritative for the addressable block count — as on a
@@ -916,8 +930,16 @@ void run_cmd(scsi_t *scsi) {
                 resp[total + 1] = 0x16; // page length: 22 bytes follow
                 resp[total + 10] = (secs_per_track >> 8) & 0xFF; // sectors per track
                 resp[total + 11] = secs_per_track & 0xFF;
-                resp[total + 12] = 0x02; // bytes per physical sector = 512
-                resp[total + 13] = 0x00;
+                // Bytes per physical sector.  SCSI-2 S8.3.3 makes this the
+                // PHYSICAL sector size, which on real hardware need not equal
+                // the logical block length in the block descriptor above -- a
+                // 512-byte-logical drive may have 2048-byte physical sectors.
+                // The images behind these devices have no physical geometry
+                // distinct from their logical one, so the two are reported the
+                // same; that is a property of what we are modelling, not an
+                // assumption that they are always equal.
+                resp[total + 12] = (blk_sz >> 8) & 0xFF;
+                resp[total + 13] = blk_sz & 0xFF;
                 resp[total + 15] = 0x01; // interleave 1:1
                 resp[total + 20] = 0x40; // HSEC: hard-sectored, the usual for a fixed disk
                 total += 24;
