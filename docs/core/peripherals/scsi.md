@@ -129,10 +129,17 @@ The CPU has to know *when* the next byte is ready:
 | Mirror writes         | Must be on **odd** CPU addresses (LDS)       |
 | `$5800drn`            | Address formation: R/W, DMA, register-number |
 
-Our emulator registers the SCSI memory interface at `0x00500000`
-spanning 1 MB (see [scsi.c `scsi_init`](../src/core/peripherals/scsi.c)),
-covering both the `$500000` reserved block and the `$580000` SCSI
-window.
+Our Macintosh Plus registers the SCSI memory interface at `0x00500000`
+spanning 1 MB — see `plus.c`, not the chip model.  Where a controller
+answers is the machine's decode, and every 5380 machine places
+`scsi_get_memory_interface()` itself; the Plus mapping used to be
+compiled into `scsi_5380_attach()` in `src/core`, which meant one
+machine's address lived inside the chip.  The 1 MB span covers both the
+`$500000` reserved block and the `$580000` SCSI window, because
+*Guide to the Macintosh Family Hardware*, 2nd ed., ch. 3 notes that "A18
+through A10, A8, A7, and A3 through A1 have no significance for the SCSI
+in the Macintosh Plus computer, so there are thousands of possible
+addresses that will access the same register".
 
 Bit semantics of the address LSBs:
 
@@ -401,39 +408,62 @@ chip or a workaround for a glue-logic race.  A/UX gates it on
 SE/30 it always fires.  Either way, it must be silently absorbed
 by the chip emulation.
 
-**Scope: BLIND window only.**  This primer behavior is a property of
-the BLIND alias (`$12000`), where the host writes ahead of the target.
-The GLUE/MDU decode marks the BLIND `write_off` with `SCSI_BLIND_SEL`
-(bit `0x400`, [scsi.h](../src/core/peripherals/scsi.h)); the ODR write
-handler in [scsi.c](../src/core/peripherals/scsi.c) `write_uint8` applies
-the primer gate to that window only.  The DRQ alias (`$06000`) is
-`/DTACK`-paced — a write happens only once the chip is ready — so it has
-no "write ahead of REQ" window and is never gated.  This matters:
-**classic Mac OS drives its pseudo-DMA writes through the DRQ window**,
-and a zero-filled block (e.g. an HFS volume bitmap or B-tree node) whose
-first byte is legitimately `$00` must NOT be dropped.  Gating the DRQ
-window broke System 6.0.8 Apple HD SC Setup's HFS volume init — it wrote
-only the MDB and one bitmap block, then aborted with "unable to mount
-volume" (guarded now by the `iici-format-hd` integration test, which drives
-the 5380 through the MDU; the test was re-hosted from the IIcx in the
-integration-test rework so the guard covers the MDU bus path).
+**How the emulator drops it: the handshake, and nothing else.**
 
-Within the BLIND window, the emulator currently still distinguishes the
-A/UX primer from a real leading byte with a **PC-discriminated primer
-slot**: the first `data_out` write is held until the second; if the held
-byte is `$00` and the two writes come from different CPU PCs, the held
-byte was the primer and is discarded.  **This PC check is the one
-remaining non-hardware-faithful element** — a real NCR 5380 cannot see
-the CPU's program counter.  The faithful model is to reproduce the
-chip's ODR→bus clock timing: a byte written before the *target's* first
-`*REQ` is overwritten by the next write before it is clocked, so the
-primer drops on its own.  That requires modeling per-byte `*REQ`/ACK
-timing on the send path (the initiator polls DRQ, but the byte is
-committed to the bus only on the target's `*REQ`, which lags); a
-straightforward "drop the pre-poll write" or "drop a leading `$00`"
-approximation is not enough, because A/UX polls DRQ *before* writing the
-primer and Mac OS legitimately writes leading `$00` bytes.  See the
-`scsi_odr_auto_handshake_byte` comment for the full analysis.
+A byte is transferred only when the target is asking for one.
+X3.131-1986 §5.1.5.1, DATA OUT: "the target shall request information by
+asserting REQ.  The initiator shall drive DB(7-0,P) … and assert ACK."
+REQ leads.  An initiator that drives data before it is not handshaking,
+and nothing moves.
+
+The target reaches that point in two steps, not one.  §5.1.5: the C/D,
+I/O and MSG lines "are valid for a **bus settle delay** before the
+assertion of REQ of the first handshake" — 400 ns per §4.7.6.  So
+`phase_data_out()` makes the phase visible immediately (an initiator
+arming a transfer must see DATA OUT) and leaves REQ false for
+`SCSI_DATA_OUT_SETTLE_CYCLES`.  The primer arrives inside that window
+and is never handshaked.
+
+The measured timing on `iix-aux3-boot`, from the moment the command
+completes:
+
+| event | cycles | writer |
+|---|---|---|
+| A/UX's primer | 112 | `$1004B890` |
+| first real byte | 1308 | `$10049760` |
+| the unrolled loop | +28 each | `$100497A4` … |
+| polled SCSI Manager's first byte | 464 | `$0001047E` |
+
+The settle sits at 256 — after the primer, before any polled driver's
+first write.  Nothing identifies the primer; a driver that polls simply
+waits, which is what the hardware makes it do.
+
+This also protects the case the DRQ window used to protect by accident:
+**classic Mac OS legitimately writes leading `$00` bytes** (an HFS volume
+bitmap or B-tree node), and dropping them broke System 6.0.8 Apple HD SC
+Setup's HFS volume init — it wrote only the MDB and one bitmap block,
+then aborted with "unable to mount volume" (guarded by `iici-format-hd`,
+which drives the 5380 through the MDU). Those writes follow a poll, so
+they land after the settle and are transferred.
+
+> **Corrected 2026-09-14.** This section used to describe a
+> **PC-discriminated primer slot** — hold the first `data_out` write,
+> discard it if it was `$00` and the next write came from a different CPU
+> program counter — and called it "the one remaining non-hardware-faithful
+> element".  A 5380 cannot see the program counter.  It is gone, with
+> `primer_held`/`primer_byte`/`primer_pc`, the `apply_primer_gate`
+> parameter, and the `SCSI_BLIND_SEL` decode bit (`0x400`) that selected
+> the window it applied to — which also aliased a real Macintosh Plus
+> address bit, since *Guide to the Macintosh Family Hardware* ch. 3 lists
+> A10 as having "no significance for the SCSI".
+>
+> The replacement it proposed — reproduce the ODR→bus clock so "a byte
+> written before the target's first REQ is overwritten by the next write
+> before it is clocked" — is the datasheet's mechanism for how real
+> hardware tolerates the write, but the measurements above rule it out as
+> the explanation here: 1196 cycles is ~75 µs at 16 MHz, and a target that
+> had entered DATA OUT would have asserted REQ long before that.  What
+> saves the primer is that the target has not entered the phase yet.
 
 Visible symptom the primer handling fixes: A/UX 3.0.1 Easy Install
 dialog shows `(SCSI device 0 on bus 1) Untitled` instead of `☐Untitled`
@@ -487,7 +517,7 @@ The top three bits of the opcode are its *group code*, and the group code fixes
 the CDB's length. ANSI X3.131-1986 (SCSI-1) §6.2.1 defines groups 0, 1 and 5 and
 leaves 2, 3 and 4 reserved; the Am53C94 datasheet (STATREG bit 3, "Group Code
 Valid") records how a target of this era sizes the rest. `cmd_size()` in
-`scsi.c` implements the combined table:
+`scsi_bus.c` implements the combined table:
 
 | Group | Opcodes     | Length | Source                                                     |
 | ----- | ----------- | ------ | ---------------------------------------------------------- |
