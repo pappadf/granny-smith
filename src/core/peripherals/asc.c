@@ -777,9 +777,12 @@ void asc_delete(asc_t *asc) {
     if (!asc)
         return;
     if (asc->object) {
-        audio_out_capture_detach();
-        object_detach(asc->object);
-        object_delete(asc->object);
+        // sound_object_delete(), not a hand-rolled detach-and-delete: the node
+        // owns a malloc'd sound_surface_t copy AND an attached detail child
+        // (machine.sound.asc), and plain object_delete() frees neither -- it is
+        // not recursive.  sound.c has always called this; asc.c grew its own
+        // three lines and leaked both on every teardown.
+        sound_object_delete(asc->object);
         asc->object = NULL;
     }
     if (asc->map)
