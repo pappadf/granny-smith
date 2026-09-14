@@ -15,6 +15,30 @@
 // MODE SENSE Pages
 // ============================================================================
 
+// How long each piece of a MODE SENSE response is.
+//
+// Named rather than repeated as literals because the total has to be a
+// compile-time bound on the response buffer, and a page that grows without the
+// buffer growing with it is a stack overflow in a build where assertions are
+// compiled out (GS_FAST, the shipping wasm profile).  Each builder returns its
+// own constant, so a page cannot change length without changing the sum.
+#define CD_MODE_PARAM_HEADER_LEN 4
+#define CD_MODE_BLOCK_DESC_LEN   8
+#define CD_PAGE_01_LEN           8
+#define CD_PAGE_02_LEN           16
+#define CD_PAGE_07_LEN           8
+#define CD_PAGE_08_LEN           12
+#define CD_PAGE_09_LEN           16
+// Page 30h is a 2-byte page header plus a 30-byte body.
+#define CD_PAGE_30_BODY 30
+#define CD_PAGE_30_LEN  (2 + CD_PAGE_30_BODY)
+
+// The longest response this file can build: page code 3Fh, "all pages".
+// Measured at 104 bytes.
+#define CD_MODE_SENSE_MAX                                                                                              \
+    (CD_MODE_PARAM_HEADER_LEN + CD_MODE_BLOCK_DESC_LEN + CD_PAGE_01_LEN + CD_PAGE_02_LEN + CD_PAGE_07_LEN +            \
+     CD_PAGE_08_LEN + CD_PAGE_09_LEN + CD_PAGE_30_LEN)
+
 // Build Mode Page 0x01: Read Error Recovery Parameters (8 bytes)
 //
 // CDU-541 manual S5.2.3.2, changeable values: "The page requested will be
@@ -28,7 +52,7 @@ static int build_page_01(uint8_t *buf, int page_control) {
     buf[1] = 0x06; // page length
     memset(buf + 2, 0, 6);
     if (page_control == 1)
-        return 8;
+        return CD_PAGE_01_LEN;
     buf[2] = 0x00; // error recovery parameter
     // CDU-541 manual S5.3.1.1: "The read retry count field specifies the number
     // of times that the controller will attempt its read recovery algorithm.
@@ -39,7 +63,7 @@ static int build_page_01(uint8_t *buf, int page_control) {
     buf[5] = 0x00; // reserved
     buf[6] = 0x00; // reserved
     buf[7] = 0x00; // reserved
-    return 8;
+    return CD_PAGE_01_LEN;
 }
 
 // Build Mode Page 0x07: Verify Error Recovery Parameters (8 bytes)
@@ -61,10 +85,10 @@ static int build_page_07(uint8_t *buf, int page_control) {
     buf[1] = 0x06; // page length
     memset(buf + 2, 0, 6);
     if (page_control == 1)
-        return 8; // nothing changeable: header, zero body
+        return CD_PAGE_07_LEN; // nothing changeable: header, zero body
     buf[2] = 0x00; // error recovery parameter
     buf[3] = 0x00; // verify retry count -- "the same as for read operations"
-    return 8;
+    return CD_PAGE_07_LEN;
 }
 
 // Build Mode Page 0x02: Disconnect-Reconnect Parameters (16 bytes)
@@ -72,7 +96,7 @@ static int build_page_02(uint8_t *buf) {
     buf[0] = 0x02; // page code
     buf[1] = 0x0E; // page length
     memset(buf + 2, 0, 14); // all zeros (we don't disconnect)
-    return 16;
+    return CD_PAGE_02_LEN;
 }
 
 // Build Mode Page 0x08: Caching Parameters (12 bytes)
@@ -80,7 +104,7 @@ static int build_page_08(uint8_t *buf) {
     buf[0] = 0x08; // page code
     buf[1] = 0x0A; // page length
     memset(buf + 2, 0, 10);
-    return 12;
+    return CD_PAGE_08_LEN;
 }
 
 // Build Mode Page 0x09: Audio Control Parameters (16 bytes)
@@ -89,14 +113,14 @@ static int build_page_09(uint8_t *buf, int page_control) {
     buf[1] = 0x0E; // page length
     memset(buf + 2, 0, 14);
     if (page_control == 1)
-        return 16; // nothing here is changeable: header, zero body
+        return CD_PAGE_09_LEN; // nothing here is changeable: header, zero body
     // Output port 0 channel selection = 01 (left)
     buf[8] = 0x01;
     buf[9] = 0xFF; // volume
     // Output port 1 channel selection = 02 (right)
     buf[10] = 0x02;
     buf[11] = 0xFF; // volume
-    return 16;
+    return CD_PAGE_09_LEN;
 }
 
 // Mode page $30, Apple's vendor identification, in the CD-ROM's form.
@@ -113,7 +137,7 @@ static int build_page_09(uint8_t *buf, int page_control) {
 // string carries no trailing period, unlike the hard disk's.
 static int build_page_30(uint8_t *buf, int page_control) {
     static const char apple_cd_id[] = "APPLE COMPUTER, INC   ";
-    return scsi_build_apple_page_30(buf, page_control, apple_cd_id, (int)sizeof(apple_cd_id) - 1, 30);
+    return scsi_build_apple_page_30(buf, page_control, apple_cd_id, (int)sizeof(apple_cd_id) - 1, CD_PAGE_30_BODY);
 }
 
 // ============================================================================
@@ -127,15 +151,27 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     uint8_t page_code = scsi->buf.data[2] & 0x3F;
     int page_control = (scsi->buf.data[2] >> 6) & 0x03;
 
-    // Build response in the SCSI buffer. The mode-sense response can grow
-    // past 256 bytes for page_code == 0x3F (all pages), so zero the *whole*
-    // BUF_LIMIT region rather than just the first 256 bytes — otherwise stale
-    // payload from a previous command leaks into the unzeroed tail.
-    uint8_t *buf = scsi->buf.data;
-    memset(buf, 0, BUF_LIMIT);
+    // Assemble into a scratch buffer and copy after the phase is armed, which
+    // is what the four other data-in builders in this file and the hard disk's
+    // MODE SENSE all do.
+    //
+    // This used to build straight into scsi->buf.data -- the live transfer
+    // buffer, while it still held the CDB being parsed -- after memset-ing the
+    // whole BUF_LIMIT region, 131072 bytes, on every call.  It worked, but for
+    // none of the reasons its comment gave.  That comment said zeroing the tail
+    // stopped "stale payload from a previous command" leaking, and no tail can
+    // leak: scsi_data_in_alloc sets buf.size to min(pos, alloc_len), next_byte
+    // counts it down, and every drain stops at zero, so nothing past `pos` is
+    // ever transmitted.  Of the bytes that ARE sent, every page zeroes its own
+    // body and the block descriptor writes all eight of its bytes -- exactly
+    // two, the header's medium type and device-specific parameter, depended on
+    // that 128 KB memset, and sizeof(resp) covers them for free (03-scsi F-41).
+    uint8_t resp[CD_MODE_SENSE_MAX];
+    memset(resp, 0, sizeof(resp));
+    uint8_t *buf = resp;
 
-    // Mode parameter header (4 bytes)
-    int pos = 4;
+    // Mode parameter header
+    int pos = CD_MODE_PARAM_HEADER_LEN;
 
     // Block descriptor (8 bytes) — always present (A/UX requires it).
     //
@@ -161,7 +197,7 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     if (scsi->device_images[target])
         blocks = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
 
-    buf[3] = 8; // block descriptor length
+    buf[3] = CD_MODE_BLOCK_DESC_LEN; // block descriptor length
     buf[pos + 0] = 0; // density code
     buf[pos + 1] = (blocks >> 16) & 0xFF; // number of blocks
     buf[pos + 2] = (blocks >> 8) & 0xFF;
@@ -170,7 +206,7 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     buf[pos + 5] = (reported_blk_sz >> 16) & 0xFF; // block length, per PC above
     buf[pos + 6] = (reported_blk_sz >> 8) & 0xFF;
     buf[pos + 7] = reported_blk_sz & 0xFF;
-    pos += 8;
+    pos += CD_MODE_BLOCK_DESC_LEN;
 
     // Append requested mode pages
     switch (page_code) {
@@ -220,18 +256,24 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
         return;
     }
 
+    // Nothing above may have run past the buffer.  CD_MODE_SENSE_MAX is summed
+    // from the same constants the builders return, so this cannot fail without
+    // someone having changed one and not the other -- but it is cheap, and the
+    // build where it would matter most is the one where assertions are gone.
+    GS_ASSERTF(pos <= (int)sizeof(resp), "MODE SENSE built %d bytes into a %zu-byte buffer", pos, sizeof(resp));
+
     // Fill in the mode data length (byte 0 = total length - 1). The field is
-    // a single byte, so clamp to avoid silent truncation if the assembled
-    // response ever grew past 256 bytes.
-    int data_len = pos - 1;
-    if (data_len > 255)
-        data_len = 255;
-    buf[0] = (uint8_t)data_len;
+    // a single byte; the longest response this can build is
+    // CD_MODE_SENSE_MAX, well inside that, so the old clamp to 255 guarded
+    // against a size the constants now make impossible.
+    buf[0] = (uint8_t)(pos - 1);
 
     // Bound by the allocation length.  Zero means zero -- CDU-541 manual
     // S4.2.6 -- where this used to read `alloc_len > 0 &&`, i.e. send the whole
     // response to a probe that allocated nothing for it.
-    scsi_data_in_alloc(scsi, pos, alloc_len);
+    int n = scsi_data_in_alloc(scsi, pos, alloc_len);
+    if (n > 0)
+        memcpy(scsi->buf.data, resp, (size_t)n);
 }
 
 // ============================================================================

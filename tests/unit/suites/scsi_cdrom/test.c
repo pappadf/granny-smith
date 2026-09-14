@@ -789,6 +789,70 @@ TEST(mode_sense_all_pages_includes_07_in_order) {
     scsi_delete(scsi);
 }
 
+// The whole "all pages" response must fit the buffer it is assembled in.
+//
+// 03-scsi F-41 proposed the stack buffer this now uses and put the response at
+// "at most 96 bytes".  It was 94 when the review was written; adding page 07h
+// (F-37) and counting page 30h's two-byte page header put it at 104.  A
+// uint8_t resp[96] -- which is exactly what the hard disk's MODE SENSE next
+// door declares, so it is the number a reader would copy -- would have
+// overflowed the stack by eight bytes.
+//
+// So the length is pinned here.  If this fails, CD_MODE_SENSE_MAX in
+// scsi_cdrom.c is the thing to change, not this number.
+TEST(mode_sense_all_pages_is_exactly_the_buffer_size) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[0xF0];
+    int phase = 0;
+    size_t n = mode_sense(scsi, 0, 0x3F, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_EQ_INT((int)n, 104);
+    // Byte 0 is the mode data length, which excludes itself.
+    ASSERT_EQ_INT(r[0], 103);
+    scsi_delete(scsi);
+}
+
+// Two bytes of the mode parameter header are written by nobody -- medium type
+// and the device-specific parameter -- and used to be zeroed only as a side
+// effect of a 131072-byte memset over the transfer buffer.  A scratch buffer
+// zeroes them instead; this checks they are still zero, and that the block
+// descriptor length beside them is right.
+TEST(mode_sense_header_reserved_bytes_are_zero) {
+    scsi_t *scsi = attach_disc();
+    uint8_t r[0xF0];
+    int phase = 0;
+    size_t n = mode_sense(scsi, 0, 0x01, r, sizeof(r), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    ASSERT_TRUE(n >= 12);
+    ASSERT_EQ_INT(r[1], 0x00); // medium type
+    ASSERT_EQ_INT(r[2], 0x00); // device-specific parameter
+    ASSERT_EQ_INT(r[3], 8); // block descriptor length
+    scsi_delete(scsi);
+}
+
+// A long response followed by a short one must not show any of the long one.
+// The response is built in a buffer the transfer also uses, so "what is left
+// over from last time" is a real question to ask of it.
+TEST(mode_sense_does_not_leak_a_previous_response) {
+    scsi_t *scsi = attach_disc();
+    uint8_t big[0xF0], small[0xF0];
+    int phase = 0;
+    size_t nbig = mode_sense(scsi, 0, 0x3F, big, sizeof(big), &phase);
+    ASSERT_EQ_INT((int)nbig, 104);
+
+    memset(small, 0xCD, sizeof(small));
+    size_t nsmall = mode_sense(scsi, 0, 0x08, small, sizeof(small), &phase);
+    ASSERT_EQ_INT(phase, scsi_data_in);
+    // Header + block descriptor + page 08h only.
+    ASSERT_EQ_INT((int)nsmall, 4 + 8 + 12);
+    ASSERT_EQ_INT(small[0], (int)nsmall - 1);
+    ASSERT_EQ_INT(small[12], 0x08); // the page, immediately after the descriptor
+    ASSERT_EQ_INT(small[13], 0x0A);
+    for (size_t i = 14; i < nsmall; i++)
+        ASSERT_EQ_INT(small[i], 0x00); // page 08h's body is all zeros
+    scsi_delete(scsi);
+}
+
 // S5.2.3: "If the page code specified is not implemented the command will be
 // terminated with a CHECK CONDITION status.  The sense key will be set to
 // ILLEGAL REQUEST and the additional sense code set to ILLEGAL VALUE IN CDB."
@@ -987,6 +1051,9 @@ int main(void) {
     RUN(read_header_honours_the_msf_bit);
     RUN(mode_sense_page_07_is_returned);
     RUN(mode_sense_all_pages_includes_07_in_order);
+    RUN(mode_sense_all_pages_is_exactly_the_buffer_size);
+    RUN(mode_sense_header_reserved_bytes_are_zero);
+    RUN(mode_sense_does_not_leak_a_previous_response);
     RUN(mode_sense_unimplemented_page_is_refused);
     RUN(mode_sense_retry_counts_default_to_zero);
     RUN(apple_vendor_page_30_bytes_are_pinned);
