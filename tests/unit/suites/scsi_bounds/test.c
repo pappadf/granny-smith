@@ -567,6 +567,251 @@ TEST(mode_sense_saved_values_are_answered_like_defaults) {
     scsi_delete(scsi);
 }
 
+// ============================================================
+// VERIFY, SEEK and FORMAT UNIT (F-39)
+// ============================================================
+// All three used to answer GOOD without decoding their CDB.  VERIFY is not a
+// stub nobody reaches: Apple HD SC Setup 7.3.5 sweeps the whole disk with it
+// after a format -- 677 of them in the Mac OS 7.6 install row -- so the bound
+// has to be exactly right in both directions.
+
+static uint8_t verify10(scsi_t *scsi, uint32_t lba, uint16_t len, bool bytchk, const uint8_t *data) {
+    const uint8_t cdb[10] = {0x2F,
+                             (uint8_t)(bytchk ? 0x02 : 0x00),
+                             (uint8_t)(lba >> 24),
+                             (uint8_t)(lba >> 16),
+                             (uint8_t)(lba >> 8),
+                             (uint8_t)lba,
+                             0x00,
+                             (uint8_t)(len >> 8),
+                             (uint8_t)len,
+                             0x00};
+    return issue(scsi, cdb, 10, data, (size_t)len * BLK);
+}
+
+static uint8_t seek6(scsi_t *scsi, uint32_t lba) {
+    const uint8_t cdb[6] = {0x0B, (uint8_t)((lba >> 16) & 0x1F), (uint8_t)(lba >> 8), (uint8_t)lba, 0x00, 0x00};
+    return issue(scsi, cdb, 6, NULL, 0);
+}
+
+static uint8_t seek10(scsi_t *scsi, uint32_t lba) {
+    const uint8_t cdb[10] = {
+        0x2B, 0x00, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba, 0x00, 0x00,
+        0x00, 0x00};
+    return issue(scsi, cdb, 10, NULL, 0);
+}
+
+// REQUEST SENSE, so a rejection can be checked for the code it reports and not
+// just for being a rejection.  Fills key/asc from the extended sense data.
+static void read_sense(scsi_t *scsi, uint8_t *key, uint8_t *asc) {
+    const uint8_t cdb[6] = {0x03, 0x00, 0x00, 0x00, 0x12, 0x00};
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    uint8_t sense[18];
+    size_t got = 0;
+    while (got < sizeof sense && scsi_pop_data_in_byte(scsi, &sense[got]))
+        got++;
+    scsi_external_data_in_complete(scsi);
+    scsi_external_release(scsi);
+    ASSERT_TRUE(got >= 13);
+    *key = sense[2] & 0x0F;
+    *asc = sense[12];
+}
+
+// The shape of HD SC Setup's sweep: the final chunk ends on the medium's LAST
+// block, so `lba + len == capacity` has to be ACCEPTED.  If this is ever
+// tightened by one the Mac OS 7.6 install stops formatting its disk.
+TEST(verify_up_to_the_final_block_is_accepted) {
+    scsi_t *scsi = attach_disk();
+    ASSERT_EQ_INT(verify10(scsi, 0, 32, false, NULL), STATUS_GOOD);
+    ASSERT_EQ_INT(verify10(scsi, 32, BLOCKS - 32, false, NULL), STATUS_GOOD);
+    ASSERT_EQ_INT(verify10(scsi, BLOCKS - 1, 1, false, NULL), STATUS_GOOD);
+    scsi_delete(scsi);
+}
+
+// ...and one block further is not.  X3.131-1994 S9.1.2; the CDU-541 manual
+// S5.2.15 names the code, which its table 5-49 numbers 21h.
+TEST(verify_past_the_end_is_refused) {
+    scsi_t *scsi = attach_disk();
+    ASSERT_EQ_INT(verify10(scsi, BLOCKS - 1, 2, false, NULL), STATUS_CHECK_CONDITION);
+    uint8_t key = 0, asc = 0;
+    read_sense(scsi, &key, &asc);
+    ASSERT_EQ_INT(key, SENSE_ILLEGAL_REQUEST);
+    ASSERT_EQ_INT(asc, ASC_LBA_OUT_OF_RANGE);
+
+    ASSERT_EQ_INT(verify10(scsi, BLOCKS + 100, 1, false, NULL), STATUS_CHECK_CONDITION);
+    scsi_delete(scsi);
+}
+
+// "A transfer length of zero indicates that no logical blocks shall be
+// verified.  This condition shall not be considered as an error" -- and that
+// holds even for an address the medium does not have, because the length is
+// answered before the bound, exactly as READ(10) treats its own.
+TEST(verify_of_zero_blocks_is_not_an_error) {
+    scsi_t *scsi = attach_disk();
+    ASSERT_EQ_INT(verify10(scsi, 0, 0, false, NULL), STATUS_GOOD);
+    ASSERT_EQ_INT(verify10(scsi, BLOCKS + 100, 0, false, NULL), STATUS_GOOD);
+    scsi_delete(scsi);
+}
+
+// BytChk set: the initiator sends the blocks and the target compares them
+// against the medium.  Matching data is GOOD...
+TEST(verify_bytchk_compares_against_the_medium) {
+    scsi_t *scsi = attach_disk();
+    // What make_disk() stamped into blocks 5 and 6.
+    uint8_t want[BLK * 2];
+    memset(want, 0, sizeof want);
+    for (uint32_t i = 0; i < 2; i++) {
+        want[i * BLK + 0] = 0xA5;
+        want[i * BLK + 1] = (uint8_t)((5 + i) >> 8);
+        want[i * BLK + 2] = (uint8_t)(5 + i);
+    }
+    ASSERT_EQ_INT(verify10(scsi, 5, 2, true, want), STATUS_GOOD);
+    scsi_delete(scsi);
+}
+
+// ...and a single wrong byte is a MISCOMPARE, which is the one answer a verify
+// can give that a read cannot.  Sense key 0Eh (X3.131-1994 table 69), ASC 1Dh
+// (table 71).
+TEST(verify_bytchk_reports_a_miscompare) {
+    scsi_t *scsi = attach_disk();
+    uint8_t wrong[BLK];
+    memset(wrong, 0, sizeof wrong);
+    wrong[0] = 0xA5;
+    wrong[1] = 0x00;
+    wrong[2] = 0x07;
+    wrong[400] = 0x01; // the medium has 0x00 here
+
+    ASSERT_EQ_INT(verify10(scsi, 7, 1, true, wrong), STATUS_CHECK_CONDITION);
+    uint8_t key = 0, asc = 0;
+    read_sense(scsi, &key, &asc);
+    ASSERT_EQ_INT(key, SENSE_MISCOMPARE);
+    ASSERT_EQ_INT(asc, ASC_MISCOMPARE_VERIFY);
+    scsi_delete(scsi);
+}
+
+// A BytChk verify has to ASK for the data.  Before this, byte 1 was never
+// read, so the target went straight to STATUS and the blocks the initiator was
+// holding had nowhere to go.
+TEST(verify_bytchk_enters_data_out_and_plain_verify_does_not) {
+    scsi_t *scsi = attach_disk();
+
+    const uint8_t with[10] = {0x2F, 0x02, 0, 0, 0, 0, 0, 0x00, 0x01, 0};
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, with[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_out);
+    scsi_external_release(scsi);
+
+    const uint8_t without[10] = {0x2F, 0x00, 0, 0, 0, 0, 0, 0x00, 0x01, 0};
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, without[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    scsi_external_status_byte(scsi);
+    scsi_external_message_byte(scsi);
+    scsi_external_release(scsi);
+
+    scsi_delete(scsi);
+}
+
+// SEEK names an address and moves nothing, so it is bounded as ONE block: the
+// last block is reachable, one past it is not.  A zero-length range check
+// would have let `BLOCKS` through, because `off + 0 > raw_size` is false at
+// exactly the end.  CDU-541 manual S5.2.30.
+TEST(seek_is_bounded_at_the_last_block) {
+    scsi_t *scsi = attach_disk();
+    ASSERT_EQ_INT(seek6(scsi, 0), STATUS_GOOD);
+    ASSERT_EQ_INT(seek6(scsi, BLOCKS - 1), STATUS_GOOD);
+    ASSERT_EQ_INT(seek6(scsi, BLOCKS), STATUS_CHECK_CONDITION);
+    uint8_t key = 0, asc = 0;
+    read_sense(scsi, &key, &asc);
+    ASSERT_EQ_INT(key, SENSE_ILLEGAL_REQUEST);
+    ASSERT_EQ_INT(asc, ASC_LBA_OUT_OF_RANGE);
+
+    ASSERT_EQ_INT(seek10(scsi, BLOCKS - 1), STATUS_GOOD);
+    ASSERT_EQ_INT(seek10(scsi, BLOCKS), STATUS_CHECK_CONDITION);
+    scsi_delete(scsi);
+}
+
+// SEEK(6) packs its address into bytes 1-3 and SEEK(10) into bytes 2-5, so the
+// two decodes have to agree about which block they mean.
+TEST(both_seek_cdbs_decode_the_same_address) {
+    scsi_t *scsi = attach_disk();
+    ASSERT_EQ_INT(seek6(scsi, BLOCKS - 1), seek10(scsi, BLOCKS - 1));
+    ASSERT_EQ_INT(seek6(scsi, BLOCKS + 1), seek10(scsi, BLOCKS + 1));
+    scsi_delete(scsi);
+}
+
+// FORMAT UNIT with FmtData clear -- the mandatory form, and the only one
+// anything in the corpus sends -- takes no data phase at all.
+TEST(format_unit_without_fmtdata_takes_no_data_phase) {
+    scsi_t *scsi = attach_disk();
+    // Byte for byte what Apple HD SC Setup issues.
+    const uint8_t cdb[6] = {0x04, 0x00, 0x00, 0x00, 0x01, 0x00};
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    ASSERT_EQ_INT(scsi_external_status_byte(scsi), STATUS_GOOD);
+    scsi_external_message_byte(scsi);
+    scsi_external_release(scsi);
+    scsi_delete(scsi);
+}
+
+// With FmtData set the target must ask for the four-byte defect list header,
+// and then -- inside the same DATA OUT phase, which is what a real one does --
+// keep asking for as many descriptor bytes as the header declared.
+TEST(format_unit_with_fmtdata_takes_the_header_then_the_list) {
+    scsi_t *scsi = attach_disk();
+    const uint8_t cdb[6] = {0x04, 0x10, 0x00, 0x00, 0x00, 0x00}; // FmtData
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_out);
+
+    // Header: two reserved bytes, then a length of 8 -- two block-format
+    // defect descriptors (X3.131-1986 table 8-5).
+    const uint8_t header[4] = {0x00, 0x00, 0x00, 0x08};
+    for (int i = 0; i < 4; i++)
+        scsi_push_data_out_byte(scsi, header[i]);
+    // Still asking: the descriptors have not arrived.
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_out);
+
+    const uint8_t descriptors[8] = {0x00, 0x00, 0x00, 0x11, 0x00, 0x00, 0x00, 0x2A};
+    for (int i = 0; i < 8; i++)
+        scsi_push_data_out_byte(scsi, descriptors[i]);
+
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    ASSERT_EQ_INT(scsi_external_status_byte(scsi), STATUS_GOOD);
+    scsi_external_message_byte(scsi);
+    scsi_external_release(scsi);
+    scsi_delete(scsi);
+}
+
+// A zero-length defect list is the header and nothing else -- the form
+// X3.131-1994 table 112 marks mandatory once FmtData is set.
+TEST(format_unit_with_an_empty_defect_list_ends_at_the_header) {
+    scsi_t *scsi = attach_disk();
+    const uint8_t cdb[6] = {0x04, 0x18, 0x00, 0x00, 0x00, 0x00}; // FmtData + CmpLst
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_out);
+
+    const uint8_t header[4] = {0x00, 0x00, 0x00, 0x00};
+    for (int i = 0; i < 4; i++)
+        scsi_push_data_out_byte(scsi, header[i]);
+
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    ASSERT_EQ_INT(scsi_external_status_byte(scsi), STATUS_GOOD);
+    scsi_external_message_byte(scsi);
+    scsi_external_release(scsi);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(test_write_in_range_lands);
@@ -583,6 +828,17 @@ int main(void) {
     RUN(test_zero_allocation_length_transfers_nothing);
     RUN(test_rejected_read_does_not_grow_buffer);
     RUN(test_valid_read_still_transfers);
+    RUN(verify_up_to_the_final_block_is_accepted);
+    RUN(verify_past_the_end_is_refused);
+    RUN(verify_of_zero_blocks_is_not_an_error);
+    RUN(verify_bytchk_compares_against_the_medium);
+    RUN(verify_bytchk_reports_a_miscompare);
+    RUN(verify_bytchk_enters_data_out_and_plain_verify_does_not);
+    RUN(seek_is_bounded_at_the_last_block);
+    RUN(both_seek_cdbs_decode_the_same_address);
+    RUN(format_unit_without_fmtdata_takes_no_data_phase);
+    RUN(format_unit_with_fmtdata_takes_the_header_then_the_list);
+    RUN(format_unit_with_an_empty_defect_list_ends_at_the_header);
     unlink(g_path);
     printf("All scsi_bounds tests passed\n");
     return 0;

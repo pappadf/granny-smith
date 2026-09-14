@@ -710,13 +710,67 @@ Pages of interest:
 
 #### VERIFY(10) — `0x2F`
 
-Like READ(10) but no data transfer.  Emulator returns GOOD if the
-LBA range is in-bounds.
+CDB layout is READ(10)'s: LBA in bytes 2–5, verification length in
+bytes 7–8.  Byte 1 bit 1 is **BytChk**.
+
+* **Length zero** returns GOOD without a bounds check — "this
+  condition shall not be considered as an error" in both ANSI texts,
+  and the same order READ(10) uses.  The CDU-541 adds that the drive
+  still seeks to the address, so a strict reading would check it; the
+  emulator follows READ(10) instead, to keep one answer per question.
+* **Out of range** is CHECK CONDITION / ILLEGAL REQUEST / LBA OUT OF
+  RANGE (`0x21`).  The bound admits `lba + length == capacity` — the
+  last block is inside the medium.
+* **BytChk = 0** is a medium-only verification, which an image cannot
+  fail: GOOD.
+* **BytChk = 1** enters DATA OUT for `length × block_size` bytes and
+  compares them against the medium byte for byte.  A mismatch is
+  CHECK CONDITION with sense key MISCOMPARE (`0x0E`) and ASC `0x1D`.
+
+> This is the most-issued command in a format: Apple HD SC Setup 7.3.5
+> sweeps the whole disk with it after formatting, 512 blocks at a time,
+> and its last chunk ends on the medium's final block.
+
+Before 2026-09-14 this returned GOOD without decoding the CDB at all,
+and this section claimed a bounds check that was not there.
+
+#### SEEK(6) — `0x0B` / SEEK(10) — `0x2B`
+
+No head to move, so the seek itself is a no-op — but the address is
+bounds-checked as **one block**, not as a zero-length range: a seek
+addresses the block it lands on, and a zero-length test would admit the
+one address exactly past the end.  Out of range is ILLEGAL REQUEST /
+LBA OUT OF RANGE, per CDU-541 §5.2.30.
+
+SEEK(6) carries the address in bytes 1–3 (low five bits of byte 1 only;
+the rest is the LUN); SEEK(10) in bytes 2–5.
 
 #### FORMAT UNIT — `0x04`
 
-Low-level format / defect map.  Emulator accepts as a no-op on
-writable devices; rejects with DATA PROTECT on read-only media.
+Byte 1 is LUN, then **FmtData** (bit 4), **CmpLst** (bit 3) and the
+defect list format (bits 2–0).
+
+* Read-only device → CHECK CONDITION / DATA PROTECT.
+* **FmtData = 0** — the mandatory form, and the only one any guest in
+  the test corpus sends (both HD SC Setup versions issue exactly
+  `04 00 00 00 01 00`) — completes with GOOD and no data phase.
+* **FmtData = 1** enters DATA OUT for the four-byte defect list
+  header, then keeps requesting inside the *same* phase for as many
+  descriptor bytes as its length field declared.  The list is
+  discarded: the defects it names are locations on a platter, and an
+  image has none to map out.
+* **CmpLst** is not consulted and has nothing to do — it chooses
+  whether the initiator's list replaces the drive's grown defect list
+  or adds to it, and there is no grown defect list.
+
+The format does not erase the medium.  Nothing a guest does afterwards
+can observe the difference through this interface, but it is a
+divergence rather than a decision the standards support.
+
+The SCSI-2 defect-list-header option bits (FOV, DPRY, DCRT, STPF, IP,
+DSP — X3.131-1994 table 111) are *not* validated, deliberately: the
+emulated drives report ANSI version `0x01`, and in X3.131-1986 table
+8-5 that header byte is Reserved.
 
 ### 8.6 CD-ROM extensions
 

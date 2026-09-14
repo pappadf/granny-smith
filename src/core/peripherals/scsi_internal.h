@@ -135,6 +135,10 @@
 #define SENSE_ILLEGAL_REQUEST 0x05
 #define SENSE_UNIT_ATTENTION  0x06
 #define SENSE_DATA_PROTECT    0x07
+// "MISCOMPARE.  Indicates that the source data did not match the data read
+// from the medium" (X3.131-1994 table 69).  The one result a VERIFY with
+// BytChk set can report that a plain medium verification cannot.
+#define SENSE_MISCOMPARE 0x0E
 
 // Additional sense codes (ASC)
 #define ASC_NO_ASC               0x00
@@ -142,8 +146,11 @@
 #define ASC_INVALID_OPCODE       0x20
 #define ASC_LBA_OUT_OF_RANGE     0x21
 #define ASC_INVALID_FIELD_IN_CDB 0x24
-#define ASC_WRITE_PROTECTED      0x27
-#define ASC_NOT_READY_TO_READY   0x28
+// X3.131-1994 table 71: 1Dh/00h MISCOMPARE DURING VERIFY OPERATION, for
+// device types "D W O" -- direct-access among them.
+#define ASC_MISCOMPARE_VERIFY  0x1D
+#define ASC_WRITE_PROTECTED    0x27
+#define ASC_NOT_READY_TO_READY 0x28
 // "Power on, reset or BUS DEVICE RESET occurred" -- the third of the three
 // codes the CDU-541 manual lists under UNIT ATTENTION (6h), and what a bus
 // reset raises on every target (ANSI X3.131-1986 S6.1.3).
@@ -162,6 +169,11 @@
 // vocabulary and does not appear anywhere in this drive's tables.
 #define ASC_SONY_PREVENT_BIT_SET 0x80
 #define ASC_INCOMPATIBLE_MEDIUM  0x30
+
+// FORMAT UNIT's defect list header: reserved, reserved, then a 16-bit length
+// of the defect descriptors that follow (X3.131-1986 table 8-5).  The target
+// reads this much before it knows how long the DATA OUT phase really is.
+#define SCSI_FORMAT_DEFECT_HEADER 4
 
 // Block size and buffer limits
 #define BLOCK_SIZE 512

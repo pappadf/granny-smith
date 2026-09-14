@@ -391,9 +391,10 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
     phase_status(scsi, STATUS_CHECK_CONDITION);
 }
 
-// Does the command's [lba, lba + tl) block range fit inside the medium?
+// Does the block range [lba, lba + blocks) fit inside the medium?
 //
-// One answer for READ and WRITE on both CDB lengths.  WRITE had none at all:
+// One answer for READ, WRITE and VERIFY on both CDB lengths, and for SEEK
+// through scsi_seek_lba_ok below.  WRITE had none at all:
 // its only guards were two assert()s in command_complete, and assert is
 // compiled out by -DNDEBUG in the release wasm profile (Makefile:131), so an
 // out-of-range WRITE reached disk_write_data, which drops the unbacked tail --
@@ -404,19 +405,21 @@ void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t 
 // where `(size_t)lba * blk_sz` wraps: a READ(10) at lba 0x00400000 with
 // 2048-byte blocks gives 0x800000000, which truncates to 0, so the old check
 // passed and the wrong blocks were served as valid data (03-scsi F-04).
-static bool scsi_lba_range_ok(const scsi_t *scsi, int target, size_t *off_out, size_t *cnt_out) {
+static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_t blocks, size_t *off_out,
+                           size_t *cnt_out) {
     const image_t *img = scsi->device_images[target];
     if (!img)
         return false;
-    // Through uint32_t first: cmd.lba and cmd.tl are `int`, and the 10-byte
-    // decode builds them with `data[2] << 24`, which overflows a signed int for
-    // any byte >= 0x80.  A CDB of FF FF FF FF lands as -1, and casting that
-    // straight to uint64_t sign-extends to 0xFFFF...FFFF, whose product with
-    // the block size wraps and passes any bound.  (Found by the scsi_bounds
-    // unit test, against the first version of THIS function.)
+    // Callers hand these in as uint32_t, and must: cmd.lba and cmd.tl are
+    // `int`, and the 10-byte decode builds them with `data[2] << 24`, which
+    // overflows a signed int for any byte >= 0x80.  A CDB of FF FF FF FF lands
+    // as -1, and casting that straight to uint64_t sign-extends to
+    // 0xFFFF...FFFF, whose product with the block size wraps and passes any
+    // bound.  (Found by the scsi_bounds unit test, against the first version
+    // of THIS function.)
     uint64_t blk = scsi->devices[target].block_size;
-    uint64_t off = (uint64_t)(uint32_t)scsi->cmd.lba * blk;
-    uint64_t cnt = (uint64_t)(uint32_t)scsi->cmd.tl * blk;
+    uint64_t off = (uint64_t)lba * blk;
+    uint64_t cnt = (uint64_t)blocks * blk;
     if (off + cnt > (uint64_t)img->raw_size)
         return false;
     // Both are bounded by raw_size above, so narrowing is safe.
@@ -425,6 +428,24 @@ static bool scsi_lba_range_ok(const scsi_t *scsi, int target, size_t *off_out, s
     if (cnt_out)
         *cnt_out = (size_t)cnt;
     return true;
+}
+
+// The same question for the decoded command: does cmd.lba/cmd.tl fit?
+static bool scsi_lba_range_ok(const scsi_t *scsi, int target, size_t *off_out, size_t *cnt_out) {
+    return scsi_blocks_ok(scsi, target, (uint32_t)scsi->cmd.lba, (uint32_t)scsi->cmd.tl, off_out, cnt_out);
+}
+
+// ...and for a command that names an address but moves nothing, which is SEEK.
+// It cannot go through the range form: a count of zero makes the test
+// `off + 0 > raw_size`, which is false at off == raw_size, so the one address
+// that is exactly one block past the end would pass.  A seek addresses the
+// block it lands on, so it is asked about as one block.  The CDU-541 manual
+// S5.2.30 draws the line in the same place -- "a seek operation may be
+// requested to any logical block address that is less than or equal to that
+// reported by a READ CAPACITY command", and READ CAPACITY reports the LAST
+// block, not the count.
+static bool scsi_seek_lba_ok(const scsi_t *scsi, int target, uint32_t lba) {
+    return scsi_blocks_ok(scsi, target, lba, 1, NULL, NULL);
 }
 
 // Execute a SCSI command after receiving it from the initiator
@@ -521,15 +542,41 @@ void run_cmd(scsi_t *scsi) {
         scsi_cdrom_request_sense(scsi);
         break;
 
-    case CMD_FORMAT_UNIT:
-        LOG(1, "command: FORMAT UNIT");
+    case CMD_FORMAT_UNIT: {
+        // FORMAT UNIT (X3.131-1986 S8.1.2, X3.131-1994 S9.2.1).  Byte 1 is
+        // LUN, then FmtData (bit 4), CmpLst (bit 3) and the defect list format
+        // (bits 2-0).
+        bool fmtdata = (scsi->buf.data[1] & 0x10) != 0;
+        LOG(1, "command: FORMAT UNIT target=%d fmtdata=%d byte1=%02X", target, fmtdata, scsi->buf.data[1]);
+
         // Reject FORMAT on read-only devices
         if (scsi->devices[target].read_only) {
             scsi_check_condition(scsi, SENSE_DATA_PROTECT, ASC_WRITE_PROTECTED, 0x00);
-        } else {
-            phase_status(scsi, STATUS_GOOD);
+            break;
         }
+        if (!fmtdata) {
+            // "A FmtData bit of zero indicates that the DATA OUT phase shall
+            // not occur (no defect data shall be supplied by the initiator)."
+            // This is the mandatory form, and the only one anything in the
+            // corpus sends: both Apple HD SC Setup versions issue exactly one
+            // FORMAT UNIT per format, `04 00 00 00 01 00`.
+            phase_status(scsi, STATUS_GOOD);
+            break;
+        }
+        // FmtData set: "format data is supplied during the DATA OUT phase".
+        // A real target cannot know how much until it has read the four-byte
+        // defect list header, whose last two bytes are the length of the
+        // descriptors that follow -- so it asks for the header first and keeps
+        // REQ'ing for the rest of the SAME phase afterwards.  That is what
+        // command_complete does below.
+        //
+        // CmpLst is not consulted, and there is nothing for it to do: it
+        // chooses whether the initiator's list replaces the drive's grown
+        // defect list or adds to it, and a disk image has neither a Glist nor
+        // any defects to put in one.
+        phase_data_out(scsi, SCSI_FORMAT_DEFECT_HEADER);
         break;
+    }
 
     case CMD_READ:
     case CMD_WRITE: {
@@ -679,11 +726,39 @@ void run_cmd(scsi_t *scsi) {
     }
 
     case CMD_SEEK_6:
-    case CMD_SEEK_10:
-        // Seek to LBA — no-op (no seek latency to emulate)
-        LOG(1, "command: SEEK");
+    case CMD_SEEK_10: {
+        // SEEK(6)/SEEK(10) (X3.131-1994 S9.2.15, CDU-541 manual S5.2.30-31).
+        // There is no head to move, so the seek itself stays a no-op -- but
+        // the address still has to exist, and this used to answer GOOD for any
+        // address at all.  The CDU-541 is explicit where the ANSI text is only
+        // general: "if the logical block address requested exceeds that
+        // reported by the READ CAPACITY data a CHECK CONDITION status will be
+        // returned.  The sense key is set to ILLEGAL REQUEST and the
+        // additional sense code is set to LOGICAL BLOCK ADDRESS NOT VALID."
+        //
+        // The two CDBs carry the address in different places: SEEK(6) packs it
+        // into bytes 1-3 with only the low five bits of byte 1 (the rest is the
+        // LUN), SEEK(10) gives it bytes 2-5 outright.
+        uint32_t lba;
+        if (scsi->cmd.opcode == CMD_SEEK_6)
+            lba = (((uint32_t)scsi->buf.data[1] & 0x1F) << 16) | ((uint32_t)scsi->buf.data[2] << 8) |
+                  (uint32_t)scsi->buf.data[3];
+        else
+            lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
+                  ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
+        scsi->cmd.lba = (int)lba;
+
+        LOG(1, "command: SEEK(%d) target=%d lba=%u", scsi->cmd.opcode == CMD_SEEK_6 ? 6 : 10, target, lba);
+
+        if (!scsi_seek_lba_ok(scsi, target, lba)) {
+            LOG(1, "SCSI SEEK out of range: target=%d lba=%u raw_size=%zu", target, lba,
+                disk_size(scsi->device_images[target]));
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+            break;
+        }
         phase_status(scsi, STATUS_GOOD);
         break;
+    }
 
     case CMD_INQUIRY:
 
@@ -1040,11 +1115,68 @@ void run_cmd(scsi_t *scsi) {
         break;
     }
 
-    case CMD_VERIFY:
-        // Verify data on disc — no-op (always succeeds)
-        LOG(1, "command: VERIFY");
-        phase_status(scsi, STATUS_GOOD);
+    case CMD_VERIFY: {
+        // VERIFY(10) (X3.131-1986 S8.2.6, X3.131-1994 S9.2.19, CDU-541 manual
+        // S5.2.35).  Its CDB is READ(10)'s: LBA in bytes 2-5, verification
+        // length in bytes 7-8.  This used to answer GOOD without reading any
+        // of it, so a verify of a range the medium does not have passed.
+        //
+        // Not a stub nobody reaches: Apple HD SC Setup 7.3.5 sweeps the whole
+        // disk with it after a format -- 677 of them in the Mac OS 7.6 install
+        // row, 512 blocks at a time -- and the last one ends on the medium's
+        // final block, so the bound below has to admit lba + len == capacity
+        // exactly.
+        scsi->cmd.lba =
+            (scsi->buf.data[2] << 24) | (scsi->buf.data[3] << 16) | (scsi->buf.data[4] << 8) | scsi->buf.data[5];
+        scsi->cmd.tl = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
+        bool bytchk = (scsi->buf.data[1] & 0x02) != 0; // byte 1 bit 1, in both ANSI texts
+        uint16_t blk_sz = scsi->devices[target].block_size;
+
+        LOG(1, "command: VERIFY target=%d lba=%u len=%u bytchk=%d", target, scsi->cmd.lba, scsi->cmd.tl, bytchk);
+
+        if (scsi->cmd.tl == 0) {
+            // "A transfer length of zero indicates that no logical blocks
+            // shall be verified.  This condition shall not be considered as an
+            // error" -- both ANSI texts.  Answered before the bound, which is
+            // how READ(10) above treats its own zero length; the CDU-541 says
+            // the drive still seeks to the address, so a strict reading would
+            // check it, but one command in this file disagreeing with its
+            // neighbour about what a zero length means is the worse outcome.
+            phase_status(scsi, STATUS_GOOD);
+            break;
+        }
+
+        size_t byte_off = 0, byte_cnt = 0;
+        if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt)) {
+            // X3.131-1994 S9.1.2: "If a command is issued that requests access
+            // to a logical block not within the capacity of the medium, the
+            // command is terminated with CHECK CONDITION."  The CDU-541 manual
+            // S5.2.15 names the code -- ILLEGAL REQUEST / "LOGICAL BLOCK
+            // ADDRESS NOT VALID", which its table 5-49 numbers 21h, the same
+            // value READ and WRITE already report.
+            LOG(1, "SCSI VERIFY out of range: target=%d lba=%u len=%u blk_sz=%u raw_size=%zu", target, scsi->cmd.lba,
+                scsi->cmd.tl, blk_sz, disk_size(scsi->device_images[target]));
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+            break;
+        }
+
+        if (!bytchk) {
+            // "A BytChk bit of zero causes the verification to be simply a
+            // medium verification (CRC, ECC, etc)" (X3.131-1986 S8.2.6).  A
+            // disk image has no medium to be wrong about, so an in-range
+            // verify succeeds.
+            phase_status(scsi, STATUS_GOOD);
+            break;
+        }
+
+        // "A BytChk bit of one causes a byte-by-byte compare of data on the
+        // medium and the data transferred from the initiator" -- so the
+        // initiator is about to send the blocks, and a target that goes
+        // straight to STATUS is not the target it was promised.  The compare
+        // happens in command_complete once they have all arrived.
+        phase_data_out(scsi, (int)byte_cnt);
         break;
+    }
 
     case CMD_RESERVE:
     case CMD_RELEASE:
@@ -1146,6 +1278,67 @@ void command_complete(scsi_t *scsi) {
             scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_WRITE_FAULT, 0x00);
             return;
         }
+    } break;
+
+    case CMD_VERIFY: {
+        // A VERIFY with BytChk set: the blocks the initiator sent are here, so
+        // compare them against the medium.  "If the compare is unsuccessful,
+        // the command shall be terminated with a CHECK CONDITION status and
+        // the sense key shall be set to MISCOMPARE" (X3.131-1986 S8.2.6);
+        // X3.131-1994 table 71 supplies the additional sense code.
+        //
+        // This is the one answer a verify can give that a read cannot, and it
+        // is a real comparison -- the image is right here -- rather than an
+        // agreeable GOOD.
+        size_t byte_off = 0, byte_cnt = 0;
+        if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
+            scsi->buf.max = scsi->buf.size = 0;
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
+            return;
+        }
+        // Read the medium a block at a time rather than staging a second copy
+        // of the whole transfer: a verify can be hundreds of blocks, and the
+        // answer is known as soon as one byte differs.
+        uint8_t *from_medium = malloc(blk_sz);
+        GS_ASSERTF(from_medium != NULL, "VERIFY: failed to allocate a %u-byte compare block", blk_sz);
+        bool same = true;
+        for (size_t done = 0; same && done < byte_cnt; done += blk_sz) {
+            if (disk_read_data(scsi->device_images[target], byte_off + done, from_medium, blk_sz) != blk_sz ||
+                memcmp(from_medium, scsi->buf.data + done, blk_sz) != 0)
+                same = false;
+        }
+        free(from_medium);
+        scsi->buf.max = scsi->buf.size = 0;
+        if (!same) {
+            LOG(1, "SCSI VERIFY miscompare: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
+            scsi_check_condition(scsi, SENSE_MISCOMPARE, ASC_MISCOMPARE_VERIFY, 0x00);
+            return;
+        }
+    } break;
+
+    case CMD_FORMAT_UNIT: {
+        // The FORMAT UNIT parameter list has arrived -- or its header has.
+        // "The defect list length in each table specifies the total length in
+        // bytes of the defect descriptors that follow" (X3.131-1986 S8.1.2),
+        // so once the four header bytes are in we know the rest, and the real
+        // target simply keeps REQ'ing inside the same DATA OUT phase for it.
+        // Extending buf.max is that: no phase change, REQ stays up, and this
+        // function is called again when the descriptors have landed.
+        if (scsi->buf.size == SCSI_FORMAT_DEFECT_HEADER) {
+            size_t defect_len = ((size_t)scsi->buf.data[2] << 8) | scsi->buf.data[3];
+            if (defect_len > 0) {
+                LOG(2, "FORMAT UNIT: taking a %zu-byte defect list", defect_len);
+                scsi_buf_ensure(scsi, SCSI_FORMAT_DEFECT_HEADER + defect_len);
+                scsi->buf.max = (int)(SCSI_FORMAT_DEFECT_HEADER + defect_len);
+                scsi->bus.req = true; // still asking, same phase
+                return;
+            }
+        }
+        // Everything the initiator had to say has been heard, and the list is
+        // discarded: the defects it names are locations on a physical platter,
+        // and an image has none to map out.  Accepting it and formatting
+        // anyway is what a drive with a clean medium does.
+        scsi->buf.max = scsi->buf.size = 0;
     } break;
 
     case CMD_MODE_SELECT:
