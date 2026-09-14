@@ -812,6 +812,139 @@ TEST(format_unit_with_an_empty_defect_list_ends_at_the_header) {
     scsi_delete(scsi);
 }
 
+// ============================================================
+// Empty and sub-block media (F-40)
+// ============================================================
+// READ CAPACITY reports the address of the LAST block, so a block count has to
+// lose one -- and an unsigned zero that loses one is 0xFFFFFFFF.  Two routes
+// reached that, and only one of them is an empty drive.
+
+static void read_capacity(scsi_t *scsi, uint8_t out[8], uint8_t *status) {
+    const uint8_t cdb[10] = {0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 10; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    *status = 0xFF;
+    if (scsi_get_bus_phase(scsi) == scsi_data_in) {
+        size_t got = 0;
+        while (got < 8 && scsi_pop_data_in_byte(scsi, &out[got]))
+            got++;
+        scsi_external_data_in_complete(scsi);
+    }
+    if (scsi_get_bus_phase(scsi) == scsi_status) {
+        *status = scsi_external_status_byte(scsi);
+        scsi_external_message_byte(scsi);
+    }
+    scsi_external_release(scsi);
+}
+
+static uint32_t be32_of(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+// The medium is there: the last block is the last block.
+TEST(read_capacity_reports_the_last_block) {
+    scsi_t *scsi = attach_disk();
+    uint8_t cap[8] = {0};
+    uint8_t status = 0xFF;
+    read_capacity(scsi, cap, &status);
+    ASSERT_EQ_INT(status, STATUS_GOOD);
+    ASSERT_EQ_INT(be32_of(cap), BLOCKS - 1);
+    ASSERT_EQ_INT(be32_of(cap + 4), BLK);
+    scsi_delete(scsi);
+}
+
+// Route one: a HARD DISK whose image was detached.  The medium gate used to
+// test `type == scsi_dev_cdrom`, so every other device type walked past it and
+// READ CAPACITY answered GOOD with 0xFFFFFFFF -- four billion blocks.
+// scsi.devices[N].eject() takes any ID, which is how a disk gets here.
+TEST(an_emptied_hard_disk_is_not_ready) {
+    scsi_t *scsi = attach_disk();
+    ASSERT_EQ_INT(scsi_eject_device(scsi, TARGET), 1);
+
+    uint8_t cap[8] = {0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE, 0xEE};
+    uint8_t status = 0xFF;
+    read_capacity(scsi, cap, &status);
+    ASSERT_EQ_INT(status, STATUS_CHECK_CONDITION);
+    ASSERT_EQ_INT(be32_of(cap), 0xEEEEEEEEu); // nothing was transferred at all
+
+    // A hard disk speaks the standard code, not the Sony CD-ROM's vendor one:
+    // X3.131-1994 table 71 lists 3Ah MEDIUM NOT PRESENT for "DTL WRSOM".
+    uint8_t key = 0, asc = 0;
+    read_sense(scsi, &key, &asc);
+    ASSERT_EQ_INT(key, SENSE_NOT_READY);
+    ASSERT_EQ_INT(asc, ASC_MEDIUM_NOT_PRESENT);
+    scsi_delete(scsi);
+}
+
+// ...and the question the command exists to answer must answer it.  This used
+// to report GOOD: asked "are you ready?", a drive with no medium said yes.
+TEST(test_unit_ready_says_no_when_there_is_no_medium) {
+    scsi_t *scsi = attach_disk();
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    ASSERT_EQ_INT(issue(scsi, tur, 6, NULL, 0), STATUS_GOOD);
+
+    ASSERT_EQ_INT(scsi_eject_device(scsi, TARGET), 1);
+    ASSERT_EQ_INT(issue(scsi, tur, 6, NULL, 0), STATUS_CHECK_CONDITION);
+    uint8_t key = 0, asc = 0;
+    read_sense(scsi, &key, &asc);
+    ASSERT_EQ_INT(key, SENSE_NOT_READY);
+    ASSERT_EQ_INT(asc, ASC_MEDIUM_NOT_PRESENT);
+    scsi_delete(scsi);
+}
+
+// A CD-ROM keeps its own vocabulary.  The drive we advertise is a SONY
+// CDU-8002, whose NOT READY table has no 3Ah in it at all -- an empty bay is
+// the vendor code B0h, which is what Apple's CD-ROM driver expects.
+TEST(an_empty_cd_bay_still_speaks_sony) {
+    scsi_t *scsi = scsi_init(NULL);
+    ASSERT_TRUE(scsi != NULL);
+    scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048, true);
+
+    const uint8_t tur[6] = {0x00, 0, 0, 0, 0, 0};
+    ASSERT_EQ_INT(issue(scsi, tur, 6, NULL, 0), STATUS_CHECK_CONDITION);
+    uint8_t key = 0, asc = 0;
+    read_sense(scsi, &key, &asc);
+    ASSERT_EQ_INT(key, SENSE_NOT_READY);
+    ASSERT_EQ_INT(asc, ASC_SONY_CADDY_NOT_INSERTED);
+    scsi_delete(scsi);
+}
+
+// Route two, which no medium gate can ever catch: the medium is PRESENT and
+// smaller than one block.  1536 / 2048 == 0, and a 1536-byte file really does
+// attach as a CD-ROM -- so the subtraction has to be guarded where it happens,
+// not only upstream of it.
+TEST(a_medium_smaller_than_a_block_does_not_underflow) {
+    char tiny[] = "/tmp/gs-subblock-XXXXXX";
+    int fd = mkstemp(tiny);
+    ASSERT_TRUE(fd >= 0);
+    uint8_t pad[1536];
+    memset(pad, 0, sizeof pad);
+    ASSERT_TRUE(write(fd, pad, sizeof pad) == (ssize_t)sizeof pad);
+    close(fd);
+
+    scsi_t *scsi = scsi_init(NULL);
+    ASSERT_TRUE(scsi != NULL);
+    image_t *img = image_create(tiny, NULL);
+    ASSERT_TRUE(img != NULL);
+    ASSERT_EQ_INT((int)disk_size(img), 1536);
+    scsi_add_device(scsi, TARGET, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, 2048, true);
+
+    // Clear the insertion UNIT ATTENTION the attach raised.
+    uint8_t key = 0, asc = 0;
+    read_sense(scsi, &key, &asc);
+    ASSERT_EQ_INT(key, SENSE_UNIT_ATTENTION);
+
+    uint8_t cap[8] = {0};
+    uint8_t status = 0xFF;
+    read_capacity(scsi, cap, &status);
+    ASSERT_EQ_INT(status, STATUS_GOOD);
+    ASSERT_EQ_INT(be32_of(cap), 0u); // NOT 0xFFFFFFFF
+    ASSERT_EQ_INT(be32_of(cap + 4), 2048);
+    scsi_delete(scsi);
+    unlink(tiny);
+}
+
 int main(void) {
     make_disk();
     RUN(test_write_in_range_lands);
@@ -839,6 +972,11 @@ int main(void) {
     RUN(format_unit_without_fmtdata_takes_no_data_phase);
     RUN(format_unit_with_fmtdata_takes_the_header_then_the_list);
     RUN(format_unit_with_an_empty_defect_list_ends_at_the_header);
+    RUN(read_capacity_reports_the_last_block);
+    RUN(an_emptied_hard_disk_is_not_ready);
+    RUN(test_unit_ready_says_no_when_there_is_no_medium);
+    RUN(an_empty_cd_bay_still_speaks_sony);
+    RUN(a_medium_smaller_than_a_block_does_not_underflow);
     unlink(g_path);
     printf("All scsi_bounds tests passed\n");
     return 0;

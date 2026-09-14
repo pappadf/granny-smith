@@ -385,6 +385,18 @@ static bool scsi_cmd_needs_medium(uint8_t opcode) {
     }
 }
 
+// Which "there is no medium" code does THIS device speak?
+//
+// The CD-ROM we advertise is a SONY CDU-8002, and its manual's NOT READY (2h)
+// table has no 0x3A at all -- an empty bay is the vendor code 0xB0, "Caddy not
+// inserted in drive" (CDU-541 manual, sense code tables), which is what Apple's
+// CD-ROM driver was written to expect.  Every other device type gets the
+// standard code: X3.131-1994 table 71 lists 3Ah MEDIUM NOT PRESENT for device
+// types "DTL WRSOM", direct-access among them.
+static uint8_t scsi_no_medium_asc(const scsi_t *scsi, int target) {
+    return scsi->devices[target].type == scsi_dev_cdrom ? ASC_SONY_CADDY_NOT_INSERTED : ASC_MEDIUM_NOT_PRESENT;
+}
+
 // Return CHECK CONDITION, setting sense data on the current target
 void scsi_check_condition(scsi_t *scsi, uint8_t sense_key, uint8_t asc, uint8_t ascq) {
     scsi_set_sense(scsi, scsi->bus.target, sense_key, asc, ascq);
@@ -496,11 +508,17 @@ void run_cmd(scsi_t *scsi) {
         return;
     }
 
-    // An empty CD bay is a real device on the bus with no disc in it: fail
-    // every command that needs the medium, before any of them reach for the
-    // absent image.  A machine with a CD bay carries the drive from power-on
-    // (system_create), so this is the ordinary state between discs, not an
-    // error path.
+    // A device on the bus with no medium in it: fail every command that needs
+    // the medium, before any of them reach for the absent image.  A machine
+    // with a CD bay carries the drive from power-on (system_create), so for a
+    // CD-ROM this is the ordinary state between discs, not an error path.
+    //
+    // This used to test `type == scsi_dev_cdrom`, and every other device type
+    // walked straight past it.  scsi.devices[N].eject() takes any ID, not just
+    // a CD-ROM's, so a hard disk could be left with medium_present false and no
+    // image -- and then TEST UNIT READY answered GOOD ("are you ready?" "yes")
+    // while READ CAPACITY divided a size of zero and reported 0xFFFFFFFF as the
+    // last block, four billion of them, also with GOOD (03-scsi F-40).
     //
     // START UNIT joins them, and only in its START form (CDB byte 4 bit 0 —
     // stopping or ejecting an empty drive is fine): a drive with no disc
@@ -512,10 +530,10 @@ void run_cmd(scsi_t *scsi) {
     // recovers from — the machine stalls at `cd` and never reaches the
     // diagnostic floppy.  Told NOT READY, it reads the sense, gives up on
     // the empty drive and boots the floppy, which is what the hardware does.
-    if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
+    if (!scsi->devices[target].medium_present) {
         bool start_unit = scsi->cmd.opcode == CMD_START_STOP_UNIT && (scsi->buf.data[4] & 0x01) != 0;
         if (start_unit || scsi_cmd_needs_medium(scsi->cmd.opcode)) {
-            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
+            scsi_check_condition(scsi, SENSE_NOT_READY, scsi_no_medium_asc(scsi, target), 0x00);
             return;
         }
     }
@@ -524,9 +542,14 @@ void run_cmd(scsi_t *scsi) {
 
     case CMD_TEST_UNIT_READY:
         LOG(1, "command: TEST UNIT READY");
-        // Check if medium is present for CD-ROM
-        if (scsi->devices[target].type == scsi_dev_cdrom && !scsi->devices[target].medium_present) {
-            scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
+        // The whole point of the command is to report readiness, so it is not
+        // in scsi_cmd_needs_medium (a drive with no medium must still ANSWER)
+        // and carries its own check.  X3.131-1994 S9.1.3: a direct-access
+        // device "is ready when medium access commands can be executed", and
+        // one with no volume mounted "normally returns CHECK CONDITION status
+        // and sets the sense key to NOT READY".
+        if (!scsi->devices[target].medium_present) {
+            scsi_check_condition(scsi, SENSE_NOT_READY, scsi_no_medium_asc(scsi, target), 0x00);
         } else {
             phase_status(scsi, STATUS_GOOD);
         }
@@ -1100,14 +1123,34 @@ void run_cmd(scsi_t *scsi) {
         // discontinuity; for a flat disk image that's the device's last LBA,
         // identical to PMI=0.  Don't assert on guest-supplied PMI — a
         // well-formed initiator may legitimately set it.
+        //
+        // X3.131-1994 S9.2.7 also requires a rejection this does NOT do: "if
+        // the PMI bit is zero and the logical block address is not zero, the
+        // target shall return a CHECK CONDITION status ... ILLEGAL FIELD IN
+        // CDB".  That rule is SCSI-2's.  X3.131-1986 S8.2.1 states the same
+        // constraint on the initiator -- "the logical block address in the
+        // command descriptor block shall be set to zero for this option" --
+        // and prescribes no penalty, and these drives report ANSI version 01h
+        // in their INQUIRY data.  Enforcing a SCSI-2 rule on a SCSI-1 drive is
+        // the anachronism that F-38 and F-39 each had to back out of.
         image_t *image = scsi->device_images[target];
         uint16_t blk_sz = scsi->devices[target].block_size;
         size_t sz = disk_size(image) / blk_sz;
 
         phase_data_in(scsi, 8);
-        // memcpy through uint8_t* to dodge strict-aliasing UB; gcc/clang fold
-        // constant-size memcpy to a single MOV.
-        uint32_t last_lba = BE32((uint32_t)sz - 1);
+        // The data is the address of the LAST block, so a block count has to
+        // lose one -- and an unsigned zero that loses one is 0xFFFFFFFF, four
+        // billion blocks of disk that is not there, reported with GOOD.
+        //
+        // The empty-drive route into this is closed by the medium gate above,
+        // but that gate can never close the OTHER one: an image SMALLER than a
+        // block divides to zero with the medium genuinely present.  A 1536-byte
+        // file attaches as a CD-ROM today -- 1536 / 2048 == 0 -- and asks this
+        // question with medium_present true.  There is no honest last-block
+        // address for a medium with no blocks, so report block zero: it claims
+        // the least that can be claimed, and every read of it is refused by the
+        // range check anyway (03-scsi F-40).
+        uint32_t last_lba = BE32(sz > 0 ? (uint32_t)sz - 1 : 0u);
         uint32_t be_blk_sz = BE32((uint32_t)blk_sz);
         memcpy(scsi->buf.data, &last_lba, 4);
         memcpy(scsi->buf.data + 4, &be_blk_sz, 4);

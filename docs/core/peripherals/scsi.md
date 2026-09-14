@@ -621,7 +621,20 @@ payloads.  Multi-byte numeric fields are big-endian.
 * CDB: `00 | (lun<<5) | 00 | 00 | 00 | 00`
 * Phases: COMMAND → STATUS → MESSAGE IN.
 * Status: GOOD if ready; CHECK CONDITION with sense NOT READY when
-  spun down / media absent.
+  media is absent — on **any** device type, not just the CD-ROM.
+
+The additional sense code depends on the device, because the codes
+themselves do (see §8.7):
+
+| Device   | ASC    | Meaning                        |
+|----------|--------|--------------------------------|
+| CD-ROM   | `0xB0` | Caddy not inserted in drive    |
+| anything else | `0x3A` | MEDIUM NOT PRESENT        |
+
+The command is deliberately *not* on the "needs medium" list that
+fails other commands before they run — reporting readiness is the one
+thing a drive with no medium must still do — so it carries its own
+check.
 
 #### REQUEST SENSE — `0x03` (6)
 
@@ -699,6 +712,32 @@ Pages of interest:
 
 * CDB: `25 00 00 00 00 00 00 00 00 00`
 * Data (8 bytes): last_lba (4, BE), block_length (4, BE).
+
+The returned value is the address of the **last** block, so it is the
+block count minus one — and a count of zero must not be allowed to
+wrap.  A medium smaller than a single block reports last block `0`
+rather than `0xFFFFFFFF`; there is no honest last-block address for a
+medium with no blocks, and every read of block 0 is refused by the
+range check regardless.  (This is reachable with the medium genuinely
+present: a 1536-byte file attaches as a CD-ROM, and 1536 / 2048 is 0.)
+
+**PMI is accepted and ignored**, and byte 2–5 with it.  X3.131-1994
+§9.2.7 requires CHECK CONDITION / ILLEGAL FIELD IN CDB when PMI is
+zero and that address is not — but that rule is SCSI-2's.  X3.131-1986
+§8.2.1 states the same constraint on the *initiator* and prescribes no
+penalty, and these drives report ANSI version `0x01`.  Enforcing it
+would describe a drive we are not emulating.
+
+#### §8.7 note — "no medium" is not one code
+
+Whether a device has a medium is tracked per device (`medium_present`),
+and every command that needs one is failed before it can reach for the
+absent image.  This applies to **all** device types.  Before
+2026-09-14 the check tested for a CD-ROM specifically, and any other
+device walked past it: a hard disk emptied through
+`scsi.devices[N].eject()` answered TEST UNIT READY with GOOD and
+READ CAPACITY with `0xFFFFFFFF` — four billion blocks — also with
+GOOD.
 
 #### START STOP UNIT — `0x1B`
 

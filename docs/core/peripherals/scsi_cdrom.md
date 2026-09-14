@@ -116,7 +116,9 @@ For data-only disc emulation (no audio CD playback), these commands should retur
 
 **Behavior:**
 - UNIT ATTENTION pending → CHECK CONDITION (see section 6)
-- No media → CHECK CONDITION, sense key NOT READY (`0x02`), ASC `0x3A` MEDIUM NOT PRESENT
+- No media → CHECK CONDITION, sense key NOT READY (`0x02`), ASC `0xB0` **Caddy not
+  inserted in drive** — the Sony vendor code, not `0x3A`.  §7 has always said so;
+  this line said `0x3A` until 2026-09-14 and contradicted it.
 - Media present and ready → STATUS GOOD
 
 ### 3.2 REQUEST SENSE — `0x03` (6 bytes)
@@ -308,7 +310,7 @@ Where byte 4: bit 1 = LoEj (Load/Eject), bit 0 = Start.
 | 0 | 1 | Eject disc |
 | 1 | 1 | Load disc (no-op for emulator) |
 
-**Eject:** If medium removal is prevented (via PREVENT/ALLOW MEDIUM REMOVAL), return CHECK CONDITION with ILLEGAL REQUEST. Otherwise, detach the image and set UNIT ATTENTION with ASC `0x3A` MEDIUM NOT PRESENT for subsequent commands.
+**Eject:** If medium removal is prevented (via PREVENT/ALLOW MEDIUM REMOVAL), return CHECK CONDITION with ILLEGAL REQUEST and ASC `0x80` PREVENT BIT SET. Otherwise, detach the image. Removal raises **no** UNIT ATTENTION — the CDU-541 manual §4.1.3 lists four causes and removal is not among them, and its UNIT ATTENTION table has no code for it. An empty bay is a persistent NOT READY / `0xB0` state instead, which is the point: a UNIT ATTENTION is a one-shot cleared by the first CHECK CONDITION. (Corrected 2026-09-14; this said `0x3A` and a unit attention, and both were wrong.)
 
 **Note:** The physical eject button on real AppleCD SC Plus hardware only works with Apple II computers. On Macintosh, ejection is exclusively software-controlled.
 
@@ -966,7 +968,7 @@ Attach a CD-ROM image to the SCSI bus. Default SCSI ID is 3. The image is opened
 
 ### 10.3 `cdrom eject [id]`
 
-Eject the CD-ROM at the specified SCSI ID (default 3). Sets UNIT ATTENTION with ASC `0x3A` MEDIUM NOT PRESENT. Fails if medium removal is prevented.
+Eject the medium at the specified SCSI ID (default 3). Fails if medium removal is prevented. Raises no UNIT ATTENTION — see §3.9. The method takes any SCSI ID, not only a CD-ROM's, so it doubles as "detach this disk"; the emptied device then answers NOT READY in its own vocabulary (`0xB0` for a CD-ROM, `0x3A` for anything else).
 
 ### 10.4 `cdrom info [id]`
 
