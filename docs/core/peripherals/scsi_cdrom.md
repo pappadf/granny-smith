@@ -116,7 +116,9 @@ For data-only disc emulation (no audio CD playback), these commands should retur
 
 **Behavior:**
 - UNIT ATTENTION pending → CHECK CONDITION (see section 6)
-- No media → CHECK CONDITION, sense key NOT READY (`0x02`), ASC `0x3A` MEDIUM NOT PRESENT
+- No media → CHECK CONDITION, sense key NOT READY (`0x02`), ASC `0xB0` **Caddy not
+  inserted in drive** — the Sony vendor code, not `0x3A`.  §7 has always said so;
+  this line said `0x3A` until 2026-09-14 and contradicted it.
 - Media present and ready → STATUS GOOD
 
 ### 3.2 REQUEST SENSE — `0x03` (6 bytes)
@@ -180,11 +182,51 @@ Where `pc_page` byte encodes: bits 7-6 = Page Control (PC), bits 5-0 = Page Code
 
 **The block descriptor must always be present**, regardless of the DBD bit in the CDB. A/UX does not set DBD and expects the descriptor. Omitting it causes A/UX to fail during SCSI bus enumeration.
 
-**Page Control (PC) values:**
-- `0x00` — Current values
-- `0x01` — Changeable values (return bitmask of modifiable fields)
-- `0x02` — Default values
-- `0x03` — Saved values (not supported — return CHECK CONDITION, ILLEGAL REQUEST)
+**Page Control (PC) values**, from the CDU-541 manual Table 5-5 — *not* the
+generic SCSI-2 table, which differs on the last row:
+
+| DB(7) | DB(6) | PC | Type of Parameter Values |
+| --- | --- | --- | --- |
+| 0 | 0 | `0x00` | Current values |
+| 0 | 1 | `0x01` | Changeable values |
+| 1 | 0 | `0x02` | Default values |
+| 1 | 1 | `0x03` | **Default values** |
+
+> **Corrected 2026-09-14.** This list previously said `0x03` was "Saved values
+> (not supported — return CHECK CONDITION, ILLEGAL REQUEST)". That is neither
+> this drive's behaviour nor, as written, any standard's: Sony, *CDU-541
+> CD-ROM Drive SCSI Interface Manual* (March 1990), Table 5-5 maps page control
+> `1 1` to Default Values.
+>
+> The two standards bracket it and neither rescues the old text. ANSI
+> X3.131-1986 (SCSI-1) has no page control field at all — mode pages and PC are
+> SCSI-2 additions. ANSI X3.131-1994 (SCSI-2) §8.2.10.4 does require a
+> rejection when saved values are unimplemented, but with additional sense code
+> **SAVING PARAMETERS NOT SUPPORTED**, not ILLEGAL VALUE IN CDB — and it does
+> not apply here, because our INQUIRY reports ANSI version `0x01`, SCSI-1, for
+> every device.
+>
+> The error was inherited by a 2026-09-03 review item that proposed
+> implementing the rejection; it would have made the model less faithful, not
+> more.
+
+**Changeable values (PC=1)**, §5.2.3.2 verbatim: "The page requested will be
+returned with the bits that are allowed to be changed set to one. Parameters
+that are not changeable will be set to zero. If any part of a field is
+changeable all bits in that field are set to one. The page descriptor as
+defined in this document will always be returned even if none of parameters are
+changeable within the page."
+
+So a page with nothing changeable is **returned with a zero body**, not omitted.
+
+**Block descriptor and PC**, §5.2.3: "The default block length is 2048 and is
+returned if default values are requested. The current block length is returned
+if current values are requested. A block length of `FFh FFh FFh` is returned if
+changeable values are requested." Block length *is* changeable on this drive
+(Table 5-4: 256, 512, 1024, 2048, 2336), which is why the changeable answer sets
+every bit rather than none. The hard-disk path answers zero there instead — its
+MODE SELECT discards the block descriptor, so its block size genuinely cannot
+be changed.
 
 **Supported mode pages:** See section 4.
 
@@ -268,7 +310,7 @@ Where byte 4: bit 1 = LoEj (Load/Eject), bit 0 = Start.
 | 0 | 1 | Eject disc |
 | 1 | 1 | Load disc (no-op for emulator) |
 
-**Eject:** If medium removal is prevented (via PREVENT/ALLOW MEDIUM REMOVAL), return CHECK CONDITION with ILLEGAL REQUEST. Otherwise, detach the image and set UNIT ATTENTION with ASC `0x3A` MEDIUM NOT PRESENT for subsequent commands.
+**Eject:** If medium removal is prevented (via PREVENT/ALLOW MEDIUM REMOVAL), return CHECK CONDITION with ILLEGAL REQUEST and ASC `0x80` PREVENT BIT SET. Otherwise, detach the image. Removal raises **no** UNIT ATTENTION — the CDU-541 manual §4.1.3 lists four causes and removal is not among them, and its UNIT ATTENTION table has no code for it. An empty bay is a persistent NOT READY / `0xB0` state instead, which is the point: a UNIT ATTENTION is a one-shot cleared by the first CHECK CONDITION. (Corrected 2026-09-14; this said `0x3A` and a unit attention, and both were wrong.)
 
 **Note:** The physical eject button on real AppleCD SC Plus hardware only works with Apple II computers. On Macintosh, ejection is exclusively software-controlled.
 
@@ -289,9 +331,18 @@ Store the prevent state per-device. When prevent=1, eject operations (START/STOP
 | 0 | Opcode `0x43` |
 | 1 | MSF bit (bit 1): 0 = LBA format, 1 = MSF format |
 | 2-5 | Reserved |
-| 6 | Starting Track/Session Number |
+| 6 | Starting Track |
 | 7-8 | Allocation Length (big-endian) |
-| 9 | Format (bits 7-6 of byte 2 in some implementations, or byte 9 bits 5-0) |
+| 9 | Control |
+
+> **Corrected 2026-09-14.** This row used to read "Format (bits 7-6 of byte 2 in
+> some implementations, or byte 9 bits 5-0)", and the code carried a
+> commented-out `format = data[2] & 0x0F` to match. **There is no format field
+> in this command.** ANSI X3.131-1994 Table 260 makes bytes 2-5 Reserved and
+> byte 9 the Control byte, and the Sony CDU-541 manual §5.2.24 agrees. Format
+> codes — and the Format 1 session info described below — are **MMC**, a later
+> standard than either authority for this drive, which reports ANSI version
+> `0x01` (SCSI-1) in INQUIRY.
 
 **Format 0 — TOC (default):**
 
@@ -329,9 +380,26 @@ Response for a single-track data disc:
 
 For data tracks: Control = `0x04` (data, no pre-emphasis, two-channel, copy prohibited). ADR = `0x01` (Q sub-channel encodes current position). Combined: `0x14`.
 
-**Format 1 — Session Info:**
+**Format 1 — Session Info:** *not applicable.* Retained here only to be
+explicitly withdrawn: this is an MMC feature reached through a format field that
+neither X3.131-1994 nor the CDU-541 manual defines for `0x43`. It is not
+implemented, and implementing it would mean adding a post-1994 feature to a
+drive that declares SCSI-1.
 
-Returns the first and last session numbers and the start address of the last session's first track. For a single-session disc, this is identical to the TOC header with the track 1 start address.
+**Starting track:** only `0x01` and `0xAA` (lead-out) can be satisfied by a
+single-session data disc; anything else is refused with CHECK CONDITION /
+ILLEGAL REQUEST / INVALID FIELD IN CDB, which both authorities require. They
+differ on **zero**: the CDU-541 manual lists it as invalid, X3.131-1994
+§14.2.11 says "if this value is zero, the table of contents data shall begin
+with the first track on the medium". We take the lenient reading, so that `0x43`
+and the Sony `0xC1` handler — which already did — answer the same question the
+same way.
+
+**TOC data length** is the length *available*, not the length transferred
+(X3.131-1994 Table 261; CDU-541 §5.2.24). It does not shrink when the allocation
+length truncates the response — that is how the initiator learns there is more
+to ask for — but it does follow the request: `0xAA` yields one descriptor, so 10
+rather than 18.
 
 **MSF conversion:** When MSF bit = 1, LBA addresses are converted to Minutes:Seconds:Frames format. The conversion from LBA to MSF (with the standard 2-second / 150-frame offset for lead-in):
 
@@ -417,8 +485,15 @@ The CDU-8002 supports five standard mode pages plus the Apple vendor page. All p
 | 0 | Page Code | `0x01` |
 | 1 | Page Length | `0x06` |
 | 2 | Error Recovery Parameter | `0x00` (max recovery, report L-EC uncorrectable only) |
-| 3 | Read Retry Count | `0x03` |
+| 3 | Read Retry Count | `0x00` |
 | 4-7 | Reserved | `0x00` |
+
+> **Corrected 2026-09-14.** This said `0x03`, and the code emitted `0x01`.
+> Neither is the drive's. §5.3.1.1, in prose because Table 5-33 is a scanned
+> image: "The read retry count field specifies the number of times that the
+> controller will attempt its read recovery algorithm. **The default value is
+> zero.**" A 2026-09-03 review item proposed changing the code to match the `3`
+> here, which would have replaced one wrong value with another.
 
 The error recovery parameter byte encodes a combination of TB, RC, PER, DTE, and DCR bits per the Sony CDU-541 manual. For emulation, the default (`0x00`) means maximum error recovery with only uncorrectable errors reported.
 
@@ -450,10 +525,19 @@ Return all zeros — the emulator does not disconnect/reconnect.
 | 0 | Page Code | `0x07` |
 | 1 | Page Length | `0x06` |
 | 2 | Error Recovery Parameter | `0x00` |
-| 3 | Verify Retry Count | `0x03` |
+| 3 | Verify Retry Count | `0x00` |
 | 4-7 | Reserved | `0x00` |
 
-Same structure as page 0x01 but for VERIFY command error handling.
+Same structure as page 0x01 but for VERIFY command error handling — §5.3.1.3:
+"The implementation of error recovery procedures for verification operations is
+the same as for read operations on CD-ROM devices."
+
+> **Inferred, not read.** Table 5-41 is a scanned image in the OCR, so the field
+> layout above comes from that sentence plus page 0x01's table, not from the
+> page 0x07 table itself. ANSI X3.131-1994 (SCSI-2) §9.3.3.8 gives page 07h a
+> parameter length of `0Ah` rather than the `06h` used here; this drive declares
+> ANSI version `0x01` (SCSI-1) in INQUIRY and predates that standard by four
+> years, so the manual's structure is followed.
 
 ### 4.4 Page 0x08 — CD-ROM Parameters (6 bytes)
 
@@ -501,8 +585,8 @@ The Immd bit controls whether audio play commands return status immediately (Imm
 |------|-------|-------|
 | 0 | Page Code | `0x30` |
 | 1 | Page Length | `0x1E` (30 bytes) |
-| 2-24 | Identification String | `"APPLE COMPUTER, INC   "` (23 bytes ASCII) |
-| 25-31 | Zero Padding | `0x00` x 7 |
+| 2-23 | Identification String | `"APPLE COMPUTER, INC   "` (22 bytes ASCII) |
+| 24-31 | Zero Padding | `0x00` x 8 |
 
 ASCII hex of the identification string: `41 50 50 4C 45 20 43 4F 4D 50 55 54 45 52 2C 20 49 4E 43 20 20 20`.
 
@@ -513,11 +597,40 @@ ASCII hex of the identification string: `41 50 50 4C 45 20 43 4F 4D 50 55 54 45 
 
 This page is the **primary authentication gate** for the Apple CD-ROM driver. Beyond the INQUIRY whitelist, the driver sends MODE SENSE for page 0x30 and verifies the Apple identification string. Drives that fail this check are rejected by the driver.
 
+> **Unverified, and unexercised.** Nothing in this tree requests this page.
+> Instrumenting the emitter across `se30-cdrom` and `iici-cdrom-boot` counts
+> **zero** calls, which is consistent with the historical note below: our
+> CD-ROM images predate the mechanism. The byte string above therefore rests on
+> the same footing as the rest of this section — reconstruction, not a cited
+> source — and no test would notice if it were wrong.
+>
+> The hard-disk path emits a **different** string: `"APPLE COMPUTER, INC."`,
+> 20 bytes with a trailing period, in a 20-byte page. That one *is* exercised —
+> HD SC Setup requests it four times during `se30-format-hd`. The two are not
+> known to be the same string and are deliberately not forced to agree; see
+> `scsi_build_apple_page_30()` in `scsi_bus.c`.
+
 **Historical note:** The real CDU-8002 (SCSI-1 era, 1991) may predate this mechanism — the Sony CDU-541 manual does not document page 0x30, and early Apple drivers relied solely on INQUIRY product strings. However, later Apple drivers (System 7.5+) request page 0x30 from all drives, and we implement it for broad compatibility. This rationale should be noted in a code comment.
 
 ### 4.7 Page 0x3F — Return All Pages
 
-When page code `0x3F` is requested, concatenate all supported pages (0x01, 0x02, 0x07, 0x08, 0x09, 0x30) in ascending order after the mode parameter header and block descriptor.
+When page code `0x3F` is requested, concatenate all supported pages (0x01, 0x02,
+0x07, 0x08, 0x09, 0x30) in ascending order after the mode parameter header and
+block descriptor. §5.2.3: "If the page code is 3Fh, all implemented pages are
+requested to be returned by the controller. The pages are returned in ascending
+order."
+
+The drive's own list is **Table 5-47**: `01h, 02h, 07h, 08h, 09h, 3Fh`. Page
+0x30 is not in it, being Apple's vendor page rather than Sony's — but it is
+implemented here (see §5.1), and "all implemented pages" includes it. Ascending
+order puts it last.
+
+**An unimplemented page code is an error, not an empty answer.** §5.2.3: "If the
+page code specified is not implemented the command will be terminated with a
+CHECK CONDITION status. The sense key will be set to ILLEGAL REQUEST and the
+additional sense code set to ILLEGAL VALUE IN CDB." Page code `0x00` is the
+exception the code keeps: SCSI-2 defines `00h` as the vendor-specific page, and
+it is answered with the header and block descriptor alone.
 
 ---
 
@@ -593,46 +706,105 @@ The sense buffer is populated when a command terminates with CHECK CONDITION sta
 
 ### 6.3 Additional Sense Codes (ASC/ASCQ)
 
-| ASC | ASCQ | Meaning | Context |
-|-----|------|---------|---------|
-| `0x20` | `0x00` | Invalid Command Operation Code | Unsupported opcode |
-| `0x21` | `0x00` | Logical Block Address Out of Range | LBA exceeds capacity |
-| `0x24` | `0x00` | Invalid Field in CDB | Bad parameter in command |
-| `0x26` | `0x00` | Invalid Field in Parameter List | Bad MODE SELECT data |
-| `0x27` | `0x00` | Write Protected | Write to CD-ROM |
-| `0x28` | `0x00` | Not Ready to Ready Change | Media inserted (UNIT ATTENTION) |
-| `0x29` | `0x00` | Power On, Reset, or Bus Device Reset | Power-on/reset (UNIT ATTENTION) |
-| `0x2A` | `0x00` | Parameters Changed | MODE SELECT from another initiator |
-| `0x30` | `0x00` | Incompatible Medium Installed | Wrong disc type |
-| `0x3A` | `0x00` | Medium Not Present | No disc in drive |
-| `0x53` | `0x02` | Medium Removal Prevented | Eject while locked |
-| `0x64` | `0x00` | Illegal Mode for This Track | Data command on audio track (or vice versa) |
+The drive we advertise is a `SONY CD-ROM CDU-8002`, so the codes below are the
+CDU-541 manual's (§5.4, Tables 5-48 and 5-49), reproduced by sense key. They are
+**not** the SCSI-2 set. Where the two differ the drive's own value is what a
+period driver expects, because Apple's CD-ROM driver was written against these
+drives.
 
-**Additional CDU-8002-specific ASCs** (documented in Sony CDU-541 manual, not yet implemented but reserved for future use):
+Codes at `0x80` and above are Sony vendor codes. Several conditions that SCSI-2
+gives a standard number live only in that vendor range here — an empty bay is
+`0xB0`, not `0x3A`; a refused eject is `0x80`, not `0x53/0x02`.
 
-| ASC | ASCQ | Meaning | Context |
-|-----|------|---------|--------|
-| `0x04` | `0x00` | Logical Unit Not Ready | TOC read in progress |
-| `0x57` | `0x00` | Unable to Recover TOC | TOC unreadable |
-| `0x63` | `0x00` | End of User Area Encountered on This Track | Read past track boundary |
-| `0xB9` | `0x00` | Audio Play Operation Aborted | Audio address not valid |
-| `0x4E` | `0x00` | Overlapped Commands Attempted | Command while previous still executing |
+| Sense key | ASC | Meaning |
+|-----------|-----|---------|
+| NO SENSE (0h) | `0x00` | No additional sense information |
+| RECOVERED ERROR (1h) | `0x17` | CIRC recovered data error |
+| | `0x18` | L-EC recovered data error |
+| NOT READY (2h) | `0x04` | Unit off line |
+| | `0xB0` | Caddy not inserted in drive |
+| | `0xB1` | Unable to recover TOC |
+| | `0xB2` | Caddy load/eject failed |
+| | `0xB7` | TOC read in progress |
+| MEDIUM ERROR (3h) | `0x02` | Error occurred during seek operation |
+| | `0x11` | L-EC uncorrectable data error (L-EC on) |
+| | `0xB3` | CIRC unrecovered data error (L-EC off) |
+| HARDWARE ERROR (4h) | `0x08` | Logical unit communication failure |
+| | `0x09` | Tracking servo failure |
+| | `0x10` | Controller data buffer failure |
+| | `0x11` | Data path failure (Sony bus data error) |
+| | `0x12` | Power on failure |
+| | `0x13` | Internal controller failure |
+| | `0x14` | Interface parity error |
+| | `0xB4` | Focus servo failure |
+| | `0xB5` | Spindle servo failure |
+| | `0xB6` | Caddy load mechanism failed |
+| ILLEGAL REQUEST (5h) | `0x20` | Invalid command operation code |
+| | `0x21` | Logical block address not valid |
+| | `0x22` | Illegal function for CD-ROM |
+| | `0x24` | Illegal value in CDB (other than opcode or LBA) |
+| | `0x25` | Invalid logical unit number |
+| | `0x26` | Invalid field in parameter list |
+| | `0x80` | Prevent bit is set |
+| | `0x81` | Logical unit is reserved |
+| | `0x82` | End of user area encountered on this track |
+| | `0x84` | Illegal mode for this track |
+| | `0x85` | Audio address not valid |
+| UNIT ATTENTION (6h) | `0x28` | Not ready to ready transition (caddy inserted) |
+| | `0x29` | Power on, reset or BUS DEVICE RESET occurred |
+| | `0x2A` | Mode select parameters changed |
+| ABORTED COMMAND (Bh) | `0x43` | Unsuccessful message retry |
+| | `0x45` | Reselect failure |
+| | `0x48` | Initiator detected error |
+| | `0x49` | Message out error |
+| | `0x83` | Overlapped commands attempted |
+
+ASCQ is `0x00` throughout — the CDU-541 reports only byte 12 of the sense data
+and does not qualify these with byte 13.
+
+Codes we do not currently emit (`0x22`, `0x25`, `0x81`, `0x82`, `0x84`, `0x85`,
+the servo and hardware-failure set, and the whole ABORTED COMMAND group) are
+listed for completeness; they belong to conditions this model does not simulate.
+
+> **History.** This table previously reproduced the SCSI-2 set, including
+> `0x53/0x02` MEDIUM REMOVAL PREVENTED and `0x3A` MEDIUM NOT PRESENT, and
+> carried a block of five "CDU-8002-specific" codes (`0x04` TOC read in
+> progress, `0x57`, `0x63`, `0xB9`, `0x4E`) attributed to the CDU-541 manual.
+> None of the five is that manual's value for the condition named. The wrong
+> table was not merely inert: it is where the code's `0x3A`-on-refused-eject
+> (F-09) and `0x3A`-on-empty-bay (F-08) came from.
 
 ### 6.4 UNIT ATTENTION
 
-UNIT ATTENTION is a per-initiator condition. It is set on:
+UNIT ATTENTION is a per-initiator condition. The drive we advertise is a
+`SONY CD-ROM CDU-8002`, so the authority is the Sony CDU-541 SCSI manual
+§4.1.3, which names exactly four causes:
 
-1. **Power-on / reset:** ASC/ASCQ `0x29/0x00`
-2. **Media change (insert):** ASC/ASCQ `0x28/0x00`
-3. **Media removal:** ASC/ASCQ `0x3A/0x00`
+1. **Power-on:** ASC/ASCQ `0x29/0x00`
+2. **Reset (or BUS DEVICE RESET):** ASC/ASCQ `0x29/0x00`
+3. **Media change (insertion of a caddy with successful TOC recovery):**
+   ASC/ASCQ `0x28/0x00`
 4. **MODE SELECT from another initiator:** ASC/ASCQ `0x2A/0x00`
+
+**Media removal is NOT a unit attention condition.** It appears in neither
+§4.1.3's list of causes nor the drive's UNIT ATTENTION (6h) sense-code table,
+which holds only `0x28`, `0x29` and `0x2A`. An empty bay is a *persistent*
+NOT READY (2h) state — the CDU-541 reports vendor code `0xB0`, "Caddy not
+inserted in drive"; `0x3A` MEDIUM NOT PRESENT does not appear anywhere in this
+drive's tables. The distinction matters beyond the code: a unit attention is a
+one-shot cleared by the first CHECK CONDITION, so modelling removal as one
+lets the *second* command after an eject succeed against an empty drive.
 
 **Clearing behavior:**
 - The condition persists until the initiator sends a command that receives CHECK CONDITION
 - If the next command from that initiator is REQUEST SENSE, the UNIT ATTENTION sense key is returned and the condition is cleared
 - If any other command is received, CHECK CONDITION is returned and the condition is cleared
 - **INQUIRY does not clear UNIT ATTENTION** — it executes normally with the condition still pending
-- **START/STOP UNIT with LoEj=1** does not clear UNIT ATTENTION — it executes normally
+- **START/STOP UNIT with LoEj=1** does not clear UNIT ATTENTION — it executes
+  normally (§4.1.3). This is a Sony extension: ANSI X3.131-1986 §6.1.3 exempts
+  only INQUIRY and REQUEST SENSE, and says any other command "shall not be
+  performed". Without the carve-out, ejecting a disc that was only just
+  inserted fails, swallowed by the insert's own pending attention.
 
 **Priority (when multiple conditions pending):**
 1. Power on / reset (highest)
@@ -796,7 +968,7 @@ Attach a CD-ROM image to the SCSI bus. Default SCSI ID is 3. The image is opened
 
 ### 10.3 `cdrom eject [id]`
 
-Eject the CD-ROM at the specified SCSI ID (default 3). Sets UNIT ATTENTION with ASC `0x3A` MEDIUM NOT PRESENT. Fails if medium removal is prevented.
+Eject the medium at the specified SCSI ID (default 3). Fails if medium removal is prevented. Raises no UNIT ATTENTION — see §3.9. The method takes any SCSI ID, not only a CD-ROM's, so it doubles as "detach this disk"; the emptied device then answers NOT READY in its own vocabulary (`0xB0` for a CD-ROM, `0x3A` for anything else).
 
 ### 10.4 `cdrom info [id]`
 

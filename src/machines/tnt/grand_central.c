@@ -484,7 +484,7 @@ uint8_t tnt_gc_read8(config_t *cfg, uint32_t offset) {
         // Absent on the Network Servers (board delta #4): the aperture
         // decodes nothing, so it falls through to the open-bus log.
         if (tnt_board(cfg)->has_mesh)
-            return tnt_mesh_read(cfg, offset - OFF_MESH);
+            return mesh_read(tnt_st(cfg)->mesh, offset - OFF_MESH);
         LOG(1, "byte read of the absent MESH aperture +$%05X", offset);
         return 0;
     default:
@@ -549,7 +549,7 @@ void tnt_gc_write8(config_t *cfg, uint32_t offset, uint8_t value) {
         return;
     case OFF_MESH:
         if (tnt_board(cfg)->has_mesh)
-            tnt_mesh_write(cfg, offset - OFF_MESH, value);
+            mesh_write(tnt_st(cfg)->mesh, offset - OFF_MESH, value);
         else
             LOG(1, "byte write of the absent MESH aperture +$%05X = $%02X", offset, value);
         return;

@@ -151,10 +151,10 @@ static void sym825_unstack_sist(sym53c8xx_t *s) {
     // cause and the stacked one merged, which no real transaction can return.
     if (s->reg_access_depth)
         return;
-    if (s->sist0 || s->sist1 || !(s->sist0_stacked | s->sist1_stacked))
+    if (s->reg[SYM825_SIST0] || s->reg[SYM825_SIST1] || !(s->sist0_stacked | s->sist1_stacked))
         return;
-    s->sist0 = s->sist0_stacked;
-    s->sist1 = s->sist1_stacked;
+    s->reg[SYM825_SIST0] = s->sist0_stacked;
+    s->reg[SYM825_SIST1] = s->sist1_stacked;
     s->sist0_stacked = 0;
     s->sist1_stacked = 0;
 }
@@ -218,7 +218,7 @@ static uint8_t dfifo_pop(sym53c8xx_t *s) {
     return v;
 }
 
-static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
+uint8_t sym53c8xx_reg_read(sym53c8xx_t *s, uint32_t reg) {
     switch (reg) {
     case SYM825_CTEST1:
         return dfifo_ctest1(s);
@@ -228,25 +228,26 @@ static uint8_t sym825_reg_read(sym53c8xx_t *s, uint32_t reg) {
         // The summary register: DIP and SIP are live views of whether the
         // DMA and SCSI cause registers hold anything, never stored state.
         return (uint8_t)((s->reg[SYM825_ISTAT] & ~(SYM825_ISTAT_DIP | SYM825_ISTAT_SIP)) |
-                         (s->dstat ? SYM825_ISTAT_DIP : 0u) | ((s->sist0 | s->sist1) ? SYM825_ISTAT_SIP : 0u));
+                         (s->reg[SYM825_DSTAT] ? SYM825_ISTAT_DIP : 0u) |
+                         ((s->reg[SYM825_SIST0] | s->reg[SYM825_SIST1]) ? SYM825_ISTAT_SIP : 0u));
     case SYM825_DSTAT: {
         // Read-to-clear.  DFE (DMA FIFO empty) is a live condition and is
         // not part of the latched cause, so it survives the read.
-        uint8_t v = (uint8_t)(s->dstat | (dfifo_all_empty(s) ? SYM825_DSTAT_DFE : 0u));
-        s->dstat = 0;
+        uint8_t v = (uint8_t)(s->reg[SYM825_DSTAT] | (dfifo_all_empty(s) ? SYM825_DSTAT_DFE : 0u));
+        s->reg[SYM825_DSTAT] = 0;
         sym53c8xx_update_irq(s);
         return v;
     }
     case SYM825_SIST0: {
-        uint8_t v = s->sist0;
-        s->sist0 = 0;
+        uint8_t v = s->reg[SYM825_SIST0];
+        s->reg[SYM825_SIST0] = 0;
         sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
         return v;
     }
     case SYM825_SIST1: {
-        uint8_t v = s->sist1;
-        s->sist1 = 0;
+        uint8_t v = s->reg[SYM825_SIST1];
+        s->reg[SYM825_SIST1] = 0;
         sym825_unstack_sist(s);
         sym53c8xx_update_irq(s);
         return v;
@@ -299,7 +300,7 @@ static void sym825_scntl1_write(sym53c8xx_t *s, uint8_t value) {
     sym53c8xx_bus_reset(s);
 }
 
-static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
+void sym53c8xx_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value, bool from_script) {
     switch (reg) {
     case SYM825_CTEST3:
         // CLF (bit 2) empties the DMA FIFO; the bit is a strobe and reads
@@ -317,6 +318,14 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         sym825_scntl1_write(s, value);
         return;
     case SYM825_ISTAT: {
+        // SRST and ABRT below re-enter chip_reset/abort, and the engine-start
+        // strobes further down re-enter sym53c8xx_start.  All three are
+        // reachable from exec_read_write/exec_load_store, i.e. from INSIDE
+        // sym53c8xx_run's dispatch loop, where restarting or resetting the
+        // engine underneath itself is not something the part does -- it is
+        // already running.  A script-side write records the bits and stops
+        // there; the host keeps the side effects.
+
         // INTF is write-ONE-to-clear, and it is the one bit here a driver
         // acknowledges rather than sets: a plain store of the value it just
         // read would re-arm the very interrupt it is dismissing.
@@ -326,7 +335,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         s->reg[reg] = (uint8_t)((value & (uint8_t)~SYM825_ISTAT_INTF) | intf);
         // A software reset clears the chip but not the PCI header (that is
         // RST#'s job) — SRST is self-clearing.
-        if (value & SYM825_ISTAT_SRST) {
+        if ((value & SYM825_ISTAT_SRST) && !from_script) {
             LOG(2, "software reset (ISTAT SRST)");
             sym53c8xx_chip_reset(s);
             return;
@@ -338,7 +347,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         // recovery has nothing to act on, and whatever the chip was doing
         // lands later, against a command the driver has already given up
         // on and freed.
-        if (value & SYM825_ISTAT_ABRT) {
+        if ((value & SYM825_ISTAT_ABRT) && !from_script) {
             LOG(2, "ch%d: ABRT — the driver is abandoning the current operation", s->channel);
             sym53c8xx_abort(s);
             return;
@@ -348,7 +357,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         // Reselect: setting it is how the CPU tells an idle engine it has
         // work.  The instruction is re-executed, sees the bit, clears it
         // and takes its alternate address — the whole point of parking.
-        if ((value & SYM825_ISTAT_SIGP) && s->waiting_reselect)
+        if ((value & SYM825_ISTAT_SIGP) && s->waiting_reselect && !from_script)
             sym53c8xx_start(s);
         return;
     }
@@ -363,7 +372,7 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         // fetch.  The status MUST change synchronously with this write —
         // the DBDMA lesson, transplanted: a driver's first `while (running)`
         // loop hangs with no diagnostic otherwise.
-        if (value & SYM825_DCNTL_STD)
+        if ((value & SYM825_DCNTL_STD) && !from_script)
             sym53c8xx_start(s);
         return;
     case SYM825_DSP + 3:
@@ -372,7 +381,8 @@ static void sym825_reg_write(sym53c8xx_t *s, uint32_t reg, uint8_t value) {
         // eight bits begins execution of SCSI SCRIPTS").  The register file
         // is little-endian within the chip, so byte 3 is the top.
         s->reg[reg] = value;
-        sym53c8xx_start(s);
+        if (!from_script)
+            sym53c8xx_start(s);
         return;
     default:
         s->reg[reg] = value;
@@ -396,7 +406,7 @@ static uint8_t regs_read8(void *ctx, uint32_t offset) {
         LOG(3, "read above the implemented register file +$%02X -> 0", offset);
         return 0;
     }
-    uint8_t v = sym825_reg_read(s, offset);
+    uint8_t v = sym53c8xx_reg_read(s, offset);
     LOG(5, "ch%d read +$%02X -> $%02X", s->channel, offset, v);
     return v;
 }
@@ -408,7 +418,7 @@ static void regs_write8(void *ctx, uint32_t offset, uint8_t value) {
         return;
     }
     LOG(5, "ch%d write +$%02X = $%02X", s->channel, offset, value);
-    sym825_reg_write(s, offset, value);
+    sym53c8xx_reg_write(s, offset, value, false);
 }
 
 // Wider accesses decompose in BUS order — big-endian, MSB at the lowest

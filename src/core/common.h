@@ -37,6 +37,29 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
     ((cond) ? (void)0 : gs_assert_fail(#cond, __FILE__, __LINE__, __func__, (fmt), ##__VA_ARGS__))
 #endif
 
+// The guest asked for something the hardware being emulated really does, and
+// this emulator has not implemented it.
+//
+// NOT an assert, and deliberately NOT compiled out by GS_FAST.  An assert says
+// "this cannot happen" and earns its removal from the shipping build because a
+// correct program never trips one.  This says "this can happen, it is legal,
+// and we cannot do it" -- a statement that is just as true in the release
+// build, and more useful there, because that is the build a user is running
+// when they find the gap.
+//
+// It is also not a guest-facing error.  Answering the guest -- a SCSI CHECK
+// CONDITION, a bus error, a NAK -- claims the request was wrong when it was
+// not, and sends whoever is debugging it to look at the driver.  Fault at the
+// host, name the missing function, and stop.
+//
+// Handled rather than fatal: gs_unimplemented_fail prints the banner and the
+// same diagnostics an assertion does, then stops the scheduler and returns
+// control to the shell.  A dead browser tab tells a user less than a stopped
+// machine with a message does.
+void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...);
+
+#define GS_UNIMPLEMENTED(fmt, ...) gs_unimplemented_fail(__FILE__, __LINE__, __func__, (fmt), ##__VA_ARGS__)
+
 #ifdef __cplusplus
 }
 #endif

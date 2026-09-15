@@ -79,6 +79,12 @@ static void mock_run_cdb(void) {
         uint32_t lba =
             ((uint32_t)mb.cdb[2] << 24) | ((uint32_t)mb.cdb[3] << 16) | ((uint32_t)mb.cdb[4] << 8) | mb.cdb[5];
         mock_fill_read(lba, ((uint32_t)mb.cdb[7] << 8) | mb.cdb[8]);
+    } else if (mb.cdb[0] == 0x0A) { // WRITE(6) -- the target now expects bytes
+        uint32_t tl = mb.cdb[4] ? mb.cdb[4] : 256;
+        mb.data_len = (size_t)tl * MOCK_BLOCK;
+        if (mb.data_len > sizeof(mb.data))
+            mb.data_len = sizeof(mb.data);
+        mb.phase = MB_data_out;
     } else {
         mb.phase = MB_status; // no data phase
     }
@@ -109,6 +115,13 @@ void scsi_push_data_out_byte(struct scsi *bus, uint8_t byte) {
         int need = mb.cdb[0] < 0x20 ? 6 : 10;
         if (mb.cdb_len >= need)
             mock_run_cdb();
+    } else if (mb.phase == MB_data_out) {
+        // Record the payload in arrival order so a test can prove not just
+        // that the right bytes arrived but that they arrived in sequence.
+        if (mb.data_pos < mb.data_len)
+            mb.data[mb.data_pos++] = byte;
+        if (mb.data_pos >= mb.data_len)
+            mb.phase = MB_status;
     }
 }
 
@@ -148,6 +161,30 @@ void scsi_external_release(struct scsi *bus) {
     mb.phase = MB_free;
 }
 
+// The device side of a bus reset (F-17): the chip calls it, the bus implements
+// it.  This suite drives the 53C96 against a mock bus with no scsi_t behind it,
+// so there are no targets to return to a power-on state -- count the call, so a
+// test can assert the chip made it.
+int g_bus_resets;
+void scsi_bus_reset(struct scsi *bus) {
+    (void)bus;
+    g_bus_resets++;
+}
+
+// The selection time-out wait belongs to the bus (F-18); the chip supplies the
+// period and the reporting.  This suite has no bus and no scheduler, so there
+// is no time for a wait to pass in -- report straight away, which is what the
+// real helper does when it finds no scheduler underneath.
+void scsi_bus_arm_select_timeout(struct scsi *bus, uint64_t ns, void (*fn)(void *), void *ctx) {
+    (void)bus, (void)ns;
+    if (fn)
+        fn(ctx);
+}
+
+void scsi_bus_cancel_select_timeout(struct scsi *bus) {
+    (void)bus;
+}
+
 // ============================================================
 // Chip register helpers
 // ============================================================
@@ -158,6 +195,7 @@ void scsi_external_release(struct scsi *bus) {
 #define R_COMMAND   0x3
 #define R_STATUS    0x4
 #define R_INTERRUPT 0x5
+#define R_FIFOFLAGS 0x7
 
 static scsi_53c96_t *chip;
 static bool irq_level;
@@ -429,6 +467,194 @@ TEST(flush_preserves_paused_select) {
     teardown();
 }
 
+// A DATA OUT transfer whose first byte the driver preloaded into the FIFO.
+//
+// This is the Quadra ROM's Duff's-device blind write, read off a live Q700 at
+// $00096400:
+//
+//     SUBQ.L #$1,D2           ; take one byte off the count...
+//     MOVE.B (A2)+,$20(A3)    ; ...and preload it into the FIFO register
+//     BRA    loop             ; then program the (now even) count and DMA the rest
+//
+// The FIFO is the chip's datapath, not a side buffer, so that byte is the
+// first one on the wire.  We used to leave it sitting in the FIFO and send
+// only the DMA stream: every block lost its leading byte, the FIFO filled
+// after 16 of them and never drained, and every later preload set ST_GE --
+// "the top of the FIFO is overwritten", the manual's gross error.  Measured on
+// suite-quadra: 64 spurious gross errors, 124 status reads that saw the bit,
+// and 75 whole blocks of write traffic the driver retried because of it.
+TEST(dma_data_out_sends_the_byte_preloaded_into_the_fifo) {
+    setup();
+
+    // Select and deliver WRITE(6) of one block.
+    wr(R_COMMAND, 0x01); // flush FIFO
+    wr(R_STATUS, 0); // dest ID 0
+    wr(R_INTERRUPT, 0xA7);
+    wr(R_XFER_LO, 6);
+    wr(R_XFER_HI, 0);
+    wr(R_COMMAND, 0xC1); // DMA select without ATN
+    uint8_t cdb[6] = {0x0A, 0, 0, 0, 1, 0};
+    for (int i = 0; i < 6; i++)
+        wr(R_FIFO, cdb[i]);
+    ASSERT_EQ_INT(MB_data_out, mb.phase);
+    (void)take_int();
+
+    // The driver's shape: one byte into the FIFO, count = 511 for the rest.
+    wr(R_FIFO, 0xA5);
+    ASSERT_EQ_INT(1, rd(R_FIFOFLAGS) & 0x1F); // the chip is holding it
+    wr(R_XFER_LO, (uint8_t)((MOCK_BLOCK - 1) & 0xFF));
+    wr(R_XFER_HI, (uint8_t)((MOCK_BLOCK - 1) >> 8));
+    wr(R_COMMAND, 0x90); // DMA Transfer Information
+
+    // Arming the transfer must have put the preloaded byte on the wire, ahead
+    // of anything the aperture carries, and emptied the FIFO.
+    ASSERT_EQ_INT(1, (int)mb.data_pos);
+    ASSERT_EQ_INT(0xA5, mb.data[0]);
+    ASSERT_EQ_INT(0, rd(R_FIFOFLAGS) & 0x1F);
+    ASSERT_TRUE(!(rd(R_STATUS) & 0x40)); // and no gross error
+
+    // The remaining 511 arrive through the aperture, in order behind it.
+    for (int i = 1; i < MOCK_BLOCK; i++)
+        scsi_53c96_pdma_write8(chip, (uint8_t)(i * 3 + 1));
+    ASSERT_EQ_INT(MOCK_BLOCK, (int)mb.data_pos); // the block is complete
+    ASSERT_EQ_INT(0xA5, mb.data[0]);
+    for (int i = 1; i < MOCK_BLOCK; i++)
+        ASSERT_EQ_INT((uint8_t)(i * 3 + 1), mb.data[i]);
+}
+
+// Sixteen preloaded blocks in a row used to be exactly what it took to wedge
+// the FIFO, so the seventeenth raised a gross error the guest could see.
+TEST(repeated_preloads_do_not_wedge_the_fifo) {
+    setup();
+
+    for (int round = 0; round < 20; round++) {
+        wr(R_COMMAND, 0x01);
+        wr(R_STATUS, 0);
+        wr(R_INTERRUPT, 0xA7);
+        wr(R_XFER_LO, 6);
+        wr(R_XFER_HI, 0);
+        wr(R_COMMAND, 0xC1);
+        uint8_t cdb[6] = {0x0A, 0, 0, 0, 1, 0};
+        for (int i = 0; i < 6; i++)
+            wr(R_FIFO, cdb[i]);
+        (void)take_int();
+
+        wr(R_FIFO, (uint8_t)(0x40 + round));
+        wr(R_XFER_LO, (uint8_t)((MOCK_BLOCK - 1) & 0xFF));
+        wr(R_XFER_HI, (uint8_t)((MOCK_BLOCK - 1) >> 8));
+        wr(R_COMMAND, 0x90);
+        for (int i = 1; i < MOCK_BLOCK; i++)
+            scsi_53c96_pdma_write8(chip, 0x5A);
+
+        ASSERT_EQ_INT((uint8_t)(0x40 + round), mb.data[0]);
+        ASSERT_EQ_INT(0, rd(R_FIFOFLAGS) & 0x1F); // never accumulates
+        ASSERT_TRUE(!(rd(R_STATUS) & 0x40)); // never a gross error
+        (void)take_int();
+        wr(R_COMMAND, 0x11);
+        (void)take_int();
+        (void)rd(R_FIFO);
+        (void)rd(R_FIFO);
+        wr(R_COMMAND, 0x12);
+        (void)take_int();
+    }
+}
+
+// ============================================================
+// Bus-master short transfer (F-42)
+// ============================================================
+// A CPU draining the aperture discovers a short transfer by asking the chip
+// for a byte that is not there.  A bus-master pump never asks: it watches the
+// bus phase, and when the phase gate closes it simply stops looping.  So the
+// chip has to be told, or it leaves DREQ asserted and the driver waits for an
+// interrupt that never comes.  The PDM's measured symptom was Drive Setup
+// 2.0d5c2 hanging at "Setting drive options...".
+//
+// scsi_53c96_dma_end_if_short() is that rule, and these pin its gates: it must
+// fire when the target quit mid-read, and must NOT fire in the three cases a
+// pump legitimately stops for reasons of its own.
+
+// Leave the chip in the state a pump sees mid-read: DMA armed for `want`
+// bytes, DREQ up, target still in DATA IN with bytes to give.
+static void arm_dma_read(uint32_t want) {
+    wr(R_COMMAND, 0x01); // flush FIFO
+    wr(R_STATUS, 0); // dest ID 0
+    wr(R_INTERRUPT, 0xA7);
+    wr(R_XFER_LO, 6);
+    wr(R_XFER_HI, 0);
+    wr(R_COMMAND, 0xC1); // DMA select without ATN
+    uint8_t cdb[6] = {0x08, 0, 0, 0, 1, 0}; // READ(6), one block
+    for (int i = 0; i < 6; i++)
+        wr(R_FIFO, cdb[i]);
+    ASSERT_EQ_INT(MB_data_in, mb.phase);
+    (void)take_int();
+    wr(R_XFER_LO, (uint8_t)(want & 0xFF));
+    wr(R_XFER_HI, (uint8_t)(want >> 8));
+    wr(R_COMMAND, 0x90); // DMA Transfer Information
+    ASSERT_TRUE(scsi_53c96_dreq(chip));
+}
+
+// The real thing: the target leaves DATA IN with the transfer still armed.
+TEST(bus_master_short_transfer_ends_the_command) {
+    setup();
+    arm_dma_read(64);
+
+    // The pump moved some bytes, then saw the phase gate close.  Forcing the
+    // phase is exactly what a target does when it has nothing more to send.
+    mb.phase = MB_status;
+    ASSERT_TRUE(scsi_53c96_dreq(chip)); // ...and the chip is still asking
+
+    scsi_53c96_dma_end_if_short(chip, 12, false, false);
+
+    // The chip terminated the transfer and told the driver.
+    ASSERT_TRUE(irq_level);
+    ASSERT_TRUE(!scsi_53c96_dreq(chip));
+    (void)take_int();
+    teardown();
+}
+
+// A pump that moved nothing has learned nothing -- it may simply have been
+// called before the target was ready.  Ending the command here would kill a
+// transfer that had not started.
+TEST(short_transfer_ignores_a_pass_that_moved_nothing) {
+    setup();
+    arm_dma_read(64);
+    mb.phase = MB_status;
+
+    scsi_53c96_dma_end_if_short(chip, 0, false, false);
+
+    ASSERT_TRUE(!irq_level);
+    ASSERT_TRUE(scsi_53c96_dreq(chip)); // still armed, still asking
+    teardown();
+}
+
+// Writing the target is not reading it.  A selection still streaming its CDB
+// leaves the data phase all the time, and must not be cut short.
+TEST(short_transfer_ignores_the_write_direction) {
+    setup();
+    arm_dma_read(64);
+    mb.phase = MB_status;
+
+    scsi_53c96_dma_end_if_short(chip, 12, true, false);
+
+    ASSERT_TRUE(!irq_level);
+    ASSERT_TRUE(scsi_53c96_dreq(chip));
+    teardown();
+}
+
+// The ordinary reason a pump stops: it hit its own per-pass byte cap with the
+// target still in DATA IN and more to give.  Nothing is short about that.
+TEST(short_transfer_ignores_a_pump_that_stopped_on_its_own) {
+    setup();
+    arm_dma_read(64);
+    ASSERT_EQ_INT(MB_data_in, mb.phase); // the target has not moved
+
+    scsi_53c96_dma_end_if_short(chip, 2048, false, true);
+
+    ASSERT_TRUE(!irq_level);
+    ASSERT_TRUE(scsi_53c96_dreq(chip));
+    teardown();
+}
+
 int main(void) {
     RUN(reset_defaults);
     RUN(select_timeout_no_device);
@@ -436,6 +662,12 @@ int main(void) {
     RUN(read6_multi_block);
     RUN(read6_partial_last_chunk);
     RUN(read_odd_length_fifo_residual);
+    RUN(dma_data_out_sends_the_byte_preloaded_into_the_fifo);
+    RUN(repeated_preloads_do_not_wedge_the_fifo);
+    RUN(bus_master_short_transfer_ends_the_command);
+    RUN(short_transfer_ignores_a_pass_that_moved_nothing);
+    RUN(short_transfer_ignores_the_write_direction);
+    RUN(short_transfer_ignores_a_pump_that_stopped_on_its_own);
     RUN(status_reflects_live_phase);
     RUN(flush_preserves_paused_select);
     printf("[scsi96] all tests passed\n");

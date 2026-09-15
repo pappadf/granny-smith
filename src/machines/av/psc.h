@@ -66,6 +66,14 @@ void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value);
 typedef bool (*av_psc_dreq_fn)(void *ctx);
 void av_psc_set_dreq_query(av_psc_t *psc, av_psc_dreq_fn fn, void *ctx);
 
+// Called when the guest touches the SCSI DMA channel's registers, so the
+// machine can wake its bus-master pump (av.c).  A hook rather than a direct
+// call because the dependency only runs one way: psc.c is built and unit
+// tested on its own, and knows nothing about what is on the other end of a
+// channel.
+typedef void (*av_psc_chan_touch_fn)(void *ctx);
+void av_psc_set_scsi_touch_hook(av_psc_t *psc, av_psc_chan_touch_fn fn, void *ctx);
+
 // Drive a level-sensitive VIA2-window source (SCSI interrupt, bit 3).
 void av_psc_via2_source(av_psc_t *psc, int bit, bool active);
 

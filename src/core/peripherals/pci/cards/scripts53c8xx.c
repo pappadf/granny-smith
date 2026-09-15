@@ -42,6 +42,7 @@
 #include "system.h"
 #include "system_config.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -92,8 +93,8 @@ void sym53c8xx_update_irq(sym53c8xx_t *s) {
     if (!s)
         return;
     // Enables gate only the PIN, never the latch (see the header comment).
-    bool dma = (s->dstat & s->reg[SYM825_DIEN]) != 0;
-    bool scsi = ((s->sist0 & s->reg[SYM825_SIEN0]) | (s->sist1 & s->reg[SYM825_SIEN1])) != 0;
+    bool dma = (s->reg[SYM825_DSTAT] & s->reg[SYM825_DIEN]) != 0;
+    bool scsi = ((s->reg[SYM825_SIST0] & s->reg[SYM825_SIEN0]) | (s->reg[SYM825_SIST1] & s->reg[SYM825_SIEN1])) != 0;
     // Interrupt-on-the-fly drives the pin too, and it has no enable bit to
     // gate it: the whole point of the instruction is to tell the driver a
     // command finished WITHOUT stopping SCRIPTS, so a model that only
@@ -112,24 +113,48 @@ void sym53c8xx_update_irq(sym53c8xx_t *s) {
         pci_deassert_irq(s->dev);
 }
 
+// Which latched causes hold the engine halted.
+//
+// LSI53C825A TM v3.1 S2.4.13.3: "All DMA interrupts (indicated by the DIP bit in
+// Interrupt Status (ISTAT) and one or more bits in DMA Status (DSTAT) being set)
+// are fatal."  Every DSTAT bit, single-step included -- DCNTL's SSM description
+// spells that case out: "To restart the LSI53C825A after it generates a SCRIPTS
+// Step interrupt, read the ISTAT and DSTAT registers to recognize and clear the
+// interrupt.  Then set the START DMA bit."
+//
+// "When the LSI53C825A is operating in Initiator mode, only the Function
+// Complete (CMP), Selected (SEL), Reselected (RSL), General Purpose Timer
+// Expired (GEN), and Handshake-to-Handshake Timer Expired (HTH) interrupts are
+// nonfatal."  Those five latch without stopping SCRIPTS, so they must not hold
+// a restart either.
+//
+// DFE is not a cause at all -- it is a live condition the DSTAT accessor mixes
+// in at read time and never stores, so it cannot appear here.
+#define SYM825_SIST0_NONFATAL (SYM825_SIST0_CMP | SYM825_SIST0_SEL | SYM825_SIST0_RSL)
+#define SYM825_SIST1_NONFATAL (SYM825_SIST1_GEN | SYM825_SIST1_HTH)
+
+static bool fatal_cause_latched(const sym53c8xx_t *s) {
+    return s->reg[SYM825_DSTAT] != 0 || (s->reg[SYM825_SIST0] & (uint8_t)~SYM825_SIST0_NONFATAL) != 0 ||
+           (s->reg[SYM825_SIST1] & (uint8_t)~SYM825_SIST1_NONFATAL) != 0;
+}
+
 void sym53c8xx_raise_dma(sym53c8xx_t *s, uint8_t dstat_bits) {
-    s->dstat |= dstat_bits;
-    // Every DSTAT cause except the single-step marker halts the engine.
-    if (dstat_bits & ~SYM825_DSTAT_SSI)
-        s->running = false;
+    s->reg[SYM825_DSTAT] |= dstat_bits;
+    // Every DMA cause is fatal (S2.4.13.3), single-step included -- the
+    // single-step path stops the engine itself before raising SSI, so this
+    // covers the rest.
+    s->running = false;
     sym53c8xx_update_irq(s);
 }
 
 void sym53c8xx_raise_scsi(sym53c8xx_t *s, uint8_t sist0_bits, uint8_t sist1_bits) {
-    s->sist0 |= sist0_bits;
-    s->sist1 |= sist1_bits;
+    s->reg[SYM825_SIST0] |= sist0_bits;
+    s->reg[SYM825_SIST1] |= sist1_bits;
     // "When the LSI53C825A is operating in Initiator mode, only the Function
     // Complete (CMP), Selected (SEL), Reselected (RSL), General Purpose
     // Timer Expired (GEN), and Handshake-to-Handshake Timer Expired (HTH)
     // interrupts are nonfatal."  Everything else stops SCRIPTS.
-    uint8_t nonfatal0 = SYM825_SIST0_CMP | SYM825_SIST0_SEL | SYM825_SIST0_RSL;
-    uint8_t nonfatal1 = SYM825_SIST1_GEN | SYM825_SIST1_HTH;
-    if ((sist0_bits & ~nonfatal0) || (sist1_bits & ~nonfatal1))
+    if ((sist0_bits & (uint8_t)~SYM825_SIST0_NONFATAL) || (sist1_bits & (uint8_t)~SYM825_SIST1_NONFATAL))
         s->running = false;
     sym53c8xx_update_irq(s);
 }
@@ -189,89 +214,66 @@ static uint32_t fetch32(sym53c8xx_t *s, uint32_t phys) {
 // way (mesh.c "Sync negotiation"), and doing anything else here would mean
 // teaching the shared model about a conversation only two chips have.
 
+// The SYM53C825A's SXFER register (data manual, register 05) tops out at
+// offset 16 in its MO4-MO0 table, and the part does Fast SCSI, so 100 ns --
+// SDTR period 25 -- is its floor.  Wide part.
+//
+// This used to echo whatever the initiator offered, unclamped.  AIX asks for
+// period 25 / offset 16, exactly the maximum, so the echo happened to be
+// right; an initiator asking for more would have been told yes.
+static const scsi_msg_caps_t SYM_MSG_CAPS = {.min_period = 25, .max_offset = 16, .wide = true};
+
 static bool msgin_pending(const sym53c8xx_t *s) {
-    return s->mi_rd < s->mi_n;
+    return scsi_msg_pending(&s->msg);
 }
 
 static void msg_session_reset(sym53c8xx_t *s) {
-    s->mo_len = 0;
-    s->mi_n = 0;
-    s->mi_rd = 0;
+    scsi_msg_reset(&s->msg);
     s->msgin_taken = 0;
     s->msgout_pending = 0;
 }
 
-// Queue an EXTENDED MESSAGE reply for the script to read back.
-static void msgin_queue_ext(sym53c8xx_t *s, uint8_t code, uint8_t a, uint8_t b, bool two) {
-    s->mi_buf[0] = 0x01u; // EXTENDED MESSAGE
-    s->mi_buf[1] = two ? 0x03u : 0x02u; // length
-    s->mi_buf[2] = code;
-    s->mi_buf[3] = a;
-    if (two)
-        s->mi_buf[4] = b;
-    s->mi_n = two ? 5u : 4u;
-    s->mi_rd = 0;
-}
-
-// The script finished its MESSAGE OUT: parse what it said.  Both
-// negotiations are ANSWERED rather than rejected, because a fast/wide
-// channel is expected to negotiate and a chip that always rejected would
-// be lying about the part.  The emulated bus has no timing, so what is
-// modelled is the agreement, not the rate it implies.
+// The script finished its MESSAGE OUT: parse what it said.  Both negotiations
+// are ANSWERED rather than rejected, because a fast/wide channel is expected to
+// negotiate and a chip that always rejected would be lying about the part.  The
+// emulated bus has no timing, so what is modelled is the agreement, not the
+// rate it implies.
 static void msgout_complete(sym53c8xx_t *s) {
-    for (uint8_t i = 0; i < s->mo_len;) {
-        uint8_t b = s->mo_buf[i];
-        if (b & 0x80u) { // IDENTIFY
-            i++;
-        } else if (b == 0x01u) { // EXTENDED MESSAGE
-            if ((uint32_t)i + 2u > s->mo_len || (uint32_t)i + 2u + s->mo_buf[i + 1] > s->mo_len)
-                return; // still incomplete; more bytes are coming
-            uint8_t len = s->mo_buf[i + 1];
-            uint8_t code = s->mo_buf[i + 2];
-            if (code == 0x01u && len == 3) { // SDTR: period, offset
-                s->sync_period = s->mo_buf[i + 3];
-                s->sync_offset = s->mo_buf[i + 4];
-                LOG(3, "ch%d: SDTR agreed, period=%u offset=%u", s->channel, s->sync_period, s->sync_offset);
-                msgin_queue_ext(s, 0x01u, s->sync_period, s->sync_offset, true);
-            } else if (code == 0x03u && len == 2) { // WDTR: transfer width
-                s->wide = s->mo_buf[i + 3] ? 1u : 0u;
-                LOG(3, "ch%d: WDTR agreed, %s transfers", s->channel, s->wide ? "16-bit" : "8-bit");
-                msgin_queue_ext(s, 0x03u, s->wide, 0, false);
-            }
-            i = (uint8_t)(i + 2 + len);
-        } else {
-            i++; // a single-byte message with nothing to answer
-        }
+    scsi_msg_result_t r;
+    scsi_msg_complete(&s->msg, &SYM_MSG_CAPS, &r);
+    if (r.incomplete)
+        return; // still arriving; more bytes are coming
+    if (r.sdtr) {
+        s->sync_period = r.period;
+        s->sync_offset = r.offset;
+        LOG(3, "ch%d: SDTR agreed, period=%u offset=%u", s->channel, s->sync_period, s->sync_offset);
     }
-    s->mo_len = 0;
+    if (r.wdtr) {
+        s->wide = r.wide ? 1u : 0u;
+        LOG(3, "ch%d: WDTR agreed, %s transfers", s->channel, s->wide ? "16-bit" : "8-bit");
+    }
+    if (r.rejected)
+        LOG(3, "ch%d: MESSAGE REJECT from initiator", s->channel);
     s->msgout_pending = 0;
 }
 
 // The SCSI phase as the INITIATOR sees it, in the chip's own 3-bit
 // encoding: the two virtual overlays first, then the shared bus model.
+_Static_assert(SYM825_PHASE_DATA_OUT == 0u && SYM825_PHASE_DATA_IN == 1u && SYM825_PHASE_COMMAND == 2u &&
+                   SYM825_PHASE_STATUS == 3u && SYM825_PHASE_MSG_OUT == 6u && SYM825_PHASE_MSG_IN == 7u,
+               "SYM825_PHASE_* must stay the X3.131 wire encoding that scsi_phase_wire_bits() returns");
+
 static uint8_t chip_phase(sym53c8xx_t *s) {
     if (s->msgout_pending)
         return SYM825_PHASE_MSG_OUT;
     if (msgin_pending(s))
         return SYM825_PHASE_MSG_IN;
-    if (!s->bus)
-        return SYM825_PHASE_MSG_IN;
-    switch (scsi_get_bus_phase(s->bus)) {
-    case scsi_command:
-        return SYM825_PHASE_COMMAND;
-    case scsi_data_in:
-        return SYM825_PHASE_DATA_IN;
-    case scsi_data_out:
-        return SYM825_PHASE_DATA_OUT;
-    case scsi_status:
-        return SYM825_PHASE_STATUS;
-    case scsi_message_in:
-        return SYM825_PHASE_MSG_IN;
-    case scsi_message_out:
-        return SYM825_PHASE_MSG_OUT;
-    default:
-        return SYM825_PHASE_MSG_IN;
-    }
+    // Below the overlays it is just the wire.  SSTAT1 and SBCL report the
+    // MSG/C-D/I-O lines unlatched -- SBCL (register 0B): "these bits are not
+    // latched; they are a true representation of what is on the SCSI bus at the
+    // time the register is read" -- and the SYM825_PHASE_* codes ARE the wire
+    // encoding, so there is nothing to translate.
+    return scsi_phase_wire_bits(scsi_get_bus_phase(s->bus));
 }
 
 // Publish the live phase where a driver expects to read it: SSTAT1's low
@@ -372,8 +374,8 @@ static uint32_t block_move_bytes(sym53c8xx_t *s, uint8_t phase, uint32_t addr, u
             // side of this conversation is ours (see msgout_complete).
             sym53c8xx_read_block(s, addr + moved, buf, chunk);
             for (uint32_t i = 0; i < chunk; i++) {
-                if (s->mo_len < sizeof(s->mo_buf))
-                    s->mo_buf[s->mo_len++] = buf[i];
+                if (!scsi_msg_collect(&s->msg, buf[i]))
+                    LOG(2, "ch%d: message-out overflow (byte $%02X dropped)", s->channel, buf[i]);
             }
             moved += chunk;
             break;
@@ -425,8 +427,9 @@ static uint32_t block_move_bytes(sym53c8xx_t *s, uint8_t phase, uint32_t addr, u
         case SYM825_PHASE_MSG_IN: {
             for (uint32_t i = 0; i < chunk; i++) {
                 int msg;
-                if (msgin_pending(s)) {
-                    msg = s->mi_buf[s->mi_rd++];
+                uint8_t queued;
+                if (scsi_msg_next(&s->msg, &queued)) {
+                    msg = queued;
                 } else {
                     msg = scsi_external_message_byte(s->bus);
                     if (msg < 0) {
@@ -456,6 +459,8 @@ static uint32_t block_move_bytes(sym53c8xx_t *s, uint8_t phase, uint32_t addr, u
     }
     return moved;
 }
+
+static void script_start_event(void *source, uint64_t data);
 
 static void exec_block_move(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
     uint8_t want = (uint8_t)((insn >> 24) & 7u);
@@ -490,6 +495,28 @@ static void exec_block_move(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
         set_reg32(s, SYM825_DSP, reg32(s, SYM825_DSP) - 8u);
         LOG(3, "ch%d: phase mismatch — script wants %u, target presents %u", s->channel, want, s->phase);
         sym53c8xx_raise_scsi(s, SYM825_SIST0_MA, 0);
+        return;
+    }
+
+    // The phase is right but the target may not be asking yet.  X3.131 5.1.5.1,
+    // DATA OUT: "the target shall request information by asserting REQ.  The
+    // initiator shall drive DB(7-0,P) ... and assert ACK."  REQ leads; an
+    // initiator that drives data before it is not handshaking, and a real
+    // SCRIPTS processor simply stalls on the handshake until the target asks.
+    //
+    // This is NOT a phase mismatch -- the script wants what the target is
+    // presenting -- so no interrupt is raised.  DSP is rewound to this
+    // instruction and the engine yields, exactly as it does after a full
+    // instruction quantum, and resumes when guest time has moved on.
+    if (want == SYM825_PHASE_DATA_OUT && !scsi_bus_req(s->bus)) {
+        set_reg32(s, SYM825_DSP, reg32(s, SYM825_DSP) - 8u);
+        s->running = false;
+        struct scheduler *sched = s->cfg ? s->cfg->scheduler : NULL;
+        if (sched && !s->start_pending) {
+            s->start_pending = true;
+            scheduler_new_cpu_event(sched, script_start_event, s, 0, 0, SYM825_YIELD_NS);
+        }
+        LOG(4, "ch%d: DATA OUT armed but target not yet asking — waiting for REQ", s->channel);
         return;
     }
 
@@ -545,7 +572,7 @@ static void select_timeout_event(void *source, uint64_t data) {
     // this order: the STO handler is the one that fails the probe with "no
     // device", and the trailing UDC handler is the one that resets the bus
     // and resynchronises the SCRIPTS command ring.
-    s->sist1 |= SYM825_SIST1_STO;
+    s->reg[SYM825_SIST1] |= SYM825_SIST1_STO;
     s->sist0_stacked |= SYM825_SIST0_UDC;
     sym53c8xx_update_irq(s);
 }
@@ -701,16 +728,20 @@ static void exec_read_write(sym53c8xx_t *s, uint32_t insn) {
     // it is the addressed register; the second operand is the immediate,
     // or SFBR when the D8 bit says so (which is how two registers are
     // combined without a temporary).
-    uint8_t acc = (opc == 5) ? s->reg[SYM825_SFBR] : s->reg[ra];
+    //
+    // Both operands come through the register accessor, so a SCRIPTS read sees
+    // exactly what a host read sees.  That is what makes CTEST2 work -- bit 6
+    // mirrors ISTAT's SIGP and the read CLEARS it (LSI53C825A TM v3.1), which
+    // the programming guide's own abort example relies on (`MOVE CTEST2 TO
+    // SFBR ; clear sig_p bit`), and which the AIX and Mac OS dispatchers spend
+    // as `MOVE CTEST2 | 0x00 TO CTEST2`.  That one register used to be
+    // hand-copied here; every other side effect was simply absent, because the
+    // engine indexed s->reg[] straight.
+    //
+    // SFBR is read raw: it is plain storage with no accessor case, and reading
+    // it through one would be a no-op with an extra branch.
+    uint8_t acc = (opc == 5) ? s->reg[SYM825_SFBR] : sym53c8xx_reg_read(s, ra);
     uint8_t data = use_sfbr ? s->reg[SYM825_SFBR] : imm;
-    // A SCRIPTS read of CTEST2 has the same side effect as a host read:
-    // bit 6 mirrors ISTAT's SIGP and the read CLEARS it (LSI53C825A TM
-    // v3.1, CTEST2) — the dispatcher's `MOVE CTEST2 | 0x00 TO CTEST2`
-    // consumes the driver's doorbell exactly this way.
-    if (opc != 5 && ra == SYM825_CTEST2) {
-        acc = (uint8_t)((acc & ~0x40u) | ((s->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP) ? 0x40u : 0u));
-        s->reg[SYM825_ISTAT] &= (uint8_t)~SYM825_ISTAT_SIGP;
-    }
     bool carry_in = (s->reg[SYM825_SCNTL1] & 0x04u) != 0;
     uint8_t result = acc;
     bool carry_out = carry_in;
@@ -757,7 +788,7 @@ static void exec_read_write(sym53c8xx_t *s, uint32_t insn) {
     if (opc == 6)
         s->reg[SYM825_SFBR] = result;
     else
-        s->reg[ra] = result;
+        sym53c8xx_reg_write(s, ra, result, true);
 }
 
 // ============================================================
@@ -859,10 +890,22 @@ static void exec_load_store(sym53c8xx_t *s, uint32_t insn, uint32_t dsps) {
         sym53c8xx_raise_dma(s, SYM825_DSTAT_IID);
         return;
     }
-    if (load)
-        sym53c8xx_read_block(s, addr, &s->reg[ra], n);
-    else
-        sym53c8xx_write_block(s, addr, &s->reg[ra], n);
+    // Byte-wise through the accessors rather than a memcpy over s->reg[].  The
+    // instruction moves up to four bytes, and each one is an ordinary register
+    // access on the part: a LOAD into a register with a write side effect
+    // triggers it, and a STORE of DSTAT or SIST0 out to memory reads them
+    // read-to-clear, which is the whole point of those registers.  A memcpy
+    // over the array had neither.
+    uint8_t buf[4];
+    if (load) {
+        sym53c8xx_read_block(s, addr, buf, n);
+        for (uint32_t i = 0; i < n; i++)
+            sym53c8xx_reg_write(s, ra + i, buf[i], true);
+    } else {
+        for (uint32_t i = 0; i < n; i++)
+            buf[i] = sym53c8xx_reg_read(s, ra + i);
+        sym53c8xx_write_block(s, addr, buf, n);
+    }
 }
 
 // ============================================================
@@ -928,7 +971,6 @@ static bool step(sym53c8xx_t *s) {
 }
 
 // The engine start/resume event (defined below); the yield path schedules it.
-static void script_start_event(void *source, uint64_t data);
 
 // Run the engine until the script stops it.  Called from the scheduler a
 // short time after the driver asks for it — never inside the store that
@@ -1028,6 +1070,30 @@ void sym53c8xx_start(sym53c8xx_t *s) {
     // most recently written down.
     if (s->select_timeout_armed)
         return;
+    // A cause the driver has not read yet holds the engine where it stopped.
+    // LSI53C825A TM v3.1, SCSI SCRIPTS mode: "Once an interrupt is generated,
+    // the LSI53C825A halts all operations until the interrupt is serviced.
+    // Then, the start address of the next SCRIPTS instruction may be written to
+    // the DMA SCRIPTS Pointer (DSP) register to restart the automatic fetching
+    // and execution of instructions."  Serviced means read: DSTAT/SIST0/SIST1
+    // are read-to-clear, and the sample ISR does exactly that before restarting.
+    //
+    // Without this, a DSP or DCNTL[STD] write arriving before the driver reads
+    // the status resumed from whatever DSP held, cause still latched -- the
+    // engine ran on past an error nobody had looked at.
+    //
+    // Only FATAL causes hold it.  The five non-fatal SCSI interrupts latch
+    // without stopping SCRIPTS in the first place, so blocking a restart on
+    // them would stall a chip that never halted.
+    //
+    // The budget-yield path does not come through here: it schedules
+    // script_start_event directly, because a yield is the same execution
+    // continuing rather than the driver restarting after an interrupt.
+    if (fatal_cause_latched(s)) {
+        LOG(3, "ch%d: start ignored -- DSTAT $%02X SIST0 $%02X SIST1 $%02X not serviced yet", s->channel,
+            s->reg[SYM825_DSTAT], s->reg[SYM825_SIST0], s->reg[SYM825_SIST1]);
+        return;
+    }
     if (!sched) {
         sym53c8xx_run(s); // no time to pass (the unit suite drives it directly)
         return;
@@ -1073,7 +1139,9 @@ void sym53c8xx_bus_reset(sym53c8xx_t *s) {
     if (s->bus) {
         if (s->connected)
             scsi_external_release(s->bus);
-        scsi_reset_pin(s->bus);
+        // Was scsi_reset_pin(), which reset a 5380 register file -- on a
+        // machine that has no 5380.  The wire is all this card can reset.
+        scsi_bus_reset(s->bus);
     }
     s->connected = false;
     s->disconnect_pending = 0;
@@ -1099,12 +1167,12 @@ void sym53c8xx_chip_reset(sym53c8xx_t *s) {
         return;
     // Power-on / SRST.  The SCRIPTS RAM is host memory and survives, as it
     // does on the part; everything else returns to its reset value.
-    memset(s->reg, 0, sizeof(s->reg));
+    memset(s->reg, 0, sizeof(s->reg)); // DSTAT/SIST0/SIST1 included
     memset(s->dfifo_n, 0, sizeof(s->dfifo_n));
     memset(s->dfifo_rd, 0, sizeof(s->dfifo_rd));
-    s->dstat = 0;
-    s->sist0 = 0;
-    s->sist1 = 0;
+    // The stacked causes are a second level the part really has -- extra
+    // registers behind SIST0/SIST1 with no address of their own -- so they are
+    // separate state rather than a duplicate of anything, and clear here.
     s->sist0_stacked = 0;
     s->sist1_stacked = 0;
     s->running = false;
@@ -1158,6 +1226,16 @@ sym53c8xx_t *sym53c8xx_new(config_t *cfg, int channel) {
 }
 
 void sym53c8xx_delete(sym53c8xx_t *s) {
+    if (!s)
+        return;
+    // Both events carry `s` as their source, and the card is freed before the
+    // scheduler, so either one still queued outlives this free and fires into
+    // released memory.  sym53c8xx_abort, _bus_reset and _chip_reset all drop
+    // them correctly; the destructor was the one place that did not.
+    if (s->cfg && s->cfg->scheduler) {
+        remove_event(s->cfg->scheduler, select_timeout_event, s);
+        remove_event(s->cfg->scheduler, script_start_event, s);
+    }
     free(s);
 }
 
@@ -1169,29 +1247,33 @@ void sym53c8xx_attach_bus(sym53c8xx_t *s, struct scsi *bus) {
 void sym53c8xx_checkpoint_save(sym53c8xx_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
-    system_write_checkpoint_data(cp, s->reg, sizeof(s->reg));
-    system_write_checkpoint_data(cp, &s->dstat, sizeof(s->dstat));
-    system_write_checkpoint_data(cp, &s->sist0, sizeof(s->sist0));
-    system_write_checkpoint_data(cp, &s->sist1, sizeof(s->sist1));
-    system_write_checkpoint_data(cp, s->script_ram, sizeof(s->script_ram));
-    system_write_checkpoint_data(cp, &s->running, sizeof(s->running));
-    system_write_checkpoint_data(cp, &s->connected, sizeof(s->connected));
-    system_write_checkpoint_data(cp, &s->target, sizeof(s->target));
-    system_write_checkpoint_data(cp, &s->phase, sizeof(s->phase));
+    // One write for the whole plain-data region -- registers, SCRIPTS RAM, the
+    // stacked interrupt causes, the message session, the sync/wide agreement,
+    // the DMA FIFO lanes and the parked-on-reselect flag.
+    //
+    // This used to name six members by hand and lost everything else.  See
+    // sym53c8xx.h for what sits below the line and why.
+    system_write_checkpoint_data(cp, s, offsetof(sym53c8xx_t, running));
 }
 
 void sym53c8xx_checkpoint_restore(sym53c8xx_t *s, checkpoint_t *cp) {
     if (!s || !cp)
         return;
-    system_read_checkpoint_data(cp, s->reg, sizeof(s->reg));
-    system_read_checkpoint_data(cp, &s->dstat, sizeof(s->dstat));
-    system_read_checkpoint_data(cp, &s->sist0, sizeof(s->sist0));
-    system_read_checkpoint_data(cp, &s->sist1, sizeof(s->sist1));
-    system_read_checkpoint_data(cp, s->script_ram, sizeof(s->script_ram));
-    system_read_checkpoint_data(cp, &s->running, sizeof(s->running));
-    system_read_checkpoint_data(cp, &s->connected, sizeof(s->connected));
-    system_read_checkpoint_data(cp, &s->target, sizeof(s->target));
-    system_read_checkpoint_data(cp, &s->phase, sizeof(s->phase));
+    system_read_checkpoint_data(cp, s, offsetof(sym53c8xx_t, running));
+
+    // The engine comes back HALTED with DSP intact, whatever it was doing.
+    // running is always false at save time anyway (it lives only inside
+    // sym53c8xx_run), but start_pending and select_timeout_armed can both be
+    // true, and each names a scheduler event this process does not have.
+    // Leaving them set would make sym53c8xx_start() return early forever.
+    //
+    // Halted-with-DSP-intact is a state a driver already knows how to leave:
+    // it is where every interrupt puts the chip, and the driver restarts it by
+    // writing DSP or strobing DCNTL[STD].
+    s->running = false;
+    s->start_pending = false;
+    s->select_timeout_armed = false;
+
     s->irq = !s->irq; // force the pin to be re-derived
     sym53c8xx_update_irq(s);
 }

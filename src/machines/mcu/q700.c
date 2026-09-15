@@ -173,7 +173,7 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // The bus/target model carries the disks and CD; the 53C96 chip model
     // is the protocol front-end driving it through the external-initiator
     // API (there is no NCR 5380 register file on this family).
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, q700_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);

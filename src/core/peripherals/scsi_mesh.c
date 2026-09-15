@@ -39,13 +39,15 @@
 //   * Cause bits (exception/error) latch BEFORE the interrupt summary
 //     bit, and all three registers are W1C (§8).
 
-#include "tnt.h"
+#include "scsi_mesh.h"
 
-#include "dbdma.h"
 #include "log.h"
-#include "ppc.h"
+#include "scheduler.h"
 #include "scsi.h"
+#include "system.h"
 
+#include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 
 LOG_USE_CATEGORY_NAME("mesh");
@@ -136,144 +138,125 @@ LOG_USE_CATEGORY_NAME("mesh");
 // wrong!") is real-hardware-plausible for an earlier cell revision.
 #define MESH_ID_VALUE 0xE3u
 
-static tnt_mesh_t *mesh(config_t *cfg) {
-    return &tnt_st(cfg)->mesh;
-}
-
 // The GC line follows the masked interrupt summary (level semantics —
 // grand_central.c's change law turns edges AND clears into latches).
-static void mesh_update_irq(config_t *cfg) {
-    tnt_mesh_t *m = mesh(cfg);
-    tnt_gc_set_source(cfg, TNT_INT_MESH, (m->interrupt & m->intr_mask) != 0);
+static void mesh_update_irq(mesh_t *m) {
+    if (m->irq_cb)
+        m->irq_cb(m->irq_ctx, (m->interrupt & m->intr_mask) != 0);
 }
 
-static void raise_int(config_t *cfg, uint8_t bits) {
-    mesh(cfg)->interrupt |= bits;
-    mesh_update_irq(cfg);
+static void raise_int(mesh_t *m, uint8_t bits) {
+    m->interrupt |= bits;
+    mesh_update_irq(m);
 }
 
 // Cause first, summary second (§8): the latched exception/error bit
 // must be readable before (and independent of) the interrupt bit.
-static void raise_exception(config_t *cfg, uint8_t cause) {
-    mesh(cfg)->exception |= cause;
-    raise_int(cfg, INT_EXCEPTION);
+static void raise_exception(mesh_t *m, uint8_t cause) {
+    m->exception |= cause;
+    raise_int(m, INT_EXCEPTION);
 }
 
-static void fifo_clear(tnt_mesh_t *m) {
-    m->fifo_rd = 0;
-    m->fifo_n = 0;
+// How long the driver asked us to wait for a target to answer.
+//
+// MR_SEL_TIMEOUT is programmed in units of 10 ms.  There is no MESH manual in
+// gs-docs to cite for that, but two things agree on it: Mac OS programs 25,
+// and 25 x 10 ms is 250 ms, which is the selection time-out ANSI X3.131-1986
+// specifies and what Linux's drivers/scsi/mesh.c writes for the same reason.
+//
+// A zero period means the driver disabled the wait; scsi_bus_arm_select_timeout
+// reports immediately in that case, which is what disabling it means.
+static uint64_t mesh_select_timeout_ns(const mesh_t *m) {
+    return (uint64_t)m->sel_timeout * 10ull * 1000000ull;
 }
 
-static void fifo_push(tnt_mesh_t *m, uint8_t v) {
-    if (m->fifo_n >= TNT_MESH_FIFO) {
-        LOG(1, "FIFO overflow (byte $%02X dropped)", v);
+// The period elapsed and nobody answered.
+//
+// This used to run synchronously inside the sequence-register write that
+// issued SELECT.  A Mac OS bus scan selects every target twice -- measured at
+// twelve time-outs per boot on tnt-hd-boot, all of them for targets that are
+// simply not fitted -- so this is the ordinary path, not the error path, and
+// completing the whole select-fail-report-retry cycle inside the driver's own
+// doorbell write is what docs/machines/tnt/tnt.md warns about: "the interrupt
+// storm that follows never lets the clock tick, so the driver's timers never
+// expire and nothing gives up".
+static void mesh_select_timed_out(void *ctx) {
+    mesh_t *m = (mesh_t *)ctx;
+    if (!m)
         return;
-    }
-    m->fifo[(m->fifo_rd + m->fifo_n) % TNT_MESH_FIFO] = v;
-    m->fifo_n++;
+    LOG(2, "select timed out after %u ms", (unsigned)m->sel_timeout * 10u);
+    m->connected = 0;
+    raise_exception(m, EXC_SELTO);
 }
 
-static uint8_t fifo_pop(tnt_mesh_t *m) {
-    if (m->fifo_n == 0)
-        return 0; // empty FIFO re-reads as zero
-    uint8_t v = m->fifo[m->fifo_rd];
-    m->fifo_rd = (uint8_t)((m->fifo_rd + 1) % TNT_MESH_FIFO);
-    m->fifo_n--;
+// The ring is byte_fifo.h's; only the ends are MESH's.  Unlike the 53C96 --
+// whose overflow and empty-read are both spelled out in the NCR manual -- what
+// real MESH silicon does at either end is documented NOWHERE.  There is no
+// Apple datasheet, and none of the three driver corpora (Linux, NetBSD,
+// MkLinux) exercises it, because a driver that respects `fifo_count` never
+// reaches either end.  Both choices below are ours, and defensive: measured
+// across a 7.6 boot, 64,053 pushes and 64,053 pops hit neither.
+static void fifo_clear(mesh_t *m) {
+    byte_fifo_clear(&m->fifo);
+}
+
+static void fifo_push(mesh_t *m, uint8_t v) {
+    if (!byte_fifo_push(&m->fifo, v))
+        LOG(1, "FIFO overflow (byte $%02X dropped)", v);
+}
+
+static uint8_t fifo_pop(mesh_t *m) {
+    uint8_t v;
+    if (!byte_fifo_pop(&m->fifo, &v))
+        return 0; // our choice: an empty FIFO reads as zero
     return v;
 }
 
 // End the active transfer command, completing with INT_CMDDONE.
-static void finish_command(config_t *cfg) {
-    tnt_mesh_t *m = mesh(cfg);
+static void finish_command(mesh_t *m) {
     m->active = 0;
     m->active_dma = 0;
-    raise_int(cfg, INT_CMDDONE);
+    raise_int(m, INT_CMDDONE);
 }
 
 // ============================================================
 // SDTR message engine (see the "Sync negotiation" header block)
 // ============================================================
 
+// MESH can express a four-bit synchronous offset (sync_params 0xD0:
+// `offset = value >> 4`) and its transfer period is (x + 2) * 40 ns with
+// x == 0 meaning 100 ns, so 100 ns -- SDTR period 25 -- is the fastest it
+// runs.  Narrow part: it answers WDTR with 8-bit rather than agreeing.
+// [Linux/NetBSD/MkLinux mesh.h; there is no Apple datasheet]
+static const scsi_msg_caps_t MESH_MSG_CAPS = {.min_period = 25, .max_offset = 15, .wide = false};
+
 // A virtual MESSAGE IN is pending while queued bytes remain unread.
-static bool msgin_pending(tnt_mesh_t *m) {
-    return m->mi_rd < m->mi_n;
+static bool msgin_pending(mesh_t *m) {
+    return scsi_msg_pending(&m->msg);
 }
 
-// Per-session message state: assembled message-out, virtual message-in,
-// and the awaiting-reply flag all die with the connection.
-static void msg_session_reset(tnt_mesh_t *m) {
-    m->mo_len = 0;
-    m->mi_n = 0;
-    m->mi_rd = 0;
-    m->sdtr_await = 0;
+// Per-session message state: assembled message-out, virtual message-in, and
+// the delivered flag all die with the connection.
+static void msg_session_reset(mesh_t *m) {
+    scsi_msg_reset(&m->msg);
     m->msgin_taken = 0;
-}
-
-static void msgin_queue_sdtr(tnt_mesh_t *m, uint8_t period, uint8_t offset) {
-    m->mi_buf[0] = 0x01; // MESSAGE EXTENDED
-    m->mi_buf[1] = 0x03;
-    m->mi_buf[2] = 0x01; // SDTR
-    m->mi_buf[3] = period;
-    m->mi_buf[4] = offset;
-    m->mi_n = 5;
-    m->mi_rd = 0;
 }
 
 // A message-out sequence completed: parse what the initiator said.
 // Called after finish_command so the CMDDONE presentation is normal;
 // queueing a message-in flips the visible phase for the NEXT command.
-static void msgout_complete(config_t *cfg) {
-    tnt_mesh_t *m = mesh(cfg);
+static void msgout_complete(mesh_t *m) {
+    scsi_msg_result_t r;
+    scsi_msg_complete(&m->msg, &MESH_MSG_CAPS, &r);
+    if (r.incomplete)
+        return; // more bytes still to come; nothing consumed
     int target = m->dest_id & 7;
-    const uint8_t *sdtr = NULL;
-    bool reject = false, incomplete = false, identify = false;
-    for (uint8_t i = 0; i < m->mo_len;) {
-        uint8_t b = m->mo_buf[i];
-        if (b & 0x80u) { // IDENTIFY family
-            identify = true;
-            i++;
-        } else if (b == 0x01u) { // MESSAGE EXTENDED
-            if (i + 2 > m->mo_len || i + 2 + m->mo_buf[i + 1] > m->mo_len) {
-                incomplete = true; // more bytes still to come
-                break;
-            }
-            if (m->mo_buf[i + 1] == 3 && m->mo_buf[i + 2] == 0x01u)
-                sdtr = &m->mo_buf[i + 3]; // period, offset
-            i = (uint8_t)(i + 2 + m->mo_buf[i + 1]);
-        } else {
-            if (b == 0x07u) // MESSAGE REJECT
-                reject = true;
-            i++;
-        }
-    }
-    if (sdtr) {
-        m->mo_len = 0;
-        if (m->sdtr_await) {
-            // The initiator's reply to our request: the agreement is
-            // whatever it answered — nothing more to say.
-            m->sdtr_await = 0;
-            LOG(2, "SDTR reply from initiator (period=%u offset=%u): target %d negotiated", sdtr[0], sdtr[1], target);
-        } else {
-            // Initiator-offered SDTR: answer within our limits through
-            // the virtual MESSAGE IN phase.
-            uint8_t period = sdtr[0] < MESH_SDTR_PERIOD ? MESH_SDTR_PERIOD : sdtr[0];
-            uint8_t offset = sdtr[1] > MESH_SDTR_OFFSET ? MESH_SDTR_OFFSET : sdtr[1];
-            msgin_queue_sdtr(m, period, offset);
-            LOG(2, "SDTR offer (period=%u offset=%u): responding (period=%u offset=%u)", sdtr[0], sdtr[1], period,
-                offset);
-        }
-    } else if (reject && m->sdtr_await) {
-        // Our request was rejected: async it is, and the exchange is
-        // over — drop anything still queued.
-        m->sdtr_await = 0;
-        m->mo_len = 0;
-        m->mi_n = 0;
-        m->mi_rd = 0;
-        LOG(2, "SDTR request rejected: target %d stays async", target);
-    } else if (!incomplete && identify) {
-        m->mo_len = 0; // identify(s) consumed; nothing to answer
-    }
-    (void)target;
+    if (r.sdtr)
+        LOG(2, "SDTR offer answered (period=%u offset=%u): target %d", r.period, r.offset, target);
+    if (r.wdtr)
+        LOG(2, "WDTR offer answered %s: target %d", r.wide ? "16-bit" : "8-bit", target);
+    if (r.rejected)
+        LOG(2, "MESSAGE REJECT from initiator: target %d", target);
 }
 
 // ============================================================
@@ -283,18 +266,17 @@ static void msgout_complete(config_t *cfg) {
 // Feed FIFO bytes to the bus for the out-going non-DMA commands
 // (COMMAND / MSGOUT / DATAOUT).  MSGOUT bytes are the IDENTIFY family —
 // absorbed here, exactly as the 53C96 front-end discards them.
-static void pump_out(config_t *cfg) {
-    tnt_mesh_t *m = mesh(cfg);
+static void pump_out(mesh_t *m) {
     if (!m->connected)
         return; // no target: bytes stay in the FIFO
-    while (m->remaining > 0 && m->fifo_n > 0) {
+    while (m->remaining > 0 && byte_fifo_count(&m->fifo) > 0) {
         uint8_t b = fifo_pop(m);
         if (m->active == CMD_MSGOUT) {
             LOG(3, "msgout byte $%02X absorbed", b);
-            if (m->mo_len < sizeof(m->mo_buf))
-                m->mo_buf[m->mo_len++] = b;
-        } else if (cfg->scsi) {
-            scsi_push_data_out_byte(cfg->scsi, b);
+            if (!scsi_msg_collect(&m->msg, b))
+                LOG(1, "message-out overflow (byte $%02X dropped)", b);
+        } else if (m->bus) {
+            scsi_push_data_out_byte(m->bus, b);
         }
         m->remaining--;
     }
@@ -302,9 +284,9 @@ static void pump_out(config_t *cfg) {
         uint8_t done = m->active;
         if (done == CMD_MSGOUT)
             m->msgout_pending = 0; // message sent: present the real phase
-        finish_command(cfg);
+        finish_command(m);
         if (done == CMD_MSGOUT) {
-            msgout_complete(cfg);
+            msgout_complete(m);
             // If the target now has a message to deliver, its phase
             // change to MESSAGE IN lands while the sequencer still
             // holds MSG OUT: the phase-mismatch exception latches on
@@ -313,7 +295,7 @@ static void pump_out(config_t *cfg) {
             // MSG OUT the driver saw was our virtual overlay, so no
             // target-driven change occurred.)
             if (msgin_pending(m))
-                raise_exception(cfg, EXC_PHASEMM);
+                raise_exception(m, EXC_PHASEMM);
         }
         // NOTE (T12 forensics): raising EXC_PHASEMM on a COMMAND
         // completion whose target has already changed phase was tried
@@ -326,27 +308,26 @@ static void pump_out(config_t *cfg) {
 }
 
 // Fill the FIFO from the bus for non-DMA DATAIN.
-static void pump_in(config_t *cfg) {
-    tnt_mesh_t *m = mesh(cfg);
-    while (m->remaining > 0 && m->fifo_n < TNT_MESH_FIFO) {
+static void pump_in(mesh_t *m) {
+    while (m->remaining > 0 && !byte_fifo_full(&m->fifo)) {
         uint8_t b;
-        if (!cfg->scsi || !scsi_pop_data_in_byte(cfg->scsi, &b)) {
+        if (!m->bus || !scsi_pop_data_in_byte(m->bus, &b)) {
             // Target has no more data: it leaves DATA IN — a short
             // transfer is a phase mismatch to the initiator.
-            if (cfg->scsi)
-                scsi_external_data_in_complete(cfg->scsi);
+            if (m->bus)
+                scsi_external_data_in_complete(m->bus);
             m->active = 0;
             m->active_dma = 0;
-            raise_exception(cfg, EXC_PHASEMM);
+            raise_exception(m, EXC_PHASEMM);
             return;
         }
         fifo_push(m, b);
         m->remaining--;
     }
     if (m->remaining == 0 && m->active != 0) {
-        if (cfg->scsi)
-            scsi_external_data_in_complete(cfg->scsi);
-        finish_command(cfg);
+        if (m->bus)
+            scsi_external_data_in_complete(m->bus);
+        finish_command(m);
     }
 }
 
@@ -354,47 +335,45 @@ static void pump_in(config_t *cfg) {
 // DBDMA channel-10 device port (the data phases)
 // ============================================================
 
-static int mesh_port_in(void *ctx, uint8_t *buf, int len) {
-    config_t *cfg = (config_t *)ctx;
-    tnt_mesh_t *m = mesh(cfg);
-    if (m->active != CMD_DATAIN || !m->active_dma || !cfg->scsi)
+int mesh_port_in(void *ctx, uint8_t *buf, int len) {
+    mesh_t *m = (mesh_t *)ctx;
+    if (m->active != CMD_DATAIN || !m->active_dma || !m->bus)
         return 0; // no transfer armed: honest stall
     int n = 0;
     while (n < len && m->remaining > 0) {
         uint8_t b;
-        if (!scsi_pop_data_in_byte(cfg->scsi, &b)) {
-            scsi_external_data_in_complete(cfg->scsi);
+        if (!scsi_pop_data_in_byte(m->bus, &b)) {
+            scsi_external_data_in_complete(m->bus);
             m->active = 0;
             m->active_dma = 0;
-            raise_exception(cfg, EXC_PHASEMM); // short transfer
+            raise_exception(m, EXC_PHASEMM); // short transfer
             break;
         }
         buf[n++] = b;
         m->remaining--;
     }
     if (m->remaining == 0 && m->active != 0) {
-        scsi_external_data_in_complete(cfg->scsi);
-        finish_command(cfg);
+        scsi_external_data_in_complete(m->bus);
+        finish_command(m);
     }
     return n;
 }
 
-static int mesh_port_out(void *ctx, const uint8_t *buf, int len) {
-    config_t *cfg = (config_t *)ctx;
-    tnt_mesh_t *m = mesh(cfg);
-    if (m->active != CMD_DATAOUT || !m->active_dma || !cfg->scsi)
+int mesh_port_out(void *ctx, const uint8_t *buf, int len) {
+    mesh_t *m = (mesh_t *)ctx;
+    if (m->active != CMD_DATAOUT || !m->active_dma || !m->bus)
         return 0;
     int n = 0;
-    while (n < len && m->remaining > 0 && scsi_get_bus_phase(cfg->scsi) == scsi_data_out) {
-        scsi_push_data_out_byte(cfg->scsi, buf[n++]);
+    while (n < len && m->remaining > 0 && scsi_get_bus_phase(m->bus) == scsi_data_out) {
+        scsi_push_data_out_byte(m->bus, buf[n++]);
         m->remaining--;
     }
-    if (m->remaining > 0 && n < len && scsi_get_bus_phase(cfg->scsi) != scsi_data_out) {
+    if (m->remaining > 0 && n < len && scsi_get_bus_phase(m->bus) != scsi_data_out) {
         m->active = 0;
         m->active_dma = 0;
-        raise_exception(cfg, EXC_PHASEMM); // target left DATA OUT early
+        raise_exception(m, EXC_PHASEMM); // target left DATA OUT early
     } else if (m->remaining == 0 && m->active != 0) {
-        finish_command(cfg);
+        finish_command(m);
     }
     return n;
 }
@@ -403,13 +382,11 @@ static int mesh_port_out(void *ctx, const uint8_t *buf, int len) {
 // The sequence command dispatch
 // ============================================================
 
-static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
-    tnt_mesh_t *m = mesh(cfg);
+static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
     uint8_t cmd = value & 0x0Fu;
     bool dma = (value & SEQ_DMA_MODE) != 0;
     m->sequence = value;
-    LOG(3, "sequence $%02X (count=%u fifo=%u conn=%d pc=%08X)", value, count, m->fifo_n, m->connected,
-        ppc_get_pc(cfg->ppc));
+    LOG(3, "sequence $%02X (count=%u fifo=%u conn=%d)", value, count, byte_fifo_count(&m->fifo), m->connected);
 
     // Starting a sequence command clears the PREVIOUS command's cause
     // latches: the ROM's native driver reads exception unconditionally
@@ -432,26 +409,29 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         // abandoned transaction (see CMD_BUSFREE) is gone by the time
         // the initiator re-arbitrates.
         if (m->connected) {
-            if (cfg->scsi)
-                scsi_external_release(cfg->scsi);
+            if (m->bus)
+                scsi_external_release(m->bus);
             m->connected = 0;
             msg_session_reset(m);
         }
         // The shared bus model has no competing initiators: arbitration
         // is always won, immediately.
         m->active = 0;
-        raise_int(cfg, INT_CMDDONE);
+        raise_int(m, INT_CMDDONE);
         return;
 
     case CMD_SELECT: {
         int target = m->dest_id & 7u;
-        if (!cfg->scsi || !scsi_external_select(cfg->scsi, target)) {
-            // Nobody home: selection timeout exception (§3.3).
-            LOG(2, "select %d: timeout", target);
+        if (!m->bus || !scsi_external_select(m->bus, target)) {
+            // Nobody home.  Report it after the period the driver programmed,
+            // NOT inside this register write -- see mesh_select_timed_out.
+            LOG(2, "select %d: nobody answered, waiting out the period", target);
             m->connected = 0;
-            raise_exception(cfg, EXC_SELTO);
+            scsi_bus_arm_select_timeout(m->bus, mesh_select_timeout_ns(m), mesh_select_timed_out, m);
             return;
         }
+        // A target answered, so any wait from a previous attempt is moot.
+        scsi_bus_cancel_select_timeout(m->bus);
         LOG(2, "select %d: connected", target);
         m->connected = 1;
         m->active = 0; // a parked transfer command is superseded
@@ -461,7 +441,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         // model is already in COMMAND, so present a virtual MSG OUT
         // phase until the driver's SEQ_MSGOUT delivers the message.
         m->msgout_pending = (value & SEQ_ATN) ? 1 : 0;
-        raise_int(cfg, INT_CMDDONE);
+        raise_int(m, INT_CMDDONE);
         return;
     }
 
@@ -473,7 +453,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
             // a mismatched transfer command trips the phase-mismatch
             // exception — the driver's message-in state picks it up.
             // MSGOUT stays legal: asserting ATN overrides the target.
-            raise_exception(cfg, EXC_PHASEMM);
+            raise_exception(m, EXC_PHASEMM);
             return;
         }
         m->active = cmd;
@@ -484,15 +464,16 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         if (m->active_dma) {
             // Data flows through the channel-10 port; wake a program
             // that stalled waiting for the device to arm.
-            tnt_dbdma_kick(tnt_st(cfg)->dbdma, 10);
+            if (m->dbdma_kick)
+                m->dbdma_kick(m->dbdma_ctx);
         } else {
-            pump_out(cfg); // consume whatever is already in the FIFO
+            pump_out(m); // consume whatever is already in the FIFO
         }
         return;
 
     case CMD_DATAIN:
         if (m->connected && msgin_pending(m)) {
-            raise_exception(cfg, EXC_PHASEMM); // MESSAGE IN pending (see above)
+            raise_exception(m, EXC_PHASEMM); // MESSAGE IN pending (see above)
             return;
         }
         m->active = cmd;
@@ -500,13 +481,17 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         m->remaining = count;
         if (!m->connected)
             return; // parked (see above)
-        if (dma)
-            tnt_dbdma_kick(tnt_st(cfg)->dbdma, 10);
-        else
-            pump_in(cfg);
-        LOG(3, "datain first bytes: %02X %02X %02X %02X (fifo_n=%u remaining=%u)", m->fifo[m->fifo_rd],
-            m->fifo[(m->fifo_rd + 1) % TNT_MESH_FIFO], m->fifo[(m->fifo_rd + 2) % TNT_MESH_FIFO],
-            m->fifo[(m->fifo_rd + 3) % TNT_MESH_FIFO], m->fifo_n, m->remaining);
+        if (dma) {
+            // Data flows through the channel-10 port; the machine owns the
+            // engine, so ask it to run.
+            if (m->dbdma_kick)
+                m->dbdma_kick(m->dbdma_ctx);
+        } else {
+            pump_in(m);
+        }
+        LOG(3, "datain first bytes: %02X %02X %02X %02X (fifo_n=%u remaining=%u)", byte_fifo_peek(&m->fifo, 0),
+            byte_fifo_peek(&m->fifo, 1), byte_fifo_peek(&m->fifo, 2), byte_fifo_peek(&m->fifo, 3),
+            byte_fifo_count(&m->fifo), m->remaining);
         return;
 
     case CMD_STATUS: {
@@ -515,18 +500,18 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
             return;
         }
         if (msgin_pending(m)) {
-            raise_exception(cfg, EXC_PHASEMM); // MESSAGE IN pending (see above)
+            raise_exception(m, EXC_PHASEMM); // MESSAGE IN pending (see above)
             return;
         }
-        int st = cfg->scsi ? scsi_external_status_byte(cfg->scsi) : -1;
+        int st = m->bus ? scsi_external_status_byte(m->bus) : -1;
         if (st < 0) {
             LOG(2, "STATUS sequence outside status phase");
-            raise_exception(cfg, EXC_PHASEMM);
+            raise_exception(m, EXC_PHASEMM);
             return;
         }
         fifo_push(m, (uint8_t)st);
         m->active = 0;
-        raise_int(cfg, INT_CMDDONE);
+        raise_int(m, INT_CMDDONE);
         return;
     }
 
@@ -539,26 +524,26 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
             // Serve the virtual message (the SDTR conversation) first;
             // the phase reverts to the live bus once it drains.
             uint32_t n = count;
-            while (n-- > 0 && msgin_pending(m))
-                fifo_push(m, m->mi_buf[m->mi_rd++]);
+            uint8_t mb;
+            while (n-- > 0 && scsi_msg_next(&m->msg, &mb))
+                fifo_push(m, mb);
             if (!msgin_pending(m)) {
-                m->mi_n = 0;
-                m->mi_rd = 0;
+                scsi_msg_reset(&m->msg);
             }
             m->active = 0;
-            raise_int(cfg, INT_CMDDONE);
+            raise_int(m, INT_CMDDONE);
             return;
         }
-        int msg = cfg->scsi ? scsi_external_message_byte(cfg->scsi) : -1;
+        int msg = m->bus ? scsi_external_message_byte(m->bus) : -1;
         if (msg < 0) {
             LOG(2, "MSGIN sequence outside message phase");
-            raise_exception(cfg, EXC_PHASEMM);
+            raise_exception(m, EXC_PHASEMM);
             return;
         }
         fifo_push(m, (uint8_t)msg);
         m->msgin_taken = 1; // delivered: the target REQs nothing more
         m->active = 0;
-        raise_int(cfg, INT_CMDDONE);
+        raise_int(m, INT_CMDDONE);
         return;
     }
 
@@ -583,8 +568,8 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         // disk boots to the Finder.  A stale connection left behind
         // by an abandoned transaction is swept by the next ARBITRATE.
         bool req_pending = false;
-        if (m->connected && cfg->scsi) {
-            switch (scsi_get_bus_phase(cfg->scsi)) {
+        if (m->connected && m->bus) {
+            switch (scsi_get_bus_phase(m->bus)) {
             case scsi_command:
             case scsi_data_in:
             case scsi_data_out:
@@ -603,16 +588,16 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
             }
         }
         if (req_pending || (m->connected && (m->msgout_pending || msgin_pending(m)))) {
-            raise_exception(cfg, EXC_PHASEMM);
+            raise_exception(m, EXC_PHASEMM);
             return;
         }
-        if (cfg->scsi)
-            scsi_external_release(cfg->scsi);
+        if (m->bus)
+            scsi_external_release(m->bus);
         m->connected = 0;
         m->msgout_pending = 0;
         m->active = 0;
         msg_session_reset(m);
-        raise_int(cfg, INT_CMDDONE);
+        raise_int(m, INT_CMDDONE);
         return;
     }
 
@@ -666,8 +651,8 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         // driver ("No interrupts") -- raise_int() latches unconditionally
         // and only the GC line is gated by the mask, which is exactly the
         // behaviour the polling loop above depends on.
-        if (m->connected && cfg->scsi)
-            scsi_external_release(cfg->scsi);
+        if (m->connected && m->bus)
+            scsi_external_release(m->bus);
         fifo_clear(m);
         m->exception = 0;
         m->error = 0;
@@ -679,7 +664,7 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
         m->msgout_pending = 0;
         m->bus0_atn = 0;
         msg_session_reset(m);
-        raise_int(cfg, INT_CMDDONE);
+        raise_int(m, INT_CMDDONE);
         return;
 
     default:
@@ -693,40 +678,28 @@ static void do_sequence(config_t *cfg, uint8_t value, uint32_t count) {
 // ============================================================
 
 // Map the live bus phase into the bus_status0 MSG/CD/IO bits (§3.2).
-static uint8_t phase_bits(config_t *cfg) {
-    tnt_mesh_t *m = mesh(cfg);
+static uint8_t phase_bits(mesh_t *m) {
     if (m->msgout_pending)
         return 0x06u; // MSG OUT — the virtual post-select-with-ATN phase
     if (msgin_pending(m))
         return 0x07u; // MSG IN — the target has an SDTR to deliver
-    if (!cfg->scsi)
-        return 0;
-    switch (scsi_get_bus_phase(cfg->scsi)) {
-    case scsi_command:
-        return 0x02u;
-    case scsi_data_in:
-        return 0x01u;
-    case scsi_data_out:
-        return 0x00u;
-    case scsi_status:
-        return 0x03u;
-    case scsi_message_in:
-        return 0x07u;
-    default:
-        return 0;
-    }
+    // Below the overlays it is just the wire, in the same MSG/C-D/I-O order.
+    // The copy this replaced had no MESSAGE OUT case at all, so that phase read
+    // back as 0x00 -- DATA OUT.  Unreachable today (only the 5380 drives the
+    // bus into MESSAGE OUT), but wrong, and wrong in the one direction a
+    // transfer-phase encoding must never be.
+    return scsi_phase_wire_bits(scsi_get_bus_phase(m->bus));
 }
 
-static uint8_t mesh_read_inner(config_t *cfg, uint32_t offset);
+static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset);
 
-uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset) {
-    uint8_t v = mesh_read_inner(cfg, offset);
-    LOG(4, "read reg %u -> $%02X (pc=%08X)", (offset >> 4) & 0xFu, v, ppc_get_pc(cfg->ppc));
+uint8_t mesh_read(mesh_t *m, uint32_t offset) {
+    uint8_t v = mesh_read_inner(m, offset);
+    LOG(4, "read reg %u -> $%02X", (offset >> 4) & 0xFu, v);
     return v;
 }
 
-static uint8_t mesh_read_inner(config_t *cfg, uint32_t offset) {
-    tnt_mesh_t *m = mesh(cfg);
+static uint8_t mesh_read_inner(mesh_t *m, uint32_t offset) {
     uint32_t idx = (offset >> 4) & 0xFu;
     switch (idx) {
     case MR_COUNT_LO:
@@ -737,7 +710,7 @@ static uint8_t mesh_read_inner(config_t *cfg, uint32_t offset) {
         uint8_t v = fifo_pop(m);
         // A draining non-DMA DATAIN refills as the driver reads.
         if (m->active == CMD_DATAIN && !m->active_dma)
-            pump_in(cfg);
+            pump_in(m);
         return v;
     }
     case MR_SEQUENCE:
@@ -745,7 +718,7 @@ static uint8_t mesh_read_inner(config_t *cfg, uint32_t offset) {
     case MR_BUS_STATUS0: {
         // REQ presents whenever a target is connected: the driver class
         // spin-waits on REQ between phases before dropping ATN.
-        uint8_t v = phase_bits(cfg);
+        uint8_t v = phase_bits(m);
         if (m->connected)
             v |= BS0_REQ;
         if (m->bus0_atn || m->msgout_pending)
@@ -755,7 +728,7 @@ static uint8_t mesh_read_inner(config_t *cfg, uint32_t offset) {
     case MR_BUS_STATUS1:
         return m->connected ? BS1_BSY : 0;
     case MR_FIFO_COUNT:
-        return m->fifo_n;
+        return byte_fifo_count(&m->fifo);
     case MR_EXCEPTION:
         return m->exception;
     case MR_ERROR:
@@ -778,11 +751,10 @@ static uint8_t mesh_read_inner(config_t *cfg, uint32_t offset) {
     return 0;
 }
 
-void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
-    tnt_mesh_t *m = mesh(cfg);
+void mesh_write(mesh_t *m, uint32_t offset, uint8_t value) {
     uint32_t idx = (offset >> 4) & 0xFu;
     if (idx != MR_SEQUENCE)
-        LOG(4, "write reg %u = $%02X (pc=%08X)", idx, value, ppc_get_pc(cfg->ppc));
+        LOG(4, "write reg %u = $%02X", idx, value);
     switch (idx) {
     case MR_COUNT_LO:
         m->remaining = (m->remaining & 0xFF00u) | value;
@@ -795,13 +767,13 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
         // A waiting out-going transfer consumes bytes as they arrive
         // (the driver issues the sequence first, then fills the FIFO).
         if (m->active == CMD_COMMAND || m->active == CMD_MSGOUT || (m->active == CMD_DATAOUT && !m->active_dma))
-            pump_out(cfg);
+            pump_out(m);
         break;
     case MR_SEQUENCE: {
         // A transfer command uses the current count; 0 arms the full
         // 65536 of the 16-bit down-counter.
         uint32_t count = m->remaining ? m->remaining : 65536u;
-        do_sequence(cfg, value, count);
+        do_sequence(m, value, count);
         break;
     }
     case MR_BUS_STATUS0:
@@ -813,8 +785,10 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
         if (value & BS1_RST) {
             // SCSI bus reset: everything back to bus-free.
             LOG(2, "bus reset via bus_status1");
-            if (cfg->scsi)
-                scsi_external_release(cfg->scsi);
+            if (m->bus) {
+                scsi_external_release(m->bus);
+                scsi_bus_reset(m->bus); // also abandons any armed select time-out
+            }
             m->connected = 0;
             m->msgout_pending = 0;
             m->active = 0;
@@ -831,11 +805,11 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
         break;
     case MR_INTR_MASK:
         m->intr_mask = value & 0x07u;
-        mesh_update_irq(cfg);
+        mesh_update_irq(m);
         break;
     case MR_INTERRUPT:
         m->interrupt &= (uint8_t)~value; // W1C
-        mesh_update_irq(cfg);
+        mesh_update_irq(m);
         break;
     case MR_SOURCE_ID:
         m->source_id = value & 7u;
@@ -870,23 +844,80 @@ void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
 // Lifecycle
 // ============================================================
 
-void tnt_mesh_reset(config_t *cfg) {
-    tnt_mesh_t *m = mesh(cfg);
-    if (m->connected && cfg->scsi)
-        scsi_external_release(cfg->scsi);
-    memset(m, 0, sizeof(*m));
+void mesh_reset(mesh_t *m) {
+    if (!m)
+        return;
+    if (m->connected && m->bus)
+        scsi_external_release(m->bus);
+    // The PLAIN-DATA region only -- the same bound the checkpoint uses.
+    //
+    // This was sizeof(*m) while the struct had no pointers and lived inside the
+    // machine's own state.  Now that it owns its bus and its callbacks, a full
+    // memset erases the wiring: the chip comes back with no bus, no interrupt
+    // line and no DBDMA kick, and the Power Macintosh never finds a boot drive.
+    memset(m, 0, offsetof(mesh_t, bus));
     m->sync_params = 2; // ASYNC_PARAMS power-on default
-    tnt_gc_set_source(cfg, TNT_INT_MESH, false);
+    if (m->irq_cb)
+        m->irq_cb(m->irq_ctx, false);
 }
 
-void tnt_mesh_init(config_t *cfg) {
-    // The DBDMA channel-10 device port (data phases).  State itself is
-    // plain data restored positionally by the tnt.c checkpoint tail.
-    tnt_dbdma_port_t port = {
-        .out = mesh_port_out,
-        .in = mesh_port_in,
-        .s_bits = NULL,
-        .ctx = cfg,
-    };
-    tnt_dbdma_set_port(tnt_st(cfg)->dbdma, 10, &port);
+// ============================================================================
+// Lifecycle
+// ============================================================================
+// The 53C96's shape, because they are peers: an opaque handle the machine
+// holds, wiring supplied by callback, and a checkpoint bounded by the first
+// pointer.
+
+mesh_t *mesh_init(struct scheduler *sched, checkpoint_t *cp) {
+    mesh_t *m = (mesh_t *)calloc(1, sizeof(mesh_t));
+    if (!m)
+        return NULL;
+    m->sched = sched;
+    if (cp) {
+        // The plain-data block only.  The pointers below it stay NULL and are
+        // re-bound by the machine (mesh_attach_bus, mesh_set_irq_callback,
+        // mesh_set_dbdma_kick).
+        system_read_checkpoint_data(cp, m, offsetof(mesh_t, bus));
+        m->sched = sched;
+    }
+    return m;
+}
+
+void mesh_delete(mesh_t *m) {
+    if (!m)
+        return;
+    // Any selection time-out this controller armed is queued on the BUS, so it
+    // must be cancelled through the bus -- an event outliving its source is
+    // what F-11/F-12 were about.
+    scsi_bus_cancel_select_timeout(m->bus);
+    free(m);
+}
+
+void mesh_checkpoint(mesh_t *m, checkpoint_t *cp) {
+    if (!m || !cp)
+        return;
+    system_write_checkpoint_data(cp, m, offsetof(mesh_t, bus));
+}
+
+void mesh_attach_bus(mesh_t *m, struct scsi *bus) {
+    if (m)
+        m->bus = bus;
+}
+
+void mesh_set_irq_callback(mesh_t *m, mesh_irq_cb cb, void *ctx) {
+    if (!m)
+        return;
+    m->irq_cb = cb;
+    m->irq_ctx = ctx;
+    // Re-drive the current level so a restore re-establishes the machine's
+    // input, the same thing scsi_53c96_set_irq_callback does.
+    if (cb)
+        cb(ctx, (m->interrupt & m->intr_mask) != 0);
+}
+
+void mesh_set_dbdma_kick(mesh_t *m, mesh_dbdma_kick_cb cb, void *ctx) {
+    if (!m)
+        return;
+    m->dbdma_kick = cb;
+    m->dbdma_ctx = ctx;
 }

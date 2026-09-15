@@ -317,36 +317,10 @@ typedef struct tnt_control {
 // scsi_external_* API the 53C96 front-end uses (mesh-scsi.md §2-§8).
 #define TNT_MESH_FIFO 16
 
-typedef struct tnt_mesh {
-    uint8_t fifo[TNT_MESH_FIFO];
-    uint8_t fifo_rd, fifo_n;
-    uint8_t sequence; // last written sequence-command byte
-    uint8_t bus0_atn; // explicitly driven ATN (bus_status0 write)
-    uint8_t exception, error; // W1C cause latches
-    uint8_t intr_mask, interrupt; // W1C summary; mask gates GC line only
-    uint8_t source_id, dest_id;
-    uint8_t sync_params, sel_timeout;
-    // Live transfer engine: the sequence command in progress and its
-    // down-counter (count_lo/hi read back the live remainder).
-    uint8_t active; // command nibble in progress (0 = idle)
-    uint8_t active_dma; // SEQ_DMA_MODE was set on the active command
-    uint32_t remaining; // bytes left on the active transfer
-    uint8_t connected; // a target is selected (bus not free)
-    uint8_t msgout_pending; // select-with-ATN: present MSG OUT until sent
-    uint8_t resel_enabled, parity_enabled;
-    // SDTR message engine (mesh.c §"Sync negotiation"): the assembled
-    // message-out bytes of the current session and the virtual
-    // message-in queue the target speaks through.  All of it is
-    // per-connection state.
-    uint8_t mo_buf[12];
-    uint8_t mo_len;
-    uint8_t mi_buf[8];
-    uint8_t mi_n, mi_rd;
-    uint8_t sdtr_await; // our SDTR request is out, awaiting the reply
-    uint8_t msgin_taken; // the bus message byte was delivered (MESSAGE IN
-                         // lingers in the bus model until release, but the
-                         // target no longer REQs — busfree must succeed)
-} tnt_mesh_t;
+// The MESH controller now lives in core/peripherals/scsi_mesh.[ch], with the
+// same shape as the 53C96: an opaque handle, its own lifecycle, its own
+// checkpoint.  tnt.c holds one.
+#include "scsi_mesh.h"
 
 // The byte ring between the SWIM3 engine (which pushes/pulls one byte at
 // a time) and DBDMA channel 1 (which moves runs of bytes per descriptor).
@@ -382,7 +356,7 @@ typedef struct tnt_state {
     tnt_control_t control;
     pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
                                // by the bus: its factory allocated it)
-    tnt_mesh_t mesh; // internal fast SCSI (mesh.c; bus = cfg->scsi)
+    mesh_t *mesh; // internal fast SCSI (core/peripherals/scsi_mesh.c)
     // The internal SuperDrive: the shared SWIM3 model behind Grand Central
     // +$15000, fed by DBDMA channel 1 through a byte ring (swim3.c).  Both
     // are plain data, checkpointed in the tail; the chip's pointer tail is
@@ -474,8 +448,6 @@ void tnt_awacs_write32(config_t *cfg, uint32_t offset, uint32_t value);
 
 // === mesh.c =================================================================
 
-void tnt_mesh_init(config_t *cfg); // power-on state + DBDMA ch-10 port
-
 // === swim3.c (tnt) ==========================================================
 // The floppy: Grand Central +$15000 on $10 centres, interrupt 19, DBDMA
 // channel 1.  init attaches the channel port; bind (after floppy_init and
@@ -488,10 +460,7 @@ void tnt_swim3_bind(config_t *cfg);
 void tnt_swim3_register_events(config_t *cfg);
 uint8_t tnt_swim3_read(config_t *cfg, uint32_t off); // off from +$15000
 void tnt_swim3_write(config_t *cfg, uint32_t off, uint8_t value);
-void tnt_mesh_reset(config_t *cfg);
 // Island access for the +$18000 block (byte registers on $10 centres).
-uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset);
-void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value);
 
 // === control.c ==============================================================
 

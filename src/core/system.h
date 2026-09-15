@@ -99,7 +99,7 @@ extern void system_destroy(config_t *config);
 
 extern config_t *global_emulator;
 
-void add_scsi_drive(config_t *restrict config, const char *filename, int scsi_id);
+bool add_scsi_drive(config_t *restrict config, const char *filename, int scsi_id);
 
 void trigger_vbl(config_t *restrict config);
 
@@ -214,13 +214,13 @@ int system_create_floppy(const char *path, bool high_density, int preferred);
 // `cdrom_attach` and the legacy `cdrom attach` command alike — the
 // underlying primitive opens the image, registers it as a SCSI device,
 // and emits the legacy "Attaching CD-ROM" stdout message.
-void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
+bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id);
 // The same, on an explicitly named SCSI bus.  A machine with more than one
 // visible bus — the Apple Network Servers' two fast/wide 53C825A channels —
 // needs `machine.scsi2.attach_cdrom` to land on the second one; NULL means
 // the machine's primary bus and is what every Macintosh path passes.
-void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
-void add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
+bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
+bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id);
 
 // Probe a floppy image at `path`. Persists volatile (/tmp/, /fd/) paths
 // to OPFS first, then opens read-only and prints the detected density.
