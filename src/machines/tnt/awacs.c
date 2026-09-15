@@ -374,9 +374,12 @@ void tnt_awacs_init(config_t *cfg) {
 void tnt_awacs_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     if (st->snd_object) {
-        audio_out_capture_detach();
-        object_detach(st->snd_object);
-        object_delete(st->snd_object);
+        // sound_object_delete(), not a hand-rolled detach-and-delete: the node
+        // owns a malloc'd sound_surface_t copy AND an attached detail child,
+        // and plain object_delete() frees neither -- it is not recursive.
+        // Same three lines asc.c grew and leaked on (fdeaed5); this file had
+        // them too.
+        sound_object_delete(st->snd_object);
         st->snd_object = NULL;
     }
     free(st->snd_stage);
