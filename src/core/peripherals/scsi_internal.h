@@ -15,6 +15,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h> // SCSI_UNIMPLEMENTED's banner, which must survive GS_FAST
 
 // ============================================================================
 // Constants and Macros
@@ -146,6 +147,12 @@
 #define ASC_INVALID_OPCODE       0x20
 #define ASC_LBA_OUT_OF_RANGE     0x21
 #define ASC_INVALID_FIELD_IN_CDB 0x24
+// 26h, for a bad value inside the DATA OUT parameter list rather than the CDB.
+// X3.131-1994 S8.2.8 makes it MODE SELECT's answer to a field reported as not
+// changeable, an unsupported block descriptor value, or a page length that does
+// not match MODE SENSE; the CDU-541 manual S5.2.2 names it for both of the
+// cases that drive has.
+#define ASC_INVALID_FIELD_IN_PARAM_LIST 0x26
 // X3.131-1994 table 71: 1Dh/00h MISCOMPARE DURING VERIFY OPERATION, for
 // device types "D W O" -- direct-access among them.
 #define ASC_MISCOMPARE_VERIFY  0x1D
@@ -174,6 +181,36 @@
 // of the defect descriptors that follow (X3.131-1986 table 8-5).  The target
 // reads this much before it knows how long the DATA OUT phase really is.
 #define SCSI_FORMAT_DEFECT_HEADER 4
+
+// The guest asked for something a real drive does and this emulator does not.
+//
+// Fault at the HOST, loudly, and name the missing function.  Deliberately NOT a
+// SCSI error to the guest: CHECK CONDITION / INVALID FIELD IN PARAMETER LIST
+// means "your request was wrong", and it was not -- the request was legal and
+// we are the ones who cannot honour it.  Telling the guest otherwise sends
+// whoever is debugging it looking at the driver.
+//
+// The banner goes to STDERR, and that is not a style choice: the assert below
+// aborts, abort() does not flush stdio, and a buffered stdout banner is
+// therefore lost exactly when it matters.  stderr is unbuffered.  (Found by
+// checking the output rather than assuming it: the first version used printf
+// and printed nothing at all.)
+//
+// It comes first so the message survives GS_FAST, where GS_ASSERTF compiles to
+// nothing and LOG is off by default (categories start at level 0, OFF).  The
+// assert then adds the host callstack, the Mac-side backtrace and the
+// instruction trace, and stops the scheduler, in every build that keeps
+// assertions -- which is every build except the shipping wasm one.
+#define SCSI_UNIMPLEMENTED(fmt, ...)                                                                                   \
+    do {                                                                                                               \
+        fprintf(stderr, "\n*** UNIMPLEMENTED SCSI FUNCTION ***\n");                                                    \
+        fprintf(stderr, "  " fmt "\n", ##__VA_ARGS__);                                                                 \
+        fprintf(stderr, "  at %s:%d in %s()\n", __FILE__, __LINE__, __func__);                                         \
+        fprintf(stderr, "  The guest's request is legal for the drive being emulated;\n");                             \
+        fprintf(stderr, "  this is an emulator limitation, not a guest error.\n");                                     \
+        fprintf(stderr, "**********************************\n\n");                                                     \
+        GS_ASSERTF(false, "unimplemented SCSI function: " fmt, ##__VA_ARGS__);                                         \
+    } while (0)
 
 // Block size and buffer limits
 #define BLOCK_SIZE 512

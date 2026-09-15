@@ -1411,6 +1411,28 @@ void command_complete(scsi_t *scsi) {
             scsi_cdrom_mode_select(scsi);
             return; // scsi_cdrom_mode_select calls phase_status itself
         }
+        // A hard disk here.  The parameter list is discarded -- with PF=0 that
+        // is what it is, "all parameters after the block descriptors are
+        // vendor-specific" (X3.131-1994 S8.2.8) -- but the block descriptor is
+        // read, because a block length this drive does not serve must not be
+        // accepted silently.
+        //
+        // Apple's formatters both send one: measured on iici-format-hd and
+        // iifx-install-76, a single MODE SELECT each carrying an 8-byte
+        // descriptor asking for 512 against a 512-byte disk.  That is the
+        // current value and costs nothing.  Anything else is a request this
+        // emulator cannot honour -- the medium is a flat image with no
+        // geometry, and changing the block length would re-map every LBA on it
+        // (which on real hardware is why S9.1.2 makes FORMAT UNIT, not MODE
+        // SELECT, the command that activates a new one).
+        if (scsi->buf.size >= 12 && scsi->buf.data[3] >= 8) {
+            uint32_t block_len = ((uint32_t)scsi->buf.data[9] << 16) | ((uint32_t)scsi->buf.data[10] << 8) |
+                                 (uint32_t)scsi->buf.data[11];
+            if (block_len != 0 && block_len != scsi->devices[target].block_size)
+                SCSI_UNIMPLEMENTED("MODE SELECT asked to change a hard disk from %u-byte to %u-byte blocks; "
+                                   "this emulator serves 512 only",
+                                   scsi->devices[target].block_size, block_len);
+        }
         break;
 
     default:

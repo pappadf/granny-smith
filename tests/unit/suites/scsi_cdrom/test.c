@@ -1027,6 +1027,98 @@ TEST(read_header_honours_the_msf_bit) {
     scsi_delete(scsi);
 }
 
+// ============================================================
+// MODE SELECT block descriptor (F-50)
+// ============================================================
+// The CDU-541 manual S5.2.2 Table 5-4 lists six block lengths this drive
+// accepts -- 256, 512, 1024, 2048, 2336, 2340 -- and says of anything else:
+// "Any other value will be considered an error.  The command will be terminated
+// with a CHECK CONDITION status.  The sense key is set to ILLEGAL REQUEST and
+// the additional sense code is set to INVALID FIELD IN PARAMETER LIST."
+//
+// Two of the six are modelled.  The rest fault at the HOST (SCSI_UNIMPLEMENTED)
+// rather than being answered, so they cannot be exercised from here -- an
+// emulator limitation is not something to assert a SCSI reply for.  What is
+// testable is the pair that works and the rejection that the manual requires.
+
+// Drive a MODE SELECT(6) carrying a 4-byte header and one 8-byte block
+// descriptor asking for `block_len`.  Returns the status byte, or 0xFF if the
+// target never reached STATUS.
+static uint8_t mode_select_block_len(scsi_t *scsi, uint32_t block_len) {
+    const uint8_t cdb[6] = {0x15, 0x00, 0x00, 0x00, 12, 0x00}; // 4 + 8
+    ASSERT_TRUE(scsi_external_select(scsi, TARGET));
+    for (int i = 0; i < 6; i++)
+        scsi_push_data_out_byte(scsi, cdb[i]);
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_out);
+
+    const uint8_t params[12] = {
+        0x00,
+        0x00,
+        0x00,
+        0x08, // header: mode data len, medium type, dev spec, bd len
+        0x00,
+        0x00,
+        0x00,
+        0x00, // descriptor: density, number of blocks
+        0x00,
+        (uint8_t)(block_len >> 16),
+        (uint8_t)(block_len >> 8),
+        (uint8_t)block_len,
+    };
+    for (int i = 0; i < 12; i++)
+        scsi_push_data_out_byte(scsi, params[i]);
+
+    uint8_t status = 0xFF;
+    if (scsi_get_bus_phase(scsi) == scsi_status) {
+        status = (uint8_t)scsi_external_status_byte(scsi);
+        scsi_external_message_byte(scsi);
+    }
+    scsi_external_release(scsi);
+    return status;
+}
+
+// 2048 is the Mode 1 sector the drive serves by default; 512 is what A/UX
+// switches its install disc to, and the switch has to stick.
+TEST(mode_select_switches_between_the_two_modelled_block_lengths) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(scsi_device_block_size(scsi, TARGET), 2048);
+
+    ASSERT_EQ_INT(mode_select_block_len(scsi, 512), STATUS_GOOD);
+    ASSERT_EQ_INT(scsi_device_block_size(scsi, TARGET), 512);
+
+    ASSERT_EQ_INT(mode_select_block_len(scsi, 2048), STATUS_GOOD);
+    ASSERT_EQ_INT(scsi_device_block_size(scsi, TARGET), 2048);
+    scsi_delete(scsi);
+}
+
+// A length the drive has never offered.  This used to be accepted silently --
+// GOOD status, block size unchanged -- which tells the guest the switch
+// happened and then serves it sectors of the old size.
+TEST(mode_select_refuses_a_block_length_the_drive_does_not_have) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(mode_select_block_len(scsi, 777), STATUS_CHECK_CONDITION);
+    ASSERT_EQ_INT(scsi_device_block_size(scsi, TARGET), 2048); // and nothing changed
+
+    uint8_t sense[18];
+    request_sense(scsi, sense);
+    ASSERT_EQ_INT(sense[2] & 0x0F, SENSE_ILLEGAL_REQUEST);
+    ASSERT_EQ_INT(sense[12], ASC_INVALID_FIELD_IN_PARAM_LIST);
+    scsi_delete(scsi);
+}
+
+// A zero-filled descriptor is how a driver says "I came here for the pages",
+// and it must not be mistaken for an unsupported block length.  Strictly the
+// CDU-541's "any other value" covers zero -- it is not in Table 5-4, and
+// X3.131-1994 S8.3.3 gives a zero block length a meaning only for SEQUENTIAL-
+// access devices -- but refusing a legal MODE SELECT over a blank field is the
+// worse error.  The hard disk path reads it the same way.
+TEST(mode_select_with_no_block_length_leaves_the_size_alone) {
+    scsi_t *scsi = attach_disc();
+    ASSERT_EQ_INT(mode_select_block_len(scsi, 0), STATUS_GOOD);
+    ASSERT_EQ_INT(scsi_device_block_size(scsi, TARGET), 2048);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disc();
     RUN(read6_at_buf_limit);
@@ -1054,6 +1146,9 @@ int main(void) {
     RUN(mode_sense_all_pages_is_exactly_the_buffer_size);
     RUN(mode_sense_header_reserved_bytes_are_zero);
     RUN(mode_sense_does_not_leak_a_previous_response);
+    RUN(mode_select_switches_between_the_two_modelled_block_lengths);
+    RUN(mode_select_refuses_a_block_length_the_drive_does_not_have);
+    RUN(mode_select_with_no_block_length_leaves_the_size_alone);
     RUN(mode_sense_unimplemented_page_is_refused);
     RUN(mode_sense_retry_counts_default_to_zero);
     RUN(apple_vendor_page_30_bytes_are_pinned);

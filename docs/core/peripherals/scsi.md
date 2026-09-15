@@ -698,6 +698,55 @@ Pages of interest:
   identity check; see `CMD_MODE_SENSE` in
   [scsi.c](../src/core/peripherals/scsi.c)).
 
+##### What MODE SELECT actually honours
+
+The **page data is discarded** on both device types.  With `PF = 0` that
+is what it is — X3.131-1994 §8.2.8: *"all parameters after the block
+descriptors are vendor-specific"* — and no mode page in this model is
+writable.  MODE SENSE with `PC = 1` says so: every page answers a
+zero changeable mask.
+
+The **block descriptor is read**, and the two device types differ
+because the drives do:
+
+| | `PC = 1` says | MODE SELECT does |
+|---|---|---|
+| CD-ROM | `FF FF FF` — changeable | switches between 512 and 2048 |
+| hard disk | `00 00 00` — not changeable | 512 only |
+
+That is a consistent pair, not an oversight.  The CDU-541 lists six
+block lengths (§5.2.2 Table 5-4: 256, 512, 1024, 2048, 2336, 2340) and
+A/UX really does switch its install disc to 512.  A hard disk's block
+length is fixed here because the medium is a flat image with no
+geometry, and on real hardware a new block length is not activated by
+MODE SELECT at all — §9.1.2 makes **FORMAT UNIT** the command that
+re-maps the medium.
+
+Three outcomes, and the difference between them is the point:
+
+* **A length this emulator serves** (512, or 2048 on the CD-ROM) —
+  applied, GOOD.
+* **A length the *drive* has but this emulator does not** (256, 1024,
+  2336, 2340 on the CD-ROM; anything but 512 on a hard disk) — a
+  **host-side fault**, `SCSI_UNIMPLEMENTED`, naming the function and the
+  value.  Deliberately *not* a SCSI error: the request was legal, and
+  telling the guest otherwise sends whoever is debugging it to look at
+  the driver.
+* **A length the drive never had** — CHECK CONDITION / ILLEGAL REQUEST /
+  INVALID FIELD IN PARAMETER LIST (`0x26`), which is what the CDU-541
+  §5.2.2 requires: *"Any other value will be considered an error."*
+
+A block length of **zero** is "not specified" and changes nothing.
+Strictly the manual's "any other value" covers it — zero is not in Table
+5-4, and §8.3.3 gives a zero block length a meaning only for
+sequential-access devices — but refusing a legal MODE SELECT over a
+field the initiator left blank is the worse error.  Both paths read it
+the same way.
+
+Measured: the only MODE SELECTs in the test corpus are one per format
+from each Apple formatter, both asking for 512 on a 512-byte disk, and
+A/UX's switch to 512 on the CD-ROM.
+
 #### READ(6)/WRITE(6) — `0x08` / `0x0A`
 
 * Group 0 layout.  21-bit LBA, 8-bit Transfer Length (`0` → 256

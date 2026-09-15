@@ -295,13 +295,50 @@ void scsi_cdrom_mode_select(scsi_t *scsi) {
     int bd_len = data[3]; // block descriptor length
     int offset = 4; // skip header
 
-    // Parse block descriptor if present — detect 512-byte sector switch (A/UX)
+    // Parse the block descriptor if present.  The CDU-541 manual S5.2.2 lists
+    // six block lengths this drive accepts (Table 5-4): 256, 512, 1024, 2048,
+    // 2336 and 2340.  "Any other value will be considered an error.  The
+    // command will be terminated with a CHECK CONDITION status.  The sense key
+    // is set to ILLEGAL REQUEST and the additional sense code is set to INVALID
+    // FIELD IN PARAMETER LIST."
+    //
+    // Two of the six are implemented -- 2048, the Mode 1 sector this drive
+    // serves by default, and 512, which is what A/UX switches its install disc
+    // to (se30-aux-3).  The other four are legal requests this emulator cannot
+    // honour, so they fault at the host rather than being answered: silently
+    // keeping the old size, which is what this did, tells the guest the switch
+    // happened and then serves it the wrong sectors.
     if (bd_len >= 8 && offset + 8 <= len) {
         uint32_t block_len =
             ((uint32_t)data[offset + 5] << 16) | ((uint32_t)data[offset + 6] << 8) | (uint32_t)data[offset + 7];
-        // Switch block size if the host requests 512 or 2048
-        if (block_len == 512 || block_len == 2048)
+        switch (block_len) {
+        case 0:
+            // A zero-filled descriptor is how a driver says "I came here for
+            // the pages, not the medium".  Strictly the manual's "any other
+            // value" covers it -- zero is not in Table 5-4, and X3.131-1994
+            // S8.3.3 defines a zero block length only for SEQUENTIAL-access
+            // devices, which this is not -- but refusing a legal MODE SELECT
+            // over a field the initiator left blank is the worse error.  Same
+            // reading on the hard disk path, so the two agree.
+            break;
+        case 512:
+        case 2048:
             scsi->devices[target].block_size = (uint16_t)block_len;
+            break;
+        case 256:
+        case 1024:
+        case 2336:
+        case 2340:
+            SCSI_UNIMPLEMENTED("MODE SELECT asked for a %u-byte CD-ROM block; the CDU-541 supports it "
+                               "(Table 5-4) but only 512 and 2048 are modelled",
+                               block_len);
+            break;
+        default:
+            // Not one the drive has ever offered: the guest is wrong, and the
+            // manual says exactly how to say so.
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_PARAM_LIST, 0x00);
+            return;
+        }
     }
 
     // Accept any remaining page data silently (truncated MODE SELECT is OK).
