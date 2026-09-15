@@ -1429,9 +1429,9 @@ void command_complete(scsi_t *scsi) {
             uint32_t block_len = ((uint32_t)scsi->buf.data[9] << 16) | ((uint32_t)scsi->buf.data[10] << 8) |
                                  (uint32_t)scsi->buf.data[11];
             if (block_len != 0 && block_len != scsi->devices[target].block_size)
-                SCSI_UNIMPLEMENTED("MODE SELECT asked to change a hard disk from %u-byte to %u-byte blocks; "
-                                   "this emulator serves 512 only",
-                                   scsi->devices[target].block_size, block_len);
+                GS_UNIMPLEMENTED("MODE SELECT asked to change a hard disk from %u-byte to %u-byte blocks; "
+                                 "this emulator serves 512 only",
+                                 scsi->devices[target].block_size, block_len);
         }
         break;
 

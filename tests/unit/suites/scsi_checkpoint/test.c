@@ -27,6 +27,7 @@
 #include "scsi_internal.h"
 #include "test_assert.h"
 
+#include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -172,6 +173,20 @@ struct object *machine_object(void) {
 }
 void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
     (void)expr, (void)file, (void)line, (void)func, (void)fmt;
+}
+// Unlike the assert above, this one is loud: a suite that reaches an
+// unimplemented function has driven the model somewhere it does not go, and
+// swallowing that would let the test pass on a machine that stopped.
+void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
+    va_list ap;
+    fprintf(stderr, "[unit] UNIMPLEMENTED: %s:%d (%s): ", file ? file : "?", line, func ? func : "?");
+    if (fmt) {
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
+    }
+    fputc('\n', stderr);
+    abort();
 }
 unsigned platform_ntz32(uint32_t v) {
     unsigned n = 0;

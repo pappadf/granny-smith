@@ -305,9 +305,9 @@ void scsi_cdrom_mode_select(scsi_t *scsi) {
     // Two of the six are implemented -- 2048, the Mode 1 sector this drive
     // serves by default, and 512, which is what A/UX switches its install disc
     // to (se30-aux-3).  The other four are legal requests this emulator cannot
-    // honour, so they fault at the host rather than being answered: silently
-    // keeping the old size, which is what this did, tells the guest the switch
-    // happened and then serves it the wrong sectors.
+    // honour, so they go to GS_UNIMPLEMENTED rather than being answered:
+    // silently keeping the old size, which is what this did, tells the guest
+    // the switch happened and then serves it the wrong sectors.
     if (bd_len >= 8 && offset + 8 <= len) {
         uint32_t block_len =
             ((uint32_t)data[offset + 5] << 16) | ((uint32_t)data[offset + 6] << 8) | (uint32_t)data[offset + 7];
@@ -329,9 +329,9 @@ void scsi_cdrom_mode_select(scsi_t *scsi) {
         case 1024:
         case 2336:
         case 2340:
-            SCSI_UNIMPLEMENTED("MODE SELECT asked for a %u-byte CD-ROM block; the CDU-541 supports it "
-                               "(Table 5-4) but only 512 and 2048 are modelled",
-                               block_len);
+            GS_UNIMPLEMENTED("MODE SELECT asked for a %u-byte CD-ROM block; the CDU-541 supports it "
+                             "(Table 5-4) but only 512 and 2048 are modelled",
+                             block_len);
             break;
         default:
             // Not one the drive has ever offered: the guest is wrong, and the
