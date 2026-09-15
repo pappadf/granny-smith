@@ -631,6 +631,31 @@ TEST(verify_up_to_the_final_block_is_accepted) {
     scsi_delete(scsi);
 }
 
+// The 10-byte decode shifts byte 2 left by 24, and byte 2 promotes to `int`:
+// for anything >= 0x80 that overflows, which is undefined behaviour rather
+// than merely implementation-defined (C11 6.5.7p4).  READ(10) has had a test
+// for this since F-04 (test_read10_large_lba_does_not_wrap); VERIFY got a
+// verbatim copy of the same decode in F-39 and no test with a high LBA, so
+// nothing reached it -- UBSan is only as good as the path a test takes
+// (03-scsi F-48).
+//
+// The refusal is the easy half; the point is that getting here is defined.
+TEST(verify_with_a_high_lba_is_refused_not_wrapped) {
+    scsi_t *scsi = attach_disk();
+    // 0x80000000 blocks x 512 is 2^40 bytes, nowhere near the 32 KB medium --
+    // but as a signed int the decode made it negative, and a negative LBA
+    // sign-extends to something that passes any bound.
+    ASSERT_EQ_INT(verify10(scsi, 0x80000000u, 1, false, NULL), STATUS_CHECK_CONDITION);
+    uint8_t key = 0, asc = 0;
+    read_sense(scsi, &key, &asc);
+    ASSERT_EQ_INT(key, SENSE_ILLEGAL_REQUEST);
+    ASSERT_EQ_INT(asc, ASC_LBA_OUT_OF_RANGE);
+
+    // Every byte set: the CDB that used to land as -1.
+    ASSERT_EQ_INT(verify10(scsi, 0xFFFFFFFFu, 0xFFFF, false, NULL), STATUS_CHECK_CONDITION);
+    scsi_delete(scsi);
+}
+
 // ...and one block further is not.  X3.131-1994 S9.1.2; the CDU-541 manual
 // S5.2.15 names the code, which its table 5-49 numbers 21h.
 TEST(verify_past_the_end_is_refused) {
@@ -962,6 +987,7 @@ int main(void) {
     RUN(test_rejected_read_does_not_grow_buffer);
     RUN(test_valid_read_still_transfers);
     RUN(verify_up_to_the_final_block_is_accepted);
+    RUN(verify_with_a_high_lba_is_refused_not_wrapped);
     RUN(verify_past_the_end_is_refused);
     RUN(verify_of_zero_blocks_is_not_an_error);
     RUN(verify_bytchk_compares_against_the_medium);

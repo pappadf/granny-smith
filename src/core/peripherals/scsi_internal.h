@@ -248,8 +248,24 @@ struct scsi {
     struct { // information about current/pending command
         uint8_t opcode; // opcode
         int lun; // logical unit number
-        int lba; // logical block address
-        int tl; // transfer length
+        // Unsigned, because every CDB field they hold is.  These were `int`,
+        // and a 10-byte decode building `data[2] << 24` overflowed it for any
+        // byte >= 0x80 -- undefined behaviour, and UBSan says so:
+        //
+        //   scsi_bus.c:719: left shift of 128 by 24 places cannot be
+        //   represented in type 'int'
+        //
+        // It produced the right answer anyway, because scsi_blocks_ok casts
+        // back through uint32_t and carries a comment explaining why it has
+        // to.  Fixing the type removes the need for that compensation, and
+        // makes the %u the LOG lines already use correct rather than lucky
+        // (03-scsi F-48).
+        //
+        // tl is 32 bits rather than the CDB's 16 so the same is true of it and
+        // so the assignments below do not narrow; scsi_get_cmd_tl() still
+        // returns uint16_t, which is the width the wire actually has.
+        uint32_t lba; // logical block address
+        uint32_t tl; // transfer length
     } cmd;
 
     /*

@@ -444,13 +444,13 @@ static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_
     const image_t *img = scsi->device_images[target];
     if (!img)
         return false;
-    // Callers hand these in as uint32_t, and must: cmd.lba and cmd.tl are
-    // `int`, and the 10-byte decode builds them with `data[2] << 24`, which
-    // overflows a signed int for any byte >= 0x80.  A CDB of FF FF FF FF lands
-    // as -1, and casting that straight to uint64_t sign-extends to
-    // 0xFFFF...FFFF, whose product with the block size wraps and passes any
-    // bound.  (Found by the scsi_bounds unit test, against the first version
-    // of THIS function.)
+    // Everything is unsigned all the way in.  cmd.lba and cmd.tl used to be
+    // `int`, built by a 10-byte decode that overflowed them for any byte
+    // >= 0x80: a CDB of FF FF FF FF landed as -1, and casting that straight to
+    // uint64_t sign-extended to 0xFFFF...FFFF, whose product with the block
+    // size wrapped and passed any bound.  (Found by the scsi_bounds unit test,
+    // against the first version of THIS function; the decode itself is fixed
+    // in 03-scsi F-48, so the compensating cast is gone.)
     uint64_t blk = scsi->devices[target].block_size;
     uint64_t off = (uint64_t)lba * blk;
     uint64_t cnt = (uint64_t)blocks * blk;
@@ -466,7 +466,7 @@ static bool scsi_blocks_ok(const scsi_t *scsi, int target, uint32_t lba, uint32_
 
 // The same question for the decoded command: does cmd.lba/cmd.tl fit?
 static bool scsi_lba_range_ok(const scsi_t *scsi, int target, size_t *off_out, size_t *cnt_out) {
-    return scsi_blocks_ok(scsi, target, (uint32_t)scsi->cmd.lba, (uint32_t)scsi->cmd.tl, off_out, cnt_out);
+    return scsi_blocks_ok(scsi, target, scsi->cmd.lba, scsi->cmd.tl, off_out, cnt_out);
 }
 
 // ...and for a command that names an address but moves nothing, which is SEEK.
@@ -714,10 +714,13 @@ void run_cmd(scsi_t *scsi) {
 
     case CMD_READ_10:
     case CMD_WRITE_10: {
-        // 10-byte CDB: LBA in bytes 2-5, transfer length in bytes 7-8
-        scsi->cmd.lba =
-            (scsi->buf.data[2] << 24) | (scsi->buf.data[3] << 16) | (scsi->buf.data[4] << 8) | scsi->buf.data[5];
-        scsi->cmd.tl = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
+        // 10-byte CDB: LBA in bytes 2-5, transfer length in bytes 7-8.
+        // Promote each byte to uint32_t before shifting, as the 6-byte decode
+        // above already does: data[2] promotes to `int`, and `<< 24` on
+        // anything >= 0x80 overflows it, which is undefined (03-scsi F-48).
+        scsi->cmd.lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
+                        ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
+        scsi->cmd.tl = ((uint32_t)scsi->buf.data[7] << 8) | (uint32_t)scsi->buf.data[8];
 
         uint16_t blk_sz = scsi->devices[target].block_size;
 
@@ -791,7 +794,7 @@ void run_cmd(scsi_t *scsi) {
         else
             lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
                   ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
-        scsi->cmd.lba = (int)lba;
+        scsi->cmd.lba = lba;
 
         LOG(1, "command: SEEK(%d) target=%d lba=%u", scsi->cmd.opcode == CMD_SEEK_6 ? 6 : 10, target, lba);
 
@@ -1191,9 +1194,9 @@ void run_cmd(scsi_t *scsi) {
         // row, 512 blocks at a time -- and the last one ends on the medium's
         // final block, so the bound below has to admit lba + len == capacity
         // exactly.
-        scsi->cmd.lba =
-            (scsi->buf.data[2] << 24) | (scsi->buf.data[3] << 16) | (scsi->buf.data[4] << 8) | scsi->buf.data[5];
-        scsi->cmd.tl = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
+        scsi->cmd.lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
+                        ((uint32_t)scsi->buf.data[4] << 8) | (uint32_t)scsi->buf.data[5];
+        scsi->cmd.tl = ((uint32_t)scsi->buf.data[7] << 8) | (uint32_t)scsi->buf.data[8];
         bool bytchk = (scsi->buf.data[1] & 0x02) != 0; // byte 1 bit 1, in both ANSI texts
         uint16_t blk_sz = scsi->devices[target].block_size;
 
@@ -1826,11 +1829,13 @@ int scsi_get_cmd_target(const scsi_t *scsi) {
 }
 
 uint32_t scsi_get_cmd_lba(const scsi_t *scsi) {
-    return scsi ? (uint32_t)scsi->cmd.lba : 0;
+    return scsi ? scsi->cmd.lba : 0;
 }
 
+// Narrowed deliberately: a transfer length is 16 bits on the wire, and the
+// field is wider only so the decode and the LOG lines do not have to cast.
 uint16_t scsi_get_cmd_tl(const scsi_t *scsi) {
-    return scsi ? scsi->cmd.tl : 0;
+    return scsi ? (uint16_t)scsi->cmd.tl : 0;
 }
 
 uint16_t scsi_get_cmd_blk_sz(const scsi_t *scsi) {
