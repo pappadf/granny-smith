@@ -323,6 +323,28 @@ void phase_status(scsi_t *scsi, uint8_t status) {
     scsi->bus.req = scsi->bus.bsy = true;
     scsi->bus.data = status;
 
+    // STATUS is the end of every data phase, so the staging buffer is spent:
+    // this function owns resetting it, and no caller should clear it again.
+    //
+    // It matters because the buffer outlives the phase.  phase_free() does not
+    // touch it and phase_command() resets `size` but not `pos`, so whatever the
+    // last transfer left stands until the next phase_data_in() -- across BUS
+    // FREE and the whole of the next command.  Nothing READS it there (every
+    // buf.size test in the tree is gated on the phase being DATA IN first, and
+    // phase_data_in assigns all three rather than reading them), with one
+    // exception: the checkpoint, which saves [0 .. pos + size) so an in-flight
+    // transfer round-trips.  Parked in STATUS there is no transfer in flight,
+    // and that span is dead payload -- measured at 518 bytes on the
+    // machine-restart row, and up to 34 KB after a CD-ROM read the initiator
+    // abandoned mid-block (03-scsi F-47).
+    //
+    // Abandoning one is ordinary, not an error path: the Mac CD driver arms a
+    // 2048-byte read, takes 512, and drives C/D+I/O in TCR to force STATUS --
+    // 10 times in the iici-cdrom-boot row.
+    scsi->buf.size = 0;
+    scsi->buf.max = 0;
+    scsi->buf.pos = 0;
+
     // Entering STATUS is a wire event; what a controller makes of it is its
     // own business.  The 5380 latches end-of-DMA here and, coming out of DATA
     // IN under DMA, deliberately withholds the interrupt -- reasoning that
@@ -1307,7 +1329,6 @@ void command_complete(scsi_t *scsi) {
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
             LOG(1, "SCSI WRITE: refusing tl=%u blk_sz=%u (%zu bytes) against buf.size=%zu raw_size=%zu", scsi->cmd.tl,
                 blk_sz, byte_cnt, scsi->buf.size, disk_size(scsi->device_images[target]));
-            scsi->buf.max = scsi->buf.size = 0;
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             return;
         }
@@ -1315,7 +1336,6 @@ void command_complete(scsi_t *scsi) {
         // And report a short write rather than discarding the count: an
         // in-bounds backing-store failure is a MEDIUM ERROR, not success.
         size_t wrote = disk_write_data(scsi->device_images[target], byte_off, scsi->buf.data, byte_cnt);
-        scsi->buf.max = scsi->buf.size = 0;
         if (wrote != byte_cnt) {
             LOG(1, "SCSI WRITE: storage took %zu of %zu bytes at offset %zu", wrote, byte_cnt, byte_off);
             scsi_check_condition(scsi, SENSE_MEDIUM_ERROR, ASC_WRITE_FAULT, 0x00);
@@ -1335,7 +1355,6 @@ void command_complete(scsi_t *scsi) {
         // agreeable GOOD.
         size_t byte_off = 0, byte_cnt = 0;
         if (!scsi_lba_range_ok(scsi, target, &byte_off, &byte_cnt) || byte_cnt != scsi->buf.size) {
-            scsi->buf.max = scsi->buf.size = 0;
             scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_LBA_OUT_OF_RANGE, 0x00);
             return;
         }
@@ -1351,7 +1370,6 @@ void command_complete(scsi_t *scsi) {
                 same = false;
         }
         free(from_medium);
-        scsi->buf.max = scsi->buf.size = 0;
         if (!same) {
             LOG(1, "SCSI VERIFY miscompare: target=%d lba=%u len=%u", target, scsi->cmd.lba, scsi->cmd.tl);
             scsi_check_condition(scsi, SENSE_MISCOMPARE, ASC_MISCOMPARE_VERIFY, 0x00);
@@ -1380,8 +1398,8 @@ void command_complete(scsi_t *scsi) {
         // Everything the initiator had to say has been heard, and the list is
         // discarded: the defects it names are locations on a physical platter,
         // and an image has none to map out.  Accepting it and formatting
-        // anyway is what a drive with a clean medium does.
-        scsi->buf.max = scsi->buf.size = 0;
+        // anyway is what a drive with a clean medium does.  phase_status()
+        // resets the staging buffer on the way out.
     } break;
 
     case CMD_MODE_SELECT:

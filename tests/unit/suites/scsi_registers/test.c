@@ -320,11 +320,87 @@ TEST(start_dma_send_asserts_drq_in_an_out_phase) {
     scsi_delete(scsi);
 }
 
+// The Mac CD-ROM driver abandons a DATA IN transfer part-way through: it arms a
+// read, takes some of it, and drives C/D+I/O in TCR to force STATUS.  Measured
+// live -- ten times in the iici-cdrom-boot row, where a 2048-byte read gives up
+// 1536 bytes undelivered, and once at 26112 of 34816.
+//
+// Nothing READS the leftover metadata (every buf.size test is gated on the
+// phase being DATA IN, and phase_data_in assigns rather than reads), but the
+// CHECKPOINT does: it saves [0 .. pos + size) so an in-flight transfer
+// round-trips, and parked in STATUS that span is dead payload carried into the
+// image.  phase_status() owns the reset now -- 03-scsi F-47.
+TEST(abandoning_a_read_through_tcr_leaves_no_staged_bytes) {
+    scsi_t *scsi = attach_disk();
+
+    wr(scsi, ODR, 1 << TARGET | 1 << 7);
+    wr(scsi, ICR, ICR_SEL);
+    wr(scsi, ICR, ICR_SEL | ICR_BSY);
+    wr(scsi, ICR, ICR_SEL); // selection completes -> COMMAND
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_command);
+
+    // READ(6), two blocks.  The CDB goes out through the ODR the way a
+    // programmed-I/O driver sends it.
+    const uint8_t cdb[6] = {0x08, 0x00, 0x00, 0x00, 0x02, 0x00};
+    for (int i = 0; i < 6; i++) {
+        wr(scsi, ODR, cdb[i]);
+        wr(scsi, ICR, ICR_DB | ICR_ACK);
+        wr(scsi, ICR, ICR_DB);
+    }
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_data_in);
+    ASSERT_TRUE(scsi->buf.size == 2u * BLK); // the whole transfer is staged
+
+    // Take a few bytes and walk away, which is what the driver does.
+    for (int i = 0; i < 4; i++) {
+        (void)rd(scsi, CSR);
+        wr(scsi, ICR, ICR_ACK);
+        wr(scsi, ICR, 0);
+    }
+    ASSERT_TRUE(scsi->buf.size > 0); // ...with most of it still staged
+
+    wr(scsi, TCR, 3); // C/D | I/O: "go to STATUS"
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+
+    // The phase is over, so the staging buffer is spent -- all three, because
+    // the checkpoint's span is pos + size and phase_command resets neither.
+    ASSERT_EQ_INT((int)scsi->buf.size, 0);
+    ASSERT_EQ_INT(scsi->buf.max, 0);
+    ASSERT_EQ_INT((int)scsi->buf.pos, 0);
+    scsi_delete(scsi);
+}
+
+// ...and the ordinary ending clears it too: a command that runs to completion
+// leaves nothing staged either, so a checkpoint taken between commands carries
+// no transfer payload at all.
+TEST(a_completed_command_leaves_no_staged_bytes) {
+    scsi_t *scsi = attach_disk();
+
+    wr(scsi, ODR, 1 << TARGET | 1 << 7);
+    wr(scsi, ICR, ICR_SEL);
+    wr(scsi, ICR, ICR_SEL | ICR_BSY);
+    wr(scsi, ICR, ICR_SEL);
+
+    // TEST UNIT READY: no data phase at all, straight to STATUS.
+    const uint8_t cdb[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    for (int i = 0; i < 6; i++) {
+        wr(scsi, ODR, cdb[i]);
+        wr(scsi, ICR, ICR_DB | ICR_ACK);
+        wr(scsi, ICR, ICR_DB);
+    }
+    ASSERT_EQ_INT(scsi_get_bus_phase(scsi), scsi_status);
+    ASSERT_EQ_INT((int)scsi->buf.size, 0);
+    ASSERT_EQ_INT(scsi->buf.max, 0);
+    ASSERT_EQ_INT((int)scsi->buf.pos, 0);
+    scsi_delete(scsi);
+}
+
 int main(void) {
     make_disk();
     RUN(phase_wire_bits_match_ansi_table_5_1);
     RUN(start_dma_send_asserts_drq_only_when_there_is_a_send_to_do);
     RUN(start_dma_send_asserts_drq_in_an_out_phase);
+    RUN(abandoning_a_read_through_tcr_leaves_no_staged_bytes);
+    RUN(a_completed_command_leaves_no_staged_bytes);
     RUN(bus_reset_raises_an_irq_that_no_mode_bit_gates);
     RUN(chip_reset_leaves_no_interrupt_behind);
     RUN(test_reselect_from_command_is_declined);
