@@ -10,11 +10,13 @@
 
 #include "scsi_53c96.h"
 
+#include "byte_fifo.h"
 #include "log.h"
 #include "scheduler.h"
 #include "scsi.h"
 #include "system.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,8 +36,31 @@ LOG_USE_CATEGORY_NAME("53c96");
 #define R_TEST      0xA // w (test mode)
 #define R_CONFIG2   0xB
 #define R_CONFIG3   0xC
-#define R_CONFIG4   0xD // 53C96 only
-#define R_TC_HIGH   0xE // 24-bit count extension (Config 2 feature)
+// 0xD and 0xE are NOT registers on this part, and 0xF is one we do not model.
+//
+// The NCR 53C94/95/96 Data Manual's Appendix A register summary lists the whole
+// file: Status 04, Interrupt 05, Sequence Step 06, Config 1 08, Test 0A,
+// Config 2 0B, Config 3 0C, and write register 0F.  The AMD Am53C94/96
+// datasheet (the second source for the same part) agrees -- its map runs 00-0C
+// then jumps to 0F.  There is no Configuration 4 and no transfer-count
+// extension: the counter is flatly two bytes, "Writing a zero to this register
+// sets a maximum transfer count of 65536 bytes".
+//
+// This file used to declare R_CONFIG4 0xD ("53C96 only") and R_TC_HIGH 0xE
+// ("24-bit count extension (Config 2 feature)").  Both describe the later
+// NCR/Emulex FAS216 family, not the part Apple shipped -- the Quadra 900
+// developer note names it: "two NCR 53C96 ICs".
+//
+// 0x0F is real and unmodelled: NCR calls it "Reserve FIFO byte (refer to
+// Config 2 Bit 7)", the AMD datasheet calls the same register DALREG, the Data
+// Alignment Register, gated by CR2 bit 7 (DAE).  It only matters for initiator
+// synchronous data-in landing on a misaligned boundary.  No guest touches it --
+// instrumented reads and writes across suite-quadra, q900-checkpoint,
+// tnt-hd-boot and ans-scsi saw 0x0F neither read nor written, and 0x0D neither
+// read nor written either.  0x0E IS read (11 times in suite-quadra, once in
+// tnt-hd-boot, at raw address 0x0E rather than through decode aliasing); it
+// returns 0 from the default case, which is what it did before and what the
+// manual tells software to expect of a reserved address.
 
 // Status register bits (Figure 4-2)
 #define ST_INT   0x80
@@ -61,9 +86,7 @@ struct scsi_53c96 {
     // Programmer-visible register file
     uint16_t xfer_count; // write side (reload value)
     uint16_t xfer_counter; // read side (live counter)
-    uint8_t fifo[FIFO_DEPTH];
-    uint8_t fifo_count;
-    uint8_t fifo_rd; // read cursor (bottom of FIFO)
+    BYTE_FIFO(FIFO_DEPTH) fifo;
     uint8_t command; // last executed command
     uint8_t status;
     uint8_t dest_id;
@@ -75,7 +98,6 @@ struct scsi_53c96 {
     uint8_t config1;
     uint8_t config2;
     uint8_t config3;
-    uint8_t config4;
     uint8_t clock_conv;
 
     bool int_line; // INT output level
@@ -101,32 +123,15 @@ struct scsi_53c96 {
 #define XFER_DATA_IN  2
 #define XFER_DATA_OUT 3
 
-// Map the bus model's phase to the 53C96 status-register phase field
-// (MSG/CD/IO wire encoding; Figure 4-2).
-static uint8_t phase_bits(int p) {
-    switch (p) {
-    case scsi_data_out:
-        return 0x0;
-    case scsi_data_in:
-        return 0x1;
-    case scsi_command:
-        return 0x2;
-    case scsi_status:
-        return 0x3;
-    case scsi_message_out:
-        return 0x6;
-    case scsi_message_in:
-        return 0x7;
-    default:
-        return 0x0;
-    }
-}
-
 // Refresh the status-register phase field from the live bus.
+//
+// STATREG bits 2:0 ARE the MSG/C-D/I-O lines (Figure 4-2), unlatched unless
+// Config 2 bit 6 says otherwise, so this is a straight copy of the wire -- no
+// 53C96-specific encoding to apply and no table of its own to keep.
 static void refresh_phase(scsi_53c96_t *c) {
     if (!c->bus)
         return;
-    c->status = (uint8_t)((c->status & ~ST_PHASE) | phase_bits(scsi_get_bus_phase(c->bus)));
+    c->status = (uint8_t)((c->status & ~ST_PHASE) | scsi_phase_wire_bits(scsi_get_bus_phase(c->bus)));
 }
 
 static void pdma_out_byte(scsi_53c96_t *c, uint8_t value);
@@ -155,12 +160,51 @@ static void post_interrupt(scsi_53c96_t *c, uint8_t bits) {
 // Selection time-out event: no target responded to a select sequence.
 // The chip disconnects and raises the Disconnect interrupt (ch. 5, select
 // sequences: "if the target does not respond within the time-out period").
-static void select_timeout_event(void *source, uint64_t data) {
+static void select_timeout_cb(void *source);
+
+// Scheduler thunk for the no-bus case above.
+static void busless_select_timeout_event(void *source, uint64_t data) {
     (void)data;
+    select_timeout_cb(source);
+}
+
+static void select_timeout_cb(void *source) {
     scsi_53c96_t *c = (scsi_53c96_t *)source;
     LOG(3, "select timeout fires (dest=%u)", c->dest_id);
     c->seq_step = 0; // no progress through the selection algorithm
     post_interrupt(c, IR_DISCONNECT);
+}
+
+// Wait out the selection period, then report.
+//
+// The wait belongs to the bus -- every controller needs the same one, and
+// reporting synchronously inside the driver's own register write is the defect
+// F-18 is about.  The period and the reporting stay here, because those are
+// this chip's.
+//
+// The exception is a chip with NO bus attached, which is how the Power
+// Macintosh models its empty 53C94 chain (tnt.c attaches no bus at all, so
+// every select finds nothing).  There is no bus object to hold the event, so
+// the chip schedules it itself.  Losing this is what made tnt-hd-boot fail to
+// find a boot drive: the timeout simply never arrived and the driver's scan
+// never finished.
+static uint64_t select_timeout_ns(scsi_53c96_t *c);
+
+static void arm_select_timeout(scsi_53c96_t *c) {
+    if (c->bus) {
+        scsi_bus_arm_select_timeout(c->bus, select_timeout_ns(c), select_timeout_cb, c);
+        return;
+    }
+    if (!c->sched) {
+        select_timeout_cb(c);
+        return;
+    }
+    uint64_t ns = select_timeout_ns(c);
+    remove_event(c->sched, busless_select_timeout_event, c);
+    if (ns != 0)
+        scheduler_new_cpu_event(c->sched, busless_select_timeout_event, c, 0, 0, ns);
+    else
+        scheduler_new_cpu_event(c->sched, busless_select_timeout_event, c, 0, 1, 0);
 }
 
 // Selection time-out in nanoseconds: RV * 8192 * clock-conversion / clock
@@ -179,30 +223,28 @@ static uint64_t select_timeout_ns(scsi_53c96_t *c) {
     return ticks * 1000000000ull / c->clock_hz;
 }
 
-// FIFO helpers.  The bottom element and flags clear on chip reset; contents
-// otherwise persist (ch. 4, FIFO register).
+// The ring itself is byte_fifo.h's; what is 53C96-specific is what happens at
+// the ends, and both ends are specified.  Manual ch. 4, FIFO Register
+// (read/write address 02): "The bottom FIFO element and the FIFO flags are
+// initialized to zero during hardware reset, software reset chip and the
+// beginning of bus initiated selection or reselection.  The contents of the
+// rest of the FIFO are not changed by any reset, but when the flags are zero,
+// successive FIFO reads will access the bottom register."
 static void fifo_flush(scsi_53c96_t *c) {
-    c->fifo_count = 0;
-    c->fifo_rd = 0;
-    c->fifo[0] = 0;
+    byte_fifo_clear(&c->fifo);
+    c->fifo.buf[0] = 0; // the bottom element, zeroed with the flags
 }
 
 static void fifo_push(scsi_53c96_t *c, uint8_t v) {
-    if (c->fifo_count >= FIFO_DEPTH) {
+    if (!byte_fifo_push(&c->fifo, v))
         c->status |= ST_GE; // top of FIFO overwritten (gross error)
-        return;
-    }
-    c->fifo[(c->fifo_rd + c->fifo_count) % FIFO_DEPTH] = v;
-    c->fifo_count++;
 }
 
 static uint8_t fifo_pop(scsi_53c96_t *c) {
-    uint8_t v = c->fifo[c->fifo_rd];
-    if (c->fifo_count > 0) {
-        c->fifo_count--;
-        c->fifo_rd = (uint8_t)((c->fifo_rd + 1) % FIFO_DEPTH);
-    }
-    return v; // empty FIFO re-reads the bottom register
+    uint8_t v;
+    if (!byte_fifo_pop(&c->fifo, &v))
+        return c->fifo.buf[c->fifo.rd]; // flags zero: reads access the bottom register
+    return v;
 }
 
 // Chip reset: same effect as hardware reset (ch. 5).  Time-out, transfer
@@ -222,8 +264,7 @@ static void chip_reset(scsi_53c96_t *c) {
     if (c->bus)
         scsi_external_release(c->bus);
     set_int(c, false);
-    if (c->sched)
-        remove_event(c->sched, select_timeout_event, c);
+    scsi_bus_cancel_select_timeout(c->bus);
 }
 
 void scsi_53c96_reset(scsi_53c96_t *c) {
@@ -260,8 +301,12 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         break;
     case 0x03: // Reset SCSI bus
         c->xfer_mode = XFER_IDLE;
-        if (c->bus)
+        if (c->bus) {
             scsi_external_release(c->bus);
+            // Every target on the wire goes back to its power-on state; this
+            // chip's own state is the two lines around it.
+            scsi_bus_reset(c->bus);
+        }
         // Interrupt only when reset reporting is enabled (Config 1 bit 6 = 0).
         if (!(c->config1 & 0x40))
             post_interrupt(c, IR_SCSI_RST);
@@ -272,36 +317,20 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
     case 0x46: // Select with ATN3
     {
         if (!c->bus || !scsi_external_select(c->bus, c->dest_id)) {
-            // No device at the destination ID: selection time-out.
-            if (c->sched) {
-                uint64_t to_ns = select_timeout_ns(c);
-                if (to_ns != 0) {
-                    scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 0, to_ns);
-                } else {
-                    // Timeout register still zero: the driver selected before
-                    // programming address 05, which MkLinux DR3's 53c94 driver
-                    // does on every empty ID of its bus scan.  The datasheet
-                    // formula (RV * 8192 * CCF / clock) then yields zero, and
-                    // the scheduler requires exactly one of cycles/ns to be
-                    // non-zero.
-                    //
-                    // ONE CYCLE, not a substituted default.  A zero-delay
-                    // insert already landed on the current timestamp and fired
-                    // at the next queue drain, so one cycle is that same
-                    // behaviour spelled legally.  Handing it the ANSI 250 ms
-                    // instead would invent a wait the guest never asked for and
-                    // stretch every empty ID of that scan.
-                    scheduler_new_cpu_event(c->sched, select_timeout_event, c, 0, 1, 0);
-                }
-            } else {
-                select_timeout_event(c, 0);
-            }
+            // No device at the destination ID: wait out the period the driver
+            // programmed, then report.  The wait itself is the bus's (every
+            // controller needs the same one); the period and what gets
+            // reported are this chip's.  The zero-period case -- MkLinux DR3
+            // selects before programming address 05 -- is handled there.
+            arm_select_timeout(c);
             break;
         }
+        // A target answered; nothing is owed.
+        scsi_bus_cancel_select_timeout(c->bus);
         // Message byte(s) first for the ATN variants (IDENTIFY etc.) —
         // informational to the v1 target model; consumed from the FIFO.
         int msg_bytes = (code == 0x41) ? 0 : (code == 0x46) ? 3 : 1;
-        for (int i = 0; i < msg_bytes && c->fifo_count > 0; i++)
+        for (int i = 0; i < msg_bytes && byte_fifo_count(&c->fifo) > 0; i++)
             (void)fifo_pop(c);
         if (code == 0x43) {
             // Select-with-ATN-and-stop: halt after the message byte.
@@ -312,7 +341,7 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
         }
         // CDB from the FIFO; run_cmd dispatches on the full CDB and moves
         // the bus out of COMMAND phase.
-        while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
+        while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
             scsi_push_data_out_byte(c->bus, fifo_pop(c));
         if (scsi_get_bus_phase(c->bus) != scsi_command) {
             c->seq_step = 4; // completed the whole select sequence
@@ -399,8 +428,15 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
             } else if (ph == scsi_data_out) {
                 if (dma) {
                     c->xfer_mode = XFER_DATA_OUT; // aperture writes push the payload
+                    // Anything the driver preloaded into the FIFO belongs to
+                    // THIS transfer and goes out first.  The FIFO is the
+                    // chip's datapath, not a side buffer.  It is NOT counted
+                    // against the transfer counter: the driver already took
+                    // it off the count before writing it.
+                    while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
+                        scsi_push_data_out_byte(c->bus, fifo_pop(c));
                 } else {
-                    while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
+                    while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_data_out)
                         scsi_push_data_out_byte(c->bus, fifo_pop(c));
                     refresh_phase(c);
                     post_interrupt(c, IR_BUS_SERVICE);
@@ -427,7 +463,7 @@ static void execute_command(scsi_53c96_t *c, uint8_t cmd) {
                 if (dma) {
                     c->xfer_mode = XFER_CMD_OUT;
                 } else {
-                    while (c->fifo_count > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
+                    while (byte_fifo_count(&c->fifo) > 0 && scsi_get_bus_phase(c->bus) == scsi_command)
                         scsi_push_data_out_byte(c->bus, fifo_pop(c));
                     refresh_phase(c);
                     post_interrupt(c, IR_FUNC_COMPLETE | IR_BUS_SERVICE);
@@ -518,7 +554,7 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
         // pseudo-DMA read is armed (capped at the 16-byte FIFO width), else
         // the command/status FIFO count.  Upper 3 bits duplicate seq step.
         uint32_t avail = (c->xfer_mode == XFER_DATA_IN) ? (c->counter_live < FIFO_DEPTH ? c->counter_live : FIFO_DEPTH)
-                                                        : c->fifo_count;
+                                                        : byte_fifo_count(&c->fifo);
         return (uint8_t)(((c->seq_step & 7) << 5) | (avail & 0x1F));
     }
     case R_CONFIG1:
@@ -527,8 +563,6 @@ static uint8_t reg_read_body(scsi_53c96_t *c, uint32_t reg) {
         return c->config2;
     case R_CONFIG3:
         return c->config3;
-    case R_CONFIG4:
-        return c->config4;
     default:
         return 0;
     }
@@ -596,9 +630,6 @@ void scsi_53c96_write(scsi_53c96_t *c, uint32_t reg, uint8_t value) {
     case R_CONFIG3:
         c->config3 = value;
         break;
-    case R_CONFIG4:
-        c->config4 = value;
-        break;
     default:
         break;
     }
@@ -609,37 +640,53 @@ scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkp
     if (!c)
         return NULL;
     c->sched = sched;
-    c->clock_hz = clock_hz;
     chip_reset(c);
     if (cp) {
-        // Restore the plain-data prefix; pointers/callbacks re-bind after.
-        scsi_53c96_t saved;
-        system_read_checkpoint_data(cp, &saved, sizeof(saved));
-        saved.sched = sched;
-        saved.clock_hz = clock_hz;
-        saved.irq_cb = NULL;
-        saved.irq_ctx = NULL;
-        saved.bus = NULL; // re-attached by the machine after restore
-        saved.xfer_mode = XFER_IDLE; // mid-transfer restore lands in Phase I
-        *c = saved;
+        // Read straight into the chip: the block stops before `sched`, so the
+        // pointers this calloc left NULL stay NULL and are re-bound by the
+        // machine (scsi_53c96_attach_bus, scsi_53c96_set_irq_callback).
+        system_read_checkpoint_data(cp, c, offsetof(scsi_53c96_t, sched));
+        c->xfer_mode = XFER_IDLE; // mid-transfer restore lands in Phase I
     }
+    // The machine's clock wins over whatever the checkpoint carried: it is a
+    // property of the board this chip is being built into, not of the saved
+    // session.
+    c->clock_hz = clock_hz;
+    // The selection time-out's scheduler event belongs to the bus now
+    // (scsi_bus_arm_select_timeout).  The one exception is a chip with no bus
+    // attached -- the Power Macintosh's empty 53C94 chain -- which still needs
+    // an event type of its own.
     if (sched)
-        scheduler_new_event_type(sched, "53c96", c, "select_timeout", select_timeout_event);
+        scheduler_new_event_type(sched, "53c96", c, "select_timeout", busless_select_timeout_event);
     return c;
 }
 
 void scsi_53c96_delete(scsi_53c96_t *c) {
     if (!c)
         return;
+    // Any time-out this chip armed is queued on the BUS now, so it must be
+    // cancelled through the bus -- see F-11/F-12: an event outliving its
+    // source is the class of bug this destructor exists to avoid.
+    scsi_bus_cancel_select_timeout(c->bus);
     if (c->sched)
-        remove_event(c->sched, select_timeout_event, c);
+        remove_event(c->sched, busless_select_timeout_event, c);
     free(c);
 }
 
 void scsi_53c96_checkpoint(scsi_53c96_t *c, checkpoint_t *cp) {
     if (!c || !cp)
         return;
-    system_write_checkpoint_data(cp, c, sizeof(*c));
+    // The plain-data block only, bounded by the first pointer -- the same shape
+    // via_t, scc_t, rtc_t and struct scsi use.
+    //
+    // This used to be sizeof(*c), which put `sched`, `bus`, `irq_cb` and
+    // `irq_ctx` into the file: 32 of 88 bytes were host addresses, measured.
+    // The restore overwrote them on the way back in, so it was never unsafe --
+    // but it made checkpoints depend on ASLR, so the same machine saved twice
+    // produced different files and "save, save again, diff" could not be used
+    // to verify anything.  The struct was already ordered for this; only the
+    // bound was wrong.
+    system_write_checkpoint_data(cp, c, offsetof(scsi_53c96_t, sched));
 }
 
 void scsi_53c96_set_irq_callback(scsi_53c96_t *c, scsi_53c96_irq_cb cb, void *context) {
@@ -794,6 +841,25 @@ bool scsi_53c96_dreq(scsi_53c96_t *c) {
 // §8.2.10 has the target send the lesser of the allocation length and the data
 // it holds — so the initiator must see the phase change and finish with a
 // residual, which is what this posts.
+// The phase gate closed on a transfer that is still armed: the target sent
+// less than the initiator asked for and has already moved on.  Unlike a CPU
+// draining the aperture, a bus-master pump never asks the chip for the byte
+// that would reveal this, so it tells the chip directly — which then posts the
+// phase-change interrupt the driver is waiting on instead of leaving DREQ
+// asserted forever.
+//
+// Gated on having moved at least one byte and on the read direction, so it can
+// only ever end a data-in transfer that genuinely ran out, never a selection
+// still streaming its CDB.
+//
+// The measured symptom, on the PDM where this was first needed: Drive Setup
+// 2.0d5c2 hanging at "Setting drive options..." because a MODE SENSE(6) asked
+// for 16 bytes and the drive had 12.
+void scsi_53c96_dma_end_if_short(scsi_53c96_t *c, int moved, bool mem_to_scsi, bool phase_ok) {
+    if (moved > 0 && !mem_to_scsi && !phase_ok && scsi_53c96_dreq(c))
+        scsi_53c96_dma_short_transfer(c);
+}
+
 void scsi_53c96_dma_short_transfer(scsi_53c96_t *c) {
     if (!c || !c->bus || c->xfer_mode != XFER_DATA_IN)
         return;

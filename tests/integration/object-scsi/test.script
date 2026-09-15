@@ -67,4 +67,45 @@ assert machine.scsi.identify_cdrom("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RET
 assert machine.scsi.identify_cdrom("${$WORK_DIR}/ident-hd.img") == false "blank HD image wrongly identified as CD-ROM"
 assert machine.scsi.identify_cdrom("${$WORK_DIR}/ident-fd.img") == false "floppy wrongly identified as CD-ROM"
 
+# --- eject / insert round-trip ----------------------------------------------
+# eject() is deliberately type-agnostic: on a hard disk it is "detach this
+# disk" (scsi_eject_device takes any id, and the CD-ROM's PREVENT lock is the
+# only thing that refuses it).  insert() has to be its counterpart, and was
+# not: it called add_scsi_cdrom() whatever the slot held, so putting a hard
+# disk back turned it into a read-only SONY CDU-8002 with 2048-byte blocks
+# (03-scsi F-45).
+#
+# The slot's type survives an eject -- scsi_eject_device clears
+# medium_present and the image pointer, never the type -- so insert() asks it.
+
+# Hard disk: out and back in as a hard disk.
+assert machine.scsi.device[0].type == "hd" "slot 0 should start as a hard disk"
+assert machine.scsi.device[0].eject() "ejecting the boot HD failed"
+assert machine.scsi.device[0].medium_present == false "HD still reports a medium after eject"
+assert machine.scsi.device[0].insert("${$WORK_DIR}/ident-hd.img") "re-inserting the HD failed"
+assert machine.scsi.device[0].type == "hd" "HD came back as ${machine.scsi.device[0].type} after insert"
+assert machine.scsi.device[0].read_only == false "HD came back read-only after insert"
+assert machine.scsi.device[0].block_size == 512 "HD came back with ${machine.scsi.device[0].block_size}-byte blocks"
+
+# CD-ROM: the case that always worked, pinned so the type lookup cannot
+# regress it in the other direction.
+assert machine.scsi.attach_cdrom("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso", 3) "attach_cdrom failed"
+assert machine.scsi.device[3].type == "cdrom" "slot 3 should be a CD-ROM"
+assert machine.scsi.device[3].eject() "ejecting the CD failed"
+assert machine.scsi.device[3].insert("../../data/aux/aux_3.0.1/APPLE_AUX_3-0-1_RETAIL.iso") "re-inserting the CD failed"
+assert machine.scsi.device[3].type == "cdrom" "CD came back as ${machine.scsi.device[3].type} after insert"
+assert machine.scsi.device[3].read_only == true "CD came back writable after insert"
+assert machine.scsi.device[3].block_size == 2048 "CD came back with ${machine.scsi.device[3].block_size}-byte blocks"
+
+# An attach that cannot open its file must SAY so.  add_scsi_drive_on and
+# add_scsi_cdrom_on returned void and their callers reported success
+# unconditionally, so `attach_hd` on a missing file printed "Failed to open
+# image" and then answered true -- which is how the first version of the
+# round-trip test above passed while inserting nothing at all.
+assert machine.scsi.attach_hd("${$WORK_DIR}/no-such-file.img", 4) == false "attach_hd invented a disk"
+assert try(machine.scsi.device[4], none) == none "slot 4 must still be empty"
+assert machine.scsi.attach_cdrom("${$WORK_DIR}/no-such-file.iso", 5) == false "attach_cdrom invented a disc"
+assert try(machine.scsi.device[5], none) == none "slot 5 must still be empty"
+assert machine.scsi.device[0].insert("${$WORK_DIR}/no-such-file.img") == false "insert invented a medium"
+
 quit

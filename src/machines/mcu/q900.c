@@ -210,14 +210,22 @@ int q900_build_devices(config_t *cfg, checkpoint_t *cp) {
 
     // Internal SCSI bus: carries the configured disks + CD through the
     // shared bus/target model; the internal 53C96 fronts it.
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96, q900_scsi96_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96, cfg->scsi);
 
     // External SCSI bus: electrically isolated second 53C96 (ref §12.1).
     // No default devices in v1 — selections time out like an empty chain.
-    st->scsi_ext = scsi_init(NULL, cp);
+    //
+    // It mounts as `machine.scsi2`, not `machine.scsi`.  Both buses used to
+    // call scsi_init(), which names its object "scsi"; object_attach()
+    // head-pushes and the lookup returns the first match, so `machine.scsi`
+    // resolved to whichever bus was constructed *last* -- this empty one.
+    // The boot disk on the internal bus was unreachable from the object tree.
+    // TNT already does it this way (tnt.c: "scsi2"), and scsi.h documents the
+    // second-bus case; the Q900 predates the helper and was never converted.
+    st->scsi_ext = scsi_init_named(cp, "scsi2");
     st->scsi96_ext = scsi_53c96_init(cfg->scheduler, 25000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96_ext, q900_scsi96_ext_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96_ext, st->scsi_ext);

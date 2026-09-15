@@ -1225,8 +1225,11 @@ void av_singer_delete(av_singer_t *s) {
         object_delete(s->ain_object);
     }
     if (s->object) {
-        object_detach(s->object);
-        object_delete(s->object);
+        // The sound node only: sound_object_delete() takes the malloc'd surface
+        // copy and the attached detail child with it, which object_delete()
+        // does not.  The two audio-in nodes above are plain object_new() and
+        // are correct as they are.
+        sound_object_delete(s->object);
     }
     if (s->cfg && s->cfg->scheduler)
         remove_event(s->cfg->scheduler, &singer_frame_event, s);

@@ -129,10 +129,17 @@ The CPU has to know *when* the next byte is ready:
 | Mirror writes         | Must be on **odd** CPU addresses (LDS)       |
 | `$5800drn`            | Address formation: R/W, DMA, register-number |
 
-Our emulator registers the SCSI memory interface at `0x00500000`
-spanning 1 MB (see [scsi.c `scsi_init`](../src/core/peripherals/scsi.c)),
-covering both the `$500000` reserved block and the `$580000` SCSI
-window.
+Our Macintosh Plus registers the SCSI memory interface at `0x00500000`
+spanning 1 MB — see `plus.c`, not the chip model.  Where a controller
+answers is the machine's decode, and every 5380 machine places
+`scsi_get_memory_interface()` itself; the Plus mapping used to be
+compiled into `scsi_5380_attach()` in `src/core`, which meant one
+machine's address lived inside the chip.  The 1 MB span covers both the
+`$500000` reserved block and the `$580000` SCSI window, because
+*Guide to the Macintosh Family Hardware*, 2nd ed., ch. 3 notes that "A18
+through A10, A8, A7, and A3 through A1 have no significance for the SCSI
+in the Macintosh Plus computer, so there are thousands of possible
+addresses that will access the same register".
 
 Bit semantics of the address LSBs:
 
@@ -401,39 +408,62 @@ chip or a workaround for a glue-logic race.  A/UX gates it on
 SE/30 it always fires.  Either way, it must be silently absorbed
 by the chip emulation.
 
-**Scope: BLIND window only.**  This primer behavior is a property of
-the BLIND alias (`$12000`), where the host writes ahead of the target.
-The GLUE/MDU decode marks the BLIND `write_off` with `SCSI_BLIND_SEL`
-(bit `0x400`, [scsi.h](../src/core/peripherals/scsi.h)); the ODR write
-handler in [scsi.c](../src/core/peripherals/scsi.c) `write_uint8` applies
-the primer gate to that window only.  The DRQ alias (`$06000`) is
-`/DTACK`-paced — a write happens only once the chip is ready — so it has
-no "write ahead of REQ" window and is never gated.  This matters:
-**classic Mac OS drives its pseudo-DMA writes through the DRQ window**,
-and a zero-filled block (e.g. an HFS volume bitmap or B-tree node) whose
-first byte is legitimately `$00` must NOT be dropped.  Gating the DRQ
-window broke System 6.0.8 Apple HD SC Setup's HFS volume init — it wrote
-only the MDB and one bitmap block, then aborted with "unable to mount
-volume" (guarded now by the `iici-format-hd` integration test, which drives
-the 5380 through the MDU; the test was re-hosted from the IIcx in the
-integration-test rework so the guard covers the MDU bus path).
+**How the emulator drops it: the handshake, and nothing else.**
 
-Within the BLIND window, the emulator currently still distinguishes the
-A/UX primer from a real leading byte with a **PC-discriminated primer
-slot**: the first `data_out` write is held until the second; if the held
-byte is `$00` and the two writes come from different CPU PCs, the held
-byte was the primer and is discarded.  **This PC check is the one
-remaining non-hardware-faithful element** — a real NCR 5380 cannot see
-the CPU's program counter.  The faithful model is to reproduce the
-chip's ODR→bus clock timing: a byte written before the *target's* first
-`*REQ` is overwritten by the next write before it is clocked, so the
-primer drops on its own.  That requires modeling per-byte `*REQ`/ACK
-timing on the send path (the initiator polls DRQ, but the byte is
-committed to the bus only on the target's `*REQ`, which lags); a
-straightforward "drop the pre-poll write" or "drop a leading `$00`"
-approximation is not enough, because A/UX polls DRQ *before* writing the
-primer and Mac OS legitimately writes leading `$00` bytes.  See the
-`scsi_odr_auto_handshake_byte` comment for the full analysis.
+A byte is transferred only when the target is asking for one.
+X3.131-1986 §5.1.5.1, DATA OUT: "the target shall request information by
+asserting REQ.  The initiator shall drive DB(7-0,P) … and assert ACK."
+REQ leads.  An initiator that drives data before it is not handshaking,
+and nothing moves.
+
+The target reaches that point in two steps, not one.  §5.1.5: the C/D,
+I/O and MSG lines "are valid for a **bus settle delay** before the
+assertion of REQ of the first handshake" — 400 ns per §4.7.6.  So
+`phase_data_out()` makes the phase visible immediately (an initiator
+arming a transfer must see DATA OUT) and leaves REQ false for
+`SCSI_DATA_OUT_SETTLE_CYCLES`.  The primer arrives inside that window
+and is never handshaked.
+
+The measured timing on `iix-aux3-boot`, from the moment the command
+completes:
+
+| event | cycles | writer |
+|---|---|---|
+| A/UX's primer | 112 | `$1004B890` |
+| first real byte | 1308 | `$10049760` |
+| the unrolled loop | +28 each | `$100497A4` … |
+| polled SCSI Manager's first byte | 464 | `$0001047E` |
+
+The settle sits at 256 — after the primer, before any polled driver's
+first write.  Nothing identifies the primer; a driver that polls simply
+waits, which is what the hardware makes it do.
+
+This also protects the case the DRQ window used to protect by accident:
+**classic Mac OS legitimately writes leading `$00` bytes** (an HFS volume
+bitmap or B-tree node), and dropping them broke System 6.0.8 Apple HD SC
+Setup's HFS volume init — it wrote only the MDB and one bitmap block,
+then aborted with "unable to mount volume" (guarded by `iici-format-hd`,
+which drives the 5380 through the MDU). Those writes follow a poll, so
+they land after the settle and are transferred.
+
+> **Corrected 2026-09-14.** This section used to describe a
+> **PC-discriminated primer slot** — hold the first `data_out` write,
+> discard it if it was `$00` and the next write came from a different CPU
+> program counter — and called it "the one remaining non-hardware-faithful
+> element".  A 5380 cannot see the program counter.  It is gone, with
+> `primer_held`/`primer_byte`/`primer_pc`, the `apply_primer_gate`
+> parameter, and the `SCSI_BLIND_SEL` decode bit (`0x400`) that selected
+> the window it applied to — which also aliased a real Macintosh Plus
+> address bit, since *Guide to the Macintosh Family Hardware* ch. 3 lists
+> A10 as having "no significance for the SCSI".
+>
+> The replacement it proposed — reproduce the ODR→bus clock so "a byte
+> written before the target's first REQ is overwritten by the next write
+> before it is clocked" — is the datasheet's mechanism for how real
+> hardware tolerates the write, but the measurements above rule it out as
+> the explanation here: 1196 cycles is ~75 µs at 16 MHz, and a target that
+> had entered DATA OUT would have asserted REQ long before that.  What
+> saves the primer is that the target has not entered the phase yet.
 
 Visible symptom the primer handling fixes: A/UX 3.0.1 Easy Install
 dialog shows `(SCSI device 0 on bus 1) Untitled` instead of `☐Untitled`
@@ -483,14 +513,38 @@ Modern emulation abstracts away CHS addressing in favour of LBA.
 
 ### 8.2 Command Descriptor Blocks (CDBs)
 
-SCSI groups opcodes by CDB length:
+The top three bits of the opcode are its *group code*, and the group code fixes
+the CDB's length. ANSI X3.131-1986 (SCSI-1) §6.2.1 defines groups 0, 1 and 5 and
+leaves 2, 3 and 4 reserved; the Am53C94 datasheet (STATREG bit 3, "Group Code
+Valid") records how a target of this era sizes the rest. `cmd_size()` in
+`scsi_bus.c` implements the combined table:
 
-* **Group 0 (6-byte)** — opcodes `0x00–0x1F`; most core SCSI-1
-  commands.
-* **Group 1 (10-byte)** — opcodes `0x20–0x5F`; READ(10), WRITE(10),
-  READ CAPACITY(10), VERIFY(10), etc.
-* **Group 5 (12-byte)** — opcodes `0xA0–0xBF`; READ(12), WRITE(12),
-  some optical/other.
+| Group | Opcodes     | Length | Source                                                     |
+| ----- | ----------- | ------ | ---------------------------------------------------------- |
+| 0     | `0x00–0x1F` | 6      | SCSI-1. Most core commands: READ(6), WRITE(6), INQUIRY, …  |
+| 1     | `0x20–0x3F` | 10     | SCSI-1. READ(10), WRITE(10), READ CAPACITY, VERIFY, …      |
+| 2     | `0x40–0x5F` | 10     | SCSI-2. The CD-ROM audio set (`0x42`–`0x4B`) lives here.   |
+| 3     | `0x60–0x7F` | 6      | Reserved; the 53C94 treats reserved groups as 6-byte.      |
+| 4     | `0x80–0x9F` | 6      | Reserved, likewise. 16-byte group 4 is a SCSI-3 addition.  |
+| 5     | `0xA0–0xBF` | 12     | SCSI-1. READ(12), WRITE(12), some optical.                 |
+| 6     | `0xC0–0xDF` | 10     | Vendor unique. Ours is a Sony CDU-541 (see §Sony below).   |
+| 7     | `0xE0–0xFF` | 10     | Vendor unique; the 53C94 always treats these as 10-byte.   |
+
+Group 2 is conditional on real hardware — the 53C94 sizes it at 10 bytes only
+when its S2FE bit is set, and treats it as reserved otherwise — but the audio
+commands we implement are group 2, so we size it at 10 unconditionally.
+
+Group 6 is the one place the chip's default is wrong for us. The 53C94 guesses
+six bytes for group 6, but a vendor group's length is defined by the device, and
+the device we model is a Sony CDU-541 whose vendor commands are 10-byte CDBs
+(CDU-541 SCSI manual §5.2.23: READ TOC `0xC1` runs byte 0 through byte 9).
+
+Length matters beyond bookkeeping: `run_cmd()` dispatches the moment the
+accumulated byte count matches, so an undersized entry dispatches the command
+early and spills the remainder of the CDB into the following bus phase. An
+opcode we do not implement must still be counted correctly, so that it can be
+declined with ILLEGAL REQUEST / INVALID OPCODE rather than corrupting whatever
+comes next.
 
 #### Common 6-byte (Group 0) layout
 
@@ -567,7 +621,20 @@ payloads.  Multi-byte numeric fields are big-endian.
 * CDB: `00 | (lun<<5) | 00 | 00 | 00 | 00`
 * Phases: COMMAND → STATUS → MESSAGE IN.
 * Status: GOOD if ready; CHECK CONDITION with sense NOT READY when
-  spun down / media absent.
+  media is absent — on **any** device type, not just the CD-ROM.
+
+The additional sense code depends on the device, because the codes
+themselves do (see §8.7):
+
+| Device   | ASC    | Meaning                        |
+|----------|--------|--------------------------------|
+| CD-ROM   | `0xB0` | Caddy not inserted in drive    |
+| anything else | `0x3A` | MEDIUM NOT PRESENT        |
+
+The command is deliberately *not* on the "needs medium" list that
+fails other commands before they run — reporting readiness is the one
+thing a drive with no medium must still do — so it carries its own
+check.
 
 #### REQUEST SENSE — `0x03` (6)
 
@@ -631,6 +698,55 @@ Pages of interest:
   identity check; see `CMD_MODE_SENSE` in
   [scsi.c](../src/core/peripherals/scsi.c)).
 
+##### What MODE SELECT actually honours
+
+The **page data is discarded** on both device types.  With `PF = 0` that
+is what it is — X3.131-1994 §8.2.8: *"all parameters after the block
+descriptors are vendor-specific"* — and no mode page in this model is
+writable.  MODE SENSE with `PC = 1` says so: every page answers a
+zero changeable mask.
+
+The **block descriptor is read**, and the two device types differ
+because the drives do:
+
+| | `PC = 1` says | MODE SELECT does |
+|---|---|---|
+| CD-ROM | `FF FF FF` — changeable | switches between 512 and 2048 |
+| hard disk | `00 00 00` — not changeable | 512 only |
+
+That is a consistent pair, not an oversight.  The CDU-541 lists six
+block lengths (§5.2.2 Table 5-4: 256, 512, 1024, 2048, 2336, 2340) and
+A/UX really does switch its install disc to 512.  A hard disk's block
+length is fixed here because the medium is a flat image with no
+geometry, and on real hardware a new block length is not activated by
+MODE SELECT at all — §9.1.2 makes **FORMAT UNIT** the command that
+re-maps the medium.
+
+Three outcomes, and the difference between them is the point:
+
+* **A length this emulator serves** (512, or 2048 on the CD-ROM) —
+  applied, GOOD.
+* **A length the *drive* has but this emulator does not** (256, 1024,
+  2336, 2340 on the CD-ROM; anything but 512 on a hard disk) — a
+  **host-side fault**, `SCSI_UNIMPLEMENTED`, naming the function and the
+  value.  Deliberately *not* a SCSI error: the request was legal, and
+  telling the guest otherwise sends whoever is debugging it to look at
+  the driver.
+* **A length the drive never had** — CHECK CONDITION / ILLEGAL REQUEST /
+  INVALID FIELD IN PARAMETER LIST (`0x26`), which is what the CDU-541
+  §5.2.2 requires: *"Any other value will be considered an error."*
+
+A block length of **zero** is "not specified" and changes nothing.
+Strictly the manual's "any other value" covers it — zero is not in Table
+5-4, and §8.3.3 gives a zero block length a meaning only for
+sequential-access devices — but refusing a legal MODE SELECT over a
+field the initiator left blank is the worse error.  Both paths read it
+the same way.
+
+Measured: the only MODE SELECTs in the test corpus are one per format
+from each Apple formatter, both asking for 512 on a 512-byte disk, and
+A/UX's switch to 512 on the CD-ROM.
+
 #### READ(6)/WRITE(6) — `0x08` / `0x0A`
 
 * Group 0 layout.  21-bit LBA, 8-bit Transfer Length (`0` → 256
@@ -646,6 +762,32 @@ Pages of interest:
 * CDB: `25 00 00 00 00 00 00 00 00 00`
 * Data (8 bytes): last_lba (4, BE), block_length (4, BE).
 
+The returned value is the address of the **last** block, so it is the
+block count minus one — and a count of zero must not be allowed to
+wrap.  A medium smaller than a single block reports last block `0`
+rather than `0xFFFFFFFF`; there is no honest last-block address for a
+medium with no blocks, and every read of block 0 is refused by the
+range check regardless.  (This is reachable with the medium genuinely
+present: a 1536-byte file attaches as a CD-ROM, and 1536 / 2048 is 0.)
+
+**PMI is accepted and ignored**, and byte 2–5 with it.  X3.131-1994
+§9.2.7 requires CHECK CONDITION / ILLEGAL FIELD IN CDB when PMI is
+zero and that address is not — but that rule is SCSI-2's.  X3.131-1986
+§8.2.1 states the same constraint on the *initiator* and prescribes no
+penalty, and these drives report ANSI version `0x01`.  Enforcing it
+would describe a drive we are not emulating.
+
+#### §8.7 note — "no medium" is not one code
+
+Whether a device has a medium is tracked per device (`medium_present`),
+and every command that needs one is failed before it can reach for the
+absent image.  This applies to **all** device types.  Before
+2026-09-14 the check tested for a CD-ROM specifically, and any other
+device walked past it: a hard disk emptied through
+`scsi.devices[N].eject()` answered TEST UNIT READY with GOOD and
+READ CAPACITY with `0xFFFFFFFF` — four billion blocks — also with
+GOOD.
+
 #### START STOP UNIT — `0x1B`
 
 * CDB: `1B | immed | 00 | 00 | LoEj|Start | control`
@@ -656,13 +798,67 @@ Pages of interest:
 
 #### VERIFY(10) — `0x2F`
 
-Like READ(10) but no data transfer.  Emulator returns GOOD if the
-LBA range is in-bounds.
+CDB layout is READ(10)'s: LBA in bytes 2–5, verification length in
+bytes 7–8.  Byte 1 bit 1 is **BytChk**.
+
+* **Length zero** returns GOOD without a bounds check — "this
+  condition shall not be considered as an error" in both ANSI texts,
+  and the same order READ(10) uses.  The CDU-541 adds that the drive
+  still seeks to the address, so a strict reading would check it; the
+  emulator follows READ(10) instead, to keep one answer per question.
+* **Out of range** is CHECK CONDITION / ILLEGAL REQUEST / LBA OUT OF
+  RANGE (`0x21`).  The bound admits `lba + length == capacity` — the
+  last block is inside the medium.
+* **BytChk = 0** is a medium-only verification, which an image cannot
+  fail: GOOD.
+* **BytChk = 1** enters DATA OUT for `length × block_size` bytes and
+  compares them against the medium byte for byte.  A mismatch is
+  CHECK CONDITION with sense key MISCOMPARE (`0x0E`) and ASC `0x1D`.
+
+> This is the most-issued command in a format: Apple HD SC Setup 7.3.5
+> sweeps the whole disk with it after formatting, 512 blocks at a time,
+> and its last chunk ends on the medium's final block.
+
+Before 2026-09-14 this returned GOOD without decoding the CDB at all,
+and this section claimed a bounds check that was not there.
+
+#### SEEK(6) — `0x0B` / SEEK(10) — `0x2B`
+
+No head to move, so the seek itself is a no-op — but the address is
+bounds-checked as **one block**, not as a zero-length range: a seek
+addresses the block it lands on, and a zero-length test would admit the
+one address exactly past the end.  Out of range is ILLEGAL REQUEST /
+LBA OUT OF RANGE, per CDU-541 §5.2.30.
+
+SEEK(6) carries the address in bytes 1–3 (low five bits of byte 1 only;
+the rest is the LUN); SEEK(10) in bytes 2–5.
 
 #### FORMAT UNIT — `0x04`
 
-Low-level format / defect map.  Emulator accepts as a no-op on
-writable devices; rejects with DATA PROTECT on read-only media.
+Byte 1 is LUN, then **FmtData** (bit 4), **CmpLst** (bit 3) and the
+defect list format (bits 2–0).
+
+* Read-only device → CHECK CONDITION / DATA PROTECT.
+* **FmtData = 0** — the mandatory form, and the only one any guest in
+  the test corpus sends (both HD SC Setup versions issue exactly
+  `04 00 00 00 01 00`) — completes with GOOD and no data phase.
+* **FmtData = 1** enters DATA OUT for the four-byte defect list
+  header, then keeps requesting inside the *same* phase for as many
+  descriptor bytes as its length field declared.  The list is
+  discarded: the defects it names are locations on a platter, and an
+  image has none to map out.
+* **CmpLst** is not consulted and has nothing to do — it chooses
+  whether the initiator's list replaces the drive's grown defect list
+  or adds to it, and there is no grown defect list.
+
+The format does not erase the medium.  Nothing a guest does afterwards
+can observe the difference through this interface, but it is a
+divergence rather than a decision the standards support.
+
+The SCSI-2 defect-list-header option bits (FOV, DPRY, DCRT, STPF, IP,
+DSP — X3.131-1994 table 111) are *not* validated, deliberately: the
+emulated drives report ANSI version `0x01`, and in X3.131-1986 table
+8-5 that header byte is Reserved.
 
 ### 8.6 CD-ROM extensions
 

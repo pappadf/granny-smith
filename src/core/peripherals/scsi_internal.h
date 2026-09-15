@@ -50,8 +50,19 @@
 #define MR_DMA       0x02
 #define MR_TARGET    0x40 // target mode
 
-// Target command register bits
-#define TCR_CD 0x02
+// Target command register bits (NCR 5380 S6.4, register 3).  The manual spells
+// the low four "ASSERT <signal>"; bits 0-2 carry the same MSG/C-D/I-O encoding
+// the wire uses, which is why scsi_phase_match() can compare them against
+// CSR[4..2] shifted down by two.
+#define TCR_IO  0x01 // bit 0: assert I/O
+#define TCR_CD  0x02 // bit 1: assert C/D
+#define TCR_MSG 0x04 // bit 2: assert MSG
+#define TCR_REQ 0x08 // bit 3: assert REQ ("no meaning when operating as an Initiator")
+// Bit 7 is an NCR 53C80 extension, not a 5380 bit: "The NCR 53C80 uses bit 7 of
+// this register to determine when the last byte of a DMA transfer is sent to
+// the SCSI bus.  This flag is necessary since the End of DMA bit in the Bus and
+// Status Register only reflects when the last byte was received from the DMA."
+#define TCR_LBS 0x80 // bit 7: last byte sent (53C80)
 
 // Current SCSI bus status register bits
 #define CSR_SEL 0x02
@@ -65,8 +76,10 @@
 // Bus and status register bits (NCR 5380/53C80 BSR, read-only register 5)
 #define BSR_ACK  0x01 // bit 0: ACK sensed on bus
 #define BSR_ATN  0x02 // bit 1: ATN sensed on bus
+#define BSR_BE   0x04 // bit 2: busy error (unexpected loss of BSY)
 #define BSR_PM   0x08 // bit 3: phase match (bus phase matches TCR)
 #define BSR_INT  0x10 // bit 4: interrupt request active (/IRQ asserted)
+#define BSR_PE   0x20 // bit 5: parity error
 #define BSR_DR   0x40 // bit 6: DMA request (data ready for DMA transfer)
 #define BSR_EDMA 0x80 // bit 7: end of DMA
 
@@ -118,24 +131,63 @@
 // Sense keys
 #define SENSE_NO_SENSE        0x00
 #define SENSE_NOT_READY       0x02
+#define SENSE_MEDIUM_ERROR    0x03
 #define SENSE_ILLEGAL_REQUEST 0x05
 #define SENSE_UNIT_ATTENTION  0x06
 #define SENSE_DATA_PROTECT    0x07
+// "MISCOMPARE.  Indicates that the source data did not match the data read
+// from the medium" (X3.131-1994 table 69).  The one result a VERIFY with
+// BytChk set can report that a plain medium verification cannot.
+#define SENSE_MISCOMPARE 0x0E
 
 // Additional sense codes (ASC)
 #define ASC_NO_ASC               0x00
+#define ASC_WRITE_FAULT          0x03
 #define ASC_INVALID_OPCODE       0x20
 #define ASC_LBA_OUT_OF_RANGE     0x21
 #define ASC_INVALID_FIELD_IN_CDB 0x24
-#define ASC_WRITE_PROTECTED      0x27
-#define ASC_NOT_READY_TO_READY   0x28
-#define ASC_MEDIUM_NOT_PRESENT   0x3A
+// 26h, for a bad value inside the DATA OUT parameter list rather than the CDB.
+// X3.131-1994 S8.2.8 makes it MODE SELECT's answer to a field reported as not
+// changeable, an unsupported block descriptor value, or a page length that does
+// not match MODE SENSE; the CDU-541 manual S5.2.2 names it for both of the
+// cases that drive has.
+#define ASC_INVALID_FIELD_IN_PARAM_LIST 0x26
+// X3.131-1994 table 71: 1Dh/00h MISCOMPARE DURING VERIFY OPERATION, for
+// device types "D W O" -- direct-access among them.
+#define ASC_MISCOMPARE_VERIFY  0x1D
+#define ASC_WRITE_PROTECTED    0x27
+#define ASC_NOT_READY_TO_READY 0x28
+// "Power on, reset or BUS DEVICE RESET occurred" -- the third of the three
+// codes the CDU-541 manual lists under UNIT ATTENTION (6h), and what a bus
+// reset raises on every target (ANSI X3.131-1986 S6.1.3).
+#define ASC_POWER_ON_OR_RESET  0x29
+#define ASC_MEDIUM_NOT_PRESENT 0x3A
+// The drive we advertise is a SONY CD-ROM CDU-8002 (system.c), so its sense
+// vocabulary is the CDU-541 manual's, not SCSI-2's.  That manual's NOT READY
+// (2h) table has no 0x3A at all -- an empty bay is vendor code 0xB0, "Caddy not
+// inserted in drive" (CDU-541 SCSI manual, sense code tables).  Apple's CD-ROM
+// driver was written against these drives, so 0xB0 is what it expects to see.
+#define ASC_SONY_CADDY_NOT_INSERTED 0xB0
+// Refusing an eject because PREVENT MEDIUM REMOVAL is latched.  CDU-541 manual
+// S5.2.33: "the sense key will be set to ILLEGAL REQUEST, and the additional
+// sense code set to PREVENT BIT SET", which its ILLEGAL REQUEST (5h) table
+// numbers 0x80.  SCSI-2's 0x53/0x02 MEDIUM REMOVAL PREVENTED is a different
+// vocabulary and does not appear anywhere in this drive's tables.
+#define ASC_SONY_PREVENT_BIT_SET 0x80
 #define ASC_INCOMPATIBLE_MEDIUM  0x30
 
+// FORMAT UNIT's defect list header: reserved, reserved, then a 16-bit length
+// of the defect descriptors that follow (X3.131-1986 table 8-5).  The target
+// reads this much before it knows how long the DATA OUT phase really is.
+#define SCSI_FORMAT_DEFECT_HEADER 4
+
 // Block size and buffer limits
-#define BLOCK_SIZE   512
-#define BUF_LIMIT    (BLOCK_SIZE * 256)
-#define MAX_CMD_SIZE 10
+#define BLOCK_SIZE 512
+#define BUF_LIMIT  (BLOCK_SIZE * 256)
+// Largest CDB cmd_size() can ask for: a group 5 (twelve-byte) command.  This
+// only sizes the expected-byte count for the COMMAND phase; buf.data itself is
+// a BUF_LIMIT allocation, so the slot costs nothing.
+#define MAX_CMD_SIZE 12
 
 // ============================================================================
 // Type Definitions
@@ -162,6 +214,8 @@ typedef struct {
     int slot;
 } scsi_device_link_t;
 
+typedef struct scsi_5380 scsi_5380_t;
+
 struct scsi {
 
     /* Plain POD fields first (no pointers) */
@@ -170,24 +224,54 @@ struct scsi {
         scsi_phase_t saved_phase; // phase before MESSAGE OUT (for return)
         int initiator;
         int target;
+        // REQ and BSY are bus signals, not chip state.  They used to be
+        // stored only inside the 5380's CSR, which is why the bus wrote that
+        // register on every phase change.
+        bool req;
+        bool bsy;
+        // The byte the target is currently presenting on the data lines --
+        // the status byte, then the completion message.  Also wire state: the
+        // 5380 returns it from CDR, the external-initiator API reads it
+        // directly, and it used to be stored in the 5380's register.
+        uint8_t data;
+        // A target does not turn a WRITE command into a data phase the instant
+        // the last CDB byte lands: it has to prepare.  Our model used to, which
+        // is the whole reason the 5380 grew a primer gate -- A/UX writes a
+        // blind $00 to the pseudo-DMA port immediately after issuing the
+        // command, long before any real disk is ready, and on real hardware
+        // that byte goes nowhere because the target has not entered DATA OUT
+        // and is not asserting REQ.  Here it landed as payload byte 0 and
+        // shifted the transfer.
+        //
+        // So the transition is scheduled instead.  `data_out_pending` is the
+        // window between "the CDB is complete" and "the target is ready for
+        // data"; REQ is low throughout it, and a byte offered with REQ low is
+        // not transferred -- that is the handshake, not a heuristic.
+        bool data_out_pending;
+        uint64_t data_out_ready_cy; // cpu cycle at which the target is ready
     } bus;
-
-    struct {
-        uint8_t cdr;
-        uint8_t odr;
-        uint8_t icr;
-        uint8_t mr;
-        uint8_t tcr;
-        uint8_t csr;
-        uint8_t ser;
-        uint8_t bsr;
-    } reg;
 
     struct { // information about current/pending command
         uint8_t opcode; // opcode
         int lun; // logical unit number
-        int lba; // logical block address
-        int tl; // transfer length
+        // Unsigned, because every CDB field they hold is.  These were `int`,
+        // and a 10-byte decode building `data[2] << 24` overflowed it for any
+        // byte >= 0x80 -- undefined behaviour, and UBSan says so:
+        //
+        //   scsi_bus.c:719: left shift of 128 by 24 places cannot be
+        //   represented in type 'int'
+        //
+        // It produced the right answer anyway, because scsi_blocks_ok casts
+        // back through uint32_t and carries a comment explaining why it has
+        // to.  Fixing the type removes the need for that compensation, and
+        // makes the %u the LOG lines already use correct rather than lucky
+        // (03-scsi F-48).
+        //
+        // tl is 32 bits rather than the CDB's 16 so the same is true of it and
+        // so the assignments below do not narrow; scsi_get_cmd_tl() still
+        // returns uint16_t, which is the width the wire actually has.
+        uint32_t lba; // logical block address
+        uint32_t tl; // transfer length
     } cmd;
 
     /*
@@ -199,10 +283,15 @@ struct scsi {
         unsigned char vendor_id[8 + 1];
         unsigned char product_id[16 + 1];
         unsigned char revision[4 + 1];
-        image_t *image;
         enum scsi_device_type type;
         bool read_only;
         uint16_t block_size; // 512 for HD, 2048 for CD-ROM (switchable)
+        // What block_size returns to on a hard RESET.  MODE SELECT can change
+        // the live one at runtime -- A/UX switches the CD-ROM to 512-byte
+        // blocks that way -- and ANSI X3.131-1986 S5.2.2.1 requires a reset to
+        // "Return any SCSI device operating modes (MODE SELECT, PREVENT/ALLOW
+        // MEDIUM REMOVAL commands, etc) to their default conditions".
+        uint16_t default_block_size;
         bool unit_attention; // pending UNIT ATTENTION
         bool medium_present; // true when disc is loaded
         bool prevent_removal; // PREVENT/ALLOW MEDIUM REMOVAL state
@@ -212,6 +301,12 @@ struct scsi {
             uint8_t ascq; // additional sense code qualifier
         } sense;
     } devices[8];
+
+    // A loopback/terminator card fitted to the bus.  A property of the WIRE --
+    // a card is plugged in or it is not -- even though the only thing that can
+    // observe it is a chip reading its own data register.  Last field of the
+    // plain-data block, so it rides the single checkpoint write with the rest.
+    bool loopback;
 
     /* Buffer metadata and pointer (data is a pointer, so placed after POD fields)
      * Note: max/size are part of the non-pointer metadata but the struct contains
@@ -225,95 +320,43 @@ struct scsi {
         size_t pos; // data-in read cursor: index of the next byte to deliver
     } buf;
 
-    /* Runtime-only pointers and interfaces last */
-    memory_map_t *memory_map;
-    memory_interface_t memory_interface;
-
-    // VIA2 for interrupt delivery (SE/30); NULL on Plus
-    via_t *via;
-
-    // Machine-specific IRQ/DRQ delivery callback (IIfx routes through
-    // OSS source 9 instead of VIA2). NULL on machines that drive VIA2
-    // via the `via` pointer above (SE/30) or that poll SCSI (Plus).
-    scsi_irq_fn irq_cb;
-    void *irq_cb_ctx;
-
-    // Tracked output pin states (active-low: true = asserted = pin driven low)
-    bool irq_active;
-    bool drq_active;
-
-    // One-time guard: the autonomous DRQ service scheduler event type has been
-    // registered with the scheduler (see scsi_schedule_drq_service).
-    bool drq_evt_registered;
-    // Buffer size at the last DRQ re-pulse; used to detect the host beginning to
-    // drain a block so the re-pulse stops (one wake per block).
-    size_t drq_pulse_last_size;
-
-    // Internal end-of-DMA flag (phase changed while DMA active)
-    bool end_of_dma;
-
-    // BLIND/DMA-write priming gate (NCR 5380 §6.8.1 / §10.2 / DCD-3 SE/30
-    // SCSI map): on real hardware, a pseudo-DMA send transfer doesn't
-    // begin until the host writes the "Start DMA Send" register (port 5).
-    // ODR-alias writes that occur AFTER MR.DMA is enabled but BEFORE
-    // Start DMA Send is written are absorbed by the chip's data register
-    // but never reach the SCSI bus.  A/UX's SCSI driver exploits this by
-    // issuing a `CLR.B ([$5B20E,])` primer write to the BLIND pseudo-DMA
-    // region (PC $1004B888 in the retail kernel) before the byte loop,
-    // assuming the chip will discard it.  We model this by gating the
-    // ODR-alias buf push on `dma_write_armed`, which is cleared on
-    // MR.DMA enable and set on Start DMA Send (case DMA in write_uint8).
-    // See docs/ncr_5380.md §3.3 / §3.6.
-    bool dma_write_armed;
-
-    // Primer-slot gate for the data_out phase.  On real NCR 5380 hardware
-    // an ODR-alias write that lands BEFORE the target asserts REQ is
-    // overwritten by the next write — only the most-recent ODR value is
-    // transmitted on REQ.  A/UX's SCSI driver exploits this by issuing a
-    // `CLR.B ([$5B20E,])` primer write to the BLIND/DRQ pseudo-DMA
-    // region (retail-kernel PC $1004B888) immediately before the byte
-    // loop, assuming the chip will discard the $00.  Our emulator pushes
-    // every ODR-alias write into buf.data instantly, so without a gate
-    // the primer lands at buf[0] and shifts the entire 8 KB transfer
-    // by +1 (manifests as `☐Untitled` in the A/UX 3.0.1 Easy Install
-    // dialog — see notes/60-aux3-volname-root-cause.md).
+    // The NCR 5380 driving this bus, or NULL on the machines that have none.
+    // The Quadras, the AVs, the PowerMacs and the Network Servers all used to
+    // carry a full 5380 register file inside this struct and never touch it,
+    // because the chip and the wire were one allocation.
     //
-    // The MacOS Installer also writes data_out in pseudo-DMA mode but
-    // does NOT issue a primer; its first byte is real data.  The
-    // distinguishing signal is the PC: A/UX's primer is a CLR.B at a
-    // distinct kernel PC, while the byte-loop body is at unrelated PCs;
-    // MacOS writes all bytes from one tight loop.  We detect the primer
-    // by holding the first data_out byte in a slot and deciding on the
-    // second write: if the held byte is $00 and the second byte comes
-    // from a different PC, the held byte was a primer and is discarded;
-    // otherwise it is a legitimate first data byte and is pushed
-    // ahead of the second.
-    uint8_t primer_byte; // value of the held first byte
-    uint32_t primer_pc; // PC at which the held byte was written
-    bool primer_held; // true while a held first byte awaits decision
+    // This is the bus knowing what is attached to it, which is the direction
+    // the dependency should run.  The other three controllers need no such
+    // pointer: they are pure clients, driving the bus through scsi.h and
+    // reading it through scsi_get_bus_phase().
+    // ---- NOT saved -------------------------------------------------------
 
-    // Bus-master DATA OUT: true once the external SCSIDMA engine has begun
-    // supplying payload bytes for the current command (scsi_push_data_out_
-    // byte).  Reset by phase_data_out.  On the engine's FIRST byte we discard
-    // any bytes already in buf — those are the A/UX scsiout CLR.B "primer"
-    // ($00) written to the blind port (iHSKEN) before the bus-master transfer
-    // starts.  On real hardware that primer sits in ODR and is overwritten by
-    // the engine's first byte before the target REQs, so it never reaches the
-    // bus; committing it would shift the whole transfer one byte (mis-aligning
-    // scattered multi-block writes — the "bad block" corruption).  Pure-iHSKEN
-    // writes (e.g. Mac OS) never run the engine, so this never fires for them.
-    bool dma_out_engine_started;
+    // The medium in each slot.  Held out here rather than inside devices[] so
+    // that array stays pure plain data and rides in the single block above --
+    // a pointer in the middle of it is what forced this file's checkpoint to
+    // be a hand-written per-field loop, and what let fields be forgotten.
+    // The filename is saved separately and the image re-opened on restore.
+    image_t *device_images[8];
 
-    // Loopback mode: simulate passive SCSI terminator (test card)
-    bool loopback;
+    // An armed selection time-out, if a controller is waiting on one.
+    //
+    // Below the plain-data line deliberately: fn is a host function pointer and
+    // ctx a host address, so neither may be written to a checkpoint, and
+    // seltmo_registered names a scheduler registration belonging to THIS
+    // process.  A restore therefore lands with nothing armed -- the contract is
+    // spelled out on scsi_bus_arm_select_timeout() in scsi.h.
+    scsi_select_timeout_fn seltmo_fn;
+    void *seltmo_ctx;
+    bool seltmo_registered;
 
-    // CDR pipeline delay: the NCR 5380's bus drivers take 2 register-write
-    // cycles to propagate, so CDR reads the bus state from before the
-    // second-to-last register write.  Modeled as a 3-element ring buffer.
-    uint8_t cdr_pipeline[3];
-    int cdr_idx;
+    // Likewise a scheduler registration belonging to THIS process, so it stays
+    // below the line: a restore starts false and the next phase_data_out()
+    // re-establishes it.  The PENDING state itself is above the line, because a
+    // checkpoint taken mid-settle must come back mid-settle.
+    bool data_out_evt_registered;
 
-    // Object-tree binding — lifetime tied to scsi_init / scsi_delete.
+    scsi_5380_t *chip5380;
+
     struct object *object; // top-level scsi node
     struct object *bus_object; // scsi.bus child
     struct object *devices_object; // scsi.device collection
@@ -325,20 +368,165 @@ struct scsi {
 };
 
 // ============================================================================
-// Phase Transition Helpers (defined in scsi.c, used by scsi_cdrom.c)
+// The NCR 5380
+// ============================================================================
+//
+// A controller attached to a bus, exactly like the 53C96, the 53C825 SCRIPTS
+// engine and MESH.  It used to BE the bus: this register file and all of the
+// pin, DMA and priming state below lived inside struct scsi.
+struct scsi_5380 {
+    // ---- plain data, saved as one block ----------------------------------
+    // Everything up to the first pointer is written in a single
+    // system_write_checkpoint_data() call, the same shape via_t, scc_t and
+    // rtc_t use.  Adding a field here is enough to make it survive a restore;
+    // adding one below the line is a deliberate statement that it should not.
+    struct {
+        uint8_t cdr;
+        uint8_t odr;
+        uint8_t icr;
+        uint8_t mr;
+        uint8_t tcr;
+        uint8_t csr;
+        uint8_t ser;
+        uint8_t bsr;
+    } reg;
+
+    // Tracked output pin states (active-low: true = asserted = pin driven low)
+    bool irq_active;
+    bool drq_active;
+    // Buffer size at the last DRQ re-pulse; used to detect the host beginning
+    // to drain a block so the re-pulse stops (one wake per block).
+    size_t drq_pulse_last_size;
+    // Internal end-of-DMA flag (phase changed while DMA active)
+    bool end_of_dma;
+    // A latched SCSI bus RST interrupt.  NCR 5380 design manual S8.3: "The NCR
+    // 5380 generates an interrupt when the RST signal (pin 16) transitions to
+    // true. ... This interrupt also occurs after setting the ASSERT RST bit
+    // (port 1, bit 7).  THIS INTERRUPT CANNOT BE DISABLED."  Held separately
+    // from the DMA-mode sources because it is the one source that does not
+    // consult the Mode Register -- a reset has just cleared MR, so deriving it
+    // from MR is how it went missing.  Cleared by reading the Reset
+    // Parity/Interrupt register (S6.9), like the other latches.
+    bool rst_irq;
+    bool dma_write_armed;
+    bool dma_out_engine_started;
+    uint8_t cdr_pipeline[3];
+    int cdr_idx;
+
+    // ---- NOT saved -------------------------------------------------------
+    // Deliberately below the line rather than merely omitted.
+    //
+    // drq_evt_registered records that this PROCESS registered the DRQ service
+    // event type with its scheduler.  Restoring it as true would make a fresh
+    // process skip the registration and lose the event entirely, so it must
+    // start false and be re-established by the first schedule.
+    bool drq_evt_registered;
+
+    // Runtime pointers: re-bound by the machine after a restore.
+    scsi_t *bus;
+    memory_map_t *memory_map;
+    memory_interface_t memory_interface;
+    via_t *via;
+    scsi_irq_fn irq_cb;
+    void *irq_cb_ctx;
+};
+
+// ============================================================================
+// The seam between the bus (scsi_bus.c) and the NCR 5380 (scsi.c)
+// ============================================================================
+//
+// These two lists ARE the coupling, written down so it can be seen and reduced.
+// Every other controller -- the 53C96, the 53C825 SCRIPTS engine, MESH -- needs
+// none of the first list: they drive the bus through the initiator API in
+// scsi.h (select / push / pop / status / message / release) and read phase
+// through scsi_get_bus_phase().  The 5380 needs twelve bus internals because it
+// grew up inside the bus's own translation unit rather than as a client of it.
+//
+// Narrowing the first list is the measure of progress on that.
+
+// Bus internals the 5380 still reaches for.
+int cmd_size(uint8_t opcode);
+void command_complete(scsi_t *scsi);
+uint8_t next_byte(scsi_t *scsi);
+void phase_arbitration(scsi_t *scsi);
+void phase_command(scsi_t *scsi);
+void phase_free(scsi_t *scsi);
+void phase_message_out(scsi_t *scsi);
+const char *phase_name(int p);
+void phase_selection(scsi_t *scsi);
+void run_cmd(scsi_t *scsi);
+void scsi_buf_ensure(scsi_t *scsi, size_t bytes);
+
+// 5380 services the bus calls back into.  Three of these are the chip's
+// interrupt and DRQ wiring, which the bus pokes when a phase changes; the
+// fourth is the pseudo-DMA byte path.  A bus that did not know which chip was
+// attached would not need any of them -- see the notes in scsi_bus.c.
+void scsi_cancel_drq_service(scsi_t *scsi);
+void scsi_odr_auto_handshake_byte(scsi_t *scsi, uint8_t value);
+void scsi_update_drq(scsi_t *scsi);
+void scsi_update_irq(scsi_t *scsi);
+bool scsi_5380_dma_mode(const scsi_t *scsi);
+void scsi_5380_entered_status(scsi_t *scsi, bool from_data_in);
+void scsi_5380_entered_data_out(scsi_t *bus);
+void scsi_5380_bus_freed(scsi_t *bus);
+void scsi_5380_dma_push_byte(scsi_t *bus, uint8_t byte);
+void scsi_bus_accept_data_out_byte(scsi_t *scsi, uint8_t value);
+
+// ============================================================================
+// Phase Transition Helpers (defined in scsi_bus.c, used by scsi_cdrom.c)
 // ============================================================================
 
 // Transition SCSI bus to data-in phase (target to initiator)
+// Phase names, indexed by scsi_phase_t.  Defined in scsi_bus.c; the object
+// model in scsi.c renders the enum from the same table.
+extern const char *const SCSI_PHASE_NAMES[];
+
 void phase_data_in(scsi_t *scsi, int bytes);
 
 // Transition SCSI bus to data-out phase (initiator to target)
 void phase_data_out(scsi_t *scsi, int bytes);
+
+// Let a pending DATA OUT settle become visible if its time has come.  Called
+// from every point that can observe the phase or offer a byte.
+void scsi_bus_settle_poll(scsi_t *scsi);
 
 // Transition SCSI bus to status phase
 void phase_status(scsi_t *scsi, uint8_t status);
 
 // Transition SCSI bus to message-in phase
 void phase_message_in(scsi_t *scsi, uint8_t message);
+
+// Arm a DATA IN phase for a response of `have` bytes against the allocation
+// length `alloc` the CDB carried.  Returns the number of bytes armed; 0 means
+// the bus went straight to STATUS GOOD and there is no buffer for the caller to
+// fill.
+//
+// AUTHORITY: an allocation length is a ceiling, never a request.  ANSI
+// X3.131-1986 says so once per command -- "the target shall terminate the DATA
+// IN phase when allocation length bytes have been transferred or when all
+// available data have been transferred to the initiator, whichever is less" --
+// and the Sony CDU-541 manual S4.2.6 states it once for every CDB that carries
+// one, in the section describing "the common parts of the CDB":
+//
+//   "An allocation length of zero indicates that no sense data will be
+//    transferred.  This condition will not be considered as an error."
+//
+// So zero means zero.  It is a legal probe, not a cue to send the whole
+// response (what five CD-ROM handlers used to do) and not a cue to substitute a
+// default (INQUIRY substituted 36, REQUEST SENSE 18).  ANSI's REQUEST SENSE
+// section is the one place that names a non-zero answer for a zero allocation
+// -- "four bytes of sense data shall be transferred" -- but those four bytes
+// are the NONEXTENDED sense format (Table 7-4), which this model does not
+// implement: S7.1.2's implementors note frames it as how a target supporting
+// both formats picks between them.  Returning four bytes of our extended ($70)
+// block would be a truncated header, not that format, so zero is both the more
+// faithful answer and the one the drive we advertise documents.
+int scsi_data_in_alloc(scsi_t *scsi, int have, int alloc);
+
+// Emit Apple's vendor-identification MODE SENSE page $30 into `buf`.  Shared by
+// the hard-disk and CD-ROM paths; the identification STRING is not shared, and
+// the reason is written out at the definition in scsi_bus.c.
+int scsi_build_apple_page_30(uint8_t *buf, int page_control, const char *id, int id_len, int page_len);
 
 // ============================================================================
 // CD-ROM Device Functions (defined in scsi_cdrom.c, called from scsi.c)

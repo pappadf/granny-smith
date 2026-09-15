@@ -343,6 +343,17 @@ static void tnt_scc_irq(void *context, bool active) {
 }
 
 // 53C94 /IRQ -> Grand Central interrupt 12 (level; 68k IPL 2).
+// MESH's interrupt line goes to Grand Central's MESH source; its DBDMA data
+// phases go to channel 10.  Both used to be reached from inside the model.
+static void tnt_mesh_irq(void *ctx, bool level) {
+    tnt_gc_set_source((config_t *)ctx, TNT_INT_MESH, level);
+}
+
+static void tnt_mesh_dbdma_kick(void *ctx) {
+    config_t *cfg = (config_t *)ctx;
+    tnt_dbdma_kick(tnt_st(cfg)->dbdma, 10);
+}
+
 static void tnt_scsi96_irq(void *context, bool active) {
     config_t *cfg = (config_t *)context;
     if (tnt_st(cfg))
@@ -627,7 +638,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // in a later phase.
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
     // The Network Servers carry TWO fast/wide buses.  `cfg->scsi` is
     // channel 0 (Open Firmware's `scsi-int`, bays 0-3, the `disk0`..`disk3`
     // aliases), so `hd=` / `cd=` and every existing consumer of
@@ -635,11 +646,32 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // (`scsi-int2`, bays 4-6 plus the 700's two rear drives) mounts beside
     // it as `machine.scsi2`.
     if (tnt_board(cfg)->kind == TNT_BOARD_SHINER)
-        st->scsi2 = scsi_init_named(NULL, cp, "scsi2");
+        st->scsi2 = scsi_init_named(cp, "scsi2");
     st->scsi96 = scsi_53c96_init(cfg->scheduler, 25000000, cp); // 25 MHz (OF clock-frequency)
     scsi_53c96_set_irq_callback(st->scsi96, tnt_scsi96_irq, cfg);
+    // Built HERE, before the reads below, because mesh_init() consumes its own
+    // block from the stream and tnt_checkpoint writes that block before gbus.
+    // Construction order is stream order; getting them out of step misaligns
+    // everything that follows and the machine restores with a corrupted GBus.
+    if (tnt_board(cfg)->has_mesh) {
+        // MESH is a controller like any other: the machine builds it, tells it
+        // where its interrupt goes and which bus it drives, and registers its
+        // DBDMA channel-10 port.  It used to reach all three back through
+        // config_t from inside its own model.
+        st->mesh = mesh_init(cfg->scheduler, cp);
+        mesh_attach_bus(st->mesh, cfg->scsi);
+        mesh_set_irq_callback(st->mesh, tnt_mesh_irq, cfg);
+        mesh_set_dbdma_kick(st->mesh, tnt_mesh_dbdma_kick, cfg);
+        tnt_dbdma_port_t mesh_port = {
+            .out = mesh_port_out,
+            .in = mesh_port_in,
+            .s_bits = NULL,
+            .ctx = st->mesh,
+        };
+        tnt_dbdma_set_port(st->dbdma, 10, &mesh_port);
+    }
+
     if (cp) {
-        system_read_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
         system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
         system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
         system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
@@ -653,8 +685,6 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // (grand_central.c) and DBDMA channel 10, which simply goes unused
     // there along with TNT_INT_MESH.  The checkpoint stream still carries
     // the (untouched) struct so it stays positional across both boards.
-    if (tnt_board(cfg)->has_mesh)
-        tnt_mesh_init(cfg); // DBDMA ch-10 port
     tnt_scsi0_port_init(cfg); // DBDMA ch-0 port (53C94 pdma)
     // Hand each 53C825A its bus.  The controllers are PCI cards seated by
     // the slot walk, so this runs after it — and after the buses exist,
@@ -680,7 +710,7 @@ static void tnt_reset(config_t *cfg) {
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
     if (tnt_board(cfg)->has_mesh)
-        tnt_mesh_reset(cfg);
+        mesh_reset(st->mesh);
     if (tnt_board(cfg)->has_gbus) {
         tnt_gbus_reset(cfg);
         tnt_lcd_reset(cfg);
@@ -732,6 +762,12 @@ static void tnt_teardown(config_t *cfg) {
     if (st && st->scsi96) {
         scsi_53c96_delete(st->scsi96);
         st->scsi96 = NULL;
+    }
+    // MESH is a controller the machine owns now, so the machine frees it --
+    // before the bus it borrows, like the 53C96 above.
+    if (st && st->mesh) {
+        mesh_delete(st->mesh);
+        st->mesh = NULL;
     }
     if (cfg->floppy) {
         floppy_delete(cfg->floppy);
@@ -808,7 +844,8 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     if (st->scsi2)
         scsi_checkpoint(st->scsi2, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
-    system_write_checkpoint_data(cp, &st->mesh, sizeof(st->mesh));
+    if (st->mesh)
+        mesh_checkpoint(st->mesh, cp);
     // The GBUS island (Network Servers only; zeroed and unread elsewhere).
     // Both blobs are plain data: the LCD's DDRAM and the board's keyswitch
     // positions and injected environmental faults.

@@ -211,7 +211,10 @@ void system_reset_devices(void) {
     if (!cfg)
         return;
     if (cfg->scsi)
-        scsi_reset_pin(cfg->scsi); // NCR 5380 → bus-free, registers cleared
+        // Warm restart is a RESET condition on the wire: the bus goes free and
+        // every target returns to its power-on state (scsi_bus_reset, called
+        // from scsi_reset), and on a 5380 machine the chip's registers clear too.
+        scsi_reset_pin(cfg->scsi);
     if (cfg->nubus)
         nubus_reset(cfg->nubus); // each populated card → power-on state
 }
@@ -612,8 +615,11 @@ static int do_attach_hd_on(struct scsi *bus, const char *path, int scsi_id) {
         printf("hd attach: emulator not initialized.\n");
         return -1;
     }
-    add_scsi_drive_on(config, bus ? bus : config->scsi, path, scsi_id);
-    return 0;
+    // Report what actually happened.  This returned 0 unconditionally, so
+    // `attach_hd` on an unopenable file printed "Failed to open image" and then
+    // answered true -- and once insert() started reporting its attach result
+    // (03-scsi F-45), a test could assert on a lie.
+    return add_scsi_drive_on(config, bus ? bus : config->scsi, path, scsi_id) ? 0 : -1;
 }
 
 static int do_attach_hd(const char *path, int scsi_id) {
@@ -904,8 +910,8 @@ void mac_reset(config_t *restrict sim) {
 }
 
 // Add a SCSI hard disk to the configuration.
-void add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
-    add_scsi_drive_on(config, config ? config->scsi : NULL, filename, scsi_id);
+bool add_scsi_drive(struct config *restrict config, const char *filename, int scsi_id) {
+    return add_scsi_drive_on(config, config ? config->scsi : NULL, filename, scsi_id);
 }
 
 // ...on a NAMED bus.  Every Macintosh has exactly one SCSI bus a guest can
@@ -914,7 +920,7 @@ void add_scsi_drive(struct config *restrict config, const char *filename, int sc
 // two fast/wide 53C825A channels carrying the backplane's bays between
 // them, reachable as `machine.scsi` and `machine.scsi2`.  Passing the bus
 // explicitly is what lets `machine.scsi2.attach_hd` mean what it says.
-void add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     // Persist volatile images to OPFS
     char *persistent_path = image_persist_volatile(filename);
     if (persistent_path)
@@ -924,7 +930,7 @@ void add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
     if (!img) {
         printf("Failed to open image: %s\n", filename);
         free(persistent_path);
-        return;
+        return false;
     }
 
     size_t sz = disk_size(img);
@@ -935,7 +941,7 @@ void add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
         LOG(1, "add_scsi_drive: drive catalog is empty; cannot attach %s", filename);
         image_close(img);
         free(persistent_path);
-        return;
+        return false;
     }
 
     LOG(1, "Attaching SCSI drive: %s as %s %s (size: %zu bytes, SCSI ID: %d)", filename, best->vendor, best->product,
@@ -947,15 +953,16 @@ void add_scsi_drive_on(struct config *restrict config, struct scsi *bus, const c
     // while the emulator holds writable handles against it (§2.9).
     image_vfs_notify_attached(filename);
     free(persistent_path);
+    return true;
 }
 
 // Add a SCSI CD-ROM to the configuration (AppleCD SC Plus / Sony CDU-8002)
-void add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
-    add_scsi_cdrom_on(config, config ? config->scsi : NULL, filename, scsi_id);
+bool add_scsi_cdrom(struct config *restrict config, const char *filename, int scsi_id) {
+    return add_scsi_cdrom_on(config, config ? config->scsi : NULL, filename, scsi_id);
 }
 
 // ...on a NAMED bus; see add_scsi_drive_on.
-void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
+bool add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const char *filename, int scsi_id) {
     // Persist volatile images to OPFS
     char *persistent_path = image_persist_volatile(filename);
     if (persistent_path)
@@ -966,7 +973,7 @@ void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
     if (!img) {
         printf("Failed to open CD-ROM image: %s\n", filename);
         free(persistent_path);
-        return;
+        return false;
     }
 
     img->type = image_cdrom;
@@ -996,6 +1003,7 @@ void add_scsi_cdrom_on(struct config *restrict config, struct scsi *bus, const c
     scsi_add_device(bus, scsi_id, "SONY", "CD-ROM CDU-8002", "1.8g", img, scsi_dev_cdrom, cd_block_size, true);
     image_vfs_notify_attached(filename);
     free(persistent_path);
+    return true;
 }
 
 // === machine.restart media transfer (proposal-boot-vs-reset §3.3) ==========

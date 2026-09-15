@@ -46,7 +46,9 @@ int mac030_glue_build_peripherals(config_t *cfg, checkpoint_t *cp, mac030_glue_s
     if (cp)
         mac_checkpoint_restore_images(cfg, cp);
 
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
+    // SE/30, IIcx and IIx: an NCR 5380 behind the glue's own decode.
+    scsi_5380_attach(cfg->scsi, cp);
     scsi_set_via(cfg->scsi, cfg->via2);
     setup_images(cfg);
 

@@ -137,6 +137,28 @@ void pci_deassert_irq(struct pci_device *dev) {
     s_irq_deasserts++;
 }
 
+// sym53c825.c is linked for its register file (F-14: the engine and the host
+// share one set of accessors), which drags in the two PCI entry points it uses
+// to publish its BAR windows and reset its config header.  Neither is on any
+// path this suite drives -- there is no PCI bus here.
+void pci_bar_backing_iface(struct pci_device *dev, int bar, const memory_interface_t *iface, void *ctx) {
+    (void)dev, (void)bar, (void)iface, (void)ctx;
+}
+
+void pci_cfg_reset(struct pci_device *dev) {
+    (void)dev;
+}
+
+// The device side of a bus reset (F-17): the card calls it, the bus implements
+// it.  This suite drives the engine against a MOCK target with no scsi_t behind
+// it, so there is nothing on the wire to return to a power-on state -- record
+// the call and move on.
+static int s_bus_resets;
+void scsi_bus_reset(struct scsi *bus) {
+    (void)bus;
+    s_bus_resets++;
+}
+
 // ============================================================================
 // Mock SCSI target
 // ============================================================================
@@ -234,6 +256,15 @@ int scsi_get_bus_phase(const struct scsi *scsi) {
     return s_phase;
 }
 
+// The mock target is always asking: it has no settle delay to model, so REQ is
+// asserted for as long as it is in a transfer phase.  The engine's "DATA OUT
+// armed but the target is not asking yet" wait therefore never fires here,
+// which is what lets these tests drive the instruction set directly.
+bool scsi_bus_req(const struct scsi *scsi) {
+    (void)scsi;
+    return s_phase != 0; // 0 == bus free in the shared phase enum
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -288,8 +319,20 @@ static void run_at(uint32_t addr) {
 
 // Read and clear DSTAT the way a driver does, ignoring the live DFE bit.
 static uint8_t take_dstat(void) {
-    uint8_t v = s_c->dstat;
-    s_c->dstat = 0;
+    uint8_t v = s_c->reg[SYM825_DSTAT];
+    s_c->reg[SYM825_DSTAT] = 0;
+    return v;
+}
+
+// The same for the SCSI causes.  A test that restarts the engine after a fatal
+// interrupt has to service it first: "Once an interrupt is generated, the
+// LSI53C825A halts all operations until the interrupt is serviced.  Then, the
+// start address of the next SCRIPTS instruction may be written to the DMA
+// SCRIPTS Pointer (DSP) register to restart" (LSI53C825A TM v3.1, SCSI SCRIPTS
+// mode), and the manual's own sample ISR reads the status registers first.
+static uint8_t take_sist0(void) {
+    uint8_t v = s_c->reg[SYM825_SIST0];
+    s_c->reg[SYM825_SIST0] = 0;
     return v;
 }
 
@@ -371,7 +414,7 @@ TEST(test_block_move_full_command) {
     // The target let go: an UNEXPECTED DISCONNECT, reported only once the
     // script had halted, so DCMD holds the INT opcode $98 (see the engine's
     // disconnect_deferred).
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_UDC);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST0] & SYM825_SIST0_UDC);
     ASSERT_EQ_INT(s_c->reg[SYM825_DCMD], 0x98);
     ASSERT_EQ_INT(s_released, 1);
 }
@@ -412,7 +455,7 @@ TEST(test_io_wait_disconnect_is_not_unexpected) {
     run_at(0x1000);
 
     ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SIR);
-    ASSERT_TRUE(!(s_c->sist0 & SYM825_SIST0_UDC));
+    ASSERT_TRUE(!(s_c->reg[SYM825_SIST0] & SYM825_SIST0_UDC));
     ASSERT_TRUE(!s_c->connected);
     ASSERT_EQ_INT(s_released, 1);
 }
@@ -452,7 +495,7 @@ TEST(test_block_move_phase_mismatch) {
     run_at(0x1000);
 
     ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1008); // rewound to the instruction
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_MA);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST0] & SYM825_SIST0_MA);
     ASSERT_EQ_INT(s_mem[0x3000], 0xEE); // nothing moved
     ASSERT_EQ_INT((int)reg32(SYM825_DBC) & 0x00FFFFFF, 4); // the count it wanted
     // A phase mismatch is FATAL: SCRIPTS stop.
@@ -477,12 +520,19 @@ TEST(test_block_move_short_transfer) {
 
     set_reg32(SYM825_DSP, 0x1000);
     sym53c8xx_start(s_c);
-    // The COMMAND move ran; the DATA IN move needs the target in DATA IN.
+
+    // The COMMAND move ran, then the DATA IN move found the target still in
+    // COMMAND: a phase mismatch, which is fatal and latches SIST0[MA].  Service
+    // it before restarting, because the engine stays halted until the cause is
+    // read -- a driver that skipped this step would find its DSP write ignored.
+    ASSERT_TRUE(take_sist0() & SYM825_SIST0_MA);
+
+    // Now the target is where the script expects it, and the move can run.
     s_phase = M_DATA_IN;
     run_at(0x1010);
 
     ASSERT_EQ_INT(memcmp(s_mem + 0x3000, "XY", 2), 0);
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_MA);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST0] & SYM825_SIST0_MA); // the short move mismatched too
 }
 
 // Table indirect: both the count and the buffer address come from a
@@ -531,7 +581,7 @@ TEST(test_io_selection_timeout) {
     // alternate address belongs to a reselection that beat the arbitration,
     // not to a target that is not there, and a driver told the wrong one
     // recovers a command it never issued.
-    ASSERT_EQ_INT(s_c->sist0, 0);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SIST0], 0);
     ASSERT_TRUE(!s_c->connected);
     ASSERT_TRUE(!s_c->running);
     ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0);
@@ -543,7 +593,7 @@ TEST(test_io_selection_timeout) {
     // stacked after the STO interrupt" — LSI53C825A TM v3.1, SIST0 UDC).
     // A driver reading the pair as one 16-bit word sees the time-out on
     // its own first; the disconnect surfaces as a fresh interrupt after.
-    ASSERT_TRUE(s_c->sist1 & SYM825_SIST1_STO);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST1] & SYM825_SIST1_STO);
     ASSERT_TRUE(s_c->sist0_stacked & SYM825_SIST0_UDC);
 }
 
@@ -579,6 +629,11 @@ TEST(test_io_set_clear) {
     ASSERT_TRUE(s_c->reg[SYM825_SCNTL1] & 0x04u);
     ASSERT_TRUE(s_c->reg[SYM825_SOCL] & 0x08u);
 
+    // The program above ended on INT, which latches DSTAT[SIR].  A fatal cause
+    // holds the engine until it is serviced, so read it before restarting --
+    // the same thing the manual's sample ISR does.
+    (void)take_dstat();
+
     put_insn_word(0x1000, IO_CLEAR(IO_BIT_CARRY | IO_BIT_ATN));
     run_at(0x1000);
     ASSERT_TRUE(!(s_c->reg[SYM825_SCNTL1] & 0x04u));
@@ -607,7 +662,7 @@ TEST(test_io_wait_reselect_parks) {
     ASSERT_TRUE(s_c->waiting_reselect);
     ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x1000);
     ASSERT_EQ_INT(take_dstat() & (uint8_t)~SYM825_DSTAT_DFE, 0);
-    ASSERT_EQ_INT(s_c->sist0 | s_c->sist1, 0);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SIST0] | s_c->reg[SYM825_SIST1], 0);
     ASSERT_EQ_INT(s_irq_asserts, 0);
 }
 
@@ -635,7 +690,7 @@ TEST(test_abort_drops_a_selection_in_flight) {
     ASSERT_TRUE(!s_c->select_timeout_armed);
     ASSERT_TRUE(!s_c->running);
     // An abort is not a reset: the bus is left alone.
-    ASSERT_TRUE(!(s_c->sist0 & SYM825_SIST0_RST));
+    ASSERT_TRUE(!(s_c->reg[SYM825_SIST0] & SYM825_SIST0_RST));
 }
 
 // The driver drove RST/.  Everything in flight is over — the connection,
@@ -657,7 +712,7 @@ TEST(test_bus_reset_ends_everything) {
 
     sym53c8xx_bus_reset(s_c);
 
-    ASSERT_TRUE(s_c->sist0 & SYM825_SIST0_RST);
+    ASSERT_TRUE(s_c->reg[SYM825_SIST0] & SYM825_SIST0_RST);
     ASSERT_TRUE(!s_c->connected);
     ASSERT_TRUE(!s_c->running);
     ASSERT_EQ_INT(s_c->sync_offset, 0);
@@ -716,7 +771,11 @@ TEST(test_read_write_alu) {
     ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x10);
     ASSERT_TRUE(s_c->reg[SYM825_SCNTL1] & 0x04u); // carry set
 
-    // Shift left THROUGH the carry, which is the documented behaviour.
+    // Shift left THROUGH the carry, which is the documented behaviour.  Service
+    // the previous program's INT first -- a fatal cause holds the engine until
+    // it is read -- but do NOT setup() here: this case runs on the carry the
+    // add above left behind, and a reset would clear SCNTL1 with everything else.
+    (void)take_dstat();
     put_insn_word(0x1000, RW(7, 1, SYM825_SCRATCHA, 0));
     put_insn_word(0x1004, 0);
     put_insn_word(0x1008, TC(3, 0));
@@ -992,7 +1051,7 @@ TEST(test_masking_gates_the_pin_not_the_halt) {
     put_insn_word(0x1004, 0x2000);
     put_insn_word(0x1008, 0x3001); // misaligned: illegal instruction
     run_at(0x1000);
-    ASSERT_TRUE(s_c->dstat & SYM825_DSTAT_IID); // the cause latched
+    ASSERT_TRUE(s_c->reg[SYM825_DSTAT] & SYM825_DSTAT_IID); // the cause latched
     ASSERT_TRUE(!s_c->running); // and it halted
     ASSERT_EQ_INT(s_irq_asserts, 0); // but the pin stayed quiet
 }
@@ -1033,7 +1092,7 @@ TEST(test_checkpoint_roundtrip) {
     s_c->reg[SYM825_SCID] = 7;
     set_reg32(SYM825_DSA, 0xC0FFEE00u);
     s_c->script_ram[0x100] = 0xA7;
-    s_c->sist0 = SYM825_SIST0_CMP;
+    s_c->reg[SYM825_SIST0] = SYM825_SIST0_CMP;
     sym53c8xx_checkpoint_save(s_c, (checkpoint_t *)1);
 
     sym53c8xx_delete(s_c);
@@ -1045,7 +1104,301 @@ TEST(test_checkpoint_roundtrip) {
     ASSERT_EQ_INT(s_c->reg[SYM825_SCID], 7);
     ASSERT_EQ_INT((int)reg32(SYM825_DSA), (int)0xC0FFEE00u);
     ASSERT_EQ_INT(s_c->script_ram[0x100], 0xA7);
-    ASSERT_EQ_INT(s_c->sist0, SYM825_SIST0_CMP);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SIST0], SYM825_SIST0_CMP);
+}
+
+// ============================================================================
+// 9. The engine and the host share one register file (F-14)
+// ============================================================================
+//
+// The engine addresses registers by 7-bit number and used to index s->reg[]
+// straight, so it saw none of the side effects the host BAR windows implement.
+// Both now go through sym53c8xx_reg_read/sym53c8xx_reg_write.
+
+// A script reading DSTAT must get the latched cause, and the read must CLEAR
+// it -- the same read-to-clear a host read gets.  Before the fix this read a
+// byte nothing in the emulator ever wrote: DSTAT lived in its own field, and
+// the array slot the engine indexed was permanently whatever reset left.
+TEST(test_script_read_of_a_status_register_sees_the_latch) {
+    setup();
+    // SIST0[CMP] -- "Function Complete", one of the five non-fatal interrupts.
+    // It latches WITHOUT stopping SCRIPTS, which is what makes it observable
+    // from a running script: a fatal cause would hold the engine halted until
+    // the driver read it (F-15), so it could never be pre-latched and then run.
+    s_c->reg[SYM825_SIST0] = SYM825_SIST0_CMP;
+
+    // MOVE SIST0 | 0x00 TO SFBR -- opcode 110, operator 010 (OR), which is how
+    // a register reaches SFBR (the guide's own abort example spends CTEST2
+    // exactly this way).
+    put_insn_word(0x1000, RW(6, 2, SYM825_SIST0, 0x00));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000);
+
+    ASSERT_TRUE(s_c->reg[SYM825_SFBR] & SYM825_SIST0_CMP); // the engine saw it
+    ASSERT_TRUE(!(s_c->reg[SYM825_SIST0] & SYM825_SIST0_CMP)); // and cleared it
+}
+
+// The CTEST2 doorbell, which was the ONE side effect hand-copied into the
+// engine.  It has to keep working now that the copy is gone -- this is the
+// idiom both the AIX and Mac OS dispatchers use, and ans-macos-2rom spends it
+// 22 times per run.
+TEST(test_script_read_of_ctest2_consumes_sigp) {
+    setup();
+    s_c->reg[SYM825_ISTAT] |= SYM825_ISTAT_SIGP;
+
+    put_insn_word(0x1000, RW(7, 2, SYM825_CTEST2, 0x00)); // MOVE CTEST2|0 TO CTEST2
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000);
+
+    ASSERT_TRUE(!(s_c->reg[SYM825_ISTAT] & SYM825_ISTAT_SIGP)); // doorbell spent
+}
+
+// A STORE of a read-to-clear register moves the latched value out to memory
+// AND clears it, because each byte of a Load/Store is an ordinary register
+// access on the part.  The old memcpy over s->reg[] did neither: it copied the
+// dead slot and left the latch alone.
+TEST(test_store_of_sist0_reads_it_to_clear) {
+    setup();
+    s_c->reg[SYM825_SIST0] = SYM825_SIST0_CMP; // non-fatal: the engine may run
+
+    // SIST0 is $42, so the memory address must share its byte alignment --
+    // "the register address and memory address must have the same byte
+    // alignment" -- hence $2102, not $2100.
+    put_insn_word(0x1000, STORE(SYM825_SIST0, 1));
+    put_insn_word(0x1004, 0x2102);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000);
+
+    ASSERT_EQ_INT(s_mem[0x2102], SYM825_SIST0_CMP); // the cause reached memory
+    ASSERT_EQ_INT(s_c->reg[SYM825_SIST0], 0); // and the latch is spent
+}
+
+// Plain storage must stay plain: SCRATCHA has no accessor case, so routing
+// through the accessors must not have changed it.  Guards against a fix that
+// "works" by giving every register a side effect.
+TEST(test_scratch_registers_are_still_plain) {
+    setup();
+    put_insn_word(0x1000, RW(7, 0, SYM825_SCRATCHA, 0x5A)); // MOVE 0x5A TO SCRATCHA
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, RW(6, 2, SYM825_SCRATCHA, 0x00)); // ...and read it back
+    put_insn_word(0x100C, 0);
+    put_insn_word(0x1010, TC(3, 0));
+    put_insn_word(0x1014, 0);
+    run_at(0x1000);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x5A); // undisturbed by the read
+    ASSERT_EQ_INT(s_c->reg[SYM825_SFBR], 0x5A);
+}
+
+// A script write to DCNTL[STD] or DSP must NOT re-enter sym53c8xx_start: those
+// strobes are reachable from inside the dispatch loop, where the engine is
+// already running.  The host keeps the side effect; the script records the
+// bits and moves on.
+TEST(test_script_write_to_dcntl_does_not_restart_the_engine) {
+    setup();
+    put_insn_word(0x1000, RW(7, 0, SYM825_DCNTL, SYM825_DCNTL_STD));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+    run_at(0x1000); // must return, not recurse or re-arm
+    ASSERT_TRUE(!s_c->running);
+}
+
+// ============================================================================
+// 10. A latched fatal cause holds the engine (F-15)
+// ============================================================================
+//
+// LSI53C825A TM v3.1, SCSI SCRIPTS mode: "Once an interrupt is generated, the
+// LSI53C825A halts all operations until the interrupt is serviced.  Then, the
+// start address of the next SCRIPTS instruction may be written to the DMA
+// SCRIPTS Pointer (DSP) register to restart the automatic fetching and
+// execution of instructions."  Serviced means read: the status registers are
+// read-to-clear, and the manual's sample ISR reads them before doing anything.
+//
+// sym53c8xx_run used to open with `s->running = true` unconditionally, so a DSP
+// write or a DCNTL[STD] strobe arriving before the driver read the status
+// resumed from whatever DSP held, cause still latched.
+
+TEST(test_fatal_cause_holds_the_engine) {
+    setup();
+    // One instruction that would obviously run if the engine started.
+    put_insn_word(0x1000, RW(7, 0, SYM825_SCRATCHA, 0x5A));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+
+    s_c->reg[SYM825_SIST0] = SYM825_SIST0_MA; // a fatal SCSI cause, unserviced
+    run_at(0x1000);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0); // the start was ignored
+    ASSERT_TRUE(!s_c->running);
+
+    // Service it, and the very same start now runs.
+    ASSERT_TRUE(take_sist0() & SYM825_SIST0_MA);
+    run_at(0x1000);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x5A);
+}
+
+// Every DMA cause is fatal -- "All DMA interrupts ... are fatal" (TM S2.4.13.3)
+// -- so DSTAT holds the engine the same way SIST0 does.
+TEST(test_latched_dstat_holds_the_engine) {
+    setup();
+    put_insn_word(0x1000, RW(7, 0, SYM825_SCRATCHA, 0x33));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+
+    s_c->reg[SYM825_DSTAT] = SYM825_DSTAT_IID;
+    run_at(0x1000);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0);
+
+    (void)take_dstat();
+    run_at(0x1000);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x33);
+}
+
+// ...but a NON-fatal cause must not hold it.  CMP, SEL, RSL, GEN and HTH latch
+// without stopping SCRIPTS in the first place, so refusing a start on them
+// would stall a chip that never halted.  This is the case a guard written as
+// `dstat || sist0 || sist1` would break.
+TEST(test_nonfatal_cause_does_not_hold_the_engine) {
+    setup();
+    put_insn_word(0x1000, RW(7, 0, SYM825_SCRATCHA, 0x77));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, TC(3, 0));
+    put_insn_word(0x100C, 0);
+
+    s_c->reg[SYM825_SIST0] = SYM825_SIST0_CMP; // latched, non-fatal
+    s_c->reg[SYM825_SIST1] = SYM825_SIST1_GEN;
+    run_at(0x1000);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x77); // ran anyway
+}
+
+// Single step is the case the rule is easiest to get wrong: SSI is a DMA cause,
+// so it is fatal, and DCNTL's SSM description spells the sequence out -- "read
+// the ISTAT and DSTAT registers to recognize and clear the interrupt.  Then set
+// the START DMA bit."  One instruction per START, each preceded by a read.
+TEST(test_single_step_needs_clear_then_start) {
+    setup();
+    s_c->reg[SYM825_DCNTL] |= SYM825_DCNTL_SSM;
+    put_insn_word(0x1000, RW(7, 0, SYM825_SCRATCHA, 0x11));
+    put_insn_word(0x1004, 0);
+    put_insn_word(0x1008, RW(7, 0, SYM825_SCRATCHB, 0x22));
+    put_insn_word(0x100C, 0);
+    put_insn_word(0x1010, TC(3, 0));
+    put_insn_word(0x1014, 0);
+
+    run_at(0x1000);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHA], 0x11); // exactly one instruction
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHB], 0);
+    ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SSI);
+
+    // START without rewriting DSP, which is what the manual says single step
+    // does: "The DSP register does not need to be written with the next
+    // address, but the Start DMA bit ... must be set each time."
+    sym53c8xx_start(s_c);
+    ASSERT_EQ_INT(s_c->reg[SYM825_SCRATCHB], 0x22); // and now the second one
+    ASSERT_TRUE(take_dstat() & SYM825_DSTAT_SSI);
+}
+
+// F-22: everything that makes the engine resumable has to come back.
+//
+// The save used to name six members by hand -- reg, script_ram, running,
+// connected, target, phase -- and lost the rest.  Each field below is here
+// because losing it changes what the driver sees on the other side.
+TEST(test_checkpoint_keeps_the_whole_engine) {
+    setup();
+    s_cp_w = s_cp_r = 0;
+
+    // The stacked interrupt causes.  scripts53c8xx.md argues at length that
+    // their ORDER is load-bearing for AIX: the time-out lands first and the
+    // disconnect surfaces behind it.  Losing the stack drops the second half.
+    s_c->sist0_stacked = SYM825_SIST0_UDC;
+    s_c->sist1_stacked = 0x02;
+
+    // The message session: what the initiator has sent us and what we owe back.
+    s_c->msg.out[0] = 0x01;
+    s_c->msg.out[1] = 0x03;
+    s_c->msg.out_len = 2;
+    s_c->msg.in[0] = 0x80;
+    s_c->msg.in_n = 1;
+    s_c->msg.in_rd = 0;
+    s_c->msgout_pending = 1;
+    s_c->msgin_taken = 1;
+    s_c->disconnect_pending = 1;
+
+    // The negotiated agreement.  Losing this silently reverts a synchronous,
+    // wide target to asynchronous narrow without telling either end.
+    s_c->sync_period = 25;
+    s_c->sync_offset = 8;
+    s_c->wide = 1;
+
+    // The DMA FIFO lanes and the diagnostic counter.
+    s_c->dfifo[1][0] = 0xEE;
+    s_c->dfifo_n[1] = 1;
+    s_c->dfifo_rd[1] = 0;
+    s_c->insn_count = 12345;
+
+    // Parked on Wait Reselect: the SIGP doorbell tests exactly this before it
+    // will start the engine.
+    s_c->waiting_reselect = true;
+
+    sym53c8xx_checkpoint_save(s_c, (checkpoint_t *)1);
+    sym53c8xx_delete(s_c);
+    s_c = sym53c8xx_new(NULL, 0);
+    ASSERT_TRUE(s_c != NULL);
+    sym53c8xx_checkpoint_restore(s_c, (checkpoint_t *)1);
+
+    ASSERT_EQ_INT(s_c->sist0_stacked, SYM825_SIST0_UDC);
+    ASSERT_EQ_INT(s_c->sist1_stacked, 0x02);
+    ASSERT_EQ_INT(s_c->msg.out[0], 0x01);
+    ASSERT_EQ_INT(s_c->msg.out[1], 0x03);
+    ASSERT_EQ_INT(s_c->msg.out_len, 2);
+    ASSERT_EQ_INT(s_c->msg.in[0], 0x80);
+    ASSERT_EQ_INT(s_c->msg.in_n, 1);
+    ASSERT_EQ_INT(s_c->msgout_pending, 1);
+    ASSERT_EQ_INT(s_c->msgin_taken, 1);
+    ASSERT_EQ_INT(s_c->disconnect_pending, 1);
+    ASSERT_EQ_INT(s_c->sync_period, 25);
+    ASSERT_EQ_INT(s_c->sync_offset, 8);
+    ASSERT_EQ_INT(s_c->wide, 1);
+    ASSERT_EQ_INT(s_c->dfifo[1][0], 0xEE);
+    ASSERT_EQ_INT(s_c->dfifo_n[1], 1);
+    ASSERT_EQ_INT((int)s_c->insn_count, 12345);
+    ASSERT_TRUE(s_c->waiting_reselect);
+}
+
+// ...and the scheduler-linked flags must NOT come back.
+//
+// start_pending and select_timeout_armed each say "an event is coming", and a
+// restored process has none queued.  Restoring either as true makes
+// sym53c8xx_start() return early forever, so the engine could never run again.
+// The restore normalises to halted with DSP intact -- where every interrupt
+// already leaves the chip, and a state the driver knows how to leave.
+TEST(test_checkpoint_lands_the_engine_halted) {
+    setup();
+    s_cp_w = s_cp_r = 0;
+    set_reg32(SYM825_DSP, 0x00001000u);
+    s_c->start_pending = true;
+    s_c->select_timeout_armed = true;
+
+    sym53c8xx_checkpoint_save(s_c, (checkpoint_t *)1);
+    sym53c8xx_delete(s_c);
+    s_c = sym53c8xx_new(NULL, 0);
+    sym53c8xx_checkpoint_restore(s_c, (checkpoint_t *)1);
+
+    ASSERT_TRUE(!s_c->running);
+    ASSERT_TRUE(!s_c->start_pending);
+    ASSERT_TRUE(!s_c->select_timeout_armed);
+    ASSERT_EQ_INT((int)reg32(SYM825_DSP), 0x00001000); // DSP intact
+
+    // And the engine is startable: with no scheduler under it, start runs it
+    // directly, which is exactly what a driver's DSP write would do.
+    sym53c8xx_start(s_c);
+    ASSERT_TRUE(s_c->insn_count > 0);
 }
 
 int main(void) {
@@ -1078,5 +1431,16 @@ int main(void) {
     RUN(test_nonfatal_scsi_cause);
     RUN(test_runaway_watchdog);
     RUN(test_checkpoint_roundtrip);
+    RUN(test_checkpoint_keeps_the_whole_engine);
+    RUN(test_checkpoint_lands_the_engine_halted);
+    RUN(test_script_read_of_a_status_register_sees_the_latch);
+    RUN(test_script_read_of_ctest2_consumes_sigp);
+    RUN(test_store_of_sist0_reads_it_to_clear);
+    RUN(test_scratch_registers_are_still_plain);
+    RUN(test_script_write_to_dcntl_does_not_restart_the_engine);
+    RUN(test_fatal_cause_holds_the_engine);
+    RUN(test_latched_dstat_holds_the_engine);
+    RUN(test_nonfatal_cause_does_not_hold_the_engine);
+    RUN(test_single_step_needs_clear_then_start);
     return 0;
 }

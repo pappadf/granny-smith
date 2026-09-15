@@ -204,6 +204,22 @@ void object_attach(struct object *parent, struct object *child) {
     if (!parent || !child)
         return;
     GS_ASSERTF(child->parent == NULL, "object %s already attached", child->name ? child->name : "?");
+
+    // NOTE: two children of one parent sharing a name is always a bug, and a
+    // silent one -- storage is head-push and find_attached_child() returns the
+    // first match, so a duplicate shadows the original and every path through
+    // it addresses the wrong device.  The Q900/Q950 carried two SCSI buses
+    // both named "scsi" for a long time and nothing reported it.
+    //
+    // A GS_ASSERTF here would catch that class outright, and it cannot go in
+    // yet: the checkpoint *restore* path constructs the new machine's objects
+    // before tearing the outgoing machine's tree down, so every restore
+    // transiently has two `memory`, `cpu`, `rtc`, `scsi`, ... under the same
+    // parent.  It is benign today (head-push means lookups resolve to the new
+    // object, and the stale generation is detached immediately after -- the
+    // overlap never exceeds one generation), but it makes the invariant
+    // un-assertable.  Ordering restore as destroy-then-create is the
+    // prerequisite; the guard belongs with that change, not ahead of it.
     child->parent = parent;
     child->next_sibling = parent->first_child;
     parent->first_child = child;

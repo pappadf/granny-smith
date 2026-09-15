@@ -2394,6 +2394,38 @@ void debug_print_target_trace(void) {
 // Assertion failure handler (coordinates all diagnostic output)
 // ────────────────────────────────────────────────────────────────────────────
 
+// Shared tail of gs_assert_fail and gs_unimplemented_fail: dump what the host
+// and the guest were doing, stop the machine, and hand the shell back.  Neither
+// aborts -- a stopped machine with a message on it is worth more than a dead
+// process, and in the browser it is the difference between a diagnosable page
+// and a blank one.
+static void diagnose_and_halt(const char *kind, const char *expr, const char *file, int line, const char *func) {
+    platform_print_host_callstack();
+    debug_mac_print_target_backtrace();
+    debug_mac_print_process_info_header();
+    debug_print_target_trace();
+
+    printf("================================================\n\n");
+
+    bool paused = false;
+    scheduler_t *sched = system_scheduler();
+    if (sched && scheduler_is_running(sched)) {
+        scheduler_stop(sched);
+        paused = true;
+    }
+
+    if (paused)
+        printf("Emulation paused (%s); returning control to shell.\n", kind);
+    else
+        printf("Handled %s while scheduler idle; shell remains available.\n", kind);
+    fflush(stdout);
+
+    // Notify the platform layer (test integration hooks this to fail a run).
+    debug_t *debug = system_debug();
+    if (debug && debug->assertion_callback)
+        debug->assertion_callback(expr ? expr : kind, file, line, func);
+}
+
 // Main assertion failure handler - prints diagnostics and pauses execution
 void gs_assert_fail(const char *expr, const char *file, int line, const char *func, const char *fmt, ...) {
     // Header
@@ -2414,35 +2446,33 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
         printf("\n");
     }
 
-    // Diagnostics - call each module's diagnostic function
-    platform_print_host_callstack();
-    debug_mac_print_target_backtrace();
-    debug_mac_print_process_info_header();
-    debug_print_target_trace();
+    diagnose_and_halt("assertion", expr, file, line, func);
+}
 
-    printf("================================================\n\n");
-
-    bool paused = false;
-    scheduler_t *sched = system_scheduler();
-    if (sched) {
-        if (scheduler_is_running(sched)) {
-            scheduler_stop(sched);
-            paused = true;
-        }
+// The unimplemented-function handler.  Same diagnostics and the same halt --
+// what differs is the claim being made, so the banner says so and nothing here
+// is compiled out by GS_FAST (see GS_UNIMPLEMENTED in common.h for why a
+// release build is exactly where this one matters).
+//
+// The banner goes to stderr, unbuffered: if a platform's assertion_callback
+// aborts -- the unit harness does -- a buffered stdout banner is lost at the
+// moment it was written for.
+void gs_unimplemented_fail(const char *file, int line, const char *func, const char *fmt, ...) {
+    fprintf(stderr, "\n\n============= UNIMPLEMENTED =============\n");
+    if (fmt) {
+        fprintf(stderr, "  ");
+        va_list ap;
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
+        fprintf(stderr, "\n");
     }
+    fprintf(stderr, "  at %s:%d in %s()\n", file ? file : "<unknown>", line, func ? func : "<unknown>");
+    fprintf(stderr, "\n  The guest's request is legal for the hardware being emulated.\n");
+    fprintf(stderr, "  This is a gap in Granny Smith, not a fault in the guest.\n");
+    fflush(stderr);
 
-    if (paused) {
-        printf("Emulation paused due to assertion; returning control to shell.\n");
-    } else {
-        printf("Assertion handled while scheduler idle; shell remains available.\n");
-    }
-    fflush(stdout);
-
-    // Notify platform layer about assertion failure (e.g., for test integration)
-    debug_t *debug = system_debug();
-    if (debug && debug->assertion_callback) {
-        debug->assertion_callback(expr, file, line, func);
-    }
+    diagnose_and_halt("unimplemented function", NULL, file, line, func);
 }
 
 // === Object-model class descriptors =========================================

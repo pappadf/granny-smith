@@ -397,7 +397,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // discrete 53CF96 on its fast internal bus (40 MHz), instantiated with
     // no bus attached: every select times out, the empty-bus presentation.
     // hd=/cd= media land on cfg->scsi, i.e. the Curio bus, on all models.
-    cfg->scsi = scsi_init(NULL, cp);
+    cfg->scsi = scsi_init(cp);
     st->scsi96[0] = scsi_53c96_init(cfg->scheduler, 20000000, cp);
     scsi_53c96_set_irq_callback(st->scsi96[0], pdm_scsi96a_irq, cfg);
     scsi_53c96_attach_bus(st->scsi96[0], cfg->scsi);

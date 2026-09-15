@@ -96,13 +96,15 @@ void pci_cfg_reset(pci_device_t *dev) {
     (void)dev;
 }
 
-uint8_t tnt_mesh_read(config_t *cfg, uint32_t offset) {
-    (void)cfg;
+// MESH is a controller with its own handle now (core/peripherals/scsi_mesh.c);
+// this suite drives Grand Central's decode, not the chip behind it.
+uint8_t mesh_read(struct mesh *m, uint32_t offset) {
+    (void)m;
     (void)offset;
     return 0;
 }
-void tnt_mesh_write(config_t *cfg, uint32_t offset, uint8_t value) {
-    (void)cfg;
+void mesh_write(struct mesh *m, uint32_t offset, uint8_t value) {
+    (void)m;
     (void)offset;
     (void)value;
 }

@@ -15,17 +15,80 @@
 // MODE SENSE Pages
 // ============================================================================
 
+// How long each piece of a MODE SENSE response is.
+//
+// Named rather than repeated as literals because the total has to be a
+// compile-time bound on the response buffer, and a page that grows without the
+// buffer growing with it is a stack overflow in a build where assertions are
+// compiled out (GS_FAST, the shipping wasm profile).  Each builder returns its
+// own constant, so a page cannot change length without changing the sum.
+#define CD_MODE_PARAM_HEADER_LEN 4
+#define CD_MODE_BLOCK_DESC_LEN   8
+#define CD_PAGE_01_LEN           8
+#define CD_PAGE_02_LEN           16
+#define CD_PAGE_07_LEN           8
+#define CD_PAGE_08_LEN           12
+#define CD_PAGE_09_LEN           16
+// Page 30h is a 2-byte page header plus a 30-byte body.
+#define CD_PAGE_30_BODY 30
+#define CD_PAGE_30_LEN  (2 + CD_PAGE_30_BODY)
+
+// The longest response this file can build: page code 3Fh, "all pages".
+// Measured at 104 bytes.
+#define CD_MODE_SENSE_MAX                                                                                              \
+    (CD_MODE_PARAM_HEADER_LEN + CD_MODE_BLOCK_DESC_LEN + CD_PAGE_01_LEN + CD_PAGE_02_LEN + CD_PAGE_07_LEN +            \
+     CD_PAGE_08_LEN + CD_PAGE_09_LEN + CD_PAGE_30_LEN)
+
 // Build Mode Page 0x01: Read Error Recovery Parameters (8 bytes)
-static int build_page_01(uint8_t *buf) {
+//
+// CDU-541 manual S5.2.3.2, changeable values: "The page requested will be
+// returned with the bits that are allowed to be changed set to one.
+// Parameters that are not changeable will be set to zero. ... The page
+// descriptor ... will always be returned even if none of parameters are
+// changeable within the page."  Nothing here is changeable, so PC=1 keeps the
+// header and zeroes the body.
+static int build_page_01(uint8_t *buf, int page_control) {
     buf[0] = 0x01; // page code
     buf[1] = 0x06; // page length
-    buf[2] = 0x00; // error recovery: no retries
-    buf[3] = 0x01; // read retry count
+    memset(buf + 2, 0, 6);
+    if (page_control == 1)
+        return CD_PAGE_01_LEN;
+    buf[2] = 0x00; // error recovery parameter
+    // CDU-541 manual S5.3.1.1: "The read retry count field specifies the number
+    // of times that the controller will attempt its read recovery algorithm.
+    // The default value is ZERO."  This emitted 1, and scsi_cdrom.md S4.3 said
+    // 3; neither is the drive's.
+    buf[3] = 0x00; // read retry count
     buf[4] = 0x00; // reserved
     buf[5] = 0x00; // reserved
     buf[6] = 0x00; // reserved
     buf[7] = 0x00; // reserved
-    return 8;
+    return CD_PAGE_01_LEN;
+}
+
+// Build Mode Page 0x07: Verify Error Recovery Parameters (8 bytes)
+//
+// Table 5-47 lists this drive's MODE SENSE pages as 01h, 02h, 07h, 08h, 09h and
+// 3Fh; this one was missing, so a host asking for it -- or for all pages -- got
+// a GOOD status and no page.
+//
+// S5.3.1.3 gives it no table of its own that this OCR can read (Table 5-41 is a
+// scanned image), only the sentence that defines it: "The implementation of
+// error recovery procedures for verification operations is the same as for read
+// operations on CD-ROM devices."  So it is page 01's structure with page 01's
+// defaults and a different page code -- INFERRED FROM THAT PROSE, not read off
+// the table.  SCSI-2 S9.3.3.8 gives page 07h a parameter length of 0Ah rather
+// than the 06h used here; this drive declares SCSI-1 in INQUIRY and predates
+// that standard by four years, so the manual wins.
+static int build_page_07(uint8_t *buf, int page_control) {
+    buf[0] = 0x07; // page code
+    buf[1] = 0x06; // page length
+    memset(buf + 2, 0, 6);
+    if (page_control == 1)
+        return CD_PAGE_07_LEN; // nothing changeable: header, zero body
+    buf[2] = 0x00; // error recovery parameter
+    buf[3] = 0x00; // verify retry count -- "the same as for read operations"
+    return CD_PAGE_07_LEN;
 }
 
 // Build Mode Page 0x02: Disconnect-Reconnect Parameters (16 bytes)
@@ -33,7 +96,7 @@ static int build_page_02(uint8_t *buf) {
     buf[0] = 0x02; // page code
     buf[1] = 0x0E; // page length
     memset(buf + 2, 0, 14); // all zeros (we don't disconnect)
-    return 16;
+    return CD_PAGE_02_LEN;
 }
 
 // Build Mode Page 0x08: Caching Parameters (12 bytes)
@@ -41,39 +104,40 @@ static int build_page_08(uint8_t *buf) {
     buf[0] = 0x08; // page code
     buf[1] = 0x0A; // page length
     memset(buf + 2, 0, 10);
-    return 12;
+    return CD_PAGE_08_LEN;
 }
 
 // Build Mode Page 0x09: Audio Control Parameters (16 bytes)
-static int build_page_09(uint8_t *buf) {
+static int build_page_09(uint8_t *buf, int page_control) {
     buf[0] = 0x09; // page code
     buf[1] = 0x0E; // page length
     memset(buf + 2, 0, 14);
+    if (page_control == 1)
+        return CD_PAGE_09_LEN; // nothing here is changeable: header, zero body
     // Output port 0 channel selection = 01 (left)
     buf[8] = 0x01;
     buf[9] = 0xFF; // volume
     // Output port 1 channel selection = 02 (right)
     buf[10] = 0x02;
     buf[11] = 0xFF; // volume
-    return 16;
+    return CD_PAGE_09_LEN;
 }
 
-// Build Mode Page 0x30: Apple Vendor Page (32 bytes).
-// The real CDU-8002 (1991, SCSI-1) may predate this mechanism, but Apple's
-// later drivers (System 7.5+) request page 0x30 even from older drives.
-// QEMU enables it unconditionally. We do the same for compatibility.
+// Mode page $30, Apple's vendor identification, in the CD-ROM's form.
+//
+// The emitter is shared with the hard-disk path (scsi_build_apple_page_30);
+// the STRING is not, and deliberately so -- see the comment there for the
+// evidence behind each.  In short: the HD form is verified against HD SC
+// Setup, this one is not verified by anything.  No test in this tree requests
+// it; instrumenting this function across se30-cdrom and iici-cdrom-boot counts
+// zero calls, which fits the CDU-8002 being a 1991 SCSI-1 drive while page $30
+// arrived with System 7.5+ drivers.
+//
+// 22 bytes of string inside a 30-byte page, so the remaining 8 are zero.  The
+// string carries no trailing period, unlike the hard disk's.
 static int build_page_30(uint8_t *buf, int page_control) {
-    buf[0] = 0x30; // page code
-    buf[1] = 0x1E; // page length = 30 bytes
-    if (page_control == 1) {
-        // Changeable values: return all zeros
-        memset(buf + 2, 0, 30);
-    } else {
-        // Current/default values: Apple vendor string
-        memcpy(buf + 2, "APPLE COMPUTER, INC   ", 22);
-        memset(buf + 24, 0, 8);
-    }
-    return 32;
+    static const char apple_cd_id[] = "APPLE COMPUTER, INC   ";
+    return scsi_build_apple_page_30(buf, page_control, apple_cd_id, (int)sizeof(apple_cd_id) - 1, CD_PAGE_30_BODY);
 }
 
 // ============================================================================
@@ -87,80 +151,129 @@ void scsi_cdrom_mode_sense(scsi_t *scsi) {
     uint8_t page_code = scsi->buf.data[2] & 0x3F;
     int page_control = (scsi->buf.data[2] >> 6) & 0x03;
 
-    // Build response in the SCSI buffer. The mode-sense response can grow
-    // past 256 bytes for page_code == 0x3F (all pages), so zero the *whole*
-    // BUF_LIMIT region rather than just the first 256 bytes — otherwise stale
-    // payload from a previous command leaks into the unzeroed tail.
-    uint8_t *buf = scsi->buf.data;
-    memset(buf, 0, BUF_LIMIT);
+    // Assemble into a scratch buffer and copy after the phase is armed, which
+    // is what the four other data-in builders in this file and the hard disk's
+    // MODE SENSE all do.
+    //
+    // This used to build straight into scsi->buf.data -- the live transfer
+    // buffer, while it still held the CDB being parsed -- after memset-ing the
+    // whole BUF_LIMIT region, 131072 bytes, on every call.  It worked, but for
+    // none of the reasons its comment gave.  That comment said zeroing the tail
+    // stopped "stale payload from a previous command" leaking, and no tail can
+    // leak: scsi_data_in_alloc sets buf.size to min(pos, alloc_len), next_byte
+    // counts it down, and every drain stops at zero, so nothing past `pos` is
+    // ever transmitted.  Of the bytes that ARE sent, every page zeroes its own
+    // body and the block descriptor writes all eight of its bytes -- exactly
+    // two, the header's medium type and device-specific parameter, depended on
+    // that 128 KB memset, and sizeof(resp) covers them for free (03-scsi F-41).
+    uint8_t resp[CD_MODE_SENSE_MAX];
+    memset(resp, 0, sizeof(resp));
+    uint8_t *buf = resp;
 
-    // Mode parameter header (4 bytes)
-    int pos = 4;
+    // Mode parameter header
+    int pos = CD_MODE_PARAM_HEADER_LEN;
 
-    // Block descriptor (8 bytes) — always present (A/UX requires it)
+    // Block descriptor (8 bytes) — always present (A/UX requires it).
+    //
+    // Its block length answers to the page control field, which the rest of
+    // this command used to ignore.  CDU-541 manual S5.2.3: "The default block
+    // length is 2048 and is returned if default values are requested.  The
+    // current block length is returned if current values are requested.  A
+    // block length of FFh FFh FFh is returned if changeable values are
+    // requested."  Block length IS changeable on this drive -- Table 5-4 lists
+    // 256, 512, 1024, 2048 and 2336 -- so the changeable answer sets every bit
+    // of the field, not zero.
+    //
+    // The default matters in practice: A/UX switches the disc to 512-byte
+    // blocks (see the MODE SELECT path below), after which a PC=2 request must
+    // still answer 2048.
     uint16_t blk_sz = scsi->devices[target].block_size;
+    uint32_t reported_blk_sz = blk_sz;
+    if (page_control == 1)
+        reported_blk_sz = 0xFFFFFFu; // every bit of a changeable field
+    else if (page_control == 2 || page_control == 3)
+        reported_blk_sz = scsi->devices[target].default_block_size;
     uint32_t blocks = 0;
-    if (scsi->devices[target].image)
-        blocks = (uint32_t)(disk_size(scsi->devices[target].image) / blk_sz);
+    if (scsi->device_images[target])
+        blocks = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
 
-    buf[3] = 8; // block descriptor length
+    buf[3] = CD_MODE_BLOCK_DESC_LEN; // block descriptor length
     buf[pos + 0] = 0; // density code
     buf[pos + 1] = (blocks >> 16) & 0xFF; // number of blocks
     buf[pos + 2] = (blocks >> 8) & 0xFF;
     buf[pos + 3] = blocks & 0xFF;
     buf[pos + 4] = 0; // reserved
-    buf[pos + 5] = (blk_sz >> 16) & 0xFF; // block length
-    buf[pos + 6] = (blk_sz >> 8) & 0xFF;
-    buf[pos + 7] = blk_sz & 0xFF;
-    pos += 8;
+    buf[pos + 5] = (reported_blk_sz >> 16) & 0xFF; // block length, per PC above
+    buf[pos + 6] = (reported_blk_sz >> 8) & 0xFF;
+    buf[pos + 7] = reported_blk_sz & 0xFF;
+    pos += CD_MODE_BLOCK_DESC_LEN;
 
     // Append requested mode pages
     switch (page_code) {
     case 0x01:
-        pos += build_page_01(buf + pos);
+        pos += build_page_01(buf + pos, page_control);
         break;
     case 0x02:
         pos += build_page_02(buf + pos);
+        break;
+    case 0x07:
+        pos += build_page_07(buf + pos, page_control);
         break;
     case 0x08:
         pos += build_page_08(buf + pos);
         break;
     case 0x09:
-        pos += build_page_09(buf + pos);
+        pos += build_page_09(buf + pos, page_control);
         break;
     case 0x30:
         pos += build_page_30(buf + pos, page_control);
         break;
     case 0x3F:
         // Return all pages
-        pos += build_page_01(buf + pos);
+        pos += build_page_01(buf + pos, page_control);
         pos += build_page_02(buf + pos);
+        pos += build_page_07(buf + pos, page_control);
         pos += build_page_08(buf + pos);
-        pos += build_page_09(buf + pos);
+        pos += build_page_09(buf + pos, page_control);
         pos += build_page_30(buf + pos, page_control);
         break;
     case 0x00:
         // Vendor-specific page 0 — return just the header + block descriptor
         break;
     default:
-        // Unknown page — return just header + block descriptor (like real hardware)
-        break;
+        // CDU-541 manual S5.2.3: "If the page code specified is not implemented
+        // the command will be terminated with a CHECK CONDITION status.  The
+        // sense key will be set to ILLEGAL REQUEST and the additional sense code
+        // set to ILLEGAL VALUE IN CDB."
+        //
+        // This used to return header-plus-block-descriptor with GOOD status and
+        // a comment claiming that was "like real hardware".  It is the opposite:
+        // a host that asks for a page it does not get, and is told everything
+        // went well, parses whatever its own buffer held -- the failure the hard
+        // disk path's page 3/4 comment documents, where MkLinux DR3's rz driver
+        // derived a 14384-byte sector from the leftovers of its own INQUIRY.
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+        return;
     }
 
+    // Nothing above may have run past the buffer.  CD_MODE_SENSE_MAX is summed
+    // from the same constants the builders return, so this cannot fail without
+    // someone having changed one and not the other -- but it is cheap, and the
+    // build where it would matter most is the one where assertions are gone.
+    GS_ASSERTF(pos <= (int)sizeof(resp), "MODE SENSE built %d bytes into a %zu-byte buffer", pos, sizeof(resp));
+
     // Fill in the mode data length (byte 0 = total length - 1). The field is
-    // a single byte, so clamp to avoid silent truncation if the assembled
-    // response ever grew past 256 bytes.
-    int data_len = pos - 1;
-    if (data_len > 255)
-        data_len = 255;
-    buf[0] = (uint8_t)data_len;
+    // a single byte; the longest response this can build is
+    // CD_MODE_SENSE_MAX, well inside that, so the old clamp to 255 guarded
+    // against a size the constants now make impossible.
+    buf[0] = (uint8_t)(pos - 1);
 
-    // Clamp to allocation length
-    int len = pos;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
+    // Bound by the allocation length.  Zero means zero -- CDU-541 manual
+    // S4.2.6 -- where this used to read `alloc_len > 0 &&`, i.e. send the whole
+    // response to a probe that allocated nothing for it.
+    int n = scsi_data_in_alloc(scsi, pos, alloc_len);
+    if (n > 0)
+        memcpy(scsi->buf.data, resp, (size_t)n);
 }
 
 // ============================================================================
@@ -182,13 +295,50 @@ void scsi_cdrom_mode_select(scsi_t *scsi) {
     int bd_len = data[3]; // block descriptor length
     int offset = 4; // skip header
 
-    // Parse block descriptor if present — detect 512-byte sector switch (A/UX)
+    // Parse the block descriptor if present.  The CDU-541 manual S5.2.2 lists
+    // six block lengths this drive accepts (Table 5-4): 256, 512, 1024, 2048,
+    // 2336 and 2340.  "Any other value will be considered an error.  The
+    // command will be terminated with a CHECK CONDITION status.  The sense key
+    // is set to ILLEGAL REQUEST and the additional sense code is set to INVALID
+    // FIELD IN PARAMETER LIST."
+    //
+    // Two of the six are implemented -- 2048, the Mode 1 sector this drive
+    // serves by default, and 512, which is what A/UX switches its install disc
+    // to (se30-aux-3).  The other four are legal requests this emulator cannot
+    // honour, so they go to GS_UNIMPLEMENTED rather than being answered:
+    // silently keeping the old size, which is what this did, tells the guest
+    // the switch happened and then serves it the wrong sectors.
     if (bd_len >= 8 && offset + 8 <= len) {
         uint32_t block_len =
             ((uint32_t)data[offset + 5] << 16) | ((uint32_t)data[offset + 6] << 8) | (uint32_t)data[offset + 7];
-        // Switch block size if the host requests 512 or 2048
-        if (block_len == 512 || block_len == 2048)
+        switch (block_len) {
+        case 0:
+            // A zero-filled descriptor is how a driver says "I came here for
+            // the pages, not the medium".  Strictly the manual's "any other
+            // value" covers it -- zero is not in Table 5-4, and X3.131-1994
+            // S8.3.3 defines a zero block length only for SEQUENTIAL-access
+            // devices, which this is not -- but refusing a legal MODE SELECT
+            // over a field the initiator left blank is the worse error.  Same
+            // reading on the hard disk path, so the two agree.
+            break;
+        case 512:
+        case 2048:
             scsi->devices[target].block_size = (uint16_t)block_len;
+            break;
+        case 256:
+        case 1024:
+        case 2336:
+        case 2340:
+            GS_UNIMPLEMENTED("MODE SELECT asked for a %u-byte CD-ROM block; the CDU-541 supports it "
+                             "(Table 5-4) but only 512 and 2048 are modelled",
+                             block_len);
+            break;
+        default:
+            // Not one the drive has ever offered: the guest is wrong, and the
+            // manual says exactly how to say so.
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_PARAM_LIST, 0x00);
+            return;
+        }
     }
 
     // Accept any remaining page data silently (truncated MODE SELECT is OK).
@@ -204,11 +354,19 @@ void scsi_cdrom_mode_select(scsi_t *scsi) {
 void scsi_cdrom_request_sense(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
     int alloc_len = scsi->buf.data[4];
-    if (alloc_len == 0)
-        alloc_len = 18; // default sense data length
 
-    int len = alloc_len < 18 ? alloc_len : 18;
-    phase_data_in(scsi, len);
+    // Zero means zero here too.  ANSI X3.131-1986's REQUEST SENSE section is
+    // the one place a zero allocation names a non-zero answer -- "four bytes of
+    // sense data shall be transferred" -- but those four bytes are the
+    // NONEXTENDED sense format (Table 7-4), which this model does not
+    // implement: S7.1.2's implementors note frames the rule as how a target
+    // supporting BOTH formats selects between them.  Four bytes of our extended
+    // ($70) block would be a truncated header, not that format.  The CDU-541
+    // manual S4.2.6, which governs the drive we advertise, has no exception at
+    // all.  This used to substitute 18.
+    int len = scsi_data_in_alloc(scsi, 18, alloc_len);
+    if (len == 0)
+        return;
 
     memset(scsi->buf.data, 0, len);
 
@@ -233,49 +391,116 @@ void scsi_cdrom_request_sense(scsi_t *scsi) {
 // ============================================================================
 
 // Handle READ TOC command — return minimal single-track data TOC
+// A CD address in MSF form.  X3.131-1994 S14.1.5 and Table 237: the four-byte
+// address field becomes reserved / M / S / F when the CDB's MSF bit is set.
+//
+// The +150 is the Red Book two-second lead-in: LBA 0 is at 00:02:00, and a
+// frame is 1/75 s, so 2 * 75 = 150 frames separate the two origins.  X3.131
+// S14.1.5 states the ratios are the drive's to report ("The ratios of M field
+// units to S field units and S field units to F field units are reported in the
+// mode parameters page"), and 60/75 is what a CD is.
+static void lba_to_msf(uint32_t lba, uint8_t out[4]) {
+    uint32_t f = lba + 150u;
+    out[0] = 0x00; // reserved
+    out[1] = (uint8_t)(f / (60u * 75u)); // M
+    out[2] = (uint8_t)((f / 75u) % 60u); // S
+    out[3] = (uint8_t)(f % 75u); // F
+}
+
+// Write a CD address into a four-byte field, as an LBA or as MSF.
+static void put_cd_address(uint8_t *dst, uint32_t lba, bool msf) {
+    if (msf) {
+        lba_to_msf(lba, dst);
+        return;
+    }
+    dst[0] = (uint8_t)(lba >> 24);
+    dst[1] = (uint8_t)(lba >> 16);
+    dst[2] = (uint8_t)(lba >> 8);
+    dst[3] = (uint8_t)lba;
+}
+
 void scsi_cdrom_read_toc(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
     uint16_t alloc_len = (scsi->buf.data[7] << 8) | scsi->buf.data[8];
-    // uint8_t format = scsi->buf.data[2] & 0x0F; // format code (unused for now)
+    // MSF: X3.131-1994 Table 260 puts it at byte 1 bit 1, and CDU-541 S5.2.24
+    // agrees -- "the format of the CD Address is determined by the MSF bit in
+    // the CDB".  Byte 2 is Reserved in BOTH; there is no format field here.
+    // (A commented-out `format = data[2] & 0x0F` used to sit on this line.
+    // Format codes and Format 1 session info are MMC, a later standard than
+    // either authority for this drive, which reports ANSI version 0x01.)
+    bool msf = (scsi->buf.data[1] & 0x02) != 0;
 
-    // For a single data session, return: header + track 1 + lead-out
+    // Starting track (byte 6).  A single-session data disc has exactly track 1,
+    // so only 1h and AAh (lead-out) can be satisfied; anything else names a
+    // track this disc does not have.  Both authorities agree on the answer for
+    // that -- CDU-541 S5.2.24: "If the track number field is zero or is not
+    // valid for the disc inserted the command will be terminated with a CHECK
+    // CONDITION status.  The sense key is set to ILLEGAL REQUEST.  The
+    // additional sense code is set to ILLEGAL VALUE IN CDB."  X3.131-1994
+    // S14.2.11 says the same with INVALID FIELD IN CDB.
+    //
+    // They disagree about ZERO, and this takes the lenient reading:
+    //
+    //   CDU-541:      zero is invalid, listed alongside out-of-range.
+    //   X3.131-1994:  "If this value is zero, the table of contents data shall
+    //                  begin with the first track on the medium."
+    //
+    // Zero is accepted as "from the first track", for two reasons.  The Sony
+    // C1h handler below already does exactly that, deliberately, and one drive
+    // answering the same question two ways would be worse than either answer.
+    // And refusing a value a real driver may legitimately send, on a path with
+    // no test coverage at all -- measured zero calls across se30-cdrom,
+    // iici-cdrom-boot and iicx-mactest -- is the more expensive way to be
+    // wrong.
+    uint8_t start_track = scsi->buf.data[6];
+    if (start_track > 0x01 && start_track != 0xAA) {
+        scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_INVALID_FIELD_IN_CDB, 0x00);
+        return;
+    }
+
+    uint16_t blk_sz = scsi->devices[target].block_size;
+    uint32_t total = 0;
+    if (scsi->device_images[target])
+        total = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
+
+    // A single data session: track 1 at LBA 0, then the lead-out.  AAh asks for
+    // the lead-out alone, so the descriptor list is one entry shorter.
     uint8_t toc[20];
     memset(toc, 0, sizeof(toc));
+    int pos = 4;
 
-    // TOC header (4 bytes)
-    toc[0] = 0x00; // data length MSB
-    toc[1] = 0x12; // data length LSB (18 = 2 track descriptors * 8 + 2)
+    if (start_track <= 0x01) { // 0 means "from the first track"
+        toc[pos + 0] = 0x00; // reserved
+        toc[pos + 1] = 0x14; // ADR=1, control=4 (data track, no copy permission)
+        toc[pos + 2] = 0x01; // track number
+        toc[pos + 3] = 0x00; // reserved
+        put_cd_address(&toc[pos + 4], 0, msf);
+        pos += 8;
+    }
+    toc[pos + 0] = 0x00; // reserved
+    toc[pos + 1] = 0x14; // ADR=1, control=4
+    toc[pos + 2] = 0xAA; // lead-out track
+    toc[pos + 3] = 0x00; // reserved
+    put_cd_address(&toc[pos + 4], total, msf);
+    pos += 8;
+
+    // TOC header.  The data length is the length AVAILABLE for this request --
+    // X3.131-1994 Table 261: "the length in bytes of the following TOC data that
+    // is available to be transferred", CDU-541 S5.2.24: "the length in bytes of
+    // the available table of contents data.  The value of TOC data length does
+    // not include itself."
+    //
+    // So it does NOT shrink when the allocation length truncates the transfer;
+    // that is how the initiator learns there is more to ask for.  It does vary
+    // with the REQUEST: AAh yields one descriptor, 01h yields two.
+    toc[0] = 0x00;
+    toc[1] = (uint8_t)(pos - 2);
     toc[2] = 0x01; // first track
     toc[3] = 0x01; // last track
 
-    // Track 1 descriptor (8 bytes): data track at LBA 0
-    toc[4] = 0x00; // reserved
-    toc[5] = 0x14; // ADR=1, control=4 (data track, no copy permission)
-    toc[6] = 0x01; // track number
-    toc[7] = 0x00; // reserved
-    // LBA = 0 (bytes 8-11)
-
-    // Lead-out descriptor (8 bytes): track 0xAA at total blocks
-    toc[12] = 0x00; // reserved
-    toc[13] = 0x14; // ADR=1, control=4
-    toc[14] = 0xAA; // lead-out track
-    toc[15] = 0x00; // reserved
-    // LBA = total blocks
-    uint16_t blk_sz = scsi->devices[target].block_size;
-    uint32_t total = 0;
-    if (scsi->devices[target].image)
-        total = (uint32_t)(disk_size(scsi->devices[target].image) / blk_sz);
-    toc[16] = (total >> 24) & 0xFF;
-    toc[17] = (total >> 16) & 0xFF;
-    toc[18] = (total >> 8) & 0xFF;
-    toc[19] = total & 0xFF;
-
-    int len = 20;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
-    memcpy(scsi->buf.data, toc, len);
+    int len = scsi_data_in_alloc(scsi, pos, alloc_len);
+    if (len > 0)
+        memcpy(scsi->buf.data, toc, (size_t)len);
 }
 
 // Handle the Sony vendor READ TOC (C1h) — returns the CDU-541 "TOC Data Format"
@@ -300,8 +525,8 @@ void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
     // The lead-out CD address is the disc's total block count.
     uint16_t blk_sz = scsi->devices[target].block_size;
     uint32_t total = 0;
-    if (scsi->devices[target].image)
-        total = (uint32_t)(disk_size(scsi->devices[target].image) / blk_sz);
+    if (scsi->device_images[target])
+        total = (uint32_t)(disk_size(scsi->device_images[target]) / blk_sz);
 
     // Include track 1 only when the requested starting track covers it; AAh (or
     // any value past our single track) asks for just the lead-out.  Track 0 is
@@ -337,12 +562,9 @@ void scsi_cdrom_read_toc_sony(scsi_t *scsi) {
     toc[2] = 0x01; // first track number
     toc[3] = 0x01; // last track number
 
-    int len = pos;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
-    memcpy(scsi->buf.data, toc, len);
+    int len = scsi_data_in_alloc(scsi, pos, alloc_len);
+    if (len > 0)
+        memcpy(scsi->buf.data, toc, (size_t)len);
 }
 
 // ============================================================================
@@ -358,12 +580,9 @@ void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
     memset(resp, 0, sizeof(resp));
     resp[1] = 0x15; // audio status: no current audio status info
 
-    int len = 4;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
-    memcpy(scsi->buf.data, resp, len);
+    int len = scsi_data_in_alloc(scsi, 4, alloc_len);
+    if (len > 0)
+        memcpy(scsi->buf.data, resp, (size_t)len);
 }
 
 // ============================================================================
@@ -373,6 +592,9 @@ void scsi_cdrom_read_sub_channel(scsi_t *scsi) {
 // Handle READ HEADER — return mode 1 data for the requested LBA
 void scsi_cdrom_read_header(scsi_t *scsi) {
     uint16_t alloc_len = (uint16_t)(((uint16_t)scsi->buf.data[7] << 8) | scsi->buf.data[8]);
+    // X3.131-1994 S14.1.5: "The READ HEADER, READ SUB-CHANNEL and READ TABLE OF
+    // CONTENTS commands have this feature" -- the MSF bit, byte 1 bit 1.
+    bool msf = (scsi->buf.data[1] & 0x02) != 0;
     // Promote each byte to uint32_t before shifting so the high-byte shift
     // (`<< 24`) doesn't trip signed-overflow UB when data[2] > 0x7F.
     uint32_t lba = ((uint32_t)scsi->buf.data[2] << 24) | ((uint32_t)scsi->buf.data[3] << 16) |
@@ -381,18 +603,11 @@ void scsi_cdrom_read_header(scsi_t *scsi) {
     uint8_t resp[8];
     memset(resp, 0, sizeof(resp));
     resp[0] = 0x01; // CD-ROM data mode 1
-    // Bytes 4-7: absolute block address
-    resp[4] = (lba >> 24) & 0xFF;
-    resp[5] = (lba >> 16) & 0xFF;
-    resp[6] = (lba >> 8) & 0xFF;
-    resp[7] = lba & 0xFF;
+    put_cd_address(&resp[4], lba, msf); // bytes 4-7: absolute address
 
-    int len = 8;
-    if (alloc_len > 0 && len > alloc_len)
-        len = alloc_len;
-
-    phase_data_in(scsi, len);
-    memcpy(scsi->buf.data, resp, len);
+    int len = scsi_data_in_alloc(scsi, 8, alloc_len);
+    if (len > 0)
+        memcpy(scsi->buf.data, resp, (size_t)len);
 }
 
 // ============================================================================
@@ -407,16 +622,20 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
     bool loej = (flags & 0x02) != 0;
 
     if (!start && loej) {
-        // Eject: check if removal is prevented
-        if (scsi->devices[target].prevent_removal) {
-            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_MEDIUM_NOT_PRESENT, 0x00);
+        // Whether the medium may leave the drive is not this command's
+        // decision -- the same lock stops the eject button -- so ask the one
+        // function that owns it and translate the refusal into SCSI.
+        //
+        // CDU-541 manual S5.2.33: "a request to eject the disc will be
+        // terminated with a CHECK CONDITION status.  The sense key will be set
+        // to ILLEGAL REQUEST, and the additional sense code set to PREVENT BIT
+        // SET".  This used to report 0x3A MEDIUM NOT PRESENT, which tells the
+        // driver the drive is empty -- the opposite of the truth, and a reason
+        // to stop retrying.
+        if (scsi_eject_device(scsi, target) == -2) {
+            scsi_check_condition(scsi, SENSE_ILLEGAL_REQUEST, ASC_SONY_PREVENT_BIT_SET, 0x00);
             return;
         }
-        // Mark medium as not present (eject)
-        scsi->devices[target].medium_present = false;
-        scsi->devices[target].image = NULL;
-        scsi->devices[target].unit_attention = true;
-        scsi_set_sense(scsi, target, SENSE_UNIT_ATTENTION, ASC_MEDIUM_NOT_PRESENT, 0x00);
     }
     // Start=1 (spin up) or Start=0,LoEj=0 (spin down): no-op
     phase_status(scsi, STATUS_GOOD);
@@ -429,6 +648,23 @@ void scsi_cdrom_start_stop_unit(scsi_t *scsi) {
 // Handle PREVENT/ALLOW MEDIUM REMOVAL command for CD-ROM
 void scsi_cdrom_prevent_allow(scsi_t *scsi) {
     int target = scsi->bus.target & 7;
-    scsi->devices[target].prevent_removal = (scsi->buf.data[4] & 0x01) != 0;
+    bool prevent = (scsi->buf.data[4] & 0x01) != 0;
+
+    // CDU-541 manual S5.2.14: "If a PREVENT MEDIUM REMOVAL command is issued
+    // without the drive being in the ready condition [the] command will be
+    // terminated with a CHECK CONDITION status.  The sense key will be set to
+    // NOT READY and the appropriate additional sense code will be set."  The
+    // ready condition is a caddy inserted with its TOC recovered (S4.1.4), so
+    // the appropriate code for an empty bay is 0xB0.
+    //
+    // ALLOW is not covered by that sentence and is not refused: unlocking a
+    // drive that has nothing in it is harmless, and a driver tidying up after
+    // an eject has every reason to send it.
+    if (prevent && !scsi->devices[target].medium_present) {
+        scsi_check_condition(scsi, SENSE_NOT_READY, ASC_SONY_CADDY_NOT_INSERTED, 0x00);
+        return;
+    }
+
+    scsi->devices[target].prevent_removal = prevent;
     phase_status(scsi, STATUS_GOOD);
 }
