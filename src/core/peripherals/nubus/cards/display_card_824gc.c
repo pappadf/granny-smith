@@ -53,19 +53,6 @@ static pixel_format_t format_for_bpp(int bpp); // fwd (video-mode section)
 
 // === Display-format helpers (ported from jmfb.c) ============================
 // Map the ≤8 bpp depth field in CLUTPBCR (bits 3-4) to a pixel_format_t.
-static pixel_format_t depth_to_format(uint16_t pbcr) {
-    switch ((pbcr >> 3) & 0x3) {
-    case 0:
-        return PIXEL_1BPP_MSB;
-    case 1:
-        return PIXEL_2BPP_MSB;
-    case 2:
-        return PIXEL_4BPP_MSB;
-    case 3:
-    default:
-        return PIXEL_8BPP;
-    }
-}
 
 // Recompute stride + width from RowWords + current format (jmfb convention).
 // The JMFB-register scanout, decided in one place against the VRAM that has to
@@ -78,160 +65,10 @@ static pixel_format_t depth_to_format(uint16_t pbcr) {
 // point at `vram` -- so a write here also switches which allocation the
 // descriptor spans.  Checking against `vram` is therefore not optional: the
 // geometry that was validated for one buffer is being applied to the other.
-static void gc824_apply_jmfb_scanout(display_card_824gc_priv_t *p) {
-    if (p->jmfb_row_words == 0)
-        return; // chip-reset sentinel; preserve the last good descriptor
-
-    uint32_t stride, width;
-    if (p->display.format == PIXEL_32BPP_XRGB) {
-        stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
-        width = stride / 4u;
-    } else {
-        stride = (uint32_t)p->jmfb_row_words * 4u;
-        width = (uint32_t)p->jmfb_row_words * 32u / display_bpp(p->display.format);
-    }
-
-    uint64_t offset = (p->display.format == PIXEL_32BPP_XRGB) ? (uint64_t)p->jmfb_video_base * 32u * 8u / 3u
-                                                              : (uint64_t)p->jmfb_video_base * 32u;
-    if (offset > UINT32_MAX)
-        offset = UINT32_MAX;
-
-    display_set_scanout(&p->display, p->vram, GC824_VRAM_SIZE, (uint32_t)offset, stride, width, p->raster_h, NULL, 0);
-}
 
 // === Display half: JMFB-family register I/O (ported from jmfb.c) ============
 // Four 256-byte blocks (0=JMFB, 1=Stopwatch, 2=CLUT, 3=Endeavor); 16-bit
 // registers live at the LOW half (+2) of a 32-bit-aligned slot.
-
-static void clut_finalize_entry(display_card_824gc_priv_t *p) {
-    uint32_t w0 = p->clut_pending[0], w1 = p->clut_pending[1], w2 = p->clut_pending[2];
-    rgba8_t e;
-    if (w0 == 0 && w1 == 0 && (w2 & 0xFFFFFF00u) != 0) {
-        e.r = (uint8_t)(w2 & 0xFFu);
-        e.g = (uint8_t)((w2 >> 8) & 0xFFu);
-        e.b = (uint8_t)((w2 >> 16) & 0xFFu);
-    } else {
-        e.r = (uint8_t)(w0 & 0xFFu);
-        e.g = (uint8_t)(w1 & 0xFFu);
-        e.b = (uint8_t)(w2 & 0xFFu);
-    }
-    e.a = 255;
-    p->clut[p->clut_idx] = e;
-    p->clut_idx++;
-    p->clut_phase = 0;
-    p->display.clut_dirty = true;
-}
-
-static void jmfb_write16(display_card_824gc_priv_t *p, int blk, uint32_t off, uint16_t val) {
-    if (blk == 0) { // JMFB block
-        switch (off) {
-        case GC824_JMFBCSR + 2:
-            p->jmfb_csr = (uint16_t)((val & ~GC824_MASK_SENSE) | (p->jmfb_csr & GC824_MASK_SENSE));
-            if (val & GC824_VRSTB) {
-                p->jmfb_csr &= GC824_MASK_SENSE;
-                p->clut_phase = 0;
-            }
-            return;
-        case GC824_JMFBVIDEOBASE + 2:
-            p->jmfb_video_base = val;
-            gc824_apply_jmfb_scanout(p);
-            p->display.fb_dirty = true;
-            return;
-        case GC824_JMFBROWWORDS + 2:
-            p->jmfb_row_words = val;
-            gc824_apply_jmfb_scanout(p);
-            p->display.shape_dirty = true;
-            return;
-        default:
-            return; // high-half / unmodeled — accept-and-ignore
-        }
-    } else if (blk == 1) { // Stopwatch block
-        switch (off) {
-        case GC824_SWICREG + 2:
-            p->sw_ic_reg = val;
-            return;
-        case GC824_SWCLRVINT + 2:
-            nubus_deassert_irq(p->card);
-            return;
-        case GC824_SWSTATUSREG + 2:
-            p->sw_status_reg = val;
-            return;
-        default:
-            return;
-        }
-    } else if (blk == 2) { // CLUT block
-        switch (off) {
-        case GC824_CLUTDATA: // high half of a CLUTDataReg long write
-            p->clut_long_hi = val;
-            return;
-        case GC824_CLUTADDR + 2:
-            p->clut_idx = (uint8_t)(val & 0xFFu);
-            p->clut_phase = 0;
-            return;
-        case GC824_CLUTDATA + 2: {
-            uint32_t full = ((uint32_t)p->clut_long_hi << 16) | val;
-            p->clut_long_hi = 0;
-            if (p->clut_phase < 3)
-                p->clut_pending[p->clut_phase++] = full;
-            if (p->clut_phase == 3)
-                clut_finalize_entry(p);
-            return;
-        }
-        case GC824_CLUTPBCR + 2: {
-            p->clut_pbcr = val;
-            pixel_format_t f = depth_to_format(val);
-            if ((val & 0x0002u) && f == PIXEL_8BPP)
-                f = PIXEL_32BPP_XRGB;
-            if (p->display.format != f) {
-                p->display.format = f;
-                gc824_apply_jmfb_scanout(p);
-                p->display.shape_dirty = true;
-            }
-            return;
-        }
-        default:
-            return;
-        }
-    }
-    // blk == 3 Endeavor PLL — accept-and-ignore (PLL program has no effect).
-}
-
-static uint16_t jmfb_read16(display_card_824gc_priv_t *p, int blk, uint32_t off) {
-    if (blk == 0) {
-        switch (off) {
-        case GC824_JMFBCSR + 2:
-            // Sense lines live in bits 9-11 (outside MaskSenseLine).
-            return (uint16_t)((p->jmfb_csr & GC824_MASK_SENSE) | ((p->sense_code & 7) << 9));
-        case GC824_JMFBVIDEOBASE + 2:
-            return p->jmfb_video_base;
-        case GC824_JMFBROWWORDS + 2:
-            return p->jmfb_row_words;
-        default:
-            return 0;
-        }
-    } else if (blk == 1) {
-        switch (off) {
-        case GC824_SWSTATUSREG + 2:
-            // VBL toggle bit 2 — flip each read so the poll sees both edges.
-            p->sw_status_reg ^= 0x0004u;
-            return p->sw_status_reg & 0x0004u;
-        case GC824_SWICREG + 2:
-            return p->sw_ic_reg;
-        default:
-            return 0;
-        }
-    } else if (blk == 2) {
-        switch (off) {
-        case GC824_CLUTADDR + 2:
-            return p->clut_idx;
-        case GC824_CLUTPBCR + 2:
-            return p->clut_pbcr;
-        default:
-            return 0;
-        }
-    }
-    return 0; // Endeavor / high-half reads drive zero
-}
 
 // === Accelerator: bring-up state machine ====================================
 
@@ -299,7 +136,7 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     // passes regardless of which section carried it).
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_SIG, GC824_PUBLICOU_SIG);
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_MSTICKS, 0);
-    dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_SENSE, p->sense_code);
+    dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_SENSE, p->jmfb.sense_code);
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_DEPTH, display_bpp(p->display.format));
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_ROWBYTES, p->display.stride);
     dram_set_be32(p, GC824_DRAM_PUBLICOU + GC824_PO_VSIZE, p->display.height);
@@ -686,12 +523,13 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
         int blk = (int)(rel >> 8);
         uint32_t off = rel & 0xFFu;
         if (width == 1) {
-            uint16_t v = jmfb_read16(p, blk, off & ~1u);
+            uint16_t v = jmfb_read16(&p->jmfb, &p->jmfb_bind, blk, off & ~1u);
             return (off & 1) ? (v & 0xFFu) : (v >> 8);
         }
         if (width == 2)
-            return jmfb_read16(p, blk, off);
-        return ((uint32_t)jmfb_read16(p, blk, off) << 16) | jmfb_read16(p, blk, off + 2);
+            return jmfb_read16(&p->jmfb, &p->jmfb_bind, blk, off);
+        return ((uint32_t)jmfb_read16(&p->jmfb, &p->jmfb_bind, blk, off) << 16) |
+               jmfb_read16(&p->jmfb, &p->jmfb_bind, blk, off + 2);
     }
     // --- Super-slot space (card-local = phys - super_base) ---
     uint32_t cl = phys - p->super_base; // card-local offset
@@ -794,12 +632,12 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
         int blk = (int)(rel >> 8);
         uint32_t off = rel & 0xFFu;
         if (width == 1)
-            jmfb_write16(p, blk, off & ~1u, (uint16_t)(val | (val << 8)));
+            jmfb_write16(&p->jmfb, &p->jmfb_bind, blk, off & ~1u, (uint16_t)(val | (val << 8)));
         else if (width == 2)
-            jmfb_write16(p, blk, off, (uint16_t)val);
+            jmfb_write16(&p->jmfb, &p->jmfb_bind, blk, off, (uint16_t)val);
         else {
-            jmfb_write16(p, blk, off, (uint16_t)(val >> 16));
-            jmfb_write16(p, blk, off + 2, (uint16_t)val);
+            jmfb_write16(&p->jmfb, &p->jmfb_bind, blk, off, (uint16_t)(val >> 16));
+            jmfb_write16(&p->jmfb, &p->jmfb_bind, blk, off + 2, (uint16_t)val);
         }
         return;
     }
@@ -987,16 +825,16 @@ static uint8_t spdepth_for_bpp(int bpp) {
 static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     // JMFB display defaults: power up at 1 bpp (the video driver switches
     // depth via CLUTPBCR at boot; jmfb convention).
-    p->sw_ic_reg = GC824_VINT_DISABLE; // VBL IRQ masked until installed
-    p->jmfb_csr = 0;
-    p->jmfb_video_base = 0xA00 / 32; // $A00 byte offset (driver convention)
-    p->jmfb_row_words = p->display.width ? (uint16_t)(p->display.width / 32u) : (640u / 32u);
-    p->clut_idx = 0;
-    p->clut_phase = 0;
-    p->clut_pbcr = 0;
+    p->jmfb.sw_ic = GC824_VINT_DISABLE; // VBL IRQ masked until installed
+    p->jmfb.csr = 0;
+    p->jmfb.video_base = 0xA00 / 32; // $A00 byte offset (driver convention)
+    p->jmfb.row_words = p->display.width ? (uint16_t)(p->display.width / 32u) : (640u / 32u);
+    p->jmfb.clut_idx = 0;
+    p->jmfb.clut_phase = 0;
+    p->jmfb.clut_pbcr = 0;
     p->acdc_addr = 0;
     p->acdc_phase = 0;
-    p->clut_long_hi = 0;
+    p->jmfb.clut_long_hi = 0;
 
     // The GC decl-ROM video driver (config 0 → 640×480) brings the screen up
     // at the depth the slot PRAM selects (the video_mode seed wrote it; 1 bpp
@@ -1011,7 +849,7 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     // decoded); RUNTIME depth switches arrive via VidComm (gc_vidcomm).
     p->display.format = format_for_bpp(p->seeded_bpp ? p->seeded_bpp : 1);
     p->display.width = 640u;
-    p->display.height = p->raster_h ? p->raster_h : 480u;
+    p->display.height = p->jmfb.raster_h ? p->jmfb.raster_h : 480u;
     // Row pitch: 1024 bytes at every indexed depth (guest-probed at 1/8 bpp).
     // The direct modes use packed pitches (32 bpp = 2560, VidComm-probed) but
     // can never be the BOOT depth, so the power-on pitch is always 1024.
@@ -1105,6 +943,17 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         return -1;
     }
 
+    // Bind the shared JMFB model to what THIS card's registers address.  The
+    // store is `vram`, NOT the `dram` the accelerator composes into -- that
+    // distinction is the whole of 04-video F-21, and keeping the bindings
+    // explicit is what stops the two being confused again.
+    p->jmfb_bind = (jmfb_bind_t){.display = &p->display,
+                                 .store = p->vram,
+                                 .store_size = GC824_VRAM_SIZE,
+                                 .clut = p->clut,
+                                 .card = card,
+                                 .tag = "8*24 GC"};
+
     if (generic) {
         // Generic sibling kind ("8_24gc"): generate the GS declaration ROM
         // at card_init — the boot family + 32-bit sister family from the
@@ -1133,17 +982,17 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // it across every /RESET — the guest's boot-time mode programming (the
     // direct MFB/ACDC path) isn't decoded, and the PRAM seed tells the driver
     // to bring the screen up at exactly this depth.
-    p->sense_code = 6;
+    p->jmfb.sense_code = 6;
     p->display.width = 640;
-    p->raster_h = 480;
+    p->jmfb.raster_h = 480;
     p->seeded_bpp = 1;
     if (seeded_monitor) {
-        p->sense_code = seeded_monitor->sense_code;
+        p->jmfb.sense_code = seeded_monitor->sense_code;
         p->display.width = seeded_monitor->width;
-        p->raster_h = seeded_monitor->height;
+        p->jmfb.raster_h = seeded_monitor->height;
         p->seeded_bpp = seeded_depth_bpp;
     }
-    p->display.height = p->raster_h;
+    p->display.height = p->jmfb.raster_h;
     set_poweron_defaults(p);
 
     card->priv = p;
@@ -1242,7 +1091,7 @@ static void card_on_vbl(nubus_card_t *card, config_t *cfg) {
     display_card_824gc_priv_t *p = card->priv;
     if (!p)
         return;
-    if (!(p->sw_ic_reg & GC824_VINT_DISABLE) || p->vbl_enabled)
+    if (!(p->jmfb.sw_ic & GC824_VINT_DISABLE) || p->vbl_enabled)
         nubus_assert_irq(card);
     // Heartbeat + ms-tick counter (the driver watchdogs these when it spins).
     if (p->booted) {
@@ -1429,7 +1278,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
             break;
         }
 
-    gc824_apply_jmfb_scanout(p);
+    jmfb_apply_scanout(&p->jmfb, &p->jmfb_bind);
     gc824_clip_rebuild(p); // masks derive from the restored regions
 
     p->display.shape_dirty = true;
