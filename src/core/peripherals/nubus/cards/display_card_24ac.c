@@ -669,7 +669,7 @@ static bool load_vrom(display_card_24ac_priv_t *p) {
 // machine.boot; consumed by the next card_init, which sets the monitor sense +
 // depth and seeds PRAM so the OS boots at that mode (mirrors jmfb.c).  The id
 // is resolved against display_card_24ac_monitors[] × its depth list.
-static char s_pending_video_mode_id[40] = "";
+static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 
 // bpp → MODE register depth bits (vrom RE depth ladder; no 2-bpp mode).
 static uint8_t modebits_for_format(pixel_format_t f) {
@@ -1250,6 +1250,7 @@ const nubus_card_kind_t display_card_24ac_kind = {
     .requires_vrom = true,
     .monitors = display_card_24ac_monitors,
     .factory = factory,
+    .stage_video_mode = display_card_24ac_pending_video_mode_set,
 };
 
 // Generic sibling kind: always-available twin with the built-in GS
@@ -1263,6 +1264,7 @@ const nubus_card_kind_t display_card_24ac_generic_kind = {
     .requires_vrom = false,
     .monitors = display_card_24ac_monitors,
     .factory = factory_generic,
+    .stage_video_mode = display_card_24ac_pending_video_mode_set,
 };
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
@@ -1283,41 +1285,7 @@ const char *display_card_24ac_pending_video_mode_get(void) {
 // monitor name is matched against display_card_24ac_monitors[] and N validated
 // against that monitor's depth list.  Mirrors jmfb_video_mode_lookup.
 bool display_card_24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
-    if (!id || !*id)
-        return false;
-    const char *underscore_bpp = strrchr(id, '_');
-    if (!underscore_bpp)
-        return false;
-    size_t mon_len = (size_t)(underscore_bpp - id);
-    if (mon_len == 0 || mon_len >= 32)
-        return false;
-    char mon_id[32];
-    memcpy(mon_id, id, mon_len);
-    mon_id[mon_len] = '\0';
-    const char *bpp_str = underscore_bpp + 1;
-    char *end = NULL;
-    long bpp = strtol(bpp_str, &end, 10);
-    if (!end || end == bpp_str || strcmp(end, "bpp") != 0)
-        return false;
-    if (bpp < 1 || bpp > 32)
-        return false;
-    for (const nubus_monitor_t *m = display_card_24ac_monitors; m->id; m++) {
-        if (strcmp(m->id, mon_id) != 0)
-            continue;
-        if (!m->depths)
-            return false;
-        for (const int *d = m->depths; *d; d++) {
-            if ((int)bpp == *d) {
-                if (out_monitor)
-                    *out_monitor = m;
-                if (out_depth_bpp)
-                    *out_depth_bpp = (int)bpp;
-                return true;
-            }
-        }
-        return false; // monitor matched but depth didn't
-    }
-    return false;
+    return nubus_monitor_mode_lookup(display_card_24ac_monitors, id, out_monitor, out_depth_bpp);
 }
 
 // === Engine introspection (object model) ====================================

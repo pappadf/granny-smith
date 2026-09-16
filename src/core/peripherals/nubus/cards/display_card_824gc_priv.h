@@ -62,6 +62,11 @@ struct display_card_824gc_priv {
     uint16_t jmfb_csr;
     uint16_t jmfb_video_base;
     uint16_t jmfb_row_words;
+    // The sensed monitor's raster height.  Held here rather than read back out
+    // of display.height because a descriptor display_set_scanout refuses has
+    // height 0, and the next good register write has to be able to rebuild the
+    // full raster from the card's own state.
+    uint32_t raster_h;
     uint16_t sw_ic_reg; // Stopwatch interrupt/control (bit1 = VINT disable)
     uint16_t sw_status_reg;
     uint16_t clut_pbcr;

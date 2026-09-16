@@ -62,7 +62,11 @@ LOG_USE_CATEGORY_NAME("dafb");
 // DP8531 (+$300): register = (offset >> 4) & 0xF; commit on reg 15
 
 // Phase C fallback frame period until the ROM programs real timing.
-#define DAFB_FALLBACK_FRAME_NS 16625000ull
+// Until the Swatch timing registers are programmed there is no mode line to
+// derive a refresh from, so the fallback is the machine's own 60.15 Hz
+// retrace -- taken from scheduler.h rather than re-rounded here, which is
+// where the old 16625000 literal lost 103 ns a frame (04-video F-17).
+#define DAFB_FALLBACK_FRAME_NS MAC_VBL_PERIOD_NS
 
 struct dafb {
     uint32_t regs[DAFB_REG_COUNT]; // raw register file ($000-$3FF)

@@ -23,6 +23,7 @@
 //     documented start/skip positions inside the 256-entry bank
 
 #include "civic.h"
+#include "display_timing.h"
 
 #include "av.h"
 #include "psc.h"
@@ -73,8 +74,10 @@ LOG_USE_CATEGORY_NAME("civic");
 // The attached monitor: Hi-Res 640x480, indexed sense code 6 (%110).
 #define AV_CIVIC_SENSE_CODE 6u
 
-// 60.15 Hz frame cadence.
-#define AV_CIVIC_FRAME_NS 16625103.0
+// 60.15 Hz frame cadence -- the machine's own retrace rate, from the one
+// place that number lives (scheduler.h).  CIVIC's timing generator is not
+// programmed with a mode line here, so this IS its refresh.
+#define AV_CIVIC_FRAME_NS MAC_VBL_PERIOD_NS
 
 struct av_civic {
     // --- plain data (checkpointed up to the first pointer field) ---
@@ -283,7 +286,13 @@ static void civic_update_display(av_civic_t *cv) {
     if (code > 5)
         code = 5;
     uint32_t bpp = 1u << code;
-    uint32_t width = 640, height = 480;
+    // CIVIC's timing generator is not programmed with a mode line in this
+    // model; the raster is whatever the attached monitor's sense code means,
+    // which is the same table every other part reads (04-video F-17) rather
+    // than a literal here.
+    const display_timing_t *timing = display_timing_for_sense(AV_CIVIC_SENSE_CODE);
+    uint32_t width = timing ? timing->width : 640;
+    uint32_t height = timing ? timing->height : 480;
     uint32_t row_words = civic_get(cv, SLOT_ROWWORDS, 8);
     uint32_t stride = row_words * 32u;
     // Before the ROM programs RowWords there is no row pitch at all; fall
@@ -294,7 +303,7 @@ static void civic_update_display(av_civic_t *cv) {
 
     display_t *d = &cv->display;
     pixel_format_t fmt = fmt_by_code[code];
-    uint8_t *bits = cv->vram + (base % AV_CIVIC_VRAM_SIZE);
+    uint8_t *bits = cv->vram; // the graphics plane; the offset is applied below
     const rgba8_t *clut = (bpp <= 8) ? cv->disp_clut : NULL;
     uint32_t clut_len = (bpp <= 8) ? (1u << bpp) : 0;
 
@@ -309,11 +318,24 @@ static void civic_update_display(av_civic_t *cv) {
     }
 
     bool shape_changed = d->format != fmt || d->stride != stride || d->width != width;
-    d->width = width;
-    d->height = height;
-    d->stride = stride;
     d->format = fmt;
-    d->bits = bits;
+    if (bits == cv->compose) {
+        // The composed overlay frame: this buffer is sized by civic_compose
+        // itself and its stride is width*4 by construction, so there is no
+        // guest-programmed geometry to check here.
+        d->width = width;
+        d->height = height;
+        d->stride = stride;
+        d->bits = bits;
+    } else {
+        // The graphics plane, addressed by guest registers.  `base` was masked
+        // into range but `stride` -- row_words * 32, from an 8-bit register --
+        // never was, and nothing compared base + stride*height against the
+        // store (04-video F-24).  Decide them together; a descriptor the VRAM
+        // cannot back scans nothing rather than reading past the end.
+        uint32_t off = base % AV_CIVIC_VRAM_SIZE;
+        display_set_scanout(d, cv->vram, AV_CIVIC_VRAM_SIZE, off, stride, width, height, NULL, 0);
+    }
     d->clut = clut;
     d->clut_len = clut_len;
     if (shape_changed)
@@ -349,7 +371,7 @@ static void civic_frame_event(void *source, uint64_t data) {
         civic_compose(cv);
     // The framebuffer may have changed; nudge the renderer each frame.
     cv->display.fb_dirty = true;
-    scheduler_new_cpu_event(cv->cfg->scheduler, &civic_frame_event, cv, 0, 0, (uint64_t)AV_CIVIC_FRAME_NS);
+    scheduler_new_cpu_event(cv->cfg->scheduler, &civic_frame_event, cv, 0, 0, AV_CIVIC_FRAME_NS);
 }
 
 // ============================================================
@@ -667,7 +689,7 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
         display_blank_raster(&cv->display);
 
     scheduler_new_event_type(cfg->scheduler, "civic", cv, "frame", &civic_frame_event);
-    scheduler_new_cpu_event(cfg->scheduler, &civic_frame_event, cv, 0, 0, (uint64_t)AV_CIVIC_FRAME_NS);
+    scheduler_new_cpu_event(cfg->scheduler, &civic_frame_event, cv, 0, 0, AV_CIVIC_FRAME_NS);
 
     LOG(1, "CIVIC init (Hi-Res 640x480 monitor, 2 MB VRAM)");
     return cv;

@@ -212,29 +212,42 @@ CtlNoop:
 	moveq	#0,d0
 	rts
 
-| csCode 0 — Reset: default 1-bpp mode, page 0, gray screen.
+| csCode 0 — Reset: default 1-bpp mode, page 0, gray screen.  A card with
+| more than one page must switch page 0 in here (Designing Cards and
+| Drivers 3ed, csCode 0).
 CtlReset:
 	move.w	#0x80,pvMode(a5)
+	clr.w	pvPage(a5)
+	bsr	DRSetPage
 	bsr	ApplyMode
 	bsr	GrayFill
 	move.w	#0x80,csMode(a2)
 	clr.w	csPage(a2)
+	moveq	#0,d2
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
 	rts
 
-| csCode 2 — SetMode: switch pixel depth (page 0 only).
+| csCode 2 — SetMode: switch pixel depth AND display page.  csPage is
+| the page to switch in (Designing Cards and Drivers 3ed, csCode 2); a
+| single-page personality still rejects anything but 0 because
+| GS_NPAGES-1 is 0 there.
 CtlSetMode:
 	move.w	csMode(a2),d2
 	cmp.w	#0x80,d2
 	blo.s	CtlModeBad
 	cmp.w	#0x80+GS_NMODES-1,d2
 	bhi.s	CtlModeBad
-	tst.w	csPage(a2)
-	bne.s	CtlModeBad
+	move.w	csPage(a2),d3
+	bmi.s	CtlModeBad
+	cmp.w	#GS_NPAGES-1,d3
+	bhi.s	CtlModeBad
 	move.w	d2,pvMode(a5)
+	move.w	d3,pvPage(a5)
+	bsr	DRSetPage
 	bsr	ApplyMode
+	move.w	d3,d2
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
@@ -473,7 +486,8 @@ StTab:
 
 StGetMode:
 	move.w	pvMode(a5),csMode(a2)
-	clr.w	csPage(a2)
+	move.w	pvPage(a5),csPage(a2)
+	move.w	pvPage(a5),d2
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
@@ -527,14 +541,23 @@ StGEHave:
 	moveq	#0,d0
 	rts
 
+| Status 4 — GetPages: the TOTAL number of pages in the current mode, as
+| a counting number (not the current page index), and it must match the
+| mPageCnt the declaration ROM declares for this personality.
 StGetPages:
-	move.w	#1,csPage(a2)
+	move.w	#GS_NPAGES,csPage(a2)
 	moveq	#0,d0
 	rts
 
+| Status 5 — GetBaseAddr: the base of the REQUESTED page, which need not
+| be the displayed one ("allows video pages to be written to even when
+| not displayed" -- Designing Cards and Drivers 3ed).  So this reads the
+| page and does not switch it.
 StGetBase:
-	tst.w	csPage(a2)
-	bne	CtlModeBad
+	move.w	csPage(a2),d2
+	bmi	CtlModeBad
+	cmp.w	#GS_NPAGES-1,d2
+	bhi	CtlModeBad
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0

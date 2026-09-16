@@ -150,7 +150,27 @@ typedef struct nubus_card_kind {
     bool requires_vrom; // dialog shows VROM picker iff true
     const nubus_monitor_t *monitors; // sentinel-terminated; NULL for non-display cards
     nubus_card_factory_fn factory; // bus controller calls this once per populated slot
+    // Hand a staged `machine.nubus.video_mode` id to this kind's pending-mode
+    // channel -- the per-driver static its factory consumes at init.  NULL for
+    // a kind with no video-mode staging.  Without it the bus controller had to
+    // if/else over card identity to route a staged mode (04-video F-05), which
+    // is core code knowing every display card by name -- exactly what
+    // pci_card_kind_t.stage_option exists to avoid on the PCI side.
+    void (*stage_video_mode)(const char *id);
 } nubus_card_kind_t;
+
+// Parse a "monitor_Nbpp" video-mode id against a kind's monitor catalogue.
+// One body for what were three byte-identical copies in jmfb.c, 24ac.c and
+// 824gc.c (04-video F-05).  The monitor portion is matched case-sensitively
+// against `list`; N is decimal and must appear in that monitor's depths[].
+// Returns false (leaving the outputs untouched) on any mismatch.
+bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, const nubus_monitor_t **out_monitor,
+                               int *out_depth_bpp);
+
+// The widest video-mode id any catalogue can name, plus room for the "_32bpp"
+// suffix and the terminator.  One size for what were a 32-byte buffer in one
+// card and 40-byte buffers in the other two.
+#define NUBUS_VIDEO_MODE_ID_MAX 40
 
 // Registry accessors.  The registry itself is an explicit list in
 // nubus.c (see proposal §3.2.1 "explicit list, no linker constructors").

@@ -96,8 +96,7 @@ static void gc824_apply_jmfb_scanout(display_card_824gc_priv_t *p) {
     if (offset > UINT32_MAX)
         offset = UINT32_MAX;
 
-    display_set_scanout(&p->display, p->vram, GC824_VRAM_SIZE, (uint32_t)offset, stride, width, p->display.height, NULL,
-                        0);
+    display_set_scanout(&p->display, p->vram, GC824_VRAM_SIZE, (uint32_t)offset, stride, width, p->raster_h, NULL, 0);
 }
 
 // === Display half: JMFB-family register I/O (ported from jmfb.c) ============
@@ -939,7 +938,7 @@ static bool load_vrom(display_card_824gc_priv_t *p) {
 }
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
-static char s_pending_video_mode_id[40] = "";
+static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 static const nubus_monitor_t display_card_824gc_monitors[]; // fwd
 
 static pixel_format_t format_for_bpp(int bpp) {
@@ -1012,7 +1011,7 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     // decoded); RUNTIME depth switches arrive via VidComm (gc_vidcomm).
     p->display.format = format_for_bpp(p->seeded_bpp ? p->seeded_bpp : 1);
     p->display.width = 640u;
-    p->display.height = 480u;
+    p->display.height = p->raster_h ? p->raster_h : 480u;
     // Row pitch: 1024 bytes at every indexed depth (guest-probed at 1/8 bpp).
     // The direct modes use packed pitches (32 bpp = 2560, VidComm-probed) but
     // can never be the BOOT depth, so the power-on pitch is always 1024.
@@ -1136,14 +1135,15 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // to bring the screen up at exactly this depth.
     p->sense_code = 6;
     p->display.width = 640;
-    p->display.height = 480;
+    p->raster_h = 480;
     p->seeded_bpp = 1;
     if (seeded_monitor) {
         p->sense_code = seeded_monitor->sense_code;
         p->display.width = seeded_monitor->width;
-        p->display.height = seeded_monitor->height;
+        p->raster_h = seeded_monitor->height;
         p->seeded_bpp = seeded_depth_bpp;
     }
+    p->display.height = p->raster_h;
     set_poweron_defaults(p);
 
     card->priv = p;
@@ -1511,6 +1511,7 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .requires_vrom = true,
     .monitors = display_card_824gc_monitors,
     .factory = factory,
+    .stage_video_mode = display_card_824gc_pending_video_mode_set,
 };
 
 // Monitor list for the generic sibling: config 0 (640×480) only in this
@@ -1540,6 +1541,7 @@ const nubus_card_kind_t display_card_824gc_generic_kind = {
     .requires_vrom = false,
     .monitors = display_card_824gc_generic_monitors,
     .factory = factory_generic,
+    .stage_video_mode = display_card_824gc_pending_video_mode_set,
 };
 
 // === Video-mode selection ===================================================
@@ -1557,41 +1559,7 @@ const char *display_card_824gc_pending_video_mode_get(void) {
 }
 
 bool display_card_824gc_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
-    if (!id || !*id)
-        return false;
-    const char *underscore_bpp = strrchr(id, '_');
-    if (!underscore_bpp)
-        return false;
-    size_t mon_len = (size_t)(underscore_bpp - id);
-    if (mon_len == 0 || mon_len >= 32)
-        return false;
-    char mon_id[32];
-    memcpy(mon_id, id, mon_len);
-    mon_id[mon_len] = '\0';
-    const char *bpp_str = underscore_bpp + 1;
-    char *end = NULL;
-    long bpp = strtol(bpp_str, &end, 10);
-    if (!end || end == bpp_str || strcmp(end, "bpp") != 0)
-        return false;
-    if (bpp < 1 || bpp > 32)
-        return false;
-    for (const nubus_monitor_t *m = display_card_824gc_monitors; m->id; m++) {
-        if (strcmp(m->id, mon_id) != 0)
-            continue;
-        if (!m->depths)
-            return false;
-        for (const int *d = m->depths; *d; d++) {
-            if ((int)bpp == *d) {
-                if (out_monitor)
-                    *out_monitor = m;
-                if (out_depth_bpp)
-                    *out_depth_bpp = (int)bpp;
-                return true;
-            }
-        }
-        return false;
-    }
-    return false;
+    return nubus_monitor_mode_lookup(display_card_824gc_monitors, id, out_monitor, out_depth_bpp);
 }
 
 // === Accelerator introspection (object model) ===============================

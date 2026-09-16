@@ -47,6 +47,7 @@
 // control node (FCode at image ~$16400) and its mode tables [ROM-RE],
 // Apple "Power Macintosh 7500 and 8500 Computers" Developer Note [Apple-doc].
 
+#include "display_timing.h"
 #include "tnt.h"
 
 #include "log.h"
@@ -152,6 +153,16 @@ static void control_refresh_clut(config_t *cfg) {
     st->display.clut_dirty = true;
 }
 
+// Scan base inside the 4 MB store: the bank the attribute selects (the 2 MB
+// modes; the $40 bit marks the 4 MB interleaved layout at 0), plus the
+// programmed start address and the 16-byte pixel-0 offset.  update() and
+// compose() must agree on this or the cursor composites over the wrong page.
+static uint32_t control_scan_base(const tnt_control_t *c) {
+    uint32_t attr = c->reg[CR_VRAM_ATTR];
+    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
+    return base + c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
+}
+
 // Re-derive the whole descriptor from the register file.  Called on init,
 // reset, restore and every geometry-relevant register write — all rare.
 void tnt_control_update(config_t *cfg) {
@@ -176,36 +187,24 @@ void tnt_control_update(config_t *cfg) {
     if (height == 0 || height > 1536u)
         height = 480u;
 
-    st->display.width = width;
-    st->display.height = height;
     st->display.format = depth_format(c);
-    st->display.stride = (pitch != 0) ? pitch : width * (bpp / 8u);
     st->display.par_w = 0;
     st->display.par_h = 0;
     st->display.crt_response = NULL;
+    uint32_t stride = (pitch != 0) ? pitch : width * (bpp / 8u);
+    uint32_t base = control_scan_base(c);
 
-    // Scan base inside the 4 MB store: the bank the attribute selects (the
-    // 2 MB modes; the $40 bit marks the 4 MB interleaved layout at 0),
-    // plus the programmed start address and the 16-byte pixel-0 offset.
-    uint32_t attr = c->reg[CR_VRAM_ATTR];
-    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
-    base += c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
-
-    // The $400 control bit blanks the raster; an unprogrammed pitch or an
-    // out-of-store scan does too (nothing sane is being scanned).
+    // The $400 control bit blanks the raster, and so does an unprogrammed
+    // pitch -- nothing sane is being scanned.  Either way the descriptor is
+    // settled in one place: display_set_scanout decides `bits` and the
+    // geometry together, so a scan the 4 MB store cannot back (CR_PITCH is
+    // 12 bits wide, which reaches 12 MB at 32 bpp) falls to the blank buffer
+    // with a height the blank buffer can actually serve, instead of keeping
+    // the large geometry over a clamped fill (04-video F-26).
     bool blanked = (c->reg[CR_CTRL] & 0x400u) || pitch == 0;
-    uint64_t span = (uint64_t)st->display.stride * height;
-    if (base + span > TNT_VRAM_SIZE)
-        blanked = true;
-    if (blanked) {
-        size_t n = (size_t)st->display.stride * height;
-        if (n > TNT_VRAM_SIZE)
-            n = TNT_VRAM_SIZE;
-        memset(st->blank, display_black_fill(st->display.format), n);
-        st->display.bits = st->blank;
-    } else {
-        st->display.bits = st->vram + base;
-    }
+    display_set_scanout(&st->display, blanked ? NULL : st->vram, TNT_VRAM_SIZE, base, stride, width, height, st->blank,
+                        TNT_VRAM_SIZE);
+    blanked = st->display.bits == st->blank;
 
     if (bpp > 8) {
         st->display.clut = NULL;
@@ -217,8 +216,14 @@ void tnt_control_update(config_t *cfg) {
     st->display.shape_dirty = true;
     st->display.fb_dirty = true;
     st->display.clut_dirty = true;
-    LOG(2, "mode: %ux%u %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height, bpp, st->display.stride,
-        c->reg[CR_MODE], c->rad_ctrl, st->display.clut ? "yes" : "no", blanked ? " BLANKED" : "");
+    // Control derives its raster from the CRTC, which is right for a
+    // programmable timing generator -- but naming the standard timing it
+    // landed on makes a misprogrammed mode line obvious in the log
+    // (04-video F-17).
+    const char *timing = display_timing_name(width, height);
+    LOG(2, "mode: %ux%u%s%s %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height, timing ? " " : "",
+        timing ? timing : "", bpp, st->display.stride, c->reg[CR_MODE], c->rad_ctrl, st->display.clut ? "yes" : "no",
+        blanked ? " BLANKED" : "");
 }
 
 // The RaDACal hardware cursor (misc $20 bit 1).  Decoded live from the
@@ -263,10 +268,7 @@ static void control_compose(config_t *cfg) {
     uint32_t bpx = depth_bpp(c) / 8u;
     uint32_t stride = st->display.stride;
     uint32_t w = st->display.width, h = st->display.height;
-    // Recompute the scan base exactly as update() does.
-    uint32_t attr = c->reg[CR_VRAM_ATTR];
-    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
-    base += c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
+    uint32_t base = control_scan_base(c);
     uint64_t span = (uint64_t)stride * h;
     if (base + span > TNT_VRAM_SIZE)
         return;

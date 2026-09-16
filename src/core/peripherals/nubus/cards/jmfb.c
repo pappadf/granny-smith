@@ -63,7 +63,7 @@ static bool s_pending_sense_set = false;
 // (mirrors s_pending_sense above; consumed in the same factory
 // invocation).  At most 31 chars + NUL fits any "monitor_Nbpp" id.
 // Empty string means "no pending mode — fall back to plain sense".
-static char s_pending_video_mode_id[32] = "";
+static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 
 // Pending "WxHxD" custom resolution set via `custom_mode=` (proposal-
 // nubus-runtime-vrom §3.6).  The generic kind generates a video
@@ -114,6 +114,11 @@ typedef struct {
     uint16_t jmfb_lsr;
     uint16_t jmfb_video_base; // raw value; offset = value * 32 bytes
     uint16_t jmfb_row_words; // raw value; stride = value * 4 (≤8bpp) or *32/3 (24bpp)
+    // The sensed monitor's raster height.  Held here rather than read back out
+    // of display.height because a descriptor display_set_scanout refuses has
+    // height 0, and the next good register write has to be able to rebuild the
+    // full raster from the card's own state.
+    uint32_t raster_h;
     uint16_t sw_ic_reg; // SRST | ENVERTI | …
     uint16_t sw_status_reg;
     uint16_t clut_pbcr;
@@ -235,8 +240,7 @@ static void jmfb_apply_scanout(jmfb_priv_t *p) {
     if (offset > UINT32_MAX)
         offset = UINT32_MAX; // guaranteed to fail the fit test below
 
-    display_set_scanout(&p->display, p->vram, JMFB_VRAM_SIZE, (uint32_t)offset, stride, width, p->display.height, NULL,
-                        0);
+    display_set_scanout(&p->display, p->vram, JMFB_VRAM_SIZE, (uint32_t)offset, stride, width, p->raster_h, NULL, 0);
 }
 
 // === Memory interface (register window I/O) =================================
@@ -835,11 +839,17 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     p->jmfb_video_base = 0xA00 / 32; // driver convention: $A00 byte offset
     p->jmfb_row_words = mon_w / 32u; // 1bpp longs/row for the chosen monitor
 
-    p->display.width = mon_w;
-    p->display.height = mon_h;
-    p->display.stride = 640 / 8; // 1 bpp: 80 bytes/row
+    p->raster_h = mon_h;
     p->display.format = PIXEL_1BPP_MSB;
-    p->display.bits = p->vram + 0xA00;
+    // Derive the descriptor from the registers just set, the same way every
+    // later write does.  The old hard-coded `stride = 640/8` described a
+    // 640-wide raster no matter which monitor was sensed, so on the 1152-wide
+    // Kong the register said 36 row-words and the descriptor said 80 bytes
+    // until the driver first wrote RowWords: the blank below covered 80x870
+    // of a 144x870 raster (the rest stayed white at 1 bpp -- the exact cold
+    // boot flash this blank exists to prevent) and every consumer sheared its
+    // rows walking width=1152 over a stride-80 row (04-video F-29).
+    jmfb_apply_scanout(p);
     // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
     display_blank_raster(&p->display);
     p->display.clut = p->clut;
@@ -856,9 +866,9 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // gamma pre-correction at display time.
     // The generic kind always uses identity response: the GS vROM ships
     // identity gamma for every monitor, so there is no Apple gamma
-    // pre-correction to invert (jmfb_generic_monitors carries no
-    // crt_response either — this belt-and-braces NULL keeps the two
-    // consistent even if the tables drift).
+    // pre-correction to invert.  This is the ONLY place that distinction is
+    // made -- both siblings share mdc_8_24_monitors, so the decision is the
+    // kind's, not a second table's.
     p->display.crt_response = (!generic && monitor) ? monitor->crt_response : NULL;
     p->display.response_dirty = true;
 
@@ -1336,46 +1346,7 @@ const char *jmfb_pending_custom_mode_get(void) {
 // case-sensitively against entries in mdc_8_24_monitors[]; N is parsed
 // as a decimal integer and validated against the monitor's depth list.
 bool jmfb_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {
-    if (!id || !*id)
-        return false;
-    // Find the last underscore — that's the boundary between the monitor name
-    // and the "Nbpp" depth suffix.
-    const char *underscore_bpp = strrchr(id, '_');
-    if (!underscore_bpp)
-        return false;
-    size_t mon_len = (size_t)(underscore_bpp - id);
-    if (mon_len == 0 || mon_len >= 32)
-        return false;
-    char mon_id[32];
-    memcpy(mon_id, id, mon_len);
-    mon_id[mon_len] = '\0';
-    // Trailing chunk should be e.g. "_8bpp" — strip the underscore and
-    // the "bpp" suffix. Validate the bpp value as 1..32 to avoid an
-    // implementation-defined `(int)` cast on out-of-range longs.
-    const char *bpp_str = underscore_bpp + 1;
-    char *end = NULL;
-    long bpp = strtol(bpp_str, &end, 10);
-    if (!end || end == bpp_str || strcmp(end, "bpp") != 0)
-        return false;
-    if (bpp < 1 || bpp > 32)
-        return false;
-    for (const nubus_monitor_t *m = mdc_8_24_monitors; m->id; m++) {
-        if (strcmp(m->id, mon_id) != 0)
-            continue;
-        if (!m->depths)
-            return false;
-        for (const int *d = m->depths; *d; d++) {
-            if ((int)bpp == *d) {
-                if (out_monitor)
-                    *out_monitor = m;
-                if (out_depth_bpp)
-                    *out_depth_bpp = (int)bpp;
-                return true;
-            }
-        }
-        return false; // monitor matched but depth didn't
-    }
-    return false;
+    return nubus_monitor_mode_lookup(mdc_8_24_monitors, id, out_monitor, out_depth_bpp);
 }
 
 const nubus_card_kind_t mdc_8_24_kind = {
@@ -1386,45 +1357,7 @@ const nubus_card_kind_t mdc_8_24_kind = {
     .requires_vrom = true,
     .monitors = mdc_8_24_monitors,
     .factory = factory,
-};
-
-// Monitor list for the generic sibling kind — same geometry / sense /
-// sister scheme as the real card (the GS vROM reproduces the Ax sister
-// sResource IDs so PRAM seeding works identically), but with no
-// crt_response entries: the generic ROM ships identity gamma for every
-// monitor, so there is no Apple gamma pre-correction to invert (the
-// real 21" Kong entry compensates for Apple's B-attenuated 'gama'
-// table, which the generic ROM deliberately does not reproduce).
-static const nubus_monitor_t jmfb_generic_monitors[] = {
-    {.id = "13in_rgb",
-     .name = "13\" AppleColor",
-     .width = 640,
-     .height = 480,
-     .depths = mdc_8_24_4depths,
-     .sense_code = 0x6,
-     .srsrc_sister = 0xA6},
-    {.id = "12in_rgb",
-     .name = "12\" RGB",
-     .width = 512,
-     .height = 384,
-     .depths = mdc_8_24_4depths,
-     .sense_code = 0x2,
-     .srsrc_sister = 0xA2},
-    {.id = "15in_bw",
-     .name = "15\" Portrait B&W",
-     .width = 640,
-     .height = 870,
-     .depths = mdc_8_24_4depths,
-     .sense_code = 0x1,
-     .srsrc_sister = 0xA1},
-    {.id = "21in_rgb",
-     .name = "21\" RGB",
-     .width = 1152,
-     .height = 870,
-     .depths = mdc_8_24_4depths,
-     .sense_code = 0x0,
-     .srsrc_sister = 0xA7},
-    {0},
+    .stage_video_mode = jmfb_pending_video_mode_set,
 };
 
 // Generic sibling kind: always-available twin of mdc_8_24 with a built-in
@@ -1436,6 +1369,13 @@ const nubus_card_kind_t jmfb_generic_kind = {
                     "24 (generic video ROM)",
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = false,
-    .monitors = jmfb_generic_monitors,
+    // ONE table for both siblings.  The generic copy repeated all four rows to
+    // drop a single field (21" Kong's crt_response), and the copy was already
+    // redundant: card_init's `(!generic && monitor) ? monitor->crt_response
+    // : NULL` decides identity gamma from the kind, not from the row (04-video
+    // F-08).  Two tables feeding one GS vROM generator is how a geometry fix
+    // lands on one sibling and not the other.
+    .monitors = mdc_8_24_monitors,
     .factory = factory_generic,
+    .stage_video_mode = jmfb_pending_video_mode_set,
 };

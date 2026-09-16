@@ -151,13 +151,21 @@ static inline lisa_state_t *lisa_state(config_t *cfg) {
 // framebuffer dirty only when the base actually moves.
 static void lisa_refresh_framebuffer(config_t *cfg) {
     lisa_state_t *ls = lisa_state(cfg);
+    const lisa_board_desc_t *board = lisa_board_of(cfg);
+    const uint8_t *prev = ls->display.bits;
     uint32_t base = lisa_mmu_video_base(ls->mmu);
-    const uint8_t *bits = ram_native_pointer(cfg->mem_map, base);
+    // The latch can point the raster anywhere in RAM, so the base is checked
+    // against installed RAM here rather than resting on lisa_mmu_video_base's
+    // `base & (ram_size - 1)` fallback, which is only a bound because every
+    // Lisa RAM size happens to be a power of two and the raster happens to be
+    // smaller than the alignment (04-video F-31).  A base the RAM cannot back
+    // scans nothing -- lisa_display() then reports no display for that frame,
+    // and the next latch write that lands in range brings it back.
+    display_set_scanout(&ls->display, ram_native_pointer(cfg->mem_map, 0), memory_ram_size(cfg->mem_map), base,
+                        board->screen_w / 8u, board->screen_w, board->screen_h, NULL, 0);
     ls->display.fb_dirty = true; // contents change every frame
-    if (ls->display.bits != bits) {
-        ls->display.bits = bits;
+    if (ls->display.bits != prev)
         ls->display.shape_dirty = true;
-    }
 }
 
 static void lisa_display_init(config_t *cfg) {

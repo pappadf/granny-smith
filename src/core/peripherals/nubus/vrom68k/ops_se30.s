@@ -13,10 +13,25 @@
 .equ GS_DRHW,          0x0009          | SE/30 built-in video DrHW
 .equ GS_FB_MINOR,      0               | device base 0; offset rides vpBaseOffset
 .equ GS_NMODES,        1               | 1 bpp only
+.equ GS_NPAGES,        2               | TWO framebuffers: the SE/30 has a
+                                        | primary and an alternate raster,
+                                        | selected by VIA1 PA6.  The hand-built
+                                        | fallback ROM has always declared
+                                        | mPageCnt 2 for this reason; the
+                                        | generated ROM under-declared it as 1
+                                        | (04-video F-51).  Declaring 2 obliges
+                                        | this driver to SERVE page 1 --
+                                        | Designing Cards and Drivers 3ed makes
+                                        | cscSetMode the page-switch call and
+                                        | GetBaseAddr answerable for a page that
+                                        | is not displayed -- which is what the
+                                        | SetPage / BaseAddr ops below do.
 .equ GS_FIRSTDIRECT,   8               | no direct modes
 .equ GS_DEFER_SPID,    0               | no deferred family
 
-.equ SE30_FB_OFFSET,   0xE08040        | framebuffer from the 0xFE000000 base
+.equ SE30_FB_OFFSET,   0xE08040        | primary framebuffer, 0xFE000000 base
+.equ SE30_FB_ALT_DELTA, -0x8000        | alternate raster sits 0x8000 BELOW the
+                                        | primary (offsets 0x0040 vs 0x8040)
 
 	.macro	GSDrvrName
 	dc.b	25
@@ -52,15 +67,48 @@
 	movea.l	(sp)+,a0
 	rts
 
-| FbBase: out A1 = framebuffer base (VRAM + primary-buffer offset).
+| FbBase: out A1 = base of the DISPLAYED framebuffer (gray fills and the
+| like paint what the user is looking at, so this follows pvPage).
 \pfx&FbBase:
 	lea	SE30_FB_OFFSET(a4),a1
+	tst.w	pvPage(a5)
+	beq.s	9f
+	lea	SE30_FB_ALT_DELTA(a1),a1
+9:
 	rts
 
-| BaseAddr: out D0.L = csBaseAddr = device base + vpBaseOffset.
+| BaseAddr: in D2.W = page, out D0.L = csBaseAddr for THAT page (not
+| necessarily the displayed one -- GetBaseAddr must answer for a page
+| that is not switched in).
 \pfx&BaseAddr:
 	move.l	pvBase(a5),d0
 	add.l	#0x8040,d0
+	tst.w	d2
+	beq.s	9f
+	add.l	#SE30_FB_ALT_DELTA,d0
+9:
+	rts
+
+| SetPage: switch the displayed raster.  VIA1 PA6 high = primary, low =
+| alternate -- the same line HwInit drives at startup, including the
+| shadow cells the real onboard vROM's PrimaryInit pokes.  VIA1 base
+| from the low-memory global 0x1D4.
+\pfx&SetPage:
+	move.l	a0,-(sp)
+	movea.l	0x1D4.w,a0
+	bset	#6,0x600(a0)            | DDR: PA6 is an output either way
+	tst.w	pvPage(a5)
+	bne.s	8f
+	bset	#6,0x400(a0)
+	bset	#6,0x1E00(a0)
+	bset	#6,(a0)
+	bra.s	9f
+8:
+	bclr	#6,0x400(a0)
+	bclr	#6,0x1E00(a0)
+	bclr	#6,(a0)
+9:
+	movea.l	(sp)+,a0
 	rts
 
 | ReadSense: the built-in CRT is always connected.

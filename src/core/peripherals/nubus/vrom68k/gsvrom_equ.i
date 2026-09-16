@@ -308,4 +308,7 @@
 .equ pvGTbl,          36+768+768      | GammaTbl block for GetGamma (12+256)
 .equ pvSpID,          36+768+768+268  | word: dCtlSlotId (the sResource that
                                         | loaded us; DrvReadVP queries it)
-.equ pvSize,          36+768+768+268+2
+.equ pvPage,          36+768+768+270  | word: currently displayed page (0-based).
+                                        | Only ever non-zero on a personality
+                                        | declaring GS_NPAGES > 1 (SE/30).
+.equ pvSize,          36+768+768+272

@@ -40,6 +40,17 @@
 // scratch upload buffer is sized once.
 #define MAX_FB_BYTES (1152u * 870u * 4u)
 
+// Does this descriptor's raster fit the scratch buffer?  A larger one is
+// refused, not clamped: the clamp bounded the memcpy INTO the scratch but
+// glTexSubImage2D still read stride*height back OUT of it, so a mode past the
+// ceiling (DAFB reaches stride 16380 x 2048, the Mach64 32736) read past the
+// static array either way -- and half a frame is not a useful degradation
+// (04-video F-19).  The producers keep stride*height inside the buffer they
+// point at (display_set_scanout), so this is the consumer's own ceiling.
+static bool fb_fits_scratch(const display_t *d) {
+    return (uint64_t)d->stride * d->height <= MAX_FB_BYTES;
+}
+
 // WebGL resources
 static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE s_ctx = 0;
 static GLuint s_vbo = 0;
@@ -420,10 +431,7 @@ static void upload_fb(const display_t *d) {
     GLenum src_fmt = (d->format == PIXEL_32BPP_XRGB) ? GL_RGBA : GL_RED;
     uint32_t tex_width = (d->format == PIXEL_32BPP_XRGB) ? d->stride / 4 : d->stride;
 
-    size_t bytes = (size_t)d->stride * d->height;
-    if (bytes > sizeof(s_upload_scratch))
-        bytes = sizeof(s_upload_scratch);
-    memcpy(s_upload_scratch, d->bits, bytes);
+    memcpy(s_upload_scratch, d->bits, (size_t)d->stride * d->height);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_fb_tex);
@@ -657,6 +665,15 @@ void em_video_update(void) {
         overlay_hide_if_up(); // no display at all: nothing for the overlay to cover
         return;
     }
+    if (!fb_fits_scratch(d)) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            printf("em_video: mode %ux%u stride %u exceeds the %u-byte upload buffer; screen frozen\n", d->width,
+                   d->height, d->stride, (unsigned)MAX_FB_BYTES);
+        }
+        return;
+    }
 
     // A frame presented by someone else (the Voodoo2's WebGPU overlay):
     // keep the canvas at the card's geometry so the page lays out the
@@ -685,12 +702,7 @@ void em_video_update(void) {
     // coupled to actual byte-level change, never to producer signaling
     // quirks. memcmp is well under a millisecond even at the largest
     // mode (1152x870 @ 8 bpp = 1 MB) and is cache-friendly.
-    bool content_changed = false;
-    size_t bytes = (size_t)d->stride * d->height;
-    if (bytes > sizeof(s_upload_scratch))
-        bytes = sizeof(s_upload_scratch);
-    if (memcmp(s_upload_scratch, d->bits, bytes) != 0)
-        content_changed = true;
+    bool content_changed = memcmp(s_upload_scratch, d->bits, (size_t)d->stride * d->height) != 0;
 
     // shape_dirty signals a texture-allocation change (resolution /
     // format / stride) — must always be honoured. clut_dirty /
@@ -711,6 +723,8 @@ void em_video_update(void) {
 
 void em_video_force_redraw(void) {
     display_t *d = system_display();
+    if (d && d->bits && !fb_fits_scratch(d))
+        return;
     if (refresh_from_display(d, /*force_full*/ true))
         draw();
 }
