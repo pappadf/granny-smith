@@ -335,6 +335,84 @@ static inline void display_blank_raster(display_t *d) {
     memset((uint8_t *)d->bits, display_black_fill(d->format), (size_t)d->stride * d->height);
 }
 
+// ============================================================================
+// The scanout transition
+// ============================================================================
+// Point a descriptor at a framebuffer, or refuse and blank it.
+//
+// This exists because nine separate findings in 04-video are one bug: the
+// descriptor is assembled from guest registers and never checked against the
+// buffer behind it, so `bits` and `stride * height` come from different
+// authorities and a consumer reads past the end.  Measured instances:
+//
+//   F-20  the JMFB's 16-bit VideoBase yields a 5,592,320-byte offset into a
+//         2 MB VRAM -- 2.7x past the end, from one move.l
+//   F-21  display_card_824gc.c carries the identical val*32*8/3, and can
+//         repoint the descriptor between two different allocations
+//   F-24  Civic masks its base into range, leaves stride unbounded, and never
+//         checks base + stride*h
+//   F-25  PDM's depth and mode registers are independent: 640x870 at 16 bpp
+//         advertises 1,113,600 bytes from a 614,400-byte blank buffer
+//   F-26  Control caps 2048x1536 -- 12 MB at 32 bpp against 4 MB of VRAM --
+//         with stride taken from the raw, uncapped CR_PITCH
+//   F-29  the JMFB's power-on stride is hard-coded 640/8 while width can be
+//         512, 640 or 1152
+//
+// Three of them already clamp their memset.  Clamping the FILL was never the
+// problem: the descriptor kept the large geometry, so the consumer still read
+// what the producer advertised.  The fix is that the geometry and the buffer
+// are decided together, here, and cannot disagree afterwards.
+//
+// REFUSING, not clamping (proposal-video-shared-model.md S5b).  A descriptor
+// that does not fit blanks -- the producer shows black, which is what a
+// misprogrammed guest already gets on the paths that set `blanked` by hand.
+// Clamping would present a shortened raster that reads as an emulation bug
+// rather than a guest one.
+//
+// `blank` is the producer's zero buffer and `blank_size` its real allocated
+// size -- not its nominal VRAM size.  On refusal the geometry is reduced to
+// what `blank` can actually back, so even the blanked descriptor is one the
+// buffer satisfies.  Returns true when the requested scanout was accepted.
+static inline bool display_set_scanout(display_t *d, const uint8_t *buf, size_t buf_size, uint32_t offset,
+                                       uint32_t stride, uint32_t width, uint32_t height, uint8_t *blank,
+                                       size_t blank_size) {
+    if (!d)
+        return false;
+
+    // 64-bit throughout: stride comes from guest registers and can be a full
+    // 32-bit value (Control's CR_PITCH), so stride * height overflows 32 bits
+    // long before it stops being a plausible-looking number.
+    uint64_t span = (uint64_t)stride * height;
+    bool fits = buf && stride && height && width && (uint64_t)offset + span <= (uint64_t)buf_size;
+
+    if (fits) {
+        d->width = width;
+        d->height = height;
+        d->stride = stride;
+        d->bits = buf + offset;
+        return true;
+    }
+
+    // Refused.  Keep the width the guest asked for where it is harmless -- a
+    // consumer sizes its canvas from it -- but bring stride and height down to
+    // what `blank` holds, so the advertised span is backed.
+    d->bits = blank;
+    if (!blank || !blank_size || !stride) {
+        d->height = 0;
+        d->stride = 0;
+        return false;
+    }
+    if (width)
+        d->width = width;
+    d->stride = stride;
+    uint64_t rows = (uint64_t)blank_size / stride;
+    if (rows > height)
+        rows = height;
+    d->height = (uint32_t)rows;
+    memset(blank, display_black_fill(d->format), (size_t)stride * (size_t)rows);
+    return false;
+}
+
 // True when the visible raster still holds nothing but its power-on blank,
 // i.e. the guest has not drawn.  A depth change reinterprets every byte, so
 // the fill chosen at the old depth stops meaning black at the new one (0xFF

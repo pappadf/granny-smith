@@ -198,18 +198,45 @@ static pixel_format_t depth_to_format(uint16_t pbcr) {
 // `(TFBM30RB * 3 / 4) / 4 / 2`; inverted, that gives stride =
 // row_words * 32 / 3 = 2560 — the *storage* stride, not the
 // 1920-byte RAMDAC scan stride.
-static void recompute_stride(jmfb_priv_t *p) {
+// Re-derive the whole scanout from the two registers that describe it, and let
+// display_set_scanout decide whether VRAM can back it.
+//
+// VideoBase and RowWords arrive in separate register writes, so before this
+// existed each handler updated its own half of the descriptor and nothing ever
+// compared the result against the 2 MB allocation: a 16-bit VideoBase yields
+// an offset of up to 5,592,320 bytes, 2.7x past the end (04-video F-20).  Both
+// handlers now call this, so `bits` and `stride * height` are always decided
+// together.
+//
+// No blank buffer: the JMFB has only its VRAM, so a refused descriptor scans
+// nothing at all (height 0, bits NULL) and every consumer already guards on
+// that.  A guest that programs an impossible base gets a black screen, which
+// is the honest answer -- the alternative is showing it some other part of
+// VRAM and calling that a picture.
+static void jmfb_apply_scanout(jmfb_priv_t *p) {
     if (p->jmfb_row_words == 0)
-        return; // chip-reset sentinel; preserve last good stride+width
+        return; // chip-reset sentinel; preserve the last good descriptor
+
+    uint32_t stride, width;
     if (p->display.format == PIXEL_32BPP_XRGB) {
-        p->display.stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
-        p->display.width = p->display.stride / 4u;
+        stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
+        width = stride / 4u;
     } else {
-        p->display.stride = (uint32_t)p->jmfb_row_words * 4u;
-        uint32_t bpp = display_bpp(p->display.format);
-        if (bpp > 0)
-            p->display.width = (uint32_t)p->jmfb_row_words * 32u / bpp;
+        stride = (uint32_t)p->jmfb_row_words * 4u;
+        width = (uint32_t)p->jmfb_row_words * 32u / display_bpp(p->display.format);
     }
+
+    // Byte offset into VRAM is depth-dependent.  For <=8 bpp the encoded value
+    // x 32 = byte offset.  For 24 bpp the JMFB driver writes
+    // `(defmBaseOffset * 3/4) >> 5 >> 1` (its TFBM30 parms) -- inverted, that
+    // is `value * 32 * 8/3`.
+    uint64_t offset = (p->display.format == PIXEL_32BPP_XRGB) ? (uint64_t)p->jmfb_video_base * 32u * 8u / 3u
+                                                              : (uint64_t)p->jmfb_video_base * 32u;
+    if (offset > UINT32_MAX)
+        offset = UINT32_MAX; // guaranteed to fail the fit test below
+
+    display_set_scanout(&p->display, p->vram, JMFB_VRAM_SIZE, (uint32_t)offset, stride, width, p->display.height, NULL,
+                        0);
 }
 
 // === Memory interface (register window I/O) =================================
@@ -281,17 +308,14 @@ static void handle_jmfb_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
         // the JMFB driver writes `(defmBaseOffset * 3/4) >> 5 >> 1`
         // (the JMFB driver's TFBM30 parms) — inverted, that's
         // `value * 32 * 8/3`.  The factor matches the
-        // `recompute_stride`'s `value * 32 / 3` formula scaled by 8 to
+        // jmfb_apply_scanout's `value * 32 / 3` stride formula scaled by 8 to
         // get from row-stride units back to byte offset.
-        if (p->display.format == PIXEL_32BPP_XRGB)
-            p->display.bits = p->vram + ((size_t)val * 32u * 8u / 3u);
-        else
-            p->display.bits = p->vram + ((size_t)val * 32u);
+        jmfb_apply_scanout(p);
         p->display.fb_dirty = true;
         return;
     case JMFBRowWords + 2:
         p->jmfb_row_words = val;
-        recompute_stride(p);
+        jmfb_apply_scanout(p);
         p->display.shape_dirty = true;
         return;
     default:
@@ -469,7 +493,9 @@ static void handle_clut_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) {
             f = PIXEL_32BPP_XRGB;
         if (p->display.format != f) {
             p->display.format = f;
-            recompute_stride(p);
+            // A depth change moves BOTH halves: the 24 bpp offset formula and
+            // the stride.  Re-decide the whole descriptor, not just the stride.
+            jmfb_apply_scanout(p);
             p->display.shape_dirty = true;
         }
         return;
@@ -1039,8 +1065,10 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, p, offsetof(jmfb_priv_t, display));
     system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
 
-    // stride and width are derived from row_words + the restored format.
-    recompute_stride(p);
+    // stride, width and the scan base are all derived from row_words,
+    // video_base and the restored format -- and the restore must land on a
+    // descriptor VRAM can back, the same as any register write would.
+    jmfb_apply_scanout(p);
 
     // display.bits still points into p->vram (card_init set it and the buffer
     // has not moved), but everything the frontend caches about this display is

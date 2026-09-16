@@ -68,18 +68,36 @@ static pixel_format_t depth_to_format(uint16_t pbcr) {
 }
 
 // Recompute stride + width from RowWords + current format (jmfb convention).
-static void recompute_stride(display_card_824gc_priv_t *p) {
+// The JMFB-register scanout, decided in one place against the VRAM that has to
+// back it.  The port from jmfb.c brought the unbounded `val * 32 * 8 / 3` with
+// it (04-video F-21): a 16-bit VideoBase reaches 5,592,320 bytes into a 2 MB
+// standard-slot VRAM.
+//
+// This card has TWO candidate framebuffers -- the GC OS draws into `dram` via
+// programMode (which does its own bounds work below), while these registers
+// point at `vram` -- so a write here also switches which allocation the
+// descriptor spans.  Checking against `vram` is therefore not optional: the
+// geometry that was validated for one buffer is being applied to the other.
+static void gc824_apply_jmfb_scanout(display_card_824gc_priv_t *p) {
     if (p->jmfb_row_words == 0)
-        return; // chip-reset sentinel; preserve last good stride+width
+        return; // chip-reset sentinel; preserve the last good descriptor
+
+    uint32_t stride, width;
     if (p->display.format == PIXEL_32BPP_XRGB) {
-        p->display.stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
-        p->display.width = p->display.stride / 4u;
+        stride = (uint32_t)p->jmfb_row_words * 32u / 3u;
+        width = stride / 4u;
     } else {
-        p->display.stride = (uint32_t)p->jmfb_row_words * 4u;
-        uint32_t bpp = display_bpp(p->display.format);
-        if (bpp > 0)
-            p->display.width = (uint32_t)p->jmfb_row_words * 32u / bpp;
+        stride = (uint32_t)p->jmfb_row_words * 4u;
+        width = (uint32_t)p->jmfb_row_words * 32u / display_bpp(p->display.format);
     }
+
+    uint64_t offset = (p->display.format == PIXEL_32BPP_XRGB) ? (uint64_t)p->jmfb_video_base * 32u * 8u / 3u
+                                                              : (uint64_t)p->jmfb_video_base * 32u;
+    if (offset > UINT32_MAX)
+        offset = UINT32_MAX;
+
+    display_set_scanout(&p->display, p->vram, GC824_VRAM_SIZE, (uint32_t)offset, stride, width, p->display.height, NULL,
+                        0);
 }
 
 // === Display half: JMFB-family register I/O (ported from jmfb.c) ============
@@ -117,15 +135,12 @@ static void jmfb_write16(display_card_824gc_priv_t *p, int blk, uint32_t off, ui
             return;
         case GC824_JMFBVIDEOBASE + 2:
             p->jmfb_video_base = val;
-            if (p->display.format == PIXEL_32BPP_XRGB)
-                p->display.bits = p->vram + ((size_t)val * 32u * 8u / 3u);
-            else
-                p->display.bits = p->vram + ((size_t)val * 32u);
+            gc824_apply_jmfb_scanout(p);
             p->display.fb_dirty = true;
             return;
         case GC824_JMFBROWWORDS + 2:
             p->jmfb_row_words = val;
-            recompute_stride(p);
+            gc824_apply_jmfb_scanout(p);
             p->display.shape_dirty = true;
             return;
         default:
@@ -170,7 +185,7 @@ static void jmfb_write16(display_card_824gc_priv_t *p, int blk, uint32_t off, ui
                 f = PIXEL_32BPP_XRGB;
             if (p->display.format != f) {
                 p->display.format = f;
-                recompute_stride(p);
+                gc824_apply_jmfb_scanout(p);
                 p->display.shape_dirty = true;
             }
             return;
@@ -1404,7 +1419,7 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
             break;
         }
 
-    recompute_stride(p);
+    gc824_apply_jmfb_scanout(p);
     gc824_clip_rebuild(p); // masks derive from the restored regions
 
     p->display.shape_dirty = true;
