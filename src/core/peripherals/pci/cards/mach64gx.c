@@ -2304,9 +2304,10 @@ static void mach64_present(mach64_t *m) {
         return;
     }
 
+    // No clamp needed: mach64_update settled this geometry against vram_size
+    // through display_set_scanout, and `compose` is vram_size, so the span
+    // fits both by construction (04-video F-26/F-27).
     size_t span = (size_t)stride * height;
-    if (span > m->vram_size)
-        span = m->vram_size;
     memcpy(m->compose, frame, span);
     m->display.bits = m->compose;
 
@@ -2403,28 +2404,29 @@ static void mach64_update(mach64_t *m) {
         stride = 0;
     }
 
-    m->display.width = width;
-    m->display.height = height;
     m->display.format = format;
-    m->display.stride = stride ? stride : width * bpp;
     m->display.par_w = 0;
     m->display.par_h = 0;
     m->display.crt_response = NULL;
 
-    // Blanked when the CRTC is held in reset, when the raster is disabled,
-    // when no pitch has been programmed, or when the scan would run off the
-    // end of VRAM (nothing sane is being scanned in any of those cases).
+    // Blanked when the CRTC is held in reset, when the raster is disabled, or
+    // when no pitch has been programmed -- nothing sane is being scanned in
+    // any of those cases.
     bool blanked =
         !(m->reg[DW_CRTC_GEN_CNTL] & CRTC_EN) || (m->reg[DW_CRTC_GEN_CNTL] & CRTC_DISPLAY_DIS) || stride == 0;
-    uint64_t span = (uint64_t)m->display.stride * height;
-    if ((uint64_t)base + span > m->vram_size)
-        blanked = true;
-    if (blanked) {
-        size_t n = (size_t)m->display.stride * height;
-        if (n > m->vram_size)
-            n = m->vram_size;
-        memset(m->blank, display_black_fill(format), n);
-    }
+
+    // A scan that runs off the end of VRAM blanks too -- and the geometry and
+    // the buffer are settled TOGETHER, which is the part this used to get
+    // wrong.  CRTC_PITCH reaches 32,736 and height reaches 1,536, so the
+    // advertised span reaches ~50 MB; the old code noticed, set `blanked`,
+    // clamped the MEMSET to vram_size, and then left display.stride x height
+    // at the large value over a vram_size buffer -- so every consumer still
+    // read what the producer advertised (04-video F-26).  display_set_scanout
+    // decides both, and `blank` is vram_size, so a refused descriptor falls
+    // back to a raster the blank buffer can actually serve.
+    display_set_scanout(&m->display, blanked ? NULL : m->vram, m->vram_size, base, stride ? stride : width * bpp, width,
+                        height, m->blank, m->vram_size);
+    blanked = m->display.bits == m->blank;
     m->scan_base = base;
     m->scan_blanked = blanked;
     mach64_present(m);
@@ -2644,13 +2646,41 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     memcpy(m->dac_indexed, c.dac_indexed, sizeof(m->dac_indexed));
     memcpy(m->clut, c.clut, sizeof(m->clut));
     // A checkpoint taken on a 4 MB card must not be restored into a 2 MB
-    // buffer: resize rather than truncate the stream.
+    // buffer: resize rather than truncate the stream.  The card is built from
+    // the STAGED options (`pci_option="vram=2m"`) and the stream is replayed
+    // into it afterwards, so the two sizes really can differ.
+    //
+    // All THREE buffers move together.  `blank` and `compose` are sized to
+    // vram_size in the factory, and that is what makes them adequate: every
+    // scan is bounded by vram_size, so a buffer of that size can always hold
+    // one.  Growing `vram` alone broke the invariant and turned the very next
+    // mach64_update() -- which this function calls below -- into a 2 MB heap
+    // WRITE overflow, twice over: memcpy into `compose` in mach64_present and
+    // memset of `blank` here (04-video F-27).
     if (c.vram_size != m->vram_size) {
-        uint8_t *grown = (uint8_t *)calloc(1, c.vram_size);
-        if (grown) {
+        uint8_t *v = (uint8_t *)calloc(1, c.vram_size);
+        uint8_t *b = (uint8_t *)calloc(1, c.vram_size);
+        uint8_t *comp = (uint8_t *)calloc(1, c.vram_size);
+        if (v && b && comp) {
             free(m->vram);
-            m->vram = grown;
+            free(m->blank);
+            free(m->compose);
+            m->vram = v;
+            m->blank = b;
+            m->compose = comp;
             m->vram_size = c.vram_size;
+        } else {
+            // Out of memory: keep the card exactly as it was.  The read below
+            // then asks for the staged size against a block holding
+            // c.vram_size, and every checkpoint format size-tags its blocks
+            // and fails the restore on a mismatch -- so this ends as a loud
+            // failed restore, which is the right answer.  Say why here, since
+            // the size-mismatch message alone would not mention the OOM.
+            free(v);
+            free(b);
+            free(comp);
+            LOG(0, "restore: out of memory resizing VRAM %u -> %u bytes; the restore will fail rather than truncate",
+                m->vram_size, c.vram_size);
         }
     }
     system_read_checkpoint_data(cp, m->vram, m->vram_size);

@@ -430,18 +430,27 @@ static void c54m30_update(c54m30_t *c) {
 
     if (width == 0 || width > 2048u || height == 0 || height > 1536u || stride < width)
         return; // a half-programmed CRTC mid-mode-set; wait for the rest
+    // A start address that pushes the raster off the end is the BASE being
+    // wrong, not the mode: scanning from 0 is the useful recovery and the one
+    // this has always done.  It is not a bound on the SPAN, though -- the
+    // Offset register reaches stride 2040 and height reaches 1536, which is
+    // 3,133,440 bytes of raster over a 1 MB store, and resetting the base does
+    // nothing about that (04-video F-26).
     if ((uint64_t)start + (uint64_t)stride * height > C54M30_VRAM)
         start = 0;
 
-    if (c->display.width != width || c->display.height != height || c->display.stride != stride ||
-        c->display.bits != c->vram + start) {
-        c->display.width = width;
-        c->display.height = height;
-        c->display.stride = stride;
-        c->display.format = PIXEL_8BPP;
-        c->display.bits = c->vram + start;
+    uint32_t prev_w = c->display.width, prev_h = c->display.height, prev_stride = c->display.stride;
+    const uint8_t *prev_bits = c->display.bits;
+    c->display.format = PIXEL_8BPP;
+    // The card has no blank buffer, so a raster its 1 MB cannot back scans
+    // nothing rather than showing some other part of VRAM as a picture.
+    display_set_scanout(&c->display, c->vram, C54M30_VRAM, start, stride, width, height, NULL, 0);
+
+    if (c->display.width != prev_w || c->display.height != prev_h || c->display.stride != prev_stride ||
+        c->display.bits != prev_bits) {
         c->display.shape_dirty = true;
-        LOG(2, "mode set: %ux%u 8 bpp, stride %u, start $%05X", width, height, stride, start);
+        LOG(2, "mode set: %ux%u 8 bpp, stride %u, start $%05X", c->display.width, c->display.height, c->display.stride,
+            start);
     }
 }
 
