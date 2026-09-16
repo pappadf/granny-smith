@@ -590,19 +590,50 @@ static void dafb_write32(void *ctx, uint32_t offset, uint32_t value) {
     reg_write_effects(dafb, off, value);
 }
 
+// Merge `n` big-endian byte lanes into the register file, then run the write
+// side effects ONCE PER REGISTER.
+//
+// dafb_write16 used to be two dafb_write8 calls, and each of those ran
+// log_touch + reg_write_effects on a PARTIALLY ASSEMBLED register (04-video
+// F-46).  reg_write_effects is not idempotent, so that was not merely noisy:
+//
+//   - ac842_write(AC842_DATA) does `dac_phase++` unconditionally, so one guest
+//     word write to the CLUT data port consumed TWO palette components -- and
+//     the first of them was the register's stale low byte, because the effect
+//     runs on the longword and only the second call has the real value in it
+//   - dp8531_commit fires on `creg == 15`, so it committed once on a
+//     half-assembled clock-register set
+//   - reconfigure ran twice, the first time on a half-written mode
+//
+// Byte lanes that fall in DIFFERENT registers still get one effects call each,
+// which is right -- that is two registers being written, not one written
+// twice.  (A word write reaches that case only when misaligned, which a 68030
+// permits; an aligned word never straddles a longword.)
+static void dafb_write_lanes(dafb_t *dafb, uint32_t offset, const uint8_t *bytes, int n) {
+    int i = 0;
+    while (i < n) {
+        uint32_t off = reg_off(offset + (uint32_t)i);
+        uint32_t first = offset + (uint32_t)i;
+        uint32_t v = dafb->regs[off >> 2];
+        // Absorb every remaining byte that lands in THIS longword.
+        while (i < n && reg_off(offset + (uint32_t)i) == off) {
+            uint32_t shift = 8u * (3u - ((offset + (uint32_t)i) & 3u));
+            v = (v & ~(0xFFu << shift)) | ((uint32_t)bytes[i] << shift);
+            i++;
+        }
+        dafb->regs[off >> 2] = v;
+        log_touch(dafb, first, true, v);
+        reg_write_effects(dafb, off, v);
+    }
+}
+
 static void dafb_write8(void *ctx, uint32_t offset, uint8_t value) {
-    dafb_t *dafb = (dafb_t *)ctx;
-    uint32_t off = reg_off(offset);
-    uint32_t shift = 8 * (3 - (offset & 3));
-    uint32_t v = (dafb->regs[off >> 2] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-    dafb->regs[off >> 2] = v;
-    log_touch(dafb, offset, true, v);
-    reg_write_effects(dafb, off, v);
+    dafb_write_lanes((dafb_t *)ctx, offset, &value, 1);
 }
 
 static void dafb_write16(void *ctx, uint32_t offset, uint16_t value) {
-    dafb_write8(ctx, offset, (uint8_t)(value >> 8));
-    dafb_write8(ctx, offset + 1, (uint8_t)value);
+    const uint8_t bytes[2] = {(uint8_t)(value >> 8), (uint8_t)value};
+    dafb_write_lanes((dafb_t *)ctx, offset, bytes, 2);
 }
 
 static const memory_interface_t dafb_reg_iface = {

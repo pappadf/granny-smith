@@ -216,7 +216,8 @@ static void civic_compose(av_civic_t *cv) {
     uint32_t gr_stride = civic_get(cv, SLOT_ROWWORDS, 8) * 32u;
     if (gr_stride < width * bpp / 8u)
         gr_stride = width * bpp / 8u;
-    const uint8_t *gr = cv->vram + ((civic_get(cv, SLOT_BASEADDR, 9) & 0xFFu) << 5) % AV_CIVIC_VRAM_SIZE;
+    // Nine bits, not eight.  See civic_update_display for why the mask went.
+    const uint8_t *gr = cv->vram + ((civic_get(cv, SLOT_BASEADDR, 9)) << 5) % AV_CIVIC_VRAM_SIZE;
 
     // The window rect, inverted from the driver's programming (§5.2):
     // 16 bpp video-in: VInHAL = HAL + left - 1; 8 bpp video-in with <=8 bpp
@@ -304,7 +305,16 @@ static void civic_update_display(av_civic_t *cv) {
     // back to the packed width so the descriptor stays self-consistent.
     if (stride < width * bpp / 8u)
         stride = width * bpp / 8u;
-    uint32_t base = (civic_get(cv, SLOT_BASEADDR, 9) & 0xFFu) << 5;
+    // BaseAddr is NINE slots wide -- the declaration says so, and the write
+    // path decodes nine of them (`slot < SLOT_BASEADDR + 9`).  The `& 0xFFu`
+    // that used to be here threw bit 8 away, capping the scan base at
+    // 255 << 5 = 8,160 instead of 511 << 5 = 16,352, so a driver that
+    // double-buffers by flipping the high bit scanned the wrong half
+    // (04-video F-48).  The width and the mask could not both be right.
+    //
+    // Dropping it is safe because the descriptor is decided against the store
+    // below rather than assumed to fit (F-24).
+    uint32_t base = civic_get(cv, SLOT_BASEADDR, 9) << 5;
 
     display_t *d = &cv->display;
     pixel_format_t fmt = fmt_by_code[code];
