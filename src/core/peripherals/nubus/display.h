@@ -105,6 +105,28 @@ typedef struct rgba8 {
 // frames — read fresh each frame and consume the dirty flags to learn
 // which GPU resources need re-uploading.
 //
+// WHO APPLIES crt_response, AND WHY THE TWO CONSUMERS DIFFER ON PURPOSE
+//
+// The WebGL renderer applies it; `screen.save` and `screen.match` do not.
+// 04-video F-03 reads that as a divergence to unify.  It is not:
+//
+//   * Capture answers "did the emulation produce the right bytes".  It emits
+//     what the card put on the bus, which is byte-stable against the model
+//     alone -- a regression reference that does not move when a monitor's
+//     response table is corrected.
+//   * The renderer answers "does this look like the monitor".  Applying the
+//     response in the fragment shader is the correct place for it.
+//
+// Only one monitor in the tree has a non-NULL curve: the JMFB's Kong 21".  Its
+// goldens carry the JMFB driver's gamma pre-distortion, so their white reads
+// (255, 247, 214) rather than (255, 255, 255) -- the round trip through
+// kong_crt_response is exact.  tests/integration/iicx-video-modes/test.script
+// records the reasoning with the driver disassembly ($40FF7E06).
+//
+// Unifying them would make four goldens depend on a table transcribed from
+// Apple's driver, and make a gamma bug indistinguishable from an emulation bug
+// in a diff.
+//
 // `crt_response` models the physical response curve of the monitor on the
 // far end of the cable.  Mac System 7's video drivers gamma-pre-correct
 // every CLUT write per a per-monitor gamma table (see the JMFB driver's

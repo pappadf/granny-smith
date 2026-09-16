@@ -15,9 +15,9 @@
 //   * clut_dirty: re-upload the CLUT texture (indexed formats only)
 //   * response_dirty: re-upload the per-channel CRT response LUT
 //
-// Full pixel paths exist for 1bpp, 8bpp (indexed), and 16bpp/32bpp
-// (direct colour — the 8•24 GC's Thousands/Millions runtime modes).
-// 2bpp/4bpp remain grey stubs (no shipping card boots into them).
+// Full pixel paths exist for every pixel_format_t.  2 and 4 bpp were grey
+// stubs until 2026-09-16 — see FS_2BPP for why "no shipping card boots into
+// them" was the wrong test (04-video F-43).
 
 #include "em.h"
 
@@ -228,15 +228,69 @@ static const char *FS_16BPP_565 =
     "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
     "}\n";
 
-// Stub for 2/4 bpp indexed: same shape as 8bpp but unpacking a 2- or
-// 4-bit field per pixel from packed bytes.  v1 ships them as fallback
-// programs that emit grey so the canvas isn't blank when an
-// unimplemented format hits the pipeline.
-static const char *FS_GRAY_STUB = "#version 300 es\n"
-                                  "precision mediump float;\n"
-                                  "in  vec2 v_uv;\n"
-                                  "out vec4 fragColor;\n"
-                                  "void main() { fragColor = vec4(0.5, 0.5, 0.5, 1.0); }\n";
+// 2 bpp and 4 bpp indexed.  The 8 bpp shader with the byte unpacked into four
+// or two pixels, MSB first -- the Mac convention display.h's decoder follows.
+//
+// These were grey stubs, justified as "no shipping card boots into them"
+// (04-video F-43).  Booting is not the only way in: six producers switch into
+// 2 and 4 bpp at runtime from the Monitors control panel, and PNG capture has
+// always decoded them correctly -- so the browser showed a flat grey field for
+// a desktop the goldens rendered properly.  The divergence was in the renderer
+// and only there; no captured pixel changes with this.
+//
+// The unpack stays in float arithmetic: the byte arrives normalised from an R8
+// texture, so recover it, divide down to the wanted field, take the remainder.
+static const char *FS_2BPP = "#version 300 es\\n"
+                             "precision mediump float;\\n"
+                             "uniform sampler2D u_texture;\\n"
+                             "uniform sampler2D u_clut;\\n"
+                             "uniform sampler2D u_response;\\n"
+                             "uniform vec2 u_fb_size;\\n"
+                             "uniform float u_stride;\\n"
+                             "in  vec2 v_uv;\\n"
+                             "out vec4 fragColor;\\n"
+                             "void main() {\\n"
+                             "    vec2 px      = v_uv * u_fb_size;\\n"
+                             "    float x      = floor(px.x);\\n"
+                             "    float y      = floor(px.y);\\n"
+                             "    float byte_x = floor(x / 4.0);\\n"
+                             "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\\n"
+                             "                        (y + 0.5) / u_fb_size.y);\\n"
+                             "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\\n"
+                             "    float shift  = (4.0 - 1.0 - mod(x, 4.0)) * 2.0;\\n"
+                             "    float idx    = mod(floor(b / pow(2.0, shift)), 4.0);\\n"
+                             "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\\n"
+                             "    float r_out  = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\\n"
+                             "    float g_out  = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\\n"
+                             "    float b_out  = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\\n"
+                             "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\\n"
+                             "}\\n";
+
+static const char *FS_4BPP = "#version 300 es\\n"
+                             "precision mediump float;\\n"
+                             "uniform sampler2D u_texture;\\n"
+                             "uniform sampler2D u_clut;\\n"
+                             "uniform sampler2D u_response;\\n"
+                             "uniform vec2 u_fb_size;\\n"
+                             "uniform float u_stride;\\n"
+                             "in  vec2 v_uv;\\n"
+                             "out vec4 fragColor;\\n"
+                             "void main() {\\n"
+                             "    vec2 px      = v_uv * u_fb_size;\\n"
+                             "    float x      = floor(px.x);\\n"
+                             "    float y      = floor(px.y);\\n"
+                             "    float byte_x = floor(x / 2.0);\\n"
+                             "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\\n"
+                             "                        (y + 0.5) / u_fb_size.y);\\n"
+                             "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\\n"
+                             "    float shift  = (2.0 - 1.0 - mod(x, 2.0)) * 4.0;\\n"
+                             "    float idx    = mod(floor(b / pow(2.0, shift)), 16.0);\\n"
+                             "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\\n"
+                             "    float r_out  = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\\n"
+                             "    float g_out  = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\\n"
+                             "    float b_out  = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\\n"
+                             "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\\n"
+                             "}\\n";
 
 // ============================================================================
 // Static helpers
@@ -289,13 +343,11 @@ static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms
     return prog;
 }
 
-// Build the per-format program table.  Programs that share a fragment
-// shader (the gray stubs) get distinct GL programs to keep uniform
-// management simple.
+// Build the per-format program table: one program per pixel_format_t.
 static void init_programs(void) {
     s_progs[PIXEL_1BPP_MSB] = link_program(VS_SHARED, FS_1BPP, &s_uniforms[PIXEL_1BPP_MSB]);
-    s_progs[PIXEL_2BPP_MSB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_2BPP_MSB]);
-    s_progs[PIXEL_4BPP_MSB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_4BPP_MSB]);
+    s_progs[PIXEL_2BPP_MSB] = link_program(VS_SHARED, FS_2BPP, &s_uniforms[PIXEL_2BPP_MSB]);
+    s_progs[PIXEL_4BPP_MSB] = link_program(VS_SHARED, FS_4BPP, &s_uniforms[PIXEL_4BPP_MSB]);
     s_progs[PIXEL_8BPP] = link_program(VS_SHARED, FS_8BPP, &s_uniforms[PIXEL_8BPP]);
     s_progs[PIXEL_16BPP_555] = link_program(VS_SHARED, FS_16BPP, &s_uniforms[PIXEL_16BPP_555]);
     s_progs[PIXEL_32BPP_XRGB] = link_program(VS_SHARED, FS_32BPP, &s_uniforms[PIXEL_32BPP_XRGB]);
