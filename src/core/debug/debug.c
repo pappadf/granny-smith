@@ -1226,27 +1226,6 @@ uint32_t framebuffer_checksum(const display_t *d) {
 
 // Calculate checksum for a region of the framebuffer (top, left, bottom, right)
 // Region is specified in pixels; v1 supports 1bpp only.
-// Bits per pixel for a display format, or 0 if it is not a packed encoding
-// this file knows how to walk.
-static unsigned framebuffer_format_bits(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_8BPP:
-        return 8;
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-        return 16;
-    case PIXEL_32BPP_XRGB:
-        return 32;
-    default:
-        return 0;
-    }
-}
 
 uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int bottom, int right) {
     if (!d || !d->bits)
@@ -1259,9 +1238,11 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
     // tell.  1 bpp keeps its exact bit-packing walk below so existing
     // baselines are unchanged.
     if (d->format != PIXEL_1BPP_MSB) {
-        unsigned bpp = framebuffer_format_bits(d->format);
-        if (!bpp)
-            return 0;
+        // display.h owns bits-per-pixel (04-video F-01).  This was a third
+        // copy of that switch, with a 0 return meaning "not a format I can
+        // walk"; display_bpp answers for every format in the enum and faults
+        // on anything else, so the sentinel had nothing left to signal.
+        unsigned bpp = display_bpp(d->format);
         // Byte span of the row segment, rounded outwards for sub-byte
         // formats (a partial byte still changes when the region does).
         size_t first = ((size_t)left * bpp) / 8;
@@ -1318,76 +1299,10 @@ uint32_t framebuffer_region_checksum(const display_t *d, int top, int left, int 
 //
 // `out_rgba` must point to at least `width * 4` bytes.
 static void framebuffer_row_to_rgba(const display_t *d, int y, uint8_t *out_rgba) {
-    const uint8_t *src_row = d->bits + (size_t)y * d->stride;
-    const rgba8_t *clut = d->clut;
-    const uint32_t clut_len = d->clut_len;
-    for (uint32_t x = 0; x < d->width; x++) {
-        uint8_t *pixel = out_rgba + x * 4;
-        uint8_t r = 0, g = 0, b = 0;
-        switch (d->format) {
-        case PIXEL_1BPP_MSB: {
-            int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
-            // 1 = black, 0 = white (Mac convention)
-            r = g = b = bit ? 0 : 255;
-            break;
-        }
-        case PIXEL_2BPP_MSB: {
-            int idx = (src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3;
-            rgba8_t c = clut[idx % clut_len];
-            r = c.r;
-            g = c.g;
-            b = c.b;
-            break;
-        }
-        case PIXEL_4BPP_MSB: {
-            int idx = (src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF;
-            rgba8_t c = clut[idx % clut_len];
-            r = c.r;
-            g = c.g;
-            b = c.b;
-            break;
-        }
-        case PIXEL_8BPP: {
-            uint8_t idx = src_row[x];
-            rgba8_t c = clut[idx % clut_len];
-            r = c.r;
-            g = c.g;
-            b = c.b;
-            break;
-        }
-        case PIXEL_16BPP_555: {
-            uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
-            uint8_t r5 = (v >> 10) & 0x1F;
-            uint8_t g5 = (v >> 5) & 0x1F;
-            uint8_t b5 = v & 0x1F;
-            r = (uint8_t)((r5 << 3) | (r5 >> 2));
-            g = (uint8_t)((g5 << 3) | (g5 >> 2));
-            b = (uint8_t)((b5 << 3) | (b5 >> 2));
-            break;
-        }
-        case PIXEL_16BPP_565: {
-            // big-endian 5-6-5: the 6-bit green replicates its top 2 bits
-            uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
-            uint8_t r5 = (v >> 11) & 0x1F;
-            uint8_t g6 = (v >> 5) & 0x3F;
-            uint8_t b5 = v & 0x1F;
-            r = (uint8_t)((r5 << 3) | (r5 >> 2));
-            g = (uint8_t)((g6 << 2) | (g6 >> 4));
-            b = (uint8_t)((b5 << 3) | (b5 >> 2));
-            break;
-        }
-        case PIXEL_32BPP_XRGB: {
-            r = src_row[x * 4 + 1];
-            g = src_row[x * 4 + 2];
-            b = src_row[x * 4 + 3];
-            break;
-        }
-        }
-        pixel[0] = r;
-        pixel[1] = g;
-        pixel[2] = b;
-        pixel[3] = 255;
-    }
+    // The conversion itself is display.h's (display_row_to_rgba): it was
+    // written twice in this file, byte for byte, and the PNG writer below is
+    // the other copy.  04-video F-02.
+    display_row_to_rgba(d, (uint32_t)y, out_rgba);
 }
 
 // Load a PNG file and decode it to packed RGBA (8 bits per channel, 4
@@ -1857,85 +1772,14 @@ int save_framebuffer_as_png(const display_t *d, const char *filename) {
         return -1;
     }
 
-    // Convert framebuffer to 8-bit RGBA, one row at a time.
-    const rgba8_t *clut = d->clut;
-    const uint32_t clut_len = d->clut_len;
+    // Convert framebuffer to 8-bit RGBA, one row at a time.  The per-pixel
+    // decode is display.h's, shared with framebuffer_row_to_rgba above and
+    // with the object model -- this was a second, byte-identical copy of that
+    // switch (04-video F-02).  `row + 1` steps past the PNG filter byte.
     for (int y = 0; y < height; y++) {
         uint8_t *row = raw_data + y * row_size;
-        const uint8_t *src_row = fb + (size_t)y * stride;
         row[0] = 0; // filter byte: none
-        for (int x = 0; x < width; x++) {
-            uint8_t *pixel = row + 1 + x * 4;
-            uint8_t r = 0, g = 0, b = 0, a = 255;
-            switch (d->format) {
-            case PIXEL_1BPP_MSB: {
-                int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
-                // 1 = black, 0 = white (Mac convention)
-                r = g = b = bit ? 0 : 255;
-                break;
-            }
-            case PIXEL_2BPP_MSB: {
-                int idx = (src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3;
-                rgba8_t c = clut[idx % clut_len];
-                r = c.r;
-                g = c.g;
-                b = c.b;
-                break;
-            }
-            case PIXEL_4BPP_MSB: {
-                int idx = (src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF;
-                rgba8_t c = clut[idx % clut_len];
-                r = c.r;
-                g = c.g;
-                b = c.b;
-                break;
-            }
-            case PIXEL_8BPP: {
-                uint8_t idx = src_row[x];
-                rgba8_t c = clut[idx % clut_len];
-                r = c.r;
-                g = c.g;
-                b = c.b;
-                break;
-            }
-            case PIXEL_16BPP_555: {
-                // big-endian 1-5-5-5
-                uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
-                uint8_t r5 = (v >> 10) & 0x1F;
-                uint8_t g5 = (v >> 5) & 0x1F;
-                uint8_t b5 = v & 0x1F;
-                r = (uint8_t)((r5 << 3) | (r5 >> 2));
-                g = (uint8_t)((g5 << 3) | (g5 >> 2));
-                b = (uint8_t)((b5 << 3) | (b5 >> 2));
-                break;
-            }
-            case PIXEL_16BPP_565: {
-                // big-endian 5-6-5: green is 6 bits, replicate its top 2
-                uint16_t v = ((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1];
-                uint8_t r5 = (v >> 11) & 0x1F;
-                uint8_t g6 = (v >> 5) & 0x3F;
-                uint8_t b5 = v & 0x1F;
-                r = (uint8_t)((r5 << 3) | (r5 >> 2));
-                g = (uint8_t)((g6 << 2) | (g6 >> 4));
-                b = (uint8_t)((b5 << 3) | (b5 >> 2));
-                break;
-            }
-            case PIXEL_32BPP_XRGB: {
-                // [X][R][G][B] big-endian, 4 bytes per pixel.  Mac OS
-                // at SetDepth(32) sets PixMap.pixelSize=32 and writes
-                // XRGB pixels; the JMFB's RAMDAC-bypass mode reads 3
-                // of those 4 bytes per pixel for scan and discards X.
-                r = src_row[x * 4 + 1];
-                g = src_row[x * 4 + 2];
-                b = src_row[x * 4 + 3];
-                break;
-            }
-            }
-            pixel[0] = r;
-            pixel[1] = g;
-            pixel[2] = b;
-            pixel[3] = a;
-        }
+        display_row_to_rgba(d, (uint32_t)y, row + 1);
     }
 
     // Deflate the filtered scanlines into a zlib stream.  A 640x480 screen is
@@ -3806,25 +3650,11 @@ static value_t screen_attr_depth(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
     const display_t *d = system_display();
-    if (!d)
-        return val_int(0);
-    switch (d->format) {
-    case PIXEL_1BPP_MSB:
-        return val_int(1);
-    case PIXEL_2BPP_MSB:
-        return val_int(2);
-    case PIXEL_4BPP_MSB:
-        return val_int(4);
-    case PIXEL_8BPP:
-        return val_int(8);
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-        return val_int(16);
-    case PIXEL_32BPP_XRGB:
-        return val_int(32);
-    default:
-        return val_int(0);
-    }
+    // A fourth copy of the bits-per-pixel switch lived here -- and this is the
+    // one every integration row asserts on (`machine.screen.depth`), so it is
+    // the copy that had to stay right while the others drifted.  display.h
+    // owns it now (04-video F-01).
+    return val_int(d ? (int)display_bpp(d->format) : 0);
 }
 
 // `screen.par_w` / `screen.par_h` — the active display's pixel aspect ratio

@@ -16,8 +16,10 @@
 #ifndef NUBUS_DISPLAY_H
 #define NUBUS_DISPLAY_H
 
+#include "common.h" // GS_UNIMPLEMENTED
 #include <stdbool.h>
 #include <stddef.h>
+
 #include <stdint.h>
 #include <string.h>
 
@@ -75,11 +77,21 @@ static inline uint32_t display_bpp(pixel_format_t format) {
     case PIXEL_8BPP:
         return 8;
     case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
         return 16;
     case PIXEL_32BPP_XRGB:
         return 32;
     }
-    return 8; // unreachable for a valid pixel_format_t
+    // Not a pixel_format_t this build knows.  Answering a plausible number
+    // here is how a bad format becomes a wrong stride three layers away,
+    // where it looks like a garbled screen rather than a missing case: the
+    // 5-6-5 arm above was absent until 2026-09-16, and -Wswitch had been
+    // saying so on every build of both targets for as long as the format
+    // existed.  Nothing reached it -- the Mach64 selects 565 and computes its
+    // own stride -- but the fix for 04-video F-01 is to route callers HERE,
+    // which would have turned a latent 8-for-16 into a live one.
+    GS_UNIMPLEMENTED("display_bpp: pixel format %d has no bits-per-pixel rule", (int)format);
+    return 8;
 }
 
 // Single CLUT entry; rgba layout matches QuickDraw's RGBColor packed for
@@ -158,6 +170,120 @@ typedef struct display {
     void (*sync_pixels)(void *ctx);
     void *sync_ctx;
 } display_t;
+
+// ============================================================================
+// Format authority
+// ============================================================================
+// Everything below is a property of pixel_format_t, not of the card that
+// scans it out, so it lives with the enum.  Before 2026-09-16 each of these
+// existed two to eight times across debug.c, nubus_class.c and the WebGL
+// renderer, and the copies had drifted: display_bpp answered 8 for a 5-6-5
+// format while nubus_class.c's copy answered 16, and the two disagreed about
+// what an unknown format means (8 vs 0).  04-video F-01, F-02, F-04.
+
+// 5-bit and 6-bit channels expanded to 8, by bit replication -- (v << 3) |
+// (v >> 2) maps 31 to 255 and 0 to 0, which a plain (v * 255 / 31) also does
+// but with a divide.  The alternative some code used, a bare (v << 3), tops
+// out at 248 and darkens every highlight by one LSB.
+static inline uint8_t display_expand5(uint8_t v) {
+    return (uint8_t)((v << 3) | (v >> 2));
+}
+static inline uint8_t display_expand6(uint8_t v) {
+    return (uint8_t)((v << 2) | (v >> 4));
+}
+
+// The shell-facing name of a format.  One spelling, so machine.screen and a
+// card's framebuffer node cannot disagree about what the guest is running.
+static inline const char *display_format_name(pixel_format_t format) {
+    switch (format) {
+    case PIXEL_1BPP_MSB:
+        return "1bpp";
+    case PIXEL_2BPP_MSB:
+        return "2bpp";
+    case PIXEL_4BPP_MSB:
+        return "4bpp";
+    case PIXEL_8BPP:
+        return "8bpp_clut";
+    case PIXEL_16BPP_555:
+        return "16bpp_555";
+    case PIXEL_16BPP_565:
+        return "16bpp_565";
+    case PIXEL_32BPP_XRGB:
+        return "32bpp_xrgb";
+    }
+    return "?";
+}
+
+// One pixel of a row, as RGB.
+//
+// `clut_len` of zero used to reach `idx % clut_len` and divide by zero
+// (04-video F-30); a direct format has no CLUT and an indexed one with an
+// empty CLUT has nothing to look up, so both answer black.
+static inline void display_pixel_rgb(const display_t *d, const uint8_t *src_row, uint32_t x, uint8_t out[3]) {
+    const rgba8_t *clut = d->clut;
+    const uint32_t clut_len = d->clut_len;
+    uint8_t r = 0, g = 0, b = 0;
+    uint32_t idx = 0;
+    switch (d->format) {
+    case PIXEL_1BPP_MSB: {
+        int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
+        r = g = b = bit ? 0 : 255; // 1 = black, 0 = white (Mac convention)
+        goto done;
+    }
+    case PIXEL_2BPP_MSB:
+        idx = (uint32_t)((src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3);
+        break;
+    case PIXEL_4BPP_MSB:
+        idx = (uint32_t)((src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF);
+        break;
+    case PIXEL_8BPP:
+        idx = src_row[x];
+        break;
+    case PIXEL_16BPP_555: {
+        uint16_t v = (uint16_t)(((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1]);
+        r = display_expand5((uint8_t)((v >> 10) & 0x1F));
+        g = display_expand5((uint8_t)((v >> 5) & 0x1F));
+        b = display_expand5((uint8_t)(v & 0x1F));
+        goto done;
+    }
+    case PIXEL_16BPP_565: {
+        uint16_t v = (uint16_t)(((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1]);
+        r = display_expand5((uint8_t)((v >> 11) & 0x1F));
+        g = display_expand6((uint8_t)((v >> 5) & 0x3F));
+        b = display_expand5((uint8_t)(v & 0x1F));
+        goto done;
+    }
+    case PIXEL_32BPP_XRGB:
+        // [X][R][G][B] big-endian; the RAMDAC scans the RGB triple and
+        // discards X (see the enum comment).
+        r = src_row[x * 4 + 1];
+        g = src_row[x * 4 + 2];
+        b = src_row[x * 4 + 3];
+        goto done;
+    }
+    if (clut && clut_len) {
+        rgba8_t c = clut[idx % clut_len];
+        r = c.r;
+        g = c.g;
+        b = c.b;
+    }
+done:
+    out[0] = r;
+    out[1] = g;
+    out[2] = b;
+}
+
+// One row of a framebuffer as packed RGBA, written at `out_rgba`, which must
+// hold at least width*4 bytes.  `out_rgba` is a base pointer rather than a
+// row index so the PNG writer can aim it past its per-row filter byte.
+static inline void display_row_to_rgba(const display_t *d, uint32_t y, uint8_t *out_rgba) {
+    const uint8_t *src_row = d->bits + (size_t)y * d->stride;
+    for (uint32_t x = 0; x < d->width; x++) {
+        uint8_t *px = out_rgba + x * 4;
+        display_pixel_rgb(d, src_row, x, px);
+        px[3] = 255;
+    }
+}
 
 // Make `bits` current before reading them (a no-op for every display
 // whose producer keeps them current).

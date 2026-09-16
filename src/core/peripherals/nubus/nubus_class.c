@@ -94,45 +94,6 @@ static display_t *node_disp(struct object *self) {
     nubus_card_t *c = node_card(self);
     return (c && c->ops && c->ops->display) ? c->ops->display(c) : NULL;
 }
-static uint32_t node_fmt_bpp(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return 1;
-    case PIXEL_2BPP_MSB:
-        return 2;
-    case PIXEL_4BPP_MSB:
-        return 4;
-    case PIXEL_8BPP:
-        return 8;
-    case PIXEL_16BPP_555:
-    case PIXEL_16BPP_565:
-        return 16;
-    case PIXEL_32BPP_XRGB:
-        return 32;
-    default:
-        return 0;
-    }
-}
-static const char *node_fmt_name(pixel_format_t f) {
-    switch (f) {
-    case PIXEL_1BPP_MSB:
-        return "1bpp";
-    case PIXEL_2BPP_MSB:
-        return "2bpp";
-    case PIXEL_4BPP_MSB:
-        return "4bpp";
-    case PIXEL_8BPP:
-        return "8bpp_clut";
-    case PIXEL_16BPP_555:
-        return "16bpp_555";
-    case PIXEL_16BPP_565:
-        return "16bpp_565";
-    case PIXEL_32BPP_XRGB:
-        return "32bpp_xrgb";
-    default:
-        return "?";
-    }
-}
 
 // --- framebuffer node -------------------------------------------------------
 static value_t fb_attr_base(struct object *self, const member_t *m) {
@@ -158,12 +119,12 @@ static value_t fb_attr_stride(struct object *self, const member_t *m) {
 static value_t fb_attr_depth(struct object *self, const member_t *m) {
     (void)m;
     display_t *d = node_disp(self);
-    return val_int(d ? (int)node_fmt_bpp(d->format) : 0);
+    return val_int(d ? (int)display_bpp(d->format) : 0);
 }
 static value_t fb_attr_format(struct object *self, const member_t *m) {
     (void)m;
     display_t *d = node_disp(self);
-    return val_str(d ? node_fmt_name(d->format) : "");
+    return val_str(d ? display_format_name(d->format) : "");
 }
 static value_t fb_attr_raw_size(struct object *self, const member_t *m) {
     (void)m;
