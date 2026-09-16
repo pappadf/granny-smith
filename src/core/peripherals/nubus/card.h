@@ -83,11 +83,9 @@ struct nubus_card {
     size_t declrom_size;
 };
 
-// Per-card constructor signature.  The bus controller calls this once per
-// populated slot during nubus_init().  Returns the new card on success,
-// NULL on failure.  The bus takes ownership and calls ops->teardown()
-// during nubus_delete.
-typedef nubus_card_t *(*nubus_card_factory_fn)(int slot, config_t *cfg, checkpoint_t *cp);
+// (The per-card factory is gone.  The bus controller allocates the
+// nubus_card_t itself and calls ops->init on it -- see nubus_card_kind_t.ops
+// and 04-video F-52.)
 
 // One monitor a card advertises (resolution + supported depths).  Used
 // by the card-kind registry so the dialog can populate a monitor / depth
@@ -150,7 +148,17 @@ typedef struct nubus_card_kind {
     card_attach_t attach; // physical attachment; drives socket matching
     bool requires_vrom; // dialog shows VROM picker iff true
     const nubus_monitor_t *monitors; // sentinel-terminated; NULL for non-display cards
-    nubus_card_factory_fn factory; // bus controller calls this once per populated slot
+    // The card's vtable.  The bus controller allocates the nubus_card_t,
+    // fills in ops / bus / slot, and calls ops->init once per populated slot.
+    //
+    // This used to be a per-card `factory` that allocated the card itself --
+    // which meant `bus` could only be assigned AFTER the factory returned, so
+    // nubus_assert_irq / nubus_deassert_irq reached from card_init were a
+    // silent no-op (they early-return on !card->bus).  No card did that, but
+    // card_reset legitimately does, and the two call sites look identical
+    // (04-video F-52).  Nine kinds also carried five byte-identical
+    // `factory_common` bodies to do the allocation.
+    const nubus_card_ops_t *ops;
     // Hand a staged `machine.nubus.video_mode` id to this kind's pending-mode
     // channel -- the per-driver static its factory consumes at init.  NULL for
     // a kind with no video-mode staging.  Without it the bus controller had to

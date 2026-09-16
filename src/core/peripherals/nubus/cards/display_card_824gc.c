@@ -1329,27 +1329,6 @@ static const nubus_card_ops_t display_card_824gc_generic_ops = {
 
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
-    nubus_card_t *card = calloc(1, sizeof(*card));
-    if (!card)
-        return NULL;
-    card->ops = ops;
-    card->slot = slot;
-    if (card->ops->init(card, cfg, cp) != 0) {
-        free(card);
-        return NULL;
-    }
-    return card;
-}
-
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &display_card_824gc_ops);
-}
-
-static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &display_card_824gc_generic_ops);
-}
-
 // Advertised modes.  Seedable BOOT depths only: the ROM Slot Manager keeps
 // the 24-bit sResource family (capped at 8 bpp) until SecondaryInit swaps in
 // the six-depth $A0 family, so 16/32 bpp can never be the boot depth on
@@ -1502,7 +1481,7 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
     .monitors = display_card_824gc_monitors,
-    .factory = factory,
+    .ops = &display_card_824gc_ops,
     .stage_video_mode = display_card_824gc_pending_video_mode_set,
     .attach_objects = display_card_824gc_attach_objects,
 };
@@ -1533,7 +1512,7 @@ const nubus_card_kind_t display_card_824gc_generic_kind = {
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = false,
     .monitors = display_card_824gc_generic_monitors,
-    .factory = factory_generic,
+    .ops = &display_card_824gc_generic_ops,
     .stage_video_mode = display_card_824gc_pending_video_mode_set,
     .attach_objects = display_card_824gc_attach_objects,
 };

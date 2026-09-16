@@ -424,19 +424,6 @@ uint8_t builtin_rbv_video_vdac_read(nubus_card_t *card, uint32_t off) {
 
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
-    nubus_card_t *card = calloc(1, sizeof(*card));
-    if (!card)
-        return NULL;
-    card->ops = &builtin_rbv_video_ops;
-    card->slot = slot;
-    if (card->ops->init(card, cfg, cp) != 0) {
-        free(card);
-        return NULL;
-    }
-    return card;
-}
-
 // Built-in monitor: 13" RGB, sense 6, depths 1/2/4/8 — for machine.profile.
 static const int builtin_rbv_depths[] = {1, 2, 4, 8, 0};
 
@@ -458,5 +445,5 @@ const nubus_card_kind_t builtin_rbv_video_kind = {
     .attach = CARD_ATTACH_BUILTIN, // motherboard circuitry — never socketed
     .requires_vrom = false,
     .monitors = builtin_rbv_monitors,
-    .factory = factory,
+    .ops = &builtin_rbv_video_ops,
 };

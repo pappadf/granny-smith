@@ -785,27 +785,6 @@ static const nubus_card_ops_t jmfb_generic_ops = {
 
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
-    nubus_card_t *card = calloc(1, sizeof(*card));
-    if (!card)
-        return NULL;
-    card->ops = ops;
-    card->slot = slot;
-    if (card->ops->init(card, cfg, cp) != 0) {
-        free(card);
-        return NULL;
-    }
-    return card;
-}
-
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &mdc_8_24_ops);
-}
-
-static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &jmfb_generic_ops);
-}
-
 // Monitor types the Rev B ROM supports (proposal §3.2.5 + the mode
 // catalog Apple ships in chip[$4000..$502B] of the JMFB VROM).
 //
@@ -1021,7 +1000,7 @@ const nubus_card_kind_t mdc_8_24_kind = {
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
     .monitors = mdc_8_24_monitors,
-    .factory = factory,
+    .ops = &mdc_8_24_ops,
     .stage_video_mode = jmfb_pending_video_mode_set,
 };
 
@@ -1041,6 +1020,6 @@ const nubus_card_kind_t jmfb_generic_kind = {
     // F-08).  Two tables feeding one GS vROM generator is how a geometry fix
     // lands on one sibling and not the other.
     .monitors = mdc_8_24_monitors,
-    .factory = factory_generic,
+    .ops = &jmfb_generic_ops,
     .stage_video_mode = jmfb_pending_video_mode_set,
 };

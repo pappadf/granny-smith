@@ -431,7 +431,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             case NUBUS_SLOT_EMPTY:
                 continue;
             }
-            if (!kind || !kind->factory)
+            if (!kind || !kind->ops || !kind->ops->init)
                 continue;
             // Route this slot's staged video mode into the kind's pending
             // channel immediately before its factory consumes it, so each
@@ -450,16 +450,25 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             if (staged_custom)
                 stage_custom_for_kind(s->slot, kind, staged_custom);
             bus->slot_kind[s->slot] = kind;
-            nubus_card_t *card = kind->factory(s->slot, cfg, cp);
+            // The bus owns the allocation, so `bus` and `slot` are populated
+            // BEFORE init runs -- a card may assert its slot IRQ, or touch any
+            // other bus service, from card_init (04-video F-52).
+            nubus_card_t *card = calloc(1, sizeof(*card));
             if (!card) {
-                // Factory returned NULL — typically a missing/invalid VROM
-                // file or out-of-memory. Log so a silent boot-time failure
-                // doesn't manifest as "card is missing for unclear reasons".
-                LOG(1, "nubus: slot $%X card factory '%s' returned NULL", s->slot, (kind && kind->id) ? kind->id : "?");
+                LOG(0, "nubus: out of memory seating slot $%X card '%s'", s->slot, kind->id ? kind->id : "?");
                 continue;
             }
+            card->ops = kind->ops;
             card->bus = bus;
             card->slot = s->slot;
+            if (card->ops->init(card, cfg, cp) != 0) {
+                // Typically a missing/invalid VROM file or out of memory.  Log
+                // it, so a boot-time failure does not manifest later as "the
+                // card is missing for unclear reasons".
+                LOG(1, "nubus: slot $%X card '%s' failed to initialise", s->slot, kind->id ? kind->id : "?");
+                free(card);
+                continue;
+            }
             if (s->slot >= 0 && s->slot < NUBUS_MAX_SLOTS)
                 bus->cards[s->slot] = card;
             // Capture the RESOLVED pick in the built-from record, so

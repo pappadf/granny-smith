@@ -1206,27 +1206,6 @@ static const nubus_card_ops_t display_card_24ac_generic_ops = {
 
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
-    nubus_card_t *card = calloc(1, sizeof(*card));
-    if (!card)
-        return NULL;
-    card->ops = ops;
-    card->slot = slot;
-    if (card->ops->init(card, cfg, cp) != 0) {
-        free(card);
-        return NULL;
-    }
-    return card;
-}
-
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &display_card_24ac_ops);
-}
-
-static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &display_card_24ac_generic_ops);
-}
-
 // Advertised monitors.  The card is a 24-bit colour board (4 MB VRAM), so
 // every one supports 1/4/8/16/32 bpp — there is NO 2-bpp mode (vrom RE depth
 // ladder).  Each row's geometry is the raster the REAL vrom programs when the
@@ -1376,7 +1355,7 @@ const nubus_card_kind_t display_card_24ac_kind = {
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = true,
     .monitors = display_card_24ac_monitors,
-    .factory = factory,
+    .ops = &display_card_24ac_ops,
     .stage_video_mode = display_card_24ac_pending_video_mode_set,
     .attach_objects = display_card_24ac_attach_objects,
 };
@@ -1391,7 +1370,7 @@ const nubus_card_kind_t display_card_24ac_generic_kind = {
     .attach = CARD_ATTACH_NUBUS,
     .requires_vrom = false,
     .monitors = display_card_24ac_monitors,
-    .factory = factory_generic,
+    .ops = &display_card_24ac_generic_ops,
     .stage_video_mode = display_card_24ac_pending_video_mode_set,
     .attach_objects = display_card_24ac_attach_objects,
 };

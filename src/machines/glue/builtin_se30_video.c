@@ -350,27 +350,6 @@ static const nubus_card_ops_t builtin_se30_video_generic_ops = {
 
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
-    nubus_card_t *card = calloc(1, sizeof(*card));
-    if (!card)
-        return NULL;
-    card->ops = ops;
-    card->slot = slot;
-    if (card->ops->init(card, cfg, cp) != 0) {
-        free(card);
-        return NULL;
-    }
-    return card;
-}
-
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &builtin_se30_video_ops);
-}
-
-static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &builtin_se30_video_generic_ops);
-}
-
 // One monitor entry — the SE/30 built-in is fixed at 512×342×1bpp; the
 // list is included so the dialog's monitor dropdown has *something* to
 // show even though the user can't change it.
@@ -395,7 +374,7 @@ const nubus_card_kind_t builtin_se30_video_kind = {
     // separate onboard-video vROM file (the dialog's VROM picker drives this).
     .requires_vrom = true,
     .monitors = builtin_se30_monitors,
-    .factory = factory,
+    .ops = &builtin_se30_video_ops,
 };
 
 // Generic sibling kind ("se30") with the built-in GS declaration ROM —
@@ -408,7 +387,7 @@ const nubus_card_kind_t builtin_se30_video_generic_kind = {
     .attach = CARD_ATTACH_BUILTIN,
     .requires_vrom = false,
     .monitors = builtin_se30_monitors,
-    .factory = factory_generic,
+    .ops = &builtin_se30_video_generic_ops,
 };
 
 // === SE/30-specific public hooks ============================================
