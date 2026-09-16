@@ -11,7 +11,10 @@
 .equ GS_DRHW,          0x002B          | 24AC DrHW (Display_Video_Apple_Boogie)
 .equ GS_FB_MINOR,      0               | framebuffer at VRAM offset 0
 .equ GS_NMODES,        5               | 0x80..0x84 = 1/4/8/16/32 bpp (no 2 bpp)
-.equ GS_NPAGES,        1               | one framebuffer (mPageCnt)
+.equ GS_NPAGES,        1               | one framebuffer (mPageCnt); with
+                                        | only one page the driver assembles
+                                        | no page code at all and needs no
+                                        | SetPage op -- see gsvrom_drvr.s
 .equ GS_FIRSTDIRECT,   3               | codes 3 (16 bpp) and 4 (32 bpp) are direct
 .equ GS_DEFER_SPID,    0               | no deferred 32-bit sResource family
 
@@ -138,11 +141,6 @@
 
 | SetDepth: in D0.W = depth code 0..4, D1.W = width (unused — the card
 | derives its stride from the mode).  Programs MODE_REG bits 7-5.
-| SetPage: single-page card -- the driver never calls this with a page
-| other than 0, and there is no second buffer to switch to.
-\pfx&SetPage:
-	rts
-
 \pfx&SetDepth:
 	movem.l	d0/a0,-(sp)
 	lea	\pfx&ModeTab(pc),a0

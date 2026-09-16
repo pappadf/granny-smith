@@ -15,6 +15,7 @@
 #include "vrom.h"
 #include "common.h"
 #include "declrom.h" // structural recognition of generated GS images
+#include "offer_registry.h"
 
 #include "log.h"
 #include "machine_profile.h"
@@ -204,155 +205,57 @@ bool vrom_identify_card(const char *path, vrom_id_t *out) {
 // Offer registry
 // ============================================================================
 
-// One registered candidate: a recognised file the platform offered, keyed by
-// its content identity.  The direct analog of the old single pending-path
-// static, generalised to N entries.
-struct vrom_offer_entry {
-    uint32_t crc; // content identity (registry key)
-    size_t chip_size; // actual file size (32 KB or 64 KB)
-    const char *card_id; // catalog card-kind id (static storage)
-    char *path; // opaque locator (owned)
-    bool explicit_pick; // set by vrom.load — wins the pick order
-};
-
-static struct vrom_offer_entry *s_offers = NULL;
-static size_t s_offer_count = 0;
-static size_t s_offer_cap = 0;
-
-// Register one candidate.  `explicit_pick` marks the vrom.load offer, which
-// takes priority in vrom_offer_find (at most one entry carries the flag).
-static void vrom_offer_add(const char *path, bool explicit_pick) {
-    if (!path || !*path)
-        return;
+// Identify one candidate for the registry.  The vROM side's validation gates,
+// size classes and identity spans are nothing like the PCI side's, which is
+// exactly why this half is NOT shared (offer_registry.h).
+static bool vrom_offer_identify(const char *path, uint32_t *out_crc, size_t *out_size, const char **out_card_id) {
     vrom_id_t id;
     if (!vrom_identify_card(path, &id)) {
         // Not a recognised declaration ROM — drop it quietly (the platform
         // offers whole directories; strays are expected, not errors).
         LOG(2, "vrom_offer: '%s' is not a recognised declaration ROM — ignored", path);
-        return;
+        return false;
     }
-    // Idempotent by content: one entry per CRC.  A re-offer refreshes the
-    // path (the newest locator for these bytes) and may promote to explicit.
-    struct vrom_offer_entry *e = NULL;
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (s_offers[i].crc == id.crc) {
-            e = &s_offers[i];
-            break;
-        }
-    }
-    if (!e) {
-        if (s_offer_count == s_offer_cap) {
-            size_t cap = s_offer_cap ? s_offer_cap * 2 : 8;
-            struct vrom_offer_entry *grown = realloc(s_offers, cap * sizeof(*grown));
-            if (!grown)
-                return;
-            s_offers = grown;
-            s_offer_cap = cap;
-        }
-        e = &s_offers[s_offer_count];
-        memset(e, 0, sizeof(*e));
-        s_offer_count++;
-    }
-    char *dup = strdup(path);
-    if (!dup) {
-        // Fresh entry with no path is useless — roll the append back.
-        if (!e->path)
-            s_offer_count--;
-        return;
-    }
-    free(e->path);
-    e->path = dup;
-    e->crc = id.crc;
-    e->chip_size = id.chip_size;
-    e->card_id = id.card_id;
-    if (explicit_pick) {
-        // Only one explicit pick at a time — latest vrom.load wins.
-        for (size_t i = 0; i < s_offer_count; i++)
-            s_offers[i].explicit_pick = false;
-        e->explicit_pick = true;
-    }
-    LOG(2, "vrom_offer: '%s' provides card '%s' (crc 0x%08x)%s", path, e->card_id, e->crc,
-        explicit_pick ? " [explicit]" : "");
+    *out_crc = id.crc;
+    *out_size = id.chip_size;
+    *out_card_id = id.card_id;
+    return true;
 }
 
+static void vrom_catalog_row(size_t r, const char **card_id, uint32_t *crc, bool *preferred) {
+    *card_id = VROM_CATALOG[r].card_id;
+    *crc = VROM_CATALOG[r].crc;
+    *preferred = VROM_CATALOG[r].preferred;
+}
+
+static offer_registry_t s_offers = {
+    .tag = "vrom_offer",
+    .identify = vrom_offer_identify,
+    .catalog = {.count = VROM_CATALOG_COUNT, .row = vrom_catalog_row},
+};
+
 void vrom_offer(const char *path) {
-    vrom_offer_add(path, false);
+    offer_registry_add(&s_offers, path, false);
 }
 
 void vrom_offer_clear(void) {
-    for (size_t i = 0; i < s_offer_count; i++)
-        free(s_offers[i].path);
-    free(s_offers);
-    s_offers = NULL;
-    s_offer_count = 0;
-    s_offer_cap = 0;
+    offer_registry_clear(&s_offers);
 }
 
 const char *vrom_offer_find(const char *card_id, int idx, size_t *out_chip_size) {
-    if (!card_id)
-        return NULL;
-    // Pick order: the explicit vrom.load offer first, then catalog rows with
-    // the `preferred` bit, then the remaining catalog rows in order.  All
-    // content-based — no filename ever enters the comparison.
-    // Pass 0: the explicit pick (at most one entry carries the flag).
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (!s_offers[i].explicit_pick || strcmp(s_offers[i].card_id, card_id) != 0)
-            continue;
-        if (idx-- == 0) {
-            if (out_chip_size)
-                *out_chip_size = s_offers[i].chip_size;
-            return s_offers[i].path;
-        }
-    }
-    // Passes 1..2: catalog order, preferred rows first.  One offer per CRC
-    // (registry invariant), so each row yields at most one candidate.
-    for (int want_preferred = 1; want_preferred >= 0; want_preferred--) {
-        for (size_t r = 0; r < VROM_CATALOG_COUNT; r++) {
-            if (VROM_CATALOG[r].preferred != (bool)want_preferred)
-                continue;
-            if (strcmp(VROM_CATALOG[r].card_id, card_id) != 0)
-                continue;
-            for (size_t i = 0; i < s_offer_count; i++) {
-                if (s_offers[i].crc != VROM_CATALOG[r].crc || s_offers[i].explicit_pick)
-                    continue; // explicit entry was already yielded in pass 0
-                if (idx-- == 0) {
-                    if (out_chip_size)
-                        *out_chip_size = s_offers[i].chip_size;
-                    return s_offers[i].path;
-                }
-            }
-        }
-    }
-    return NULL;
+    return offer_registry_find(&s_offers, card_id, idx, out_chip_size);
 }
 
 bool vrom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
-    if (!path)
-        return false;
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (strcmp(s_offers[i].path, path) != 0)
-            continue;
-        if (out_crc)
-            *out_crc = s_offers[i].crc;
-        if (out_explicit)
-            *out_explicit = s_offers[i].explicit_pick;
-        return true;
-    }
-    return false;
+    return offer_registry_info(&s_offers, path, out_crc, out_explicit);
 }
 
 bool vrom_card_catalogued(const char *card_id) {
-    if (!card_id || !*card_id)
-        return false;
-    for (size_t r = 0; r < VROM_CATALOG_COUNT; r++) {
-        if (strcmp(VROM_CATALOG[r].card_id, card_id) == 0)
-            return true;
-    }
-    return false;
+    return offer_registry_catalogued(&s_offers, card_id);
 }
 
 bool vrom_card_resolvable(const char *card_id) {
-    return vrom_offer_find(card_id, 0, NULL) != NULL;
+    return offer_registry_resolvable(&s_offers, card_id);
 }
 
 // ============================================================================
@@ -367,7 +270,7 @@ int vrom_set_path(const char *path) {
     // The boot document's vrom= explicit pick: an offer that wins the pick
     // order for whichever card its content provides.  An unrecognised file
     // is dropped by the offer (with a log).
-    vrom_offer_add(path, true);
+    offer_registry_add(&s_offers, path, true);
     return 0;
 }
 

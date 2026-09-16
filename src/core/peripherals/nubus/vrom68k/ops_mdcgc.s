@@ -20,7 +20,10 @@
 .equ GS_FB_MINOR,      0xA00           | 24-bit boot family: std-slot VRAM base
 .equ GREG_FB_OFFSET,   0x11400         | framebuffer offset within card DRAM
 .equ GS_NMODES,        4               | 0x80..0x83 = 1/2/4/8 bpp boot depths
-.equ GS_NPAGES,        1               | one framebuffer (mPageCnt)
+.equ GS_NPAGES,        1               | one framebuffer (mPageCnt); with
+                                        | only one page the driver assembles
+                                        | no page code at all and needs no
+                                        | SetPage op -- see gsvrom_drvr.s
 .equ GS_FIRSTDIRECT,   8               | direct modes arrive via VidComm only
 .equ GS_BOOT_SPID,     0x80            | 24-bit boot family (std-slot VRAM)
 .equ GS_DEFER_SPID,    0xA0            | 32-bit family (super-slot DRAM) that
@@ -164,11 +167,6 @@
 | SetDepth: depth is not register-programmed on the GC (the HLE boots
 | at the PRAM-seeded depth; runtime switches ride VidComm).  Perform the
 | bounded heartbeat wait the real driver does around mode changes.
-| SetPage: single-page card -- the driver never calls this with a page
-| other than 0, and there is no second buffer to switch to.
-\pfx&SetPage:
-	rts
-
 \pfx&SetDepth:
 	bsr	\pfx&CardSync
 	rts

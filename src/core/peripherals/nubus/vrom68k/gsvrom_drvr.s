@@ -212,18 +212,29 @@ CtlNoop:
 	moveq	#0,d0
 	rts
 
+| PAGES.  Everything below that touches pvPage / DRSetPage is assembled
+| ONLY for a personality that declares more than one (GS_NPAGES), so a
+| single-page card's DRVR comes out byte-for-byte as it did before the
+| page support existed.  That is not tidiness: the 8*24 GC's accelerator
+| bring-up is sensitive to this fragment's LENGTH -- four bytes of nop in
+| CtlSetMode is enough to stop GC-OS starting (measured) -- so a
+| single-page personality must not pay for a mechanism it cannot use.
+| The sensitivity itself is a separate, pre-existing defect.
+|
 | csCode 0 — Reset: default 1-bpp mode, page 0, gray screen.  A card with
 | more than one page must switch page 0 in here (Designing Cards and
 | Drivers 3ed, csCode 0).
 CtlReset:
 	move.w	#0x80,pvMode(a5)
+	.if	GS_NPAGES > 1
 	clr.w	pvPage(a5)
 	bsr	DRSetPage
+	moveq	#0,d2
+	.endif
 	bsr	ApplyMode
 	bsr	GrayFill
 	move.w	#0x80,csMode(a2)
 	clr.w	csPage(a2)
-	moveq	#0,d2
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
@@ -239,6 +250,7 @@ CtlSetMode:
 	blo.s	CtlModeBad
 	cmp.w	#0x80+GS_NMODES-1,d2
 	bhi.s	CtlModeBad
+	.if	GS_NPAGES > 1
 	move.w	csPage(a2),d3
 	bmi.s	CtlModeBad
 	cmp.w	#GS_NPAGES-1,d3
@@ -248,6 +260,12 @@ CtlSetMode:
 	bsr	DRSetPage
 	bsr	ApplyMode
 	move.w	d3,d2
+	.else
+	tst.w	csPage(a2)
+	bne.s	CtlModeBad
+	move.w	d2,pvMode(a5)
+	bsr	ApplyMode
+	.endif
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
@@ -486,8 +504,12 @@ StTab:
 
 StGetMode:
 	move.w	pvMode(a5),csMode(a2)
+	.if	GS_NPAGES > 1
 	move.w	pvPage(a5),csPage(a2)
 	move.w	pvPage(a5),d2
+	.else
+	clr.w	csPage(a2)
+	.endif
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
@@ -554,10 +576,15 @@ StGetPages:
 | not displayed" -- Designing Cards and Drivers 3ed).  So this reads the
 | page and does not switch it.
 StGetBase:
+	.if	GS_NPAGES > 1
 	move.w	csPage(a2),d2
 	bmi	CtlModeBad
 	cmp.w	#GS_NPAGES-1,d2
 	bhi	CtlModeBad
+	.else
+	tst.w	csPage(a2)
+	bne	CtlModeBad
+	.endif
 	bsr	DRBaseAddr
 	move.l	d0,csBaseAddr(a2)
 	moveq	#0,d0
