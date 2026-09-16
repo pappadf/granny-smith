@@ -706,6 +706,22 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     // Only on a cold build — a checkpoint restore has just loaded real pixels.
     if (!cp)
         display_blank_raster(&cv->display);
+    if (cp) {
+        // Two OUTPUTS derived from the state just loaded, neither of which is
+        // in the stream because neither is state (04-video F-39).
+        //
+        // The shared slot line: vbl_flag / vdc_flag came back set, but nothing
+        // drove av_psc_slot_source, so a restored pending latch never reaches
+        // the PSC.  The note at the top of this file is explicit that the
+        // assertion "is not optional: without it the level-2 handler never
+        // runs, so no VBL tasks fire and the cursor never blinks" -- which is
+        // exactly the state a restore landed in.
+        civic_update_slot_line(cv);
+        // The overlay composite: with the overlay active, civic_update_display
+        // points display.bits at cv->compose, which av_civic_init has just
+        // calloc'd to zero -- a black frame until the next frame event.
+        civic_compose(cv);
+    }
 
     scheduler_new_event_type(cfg->scheduler, "civic", cv, "frame", &civic_frame_event);
     scheduler_new_cpu_event(cfg->scheduler, &civic_frame_event, cv, 0, 0, AV_CIVIC_FRAME_NS);

@@ -614,6 +614,40 @@ static const memory_interface_t dafb_reg_iface = {
     .write_uint32 = dafb_write32,
 };
 
+// The pre-mode-set presentation state: 640x480x1 over the fallback frame
+// period, so a capture taken before the ROM's first mode set shows a sane
+// blank raster, plus the identity CLUT ramp the DAC powers up with.
+//
+// Shared by construction and /RESET.  dafb_reset used to zero the register
+// file and stop -- leaving dafb->display holding the PRE-RESET width, height,
+// stride, format and bits, and the CLUT at whatever the guest had programmed.
+// Worse, with regs zeroed the next reconfigure() bails at its mid-mode-set
+// guard (`hfp <= hal`), so the stale mode persisted indefinitely rather than
+// being re-derived (04-video F-38).
+//
+// `cold` follows the same rule as the NuBus cards' set_poweron_defaults: VRAM
+// keeps the previous frame across a warm /RESET, so only a cold build blanks
+// it.
+static void dafb_poweron_display(dafb_t *dafb, bool cold) {
+    dafb->display.width = 640;
+    dafb->display.height = 480;
+    dafb->display.format = PIXEL_1BPP_MSB;
+    dafb->display.stride = 1024;
+    dafb->display.bits = dafb->vram + 0x1000;
+    if (cold) // cold boot scans out black, not the white an all-zero 1 bpp buffer gives
+        display_blank_raster(&dafb->display);
+    dafb->display.clut = dafb->clut;
+    dafb->display.clut_len = 256;
+    dafb->display.shape_dirty = true;
+    dafb->display.clut_dirty = true;
+    dafb->display.fb_dirty = true;
+    dafb->display.response_dirty = true;
+    for (int i = 0; i < 256; i++) {
+        dafb->clut[i].r = dafb->clut[i].g = dafb->clut[i].b = (uint8_t)i;
+        dafb->clut[i].a = 255;
+    }
+}
+
 // ============================================================
 // Lifecycle
 // ============================================================
@@ -636,25 +670,7 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
     // ROM silently configures a 21" two-page display (observed).
     dafb->regs[DAFB_SENSE >> 2] = 0x7u;
 
-    // Pre-mode-set display: 640×480×1 over the fallback frame period, so a
-    // capture before the ROM's first mode set shows a sane blank raster.
-    dafb->display.width = 640;
-    dafb->display.height = 480;
-    dafb->display.format = PIXEL_1BPP_MSB;
-    dafb->display.stride = 1024;
-    dafb->display.bits = dafb->vram + 0x1000;
-    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
-    display_blank_raster(&dafb->display);
-    dafb->display.clut = dafb->clut;
-    dafb->display.clut_len = 256;
-    dafb->display.shape_dirty = true;
-    dafb->display.clut_dirty = true;
-    dafb->display.fb_dirty = true;
-    dafb->display.response_dirty = true;
-    for (int i = 0; i < 256; i++) {
-        dafb->clut[i].r = dafb->clut[i].g = dafb->clut[i].b = (uint8_t)i;
-        dafb->clut[i].a = 255;
-    }
+    dafb_poweron_display(dafb, /*cold*/ true);
 
     if (cp) {
         system_read_checkpoint_data(cp, dafb->regs, sizeof(dafb->regs));
@@ -671,6 +687,14 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &dafb->sense_ext_on, sizeof(dafb->sense_ext_on));
         system_read_checkpoint_data(cp, dafb->vram, vram_size);
         reconfigure(dafb);
+        // ...and the INTERRUPT LEVEL, which is derived from the register file
+        // exactly as the descriptor is.  `irq_line` is not in the stream (it
+        // is an output, not state), so it starts false; a checkpoint taken
+        // with SWATCH_INTR_STATUS & _ENABLE non-zero has to re-assert it here,
+        // or the level is lost -- and update_irq's `active != irq_line` edge
+        // filter means a later status change may not re-raise it either.  The
+        // Quadra's whole VBL chain hangs off this level (04-video F-38).
+        update_irq(dafb);
     }
     return dafb;
 }
@@ -835,6 +859,10 @@ void dafb_reset(dafb_t *dafb) {
     dafb->irq_line = false;
     if (dafb->irq_cb)
         dafb->irq_cb(dafb->irq_ctx, false);
+    // ...and the presentation state that is DERIVED from those registers.
+    // Zeroing the register file is not a reset of the chip if the descriptor
+    // it produced survives (04-video F-38).
+    dafb_poweron_display(dafb, /*cold*/ false);
 }
 
 const memory_interface_t *dafb_reg_interface(dafb_t *dafb) {

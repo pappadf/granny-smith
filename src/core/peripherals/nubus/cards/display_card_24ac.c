@@ -784,7 +784,15 @@ static void sense_for_sister(uint8_t sister, uint8_t *primary, uint8_t *ext) {
 // pending video-mode pick (card_init only) is applied over these defaults by
 // the caller; a warm reset keeps the power-on default because the mode is
 // re-selected from the (battery-backed, un-reset) PRAM as the ROM re-boots.
-static void set_poweron_defaults(display_card_24ac_priv_t *p) {
+// `cold` is true only for card_init.  A warm /RESET must leave VRAM alone --
+// see the paragraph above, and card.h's contract -- but this function used to
+// call display_blank_raster() unconditionally, which memsets stride * height
+// bytes OF VRAM, so every 68k RESET wiped the visible raster (307,200 bytes at
+// the default 640x480x8) in flat contradiction of both (04-video F-37).  The
+// two sibling cards say the same thing in their own words: control.c and
+// mach64gx.c both note the previous frame survives a warm reset, and leave
+// their buffers alone.
+static void set_poweron_defaults(display_card_24ac_priv_t *p, bool cold) {
     // VIDCTL power-on default: low 3 bits = 2.  PrimaryInit's monitor-sense
     // path reads VIDCTL ($D00403) at vrom chip 0x176 and, if its low 3 bits
     // are NOT 2, forces the monitor id to the "$47 standard-monitor" marker —
@@ -838,7 +846,9 @@ static void set_poweron_defaults(display_card_24ac_priv_t *p) {
     p->display.bits = p->vram;
     // Cold boot scans out black (already so at 8 bpp: index 0 of the seeded
     // ramp is black); go through the helper so a depth change stays right.
-    display_blank_raster(&p->display);
+    // COLD ONLY: on a warm /RESET the DRAM keeps the previous frame.
+    if (cold)
+        display_blank_raster(&p->display);
     p->display.clut = p->clut;
     p->display.clut_len = 256;
     p->display.crt_response = NULL; // identity until a monitor needs gamma
@@ -930,7 +940,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // depth/CLUT/timing at boot.  The power-on register/engine/display state
     // (and the grayscale CLUT ramp) is shared with the /RESET hook — see
     // set_poweron_defaults.
-    set_poweron_defaults(p);
+    set_poweron_defaults(p, /*cold*/ true);
 
     // Apply a pending video-mode pick's DEPTH over the power-on defaults
     // (the OS re-confirms it via the sResource + the PRAM seed below).
@@ -1080,7 +1090,7 @@ static void card_reset(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     nubus_deassert_irq(card); // drop any pending slot VBL IRQ before re-arm
-    set_poweron_defaults(p);
+    set_poweron_defaults(p, /*cold*/ false); // VRAM keeps the previous frame
     LOG(2, "24AC: display_card_24ac: /RESET → power-on state (8 bpp 640×480)");
 }
 

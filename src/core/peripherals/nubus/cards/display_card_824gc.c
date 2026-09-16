@@ -887,6 +887,13 @@ static void set_poweron_defaults(display_card_824gc_priv_t *p) {
     p->state = GC_ST_RESET;
     p->booted = false;
     p->armed = false;
+    // The slot VBL the RISC side arms (command 1).  card_on_vbl asserts on
+    // `!(sw_ic & VINT_DISABLE) || vbl_enabled`, so leaving this set after a
+    // /RESET keeps the card driving a VBL interrupt the newly-reset chip
+    // should not be driving -- and the disjunction means the documented mask
+    // bit cannot suppress it (04-video F-36).  A slot IRQ asserted before the
+    // rebooting ROM installs its SlotIQE is the interrupt-storm shape.
+    p->vbl_enabled = false;
     p->attached = false;
     p->gc_on = false;
     p->mailbox = 0;

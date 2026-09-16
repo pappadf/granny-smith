@@ -201,6 +201,9 @@ typedef struct pdm_video {
     rgba8_t clut_view[256]; // depth-windowed palette the renderer indexes
     uint8_t *blank; // black raster presented while the blank bit is set
     uint8_t sense; // monitor strap (PDM_SENSE_NONE = nothing connected)
+    // Set when the substrate restored `sense` from a checkpoint, so
+    // pdm_video_init leaves it alone instead of taking the staged default.
+    bool sense_restored;
     // machine.video -- the framebuffer node every display source exposes
     // (display_class.h); a built-in chip had none at all (04-video F-16).
     display_fb_node_t fb_node;

@@ -208,6 +208,13 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         // from the checkpoint stream; an empty buffer here is fine.
     }
 
+    // Publish it, the way jmfb.c / 24ac.c / 824gc.c all do.  Without this the
+    // object model reported `slot[$E].card.declrom.present == false` on an
+    // SE/30 that has a perfectly good 32 KB declaration ROM (04-video F-34).
+    // nubus_delete owns and frees the buffer once it is published here.
+    card->declrom = p->vrom;
+    card->declrom_size = SE30_VROM_SIZE;
+
     // Populate the display descriptor.  Primary buffer at $8040 is the
     // boot-time selection — VIA1 PA6 will toggle it before the OS draws.
     p->main_buf = true;
@@ -241,7 +248,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    free(p->vrom);
+    // p->vrom is published as card->declrom; nubus_delete owns and frees it.
     free(p->vrom_path);
     free(p);
     card->priv = NULL;
@@ -430,23 +437,4 @@ uint8_t *builtin_se30_video_vrom(nubus_card_t *card) {
 const char *builtin_se30_video_vrom_path(nubus_card_t *card) {
     se30_priv_t *p = card ? card->priv : NULL;
     return p ? p->vrom_path : NULL;
-}
-
-void builtin_se30_video_checkpoint_save_vram(nubus_card_t *card, checkpoint_t *cp) {
-    se30_priv_t *p = card ? card->priv : NULL;
-    if (!p)
-        return;
-    system_write_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
-}
-
-void builtin_se30_video_checkpoint_restore_vram(nubus_card_t *card, checkpoint_t *cp) {
-    se30_priv_t *p = card ? card->priv : NULL;
-    if (!p)
-        return;
-    system_read_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
-    // Re-derive display.bits in case the checkpoint stream restores
-    // VIA1 PA6 to a value that toggles the buffer (via_redrive_outputs
-    // will fire after we return).
-    p->display.bits = p->vram + (p->main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
-    p->display.fb_dirty = true;
 }
