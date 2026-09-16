@@ -107,7 +107,8 @@ static const pci_config_decl_t c54m30_decl = {
 // address), which is why a flat per-block array is enough.
 #define C54M30_SEQ_REGS  0x20u
 #define C54M30_CRTC_REGS 0x40u
-#define C54M30_GR_REGS   0x20u
+#define C54M30_GR_REGS                                                                                                 \
+    0x40u // GR00-GR3F: the VGA nine plus Cirrus's extensions, the BitBLT engine's GR20-GR35 among them
 #define C54M30_ATTR_REGS 0x20u
 
 // Two registers in those blocks are not RAM, and every Alpine driver leans
@@ -142,7 +143,15 @@ typedef struct c54m30 {
     uint8_t seq_index, crtc_index, gr_index, attr_index;
     bool attr_data; // the attribute port's index/data flip-flop
     uint8_t dac_write_index, dac_read_index, dac_phase;
-    uint8_t dac[256][3]; // the palette, in the DAC's own 6-bit values
+    uint8_t dac[256][3]; // the palette, as written: six bits (VGA) or eight (hidden DAC, below)
+    // The Cirrus "hidden DAC register" sits behind the pel mask: four consecutive reads of
+    // $3C6 and the fifth access to $3C6 reaches it instead.  Bit 1 puts the palette DAC in its
+    // 8-bit mode, and NT's Cirrus display driver loads 8-bit RGB once it has -- with a 6-bit-only
+    // model every grey that is a multiple of 64 (the dialog's 192, disabled text's 128) came out
+    // black, and GUI Setup's pages drew as a black void with one grey button.
+    uint8_t pelmask_reads; // consecutive $3C6 reads so far; any other access resets it
+    uint8_t hidden_dac;
+    bool dac_8bit; // palette data is 8-bit RGB (hidden DAC bit 1, or seen from the values)
     display_t display;
     rgba8_t clut[256]; // the palette materialised for the renderer
     memory_interface_t fb_if;
@@ -288,9 +297,36 @@ static uint32_t c54m30_port(uint32_t port) {
     return port;
 }
 
+// One palette entry, from the DAC's stored value to the renderer's: six-bit values are
+// expanded by replicating the top two bits (so $3F is $FF exactly), eight-bit ones are as is.
+static void c54m30_materialise(c54m30_t *c, unsigned i) {
+    for (int ch = 0; ch < 3; ch++) {
+        uint8_t v = c->dac[i][ch];
+        uint8_t v8 = c->dac_8bit ? v : (uint8_t)(((v & 0x3Fu) << 2) | ((v & 0x3Fu) >> 4));
+        if (ch == 0)
+            c->clut[i].r = v8;
+        else if (ch == 1)
+            c->clut[i].g = v8;
+        else
+            c->clut[i].b = v8;
+    }
+    c->clut[i].a = 0xFFu;
+}
+
+#define C54M30_DAC_MASK 0xC6u // $3C6: pel mask, and the door to the hidden DAC register
+
 static uint8_t io_read8(void *ctx, uint32_t offset) {
     c54m30_t *c = (c54m30_t *)ctx;
     uint32_t port = c54m30_port(offset & (C54M30_REGS - 1u));
+    if (port == C54M30_DAC_MASK) {
+        if (c->pelmask_reads >= 4) {
+            c->pelmask_reads = 0;
+            return c->hidden_dac;
+        }
+        c->pelmask_reads++;
+        return c->reg[C54M30_DAC_MASK];
+    }
+    c->pelmask_reads = 0;
     switch (port) {
     case C54M30_MISC_READ:
         return c->reg[C54M30_MISC_WRITE];
@@ -328,8 +364,22 @@ static uint8_t io_read8(void *ctx, uint32_t offset) {
 static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
     c54m30_t *c = (c54m30_t *)ctx;
     uint32_t port = c54m30_port(offset & (C54M30_REGS - 1u));
-    c->reg[port] = value;
     LOG(5, "VGA I/O +$%03X = $%02X", port, value);
+    if (port == C54M30_DAC_MASK && c->pelmask_reads >= 4) {
+        c->pelmask_reads = 0;
+        c->hidden_dac = value;
+        bool eight = (value & 0x02u) != 0;
+        LOG(1, "hidden DAC register = $%02X (%d-bit palette)", value, eight ? 8 : 6);
+        if (eight != c->dac_8bit) {
+            c->dac_8bit = eight;
+            for (unsigned i = 0; i < 256; i++)
+                c54m30_materialise(c, i);
+            c->display.clut_dirty = true;
+        }
+        return;
+    }
+    c->pelmask_reads = 0;
+    c->reg[port] = value;
     switch (port) {
     case C54M30_SEQ_INDEX:
         c->seq_index = value;
@@ -356,6 +406,15 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
         return;
     case C54M30_GR_DATA:
         c->gr[c->gr_index & (C54M30_GR_REGS - 1u)] = value;
+        // The BitBLT engine's start bit.  Not executed here (yet): logged, so a driver that
+        // hands its fills and copies to the engine can be seen doing so.
+        if ((c->gr_index & (C54M30_GR_REGS - 1u)) == 0x31u && (value & 0x02u))
+            LOG(1, "BLT start: mode $%02X ext $%02X rop $%02X w %u h %u dst $%06X src $%06X dpitch %u spitch %u",
+                c->gr[0x30], c->gr[0x33], c->gr[0x32], (unsigned)(c->gr[0x20] | (c->gr[0x21] << 8)) + 1u,
+                (unsigned)(c->gr[0x22] | (c->gr[0x23] << 8)) + 1u,
+                (unsigned)(c->gr[0x28] | (c->gr[0x29] << 8) | (c->gr[0x2A] << 16)),
+                (unsigned)(c->gr[0x2C] | (c->gr[0x2D] << 8) | (c->gr[0x2E] << 16)),
+                (unsigned)(c->gr[0x24] | (c->gr[0x25] << 8)), (unsigned)(c->gr[0x26] | (c->gr[0x27] << 8)));
         c54m30_update(c);
         return;
     case C54M30_ATTR:
@@ -379,24 +438,13 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
         // Three writes per entry, R then G then B, and the index
         // auto-advances — which is how a driver loads 256 colours with one
         // index write and 768 data writes.
-        c->dac[c->dac_write_index][c->dac_phase] = value & 0x3Fu;
+        // Stored as written; the hidden DAC register decides whether six or eight bits count.
+        // (A guess from the values -- "above $3F must mean 8-bit" -- was tried and was wrong:
+        // one stray $FF darkened a driver's whole 6-bit palette.)
+        c->dac[c->dac_write_index][c->dac_phase] = value;
         if (++c->dac_phase == 3) {
             c->dac_phase = 0;
-            // DAC values are SIX bits.  Scale to eight by replicating the
-            // top two into the bottom, so $3F maps to $FF exactly — the
-            // conventional expansion, and the one that makes white white.
-            uint8_t i = c->dac_write_index;
-            for (int ch = 0; ch < 3; ch++) {
-                uint8_t v6 = c->dac[i][ch];
-                uint8_t v8 = (uint8_t)((v6 << 2) | (v6 >> 4));
-                if (ch == 0)
-                    c->clut[i].r = v8;
-                else if (ch == 1)
-                    c->clut[i].g = v8;
-                else
-                    c->clut[i].b = v8;
-            }
-            c->clut[i].a = 0xFFu;
+            c54m30_materialise(c, c->dac_write_index);
             c->display.clut_dirty = true;
             c->dac_write_index++;
         }
@@ -628,19 +676,8 @@ static void c54m30_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, c->vram, C54M30_VRAM);
     // The palette view and the scanout descriptor are DERIVED: rebuild them
     // rather than checkpointing pointers into a buffer that has moved.
-    for (int i = 0; i < 256; i++) {
-        for (int ch = 0; ch < 3; ch++) {
-            uint8_t v6 = c->dac[i][ch];
-            uint8_t v8 = (uint8_t)((v6 << 2) | (v6 >> 4));
-            if (ch == 0)
-                c->clut[i].r = v8;
-            else if (ch == 1)
-                c->clut[i].g = v8;
-            else
-                c->clut[i].b = v8;
-        }
-        c->clut[i].a = 0xFFu;
-    }
+    for (unsigned i = 0; i < 256; i++)
+        c54m30_materialise(c, i);
     c->display.bits = NULL; // force c54m30_update to re-derive
     c->display.width = 0;
     c54m30_update(c);
