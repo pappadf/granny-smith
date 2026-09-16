@@ -134,7 +134,7 @@ typedef struct {
 
     // --- Pointers and construction facts last; NOT part of the range above ---
     // `display` leads them because it embeds `bits`/`clut` pointers of its own;
-    // its scalar head is checkpointed separately as offsetof(display_t, bits).
+    // its scalar head is checkpointed separately as a display_head_t.
     display_t display;
     nubus_card_t *card; // back-pointer for IRQ helpers
     uint8_t *vram; // 2 MB
@@ -1064,7 +1064,13 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
         return;
     system_write_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
     system_write_checkpoint_data(cp, p, offsetof(jmfb_priv_t, display));
-    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        // Fixed widths, not a raw struct prefix: the prefix carried a bare
+        // pixel_format_t, whose size is implementation-defined (04-video
+        // F-41; see display.h).
+        display_head_t head = display_head_of(&p->display);
+        system_write_checkpoint_data(cp, &head, sizeof head);
+    }
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -1073,7 +1079,11 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
         return;
     system_read_checkpoint_data(cp, p->vram, JMFB_VRAM_SIZE);
     system_read_checkpoint_data(cp, p, offsetof(jmfb_priv_t, display));
-    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        display_head_t head;
+        system_read_checkpoint_data(cp, &head, sizeof head);
+        display_head_apply(&p->display, &head);
+    }
 
     // stride, width and the scan base are all derived from row_words,
     // video_base and the restored format -- and the restore must land on a

@@ -49,7 +49,7 @@ typedef struct {
 
     // --- Pointers last; NOT in the range above ---
     // `display` leads them because it embeds `bits`/`clut` pointers of its own;
-    // its scalar head is checkpointed separately as offsetof(display_t, bits).
+    // its scalar head is checkpointed separately as a display_head_t.
     display_t display;
     uint8_t *vram;
     uint8_t *vrom;
@@ -293,7 +293,13 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
     checkpoint_write_file(cp, p->vrom_path ? p->vrom_path : "");
     system_write_checkpoint_data(cp, p, offsetof(se30_priv_t, display));
-    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        // Fixed widths, not a raw struct prefix: the prefix carried a bare
+        // pixel_format_t, whose size is implementation-defined (04-video
+        // F-41; see display.h).
+        display_head_t head = display_head_of(&p->display);
+        system_write_checkpoint_data(cp, &head, sizeof head);
+    }
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -303,7 +309,11 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
     checkpoint_read_file(cp, p->vrom, SE30_VROM_SIZE, NULL);
     system_read_checkpoint_data(cp, p, offsetof(se30_priv_t, display));
-    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        display_head_t head;
+        system_read_checkpoint_data(cp, &head, sizeof head);
+        display_head_apply(&p->display, &head);
+    }
 
     p->display.shape_dirty = true;
     p->display.clut_dirty = true;

@@ -47,7 +47,7 @@ typedef struct {
 
     // --- Pointers and construction facts last; NOT in the range above ---
     // `display` leads them because it embeds `bits`/`clut` pointers of its own;
-    // its scalar head is checkpointed separately as offsetof(display_t, bits).
+    // its scalar head is checkpointed separately as a display_head_t.
     display_t display;
     rbv_t *rbv; // RBV chip — set post-init by the machine (slot-0 IRQ)
     uint8_t *fb; // framebuffer buffer (registered by the machine at $FBB00000)
@@ -212,7 +212,13 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     if (!p->fb_external)
         system_write_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
     system_write_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
-    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        // Fixed widths, not a raw struct prefix: the prefix carried a bare
+        // pixel_format_t, whose size is implementation-defined (04-video
+        // F-41; see display.h).
+        display_head_t head = display_head_of(&p->display);
+        system_write_checkpoint_data(cp, &head, sizeof head);
+    }
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -222,7 +228,11 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p->fb_external)
         system_read_checkpoint_data(cp, p->fb, BUILTIN_RBV_VRAM_SIZE);
     system_read_checkpoint_data(cp, p, offsetof(rbv_video_priv_t, display));
-    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        display_head_t head;
+        system_read_checkpoint_data(cp, &head, sizeof head);
+        display_head_apply(&p->display, &head);
+    }
 
     // The CLUT window depends on the restored depth, so recompute it.
     rbv_video_apply_clut_window(p);

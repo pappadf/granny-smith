@@ -243,6 +243,73 @@ static inline const char *display_format_name(pixel_format_t format) {
     return "?";
 }
 
+// ============================================================================
+// The checkpointed head of a descriptor
+// ============================================================================
+//
+// Five producers -- builtin_rbv_video.c, builtin_se30_video.c, jmfb.c,
+// display_card_24ac.c, display_card_824gc.c -- save the descriptor's scalar
+// head with `system_write_checkpoint_data(cp, &display, offsetof(display_t,
+// bits))`.  That puts a bare `pixel_format_t` into a positional, untagged
+// stream, and `sizeof(enum)` is implementation-defined: a `-fshort-enums`
+// build shifts every field after it, in five files at once (04-video F-41,
+// filed against the RBV alone -- it is five producers, not one).
+//
+// This is LATENT rather than live, and the reason is worth writing down so
+// nobody "fixes" the gate instead: checkpoints carry the build id
+// (`__DATE__ " " __TIME__`, force-recompiled every build), and a stream from a
+// differently-compiled binary is refused before any of these bytes are read.
+// The fix is still worth having -- it is the same shape 03-scsi F-21 applied
+// to the 53C96, and it stops the trap arming itself the day checkpoints
+// become portable between the wasm and native builds.
+//
+// Fixed widths throughout, so the layout is the same on every target.
+typedef struct display_head {
+    uint32_t width, height, stride;
+    uint32_t par_w, par_h;
+    uint32_t format; // pixel_format_t, widened to a fixed width
+} display_head_t;
+
+static inline display_head_t display_head_of(const display_t *d) {
+    display_head_t h = {0};
+    if (d) {
+        h.width = d->width;
+        h.height = d->height;
+        h.stride = d->stride;
+        h.par_w = d->par_w;
+        h.par_h = d->par_h;
+        h.format = (uint32_t)d->format;
+    }
+    return h;
+}
+
+static inline void display_head_apply(display_t *d, const display_head_t *h) {
+    if (!d || !h)
+        return;
+    d->width = h->width;
+    d->height = h->height;
+    d->stride = h->stride;
+    d->par_w = h->par_w;
+    d->par_h = h->par_h;
+    // A stream that names a format this build does not have is corrupt, not
+    // merely unknown -- fall back to the one format every producer can scan
+    // rather than leaving the enum holding a value no switch handles.
+    switch ((pixel_format_t)h->format) {
+    case PIXEL_1BPP_MSB:
+    case PIXEL_2BPP_MSB:
+    case PIXEL_4BPP_MSB:
+    case PIXEL_8BPP:
+    case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
+    case PIXEL_32BPP_XRGB:
+        d->format = (pixel_format_t)h->format;
+        break;
+    default:
+        d->format = PIXEL_1BPP_MSB;
+        break;
+    }
+}
+
 // One pixel of a row, as RGB.
 //
 // `clut_len` of zero used to reach `idx % clut_len` and divide by zero

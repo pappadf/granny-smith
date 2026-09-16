@@ -802,6 +802,10 @@ static int pci_collect(pci_root_t *root, pci_device_t **out, int max) {
 void pci_checkpoint_save(pci_root_t *root, checkpoint_t *cp) {
     if (!root || !cp)
         return;
+    // The aggregate, before the devices -- the same omission the NuBus side
+    // had (04-video F-42).  PCI slot lines are levels held until acknowledged,
+    // so a restore that loses the mask loses which slots are still asserting.
+    system_write_checkpoint_data(cp, &root->slot_irq_mask, sizeof(root->slot_irq_mask));
     pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
     int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
     for (int i = 0; i < n; i++) {
@@ -814,6 +818,7 @@ void pci_checkpoint_save(pci_root_t *root, checkpoint_t *cp) {
 void pci_checkpoint_restore(pci_root_t *root, checkpoint_t *cp) {
     if (!root || !cp)
         return;
+    system_read_checkpoint_data(cp, &root->slot_irq_mask, sizeof(root->slot_irq_mask));
     pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
     int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
     for (int i = 0; i < n; i++) {

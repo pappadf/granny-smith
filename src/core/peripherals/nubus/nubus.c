@@ -515,6 +515,15 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot) {
 void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
     if (!bus || !cp)
         return;
+    // The aggregate, before the cards.  It is bus state, not card state: no
+    // card knows whether ANOTHER slot is still asserting, and that is exactly
+    // what decides the umbrella edge.  Nothing wrote it, so a machine
+    // checkpointed with a slot interrupt asserted came back with the mask at
+    // zero and BOTH edges were then computed from a lie (04-video F-42) -- the
+    // next assert saw `any_was_asserted` false and raised an umbrella edge that
+    // had already been raised, and the next deassert saw `mask == 0` and
+    // dropped the umbrella while another slot was still holding it.
+    system_write_checkpoint_data(cp, &bus->slot_irq_mask, sizeof(bus->slot_irq_mask));
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (card && card->ops && card->ops->checkpoint_save)
@@ -525,6 +534,7 @@ void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
 void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp) {
     if (!bus || !cp)
         return;
+    system_read_checkpoint_data(cp, &bus->slot_irq_mask, sizeof(bus->slot_irq_mask));
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (card && card->ops && card->ops->checkpoint_restore)

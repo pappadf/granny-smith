@@ -1358,7 +1358,13 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_write_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
-    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        // Fixed widths, not a raw struct prefix: the prefix carried a bare
+        // pixel_format_t, whose size is implementation-defined (04-video
+        // F-41; see display.h).
+        display_head_t head = display_head_of(&p->display);
+        system_write_checkpoint_data(cp, &head, sizeof head);
+    }
 
     system_write_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
     system_write_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
@@ -1386,7 +1392,11 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     if (!p)
         return;
     system_read_checkpoint_data(cp, p, offsetof(struct display_card_824gc_priv, card));
-    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        display_head_t head;
+        system_read_checkpoint_data(cp, &head, sizeof head);
+        display_head_apply(&p->display, &head);
+    }
 
     system_read_checkpoint_data(cp, p->vram, GC824_VRAM_SIZE);
     system_read_checkpoint_data(cp, p->sram, GC824_SRAM_SIZE);
