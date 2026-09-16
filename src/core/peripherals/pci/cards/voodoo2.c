@@ -2720,9 +2720,9 @@ static void v2_display_convert(voodoo2_t *v) {
             uint32_t at = (src + 2u * x) & (V2_FB_SIZE - 1u);
             uint32_t px = (uint32_t)v->fb_ram[at] | ((uint32_t)v->fb_ram[(at + 1u) & (V2_FB_SIZE - 1u)] << 8);
             uint32_t r5 = (px >> 11) & 0x1Fu, g6 = (px >> 5) & 0x3Fu, b5 = px & 0x1Fu;
-            uint8_t r8 = (uint8_t)((r5 << 3) | (r5 >> 2));
-            uint8_t g8 = (uint8_t)((g6 << 2) | (g6 >> 4));
-            uint8_t b8 = (uint8_t)((b5 << 3) | (b5 >> 2));
+            uint8_t r8 = display_expand5(r5);
+            uint8_t g8 = display_expand6(g6);
+            uint8_t b8 = display_expand5(b5);
             if (gamma) {
                 r8 = v->gamma_lut[0][r8];
                 g8 = v->gamma_lut[1][g8];

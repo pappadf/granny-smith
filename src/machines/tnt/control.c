@@ -347,6 +347,24 @@ static void control_vbl_sync(config_t *cfg) {
     tnt_gc_set_source(cfg, TNT_INT_VBL, c->vbl_pending && (c->reg[CR_INTR_ENA] & CONTROL_INT_VBL));
 }
 
+// Control's own vertical retrace, and NOT the Macintosh 60.15 Hz tick.
+//
+// Worth saying explicitly because the two look like the same number badly
+// typed.  tnt_trigger_vbl() feeds VIA1 CA1 once per scheduler frame-unit --
+// that is MAC_VBL_PERIOD, 60.15 Hz, and it is what paces Ticks, the Time
+// Manager and cursor blink (tnt.md "the 60.15 Hz reference into VIA1 CA1").
+// This event is a different wire: Grand Central interrupt 26, the retrace the
+// ndrv spin-polls during a mode-set.  Changing this 60 to 60.15 would conflate
+// the monitor with the machine clock.
+//
+// The faithful model is neither constant: on the real chip the rate is
+// pixel_clock / (htotal x vtotal), and this file already derives GEOMETRY from
+// the blank-pair registers.  Deriving the period from them too is a fidelity
+// improvement filed separately -- it moves guest-visible timing on every TNT
+// machine, which does not belong inside a de-duplication pass
+// (proposal-video-shared-model.md S3.3, and 04-video F-12, whose "four nominal
+// VBL periods" counts this one as drift from MAC_VBL_PERIOD when it is not
+// measuring the same thing).
 static void control_vbl_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;

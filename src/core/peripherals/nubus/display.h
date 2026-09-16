@@ -181,10 +181,17 @@ typedef struct display {
 // format while nubus_class.c's copy answered 16, and the two disagreed about
 // what an unknown format means (8 vs 0).  04-video F-01, F-02, F-04.
 
-// 5-bit and 6-bit channels expanded to 8, by bit replication -- (v << 3) |
-// (v >> 2) maps 31 to 255 and 0 to 0, which a plain (v * 255 / 31) also does
-// but with a divide.  The alternative some code used, a bare (v << 3), tops
-// out at 248 and darkens every highlight by one LSB.
+// 5-bit and 6-bit channels expanded to 8, by bit replication.  (v << 3) |
+// (v >> 2) maps 31 to 255 and 0 to 0, and is exactly round(v * 255 / 31) at
+// every input -- the WebGL shaders divide instead and land on the same values.
+//
+// 04-video F-04 calls these "three different 5-bit->8-bit expansions,
+// disagreeing by 1 LSB".  Audited 2026-09-16: they do NOT disagree.  Every
+// copy in the tree is this same replication, and the renderer's /31.0 is the
+// identity above, not a rival.  The duplication is real -- it was six copies,
+// counting the Voodoo2's two -- but the divergence is not, and an earlier
+// version of this comment asserted a bare (v << 3) variant that does not
+// exist anywhere.
 static inline uint8_t display_expand5(uint8_t v) {
     return (uint8_t)((v << 3) | (v >> 2));
 }
