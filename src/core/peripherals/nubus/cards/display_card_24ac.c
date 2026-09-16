@@ -54,7 +54,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("24ac");
+LOG_USE_CATEGORY_NAME("video");
 
 // === Per-card private state =================================================
 
@@ -227,7 +227,7 @@ static void apply_mode_depth(display_card_24ac_priv_t *p, uint8_t mode_byte) {
         p->display.format = f;
         recompute_stride(p);
         p->display.shape_dirty = true;
-        LOG(2, "MODE depth → %u bpp (stride %u)", display_bpp(f), p->display.stride);
+        LOG(2, "24AC: MODE depth → %u bpp (stride %u)", display_bpp(f), p->display.stride);
     }
 }
 
@@ -392,8 +392,8 @@ static void engine_store_long(display_card_24ac_priv_t *p, uint32_t dest, uint32
     if (len > DISPLAY_CARD_24AC_VRAM_SIZE - dest)
         len = DISPLAY_CARD_24AC_VRAM_SIZE - dest;
     if (p->engine_mode != DISPLAY_CARD_24AC_MODE_COPY && p->engine_mode != DISPLAY_CARD_24AC_MODE_STRETCH)
-        LOG(3, "engine: ROP mode $%02x block-copy %u bytes src $%06x → dest $%06x (copy fallback)", p->engine_mode, len,
-            src, dest);
+        LOG(3, "24AC: engine: ROP mode $%02x block-copy %u bytes src $%06x → dest $%06x (copy fallback)",
+            p->engine_mode, len, src, dest);
     memmove(p->vram + dest, p->vram + src, len); // source/dest may overlap
     p->copy_ops++;
     p->copy_bytes += len;
@@ -469,7 +469,7 @@ static uint32_t reg_read(display_card_24ac_priv_t *p, uint32_t off, unsigned wid
             return p->vram[dest];
         return 0;
     }
-    LOG(3, "unmodeled read off $%06x width %u", off, width);
+    LOG(3, "24AC: unmodeled read off $%06x width %u", off, width);
     return 0;
 }
 
@@ -485,10 +485,10 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
         clut_write_data(p, (uint8_t)val);
         return;
     case DISPLAY_CARD_24AC_RAMDAC_CMD:
-        LOG(3, "RAMDAC command = $%02x (accept-and-log)", (uint8_t)val);
+        LOG(3, "24AC: RAMDAC command = $%02x (accept-and-log)", (uint8_t)val);
         return;
     case DISPLAY_CARD_24AC_CLUT_CTL:
-        LOG(3, "CLUT control strobe = $%02x (accept-and-log)", (uint8_t)val);
+        LOG(3, "24AC: CLUT control strobe = $%02x (accept-and-log)", (uint8_t)val);
         return;
     // --- Display control ----------------------------------------------------
     case DISPLAY_CARD_24AC_VIDCTL_OFFSET:
@@ -518,19 +518,19 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
         // sense read-back above can answer the probe; the clock program itself
         // has no modelled effect.
         p->sense_last_write = (uint8_t)val;
-        LOG(3, "SENSE_CLK write $%02x (sense drive / PLL)", (uint8_t)val);
+        LOG(3, "24AC: SENSE_CLK write $%02x (sense drive / PLL)", (uint8_t)val);
         return;
     // --- Engine -------------------------------------------------------------
     case DISPLAY_CARD_24AC_CONTROL_OFFSET:
         p->engine_mode = (uint8_t)val; // latch op mode for active-bank writes
-        LOG(3, "engine: CONTROL = $%02x", p->engine_mode);
+        LOG(3, "24AC: engine: CONTROL = $%02x", p->engine_mode);
         return;
     default:
         break;
     }
     // CRTC timing register file (write-only) — accept-and-log.
     if (off >= DISPLAY_CARD_24AC_CRTC_LO && off <= DISPLAY_CARD_24AC_CRTC_HI) {
-        LOG(3, "CRTC[$%06x] = $%02x (accept-and-log)", off, (uint8_t)val);
+        LOG(3, "24AC: CRTC[$%06x] = $%02x (accept-and-log)", off, (uint8_t)val);
         return;
     }
     // Top-of-bank carve-out [VRAM_VISIBLE .. active alias): the operand
@@ -574,7 +574,7 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
                 p->engine_operand = LOAD_BE32(p->vram + dest);
                 memcpy(p->engine_pat, p->vram + dest, 4);
                 p->engine_pat_len = 4;
-                LOG(3, "engine: operand commit from $%06x ($%08x)", dest, p->engine_operand);
+                LOG(3, "24AC: engine: operand commit from $%06x ($%08x)", dest, p->engine_operand);
                 return;
             }
             if (val == DISPLAY_CARD_24AC_PATTERN_ROW_BYTES && dest + 8 <= DISPLAY_CARD_24AC_VRAM_SIZE) {
@@ -589,7 +589,7 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
                 p->engine_pat_len = 8;
                 return;
             }
-            LOG(3, "engine: unmodeled aperture command $%08x at $%06x", val, dest);
+            LOG(3, "24AC: engine: unmodeled aperture command $%08x at $%06x", val, dest);
             return;
         }
         if (!p->engine_enabled || width != 4) {
@@ -610,7 +610,7 @@ static void reg_write(display_card_24ac_priv_t *p, uint32_t off, uint32_t val, u
             engine_store_long(p, dest, val); // longword value == source pixels
         return;
     }
-    LOG(3, "unmodeled write off $%06x = $%08x width %u", off, val, width);
+    LOG(3, "24AC: unmodeled write off $%06x = $%08x width %u", off, val, width);
 }
 
 // === Memory interface (single dispatcher over every region) =================
@@ -903,7 +903,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         // requires_vrom gates the dialog on a real file; reaching here means
         // CI ran without one.  Log loudly and continue with a zero declrom —
         // PrimaryInit finds no Format Header and the OS skips the slot.
-        LOG(0, "display-card-24ac-d8daab87.vrom not found; declaration ROM is zero-filled");
+        LOG(0, "24AC: display-card-24ac-d8daab87.vrom not found; declaration ROM is zero-filled");
     }
 
     // Publish the declaration ROM on the generic card handle so the
@@ -1048,7 +1048,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
             rtc_pram_write(rtc, off + 5, 0x00);
             rtc_pram_write(rtc, off + 6, seeded_monitor->srsrc_sister);
             rtc_pram_write(rtc, off + 7, seeded_monitor->srsrc_sister);
-            LOG(1, "display_card_24ac: seeded slot-%d PRAM for video mode '%s' (savedMode=$%02x sister=$%02x)",
+            LOG(1, "24AC: display_card_24ac: seeded slot-%d PRAM for video mode '%s' (savedMode=$%02x sister=$%02x)",
                 card->slot, seeded_monitor->id, saved_mode, seeded_monitor->srsrc_sister);
         }
     }
@@ -1081,7 +1081,7 @@ static void card_reset(nubus_card_t *card, config_t *cfg) {
         return;
     nubus_deassert_irq(card); // drop any pending slot VBL IRQ before re-arm
     set_poweron_defaults(p);
-    LOG(2, "display_card_24ac: /RESET → power-on state (8 bpp 640×480)");
+    LOG(2, "24AC: display_card_24ac: /RESET → power-on state (8 bpp 640×480)");
 }
 
 static void card_on_vbl(nubus_card_t *card, config_t *cfg) {

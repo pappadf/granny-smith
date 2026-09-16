@@ -13,7 +13,7 @@
 #include "log.h"
 #include "nubus.h"
 
-LOG_USE_CATEGORY_NAME("nubus");
+LOG_USE_CATEGORY_NAME("video");
 
 pixel_format_t jmfb_depth_to_format(uint16_t pbcr) {
     // 24 bpp is depth=3 plus PBCR bit 1, and the System 7 driver only toggles

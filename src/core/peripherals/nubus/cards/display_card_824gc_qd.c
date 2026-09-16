@@ -26,7 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("824gc");
+LOG_USE_CATEGORY_NAME("video");
 
 // fwds (text section — used by gc_interp, defined after the rasterizers)
 static struct gc_cache_ent *gc_cache_find(struct gc_cache_ent *tab, int n, uint32_t key);
@@ -323,7 +323,8 @@ static void gc_px_val(display_card_824gc_priv_t *p, int x, int y, uint32_t v) {
     if (!(p->gc_clipmask[y * 80 + (x >> 3)] & (0x80u >> (x & 7))))
         return;
     if (p->gc_mode & 0x20) {
-        LOG(1, "arithmetic/hilite mode $%02x with a colour pattern not modelled — pixel skipped", p->gc_mode);
+        LOG(1, "8*24 GC QD: arithmetic/hilite mode $%02x with a colour pattern not modelled — pixel skipped",
+            p->gc_mode);
         return;
     }
     if (p->display.format == PIXEL_32BPP_XRGB) {
@@ -1266,7 +1267,7 @@ void gc824_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count) {
         uint16_t op = (uint16_t)(dram_be32(p, off) >> 16);
         uint32_t adv = gc_op_adv(p, off, op);
         if (adv == 0) {
-            LOG(1, "DrawMultiObject: unknown opCode $%02x @dram $%05x", op, off);
+            LOG(1, "8*24 GC QD: DrawMultiObject: unknown opCode $%02x @dram $%05x", op, off);
             break;
         }
         switch (op) {
@@ -1295,9 +1296,9 @@ void gc824_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count) {
             p->gc_cur_strike = stk ? stk->data : NULL;
             p->gc_cur_strike_size = stk ? stk->size : 0;
             if (!wt || !stk)
-                LOG(0, "opSwapFont: cache miss (wt key $%08x) — text will drop", wtkey);
+                LOG(0, "8*24 GC QD: opSwapFont: cache miss (wt key $%08x) — text will drop", wtkey);
             if (dram_be32(p, off + 0x14) != dram_be32(p, off + 0x18))
-                LOG(0, "opSwapFont: scaled text (numer != denom) not modelled — drawn unscaled");
+                LOG(0, "8*24 GC QD: opSwapFont: scaled text (numer != denom) not modelled — drawn unscaled");
             break;
         }
         case 0x06: // opText
@@ -1498,7 +1499,7 @@ void gc824_interp(display_card_824gc_priv_t *p, uint32_t base, uint32_t count) {
                 // The real card aborts the WHOLE DrawMultiObject stream here
                 // ("can't find PixPat in cache" → epilogue), so the batch's
                 // remaining records are dropped, not drawn with wrong fills.
-                LOG(0, "op $72: PixPat $%08x not in the type-5 cache — batch aborted", key);
+                LOG(0, "8*24 GC QD: op $72: PixPat $%08x not in the type-5 cache — batch aborted", key);
                 p->gc_pat_kind[slot] = 0;
                 return;
             }
@@ -1592,7 +1593,7 @@ static uint32_t gc_offscreen_base(display_card_824gc_priv_t *p, uint32_t pm, uin
         return master ? master : 0; // purged/empty handle → decline
     }
     default: // 4 = transient $4842 swizzle (or unknown) → ROM path
-        LOG(2, "blit: pmVersion %u source declined", pmver);
+        LOG(2, "8*24 GC QD: blit: pmVersion %u source declined", pmver);
         return 0;
     }
 }
@@ -1666,12 +1667,12 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
     // Accept only: boolean modes, destination is the screen FB, 1:1 (no stretch).
     uint32_t screen = p->super_base | (GC824_DRAM_OFFSET + GC824_FB_OFFSET);
     if (mode > 7 || dstBase != screen) {
-        LOG(2, "blit declined: mode $%x dst $%08x (screen $%08x)", mode, dstBase, screen);
+        LOG(2, "8*24 GC QD: blit declined: mode $%x dst $%08x (screen $%08x)", mode, dstBase, screen);
         return 0; // arithmetic/hilite (incl. pending-hilite 50) → ROM
     }
     if ((dRb - dRt) != (int16_t)dram_be16(p, rb + 0xB4) - sRt ||
         (dRr - dRl) != (int16_t)dram_be16(p, rb + 0xB6) - sRl) {
-        LOG(2, "blit declined: stretched %dx%d -> %dx%d", (int16_t)dram_be16(p, rb + 0xB4) - sRt,
+        LOG(2, "8*24 GC QD: blit declined: stretched %dx%d -> %dx%d", (int16_t)dram_be16(p, rb + 0xB4) - sRt,
             (int16_t)dram_be16(p, rb + 0xB6) - sRl, dRb - dRt, dRr - dRl);
         return 0; // stretched → decline
     }
@@ -1687,7 +1688,7 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
         (depth == 16 && srcPS != 16 && srcPS != 1) || (depth == 32 && srcPS != 32 && srcPS != 1)) {
         // dst must match the screen depth; sources may be same-depth or
         // 1-bit-expanded — cross-depth blits route to the ROM path.
-        LOG(2, "blit declined: depth %d dstPS %d srcPS %d", depth, dstPS, srcPS);
+        LOG(2, "8*24 GC QD: blit declined: depth %d dstPS %d srcPS %d", depth, dstPS, srcPS);
         return 0;
     }
     // Offscreen (GWorld) sources: pmVersion tags the baseAddr form the GCQD
@@ -1709,7 +1710,7 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
             return 0;
     }
     if (maskBase && (dram_be16(p, rb + 0x6E) & 0x8000) && dram_be16(p, rb + 0x6A + 0x20) != 1) {
-        LOG(2, "blit declined: deep mask (%u bpp)", dram_be16(p, rb + 0x6A + 0x20));
+        LOG(2, "8*24 GC QD: blit declined: deep mask (%u bpp)", dram_be16(p, rb + 0x6A + 0x20));
         return 0; // only 1-bit masks (deep CopyDeepMask blends -> ROM)
     }
     if (depth == 8 && srcPS == 8 && !gc_ctab_match(dram_be32(p, rb + 0x60), dram_be32(p, rb + 0x2C))) {
@@ -1717,8 +1718,8 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
         // path remaps every pixel through the inverse table, so the raw index
         // copy is wrong (e.g. Marathon's HUD, blitted from a GWorld carrying
         // the picture's own palette).
-        LOG(2, "blit declined: src ctab $%08x != dst ctab $%08x (needs ITab remap)", dram_be32(p, rb + 0x60),
-            dram_be32(p, rb + 0x2C));
+        LOG(2, "8*24 GC QD: blit declined: src ctab $%08x != dst ctab $%08x (needs ITab remap)",
+            dram_be32(p, rb + 0x60), dram_be32(p, rb + 0x2C));
         return 0;
     }
     if (depth == 8 || depth == 16 || depth == 32) {
@@ -1728,7 +1729,7 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
         if (dram_be16(p, rb + 0xE8) != 0 || dram_be16(p, rb + 0xEA) != 0 || dram_be16(p, rb + 0xEC) != 0 ||
             dram_be16(p, rb + 0xEE) != 0xFFFF || dram_be16(p, rb + 0xF0) != 0xFFFF ||
             dram_be16(p, rb + 0xF2) != 0xFFFF) {
-            LOG(2, "blit declined: colorized fg %04x/%04x/%04x bk %04x/%04x/%04x", dram_be16(p, rb + 0xE8),
+            LOG(2, "8*24 GC QD: blit declined: colorized fg %04x/%04x/%04x bk %04x/%04x/%04x", dram_be16(p, rb + 0xE8),
                 dram_be16(p, rb + 0xEA), dram_be16(p, rb + 0xEC), dram_be16(p, rb + 0xEE), dram_be16(p, rb + 0xF0),
                 dram_be16(p, rb + 0xF2));
             return 0;
@@ -1745,7 +1746,7 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
             continue;
         uint8_t buf[GC824_RGN_MAX];
         if (!gc_fetch_guest_rgn(rgn, rsz, buf)) {
-            LOG(2, "blit declined: region %d @$%08x size %u unfetchable", i, rgn, rsz);
+            LOG(2, "8*24 GC QD: blit declined: region %d @$%08x size %u unfetchable", i, rgn, rsz);
             return 0;
         }
         // The regions are PORT-LOCAL like every other coordinate in the
@@ -2046,7 +2047,7 @@ int gc824_cache_pixpat(display_card_824gc_priv_t *p) {
     uint32_t ctab = dram_be32(p, a + 16) ? gc_host_addr(dram_be32(p, a + 16)) : 0;
     int ctsize = (int)dram_be32(p, a + 20);
     if (!key || ptype != 1 || !pmap || !pdata) {
-        LOG(1, "func $0C: bad args (key $%08x type %u) — declined", key, ptype);
+        LOG(1, "8*24 GC QD: func $0C: bad args (key $%08x type %u) — declined", key, ptype);
         return 0;
     }
     uint32_t rowbytes = memory_debug_read_uint16(pmap + 4) & 0x3FFFu;
@@ -2060,7 +2061,7 @@ int gc824_cache_pixpat(display_card_824gc_priv_t *p) {
     // missing CLUT would tile wrongly — decline them all to the ROM path.)
     if (w <= 0 || h <= 0 || w > 64 || h > 64 || (w & (w - 1)) || (h & (h - 1)) ||
         !((depth == 1 || depth == 2 || depth == 4 || depth == 8) ? ctab != 0 : depth == 32)) {
-        LOG(1, "func $0C: PixPat %dx%d depth %d outside envelope — declined", w, h, depth);
+        LOG(1, "8*24 GC QD: func $0C: PixPat %dx%d depth %d outside envelope — declined", w, h, depth);
         return 0;
     }
     uint32_t *pix = malloc((size_t)w * h * sizeof(uint32_t));
@@ -2114,7 +2115,7 @@ int gc824_cache_pixpat(display_card_824gc_priv_t *p) {
     free(e->pix);
     *e = (struct gc_pixpat){
         .key = key, .w = (uint16_t)w, .h = (uint16_t)h, .fmt = (uint8_t)p->display.format, .pix = pix};
-    LOG(2, "func $0C: cached PixPat $%08x %dx%d depth %d", key, w, h, depth);
+    LOG(2, "8*24 GC QD: func $0C: cached PixPat $%08x %dx%d depth %d", key, w, h, depth);
     return 1;
 }
 void gc824_pixpats_flush(display_card_824gc_priv_t *p, uint32_t key) {
@@ -2164,7 +2165,7 @@ int gc824_font_download(display_card_824gc_priv_t *p) {
                 return 0;
         }
     }
-    LOG(2, "func $30 FontDownload mask $%02x cached", mask);
+    LOG(2, "8*24 GC QD: func $30 FontDownload mask $%02x cached", mask);
     return 1;
 }
 
@@ -2199,11 +2200,11 @@ static void gc_draw_text(display_card_824gc_priv_t *p, uint32_t off) {
                     26 + rowbytes * (size_t)height + (size_t)(nglyph + 2) * 2 <= p->gc_cur_strike_size &&
                     16 + (size_t)owtloc * 2 + (size_t)(nglyph + 1) * 2 <= p->gc_cur_strike_size;
         if (!sane) {
-            LOG(0, "opText: cached strike fails sanity (first %d last %d h %d rb %u size %u) — run dropped", first,
-                last, height, rowbytes, p->gc_cur_strike_size);
+            LOG(0, "8*24 GC QD: opText: cached strike fails sanity (first %d last %d h %d rb %u size %u) — run dropped",
+                first, last, height, rowbytes, p->gc_cur_strike_size);
         } else {
             if (p->gc_font_info[6] || p->gc_font_info[7])
-                LOG(1, "opText: on-card style synthesis (bold/italic) not modelled — drawn plain");
+                LOG(1, "8*24 GC QD: opText: on-card style synthesis (bold/italic) not modelled — drawn plain");
             int top = p->gc_pen_y - ascent;
             gc_cursor_shield(p, top, (acc >> 16) + kern - widMax, top + height, (accEnd >> 16) + kern + 2 * widMax);
             if ((p->gc_mode & 0x27) == 0) {
@@ -2243,7 +2244,7 @@ static void gc_draw_text(display_card_824gc_priv_t *p, uint32_t off) {
             p->draw_count++;
         }
     } else if (len > 0 && rawAdv != 0) {
-        LOG(0, "opText with no cached font — run dropped");
+        LOG(0, "8*24 GC QD: opText with no cached font — run dropped");
     }
     // Mirror the host's eager pen advance in the card pen (0xE830-0xE848).
     p->gc_pen_x = (int16_t)(accEnd >> 16);

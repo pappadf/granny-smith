@@ -23,7 +23,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("rbvvid");
+LOG_USE_CATEGORY_NAME("video");
 
 // Built-in 13" RGB panel: 640×480, depths 1/2/4/8 bpp.
 #define RBV_VIDEO_WIDTH  640
@@ -310,7 +310,7 @@ void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code) {
     rbv_video_apply_clut_window(p);
     p->display.shape_dirty = true;
     p->display.fb_dirty = true;
-    LOG(2, "depth -> %u bpp (stride %u)", display_bpp(f), p->display.stride);
+    LOG(2, "RBV video: depth -> %u bpp (stride %u)", display_bpp(f), p->display.stride);
 }
 
 void builtin_rbv_video_vdac_write(nubus_card_t *card, uint32_t off, uint8_t val) {
@@ -349,7 +349,7 @@ void builtin_rbv_video_vdac_write(nubus_card_t *card, uint32_t off, uint8_t val)
         p->vdac_phase = 0;
         return;
     default:
-        LOG(2, "VDAC write at +%X = $%02X (unmodeled)", off, val);
+        LOG(2, "RBV video: VDAC write at +%X = $%02X (unmodeled)", off, val);
         return;
     }
 }

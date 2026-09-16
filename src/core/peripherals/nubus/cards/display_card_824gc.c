@@ -49,7 +49,7 @@
 
 #include "display_card_824gc_priv.h"
 
-LOG_USE_CATEGORY_NAME("824gc");
+LOG_USE_CATEGORY_NAME("video");
 
 static pixel_format_t format_for_bpp(int bpp); // fwd (video-mode section)
 
@@ -158,7 +158,7 @@ static void gc_boot(display_card_824gc_priv_t *p) {
     p->booted = true;
     p->expected_seq = 0;
     p->state = GC_ST_BOOTED;
-    LOG(1, "boot handshake: CB published at NuBus $%08x (free %uB)", p->cb_nubus, free_size);
+    LOG(1, "8*24 GC: boot handshake: CB published at NuBus $%08x (free %uB)", p->cb_nubus, free_size);
 }
 
 // RPC (Transport A) dispatch — executed synchronously inside the doorbell
@@ -203,7 +203,7 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
         // flushes all 11 caches (protocol §9.2) — drop the font + PixPat caches.
         gc824_font_caches_flush(p);
         gc824_pixpats_flush(p, 0);
-        LOG(2, "func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, ctx);
+        LOG(2, "8*24 GC: func $17 PQDInit: ScrnBase=$%08x -> ctx=$%08x", scrnbase, ctx);
         // Result 1 = registered OK — sub_61B0 checks this (== 1) and $884A posts
         // error 4 ("having difficulty") otherwise.  Protocol §9.2.
         result = 1;
@@ -303,7 +303,7 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
             p->gc_port_ptr = dram_be32(p, GC824_DRAM_CB + 0x170);
         }
         p->gc_accel = (result != 0); // gate the interpreter on port acceptance
-        LOG(3, "func $2D SetPort %s (org %d,%d)", result ? "accepted" : "declined", p->gc_org_x, p->gc_org_y);
+        LOG(3, "8*24 GC: func $2D SetPort %s (org %d,%d)", result ? "accepted" : "declined", p->gc_org_x, p->gc_org_y);
         break;
     }
     case 0x0C: // CachePixPat — expand + cache a patType-1 PixPat (type 5).
@@ -333,11 +333,11 @@ static uint32_t gc_dispatch_func(display_card_824gc_priv_t *p, uint32_t func, ui
             // Unknown function — flag the sequence/error bits (protocol §9).
             dram_set_be32(p, GC824_DRAM_CB + GC824_CB_STATUS, dram_be32(p, GC824_DRAM_CB + GC824_CB_STATUS) | 0x11u);
             statusw = GC824_STATUSW_ERR;
-            LOG(1, "RPC unknown func $%02x", func);
+            LOG(1, "8*24 GC: RPC unknown func $%02x", func);
         } else {
             // A known-but-unimplemented func: succeed benignly (bookkeeping).
             result = 0;
-            LOG(2, "func $%02x accepted (no-op, stage 1)", func);
+            LOG(2, "8*24 GC: func $%02x accepted (no-op, stage 1)", func);
         }
         break;
     }
@@ -357,7 +357,7 @@ static void gc_rpc(display_card_824gc_priv_t *p) {
     uint32_t result = 0, statusw;
     if (func != 1 && seq != p->expected_seq) {
         // Sequence desync (GCQD fault recovery relies on the seq-error bits).
-        LOG(2, "RPC seq desync: got %u expected %u (func $%02x)", seq, p->expected_seq, func);
+        LOG(2, "8*24 GC: RPC seq desync: got %u expected %u (func $%02x)", seq, p->expected_seq, func);
         dram_set_be32(p, GC824_DRAM_CB + GC824_CB_STATUS, dram_be32(p, GC824_DRAM_CB + GC824_CB_STATUS) | 3u);
         statusw = GC824_STATUSW_ERR;
     } else {
@@ -376,7 +376,7 @@ static void gc_rpc(display_card_824gc_priv_t *p) {
     if (mirror)
         memory_debug_write_uint32(mirror, statusw); // bus-master into host RAM
     dram_set_be32(p, GC824_DRAM_CB + GC824_CB_DOORBELL, 0);
-    LOG(3, "RPC func $%02x seq %u -> result $%08x status $%x", func, seq, result, statusw);
+    LOG(3, "8*24 GC: RPC func $%02x seq %u -> result $%08x status $%x", func, seq, result, statusw);
 }
 
 // Transport B (CB+0x1C0 bytes published): drain the opcode stream.  Draining
@@ -440,9 +440,10 @@ static void gc_vidcomm(display_card_824gc_priv_t *p) {
             p->display.width = rowbytes * 8u / (uint32_t)b;
         p->display.shape_dirty = true;
         p->display.fb_dirty = true;
-        LOG(1, "VidComm mode change: fb=$%08x rowBytes=%u bpp=%u scanlines=%u", fbbase, rowbytes, bpp, scanlines);
+        LOG(1, "8*24 GC: VidComm mode change: fb=$%08x rowBytes=%u bpp=%u scanlines=%u", fbbase, rowbytes, bpp,
+            scanlines);
     } else {
-        LOG(0, "VidComm mode change rejected: fb=$%08x rowBytes=%u bpp=%u scanlines=%u", fbbase, rowbytes, bpp,
+        LOG(0, "8*24 GC: VidComm mode change rejected: fb=$%08x rowBytes=%u bpp=%u scanlines=%u", fbbase, rowbytes, bpp,
             scanlines);
     }
     dram_set_be32(p, vc + GC824_VC_ACK, 0); // ack: host polls byte 0 == 0
@@ -466,7 +467,7 @@ static void gc_check_triggers(display_card_824gc_priv_t *p) {
         p->mailbox = dram_be32(p, GC824_DRAM_CB + GC824_CB_MAILBOX);
         if (p->state < GC_ST_ARMED)
             p->state = GC_ST_ARMED;
-        LOG(1, "CB armed: reply-mailbox phys $%08x", p->mailbox);
+        LOG(1, "8*24 GC: CB armed: reply-mailbox phys $%08x", p->mailbox);
     }
     // Doorbell RPC.
     if (dram_be32(p, GC824_DRAM_CB + GC824_CB_DOORBELL) == 0xFFFFFFFFu)
@@ -616,7 +617,7 @@ static uint32_t gc_read(display_card_824gc_priv_t *p, uint32_t phys, unsigned wi
         return buf_read(p->dram, cl - GC824_DRAM_OFFSET, GC824_DRAM_SIZE, width);
     if (cl >= GC824_DRAM_MIRROR_OFFSET && cl < GC824_DRAM_MIRROR_OFFSET + GC824_DRAM_SIZE)
         return buf_read(p->dram, cl - GC824_DRAM_MIRROR_OFFSET, GC824_DRAM_SIZE, width);
-    LOG(3, "read card-local $%07x (unmapped) w%u", cl, width);
+    LOG(3, "8*24 GC: read card-local $%07x (unmapped) w%u", cl, width);
     return 0xFFFFFFFFu >> ((4 - width) * 8); // NuBus unmapped reads float high
 }
 
@@ -660,7 +661,7 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
         if (cl == GC824_REG_ATTACH) {
             if (val == 0xFFFFFFFFu) {
                 p->attached = true;
-                LOG(1, "attach ($04000028 = -1)");
+                LOG(1, "8*24 GC: attach ($04000028 = -1)");
             } else if (val == 0) {
                 p->attached = false;
             }
@@ -674,13 +675,13 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
                 p->risc_cmd_shift = 0;
                 if (cmd == 1) {
                     p->vbl_enabled = true;
-                    LOG(1, "RISC serial command 1 (run) -> slot VBL on");
+                    LOG(1, "8*24 GC: RISC serial command 1 (run) -> slot VBL on");
                 } else if (cmd == 3) {
                     p->vbl_enabled = false;
                     nubus_deassert_irq(p->card);
-                    LOG(1, "RISC serial command 3 (stop) -> slot VBL off");
+                    LOG(1, "8*24 GC: RISC serial command 3 (stop) -> slot VBL off");
                 } else {
-                    LOG(2, "RISC serial command $%03x (ignored)", cmd);
+                    LOG(2, "8*24 GC: RISC serial command $%03x (ignored)", cmd);
                 }
             }
         } else if (cl == GC824_REG_VBL_ACK) {
@@ -691,7 +692,7 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
             p->gc_on = true;
             if (p->state < GC_ST_ON)
                 p->state = GC_ST_ON;
-            LOG(1, "firmware kick ($04000050 = -1) -> GC ON");
+            LOG(1, "8*24 GC: firmware kick ($04000050 = -1) -> GC ON");
         } else if (cl == GC824_REG_ACDC_ADDR) {
             // ACDC RAMDAC address port: a write sets the palette index and
             // resets the R/G/B phase.  (The ACDC probe / loadCRTCandCLUT write
@@ -722,7 +723,7 @@ static void gc_write(display_card_824gc_priv_t *p, uint32_t phys, uint32_t val, 
         gc_check_triggers(p);
         return;
     }
-    LOG(3, "write card-local $%07x = $%08x (unmapped) w%u", cl, val, width);
+    LOG(3, "8*24 GC: write card-local $%07x = $%08x (unmapped) w%u", cl, val, width);
 }
 
 // === Memory interface (single dispatcher over every region) =================
@@ -977,10 +978,10 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
             declrom_install_builtin(display_card_824gc_generic_kind.id, img, img_size, p->vrom, GC824_DECLROM_BUS_SIZE))
             p->vrom_size = GC824_DECLROM_BUS_SIZE;
         else
-            LOG(0, "8_24gc: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+            LOG(0, "8*24 GC: 8_24gc: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
     } else if (!load_vrom(p))
-        LOG(0, "no 8•24 GC declaration ROM offered (machine.vrom.load a GC vROM, "
+        LOG(0, "8*24 GC: no 8•24 GC declaration ROM offered (machine.vrom.load a GC vROM, "
                "or make one available where the platform offers vROM files); "
                "declaration ROM is zero-filled");
 
@@ -1057,8 +1058,8 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
             rtc_pram_write(rtc, off + 5, 0x00);
             rtc_pram_write(rtc, off + 6, 0x00);
             rtc_pram_write(rtc, off + 7, 0x00);
-            LOG(1, "seeded slot-%d PRAM for '%s' (spDepth=$%02x sister=$%02x)", card->slot, seeded_monitor->id, spDepth,
-                seeded_monitor->srsrc_sister);
+            LOG(1, "8*24 GC: seeded slot-%d PRAM for '%s' (spDepth=$%02x sister=$%02x)", card->slot, seeded_monitor->id,
+                spDepth, seeded_monitor->srsrc_sister);
         }
     }
 
@@ -1093,7 +1094,7 @@ static void card_reset(nubus_card_t *card, config_t *cfg) {
         return;
     nubus_deassert_irq(card);
     set_poweron_defaults(p);
-    LOG(2, "/RESET -> power-on state");
+    LOG(2, "8*24 GC: /RESET -> power-on state");
 }
 
 static void card_on_vbl(nubus_card_t *card, config_t *cfg) {

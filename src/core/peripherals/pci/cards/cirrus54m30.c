@@ -58,7 +58,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("54m30");
+LOG_USE_CATEGORY_NAME("video");
 
 // === PCI identity (Alpine TRM §4.14-§4.17) ==================================
 #define C54M30_VENDOR_ID 0x1013u // Cirrus Logic
@@ -284,7 +284,7 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
     c54m30_t *c = (c54m30_t *)ctx;
     uint32_t port = offset & (C54M30_REGS - 1u);
     c->reg[port] = value;
-    LOG(5, "VGA I/O +$%03X = $%02X", port, value);
+    LOG(5, "54M30: VGA I/O +$%03X = $%02X", port, value);
     switch (port) {
     case C54M30_SEQ_INDEX:
         c->seq_index = value;
@@ -449,8 +449,8 @@ static void c54m30_update(c54m30_t *c) {
     if (c->display.width != prev_w || c->display.height != prev_h || c->display.stride != prev_stride ||
         c->display.bits != prev_bits) {
         c->display.shape_dirty = true;
-        LOG(2, "mode set: %ux%u 8 bpp, stride %u, start $%05X", c->display.width, c->display.height, c->display.stride,
-            start);
+        LOG(2, "54M30: mode set: %ux%u 8 bpp, stride %u, start $%05X", c->display.width, c->display.height,
+            c->display.stride, start);
     }
 }
 
@@ -664,7 +664,7 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, checkpoint_t 
     // card does not decode.
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &c->vga_if, c);
 
-    LOG(1, "seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
+    LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
     return dev;
 }
 

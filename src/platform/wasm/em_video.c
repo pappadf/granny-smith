@@ -29,7 +29,14 @@
 #include <string.h>
 
 #include "display.h"
+#include "log.h"
 #include "system.h"
+
+// The renderer is part of the display path, so it shares its category:
+// `debug.log("video", N)` turns on the producers AND the consumer
+// (04-video F-14).  These five messages used to be bare printfs, so they
+// could not be levelled, filed or redirected at all.
+LOG_USE_CATEGORY_NAME("video");
 
 // ============================================================================
 // Internal state
@@ -317,7 +324,7 @@ static GLuint compile_shader(GLenum type, const char *src) {
     if (!ok) {
         char log[512];
         glGetShaderInfoLog(s, sizeof log, NULL, log);
-        printf("Shader error: %s\n", log);
+        LOG(0, "shader compile failed: %s", log);
         return 0;
     }
     return s;
@@ -339,7 +346,7 @@ static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms
     if (!ok) {
         char log[512];
         glGetProgramInfoLog(prog, sizeof log, NULL, log);
-        printf("Link error: %s\n", log);
+        LOG(0, "shader link failed: %s", log);
         return 0;
     }
     glDeleteShader(vs);
@@ -502,7 +509,9 @@ static void init_gl(void) {
     attr.minorVersion = 0;
     s_ctx = emscripten_webgl_create_context("#screen", &attr);
     if (s_ctx <= 0) {
-        printf("WebGL 2 not supported—cannot run.");
+        // No newline on the old printf here, so this one ran into whatever came
+        // next in the output.  LOG ends its own lines.
+        LOG(0, "WebGL 2 not supported - cannot run");
         return;
     }
     emscripten_webgl_make_context_current(s_ctx);
@@ -628,7 +637,7 @@ static void draw(void) {
     glDrawArrays(GL_TRIANGLES, 0, 6);
     GLenum err = glGetError();
     if (err != GL_NO_ERROR)
-        printf("GL error: %d\n", err);
+        LOG(1, "GL error: %d", err);
 }
 
 // ============================================================================
@@ -669,8 +678,8 @@ void em_video_update(void) {
         static bool warned = false;
         if (!warned) {
             warned = true;
-            printf("em_video: mode %ux%u stride %u exceeds the %u-byte upload buffer; screen frozen\n", d->width,
-                   d->height, d->stride, (unsigned)MAX_FB_BYTES);
+            LOG(0, "renderer: mode %ux%u stride %u exceeds the %u-byte upload buffer; screen frozen", d->width,
+                d->height, d->stride, (unsigned)MAX_FB_BYTES);
         }
         return;
     }

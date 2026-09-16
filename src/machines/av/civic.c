@@ -41,7 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("civic");
+LOG_USE_CATEGORY_NAME("video");
 
 // CIVIC longword-slot indices (hardware byte offset >> 2; civic.md §3).
 #define SLOT_VBLINT    (0x000u >> 2)

@@ -29,7 +29,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("ariel");
+LOG_USE_CATEGORY_NAME("video");
 
 // Monitor sense lines (the HDI-45 carries three open-collector lines A/B/C
 // with 10k pull-ups; a dumb monitor hard-wires a subset to ground and the
@@ -263,7 +263,7 @@ void pdm_video_init(config_t *cfg) {
     s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
     st->video.blank = calloc(1, PDM_VIDEO_MAX_BYTES);
     if (!st->video.blank)
-        LOG(0, "Error: out of memory allocating the blanked raster; the screen stays live while blanked");
+        LOG(0, "Ariel: Error: out of memory allocating the blanked raster; the screen stays live while blanked");
     pdm_video_update(cfg);
     st->video.display.response_dirty = true;
     st->video.fb_node = (display_fb_node_t){.owner = cfg, .resolve = ariel_fb_resolve, .base = ariel_fb_base};
@@ -352,12 +352,12 @@ void pdm_video_ctl_write(config_t *cfg, uint32_t off, uint8_t value) {
     switch (off) {
     case 0:
         a->vid_mode = value;
-        LOG(2, "video mode = $%02X", value);
+        LOG(2, "Ariel: video mode = $%02X", value);
         pdm_video_update(cfg);
         break;
     case 1:
         a->vid_depth = value;
-        LOG(2, "video depth = $%02X", value);
+        LOG(2, "Ariel: video depth = $%02X", value);
         pdm_video_update(cfg);
         break;
     case 2:

@@ -42,7 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("jmfb");
+LOG_USE_CATEGORY_NAME("video");
 
 // === Forward declarations ===================================================
 //
@@ -233,10 +233,10 @@ static void handle_endeavor_write16(jmfb_priv_t *p, uint32_t off, uint16_t val) 
         p->endeavor_reserved = val;
         break;
     default:
-        LOG(2, "Endeavor block write at +%02x = %04x (unmodeled)", off, val);
+        LOG(2, "JMFB: Endeavor block write at +%02x = %04x (unmodeled)", off, val);
         return;
     }
-    LOG(3, "Endeavor +%02x = %04x (accept-and-log)", off, val);
+    LOG(3, "JMFB: Endeavor +%02x = %04x (accept-and-log)", off, val);
 }
 
 static uint16_t handle_endeavor_read16(jmfb_priv_t *p, uint32_t off) {
@@ -255,7 +255,7 @@ static uint16_t handle_endeavor_read16(jmfb_priv_t *p, uint32_t off) {
     case EndeavorReserved + 2:
         return EndeavorID;
     default:
-        LOG(2, "Endeavor block read at +%02x (unmodeled)", off);
+        LOG(2, "JMFB: Endeavor block read at +%02x (unmodeled)", off);
         return 0;
     }
 }
@@ -391,12 +391,13 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     if (generic && s_pending_custom_mode[0]) {
         const char *why = NULL;
         if (!nubus_custom_mode_parse(s_pending_custom_mode, &custom_w, &custom_h, &custom_d, &why)) {
-            LOG(0, "8_24: custom_mode '%s' rejected: %s", s_pending_custom_mode, why);
+            LOG(0, "JMFB: 8_24: custom_mode '%s' rejected: %s", s_pending_custom_mode, why);
         } else if (custom_d != 1 && custom_d != 2 && custom_d != 4 && custom_d != 8) {
-            LOG(0, "8_24: custom_mode depth %u unsupported (this card has no direct modes; use 1/2/4/8)", custom_d);
+            LOG(0, "JMFB: 8_24: custom_mode depth %u unsupported (this card has no direct modes; use 1/2/4/8)",
+                custom_d);
         } else if ((uint64_t)custom_w * custom_h * custom_d / 8 + 0xA00 > JMFB_VRAM_SIZE) {
-            LOG(0, "8_24: custom_mode %ux%ux%u framebuffer exceeds the %u-byte window", custom_w, custom_h, custom_d,
-                (unsigned)JMFB_VRAM_SIZE);
+            LOG(0, "JMFB: 8_24: custom_mode %ux%ux%u framebuffer exceeds the %u-byte window", custom_w, custom_h,
+                custom_d, (unsigned)JMFB_VRAM_SIZE);
         } else {
             // Copy the generic monitor list and rewrite the default (13" RGB,
             // sense $6) entry to the custom geometry; the rest stay so their
@@ -429,7 +430,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         if (img && declrom_install_builtin(jmfb_generic_kind.id, img, img_size, p->vrom, JMFB_DECLROM_BUS_SIZE))
             p->vrom_size = JMFB_DECLROM_BUS_SIZE;
         else
-            LOG(0, "8_24: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+            LOG(0, "JMFB: 8_24: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
     } else if (!load_vrom(p)) {
         // requires_vrom is true on this kind, so the dialog gates
@@ -437,7 +438,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         // one.  Log loudly and continue with a zero-filled declrom —
         // PrimaryInit won't find a Format Header and the OS will skip
         // the slot, but the rest of the machine still boots.
-        LOG(0, "mdc-8-24-revb-d1629664.vrom not found; declaration ROM is zero-filled");
+        LOG(0, "JMFB: mdc-8-24-revb-d1629664.vrom not found; declaration ROM is zero-filled");
     }
     // Publish the declaration ROM on the card struct (drives the
     // slot[N].card.declrom object-model node, same as the 24AC / 8•24 GC);

@@ -32,7 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("dafb");
+LOG_USE_CATEGORY_NAME("video");
 
 // === Register offsets ===
 // DAFB core

@@ -32,7 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("se30vid");
+LOG_USE_CATEGORY_NAME("video");
 
 #define SE30_VRAM_SIZE           0x00010000UL // 64 KB
 #define SE30_VROM_SIZE           0x00008000UL // 32 KB
@@ -149,7 +149,7 @@ static void synthesise_vrom_fallback(uint8_t *rom) {
             ok = false;
     }
     if (!ok)
-        LOG(0, "se30: fallback declaration-ROM generation failed; slot will read as empty");
+        LOG(0, "SE/30 video: fallback declaration-ROM generation failed; slot will read as empty");
     declrom_builder_free(b);
 }
 
@@ -164,7 +164,7 @@ static bool load_real_vrom(uint8_t *vrom_buf, char **out_path) {
         LOG(0, "No SE/30 onboard-video vROM offered — falling back to the synthesised declaration ROM");
         return false;
     }
-    LOG(1, "Loaded real VROM from %s", *out_path);
+    LOG(1, "SE/30 video: Loaded real VROM from %s", *out_path);
     return true;
 }
 
@@ -195,7 +195,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
         if (!img ||
             !declrom_install_builtin(builtin_se30_video_generic_kind.id, img, img_size, p->vrom, SE30_VROM_SIZE))
-            LOG(0, "se30: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+            LOG(0, "SE/30 video: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
     } else if (!load_real_vrom(p->vrom, &p->vrom_path)) {
         if (!cp) {

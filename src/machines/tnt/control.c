@@ -59,7 +59,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("control");
+LOG_USE_CATEGORY_NAME("video");
 
 // Register indices (offset / $10) — controlfb's struct control_regs.
 #define CR_VCOUNT     0 // vertical counter (read)
@@ -221,9 +221,9 @@ void tnt_control_update(config_t *cfg) {
     // landed on makes a misprogrammed mode line obvious in the log
     // (04-video F-17).
     const char *timing = display_timing_name(width, height);
-    LOG(2, "mode: %ux%u%s%s %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height, timing ? " " : "",
-        timing ? timing : "", bpp, st->display.stride, c->reg[CR_MODE], c->rad_ctrl, st->display.clut ? "yes" : "no",
-        blanked ? " BLANKED" : "");
+    LOG(2, "Control: mode: %ux%u%s%s %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height,
+        timing ? " " : "", timing ? timing : "", bpp, st->display.stride, c->reg[CR_MODE], c->rad_ctrl,
+        st->display.clut ? "yes" : "no", blanked ? " BLANKED" : "");
 }
 
 // The RaDACal hardware cursor (misc $20 bit 1).  Decoded live from the
@@ -427,7 +427,7 @@ static uint32_t control_reg_read(config_t *cfg, uint32_t offset) {
     tnt_control_t *c = ctl(cfg);
     uint32_t idx = offset >> 4;
     if ((offset & 0xFu) != 0 || idx >= TNT_CONTROL_REGS) {
-        LOG(1, "register read off-centre +$%03X", offset);
+        LOG(1, "Control: register read off-centre +$%03X", offset);
         return 0;
     }
     switch (idx) {
@@ -446,10 +446,10 @@ static void control_reg_write(config_t *cfg, uint32_t offset, uint32_t value) {
     tnt_control_t *c = ctl(cfg);
     uint32_t idx = offset >> 4;
     if ((offset & 0xFu) != 0 || idx >= TNT_CONTROL_REGS) {
-        LOG(1, "register write off-centre +$%03X = $%08X", offset, value);
+        LOG(1, "Control: register write off-centre +$%03X = $%08X", offset, value);
         return;
     }
-    LOG(2, "reg[%u] = $%08X", idx, value);
+    LOG(2, "Control: reg[%u] = $%08X", idx, value);
     c->reg[idx] = value;
     switch (idx) {
     case CR_CTRL:
@@ -662,7 +662,8 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
         c->crsr_phase = 0;
         break;
     case 0x10:
-        LOG(4, "cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value, ppc_get_pc(cfg->ppc));
+        LOG(4, "Control: cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value,
+            ppc_get_pc(cfg->ppc));
         c->crsr[c->rad_addr & 7u][c->crsr_phase] = value;
         if (++c->crsr_phase == 3) {
             c->crsr_phase = 0;
@@ -670,7 +671,7 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
         }
         break;
     case 0x20:
-        LOG(2, "RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
+        LOG(2, "Control: RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
         switch (c->rad_addr) {
         case 0x20:
             c->rad_ctrl = value; // depth control — geometry follows
@@ -690,8 +691,8 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     default: // +$30: CLUT data
         c->clut[c->rad_addr][c->rad_phase] = value;
         if (++c->rad_phase == 3) {
-            LOG(3, "CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0], c->clut[c->rad_addr][1],
-                c->clut[c->rad_addr][2]);
+            LOG(3, "Control: CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0],
+                c->clut[c->rad_addr][1], c->clut[c->rad_addr][2]);
             c->rad_phase = 0;
             c->rad_addr++;
             control_refresh_clut(cfg);
@@ -812,7 +813,8 @@ int tnt_control_init(config_t *cfg) {
     st->blank = calloc(1, TNT_VRAM_SIZE);
     st->compose = calloc(1, TNT_VRAM_SIZE);
     if (!st->vram || !st->blank || !st->compose) {
-        LOG(0, "Error: out of memory allocating Control's three %u-byte framebuffers", (unsigned)TNT_VRAM_SIZE);
+        LOG(0, "Control: Error: out of memory allocating Control's three %u-byte framebuffers",
+            (unsigned)TNT_VRAM_SIZE);
         free(st->vram);
         free(st->blank);
         free(st->compose);
