@@ -57,6 +57,7 @@
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
+#include "display_class.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
@@ -533,6 +534,7 @@ typedef struct mach64 {
     // one of them moves; `blank` is the black stub shown while the raster
     // is disabled, and `compose` carries the hardware-cursor composite.
     display_t display;
+    display_fb_node_t fb_node; // instance data for the shared framebuffer class
     rgba8_t clut_view[256];
     uint8_t *blank;
     uint8_t *compose;
@@ -2947,80 +2949,27 @@ static const class_desc_t mach64_dac_class = {
     .name = "dac", .members = dac_members, .n_members = sizeof(dac_members) / sizeof(dac_members[0])};
 
 // --- the framebuffer node ---------------------------------------------------
-// Mirrors what the NuBus cards expose, so `machine.screen.source.depth`
-// reads the same on either bus.
-
-static value_t fb_attr_width(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.width : 0);
+// The framebuffer node is display_class.c's, shared with the NuBus cards and
+// the built-in chips, so `machine.screen.source` reads the same on either bus
+// (04-video F-15).  This card used to re-implement it with `size` where NuBus
+// said `raw_size`, V_UINT where NuBus said V_INT, and no `format` at all --
+// the node was declared to mirror the NuBus one and did not.
+static display_t *mach64_fb_resolve(void *owner) {
+    mach64_t *c = (mach64_t *)owner;
+    return c ? &c->display : NULL;
 }
-static value_t fb_attr_height(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.height : 0);
+static uint64_t mach64_fb_base(void *owner) {
+    // A byte offset into VRAM, not an address: CRTC_OFFSET x 8.
+    mach64_t *c = (mach64_t *)owner;
+    return c ? (uint64_t)(c->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u : 0;
 }
-static value_t fb_attr_stride(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.stride : 0);
-}
-static value_t fb_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? mach64_bytes_per_pixel(c) * 8u : 0);
-}
-static value_t fb_attr_base(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? (c->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u : 0);
-}
-static value_t fb_attr_size(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? (uint64_t)c->display.stride * c->display.height : 0);
-}
-
-static const member_t fb_members[] = {
-    {.kind = M_ATTR,
-     .name = "width",
-     .doc = "Active raster width in pixels",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_width}                              },
-    {.kind = M_ATTR,
-     .name = "height",
-     .doc = "Active raster height in lines",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_height}                             },
-    {.kind = M_ATTR,
-     .name = "stride",
-     .doc = "Bytes per scan line (CRTC_PITCH x 8 x bytes-per-pixel)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_stride}                             },
-    {.kind = M_ATTR,
-     .name = "depth",
-     .doc = "Bits per pixel, from CRTC_PIX_WIDTH",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_depth}                              },
-    {.kind = M_ATTR,
-     .name = "base",
-     .doc = "Scan base as a byte offset into VRAM (CRTC_OFFSET x 8)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = fb_attr_base}},
-    {.kind = M_ATTR,
-     .name = "size",
-     .doc = "Active framebuffer size in bytes (stride x height)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_size}                               },
-};
-static const class_desc_t mach64_fb_class = {
-    .name = "framebuffer", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
 
 static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
     mach64_t *m = (mach64_t *)dev->priv;
     if (!m || !card_node)
         return;
-    struct object *fb = object_new(&mach64_fb_class, m, "framebuffer");
+    m->fb_node = (display_fb_node_t){.owner = m, .resolve = mach64_fb_resolve, .base = mach64_fb_base};
+    struct object *fb = object_new(&display_fb_class, &m->fb_node, "framebuffer");
     if (fb) {
         object_set_label(fb, "Framebuffer");
         object_set_order(fb, 10);

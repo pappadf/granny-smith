@@ -45,7 +45,8 @@ SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/machines/av/civic.c \
         $(EMU_ROOT)/machines/av/cuda.c \
         $(UNIT_ROOT)/support/stub_memory.c \
-        $(UNIT_ROOT)/support/stub_checkpoint.c
+        $(UNIT_ROOT)/support/stub_checkpoint.c \
+        $(UNIT_ROOT)/support/stub_display_class.c
 
 ALL_SRCS := $(abspath $(SRCS))
 

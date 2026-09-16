@@ -13,6 +13,7 @@
 #include "display.h"
 #include "display_card_24ac.h"
 #include "display_card_824gc.h"
+#include "display_class.h"
 #include "jmfb.h"
 #include "nubus.h"
 #include "object.h"
@@ -82,6 +83,7 @@ typedef struct {
     struct object *mode; // current monitor / depth
     struct object *engine; // accelerator (display_card_24ac only; NULL otherwise)
     struct object *gc; // GC accelerator protocol state (display_card_824gc only)
+    display_fb_node_t fb_node; // instance data for the shared framebuffer class
 } nubus_slot_nodes_t;
 
 static nubus_bus_t *g_obj_bus = NULL;
@@ -96,80 +98,18 @@ static display_t *node_disp(struct object *self) {
 }
 
 // --- framebuffer node -------------------------------------------------------
-static value_t fb_attr_base(struct object *self, const member_t *m) {
-    (void)m;
-    nubus_card_t *c = node_card(self);
-    return val_uint(4, c ? nubus_slot_base(c->slot) : 0);
+// The node itself is display_class.c's, shared with every other display
+// source so `machine.screen.source` means the same thing on either bus and on
+// the built-in chips (04-video F-15/F-16).  All this side supplies is how to
+// reach a card's live descriptor and where its framebuffer sits.
+static display_t *nubus_fb_resolve(void *owner) {
+    nubus_card_t *c = (nubus_card_t *)owner;
+    return (c && c->ops && c->ops->display) ? c->ops->display(c) : NULL;
 }
-static value_t fb_attr_width(struct object *self, const member_t *m) {
-    (void)m;
-    display_t *d = node_disp(self);
-    return val_int(d ? (int)d->width : 0);
+static uint64_t nubus_fb_base(void *owner) {
+    nubus_card_t *c = (nubus_card_t *)owner;
+    return c ? nubus_slot_base(c->slot) : 0;
 }
-static value_t fb_attr_height(struct object *self, const member_t *m) {
-    (void)m;
-    display_t *d = node_disp(self);
-    return val_int(d ? (int)d->height : 0);
-}
-static value_t fb_attr_stride(struct object *self, const member_t *m) {
-    (void)m;
-    display_t *d = node_disp(self);
-    return val_uint(4, d ? d->stride : 0);
-}
-static value_t fb_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
-    display_t *d = node_disp(self);
-    return val_int(d ? (int)display_bpp(d->format) : 0);
-}
-static value_t fb_attr_format(struct object *self, const member_t *m) {
-    (void)m;
-    display_t *d = node_disp(self);
-    return val_str(d ? display_format_name(d->format) : "");
-}
-static value_t fb_attr_raw_size(struct object *self, const member_t *m) {
-    (void)m;
-    display_t *d = node_disp(self);
-    return val_uint(4, d ? (uint64_t)d->stride * d->height : 0);
-}
-static const member_t fb_members[] = {
-    {.kind = M_ATTR,
-     .name = "base",
-     .doc = "Slot-space base address of the framebuffer",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = fb_attr_base}},
-    {.kind = M_ATTR,
-     .name = "width",
-     .doc = "Active width in pixels",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = fb_attr_width}                               },
-    {.kind = M_ATTR,
-     .name = "height",
-     .doc = "Active height in pixels",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = fb_attr_height}                              },
-    {.kind = M_ATTR,
-     .name = "stride",
-     .doc = "Row stride in bytes (rowBytes)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_stride}                             },
-    {.kind = M_ATTR,
-     .name = "depth",
-     .doc = "Bits per pixel",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = fb_attr_depth}                               },
-    {.kind = M_ATTR,
-     .name = "format",
-     .doc = "Pixel encoding",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = fb_attr_format}                           },
-    {.kind = M_ATTR,
-     .name = "raw_size",
-     .doc = "Active framebuffer size in bytes (stride × height)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_raw_size}                           },
-};
-static const class_desc_t nubus_fb_class = {
-    .name = "framebuffer", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
 
 // --- declrom node -----------------------------------------------------------
 static value_t declrom_attr_size(struct object *self, const member_t *m) {
@@ -214,27 +154,50 @@ static const class_desc_t nubus_clut_class = {
     .name = "clut", .members = clut_members, .n_members = sizeof(clut_members) / sizeof(clut_members[0])};
 
 // --- mode node (current monitor / depth) ------------------------------------
+// Same numbers as the framebuffer node, under the card's own `mode` child --
+// this one carries the CARD as instance data, so it reads the descriptor
+// through node_disp rather than through a display_fb_node_t.
+static value_t mode_attr_width(struct object *self, const member_t *m) {
+    (void)m;
+    display_t *d = node_disp(self);
+    return val_int(d ? (int)d->width : 0);
+}
+static value_t mode_attr_height(struct object *self, const member_t *m) {
+    (void)m;
+    display_t *d = node_disp(self);
+    return val_int(d ? (int)d->height : 0);
+}
+static value_t mode_attr_depth(struct object *self, const member_t *m) {
+    (void)m;
+    display_t *d = node_disp(self);
+    return val_int(d ? (int)display_bpp(d->format) : 0);
+}
+static value_t mode_attr_format(struct object *self, const member_t *m) {
+    (void)m;
+    display_t *d = node_disp(self);
+    return val_str(d ? display_format_name(d->format) : "");
+}
 static const member_t mode_members[] = {
     {.kind = M_ATTR,
      .name = "width",
      .doc = "Current monitor width in pixels",
      .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = fb_attr_width}    },
+     .attr = {.type = V_INT, .get = mode_attr_width}    },
     {.kind = M_ATTR,
      .name = "height",
      .doc = "Current monitor height in pixels",
      .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = fb_attr_height}   },
+     .attr = {.type = V_INT, .get = mode_attr_height}   },
     {.kind = M_ATTR,
      .name = "depth",
      .doc = "Current pixel depth (bpp)",
      .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = fb_attr_depth}    },
+     .attr = {.type = V_INT, .get = mode_attr_depth}    },
     {.kind = M_ATTR,
      .name = "format",
      .doc = "Current pixel encoding",
      .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = fb_attr_format}},
+     .attr = {.type = V_STRING, .get = mode_attr_format}},
 };
 static const class_desc_t nubus_mode_class = {
     .name = "mode", .members = mode_members, .n_members = sizeof(mode_members) / sizeof(mode_members[0])};
@@ -605,9 +568,12 @@ const class_desc_t nubus_class = {
 // === Object-tree build / teardown ===========================================
 
 // Attach one resource child under the card node with a label/order/category.
-static struct object *attach_resource(struct object *card_node, const class_desc_t *cls, nubus_card_t *card,
-                                      const char *name, const char *label, int order, uint16_t category) {
-    struct object *o = object_new(cls, card, name);
+// `data` is the node's instance data -- the nubus_card_t for every class
+// defined here, and a display_fb_node_t for the shared framebuffer class, so
+// it is typed as the void the object model actually stores.
+static struct object *attach_resource(struct object *card_node, const class_desc_t *cls, void *data, const char *name,
+                                      const char *label, int order, uint16_t category) {
+    struct object *o = object_new(cls, data, name);
     if (!o)
         return NULL;
     object_set_label(o, label);
@@ -646,7 +612,9 @@ void nubus_objects_build(nubus_bus_t *bus) {
         if (n->card) {
             object_set_label(n->card, (card->ops && card->ops->name) ? card->ops->name(card) : "Card");
             object_attach(n->slot, n->card);
-            n->fb = attach_resource(n->card, &nubus_fb_class, card, "framebuffer", "Framebuffer", 10, M_CAT_BASIC);
+            n->fb_node = (display_fb_node_t){.owner = card, .resolve = nubus_fb_resolve, .base = nubus_fb_base};
+            n->fb =
+                attach_resource(n->card, &display_fb_class, &n->fb_node, "framebuffer", "Framebuffer", 10, M_CAT_BASIC);
             n->declrom =
                 attach_resource(n->card, &nubus_declrom_class, card, "declrom", "Declaration ROM", 20, M_CAT_BASIC);
             n->clut = attach_resource(n->card, &nubus_clut_class, card, "clut", "CLUT", 30, M_CAT_BASIC);

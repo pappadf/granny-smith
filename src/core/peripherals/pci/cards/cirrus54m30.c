@@ -48,6 +48,7 @@
 
 #include "card.h"
 #include "display.h"
+#include "display_class.h"
 #include "log.h"
 #include "pci.h"
 #include "scheduler.h"
@@ -128,6 +129,7 @@ typedef struct c54m30 {
     memory_interface_t fb_if;
     memory_interface_t io_if;
     memory_interface_t vga_if; // the fixed legacy $3B0-$3DF block
+    display_fb_node_t fb_node; // instance data for the shared framebuffer class
 } c54m30_t;
 
 static void c54m30_update(c54m30_t *c);
@@ -657,6 +659,40 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, checkpoint_t 
     return dev;
 }
 
+// The framebuffer node, shared with every other display source
+// (display_class.h).  This card declared no attach_objects at all, so on a
+// Network Server `machine.screen.source` resolved to nothing and there was no
+// way to read the geometry the VGA CRTC had been programmed with
+// (04-video F-15).
+static display_t *c54m30_fb_resolve(void *owner) {
+    c54m30_t *c = (c54m30_t *)owner;
+    return c ? &c->display : NULL;
+}
+static uint64_t c54m30_fb_base(void *owner) {
+    // A byte offset into display memory: the VGA start-address pair, in the
+    // doubleword units the CRTC counts in.
+    c54m30_t *c = (c54m30_t *)owner;
+    if (!c)
+        return 0;
+    return ((uint64_t)c->crtc[0x0C] << 8 | c->crtc[0x0D]) * 4u;
+}
+
+static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
+    c54m30_t *c = dev ? (c54m30_t *)dev->priv : NULL;
+    if (!c || !card_node)
+        return;
+    c->fb_node = (display_fb_node_t){.owner = c, .resolve = c54m30_fb_resolve, .base = c54m30_fb_base};
+    struct object *fb = object_new(&display_fb_class, &c->fb_node, "framebuffer");
+    if (!fb)
+        return;
+    object_set_label(fb, "Framebuffer");
+    object_set_order(fb, 10);
+    object_attach(card_node, fb);
+    // Nominate it, so `machine.screen.source` resolves here when this card is
+    // the primary display.
+    pci_card_set_framebuffer_object(dev, fb);
+}
+
 // BUILTIN: soldered down on the Network Server logic board, instantiable
 // only where a machine's slot table names it.
 const pci_card_kind_t cirrus_54m30_kind = {
@@ -665,4 +701,5 @@ const pci_card_kind_t cirrus_54m30_kind = {
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
     .factory = c54m30_factory,
+    .attach_objects = c54m30_attach_objects,
 };

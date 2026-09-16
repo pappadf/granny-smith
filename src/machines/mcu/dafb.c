@@ -24,6 +24,7 @@
 
 #include "dafb.h"
 
+#include "display_class.h"
 #include "log.h"
 #include "scheduler.h"
 #include "system.h"
@@ -77,6 +78,10 @@ struct dafb {
 
     // Scanout state
     display_t display;
+    // machine.video -- the framebuffer node every display source exposes
+    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    display_fb_node_t fb_node;
+    struct object *video_node;
     rgba8_t clut[256];
 
     // AC842 write machine: index + RGB component phase (Trap 11: the
@@ -670,9 +675,28 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
     return dafb;
 }
 
+static display_t *dafb_fb_resolve(void *owner) {
+    return dafb_display((dafb_t *)owner);
+}
+static uint64_t dafb_fb_base(void *owner) {
+    // A byte offset into the chip's own VRAM, which is where the Swatch
+    // scan base points.
+    dafb_t *d = (dafb_t *)owner;
+    return (d && d->display.bits && d->vram) ? (uint64_t)(d->display.bits - d->vram) : 0;
+}
+
+void dafb_attach_objects(dafb_t *dafb) {
+    if (!dafb || dafb->video_node)
+        return;
+    dafb->fb_node = (display_fb_node_t){.owner = dafb, .resolve = dafb_fb_resolve, .base = dafb_fb_base};
+    dafb->video_node = display_attach_video_node(&dafb->fb_node, "Video (DAFB)");
+}
+
 void dafb_delete(dafb_t *dafb) {
     if (!dafb)
         return;
+    display_detach_video_node(dafb->video_node);
+    dafb->video_node = NULL;
     if (dafb->sched)
         remove_event(dafb->sched, dafb_frame_event, dafb);
     free(dafb->vram);

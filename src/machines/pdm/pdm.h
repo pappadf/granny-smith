@@ -22,6 +22,7 @@
 #define GS_MACHINES_PDM_H
 
 #include "display.h"
+#include "display_class.h"
 #include "machine.h"
 #include "memory.h"
 #include "nubus.h" // struct nubus_slot_decl, for the shared slot table below
@@ -200,6 +201,10 @@ typedef struct pdm_video {
     rgba8_t clut_view[256]; // depth-windowed palette the renderer indexes
     uint8_t *blank; // black raster presented while the blank bit is set
     uint8_t sense; // monitor strap (PDM_SENSE_NONE = nothing connected)
+    // machine.video -- the framebuffer node every display source exposes
+    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    display_fb_node_t fb_node;
+    struct object *video_node;
 } pdm_video_t;
 
 // === BART state (bart.c) ====================================================

@@ -92,6 +92,10 @@ uint32_t dafb_vram_size(dafb_t *dafb);
 // The scanout display (substrate .display hook).
 display_t *dafb_display(dafb_t *dafb);
 
+// Attach machine.video{,.framebuffer} for this chip.  Called once the object
+// tree exists; dafb_delete tears it down.
+void dafb_attach_objects(dafb_t *dafb);
+
 // Register-aperture memory interface (registered at DAFB_REG_BASE).
 const memory_interface_t *dafb_reg_interface(dafb_t *dafb);
 

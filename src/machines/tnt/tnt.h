@@ -36,7 +36,8 @@
 #define GS_MACHINES_TNT_H
 
 #include "awacs.h" // shared ASCO codec semantics (core/peripherals/)
-#include "display.h" // scanout descriptor (control.c presents through it)
+#include "display.h"
+#include "display_class.h" // scanout descriptor (control.c presents through it)
 #include "gbus.h" // the ANS GBUS island: board registers, keyswitch, LCD
 #include "machine.h"
 #include "memory.h"
@@ -354,6 +355,10 @@ typedef struct tnt_state {
     // the VRAM blob follows it in the tail; the display descriptor and its
     // derived views are rebuilt from the registers on restore.
     tnt_control_t control;
+    // machine.video -- the framebuffer node every display source exposes
+    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    display_fb_node_t control_fb_node;
+    struct object *control_video_node;
     pci_device_t *control_dev; // Control as a device on the Chaos bus (owned
                                // by the bus: its factory allocated it)
     mesh_t *mesh; // internal fast SCSI (core/peripherals/scsi_mesh.c)

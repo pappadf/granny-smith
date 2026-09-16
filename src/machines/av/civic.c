@@ -23,6 +23,7 @@
 //     documented start/skip positions inside the 256-entry bank
 
 #include "civic.h"
+#include "display_class.h"
 #include "display_timing.h"
 
 #include "av.h"
@@ -97,6 +98,10 @@ struct av_civic {
     uint8_t *vram; // 2 MB, host-owned
     uint8_t *compose; // 640x480 XRGB scanout while the video-in overlay is on
     display_t display;
+    // machine.video -- the framebuffer node every display source exposes
+    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    display_fb_node_t fb_node;
+    struct object *video_node;
     rgba8_t disp_clut[256]; // derived CLUT the display consumes
     memory_interface_t lo_iface; // the $50036000 register alias
 };
@@ -654,6 +659,20 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv) {
 // Lifecycle
 // ============================================================
 
+static display_t *civic_fb_resolve(void *owner) {
+    av_civic_t *cv = (av_civic_t *)owner;
+    return cv ? &cv->display : NULL;
+}
+static uint64_t civic_fb_base(void *owner) {
+    // A byte offset into CIVIC's own VRAM.  While the video-in overlay is up
+    // the scan runs from the composed frame instead, which is not in VRAM and
+    // has no meaningful offset.
+    av_civic_t *cv = (av_civic_t *)owner;
+    if (!cv || !cv->display.bits || cv->display.bits == cv->compose || !cv->vram)
+        return 0;
+    return (uint64_t)(cv->display.bits - cv->vram);
+}
+
 av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     av_civic_t *cv = calloc(1, sizeof(*cv));
     if (!cv)
@@ -691,6 +710,9 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
     scheduler_new_event_type(cfg->scheduler, "civic", cv, "frame", &civic_frame_event);
     scheduler_new_cpu_event(cfg->scheduler, &civic_frame_event, cv, 0, 0, AV_CIVIC_FRAME_NS);
 
+    cv->fb_node = (display_fb_node_t){.owner = cv, .resolve = civic_fb_resolve, .base = civic_fb_base};
+    cv->video_node = display_attach_video_node(&cv->fb_node, "Video (CIVIC)");
+
     LOG(1, "CIVIC init (Hi-Res 640x480 monitor, 2 MB VRAM)");
     return cv;
 }
@@ -698,6 +720,8 @@ av_civic_t *av_civic_init(config_t *cfg, checkpoint_t *cp) {
 void av_civic_delete(av_civic_t *cv) {
     if (!cv)
         return;
+    display_detach_video_node(cv->video_node);
+    cv->video_node = NULL;
     if (cv->cfg && cv->cfg->scheduler)
         remove_event(cv->cfg->scheduler, &civic_frame_event, cv);
     free(cv->compose);

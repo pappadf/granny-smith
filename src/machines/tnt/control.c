@@ -793,6 +793,19 @@ void tnt_control_reset(config_t *cfg) {
     tnt_control_update(cfg);
 }
 
+static display_t *control_fb_resolve(void *owner) {
+    return tnt_control_display((config_t *)owner);
+}
+static uint64_t control_fb_base(void *owner) {
+    // A byte offset into the 4 MB store, which is what CR_START_ADDR and the
+    // bank-select attribute add up to.
+    config_t *cfg = (config_t *)owner;
+    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
+    if (!st || !st->display.bits || st->display.bits == st->blank || !st->vram)
+        return 0;
+    return (uint64_t)(st->display.bits - st->vram);
+}
+
 int tnt_control_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     st->vram = calloc(1, TNT_VRAM_SIZE);
@@ -830,11 +843,15 @@ int tnt_control_init(config_t *cfg) {
 
     tnt_control_update(cfg);
     st->display.response_dirty = true;
+    st->control_fb_node = (display_fb_node_t){.owner = cfg, .resolve = control_fb_resolve, .base = control_fb_base};
+    st->control_video_node = display_attach_video_node(&st->control_fb_node, "Video (Control)");
     return 0;
 }
 
 void tnt_control_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
+    display_detach_video_node(st->control_video_node);
+    st->control_video_node = NULL;
     free(st->vram);
     st->vram = NULL;
     free(st->blank);

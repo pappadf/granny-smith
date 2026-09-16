@@ -3725,6 +3725,23 @@ static const arg_decl_t screen_checksum_args[] = {
     {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region bottom edge"},
     {.name = "right",  .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Region right edge" },
 };
+// Stride and format: every per-card framebuffer node has had these, and the
+// generic `screen` node -- the one node that exists on EVERY machine,
+// including the ones with built-in video and no card node at all -- did not
+// (04-video F-16).
+static value_t screen_attr_stride(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    return val_uint(4, d ? d->stride : 0);
+}
+static value_t screen_attr_format(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    const display_t *d = system_display();
+    return val_str(d ? display_format_name(d->format) : "");
+}
+
 static const member_t screen_members[] = {
     {.kind = M_ATTR,
      .name = "width",
@@ -3741,6 +3758,16 @@ static const member_t screen_members[] = {
      .flags = VAL_RO,
      .doc = "Bits per pixel of the active display (1/2/4/8/16/32; 0 if unknown)",
      .attr = {.type = V_INT, .get = screen_attr_depth, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "stride",
+     .flags = VAL_RO,
+     .doc = "Row stride in bytes (rowBytes) of the active display",
+     .attr = {.type = V_UINT, .get = screen_attr_stride, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "format",
+     .flags = VAL_RO,
+     .doc = "Pixel encoding of the active display",
+     .attr = {.type = V_STRING, .get = screen_attr_format, .set = NULL}},
     {.kind = M_ATTR,
      .name = "par_w",
      .flags = VAL_RO,

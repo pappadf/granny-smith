@@ -242,6 +242,21 @@ void pdm_video_update(config_t *cfg) {
     v->display.clut_dirty = true;
 }
 
+static display_t *ariel_fb_resolve(void *owner) {
+    return pdm_video_display((config_t *)owner);
+}
+static uint64_t ariel_fb_base(void *owner) {
+    // A PHYSICAL address: there is no framebuffer-base register on Ariel, the
+    // scan window is picked by an HMC serial-config bit and the raster lives
+    // in main RAM.
+    config_t *cfg = (config_t *)owner;
+    pdm_state_t *st = cfg ? pdm_st(cfg) : NULL;
+    if (!st || !st->video.display.bits || st->video.display.bits == st->video.blank)
+        return 0;
+    const uint8_t *ram = ram_native_pointer(cfg->mem_map, 0);
+    return ram ? (uint64_t)(st->video.display.bits - ram) : 0;
+}
+
 void pdm_video_init(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     st->video.sense = s_pending_sense; // what machine.boot's monitor= staged
@@ -251,10 +266,14 @@ void pdm_video_init(config_t *cfg) {
         LOG(0, "Error: out of memory allocating the blanked raster; the screen stays live while blanked");
     pdm_video_update(cfg);
     st->video.display.response_dirty = true;
+    st->video.fb_node = (display_fb_node_t){.owner = cfg, .resolve = ariel_fb_resolve, .base = ariel_fb_base};
+    st->video.video_node = display_attach_video_node(&st->video.fb_node, "Video (Ariel)");
 }
 
 void pdm_video_teardown(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
+    display_detach_video_node(st->video.video_node);
+    st->video.video_node = NULL;
     free(st->video.blank);
     st->video.blank = NULL;
 }
