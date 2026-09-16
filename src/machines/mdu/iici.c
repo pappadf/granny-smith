@@ -183,6 +183,13 @@ static void iici_power_off(void *context) {
 }
 
 // RBV depth change (RvMonP bits 0-2) → reshape the built-in video display.
+// RBV video on/off (RvMonP bit 6) -> blank or unblank the raster.
+static void iici_rbv_blank(void *context, bool video_off) {
+    config_t *cfg = (config_t *)context;
+    iici_state_t *st = iici_state(cfg);
+    builtin_rbv_video_set_blank(st->video_card, video_off);
+}
+
 static void iici_rbv_mode(void *context, int depth_code) {
     config_t *cfg = (config_t *)context;
     iici_state_t *st = iici_state(cfg);
@@ -324,6 +331,7 @@ static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     rbv_set_irq_callback(st->rbv, iici_rbv_irq, cfg);
     rbv_set_power_off_callback(st->rbv, iici_power_off, cfg);
     rbv_set_mode_callback(st->rbv, iici_rbv_mode, cfg);
+    rbv_set_blank_callback(st->rbv, iici_rbv_blank, cfg);
     rbv_set_monitor_sense(st->rbv, 6);
     asc_set_irq_handler(st->asc, iici_asc_irq, st->rbv); // sound IRQ → RvIFR bit 4
 

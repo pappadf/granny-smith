@@ -121,6 +121,11 @@ struct rbv {
     void (*power_cb)(void *ctx);
     void *power_ctx;
     void (*mode_cb)(void *ctx, int depth_code);
+    // RvVIDOff (RvMonP bit 6).  A separate seam from mode_cb because blanking
+    // and depth are separate bits the driver sets independently -- it blanks,
+    // reprograms, then unblanks (04-video F-44).
+    void (*blank_cb)(void *ctx, bool video_off);
+    void *blank_ctx;
     void *mode_ctx;
 };
 
@@ -260,6 +265,7 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
         return;
     case RV_MONP: {
         uint8_t old_depth = rbv->reg_monp & RVMONP_DEPTH_MASK;
+        bool old_vidoff = (rbv->reg_monp & RVMONP_VIDOFF) != 0;
         // Depth (bits 0-2) and video on/off (bits 6-7) are writable; the
         // monitor-sense field (bits 3-5) is read-only and preserved.
         rbv->reg_monp = (uint8_t)((value & ~RVMONP_SENSE_MASK) | (rbv->reg_monp & RVMONP_SENSE_MASK));
@@ -268,6 +274,9 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
             (rbv->reg_monp & RVMONP_VIDOFF) ? 1 : 0);
         if (new_depth != old_depth && rbv->mode_cb)
             rbv->mode_cb(rbv->mode_ctx, new_depth);
+        bool new_vidoff = (rbv->reg_monp & RVMONP_VIDOFF) != 0;
+        if (new_vidoff != old_vidoff && rbv->blank_cb)
+            rbv->blank_cb(rbv->blank_ctx, new_vidoff);
         return;
     }
     case RV_CHPT:
@@ -378,6 +387,11 @@ void rbv_set_irq_callback(rbv_t *rbv, void (*cb)(void *ctx, bool active), void *
 void rbv_set_power_off_callback(rbv_t *rbv, void (*cb)(void *ctx), void *ctx) {
     rbv->power_cb = cb;
     rbv->power_ctx = ctx;
+}
+
+void rbv_set_blank_callback(rbv_t *rbv, void (*cb)(void *ctx, bool video_off), void *ctx) {
+    rbv->blank_cb = cb;
+    rbv->blank_ctx = ctx;
 }
 
 void rbv_set_mode_callback(rbv_t *rbv, void (*cb)(void *ctx, int depth_code), void *ctx) {

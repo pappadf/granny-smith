@@ -28,6 +28,9 @@ LOG_USE_CATEGORY_NAME("video");
 // Built-in 13" RGB panel: 640×480, depths 1/2/4/8 bpp.
 #define RBV_VIDEO_WIDTH  640
 #define RBV_VIDEO_HEIGHT 480
+// The black stub presented while RvVIDOff is set: the largest raster this card
+// can scan (8 bpp is the deepest entry in builtin_rbv_depths).
+#define RBV_BLANK_BYTES ((size_t)RBV_VIDEO_WIDTH * RBV_VIDEO_HEIGHT)
 
 // === Per-card private state =================================================
 
@@ -44,6 +47,7 @@ typedef struct {
     uint8_t vdac_phase; // 0 = R, 1 = G, 2 = B
     uint8_t vdac_rgb[3]; // accumulated R/G/B for the in-progress entry
     uint8_t vdac_pix_mask; // pixel read mask (accept-and-log)
+    bool video_off; // RvMonP RvVIDOff: the raster is blanked
 
     // --- Pointers and construction facts last; NOT in the range above ---
     // `display` leads them because it embeds `bits`/`clut` pointers of its own;
@@ -52,6 +56,12 @@ typedef struct {
     rbv_t *rbv; // RBV chip — set post-init by the machine (slot-0 IRQ)
     uint8_t *fb; // framebuffer buffer (registered by the machine at $FBB00000)
     bool fb_external; // true if fb points at machine-owned memory (don't free)
+    // RvMonP's RvVIDOff bit, and the black raster presented while it is set.
+    // A separate buffer because the framebuffer is LIVE GUEST MEMORY on the
+    // IIsi (the V8 DMAs main DRAM): blanking the screen must not write it.
+    // Same reasoning as ariel.c's `blank`.
+    uint8_t *blank;
+    uint32_t screen_offset; // where the visible raster starts within `fb`
 } rbv_video_priv_t;
 
 // The layout above is load-bearing.  If this fires, a member moved across the
@@ -78,6 +88,18 @@ static pixel_format_t depth_to_format(int depth_code) {
     default:
         return PIXEL_8BPP;
     }
+}
+
+// Re-derive the scanout from the current depth and the video-off bit.  One
+// checked transition, the same helper every other producer uses: geometry and
+// buffer are decided together, so a blanked screen cannot advertise a raster
+// the stub cannot serve, and the framebuffer window is bounds-checked against
+// the aperture rather than assumed to fit.
+static void rbv_video_apply_scanout(rbv_video_priv_t *p) {
+    uint32_t bpp = display_bpp(p->display.format);
+    uint32_t stride = RBV_VIDEO_WIDTH * bpp / 8u;
+    display_set_scanout(&p->display, p->video_off ? NULL : p->fb, BUILTIN_RBV_VRAM_SIZE, p->screen_offset, stride,
+                        RBV_VIDEO_WIDTH, RBV_VIDEO_HEIGHT, p->blank, RBV_BLANK_BYTES);
 }
 
 // Point display.clut at the slice of the 256-entry hardware CLUT the current
@@ -119,7 +141,10 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     if (!p)
         return -1;
     p->fb = calloc(1, BUILTIN_RBV_VRAM_SIZE);
-    if (!p->fb) {
+    p->blank = calloc(1, RBV_BLANK_BYTES);
+    if (!p->fb || !p->blank) {
+        free(p->fb);
+        free(p->blank);
         free(p);
         return -1;
     }
@@ -130,7 +155,8 @@ static int card_init(nubus_card_t *card, config_t *cfg, checkpoint_t *cp) {
     p->display.height = RBV_VIDEO_HEIGHT;
     p->display.format = PIXEL_1BPP_MSB;
     p->display.stride = RBV_VIDEO_WIDTH / 8; // 80 bytes/row at 1 bpp
-    p->display.bits = p->fb + BUILTIN_RBV_SCREEN_OFFSET;
+    p->screen_offset = BUILTIN_RBV_SCREEN_OFFSET;
+    p->display.bits = p->fb + p->screen_offset;
     // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
     display_blank_raster(&p->display);
     p->display.clut = p->clut; // narrowed to the active window below
@@ -163,6 +189,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
         return;
     if (!p->fb_external)
         free(p->fb); // machine-owned (IIsi main-RAM) framebuffers are not ours to free
+    free(p->blank);
     free(p);
     card->priv = NULL;
 }
@@ -276,7 +303,8 @@ void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, ui
         free(p->fb);
     p->fb = aperture;
     p->fb_external = true;
-    p->display.bits = p->fb + screen_offset;
+    p->screen_offset = screen_offset;
+    rbv_video_apply_scanout(p);
     // The private buffer card_init blanked has just been thrown away, so blank
     // the visible window of the aperture too — otherwise the IIsi cold-boots to
     // a white screen (zeroed DRAM is white at 1 bpp) while every other machine
@@ -285,6 +313,25 @@ void builtin_rbv_video_set_framebuffer(nubus_card_t *card, uint8_t *aperture, ui
     // its own patterns over this either way.
     display_blank_raster(&p->display);
     p->display.fb_dirty = true;
+}
+
+// RvMonP bit 6 (RvVIDOff).  The RBV decoded this bit, logged it and threw it
+// away, so the descriptor kept scanning out the framebuffer while the guest
+// believed video was off -- every sibling chip honours its blanking bit
+// (ariel.c `vid_mode & 0x80`, control.c `CR_CTRL & 0x400`, mach64gx.c
+// `CRTC_EN`/`CRTC_DISPLAY_DIS`, civic.c `SLOT_ENABLE`) and RBV was the only
+// one that did not (04-video F-44).  The visible effect is the mode-change
+// flicker a real IIci shows during a depth switch: guest code that
+// blanks-then-reprograms was visible mid-transition.
+void builtin_rbv_video_set_blank(nubus_card_t *card, bool video_off) {
+    rbv_video_priv_t *p = card ? card->priv : NULL;
+    if (!p || p->video_off == video_off)
+        return;
+    p->video_off = video_off;
+    rbv_video_apply_scanout(p);
+    p->display.shape_dirty = true;
+    p->display.fb_dirty = true;
+    LOG(2, "RBV video: video %s", video_off ? "off (blanked)" : "on");
 }
 
 void builtin_rbv_video_set_rbv(nubus_card_t *card, rbv_t *rbv) {
@@ -304,8 +351,8 @@ void builtin_rbv_video_set_depth(nubus_card_t *card, int depth_code) {
     // during machine init) would leave the power-on blank showing as white.
     bool pristine = display_raster_is_pristine(&p->display);
     p->display.format = f;
-    p->display.stride = RBV_VIDEO_WIDTH * display_bpp(f) / 8u;
-    if (pristine)
+    rbv_video_apply_scanout(p); // stride follows the depth; re-fills the stub if blanked
+    if (pristine && !p->video_off)
         display_blank_raster(&p->display);
     rbv_video_apply_clut_window(p);
     p->display.shape_dirty = true;

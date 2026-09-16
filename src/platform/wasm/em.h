@@ -27,9 +27,6 @@ void em_video_update(void);
 // Force a redraw of the video display
 void em_video_force_redraw(void);
 
-// Get pointer to framebuffer
-uint8_t *em_video_get_framebuffer(void);
-
 // === Audio Subsystem ===
 
 // Initialize audio subsystem (context + worklet module; the stream itself is

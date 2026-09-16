@@ -401,6 +401,8 @@ static uint32_t control_vcount(config_t *cfg) {
     if (vtotal == 0 || vtotal > 4096u)
         vtotal = 525u;
     uint64_t frame = cfg->machine->freq / 60u;
+    if (!frame)
+        return 0; // a machine with no clock yet -- % 0 is undefined (04-video F-47)
     uint64_t pos = scheduler_cpu_cycles(cfg->scheduler) % frame;
     return (uint32_t)(pos * vtotal / frame);
 }

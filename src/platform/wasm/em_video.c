@@ -738,10 +738,6 @@ void em_video_force_redraw(void) {
         draw();
 }
 
-uint8_t *em_video_get_framebuffer(void) {
-    return s_upload_scratch;
-}
-
 void frontend_force_redraw(void) {
     em_video_force_redraw();
 }
