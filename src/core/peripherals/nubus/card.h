@@ -24,6 +24,7 @@ typedef struct display display_t;
 
 struct nubus_bus;
 struct nubus_card;
+struct object;
 typedef struct nubus_bus nubus_bus_t;
 typedef struct nubus_card nubus_card_t;
 
@@ -157,6 +158,14 @@ typedef struct nubus_card_kind {
     // is core code knowing every display card by name -- exactly what
     // pci_card_kind_t.stage_option exists to avoid on the PCI side.
     void (*stage_video_mode)(const char *id);
+
+    // Attach this kind's OWN object children under the generic card node.
+    // The seam PCI has had since its §5.1: a card's private nodes belong to
+    // the card, not to a core file testing `is_card()` on every seated slot
+    // (04-video F-10).  NULL for a kind with nothing card-specific to expose.
+    // Children attached here are freed with the slot's tree; the callee keeps
+    // no handle.
+    void (*attach_objects)(struct nubus_card *card, struct object *card_node);
 } nubus_card_kind_t;
 
 // Parse a "monitor_Nbpp" video-mode id against a kind's monitor catalogue.

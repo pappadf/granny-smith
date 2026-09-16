@@ -42,9 +42,11 @@
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
+#include "object.h"
 #include "rtc.h"
 #include "system.h"
 #include "system_config.h"
+#include "value.h"
 
 #include <stddef.h> // offsetof — the checkpoint range
 #include <stdint.h>
@@ -669,6 +671,14 @@ static bool load_vrom(display_card_24ac_priv_t *p) {
 // machine.boot; consumed by the next card_init, which sets the monitor sense +
 // depth and seeds PRAM so the OS boots at that mode (mirrors jmfb.c).  The id
 // is resolved against display_card_24ac_monitors[] × its depth list.
+// STAGING -- ON DEATH ROW.  This is a construction input travelling as a
+// hidden per-module global: the visible per-slot channel
+// (machine.nubus.slot[N].video_mode) funnels through here, and the factory
+// consumes it destructively.  proposal-construction-inputs.md R1 replaces
+// every one of these with a machine_build_opts_t field passed to the factory
+// as an ARGUMENT, which is also what proposal-reset-and-nonvolatile-state.md
+// R3 means by "no holder, no staged copy, no pending slot".  Do not add
+// another one; the per-slot channel is already there to carry it.
 static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 
 // bpp → MODE register depth bits (vrom RE depth ladder; no 2-bpp mode).
@@ -1253,6 +1263,103 @@ static const nubus_monitor_t display_card_24ac_monitors[] = {
     {0},
 };
 
+static nubus_card_t *node_card(struct object *self) {
+    return (nubus_card_t *)object_data(self);
+}
+
+// --- machine.nubus.slot[N].card.engine ---------------------------------------
+// This card's own object children, attached through the KIND's attach_objects
+// hook.  They used to live in nubus_class.c behind an is_card() test, which
+// meant a core file knew this card existed (04-video F-10).
+static value_t eng_attr_enabled_get(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(display_card_24ac_engine_enabled(node_card(self)));
+}
+static value_t eng_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    if (in.kind != V_BOOL) {
+        value_free(&in);
+        return val_err("engine.enabled: expected a boolean");
+    }
+    display_card_24ac_engine_set_enabled(node_card(self), in.b);
+    value_free(&in);
+    return val_none();
+}
+static value_t eng_attr_mode(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, display_card_24ac_engine_mode(node_card(self)));
+}
+static value_t eng_attr_operand(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, display_card_24ac_engine_operand(node_card(self)));
+}
+static value_t eng_attr_fill_ops(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_24ac_engine_fill_ops(node_card(self)));
+}
+static value_t eng_attr_fill_bytes(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_24ac_engine_fill_bytes(node_card(self)));
+}
+static value_t eng_attr_copy_ops(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_24ac_engine_copy_ops(node_card(self)));
+}
+static value_t eng_attr_copy_bytes(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_24ac_engine_copy_bytes(node_card(self)));
+}
+static const member_t engine_members[] = {
+    {.kind = M_ATTR,
+     .name = "enabled",
+     .doc = "Acceleration gate; clear to force the software-fallback path (the oracle)",
+     .attr = {.type = V_BOOL, .get = eng_attr_enabled_get, .set = eng_attr_enabled_set}},
+    {.kind = M_ATTR,
+     .name = "mode",
+     .doc = "Latched CONTROL op byte ($01 fill / $03 stretch / $7F copy / ROP)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_mode}},
+    {.kind = M_ATTR,
+     .name = "operand",
+     .doc = "Latched 32-bit fill/pattern operand",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_operand}},
+    {.kind = M_ATTR,
+     .name = "fill_ops",
+     .doc = "Diagnostic: hardware run-length fills executed by the engine",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = eng_attr_fill_ops}},
+    {.kind = M_ATTR,
+     .name = "fill_bytes",
+     .doc = "Diagnostic: total bytes filled by the engine",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = eng_attr_fill_bytes}},
+    {.kind = M_ATTR,
+     .name = "copy_ops",
+     .doc = "Diagnostic: hardware block-copy/ROP executes by the engine",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = eng_attr_copy_ops}},
+    {.kind = M_ATTR,
+     .name = "copy_bytes",
+     .doc = "Diagnostic: total bytes copied by the engine",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = eng_attr_copy_bytes}},
+};
+static const class_desc_t display_card_24ac_engine_class = {
+    .name = "engine", .members = engine_members, .n_members = sizeof(engine_members) / sizeof(engine_members[0])};
+
+static void display_card_24ac_attach_objects(nubus_card_t *card, struct object *card_node) {
+    if (!card || !card_node)
+        return;
+    struct object *o = object_new(&display_card_24ac_engine_class, card, "engine");
+    if (!o)
+        return;
+    object_set_label(o, "Accelerator");
+    object_set_order(o, 50);
+    object_set_category(o, M_CAT_ADVANCED); // keep it out of the default SYSTEM tree
+    object_attach(card_node, o);
+}
+
 const nubus_card_kind_t display_card_24ac_kind = {
     .id = "display_card_24ac",
     .display_name = "Apple Macintosh Display Card 24AC",
@@ -1261,6 +1368,7 @@ const nubus_card_kind_t display_card_24ac_kind = {
     .monitors = display_card_24ac_monitors,
     .factory = factory,
     .stage_video_mode = display_card_24ac_pending_video_mode_set,
+    .attach_objects = display_card_24ac_attach_objects,
 };
 
 // Generic sibling kind: always-available twin with the built-in GS
@@ -1275,6 +1383,7 @@ const nubus_card_kind_t display_card_24ac_generic_kind = {
     .monitors = display_card_24ac_monitors,
     .factory = factory_generic,
     .stage_video_mode = display_card_24ac_pending_video_mode_set,
+    .attach_objects = display_card_24ac_attach_objects,
 };
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
@@ -1285,10 +1394,6 @@ void display_card_24ac_pending_video_mode_set(const char *id) {
         return;
     }
     snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
-}
-
-const char *display_card_24ac_pending_video_mode_get(void) {
-    return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
 }
 
 // Parse "<monitor>_<N>bpp" (e.g. "rgb_640x480_8bpp") into (monitor, N): the

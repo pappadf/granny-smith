@@ -36,9 +36,11 @@
 #include "log.h"
 #include "memory.h"
 #include "nubus.h"
+#include "object.h"
 #include "rtc.h"
 #include "system.h"
 #include "system_config.h"
+#include "value.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -776,6 +778,14 @@ static bool load_vrom(display_card_824gc_priv_t *p) {
 }
 
 // === Video-mode selection (machine.nubus.video_mode) ========================
+// STAGING -- ON DEATH ROW.  This is a construction input travelling as a
+// hidden per-module global: the visible per-slot channel
+// (machine.nubus.slot[N].video_mode) funnels through here, and the factory
+// consumes it destructively.  proposal-construction-inputs.md R1 replaces
+// every one of these with a machine_build_opts_t field passed to the factory
+// as an ARGUMENT, which is also what proposal-reset-and-nonvolatile-state.md
+// R3 means by "no holder, no staged copy, no pending slot".  Do not add
+// another one; the per-slot channel is already there to carry it.
 static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 static const nubus_monitor_t display_card_824gc_monitors[]; // fwd
 
@@ -1362,6 +1372,121 @@ static const nubus_monitor_t display_card_824gc_monitors[] = {
     {0},
 };
 
+static nubus_card_t *node_card(struct object *self) {
+    return (nubus_card_t *)object_data(self);
+}
+
+// --- machine.nubus.slot[N].card.gc -------------------------------------------
+// This card's own object children, attached through the KIND's attach_objects
+// hook.  They used to live in nubus_class.c behind an is_card() test, which
+// meant a core file knew this card existed (04-video F-10).
+static value_t gc_attr_state(struct object *self, const member_t *m) {
+    (void)m;
+    return val_str(display_card_824gc_state(node_card(self)));
+}
+static value_t gc_attr_cb(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, display_card_824gc_cb_addr(node_card(self)));
+}
+static value_t gc_attr_seq(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, display_card_824gc_seq(node_card(self)));
+}
+static value_t gc_attr_lastfunc(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, display_card_824gc_lastfunc(node_card(self)));
+}
+static value_t gc_attr_rpc_count(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_824gc_rpc_count(node_card(self)));
+}
+static value_t gc_attr_queue_bytes(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(8, display_card_824gc_queue_bytes(node_card(self)));
+}
+static value_t gc_attr_on(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(display_card_824gc_gc_on(node_card(self)));
+}
+static value_t gc_attr_error(struct object *self, const member_t *m) {
+    (void)m;
+    return val_int(display_card_824gc_error(node_card(self)));
+}
+static value_t gc_attr_force_decline_get(struct object *self, const member_t *m) {
+    (void)m;
+    return val_bool(display_card_824gc_force_decline(node_card(self)));
+}
+static value_t gc_attr_force_decline_set(struct object *self, const member_t *m, value_t in) {
+    (void)m;
+    if (in.kind != V_BOOL) {
+        value_free(&in);
+        return val_err("gc.force_decline: expected a boolean");
+    }
+    display_card_824gc_set_force_decline(node_card(self), in.b);
+    value_free(&in);
+    return val_none();
+}
+static const member_t gc_members[] = {
+    {.kind = M_ATTR,
+     .name = "state",
+     .doc = "Bring-up state: reset / booted / armed / gc-on / error",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = gc_attr_state}},
+    {.kind = M_ATTR,
+     .name = "cb",
+     .doc = "Published NuBus address of the command block (0 until booted)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_cb}},
+    {.kind = M_ATTR,
+     .name = "seq",
+     .doc = "Next expected RPC sequence word",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = gc_attr_seq}},
+    {.kind = M_ATTR,
+     .name = "lastfunc",
+     .doc = "Last dispatched RPC func code",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_lastfunc}},
+    {.kind = M_ATTR,
+     .name = "rpc_count",
+     .doc = "Total RPCs (Transport A doorbell) serviced",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = gc_attr_rpc_count}},
+    {.kind = M_ATTR,
+     .name = "queue_bytes",
+     .doc = "Total Transport-B (DrawMultiObject queue) bytes drained",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .get = gc_attr_queue_bytes}},
+    {.kind = M_ATTR,
+     .name = "on",
+     .doc = "Acceleration turned ON (Control $0D firmware kick observed)",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = gc_attr_on}},
+    {.kind = M_ATTR,
+     .name = "error",
+     .doc = "Last posted accelerator error code (0 = none)",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = gc_attr_error}},
+    {.kind = M_ATTR,
+     .name = "force_decline",
+     .doc = "Decline the drawing funcs ($2D/$15/$30) so the ROM path renders everything (the differential oracle)",
+     .attr = {.type = V_BOOL, .get = gc_attr_force_decline_get, .set = gc_attr_force_decline_set}},
+};
+static const class_desc_t display_card_824gc_gc_class = {
+    .name = "gc", .members = gc_members, .n_members = sizeof(gc_members) / sizeof(gc_members[0])};
+
+static void display_card_824gc_attach_objects(nubus_card_t *card, struct object *card_node) {
+    if (!card || !card_node)
+        return;
+    struct object *o = object_new(&display_card_824gc_gc_class, card, "gc");
+    if (!o)
+        return;
+    object_set_label(o, "GC Accelerator");
+    object_set_order(o, 50);
+    object_set_category(o, M_CAT_ADVANCED); // keep it out of the default SYSTEM tree
+    object_attach(card_node, o);
+}
+
 const nubus_card_kind_t display_card_824gc_kind = {
     .id = "824gc",
     .display_name = "Apple Macintosh Display Card 8\xe2\x80\xa2"
@@ -1371,6 +1496,7 @@ const nubus_card_kind_t display_card_824gc_kind = {
     .monitors = display_card_824gc_monitors,
     .factory = factory,
     .stage_video_mode = display_card_824gc_pending_video_mode_set,
+    .attach_objects = display_card_824gc_attach_objects,
 };
 
 // Monitor list for the generic sibling: config 0 (640×480) only in this
@@ -1401,6 +1527,7 @@ const nubus_card_kind_t display_card_824gc_generic_kind = {
     .monitors = display_card_824gc_generic_monitors,
     .factory = factory_generic,
     .stage_video_mode = display_card_824gc_pending_video_mode_set,
+    .attach_objects = display_card_824gc_attach_objects,
 };
 
 // === Video-mode selection ===================================================
@@ -1411,10 +1538,6 @@ void display_card_824gc_pending_video_mode_set(const char *id) {
         return;
     }
     snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
-}
-
-const char *display_card_824gc_pending_video_mode_get(void) {
-    return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
 }
 
 bool display_card_824gc_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp) {

@@ -9,9 +9,7 @@
 
 #include "nubus.h"
 #include "card.h"
-#include "display_card_24ac.h" // staged video-mode routing (stage_mode_for_kind)
-#include "display_card_824gc.h"
-#include "jmfb.h"
+#include "jmfb.h" // ONLY for stage_custom_for_kind; see the note there
 #include "log.h"
 #include "machine_config.h" // the built-from record's per-slot picks
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
@@ -32,6 +30,10 @@ struct nubus_bus {
     config_t *cfg;
     const nubus_slot_decl_t *slots; // the machine's slot table (topology)
     nubus_card_t *cards[NUBUS_MAX_SLOTS]; // cards[$9..$E]; NULL elsewhere
+    // Which KIND seated each slot.  The object layer needs it to call
+    // attach_objects without testing card identity (04-video F-10); PCI has
+    // carried the same per-slot record since its own §5.1.
+    const nubus_card_kind_t *slot_kind[NUBUS_MAX_SLOTS];
     uint16_t slot_irq_mask; // bitmap; bit $9 .. bit $E
 };
 
@@ -353,6 +355,12 @@ static void stage_mode_for_kind(int slot, const nubus_card_kind_t *kind, const c
 static void stage_custom_for_kind(int slot, const nubus_card_kind_t *kind, const char *spec) {
     if (!spec || !*spec || !kind)
         return;
+    // The last identity test in this file, kept DELIBERATELY.  Routing it
+    // through a kind hook would mean adding another staging seam, and staging
+    // is what proposal-construction-inputs.md R1 deletes outright -- the
+    // custom mode becomes a machine_build_opts_t field handed to the factory,
+    // at which point this function and jmfb.h's include above both go.  Making
+    // a condemned channel more polite is not worth a new hook (04-video F-10).
     if (kind == &jmfb_generic_kind)
         jmfb_pending_custom_mode_set(spec);
     else
@@ -441,6 +449,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
                 staged_custom = nubus_staged_custom_mode_get(NUBUS_STAGED_WILDCARD);
             if (staged_custom)
                 stage_custom_for_kind(s->slot, kind, staged_custom);
+            bus->slot_kind[s->slot] = kind;
             nubus_card_t *card = kind->factory(s->slot, cfg, cp);
             if (!card) {
                 // Factory returned NULL — typically a missing/invalid VROM
@@ -504,6 +513,12 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot) {
     if (!bus || slot < 0 || slot >= NUBUS_MAX_SLOTS)
         return NULL;
     return bus->cards[slot];
+}
+
+const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
+    if (!bus || slot < 0 || slot >= NUBUS_MAX_SLOTS)
+        return NULL;
+    return bus->slot_kind[slot];
 }
 
 // Serialise every seated card that implements the hooks, in slot order.

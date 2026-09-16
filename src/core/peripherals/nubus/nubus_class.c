@@ -11,10 +11,7 @@
 
 #include "card.h"
 #include "display.h"
-#include "display_card_24ac.h"
-#include "display_card_824gc.h"
 #include "display_class.h"
-#include "jmfb.h"
 #include "nubus.h"
 #include "object.h"
 #include "value.h"
@@ -46,9 +43,17 @@ static value_t nubus_method_cards(struct object *self, const member_t *m, int ar
     return val_list(items, n);
 }
 
+// Does any registered card offer this "monitor_Nbpp" id?  Asked of the
+// REGISTRY rather than of three named cards: every display kind carries its
+// own catalogue in `.monitors`, and nubus_monitor_mode_lookup answers the same
+// question against any of them.  The named-card version meant core knew which
+// display cards exist -- and silently gave the wrong answer for a fourth
+// (04-video F-10).
 static bool video_mode_id_known(const char *id) {
-    return jmfb_video_mode_lookup(id, NULL, NULL) || display_card_24ac_video_mode_lookup(id, NULL, NULL) ||
-           display_card_824gc_video_mode_lookup(id, NULL, NULL);
+    for (const nubus_card_kind_t *const *k = nubus_card_registry(); k && *k; k++)
+        if (nubus_monitor_mode_lookup((*k)->monitors, id, NULL, NULL))
+            return true;
+    return false;
 }
 
 // Exported for boot-document validation (machine.boot video_mode=).
@@ -81,8 +86,6 @@ typedef struct {
     struct object *declrom; // declaration ROM
     struct object *clut; // palette
     struct object *mode; // current monitor / depth
-    struct object *engine; // accelerator (display_card_24ac only; NULL otherwise)
-    struct object *gc; // GC accelerator protocol state (display_card_824gc only)
     display_fb_node_t fb_node; // instance data for the shared framebuffer class
 } nubus_slot_nodes_t;
 
@@ -201,180 +204,6 @@ static const member_t mode_members[] = {
 };
 static const class_desc_t nubus_mode_class = {
     .name = "mode", .members = mode_members, .n_members = sizeof(mode_members) / sizeof(mode_members[0])};
-
-// --- engine node (display_card_24ac acceleration engine) --------------------------
-static value_t eng_attr_enabled_get(struct object *self, const member_t *m) {
-    (void)m;
-    return val_bool(display_card_24ac_engine_enabled(node_card(self)));
-}
-static value_t eng_attr_enabled_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
-    if (in.kind != V_BOOL) {
-        value_free(&in);
-        return val_err("engine.enabled: expected a boolean");
-    }
-    display_card_24ac_engine_set_enabled(node_card(self), in.b);
-    value_free(&in);
-    return val_none();
-}
-static value_t eng_attr_mode(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(1, display_card_24ac_engine_mode(node_card(self)));
-}
-static value_t eng_attr_operand(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, display_card_24ac_engine_operand(node_card(self)));
-}
-static value_t eng_attr_fill_ops(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(8, display_card_24ac_engine_fill_ops(node_card(self)));
-}
-static value_t eng_attr_fill_bytes(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(8, display_card_24ac_engine_fill_bytes(node_card(self)));
-}
-static value_t eng_attr_copy_ops(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(8, display_card_24ac_engine_copy_ops(node_card(self)));
-}
-static value_t eng_attr_copy_bytes(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(8, display_card_24ac_engine_copy_bytes(node_card(self)));
-}
-static const member_t engine_members[] = {
-    {.kind = M_ATTR,
-     .name = "enabled",
-     .doc = "Acceleration gate; clear to force the software-fallback path (the oracle)",
-     .attr = {.type = V_BOOL, .get = eng_attr_enabled_get, .set = eng_attr_enabled_set}},
-    {.kind = M_ATTR,
-     .name = "mode",
-     .doc = "Latched CONTROL op byte ($01 fill / $03 stretch / $7F copy / ROP)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_mode}},
-    {.kind = M_ATTR,
-     .name = "operand",
-     .doc = "Latched 32-bit fill/pattern operand",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = eng_attr_operand}},
-    {.kind = M_ATTR,
-     .name = "fill_ops",
-     .doc = "Diagnostic: hardware run-length fills executed by the engine",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = eng_attr_fill_ops}},
-    {.kind = M_ATTR,
-     .name = "fill_bytes",
-     .doc = "Diagnostic: total bytes filled by the engine",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = eng_attr_fill_bytes}},
-    {.kind = M_ATTR,
-     .name = "copy_ops",
-     .doc = "Diagnostic: hardware block-copy/ROP executes by the engine",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = eng_attr_copy_ops}},
-    {.kind = M_ATTR,
-     .name = "copy_bytes",
-     .doc = "Diagnostic: total bytes copied by the engine",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = eng_attr_copy_bytes}},
-};
-static const class_desc_t nubus_engine_class = {
-    .name = "engine", .members = engine_members, .n_members = sizeof(engine_members) / sizeof(engine_members[0])};
-
-// --- gc node (display_card_824gc accelerator bring-up / protocol state) ------
-static value_t gc_attr_state(struct object *self, const member_t *m) {
-    (void)m;
-    return val_str(display_card_824gc_state(node_card(self)));
-}
-static value_t gc_attr_cb(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, display_card_824gc_cb_addr(node_card(self)));
-}
-static value_t gc_attr_seq(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, display_card_824gc_seq(node_card(self)));
-}
-static value_t gc_attr_lastfunc(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(4, display_card_824gc_lastfunc(node_card(self)));
-}
-static value_t gc_attr_rpc_count(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(8, display_card_824gc_rpc_count(node_card(self)));
-}
-static value_t gc_attr_queue_bytes(struct object *self, const member_t *m) {
-    (void)m;
-    return val_uint(8, display_card_824gc_queue_bytes(node_card(self)));
-}
-static value_t gc_attr_on(struct object *self, const member_t *m) {
-    (void)m;
-    return val_bool(display_card_824gc_gc_on(node_card(self)));
-}
-static value_t gc_attr_error(struct object *self, const member_t *m) {
-    (void)m;
-    return val_int(display_card_824gc_error(node_card(self)));
-}
-static value_t gc_attr_force_decline_get(struct object *self, const member_t *m) {
-    (void)m;
-    return val_bool(display_card_824gc_force_decline(node_card(self)));
-}
-static value_t gc_attr_force_decline_set(struct object *self, const member_t *m, value_t in) {
-    (void)m;
-    if (in.kind != V_BOOL) {
-        value_free(&in);
-        return val_err("gc.force_decline: expected a boolean");
-    }
-    display_card_824gc_set_force_decline(node_card(self), in.b);
-    value_free(&in);
-    return val_none();
-}
-static const member_t gc_members[] = {
-    {.kind = M_ATTR,
-     .name = "state",
-     .doc = "Bring-up state: reset / booted / armed / gc-on / error",
-     .flags = VAL_RO,
-     .attr = {.type = V_STRING, .get = gc_attr_state}},
-    {.kind = M_ATTR,
-     .name = "cb",
-     .doc = "Published NuBus address of the command block (0 until booted)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_cb}},
-    {.kind = M_ATTR,
-     .name = "seq",
-     .doc = "Next expected RPC sequence word",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = gc_attr_seq}},
-    {.kind = M_ATTR,
-     .name = "lastfunc",
-     .doc = "Last dispatched RPC func code",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_lastfunc}},
-    {.kind = M_ATTR,
-     .name = "rpc_count",
-     .doc = "Total RPCs (Transport A doorbell) serviced",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = gc_attr_rpc_count}},
-    {.kind = M_ATTR,
-     .name = "queue_bytes",
-     .doc = "Total Transport-B (DrawMultiObject queue) bytes drained",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = gc_attr_queue_bytes}},
-    {.kind = M_ATTR,
-     .name = "on",
-     .doc = "Acceleration turned ON (Control $0D firmware kick observed)",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = gc_attr_on}},
-    {.kind = M_ATTR,
-     .name = "error",
-     .doc = "Last posted accelerator error code (0 = none)",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = gc_attr_error}},
-    {.kind = M_ATTR,
-     .name = "force_decline",
-     .doc = "Decline the drawing funcs ($2D/$15/$30) so the ROM path renders everything (the differential oracle)",
-     .attr = {.type = V_BOOL, .get = gc_attr_force_decline_get, .set = gc_attr_force_decline_set}},
-};
-static const class_desc_t nubus_gc_class = {
-    .name = "gc", .members = gc_members, .n_members = sizeof(gc_members) / sizeof(gc_members[0])};
 
 // --- card node --------------------------------------------------------------
 static value_t card_attr_name(struct object *self, const member_t *m) {
@@ -619,15 +448,13 @@ void nubus_objects_build(nubus_bus_t *bus) {
                 attach_resource(n->card, &nubus_declrom_class, card, "declrom", "Declaration ROM", 20, M_CAT_BASIC);
             n->clut = attach_resource(n->card, &nubus_clut_class, card, "clut", "CLUT", 30, M_CAT_BASIC);
             n->mode = attach_resource(n->card, &nubus_mode_class, card, "mode", "Mode", 40, M_CAT_BASIC);
-            // The accelerator is display_card_24ac-specific; mark it Advanced so it
-            // doesn't clutter the default SYSTEM tree.
-            if (display_card_24ac_is_card(card))
-                n->engine =
-                    attach_resource(n->card, &nubus_engine_class, card, "engine", "Accelerator", 50, M_CAT_ADVANCED);
-            // The 8•24 GC exposes its accelerator bring-up / protocol state
-            // (headless tests assert the csCode ladder directly against it).
-            if (display_card_824gc_is_card(card))
-                n->gc = attach_resource(n->card, &nubus_gc_class, card, "gc", "GC Accelerator", 50, M_CAT_ADVANCED);
+            // Card-specific children, through the KIND that seated this slot.
+            // This file never tests a card's identity -- the accelerator nodes
+            // that used to live here behind is_card() belong to the cards
+            // (04-video F-10), the same way pci_class.c has always done it.
+            const nubus_card_kind_t *kind = nubus_slot_kind(bus, i);
+            if (kind && kind->attach_objects)
+                kind->attach_objects(card, n->card);
         }
     }
 }

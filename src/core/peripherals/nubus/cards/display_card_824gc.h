@@ -249,7 +249,6 @@ extern const nubus_card_kind_t display_card_824gc_generic_kind;
 // A pending "<monitor>_<N>bpp" id consumed by the next card_init (mirrors the
 // jmfb / 24AC equivalents): sets the monitor sense + depth and seeds PRAM.
 void display_card_824gc_pending_video_mode_set(const char *id);
-const char *display_card_824gc_pending_video_mode_get(void);
 bool display_card_824gc_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
 
 // === Accelerator introspection (object model — slot[N].card.gc) =============

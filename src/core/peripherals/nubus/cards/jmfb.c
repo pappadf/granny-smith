@@ -50,27 +50,36 @@ LOG_USE_CATEGORY_NAME("jmfb");
 // live near the bottom of this file (next to the per-card kind
 // descriptor that references the list); the JMFB factory body
 // further up needs to reach them.  Forward declarations here let the
-// factory call `monitor_for_sense` and read `s_pending_sense` /
-// `s_pending_sense_set` without reshuffling the file.
+// factory call `monitor_for_sense` and read `s_pending_sense` without
+// reshuffling the file.
 static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
 
 // Pending sense code consumed by the next JMFB factory call.  Set
 // from the shell via `nubus.video_sense = N` before `machine.boot`;
 // reset to the default ($6 = 13" RGB) on consumption so a forgotten
 // configuration doesn't leak across machine reinitialisations.
+// STAGING -- ON DEATH ROW.  This is a construction input travelling as a
+// hidden per-module global: the visible per-slot channel
+// (machine.nubus.slot[N].video_mode) funnels through here, and the factory
+// consumes it destructively.  proposal-construction-inputs.md R1 replaces
+// every one of these with a machine_build_opts_t field passed to the factory
+// as an ARGUMENT, which is also what proposal-reset-and-nonvolatile-state.md
+// R3 means by "no holder, no staged copy, no pending slot".  Do not add
+// another one; the per-slot channel is already there to carry it.
 static uint8_t s_pending_sense = 0x6;
-static bool s_pending_sense_set = false;
 
 // Pending video-mode selection set via `machine.video_mode = "id"`
 // (mirrors s_pending_sense above; consumed in the same factory
 // invocation).  At most 31 chars + NUL fits any "monitor_Nbpp" id.
 // Empty string means "no pending mode — fall back to plain sense".
+// STAGING -- see the note above; R1 deletes this too.
 static char s_pending_video_mode_id[NUBUS_VIDEO_MODE_ID_MAX] = "";
 
 // Pending "WxHxD" custom resolution set via `custom_mode=` (proposal-
 // nubus-runtime-vrom §3.6).  The generic kind generates a video
 // sResource at this geometry and boots its default monitor on it.
 // Empty string means "no custom mode".
+// STAGING -- see the note above; R1 deletes this too.
 static char s_pending_custom_mode[40] = "";
 
 // === Per-card private state =================================================
@@ -444,7 +453,6 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     if (s_pending_video_mode_id[0]) {
         if (jmfb_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp)) {
             s_pending_sense = seeded_monitor->sense_code;
-            s_pending_sense_set = true;
         } else {
             LOG(1, "jmfb: pending video_mode '%s' did not match any catalog entry; ignored", s_pending_video_mode_id);
         }
@@ -463,7 +471,6 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         }
         seeded_depth_bpp = (int)custom_d;
         s_pending_sense = 0x6;
-        s_pending_sense_set = true;
     }
 
     // Monitor sense code — consumed from the pending-sense slot the
@@ -475,7 +482,6 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     // machine.boot.
     p->regs.sense_code = s_pending_sense;
     s_pending_sense = 0x6;
-    s_pending_sense_set = false;
 
     const nubus_monitor_t *monitor = monitor_for_sense(p->regs.sense_code);
     uint32_t mon_w = monitor ? monitor->width : 640;
@@ -973,12 +979,11 @@ static const nubus_monitor_t *monitor_for_sense(uint8_t sense) {
     return NULL;
 }
 
-// (s_pending_sense / s_pending_sense_set defined near the top of this
+// (s_pending_sense defined near the top of this
 // file alongside the matching forward declarations.)
 
 void jmfb_pending_sense_set(uint8_t sense) {
     s_pending_sense = sense & 7;
-    s_pending_sense_set = true;
 }
 
 uint8_t jmfb_pending_sense_get(void) {
@@ -993,20 +998,12 @@ void jmfb_pending_video_mode_set(const char *id) {
     snprintf(s_pending_video_mode_id, sizeof s_pending_video_mode_id, "%s", id);
 }
 
-const char *jmfb_pending_video_mode_get(void) {
-    return s_pending_video_mode_id[0] ? s_pending_video_mode_id : NULL;
-}
-
 void jmfb_pending_custom_mode_set(const char *spec) {
     if (!spec || !*spec) {
         s_pending_custom_mode[0] = '\0';
         return;
     }
     snprintf(s_pending_custom_mode, sizeof s_pending_custom_mode, "%s", spec);
-}
-
-const char *jmfb_pending_custom_mode_get(void) {
-    return s_pending_custom_mode[0] ? s_pending_custom_mode : NULL;
 }
 
 // Parse "monitor_Nbpp" into (monitor, N).  monitor portion is matched
