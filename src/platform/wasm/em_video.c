@@ -585,6 +585,30 @@ static bool refresh_from_display(display_t *d, bool force_full) {
     if (!d || !d->bits)
         return false;
 
+    // Refuse a format this build has no shader for, rather than rendering it
+    // through another format's program.
+    //
+    // program_for() and uniforms_for() fall back to the 1 bpp program when a
+    // slot is 0 (a shader that failed to compile -- a driver quirk or a WebGL2
+    // precision difference), but allocate_fb_texture(), the u_stride uniform
+    // and upload_fb()'s src_fmt / tex_width all keep using the REAL format.
+    // So the 1 bpp shader sampled an RGBA8 texture with byte-index maths
+    // (04-video F-49).  Agreeing on 1 bpp instead would only make the garbage
+    // self-consistent; refusing says which format is missing, which is the same
+    // call display_set_scanout and the 8*24 GC blitter make -- and it also
+    // covers the case the finding does not, where the 1 bpp program is itself
+    // the one that failed and glUseProgram(0) silently unbinds everything.
+    if (d->format < 0 || (int)d->format >= NUM_FORMATS || !s_progs[d->format]) {
+        static bool warned[NUM_FORMATS + 1];
+        int slot = (d->format >= 0 && (int)d->format < NUM_FORMATS) ? (int)d->format : NUM_FORMATS;
+        if (!warned[slot]) {
+            warned[slot] = true;
+            LOG(0, "renderer: no shader program for %s -- frames in this format are refused",
+                display_format_name(d->format));
+        }
+        return false;
+    }
+
     bool shape = force_full || d->shape_dirty;
     bool fb = force_full || d->fb_dirty || shape;
     bool clut = force_full || d->clut_dirty;
