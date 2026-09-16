@@ -147,11 +147,18 @@ static void gc_px_arith(display_card_824gc_priv_t *p, uint8_t *b, uint32_t srcpi
 // not implemented; they draw nothing (also the ROM's illegal-mode behavior)
 // and log so a scene that needs them is visible.
 static inline void gc_px(display_card_824gc_priv_t *p, int x, int y, int s) {
-    if (x < 0 || x >= (int)p->display.width || y < 0 || y >= (int)p->display.height || y >= 480)
+    // Bounded by the clip mask as well as the descriptor: the mask is one bit
+    // per pixel of a fixed GC824_CLIP_STRIDE*8 x GC824_CLIP_ROWS screen, and x
+    // used to be checked only against display.width -- which at a wider raster
+    // walks off the end of the row (04-video F-23).  The literals 80 and 480
+    // that used to be here were the same two constants, spelled so that changing
+    // them would not have moved the guards that enforce them.
+    if (x < 0 || x >= (int)p->display.width || x >= GC824_CLIP_STRIDE * 8 || y < 0 || y >= (int)p->display.height ||
+        y >= GC824_CLIP_ROWS)
         return;
     // Clip to the drawable mask (clipRgn ∩ visRgn ∩ device) — region-accurate,
     // so a fill clipped to the desktop region does not paint over icons/windows.
-    if (!(p->gc_clipmask[y * 80 + (x >> 3)] & (0x80u >> (x & 7))))
+    if (!(p->gc_clipmask[y * GC824_CLIP_STRIDE + (x >> 3)] & (0x80u >> (x & 7))))
         return;
     if (p->gc_mode & 0x20) { // arithmetic family (incl. hilite $32/$3A)
         if (p->display.format == PIXEL_1BPP_MSB) {
@@ -318,9 +325,16 @@ static inline int gc_src(display_card_824gc_priv_t *p, int x, int y) {
 // RGBPat/PixPat path: patType != 0 patterns are never colorized (§2.2), so
 // the §2.1 cores run non-colorized with the pattern pixel as S.
 static void gc_px_val(display_card_824gc_priv_t *p, int x, int y, uint32_t v) {
-    if (x < 0 || x >= (int)p->display.width || y < 0 || y >= (int)p->display.height || y >= 480)
+    // Bounded by the clip mask as well as the descriptor: the mask is one bit
+    // per pixel of a fixed GC824_CLIP_STRIDE*8 x GC824_CLIP_ROWS screen, and x
+    // used to be checked only against display.width -- which at a wider raster
+    // walks off the end of the row (04-video F-23).  The literals 80 and 480
+    // that used to be here were the same two constants, spelled so that changing
+    // them would not have moved the guards that enforce them.
+    if (x < 0 || x >= (int)p->display.width || x >= GC824_CLIP_STRIDE * 8 || y < 0 || y >= (int)p->display.height ||
+        y >= GC824_CLIP_ROWS)
         return;
-    if (!(p->gc_clipmask[y * 80 + (x >> 3)] & (0x80u >> (x & 7))))
+    if (!(p->gc_clipmask[y * GC824_CLIP_STRIDE + (x >> 3)] & (0x80u >> (x & 7))))
         return;
     if (p->gc_mode & 0x20) {
         LOG(1, "8*24 GC QD: arithmetic/hilite mode $%02x with a colour pattern not modelled — pixel skipped",
@@ -1669,6 +1683,26 @@ int gc824_stretchbits(display_card_824gc_priv_t *p) {
     if (mode > 7 || dstBase != screen) {
         LOG(2, "8*24 GC QD: blit declined: mode $%x dst $%08x (screen $%08x)", mode, dstBase, screen);
         return 0; // arithmetic/hilite (incl. pending-hilite 50) → ROM
+    }
+    // ...and only a raster the clip mask actually covers.  The mask is one bit
+    // per pixel of a GC824_CLIP_STRIDE*8 x GC824_CLIP_ROWS screen, while the
+    // loops below bound y and x by the LIVE descriptor -- so on a taller mode
+    // (the card advertises 832x624, where display.height is 624) every row past
+    // 479 indexed ~11 KB past the allocation, and the destination writes had no
+    // buffer bound at all (04-video F-22).
+    //
+    // Declining is the fix rather than clamping: this function's contract is
+    // that 0 means "I did not draw it", and the caller then runs QuickDraw's
+    // own ROM blit.  Clamping the loops would skip the rows past the mask while
+    // still answering 1, so nothing would draw them at all.  Declining costs
+    // acceleration on a raster the mask cannot describe and keeps the picture
+    // correct, which is the right trade for a clip mask that is sized for one
+    // resolution.  (That it IS sized for one resolution is the separate
+    // question -- see local/gs-docs/projects/8-24GC.)
+    if (p->display.height > GC824_CLIP_ROWS || p->display.width > GC824_CLIP_STRIDE * 8u) {
+        LOG(2, "8*24 GC QD: blit declined: %ux%u exceeds the %ux%u clip mask", p->display.width, p->display.height,
+            GC824_CLIP_STRIDE * 8u, GC824_CLIP_ROWS);
+        return 0;
     }
     if ((dRb - dRt) != (int16_t)dram_be16(p, rb + 0xB4) - sRt ||
         (dRr - dRl) != (int16_t)dram_be16(p, rb + 0xB6) - sRl) {
