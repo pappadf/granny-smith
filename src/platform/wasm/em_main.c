@@ -365,6 +365,56 @@ static int map_dom_code_to_mac(const char *code, const char *key) {
     if (!strcmp(code, "ArrowUp"))
         return 0x3E;
 
+    // ── The Apple Extended Keyboard block ───────────────────────────────────
+    // Page Up/Down, Home, End, forward Delete, Help and the function keys.  A
+    // Mac Plus keyboard has none of these, which is presumably why they were
+    // never mapped -- but every ADB machine's guest can use them, and some
+    // REQUIRE them: Windows NT's text-mode Setup pages its licence agreement
+    // with Page Down and accepts it with F8, so without these the web UI gets
+    // stuck on the licence screen with no way forward.
+    //
+    // These are raw register-0 scan codes, like the arrows above.  They do not
+    // collide with the right-hand modifiers at raw 0x7B-0x7D that made the
+    // arrows send phantom Shift/Option/Control; 0x7A (F1) is the closest and is
+    // clear of them.  0x79 and 0x64 are the two confirmed end to end, driving
+    // NT Setup's licence agreement through to the hardware list.
+    if (!strcmp(code, "PageUp"))
+        return 0x74;
+    if (!strcmp(code, "PageDown"))
+        return 0x79;
+    if (!strcmp(code, "Home"))
+        return 0x73;
+    if (!strcmp(code, "End"))
+        return 0x77;
+    if (!strcmp(code, "Delete"))
+        return 0x75; // forward delete; Backspace is 0x33 above
+    if (!strcmp(code, "Insert"))
+        return 0x72; // Help on an Apple keyboard
+    if (!strcmp(code, "F1"))
+        return 0x7A;
+    if (!strcmp(code, "F2"))
+        return 0x78;
+    if (!strcmp(code, "F3"))
+        return 0x63;
+    if (!strcmp(code, "F4"))
+        return 0x76;
+    if (!strcmp(code, "F5"))
+        return 0x60;
+    if (!strcmp(code, "F6"))
+        return 0x61;
+    if (!strcmp(code, "F7"))
+        return 0x62;
+    if (!strcmp(code, "F8"))
+        return 0x64;
+    if (!strcmp(code, "F9"))
+        return 0x65;
+    if (!strcmp(code, "F10"))
+        return 0x6D;
+    if (!strcmp(code, "F11"))
+        return 0x67;
+    if (!strcmp(code, "F12"))
+        return 0x6F;
+
     // ── Numeric keypad ──────────────────────────────────────────────────────
     if (!strcmp(code, "NumpadDecimal"))
         return 0x41; // Keypad .
