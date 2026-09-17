@@ -3498,6 +3498,42 @@ static value_t atalk_printer_attr_set_name(struct object *self, const member_t *
     value_free(&in);
     return val_none();
 }
+static value_t atalk_printer_attr_status(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_str(atalk_printer_status_text());
+}
+static value_t atalk_printer_attr_interpreter(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_bool(atalk_printer_has_interpreter());
+}
+static value_t atalk_printer_attr_capture(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_bool(atalk_printer_capture_get());
+}
+static value_t atalk_printer_attr_set_capture(struct object *self, const member_t *m, value_t in) {
+    (void)self;
+    (void)m;
+    atalk_printer_capture_set(in.b);
+    return val_none();
+}
+static value_t atalk_printer_attr_documents(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_int(atalk_printer_documents());
+}
+static value_t atalk_printer_attr_last_pages(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_int(atalk_printer_last_pages());
+}
+static value_t atalk_printer_attr_last_outcome(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_str(atalk_printer_last_outcome());
+}
 
 static const member_t atalk_printer_members[] = {
     {.kind = M_ATTR,
@@ -3511,6 +3547,35 @@ static const member_t atalk_printer_members[] = {
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = atalk_printer_attr_name,
               .set = atalk_printer_attr_set_name}                                                      },
+    {.kind = M_ATTR,
+     .name = "status",
+     .doc = "PAP status string as the workstation reads it",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_printer_attr_status}                                      },
+    {.kind = M_ATTR,
+     .name = "interpreter",
+     .doc = "True when the build links the PostScript interpreter (PLATEN=1)",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = atalk_printer_attr_interpreter}                                   },
+    {.kind = M_ATTR,
+     .name = "capture",
+     .doc = "Also write each job's PostScript to the spool file",
+     .attr = {.type = V_BOOL, .get = atalk_printer_attr_capture, .set = atalk_printer_attr_set_capture}},
+    {.kind = M_ATTR,
+     .name = "documents",
+     .doc = "Documents the interpreter has handed to the platform",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = atalk_printer_attr_documents}                                      },
+    {.kind = M_ATTR,
+     .name = "last_pages",
+     .doc = "Pages of the last finished job",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = atalk_printer_attr_last_pages}                                     },
+    {.kind = M_ATTR,
+     .name = "last_outcome",
+     .doc = "Outcome of the last finished job: ok, error: <name> in <command>, budget",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_printer_attr_last_outcome}                                },
 };
 
 const class_desc_t atalk_printer_class = {

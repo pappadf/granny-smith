@@ -1,0 +1,42 @@
+%!PS
+% Host prelude for the emulated LaserWriter's PostScript interpreter.
+% Embedded at build time (laserwriter.mk -> build/laserwriter/
+% laserwriter_prelude.h) and run once per job at the server level before
+% the workstation's program, so everything defined here is what the driver
+% finds in the device.
+%
+% What the driver's setup code asks the device: statusdict timeouts and
+% feed state, the Level 1 page-size procedures, and the userdict page-type
+% procedures the LaserWriter family provides. Written from the published
+% language reference; nothing here is taken from a driver.
+%
+% The identity (product, version, revision) is not defined here: it is
+% seeded by laserwriter_job.c as statusdict identity entries, which the
+% interpreter mirrors into systemdict, so the two cannot disagree.
+statusdict begin
+  /manualfeed false def
+  /manualfeedtimeout 60 def
+  /waittimeout 300 def
+  /jobname () def
+  /jobstate (idle) def
+  /pagecount 0 def
+  % width height orientation setpage
+  /setpage { pop 2 array astore << /PageSize 3 -1 roll >> setpagedevice } bind def
+  % width height offset orientation setpageparams
+  /setpageparams { pop pop 2 array astore << /PageSize 3 -1 roll >> setpagedevice } bind def
+end
+/letter { << /PageSize [612 792] >> setpagedevice } bind def
+/legal { << /PageSize [612 1008] >> setpagedevice } bind def
+/a4 { << /PageSize [595 842] >> setpagedevice } bind def
+/b5 { << /PageSize [516 729] >> setpagedevice } bind def
+/note { letter } bind def
+/lettersmall { letter } bind def
+/a4small { a4 } bind def
+/11x17 { << /PageSize [792 1224] >> setpagedevice } bind def
+/tabloid { 11x17 } bind def
+% Note: the 13 resident faces are deliberately NOT registered in
+% FontDirectory here.  Doing so makes the driver's font-list query report
+% them and stream an outline job (full-fidelity text), but it also trips a
+% pre-existing guest-side LocalTalk wedge partway through the live print
+% (docs/notes/2026-09-16-efterscript-platen-bridge.md).  Left out so the
+% live job completes; the interpreter's findfont still resolves the faces.

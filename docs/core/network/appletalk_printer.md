@@ -147,6 +147,22 @@ To detect half-open connections, each side maintains a **2-minute connection tim
 * Receiver resets timer but sends no response.
 * If timer expires → connection considered dead; PAP tears down the connection.
 
+### 6.3a PostScript interpreter path (`PLATEN=1`)
+
+The read-driven model below describes the transport, which is unchanged by
+the interpreter. What differs is *what answers a read*. With `PLATEN=1`
+(`src/core/network/laserwriter_job.c`, `laserwriter.md` §5) every
+EOF-delimited PAP job is a `platen` interpreter job: incoming Data payloads
+are fed to it verbatim, and its own output (query replies, error reports)
+is what the workstation's status-channel reads return — the placeholder
+query detection (`PAP_QUERY_*`, the `= flush` / PatchPrep / font-list
+heuristics) is compiled out entirely. A status read the interpreter has no
+reply for is answered with the composed status string (never with EOF mid
+job), so the driver's progress poll never blocks; the reader→writer
+SendData that pulls PostScript is a separate transaction and is never
+answered with status. At the workstation's EOF the job runs to completion,
+its PDF goes to the platform, and the session is primed for the next job.
+
 ### 6.4 Printer-to-workstation chatter
 
 LaserWriter-class devices occasionally deliver PostScript status text back to the workstation (for example, to display `%%[ status: printing; jobname=Foo ]%%` dialogs). That path still follows the read-driven model: the workstation issues PAPRead (which becomes a SendData TReq aimed at the printer’s responding socket) and the printer answers with a Data response only when it has status bytes or wants to signal EOF. Real hardware often batches several status strings per SendData credit; conversely, a server that has nothing to report should simply set the EOF flag when returning a zero-length Data so the workstation does not loop forever trying to read nonexistent output.

@@ -12,6 +12,7 @@
 #include "debug.h"
 #include "floppy.h"
 #include "image.h"
+#include "laserwriter_job.h"
 #include "log.h"
 #include "machine.h"
 #include "machine_config.h"
@@ -56,6 +57,64 @@ void frontend_force_redraw(void) {
 // tree operation it is handed.  Empty means "no default volume".
 #define GS_DEFAULT_SHARE_NAME "Shared"
 static char g_shared_dir[PATH_MAX];
+
+// Where the LaserWriter's documents land, from --print-dir or $GS_PRINT_DIR.
+// Empty means "no directory": a finished job is logged and dropped.
+static char g_print_dir[PATH_MAX];
+
+// Platform sink for a finished LaserWriter job (weak default in
+// laserwriter_job.c drops it): <print-dir>/<job>-<title>.pdf, the title
+// reduced to filename-safe characters.  An error outcome keeps its
+// document (the pages shown before the error are in it) and is reported
+// on the console.
+void laserwriter_sink_document(const laserwriter_document_t *doc) {
+    const char *outcome = doc->ok ? "ok" : doc->budget_exceeded ? "execution budget spent" : doc->error_name;
+    if (!g_print_dir[0]) {
+        printf("laserwriter: job %u '%s' (%u pages, %s) discarded: no --print-dir\n", (unsigned)doc->job_id, doc->title,
+               (unsigned)doc->pages, outcome);
+        return;
+    }
+    if (mkdir(g_print_dir, 0755) != 0 && errno != EEXIST) {
+        printf("laserwriter: cannot create print directory %s: %s\n", g_print_dir, strerror(errno));
+        return;
+    }
+    // Filename-safe title: one '_' per run of anything outside [A-Za-z0-9._-]
+    char safe[LASERWRITER_TITLE_MAX + 1];
+    size_t n = 0;
+    bool pending_sep = false;
+    for (const char *p = doc->title; *p && n < LASERWRITER_TITLE_MAX; p++) {
+        unsigned char c = (unsigned char)*p;
+        bool keep = (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '.' || c == '-';
+        if (keep) {
+            if (pending_sep && n > 0)
+                safe[n++] = '_';
+            pending_sep = false;
+            if (n < LASERWRITER_TITLE_MAX)
+                safe[n++] = (char)c;
+        } else {
+            pending_sep = true;
+        }
+    }
+    safe[n] = '\0';
+    // Room for the directory plus the longest name this can form
+    char path[PATH_MAX + LASERWRITER_TITLE_MAX + 32];
+    snprintf(path, sizeof(path), "%s/%05u-%s.pdf", g_print_dir, (unsigned)doc->job_id, n ? safe : "untitled");
+    FILE *f = fopen(path, "wb");
+    if (!f) {
+        printf("laserwriter: cannot write %s: %s\n", path, strerror(errno));
+        return;
+    }
+    size_t wrote = fwrite(doc->pdf, 1, doc->pdf_len, f);
+    fclose(f);
+    if (wrote != doc->pdf_len)
+        printf("laserwriter: short write to %s (%zu of %zu bytes)\n", path, wrote, doc->pdf_len);
+    if (doc->ok)
+        printf("laserwriter: job %u '%s': %u pages -> %s\n", (unsigned)doc->job_id, doc->title, (unsigned)doc->pages,
+               path);
+    else
+        printf("laserwriter: job %u '%s': %u pages -> %s (error: %s in %s)\n", (unsigned)doc->job_id, doc->title,
+               (unsigned)doc->pages, path, outcome, doc->offending);
+}
 
 // Publish the default share after every system_create.  A machine teardown
 // drops the volume table, so this has to re-run; failure is a warning, not a
@@ -193,6 +252,8 @@ static void print_usage(const char *program) {
     printf("  --checkpoint-dir=DIR  Directory to host writable image deltas (default: alongside base image)\n");
     printf("  --shared-dir=DIR     Publish DIR as the default AppleShare volume \"Shared\"\n");
     printf("                       (also settable with $GS_SHARED_DIR; created if missing)\n");
+    printf("  --print-dir=DIR      Write each LaserWriter job's PDF as DIR/<job>-<title>.pdf\n");
+    printf("                       (also $GS_PRINT_DIR; created if missing; needs a PLATEN=1 build)\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s rom=plus.rom\n", program);
@@ -879,6 +940,10 @@ int main(int argc, char *argv[]) {
             snprintf(g_shared_dir, sizeof(g_shared_dir), "%s", arg + 13);
             continue;
         }
+        if (strncmp(arg, "--print-dir=", 12) == 0) {
+            snprintf(g_print_dir, sizeof(g_print_dir), "%s", arg + 12);
+            continue;
+        }
         if (strncmp(arg, "--checkpoint-dir=", 17) == 0) {
             checkpoint_dir = arg + 17;
             continue;
@@ -1058,6 +1123,16 @@ int main(int argc, char *argv[]) {
         if (env_dir && *env_dir)
             snprintf(g_shared_dir, sizeof(g_shared_dir), "%s", env_dir);
     }
+
+    // $GS_PRINT_DIR is the fallback for --print-dir.  A directory without the
+    // interpreter linked would never receive anything; say so up front.
+    if (!g_print_dir[0]) {
+        const char *env_dir = getenv("GS_PRINT_DIR");
+        if (env_dir && *env_dir)
+            snprintf(g_print_dir, sizeof(g_print_dir), "%s", env_dir);
+    }
+    if (g_print_dir[0] && !atalk_printer_has_interpreter())
+        fprintf(stderr, "warning: --print-dir set but this build has no PostScript interpreter (build with PLATEN=1)\n");
 
     // If a --checkpoint-dir was given, point the machine layer at it
     // verbatim so writable image deltas land there.  No id/timestamp
