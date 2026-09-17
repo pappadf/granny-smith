@@ -153,6 +153,15 @@ static void io_write(uint32_t port, uint8_t v) {
     g_io->write_uint8(g_ioctx, port ^ 7u, v);
 }
 
+static void crtc_write(uint8_t index, uint8_t value) {
+    io_write(0x3D4u, index);
+    io_write(0x3D5u, value);
+}
+
+static uint8_t io_read(uint32_t port) {
+    return g_io->read_uint8(g_ioctx, port ^ 7u);
+}
+
 static void seq_write(uint8_t index, uint8_t value) {
     io_write(0x3C4u, index);
     io_write(0x3C5u, value);
@@ -323,10 +332,29 @@ TEST(mirror_and_register_block) {
     ASSERT_EQ_HEX(vram_read(WIN_MMIO + MM_MODE), 0x5Au);
     ASSERT_EQ_HEX(mmio_read(MM_MODE), 0x5Au); // the read is display memory too, now
 
-    // SR17[6] moves the block to the last 256 bytes of the linear address space instead.
-    seq_write(0x17, 0x44);
-    g_write8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP, 0x6Du);
-    ASSERT_EQ_HEX(g_read8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP), 0x6Du);
+    // SR17[6] moves the block to the last 256 bytes of the linear address space instead -- but
+    // ONLY once linear addressing is enabled, which on this part means SR7[7:4] non-zero (TRM
+    // 9.13: "if linear addressing is not enabled, this bit is ignored").  With SR7[7:4] = 0 the
+    // bit is a don't-care and the block stays at $B8000.
+    //
+    // This is what wall E28 was.  Open Firmware's own Cirrus driver runs before NT with the
+    // console on the screen and leaves SR17 = $62; cirrus.sys then ORs in bit 2 and gets $66 --
+    // and this model, which took bit 6 as unconditional, moved the registers out from under a
+    // driver that was still writing them at $B8000.  A 17 September browser log shows the
+    // whole thing: "SR17 = $66", then every register write logged as a plain "window write"
+    // into display memory, START read back as $0, and not one "BLT start" in 750 lines.
+    gr_write(0x06, 0x04);
+    seq_write(0x07, 0x01); // packed pixel, SR7[7:4] = 0: linear addressing OFF
+    seq_write(0x17, 0x66); // the value the browser saw
+    g_write8(FB_BASE + WIN_BASE + WIN_MMIO + MM_ROP, 0x6Du);
+    ASSERT_EQ_HEX(mmio_read(MM_ROP), 0x6Du); // decoded at $B8000
+    ASSERT_EQ_HEX(vram_read(WIN_MMIO + MM_ROP), 0x00u); // and not as a pixel
+    ASSERT_EQ_HEX(g_read8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP), 0x00u); // nor at the top
+
+    // Linear addressing on (cirrus.sys programs SR07 = $F1): now bit 6 means what it says.
+    seq_write(0x07, 0xF1);
+    g_write8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP, 0x5Du);
+    ASSERT_EQ_HEX(g_read8(FB_BASE + VRAM_SIZE - 0x100u + MM_ROP), 0x5Du);
     ASSERT_EQ_HEX(g_read8(FB_BASE + WIN_BASE + WIN_MMIO + MM_ROP), 0x00u); // and not at $B8000
     rig_teardown();
 }
@@ -588,6 +616,58 @@ TEST(window_banking) {
 }
 
 // ============================================================================
+TEST(reset_restores_six_bit_dac) {
+    // The hidden DAC register sits in the register file that PCI RST# clears, so a warm reset
+    // has to leave the palette back in its six-bit VGA reading.  This row exists because the
+    // model used to keep the eight-bit flag across a reset: a guest that rebooted out of a
+    // session where the Cirrus driver had selected eight-bit palette data then had every
+    // subsequent VGA palette write taken raw, and the whole screen came up four times too dark.
+    rig_setup();
+    // The descriptor only exists once a packed-pixel mode is programmed, so put the card in
+    // 640x480 at 8 bpp the way a driver does: SR07[0] selects packed pixels with SR07[3:1] = 0
+    // for eight of them, and the CRTC carries the geometry.
+    seq_write(0x07, 0x01);
+    seq_write(0x01, 0x01); // eight dots per character clock
+    crtc_write(0x01, 79); // (79 + 1) * 8 = 640
+    crtc_write(0x12, 0xDF);
+    crtc_write(0x07, 0x02); // VDE bit 8: 479 + 1 = 480
+    crtc_write(0x13, 80); // 80 * 8 = 640 bytes per line
+    display_t *d = g_dev->ops->display(g_dev);
+    ASSERT_TRUE(d != NULL);
+
+    // The hidden register is reached the way a driver reaches it: four reads of $3C6 arm the
+    // door and the fifth access lands on the register (TRM 9.13).  Bit 1 selects eight bits.
+    for (int i = 0; i < 4; i++)
+        (void)io_read(0x3C6u);
+    io_write(0x3C6u, 0x02u);
+
+    // In eight-bit mode the written value is the intensity itself.
+    io_write(0x3C8u, 0x01u);
+    for (int ch = 0; ch < 3; ch++)
+        io_write(0x3C9u, 0x3Fu);
+    ASSERT_EQ_HEX(d->clut[1].r, 0x3Fu);
+
+    g_dev->ops->reset(g_dev, &g_cfg); // RST#, as a machine reset delivers it
+
+    // The same three bytes are a six-bit VGA value again, and $3F is full white.
+    io_write(0x3C8u, 0x01u);
+    for (int ch = 0; ch < 3; ch++)
+        io_write(0x3C9u, 0x3Fu);
+    ASSERT_EQ_HEX(d->clut[1].r, 0xFFu);
+    ASSERT_EQ_HEX(d->clut[1].g, 0xFFu);
+    ASSERT_EQ_HEX(d->clut[1].b, 0xFFu);
+
+    // And the door itself is shut again: a bare write to $3C6 after the reset is a pel mask
+    // write, not a hidden-register write, so it must not put the DAC back into eight-bit mode.
+    io_write(0x3C6u, 0x02u);
+    io_write(0x3C8u, 0x02u);
+    for (int ch = 0; ch < 3; ch++)
+        io_write(0x3C9u, 0x3Fu);
+    ASSERT_EQ_HEX(d->clut[2].r, 0xFFu);
+    rig_teardown();
+}
+
+// ============================================================================
 int main(void) {
     RUN(lane_contract);
     RUN(mirror_and_register_block);
@@ -602,6 +682,7 @@ int main(void) {
     RUN(blit_stays_inside_vram);
     RUN(unknown_rop_is_refused);
     RUN(window_banking);
+    RUN(reset_restores_six_bit_dac);
     fprintf(stderr, "[ OK ] cirrus54m30\n");
     return 0;
 }

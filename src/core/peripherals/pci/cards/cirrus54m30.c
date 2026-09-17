@@ -554,18 +554,35 @@ static uint8_t c54m30_mmio_reg(uint8_t off) {
     return C54M30_MMIO_NONE;
 }
 
+// Linear addressing, as the part defines it: "linear addressing is selected whenever SR7[7:4]
+// is programmed to any value other than '0'" (TRM 9.5 and the PCI system considerations in
+// Appendix B15).  BAR0 being the aperture is necessary but not sufficient; the sequencer bit
+// is the enable, and a driver in a legacy VGA mode leaves it clear.
+static bool c54m30_linear_enabled(const c54m30_t *c) {
+    return (c->seq[0x07] & 0xF0u) != 0;
+}
+
 // Where SR17 has put the register block, if anywhere.  SR17[2] enables it at $B8000 inside the
 // legacy window, aliased at every 256-byte boundary up to $BFF00 because "Address bits 14:8 are
-// 'don't care'" (Appendix B20 section 1).  With SR17[6] also set, the '30/'36/'40 move it
-// instead to the last 256 bytes of the linear address space, which for this 1 MB board is the
-// last 256 bytes of the fitted DRAM.  SR17[6] is documented as a don't-care unless linear
-// addressing is enabled; on this model BAR0 *is* the linear aperture and there is no separate
-// enable to consult, so it is always taken as enabled.
+// 'don't care'" (Appendix B20 section 1).  With SR17[6] also set AND linear addressing enabled,
+// the '30/'36/'40 move it instead to the last 256 bytes of the linear address space, which for
+// this 1 MB board is the last 256 bytes of the fitted DRAM.  Otherwise SR17[6] is ignored:
+// "If Memory-mapped I/O is not enabled, or if linear addressing is not enabled, this bit is
+// ignored" (TRM 9.13).
+//
+// An earlier version of this function took linear addressing as always enabled, on the
+// grounds that BAR0 is the aperture and there was "no separate enable to consult".  There is:
+// SR7[7:4].  Open Firmware's Cirrus driver leaves SR17 = $62 behind when its console is on the
+// screen, cirrus.sys ORs in bit 2 and gets $66, and with bit 6 honoured unconditionally the
+// registers moved out from under a driver still writing them at $B8000 -- every write logged
+// as a "window write" into display memory, START reading back $0, no BLT ever starting.  That
+// was wall E28 (17 September, browser only: every headless run had the OF console on ttya, so
+// the card was untouched before NT and SR17 started from zero).
 static bool c54m30_mmio_hit(const c54m30_t *c, uint32_t offset, uint8_t *reg) {
     uint8_t sr17 = c->seq[0x17];
     if (!(sr17 & 0x04u))
         return false;
-    if (sr17 & 0x40u) {
+    if ((sr17 & 0x40u) && c54m30_linear_enabled(c)) {
         if (offset < C54M30_VRAM - 0x100u || offset >= C54M30_VRAM)
             return false;
     } else {
@@ -973,9 +990,18 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
         // Worth a line at level 1: if a driver never sets bit 2, none of its register writes
         // are register writes at all -- on the real part or here -- and the log says so before
         // anything else is worth reading.
-        if ((c->seq_index & (C54M30_SEQ_REGS - 1u)) == 0x17u)
-            LOG(1, "SR17 = $%02X: memory-mapped BLT registers %s", value,
-                (value & 0x04u) ? ((value & 0x40u) ? "at the top of the linear aperture" : "at $B8000") : "disabled");
+        if ((c->seq_index & (C54M30_SEQ_REGS - 1u)) == 0x17u) {
+            bool lin = c54m30_linear_enabled(c);
+            LOG(1, "SR17 = $%02X: memory-mapped BLT registers %s%s", value,
+                (value & 0x04u) ? ((value & 0x40u) && lin ? "at the top of the linear aperture" : "at $B8000")
+                                : "disabled",
+                ((value & 0x40u) && !lin) ? " (bit 6 set but linear addressing off: ignored)" : "");
+        }
+        // SR07 is the other half of that decision (and the pixel depth), so it earns a line too:
+        // the ORDER of SR07 and SR17 writes is what decides where a driver's registers land.
+        if ((c->seq_index & (C54M30_SEQ_REGS - 1u)) == 0x07u)
+            LOG(1, "SR07 = $%02X: %s, linear addressing %s", value, (value & 0x01u) ? "packed pixel" : "VGA planar",
+                (value & 0xF0u) ? "on" : "off");
         c->seq[c->seq_index & (C54M30_SEQ_REGS - 1u)] = value;
         c54m30_update(c);
         return;
@@ -1211,6 +1237,13 @@ static void c54m30_reset(pci_device_t *dev, config_t *cfg) {
     c->dac_write_index = 0;
     c->dac_read_index = 0;
     c->dac_phase = 0;
+    // The hidden DAC register is part of that register file, and it powers up at zero: six-bit
+    // palette data, and the $3C6 door shut.  Carrying an eight-bit selection across a reset
+    // makes every VGA palette write afterwards four times too dark -- which is what a guest
+    // rebooting out of a session where its Cirrus driver ran in eight-bit mode used to get.
+    c->hidden_dac = 0;
+    c->dac_8bit = false;
+    c->pelmask_reads = 0;
     // The palette powers up all-zero — i.e. black — which is what a
     // monitor shows before the video circuitry drives it.
     memset(c->dac, 0, sizeof(c->dac));
