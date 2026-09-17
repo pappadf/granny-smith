@@ -212,16 +212,80 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd);
 // ============================================================================
 
 // Enqueues one byte into the keyboard ring buffer; drops the oldest on overflow
+static inline unsigned kbd_queue_next(unsigned i) {
+    return (i + 1 == KBD_QUEUE_SIZE) ? 0 : i + 1;
+}
+
+// Take one byte out of the middle of the ring, closing the gap behind it.
+static void kbd_queue_remove(adb_t *adb, unsigned idx) {
+    unsigned i = idx;
+    for (unsigned next = kbd_queue_next(i); next != adb->kbd_queue.head; next = kbd_queue_next(next)) {
+        adb->kbd_queue.buf[i] = adb->kbd_queue.buf[next];
+        i = next;
+    }
+    adb->kbd_queue.head = i;
+}
+
+// Drop the oldest queued byte that satisfies `want`, if there is one.
+static bool kbd_queue_drop_first(adb_t *adb, bool (*want)(uint8_t, uint8_t), uint8_t arg) {
+    for (unsigned i = adb->kbd_queue.tail; i != adb->kbd_queue.head; i = kbd_queue_next(i)) {
+        if (want(adb->kbd_queue.buf[i], arg)) {
+            kbd_queue_remove(adb, i);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool kbd_byte_is_press(uint8_t b, uint8_t arg) {
+    (void)arg;
+    return (b & 0x80u) == 0u; // Register 0 bit 7: 0 = down, 1 = up
+}
+
+static bool kbd_byte_same_key(uint8_t b, uint8_t arg) {
+    return b == arg; // an identical transition already queued: dropping it changes nothing
+}
+
+// WHICH BYTE GOES WHEN THE QUEUE IS FULL decides whether the guest loses a
+// character or is left with a stuck modifier, and the two are not close.
+//
+// Register 0 reports a release as bit 7 of the keycode, so a dropped RELEASE
+// leaves the guest holding a key it will never see let go.  For Shift that
+// silently converts every character after it: in a digits-only field the
+// digits arrive as `!@#$%^&*()` and the field discards them without a sound,
+// which reads exactly like software rejecting the input.  Nothing corrects it
+// either, because this side's kbd_pressed[] has already moved on -- the two
+// halves disagree from then on.  A dropped PRESS costs one character and
+// nothing else.
+//
+// So a release always gets in, at the cost of the oldest press still queued;
+// and a press that will not fit is refused rather than displacing anything.
+// Dropping a press does leave its own release to be delivered unpaired, which
+// a guest treats as a release of a key it does not think is held -- harmless,
+// and the benign direction of the two.
 static void kbd_enqueue(adb_t *adb, uint8_t byte) {
-    unsigned int head = adb->kbd_queue.head + 1;
-    if (head == KBD_QUEUE_SIZE)
-        head = 0;
+    unsigned int head = kbd_queue_next(adb->kbd_queue.head);
     if (head == adb->kbd_queue.tail) {
-        // Queue full: drop oldest entry to make room for the new key event
-        LOG(1, "kbd_queue overflow, dropping oldest byte");
-        adb->kbd_queue.tail++;
-        if (adb->kbd_queue.tail == KBD_QUEUE_SIZE)
-            adb->kbd_queue.tail = 0;
+        if (!(byte & 0x80u)) {
+            LOG(1, "kbd_queue full, refusing key-down $%02X rather than displace a queued release", byte);
+            return;
+        }
+        if (kbd_queue_drop_first(adb, kbd_byte_is_press, 0)) {
+            LOG(1, "kbd_queue full, dropped the oldest key-down to make room for release $%02X", byte);
+        } else if (kbd_queue_drop_first(adb, kbd_byte_same_key, byte)) {
+            // Nothing but releases left, so a press was refused earlier and its
+            // release is now unpaired.  An identical one is already waiting;
+            // dropping that costs nothing and leaves every OTHER key's release
+            // where it is -- which is the whole point of the exercise.
+            LOG(1, "kbd_queue full of releases, dropped a duplicate $%02X", byte);
+        } else {
+            // Every entry is a release for a different key, which would mean
+            // more keys held than a keyboard has.  Refuse rather than evict
+            // someone else's release.
+            LOG(1, "kbd_queue full of distinct releases, refusing $%02X", byte);
+            return;
+        }
+        head = kbd_queue_next(adb->kbd_queue.head);
     }
     adb->kbd_queue.buf[adb->kbd_queue.head] = byte;
     adb->kbd_queue.head = head;
