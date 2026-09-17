@@ -60,6 +60,11 @@ void rbv_set_power_off_callback(rbv_t *rbv, void (*cb)(void *ctx), void *ctx);
 
 // Video depth-change callback — fires when the RvMonP depth field (bits 0-2)
 // changes.  `depth_code`: 0 = 1 bpp, 1 = 2 bpp, 2 = 4 bpp, 3 = 8 bpp.
+// RvMonP's RvVIDOff bit, reported when it CHANGES.  Separate from the mode
+// callback because the driver sets the two bits independently: it blanks,
+// reprograms the depth, then unblanks (04-video F-44).
+void rbv_set_blank_callback(rbv_t *rbv, void (*cb)(void *ctx, bool video_off), void *ctx);
+
 void rbv_set_mode_callback(rbv_t *rbv, void (*cb)(void *ctx, int depth_code), void *ctx);
 
 // === Interrupt sources ======================================================

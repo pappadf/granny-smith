@@ -24,6 +24,7 @@ typedef struct display display_t;
 
 struct nubus_bus;
 struct nubus_card;
+struct object;
 typedef struct nubus_bus nubus_bus_t;
 typedef struct nubus_card nubus_card_t;
 
@@ -82,11 +83,9 @@ struct nubus_card {
     size_t declrom_size;
 };
 
-// Per-card constructor signature.  The bus controller calls this once per
-// populated slot during nubus_init().  Returns the new card on success,
-// NULL on failure.  The bus takes ownership and calls ops->teardown()
-// during nubus_delete.
-typedef nubus_card_t *(*nubus_card_factory_fn)(int slot, config_t *cfg, checkpoint_t *cp);
+// (The per-card factory is gone.  The bus controller allocates the
+// nubus_card_t itself and calls ops->init on it -- see nubus_card_kind_t.ops
+// and 04-video F-52.)
 
 // One monitor a card advertises (resolution + supported depths).  Used
 // by the card-kind registry so the dialog can populate a monitor / depth
@@ -149,8 +148,46 @@ typedef struct nubus_card_kind {
     card_attach_t attach; // physical attachment; drives socket matching
     bool requires_vrom; // dialog shows VROM picker iff true
     const nubus_monitor_t *monitors; // sentinel-terminated; NULL for non-display cards
-    nubus_card_factory_fn factory; // bus controller calls this once per populated slot
+    // The card's vtable.  The bus controller allocates the nubus_card_t,
+    // fills in ops / bus / slot, and calls ops->init once per populated slot.
+    //
+    // This used to be a per-card `factory` that allocated the card itself --
+    // which meant `bus` could only be assigned AFTER the factory returned, so
+    // nubus_assert_irq / nubus_deassert_irq reached from card_init were a
+    // silent no-op (they early-return on !card->bus).  No card did that, but
+    // card_reset legitimately does, and the two call sites look identical
+    // (04-video F-52).  Nine kinds also carried five byte-identical
+    // `factory_common` bodies to do the allocation.
+    const nubus_card_ops_t *ops;
+    // Hand a staged `machine.nubus.video_mode` id to this kind's pending-mode
+    // channel -- the per-driver static its factory consumes at init.  NULL for
+    // a kind with no video-mode staging.  Without it the bus controller had to
+    // if/else over card identity to route a staged mode (04-video F-05), which
+    // is core code knowing every display card by name -- exactly what
+    // pci_card_kind_t.stage_option exists to avoid on the PCI side.
+    void (*stage_video_mode)(const char *id);
+
+    // Attach this kind's OWN object children under the generic card node.
+    // The seam PCI has had since its §5.1: a card's private nodes belong to
+    // the card, not to a core file testing `is_card()` on every seated slot
+    // (04-video F-10).  NULL for a kind with nothing card-specific to expose.
+    // Children attached here are freed with the slot's tree; the callee keeps
+    // no handle.
+    void (*attach_objects)(struct nubus_card *card, struct object *card_node);
 } nubus_card_kind_t;
+
+// Parse a "monitor_Nbpp" video-mode id against a kind's monitor catalogue.
+// One body for what were three byte-identical copies in jmfb.c, 24ac.c and
+// 824gc.c (04-video F-05).  The monitor portion is matched case-sensitively
+// against `list`; N is decimal and must appear in that monitor's depths[].
+// Returns false (leaving the outputs untouched) on any mismatch.
+bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, const nubus_monitor_t **out_monitor,
+                               int *out_depth_bpp);
+
+// The widest video-mode id any catalogue can name, plus room for the "_32bpp"
+// suffix and the terminator.  One size for what were a 32-byte buffer in one
+// card and 40-byte buffers in the other two.
+#define NUBUS_VIDEO_MODE_ID_MAX 40
 
 // Registry accessors.  The registry itself is an explicit list in
 // nubus.c (see proposal §3.2.1 "explicit list, no linker constructors").

@@ -24,6 +24,19 @@ typedef void (*event_callback_t)(void *source, uint64_t data);
 
 #define NS_PER_SEC 1000000000ULL
 
+// The Macintosh vertical-blanking rate: 60.15 Hz, the tick that paces Ticks,
+// the Time Manager and every VBL task, on every machine from the 128K to the
+// PowerPC models.  It is ONE number, so it lives in one place -- display
+// producers that raise their own frame event were each carrying a private
+// nanosecond literal derived from it (Civic 16625103, DAFB 16625000, the
+// latter 103 ns short per frame), which is three chances to disagree about a
+// constant (04-video F-17).  A card whose timing registers give a real refresh
+// rate should derive the period from THOSE and not use this; this is the
+// rate of the machine's own retrace.
+#define MAC_VBL_FREQUENCY 60.15
+#define MAC_VBL_PERIOD    (1.0 / MAC_VBL_FREQUENCY) // seconds
+#define MAC_VBL_PERIOD_NS 16625103ULL // = 1e9 / 60.15, truncated
+
 // Three pacing modes (see docs/core/scheduler/scheduler.md §10,
 // docs/core/scheduler/scheduler.md):
 //   schedule_paced       — wall-clock accumulator; the guest tracks real time

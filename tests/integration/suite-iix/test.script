@@ -332,6 +332,57 @@ def row_iix_75_hd() {
     report_perf("suite-iix/iix-75-hd", scheduler.instr_count)
 }
 
+# ---- iix-jmfb-refuse --------------------------------------------------------
+# The descriptor half of the JMFB: what the card does when the guest programs
+# geometry its 2 MB VRAM cannot back.  VideoBase is 16 bits in units of 32
+# bytes, so one move.l reaches 2,097,120 -- and at 24 bpp the driver's own
+# encoding scales it by 8/3, which reaches 5,592,320, 2.7x past the end
+# (04-video F-20).  RowWords is likewise unbounded.
+#
+# Both writes must be REFUSED, not clamped: the card scans nothing rather than
+# advertising a raster that runs off the end of VRAM, so screen.checksum -- the
+# capture path, which walks stride x height -- reports no framebuffer instead
+# of reading past the allocation.  And the refusal must be recoverable: the
+# next sane write rebuilds the full raster, byte-identical to before.
+#
+# This is the integration row that covers display_set_scanout for every card
+# that routes through it; under the nightly valgrind tier it is also the thing
+# that would catch a regression as an invalid read rather than as a wrong
+# picture.
+def row_iix_jmfb_refuse() {
+    machine.boot model="iix" ram=8192 rom="${$ROM}"
+    scheduler.run 80000000
+    assert machine.screen.width == 640 "iix-jmfb-refuse: screen.width != 640"
+    assert machine.screen.height == 480 "iix-jmfb-refuse: screen.height != 480"
+    let good = machine.screen.checksum()
+
+    # JMFB registers live at slot $9 + $200000; the low half of each long is
+    # the live word (jmfb.h JMFBVideoBase $08 / JMFBRowWords $0C).
+    let reg_base = 0xF920000A
+    let reg_rw = 0xF920000E
+
+    # VideoBase = $FFFF -> byte offset 2,097,120, one row-word short of the
+    # 2 MB end: the 640x480 raster cannot fit behind it.
+    machine.memory.poke.w $reg_base 0xFFFF
+    assert machine.screen.height == 0 "iix-jmfb-refuse: out-of-VRAM VideoBase was accepted"
+    assert try(machine.screen.checksum(), "refused") == "refused" "iix-jmfb-refuse: refused descriptor still scanned"
+
+    # ...and the next sane write brings the same picture back.
+    machine.memory.poke.w $reg_base 0x0050
+    assert machine.screen.height == 480 "iix-jmfb-refuse: descriptor did not recover after VideoBase"
+    assert machine.screen.checksum() == $good "iix-jmfb-refuse: recovered picture differs after VideoBase"
+
+    # RowWords = $0FFF -> stride 16,380 at 1 bpp, a 7.8 MB raster.
+    machine.memory.poke.w $reg_rw 0x0FFF
+    assert machine.screen.height == 0 "iix-jmfb-refuse: out-of-VRAM RowWords was accepted"
+    assert try(machine.screen.checksum(), "refused") == "refused" "iix-jmfb-refuse: refused stride still scanned"
+
+    machine.memory.poke.w $reg_rw 0x0014
+    assert machine.screen.height == 480 "iix-jmfb-refuse: descriptor did not recover after RowWords"
+    assert machine.screen.checksum() == $good "iix-jmfb-refuse: recovered picture differs after RowWords"
+    report_perf("suite-iix/iix-jmfb-refuse", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("iix-nomedia") { row_end("iix-nomedia", try(row_iix_nomedia(), "FAILED")) }
@@ -341,6 +392,7 @@ if row_on("iix-portrait-603") { row_end("iix-portrait-603", try(row_iix_portrait
 if row_on("iix-71-extfd") { row_end("iix-71-extfd", try(row_iix_71_extfd(), "FAILED")) }
 if row_on("iix-gc-accel1") { row_end("iix-gc-accel1", try(row_iix_gc_accel1(), "FAILED")) }
 if row_on("iix-gc-decline1") { row_end("iix-gc-decline1", try(row_iix_gc_decline1(), "FAILED")) }
+if row_on("iix-jmfb-refuse") { row_end("iix-jmfb-refuse", try(row_iix_jmfb_refuse(), "FAILED")) }
 if row_on("iix-jmfb-sweep") { row_end("iix-jmfb-sweep", try(row_iix_jmfb_sweep(), "FAILED")) }
 if row_on("iix-75-hd") {
     if have_media($hd_75) {

@@ -413,6 +413,50 @@ assert machine.profile("pm9500").pci_slots[0].cards[0].options[0].default_value 
 
 machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
 
+# --- A checkpoint crosses the VRAM staging boundary. ------------------------
+# The card is CONSTRUCTED from the staged options and the stream is replayed
+# into it afterwards, so a 4 MB checkpoint really can land in a card staged at
+# the 2 MB default.  The restore resizes rather than truncating -- and it has
+# to resize all THREE buffers, because `blank` and `compose` are sized to
+# vram_size and every scan is bounded by vram_size, which is the only reason a
+# buffer of that size is always big enough.  Growing `vram` alone left the
+# other two at the old size and turned the mach64_update() that the restore
+# itself performs into a heap WRITE overflow (04-video F-27).
+#
+# This pins the invariant rather than the crash: firing the overflow needs the
+# guest in a mode spanning more than 2 MB, which a ROM-stage boot never reaches.
+# What it does catch is the resize going wrong in either direction, and under
+# the nightly valgrind tier it is also where a reintroduced mismatch would show
+# up as an invalid write.
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
+scheduler.run 40000000
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "checkpoint source: the card is the 4 MB build"
+checkpoint.save "${$WORK_DIR}/mach64-4m.ckpt"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=2m"
+scheduler.run 40000000
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 2 "restore target: staged at the 2 MB default"
+checkpoint.load "${$WORK_DIR}/mach64-4m.ckpt"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 4 MB stream must win over the 2 MB staging"
+assert machine.pci.slot[1].card.regs.vram_size == 0x400000 "...and the card must report 4 MB afterwards"
+# Every buffer moved, so a scanout still pointing into a freed one would read
+# garbage or fault.  Keep running: the restore already called mach64_update()
+# once, and this drives more of them plus the VBL presents.  (There is no
+# geometry to assert at this point -- the Open Firmware ROM does not program
+# this card's CRTC at ROM stage, so the descriptor is legitimately 0x0 here.)
+scheduler.run 20000000
+assert machine.id == "pm9500" "the machine survives scanning on the resized buffers"
+
+# ...and the same in the other direction, which is the case that SHRINKS the
+# buffers: a 2 MB stream into a card staged at 4 MB.
+checkpoint.save "${$WORK_DIR}/mach64-2m.ckpt"
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx" pci_option="vram=4m"
+scheduler.run 40000000
+checkpoint.load "${$WORK_DIR}/mach64-2m.ckpt"
+assert (machine.pci.slot[1].card.regs.mem_cntl & 7) == 3 "the 4 MB stream restores into the 4 MB card"
+
+machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="mach64_gx"
+
 # --- A card that requires an expansion ROM cannot boot without one. ---------
 # Strict resolution runs BEFORE the running machine is touched, so a
 # rejected boot leaves the current machine alive.

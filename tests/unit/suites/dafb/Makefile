@@ -40,6 +40,7 @@ LDFLAGS ?=
 SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/machines/mcu/dafb.c \
         $(UNIT_ROOT)/support/stub_checkpoint.c \
+        $(UNIT_ROOT)/support/stub_display_class.c \
         $(UNIT_ROOT)/support/stub_system.c \
         $(UNIT_ROOT)/support/harness_common.c \
         $(UNIT_ROOT)/support/harness_isolated.c \

@@ -16,8 +16,10 @@
 #ifndef NUBUS_DISPLAY_H
 #define NUBUS_DISPLAY_H
 
+#include "common.h" // GS_UNIMPLEMENTED
 #include <stdbool.h>
 #include <stddef.h>
+
 #include <stdint.h>
 #include <string.h>
 
@@ -75,11 +77,21 @@ static inline uint32_t display_bpp(pixel_format_t format) {
     case PIXEL_8BPP:
         return 8;
     case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
         return 16;
     case PIXEL_32BPP_XRGB:
         return 32;
     }
-    return 8; // unreachable for a valid pixel_format_t
+    // Not a pixel_format_t this build knows.  Answering a plausible number
+    // here is how a bad format becomes a wrong stride three layers away,
+    // where it looks like a garbled screen rather than a missing case: the
+    // 5-6-5 arm above was absent until 2026-09-16, and -Wswitch had been
+    // saying so on every build of both targets for as long as the format
+    // existed.  Nothing reached it -- the Mach64 selects 565 and computes its
+    // own stride -- but the fix for 04-video F-01 is to route callers HERE,
+    // which would have turned a latent 8-for-16 into a live one.
+    GS_UNIMPLEMENTED("display_bpp: pixel format %d has no bits-per-pixel rule", (int)format);
+    return 8;
 }
 
 // Single CLUT entry; rgba layout matches QuickDraw's RGBColor packed for
@@ -92,6 +104,28 @@ typedef struct rgba8 {
 // drives the active display.  Consumers must not retain the pointer across
 // frames — read fresh each frame and consume the dirty flags to learn
 // which GPU resources need re-uploading.
+//
+// WHO APPLIES crt_response, AND WHY THE TWO CONSUMERS DIFFER ON PURPOSE
+//
+// The WebGL renderer applies it; `screen.save` and `screen.match` do not.
+// 04-video F-03 reads that as a divergence to unify.  It is not:
+//
+//   * Capture answers "did the emulation produce the right bytes".  It emits
+//     what the card put on the bus, which is byte-stable against the model
+//     alone -- a regression reference that does not move when a monitor's
+//     response table is corrected.
+//   * The renderer answers "does this look like the monitor".  Applying the
+//     response in the fragment shader is the correct place for it.
+//
+// Only one monitor in the tree has a non-NULL curve: the JMFB's Kong 21".  Its
+// goldens carry the JMFB driver's gamma pre-distortion, so their white reads
+// (255, 247, 214) rather than (255, 255, 255) -- the round trip through
+// kong_crt_response is exact.  tests/integration/iicx-video-modes/test.script
+// records the reasoning with the driver disassembly ($40FF7E06).
+//
+// Unifying them would make four goldens depend on a table transcribed from
+// Apple's driver, and make a gamma bug indistinguishable from an emulation bug
+// in a diff.
 //
 // `crt_response` models the physical response curve of the monitor on the
 // far end of the cable.  Mac System 7's video drivers gamma-pre-correct
@@ -159,6 +193,194 @@ typedef struct display {
     void *sync_ctx;
 } display_t;
 
+// ============================================================================
+// Format authority
+// ============================================================================
+// Everything below is a property of pixel_format_t, not of the card that
+// scans it out, so it lives with the enum.  Before 2026-09-16 each of these
+// existed two to eight times across debug.c, nubus_class.c and the WebGL
+// renderer, and the copies had drifted: display_bpp answered 8 for a 5-6-5
+// format while nubus_class.c's copy answered 16, and the two disagreed about
+// what an unknown format means (8 vs 0).  04-video F-01, F-02, F-04.
+
+// 5-bit and 6-bit channels expanded to 8, by bit replication.  (v << 3) |
+// (v >> 2) maps 31 to 255 and 0 to 0, and is exactly round(v * 255 / 31) at
+// every input -- the WebGL shaders divide instead and land on the same values.
+//
+// 04-video F-04 calls these "three different 5-bit->8-bit expansions,
+// disagreeing by 1 LSB".  Audited 2026-09-16: they do NOT disagree.  Every
+// copy in the tree is this same replication, and the renderer's /31.0 is the
+// identity above, not a rival.  The duplication is real -- it was six copies,
+// counting the Voodoo2's two -- but the divergence is not, and an earlier
+// version of this comment asserted a bare (v << 3) variant that does not
+// exist anywhere.
+static inline uint8_t display_expand5(uint8_t v) {
+    return (uint8_t)((v << 3) | (v >> 2));
+}
+static inline uint8_t display_expand6(uint8_t v) {
+    return (uint8_t)((v << 2) | (v >> 4));
+}
+
+// The shell-facing name of a format.  One spelling, so machine.screen and a
+// card's framebuffer node cannot disagree about what the guest is running.
+static inline const char *display_format_name(pixel_format_t format) {
+    switch (format) {
+    case PIXEL_1BPP_MSB:
+        return "1bpp";
+    case PIXEL_2BPP_MSB:
+        return "2bpp";
+    case PIXEL_4BPP_MSB:
+        return "4bpp";
+    case PIXEL_8BPP:
+        return "8bpp_clut";
+    case PIXEL_16BPP_555:
+        return "16bpp_555";
+    case PIXEL_16BPP_565:
+        return "16bpp_565";
+    case PIXEL_32BPP_XRGB:
+        return "32bpp_xrgb";
+    }
+    return "?";
+}
+
+// ============================================================================
+// The checkpointed head of a descriptor
+// ============================================================================
+//
+// Five producers -- builtin_rbv_video.c, builtin_se30_video.c, jmfb.c,
+// display_card_24ac.c, display_card_824gc.c -- save the descriptor's scalar
+// head with `system_write_checkpoint_data(cp, &display, offsetof(display_t,
+// bits))`.  That puts a bare `pixel_format_t` into a positional, untagged
+// stream, and `sizeof(enum)` is implementation-defined: a `-fshort-enums`
+// build shifts every field after it, in five files at once (04-video F-41,
+// filed against the RBV alone -- it is five producers, not one).
+//
+// This is LATENT rather than live, and the reason is worth writing down so
+// nobody "fixes" the gate instead: checkpoints carry the build id
+// (`__DATE__ " " __TIME__`, force-recompiled every build), and a stream from a
+// differently-compiled binary is refused before any of these bytes are read.
+// The fix is still worth having -- it is the same shape 03-scsi F-21 applied
+// to the 53C96, and it stops the trap arming itself the day checkpoints
+// become portable between the wasm and native builds.
+//
+// Fixed widths throughout, so the layout is the same on every target.
+typedef struct display_head {
+    uint32_t width, height, stride;
+    uint32_t par_w, par_h;
+    uint32_t format; // pixel_format_t, widened to a fixed width
+} display_head_t;
+
+static inline display_head_t display_head_of(const display_t *d) {
+    display_head_t h = {0};
+    if (d) {
+        h.width = d->width;
+        h.height = d->height;
+        h.stride = d->stride;
+        h.par_w = d->par_w;
+        h.par_h = d->par_h;
+        h.format = (uint32_t)d->format;
+    }
+    return h;
+}
+
+static inline void display_head_apply(display_t *d, const display_head_t *h) {
+    if (!d || !h)
+        return;
+    d->width = h->width;
+    d->height = h->height;
+    d->stride = h->stride;
+    d->par_w = h->par_w;
+    d->par_h = h->par_h;
+    // A stream that names a format this build does not have is corrupt, not
+    // merely unknown -- fall back to the one format every producer can scan
+    // rather than leaving the enum holding a value no switch handles.
+    switch ((pixel_format_t)h->format) {
+    case PIXEL_1BPP_MSB:
+    case PIXEL_2BPP_MSB:
+    case PIXEL_4BPP_MSB:
+    case PIXEL_8BPP:
+    case PIXEL_16BPP_555:
+    case PIXEL_16BPP_565:
+    case PIXEL_32BPP_XRGB:
+        d->format = (pixel_format_t)h->format;
+        break;
+    default:
+        d->format = PIXEL_1BPP_MSB;
+        break;
+    }
+}
+
+// One pixel of a row, as RGB.
+//
+// `clut_len` of zero used to reach `idx % clut_len` and divide by zero
+// (04-video F-30); a direct format has no CLUT and an indexed one with an
+// empty CLUT has nothing to look up, so both answer black.
+static inline void display_pixel_rgb(const display_t *d, const uint8_t *src_row, uint32_t x, uint8_t out[3]) {
+    const rgba8_t *clut = d->clut;
+    const uint32_t clut_len = d->clut_len;
+    uint8_t r = 0, g = 0, b = 0;
+    uint32_t idx = 0;
+    switch (d->format) {
+    case PIXEL_1BPP_MSB: {
+        int bit = (src_row[x >> 3] >> (7 - (x & 7))) & 1;
+        r = g = b = bit ? 0 : 255; // 1 = black, 0 = white (Mac convention)
+        goto done;
+    }
+    case PIXEL_2BPP_MSB:
+        idx = (uint32_t)((src_row[x >> 2] >> ((3 - (x & 3)) * 2)) & 0x3);
+        break;
+    case PIXEL_4BPP_MSB:
+        idx = (uint32_t)((src_row[x >> 1] >> ((1 - (x & 1)) * 4)) & 0xF);
+        break;
+    case PIXEL_8BPP:
+        idx = src_row[x];
+        break;
+    case PIXEL_16BPP_555: {
+        uint16_t v = (uint16_t)(((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1]);
+        r = display_expand5((uint8_t)((v >> 10) & 0x1F));
+        g = display_expand5((uint8_t)((v >> 5) & 0x1F));
+        b = display_expand5((uint8_t)(v & 0x1F));
+        goto done;
+    }
+    case PIXEL_16BPP_565: {
+        uint16_t v = (uint16_t)(((uint16_t)src_row[x * 2] << 8) | src_row[x * 2 + 1]);
+        r = display_expand5((uint8_t)((v >> 11) & 0x1F));
+        g = display_expand6((uint8_t)((v >> 5) & 0x3F));
+        b = display_expand5((uint8_t)(v & 0x1F));
+        goto done;
+    }
+    case PIXEL_32BPP_XRGB:
+        // [X][R][G][B] big-endian; the RAMDAC scans the RGB triple and
+        // discards X (see the enum comment).
+        r = src_row[x * 4 + 1];
+        g = src_row[x * 4 + 2];
+        b = src_row[x * 4 + 3];
+        goto done;
+    }
+    if (clut && clut_len) {
+        rgba8_t c = clut[idx % clut_len];
+        r = c.r;
+        g = c.g;
+        b = c.b;
+    }
+done:
+    out[0] = r;
+    out[1] = g;
+    out[2] = b;
+}
+
+// One row of a framebuffer as packed RGBA, written at `out_rgba`, which must
+// hold at least width*4 bytes.  `out_rgba` is a base pointer rather than a
+// row index so the PNG writer can aim it past its per-row filter byte.
+static inline void display_row_to_rgba(const display_t *d, uint32_t y, uint8_t *out_rgba) {
+    const uint8_t *src_row = d->bits + (size_t)y * d->stride;
+    for (uint32_t x = 0; x < d->width; x++) {
+        uint8_t *px = out_rgba + x * 4;
+        display_pixel_rgb(d, src_row, x, px);
+        px[3] = 255;
+    }
+}
+
 // Make `bits` current before reading them (a no-op for every display
 // whose producer keeps them current).
 static inline void display_sync_pixels(display_t *d) {
@@ -178,6 +400,84 @@ static inline void display_blank_raster(display_t *d) {
     if (!d || !d->bits || !d->stride || !d->height)
         return;
     memset((uint8_t *)d->bits, display_black_fill(d->format), (size_t)d->stride * d->height);
+}
+
+// ============================================================================
+// The scanout transition
+// ============================================================================
+// Point a descriptor at a framebuffer, or refuse and blank it.
+//
+// This exists because nine separate findings in 04-video are one bug: the
+// descriptor is assembled from guest registers and never checked against the
+// buffer behind it, so `bits` and `stride * height` come from different
+// authorities and a consumer reads past the end.  Measured instances:
+//
+//   F-20  the JMFB's 16-bit VideoBase yields a 5,592,320-byte offset into a
+//         2 MB VRAM -- 2.7x past the end, from one move.l
+//   F-21  display_card_824gc.c carries the identical val*32*8/3, and can
+//         repoint the descriptor between two different allocations
+//   F-24  Civic masks its base into range, leaves stride unbounded, and never
+//         checks base + stride*h
+//   F-25  PDM's depth and mode registers are independent: 640x870 at 16 bpp
+//         advertises 1,113,600 bytes from a 614,400-byte blank buffer
+//   F-26  Control caps 2048x1536 -- 12 MB at 32 bpp against 4 MB of VRAM --
+//         with stride taken from the raw, uncapped CR_PITCH
+//   F-29  the JMFB's power-on stride is hard-coded 640/8 while width can be
+//         512, 640 or 1152
+//
+// Three of them already clamp their memset.  Clamping the FILL was never the
+// problem: the descriptor kept the large geometry, so the consumer still read
+// what the producer advertised.  The fix is that the geometry and the buffer
+// are decided together, here, and cannot disagree afterwards.
+//
+// REFUSING, not clamping (proposal-video-shared-model.md S5b).  A descriptor
+// that does not fit blanks -- the producer shows black, which is what a
+// misprogrammed guest already gets on the paths that set `blanked` by hand.
+// Clamping would present a shortened raster that reads as an emulation bug
+// rather than a guest one.
+//
+// `blank` is the producer's zero buffer and `blank_size` its real allocated
+// size -- not its nominal VRAM size.  On refusal the geometry is reduced to
+// what `blank` can actually back, so even the blanked descriptor is one the
+// buffer satisfies.  Returns true when the requested scanout was accepted.
+static inline bool display_set_scanout(display_t *d, const uint8_t *buf, size_t buf_size, uint32_t offset,
+                                       uint32_t stride, uint32_t width, uint32_t height, uint8_t *blank,
+                                       size_t blank_size) {
+    if (!d)
+        return false;
+
+    // 64-bit throughout: stride comes from guest registers and can be a full
+    // 32-bit value (Control's CR_PITCH), so stride * height overflows 32 bits
+    // long before it stops being a plausible-looking number.
+    uint64_t span = (uint64_t)stride * height;
+    bool fits = buf && stride && height && width && (uint64_t)offset + span <= (uint64_t)buf_size;
+
+    if (fits) {
+        d->width = width;
+        d->height = height;
+        d->stride = stride;
+        d->bits = buf + offset;
+        return true;
+    }
+
+    // Refused.  Keep the width the guest asked for where it is harmless -- a
+    // consumer sizes its canvas from it -- but bring stride and height down to
+    // what `blank` holds, so the advertised span is backed.
+    d->bits = blank;
+    if (!blank || !blank_size || !stride) {
+        d->height = 0;
+        d->stride = 0;
+        return false;
+    }
+    if (width)
+        d->width = width;
+    d->stride = stride;
+    uint64_t rows = (uint64_t)blank_size / stride;
+    if (rows > height)
+        rows = height;
+    d->height = (uint32_t)rows;
+    memset(blank, display_black_fill(d->format), (size_t)stride * (size_t)rows);
+    return false;
 }
 
 // True when the visible raster still holds nothing but its power-on blank,

@@ -150,7 +150,6 @@ extern const nubus_card_kind_t display_card_24ac_generic_kind;
 // nubus.video_mode dispatches here when the id names a 24AC mode.  Mirrors the
 // jmfb_* equivalents.
 void display_card_24ac_pending_video_mode_set(const char *id);
-const char *display_card_24ac_pending_video_mode_get(void);
 bool display_card_24ac_video_mode_lookup(const char *id, const nubus_monitor_t **out_monitor, int *out_depth_bpp);
 
 // === Engine introspection (object model — slot[N].card.engine) ==============

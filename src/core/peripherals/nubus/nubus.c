@@ -9,9 +9,7 @@
 
 #include "nubus.h"
 #include "card.h"
-#include "display_card_24ac.h" // staged video-mode routing (stage_mode_for_kind)
-#include "display_card_824gc.h"
-#include "jmfb.h"
+#include "jmfb.h" // ONLY for stage_custom_for_kind; see the note there
 #include "log.h"
 #include "machine_config.h" // the built-from record's per-slot picks
 #include "machine_profile.h" // machine_substrate_t (slot-IRQ routing)
@@ -32,6 +30,10 @@ struct nubus_bus {
     config_t *cfg;
     const nubus_slot_decl_t *slots; // the machine's slot table (topology)
     nubus_card_t *cards[NUBUS_MAX_SLOTS]; // cards[$9..$E]; NULL elsewhere
+    // Which KIND seated each slot.  The object layer needs it to call
+    // attach_objects without testing card identity (04-video F-10); PCI has
+    // carried the same per-slot record since its own §5.1.
+    const nubus_card_kind_t *slot_kind[NUBUS_MAX_SLOTS];
     uint16_t slot_irq_mask; // bitmap; bit $9 .. bit $E
 };
 
@@ -96,6 +98,50 @@ static bool ids_match_sans_underscores(const char *a, const char *b) {
             b++;
     }
     return *a == '\0' && *b == '\0';
+}
+
+// Parse "monitor_Nbpp" against a kind's monitor catalogue -- see card.h.
+bool nubus_monitor_mode_lookup(const nubus_monitor_t *list, const char *id, const nubus_monitor_t **out_monitor,
+                               int *out_depth_bpp) {
+    if (!list || !id || !*id)
+        return false;
+    // The LAST underscore is the boundary between the monitor name and the
+    // "Nbpp" depth suffix -- monitor ids contain underscores themselves.
+    const char *underscore_bpp = strrchr(id, '_');
+    if (!underscore_bpp)
+        return false;
+    size_t mon_len = (size_t)(underscore_bpp - id);
+    if (mon_len == 0 || mon_len >= NUBUS_VIDEO_MODE_ID_MAX)
+        return false;
+    char mon_id[NUBUS_VIDEO_MODE_ID_MAX];
+    memcpy(mon_id, id, mon_len);
+    mon_id[mon_len] = '\0';
+    // Validate the bpp value as 1..32 before the (int) cast, which is
+    // implementation-defined for out-of-range longs.
+    const char *bpp_str = underscore_bpp + 1;
+    char *end = NULL;
+    long bpp = strtol(bpp_str, &end, 10);
+    if (!end || end == bpp_str || strcmp(end, "bpp") != 0)
+        return false;
+    if (bpp < 1 || bpp > 32)
+        return false;
+    for (const nubus_monitor_t *m = list; m->id; m++) {
+        if (strcmp(m->id, mon_id) != 0)
+            continue;
+        if (!m->depths)
+            return false;
+        for (const int *d = m->depths; *d; d++) {
+            if ((int)bpp == *d) {
+                if (out_monitor)
+                    *out_monitor = m;
+                if (out_depth_bpp)
+                    *out_depth_bpp = (int)bpp;
+                return true;
+            }
+        }
+        return false; // monitor matched but depth didn't
+    }
+    return false;
 }
 
 const char *nubus_card_suggest(const char *id) {
@@ -212,6 +258,16 @@ bool nubus_custom_mode_parse(const char *spec, uint32_t *out_w, uint32_t *out_h,
         reason = "rowBytes (width*depth/8) must be < 0x4000";
         goto done;
     }
+    // Height has a ceiling too: the generated sResource stores it as a
+    // uint16_t (gsvrom_data.c make_mode), so a taller raster would leave the
+    // declaration ROM and the scanout descriptor describing different
+    // pictures -- 70000 truncates to 4464 in the ROM while display.height
+    // stays 70000 (04-video F-32).  2048 is the ceiling DAFB and the Mach64
+    // already enforce.
+    if (h > 2048) {
+        reason = "height must be <= 2048";
+        goto done;
+    }
 done:
     if (err)
         *err = reason;
@@ -285,14 +341,8 @@ static const char *socket_staged_mode(const nubus_slot_decl_t *s, bool is_first_
 static void stage_mode_for_kind(int slot, const nubus_card_kind_t *kind, const char *mode) {
     if (!mode || !*mode || !kind)
         return;
-    if ((kind == &mdc_8_24_kind || kind == &jmfb_generic_kind) && jmfb_video_mode_lookup(mode, NULL, NULL))
-        jmfb_pending_video_mode_set(mode);
-    else if ((kind == &display_card_24ac_kind || kind == &display_card_24ac_generic_kind) &&
-             display_card_24ac_video_mode_lookup(mode, NULL, NULL))
-        display_card_24ac_pending_video_mode_set(mode);
-    else if ((kind == &display_card_824gc_kind || kind == &display_card_824gc_generic_kind) &&
-             display_card_824gc_video_mode_lookup(mode, NULL, NULL))
-        display_card_824gc_pending_video_mode_set(mode);
+    if (kind->stage_video_mode && nubus_monitor_mode_lookup(kind->monitors, mode, NULL, NULL))
+        kind->stage_video_mode(mode);
     else
         LOG(0, "nubus: staged video_mode '%s' does not belong to slot $%X card '%s' — ignored", mode, slot, kind->id);
 }
@@ -305,6 +355,12 @@ static void stage_mode_for_kind(int slot, const nubus_card_kind_t *kind, const c
 static void stage_custom_for_kind(int slot, const nubus_card_kind_t *kind, const char *spec) {
     if (!spec || !*spec || !kind)
         return;
+    // The last identity test in this file, kept DELIBERATELY.  Routing it
+    // through a kind hook would mean adding another staging seam, and staging
+    // is what proposal-construction-inputs.md R1 deletes outright -- the
+    // custom mode becomes a machine_build_opts_t field handed to the factory,
+    // at which point this function and jmfb.h's include above both go.  Making
+    // a condemned channel more polite is not worth a new hook (04-video F-10).
     if (kind == &jmfb_generic_kind)
         jmfb_pending_custom_mode_set(spec);
     else
@@ -375,7 +431,7 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
             case NUBUS_SLOT_EMPTY:
                 continue;
             }
-            if (!kind || !kind->factory)
+            if (!kind || !kind->ops || !kind->ops->init)
                 continue;
             // Route this slot's staged video mode into the kind's pending
             // channel immediately before its factory consumes it, so each
@@ -393,16 +449,26 @@ nubus_bus_t *nubus_init(config_t *cfg, const nubus_slot_decl_t *slots, checkpoin
                 staged_custom = nubus_staged_custom_mode_get(NUBUS_STAGED_WILDCARD);
             if (staged_custom)
                 stage_custom_for_kind(s->slot, kind, staged_custom);
-            nubus_card_t *card = kind->factory(s->slot, cfg, cp);
+            bus->slot_kind[s->slot] = kind;
+            // The bus owns the allocation, so `bus` and `slot` are populated
+            // BEFORE init runs -- a card may assert its slot IRQ, or touch any
+            // other bus service, from card_init (04-video F-52).
+            nubus_card_t *card = calloc(1, sizeof(*card));
             if (!card) {
-                // Factory returned NULL — typically a missing/invalid VROM
-                // file or out-of-memory. Log so a silent boot-time failure
-                // doesn't manifest as "card is missing for unclear reasons".
-                LOG(1, "nubus: slot $%X card factory '%s' returned NULL", s->slot, (kind && kind->id) ? kind->id : "?");
+                LOG(0, "nubus: out of memory seating slot $%X card '%s'", s->slot, kind->id ? kind->id : "?");
                 continue;
             }
+            card->ops = kind->ops;
             card->bus = bus;
             card->slot = s->slot;
+            if (card->ops->init(card, cfg, cp) != 0) {
+                // Typically a missing/invalid VROM file or out of memory.  Log
+                // it, so a boot-time failure does not manifest later as "the
+                // card is missing for unclear reasons".
+                LOG(1, "nubus: slot $%X card '%s' failed to initialise", s->slot, kind->id ? kind->id : "?");
+                free(card);
+                continue;
+            }
             if (s->slot >= 0 && s->slot < NUBUS_MAX_SLOTS)
                 bus->cards[s->slot] = card;
             // Capture the RESOLVED pick in the built-from record, so
@@ -458,6 +524,12 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot) {
     return bus->cards[slot];
 }
 
+const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
+    if (!bus || slot < 0 || slot >= NUBUS_MAX_SLOTS)
+        return NULL;
+    return bus->slot_kind[slot];
+}
+
 // Serialise every seated card that implements the hooks, in slot order.
 //
 // Save and restore walk the slots identically, and a machine restores with the
@@ -467,6 +539,15 @@ nubus_card_t *nubus_card(nubus_bus_t *bus, int slot) {
 void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
     if (!bus || !cp)
         return;
+    // The aggregate, before the cards.  It is bus state, not card state: no
+    // card knows whether ANOTHER slot is still asserting, and that is exactly
+    // what decides the umbrella edge.  Nothing wrote it, so a machine
+    // checkpointed with a slot interrupt asserted came back with the mask at
+    // zero and BOTH edges were then computed from a lie (04-video F-42) -- the
+    // next assert saw `any_was_asserted` false and raised an umbrella edge that
+    // had already been raised, and the next deassert saw `mask == 0` and
+    // dropped the umbrella while another slot was still holding it.
+    system_write_checkpoint_data(cp, &bus->slot_irq_mask, sizeof(bus->slot_irq_mask));
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (card && card->ops && card->ops->checkpoint_save)
@@ -477,6 +558,7 @@ void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
 void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp) {
     if (!bus || !cp)
         return;
+    system_read_checkpoint_data(cp, &bus->slot_irq_mask, sizeof(bus->slot_irq_mask));
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (card && card->ops && card->ops->checkpoint_restore)

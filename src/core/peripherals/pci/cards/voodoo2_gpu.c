@@ -34,6 +34,7 @@
 
 #include "voodoo2_gpu.h"
 
+#include "display.h" // display_expand5/6 -- the shared channel expansion
 #include "log.h"
 #include "system.h"
 #include "voodoo2_gpu_protocol.h"
@@ -339,9 +340,9 @@ static inline bool v2gpu_row_valid(const v2gpu_target_t *t, uint32_t y) {
 // Expand one 5-6-5 pixel to the rgba8 the colour attachment holds.
 static inline void v2gpu_expand565(uint16_t px, uint8_t *out) {
     uint32_t r5 = (px >> 11) & 0x1Fu, g6 = (px >> 5) & 0x3Fu, b5 = px & 0x1Fu;
-    out[0] = (uint8_t)((r5 << 3) | (r5 >> 2));
-    out[1] = (uint8_t)((g6 << 2) | (g6 >> 4));
-    out[2] = (uint8_t)((b5 << 3) | (b5 >> 2));
+    out[0] = display_expand5(r5);
+    out[1] = display_expand6(g6);
+    out[2] = display_expand5(b5);
     out[3] = 0xFF;
 }
 

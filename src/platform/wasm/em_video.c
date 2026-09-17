@@ -15,9 +15,9 @@
 //   * clut_dirty: re-upload the CLUT texture (indexed formats only)
 //   * response_dirty: re-upload the per-channel CRT response LUT
 //
-// Full pixel paths exist for 1bpp, 8bpp (indexed), and 16bpp/32bpp
-// (direct colour — the 8•24 GC's Thousands/Millions runtime modes).
-// 2bpp/4bpp remain grey stubs (no shipping card boots into them).
+// Full pixel paths exist for every pixel_format_t.  2 and 4 bpp were grey
+// stubs until 2026-09-16 — see FS_2BPP for why "no shipping card boots into
+// them" was the wrong test (04-video F-43).
 
 #include "em.h"
 
@@ -29,7 +29,14 @@
 #include <string.h>
 
 #include "display.h"
+#include "log.h"
 #include "system.h"
+
+// The renderer is part of the display path, so it shares its category:
+// `debug.log("video", N)` turns on the producers AND the consumer
+// (04-video F-14).  These five messages used to be bare printfs, so they
+// could not be levelled, filed or redirected at all.
+LOG_USE_CATEGORY_NAME("video");
 
 // ============================================================================
 // Internal state
@@ -39,6 +46,17 @@
 // proposal scopes (1152x870 = 1MP).  We still allocate per-display, but the
 // scratch upload buffer is sized once.
 #define MAX_FB_BYTES (1152u * 870u * 4u)
+
+// Does this descriptor's raster fit the scratch buffer?  A larger one is
+// refused, not clamped: the clamp bounded the memcpy INTO the scratch but
+// glTexSubImage2D still read stride*height back OUT of it, so a mode past the
+// ceiling (DAFB reaches stride 16380 x 2048, the Mach64 32736) read past the
+// static array either way -- and half a frame is not a useful degradation
+// (04-video F-19).  The producers keep stride*height inside the buffer they
+// point at (display_set_scanout), so this is the consumer's own ceiling.
+static bool fb_fits_scratch(const display_t *d) {
+    return (uint64_t)d->stride * d->height <= MAX_FB_BYTES;
+}
 
 // WebGL resources
 static EMSCRIPTEN_WEBGL_CONTEXT_HANDLE s_ctx = 0;
@@ -228,15 +246,69 @@ static const char *FS_16BPP_565 =
     "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\n"
     "}\n";
 
-// Stub for 2/4 bpp indexed: same shape as 8bpp but unpacking a 2- or
-// 4-bit field per pixel from packed bytes.  v1 ships them as fallback
-// programs that emit grey so the canvas isn't blank when an
-// unimplemented format hits the pipeline.
-static const char *FS_GRAY_STUB = "#version 300 es\n"
-                                  "precision mediump float;\n"
-                                  "in  vec2 v_uv;\n"
-                                  "out vec4 fragColor;\n"
-                                  "void main() { fragColor = vec4(0.5, 0.5, 0.5, 1.0); }\n";
+// 2 bpp and 4 bpp indexed.  The 8 bpp shader with the byte unpacked into four
+// or two pixels, MSB first -- the Mac convention display.h's decoder follows.
+//
+// These were grey stubs, justified as "no shipping card boots into them"
+// (04-video F-43).  Booting is not the only way in: six producers switch into
+// 2 and 4 bpp at runtime from the Monitors control panel, and PNG capture has
+// always decoded them correctly -- so the browser showed a flat grey field for
+// a desktop the goldens rendered properly.  The divergence was in the renderer
+// and only there; no captured pixel changes with this.
+//
+// The unpack stays in float arithmetic: the byte arrives normalised from an R8
+// texture, so recover it, divide down to the wanted field, take the remainder.
+static const char *FS_2BPP = "#version 300 es\\n"
+                             "precision mediump float;\\n"
+                             "uniform sampler2D u_texture;\\n"
+                             "uniform sampler2D u_clut;\\n"
+                             "uniform sampler2D u_response;\\n"
+                             "uniform vec2 u_fb_size;\\n"
+                             "uniform float u_stride;\\n"
+                             "in  vec2 v_uv;\\n"
+                             "out vec4 fragColor;\\n"
+                             "void main() {\\n"
+                             "    vec2 px      = v_uv * u_fb_size;\\n"
+                             "    float x      = floor(px.x);\\n"
+                             "    float y      = floor(px.y);\\n"
+                             "    float byte_x = floor(x / 4.0);\\n"
+                             "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\\n"
+                             "                        (y + 0.5) / u_fb_size.y);\\n"
+                             "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\\n"
+                             "    float shift  = (4.0 - 1.0 - mod(x, 4.0)) * 2.0;\\n"
+                             "    float idx    = mod(floor(b / pow(2.0, shift)), 4.0);\\n"
+                             "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\\n"
+                             "    float r_out  = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\\n"
+                             "    float g_out  = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\\n"
+                             "    float b_out  = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\\n"
+                             "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\\n"
+                             "}\\n";
+
+static const char *FS_4BPP = "#version 300 es\\n"
+                             "precision mediump float;\\n"
+                             "uniform sampler2D u_texture;\\n"
+                             "uniform sampler2D u_clut;\\n"
+                             "uniform sampler2D u_response;\\n"
+                             "uniform vec2 u_fb_size;\\n"
+                             "uniform float u_stride;\\n"
+                             "in  vec2 v_uv;\\n"
+                             "out vec4 fragColor;\\n"
+                             "void main() {\\n"
+                             "    vec2 px      = v_uv * u_fb_size;\\n"
+                             "    float x      = floor(px.x);\\n"
+                             "    float y      = floor(px.y);\\n"
+                             "    float byte_x = floor(x / 2.0);\\n"
+                             "    vec2 tc      = vec2((byte_x + 0.5) / u_stride,\\n"
+                             "                        (y + 0.5) / u_fb_size.y);\\n"
+                             "    float b      = floor(texture(u_texture, tc).r * 255.0 + 0.5);\\n"
+                             "    float shift  = (2.0 - 1.0 - mod(x, 2.0)) * 4.0;\\n"
+                             "    float idx    = mod(floor(b / pow(2.0, shift)), 16.0);\\n"
+                             "    vec4 entry   = texture(u_clut, vec2((idx + 0.5) / 256.0, 0.5));\\n"
+                             "    float r_out  = texture(u_response, vec2(entry.r, 0.5 / 3.0)).r;\\n"
+                             "    float g_out  = texture(u_response, vec2(entry.g, 1.5 / 3.0)).r;\\n"
+                             "    float b_out  = texture(u_response, vec2(entry.b, 2.5 / 3.0)).r;\\n"
+                             "    fragColor    = vec4(r_out, g_out, b_out, 1.0);\\n"
+                             "}\\n";
 
 // ============================================================================
 // Static helpers
@@ -252,7 +324,7 @@ static GLuint compile_shader(GLenum type, const char *src) {
     if (!ok) {
         char log[512];
         glGetShaderInfoLog(s, sizeof log, NULL, log);
-        printf("Shader error: %s\n", log);
+        LOG(0, "shader compile failed: %s", log);
         return 0;
     }
     return s;
@@ -274,7 +346,7 @@ static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms
     if (!ok) {
         char log[512];
         glGetProgramInfoLog(prog, sizeof log, NULL, log);
-        printf("Link error: %s\n", log);
+        LOG(0, "shader link failed: %s", log);
         return 0;
     }
     glDeleteShader(vs);
@@ -289,13 +361,11 @@ static GLuint link_program(const char *vs_src, const char *fs_src, prog_uniforms
     return prog;
 }
 
-// Build the per-format program table.  Programs that share a fragment
-// shader (the gray stubs) get distinct GL programs to keep uniform
-// management simple.
+// Build the per-format program table: one program per pixel_format_t.
 static void init_programs(void) {
     s_progs[PIXEL_1BPP_MSB] = link_program(VS_SHARED, FS_1BPP, &s_uniforms[PIXEL_1BPP_MSB]);
-    s_progs[PIXEL_2BPP_MSB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_2BPP_MSB]);
-    s_progs[PIXEL_4BPP_MSB] = link_program(VS_SHARED, FS_GRAY_STUB, &s_uniforms[PIXEL_4BPP_MSB]);
+    s_progs[PIXEL_2BPP_MSB] = link_program(VS_SHARED, FS_2BPP, &s_uniforms[PIXEL_2BPP_MSB]);
+    s_progs[PIXEL_4BPP_MSB] = link_program(VS_SHARED, FS_4BPP, &s_uniforms[PIXEL_4BPP_MSB]);
     s_progs[PIXEL_8BPP] = link_program(VS_SHARED, FS_8BPP, &s_uniforms[PIXEL_8BPP]);
     s_progs[PIXEL_16BPP_555] = link_program(VS_SHARED, FS_16BPP, &s_uniforms[PIXEL_16BPP_555]);
     s_progs[PIXEL_32BPP_XRGB] = link_program(VS_SHARED, FS_32BPP, &s_uniforms[PIXEL_32BPP_XRGB]);
@@ -368,10 +438,7 @@ static void upload_fb(const display_t *d) {
     GLenum src_fmt = (d->format == PIXEL_32BPP_XRGB) ? GL_RGBA : GL_RED;
     uint32_t tex_width = (d->format == PIXEL_32BPP_XRGB) ? d->stride / 4 : d->stride;
 
-    size_t bytes = (size_t)d->stride * d->height;
-    if (bytes > sizeof(s_upload_scratch))
-        bytes = sizeof(s_upload_scratch);
-    memcpy(s_upload_scratch, d->bits, bytes);
+    memcpy(s_upload_scratch, d->bits, (size_t)d->stride * d->height);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, s_fb_tex);
@@ -442,7 +509,9 @@ static void init_gl(void) {
     attr.minorVersion = 0;
     s_ctx = emscripten_webgl_create_context("#screen", &attr);
     if (s_ctx <= 0) {
-        printf("WebGL 2 not supported—cannot run.");
+        // No newline on the old printf here, so this one ran into whatever came
+        // next in the output.  LOG ends its own lines.
+        LOG(0, "WebGL 2 not supported - cannot run");
         return;
     }
     emscripten_webgl_make_context_current(s_ctx);
@@ -516,6 +585,30 @@ static bool refresh_from_display(display_t *d, bool force_full) {
     if (!d || !d->bits)
         return false;
 
+    // Refuse a format this build has no shader for, rather than rendering it
+    // through another format's program.
+    //
+    // program_for() and uniforms_for() fall back to the 1 bpp program when a
+    // slot is 0 (a shader that failed to compile -- a driver quirk or a WebGL2
+    // precision difference), but allocate_fb_texture(), the u_stride uniform
+    // and upload_fb()'s src_fmt / tex_width all keep using the REAL format.
+    // So the 1 bpp shader sampled an RGBA8 texture with byte-index maths
+    // (04-video F-49).  Agreeing on 1 bpp instead would only make the garbage
+    // self-consistent; refusing says which format is missing, which is the same
+    // call display_set_scanout and the 8*24 GC blitter make -- and it also
+    // covers the case the finding does not, where the 1 bpp program is itself
+    // the one that failed and glUseProgram(0) silently unbinds everything.
+    if (d->format < 0 || (int)d->format >= NUM_FORMATS || !s_progs[d->format]) {
+        static bool warned[NUM_FORMATS + 1];
+        int slot = (d->format >= 0 && (int)d->format < NUM_FORMATS) ? (int)d->format : NUM_FORMATS;
+        if (!warned[slot]) {
+            warned[slot] = true;
+            LOG(0, "renderer: no shader program for %s -- frames in this format are refused",
+                display_format_name(d->format));
+        }
+        return false;
+    }
+
     bool shape = force_full || d->shape_dirty;
     bool fb = force_full || d->fb_dirty || shape;
     bool clut = force_full || d->clut_dirty;
@@ -568,7 +661,7 @@ static void draw(void) {
     glDrawArrays(GL_TRIANGLES, 0, 6);
     GLenum err = glGetError();
     if (err != GL_NO_ERROR)
-        printf("GL error: %d\n", err);
+        LOG(1, "GL error: %d", err);
 }
 
 // ============================================================================
@@ -605,6 +698,15 @@ void em_video_update(void) {
         overlay_hide_if_up(); // no display at all: nothing for the overlay to cover
         return;
     }
+    if (!fb_fits_scratch(d)) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            LOG(0, "renderer: mode %ux%u stride %u exceeds the %u-byte upload buffer; screen frozen", d->width,
+                d->height, d->stride, (unsigned)MAX_FB_BYTES);
+        }
+        return;
+    }
 
     // A frame presented by someone else (the Voodoo2's WebGPU overlay):
     // keep the canvas at the card's geometry so the page lays out the
@@ -633,12 +735,7 @@ void em_video_update(void) {
     // coupled to actual byte-level change, never to producer signaling
     // quirks. memcmp is well under a millisecond even at the largest
     // mode (1152x870 @ 8 bpp = 1 MB) and is cache-friendly.
-    bool content_changed = false;
-    size_t bytes = (size_t)d->stride * d->height;
-    if (bytes > sizeof(s_upload_scratch))
-        bytes = sizeof(s_upload_scratch);
-    if (memcmp(s_upload_scratch, d->bits, bytes) != 0)
-        content_changed = true;
+    bool content_changed = memcmp(s_upload_scratch, d->bits, (size_t)d->stride * d->height) != 0;
 
     // shape_dirty signals a texture-allocation change (resolution /
     // format / stride) — must always be honoured. clut_dirty /
@@ -659,12 +756,10 @@ void em_video_update(void) {
 
 void em_video_force_redraw(void) {
     display_t *d = system_display();
+    if (d && d->bits && !fb_fits_scratch(d))
+        return;
     if (refresh_from_display(d, /*force_full*/ true))
         draw();
-}
-
-uint8_t *em_video_get_framebuffer(void) {
-    return s_upload_scratch;
 }
 
 void frontend_force_redraw(void) {

@@ -15,6 +15,7 @@
 
 #include "prom.h"
 #include "common.h"
+#include "offer_registry.h"
 
 #include "log.h"
 #include "machine_profile.h"
@@ -238,28 +239,18 @@ bool prom_identify_card(const char *path, prom_id_t *out) {
 // Offer registry
 // ============================================================================
 
-// One registered candidate, keyed by its content identity.
-struct prom_offer_entry {
-    uint32_t crc;
-    size_t image_size;
-    const char *card_id; // catalog row (static storage)
-    char *path; // opaque locator (owned)
-    bool explicit_pick; // the boot document's prom= pick
-};
-
-static struct prom_offer_entry *s_offers = NULL;
-static size_t s_offer_count = 0;
-static size_t s_offer_cap = 0;
-
-static void prom_offer_add(const char *path, bool explicit_pick) {
-    if (!path || !*path)
-        return;
+// Identify one candidate for the registry.  This half stays here: what a
+// declaration ROM and a PCI expansion ROM have in common is the registry
+// shape, and almost nothing else (offer_registry.h).  The per-failure
+// diagnostics live here too, because only the identifier knows WHICH kind of
+// stray it just rejected -- and the interesting one is a structurally valid
+// ROM we do not catalog.
+static bool prom_offer_identify(const char *path, uint32_t *out_crc, size_t *out_size, const char **out_card_id) {
     prom_id_t id;
     prom_id_result_t r = prom_identify_detail(path, &id, NULL, NULL);
     if (r != PROM_ID_KNOWN) {
         // The platform offers whole directories, so strays are expected
-        // rather than errors — but say WHICH kind of stray, because the
-        // interesting one is a structurally valid ROM we do not catalog.
+        // rather than errors.
         switch (r) {
         case PROM_ID_NOT_OPEN_FIRMWARE:
             LOG(0,
@@ -277,125 +268,48 @@ static void prom_offer_add(const char *path, bool explicit_pick) {
             LOG(2, "prom_offer: '%s' is not a recognised PCI expansion ROM — ignored", path);
             break;
         }
-        return;
+        return false;
     }
-    // Idempotent by content: one entry per CRC.  A re-offer refreshes the
-    // path (the newest locator for these bytes) and may promote to explicit.
-    struct prom_offer_entry *e = NULL;
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (s_offers[i].crc == id.crc) {
-            e = &s_offers[i];
-            break;
-        }
-    }
-    if (!e) {
-        if (s_offer_count == s_offer_cap) {
-            size_t cap = s_offer_cap ? s_offer_cap * 2 : 8;
-            struct prom_offer_entry *grown = realloc(s_offers, cap * sizeof(*grown));
-            if (!grown)
-                return;
-            s_offers = grown;
-            s_offer_cap = cap;
-        }
-        e = &s_offers[s_offer_count];
-        memset(e, 0, sizeof(*e));
-        s_offer_count++;
-    }
-    char *dup = strdup(path);
-    if (!dup) {
-        if (!e->path)
-            s_offer_count--; // fresh entry with no path is useless
-        return;
-    }
-    free(e->path);
-    e->path = dup;
-    e->crc = id.crc;
-    e->image_size = id.image_size;
-    e->card_id = id.card_id;
-    if (explicit_pick) {
-        for (size_t i = 0; i < s_offer_count; i++)
-            s_offers[i].explicit_pick = false; // latest pick wins
-        e->explicit_pick = true;
-    }
-    LOG(2, "prom_offer: '%s' provides card '%s' (crc $%08X)%s", path, e->card_id, e->crc,
-        explicit_pick ? " [explicit]" : "");
+    *out_crc = id.crc;
+    *out_size = id.image_size;
+    *out_card_id = id.card_id;
+    return true;
 }
 
+static void prom_catalog_row(size_t r, const char **card_id, uint32_t *crc, bool *preferred) {
+    *card_id = PROM_CATALOG[r].card_id;
+    *crc = PROM_CATALOG[r].crc;
+    *preferred = PROM_CATALOG[r].preferred;
+}
+
+static offer_registry_t s_offers = {
+    .tag = "prom_offer",
+    .identify = prom_offer_identify,
+    .catalog = {.count = PROM_CATALOG_COUNT, .row = prom_catalog_row},
+};
+
 void prom_offer(const char *path) {
-    prom_offer_add(path, false);
+    offer_registry_add(&s_offers, path, false);
 }
 
 void prom_offer_clear(void) {
-    for (size_t i = 0; i < s_offer_count; i++)
-        free(s_offers[i].path);
-    free(s_offers);
-    s_offers = NULL;
-    s_offer_count = 0;
-    s_offer_cap = 0;
+    offer_registry_clear(&s_offers);
 }
 
 const char *prom_offer_find(const char *card_id, int idx, size_t *out_size) {
-    if (!card_id)
-        return NULL;
-    // Pick order: the explicit pick first, then catalog rows with the
-    // `preferred` bit, then the remaining rows in catalog order.  All
-    // content-based — no filename enters the comparison.
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (!s_offers[i].explicit_pick || strcmp(s_offers[i].card_id, card_id) != 0)
-            continue;
-        if (idx-- == 0) {
-            if (out_size)
-                *out_size = s_offers[i].image_size;
-            return s_offers[i].path;
-        }
-    }
-    for (int want_preferred = 1; want_preferred >= 0; want_preferred--) {
-        for (size_t r = 0; r < PROM_CATALOG_COUNT; r++) {
-            if (PROM_CATALOG[r].preferred != (bool)want_preferred)
-                continue;
-            if (strcmp(PROM_CATALOG[r].card_id, card_id) != 0)
-                continue;
-            for (size_t i = 0; i < s_offer_count; i++) {
-                if (s_offers[i].crc != PROM_CATALOG[r].crc || s_offers[i].explicit_pick)
-                    continue; // the explicit entry was yielded above
-                if (idx-- == 0) {
-                    if (out_size)
-                        *out_size = s_offers[i].image_size;
-                    return s_offers[i].path;
-                }
-            }
-        }
-    }
-    return NULL;
+    return offer_registry_find(&s_offers, card_id, idx, out_size);
 }
 
 bool prom_offer_info(const char *path, uint32_t *out_crc, bool *out_explicit) {
-    if (!path)
-        return false;
-    for (size_t i = 0; i < s_offer_count; i++) {
-        if (strcmp(s_offers[i].path, path) != 0)
-            continue;
-        if (out_crc)
-            *out_crc = s_offers[i].crc;
-        if (out_explicit)
-            *out_explicit = s_offers[i].explicit_pick;
-        return true;
-    }
-    return false;
+    return offer_registry_info(&s_offers, path, out_crc, out_explicit);
 }
 
 bool prom_card_catalogued(const char *card_id) {
-    if (!card_id || !*card_id)
-        return false;
-    for (size_t r = 0; r < PROM_CATALOG_COUNT; r++) {
-        if (strcmp(PROM_CATALOG[r].card_id, card_id) == 0)
-            return true;
-    }
-    return false;
+    return offer_registry_catalogued(&s_offers, card_id);
 }
 
 bool prom_card_resolvable(const char *card_id) {
-    return prom_offer_find(card_id, 0, NULL) != NULL;
+    return offer_registry_resolvable(&s_offers, card_id);
 }
 
 int prom_set_path(const char *path) {
@@ -403,7 +317,7 @@ int prom_set_path(const char *path) {
         printf("prom: expected a non-empty path\n");
         return -1;
     }
-    prom_offer_add(path, true);
+    offer_registry_add(&s_offers, path, true);
     return 0;
 }
 

@@ -57,6 +57,7 @@
 #include "checkpoint.h"
 #include "config_space.h"
 #include "display.h"
+#include "display_class.h"
 #include "log.h"
 #include "memory.h"
 #include "object.h"
@@ -71,7 +72,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("mach64");
+LOG_USE_CATEGORY_NAME("video");
 
 // The card's little-endian register domain.  The ONE sanctioned swap point
 // in this file; see the endianness note above.
@@ -533,6 +534,7 @@ typedef struct mach64 {
     // one of them moves; `blank` is the black stub shown while the raster
     // is disabled, and `compose` carries the hardware-cursor composite.
     display_t display;
+    display_fb_node_t fb_node; // instance data for the shared framebuffer class
     rgba8_t clut_view[256];
     uint8_t *blank;
     uint8_t *compose;
@@ -698,7 +700,7 @@ static uint32_t mach64_reg_read(mach64_t *m, int dw) {
         // straight-line code that senses nothing.  A plausible value is
         // strapped and every read of the field is logged, so the first run
         // says whether anything actually cares.
-        LOG(4, "CONFIG_STAT0 read (CFG_INIT_DAC_TYPE = %u)", (m->reg[DW_CONFIG_STAT0] >> 9) & 7u);
+        LOG(4, "Mach64: CONFIG_STAT0 read (CFG_INIT_DAC_TYPE = %u)", (m->reg[DW_CONFIG_STAT0] >> 9) & 7u);
         return m->reg[DW_CONFIG_STAT0];
 
     case DW_DAC_CNTL: {
@@ -743,7 +745,7 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
         // Read-only straps.  The card's own init table DOES write
         // CONFIG_STAT0 (value 0 on a GX, 9 on a CT), so this is a normal
         // event, not a guest bug — accept it and discard it.
-        LOG(3, "write to read-only register (dword $%02X) = $%08X — ignored", dw, value);
+        LOG(3, "Mach64: write to read-only register (dword $%02X) = $%08X — ignored", dw, value);
         return;
 
     case DW_CONFIG_CNTL: {
@@ -798,8 +800,8 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
         // own init table writes 2 (= 2 MB) on a GX; a 4 MB card is the
         // expansion module.  Keep OUR size authoritative and say so.
         if ((value & 7u) != mach64_mem_size_code(m)) {
-            LOG(1, "MEM_CNTL wrote MEM_SIZE=%u but this card has %u MB — keeping %u", value & 7u, m->vram_size >> 20,
-                mach64_mem_size_code(m));
+            LOG(1, "Mach64: MEM_CNTL wrote MEM_SIZE=%u but this card has %u MB — keeping %u", value & 7u,
+                m->vram_size >> 20, mach64_mem_size_code(m));
         }
         m->reg[DW_MEM_CNTL] = (value & ~7u) | mach64_mem_size_code(m);
         return;
@@ -810,7 +812,7 @@ static void mach64_reg_write(mach64_t *m, int dw, uint32_t value) {
         if (dw >= DW_DRAW_ENGINE_FIRST) {
             // An engine register with no behaviour of its own: pattern,
             // colour-compare, context.  Stored and read back.
-            LOG(4, "draw-engine register dword $%02X = $%08X (store only)", dw, value);
+            LOG(4, "Mach64: draw-engine register dword $%02X = $%08X (store only)", dw, value);
         }
         m->reg[dw] = value;
         return;
@@ -852,7 +854,7 @@ static uint8_t mach64_mon_id_state(const mach64_t *m) {
         // Two or three pins driven at once is reserved (RRG p. 3-31).  Real
         // silicon would report whatever the drivers won; say "all high" and
         // log, so a driver doing something we have not seen announces itself.
-        LOG(1, "reserved DAC_MON_ID_DIR value %u — reporting all pins high", m->mon_id_dir);
+        LOG(1, "Mach64: reserved DAC_MON_ID_DIR value %u — reporting all pins high", m->mon_id_dir);
         return 7u;
     }
 }
@@ -888,7 +890,7 @@ static void mach64_sense_step(mach64_t *m) {
             break;
         }
     }
-    LOG(3, "sense: dir=%u -> state=%u (monitor '%s': primary=%u extended=$%02X)", m->mon_id_dir, state,
+    LOG(3, "Mach64: sense: dir=%u -> state=%u (monitor '%s': primary=%u extended=$%02X)", m->mon_id_dir, state,
         m->mon ? m->mon->id : "(none)", m->sense_primary, m->sense_ext);
 }
 
@@ -923,7 +925,7 @@ static uint32_t mach64_dac_rs(const mach64_t *m, uint32_t lane) {
 static uint8_t mach64_dac_indexed_read(mach64_t *m) {
     uint16_t idx = m->dac_index;
     if (idx >= sizeof(m->dac_indexed)) {
-        LOG(1, "RGB514 indexed read past the file: $%04X", idx);
+        LOG(1, "Mach64: RGB514 indexed read past the file: $%04X", idx);
         return 0;
     }
     switch (idx) {
@@ -935,7 +937,7 @@ static uint8_t mach64_dac_indexed_read(mach64_t *m) {
         // DAC Sense: a genuine read-only comparator.  The monitor detection
         // that matters here runs through the mach64's own pins (above), not
         // this, so return a stable value and log anyone who looks.
-        LOG(2, "RGB514 DAC Sense read");
+        LOG(2, "Mach64: RGB514 DAC Sense read");
         return 0x00;
     default:
         return m->dac_indexed[idx];
@@ -945,11 +947,11 @@ static uint8_t mach64_dac_indexed_read(mach64_t *m) {
 static void mach64_dac_indexed_write(mach64_t *m, uint8_t value) {
     uint16_t idx = m->dac_index;
     if (idx >= sizeof(m->dac_indexed)) {
-        LOG(1, "RGB514 indexed write past the file: $%04X = $%02X", idx, value);
+        LOG(1, "Mach64: RGB514 indexed write past the file: $%04X = $%02X", idx, value);
         return;
     }
     m->dac_indexed[idx] = value;
-    LOG(3, "RGB514[$%04X] = $%02X", idx, value);
+    LOG(3, "Mach64: RGB514[$%04X] = $%02X", idx, value);
 }
 
 // DAC_REGS is one 32-bit register whose four BYTE lanes are separate DAC
@@ -982,7 +984,7 @@ static uint8_t mach64_dac_read_lane(mach64_t *m, uint32_t lane) {
 }
 
 static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
-    LOG(4, "DAC cell RS=%u (lane %u) = $%02X", mach64_dac_rs(m, lane), lane, value);
+    LOG(4, "Mach64: DAC cell RS=%u (lane %u) = $%02X", mach64_dac_rs(m, lane), lane, value);
     switch (mach64_dac_rs(m, lane)) {
     case 0:
     case 3:
@@ -993,8 +995,8 @@ static void mach64_dac_write_lane(mach64_t *m, uint32_t lane, uint8_t value) {
         m->clut[m->clut_addr][m->clut_phase] = value;
         if (++m->clut_phase == 3) {
             m->clut_phase = 0;
-            LOG(4, "CLUT[$%02X] = %02X %02X %02X", m->clut_addr, m->clut[m->clut_addr][0], m->clut[m->clut_addr][1],
-                m->clut[m->clut_addr][2]);
+            LOG(4, "Mach64: CLUT[$%02X] = %02X %02X %02X", m->clut_addr, m->clut[m->clut_addr][0],
+                m->clut[m->clut_addr][1], m->clut[m->clut_addr][2]);
             m->clut_addr++;
             mach64_clut_changed(m);
         }
@@ -1075,8 +1077,8 @@ static void mach64_aperture_changed(mach64_t *m) {
             "keeping the BAR-relative view; one of the two is wrong",
             loc, bar0);
     }
-    LOG(2, "aperture %s: %u MB at BAR0 base $%08X, register alias at +$%06X", size ? "enabled" : "DISABLED", size >> 20,
-        bar0, mach64_mmio_offset(m));
+    LOG(2, "Mach64: aperture %s: %u MB at BAR0 base $%08X, register alias at +$%06X", size ? "enabled" : "DISABLED",
+        size >> 20, bar0, mach64_mmio_offset(m));
 }
 
 // ============================================================
@@ -1456,7 +1458,7 @@ static void mach64_engine_run(mach64_t *m) {
         m->host_op.h = height;
         m->host_op.col = 0;
         m->host_op.row = 0;
-        LOG(4, "host-data operation armed: %ux%u at (%u,%u)", width, height, dst_x, dst_y);
+        LOG(4, "Mach64: host-data operation armed: %ux%u at (%u,%u)", width, height, dst_x, dst_y);
         return;
     }
 
@@ -1484,7 +1486,9 @@ static void mach64_engine_run(mach64_t *m) {
             op.mono_sel, op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix, op.sc_left, op.sc_right, op.sc_top,
             op.sc_bottom, op.mask, op.cmp_fn, op.cmp_clr, op.cmp_msk, mach64_tally(m));
     else
-        LOG(3, "op #%llu %s %ux%u at (%u,%u) dst=$%X/%u mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X wmask=$%08X %s",
+        LOG(3,
+            "Mach64: op #%llu %s %ux%u at (%u,%u) dst=$%X/%u mono=%u frgd=%u/%X bkgd=%u/%X clr=$%08X/$%08X wmask=$%08X "
+            "%s",
             (unsigned long long)m->blits, m->in_context ? "CTX" : "DIR", width, height, dst_x, dst_y, op.dst.base,
             op.dst.pitch, op.mono_sel, op.frgd_sel, op.frgd_mix, op.bkgd_sel, op.bkgd_mix, m->reg[DW_DP_FRGD_CLR],
             m->reg[DW_DP_BKGD_CLR], op.mask, mach64_tally(m));
@@ -1524,7 +1528,7 @@ static void mach64_host_feed(mach64_t *m, uint32_t value) {
                 m->host_op.active = false;
                 m->blits++;
                 m->display.fb_dirty = true;
-                LOG(3, "op #%llu HOST %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits, m->host_op.w,
+                LOG(3, "Mach64: op #%llu HOST %ux%u at (%u,%u) dst=$%X/%u", (unsigned long long)m->blits, m->host_op.w,
                     m->host_op.h, m->host_op.x0, m->host_op.y0, op.dst.base, op.dst.pitch);
                 return;
             }
@@ -1679,8 +1683,8 @@ static void mach64_context_load(mach64_t *m, uint32_t value) {
                 continue; // the block's own mask inhibits this DWORD
             mach64_context_apply(m, i, mach64_context_dword(m, base, i));
         }
-        LOG(2, "context load: ptr $%04X -> VRAM +$%06X mask $%08X cmd %u (DP_MIX $%08X DP_SRC $%08X)", ptr, base, mask,
-            cmd, m->reg[DW_DP_MIX], m->reg[DW_DP_SRC]);
+        LOG(2, "Mach64: context load: ptr $%04X -> VRAM +$%06X mask $%08X cmd %u (DP_MIX $%08X DP_SRC $%08X)", ptr,
+            base, mask, cmd, m->reg[DW_DP_MIX], m->reg[DW_DP_SRC]);
 
         // A context command only draws if the BLOCK supplies the operands
         // that draw needs — the trajectory for a fill, the Bresenham terms
@@ -1720,7 +1724,7 @@ static void mach64_context_load(mach64_t *m, uint32_t value) {
         // The CONTEXT_LOAD_CNTL entry continues or halts the chain.
         value = mach64_context_dword(m, base, 0x1C);
     }
-    LOG(1, "context chain exceeded 64 hops — stopping");
+    LOG(1, "Mach64: context chain exceeded 64 hops — stopping");
 }
 
 // ============================================================
@@ -1802,7 +1806,7 @@ static void mach64_engine_line(mach64_t *m) {
     m->reg[DW_DST_Y] = (uint32_t)(y & 0xFFFF);
     m->blits++;
     m->display.fb_dirty = true;
-    LOG(3, "line #%llu %u px from (%d,%d) %s-major dir(%+d,%+d)", (unsigned long long)m->blits, lnth,
+    LOG(3, "Mach64: line #%llu %u px from (%d,%d) %s-major dir(%+d,%+d)", (unsigned long long)m->blits, lnth,
         (int)(m->reg[DW_DST_X]), (int)(m->reg[DW_DST_Y]), y_major ? "Y" : "X", xstep, ystep);
 }
 
@@ -1934,7 +1938,7 @@ static uint8_t io_read8(void *ctx, uint32_t addr) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
-        LOG(1, "I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
+        LOG(1, "Mach64: I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
         return 0xFFu;
     }
     return mach64_reg_read_lane(m, dw, addr & 3u);
@@ -1944,7 +1948,7 @@ static void io_write8(void *ctx, uint32_t addr, uint8_t value) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
-        LOG(1, "I/O write of unassigned select $%02X (address $%04X) = $%02X", addr >> 10, addr, value);
+        LOG(1, "Mach64: I/O write of unassigned select $%02X (address $%04X) = $%02X", addr >> 10, addr, value);
         return;
     }
     // Lane-wise, so byte and halfword pokes of a 32-bit register work —
@@ -1966,7 +1970,7 @@ static uint32_t io_read32(void *ctx, uint32_t addr) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
-        LOG(1, "I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
+        LOG(1, "Mach64: I/O read of unassigned select $%02X (address $%04X)", addr >> 10, addr);
         return 0xFFFFFFFFu;
     }
     return MACH64_LE32(mach64_reg_read(m, dw));
@@ -1976,7 +1980,7 @@ static void io_write32(void *ctx, uint32_t addr, uint32_t value) {
     mach64_t *m = (mach64_t *)ctx;
     int dw = io_dword_for_select(addr >> 10);
     if (dw < 0) {
-        LOG(1, "I/O write of unassigned select $%02X (address $%04X) = $%08X", addr >> 10, addr, value);
+        LOG(1, "Mach64: I/O write of unassigned select $%02X (address $%04X) = $%08X", addr >> 10, addr, value);
         return;
     }
     mach64_reg_write(m, dw, MACH64_LE32(value));
@@ -2022,7 +2026,7 @@ static int64_t aper_map(mach64_t *m, uint32_t offset) {
         // no aperture; the alias answers regardless, because that costs
         // nothing and a driver poking it would otherwise wedge.  Log it, so
         // we learn whether it ever matters.
-        LOG(2, "aperture access at +$%06X with CFG_MEM_AP_SIZE = 0", offset);
+        LOG(2, "Mach64: aperture access at +$%06X with CFG_MEM_AP_SIZE = 0", offset);
         if ((offset & ~(MACH64_MMIO_BLOCK_LEN - 1u)) == MACH64_MMIO_OFF_8MB)
             return MACH64_APER_REGS;
         return MACH64_APER_NONE;
@@ -2146,7 +2150,7 @@ static uint32_t rom_read32(void *ctx, uint32_t offset) {
 
 static void rom_write8(void *ctx, uint32_t offset, uint8_t value) {
     (void)ctx;
-    LOG(2, "write to the expansion ROM at +$%04X = $%02X — ignored (it is a ROM)", offset, value);
+    LOG(2, "Mach64: write to the expansion ROM at +$%04X = $%02X — ignored (it is a ROM)", offset, value);
 }
 
 static void rom_write16(void *ctx, uint32_t offset, uint16_t value) {
@@ -2302,9 +2306,10 @@ static void mach64_present(mach64_t *m) {
         return;
     }
 
+    // No clamp needed: mach64_update settled this geometry against vram_size
+    // through display_set_scanout, and `compose` is vram_size, so the span
+    // fits both by construction (04-video F-26/F-27).
     size_t span = (size_t)stride * height;
-    if (span > m->vram_size)
-        span = m->vram_size;
     memcpy(m->compose, frame, span);
     m->display.bits = m->compose;
 
@@ -2318,7 +2323,8 @@ static void mach64_present(mach64_t *m) {
     uint32_t oy = CUR_OFF_V(m->reg[DW_CUR_HORZ_VERT_OFF]);
     uint32_t src = CUR_BASE(m->reg[DW_CUR_OFFSET]);
     if ((uint64_t)src + CUR_SIZE * CUR_LINE_BYTES > m->vram_size) {
-        LOG(1, "hardware cursor definition at $%06X runs past %u MB of VRAM — not drawn", src, m->vram_size >> 20);
+        LOG(1, "Mach64: hardware cursor definition at $%06X runs past %u MB of VRAM — not drawn", src,
+            m->vram_size >> 20);
         return;
     }
 
@@ -2388,41 +2394,42 @@ static void mach64_update(mach64_t *m) {
         // 4 bpp, or a reserved encoding.  Same rule as 5,6,5 above.
         if (!m->pix_width_warned) {
             m->pix_width_warned = true;
-            LOG(0, "CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode",
+            LOG(0, "Mach64: CRTC_PIX_WIDTH = %u is not a depth this model renders — keeping the previous mode",
                 mach64_pix_width(m));
         }
         return;
     }
 
     if (width == 0 || width > 2048u || height == 0 || height > 1536u) {
-        LOG(2, "implausible CRTC geometry %ux%u — blanking", width, height);
+        LOG(2, "Mach64: implausible CRTC geometry %ux%u — blanking", width, height);
         width = 640;
         height = 480;
         stride = 0;
     }
 
-    m->display.width = width;
-    m->display.height = height;
     m->display.format = format;
-    m->display.stride = stride ? stride : width * bpp;
     m->display.par_w = 0;
     m->display.par_h = 0;
     m->display.crt_response = NULL;
 
-    // Blanked when the CRTC is held in reset, when the raster is disabled,
-    // when no pitch has been programmed, or when the scan would run off the
-    // end of VRAM (nothing sane is being scanned in any of those cases).
+    // Blanked when the CRTC is held in reset, when the raster is disabled, or
+    // when no pitch has been programmed -- nothing sane is being scanned in
+    // any of those cases.
     bool blanked =
         !(m->reg[DW_CRTC_GEN_CNTL] & CRTC_EN) || (m->reg[DW_CRTC_GEN_CNTL] & CRTC_DISPLAY_DIS) || stride == 0;
-    uint64_t span = (uint64_t)m->display.stride * height;
-    if ((uint64_t)base + span > m->vram_size)
-        blanked = true;
-    if (blanked) {
-        size_t n = (size_t)m->display.stride * height;
-        if (n > m->vram_size)
-            n = m->vram_size;
-        memset(m->blank, display_black_fill(format), n);
-    }
+
+    // A scan that runs off the end of VRAM blanks too -- and the geometry and
+    // the buffer are settled TOGETHER, which is the part this used to get
+    // wrong.  CRTC_PITCH reaches 32,736 and height reaches 1,536, so the
+    // advertised span reaches ~50 MB; the old code noticed, set `blanked`,
+    // clamped the MEMSET to vram_size, and then left display.stride x height
+    // at the large value over a vram_size buffer -- so every consumer still
+    // read what the producer advertised (04-video F-26).  display_set_scanout
+    // decides both, and `blank` is vram_size, so a refused descriptor falls
+    // back to a raster the blank buffer can actually serve.
+    display_set_scanout(&m->display, blanked ? NULL : m->vram, m->vram_size, base, stride ? stride : width * bpp, width,
+                        height, m->blank, m->vram_size);
+    blanked = m->display.bits == m->blank;
     m->scan_base = base;
     m->scan_blanked = blanked;
     mach64_present(m);
@@ -2435,7 +2442,7 @@ static void mach64_update(mach64_t *m) {
     }
     m->display.shape_dirty = true;
     m->display.fb_dirty = true;
-    LOG(2, "mode: %ux%u %u bpp stride=%u base=$%06X%s", width, height, bpp * 8u, m->display.stride, base,
+    LOG(2, "Mach64: mode: %ux%u %u bpp stride=%u base=$%06X%s", width, height, bpp * 8u, m->display.stride, base,
         blanked ? " BLANKED" : "");
 }
 
@@ -2642,13 +2649,43 @@ static void mach64_checkpoint_restore(pci_device_t *dev, checkpoint_t *cp) {
     memcpy(m->dac_indexed, c.dac_indexed, sizeof(m->dac_indexed));
     memcpy(m->clut, c.clut, sizeof(m->clut));
     // A checkpoint taken on a 4 MB card must not be restored into a 2 MB
-    // buffer: resize rather than truncate the stream.
+    // buffer: resize rather than truncate the stream.  The card is built from
+    // the STAGED options (`pci_option="vram=2m"`) and the stream is replayed
+    // into it afterwards, so the two sizes really can differ.
+    //
+    // All THREE buffers move together.  `blank` and `compose` are sized to
+    // vram_size in the factory, and that is what makes them adequate: every
+    // scan is bounded by vram_size, so a buffer of that size can always hold
+    // one.  Growing `vram` alone broke the invariant and turned the very next
+    // mach64_update() -- which this function calls below -- into a 2 MB heap
+    // WRITE overflow, twice over: memcpy into `compose` in mach64_present and
+    // memset of `blank` here (04-video F-27).
     if (c.vram_size != m->vram_size) {
-        uint8_t *grown = (uint8_t *)calloc(1, c.vram_size);
-        if (grown) {
+        uint8_t *v = (uint8_t *)calloc(1, c.vram_size);
+        uint8_t *b = (uint8_t *)calloc(1, c.vram_size);
+        uint8_t *comp = (uint8_t *)calloc(1, c.vram_size);
+        if (v && b && comp) {
             free(m->vram);
-            m->vram = grown;
+            free(m->blank);
+            free(m->compose);
+            m->vram = v;
+            m->blank = b;
+            m->compose = comp;
             m->vram_size = c.vram_size;
+        } else {
+            // Out of memory: keep the card exactly as it was.  The read below
+            // then asks for the staged size against a block holding
+            // c.vram_size, and every checkpoint format size-tags its blocks
+            // and fails the restore on a mismatch -- so this ends as a loud
+            // failed restore, which is the right answer.  Say why here, since
+            // the size-mismatch message alone would not mention the OOM.
+            free(v);
+            free(b);
+            free(comp);
+            LOG(0,
+                "Mach64: restore: out of memory resizing VRAM %u -> %u bytes; the restore will fail rather than "
+                "truncate",
+                m->vram_size, c.vram_size);
         }
     }
     system_read_checkpoint_data(cp, m->vram, m->vram_size);
@@ -2947,80 +2984,27 @@ static const class_desc_t mach64_dac_class = {
     .name = "dac", .members = dac_members, .n_members = sizeof(dac_members) / sizeof(dac_members[0])};
 
 // --- the framebuffer node ---------------------------------------------------
-// Mirrors what the NuBus cards expose, so `machine.screen.source.depth`
-// reads the same on either bus.
-
-static value_t fb_attr_width(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.width : 0);
+// The framebuffer node is display_class.c's, shared with the NuBus cards and
+// the built-in chips, so `machine.screen.source` reads the same on either bus
+// (04-video F-15).  This card used to re-implement it with `size` where NuBus
+// said `raw_size`, V_UINT where NuBus said V_INT, and no `format` at all --
+// the node was declared to mirror the NuBus one and did not.
+static display_t *mach64_fb_resolve(void *owner) {
+    mach64_t *c = (mach64_t *)owner;
+    return c ? &c->display : NULL;
 }
-static value_t fb_attr_height(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.height : 0);
+static uint64_t mach64_fb_base(void *owner) {
+    // A byte offset into VRAM, not an address: CRTC_OFFSET x 8.
+    mach64_t *c = (mach64_t *)owner;
+    return c ? (uint64_t)(c->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u : 0;
 }
-static value_t fb_attr_stride(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? c->display.stride : 0);
-}
-static value_t fb_attr_depth(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? mach64_bytes_per_pixel(c) * 8u : 0);
-}
-static value_t fb_attr_base(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? (c->reg[DW_CRTC_OFF_PITCH] & 0xFFFFFu) * 8u : 0);
-}
-static value_t fb_attr_size(struct object *self, const member_t *m) {
-    (void)m;
-    mach64_t *c = node_card(self);
-    return val_uint(4, c ? (uint64_t)c->display.stride * c->display.height : 0);
-}
-
-static const member_t fb_members[] = {
-    {.kind = M_ATTR,
-     .name = "width",
-     .doc = "Active raster width in pixels",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_width}                              },
-    {.kind = M_ATTR,
-     .name = "height",
-     .doc = "Active raster height in lines",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_height}                             },
-    {.kind = M_ATTR,
-     .name = "stride",
-     .doc = "Bytes per scan line (CRTC_PITCH x 8 x bytes-per-pixel)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_stride}                             },
-    {.kind = M_ATTR,
-     .name = "depth",
-     .doc = "Bits per pixel, from CRTC_PIX_WIDTH",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_depth}                              },
-    {.kind = M_ATTR,
-     .name = "base",
-     .doc = "Scan base as a byte offset into VRAM (CRTC_OFFSET x 8)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = fb_attr_base}},
-    {.kind = M_ATTR,
-     .name = "size",
-     .doc = "Active framebuffer size in bytes (stride x height)",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = fb_attr_size}                               },
-};
-static const class_desc_t mach64_fb_class = {
-    .name = "framebuffer", .members = fb_members, .n_members = sizeof(fb_members) / sizeof(fb_members[0])};
 
 static void mach64_attach_objects(pci_device_t *dev, struct object *card_node) {
     mach64_t *m = (mach64_t *)dev->priv;
     if (!m || !card_node)
         return;
-    struct object *fb = object_new(&mach64_fb_class, m, "framebuffer");
+    m->fb_node = (display_fb_node_t){.owner = m, .resolve = mach64_fb_resolve, .base = mach64_fb_base};
+    struct object *fb = object_new(&display_fb_class, &m->fb_node, "framebuffer");
     if (fb) {
         object_set_label(fb, "Framebuffer");
         object_set_order(fb, 10);
@@ -3151,7 +3135,7 @@ static pci_device_t *mach64_factory(int slot_index, config_t *cfg, checkpoint_t 
     // addresses congruent to the strapped base modulo 1024 are ours.
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, 0, MACH64_IO_SPAN, MACH64_IO_MATCH_MASK, m->io_base, &m->io_if, m);
 
-    LOG(1, "seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM", slot_index,
+    LOG(1, "Mach64: seated in slot %d: %u MB VRAM, monitor '%s' (primary sense %u), %zu-byte expansion ROM", slot_index,
         m->vram_size >> 20, m->mon->id, m->mon->primary, rom_size);
     return dev;
 }

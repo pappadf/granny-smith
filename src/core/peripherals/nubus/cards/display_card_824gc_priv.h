@@ -15,6 +15,7 @@
 #include "display_card_824gc.h"
 
 #include "display.h"
+#include "jmfb_family.h"
 #include "memory.h"
 #include "nubus.h"
 
@@ -58,18 +59,13 @@ typedef struct {
 // marker and is handled explicitly.
 struct display_card_824gc_priv {
     rgba8_t clut[256];
-    // JMFB-family register shadows (subset the video driver drives).
-    uint16_t jmfb_csr;
-    uint16_t jmfb_video_base;
-    uint16_t jmfb_row_words;
-    uint16_t sw_ic_reg; // Stopwatch interrupt/control (bit1 = VINT disable)
-    uint16_t sw_status_reg;
-    uint16_t clut_pbcr;
-    uint8_t clut_idx;
-    uint8_t clut_phase; // 0=R,1=G,2=B; reset on index write
-    uint32_t clut_pending[3];
-    uint16_t clut_long_hi;
-    uint8_t sense_code; // 3-bit monitor sense the card reports
+    // The JMFB chip's registers.  This card IS an 8*24 with an accelerator
+    // bolted on, so it carries the same chip, and the model is shared with
+    // jmfb.c rather than ported into it (jmfb_family.h, 04-video F-07).
+    // Plain data, so it rides the checkpointed range exactly as the loose
+    // fields it replaced did.  Named `jmfb`, not `regs`: `regs` below is the
+    // ACCELERATOR's register window, a different thing entirely.
+    jmfb_regs_t jmfb;
     int seeded_bpp; // boot depth from machine.nubus.video_mode (default 1).
                     // The decl-ROM driver programs the boot mode at Open from
                     // the slot PRAM (which the same seed wrote), so the model's
@@ -178,6 +174,7 @@ struct display_card_824gc_priv {
     char *vrom_path;
     uint32_t vrom_size;
     display_t display;
+    jmfb_bind_t jmfb_bind; // what `jmfb` acts on; rebuilt at init, never checkpointed
 
     // --- Accelerator (super-slot space) ---
     uint8_t *sram; // GC824_SRAM_SIZE (firmware code sink; plain RAM)

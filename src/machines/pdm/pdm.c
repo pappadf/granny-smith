@@ -426,6 +426,16 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
         system_read_checkpoint_data(cp, &st->amic, sizeof(st->amic));
+        // The monitor strap.  It lives in pdm_state_t outside the two structs
+        // above, so it was not saved -- and pdm_video_init below runs on the
+        // restore path too and would overwrite it from the staging default,
+        // so a machine saved with monitor=none came back as hires and its
+        // display topology changed underneath it: pdm_video_display returns
+        // NULL on PDM_SENSE_NONE, which is what lets a NuBus card be the only
+        // screen (04-video F-40).  DAFB solved the same problem by riding its
+        // sense in the device's own stream.
+        system_read_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
+        st->video.sense_restored = true;
         system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
         pdm_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
@@ -554,6 +564,7 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // Substrate-private tail (mirrored by the restore block in pdm_init).
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
+    system_write_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
     system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
     system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
     system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));

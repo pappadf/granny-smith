@@ -48,6 +48,7 @@
 
 #include "card.h"
 #include "display.h"
+#include "display_class.h"
 #include "log.h"
 #include "pci.h"
 #include "scheduler.h"
@@ -57,7 +58,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("54m30");
+LOG_USE_CATEGORY_NAME("video");
 
 // === PCI identity (Alpine TRM §4.14-§4.17) ==================================
 #define C54M30_VENDOR_ID 0x1013u // Cirrus Logic
@@ -128,6 +129,7 @@ typedef struct c54m30 {
     memory_interface_t fb_if;
     memory_interface_t io_if;
     memory_interface_t vga_if; // the fixed legacy $3B0-$3DF block
+    display_fb_node_t fb_node; // instance data for the shared framebuffer class
 } c54m30_t;
 
 static void c54m30_update(c54m30_t *c);
@@ -282,7 +284,7 @@ static void io_write8(void *ctx, uint32_t offset, uint8_t value) {
     c54m30_t *c = (c54m30_t *)ctx;
     uint32_t port = offset & (C54M30_REGS - 1u);
     c->reg[port] = value;
-    LOG(5, "VGA I/O +$%03X = $%02X", port, value);
+    LOG(5, "54M30: VGA I/O +$%03X = $%02X", port, value);
     switch (port) {
     case C54M30_SEQ_INDEX:
         c->seq_index = value;
@@ -428,18 +430,27 @@ static void c54m30_update(c54m30_t *c) {
 
     if (width == 0 || width > 2048u || height == 0 || height > 1536u || stride < width)
         return; // a half-programmed CRTC mid-mode-set; wait for the rest
+    // A start address that pushes the raster off the end is the BASE being
+    // wrong, not the mode: scanning from 0 is the useful recovery and the one
+    // this has always done.  It is not a bound on the SPAN, though -- the
+    // Offset register reaches stride 2040 and height reaches 1536, which is
+    // 3,133,440 bytes of raster over a 1 MB store, and resetting the base does
+    // nothing about that (04-video F-26).
     if ((uint64_t)start + (uint64_t)stride * height > C54M30_VRAM)
         start = 0;
 
-    if (c->display.width != width || c->display.height != height || c->display.stride != stride ||
-        c->display.bits != c->vram + start) {
-        c->display.width = width;
-        c->display.height = height;
-        c->display.stride = stride;
-        c->display.format = PIXEL_8BPP;
-        c->display.bits = c->vram + start;
+    uint32_t prev_w = c->display.width, prev_h = c->display.height, prev_stride = c->display.stride;
+    const uint8_t *prev_bits = c->display.bits;
+    c->display.format = PIXEL_8BPP;
+    // The card has no blank buffer, so a raster its 1 MB cannot back scans
+    // nothing rather than showing some other part of VRAM as a picture.
+    display_set_scanout(&c->display, c->vram, C54M30_VRAM, start, stride, width, height, NULL, 0);
+
+    if (c->display.width != prev_w || c->display.height != prev_h || c->display.stride != prev_stride ||
+        c->display.bits != prev_bits) {
         c->display.shape_dirty = true;
-        LOG(2, "mode set: %ux%u 8 bpp, stride %u, start $%05X", width, height, stride, start);
+        LOG(2, "54M30: mode set: %ux%u 8 bpp, stride %u, start $%05X", c->display.width, c->display.height,
+            c->display.stride, start);
     }
 }
 
@@ -653,8 +664,42 @@ static pci_device_t *c54m30_factory(int slot_index, config_t *cfg, checkpoint_t 
     // card does not decode.
     pci_device_add_fixed_region(dev, PCI_SPACE_IO, C54M30_VGA_IO_BASE, C54M30_VGA_IO_SPAN, 0, 0, &c->vga_if, c);
 
-    LOG(1, "seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
+    LOG(1, "54M30: seated in slot %d: %u KB display memory, no interrupt line", slot_index, C54M30_VRAM >> 10);
     return dev;
+}
+
+// The framebuffer node, shared with every other display source
+// (display_class.h).  This card declared no attach_objects at all, so on a
+// Network Server `machine.screen.source` resolved to nothing and there was no
+// way to read the geometry the VGA CRTC had been programmed with
+// (04-video F-15).
+static display_t *c54m30_fb_resolve(void *owner) {
+    c54m30_t *c = (c54m30_t *)owner;
+    return c ? &c->display : NULL;
+}
+static uint64_t c54m30_fb_base(void *owner) {
+    // A byte offset into display memory: the VGA start-address pair, in the
+    // doubleword units the CRTC counts in.
+    c54m30_t *c = (c54m30_t *)owner;
+    if (!c)
+        return 0;
+    return ((uint64_t)c->crtc[0x0C] << 8 | c->crtc[0x0D]) * 4u;
+}
+
+static void c54m30_attach_objects(pci_device_t *dev, struct object *card_node) {
+    c54m30_t *c = dev ? (c54m30_t *)dev->priv : NULL;
+    if (!c || !card_node)
+        return;
+    c->fb_node = (display_fb_node_t){.owner = c, .resolve = c54m30_fb_resolve, .base = c54m30_fb_base};
+    struct object *fb = object_new(&display_fb_class, &c->fb_node, "framebuffer");
+    if (!fb)
+        return;
+    object_set_label(fb, "Framebuffer");
+    object_set_order(fb, 10);
+    object_attach(card_node, fb);
+    // Nominate it, so `machine.screen.source` resolves here when this card is
+    // the primary display.
+    pci_card_set_framebuffer_object(dev, fb);
 }
 
 // BUILTIN: soldered down on the Network Server logic board, instantiable
@@ -665,4 +710,5 @@ const pci_card_kind_t cirrus_54m30_kind = {
     .attach = PCI_ATTACH_BUILTIN,
     .card_class = "display",
     .factory = c54m30_factory,
+    .attach_objects = c54m30_attach_objects,
 };

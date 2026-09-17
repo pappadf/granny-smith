@@ -58,7 +58,5 @@ const char *builtin_se30_video_vrom_path(nubus_card_t *card);
 // checkpoint stream.  VROM is restored by re-loading from disk on
 // machine init (the path round-trips via the SE/30 checkpoint path).
 struct checkpoint;
-void builtin_se30_video_checkpoint_save_vram(nubus_card_t *card, struct checkpoint *cp);
-void builtin_se30_video_checkpoint_restore_vram(nubus_card_t *card, struct checkpoint *cp);
 
 #endif // NUBUS_CARDS_BUILTIN_SE30_VIDEO_H

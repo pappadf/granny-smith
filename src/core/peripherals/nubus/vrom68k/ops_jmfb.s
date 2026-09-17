@@ -14,6 +14,10 @@
 .equ GS_DRHW,          0x0019          | JMFB DrHW (Display_Video_Apple_MDC)
 .equ GS_FB_MINOR,      0xA00           | framebuffer offset in standard slot space
 .equ GS_NMODES,        4               | mode-list entries 0x80..0x83 (1/2/4/8 bpp)
+.equ GS_NPAGES,        1               | one framebuffer (mPageCnt); with
+                                        | only one page the driver assembles
+                                        | no page code at all and needs no
+                                        | SetPage op -- see gsvrom_drvr.s
 .equ GS_FIRSTDIRECT,   8               | no direct-RGB depth codes on this card
 .equ GS_DEFER_SPID,    0               | no deferred 32-bit sResource family
 

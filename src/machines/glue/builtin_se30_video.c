@@ -32,7 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("se30vid");
+LOG_USE_CATEGORY_NAME("video");
 
 #define SE30_VRAM_SIZE           0x00010000UL // 64 KB
 #define SE30_VROM_SIZE           0x00008000UL // 32 KB
@@ -49,7 +49,7 @@ typedef struct {
 
     // --- Pointers last; NOT in the range above ---
     // `display` leads them because it embeds `bits`/`clut` pointers of its own;
-    // its scalar head is checkpointed separately as offsetof(display_t, bits).
+    // its scalar head is checkpointed separately as a display_head_t.
     display_t display;
     uint8_t *vram;
     uint8_t *vrom;
@@ -149,7 +149,7 @@ static void synthesise_vrom_fallback(uint8_t *rom) {
             ok = false;
     }
     if (!ok)
-        LOG(0, "se30: fallback declaration-ROM generation failed; slot will read as empty");
+        LOG(0, "SE/30 video: fallback declaration-ROM generation failed; slot will read as empty");
     declrom_builder_free(b);
 }
 
@@ -164,7 +164,7 @@ static bool load_real_vrom(uint8_t *vrom_buf, char **out_path) {
         LOG(0, "No SE/30 onboard-video vROM offered — falling back to the synthesised declaration ROM");
         return false;
     }
-    LOG(1, "Loaded real VROM from %s", *out_path);
+    LOG(1, "SE/30 video: Loaded real VROM from %s", *out_path);
     return true;
 }
 
@@ -195,7 +195,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         const uint8_t *img = bld ? declrom_builder_bytes(bld, &img_size) : NULL;
         if (!img ||
             !declrom_install_builtin(builtin_se30_video_generic_kind.id, img, img_size, p->vrom, SE30_VROM_SIZE))
-            LOG(0, "se30: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
+            LOG(0, "SE/30 video: built-in declaration ROM failed to generate; declaration ROM is zero-filled");
         declrom_builder_free(bld);
     } else if (!load_real_vrom(p->vrom, &p->vrom_path)) {
         if (!cp) {
@@ -207,6 +207,13 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
         // Restoring from a checkpoint?  The VROM contents will be overwritten
         // from the checkpoint stream; an empty buffer here is fine.
     }
+
+    // Publish it, the way jmfb.c / 24ac.c / 824gc.c all do.  Without this the
+    // object model reported `slot[$E].card.declrom.present == false` on an
+    // SE/30 that has a perfectly good 32 KB declaration ROM (04-video F-34).
+    // nubus_delete owns and frees the buffer once it is published here.
+    card->declrom = p->vrom;
+    card->declrom_size = SE30_VROM_SIZE;
 
     // Populate the display descriptor.  Primary buffer at $8040 is the
     // boot-time selection — VIA1 PA6 will toggle it before the OS draws.
@@ -241,7 +248,7 @@ static void card_teardown(nubus_card_t *card, config_t *cfg) {
     if (!p)
         return;
     free(p->vram);
-    free(p->vrom);
+    // p->vrom is published as card->declrom; nubus_delete owns and frees it.
     free(p->vrom_path);
     free(p);
     card->priv = NULL;
@@ -293,7 +300,13 @@ static void card_checkpoint_save(nubus_card_t *card, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
     checkpoint_write_file(cp, p->vrom_path ? p->vrom_path : "");
     system_write_checkpoint_data(cp, p, offsetof(se30_priv_t, display));
-    system_write_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        // Fixed widths, not a raw struct prefix: the prefix carried a bare
+        // pixel_format_t, whose size is implementation-defined (04-video
+        // F-41; see display.h).
+        display_head_t head = display_head_of(&p->display);
+        system_write_checkpoint_data(cp, &head, sizeof head);
+    }
 }
 
 static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
@@ -303,7 +316,11 @@ static void card_checkpoint_restore(nubus_card_t *card, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
     checkpoint_read_file(cp, p->vrom, SE30_VROM_SIZE, NULL);
     system_read_checkpoint_data(cp, p, offsetof(se30_priv_t, display));
-    system_read_checkpoint_data(cp, &p->display, offsetof(display_t, bits));
+    {
+        display_head_t head;
+        system_read_checkpoint_data(cp, &head, sizeof head);
+        display_head_apply(&p->display, &head);
+    }
 
     p->display.shape_dirty = true;
     p->display.clut_dirty = true;
@@ -333,27 +350,6 @@ static const nubus_card_ops_t builtin_se30_video_generic_ops = {
 
 // === Factory + kind descriptor ==============================================
 
-static nubus_card_t *factory_common(int slot, config_t *cfg, checkpoint_t *cp, const nubus_card_ops_t *ops) {
-    nubus_card_t *card = calloc(1, sizeof(*card));
-    if (!card)
-        return NULL;
-    card->ops = ops;
-    card->slot = slot;
-    if (card->ops->init(card, cfg, cp) != 0) {
-        free(card);
-        return NULL;
-    }
-    return card;
-}
-
-static nubus_card_t *factory(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &builtin_se30_video_ops);
-}
-
-static nubus_card_t *factory_generic(int slot, config_t *cfg, checkpoint_t *cp) {
-    return factory_common(slot, cfg, cp, &builtin_se30_video_generic_ops);
-}
-
 // One monitor entry — the SE/30 built-in is fixed at 512×342×1bpp; the
 // list is included so the dialog's monitor dropdown has *something* to
 // show even though the user can't change it.
@@ -378,7 +374,7 @@ const nubus_card_kind_t builtin_se30_video_kind = {
     // separate onboard-video vROM file (the dialog's VROM picker drives this).
     .requires_vrom = true,
     .monitors = builtin_se30_monitors,
-    .factory = factory,
+    .ops = &builtin_se30_video_ops,
 };
 
 // Generic sibling kind ("se30") with the built-in GS declaration ROM —
@@ -391,7 +387,7 @@ const nubus_card_kind_t builtin_se30_video_generic_kind = {
     .attach = CARD_ATTACH_BUILTIN,
     .requires_vrom = false,
     .monitors = builtin_se30_monitors,
-    .factory = factory_generic,
+    .ops = &builtin_se30_video_generic_ops,
 };
 
 // === SE/30-specific public hooks ============================================
@@ -420,23 +416,4 @@ uint8_t *builtin_se30_video_vrom(nubus_card_t *card) {
 const char *builtin_se30_video_vrom_path(nubus_card_t *card) {
     se30_priv_t *p = card ? card->priv : NULL;
     return p ? p->vrom_path : NULL;
-}
-
-void builtin_se30_video_checkpoint_save_vram(nubus_card_t *card, checkpoint_t *cp) {
-    se30_priv_t *p = card ? card->priv : NULL;
-    if (!p)
-        return;
-    system_write_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
-}
-
-void builtin_se30_video_checkpoint_restore_vram(nubus_card_t *card, checkpoint_t *cp) {
-    se30_priv_t *p = card ? card->priv : NULL;
-    if (!p)
-        return;
-    system_read_checkpoint_data(cp, p->vram, SE30_VRAM_SIZE);
-    // Re-derive display.bits in case the checkpoint stream restores
-    // VIA1 PA6 to a value that toggles the buffer (via_redrive_outputs
-    // will fire after we return).
-    p->display.bits = p->vram + (p->main_buf ? SE30_FB_PRIMARY_OFFSET : SE30_FB_ALTERNATE_OFFSET);
-    p->display.fb_dirty = true;
 }

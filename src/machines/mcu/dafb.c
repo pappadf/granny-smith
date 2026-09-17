@@ -24,6 +24,7 @@
 
 #include "dafb.h"
 
+#include "display_class.h"
 #include "log.h"
 #include "scheduler.h"
 #include "system.h"
@@ -31,7 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("dafb");
+LOG_USE_CATEGORY_NAME("video");
 
 // === Register offsets ===
 // DAFB core
@@ -62,7 +63,11 @@ LOG_USE_CATEGORY_NAME("dafb");
 // DP8531 (+$300): register = (offset >> 4) & 0xF; commit on reg 15
 
 // Phase C fallback frame period until the ROM programs real timing.
-#define DAFB_FALLBACK_FRAME_NS 16625000ull
+// Until the Swatch timing registers are programmed there is no mode line to
+// derive a refresh from, so the fallback is the machine's own 60.15 Hz
+// retrace -- taken from scheduler.h rather than re-rounded here, which is
+// where the old 16625000 literal lost 103 ns a frame (04-video F-17).
+#define DAFB_FALLBACK_FRAME_NS MAC_VBL_PERIOD_NS
 
 struct dafb {
     uint32_t regs[DAFB_REG_COUNT]; // raw register file ($000-$3FF)
@@ -73,6 +78,10 @@ struct dafb {
 
     // Scanout state
     display_t display;
+    // machine.video -- the framebuffer node every display source exposes
+    // (display_class.h); a built-in chip had none at all (04-video F-16).
+    display_fb_node_t fb_node;
+    struct object *video_node;
     rgba8_t clut[256];
 
     // AC842 write machine: index + RGB component phase (Trap 11: the
@@ -581,19 +590,50 @@ static void dafb_write32(void *ctx, uint32_t offset, uint32_t value) {
     reg_write_effects(dafb, off, value);
 }
 
+// Merge `n` big-endian byte lanes into the register file, then run the write
+// side effects ONCE PER REGISTER.
+//
+// dafb_write16 used to be two dafb_write8 calls, and each of those ran
+// log_touch + reg_write_effects on a PARTIALLY ASSEMBLED register (04-video
+// F-46).  reg_write_effects is not idempotent, so that was not merely noisy:
+//
+//   - ac842_write(AC842_DATA) does `dac_phase++` unconditionally, so one guest
+//     word write to the CLUT data port consumed TWO palette components -- and
+//     the first of them was the register's stale low byte, because the effect
+//     runs on the longword and only the second call has the real value in it
+//   - dp8531_commit fires on `creg == 15`, so it committed once on a
+//     half-assembled clock-register set
+//   - reconfigure ran twice, the first time on a half-written mode
+//
+// Byte lanes that fall in DIFFERENT registers still get one effects call each,
+// which is right -- that is two registers being written, not one written
+// twice.  (A word write reaches that case only when misaligned, which a 68030
+// permits; an aligned word never straddles a longword.)
+static void dafb_write_lanes(dafb_t *dafb, uint32_t offset, const uint8_t *bytes, int n) {
+    int i = 0;
+    while (i < n) {
+        uint32_t off = reg_off(offset + (uint32_t)i);
+        uint32_t first = offset + (uint32_t)i;
+        uint32_t v = dafb->regs[off >> 2];
+        // Absorb every remaining byte that lands in THIS longword.
+        while (i < n && reg_off(offset + (uint32_t)i) == off) {
+            uint32_t shift = 8u * (3u - ((offset + (uint32_t)i) & 3u));
+            v = (v & ~(0xFFu << shift)) | ((uint32_t)bytes[i] << shift);
+            i++;
+        }
+        dafb->regs[off >> 2] = v;
+        log_touch(dafb, first, true, v);
+        reg_write_effects(dafb, off, v);
+    }
+}
+
 static void dafb_write8(void *ctx, uint32_t offset, uint8_t value) {
-    dafb_t *dafb = (dafb_t *)ctx;
-    uint32_t off = reg_off(offset);
-    uint32_t shift = 8 * (3 - (offset & 3));
-    uint32_t v = (dafb->regs[off >> 2] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
-    dafb->regs[off >> 2] = v;
-    log_touch(dafb, offset, true, v);
-    reg_write_effects(dafb, off, v);
+    dafb_write_lanes((dafb_t *)ctx, offset, &value, 1);
 }
 
 static void dafb_write16(void *ctx, uint32_t offset, uint16_t value) {
-    dafb_write8(ctx, offset, (uint8_t)(value >> 8));
-    dafb_write8(ctx, offset + 1, (uint8_t)value);
+    const uint8_t bytes[2] = {(uint8_t)(value >> 8), (uint8_t)value};
+    dafb_write_lanes((dafb_t *)ctx, offset, bytes, 2);
 }
 
 static const memory_interface_t dafb_reg_iface = {
@@ -604,6 +644,40 @@ static const memory_interface_t dafb_reg_iface = {
     .write_uint16 = dafb_write16,
     .write_uint32 = dafb_write32,
 };
+
+// The pre-mode-set presentation state: 640x480x1 over the fallback frame
+// period, so a capture taken before the ROM's first mode set shows a sane
+// blank raster, plus the identity CLUT ramp the DAC powers up with.
+//
+// Shared by construction and /RESET.  dafb_reset used to zero the register
+// file and stop -- leaving dafb->display holding the PRE-RESET width, height,
+// stride, format and bits, and the CLUT at whatever the guest had programmed.
+// Worse, with regs zeroed the next reconfigure() bails at its mid-mode-set
+// guard (`hfp <= hal`), so the stale mode persisted indefinitely rather than
+// being re-derived (04-video F-38).
+//
+// `cold` follows the same rule as the NuBus cards' set_poweron_defaults: VRAM
+// keeps the previous frame across a warm /RESET, so only a cold build blanks
+// it.
+static void dafb_poweron_display(dafb_t *dafb, bool cold) {
+    dafb->display.width = 640;
+    dafb->display.height = 480;
+    dafb->display.format = PIXEL_1BPP_MSB;
+    dafb->display.stride = 1024;
+    dafb->display.bits = dafb->vram + 0x1000;
+    if (cold) // cold boot scans out black, not the white an all-zero 1 bpp buffer gives
+        display_blank_raster(&dafb->display);
+    dafb->display.clut = dafb->clut;
+    dafb->display.clut_len = 256;
+    dafb->display.shape_dirty = true;
+    dafb->display.clut_dirty = true;
+    dafb->display.fb_dirty = true;
+    dafb->display.response_dirty = true;
+    for (int i = 0; i < 256; i++) {
+        dafb->clut[i].r = dafb->clut[i].g = dafb->clut[i].b = (uint8_t)i;
+        dafb->clut[i].a = 255;
+    }
+}
 
 // ============================================================
 // Lifecycle
@@ -627,25 +701,7 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
     // ROM silently configures a 21" two-page display (observed).
     dafb->regs[DAFB_SENSE >> 2] = 0x7u;
 
-    // Pre-mode-set display: 640×480×1 over the fallback frame period, so a
-    // capture before the ROM's first mode set shows a sane blank raster.
-    dafb->display.width = 640;
-    dafb->display.height = 480;
-    dafb->display.format = PIXEL_1BPP_MSB;
-    dafb->display.stride = 1024;
-    dafb->display.bits = dafb->vram + 0x1000;
-    // Cold boot scans out black, not the white an all-zero 1 bpp buffer gives.
-    display_blank_raster(&dafb->display);
-    dafb->display.clut = dafb->clut;
-    dafb->display.clut_len = 256;
-    dafb->display.shape_dirty = true;
-    dafb->display.clut_dirty = true;
-    dafb->display.fb_dirty = true;
-    dafb->display.response_dirty = true;
-    for (int i = 0; i < 256; i++) {
-        dafb->clut[i].r = dafb->clut[i].g = dafb->clut[i].b = (uint8_t)i;
-        dafb->clut[i].a = 255;
-    }
+    dafb_poweron_display(dafb, /*cold*/ true);
 
     if (cp) {
         system_read_checkpoint_data(cp, dafb->regs, sizeof(dafb->regs));
@@ -662,13 +718,40 @@ dafb_t *dafb_init(uint32_t vram_size, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, &dafb->sense_ext_on, sizeof(dafb->sense_ext_on));
         system_read_checkpoint_data(cp, dafb->vram, vram_size);
         reconfigure(dafb);
+        // ...and the INTERRUPT LEVEL, which is derived from the register file
+        // exactly as the descriptor is.  `irq_line` is not in the stream (it
+        // is an output, not state), so it starts false; a checkpoint taken
+        // with SWATCH_INTR_STATUS & _ENABLE non-zero has to re-assert it here,
+        // or the level is lost -- and update_irq's `active != irq_line` edge
+        // filter means a later status change may not re-raise it either.  The
+        // Quadra's whole VBL chain hangs off this level (04-video F-38).
+        update_irq(dafb);
     }
     return dafb;
+}
+
+static display_t *dafb_fb_resolve(void *owner) {
+    return dafb_display((dafb_t *)owner);
+}
+static uint64_t dafb_fb_base(void *owner) {
+    // A byte offset into the chip's own VRAM, which is where the Swatch
+    // scan base points.
+    dafb_t *d = (dafb_t *)owner;
+    return (d && d->display.bits && d->vram) ? (uint64_t)(d->display.bits - d->vram) : 0;
+}
+
+void dafb_attach_objects(dafb_t *dafb) {
+    if (!dafb || dafb->video_node)
+        return;
+    dafb->fb_node = (display_fb_node_t){.owner = dafb, .resolve = dafb_fb_resolve, .base = dafb_fb_base};
+    dafb->video_node = display_attach_video_node(&dafb->fb_node, "Video (DAFB)");
 }
 
 void dafb_delete(dafb_t *dafb) {
     if (!dafb)
         return;
+    display_detach_video_node(dafb->video_node);
+    dafb->video_node = NULL;
     if (dafb->sched)
         remove_event(dafb->sched, dafb_frame_event, dafb);
     free(dafb->vram);
@@ -807,6 +890,10 @@ void dafb_reset(dafb_t *dafb) {
     dafb->irq_line = false;
     if (dafb->irq_cb)
         dafb->irq_cb(dafb->irq_ctx, false);
+    // ...and the presentation state that is DERIVED from those registers.
+    // Zeroing the register file is not a reset of the chip if the descriptor
+    // it produced survives (04-video F-38).
+    dafb_poweron_display(dafb, /*cold*/ false);
 }
 
 const memory_interface_t *dafb_reg_interface(dafb_t *dafb) {

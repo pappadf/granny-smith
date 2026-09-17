@@ -31,8 +31,8 @@ LOG_USE_CATEGORY_NAME("scheduler");
 // Constants and Macros
 // ============================================================================
 
-#define MAC_VBL_FREQUENCY 60.15 // 60 vertical blanking interrupts per second
-#define MAC_VBL_PERIOD    (1.0 / MAC_VBL_FREQUENCY) // period of one VBL in seconds
+// MAC_VBL_FREQUENCY / MAC_VBL_PERIOD live in scheduler.h -- the display
+// producers that raise their own frame event need the same number.
 // Default cycles per instruction: the authentic average for the original
 // 68000 Macs. Machines override this with one per-machine constant via
 // scheduler_set_cpi(); CPI never depends on the pacing mode.

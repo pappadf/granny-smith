@@ -47,6 +47,7 @@
 // control node (FCode at image ~$16400) and its mode tables [ROM-RE],
 // Apple "Power Macintosh 7500 and 8500 Computers" Developer Note [Apple-doc].
 
+#include "display_timing.h"
 #include "tnt.h"
 
 #include "log.h"
@@ -58,7 +59,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-LOG_USE_CATEGORY_NAME("control");
+LOG_USE_CATEGORY_NAME("video");
 
 // Register indices (offset / $10) — controlfb's struct control_regs.
 #define CR_VCOUNT     0 // vertical counter (read)
@@ -152,6 +153,16 @@ static void control_refresh_clut(config_t *cfg) {
     st->display.clut_dirty = true;
 }
 
+// Scan base inside the 4 MB store: the bank the attribute selects (the 2 MB
+// modes; the $40 bit marks the 4 MB interleaved layout at 0), plus the
+// programmed start address and the 16-byte pixel-0 offset.  update() and
+// compose() must agree on this or the cursor composites over the wrong page.
+static uint32_t control_scan_base(const tnt_control_t *c) {
+    uint32_t attr = c->reg[CR_VRAM_ATTR];
+    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
+    return base + c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
+}
+
 // Re-derive the whole descriptor from the register file.  Called on init,
 // reset, restore and every geometry-relevant register write — all rare.
 void tnt_control_update(config_t *cfg) {
@@ -176,36 +187,24 @@ void tnt_control_update(config_t *cfg) {
     if (height == 0 || height > 1536u)
         height = 480u;
 
-    st->display.width = width;
-    st->display.height = height;
     st->display.format = depth_format(c);
-    st->display.stride = (pitch != 0) ? pitch : width * (bpp / 8u);
     st->display.par_w = 0;
     st->display.par_h = 0;
     st->display.crt_response = NULL;
+    uint32_t stride = (pitch != 0) ? pitch : width * (bpp / 8u);
+    uint32_t base = control_scan_base(c);
 
-    // Scan base inside the 4 MB store: the bank the attribute selects (the
-    // 2 MB modes; the $40 bit marks the 4 MB interleaved layout at 0),
-    // plus the programmed start address and the 16-byte pixel-0 offset.
-    uint32_t attr = c->reg[CR_VRAM_ATTR];
-    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
-    base += c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
-
-    // The $400 control bit blanks the raster; an unprogrammed pitch or an
-    // out-of-store scan does too (nothing sane is being scanned).
+    // The $400 control bit blanks the raster, and so does an unprogrammed
+    // pitch -- nothing sane is being scanned.  Either way the descriptor is
+    // settled in one place: display_set_scanout decides `bits` and the
+    // geometry together, so a scan the 4 MB store cannot back (CR_PITCH is
+    // 12 bits wide, which reaches 12 MB at 32 bpp) falls to the blank buffer
+    // with a height the blank buffer can actually serve, instead of keeping
+    // the large geometry over a clamped fill (04-video F-26).
     bool blanked = (c->reg[CR_CTRL] & 0x400u) || pitch == 0;
-    uint64_t span = (uint64_t)st->display.stride * height;
-    if (base + span > TNT_VRAM_SIZE)
-        blanked = true;
-    if (blanked) {
-        size_t n = (size_t)st->display.stride * height;
-        if (n > TNT_VRAM_SIZE)
-            n = TNT_VRAM_SIZE;
-        memset(st->blank, display_black_fill(st->display.format), n);
-        st->display.bits = st->blank;
-    } else {
-        st->display.bits = st->vram + base;
-    }
+    display_set_scanout(&st->display, blanked ? NULL : st->vram, TNT_VRAM_SIZE, base, stride, width, height, st->blank,
+                        TNT_VRAM_SIZE);
+    blanked = st->display.bits == st->blank;
 
     if (bpp > 8) {
         st->display.clut = NULL;
@@ -217,8 +216,14 @@ void tnt_control_update(config_t *cfg) {
     st->display.shape_dirty = true;
     st->display.fb_dirty = true;
     st->display.clut_dirty = true;
-    LOG(2, "mode: %ux%u %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height, bpp, st->display.stride,
-        c->reg[CR_MODE], c->rad_ctrl, st->display.clut ? "yes" : "no", blanked ? " BLANKED" : "");
+    // Control derives its raster from the CRTC, which is right for a
+    // programmable timing generator -- but naming the standard timing it
+    // landed on makes a misprogrammed mode line obvious in the log
+    // (04-video F-17).
+    const char *timing = display_timing_name(width, height);
+    LOG(2, "Control: mode: %ux%u%s%s %ubpp stride=%u mode_reg=%u rad_ctrl=$%02X clut=%s%s", width, height,
+        timing ? " " : "", timing ? timing : "", bpp, st->display.stride, c->reg[CR_MODE], c->rad_ctrl,
+        st->display.clut ? "yes" : "no", blanked ? " BLANKED" : "");
 }
 
 // The RaDACal hardware cursor (misc $20 bit 1).  Decoded live from the
@@ -263,10 +268,7 @@ static void control_compose(config_t *cfg) {
     uint32_t bpx = depth_bpp(c) / 8u;
     uint32_t stride = st->display.stride;
     uint32_t w = st->display.width, h = st->display.height;
-    // Recompute the scan base exactly as update() does.
-    uint32_t attr = c->reg[CR_VRAM_ATTR];
-    uint32_t base = (!(attr & 0x40u) && (attr & 0x08u)) ? 0x200000u : 0u;
-    base += c->reg[CR_START_ADDR] + CONTROL_FB_OFF;
+    uint32_t base = control_scan_base(c);
     uint64_t span = (uint64_t)stride * h;
     if (base + span > TNT_VRAM_SIZE)
         return;
@@ -347,6 +349,24 @@ static void control_vbl_sync(config_t *cfg) {
     tnt_gc_set_source(cfg, TNT_INT_VBL, c->vbl_pending && (c->reg[CR_INTR_ENA] & CONTROL_INT_VBL));
 }
 
+// Control's own vertical retrace, and NOT the Macintosh 60.15 Hz tick.
+//
+// Worth saying explicitly because the two look like the same number badly
+// typed.  tnt_trigger_vbl() feeds VIA1 CA1 once per scheduler frame-unit --
+// that is MAC_VBL_PERIOD, 60.15 Hz, and it is what paces Ticks, the Time
+// Manager and cursor blink (tnt.md "the 60.15 Hz reference into VIA1 CA1").
+// This event is a different wire: Grand Central interrupt 26, the retrace the
+// ndrv spin-polls during a mode-set.  Changing this 60 to 60.15 would conflate
+// the monitor with the machine clock.
+//
+// The faithful model is neither constant: on the real chip the rate is
+// pixel_clock / (htotal x vtotal), and this file already derives GEOMETRY from
+// the blank-pair registers.  Deriving the period from them too is a fidelity
+// improvement filed separately -- it moves guest-visible timing on every TNT
+// machine, which does not belong inside a de-duplication pass
+// (proposal-video-shared-model.md S3.3, and 04-video F-12, whose "four nominal
+// VBL periods" counts this one as drift from MAC_VBL_PERIOD when it is not
+// measuring the same thing).
 static void control_vbl_event(void *source, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)source;
@@ -381,6 +401,8 @@ static uint32_t control_vcount(config_t *cfg) {
     if (vtotal == 0 || vtotal > 4096u)
         vtotal = 525u;
     uint64_t frame = cfg->machine->freq / 60u;
+    if (!frame)
+        return 0; // a machine with no clock yet -- % 0 is undefined (04-video F-47)
     uint64_t pos = scheduler_cpu_cycles(cfg->scheduler) % frame;
     return (uint32_t)(pos * vtotal / frame);
 }
@@ -407,7 +429,7 @@ static uint32_t control_reg_read(config_t *cfg, uint32_t offset) {
     tnt_control_t *c = ctl(cfg);
     uint32_t idx = offset >> 4;
     if ((offset & 0xFu) != 0 || idx >= TNT_CONTROL_REGS) {
-        LOG(1, "register read off-centre +$%03X", offset);
+        LOG(1, "Control: register read off-centre +$%03X", offset);
         return 0;
     }
     switch (idx) {
@@ -426,10 +448,10 @@ static void control_reg_write(config_t *cfg, uint32_t offset, uint32_t value) {
     tnt_control_t *c = ctl(cfg);
     uint32_t idx = offset >> 4;
     if ((offset & 0xFu) != 0 || idx >= TNT_CONTROL_REGS) {
-        LOG(1, "register write off-centre +$%03X = $%08X", offset, value);
+        LOG(1, "Control: register write off-centre +$%03X = $%08X", offset, value);
         return;
     }
-    LOG(2, "reg[%u] = $%08X", idx, value);
+    LOG(2, "Control: reg[%u] = $%08X", idx, value);
     c->reg[idx] = value;
     switch (idx) {
     case CR_CTRL:
@@ -642,7 +664,8 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
         c->crsr_phase = 0;
         break;
     case 0x10:
-        LOG(4, "cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value, ppc_get_pc(cfg->ppc));
+        LOG(4, "Control: cursor data [%u.%u] = $%02X (pc=%08X)", c->rad_addr, c->crsr_phase, value,
+            ppc_get_pc(cfg->ppc));
         c->crsr[c->rad_addr & 7u][c->crsr_phase] = value;
         if (++c->crsr_phase == 3) {
             c->crsr_phase = 0;
@@ -650,7 +673,7 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
         }
         break;
     case 0x20:
-        LOG(2, "RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
+        LOG(2, "Control: RaDACal misc[$%02X] = $%02X", c->rad_addr, value);
         switch (c->rad_addr) {
         case 0x20:
             c->rad_ctrl = value; // depth control — geometry follows
@@ -670,8 +693,8 @@ void tnt_control_rad_write(config_t *cfg, uint32_t offset, uint8_t value) {
     default: // +$30: CLUT data
         c->clut[c->rad_addr][c->rad_phase] = value;
         if (++c->rad_phase == 3) {
-            LOG(3, "CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0], c->clut[c->rad_addr][1],
-                c->clut[c->rad_addr][2]);
+            LOG(3, "Control: CLUT[$%02X] = %02X %02X %02X", c->rad_addr, c->clut[c->rad_addr][0],
+                c->clut[c->rad_addr][1], c->clut[c->rad_addr][2]);
             c->rad_phase = 0;
             c->rad_addr++;
             control_refresh_clut(cfg);
@@ -773,13 +796,27 @@ void tnt_control_reset(config_t *cfg) {
     tnt_control_update(cfg);
 }
 
+static display_t *control_fb_resolve(void *owner) {
+    return tnt_control_display((config_t *)owner);
+}
+static uint64_t control_fb_base(void *owner) {
+    // A byte offset into the 4 MB store, which is what CR_START_ADDR and the
+    // bank-select attribute add up to.
+    config_t *cfg = (config_t *)owner;
+    tnt_state_t *st = cfg ? tnt_st(cfg) : NULL;
+    if (!st || !st->display.bits || st->display.bits == st->blank || !st->vram)
+        return 0;
+    return (uint64_t)(st->display.bits - st->vram);
+}
+
 int tnt_control_init(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     st->vram = calloc(1, TNT_VRAM_SIZE);
     st->blank = calloc(1, TNT_VRAM_SIZE);
     st->compose = calloc(1, TNT_VRAM_SIZE);
     if (!st->vram || !st->blank || !st->compose) {
-        LOG(0, "Error: out of memory allocating Control's three %u-byte framebuffers", (unsigned)TNT_VRAM_SIZE);
+        LOG(0, "Control: Error: out of memory allocating Control's three %u-byte framebuffers",
+            (unsigned)TNT_VRAM_SIZE);
         free(st->vram);
         free(st->blank);
         free(st->compose);
@@ -810,11 +847,15 @@ int tnt_control_init(config_t *cfg) {
 
     tnt_control_update(cfg);
     st->display.response_dirty = true;
+    st->control_fb_node = (display_fb_node_t){.owner = cfg, .resolve = control_fb_resolve, .base = control_fb_base};
+    st->control_video_node = display_attach_video_node(&st->control_fb_node, "Video (Control)");
     return 0;
 }
 
 void tnt_control_teardown(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
+    display_detach_video_node(st->control_video_node);
+    st->control_video_node = NULL;
     free(st->vram);
     st->vram = NULL;
     free(st->blank);

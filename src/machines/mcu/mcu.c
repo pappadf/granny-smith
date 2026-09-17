@@ -448,6 +448,7 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
     }
     dafb_attach_scheduler(st->dafb, cfg->scheduler);
     dafb_set_irq_callback(st->dafb, mcu_dafb_irq, cfg);
+    dafb_attach_objects(st->dafb); // machine.video{,.framebuffer}
 
     // Consume unconditionally so a staged sense never leaks into a later
     // boot, but only APPLY it on a cold build: on a restore, dafb_init()
