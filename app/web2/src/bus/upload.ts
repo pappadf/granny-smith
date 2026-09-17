@@ -21,7 +21,7 @@
 // the whole file. This mirrors how move/delete route through the worker
 // (storage.mv/storage.rm).
 
-import { gsEval, isModuleReady, getModule, applyCapabilities, seedPram } from './emulator';
+import { gsEval, isModuleReady, getModule, applyCapabilities, seedPram, defaultCdId } from './emulator';
 import { opfs } from './opfs';
 import { showNotification } from '@/state/toasts.svelte';
 import { machine } from '@/state/machine.svelte';
@@ -251,9 +251,12 @@ async function autoMountIfEmpty(persistedPath: string, category: MediaTypeId): P
     return;
   }
   if (category === 'cdrom') {
-    const ok = (await gsEval('machine.scsi.attach_cdrom', [persistedPath, 3])) !== null;
+    // Not a hardcoded 3: the CD's id is the running model's (defaultCdId), which
+    // is 0 on the Network Server and 3 on the Macintoshes.
+    const cdId = await defaultCdId();
+    const ok = (await gsEval('machine.scsi.attach_cdrom', [persistedPath, cdId])) !== null;
     if (ok) {
-      setMounted(persistedPath, { kind: 'cd', drive: 3 });
+      setMounted(persistedPath, { kind: 'cd', drive: cdId });
       showNotification('Inserted into CD-ROM drive', 'info');
     } else {
       showNotification('CD-ROM drive is occupied — image saved but not mounted', 'warning');

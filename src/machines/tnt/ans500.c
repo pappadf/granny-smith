@@ -51,7 +51,7 @@ static const uint32_t ans500_ram_options_kb[] = {16384, 32768, 49152, 65536, 131
 // bus that this machine has never had.
 static const struct scsi_slot ans500_scsi_slots[] = {
     {.label = "Bay 1 (fast/wide 0)", .id = 1},
-    {.label = "Bay 2 (fast/wide 0)", .id = 2, .boot = true}, // Open Firmware's default: disk2:aix
+    {.label = "Bay 2 (fast/wide 0)", .id = 2}, // Open Firmware's own default: disk2:aix
     {.label = "Bay 3 (fast/wide 0)", .id = 3},
     {0},
 };
@@ -66,7 +66,19 @@ static const struct scsi_slot ans500_scsi_slots[] = {
 // Bay 0 is Apple's expected CD-ROM position and is deliberately NOT declared
 // here: it is what hw_profile_t.cdrom_id addresses, which F-10 of the
 // 2026-09-03 review owns.
+// The first entry is NOT a backplane bay.  The backplane's seven bays are ids
+// 0-6 with 0-3 on the first controller and 4-6 on the second, so id 0 on the
+// SECOND controller is a free SCSI address rather than a slot you can put a
+// drive in on real hardware.  It is declared because it is where a Windows NT
+// installation lives on this machine: `bootdisk.of` hands Open Firmware
+// `/bandit/53c825@12/sd@0,0` as the boot path, and the CD-ROM the install
+// reads from occupies id 0 on the FIRST controller, so the two cannot share.
+// Flagged `boot` so the configuration dialog preselects it: the firmware's own
+// default is still `disk2:aix` (bay 2), but a machine configured from the
+// dialog is one somebody is about to install NT on, and a disk anywhere else
+// is one `bootdisk.of` cannot name.
 static const struct scsi_slot ans500_scsi_slots_fw1[] = {
+    {.label = "Windows NT boot disk (fast/wide 1, id 0)", .id = 0, .boot = true},
     {.label = "Bay 5 (fast/wide 1)", .id = 4},
     {.label = "Bay 6 (fast/wide 1)", .id = 5},
     {.label = "Bay 7 (fast/wide 1)", .id = 6},

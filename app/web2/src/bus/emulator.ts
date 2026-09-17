@@ -422,23 +422,64 @@ export function getLastBootConfig(): MachineConfig | null {
   return lastBootConfig;
 }
 
-// The SCSI id a hard disk attached outside the dialog should take: the
-// running model's slot flagged `boot` (the Network Server's bay 2, where its
-// firmware looks for `disk2:aix`), else its first slot, else 0.
-export async function defaultHdId(): Promise<number> {
+// Where a hard disk attached outside the dialog should go: the running model's
+// slot flagged `boot`, else its first slot, else scsi id 0.  The BUS matters as
+// much as the id -- a machine with two controllers can flag a bay on either,
+// and the Network Server flags one on its second -- so both come back together.
+// Flattening the buses and keeping only the id, which this used to do, silently
+// put the disk on the first controller whatever the profile said.
+export async function defaultHdTarget(): Promise<{ bus: string; id: number }> {
+  const fallback = { bus: 'scsi', id: 0 };
   try {
     const model = await gsEval('machine.id');
-    if (typeof model !== 'string' || !model) return 0;
+    if (typeof model !== 'string' || !model) return fallback;
     const r = await gsEval('machine.profile', [model]);
-    if (!r || typeof r !== 'object' || 'error' in r) return 0;
+    if (!r || typeof r !== 'object' || 'error' in r) return fallback;
     const buses =
-      (r as { scsi_buses?: Array<{ slots?: Array<{ id?: number; boot?: boolean }> }> })
-        .scsi_buses ?? [];
-    const slots = buses.flatMap((bus) => bus.slots ?? []);
-    const pick = slots.find((s) => s.boot) ?? slots[0];
-    return typeof pick?.id === 'number' ? pick.id : 0;
+      (
+        r as {
+          scsi_buses?: Array<{
+            object?: string;
+            slots?: Array<{ id?: number; boot?: boolean }>;
+          }>;
+        }
+      ).scsi_buses ?? [];
+    for (const bus of buses) {
+      const hit = (bus.slots ?? []).find((s) => s.boot);
+      if (hit && typeof hit.id === 'number') return { bus: bus.object ?? 'scsi', id: hit.id };
+    }
+    for (const bus of buses) {
+      const first = (bus.slots ?? [])[0];
+      if (first && typeof first.id === 'number')
+        return { bus: bus.object ?? 'scsi', id: first.id };
+    }
+    return fallback;
   } catch {
-    return 0;
+    return fallback;
+  }
+}
+
+// Kept for callers that only want the id.
+export async function defaultHdId(): Promise<number> {
+  return (await defaultHdTarget()).id;
+}
+
+// The SCSI id the CD-ROM belongs at on the running model.  Three is the Macintosh
+// convention and was hardcoded here, but it is not universal: the Network Server's
+// backplane puts the CD at id 0 ("it is expected that slot 0 will be a CD ROM"),
+// and its Open Firmware boot script names `/bandit/53c825@11/sd@0,0` outright, so
+// a disc at 3 is one the firmware will not find.  The profile already publishes
+// the answer as `cdrom_id`; ask it.
+export async function defaultCdId(): Promise<number> {
+  try {
+    const model = await gsEval('machine.id');
+    if (typeof model !== 'string' || !model) return 3;
+    const r = await gsEval('machine.profile', [model]);
+    if (!r || typeof r !== 'object' || 'error' in r) return 3;
+    const id = (r as { cdrom_id?: number }).cdrom_id;
+    return typeof id === 'number' ? id : 3;
+  } catch {
+    return 3;
   }
 }
 
@@ -577,7 +618,7 @@ export async function initEmulator(config: MachineConfig): Promise<void> {
     }
   }
   if (config.cd && config.cd !== '(none)') {
-    await gsEval('machine.scsi.attach_cdrom', [config.cd, 3]);
+    await gsEval('machine.scsi.attach_cdrom', [config.cd, await defaultCdId()]);
   }
 
   machine.model = config.modelName ?? config.model;

@@ -6,7 +6,7 @@
   import { CATEGORY_LABELS, CATEGORY_ACCEPT, iconForCategory } from '@/lib/iconForFsEntry';
   import { opfs } from '@/bus/opfs';
   import { pickAndUploadAs, acceptFilesAsCategory } from '@/bus/upload';
-  import { gsEval, defaultHdId } from '@/bus/emulator';
+  import { gsEval, defaultHdTarget, defaultCdId } from '@/bus/emulator';
   import { showNotification } from '@/state/toasts.svelte';
   import type { OpfsEntry, ImageCategory } from '@/bus/types';
   import type { MediaTypeId } from '@/lib/media';
@@ -159,13 +159,17 @@
         setMounted(entry.path, { kind: 'fd', drive });
         showNotification(`Inserted '${entry.name}'`, 'info');
       } else if (cat === 'hd') {
-        const id = await defaultHdId();
-        await gsEval('machine.scsi.attach_hd', [entry.path, id]);
+        // The bus matters as much as the id: the Network Server's preselected
+        // disk position is on its SECOND controller, and attaching to `scsi`
+        // regardless put it somewhere its boot script cannot name.
+        const { bus, id } = await defaultHdTarget();
+        await gsEval(`machine.${bus}.attach_hd`, [entry.path, id]);
         setMounted(entry.path, { kind: 'hd', drive: id });
         showNotification(`Mounted '${entry.name}'`, 'info');
       } else if (cat === 'cd') {
-        await gsEval('machine.scsi.attach_cdrom', [entry.path, 3]);
-        setMounted(entry.path, { kind: 'cd', drive: 3 });
+        const cdId = await defaultCdId();
+        await gsEval('machine.scsi.attach_cdrom', [entry.path, cdId]);
+        setMounted(entry.path, { kind: 'cd', drive: cdId });
         showNotification(`Inserted '${entry.name}'`, 'info');
       }
       onMountedChange?.();
