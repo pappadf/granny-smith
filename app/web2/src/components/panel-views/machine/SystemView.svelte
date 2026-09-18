@@ -12,6 +12,13 @@
   import { pathKey } from '@/lib/treePath';
   import { openContextMenu, type ContextMenuItem } from '@/components/common/ContextMenu.svelte';
   import { showNotification } from '@/state/toasts.svelte';
+  import { downloadFiles } from '@/bus/fsOps';
+  import { sanitizeName } from '@/lib/archive';
+
+  // Exported images land here: /opfs is file-backed, so writing one costs no
+  // wasm heap (see saveImage).  A directory of its own keeps a 512 MB export
+  // out of the image categories the New Machine dialog offers.
+  const EXPORT_DIR = '/opfs/exports';
 
   let rootNodes = $state<SystemTreeNode[]>([]);
   let expanded = $state<Record<string, boolean>>({});
@@ -65,21 +72,54 @@
     if (mutate) void refresh();
   }
 
-  // Save-image flow (§8.4): export writes a NEW file, then we hand it to the
-  // browser via the WASM-only root.download. "Save image…" is a Save As.
+  // Save-image flow (§8.4).
+  //
+  // This used to export to /tmp and then hand the file to root.download, and
+  // exporting a hard disk aborted the module outright.  The instrumented run
+  // (17 September) showed why, and it was not the read-back copy: /tmp on the
+  // WASM build is a MEMORY-backed filesystem, and WASMFS grows a memory file's
+  // buffer by reallocating it, so the old and the new buffer are both live at
+  // every step and the Emscripten heap never gives the space back.  Writing
+  // 512 MB cost 1.29 GB of heap --
+  //
+  //   331.1 -> 397.3 -> 523.0 -> 779.0 -> 1290.9 MB, Aborted() at 496 of 512
+  //
+  // -- and the next growth did not fit in the 757 MB left under wasm32's 2 GB
+  // ceiling.  A failure to grow is abort(), which is the bare "Uncaught
+  // RuntimeError: Aborted()" with nothing else to go on.
+  //
+  // So the export goes to /opfs, which is file-backed and costs no heap at
+  // all, and the browser gets the OPFS entry as a lazy File: createObjectURL
+  // streams it from storage, so the bytes never enter the wasm heap or the JS
+  // heap either.  root.download is deliberately not used -- it exists to read
+  // a file into memory and hand over a copy, which is the thing to avoid.
   async function saveImage(target: string) {
     const suggested = (await gsEval(`${target}.filename`)) as string;
     const base = (typeof suggested === 'string' && suggested) || 'disk.img';
     const name = window.prompt('Save image as (filename):', base.split('/').pop() || 'disk.img');
     if (!name) return;
-    const tmp = `/tmp/${name}`;
-    const ok = await gsEval(`${target}.export`, [tmp]);
+
+    const dest = `${EXPORT_DIR}/${sanitizeName(name)}`;
+    showNotification(`Exporting to ${dest}…`, 'info');
+    const ok = await gsEval(`${target}.export`, [dest]);
     if (ok !== true) {
-      showNotification('export failed (file may already exist)', 'error');
+      showNotification(`export failed — ${dest} may already exist; see the terminal log`, 'error');
       return;
     }
-    await gsEval('download', [tmp]);
-    showNotification(`Exported ${name}`, 'info');
+
+    // Hand the OPFS entry to the browser without reading it.  The file is left
+    // in /opfs on purpose: revoking the URL or deleting the file too early
+    // truncates the download (the browser reads it after the click), and a
+    // 512 MB disk is worth keeping until the user has it.
+    const res = await downloadFiles([dest]);
+    if (res.failures.length) {
+      showNotification(
+        `Exported to ${dest}, but the download failed — save it from Files`,
+        'error',
+      );
+      return;
+    }
+    showNotification(`Exported ${name} (also kept at ${dest})`, 'info');
   }
 
   // Build the right-click menu for a node from meta.methods (§8.3): one item
