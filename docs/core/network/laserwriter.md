@@ -111,9 +111,18 @@ present file is re-verified, never re-downloaded):
 
 ```sh
 make -f Makefile.headless PLATEN=1     # fetches the host archive + header
-make PLATEN=1                          # fetches the Emscripten archive + header
-make PLATEN=1 PLATEN_VERSION=0.0.3     # another release
+make PLATEN=1                          # wasm: nothing fetched (see below)
+make -f Makefile.headless PLATEN=1 PLATEN_VERSION=0.0.3   # another release
 ```
+
+The two builds reach the library differently
+([`laserwriter_job.md`](laserwriter_job.md)): headless links the host
+archive into the emulator and calls it directly; the browser build is a
+threaded module and the archive's Rust standard library is not, so there
+the interpreter runs in its own Web Worker with its own module, and the
+main module compiles only a shared-memory ring transport — `make PLATEN=1`
+links no archive and needs no fetch. The Emscripten archive named below is
+what that worker module is built from (part 2B of the integration).
 
 Two rules follow from how the archives are built. The Emscripten archive
 links only with the SDK version in its name, so `PLATEN_EMSDK` follows

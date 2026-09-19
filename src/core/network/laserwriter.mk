@@ -1,21 +1,27 @@
 # laserwriter.mk — the PLATEN switch, the platen library fetch, and the
 # embedded LaserWriter prelude.
 #
-# Included by BOTH Makefile (wasm) and Makefile.headless.  PLATEN=1 links
-# EfterScript's platen library (the per-job PostScript interpreter behind
-# the emulated LaserWriter, src/core/network/laserwriter_job.c); the
-# default PLATEN=0 leaves the printer as a spool-only capture.
+# Included by BOTH Makefile (wasm) and Makefile.headless.  PLATEN=1 builds
+# the printer bridge (src/core/network/laserwriter_job.c: the per-job
+# PostScript interpreter behind the emulated LaserWriter); the default
+# PLATEN=0 leaves the printer as a spool-only capture.  The bridge reaches
+# EfterScript's platen library through one transport per build
+# (laserwriter_transport.h): headless links the host archive and calls it
+# directly (laserwriter_transport_direct.c); the browser build compiles
+# the ring transport (laserwriter_transport_ring.c) and links NO archive —
+# the interpreter runs in a Web Worker with its own non-threaded module,
+# which part 2B builds from the Emscripten archive named below.
 #
 # The library comes prebuilt from EfterScript's releases, pinned by
 # PLATEN_VERSION: every tag attaches a host archive, an Emscripten archive
 # named after the SDK it was built with, the header, and SHA256SUMS.
 # scripts/fetch_platen.sh fetches and verifies them into PLATEN_CACHE, so
-# PLATEN=1 needs no Rust toolchain.  Each including Makefile picks its own
-# archive (PLATEN_LIB_NATIVE / PLATEN_LIB_WASM) and puts it AFTER the
-# objects on the link line — a static archive resolves only what precedes
-# it.  The Emscripten archive links only with the SDK version in its name
-# (Makefile pins EMSDK_REQUIRED_VERSION to the same) and only with
-# WebAssembly exceptions enabled at the link (PLATEN_WASM_LDFLAGS).
+# PLATEN=1 needs no Rust toolchain.  Makefile.headless puts PLATEN_LIB_NATIVE
+# AFTER the objects on the link line — a static archive resolves only what
+# precedes it.  The Emscripten archive (PLATEN_LIB_WASM) links only with
+# the SDK version in its name (Makefile pins EMSDK_REQUIRED_VERSION to the
+# same) and only with WebAssembly exceptions enabled at the link
+# (PLATEN_WASM_LDFLAGS).
 #
 # A developer working on EfterScript itself can point PLATEN_DIR at a
 # checkout: its `cargo build -p platen --release [--target
