@@ -2,7 +2,7 @@ name: "Copilot Setup Steps"
 
 # This workflow configures the development environment for GitHub Copilot coding agent.
 # It installs all prerequisites needed to build and test the Granny Smith emulator:
-# - Emscripten 4.0.10 (for WASM builds)
+# - Emscripten 6.0.7 (for WASM builds)
 # - Node.js and npm (for Playwright e2e tests)
 # - Playwright with Chromium browser
 # - Build tools (gcc, make, cmake, etc.)
@@ -31,7 +31,7 @@ jobs:
 
     env:
       # Emscripten version required by this project (see Makefile)
-      EMSDK_VERSION: "4.0.10"
+      EMSDK_VERSION: "6.0.7"
       EMSDK_PATH: /opt/emsdk
       
     steps:

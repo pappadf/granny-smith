@@ -23,7 +23,7 @@ ifneq ($(notdir $(CC)),emcc)
 		override CC := emcc
 	endif
 endif
-EMSDK_REQUIRED_VERSION := 4.0.10
+EMSDK_REQUIRED_VERSION := 6.0.7
 
 # Targets that do not require the Emscripten toolchain
 NON_EMCC_TARGETS := clean help headless unit-test \

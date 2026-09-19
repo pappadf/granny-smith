@@ -23,14 +23,14 @@ permissions:
 
 env:
   IMAGE_NAME: ghcr.io/pappadf/granny-smith-dev
-  IMAGE_TAG: ubuntu24-emsdk4.0.10-node22
+  IMAGE_TAG: ubuntu24-emsdk6.0.7-node22
   # The buildx layer cache lives in its OWN package, not in the dev-image
   # package. `cache-to: mode=max` exports every intermediate layer on every
   # build, and GHCR never garbage-collects; keeping that churn out of the
   # dev-image package is what makes the multi-arch index safe to leave unpruned
   # (see the prune job at the bottom).
   CACHE_IMAGE: ghcr.io/pappadf/granny-smith-dev-cache
-  IMAGE_DESCRIPTION: "Dev image with Emscripten 4.0.10, Node 22, C/C++ toolchain"
+  IMAGE_DESCRIPTION: "Dev image with Emscripten 6.0.7, Node 22, C/C++ toolchain"
 
 jobs:
   # Each architecture is built on a runner of that architecture — no QEMU.

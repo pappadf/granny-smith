@@ -1,11 +1,11 @@
 # .devcontainer/Dockerfile
-# Purpose: Build a general-purpose dev image with Emscripten 4.0.10 + C/C++ + Node 22
+# Purpose: Build a general-purpose dev image with Emscripten 6.0.7 + C/C++ + Node 22
 
 FROM mcr.microsoft.com/devcontainers/base:ubuntu-24.04
 
 # ---- ARGs / Versions ----
 ARG DEBIAN_FRONTEND=noninteractive
-ARG EMSDK_VERSION=4.0.10
+ARG EMSDK_VERSION=6.0.7
 ARG NODE_MAJOR=22
 
 # ---- Base packages (Node.js installed separately from NodeSource below) ----
@@ -38,7 +38,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_${NODE_MAJOR}.x | bash - \
 # Verify node/npm available
 RUN node -v && npm -v
 
-# ---- Emscripten (emsdk 4.0.10) ----
+# ---- Emscripten (emsdk 6.0.7) ----
 ENV EMSDK=/opt/emsdk
 RUN git clone --depth=1 https://github.com/emscripten-core/emsdk ${EMSDK} \
  && bash -lc "cd ${EMSDK} && ./emsdk install ${EMSDK_VERSION} && ./emsdk activate ${EMSDK_VERSION}" \

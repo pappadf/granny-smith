@@ -164,3 +164,24 @@ None of these required editing EfterScript or a workaround hack here.
 - **The font wedge.** Independent of part 2, but resolving it would let the
   prelude register the resident faces and bring live-path text fidelity up
   to the golden.
+
+## How the library arrives, and the toolchain it dictates
+
+Decided 2026-09-19. The emulator consumes EfterScript's released
+archives rather than building the crate from source: every EfterScript
+tag attaches `libplaten-<version>-wasm32-unknown-emscripten-<emsdk>.a`,
+`libplaten-<version>-x86_64-unknown-linux-gnu.a`, `platen-<version>.h`
+and `SHA256SUMS` to its GitHub release (0.0.2 is the first). Part 2
+replaces the source build in `laserwriter.mk` with a fetch of those
+files by version, verified against the checksum file.
+
+An Emscripten archive links only into a program built with the same
+Emscripten SDK, so the emulator's pin follows EfterScript's: 6.0.7 for
+0.0.2 (the version Rust 1.98.0's standard library was built with; the
+file name carries it). That is why the SDK moves from 4.0.10 to 6.0.7
+on this branch before the fetch step lands. Two further rules from
+EfterScript's embedding guide: the final link passes
+`-fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=1`, because Rust compiles
+the target with WebAssembly exceptions on and the archive references
+the exception tag; and a later EfterScript release that names a newer
+SDK means a matching bump here.
