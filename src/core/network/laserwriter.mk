@@ -22,7 +22,7 @@ PLATEN     ?= 0
 # produces target/release/libplaten.a (see docs/core/network/laserwriter_job.md).
 PLATEN_DIR ?= ../efterscript
 
-PLATEN_INCLUDE := -I$(PLATEN_DIR)/crates/platen/include
+PLATEN_INCLUDE := -I$(PLATEN_DIR)/crates/efterscript-platen/include
 PLATEN_LIB_NATIVE := $(PLATEN_DIR)/target/release/libplaten.a
 # Built with `cargo build -p platen --release --target wasm32-unknown-emscripten`
 # (needs emcc on the path); unverified here — no emcc in this container.

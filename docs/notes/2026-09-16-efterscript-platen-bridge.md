@@ -151,7 +151,7 @@ None of these required editing EfterScript or a workaround hack here.
   which needs `cargo build -p platen --release --target
   wasm32-unknown-emscripten` (and `emcc` on the path, absent here). The
   platen symbols must be added to the Emscripten `EXPORTED_FUNCTIONS`
-  (EfterScript's `crates/platen/docs/embedding.md` lists them); confirm the
+  (EfterScript's `crates/efterscript-platen/docs/embedding.md` lists them); confirm the
   `libplaten.a` symbols survive the linker's dead-code elimination since the
   bridge calls them from C, not from JS.
 - **The download UI.** `em_main.c`'s `laserwriter_sink_document` already

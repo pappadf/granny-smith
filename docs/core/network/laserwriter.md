@@ -105,7 +105,7 @@ default, `../efterscript`):
 # in the EfterScript checkout: build the static library
 cargo build -p platen --release
 #   -> target/release/libplaten.a
-#   header: crates/platen/include/platen.h
+#   header: crates/efterscript-platen/include/platen.h
 
 # in this repo: build the headless emulator with the bridge linked
 make -f Makefile.headless PLATEN=1              # PLATEN_DIR=../efterscript by default
