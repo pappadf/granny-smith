@@ -34,9 +34,13 @@ One implementation is linked per build:
   documents every word and record). Requests are records in the outbound
   ring; results are records the bridge drains from the inbound ring in
   `laserwriter_transport_poll()`. The PDF never enters the ring: the worker
-  posts it to the page. The platform provides two hooks
+  posts it to the page, which downloads it. The platform provides two hooks
   (`laserwriter_ring_attach_requested`, `laserwriter_ring_notify`; weak
-  no-ops until part 2B).
+  no-ops in the transport, overridden in `em_main.c`: the first fires
+  `Module.onPrinterAttach`, the second `emscripten_futex_wake`). The FINISH
+  record carries the bridge's `%%Title:` name so the worker can name the
+  download; the browser side is
+  [`laserwriter.md`](laserwriter.md) §5.5.
 
 So the headless acceptance row exercises the same asynchronous bridge the
 browser runs: the shape of the conversation is identical, only the
@@ -113,9 +117,9 @@ spool file), `documents`, `last_pages`, and `last_outcome` (`ok`, `error:
 
 - **headless** (`headless_main.c`) writes `<print-dir>/<job>-<title>.pdf`
   under `--print-dir` / `$GS_PRINT_DIR` and logs pages and any error.
-- **wasm** (`em_main.c`) keeps an override, but the ring transport never
-  produces bytes here: the interpreter worker posts the PDF to the page
-  (part 2B wires the download). The document count still moves.
+- **wasm** has no override: the ring transport never produces bytes here —
+  the interpreter worker posts the PDF to the page, which downloads it
+  ([`laserwriter.md`](laserwriter.md) §5.5). The document count still moves.
 - the default (no platform override) logs and drops the document.
 
 ## The prelude and identity

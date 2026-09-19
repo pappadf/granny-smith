@@ -10,6 +10,7 @@
 #   integration-test-valgrind  Run integration tests under Valgrind
 #   e2e-test                   Run Playwright end-to-end tests
 #   test                       Run unit + integration tests
+#   platen-module              Build the LaserWriter interpreter worker's module
 #   run                        Build and serve the UI on :8080 (or the next free port)
 #   clean                      Remove all build artifacts (wasm, headless,
 #                              unit, integration, e2e)
@@ -120,9 +121,13 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 
 # -- EfterScript platen (PLATEN=1) and the embedded LaserWriter prelude --
-# Defines PLATEN, PLATEN_CFLAGS, PLATEN_LIB_WASM, LASERWRITER_OUT and the
-# rule for LASERWRITER_PRELUDE_HEADER.
+# Defines PLATEN, PLATEN_CFLAGS, PLATEN_LIB_WASM, PLATEN_WASM_LDFLAGS,
+# PLATEN_VERSION, LASERWRITER_OUT and the rule for LASERWRITER_PRELUDE_HEADER.
+# The browser always has the printer: PLATEN defaults to 1 here (headless
+# keeps laserwriter.mk's 0 until EfterScript publishes an arm64 host
+# archive).  `make PLATEN=0` still builds a spool-only printer.
 
+PLATEN ?= 1
 include src/core/network/laserwriter.mk
 
 # -- Build mode (release | debug | sanitize) --
@@ -187,18 +192,45 @@ INCLUDES := -I$(CORE_DIR) \
 
 CFLAGS := -MMD -MP $(MODE_CFLAGS) \
           -pthread \
+          -DGS_PLATEN_VERSION=\"$(PLATEN_VERSION)\" \
           $(PEELER_INCLUDES) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
 
 # With PLATEN=1 the main module compiles the printer bridge with its ring
 # transport (laserwriter_transport_ring.c) and links NO platen archive: the
 # emulator is a threaded build and Rust's prebuilt standard library for the
 # Emscripten target has no atomics, so the interpreter runs in its own
-# worker with its own non-threaded module (part 2B builds that module from
-# the release archive: PLATEN_LIB_WASM + PLATEN_WASM_LDFLAGS, laserwriter.mk).
-# Nothing here depends on the archive or the header, so PLATEN=1 needs no
-# fetch and no toolchain beyond emcc.
+# worker with its own non-threaded module — `platen-module` below, built
+# from the release archive (PLATEN_LIB_WASM + PLATEN_WASM_LDFLAGS,
+# laserwriter.mk).  The main link depends on neither the archive nor the
+# header; only the module target fetches the archive.
 PLATEN_LDLIBS :=
 PLATEN_PREREQS :=
+
+# -- The interpreter worker's module (platen-module) --
+# A standalone, NON-threaded Emscripten module the page's platen worker
+# imports on the first print job (app/web2/src/printer/platen.worker.ts):
+# the released archive linked with the flags EfterScript's embedding guide
+# gives, every platen_* entry of platen.h exported, an ES6 module for a Web
+# Worker (and Node, so the app's vitest can drive it).  Named after the
+# library version so a deploy never serves a stale module to a new page;
+# the wasm Makefile passes the same version to em_main.c (GS_PLATEN_VERSION)
+# and the page builds the URL from it.  Served beside main.mjs: the Vite dev
+# middleware reads build/, `ui2` copies it into dist/.
+PLATEN_MODULE_JS   := $(BUILD_DIR)/platen-$(PLATEN_VERSION).js
+PLATEN_MODULE_WASM := $(BUILD_DIR)/platen-$(PLATEN_VERSION).wasm
+PLATEN_MODULE_EXPORTS := _platen_job_new,_platen_job_feed,_platen_job_read_replies,_platen_job_read_errors,_platen_job_finish,_platen_job_pdf,_platen_job_error_name,_platen_job_offending,_platen_job_pages,_platen_job_free,_platen_last_error,_malloc,_free
+PLATEN_MODULE_LDFLAGS := -O2 \
+           $(PLATEN_WASM_LDFLAGS) \
+           --no-entry \
+           -sMODULARIZE=1 \
+           -sEXPORT_ES6=1 \
+           -sEXPORT_NAME=createPlatenModule \
+           -sENVIRONMENT=worker,node \
+           -sALLOW_MEMORY_GROWTH=1 \
+           -sSTACK_SIZE=1MB \
+           -sEXPORTED_FUNCTIONS=$(PLATEN_MODULE_EXPORTS) \
+           -sEXPORTED_RUNTIME_METHODS=HEAPU8,HEAPU32,UTF8ToString \
+           -sINCOMING_MODULE_JS_API=locateFile,print,printErr
 
 # PLATEN changes what the printer compiles to; a stamp named after the
 # value is a prerequisite of every object, so toggling the switch rebuilds
@@ -236,6 +268,17 @@ LDFLAGS := $(MODE_CFLAGS) \
 # -- WASM build --
 
 all: $(OUTPUT)
+ifeq ($(PLATEN),1)
+all: platen-module
+endif
+
+# The interpreter worker's module, from the fetched release archive.
+platen-module: $(PLATEN_MODULE_JS)
+
+$(PLATEN_MODULE_JS): $(PLATEN_LIB_WASM)
+	@mkdir -p $(dir $@)
+	@echo "Linking the platen module ($(PLATEN_VERSION)) with $(CC)"
+	$(CC) $(PLATEN_MODULE_LDFLAGS) $< -o $@
 
 release:
 	$(MAKE) MODE=release all
@@ -392,6 +435,9 @@ ui2:
 		if [ -f $(BUILD_DIR)/coi-serviceworker.js ]; then \
 			cp $(BUILD_DIR)/coi-serviceworker.js $(WEB2_DIST)/ ; \
 		fi ; \
+		for f in $(BUILD_DIR)/platen-*.js $(BUILD_DIR)/platen-*.wasm; do \
+			[ -f "$$f" ] && cp "$$f" $(WEB2_DIST)/ ; \
+		done ; \
 		if [ -d $(BUILD_DIR)/wasm ]; then \
 			cp -R $(BUILD_DIR)/wasm $(WEB2_DIST)/wasm ; \
 		fi ; \
@@ -470,9 +516,10 @@ help:
 	@echo "Granny Smith Build System"
 	@echo ""
 	@echo "Build targets:"
-	@echo "  all (default)              Build WASM emulator (release)"
+	@echo "  all (default)              Build WASM emulator (release) and the platen module"
 	@echo "  debug                      Build WASM emulator (debug)"
 	@echo "  sanitize                   Build WASM emulator (sanitizers)"
+	@echo "  platen-module              Build the LaserWriter interpreter worker's module"
 	@echo "  headless                   Build native headless CLI"
 	@echo "  run                        Build the UI and serve on :8080 (next free port if taken; RUN_PORT=n)"
 	@echo ""
@@ -499,8 +546,10 @@ help:
 	@echo "Options:"
 	@echo "  MODE=release|debug|sanitize  Build mode (default: release)"
 	@echo "  EXTRA_CFLAGS=...             Additional compiler flags"
-	@echo "  PLATEN=1 [PLATEN_DIR=path]   Link EfterScript's platen (PostScript to PDF"
-	@echo "                               for the emulated LaserWriter; default off)"
+	@echo "  PLATEN=0                     Leave out EfterScript's platen (PostScript to PDF"
+	@echo "                               for the emulated LaserWriter; default on: the"
+	@echo "                               bridge in the core, the interpreter in a worker)"
+	@echo "  PLATEN_DIR=path              Take the platen archive from an EfterScript checkout"
 	@echo ""
 	@echo "Boot media (for 'run' target):"
 	@echo "  ROM=path/to/rom.bin          ROM image"

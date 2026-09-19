@@ -9,9 +9,10 @@
 // wasm memory; nothing crosses as a message except the initial attach
 // (the control block's address) and the finished PDF, which the worker
 // posts to the main thread itself — it never enters this ring.
-// MIRRORED in app/web2/src/printer/platenProtocol.ts (part 2B) — bump
-// LWRING_PROTOCOL_VERSION whenever a layout or a record changes, and the
-// worker refuses a control block it does not understand.
+// MIRRORED in app/web2/src/printer/platenProtocol.ts — keep the two in
+// step: bump LWRING_PROTOCOL_VERSION whenever a layout or a record changes
+// (both files), and the worker refuses a control block it does not
+// understand.
 //
 // Layout of the region the bridge allocates (one calloc, 64-byte aligned):
 //
@@ -48,7 +49,7 @@
 
 // === Constants ===
 
-#define LWRING_PROTOCOL_VERSION 1u
+#define LWRING_PROTOCOL_VERSION 2u
 #define LWRING_MAGIC            0x4C575250u // 'LWRP'
 
 // Control-block word indices (uint32 / Int32Array for Atomics).
@@ -101,6 +102,10 @@
 // and sets LWRING_FED_F_TRUNCATED; the bridge logs the loss.
 #define LWRING_TEXT_MAX (64u << 10)
 
+// Cap on the job title carried by FINISH (the bridge's %%Title: name,
+// LASERWRITER_TITLE_MAX); the writer cuts a longer one.
+#define LWRING_TITLE_MAX 63u
+
 // Record header: {kind, len}.  A record's total length is LWRING_PAD8 of
 // the header plus its payload.
 #define LWRING_HDR_BYTES 8u
@@ -142,12 +147,17 @@
 #define LWRING_FEED_LEN   2
 #define LWRING_FEED_WORDS 3
 
-// FINISH {job_id}: end of data.  The worker calls platen_job_finish,
-// drains both channels, posts the PDF to the main thread, and answers
-// FINISHED; then frees the job.
-#define LWRING_R_FINISH     3u
-#define LWRING_FINISH_JOB   0
-#define LWRING_FINISH_WORDS 1
+// FINISH {job_id, title_len} + title bytes (padded to 4): end of data.
+// The title is the job name the bridge scanned from the driver's %%Title:
+// line ("" when absent), at most LWRING_TITLE_MAX bytes: the worker names
+// the download from it and the job id (<job id, 5 digits>-<title>.pdf),
+// since the PDF never passes through the core in the browser.  The worker
+// calls platen_job_finish, drains both channels, posts the PDF to the main
+// thread, and answers FINISHED; then frees the job.
+#define LWRING_R_FINISH         3u
+#define LWRING_FINISH_JOB       0
+#define LWRING_FINISH_TITLE_LEN 1
+#define LWRING_FINISH_WORDS     2
 
 // ABANDON {job_id}: the connection went away mid-job.  The worker frees
 // the job without finishing and answers nothing; a reply already on its

@@ -406,19 +406,27 @@ bool laserwriter_transport_feed(uint32_t job_id, uint32_t sequence, const uint8_
     return true;
 }
 
-bool laserwriter_transport_finish(uint32_t job_id) {
+bool laserwriter_transport_finish(uint32_t job_id, const char *title) {
     if (!g_ring.region || g_ring.job_id != job_id) {
         LOG(1, "laserwriter: job %u: finish with no such job", (unsigned)job_id);
         return false;
     }
     if (g_ring.outstanding)
         return false;
-    uint32_t at = ring_reserve(LWRING_R_FINISH, LWRING_HDR_BYTES + 4u * LWRING_FINISH_WORDS);
+    // The title names the download on the page; cut to the protocol's cap
+    uint32_t title_len = title ? (uint32_t)strlen(title) : 0u;
+    if (title_len > LWRING_TITLE_MAX)
+        title_len = LWRING_TITLE_MAX;
+    uint32_t at = ring_reserve(LWRING_R_FINISH, LWRING_HDR_BYTES + 4u * LWRING_FINISH_WORDS + LWRING_PAD4(title_len));
     if (at == UINT32_MAX) {
         LOG(1, "laserwriter: job %u: no room in the interpreter ring for finish", (unsigned)job_id);
         return false;
     }
-    put_u32(g_ring.out + at + LWRING_HDR_BYTES + 4 * LWRING_FINISH_JOB, job_id);
+    uint8_t *p = g_ring.out + at + LWRING_HDR_BYTES;
+    put_u32(p + 4 * LWRING_FINISH_JOB, job_id);
+    put_u32(p + 4 * LWRING_FINISH_TITLE_LEN, title_len);
+    if (title_len)
+        memcpy(p + 4 * LWRING_FINISH_WORDS, title, title_len);
     ring_issue(LWRING_R_FINISH, 0);
     ring_publish();
     return true;

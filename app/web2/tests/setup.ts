@@ -20,6 +20,10 @@ const noopCanvasContext = {
   fill: () => undefined,
 };
 
-HTMLCanvasElement.prototype.getContext = function getContext() {
-  return noopCanvasContext as unknown as CanvasRenderingContext2D;
-} as unknown as HTMLCanvasElement['getContext'];
+// A test that opts into the node environment (// @vitest-environment node)
+// has no DOM to patch.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = function getContext() {
+    return noopCanvasContext as unknown as CanvasRenderingContext2D;
+  } as unknown as HTMLCanvasElement['getContext'];
+}

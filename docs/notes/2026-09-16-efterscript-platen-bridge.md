@@ -466,3 +466,159 @@ so `PLATEN_DIR=/workspaces/efterscript` supplied `target/release/libplaten.a`):
   headless integration tier with `PLATEN=1` on x86_64.
 - Optional: `appletalk.printer.transport` in the object model
   (`laserwriter_transport_name()` exists for it).
+
+## Part 2B implementation notes
+
+Done 2026-09-19: the browser half of the part 2 design — the worker's
+module, the TypeScript mirror, the worker and its loop, the front-end
+attach, the download, and the PLATEN default flip. The reference is
+`docs/core/network/laserwriter.md` §5.5.
+
+**Built.**
+
+- `make platen-module` (`Makefile`; a prerequisite of `all` when
+  `PLATEN=1`): `emcc` links `$(PLATEN_LIB_WASM)` alone — no C shim; the
+  `-sEXPORTED_FUNCTIONS` list pulls the archive members — into
+  `build/platen-<PLATEN_VERSION>.js` + `.wasm`: `-O2`,
+  `$(PLATEN_WASM_LDFLAGS)`, `--no-entry`, `MODULARIZE` + `EXPORT_ES6`
+  (`createPlatenModule`), `ENVIRONMENT=worker,node`, memory growth,
+  `STACK_SIZE=1MB`, every `platen_*` entry plus `_malloc,_free`, runtime
+  methods `HEAPU8,HEAPU32,UTF8ToString` (what the wrapper uses), and an
+  explicit `INCOMING_MODULE_JS_API=locateFile,print,printErr`. 55 KB of
+  glue, 11 MB of wasm. Served like `main.mjs`: the Vite middleware matcher
+  gained `/platen-<v>.(js|wasm)`, `make ui2` copies `build/platen-*` into
+  `dist/`; `build/` is already ignored. The version reaches the page from
+  the core: the wasm `CFLAGS` carry `-DGS_PLATEN_VERSION="<PLATEN_VERSION>"`
+  and `em_main.c` passes it in the attach callback, so `laserwriter.mk` is
+  the single source of the version.
+- `app/web2/src/printer/platenProtocol.ts` — the mirror of
+  `laserwriter_ring_protocol.h` (same names, values; "keep in step" both
+  ways), plus the framing helpers both sides share: `recordBytes`
+  (PAD8 of header + words + PAD4 fields), `ringWrite` (PAD before the
+  ring's end, no-room detection against TAIL), `ringRead` (rejects
+  `len & 7`, a wrap, or more than published).
+- `app/web2/src/printer/platenLib.ts` — the module loader (dynamic import
+  of the cache-busted URL, `locateFile` for the wasm) and the C-ABI
+  wrapper: `platen_config` laid out in the module's own memory (wasm32
+  offsets, the identity as `platen_entry` pairs pointing at NUL-terminated
+  strings, the prelude inline), feed/finish/read/pdf/free, the channels
+  drained through one 64 KB scratch buffer with the cap and truncation
+  flag, heap views re-read after every call (memory growth).
+- `app/web2/src/printer/platenRing.ts` — the loop, factored so a test can
+  drive it against a plain `SharedArrayBuffer`: the constructor checks
+  magic/version (throws, nothing touched), reads the geometry from the
+  control block, starts from `OUT_TAIL` / `IN_HEAD` (records the bridge
+  wrote before the attach are consumed), sets STATUS ATTACHED; `run()`
+  parks in `Atomics.waitAsync` on `OUT_HEAD`; `service()` consumes PAD /
+  OPEN / FEED / FINISH / ABANDON and answers OPENED / OPEN_FAILED / FED /
+  FINISHED, waiting on `IN_TAIL` when the inbound ring is full, notifying
+  `IN_HEAD`, counting `STAT_JOBS` / `STAT_FEEDS`; a FEED or FINISH for a
+  job it does not hold answers a failure; an OPEN over a live job frees
+  it first (a lost ABANDON); the document is posted only under the
+  bridge's own rule (a page shown, or an error) so downloads and the
+  `documents` count agree. `documentName()` is the headless sink's
+  naming, character for character.
+- `app/web2/src/printer/platen.worker.ts` — the worker: `start`
+  {moduleUrl, wasmUrl} → `ready` / `lost`; `attach` {memory, ctrl} →
+  loop; any throw → STATUS LOST + `lost {reason}`; `document` posted with
+  the PDF transferred.
+- `app/web2/src/printer/platen.ts` — the page side, registered as
+  `Module.onPrinterAttach` in `bus/emulator.ts`: starts the worker on the
+  first attach (the module is fetched only then), queues the attach until
+  `ready`, posts the wasm memory + ctrl, downloads each document through
+  a Blob + anchor click and shows a toast; on `lost` logs, toasts, and
+  lets the core's LOST handling / open timeout end the session.
+- `src/platform/wasm/em_main.c` — `laserwriter_ring_attach_requested`
+  (`MAIN_THREAD_ASYNC_EM_ASM` → `Module.onPrinterAttach(ctrl, version)`,
+  the em_gpu.c pattern) and `laserwriter_ring_notify`
+  (`emscripten_futex_wake`); the held-document `laserwriter_sink_document`
+  override is removed (the ring result carries no bytes, so it was never
+  reached). The hook prototypes now live in `laserwriter_transport.h`.
+- **Protocol version 2**: FINISH is `{job_id, title_len}` + title
+  (PAD4, capped at the new `LWRING_TITLE_MAX` = 63);
+  `laserwriter_transport_finish(job_id, title)` in both transports (the
+  direct one ignores it — its sink gets the bridge's title with the
+  document); the bridge passes its `%%Title:` name; the C unit suite
+  asserts the field and the PAD8 total; the TS mirror carries the same
+  layout.
+- **Defaults**: `Makefile` sets `PLATEN ?= 1` before including
+  `laserwriter.mk` (headless keeps 0). `make` alone now builds the main
+  module and the platen module (one ~27 MB archive fetch from the pinned
+  release on the first build; no secrets). CI's `ui` job runs Vitest after
+  `make ui2` so the module test runs for real there; the `test` job's
+  `make` builds the module too.
+- **Tests**: `app/web2/tests/unit/platenRing.test.ts`
+  (`@vitest-environment node`; `tests/setup.ts` now guards its DOM patch;
+  `vitest.config.ts` allows the repository root so Vite serves `build/`):
+  loads the built module, lays out the rings in a `SharedArrayBuffer`,
+  writes OPEN (the bridge's identity + `laserwriter_prelude.ps`), FEED
+  (`0.5 setgray 100 100 200 300 rectfill showpage`), FINISH ("Test Page")
+  before attaching, runs the real loop, and asserts OPENED / FED
+  (WAITING, pages 1, seq echoed) / FINISHED (OK, pages 1) with PAD8
+  totals, the STAT words, `OUT_TAIL` caught up, and a `%PDF-` document
+  named `00001-Test_Page.pdf`; the framing test starts the outbound cursor
+  so OPEN ends 16 bytes short of the end and the FEED forces a 16-byte PAD
+  and restarts at 0 (and the inbound cursor so the worker's own FED needs
+  a PAD of just a header — the core-side reader sees it); plus a version
+  mismatch refusal, a FED-failed answer for an unknown job, the naming
+  rule, and a `len & 7` rejection. Skips with a warning when
+  `build/platen-*.js` is absent.
+
+**Verified** (arm64 devcontainer, emsdk 6.0.7, Node 20.20.2).
+
+- `make platen-module`: links; the exports alone pull the archive (no
+  shim). A Node smoke script drove the module directly: empty prelude
+  accepted, `feed` → 0 / pages 1, `finish` → 0, a 587-byte `%PDF-1.7`.
+- `make ui2-check`: svelte-check 0 errors / 0 warnings; ESLint and
+  Prettier clean.
+- `make ui2-test`: `Test Files 65 passed (65)`, `Tests 365 passed (365)`
+  — the new file's 7 tests included, the module test running (not
+  skipped).
+- `make -j8 all` (PLATEN=1 by default): links; `build/main.mjs` reads
+  `Module.onPrinterAttach`; `build/platen-0.0.2.{js,wasm}` present.
+  `make -j8 PLATEN=0 all`: links. `make ui2` then `node
+  scripts/check-dist.mjs`: `dist/platen-0.0.2.{js,wasm}` beside
+  `main.mjs`, `check-dist: OK`.
+- `make -f Makefile.headless` (PLATEN=0): `Built: build/headless/gs-headless`.
+- `make -C tests/unit test-laserwriter_ring`: `all tests passed (675
+  outbound / 683 inbound record starts, all 8-aligned)`.
+- `make -C tests/integration test-appletalk-print PLATEN=1
+  PLATEN_DIR=/workspaces/efterscript`: `printer: documents=1 pages=1
+  outcome='ok' status='status: idle'`, `=== PASS: appletalk-print ===`.
+- clang-format 18 `--dry-run --Werror` over `src`: nothing printed.
+
+**Deviations from the task, and why.**
+
+- The download's name is composed in the worker (`documentName`) and
+  posted as `name` beside `jobId`, `title` and `pages`; the page uses it
+  as given. The naming is the headless sink's, not the old `em_main.c`
+  one (which did not sanitise), so both platforms produce the same file
+  name for the same job.
+- `-sSTACK_SIZE=1MB` on the module link is not in the embedding guide's
+  example: Emscripten's default is 64 KB and a PostScript job recurses;
+  the cost is static memory in the worker's own module.
+- Runtime methods are `HEAPU8,HEAPU32,UTF8ToString` rather than the
+  longer list suggested: the wrapper writes its strings itself and calls
+  the exports directly (no `ccall`/`cwrap`).
+- The vitest runs in Node's environment (the module has no browser
+  build), which needed a one-line guard in `tests/setup.ts` and an
+  `fs.allow` for the repository root in `vitest.config.ts`.
+- CI's `ui` job runs Vitest after the WASM build instead of before, so
+  the module test is exercised rather than skipped.
+- No Playwright row: nothing here can run a browser, and a "printer
+  attaches and the module loads" check needs a booted guest printing.
+
+**Open items.**
+
+- A browser run is unverified here (no browser in the container): the
+  attach → module fetch → download path has run only under Node through
+  the loop; CI's Playwright rows exercise the page's bootstrap, not a
+  print.
+- A worker lost mid-session stays lost: the core keeps its ring region
+  and never re-requests an attach, so every later job times out (120 s)
+  with the LOST status. Recovery (a fresh region and a fresh worker) is
+  a small core + page change if it is ever wanted.
+- The module is 11 MB (6.9 MB gzipped); trimming is EfterScript's side.
+- `appletalk.printer.transport` in the object model is still optional.
+- The unit-test tier (`make unit-test` as a whole) was not re-run: only
+  the ring suite is touched by the version bump.

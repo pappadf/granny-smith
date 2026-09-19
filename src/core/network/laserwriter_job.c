@@ -469,7 +469,7 @@ bool laserwriter_job_finish(void) {
         LOG(1, "laserwriter: job %u: finish while not ready (state %d)", (unsigned)g_lw.job_id, (int)g_lw.state);
         return false;
     }
-    if (!laserwriter_transport_finish(g_lw.job_id)) {
+    if (!laserwriter_transport_finish(g_lw.job_id, g_lw.title)) {
         lw_fail("the transport refused the finish");
         return false;
     }

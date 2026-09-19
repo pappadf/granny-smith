@@ -375,7 +375,8 @@ bool laserwriter_transport_feed(uint32_t job_id, uint32_t sequence, const uint8_
     return direct_queue(OP_FEED, job_id);
 }
 
-bool laserwriter_transport_finish(uint32_t job_id) {
+bool laserwriter_transport_finish(uint32_t job_id, const char *title) {
+    (void)title; // the sink gets the bridge's title with the document
     if (!g_direct.job || g_direct.job_id != job_id) {
         LOG(1, "laserwriter: job %u: finish with no such job", (unsigned)job_id);
         return false;
@@ -428,8 +429,9 @@ bool laserwriter_transport_feed(uint32_t job_id, uint32_t sequence, const uint8_
     return false;
 }
 
-bool laserwriter_transport_finish(uint32_t job_id) {
+bool laserwriter_transport_finish(uint32_t job_id, const char *title) {
     (void)job_id;
+    (void)title;
     return false;
 }
 

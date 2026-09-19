@@ -388,12 +388,16 @@ TEST(feed_and_fed_round_trip) {
 }
 
 TEST(finish_and_finished_round_trip) {
-    ASSERT_TRUE(laserwriter_transport_finish(11));
+    ASSERT_TRUE(laserwriter_transport_finish(11, "Macintosh HD"));
     uint32_t kind, len;
     const uint8_t *p;
     ASSERT_TRUE(worker_read(&kind, &p, &len));
     ASSERT_EQ_INT(kind, LWRING_R_FINISH);
     ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_FINISH_JOB), 11);
+    // The title rides in FINISH (padded to 4; the record total to 8)
+    ASSERT_EQ_INT(rd_u32(p + 4 * LWRING_FINISH_TITLE_LEN), 12);
+    ASSERT_TRUE(memcmp(p + 4 * LWRING_FINISH_WORDS, "Macintosh HD", 12) == 0);
+    ASSERT_EQ_INT(len, LWRING_PAD8(4 * LWRING_FINISH_WORDS + 12));
     const char *tail = "done\n";
     ASSERT_TRUE(worker_send_finished(11, LWRING_OUTCOME_ERROR, 3, "limitcheck", "loop", (const uint8_t *)tail, 5));
     laserwriter_transport_poll();

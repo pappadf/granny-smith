@@ -17,6 +17,7 @@
 #include <emscripten/atomic.h>
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
+#include <emscripten/threading.h>
 #include <emscripten/version.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -49,7 +50,7 @@
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "keyboard.h"
-#include "laserwriter_job.h"
+#include "laserwriter_transport.h"
 #include "log.h"
 #include "machine.h"
 #include "mouse.h"
@@ -963,36 +964,32 @@ int gs_find_media(const char *dir_path, const char *dest) {
     return 0;
 }
 
-// The last LaserWriter document, kept for the download UI (part 2 of the
-// EfterScript integration: a browser download of these bytes, the way
-// gs_download hands a file over).  Until then a finished job is held here
-// and announced on the console; the next job replaces it.
-static uint8_t *g_last_print_pdf;
-static size_t g_last_print_len;
-static char g_last_print_name[LASERWRITER_TITLE_MAX + 16];
+// ============================================================================
+// LaserWriter interpreter worker (the ring transport's platform hooks)
+// ============================================================================
+// The printer bridge runs its PostScript interpreter in the page's platen
+// worker (app/web2/src/printer/), reached through a shared-memory ring
+// (laserwriter_ring_protocol.h).  The finished PDF never enters the core
+// here: the worker posts it to the page, which downloads it — so there is
+// no laserwriter_sink_document override on this platform (the weak default
+// in laserwriter_job.c is never reached: the ring result carries no bytes).
 
-// Platform sink for a finished LaserWriter job (weak default in
-// laserwriter_job.c drops it).  Copies the bytes: they belong to the job
-// and go away when it is freed.
-void laserwriter_sink_document(const laserwriter_document_t *doc) {
-    uint8_t *copy = (uint8_t *)malloc(doc->pdf_len);
-    if (!copy) {
-        printf("laserwriter: job %u: out of memory keeping %zu bytes\n", (unsigned)doc->job_id, doc->pdf_len);
-        return;
-    }
-    memcpy(copy, doc->pdf, doc->pdf_len);
-    free(g_last_print_pdf);
-    g_last_print_pdf = copy;
-    g_last_print_len = doc->pdf_len;
-    snprintf(g_last_print_name, sizeof(g_last_print_name), "%05u-%s.pdf", (unsigned)doc->job_id,
-             doc->title[0] ? doc->title : "untitled");
-    if (doc->ok)
-        printf("laserwriter: job %u '%s': %u pages, %zu bytes held as %s\n", (unsigned)doc->job_id, doc->title,
-               (unsigned)doc->pages, doc->pdf_len, g_last_print_name);
-    else
-        printf("laserwriter: job %u '%s': %u pages held as %s (error: %s in %s)\n", (unsigned)doc->job_id, doc->title,
-               (unsigned)doc->pages, g_last_print_name,
-               doc->budget_exceeded ? "execution budget spent" : doc->error_name, doc->offending);
+// The bridge allocated its control block at `ctrl_addr` (emulation
+// pthread): ask the page to start the worker and attach it, the way
+// em_gpu.c reaches Module.onVoodooGpuAttach.  The library version names
+// the module file the page fetches (platen-<version>.js, laserwriter.mk).
+void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
+    static const char version[] = GS_PLATEN_VERSION;
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM(
+        { if (typeof Module.onPrinterAttach === 'function') Module.onPrinterAttach($0, UTF8ToString($1)); },
+        (uint32_t)ctrl_addr, version);
+    // clang-format on
+}
+
+// Wakes the worker parked in Atomics.waitAsync on a control word.
+void laserwriter_ring_notify(volatile uint32_t *addr) {
+    emscripten_futex_wake(addr, INT_MAX);
 }
 
 // Download command - save file to browser

@@ -315,10 +315,6 @@ jobs:
         working-directory: app/web2
         run: npm run lint
 
-      - name: Vitest
-        working-directory: app/web2
-        run: npm test
-
       - name: Vite build
         working-directory: app/web2
         run: npm run build
@@ -336,6 +332,12 @@ jobs:
 
       - name: ui2 (copy WASM into app/web2/dist/)
         run: make ui2
+
+      # After the WASM build: the printer test loads the interpreter module
+      # `make` produced (build/platen-<version>.js) and skips without it.
+      - name: Vitest
+        working-directory: app/web2
+        run: npm test
 
       - name: Install Playwright (tests/e2e)
         working-directory: tests/e2e

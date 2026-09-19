@@ -98,8 +98,12 @@ bool laserwriter_transport_open(uint32_t job_id, const laserwriter_job_config_t 
 // issued.
 bool laserwriter_transport_feed(uint32_t job_id, uint32_t sequence, const uint8_t *bytes, size_t len);
 
-// End of data; on_finished follows.  False when not issued.
-bool laserwriter_transport_finish(uint32_t job_id);
+// End of data; on_finished follows.  `title` is the job name the bridge
+// scanned ("" when none): the ring transport carries it to the worker,
+// which names the browser download from it; the direct transport ignores
+// it (the document reaches the sink with the bridge's title).  False when
+// not issued.
+bool laserwriter_transport_finish(uint32_t job_id, const char *title);
 
 // Frees the job without finishing (the connection went away).  No
 // callback follows; a result already in flight for the job is dropped.
@@ -113,5 +117,14 @@ void laserwriter_transport_poll(void);
 
 // A short name for logs and the object model: "direct" or "ring".
 const char *laserwriter_transport_name(void);
+
+// === Ring transport platform hooks ===
+// Weak no-ops in laserwriter_transport_ring.c; the wasm platform overrides
+// them (em_main.c): the first asks the page to attach the interpreter
+// worker to the control block at `ctrl_addr`, the second wakes a worker
+// parked on a control word (Atomics.notify on the address).
+
+void laserwriter_ring_attach_requested(uintptr_t ctrl_addr);
+void laserwriter_ring_notify(volatile uint32_t *addr);
 
 #endif // LASERWRITER_TRANSPORT_H

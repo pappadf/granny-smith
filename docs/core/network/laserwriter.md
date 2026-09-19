@@ -93,8 +93,12 @@ does with the PostScript it receives depends on the build:
   [`laserwriter_job.md`](laserwriter_job.md)): the driver's bytes are fed
   in as they arrive, a query is answered by the program's own output, and
   the finished document goes to the platform (headless writes a `.pdf`,
-  wasm keeps it for a download UI). The placeholder query answers are gone
+  the browser downloads one — §5.5). The placeholder query answers are gone
   — a query is just a job whose program prints its answer.
+
+`PLATEN` defaults to **1 for the browser build** (`Makefile`) and **0 for
+headless** (`Makefile.headless`, until EfterScript publishes a host archive
+for every host the tree is built on).
 
 ## 5.1 Building with the interpreter
 
@@ -111,7 +115,10 @@ present file is re-verified, never re-downloaded):
 
 ```sh
 make -f Makefile.headless PLATEN=1     # fetches the host archive + header
-make PLATEN=1                          # wasm: nothing fetched (see below)
+make                                   # wasm (PLATEN=1 by default): the main module,
+                                       #   then `platen-module` fetches the Emscripten
+                                       #   archive and links build/platen-<version>.{js,wasm}
+make PLATEN=0                          # wasm without the printer bridge or the module
 make -f Makefile.headless PLATEN=1 PLATEN_VERSION=0.0.3   # another release
 ```
 
@@ -120,9 +127,9 @@ The two builds reach the library differently
 archive into the emulator and calls it directly; the browser build is a
 threaded module and the archive's Rust standard library is not, so there
 the interpreter runs in its own Web Worker with its own module, and the
-main module compiles only a shared-memory ring transport — `make PLATEN=1`
-links no archive and needs no fetch. The Emscripten archive named below is
-what that worker module is built from (part 2B of the integration).
+main module compiles only a shared-memory ring transport — the main link
+names no archive. The Emscripten archive is what `make platen-module`
+builds that worker module from (§5.5).
 
 Two rules follow from how the archives are built. The Emscripten archive
 links only with the SDK version in its name, so `PLATEN_EMSDK` follows
@@ -179,3 +186,57 @@ the page's layout matches the golden but its text glyphs are sparse. See
 `docs/notes/2026-09-16-efterscript-platen-bridge.md` for the analysis and
 the mitigation that is deferred because it trips a pre-existing guest-side
 LocalTalk wedge.
+
+## 5.5 The browser path: the module, the worker, the download
+
+In the browser the interpreter runs in its own Web Worker, and the bridge
+in the core reaches it through a shared-memory ring
+(`src/core/network/laserwriter_ring_protocol.h`, mirrored in
+`app/web2/src/printer/platenProtocol.ts`; the two carry
+`LWRING_PROTOCOL_VERSION` and the worker refuses a control block of another
+version). The pieces:
+
+* **The module** — `make platen-module` (a prerequisite of `all` with
+  `PLATEN=1`) links the released Emscripten archive into a standalone,
+  non-threaded ES6 module, `build/platen-<version>.js` + `.wasm`, with
+  every `platen_*` entry of `platen.h` exported and the link flags the
+  embedding guide gives (`-fwasm-exceptions -sWASM_LEGACY_EXCEPTIONS=1`,
+  memory growth). It is served beside `main.mjs`: the Vite dev middleware
+  reads it from `build/`, `make ui2` copies it into `dist/`. The main module
+  learns the version at compile time (`GS_PLATEN_VERSION`, from
+  `PLATEN_VERSION` in `laserwriter.mk`) so the page fetches the matching
+  file, cache-busted like `main.mjs`.
+* **The attach** — on the first print job the bridge allocates the ring and
+  `laserwriter_ring_attach_requested` (`src/platform/wasm/em_main.c`) fires
+  `Module.onPrinterAttach(ctrl, version)` on the main thread.
+  `app/web2/src/printer/platen.ts` starts the worker then — the module is
+  fetched only now, and a first print waits for it like a printer warming
+  up (the bridge's open timeout is 120 s of guest time) — and posts the
+  wasm memory and the control block's address. `laserwriter_ring_notify`
+  wakes the worker with `emscripten_futex_wake` after every publish.
+* **The worker** — `app/web2/src/printer/platen.worker.ts` loads the module
+  (`platenLib.ts` wraps the C ABI: the `platen_config` is built in the
+  module's own memory from the OPEN record, identity pairs included) and
+  runs the loop in `platenRing.ts`: `Atomics.waitAsync` on `OUT_HEAD`,
+  OPEN / FEED / FINISH / ABANDON consumed in order, OPENED / OPEN_FAILED /
+  FED / FINISHED written back with the 8-byte record framing (a PAD before
+  the ring's end, text fields cut at `LWRING_TEXT_MAX` with the truncation
+  flag), the STAT words counting jobs and feeds. A failed module load, a
+  version mismatch, a framing violation or a library exception sets the
+  STATUS word to LOST, after which the core fails whatever it was waiting
+  on and the session aborts with the reason in the status string.
+* **The download** — the PDF never enters the core. At FINISH the worker
+  posts `{jobId, title, name, pages, pdf}` to the page (the PDF
+  transferred), and the page downloads it at once through a Blob and an
+  anchor click, as `<job id, 5 digits>-<title>.pdf` — the title is the
+  bridge's `%%Title:` name, carried in the FINISH record and made
+  file-safe the way the headless print directory names its files
+  (`00003-Macintosh_HD.pdf`); a query job that shows no page produces no
+  download. A toast names each document. `em_main.c` has no document sink:
+  the ring result carries no bytes.
+
+The loop is testable without a browser: `app/web2/tests/unit/platenRing.test.ts`
+loads the built module under Node, lays the rings out in a
+`SharedArrayBuffer`, plays the core, and checks the answers' framing and
+the posted PDF (it skips with a warning when `build/platen-*.js` is
+absent, so `npm test` still runs in a checkout that has not built).
