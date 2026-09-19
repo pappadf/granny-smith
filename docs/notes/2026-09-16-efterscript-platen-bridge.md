@@ -185,3 +185,29 @@ EfterScript's embedding guide: the final link passes
 the target with WebAssembly exceptions on and the archive references
 the exception tag; and a later EfterScript release that names a newer
 SDK means a matching bump here.
+
+### The 4.0.10 to 6.0.7 jump, checked item by item
+
+Against the SDK's own changelog for 5.x and 6.0.x, on the branch:
+
+- **Incoming module keys.** 6.0.2 dropped `mainScriptUrlOrBlob` (and
+  others) from the default `INCOMING_MODULE_JS_API`, so a build no longer
+  compiles in the read of it; the front end sets that key so worker
+  threads fetch the cache-busted script rather than a stale one. The link
+  now lists the keys the front end passes explicitly
+  (`arguments,canvas,locateFile,mainScriptUrlOrBlob,print,printErr`);
+  verified by the read reappearing in the built module. The `on*`
+  callbacks the embedded JavaScript reads are plain properties on the
+  same object and need no listing.
+- **Not applicable.** C only, linked with `emcc` (`DEFAULT_TO_CXX` off is
+  moot); already `-pthread`; no `-shared`, `MEMORY64`, `USE_PTHREADS`,
+  `.bat` launchers, or thread-pool internals; no C++ exceptions crossing
+  into JS. `GROWABLE_ARRAYBUFFERS` still defaults off in 6.0.7's
+  settings. `WASM_LEGACY_EXCEPTIONS` defaults on, matching the flag the
+  platen link passes.
+- **Browser floor.** Chrome 85 / Firefox 79 / Safari 15; the emulator
+  already requires SharedArrayBuffer, OffscreenCanvas, WebGL2 and OPFS,
+  and the README names Chromium, so nothing narrows.
+- **Runtime in a browser is unverified here**: this container has no
+  browsers, so the Playwright rows (`ui2-e2e`, `ui2-prod-smoke`) run in
+  CI's web job on the new image.
