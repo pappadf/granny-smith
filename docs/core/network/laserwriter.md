@@ -75,3 +75,88 @@ With the environment prepared, the driver streams the actual PostScript job:
 * **Flow control** relies entirely on the PAP SendData bitmap/credit scheme; the printer must not send unsolicited data.
 
 Understanding this sequence makes it easier to build accurate emulations or troubleshoot why a particular workstation is stuck waiting—if PatchPrep never acknowledges, the driver simply keeps repeating the procset upload and never advances to the font query or main document.
+
+---
+
+# 5. Turning PostScript into a PDF: the platen bridge (`PLATEN=1`)
+
+The workflow above is what the *driver* does. What the emulated printer
+does with the PostScript it receives depends on the build:
+
+* **Default (`PLATEN=0`).** The printer spools the PostScript to a file and
+  answers the driver's queries with fixed placeholders (the PatchPrep `0`/`1`
+  handshake and the built-in font list). No PDF is produced. This keeps
+  `main` builds free of any Rust toolchain.
+* **`PLATEN=1`.** EfterScript's `platen` library — a per-job PostScript
+  interpreter that produces a PDF — is linked in. Every PAP job becomes one
+  interpreter job (`src/core/network/laserwriter_job.c`,
+  [`laserwriter_job.md`](laserwriter_job.md)): the driver's bytes are fed
+  in as they arrive, a query is answered by the program's own output, and
+  the finished document goes to the platform (headless writes a `.pdf`,
+  wasm keeps it for a download UI). The placeholder query answers are gone
+  — a query is just a job whose program prints its answer.
+
+## 5.1 Building with the interpreter
+
+`platen` is built from the EfterScript checkout (a sibling of this repo by
+default, `../efterscript`):
+
+```sh
+# in the EfterScript checkout: build the static library
+cargo build -p platen --release
+#   -> target/release/libplaten.a
+#   header: crates/efterscript-platen/include/platen.h
+
+# in this repo: build the headless emulator with the bridge linked
+make -f Makefile.headless PLATEN=1              # PLATEN_DIR=../efterscript by default
+# or point at another checkout:
+make -f Makefile.headless PLATEN=1 PLATEN_DIR=/path/to/efterscript
+```
+
+The link adds `libplaten.a` after the objects, followed by exactly the
+system libraries a Rust staticlib reports needing on Linux (from `cargo
+rustc -p platen --release -- --print native-static-libs`): `-lgcc_s -lutil
+-lrt -lpthread -lm -ldl -lc`. Toggling `PLATEN` rebuilds the tree (a stamp
+prerequisite), so a switched value never mixes objects compiled either way.
+
+The **Emscripten** build (`make PLATEN=1`) links
+`$(PLATEN_DIR)/target/wasm32-unknown-emscripten/release/libplaten.a`, built
+with `cargo build -p platen --release --target wasm32-unknown-emscripten`
+(needs `emcc` on the path). That link and the browser download UI are part
+2 of the integration and are unverified in a container without `emcc`.
+
+## 5.2 Headless options
+
+* `--print-dir=DIR` (or `$GS_PRINT_DIR`) — write each finished job as
+  `DIR/<job>-<title>.pdf`. Without it a finished job is logged and dropped.
+  A `PLATEN=0` binary warns that it has no interpreter.
+* `appletalk.printer.capture = true` — also write the raw PostScript to the
+  spool file beside the PDF (off by default with the interpreter linked, on
+  without it since the spool is then the only output).
+* `appletalk.printer` observability: `interpreter`, `status`, `documents`,
+  `last_pages`, `last_outcome`.
+
+## 5.3 Identity and prelude
+
+The interpreter is seeded with the product/version/revision identity and a
+host prelude that makes `statusdict` look like a LaserWriter. The prelude
+lives in the repository as `src/core/network/laserwriter_prelude.ps`,
+embedded at build time; see [`laserwriter_job.md`](laserwriter_job.md).
+
+## 5.4 Acceptance and a known fidelity gap
+
+`tests/integration/appletalk-print/` drives the Chooser + Finder "Print
+Directory" flow and asserts `appletalk.printer.documents == 1`,
+`last_pages == 1`, `last_outcome == "ok"`, and an idle status. It is gated
+on `appletalk.printer.interpreter`, so it skips on the harness's default
+`PLATEN=0` build; run it against a `PLATEN=1` binary to exercise the bridge.
+
+Over the live PAP path the driver queries the printer's resident fonts.
+`platen`'s `FontDirectory` is empty at job start (its `findfont` resolves a
+face but does not register it there), so the query reports no resident
+fonts and the driver downloads a bitmap font, which the interpreter renders
+at lower fidelity than the outline fonts a file-destination capture uses —
+the page's layout matches the golden but its text glyphs are sparse. See
+`docs/notes/2026-09-16-efterscript-platen-bridge.md` for the analysis and
+the mitigation that is deferred because it trips a pre-existing guest-side
+LocalTalk wedge.

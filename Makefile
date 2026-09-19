@@ -23,7 +23,7 @@ ifneq ($(notdir $(CC)),emcc)
 		override CC := emcc
 	endif
 endif
-EMSDK_REQUIRED_VERSION := 4.0.10
+EMSDK_REQUIRED_VERSION := 6.0.7
 
 # Targets that do not require the Emscripten toolchain
 NON_EMCC_TARGETS := clean help headless unit-test \
@@ -112,6 +112,12 @@ OUTPUT := $(BUILD_DIR)/main.mjs
 
 include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 
+# -- EfterScript platen (PLATEN=1) and the embedded LaserWriter prelude --
+# Defines PLATEN, PLATEN_CFLAGS, PLATEN_LIB_WASM, LASERWRITER_OUT and the
+# rule for LASERWRITER_PRELUDE_HEADER.
+
+include src/core/network/laserwriter.mk
+
 # -- Build mode (release | debug | sanitize) --
 
 MODE ?= release
@@ -165,7 +171,8 @@ INCLUDES := -I$(CORE_DIR) \
             -I$(MACHINES_DIR)/compact \
             -I$(MACHINES_DIR)/lisa \
             -I$(PLATFORM_DIR) \
-            -I$(VROM68K_OUT)
+            -I$(VROM68K_OUT) \
+            -I$(LASERWRITER_OUT)
 
 # -- Compile flags (source -> object) --
 # -MMD -MP generates .d dependency files alongside each .o so that
@@ -173,7 +180,30 @@ INCLUDES := -I$(CORE_DIR) \
 
 CFLAGS := -MMD -MP $(MODE_CFLAGS) \
           -pthread \
-          $(PEELER_INCLUDES) $(INCLUDES) $(EXTRA_CFLAGS)
+          $(PEELER_INCLUDES) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
+
+# With PLATEN=1 the wasm32-unknown-emscripten platen archive goes after the
+# objects on the link line.  Written from EfterScript's embedding notes and
+# NOT verified here: the container this was authored in has no emcc, so the
+# first Emscripten link with PLATEN=1 is part 2 of the integration
+# (docs/core/network/laserwriter_job.md).  A Rust staticlib for this target
+# needs no extra system libraries; the browser download UI is also part 2.
+ifeq ($(PLATEN),1)
+# Only a WASM goal needs the archive; `make headless PLATEN=1` must not.
+ifeq (,$(filter $(NON_EMCC_TARGETS),$(MAKECMDGOALS)))
+ifeq (,$(wildcard $(PLATEN_LIB_WASM)))
+$(error PLATEN=1 but $(PLATEN_LIB_WASM) is missing: run `cargo build -p platen --release --target wasm32-unknown-emscripten` in $(PLATEN_DIR), or set PLATEN_DIR)
+endif
+endif
+PLATEN_LDLIBS := $(PLATEN_LIB_WASM)
+else
+PLATEN_LDLIBS :=
+endif
+
+# PLATEN changes what the printer compiles to; a stamp named after the
+# value is a prerequisite of every object, so toggling the switch rebuilds
+# the tree instead of mixing objects compiled either way.
+PLATEN_STAMP := $(OBJ_DIR)/platen-$(PLATEN).stamp
 
 # -- Link flags (objects -> final binary) --
 
@@ -190,6 +220,7 @@ LDFLAGS := $(MODE_CFLAGS) \
            -sOFFSCREENCANVASES_TO_PTHREAD='\#screen' \
            -s EXPORTED_RUNTIME_METHODS=['FS','cwrap','ccall','stringToUTF8','UTF8ToString','HEAP16','HEAP32','HEAPU8','wasmMemory'] \
            -s EXPORTED_FUNCTIONS="['_main','_get_js_bridge']" \
+           -sINCOMING_MODULE_JS_API=arguments,canvas,locateFile,mainScriptUrlOrBlob,print,printErr \
            -s STACK_SIZE=5MB \
            -s ALLOW_MEMORY_GROWTH=1 \
            -s USE_WEBGL2=1 \
@@ -227,11 +258,21 @@ $(OBJ_DIR)/$(CORE_DIR)/build_id.o: FORCE
 # gsvrom_data.c embeds the generated fragments header.
 $(OBJ_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 
+# laserwriter_job.c embeds the generated prelude header.
+$(OBJ_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
+
+# The PLATEN stamp: creating it (a value change) outdates every object.
+$(PLATEN_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(OBJ_DIR)/platen-*.stamp
+	@touch $@
+$(OBJ): $(PLATEN_STAMP)
+
 # Link all objects into the final WASM module
 $(OUTPUT): $(OBJ)
 	@mkdir -p $(dir $@)
 	@echo "Linking ($(MODE)) with $(CC)"
-	$(CC) $(LDFLAGS) $(OBJ) -o $@
+	$(CC) $(LDFLAGS) $(OBJ) $(PLATEN_LDLIBS) -o $@
 
 # Include auto-generated header dependency files
 -include $(DEP)
@@ -458,6 +499,8 @@ help:
 	@echo "Options:"
 	@echo "  MODE=release|debug|sanitize  Build mode (default: release)"
 	@echo "  EXTRA_CFLAGS=...             Additional compiler flags"
+	@echo "  PLATEN=1 [PLATEN_DIR=path]   Link EfterScript's platen (PostScript to PDF"
+	@echo "                               for the emulated LaserWriter; default off)"
 	@echo ""
 	@echo "Boot media (for 'run' target):"
 	@echo "  ROM=path/to/rom.bin          ROM image"

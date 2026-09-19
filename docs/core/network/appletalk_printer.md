@@ -119,6 +119,19 @@ After connection opens, PAP:
 
 ### 6.1 Read-driven model
 
+**Issue gap.** Every SendData the emulated printer issues is deferred by
+`PAP_SENDDATA_GAP_NS` (10 ms of guest time) on the stack's scheduler, so it
+never leaves in the same instant as the frame before it: the OpenConnReply,
+the TRel of the previous SendData, or a Data reply to the workstation's own
+read. A real printer takes far longer between reads. Without the gap the
+TRel and the next SendData reached the LaserWriter driver before its write
+completion had propagated, and it answered the new sequence number with the
+buffer it had already sent (see §7): the job's query was ingested twice and
+the driver went silent. The gap is cancelled on session reset. The link
+layer also reserves the wire for the workstation's own frames (see
+`appletalk.md`, implementation notes), so no reply of the printer's is
+lost to a driver that is still transmitting.
+
 A PAPRead call sends an ATP **SendData** request to the peer, equal in size to the read buffer (must equal the local flow quantum). The read buffer provided to PAPRead **must not be smaller** than the negotiated flow quantum; most stacks simply size the buffer exactly to that quantum.
 
 Receipt of SendData grants **send credit** for PAPWrite at the opposite end. The direction is always reader→writer: the side that wants to read issues SendData, and the peer must remember that credit until it has real data (or an intentional EOF) ready to satisfy the read. Sending an empty **Data** response without EOF simply causes the reader to immediately retry, so robust implementations queue the PAPWrite until credit exists and only return zero-length Data when they simultaneously assert EOF.
@@ -140,12 +153,30 @@ Flow-control rule: **PAPWrite cannot exceed the peer’s flow quantum**. If a ca
 
 ### 6.3 Tickle mechanism & connection timer
 
-To detect half-open connections, each side maintains a **2-minute connection timer**:
+To detect half-open connections, each side maintains a **2-minute connection timer**
+(the emulator measures it in guest time from the scheduler, not the host clock, so a
+slow host or heavy logging cannot end a session by itself):
 
 * Any received PAP/ATP packet resets the timer.
 * Each side sends ATP **Tickle** requests periodically. The retry interval is defined as **half the connection timeout** (120s timeout → 60s tickle cadence) and retry count is infinite.
 * Receiver resets timer but sends no response.
 * If timer expires → connection considered dead; PAP tears down the connection.
+
+### 6.3a PostScript interpreter path (`PLATEN=1`)
+
+The read-driven model below describes the transport, which is unchanged by
+the interpreter. What differs is *what answers a read*. With `PLATEN=1`
+(`src/core/network/laserwriter_job.c`, `laserwriter.md` §5) every
+EOF-delimited PAP job is a `platen` interpreter job: incoming Data payloads
+are fed to it verbatim, and its own output (query replies, error reports)
+is what the workstation's status-channel reads return — the placeholder
+query detection (`PAP_QUERY_*`, the `= flush` / PatchPrep / font-list
+heuristics) is compiled out entirely. A status read the interpreter has no
+reply for is answered with the composed status string (never with EOF mid
+job), so the driver's progress poll never blocks; the reader→writer
+SendData that pulls PostScript is a separate transaction and is never
+answered with status. At the workstation's EOF the job runs to completion,
+its PDF goes to the platform, and the session is primed for the next job.
 
 ### 6.4 Printer-to-workstation chatter
 
@@ -158,7 +189,7 @@ The emulator now mirrors that behaviour: every workstation-issued SendData credi
 
 Practical interoperability hinges on a few additional rules that came directly from log-based feedback:
 
-* **Retry send-data aggressively when polled.** The very first SendData request is easy to lose because the printer often issues it before the workstation finishes processing OpenConnReply. We timestamp every outstanding SendData and, whenever a Tickle **or** SendStatus arrives, immediately retransmit if the credit has been outstanding for ~500 ms. That keeps PostScript input moving even when the client never sends Tickles.
+* **Retry send-data aggressively when polled.** The very first SendData request was easy to lose because the printer used to issue it in the same instant as OpenConnReply; the issue gap (§6.1) removes that cause, and this recovery remains as a backstop. We timestamp every outstanding SendData and, whenever a Tickle **or** SendStatus arrives, immediately retransmit if the credit has been outstanding for ~500 ms. That keeps PostScript input moving even when the client never sends Tickles.
 * **Never answer SendData with status strings.** SendData is workstation-issued read credit, not a status poll. Holding the request open (until we have PostScript stderr/status bytes or an intentional EOF) prevents the `SendData → Data (EOF)` spin that previously broke Chooser and LaserWriter 8.
 * **Use empty EOF replies for query reads.** The workstation may open a short-lived connection to ask PostScript capability questions. When we have no reply payload, we immediately return a zero-length Data response with EOF set, both for inactive sessions and for in-progress jobs that have no PS-level answer. This unblocks PAPRead without leaking status-channel text into the data stream.
 * **Finish the job as soon as EOF is observed.** Once PAPWrite delivers a packet with the EOF flag and the ATP bitmap has been satisfied, the emulator closes the spool file, updates the status string to `idle`, and tears down the session instead of sending more status responses. Leaving the session open causes the Mac to issue endless SendStatus probes and keeps the query connection alive forever.

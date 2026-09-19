@@ -175,6 +175,23 @@ const char *atalk_printer_object_name(void);
 int atalk_printer_set_enabled(bool enabled, char *err, size_t err_len);
 int atalk_printer_set_name(const char *name, char *err, size_t err_len);
 
+// The PAP status string as the workstation reads it.
+const char *atalk_printer_status_text(void);
+
+// True when the build links the PostScript interpreter (PLATEN=1); then a
+// job produces a PDF through the platform sink and the spool is optional.
+bool atalk_printer_has_interpreter(void);
+
+// Whether each job's PostScript is also written to the spool file.
+bool atalk_printer_capture_get(void);
+void atalk_printer_capture_set(bool enabled);
+
+// Documents produced, and the page count and outcome of the last finished
+// job ("" before any; "ok"; "error: <name> in <command>"; "budget").
+uint32_t atalk_printer_documents(void);
+uint32_t atalk_printer_last_pages(void);
+const char *atalk_printer_last_outcome(void);
+
 // === NBP (Name Binding Protocol) ===
 
 // NBP service publication helpers.

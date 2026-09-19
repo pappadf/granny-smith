@@ -49,6 +49,7 @@
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "keyboard.h"
+#include "laserwriter_job.h"
 #include "log.h"
 #include "machine.h"
 #include "mouse.h"
@@ -960,6 +961,38 @@ int gs_find_media(const char *dir_path, const char *dest) {
 
     printf("%s\n", found_path);
     return 0;
+}
+
+// The last LaserWriter document, kept for the download UI (part 2 of the
+// EfterScript integration: a browser download of these bytes, the way
+// gs_download hands a file over).  Until then a finished job is held here
+// and announced on the console; the next job replaces it.
+static uint8_t *g_last_print_pdf;
+static size_t g_last_print_len;
+static char g_last_print_name[LASERWRITER_TITLE_MAX + 16];
+
+// Platform sink for a finished LaserWriter job (weak default in
+// laserwriter_job.c drops it).  Copies the bytes: they belong to the job
+// and go away when it is freed.
+void laserwriter_sink_document(const laserwriter_document_t *doc) {
+    uint8_t *copy = (uint8_t *)malloc(doc->pdf_len);
+    if (!copy) {
+        printf("laserwriter: job %u: out of memory keeping %zu bytes\n", (unsigned)doc->job_id, doc->pdf_len);
+        return;
+    }
+    memcpy(copy, doc->pdf, doc->pdf_len);
+    free(g_last_print_pdf);
+    g_last_print_pdf = copy;
+    g_last_print_len = doc->pdf_len;
+    snprintf(g_last_print_name, sizeof(g_last_print_name), "%05u-%s.pdf", (unsigned)doc->job_id,
+             doc->title[0] ? doc->title : "untitled");
+    if (doc->ok)
+        printf("laserwriter: job %u '%s': %u pages, %zu bytes held as %s\n", (unsigned)doc->job_id, doc->title,
+               (unsigned)doc->pages, doc->pdf_len, g_last_print_name);
+    else
+        printf("laserwriter: job %u '%s': %u pages held as %s (error: %s in %s)\n", (unsigned)doc->job_id, doc->title,
+               (unsigned)doc->pages, g_last_print_name,
+               doc->budget_exceeded ? "execution budget spent" : doc->error_name, doc->offending);
 }
 
 // Download command - save file to browser
