@@ -147,14 +147,15 @@ LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
 
 # With PLATEN=1 the platen archive goes on the link line after the objects
 # (an archive resolves only what precedes it), followed by exactly the
-# system libraries the Rust staticlib reports needing.
+# system libraries the Rust staticlib reports needing.  The archive is
+# fetched from the pinned EfterScript release on demand (or taken from
+# PLATEN_DIR); see laserwriter.mk.
 ifeq ($(PLATEN),1)
-ifeq (,$(wildcard $(PLATEN_LIB_NATIVE)))
-$(error PLATEN=1 but $(PLATEN_LIB_NATIVE) is missing: run `cargo build -p platen --release` in $(PLATEN_DIR), or set PLATEN_DIR)
-endif
 PLATEN_LDLIBS := $(PLATEN_LIB_NATIVE) $(PLATEN_NATIVE_LIBS)
+PLATEN_PREREQS := $(PLATEN_LIB_NATIVE) $(PLATEN_HEADER)
 else
 PLATEN_LDLIBS :=
+PLATEN_PREREQS :=
 endif
 
 # PLATEN changes what the printer compiles to; a stamp named after the
@@ -190,7 +191,7 @@ $(PLATEN_STAMP):
 	@mkdir -p $(dir $@)
 	@rm -f $(BUILD_DIR)/platen-*.stamp
 	@touch $@
-$(OBJ): $(PLATEN_STAMP)
+$(OBJ): $(PLATEN_STAMP) $(PLATEN_PREREQS)
 
 # Link all objects into the headless binary
 $(OUTPUT): $(OBJ)

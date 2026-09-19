@@ -98,32 +98,42 @@ does with the PostScript it receives depends on the build:
 
 ## 5.1 Building with the interpreter
 
-`platen` is built from the EfterScript checkout (a sibling of this repo by
-default, `../efterscript`):
+The library comes prebuilt from EfterScript's releases; no Rust toolchain is
+needed. Every EfterScript tag `v<version>` attaches to its GitHub release a
+host archive (`libplaten-<version>-<host triple>.a`), an Emscripten archive
+named after the SDK it was built with
+(`libplaten-<version>-wasm32-unknown-emscripten-<emsdk>.a`), the header
+(`platen-<version>.h`) and `SHA256SUMS`. `src/core/network/laserwriter.mk`
+pins the release in `PLATEN_VERSION` and, on the first `PLATEN=1` build,
+`scripts/fetch_platen.sh` downloads what that build needs into
+`local/platen/<version>/` and verifies it against the checksum file (a
+present file is re-verified, never re-downloaded):
 
 ```sh
-# in the EfterScript checkout: build the static library
-cargo build -p platen --release
-#   -> target/release/libplaten.a
-#   header: crates/efterscript-platen/include/platen.h
-
-# in this repo: build the headless emulator with the bridge linked
-make -f Makefile.headless PLATEN=1              # PLATEN_DIR=../efterscript by default
-# or point at another checkout:
-make -f Makefile.headless PLATEN=1 PLATEN_DIR=/path/to/efterscript
+make -f Makefile.headless PLATEN=1     # fetches the host archive + header
+make PLATEN=1                          # fetches the Emscripten archive + header
+make PLATEN=1 PLATEN_VERSION=0.0.3     # another release
 ```
 
-The link adds `libplaten.a` after the objects, followed by exactly the
-system libraries a Rust staticlib reports needing on Linux (from `cargo
-rustc -p platen --release -- --print native-static-libs`): `-lgcc_s -lutil
--lrt -lpthread -lm -ldl -lc`. Toggling `PLATEN` rebuilds the tree (a stamp
-prerequisite), so a switched value never mixes objects compiled either way.
+Two rules follow from how the archives are built. The Emscripten archive
+links only with the SDK version in its name, so `PLATEN_EMSDK` follows
+`EMSDK_REQUIRED_VERSION` and a newer EfterScript release that names a newer
+SDK means bumping this tree's SDK in step. And Rust compiles that target
+with WebAssembly exceptions on, so the wasm link passes `-fwasm-exceptions
+-sWASM_LEGACY_EXCEPTIONS=1` (`PLATEN_WASM_LDFLAGS`); without it the
+archive's exception tag is undefined at link time.
 
-The **Emscripten** build (`make PLATEN=1`) links
-`$(PLATEN_DIR)/target/wasm32-unknown-emscripten/release/libplaten.a`, built
-with `cargo build -p platen --release --target wasm32-unknown-emscripten`
-(needs `emcc` on the path). That link and the browser download UI are part
-2 of the integration and are unverified in a container without `emcc`.
+The host archive is published for `x86_64-unknown-linux-gnu`; a build on
+another host (an arm64 devcontainer, macOS) needs either an EfterScript
+release that adds that triple or a checkout: `PLATEN_DIR=/path/to/efterscript`
+uses that checkout's `cargo build -p platen --release [--target
+wasm32-unknown-emscripten]` outputs instead of the release.
+
+The link adds the archive after the objects, followed (native only) by
+exactly the system libraries a Rust staticlib reports needing on Linux
+(`-lgcc_s -lutil -lrt -lpthread -lm -ldl -lc`). Toggling `PLATEN` rebuilds
+the tree (a stamp prerequisite), so a switched value never mixes objects
+compiled either way.
 
 ## 5.2 Headless options
 

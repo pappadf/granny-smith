@@ -183,21 +183,16 @@ CFLAGS := -MMD -MP $(MODE_CFLAGS) \
           $(PEELER_INCLUDES) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
 
 # With PLATEN=1 the wasm32-unknown-emscripten platen archive goes after the
-# objects on the link line.  Written from EfterScript's embedding notes and
-# NOT verified here: the container this was authored in has no emcc, so the
-# first Emscripten link with PLATEN=1 is part 2 of the integration
-# (docs/core/network/laserwriter_job.md).  A Rust staticlib for this target
-# needs no extra system libraries; the browser download UI is also part 2.
+# objects on the link line, with WebAssembly exceptions enabled for the link
+# (laserwriter.mk).  The archive is fetched from the pinned EfterScript
+# release on demand (or taken from PLATEN_DIR); a Rust staticlib for this
+# target needs no extra system libraries.
 ifeq ($(PLATEN),1)
-# Only a WASM goal needs the archive; `make headless PLATEN=1` must not.
-ifeq (,$(filter $(NON_EMCC_TARGETS),$(MAKECMDGOALS)))
-ifeq (,$(wildcard $(PLATEN_LIB_WASM)))
-$(error PLATEN=1 but $(PLATEN_LIB_WASM) is missing: run `cargo build -p platen --release --target wasm32-unknown-emscripten` in $(PLATEN_DIR), or set PLATEN_DIR)
-endif
-endif
-PLATEN_LDLIBS := $(PLATEN_LIB_WASM)
+PLATEN_LDLIBS := $(PLATEN_LIB_WASM) $(PLATEN_WASM_LDFLAGS)
+PLATEN_PREREQS := $(PLATEN_LIB_WASM) $(PLATEN_HEADER)
 else
 PLATEN_LDLIBS :=
+PLATEN_PREREQS :=
 endif
 
 # PLATEN changes what the printer compiles to; a stamp named after the
@@ -266,7 +261,7 @@ $(PLATEN_STAMP):
 	@mkdir -p $(dir $@)
 	@rm -f $(OBJ_DIR)/platen-*.stamp
 	@touch $@
-$(OBJ): $(PLATEN_STAMP)
+$(OBJ): $(PLATEN_STAMP) $(PLATEN_PREREQS)
 
 # Link all objects into the final WASM module
 $(OUTPUT): $(OBJ)
