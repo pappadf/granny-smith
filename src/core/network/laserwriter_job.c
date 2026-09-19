@@ -61,12 +61,12 @@ typedef struct {
     uint32_t job_id;
     char title[LASERWRITER_TITLE_MAX + 1];
     title_scan_state_t title_state;
-    uint8_t title_window_len;  // bytes of the "%%Title:" pattern matched so far
-    uint8_t *output;           // program output not yet read by the PAP layer
+    uint8_t title_window_len; // bytes of the "%%Title:" pattern matched so far
+    uint8_t *output; // program output not yet read by the PAP layer
     size_t output_len;
     size_t output_cap;
-    size_t output_dropped;     // bytes lost to LASERWRITER_OUTPUT_MAX
-    uint32_t documents;        // finished jobs handed to the sink
+    size_t output_dropped; // bytes lost to LASERWRITER_OUTPUT_MAX
+    uint32_t documents; // finished jobs handed to the sink
     uint32_t last_pages;
     char last_outcome[128];
 } laserwriter_state_t;
@@ -179,9 +179,9 @@ bool laserwriter_job_begin(uint32_t job_id) {
         lw_release();
     // The three identity values are the ones systemdict must agree with
     static const platen_entry identity[] = {
-        {"product", "(" LASERWRITER_PRODUCT ")"},
-        {"version", "(" LASERWRITER_VERSION ")"},
-        {"revision", LASERWRITER_REVISION},
+        {"product",  "(" LASERWRITER_PRODUCT ")"},
+        {"version",  "(" LASERWRITER_VERSION ")"},
+        {"revision", LASERWRITER_REVISION       },
     };
     platen_config cfg;
     memset(&cfg, 0, sizeof(cfg));
@@ -195,8 +195,7 @@ bool laserwriter_job_begin(uint32_t job_id) {
     cfg.step_budget = LASERWRITER_STEP_BUDGET;
     g_lw.job = platen_job_new(&cfg);
     if (!g_lw.job) {
-        LOG(1, "laserwriter: job %u: interpreter refused the configuration: %s", (unsigned)job_id,
-            platen_last_error());
+        LOG(1, "laserwriter: job %u: interpreter refused the configuration: %s", (unsigned)job_id, platen_last_error());
         return false;
     }
     g_lw.job_id = job_id;

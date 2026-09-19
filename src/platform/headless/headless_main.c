@@ -1132,7 +1132,8 @@ int main(int argc, char *argv[]) {
             snprintf(g_print_dir, sizeof(g_print_dir), "%s", env_dir);
     }
     if (g_print_dir[0] && !atalk_printer_has_interpreter())
-        fprintf(stderr, "warning: --print-dir set but this build has no PostScript interpreter (build with PLATEN=1)\n");
+        fprintf(stderr,
+                "warning: --print-dir set but this build has no PostScript interpreter (build with PLATEN=1)\n");
 
     // If a --checkpoint-dir was given, point the machine layer at it
     // verbatim so writable image deltas land there.  No id/timestamp

@@ -991,8 +991,8 @@ void laserwriter_sink_document(const laserwriter_document_t *doc) {
                (unsigned)doc->pages, doc->pdf_len, g_last_print_name);
     else
         printf("laserwriter: job %u '%s': %u pages held as %s (error: %s in %s)\n", (unsigned)doc->job_id, doc->title,
-               (unsigned)doc->pages, g_last_print_name, doc->budget_exceeded ? "execution budget spent" : doc->error_name,
-               doc->offending);
+               (unsigned)doc->pages, g_last_print_name,
+               doc->budget_exceeded ? "execution budget spent" : doc->error_name, doc->offending);
 }
 
 // Download command - save file to browser

@@ -33,15 +33,15 @@
 // A finished job handed to the platform sink.  The bytes are valid only for
 // the duration of the call; the sink copies what it keeps.
 typedef struct {
-    uint32_t job_id;          // PAP job counter value for the job
-    const char *title;        // job name from %%Title:, "" when absent
-    const uint8_t *pdf;       // the document, complete whatever the outcome
+    uint32_t job_id; // PAP job counter value for the job
+    const char *title; // job name from %%Title:, "" when absent
+    const uint8_t *pdf; // the document, complete whatever the outcome
     size_t pdf_len;
-    uint32_t pages;           // pages in the document
-    bool ok;                  // the program ran to the end of its data
-    const char *error_name;   // PostScript error name, "" when ok
-    const char *offending;    // offending command, "" when ok
-    bool budget_exceeded;     // stopped by the execution budget
+    uint32_t pages; // pages in the document
+    bool ok; // the program ran to the end of its data
+    const char *error_name; // PostScript error name, "" when ok
+    const char *offending; // offending command, "" when ok
+    bool budget_exceeded; // stopped by the execution budget
 } laserwriter_document_t;
 
 // === Operations ===
