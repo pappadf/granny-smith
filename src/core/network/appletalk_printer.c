@@ -9,6 +9,7 @@
 #include "laserwriter_job.h"
 #include "log.h"
 #include "platform.h"
+#include "scheduler.h"
 
 #include <errno.h>
 #include <stdarg.h>
@@ -19,17 +20,25 @@
 
 LOG_USE_CATEGORY_NAME("appletalk");
 
-#define PRINTER_STATUS_MAX          255
-#define PRINTER_OBJECT_MAX          32
-#define PRINTER_SPOOL_PATH_MAX      160
-#define PRINTER_DEFAULT_OBJECT      "LaserWriter (Sim)"
-#define PRINTER_STATUS_IDLE         "status: idle"
-#define PRINTER_STATUS_BUSY         "status: print spooler processing job"
-#define PRINTER_ENTITY_TYPE         "LaserWriter"
-#define PRINTER_SPOOL_DIR           "/tmp"
-#define PAP_SENDDATA_RETRY_MS       8000u
-#define PAP_SENDDATA_RETRY_LIMIT    12
-#define PAP_SESSION_TIMEOUT_MS      120000u
+#define PRINTER_STATUS_MAX       255
+#define PRINTER_OBJECT_MAX       32
+#define PRINTER_SPOOL_PATH_MAX   160
+#define PRINTER_DEFAULT_OBJECT   "LaserWriter (Sim)"
+#define PRINTER_STATUS_IDLE      "status: idle"
+#define PRINTER_STATUS_BUSY      "status: print spooler processing job"
+#define PRINTER_ENTITY_TYPE      "LaserWriter"
+#define PRINTER_SPOOL_DIR        "/tmp"
+#define PAP_SENDDATA_RETRY_MS    8000u
+#define PAP_SENDDATA_RETRY_LIMIT 12
+#define PAP_SESSION_TIMEOUT_MS   120000u
+// Gap between a frame the printer has just sent (an OpenReply, a TRel, a
+// reply to the workstation's read) and its next SendData.  A real printer
+// takes far longer between reads; issuing the next request in the same
+// instant as the release of the previous one reached the LaserWriter
+// driver before its write completion had propagated, and it answered the
+// new sequence number with the buffer it had already sent (Inside AppleTalk
+// 2e, ch. 10, "Duplicate filtration": a new number means new data).
+#define PAP_SENDDATA_GAP_NS         10000000ull
 #define PAP_QUERY_PLACEHOLDER_LIMIT 8
 
 // With the interpreter linked (PLATEN=1) the spool file is an optional
@@ -54,7 +63,7 @@ typedef struct {
     atalk_nbp_entry_t *nbp_entry;
     uint32_t job_counter;
     bool patch_installed; // True once the PatchPrep procset has been uploaded
-    bool capture;         // Write each job's PostScript to the spool file
+    bool capture; // Write each job's PostScript to the spool file
 } pap_printer_service_t;
 
 // Structure tracking a held PAP SendData request while we wait for data to emit.
@@ -190,6 +199,9 @@ static void pap_log_session_state(const char *tag);
 static void pap_send_data_response(const ddp_header_t *ddp, atp_packet_t *atp, uint8_t conn_id, const uint8_t *payload,
                                    int len, bool set_eof);
 static bool pap_issue_senddata_request(void);
+static void pap_schedule_senddata(void);
+static void pap_cancel_senddata(void);
+static void pap_senddata_gap_cb(void *source, uint64_t data);
 static void pap_handle_data_fragment(const atp_response_fragment_t *fragment, void *ctx);
 static void pap_handle_data_complete(atp_request_handle_t *handle, atp_request_result_t result, void *ctx);
 static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp);
@@ -203,7 +215,44 @@ static void pap_format_request_detail(char *dst, size_t dst_len, uint8_t func, c
 
 // Helper returning the current platform tick count in milliseconds.
 static uint64_t pap_now_ms(void) {
+    scheduler_t *sched = atalk_scheduler();
+    if (sched)
+        return (uint64_t)(scheduler_time_ns(sched) / 1000000.0);
     return platform_ticks();
+}
+
+// -- Deferred SendData ------------------------------------------------------
+// Every SendData the printer issues goes through here, so none leaves in the
+// same instant as the frame that preceded it (see PAP_SENDDATA_GAP_NS).
+
+static int g_pap_gap_event_token;
+static scheduler_t *g_pap_gap_registered_with; // the scheduler the event type is registered on
+
+static void pap_senddata_gap_cb(void *source, uint64_t data) {
+    (void)source;
+    (void)data;
+    pap_issue_senddata_request();
+}
+
+static void pap_schedule_senddata(void) {
+    scheduler_t *sched = atalk_scheduler();
+    if (!sched) {
+        pap_issue_senddata_request();
+        return;
+    }
+    if (g_pap_gap_registered_with != sched) {
+        // Idempotent: a machine rebuild hands out a new scheduler.
+        scheduler_new_event_type(sched, "pap", &g_pap_gap_event_token, "senddata_gap", &pap_senddata_gap_cb);
+        g_pap_gap_registered_with = sched;
+    }
+    remove_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token);
+    scheduler_new_cpu_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token, 0, 0, PAP_SENDDATA_GAP_NS);
+}
+
+static void pap_cancel_senddata(void) {
+    scheduler_t *sched = atalk_scheduler();
+    if (sched && g_pap_gap_registered_with == sched)
+        remove_event(sched, &pap_senddata_gap_cb, &g_pap_gap_event_token);
 }
 
 // Ensures the printer service is initialized exactly once.
@@ -222,6 +271,7 @@ static void pap_printer_init(void) {
 
 // Resets the active session, canceling pending ATP requests and closing the spool file.
 static void pap_session_reset(void) {
+    pap_cancel_senddata();
     if (g_session.send_handle) {
         atp_request_cancel(g_session.send_handle);
         g_session.send_handle = NULL;
@@ -561,7 +611,7 @@ static bool pap_consume_query_eof(pap_session_t *sess) {
     sess->font_query_detected = false;
     pap_session_rewind_spool(sess);
     if (sess->active && !sess->blocked_for_reply)
-        pap_issue_senddata_request();
+        pap_schedule_senddata();
     return true;
 }
 
@@ -587,7 +637,7 @@ static void pap_handle_patch_complete(pap_session_t *sess) {
     pap_queue_postscript_reply("1");
     pap_session_rewind_spool(sess);
     if (sess->active && !sess->blocked_for_reply)
-        pap_issue_senddata_request();
+        pap_schedule_senddata();
 }
 
 // Closes the current spool, reports completion, and primes the session for another job.
@@ -779,7 +829,7 @@ static bool pap_try_deliver_pending_reply(void) {
         return false;
     pap_log_session_state("deliver-reply");
     if (g_session.active && !g_session.awaiting_data)
-        pap_issue_senddata_request();
+        pap_schedule_senddata();
     return true;
 }
 
@@ -799,8 +849,8 @@ static void pap_platen_answer_status_credits(void) {
         if (!credit)
             break;
         LOG(3, "PAP -> Mac StatusData conn=%u bytes=%d eof=0 source=status", (unsigned)credit->atp.user[0], len);
-        pap_send_data_response(&credit->ddp, &credit->atp, credit->atp.user[0], (len > 0) ? (const uint8_t *)line : NULL,
-                               len, false);
+        pap_send_data_response(&credit->ddp, &credit->atp, credit->atp.user[0],
+                               (len > 0) ? (const uint8_t *)line : NULL, len, false);
         pap_status_queue_pop();
     }
 }
@@ -824,7 +874,7 @@ static bool pap_try_deliver_pending_reply(void) {
     g_session.blocked_for_reply = false;
     pap_log_session_state("deliver-reply");
     if (g_session.active && !g_session.awaiting_data)
-        pap_issue_senddata_request();
+        pap_schedule_senddata();
     return true;
 }
 
@@ -1179,7 +1229,7 @@ static void pap_handle_data_complete(atp_request_handle_t *handle, atp_request_r
         if (sess->eof_pending)
             pap_platen_finalize_job();
         if (sess->active && !sess->blocked_for_reply)
-            pap_issue_senddata_request();
+            pap_schedule_senddata();
 #else
         if (sess->eof_pending) {
             if (pap_consume_query_eof(sess))
@@ -1189,11 +1239,11 @@ static void pap_handle_data_complete(atp_request_handle_t *handle, atp_request_r
                 break;
             }
             if (pap_finalize_job("EOF received") && sess->active && !sess->blocked_for_reply)
-                pap_issue_senddata_request();
+                pap_schedule_senddata();
             break;
         }
         if (sess->active && !sess->blocked_for_reply) {
-            pap_issue_senddata_request();
+            pap_schedule_senddata();
         }
 #endif // GS_PLATEN
         break;
@@ -1259,7 +1309,7 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         LOG(10, "pap: session opened conn=%u job=%u clientSock=%u clientFlow=%u clientAddr=%u.%u.%u", conn_id,
             g_session.job_id, g_session.client_socket, g_session.client_flow_quantum, g_session.client_addr.net,
             g_session.client_addr.node, g_session.client_addr.socket);
-        pap_issue_senddata_request();
+        pap_schedule_senddata();
     }
 }
 

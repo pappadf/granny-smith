@@ -11,6 +11,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The scheduler the stack was initialised with (NULL before appletalk_init),
+// for guest-time timers in the protocol modules.
+struct scheduler *atalk_scheduler(void);
+
 // Shared AppleTalk constants
 #define LLAP_HOST_NODE         33
 #define HOST_AFP_SOCKET        8

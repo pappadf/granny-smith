@@ -211,3 +211,54 @@ Against the SDK's own changelog for 5.x and 6.0.x, on the branch:
 - **Runtime in a browser is unverified here**: this container has no
   browsers, so the Playwright rows (`ui2-e2e`, `ui2-prod-smoke`) run in
   CI's web job on the new image.
+
+## The rebase regression, and the PAP fix
+
+After the rebase onto main (the four code-review commits of 2026-09-03)
+the acceptance row failed: the whole guest flow ran, the driver reached
+"processing job", and no document arrived. Bisected to the machines
+commit, but that commit only moved boot timing (its VIA idle-line change,
+reverted in isolation, changed nothing); the pre-rebase build itself
+failed as soon as AppleTalk logging was raised. The defect was the
+printer's: every SendData it issued left in the same instant as the frame
+before it (the OpenReply, the TRel of the previous SendData, a reply to
+the workstation's read). On the second query the TRel and the next
+SendData reached the driver before its write completion had propagated,
+and it answered the new sequence number with the buffer it had already
+sent; the bridge fed the query twice, asked again, and the driver never
+spoke again. Inside AppleTalk 2e, ch. 10, "Duplicate filtration", says a
+new sequence number means new data, so the resend was the driver's
+consequence of the timing, not a protocol choice.
+
+Fix: `pap_schedule_senddata()` defers every SendData by
+`PAP_SENDDATA_GAP_NS` (10 ms of guest time) on the stack's scheduler,
+cancelled on session reset; a real printer takes far longer between
+reads. Also `pap_now_ms()` now reads guest time when a scheduler exists,
+so the 120 s inactivity timeout no longer runs on the host clock (a slow
+host or heavy logging could end a session by itself). The row passes
+with logging at level 6, the condition the old code failed under, and
+the first SendData's one retry seen in every earlier transcript is gone.
+
+The second half, one layer down. With the gap in place the row passed,
+but after the document the driver held the connection with tickles and
+never closed; the printer's retry limit (12 x 8 s) eventually cut it.
+The transcript showed why: the driver's last read had been answered in
+the same instant the driver itself was transmitting the job's final
+fragment. The link layer noted the wire busy only for the printer's own
+data frames, never for the guest's, and the SCC completes the guest's
+transmission the instant the driver finishes writing, so the printer
+could open its own dialog while, on a real line, the guest was still
+sending; the driver never saw the answer and its read never completed.
+Fix in `appletalk.c`: every received frame holds the wire for its wire
+time plus the interframe gap (`llap_wire_note_peer_frame`), and
+answering the guest's lapRTS reserves the wire until its data frame
+arrives (`llap_wire_reserve_for_peer`, ceiling one maximal frame). After
+it the driver closes the connection itself (`CloseConn`, "client
+closed"), with no retries or lost handshakes, under full logging. The
+six other AppleTalk rows (AFP x2, PPC, Apple events x3) and the unit
+suites pass on the new timing.
+
+Known deviation kept: the printer's SendData retries 12 x 8 s and then
+aborts, where Inside AppleTalk specifies infinite retries at 15 s with
+the two-minute tickle timer as the only reaper. It is a safety net that
+the two fixes above make dormant on a live driver.
