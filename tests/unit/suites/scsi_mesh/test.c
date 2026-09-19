@@ -194,7 +194,7 @@ void gs_unimplemented_fail(const char *file, int line, const char *func, const c
     fputc('\n', stderr);
     abort();
 }
-unsigned platform_ntz32(uint32_t v) {
+int platform_ntz32(uint32_t v) {
     unsigned n = 0;
     if (!v)
         return 32;
