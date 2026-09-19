@@ -117,6 +117,15 @@ typedef struct {
     size_t reply_bytes_len;
     size_t reply_bytes_cap;
     bool reply_eof_pending;
+    // One SendData transaction's data (PLATEN=1): the fragments are
+    // gathered here and fed to the interpreter as one piece when the
+    // transaction completes — at most one flow quantum (PAP_MAX_FLOW_QUANTUM
+    // packets of PAP_MAX_DATA_SIZE), the FEED record's bound.
+    uint8_t rx[PAP_MAX_FLOW_QUANTUM * PAP_MAX_DATA_SIZE];
+    size_t rx_len;
+    uint16_t rx_seq; // the SendData sequence the data answered
+    bool rx_eof; // the transaction carried the driver's EOF
+    bool rx_pending; // gathered data waits for the job's OPENED
 } pap_session_t;
 
 typedef struct {
@@ -188,7 +197,10 @@ static void pap_reply_bytes_append(const uint8_t *data, size_t len);
 static void pap_platen_pull_output(void);
 static void pap_platen_answer_status_credits(void);
 static void pap_platen_ingest_fragment(pap_session_t *sess, const atp_response_fragment_t *fragment);
+static void pap_platen_transaction_done(pap_session_t *sess, uint16_t seq);
+static void pap_platen_flush_rx(pap_session_t *sess);
 static void pap_platen_finalize_job(void);
+static void pap_platen_event(laserwriter_event_t event, const char *detail, void *ctx);
 #endif
 static int pap_format_status_line(const char *text, char *out, size_t out_len);
 static void pap_completion_set(uint8_t conn_id, const char *text, const atalk_socket_addr_t *addr);
@@ -266,6 +278,10 @@ static void pap_printer_init(void) {
     strncpy(g_printer.status_text, PRINTER_STATUS_IDLE, sizeof(g_printer.status_text) - 1);
     g_printer.status_text[sizeof(g_printer.status_text) - 1] = '\0';
     g_printer.status_len = (uint8_t)strlen(g_printer.status_text);
+#if GS_PLATEN
+    // The interpreter answers later, through events
+    laserwriter_job_set_listener(pap_platen_event, NULL);
+#endif
     g_printer.initialized = true;
 }
 
@@ -287,6 +303,10 @@ static void pap_session_reset(void) {
     g_session.reply_bytes_len = 0;
     g_session.reply_bytes_cap = 0;
     g_session.reply_eof_pending = false;
+    g_session.rx_len = 0;
+    g_session.rx_seq = 0;
+    g_session.rx_eof = false;
+    g_session.rx_pending = false;
     memset(g_session.spool_path, 0, sizeof(g_session.spool_path));
     g_session.active = false;
     g_session.awaiting_data = false;
@@ -827,9 +847,10 @@ static bool pap_try_deliver_pending_reply(void) {
     }
     if (!sent)
         return false;
+    // The next SendData is issued by the interpreter's events (OPENED,
+    // FED, FINISHED), never by a delivery: a read must not go out while a
+    // feed is unacknowledged.
     pap_log_session_state("deliver-reply");
-    if (g_session.active && !g_session.awaiting_data)
-        pap_schedule_senddata();
     return true;
 }
 
@@ -838,7 +859,11 @@ static bool pap_try_deliver_pending_reply(void) {
 // report, and the driver polls status while it streams a job — holding these
 // credits forever stalls that stream.  The reader→writer credit for pulling
 // PostScript is a separate transaction (pap_issue_senddata_request) and is
-// never answered here.
+// never answered here.  Nor is any credit answered here while a feed is
+// unacknowledged (the caller checks laserwriter_job_feed_pending): the
+// feed's reply arrives with the acknowledgement and must go out on the
+// credit, since a query's answer is available as soon as the feed that
+// completed it returns.
 static void pap_platen_answer_status_credits(void) {
     if (g_session.reply_bytes_len > 0 || g_session.reply_eof_pending)
         return; // interpreter output (and its terminating EOF) comes first
@@ -1225,11 +1250,9 @@ static void pap_handle_data_complete(atp_request_handle_t *handle, atp_request_r
     switch (result) {
     case ATP_REQUEST_RESULT_OK:
 #if GS_PLATEN
-        // EOF ends the job; the connection stays for the next one
-        if (sess->eof_pending)
-            pap_platen_finalize_job();
-        if (sess->active && !sess->blocked_for_reply)
-            pap_schedule_senddata();
+        // The transaction's data goes to the interpreter as one piece; the
+        // next read waits for its acknowledgement (or for OPENED)
+        pap_platen_transaction_done(sess, completed_seq);
 #else
         if (sess->eof_pending) {
             if (pap_consume_query_eof(sess))
@@ -1309,7 +1332,10 @@ static void pap_handle_open(const ddp_header_t *ddp, atp_packet_t *atp) {
         LOG(10, "pap: session opened conn=%u job=%u clientSock=%u clientFlow=%u clientAddr=%u.%u.%u", conn_id,
             g_session.job_id, g_session.client_socket, g_session.client_flow_quantum, g_session.client_addr.net,
             g_session.client_addr.node, g_session.client_addr.socket);
-        pap_schedule_senddata();
+        // With the interpreter the OpenReply went out at once ("starting
+        // up"); the first SendData follows its OPENED (pap_platen_event)
+        if (!laserwriter_job_available())
+            pap_schedule_senddata();
     }
 }
 
@@ -1353,8 +1379,11 @@ static void pap_handle_status_read(const ddp_header_t *ddp, atp_packet_t *atp) {
             pap_try_deliver_pending_reply();
 #if GS_PLATEN
             // Whatever the reply channel did not consume is answered with the
-            // status string, so the driver's progress poll never blocks.
-            pap_platen_answer_status_credits();
+            // status string, so the driver's progress poll never blocks —
+            // unless a feed is unacknowledged: its reply is on its way and
+            // belongs on this credit (answered from the FED event).
+            if (!laserwriter_job_feed_pending())
+                pap_platen_answer_status_credits();
 #endif
         }
         return;
@@ -1446,8 +1475,8 @@ static void pap_socket_request_handler(const ddp_header_t *ddp, atp_packet_t *re
 
 #if GS_PLATEN
 
-// Spools (when capturing) and feeds one data fragment to the interpreter,
-// then queues whatever it printed and refreshes the status text.
+// Spools (when capturing) and gathers one data fragment for the interpreter;
+// the transaction's data is fed as one piece when it completes.
 static void pap_platen_ingest_fragment(pap_session_t *sess, const atp_response_fragment_t *fragment) {
     if (fragment->data_len > 0 && fragment->data) {
         if (g_printer.capture) {
@@ -1459,23 +1488,71 @@ static void pap_platen_ingest_fragment(pap_session_t *sess, const atp_response_f
             if (wrote != (size_t)fragment->data_len)
                 LOG(1, "pap: short write to spool (%zu vs %d)", wrote, fragment->data_len);
         }
-        // The first job starts at OpenConn; later ones on the same connection start here
-        if (!laserwriter_job_active() && !laserwriter_job_begin(sess->job_id)) {
+        size_t room = sizeof(sess->rx) - sess->rx_len;
+        size_t n = (size_t)fragment->data_len;
+        if (n > room) {
+            // Cannot happen within one flow quantum; a misbehaving peer loses the excess
+            LOG(1, "pap: transaction data exceeds one flow quantum (%zu bytes dropped)", n - room);
+            n = room;
+        }
+        memcpy(sess->rx + sess->rx_len, fragment->data, n);
+        sess->rx_len += n;
+    }
+    if (fragment->user[2])
+        sess->rx_eof = true;
+}
+
+// A SendData transaction completed: its data (and EOF) go to the
+// interpreter.  The first job on a connection was opened at OpenConn; a
+// later one opens here, on its first data, and the data waits for OPENED.
+// An empty transaction without EOF is a zero-length write: read again.
+static void pap_platen_transaction_done(pap_session_t *sess, uint16_t seq) {
+    sess->rx_seq = seq;
+    if (sess->rx_len == 0 && !sess->rx_eof) {
+        pap_schedule_senddata();
+        return;
+    }
+    if (!laserwriter_job_active()) {
+        if (!laserwriter_job_begin(sess->job_id)) {
             pap_session_abort("interpreter refused the job");
             return;
         }
-        sess->bytes_received += (size_t)fragment->data_len;
-        laserwriter_job_feed(fragment->data, (size_t)fragment->data_len);
-        pap_platen_pull_output();
         pap_update_progress_status();
+        sess->rx_pending = true;
+        return;
     }
-    if (fragment->user[2])
-        sess->eof_pending = true;
+    pap_platen_flush_rx(sess);
 }
 
-// Ends the job at the workstation's EOF: the interpreter runs to completion,
-// the document goes to the platform sink, the output is followed by EOF on
-// the read channel, and the session is primed for the next job.
+// Hands the gathered transaction to the interpreter: a FEED for its data
+// (the EOF, if any, becomes a FINISH after the acknowledgement), or a FINISH
+// at once for a bare EOF.
+static void pap_platen_flush_rx(pap_session_t *sess) {
+    sess->rx_pending = false;
+    if (sess->rx_len > 0) {
+        sess->bytes_received += sess->rx_len;
+        sess->eof_pending = sess->rx_eof;
+        size_t len = sess->rx_len;
+        sess->rx_len = 0;
+        sess->rx_eof = false;
+        // A transport refusal raises the FAILED event, which aborts the
+        // session; a refusal with the job still alive is a sequencing fault
+        if (!laserwriter_job_feed(sess->rx_seq, sess->rx, len) && sess->active && laserwriter_job_active())
+            pap_session_abort("interpreter out of step");
+        return;
+    }
+    if (sess->rx_eof) {
+        sess->rx_eof = false;
+        sess->eof_pending = false;
+        LOG(2, "pap: job %u EOF after %zu bytes", sess->job_id, sess->bytes_received);
+        if (!laserwriter_job_finish() && sess->active && laserwriter_job_active())
+            pap_session_abort("interpreter out of step");
+    }
+}
+
+// Ends the job at FINISHED: the document went to the platform sink already;
+// the output is followed by EOF on the read channel, the session is primed
+// for the next job, and a read goes out for it.
 static void pap_platen_finalize_job(void) {
     pap_session_t *sess = &g_session;
     if (!sess->active)
@@ -1486,19 +1563,68 @@ static void pap_platen_finalize_job(void) {
         sess->spool = NULL;
         LOG(3, "pap: job %u captured at %s", completed_job, sess->spool_path);
     }
-    LOG(2, "pap: job %u EOF after %zu bytes", completed_job, sess->bytes_received);
-    if (laserwriter_job_active())
-        laserwriter_job_finish();
+    LOG(2, "pap: job %u complete (%s)", completed_job, laserwriter_job_last_outcome());
     pap_platen_pull_output();
     // A LaserWriter closes its side of the job with EOF once its output is out
     sess->reply_eof_pending = true;
     sess->eof_pending = false;
+    sess->rx_len = 0;
+    sess->rx_eof = false;
+    sess->rx_pending = false;
     sess->bytes_received = 0;
     sess->spool_path[0] = '\0';
     pap_printer_set_status_idle();
     pap_try_deliver_pending_reply();
     sess->job_id = ++g_printer.job_counter;
     LOG(4, "pap: prepared for next job %u", sess->job_id);
+    // The connection stays for the next job: read it
+    pap_schedule_senddata();
+}
+
+// The interpreter's events, from the scheduler (never from inside a call
+// into the bridge).  This is where every SendData after the first
+// OpenConn is decided: after OPENED, after each FED, after FINISHED.
+static void pap_platen_event(laserwriter_event_t event, const char *detail, void *ctx) {
+    (void)ctx;
+    pap_session_t *sess = &g_session;
+    if (!sess->active)
+        return;
+    switch (event) {
+    case LASERWRITER_EVENT_OPENED:
+        pap_update_progress_status();
+        // Data gathered before the job opened (a later job on the
+        // connection) goes first; otherwise ask the driver for some
+        if (sess->rx_pending)
+            pap_platen_flush_rx(sess);
+        else
+            pap_schedule_senddata();
+        break;
+    case LASERWRITER_EVENT_FED:
+        pap_update_progress_status();
+        // The feed's reply goes out on the held credits; the rest of them
+        // get the status line; then the driver's EOF ends the job or the
+        // next read goes out
+        pap_platen_pull_output();
+        pap_platen_answer_status_credits();
+        if (sess->eof_pending) {
+            sess->eof_pending = false;
+            LOG(2, "pap: job %u EOF after %zu bytes", sess->job_id, sess->bytes_received);
+            if (!laserwriter_job_finish() && sess->active && laserwriter_job_active())
+                pap_session_abort("interpreter out of step");
+        } else {
+            pap_schedule_senddata();
+        }
+        break;
+    case LASERWRITER_EVENT_FINISHED:
+        pap_platen_finalize_job();
+        break;
+    case LASERWRITER_EVENT_FAILED:
+        // The session ends; the error stays in the status string until the
+        // next job replaces it
+        pap_session_abort(detail);
+        pap_printer_set_status_fmt("%s; error: %s", PRINTER_STATUS_IDLE, detail);
+        break;
+    }
 }
 
 #endif // GS_PLATEN

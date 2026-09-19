@@ -96,6 +96,13 @@ PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/formats/sit13.c \
               $(PEELER_DIR)/lib/formats/sit15.c
 
+# The LaserWriter bridge reaches its interpreter through one transport per
+# build (laserwriter_transport.h): in the browser the interpreter runs in
+# its own worker behind a shared-memory ring, so the main module compiles
+# the ring transport and links no platen archive; the direct transport is
+# headless-only (Makefile.headless).
+CORE_SRC := $(filter-out $(CORE_DIR)/network/laserwriter_transport_direct.c,$(CORE_SRC))
+
 SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
 
 # Object and dependency files (mirror source tree under OBJ_DIR)
@@ -182,18 +189,16 @@ CFLAGS := -MMD -MP $(MODE_CFLAGS) \
           -pthread \
           $(PEELER_INCLUDES) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
 
-# With PLATEN=1 the wasm32-unknown-emscripten platen archive goes after the
-# objects on the link line, with WebAssembly exceptions enabled for the link
-# (laserwriter.mk).  The archive is fetched from the pinned EfterScript
-# release on demand (or taken from PLATEN_DIR); a Rust staticlib for this
-# target needs no extra system libraries.
-ifeq ($(PLATEN),1)
-PLATEN_LDLIBS := $(PLATEN_LIB_WASM) $(PLATEN_WASM_LDFLAGS)
-PLATEN_PREREQS := $(PLATEN_LIB_WASM) $(PLATEN_HEADER)
-else
+# With PLATEN=1 the main module compiles the printer bridge with its ring
+# transport (laserwriter_transport_ring.c) and links NO platen archive: the
+# emulator is a threaded build and Rust's prebuilt standard library for the
+# Emscripten target has no atomics, so the interpreter runs in its own
+# worker with its own non-threaded module (part 2B builds that module from
+# the release archive: PLATEN_LIB_WASM + PLATEN_WASM_LDFLAGS, laserwriter.mk).
+# Nothing here depends on the archive or the header, so PLATEN=1 needs no
+# fetch and no toolchain beyond emcc.
 PLATEN_LDLIBS :=
 PLATEN_PREREQS :=
-endif
 
 # PLATEN changes what the printer compiles to; a stamp named after the
 # value is a prerequisite of every object, so toggling the switch rebuilds

@@ -165,18 +165,52 @@ slow host or heavy logging cannot end a session by itself):
 ### 6.3a PostScript interpreter path (`PLATEN=1`)
 
 The read-driven model below describes the transport, which is unchanged by
-the interpreter. What differs is *what answers a read*. With `PLATEN=1`
-(`src/core/network/laserwriter_job.c`, `laserwriter.md` §5) every
+the interpreter. What differs is *what answers a read*, and *when the
+printer reads*. With `PLATEN=1` (`src/core/network/laserwriter_job.c`,
+[`laserwriter_job.md`](laserwriter_job.md), `laserwriter.md` §5) every
 EOF-delimited PAP job is a `platen` interpreter job: incoming Data payloads
 are fed to it verbatim, and its own output (query replies, error reports)
 is what the workstation's status-channel reads return — the placeholder
 query detection (`PAP_QUERY_*`, the `= flush` / PatchPrep / font-list
-heuristics) is compiled out entirely. A status read the interpreter has no
-reply for is answered with the composed status string (never with EOF mid
-job), so the driver's progress poll never blocks; the reader→writer
-SendData that pulls PostScript is a separate transaction and is never
-answered with status. At the workstation's EOF the job runs to completion,
-its PDF goes to the platform, and the session is primed for the next job.
+heuristics) is compiled out entirely. The reader→writer SendData that
+pulls PostScript is a separate transaction and is never answered with
+status.
+
+The interpreter answers **asynchronously** (in the browser it runs in a
+Web Worker; headless defers through the scheduler so the same bridge runs
+in both), and the session follows its events:
+
+- **OpenConn** is answered at once with OpenReply and the status `status:
+  starting up`; the interpreter job is opened in the same instant, but the
+  **first SendData is issued only when its OPENED arrives** (through the
+  usual issue gap, §6.1). While starting up, the driver's status reads get
+  the status line. An OPEN_FAILED (a refused configuration, an interpreter
+  that never started) aborts the session; the error stays in the status
+  string until the next job.
+- Each **SendData transaction's data is gathered** (at most one flow
+  quantum) and fed as one piece when the transaction completes, with its
+  sequence number. **The next SendData goes out after that feed's FED
+  acknowledgement** (plus the issue gap) — never before.
+- **A read credit is answered with the status line only while no feed is
+  unacknowledged.** The library guarantees a query's answer is available
+  as soon as the feed that completed it returns, so the FED carries the
+  reply and it goes out on the held credit (§6.4 read-driven model: the
+  credit waits for real data). A credit that arrives while the printer's
+  own SendData is on the wire, or between jobs, is answered with the
+  status line so the driver's progress poll never blocks.
+- **EOF** from the driver (with or after the last data) issues FINISH after
+  the last FED; on **FINISHED** the document is counted (and, headless,
+  written), the completion's output goes out on the credits followed by
+  EOF on the read channel, status returns to idle, the session is primed
+  for the next job on the connection, and a SendData reads for it. A
+  later job on the same connection opens on its first data; that data
+  waits for its OPENED.
+- **Connection loss** mid-job (CloseConn, the inactivity timer, a SendData
+  failure) issues ABANDON: the interpreter job is freed without finishing
+  and no document is produced.
+
+Two things stay as before: the SendData issue gap (§6.1) and the guest-time
+inactivity timer (§6.3).
 
 ### 6.4 Printer-to-workstation chatter
 

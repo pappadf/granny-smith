@@ -130,6 +130,11 @@ PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/formats/sit13.c \
               $(PEELER_DIR)/lib/formats/sit15.c
 
+# The LaserWriter bridge reaches its interpreter through one transport per
+# build (laserwriter_transport.h): headless links the platen library and
+# calls it directly; the ring transport is the browser's (Makefile).
+CORE_SRC := $(filter-out $(CORE_DIR)/network/laserwriter_transport_ring.c,$(CORE_SRC))
+
 # All sources
 SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
 

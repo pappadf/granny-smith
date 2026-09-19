@@ -262,3 +262,207 @@ Known deviation kept: the printer's SendData retries 12 x 8 s and then
 aborts, where Inside AppleTalk specifies infinite retries at 15 s with
 the two-minute tickle timer as the only reaper. It is a safety net that
 the two fixes above make dormant on a live driver.
+
+## Part 2 design: the interpreter in its own worker
+
+Decided 2026-09-19 after the first Emscripten link. The emulator is a
+threaded build (shared memory), and Emscripten's linker refuses the
+released archive in such a program because Rust's prebuilt standard
+library for the target has no atomics. Rather than ask EfterScript for a
+threaded variant (nightly, rebuilt std) and carry ten megabytes in the
+main module for everyone, the interpreter runs in its own Web Worker with
+its own non-threaded module, built by this tree from the released archive
+(`make platen-module`): the archive links standalone today (checked here:
+a page rendered under Node; 11 MB wasm, 6.9 MB gzipped, to be trimmed on
+EfterScript's side). The module is fetched on the first print job, not at
+start; a first print waits like a real printer warms up.
+
+**Transport.** The Voodoo GPU worker's pattern (`voodoo2_gpu_protocol.h`
+/ `voodoo2Protocol.ts`, `voodoo2Gpu.worker.ts`): the core allocates a
+control block and two byte rings in the wasm heap; the front end hands
+the worker the shared memory and the block's address (`postMessage`,
+once); after that the two sides exchange records through the rings with
+`Atomics` (notify on write; the worker parks in `Atomics.waitAsync`; the
+emulation pthread drains its inbound ring from its per-frame hook and
+never blocks on the printer). Records, defined once in
+`laserwriter_ring_protocol.h` and mirrored in `platenProtocol.ts` under a
+version checked at attach:
+
+- core -> worker: `open` (job id, the `platen_config` fields), `feed`
+  (job id, sequence, up to one PAP flow quantum of bytes), `finish`,
+  `abandon`.
+- worker -> core: `opened` / `open_failed` (error text), `fed` (job id,
+  sequence acknowledged, the feed's status, that feed's reply and error
+  bytes), `finished` (job id, outcome, pages, error name, offending
+  command). The PDF itself never enters the core in the browser: the
+  worker posts it to the main thread (transferable) and it downloads as
+  `<job>-<title>.pdf` at once; the core learns only the outcome and the
+  page count.
+
+**The bridge becomes asynchronous**, in both builds. `laserwriter_job.c`
+issues the four records through a `laserwriter_transport` (direct calls
+into the library for headless; the ring for wasm) and receives results
+through callbacks; the direct transport defers its callbacks through the
+scheduler so the headless acceptance row exercises the same asynchronous
+bridge the browser runs. Two PAP rules follow from the library's
+guarantee that a query's answer is available as soon as the feed that
+completed it returns: the driver's read credits are answered with a
+status line only while no feed is unacknowledged, and the next SendData
+goes out after the acknowledgement (plus the issue gap). An OpenConn is
+answered at once with a "starting up" status while the module loads; the
+first SendData waits for `opened`; an `open_failed` aborts the session
+with the error in the status string.
+
+**Defaults.** The browser build always carries the printer (`PLATEN=1`
+is the wasm default; the core no longer links the library, so no
+toolchain or archive is needed for the main module, only for
+`platen-module`). Headless keeps `PLATEN=0` by default until EfterScript
+publishes an arm64 host archive; CI's x86_64 runners can run the
+integration tier with `PLATEN=1`.
+
+## Part 2A implementation notes
+
+Done 2026-09-19: the core/headless half of the part 2 design above. The
+browser worker, the TypeScript mirror, the front-end attach, the download,
+and the PLATEN default flip are part 2B.
+
+**Built.**
+
+- `laserwriter_ring_protocol.h` — the shared-memory protocol: magic and
+  `LWRING_PROTOCOL_VERSION`, control-block word indices (Int32 for
+  Atomics: two rings' head/tail, a status word, statistics), two byte
+  rings of `{kind, len}` records whose total length is a multiple of 8
+  (`LWRING_PAD8`; fields inside a payload are padded to 4) and that
+  never wrap — a PAD record reaches the ring's end, and the 8-byte rule
+  is what guarantees the PAD's own 8-byte header always fits (a 4-byte
+  rule left a 4-byte remainder possible; caught in review before part
+  2B mirrors the protocol; readers reject `len & 7`), and the records:
+  OPEN (job id plus every
+  `platen_config` field the bridge sets, the identity as NUL-terminated
+  pairs and the prelude inline), FEED (job id, PAP SendData sequence, at
+  most one flow quantum of bytes), FINISH, ABANDON out; OPENED,
+  OPEN_FAILED (text), FED (sequence, feed status, pages, reply bytes,
+  error bytes, a truncation flag), FINISHED (outcome, pages, error name,
+  offending command, the completion's output) in. The PDF is not a
+  record. Ring sizes are compile-time and overridable for tests; the
+  worker must read them from the control block.
+- `laserwriter_transport.h` — open/feed/finish/abandon plus the four
+  callbacks and `laserwriter_transport_poll()`; two implementations:
+  `laserwriter_transport_direct.c` (headless: queues the request, runs the
+  library call from a scheduler event 1 ms of guest time later, delivers
+  from it; the document rides in the finished result) and
+  `laserwriter_transport_ring.c` (wasm: records into the outbound ring,
+  answers drained in poll; the region is allocated on the first open and
+  `laserwriter_ring_attach_requested(ctrl_addr)` /
+  `laserwriter_ring_notify(addr)` are weak no-ops for the platform to
+  override; a LOST status word or corrupt inbound framing fails the
+  outstanding request as its own kind of failure). The ring transport
+  compiles natively and is unit-tested.
+- `laserwriter_job.c` — a five-state job (idle, opening, ready, feeding,
+  finishing) that turns the callbacks into four events for the PAP layer
+  (OPENED, FED, FINISHED, FAILED), keeps the output queue, title scan,
+  status text and counters, and runs a 1 ms guest-time poll tick while a
+  request is outstanding, with a 120 s deadline on OPEN.
+- `appletalk_printer.c` (`GS_PLATEN` path) — OpenConn answered at once
+  with `status: starting up`, first SendData at OPENED; a transaction's
+  fragments gathered into one feed (sequence = the SendData's); the next
+  SendData at FED; status lines on read credits only while no feed or
+  finish is unacknowledged (a held credit is answered from the FED); EOF
+  → FINISH after the last FED → FINISHED finalises (counts, EOF on the
+  read channel, idle, next job primed, next SendData); a later job on the
+  connection opens on its first data, which waits for OPENED; FAILED
+  aborts the session with the error in the status string; connection
+  loss → ABANDON through `pap_session_reset`. The issue gap, the
+  guest-time inactivity timer and `appletalk.c`'s wire reservation are
+  untouched.
+- Build: `Makefile.headless` compiles the direct transport
+  (`filter-out` of the ring), `Makefile` the ring transport; the wasm
+  link no longer names the platen archive or fetches it — `make PLATEN=1`
+  needs only emcc. `laserwriter.mk` unchanged in defaults and fetch.
+- Tests: `tests/unit/suites/laserwriter_ring/` plays the worker in C
+  (8 KB / 4 KB rings via `-DLWRING_*_BYTES`): every record field,
+  one-request-at-a-time refusal, a feed over one quantum refused, stale
+  answers for an abandoned job dropped, a LOST worker failing the
+  outstanding feed, both rings wrapping several times with PADs and byte
+  identity checked, an inbound record engineered to need a PAD before
+  the ring's end, an outbound ring with no room refusing an open (and
+  recovering), an outbound position driven to exactly size - 8 (a PAD
+  of just its header), 300 feeds of every size residue mod 8 through
+  both rings with every record start asserted 8-aligned, and corrupt
+  inbound framing (a 4-aligned but not 8-aligned len) marking the
+  worker lost.
+
+**Verified** (arm64 devcontainer; the release has no arm64 host archive,
+so `PLATEN_DIR=/workspaces/efterscript` supplied `target/release/libplaten.a`):
+
+- `make -C tests/integration test-appletalk-print PLATEN=1
+  PLATEN_DIR=/workspaces/efterscript` — twice (before and after a final
+  log-only tweak):
+  `printer: documents=1 pages=1 outcome='ok' status='status: idle'`,
+  `=== PASS: appletalk-print ===`.
+- The same row with `debug.log "appletalk" "level=6"` prefixed (temporary
+  twin directory, deleted afterwards):
+  `printer: documents=1 pages=1 outcome='ok' status='status: idle'`,
+  `=== PASS: appletalk-print-log ===`. In the transcript: OpenReply goes
+  out before "job 1 started", the first SendData after it; every job's
+  output is followed by `eof=1`; after the document the driver sends
+  `CloseConn` itself ("job 4 complete (client closed)"); zero `retry
+  timeout`, `no CTS` and `SendData timeout` lines; every status-line
+  answer is issued while the printer's own SendData is on the wire, none
+  while a feed is unacknowledged.
+- `appletalk-afp`, `appletalk-afp-e2e`, `appletalk-ppc`, `aevt-finder`,
+  `aevt-inbox`, `aevt-stress` with `PLATEN=1 PLATEN_DIR=…`: all
+  `=== PASS`.
+- `make unit-test`: "All 66 tests passed" (the new suite included).
+- `make -j8 all` and `make -j8 PLATEN=1 all` under emsdk 6.0.7: both
+  link; the PLATEN=1 link line carries no archive.
+- `make -f Makefile.headless` (PLATEN=0): the stubs build.
+- clang-format 18 `--dry-run --Werror` over `src`: clean.
+
+**Deviations from the design, and why.**
+
+- *Polling.* The design has the emulation pthread drain the inbound ring
+  "from its per-frame hook". The core has no such hook, so the bridge
+  polls the transport from a 1 ms guest-time scheduler tick while (and
+  only while) a request is outstanding; the transport itself has no
+  scheduler dependency, which is what lets the unit suite drive it with
+  a simulated worker. `laserwriter_transport_poll()` stays public so the
+  platform may also call it from its frame loop.
+- *Feed granularity.* Part 1 fed each ATP fragment (≤ 512 bytes); now a
+  SendData transaction's fragments are gathered and fed once (≤ 4096),
+  which is what makes FEED/FED carry the SendData sequence and keeps one
+  FEED per read. The library accepts any split.
+- *FED carries the page count* (not in the design's list) so the status
+  line can say `printing … page: n` without a live library handle.
+- *A second job on a connection opens lazily* on its first data (as in
+  part 1) rather than eagerly at FINISHED; the gathered data waits for
+  OPENED. The first job still opens at OpenConn.
+- *Open timeout* (120 s of guest time) added so a wasm build without the
+  worker degrades to a failed job rather than a session that never
+  reads; the driver's tickles keep the PAP timer from firing meanwhile.
+- The manual and the code agree on everything this part touches; the
+  one known deviation from Inside AppleTalk (the finite SendData retry
+  limit) is unchanged and noted above.
+
+**Open for part 2B.**
+
+- `platenProtocol.ts` mirroring `laserwriter_ring_protocol.h` (check
+  `LWRING_PROTOCOL_VERSION` at attach), the worker (Atomics.waitAsync on
+  OUT_HEAD; read sizes from the control block; PAD on both rings; set
+  STATUS to ATTACHED, LOST on a failed module load or a crash; cap each
+  text field at `LWRING_TEXT_MAX` and set the truncation flag; post the
+  PDF to the main thread with the job id), `make platen-module` from the
+  release archive with `PLATEN_LIB_WASM` + `PLATEN_WASM_LDFLAGS`.
+- Platform overrides in `src/platform/wasm`:
+  `laserwriter_ring_attach_requested` (post the control block address
+  to the page, once) and `laserwriter_ring_notify`
+  (`emscripten_futex_wake`, as `gs_v2gpu_notify` does). Without them the
+  weak no-ops log once and every open times out after 120 s.
+- The download (`<job>-<title>.pdf`: the title is the bridge's; the
+  worker only knows the job id — either the page asks the core for
+  `appletalk.printer` state or the FINISH record grows a title field;
+  the latter is a one-line protocol change with a version bump).
+- The PLATEN default flip for the wasm build, and CI running the
+  headless integration tier with `PLATEN=1` on x86_64.
+- Optional: `appletalk.printer.transport` in the object model
+  (`laserwriter_transport_name()` exists for it).
