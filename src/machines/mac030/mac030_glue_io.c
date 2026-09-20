@@ -311,6 +311,21 @@ int mac030_io_validate(const mac030_io_t *io, const char *machine_id) {
         return 0;
     int unbound = 0;
     for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
+        // Every window that completes a bus cycle charges for it.  The
+        // handler rows were the ones that did not: av.c and mcu.c left the
+        // field at its zero default at twenty-odd rows, so a PSC or 53C96
+        // access on a Quadra was free while an SCC access two rows above it
+        // cost 2 (05-chipsets-irq F-49).  The IIfx table had it right all
+        // along -- its scsi_dma and oss_ext handler rows charge, and only
+        // its two bus-error windows do not -- which is the evidence that
+        // the penalty models the island's bus turnaround, not the part.
+        if (r->penalty == 0 && !r->esync && !r->berr) {
+            LOG(0,
+                "Error: %s I/O window '%s' ($%05X-$%05X) declares no bus penalty -- set one, mark it .esync, "
+                "or mark it .berr if the cycle never completes",
+                machine_id, r->debug_name ? r->debug_name : "(unnamed)", r->base, r->end);
+            unbound++;
+        }
         if (r->read_fn || r->write_fn) // handler-row: no device slot to bind
             continue;
         if (io->iface[r->device])

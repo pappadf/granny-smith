@@ -186,6 +186,10 @@ static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
 
 #define AV_VIA_IO_PENALTY 16
 #define AV_SCC_IO_PENALTY 2
+// Every other window on the island is a handler row, and every one of them
+// completes a bus cycle -- so all of them pay the island's turnaround, the
+// way the IIfx table has always charged its handler rows (F-49).
+#define AV_IO_PENALTY 2
 
 // 53C96 window handlers (defined with the SCSI wiring below).
 static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr);
@@ -196,19 +200,19 @@ static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, u
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
 const mac030_io_range_t av_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, AV_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
-    {0x02000, 0x04000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
+    {0x02000, 0x04000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
     {0x04000, 0x08000, MAC030_DEV_SCC, AV_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x08000, 0x08080, 0, 0, MAC030_IO_NORMAL, 0, 0, av_mace_prom_read, av_mace_prom_write, "mac_prom"},
-    {0x18000, 0x18100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96"},
-    {0x18100, 0x18200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma"},
-    {0x1C000, 0x1C200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace"},
-    {0x2A000, 0x2A200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
-    {0x2E000, 0x2E100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_clk_read, av_civic_clk_write, "clock"},
-    {0x30000, 0x30400, 0, 0, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
-    {0x30400, 0x30800, 0, 0, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
-    {0x30800, 0x30C00, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_seb_read, av_civic_seb_write, "sebastian"},
-    {0x31000, 0x33000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_reg_read, av_psc_reg_write, "psc"},
-    {0x36000, 0x38000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_read, av_civic_write, "civic"},
+    {0x08000, 0x08080, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_prom_read, av_mace_prom_write, "mac_prom"},
+    {0x18000, 0x18100, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96"},
+    {0x18100, 0x18200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma"},
+    {0x1C000, 0x1C200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace"},
+    {0x2A000, 0x2A200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
+    {0x2E000, 0x2E100, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_clk_read, av_civic_clk_write, "clock"},
+    {0x30000, 0x30400, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
+    {0x30400, 0x30800, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
+    {0x30800, 0x30C00, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_seb_read, av_civic_seb_write, "sebastian"},
+    {0x31000, 0x33000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_psc_reg_read, av_psc_reg_write, "psc"},
+    {0x36000, 0x38000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_read, av_civic_write, "civic"},
     {0}, // sentinel: end == 0
 };
 

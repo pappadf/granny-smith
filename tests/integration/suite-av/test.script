@@ -753,7 +753,7 @@ def row_av_chime() {
     # The chime plays out-enabled frames ~10-67 (~0.6 s); run well past it.
     scheduler.run 30000000
     assert machine.sound.frames > 100 "av-chime: sound frame engine not ticking"
-    check_sound("goldens/av-chime.wav", 54720)
+    check_sound("goldens/av-chime.wav", 52800)
     report_perf("suite-av/av-chime", scheduler.instr_count)
 }
 

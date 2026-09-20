@@ -368,20 +368,24 @@ static void mcu_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint
 #define MCU_SCC_IO_PENALTY  2
 #define MCU_ASC_IO_PENALTY  2
 #define MCU_SWIM_IO_PENALTY 5 // current MAME charges 5 CPU cycles [R]
+// The handler-row chips (MAC PROM, SONIC, the MCU's own registers, the 53C96
+// and its pseudo-DMA aperture, YANCC) sit on the same island as the SCC and
+// EASC and pay the same turnaround.  They were charging nothing (F-49).
+#define MCU_IO_PENALTY 2
 
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
 const mac030_io_range_t mcu_q700_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, MAC030_DEV_VIA2, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
-    {0x08000, 0x08008, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
-    {0x0A000, 0x0B100, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
+    {0x08000, 0x08008, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
+    {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
     {0x0C000, 0x0E000, MAC030_DEV_SCC, MCU_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x0E000, 0x0F000, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
-    {0x0F000, 0x0F100, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_read, mcu_scsi_write, "scsi_53c96"},
-    {0x0F100, 0x0F102, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma"},
+    {0x0E000, 0x0F000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
+    {0x0F000, 0x0F100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_read, mcu_scsi_write, "scsi_53c96"},
+    {0x0F100, 0x0F102, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma"},
     {0x14000, 0x16000, MAC030_DEV_ASC, MCU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
     {0x1E000, 0x20000, MAC030_DEV_FLOPPY, MCU_SWIM_IO_PENALTY, MAC030_IO_STRIDE_512, 0, 0, NULL, NULL, "swim"},
-    {0x28000, 0x2A000, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc"},
+    {0x28000, 0x2A000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc"},
     {0}, // sentinel: end == 0
 };
 
@@ -400,17 +404,18 @@ const mac030_io_range_t mcu_q700_io_ranges[] = {
 const mac030_io_range_t mcu_q900_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
     {0x02000, 0x04000, MAC030_DEV_VIA2, MCU_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via2", .esync = 1},
-    {0x08000, 0x08008, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
-    {0x0A000, 0x0B100, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
+    {0x08000, 0x08008, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_prom_read, mcu_prom_write, "mac_prom"},
+    {0x0A000, 0x0B100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_sonic_read, mcu_sonic_write, "sonic"},
     {0x0C000, 0x0E000, MAC030_DEV_SCC_IOP, MCU_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc_iop"},
-    {0x0E000, 0x0F000, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
-    {0x0F000, 0x0F100, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_read, mcu_scsi_write, "scsi_53c96"},
-    {0x0F100, 0x0F102, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma"},
-    {0x0F400, 0x0F500, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_ext_read, mcu_scsi_ext_write, "scsi1_53c96"},
-    {0x0F500, 0x0F510, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_scsi_ext_pdma_read, mcu_scsi_ext_pdma_write, "scsi1_pdma"},
+    {0x0E000, 0x0F000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_reg_read, mcu_reg_write, "mcu"},
+    {0x0F000, 0x0F100, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_read, mcu_scsi_write, "scsi_53c96"},
+    {0x0F100, 0x0F102, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_pdma_read, mcu_scsi_pdma_write, "scsi_pdma"},
+    {0x0F400, 0x0F500, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_ext_read, mcu_scsi_ext_write, "scsi1_53c96"},
+    {0x0F500, 0x0F510, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_scsi_ext_pdma_read, mcu_scsi_ext_pdma_write,
+     "scsi1_pdma"},
     {0x14000, 0x16000, MAC030_DEV_ASC, MCU_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "easc"},
     {0x1E000, 0x20000, MAC030_DEV_SWIM_IOP, MCU_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "swim_iop"},
-    {0x28000, 0x2A000, 0, 0, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc"},
+    {0x28000, 0x2A000, 0, MCU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, mcu_yancc_read, mcu_yancc_write, "yancc"},
     {0}, // sentinel: end == 0
 };
 

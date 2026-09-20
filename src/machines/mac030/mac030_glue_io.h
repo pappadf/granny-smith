@@ -94,6 +94,11 @@ typedef struct mac030_io_range {
     // next 783.360 kHz E boundary — see memory_io_esync_penalty). Last so
     // positional initializers stay valid; flagged rows set `.esync = 1`.
     uint16_t esync;
+    // 1 = this window signals a bus error instead of completing a cycle
+    // (the IIfx RPU probe and FMC windows).  There is no bus turnaround to
+    // charge, so `penalty` is legitimately 0 -- and saying so here is what
+    // lets mac030_io_validate insist that every OTHER window declares one.
+    uint16_t berr;
 } mac030_io_range_t;
 
 // The island is at most 256 KB (the widest io_mirror_mask any board declares

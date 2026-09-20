@@ -356,6 +356,68 @@ TEST(test_misordered_table_falls_back_to_the_linear_walk) {
     ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F00100u) == NULL);
 }
 
+// --- Bus penalties --------------------------------------------------------
+// Every window that completes a bus cycle charges the island's turnaround.
+// The handler rows were the ones that did not: av.c and mcu.c left the field
+// at its zero default on twenty-six rows between them, so a PSC or 53C96
+// access on a Quadra was free while an SCC access two rows above it cost 2
+// (05-chipsets-irq F-49).  The IIfx table had it right all along -- its
+// scsi_dma and oss_ext handler rows charge, and only its two bus-error
+// windows do not -- which is the evidence that the penalty models the
+// island's bus turnaround and not the part behind it.
+
+static void expect_all_rows_declare_a_penalty(const mac030_io_range_t *ranges) {
+    for (const mac030_io_range_t *r = ranges; r->end; r++) {
+        if (r->penalty == 0 && !r->esync && !r->berr) {
+            fprintf(stderr, "[FAIL] window '%s' ($%05X-$%05X) declares no bus penalty\n",
+                    r->debug_name ? r->debug_name : "(unnamed)", r->base, r->end);
+            exit(1);
+        }
+    }
+}
+
+TEST(test_every_shipped_window_declares_a_bus_penalty) {
+    expect_all_rows_declare_a_penalty(mac030_glue_io_ranges());
+    expect_all_rows_declare_a_penalty(mdu_io_ranges());
+}
+
+// ...and the validator says so for a table that does not, so a new family
+// cannot recreate the gap silently.
+static const mac030_io_range_t k_free_window[] = {
+    {.base = PROBE_BASE, .end = 0x00002000u, .read_fn = probe_read, .write_fn = probe_write, .debug_name = "free"},
+    {0},
+};
+static const mac030_io_range_t k_paid_window[] = {
+    {.base = PROBE_BASE,
+     .end = 0x00002000u,
+     .penalty = 2,
+     .read_fn = probe_read,
+     .write_fn = probe_write,
+     .debug_name = "paid"},
+    {0},
+};
+// A bus-error window legitimately charges nothing: the cycle is aborted, so
+// there is no turnaround to pay for.  `.berr` is how a row says that out loud.
+static const mac030_io_range_t k_berr_window[] = {
+    {.base = PROBE_BASE,
+     .end = 0x00002000u,
+     .read_fn = probe_read,
+     .write_fn = probe_write,
+     .debug_name = "berr",
+     .berr = 1},
+    {0},
+};
+
+TEST(test_validate_flags_a_window_with_no_declared_penalty) {
+    mac030_io_t io;
+    probe_io_init(&io, k_paid_window, PROBE_MIRROR);
+    ASSERT_EQ_INT(mac030_io_validate(&io, "probe"), 0);
+    probe_io_init(&io, k_berr_window, PROBE_MIRROR);
+    ASSERT_EQ_INT(mac030_io_validate(&io, "probe"), 0);
+    probe_io_init(&io, k_free_window, PROBE_MIRROR);
+    ASSERT_EQ_INT(mac030_io_validate(&io, "probe"), 1);
+}
+
 // --- IRQ routing ----------------------------------------------------------
 
 TEST(test_irq_single_sources) {
@@ -389,6 +451,8 @@ int main(void) {
     RUN(test_page_index_agrees_with_linear_decode_everywhere);
     RUN(test_misordered_table_falls_back_to_the_linear_walk);
     RUN(test_decode_miss_is_recorded_once_per_4k);
+    RUN(test_every_shipped_window_declares_a_bus_penalty);
+    RUN(test_validate_flags_a_window_with_no_declared_penalty);
     RUN(test_irq_single_sources);
     RUN(test_irq_priority);
     printf("[PASS] All mac030_io dispatch-table tests passed\n");

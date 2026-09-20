@@ -125,6 +125,7 @@ LOG_USE_CATEGORY_NAME("board");
 #define IIFX_SCSI_IO_PENALTY 2
 #define IIFX_ASC_IO_PENALTY  2
 #define IIFX_OSS_IO_PENALTY  2
+#define IIFX_BIU_IO_PENALTY  2 // a decoded window like any other: reads 0, writes drop, cycle completes
 
 // IIfx SCSI DMA controller — Apple 343S0064-A "IIfx Custom SCSI DMA
 // Controller, QFP-100".
@@ -1188,14 +1189,17 @@ static const mac030_io_range_t iifx_io_ranges_tbl[] = {
     {IO_ASC, IO_ASC_END, MAC030_DEV_ASC, IIFX_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
     {IO_SWIM_IOP, IO_SWIM_IOP_END, MAC030_DEV_SWIM_IOP, IIFX_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL,
      "swim_iop"},
-    {IO_BIU, IO_BIU_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_biu_read, iifx_io_biu_write, "biu"},
+    {IO_BIU, IO_BIU_END, MAC030_DEV_VIA1, IIFX_BIU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, iifx_io_biu_read,
+     iifx_io_biu_write, "biu"},
     {IO_OSS, IO_OSS_END, MAC030_DEV_OSS, IIFX_OSS_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "oss"},
+    // The two bus-error windows charge nothing on purpose: the cycle is
+    // aborted, so there is no turnaround to pay for.  `.berr` says so.
     {IO_RPU_PROBE, IO_RPU_PROBE_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
-     "rpu_probe"},
+     "rpu_probe", .berr = 1},
     {IO_OSS_EXT_START, IO_OSS_EXT_END, MAC030_DEV_VIA1, IIFX_OSS_IO_PENALTY, MAC030_IO_NORMAL, 0, 0,
      iifx_io_ossext_read, iifx_io_ossext_write, "oss_ext"},
     {IO_FMC_BERR, IO_FMC_BERR_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
-     "fmc_berr"},
+     "fmc_berr", .berr = 1},
     {0}, // sentinel
 };
 
