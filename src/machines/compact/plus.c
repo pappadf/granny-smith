@@ -10,6 +10,7 @@
 
 #include "mac_host_io.h"
 #include "machine.h"
+#include "machine_teardown.h"
 #include "slot_tables.h"
 #include "system_config.h" // full config_t definition
 
@@ -339,70 +340,45 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
 // Tear down all Plus resources in reverse init order.
 static void plus_teardown(config_t *cfg) {
-    // Stop scheduler if running (best effort)
-    if (cfg->scheduler) {
+    if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
-    }
 
-    // Mirror the appletalk_init() in plus_init(): tear the AppleTalk
-    // object nodes down before the SCC and scheduler it holds pointers
-    // to are freed below.
-    appletalk_delete();
-
+    // Machine-owned devices first, then the shared delete-chain.  This is the
+    // shape mac030_glue_teardown uses and the other six families already
+    // follow; the Plus and the Lisa were the two that still hand-rolled the
+    // whole thing (05-chipsets-irq F-17).
+    //
+    // ORDER IS LOAD-BEARING and this is why: the floppy used to be deleted
+    // AFTER scheduler_delete here.  That was harmless while floppy_delete only
+    // freed memory, but it now calls scheduler_forget_source(floppy->scheduler,
+    // ...) -- a read through a pointer to the freed scheduler.  Everything that
+    // holds a scheduler handle must go before the scheduler does, which is
+    // exactly what machine_teardown_config_devices guarantees by deleting the
+    // scheduler itself, last.
+    plus_state_t *ps = plus_state(cfg);
     if (cfg->keyboard) {
         keyboard_delete(cfg->keyboard);
         cfg->keyboard = NULL;
-    }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
     }
     if (cfg->mouse) {
         mouse_delete(cfg->mouse);
         cfg->mouse = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
+    if (cfg->floppy) {
+        floppy_delete(cfg->floppy);
+        cfg->floppy = NULL;
     }
-
-    plus_state_t *ps = plus_state(cfg);
     if (ps && ps->sound) {
         sound_delete(ps->sound);
         ps->sound = NULL;
         cfg->sound = NULL;
     }
 
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->floppy) {
-        floppy_delete(cfg->floppy);
-        cfg->floppy = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    // scsi, appletalk, scc, rtc, via1, the scheduler, the CPU, the memory map
+    // and the debugger -- in the one order that is documented once.
+    machine_teardown_config_devices(cfg);
 
-    // Free machine-specific state; images are freed by system_destroy()
+    // Machine-specific state; images are freed by system_destroy().
     if (ps) {
         free(ps);
         cfg->machine_context = NULL;
