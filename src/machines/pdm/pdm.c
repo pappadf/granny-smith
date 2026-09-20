@@ -599,8 +599,7 @@ static void pdm_trigger_vbl(config_t *cfg) {
 // A NuBus card's /NMRQ.  The umbrella edge is AMIC's own business (the
 // pseudo-VIA2 "any slot" bit is recomputed from the slot levels on every
 // read), so the bus controller's edge hint is not needed here.
-static void pdm_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge;
+static void pdm_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     pdm_bart_slot_irq(cfg, slot, active);
 }
 

@@ -271,7 +271,7 @@ typedef struct machine_substrate {
     // poke (proposal §4.4).  NULL on the three substrates with no NuBus --
     // `compact` (Plus), `lisa`, and `tnt`, which is PCI -- and they never
     // reach it.
-    void (*nubus_slot_irq)(struct config *cfg, int slot, bool active, bool umbrella_edge);
+    void (*nubus_slot_irq)(struct config *cfg, int slot, bool active);
 
     // Drive PCI slot `slot`'s strapped INTA-D line active/inactive.  The
     // PCI slot lines are level-sensitive and have no umbrella (each has

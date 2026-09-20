@@ -474,8 +474,7 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
 // substrate.nubus_slot_irq: a NuBus card's /NMRQ maps to VIA2 PA(slot-9)
 // (slot $A→PA1 .. $E→PA5; ref §13.3).  Slot 9 is the built-in video and
 // never arrives here — DAFB drives PA6 directly through the aggregate.
-static void mcu_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge; // CA1 derives from the family aggregate, not the bus's own OR
+static void mcu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     int pa_bit = slot - 0x9;
     if (pa_bit < 1 || pa_bit > 5)
         return;

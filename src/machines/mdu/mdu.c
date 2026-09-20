@@ -177,8 +177,7 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 //
 // RvSInt numbering is logical: 0 is the built-in video (RvIRQ0, bit 6) and
 // 1..6 are RvIRQ1..6, so NuBus $9..$E map to 1..6.
-static void mdu_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge; // the RBV aggregates internally
+static void mdu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     mac030_mdu_state_t *st = mdu_st(cfg);
     if (!st || !st->rbv || slot < 0x9 || slot > 0xE)
         return;

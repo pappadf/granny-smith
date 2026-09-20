@@ -371,13 +371,33 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
 // (no slot asserted ↔ any slot asserted) pulses CA1.  Verbatim from the former
 // nubus.c VIA2 fast-path — now reached uniformly through the substrate so
 // nubus.c carries no cfg->via2 (proposal §4.4).
-void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+// One source of the family's /SLOTIRQ aggregate changes state.
+//
+// The chipset keeps the OR, not the bus.  GLUE used to pulse CA1 only when
+// the NuBus controller reported an `umbrella_edge` computed from its own
+// slot_irq_mask; the MCU ignored that flag and re-drove CA1 from its own
+// mask, and the MCU was right -- its aggregate includes DAFB on PA6 and SONIC
+// on PA0, sources the NuBus controller knows nothing about.  The SE/30's
+// built-in video is the same shape.  A bus that cannot see every contributor
+// cannot compute the edge (05-chipsets-irq F-46).
+//
+// /SLOTIRQ is a LEVEL: "routed through an OR gate ... connected to the CA1
+// input of VIA2" (Quadra 700 and 900 developer notes).
+void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
+    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    if (!st || pa_bit < 0 || pa_bit > 6)
+        return;
+    uint8_t bit = (uint8_t)(1u << pa_bit);
+    st->slot_pa_mask = active ? (st->slot_pa_mask | bit) : (st->slot_pa_mask & (uint8_t)~bit);
+    via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low line
+    via_input_c(cfg->via2, /*CA1*/ 0, 0, st->slot_pa_mask ? 0 : 1); // /SLOTIRQ = OR of sources
+}
+
+void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     int pa_bit = slot - 0x9;
     if (pa_bit < 0 || pa_bit > 5)
         return;
-    via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low
-    if (umbrella_edge)
-        via_input_c(cfg->via2, /*CA1*/ 0, /*pin*/ 0, active ? 0 : 1);
+    mac030_glue_slot_irq_source(cfg, pa_bit, active);
 }
 
 // Family-shared teardown delete-chain.  Order matches the (identical)
@@ -460,18 +480,32 @@ static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mmu_checkpoint_save(st->mmu, cp);
 }
 
+// One 60.15 Hz VBL pulse on a VIA's CA1.  The lines idle high (via_init parks
+// them there), so the active transition is the falling edge and the line is
+// left back at rest.
+void mac_vbl_pulse(struct via *via) {
+    via_input_c(via, /*port A*/ 0, /*CA1*/ 0, false);
+    via_input_c(via, 0, 0, true);
+}
+
 static void glue_trigger_vbl(config_t *cfg) {
     const mac030_glue_board_t *board = glue_board(cfg);
     if (board->trigger_vbl) {
         board->trigger_vbl(cfg); // SE/30: built-in slot-$E video VBL
         return;
     }
-    // Default GLUE VBL (IIcx/IIx, NuBus video): pulse both VIA CA1 lines as the
-    // GLUE chip does, then fan the VBL out to the NuBus cards.
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via2, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via2, 0, 0, 1);
+    // Default GLUE VBL (IIcx/IIx, NuBus video): the 60.15 Hz interrupt on
+    // VIA1 CA1, then fan the VBL out to the NuBus cards.
+    //
+    // VIA1 ONLY.  This used to pulse VIA2's CA1 too, "as the GLUE chip does"
+    // -- but VIA2 CA1 is /SLOTIRQ, the slot-interrupt aggregate, so every
+    // frame forged a slot interrupt and desynchronised the umbrella level a
+    // real card may be holding.  Guide to the Macintosh Family Hardware 2e,
+    // p.211: the vSync slot interrupt "is distinct from the 60.15 Hz
+    // interrupt (VBL) request, WHICH IS SENT BY VIA2 TO VIA1."  Two different
+    // interrupts; only one of them lands on a CA1 pin here
+    // (05-chipsets-irq F-11).
+    mac_vbl_pulse(cfg->via1);
     nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
 }

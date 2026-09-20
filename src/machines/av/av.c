@@ -265,8 +265,7 @@ static void av_via1_irq(void *context, bool active) {
 // No AV board declares a slot table yet (.slots = NULL on both, "declared but
 // unpopulated"), so nothing reaches this today.  It exists so the first AV
 // declaration-ROM card does not have to discover that its /NMRQ went nowhere.
-static void av_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge; // the PSC aggregates internally
+static void av_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     av_state_t *st = (av_state_t *)cfg->machine_context;
     if (!st || !st->psc)
         return;

@@ -41,6 +41,17 @@ typedef struct mac030_glue_state {
 
     mac030_glue_io_t glue_io; // device handles for the shared dispatcher
 
+    // The /SLOTIRQ aggregate this family drives onto VIA2 CA1: the OR of
+    // every source, kept by the CHIPSET rather than inferred from the NuBus
+    // controller's own view.  Quadra 700/900 developer notes: "The ... NuBus
+    // interrupt signals ..., the built-in video interrupt signal, and the
+    // Ethernet controller interrupt signal are routed through an OR gate to
+    // generate a signal called /SLOTIRQ.  This signal is connected to the CA1
+    // input of VIA2."  It is a LEVEL, and it can include sources the bus
+    // knows nothing about -- which is why the bus's `umbrella_edge` was the
+    // wrong abstraction (05-chipsets-irq F-46).
+    uint8_t slot_pa_mask;
+
     uint8_t last_port_b; // VIA1 PB output, for ADB ST-transition filtering
     uint8_t last_via2_port_b; // IIcx soft-power detect (unused on se30/iix)
     bool soft_power_armed; // IIcx soft-power detect (unused on se30/iix)
@@ -288,7 +299,16 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active);
 // substrate.nubus_slot_irq for the GLUE family: each slot's /NMRQ is a VIA2
 // port-A bit (active-low; slot $9→PA0 .. $E→PA5), and the umbrella OR-line edge
 // pulses CA1.  (se30/iicx/iix.)
-void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
+// One source of the family /SLOTIRQ aggregate on VIA2 port A changes state.
+// pa_bit 0-5 are NuBus slots $9-$E; 6 is available for a built-in source the
+// bus knows nothing about (the SE/30's video, the MCU's DAFB).
+// One 60.15 Hz VBL pulse on a VIA's CA1 line.
+struct via;
+void mac_vbl_pulse(struct via *via);
+
+void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active);
+
+void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active);
 
 // Family-shared teardown delete-chain: scheduler_stop → mmu → floppy → asc →
 // adb → scsi → via2 → via1 → scc → rtc → scheduler → cpu → mem_map → debugger.

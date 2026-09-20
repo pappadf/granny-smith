@@ -296,7 +296,7 @@ static void iifx_teardown(config_t *cfg);
 static void iifx_bus_reset(config_t *cfg);
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp);
 static void iifx_memory_layout_init(config_t *cfg);
-static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
+static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active);
 static void iifx_trigger_vbl(config_t *cfg);
 
 // Fills one page-table entry with a direct host mapping.
@@ -1356,8 +1356,7 @@ static void iifx_scsi_irq(void *context, bool irq, bool drq) {
 // adapter here.  That indirection was the last survivor of nubus.c's old
 // "non-VIA2 path"; the IIfx was the only machine still using it, so both
 // hops and the vtable slot behind them are gone.
-static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge; // the OSS aggregates internally
+static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     int source = slot - 0x9;
     if (source < 0 || source > 5)
         return;
