@@ -54,11 +54,6 @@ const pdm_monitor_kind_t pdm_monitors[] = {
     {NULL,       NULL,                                        0             },
 };
 
-// Strap staged by machine.boot's `monitor=` and consumed by the next
-// pdm_video_init (the jmfb_pending_sense_set shape).  Reset to the default
-// on consumption so a forgotten setting cannot leak into the next machine.
-static uint8_t s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
-
 // hw_profile_t.builtin_video (machine_profile.h).  Two thin adapters over
 // pdm_monitors so the machine registry can publish and validate this port
 // without reaching into this family: the sense strap stays here.
@@ -74,23 +69,19 @@ static bool pdm_builtin_monitor_at(size_t i, const char **id, const char **name)
     return false;
 }
 
-static bool pdm_builtin_stage_monitor(const char *id) {
+static bool pdm_builtin_monitor_sense(const char *id, uint8_t *out_sense) {
     const pdm_monitor_kind_t *m = pdm_monitor_lookup(id);
     if (!m)
         return false;
-    pdm_pending_monitor_set(m->sense);
+    *out_sense = m->sense;
     return true;
 }
 
 const builtin_video_desc_t pdm_builtin_video = {
     .display_name = "Built-in video (Ariel II)",
     .monitor_at = pdm_builtin_monitor_at,
-    .stage_monitor = pdm_builtin_stage_monitor,
+    .monitor_sense = pdm_builtin_monitor_sense,
 };
-
-void pdm_pending_monitor_set(uint8_t sense) {
-    s_pending_sense = (uint8_t)(sense & 0x07u);
-}
 
 // Look a strap up by config token; NULL when the name is not one of ours.
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id) {
@@ -260,12 +251,14 @@ static uint64_t ariel_fb_base(void *owner) {
 void pdm_video_init(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     // A restore has already loaded the saved strap; only a cold build takes
-    // the staged pick (04-video F-40).  The consume-on-use still happens
-    // either way, so a forgotten `monitor=` cannot leak into the next boot.
-    uint8_t staged = s_pending_sense;
-    s_pending_sense = PDM_MONITOR_SENSE_DEFAULT;
-    if (!st->video.sense_restored)
-        st->video.sense = staged;
+    // the caller's pick (04-video F-40).  Nothing to consume or reset now
+    // that the pick is a build option rather than a one-shot static -- a
+    // forgotten `monitor=` cannot leak into the next boot because the next
+    // boot fills its own options.
+    if (!st->video.sense_restored) {
+        int want = cfg->build_opts.video_sense;
+        st->video.sense = (want >= 0 && want <= 7) ? (uint8_t)want : PDM_MONITOR_SENSE_DEFAULT;
+    }
     st->video.sense_restored = false;
     st->video.blank = calloc(1, PDM_VIDEO_MAX_BYTES);
     if (!st->video.blank)

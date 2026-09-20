@@ -19,6 +19,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct config;
+
 // Fixed CPU-visible apertures (reference §5.2 [R])
 #define DAFB_VRAM_BASE     0xF9000000u
 #define DAFB_VRAM_APERTURE 0x00200000u // 2 MiB CPU window
@@ -67,8 +69,8 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code);
 // Pending-sense staging for `machine.boot video_sense=N` (the JMFB
 // pattern): machine.c stages, the Quadra constructors consume; the slot
 // self-resets to $6 on consumption.
-void dafb_pending_sense_set(uint8_t code);
-uint8_t dafb_consume_pending_sense(void);
+// The monitor sense this build should use, from cfg->build_opts.
+uint8_t dafb_sense_for_build(const struct config *cfg);
 
 // Board revision facts (Phase H).  `version` is served in DAFB_Test bits
 // 11:9 (ref §11.8 [R]; Q700/Q900 = 0, Q950 "DAFB 3" = 3 — the driver's

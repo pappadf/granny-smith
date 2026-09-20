@@ -98,8 +98,6 @@ extern const nubus_card_kind_t jmfb_generic_kind;
 // ($6 = 13" RGB).  Valid raw-sense codes per JMFBPrimaryInit.a are
 // 0..6; 7 is "no connect / extended sense" and falls back to
 // 13" RGB dimensions.
-void jmfb_pending_sense_set(uint8_t sense);
-uint8_t jmfb_pending_sense_get(void);
 
 // Pending high-level video-mode selection consumed by the next JMFB
 // factory call.  The id matches one of the entries enumerated by

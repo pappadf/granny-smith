@@ -16,6 +16,7 @@
 #define GS_CORE_MACHINE_PROFILE_H
 
 #include "common.h"
+#include "machine_build_opts.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -112,11 +113,14 @@ typedef struct builtin_video_desc {
     // Enumerate what the port accepts: fill *id/*name for index i, or return
     // false once past the end.
     bool (*monitor_at)(size_t i, const char **id, const char **name);
-    // Stage the pick for the next machine built; false if id is not one of
-    // the above.  (On the staging channel this rides, and why it is a
-    // construction input rather than a post-boot write, see
-    // proposal-construction-inputs.md.)
-    bool (*stage_monitor)(const char *id);
+    // Resolve one of the ids above to its monitor sense code; false if the id
+    // is not one of them.  RESOLVE ONLY -- the caller puts the answer into
+    // machine_build_opts_t and system_create carries it to the device.  This
+    // used to be `stage_monitor`, which wrote a family-private static that the
+    // next construction consumed, so the value was invisible to everything but
+    // the two modules that agreed on it and a second construction silently got
+    // the default (proposal-construction-inputs R1).
+    bool (*monitor_sense)(const char *id, uint8_t *out_sense);
 } builtin_video_desc_t;
 
 struct floppy_slot {
@@ -210,6 +214,11 @@ typedef struct machine_substrate {
     // NULL, which machine_boot_apply already handles, so a machine that cannot
     // be constructed rejects the boot instead of leaving a half-built config
     // for the caller to dereference.
+    // Construction inputs that must be known before devices exist reach the
+    // family through `cfg->build_opts`, filled by system_create from what the
+    // caller asked for (machine_build_opts.h).  Devices several layers below
+    // this seam read it too, which is why it rides on the config rather than
+    // being a parameter here -- one name for one thing.
     int (*init)(struct config *cfg, checkpoint_t *cp);
     // Hardware RESET line, reached through system_hardware_reset().
     //

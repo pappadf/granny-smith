@@ -454,7 +454,7 @@ int mcu_build_dafb(config_t *cfg, checkpoint_t *cp) {
     // boot, but only APPLY it on a cold build: on a restore, dafb_init()
     // has already read the saved sense out of the checkpoint, and this
     // call would otherwise overwrite it with the default.
-    uint8_t staged_sense = dafb_consume_pending_sense(); // default 6 = 13" RGB
+    uint8_t staged_sense = dafb_sense_for_build(cfg); // default 6 = 13" RGB
     if (!cp)
         dafb_set_monitor_sense(st->dafb, staged_sense);
 

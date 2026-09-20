@@ -8,6 +8,7 @@
 #define SETUP_H
 
 // === Includes ===
+#include "machine_build_opts.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -92,7 +93,11 @@ extern void setup_init(void);
 // Create an emulator instance for the given machine profile.
 // If checkpoint is non-NULL, device state is restored from that checkpoint.
 // Sets global_emulator and returns the new config handle.
-extern config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint);
+// `opts` carries the choices that must be known before devices exist (see
+// machine_build_opts.h).  Pass NULL for "nothing chosen", which is what the
+// internal rebuild paths want; machine_boot_apply and the checkpoint restore
+// both fill it from what the caller actually asked for.
+extern config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint);
 
 // Destroy an emulator instance: call machine teardown and free all resources.
 extern void system_destroy(config_t *config);

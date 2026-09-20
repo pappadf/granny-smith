@@ -354,7 +354,7 @@ int system_ensure_machine(const char *model_id) {
     }
 
     // Create the new machine
-    config_t *cfg = system_create(needed, NULL);
+    config_t *cfg = system_create(needed, NULL, NULL);
     if (!cfg) {
         LOG(1, "system_ensure_machine: failed to create %s", model_id);
         return -1;
@@ -761,7 +761,8 @@ __attribute__((weak)) bool gs_audio_in_debug(char *buf, size_t buflen) {
 
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
-config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
+config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint) {
+
     assert(profile != NULL);
     assert(profile->substrate != NULL && profile->substrate->init != NULL);
 
@@ -769,6 +770,7 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     if (!cfg)
         return NULL;
     memset(cfg, 0, sizeof(config_t));
+    cfg->build_opts = opts ? *opts : machine_build_opts_default();
 
     cfg->machine = profile;
     // Main-CPU architecture tag (PPC proposal §3.9a): derived from the
@@ -1178,6 +1180,7 @@ config_t *system_restore(const char *filename) {
     // was consumed by the previous boot, and a checkpoint written with a
     // non-default card must not restore against the slot default (the
     // strictly-ordered stream would misalign).
+    machine_build_opts_t build_opts = machine_build_opts_default();
     if (restored_record.valid) {
         if (restored_record.video_card[0])
             nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
@@ -1185,12 +1188,16 @@ config_t *system_restore(const char *filename) {
             nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
         if (restored_record.custom_mode[0])
             nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, restored_record.custom_mode);
+        // The sense goes into the build options, which every video model
+        // reads -- the JMFB cards, the DAFB and PDM's Ariel alike.  This used
+        // to call jmfb_pending_sense_set() and note that "the DAFB's half is
+        // NOT staged here: dafb.h is a machine header and core may not
+        // include it", so the Quadras carried their sense through the
+        // checkpoint as device state instead.  machine_build_opts_t lives in
+        // core, so one channel now serves both and the layering test is
+        // satisfied by construction rather than by a second mechanism.
         if (restored_record.video_sense >= 0)
-            jmfb_pending_sense_set((uint8_t)restored_record.video_sense);
-        // The DAFB's half of this is NOT staged here: dafb.h is a machine
-        // header (src/machines/mcu/) and core may not include it — see the
-        // core-layering test. The Quadras' built-in video carries its sense
-        // through the checkpoint as device state instead; see dafb_checkpoint().
+            build_opts.video_sense = restored_record.video_sense;
         if (restored_record.vrom[0])
             vrom_set_path(restored_record.vrom);
         // The PCI half of the same rule: a checkpoint written with a
@@ -1218,7 +1225,7 @@ config_t *system_restore(const char *filename) {
     // re-report their picks during system_create).
     machine_config_reset_vroms();
 
-    config_t *config = system_create(profile, checkpoint);
+    config_t *config = system_create(profile, &build_opts, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         printf("Error: Failed to read checkpoint\n");

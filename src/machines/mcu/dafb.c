@@ -28,6 +28,7 @@
 #include "log.h"
 #include "scheduler.h"
 #include "system.h"
+#include "system_config.h" // full config_t, for cfg->build_opts
 
 #include <stdlib.h>
 #include <string.h>
@@ -827,21 +828,17 @@ void dafb_set_monitor_sense(dafb_t *dafb, uint8_t code) {
         dafb->sense_code = code & 0x7u;
 }
 
-// Pending monitor sense consumed by the next Quadra construction — the
-// built-in-video mirror of the JMFB pending slot, fed from
-// `machine.boot video_sense=N` (machine.c).  Reset to the default $6
-// (13" RGB) on consumption so a forgotten setting doesn't leak into a
-// later boot.
-static uint8_t s_dafb_pending_sense = 0x6;
-
-void dafb_pending_sense_set(uint8_t code) {
-    s_dafb_pending_sense = (code < DAFB_SENSE_INDEXED_MAX) ? code : 0x6u;
-}
-
-uint8_t dafb_consume_pending_sense(void) {
-    uint8_t code = s_dafb_pending_sense;
-    s_dafb_pending_sense = 0x6;
-    return code;
+// The monitor sense for this Quadra's built-in video: what the caller asked
+// for, or the default $6 (13" RGB).
+//
+// This used to be a file-static "pending" slot that machine.c poked by name
+// and mcu.c consumed destructively -- a second mirror of the JMFB one, which
+// existed only because core could not reach a machine header to set both
+// (proposal-construction-inputs §1.6).  machine_build_opts_t lives in core,
+// so both now read one value and neither consumes it.
+uint8_t dafb_sense_for_build(const struct config *cfg) {
+    int s = cfg->build_opts.video_sense;
+    return (s >= 0 && (unsigned)s < DAFB_SENSE_INDEXED_MAX) ? (uint8_t)s : 0x6u;
 }
 
 void dafb_set_version(dafb_t *dafb, uint8_t version) {

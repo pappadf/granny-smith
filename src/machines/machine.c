@@ -900,19 +900,25 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, doc.video_mode);
     if (doc.custom_mode && *doc.custom_mode)
         nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, doc.custom_mode);
-    if (doc.video_sense >= 0) {
-        if (doc.video_sense <= 7)
-            jmfb_pending_sense_set((uint8_t)doc.video_sense);
-        dafb_pending_sense_set((uint8_t)doc.video_sense); // built-in Quadra video
+    // One channel for every video model that needs the sense at construction
+    // -- the JMFB cards, the Quadras' DAFB, PDM's Ariel.  This used to poke
+    // two per-module one-shot statics by name, which is why machine.c had to
+    // include a machine header for each one and why a family added later
+    // would have been missed silently.
+    machine_build_opts_t build_opts = machine_build_opts_default();
+    if (doc.video_sense >= 0)
+        build_opts.video_sense = doc.video_sense;
+    // The built-in monitor strap resolves to a sense code and joins the other
+    // build options.  Validated above, so this cannot fail.
+    if (doc.monitor && *doc.monitor) {
+        uint8_t mon_sense = 0;
+        if (profile->builtin_video->monitor_sense(doc.monitor, &mon_sense))
+            build_opts.video_sense = mon_sense;
     }
-    // The built-in monitor strap, staged by whichever family owns this port.
-    // Validated above, so this cannot fail.
-    if (doc.monitor && *doc.monitor)
-        (void)profile->builtin_video->stage_monitor(doc.monitor);
 
     machine_config_reset_vroms();
     machine_config_reset_slot_cards();
-    config_t *cfg = system_create(profile, NULL);
+    config_t *cfg = system_create(profile, &build_opts, NULL);
     if (!cfg) {
         for (int i = 0; i < n_media; ++i)
             image_close(media[i].img); // machine gone; nothing to attach to

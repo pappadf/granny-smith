@@ -181,7 +181,6 @@ typedef struct pdm_monitor_kind {
 extern const pdm_monitor_kind_t pdm_monitors[];
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
 // Stage the strap for the NEXT machine built (machine.boot `monitor=`).
-void pdm_pending_monitor_set(uint8_t sense);
 
 // hw_profile_t.builtin_video for the three PDM leaves: the registry walks the
 // table above and stages a pick through this, so it needs no pdm_ symbol and
