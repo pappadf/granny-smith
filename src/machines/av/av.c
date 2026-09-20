@@ -720,15 +720,16 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void av_reset(config_t *cfg) {
+static void av_bus_reset(config_t *cfg) {
     av_state_t *st = av_st(cfg);
-    // Hardware RESET: overlay re-arms; the CPU-owned 040 MMU state is reset
-    // by cpu_hardware_reset_040.
-    mac030_rom_overlay_arm(&av_st(cfg)->overlay);
+    // Overlay re-arms; the 040's own MMU is reset by cpu_hardware_reset_040.
+    mac030_rom_overlay_arm(&st->overlay);
+    // The AV's BUS mmu is a board part, so it stays on this side.
     if (st->bus_mmu) {
         st->bus_mmu->enabled = false;
         mmu_invalidate_tlb(st->bus_mmu);
     }
+    system_reset_common_devices(cfg);
 }
 
 static void av_teardown(config_t *cfg) {
@@ -842,7 +843,7 @@ static struct display *av_display(config_t *cfg) {
 
 const machine_substrate_t av_substrate = {
     .init = av_init,
-    .reset = av_reset,
+    .bus_reset = av_bus_reset,
     .teardown = av_teardown,
     .checkpoint_save = av_checkpoint_save,
     .nubus_slot_irq = av_nubus_slot_irq, // slots C/D/E → PSC SInt bits 3-5

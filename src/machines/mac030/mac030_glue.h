@@ -99,7 +99,7 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
 // Hardware RESET: re-enable the ROM overlay and disable the MMU (TC/E off,
 // TLB flushed).  `overlay_flag` points at the machine's rom_overlay bool;
 // `rom_start` is the ROM region base; `mmu` may be NULL.
-void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, struct mmu_state *mmu);
+void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start);
 
 // Construct the GLUE peripheral set shared by se30/iicx/iix in canonical
 // order: ADB, (checkpoint image restore), SCSI (+VIA2), images, ASC (+VIA2),

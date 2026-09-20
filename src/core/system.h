@@ -145,6 +145,10 @@ __attribute__((weak)) void system_hardware_reset(void);
 // no-op stub in tests/unit/support/stub_system.c.
 __attribute__((weak)) void system_reset_devices(void);
 
+// The devices every Macintosh board wires to /RESET.  A family's bus_reset
+// calls this, then resets its own chipset.
+void system_reset_common_devices(struct config *cfg);
+
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void);
 

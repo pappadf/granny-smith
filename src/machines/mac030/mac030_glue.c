@@ -322,14 +322,18 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
 }
 
 // Hardware RESET: ROM overlay back on, MMU disabled.
-void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, struct mmu_state *mmu) {
+// The GLUE/MDU half of the board's /RESET net: VIA1 goes back to power-on and
+// pulls Overlay high, so the memory controller uses the ROM overlay map
+// again (Guide p.256), plus the devices every board shares.
+//
+// The 68030 PMMU used to be cleared here.  It is INSIDE THE CPU and not on
+// the net, so an external chip reset must not touch it; that moved to
+// cpu_hardware_reset (reset proposal §3.1.3).  The `mmu` parameter is gone
+// with it.
+void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start) {
     *overlay_flag = false; // force the set_rom_overlay toggle below
     mac030_glue_set_rom_overlay(cfg, overlay_flag, rom_start, true);
-    if (mmu) {
-        mmu->enabled = false;
-        mmu->tc = 0;
-        mmu_invalidate_tlb(mmu);
-    }
+    system_reset_common_devices(cfg);
 }
 
 // Shared IRQ callbacks — route a device's interrupt line to the CPU IPL.
@@ -419,9 +423,9 @@ static int glue_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void glue_reset(config_t *cfg) {
+static void glue_bus_reset(config_t *cfg) {
     mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
-    mac030_glue_reset(cfg, &st->rom_overlay, glue_board(cfg)->desc->rom_base, st->mmu);
+    mac030_glue_bus_reset(cfg, &st->rom_overlay, glue_board(cfg)->desc->rom_base);
 }
 
 static void glue_teardown(config_t *cfg) {
@@ -474,7 +478,7 @@ static void glue_trigger_vbl(config_t *cfg) {
 
 const machine_substrate_t glue_substrate = {
     .init = glue_init,
-    .reset = glue_reset,
+    .bus_reset = glue_bus_reset,
     .teardown = glue_teardown,
     .checkpoint_save = glue_checkpoint_save,
     .trigger_vbl = glue_trigger_vbl,

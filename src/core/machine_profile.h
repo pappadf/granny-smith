@@ -220,21 +220,39 @@ typedef struct machine_substrate {
     // this seam read it too, which is why it rides on the config rather than
     // being a parameter here -- one name for one thing.
     int (*init)(struct config *cfg, checkpoint_t *cp);
-    // Hardware RESET line, reached through system_hardware_reset().
+    // The board's /RESET net: every device THIS BOARD wires to it.
+    //
+    // /RESET is ONE bidirectional net with one destination list (MC68030 UM
+    // 3rd ed. §5.10.1; Guide to the Macintosh Family Hardware 2e, the 68000
+    // PDS signal table: "Master reset for entire board").  The emulator used
+    // to hold two lists -- system_reset_devices() reset cfg->scsi and
+    // cfg->nubus and nothing else, while substrate->reset re-armed the ROM
+    // overlay and disabled the MMU -- and they reset DISJOINT sets, which is
+    // how two lists always end up.  They are one list now, and both entry
+    // points call it (proposal-reset-and-nonvolatile-state.md §3.1).
+    //
+    // CPU-INTERNAL STATE IS NOT HERE.  On the 68030 the MMU is inside the
+    // CPU, so an external chip reset must not touch it; that half lives in
+    // cpu_hardware_reset / cpu_hardware_reset_040.  The dividing line is the
+    // package boundary, which is the only line the hardware draws.
+    //
+    // The ROM overlay IS here, and that is not arbitrary: the overlay is a
+    // VIA1 OUTPUT and VIA1 is on the net.  Guide p.256 -- "When VIA1 is
+    // reset, it pulls the Overlay signal high, which causes the
+    // memory-control IC (GLUE or MDU) to use the ROM overlay address map."
     //
     // NULL on the `compact` (Plus) and `lisa` substrates, and that is a GAP,
-    // not a statement about the hardware: both machines physically reset -- the
-    // Plus from the programmer's switch, and either from a guest executing the
-    // 68000 RESET opcode -- and today the call silently does nothing on them.
-    // Owned by proposal-reset-and-nonvolatile-state.md, whose S1.2 is "Reset
-    // already means four different things, and no two families agree".
+    // not a statement about the hardware: both machines physically reset --
+    // the Plus from the programmer's switch, and either from a guest
+    // executing the 68000 RESET opcode -- and today the call silently does
+    // nothing on them.  Owned by the reset proposal's §5 conformance table.
     //
     // Distinguish this from `nubus_slot_irq` and `pci_slot_irq` below, which
     // are NULL because the bus genuinely is not on the board.  A NULL that
     // means "no such hardware" and a NULL that means "not written yet" must
     // not read the same way here, or this header becomes the reason nobody
     // notices the second kind.
-    void (*reset)(struct config *cfg);
+    void (*bus_reset)(struct config *cfg);
     void (*teardown)(struct config *cfg);
     void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 

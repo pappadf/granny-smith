@@ -697,7 +697,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void tnt_reset(config_t *cfg) {
+static void tnt_bus_reset(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
     // Power-on reset: the CPU back to $FFF00100, chipset registers to
     // their power-on state.  NVRAM survives — it is non-volatile, and
@@ -722,9 +722,10 @@ static void tnt_reset(config_t *cfg) {
         st->bridge[i].cfg_addr = 0;
         st->bridge[i].mode_select = 0;
     }
-    // PCI RST#: every seated device's header back to power-on, which drops
-    // the assigned BARs and with them the decode.
-    pci_reset(cfg->pci);
+    // PCI RST# (every seated device's header back to power-on, dropping the
+    // assigned BARs and with them the decode), NuBus and SCSI -- the shared
+    // fan-out, since they are all on the one net.
+    system_reset_common_devices(cfg);
     tnt_gc_recompute(cfg);
 }
 
@@ -1098,7 +1099,7 @@ static bool tnt_fd_present(config_t *cfg, int drive) {
 
 const machine_substrate_t tnt_substrate = {
     .init = tnt_init,
-    .reset = tnt_reset,
+    .bus_reset = tnt_bus_reset,
     .teardown = tnt_teardown,
     .checkpoint_save = tnt_checkpoint_save,
     .pci_slot_irq = tnt_pci_slot_irq,

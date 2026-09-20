@@ -594,17 +594,20 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void mcu_reset(config_t *cfg) {
+static void mcu_bus_reset(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
-    // Hardware RESET: overlay re-arms; the CPU-owned 040 MMU state is reset
-    // by cpu_hardware_reset_040; DAFB registers clear.
-    mac030_rom_overlay_arm(&mcu_st(cfg)->overlay);
+    // Overlay re-arms (VIA1 pulls it high), DAFB registers clear, and the
+    // NuBus/SCSI fan-out with them.  The 040's own MMU is reset by
+    // cpu_hardware_reset_040 -- it is inside the CPU, not on the net.
+    mac030_rom_overlay_arm(&st->overlay);
     if (st->dafb)
         dafb_reset(st->dafb);
+    // The MCU's BUS mmu is a board part, not the CPU's, so it stays here.
     if (st->bus_mmu) {
         st->bus_mmu->enabled = false;
         mmu_invalidate_tlb(st->bus_mmu);
     }
+    system_reset_common_devices(cfg);
 }
 
 static void mcu_teardown(config_t *cfg) {
@@ -778,7 +781,7 @@ static struct display *mcu_display(config_t *cfg) {
 
 const machine_substrate_t mcu_substrate = {
     .init = mcu_init,
-    .reset = mcu_reset,
+    .bus_reset = mcu_bus_reset,
     .teardown = mcu_teardown,
     .checkpoint_save = mcu_checkpoint_save,
     .trigger_vbl = mcu_trigger_vbl,

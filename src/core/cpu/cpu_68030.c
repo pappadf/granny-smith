@@ -478,6 +478,19 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
     cpu->ssp = memory_read_uint32(0x00000000); // SSP from vector 0 (ROM via overlay)
     cpu->a[7] = cpu->ssp;
     cpu->pc = memory_read_uint32(0x00000004); // PC from vector 1 (ROM via overlay)
+
+    // The PMMU is INSIDE the 68030, so its reset belongs here and not on the
+    // board's /RESET net.  The family bus_reset handlers used to clear it --
+    // mac030_glue_reset took an `mmu` argument for exactly this -- which put
+    // CPU-internal state on the wrong side of the package boundary, the only
+    // line the hardware actually draws (reset proposal §3.1.3).  The 68040
+    // equivalent was already on this side, in cpu_hardware_reset_040.
+    mmu_state_t *mmu = (mmu_state_t *)cpu->mmu;
+    if (mmu) {
+        mmu->enabled = false;
+        mmu->tc = 0;
+        mmu_invalidate_tlb(mmu);
+    }
 }
 
 // Generate the cpu_run_68030 decoder function using the shared template

@@ -473,7 +473,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void pdm_reset(config_t *cfg) {
+static void pdm_bus_reset(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
     // Power-on reset: the 601 back to the reset vector, AMIC and HMC to
     // their power-on state.  (The 68k-RESET warm path re-enters HWInit
@@ -498,6 +498,7 @@ static void pdm_reset(config_t *cfg) {
     st->icr_sources = 0;
     pdm_hmc_remap(cfg);
     pdm_video_update(cfg); // blanked power-on raster follows the reset regs
+    system_reset_common_devices(cfg); // scsi/scsi2, NuBus, PCI -- the same net
 }
 
 static void pdm_teardown(config_t *cfg) {
@@ -612,7 +613,7 @@ static bool pdm_fd_present(config_t *cfg, int drive) {
 
 const machine_substrate_t pdm_substrate = {
     .init = pdm_init,
-    .reset = pdm_reset,
+    .bus_reset = pdm_bus_reset,
     .teardown = pdm_teardown,
     .checkpoint_save = pdm_checkpoint_save,
     .nubus_slot_irq = pdm_nubus_slot_irq,

@@ -193,9 +193,13 @@ void system_keyboard_update(key_event_t event, int key) {
 
 // Hardware RESET line: calls the machine's reset handler to reinitialize
 // peripherals.  On SE/30: VIA1 re-enables ROM overlay, MMU disabled.
+// The non-CPU half of a machine reset (reset button, Cuda CMD_RESET, double
+// bus fault).  Same net as level 1, so same list -- that is the whole point of
+// there being one list.  The CPU half is the caller's: cpu_hardware_reset and
+// cpu_hardware_reset_040 do it themselves, and the Cuda path does NOT, which
+// is 05-chipsets-irq F-04 and belongs with the level-2 contract.
 void system_hardware_reset(void) {
-    if (global_emulator && global_emulator->machine && global_emulator->machine->substrate->reset)
-        global_emulator->machine->substrate->reset(global_emulator);
+    system_reset_devices();
 }
 
 // The 68k RESET instruction asserts the bus /RESET line, which resets the
@@ -206,17 +210,47 @@ void system_hardware_reset(void) {
 // RESET → set up the MMU → jump to the boot entry.  Without this, the SCSI
 // controller and the video card would carry stale OS-session state into the
 // reboot (a garbage-video hang + a write_mr phase assertion).
-void system_reset_devices(void) {
-    config_t *cfg = global_emulator;
+// The devices every Macintosh board wires to /RESET, whatever its chipset.
+// A family's bus_reset calls this and then adds its own.
+//
+// This used to BE system_reset_devices() -- a core-owned list of two devices
+// that no board could extend, which is why it never grew a PCI arm and why
+// adding one there would have been dead code (reset proposal §3.1.5).
+void system_reset_common_devices(config_t *cfg) {
     if (!cfg)
         return;
+    // NOTE: the reset proposal's §3.1.3 lists `cfg->scsi2` here, the Network
+    // Servers' second bus.  There is no such field -- config_t carries one
+    // `scsi`, and the ANS's second bus lives in the TNT state, so its family
+    // bus_reset is where it belongs.  Corrected rather than copied.
     if (cfg->scsi)
-        // Warm restart is a RESET condition on the wire: the bus goes free and
-        // every target returns to its power-on state (scsi_bus_reset, called
-        // from scsi_reset), and on a 5380 machine the chip's registers clear too.
+        // A reset condition on the wire: the bus goes free and every target
+        // returns to its power-on state (scsi_bus_reset, called from
+        // scsi_reset); on a 5380 machine the chip's registers clear too.
         scsi_reset_pin(cfg->scsi);
     if (cfg->nubus)
         nubus_reset(cfg->nubus); // each populated card → power-on state
+    if (cfg->pci)
+        pci_reset(cfg->pci); // PCI RST#, on the same net
+}
+
+// Level 1 -- the 68k RESET opcode asserts the peripheral reset line.
+//
+// It now delegates to the board's own /RESET destination list instead of
+// resetting a fixed pair of devices.  Two consequences, both intended and
+// both per the sources in machine_profile.h: a guest RESET re-arms the ROM
+// overlay (it did not before, and the boot ROM executes RESET while the
+// overlay is already on), and the PPC families' chipsets are reached for the
+// first time from this path.
+void system_reset_devices(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->bus_reset) {
+        // No bus_reset bound yet (Plus, Lisa -- a gap, not hardware).  Fall
+        // back to the common set so those two keep the behaviour they had.
+        system_reset_common_devices(cfg);
+        return;
+    }
+    cfg->machine->substrate->bus_reset(cfg);
 }
 
 // System-level scheduler accessor: returns the current scheduler object

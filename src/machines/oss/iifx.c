@@ -293,7 +293,7 @@ static inline iifx_state_t *iifx_state(config_t *cfg) {
 // Forward declarations for profile callbacks.
 static int iifx_init(config_t *cfg, checkpoint_t *checkpoint);
 static void iifx_teardown(config_t *cfg);
-static void iifx_reset(config_t *cfg);
+static void iifx_bus_reset(config_t *cfg);
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp);
 static void iifx_memory_layout_init(config_t *cfg);
 static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
@@ -1435,15 +1435,12 @@ static void iifx_memory_layout_init(config_t *cfg) {
 }
 
 // Reasserts reset-time IIfx hardware state.
-static void iifx_reset(config_t *cfg) {
+static void iifx_bus_reset(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
     st->rom_overlay = false;
     iifx_set_rom_overlay(cfg, true);
-    if (st->mmu) {
-        st->mmu->enabled = false;
-        st->mmu->tc = 0;
-        mmu_invalidate_tlb(st->mmu);
-    }
+    system_reset_common_devices(cfg);
+    // The 68030 PMMU is inside the CPU and moved to cpu_hardware_reset.
 }
 
 // Slot table for the six-slot IIfx NuBus cage.
@@ -1675,7 +1672,7 @@ static const scsi_bus_decl_t iifx_scsi_buses[] = {
 
 static const machine_substrate_t iifx_substrate = {
     .init = iifx_init,
-    .reset = iifx_reset,
+    .bus_reset = iifx_bus_reset,
     .teardown = iifx_teardown,
     .checkpoint_save = iifx_checkpoint_save,
     .trigger_vbl = iifx_trigger_vbl,
