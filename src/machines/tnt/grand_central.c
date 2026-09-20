@@ -316,6 +316,16 @@ void tnt_gc_init(config_t *cfg) {
     gc->int_events = 0;
     gc->int_mask = 0;
     gc->int_levels = 0;
+    // The mode-1 output latch and the clear-mode selector, which this said
+    // "nothing latched" about while leaving both standing (05-chipsets-irq
+    // F-07).  With int_mask zero the line is quiet either way, so nothing
+    // fired immediately -- but the moment post-reset firmware writes its
+    // first mask, stale pre-reset latch bits inside it assert the CPU line
+    // for sources that never re-asserted.  And a clear mode surviving a reset
+    // means a machine restarted out of MkLinux boots the ROM in mode 1
+    // instead of the power-on mode 0.
+    gc->int_latch = 0;
+    gc->int_mode1 = false;
     gc->nvram_bank = 0;
 }
 
