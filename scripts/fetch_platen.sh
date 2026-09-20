@@ -29,10 +29,22 @@ base="${PLATEN_RELEASE_BASE:-https://github.com/efterscript/efterscript/releases
 mkdir -p "$cache"
 sums="$cache/SHA256SUMS"
 
+# Temp files carry the PID.  Make runs the asset rules in parallel -- the
+# header and the native archive are separate targets of one `make -j` -- and
+# every invocation refreshes SHA256SUMS, so a shared "$sums.tmp" is two
+# writers and two renames of one path: whichever process renames first wins
+# and the other's `mv` dies with "cannot stat .../SHA256SUMS.tmp".  Observed
+# in CI on this repo twice in a row, and reproduces 5 times out of 5 by
+# running two fetches for the same cache concurrently.  The rename onto the
+# final name stays atomic, so concurrent winners are harmless.
+tmp_suffix=".tmp.$$"
+cleanup() { rm -f "$sums$tmp_suffix"; }
+trap cleanup EXIT
+
 # The checksum file is small and is what the rest is verified against;
 # always take the release's current copy.
-curl -fsSL --retry 3 -o "$sums.tmp" "$base/SHA256SUMS"
-mv -f "$sums.tmp" "$sums"
+curl -fsSL --retry 3 -o "$sums$tmp_suffix" "$base/SHA256SUMS"
+mv -f "$sums$tmp_suffix" "$sums"
 
 for asset in "$@"; do
     dest="$cache/$asset"
@@ -45,8 +57,8 @@ for asset in "$@"; do
         continue
     fi
     echo "fetch_platen: downloading $asset (v$version)"
-    curl -fsSL --retry 3 -o "$dest.tmp" "$base/$asset"
-    mv -f "$dest.tmp" "$dest"
+    curl -fsSL --retry 3 -o "$dest$tmp_suffix" "$base/$asset"
+    mv -f "$dest$tmp_suffix" "$dest"
     if ! (cd "$cache" && grep " $asset\$" SHA256SUMS | sha256sum -c --quiet -); then
         rm -f "$dest"
         echo "fetch_platen: checksum mismatch for $asset; removed" >&2
