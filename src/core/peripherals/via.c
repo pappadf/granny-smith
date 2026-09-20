@@ -610,7 +610,17 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
     case IER: {
         // if bit 7 is 0 - 1s will clear bits
         // if bit 7 is 1 - 1s will set bits
-        via->ier = value & 0x80 ? via->ier | value : via->ier & ~value;
+        // Bit 7 of the written value is the set/clear selector, not data:
+        // R6522 Figure 30 -- "if bit 7 of the data placed on the system data
+        // bus during this write operation is a 0, each 1 in bits 6 through 0
+        // clears the corresponding bit... Selected bits in the IER can be set
+        // by writing to the IER with bit 7 in the data word set to a 1."  It
+        // is not storage; the register always reads back with bit 7 as 1 (see
+        // the IER read case above), so mask it out of what is stored.  Leaving
+        // it in did not change interrupt behaviour -- update_ifr masks flags to
+        // 0x7F -- but via_get_ier() exposed the polluted value, which is what
+        // machine.via1.ier prints.
+        via->ier = (value & 0x80) ? (via->ier | (value & 0x7F)) : (via->ier & ~(value & 0x7F));
         update_ifr(via, via->ifr);
         break;
     }

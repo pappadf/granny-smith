@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) pappadf
 //
-// VIA control-line unit test (code review 2026-09-03, 05-chipsets-irq
-// F-01/F-02).  Links the real via.c against recording stubs and pins the PCR
-// CA2/CB2 mode field against the Rockwell R6522 datasheet:
+// VIA unit test (code review 2026-09-03, 05-chipsets-irq track A1).  Links the
+// real via.c against recording stubs and pins its register model against the
+// Rockwell R6522 datasheet, held in-tree at
+// local/gs-docs/library/io/rockwell-r6522-via/.
 //
 //   Figure 11 (PCR), CA2 field = PCR bits 3,2,1 / CB2 field = bits 7,6,5:
 //     000 input, negative active edge        010 input, positive active edge
@@ -15,12 +16,19 @@
 //   ORA/ORB will NOT clear the flag bit.  Instead, the bit must be cleared by
 //   writing into the IFR."
 //
-// Two defects these pin, both live before this suite existed:
-//   F-01 the positive-edge selector was read as field bit 2 under a `field < 4`
-//        guard, so it was always false and every input mode latched on the
-//        negative edge.
-//   F-02 a port access cleared CA2/CB2 unconditionally, so the two independent
-//        modes lost the flag they exist to hold.
+//   Figure 30 (IER): bit 7 of a written value is the set/clear selector, not
+//   storage, and the register always reads back with bit 7 as 1.
+//
+//   "Timer 1 One-Shot Mode": after timeout "the counter will continue to
+//   decrement at system clock rate.  This allows the system processor to read
+//   the contents of the counter to determine the time since interrupt."
+//
+// Findings pinned here, each verified to fail when its defect is reintroduced
+// alone: F-01 (dead positive-edge selector), F-02 (independent modes lost
+// their flag on a port access), F-27 (wide accesses aborted the emulator),
+// F-29 (T1 one-shot froze its counter), F-32 (IER bit 7 reached storage).
+// Also F-12's power-on idle-high control lines, fixed in via_init before this
+// suite existed and pinned so it cannot be silently undone.
 
 #include "object.h"
 #include "test_assert.h"
@@ -41,6 +49,7 @@
 #define REG_T1C_L  4
 #define REG_T1C_H  5
 #define REG_ACR    11
+#define REG_IER    14
 
 // IFR bits (via.c's private numbering, mirrored here so the test reads as the
 // datasheet does).
@@ -365,6 +374,34 @@ TEST(test_orb_access_respects_cb2_independent_mode) {
 }
 
 // ============================================================================
+// F-32 — IER bit 7 is the set/clear selector, not storage
+// ============================================================================
+
+// R6522 Figure 30: bit 7 of the written value selects set-vs-clear, and the
+// register always reads back with bit 7 as 1.  It never lands in storage, so
+// via_get_ier() -- which is what machine.via1.ier prints -- must not show it.
+TEST(test_ier_bit7_is_a_selector_not_storage) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+
+    wr(via, REG_IER, 0x82); // set CA1
+    ASSERT_EQ_INT(via_get_ier(via), 0x02);
+    ASSERT_EQ_INT(rd(via, REG_IER), 0x82); // read-back always shows bit 7
+
+    wr(via, REG_IER, 0x90); // set CB1 as well
+    ASSERT_EQ_INT(via_get_ier(via), 0x12);
+
+    wr(via, REG_IER, 0x02); // bit 7 clear -> clear CA1
+    ASSERT_EQ_INT(via_get_ier(via), 0x10);
+    ASSERT_EQ_INT(rd(via, REG_IER), 0x90);
+
+    wr(via, REG_IER, 0x7F); // clear everything
+    ASSERT_EQ_INT(via_get_ier(via), 0x00);
+    ASSERT_EQ_INT(rd(via, REG_IER), 0x80);
+
+    via_delete(via);
+}
+
+// ============================================================================
 // F-29 — T1 one-shot keeps counting after timeout, as T2 already did
 // ============================================================================
 
@@ -498,6 +535,7 @@ int main(void) {
     RUN(test_port_access_always_clears_ca1);
     RUN(test_ora_no_handshake_clears_nothing);
     RUN(test_orb_access_respects_cb2_independent_mode);
+    RUN(test_ier_bit7_is_a_selector_not_storage);
     RUN(test_t1_one_shot_counter_runs_on_after_timeout);
     RUN(test_t1_one_shot_does_not_refire);
     RUN(test_t1_free_run_rearms);
