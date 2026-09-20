@@ -442,6 +442,11 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
 }
 
 void iop_delete(iop_t *iop) {
+    if (!iop)
+        return;
+    // iop_swim.c schedules eight events with `iop` as their source; this
+    // destructor was one line and dropped none of them.
+    scheduler_forget_source(iop->scheduler, iop);
     free(iop);
 }
 

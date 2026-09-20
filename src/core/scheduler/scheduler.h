@@ -114,6 +114,7 @@ void scheduler_forget_source(struct scheduler *restrict scheduler, void *source)
 // types.  The scheduler object nodes will want both; scheduler_forget_source
 // is untestable without them, since `struct scheduler` is opaque.
 int scheduler_pending_events(const struct scheduler *scheduler);
+int scheduler_pending_device_events(const struct scheduler *scheduler);
 int scheduler_event_type_count(const struct scheduler *scheduler);
 
 void remove_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source);

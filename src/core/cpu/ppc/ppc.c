@@ -798,6 +798,8 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
 void ppc_delete(ppc_t *p) {
     if (!p)
         return;
+    // The decrementer event carries `p`; only the live re-arm path removed it.
+    scheduler_forget_source(p->scheduler, p);
     // Drop the parameterless-hook binding if it is ours (memory_map_init
     // also clears the function pointers on machine swap).
     if (g_hook_ppc == p) {
