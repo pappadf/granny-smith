@@ -20,12 +20,16 @@ LOG_USE_CATEGORY_NAME("board");
 // OSS register offsets (canonical IIfx hardware layout).
 #define OSS_LEVEL_FIRST 0x000
 #define OSS_LEVEL_LAST  0x00E
-#define OSS_INT_STAT    0x202
-#define OSS_ROM_CTRL    0x204
-#define OSS_COUNTER_CTL 0x205
-#define OSS_INPUT_STAT  0x206
-#define OSS_60HZ_ACK    0x207
-#define OSS_COUNTER     0x208
+// Interrupt-status longword.  The four byte lanes live at $200-$203; OSS_INT_STAT
+// is lane 2, the one the ROM's byte accesses use.  Both decode sites open-coded
+// the range and the define was never referenced.
+#define OSS_INT_STAT_BASE 0x200
+#define OSS_INT_STAT      0x202
+#define OSS_ROM_CTRL      0x204
+#define OSS_COUNTER_CTL   0x205
+#define OSS_INPUT_STAT    0x206
+#define OSS_60HZ_ACK      0x207
+#define OSS_COUNTER       0x208
 
 // OSS source numbers used by the IIfx ROM.
 #define OSS_SRC_60HZ 10
@@ -56,8 +60,12 @@ static uint8_t be32_byte(uint32_t value, unsigned index) {
 }
 
 // Clears pending bits selected by a byte write to the long status register.
-static void clear_status_byte(oss_t *oss, uint32_t addr, uint8_t value) {
-    unsigned lane = addr & 3u;
+// Write-1-to-clear one byte lane of the 32-bit interrupt-status word.  `lane`
+// is a lane index 0-3 (lane 0 is the MSB on this bus), not an address -- the
+// parameter used to be named `addr` while every caller passed an index, which
+// is how an off-by-$200 gets introduced later.
+static void clear_status_byte(oss_t *oss, uint32_t lane, uint8_t value) {
+    lane &= 3u;
     uint32_t mask = (uint32_t)value << ((3u - lane) * 8u);
     uint16_t old_pending = oss->pending;
     oss->pending &= (uint16_t)~mask;
@@ -73,8 +81,8 @@ static uint8_t oss_read_uint8(void *device, uint32_t addr) {
     if (offset <= OSS_LEVEL_LAST)
         return oss->level[offset] & 7u;
 
-    if (offset >= 0x200 && offset <= 0x203)
-        return be32_byte((uint32_t)oss->pending, offset - 0x200);
+    if (offset >= OSS_INT_STAT_BASE && offset <= OSS_INT_STAT_BASE + 3)
+        return be32_byte((uint32_t)oss->pending, offset - OSS_INT_STAT_BASE);
 
     if (offset == OSS_ROM_CTRL)
         return oss->rom_ctrl;
@@ -144,8 +152,8 @@ static void oss_write_uint8(void *device, uint32_t addr, uint8_t value) {
         return;
     }
 
-    if (offset >= 0x200 && offset <= 0x203) {
-        clear_status_byte(oss, offset - 0x200, value);
+    if (offset >= OSS_INT_STAT_BASE && offset <= OSS_INT_STAT_BASE + 3) {
+        clear_status_byte(oss, offset - OSS_INT_STAT_BASE, value);
         return;
     }
 

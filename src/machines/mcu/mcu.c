@@ -320,8 +320,14 @@ static uint8_t mcu_yancc_read(config_t *cfg, uint32_t addr) {
     uint32_t off = addr & 0x1FFFu;
     uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;
     uint32_t v = st->yancc_regs[idx];
-    if (!(st->yancc_touched & (1ull << (idx & 63))))
+    // Log-once per register, the dafb.c pattern.  The read path used to TEST
+    // yancc_touched without ever SETTING it -- only the write path did -- so a
+    // register the ROM only reads logged on every single read, forever,
+    // defeating the design.
+    if (!(st->yancc_touched & (1ull << (idx & 63)))) {
+        st->yancc_touched |= 1ull << (idx & 63);
         LOG(2, "YANCC read  $%04X -> $%08X (pc=%08X)", off, v, cpu_get_pc(cfg->cpu));
+    }
     return (uint8_t)(v >> (8 * (3 - (off & 3))));
 }
 
@@ -827,6 +833,9 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->orwell_cfg, sizeof(st->orwell_cfg));
     system_write_checkpoint_data(cp, st->bank_start, sizeof(st->bank_start));
     system_write_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
+    // The log-once bitmap travels with the registers it guards; without it a
+    // restore re-logs every YANCC register the guest had already touched.
+    system_write_checkpoint_data(cp, &st->yancc_touched, sizeof(st->yancc_touched));
     system_write_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
     system_write_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
     system_write_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));
@@ -855,6 +864,7 @@ void mcu_restore_private(config_t *cfg, checkpoint_t *cp) {
     system_read_checkpoint_data(cp, &st->orwell_cfg, sizeof(st->orwell_cfg));
     system_read_checkpoint_data(cp, st->bank_start, sizeof(st->bank_start));
     system_read_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
+    system_read_checkpoint_data(cp, &st->yancc_touched, sizeof(st->yancc_touched)); // mirrors the save above
     system_read_checkpoint_data(cp, &st->slot_pa_mask, sizeof(st->slot_pa_mask));
     system_read_checkpoint_data(cp, &st->sonic_byte2, sizeof(st->sonic_byte2));
     system_read_checkpoint_data(cp, &st->scc_irq_or, sizeof(st->scc_irq_or));

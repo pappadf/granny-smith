@@ -400,7 +400,14 @@ uint32_t tnt_dbdma_reg_read(tnt_dbdma_t *d, int chan, uint32_t offset) {
     LOG(4, "ch%d rd +$%02X (status $%04X cmdptr $%08X)", chan, offset & 0xFCu, status16(d, chan), c->cmdptr);
     switch (offset & 0xFCu) {
     case TNT_DBDMA_REG_CONTROL:
-        return 0; // write-only in effect
+        // Apple's DBDMA architecture defines ChannelControl and ChannelStatus
+        // as the same 16-bit field; ChannelControl merely adds the mask/value
+        // write semantics on top.  It used to return 0 with a comment calling
+        // it "write-only in effect" and no source, which would make a driver
+        // that does read-modify-write on ChannelControl (rather than using the
+        // mask/value idiom) compute from zero.  No corpus driver does, which
+        // is why this was Low.
+        return (uint32_t)status16(d, chan);
     case TNT_DBDMA_REG_STATUS:
         return (uint32_t)status16(d, chan);
     case TNT_DBDMA_REG_CMDPTRLO:

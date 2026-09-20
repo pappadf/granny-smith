@@ -481,12 +481,24 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
             return 0;
         if (reg == 0) { // IR
             uint8_t ir = (uint8_t)((psc->l_level[level] | psc->l_latched[level]) & 0x7F);
+            // Bit 7 here is the OR of all pending on this level, UNGATED by
+            // the IER -- unlike the chip's own VIA2 window above ($1A00),
+            // which gates it 6522-style.  The asymmetry may well be right for
+            // the level banks, but nothing cites a source for it and no
+            // developer note we hold describes the L3-L6 register semantics,
+            // so it is left as found rather than made to match on a guess.
+            // The 840AV/660AV developer note's PSC section would settle it.
             if (ir)
-                ir |= 0x80; // bit 7 = OR of all pending on this level
+                ir |= 0x80;
             return ir;
         }
         if (reg == 4) // IER
-            return psc->l_ier[level];
+            // Bit 7 reads back as 1, matching the VIA2 window's IER above and
+            // the 6522 convention the same file adopts two hundred lines
+            // earlier.  This returned the raw l_ier with no justification, so
+            // a guest reading back a level IER to preserve bits saw a
+            // different shape from the VIA2 IER on the same chip.
+            return (uint8_t)(psc->l_ier[level] | 0x80);
         return 0;
     }
 

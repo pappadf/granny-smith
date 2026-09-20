@@ -66,13 +66,21 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output);
 static void plus_via_shift_out(void *context, uint8_t byte);
 static void plus_via_irq(void *context, bool active);
 static void plus_scc_irq(void *context, bool active);
-static void plus_update_ipl(config_t *sim, int level, bool value);
+static void plus_update_ipl(config_t *sim, int source_mask, bool value);
 
 // ============================================================
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
 // Plus ROM start in the 24-bit address space (== Plus RAM top of 4 MB)
+// Interrupt source bits in cfg->irq, matching the MAC030_GLUE_IRQ_* /
+// AV_IRQ_* convention.  These are a source MASK, not an IPL level: the PALs
+// derive the level from the set of asserted sources (plus_update_ipl).  The
+// Lisa's identically-named lisa_update_ipl() really does take a level, so two
+// adjacent 68000 families used one signature with opposite meanings.
+#define PLUS_IRQ_VIA (1u << 0)
+#define PLUS_IRQ_SCC (1u << 1)
+
 #define PLUS_SCSI_BASE 0x500000UL
 #define PLUS_SCSI_SIZE 0x100000UL
 
@@ -441,13 +449,13 @@ static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // ============================================================
 
 // Plus-specific interrupt routing: update CPU IPL from VIA or SCC IRQ changes
-static void plus_update_ipl(config_t *sim, int level, bool value) {
+static void plus_update_ipl(config_t *sim, int source_mask, bool value) {
     int old_irq = sim->irq;
     int old_ipl = cpu_get_ipl(sim->cpu);
     if (value)
-        sim->irq |= level;
+        sim->irq |= source_mask;
     else
-        sim->irq &= ~level;
+        sim->irq &= ~source_mask;
 
     // Guide to the Macintosh Family Hardware, chapter 3:
     // The interrupt request line from the VIA goes to the PALs,
@@ -455,17 +463,20 @@ static void plus_update_ipl(config_t *sim, int level, bool value) {
     // The PALs also monitor interrupt line /IPL1,
     // and deassert /IPL0 whenever /IPL1 is asserted.
 
+    // The SCC on /IPL1 wins over the VIA on /IPL0, exactly as the quote
+    // above describes.  Previously spelled `irq > 1` / `irq == 1`, which is
+    // the same test only because these are the only two sources.
     uint32_t new_ipl;
-    if (sim->irq > 1)
+    if (sim->irq & PLUS_IRQ_SCC)
         new_ipl = 2;
-    else if (sim->irq == 1)
+    else if (sim->irq & PLUS_IRQ_VIA)
         new_ipl = 1;
     else
         new_ipl = 0;
     cpu_set_ipl(sim->cpu, new_ipl);
 
-    LOG(1, "plus_update_ipl: level=%d value=%d irq:%d->%d ipl:%d->%d", level, value ? 1 : 0, old_irq, sim->irq, old_ipl,
-        new_ipl);
+    LOG(1, "plus_update_ipl: source_mask=%d value=%d irq:%d->%d ipl:%d->%d", source_mask, value ? 1 : 0, old_irq,
+        sim->irq, old_ipl, new_ipl);
 
     cpu_reschedule();
 }
@@ -496,14 +507,14 @@ static void plus_via_shift_out(void *context, uint8_t byte) {
     keyboard_input(sim->keyboard, byte);
 }
 
-// Plus-specific VIA IRQ callback: VIA uses IPL level 1
+// Plus-specific VIA IRQ callback: the VIA drives cfg->irq bit 0
 static void plus_via_irq(void *context, bool active) {
-    plus_update_ipl((config_t *)context, 1, active);
+    plus_update_ipl((config_t *)context, PLUS_IRQ_VIA, active);
 }
 
-// Plus-specific SCC IRQ callback: SCC uses IPL level 2
+// Plus-specific SCC IRQ callback: the SCC drives cfg->irq bit 1
 static void plus_scc_irq(void *context, bool active) {
-    plus_update_ipl((config_t *)context, 2, active);
+    plus_update_ipl((config_t *)context, PLUS_IRQ_SCC, active);
 }
 
 // ============================================================
