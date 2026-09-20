@@ -882,6 +882,65 @@ TEST(test_governor_pin_unpin) {
     teardown(s);
 }
 
+// ============================================================================
+// scheduler_forget_source (proposal-scheduler-source-lifetime §5)
+// ============================================================================
+
+static void forget_cb_a(void *src, uint64_t data) {
+    (void)src;
+    (void)data;
+}
+static void forget_cb_b(void *src, uint64_t data) {
+    (void)src;
+    (void)data;
+}
+
+// One call drops every queued event for an object whatever its callback, plus
+// the event-type rows.  remove_event() matches on callback AND source, so a
+// device with N callbacks needs N calls and 27 of 38 destructors got that
+// wrong; this cannot be half-done.
+TEST(test_forget_source_drops_events_and_types) {
+    scheduler_t *s = fresh_scheduler(false);
+    int victim = 0, bystander = 0;
+
+    // scheduler_init registers types of its own, so measure deltas.
+    const int types0 = scheduler_event_type_count(s);
+    const int events0 = scheduler_pending_events(s);
+
+    scheduler_new_event_type(s, "victim", &victim, "a", forget_cb_a);
+    scheduler_new_event_type(s, "victim", &victim, "b", forget_cb_b);
+    scheduler_new_event_type(s, "bystander", &bystander, "a", forget_cb_a);
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 3);
+
+    scheduler_new_cpu_event(s, forget_cb_a, &victim, 0, 1000, 0);
+    scheduler_new_cpu_event(s, forget_cb_b, &victim, 0, 2000, 0);
+    scheduler_new_cpu_event(s, forget_cb_a, &bystander, 0, 3000, 0);
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 3);
+
+    scheduler_forget_source(s, &victim);
+
+    // BOTH of the victim's events go, under different callbacks -- the whole
+    // point, since a per-callback cleanup needs two calls and the survey
+    // found that is exactly what destructors get wrong.
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 1);
+    // Its two type rows go too; the bystander's stays.
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 1);
+
+    // Idempotent, and safe for a source the scheduler never saw.
+    scheduler_forget_source(s, &victim);
+    scheduler_forget_source(s, (void *)"never registered");
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 1);
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 1);
+
+    // The surviving row still resolves, i.e. the table was compacted rather
+    // than left with a hole the three linear scans would trip over.
+    scheduler_new_cpu_event(s, forget_cb_a, &bystander, 0, 4000, 0);
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 2);
+
+    scheduler_delete(s);
+    g_sched = NULL;
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -904,6 +963,7 @@ int main(void) {
     RUN(test_governor_audio_pressure);
     RUN(test_governor_max_speed_cap);
     RUN(test_governor_pin_unpin);
+    RUN(test_forget_source_drops_events_and_types);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

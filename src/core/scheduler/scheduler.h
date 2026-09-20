@@ -96,6 +96,18 @@ event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_cal
                                  uint64_t data, uint64_t cycles, uint64_t ns);
 
 // Remove all events matching the given callback (and optionally source) from the queue
+// Drop every queued event and the event-type registration held for `source`.
+// One call per destructor, keyed on the object alone, so the cleanup cannot be
+// half-done the way N-callbacks-N-remove_event calls repeatedly was.  Call it
+// from any *_delete that owns a scheduler-visible object, before free().
+void scheduler_forget_source(struct scheduler *restrict scheduler, void *source);
+
+// Counts, for tests and introspection: queued events, and registered event
+// types.  The scheduler object nodes will want both; scheduler_forget_source
+// is untestable without them, since `struct scheduler` is opaque.
+int scheduler_pending_events(const struct scheduler *scheduler);
+int scheduler_event_type_count(const struct scheduler *scheduler);
+
 void remove_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source);
 
 // Remove events matching callback, source, and data value

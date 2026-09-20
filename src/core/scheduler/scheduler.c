@@ -1040,6 +1040,70 @@ void remove_event(struct scheduler *restrict scheduler, event_callback_t callbac
 }
 
 // Remove events matching callback, source, AND data value
+// Drop everything the scheduler still holds for `source`: every queued event
+// whatever its callback, and the event-type registration row.
+//
+// This exists because remove_event() matches on callback AND source, so a
+// device with N callbacks needs N calls to clean up, and the convention could
+// not be kept even by people trying: a survey for
+// proposal-scheduler-source-lifetime.md found 27 of 38 device destructors
+// leaking at least one queued event -- appletalk.c schedules 5 and removes 2,
+// adb.c 4 and 3, floppy.c 3 and 0, via.c 2 and 0.  Keyed on the source alone,
+// the call is one line per destructor and cannot be half-done, which makes
+// "every *_delete that owns a scheduler-visible object calls
+// scheduler_forget_source before free" a rule a reviewer or a lint can check.
+//
+// remove_event() stays: cancelling ONE pending thing on a live device is a
+// different operation from "this object is going away".
+//
+// Safe to call with a source the scheduler has never seen.
+void scheduler_forget_source(struct scheduler *restrict scheduler, void *source) {
+    GS_ASSERT(scheduler != NULL);
+    if (source == NULL)
+        return; // NULL means "any source" to remove_event; refuse it here
+
+    // Queued events first -- these are the dangling pointers that matter.
+    event_t **ev = &scheduler->cpu_events;
+    while (*ev != NULL) {
+        if ((*ev)->source == source) {
+            event_t *to_remove = *ev;
+            *ev = to_remove->next;
+            event_free(to_remove);
+        } else {
+            ev = &(*ev)->next;
+        }
+    }
+
+    // Then the registration rows, which no per-callback remove_event can
+    // reach.  Compact rather than tombstone: the table is scanned linearly by
+    // find_event_type and by both checkpoint paths, and a hole would have to
+    // be skipped in all three.
+    int out = 0;
+    for (int i = 0; i < scheduler->num_event_types; i++) {
+        if (scheduler->event_types[i].source == source)
+            continue;
+        if (out != i)
+            scheduler->event_types[out] = scheduler->event_types[i];
+        out++;
+    }
+    scheduler->num_event_types = out;
+}
+
+// Number of events currently queued.
+int scheduler_pending_events(const struct scheduler *scheduler) {
+    GS_ASSERT(scheduler != NULL);
+    int n = 0;
+    for (const event_t *e = scheduler->cpu_events; e != NULL; e = e->next)
+        n++;
+    return n;
+}
+
+// Number of registered event types.
+int scheduler_event_type_count(const struct scheduler *scheduler) {
+    GS_ASSERT(scheduler != NULL);
+    return scheduler->num_event_types;
+}
+
 void remove_event_by_data(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
                           uint64_t data) {
     GS_ASSERT(scheduler != NULL);
