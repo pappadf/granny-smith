@@ -23,7 +23,17 @@
 // The device the interpreter presents.  Seeded as statusdict identity
 // entries, which platen also mirrors into systemdict, so the two agree;
 // the prelude (laserwriter_prelude.ps) defines everything else.
-#define LASERWRITER_PRODUCT  "LaserWriter II NT"
+//
+// The product deliberately does NOT begin with "LaserWriter".  Apple's
+// drivers key their native-code paths off exactly that prefix: the
+// AppleDict prologue computes
+//     LW = statusdict/product get (LaserWriter) anchorsearch ...
+// and a non-zero LW makes the driver download 68000 code for the
+// printer's own processor through `eexec` + `cexec` (System 7.1's
+// LaserWriter 7.1.2 does this for its smoothing procedures).  We are a
+// software interpreter with no such processor, so we answer LW = 0 and
+// the driver sends the generic PostScript path instead.
+#define LASERWRITER_PRODUCT  "EfterScript LaserWriter"
 #define LASERWRITER_VERSION  "47.0"
 #define LASERWRITER_REVISION "0"
 

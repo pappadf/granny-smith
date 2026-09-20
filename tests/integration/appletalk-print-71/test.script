@@ -1,0 +1,117 @@
+# LaserWriter print over AppleTalk from System 7.1, through the platen
+# interpreter.  See config.mk for why this row exists beside appletalk-print.
+#
+# Boot System 7.1 on a IIcx + Display Card 24AC to an 8-bpp 640x480 colour
+# Finder desktop, enable the emulated LaserWriter, and drive the Chooser and
+# the Finder's "Print Window…" with injected mouse input.  The bridge feeds
+# each PAP data payload to a platen job and hands the finished PDF to the
+# platform (--print-dir).
+#
+# Pointer moves use the "global" form: the IIcx has an ADB mouse, whose
+# relative deltas are accelerated, so only absolute moves land where the
+# coordinates say.
+
+machine.boot model="iicx" ram=8192 video_card="display_card_24ac" video_mode="rgb_640x480_8bpp" rom="${$ROM}"
+machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
+machine.rtc.time = "2026-04-26T21:30:36"
+scheduler.run 400000000
+
+appletalk.printer.enabled = true
+scheduler.run 20000000
+
+if appletalk.printer.interpreter == false {
+    echo "SKIP: this headless binary has no PostScript interpreter (build with PLATEN=1)"
+    quit
+}
+
+assert appletalk.printer.status == "status: idle" "printer is not idle before printing"
+assert appletalk.printer.documents == 0 "a document exists before any print"
+
+# --- Chooser: pick the LaserWriter ------------------------------------------
+# Apple menu -> Chooser
+machine.adb.mouse.move 22 9 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 6000000
+machine.adb.mouse.move 60 114 "global"
+scheduler.run 6000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+
+# The LaserWriter driver icon in the left-hand list
+machine.adb.mouse.move 242 168 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 120000000
+
+# The printer itself in the right-hand list
+machine.adb.mouse.move 390 113 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Close the Chooser; System 7 then advises "choose Page Setup…" — OK it.
+machine.adb.mouse.move 105 68 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+machine.adb.mouse.move 437 262 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 80000000
+
+# --- Open the volume window and print it ------------------------------------
+# Double-click the "Macintosh HD" icon
+machine.adb.mouse.move 597 60 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 100000
+machine.adb.mouse.click false
+scheduler.run 100000
+machine.adb.mouse.click true
+scheduler.run 100000
+machine.adb.mouse.click false
+scheduler.run 120000000
+
+# File -> Print Window…
+machine.adb.mouse.move 50 9 "global"
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 8000000
+machine.adb.mouse.move 90 267 "global"
+scheduler.run 6000000
+machine.adb.mouse.click false
+scheduler.run 150000000
+
+# The Print button of the LaserWriter 7.1.2 dialog
+machine.adb.mouse.move 515 44 "global"
+scheduler.run 4000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.click false
+
+# Let the job stream, run and finish: the driver splits it into query jobs
+# and the document, and background printing hands it to PrintMonitor.
+scheduler.run 300000000
+scheduler.run 300000000
+scheduler.run 200000000
+
+echo "printer: documents=${appletalk.printer.documents} pages=${appletalk.printer.last_pages} outcome='${appletalk.printer.last_outcome}' status='${appletalk.printer.status}'"
+
+# The document printed: one page, clean outcome, and the printer is idle.
+# `outcome` is the assertion that guards the two defects this row was
+# written for — both ended the job with an error and no page.
+assert appletalk.printer.documents >= 1 "no document was produced"
+assert appletalk.printer.last_outcome == "ok" "the job did not finish cleanly"
+assert appletalk.printer.last_pages == 1 "the printed document is not one page"
+assert appletalk.printer.status == "status: idle" "the printer is not idle after the job"
+echo done
+quit

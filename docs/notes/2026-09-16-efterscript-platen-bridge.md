@@ -633,3 +633,59 @@ attach, the download, and the PLATEN default flip. The reference is
 - `appletalk.printer.transport` in the object model is still optional.
 - The unit-test tier (`make unit-test` as a whole) was not re-run: only
   the ring suite is touched by the version bump.
+
+## System 7.1 printed nothing: two defects behind one error
+
+Reported 2026-09-20 from the browser build: printing from a IIcx running
+System 7.1 gave "offending command" in the driver's dialog and a PDF no
+reader would open. Reproduced headlessly (the new integration row
+`appletalk-print-71`, which drives the same Chooser + "Print Window…"
+flow on that machine) as `error: typecheck in and`, zero pages, and a
+317-byte PDF with no page tree — hence the reader's refusal.
+
+The System 7.1 image carries LaserWriter **7.1.2**; the row that existed
+(`appletalk-print`, System 6.0.8 on a Plus) exercises **7.0**, and the
+two send materially different PostScript. Capturing the job
+(`appletalk.printer.capture = true`, 40 KB) and replaying it against the
+interpreter directly isolated both causes.
+
+**One, `cexec` (EfterScript's).** The AppleDict prologue opens with a
+probe for the printer's native-code escape:
+
+```
+save LW dup 1 ne exch 2 ne and
+false <encrypted>{eexec}stopped{dup type/stringtype eq{pop}if}if and
+```
+
+The encrypted section pushes a string of 68000 code and calls `cexec`.
+The probe is written to fail: `undefined` → `stopped` true → the cleanup
+pops the string → `and` gets its two booleans. EfterScript defined
+`cexec` as `exec`, so the section succeeded, the string stayed, and the
+`and` raised `typecheck`. Fixed in EfterScript (`cexec-not-an-operator`);
+`cexec` is not a PLRM operator and is no longer defined.
+
+**Two, the product string (ours).** With that fixed the job got further
+and then failed on a *second* `cexec`, in a section the driver downloads
+only for genuine LaserWriters. The prologue computes
+
+```
+LW = statusdict/product get (LaserWriter) anchorsearch …   (0 when it does not match)
+ok = systemdict/statusdict known dup{LW 0 gt and}if
+```
+
+and `checkload` skips the native sections when `ok` is false. Our
+product was `LaserWriter II NT`, so `LW` was 3 and the driver sent code
+for a processor we do not have. `LASERWRITER_PRODUCT` is now
+`EfterScript LaserWriter` — deliberately not beginning with the prefix
+the drivers key on, so they send the generic PostScript path. The
+AppleTalk entity type stays `LaserWriter`, so the Chooser is unchanged.
+
+**After both.** One page, `outcome: ok`, a 7.8 KB PDF whose text is
+Helvetica as a Type 1 face, rendering as the Finder window it printed.
+System 6.0.8 is unaffected (`appletalk-print` passes, same font
+treatment). The new row fails with either fix missing: against the
+released 0.0.3 library it reproduces `typecheck in and` exactly.
+
+**Sequencing.** `appletalk-print-71` needs an EfterScript release
+carrying the `cexec` fix; until the pin moves past 0.0.3 it fails on the
+extended tier.

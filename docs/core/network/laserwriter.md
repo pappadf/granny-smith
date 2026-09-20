@@ -100,6 +100,23 @@ does with the PostScript it receives depends on the build:
 headless** (`Makefile.headless`, until EfterScript publishes a host archive
 for every host the tree is built on).
 
+### The identity the printer reports
+
+`statusdict`'s `product` is `EfterScript LaserWriter`, and it deliberately
+does not *begin* with `LaserWriter`. Apple's drivers compute
+
+```
+LW = statusdict/product get (LaserWriter) anchorsearch …
+```
+
+and a non-zero `LW` makes them download 68000 code for the printer's own
+processor (`eexec` + `cexec`) instead of plain PostScript — System 7.1's
+LaserWriter 7.1.2 does this for its smoothing procedures. A software
+interpreter has no such processor, so we answer `LW = 0` and get the
+generic path. The AppleTalk entity type advertised over NBP is still
+`LaserWriter`, so the Chooser lists the printer as before. `version` is
+`47.0` and must stay a number a driver can `cvr`.
+
 ## 5.1 Building with the interpreter
 
 The library comes prebuilt from EfterScript's releases; no Rust toolchain is
