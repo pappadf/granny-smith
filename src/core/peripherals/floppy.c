@@ -969,6 +969,48 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
 }
 
 // Frees all resources associated with the floppy controller
+// Bus /RESET: the floppy controller is on every Macintosh board's reset net.
+// Guide to the Macintosh Family Hardware 2e, the 68000 PDS signal table:
+// "/RESET ... MC68000, VIA, SWIM, SCC, SCSI, BBU."
+//
+// WHAT RESETS IS THE CHIP'S OWN REGISTER FILE, AND ONLY THAT.  Three classes
+// of state in this struct are deliberately untouched:
+//
+//   - The MEDIA.  A reset line is not an eject: the disk images, their
+//     decoded tracks, the modified flags and each drive's current format all
+//     survive, and so does the head position -- nothing moves the head.
+//   - What ANOTHER CHIP DRIVES.  iwm_lines (the CA0-CA2/LSTRB phase lines),
+//     `sel` and each drive's motor enable are VIA OUTPUTS that this model
+//     mirrors, not IWM registers.  Resetting the VIA is what clears them;
+//     clearing them here as well double-resets and desynchronises the two.
+//     (Measured: doing it breaks suite-iix's iix-jmfb-sweep, because the row
+//     boots through RESET instructions and loses the drive state the ROM had
+//     set up through the VIA.)
+//   - The DRIVE MECHANICS.  A step or speed settle in flight is the physical
+//     drive's business, not the controller's, so those events keep running.
+//
+// Before this existed there was no floppy_reset at all: the IWM mode register
+// and the whole ISM register file survived every reset path
+// (05-chipsets-irq F-03).
+void floppy_reset(floppy_t *floppy) {
+    if (!floppy)
+        return;
+
+    // The IWM mode register is the chip's own; the phase lines are not.
+    floppy->mode = 0;
+
+    // The SWIM's ISM register file, and the IWM/ISM mode latch with it.
+    if (floppy->type == FLOPPY_TYPE_SWIM) {
+        // remove_event and NOT scheduler_forget_source: a live device that
+        // arms this again, and the primitive drops event-TYPE registrations.
+        remove_event(floppy->scheduler, &floppy_swim_service_callback, floppy);
+        floppy->ism_service_armed = false;
+        floppy_swim_bus_reset(floppy);
+    }
+
+    LOG(1, "floppy_reset: controller registers cleared (media, head and VIA-driven lines kept)");
+}
+
 void floppy_delete(floppy_t *floppy) {
     if (!floppy)
         return;

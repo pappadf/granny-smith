@@ -237,6 +237,8 @@ void system_reset_common_devices(config_t *cfg) {
         via_reset(cfg->via2);
     if (cfg->scc)
         scc_reset(cfg->scc); // "MC68000, VIA, SWIM, SCC, SCSI, BBU"
+    if (cfg->floppy)
+        floppy_reset(cfg->floppy); // the SWIM of that list; media survive
     if (cfg->nubus)
         nubus_reset(cfg->nubus); // each populated card → power-on state
     if (cfg->pci)
