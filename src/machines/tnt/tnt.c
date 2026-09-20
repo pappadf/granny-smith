@@ -699,11 +699,12 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
 
 static void tnt_bus_reset(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
-    // Power-on reset: the CPU back to $FFF00100, chipset registers to
-    // their power-on state.  NVRAM survives — it is non-volatile, and
-    // POST's log plus the Open Firmware environment must persist across
-    // restarts (warm-restart semantics proper are observed at the ladder).
-    ppc_reset(cfg->ppc);
+    // Chipset registers to their power-on state.  The CPU going back to
+    // $FFF00100 is the CPU half and belongs to level 2
+    // (system_machine_reset); see the PDM twin.  NVRAM survives — it is
+    // non-volatile, and POST's log plus the Open Firmware environment must
+    // persist across restarts (warm-restart semantics proper are observed at
+    // the ladder).
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
     tnt_dbdma_reset(st->dbdma);

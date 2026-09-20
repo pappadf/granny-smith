@@ -475,11 +475,13 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
 
 static void pdm_bus_reset(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
-    // Power-on reset: the 601 back to the reset vector, AMIC and HMC to
-    // their power-on state.  (The 68k-RESET warm path re-enters HWInit
-    // with MSR[IR] on and AMIC state SURVIVING — that path is guest-driven
-    // and becomes a first-class test row in Phase D.)
-    ppc_reset(cfg->ppc);
+    // The chipset half only.  The 601 going back to its reset vector is the
+    // CPU half and belongs to level 2 (system_machine_reset), not to the
+    // board's /RESET net -- this used to call ppc_reset() from here, which is
+    // why the Cuda path happened to work on PDM and TNT while leaving the AV
+    // families' 68040 running (05-chipsets-irq F-04).  (The 68k-RESET warm
+    // path re-enters HWInit with MSR[IR] on and AMIC state SURVIVING — that
+    // path is guest-driven and becomes a first-class test row in Phase D.)
     // Note pdm_amic_init memsets the whole AMIC.  The SWIM3 model is
     // deliberately NOT inside pdm_amic_t (pdm.h), so this cannot clear the
     // chip's bound fd/sched/backend pointers the way it once did.

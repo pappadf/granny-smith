@@ -148,6 +148,13 @@ uint64_t scheduler_cpu_cycles(scheduler_t *sched) {
 // harness, so this is a no-op.
 void system_reset_devices(void) {}
 
+// The level-2 entry points are declared weak in system.h so a suite can link a
+// device without system.c.  A weak UNDEFINED symbol that is actually called is
+// a NULL call, though, so define them here too: a suite that reaches the Cuda
+// reset path gets a no-op rather than a segfault.
+void system_machine_reset(void) {}
+void system_hardware_reset(void) {}
+
 // Keyboard stub for key injection command
 typedef enum { key_up, key_down } key_event_t;
 void system_keyboard_update(key_event_t event, int key) {

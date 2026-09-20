@@ -193,13 +193,42 @@ void system_keyboard_update(key_event_t event, int key) {
 
 // Hardware RESET line: calls the machine's reset handler to reinitialize
 // peripherals.  On SE/30: VIA1 re-enables ROM overlay, MMU disabled.
-// The non-CPU half of a machine reset (reset button, Cuda CMD_RESET, double
-// bus fault).  Same net as level 1, so same list -- that is the whole point of
-// there being one list.  The CPU half is the caller's: cpu_hardware_reset and
-// cpu_hardware_reset_040 do it themselves, and the Cuda path does NOT, which
-// is 05-chipsets-irq F-04 and belongs with the level-2 contract.
+// LEVEL 2 -- a machine reset: the reset button, Finder > Restart, the Cuda's
+// CMD_RESET, a double bus fault.  Bus reset plus the CPU back to its vector,
+// which is the entire difference from level 1 (reset proposal §3.1.2).
+//
+// This is 05-chipsets-irq F-04.  The two callers of the old
+// system_hardware_reset() had incompatible expectations: cpu_hardware_reset()
+// called it and then reset the CPU itself, while cuda_reset_event() called it
+// ALONE.  That was survivable on PDM and TNT only because their substrate
+// handlers happened to call ppc_reset() from inside the bus half.  On the AV
+// families nothing reset the 68040 at all, so a guest Cuda CMD_RESET -- which
+// is how System 7.5 restarts an AV machine -- re-armed the ROM overlay and
+// left the CPU executing from wherever it was: RAM yanked out from under
+// $00000000 with the machine still running.
+//
+// One entry point now does both halves, in the order the hardware imposes:
+// the overlay must be back before the vectors at $0/$4 are read.
+void system_machine_reset(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg)
+        return;
+
+    system_reset_devices(); // level 1: the board's /RESET net
+
+    if (cfg->cpu) {
+        if (cfg->machine && cfg->machine->cpu_model == CPU_MODEL_68040)
+            cpu_reset_to_vector_68040(cfg->cpu);
+        else
+            cpu_reset_to_vector_68030(cfg->cpu);
+    } else if (cfg->ppc) {
+        ppc_reset(cfg->ppc);
+    }
+}
+
+// Retained under its old name for the callers that mean "level 2".
 void system_hardware_reset(void) {
-    system_reset_devices();
+    system_machine_reset();
 }
 
 // The 68k RESET instruction asserts the bus /RESET line, which resets the

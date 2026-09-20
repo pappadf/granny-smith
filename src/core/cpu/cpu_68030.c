@@ -456,15 +456,16 @@ static int cpu_movec_rn_rc(cpu_t *cpu) {
 //   1. RESET asserts → peripherals reset (VIA re-enables ROM overlay at $0)
 //   2. CPU reads SSP from $00000000 (ROM via overlay) and PC from $00000004
 //   3. SR = $2700, VBR = 0, caches/MMU cleared
-static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict cpu) {
-    LOG(1, "Hardware reset (double bus error → HALT → GLU RESET)");
-
-    // Step 1: Assert RESET line → machine-specific peripheral reset.
-    // On SE/30: VIA1 re-enables ROM overlay (ROM visible at $0), MMU disabled.
-    // This MUST happen before the CPU reads vectors from $0.
-    system_hardware_reset();
-
-    // Step 2: CPU hardware reset sequence (MC68030 User's Manual §5.2.1)
+// The CPU half of a reset, and only that half: everything inside the package.
+// MC68030 User's Manual §5.2.1.  Exported because level 2 -- machine.reset(),
+// the reset button, Cuda CMD_RESET -- is "bus_reset plus this", and the Cuda
+// path used to do neither on a 68k machine (05-chipsets-irq F-04).
+//
+// The caller must have asserted the bus reset FIRST: the vectors are read from
+// $00000000, which is ROM only while the overlay is armed, and re-arming the
+// overlay is the bus half's job.
+void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
+    // CPU hardware reset sequence (MC68030 User's Manual §5.2.1)
     cpu->supervisor = 1;
     cpu->interrupt_mask = 7;
     cpu->trace = 0;
@@ -491,6 +492,15 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
         mmu->tc = 0;
         mmu_invalidate_tlb(mmu);
     }
+}
+
+// Double bus error → HALT → the GLU asserts RESET.  The sequence matches real
+// hardware: RESET asserts and the peripherals reset (VIA1 re-enables the ROM
+// overlay at $0), then the CPU reads SSP from $0 and PC from $4.
+static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict cpu) {
+    LOG(1, "Hardware reset (double bus error → HALT → GLU RESET)");
+    system_reset_devices(); // the board's /RESET net; must precede the vector read
+    cpu_reset_to_vector_68030(cpu);
 }
 
 // Generate the cpu_run_68030 decoder function using the shared template

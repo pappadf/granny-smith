@@ -93,6 +93,13 @@ typedef struct cpu cpu_t;
 
 extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint);
 
+// The CPU half of a reset: everything inside the package, PC and SSP reloaded
+// from the vectors at $0/$4.  The BUS half must already have run -- those
+// vectors are ROM only while the overlay is armed.  Level 2 (machine.reset(),
+// the reset button, Cuda CMD_RESET) is bus_reset plus one of these.
+void cpu_reset_to_vector_68030(cpu_t *restrict cpu);
+void cpu_reset_to_vector_68040(cpu_t *restrict cpu);
+
 void cpu_delete(cpu_t *cpu);
 
 void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint);

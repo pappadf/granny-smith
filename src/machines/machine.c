@@ -1019,6 +1019,30 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
 // construction configuration (volume, host capture sources) is out of scope
 // — the frontend re-asserts it.  Scheduler pacing is the exception every
 // rebuild keeps: it is the harness's setting, not the machine's.
+// Level 2 -- a warm reset: the board's /RESET net plus the CPU back to its
+// reset vector, with the machine left standing.  Nothing is torn down and
+// nothing is rebuilt, so RAM, the PRAM/NVRAM, mounted media and the object
+// tree all survive; this is the reset button, not machine.restart.
+//
+// The reset proposal §1.3 records why this had to exist: the machine object
+// exposed only `boot` and `restart`, both of which construct a new machine,
+// so there was NO VERB for level 2 at all.  A test that wanted "reboot this
+// machine, keeping its NVRAM" had to drive the guest's own restart through
+// the UI or use machine.restart, which tears the machine down -- and that is
+// exactly why the TNT NVRAM carry was invented.  The reset button is real
+// hardware on every machine modelled here and was not reachable from
+// anywhere.
+static value_t machine_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    if (!global_emulator)
+        return val_err("machine.reset: no machine is running; boot one first");
+    system_machine_reset();
+    return val_bool(true);
+}
+
 static value_t machine_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -1212,6 +1236,10 @@ static const member_t machine_members[] = {
                 .nargs = sizeof(machine_boot_args) / sizeof(machine_boot_args[0]),
                 .result = V_BOOL,
                 .fn = machine_method_boot}},
+    {.kind = M_METHOD,
+     .name = "reset",
+     .doc = "Warm-reset the running machine: the /RESET net plus the CPU, keeping RAM, PRAM and media",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_reset}},
     {.kind = M_METHOD,
      .name = "restart",
      .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",

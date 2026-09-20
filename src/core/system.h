@@ -135,6 +135,14 @@ void system_keyboard_update(key_event_t event, int key);
 // peripherals (VIA overlay, MMU, etc.).  Called by the CPU on double bus error
 // (HALT → GLU RESET) BEFORE the CPU reads SSP/PC from $0/$4.
 // Weak: unit tests that don't link system.c get a no-op stub.
+// Level 2 -- a machine reset: the board's /RESET net plus the CPU back to its
+// reset vector.  The reset button, machine.reset(), Finder > Restart, the
+// Cuda's CMD_RESET.  Weak for the same reason as its two siblings here: a
+// unit suite that links a device without system.c must still resolve it.
+__attribute__((weak)) void system_machine_reset(void);
+
+// Retained under its old name for callers that mean level 2; an alias for
+// system_machine_reset above.
 __attribute__((weak)) void system_hardware_reset(void);
 
 // Bus /RESET line asserted by the 68k RESET instruction: reset the external
