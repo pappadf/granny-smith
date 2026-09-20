@@ -18,6 +18,7 @@
 // reads, write-1-to-clear conventions).
 
 #include "pdm.h"
+#include "regfile.h"
 
 #include "log.h"
 #include "ppc.h"
@@ -288,14 +289,6 @@ static uint32_t dma_window_base(pdm_amic_t *a) {
 }
 
 // Byte lane helpers for the 32-bit address registers (MSB at +0)
-static void addr_write_byte(uint32_t *addr, uint32_t lane, uint8_t v) {
-    uint32_t shift = 8 * (3 - lane);
-    *addr = (*addr & ~(0xFFu << shift)) | ((uint32_t)v << shift);
-}
-
-static uint8_t addr_read_byte(uint32_t addr, uint32_t lane) {
-    return (uint8_t)(addr >> (8 * (3 - lane)));
-}
 
 static uint8_t dma_read(config_t *cfg, uint32_t off) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
@@ -312,12 +305,12 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
     case 0x1001:
     case 0x1002:
     case 0x1003:
-        return addr_read_byte(a->scsi[0].addr, off & 3);
+        return be_lane8(a->scsi[0].addr, off & 3);
     case 0x1004:
     case 0x1005:
     case 0x1006:
     case 0x1007:
-        return addr_read_byte(a->scsi[1].addr, off & 3);
+        return be_lane8(a->scsi[1].addr, off & 3);
     case 0x1008:
         return a->scsi[0].ctrl;
     case 0x1009:
@@ -326,12 +319,12 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
     case 0x1011:
     case 0x1012:
     case 0x1013:
-        return addr_read_byte(a->scsi[0].addr, off & 3); // current = base (no engine yet)
+        return be_lane8(a->scsi[0].addr, off & 3); // current = base (no engine yet)
     case 0x1014:
     case 0x1015:
     case 0x1016:
     case 0x1017:
-        return addr_read_byte(a->scsi[1].addr, off & 3);
+        return be_lane8(a->scsi[1].addr, off & 3);
     case 0x1028:
         return a->enet_rx.ctrl;
     case 0x1030:
@@ -350,7 +343,7 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
     case 0x1061:
     case 0x1062:
     case 0x1063:
-        return addr_read_byte(a->floppy.addr, off & 3);
+        return be_lane8(a->floppy.addr, off & 3);
     case 0x1064:
         return (uint8_t)(a->floppy.count >> 8);
     case 0x1065:
@@ -374,7 +367,7 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
                 // The address bytes read back as addr + internal offset —
                 // the live ring pointer (MkLinux scc_amic.c reads the Rx
                 // ring index exactly this way).
-                return addr_read_byte(ch->addr + ch->xfer_off, r);
+                return be_lane8(ch->addr + ch->xfer_off, r);
             if (r == 4)
                 return (uint8_t)((ch->count >> 8) & 0x1Fu);
             if (r == 5)
@@ -402,13 +395,13 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
     case 0x1001:
     case 0x1002:
     case 0x1003:
-        addr_write_byte(&a->scsi[0].addr, off & 3, value);
+        be_lane8_set(&a->scsi[0].addr, off & 3, value);
         return;
     case 0x1004:
     case 0x1005:
     case 0x1006:
     case 0x1007:
-        addr_write_byte(&a->scsi[1].addr, off & 3, value);
+        be_lane8_set(&a->scsi[1].addr, off & 3, value);
         return;
     case 0x1008:
         // Bus-speed bits 3:2 share the register and must stick (the ROM's
@@ -456,7 +449,7 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
     case 0x1061:
     case 0x1062:
     case 0x1063:
-        addr_write_byte(&a->floppy.addr, off & 3, value);
+        be_lane8_set(&a->floppy.addr, off & 3, value);
         return;
     case 0x1064:
         a->floppy.count = (uint16_t)((a->floppy.count & 0x00FFu) | (value << 8));
@@ -492,7 +485,7 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
             LOG(4, "scc dma wr ch%u +%X = $%02X (addr=$%X cnt=%u ctrl=$%02X)", (unsigned)((off - 0x1080u) >> 4), r,
                 value, ch->addr, ch->count, ch->ctrl);
             if (r < 4) {
-                addr_write_byte(&ch->addr, r, value);
+                be_lane8_set(&ch->addr, r, value);
                 ch->xfer_off = 0; // an address write clears the internal offset
             } else if (r == 4)
                 ch->count = (uint16_t)((ch->count & 0x00FFu) | ((value & 0x1Fu) << 8));

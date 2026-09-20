@@ -19,6 +19,7 @@
 //     real tick source is undocumented — psc.md §7)
 
 #include "psc.h"
+#include "regfile.h"
 
 #include "av.h"
 #include "singer.h" // AV_SINGER_STAT presentation
@@ -265,10 +266,6 @@ static uint32_t psc_snd_phase(av_psc_t *psc) {
 // ============================================================
 
 // Big-endian byte lane of a 32-bit value.
-static inline uint8_t lane32(uint32_t v, uint32_t off) {
-    return (uint8_t)(v >> (8 * (3 - (off & 3))));
-}
-
 // PSC_ISR: bit (31−n) = channel n interrupting — a set's IF && IE, gated
 // by the channel's CIE (BFFFO-compatible bit order, psc.md §2.4).
 static uint32_t psc_isr_value(av_psc_t *psc) {
@@ -424,9 +421,9 @@ static void psc_ctrl_write(av_psc_t *psc, int n, uint32_t lane, uint8_t value) {
 static uint8_t psc_set_read(av_psc_t *psc, int n, int s, uint32_t reg_off) {
     av_psc_chan_t *ch = &psc->chan[n];
     if (reg_off < 4)
-        return lane32(ch->addr[s], reg_off);
+        return be_lane8(ch->addr[s], reg_off);
     if (reg_off < 8)
-        return lane32(ch->cnt[s], reg_off);
+        return be_lane8(ch->cnt[s], reg_off);
     if (reg_off == 8)
         return ch->cs[s]; // CmdStat high byte
     return 0; // CmdStat low byte (SETMASK — unused) + reserved
@@ -435,13 +432,11 @@ static uint8_t psc_set_read(av_psc_t *psc, int n, int s, uint32_t reg_off) {
 static void psc_set_write(av_psc_t *psc, int n, int s, uint32_t reg_off, uint8_t value) {
     av_psc_chan_t *ch = &psc->chan[n];
     if (reg_off < 4) {
-        uint32_t shift = 8 * (3 - reg_off);
-        ch->addr[s] = (ch->addr[s] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        be_lane8_set(&ch->addr[s], reg_off, value);
         return;
     }
     if (reg_off < 8) {
-        uint32_t shift = 8 * (3 - (reg_off & 3));
-        ch->cnt[s] = (ch->cnt[s] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        be_lane8_set(&ch->cnt[s], reg_off & 3, value);
         return;
     }
     if (reg_off == 8) {
@@ -518,7 +513,7 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
 
     switch (off & ~3u) {
     case 0x208: // singerStat — board straps + valid-data presentation
-        return lane32(AV_SINGER_STAT, off);
+        return be_lane8(AV_SINGER_STAT, off);
     case 0x200: // sndComCtl (word) + neighbours — latches
     case 0x204:
     case 0x210:
@@ -526,19 +521,19 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
     case 0x218:
         return psc->snd[off & 0x1F];
     case 0x20C: // sndPhase — computed free-runner
-        return lane32(psc_snd_phase(psc), off);
+        return be_lane8(psc_snd_phase(psc), off);
     case 0x21C:
         return (off & 3) == 0 ? psc->dsp_overrun : psc->snd[off & 0x1F];
     case 0x300: // UTSC least-significant longword
-        return lane32((uint32_t)psc_utsc(cfg), off);
+        return be_lane8((uint32_t)psc_utsc(cfg), off);
     case 0x304: // UTSC most-significant (16 valid bits)
-        return lane32((uint32_t)(psc_utsc(cfg) >> 32), off);
+        return be_lane8((uint32_t)(psc_utsc(cfg) >> 32), off);
     case 0x400:
         return psc->psctest[off & 3];
     case 0x800:
         return (off & 3) == 0 ? psc->berrie : 0;
     case 0x804:
-        return lane32(psc_isr_value(psc), off); // PSC_ISR
+        return be_lane8(psc_isr_value(psc), off); // PSC_ISR
     default:
         return 0;
     }

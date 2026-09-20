@@ -63,6 +63,7 @@
 //
 // Everything else is accept-and-readback, and every access is logged.
 
+#include "regfile.h"
 #include "tnt.h"
 
 #include "log.h"
@@ -252,7 +253,7 @@ uint8_t tnt_hh_read(config_t *cfg, uint32_t offset) {
     }
     uint32_t lane = offset & 0xFu;
     uint32_t value = hh->reg[offset >> 4];
-    uint8_t b = (lane < 4) ? (uint8_t)(value >> (8 * (3 - lane))) : 0;
+    uint8_t b = (lane < 4) ? be_lane8(value, lane) : 0;
     // R1 instrumentation: every Hammerhead access is loggable so the T5
     // memory-sizing sequence can be recorded and the model fitted to it.
     LOG(2, "read  +$%03X -> $%02X (reg $%08X) r24=$%08X", offset, b, value, ppc_get_gpr(cfg->ppc, 24));
@@ -281,8 +282,7 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
         value = (uint8_t)((value & (uint8_t)~HH_L2CFG_STRAP_MASK) | (strap & HH_L2CFG_STRAP_MASK));
     }
     uint32_t *reg = &hh->reg[offset >> 4];
-    uint32_t shift = 8 * (3 - lane);
-    *reg = (*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    be_lane8_set(reg, lane, value);
     LOG(2, "write +$%03X = $%02X (reg now $%08X)", offset, value, *reg);
     // The identifier keeps its identity upper halfword whatever is
     // written (accept-and-readback everywhere else).

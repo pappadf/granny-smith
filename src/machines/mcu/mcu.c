@@ -9,6 +9,7 @@
 
 #include "mcu.h"
 #include "appletalk.h"
+#include "regfile.h"
 
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
 #include "machine_teardown.h" // the shared config_t-owned delete chain
@@ -328,15 +329,14 @@ static uint8_t mcu_yancc_read(config_t *cfg, uint32_t addr) {
         st->yancc_touched |= 1ull << (idx & 63);
         LOG(2, "YANCC read  $%04X -> $%08X (pc=%08X)", off, v, cpu_get_pc(cfg->cpu));
     }
-    return (uint8_t)(v >> (8 * (3 - (off & 3))));
+    return be_lane8(v, off & 3);
 }
 
 static void mcu_yancc_write(config_t *cfg, uint32_t addr, uint8_t value) {
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0x1FFFu;
     uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;
-    uint32_t shift = 8 * (3 - (off & 3));
-    st->yancc_regs[idx] = (st->yancc_regs[idx] & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    be_lane8_set(&st->yancc_regs[idx], off & 3, value);
     LOG(2, "YANCC write $%04X = $%08X (pc=%08X)", off, st->yancc_regs[idx], cpu_get_pc(cfg->cpu));
     st->yancc_touched |= 1ull << (idx & 63);
 }

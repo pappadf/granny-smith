@@ -12,6 +12,7 @@
 
 #include "av.h"
 #include "appletalk.h"
+#include "regfile.h"
 
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 
@@ -115,23 +116,23 @@ static uint8_t av_muni_read(config_t *cfg, uint32_t addr) {
         return 0xFF;
     }
     uint32_t v = (reg == AV_MUNI_CONTROL) ? st->muni_control : (reg == AV_MUNI_INTCNTRL) ? st->muni_intcntrl : 0;
-    return (uint8_t)(v >> (8 * (3 - (off & 3))));
+    return be_lane8(v, off & 3);
 }
 
 static void av_muni_write(config_t *cfg, uint32_t addr, uint8_t value) {
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu;
     uint32_t reg = off & ~3u;
-    uint32_t shift = 8 * (3 - (off & 3));
+    unsigned lane = off & 3u;
     if (reg == AV_MUNI_CONTROL) {
         if (!av_board(cfg)->desc->muni_present) {
             memory_signal_bus_error(addr, true);
             return;
         }
-        st->muni_control = (st->muni_control & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        be_lane8_set(&st->muni_control, lane, value);
         LOG(2, "MUNI Control = $%08X (pc=%08X)", st->muni_control, cpu_get_pc(cfg->cpu));
     } else if (reg == AV_MUNI_INTCNTRL) {
-        st->muni_intcntrl = (st->muni_intcntrl & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        be_lane8_set(&st->muni_intcntrl, lane, value);
         LOG(2, "MUNI IntCntrl = $%08X (pc=%08X)", st->muni_intcntrl, cpu_get_pc(cfg->cpu));
     }
 }
@@ -149,7 +150,7 @@ static void av_muni_write(config_t *cfg, uint32_t addr, uint8_t value) {
 static uint8_t av_cpuid_read8(void *ctx, uint32_t offset) {
     (void)ctx;
     if (offset >= 0xFFCu)
-        return (uint8_t)(AV_CPUID_VALUE >> (8 * (3 - (offset & 3))));
+        return be_lane8(AV_CPUID_VALUE, offset & 3);
     return 0xFF; // nothing else decodes in this page — float high
 }
 

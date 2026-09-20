@@ -7,6 +7,7 @@
 #include "oss.h"
 
 #include "log.h"
+#include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
 
@@ -62,10 +63,6 @@ static void oss_notify(oss_t *oss) {
 }
 
 // Reads one big-endian byte from a 32-bit register value.
-static uint8_t be32_byte(uint32_t value, unsigned index) {
-    return (uint8_t)(value >> ((3u - (index & 3u)) * 8u));
-}
-
 // Clears pending bits selected by a byte write to the long status register.
 // Write-1-to-clear one byte lane of the 32-bit interrupt-status word.  `lane`
 // is a lane index 0-3 (lane 0 is the MSB on this bus), not an address -- the
@@ -116,7 +113,7 @@ static uint8_t oss_read_uint8(void *device, uint32_t addr) {
         return oss->level[offset] & 7u;
 
     if (offset >= OSS_INT_STAT_BASE && offset <= OSS_INT_STAT_BASE + 3)
-        return be32_byte((uint32_t)oss->pending, offset - OSS_INT_STAT_BASE);
+        return be_lane8((uint32_t)oss->pending, offset - OSS_INT_STAT_BASE);
 
     if (offset == OSS_ROM_CTRL)
         return oss->rom_ctrl;
