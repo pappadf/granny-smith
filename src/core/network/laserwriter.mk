@@ -38,7 +38,7 @@ LASERWRITER_SAVED_GOAL := $(.DEFAULT_GOAL)
 
 PLATEN         ?= 0
 # The EfterScript release the library comes from (tag v$(PLATEN_VERSION)).
-PLATEN_VERSION ?= 0.0.2
+PLATEN_VERSION ?= 0.0.3
 # The Emscripten SDK the release's wasm archive was built with; must equal
 # the SDK this tree builds with (EMSDK_REQUIRED_VERSION in Makefile).
 PLATEN_EMSDK   ?= $(if $(EMSDK_REQUIRED_VERSION),$(EMSDK_REQUIRED_VERSION),6.0.7)
