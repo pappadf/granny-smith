@@ -21,6 +21,7 @@
 #include "log.h"
 #include "system.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -427,9 +428,8 @@ iop_t *iop_init(iop_kind_t kind, const memory_interface_t *bypass_iface, void *b
     };
 
     if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, iop->ram, sizeof(iop->ram));
-        system_read_checkpoint_data(checkpoint, &iop->ram_addr, sizeof(iop->ram_addr));
-        system_read_checkpoint_data(checkpoint, &iop->stat_ctl, sizeof(iop->stat_ctl));
+        // Mirrors iop_checkpoint: one blob, host_irq included (F-08).
+        system_read_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior));
     }
 
     // Register periodic-event types with the scheduler so checkpoint
@@ -450,12 +450,24 @@ void iop_delete(iop_t *iop) {
     free(iop);
 }
 
+// One blob of everything before the first pointer -- the prefix idiom of
+// via.c and friends (05-chipsets-irq F-37).
+//
+// THIS ALSO FIXES F-08, and the two findings turn out to be one.  The three
+// per-field calls this replaces saved `ram`, `ram_addr` and `stat_ctl` but
+// NOT `host_irq`, which sits between stat_ctl and the first pointer.
+// iop_update_host_irq() is edge-suppressed -- `if (active == iop->host_irq)
+// return;` -- so a checkpoint taken with iopInt0Active set came back with
+// host_irq false while the OSS pending bit was separately restored TRUE.
+// When the guest then cleared the IOP's interrupt bits, the computed `active`
+// matched the stale false, the callback was skipped, and the OSS source
+// stayed latched forever: a restored IIfx took the same autovector on every
+// instruction boundary.  A blob of the prefix carries the field by
+// construction, which is the argument for the idiom.
 void iop_checkpoint(iop_t *iop, checkpoint_t *checkpoint) {
     if (!iop || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, iop->ram, sizeof(iop->ram));
-    system_write_checkpoint_data(checkpoint, &iop->ram_addr, sizeof(iop->ram_addr));
-    system_write_checkpoint_data(checkpoint, &iop->stat_ctl, sizeof(iop->stat_ctl));
+    system_write_checkpoint_data(checkpoint, iop, offsetof(iop_t, behavior));
 }
 
 const memory_interface_t *iop_get_memory_interface(iop_t *iop) {

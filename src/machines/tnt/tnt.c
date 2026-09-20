@@ -54,6 +54,7 @@
 #include "via.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -674,7 +675,9 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
         system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+        // Mirrors the save: the prefix only, then *_swim3_bind re-attaches
+        // the pointer tail.
+        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
         tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
@@ -855,7 +858,15 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
     // The floppy controller and its DBDMA byte ring (swim3.c); the drive
     // itself is in the images block above.
-    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
+    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
+    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
+    // in a user-shareable save file, and made two saves of the same guest
+    // state differ -- which defeats any diff-based checkpoint testing.  The
+    // restore re-binds through *_swim3_bind either way, so the values were
+    // harmless; the leak and the non-reproducibility were not
+    // (05-chipsets-irq F-09).
+    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
 }
 

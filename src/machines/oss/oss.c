@@ -11,6 +11,7 @@
 #include "scheduler.h"
 #include "system.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -279,12 +280,8 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
     };
 
     if (checkpoint) {
-        system_read_checkpoint_data(checkpoint, oss->level, sizeof(oss->level));
-        system_read_checkpoint_data(checkpoint, &oss->pending, sizeof(oss->pending));
-        system_read_checkpoint_data(checkpoint, &oss->rom_ctrl, sizeof(oss->rom_ctrl));
-        system_read_checkpoint_data(checkpoint, &oss->counter_ctl, sizeof(oss->counter_ctl));
-        system_read_checkpoint_data(checkpoint, &oss->counter_base, sizeof(oss->counter_base));
-        system_read_checkpoint_data(checkpoint, &oss->counter_base_ns, sizeof(oss->counter_base_ns));
+        // Mirrors oss_checkpoint: one blob, so the two halves cannot drift.
+        system_read_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface));
     }
 
     return oss;
@@ -296,15 +293,17 @@ void oss_delete(oss_t *oss) {
 }
 
 // Saves OSS plain state to a checkpoint.
+// One blob of everything before the first pointer, the idiom via.c, rbv.c,
+// psc.c, new_age.c and civic.c already use and swim3.h:51-53 documents.
+// This was six per-field calls whose order had to be kept in step BY HAND
+// with six more in oss_init -- the idiom 05-chipsets-irq F-37 calls the most
+// error-prone of the three in the tree, and the one F-08's missing field
+// lived in.  A field added to the struct prefix is now carried automatically
+// instead of being silently dropped.
 void oss_checkpoint(oss_t *oss, checkpoint_t *checkpoint) {
     if (!oss || !checkpoint)
         return;
-    system_write_checkpoint_data(checkpoint, oss->level, sizeof(oss->level));
-    system_write_checkpoint_data(checkpoint, &oss->pending, sizeof(oss->pending));
-    system_write_checkpoint_data(checkpoint, &oss->rom_ctrl, sizeof(oss->rom_ctrl));
-    system_write_checkpoint_data(checkpoint, &oss->counter_ctl, sizeof(oss->counter_ctl));
-    system_write_checkpoint_data(checkpoint, &oss->counter_base, sizeof(oss->counter_base));
-    system_write_checkpoint_data(checkpoint, &oss->counter_base_ns, sizeof(oss->counter_base_ns)); // mirrors the save
+    system_write_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface));
 }
 
 // Returns the OSS memory interface.

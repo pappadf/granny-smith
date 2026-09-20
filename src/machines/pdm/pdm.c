@@ -44,6 +44,7 @@
 #include "via.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -436,7 +437,9 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
         // sense in the device's own stream.
         system_read_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
         st->video.sense_restored = true;
-        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+        // Mirrors the save: the prefix only, then *_swim3_bind re-attaches
+        // the pointer tail.
+        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         pdm_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
         system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
@@ -568,7 +571,15 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
     system_write_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
-    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
+    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
+    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
+    // in a user-shareable save file, and made two saves of the same guest
+    // state differ -- which defeats any diff-based checkpoint testing.  The
+    // restore re-binds through *_swim3_bind either way, so the values were
+    // harmless; the leak and the non-reproducibility were not
+    // (05-chipsets-irq F-09).
+    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
     system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
     // Card-side state (framebuffer, palette, mode) last — see the restore
