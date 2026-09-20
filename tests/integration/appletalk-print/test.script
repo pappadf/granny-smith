@@ -1,0 +1,111 @@
+# LaserWriter print over AppleTalk with the platen interpreter.
+#
+# Boot System 6.0.8 on a Plus, enable the emulated LaserWriter, and drive the
+# Chooser + Finder "Print Directory..." exactly as the gs-test-data capture was
+# produced (tmp/lab/step6.script).  The bridge feeds each PAP data payload to a
+# platen job, answers the driver's PostScript queries from the job's own
+# output, and hands the finished PDF to the platform (--print-dir).  Assertions
+# read the object model, not pixels.
+#
+# Skipped on a PLATEN=0 build (appletalk.printer.interpreter false): the bridge
+# is not compiled in, so there is nothing to exercise.
+
+machine.rtc.time = "2026-04-26T21:30:36"
+scheduler.run 30000000
+appletalk.printer.enabled = true
+
+if appletalk.printer.interpreter == false {
+    echo "SKIP: this headless binary has no PostScript interpreter (build with PLATEN=1)"
+    quit
+}
+
+assert appletalk.printer.status == "status: idle" "printer is not idle before printing"
+assert appletalk.printer.documents == 0 "a document exists before any print"
+
+# Apple menu -> Chooser
+machine.adb.mouse.move 25 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 25 123
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Click the LaserWriter icon in the device list
+machine.adb.mouse.move 165 135
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+
+# "LaserWriter requires AppleTalk" -> OK
+machine.adb.mouse.move 187 206
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Select the printer in the right-hand list
+machine.adb.mouse.move 300 88
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 20000000
+
+# Close the Chooser
+machine.adb.mouse.move 72 47
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# Double-click the Macintosh HD icon to open its window
+machine.adb.mouse.move 470 52
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 80000
+machine.adb.mouse.click true
+scheduler.run 80000
+machine.adb.mouse.click false
+scheduler.run 40000000
+
+# File -> Print Directory...
+machine.adb.mouse.move 53 10
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 4000000
+machine.adb.mouse.move 100 203
+scheduler.run 4000000
+machine.adb.mouse.click false
+scheduler.run 60000000
+
+# Print button
+machine.adb.mouse.move 452 45
+scheduler.run 2000000
+machine.adb.mouse.click true
+scheduler.run 2000000
+machine.adb.mouse.click false
+
+# Let the job stream, run, and finish; the driver splits it into query jobs
+# (PatchPrep, font list) and the document.  Poll until a document lands.
+scheduler.run 100000000
+scheduler.run 200000000
+scheduler.run 300000000
+
+echo "printer: documents=${appletalk.printer.documents} pages=${appletalk.printer.last_pages} outcome='${appletalk.printer.last_outcome}' status='${appletalk.printer.status}'"
+
+# The document printed: one page, clean outcome, and the printer is idle again.
+assert appletalk.printer.documents >= 1 "no document was produced"
+assert appletalk.printer.last_pages == 1 "the printed document is not one page"
+assert appletalk.printer.last_outcome == "ok" "the job did not finish cleanly"
+assert appletalk.printer.status == "status: idle" "the printer is not idle after the job"
+
+echo done
+quit

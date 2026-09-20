@@ -128,6 +128,24 @@ construction, not through the bridge slot:
   [`voodoo2_gpu_protocol.h`](../src/core/peripherals/pci/cards/voodoo2_gpu_protocol.h)
   / `voodoo2Protocol.ts`.
 
+- **`Module.onPrinterAttach(ctrl, version)`** — the emulated LaserWriter's
+  interpreter (`src/platform/wasm/em_main.c`,
+  `laserwriter_ring_attach_requested`): the printer bridge allocated a
+  control block + two byte rings at `ctrl` in the shared heap on the
+  first print job and wants the page's platen worker attached.
+  [`printer/platen.ts`](../app/web2/src/printer/platen.ts) starts
+  [`printer/platen.worker.ts`](../app/web2/src/printer/platen.worker.ts)
+  then (lazily: the worker fetches its own non-threaded module,
+  `platen-<version>.js` beside `main.mjs`, built by `make platen-module`),
+  and posts the wasm memory and the address; the worker parks in
+  `Atomics.waitAsync` on the outbound ring's head while the C side wakes
+  it with `emscripten_futex_wake`.  Each finished PDF comes back to the
+  page as a transferable and is downloaded at once as
+  `<job>-<title>.pdf`.  The protocol is
+  [`laserwriter_ring_protocol.h`](../src/core/network/laserwriter_ring_protocol.h)
+  / `printer/platenProtocol.ts`; the whole path is
+  [`docs/core/network/laserwriter.md`](../core/network/laserwriter.md) §5.5.
+
 These callbacks are the template for any future C→JS event: install on
 `Module.*`, fire from C with `MAIN_THREAD_*_EM_ASM`. No exports, no
 SAB plumbing, no JS-side timers. (A previous `onPromptChange` callback

@@ -40,6 +40,10 @@
 static scc_t *g_scc = NULL;
 static scheduler_t *g_scheduler = NULL;
 
+scheduler_t *atalk_scheduler(void) {
+    return g_scheduler;
+}
+
 // Object-model class descriptors live near the bottom of the file but
 // appletalk_init / appletalk_delete reference them.
 extern const class_desc_t atalk_class;
@@ -212,6 +216,13 @@ static struct {
 static int g_llap_rts_event_token;
 static int g_llap_kick_event_token;
 static double g_llap_wire_busy_until_ns; // scheduler time the wire frees up
+// Set between answering the guest's lapRTS with lapCTS and the arrival of
+// its data frame: the wire is reserved for that dialog, and our own lapRTS
+// must wait (see llap_wire_note_peer_frame).
+static bool g_llap_peer_reserved;
+// The longest LLAP frame on the wire (header + data + CRC + flags), the
+// reservation's ceiling should the guest never send the frame it asked for.
+#define LLAP_MAX_FRAME_NS ((3.0 + LLAP_DATA_MAX_SIZE + 4.0) * LLAP_BYTE_NS)
 static void llap_rts_timeout_cb(void *source, uint64_t data);
 static void llap_rts_kick_cb(void *source, uint64_t data);
 static void llap_wire_send(const uint8_t *buf, size_t total);
@@ -230,6 +241,7 @@ static void llap_rts_reset(void) {
     }
     memset(&g_llap_rts, 0, sizeof(g_llap_rts));
     g_llap_wire_busy_until_ns = 0;
+    g_llap_peer_reserved = false;
 }
 
 // A data frame of `total` bytes just went out: the wire stays busy for its
@@ -240,6 +252,39 @@ static void llap_wire_note_busy(size_t total) {
     double until = scheduler_time_ns(g_scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
     if (until > g_llap_wire_busy_until_ns)
         g_llap_wire_busy_until_ns = until;
+}
+
+// The guest's frames occupy the wire too.  The SCC completes the driver's
+// transmission the instant it finishes writing (wr0's faked underrun), so a
+// frame reaches us with none of its wire time elapsed: hold the wire for that
+// time plus the interframe gap, as llap_wire_note_busy does for our own.
+// Without this our lapRTS went out in the same instant the guest finished a
+// frame -- or between its lapRTS and the data frame that follows -- which on
+// real LocalTalk cannot happen; the driver, still transmitting, never saw it,
+// and a read it had outstanding never completed.
+static void llap_wire_note_peer_frame(size_t total) {
+    if (!g_scheduler)
+        return;
+    double until = scheduler_time_ns(g_scheduler) + (double)total * LLAP_BYTE_NS + LLAP_IFG_NS;
+    if (g_llap_peer_reserved) {
+        // The frame the reservation was for has arrived; only its own wire
+        // time remains, not the reservation's ceiling.
+        g_llap_peer_reserved = false;
+        g_llap_wire_busy_until_ns = until;
+    } else if (until > g_llap_wire_busy_until_ns) {
+        g_llap_wire_busy_until_ns = until;
+    }
+}
+
+// We answered the guest's lapRTS with lapCTS: its data frame is next on the
+// wire.  Reserve the wire until it arrives, up to the longest frame.
+static void llap_wire_reserve_for_peer(void) {
+    if (!g_scheduler)
+        return;
+    double until = scheduler_time_ns(g_scheduler) + LLAP_IFG_NS + LLAP_MAX_FRAME_NS;
+    if (until > g_llap_wire_busy_until_ns)
+        g_llap_wire_busy_until_ns = until;
+    g_llap_peer_reserved = true;
 }
 
 static void llap_rts_kick(void);
@@ -375,6 +420,7 @@ void llap_in(const uint8_t *buf, size_t len) {
     header.dst = buf[0];
     header.src = buf[1];
     header.type = buf[2];
+    llap_wire_note_peer_frame(len);
 
     // LLAP rx hexdump at high verbosity
     log_hex(11, "LLAP rx dump", buf, len);
@@ -416,6 +462,7 @@ void llap_in(const uint8_t *buf, size_t len) {
             cts.type = LLAP_CTS;
             LOG(11, "LLAP send CTS to=%02X", (unsigned)cts.dst);
             llap_send(&cts, NULL, 0);
+            llap_wire_reserve_for_peer();
         }
         break;
 
@@ -3498,6 +3545,42 @@ static value_t atalk_printer_attr_set_name(struct object *self, const member_t *
     value_free(&in);
     return val_none();
 }
+static value_t atalk_printer_attr_status(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_str(atalk_printer_status_text());
+}
+static value_t atalk_printer_attr_interpreter(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_bool(atalk_printer_has_interpreter());
+}
+static value_t atalk_printer_attr_capture(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_bool(atalk_printer_capture_get());
+}
+static value_t atalk_printer_attr_set_capture(struct object *self, const member_t *m, value_t in) {
+    (void)self;
+    (void)m;
+    atalk_printer_capture_set(in.b);
+    return val_none();
+}
+static value_t atalk_printer_attr_documents(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_int(atalk_printer_documents());
+}
+static value_t atalk_printer_attr_last_pages(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_int(atalk_printer_last_pages());
+}
+static value_t atalk_printer_attr_last_outcome(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    return val_str(atalk_printer_last_outcome());
+}
 
 static const member_t atalk_printer_members[] = {
     {.kind = M_ATTR,
@@ -3510,7 +3593,36 @@ static const member_t atalk_printer_members[] = {
      .attr = {.type = V_STRING,
               .validation_flags = OBJ_ARG_NONEMPTY,
               .get = atalk_printer_attr_name,
-              .set = atalk_printer_attr_set_name}                                                      },
+              .set = atalk_printer_attr_set_name}},
+    {.kind = M_ATTR,
+     .name = "status",
+     .doc = "PAP status string as the workstation reads it",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_printer_attr_status}},
+    {.kind = M_ATTR,
+     .name = "interpreter",
+     .doc = "True when the build links the PostScript interpreter (PLATEN=1)",
+     .flags = VAL_RO,
+     .attr = {.type = V_BOOL, .get = atalk_printer_attr_interpreter}},
+    {.kind = M_ATTR,
+     .name = "capture",
+     .doc = "Also write each job's PostScript to the spool file",
+     .attr = {.type = V_BOOL, .get = atalk_printer_attr_capture, .set = atalk_printer_attr_set_capture}},
+    {.kind = M_ATTR,
+     .name = "documents",
+     .doc = "Documents the interpreter has handed to the platform",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = atalk_printer_attr_documents}},
+    {.kind = M_ATTR,
+     .name = "last_pages",
+     .doc = "Pages of the last finished job",
+     .flags = VAL_RO,
+     .attr = {.type = V_INT, .get = atalk_printer_attr_last_pages}},
+    {.kind = M_ATTR,
+     .name = "last_outcome",
+     .doc = "Outcome of the last finished job: ok, error: <name> in <command>, budget",
+     .flags = VAL_RO,
+     .attr = {.type = V_STRING, .get = atalk_printer_attr_last_outcome}},
 };
 
 const class_desc_t atalk_printer_class = {

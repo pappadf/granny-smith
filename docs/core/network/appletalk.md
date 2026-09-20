@@ -153,7 +153,16 @@ If A receives no CTS, it backs off randomly before retrying.
 ## 5. Implementation Notes (for emulation)
 
 * Simulate per-node transmit queues and random back-off.
-* Enforce single-talker rule: only one active transmission at a time.
+* Enforce single-talker rule: only one active transmission at a time. The
+  emulator keeps one "wire busy until" time on the scheduler and holds its
+  own lapRTS until then. It is advanced by the emulator's data frames
+  (wire time + IFG) and, since the SCC completes the guest's transmission
+  the instant the driver finishes writing, by every frame received from
+  the guest as well; answering the guest's lapRTS with lapCTS reserves
+  the wire until its data frame arrives (ceiling: one maximal frame).
+  Without the guest's side the emulator opened dialogs while the guest,
+  on a real line, was still sending, and the guest's driver never saw
+  those frames.
 * Maintain NodeID map (1–254) → MAC instance.
 * Treat broadcast (**255**) as multi-cast to all nodes.
 * CRC-CCITT calculated over Dest..Data fields; initial value = 0xFFFF.

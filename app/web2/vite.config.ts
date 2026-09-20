@@ -7,13 +7,16 @@ import { join, resolve } from 'node:path';
 const buildDir = resolve(fileURLToPath(new URL('../../build', import.meta.url)));
 
 // Phase 3: serve build/main.{mjs,wasm}, build/wasm/*, build/coi-serviceworker.js
-// from /<repo>/build/ directly via dev + preview middleware. No copy step is
-// needed during dev; `make ui2` copies these into dist/ for production.
+// and the LaserWriter interpreter's module build/platen-<version>.{js,wasm}
+// (`make platen-module`) from /<repo>/build/ directly via dev + preview
+// middleware. No copy step is needed during dev; `make ui2` copies these
+// into dist/ for production.
 function serveBuildArtifacts(): Plugin {
   const matchers: RegExp[] = [
     /^\/main\.mjs(\?.*)?$/,
     /^\/main\.wasm(\?.*)?$/,
     /^\/coi-serviceworker\.js(\?.*)?$/,
+    /^\/platen-[0-9A-Za-z.-]+\.(js|wasm)(\?.*)?$/,
     /^\/wasm\//,
   ];
 

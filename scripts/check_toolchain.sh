@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-REQ=4.0.10
+REQ=6.0.7
 if ! command -v emcc >/dev/null 2>&1; then
   echo "[toolchain] emcc missing (expected $REQ). Do NOT run emsdk install inside agent; base image must supply it." >&2
   exit 2

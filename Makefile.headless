@@ -48,6 +48,12 @@ PEELER_DIR    := src/peeler
 
 include src/core/peripherals/nubus/vrom68k/vrom68k.mk
 
+# -- EfterScript platen (PLATEN=1) and the embedded LaserWriter prelude --
+# Defines PLATEN, PLATEN_CFLAGS, PLATEN_LIB_NATIVE, PLATEN_NATIVE_LIBS,
+# LASERWRITER_OUT and the rule for LASERWRITER_PRELUDE_HEADER.
+
+include src/core/network/laserwriter.mk
+
 # -- Include paths --
 # Platform headers come first so platform.h overrides are picked up.
 
@@ -83,7 +89,8 @@ INCLUDES := -I$(PLATFORM_DIR) \
             -I$(MACHINES_DIR)/lisa \
             -I$(PEELER_DIR)/include \
             -I$(PEELER_DIR)/lib \
-            -I$(VROM68K_OUT)
+            -I$(VROM68K_OUT) \
+            -I$(LASERWRITER_OUT)
 
 # -- Source discovery --
 # Wildcard patterns auto-discover new .c files in each subdirectory.
@@ -123,6 +130,11 @@ PEELER_SRC := $(PEELER_DIR)/lib/peeler.c \
               $(PEELER_DIR)/lib/formats/sit13.c \
               $(PEELER_DIR)/lib/formats/sit15.c
 
+# The LaserWriter bridge reaches its interpreter through one transport per
+# build (laserwriter_transport.h): headless links the platen library and
+# calls it directly; the ring transport is the browser's (Makefile).
+CORE_SRC := $(filter-out $(CORE_DIR)/network/laserwriter_transport_ring.c,$(CORE_SRC))
+
 # All sources
 SRC := $(CORE_SRC) $(PLATFORM_SRC) $(PEELER_SRC)
 
@@ -135,8 +147,26 @@ OUTPUT := $(BUILD_DIR)/gs-headless
 
 # -- Combined flags --
 
-CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(EXTRA_CFLAGS)
+CFLAGS  := $(CFLAGS_BASE) $(CFLAGS_MODE) $(INCLUDES) $(PLATEN_CFLAGS) $(EXTRA_CFLAGS)
 LDFLAGS := $(LDFLAGS_MODE) -lpthread -lm
+
+# With PLATEN=1 the platen archive goes on the link line after the objects
+# (an archive resolves only what precedes it), followed by exactly the
+# system libraries the Rust staticlib reports needing.  The archive is
+# fetched from the pinned EfterScript release on demand (or taken from
+# PLATEN_DIR); see laserwriter.mk.
+ifeq ($(PLATEN),1)
+PLATEN_LDLIBS := $(PLATEN_LIB_NATIVE) $(PLATEN_NATIVE_LIBS)
+PLATEN_PREREQS := $(PLATEN_LIB_NATIVE) $(PLATEN_HEADER)
+else
+PLATEN_LDLIBS :=
+PLATEN_PREREQS :=
+endif
+
+# PLATEN changes what the printer compiles to; a stamp named after the
+# value is a prerequisite of every object, so toggling the switch rebuilds
+# the tree instead of mixing objects compiled either way.
+PLATEN_STAMP := $(BUILD_DIR)/platen-$(PLATEN).stamp
 
 # -- Targets --
 
@@ -158,10 +188,20 @@ $(BUILD_DIR)/$(CORE_DIR)/build_id.o: FORCE
 # tracking; the stale-blob failure mode is gone).
 $(BUILD_DIR)/$(CORE_DIR)/peripherals/nubus/gsvrom_data.o: $(VROM68K_HEADER)
 
+# laserwriter_job.c embeds the generated prelude header.
+$(BUILD_DIR)/$(CORE_DIR)/network/laserwriter_job.o: $(LASERWRITER_PRELUDE_HEADER)
+
+# The PLATEN stamp: creating it (a value change) outdates every object.
+$(PLATEN_STAMP):
+	@mkdir -p $(dir $@)
+	@rm -f $(BUILD_DIR)/platen-*.stamp
+	@touch $@
+$(OBJ): $(PLATEN_STAMP) $(PLATEN_PREREQS)
+
 # Link all objects into the headless binary
 $(OUTPUT): $(OBJ)
 	@mkdir -p $(dir $@)
-	$(CC) $(OBJ) -o $@ $(LDFLAGS)
+	$(CC) $(OBJ) -o $@ $(PLATEN_LDLIBS) $(LDFLAGS)
 	@echo "Built: $@"
 
 # Include auto-generated header dependency files
@@ -182,6 +222,7 @@ clean:
 info:
 	@echo "CC:       $(CC)"
 	@echo "MODE:     $(MODE)"
+	@echo "PLATEN:   $(PLATEN) ($(PLATEN_DIR))"
 	@echo "CFLAGS:   $(CFLAGS)"
 	@echo "LDFLAGS:  $(LDFLAGS)"
 	@echo "OUTPUT:   $(OUTPUT)"

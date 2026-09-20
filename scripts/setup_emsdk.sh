@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Idempotent installer for a pinned Emscripten toolchain (4.0.10 by default).
+# Idempotent installer for a pinned Emscripten toolchain (6.0.7 by default).
 # Usage: scripts/setup_emsdk.sh [version]
 set -euo pipefail
 
-REQ_VERSION="${1:-4.0.10}"
+REQ_VERSION="${1:-6.0.7}"
 INSTALL_DIR="${EMSDK_ROOT:-$PWD/.emsdk}" # local clone to avoid polluting system
 
 if command -v emcc >/dev/null 2>&1; then
