@@ -1540,7 +1540,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->asc_iface = asc_get_memory_interface(st->asc);
     st->floppy_iface = floppy_get_memory_interface(st->floppy);
 
-    st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, checkpoint);
+    st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, cfg->scheduler, checkpoint);
     st->oss_iface = oss_get_memory_interface(st->oss);
     asc_set_irq_handler(st->asc, iifx_asc_irq, cfg); // sound IRQ → OSS source 8
     scsi_set_irq_callback(cfg->scsi, iifx_scsi_irq, cfg);

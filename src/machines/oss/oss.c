@@ -7,6 +7,7 @@
 #include "oss.h"
 
 #include "log.h"
+#include "scheduler.h"
 #include "system.h"
 
 #include <stdlib.h>
@@ -40,12 +41,18 @@ struct oss {
     uint16_t pending;
     uint8_t rom_ctrl;
     uint8_t counter_ctl;
-    uint64_t counter;
+    // Free-running counter, derived from emulated time rather than stored as
+    // a running value: `counter_base` is its value at `counter_base_ns`, and
+    // a read adds the elapsed ticks.  Writing the control register rebases
+    // both, so start/stop is exact.  See oss_counter_value().
+    uint64_t counter_base;
+    uint64_t counter_base_ns;
 
     memory_interface_t memory_interface;
     oss_irq_fn irq_cb;
     oss_control_fn control_cb;
     void *cb_context;
+    struct scheduler *scheduler; // counter time base; not checkpointed
 };
 
 // Notifies the owning machine that CPU IPL may need recomputing.
@@ -73,6 +80,33 @@ static void clear_status_byte(oss_t *oss, uint32_t lane, uint8_t value) {
         oss_notify(oss);
 }
 
+// Current value of the free-running counter.
+//
+// The counter advances with EMULATED TIME.  It used to be incremented once per
+// byte read -- so reading it as eight byte accesses advanced it eight times, a
+// 32-bit read four times, and its rate was a function of the guest's own
+// access pattern rather than of time (05-chipsets-irq F-14).  Every other
+// timer in the tree is scheduler-derived: VIA T1/T2, the RBV and DAFB Swatch,
+// the PSC's sndPhase/UTSC, the PPC decrementer.  The OSS was the outlier.
+//
+// RATE IS UNATTESTED.  Neither the F19 theory-of-operation volumes nor
+// docs/machines/oss/iifx.md states what clock drives it, so this follows the
+// precedent the finding names -- psc_utsc(), which is scheduler_time_ns()/1000
+// -- and ticks at 1 MHz.  Nothing in the corpus reads the counter at all
+// (measured across iifx-mactest, iifx-marathon and iifx-install-76: zero
+// reads), so no behaviour depends on the choice today; a source that settles
+// the real rate should change the divisor here and nothing else.
+//
+// Control bit 0 stops the count.  A read is now side-effect-free, which also
+// means a memory.peek of $208-$20F no longer perturbs guest-visible state.
+static uint64_t oss_counter_value(const oss_t *oss) {
+    if (oss->counter_ctl & 1u)
+        return oss->counter_base; // stopped: frozen where it was rebased
+    uint64_t now_ns = (uint64_t)scheduler_time_ns(oss->scheduler);
+    uint64_t elapsed_us = (now_ns - oss->counter_base_ns) / 1000u;
+    return oss->counter_base + elapsed_us;
+}
+
 // Reads one OSS byte register.
 static uint8_t oss_read_uint8(void *device, uint32_t addr) {
     oss_t *oss = (oss_t *)device;
@@ -95,9 +129,7 @@ static uint8_t oss_read_uint8(void *device, uint32_t addr) {
         return 0;
     }
     if (offset >= OSS_COUNTER && offset < OSS_COUNTER + 8) {
-        uint64_t value = oss->counter;
-        if ((oss->counter_ctl & 1u) == 0)
-            oss->counter++;
+        uint64_t value = oss_counter_value(oss);
         return (uint8_t)(value >> ((7u - ((offset - OSS_COUNTER) & 7u)) * 8u));
     }
 
@@ -165,6 +197,10 @@ static void oss_write_uint8(void *device, uint32_t addr, uint8_t value) {
         return;
     }
     if (offset == OSS_COUNTER_CTL) {
+        // Rebase across the transition so neither starting nor stopping the
+        // counter loses or invents ticks.
+        oss->counter_base = oss_counter_value(oss);
+        oss->counter_base_ns = (uint64_t)scheduler_time_ns(oss->scheduler);
         oss->counter_ctl = value;
         return;
     }
@@ -189,7 +225,8 @@ static void oss_write_uint32(void *device, uint32_t addr, uint32_t value) {
 }
 
 // Creates an OSS instance with ROM-like default source priorities.
-oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, checkpoint_t *checkpoint) {
+oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, struct scheduler *scheduler,
+                checkpoint_t *checkpoint) {
     oss_t *oss = calloc(1, sizeof(*oss));
     if (!oss)
         return NULL;
@@ -197,6 +234,7 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, che
     oss->irq_cb = irq_cb;
     oss->control_cb = control_cb;
     oss->cb_context = context;
+    oss->scheduler = scheduler;
     oss->rom_ctrl = 0x0d;
 
     // Default level[] state.  These specific non-zero values are what
@@ -248,7 +286,8 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, che
         system_read_checkpoint_data(checkpoint, &oss->pending, sizeof(oss->pending));
         system_read_checkpoint_data(checkpoint, &oss->rom_ctrl, sizeof(oss->rom_ctrl));
         system_read_checkpoint_data(checkpoint, &oss->counter_ctl, sizeof(oss->counter_ctl));
-        system_read_checkpoint_data(checkpoint, &oss->counter, sizeof(oss->counter));
+        system_read_checkpoint_data(checkpoint, &oss->counter_base, sizeof(oss->counter_base));
+        system_read_checkpoint_data(checkpoint, &oss->counter_base_ns, sizeof(oss->counter_base_ns));
     }
 
     return oss;
@@ -267,7 +306,8 @@ void oss_checkpoint(oss_t *oss, checkpoint_t *checkpoint) {
     system_write_checkpoint_data(checkpoint, &oss->pending, sizeof(oss->pending));
     system_write_checkpoint_data(checkpoint, &oss->rom_ctrl, sizeof(oss->rom_ctrl));
     system_write_checkpoint_data(checkpoint, &oss->counter_ctl, sizeof(oss->counter_ctl));
-    system_write_checkpoint_data(checkpoint, &oss->counter, sizeof(oss->counter));
+    system_write_checkpoint_data(checkpoint, &oss->counter_base, sizeof(oss->counter_base));
+    system_write_checkpoint_data(checkpoint, &oss->counter_base_ns, sizeof(oss->counter_base_ns)); // mirrors the save
 }
 
 // Returns the OSS memory interface.
