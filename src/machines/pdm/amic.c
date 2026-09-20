@@ -1087,6 +1087,17 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
     case OFF_DMA:
     case OFF_DMA + 0x1000:
         return dma_read(cfg, offset - OFF_DMA);
+    case OFF_EPROM:
+    case OFF_MACE:
+        // Declared in the decode, nothing behind them yet (05-chipsets-irq
+        // F-25).  The finding's own suggestion is to delete the two defines;
+        // two proposals say not to -- multi-cpu §11.5 wants Grand Central's
+        // OFF_EPROM wired as an IPI, and localtalk-networking keeps MACE as a
+        // stub with a real model as future work.  So the windows stay and
+        // read $FF: a decoded window with no part on it floats, and pull-ups
+        // carry it high, which is the same reasoning mac030_board_desc's
+        // io_unmapped_read records for the other five families.
+        return 0xFFu;
     default:
         LOG(2, "read of unwired island offset $%05X", offset);
         return 0;

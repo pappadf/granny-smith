@@ -210,6 +210,16 @@ def row_pdm_nubus_empty() {
     assert machine.amic.chip == "AMIC" "pdm-nubus-empty: machine.amic missing"
     assert machine.amic.enabled == 0x3F "pdm-nubus-empty: AMIC should report six ICR sources"
     assert machine.amic.mode == 0 "pdm-nubus-empty: AMIC INTMODE should be 0 out of reset"
+
+    # The Ethernet ID PROM ($50F08000) and MACE ($50F0A000) windows are
+    # declared in the AMIC decode with nothing behind them yet.  They read
+    # $FF, not 0: a decoded window with no part on it floats and the
+    # pull-ups carry it high, which is what io_unmapped_read records for
+    # the five mac030 families (05-chipsets-irq F-25).  The defines stay --
+    # multi-cpu §11.5 wants OFF_EPROM wired as an IPI and
+    # localtalk-networking keeps MACE as a stub.
+    assert machine.memory.peek.b(0x50F08000) == 0xFF "pdm: Ethernet ID PROM window should float high"
+    assert machine.memory.peek.b(0x50F0A000) == 0xFF "pdm: MACE window should float high"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
     assert try(machine.nubus.slot[14].card.name, none) == none "slot E is populated"
     # The connectors are $C/$D/$E, and $B is NOT one of them.  This is not
