@@ -33,6 +33,7 @@ import {
   onVoodooGpuOverlay,
   whenVoodooGpuReady,
 } from '@/gpu/voodoo2Gpu.svelte';
+import { onPrinterAttach } from '@/printer/platen';
 import { getOrCreateMachine } from '@/lib/machineId';
 import { routePrintLine, routeLogEmit } from './logSink';
 import { resetDebugSections } from '@/state/debug.svelte';
@@ -103,6 +104,7 @@ interface EmscriptenModuleConfig {
   onVoodooGpuAttach?(ctrl: number, bytes: number): void;
   onVoodooGpuDetach?(ctrl: number): void;
   onVoodooGpuOverlay?(visible: number): void;
+  onPrinterAttach?(ctrl: number, version: string): void;
 }
 
 type CreateModule = (config: EmscriptenModuleConfig) => Promise<EmscriptenModule>;
@@ -184,6 +186,7 @@ export async function bootstrap(canvas: HTMLCanvasElement, wasmArgs: string[] = 
     onVoodooGpuAttach,
     onVoodooGpuDetach,
     onVoodooGpuOverlay,
+    onPrinterAttach,
   });
 
   bridgePtr = Module._get_js_bridge();

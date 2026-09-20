@@ -17,6 +17,7 @@
 #include <emscripten/atomic.h>
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
+#include <emscripten/threading.h>
 #include <emscripten/version.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -49,6 +50,7 @@
 #include "checkpoint_machine.h"
 #include "cpu.h"
 #include "keyboard.h"
+#include "laserwriter_transport.h"
 #include "log.h"
 #include "machine.h"
 #include "mouse.h"
@@ -960,6 +962,34 @@ int gs_find_media(const char *dir_path, const char *dest) {
 
     printf("%s\n", found_path);
     return 0;
+}
+
+// ============================================================================
+// LaserWriter interpreter worker (the ring transport's platform hooks)
+// ============================================================================
+// The printer bridge runs its PostScript interpreter in the page's platen
+// worker (app/web2/src/printer/), reached through a shared-memory ring
+// (laserwriter_ring_protocol.h).  The finished PDF never enters the core
+// here: the worker posts it to the page, which downloads it — so there is
+// no laserwriter_sink_document override on this platform (the weak default
+// in laserwriter_job.c is never reached: the ring result carries no bytes).
+
+// The bridge allocated its control block at `ctrl_addr` (emulation
+// pthread): ask the page to start the worker and attach it, the way
+// em_gpu.c reaches Module.onVoodooGpuAttach.  The library version names
+// the module file the page fetches (platen-<version>.js, laserwriter.mk).
+void laserwriter_ring_attach_requested(uintptr_t ctrl_addr) {
+    static const char version[] = GS_PLATEN_VERSION;
+    // clang-format off
+    MAIN_THREAD_ASYNC_EM_ASM(
+        { if (typeof Module.onPrinterAttach === 'function') Module.onPrinterAttach($0, UTF8ToString($1)); },
+        (uint32_t)ctrl_addr, version);
+    // clang-format on
+}
+
+// Wakes the worker parked in Atomics.waitAsync on a control word.
+void laserwriter_ring_notify(volatile uint32_t *addr) {
+    emscripten_futex_wake(addr, INT_MAX);
 }
 
 // Download command - save file to browser

@@ -1,0 +1,58 @@
+%!PS
+% Host prelude for the emulated LaserWriter's PostScript interpreter.
+% Embedded at build time (laserwriter.mk -> build/laserwriter/
+% laserwriter_prelude.h) and run once per job at the server level before
+% the workstation's program, so everything defined here is what the driver
+% finds in the device.
+%
+% What the driver's setup code asks the device: statusdict timeouts and
+% feed state, the Level 1 page-size procedures, and the userdict page-type
+% procedures the LaserWriter family provides. Written from the published
+% language reference; nothing here is taken from a driver.
+%
+% The identity (product, version, revision) is not defined here: it is
+% seeded by laserwriter_job.c as statusdict identity entries, which the
+% interpreter mirrors into systemdict, so the two cannot disagree.
+statusdict begin
+  /manualfeed false def
+  /manualfeedtimeout 60 def
+  /waittimeout 300 def
+  /jobname () def
+  /jobstate (idle) def
+  /pagecount 0 def
+  % width height orientation setpage
+  /setpage { pop 2 array astore << /PageSize 3 -1 roll >> setpagedevice } bind def
+  % width height offset orientation setpageparams
+  /setpageparams { pop pop 2 array astore << /PageSize 3 -1 roll >> setpagedevice } bind def
+end
+/letter { << /PageSize [612 792] >> setpagedevice } bind def
+/legal { << /PageSize [612 1008] >> setpagedevice } bind def
+/a4 { << /PageSize [595 842] >> setpagedevice } bind def
+/b5 { << /PageSize [516 729] >> setpagedevice } bind def
+/note { letter } bind def
+/lettersmall { letter } bind def
+/a4small { a4 } bind def
+/11x17 { << /PageSize [792 1224] >> setpagedevice } bind def
+/tabloid { 11x17 } bind def
+% The 13 resident faces, registered so the driver's font-list query
+% reports them (findfont resolves a face but does not register it).  With
+% them the driver substitutes the printer's outline faces instead of
+% downloading bitmap fonts, and the job is a third shorter.  This was left
+% out at first because the shorter job tripped a LocalTalk fault (the
+% printer answering in the same instant the guest was transmitting); that
+% fault is fixed in the link layer (docs/notes/2026-09-16-efterscript-
+% platen-bridge.md, "The rebase regression, and the PAP fix"), and the
+% acceptance row passes with the registration in place.
+FontDirectory /Courier /Courier findfont put
+FontDirectory /Courier-Bold /Courier-Bold findfont put
+FontDirectory /Courier-Oblique /Courier-Oblique findfont put
+FontDirectory /Courier-BoldOblique /Courier-BoldOblique findfont put
+FontDirectory /Helvetica /Helvetica findfont put
+FontDirectory /Helvetica-Bold /Helvetica-Bold findfont put
+FontDirectory /Helvetica-Oblique /Helvetica-Oblique findfont put
+FontDirectory /Helvetica-BoldOblique /Helvetica-BoldOblique findfont put
+FontDirectory /Times-Roman /Times-Roman findfont put
+FontDirectory /Times-Bold /Times-Bold findfont put
+FontDirectory /Times-Italic /Times-Italic findfont put
+FontDirectory /Times-BoldItalic /Times-BoldItalic findfont put
+FontDirectory /Symbol /Symbol findfont put

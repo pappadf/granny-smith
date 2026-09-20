@@ -49,6 +49,12 @@ static inline uint16_t reverse16(uint16_t x)
     return x;
 }
 
+// Bit helpers the SCSI core calls; defined in stub_platform.c.  Declared here
+// so a suite that compiles scsi.c sees a prototype (GCC 14 rejects the
+// implicit declaration that GCC 13 only warned about).
+int platform_bsr32(uint32_t value);
+int platform_ntz32(uint32_t mask);
+
 static inline uint64_t platform_ticks(void) { return 0; }
 static inline double host_time(void) { return 0.0; }
 

@@ -91,7 +91,7 @@ For build, test, and contribution instructions, see [CONTRIBUTING.md](CONTRIBUTI
 - **Firefox** - works partially; some compatibility problems remain
 - **Ethernet** - the Quadras' SONIC and the AV machines' MACE controllers are modeled at the register/self-test level but are not bridged to a network; networking is AppleTalk over LocalTalk (serial) only
 - **Sound input** - not modeled on any machine; the Quadras' EASC currently runs as an ASC-compatible core, and the AV machines' Singer/AWACS sound is not modeled at all
-- **LaserWriter** - printer is identified, but print jobs don't complete correctly
+- **LaserWriter** - printing works in the headless build when it is compiled with `PLATEN=1`, which links the EfterScript session library to interpret the job and produce a PDF; the default build still only spools the job, and the browser build does not yet link the interpreter (see `docs/core/network/laserwriter.md`)
 
 ## A Note on AI
 

@@ -40,14 +40,14 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
 ## Tools and Environments
 
 **Devcontainer (recommended):**
-- Prebuilt image: `ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk4.0.10-node22`
-- All prerequisites preinstalled: Emscripten 4.0.10, Node.js 22.x, Playwright, build tools
+- Prebuilt image: `ghcr.io/pappadf/granny-smith-dev:ubuntu24-emsdk6.0.7-node22`
+- All prerequisites preinstalled: Emscripten 6.0.7, Node.js 22.x, Playwright, build tools
 
 **Manual setup (outside devcontainer):**
-1. Install Emscripten 4.0.10:
+1. Install Emscripten 6.0.7:
    ```bash
    git clone https://github.com/emscripten-core/emsdk
-   cd emsdk && ./emsdk install 4.0.10 && ./emsdk activate 4.0.10
+   cd emsdk && ./emsdk install 6.0.7 && ./emsdk activate 6.0.7
    source ./emsdk_env.sh
    ```
 2. Install Node.js 18+ and npm
@@ -57,7 +57,7 @@ Emulator modules (e.g., scsi, cpu, via, scc, rtc) have `.c`/`.h` files in `src/c
    npx playwright install --with-deps chromium
    ```
 
-**Required tools:** `emcc` (4.0.10), `make`, `node` (18+), `python3`, `git`,
+**Required tools:** `emcc` (6.0.7), `make`, `node` (18+), `python3`, `git`,
 `binutils-m68k-linux-gnu` (2.42+; assembles the generic NuBus declaration-ROM
 68K fragments — `src/core/peripherals/nubus/vrom68k/`. Any m68k-targeted
 binutils works; override `M68K_AS`/`M68K_OBJCOPY` if yours differ. Shipped in
