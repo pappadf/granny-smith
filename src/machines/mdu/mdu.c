@@ -10,6 +10,7 @@
 #include "mdu.h"
 #include "appletalk.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -145,7 +146,7 @@ static void mdu_teardown(config_t *cfg) {
 
 static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mac030_mdu_state_t *st = mdu_st(cfg);
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(st->adb, cp);
     if (st->egret) // IIsi only; IIci leaves egret NULL
         egret_checkpoint(st->egret, cp);

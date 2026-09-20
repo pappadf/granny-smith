@@ -435,7 +435,7 @@ typedef struct hw_profile {
     //
     // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
     // included, builds through mac030_build_core + mac030_build_lowspeed,
-    // checkpoints through mac030_checkpoint_save_core, and tears down through
+    // checkpoints through machine_checkpoint_save_core, and tears down through
     // machine_teardown_config_devices.  What a family keeps for itself is what
     // its hardware actually does differently -- for the IIfx, the OSS
     // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA

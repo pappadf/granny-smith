@@ -24,6 +24,7 @@
 #include "image.h"
 #include "iop.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
@@ -1643,7 +1644,7 @@ static void iifx_teardown(config_t *cfg) {
 // Saves an IIfx checkpoint.
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     iifx_state_t *st = iifx_state(cfg);
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     // Save order must mirror iifx_init's construction order exactly: the

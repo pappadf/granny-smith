@@ -40,6 +40,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_checkpoint.h"
 #include "machine_config.h" // machine_boot_is_restart (the NVRAM carry rule)
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "pci.h"
@@ -834,13 +835,10 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
     // Same relative order as the tnt_init construction sequence (the
     // checkpoint stream is positional).
-    memory_map_checkpoint(cfg->mem_map, cp);
-    ppc_checkpoint(cfg->ppc, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    // The shared core prefix (05-chipsets-irq F-18), byte-identical to the
+    // seven lines it replaces -- see pdm.c for why the PowerPC families come
+    // out the same as the 68k ones through it.
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     tnt_dbdma_checkpoint(st->dbdma, cp);

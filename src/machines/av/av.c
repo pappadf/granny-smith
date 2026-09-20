@@ -35,6 +35,7 @@
 #include "debug.h"
 #include "image.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
@@ -786,7 +787,7 @@ static void av_teardown(config_t *cfg) {
 
 static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     av_state_t *st = av_st(cfg);
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     // Device order mirrors the checkpoint READS in av_build_devices — the
     // stream is sequential, so save and restore must walk it identically.
     av_psc_checkpoint(st->psc, cp);

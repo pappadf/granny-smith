@@ -25,6 +25,7 @@
 #include "image.h"
 #include "keyboard.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mouse.h"
 #include "rtc.h"
@@ -244,13 +245,19 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // session numbering) in the same order plus_checkpoint_save writes it.
     appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
 
-    ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
-    cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
-                            // class can find it via cfg->sound (M7f)
-
     // 7.8336 MHz / 783.36 kHz = exactly 10, so this is the literal it replaces.
     cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
+
+    // The sound chip is built AFTER the VIA now, and the save half moved with
+    // it: construction order IS restore order, and the shared checkpoint
+    // prefix ends at the VIAs (05-chipsets-irq F-18).  Neither depends on the
+    // other -- sound_init takes the map and the scheduler, via_init takes the
+    // map, the scheduler and this machine's hooks -- so the swap is only
+    // about where their blocks sit in the stream.
+    ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
+    cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
+                            // class can find it via cfg->sound (M7f)
 
     // VIA1 PA3 is the SCC's W/REQ line on a Plus, and it is held LOW at boot
     // until the SCC comes out of reset.  This used to be the core VIA's port-A
@@ -392,21 +399,14 @@ static void plus_teardown(config_t *cfg) {
 // Save complete Plus machine state to an open checkpoint stream.
 // Order must match the restore path in plus_init().
 static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-
-    // Save global interrupt state (irq) after scheduler/cpu
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
+    // The shared core prefix (05-chipsets-irq F-18): mem_map, CPU,
+    // scheduler, cfg->irq, RTC, SCC, AppleTalk, VIA1.  The Plus's own copy
+    // of those eight differed only in interposing the sound chip before the
+    // VIA; plus_init's construction moved with this.
+    machine_checkpoint_save_core(cfg, cp);
 
     plus_state_t *ps = plus_state(cfg);
     sound_checkpoint(ps ? ps->sound : NULL, cp);
-
-    via_checkpoint(cfg->via1, cp);
     mouse_checkpoint(cfg->mouse, cp);
 
     // Checkpoint list of images (path + writable) before devices that reference
@@ -462,18 +462,27 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output) {
     config_t *sim = (config_t *)context;
     plus_state_t *ps = plus_state(sim);
 
+    // via_init re-drives this callback while it restores a checkpoint, and
+    // the VIA is now built before the sound chip (see plus_init), so the
+    // half-built case is real and the sound_* entry points do not guard
+    // against NULL.  Same shape as av.c's "scc_init fires this before the
+    // PSC is built" guard.
+    sound_t *snd = ps ? ps->sound : NULL;
+
     if (port == 0) {
         floppy_set_sel_signal(sim->floppy, (output & 0x20) != 0);
 
         plus_use_video_buffer(sim, (output >> 6) & 1);
 
-        sound_use_buffer(ps->sound, (output >> 3) & 1);
-
-        sound_volume(ps->sound, output & 7);
+        if (snd) {
+            sound_use_buffer(snd, (output >> 3) & 1);
+            sound_volume(snd, output & 7);
+        }
     } else {
         rtc_input(sim->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
 
-        sound_enable(ps->sound, (output & 0x80) == 0);
+        if (snd)
+            sound_enable(snd, (output & 0x80) == 0);
     }
 }
 

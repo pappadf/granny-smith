@@ -1058,6 +1058,15 @@ static void lisa_teardown(config_t *cfg) {
 // Checkpoint
 // ============================================================
 
+// The Lisa is the one family NOT on machine_checkpoint_save_core
+// (05-chipsets-irq F-18), and not by omission: its construction order
+// genuinely differs.  It has no RTC -- the COPS keeps the time -- no
+// AppleTalk at this point, and it builds the SCC last, after both VIAs, the
+// COPS, the image list, the FDC and the ProFile.  Since save order IS
+// construction order (the stream is positional and each *_init consumes its
+// own block as it builds), adopting the shared prefix would mean reordering
+// lisa_init for no gain.  The first four lines below are the shared ones and
+// are deliberately kept in step with it.
 static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     memory_map_checkpoint(cfg->mem_map, cp);
     cpu_checkpoint(cfg->cpu, cp);

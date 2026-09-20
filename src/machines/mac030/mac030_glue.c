@@ -21,6 +21,7 @@
 #include "floppy.h"
 #include "image.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
 #include "mmu_checkpoint.h"
@@ -142,22 +143,11 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 // here -- byte-identical to the four families that used to omit the call --
 // and the restore side stays symmetric because those families never call
 // via_init() for a second VIA either.
-void mac030_checkpoint_save_core(config_t *cfg, checkpoint_t *cp) {
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp); // on the 040 families this carries the MMU register file too
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
-    via_checkpoint(cfg->via2, cp);
-}
 
 // Build the low-speed spine every 68k family shares: the RTC, the SCC at the
 // Mac's clocks, and the AppleTalk stack that rides its LocalTalk channel.
 //
-// This is the READ side of the stream mac030_checkpoint_save_core() writes,
+// This is the READ side of the stream machine_checkpoint_save_core() writes,
 // and the two must stay in step: construction order here is restore order,
 // because rtc_init, scc_init and appletalk_init each consume their own block
 // from the checkpoint as they build.  Keeping both halves in one function
@@ -466,7 +456,7 @@ static void glue_teardown(config_t *cfg) {
 
 static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(st->adb, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);

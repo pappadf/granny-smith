@@ -33,6 +33,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_checkpoint.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "nubus.h"
 #include "ppc.h"
@@ -552,13 +553,11 @@ static void pdm_teardown(config_t *cfg) {
 
 static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     pdm_state_t *st = pdm_st(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    ppc_checkpoint(cfg->ppc, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    // The shared core prefix (05-chipsets-irq F-18).  Byte-identical to the
+    // seven lines that used to be written out here: this machine has cfg->ppc
+    // and no cfg->via2, so the helper takes the ppc block, skips cfg->irq and
+    // passes straight through the second VIA.
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     // Same relative order as the pdm_init construction sequence (the

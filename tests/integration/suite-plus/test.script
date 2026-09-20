@@ -162,6 +162,30 @@ def row_plus_71_hd() {
     report_perf("suite-plus/plus-71-hd", scheduler.instr_count)
 }
 
+# ---- plus-checkpoint --------------------------------------------------------
+# The Plus had no save/restore round trip at all, which is the coverage the
+# 2026-09-03 review's F-18 needed before the family could move onto the
+# shared checkpoint prefix: the checkpoint stream is positional and has no
+# version field, so a save and its restore that drift apart do not fail at
+# the drift -- they cross-load and die later at whichever block first
+# disagrees on size (the IIfx did exactly that).  Boot to the 6.0.8 Finder,
+# save, boot a DIFFERENT machine, load, and require the restored machine to
+# be the saved one down to the pixel.
+def row_plus_checkpoint() {
+    machine.boot model="plus" ram=2048 rom="${$ROM}"
+    machine.floppy.drive[0].insert "${$ssw_608}"
+    scheduler.run 30000000
+    wait_stable(300000000)
+    check("goldens/plus-6.0.8-512x342-finder.png")
+    assert checkpoint.save("${$WORK_DIR}/suite-plus.gsc") "plus-checkpoint: save failed"
+    machine.boot model="plus" ram=1024 rom="${$ROM}"
+    assert checkpoint.load("${$WORK_DIR}/suite-plus.gsc") "plus-checkpoint: load failed"
+    scheduler.run 5000000
+    assert machine.ram == 2048 "plus-checkpoint: restored RAM size wrong"
+    check("goldens/plus-6.0.8-512x342-finder.png")
+    report_perf("suite-plus/plus-checkpoint", scheduler.instr_count)
+}
+
 # ---- row dispatch -----------------------------------------------------------
 
 if row_on("plus-beep") { row_end("plus-beep", try(row_plus_beep(), "FAILED")) }
@@ -171,6 +195,7 @@ if row_on("plus-4x-fd") { row_end("plus-4x-fd", try(row_plus_4x_fd(), "FAILED"))
 if row_on("plus-42-fd") { row_end("plus-42-fd", try(row_plus_42_fd(), "FAILED")) }
 if row_on("plus-608-fd") { row_end("plus-608-fd", try(row_plus_608_fd(), "FAILED")) }
 if row_on("plus-71-hd") { row_end("plus-71-hd", try(row_plus_71_hd(), "FAILED")) }
+if row_on("plus-checkpoint") { row_end("plus-checkpoint", try(row_plus_checkpoint(), "FAILED")) }
 
 suite_done()
 quit

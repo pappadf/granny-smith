@@ -27,6 +27,7 @@
 #include "image.h"
 #include "iop.h" // tower SCC/SWIM Apple PIC/IOPs (IIfx-compatible host aperture)
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
@@ -698,7 +699,7 @@ static void mcu_teardown(config_t *cfg) {
 
 static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mcu_state_t *st = mcu_st(cfg);
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(st->adb, cp);
     mac_checkpoint_save_images(cfg, cp);
     // Device order mirrors the build_devices construction order exactly
