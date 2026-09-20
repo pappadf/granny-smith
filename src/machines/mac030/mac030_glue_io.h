@@ -122,12 +122,16 @@ typedef struct mac030_io {
     // Diagnostic state only, and full of host pointers besides -- this whole
     // struct is rebuilt at init and never checkpointed.
     uint64_t miss_logged_read, miss_logged_write;
-    // Decode index: for each 4 KB page of the island, the first row that can
-    // contain an offset in it (MAC030_IO_NO_ROW = none).  Built by
-    // mac030_io_install from the table itself; `indexed` goes false and the
-    // engine reverts to the plain linear walk if the table is not the
-    // ascending, non-overlapping shape the index assumes (see F-43).
+    // Decode index: for each 4 KB page of the island, the span of rows that
+    // touch it -- first..last inclusive, MAC030_IO_NO_ROW when no row does.
+    // Built by mac030_io_install from the table itself (F-43).  A span, not
+    // a single row, because the table needs no particular order: the IIfx
+    // nests a 32-byte bus-error window inside the 16 KB oss_ext window and
+    // declares the narrow one FIRST so the linear walk's first-match gives
+    // it priority.  Scanning the span in table order reproduces that
+    // exactly, whatever the order and whatever overlaps.
     uint8_t page_first_row[MAC030_IO_MAX_PAGES];
+    uint8_t page_last_row[MAC030_IO_MAX_PAGES];
     uint8_t page_count;
     bool indexed;
 } mac030_io_t;

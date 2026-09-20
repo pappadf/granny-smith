@@ -312,6 +312,26 @@ TEST(test_decode_miss_is_recorded_once_per_4k) {
     ASSERT_EQ_INT((uint32_t)io2.miss_logged_read, 0x1u);
 }
 
+// The index must not require any particular table order.  The IIfx nests a
+// 32-byte bus-error window inside the 16 KB oss_ext window and declares the
+// narrow one FIRST, so the linear walk's first-match semantics carve it out
+// -- a correct table that the first cut at the index rejected outright.
+#define NEST_WIDE_BASE 0x00004000u
+#define NEST_WIDE_END  0x00008000u
+#define NEST_HOLE_BASE 0x00006000u
+#define NEST_HOLE_END  0x00006020u
+static const mac030_io_range_t k_nested[] = {
+    // the narrow carve-out, declared first, exactly as iifx.c orders it
+    {.base = NEST_HOLE_BASE, .end = NEST_HOLE_END, .penalty = 2, .read_fn = probe2_read, .debug_name = "hole"},
+    {.base = NEST_WIDE_BASE,
+     .end = NEST_WIDE_END,
+     .penalty = 2,
+     .read_fn = probe_read,
+     .write_fn = probe_write,
+     .debug_name = "wide"},
+    {0},
+};
+
 // The index must be invisible: for every board, at every offset of its
 // island, the indexed decode the dispatch path takes has to name exactly the
 // row the plain linear walk names (05-chipsets-irq F-43).
@@ -334,26 +354,19 @@ TEST(test_page_index_agrees_with_linear_decode_everywhere) {
     sweep_index_against_linear(mac030_glue_io_ranges(), GLUE_MIRROR);
     sweep_index_against_linear(mdu_io_ranges(), MDU_MIRROR);
     sweep_index_against_linear(k_probe_ranges, PROBE_MIRROR);
+    sweep_index_against_linear(k_nested, PROBE_MIRROR);
 }
 
-// The index assumes an ascending, non-overlapping table.  That was always an
-// unstated requirement of the linear walk too -- it returns the FIRST match
-// -- and nothing checked it.  A table that breaks the shape now says so and
-// gets the plain walk back, rather than being quietly half-honoured.
-static const mac030_io_range_t k_out_of_order[] = {
-    {.base = 0x00002000u, .end = 0x00003000u, .read_fn = probe2_read, .debug_name = "high_first"},
-    {.base = 0x00001000u, .end = 0x00002000u, .read_fn = probe_read, .debug_name = "low_second"},
-    {0},
-};
-
-TEST(test_misordered_table_falls_back_to_the_linear_walk) {
+TEST(test_nested_window_keeps_first_match_wins) {
     mac030_io_t io;
-    probe_io_init(&io, k_out_of_order, PROBE_MIRROR);
-    ASSERT_TRUE(!io.indexed);
-    // ...and both windows still decode, exactly as the linear walk always did.
-    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F02100u) == &k_out_of_order[0]);
-    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F01100u) == &k_out_of_order[1]);
-    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F00100u) == NULL);
+    probe_io_init(&io, k_nested, PROBE_MIRROR);
+    ASSERT_TRUE(io.indexed); // a nested table is indexable, not a fallback
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F04000u) == &k_nested[1]); // wide
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F06000u) == &k_nested[0]); // the carve-out
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F0601Fu) == &k_nested[0]);
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F06020u) == &k_nested[1]); // wide again
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F07FFFu) == &k_nested[1]);
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F08000u) == NULL);
 }
 
 // --- Bus penalties --------------------------------------------------------
@@ -449,7 +462,7 @@ int main(void) {
     RUN(test_handler_row_gets_engine_decoded_sub_offset);
     RUN(test_wide_access_straddling_a_window_edge_redecodes);
     RUN(test_page_index_agrees_with_linear_decode_everywhere);
-    RUN(test_misordered_table_falls_back_to_the_linear_walk);
+    RUN(test_nested_window_keeps_first_match_wins);
     RUN(test_decode_miss_is_recorded_once_per_4k);
     RUN(test_every_shipped_window_declares_a_bus_penalty);
     RUN(test_validate_flags_a_window_with_no_declared_penalty);

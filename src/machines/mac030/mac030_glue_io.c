@@ -113,8 +113,8 @@ static inline const mac030_io_range_t *io_find(const mac030_io_t *io, const mac0
     if (hint && offset >= hint->base && offset < hint->end)
         return hint;
     if (!io->indexed) {
-        // A table that is not ascending and non-overlapping: walk it whole,
-        // first match wins, exactly as the engine always did.
+        // No index for this board (see io_build_page_index): walk the whole
+        // table, first match wins, exactly as the engine always did.
         for (const mac030_io_range_t *r = io->ranges; r->end; r++) {
             if (offset >= r->base && offset < r->end)
                 return r;
@@ -124,13 +124,13 @@ static inline const mac030_io_range_t *io_find(const mac030_io_t *io, const mac0
     uint32_t page = offset >> 12;
     if (page >= io->page_count)
         return NULL;
-    uint8_t first = io->page_first_row[page];
+    unsigned first = io->page_first_row[page];
     if (first == MAC030_IO_NO_ROW)
         return NULL;
-    for (const mac030_io_range_t *r = io->ranges + first; r->end; r++) {
-        if (offset < r->base)
-            return NULL; // ascending and non-overlapping: nothing later can match
-        if (offset < r->end)
+    unsigned last = io->page_last_row[page];
+    // Table order within the span, so first-match still means what it meant.
+    for (const mac030_io_range_t *r = io->ranges + first; first <= last; first++, r++) {
+        if (offset >= r->base && offset < r->end)
             return r;
     }
     return NULL;
@@ -241,21 +241,27 @@ static const char *const mac030_dev_names[MAC030_DEV_COUNT] = {
     [MAC030_DEV_SWIM_IOP] = "SWIM_IOP", [MAC030_DEV_OSS] = "OSS",
 };
 
-// Build page_first_row[] from the table: for each 4 KB page of the island,
-// the index of the first row that can contain an offset in it.
+// Build the page index from the table: for each 4 KB page of the island, the
+// span of row indices that touch it.
 //
-// The index only works if the table is ascending and non-overlapping.  That
-// was always an unstated requirement -- the linear walk returns the FIRST
-// match, so an out-of-order or overlapping table already decoded to whichever
-// row happened to come first -- and nothing checked it.  Now it is checked:
-// a board that breaks the shape says so and gets the plain linear walk, which
-// behaves exactly as it always did.  (Same lesson as F-24: a table that is
-// wrong should not be quietly half-honoured.)
+// A span rather than a single row because the table needs no particular
+// order.  The first cut at this required ascending, non-overlapping rows and
+// rejected anything else -- and the IIfx table is neither: it nests a
+// 32-byte bus-error window (rpu_probe, $1E000-$1E020) inside the 16 KB
+// oss_ext window ($1C000-$20000) and declares the narrow one first, so the
+// linear walk's first-match semantics carve it out.  That is a correct
+// table, not a broken one, and the index has to reproduce it rather than
+// refuse it.  Scanning first..last in table order does exactly that, for any
+// order and any overlap.
+//
+// `indexed` still goes false, with the plain walk behind it, for a board the
+// index cannot address at all: a mirror mask that is not 2^n-1, an island
+// wider than MAC030_IO_MAX_PAGES, or more windows than a byte can name.
 static void io_build_page_index(mac030_io_t *io) {
     io->indexed = false;
     io->page_count = 0;
     for (unsigned p = 0; p < MAC030_IO_MAX_PAGES; p++)
-        io->page_first_row[p] = MAC030_IO_NO_ROW;
+        io->page_first_row[p] = io->page_last_row[p] = MAC030_IO_NO_ROW;
 
     uint32_t span = io->mirror_mask + 1u;
     if (span == 0 || (io->mirror_mask & span) != 0) {
@@ -269,24 +275,23 @@ static void io_build_page_index(mac030_io_t *io) {
         return;
     }
 
-    uint32_t prev_end = 0;
     unsigned n = 0;
     for (const mac030_io_range_t *r = io->ranges; r->end; r++, n++) {
         if (n >= MAC030_IO_NO_ROW) {
             LOG(0, "mac030 I/O: more than %u windows -- decode falls back to a linear walk", MAC030_IO_NO_ROW - 1);
             return;
         }
-        if (r->base < prev_end || r->end <= r->base || r->end > span) {
+        if (r->end <= r->base || r->end > span) {
             LOG(0,
-                "Error: mac030 I/O window '%s' ($%05X-$%05X) is out of order, empty or outside the $%05X island "
+                "Error: mac030 I/O window '%s' ($%05X-$%05X) is empty or outside the $%05X island "
                 "-- the decode index is disabled and the table falls back to a linear walk",
                 r->debug_name ? r->debug_name : "(unnamed)", r->base, r->end, span - 1u);
             return;
         }
-        prev_end = r->end;
         for (uint32_t pg = r->base >> 12; pg <= (r->end - 1u) >> 12; pg++) {
             if (io->page_first_row[pg] == MAC030_IO_NO_ROW)
                 io->page_first_row[pg] = (uint8_t)n;
+            io->page_last_row[pg] = (uint8_t)n;
         }
     }
     io->page_count = (uint8_t)pages;
