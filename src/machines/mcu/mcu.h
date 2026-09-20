@@ -25,6 +25,7 @@
 
 #include "mac030_glue.h" // shared core builder + IRQ resolver + fill_page
 #include "mac030_glue_io.h" // the shared I/O dispatch engine
+#include "mac030_rom_overlay.h"
 #include "memory.h"
 #include "system_config.h"
 
@@ -130,7 +131,7 @@ typedef struct mcu_state {
     uint8_t scc_irq_or; // level-4 requesters: bit0 = SCC chip, bit1 = SCC IOP host INT
     uint8_t scsi_irq_or; // VIA2 CB2 requesters: bit0 = internal 53C96, bit1 = external
 
-    bool rom_overlay; // true = ROM mapped at $00000000 (access-triggered drop)
+    mac030_rom_overlay_t overlay; // ROM-at-zero until the aperture is touched
     struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs live on the CPU
 
     mac030_io_t io; // device handles for the shared I/O engine
@@ -155,7 +156,6 @@ typedef struct mcu_state {
     uint8_t slot_pa_mask;
 
     memory_interface_t io_interface; // registered at the $50000000 island
-    memory_interface_t overlay_interface; // ROM-aperture trigger while overlay on
 } mcu_state_t;
 
 // The one MCU-family substrate; q700/q900/q950 bind this.

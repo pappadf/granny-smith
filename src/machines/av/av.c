@@ -482,114 +482,6 @@ static void av_map_ram(config_t *cfg) {
 // executes `JMP $40800074` as its very first instruction, so the drop
 // happens before any RAM is touched.
 
-// Fill the ROM aperture with direct pages of the 2 MB image.
-static void av_fill_rom_aperture(config_t *cfg) {
-    const av_board_desc_t *desc = av_board(cfg)->desc;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++)
-        mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
-}
-
-// Drop the overlay: RAM at zero, aperture direct.  Idempotent.
-static void av_overlay_drop(config_t *cfg) {
-    av_state_t *st = av_st(cfg);
-    if (!st->rom_overlay)
-        return;
-    st->rom_overlay = false;
-    LOG(1, "AV overlay drop: RAM at $00000000, ROM direct in aperture (pc=%08X)", cpu_get_pc(cfg->cpu));
-    av_map_ram(cfg);
-    av_fill_rom_aperture(cfg);
-}
-
-// Arm the overlay: ROM readable at zero, aperture pages routed to the
-// trigger device.  Used at cold boot and by hardware RESET.
-static void av_overlay_arm(config_t *cfg) {
-    av_state_t *st = av_st(cfg);
-    const av_board_desc_t *desc = av_board(cfg)->desc;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-
-    st->rom_overlay = true;
-
-    // ROM mapped read-only at zero (2 MB).
-    for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
-        mac030_fill_page(p, rom_data + (p << PAGE_SHIFT), false);
-
-    // Route the aperture through the trigger device (page plumbing was done
-    // once by memory_map_add; later arms re-point the pages manually).
-    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
-        g_page_table[p].host_base = NULL;
-        g_page_table[p].dev = &st->overlay_interface;
-        g_page_table[p].dev_context = cfg;
-        g_page_table[p].base_addr = desc->common.rom_base;
-        g_page_table[p].writable = false;
-        if (g_supervisor_read)
-            g_supervisor_read[p] = 0;
-        if (g_supervisor_write)
-            g_supervisor_write[p] = 0;
-        if (g_user_read)
-            g_user_read[p] = 0;
-        if (g_user_write)
-            g_user_write[p] = 0;
-    }
-}
-
-// Trigger-device handlers: any access drops the overlay and completes from
-// the ROM image.  `offset` is relative to the aperture base.
-static inline uint8_t *av_rom_ptr(config_t *cfg, uint32_t offset) {
-    uint32_t rom_size = cfg->machine->rom_size;
-    return ram_native_pointer(cfg->mem_map, cfg->ram_size) + (offset % rom_size);
-}
-
-static uint8_t av_overlay_read8(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    av_overlay_drop(cfg);
-    return av_rom_ptr(cfg, offset)[0];
-}
-
-// Composed from byte reads so every byte wraps within the mirror
-// independently, the shape iifx_rom_read_uint16/32 already use.  Indexing
-// p[1..3] off a single wrapped base instead would read past the end of the
-// RAM+ROM allocation when the base landed on the last bytes of a mirror
-// period -- the ROM sits at the top of that one calloc.
-//
-// That was not reachable: the memory dispatcher only calls a device's 16/32-bit
-// handler when (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2/-4 and splits anything
-// closer to a page end, and rom_size is a multiple of the 4 KiB page size, so
-// "within 3 bytes of a mirror top" is always also "within 3 bytes of a page
-// end".  Confirmed under ASAN: a long read at the top of a q700 mirror reaches
-// this handler only after being decomposed.  But that safety lives in another
-// file and depends on an unstated size relationship, so it is made local here.
-// (av_overlay_drop is idempotent, so the repeated call costs nothing.)
-static uint16_t av_overlay_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((av_overlay_read8(ctx, offset) << 8) | av_overlay_read8(ctx, offset + 1));
-}
-
-static uint32_t av_overlay_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)av_overlay_read16(ctx, offset) << 16) | av_overlay_read16(ctx, offset + 2);
-}
-
-static void av_overlay_write8(void *ctx, uint32_t offset, uint8_t value) {
-    (void)value;
-    av_overlay_drop((config_t *)ctx); // a write access also triggers the switch
-    LOG(2, "ROM aperture write $%X ignored", offset);
-}
-
-static void av_overlay_write16(void *ctx, uint32_t offset, uint16_t value) {
-    av_overlay_write8(ctx, offset, (uint8_t)value);
-}
-
-static void av_overlay_write32(void *ctx, uint32_t offset, uint32_t value) {
-    av_overlay_write8(ctx, offset, (uint8_t)value);
-}
-
 // ============================================================
 // Memory layout
 // ============================================================
@@ -614,16 +506,11 @@ static void av_memory_layout(config_t *cfg) {
 
     // The overlay-trigger device for the ROM aperture is registered once;
     // arming/dropping only re-points page entries.
-    st->overlay_interface.read_uint8 = av_overlay_read8;
-    st->overlay_interface.read_uint16 = av_overlay_read16;
-    st->overlay_interface.read_uint32 = av_overlay_read32;
-    st->overlay_interface.write_uint8 = av_overlay_write8;
-    st->overlay_interface.write_uint16 = av_overlay_write16;
-    st->overlay_interface.write_uint32 = av_overlay_write32;
+    mac030_rom_overlay_init(&st->overlay, cfg, desc->common.rom_base, desc->common.rom_end, av_map_ram, "AV");
     memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
-                   &st->overlay_interface, cfg);
+                   &st->overlay.iface, &st->overlay);
 
-    av_overlay_arm(cfg);
+    mac030_rom_overlay_arm(&av_st(cfg)->overlay);
 }
 
 // ============================================================
@@ -839,7 +726,7 @@ static void av_reset(config_t *cfg) {
     av_state_t *st = av_st(cfg);
     // Hardware RESET: overlay re-arms; the CPU-owned 040 MMU state is reset
     // by cpu_hardware_reset_040.
-    av_overlay_arm(cfg);
+    mac030_rom_overlay_arm(&av_st(cfg)->overlay);
     if (st->bus_mmu) {
         st->bus_mmu->enabled = false;
         mmu_invalidate_tlb(st->bus_mmu);
@@ -925,7 +812,7 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
         scsi_checkpoint(cfg->scsi, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
     // Substrate-private tail (mirrored by the restore block in av_init).
-    system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
+    system_write_checkpoint_data(cp, &st->overlay.armed, sizeof(st->overlay.armed));
     system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
     system_write_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
     system_write_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
@@ -975,7 +862,7 @@ const machine_substrate_t av_substrate = {
 // Public overlay control for checkpoint restore / tests.
 void av_set_overlay(config_t *cfg, bool on) {
     if (on)
-        av_overlay_arm(cfg);
+        mac030_rom_overlay_arm(&av_st(cfg)->overlay);
     else
-        av_overlay_drop(cfg);
+        mac030_rom_overlay_drop(&av_st(cfg)->overlay);
 }

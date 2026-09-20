@@ -34,6 +34,7 @@
 
 #include "mac030_glue.h" // shared core builder + IRQ resolver + fill_page
 #include "mac030_glue_io.h" // the shared I/O dispatch engine
+#include "mac030_rom_overlay.h"
 #include "memory.h"
 #include "system_config.h"
 
@@ -115,7 +116,7 @@ typedef struct av_state {
     struct av_mace *mace; // MACE Ethernet register stub
     struct scsi_53c96 *scsi96; // NCR 53C96 inside Curio (Phase E)
 
-    bool rom_overlay; // true = ROM mapped at $00000000 (access-triggered drop)
+    mac030_rom_overlay_t overlay; // ROM-at-zero until the aperture is touched
     struct mmu_state *bus_mmu; // bus-side resolver; 040 walker regs on the CPU
 
     mac030_io_t io; // device handles for the shared I/O engine
@@ -136,7 +137,6 @@ typedef struct av_state {
     uint32_t muni_control;
 
     memory_interface_t io_interface; // registered at the $50F00000 island
-    memory_interface_t overlay_interface; // ROM-aperture trigger while overlay on
     memory_interface_t cpuid_interface; // $5FFFFFFC CPU-ID register page
 } av_state_t;
 

@@ -497,122 +497,6 @@ static void mcu_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrel
 // itself returns ROM data.  This matches the MCU's documented behavior
 // without trapping every access after the drop.
 
-// Fill the whole ROM aperture with direct 1 MiB mirrors of the ROM image.
-static void mcu_fill_rom_aperture(config_t *cfg) {
-    const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++)
-        mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
-}
-
-// Drop the overlay: RAM at zero, aperture direct.  Idempotent.
-static void mcu_overlay_drop(config_t *cfg) {
-    mcu_state_t *st = mcu_st(cfg);
-    if (!st->rom_overlay)
-        return;
-    st->rom_overlay = false;
-    LOG(1, "MCU overlay drop: RAM at $00000000, ROM direct in aperture (pc=%08X)", cpu_get_pc(cfg->cpu));
-
-    // RAM appears at zero, decoded per the Orwell bank starts currently
-    // latched (the power-up 64 MB split until the ROM merges the banks).
-    mcu_map_ram(cfg);
-
-    // The aperture switches from the trigger device to direct ROM mirrors
-    // (mac030_fill_page overwrites the device page entries).
-    mcu_fill_rom_aperture(cfg);
-}
-
-// Arm the overlay: ROM readable at zero, aperture pages routed to the
-// trigger device.  Used at cold boot and by hardware RESET.
-static void mcu_overlay_arm(config_t *cfg) {
-    mcu_state_t *st = mcu_st(cfg);
-    const mcu_board_desc_t *desc = mcu_board(cfg)->desc;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-
-    st->rom_overlay = true;
-
-    // ROM mapped read-only at zero (1 MiB; aliasing above the image is [U] —
-    // unmapped reads return $FF, the conservative choice per ref §4.3).
-    for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
-        mac030_fill_page(p, rom_data + (p << PAGE_SHIFT), false);
-
-    // Route the aperture through the trigger device: reuse memory_map_add's
-    // page plumbing once, then re-point the pages manually on later arms.
-    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
-        g_page_table[p].host_base = NULL;
-        g_page_table[p].dev = &st->overlay_interface;
-        g_page_table[p].dev_context = cfg;
-        g_page_table[p].base_addr = desc->common.rom_base;
-        g_page_table[p].writable = false;
-        if (g_supervisor_read)
-            g_supervisor_read[p] = 0;
-        if (g_supervisor_write)
-            g_supervisor_write[p] = 0;
-        if (g_user_read)
-            g_user_read[p] = 0;
-        if (g_user_write)
-            g_user_write[p] = 0;
-    }
-}
-
-// Trigger-device handlers: any access drops the overlay and completes from
-// the ROM image.  `offset` is relative to the aperture base; the image
-// repeats every 1 MiB.
-static inline uint8_t *mcu_rom_ptr(config_t *cfg, uint32_t offset) {
-    uint32_t rom_size = cfg->machine->rom_size;
-    return ram_native_pointer(cfg->mem_map, cfg->ram_size) + (offset % rom_size);
-}
-
-static uint8_t mcu_overlay_read8(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    mcu_overlay_drop(cfg);
-    return mcu_rom_ptr(cfg, offset)[0];
-}
-
-// Composed from byte reads so every byte wraps within the mirror
-// independently, the shape iifx_rom_read_uint16/32 already use.  Indexing
-// p[1..3] off a single wrapped base instead would read past the end of the
-// RAM+ROM allocation when the base landed on the last bytes of a mirror
-// period -- the ROM sits at the top of that one calloc.
-//
-// That was not reachable: the memory dispatcher only calls a device's 16/32-bit
-// handler when (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2/-4 and splits anything
-// closer to a page end, and rom_size is a multiple of the 4 KiB page size, so
-// "within 3 bytes of a mirror top" is always also "within 3 bytes of a page
-// end".  Confirmed under ASAN: a long read at the top of a q700 mirror reaches
-// this handler only after being decomposed.  But that safety lives in another
-// file and depends on an unstated size relationship, so it is made local here.
-// (mcu_overlay_drop is idempotent, so the repeated call costs nothing.)
-static uint16_t mcu_overlay_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((mcu_overlay_read8(ctx, offset) << 8) | mcu_overlay_read8(ctx, offset + 1));
-}
-
-static uint32_t mcu_overlay_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)mcu_overlay_read16(ctx, offset) << 16) | mcu_overlay_read16(ctx, offset + 2);
-}
-
-static void mcu_overlay_write8(void *ctx, uint32_t offset, uint8_t value) {
-    (void)value;
-    mcu_overlay_drop((config_t *)ctx); // a write access also triggers the switch
-    LOG(2, "ROM aperture write $%X ignored", offset);
-}
-
-static void mcu_overlay_write16(void *ctx, uint32_t offset, uint16_t value) {
-    mcu_overlay_write8(ctx, offset, (uint8_t)value);
-}
-
-static void mcu_overlay_write32(void *ctx, uint32_t offset, uint32_t value) {
-    mcu_overlay_write8(ctx, offset, (uint8_t)value);
-}
-
 // ============================================================
 // Memory layout
 // ============================================================
@@ -645,16 +529,11 @@ static void mcu_memory_layout_init(config_t *cfg) {
 
     // The overlay-trigger device for the ROM aperture is registered once;
     // arming/dropping only re-points page entries.
-    st->overlay_interface.read_uint8 = mcu_overlay_read8;
-    st->overlay_interface.read_uint16 = mcu_overlay_read16;
-    st->overlay_interface.read_uint32 = mcu_overlay_read32;
-    st->overlay_interface.write_uint8 = mcu_overlay_write8;
-    st->overlay_interface.write_uint16 = mcu_overlay_write16;
-    st->overlay_interface.write_uint32 = mcu_overlay_write32;
+    mac030_rom_overlay_init(&st->overlay, cfg, desc->common.rom_base, desc->common.rom_end, mcu_map_ram, "MCU");
     memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
-                   &st->overlay_interface, cfg);
+                   &st->overlay.iface, &st->overlay);
 
-    mcu_overlay_arm(cfg);
+    mac030_rom_overlay_arm(&mcu_st(cfg)->overlay);
 }
 
 // ============================================================
@@ -725,7 +604,7 @@ static void mcu_reset(config_t *cfg) {
     mcu_state_t *st = mcu_st(cfg);
     // Hardware RESET: overlay re-arms; the CPU-owned 040 MMU state is reset
     // by cpu_hardware_reset_040; DAFB registers clear.
-    mcu_overlay_arm(cfg);
+    mac030_rom_overlay_arm(&mcu_st(cfg)->overlay);
     if (st->dafb)
         dafb_reset(st->dafb);
     if (st->bus_mmu) {
@@ -829,7 +708,7 @@ static void mcu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     // the YANCC register file +
     // the /SLOTIRQ aggregate mask + the in-flight SONIC write latch + the
     // tower wire-OR IRQ masks (zero on the Q700).
-    system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
+    system_write_checkpoint_data(cp, &st->overlay.armed, sizeof(st->overlay.armed));
     system_write_checkpoint_data(cp, &st->orwell_cfg, sizeof(st->orwell_cfg));
     system_write_checkpoint_data(cp, st->bank_start, sizeof(st->bank_start));
     system_write_checkpoint_data(cp, st->yancc_regs, sizeof(st->yancc_regs));
@@ -930,7 +809,7 @@ void mcu_memory_layout(config_t *cfg) {
 // armed; a restore of a post-overlay state drops it again.
 void mcu_set_overlay(config_t *cfg, bool on) {
     if (on)
-        mcu_overlay_arm(cfg);
+        mac030_rom_overlay_arm(&mcu_st(cfg)->overlay);
     else
-        mcu_overlay_drop(cfg);
+        mac030_rom_overlay_drop(&mcu_st(cfg)->overlay);
 }
