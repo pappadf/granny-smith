@@ -127,6 +127,18 @@ struct mac030_board_desc;
 // (`&desc->common` for the families that wrap it).
 void mac030_io_install(mac030_io_t *io, struct config *cfg, const struct mac030_board_desc *desc);
 
+// Bind one device slot: its handle and the memory interface that decodes it,
+// together.  The two arrays are indexed by the same mac030_dev_t and are
+// meaningless apart -- a handle without its interface decodes to NULL, and an
+// interface without its handle dispatches on NULL -- so setting them in one
+// call is what stops them drifting.  Four families were writing the pair by
+// hand at twenty sites (05-chipsets-irq F-20).
+static inline void mac030_io_bind_dev(mac030_io_t *io, mac030_dev_t dev, void *handle,
+                                      const memory_interface_t *iface) {
+    io->handle[dev] = handle;
+    io->iface[dev] = iface;
+}
+
 // Check that every device row in the installed table has a bound interface.
 // A row naming a chip nobody built is not a crash any more (the dispatcher
 // falls back to unmapped_read), which makes it silent: the machine boots and

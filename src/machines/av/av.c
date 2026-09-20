@@ -211,11 +211,9 @@ const mac030_io_range_t av_io_ranges[] = {
 // Bind the family device set + board tables into the shared I/O engine.
 static void av_io_bind(mac030_io_t *io, config_t *cfg, const av_board_desc_t *desc) {
     mac030_io_install(io, cfg, &desc->common);
-    io->handle[MAC030_DEV_VIA1] = cfg->via1;
-    io->iface[MAC030_DEV_VIA1] = via_get_memory_interface(cfg->via1);
+    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
     if (cfg->scc) {
-        io->handle[MAC030_DEV_SCC] = cfg->scc;
-        io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
+        mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
     }
 }
 

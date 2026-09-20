@@ -400,17 +400,11 @@ const mac030_io_range_t mcu_q900_io_ranges[] = {
 
 void mcu_io_bind(mac030_io_t *io, config_t *cfg, const mcu_board_desc_t *desc, void *asc, void *floppy) {
     mac030_io_install(io, cfg, &desc->common);
-    io->handle[MAC030_DEV_VIA1] = cfg->via1;
-    io->handle[MAC030_DEV_VIA2] = cfg->via2;
-    io->handle[MAC030_DEV_SCC] = cfg->scc;
-    io->handle[MAC030_DEV_ASC] = asc;
-    io->handle[MAC030_DEV_FLOPPY] = floppy;
-
-    io->iface[MAC030_DEV_VIA1] = via_get_memory_interface(cfg->via1);
-    io->iface[MAC030_DEV_VIA2] = via_get_memory_interface(cfg->via2);
-    io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
-    io->iface[MAC030_DEV_ASC] = asc_get_memory_interface((asc_t *)asc);
-    io->iface[MAC030_DEV_FLOPPY] = floppy_get_memory_interface((floppy_t *)floppy);
+    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
+    mac030_io_bind_dev(io, MAC030_DEV_VIA2, cfg->via2, via_get_memory_interface(cfg->via2));
+    mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
+    mac030_io_bind_dev(io, MAC030_DEV_ASC, asc, asc_get_memory_interface((asc_t *)asc));
+    mac030_io_bind_dev(io, MAC030_DEV_FLOPPY, floppy, floppy_get_memory_interface((floppy_t *)floppy));
 }
 
 // ============================================================
