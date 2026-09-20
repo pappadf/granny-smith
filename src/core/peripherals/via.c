@@ -894,6 +894,10 @@ void via_delete(via_t *via) {
     if (!via)
         return;
     LOG(1, "via_delete: freeing via");
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(via->scheduler, via);
+
     if (via->port_b_object) {
         object_detach(via->port_b_object);
         object_delete(via->port_b_object);

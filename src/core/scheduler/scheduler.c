@@ -1056,6 +1056,10 @@ void remove_event(struct scheduler *restrict scheduler, event_callback_t callbac
 // remove_event() stays: cancelling ONE pending thing on a live device is a
 // different operation from "this object is going away".
 //
+// DESTRUCTORS ONLY -- see the header.  Removing the type registrations is what
+// makes this unsafe on a live device, and also what makes it complete on a
+// dying one.
+//
 // Safe to call with a source the scheduler has never seen.
 void scheduler_forget_source(struct scheduler *restrict scheduler, void *source) {
     GS_ASSERT(scheduler != NULL);

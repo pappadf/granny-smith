@@ -72,6 +72,10 @@ void remove_event(scheduler_t *sch, event_callback_t callback, void *source) {
     (void)source;
     s_frame_cb = NULL;
 }
+void scheduler_forget_source(scheduler_t *sch, void *source) {
+    (void)sch;
+    (void)source;
+}
 void scheduler_new_event_type(scheduler_t *sch, const char *owner, void *source, const char *name,
                               event_callback_t callback) {
     (void)sch;

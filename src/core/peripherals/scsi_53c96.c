@@ -664,6 +664,9 @@ scsi_53c96_t *scsi_53c96_init(struct scheduler *sched, uint32_t clock_hz, checkp
 void scsi_53c96_delete(scsi_53c96_t *c) {
     if (!c)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(c->sched, c);
     // Any time-out this chip armed is queued on the BUS now, so it must be
     // cancelled through the bus -- see F-11/F-12: an event outliving its
     // source is the class of bug this destructor exists to avoid.

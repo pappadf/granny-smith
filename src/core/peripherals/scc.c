@@ -1367,6 +1367,9 @@ size_t scc_channel_take_sent(scc_t *scc, unsigned int ch, uint8_t *out, size_t m
 void scc_delete(scc_t *scc) {
     if (!scc)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(scc->scheduler, scc);
     // Tear down object-tree nodes in reverse order (children first).
     if (scc->channel_b) {
         object_detach(scc->channel_b);

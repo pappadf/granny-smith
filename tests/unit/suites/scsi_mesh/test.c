@@ -125,6 +125,10 @@ event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t 
 void remove_event(struct scheduler *restrict s, event_callback_t cb, void *src) {
     (void)s, (void)cb, (void)src;
 }
+void scheduler_forget_source(struct scheduler *sch, void *source) {
+    (void)sch;
+    (void)source;
+}
 // The medium itself is out of scope here: these tests stage the state AROUND a
 // device, not its contents, and setup_get_image_by_filename() returns NULL so
 // no image is ever opened.

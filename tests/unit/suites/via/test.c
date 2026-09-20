@@ -99,6 +99,10 @@ void remove_event(scheduler_t *sch, event_callback_t callback, void *source) {
     (void)source;
     s_armed_cb = NULL;
 }
+void scheduler_forget_source(scheduler_t *sch, void *source) {
+    (void)sch;
+    (void)source;
+}
 uint64_t scheduler_cpu_cycles(scheduler_t *sch) {
     (void)sch;
     return s_cycles;

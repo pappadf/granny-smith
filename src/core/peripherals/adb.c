@@ -876,6 +876,9 @@ void adb_delete(adb_t *adb) {
         s_adb_current = NULL;
     if (!adb)
         return;
+    // Four callbacks are scheduled with `adb` as their source and the
+    // destructor removed none of them (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(adb->scheduler, adb);
     free(adb);
 }
 

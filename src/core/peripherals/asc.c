@@ -776,6 +776,9 @@ const memory_interface_t *asc_get_memory_interface(asc_t *asc) {
 void asc_delete(asc_t *asc) {
     if (!asc)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(asc->scheduler, asc);
     if (asc->object) {
         // sound_object_delete(), not a hand-rolled detach-and-delete: the node
         // owns a malloc'd sound_surface_t copy AND an attached detail child

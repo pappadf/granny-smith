@@ -117,6 +117,11 @@ void remove_event(scheduler_t *sched, event_callback_t callback, void *source) {
     (void)source;
 }
 
+void scheduler_forget_source(scheduler_t *sched, void *source) {
+    (void)sched;
+    (void)source;
+}
+
 void remove_event_by_data(scheduler_t *sched, event_callback_t callback, void *source, uint64_t data) {
     (void)sched;
     (void)callback;

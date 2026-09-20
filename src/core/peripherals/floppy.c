@@ -972,6 +972,9 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
 void floppy_delete(floppy_t *floppy) {
     if (!floppy)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(floppy->scheduler, floppy);
     LOG(2, "Floppy: Deleting controller");
 
     // Tear down per-drive entry objects (never attached), then the
