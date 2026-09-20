@@ -266,11 +266,14 @@ static void run_channel(tnt_dbdma_t *d, int n) {
                 LOG(1, "ch%d %s $%04X bytes with no device port — stalling", n, out ? "OUTPUT" : "INPUT", req);
                 return;
             }
+            uint32_t burst_left = p->burst > 0 ? (uint32_t)p->burst : 0;
             while (c->cursor < req) {
                 uint8_t buf[PORT_CHUNK];
                 int want = (int)(req - c->cursor);
                 if (want > PORT_CHUNK)
                     want = PORT_CHUNK;
+                if (p->burst > 0 && (uint32_t)want > burst_left)
+                    want = (int)burst_left; // the yield lands ON the budget
                 int moved;
                 if (out) {
                     dma_mem_read_block(&d->mem, w[1] + c->cursor, buf, (uint32_t)want);
@@ -288,6 +291,17 @@ static void run_channel(tnt_dbdma_t *d, int n) {
                     // descriptor is refetched on the device's kick.
                     LOG(3, "ch%d stalled at %u/%u bytes", n, c->cursor, req);
                     return;
+                }
+                if (p->burst > 0) {
+                    // Rate-limited port: yield after its burst, the same way
+                    // a short return yields, so the transfer costs emulated
+                    // time instead of completing inside one register store
+                    // (F-15).  The device's pump kicks us back.
+                    burst_left -= (uint32_t)moved;
+                    if (burst_left == 0 && c->cursor < req) {
+                        LOG(3, "ch%d yielding at %u/%u bytes (burst %d)", n, c->cursor, req, p->burst);
+                        return;
+                    }
                 }
             }
             // Command complete: branch decision, then result write-back,

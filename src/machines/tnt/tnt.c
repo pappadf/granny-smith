@@ -677,6 +677,11 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
             .out = mesh_port_out,
             .in = mesh_port_in,
             .s_bits = NULL,
+            // MESH pops straight off the SCSI bus, so it never returns
+            // short and the channel would run a whole transfer inside one
+            // register store; the burst makes it yield and MESH's own pump
+            // kicks it back on the bus's cadence (05-chipsets-irq F-15).
+            .burst = MESH_DMA_BURST,
             .ctx = st->mesh,
         };
         tnt_dbdma_set_port(st->dbdma, 10, &mesh_port);

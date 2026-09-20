@@ -85,6 +85,22 @@ typedef struct tnt_dbdma_port {
     int (*in)(void *ctx, uint8_t *buf, int len); // device -> memory
     uint8_t (*s_bits)(void *ctx); // live device status bits (may be NULL)
     void *ctx;
+    // Bytes this port will move per activation before the channel yields,
+    // or 0 for "as many as the device offers" (05-chipsets-irq F-15).
+    //
+    // A port whose device is itself rate-limited -- the AWACS half-buffer,
+    // the SWIM3 byte ring, an SCC ring -- needs nothing here: it returns
+    // short on its own and the channel stalls until the device kicks it.
+    // MESH does not: it pops straight off the SCSI bus, so a data command
+    // ran to completion inside the guest's control-register store.  A
+    // non-zero burst makes the channel yield mid-command with its cursor
+    // intact, exactly as a short device return does, and the device's own
+    // scheduler pump kicks it again on the bus's cadence.
+    //
+    // Set it only together with something that will kick, or the channel
+    // parks for good.  Last in the struct so positional initialisers stay
+    // valid, like mac030_io_range_t.esync.
+    int burst;
 } tnt_dbdma_port_t;
 
 // === Lifecycle ==============================================================

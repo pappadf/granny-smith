@@ -97,6 +97,12 @@ void mesh_reset(mesh_t *m);
 
 // The DBDMA channel-10 device port: the machine registers these with its own
 // DBDMA engine.
+// Bytes the channel-10 DBDMA port moves per activation before yielding
+// (tnt_dbdma_port_t.burst).  2 KB, the per-firing cap av.c and amic.c
+// already use for the same job on the two other families -- see
+// 05-chipsets-irq F-15 in scsi_mesh.c.
+#define MESH_DMA_BURST 2048
+
 int mesh_port_in(void *ctx, uint8_t *buf, int len);
 int mesh_port_out(void *ctx, const uint8_t *buf, int len);
 

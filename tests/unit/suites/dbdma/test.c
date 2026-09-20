@@ -318,6 +318,61 @@ TEST(test_stall_and_kick) {
     ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_ACTIVE), 0); // parked on STOP
 }
 
+// A rate-limited port yields mid-command and resumes on a kick
+// (05-chipsets-irq F-15).
+//
+// Without this, a port that never returns short -- MESH pops straight off
+// the SCSI bus -- runs a whole data command inside the guest's
+// control-register store: measured at 61,440 bytes in one run_channel call
+// on tnt-hd-boot, against the 2 KB per firing the AV and PDM families
+// already observe for the same job.  The burst makes the channel yield the
+// same way a short device return does, and the device's scheduler pump
+// kicks it back on the bus's cadence.
+TEST(test_port_burst_yields_mid_command_and_resumes) {
+    fixture();
+    tnt_dbdma_port_t p = {.out = dev_out, .in = dev_in, .s_bits = dev_s_bits, .burst = 4, .ctx = NULL};
+    tnt_dbdma_set_port(s_d, 0, &p);
+
+    // Ten bytes available up front: the device never stalls, only the burst
+    // does.
+    desc(0x1000, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 10), 0x2000, 0);
+    desc(0x1010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    memcpy(s_dev_data, "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A", 10);
+    s_dev_len = 10;
+
+    s_irq_watch_addr = 0x1000;
+    start(0, 0x1000);
+    // Yielded after four bytes, still ACTIVE, no completion interrupt.
+    ASSERT_TRUE(tnt_dbdma_active(s_d, 0));
+    ASSERT_EQ_INT(s_irq_count, 0);
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x01\x02\x03\x04", 4), 0);
+    ASSERT_EQ_INT((int)s_mem[0x2004], 0); // and nothing past the burst
+
+    tnt_dbdma_kick(s_d, 0); // the pump fires
+    ASSERT_EQ_INT(s_irq_count, 0);
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x01\x02\x03\x04\x05\x06\x07\x08", 8), 0);
+
+    tnt_dbdma_kick(s_d, 0); // ...and the last two bytes finish it
+    ASSERT_EQ_INT(s_irq_count, 1);
+    ASSERT_EQ_INT((int)(s_irq_result & 0xFFFF), 0); // residual 0: nothing lost
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A", 10), 0);
+    ASSERT_EQ_INT((int)(status(0) & TNT_DBDMA_ACTIVE), 0); // parked on STOP
+}
+
+// burst = 0 is "as many as the device offers", which is what every port
+// whose device is already rate-limited (AWACS, SWIM3, the SCC rings) relies
+// on -- so the default must not have changed.
+TEST(test_zero_burst_still_runs_a_command_to_completion) {
+    fixture(); // channel 0's port leaves .burst at 0
+    desc(0x1000, op(INPUT_LAST, ALWAYS, NEVER, NEVER, 10), 0x2000, 0);
+    desc(0x1010, op(STOP_CMD, NEVER, NEVER, NEVER, 0), 0, 0);
+    memcpy(s_dev_data, "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A", 10);
+    s_dev_len = 10;
+    start(0, 0x1000);
+    ASSERT_EQ_INT(s_irq_count, 1); // all ten in one activation
+    ASSERT_EQ_INT(memcmp(s_mem + 0x2000, "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A", 10), 0);
+}
+
 // A channel with no device port stalls its data command honestly.
 TEST(test_no_port_stalls) {
     fixture();
@@ -470,7 +525,7 @@ TEST(test_checkpoint_roundtrip) {
     static const dma_mem_port_t mem_port = {.read_block = mem_read, .write_block = mem_write};
     tnt_dbdma_set_memory_port(s_d, &mem_port);
     tnt_dbdma_set_irq_hook(s_d, irq_hook, NULL);
-    static tnt_dbdma_port_t port = {dev_out, dev_in, dev_s_bits, NULL};
+    static tnt_dbdma_port_t port = {.out = dev_out, .in = dev_in, .s_bits = dev_s_bits, .ctx = NULL};
     tnt_dbdma_set_port(s_d, 0, &port);
     ASSERT_TRUE(status(0) & TNT_DBDMA_ACTIVE); // still mid-program
     // The rest of the data arrives; the transfer completes from byte 1.
@@ -486,6 +541,8 @@ int main(void) {
     RUN(test_output_program);
     RUN(test_stop_reset_sequences);
     RUN(test_stall_and_kick);
+    RUN(test_port_burst_yields_mid_command_and_resumes);
+    RUN(test_zero_burst_still_runs_a_command_to_completion);
     RUN(test_no_port_stalls);
     RUN(test_nop_branch_ring);
     RUN(test_stop_wake_overwrite);
