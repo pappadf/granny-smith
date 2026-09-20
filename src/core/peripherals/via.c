@@ -98,13 +98,28 @@ struct via {
         uint16_t start_value;
         uint16_t latch;
         uint16_t counter;
-        bool expired; // for one-shot modes: true after first timeout (IFR won't be set again)
+        // True once the timer has been armed, i.e. start_timestamp holds a
+        // real arm time.  read_timer used to infer this from
+        // `start_timestamp == 0`, which is also a legal arm time: a timer
+        // armed on CPU cycle 0 read as "never armed" for good.  This replaces
+        // a dead `expired` flag that was written in three places and read
+        // nowhere -- what actually stops a one-shot re-firing is that its
+        // callback schedules no follow-up event.
+        bool started;
     } timers[2];
 
     struct {
         uint8_t output;
         uint8_t input;
         uint8_t direction;
+        // Input latch (ACR bits 0/1).  With latching enabled the input
+        // register holds the pin levels sampled at the CA1/CB1 active edge
+        // rather than tracking them live -- R6522 "Port A and Port B
+        // Operation": "With input latching disabled, IRA will always reflect
+        // the levels on the PA pins.  With input latching enabled, IRA will
+        // reflect the levels on the PA pins at the time the latching occurred
+        // (via CA1)."
+        uint8_t latched;
         bool ctrl[2];
     } ports[2];
 
@@ -150,7 +165,7 @@ struct via {
 // Convert CPU cycles to VIA timer cycles using the per-instance rational.
 // Split division keeps the intermediate product inside 64 bits for any
 // cycle count (the ppc_ticks_now precedent).
-static uint64_t cpu_to_via_cycles(via_t *via, uint64_t scheduler_cpu_cycles) {
+static uint64_t cpu_to_via_cycles(const via_t *via, uint64_t scheduler_cpu_cycles) {
     uint64_t c = scheduler_cpu_cycles;
     return (c / via->ff_den) * via->ff_num + (c % via->ff_den) * via->ff_num / via->ff_den;
 }
@@ -179,9 +194,9 @@ static void update_ifr(via_t *restrict via, uint8_t new_ifr) {
 }
 
 // Read the current value of a VIA timer counter (accounting for elapsed time)
-static uint16_t read_timer(via_t *restrict via, int timer) {
-    // If the timer is not running, return the stored counter value
-    if (via->timers[timer].start_timestamp == 0)
+static uint16_t read_timer(const via_t *restrict via, int timer) {
+    // Never armed: the stored counter is all there is to report.
+    if (!via->timers[timer].started)
         return via->timers[timer].counter;
 
     // Timer is running - calculate current counter value with proper wraparound.
@@ -208,7 +223,7 @@ static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_ca
     via->timers[timer].start_value = counter;
     via->timers[timer].counter = counter;
     via->timers[timer].start_timestamp = scheduler_cpu_cycles(via->scheduler);
-    via->timers[timer].expired = false; // reset expired flag on arm
+    via->timers[timer].started = true;
 
     // Timer interrupt fires when the counter wraps around, i.e. delay is counter + 1.
     // Promote to uint64_t before the multiply so an exotic int-width host can't
@@ -246,7 +261,7 @@ static void t1_callback(void *source, uint64_t data) {
 
     via_t *via = (via_t *)source;
 
-    GS_ASSERT(via->timers[TIMER_1].start_timestamp != 0);
+    GS_ASSERT(via->timers[TIMER_1].started);
 
     LOG(1, "t1_callback: acr=0x%02x mode=%u latch=0x%04x start_value=0x%04x", via->acr, (unsigned)(via->acr >> 6),
         via->timers[TIMER_1].latch, via->timers[TIMER_1].start_value);
@@ -265,13 +280,11 @@ static void t1_callback(void *source, uint64_t data) {
         // start_timestamp and freeze counter at 0xFFFF, which short-circuited
         // read_timer and returned that constant forever, defeating the one use
         // the datasheet names for the running counter.
-        via->timers[TIMER_1].expired = true;
         break;
     case 1: // Free‑run
         arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback);
         break;
     case 2: // One-shot w/ PB7 output
-        via->timers[TIMER_1].expired = true; // counter keeps running -- see case 0
         // DDRB bit 7 must be set for PB7 to function as a timer output
         if (via->ports[PORT_B].direction & 0x80)
             via->ports[PORT_B].output |= 0x80; // PB7 is set high when the timer expires
@@ -294,7 +307,7 @@ static void t2_callback(void *source, uint64_t data) {
 
     via_t *via = (via_t *)source;
 
-    GS_ASSERT(via->timers[TIMER_2].start_timestamp != 0);
+    GS_ASSERT(via->timers[TIMER_2].started);
 
     LOG(2, "t2_callback: IFR will be set to 0x%02x", (unsigned)(via->ifr | IFR_T2));
     LOG(1, "t2_callback: timer2 expired latch=0x%04x", via->timers[TIMER_2].latch);
@@ -303,9 +316,9 @@ static void t2_callback(void *source, uint64_t data) {
     // However, setting of the interrupt flag is disabled after initial time-out
     // so that it will not be set by the counter decrementing again through zero."
     //
-    // We mark the timer as expired but do NOT stop it - it keeps running.
-    // The expired flag prevents re-triggering IFR on subsequent wrap-throughs.
-    via->timers[TIMER_2].expired = true;
+    // The timer is NOT stopped -- it keeps running.  What prevents the flag
+    // being set again is that this callback schedules no follow-up event, so
+    // nothing fires when the counter wraps through zero a second time.
 
     update_ifr(via, via->ifr | IFR_T2);
 }
@@ -348,6 +361,13 @@ static void set_t2c_high(via_t *restrict via, uint8_t value) {
     }
 }
 
+// True when ACR enables input latching for `port` -- bit 0 is PA, bit 1 is PB
+// (R6522 Figure 14).  With it set, the input register holds the levels sampled
+// at the CA1/CB1 active edge instead of tracking the pins live.
+static bool port_latch_enabled(const via_t *restrict via, int port) {
+    return (via->acr & (port ? 0x02u : 0x01u)) != 0;
+}
+
 // IFR control-line flags an ORA/ORB access clears for `port`.
 // CA1/CB1 always clear.  CA2/CB2 clear too, EXCEPT when the PCR selects one of
 // the two "independent interrupt input" modes (field 001 / 011): R6522 Figure
@@ -365,12 +385,16 @@ static uint8_t port_access_ifr_clear_mask(const via_t *restrict via, int port) {
     return mask;
 }
 
-// Read from a VIA port combining output and input based on data direction
+// Read from a VIA port combining output and input based on data direction.
+// Output pins read back the output register on both ports -- the IRA/IRB
+// distinction the datasheet draws is about pin loading, which we do not model,
+// so the programmed level is what both report.  Input pins read the live pin
+// levels, or the latched sample when ACR enables latching for this port.
 static uint8_t read_port(via_t *restrict via, int port) {
     update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, port));
 
-    return (via->ports[port].output & via->ports[port].direction) |
-           (via->ports[port].input & ~via->ports[port].direction);
+    uint8_t inputs = port_latch_enabled(via, port) ? via->ports[port].latched : via->ports[port].input;
+    return (via->ports[port].output & via->ports[port].direction) | (inputs & ~via->ports[port].direction);
 }
 
 // ============================================================================
@@ -420,12 +444,12 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
     case T1C_L:
         update_ifr(via, via->ifr & ~IFR_T1); // interrupt flag cleared by reading T1C-L
         ret = (uint8_t)read_timer(via, TIMER_1);
-        LOG(2, "Read register T1C_L=0x%02x (%s)", ret, via->timers[TIMER_1].start_timestamp ? "counting" : "stopped");
+        LOG(2, "Read register T1C_L=0x%02x (%s)", ret, via->timers[TIMER_1].started ? "counting" : "stopped");
         break;
 
     case T1C_H:
         ret = (uint8_t)(read_timer(via, TIMER_1) >> 8);
-        LOG(2, "Read register T1C_H=0x%02x (%s)", ret, via->timers[TIMER_1].start_timestamp ? "counting" : "stopped");
+        LOG(2, "Read register T1C_H=0x%02x (%s)", ret, via->timers[TIMER_1].started ? "counting" : "stopped");
         break;
 
     case T1L_L:
@@ -441,12 +465,12 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
     case T2C_L:
         update_ifr(via, via->ifr & ~IFR_T2);
         ret = (uint8_t)read_timer(via, TIMER_2);
-        LOG(2, "Read register T2C_L=0x%02x (%s)", ret, via->timers[TIMER_2].start_timestamp ? "counting" : "stopped");
+        LOG(2, "Read register T2C_L=0x%02x (%s)", ret, via->timers[TIMER_2].started ? "counting" : "stopped");
         break;
 
     case T2C_H:
         ret = (uint8_t)(read_timer(via, TIMER_2) >> 8);
-        LOG(2, "Read register T2C_H=0x%02x (%s)", ret, via->timers[TIMER_2].start_timestamp ? "counting" : "stopped");
+        LOG(2, "Read register T2C_H=0x%02x (%s)", ret, via->timers[TIMER_2].started ? "counting" : "stopped");
         break;
 
     case SR:
@@ -526,13 +550,13 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         uint16_t old_latch = via->timers[TIMER_1].latch;
         via->timers[TIMER_1].latch = (old_latch & 0xFF00) | value;
         LOG(2, "Write register T1C_L=0x%02x (latch 0x%04x->0x%04x, %s)", value, old_latch, via->timers[TIMER_1].latch,
-            via->timers[TIMER_1].start_timestamp ? "counting" : "stopped");
+            via->timers[TIMER_1].started ? "counting" : "stopped");
         break;
     }
 
     case T1C_H: {
         uint16_t old_latch = via->timers[TIMER_1].latch;
-        bool was_counting = via->timers[TIMER_1].start_timestamp != 0;
+        bool was_counting = via->timers[TIMER_1].started;
         update_ifr(via, via->ifr & ~IFR_T1); // interrupt flag cleared by writing T1C-H
         set_t1c_high(via, value);
         LOG(2, "Write register T1C_H=0x%02x (latch 0x%04x->0x%04x, %s->counting)", value, old_latch,
@@ -552,13 +576,13 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         uint16_t old_latch = via->timers[TIMER_2].latch;
         via->timers[TIMER_2].latch = (old_latch & 0xFF00) | (value & 0xFF);
         LOG(2, "Write register T2C_L=0x%02x (latch 0x%04x->0x%04x, %s)", value, old_latch, via->timers[TIMER_2].latch,
-            via->timers[TIMER_2].start_timestamp ? "counting" : "stopped");
+            via->timers[TIMER_2].started ? "counting" : "stopped");
         break;
     }
 
     case T2C_H: {
         uint16_t old_latch = via->timers[TIMER_2].latch;
-        bool was_counting = via->timers[TIMER_2].start_timestamp != 0;
+        bool was_counting = via->timers[TIMER_2].started;
         set_t2c_high(via, value);
         LOG(2, "Write register T2C_H=0x%02x (latch 0x%04x->0x%04x, %s->counting)", value, old_latch,
             via->timers[TIMER_2].latch, was_counting ? "counting" : "stopped");
@@ -832,8 +856,11 @@ uint8_t via_port_input(const via_t *via, unsigned which) {
 uint8_t via_port_direction(const via_t *via, unsigned which) {
     return (via && which < 2) ? via->ports[which].direction : 0;
 }
+// Live timer counter, for the object model.  These used to return
+// timers[].counter, which arm_timer sets to the START value and never updates
+// while the timer runs -- so a caller saw the reload value, not the count.
 uint16_t via_timer_counter(const via_t *via, unsigned which) {
-    return (via && which < 2) ? via->timers[which].counter : 0;
+    return (via && which < 2) ? read_timer(via, (int)which) : 0;
 }
 uint16_t via_timer_latch(const via_t *via, unsigned which) {
     return (via && which < 2) ? via->timers[which].latch : 0;
@@ -1005,8 +1032,10 @@ void via_input_c(via_t *restrict via, int port, int c, bool value) {
         via->ports[0].ctrl[0] = value;
         bool pos_edge = via->pcr & 0x01;
         bool active = pos_edge ? (!old && value) : (old && !value);
-        if (active)
+        if (active) {
+            via->ports[0].latched = via->ports[0].input; // ACR bit 0 sample point
             update_ifr(via, via->ifr | IFR_CA1);
+        }
 
     } else if (port == 0 && c == 1) {
         // CA2 control mode (PCR bits 1-3)
@@ -1028,8 +1057,10 @@ void via_input_c(via_t *restrict via, int port, int c, bool value) {
         via->ports[1].ctrl[0] = value;
         bool pos_edge = via->pcr & 0x10;
         bool active = pos_edge ? (!old && value) : (old && !value);
-        if (active)
+        if (active) {
+            via->ports[1].latched = via->ports[1].input; // ACR bit 1 sample point
             update_ifr(via, via->ifr | IFR_CB1);
+        }
 
     } else {
         // CB2 control mode (PCR bits 5-7)

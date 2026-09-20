@@ -189,6 +189,19 @@ static void wr(via_t *via, int rs, uint8_t value) {
     s_iface->write_uint8(s_device, reg_addr(rs), value);
 }
 
+// Drive all eight input pins of a port to `bits`.
+static void set_port_input(via_t *via, int port, uint8_t bits) {
+    for (int pin = 0; pin < 8; pin++)
+        via_input(via, port, pin, (bits >> pin) & 1);
+}
+
+// One CA1/CB1 active edge.  PCR bits 0 and 4 default to 0 = negative edge, and
+// the lines idle high, so high-then-low is the active transition.
+static void pulse_c1(via_t *via, int port) {
+    via_input_c(via, port, 0, true);
+    via_input_c(via, port, 0, false);
+}
+
 // Fire the armed timer event the way the scheduler does: the event is consumed
 // on delivery, so anything still armed afterwards was rearmed by the callback.
 static void fire_armed(void) {
@@ -374,6 +387,101 @@ TEST(test_orb_access_respects_cb2_independent_mode) {
 }
 
 // ============================================================================
+// F-31 — ACR input latching (bits 0 and 1)
+// ============================================================================
+
+// R6522 "Port A and Port B Operation": "With input latching disabled, IRA will
+// always reflect the levels on the PA pins.  With input latching enabled, IRA
+// will reflect the levels on the PA pins at the time the latching occurred
+// (via CA1)."  ACR bits 0/1 used to be stored and ignored.
+TEST(test_acr_input_latching_holds_the_sampled_level) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+    wr(via, REG_DDRA, 0x00); // all of port A is input
+
+    // Latching off: reads track the pins live.
+    wr(via, REG_ACR, 0x00);
+    set_port_input(via, 0, 0x55);
+    ASSERT_EQ_INT(rd(via, REG_ORA), 0x55);
+    set_port_input(via, 0, 0xAA);
+    ASSERT_EQ_INT(rd(via, REG_ORA), 0xAA);
+
+    // Latching on: the read returns the level sampled at the last CA1 edge,
+    // not whatever the pins are doing now.
+    wr(via, REG_ACR, 0x01);
+    set_port_input(via, 0, 0x55);
+    pulse_c1(via, 0);
+    set_port_input(via, 0, 0xAA); // pins move after the sample
+    ASSERT_EQ_INT(rd(via, REG_ORA), 0x55);
+
+    // The next edge takes a fresh sample.
+    pulse_c1(via, 0);
+    ASSERT_EQ_INT(rd(via, REG_ORA), 0xAA);
+
+    // Turning latching off goes back to live pins immediately.
+    wr(via, REG_ACR, 0x00);
+    set_port_input(via, 0, 0x33);
+    ASSERT_EQ_INT(rd(via, REG_ORA), 0x33);
+
+    via_delete(via);
+}
+
+// Output pins read back the output register whether or not latching is on —
+// the latch covers the input half only.
+TEST(test_latching_does_not_cover_output_pins) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+    wr(via, REG_ACR, 0x02); // latch port B
+    wr(via, REG_DDRB, 0xF0); // high nibble output, low nibble input
+
+    set_port_input(via, 1, 0x0F);
+    pulse_c1(via, 1);
+    wr(via, REG_ORB, 0xA5); // only the high nibble reaches pins
+
+    set_port_input(via, 1, 0x00); // input pins move after the sample
+    ASSERT_EQ_INT(rd(via, REG_ORB), 0xAF); // A0 from output, F from the latch
+
+    via_delete(via);
+}
+
+// ============================================================================
+// F-30 / W-02 — timer accessors report live values; arming at cycle 0 works
+// ============================================================================
+
+// via_timer_counter() is declared as an object-model view.  It used to return
+// timers[].counter, which arm_timer sets to the START value and never updates,
+// so it reported the reload value rather than the count.
+TEST(test_via_timer_counter_is_live) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+
+    wr(via, REG_ACR, 0x00);
+    wr(via, REG_T1C_L, 0x00);
+    wr(via, REG_T1C_H, 0x10); // start at 0x1000
+
+    ASSERT_EQ_INT(via_timer_latch(via, 0), 0x1000);
+    uint16_t a = via_timer_counter(via, 0);
+    s_cycles += 0x100;
+    uint16_t b = via_timer_counter(via, 0);
+    ASSERT_EQ_INT((uint16_t)(a - b), 0x100);
+
+    via_delete(via);
+}
+
+// A timer armed on CPU cycle 0 must read as running.  read_timer used to infer
+// "never armed" from `start_timestamp == 0`, which is also a legal arm time.
+TEST(test_timer_armed_at_cycle_zero_still_counts) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+    s_cycles = 0; // arm on the very first cycle
+
+    wr(via, REG_ACR, 0x00);
+    wr(via, REG_T1C_L, 0x00);
+    wr(via, REG_T1C_H, 0x10);
+
+    s_cycles = 0x40;
+    ASSERT_EQ_INT(via_timer_counter(via, 0), 0x1000 - 0x40);
+
+    via_delete(via);
+}
+
+// ============================================================================
 // F-32 — IER bit 7 is the set/clear selector, not storage
 // ============================================================================
 
@@ -535,6 +643,10 @@ int main(void) {
     RUN(test_port_access_always_clears_ca1);
     RUN(test_ora_no_handshake_clears_nothing);
     RUN(test_orb_access_respects_cb2_independent_mode);
+    RUN(test_acr_input_latching_holds_the_sampled_level);
+    RUN(test_latching_does_not_cover_output_pins);
+    RUN(test_via_timer_counter_is_live);
+    RUN(test_timer_armed_at_cycle_zero_still_counts);
     RUN(test_ier_bit7_is_a_selector_not_storage);
     RUN(test_t1_one_shot_counter_runs_on_after_timeout);
     RUN(test_t1_one_shot_does_not_refire);
