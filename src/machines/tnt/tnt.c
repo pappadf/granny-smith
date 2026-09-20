@@ -51,6 +51,7 @@
 #include "scsi.h"
 #include "scsi_53c96.h"
 #include "slot_tables.h"
+#include "swim3.h"
 #include "sym53c8xx.h" // the fast/wide controllers the ANS slot table seats
 #include "via.h"
 
@@ -727,6 +728,10 @@ static void tnt_bus_reset(config_t *cfg) {
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
     tnt_dbdma_reset(st->dbdma);
+    // The floppy CONTROLLER behind Grand Central +$15000.  cfg->floppy (the
+    // drive and its media) is reset by the shared chain; the SWIM3 was the
+    // one controller in the tree that survived a reset (`W-01`).
+    swim3_reset(&st->swim3);
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
     if (tnt_board(cfg)->has_mesh)

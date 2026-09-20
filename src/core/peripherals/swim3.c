@@ -334,6 +334,37 @@ uint8_t swim3_read(swim3_t *sw, unsigned reg) {
     return v;
 }
 
+// Return the chip to its power-on state (ERS v1.2 §3.10).
+//
+// Two things drive this: the guest's self-clearing SoftReset bit in the
+// Setup register, and the board's /RESET net -- the SWIM3 has a hardware
+// `Reset/` input like any other part, and it is the floppy CONTROLLER on
+// PDM and TNT, which is the role `floppy_reset` fills for every other
+// family (system_reset_common_devices calls it "the SWIM of that list",
+// against the Guide's /RESET destinations "MC68000, VIA, SWIM, SCC, SCSI,
+// BBU").  Until this existed the SWIM3 was the one floppy controller in the
+// tree that survived a machine reset: `W-01` from the 2026-09-03 review.
+//
+// The bound pointers survive, because they are wiring rather than state --
+// the drive, the scheduler and the DMA backend are still attached to the
+// same board after a reset.  The three non-zero seeds are the chip's
+// documented power-on register values.
+void swim3_reset(swim3_t *sw) {
+    if (!sw)
+        return;
+    swim3_t z = {0};
+    z.ctrack = 0xFF;
+    z.csect = 0x7F;
+    z.sector = 0xFF;
+    z.fd = sw->fd;
+    z.sched = sw->sched;
+    z.be = sw->be;
+    swim3_timer_stop(sw);
+    *sw = z;
+    swim3_engine_update(sw);
+    swim3_update_irq(sw);
+}
+
 void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
     LOG(5, "wr reg %2u %-9s = $%02X", reg, REG_WR_NAMES[reg & 15], value);
     switch (reg) {
@@ -354,19 +385,9 @@ void swim3_write(swim3_t *sw, unsigned reg, uint8_t value) {
     }
     case R_SETUP:
         if (value & SWIM3_S_SOFTRESET) {
-            // SoftReset (self-clearing): registers return to their reset
-            // state (§3.10) and any running engine stops with them.
-            swim3_t z = {0};
-            z.ctrack = 0xFF;
-            z.csect = 0x7F;
-            z.sector = 0xFF;
-            z.fd = sw->fd;
-            z.sched = sw->sched;
-            z.be = sw->be;
-            swim3_timer_stop(sw);
-            *sw = z;
-            swim3_engine_update(sw);
-            swim3_update_irq(sw);
+            // SoftReset (self-clearing).  Identical to the hardware Reset/
+            // pin, so both go through one function.
+            swim3_reset(sw);
         } else {
             sw->setup = value;
         }

@@ -518,6 +518,27 @@ if row_on("8100-75-24ac") {
     }
 }
 
+# ---- pdm-swim3-reset --------------------------------------------------------
+# The SWIM3 is this family's floppy CONTROLLER, and it was the one controller
+# in the tree that survived a machine reset -- `W-01` from the 2026-09-03
+# review.  cfg->floppy (the drive and its media) has always been reset by the
+# shared chain; the chip in front of it was not, on either PowerPC family.
+#
+# Poke a non-zero Setup register (island $16000 + register 5 x $200), reset,
+# and require the documented power-on value back.  $24 is GCR + IBMDrive and
+# deliberately NOT $80, which is the self-clearing SoftReset bit and would
+# make the chip reset itself and prove nothing.
+def row_pdm_swim3_reset() {
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    scheduler.run 20000000
+    machine.memory.poke.b(0x50F16A00, 0x24)
+    assert machine.memory.peek.b(0x50F16A00) == 0x24 "pdm-swim3-reset: Setup did not take the poke"
+    machine.reset
+    scheduler.run 200000
+    assert machine.memory.peek.b(0x50F16A00) == 0 "pdm-swim3-reset: SWIM3 Setup survived a machine reset"
+    report_perf("suite-pdm/pdm-swim3-reset", scheduler.instr_count)
+}
+
 if row_on("pdm-nubus-empty") {
     row_end("pdm-nubus-empty", try(row_pdm_nubus_empty(), "FAILED"))
 }
@@ -576,6 +597,7 @@ if row_on("pdm-cd-device") {
         echo "skip: pdm-cd-device (CD disc image not fetched)"
     }
 }
+if row_on("pdm-swim3-reset") { row_end("pdm-swim3-reset", try(row_pdm_swim3_reset(), "FAILED")) }
 
 suite_done()
 quit

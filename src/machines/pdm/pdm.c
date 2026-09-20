@@ -42,6 +42,7 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "swim3.h"
 #include "via.h"
 
 #include <assert.h>
@@ -495,6 +496,10 @@ static void pdm_bus_reset(config_t *cfg) {
     // to the cards themselves is the bus controller's (system_reset_devices).
     memset(&st->bart, 0, sizeof(st->bart));
     scc_reset(cfg->scc);
+    // The floppy CONTROLLER.  cfg->floppy (the drive and its media) is reset
+    // by the shared chain; the SWIM3 is this family's controller and was the
+    // one in the tree that survived a reset (`W-01`).
+    swim3_reset(&st->swim3);
     for (int i = 0; i < 2; i++)
         if (st->scsi96[i])
             scsi_53c96_reset(st->scsi96[i]);
