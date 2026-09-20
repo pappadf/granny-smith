@@ -228,6 +228,15 @@ void system_reset_common_devices(config_t *cfg) {
         // returns to its power-on state (scsi_bus_reset, called from
         // scsi_reset); on a 5380 machine the chip's registers clear too.
         scsi_reset_pin(cfg->scsi);
+    // Both VIAs: on the net per the Guide's destination list, and the reason
+    // the ROM overlay comes back (VIA1's Overlay output goes high when the
+    // chip resets).  via2 is NULL on the single-VIA machines.
+    if (cfg->via1)
+        via_reset(cfg->via1);
+    if (cfg->via2)
+        via_reset(cfg->via2);
+    if (cfg->scc)
+        scc_reset(cfg->scc); // "MC68000, VIA, SWIM, SCC, SCSI, BBU"
     if (cfg->nubus)
         nubus_reset(cfg->nubus); // each populated card → power-on state
     if (cfg->pci)

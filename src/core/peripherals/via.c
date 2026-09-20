@@ -718,6 +718,83 @@ static void via_write_uint32(void *via, uint32_t addr, uint32_t value) {
 // Lifecycle: Constructor
 // ============================================================================
 
+// Bus /RESET: the VIA is on every Macintosh board's reset net.
+//
+// R6522 datasheet, "RESET (!RES)": "Reset (!RES) clears all internal registers
+// (except T1 and T2 counters and latches, and the Shift Register (SR)).  In
+// the !RES condition, all peripheral interface lines (PA and PB) are placed in
+// the input state.  Also, the Timers (T1 and T2), SR and interrupt logic are
+// disabled from operation."
+//
+// So: the direction, output, control and interrupt registers clear; the timer
+// counters, timer latches and SR keep their values but stop running; and the
+// armed scheduler events go with "disabled from operation".
+//
+// What is NOT cleared, and why: ports[].input and ports[].ctrl hold what the
+// BOARD is driving onto the pins.  A reset of this chip does not change what
+// a peripheral outside it is asserting, and modelling it as if it did would
+// invent edges on the next via_input_c.
+//
+// Before this existed there was no via_reset at all -- the IER, IFR, ACR, PCR,
+// timers and armed events survived every reset path, so a warm restart could
+// take an interrupt for a source the new OS had not installed a handler for
+// (05-chipsets-irq F-03).
+void via_reset(via_t *restrict via) {
+    if (!via)
+        return;
+
+    // "Timers and SR disabled from operation": stop them, keeping the counter
+    // values the datasheet says survive.  Freeze the live value first, since
+    // read_timer derives it from the arm timestamp while the timer runs.
+    for (int t = 0; t < 2; t++) {
+        via->timers[t].counter = read_timer(via, t);
+        via->timers[t].started = false;
+    }
+    // remove_event, NOT scheduler_forget_source: this is a LIVE device that
+    // arms its timers again afterwards, and the primitive also drops the
+    // event-TYPE registrations, so the next arm trips
+    // scheduler_new_cpu_event's "event type not registered" assert.  Exactly
+    // the trap that function's own header warns about -- and walking into it
+    // is what broke suite-iicx, suite-iici and suite-iifx on the first run of
+    // this change.
+    remove_event(via->scheduler, &t1_callback, via);
+    remove_event(via->scheduler, &t2_callback, via);
+    remove_event(via->scheduler, &sr_shift_complete_callback, via);
+    via->sr_shift_pending = false;
+
+    // "Clears all internal registers", except the three named above.
+    via->ports[PORT_A].direction = 0; // PA to the input state
+    via->ports[PORT_B].direction = 0; // PB likewise
+    via->ports[PORT_A].output = 0;
+    via->ports[PORT_B].output = 0;
+    via->ports[PORT_A].latched = 0;
+    via->ports[PORT_B].latched = 0;
+    via->acr = 0;
+    via->pcr = 0;
+    via->ier = 0;
+
+    // The IFR last, through update_ifr, so the aggregate bit is recomputed and
+    // the IRQ line is dropped if it was asserted.
+    update_ifr(via, 0);
+
+    // DELIBERATELY NOT re-driving output_cb here.  With every direction bit
+    // clear the VIA drives nothing, but the callback's contract is
+    // `output & direction` -- a value, with no way to say "not driving".
+    // Publishing 0 would tell the board every line went LOW, and most of
+    // these are active-low: VIA2 port A carries the NuBus slot /NMRQ lines on
+    // the II family, so a reset would assert every slot interrupt at once.
+    // (Measured: doing it breaks suite-iicx.  It is the mirror of the bug
+    // via_init's comment describes, where the control lines came up at 0 and
+    // an active-low input read that as ASSERTED.)
+    //
+    // Leaving the board's picture alone until the guest programs the VIA
+    // again is the least-wrong model available, and matches the pull-ups:
+    // nothing is driving, so the lines sit high, which is what the board
+    // already believes.
+
+    LOG(1, "via_reset: registers cleared, timers stopped (counters kept)");
+}
+
 // Initialize a new VIA instance with callbacks and optional checkpoint restoration
 via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t freq_factor, const char *name,
                 via_output_fn output_cb, via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context,
