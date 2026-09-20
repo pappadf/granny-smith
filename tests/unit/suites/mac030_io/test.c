@@ -203,13 +203,39 @@ static void probe_write(struct config *cfg, uint32_t win_off, uint32_t addr, uin
 // hardcoded `(addr & 0x3FFFFu) - <base>` (05-chipsets-irq F-22).
 #define PROBE_MIRROR 0x0001FFFFu
 #define PROBE_BASE   0x00001000u
+// A second, adjacent window, so a wide access can be made to straddle the
+// boundary between two rows.
+static uint8_t g_probe2_calls[8];
+static uint32_t g_probe2_offs[8];
+static int g_probe2_n;
+
+static uint8_t probe2_read(struct config *cfg, uint32_t win_off, uint32_t addr) {
+    (void)cfg;
+    (void)addr;
+    if (g_probe2_n < 8) {
+        g_probe2_calls[g_probe2_n] = 2;
+        g_probe2_offs[g_probe2_n++] = win_off;
+    }
+    return 0xA5;
+}
+
 static const mac030_io_range_t k_probe_ranges[] = {
     {.base = PROBE_BASE, .end = 0x00002000u, .read_fn = probe_read, .write_fn = probe_write, .debug_name = "probe"},
+    {.base = 0x00002000u, .end = 0x00003000u, .read_fn = probe2_read, .debug_name = "probe2"},
     {0},
 };
 
+// Go through the real installer, so the tests run against the page index the
+// dispatch path actually uses rather than a hand-built struct.
+static void probe_io_init(mac030_io_t *io, const mac030_io_range_t *ranges, uint32_t mirror) {
+    mac030_board_desc_t desc = {
+        .chipset = "probe", .io_ranges = ranges, .io_mirror_mask = mirror, .io_unmapped_read = 0xFF};
+    mac030_io_install(io, NULL, &desc);
+}
+
 TEST(test_handler_row_gets_engine_decoded_sub_offset) {
-    mac030_io_t io = {.ranges = k_probe_ranges, .mirror_mask = PROBE_MIRROR, .unmapped_read = 0xFF};
+    mac030_io_t io;
+    probe_io_init(&io, k_probe_ranges, PROBE_MIRROR);
 
     // Inside the first copy of the island: re-derivation and the engine agree.
     ASSERT_EQ_INT(mac030_io_read_uint8(&io, 0x50F01004u), 0x5A);
@@ -229,11 +255,38 @@ TEST(test_handler_row_gets_engine_decoded_sub_offset) {
     ASSERT_EQ_INT(g_probe_writes, 1);
 }
 
+// A 16/32-bit access now decodes once and hands the row to each byte
+// (05-chipsets-irq F-43) -- the four table scans a longword used to do were
+// the waste, not the four device calls.  The hoist must not become a promise
+// that all four bytes live in one window: nothing forbids an access
+// straddling a window edge, so the row is re-validated per byte and a
+// straddle falls back to the full scan.
+TEST(test_wide_access_straddling_a_window_edge_redecodes) {
+    mac030_io_t io;
+    probe_io_init(&io, k_probe_ranges, PROBE_MIRROR);
+    g_probe_reads = g_probe2_n = 0;
+
+    // $1FFE..$2001: two bytes in "probe", two in "probe2".
+    uint32_t v = mac030_io_read_uint32(&io, 0x50F01FFEu);
+    ASSERT_EQ_INT((int)v, (int)0x5A5AA5A5u); // probe returns $5A, probe2 $A5
+    ASSERT_EQ_INT(g_probe_reads, 2);
+    ASSERT_EQ_INT(g_probe2_n, 2);
+    ASSERT_EQ_INT((int)g_probe2_offs[0], 0x000); // $2000 - $2000
+    ASSERT_EQ_INT((int)g_probe2_offs[1], 0x001);
+
+    // And wholly inside one window the four bytes still get four sub-offsets.
+    g_probe_reads = 0;
+    mac030_io_read_uint32(&io, 0x50F01100u);
+    ASSERT_EQ_INT(g_probe_reads, 4);
+    ASSERT_EQ_INT((int)g_probe_win_off, 0x103); // last byte of the four
+}
+
 // The five families on this engine used to return `unmapped_read` in silence.
 // Each first touch of an unwired 4K now logs once; the bitmaps are the
 // observable half of that (the log call itself is a no-op in this harness).
 TEST(test_decode_miss_is_recorded_once_per_4k) {
-    mac030_io_t io = {.ranges = k_probe_ranges, .mirror_mask = PROBE_MIRROR, .unmapped_read = 0xFF};
+    mac030_io_t io;
+    probe_io_init(&io, k_probe_ranges, PROBE_MIRROR);
 
     ASSERT_EQ_INT(mac030_io_read_uint8(&io, 0x50F00000u), 0xFF); // unwired: below the window
     ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x1u); // 4K #0
@@ -253,9 +306,54 @@ TEST(test_decode_miss_is_recorded_once_per_4k) {
     ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x9u);
 
     // Per instance, not per process: a second board starts clean.
-    mac030_io_t io2 = {.ranges = k_probe_ranges, .mirror_mask = PROBE_MIRROR, .unmapped_read = 0xFF};
+    mac030_io_t io2;
+    probe_io_init(&io2, k_probe_ranges, PROBE_MIRROR);
     mac030_io_read_uint8(&io2, 0x50F00000u);
     ASSERT_EQ_INT((uint32_t)io2.miss_logged_read, 0x1u);
+}
+
+// The index must be invisible: for every board, at every offset of its
+// island, the indexed decode the dispatch path takes has to name exactly the
+// row the plain linear walk names (05-chipsets-irq F-43).
+static void sweep_index_against_linear(const mac030_io_range_t *ranges, uint32_t mirror) {
+    mac030_io_t io;
+    probe_io_init(&io, ranges, mirror);
+    ASSERT_TRUE(io.indexed); // every shipped table must be indexable
+    for (uint32_t off = 0; off <= mirror; off++) {
+        const mac030_io_range_t *want = mac030_io_decode(ranges, mirror, off);
+        const mac030_io_range_t *got = mac030_io_decode_indexed(&io, off);
+        if (want != got) {
+            fprintf(stderr, "[FAIL] offset $%05X: linear=%s indexed=%s\n", off, want ? want->debug_name : "(none)",
+                    got ? got->debug_name : "(none)");
+            exit(1);
+        }
+    }
+}
+
+TEST(test_page_index_agrees_with_linear_decode_everywhere) {
+    sweep_index_against_linear(mac030_glue_io_ranges(), GLUE_MIRROR);
+    sweep_index_against_linear(mdu_io_ranges(), MDU_MIRROR);
+    sweep_index_against_linear(k_probe_ranges, PROBE_MIRROR);
+}
+
+// The index assumes an ascending, non-overlapping table.  That was always an
+// unstated requirement of the linear walk too -- it returns the FIRST match
+// -- and nothing checked it.  A table that breaks the shape now says so and
+// gets the plain walk back, rather than being quietly half-honoured.
+static const mac030_io_range_t k_out_of_order[] = {
+    {.base = 0x00002000u, .end = 0x00003000u, .read_fn = probe2_read, .debug_name = "high_first"},
+    {.base = 0x00001000u, .end = 0x00002000u, .read_fn = probe_read, .debug_name = "low_second"},
+    {0},
+};
+
+TEST(test_misordered_table_falls_back_to_the_linear_walk) {
+    mac030_io_t io;
+    probe_io_init(&io, k_out_of_order, PROBE_MIRROR);
+    ASSERT_TRUE(!io.indexed);
+    // ...and both windows still decode, exactly as the linear walk always did.
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F02100u) == &k_out_of_order[0]);
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F01100u) == &k_out_of_order[1]);
+    ASSERT_TRUE(mac030_io_decode_indexed(&io, 0x50F00100u) == NULL);
 }
 
 // --- IRQ routing ----------------------------------------------------------
@@ -287,6 +385,9 @@ int main(void) {
     RUN(test_swim_window_decodes_register_index);
     RUN(test_mdu_addr_map);
     RUN(test_handler_row_gets_engine_decoded_sub_offset);
+    RUN(test_wide_access_straddling_a_window_edge_redecodes);
+    RUN(test_page_index_agrees_with_linear_decode_everywhere);
+    RUN(test_misordered_table_falls_back_to_the_linear_walk);
     RUN(test_decode_miss_is_recorded_once_per_4k);
     RUN(test_irq_single_sources);
     RUN(test_irq_priority);

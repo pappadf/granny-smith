@@ -22,6 +22,7 @@
 #include "memory.h"
 #include "system_config.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 // The canonical GLUE $50Fxxxxx island repeats every 128 KB; the 6522s decode
@@ -95,6 +96,11 @@ typedef struct mac030_io_range {
     uint16_t esync;
 } mac030_io_range_t;
 
+// The island is at most 256 KB (the widest io_mirror_mask any board declares
+// is $0003FFFF), so 64 pages of 4 KB index all of it.
+#define MAC030_IO_MAX_PAGES 64
+#define MAC030_IO_NO_ROW    0xFFu
+
 // Device handles + cached memory interfaces the engine routes to, indexed by
 // mac030_dev_t.  Plus the ordered window table + mirror mask for this family.
 // Filled by a family bind (mac030_glue_io_bind / mac030_mdu_io_bind /
@@ -111,6 +117,14 @@ typedef struct mac030_io {
     // Diagnostic state only, and full of host pointers besides -- this whole
     // struct is rebuilt at init and never checkpointed.
     uint64_t miss_logged_read, miss_logged_write;
+    // Decode index: for each 4 KB page of the island, the first row that can
+    // contain an offset in it (MAC030_IO_NO_ROW = none).  Built by
+    // mac030_io_install from the table itself; `indexed` goes false and the
+    // engine reverts to the plain linear walk if the table is not the
+    // ascending, non-overlapping shape the index assumes (see F-43).
+    uint8_t page_first_row[MAC030_IO_MAX_PAGES];
+    uint8_t page_count;
+    bool indexed;
 } mac030_io_t;
 
 // Backwards-compatible alias: the GLUE state struct calls its field's type
@@ -122,6 +136,11 @@ typedef mac030_io_t mac030_glue_io_t;
 // Pure decode: the window in `ranges` containing `offset & mirror`, or NULL if
 // unmapped.  Exposed for the address-map unit tests (§6.1).
 const mac030_io_range_t *mac030_io_decode(const mac030_io_range_t *ranges, uint32_t mirror, uint32_t offset);
+
+// The same decode the dispatch path actually takes, through this board's page
+// index (F-43).  Must agree with mac030_io_decode() on every offset of the
+// island for every board -- which is what the unit test sweeps.
+const mac030_io_range_t *mac030_io_decode_indexed(const mac030_io_t *io, uint32_t addr);
 
 // The six dispatch entry-points (the shared engine).  `ctx` is a mac030_io_t*.
 uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr);
