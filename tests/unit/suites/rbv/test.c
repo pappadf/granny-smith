@@ -30,6 +30,8 @@
 #define RV_IFR       0x003
 #define RV_IER       0x013
 #define RV_IFR_ALIAS 0x1A03
+#define RV_SINT      0x002
+#define RV_SENB      0x012
 #define RV_IER_ALIAS 0x1C13
 
 // ASC register offsets
@@ -319,10 +321,62 @@ TEST(test_asc_to_rbv_chain) {
 
 // ============================================================================
 
+// ============================================================================
+// 4. RvIFR writes clear the RvIRQ0 latch (2026-09-03 code review, 05 F-33)
+// ============================================================================
+
+// slot_pending bit 6 (RvIRQ0, the built-in video frame interrupt) is a LATCH:
+// asserted by the vblank, and otherwise cleared only by reading RvSInt.  It
+// feeds RvAnySlot.  The RvIFR write path used to discard the written value
+// entirely, so a driver acknowledging the frame interrupt through RvIFR --
+// or through the Rv2IFR alias, which is the path the shared VIA2/RBV OS code
+// takes -- never cleared it, and the machine took a level-2 interrupt
+// continuously.
+TEST(test_rvifr_write_clears_rvirq0_latch) {
+    fresh_rbv();
+
+    // Enable RvIRQ0 as a slot source, and RvAnySlot as an interrupt.
+    rwr(RV_SENB, 0x80 | (1u << 6));
+    rwr(RV_IER, 0x80 | 0x02); // RvAnySlot = IFR bit 1
+
+    rbv_assert_slot_irq(g_rbv, 0); // slot 0 = built-in video = RvIRQ0
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0);
+    ASSERT_TRUE(g_irq_state);
+
+    // Acknowledge through RvIFR: bit 7 = 0 selects clear, RvAnySlot names it.
+    rwr(RV_IFR, 0x02);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) == 0);
+    ASSERT_TRUE(!g_irq_state);
+
+    // The Rv2IFR alias must behave identically -- it is the one the shared
+    // OS path actually uses.
+    rbv_assert_slot_irq(g_rbv, 0);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0);
+    rwr(RV_IFR_ALIAS, 0x02);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) == 0);
+
+    // Reading RvSInt remains a valid way to clear it.
+    rbv_assert_slot_irq(g_rbv, 0);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0);
+    (void)rrd(RV_SINT);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) == 0);
+
+    // A NuBus slot source is level, not latched: an RvIFR write must NOT
+    // clear it, or a real pending card interrupt would be lost.
+    rwr(RV_SENB, 0x80 | 0x01); // enable RvIRQ1
+    rbv_assert_slot_irq(g_rbv, 1);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0);
+    rwr(RV_IFR, 0x02);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0); // still asserted by the card
+    rbv_clear_slot_irq(g_rbv, 1);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) == 0);
+}
+
 int main(void) {
     RUN(test_ier_set_clr_and_aliases);
     RUN(test_snd_flag_and_combined_irq);
     RUN(test_asc_to_rbv_chain);
+    RUN(test_rvifr_write_clears_rvirq0_latch);
     fprintf(stderr, "rbv: all tests passed\n");
     return 0;
 }

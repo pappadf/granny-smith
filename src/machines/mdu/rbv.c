@@ -159,7 +159,27 @@ static void rbv_update_irq(rbv_t *rbv) {
 // === Register read ==========================================================
 
 // Translate a window offset (native or VIA-spaced alias) to a register id,
-// or 0xFF if unmapped.
+// or 0xFFFF if unmapped.
+//
+// The decode is deliberately NARROW -- eight exact offsets plus two named
+// aliases -- where the AMIC's equivalent pseudo-VIA2 bank partial-decodes on
+// the low five address bits (amic.c) and mirrors its 32-byte file across the
+// whole window.  Code review 2026-09-03 05-chipsets-irq F-42 reads that
+// difference as a gap and proposes `off & 0x1F` here.  It must not be applied:
+//
+//   - The two accesses the AMIC comment names as load-bearing -- the compact
+//     offsets and the classic-VIA stride ($1A03 for the IFR, $1C13 for the
+//     IER) -- are already covered, by RV_IFR_ALIAS and RV_IER_ALIAS.  Widening
+//     buys no access we have evidence anyone makes.
+//   - It would alias offsets we have no evidence about onto registers with
+//     side effects.  $1A00 -- vBufB, the VIA2 base the same shared OS code
+//     touches -- masks to $00, which is RvDataB, whose write path runs the
+//     soft power-off sequence (see RV_DATAB below).  Aliasing an unknown
+//     access onto "turn the machine off" is a worse failure than the missing
+//     mirror it would fix.
+//
+// The IIci and IIsi developer notes would settle the real decode width; our
+// copies are image-only scans, so this stays narrow and says why.
 static uint16_t rbv_decode(uint32_t off) {
     switch (off) {
     case RV_DATAB:
@@ -255,14 +275,30 @@ static void rbv_write_byte(void *device, uint32_t addr, uint8_t value) {
         // are accepted (the OS pokes it during self-test) but do not latch.
         LOG(3, "write RvSInt = $%02X (accept-and-log)", value);
         return;
-    case RV_IFR:
-        // IFR is composed live from source state.  The OS clears flags by
-        // writing with bit 7 = 0; the underlying sources deassert on
-        // service, so the recompute below reflects the result.  Accept the
-        // write so diagnostic poke/peek sequences see no bus error.
+    case RV_IFR: {
+        // Most of RvIFR is composed live from source state (rbv_compose_ifr),
+        // and for those bits the write needs no effect: the underlying source
+        // deasserts on service and the recompute below reflects it.
+        //
+        // RvIRQ0 -- the built-in video's frame interrupt, slot_pending bit 6 --
+        // is the exception.  It is a LATCH, set by the vblank and otherwise
+        // cleared only by reading RvSInt, and it feeds RvAnySlot.  Discarding
+        // the written value meant a driver that acknowledges the VBL through
+        // RvIFR (or through the Rv2IFR alias, which is the path the shared
+        // VIA2/RBV OS code takes) never cleared it, and the machine took a
+        // level-2 interrupt continuously.
+        //
+        // So honour write-1-to-clear over the latched set, the way the PSC
+        // does with AV_PSC_VIA2_LATCH_MASK: bit 7 = 0 selects clear, and a 1
+        // in RvAnySlot clears the only latched contributor there is.
         LOG(3, "write RvIFR = $%02X (set/clr=%d)", value, (value & RVIFR_SETCLR) ? 1 : 0);
+        if (!(value & RVIFR_SETCLR) && (value & RVIFR_ANYSLOT) && (rbv->slot_pending & (1u << 6))) {
+            rbv->slot_pending &= (uint8_t) ~(1u << 6);
+            LOG(4, "  RvIRQ0 latch cleared by RvIFR write");
+        }
         rbv_update_irq(rbv);
         return;
+    }
     case RV_MONP: {
         uint8_t old_depth = rbv->reg_monp & RVMONP_DEPTH_MASK;
         bool old_vidoff = (rbv->reg_monp & RVMONP_VIDOFF) != 0;
