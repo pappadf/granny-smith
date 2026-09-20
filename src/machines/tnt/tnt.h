@@ -185,7 +185,6 @@ typedef struct tnt_board_desc {
 #define TNT_HH_BANKS 26 // DRAM banks with a base-register pair each (+$1C0..+$4F0)
 typedef struct tnt_hammerhead {
     uint32_t reg[TNT_HH_REGS]; // raw store; specials overlay on read
-    bool l2cfg_sticky; // TEMP diagnostic: +$E0 ignores writes (GS_HH_L2CFG)
     // The DIMMs, as banks: bytes of DRAM behind each bank (0 = no DIMM
     // side there) and where in host RAM that bank's storage starts.
     // Carved from the profile's RAM size at init (hammerhead.c).

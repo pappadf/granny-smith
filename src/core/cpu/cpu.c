@@ -116,7 +116,38 @@ uint32_t cpu_get_ipl(cpu_t *restrict cpu) {
     return cpu->ipl;
 }
 
-// Set the interrupt priority level
+// Set the interrupt priority level.
+//
+// THIS IS A BARE STORE, AND THAT IS THE CONTRACT.  Raising the IPL here does
+// not itself wake a STOP-halted CPU; delivery happens when the scheduler's run
+// loop next polls, which it does at the top of every iteration and again after
+// each event batch (scheduler.c, the `is_stopped` branch).  That is sufficient
+// because every caller raises the IPL from one of exactly two places:
+//
+//   1. inside a scheduler event callback -- every *_update_ipl in
+//      mac030_glue.c, av.c, iifx.c, lisa.c and plus.c reaches here that way;
+//   2. before the run loop starts (the cold-boot `cpu_set_ipl(cpu, 0)` in
+//      mac030_glue_finish and its siblings).
+//
+// In both, the scheduler polls before the CPU next executes anything.
+//
+// The five *_update_ipl implementations pair this call with cpu_reschedule(),
+// which only reconciles sprint counters -- it is NOT the wake mechanism, and
+// reading it as one is the mistake this comment exists to prevent.
+//
+// DO NOT "fix" this by calling cpu_check_interrupt() from here.  The 2026-09-03
+// review (05-chipsets-irq F-47) proposes exactly that, guarded on the CPU being
+// stopped, and the guard is sound as far as it goes -- a stopped CPU is at a
+// clean instruction boundary.  But the common caller is a device callback
+// running inside process_event_queue(), so delivering there would push an
+// exception frame and move the PC part-way through an event batch that then
+// continues.  That reorders exception delivery against the remaining events for
+// no present benefit: no caller today violates the invariant above.
+//
+// A caller that genuinely cannot satisfy it -- a host-input hook, or the
+// `machine.irq.inject` method the interrupt-controller object nodes would add
+// -- must drive delivery through the scheduler rather than widen this
+// function.  cpu_poll_interrupt() below is the entry point for that.
 void cpu_set_ipl(cpu_t *restrict cpu, uint32_t value) {
     cpu->ipl = value;
 }

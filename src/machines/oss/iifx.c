@@ -856,29 +856,34 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     iifx_state_t *st = iifx_state(cfg);
     uint32_t off = offset & 0x1fff;
 
-    // Per-register PC trace for the discriminator investigation
-    // (env-gated, same toggle as the shim trace).  Emits one line per
-    // interesting wrapper-register write with the CPU PC at issue
-    // time.  $0C0/$100 emit only on the final byte so the assembled
-    // 32-bit value appears.  $020/$050/$070 are byte-wide registers.
-    if (getenv("GS_IIFX_SHIM_TRACE")) {
+    // Per-register PC trace for the SCSI-DMA discriminator investigation.
+    // One line per interesting wrapper-register write, with the CPU PC at
+    // issue time.  $0C0/$100 emit only on the final byte so the assembled
+    // 32-bit value appears; $020/$050/$070 are byte-wide registers.
+    //
+    // Gated on the `board` log category at level 9, not on GS_IIFX_SHIM_TRACE
+    // (05-chipsets-irq F-41).  `debug.log board 9` turns it on, `file=` can
+    // redirect it, and it is visible in the object model -- none of which an
+    // env var offered.  Unlike the other overrides that finding names, this
+    // one only ever produced output and never changed emulated behaviour.
+    if (log_would_log(_log_get_local_category(), 9)) {
         extern uint64_t cpu_instr_count(void);
-        unsigned long long _ic = (unsigned long long)cpu_instr_count();
+        unsigned long long ic = (unsigned long long)cpu_instr_count();
         if (off == 0x020 || off == 0x050 || off == 0x070) {
-            fprintf(stdout, "REG W i=%llu $%03x = $%02x  pc=$%08x  ctrl=$%08x cur=$%08x\n", _ic, off, value,
-                    cpu_get_pc(cfg->cpu), st->scsi_dma_ctrl, st->scsi_dma_addr);
+            LOG(9, "REG W i=%llu $%03x = $%02x  pc=$%08x  ctrl=$%08x cur=$%08x", ic, off, value, cpu_get_pc(cfg->cpu),
+                st->scsi_dma_ctrl, st->scsi_dma_addr);
         } else if ((off & 0xff0) == SCSIDMA_DCTRL && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_ctrl;
             iifx_write_reg32_byte(&composed, off, value);
-            fprintf(stdout, "REG W i=%llu $080 = $%08x  pc=$%08x\n", _ic, composed, cpu_get_pc(cfg->cpu));
+            LOG(9, "REG W i=%llu $080 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         } else if ((off & 0xff0) == SCSIDMA_DCNT && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_count;
             iifx_write_reg32_byte(&composed, off, value);
-            fprintf(stdout, "REG W i=%llu $0c0 = $%08x  pc=$%08x\n", _ic, composed, cpu_get_pc(cfg->cpu));
+            LOG(9, "REG W i=%llu $0c0 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         } else if ((off & 0xff0) == SCSIDMA_DADDR && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_addr_latch;
             iifx_write_reg32_byte(&composed, off, value);
-            fprintf(stdout, "REG W i=%llu $100 = $%08x  pc=$%08x\n", _ic, composed, cpu_get_pc(cfg->cpu));
+            LOG(9, "REG W i=%llu $100 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         }
     }
 
