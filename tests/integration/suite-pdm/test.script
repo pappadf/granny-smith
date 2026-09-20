@@ -213,13 +213,17 @@ def row_pdm_nubus_empty() {
 
     # The Ethernet ID PROM ($50F08000) and MACE ($50F0A000) windows are
     # declared in the AMIC decode with nothing behind them yet.  They read
-    # $FF, not 0: a decoded window with no part on it floats and the
-    # pull-ups carry it high, which is what io_unmapped_read records for
-    # the five mac030 families (05-chipsets-irq F-25).  The defines stay --
-    # multi-cpu §11.5 wants OFF_EPROM wired as an IPI and
-    # localtalk-networking keeps MACE as a stub.
-    assert machine.memory.peek.b(0x50F08000) == 0xFF "pdm: Ethernet ID PROM window should float high"
-    assert machine.memory.peek.b(0x50F0A000) == 0xFF "pdm: MACE window should float high"
+    # 0, NOT the $FF that 05-chipsets-irq F-25 proposes and that the five
+    # mac030 families float to: floating them high breaks mklinux-boot's
+    # pm7100 row, which stops reaching the login screen because MkLinux
+    # probes for Ethernet here and an all-ones ID PROM is a different
+    # answer from an empty one.  Measured, not assumed -- the EPROM window
+    # is read once and MACE read 10 / written 40 times per run of this
+    # suite, so the value is live traffic.  The defines stay: multi-cpu
+    # §11.5 wants OFF_EPROM wired as an IPI and localtalk-networking keeps
+    # MACE as a stub.
+    assert machine.memory.peek.b(0x50F08000) == 0 "pdm: Ethernet ID PROM window should read 0, not float"
+    assert machine.memory.peek.b(0x50F0A000) == 0 "pdm: MACE window should read 0, not float"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
     assert try(machine.nubus.slot[14].card.name, none) == none "slot E is populated"
     # The connectors are $C/$D/$E, and $B is NOT one of them.  This is not

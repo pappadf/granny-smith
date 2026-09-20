@@ -1089,15 +1089,23 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
         return dma_read(cfg, offset - OFF_DMA);
     case OFF_EPROM:
     case OFF_MACE:
-        // Declared in the decode, nothing behind them yet (05-chipsets-irq
-        // F-25).  The finding's own suggestion is to delete the two defines;
-        // two proposals say not to -- multi-cpu §11.5 wants Grand Central's
-        // OFF_EPROM wired as an IPI, and localtalk-networking keeps MACE as a
-        // stub with a real model as future work.  So the windows stay and
-        // read $FF: a decoded window with no part on it floats, and pull-ups
-        // carry it high, which is the same reasoning mac030_board_desc's
-        // io_unmapped_read records for the other five families.
-        return 0xFFu;
+        // Declared in the decode, nothing behind them yet.  05-chipsets-irq
+        // F-25 suggests deleting the two defines; two proposals say not to
+        // (multi-cpu §11.5 wants Grand Central's OFF_EPROM wired as an IPI,
+        // localtalk-networking keeps MACE as a stub with a real model as
+        // future work), and the finding's own alternative is to float them
+        // to $FF the way io_unmapped_read does on the five mac030 families.
+        //
+        // THE CORPUS SAYS OTHERWISE, and it was measured: these windows are
+        // live traffic, not dead decode -- the EPROM read once and MACE read
+        // 10 times and written 40 times per suite-pdm run.  Floating them
+        // high passes suite-pdm but breaks mklinux-boot's pm7100 row, which
+        // no longer reaches the login screen: MkLinux probes for Ethernet
+        // here and an all-ones ID PROM is a different answer from an empty
+        // one.  So they read 0, deliberately, until the PDM address-map
+        // shading the wider float-vs-fault audit is blocked on says
+        // otherwise -- which is the audit's own gate, reached empirically.
+        return 0;
     default:
         LOG(2, "read of unwired island offset $%05X", offset);
         return 0;
