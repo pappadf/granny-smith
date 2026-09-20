@@ -233,8 +233,8 @@ static const mac030_board_desc_t iisi_board_desc = {
     .io_ranges = mdu_io_ranges_tbl,
     .io_mirror_mask = 0x0003FFFFUL,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .bus_err_lo = 0xF9000000,
-    .bus_err_hi = 0xFEFFFFFF,
+    .bus_err_lo = NUBUS_BERR_LO,
+    .bus_err_hi = NUBUS_BERR_HI,
 };
 
 // ============================================================

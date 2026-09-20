@@ -74,6 +74,46 @@ static inline uint32_t nubus_super_slot_base(int slot) {
     return ((uint32_t)slot << 28);
 }
 
+// The board bus-error window, as every NuBus Macintosh draws it: an access
+// with no responder anywhere in expansion space ends in the watchdog's bus
+// error rather than floating to $FF.
+//
+// LO IS STANDARD SLOT SPACE, and an attempt to extend it to super-slot space
+// was REFUTED BY TEST -- worth recording, because the argument for extending
+// it was good and still lost.
+//
+// 05-chipsets-irq F-23 presents the three different windows as "three
+// separate policies for the same architectural question", and the tree looks
+// like it has already decided: the AV pair start at $A0, covering super-slot
+// space, and PDM's BART explicitly claims super-slot space for empty slots so
+// they fault (bart.c:318) -- with bart.c:300 recording "there read $FF
+// instead of faulting" as a bug it had to fix.  Two families modelling it,
+// one of them with a fixed bug behind it, reads like the other nine being a
+// gap.
+//
+// They are not.  Lowering the nine boards to $90000000 breaks suite-se30,
+// suite-iicx and suite-iici outright -- iicx-gc-beep and iici-701-fd stop
+// matching -- so something on those machines legitimately reads super-slot
+// space and expects the bus to float.  Taking PDM's fact and applying it to
+// nine other boards is exactly the mistake HANDOVER §4.0 warns about, in the
+// direction that is harder to see: the evidence was real, it was just
+// evidence about a different machine.  The per-board question belongs to the
+// float-or-fault audit (proposal-bus-timeout-audit.md), which reads each
+// board's own address map.
+//
+// These are the same arithmetic as nubus_slot_base above, spelled as constant
+// expressions because a board descriptor is a static initialiser and a
+// `static inline` call is not constant.  The _Static_asserts in nubus.c keep
+// the two spellings honest.
+#define NUBUS_BERR_LO 0xF9000000u // == nubus_slot_base(0x9)
+
+// Standard slot space through slot $E inclusive.
+#define NUBUS_BERR_HI 0xFEFFFFFFu // == nubus_slot_base(0xE) + 0xFFFFFF
+
+// ...except where slot $E is not expansion space.  The SE/30's $E is its PDS,
+// and the machine has always excluded it.
+#define NUBUS_BERR_HI_EXCL_SLOT_E 0xFDFFFFFFu // == nubus_slot_base(0xD) + 0xFFFFFF
+
 // Bus controller.  Walks the slot table at init; for each BUILTIN entry
 // looks up .builtin_card_id via nubus_card_find() and calls the resolved
 // factory.  For the VIDEO entry (at most one per machine) it reads the

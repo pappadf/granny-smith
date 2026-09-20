@@ -1464,8 +1464,8 @@ static const mac030_board_desc_t iifx_board_desc = {
     .io_ranges = iifx_io_ranges_tbl,
     .io_mirror_mask = IIFX_IO_MIRROR,
     .io_unmapped_read = 0xff,
-    .bus_err_lo = 0xF9000000,
-    .bus_err_hi = 0xFEFFFFFF,
+    .bus_err_lo = NUBUS_BERR_LO,
+    .bus_err_hi = NUBUS_BERR_HI,
 };
 
 // Initializes a Macintosh IIfx machine.

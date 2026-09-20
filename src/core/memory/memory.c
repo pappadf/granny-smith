@@ -23,6 +23,33 @@
 
 // The category memory logpoints already use (AGENTS.md); debug.log memory N.
 LOG_USE_CATEGORY_NAME("memory");
+
+// === Bus-error window ======================================================
+//
+// The address range where "no chip answered" means the board's watchdog fires
+// and the cycle ends in a bus error, rather than the bus floating to the
+// pull-ups and reading $FF.  Per board; see each machine's bus_err_lo/hi.
+//
+// It lives HERE, not in mmu_state_t, because it is a property of the BUS.
+// Keeping it in the MMU had two consequences (05-chipsets-irq F-23): the test
+// was written out twice, once in mmu.c and once in mmu040.c, and it could
+// only ever fire on the MMU's transparent-translation path -- so with the MMU
+// disabled, which is most of POST, the same address returned $FF and never
+// faulted.
+static uint32_t g_bus_err_lo = 1; // lo > hi: an empty window until a board sets one
+static uint32_t g_bus_err_hi = 0;
+
+void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end) {
+    (void)m;
+    g_bus_err_lo = start;
+    g_bus_err_hi = end;
+}
+
+// True when an unanswered access at `addr` should fault rather than float.
+bool memory_addr_faults_when_unmapped(uint32_t addr) {
+    return addr >= g_bus_err_lo && addr <= g_bus_err_hi;
+}
+
 #include "shell.h"
 #include "system.h"
 #include "system_config.h"
@@ -465,6 +492,16 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
     // MMU disabled: logical == physical, dispatch by logical page-table entry.
     if (pe->dev)
         return dev_read8(pe, addr, addr - pe->base_addr);
+    // Nothing answered.  Inside the board's bus-error window the watchdog
+    // fires; outside it the bus floats to the pull-ups and reads $FF.
+    //
+    // The window used to be consulted only on the MMU's transparent-
+    // translation path, so with the MMU disabled -- which is most of POST --
+    // an unpopulated slot read $FF and never faulted (05-chipsets-irq F-23).
+    if (memory_addr_faults_when_unmapped(addr)) {
+        memory_signal_bus_error(addr, false);
+        return 0xFF;
+    }
     // Unmapped physical memory returns $FF (floating bus, pull-up resistors).
     // This matches real 68k Mac hardware behavior and is critical for:
     //   - ROM RAM sizing (write pattern / read-back $FF → detects boundary)

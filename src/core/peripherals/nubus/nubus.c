@@ -49,6 +49,16 @@ struct nubus_bus {
     uint16_t slot_irq_mask;
 };
 
+// The bus-error window constants in nubus.h are spelled as literals because
+// board descriptors are static initialisers; these pin them to the helpers
+// they are meant to mirror, so a change to one spelling fails the build
+// rather than drifting.
+_Static_assert(NUBUS_BERR_LO == (0xF0000000u | (0x9u << 24)), "NUBUS_BERR_LO must equal nubus_slot_base(0x9)");
+_Static_assert(NUBUS_BERR_HI == ((0xF0000000u | (0xEu << 24)) + 0x00FFFFFFu),
+               "NUBUS_BERR_HI must equal nubus_slot_base(0xE) + 0xFFFFFF");
+_Static_assert(NUBUS_BERR_HI_EXCL_SLOT_E == ((0xF0000000u | (0xDu << 24)) + 0x00FFFFFFu),
+               "NUBUS_BERR_HI_EXCL_SLOT_E must equal nubus_slot_base(0xD) + 0xFFFFFF");
+
 // === Card-kind registry =====================================================
 //
 // Single explicit list (no linker-section magic).  Adding a card driver
