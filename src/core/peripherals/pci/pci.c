@@ -71,7 +71,6 @@ struct pci_root {
     int bus_count;
     pci_device_t *slot_dev[PCI_MAX_SLOTS]; // device seated in slot N
     const pci_card_kind_t *slot_kind[PCI_MAX_SLOTS]; // and the kind that made it
-    uint32_t slot_irq_mask; // aggregate of asserted slot lines
 };
 
 // === Card-kind registry =====================================================
@@ -802,10 +801,6 @@ static int pci_collect(pci_root_t *root, pci_device_t **out, int max) {
 void pci_checkpoint_save(pci_root_t *root, checkpoint_t *cp) {
     if (!root || !cp)
         return;
-    // The aggregate, before the devices -- the same omission the NuBus side
-    // had (04-video F-42).  PCI slot lines are levels held until acknowledged,
-    // so a restore that loses the mask loses which slots are still asserting.
-    system_write_checkpoint_data(cp, &root->slot_irq_mask, sizeof(root->slot_irq_mask));
     pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
     int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
     for (int i = 0; i < n; i++) {
@@ -818,7 +813,6 @@ void pci_checkpoint_save(pci_root_t *root, checkpoint_t *cp) {
 void pci_checkpoint_restore(pci_root_t *root, checkpoint_t *cp) {
     if (!root || !cp)
         return;
-    system_read_checkpoint_data(cp, &root->slot_irq_mask, sizeof(root->slot_irq_mask));
     pci_device_t *devs[PCI_MAX_TOTAL_DEVICES];
     int n = pci_collect(root, devs, PCI_MAX_TOTAL_DEVICES);
     for (int i = 0; i < n; i++) {
@@ -842,7 +836,6 @@ void pci_reset(pci_root_t *root) {
         if (devs[i]->ops && devs[i]->ops->reset)
             devs[i]->ops->reset(devs[i], root->cfg);
     }
-    root->slot_irq_mask = 0;
 }
 
 void pci_tick_vbl(pci_root_t *root) {
@@ -884,18 +877,18 @@ static void pci_route_slot_irq(config_t *cfg, int slot, bool active) {
         cfg->machine->substrate->pci_slot_irq(cfg, slot, active);
 }
 
+// Like the NuBus side, the PCI root keeps NO aggregate of asserted slot
+// lines: the chipset owns the OR (05-chipsets-irq F-46), and the mask here
+// was maintained and checkpointed but read by nothing.  See the note above
+// nubus_assert_irq before reintroducing it.
 void pci_assert_irq(pci_device_t *dev) {
     if (!dev || !dev->bus || dev->slot_index <= 0 || dev->slot_index >= PCI_MAX_SLOTS)
         return;
-    pci_root_t *root = dev->bus->root;
-    root->slot_irq_mask |= (1u << dev->slot_index);
     pci_route_slot_irq(dev->bus->cfg, dev->slot_index, /*active*/ true);
 }
 
 void pci_deassert_irq(pci_device_t *dev) {
     if (!dev || !dev->bus || dev->slot_index <= 0 || dev->slot_index >= PCI_MAX_SLOTS)
         return;
-    pci_root_t *root = dev->bus->root;
-    root->slot_irq_mask &= ~(1u << dev->slot_index);
     pci_route_slot_irq(dev->bus->cfg, dev->slot_index, /*active*/ false);
 }

@@ -365,7 +365,7 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
 //
 // The chipset keeps the OR, not the bus.  GLUE used to pulse CA1 only when
 // the NuBus controller reported an `umbrella_edge` computed from its own
-// slot_irq_mask; the MCU ignored that flag and re-drove CA1 from its own
+// slot bitmap; the MCU ignored that flag and re-drove CA1 from its own
 // mask, and the MCU was right -- its aggregate includes DAFB on PA6 and SONIC
 // on PA0, sources the NuBus controller knows nothing about.  The SE/30's
 // built-in video is the same shape.  A bus that cannot see every contributor

@@ -282,7 +282,7 @@ static void se30_trigger_vbl(config_t *cfg) {
     // used to pulse BOTH CA1 lines "as the GLUE chip does", which forged a
     // slot interrupt every frame and fought the umbrella level a real card
     // may be holding (05-chipsets-irq F-11), and drove slot $E by poking
-    // VIA2 port A directly, so the bus's own slot_irq_mask never saw it
+    // VIA2 port A directly, so the bus never saw it
     // (F-13).
     mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, true);
     mac_vbl_pulse(cfg->via1);

@@ -34,19 +34,6 @@ struct nubus_bus {
     // attach_objects without testing card identity (04-video F-10); PCI has
     // carried the same per-slot record since its own §5.1.
     const nubus_card_kind_t *slot_kind[NUBUS_MAX_SLOTS];
-    // Which slots are asserting, as a bitmap ($9..$E).  The bus's OWN record
-    // and nothing more: the aggregate that actually drives /SLOTIRQ is the
-    // chipset's, because only the chipset can see the non-NuBus contributors
-    // (the SE/30's built-in video, the MCU's DAFB and SONIC) --
-    // 05-chipsets-irq F-46.  Until that finding this mask also computed an
-    // `umbrella_edge` passed down to the substrate, which is why 04-video
-    // F-42 had to start checkpointing it; that consumer is gone, so the field
-    // is now maintained and saved but not READ for any decision.  Kept
-    // because a machine.nubus node would want it, and because deleting state
-    // another branch fixed a bug in deserves its own change rather than
-    // riding along in this one -- but it is a deletion candidate, and it must
-    // not be reintroduced as an edge source.
-    uint16_t slot_irq_mask;
 };
 
 // The bus-error window constants in nubus.h are spelled as literals because
@@ -561,15 +548,6 @@ const nubus_card_kind_t *nubus_slot_kind(nubus_bus_t *bus, int slot) {
 void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
     if (!bus || !cp)
         return;
-    // The aggregate, before the cards.  It is bus state, not card state: no
-    // card knows whether ANOTHER slot is still asserting, and that is exactly
-    // what decides the umbrella edge.  Nothing wrote it, so a machine
-    // checkpointed with a slot interrupt asserted came back with the mask at
-    // zero and BOTH edges were then computed from a lie (04-video F-42) -- the
-    // next assert saw `any_was_asserted` false and raised an umbrella edge that
-    // had already been raised, and the next deassert saw `mask == 0` and
-    // dropped the umbrella while another slot was still holding it.
-    system_write_checkpoint_data(cp, &bus->slot_irq_mask, sizeof(bus->slot_irq_mask));
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (card && card->ops && card->ops->checkpoint_save)
@@ -580,7 +558,6 @@ void nubus_checkpoint_save(nubus_bus_t *bus, checkpoint_t *cp) {
 void nubus_checkpoint_restore(nubus_bus_t *bus, checkpoint_t *cp) {
     if (!bus || !cp)
         return;
-    system_read_checkpoint_data(cp, &bus->slot_irq_mask, sizeof(bus->slot_irq_mask));
     for (int i = 0; i < NUBUS_MAX_SLOTS; i++) {
         nubus_card_t *card = bus->cards[i];
         if (card && card->ops && card->ops->checkpoint_restore)
@@ -659,18 +636,27 @@ static void nubus_route_slot_irq(config_t *cfg, int slot, bool active) {
         cfg->machine->substrate->nubus_slot_irq(cfg, slot, active);
 }
 
+// The bus keeps NO aggregate of which slots are asserting, deliberately.
+//
+// It used to: a `slot_irq_mask` here computed an `umbrella_edge` that was
+// passed down to the substrate.  That was wrong, because only the chipset can
+// see the non-NuBus contributors to /SLOTIRQ -- the SE/30's built-in video,
+// the MCU's DAFB on PA6 and SONIC on PA0 -- so a bus-side OR was always a
+// partial one (05-chipsets-irq F-46).  With the edge consumer gone the mask
+// was maintained and checkpointed but read by nothing, and it is now deleted.
+//
+// Do not bring it back as an edge source.  Its checkpointing exists in the
+// history for a reason (04-video F-42: restoring it as zero while a slot was
+// still asserting made both edges compute from a lie), and reintroducing the
+// mask without that fix reintroduces the bug.  The chipset owns the OR.
 void nubus_assert_irq(nubus_card_t *card) {
     if (!card || !card->bus)
         return;
-    nubus_bus_t *bus = card->bus;
-    bus->slot_irq_mask |= (uint16_t)(1u << card->slot);
-    nubus_route_slot_irq(bus->cfg, card->slot, /*active*/ true);
+    nubus_route_slot_irq(card->bus->cfg, card->slot, /*active*/ true);
 }
 
 void nubus_deassert_irq(nubus_card_t *card) {
     if (!card || !card->bus)
         return;
-    nubus_bus_t *bus = card->bus;
-    bus->slot_irq_mask &= (uint16_t) ~(1u << card->slot);
-    nubus_route_slot_irq(bus->cfg, card->slot, /*active*/ false);
+    nubus_route_slot_irq(card->bus->cfg, card->slot, /*active*/ false);
 }
