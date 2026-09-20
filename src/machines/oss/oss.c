@@ -6,7 +6,10 @@
 
 #include "oss.h"
 
+#include "irq_controller.h"
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "regfile.h"
 #include "scheduler.h"
 #include "system.h"
@@ -55,6 +58,7 @@ struct oss {
     oss_control_fn control_cb;
     void *cb_context;
     struct scheduler *scheduler; // counter time base; not checkpointed
+    struct object *object; // machine.oss (F-26); after the blob, never saved
 };
 
 // Notifies the owning machine that CPU IPL may need recomputing.
@@ -223,6 +227,132 @@ static void oss_write_uint32(void *device, uint32_t addr, uint32_t value) {
 }
 
 // Creates an OSS instance with ROM-like default source priorities.
+// === Object node: machine.oss (05-chipsets-irq F-26) ========================
+//
+// The IIfx has no VIA2 and no RBV; the OSS *is* its interrupt controller, so
+// before this node an IRQ storm on a IIfx was not inspectable at all.  The
+// chip-specific half matters here more than anywhere: the OSS has no mask
+// register, and "disabled" means a source whose level register reads 0, so
+// `source_levels` is the thing an investigation actually needs.
+
+static uint32_t oss_obj_pending(void *ctx) {
+    return oss_pending((const oss_t *)ctx);
+}
+
+// The OSS has no enable mask.  A source is enabled exactly when its level
+// register is non-zero -- "Writing 0 disables that source" (IIfx note),
+// which is also why level[10] starts at 0 above.
+static uint32_t oss_obj_enabled(void *ctx) {
+    const oss_t *oss = (const oss_t *)ctx;
+    uint32_t mask = 0;
+    for (int i = 0; i < OSS_NUM_SOURCES; i++) {
+        if (oss->level[i] & 7u)
+            mask |= 1u << i;
+    }
+    return mask;
+}
+
+static int oss_obj_ipl(void *ctx) {
+    return (int)oss_highest_ipl((const oss_t *)ctx);
+}
+
+static int oss_obj_level_count(void *ctx) {
+    (void)ctx;
+    return 7; // IPL 1..7
+}
+
+static uint32_t oss_obj_level(void *ctx, int index) {
+    const oss_t *oss = (const oss_t *)ctx;
+    uint32_t mask = 0;
+    for (int i = 0; i < OSS_NUM_SOURCES; i++) {
+        if ((oss->level[i] & 7u) == (uint8_t)(index + 1))
+            mask |= 1u << i;
+    }
+    return mask;
+}
+
+static const irq_controller_ops_t oss_irq_ops = {
+    .chip = "OSS",
+    .pending = oss_obj_pending,
+    .enabled = oss_obj_enabled,
+    .ipl = oss_obj_ipl,
+    .level_count = oss_obj_level_count,
+    .level = oss_obj_level,
+    .level_base = 1,
+};
+
+// The per-source programmed level, in source order -- the OSS's own view,
+// and the inverse of `levels`.  Reading both together is how you tell a
+// source that is shouting from a source that was programmed to the wrong
+// priority.
+static value_t oss_attr_source_levels(struct object *self, const member_t *m) {
+    (void)m;
+    const oss_t *oss = (const oss_t *)object_data(self);
+    value_t *items = (value_t *)calloc(OSS_NUM_SOURCES, sizeof(value_t));
+    if (!items)
+        return val_err("oss.source_levels: out of memory");
+    for (int i = 0; i < OSS_NUM_SOURCES; i++)
+        items[i] = val_uint(1, oss->level[i] & 7u);
+    return val_list(items, OSS_NUM_SOURCES);
+}
+
+static value_t oss_attr_rom_ctrl(struct object *self, const member_t *m) {
+    (void)m;
+    value_t v = val_uint(1, ((const oss_t *)object_data(self))->rom_ctrl);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t oss_attr_counter_ctl(struct object *self, const member_t *m) {
+    (void)m;
+    value_t v = val_uint(1, ((const oss_t *)object_data(self))->counter_ctl);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t oss_attr_counter(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(4, oss_counter_value((const oss_t *)object_data(self)));
+}
+
+static const member_t oss_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&oss_irq_ops){
+                                         .kind = M_ATTR,
+                                         .name = "source_levels",
+                                         .doc = "Programmed CPU level per OSS source, source order (0 = disabled)",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = oss_attr_source_levels, .set = NULL}},
+    {.kind = M_ATTR,
+                                         .name = "rom_ctrl",
+                                         .doc = "ROM control register ($204)",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = oss_attr_rom_ctrl, .set = NULL}          },
+    {.kind = M_ATTR,
+                                         .name = "counter_ctl",
+                                         .doc = "Free-running counter control ($20C)",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = oss_attr_counter_ctl, .set = NULL}       },
+    {.kind = M_ATTR,
+                                         .name = "counter",
+                                         .doc = "Free-running counter, derived from emulated time",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = oss_attr_counter, .set = NULL}      },
+};
+
+static const class_desc_t oss_class = {
+    .name = "irq_controller",
+    .members = oss_members,
+    .n_members = sizeof(oss_members) / sizeof(oss_members[0]),
+};
+
+static void oss_attach_object(oss_t *oss) {
+    oss->object = object_new(&oss_class, oss, "oss");
+    if (!oss->object)
+        return;
+    object_set_order(oss->object, 45); // between the VIAs (40) and the RTC (60)
+    object_attach(machine_object(), oss->object);
+}
+
 oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, struct scheduler *scheduler,
                 checkpoint_t *checkpoint) {
     oss_t *oss = calloc(1, sizeof(*oss));
@@ -284,11 +414,16 @@ oss_t *oss_init(oss_irq_fn irq_cb, oss_control_fn control_cb, void *context, str
         system_read_checkpoint_data(checkpoint, oss, offsetof(oss_t, memory_interface));
     }
 
+    oss_attach_object(oss);
     return oss;
 }
 
 // Frees an OSS instance.
 void oss_delete(oss_t *oss) {
+    if (oss && oss->object) {
+        object_detach(oss->object);
+        object_delete(oss->object);
+    }
     free(oss);
 }
 

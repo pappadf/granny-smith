@@ -60,6 +60,12 @@ def row_iici_chime() {
     machine.sound.capture.stop
     assert machine.ram == 8192 "iici-chime: machine.ram != 8192"
     assert machine.sound.capture.frames == 13405 "iici-chime: unexpected capture length"
+    # machine.rbv — the IIci has no VIA2, so before 05-chipsets-irq F-26 its
+    # interrupt controller was not inspectable at all.  RvIFR is composed on
+    # demand from live source state, so there is no register to peek either.
+    assert machine.rbv.chip == "RBV" "iici-chime: machine.rbv missing"
+    assert machine.rbv.variant == "RBV/IIci" "iici-chime: wrong RBV variant"
+    assert machine.rbv.active == machine.rbv.pending & machine.rbv.enabled "iici-chime: RBV active != pending & enabled"
     machine.sound.match goldens/iici-chime.wav
     report_perf("suite-iici/iici-chime", scheduler.instr_count)
 }

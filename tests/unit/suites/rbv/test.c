@@ -127,50 +127,12 @@ void sound_object_delete(struct object *o) {
     (void)o;
 }
 
-struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {
-    (void)cls;
-    (void)instance_data;
-    (void)name;
-    return NULL;
-}
-void object_delete(struct object *o) {
-    (void)o;
-}
-void object_attach(struct object *parent, struct object *child) {
-    (void)parent;
-    (void)child;
-}
-void object_detach(struct object *child) {
-    (void)child;
-}
-void *object_data(struct object *o) {
-    (void)o;
-    return NULL;
-}
-void object_set_label(struct object *o, const char *label) {
-    (void)o;
-    (void)label;
-}
-void object_set_order(struct object *o, int order) {
-    (void)o;
-    (void)order;
-}
-struct object *machine_object(void) {
-    return NULL;
-}
-value_t val_uint(uint8_t width, uint64_t u) {
-    (void)width;
-    (void)u;
-    value_t v;
-    memset(&v, 0, sizeof(v));
-    return v;
-}
-value_t val_bool(bool b) {
-    (void)b;
-    value_t v;
-    memset(&v, 0, sizeof(v));
-    return v;
-}
+// The object model used to be stubbed inert here.  It is the real thing
+// now: rbv.c builds a machine.rbv node at init (05-chipsets-irq F-26), and
+// a suite that stubs object_new to return NULL cannot tell a node that
+// works from one that was never built.  Only machine_object() stays a stub
+// (support/stub_machine_object.c) -- there is no machine here to parent to,
+// and object_attach(NULL, child) is a no-op.
 
 // --- memory map: unused (both devices get map == NULL) ---
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,

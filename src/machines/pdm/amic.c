@@ -20,7 +20,10 @@
 #include "pdm.h"
 #include "regfile.h"
 
+#include "irq_controller.h"
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "ppc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -928,6 +931,120 @@ static void icr_write(config_t *cfg, uint32_t off, uint8_t value) {
 // ============================================================
 // Island dispatch
 // ============================================================
+
+// === Object node: machine.amic (05-chipsets-irq F-26) =======================
+//
+// A 6100/7100/8100 routes everything through the AMIC's six-bit ICR and its
+// pseudo-VIA2 bank, and neither was reachable from the shell.  The AMIC has
+// no per-source mask of its own -- the masking that matters happens one
+// level down, in the pseudo-VIA2 slot and device IERs -- so those four
+// registers are the chip-specific half, and `enabled` says all six ICR
+// sources because that is the truth about this chip rather than a stand-in.
+
+static uint32_t amic_obj_pending(void *ctx) {
+    return pdm_st((config_t *)ctx)->icr_sources & 0x3Fu;
+}
+static uint32_t amic_obj_enabled(void *ctx) {
+    (void)ctx;
+    return 0x3Fu; // six sources, no ICR-level mask on this part
+}
+// INTMODE 0: the line follows the live source picture.  INTMODE 1: it
+// follows the CPUINT latch, which an enabled source CHANGE sets and the
+// driver clears -- so a quiet source picture can still hold the line up.
+static uint32_t amic_obj_active(void *ctx) {
+    const pdm_state_t *st = pdm_st((config_t *)ctx);
+    if (st->amic.icr_mode)
+        return st->amic.icr_latch ? (st->icr_sources & 0x3Fu) : 0u;
+    return st->icr_sources & 0x3Fu;
+}
+static int amic_obj_ipl(void *ctx) {
+    return amic_obj_active(ctx) ? 1 : 0; // one PowerPC external-interrupt pin
+}
+
+static const irq_controller_ops_t amic_irq_ops = {
+    .chip = "AMIC",
+    .pending = amic_obj_pending,
+    .enabled = amic_obj_enabled,
+    .active = amic_obj_active,
+    .ipl = amic_obj_ipl,
+};
+
+#define AMIC_BYTE_ATTR(NAME, EXPR)                                                                                     \
+    static value_t amic_attr_##NAME(struct object *self, const member_t *m) {                                          \
+        (void)m;                                                                                                       \
+        const pdm_state_t *st = pdm_st((config_t *)object_data(self));                                                 \
+        (void)st;                                                                                                      \
+        value_t v = val_uint(1, (EXPR));                                                                               \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+AMIC_BYTE_ATTR(mode, st->amic.icr_mode ? 1u : 0u)
+AMIC_BYTE_ATTR(latch, st->amic.icr_latch ? 1u : 0u)
+AMIC_BYTE_ATTR(slot_ifr, st->amic.via2.slot_ifr)
+AMIC_BYTE_ATTR(slot_ier, st->amic.via2.slot_ier)
+AMIC_BYTE_ATTR(dev_levels, st->amic.via2.dev_levels)
+AMIC_BYTE_ATTR(dev_ier, st->amic.via2.dev_ier)
+
+static const member_t amic_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&amic_irq_ops){
+                                          .kind = M_ATTR,
+                                          .name = "mode",
+                                          .doc = "INTMODE: 0 = line follows the sources, 1 = line follows the CPUINT latch",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .get = amic_attr_mode, .set = NULL}                                                    },
+    {.kind = M_ATTR,
+                                          .name = "latch",
+                                          .doc = "CPUINT latch (INTMODE 1 only)",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = amic_attr_latch, .set = NULL}               },
+    {.kind = M_ATTR,
+                                          .name = "slot_ifr",
+                                          .doc = "Pseudo-VIA2 slot flags, ACTIVE LOW (a clear bit is an asserted /NMRQ)",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = amic_attr_slot_ifr, .set = NULL}  },
+    {.kind = M_ATTR,
+                                          .name = "slot_ier",
+                                          .doc = "Pseudo-VIA2 slot enables (mask $78)",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = amic_attr_slot_ier, .set = NULL}                 },
+    {.kind = M_ATTR,
+                                          .name = "dev_levels",
+                                          .doc = "Pseudo-VIA2 device sources, active-high internal view",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = amic_attr_dev_levels, .set = NULL}},
+    {.kind = M_ATTR,
+                                          .name = "dev_ier",
+                                          .doc = "Pseudo-VIA2 device enables (mask $3B)",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = amic_attr_dev_ier, .set = NULL}                  },
+};
+
+static const class_desc_t amic_class = {
+    .name = "irq_controller",
+    .members = amic_members,
+    .n_members = sizeof(amic_members) / sizeof(amic_members[0]),
+};
+
+void pdm_amic_attach_object(config_t *cfg) {
+    pdm_state_t *st = pdm_st(cfg);
+    if (!st || st->amic_object)
+        return;
+    st->amic_object = object_new(&amic_class, cfg, "amic");
+    if (!st->amic_object)
+        return;
+    object_set_order(st->amic_object, 45);
+    object_attach(machine_object(), st->amic_object);
+}
+
+void pdm_amic_detach_object(config_t *cfg) {
+    pdm_state_t *st = pdm_st(cfg);
+    if (st && st->amic_object) {
+        object_detach(st->amic_object);
+        object_delete(st->amic_object);
+        st->amic_object = NULL;
+    }
+}
 
 void pdm_amic_init(config_t *cfg) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;

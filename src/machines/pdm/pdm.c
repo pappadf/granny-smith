@@ -415,6 +415,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     pdm_hmc_init(cfg);
     pdm_amic_init(cfg);
+    pdm_amic_attach_object(cfg); // machine.amic; construction only, not on reset
     pdm_amic_register_events(cfg);
     pdm_awacs_register_events(cfg);
     pdm_swim3_bind(cfg);
@@ -511,6 +512,7 @@ static void pdm_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     pdm_state_t *st = pdm_st(cfg);
     if (st) {
+        pdm_amic_detach_object(cfg);
         pdm_awacs_teardown(cfg);
         pdm_video_teardown(cfg);
         for (int i = 0; i < 2; i++) {

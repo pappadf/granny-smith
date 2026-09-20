@@ -171,6 +171,37 @@ static value_t attr_machine_ram(struct object *self, const member_t *m) {
     return val_uint(4, cfg->ram_size / 1024u);
 }
 
+// `machine.irq` and `machine.ipl` — the family's raw interrupt-source
+// bitmap and the level the CPU is actually seeing (05-chipsets-irq F-26).
+//
+// Every family aggregates its controllers into cfg->irq and resolves one
+// IPL from it, and neither was readable from anywhere: an investigation
+// could see a controller's own view through machine.<chip> and the CPU's
+// behaviour, with the step between them invisible.  The bit meanings are
+// per family (MAC030_GLUE_IRQ_* and the family equivalents), which is why
+// this is a bitmap and not an enum.
+static value_t attr_machine_irq(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.irq: no machine");
+    value_t v = val_uint(4, (uint64_t)(uint32_t)cfg->irq);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_machine_ipl(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.ipl: no machine");
+    if (!cfg->cpu)
+        return val_uint(1, 0); // a PowerPC machine has an external-interrupt pin, not an IPL
+    return val_uint(1, cpu_get_ipl(cfg->cpu));
+}
+
 static value_t attr_machine_created(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -1220,6 +1251,16 @@ static const member_t machine_members[] = {
      .doc = "Active RAM size in KB",
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = attr_machine_ram, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "irq",
+     .doc = "Raw interrupt-source bitmap the family aggregates (bit meanings are per family)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = attr_machine_irq, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "ipl",
+     .doc = "CPU interrupt level asserted now (0 on a PowerPC machine, which has a single pin)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = attr_machine_ipl, .set = NULL}},
     {.kind = M_ATTR,
      .name = "created",
      .doc = "True if a machine has been booted",

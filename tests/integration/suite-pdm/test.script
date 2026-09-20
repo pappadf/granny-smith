@@ -203,6 +203,13 @@ def row_pdm_nubus_empty() {
     machine.rtc.time = 0xE0000000
     assert machine.nubus.slot[12].card_id == "" "slot C carries a staged pick"
     assert try(machine.nubus.slot[12].card.name, none) == none "slot C is populated"
+    # machine.amic — the AMIC has no per-source mask of its own, so
+    # `enabled` reports all six ICR sources and the masking that matters is
+    # one level down in the pseudo-VIA2 IERs, which the node also carries
+    # (05-chipsets-irq F-26).
+    assert machine.amic.chip == "AMIC" "pdm-nubus-empty: machine.amic missing"
+    assert machine.amic.enabled == 0x3F "pdm-nubus-empty: AMIC should report six ICR sources"
+    assert machine.amic.mode == 0 "pdm-nubus-empty: AMIC INTMODE should be 0 out of reset"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
     assert try(machine.nubus.slot[14].card.name, none) == none "slot E is populated"
     # The connectors are $C/$D/$E, and $B is NOT one of them.  This is not

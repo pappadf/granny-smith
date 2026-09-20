@@ -25,7 +25,10 @@
 #include "singer.h" // AV_SINGER_STAT presentation
 
 #include "cpu.h"
+#include "irq_controller.h"
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "scheduler.h"
 #include "system.h"
 
@@ -90,6 +93,7 @@ struct av_psc {
     void *mem_ctx;
     av_psc_dsp_fn dsp_fn; // dspOverRun latch observer (the DSP glue)
     void *dsp_ctx;
+    struct object *object; // machine.psc (F-26); after the blob, never saved
 };
 
 static inline av_psc_t *psc_of(config_t *cfg) {
@@ -642,6 +646,119 @@ void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t va
 // Lifecycle
 // ============================================================
 
+// === Object node: machine.psc (05-chipsets-irq F-26) ========================
+//
+// On the AV machines the PSC is both the VIA2 replacement and the level
+// controller for IPL 3-6, so one node has to show two register families.
+// The generic four describe the VIA2 window (the thing that behaves like
+// every other controller's IFR/IER pair); `levels` carries the L3-L6 file,
+// which is where an AV interrupt storm is actually diagnosed.
+
+static uint32_t psc_obj_pending(void *ctx) {
+    const av_psc_t *psc = (const av_psc_t *)ctx;
+    return (uint32_t)((psc->via2_level | psc->via2_latched) & 0x7Fu);
+}
+static uint32_t psc_obj_enabled(void *ctx) {
+    return ((const av_psc_t *)ctx)->via2_ier & 0x7Fu;
+}
+
+// The highest CPU level the PSC is asserting across all of its files:
+// VIA2 is IPL 2, and the four level registers are IPL 3-6.
+static int psc_obj_ipl(void *ctx) {
+    const av_psc_t *psc = (const av_psc_t *)ctx;
+    for (int i = 3; i >= 0; i--) {
+        uint8_t ir = (uint8_t)((psc->l_level[i] | psc->l_latched[i]) & 0x7Fu);
+        if (ir & psc->l_ier[i] & 0x7Fu)
+            return AV_PSC_L3 + i + 3;
+    }
+    return (psc_obj_pending(ctx) & psc_obj_enabled(ctx)) ? 2 : 0;
+}
+
+static int psc_obj_level_count(void *ctx) {
+    (void)ctx;
+    return 4; // L3..L6
+}
+// Sources that survive masking on that level register, not merely pending:
+// the L-file IERs are the half of the AV picture that VIA2's IER does not
+// cover.
+static uint32_t psc_obj_level(void *ctx, int index) {
+    const av_psc_t *psc = (const av_psc_t *)ctx;
+    uint8_t ir = (uint8_t)((psc->l_level[index] | psc->l_latched[index]) & 0x7Fu);
+    return (uint32_t)(ir & psc->l_ier[index] & 0x7Fu);
+}
+
+static const irq_controller_ops_t psc_irq_ops = {
+    .chip = "PSC",
+    .pending = psc_obj_pending,
+    .enabled = psc_obj_enabled,
+    .ipl = psc_obj_ipl,
+    .level_count = psc_obj_level_count,
+    .level = psc_obj_level,
+    .level_base = 3,
+};
+
+// The raw L3-L6 file, unmasked, so `level_ier` and `levels` together say
+// whether a source is quiet or merely masked.
+static value_t psc_attr_level_pending(struct object *self, const member_t *m) {
+    (void)m;
+    const av_psc_t *psc = (const av_psc_t *)object_data(self);
+    value_t *items = (value_t *)calloc(4, sizeof(value_t));
+    if (!items)
+        return val_err("psc.level_pending: out of memory");
+    for (int i = 0; i < 4; i++) {
+        value_t v = val_uint(1, (uint8_t)((psc->l_level[i] | psc->l_latched[i]) & 0x7Fu));
+        v.flags |= VAL_HEX;
+        items[i] = v;
+    }
+    return val_list(items, 4);
+}
+
+static value_t psc_attr_level_ier(struct object *self, const member_t *m) {
+    (void)m;
+    const av_psc_t *psc = (const av_psc_t *)object_data(self);
+    value_t *items = (value_t *)calloc(4, sizeof(value_t));
+    if (!items)
+        return val_err("psc.level_ier: out of memory");
+    for (int i = 0; i < 4; i++) {
+        value_t v = val_uint(1, psc->l_ier[i] & 0x7Fu);
+        v.flags |= VAL_HEX;
+        items[i] = v;
+    }
+    return val_list(items, 4);
+}
+
+static value_t psc_attr_sint_active(struct object *self, const member_t *m) {
+    (void)m;
+    value_t v = val_uint(1, ((const av_psc_t *)object_data(self))->sint_active);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static const member_t psc_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&psc_irq_ops){
+                                         .kind = M_ATTR,
+                                         .name = "level_pending",
+                                         .doc = "L3-L6 source registers, unmasked, index 0 = L3",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_LIST, .presentation_flags = VAL_VOLATILE, .get = psc_attr_level_pending, .set = NULL}        },
+    {.kind = M_ATTR,
+                                         .name = "level_ier",
+                                         .doc = "L3-L6 enable registers, index 0 = L3",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_LIST, .get = psc_attr_level_ier, .set = NULL}                                                },
+    {.kind = M_ATTR,
+                                         .name = "sint_active",
+                                         .doc = "SInt slot sources currently asserting (aggregated onto VIA2 CA1)",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = psc_attr_sint_active, .set = NULL}},
+};
+
+static const class_desc_t psc_class = {
+    .name = "irq_controller",
+    .members = psc_members,
+    .n_members = sizeof(psc_members) / sizeof(psc_members[0]),
+};
+
 av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
     av_psc_t *psc = calloc(1, sizeof(*psc));
     if (!psc)
@@ -651,10 +768,19 @@ av_psc_t *av_psc_init(config_t *cfg, checkpoint_t *cp) {
         size_t data_size = offsetof(av_psc_t, cfg);
         system_read_checkpoint_data(cp, psc, data_size);
     }
+    psc->object = object_new(&psc_class, psc, "psc");
+    if (psc->object) {
+        object_set_order(psc->object, 45);
+        object_attach(machine_object(), psc->object);
+    }
     return psc;
 }
 
 void av_psc_delete(av_psc_t *psc) {
+    if (psc && psc->object) {
+        object_detach(psc->object);
+        object_delete(psc->object);
+    }
     free(psc);
 }
 

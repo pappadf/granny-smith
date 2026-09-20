@@ -581,6 +581,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    tnt_gc_attach_object(cfg); // machine.gc; construction only, not on reset
     // The Network Server's GBUS island — built before the memory layout so
     // the LCD is answering from the very first POST write.  That ordering is
     // the whole point of it: POST establishes its LCD path before it sizes
@@ -756,6 +757,7 @@ static void tnt_teardown(config_t *cfg) {
         }
     }
     if (st) {
+        tnt_gc_detach_object(cfg);
         tnt_awacs_teardown(cfg);
         tnt_gbus_teardown(cfg);
         tnt_lcd_teardown(cfg);

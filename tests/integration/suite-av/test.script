@@ -753,6 +753,14 @@ def row_av_chime() {
     # The chime plays out-enabled frames ~10-67 (~0.6 s); run well past it.
     scheduler.run 30000000
     assert machine.sound.frames > 100 "av-chime: sound frame engine not ticking"
+    # machine.psc — on the AV machines the PSC is both the VIA2 replacement
+    # and the L3-L6 level controller, so one node carries two register
+    # families: the generic four describe the VIA2 window, `levels` the
+    # L-file where an AV storm is actually diagnosed (F-26).
+    assert machine.psc.chip == "PSC" "av-chime: machine.psc missing"
+    assert len(machine.psc.levels) == 4 "av-chime: PSC level map is not L3..L6"
+    assert machine.psc.levels[0].ipl == 3 "av-chime: PSC level map does not start at IPL 3"
+    assert len(machine.psc.level_ier) == 4 "av-chime: PSC has four level IERs"
     check_sound("goldens/av-chime.wav", 52800)
     report_perf("suite-av/av-chime", scheduler.instr_count)
 }

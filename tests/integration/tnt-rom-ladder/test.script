@@ -38,6 +38,14 @@ scheduler.run 600000000
 # init ran twice with OF's measurement in between.
 assert machine.cpu.sdr1 == 0x01FE0001 "T2: SDR1/HTAB not at the 32 MB layout"
 
+# machine.gc — Grand Central is the whole interrupt controller here, and
+# the chip whose two clear modes make a storm hard to read: in mode 0 the
+# line follows ((events|levels) & mask), in mode 1 (latch & mask) alone,
+# and which one you are in is invisible from the register values.  So
+# `active` answers for the mode actually selected (05-chipsets-irq F-26).
+assert machine.gc.chip == "Grand Central" "machine.gc missing"
+assert machine.gc.clear_mode == 0 || machine.gc.clear_mode == 1 "gc.clear_mode out of range"
+
 # --- T4: machine identity — SOLVED (Phase D) ---------------------------------
 # The shipping ROM's identification routine ($FFC14844, decoded during
 # Phase D): Hammerhead's part identifier must read $39 in its first byte

@@ -34,7 +34,10 @@
 #include "rbv.h"
 
 #include "checkpoint.h"
+#include "irq_controller.h"
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "system.h"
 
 #include <stddef.h>
@@ -127,6 +130,7 @@ struct rbv {
     void (*blank_cb)(void *ctx, bool video_off);
     void *blank_ctx;
     void *mode_ctx;
+    struct object *object; // machine.rbv (F-26); after the blob, never saved
 };
 
 // === Interrupt aggregation ==================================================
@@ -368,6 +372,84 @@ static void rbv_write_long(void *device, uint32_t addr, uint32_t value) {
 
 // === Lifecycle ==============================================================
 
+// === Object node: machine.rbv (05-chipsets-irq F-26) ========================
+//
+// The IIci and IIsi have no VIA2 -- the RBV replaces it -- so `machine.via2`
+// does not exist on them and there was nothing else to look at.  RvIFR is
+// composed on demand from live source state rather than stored, which is
+// exactly why it needs a node: there is no register to peek.
+
+static uint32_t rbv_obj_pending(void *ctx) {
+    return rbv_compose_ifr((const rbv_t *)ctx);
+}
+static uint32_t rbv_obj_enabled(void *ctx) {
+    return ((const rbv_t *)ctx)->reg_ier & 0x7Fu;
+}
+// One line to the CPU, at IPL 1 through VIA1's CA1 slot-interrupt input.
+static int rbv_obj_ipl(void *ctx) {
+    const rbv_t *rbv = (const rbv_t *)ctx;
+    return (rbv_compose_ifr(rbv) & rbv->reg_ier & 0x7Fu) ? 1 : 0;
+}
+
+static const irq_controller_ops_t rbv_irq_ops = {
+    .chip = "RBV",
+    .pending = rbv_obj_pending,
+    .enabled = rbv_obj_enabled,
+    .ipl = rbv_obj_ipl,
+};
+
+#define RBV_BYTE_ATTR(FIELD)                                                                                           \
+    static value_t rbv_attr_##FIELD(struct object *self, const member_t *m) {                                          \
+        (void)m;                                                                                                       \
+        value_t v = val_uint(1, ((const rbv_t *)object_data(self))->FIELD);                                            \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+RBV_BYTE_ATTR(slot_pending)
+RBV_BYTE_ATTR(reg_senb)
+RBV_BYTE_ATTR(reg_monp)
+RBV_BYTE_ATTR(reg_datab)
+
+static value_t rbv_attr_variant(struct object *self, const member_t *m) {
+    (void)m;
+    return val_str(((const rbv_t *)object_data(self))->variant == RBV_VARIANT_V8_IISI ? "V8/IIsi" : "RBV/IIci");
+}
+
+static const member_t rbv_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&rbv_irq_ops){.kind = M_ATTR,
+                                         .name = "variant",
+                                         .doc = "RBV silicon variant",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_STRING, .get = rbv_attr_variant, .set = NULL}                                                 },
+    {.kind = M_ATTR,
+                                         .name = "slot_pending",
+                                         .doc = "Raw slot IRQ requests, active-high (before RvSEnb)",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = rbv_attr_slot_pending, .set = NULL}},
+    {.kind = M_ATTR,
+                                         .name = "slot_enable",
+                                         .doc = "RvSEnb: which slots may raise RvAnySlot",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_senb, .set = NULL}                   },
+    {.kind = M_ATTR,
+                                         .name = "monp",
+                                         .doc = "RvMonP: depth, monitor sense and video bits",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_monp, .set = NULL}                   },
+    {.kind = M_ATTR,
+                                         .name = "datab",
+                                         .doc = "RvDataB: latched control bits (cache, soft power, sound path)",
+                                         .flags = VAL_RO,
+                                         .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = rbv_attr_reg_datab, .set = NULL}                  },
+};
+
+static const class_desc_t rbv_class = {
+    .name = "irq_controller",
+    .members = rbv_members,
+    .n_members = sizeof(rbv_members) / sizeof(rbv_members[0]),
+};
+
 rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
     rbv_t *rbv = (rbv_t *)calloc(1, sizeof(*rbv));
     if (!rbv)
@@ -395,10 +477,19 @@ rbv_t *rbv_init(rbv_variant_t variant, checkpoint_t *cp) {
         system_read_checkpoint_data(cp, rbv, data_size);
     }
 
+    rbv->object = object_new(&rbv_class, rbv, "rbv");
+    if (rbv->object) {
+        object_set_order(rbv->object, 45); // beside the other controllers
+        object_attach(machine_object(), rbv->object);
+    }
     return rbv;
 }
 
 void rbv_delete(rbv_t *rbv) {
+    if (rbv && rbv->object) {
+        object_detach(rbv->object);
+        object_delete(rbv->object);
+    }
     free(rbv);
 }
 

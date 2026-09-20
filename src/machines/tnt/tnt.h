@@ -372,6 +372,7 @@ typedef struct tnt_state {
     // TNT_BOARD_SHINER; inert and unread on the Macintosh boards.
     tnt_gbus_t gbus;
     tnt_lcd_t lcd;
+    struct object *gc_object; // machine.gc node (grand_central.c)
     struct object *board_object; // machine.board node (gbus.c)
     struct object *lcd_object; // machine.lcd node (lcd.c)
     struct scsi_53c96 *scsi96; // external SCSI chip (no bus attached yet)
@@ -499,6 +500,12 @@ void tnt_gc_write32(config_t *cfg, uint32_t offset, uint32_t value);
 // Level-sensitive source line n (0..30): updates Levels, edge-latches into
 // Events on assertion, recomputes the CPU line.
 void tnt_gc_set_source(config_t *cfg, int n, bool level);
+
+// machine.gc — the interrupt-controller node (05-chipsets-irq F-26).
+// Attached once at machine construction, not from tnt_gc_init (which also
+// runs on a reset).
+void tnt_gc_attach_object(config_t *cfg);
+void tnt_gc_detach_object(config_t *cfg);
 // Momentary event on line n (edge-latch only; Levels untouched).
 void tnt_gc_pulse_event(config_t *cfg, int n);
 // Recompute ((events | levels) & mask) and drive the CPU external line.
