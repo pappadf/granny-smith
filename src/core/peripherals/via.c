@@ -634,32 +634,41 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         LOG(2, "Write register %s=0x%02x", via_reg_names[rs], value);
 }
 
-// Unimplemented 16-bit read handler (VIA is 8-bit only)
+// The VIA is an 8-bit peripheral on the upper byte of the bus, so a wider
+// access is not something it answers -- but it is also not something to die
+// over.  A guest, a debugger's memory scan, a `memory.peek width=w` or a memory
+// logpoint may issue one, and on the Plus and the Lisa the VIA sits directly in
+// the memory map where any of those reach it.  Compose from the byte handlers
+// the way the RBV does (rbv.c) and log at level 3: the odd byte of each pair
+// falls to via_read_uint8's own odd-address path, which is the floating upper
+// byte the hardware presents.  These used to be GS_ASSERT(0), which took the
+// emulator down on a debugger read -- and contradicted the odd-byte policy this
+// same file argues for eleven lines above it.
+
+// 16-bit read: two byte reads, big-endian, VIA on the even (upper) byte.
 static uint16_t via_read_uint16(void *via, uint32_t addr) {
-    (void)addr;
-    GS_ASSERT(0);
-    return 0;
+    LOG(3, "16-bit read at $%08X: the VIA is 8-bit; composing from byte reads", addr);
+    return (uint16_t)((via_read_uint8(via, addr) << 8) | via_read_uint8(via, addr + 1));
 }
 
-// Unimplemented 32-bit read handler (VIA is 8-bit only)
+// 32-bit read: two word reads.
 static uint32_t via_read_uint32(void *via, uint32_t addr) {
-    (void)addr;
-    GS_ASSERT(0);
-    return 0;
+    LOG(3, "32-bit read at $%08X: the VIA is 8-bit; composing from byte reads", addr);
+    return ((uint32_t)via_read_uint16(via, addr) << 16) | via_read_uint16(via, addr + 2);
 }
 
-// Unimplemented 16-bit write handler (VIA is 8-bit only)
+// 16-bit write: two byte writes, big-endian.
 static void via_write_uint16(void *via, uint32_t addr, uint16_t value) {
-    (void)addr;
-    (void)value;
-    GS_ASSERT(0);
+    LOG(3, "16-bit write at $%08X = $%04X: the VIA is 8-bit; splitting into byte writes", addr, value);
+    via_write_uint8(via, addr, (uint8_t)(value >> 8));
+    via_write_uint8(via, addr + 1, (uint8_t)value);
 }
 
-// Unimplemented 32-bit write handler (VIA is 8-bit only)
+// 32-bit write: two word writes.
 static void via_write_uint32(void *via, uint32_t addr, uint32_t value) {
-    (void)addr;
-    (void)value;
-    GS_ASSERT(0);
+    LOG(3, "32-bit write at $%08X = $%08X: the VIA is 8-bit; splitting into byte writes", addr, value);
+    via_write_uint16(via, addr, (uint16_t)(value >> 16));
+    via_write_uint16(via, addr + 2, (uint16_t)value);
 }
 
 // ============================================================================

@@ -339,6 +339,41 @@ TEST(test_orb_access_respects_cb2_independent_mode) {
 }
 
 // ============================================================================
+// F-27 — a wider access degrades, it does not abort
+// ============================================================================
+
+// The VIA is 8-bit on the upper byte of the bus.  A word or long access is not
+// something it answers, but a guest, a `memory.peek width=w` or a memory
+// logpoint can issue one -- and on the Plus and the Lisa the VIA is in the
+// memory map where they reach it.  These used to be GS_ASSERT(0).
+TEST(test_wide_accesses_compose_from_byte_ops) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+
+    // DDRA is a plain read/write register with no side effects.
+    wr(via, REG_DDRA, 0xAB);
+    ASSERT_EQ_INT(rd(via, REG_DDRA), 0xAB);
+
+    // Register select comes from address lines 9-12, so every byte of a wide
+    // access at a register's base address selects that SAME register: the even
+    // bytes read it, the odd bytes fall to via_read_uint8's odd-address path
+    // and read 0 (the VIA drives the upper byte only).  A word read is
+    // therefore <reg>,00 and a long read is <reg>,00,<reg>,00.
+    ASSERT_EQ_INT(s_iface->read_uint16(s_device, reg_addr(REG_DDRA)), 0xAB00);
+    ASSERT_TRUE(s_iface->read_uint32(s_device, reg_addr(REG_DDRA)) == 0xAB00AB00u);
+
+    // A word write puts its high byte in the register and drops the odd byte.
+    s_iface->write_uint16(s_device, reg_addr(REG_DDRA), 0xCD00);
+    ASSERT_EQ_INT(rd(via, REG_DDRA), 0xCD);
+
+    // A long write lands two even bytes in the same register, so the second
+    // one wins -- which is what the bus does, not something to paper over.
+    s_iface->write_uint32(s_device, reg_addr(REG_DDRA), 0xEF00A500u);
+    ASSERT_EQ_INT(rd(via, REG_DDRA), 0xA5);
+
+    via_delete(via);
+}
+
+// ============================================================================
 // Power-on state (F-12, fixed in via_init before this suite existed — pinned
 // here so it is not silently undone)
 // ============================================================================
@@ -364,6 +399,7 @@ int main(void) {
     RUN(test_port_access_always_clears_ca1);
     RUN(test_ora_no_handshake_clears_nothing);
     RUN(test_orb_access_respects_cb2_independent_mode);
+    RUN(test_wide_accesses_compose_from_byte_ops);
     RUN(test_control_lines_idle_high_at_power_on);
     fprintf(stderr, "All VIA control-line tests passed\n");
     return 0;
