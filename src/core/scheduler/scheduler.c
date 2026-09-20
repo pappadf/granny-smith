@@ -129,10 +129,6 @@ struct scheduler {
     enum schedule_mode mode;
     bool running;
     uint64_t cpu_cycles; // authoritative cycle counter, updated at sprint boundaries
-    double previous_time; // previous time in seconds
-    double vbl_acc_error; // accumulated VBL timing error (seconds)
-    double host_secs_per_vbl; // smoothed host seconds per VBL
-    double host_secs_per_loop; // smoothed host seconds per main loop iteration
 
     // Per-machine cycles-per-instruction constant — guest-visible, identical
     // in every pacing mode (one guest timeline)
@@ -149,6 +145,23 @@ struct scheduler {
     // speed is clamped to it too), x256 fixed point. Persisted with the
     // prefix; default 8x.
     uint32_t max_speed_x256;
+
+    // --- END OF THE CHECKPOINTED PREFIX -------------------------------------
+    // The save writes up to `previous_time`.  Keep new guest-visible plain
+    // data ABOVE this line; anything host-relative or re-derivable goes
+    // below, the same reason cpi_eff_x256 sits after event_types.
+    //
+    // These four are the pacing governor's wall-clock smoothing.  They used
+    // to be inside the prefix, so every checkpoint carried one host's timing
+    // state -- the restore then overwrote all four from host_time(), so
+    // nothing ever consumed them, but they still made save files
+    // non-reproducible: two processes saving identical guest state produced
+    // files differing in the mantissa of these doubles.  Same class as
+    // 05-chipsets-irq F-09, host state leaking into a save file.
+    double previous_time; // previous time in seconds
+    double vbl_acc_error; // accumulated VBL timing error (seconds)
+    double host_secs_per_vbl; // smoothed host seconds per VBL
+    double host_secs_per_loop; // smoothed host seconds per main loop iteration
 
     // Event type registry for checkpointing
     event_type_t event_types[MAX_EVENT_TYPES];
@@ -721,13 +734,11 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
     if (checkpoint != NULL) {
         // Restore plain-data portion of struct from checkpoint
-        system_read_checkpoint_data(checkpoint, s, offsetof(struct scheduler, event_types));
+        system_read_checkpoint_data(checkpoint, s, offsetof(struct scheduler, previous_time));
 
-        // Reset host-timing fields that are relative to wall-clock time
-        s->previous_time = host_time();
-        s->vbl_acc_error = 0.0;
-        s->host_secs_per_vbl = NAN;
-        s->host_secs_per_loop = 1.0 / 60.0;
+        // The four wall-clock fields used to be restored here and then
+        // immediately overwritten.  They are outside the prefix now, so the
+        // values set above still stand and there is nothing to undo.
         s->frame_cycles_left = 0; // restore begins a fresh VBL frame-unit
 
         // Reconstruct instruction count from restored cycle counter. Cycles
@@ -845,7 +856,7 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
     validate_cpu_events(scheduler);
 
     // Save plain-data portion of struct
-    system_write_checkpoint_data(checkpoint, scheduler, offsetof(struct scheduler, event_types));
+    system_write_checkpoint_data(checkpoint, scheduler, offsetof(struct scheduler, previous_time));
 
     // Convert event queue to checkpoint-friendly format (names instead of pointers)
     unsigned int num_events = num_events_in_queue(scheduler);

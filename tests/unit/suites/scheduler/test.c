@@ -138,21 +138,30 @@ uint32_t g_sprint_frac_x256 = 0;
 uint32_t g_sprint_total_slots = 0;
 uint32_t g_esync_period_x256 = 0;
 
-// Checkpointing is not exercised here (integration checkpoint tests cover it).
+// A recording checkpoint stream: save writes into g_cp[g_cp_slot], restore
+// always reads back slot 0.  Used only by
+// test_checkpoint_carries_no_host_timing; every other test leaves the
+// buffers alone and the calls are harmless.
+static uint8_t g_cp[2][65536];
+static size_t g_cp_w[2], g_cp_r;
+static int g_cp_slot;
+
 void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
-    (void)checkpoint;
-    (void)data;
-    (void)size;
-    (void)file;
-    (void)line;
+    (void)checkpoint, (void)file, (void)line;
+    if (g_cp_r + size > g_cp_w[0]) {
+        memset(data, 0, size);
+        return;
+    }
+    memcpy(data, g_cp[0] + g_cp_r, size);
+    g_cp_r += size;
 }
 void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
                                       int line) {
-    (void)checkpoint;
-    (void)data;
-    (void)size;
-    (void)file;
-    (void)line;
+    (void)checkpoint, (void)file, (void)line;
+    if (g_cp_w[g_cp_slot] + size > sizeof(g_cp[0]))
+        return;
+    memcpy(g_cp[g_cp_slot] + g_cp_w[g_cp_slot], data, size);
+    g_cp_w[g_cp_slot] += size;
 }
 
 // Object tree: the scheduler tolerates a NULL binding (object_new failure
@@ -941,6 +950,51 @@ TEST(test_forget_source_drops_events_and_types) {
     g_sched = NULL;
 }
 
+// A checkpoint must carry no host wall-clock state.
+//
+// The scheduler's plain-data prefix used to run past `cpu_cycles` and over
+// `previous_time`, `vbl_acc_error`, `host_secs_per_vbl` and
+// `host_secs_per_loop` -- the pacing governor's smoothing, all derived from
+// host_time().  The restore overwrote all four immediately, so nothing
+// consumed them, but they still went into every save file and made two
+// processes saving identical guest state produce different bytes.
+//
+// Save -> restore -> save, with the host clock moved on in between: the two
+// streams must be identical.  With the fields back inside the prefix they are
+// not, because the second instance re-derives them from the NEW host time.
+TEST(test_checkpoint_carries_no_host_timing) {
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+
+    g_now = 1000.0;
+    g_cp_slot = 0;
+    scheduler_t *a = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(a != NULL);
+    scheduler_set_frequency(a, 16000000);
+    scheduler_set_cpi(a, 4);
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    ASSERT_TRUE(g_cp_w[0] > 0);
+
+    // A different host "now" for the restoring instance -- the whole point.
+    g_now = 987654.0;
+    g_cp_r = 0;
+    g_cp_slot = 1;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    scheduler_checkpoint(b, (checkpoint_t *)1);
+
+    ASSERT_EQ_INT((int)g_cp_w[0], (int)g_cp_w[1]);
+    if (memcmp(g_cp[0], g_cp[1], g_cp_w[0]) != 0) {
+        size_t i = 0;
+        while (i < g_cp_w[0] && g_cp[0][i] == g_cp[1][i])
+            i++;
+        fprintf(stderr, "[FAIL] scheduler stream carries host state: diverges at byte %zu of %zu\n", i, g_cp_w[0]);
+        exit(1);
+    }
+
+    scheduler_delete(a);
+    scheduler_delete(b);
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -964,6 +1018,7 @@ int main(void) {
     RUN(test_governor_max_speed_cap);
     RUN(test_governor_pin_unpin);
     RUN(test_forget_source_drops_events_and_types);
+    RUN(test_checkpoint_carries_no_host_timing);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }
