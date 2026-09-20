@@ -177,15 +177,7 @@ Directory" flow and asserts `appletalk.printer.documents == 1`,
 on `appletalk.printer.interpreter`, so it skips on the harness's default
 `PLATEN=0` build; run it against a `PLATEN=1` binary to exercise the bridge.
 
-Over the live PAP path the driver queries the printer's resident fonts.
-`platen`'s `FontDirectory` is empty at job start (its `findfont` resolves a
-face but does not register it there), so the query reports no resident
-fonts and the driver downloads a bitmap font, which the interpreter renders
-at lower fidelity than the outline fonts a file-destination capture uses —
-the page's layout matches the golden but its text glyphs are sparse. See
-`docs/notes/2026-09-16-efterscript-platen-bridge.md` for the analysis and
-the mitigation that is deferred because it trips a pre-existing guest-side
-LocalTalk wedge.
+The prelude registers the 13 resident faces in `FontDirectory`, so the driver's font-list query reports them and the driver substitutes the printer's outline faces instead of downloading bitmap fonts; text in the PDF is then the resident Type 1 faces. (The registration was left out at first because the shorter substitute-font job tripped a link-layer fault; that fault is fixed, see the bridge note.)
 
 ## 5.5 The browser path: the module, the worker, the download
 

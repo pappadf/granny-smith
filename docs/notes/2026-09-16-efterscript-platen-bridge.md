@@ -116,6 +116,17 @@ prelude would wedge every real print, so it is **left out**; the prelude
 carries a comment saying why. Resolving the wedge (an LLAP/ATP timing
 investigation) and then restoring the font registration is follow-up work.
 
+**Resolved 2026-09-20.** The wedge was the link-layer fault fixed on
+2026-09-19 (the printer transmitting in the same instant as the guest;
+see "The rebase regression, and the PAP fix"). With the wire reserved
+for the guest's frames, the prelude registers the 13 faces again: the
+font-list query reports them, the driver substitutes rather than
+downloads, the document job is 36,900 bytes instead of 61,981, the PDF
+carries Helvetica as a Type 1 face, and the acceptance row passes plain
+and at log level 6 with the driver closing the connection itself. The
+user's first browser print (before this) showed exactly the symptom:
+"downloading bitmap font" messages and bitmapped text in the PDF.
+
 ## platen ABI gaps found
 
 Stated precisely, per the task. None blocks part 1; all are recorded for

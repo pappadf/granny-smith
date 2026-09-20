@@ -34,9 +34,25 @@ end
 /a4small { a4 } bind def
 /11x17 { << /PageSize [792 1224] >> setpagedevice } bind def
 /tabloid { 11x17 } bind def
-% Note: the 13 resident faces are deliberately NOT registered in
-% FontDirectory here.  Doing so makes the driver's font-list query report
-% them and stream an outline job (full-fidelity text), but it also trips a
-% pre-existing guest-side LocalTalk wedge partway through the live print
-% (docs/notes/2026-09-16-efterscript-platen-bridge.md).  Left out so the
-% live job completes; the interpreter's findfont still resolves the faces.
+% The 13 resident faces, registered so the driver's font-list query
+% reports them (findfont resolves a face but does not register it).  With
+% them the driver substitutes the printer's outline faces instead of
+% downloading bitmap fonts, and the job is a third shorter.  This was left
+% out at first because the shorter job tripped a LocalTalk fault (the
+% printer answering in the same instant the guest was transmitting); that
+% fault is fixed in the link layer (docs/notes/2026-09-16-efterscript-
+% platen-bridge.md, "The rebase regression, and the PAP fix"), and the
+% acceptance row passes with the registration in place.
+FontDirectory /Courier /Courier findfont put
+FontDirectory /Courier-Bold /Courier-Bold findfont put
+FontDirectory /Courier-Oblique /Courier-Oblique findfont put
+FontDirectory /Courier-BoldOblique /Courier-BoldOblique findfont put
+FontDirectory /Helvetica /Helvetica findfont put
+FontDirectory /Helvetica-Bold /Helvetica-Bold findfont put
+FontDirectory /Helvetica-Oblique /Helvetica-Oblique findfont put
+FontDirectory /Helvetica-BoldOblique /Helvetica-BoldOblique findfont put
+FontDirectory /Times-Roman /Times-Roman findfont put
+FontDirectory /Times-Bold /Times-Bold findfont put
+FontDirectory /Times-Italic /Times-Italic findfont put
+FontDirectory /Times-BoldItalic /Times-BoldItalic findfont put
+FontDirectory /Symbol /Symbol findfont put
