@@ -91,7 +91,9 @@ jobs:
       # KEEP_GOING so one red row does not truncate the report (§5.7).
       - name: Run integration tests (${{ github.event.inputs.tier || 'extended' }} tier)
         run: |
-          make integration-test TIER="${{ github.event.inputs.tier || 'extended' }}" \
+          # PLATEN=1: without the bridge the printer rows skip (see
+          # .github/workflows/tests.yml for the full note).
+          make integration-test PLATEN=1 TIER="${{ github.event.inputs.tier || 'extended' }}" \
             TEST_VARS="KEEP_GOING=1" 2>&1 | tee /tmp/it-nightly.log
           exit "${PIPESTATUS[0]}"
 

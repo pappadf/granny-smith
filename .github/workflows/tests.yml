@@ -138,16 +138,25 @@ jobs:
       # but while the integration-test rework settles, extended runs here too
       # (see its step below). Suites are parallel-safe because each test gets a
       # private GS_STORAGE_CACHE, so nothing writes beside the shared media.
+      # PLATEN=1 throughout: the printer rows (appletalk-print,
+      # appletalk-print-71) reach the PostScript interpreter only in a
+      # bridge build — without it they detect the missing interpreter,
+      # log a skip and pass, which is how a System 7.1 printing defect
+      # reached a user with CI green. The build fetches the prebuilt
+      # library from the pinned EfterScript release (see
+      # src/core/network/laserwriter.mk); it needs no Rust toolchain, but
+      # it does need the network. Set on every tier so one binary serves
+      # all three: toggling PLATEN rebuilds the tree.
       - name: Run integration tests (unit tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
-          make integration-test TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
+          make integration-test PLATEN=1 TIER=unit -j"$(nproc)" 2>&1 | tee /tmp/it-unit.log
           exit "${PIPESTATUS[0]}"
 
       - name: Run integration tests (matrix tier)
         if: steps.fetch-data.outputs.has_test_data == 'true'
         run: |
-          make integration-test TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
+          make integration-test PLATEN=1 TIER=matrix -j"$(nproc)" 2>&1 | tee /tmp/it-matrix.log
           exit "${PIPESTATUS[0]}"
 
       # Extended tier on the PR gate as well as the nightly, TEMPORARILY.
@@ -164,7 +173,7 @@ jobs:
         if: steps.fetch-data.outputs.has_test_data == 'true'
         timeout-minutes: 120
         run: |
-          make integration-test TIER=extended TEST_VARS="KEEP_GOING=1" \
+          make integration-test PLATEN=1 TIER=extended TEST_VARS="KEEP_GOING=1" \
             2>&1 | tee /tmp/it-extended.log
           exit "${PIPESTATUS[0]}"
 

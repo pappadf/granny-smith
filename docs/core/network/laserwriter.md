@@ -117,6 +117,19 @@ generic path. The AppleTalk entity type advertised over NBP is still
 `LaserWriter`, so the Chooser lists the printer as before. `version` is
 `47.0` and must stay a number a driver can `cvr`.
 
+### The rows that print, and CI
+
+`tests/integration/appletalk-print` (System 6.0.8, a Plus, LaserWriter
+7.0) and `tests/integration/appletalk-print-71` (System 7.1, a IIcx,
+LaserWriter 7.1.2) drive a real print from the Chooser to a PDF. Both
+are gated on the interpreter: a `PLATEN=0` binary makes them log a skip
+and pass, so CI runs the integration tiers with `PLATEN=1` — otherwise
+they are green without printing anything, which is how a System 7.1
+defect once reached a user with CI green.
+
+The two exist separately because the driver versions differ in what they
+send; see the bridge note for the defects only the 7.1.2 path reached.
+
 ## 5.1 Building with the interpreter
 
 The library comes prebuilt from EfterScript's releases; no Rust toolchain is
