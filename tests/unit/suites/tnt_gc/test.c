@@ -240,7 +240,8 @@ static void fixture(void) {
     if (s_st.dbdma)
         tnt_dbdma_delete(s_st.dbdma);
     s_st.dbdma = tnt_dbdma_init(NULL);
-    tnt_dbdma_set_memory_hooks(s_st.dbdma, mem_read, mem_write, NULL);
+    static const dma_mem_port_t port = {.read_block = mem_read, .write_block = mem_write};
+    tnt_dbdma_set_memory_port(s_st.dbdma, &port);
     tnt_dbdma_set_irq_hook(s_st.dbdma, dbdma_irq, &s_cfg);
     memset(s_mem, 0, sizeof(s_mem));
     tnt_gc_init(&s_cfg);

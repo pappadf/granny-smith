@@ -428,25 +428,6 @@ void av_scsi_pump_arm(void *ctx) {
 // PSC bus-master DMA: guest-physical accesses through the bus resolver
 // (the sonic memory-hook pattern — the CPU MMU is deliberately not in the
 // path).
-static uint32_t av_psc_mem_read(void *context, uint32_t phys, unsigned width) {
-    (void)context;
-    if (width == 1)
-        return mmu_read_physical_uint8(g_mmu, phys);
-    if (width == 2)
-        return mmu_read_physical_uint16(g_mmu, phys);
-    return mmu_read_physical_uint32(g_mmu, phys);
-}
-
-static void av_psc_mem_write(void *context, uint32_t phys, uint32_t value, unsigned width) {
-    (void)context;
-    if (width == 1)
-        mmu_write_physical_uint8(g_mmu, phys, (uint8_t)value);
-    else if (width == 2)
-        mmu_write_physical_uint16(g_mmu, phys, (uint16_t)value);
-    else
-        mmu_write_physical_uint32(g_mmu, phys, value);
-}
-
 // SCC chip INT → PSC level-4 SCCA/SCCB bits.  The chip has one INT line;
 // the ROM's SccDecode handler reads SCC RR3 to find the channel, so both
 // bits track the line.  (Guarded: scc_init fires this before the PSC is
@@ -570,7 +551,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the PSC");
         return -1;
     }
-    av_psc_set_memory_hooks(st->psc, av_psc_mem_read, av_psc_mem_write, cfg);
+    av_psc_set_memory_port(st->psc, &dma_mem_port_physical); // the pair that lived here is shared now (F-16)
 
     // The DSP3210 aux core on the PSC's dspOverRun reset latch, and the
     // Singer sound frame engine that feeds it EXT1 ticks.

@@ -267,6 +267,9 @@ static void tnt_memory_layout(config_t *cfg) {
 // bus's slow path byte by byte.  The CPU MMU is deliberately not in the
 // path (the sonic/psc memory-hook precedent).
 
+// The DBDMA port: RAM by memcpy, everything else through the bus.  NOT
+// dma_mem_port_physical, which resolves host memory only and reads device
+// space as zero (dma_mem.h).
 static void tnt_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
@@ -568,7 +571,13 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
-    tnt_dbdma_set_memory_hooks(st->dbdma, tnt_dbdma_mem_read, tnt_dbdma_mem_write, cfg);
+    static const dma_mem_port_t dbdma_port = {
+        .read_block = tnt_dbdma_mem_read,
+        .write_block = tnt_dbdma_mem_write,
+    };
+    dma_mem_port_t port = dbdma_port;
+    port.ctx = cfg;
+    tnt_dbdma_set_memory_port(st->dbdma, &port);
     tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
 
     // The AWACS sound face on channel 8 (Open Firmware's beep is the

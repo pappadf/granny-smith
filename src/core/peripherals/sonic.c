@@ -133,34 +133,32 @@ struct sonic {
 
     sonic_irq_cb irq_cb;
     void *irq_ctx;
-    sonic_mem_read_fn mem_rd;
-    sonic_mem_write_fn mem_wr;
-    void *mem_ctx;
+    dma_mem_port_t mem; // guest-physical port (dma_mem.h)
 };
 
 // ============================================================
 // Bus access (guest-physical; hooks or machine bus)
 // ============================================================
 
-// The machine installs guest-physical accessors via sonic_set_memory_hooks
-// (the chip is a bus master); with none installed, DMA reads as zero and
-// writes vanish — logged once so a missing wiring is visible.
+// The machine installs a guest-physical port via sonic_set_memory_port (the
+// chip is a bus master); with none installed, DMA reads as zero and writes
+// vanish — logged so a missing wiring is visible.
 
 static uint32_t bus_read(sonic_t *s, uint32_t phys, unsigned width) {
-    if (s->mem_rd)
-        return s->mem_rd(s->mem_ctx, phys, width);
-    LOG(1, "DMA read $%08X with no memory hooks installed", phys);
+    if (dma_mem_port_bound(&s->mem))
+        return dma_mem_read(&s->mem, phys, width);
+    LOG(1, "DMA read $%08X with no memory port installed", phys);
     return 0;
 }
 
 static void bus_write(sonic_t *s, uint32_t phys, uint32_t value, unsigned width) {
-    if (s->mem_wr) {
-        s->mem_wr(s->mem_ctx, phys, value, width);
+    if (dma_mem_port_bound(&s->mem)) {
+        dma_mem_write(&s->mem, phys, value, width);
         return;
     }
     (void)value;
     (void)width;
-    LOG(1, "DMA write $%08X with no memory hooks installed", phys);
+    LOG(1, "DMA write $%08X with no memory port installed", phys);
 }
 
 // Descriptor-field step: 32-bit bus mode (DCR.DW set) puts each 16-bit
@@ -546,8 +544,9 @@ void sonic_set_irq_callback(sonic_t *s, sonic_irq_cb cb, void *context) {
         cb(context, true); // re-drive the level after (re)binding
 }
 
-void sonic_set_memory_hooks(sonic_t *s, sonic_mem_read_fn rd, sonic_mem_write_fn wr, void *context) {
-    s->mem_rd = rd;
-    s->mem_wr = wr;
-    s->mem_ctx = context;
+void sonic_set_memory_port(sonic_t *s, const dma_mem_port_t *port) {
+    if (port)
+        s->mem = *port;
+    else
+        s->mem = (dma_mem_port_t){0};
 }

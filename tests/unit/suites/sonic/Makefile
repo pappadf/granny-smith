@@ -36,6 +36,7 @@ CFLAGS := $(BASE_CFLAGS) $(INCLUDE_FLAGS)
 LDFLAGS ?=
 
 SRCS := $(CURDIR)/test.c \
+        $(EMU_ROOT)/core/peripherals/dma_mem.c \
         $(EMU_ROOT)/core/peripherals/sonic.c \
         $(UNIT_ROOT)/support/stub_checkpoint.c \
         $(UNIT_ROOT)/support/stub_system.c \

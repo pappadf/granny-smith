@@ -88,9 +88,7 @@ struct av_psc {
     av_psc_chan_touch_fn scsi_touch_fn; // "the guest programmed the SCSI channel"
     void *scsi_touch_ctx;
     void *dreq_ctx;
-    av_psc_mem_read_fn mem_read; // guest-physical accessors for DMA
-    av_psc_mem_write_fn mem_write;
-    void *mem_ctx;
+    dma_mem_port_t mem; // guest-physical port for DMA (dma_mem.h)
     av_psc_dsp_fn dsp_fn; // dspOverRun latch observer (the DSP glue)
     void *dsp_ctx;
     struct object *object; // machine.psc (F-26); after the blob, never saved
@@ -314,10 +312,8 @@ void av_psc_set_dreq_query(av_psc_t *psc, av_psc_dreq_fn fn, void *ctx) {
     psc->dreq_ctx = ctx;
 }
 
-void av_psc_set_memory_hooks(av_psc_t *psc, av_psc_mem_read_fn rd, av_psc_mem_write_fn wr, void *ctx) {
-    psc->mem_read = rd;
-    psc->mem_write = wr;
-    psc->mem_ctx = ctx;
+void av_psc_set_memory_port(av_psc_t *psc, const dma_mem_port_t *port) {
+    psc->mem = port ? *port : (dma_mem_port_t){0};
 }
 
 bool av_psc_dma_ready(av_psc_t *psc, int chan) {
@@ -351,12 +347,12 @@ static int psc_dma_transfer(av_psc_t *psc, int n, const uint8_t *in, uint8_t *ou
         return 0;
     }
     uint32_t count = (uint32_t)len < remain ? (uint32_t)len : remain;
-    for (uint32_t i = 0; i < count; i++) {
-        if (to_memory)
-            psc->mem_write(psc->mem_ctx, ch->addr[s] + i, in[i], 1);
-        else
-            out[i] = (uint8_t)psc->mem_read(psc->mem_ctx, ch->addr[s] + i, 1);
-    }
+    // One block call, not a byte loop: the port decides whether that is a
+    // memcpy or the same byte loop (F-16).
+    if (to_memory)
+        dma_mem_write_block(&psc->mem, ch->addr[s], in, count);
+    else
+        dma_mem_read_block(&psc->mem, ch->addr[s], out, count);
     ch->addr[s] += count;
     ch->cnt[s] -= count;
     if (ch->cnt[s] == 0)

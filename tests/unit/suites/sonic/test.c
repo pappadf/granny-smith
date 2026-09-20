@@ -109,7 +109,8 @@ static sonic_t *fresh(void) {
         sonic_delete(s);
     s = sonic_init(NULL);
     ASSERT_TRUE(s != NULL);
-    sonic_set_memory_hooks(s, mock_read, mock_write, NULL);
+    static const dma_mem_port_t port = {.read = mock_read, .write = mock_write};
+    sonic_set_memory_port(s, &port);
     sonic_set_irq_callback(s, irq_cb, NULL);
     memset(mem, 0, sizeof(mem));
     irq_edges = 0;

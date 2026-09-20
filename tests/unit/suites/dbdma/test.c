@@ -197,7 +197,8 @@ static void fixture(void) {
     if (s_d)
         tnt_dbdma_delete(s_d);
     s_d = tnt_dbdma_init(NULL);
-    tnt_dbdma_set_memory_hooks(s_d, mem_read, mem_write, NULL);
+    static const dma_mem_port_t mem_port = {.read_block = mem_read, .write_block = mem_write};
+    tnt_dbdma_set_memory_port(s_d, &mem_port);
     tnt_dbdma_set_irq_hook(s_d, irq_hook, NULL);
     port.out = dev_out;
     port.in = dev_in;
@@ -466,7 +467,8 @@ TEST(test_checkpoint_roundtrip) {
     tnt_dbdma_checkpoint(s_d, (checkpoint_t *)1);
     tnt_dbdma_delete(s_d);
     s_d = tnt_dbdma_init((checkpoint_t *)1);
-    tnt_dbdma_set_memory_hooks(s_d, mem_read, mem_write, NULL);
+    static const dma_mem_port_t mem_port = {.read_block = mem_read, .write_block = mem_write};
+    tnt_dbdma_set_memory_port(s_d, &mem_port);
     tnt_dbdma_set_irq_hook(s_d, irq_hook, NULL);
     static tnt_dbdma_port_t port = {dev_out, dev_in, dev_s_bits, NULL};
     tnt_dbdma_set_port(s_d, 0, &port);

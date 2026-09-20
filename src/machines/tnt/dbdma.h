@@ -28,6 +28,7 @@
 #define GS_MACHINES_TNT_DBDMA_H
 
 #include "checkpoint.h"
+#include "dma_mem.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -59,11 +60,14 @@ typedef struct tnt_dbdma tnt_dbdma_t;
 
 // === Injected hooks =========================================================
 
-// Guest-physical memory movers (descriptor fetch/write-back and data
-// transfers; the CPU MMU is deliberately not in the path — the sonic/psc
-// memory-hook pattern).  `buf` carries raw guest bytes in address order.
-typedef void (*tnt_dbdma_mem_read_fn)(void *ctx, uint32_t phys, uint8_t *buf, uint32_t len);
-typedef void (*tnt_dbdma_mem_write_fn)(void *ctx, uint32_t phys, const uint8_t *buf, uint32_t len);
+// Guest-physical memory moves (descriptor fetch/write-back and data
+// transfers; the CPU MMU is deliberately not in the path) go through the
+// shared dma_mem_port_t, which is where this file's own pair of block-shaped
+// typedefs went (05-chipsets-irq F-16).  This engine fills the port's BLOCK
+// slots: it moves kilobytes per command, and tnt.c's implementation turns
+// the RAM case into a memcpy -- which is also why it is not the same
+// implementation as dma_mem_port_physical (that one resolves host memory
+// only; this one falls through to the whole bus).
 
 // Channel-completion interrupt (Grand Central interrupt n == channel n);
 // fired AFTER the descriptor's result write-back, per the house gotcha.
@@ -90,7 +94,7 @@ void tnt_dbdma_delete(tnt_dbdma_t *d);
 void tnt_dbdma_checkpoint(tnt_dbdma_t *d, checkpoint_t *cp);
 void tnt_dbdma_reset(tnt_dbdma_t *d); // power-on: all channels idle
 
-void tnt_dbdma_set_memory_hooks(tnt_dbdma_t *d, tnt_dbdma_mem_read_fn rd, tnt_dbdma_mem_write_fn wr, void *ctx);
+void tnt_dbdma_set_memory_port(tnt_dbdma_t *d, const dma_mem_port_t *port); // copied; NULL unbinds
 void tnt_dbdma_set_irq_hook(tnt_dbdma_t *d, tnt_dbdma_irq_fn fn, void *ctx);
 void tnt_dbdma_set_port(tnt_dbdma_t *d, int chan, const tnt_dbdma_port_t *port); // port copied; NULL detaches
 

@@ -307,7 +307,8 @@ int main(void) {
     s_cfg.machine_context = &s_st;
     s_st.psc = av_psc_init(&s_cfg, NULL);
     ASSERT_TRUE(s_st.psc != NULL);
-    av_psc_set_memory_hooks(s_st.psc, mem_read, mem_write, NULL);
+    static const dma_mem_port_t port = {.read = mem_read, .write = mem_write};
+    av_psc_set_memory_port(s_st.psc, &port);
 
     RUN(test_scsi_start_and_complete);
     RUN(test_scsi_stop_read);
