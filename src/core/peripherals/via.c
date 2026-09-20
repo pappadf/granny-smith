@@ -254,15 +254,24 @@ static void t1_callback(void *source, uint64_t data) {
 
     switch (via->acr >> 6) {
     case 0: // One-shot
-        via->timers[TIMER_1].start_timestamp = 0;
-        via->timers[TIMER_1].counter = 0xFFFF; // interrupt fired at wraparound
+        // Per R6522 "Timer 1 One-Shot Mode": "When the counter reaches zero,
+        // the T1 interrupt flag will be set... At this time the counter will
+        // continue to decrement at system clock rate.  This allows the system
+        // processor to read the contents of the counter to determine the time
+        // since interrupt."  So leave start_timestamp standing and let
+        // read_timer keep deriving the wrapped value -- exactly what T2 does
+        // below.  Scheduling no follow-up event is what stops the flag being
+        // set a second time, as the same passage requires.  This used to zero
+        // start_timestamp and freeze counter at 0xFFFF, which short-circuited
+        // read_timer and returned that constant forever, defeating the one use
+        // the datasheet names for the running counter.
+        via->timers[TIMER_1].expired = true;
         break;
     case 1: // Free‑run
         arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback);
         break;
     case 2: // One-shot w/ PB7 output
-        via->timers[TIMER_1].start_timestamp = 0;
-        via->timers[TIMER_1].counter = 0xFFFF;
+        via->timers[TIMER_1].expired = true; // counter keeps running -- see case 0
         // DDRB bit 7 must be set for PB7 to function as a timer output
         if (via->ports[PORT_B].direction & 0x80)
             via->ports[PORT_B].output |= 0x80; // PB7 is set high when the timer expires

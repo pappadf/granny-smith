@@ -38,6 +38,9 @@
 #define REG_IFR    13
 #define REG_PCR    12
 #define REG_ORA_NH 15
+#define REG_T1C_L  4
+#define REG_T1C_H  5
+#define REG_ACR    11
 
 // IFR bits (via.c's private numbering, mirrored here so the test reads as the
 // datasheet does).
@@ -45,6 +48,7 @@
 #define IFR_CA1 0x02
 #define IFR_CB2 0x08
 #define IFR_CB1 0x10
+#define IFR_T1  0x40
 
 // PCR CA2/CB2 field values (Figure 11).
 #define CA2_INPUT_NEG 0u
@@ -55,6 +59,12 @@
 // ============================================================================
 // Stubs — via.c reaches the scheduler, the memory map and the object tree.
 // ============================================================================
+
+// A settable cycle counter and the most recently armed event, so a test can
+// run a timer out and then keep the clock moving past the timeout.
+static uint64_t s_cycles;
+static event_callback_t s_armed_cb;
+static void *s_armed_src;
 
 void scheduler_new_event_type(scheduler_t *sch, const char *source_name, void *source, const char *event_name,
                               event_callback_t callback) {
@@ -67,21 +77,22 @@ void scheduler_new_event_type(scheduler_t *sch, const char *source_name, void *s
 event_t *scheduler_new_cpu_event(scheduler_t *sch, event_callback_t callback, void *source, uint64_t data,
                                  uint64_t cycles, uint64_t ns) {
     (void)sch;
-    (void)callback;
-    (void)source;
     (void)data;
-    (void)cycles;
     (void)ns;
+    (void)cycles;
+    s_armed_cb = callback;
+    s_armed_src = source;
     return NULL;
 }
 void remove_event(scheduler_t *sch, event_callback_t callback, void *source) {
     (void)sch;
     (void)callback;
     (void)source;
+    s_armed_cb = NULL;
 }
 uint64_t scheduler_cpu_cycles(scheduler_t *sch) {
     (void)sch;
-    return 0;
+    return s_cycles;
 }
 // via_t is opaque to callers, so the test reaches its registers the way the
 // machine does: through the memory_interface_t via_init registers here.
@@ -169,9 +180,24 @@ static void wr(via_t *via, int rs, uint8_t value) {
     s_iface->write_uint8(s_device, reg_addr(rs), value);
 }
 
+// Fire the armed timer event the way the scheduler does: the event is consumed
+// on delivery, so anything still armed afterwards was rearmed by the callback.
+static void fire_armed(void) {
+    event_callback_t cb = s_armed_cb;
+    void *src = s_armed_src;
+    ASSERT_TRUE(cb != NULL);
+    s_armed_cb = NULL;
+    cb(src, 0);
+}
+
 // A fresh VIA with the CA2 field (PCR bits 3-1) set to `ca2_mode`.
 static via_t *make_via(unsigned ca2_mode) {
     s_irq_level = false;
+    // Non-zero: arm_timer stores scheduler_cpu_cycles() as start_timestamp and
+    // read_timer reads a zero timestamp as "never armed", so a timer armed at
+    // cycle 0 would read as stopped.  Latent in the emulator too (W-02).
+    s_cycles = 1000;
+    s_armed_cb = NULL;
     via_t *via = via_init(s_dummy_map_token, NULL, 1, "via1", output_sink, shift_sink, irq_sink, NULL, NULL);
     ASSERT_TRUE(via != NULL);
     wr(via, REG_PCR, (uint8_t)(ca2_mode << 1));
@@ -339,6 +365,79 @@ TEST(test_orb_access_respects_cb2_independent_mode) {
 }
 
 // ============================================================================
+// F-29 — T1 one-shot keeps counting after timeout, as T2 already did
+// ============================================================================
+
+// R6522 "Timer 1 One-Shot Mode": "When the counter reaches zero, the T1
+// interrupt flag will be set... At this time the counter will continue to
+// decrement at system clock rate.  This allows the system processor to read
+// the contents of the counter to determine the time since interrupt."
+// T1 used to freeze at 0xFFFF, which returned that constant forever and so
+// defeated the one use the datasheet names.
+TEST(test_t1_one_shot_counter_runs_on_after_timeout) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+
+    wr(via, REG_ACR, 0x00); // ACR 7:6 = 00 -> one-shot, no PB7 output
+    wr(via, REG_T1C_L, 0x10); // latch low
+    wr(via, REG_T1C_H, 0x00); // writing the high byte starts the count
+    ASSERT_TRUE(s_armed_cb != NULL);
+
+    // Run the counter out and fire the timeout the scheduler would have.
+    s_cycles += 0x11;
+    fire_armed();
+    ASSERT_TRUE((rd(via, REG_IFR) & IFR_T1) != 0);
+
+    // The counter must keep moving, and by the elapsed amount.
+    uint16_t a = (uint16_t)((rd(via, REG_T1C_H) << 8) | rd(via, REG_T1C_L));
+    s_cycles += 0x20;
+    uint16_t b = (uint16_t)((rd(via, REG_T1C_H) << 8) | rd(via, REG_T1C_L));
+    ASSERT_TRUE(a != b);
+    ASSERT_EQ_INT((uint16_t)(a - b), 0x20);
+
+    via_delete(via);
+}
+
+// The flag must not be set a second time by the counter wrapping again: the
+// datasheet requires a rewrite of T1C-H first, and scheduling no follow-up
+// event is what enforces it.
+TEST(test_t1_one_shot_does_not_refire) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+
+    wr(via, REG_ACR, 0x00);
+    wr(via, REG_T1C_L, 0x10);
+    wr(via, REG_T1C_H, 0x00);
+    s_cycles += 0x11;
+    fire_armed();
+
+    // Acknowledge, then run well past a full 16-bit wrap.
+    (void)rd(via, REG_T1C_L); // reading T1C-L clears the T1 flag
+    ASSERT_TRUE((rd(via, REG_IFR) & IFR_T1) == 0);
+    ASSERT_TRUE(s_armed_cb == NULL); // nothing rearmed
+    s_cycles += 0x20000;
+    ASSERT_TRUE((rd(via, REG_IFR) & IFR_T1) == 0);
+
+    via_delete(via);
+}
+
+// Free-run (ACR 7:6 = 01) must still rearm — the fix must not flatten the two
+// modes into one.
+TEST(test_t1_free_run_rearms) {
+    via_t *via = make_via(CA2_INPUT_NEG);
+
+    wr(via, REG_ACR, 0x40); // ACR 7:6 = 01 -> continuous interrupts
+    wr(via, REG_T1C_L, 0x10);
+    wr(via, REG_T1C_H, 0x00);
+    ASSERT_TRUE(s_armed_cb != NULL);
+
+    s_cycles += 0x11;
+    fire_armed();
+    ASSERT_TRUE((rd(via, REG_IFR) & IFR_T1) != 0);
+    ASSERT_TRUE(s_armed_cb != NULL); // rearmed for the next period
+
+    via_delete(via);
+}
+
+// ============================================================================
 // F-27 — a wider access degrades, it does not abort
 // ============================================================================
 
@@ -399,6 +498,9 @@ int main(void) {
     RUN(test_port_access_always_clears_ca1);
     RUN(test_ora_no_handshake_clears_nothing);
     RUN(test_orb_access_respects_cb2_independent_mode);
+    RUN(test_t1_one_shot_counter_runs_on_after_timeout);
+    RUN(test_t1_one_shot_does_not_refire);
+    RUN(test_t1_free_run_rearms);
     RUN(test_wide_accesses_compose_from_byte_ops);
     RUN(test_control_lines_idle_high_at_power_on);
     fprintf(stderr, "All VIA control-line tests passed\n");
