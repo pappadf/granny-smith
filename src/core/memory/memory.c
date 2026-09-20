@@ -16,9 +16,13 @@
 #include "common.h"
 #include "cpu.h"
 #include "debug.h"
+#include "log.h"
 #include "object.h"
 #include "platform.h"
 #include "rom.h"
+
+// The category memory logpoints already use (AGENTS.md); debug.log memory N.
+LOG_USE_CATEGORY_NAME("memory");
 #include "shell.h"
 #include "system.h"
 #include "system_config.h"
@@ -1304,12 +1308,57 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
     map->next = mem->map;
     mem->map = map;
 
+    // Three registration mistakes that used to be silent (05-chipsets-irq
+    // F-24).  All three are init-only, so the cost is nil, and each one
+    // produced a mapping that LOOKED registered -- it is in the linked list
+    // above and memory_map_print shows it -- while claiming the wrong pages
+    // or none at all.
+    //
+    // 1. WRAP.  end_page is computed from `addr + size - 1` masked to the
+    //    address space.  If that overflows 32 bits, or exceeds the 24-bit
+    //    mask on a Plus or Lisa, end_page comes out BELOW start_page, the
+    //    loop body never runs, and the region claims nothing.
+    //    bart_claim_empty(cfg, 0xD0000000, 0x10000000, ...) sits one slot
+    //    away from this.
+    // 2. SUB-PAGE.  A region smaller than a page claims the whole page, so
+    //    two sub-page devices sharing one page silently collide -- the
+    //    second wins for the entire page, including the first one's bytes.
+    // 3. OVERLAP.  A later registration overwrites an earlier one's page
+    //    entries with no diagnostic, while the earlier mapping stays in the
+    //    list.  That layering-by-call-order is load-bearing and documented
+    //    only in prose (bart.c:262-264, "Called from the family memory
+    //    layout, BEFORE nubus_init"), and bart.c:295-303 records a real bug
+    //    caused by getting it wrong.
+    if (size == 0)
+        LOG(0, "memory_map_add('%s'): zero size at $%08X claims no pages", name ? name : "?", addr);
+    if (addr + size - 1 < addr)
+        LOG(0, "memory_map_add('%s'): $%08X + $%08X wraps the address space; the region will claim no pages",
+            name ? name : "?", addr, size);
+    // Measured across every ROM in tests/data: exactly one hit, the IIfx's
+    // JMFB registering a 1 KB register window ('JMFB regs' at $F9200000+$400).
+    // It claims the whole 4 KB page and nothing else is in that page today,
+    // so it is a risk rather than a fault -- which is what level 2 is for.
+    if ((addr & (MEM_PAGE_SIZE - 1)) != 0 || (size & (MEM_PAGE_SIZE - 1)) != 0)
+        LOG(2,
+            "memory_map_add('%s'): $%08X+$%08X is not page-aligned; it claims whole pages and can collide with a "
+            "neighbour in the same page",
+            name ? name : "?", addr, size);
+
     // Populate page table entries for the device's address range
     if (g_page_table) {
         uint32_t start_page = (addr & g_address_mask) >> PAGE_SHIFT;
         uint32_t end_page = ((addr + size - 1) & g_address_mask) >> PAGE_SHIFT;
         assert(start_page < g_page_count && "device start address exceeds page table bounds");
+        if (end_page < start_page)
+            LOG(0, "memory_map_add('%s'): page range $%X..$%X is inverted; the region claims no pages",
+                name ? name : "?", start_page, end_page);
         for (uint32_t p = start_page; p <= end_page && p < g_page_count; p++) {
+            // Overlap: another device already owns this page.  Layering by
+            // call order is intentional in places, so this is a log and not
+            // a refusal -- but it must be visible.
+            if (g_page_table[p].dev && g_page_table[p].dev != &map->memory_interface)
+                LOG(2, "memory_map_add('%s'): page $%X was already claimed by a device at $%08X; replacing it",
+                    name ? name : "?", p, g_page_table[p].base_addr);
             // AoS cold-path: register device handler
             g_page_table[p].host_base = NULL;
             g_page_table[p].dev = &map->memory_interface;
