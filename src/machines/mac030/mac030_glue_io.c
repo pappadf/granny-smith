@@ -24,6 +24,45 @@
 
 LOG_USE_CATEGORY_NAME("setup"); // the validation diagnostic is a setup-time check
 
+// The runtime decode-miss diagnostic belongs with the board, not with setup,
+// so it takes its own category through LOG_WITH.  Registered lazily on first
+// use; log_register_category is idempotent.
+static const log_category_t *io_board_category(void) {
+    static log_category_t *cat;
+    if (!cat)
+        cat = log_register_category("board");
+    return cat;
+}
+
+// Log the first access to each unimplemented register, once per masked
+// offset, the way every hand-written ladder already does -- amic.c:1035
+// ("write of unwired island offset"), grand_central.c:550, hammerhead.c:265,
+// rbv.c:299, dafb.c:473-477 (log-once with a touched[] bitmap).
+//
+// The five families on this shared engine were the ones saying NOTHING about
+// a decode miss, and they are precisely the ones where an unimplemented
+// register is most likely -- so the project's stated RE workflow ("every
+// first touch is logged so the boot ROM's access sequence becomes an RE
+// artefact", mcu.c:57-58) was unavailable exactly where it was most wanted
+// (05-chipsets-irq F-21).
+//
+// The bitmaps live on the instance, not in a function-level static: two
+// machines in one process (the boot-matrix rows do this) each get their own
+// first touches, and a new machine starts over.
+static void io_log_miss_once(mac030_io_t *io, uint32_t offset, bool is_write, uint32_t value) {
+    uint64_t bit = 1ull << ((offset >> 12) & 63u);
+    uint64_t *seen = is_write ? &io->miss_logged_write : &io->miss_logged_read;
+    if (*seen & bit)
+        return;
+    *seen |= bit;
+    if (is_write)
+        LOG_WITH(io_board_category(), 2, "I/O island: write of unwired offset $%05X = $%02X (first touch in this 4K)",
+                 offset, value);
+    else
+        LOG_WITH(io_board_category(), 2, "I/O island: read of unwired offset $%05X -> $%02X (first touch in this 4K)",
+                 offset, io->unmapped_read);
+}
+
 // ============================================================
 // The engine
 // ============================================================
@@ -62,7 +101,7 @@ uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr) {
             else
                 memory_io_penalty(r->penalty);
             if (r->read_fn)
-                return r->read_fn(io->cfg, addr);
+                return r->read_fn(io->cfg, io_sub_offset(r, offset, true), addr);
             // A device-row whose chip this model does not build: the window is
             // decoded (we got here) but unpopulated, so the cycle is still
             // acknowledged and the bus floats — see memory_signal_bus_error.
@@ -71,6 +110,7 @@ uint8_t mac030_io_read_uint8(void *ctx, uint32_t addr) {
             return io->iface[r->device]->read_uint8(io->handle[r->device], io_sub_offset(r, offset, true));
         }
     }
+    io_log_miss_once(io, offset, false, 0);
     return io->unmapped_read;
 }
 
@@ -97,12 +137,13 @@ void mac030_io_write_uint8(void *ctx, uint32_t addr, uint8_t value) {
             else
                 memory_io_penalty(r->penalty);
             if (r->write_fn)
-                r->write_fn(io->cfg, addr, value);
+                r->write_fn(io->cfg, io_sub_offset(r, offset, false), addr, value);
             else if (io->iface[r->device]) // unpopulated device-row: acknowledged, dropped
                 io->iface[r->device]->write_uint8(io->handle[r->device], io_sub_offset(r, offset, false), value);
             return;
         }
     }
+    io_log_miss_once(io, offset, true, value);
 }
 
 void mac030_io_write_uint16(void *ctx, uint32_t addr, uint16_t value) {

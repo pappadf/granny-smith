@@ -232,9 +232,10 @@ static void na_execute(av_new_age_t *fdc) {
 // Register handlers
 // ============================================================
 
-uint8_t av_new_age_read(config_t *cfg, uint32_t addr) {
+uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     av_new_age_t *fdc = na_of(cfg);
-    uint32_t off = (addr & 0x3FFFFu) - 0x2A000u;
+    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    (void)addr;
     switch (off) {
     case 0x101: { // MSR
         uint8_t msr = (uint8_t)(NA_MSR_RQM | NA_MSR_D0I | NA_MSR_D1I);
@@ -260,9 +261,10 @@ uint8_t av_new_age_read(config_t *cfg, uint32_t addr) {
     }
 }
 
-void av_new_age_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     av_new_age_t *fdc = na_of(cfg);
-    uint32_t off = (addr & 0x3FFFFu) - 0x2A000u;
+    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    (void)addr;
     switch (off) {
     case 0x101: // DRR (data-rate register)
         fdc->drr = value;

@@ -175,7 +175,8 @@ static void mcu_orwell_latch_banks(config_t *cfg) {
     mcu_map_ram(cfg);
 }
 
-static uint8_t mcu_reg_read(config_t *cfg, uint32_t addr) {
+static uint8_t mcu_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0xFFFu;
     if (off >= ORWELL_STATUS_BASE)
@@ -190,7 +191,8 @@ static uint8_t mcu_reg_read(config_t *cfg, uint32_t addr) {
     return (off & 3) == 3 ? (uint8_t)((st->orwell_cfg >> bit) & 1) : 0;
 }
 
-static void mcu_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void mcu_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0xFFFu;
 
@@ -225,12 +227,14 @@ static void mcu_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // 80; byte 6 is zero and byte 7 makes the XOR come out to $FF.
 static const uint8_t mcu_mac_prom[8] = {0x40, 0x00, 0x00, 0x90, 0xE0, 0x80, 0x00, 0x4F};
 
-static uint8_t mcu_prom_read(config_t *cfg, uint32_t addr) {
+static uint8_t mcu_prom_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     return mcu_mac_prom[addr & 7u];
 }
 
-static void mcu_prom_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void mcu_prom_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     LOG(2, "MAC PROM write $%X = $%02X ignored (read-only)", addr & 7u, value);
 }
@@ -242,7 +246,8 @@ static void mcu_prom_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // lands (the Quadra driver/tests use 32-bit accesses throughout — SonicEqu.a
 // SONIC32).  Bytes 0-1 read as zero and their writes are ignored.
 
-static uint8_t mcu_sonic_read(config_t *cfg, uint32_t addr) {
+static uint8_t mcu_sonic_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0xFFFu;
     uint32_t byte = off & 3u;
@@ -252,7 +257,8 @@ static uint8_t mcu_sonic_read(config_t *cfg, uint32_t addr) {
     return (byte == 2) ? (uint8_t)(v >> 8) : (uint8_t)v;
 }
 
-static void mcu_sonic_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void mcu_sonic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0xFFFu;
     uint32_t byte = off & 3u;
@@ -264,11 +270,13 @@ static void mcu_sonic_write(config_t *cfg, uint32_t addr, uint8_t value) {
 
 // --- NCR 53C96 ($5000F000; registers on a 16-byte spacing, ref §6.4) ---
 
-static uint8_t mcu_scsi_read(config_t *cfg, uint32_t addr) {
+static uint8_t mcu_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     return scsi_53c96_read(mcu_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
 }
 
-static void mcu_scsi_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void mcu_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     scsi_53c96_write(mcu_st(cfg)->scsi96, (addr & 0xFFu) >> 4, value);
 }
 
@@ -276,12 +284,14 @@ static void mcu_scsi_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // The engine byte-decomposes 16-bit accesses, so the byte hooks carry both
 // widths in wire order (big-endian high byte first).
 
-static uint8_t mcu_scsi_pdma_read(config_t *cfg, uint32_t addr) {
+static uint8_t mcu_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     return scsi_53c96_pdma_read8(mcu_st(cfg)->scsi96);
 }
 
-static void mcu_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void mcu_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     scsi_53c96_pdma_write8(mcu_st(cfg)->scsi96, value);
 }
@@ -291,20 +301,24 @@ static void mcu_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // (external) SCSI96" [A]; the pdma alias matches current MAME [R]).  The
 // same (offset >> 4) register decode as bus 0 serves the +2 byte lane.
 
-static uint8_t mcu_scsi_ext_read(config_t *cfg, uint32_t addr) {
+static uint8_t mcu_scsi_ext_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     return scsi_53c96_read(mcu_st(cfg)->scsi96_ext, (addr & 0xFFu) >> 4);
 }
 
-static void mcu_scsi_ext_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void mcu_scsi_ext_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     scsi_53c96_write(mcu_st(cfg)->scsi96_ext, (addr & 0xFFu) >> 4, value);
 }
 
-static uint8_t mcu_scsi_ext_pdma_read(config_t *cfg, uint32_t addr) {
+static uint8_t mcu_scsi_ext_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     return scsi_53c96_pdma_read8(mcu_st(cfg)->scsi96_ext);
 }
 
-static void mcu_scsi_ext_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void mcu_scsi_ext_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     scsi_53c96_pdma_write8(mcu_st(cfg)->scsi96_ext, value);
 }
@@ -316,7 +330,8 @@ static void mcu_scsi_ext_pdma_write(config_t *cfg, uint32_t addr, uint8_t value)
 // NuBus transactions run through the memory map + nubus core directly; the
 // write-buffer/error machinery this register controls is not modeled yet.
 
-static uint8_t mcu_yancc_read(config_t *cfg, uint32_t addr) {
+static uint8_t mcu_yancc_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0x1FFFu;
     uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;
@@ -332,7 +347,8 @@ static uint8_t mcu_yancc_read(config_t *cfg, uint32_t addr) {
     return be_lane8(v, off & 3);
 }
 
-static void mcu_yancc_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void mcu_yancc_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     mcu_state_t *st = mcu_st(cfg);
     uint32_t off = addr & 0x1FFFu;
     uint32_t idx = (off >> 2) % MCU_YANCC_REG_COUNT;

@@ -497,11 +497,13 @@ void av_civic_vdc_field(av_civic_t *cv) {
     }
 }
 
-uint8_t av_civic_read(config_t *cfg, uint32_t addr) {
+uint8_t av_civic_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     return civic_slot_read(civic_of(cfg), addr & 0x1FFFu);
 }
 
-void av_civic_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_civic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     civic_slot_write(civic_of(cfg), addr & 0x1FFFu, value);
 }
 
@@ -537,7 +539,8 @@ static void civic_lo_write32(void *ctx, uint32_t off, uint32_t value) {
 // Sebastian RAMDAC (sebastian.md)
 // ============================================================
 
-uint8_t av_civic_seb_read(config_t *cfg, uint32_t addr) {
+uint8_t av_civic_seb_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_civic_t *cv = civic_of(cfg);
     uint32_t reg = (addr & 0xFFu) >> 4;
     int bank = (cv->seb_pcbr >> 6) & 1;
@@ -574,7 +577,8 @@ uint8_t av_civic_seb_read(config_t *cfg, uint32_t addr) {
     }
 }
 
-void av_civic_seb_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_civic_seb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_civic_t *cv = civic_of(cfg);
     uint32_t reg = (addr & 0xFFu) >> 4;
     int bank = (cv->seb_pcbr >> 6) & 1;
@@ -627,13 +631,15 @@ void av_civic_seb_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // Pure write-latches; the PUMA ID probe reads EndeavorM bit-serially and a
 // Clifton answers all ones — return $FF so a 660AV detects Clifton.
 
-uint8_t av_civic_clk_read(config_t *cfg, uint32_t addr) {
+uint8_t av_civic_clk_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     (void)addr;
     return 0xFF;
 }
 
-void av_civic_clk_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_civic_clk_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_civic_t *cv = civic_of(cfg);
     uint32_t reg = (addr & 0xFFu) >> 4;
     if (reg < 3)

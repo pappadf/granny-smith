@@ -172,6 +172,92 @@ TEST(test_mdu_addr_map) {
     expect_window(m, MDU_MIRROR, 0x26000 + 0x40000, MAC030_DEV_RBV, "rbv", 2, MAC030_IO_NORMAL);
 }
 
+// --- Handler rows + decode-miss bookkeeping -------------------------------
+// These two go through the real byte dispatcher rather than mac030_io_decode,
+// because what they pin is what the ENGINE hands a handler row and what it
+// records when nothing matches.
+
+static uint32_t g_probe_win_off, g_probe_addr;
+static int g_probe_reads, g_probe_writes;
+static uint8_t g_probe_value;
+
+static uint8_t probe_read(struct config *cfg, uint32_t win_off, uint32_t addr) {
+    (void)cfg;
+    g_probe_win_off = win_off;
+    g_probe_addr = addr;
+    g_probe_reads++;
+    return 0x5A;
+}
+static void probe_write(struct config *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)cfg;
+    g_probe_win_off = win_off;
+    g_probe_addr = addr;
+    g_probe_value = value;
+    g_probe_writes++;
+}
+
+// A deliberately narrow island: $1FFFF, half the AV family's $3FFFF.  A
+// handler that re-derives its own offset has to name SOME mask, and any
+// board whose mask differs from the one it named is then decoded twice,
+// differently.  That is exactly what psc.c and new_age.c were doing with a
+// hardcoded `(addr & 0x3FFFFu) - <base>` (05-chipsets-irq F-22).
+#define PROBE_MIRROR 0x0001FFFFu
+#define PROBE_BASE   0x00001000u
+static const mac030_io_range_t k_probe_ranges[] = {
+    {.base = PROBE_BASE, .end = 0x00002000u, .read_fn = probe_read, .write_fn = probe_write, .debug_name = "probe"},
+    {0},
+};
+
+TEST(test_handler_row_gets_engine_decoded_sub_offset) {
+    mac030_io_t io = {.ranges = k_probe_ranges, .mirror_mask = PROBE_MIRROR, .unmapped_read = 0xFF};
+
+    // Inside the first copy of the island: re-derivation and the engine agree.
+    ASSERT_EQ_INT(mac030_io_read_uint8(&io, 0x50F01004u), 0x5A);
+    ASSERT_EQ_INT(g_probe_win_off, 0x004u);
+    ASSERT_EQ_INT(g_probe_addr, 0x50F01004u); // raw address, for fault reporting
+
+    // Now the same register through the $20000 mirror, which this board folds
+    // away but a hardcoded $3FFFF mask would not: the engine still says $004,
+    // where `(addr & 0x3FFFF) - $1000` would say $20004 and fall off the end
+    // of every register switch.
+    mac030_io_write_uint8(&io, 0x50F21004u, 0xC3);
+    ASSERT_EQ_INT(g_probe_win_off, 0x004u);
+    ASSERT_EQ_INT(g_probe_addr, 0x50F21004u);
+    ASSERT_EQ_INT(g_probe_value, 0xC3);
+    ASSERT_EQ_INT((0x50F21004u & 0x0003FFFFu) - PROBE_BASE, 0x20004u); // what the old code computed
+    ASSERT_EQ_INT(g_probe_reads, 1);
+    ASSERT_EQ_INT(g_probe_writes, 1);
+}
+
+// The five families on this engine used to return `unmapped_read` in silence.
+// Each first touch of an unwired 4K now logs once; the bitmaps are the
+// observable half of that (the log call itself is a no-op in this harness).
+TEST(test_decode_miss_is_recorded_once_per_4k) {
+    mac030_io_t io = {.ranges = k_probe_ranges, .mirror_mask = PROBE_MIRROR, .unmapped_read = 0xFF};
+
+    ASSERT_EQ_INT(mac030_io_read_uint8(&io, 0x50F00000u), 0xFF); // unwired: below the window
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x1u); // 4K #0
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_write, 0x0u); // reads and writes count apart
+
+    mac030_io_read_uint8(&io, 0x50F00FFFu); // same 4K: no second bit
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x1u);
+
+    mac030_io_read_uint8(&io, 0x50F03000u); // 4K #3
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x9u);
+
+    mac030_io_write_uint8(&io, 0x50F03000u, 0x11); // same 4K, other direction
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_write, 0x8u);
+
+    // A hit inside the handler window records nothing.
+    mac030_io_read_uint8(&io, 0x50F01004u);
+    ASSERT_EQ_INT((uint32_t)io.miss_logged_read, 0x9u);
+
+    // Per instance, not per process: a second board starts clean.
+    mac030_io_t io2 = {.ranges = k_probe_ranges, .mirror_mask = PROBE_MIRROR, .unmapped_read = 0xFF};
+    mac030_io_read_uint8(&io2, 0x50F00000u);
+    ASSERT_EQ_INT((uint32_t)io2.miss_logged_read, 0x1u);
+}
+
 // --- IRQ routing ----------------------------------------------------------
 
 TEST(test_irq_single_sources) {
@@ -200,6 +286,8 @@ int main(void) {
     RUN(test_glue_addr_map);
     RUN(test_swim_window_decodes_register_index);
     RUN(test_mdu_addr_map);
+    RUN(test_handler_row_gets_engine_decoded_sub_offset);
+    RUN(test_decode_miss_is_recorded_once_per_4k);
     RUN(test_irq_single_sources);
     RUN(test_irq_priority);
     printf("[PASS] All mac030_io dispatch-table tests passed\n");

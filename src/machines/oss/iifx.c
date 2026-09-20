@@ -1104,32 +1104,38 @@ static void iifx_scsidma_pump(config_t *cfg) {
 
 // FMC ($24000) + RPU-probe ($1e000): no chip present — bus-error like the real
 // BIU30 does when the parity controller / RPU is absent, reporting the address.
-static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t addr) {
+static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     memory_signal_bus_error(IIFX_IO_BASE + addr, false);
     return 0xff;
 }
-static void iifx_io_berr_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void iifx_io_berr_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     (void)value;
     memory_signal_bus_error(IIFX_IO_BASE + addr, true);
 }
 
 // SCSI-DMA engine ($08000).
-static uint8_t iifx_io_scsidma_read(config_t *cfg, uint32_t addr) {
+static uint8_t iifx_io_scsidma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     return iifx_scsidma_read_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA);
 }
-static void iifx_io_scsidma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void iifx_io_scsidma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     iifx_scsidma_write_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA, value);
 }
 
 // BIU ($18000): reads 0, writes ignored.
-static uint8_t iifx_io_biu_read(config_t *cfg, uint32_t addr) {
+static uint8_t iifx_io_biu_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     (void)addr;
     return 0;
 }
-static void iifx_io_biu_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void iifx_io_biu_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     (void)addr;
     (void)value;
@@ -1138,7 +1144,8 @@ static void iifx_io_biu_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // OSS extension / serial-shift register ($1c000-$1ffff).  Offset 0 is a 16-bit
 // right-shifting serial register (POST phase $8F: writes insert at bit 15,
 // reads take bit 0 and shift right); the rest is a plain R/W backing array.
-static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t addr) {
+static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     iifx_state_t *st = iifx_state(cfg);
     uint32_t offset = addr & IIFX_IO_MIRROR;
     if (offset == IO_OSS_EXT_SHIFT) {
@@ -1148,7 +1155,8 @@ static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t addr) {
     }
     return st->oss_ext[offset - IO_OSS_EXT_START];
 }
-static void iifx_io_ossext_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void iifx_io_ossext_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     iifx_state_t *st = iifx_state(cfg);
     uint32_t offset = addr & IIFX_IO_MIRROR;
     if (offset == IO_OSS_EXT_SHIFT) {

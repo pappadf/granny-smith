@@ -23,6 +23,9 @@
 #include "av.h"
 #include "civic.h"
 #include "psc.h"
+// Handler rows take (cfg, win_off, addr) since 05-chipsets-irq F-22: the
+// engine hands them the window-relative offset it has already decoded, and
+// keeps the raw address for fault reporting.  These calls pass both.
 #include "test_assert.h"
 
 #include <stdint.h>
@@ -123,11 +126,11 @@ static av_state_t s_st;
 
 // One longword slot: only byte lane 3 carries D[0].
 static void slot_write(uint32_t off, uint32_t value) {
-    av_civic_write(&s_cfg, CIVIC_BASE + off + 3, (uint8_t)(value & 1));
+    av_civic_write(&s_cfg, off + 3, CIVIC_BASE + off + 3, (uint8_t)(value & 1));
 }
 
 static uint32_t slot_read(uint32_t off) {
-    return av_civic_read(&s_cfg, CIVIC_BASE + off + 3) & 1;
+    return av_civic_read(&s_cfg, off + 3, CIVIC_BASE + off + 3) & 1;
 }
 
 // dWriteCivic: stream the bits LSB->MSB ascending from the register base.
@@ -170,11 +173,11 @@ static uint32_t civic_read_reg(uint32_t off, int width) {
 #define SEB_PCBR 0x20
 
 static void seb_write(uint32_t reg, uint8_t v) {
-    av_civic_seb_write(&s_cfg, SEB_BASE + reg, v);
+    av_civic_seb_write(&s_cfg, reg, SEB_BASE + reg, v);
 }
 
 static uint8_t seb_read(uint32_t reg) {
-    return av_civic_seb_read(&s_cfg, SEB_BASE + reg);
+    return av_civic_seb_read(&s_cfg, reg, SEB_BASE + reg);
 }
 
 // ============================================================================
@@ -199,7 +202,7 @@ TEST(test_serial_codec) {
     ASSERT_EQ_INT((int)civic_read_reg(R_HAL, 12), 0x5A5);
 
     // Only D[0] of the datum is wired: a write of $FE stores a 0 bit.
-    av_civic_write(&s_cfg, CIVIC_BASE + R_HAL + 3, 0xFE);
+    av_civic_write(&s_cfg, R_HAL + 3, CIVIC_BASE + R_HAL + 3, 0xFE);
     ASSERT_EQ_INT((int)slot_read(R_HAL + 0), 0);
 }
 

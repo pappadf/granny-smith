@@ -185,9 +185,10 @@ void av_psc_dsp_frame_overrun(av_psc_t *psc) {
 // VIA2 window ($50F02000: $1A00 IFR / $1C00 IER / $1E00 SInt)
 // ============================================================
 
-uint8_t av_psc_via2_read(config_t *cfg, uint32_t addr) {
+uint8_t av_psc_via2_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     av_psc_t *psc = psc_of(cfg);
-    uint32_t off = (addr & 0x3FFFFu) - 0x2000u;
+    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    (void)addr;
     switch (off) {
     case 0x1A00: {
         uint8_t ifr = (uint8_t)((psc->via2_level | psc->via2_latched) & 0x7F);
@@ -217,9 +218,10 @@ uint8_t av_psc_via2_read(config_t *cfg, uint32_t addr) {
     }
 }
 
-void av_psc_via2_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     av_psc_t *psc = psc_of(cfg);
-    uint32_t off = (addr & 0x3FFFFu) - 0x2000u;
+    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    (void)addr;
     switch (off) {
     case 0x1A00:
         // Write-1-to-clear on the latched bits; level bits re-derive.
@@ -464,9 +466,10 @@ static uint64_t psc_utsc(config_t *cfg) {
 // PSC register block ($50F31000-$50F32FFF)
 // ============================================================
 
-uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
+uint8_t av_psc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
     av_psc_t *psc = psc_of(cfg);
-    uint32_t off = (addr & 0x3FFFFu) - 0x31000u;
+    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    (void)addr;
 
     // Level 3-6 interrupt register pairs ($130..$164, byte-wide).
     if (off >= 0x130 && off <= 0x167) {
@@ -539,9 +542,10 @@ uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr) {
     }
 }
 
-void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
     av_psc_t *psc = psc_of(cfg);
-    uint32_t off = (addr & 0x3FFFFu) - 0x31000u;
+    uint32_t off = win_off; // decoded by the engine (F-22); was (addr & island mask) - base
+    (void)addr;
 
     if (off >= 0x130 && off <= 0x167) {
         int level = (int)((off - 0x130) >> 4);

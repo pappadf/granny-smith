@@ -75,8 +75,18 @@ typedef struct mac030_io_range {
     // the engine calls them with the machine config + the FULL bus address
     // (so a handler can report the faulting address) instead of routing to a
     // device.  NULL on every GLUE/MDU row (those are pure device routes).
-    uint8_t (*read_fn)(struct config *cfg, uint32_t addr);
-    void (*write_fn)(struct config *cfg, uint32_t addr, uint8_t value);
+    // Handler rows get the window-relative sub-offset the engine has ALREADY
+    // decoded, plus the raw bus address for fault reporting.
+    //
+    // They used to get `addr` alone, so each handler re-derived the offset by
+    // hand -- and the AV family's island mirror mask ($0003FFFF), declared
+    // once as data in q840av.c/q660av.c, was written out six more times
+    // inside psc.c and new_age.c as `(addr & 0x3FFFFu) - <window base>`.
+    // Changing io_mirror_mask on a new board would silently have broken all
+    // six (05-chipsets-irq F-22).  Device rows never had this problem: they
+    // have always been handed io_sub_offset().
+    uint8_t (*read_fn)(struct config *cfg, uint32_t win_off, uint32_t addr);
+    void (*write_fn)(struct config *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
     const char *debug_name; // for the address-map unit test + tracing
     // 1 = 6522 window: charge the phase-accurate E-clock sync penalty
     // instead of the fixed `penalty` (each byte access completes at the
@@ -96,6 +106,11 @@ typedef struct mac030_io {
     uint32_t mirror_mask; // addr & mask before decode
     struct config *cfg; // for handler-row (read_fn/write_fn) dispatch
     uint8_t unmapped_read; // value returned on a no-match read (0 GLUE/MDU; 0xFF OSS)
+    // Decode-miss log-once bitmaps, one bit per 4 KB of island (the largest
+    // mirror mask any board declares is $3FFFF, so 64 bits covers it).
+    // Diagnostic state only, and full of host pointers besides -- this whole
+    // struct is rebuilt at init and never checkpointed.
+    uint64_t miss_logged_read, miss_logged_write;
 } mac030_io_t;
 
 // Backwards-compatible alias: the GLUE state struct calls its field's type

@@ -66,17 +66,21 @@ static void mem_write(void *ctx, uint32_t phys, uint32_t value, unsigned width) 
 // Register access helpers (byte-lane shaped, like the mac030 engine)
 // ============================================================================
 
+// Handler rows take (cfg, win_off, addr) since 05-chipsets-irq F-22: the
+// engine decodes the window-relative offset once and hands it over, instead
+// of each handler re-deriving it from the island mirror mask by hand.  For
+// this window win_off is exactly `off`.
 #define PSC_BASE 0x50F31000u
 
 static config_t s_cfg;
 static av_state_t s_st;
 
 static void w8(uint32_t off, uint8_t v) {
-    av_psc_reg_write(&s_cfg, PSC_BASE + off, v);
+    av_psc_reg_write(&s_cfg, off, PSC_BASE + off, v);
 }
 
 static uint8_t r8(uint32_t off) {
-    return av_psc_reg_read(&s_cfg, PSC_BASE + off);
+    return av_psc_reg_read(&s_cfg, off, PSC_BASE + off);
 }
 
 static void w16(uint32_t off, uint16_t v) {

@@ -69,7 +69,8 @@ static inline av_state_t *av_st(config_t *cfg) {
 // else is a latch that reads back (speed/width semantics are not modelled —
 // ymca.md §10 records that even the ROM only knows fixed patterns).
 
-static uint8_t av_ymca_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_ymca_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu; // island offset $30400 + $000..$3FF
     if ((off & 3) != 0)
@@ -85,7 +86,8 @@ static uint8_t av_ymca_read(config_t *cfg, uint32_t addr) {
     return (uint8_t)((st->ymca_regs[idx] & 1) << 7);
 }
 
-static void av_ymca_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void av_ymca_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu;
     if ((off & 3) != 0)
@@ -107,7 +109,8 @@ static void av_ymca_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // bus-error so the ROM's TestForMUNI clears MUNIExists (the speed-programming
 // write in JumpIntoROM runs under a temp bus-error handler and is skipped).
 
-static uint8_t av_muni_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_muni_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu;
     uint32_t reg = off & ~3u;
@@ -119,7 +122,8 @@ static uint8_t av_muni_read(config_t *cfg, uint32_t addr) {
     return be_lane8(v, off & 3);
 }
 
-static void av_muni_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void av_muni_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu;
     uint32_t reg = off & ~3u;
@@ -184,10 +188,10 @@ static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
 #define AV_SCC_IO_PENALTY 2
 
 // 53C96 window handlers (defined with the SCSI wiring below).
-static uint8_t av_scsi_read(config_t *cfg, uint32_t addr);
-static void av_scsi_write(config_t *cfg, uint32_t addr, uint8_t value);
-static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t addr);
-static void av_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value);
+static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+static void av_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
+static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
 const mac030_io_range_t av_io_ranges[] = {
@@ -283,23 +287,27 @@ static void av_nubus_slot_irq(config_t *cfg, int slot, bool active) {
 // handler).  The chip IRQ is level-sensitive into the PSC-VIA2 window,
 // bits 3 and mirror 0 (curio.md §2, IMPLEMENTATION.md §5).
 
-static uint8_t av_scsi_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     return scsi_53c96_read(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
 }
 
-static void av_scsi_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void av_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     scsi_53c96_write(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4, value);
 }
 
 // Curio's rDMA pseudo-DMA port at +$100: the ROM's boot-time SCSI Manager
 // (SCSIMgrHWPSC.a) streams 16-bit words through it — the engine
 // byte-decomposes them, and byte order equals wire order.
-static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     return scsi_53c96_pdma_read8(av_st(cfg)->scsi96);
 }
 
-static void av_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     scsi_53c96_pdma_write8(av_st(cfg)->scsi96, value);
 }

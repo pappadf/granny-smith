@@ -52,13 +52,13 @@ void av_psc_checkpoint(av_psc_t *psc, checkpoint_t *cp);
 
 // The 3-register VIA2 window at island $02000 ($1A00 IFR / $1C00 IER /
 // $1E00 SInt — via1-cuda.md §1).
-uint8_t av_psc_via2_read(config_t *cfg, uint32_t addr);
-void av_psc_via2_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_psc_via2_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // The PSC register block at island $31000-$32FFF (level regs, UTSC, ISR,
 // sound block, DMA control + register sets).
-uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr);
-void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_psc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // === Interrupt sources ======================================================
 
