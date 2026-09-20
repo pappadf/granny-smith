@@ -339,9 +339,26 @@ static void set_t2c_high(via_t *restrict via, uint8_t value) {
     }
 }
 
+// IFR control-line flags an ORA/ORB access clears for `port`.
+// CA1/CB1 always clear.  CA2/CB2 clear too, EXCEPT when the PCR selects one of
+// the two "independent interrupt input" modes (field 001 / 011): R6522 Figure
+// 29 note -- "if the CA2/CB2 control in the PCR is selected as 'independent'
+// interrupt input, then reading or writing the output register ORA/ORB will NOT
+// clear the flag bit.  Instead, the bit must be cleared by writing into the
+// IFR."  The output modes (field >= 100) clear normally; nothing drives an edge
+// onto a pin the VIA itself is driving.
+static uint8_t port_access_ifr_clear_mask(const via_t *restrict via, int port) {
+    uint8_t mask = port ? IFR_CB1 : IFR_CA1;
+    uint8_t mode = (via->pcr >> (port ? 5 : 1)) & 0x07;
+    bool independent = mode < 4 && (mode & 0x01); // fields 001 and 011
+    if (!independent)
+        mask |= port ? IFR_CB2 : IFR_CA2;
+    return mask;
+}
+
 // Read from a VIA port combining output and input based on data direction
 static uint8_t read_port(via_t *restrict via, int port) {
-    update_ifr(via, via->ifr & ~(port ? (IFR_CB1 | IFR_CB2) : (IFR_CA1 | IFR_CA2)));
+    update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, port));
 
     return (via->ports[port].output & via->ports[port].direction) |
            (via->ports[port].input & ~via->ports[port].direction);
@@ -374,7 +391,8 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case ORA_IRA:
-        // Register 1: Read Port A WITH handshake — clears CA1/CA2 interrupt flags.
+        // Register 1: Read Port A WITH handshake — clears the CA1 flag, and CA2
+        // unless the PCR selects an independent input (port_access_ifr_clear_mask).
         // The handshaked access pulses CA2/PSTRB, so a hooked device advances to
         // the next byte and drives it onto the input pins.
         if (via->porta_read)
@@ -482,7 +500,7 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
     case ORB_IRB:
         via->ports[PORT_B].output = value;
         via->output_cb(via->cb_context, 1, via->ports[PORT_B].output & via->ports[PORT_B].direction);
-        update_ifr(via, via->ifr & ~(IFR_CB1 | IFR_CB2));
+        update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, PORT_B));
         break;
 
     case DDRB:
@@ -589,13 +607,14 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
     }
 
     case ORA_IRA:
-        // Register 1: Write Port A WITH handshake — clears CA1/CA2 interrupt flags.
+        // Register 1: Write Port A WITH handshake — clears the CA1 flag, and CA2
+        // unless the PCR selects an independent input (port_access_ifr_clear_mask).
         // Handshaked access pulses CA2/PSTRB → a hooked device latches the byte.
         via->ports[PORT_A].output = value;
         via->output_cb(via->cb_context, 0, via->ports[PORT_A].output & via->ports[PORT_A].direction);
         if (via->porta_write)
             via->porta_write(via->porta_ctx, value, true);
-        update_ifr(via, via->ifr & ~(IFR_CA1 | IFR_CA2));
+        update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, PORT_A));
         break;
 
     case ORA:
@@ -966,9 +985,10 @@ void via_input_c(via_t *restrict via, int port, int c, bool value) {
         unsigned int old = via->ports[0].ctrl[1];
         via->ports[0].ctrl[1] = value;
         uint8_t mode = (via->pcr >> 1) & 0x07;
-        // Modes 0-3 are input; bit 2 selects positive edge
+        // Modes 0-3 are input; field bit 1 selects the positive edge (R6522
+        // Figure 11: 000 neg, 001 independent-neg, 010 pos, 011 independent-pos)
         if (mode < 4) {
-            bool pos_edge = mode & 0x04;
+            bool pos_edge = mode & 0x02;
             bool active = pos_edge ? (!old && value) : (old && !value);
             if (active)
                 update_ifr(via, via->ifr | IFR_CA2);
@@ -988,9 +1008,10 @@ void via_input_c(via_t *restrict via, int port, int c, bool value) {
         unsigned int old = via->ports[1].ctrl[1];
         via->ports[1].ctrl[1] = value;
         uint8_t mode = (via->pcr >> 5) & 0x07;
-        // Modes 0-3 are input; bit 2 selects positive edge
+        // Modes 0-3 are input; field bit 1 selects the positive edge (R6522
+        // Figure 11: 000 neg, 001 independent-neg, 010 pos, 011 independent-pos)
         if (mode < 4) {
-            bool pos_edge = mode & 0x04;
+            bool pos_edge = mode & 0x02;
             bool active = pos_edge ? (!old && value) : (old && !value);
             if (active)
                 update_ifr(via, via->ifr | IFR_CB2);
