@@ -748,8 +748,8 @@ void av_civic_delete(av_civic_t *cv) {
         return;
     display_detach_video_node(cv->video_node);
     cv->video_node = NULL;
-    if (cv->cfg && cv->cfg->scheduler)
-        remove_event(cv->cfg->scheduler, &civic_frame_event, cv);
+    if (cv->cfg)
+        scheduler_forget_source(cv->cfg->scheduler, cv);
     free(cv->compose);
     free(cv->vram);
     free(cv);

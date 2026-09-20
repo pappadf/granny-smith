@@ -539,8 +539,8 @@ void av_dsp_delete(av_dsp_t *d) {
         object_detach(d->object);
         object_delete(d->object);
     }
-    if (d->cfg && d->cfg->scheduler)
-        remove_event(d->cfg->scheduler, &av_dsp_burst_event, d);
+    if (d->cfg)
+        scheduler_forget_source(d->cfg->scheduler, d);
     free(d->core);
     free(d);
 }

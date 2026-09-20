@@ -752,8 +752,7 @@ void dafb_delete(dafb_t *dafb) {
         return;
     display_detach_video_node(dafb->video_node);
     dafb->video_node = NULL;
-    if (dafb->sched)
-        remove_event(dafb->sched, dafb_frame_event, dafb);
+    scheduler_forget_source(dafb->sched, dafb);
     free(dafb->vram);
     free(dafb);
 }

@@ -961,11 +961,9 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
 void av_cuda_delete(av_cuda_t *cuda) {
     if (!cuda)
         return;
-    if (cuda->sched) {
-        remove_event(cuda->sched, &cuda_tick_event, cuda);
-        remove_event(cuda->sched, &cuda_autopoll_event, cuda);
-        remove_event(cuda->sched, &cuda_push_event, cuda);
-    }
+    // Thirteen scheduling sites, three callbacks removed here: one call
+    // covers whatever is actually queued.
+    scheduler_forget_source(cuda->sched, cuda);
     free(cuda);
 }
 

@@ -1231,8 +1231,8 @@ void av_singer_delete(av_singer_t *s) {
         // are correct as they are.
         sound_object_delete(s->object);
     }
-    if (s->cfg && s->cfg->scheduler)
-        remove_event(s->cfg->scheduler, &singer_frame_event, s);
+    if (s->cfg)
+        scheduler_forget_source(s->cfg->scheduler, s);
     free(s->ain_cap);
     free(s->wav);
     free(s->stage);

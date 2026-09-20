@@ -505,6 +505,7 @@ lisa_profile_t *lisa_profile_init(struct scheduler *scheduler, lisa_profile_bsy_
 void lisa_profile_delete(lisa_profile_t *pf) {
     if (!pf)
         return;
+    scheduler_forget_source(pf->sched, pf);
     lisa_profile_detach(pf);
     free(pf);
 }
