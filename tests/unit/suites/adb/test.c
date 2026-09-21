@@ -311,6 +311,113 @@ TEST(test_a_quiet_bus_returns_false) {
     adb_delete(adb);
 }
 
+// === Register 3 ============================================================
+//
+// Guide 2e Table 8-15 (single-file.md:7726-7739): bit 15 reserved 0, bit 14
+// "exceptional event, device specific; always 1 if not used", bit 13
+// "Service Request enable; 1 = enabled", bit 12 reserved 0, bits 11-8 the
+// address, bits 7-0 the handler ID.  The model answered $0X -- bits 14 and
+// 13 both clear, which reads as "an exceptional event is in progress and I
+// cannot service-request".  The $6X it answers now is DERIVED from that
+// table, not quoted: the Guide has no register-3 content table.
+
+// Talk R3 through the same path a transport uses.  Talk is $C | register,
+// so Talk R3 is $F -- and Guide 2e :7603 is why every device answers it:
+// "A device times out if it has no data to send; however, a device must
+// respond to a Talk Register 3 command."
+static void talk_r3(adb_t *adb, uint8_t addr, uint8_t *out) {
+    int n = 0;
+    ASSERT_TRUE(adb_iop_transact(adb, (uint8_t)((addr << 4) | 0x0F), NULL, 0, out, &n));
+    ASSERT_EQ_INT(2, n);
+}
+
+TEST(test_register_three_reports_its_upper_bits) {
+    adb_t *adb = setup();
+    uint8_t r3[8];
+
+    talk_r3(adb, 2, r3);
+    ASSERT_EQ_INT(0x62, r3[0]); // no exceptional event, SRQ enabled, address 2
+
+    talk_r3(adb, 3, r3);
+    ASSERT_EQ_INT(0x63, r3[0]);
+
+    // A $FE move takes the address with it and leaves the upper bits alone
+    // -- including bit 13, even though the value written here has it clear.
+    // Nothing ties bit 13 to the $FE form, and reading it from there would
+    // turn a device's Service Request off during an ordinary enumeration.
+    move_device(adb, 2, 9);
+    talk_r3(adb, 9, r3);
+    ASSERT_EQ_INT(0x69, r3[0]);
+
+    adb_delete(adb);
+}
+
+// :7810-7812: "To disable a device's ability to send a Service Request
+// signal, set bit 13 in register 3 to 0 by using a Listen Register 3 command
+// with a Device Handler ID of $00... To enable the Service Request ability,
+// set this bit to 1."
+TEST(test_listen_r3_carries_the_srq_bit) {
+    adb_t *adb = setup();
+    uint8_t r3[8];
+    uint8_t out[8];
+    int n = 0;
+
+    // Listen R3, handler $00, bit 13 clear: same address, SRQ off.  This is
+    // the form the Guide names, and the only one that touches the bit.
+    uint8_t off[2] = {0x02, 0x00}; // bits 13/14 clear, address 2
+    adb_iop_transact(adb, (uint8_t)((2 << 4) | 0x0B), off, 2, out, &n);
+    talk_r3(adb, 2, r3);
+    ASSERT_EQ_INT(0x42, r3[0]); // bit 13 gone, bit 14 still set
+
+    // ...and back on.
+    uint8_t on[2] = {0x22, 0x00};
+    adb_iop_transact(adb, (uint8_t)((2 << 4) | 0x0B), on, 2, out, &n);
+    talk_r3(adb, 2, r3);
+    ASSERT_EQ_INT(0x62, r3[0]);
+
+    // ...and the $FE move does not touch it, in either direction.
+    uint8_t off2[2] = {0x02, 0x00};
+    adb_iop_transact(adb, (uint8_t)((2 << 4) | 0x0B), off2, 2, out, &n);
+    move_device(adb, 2, 2); // $FE, bit 13 clear in the written value
+    talk_r3(adb, 2, r3);
+    ASSERT_EQ_INT(0x42, r3[0]); // still off, not re-enabled by the move
+
+    adb_delete(adb);
+}
+
+// The bit is real state, so it changes behaviour: a device told not to
+// service-request cannot interrupt the auto-poll to announce itself.  It is
+// still polled and still answers -- it just waits its turn.
+TEST(test_a_device_with_srq_off_does_not_interrupt_the_poll) {
+    adb_t *adb = setup();
+    uint8_t cmd = 0;
+    uint8_t out[8];
+    int n = 0;
+
+    // Keyboard: SRQ off, address unchanged.
+    uint8_t off[2] = {0x02, 0x00};
+    adb_iop_transact(adb, (uint8_t)((2 << 4) | 0x0B), off, 2, out, &n);
+
+    adb_mouse_event(adb, false, 4, 0);
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(3), cmd); // mouse is the MRU device now
+
+    // Still dragging, and now typing.  With SRQ enabled the keyboard would
+    // take this poll (see test_another_device_with_data_interrupts_the_
+    // re_poll); with it off, the mouse keeps the bus.
+    adb_mouse_event(adb, false, 4, 0);
+    adb_keyboard_event(adb, key_down, 0x00);
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(3), cmd);
+
+    // The keystroke is not lost: once the mouse goes quiet the scan reaches
+    // the keyboard on its own.
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(2), cmd);
+
+    adb_delete(adb);
+}
+
 int main(void) {
     RUN(test_rtc_bit_banging_is_not_an_adb_transition);
     RUN(test_an_st_change_still_lands_under_rtc_traffic);
@@ -321,6 +428,9 @@ int main(void) {
     RUN(test_the_enable_mask_is_honoured);
     RUN(test_the_fallback_ignores_the_mask);
     RUN(test_a_quiet_bus_returns_false);
+    RUN(test_register_three_reports_its_upper_bits);
+    RUN(test_listen_r3_carries_the_srq_bit);
+    RUN(test_a_device_with_srq_off_does_not_interrupt_the_poll);
     printf("[PASS] All ADB tests passed\n");
     return 0;
 }

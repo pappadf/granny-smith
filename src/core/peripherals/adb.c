@@ -119,6 +119,14 @@ LOG_USE_CATEGORY_NAME("adb");
 typedef struct {
     uint8_t address;
     uint8_t handler;
+    // Register 3 bit 13, Service Request enable.  Real per-device state, not
+    // a constant: Guide 2e :7810-7812 -- "To disable a device's ability to
+    // send a Service Request signal, set bit 13 in register 3 to 0 by using a
+    // Listen Register 3 command with a Device Handler ID of $00... To enable
+    // the Service Request ability, set this bit to 1."  Powers up set
+    // (Table 8-15 marks bit 14 "always 1 if not used" and bit 13 the SRQ
+    // enable; a device that never had it turned off can service-request).
+    bool srq_enabled;
 } adb_device_t;
 
 // Full ADB transceiver state; plain data placed first so the checkpoint
@@ -300,6 +308,14 @@ static bool has_pending_data(const adb_t *adb) {
     return !kbd_queue_empty(adb) || adb->mouse_data_pending || adb->mouse_button;
 }
 
+// Returns true if the device at `addr` both has data AND is allowed to say so
+// unasked -- Register 3 bit 13, the Service Request enable.  This is what the
+// bit MEANS: once it is real per-device state (F-04), a device with it clear
+// must stop triggering the SRQ path, or the state is cosmetic readback and
+// the host's SetSRQ has no effect.  A device with SRQ off is still polled and
+// still answers; it simply cannot interrupt to announce itself.
+static bool device_can_service_request(const adb_t *adb, uint8_t addr);
+
 // Returns true if the device at the given ADB address has unreported data.
 // On real hardware, a device with no pending data simply doesn't respond to
 // Talk R0 — the transceiver sees a timeout and stays quiet.
@@ -308,6 +324,24 @@ static bool device_has_pending_data(const adb_t *adb, uint8_t addr) {
         return !kbd_queue_empty(adb);
     if (addr == adb->mouse.address)
         return adb->mouse_data_pending || adb->mouse_button;
+    return false;
+}
+
+static bool device_can_service_request(const adb_t *adb, uint8_t addr) {
+    if (!device_has_pending_data(adb, addr))
+        return false;
+    if (addr == adb->kbd.address)
+        return adb->kbd.srq_enabled;
+    if (addr == adb->mouse.address)
+        return adb->mouse.srq_enabled;
+    return false;
+}
+
+// True if any device OTHER than `except` is service-requesting.
+static bool other_device_service_requesting(const adb_t *adb, uint8_t except) {
+    for (uint8_t addr = 0; addr < 16; addr++)
+        if (addr != except && device_can_service_request(adb, addr))
+            return true;
     return false;
 }
 
@@ -399,15 +433,15 @@ static int autopoll_scan(adb_t *adb, uint16_t mask, uint8_t first, uint8_t *cmd_
     return -1;
 }
 
-// True if any address other than `except` has something to say under `mask`.
+// True if any address other than `except` is service-requesting under `mask`.
 // This is the model's stand-in for the ADB bus's Service Request line, which
-// nothing here drives: a device with data is a device that would be pulling
-// SRQ low.
+// nothing here drives: a device with data AND Register 3 bit 13 set is a
+// device that would be pulling SRQ low.
 static bool autopoll_others_pending(const adb_t *adb, uint16_t mask, uint8_t except) {
     for (uint8_t addr = 0; addr < 16; addr++) {
         if (addr == except || !autopoll_addr_enabled(mask, addr))
             continue;
-        if (device_has_pending_data(adb, addr))
+        if (device_can_service_request(adb, addr))
             return true;
     }
     return false;
@@ -481,8 +515,10 @@ static void adb_reset(adb_t *adb) {
 
     adb->kbd.address = KBD_DEFAULT_ADDR;
     adb->kbd.handler = KBD_HANDLER_ID;
+    adb->kbd.srq_enabled = true;
     adb->mouse.address = MOUSE_DEFAULT_ADDR;
     adb->mouse.handler = MOUSE_HANDLER_ID;
+    adb->mouse.srq_enabled = true;
 
     kbd_queue_reset(adb);
 
@@ -594,10 +630,25 @@ static void prepare_mouse_reply(adb_t *adb) {
         adb->mouse_data_pending = false;
 }
 
-// Populates reply_buf with Register 3 data (address + handler ID) for a device
+// Populates reply_buf with Register 3 (Guide 2e Table 8-15, :7726-7739):
+//
+//   15    reserved, must be 0
+//   14    exceptional event, device specific; always 1 if not used
+//   13    Service Request enable; 1 = enabled
+//   12    reserved, must be 0
+//   11-8  device address
+//   7-0   device handler ID
+//
+// So an ordinary idle device answers $6X, and this used to answer $0X --
+// bits 14 and 13 both clear, i.e. "an exceptional event is in progress and
+// I cannot service-request".  The specific value $6X is DERIVED from the
+// table rather than quoted: the Guide has register-0 and register-2 content
+// tables per device (8-4, 8-7, 8-8, 8-10, 8-11) but no register-3 one.
 static void prepare_reg3_reply(adb_t *adb, const adb_device_t *dev) {
-    // Byte 0: device address in bits 3-0; byte 1: handler ID
-    adb->reply_buf[0] = dev->address & 0x0F;
+    uint8_t hi = 0x40; // bit 14: no exceptional event
+    if (dev->srq_enabled)
+        hi |= 0x20; // bit 13
+    adb->reply_buf[0] = (uint8_t)(hi | (dev->address & 0x0F));
     adb->reply_buf[1] = dev->handler;
     adb->reply_len = 2;
 }
@@ -728,8 +779,28 @@ static void apply_listen_data(adb_t *adb) {
             uint8_t cmd_byte = adb->listen_buf[1];
             switch (cmd_byte) {
             case 0x00:
+                // The $00 form is the one the Guide ties bit 13 to
+                // (:7810-7812): "To disable a device's ability to send a
+                // Service Request signal, set bit 13 in register 3 to 0 by
+                // using a Listen Register 3 command with a Device Handler ID
+                // of $00... To enable the Service Request ability, set this
+                // bit to 1."  So this form moves the address AND sets SRQ.
+                LOG(2, "listen R3 addr=%d: move to addr=%d, SRQ %s (handler preserved)", adb->listen_addr, new_addr,
+                    (adb->listen_buf[0] & 0x20) ? "on" : "off");
+                dev->address = new_addr;
+                dev->srq_enabled = (adb->listen_buf[0] & 0x20) != 0;
+                break;
             case 0xFE:
-                LOG(2, "listen R3 addr=%d: move to addr=%d (handler preserved)", adb->listen_addr, new_addr);
+                // The collision-safe move.  Bit 13 is DELIBERATELY not taken
+                // from this form.  Nothing in the Guide ties bit 13 to $FE --
+                // :7810-7812 names $00 and only $00 -- and the two readings
+                // are not symmetric in cost: if a host moves a device with
+                // $FE and a bare address in bits 11-8, taking bit 13 from it
+                // would silently switch that device's Service Request off and
+                // its input would stop arriving unasked.  Leaving SRQ alone
+                // here costs nothing if the guess is wrong, because the host
+                // has the $00 form when it means to change the bit.
+                LOG(2, "listen R3 addr=%d: move to addr=%d (handler and SRQ preserved)", adb->listen_addr, new_addr);
                 dev->address = new_addr;
                 break;
             case 0xFD:
@@ -921,17 +992,24 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
     if (adb->state != ADB_STATE_IDLE)
         return;
 
-    if (!has_pending_data(adb)) {
-        // No device has data: the real transceiver gets no response and stays
-        // quiet.  Don't fire IFR_SR — the ROM remains waiting.
-        LOG(3, "autopoll: no pending data, rescheduling");
-        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
-        return;
-    }
-
     // Always repeat the last Talk R0 target, matching real transceiver behaviour.
     uint8_t poll_addr = adb->last_poll_addr;
     bool polled_device_has_data = device_has_pending_data(adb, poll_addr);
+
+    // There is something to do only if the polled device answers, or if some
+    // other device is SERVICE-REQUESTING.  The second half is where Register
+    // 3 bit 13 bites (F-04): a device the host has told to stop
+    // service-requesting has data nobody has asked for, and the transceiver
+    // stays quiet until that device is polled again.  Before bit 13 was real
+    // state the test here was has_pending_data(), which could not tell the
+    // difference.
+    if (!polled_device_has_data && !other_device_service_requesting(adb, poll_addr)) {
+        // The real transceiver gets no response and stays quiet.  Don't fire
+        // IFR_SR — the ROM remains waiting.
+        LOG(3, "autopoll: nothing to report, rescheduling");
+        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
+        return;
+    }
 
     if (polled_device_has_data) {
         // Last-polled device has data: prepare reply and fire IFR_SR with
