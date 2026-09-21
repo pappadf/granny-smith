@@ -139,7 +139,6 @@ struct egret {
 
     bool autopoll_enabled; // ADB auto-poll active
     bool onesec_enabled; // 1-second tick active
-    uint8_t autopoll_phase; // rotates the polled ADB address each tick
 
     // A response whose ATTENTION byte the host never takes is abandoned
     // after EGRET_SEND_ABANDON_NS.  Named as on the Cuda side, which runs
@@ -532,28 +531,20 @@ static void egret_autopoll_event(void *source, uint64_t data) {
     (void)data;
     egret_t *eg = (egret_t *)source;
     if (eg->autopoll_enabled && eg->adb && egret_try_unsolicited(eg)) {
-        // Ask the model where the devices are NOW, never assume the power-on
-        // addresses (adb.h's contract).  An OS's init may re-address them via
-        // Listen R3 and leave them there — classic Mac OS moves them back,
-        // Copland does not — and a transport that polls {3, 2} regardless
-        // then delivers nothing at all: no keyboard, no mouse.  The identical
-        // bug was found and fixed on the Cuda side (see
-        // projects/copland/notes/adb-input.md) and Egret was never swept.
-        const uint8_t poll_addr[2] = {adb_mouse_address(eg->adb), adb_keyboard_address(eg->adb)};
-        for (int k = 0; k < 2; k++) {
-            uint8_t addr = poll_addr[(eg->autopoll_phase + k) & 1];
-            uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
-            uint8_t out[8];
-            int out_len = 0;
-            if (adb_iop_transact(eg->adb, cmd, NULL, 0, out, &out_len) && out_len > 0) {
-                int n = egret_put_header(eg, PKT_ADB, EG_FLAG_AUTOPOLL, cmd);
-                for (int i = 0; i < out_len && n < EG_TX_MAX; i++)
-                    eg->tx_buf[n++] = out[i];
-                eg->tx_len = n;
-                egret_begin_send(eg);
-                eg->autopoll_phase ^= 1; // give the other device priority next time
-                break;
-            }
+        // The device-selection rules live in adb.c, shared with Cuda and the
+        // SWIM IOP (R-2).  Egret implements neither WrDevList nor RdDevList,
+        // so it has no host-supplied enable bitmap: 0 means every address is
+        // eligible, and the scan finds the devices wherever Listen R3 has
+        // most recently moved them.
+        uint8_t cmd;
+        uint8_t out[8];
+        int out_len = 0;
+        if (adb_autopoll_next(eg->adb, 0, &cmd, out, &out_len)) {
+            int n = egret_put_header(eg, PKT_ADB, EG_FLAG_AUTOPOLL, cmd);
+            for (int i = 0; i < out_len && n < EG_TX_MAX; i++)
+                eg->tx_buf[n++] = out[i];
+            eg->tx_len = n;
+            egret_begin_send(eg);
         }
     }
     scheduler_new_cpu_event(eg->sched, &egret_autopoll_event, eg, 0, 0, (uint64_t)EGRET_AUTOPOLL_NS);

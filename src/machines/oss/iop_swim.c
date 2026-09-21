@@ -227,12 +227,14 @@ LOG_USE_CATEGORY_NAME("iop_swim");
 #define SWIM_MODEL_DRIVE_PRESENT   (SWIM_MODEL_BASE + 4) // bitmap: bit N = drive N has disk last seen
 #define SWIM_MODEL_DRIVE_ANNOUNCED (SWIM_MODEL_BASE + 5) // bitmap: bit N = DiskInserted has been delivered for drive N
 #define SWIM_MODEL_ADB_DATACOUNT   (SWIM_MODEL_BASE + 6) // bytes of saved Listen data (0..8)
-#define SWIM_MODEL_AUTOPOLL_ADDR   (SWIM_MODEL_BASE + 7) // next ADB address to probe in autopoll cycle (1..15)
-#define SWIM_MODEL_HFS_TAG_ADDR    (SWIM_MODEL_BASE + 8) // long: host RAM addr for MFS tags
-#define SWIM_MODEL_ADB_DATA        (SWIM_MODEL_BASE + 12) // 8 bytes: saved Listen-side ADBData
-#define SWIM_MODEL_DEVMAP          (SWIM_MODEL_BASE + 20) // 2 bytes: SetPollEnables DevMap bitmap
-#define SWIM_MODEL_ADB_AUTOPOLL    (SWIM_MODEL_BASE + 22) // 1 if autonomous Auto/SRQ polling is enabled
-#define SWIM_MODEL_ADB_HOSTGRACE   (SWIM_MODEL_BASE + 23) // ticks the autonomous poll defers after host-driven ADB
+// (SWIM_MODEL_BASE + 7) was the autopoll cursor.  The MRU address lives in
+// adb_t now, where the shared engine keeps it; the byte stays reserved so the
+// offsets below do not move.
+#define SWIM_MODEL_HFS_TAG_ADDR  (SWIM_MODEL_BASE + 8) // long: host RAM addr for MFS tags
+#define SWIM_MODEL_ADB_DATA      (SWIM_MODEL_BASE + 12) // 8 bytes: saved Listen-side ADBData
+#define SWIM_MODEL_DEVMAP        (SWIM_MODEL_BASE + 20) // 2 bytes: SetPollEnables DevMap bitmap
+#define SWIM_MODEL_ADB_AUTOPOLL  (SWIM_MODEL_BASE + 22) // 1 if autonomous Auto/SRQ polling is enabled
+#define SWIM_MODEL_ADB_HOSTGRACE (SWIM_MODEL_BASE + 23) // ticks the autonomous poll defers after host-driven ADB
 
 // Number of floppy drives we model (must match floppy.c NUM_DRIVES).
 #define SWIM_NUM_DRIVES 2
@@ -457,7 +459,6 @@ static void iop_swim_on_run_start(iop_t *iop) {
     iop->ram[SWIM_MODEL_POLL_ENABLED] = 0;
     iop->ram[SWIM_MODEL_DRIVE_PRESENT] = 0;
     iop->ram[SWIM_MODEL_DRIVE_ANNOUNCED] = 0;
-    iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = 1;
     iop->ram[SWIM_MODEL_ADB_AUTOPOLL] = 0;
     iop->ram[SWIM_MODEL_ADB_HOSTGRACE] = 0;
     iop->ram[SWIM_MODEL_DEVMAP + 0] = 0;
@@ -1189,36 +1190,22 @@ static void swim_adb_response(void *source, uint64_t data) {
     uint8_t reply_cmd = cmd;
 
     if (is_autopoll) {
-        // Cycle through enabled devices, looking for one with pending data.
-        // Talk-R0 each in turn; first non-NoReply wins.  Honors the DevMap
-        // bitmap when the OS has installed one; otherwise polls every
-        // address (1..15) on the off-chance that the OS hasn't called
-        // SetPollEnables yet.
+        // Device selection is adb_autopoll_next's, shared with Egret and
+        // Cuda (R-2), and it implements the ERS's rules: MRU order over
+        // addresses 0..15, with the fallback that polls everything when SRQ
+        // persists.  The walk this replaced was `((start - 1 + step) % 15) + 1`
+        // -- numeric, and over 1..15, so ADDRESS 0 WAS NEVER POLLED at all,
+        // though the DevMap test three lines below it was already bit-per-
+        // address over 0..15 (N-05).  The MRU cursor lives in adb_t now, so
+        // the cursor byte in IOP model RAM is retired.
         uint16_t devmap = ((uint16_t)iop->ram[SWIM_MODEL_DEVMAP + 0] << 8) | iop->ram[SWIM_MODEL_DEVMAP + 1];
-        uint8_t start = iop->ram[SWIM_MODEL_AUTOPOLL_ADDR];
-        if (start < 1 || start > 15)
-            start = 1;
-        for (int step = 0; step < 15; step++) {
-            uint8_t addr = (uint8_t)(((start - 1 + step) % 15) + 1);
-            if (devmap != 0 && (devmap & (1u << addr)) == 0)
-                continue;
-            uint8_t talk_r0 = (uint8_t)((addr << 4) | 0x0C); // Talk-Reg-0
-            int n = 0;
-            uint8_t buf[8] = {0};
-            if (global_emulator && global_emulator->adb &&
-                adb_iop_transact(global_emulator->adb, talk_r0, NULL, 0, buf, &n) && n > 0) {
-                memcpy(out_data, buf, (size_t)n);
-                out_data_len = n;
-                reply_cmd = talk_r0;
-                has_reply = true;
-                iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = (uint8_t)((addr % 15) + 1);
-                break;
-            }
-        }
-        if (!has_reply) {
-            // Nothing pending — keep advancing the round-robin pointer
-            // so the next autopoll cycle starts at the next address.
-            iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = (uint8_t)(((start) % 15) + 1);
+        uint8_t talk_r0 = 0;
+        int n = 0;
+        if (global_emulator && global_emulator->adb &&
+            adb_autopoll_next(global_emulator->adb, devmap, &talk_r0, out_data, &n)) {
+            out_data_len = n;
+            reply_cmd = talk_r0;
+            has_reply = true;
         }
     } else {
         // Explicit cmd path: dispatch the host's ADBCmd directly.
@@ -1303,40 +1290,27 @@ static void swim_adb_autopoll_tick(void *source, uint64_t data) {
     if (!global_emulator || !global_emulator->adb)
         return;
 
-    // Talk-Reg-0 each enabled device in round-robin (MRU) order; the first
-    // with pending data wins.  Honour the DevMap when the host has installed
-    // one; otherwise probe every address.
+    // Same engine as the request-driven path above, and the same ERS rules:
+    // this loop was a line-for-line duplicate of it, down to the bug.
     uint16_t devmap = ((uint16_t)iop->ram[SWIM_MODEL_DEVMAP + 0] << 8) | iop->ram[SWIM_MODEL_DEVMAP + 1];
-    uint8_t start = iop->ram[SWIM_MODEL_AUTOPOLL_ADDR];
-    if (start < 1 || start > 15)
-        start = 1;
-    for (int step = 0; step < 15; step++) {
-        uint8_t addr = (uint8_t)(((start - 1 + step) % 15) + 1);
-        if (devmap != 0 && (devmap & (1u << addr)) == 0)
-            continue;
-        uint8_t talk_r0 = (uint8_t)((addr << 4) | 0x0C); // Talk-Reg-0
-        uint8_t buf[8] = {0};
-        int n = 0;
-        if (adb_iop_transact(global_emulator->adb, talk_r0, NULL, 0, buf, &n) && n > 0) {
-            // Push an unsolicited autopoll-data message: ExplicitCmd cleared,
-            // PollEnable set, Timeout cleared (data received).  ADBCmd carries
-            // the Talk-R0 the firmware issued so the host learns which device
-            // responded.
-            uint32_t pl = IOPMsgPayload(IOPRcvMsgBase, ADB_SLOT);
-            iop->ram[pl + ADBMSG_FLAGS] = ADBMSG_FLAG_POLL_EN;
-            iop->ram[pl + ADBMSG_DATACOUNT] = (uint8_t)n;
-            iop->ram[pl + ADBMSG_ADBCMD] = talk_r0;
-            for (int i = 0; i < n; i++)
-                iop->ram[pl + ADBMSG_ADBDATA + i] = buf[i];
-            iop->ram[IOPRcvMsgBase + IOPMsgState(ADB_SLOT)] = NewMsgSent;
-            iop_raise_int1(iop);
-            iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = (uint8_t)((addr % 15) + 1);
-            LOG(3, "SWIM IOP: autopoll push cmd=$%02x count=%d (autonomous)", talk_r0, n);
-            return;
-        }
-    }
-    // Nothing pending this cycle — advance the round-robin pointer.
-    iop->ram[SWIM_MODEL_AUTOPOLL_ADDR] = (uint8_t)((start % 15) + 1);
+    uint8_t talk_r0 = 0;
+    uint8_t buf[8] = {0};
+    int n = 0;
+    if (!adb_autopoll_next(global_emulator->adb, devmap, &talk_r0, buf, &n))
+        return;
+
+    // Push an unsolicited autopoll-data message: ExplicitCmd cleared,
+    // PollEnable set, Timeout cleared (data received).  ADBCmd carries the
+    // Talk-R0 the firmware issued so the host learns which device responded.
+    uint32_t pl = IOPMsgPayload(IOPRcvMsgBase, ADB_SLOT);
+    iop->ram[pl + ADBMSG_FLAGS] = ADBMSG_FLAG_POLL_EN;
+    iop->ram[pl + ADBMSG_DATACOUNT] = (uint8_t)n;
+    iop->ram[pl + ADBMSG_ADBCMD] = talk_r0;
+    for (int i = 0; i < n; i++)
+        iop->ram[pl + ADBMSG_ADBDATA + i] = buf[i];
+    iop->ram[IOPRcvMsgBase + IOPMsgState(ADB_SLOT)] = NewMsgSent;
+    iop_raise_int1(iop);
+    LOG(3, "SWIM IOP: autopoll push cmd=$%02x count=%d (autonomous)", talk_r0, n);
 }
 
 // Enable autonomous Auto/SRQ polling and (re)arm the poll timer.  Idempotent.

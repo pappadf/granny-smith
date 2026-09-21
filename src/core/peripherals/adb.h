@@ -102,4 +102,28 @@ void adb_mouse_pending(const adb_t *adb, int *dx, int *dy);
 bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_data_len, uint8_t *out_data,
                       int *out_data_len);
 
+// Bit per ADB address (bit N = address N) of the devices the model actually
+// has, at wherever Listen R3 has most recently moved them.  This is the shape
+// every transport's device bitmap takes: the IOP ADB Driver ERS's SetPollEnables
+// DevMap ("The most significant bit corresponds to device address 15, and the
+// least significant bit corresponds to device address 0"), and Cuda's
+// RdDevList, which built the same value by hand.
+uint16_t adb_device_mask(const adb_t *adb);
+
+// One autonomous auto-poll step, shared by every transport that polls the bus
+// on its own: Egret, Cuda and the IIfx's SWIM IOP, which between them used to
+// carry four copies of this loop that disagreed four ways.  (The VIA
+// transceiver in this file is deliberately NOT one of them -- it repeats the
+// last active device and leaves the SRQ scan to the 68k ADB Manager, which is
+// what Guide 2e :7798-7808 describes and what the hardware does.)
+//
+// `enable_mask` is the host's polling-enable bitmap in adb_device_mask's
+// layout; 0 means the host has installed none, so every address is eligible.
+// On a reply the answering address becomes the most-recently-used one.
+//
+// Returns true and fills *cmd_out (the Talk R0 that was issued, so the
+// transport can tell the host which device answered), out_data and *len_out.
+// out_data must hold 8 bytes, the same contract as adb_iop_transact's.
+bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out);
+
 #endif // ADB_H

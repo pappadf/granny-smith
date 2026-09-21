@@ -190,6 +190,16 @@ uint8_t adb_mouse_address(adb_t *adb) {
     (void)adb;
     return 3;
 }
+// The shared auto-poll engine (adb.c, its own suite).  This suite drives no
+// ADB traffic; a quiet bus is the right answer.
+uint16_t adb_device_mask(const adb_t *adb) {
+    (void)adb;
+    return (1 << 2) | (1 << 3);
+}
+bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
+    (void)adb, (void)enable_mask, (void)cmd_out, (void)out_data, (void)len_out;
+    return false;
+}
 
 // --- object model: registration is skipped when object_new returns NULL ---
 struct object *machine_object(void) {

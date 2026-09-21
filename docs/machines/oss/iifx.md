@@ -1193,6 +1193,20 @@ rules below are what it runs on *each* autonomous cycle:
    skipping and polls whatever it lands on. The first non-disabled
    address found becomes the new `AutoPollAddr` and is Talk-R0'd.
 3. Issues `Talk-Reg-0` (`(addr << 4) | $0C`) to that address.
+
+**What the model implements**, in `adb_autopoll_next` (`adb.c`), shared
+with Egret and Cuda so that all three transports select devices the same
+way: the three ERS clauses above, with the per-address chain collapsed to
+"start at `AutoPollAddr` and walk the sixteen addresses in order". The
+chain is permuted only by which device replied, and with **no SRQ line in
+the model** the intermediate hops over silent addresses are not observable
+by any guest — what *is* observable is who gets re-polled and who wins
+when two devices have data at once, and that is decided exactly as the
+clauses say. "Another device asserts SRQ" maps to "another enabled device
+has data", which is what keeps a mouse in continuous motion from starving
+the keyboard. The MRU address itself lives in `adb_t` and is
+checkpointed there.
+
 4. Returns the response in `ADBData` and sets the reply's `ADBCmd`
    to the actual Talk command that was issued, **not** to the stale
    value from the request.

@@ -179,6 +179,13 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     *out_len = 2;
     return true;
 }
+// Device selection is adb.c's business and has its own suite; here it only
+// has to answer, so that the autopoll path produces a packet.
+bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
+    (void)enable_mask;
+    *cmd_out = 0x2C; // Talk R0, address 2
+    return adb_iop_transact(adb, *cmd_out, NULL, 0, out_data, len_out) && *len_out > 0;
+}
 
 // The VIA side: the shift register and the PB3 (xcvrSes) level Egret drives.
 static uint8_t s_sr[64];

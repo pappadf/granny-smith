@@ -22,9 +22,19 @@
 // There was no ADB unit suite at all before this, which is why a filter
 // could be copied four times and explained once.
 //
-// The observable: a CMD transition reads the VIA shift register exactly
-// once (adb.c reads SR directly there rather than waiting for the VIA's
-// shift-complete callback, same BUG-004).  A filtered write reads nothing.
+// The observable for the filter: a CMD transition reads the VIA shift
+// register exactly once (adb.c reads SR directly there rather than waiting
+// for the VIA's shift-complete callback, same BUG-004).  A filtered write
+// reads nothing.
+//
+// The suite also covers adb_autopoll_next (unit D3, from R-2 / N-05), the
+// one auto-poll engine that Egret, Cuda and the SWIM IOP now share.  Four
+// copies of that loop disagreed four ways; the IIfx's two walked addresses
+// 1..15 numerically, so ADDRESS 0 WAS NEVER POLLED, while the DevMap test
+// three lines away was already bit-per-address over 0..15.  The IOP ADB
+// Driver ERS (library/serial/apple-iop-adb-driver-ers/markdown.md:62,70)
+// defines the mask over 0..15 and the order as most-recently-used, with a
+// fallback that polls every address ignoring the mask while SRQ persists.
 
 #include "adb.h"
 
@@ -177,10 +187,140 @@ TEST(test_the_shadow_starts_idle) {
     adb_delete(adb);
 }
 
+// === Auto-poll ==============================================================
+
+// Talk register 0 to `addr`, the command every auto-poll issues.
+#define TALK_R0(addr) ((uint8_t)(((addr) << 4) | 0x0C))
+
+// Move a device with a Listen R3.  Handler $FE means "change address,
+// preserve the handler" -- the form an OS's enumeration uses.
+static void move_device(adb_t *adb, uint8_t from, uint8_t to) {
+    uint8_t data[2] = {to, 0xFE};
+    uint8_t out[8];
+    int n = 0;
+    adb_iop_transact(adb, (uint8_t)((from << 4) | 0x0B), data, 2, out, &n);
+}
+
+static bool poll(adb_t *adb, uint16_t mask, uint8_t *cmd) {
+    uint8_t out[8];
+    int n = 0;
+    return adb_autopoll_next(adb, mask, cmd, out, &n);
+}
+
+// Address 0 is a legal ADB address and the IIfx's walk could never reach it.
+TEST(test_address_zero_is_polled) {
+    adb_t *adb = setup();
+
+    move_device(adb, 2, 0); // keyboard from its power-on address to 0
+    ASSERT_EQ_INT(0, adb_keyboard_address(adb));
+    ASSERT_EQ_INT((1 << 0) | (1 << 3), adb_device_mask(adb));
+
+    adb_keyboard_event(adb, key_down, 0x00);
+
+    uint8_t cmd = 0;
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(0), cmd);
+
+    adb_delete(adb);
+}
+
+// ERS clause 1: "poll the most recently used device ... until it receives
+// data".  A mouse in continuous motion is re-polled, not round-robined
+// past.
+TEST(test_the_most_recently_used_device_is_polled_again) {
+    adb_t *adb = setup();
+    uint8_t cmd = 0;
+
+    adb_mouse_event(adb, false, 4, 0);
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(3), cmd);
+
+    adb_mouse_event(adb, false, 4, 0);
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(3), cmd);
+
+    adb_delete(adb);
+}
+
+// ERS clause 2: "or until another device asserts Service Request".  There
+// is no SRQ line in this model, so a device with data stands in for one
+// pulling SRQ low -- and honouring the clause is what keeps a mouse in
+// continuous motion from starving the keyboard, which is exactly what
+// "re-poll the MRU device" alone would do.
+TEST(test_another_device_with_data_interrupts_the_re_poll) {
+    adb_t *adb = setup();
+    uint8_t cmd = 0;
+
+    adb_mouse_event(adb, false, 4, 0);
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(3), cmd);
+
+    // Still dragging, and now typing.
+    adb_mouse_event(adb, false, 4, 0);
+    adb_keyboard_event(adb, key_down, 0x00);
+
+    ASSERT_TRUE(poll(adb, 0, &cmd));
+    ASSERT_EQ_INT(TALK_R0(2), cmd); // the keyboard, not the mouse again
+
+    adb_delete(adb);
+}
+
+// The enable mask excludes an address, so the first scan skips it...
+TEST(test_the_enable_mask_is_honoured) {
+    adb_t *adb = setup();
+    uint8_t cmd = 0;
+
+    // Both have data.  The scan reaches the keyboard at 2 before the mouse
+    // at 3, so with the mask ignored the keyboard would win -- which is
+    // what makes the MOUSE the discriminating choice here.
+    adb_mouse_event(adb, false, 4, 0);
+    adb_keyboard_event(adb, key_down, 0x00);
+
+    ASSERT_TRUE(poll(adb, 1 << 3, &cmd));
+    ASSERT_EQ_INT(TALK_R0(3), cmd);
+
+    adb_delete(adb);
+}
+
+// ...and ERS clause 3: "If after polling all of the enabled devices, SRQ is
+// active, and no data was received from any of the devices, SRQ polling
+// will continue, polling ALL device addresses, ignoring the enable mask."
+TEST(test_the_fallback_ignores_the_mask) {
+    adb_t *adb = setup();
+    uint8_t cmd = 0;
+
+    // Only the mouse is moving, and only the keyboard is enabled.  No
+    // enabled device answers, but the bus is not quiet -- so the mask is
+    // dropped and the mouse is polled.
+    adb_mouse_event(adb, false, 4, 0);
+
+    ASSERT_TRUE(poll(adb, 1 << 2, &cmd));
+    ASSERT_EQ_INT(TALK_R0(3), cmd);
+
+    adb_delete(adb);
+}
+
+// A quiet bus answers nothing, and says so, on both passes.
+TEST(test_a_quiet_bus_returns_false) {
+    adb_t *adb = setup();
+    uint8_t cmd = 0;
+
+    ASSERT_TRUE(!poll(adb, 0, &cmd));
+    ASSERT_TRUE(!poll(adb, 1 << 2, &cmd));
+
+    adb_delete(adb);
+}
+
 int main(void) {
     RUN(test_rtc_bit_banging_is_not_an_adb_transition);
     RUN(test_an_st_change_still_lands_under_rtc_traffic);
     RUN(test_the_shadow_starts_idle);
+    RUN(test_address_zero_is_polled);
+    RUN(test_the_most_recently_used_device_is_polled_again);
+    RUN(test_another_device_with_data_interrupts_the_re_poll);
+    RUN(test_the_enable_mask_is_honoured);
+    RUN(test_the_fallback_ignores_the_mask);
+    RUN(test_a_quiet_bus_returns_false);
     printf("[PASS] All ADB tests passed\n");
     return 0;
 }

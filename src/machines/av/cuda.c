@@ -164,7 +164,6 @@ struct av_cuda {
     bool autopoll_enabled;
     bool onesec_enabled;
     uint8_t onesec_mode; // Wr1SecMode value; 3 = Mode3Clock (tick carries RTC)
-    uint8_t autopoll_phase;
     // A response whose ATTENTION byte the host never takes is abandoned
     // after a firmware-style timeout (the TNT ROM's Open Firmware hands
     // off to the 68k with its last ADB response unread; the 68k's
@@ -522,10 +521,7 @@ static void cuda_process_pseudo(av_cuda_t *cuda) {
         // a machine without a keyboard, and its graphics console configures
         // without one.  Report the devices where they live now (see the
         // autopoll event for why the model is asked rather than shadowed).
-        uint16_t list = 0;
-        if (cuda->adb)
-            list = (uint16_t)((1u << (adb_keyboard_address(cuda->adb) & 0xF)) |
-                              (1u << (adb_mouse_address(cuda->adb) & 0xF)));
+        uint16_t list = adb_device_mask(cuda->adb);
         cuda->tx_buf[n++] = (uint8_t)(list >> 8);
         cuda->tx_buf[n++] = (uint8_t)list;
         LOG(2, "RdDevList -> $%04X", list);
@@ -901,26 +897,21 @@ static void cuda_autopoll_event(void *source, uint64_t data) {
     LOG(4, "autopoll gate: enabled=%d adb=%d state=%d push=%d pb=$%02X", cuda->autopoll_enabled, cuda->adb != NULL,
         cuda->state, cuda->push_pending, cuda->last_pb);
     if (cuda->autopoll_enabled && cuda->adb && cuda_bus_idle(cuda)) {
-        // Poll the devices where they live NOW: an OS's ADB init can move
-        // them off the default addresses via Listen R3 and leave them there
-        // (Copland does; classic Mac OS moves them back), and real Cuda
-        // firmware tracks the moves.  Asking the model beats shadowing the
-        // Listen traffic.
-        const uint8_t poll_addr[2] = {adb_mouse_address(cuda->adb), adb_keyboard_address(cuda->adb)};
-        for (int k = 0; k < 2; k++) {
-            uint8_t addr = poll_addr[(cuda->autopoll_phase + k) & 1];
-            uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
-            uint8_t out[8];
-            int out_len = 0;
-            if (adb_iop_transact(cuda->adb, cmd, NULL, 0, out, &out_len) && out_len > 0) {
-                int n = cuda_put_header(cuda, PKT_ADB, CUDA_FLAG_AUTOPOLL, cmd);
-                for (int i = 0; i < out_len && n < CUDA_TX_MAX; i++)
-                    cuda->tx_buf[n++] = out[i];
-                cuda->tx_len = n;
-                cuda_begin_send(cuda);
-                cuda->autopoll_phase ^= 1;
-                break;
-            }
+        // The device-selection rules live in adb.c, shared with Egret and the
+        // SWIM IOP (R-2).  Cuda has no WrDevList in this model -- the host
+        // can read the device list but not set a polling mask -- so 0 here
+        // means every address is eligible, and the scan finds the devices
+        // wherever Listen R3 has most recently moved them (Copland moves
+        // them and leaves them; classic Mac OS moves them back).
+        uint8_t cmd;
+        uint8_t out[8];
+        int out_len = 0;
+        if (adb_autopoll_next(cuda->adb, 0, &cmd, out, &out_len)) {
+            int n = cuda_put_header(cuda, PKT_ADB, CUDA_FLAG_AUTOPOLL, cmd);
+            for (int i = 0; i < out_len && n < CUDA_TX_MAX; i++)
+                cuda->tx_buf[n++] = out[i];
+            cuda->tx_len = n;
+            cuda_begin_send(cuda);
         }
     }
     scheduler_new_cpu_event(cuda->sched, &cuda_autopoll_event, cuda, 0, 0, (uint64_t)CUDA_AUTOPOLL_NS);

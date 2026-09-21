@@ -188,6 +188,11 @@ struct adb {
     // rather than landing in one report (adb_typed_key_deferred).
     uint64_t type_next_ns;
 
+    // The most recently used ADB address, in the IOP ADB Driver ERS's sense:
+    // the one that answered the last autonomous auto-poll.  adb_autopoll_next
+    // anchors its scan here.  Plain data, so it checkpoints with the rest.
+    uint8_t autopoll_mru;
+
     // Shadow of the last VIA1 port-B output, for the ST-transition filter in
     // adb_port_b_output.  It lived in four machine-state structs -- se30_t,
     // iicx/iix, iici and q700 -- each with its own copy of the filter and,
@@ -360,6 +365,103 @@ uint8_t adb_keyboard_address(adb_t *adb) {
 
 uint8_t adb_mouse_address(adb_t *adb) {
     return adb ? adb->mouse.address : 3;
+}
+
+uint16_t adb_device_mask(const adb_t *adb) {
+    if (!adb)
+        return 0;
+    return (uint16_t)((1u << (adb->kbd.address & 0x0F)) | (1u << (adb->mouse.address & 0x0F)));
+}
+
+// True if this address may be polled under `mask`.  A zero mask means the
+// host has not installed one, so nothing is excluded.
+static bool autopoll_addr_enabled(uint16_t mask, uint8_t addr) {
+    return mask == 0 || (mask & (1u << addr)) != 0;
+}
+
+// One pass of the auto-poll scan, starting at `first` and wrapping through
+// all sixteen addresses.  Returns the address that answered, or -1.
+static int autopoll_scan(adb_t *adb, uint16_t mask, uint8_t first, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
+    for (int step = 0; step < 16; step++) {
+        uint8_t addr = (uint8_t)((first + step) & 0x0F);
+        if (!autopoll_addr_enabled(mask, addr))
+            continue;
+        if (!device_has_pending_data(adb, addr))
+            continue;
+        uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
+        int n = 0;
+        if (adb_iop_transact(adb, cmd, NULL, 0, out_data, &n) && n > 0) {
+            *cmd_out = cmd;
+            *len_out = n;
+            return addr;
+        }
+    }
+    return -1;
+}
+
+// True if any address other than `except` has something to say under `mask`.
+// This is the model's stand-in for the ADB bus's Service Request line, which
+// nothing here drives: a device with data is a device that would be pulling
+// SRQ low.
+static bool autopoll_others_pending(const adb_t *adb, uint16_t mask, uint8_t except) {
+    for (uint8_t addr = 0; addr < 16; addr++) {
+        if (addr == except || !autopoll_addr_enabled(mask, addr))
+            continue;
+        if (device_has_pending_data(adb, addr))
+            return true;
+    }
+    return false;
+}
+
+bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
+    if (!adb || !cmd_out || !out_data || !len_out)
+        return false;
+
+    uint8_t mru = (uint8_t)(adb->autopoll_mru & 0x0F);
+
+    // The ERS (library/serial/apple-iop-adb-driver-ers/markdown.md:70):
+    // "it will poll the most recently used device (which has its polling
+    // enable bit set) until it receives data, or until another device asserts
+    // Service Request.  To handle a service request, it will start polling
+    // all of the other devices ... in most recently used order until it hits
+    // one that returns data.  If after polling all of the enabled devices,
+    // SRQ is active, and no data was received from any of the devices, SRQ
+    // polling will continue, polling ALL device addresses, ignoring the
+    // enable mask."
+    //
+    // Three clauses, three scans.  The only liberty taken is that the ERS's
+    // per-address MRU CHAIN collapses to "start at the MRU address and go
+    // round": the chain is permuted only by which device replied, and with
+    // no SRQ line to make the intermediate hops observable, the order in
+    // which empty addresses are visited cannot be seen by any guest.  What
+    // IS observable -- who is re-polled, and who wins when two devices have
+    // data at once -- is exactly what the clauses below decide.
+    //
+    // Honouring the SRQ clause matters, and is not pedantry: without it the
+    // rule is "re-poll the MRU device", and a mouse in continuous motion
+    // always has data, so typing while dragging would never be delivered.
+    int answered;
+    if (autopoll_addr_enabled(enable_mask, mru) && device_has_pending_data(adb, mru) &&
+        !autopoll_others_pending(adb, enable_mask, mru)) {
+        // Clause 1: the MRU device, and nobody else is asking.
+        answered = autopoll_scan(adb, enable_mask, mru, cmd_out, out_data, len_out);
+    } else {
+        // Clause 2: somebody else is asking (or the MRU has nothing) -- walk
+        // the others, MRU-relative, starting past the MRU address.
+        answered = autopoll_scan(adb, enable_mask, (uint8_t)((mru + 1) & 0x0F), cmd_out, out_data, len_out);
+    }
+
+    // Clause 3: nothing enabled answered.  If an address outside the mask has
+    // data, SRQ is still asserted as far as the bus is concerned, so poll
+    // everything.  (Skipped when there is no mask: that scan just ran.)
+    if (answered < 0 && enable_mask != 0)
+        answered = autopoll_scan(adb, 0, (uint8_t)((mru + 1) & 0x0F), cmd_out, out_data, len_out);
+
+    if (answered < 0)
+        return false;
+
+    adb->autopoll_mru = (uint8_t)answered;
+    return true;
 }
 
 // The two halves of carrying the mechanical latch across machine.restart
