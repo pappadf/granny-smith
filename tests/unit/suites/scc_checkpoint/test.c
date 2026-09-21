@@ -221,9 +221,33 @@ TEST(test_both_channels_registers_survive) {
     scc_delete(b);
 }
 
+// The external loopback cable is a property of the two ports together, so
+// it lives outside the per-channel blocks -- and it was outside the stream
+// entirely (N-16).  A restore quietly unplugged it.
+TEST(test_the_loopback_cable_survives) {
+    s_w[0] = s_w[1] = s_r = 0;
+
+    s_slot = 0;
+    scc_t *a = scc_init(NULL, NULL, irq_sink, NULL, NULL);
+    ASSERT_TRUE(a != NULL);
+    scc_set_external_loopback(a, true);
+    ASSERT_TRUE(scc_get_external_loopback(a));
+    scc_checkpoint(a, (checkpoint_t *)1);
+
+    s_r = 0;
+    s_slot = 1;
+    scc_t *b = scc_init(NULL, NULL, irq_sink, NULL, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_TRUE(scc_get_external_loopback(b));
+
+    scc_delete(a);
+    scc_delete(b);
+}
+
 int main(void) {
     RUN(test_save_restore_save_is_byte_identical);
     RUN(test_both_channels_registers_survive);
+    RUN(test_the_loopback_cable_survives);
     printf("[PASS] All scc_checkpoint tests passed\n");
     return 0;
 }

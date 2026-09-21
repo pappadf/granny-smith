@@ -1324,6 +1324,10 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
         for (int i = 0; i < 2; i++)
             system_read_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
 
+        uint8_t loopback = 0;
+        system_read_checkpoint_data(checkpoint, &loopback, sizeof(loopback));
+        scc->external_loopback = loopback != 0;
+
         // Re-link channel back-pointers and ensure index is correct
         for (int i = 0; i < 2; i++) {
             scc->ch[i].scc = scc;
@@ -1488,6 +1492,15 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
     size_t ch_data_size = offsetof(ch_t, scc);
     for (int i = 0; i < 2; i++)
         system_write_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
+
+    // The external loopback cable (N-16).  It sits outside the per-channel
+    // blocks because it is a property of the two ports TOGETHER, and it was
+    // left out of the stream entirely -- so a restore quietly unplugged the
+    // cable, and a serial loopback row that saved and resumed found port A
+    // talking to nobody.  It is host-side wiring rather than guest state,
+    // which is exactly why the guest cannot put it back.
+    uint8_t loopback = scc->external_loopback ? 1 : 0;
+    system_write_checkpoint_data(checkpoint, &loopback, sizeof(loopback));
 
     // Note: we intentionally do not save the scc back-pointer, nor the memory_interface
     // function pointers or the mapping pointer. Those are runtime-specific and re-initialized

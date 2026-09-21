@@ -41,6 +41,16 @@ hooks over a flat buffer.
   presentation: each byte is the bit-reversed MAC address byte, and the
   XOR of all 8 bytes is `$FF` (`SonicEnet.a` `@GetAddr`/`NormAddr`).
 
+## Power-on values
+
+Beyond the datasheet's usual zeros, two registers come up non-zero at a
+hardware reset and the model sets both: `TCR` gets `NCRS | BCM` (§4.3.4)
+and **`EOBC` gets `$02F8`** (§4.3.9). EOBC is the word count below which
+the receiver stops treating what is left of the RBA as usable; at zero the
+"last buffer in the RBA" test never fires, so a driver that relies on the
+power-on value would fill past the end of the buffer area instead of
+switching.
+
 ## Debts
 
 - The System's `.enet` driver / EtherTalk end-to-end is unexercised (the
@@ -48,5 +58,17 @@ hooks over a flat buffer.
 - The SONIC watchdog timer is static (ST/STP latch only, no TC rollover
   interrupt).
 
-`sonic_checkpoint` serializes the whole chip struct;
-`sonic_set_irq_callback` re-drives an asserted INT level on rebind.
+`sonic_checkpoint` serializes the plain-data prefix, up to the first
+pointer, as every other device in the tree does — this was the last
+whole-struct checkpoint write anywhere, and it put three host addresses
+(the IRQ callback, its context and the memory port's function pointers)
+into every save file. `sonic_set_irq_callback` re-drives an asserted INT
+level on rebind.
+
+The byte-write latch that the machine wiring note above describes belongs
+to the **board**, not the chip: Apple's register window puts the 16-bit
+value in the low half of a 4-byte slot, so a byte write must be
+reassembled before it reaches the DP83932, which has no byte-write latch of
+its own. `struct sonic` carried a `byte2_latch` field that nothing ever
+read; it is gone. A second board wiring SONIC with different spacing would
+need its own latch, which is exactly why it cannot live in the chip.
