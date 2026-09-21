@@ -91,6 +91,41 @@ If `LOG(level, ...)` is used without setting an implicit category in the file, i
 - Levels are plain integers; smaller means more important or less verbose in this design (so that `level <= category_level` is “emit”).
 - The shell never enforces ranges; it accepts any non‑negative integer. Modules may choose their own fine‑grained levels if desired.
 
+### Conventional bands (guidance, not a rule)
+
+Because ranges are not enforced, `debug.log scc 4` and `debug.log adb 4` mean
+different things — `scc.c` uses levels up to 11, `adb.c` stops at 3. That is
+deliberate, but it means a user cannot transfer intuition between two modules
+without reading them. New code should follow these bands so that intuition
+starts to hold:
+
+| level | meaning | rough frequency |
+|---|---|---|
+| 1 | warning, error, or an unmodelled request we had to refuse | rare |
+| 2 | state change — mode set, device attached, reset | occasional |
+| 3 | one line per transaction, command or host event | per interaction |
+| 4+ | per byte, per sample, per scanline | firehose |
+
+Modules with genuinely more structure may go further — `scc.c`'s 6 and 11 and
+`appletalk.c`'s 8 and 11 are deliberately paired for LocalTalk tracing, so a
+single level selects a matched view across both. Exceeding the bands is fine;
+doing it *by accident* is what the table is here to prevent.
+
+### Level 0 is the always-on level
+
+A category's level starts at 0 and 0 means "off", so a `LOG(0, ...)` site
+emits whenever the category has not been turned up — that is, always, in the
+default configuration. This falls out of the `level <= category_level` rule
+rather than being a separate mechanism, and it is **used deliberately**: there
+are ~200 such sites in `src/`, and the ones sampled are all unrecoverable or
+degraded conditions where silence is the wrong default — out of memory during
+machine construction, a window table overflowing, an address decode falling
+back to a linear walk.
+
+Use level 0 only for those. If a message should be suppressible, it is a
+level-1 warning, not a level-0 one. The only way to silence a level-0 site is
+the compile-time `LOG_COMPILE_MIN_LEVEL`.
+
 
 ## Internal design (log.c)
 

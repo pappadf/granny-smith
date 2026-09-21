@@ -176,6 +176,51 @@ Example implementation section comment:
 - Use `bool`, `true`, `false` from `<stdbool.h>`.
 - Free all allocated memory; avoid leaks.
 
+### Device module conventions
+
+Three rules that had been re-derived from scratch in four different files
+before anyone wrote them down. The first is stated in full in
+[`../core/storage/checkpointing.md`](../core/storage/checkpointing.md) under
+"Struct layout guideline"; it is repeated here because that is not where
+people writing a new device look.
+
+**1. Plain data first, pointers last, `offsetof` as the boundary.**
+A device struct puts its POD fields first and every pointer at the end, so
+`system_write_checkpoint_data(cp, dev, offsetof(dev_t, first_pointer))` saves
+the whole value region in one block and no host address ever reaches the
+stream. The checkpoint stream is positional and carries no version field — a
+build-ID mismatch is rejected outright — so **layout is free to change, but a
+save and its restore must land in the same commit.** Mark the boundary in the
+struct with a comment; several modules already do.
+
+**2. `scheduler_forget_source` in destructors, and nowhere else.**
+Every `*_delete` that owns a scheduler-visible object calls it before `free`.
+It also unregisters the event *types*, so calling it on a live device makes
+the next `scheduler_new_cpu_event` trip "event type not registered" — a live
+device that wants to cancel one event uses `remove_event` instead. See
+[`proposal-scheduler-source-lifetime`](../../local/gs-docs/completed/proposal-scheduler-source-lifetime.md)
+for the reasoning and the teardown warning that guards it.
+
+Deliberately not converted, and not a defect: modules whose events are
+sourced on `cfg` rather than on the device (`pdm/awacs.c`, `tnt/awacs.c`,
+`tnt/control.c`, `av.c`, `se30.c`, `lisa.c`). `cfg` outlives the scheduler, so
+there is nothing to forget. This has now been re-flagged by four separate
+reviews; it is recorded here so it stops being.
+
+**3. Three kinds of "this should not happen", and they are not the same.**
+See `src/core/common.h` for the first two.
+
+| situation | use | why |
+|---|---|---|
+| A correct program cannot reach this | `GS_ASSERT` | It is an internal invariant. Note `gs_assert_fail` **returns** — execution continues past the check — so it is a diagnostic, never a guard. |
+| The guest asked for something legal that we do not model | `GS_UNIMPLEMENTED` | Name the missing function and stop. Equally true in a release build, which is why it is not an assert. |
+| The guest wrote junk, or something illegal | `LOG(1, ...)` + a safe fallback | A guest must never be able to halt the emulator. `adb.c`'s `kbd_dequeue` and several converted sites in `scc.c` are the precedent. |
+
+**A bounds check is none of the three** — it is an `if`. Both `assert` and
+`GS_ASSERT` vanish under `GS_FAST` (the shipped build sets `-DGS_FAST
+-DNDEBUG`), and `gs_assert_fail` returns anyway, so neither one prevents the
+overrun it appears to guard.
+
 ---
 
 ## Markdown Documentation
