@@ -14,8 +14,8 @@ let av_hd = "../../data/systems/system_7_1_77mb_av.img"
 # contract, so it is exactly the shape a real mic would deliver.
 let utterance = "../../data/speech/sr-what-day-is-it.wav"
 
-machine.rtc.time = 3000000000
 machine.boot model="q840av" ram=16384 rom="${$av_rom}"
+machine.rtc.time = 3000000000
 machine.scsi.attach_hd "${$av_hd}" 0
 debug.log singer "level=2"
 debug.log psc "level=2"

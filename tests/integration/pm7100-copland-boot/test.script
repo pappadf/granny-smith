@@ -41,8 +41,8 @@ def boot_image(image, latch) {
     # with its clock later than its files; 0xE0800000 models that, and now
     # that rtc.time survives machine.boot on the PDM it is the deterministic
     # simulated-time seed for the whole run.
-    machine.rtc.time = 0xE0800000
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.rtc.time = 0xE0800000
     machine.scsi.attach_hd "${$image}" 0
     if $latch {
         machine.adb.keyboard.down "capslock"
@@ -69,8 +69,8 @@ def row_control_75() {
 # ~398.7 M instructions, so 380 M is after the ADB init that would have thrown
 # the latch away and before anything acts on it.
 def row_keymap_latch() {
-    machine.rtc.time = 0xE0800000 # post-install seed, as in boot_image
     machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    machine.rtc.time = 0xE0800000 # post-install seed, as in boot_image
     machine.scsi.attach_hd "${$img}" 0
     machine.adb.keyboard.down "capslock"
     scheduler.run 380000000

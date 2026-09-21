@@ -12,7 +12,6 @@
 # scenes double as accel-vs-ROM compositing proofs at System 7.1.
 
 # Pin the RTC so the boot is deterministic run-to-run.
-machine.rtc.time = 3000000000
 
 # --- Boot to the 8-bpp colour Finder desktop ---------------------------------
 # The gc_ video-mode seed writes the complete valid PRAM ('NuMc' validity +
@@ -20,6 +19,7 @@ machine.rtc.time = 3000000000
 # driver boots the screen at 640x480 8 bpp AND the ROM boots straight from the
 # SCSI HD.
 machine.boot model="iicx" ram=8192 video_card="824gc" video_mode="gc_640x480_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 
 machine.scsi.attach_hd "../../data/systems/system_7_1_20mb_24ac_cd_32bit_gc.img" 0
 
