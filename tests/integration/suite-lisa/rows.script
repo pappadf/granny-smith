@@ -366,6 +366,15 @@ def row_xl_no_media() {
 def row_lisa_checkpoint() {
     machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
     scheduler.run 5000000
+    # Put COPS state in the machine BEFORE saving.  Until 2026-09-21
+    # cops_checkpoint was a no-op, so a restored Lisa came up with an empty
+    # response FIFO, the mouse disabled and any in-flight warp forgotten --
+    # and this row could not see it, because it saved a COPS that had never
+    # been touched.  A keypress and a mouse delta are enough to make the FIFO
+    # and the accumulated deltas non-empty at save time.
+    machine.adb.keyboard.press 0xEB
+    machine.adb.mouse.move 40 24
+    scheduler.run 2000000
     assert checkpoint.save("${$WORK_DIR}/suite-lisa.gsc") "lisa-checkpoint: save failed"
     # A different RAM size, so a restore that quietly kept the old machine fails
     # the assert below rather than passing by accident.
@@ -374,7 +383,10 @@ def row_lisa_checkpoint() {
     assert machine.id == "lisa" "lisa-checkpoint: restored machine.id wrong"
     assert machine.ram == 2048 "lisa-checkpoint: restored RAM size wrong"
     assert machine.rom.checksum == "098917B2" "lisa-checkpoint: restored rom.checksum wrong"
-    # The restored machine must keep executing, not just load.
+    # The restored machine must keep executing, not just load.  With the COPS
+    # now in the stream, a mismatched save/restore pair fails HERE with a
+    # positional size error naming both sites, which is the failure mode this
+    # row exists to catch.
     scheduler.run 5000000
     report_perf("suite-lisa/lisa-checkpoint", scheduler.instr_count)
 }

@@ -12,10 +12,12 @@
 
 #include "cops.h"
 
+#include "checkpoint.h"
 #include "log.h"
 #include "scheduler.h"
 #include "via.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -62,9 +64,12 @@ LOG_USE_CATEGORY_NAME("cops");
 #define COPS_FIFO 32 // response queue depth
 
 struct cops {
-    via_t *via1;
-    struct scheduler *sched;
-
+    // Plain data first so the checkpoint can read/write one contiguous block
+    // bounded by offsetof(cops_t, via1) -- the convention the other nine
+    // modules in this area follow (STYLE_GUIDE.md, "Device module
+    // conventions").  This struct used to lead with its pointers, which is
+    // the mechanical reason cops_checkpoint stayed a no-op: the obvious
+    // offsetof bound would have written zero bytes.
     bool crdy; // current CRDY (PB6) level we drive: false = ready
     bool reset_asserted; // last observed PB0 reset state (true = held in reset)
 
@@ -90,6 +95,10 @@ struct cops {
     bool warp_active;
     int warp_x, warp_y; // target screen pixel
     int warp_ticks; // convergence-loop safety counter
+
+    // Pointers last (not checkpointed)
+    via_t *via1;
+    struct scheduler *sched;
 };
 
 // === Response FIFO ==========================================================
@@ -360,6 +369,9 @@ void cops_via_output(cops_t *c, uint8_t port, uint8_t value) {
 
 // === Lifecycle =============================================================
 
+// Mirror of cops_checkpoint; defined below, used while constructing.
+static void cops_restore(cops_t *c, checkpoint_t *cp);
+
 cops_t *cops_init(via_t *via1, struct scheduler *scheduler, checkpoint_t *cp) {
     cops_t *c = (cops_t *)calloc(1, sizeof(*c));
     if (!c)
@@ -369,11 +381,23 @@ cops_t *cops_init(via_t *via1, struct scheduler *scheduler, checkpoint_t *cp) {
     scheduler_new_event_type(scheduler, "cops", c, "pump", &cops_pump);
     scheduler_new_event_type(scheduler, "cops", c, "mouse", &cops_mouse_tick);
     scheduler_new_event_type(scheduler, "cops", c, "crdy", &cops_crdy_tick);
-    // Start the free-running CRDY (PB6) toggle from the ready (low) state.
-    cops_set_crdy(c, false);
-    scheduler_new_cpu_event(scheduler, &cops_crdy_tick, c, 0, COPS_CRDY_HALF_CYCLES, 0);
-    if (cp)
-        cops_checkpoint(c, cp); // restore (symmetric with save below)
+    if (cp) {
+        // Restore the plain-data block.  Do NOT arm any events here: the
+        // scheduler's own checkpointed queue brings back this source's crdy,
+        // pump and mouse events in scheduler_start(), matching the
+        // pump_scheduled / mouse_scheduled flags we just read.
+        //
+        // Arming unconditionally (as this did before) meant a restored Lisa
+        // ran TWO free-running CRDY togglers: the one armed here and the one
+        // the saved queue brought back.  rtc_init has the correct shape and
+        // is the pattern followed here.
+        cops_restore(c, cp);
+        via_input(c->via1, 1, 6, c->crdy); // re-drive the restored level
+    } else {
+        // Cold boot: start the free-running CRDY (PB6) toggle from ready (low).
+        cops_set_crdy(c, false);
+        scheduler_new_cpu_event(scheduler, &cops_crdy_tick, c, 0, COPS_CRDY_HALF_CYCLES, 0);
+    }
     return c;
 }
 
@@ -385,10 +409,22 @@ void cops_delete(cops_t *c) {
     free(c);
 }
 
+// Save the COPS's plain-data region: the response FIFO and its indices, the
+// CRDY phase, the command/mouse state and the warp target.  None of it is
+// re-derived by the reset handshake -- a restored Lisa without this comes up
+// with an empty FIFO, the mouse disabled and any in-flight warp forgotten.
+//
+// The stream is positional and unversioned (build-ID gated), so this and
+// cops_restore must change together, in one commit.
 void cops_checkpoint(cops_t *c, checkpoint_t *cp) {
-    // Symmetric no-op for now (same discipline as lisa_mmu_checkpoint): the
-    // COPS reset handshake re-derives its state from VIA1 on the next scan.
-    // Full save/restore of the FIFO + command state lands in Step 9 (R7).
-    (void)c;
-    (void)cp;
+    if (!c || !cp)
+        return;
+    system_write_checkpoint_data(cp, c, offsetof(cops_t, via1));
+}
+
+// The mirror, called from cops_init while constructing.
+static void cops_restore(cops_t *c, checkpoint_t *cp) {
+    if (!c || !cp)
+        return;
+    system_read_checkpoint_data(cp, c, offsetof(cops_t, via1));
 }
