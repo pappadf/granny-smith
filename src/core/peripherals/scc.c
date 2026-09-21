@@ -16,7 +16,6 @@
 #include "system_config.h"
 #include "value.h"
 
-#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -321,8 +320,11 @@ static void update_irqs(scc_t *scc) {
 
 // Check for incoming SDLC frames and move them to the receive buffer
 static void check_rx(ch_t *ch) {
-    assert(SDLC_MODE(ch));
-    assert(RX_ENABLED(ch));
+    // Both are the sole caller's entry conditions: scc_schedule_rx_if_ready
+    // returns early on !RX_ENABLED and again on !SDLC_MODE before it ever
+    // gets here, on both of its call paths.  Guest-unreachable.
+    GS_ASSERT(SDLC_MODE(ch));
+    GS_ASSERT(RX_ENABLED(ch));
 
     // if the receiver is not in hunt mode, no data is received
     if (!(ch->rr[0] & 0x10))
@@ -461,7 +463,11 @@ static void scc_schedule_rx_if_ready(ch_t *ch) {
 // interrupt vector
 static uint8_t rr2(scc_t *scc, int ch) {
     // there should only be 1 shared wr9
-    assert(scc->ch[0].wr[9] == scc->ch[1].wr[9]);
+    // WR9 is one physical register.  It has exactly one writer, which sets
+    // both copies; reset_ch saves and restores each channel's own copy, so
+    // equality survives a reset; and a checkpoint is written from an already
+    // equal state.  Guest-unbreakable.
+    GS_ASSERT(scc->ch[0].wr[9] == scc->ch[1].wr[9]);
 
     // channel a returns unmodified vector; channel b returns modified vector with status
     if (ch == 0) {
@@ -846,7 +852,11 @@ static void wr8(ch_t *c, uint8_t value) {
 // master interrupt control
 static void wr9(scc_t *scc, uint8_t value) {
     // there should only be 1 shared wr9
-    assert(scc->ch[0].wr[9] == scc->ch[1].wr[9]);
+    // WR9 is one physical register.  It has exactly one writer, which sets
+    // both copies; reset_ch saves and restores each channel's own copy, so
+    // equality survives a reset; and a checkpoint is written from an already
+    // equal state.  Guest-unbreakable.
+    GS_ASSERT(scc->ch[0].wr[9] == scc->ch[1].wr[9]);
 
     LOG(4, "wr9: value=0x%02X (MIE=%d, reset_cmd=%d)", value, !!(value & WR9_MIE), (value >> 6) & 3);
 
@@ -885,13 +895,17 @@ static uint8_t read_uint8(void *s, uint32_t addr) {
     int dc = addr >> 2 & 1;
 
     int ch = !ab;
-    int reg = dc ? 8 : scc->ch[ch].pointer;
+    // wr0 sets `pointer` to (value & 7) and the "point high" command adds 8,
+    // so it is structurally in [0, 15]; only a corrupted checkpoint can put
+    // it outside.  GS_ASSERT reports and RETURNS, and the default arm below
+    // indexes rr[reg], so the mask -- not the assertion -- is what keeps the
+    // access in bounds.
+    GS_ASSERT(scc->ch[ch].pointer >= 0 && scc->ch[ch].pointer < 16);
+    int reg = dc ? 8 : (scc->ch[ch].pointer & 0x0F);
 
     LOG(4, "scc_read: addr=0x%X ch=%d dc=%d reg=%d", addr, ch, dc, reg);
 
     scc->ch[ch].pointer = 0;
-
-    assert(reg >= 0 && reg < 16);
 
     switch (reg) {
 
@@ -945,13 +959,13 @@ static void scc_write_uint8(void *s, uint32_t addr, uint8_t value) {
     int dc = addr >> 2 & 1;
 
     int ch = !ab;
-    int reg = dc ? 8 : scc->ch[ch].pointer;
+    // Same bound, same reason as scc_read's: the default arm writes wr[reg].
+    GS_ASSERT(scc->ch[ch].pointer >= 0 && scc->ch[ch].pointer < 16);
+    int reg = dc ? 8 : (scc->ch[ch].pointer & 0x0F);
 
     LOG(4, "scc_write: addr=0x%X ch=%d dc=%d reg=%d value=0x%02X", addr, ch, dc, reg, value);
 
     scc->ch[ch].pointer = 0;
-
-    assert(reg >= 0 && reg < 16);
 
     switch (reg) {
     case 0x00:
@@ -1194,7 +1208,14 @@ static void update_loopback_signals(scc_t *scc, int ch) {
 }
 
 void scc_dcd(scc_t *restrict scc, unsigned int ch, unsigned int dcd) {
-    assert(ch < 2 && dcd < 2);
+    // `ch` indexes scc->ch[2] from machine glue, so it is checked the way
+    // scc_dma_tx_complete checks the same parameter, not asserted.  `dcd`
+    // needs no bound: the negation below maps every value onto 0 or 1, which
+    // is why the old `dcd < 2` half of this assert guarded nothing.
+    if (!scc || ch > 1) {
+        LOG(1, "scc_dcd: channel %u does not exist", ch);
+        return;
+    }
 
     dcd = !dcd; // dcd is acitive low - not sure if the bit in rr0 should reflect this or not
 

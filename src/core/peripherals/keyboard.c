@@ -10,7 +10,6 @@
 #include "system.h"
 #include "via.h"
 
-#include <assert.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,7 +81,12 @@ static void enqueue(keyboard_t *keyboard, uint8_t byte) {
 }
 
 static uint8_t dequeue(keyboard_t *keyboard) {
-    assert(keyboard->queue.tail != keyboard->queue.head);
+    // The sole caller guards with `if (!queue_empty(...))`.  (F-40 called
+    // this reachable by analogy with adb.c's kbd_dequeue; adb.c's really is,
+    // from a bare guest register poll, and this one is not.)  A tripped
+    // GS_ASSERT returns, which here would hand back a stale byte and advance
+    // tail past head -- worth knowing, and the reason not to lean on it.
+    GS_ASSERT(keyboard->queue.tail != keyboard->queue.head);
 
     uint8_t byte = keyboard->queue.buf[keyboard->queue.tail];
 

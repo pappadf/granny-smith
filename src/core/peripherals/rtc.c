@@ -99,7 +99,7 @@ static int legacy_pram_addr(const rtc_t *rtc, uint8_t cmd) {
 
 static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
     // high bits set equals read operation
-    assert(cmd >> 7);
+    GS_ASSERT(cmd >> 7); // read_cmd is only reached through IS_READ(shift)
 
     switch (cmd & 0x7F) {
 
@@ -144,7 +144,7 @@ static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
 
 static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
     // High bit clear indicates write operation
-    assert(cmd >> 7 == 0);
+    GS_ASSERT(cmd >> 7 == 0); // write_cmd is only reached when IS_READ is false
 
     // Write-protect command itself is always allowed
     if (cmd != CMD_WRITE_PROTECT) {
@@ -281,7 +281,9 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
     }
 
     // Allow valid state transitions where both may be 0 momentarily, or at least one is active
-    assert((rtc->rx_bits >= 0 && rtc->tx_bits >= 0) && (rtc->rx_bits > 0 || rtc->tx_bits > 0));
+    // A true invariant now that rtc_init seeds rx_bits: the chip is always
+    // either receiving or transmitting, never neither.
+    GS_ASSERT((rtc->rx_bits >= 0 && rtc->tx_bits >= 0) && (rtc->rx_bits > 0 || rtc->tx_bits > 0));
 
     if (rtc->rx_bits) {
 
@@ -320,7 +322,7 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
                 rtc->command = 0;
             } else { // normal (non extended) write command
 
-                assert(!IS_READ(rtc->command));
+                GS_ASSERT(!IS_READ(rtc->command)); // the read forms are handled above
                 write_cmd(rtc, rtc->command, (uint8_t)rtc->shift);
                 rtc->command = 0;
                 rtc->rx_bits = 8;
@@ -337,7 +339,7 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
             rtc->shift <<= 1;
     }
 
-    assert((rtc->rx_bits && !rtc->tx_bits) || (!rtc->rx_bits && rtc->tx_bits));
+    GS_ASSERT((rtc->rx_bits && !rtc->tx_bits) || (!rtc->rx_bits && rtc->tx_bits));
 }
 
 static void one_second_interrupt(void *source, uint64_t data) {
@@ -359,9 +361,12 @@ static void one_second_interrupt(void *source, uint64_t data) {
     scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL);
 }
 
-static uint32_t wall_clock_seconds(void) {
-    assert(sizeof(time_t) >= 4);
+// A property of the toolchain, not of any run: it belongs at compile time,
+// where it cannot be compiled out by the release profile the way the
+// runtime assert it replaces was.
+static_assert(sizeof(time_t) >= 4, "time_t must hold at least 32 bits for the Mac epoch conversion");
 
+static uint32_t wall_clock_seconds(void) {
     // Promote to uint64_t before the cast so the wrap point is visible (Mac
     // epoch in 1904 + Unix epoch overflowing uint32_t in 2040): the explicit
     // 64-bit add documents the assumption, the (uint32_t) cast is the wrap.
