@@ -52,7 +52,6 @@ typedef struct mac030_glue_state {
     // wrong abstraction (05-chipsets-irq F-46).
     uint8_t slot_pa_mask;
 
-    uint8_t last_port_b; // VIA1 PB output, for ADB ST-transition filtering
     uint8_t last_via2_port_b; // IIcx soft-power detect (unused on se30/iix)
     bool soft_power_armed; // IIcx soft-power detect (unused on se30/iix)
 

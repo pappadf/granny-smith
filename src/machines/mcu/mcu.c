@@ -563,7 +563,6 @@ static int mcu_init(config_t *cfg, checkpoint_t *cp) {
         return -1;
     }
     cfg->machine_context = st;
-    st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
 
     // Shared core (mem_map, 68040 CPU from the profile, scheduler) + RTC +
     // SCC + the two VIAs.

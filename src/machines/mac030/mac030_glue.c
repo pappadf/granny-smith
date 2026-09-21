@@ -192,7 +192,6 @@ int mac030_glue_init(config_t *cfg, checkpoint_t *cp, const mac030_glue_board_t 
         return -1;
     }
     cfg->machine_context = st;
-    st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
     st->last_via2_port_b = 0xFF; // PB2 starts high (IIcx soft-power; unused elsewhere)
 
     mac030_build_core(cfg, cp);

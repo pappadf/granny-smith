@@ -50,7 +50,7 @@ const mac030_io_range_t *mdu_io_ranges(void);
 
 // Unified MDU+RBV machine state — the single struct shared by the IIci and
 // IIsi (mirrors the GLUE-family unification).  Superset: the IIsi uses egret +
-// last_port_a; the IIci uses last_port_b and leaves egret NULL.
+// last_port_a; the IIci leaves egret NULL.
 typedef struct mac030_mdu_state {
     struct adb *adb;
     struct asc *asc;
@@ -65,7 +65,6 @@ typedef struct mac030_mdu_state {
     mdu_io_t mdu_io; // device handles for the shared MDU dispatcher
 
     uint8_t last_port_a; // IIsi: floppy/overlay filtering on VIA1 PA
-    uint8_t last_port_b; // IIci: ADB ST filtering on VIA1 PB
 
     memory_interface_t io_interface; // registered at the $50000000 I/O region
 } mac030_mdu_state_t;

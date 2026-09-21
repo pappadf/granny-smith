@@ -257,20 +257,16 @@ static void pdm_memory_layout(config_t *cfg) {
 // VIA1 (the AMIC pseudo-VIA) callbacks — Cuda transport
 // ============================================================
 
+// Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out, PB5 TIP
+// out — the classic Cuda bit positions); the SR shift-out is a command byte.
 static void pdm_via1_output(void *context, uint8_t port, uint8_t value) {
-    config_t *cfg = (config_t *)context;
-    pdm_state_t *st = pdm_st(cfg);
-    // Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out,
-    // PB5 TIP out — the classic Cuda bit positions).
-    if (port == 1 && st && st->cuda)
-        av_cuda_via1_pb_input(st->cuda, value);
+    pdm_state_t *st = pdm_st((config_t *)context);
+    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void pdm_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    pdm_state_t *st = pdm_st(cfg);
-    if (st && st->cuda)
-        av_cuda_via1_shift_input(st->cuda, byte);
+    pdm_state_t *st = pdm_st((config_t *)context);
+    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA1 aggregate IRQ → ICR bit 0.

@@ -226,24 +226,12 @@ static void iici_via1_output(void *context, uint8_t port, uint8_t output) {
             floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
         iici_set_rom_overlay(cfg, (output & 0x10) != 0);
     } else {
-        if (st->adb) {
-            uint8_t st_mask = 0x30;
-            uint8_t old_st = st->last_port_b & st_mask;
-            uint8_t new_st = output & st_mask;
-            if (new_st != old_st)
-                adb_port_b_output(st->adb, output);
-        }
-        st->last_port_b = output;
-        if (cfg->rtc)
-            rtc_input(cfg->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
+        // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
+        // ST-transition filter and its port-B shadow live in adb.c now.
+        if (st->adb)
+            adb_port_b_output(st->adb, output);
+        rtc_via1_pb_output(cfg->rtc, output);
     }
-}
-
-static void iici_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    iici_state_t *st = iici_state(cfg);
-    if (st->adb)
-        adb_shift_byte(st->adb, byte);
 }
 
 // ============================================================
@@ -290,7 +278,6 @@ static const mac030_board_desc_t iici_board_desc = {
 // the shared core/RTC/SCC/VIA1 prefix and before mac030_glue_finish.
 static int iici_build_devices(config_t *cfg, checkpoint_t *checkpoint) {
     iici_state_t *st = iici_state(cfg);
-    st->last_port_b = 0x30; // ADB ST1:ST0 idle = 11
     // The IIci bit-bangs the RTC on VIA1 (classic transceiver path).
     rtc_set_via(cfg->rtc, cfg->via1);
 
@@ -394,7 +381,12 @@ static const scsi_bus_decl_t iici_scsi_buses[] = {
 static const mac030_mdu_board_t iici_board = {
     .desc = &iici_board_desc,
     .via1_output = iici_via1_output,
-    .via1_shift_out = iici_via1_shift_out,
+    // No VIA1 shift-out routing: adb.c reads the VIA's shift register
+    // directly at each port-B ST transition, because in mode 7 the ADB
+    // transceiver clocks the shift, not the VIA's internal timer, and the
+    // ROM's SR writes during interrupt handling fire the callback
+    // spuriously (BUG-004).  via.c tolerates a NULL here.
+    .via1_shift_out = NULL,
     .build_devices = iici_build_devices,
 };
 

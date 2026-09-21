@@ -438,7 +438,14 @@ static void egret_process_command(egret_t *eg) {
 
 // === VIA1 transport hooks ===================================================
 
+void egret_via1_port_output(egret_t *eg, uint8_t port, uint8_t output) {
+    if (port == 1)
+        egret_via1_pb_input(eg, output);
+}
+
 void egret_via1_shift_input(egret_t *eg, uint8_t byte) {
+    if (!eg)
+        return;
     if (eg->state != EG_RECEIVING) {
         // A shift-out while we believe the bus is idle means the host has begun
         // a command without our seeing the sysSes edge yet (early boot, before
@@ -451,6 +458,8 @@ void egret_via1_shift_input(egret_t *eg, uint8_t byte) {
 }
 
 void egret_via1_pb_input(egret_t *eg, uint8_t port_b) {
+    if (!eg)
+        return;
     uint8_t old = eg->last_pb;
     eg->last_pb = port_b;
 

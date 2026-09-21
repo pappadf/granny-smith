@@ -193,18 +193,14 @@ static void iisi_via1_output(void *context, uint8_t port, uint8_t output) {
         if (st->rom_overlay && cpu_get_pc(cfg->cpu) >= IISI_ROM_START)
             iisi_set_rom_overlay(cfg, false);
         st->last_port_a = output;
-    } else {
-        if (st->egret)
-            egret_via1_pb_input(st->egret, output);
+        return;
     }
+    egret_via1_port_output(st->egret, port, output);
 }
 
 // VIA1 shift-out: bytes the host shifts to Egret (command packets).
 static void iisi_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    iisi_state_t *st = iisi_state(cfg);
-    if (st->egret)
-        egret_via1_shift_input(st->egret, byte);
+    egret_via1_shift_input(iisi_state((config_t *)context)->egret, byte);
 }
 
 // ============================================================

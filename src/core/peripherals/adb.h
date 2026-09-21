@@ -45,9 +45,6 @@ void adb_checkpoint(adb_t *restrict adb, checkpoint_t *checkpoint);
 
 // === VIA Callback Hooks ===
 
-// Called by the machine's VIA shift-out callback when a byte is fully shifted out
-void adb_shift_byte(adb_t *adb, uint8_t byte);
-
 // Called by the machine's VIA port-B output callback when ST0/ST1 state lines change
 void adb_port_b_output(adb_t *adb, uint8_t value);
 
@@ -82,7 +79,7 @@ void adb_mouse_pending(const adb_t *adb, int *dx, int *dy);
 //
 // On VIA-shift machines (SE/30, IIcx, IIx) the host writes the ADB command
 // byte into VIA1's shift register and clocks bytes back via SR interrupts
-// (handled by adb_shift_byte / adb_port_b_output above).  On the Macintosh
+// (handled by adb_port_b_output above).  On the Macintosh
 // IIfx, the SWIM IOP firmware bit-bangs the ADB bus itself — the host
 // just posts an ADBMsg on XmtMsg[3] and reads the reply from RcvMsg[3].
 //

@@ -1317,8 +1317,7 @@ static void iifx_via1_output(void *context, uint8_t port, uint8_t output) {
             floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
         return;
     }
-    if (cfg->rtc)
-        rtc_input(cfg->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
+    rtc_via1_pb_output(cfg->rtc, output);
 }
 
 // Ignores VIA1 shift-register output because ADB lives behind the ISM IOP.

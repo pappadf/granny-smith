@@ -56,6 +56,12 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data);
 
 void rtc_set_via(rtc_t *restrict rtc, via_t *via);
 
+// The VIA1 port-B bit assignment for the RTC is the same on every machine
+// that wires it there -- PB0 rtcData, PB1 rtcClk, PB2 rtcEnb (active low, so
+// it is `disable` in rtc_input's terms).  Six machines were each unpacking it
+// inline, identically.  NULL-tolerant: the caller need not test cfg->rtc.
+void rtc_via1_pb_output(rtc_t *restrict rtc, uint8_t port_b);
+
 // Override the wall clock with an absolute Mac-epoch (1904) seconds value.
 // Used by the `set-time` script command to make boot deterministic.
 void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds);

@@ -41,7 +41,6 @@ void iicx_set_rom_overlay(struct config *cfg, bool overlay);
 
 // VIA1 callbacks — identical between IIcx and IIx (no PA6 buffer-select).
 void iicx_via1_output(void *context, uint8_t port, uint8_t output);
-void iicx_via1_shift_out(void *context, uint8_t byte);
 
 // SCC IRQ (identical).
 

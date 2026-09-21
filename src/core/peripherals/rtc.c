@@ -377,6 +377,12 @@ void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
     rtc->via = via;
 }
 
+void rtc_via1_pb_output(rtc_t *restrict rtc, uint8_t port_b) {
+    if (!rtc)
+        return;
+    rtc_input(rtc, (port_b >> 2) & 1, (port_b >> 1) & 1, port_b & 1);
+}
+
 void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
     if (!rtc)
         return;

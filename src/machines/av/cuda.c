@@ -623,7 +623,14 @@ static void cuda_process_command(av_cuda_t *cuda) {
 
 // === VIA1 transport hooks ===================================================
 
+void av_cuda_via1_port_output(av_cuda_t *cuda, uint8_t port, uint8_t value) {
+    if (port == 1)
+        av_cuda_via1_pb_input(cuda, value);
+}
+
 void av_cuda_via1_shift_input(av_cuda_t *cuda, uint8_t byte) {
+    if (!cuda)
+        return;
     cuda_cancel_push(cuda); // the host moved on — drop any stale idle-ack
     switch (cuda->state) {
     case CUDA_SENDING:
@@ -651,6 +658,8 @@ void av_cuda_via1_shift_input(av_cuda_t *cuda, uint8_t byte) {
 }
 
 void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b) {
+    if (!cuda)
+        return;
     uint8_t old = cuda->last_pb;
     cuda->last_pb = port_b;
 

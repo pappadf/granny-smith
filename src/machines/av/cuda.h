@@ -61,6 +61,24 @@ void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp);
 
 // The host shifted a byte OUT to Cuda (VIA SR output mode).  Wired from the
 // machine's VIA1 shift-out callback.
+// The VIA1 glue is the same on every machine that wires this transport to
+// VIA1: port B is the handshake, the shift register is a command byte, and
+// only the port test and a NULL check stand between the VIA callback and
+// the transport (F-19).  Five machines each carried their own copy of that,
+// and they had already drifted -- two tested the machine-state pointer for
+// NULL and two did not.  Both entry points below are NULL-tolerant, and
+// av_cuda_via1_port_output takes the port number, so a machine's callback is one
+// line and cannot get the port wrong.
+//
+// Registering the transport pointer as the VIA callback context, which
+// would remove the shim entirely, is NOT available: via_init takes one
+// cb_context for all three callbacks, and the IRQ callback needs cfg on
+// every one of these machines (av_via1_irq -> av_update_ipl((config_t *)
+// context), same shape on PDM and TNT), as does the IIsi's port-A output
+// for the ROM overlay.  A vtable returning the pair runs into the same
+// wall.  This is the available consolidation, not the preferred one.
+void av_cuda_via1_port_output(av_cuda_t *cuda, uint8_t port, uint8_t value);
+
 void av_cuda_via1_shift_input(av_cuda_t *cuda, uint8_t byte);
 
 // The host's VIA1 port-B output changed (TIP/BYTEACK edges).  Wired from

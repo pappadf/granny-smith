@@ -188,6 +188,16 @@ struct adb {
     // rather than landing in one report (adb_typed_key_deferred).
     uint64_t type_next_ns;
 
+    // Shadow of the last VIA1 port-B output, for the ST-transition filter in
+    // adb_port_b_output.  It lived in four machine-state structs -- se30_t,
+    // iicx/iix, iici and q700 -- each with its own copy of the filter and,
+    // in three of the four, no comment saying what the filter was for.  None
+    // of those copies was checkpointed: all three initialisers set it to
+    // $30 at machine init and a restore simply got $30 back, whatever the
+    // VIA's actual ORB was.  Here it rides in adb_t's plain-data block and
+    // round-trips exactly.
+    uint8_t last_port_b;
+
     // === Pointers last (not checkpointed) ===
     via_t *via;
     struct scheduler *scheduler;
@@ -876,6 +886,8 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
     // Set device register 3 defaults and clear all queues/deltas
     adb_reset(adb);
     adb->state = ADB_STATE_IDLE;
+    adb->last_port_b = 0x30; // ADB ST1:ST0 idle = 11; before the read below,
+                             // so a restore overwrites it with the saved value
 
     if (checkpoint) {
         // Restore plain-data state; pointers are re-filled above
@@ -922,21 +934,6 @@ void adb_checkpoint(adb_t *restrict adb, checkpoint_t *checkpoint) {
 // VIA Callback Hooks
 // ============================================================================
 
-// Called by the machine's VIA shift-out callback when the VIA completes an
-// internal 80-cycle shift timer.  On the SE/30, VIA1 SR operates in mode 7
-// (shift out under external clock CB1), so the real shift timing is controlled
-// by the ADB transceiver, not the VIA's internal timer.  The ROM sometimes
-// writes SR during interrupt handling (e.g., to clear it) while ACR is still
-// in mode 7, which triggers spurious sr_shift_complete callbacks.
-//
-// To avoid decoding stale or spurious bytes, the ADB module reads VIA SR
-// directly at each port-B state transition (CMD, EVEN, ODD) instead of
-// relying on this callback.  This function is therefore intentionally a no-op.
-void adb_shift_byte(adb_t *adb, uint8_t byte) {
-    (void)adb;
-    (void)byte;
-}
-
 // Called by the machine's VIA port-B output callback when the OS changes ST0/ST1.
 //
 // On the SE/30 the VIA shift register operates in mode 7 (shift-out under
@@ -946,6 +943,18 @@ void adb_shift_byte(adb_t *adb, uint8_t byte) {
 // each CMD and Listen-data transition.  This matches real hardware where the
 // ADB transceiver controls shift timing via CB1 (BUG-004).
 void adb_port_b_output(adb_t *adb, uint8_t value) {
+    // ST-transition filter.  The ROM bit-bangs the RTC on PB0-PB2 without
+    // intending to touch ST1:ST0 on PB5:PB4, and on real hardware the
+    // transceiver ignores writes where the ST lines do not change
+    // electrically (BUG-004).  Four machines each carried this test in their
+    // VIA1 port-B callback; only se30.c carried the reason.  It belongs
+    // here, where the ST lines are what the module is about.
+    const uint8_t st_mask = 0x30; // PB5:PB4 = ST1:ST0
+    bool st_changed = ((value ^ adb->last_port_b) & st_mask) != 0;
+    adb->last_port_b = value;
+    if (!st_changed)
+        return;
+
     int new_state = extract_state(value);
     adb->state = new_state;
 
