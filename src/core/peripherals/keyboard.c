@@ -194,9 +194,27 @@ extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_ke
     }
 
     // Translate ADB virtual key code to Mac Plus raw code.
-    // See notes/key-mappings.md for the complete translation table.
+    // The full table is docs/core/peripherals/keyboard.md §6.4, derived from
+    // Guide to the Macintosh Family Hardware 2e Figure 7-6 (p.282).
+    //
+    // Three prefix forms, not two.  Guide 2e p.283 (:6694):
+    //
+    //   "If a key transition occurs for one of the arrow keys -- which are
+    //    lowercase keys on the separate keypad -- the Macintosh Plus keyboard
+    //    responds to an Inquiry command by sending back the Keypad response
+    //    ($79) followed by the code shown in Figure 7-6.  If a key transition
+    //    occurs on the Macintosh Plus numeric keypad for the plus sign (+),
+    //    asterisk (*), or slash (/) keys -- which are UPPERCASE keys on the
+    //    separate keypad -- the Macintosh Plus keyboard responds ... by
+    //    sending back the Shift key-down transition response ($71), followed
+    //    by the Keypad response ($79), followed by the code."
+    //
+    // The Shift prefix is load-bearing, not decorative: on a Plus the keypad
+    // symbol and its arrow SHARE a raw code, and after the Keyboard Driver's
+    // conversion ($40 + ((raw & $7F) >> 1), p.282) they share a KEY code too.
+    // Shift is the only thing that tells them apart.
     uint8_t raw_code;
-    bool needs_keypad_prefix = false;
+    enum { PREFIX_NONE, PREFIX_KEYPAD, PREFIX_SHIFT_KEYPAD } prefix = PREFIX_NONE;
 
     switch (host_key) {
     // Main keyboard letters and numbers: raw = (virtual << 1) | 1
@@ -377,95 +395,99 @@ extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_ke
     case 0x3B:
     case 0x7B:
         raw_code = 0x0D;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Left (Z)
     case 0x3C:
     case 0x7C:
         raw_code = 0x05;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Right (D)
     case 0x3D:
     case 0x7D:
         raw_code = 0x11;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Down (C)
     case 0x3E:
     case 0x7E:
         raw_code = 0x1B;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Up (W)
 
     // Numeric keypad: need $79 prefix, then shared main key code
     case 0x41:
         raw_code = 0x03;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad . (S)
     case 0x43:
         raw_code = 0x05;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_SHIFT_KEYPAD;
         break; // Keypad * (D)
     case 0x45:
         raw_code = 0x0D;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_SHIFT_KEYPAD;
         break; // Keypad + (Z)
     case 0x47:
         raw_code = 0x0F;
-        break; // Keypad Clear (X) - unique, no prefix
+        prefix = PREFIX_KEYPAD;
+        break; // Keypad Clear -- $0F is ALSO X ($07 << 1 | 1), so the $79
+               // prefix is what makes the driver add $40 and produce $47
+               // rather than $07.  The old comment claimed $0F was "unique";
+               // every keypad raw code is an alias of a main key.
     case 0x4B:
         raw_code = 0x1B;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_SHIFT_KEYPAD;
         break; // Keypad / (W)
     case 0x4C:
         raw_code = 0x19;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad Enter (Q)
     case 0x4E:
         raw_code = 0x1D;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad - (E)
     case 0x51:
         raw_code = 0x11;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_SHIFT_KEYPAD;
         break; // Keypad = (C)
     case 0x52:
         raw_code = 0x25;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 0 (1)
     case 0x53:
         raw_code = 0x27;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 1 (2)
     case 0x54:
         raw_code = 0x29;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 2 (3)
     case 0x55:
         raw_code = 0x2B;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 3 (4)
     case 0x56:
         raw_code = 0x2D;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 4 (6)
     case 0x57:
         raw_code = 0x2F;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 5 (5)
     case 0x58:
         raw_code = 0x31;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 6 (=)
     case 0x59:
         raw_code = 0x33;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 7 (9)
     case 0x5B:
         raw_code = 0x37;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 8 (-)
     case 0x5C:
         raw_code = 0x39;
-        needs_keypad_prefix = true;
+        prefix = PREFIX_KEYPAD;
         break; // Keypad 9 (8)
 
     default:
@@ -473,10 +495,18 @@ extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_ke
         return;
     }
 
-    // Emit keypad prefix if needed (for arrow keys and numeric keypad)
-    if (needs_keypad_prefix) {
+    // Emit the prefix, if any.  $71 is the Shift KEY-DOWN code, so on release
+    // it becomes $F1 by the same bit-7 rule as every other key -- otherwise
+    // the driver's Shift latch stays down and every later keystroke arrives
+    // shifted.  INFERRED: Guide 2e specifies only the key-down sequence and
+    // Figure 7-6 is the key-down figure; no source we hold states what the
+    // Plus sends on release of keypad + * /.  The plus-keyboard test asserts
+    // Shift's KeyMap bit is clear afterwards, which catches a stuck latch
+    // whichever way the real hardware behaved.
+    if (prefix == PREFIX_SHIFT_KEYPAD)
+        add_key_event(keyboard, (event == key_up) ? 0xF1 : 0x71);
+    if (prefix != PREFIX_NONE)
         add_key_event(keyboard, 0x79);
-    }
 
     // Set key-up flag in bit 7
     if (event == key_up)

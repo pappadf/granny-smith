@@ -407,18 +407,33 @@ codes for the Macintosh Plus keyboard.
 #### 6.4.2 Numeric keypad
 
 **Numeric keypad keys** use the keypad protocol: each transition is preceded by
-`$79` (keypad prefix), then the raw code which is shared with a main keyboard key:
+`$79` (keypad prefix), then the raw code which is shared with a main keyboard key.
+
+**Four of them take a `$71` Shift prefix as well.** Guide 2e p.283: the keypad
+`+`, `*` and `/` are *uppercase* keys on the separate keypad, so the Plus
+keyboard sends "the Shift key-down transition response (`$71`), followed by the
+Keypad response (`$79`), followed by the code".  `=` is not named in that
+sentence but takes it by the same mechanism: Figure 7-6 gives keypad `=` and
+the down-arrow the **same** raw byte `$11`, so the prefix is the only thing in
+the protocol that can distinguish them.  On release the Shift byte becomes
+`$F1` by the ordinary bit-7 rule — *inferred*, since the Guide specifies only
+the key-down direction.
+
+Before 2026-09-21 this table (and the code) omitted all four, and marked
+Keypad Clear as needing no prefix at all — so Clear typed `X`, and `+ * / =`
+arrived as Left, Right, Up and Down.  See §7.1, which had the rule right all
+along:
 
 | Key          | ADB Virtual | Raw Down         | Raw Up           | Shared With |
 | ------------ | ----------- | ---------------- | ---------------- | ----------- |
 | Keypad .     | `$41`       | `$79` then `$03` | `$79` then `$83` | S           |
-| Keypad \*    | `$43`       | `$79` then `$05` | `$79` then `$85` | D           |
-| Keypad +     | `$45`       | `$79` then `$0D` | `$79` then `$8D` | Z           |
-| Keypad Clear | `$47`       | `$0F`            | `$8F`            | X (unique)  |
-| Keypad /     | `$4B`       | `$79` then `$1B` | `$79` then `$9B` | W           |
+| Keypad \*    | `$43`       | `$71 $79 $05`    | `$F1 $79 $85`    | D + Shift   |
+| Keypad +     | `$45`       | `$71 $79 $0D`    | `$F1 $79 $8D`    | Left arrow + Shift |
+| Keypad Clear | `$47`       | `$79` then `$0F` | `$79` then `$8F` | X           |
+| Keypad /     | `$4B`       | `$71 $79 $1B`    | `$F1 $79 $9B`    | Up arrow + Shift |
 | Keypad Enter | `$4C`       | `$79` then `$19` | `$79` then `$99` | Q           |
 | Keypad -     | `$4E`       | `$79` then `$1D` | `$79` then `$9D` | E           |
-| Keypad =     | `$51`       | `$79` then `$11` | `$79` then `$91` | C           |
+| Keypad =     | `$51`       | `$71 $79 $11`    | `$F1 $79 $91`    | Down arrow + Shift |
 | Keypad 0     | `$52`       | `$79` then `$25` | `$79` then `$A5` | 1           |
 | Keypad 1     | `$53`       | `$79` then `$27` | `$79` then `$A7` | 2           |
 | Keypad 2     | `$54`       | `$79` then `$29` | `$79` then `$A9` | 3           |
