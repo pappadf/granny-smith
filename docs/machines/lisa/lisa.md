@@ -813,6 +813,45 @@ software): `$0F` = old US layout, `$3E` = Dvorak, `$3F` = final US layout (plus
 several international layouts). An emulator maps host key events to Lisa key
 codes through the layout table for the configured layout.
 
+#### The final-US key code table
+
+Transcribed from the boot ROM's own `AsciiTable`
+(`local/gs-docs/projects/Lisa/AppleLisa - Boot ROM Source/Lisa Boot ROM RM248.G.TEXT`),
+96 bytes covering key codes `$20`–`$7F`. The indexing law is in
+*Lisa Boot ROM Asm Listing*, routine `KeyToAscii`: `ANDI #$007F,D1` then
+`SUBI #32,D1` — so the first table byte is key code `$20`, and bit 7 is the
+direction bit rather than part of the index.
+
+This table was previously undocumented here, which is worth recording because
+a code review cited "lisa.md §11" as its location and the citation was wrong.
+
+|      | `+0`  | `+1` | `+2` | `+3` | `+4` | `+5` | `+6` | `+7` |
+| ---- | ----- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| `$20`| Clear | Pad&nbsp;- | Left | Right | Pad&nbsp;7 | Pad&nbsp;8 | Pad&nbsp;9 | Up |
+| `$28`| Pad&nbsp;4 | Pad&nbsp;5 | Pad&nbsp;6 | Down | Pad&nbsp;. | Pad&nbsp;2 | Pad&nbsp;3 | Enter |
+| `$30`| —     | —    | —    | —    | —    | —    | —    | —    |
+| `$38`| —     | —    | —    | —    | —    | —    | —    | —    |
+| `$40`| `-`   | `=`  | —    | —    | `P`  | BkSp | —    | —    |
+| `$48`| Return | Pad&nbsp;0 | —  | —    | `/`  | Pad&nbsp;1 | — | —    |
+| `$50`| `9`   | `0`  | `U`  | `I`  | `J`  | `K`  | `[`  | `]`  |
+| `$58`| `M`   | `L`  | `;`  | `'`  | Space | `,` | `.`  | `O`  |
+| `$60`| `E`   | `6`  | `7`  | `8`  | `5`  | `R`  | `T`  | `Y`  |
+| `$68`| Option | `F` | `G`  | `H`  | `V`  | `C`  | `B`  | `N`  |
+| `$70`| `A`   | `2`  | `3`  | `4`  | `1`  | `Q`  | `S`  | `W`  |
+| `$78`| Tab   | `Z`  | `X`  | `D`  | —    | Alpha&nbsp;Lock | Shift | Command |
+
+The ROM's table stores `$00` for keys with no ASCII form (Option, Tab, Alpha
+Lock, Shift, Command) and for unused slots; those are named above rather than
+derived. Its own comment notes it "assumes alpha-lock so upper case only",
+which is why there are no separate lower-case codes.
+
+Two entries to check a transcription against: `$EB` is `H` held down (`$6B` with
+bit 7 set) — the boot menu's "boot from ProFile" key — and `$F2` is `3`.
+
+`src/machines/lisa/lisa.c`'s `lisa_resolve_key_name()` implements this, so
+`keyboard.press("h")` and `keyboard.down "shift"` work on the Lisa the way they
+do on a Mac.
+
 ### 11.4 Mouse
 
 The mouse is enabled with a command of the form `#111 ennn`, where `e` enables

@@ -228,7 +228,25 @@ def row_plus_keyboard() {
     run_ticks(10)
     assert keymap_bit(0x38) == 0 "plus-keyboard: Shift latch stuck down after keypad / release"
 
-    report_row("7.1", "builtin", "hd-boot keypad-prefix keymap")
+    # N-04: keyboard.press("a") failed on EVERY machine, Mac included --
+    # debug_mac_resolve_key_name knew fourteen named keys and the hex form and
+    # nothing else, while adb.c's own argument doc promised
+    # `Key name ("return"/"esc"/"a"/...)`.  Letters and digits now resolve
+    # through the layout table that was already there.
+    machine.adb.keyboard.down "a"
+    run_ticks(10)
+    assert keymap_bit(0x00) == 1 "plus-keyboard: keyboard.press(\"a\") did not resolve"
+    machine.adb.keyboard.up "a"
+    run_ticks(10)
+    assert keymap_bit(0x00) == 0 "plus-keyboard: 'a' stuck down"
+
+    machine.adb.keyboard.down "7"
+    run_ticks(10)
+    assert keymap_bit(0x1A) == 1 "plus-keyboard: keyboard.press(\"7\") did not resolve"
+    machine.adb.keyboard.up "7"
+    run_ticks(10)
+
+    report_row("7.1", "builtin", "hd-boot keypad-prefix keymap key-names")
 }
 
 # ---- plus-checkpoint --------------------------------------------------------

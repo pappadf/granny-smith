@@ -87,35 +87,34 @@ def row_lisa_xenix_hdinit() {
     check("goldens/lisa-xenix3.0-720x364x1-hdinit-bootfloppy.png")
 
     # (§1.5.2) Type "hdinit" + RETURN.
-    machine.adb.keyboard.press 0xEB
-    machine.adb.keyboard.press 0x6B
+    #
+    # By NAME.  Until 2026-09-21 lisa_input_key took only "0xNN" and dropped
+    # the key-up leg entirely, so each character needed two calls -- an
+    # explicit down byte and an explicit up byte, hand-assembled from the
+    # COPS encoding.  That is what these twelve lines used to be.  Both
+    # limitations were drift, not hardware, and this block is the end-to-end
+    # proof: the names resolve through the boot ROM's own AsciiTable and each
+    # press now emits its own down and up.
+    machine.adb.keyboard.press "h"
     scheduler.run 600000
-    machine.adb.keyboard.press 0xFB
-    machine.adb.keyboard.press 0x7B
+    machine.adb.keyboard.press "d"
     scheduler.run 600000
-    machine.adb.keyboard.press 0xD3
-    machine.adb.keyboard.press 0x53
+    machine.adb.keyboard.press "i"
     scheduler.run 600000
-    machine.adb.keyboard.press 0xEF
-    machine.adb.keyboard.press 0x6F
+    machine.adb.keyboard.press "n"
     scheduler.run 600000
-    machine.adb.keyboard.press 0xD3
-    machine.adb.keyboard.press 0x53
+    machine.adb.keyboard.press "i"
     scheduler.run 600000
-    machine.adb.keyboard.press 0xE6
-    machine.adb.keyboard.press 0x66
+    machine.adb.keyboard.press "t"
     scheduler.run 600000
-    machine.adb.keyboard.press 0xC8
-    machine.adb.keyboard.press 0x48
+    machine.adb.keyboard.press "return"
     scheduler.run 30000000
     # "WARNING: ... Do you want to continue <y/n>?"
     check("goldens/lisa-xenix3.0-720x364x1-hdinit-continue.png")
 
     # Answer "y" + RETURN.
-    machine.adb.keyboard.press 0xE7
-    machine.adb.keyboard.press 0x67
-    machine.adb.keyboard.press 0xC8
-    machine.adb.keyboard.press 0x48
+    machine.adb.keyboard.press "y"
+    machine.adb.keyboard.press "return"
     scheduler.run 20000000
     # "Enter size of hard disk (5 or 10):"
     check("goldens/lisa-xenix3.0-720x364x1-hdinit-size.png")
