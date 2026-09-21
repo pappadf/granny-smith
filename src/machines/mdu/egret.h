@@ -73,9 +73,7 @@ void egret_set_power_off_callback(egret_t *eg, void (*cb)(void *ctx), void *ctx)
 // === Object-model / test helpers ============================================
 
 // Firmware identity string ("Egret8").
-const char *egret_firmware(const egret_t *eg);
 
 // Force a 1-second tick packet now (test helper; normally autonomous).
-void egret_force_tick(egret_t *eg);
 
 #endif // EGRET_H

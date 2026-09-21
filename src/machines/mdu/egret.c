@@ -184,8 +184,15 @@ static void egret_process_adb(egret_t *eg) {
     uint8_t out[8];
     int out_len = 0;
     bool replied = false;
+    // Clamp here, the way egret_process_pseudo does fifteen lines down: a
+    // truncated packet (rx_len 0 or 1) otherwise passes -2 or -1 as the
+    // length.  adb_iop_transact absorbs it, but the guard belongs at the
+    // call site so both paths in this file read the same way.
+    int data_len = eg->rx_len - 2;
+    if (data_len < 0)
+        data_len = 0;
     if (eg->adb)
-        replied = adb_iop_transact(eg->adb, cmd, &eg->rx_buf[2], eg->rx_len - 2, out, &out_len);
+        replied = adb_iop_transact(eg->adb, cmd, &eg->rx_buf[2], data_len, out, &out_len);
 
     uint8_t flags = replied ? 0 : EG_FLAG_TIMEOUT;
     int n = egret_put_header(eg, PKT_ADB, flags, cmd);
@@ -398,16 +405,6 @@ static void egret_tick_event(void *source, uint64_t data) {
     scheduler_new_cpu_event(eg->sched, &egret_tick_event, eg, 0, 0, (uint64_t)EGRET_TICK_NS);
 }
 
-// Force a tick now (test/object-model helper).
-void egret_force_tick(egret_t *eg) {
-    if (egret_try_unsolicited(eg)) {
-        eg->tx_buf[0] = 0x00;
-        eg->tx_buf[1] = PKT_TICK;
-        eg->tx_len = 2;
-        egret_begin_send(eg);
-    }
-}
-
 // ADB auto-poll: Talk-Reg-0 the active ADB devices; when one has fresh data
 // (mouse motion/button, keystroke) deliver it as an unsolicited adbPkt with the
 // EgAutoPoll flag set.  Devices drain their reply buffer after a Talk, so an
@@ -416,8 +413,14 @@ static void egret_autopoll_event(void *source, uint64_t data) {
     (void)data;
     egret_t *eg = (egret_t *)source;
     if (eg->autopoll_enabled && eg->adb && egret_try_unsolicited(eg)) {
-        // Rotate across the standard relocated addresses: 3 = mouse, 2 = kbd.
-        static const uint8_t poll_addr[2] = {3, 2};
+        // Ask the model where the devices are NOW, never assume the power-on
+        // addresses (adb.h's contract).  An OS's init may re-address them via
+        // Listen R3 and leave them there — classic Mac OS moves them back,
+        // Copland does not — and a transport that polls {3, 2} regardless
+        // then delivers nothing at all: no keyboard, no mouse.  The identical
+        // bug was found and fixed on the Cuda side (see
+        // projects/copland/notes/adb-input.md) and Egret was never swept.
+        const uint8_t poll_addr[2] = {adb_mouse_address(eg->adb), adb_keyboard_address(eg->adb)};
         for (int k = 0; k < 2; k++) {
             uint8_t addr = poll_addr[(eg->autopoll_phase + k) & 1];
             uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
@@ -497,9 +500,4 @@ void egret_checkpoint(egret_t *eg, checkpoint_t *cp) {
 void egret_set_power_off_callback(egret_t *eg, void (*cb)(void *ctx), void *ctx) {
     eg->power_cb = cb;
     eg->power_ctx = ctx;
-}
-
-const char *egret_firmware(const egret_t *eg) {
-    (void)eg;
-    return "Egret8";
 }

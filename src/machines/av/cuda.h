@@ -70,7 +70,6 @@ void av_cuda_via1_pb_input(av_cuda_t *cuda, uint8_t port_b);
 // === Object-model / test helpers ============================================
 
 // Firmware identity string ("Cuda 2.37").
-const char *av_cuda_firmware(const av_cuda_t *cuda);
 
 // Attach the video digitizer's I2C targets (DMSD + VDC) behind
 // pseudo-command $22 (wired from av_build_devices once both exist).

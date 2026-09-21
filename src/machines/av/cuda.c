@@ -399,8 +399,15 @@ static void cuda_process_adb(av_cuda_t *cuda) {
     uint8_t out[8];
     int out_len = 0;
     bool replied = false;
+    // Clamp here, the way cuda_process_pseudo does below: a truncated packet
+    // (rx_len 0 or 1) otherwise passes -2 or -1 as the length.  The callee
+    // absorbs it, but the guard belongs at the call site so both paths in
+    // this file read the same way.
+    int data_len = cuda->rx_len - 2;
+    if (data_len < 0)
+        data_len = 0;
     if (cuda->adb)
-        replied = adb_iop_transact(cuda->adb, cmd, &cuda->rx_buf[2], cuda->rx_len - 2, out, &out_len);
+        replied = adb_iop_transact(cuda->adb, cmd, &cuda->rx_buf[2], data_len, out, &out_len);
 
     uint8_t flags = replied ? 0 : CUDA_FLAG_TIMEOUT;
     int n = cuda_put_header(cuda, PKT_ADB, flags, cmd);
@@ -978,11 +985,6 @@ void av_cuda_checkpoint(av_cuda_t *cuda, checkpoint_t *cp) {
         return;
     size_t data_size = offsetof(av_cuda_t, via1);
     system_write_checkpoint_data(cp, cuda, data_size);
-}
-
-const char *av_cuda_firmware(const av_cuda_t *cuda) {
-    (void)cuda;
-    return "Cuda 2.37";
 }
 
 void av_cuda_attach_vdc(av_cuda_t *cuda, struct av_vdc *vdc) {

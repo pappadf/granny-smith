@@ -418,6 +418,17 @@ static void flush_device(adb_t *adb, uint8_t addr) {
         LOG(2, "flush_device: flushing mouse at addr %d", addr);
         adb->mouse_dx = 0;
         adb->mouse_dy = 0;
+        // Clear the pending flag too, or device_has_pending_data() keeps
+        // reporting data and the next Talk R0 delivers a zero-delta report
+        // the host did not ask for.  Guide 2e: "Any user input data being
+        // stored by the device ... are lost."  Self-healing before this (one
+        // spurious report per Flush, until prepare_mouse_reply clears it),
+        // but mouse_control.md records spurious zero-delta reports as what
+        // corrupts MTemp on the SE/30 ROM path.
+        //
+        // mouse_button is deliberately NOT cleared: a held button is a level,
+        // not buffered input, so a Flush mid-drag should still report it.
+        adb->mouse_data_pending = false;
     } else {
         LOG(2, "flush_device: unknown device at addr %d, ignoring", addr);
     }
@@ -654,14 +665,30 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
 
     switch (type) {
     case CMD_TYPE_SENDRESET:
-        // Type-00 sub-commands: bits 1-0 distinguish SendReset ($X0) from
-        // Flush ($X1).  Inside Mac V "The Apple Desktop Bus" §6.2:
-        //   $X0  Reserved for SendReset to addr X (no real device implements it)
-        //   $X1  Flush device X (discard buffered output, keep address remap)
-        // Treating $X1 as a broadcast reset would wipe the device-address
-        // remap state set up by an earlier Listen-R3 — every Talk poll after
-        // the Flush would then see the original default addresses and the OS
-        // would loop probing the same devices forever.
+        // Type-00 sub-commands: bits 1-0 distinguish SendReset from Flush.
+        // Guide to the Macintosh Family Hardware 2e, Table 8-13 "Command byte
+        // syntax" (p.315):
+        //
+        //     x x x x 0 0 0 0   SendReset      <- address bits IGNORED
+        //     A3 A2 A1 A0 0 0 0 1   Flush      <- addressed
+        //     ...
+        //     Note: x = ignored
+        //
+        // and p.316: "The SendReset command causes all devices on the network
+        // to reset to their power-on states."  So $30 and $00 are the same
+        // command on the wire, and resetting every device for any $X0 is
+        // correct rather than over-broad.  Apple's own egretequ.a agrees
+        // ("%0000xxxx SendReset (addr field ignored)").
+        //
+        // An earlier version of this comment cited Inside Mac V for "$X0
+        // reserved for SendReset to addr X"; Table 8-13 contradicts that, and
+        // narrowing $X0 to addr==0 would make the model refuse a valid
+        // broadcast reset.
+        //
+        // Flush stays addressed: treating $X1 as a broadcast reset would wipe
+        // the device-address remap set up by an earlier Listen-R3 — every Talk
+        // poll after the Flush would see the original default addresses and
+        // the OS would loop probing the same devices forever.
         if (reg == 1)
             flush_device(adb, addr);
         else
@@ -669,10 +696,12 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
         break;
 
     case CMD_TYPE_FLUSH:
-        // Type-01 is "Reserved" per the ADB spec.  Earlier code mapped this
-        // here, but real OSes use the type-00 + sub=01 encoding (above);
-        // we keep this case as a defensive alias.
-        flush_device(adb, addr);
+        // Type-01 ($X4-$X7) is *Reserved* per Table 8-13 ("x x x x 0 1 x x"),
+        // exactly as $X2 and $X3 are.  Flush is type-00 sub=01, handled above.
+        // Mapping this to flush_device was a "defensive alias" that is not in
+        // the spec: a host probing with $24 would get its keyboard buffer
+        // flushed.  Log and ignore, the way an unimplemented encoding should.
+        LOG(1, "ADB: reserved command type 01 ($%02X) ignored (Guide 2e Table 8-13)", cmd);
         break;
 
     case CMD_TYPE_LISTEN:
@@ -1149,9 +1178,15 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     if (type == CMD_TYPE_TALK) {
         if (adb->reply_len == 0)
             return false; // no device at this address
+        // Bound by the SOURCE, not by the caller's 8-byte buffer.  This was
+        // `if (n > 8) n = 8;`, which is the wrong bound in the dangerous
+        // direction: reply_buf is 2 bytes, so a reply_len above 2 would have
+        // over-read the struct rather than being clamped.  reply_len is only
+        // ever set to 0 or 2 today, so the clamp has never fired either way —
+        // but the version that is safe if that changes is this one.
         int n = adb->reply_len;
-        if (n > 8)
-            n = 8;
+        if (n > (int)sizeof adb->reply_buf)
+            n = (int)sizeof adb->reply_buf;
         memcpy(out_data, adb->reply_buf, (size_t)n);
         *out_data_len = n;
         // Drain the reply buffer so a follow-up Talk poll on the same

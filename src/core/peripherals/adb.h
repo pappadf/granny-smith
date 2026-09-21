@@ -89,7 +89,15 @@ void adb_mouse_pending(const adb_t *adb, int *dx, int *dy);
 // adb_iop_transact bridges that protocol to this module's existing device
 // state machine: given an ADB command byte plus any Listen-side payload,
 // it runs the same dispatch (Talk / Listen / Reset / Flush) and returns
-// the Talk reply (if any).  Output buffer must hold up to 8 bytes.
+// the Talk reply (if any).
+//
+// Output buffer must hold up to 8 bytes.  That is the HARDWARE's contract,
+// not this model's: the IOP ADB Driver ERS puts the ADB data field at "zero,
+// or in the range 2 to 8 bytes", and all callers size `out[8]` accordingly.
+// This model's devices never return more than 2 (reply_buf is 2 bytes), so
+// the extra headroom is unused today — but do not narrow the documented
+// contract to 2, because a tablet or an extended keyboard's Register 1 would
+// need the full width and every transport already allocates for it.
 //
 // Returns true if a device responded with `*out_data_len` reply bytes;
 // false for "no device at this address" (= NoReply, the firmware sets
