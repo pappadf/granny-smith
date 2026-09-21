@@ -69,6 +69,19 @@ image_t *lisa_fdc_disk_image(const lisa_fdc_t *fdc);
 // the OS's boot-volume + device-configuration table across launches.  Returns
 // false on I/O error.  Load before booting (the ROM reads it during startup).
 bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path);
+// Write a factory-fresh parameter memory (defaults, empty device table, valid
+// checksum) into the controller RAM.  `boot_vol` is the BootVol nibble from
+// pram_format.md §4 -- 1 = built-in Sony floppy, 2 = the parallel-port
+// ProFile.  Called at construction; exposed so a machine can re-seed.
+// `valid` false stores a deliberately non-verifying checksum -- a machine
+// whose battery was just replaced, so the OS rebuilds the device table from
+// the boot volume's MDDF snapshot instead of trusting an empty one.
+// `installed` additionally packs the device-configuration table the LOS 3.1
+// installer leaves at a clean shutdown (ProFile as cd_paraport).  Needed only
+// for a volume installed onto but not yet cleanly shut down, whose on-disk
+// MDDF snapshot the OS cannot restore from.
+void lisa_fdc_pram_init(lisa_fdc_t *fdc, uint8_t boot_vol, bool valid, bool installed);
+
 bool lisa_fdc_pram_load(lisa_fdc_t *fdc, const char *path);
 
 // === Shared-RAM access (offset = physical address − $00C001) ================

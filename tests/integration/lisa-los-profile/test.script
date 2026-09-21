@@ -147,11 +147,23 @@ check("expected_installed.png")
 # we must run the OS FROM it: eject the boot floppy and power-cycle with
 # machine.restart — the just-installed ProFile (delta and all) stays attached
 # across the teardown (proposal-boot-vs-reset §3.3), no save-and-reattach
-# choreography — then load the clean-shutdown PRAM (TEST_SETUP) so the ROM
-# auto-boots the ProFile with no floppy — exactly suite-lisa's lisa-los31-profile row.
+# choreography — then seed the parameter memory so the ROM auto-boots the
+# ProFile with no floppy — exactly suite-lisa's lisa-los31-profile row.
+#
+# BootVol=2, a valid checksum, and the installer's device table -- i.e. what
+# LOS itself would have left in PRAM had it shut down cleanly.  That third
+# argument is load-bearing HERE and nowhere else: this volume has been
+# installed onto but has not yet been cleanly powered off (that happens at the
+# end of this very row), so its on-disk MDDF snapshot is not usable and the
+# rebuild-from-disk path has nothing to restore.  Booting with only a
+# fresh-battery PRAM stops at error 10738 -- ProFile not found.
+#
+# suite-lisa's lisa-los31-profile row is the other case and takes the other
+# posture: its volume WAS cleanly shut down, so pram_init(2, false) is right
+# there and the OS rebuilds from the snapshot.
 machine.floppy.drive.0.eject
 machine.restart
-assert machine.hd.pram_load("${$WORK_DIR}/profile.pram") "pram_load failed"
+assert machine.hd.pram_init(2, true, true) "pram_init failed"
 
 # Boot to the Office System desktop; the first boot opens a "clock not set" note,
 # which we dismiss (warp onto OK — closed-loop on $CC00F0/F2 — and click), leaving
