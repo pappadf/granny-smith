@@ -40,21 +40,17 @@ def row_lisa_los31_profile() {
     # The ROM reads PRAM -> BootVol=2 -> PROBOOT the ProFile -> loader -> SYSTEM.OS;
     # pm_good=false, so INIT_CONFIG restores the on-disk MDDF snapshot and FIND_PM_IDS
     # resolves the ProFile (cd_paraport) from it.  By ~100M instructions LOS has booted
-    # to the Office System desktop, which opens a first-boot "Lisa clock/calendar is not
-    # set properly" note (the emulated COPS real-time clock reads zero, so the OS offers
-    # to set it).
-    scheduler.run 100000000
-
-    # Dismiss the note: warp the cursor onto its OK button (closed-loop on the OS cursor
-    # globals $CC00F0/F2 — live on this modal) and click, leaving the clean Office System
-    # desktop: the menu bar (Desk / File-Print / Edit / Housekeeping) with the
-    # Preferences / Wastebasket / Clipboard / Disk icons.
-    machine.adb.mouse.move 622 108 "global"
-    scheduler.run 2000000
-    machine.adb.mouse.click true
-    scheduler.run 600000
-    machine.adb.mouse.click false
-    scheduler.run 12000000
+    # to the clean Office System desktop: the menu bar (Desk / File-Print / Edit /
+    # Housekeeping) with the Preferences / Wastebasket / Clipboard / Disk icons.
+    #
+    # Until 2026-09-21 it booted to a "Lisa clock/calendar is not set properly" note
+    # instead, because the COPS clock read all zeros -- not merely unset but impossible,
+    # since day-of-year is 1-based and year 0 is 1980, below the Office System's floor.
+    # This row dismissed it by warping the cursor onto the OK button and clicking.  The
+    # COPS clock powers up at 1 January 1984 now (06-io-controllers F-27), so there is
+    # no note and nothing to dismiss; the golden is the same desktop, differing only in
+    # where the cursor is parked.
+    scheduler.run 112000000
     check("goldens/lisa-los3.1-720x364x1-office.png")
     report_row("LOS 3.1", "builtin", "profile-boot own-pram")
     report_perf("suite-lisa/lisa-los31-profile", scheduler.instr_count)

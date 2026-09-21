@@ -79,6 +79,58 @@ LOG_USE_CATEGORY_NAME("cops");
 
 #define COPS_FIFO 32 // response queue depth
 
+// === The COPS real-time clock ===============================================
+//
+// The Lisa's clock lives in the COPS, and the boot ROM proves its shape.
+// `READCLK` (RM248.M.TEXT) sends $02, expects $80, then a byte masked
+// `ANDI.B #$F0` against `#$E0`, then five more bytes; parameter memory
+// reserves "$1BA-1BF : Clock setting (Ey,dd,dh,hm,ms,st)" (RM248.E.TEXT).
+// Six bytes, twelve nibbles: an $E marker and eleven BCD digits.
+//
+// `DSPCLK` (RM248.B.TEXT) pins the field widths.  It loads CLKDATA+2 as a
+// longword -- so skipping `Ey` and `dd` -- and then rotates out 1 digit of
+// day, 2 of hour, 2 of minute and 2 of seconds, leaving one nibble it does
+// not display.  That gives:
+//
+//     byte 0:  E y      marker, year
+//     byte 1:  d d      day-of-year hundreds, tens
+//     byte 2:  d h      day-of-year units, hour tens
+//     byte 3:  h m      hour units, minute tens
+//     byte 4:  m s      minute units, second tens
+//     byte 5:  s t      second units, tenths
+//
+// year 1 + day 3 + hh 2 + mm 2 + ss 2 + tenths 1 = eleven digits, and
+// lisa.md §11.5 independently says "1/10 second with a 16-year span".
+//
+// THE YEAR NIBBLE IS ANCHORED AT 1980.  Four bits give 1980..1995, and the
+// Office System enforces a floor of 1981, so 1981..1995 is the usable range.
+// That anchor is NOT in any source in this tree -- the ROM never displays or
+// validates a year, which is consistent with it not caring -- and is recorded
+// here as a determination from the project owner rather than a derivation.
+//
+// One consequence worth stating plainly: a present-day host clock cannot be
+// represented at all.  So the Lisa does not seed from the wall clock the way
+// every other machine does; it powers up at a fixed, reproducible instant.
+#define CLK_YEAR_BASE 1980
+
+// year, ddd, hh, mm, ss, t
+#define CLK_DIGITS 11
+
+// A set sequence carries sixteen nibbles, not eleven: the burn-in code in
+// RM248.B.TEXT sends $2C, then TODSET twice with eight digits each
+// (SET1 = "initial alarm/year/dd setting", SET2 = $10000000 producing
+// "day=01, all other values=0"), then $25 to enable.  TODSET rotates
+// MSB-first and sends each digit as $1X.
+//
+// SET2's eight digits must therefore be d, h, h, m, m, s, s, t -- day UNITS
+// through tenths -- which places `dd` at digits 6 and 7 of SET1 and the year
+// at digit 5, leaving digits 0..4 as the alarm.  The alarm width is the one
+// inferred quantity here: it is what is left over, not something a source
+// states.  The clock digits are contiguous across the boundary, which is the
+// consistency check that makes the reading credible.
+#define CLK_SET_DIGITS       16
+#define CLK_SET_ALARM_DIGITS 5
+
 struct cops {
     // Plain data first so the checkpoint can read/write one contiguous block
     // bounded by offsetof(cops_t, via1) -- the convention the other nine
@@ -114,10 +166,78 @@ struct cops {
     int warp_x, warp_y; // target screen pixel
     int warp_ticks; // convergence-loop safety counter
 
+    // The real-time clock (06-io-controllers F-27).  Eleven BCD nibbles:
+    // year, three day-of-year digits, hh, mm, ss and tenths.  Held unpacked,
+    // one digit per byte, because the wire packs them differently in each
+    // direction -- the read is six bytes with an $E marker nibble, the write
+    // is a stream of one-nibble commands -- and a packed form would need
+    // unpacking on both paths anyway.
+    uint8_t clock[CLK_DIGITS];
+    // Digits arriving from a $2C ... $1n ... $25 set sequence, and how many
+    // have landed.  -1 means no set is in progress.
+    uint8_t clock_set[CLK_SET_DIGITS];
+    int clock_set_count;
+    bool clock_setting;
+
     // Pointers last (not checkpointed)
     via_t *via1;
     struct scheduler *sched;
 };
+
+// === Real-time clock ========================================================
+
+// The power-on clock.  Every other machine seeds its RTC from the host wall
+// clock; the Lisa cannot, because four bits of year reach only 1995.  So it
+// powers up at a fixed instant instead, which also makes every Lisa row
+// reproducible without pinning anything.
+//
+// 1 January 1984: inside the Office System's 1981..1995 window, and the year
+// the Lisa 2 shipped.
+#define CLK_DEFAULT_YEAR 1984
+#define CLK_DEFAULT_DAY  1
+
+static void cops_clock_reset(cops_t *c) {
+    int y = CLK_DEFAULT_YEAR - CLK_YEAR_BASE;
+    int d = CLK_DEFAULT_DAY;
+    c->clock[0] = (uint8_t)(y & 0x0F); // year
+    c->clock[1] = (uint8_t)(d / 100); // day hundreds
+    c->clock[2] = (uint8_t)((d / 10) % 10); // day tens
+    c->clock[3] = (uint8_t)(d % 10); // day units
+    for (int i = 4; i < CLK_DIGITS; i++)
+        c->clock[i] = 0; // hh:mm:ss.t = 00:00:00.0
+    c->clock_setting = false;
+    c->clock_set_count = 0;
+}
+
+// Pack the eleven digits into the five bytes after the $Ey marker, plus the
+// marker itself: E y | d d | d h | h m | m s | s t.
+static void cops_clock_pack(const cops_t *c, uint8_t out[6]) {
+    out[0] = (uint8_t)(0xE0 | (c->clock[0] & 0x0F));
+    out[1] = (uint8_t)((c->clock[1] << 4) | c->clock[2]);
+    out[2] = (uint8_t)((c->clock[3] << 4) | c->clock[4]);
+    out[3] = (uint8_t)((c->clock[5] << 4) | c->clock[6]);
+    out[4] = (uint8_t)((c->clock[7] << 4) | c->clock[8]);
+    out[5] = (uint8_t)((c->clock[9] << 4) | c->clock[10]);
+}
+
+// End of a $2C ... $25 sequence: take the eleven clock digits out of the
+// sixteen that arrived, skipping the alarm.  A short sequence is ignored
+// rather than half-applied -- the host either set the clock or it did not.
+static void cops_clock_commit(cops_t *c) {
+    if (!c->clock_setting)
+        return;
+    c->clock_setting = false;
+    if (c->clock_set_count < CLK_SET_DIGITS) {
+        LOG(1, "cops clock set abandoned after %d of %d digits", c->clock_set_count, CLK_SET_DIGITS);
+        c->clock_set_count = 0;
+        return;
+    }
+    for (int i = 0; i < CLK_DIGITS; i++)
+        c->clock[i] = c->clock_set[CLK_SET_ALARM_DIGITS + i] & 0x0F;
+    c->clock_set_count = 0;
+    LOG(2, "cops clock set to %d, day %d%d%d, %d%d:%d%d:%d%d.%d", CLK_YEAR_BASE + c->clock[0], c->clock[1], c->clock[2],
+        c->clock[3], c->clock[4], c->clock[5], c->clock[6], c->clock[7], c->clock[8], c->clock[9], c->clock[10]);
+}
 
 // === Response FIFO ==========================================================
 
@@ -385,21 +505,36 @@ static void cops_command(cops_t *c, uint8_t cmd) {
         // #111 ennn: e (bit 3) = mouse-interrupt enable, nnn = interval units.
         cops_set_mouse(c, (cmd & 0x08) != 0, cmd & 0x07);
     } else if (cmd == 0x02) {
-        // Read clock: the COPS replies with a $80 lead-in, an $Ey clock-data
-        // marker (y = year nibble), then 5 packed time bytes (docs §11.5).  A
-        // zeroed time is a valid default; the deterministic/real clock layers
-        // in with the RTC work (Step 9).
-        // The clock reply is one 7-byte message: $80, the $E0 clock-data
-        // marker, then five time bytes.  READCLK in the boot ROM
-        // (RM248.M.TEXT) reads exactly that shape, so a partial enqueue would
-        // leave it waiting mid-sequence.  The five bytes are zero because the
-        // COPS clock is not modelled -- see 06-io-controllers F-27, which is
-        // deferred pending a decision on the Ey,dd,dh,hm,ms,st format.
-        const uint8_t clock_reply[7] = {COPS_RSTCODE, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00};
-        fifo_push_msg(c, clock_reply, 7);
+        // Read clock.  One 7-byte message -- $80, the $Ey marker carrying the
+        // year nibble, then five packed bytes -- because READCLK reads
+        // exactly that shape and a partial enqueue would leave it waiting
+        // mid-sequence.
+        //
+        // This used to be five zero bytes, which is not merely unset: day-of-
+        // year is 1-based, so 000 is not a date, and year 0 is 1980, below
+        // the Office System's floor.  LOS opened a "clock/calendar is not set
+        // properly" dialog on every boot and two suites dismissed it by
+        // warping the cursor onto its OK button.
+        uint8_t reply[7];
+        reply[0] = COPS_RSTCODE;
+        cops_clock_pack(c, &reply[1]);
+        fifo_push_msg(c, reply, 7);
         cops_kick_pump(c);
+    } else if (cmd == 0x2C) {
+        // Begin a clock set: the digits follow as $1n commands.
+        c->clock_setting = true;
+        c->clock_set_count = 0;
+    } else if (cmd == 0x25) {
+        // Clock enable, which is also the end of a set sequence.
+        cops_clock_commit(c);
+    } else if ((cmd & 0xF0) == 0x10) {
+        // One clock digit, MSB-first (TODSET).  Outside a set sequence these
+        // still arrive -- the ROM writes nibbles in other contexts -- so they
+        // are only collected between $2C and $25.
+        if (c->clock_setting && c->clock_set_count < CLK_SET_DIGITS)
+            c->clock_set[c->clock_set_count++] = cmd & 0x0F;
     }
-    // 0x1n write-clock, 0x2x set-modes, 0x5n/0x6n NMI-key: accepted.
+    // 0x2x set-modes, 0x5n/0x6n NMI-key: accepted.
     LOG(2, "cops command 0x%02x", cmd);
 }
 
@@ -443,6 +578,7 @@ cops_t *cops_init(via_t *via1, struct scheduler *scheduler, checkpoint_t *cp) {
         return NULL;
     c->via1 = via1;
     c->sched = scheduler;
+    cops_clock_reset(c); // before the checkpoint read below, so a restore wins
     scheduler_new_event_type(scheduler, "cops", c, "pump", &cops_pump);
     scheduler_new_event_type(scheduler, "cops", c, "mouse", &cops_mouse_tick);
     scheduler_new_event_type(scheduler, "cops", c, "crdy", &cops_crdy_tick);

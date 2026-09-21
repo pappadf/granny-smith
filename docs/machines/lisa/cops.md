@@ -111,9 +111,20 @@ Lisa boot **menu** is mouse-driven — its input loop watches for the mouse-butt
 code, not keyboard.)
 
 ### Clock / NMI key / power
-Clock read/write (`$02`, `$1n`), set-modes (`$2x`), and NMI-key nibbles
-(`$5n`/`$6n`) are accepted today; the RTC protocol and key-driven NMI land with
-the input/clock work.
+The **real-time clock is modelled** (F-27): `$02` reads it, and `$2C` +
+sixteen `$1n` nibbles + `$25` sets it, with the eleven clock digits taken from
+digit 5 onward — the first five are the alarm. It powers up at 1 January 1984
+rather than seeding from the host wall clock, because four bits of year reach
+only 1995. See `lisa.md` §11.5 for the field layout and its derivation from
+the boot ROM, and `tests/unit/suites/cops_clock` for the round-trip.
+
+The alarm itself is not modelled — those five digits are accepted and
+discarded — and the clock does not tick: it answers with the instant it was
+last set to. Nothing in the corpus reads it twice expecting movement, and a
+guest that did would see a stopped clock.
+
+Set-modes (`$2x` other than `$2C`/`$25`) and NMI-key nibbles (`$5n`/`$6n`)
+are accepted today; key-driven NMI lands with the input work.
 
 ### CRDY (VIA1 PB6) — free-running ready/busy toggle
 The host hands a command byte to the COPS in sync with `CRDY` (VIA1 **PB6**),

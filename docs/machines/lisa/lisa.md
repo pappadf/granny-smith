@@ -919,11 +919,49 @@ tracked; the cursor becomes visible once a dialog opens.)
 
 ### 11.5 Real-time clock
 
-Resolution is 1/10 second with a 16-year span. The clock is set and read via the
-`0001 nnnn` (write nibble) and `0000 0010` (read) commands; read-back is the
-`$80 $Ey …` 5-byte form. The clock timer can interrupt and/or power the machine
-on after a programmed interval. An emulator drives the clock from the host wall
-clock, with a deterministic override for reproducible boots.
+Resolution is 1/10 second with a 16-year span. The clock timer can interrupt
+and/or power the machine on after a programmed interval.
+
+**Reading** (`0000 0010`) returns `$80` then six bytes — an `$Ey` marker
+carrying the year nibble, then five packed BCD bytes. `READCLK`
+(`RM248.M.TEXT`) reads exactly that, and parameter memory reserves
+`$1BA-1BF : Clock setting (Ey,dd,dh,hm,ms,st)` (`RM248.E.TEXT`). `DSPCLK`
+(`RM248.B.TEXT`) pins the widths by loading `CLKDATA+2` as a longword and
+rotating out 1 day digit, 2 hour, 2 minute and 2 second:
+
+| byte | nibbles | |
+|---|---|---|
+| 0 | `E` `y` | marker, **year** |
+| 1 | `d` `d` | day-of-year hundreds, tens |
+| 2 | `d` `h` | day units, hour tens |
+| 3 | `h` `m` | hour units, minute tens |
+| 4 | `m` `s` | minute units, second tens |
+| 5 | `s` `t` | second units, **tenths** |
+
+Eleven digits, which is where the "1/10 second, 16-year span" comes from.
+
+**Setting** is `$2C`, then sixteen `0001 nnnn` one-nibble commands MSB-first
+(`TODSET`), then `$25` to enable. Sixteen and not eleven because the first
+five digits are the **alarm**: the burn-in code sends `SET1` ("initial
+alarm/year/dd setting") and `SET2` = `$10000000`, commented as "day=01, all
+other values=0". That places the clock's eleven digits contiguously from
+digit 5, which is the consistency check — the alarm width itself is inferred
+from what is left over, not stated by a source.
+
+**The year nibble is anchored at 1980**, giving 1980–1995, and the Office
+System enforces a floor of 1981. That anchor is *not* in any source in this
+tree — the ROM never displays or validates a year — and is recorded as a
+project determination.
+
+One consequence: a present-day host clock cannot be represented, so unlike
+every other machine the Lisa does **not** seed from the wall clock. It powers
+up at a fixed **1 January 1984**, inside the usable window and the year the
+Lisa 2 shipped, which also makes Lisa rows reproducible without pinning
+anything. Until 2026-09-21 the model answered the read with five zero bytes,
+which is not "unset" but impossible — day-of-year is 1-based and year 0 is
+1980, below the floor — so Lisa Office System opened a "clock/calendar is not
+set properly" note on every boot and two integration rows dismissed it by
+clicking OK.
 
 ### 11.6 Soft power
 

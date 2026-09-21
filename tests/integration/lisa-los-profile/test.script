@@ -165,16 +165,11 @@ machine.floppy.drive.0.eject
 machine.restart
 assert machine.hd.pram_init(2, true, true) "pram_init failed"
 
-# Boot to the Office System desktop; the first boot opens a "clock not set" note,
-# which we dismiss (warp onto OK — closed-loop on $CC00F0/F2 — and click), leaving
-# the clean desktop (menu bar + Preferences/Wastebasket/Clipboard/Disk icons).
-scheduler.run 100000000
-machine.adb.mouse.move 622 108 "global"
-scheduler.run 2000000
-machine.adb.mouse.click true
-scheduler.run 600000
-machine.adb.mouse.click false
-scheduler.run 12000000
+# Boot to the clean Office System desktop (menu bar + Preferences / Wastebasket /
+# Clipboard / Disk icons).  This used to arrive at a "clock not set" note that the
+# row dismissed by warping onto OK and clicking; the COPS clock powers up at
+# 1 January 1984 now (06-io-controllers F-27) and the note does not appear.
+scheduler.run 112000000
 check("expected_desktop.png")
 
 # Press the soft power-off switch.  LOS catches the COPS $FB, runs its orderly
