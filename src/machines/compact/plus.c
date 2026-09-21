@@ -10,6 +10,7 @@
 
 #include "mac_host_io.h"
 #include "machine.h"
+#include "machine_teardown.h"
 #include "slot_tables.h"
 #include "system_config.h" // full config_t definition
 
@@ -24,6 +25,7 @@
 #include "image.h"
 #include "keyboard.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mouse.h"
 #include "rtc.h"
@@ -66,13 +68,21 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output);
 static void plus_via_shift_out(void *context, uint8_t byte);
 static void plus_via_irq(void *context, bool active);
 static void plus_scc_irq(void *context, bool active);
-static void plus_update_ipl(config_t *sim, int level, bool value);
+static void plus_update_ipl(config_t *sim, int source_mask, bool value);
 
 // ============================================================
 // Video buffer helper (Plus-specific address constants)
 // ============================================================
 
 // Plus ROM start in the 24-bit address space (== Plus RAM top of 4 MB)
+// Interrupt source bits in cfg->irq, matching the MAC030_GLUE_IRQ_* /
+// AV_IRQ_* convention.  These are a source MASK, not an IPL level: the PALs
+// derive the level from the set of asserted sources (plus_update_ipl).  The
+// Lisa's identically-named lisa_update_ipl() really does take a level, so two
+// adjacent 68000 families used one signature with opposite meanings.
+#define PLUS_IRQ_VIA (1u << 0)
+#define PLUS_IRQ_SCC (1u << 1)
+
 #define PLUS_SCSI_BASE 0x500000UL
 #define PLUS_SCSI_SIZE 0x100000UL
 
@@ -235,13 +245,19 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
     // session numbering) in the same order plus_checkpoint_save writes it.
     appletalk_init(cfg->scheduler, cfg->scc, checkpoint);
 
-    ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
-    cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
-                            // class can find it via cfg->sound (M7f)
-
     // 7.8336 MHz / 783.36 kHz = exactly 10, so this is the literal it replaces.
     cfg->via1 = via_init(cfg->mem_map, cfg->scheduler, via_freq_factor_for_clock(cfg->machine->freq), "via1",
                          plus_via_output, plus_via_shift_out, plus_via_irq, cfg, checkpoint);
+
+    // The sound chip is built AFTER the VIA now, and the save half moved with
+    // it: construction order IS restore order, and the shared checkpoint
+    // prefix ends at the VIAs (05-chipsets-irq F-18).  Neither depends on the
+    // other -- sound_init takes the map and the scheduler, via_init takes the
+    // map, the scheduler and this machine's hooks -- so the swap is only
+    // about where their blocks sit in the stream.
+    ps->sound = sound_init(cfg->mem_map, cfg->scheduler, checkpoint);
+    cfg->sound = ps->sound; // mirror onto cfg so the object-model `sound`
+                            // class can find it via cfg->sound (M7f)
 
     // VIA1 PA3 is the SCC's W/REQ line on a Plus, and it is held LOW at boot
     // until the SCC comes out of reset.  This used to be the core VIA's port-A
@@ -331,70 +347,45 @@ static int plus_init(config_t *cfg, checkpoint_t *checkpoint) {
 
 // Tear down all Plus resources in reverse init order.
 static void plus_teardown(config_t *cfg) {
-    // Stop scheduler if running (best effort)
-    if (cfg->scheduler) {
+    if (cfg->scheduler)
         scheduler_stop(cfg->scheduler);
-    }
 
-    // Mirror the appletalk_init() in plus_init(): tear the AppleTalk
-    // object nodes down before the SCC and scheduler it holds pointers
-    // to are freed below.
-    appletalk_delete();
-
+    // Machine-owned devices first, then the shared delete-chain.  This is the
+    // shape mac030_glue_teardown uses and the other six families already
+    // follow; the Plus and the Lisa were the two that still hand-rolled the
+    // whole thing (05-chipsets-irq F-17).
+    //
+    // ORDER IS LOAD-BEARING and this is why: the floppy used to be deleted
+    // AFTER scheduler_delete here.  That was harmless while floppy_delete only
+    // freed memory, but it now calls scheduler_forget_source(floppy->scheduler,
+    // ...) -- a read through a pointer to the freed scheduler.  Everything that
+    // holds a scheduler handle must go before the scheduler does, which is
+    // exactly what machine_teardown_config_devices guarantees by deleting the
+    // scheduler itself, last.
+    plus_state_t *ps = plus_state(cfg);
     if (cfg->keyboard) {
         keyboard_delete(cfg->keyboard);
         cfg->keyboard = NULL;
-    }
-    if (cfg->scsi) {
-        scsi_delete(cfg->scsi);
-        cfg->scsi = NULL;
     }
     if (cfg->mouse) {
         mouse_delete(cfg->mouse);
         cfg->mouse = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
+    if (cfg->floppy) {
+        floppy_delete(cfg->floppy);
+        cfg->floppy = NULL;
     }
-
-    plus_state_t *ps = plus_state(cfg);
     if (ps && ps->sound) {
         sound_delete(ps->sound);
         ps->sound = NULL;
         cfg->sound = NULL;
     }
 
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
-    if (cfg->rtc) {
-        rtc_delete(cfg->rtc);
-        cfg->rtc = NULL;
-    }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->floppy) {
-        floppy_delete(cfg->floppy);
-        cfg->floppy = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+    // scsi, appletalk, scc, rtc, via1, the scheduler, the CPU, the memory map
+    // and the debugger -- in the one order that is documented once.
+    machine_teardown_config_devices(cfg);
 
-    // Free machine-specific state; images are freed by system_destroy()
+    // Machine-specific state; images are freed by system_destroy().
     if (ps) {
         free(ps);
         cfg->machine_context = NULL;
@@ -408,21 +399,14 @@ static void plus_teardown(config_t *cfg) {
 // Save complete Plus machine state to an open checkpoint stream.
 // Order must match the restore path in plus_init().
 static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-
-    // Save global interrupt state (irq) after scheduler/cpu
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
+    // The shared core prefix (05-chipsets-irq F-18): mem_map, CPU,
+    // scheduler, cfg->irq, RTC, SCC, AppleTalk, VIA1.  The Plus's own copy
+    // of those eight differed only in interposing the sound chip before the
+    // VIA; plus_init's construction moved with this.
+    machine_checkpoint_save_core(cfg, cp);
 
     plus_state_t *ps = plus_state(cfg);
     sound_checkpoint(ps ? ps->sound : NULL, cp);
-
-    via_checkpoint(cfg->via1, cp);
     mouse_checkpoint(cfg->mouse, cp);
 
     // Checkpoint list of images (path + writable) before devices that reference
@@ -441,13 +425,13 @@ static void plus_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 // ============================================================
 
 // Plus-specific interrupt routing: update CPU IPL from VIA or SCC IRQ changes
-static void plus_update_ipl(config_t *sim, int level, bool value) {
+static void plus_update_ipl(config_t *sim, int source_mask, bool value) {
     int old_irq = sim->irq;
     int old_ipl = cpu_get_ipl(sim->cpu);
     if (value)
-        sim->irq |= level;
+        sim->irq |= source_mask;
     else
-        sim->irq &= ~level;
+        sim->irq &= ~source_mask;
 
     // Guide to the Macintosh Family Hardware, chapter 3:
     // The interrupt request line from the VIA goes to the PALs,
@@ -455,17 +439,20 @@ static void plus_update_ipl(config_t *sim, int level, bool value) {
     // The PALs also monitor interrupt line /IPL1,
     // and deassert /IPL0 whenever /IPL1 is asserted.
 
+    // The SCC on /IPL1 wins over the VIA on /IPL0, exactly as the quote
+    // above describes.  Previously spelled `irq > 1` / `irq == 1`, which is
+    // the same test only because these are the only two sources.
     uint32_t new_ipl;
-    if (sim->irq > 1)
+    if (sim->irq & PLUS_IRQ_SCC)
         new_ipl = 2;
-    else if (sim->irq == 1)
+    else if (sim->irq & PLUS_IRQ_VIA)
         new_ipl = 1;
     else
         new_ipl = 0;
     cpu_set_ipl(sim->cpu, new_ipl);
 
-    LOG(1, "plus_update_ipl: level=%d value=%d irq:%d->%d ipl:%d->%d", level, value ? 1 : 0, old_irq, sim->irq, old_ipl,
-        new_ipl);
+    LOG(1, "plus_update_ipl: source_mask=%d value=%d irq:%d->%d ipl:%d->%d", source_mask, value ? 1 : 0, old_irq,
+        sim->irq, old_ipl, new_ipl);
 
     cpu_reschedule();
 }
@@ -475,18 +462,27 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output) {
     config_t *sim = (config_t *)context;
     plus_state_t *ps = plus_state(sim);
 
+    // via_init re-drives this callback while it restores a checkpoint, and
+    // the VIA is now built before the sound chip (see plus_init), so the
+    // half-built case is real and the sound_* entry points do not guard
+    // against NULL.  Same shape as av.c's "scc_init fires this before the
+    // PSC is built" guard.
+    sound_t *snd = ps ? ps->sound : NULL;
+
     if (port == 0) {
         floppy_set_sel_signal(sim->floppy, (output & 0x20) != 0);
 
         plus_use_video_buffer(sim, (output >> 6) & 1);
 
-        sound_use_buffer(ps->sound, (output >> 3) & 1);
-
-        sound_volume(ps->sound, output & 7);
+        if (snd) {
+            sound_use_buffer(snd, (output >> 3) & 1);
+            sound_volume(snd, output & 7);
+        }
     } else {
         rtc_input(sim->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
 
-        sound_enable(ps->sound, (output & 0x80) == 0);
+        if (snd)
+            sound_enable(snd, (output & 0x80) == 0);
     }
 }
 
@@ -496,14 +492,14 @@ static void plus_via_shift_out(void *context, uint8_t byte) {
     keyboard_input(sim->keyboard, byte);
 }
 
-// Plus-specific VIA IRQ callback: VIA uses IPL level 1
+// Plus-specific VIA IRQ callback: the VIA drives cfg->irq bit 0
 static void plus_via_irq(void *context, bool active) {
-    plus_update_ipl((config_t *)context, 1, active);
+    plus_update_ipl((config_t *)context, PLUS_IRQ_VIA, active);
 }
 
-// Plus-specific SCC IRQ callback: SCC uses IPL level 2
+// Plus-specific SCC IRQ callback: the SCC drives cfg->irq bit 1
 static void plus_scc_irq(void *context, bool active) {
-    plus_update_ipl((config_t *)context, 2, active);
+    plus_update_ipl((config_t *)context, PLUS_IRQ_SCC, active);
 }
 
 // ============================================================

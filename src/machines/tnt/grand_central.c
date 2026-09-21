@@ -30,7 +30,10 @@
 #include "tnt.h"
 
 #include "dbdma.h"
+#include "irq_controller.h"
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "pci.h"
 #include "ppc.h"
 #include "scc.h"
@@ -308,6 +311,119 @@ static void nvram_write(config_t *cfg, uint32_t offset, uint8_t value) {
 // Island dispatch
 // ============================================================
 
+// === Object node: machine.gc (05-chipsets-irq F-26) =========================
+//
+// Grand Central is the whole interrupt controller of a 7500/8500/9500 and an
+// ANS, and it is the chip whose two clear modes make an IRQ storm here
+// specifically hard to read: in mode 0 the line follows
+// ((events | levels) & mask), in mode 1 it follows (latch & mask) alone, and
+// which mode you are in is invisible from the register values.  So the four
+// raw registers and the mode are all first-class here, and `active`
+// overrides the generic `pending & enabled` to answer for the mode actually
+// selected.
+
+static tnt_gc_t *gc_obj(void *ctx) {
+    return &tnt_st((config_t *)ctx)->gc;
+}
+
+static uint32_t gc_obj_pending(void *ctx) {
+    const tnt_gc_t *gc = gc_obj(ctx);
+    return gc->int_events | gc->int_levels;
+}
+static uint32_t gc_obj_enabled(void *ctx) {
+    return gc_obj(ctx)->int_mask;
+}
+static uint32_t gc_obj_active(void *ctx) {
+    const tnt_gc_t *gc = gc_obj(ctx);
+    return gc->int_mode1 ? (gc->int_latch & gc->int_mask) : ((gc->int_events | gc->int_levels) & gc->int_mask);
+}
+// A PowerPC has one external-interrupt pin, not an IPL: 1 = asserted.
+static int gc_obj_ipl(void *ctx) {
+    return gc_obj_active(ctx) ? 1 : 0;
+}
+
+static const irq_controller_ops_t gc_irq_ops = {
+    .chip = "Grand Central",
+    .pending = gc_obj_pending,
+    .enabled = gc_obj_enabled,
+    .active = gc_obj_active,
+    .ipl = gc_obj_ipl,
+};
+
+#define GC_U32_ATTR(NAME, EXPR)                                                                                        \
+    static value_t gc_attr_##NAME(struct object *self, const member_t *m) {                                            \
+        (void)m;                                                                                                       \
+        const tnt_gc_t *gc = gc_obj(object_data(self));                                                                \
+        value_t v = val_uint(4, (EXPR));                                                                               \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+GC_U32_ATTR(events, gc->int_events)
+GC_U32_ATTR(levels, gc->int_levels)
+GC_U32_ATTR(mask, gc->int_mask)
+GC_U32_ATTR(latch, gc->int_latch)
+
+static value_t gc_attr_clear_mode(struct object *self, const member_t *m) {
+    (void)m;
+    return val_uint(1, gc_obj(object_data(self))->int_mode1 ? 1u : 0u);
+}
+
+static const member_t gc_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&gc_irq_ops){
+                                        .kind = M_ATTR,
+                                        .name = "events",
+                                        .doc = "Edge-latched source rising edges (write-1-to-clear in mode 0)",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_events, .set = NULL}},
+    {.kind = M_ATTR,
+                                        .name = "source_levels",
+                                        .doc = "Live source picture, never latched",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_levels, .set = NULL}},
+    {.kind = M_ATTR,
+                                        .name = "mask",
+                                        .doc = "Per-source enables",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = gc_attr_mask, .set = NULL}                 },
+    {.kind = M_ATTR,
+                                        .name = "latch",
+                                        .doc = "Mode-1 per-source output latch",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = gc_attr_latch, .set = NULL} },
+    {.kind = M_ATTR,
+                                        .name = "clear_mode",
+                                        .doc = "0 = power-on ((events|levels) & mask); 1 = NanoKernel acknowledge (latch & mask)",
+                                        .flags = VAL_RO,
+                                        .attr = {.type = V_UINT, .get = gc_attr_clear_mode, .set = NULL}                                          },
+};
+
+static const class_desc_t gc_class = {
+    .name = "irq_controller",
+    .members = gc_members,
+    .n_members = sizeof(gc_members) / sizeof(gc_members[0]),
+};
+
+void tnt_gc_attach_object(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (!st || st->gc_object)
+        return;
+    st->gc_object = object_new(&gc_class, cfg, "gc");
+    if (!st->gc_object)
+        return;
+    object_set_order(st->gc_object, 45);
+    object_attach(machine_object(), st->gc_object);
+}
+
+void tnt_gc_detach_object(config_t *cfg) {
+    tnt_state_t *st = tnt_st(cfg);
+    if (st && st->gc_object) {
+        object_detach(st->gc_object);
+        object_delete(st->gc_object);
+        st->gc_object = NULL;
+    }
+}
+
 void tnt_gc_init(config_t *cfg) {
     tnt_gc_t *gc = &tnt_st(cfg)->gc;
     // Power-on: everything masked, nothing latched.  NVRAM contents are
@@ -316,6 +432,16 @@ void tnt_gc_init(config_t *cfg) {
     gc->int_events = 0;
     gc->int_mask = 0;
     gc->int_levels = 0;
+    // The mode-1 output latch and the clear-mode selector, which this said
+    // "nothing latched" about while leaving both standing (05-chipsets-irq
+    // F-07).  With int_mask zero the line is quiet either way, so nothing
+    // fired immediately -- but the moment post-reset firmware writes its
+    // first mask, stale pre-reset latch bits inside it assert the CPU line
+    // for sources that never re-asserted.  And a clear mode surviving a reset
+    // means a machine restarted out of MkLinux boots the ROM in mode 1
+    // instead of the power-on mode 0.
+    gc->int_latch = 0;
+    gc->int_mode1 = false;
     gc->nvram_bank = 0;
 }
 

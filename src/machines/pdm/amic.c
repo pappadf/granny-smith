@@ -18,8 +18,12 @@
 // reads, write-1-to-clear conventions).
 
 #include "pdm.h"
+#include "regfile.h"
 
+#include "irq_controller.h"
 #include "log.h"
+#include "machine.h"
+#include "object.h"
 #include "ppc.h"
 #include "scc.h"
 #include "scheduler.h"
@@ -288,14 +292,6 @@ static uint32_t dma_window_base(pdm_amic_t *a) {
 }
 
 // Byte lane helpers for the 32-bit address registers (MSB at +0)
-static void addr_write_byte(uint32_t *addr, uint32_t lane, uint8_t v) {
-    uint32_t shift = 8 * (3 - lane);
-    *addr = (*addr & ~(0xFFu << shift)) | ((uint32_t)v << shift);
-}
-
-static uint8_t addr_read_byte(uint32_t addr, uint32_t lane) {
-    return (uint8_t)(addr >> (8 * (3 - lane)));
-}
 
 static uint8_t dma_read(config_t *cfg, uint32_t off) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
@@ -312,12 +308,12 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
     case 0x1001:
     case 0x1002:
     case 0x1003:
-        return addr_read_byte(a->scsi[0].addr, off & 3);
+        return be_lane8(a->scsi[0].addr, off & 3);
     case 0x1004:
     case 0x1005:
     case 0x1006:
     case 0x1007:
-        return addr_read_byte(a->scsi[1].addr, off & 3);
+        return be_lane8(a->scsi[1].addr, off & 3);
     case 0x1008:
         return a->scsi[0].ctrl;
     case 0x1009:
@@ -326,12 +322,12 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
     case 0x1011:
     case 0x1012:
     case 0x1013:
-        return addr_read_byte(a->scsi[0].addr, off & 3); // current = base (no engine yet)
+        return be_lane8(a->scsi[0].addr, off & 3); // current = base (no engine yet)
     case 0x1014:
     case 0x1015:
     case 0x1016:
     case 0x1017:
-        return addr_read_byte(a->scsi[1].addr, off & 3);
+        return be_lane8(a->scsi[1].addr, off & 3);
     case 0x1028:
         return a->enet_rx.ctrl;
     case 0x1030:
@@ -350,7 +346,7 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
     case 0x1061:
     case 0x1062:
     case 0x1063:
-        return addr_read_byte(a->floppy.addr, off & 3);
+        return be_lane8(a->floppy.addr, off & 3);
     case 0x1064:
         return (uint8_t)(a->floppy.count >> 8);
     case 0x1065:
@@ -374,7 +370,7 @@ static uint8_t dma_read(config_t *cfg, uint32_t off) {
                 // The address bytes read back as addr + internal offset —
                 // the live ring pointer (MkLinux scc_amic.c reads the Rx
                 // ring index exactly this way).
-                return addr_read_byte(ch->addr + ch->xfer_off, r);
+                return be_lane8(ch->addr + ch->xfer_off, r);
             if (r == 4)
                 return (uint8_t)((ch->count >> 8) & 0x1Fu);
             if (r == 5)
@@ -402,13 +398,13 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
     case 0x1001:
     case 0x1002:
     case 0x1003:
-        addr_write_byte(&a->scsi[0].addr, off & 3, value);
+        be_lane8_set(&a->scsi[0].addr, off & 3, value);
         return;
     case 0x1004:
     case 0x1005:
     case 0x1006:
     case 0x1007:
-        addr_write_byte(&a->scsi[1].addr, off & 3, value);
+        be_lane8_set(&a->scsi[1].addr, off & 3, value);
         return;
     case 0x1008:
         // Bus-speed bits 3:2 share the register and must stick (the ROM's
@@ -456,7 +452,7 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
     case 0x1061:
     case 0x1062:
     case 0x1063:
-        addr_write_byte(&a->floppy.addr, off & 3, value);
+        be_lane8_set(&a->floppy.addr, off & 3, value);
         return;
     case 0x1064:
         a->floppy.count = (uint16_t)((a->floppy.count & 0x00FFu) | (value << 8));
@@ -492,7 +488,7 @@ static void dma_write(config_t *cfg, uint32_t off, uint8_t value) {
             LOG(4, "scc dma wr ch%u +%X = $%02X (addr=$%X cnt=%u ctrl=$%02X)", (unsigned)((off - 0x1080u) >> 4), r,
                 value, ch->addr, ch->count, ch->ctrl);
             if (r < 4) {
-                addr_write_byte(&ch->addr, r, value);
+                be_lane8_set(&ch->addr, r, value);
                 ch->xfer_off = 0; // an address write clears the internal offset
             } else if (r == 4)
                 ch->count = (uint16_t)((ch->count & 0x00FFu) | ((value & 0x1Fu) << 8));
@@ -936,6 +932,120 @@ static void icr_write(config_t *cfg, uint32_t off, uint8_t value) {
 // Island dispatch
 // ============================================================
 
+// === Object node: machine.amic (05-chipsets-irq F-26) =======================
+//
+// A 6100/7100/8100 routes everything through the AMIC's six-bit ICR and its
+// pseudo-VIA2 bank, and neither was reachable from the shell.  The AMIC has
+// no per-source mask of its own -- the masking that matters happens one
+// level down, in the pseudo-VIA2 slot and device IERs -- so those four
+// registers are the chip-specific half, and `enabled` says all six ICR
+// sources because that is the truth about this chip rather than a stand-in.
+
+static uint32_t amic_obj_pending(void *ctx) {
+    return pdm_st((config_t *)ctx)->icr_sources & 0x3Fu;
+}
+static uint32_t amic_obj_enabled(void *ctx) {
+    (void)ctx;
+    return 0x3Fu; // six sources, no ICR-level mask on this part
+}
+// INTMODE 0: the line follows the live source picture.  INTMODE 1: it
+// follows the CPUINT latch, which an enabled source CHANGE sets and the
+// driver clears -- so a quiet source picture can still hold the line up.
+static uint32_t amic_obj_active(void *ctx) {
+    const pdm_state_t *st = pdm_st((config_t *)ctx);
+    if (st->amic.icr_mode)
+        return st->amic.icr_latch ? (st->icr_sources & 0x3Fu) : 0u;
+    return st->icr_sources & 0x3Fu;
+}
+static int amic_obj_ipl(void *ctx) {
+    return amic_obj_active(ctx) ? 1 : 0; // one PowerPC external-interrupt pin
+}
+
+static const irq_controller_ops_t amic_irq_ops = {
+    .chip = "AMIC",
+    .pending = amic_obj_pending,
+    .enabled = amic_obj_enabled,
+    .active = amic_obj_active,
+    .ipl = amic_obj_ipl,
+};
+
+#define AMIC_BYTE_ATTR(NAME, EXPR)                                                                                     \
+    static value_t amic_attr_##NAME(struct object *self, const member_t *m) {                                          \
+        (void)m;                                                                                                       \
+        const pdm_state_t *st = pdm_st((config_t *)object_data(self));                                                 \
+        (void)st;                                                                                                      \
+        value_t v = val_uint(1, (EXPR));                                                                               \
+        v.flags |= VAL_HEX;                                                                                            \
+        return v;                                                                                                      \
+    }
+
+AMIC_BYTE_ATTR(mode, st->amic.icr_mode ? 1u : 0u)
+AMIC_BYTE_ATTR(latch, st->amic.icr_latch ? 1u : 0u)
+AMIC_BYTE_ATTR(slot_ifr, st->amic.via2.slot_ifr)
+AMIC_BYTE_ATTR(slot_ier, st->amic.via2.slot_ier)
+AMIC_BYTE_ATTR(dev_levels, st->amic.via2.dev_levels)
+AMIC_BYTE_ATTR(dev_ier, st->amic.via2.dev_ier)
+
+static const member_t amic_members[] = {
+    IRQ_CONTROLLER_MEMBERS(&amic_irq_ops){
+                                          .kind = M_ATTR,
+                                          .name = "mode",
+                                          .doc = "INTMODE: 0 = line follows the sources, 1 = line follows the CPUINT latch",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .get = amic_attr_mode, .set = NULL}                                                    },
+    {.kind = M_ATTR,
+                                          .name = "latch",
+                                          .doc = "CPUINT latch (INTMODE 1 only)",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = amic_attr_latch, .set = NULL}               },
+    {.kind = M_ATTR,
+                                          .name = "slot_ifr",
+                                          .doc = "Pseudo-VIA2 slot flags, ACTIVE LOW (a clear bit is an asserted /NMRQ)",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = amic_attr_slot_ifr, .set = NULL}  },
+    {.kind = M_ATTR,
+                                          .name = "slot_ier",
+                                          .doc = "Pseudo-VIA2 slot enables (mask $78)",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = amic_attr_slot_ier, .set = NULL}                 },
+    {.kind = M_ATTR,
+                                          .name = "dev_levels",
+                                          .doc = "Pseudo-VIA2 device sources, active-high internal view",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = amic_attr_dev_levels, .set = NULL}},
+    {.kind = M_ATTR,
+                                          .name = "dev_ier",
+                                          .doc = "Pseudo-VIA2 device enables (mask $3B)",
+                                          .flags = VAL_RO,
+                                          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = amic_attr_dev_ier, .set = NULL}                  },
+};
+
+static const class_desc_t amic_class = {
+    .name = "irq_controller",
+    .members = amic_members,
+    .n_members = sizeof(amic_members) / sizeof(amic_members[0]),
+};
+
+void pdm_amic_attach_object(config_t *cfg) {
+    pdm_state_t *st = pdm_st(cfg);
+    if (!st || st->amic_object)
+        return;
+    st->amic_object = object_new(&amic_class, cfg, "amic");
+    if (!st->amic_object)
+        return;
+    object_set_order(st->amic_object, 45);
+    object_attach(machine_object(), st->amic_object);
+}
+
+void pdm_amic_detach_object(config_t *cfg) {
+    pdm_state_t *st = pdm_st(cfg);
+    if (st && st->amic_object) {
+        object_detach(st->amic_object);
+        object_delete(st->amic_object);
+        st->amic_object = NULL;
+    }
+}
+
 void pdm_amic_init(config_t *cfg) {
     pdm_amic_t *a = &pdm_st(cfg)->amic;
     memset(a, 0, sizeof(*a));
@@ -977,6 +1087,25 @@ uint8_t pdm_amic_read(config_t *cfg, uint32_t offset) {
     case OFF_DMA:
     case OFF_DMA + 0x1000:
         return dma_read(cfg, offset - OFF_DMA);
+    case OFF_EPROM:
+    case OFF_MACE:
+        // Declared in the decode, nothing behind them yet.  05-chipsets-irq
+        // F-25 suggests deleting the two defines; two proposals say not to
+        // (multi-cpu §11.5 wants Grand Central's OFF_EPROM wired as an IPI,
+        // localtalk-networking keeps MACE as a stub with a real model as
+        // future work), and the finding's own alternative is to float them
+        // to $FF the way io_unmapped_read does on the five mac030 families.
+        //
+        // THE CORPUS SAYS OTHERWISE, and it was measured: these windows are
+        // live traffic, not dead decode -- the EPROM read once and MACE read
+        // 10 times and written 40 times per suite-pdm run.  Floating them
+        // high passes suite-pdm but breaks mklinux-boot's pm7100 row, which
+        // no longer reaches the login screen: MkLinux probes for Ethernet
+        // here and an all-ones ID PROM is a different answer from an empty
+        // one.  So they read 0, deliberately, until the PDM address-map
+        // shading the wider float-vs-fault audit is blocked on says
+        // otherwise -- which is the audit's own gate, reached empirically.
+        return 0;
     default:
         LOG(2, "read of unwired island offset $%05X", offset);
         return 0;

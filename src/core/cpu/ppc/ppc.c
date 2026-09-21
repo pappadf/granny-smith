@@ -9,6 +9,7 @@
 #include "ppc_internal.h"
 #include "ppc_softfp.h"
 
+#include <stddef.h> // offsetof
 #include <stdlib.h> // malloc / free
 
 #include "alias.h"
@@ -745,14 +746,12 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     g_mem_logical_xlate = ppc_hook_logical_xlate;
 
     if (checkpoint) {
-        // The stream carries the whole struct including save-time pointers;
-        // null them so the bindings below are rebuilt for THIS machine
-        // (the cpu.c same-process-restore double-free precedent).
-        system_read_checkpoint_data(checkpoint, p, sizeof(ppc_t));
-        p->cpu_object = NULL;
-        p->fpu_object = NULL;
-        p->mmu_object = NULL;
-        p->scheduler = NULL; // re-planted by ppc_bind_time
+        // The stream carries the prefix only; the pointer section is not in
+        // it, so zero the whole struct first and let the read fill the front.
+        // The bindings below are then rebuilt for THIS machine (the cpu.c
+        // same-process-restore double-free precedent).
+        memset(p, 0, sizeof(ppc_t));
+        system_read_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
         p->tick_mul = p->tick_div = 0;
         // The MMU caches are derived state and refill lazily; the T-bit
         // mask is derived from the restored SRs.
@@ -798,6 +797,8 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
 void ppc_delete(ppc_t *p) {
     if (!p)
         return;
+    // The decrementer event carries `p`; only the live re-arm path removed it.
+    scheduler_forget_source(p->scheduler, p);
     // Drop the parameterless-hook binding if it is ours (memory_map_init
     // also clears the function pointers on machine swap).
     if (g_hook_ppc == p) {
@@ -825,8 +826,15 @@ void ppc_delete(ppc_t *p) {
 void ppc_checkpoint(ppc_t *restrict p, checkpoint_t *checkpoint) {
     if (!p || !checkpoint)
         return;
-    // One POD blob; pointers are nulled on restore (§3.9f).
-    system_write_checkpoint_data(checkpoint, p, sizeof(ppc_t));
+    // Everything before the pointer section, which ppc_internal.h marks and
+    // ppc_init nulls on the way back in.  It used to write sizeof(ppc_t) and
+    // null them afterwards -- harmless to the restore, but it put four host
+    // pointers into a user-shareable save file and made two saves of the same
+    // guest state differ between processes, which defeats diff-based
+    // checkpoint testing.  Measured: four 4-byte runs at 8-byte stride,
+    // exactly cpu_object/fpu_object/mmu_object/scheduler.  05-chipsets-irq
+    // F-09 names the 68k twin (cpu.c) and misses this one.
+    system_write_checkpoint_data(checkpoint, p, offsetof(struct ppc, cpu_object));
 }
 
 // === Scheduler adapter (the main-CPU seam) ==================================

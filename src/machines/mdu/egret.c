@@ -481,10 +481,7 @@ egret_t *egret_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct s
 void egret_delete(egret_t *eg) {
     if (!eg)
         return;
-    if (eg->sched) {
-        remove_event(eg->sched, &egret_tick_event, eg);
-        remove_event(eg->sched, &egret_autopoll_event, eg);
-    }
+    scheduler_forget_source(eg->sched, eg);
     free(eg);
 }
 

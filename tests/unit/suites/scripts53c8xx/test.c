@@ -78,6 +78,10 @@ void remove_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), voi
 void remove_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source) {
     (void)scheduler, (void)cb, (void)source;
 }
+void scheduler_forget_source(struct scheduler *scheduler, void *source);
+void scheduler_forget_source(struct scheduler *scheduler, void *source) {
+    (void)scheduler, (void)source;
+}
 void scheduler_new_event_type(struct scheduler *scheduler, const char *source_name, void *source,
                               const char *event_name, void (*cb)(void *, uint64_t));
 void scheduler_new_event_type(struct scheduler *scheduler, const char *source_name, void *source,

@@ -335,6 +335,50 @@ static void pump_in(mesh_t *m) {
 // DBDMA channel-10 device port (the data phases)
 // ============================================================
 
+// Per-firing byte budget and pump cadence.  Both are the values av.c and
+// amic.c already use for the same job on the two other families
+// (AV_SCSI_PUMP_MAX / AV_SCSI_PUMP_NS, PDM_SCSI_PUMP_MAX /
+// PDM_SCSI_PUMP_NS): a 2 KB burst -- one CD sector and change -- every
+// 10 us.
+//
+// Why this exists (05-chipsets-irq F-15).  The port used to drain the whole
+// `remaining` count in one call, so a DBDMA data command completed inside
+// the guest's control-register store, in zero emulated time.  Measured over
+// tnt-hd-boot: up to **61,440 bytes moved in a single run_channel call**, 30x
+// the per-firing cap the other two families observe and with no cadence at
+// all.  F-15 reads that as DBDMA needing a scheduler-paced pump; the
+// measurement puts it one level down.  DBDMA already stalls whenever a port
+// returns short -- 18,310 run_channel calls for 8.3 MB on that same run say
+// so -- and MESH was simply the one port that never returned short.  So the
+// pacing goes where the other two families put it -- a per-firing byte
+// budget and a scheduler cadence on the SCSI side.  The budget is declared
+// on the channel-10 port (tnt_dbdma_port_t.burst) because only the engine
+// can count bytes across the 512-byte chunks it already splits a command
+// into; the cadence is the pump below.
+#define MESH_DMA_PUMP_NS 10000.0 // 10 us cadence
+
+static void mesh_pump_event(void *source, uint64_t data);
+
+// Keep the channel-10 program moving while a DMA data phase is armed.
+// Armed when a DMA sequence command starts; it stops itself when the
+// transfer ends, exactly like av_scsi_pump_arm's cadence rule.
+static void mesh_pump_arm(mesh_t *m) {
+    if (!m->sched || has_event(m->sched, &mesh_pump_event))
+        return; // already pumping: leave its cadence where it is
+    scheduler_new_cpu_event(m->sched, &mesh_pump_event, m, 0, 0, (uint64_t)MESH_DMA_PUMP_NS);
+}
+
+static void mesh_pump_event(void *source, uint64_t data) {
+    (void)data;
+    mesh_t *m = (mesh_t *)source;
+    if (!m->active_dma || m->remaining == 0)
+        return; // transfer finished: the pump stops with it
+    if (m->dbdma_kick)
+        m->dbdma_kick(m->dbdma_ctx);
+    if (m->active_dma && m->remaining > 0)
+        scheduler_new_cpu_event(m->sched, &mesh_pump_event, m, 0, 0, (uint64_t)MESH_DMA_PUMP_NS);
+}
+
 int mesh_port_in(void *ctx, uint8_t *buf, int len) {
     mesh_t *m = (mesh_t *)ctx;
     if (m->active != CMD_DATAIN || !m->active_dma || !m->bus)
@@ -463,9 +507,11 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
             return; // no target: the chip waits for REQ that never comes
         if (m->active_dma) {
             // Data flows through the channel-10 port; wake a program
-            // that stalled waiting for the device to arm.
+            // that stalled waiting for the device to arm, then keep it
+            // moving at the bus's pace (F-15).
             if (m->dbdma_kick)
                 m->dbdma_kick(m->dbdma_ctx);
+            mesh_pump_arm(m);
         } else {
             pump_out(m); // consume whatever is already in the FIFO
         }
@@ -483,9 +529,11 @@ static void do_sequence(mesh_t *m, uint8_t value, uint32_t count) {
             return; // parked (see above)
         if (dma) {
             // Data flows through the channel-10 port; the machine owns the
-            // engine, so ask it to run.
+            // engine, so ask it to run, then keep it moving at the bus's
+            // pace (F-15).
             if (m->dbdma_kick)
                 m->dbdma_kick(m->dbdma_ctx);
+            mesh_pump_arm(m);
         } else {
             pump_in(m);
         }
@@ -873,6 +921,8 @@ mesh_t *mesh_init(struct scheduler *sched, checkpoint_t *cp) {
     if (!m)
         return NULL;
     m->sched = sched;
+    if (sched)
+        scheduler_new_event_type(sched, "mesh", m, "dma_pump", &mesh_pump_event);
     if (cp) {
         // The plain-data block only.  The pointers below it stay NULL and are
         // re-bound by the machine (mesh_attach_bus, mesh_set_irq_callback,
@@ -890,6 +940,11 @@ void mesh_delete(mesh_t *m) {
     // must be cancelled through the bus -- an event outliving its source is
     // what F-11/F-12 were about.
     scsi_bus_cancel_select_timeout(m->bus);
+    // The DMA pump IS this controller's own event, so it goes with it.
+    // (remove_event, not scheduler_forget_source: that primitive drops the
+    // event-TYPE registration too and is for destructors of the whole
+    // scheduler -- scheduler.h, DESTRUCTORS ONLY.)
+    remove_event(m->sched, &mesh_pump_event, m);
     free(m);
 }
 

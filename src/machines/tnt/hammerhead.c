@@ -63,6 +63,7 @@
 //
 // Everything else is accept-and-readback, and every access is logged.
 
+#include "regfile.h"
 #include "tnt.h"
 
 #include "log.h"
@@ -223,21 +224,21 @@ void tnt_hh_init(config_t *cfg) {
     hh->reg[HH_REG_ARBCONFIG >> 4] = 0x00u; // TwoCPU clear: uniprocessor
     hh->reg[HH_REG_WHOAMI >> 4] = 0x10u << 24; // primary CPU
     hh->reg[HH_REG_L2CFG >> 4] = (uint32_t)hh_l2cfg_strap(cfg) << 24;
-    // TEMP diagnostic (604 boot-wall hunt): present an L2 module.  Byte
-    // registers live in lane 0, so the value is shifted to bits 31-24.
-    // Bit $80 = present, low 3 bits = size code (encoding unattested; probe
-    // with values $80-$87 and read what OF puts in the tree).  The probe
-    // sequence observed live (read $81 / strobe $80 / WRITE +$E0=$70 /
-    // read-back / strobe $00) shows +$E0 is read back after a write, so
-    // while the override is armed the register is STICKY: reads always
-    // return the env value (hardware-status semantics), writes are dropped.
-    {
-        const char *s = getenv("GS_HH_L2CFG");
-        if (s) {
-            hh->reg[HH_REG_L2CFG >> 4] = ((uint32_t)strtoul(s, NULL, 16) & 0xFFu) << 24;
-            hh->l2cfg_sticky = true;
-        }
-    }
+    // The strap above is the whole story: +$E0 reports what the cache DIMM
+    // socket is wired for, derived from the board's declared l2_kb.
+    //
+    // A GS_HH_L2CFG env-var override used to sit here, cut for the 604
+    // boot-wall hunt, letting the environment rewrite the strap and latch an
+    // `l2cfg_sticky` flag that made the register ignore writes.  Removed
+    // (05-chipsets-irq F-41).  Three things were wrong with it: emulated
+    // hardware behaviour depended on the process environment, so a run was
+    // not reproducible; it contradicted the rule that a machine's facts come
+    // from its profile (mac030_glue.h:57-60, ARCHITECTURE.md:492); and
+    // `l2cfg_sticky` lived inside st->hh, which tnt_checkpoint_save writes
+    // whole -- so the flag ESCAPED INTO THE CHECKPOINT and a file saved with
+    // the variable set restored the sticky behaviour on a machine that never
+    // had it.  To try a different strap now, give the board a different
+    // l2_kb, which is visible, checkpointed as board data, and scriptable.
 }
 
 // Byte read.  The register file is 128 x 32-bit on $10 centres; within a
@@ -252,7 +253,7 @@ uint8_t tnt_hh_read(config_t *cfg, uint32_t offset) {
     }
     uint32_t lane = offset & 0xFu;
     uint32_t value = hh->reg[offset >> 4];
-    uint8_t b = (lane < 4) ? (uint8_t)(value >> (8 * (3 - lane))) : 0;
+    uint8_t b = (lane < 4) ? be_lane8(value, lane) : 0;
     // R1 instrumentation: every Hammerhead access is loggable so the T5
     // memory-sizing sequence can be recorded and the model fitted to it.
     LOG(2, "read  +$%03X -> $%02X (reg $%08X) r24=$%08X", offset, b, value, ppc_get_gpr(cfg->ppc, 24));
@@ -270,10 +271,6 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
         LOG(2, "write to dead lane +$%03X = $%02X", offset, value);
         return;
     }
-    if (hh->l2cfg_sticky && (offset >> 4) == (HH_REG_L2CFG >> 4)) {
-        LOG(2, "write +$%03X = $%02X dropped (GS_HH_L2CFG sticky)", offset, value);
-        return;
-    }
     // +$E0's presence bit and size code are a STRAP — what the cache DIMM
     // socket reports, not something software sets.  The ROM writes the
     // register (it drops $70 in there mid-test) and reads it straight back,
@@ -285,8 +282,7 @@ void tnt_hh_write(config_t *cfg, uint32_t offset, uint8_t value) {
         value = (uint8_t)((value & (uint8_t)~HH_L2CFG_STRAP_MASK) | (strap & HH_L2CFG_STRAP_MASK));
     }
     uint32_t *reg = &hh->reg[offset >> 4];
-    uint32_t shift = 8 * (3 - lane);
-    *reg = (*reg & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+    be_lane8_set(reg, lane, value);
     LOG(2, "write +$%03X = $%02X (reg now $%08X)", offset, value, *reg);
     // The identifier keeps its identity upper halfword whatever is
     // written (accept-and-readback everywhere else).

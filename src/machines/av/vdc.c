@@ -549,8 +549,8 @@ void av_vdc_delete(av_vdc_t *vdc) {
         object_detach(vdc->object);
         object_delete(vdc->object);
     }
-    if (vdc->cfg && vdc->cfg->scheduler)
-        remove_event(vdc->cfg->scheduler, &vdc_field_event, vdc);
+    if (vdc->cfg)
+        scheduler_forget_source(vdc->cfg->scheduler, vdc);
     free(vdc->file_frame);
     free(vdc->frame);
     free(vdc);

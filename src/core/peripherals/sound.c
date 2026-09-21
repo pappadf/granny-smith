@@ -316,6 +316,9 @@ sound_t *sound_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *che
 void sound_delete(sound_t *sound) {
     if (!sound)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(sound->scheduler, sound);
     if (sound->object) {
         sound_object_delete(sound->object);
         sound->object = NULL;

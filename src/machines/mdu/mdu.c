@@ -10,6 +10,7 @@
 #include "mdu.h"
 #include "appletalk.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 
 #include "mac030_glue.h" // shared core/finish/reset/irq/build_mmu + board desc
 #include "mac_host_io.h" // mac_fd_*/mac_input_*
@@ -94,9 +95,9 @@ static int mdu_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void mdu_reset(config_t *cfg) {
+static void mdu_bus_reset(config_t *cfg) {
     mac030_mdu_state_t *st = mdu_st(cfg);
-    mac030_glue_reset(cfg, &st->rom_overlay, mdu_board(cfg)->desc->rom_base, st->mmu);
+    mac030_glue_bus_reset(cfg, &st->rom_overlay, mdu_board(cfg)->desc->rom_base);
 }
 
 // MDU delete-chain (no VIA2; RBV instead; Egret on the IIsi).  Order matches
@@ -145,7 +146,7 @@ static void mdu_teardown(config_t *cfg) {
 
 static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mac030_mdu_state_t *st = mdu_st(cfg);
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(st->adb, cp);
     if (st->egret) // IIsi only; IIci leaves egret NULL
         egret_checkpoint(st->egret, cp);
@@ -177,8 +178,7 @@ static void mdu_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
 //
 // RvSInt numbering is logical: 0 is the built-in video (RvIRQ0, bit 6) and
 // 1..6 are RvIRQ1..6, so NuBus $9..$E map to 1..6.
-static void mdu_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge; // the RBV aggregates internally
+static void mdu_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     mac030_mdu_state_t *st = mdu_st(cfg);
     if (!st || !st->rbv || slot < 0x9 || slot > 0xE)
         return;
@@ -199,7 +199,7 @@ static void mdu_trigger_vbl(config_t *cfg) {
 
 const machine_substrate_t mdu_substrate = {
     .init = mdu_init,
-    .reset = mdu_reset,
+    .bus_reset = mdu_bus_reset,
     .teardown = mdu_teardown,
     .checkpoint_save = mdu_checkpoint_save,
     .trigger_vbl = mdu_trigger_vbl,

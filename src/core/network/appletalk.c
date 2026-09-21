@@ -134,6 +134,7 @@ static atalk_stats_t g_atalk_stats;
 
 // Lower layers at top of file, higher at bottom. These prototypes resolve circular references.
 static void ddp_short_in(llap_header_t *llap, const uint8_t *buf, size_t len);
+static void atp_cancel_all_timers(void);
 static void ddp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void nbp_in(ddp_header_t *ddp, const uint8_t *buf, size_t len);
 static void atp_in(const ddp_header_t *ddp, const uint8_t *buf, int len);
@@ -714,6 +715,17 @@ void appletalk_checkpoint(checkpoint_t *checkpoint) {
 // ============================================================================
 
 static void appletalk_teardown(void) {
+    // Cancel every timer this stack owns.  The sources are file-scope tokens
+    // rather than heap objects, so nothing dangles -- but teardown left up to
+    // five event kinds queued, and an event that fires into a half-torn-down
+    // stack is its own problem.  Five scheduling sites, two removals, and
+    // neither of those two was here (proposal-scheduler-source-lifetime).
+    if (g_scheduler) {
+        scheduler_forget_source(g_scheduler, &g_llap_rts_event_token);
+        scheduler_forget_source(g_scheduler, &g_llap_kick_event_token);
+    }
+    atp_cancel_all_timers(); // its tokens are declared with the ATP code below
+
     // Sessions first: closing them hands the AFP layer its forks back.
     atalk_asp_close_all_sessions();
     atalk_server_delete();
@@ -1703,6 +1715,16 @@ static atp_xo_entry_t g_xo_entries[ATP_MAX_XO_CACHE];
 static uint16_t g_next_tid = 0x2000;
 static int g_atp_retry_event_token;
 static int g_atp_release_event_token;
+
+// Drop every ATP retry and release timer.  Called from appletalk_teardown,
+// which cannot name these tokens directly -- they are declared here, with the
+// layer that owns them, and the file runs lower layers to higher.
+static void atp_cancel_all_timers(void) {
+    if (!g_scheduler)
+        return;
+    scheduler_forget_source(g_scheduler, &g_atp_retry_event_token);
+    scheduler_forget_source(g_scheduler, &g_atp_release_event_token);
+}
 
 // Utility helpers -----------------------------------------------------------
 static void atp_register_scheduler_events(void);

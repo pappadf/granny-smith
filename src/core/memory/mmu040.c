@@ -289,7 +289,7 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
         if (!write) {
             uint32_t page_index = emu_page >> PAGE_SHIFT;
             if ((int)page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
-                logical_addr >= bus->nubus_berr_start && logical_addr <= bus->nubus_berr_end) {
+                memory_addr_faults_when_unmapped(logical_addr)) {
                 g_bus_error_is_pmmu = false; // bus timeout: skip semantics
                 return false;
             }

@@ -496,6 +496,17 @@ bool floppy_swim_mode_write_hook(floppy_t *floppy, uint8_t byte) {
 // ============================================================================
 
 // Resets ISM registers to their initial power-on state
+// Bus /RESET for the SWIM half: the ISM register file back to power-on.
+// Wraps the internal reset the mode-switch sequence already uses, so both
+// paths land on one definition of "ISM at power-on".
+void floppy_swim_bus_reset(floppy_t *floppy) {
+    swim_ism_reset(floppy);
+    floppy->in_ism_mode = false; // a reset leaves the chip in IWM mode
+    floppy->mode_switch_count = 0;
+    floppy->iwm_write_latch = 0;
+    floppy->iwm_latch_valid = false;
+}
+
 static void swim_ism_reset(floppy_t *floppy) {
     floppy->ism_mode = ISM_MODE_ISM_IWM; // bit 6 set = ISM mode active
     floppy->ism_phase = 0xF0; // all phase outputs, all low

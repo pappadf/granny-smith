@@ -1452,6 +1452,17 @@ void scsi_delete(scsi_t *scsi) {
     // the free below and fires into released memory on the next tick.  The
     // 53C96 destructor has always done this; this one never did.
     scsi_cancel_drq_service(scsi);
+    // ...and then everything else the scheduler holds for this bus.  Note the
+    // division: scsi_cancel_drq_service is called from LIVE paths too, so it
+    // must stay a per-callback remove_event -- scheduler_forget_source also
+    // drops the event-type registrations, and a live device that schedules
+    // again afterwards trips scheduler_new_cpu_event's "event type not
+    // registered" assert.  The primitive is for destructors only.
+    {
+        scheduler_t *sched = system_scheduler();
+        if (sched)
+            scheduler_forget_source(sched, scsi);
+    }
     // Tear down per-slot entry objects (never attached to the tree),
     // then the named children, then the top-level node.
     for (int i = 0; i < 8; i++) {

@@ -100,6 +100,24 @@ def check_ex(ref, top, left, bottom, right) {
     }
 }
 
+# Two exclusion rectangles, for a frame carrying two phase-dependent
+# fields with content worth asserting BETWEEN them — so a bounding box
+# over the pair would blank the assertion too.
+#
+# About This Macintosh is the case: the menu-bar clock sits top right and
+# the Finder's "Largest Unused Block" figure well below it, with "Total
+# Memory" — which is exactly what those rows exist to check — in between.
+# Largest Unused Block drifts by a couple of KB with elapsed time, so
+# under `make -j` load it lands differently; it failed q900-75-hd in CI
+# and q700-75-hd locally, and passes whenever the row runs alone.
+def check_ex2(ref, top, left, bottom, right, top2, left2, bottom2, right2) {
+    if $REGEN_MODE == "1" {
+        machine.screen.save "${$ref}"
+    } else {
+        machine.screen.match "${$ref}" $top $left $bottom $right $top2 $left2 $bottom2 $right2
+    }
+}
+
 # Sound goldens: stop the running capture and either match `ref` or, in
 # REGEN mode, write the capture to it. `machine.sound.capture.stop` takes
 # an optional WAV path precisely for this, so sound goldens can be

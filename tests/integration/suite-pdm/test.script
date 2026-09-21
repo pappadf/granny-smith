@@ -203,6 +203,27 @@ def row_pdm_nubus_empty() {
     machine.rtc.time = 0xE0000000
     assert machine.nubus.slot[12].card_id == "" "slot C carries a staged pick"
     assert try(machine.nubus.slot[12].card.name, none) == none "slot C is populated"
+    # machine.amic — the AMIC has no per-source mask of its own, so
+    # `enabled` reports all six ICR sources and the masking that matters is
+    # one level down in the pseudo-VIA2 IERs, which the node also carries
+    # (05-chipsets-irq F-26).
+    assert machine.amic.chip == "AMIC" "pdm-nubus-empty: machine.amic missing"
+    assert machine.amic.enabled == 0x3F "pdm-nubus-empty: AMIC should report six ICR sources"
+    assert machine.amic.mode == 0 "pdm-nubus-empty: AMIC INTMODE should be 0 out of reset"
+
+    # The Ethernet ID PROM ($50F08000) and MACE ($50F0A000) windows are
+    # declared in the AMIC decode with nothing behind them yet.  They read
+    # 0, NOT the $FF that 05-chipsets-irq F-25 proposes and that the five
+    # mac030 families float to: floating them high breaks mklinux-boot's
+    # pm7100 row, which stops reaching the login screen because MkLinux
+    # probes for Ethernet here and an all-ones ID PROM is a different
+    # answer from an empty one.  Measured, not assumed -- the EPROM window
+    # is read once and MACE read 10 / written 40 times per run of this
+    # suite, so the value is live traffic.  The defines stay: multi-cpu
+    # §11.5 wants OFF_EPROM wired as an IPI and localtalk-networking keeps
+    # MACE as a stub.
+    assert machine.memory.peek.b(0x50F08000) == 0 "pdm: Ethernet ID PROM window should read 0, not float"
+    assert machine.memory.peek.b(0x50F0A000) == 0 "pdm: MACE window should read 0, not float"
     assert try(machine.nubus.slot[13].card.name, none) == none "slot D is populated"
     assert try(machine.nubus.slot[14].card.name, none) == none "slot E is populated"
     # The connectors are $C/$D/$E, and $B is NOT one of them.  This is not
@@ -497,6 +518,27 @@ if row_on("8100-75-24ac") {
     }
 }
 
+# ---- pdm-swim3-reset --------------------------------------------------------
+# The SWIM3 is this family's floppy CONTROLLER, and it was the one controller
+# in the tree that survived a machine reset -- `W-01` from the 2026-09-03
+# review.  cfg->floppy (the drive and its media) has always been reset by the
+# shared chain; the chip in front of it was not, on either PowerPC family.
+#
+# Poke a non-zero Setup register (island $16000 + register 5 x $200), reset,
+# and require the documented power-on value back.  $24 is GCR + IBMDrive and
+# deliberately NOT $80, which is the self-clearing SoftReset bit and would
+# make the chip reset itself and prove nothing.
+def row_pdm_swim3_reset() {
+    machine.boot model="pm7100" ram=24576 rom="${$ROM}"
+    scheduler.run 20000000
+    machine.memory.poke.b(0x50F16A00, 0x24)
+    assert machine.memory.peek.b(0x50F16A00) == 0x24 "pdm-swim3-reset: Setup did not take the poke"
+    machine.reset
+    scheduler.run 200000
+    assert machine.memory.peek.b(0x50F16A00) == 0 "pdm-swim3-reset: SWIM3 Setup survived a machine reset"
+    report_perf("suite-pdm/pdm-swim3-reset", scheduler.instr_count)
+}
+
 if row_on("pdm-nubus-empty") {
     row_end("pdm-nubus-empty", try(row_pdm_nubus_empty(), "FAILED"))
 }
@@ -555,6 +597,7 @@ if row_on("pdm-cd-device") {
         echo "skip: pdm-cd-device (CD disc image not fetched)"
     }
 }
+if row_on("pdm-swim3-reset") { row_end("pdm-swim3-reset", try(row_pdm_swim3_reset(), "FAILED")) }
 
 suite_done()
 quit

@@ -187,6 +187,9 @@ mouse_t *mouse_init(struct scheduler *scheduler, scc_t *scc, via_t *restrict via
 void mouse_delete(mouse_t *mouse) {
     if (!mouse)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(mouse->scheduler, mouse);
     free(mouse);
 }
 

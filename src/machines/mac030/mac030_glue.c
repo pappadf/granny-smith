@@ -21,6 +21,7 @@
 #include "floppy.h"
 #include "image.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
 #include "mmu_checkpoint.h"
@@ -142,22 +143,11 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc) {
 // here -- byte-identical to the four families that used to omit the call --
 // and the restore side stays symmetric because those families never call
 // via_init() for a second VIA either.
-void mac030_checkpoint_save_core(config_t *cfg, checkpoint_t *cp) {
-    memory_map_checkpoint(cfg->mem_map, cp);
-    cpu_checkpoint(cfg->cpu, cp); // on the 040 families this carries the MMU register file too
-    scheduler_checkpoint(cfg->scheduler, cp);
-    system_write_checkpoint_data(cp, &cfg->irq, sizeof(cfg->irq));
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
-    via_checkpoint(cfg->via2, cp);
-}
 
 // Build the low-speed spine every 68k family shares: the RTC, the SCC at the
 // Mac's clocks, and the AppleTalk stack that rides its LocalTalk channel.
 //
-// This is the READ side of the stream mac030_checkpoint_save_core() writes,
+// This is the READ side of the stream machine_checkpoint_save_core() writes,
 // and the two must stay in step: construction order here is restore order,
 // because rtc_init, scc_init and appletalk_init each consume their own block
 // from the checkpoint as they build.  Keeping both halves in one function
@@ -322,14 +312,18 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
 }
 
 // Hardware RESET: ROM overlay back on, MMU disabled.
-void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, struct mmu_state *mmu) {
+// The GLUE/MDU half of the board's /RESET net: VIA1 goes back to power-on and
+// pulls Overlay high, so the memory controller uses the ROM overlay map
+// again (Guide p.256), plus the devices every board shares.
+//
+// The 68030 PMMU used to be cleared here.  It is INSIDE THE CPU and not on
+// the net, so an external chip reset must not touch it; that moved to
+// cpu_hardware_reset (reset proposal §3.1.3).  The `mmu` parameter is gone
+// with it.
+void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start) {
     *overlay_flag = false; // force the set_rom_overlay toggle below
     mac030_glue_set_rom_overlay(cfg, overlay_flag, rom_start, true);
-    if (mmu) {
-        mmu->enabled = false;
-        mmu->tc = 0;
-        mmu_invalidate_tlb(mmu);
-    }
+    system_reset_common_devices(cfg);
 }
 
 // Shared IRQ callbacks — route a device's interrupt line to the CPU IPL.
@@ -367,13 +361,33 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active) {
 // (no slot asserted ↔ any slot asserted) pulses CA1.  Verbatim from the former
 // nubus.c VIA2 fast-path — now reached uniformly through the substrate so
 // nubus.c carries no cfg->via2 (proposal §4.4).
-void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
+// One source of the family's /SLOTIRQ aggregate changes state.
+//
+// The chipset keeps the OR, not the bus.  GLUE used to pulse CA1 only when
+// the NuBus controller reported an `umbrella_edge` computed from its own
+// slot bitmap; the MCU ignored that flag and re-drove CA1 from its own
+// mask, and the MCU was right -- its aggregate includes DAFB on PA6 and SONIC
+// on PA0, sources the NuBus controller knows nothing about.  The SE/30's
+// built-in video is the same shape.  A bus that cannot see every contributor
+// cannot compute the edge (05-chipsets-irq F-46).
+//
+// /SLOTIRQ is a LEVEL: "routed through an OR gate ... connected to the CA1
+// input of VIA2" (Quadra 700 and 900 developer notes).
+void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active) {
+    mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
+    if (!st || pa_bit < 0 || pa_bit > 6)
+        return;
+    uint8_t bit = (uint8_t)(1u << pa_bit);
+    st->slot_pa_mask = active ? (st->slot_pa_mask | bit) : (st->slot_pa_mask & (uint8_t)~bit);
+    via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low line
+    via_input_c(cfg->via2, /*CA1*/ 0, 0, st->slot_pa_mask ? 0 : 1); // /SLOTIRQ = OR of sources
+}
+
+void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     int pa_bit = slot - 0x9;
     if (pa_bit < 0 || pa_bit > 5)
         return;
-    via_input(cfg->via2, /*port A*/ 0, pa_bit, active ? 0 : 1); // active-low
-    if (umbrella_edge)
-        via_input_c(cfg->via2, /*CA1*/ 0, /*pin*/ 0, active ? 0 : 1);
+    mac030_glue_slot_irq_source(cfg, pa_bit, active);
 }
 
 // Family-shared teardown delete-chain.  Order matches the (identical)
@@ -419,9 +433,9 @@ static int glue_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void glue_reset(config_t *cfg) {
+static void glue_bus_reset(config_t *cfg) {
     mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
-    mac030_glue_reset(cfg, &st->rom_overlay, glue_board(cfg)->desc->rom_base, st->mmu);
+    mac030_glue_bus_reset(cfg, &st->rom_overlay, glue_board(cfg)->desc->rom_base);
 }
 
 static void glue_teardown(config_t *cfg) {
@@ -442,7 +456,7 @@ static void glue_teardown(config_t *cfg) {
 
 static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mac030_glue_state_t *st = (mac030_glue_state_t *)cfg->machine_context;
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(st->adb, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
@@ -456,25 +470,39 @@ static void glue_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     mmu_checkpoint_save(st->mmu, cp);
 }
 
+// One 60.15 Hz VBL pulse on a VIA's CA1.  The lines idle high (via_init parks
+// them there), so the active transition is the falling edge and the line is
+// left back at rest.
+void mac_vbl_pulse(struct via *via) {
+    via_input_c(via, /*port A*/ 0, /*CA1*/ 0, false);
+    via_input_c(via, 0, 0, true);
+}
+
 static void glue_trigger_vbl(config_t *cfg) {
     const mac030_glue_board_t *board = glue_board(cfg);
     if (board->trigger_vbl) {
         board->trigger_vbl(cfg); // SE/30: built-in slot-$E video VBL
         return;
     }
-    // Default GLUE VBL (IIcx/IIx, NuBus video): pulse both VIA CA1 lines as the
-    // GLUE chip does, then fan the VBL out to the NuBus cards.
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via2, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via2, 0, 0, 1);
+    // Default GLUE VBL (IIcx/IIx, NuBus video): the 60.15 Hz interrupt on
+    // VIA1 CA1, then fan the VBL out to the NuBus cards.
+    //
+    // VIA1 ONLY.  This used to pulse VIA2's CA1 too, "as the GLUE chip does"
+    // -- but VIA2 CA1 is /SLOTIRQ, the slot-interrupt aggregate, so every
+    // frame forged a slot interrupt and desynchronised the umbrella level a
+    // real card may be holding.  Guide to the Macintosh Family Hardware 2e,
+    // p.211: the vSync slot interrupt "is distinct from the 60.15 Hz
+    // interrupt (VBL) request, WHICH IS SENT BY VIA2 TO VIA1."  Two different
+    // interrupts; only one of them lands on a CA1 pin here
+    // (05-chipsets-irq F-11).
+    mac_vbl_pulse(cfg->via1);
     nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
 }
 
 const machine_substrate_t glue_substrate = {
     .init = glue_init,
-    .reset = glue_reset,
+    .bus_reset = glue_bus_reset,
     .teardown = glue_teardown,
     .checkpoint_save = glue_checkpoint_save,
     .trigger_vbl = glue_trigger_vbl,

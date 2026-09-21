@@ -141,7 +141,7 @@ def row_q700_75_hd() {
     assert_addr(false)
     check_ex("goldens/q700-7.5-640x480-finder.png", 0, 440, 20, 640)
     about_box()
-    check_ex("goldens/q700-7.5-640x480-about.png", 0, 440, 20, 640)
+    check_ex2("goldens/q700-7.5-640x480-about.png", 0, 440, 20, 640, 133, 445, 148, 500)
     report_row("7.5", "dafb", "hd-boot 53c96 about")
     report_perf("suite-quadra/q700-75-hd", scheduler.instr_count)
 }
@@ -311,7 +311,7 @@ def row_q900_75_hd() {
     assert_addr(false)
     check_ex("goldens/q900-7.5-640x480-finder.png", 0, 440, 20, 640)
     about_box()
-    check_ex("goldens/q900-7.5-640x480-about.png", 0, 440, 20, 640)
+    check_ex2("goldens/q900-7.5-640x480-about.png", 0, 440, 20, 640, 133, 445, 148, 500)
     report_row("7.5", "dafb", "hd-boot caboose iop about")
     report_perf("suite-quadra/q900-75-hd", scheduler.instr_count)
 }

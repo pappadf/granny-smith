@@ -125,6 +125,17 @@ event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t 
 void remove_event(struct scheduler *restrict s, event_callback_t cb, void *src) {
     (void)s, (void)cb, (void)src;
 }
+// The DMA pump (F-15) asks whether it is already queued.  These tests drive
+// the port directly rather than through the scheduler, so "never queued" is
+// the right answer: every mesh_pump_arm re-arms into the no-op above.
+bool has_event(struct scheduler *restrict s, event_callback_t cb) {
+    (void)s, (void)cb;
+    return false;
+}
+void scheduler_forget_source(struct scheduler *sch, void *source) {
+    (void)sch;
+    (void)source;
+}
 // The medium itself is out of scope here: these tests stage the state AROUND a
 // device, not its contents, and setup_get_image_by_filename() returns NULL so
 // no image is ever opened.

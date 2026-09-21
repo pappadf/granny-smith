@@ -1246,8 +1246,10 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
     // embedded scc pointer inside ch_t). The ch_t.scc pointer will be re-linked below.
     if (checkpoint) {
         size_t ch_data_size = offsetof(ch_t, scc);
-        // Read contiguous plain-data for both channels
-        system_read_checkpoint_data(checkpoint, scc->ch, ch_data_size * 2);
+        // One block per channel, mirroring the save (see scc_checkpoint for
+        // why this is not a single ch_data_size * 2 read).
+        for (int i = 0; i < 2; i++)
+            system_read_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
 
         // Re-link channel back-pointers and ensure index is correct
         for (int i = 0; i < 2; i++) {
@@ -1367,6 +1369,9 @@ size_t scc_channel_take_sent(scc_t *scc, unsigned int ch, uint8_t *out, size_t m
 void scc_delete(scc_t *scc) {
     if (!scc)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(scc->scheduler, scc);
     // Tear down object-tree nodes in reverse order (children first).
     if (scc->channel_b) {
         object_detach(scc->channel_b);
@@ -1390,9 +1395,26 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
     if (!scc || !checkpoint)
         return;
 
-    // Write contiguous plain-data portion of each channel up to the embedded scc pointer.
+    // Each channel's plain data, up to its embedded scc back-pointer, as its
+    // OWN block.
+    //
+    // This was one block of `offsetof(ch_t, scc) * 2` bytes starting at
+    // ch[0], which assumed the channels are packed at the PREFIX size.  They
+    // are not: the stride is sizeof(ch_t), eight bytes larger because of the
+    // back-pointer.  So the single block ran off the end of ch[0]'s prefix
+    // and covered ch[0]'s `scc` pointer -- a host heap address, in the save
+    // file, which is what 05-chipsets-irq F-09 was about -- and then stopped
+    // eight bytes short of the end of ch[1]'s, silently dropping channel B's
+    // `brg` (baud rate generator: time constant, counter, enable, clock
+    // source), `loopback_prev_dtr` and `rx_special` from every checkpoint.
+    // Channel B is the LocalTalk channel on a Mac, and rx_special is the
+    // SDLC end-of-frame latch the PDM native LocalTalk driver waits on.
+    //
+    // Per channel, the two are the same number only when the prefix happens
+    // to fill the struct, so the loop is the form that cannot drift.
     size_t ch_data_size = offsetof(ch_t, scc);
-    system_write_checkpoint_data(checkpoint, scc->ch, ch_data_size * 2);
+    for (int i = 0; i < 2; i++)
+        system_write_checkpoint_data(checkpoint, &scc->ch[i], ch_data_size);
 
     // Note: we intentionally do not save the scc back-pointer, nor the memory_interface
     // function pointers or the mapping pointer. Those are runtime-specific and re-initialized

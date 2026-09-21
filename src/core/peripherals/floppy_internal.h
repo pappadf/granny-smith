@@ -390,6 +390,9 @@ void floppy_iwm_setup(floppy_t *floppy, memory_map_t *map);
 // Sets up SWIM memory interface callbacks and ISM initial state
 void floppy_swim_setup(floppy_t *floppy, memory_map_t *map);
 
+// Bus /RESET for the SWIM/ISM register file.
+void floppy_swim_bus_reset(floppy_t *floppy);
+
 // SWIM motor spin-up callback (separate for scheduler event identity)
 void floppy_swim_motor_spinup_callback(void *source, uint64_t data);
 

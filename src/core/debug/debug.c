@@ -1630,12 +1630,19 @@ static int load_png_to_framebuffer(const char *filename, uint8_t *fb_out, int ex
 // the colour bytes will be zero, which won't match a real reference
 // — that's intentional, the test should screenshot post-CLUT-load.
 //
-// `exclude_rect`, when non-NULL, points to {top, left, bottom, right}
-// (half-open).  Those pixels are zeroed in BOTH the live and reference
-// buffers before the compare, so any phase-dependent content there (a
-// blinking text caret, a ticking clock digit) is ignored.  Callers must
-// validate the bounds; out-of-range values are clamped defensively here.
-int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rect) {
+// `exclude_rects` points to `n_rects` consecutive {top, left, bottom,
+// right} quads (half-open).  Those pixels are zeroed in BOTH the live and
+// reference buffers before the compare, so any phase-dependent content
+// there is ignored.  Callers must validate the bounds; out-of-range values
+// are clamped defensively here.
+//
+// More than one region because a single frame can carry more than one
+// phase-dependent field, and a bounding box over both would blank whatever
+// sits between them.  The About This Macintosh rows are the case that
+// forced it: the menu-bar clock in the top right AND the Finder's "Largest
+// Unused Block" figure lower down, with "Total Memory" -- an assertion the
+// row exists to make -- sitting between the two.
+int match_framebuffer_with_png(const display_t *d, const char *filename, const int *exclude_rects, int n_rects) {
     if (!d || !d->bits) {
         printf("Error: No active display.\n");
         return -1;
@@ -1677,9 +1684,9 @@ int match_framebuffer_with_png(const display_t *d, const char *filename, const i
     }
     // Mask the excluded region (if any) in both buffers so phase-dependent
     // pixels there don't affect the compare.  Clamp to the framebuffer.
-    if (exclude_rect) {
-        int top = exclude_rect[0], left = exclude_rect[1];
-        int bottom = exclude_rect[2], right = exclude_rect[3];
+    for (int r = 0; exclude_rects && r < n_rects; r++) {
+        const int *q = exclude_rects + r * 4;
+        int top = q[0], left = q[1], bottom = q[2], right = q[3];
         if (top < 0)
             top = 0;
         if (left < 0)
@@ -3510,23 +3517,31 @@ static value_t screen_method_save(struct object *self, const member_t *m, int ar
 // `screen.matches`: either just the reference (whole-screen compare) or the
 // reference plus all four region edges (top, left, bottom, right) — reject
 // anything in between.  Returns NULL through *err_out on a bad call.
-static const int *screen_parse_exclude_rect(const char *who, const display_t *d, int argc, const value_t *argv,
-                                            int rect[4], value_t *err_out) {
-    if (argc == 5) {
-        int top = (int)argv[1].i, left = (int)argv[2].i, bottom = (int)argv[3].i, right = (int)argv[4].i;
-        if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > (int)d->height || right > (int)d->width) {
-            *err_out = val_err("%s: invalid exclude region for (0,0)-(%u,%u)", who, d->width, d->height);
-            return NULL;
-        }
-        rect[0] = top;
-        rect[1] = left;
-        rect[2] = bottom;
-        rect[3] = right;
-        return rect;
+// Parse 0, 1 or 2 exclude rectangles from the optional arguments and write
+// them into `rect` (4 ints each).  Returns the count, or -1 on error.
+static int screen_parse_exclude_rects(const char *who, const display_t *d, int argc, const value_t *argv, int rect[8],
+                                      value_t *err_out) {
+    if (argc != 1 && argc != 5 && argc != 9) {
+        *err_out = val_err("%s: expected (reference), (reference, top, left, bottom, right) or the same with a "
+                           "second rectangle appended",
+                           who);
+        return -1;
     }
-    if (argc != 1)
-        *err_out = val_err("%s: expected (reference) or (reference, top, left, bottom, right)", who);
-    return NULL;
+    int n = (argc - 1) / 4;
+    for (int r = 0; r < n; r++) {
+        int base = 1 + r * 4;
+        int top = (int)argv[base].i, left = (int)argv[base + 1].i;
+        int bottom = (int)argv[base + 2].i, right = (int)argv[base + 3].i;
+        if (top < 0 || left < 0 || bottom <= top || right <= left || bottom > (int)d->height || right > (int)d->width) {
+            *err_out = val_err("%s: invalid exclude region %d for (0,0)-(%u,%u)", who, r + 1, d->width, d->height);
+            return -1;
+        }
+        rect[r * 4] = top;
+        rect[r * 4 + 1] = left;
+        rect[r * 4 + 2] = bottom;
+        rect[r * 4 + 3] = right;
+    }
+    return n;
 }
 
 static value_t screen_method_match(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -3536,12 +3551,12 @@ static value_t screen_method_match(struct object *self, const member_t *m, int a
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.match: framebuffer not available");
-    int rect[4];
+    int rect[8];
     value_t err = val_none();
-    const int *exclude_rect = screen_parse_exclude_rect("screen.match", d, argc, argv, rect, &err);
-    if (!exclude_rect && argc != 1)
+    int n_rects = screen_parse_exclude_rects("screen.match", d, argc, argv, rect, &err);
+    if (n_rects < 0)
         return err;
-    int result = match_framebuffer_with_png(d, ref, exclude_rect);
+    int result = match_framebuffer_with_png(d, ref, n_rects ? rect : NULL, n_rects);
     if (result < 0) {
         printf("MATCH FAILED: Error loading reference image '%s'.\n", ref);
         return val_err("screen.match: cannot load reference '%s'", ref);
@@ -3568,12 +3583,12 @@ static value_t screen_method_matches(struct object *self, const member_t *m, int
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.matches: framebuffer not available");
-    int rect[4];
+    int rect[8];
     value_t err = val_none();
-    const int *exclude_rect = screen_parse_exclude_rect("screen.matches", d, argc, argv, rect, &err);
-    if (!exclude_rect && argc != 1)
+    int n_rects = screen_parse_exclude_rects("screen.matches", d, argc, argv, rect, &err);
+    if (n_rects < 0)
         return err;
-    int result = match_framebuffer_with_png(d, ref, exclude_rect);
+    int result = match_framebuffer_with_png(d, ref, n_rects ? rect : NULL, n_rects);
     if (result < 0)
         return val_err("screen.matches: cannot load reference '%s'", ref);
     return val_bool(result == 0);
@@ -3587,7 +3602,7 @@ static value_t screen_method_match_or_save(struct object *self, const member_t *
     const display_t *d = system_display_synced();
     if (!d || !d->bits)
         return val_err("screen.match_or_save: framebuffer not available");
-    int result = match_framebuffer_with_png(d, ref, NULL);
+    int result = match_framebuffer_with_png(d, ref, NULL, 0);
     if (result < 0) {
         printf("MATCH FAILED: Error loading reference image.\n");
         if (actual)
@@ -3704,6 +3719,13 @@ static const arg_decl_t screen_match_args[] = {
     {.name = "left", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region left edge"},
     {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
     {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
+    {.name = "top2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region top edge"},
+    {.name = "left2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region left edge"},
+    {.name = "bottom2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Second exclude-region bottom edge"},
+    {.name = "right2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region right edge"},
 };
 static const arg_decl_t screen_matches_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -3711,6 +3733,13 @@ static const arg_decl_t screen_matches_args[] = {
     {.name = "left", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region left edge"},
     {.name = "bottom", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region bottom edge"},
     {.name = "right", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Exclude-region right edge"},
+    {.name = "top2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region top edge"},
+    {.name = "left2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region left edge"},
+    {.name = "bottom2",
+     .kind = V_INT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Second exclude-region bottom edge"},
+    {.name = "right2", .kind = V_INT, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "Second exclude-region right edge"},
 };
 static const arg_decl_t screen_match_or_save_args[] = {
     {.name = "reference", .kind = V_STRING, .doc = "Reference PNG path"},
@@ -3785,11 +3814,11 @@ static const member_t screen_members[] = {
     {.kind = M_METHOD,
      .name = "match",
      .doc = "Compare the framebuffer against a reference PNG (true if identical); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_match}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_match_args, .nargs = 9, .result = V_BOOL, .fn = screen_method_match}},
     {.kind = M_METHOD,
      .name = "matches",
      .doc = "Non-fatal `match`: true/false without aborting, artifacts, or output (polling primitive); optional "
-            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 5, .result = V_BOOL, .fn = screen_method_matches}},
+            "(top, left, bottom, right) excludes a region from the compare", .method = {.args = screen_matches_args, .nargs = 9, .result = V_BOOL, .fn = screen_method_matches}},
     {.kind = M_METHOD,
      .name = "match_or_save",
      .doc = "Like `match`, but also write the current screen to `actual` on mismatch",

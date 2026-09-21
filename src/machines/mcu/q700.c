@@ -116,25 +116,6 @@ static void q700_sonic_irq(void *context, bool active) {
 
 // SONIC bus-master DMA: guest-physical accesses through the bus resolver
 // (no IOMMU on this family, ref §16.3 — CPU MMU is not in the path).
-static uint32_t q700_sonic_mem_read(void *context, uint32_t phys, unsigned width) {
-    (void)context;
-    if (width == 1)
-        return mmu_read_physical_uint8(g_mmu, phys);
-    if (width == 2)
-        return mmu_read_physical_uint16(g_mmu, phys);
-    return mmu_read_physical_uint32(g_mmu, phys);
-}
-
-static void q700_sonic_mem_write(void *context, uint32_t phys, uint32_t value, unsigned width) {
-    (void)context;
-    if (width == 1)
-        mmu_write_physical_uint8(g_mmu, phys, (uint8_t)value);
-    else if (width == 2)
-        mmu_write_physical_uint16(g_mmu, phys, (uint16_t)value);
-    else
-        mmu_write_physical_uint32(g_mmu, phys, value);
-}
-
 // ============================================================
 // Device construction (mcu_board_t.build_devices)
 // ============================================================
@@ -181,7 +162,9 @@ static int q700_build_devices(config_t *cfg, checkpoint_t *cp) {
     // SONIC Ethernet (Phase F; ~20 MHz part on the Q700, no wire in v1).
     st->sonic = sonic_init(cp);
     sonic_set_irq_callback(st->sonic, q700_sonic_irq, cfg);
-    sonic_set_memory_hooks(st->sonic, q700_sonic_mem_read, q700_sonic_mem_write, NULL);
+    // SONIC bus-master DMA: the shared guest-physical port.  This machine
+    // carried its own byte-identical copy of it until F-16.
+    sonic_set_memory_port(st->sonic, &dma_mem_port_physical);
 
     st->asc = asc_init(NULL, cfg->scheduler, cp); // EASC: ASC-compatible core until Phase D
     asc_set_mix(st->asc, ASC_MIX_CH_A);
@@ -259,8 +242,8 @@ static const mcu_board_desc_t q700_board_desc = {
                  .io_ranges = mcu_q700_io_ranges,
                  .io_mirror_mask = 0x0003FFFFu, // 256 KiB island (ref §6.1)
             .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-            .bus_err_lo = 0xF1000000u,
-                 .bus_err_hi = 0xFEFFFFFFu,
+            .bus_err_lo = 0xF1000000u, // slots $1-$E: this board decodes below $F9
+            .bus_err_hi = NUBUS_BERR_HI,
                  },
     .ram_onboard_size = 0x00400000u, // 4 MB soldered = bank A; SIMM bank B follows
     .ram_bank_count = 2, // 4 MB soldered + one four-SIMM bank

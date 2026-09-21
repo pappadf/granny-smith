@@ -14,6 +14,7 @@
 // Video, COPS, floppy, and the parallel disk arrive in later steps.
 
 #include "machine.h"
+#include "machine_teardown.h"
 #include "system_config.h"
 
 #include "checkpoint_images.h"
@@ -1034,39 +1035,19 @@ static void lisa_teardown(config_t *cfg) {
         cops_delete(ls0->cops);
         ls0->cops = NULL;
     }
-    if (cfg->via1) {
-        via_delete(cfg->via1);
-        cfg->via1 = NULL;
-    }
-    if (cfg->via2) {
-        via_delete(cfg->via2);
-        cfg->via2 = NULL;
-    }
-    if (cfg->scc) {
-        scc_delete(cfg->scc);
-        cfg->scc = NULL;
-    }
     lisa_state_t *ls = lisa_state(cfg);
     if (ls && ls->mmu) {
         lisa_mmu_delete(ls->mmu);
         ls->mmu = NULL;
     }
-    if (cfg->scheduler) {
-        scheduler_delete(cfg->scheduler);
-        cfg->scheduler = NULL;
-    }
-    if (cfg->cpu) {
-        cpu_delete(cfg->cpu);
-        cfg->cpu = NULL;
-    }
-    if (cfg->mem_map) {
-        memory_map_delete(cfg->mem_map);
-        cfg->mem_map = NULL;
-    }
-    if (cfg->debugger) {
-        debug_cleanup(cfg->debugger);
-        cfg->debugger = NULL;
-    }
+
+    // via1, via2, scc, the scheduler, the CPU, the memory map and the
+    // debugger, in the one order documented once (05-chipsets-irq F-17).
+    // The Lisa builds no scsi and no rtc; the chain NULL-checks its way past
+    // both.  Note it also deletes the scheduler LAST of those, which is what
+    // keeps the device destructors' scheduler_forget_source calls valid.
+    machine_teardown_config_devices(cfg);
+
     if (ls) {
         free(ls);
         cfg->machine_context = NULL;
@@ -1077,6 +1058,15 @@ static void lisa_teardown(config_t *cfg) {
 // Checkpoint
 // ============================================================
 
+// The Lisa is the one family NOT on machine_checkpoint_save_core
+// (05-chipsets-irq F-18), and not by omission: its construction order
+// genuinely differs.  It has no RTC -- the COPS keeps the time -- no
+// AppleTalk at this point, and it builds the SCC last, after both VIAs, the
+// COPS, the image list, the FDC and the ProFile.  Since save order IS
+// construction order (the stream is positional and each *_init consumes its
+// own block as it builds), adopting the shared prefix would mean reordering
+// lisa_init for no gain.  The first four lines below are the shared ones and
+// are deliberately kept in step with it.
 static void lisa_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     memory_map_checkpoint(cfg->mem_map, cp);
     cpu_checkpoint(cfg->cpu, cp);

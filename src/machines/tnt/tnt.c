@@ -40,6 +40,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_checkpoint.h"
 #include "machine_config.h" // machine_boot_is_restart (the NVRAM carry rule)
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "pci.h"
@@ -50,10 +51,12 @@
 #include "scsi.h"
 #include "scsi_53c96.h"
 #include "slot_tables.h"
+#include "swim3.h"
 #include "sym53c8xx.h" // the fast/wide controllers the ANS slot table seats
 #include "via.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -266,6 +269,9 @@ static void tnt_memory_layout(config_t *cfg) {
 // bus's slow path byte by byte.  The CPU MMU is deliberately not in the
 // path (the sonic/psc memory-hook precedent).
 
+// The DBDMA port: RAM by memcpy, everything else through the bus.  NOT
+// dma_mem_port_physical, which resolves host memory only and reads device
+// space as zero (dma_mem.h).
 static void tnt_dbdma_mem_read(void *ctx, uint32_t phys, uint8_t *buf, uint32_t len) {
     config_t *cfg = (config_t *)ctx;
     if (phys < cfg->ram_size && len <= cfg->ram_size - phys) {
@@ -567,7 +573,13 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     tnt_swim3_bind(cfg);
     tnt_swim3_init(cfg);
     tnt_scc_dma_init(cfg);
-    tnt_dbdma_set_memory_hooks(st->dbdma, tnt_dbdma_mem_read, tnt_dbdma_mem_write, cfg);
+    static const dma_mem_port_t dbdma_port = {
+        .read_block = tnt_dbdma_mem_read,
+        .write_block = tnt_dbdma_mem_write,
+    };
+    dma_mem_port_t port = dbdma_port;
+    port.ctx = cfg;
+    tnt_dbdma_set_memory_port(st->dbdma, &port);
     tnt_dbdma_set_irq_hook(st->dbdma, tnt_dbdma_irq, cfg);
 
     // The AWACS sound face on channel 8 (Open Firmware's beep is the
@@ -580,6 +592,7 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
+    tnt_gc_attach_object(cfg); // machine.gc; construction only, not on reset
     // The Network Server's GBUS island — built before the memory layout so
     // the LCD is answering from the very first POST write.  That ordering is
     // the whole point of it: POST establishes its LCD path before it sizes
@@ -666,6 +679,11 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
             .out = mesh_port_out,
             .in = mesh_port_in,
             .s_bits = NULL,
+            // MESH pops straight off the SCSI bus, so it never returns
+            // short and the channel would run a whole transfer inside one
+            // register store; the burst makes it yield and MESH's own pump
+            // kicks it back on the bus's cadence (05-chipsets-irq F-15).
+            .burst = MESH_DMA_BURST,
             .ctx = st->mesh,
         };
         tnt_dbdma_set_port(st->dbdma, 10, &mesh_port);
@@ -674,7 +692,9 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     if (cp) {
         system_read_checkpoint_data(cp, &st->gbus, sizeof(st->gbus));
         system_read_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
-        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+        // Mirrors the save: the prefix only, then *_swim3_bind re-attaches
+        // the pointer tail.
+        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         system_read_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
         tnt_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         tnt_gc_recompute(cfg); // mesh/53C94 lines fold into the fabric
@@ -697,16 +717,21 @@ static int tnt_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void tnt_reset(config_t *cfg) {
+static void tnt_bus_reset(config_t *cfg) {
     tnt_state_t *st = tnt_st(cfg);
-    // Power-on reset: the CPU back to $FFF00100, chipset registers to
-    // their power-on state.  NVRAM survives — it is non-volatile, and
-    // POST's log plus the Open Firmware environment must persist across
-    // restarts (warm-restart semantics proper are observed at the ladder).
-    ppc_reset(cfg->ppc);
+    // Chipset registers to their power-on state.  The CPU going back to
+    // $FFF00100 is the CPU half and belongs to level 2
+    // (system_machine_reset); see the PDM twin.  NVRAM survives — it is
+    // non-volatile, and POST's log plus the Open Firmware environment must
+    // persist across restarts (warm-restart semantics proper are observed at
+    // the ladder).
     tnt_hh_init(cfg);
     tnt_gc_init(cfg);
     tnt_dbdma_reset(st->dbdma);
+    // The floppy CONTROLLER behind Grand Central +$15000.  cfg->floppy (the
+    // drive and its media) is reset by the shared chain; the SWIM3 was the
+    // one controller in the tree that survived a reset (`W-01`).
+    swim3_reset(&st->swim3);
     tnt_awacs_reset(cfg);
     tnt_control_reset(cfg);
     if (tnt_board(cfg)->has_mesh)
@@ -722,9 +747,10 @@ static void tnt_reset(config_t *cfg) {
         st->bridge[i].cfg_addr = 0;
         st->bridge[i].mode_select = 0;
     }
-    // PCI RST#: every seated device's header back to power-on, which drops
-    // the assigned BARs and with them the decode.
-    pci_reset(cfg->pci);
+    // PCI RST# (every seated device's header back to power-on, dropping the
+    // assigned BARs and with them the decode), NuBus and SCSI -- the shared
+    // fan-out, since they are all on the one net.
+    system_reset_common_devices(cfg);
     tnt_gc_recompute(cfg);
 }
 
@@ -751,6 +777,7 @@ static void tnt_teardown(config_t *cfg) {
         }
     }
     if (st) {
+        tnt_gc_detach_object(cfg);
         tnt_awacs_teardown(cfg);
         tnt_gbus_teardown(cfg);
         tnt_lcd_teardown(cfg);
@@ -813,13 +840,10 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     tnt_state_t *st = tnt_st(cfg);
     // Same relative order as the tnt_init construction sequence (the
     // checkpoint stream is positional).
-    memory_map_checkpoint(cfg->mem_map, cp);
-    ppc_checkpoint(cfg->ppc, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    // The shared core prefix (05-chipsets-irq F-18), byte-identical to the
+    // seven lines it replaces -- see pdm.c for why the PowerPC families come
+    // out the same as the 68k ones through it.
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     tnt_dbdma_checkpoint(st->dbdma, cp);
@@ -853,7 +877,15 @@ static void tnt_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->lcd, sizeof(st->lcd));
     // The floppy controller and its DBDMA byte ring (swim3.c); the drive
     // itself is in the images block above.
-    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
+    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
+    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
+    // in a user-shareable save file, and made two saves of the same guest
+    // state differ -- which defeats any diff-based checkpoint testing.  The
+    // restore re-binds through *_swim3_bind either way, so the values were
+    // harmless; the leak and the non-reproducibility were not
+    // (05-chipsets-irq F-09).
+    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->fdring, sizeof(st->fdring));
 }
 
@@ -1098,7 +1130,7 @@ static bool tnt_fd_present(config_t *cfg, int drive) {
 
 const machine_substrate_t tnt_substrate = {
     .init = tnt_init,
-    .reset = tnt_reset,
+    .bus_reset = tnt_bus_reset,
     .teardown = tnt_teardown,
     .checkpoint_save = tnt_checkpoint_save,
     .pci_slot_irq = tnt_pci_slot_irq,

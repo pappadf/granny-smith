@@ -41,6 +41,17 @@ typedef struct mac030_glue_state {
 
     mac030_glue_io_t glue_io; // device handles for the shared dispatcher
 
+    // The /SLOTIRQ aggregate this family drives onto VIA2 CA1: the OR of
+    // every source, kept by the CHIPSET rather than inferred from the NuBus
+    // controller's own view.  Quadra 700/900 developer notes: "The ... NuBus
+    // interrupt signals ..., the built-in video interrupt signal, and the
+    // Ethernet controller interrupt signal are routed through an OR gate to
+    // generate a signal called /SLOTIRQ.  This signal is connected to the CA1
+    // input of VIA2."  It is a LEVEL, and it can include sources the bus
+    // knows nothing about -- which is why the bus's `umbrella_edge` was the
+    // wrong abstraction (05-chipsets-irq F-46).
+    uint8_t slot_pa_mask;
+
     uint8_t last_port_b; // VIA1 PB output, for ADB ST-transition filtering
     uint8_t last_via2_port_b; // IIcx soft-power detect (unused on se30/iix)
     bool soft_power_armed; // IIcx soft-power detect (unused on se30/iix)
@@ -99,7 +110,7 @@ void mac030_glue_set_rom_overlay(config_t *cfg, bool *overlay_flag, uint32_t rom
 // Hardware RESET: re-enable the ROM overlay and disable the MMU (TC/E off,
 // TLB flushed).  `overlay_flag` points at the machine's rom_overlay bool;
 // `rom_start` is the ROM region base; `mmu` may be NULL.
-void mac030_glue_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start, struct mmu_state *mmu);
+void mac030_glue_bus_reset(config_t *cfg, bool *overlay_flag, uint32_t rom_start);
 
 // Construct the GLUE peripheral set shared by se30/iicx/iix in canonical
 // order: ADB, (checkpoint image restore), SCSI (+VIA2), images, ASC (+VIA2),
@@ -175,7 +186,7 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
 // rides its LocalTalk channel.  Pass NULL for `scc_irq` to take the family
 // default (mac030_glue_scc_irq).
 //
-// This is the READ side of the stream mac030_checkpoint_save_core() writes
+// This is the READ side of the stream machine_checkpoint_save_core() writes
 // below, and the pairing is the point: rtc_init, scc_init and appletalk_init
 // each consume their own block from `cp` as they build, so construction order
 // here IS restore order.  While the save half was shared and the restore half
@@ -188,28 +199,6 @@ void mac030_glue_memory_layout(config_t *cfg, const mac030_board_desc_t *desc);
 // versus the derived factor everyone else needs.  That variation is real, and
 // a parameter list long enough to absorb it would be longer than the code.
 void mac030_build_lowspeed(config_t *cfg, checkpoint_t *cp, void (*scc_irq)(void *, bool));
-
-// Write the head of a 68k family's checkpoint stream, in the one canonical
-// order:
-//
-//   mem_map -> cpu -> scheduler -> cfg->irq -> rtc -> scc -> appletalk ->
-//   via1 -> via2
-//
-// The stream is positional -- no per-block tag, no size field -- so this
-// sequence IS the file format, and a family that replicated it could silently
-// write a different one by dropping a line.  That is not hypothetical: the
-// review's F-23 was exactly this, a copy that omitted appletalk_checkpoint.
-//
-// Each family calls this first, then writes its own devices in its own
-// construction order.  That ordering rule is the family's to keep: save must
-// mirror what its init reads back, because a swapped pair does not fail at
-// the swap, it cross-loads and dies later at whichever block first disagrees
-// on size (see the IIfx, which did exactly that).
-//
-// The PowerPC families do NOT use this: their stream substitutes
-// ppc_checkpoint for cpu_checkpoint and omits cfg->irq, because PDM and TNT
-// keep interrupt state in their own register blobs instead.
-void mac030_checkpoint_save_core(config_t *cfg, checkpoint_t *cp);
 
 // Create the 68030 PMMU over a board's ROM window, make it the global MMU and
 // attach it to the CPU.  Returns the MMU; the caller sets any TT registers.
@@ -288,7 +277,16 @@ void mac030_glue_update_ipl(config_t *cfg, int source, bool active);
 // substrate.nubus_slot_irq for the GLUE family: each slot's /NMRQ is a VIA2
 // port-A bit (active-low; slot $9→PA0 .. $E→PA5), and the umbrella OR-line edge
 // pulses CA1.  (se30/iicx/iix.)
-void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
+// One source of the family /SLOTIRQ aggregate on VIA2 port A changes state.
+// pa_bit 0-5 are NuBus slots $9-$E; 6 is available for a built-in source the
+// bus knows nothing about (the SE/30's video, the MCU's DAFB).
+// One 60.15 Hz VBL pulse on a VIA's CA1 line.
+struct via;
+void mac_vbl_pulse(struct via *via);
+
+void mac030_glue_slot_irq_source(config_t *cfg, int pa_bit, bool active);
+
+void mac030_glue_nubus_slot_irq(config_t *cfg, int slot, bool active);
 
 // Family-shared teardown delete-chain: scheduler_stop → mmu → floppy → asc →
 // adb → scsi → via2 → via1 → scc → rtc → scheduler → cpu → mem_map → debugger.

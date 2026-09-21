@@ -94,6 +94,11 @@ typedef struct swim3 {
 // plain-data part.  Does not touch the register state.
 void swim3_bind(swim3_t *sw, struct floppy *fd, struct scheduler *sched, const swim3_backend_t *be);
 
+// Power-on state (ERS v1.2 §3.10).  Driven by the guest's self-clearing
+// Setup SoftReset bit and by the board's /RESET net; the bound fd/sched/
+// backend pointers survive, being wiring rather than state.  See swim3.c.
+void swim3_reset(swim3_t *sw);
+
 // Register the chip's scheduler event types — before scheduler_start
 // (the timer in swim3.c, the transfer engine in swim3_xfer.c).
 void swim3_register_events(swim3_t *sw);

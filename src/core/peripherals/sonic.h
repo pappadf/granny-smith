@@ -19,6 +19,7 @@
 #define SONIC_H
 
 #include "checkpoint.h"
+#include "dma_mem.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -35,15 +36,16 @@ typedef void (*sonic_irq_cb)(void *context, bool active);
 // When no hooks are installed the chip uses the machine bus
 // (mmu_read_physical_* / mmu_write_physical_*); unit tests install mock
 // hooks over a flat buffer.
-typedef uint32_t (*sonic_mem_read_fn)(void *context, uint32_t phys, unsigned width);
-typedef void (*sonic_mem_write_fn)(void *context, uint32_t phys, uint32_t value, unsigned width);
+// (The pair of typedefs that used to live here is now the shared
+// dma_mem_port_t -- one port type for every bus-master engine, 05-chipsets-irq
+// F-16.)
 
 sonic_t *sonic_init(checkpoint_t *cp);
 void sonic_delete(sonic_t *s);
 void sonic_checkpoint(sonic_t *s, checkpoint_t *cp);
 
 void sonic_set_irq_callback(sonic_t *s, sonic_irq_cb cb, void *context);
-void sonic_set_memory_hooks(sonic_t *s, sonic_mem_read_fn rd, sonic_mem_write_fn wr, void *context);
+void sonic_set_memory_port(sonic_t *s, const dma_mem_port_t *port); // copied; NULL unbinds
 
 // Register file access (reg = RA5..RA0, i.e. the byte offset already
 // divided by the board's 4-byte register spacing).

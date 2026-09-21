@@ -42,6 +42,7 @@ LDFLAGS ?=
 # No stub_checkpoint.c: the test provides RECORDING checkpoint stream
 # functions so the save/restore round-trip is exercised for real.
 SRCS := $(CURDIR)/test.c \
+        $(EMU_ROOT)/core/peripherals/dma_mem.c \
         $(EMU_ROOT)/machines/tnt/dbdma.c
 
 ALL_SRCS := $(abspath $(SRCS))

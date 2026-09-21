@@ -42,8 +42,8 @@ static const av_board_desc_t q660av_board_desc = {
                  .io_ranges = av_io_ranges,
                  .io_mirror_mask = 0x0003FFFFu,
                  .io_unmapped_read = 0xFF,
-                 .bus_err_lo = 0xA0000000u,
-                 .bus_err_hi = 0xFEFFFFFFu,
+                 .bus_err_lo = 0xA0000000u, // super-slots + slots; see nubus.h
+            .bus_err_hi = NUBUS_BERR_HI,
                  },
     .strap_nibble = 0xB, // Tempest25 straps %1011 (ymca.md §2)
     .muni_present = false, // no NuBus adapter: MUNI_Control bus-errors

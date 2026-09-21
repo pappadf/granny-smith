@@ -24,6 +24,7 @@
 #include "image.h"
 #include "iop.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
@@ -125,6 +126,7 @@ LOG_USE_CATEGORY_NAME("board");
 #define IIFX_SCSI_IO_PENALTY 2
 #define IIFX_ASC_IO_PENALTY  2
 #define IIFX_OSS_IO_PENALTY  2
+#define IIFX_BIU_IO_PENALTY  2 // a decoded window like any other: reads 0, writes drop, cycle completes
 
 // IIfx SCSI DMA controller — Apple 343S0064-A "IIfx Custom SCSI DMA
 // Controller, QFP-100".
@@ -293,10 +295,10 @@ static inline iifx_state_t *iifx_state(config_t *cfg) {
 // Forward declarations for profile callbacks.
 static int iifx_init(config_t *cfg, checkpoint_t *checkpoint);
 static void iifx_teardown(config_t *cfg);
-static void iifx_reset(config_t *cfg);
+static void iifx_bus_reset(config_t *cfg);
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp);
 static void iifx_memory_layout_init(config_t *cfg);
-static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge);
+static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active);
 static void iifx_trigger_vbl(config_t *cfg);
 
 // Fills one page-table entry with a direct host mapping.
@@ -856,29 +858,34 @@ static void iifx_scsidma_write_uint8(config_t *cfg, uint32_t offset, uint8_t val
     iifx_state_t *st = iifx_state(cfg);
     uint32_t off = offset & 0x1fff;
 
-    // Per-register PC trace for the discriminator investigation
-    // (env-gated, same toggle as the shim trace).  Emits one line per
-    // interesting wrapper-register write with the CPU PC at issue
-    // time.  $0C0/$100 emit only on the final byte so the assembled
-    // 32-bit value appears.  $020/$050/$070 are byte-wide registers.
-    if (getenv("GS_IIFX_SHIM_TRACE")) {
+    // Per-register PC trace for the SCSI-DMA discriminator investigation.
+    // One line per interesting wrapper-register write, with the CPU PC at
+    // issue time.  $0C0/$100 emit only on the final byte so the assembled
+    // 32-bit value appears; $020/$050/$070 are byte-wide registers.
+    //
+    // Gated on the `board` log category at level 9, not on GS_IIFX_SHIM_TRACE
+    // (05-chipsets-irq F-41).  `debug.log board 9` turns it on, `file=` can
+    // redirect it, and it is visible in the object model -- none of which an
+    // env var offered.  Unlike the other overrides that finding names, this
+    // one only ever produced output and never changed emulated behaviour.
+    if (log_would_log(_log_get_local_category(), 9)) {
         extern uint64_t cpu_instr_count(void);
-        unsigned long long _ic = (unsigned long long)cpu_instr_count();
+        unsigned long long ic = (unsigned long long)cpu_instr_count();
         if (off == 0x020 || off == 0x050 || off == 0x070) {
-            fprintf(stdout, "REG W i=%llu $%03x = $%02x  pc=$%08x  ctrl=$%08x cur=$%08x\n", _ic, off, value,
-                    cpu_get_pc(cfg->cpu), st->scsi_dma_ctrl, st->scsi_dma_addr);
+            LOG(9, "REG W i=%llu $%03x = $%02x  pc=$%08x  ctrl=$%08x cur=$%08x", ic, off, value, cpu_get_pc(cfg->cpu),
+                st->scsi_dma_ctrl, st->scsi_dma_addr);
         } else if ((off & 0xff0) == SCSIDMA_DCTRL && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_ctrl;
             iifx_write_reg32_byte(&composed, off, value);
-            fprintf(stdout, "REG W i=%llu $080 = $%08x  pc=$%08x\n", _ic, composed, cpu_get_pc(cfg->cpu));
+            LOG(9, "REG W i=%llu $080 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         } else if ((off & 0xff0) == SCSIDMA_DCNT && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_count;
             iifx_write_reg32_byte(&composed, off, value);
-            fprintf(stdout, "REG W i=%llu $0c0 = $%08x  pc=$%08x\n", _ic, composed, cpu_get_pc(cfg->cpu));
+            LOG(9, "REG W i=%llu $0c0 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         } else if ((off & 0xff0) == SCSIDMA_DADDR && (off & 3) == 3) {
             uint32_t composed = st->scsi_dma_addr_latch;
             iifx_write_reg32_byte(&composed, off, value);
-            fprintf(stdout, "REG W i=%llu $100 = $%08x  pc=$%08x\n", _ic, composed, cpu_get_pc(cfg->cpu));
+            LOG(9, "REG W i=%llu $100 = $%08x  pc=$%08x", ic, composed, cpu_get_pc(cfg->cpu));
         }
     }
 
@@ -1099,32 +1106,38 @@ static void iifx_scsidma_pump(config_t *cfg) {
 
 // FMC ($24000) + RPU-probe ($1e000): no chip present — bus-error like the real
 // BIU30 does when the parity controller / RPU is absent, reporting the address.
-static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t addr) {
+static uint8_t iifx_io_berr_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     memory_signal_bus_error(IIFX_IO_BASE + addr, false);
     return 0xff;
 }
-static void iifx_io_berr_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void iifx_io_berr_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     (void)value;
     memory_signal_bus_error(IIFX_IO_BASE + addr, true);
 }
 
 // SCSI-DMA engine ($08000).
-static uint8_t iifx_io_scsidma_read(config_t *cfg, uint32_t addr) {
+static uint8_t iifx_io_scsidma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     return iifx_scsidma_read_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA);
 }
-static void iifx_io_scsidma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void iifx_io_scsidma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     iifx_scsidma_write_uint8(cfg, (addr & IIFX_IO_MIRROR) - IO_SCSI_DMA, value);
 }
 
 // BIU ($18000): reads 0, writes ignored.
-static uint8_t iifx_io_biu_read(config_t *cfg, uint32_t addr) {
+static uint8_t iifx_io_biu_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     (void)addr;
     return 0;
 }
-static void iifx_io_biu_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void iifx_io_biu_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     (void)addr;
     (void)value;
@@ -1133,7 +1146,8 @@ static void iifx_io_biu_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // OSS extension / serial-shift register ($1c000-$1ffff).  Offset 0 is a 16-bit
 // right-shifting serial register (POST phase $8F: writes insert at bit 15,
 // reads take bit 0 and shift right); the rest is a plain R/W backing array.
-static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t addr) {
+static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     iifx_state_t *st = iifx_state(cfg);
     uint32_t offset = addr & IIFX_IO_MIRROR;
     if (offset == IO_OSS_EXT_SHIFT) {
@@ -1143,7 +1157,8 @@ static uint8_t iifx_io_ossext_read(config_t *cfg, uint32_t addr) {
     }
     return st->oss_ext[offset - IO_OSS_EXT_START];
 }
-static void iifx_io_ossext_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void iifx_io_ossext_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     iifx_state_t *st = iifx_state(cfg);
     uint32_t offset = addr & IIFX_IO_MIRROR;
     if (offset == IO_OSS_EXT_SHIFT) {
@@ -1175,14 +1190,17 @@ static const mac030_io_range_t iifx_io_ranges_tbl[] = {
     {IO_ASC, IO_ASC_END, MAC030_DEV_ASC, IIFX_ASC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "asc"},
     {IO_SWIM_IOP, IO_SWIM_IOP_END, MAC030_DEV_SWIM_IOP, IIFX_IOP_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL,
      "swim_iop"},
-    {IO_BIU, IO_BIU_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_biu_read, iifx_io_biu_write, "biu"},
+    {IO_BIU, IO_BIU_END, MAC030_DEV_VIA1, IIFX_BIU_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, iifx_io_biu_read,
+     iifx_io_biu_write, "biu"},
     {IO_OSS, IO_OSS_END, MAC030_DEV_OSS, IIFX_OSS_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "oss"},
+    // The two bus-error windows charge nothing on purpose: the cycle is
+    // aborted, so there is no turnaround to pay for.  `.berr` says so.
     {IO_RPU_PROBE, IO_RPU_PROBE_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
-     "rpu_probe"},
+     "rpu_probe", .berr = 1},
     {IO_OSS_EXT_START, IO_OSS_EXT_END, MAC030_DEV_VIA1, IIFX_OSS_IO_PENALTY, MAC030_IO_NORMAL, 0, 0,
      iifx_io_ossext_read, iifx_io_ossext_write, "oss_ext"},
     {IO_FMC_BERR, IO_FMC_BERR_END, MAC030_DEV_VIA1, 0, MAC030_IO_NORMAL, 0, 0, iifx_io_berr_read, iifx_io_berr_write,
-     "fmc_berr"},
+     "fmc_berr", .berr = 1},
     {0}, // sentinel
 };
 
@@ -1351,8 +1369,7 @@ static void iifx_scsi_irq(void *context, bool irq, bool drq) {
 // adapter here.  That indirection was the last survivor of nubus.c's old
 // "non-VIA2 path"; the IIfx was the only machine still using it, so both
 // hops and the vtable slot behind them are gone.
-static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge; // the OSS aggregates internally
+static void iifx_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     int source = slot - 0x9;
     if (source < 0 || source > 5)
         return;
@@ -1430,15 +1447,12 @@ static void iifx_memory_layout_init(config_t *cfg) {
 }
 
 // Reasserts reset-time IIfx hardware state.
-static void iifx_reset(config_t *cfg) {
+static void iifx_bus_reset(config_t *cfg) {
     iifx_state_t *st = iifx_state(cfg);
     st->rom_overlay = false;
     iifx_set_rom_overlay(cfg, true);
-    if (st->mmu) {
-        st->mmu->enabled = false;
-        st->mmu->tc = 0;
-        mmu_invalidate_tlb(st->mmu);
-    }
+    system_reset_common_devices(cfg);
+    // The 68030 PMMU is inside the CPU and moved to cpu_hardware_reset.
 }
 
 // Slot table for the six-slot IIfx NuBus cage.
@@ -1463,8 +1477,8 @@ static const mac030_board_desc_t iifx_board_desc = {
     .io_ranges = iifx_io_ranges_tbl,
     .io_mirror_mask = IIFX_IO_MIRROR,
     .io_unmapped_read = 0xff,
-    .bus_err_lo = 0xF9000000,
-    .bus_err_hi = 0xFEFFFFFF,
+    .bus_err_lo = NUBUS_BERR_LO,
+    .bus_err_hi = NUBUS_BERR_HI,
 };
 
 // Initializes a Macintosh IIfx machine.
@@ -1535,7 +1549,7 @@ static int iifx_init(config_t *cfg, checkpoint_t *checkpoint) {
     st->asc_iface = asc_get_memory_interface(st->asc);
     st->floppy_iface = floppy_get_memory_interface(st->floppy);
 
-    st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, checkpoint);
+    st->oss = oss_init(iifx_oss_irq_changed, iifx_oss_control, cfg, cfg->scheduler, checkpoint);
     st->oss_iface = oss_get_memory_interface(st->oss);
     asc_set_irq_handler(st->asc, iifx_asc_irq, cfg); // sound IRQ → OSS source 8
     scsi_set_irq_callback(cfg->scsi, iifx_scsi_irq, cfg);
@@ -1630,7 +1644,7 @@ static void iifx_teardown(config_t *cfg) {
 // Saves an IIfx checkpoint.
 static void iifx_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     iifx_state_t *st = iifx_state(cfg);
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     mac_checkpoint_save_images(cfg, cp);
     scsi_checkpoint(cfg->scsi, cp);
     // Save order must mirror iifx_init's construction order exactly: the
@@ -1670,7 +1684,7 @@ static const scsi_bus_decl_t iifx_scsi_buses[] = {
 
 static const machine_substrate_t iifx_substrate = {
     .init = iifx_init,
-    .reset = iifx_reset,
+    .bus_reset = iifx_bus_reset,
     .teardown = iifx_teardown,
     .checkpoint_save = iifx_checkpoint_save,
     .trigger_vbl = iifx_trigger_vbl,

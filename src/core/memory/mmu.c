@@ -767,13 +767,8 @@ void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uin
         alias_phys_base);
 }
 
-void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end) {
-    (void)m;
-    if (!g_mmu)
-        return;
-    g_mmu->nubus_berr_start = start;
-    g_mmu->nubus_berr_end = end;
-}
+// memory_set_bus_error_range now lives in memory.c: the window is a bus
+// property, not an MMU one (05-chipsets-irq F-23).
 
 // Invalidate the software TLB.  Uses the tracking list to zero only
 // populated entries — typically ~2000-3000 pages vs 1M+ for a full memset.
@@ -890,7 +885,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
         if (!write) {
             uint32_t page_index = emu_page >> PAGE_SHIFT;
             if ((int)page_index < g_page_count && g_supervisor_read && g_supervisor_read[page_index] == 0 &&
-                logical_addr >= mmu->nubus_berr_start && logical_addr <= mmu->nubus_berr_end) {
+                memory_addr_faults_when_unmapped(logical_addr)) {
                 // TT + unmapped physical = plain bus timeout; ROM handlers
                 // expect skip semantics (Format $A).
                 g_bus_error_is_pmmu = false;

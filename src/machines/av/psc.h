@@ -16,6 +16,7 @@
 #ifndef GS_MACHINES_AV_PSC_H
 #define GS_MACHINES_AV_PSC_H
 
+#include "dma_mem.h"
 #include "system_config.h"
 
 #include <stdbool.h>
@@ -52,13 +53,13 @@ void av_psc_checkpoint(av_psc_t *psc, checkpoint_t *cp);
 
 // The 3-register VIA2 window at island $02000 ($1A00 IFR / $1C00 IER /
 // $1E00 SInt — via1-cuda.md §1).
-uint8_t av_psc_via2_read(config_t *cfg, uint32_t addr);
-void av_psc_via2_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_psc_via2_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_psc_via2_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // The PSC register block at island $31000-$32FFF (level regs, UTSC, ISR,
 // sound block, DMA control + register sets).
-uint8_t av_psc_reg_read(config_t *cfg, uint32_t addr);
-void av_psc_reg_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_psc_reg_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_psc_reg_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // === Interrupt sources ======================================================
 
@@ -127,12 +128,11 @@ void av_psc_dsp_frame_overrun(av_psc_t *psc);
 #define AV_PSC_DMA_SCCA_TX  6
 #define AV_PSC_DMA_CHANNELS 7
 
-// Guest-physical memory hooks the engine transfers through (the
-// sonic_set_memory_hooks pattern — the CPU MMU is deliberately not in the
-// path; unit tests install array-backed hooks instead).
-typedef uint32_t (*av_psc_mem_read_fn)(void *ctx, uint32_t phys, unsigned width);
-typedef void (*av_psc_mem_write_fn)(void *ctx, uint32_t phys, uint32_t value, unsigned width);
-void av_psc_set_memory_hooks(av_psc_t *psc, av_psc_mem_read_fn rd, av_psc_mem_write_fn wr, void *ctx);
+// The guest-physical port the engine transfers through -- the shared
+// dma_mem_port_t (the CPU MMU is deliberately not in the path; unit tests
+// install an array-backed port instead).  This used to be a third private
+// pair of hook typedefs (05-chipsets-irq F-16).
+void av_psc_set_memory_port(av_psc_t *psc, const dma_mem_port_t *port); // copied; NULL unbinds
 
 // Device-side DMA ports: move up to `len` bytes between the channel's
 // ACTIVE register set and the device.  `device_in` is device→memory (needs

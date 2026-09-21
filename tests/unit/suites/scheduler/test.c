@@ -138,21 +138,30 @@ uint32_t g_sprint_frac_x256 = 0;
 uint32_t g_sprint_total_slots = 0;
 uint32_t g_esync_period_x256 = 0;
 
-// Checkpointing is not exercised here (integration checkpoint tests cover it).
+// A recording checkpoint stream: save writes into g_cp[g_cp_slot], restore
+// always reads back slot 0.  Used only by
+// test_checkpoint_carries_no_host_timing; every other test leaves the
+// buffers alone and the calls are harmless.
+static uint8_t g_cp[2][65536];
+static size_t g_cp_w[2], g_cp_r;
+static int g_cp_slot;
+
 void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
-    (void)checkpoint;
-    (void)data;
-    (void)size;
-    (void)file;
-    (void)line;
+    (void)checkpoint, (void)file, (void)line;
+    if (g_cp_r + size > g_cp_w[0]) {
+        memset(data, 0, size);
+        return;
+    }
+    memcpy(data, g_cp[0] + g_cp_r, size);
+    g_cp_r += size;
 }
 void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
                                       int line) {
-    (void)checkpoint;
-    (void)data;
-    (void)size;
-    (void)file;
-    (void)line;
+    (void)checkpoint, (void)file, (void)line;
+    if (g_cp_w[g_cp_slot] + size > sizeof(g_cp[0]))
+        return;
+    memcpy(g_cp[g_cp_slot] + g_cp_w[g_cp_slot], data, size);
+    g_cp_w[g_cp_slot] += size;
 }
 
 // Object tree: the scheduler tolerates a NULL binding (object_new failure
@@ -882,6 +891,110 @@ TEST(test_governor_pin_unpin) {
     teardown(s);
 }
 
+// ============================================================================
+// scheduler_forget_source (proposal-scheduler-source-lifetime §5)
+// ============================================================================
+
+static void forget_cb_a(void *src, uint64_t data) {
+    (void)src;
+    (void)data;
+}
+static void forget_cb_b(void *src, uint64_t data) {
+    (void)src;
+    (void)data;
+}
+
+// One call drops every queued event for an object whatever its callback, plus
+// the event-type rows.  remove_event() matches on callback AND source, so a
+// device with N callbacks needs N calls and 27 of 38 destructors got that
+// wrong; this cannot be half-done.
+TEST(test_forget_source_drops_events_and_types) {
+    scheduler_t *s = fresh_scheduler(false);
+    int victim = 0, bystander = 0;
+
+    // scheduler_init registers types of its own, so measure deltas.
+    const int types0 = scheduler_event_type_count(s);
+    const int events0 = scheduler_pending_events(s);
+
+    scheduler_new_event_type(s, "victim", &victim, "a", forget_cb_a);
+    scheduler_new_event_type(s, "victim", &victim, "b", forget_cb_b);
+    scheduler_new_event_type(s, "bystander", &bystander, "a", forget_cb_a);
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 3);
+
+    scheduler_new_cpu_event(s, forget_cb_a, &victim, 0, 1000, 0);
+    scheduler_new_cpu_event(s, forget_cb_b, &victim, 0, 2000, 0);
+    scheduler_new_cpu_event(s, forget_cb_a, &bystander, 0, 3000, 0);
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 3);
+
+    scheduler_forget_source(s, &victim);
+
+    // BOTH of the victim's events go, under different callbacks -- the whole
+    // point, since a per-callback cleanup needs two calls and the survey
+    // found that is exactly what destructors get wrong.
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 1);
+    // Its two type rows go too; the bystander's stays.
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 1);
+
+    // Idempotent, and safe for a source the scheduler never saw.
+    scheduler_forget_source(s, &victim);
+    scheduler_forget_source(s, (void *)"never registered");
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 1);
+    ASSERT_EQ_INT(scheduler_event_type_count(s), types0 + 1);
+
+    // The surviving row still resolves, i.e. the table was compacted rather
+    // than left with a hole the three linear scans would trip over.
+    scheduler_new_cpu_event(s, forget_cb_a, &bystander, 0, 4000, 0);
+    ASSERT_EQ_INT(scheduler_pending_events(s), events0 + 2);
+
+    scheduler_delete(s);
+    g_sched = NULL;
+}
+
+// A checkpoint must carry no host wall-clock state.
+//
+// The scheduler's plain-data prefix used to run past `cpu_cycles` and over
+// `previous_time`, `vbl_acc_error`, `host_secs_per_vbl` and
+// `host_secs_per_loop` -- the pacing governor's smoothing, all derived from
+// host_time().  The restore overwrote all four immediately, so nothing
+// consumed them, but they still went into every save file and made two
+// processes saving identical guest state produce different bytes.
+//
+// Save -> restore -> save, with the host clock moved on in between: the two
+// streams must be identical.  With the fields back inside the prefix they are
+// not, because the second instance re-derives them from the NEW host time.
+TEST(test_checkpoint_carries_no_host_timing) {
+    g_cp_w[0] = g_cp_w[1] = g_cp_r = 0;
+
+    g_now = 1000.0;
+    g_cp_slot = 0;
+    scheduler_t *a = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(a != NULL);
+    scheduler_set_frequency(a, 16000000);
+    scheduler_set_cpi(a, 4);
+    scheduler_checkpoint(a, (checkpoint_t *)1);
+    ASSERT_TRUE(g_cp_w[0] > 0);
+
+    // A different host "now" for the restoring instance -- the whole point.
+    g_now = 987654.0;
+    g_cp_r = 0;
+    g_cp_slot = 1;
+    scheduler_t *b = scheduler_init(TEST_CPU, (checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    scheduler_checkpoint(b, (checkpoint_t *)1);
+
+    ASSERT_EQ_INT((int)g_cp_w[0], (int)g_cp_w[1]);
+    if (memcmp(g_cp[0], g_cp[1], g_cp_w[0]) != 0) {
+        size_t i = 0;
+        while (i < g_cp_w[0] && g_cp[0][i] == g_cp[1][i])
+            i++;
+        fprintf(stderr, "[FAIL] scheduler stream carries host state: diverges at byte %zu of %zu\n", i, g_cp_w[0]);
+        exit(1);
+    }
+
+    scheduler_delete(a);
+    scheduler_delete(b);
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -904,6 +1017,8 @@ int main(void) {
     RUN(test_governor_audio_pressure);
     RUN(test_governor_max_speed_cap);
     RUN(test_governor_pin_unpin);
+    RUN(test_forget_source_drops_events_and_types);
+    RUN(test_checkpoint_carries_no_host_timing);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

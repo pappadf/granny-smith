@@ -129,10 +129,6 @@ struct scheduler {
     enum schedule_mode mode;
     bool running;
     uint64_t cpu_cycles; // authoritative cycle counter, updated at sprint boundaries
-    double previous_time; // previous time in seconds
-    double vbl_acc_error; // accumulated VBL timing error (seconds)
-    double host_secs_per_vbl; // smoothed host seconds per VBL
-    double host_secs_per_loop; // smoothed host seconds per main loop iteration
 
     // Per-machine cycles-per-instruction constant — guest-visible, identical
     // in every pacing mode (one guest timeline)
@@ -149,6 +145,23 @@ struct scheduler {
     // speed is clamped to it too), x256 fixed point. Persisted with the
     // prefix; default 8x.
     uint32_t max_speed_x256;
+
+    // --- END OF THE CHECKPOINTED PREFIX -------------------------------------
+    // The save writes up to `previous_time`.  Keep new guest-visible plain
+    // data ABOVE this line; anything host-relative or re-derivable goes
+    // below, the same reason cpi_eff_x256 sits after event_types.
+    //
+    // These four are the pacing governor's wall-clock smoothing.  They used
+    // to be inside the prefix, so every checkpoint carried one host's timing
+    // state -- the restore then overwrote all four from host_time(), so
+    // nothing ever consumed them, but they still made save files
+    // non-reproducible: two processes saving identical guest state produced
+    // files differing in the mantissa of these doubles.  Same class as
+    // 05-chipsets-irq F-09, host state leaking into a save file.
+    double previous_time; // previous time in seconds
+    double vbl_acc_error; // accumulated VBL timing error (seconds)
+    double host_secs_per_vbl; // smoothed host seconds per VBL
+    double host_secs_per_loop; // smoothed host seconds per main loop iteration
 
     // Event type registry for checkpointing
     event_type_t event_types[MAX_EVENT_TYPES];
@@ -721,13 +734,11 @@ struct scheduler *scheduler_init(const sched_cpu_if_t *cpu, checkpoint_t *checkp
 
     if (checkpoint != NULL) {
         // Restore plain-data portion of struct from checkpoint
-        system_read_checkpoint_data(checkpoint, s, offsetof(struct scheduler, event_types));
+        system_read_checkpoint_data(checkpoint, s, offsetof(struct scheduler, previous_time));
 
-        // Reset host-timing fields that are relative to wall-clock time
-        s->previous_time = host_time();
-        s->vbl_acc_error = 0.0;
-        s->host_secs_per_vbl = NAN;
-        s->host_secs_per_loop = 1.0 / 60.0;
+        // The four wall-clock fields used to be restored here and then
+        // immediately overwritten.  They are outside the prefix now, so the
+        // values set above still stand and there is nothing to undo.
         s->frame_cycles_left = 0; // restore begins a fresh VBL frame-unit
 
         // Reconstruct instruction count from restored cycle counter. Cycles
@@ -845,7 +856,7 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
     validate_cpu_events(scheduler);
 
     // Save plain-data portion of struct
-    system_write_checkpoint_data(checkpoint, scheduler, offsetof(struct scheduler, event_types));
+    system_write_checkpoint_data(checkpoint, scheduler, offsetof(struct scheduler, previous_time));
 
     // Convert event queue to checkpoint-friendly format (names instead of pointers)
     unsigned int num_events = num_events_in_queue(scheduler);
@@ -1040,6 +1051,88 @@ void remove_event(struct scheduler *restrict scheduler, event_callback_t callbac
 }
 
 // Remove events matching callback, source, AND data value
+// Drop everything the scheduler still holds for `source`: every queued event
+// whatever its callback, and the event-type registration row.
+//
+// This exists because remove_event() matches on callback AND source, so a
+// device with N callbacks needs N calls to clean up, and the convention could
+// not be kept even by people trying: a survey for
+// proposal-scheduler-source-lifetime.md found 27 of 38 device destructors
+// leaking at least one queued event -- appletalk.c schedules 5 and removes 2,
+// adb.c 4 and 3, floppy.c 3 and 0, via.c 2 and 0.  Keyed on the source alone,
+// the call is one line per destructor and cannot be half-done, which makes
+// "every *_delete that owns a scheduler-visible object calls
+// scheduler_forget_source before free" a rule a reviewer or a lint can check.
+//
+// remove_event() stays: cancelling ONE pending thing on a live device is a
+// different operation from "this object is going away".
+//
+// DESTRUCTORS ONLY -- see the header.  Removing the type registrations is what
+// makes this unsafe on a live device, and also what makes it complete on a
+// dying one.
+//
+// Safe to call with a source the scheduler has never seen.
+void scheduler_forget_source(struct scheduler *restrict scheduler, void *source) {
+    GS_ASSERT(scheduler != NULL);
+    if (source == NULL)
+        return; // NULL means "any source" to remove_event; refuse it here
+
+    // Queued events first -- these are the dangling pointers that matter.
+    event_t **ev = &scheduler->cpu_events;
+    while (*ev != NULL) {
+        if ((*ev)->source == source) {
+            event_t *to_remove = *ev;
+            *ev = to_remove->next;
+            event_free(to_remove);
+        } else {
+            ev = &(*ev)->next;
+        }
+    }
+
+    // Then the registration rows, which no per-callback remove_event can
+    // reach.  Compact rather than tombstone: the table is scanned linearly by
+    // find_event_type and by both checkpoint paths, and a hole would have to
+    // be skipped in all three.
+    int out = 0;
+    for (int i = 0; i < scheduler->num_event_types; i++) {
+        if (scheduler->event_types[i].source == source)
+            continue;
+        if (out != i)
+            scheduler->event_types[out] = scheduler->event_types[i];
+        out++;
+    }
+    scheduler->num_event_types = out;
+}
+
+// Number of events currently queued.
+int scheduler_pending_events(const struct scheduler *scheduler) {
+    GS_ASSERT(scheduler != NULL);
+    int n = 0;
+    for (const event_t *e = scheduler->cpu_events; e != NULL; e = e->next)
+        n++;
+    return n;
+}
+
+// Number of queued events that belong to an OBJECT, i.e. carry a non-NULL
+// source.  A NULL-sourced event belongs to no device -- debug_mac.c's
+// mouse_guard tick is one, registered for the lifetime of the process -- so it
+// can never dangle and is not evidence of a destructor that forgot to clean
+// up.  This is what the teardown backstop counts.
+int scheduler_pending_device_events(const struct scheduler *scheduler) {
+    GS_ASSERT(scheduler != NULL);
+    int n = 0;
+    for (const event_t *e = scheduler->cpu_events; e != NULL; e = e->next)
+        if (e->source != NULL)
+            n++;
+    return n;
+}
+
+// Number of registered event types.
+int scheduler_event_type_count(const struct scheduler *scheduler) {
+    GS_ASSERT(scheduler != NULL);
+    return scheduler->num_event_types;
+}
+
 void remove_event_by_data(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
                           uint64_t data) {
     GS_ASSERT(scheduler != NULL);

@@ -30,6 +30,8 @@
 #define RV_IFR       0x003
 #define RV_IER       0x013
 #define RV_IFR_ALIAS 0x1A03
+#define RV_SINT      0x002
+#define RV_SENB      0x012
 #define RV_IER_ALIAS 0x1C13
 
 // ASC register offsets
@@ -59,6 +61,10 @@ void remove_event(scheduler_t *sch, event_callback_t callback, void *source) {
     (void)callback;
     (void)source;
     s_cb = NULL;
+}
+void scheduler_forget_source(scheduler_t *sch, void *source) {
+    (void)sch;
+    (void)source;
 }
 void scheduler_new_event_type(scheduler_t *sch, const char *source_name, void *source, const char *event_name,
                               event_callback_t callback) {
@@ -121,50 +127,12 @@ void sound_object_delete(struct object *o) {
     (void)o;
 }
 
-struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {
-    (void)cls;
-    (void)instance_data;
-    (void)name;
-    return NULL;
-}
-void object_delete(struct object *o) {
-    (void)o;
-}
-void object_attach(struct object *parent, struct object *child) {
-    (void)parent;
-    (void)child;
-}
-void object_detach(struct object *child) {
-    (void)child;
-}
-void *object_data(struct object *o) {
-    (void)o;
-    return NULL;
-}
-void object_set_label(struct object *o, const char *label) {
-    (void)o;
-    (void)label;
-}
-void object_set_order(struct object *o, int order) {
-    (void)o;
-    (void)order;
-}
-struct object *machine_object(void) {
-    return NULL;
-}
-value_t val_uint(uint8_t width, uint64_t u) {
-    (void)width;
-    (void)u;
-    value_t v;
-    memset(&v, 0, sizeof(v));
-    return v;
-}
-value_t val_bool(bool b) {
-    (void)b;
-    value_t v;
-    memset(&v, 0, sizeof(v));
-    return v;
-}
+// The object model used to be stubbed inert here.  It is the real thing
+// now: rbv.c builds a machine.rbv node at init (05-chipsets-irq F-26), and
+// a suite that stubs object_new to return NULL cannot tell a node that
+// works from one that was never built.  Only machine_object() stays a stub
+// (support/stub_machine_object.c) -- there is no machine here to parent to,
+// and object_attach(NULL, child) is a no-op.
 
 // --- memory map: unused (both devices get map == NULL) ---
 void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name, memory_interface_t *iface,
@@ -319,10 +287,62 @@ TEST(test_asc_to_rbv_chain) {
 
 // ============================================================================
 
+// ============================================================================
+// 4. RvIFR writes clear the RvIRQ0 latch (2026-09-03 code review, 05 F-33)
+// ============================================================================
+
+// slot_pending bit 6 (RvIRQ0, the built-in video frame interrupt) is a LATCH:
+// asserted by the vblank, and otherwise cleared only by reading RvSInt.  It
+// feeds RvAnySlot.  The RvIFR write path used to discard the written value
+// entirely, so a driver acknowledging the frame interrupt through RvIFR --
+// or through the Rv2IFR alias, which is the path the shared VIA2/RBV OS code
+// takes -- never cleared it, and the machine took a level-2 interrupt
+// continuously.
+TEST(test_rvifr_write_clears_rvirq0_latch) {
+    fresh_rbv();
+
+    // Enable RvIRQ0 as a slot source, and RvAnySlot as an interrupt.
+    rwr(RV_SENB, 0x80 | (1u << 6));
+    rwr(RV_IER, 0x80 | 0x02); // RvAnySlot = IFR bit 1
+
+    rbv_assert_slot_irq(g_rbv, 0); // slot 0 = built-in video = RvIRQ0
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0);
+    ASSERT_TRUE(g_irq_state);
+
+    // Acknowledge through RvIFR: bit 7 = 0 selects clear, RvAnySlot names it.
+    rwr(RV_IFR, 0x02);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) == 0);
+    ASSERT_TRUE(!g_irq_state);
+
+    // The Rv2IFR alias must behave identically -- it is the one the shared
+    // OS path actually uses.
+    rbv_assert_slot_irq(g_rbv, 0);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0);
+    rwr(RV_IFR_ALIAS, 0x02);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) == 0);
+
+    // Reading RvSInt remains a valid way to clear it.
+    rbv_assert_slot_irq(g_rbv, 0);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0);
+    (void)rrd(RV_SINT);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) == 0);
+
+    // A NuBus slot source is level, not latched: an RvIFR write must NOT
+    // clear it, or a real pending card interrupt would be lost.
+    rwr(RV_SENB, 0x80 | 0x01); // enable RvIRQ1
+    rbv_assert_slot_irq(g_rbv, 1);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0);
+    rwr(RV_IFR, 0x02);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) != 0); // still asserted by the card
+    rbv_clear_slot_irq(g_rbv, 1);
+    ASSERT_TRUE((rrd(RV_IFR) & 0x02) == 0);
+}
+
 int main(void) {
     RUN(test_ier_set_clr_and_aliases);
     RUN(test_snd_flag_and_combined_irq);
     RUN(test_asc_to_rbv_chain);
+    RUN(test_rvifr_write_clears_rvirq0_latch);
     fprintf(stderr, "rbv: all tests passed\n");
     return 0;
 }

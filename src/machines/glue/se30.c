@@ -267,14 +267,25 @@ static void se30_via2_shift_out(void *context, uint8_t byte) {
 static void se30_vbl_slot_deassert(void *context, uint64_t data);
 
 static void se30_trigger_vbl(config_t *cfg) {
-    // Assert slot $E on VIA2 port A bit 5 (active-low)
-    via_input(cfg->via2, 0, 5, 0);
-
-    // Pulse both VIA CA1 lines simultaneously, as the GLUE chip does
-    via_input_c(cfg->via1, 0, 0, 0);
-    via_input_c(cfg->via2, 0, 0, 0);
-    via_input_c(cfg->via1, 0, 0, 1);
-    via_input_c(cfg->via2, 0, 0, 1);
+    // TWO DISTINCT INTERRUPTS, and the SE/30 is where the Guide spells the
+    // difference out (2e p.211):
+    //
+    //   "In the Macintosh SE/30, bit 6 (vSyncEnA) enables or disables a slot
+    //    $E interrupt request from the video logic circuits to VIA2.  When
+    //    enabled, this interrupt request is asserted each time the vertical
+    //    blanking signal is asserted...  The vertical synchronization
+    //    interrupt generated in this fashion is distinct from the 60.15 Hz
+    //    interrupt (VBL) request, which is sent by VIA2 to VIA1."
+    //
+    // So: the slot-$E vSync request goes through the SLOT path into VIA2's
+    // /SLOTIRQ aggregate, and the 60.15 Hz VBL lands on VIA1's CA1.  This
+    // used to pulse BOTH CA1 lines "as the GLUE chip does", which forged a
+    // slot interrupt every frame and fought the umbrella level a real card
+    // may be holding (05-chipsets-irq F-11), and drove slot $E by poking
+    // VIA2 port A directly, so the bus never saw it
+    // (F-13).
+    mac030_glue_slot_irq_source(cfg, /*PA5 = slot $E*/ 5, true);
+    mac_vbl_pulse(cfg->via1);
 
     // Deassert slot $E after the vertical blanking interval ends.
     // 15700 cycles ≈ 1 ms at 15.6672 MHz — matches the SE/30 video
@@ -284,6 +295,10 @@ static void se30_trigger_vbl(config_t *cfg) {
     // for some RTC values.
     scheduler_new_cpu_event(cfg->scheduler, &se30_vbl_slot_deassert, cfg, 0, 0, 15700);
 
+    // The built-in card is slot $E on this machine, and the default GLUE path
+    // ticks the bus; overriding trigger_vbl dropped that, so a card with an
+    // on_vbl hook would silently never tick (F-13).
+    nubus_tick_vbl(cfg->nubus);
     image_tick_all(cfg);
 }
 
@@ -291,7 +306,10 @@ static void se30_trigger_vbl(config_t *cfg) {
 static void se30_vbl_slot_deassert(void *context, uint64_t data) {
     (void)data;
     config_t *cfg = (config_t *)context;
-    via_input(cfg->via2, 0, 5, 1);
+    // Through the aggregate, exactly as the assert was: poking VIA2 port A
+    // directly would clear the pin but leave the chipset's /SLOTIRQ mask
+    // holding, so CA1 would stay asserted with no source behind it.
+    mac030_glue_slot_irq_source(cfg, 5, false);
 }
 
 // ============================================================
@@ -379,8 +397,8 @@ static const mac030_board_desc_t se30_board_desc = {
     .io_ranges = glue_io_ranges,
     .io_mirror_mask = MAC030_GLUE_IO_MIRROR,
     .io_unmapped_read = 0xFF, // undecoded island reads float high (see mac030_glue.h)
-    .bus_err_lo = 0xF9000000,
-    .bus_err_hi = 0xFDFFFFFF,
+    .bus_err_lo = NUBUS_BERR_LO,
+    .bus_err_hi = NUBUS_BERR_HI_EXCL_SLOT_E, // the PDS lives in $E
     .asc_mix = ASC_MIX_SUM, // SE/30 board sums both channels to the speaker
 };
 

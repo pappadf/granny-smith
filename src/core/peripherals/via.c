@@ -98,13 +98,28 @@ struct via {
         uint16_t start_value;
         uint16_t latch;
         uint16_t counter;
-        bool expired; // for one-shot modes: true after first timeout (IFR won't be set again)
+        // True once the timer has been armed, i.e. start_timestamp holds a
+        // real arm time.  read_timer used to infer this from
+        // `start_timestamp == 0`, which is also a legal arm time: a timer
+        // armed on CPU cycle 0 read as "never armed" for good.  This replaces
+        // a dead `expired` flag that was written in three places and read
+        // nowhere -- what actually stops a one-shot re-firing is that its
+        // callback schedules no follow-up event.
+        bool started;
     } timers[2];
 
     struct {
         uint8_t output;
         uint8_t input;
         uint8_t direction;
+        // Input latch (ACR bits 0/1).  With latching enabled the input
+        // register holds the pin levels sampled at the CA1/CB1 active edge
+        // rather than tracking them live -- R6522 "Port A and Port B
+        // Operation": "With input latching disabled, IRA will always reflect
+        // the levels on the PA pins.  With input latching enabled, IRA will
+        // reflect the levels on the PA pins at the time the latching occurred
+        // (via CA1)."
+        uint8_t latched;
         bool ctrl[2];
     } ports[2];
 
@@ -150,7 +165,7 @@ struct via {
 // Convert CPU cycles to VIA timer cycles using the per-instance rational.
 // Split division keeps the intermediate product inside 64 bits for any
 // cycle count (the ppc_ticks_now precedent).
-static uint64_t cpu_to_via_cycles(via_t *via, uint64_t scheduler_cpu_cycles) {
+static uint64_t cpu_to_via_cycles(const via_t *via, uint64_t scheduler_cpu_cycles) {
     uint64_t c = scheduler_cpu_cycles;
     return (c / via->ff_den) * via->ff_num + (c % via->ff_den) * via->ff_num / via->ff_den;
 }
@@ -179,9 +194,9 @@ static void update_ifr(via_t *restrict via, uint8_t new_ifr) {
 }
 
 // Read the current value of a VIA timer counter (accounting for elapsed time)
-static uint16_t read_timer(via_t *restrict via, int timer) {
-    // If the timer is not running, return the stored counter value
-    if (via->timers[timer].start_timestamp == 0)
+static uint16_t read_timer(const via_t *restrict via, int timer) {
+    // Never armed: the stored counter is all there is to report.
+    if (!via->timers[timer].started)
         return via->timers[timer].counter;
 
     // Timer is running - calculate current counter value with proper wraparound.
@@ -208,7 +223,7 @@ static void arm_timer(via_t *restrict via, int timer, uint16_t counter, event_ca
     via->timers[timer].start_value = counter;
     via->timers[timer].counter = counter;
     via->timers[timer].start_timestamp = scheduler_cpu_cycles(via->scheduler);
-    via->timers[timer].expired = false; // reset expired flag on arm
+    via->timers[timer].started = true;
 
     // Timer interrupt fires when the counter wraps around, i.e. delay is counter + 1.
     // Promote to uint64_t before the multiply so an exotic int-width host can't
@@ -246,7 +261,7 @@ static void t1_callback(void *source, uint64_t data) {
 
     via_t *via = (via_t *)source;
 
-    GS_ASSERT(via->timers[TIMER_1].start_timestamp != 0);
+    GS_ASSERT(via->timers[TIMER_1].started);
 
     LOG(1, "t1_callback: acr=0x%02x mode=%u latch=0x%04x start_value=0x%04x", via->acr, (unsigned)(via->acr >> 6),
         via->timers[TIMER_1].latch, via->timers[TIMER_1].start_value);
@@ -254,15 +269,22 @@ static void t1_callback(void *source, uint64_t data) {
 
     switch (via->acr >> 6) {
     case 0: // One-shot
-        via->timers[TIMER_1].start_timestamp = 0;
-        via->timers[TIMER_1].counter = 0xFFFF; // interrupt fired at wraparound
+        // Per R6522 "Timer 1 One-Shot Mode": "When the counter reaches zero,
+        // the T1 interrupt flag will be set... At this time the counter will
+        // continue to decrement at system clock rate.  This allows the system
+        // processor to read the contents of the counter to determine the time
+        // since interrupt."  So leave start_timestamp standing and let
+        // read_timer keep deriving the wrapped value -- exactly what T2 does
+        // below.  Scheduling no follow-up event is what stops the flag being
+        // set a second time, as the same passage requires.  This used to zero
+        // start_timestamp and freeze counter at 0xFFFF, which short-circuited
+        // read_timer and returned that constant forever, defeating the one use
+        // the datasheet names for the running counter.
         break;
     case 1: // Free‑run
         arm_timer(via, TIMER_1, via->timers[TIMER_1].latch, &t1_callback);
         break;
     case 2: // One-shot w/ PB7 output
-        via->timers[TIMER_1].start_timestamp = 0;
-        via->timers[TIMER_1].counter = 0xFFFF;
         // DDRB bit 7 must be set for PB7 to function as a timer output
         if (via->ports[PORT_B].direction & 0x80)
             via->ports[PORT_B].output |= 0x80; // PB7 is set high when the timer expires
@@ -285,7 +307,7 @@ static void t2_callback(void *source, uint64_t data) {
 
     via_t *via = (via_t *)source;
 
-    GS_ASSERT(via->timers[TIMER_2].start_timestamp != 0);
+    GS_ASSERT(via->timers[TIMER_2].started);
 
     LOG(2, "t2_callback: IFR will be set to 0x%02x", (unsigned)(via->ifr | IFR_T2));
     LOG(1, "t2_callback: timer2 expired latch=0x%04x", via->timers[TIMER_2].latch);
@@ -294,9 +316,9 @@ static void t2_callback(void *source, uint64_t data) {
     // However, setting of the interrupt flag is disabled after initial time-out
     // so that it will not be set by the counter decrementing again through zero."
     //
-    // We mark the timer as expired but do NOT stop it - it keeps running.
-    // The expired flag prevents re-triggering IFR on subsequent wrap-throughs.
-    via->timers[TIMER_2].expired = true;
+    // The timer is NOT stopped -- it keeps running.  What prevents the flag
+    // being set again is that this callback schedules no follow-up event, so
+    // nothing fires when the counter wraps through zero a second time.
 
     update_ifr(via, via->ifr | IFR_T2);
 }
@@ -339,12 +361,40 @@ static void set_t2c_high(via_t *restrict via, uint8_t value) {
     }
 }
 
-// Read from a VIA port combining output and input based on data direction
-static uint8_t read_port(via_t *restrict via, int port) {
-    update_ifr(via, via->ifr & ~(port ? (IFR_CB1 | IFR_CB2) : (IFR_CA1 | IFR_CA2)));
+// True when ACR enables input latching for `port` -- bit 0 is PA, bit 1 is PB
+// (R6522 Figure 14).  With it set, the input register holds the levels sampled
+// at the CA1/CB1 active edge instead of tracking the pins live.
+static bool port_latch_enabled(const via_t *restrict via, int port) {
+    return (via->acr & (port ? 0x02u : 0x01u)) != 0;
+}
 
-    return (via->ports[port].output & via->ports[port].direction) |
-           (via->ports[port].input & ~via->ports[port].direction);
+// IFR control-line flags an ORA/ORB access clears for `port`.
+// CA1/CB1 always clear.  CA2/CB2 clear too, EXCEPT when the PCR selects one of
+// the two "independent interrupt input" modes (field 001 / 011): R6522 Figure
+// 29 note -- "if the CA2/CB2 control in the PCR is selected as 'independent'
+// interrupt input, then reading or writing the output register ORA/ORB will NOT
+// clear the flag bit.  Instead, the bit must be cleared by writing into the
+// IFR."  The output modes (field >= 100) clear normally; nothing drives an edge
+// onto a pin the VIA itself is driving.
+static uint8_t port_access_ifr_clear_mask(const via_t *restrict via, int port) {
+    uint8_t mask = port ? IFR_CB1 : IFR_CA1;
+    uint8_t mode = (via->pcr >> (port ? 5 : 1)) & 0x07;
+    bool independent = mode < 4 && (mode & 0x01); // fields 001 and 011
+    if (!independent)
+        mask |= port ? IFR_CB2 : IFR_CA2;
+    return mask;
+}
+
+// Read from a VIA port combining output and input based on data direction.
+// Output pins read back the output register on both ports -- the IRA/IRB
+// distinction the datasheet draws is about pin loading, which we do not model,
+// so the programmed level is what both report.  Input pins read the live pin
+// levels, or the latched sample when ACR enables latching for this port.
+static uint8_t read_port(via_t *restrict via, int port) {
+    update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, port));
+
+    uint8_t inputs = port_latch_enabled(via, port) ? via->ports[port].latched : via->ports[port].input;
+    return (via->ports[port].output & via->ports[port].direction) | (inputs & ~via->ports[port].direction);
 }
 
 // ============================================================================
@@ -374,7 +424,8 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
         break;
 
     case ORA_IRA:
-        // Register 1: Read Port A WITH handshake — clears CA1/CA2 interrupt flags.
+        // Register 1: Read Port A WITH handshake — clears the CA1 flag, and CA2
+        // unless the PCR selects an independent input (port_access_ifr_clear_mask).
         // The handshaked access pulses CA2/PSTRB, so a hooked device advances to
         // the next byte and drives it onto the input pins.
         if (via->porta_read)
@@ -393,12 +444,12 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
     case T1C_L:
         update_ifr(via, via->ifr & ~IFR_T1); // interrupt flag cleared by reading T1C-L
         ret = (uint8_t)read_timer(via, TIMER_1);
-        LOG(2, "Read register T1C_L=0x%02x (%s)", ret, via->timers[TIMER_1].start_timestamp ? "counting" : "stopped");
+        LOG(2, "Read register T1C_L=0x%02x (%s)", ret, via->timers[TIMER_1].started ? "counting" : "stopped");
         break;
 
     case T1C_H:
         ret = (uint8_t)(read_timer(via, TIMER_1) >> 8);
-        LOG(2, "Read register T1C_H=0x%02x (%s)", ret, via->timers[TIMER_1].start_timestamp ? "counting" : "stopped");
+        LOG(2, "Read register T1C_H=0x%02x (%s)", ret, via->timers[TIMER_1].started ? "counting" : "stopped");
         break;
 
     case T1L_L:
@@ -414,12 +465,12 @@ static uint8_t via_read_uint8(void *v, uint32_t addr) {
     case T2C_L:
         update_ifr(via, via->ifr & ~IFR_T2);
         ret = (uint8_t)read_timer(via, TIMER_2);
-        LOG(2, "Read register T2C_L=0x%02x (%s)", ret, via->timers[TIMER_2].start_timestamp ? "counting" : "stopped");
+        LOG(2, "Read register T2C_L=0x%02x (%s)", ret, via->timers[TIMER_2].started ? "counting" : "stopped");
         break;
 
     case T2C_H:
         ret = (uint8_t)(read_timer(via, TIMER_2) >> 8);
-        LOG(2, "Read register T2C_H=0x%02x (%s)", ret, via->timers[TIMER_2].start_timestamp ? "counting" : "stopped");
+        LOG(2, "Read register T2C_H=0x%02x (%s)", ret, via->timers[TIMER_2].started ? "counting" : "stopped");
         break;
 
     case SR:
@@ -482,7 +533,7 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
     case ORB_IRB:
         via->ports[PORT_B].output = value;
         via->output_cb(via->cb_context, 1, via->ports[PORT_B].output & via->ports[PORT_B].direction);
-        update_ifr(via, via->ifr & ~(IFR_CB1 | IFR_CB2));
+        update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, PORT_B));
         break;
 
     case DDRB:
@@ -499,13 +550,13 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         uint16_t old_latch = via->timers[TIMER_1].latch;
         via->timers[TIMER_1].latch = (old_latch & 0xFF00) | value;
         LOG(2, "Write register T1C_L=0x%02x (latch 0x%04x->0x%04x, %s)", value, old_latch, via->timers[TIMER_1].latch,
-            via->timers[TIMER_1].start_timestamp ? "counting" : "stopped");
+            via->timers[TIMER_1].started ? "counting" : "stopped");
         break;
     }
 
     case T1C_H: {
         uint16_t old_latch = via->timers[TIMER_1].latch;
-        bool was_counting = via->timers[TIMER_1].start_timestamp != 0;
+        bool was_counting = via->timers[TIMER_1].started;
         update_ifr(via, via->ifr & ~IFR_T1); // interrupt flag cleared by writing T1C-H
         set_t1c_high(via, value);
         LOG(2, "Write register T1C_H=0x%02x (latch 0x%04x->0x%04x, %s->counting)", value, old_latch,
@@ -525,13 +576,13 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         uint16_t old_latch = via->timers[TIMER_2].latch;
         via->timers[TIMER_2].latch = (old_latch & 0xFF00) | (value & 0xFF);
         LOG(2, "Write register T2C_L=0x%02x (latch 0x%04x->0x%04x, %s)", value, old_latch, via->timers[TIMER_2].latch,
-            via->timers[TIMER_2].start_timestamp ? "counting" : "stopped");
+            via->timers[TIMER_2].started ? "counting" : "stopped");
         break;
     }
 
     case T2C_H: {
         uint16_t old_latch = via->timers[TIMER_2].latch;
-        bool was_counting = via->timers[TIMER_2].start_timestamp != 0;
+        bool was_counting = via->timers[TIMER_2].started;
         set_t2c_high(via, value);
         LOG(2, "Write register T2C_H=0x%02x (latch 0x%04x->0x%04x, %s->counting)", value, old_latch,
             via->timers[TIMER_2].latch, was_counting ? "counting" : "stopped");
@@ -583,19 +634,30 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
     case IER: {
         // if bit 7 is 0 - 1s will clear bits
         // if bit 7 is 1 - 1s will set bits
-        via->ier = value & 0x80 ? via->ier | value : via->ier & ~value;
+        // Bit 7 of the written value is the set/clear selector, not data:
+        // R6522 Figure 30 -- "if bit 7 of the data placed on the system data
+        // bus during this write operation is a 0, each 1 in bits 6 through 0
+        // clears the corresponding bit... Selected bits in the IER can be set
+        // by writing to the IER with bit 7 in the data word set to a 1."  It
+        // is not storage; the register always reads back with bit 7 as 1 (see
+        // the IER read case above), so mask it out of what is stored.  Leaving
+        // it in did not change interrupt behaviour -- update_ifr masks flags to
+        // 0x7F -- but via_get_ier() exposed the polluted value, which is what
+        // machine.via1.ier prints.
+        via->ier = (value & 0x80) ? (via->ier | (value & 0x7F)) : (via->ier & ~(value & 0x7F));
         update_ifr(via, via->ifr);
         break;
     }
 
     case ORA_IRA:
-        // Register 1: Write Port A WITH handshake — clears CA1/CA2 interrupt flags.
+        // Register 1: Write Port A WITH handshake — clears the CA1 flag, and CA2
+        // unless the PCR selects an independent input (port_access_ifr_clear_mask).
         // Handshaked access pulses CA2/PSTRB → a hooked device latches the byte.
         via->ports[PORT_A].output = value;
         via->output_cb(via->cb_context, 0, via->ports[PORT_A].output & via->ports[PORT_A].direction);
         if (via->porta_write)
             via->porta_write(via->porta_ctx, value, true);
-        update_ifr(via, via->ifr & ~(IFR_CA1 | IFR_CA2));
+        update_ifr(via, via->ifr & (uint8_t)~port_access_ifr_clear_mask(via, PORT_A));
         break;
 
     case ORA:
@@ -615,37 +677,123 @@ static void via_write_uint8(void *v, uint32_t addr, uint8_t value) {
         LOG(2, "Write register %s=0x%02x", via_reg_names[rs], value);
 }
 
-// Unimplemented 16-bit read handler (VIA is 8-bit only)
+// The VIA is an 8-bit peripheral on the upper byte of the bus, so a wider
+// access is not something it answers -- but it is also not something to die
+// over.  A guest, a debugger's memory scan, a `memory.peek width=w` or a memory
+// logpoint may issue one, and on the Plus and the Lisa the VIA sits directly in
+// the memory map where any of those reach it.  Compose from the byte handlers
+// the way the RBV does (rbv.c) and log at level 3: the odd byte of each pair
+// falls to via_read_uint8's own odd-address path, which is the floating upper
+// byte the hardware presents.  These used to be GS_ASSERT(0), which took the
+// emulator down on a debugger read -- and contradicted the odd-byte policy this
+// same file argues for eleven lines above it.
+
+// 16-bit read: two byte reads, big-endian, VIA on the even (upper) byte.
 static uint16_t via_read_uint16(void *via, uint32_t addr) {
-    (void)addr;
-    GS_ASSERT(0);
-    return 0;
+    LOG(3, "16-bit read at $%08X: the VIA is 8-bit; composing from byte reads", addr);
+    return (uint16_t)((via_read_uint8(via, addr) << 8) | via_read_uint8(via, addr + 1));
 }
 
-// Unimplemented 32-bit read handler (VIA is 8-bit only)
+// 32-bit read: two word reads.
 static uint32_t via_read_uint32(void *via, uint32_t addr) {
-    (void)addr;
-    GS_ASSERT(0);
-    return 0;
+    LOG(3, "32-bit read at $%08X: the VIA is 8-bit; composing from byte reads", addr);
+    return ((uint32_t)via_read_uint16(via, addr) << 16) | via_read_uint16(via, addr + 2);
 }
 
-// Unimplemented 16-bit write handler (VIA is 8-bit only)
+// 16-bit write: two byte writes, big-endian.
 static void via_write_uint16(void *via, uint32_t addr, uint16_t value) {
-    (void)addr;
-    (void)value;
-    GS_ASSERT(0);
+    LOG(3, "16-bit write at $%08X = $%04X: the VIA is 8-bit; splitting into byte writes", addr, value);
+    via_write_uint8(via, addr, (uint8_t)(value >> 8));
+    via_write_uint8(via, addr + 1, (uint8_t)value);
 }
 
-// Unimplemented 32-bit write handler (VIA is 8-bit only)
+// 32-bit write: two word writes.
 static void via_write_uint32(void *via, uint32_t addr, uint32_t value) {
-    (void)addr;
-    (void)value;
-    GS_ASSERT(0);
+    LOG(3, "32-bit write at $%08X = $%08X: the VIA is 8-bit; splitting into byte writes", addr, value);
+    via_write_uint16(via, addr, (uint16_t)(value >> 16));
+    via_write_uint16(via, addr + 2, (uint16_t)value);
 }
 
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
+
+// Bus /RESET: the VIA is on every Macintosh board's reset net.
+//
+// R6522 datasheet, "RESET (!RES)": "Reset (!RES) clears all internal registers
+// (except T1 and T2 counters and latches, and the Shift Register (SR)).  In
+// the !RES condition, all peripheral interface lines (PA and PB) are placed in
+// the input state.  Also, the Timers (T1 and T2), SR and interrupt logic are
+// disabled from operation."
+//
+// So: the direction, output, control and interrupt registers clear; the timer
+// counters, timer latches and SR keep their values but stop running; and the
+// armed scheduler events go with "disabled from operation".
+//
+// What is NOT cleared, and why: ports[].input and ports[].ctrl hold what the
+// BOARD is driving onto the pins.  A reset of this chip does not change what
+// a peripheral outside it is asserting, and modelling it as if it did would
+// invent edges on the next via_input_c.
+//
+// Before this existed there was no via_reset at all -- the IER, IFR, ACR, PCR,
+// timers and armed events survived every reset path, so a warm restart could
+// take an interrupt for a source the new OS had not installed a handler for
+// (05-chipsets-irq F-03).
+void via_reset(via_t *restrict via) {
+    if (!via)
+        return;
+
+    // "Timers and SR disabled from operation": stop them, keeping the counter
+    // values the datasheet says survive.  Freeze the live value first, since
+    // read_timer derives it from the arm timestamp while the timer runs.
+    for (int t = 0; t < 2; t++) {
+        via->timers[t].counter = read_timer(via, t);
+        via->timers[t].started = false;
+    }
+    // remove_event, NOT scheduler_forget_source: this is a LIVE device that
+    // arms its timers again afterwards, and the primitive also drops the
+    // event-TYPE registrations, so the next arm trips
+    // scheduler_new_cpu_event's "event type not registered" assert.  Exactly
+    // the trap that function's own header warns about -- and walking into it
+    // is what broke suite-iicx, suite-iici and suite-iifx on the first run of
+    // this change.
+    remove_event(via->scheduler, &t1_callback, via);
+    remove_event(via->scheduler, &t2_callback, via);
+    remove_event(via->scheduler, &sr_shift_complete_callback, via);
+    via->sr_shift_pending = false;
+
+    // "Clears all internal registers", except the three named above.
+    via->ports[PORT_A].direction = 0; // PA to the input state
+    via->ports[PORT_B].direction = 0; // PB likewise
+    via->ports[PORT_A].output = 0;
+    via->ports[PORT_B].output = 0;
+    via->ports[PORT_A].latched = 0;
+    via->ports[PORT_B].latched = 0;
+    via->acr = 0;
+    via->pcr = 0;
+    via->ier = 0;
+
+    // The IFR last, through update_ifr, so the aggregate bit is recomputed and
+    // the IRQ line is dropped if it was asserted.
+    update_ifr(via, 0);
+
+    // DELIBERATELY NOT re-driving output_cb here.  With every direction bit
+    // clear the VIA drives nothing, but the callback's contract is
+    // `output & direction` -- a value, with no way to say "not driving".
+    // Publishing 0 would tell the board every line went LOW, and most of
+    // these are active-low: VIA2 port A carries the NuBus slot /NMRQ lines on
+    // the II family, so a reset would assert every slot interrupt at once.
+    // (Measured: doing it breaks suite-iicx.  It is the mirror of the bug
+    // via_init's comment describes, where the control lines came up at 0 and
+    // an active-low input read that as ASSERTED.)
+    //
+    // Leaving the board's picture alone until the guest programs the VIA
+    // again is the least-wrong model available, and matches the pull-ups:
+    // nothing is driving, so the lines sit high, which is what the board
+    // already believes.
+
+    LOG(1, "via_reset: registers cleared, timers stopped (counters kept)");
+}
 
 // Initialize a new VIA instance with callbacks and optional checkpoint restoration
 via_t *via_init(memory_map_t *restrict map, struct scheduler *scheduler, uint8_t freq_factor, const char *name,
@@ -785,8 +933,11 @@ uint8_t via_port_input(const via_t *via, unsigned which) {
 uint8_t via_port_direction(const via_t *via, unsigned which) {
     return (via && which < 2) ? via->ports[which].direction : 0;
 }
+// Live timer counter, for the object model.  These used to return
+// timers[].counter, which arm_timer sets to the START value and never updates
+// while the timer runs -- so a caller saw the reload value, not the count.
 uint16_t via_timer_counter(const via_t *via, unsigned which) {
-    return (via && which < 2) ? via->timers[which].counter : 0;
+    return (via && which < 2) ? read_timer(via, (int)which) : 0;
 }
 uint16_t via_timer_latch(const via_t *via, unsigned which) {
     return (via && which < 2) ? via->timers[which].latch : 0;
@@ -820,6 +971,10 @@ void via_delete(via_t *via) {
     if (!via)
         return;
     LOG(1, "via_delete: freeing via");
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(via->scheduler, via);
+
     if (via->port_b_object) {
         object_detach(via->port_b_object);
         object_delete(via->port_b_object);
@@ -958,17 +1113,20 @@ void via_input_c(via_t *restrict via, int port, int c, bool value) {
         via->ports[0].ctrl[0] = value;
         bool pos_edge = via->pcr & 0x01;
         bool active = pos_edge ? (!old && value) : (old && !value);
-        if (active)
+        if (active) {
+            via->ports[0].latched = via->ports[0].input; // ACR bit 0 sample point
             update_ifr(via, via->ifr | IFR_CA1);
+        }
 
     } else if (port == 0 && c == 1) {
         // CA2 control mode (PCR bits 1-3)
         unsigned int old = via->ports[0].ctrl[1];
         via->ports[0].ctrl[1] = value;
         uint8_t mode = (via->pcr >> 1) & 0x07;
-        // Modes 0-3 are input; bit 2 selects positive edge
+        // Modes 0-3 are input; field bit 1 selects the positive edge (R6522
+        // Figure 11: 000 neg, 001 independent-neg, 010 pos, 011 independent-pos)
         if (mode < 4) {
-            bool pos_edge = mode & 0x04;
+            bool pos_edge = mode & 0x02;
             bool active = pos_edge ? (!old && value) : (old && !value);
             if (active)
                 update_ifr(via, via->ifr | IFR_CA2);
@@ -980,17 +1138,20 @@ void via_input_c(via_t *restrict via, int port, int c, bool value) {
         via->ports[1].ctrl[0] = value;
         bool pos_edge = via->pcr & 0x10;
         bool active = pos_edge ? (!old && value) : (old && !value);
-        if (active)
+        if (active) {
+            via->ports[1].latched = via->ports[1].input; // ACR bit 1 sample point
             update_ifr(via, via->ifr | IFR_CB1);
+        }
 
     } else {
         // CB2 control mode (PCR bits 5-7)
         unsigned int old = via->ports[1].ctrl[1];
         via->ports[1].ctrl[1] = value;
         uint8_t mode = (via->pcr >> 5) & 0x07;
-        // Modes 0-3 are input; bit 2 selects positive edge
+        // Modes 0-3 are input; field bit 1 selects the positive edge (R6522
+        // Figure 11: 000 neg, 001 independent-neg, 010 pos, 011 independent-pos)
         if (mode < 4) {
-            bool pos_edge = mode & 0x04;
+            bool pos_edge = mode & 0x02;
             bool active = pos_edge ? (!old && value) : (old && !value);
             if (active)
                 update_ifr(via, via->ifr | IFR_CB2);

@@ -117,6 +117,11 @@ void remove_event(scheduler_t *sched, event_callback_t callback, void *source) {
     (void)source;
 }
 
+void scheduler_forget_source(scheduler_t *sched, void *source) {
+    (void)sched;
+    (void)source;
+}
+
 void remove_event_by_data(scheduler_t *sched, event_callback_t callback, void *source, uint64_t data) {
     (void)sched;
     (void)callback;
@@ -142,6 +147,13 @@ uint64_t scheduler_cpu_cycles(scheduler_t *sched) {
 // calls system_reset_devices().  No emulator peripherals exist in the isolated
 // harness, so this is a no-op.
 void system_reset_devices(void) {}
+
+// The level-2 entry points are declared weak in system.h so a suite can link a
+// device without system.c.  A weak UNDEFINED symbol that is actually called is
+// a NULL call, though, so define them here too: a suite that reaches the Cuda
+// reset path gets a no-op rather than a segfault.
+void system_machine_reset(void) {}
+void system_hardware_reset(void) {}
 
 // Keyboard stub for key injection command
 typedef enum { key_up, key_down } key_event_t;

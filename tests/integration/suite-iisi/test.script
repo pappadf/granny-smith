@@ -41,6 +41,10 @@ def row_iisi_chime() {
     machine.sound.capture.stop
     assert machine.ram == 66560 "iisi-chime: machine.ram != 66560"
     assert machine.sound.capture.frames == 13444 "iisi-chime: unexpected capture length"
+    # machine.rbv on the V8 superset — same node, same four attributes, and
+    # the variant is the part the node has to distinguish (F-26).
+    assert machine.rbv.chip == "RBV" "iisi-chime: machine.rbv missing"
+    assert machine.rbv.variant == "V8/IIsi" "iisi-chime: wrong RBV variant"
     machine.sound.match goldens/iisi-chime.wav
     report_perf("suite-iisi/iisi-chime", scheduler.instr_count)
 }

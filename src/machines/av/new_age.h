@@ -32,7 +32,7 @@ void av_new_age_checkpoint(av_new_age_t *fdc, checkpoint_t *cp);
 
 // === I/O island handlers ====================================================
 
-uint8_t av_new_age_read(config_t *cfg, uint32_t addr);
-void av_new_age_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_new_age_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_new_age_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 #endif // GS_MACHINES_AV_NEW_AGE_H

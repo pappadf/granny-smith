@@ -20,6 +20,7 @@
 #include "floppy.h"
 #include "image.h"
 #include "keyboard.h"
+#include "machine_build_opts.h"
 #include "machine_profile.h"
 #include "memory.h"
 #include "mouse.h"
@@ -39,6 +40,11 @@ struct ppc;
 
 struct config {
     const hw_profile_t *machine; // active machine profile (set by system_create)
+    // Choices that had to be known before the devices existed: what the
+    // caller asked for, filled by system_create and READ (never consumed) by
+    // whoever needs it during construction.  Replaces three per-module
+    // one-shot statics -- jmfb/dafb/pdm's pending sense (machine_build_opts.h).
+    machine_build_opts_t build_opts;
     uint32_t ram_size; // actual RAM size in bytes (from setup --ram or machine default)
     void *machine_context; // machine-specific state (e.g., plus_state_t)
 

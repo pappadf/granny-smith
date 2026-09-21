@@ -1423,7 +1423,7 @@ int main(int argc, char *argv[]) {
         if (profile) {
             // system_create assigns global_emulator internally on success.
             // Don't shadow that here — a NULL return would clobber it.
-            if (system_create(profile, NULL))
+            if (system_create(profile, NULL, NULL))
                 printf("%s (%u KB RAM)\n", profile->name, profile->ram_default / 1024);
             else
                 printf("Failed to create machine: %s\n", profile->name);

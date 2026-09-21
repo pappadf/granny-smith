@@ -193,9 +193,42 @@ void system_keyboard_update(key_event_t event, int key) {
 
 // Hardware RESET line: calls the machine's reset handler to reinitialize
 // peripherals.  On SE/30: VIA1 re-enables ROM overlay, MMU disabled.
+// LEVEL 2 -- a machine reset: the reset button, Finder > Restart, the Cuda's
+// CMD_RESET, a double bus fault.  Bus reset plus the CPU back to its vector,
+// which is the entire difference from level 1 (reset proposal §3.1.2).
+//
+// This is 05-chipsets-irq F-04.  The two callers of the old
+// system_hardware_reset() had incompatible expectations: cpu_hardware_reset()
+// called it and then reset the CPU itself, while cuda_reset_event() called it
+// ALONE.  That was survivable on PDM and TNT only because their substrate
+// handlers happened to call ppc_reset() from inside the bus half.  On the AV
+// families nothing reset the 68040 at all, so a guest Cuda CMD_RESET -- which
+// is how System 7.5 restarts an AV machine -- re-armed the ROM overlay and
+// left the CPU executing from wherever it was: RAM yanked out from under
+// $00000000 with the machine still running.
+//
+// One entry point now does both halves, in the order the hardware imposes:
+// the overlay must be back before the vectors at $0/$4 are read.
+void system_machine_reset(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg)
+        return;
+
+    system_reset_devices(); // level 1: the board's /RESET net
+
+    if (cfg->cpu) {
+        if (cfg->machine && cfg->machine->cpu_model == CPU_MODEL_68040)
+            cpu_reset_to_vector_68040(cfg->cpu);
+        else
+            cpu_reset_to_vector_68030(cfg->cpu);
+    } else if (cfg->ppc) {
+        ppc_reset(cfg->ppc);
+    }
+}
+
+// Retained under its old name for the callers that mean "level 2".
 void system_hardware_reset(void) {
-    if (global_emulator && global_emulator->machine && global_emulator->machine->substrate->reset)
-        global_emulator->machine->substrate->reset(global_emulator);
+    system_machine_reset();
 }
 
 // The 68k RESET instruction asserts the bus /RESET line, which resets the
@@ -206,17 +239,58 @@ void system_hardware_reset(void) {
 // RESET → set up the MMU → jump to the boot entry.  Without this, the SCSI
 // controller and the video card would carry stale OS-session state into the
 // reboot (a garbage-video hang + a write_mr phase assertion).
-void system_reset_devices(void) {
-    config_t *cfg = global_emulator;
+// The devices every Macintosh board wires to /RESET, whatever its chipset.
+// A family's bus_reset calls this and then adds its own.
+//
+// This used to BE system_reset_devices() -- a core-owned list of two devices
+// that no board could extend, which is why it never grew a PCI arm and why
+// adding one there would have been dead code (reset proposal §3.1.5).
+void system_reset_common_devices(config_t *cfg) {
     if (!cfg)
         return;
+    // NOTE: the reset proposal's §3.1.3 lists `cfg->scsi2` here, the Network
+    // Servers' second bus.  There is no such field -- config_t carries one
+    // `scsi`, and the ANS's second bus lives in the TNT state, so its family
+    // bus_reset is where it belongs.  Corrected rather than copied.
     if (cfg->scsi)
-        // Warm restart is a RESET condition on the wire: the bus goes free and
-        // every target returns to its power-on state (scsi_bus_reset, called
-        // from scsi_reset), and on a 5380 machine the chip's registers clear too.
+        // A reset condition on the wire: the bus goes free and every target
+        // returns to its power-on state (scsi_bus_reset, called from
+        // scsi_reset); on a 5380 machine the chip's registers clear too.
         scsi_reset_pin(cfg->scsi);
+    // Both VIAs: on the net per the Guide's destination list, and the reason
+    // the ROM overlay comes back (VIA1's Overlay output goes high when the
+    // chip resets).  via2 is NULL on the single-VIA machines.
+    if (cfg->via1)
+        via_reset(cfg->via1);
+    if (cfg->via2)
+        via_reset(cfg->via2);
+    if (cfg->scc)
+        scc_reset(cfg->scc); // "MC68000, VIA, SWIM, SCC, SCSI, BBU"
+    if (cfg->floppy)
+        floppy_reset(cfg->floppy); // the SWIM of that list; media survive
     if (cfg->nubus)
         nubus_reset(cfg->nubus); // each populated card → power-on state
+    if (cfg->pci)
+        pci_reset(cfg->pci); // PCI RST#, on the same net
+}
+
+// Level 1 -- the 68k RESET opcode asserts the peripheral reset line.
+//
+// It now delegates to the board's own /RESET destination list instead of
+// resetting a fixed pair of devices.  Two consequences, both intended and
+// both per the sources in machine_profile.h: a guest RESET re-arms the ROM
+// overlay (it did not before, and the boot ROM executes RESET while the
+// overlay is already on), and the PPC families' chipsets are reached for the
+// first time from this path.
+void system_reset_devices(void) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->bus_reset) {
+        // No bus_reset bound yet (Plus, Lisa -- a gap, not hardware).  Fall
+        // back to the common set so those two keep the behaviour they had.
+        system_reset_common_devices(cfg);
+        return;
+    }
+    cfg->machine->substrate->bus_reset(cfg);
 }
 
 // System-level scheduler accessor: returns the current scheduler object
@@ -354,7 +428,7 @@ int system_ensure_machine(const char *model_id) {
     }
 
     // Create the new machine
-    config_t *cfg = system_create(needed, NULL);
+    config_t *cfg = system_create(needed, NULL, NULL);
     if (!cfg) {
         LOG(1, "system_ensure_machine: failed to create %s", model_id);
         return -1;
@@ -761,7 +835,8 @@ __attribute__((weak)) bool gs_audio_in_debug(char *buf, size_t buflen) {
 
 // Create an emulator instance for the given machine profile.
 // Allocates config_t, wires the machine descriptor, and calls profile->substrate->init().
-config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
+config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint) {
+
     assert(profile != NULL);
     assert(profile->substrate != NULL && profile->substrate->init != NULL);
 
@@ -769,6 +844,7 @@ config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint) {
     if (!cfg)
         return NULL;
     memset(cfg, 0, sizeof(config_t));
+    cfg->build_opts = opts ? *opts : machine_build_opts_default();
 
     cfg->machine = profile;
     // Main-CPU architecture tag (PPC proposal §3.9a): derived from the
@@ -1178,6 +1254,7 @@ config_t *system_restore(const char *filename) {
     // was consumed by the previous boot, and a checkpoint written with a
     // non-default card must not restore against the slot default (the
     // strictly-ordered stream would misalign).
+    machine_build_opts_t build_opts = machine_build_opts_default();
     if (restored_record.valid) {
         if (restored_record.video_card[0])
             nubus_staged_card_set(NUBUS_STAGED_WILDCARD, restored_record.video_card);
@@ -1185,12 +1262,16 @@ config_t *system_restore(const char *filename) {
             nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, restored_record.video_mode);
         if (restored_record.custom_mode[0])
             nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, restored_record.custom_mode);
+        // The sense goes into the build options, which every video model
+        // reads -- the JMFB cards, the DAFB and PDM's Ariel alike.  This used
+        // to call jmfb_pending_sense_set() and note that "the DAFB's half is
+        // NOT staged here: dafb.h is a machine header and core may not
+        // include it", so the Quadras carried their sense through the
+        // checkpoint as device state instead.  machine_build_opts_t lives in
+        // core, so one channel now serves both and the layering test is
+        // satisfied by construction rather than by a second mechanism.
         if (restored_record.video_sense >= 0)
-            jmfb_pending_sense_set((uint8_t)restored_record.video_sense);
-        // The DAFB's half of this is NOT staged here: dafb.h is a machine
-        // header (src/machines/mcu/) and core may not include it — see the
-        // core-layering test. The Quadras' built-in video carries its sense
-        // through the checkpoint as device state instead; see dafb_checkpoint().
+            build_opts.video_sense = restored_record.video_sense;
         if (restored_record.vrom[0])
             vrom_set_path(restored_record.vrom);
         // The PCI half of the same rule: a checkpoint written with a
@@ -1218,7 +1299,7 @@ config_t *system_restore(const char *filename) {
     // re-report their picks during system_create).
     machine_config_reset_vroms();
 
-    config_t *config = system_create(profile, checkpoint);
+    config_t *config = system_create(profile, &build_opts, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
         printf("Error: Failed to read checkpoint\n");

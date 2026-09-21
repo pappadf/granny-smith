@@ -44,6 +44,15 @@ def row_iifx_chime() {
     machine.sound.capture.stop
     assert machine.id == "iifx" "iifx-chime: machine.id != iifx"
     assert machine.sound.capture.frames == 12516 "iifx-chime: unexpected capture length"
+    # machine.oss — the IIfx has no VIA2 and no RBV, so the OSS *is* its
+    # interrupt controller (05-chipsets-irq F-26).  The OSS has no mask
+    # register: a source is enabled exactly when its level register is
+    # non-zero, which is what `enabled` has to mean here.
+    assert machine.oss.chip == "OSS" "iifx-chime: machine.oss missing"
+    assert machine.oss.active == machine.oss.pending & machine.oss.enabled "iifx-chime: OSS active != pending & enabled"
+    assert len(machine.oss.levels) == 7 "iifx-chime: OSS level map is not IPL 1..7"
+    assert machine.oss.levels[0].ipl == 1 "iifx-chime: OSS level map does not start at IPL 1"
+    assert len(machine.oss.source_levels) == 15 "iifx-chime: OSS has 15 sources"
     machine.sound.match goldens/iifx-chime.wav
     report_perf("suite-iifx/iifx-chime", scheduler.instr_count)
 }

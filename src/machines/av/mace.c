@@ -59,7 +59,8 @@ static inline av_mace_t *mace_of(config_t *cfg) {
     return ((av_state_t *)cfg->machine_context)->mace;
 }
 
-uint8_t av_mace_read(config_t *cfg, uint32_t addr) {
+uint8_t av_mace_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_mace_t *m = mace_of(cfg);
     uint32_t reg = ((addr & 0x1FFu) >> 4) % AV_MACE_REGS;
     switch (reg) {
@@ -80,7 +81,8 @@ uint8_t av_mace_read(config_t *cfg, uint32_t addr) {
     }
 }
 
-void av_mace_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_mace_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_mace_t *m = mace_of(cfg);
     uint32_t reg = ((addr & 0x1FFu) >> 4) % AV_MACE_REGS;
     if (reg == MACE_IR || reg == MACE_PR || reg == MACE_CHIPIDLO || reg == MACE_CHIPIDHI)
@@ -89,7 +91,8 @@ void av_mace_write(config_t *cfg, uint32_t addr, uint8_t value) {
     LOG(3, "reg %u = $%02X (pc=%08X)", reg, value, cpu_get_pc(cfg->cpu));
 }
 
-uint8_t av_mace_prom_read(config_t *cfg, uint32_t addr) {
+uint8_t av_mace_prom_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)cfg;
     // One byte per 16-byte group, at offset $x1 of each.
     if ((addr & 0xFu) != 1)
@@ -97,7 +100,8 @@ uint8_t av_mace_prom_read(config_t *cfg, uint32_t addr) {
     return av_mace_prom[(addr >> 4) & 7];
 }
 
-void av_mace_prom_write(config_t *cfg, uint32_t addr, uint8_t value) {
+void av_mace_prom_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     LOG(2, "PROM write $%X = $%02X ignored (read-only)", addr & 0xFFu, value);
     (void)cfg;
 }

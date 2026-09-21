@@ -35,6 +35,10 @@ typedef struct floppy floppy_t;
 // Initializes a floppy controller of the given type and maps it to memory
 floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, checkpoint_t *checkpoint);
 // Frees all resources associated with the floppy controller
+// Bus /RESET: controller registers, mode latches and motor enable back to
+// power-on.  Media, decoded tracks and head position are NOT disturbed.
+void floppy_reset(floppy_t *floppy);
+
 void floppy_delete(floppy_t *floppy);
 // Saves the floppy controller state to a checkpoint
 void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint);

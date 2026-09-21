@@ -72,6 +72,12 @@ via_t *via_init(memory_map_t *map, struct scheduler *scheduler, uint8_t freq_fac
                 via_output_fn output_cb, via_shift_out_fn shift_cb, via_irq_fn irq_cb, void *cb_context,
                 checkpoint_t *checkpoint);
 
+// Bus /RESET.  Clears the direction, output, control and interrupt registers;
+// keeps the timer counters, timer latches and SR per the R6522 datasheet, but
+// stops the timers running.  Does not disturb what the board is driving onto
+// the pins.
+void via_reset(via_t *restrict via);
+
 void via_delete(via_t *via);
 
 void via_checkpoint(via_t *restrict via, checkpoint_t *checkpoint);

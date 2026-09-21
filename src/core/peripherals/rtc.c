@@ -463,6 +463,9 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
 void rtc_delete(rtc_t *rtc) {
     if (!rtc)
         return;
+    // Drop everything the scheduler still holds for this object before any
+    // of it is torn down (proposal-scheduler-source-lifetime).
+    scheduler_forget_source(rtc->scheduler, rtc);
     LOG(1, "rtc_delete: freeing rtc seconds=%u", rtc->seconds);
     if (rtc->pram_object) {
         object_detach(rtc->pram_object);

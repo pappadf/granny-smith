@@ -181,7 +181,6 @@ typedef struct pdm_monitor_kind {
 extern const pdm_monitor_kind_t pdm_monitors[];
 const pdm_monitor_kind_t *pdm_monitor_lookup(const char *id);
 // Stage the strap for the NEXT machine built (machine.boot `monitor=`).
-void pdm_pending_monitor_set(uint8_t sense);
 
 // hw_profile_t.builtin_video for the three PDM leaves: the registry walks the
 // table above and stages a pick through this, so it needs no pdm_ symbol and
@@ -268,6 +267,7 @@ typedef struct pdm_state {
     pdm_video_t video; // scanout descriptor (ariel.c)
     int16_t *snd_stage; // one half-buffer of staged stereo samples (awacs.c)
     struct object *snd_object; // the machine.sound node (awacs.c)
+    struct object *amic_object; // the machine.amic node (amic.c)
 } pdm_state_t;
 
 static inline pdm_state_t *pdm_st(config_t *cfg) {
@@ -320,6 +320,12 @@ void pdm_amic_recompute(config_t *cfg);
 #define PDM_ICR_DMA  4
 #define PDM_ICR_NMI  5
 void pdm_amic_set_source(config_t *cfg, int bit, bool level);
+
+// machine.amic — the interrupt-controller node (05-chipsets-irq F-26).
+// Attached from machine construction, not from pdm_amic_init: that memsets
+// the whole AMIC and also runs on a reset.
+void pdm_amic_attach_object(config_t *cfg);
+void pdm_amic_detach_object(config_t *cfg);
 // 53C9x INT pin levels into the pseudo-VIA2 device bank (chip 0 = Curio →
 // bit 3, chip 1 = 53CF96 → bit 6; the DRQ bits 0/2 are read live from the
 // chips' DREQ outputs, never latched).

@@ -537,8 +537,10 @@ void lisa_fdc_set_diskrom(lisa_fdc_t *fdc, uint8_t id) {
 }
 
 void lisa_fdc_delete(lisa_fdc_t *fdc) {
-    if (fdc)
-        free(fdc->pending_media);
+    if (!fdc)
+        return;
+    scheduler_forget_source(fdc->sched, fdc);
+    free(fdc->pending_media);
     free(fdc);
 }
 

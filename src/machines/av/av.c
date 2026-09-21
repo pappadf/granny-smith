@@ -12,6 +12,7 @@
 
 #include "av.h"
 #include "appletalk.h"
+#include "regfile.h"
 
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 
@@ -34,6 +35,7 @@
 #include "debug.h"
 #include "image.h"
 #include "log.h"
+#include "machine_checkpoint.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
@@ -68,7 +70,8 @@ static inline av_state_t *av_st(config_t *cfg) {
 // else is a latch that reads back (speed/width semantics are not modelled —
 // ymca.md §10 records that even the ROM only knows fixed patterns).
 
-static uint8_t av_ymca_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_ymca_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu; // island offset $30400 + $000..$3FF
     if ((off & 3) != 0)
@@ -84,7 +87,8 @@ static uint8_t av_ymca_read(config_t *cfg, uint32_t addr) {
     return (uint8_t)((st->ymca_regs[idx] & 1) << 7);
 }
 
-static void av_ymca_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void av_ymca_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu;
     if ((off & 3) != 0)
@@ -106,7 +110,8 @@ static void av_ymca_write(config_t *cfg, uint32_t addr, uint8_t value) {
 // bus-error so the ROM's TestForMUNI clears MUNIExists (the speed-programming
 // write in JumpIntoROM runs under a temp bus-error handler and is skipped).
 
-static uint8_t av_muni_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_muni_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu;
     uint32_t reg = off & ~3u;
@@ -115,23 +120,24 @@ static uint8_t av_muni_read(config_t *cfg, uint32_t addr) {
         return 0xFF;
     }
     uint32_t v = (reg == AV_MUNI_CONTROL) ? st->muni_control : (reg == AV_MUNI_INTCNTRL) ? st->muni_intcntrl : 0;
-    return (uint8_t)(v >> (8 * (3 - (off & 3))));
+    return be_lane8(v, off & 3);
 }
 
-static void av_muni_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void av_muni_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     av_state_t *st = av_st(cfg);
     uint32_t off = addr & 0x3FFu;
     uint32_t reg = off & ~3u;
-    uint32_t shift = 8 * (3 - (off & 3));
+    unsigned lane = off & 3u;
     if (reg == AV_MUNI_CONTROL) {
         if (!av_board(cfg)->desc->muni_present) {
             memory_signal_bus_error(addr, true);
             return;
         }
-        st->muni_control = (st->muni_control & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        be_lane8_set(&st->muni_control, lane, value);
         LOG(2, "MUNI Control = $%08X (pc=%08X)", st->muni_control, cpu_get_pc(cfg->cpu));
     } else if (reg == AV_MUNI_INTCNTRL) {
-        st->muni_intcntrl = (st->muni_intcntrl & ~(0xFFu << shift)) | ((uint32_t)value << shift);
+        be_lane8_set(&st->muni_intcntrl, lane, value);
         LOG(2, "MUNI IntCntrl = $%08X (pc=%08X)", st->muni_intcntrl, cpu_get_pc(cfg->cpu));
     }
 }
@@ -149,7 +155,7 @@ static void av_muni_write(config_t *cfg, uint32_t addr, uint8_t value) {
 static uint8_t av_cpuid_read8(void *ctx, uint32_t offset) {
     (void)ctx;
     if (offset >= 0xFFCu)
-        return (uint8_t)(AV_CPUID_VALUE >> (8 * (3 - (offset & 3))));
+        return be_lane8(AV_CPUID_VALUE, offset & 3);
     return 0xFF; // nothing else decodes in this page — float high
 }
 
@@ -181,40 +187,42 @@ static void av_cpuid_write32(void *ctx, uint32_t offset, uint32_t value) {
 
 #define AV_VIA_IO_PENALTY 16
 #define AV_SCC_IO_PENALTY 2
+// Every other window on the island is a handler row, and every one of them
+// completes a bus cycle -- so all of them pay the island's turnaround, the
+// way the IIfx table has always charged its handler rows (F-49).
+#define AV_IO_PENALTY 2
 
 // 53C96 window handlers (defined with the SCSI wiring below).
-static uint8_t av_scsi_read(config_t *cfg, uint32_t addr);
-static void av_scsi_write(config_t *cfg, uint32_t addr, uint8_t value);
-static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t addr);
-static void av_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value);
+static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+static void av_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
+static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 //   base     end      device            penalty          xform            rd wr  rd_fn/wr_fn      name
 const mac030_io_range_t av_io_ranges[] = {
     {0x00000, 0x02000, MAC030_DEV_VIA1, AV_VIA_IO_PENALTY, MAC030_IO_MASK_A0, 0, 0, NULL, NULL, "via1", .esync = 1},
-    {0x02000, 0x04000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
+    {0x02000, 0x04000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_psc_via2_read, av_psc_via2_write, "psc_via2"},
     {0x04000, 0x08000, MAC030_DEV_SCC, AV_SCC_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, NULL, NULL, "scc"},
-    {0x08000, 0x08080, 0, 0, MAC030_IO_NORMAL, 0, 0, av_mace_prom_read, av_mace_prom_write, "mac_prom"},
-    {0x18000, 0x18100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96"},
-    {0x18100, 0x18200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma"},
-    {0x1C000, 0x1C200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace"},
-    {0x2A000, 0x2A200, 0, 0, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
-    {0x2E000, 0x2E100, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_clk_read, av_civic_clk_write, "clock"},
-    {0x30000, 0x30400, 0, 0, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
-    {0x30400, 0x30800, 0, 0, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
-    {0x30800, 0x30C00, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_seb_read, av_civic_seb_write, "sebastian"},
-    {0x31000, 0x33000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_psc_reg_read, av_psc_reg_write, "psc"},
-    {0x36000, 0x38000, 0, 0, MAC030_IO_NORMAL, 0, 0, av_civic_read, av_civic_write, "civic"},
+    {0x08000, 0x08080, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_prom_read, av_mace_prom_write, "mac_prom"},
+    {0x18000, 0x18100, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_read, av_scsi_write, "scsi_53c96"},
+    {0x18100, 0x18200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_scsi_pdma_read, av_scsi_pdma_write, "scsi_rdma"},
+    {0x1C000, 0x1C200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_mace_read, av_mace_write, "mace"},
+    {0x2A000, 0x2A200, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_new_age_read, av_new_age_write, "new_age"},
+    {0x2E000, 0x2E100, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_clk_read, av_civic_clk_write, "clock"},
+    {0x30000, 0x30400, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_muni_read, av_muni_write, "muni"},
+    {0x30400, 0x30800, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_ymca_read, av_ymca_write, "ymca"},
+    {0x30800, 0x30C00, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_seb_read, av_civic_seb_write, "sebastian"},
+    {0x31000, 0x33000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_psc_reg_read, av_psc_reg_write, "psc"},
+    {0x36000, 0x38000, 0, AV_IO_PENALTY, MAC030_IO_NORMAL, 0, 0, av_civic_read, av_civic_write, "civic"},
     {0}, // sentinel: end == 0
 };
 
 // Bind the family device set + board tables into the shared I/O engine.
 static void av_io_bind(mac030_io_t *io, config_t *cfg, const av_board_desc_t *desc) {
     mac030_io_install(io, cfg, &desc->common);
-    io->handle[MAC030_DEV_VIA1] = cfg->via1;
-    io->iface[MAC030_DEV_VIA1] = via_get_memory_interface(cfg->via1);
+    mac030_io_bind_dev(io, MAC030_DEV_VIA1, cfg->via1, via_get_memory_interface(cfg->via1));
     if (cfg->scc) {
-        io->handle[MAC030_DEV_SCC] = cfg->scc;
-        io->iface[MAC030_DEV_SCC] = scc_get_memory_interface(cfg->scc);
+        mac030_io_bind_dev(io, MAC030_DEV_SCC, cfg->scc, scc_get_memory_interface(cfg->scc));
     }
 }
 
@@ -266,8 +274,7 @@ static void av_via1_irq(void *context, bool active) {
 // No AV board declares a slot table yet (.slots = NULL on both, "declared but
 // unpopulated"), so nothing reaches this today.  It exists so the first AV
 // declaration-ROM card does not have to discover that its /NMRQ went nowhere.
-static void av_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge; // the PSC aggregates internally
+static void av_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     av_state_t *st = (av_state_t *)cfg->machine_context;
     if (!st || !st->psc)
         return;
@@ -285,23 +292,27 @@ static void av_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrell
 // handler).  The chip IRQ is level-sensitive into the PSC-VIA2 window,
 // bits 3 and mirror 0 (curio.md §2, IMPLEMENTATION.md §5).
 
-static uint8_t av_scsi_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_scsi_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     return scsi_53c96_read(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4);
 }
 
-static void av_scsi_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void av_scsi_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     scsi_53c96_write(av_st(cfg)->scsi96, (addr & 0xFFu) >> 4, value);
 }
 
 // Curio's rDMA pseudo-DMA port at +$100: the ROM's boot-time SCSI Manager
 // (SCSIMgrHWPSC.a) streams 16-bit words through it — the engine
 // byte-decomposes them, and byte order equals wire order.
-static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t addr) {
+static uint8_t av_scsi_pdma_read(config_t *cfg, uint32_t win_off, uint32_t addr) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     return scsi_53c96_pdma_read8(av_st(cfg)->scsi96);
 }
 
-static void av_scsi_pdma_write(config_t *cfg, uint32_t addr, uint8_t value) {
+static void av_scsi_pdma_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value) {
+    (void)win_off; // this window's handler decodes from addr itself
     (void)addr;
     scsi_53c96_pdma_write8(av_st(cfg)->scsi96, value);
 }
@@ -418,25 +429,6 @@ void av_scsi_pump_arm(void *ctx) {
 // PSC bus-master DMA: guest-physical accesses through the bus resolver
 // (the sonic memory-hook pattern — the CPU MMU is deliberately not in the
 // path).
-static uint32_t av_psc_mem_read(void *context, uint32_t phys, unsigned width) {
-    (void)context;
-    if (width == 1)
-        return mmu_read_physical_uint8(g_mmu, phys);
-    if (width == 2)
-        return mmu_read_physical_uint16(g_mmu, phys);
-    return mmu_read_physical_uint32(g_mmu, phys);
-}
-
-static void av_psc_mem_write(void *context, uint32_t phys, uint32_t value, unsigned width) {
-    (void)context;
-    if (width == 1)
-        mmu_write_physical_uint8(g_mmu, phys, (uint8_t)value);
-    else if (width == 2)
-        mmu_write_physical_uint16(g_mmu, phys, (uint16_t)value);
-    else
-        mmu_write_physical_uint32(g_mmu, phys, value);
-}
-
 // SCC chip INT → PSC level-4 SCCA/SCCB bits.  The chip has one INT line;
 // the ROM's SccDecode handler reads SCC RR3 to find the channel, so both
 // bits track the line.  (Guarded: scc_init fires this before the PSC is
@@ -481,114 +473,6 @@ static void av_map_ram(config_t *cfg) {
 // executes `JMP $40800074` as its very first instruction, so the drop
 // happens before any RAM is touched.
 
-// Fill the ROM aperture with direct pages of the 2 MB image.
-static void av_fill_rom_aperture(config_t *cfg) {
-    const av_board_desc_t *desc = av_board(cfg)->desc;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++)
-        mac030_fill_page(p, rom_data + (((p - start_page) % rom_pages) << PAGE_SHIFT), false);
-}
-
-// Drop the overlay: RAM at zero, aperture direct.  Idempotent.
-static void av_overlay_drop(config_t *cfg) {
-    av_state_t *st = av_st(cfg);
-    if (!st->rom_overlay)
-        return;
-    st->rom_overlay = false;
-    LOG(1, "AV overlay drop: RAM at $00000000, ROM direct in aperture (pc=%08X)", cpu_get_pc(cfg->cpu));
-    av_map_ram(cfg);
-    av_fill_rom_aperture(cfg);
-}
-
-// Arm the overlay: ROM readable at zero, aperture pages routed to the
-// trigger device.  Used at cold boot and by hardware RESET.
-static void av_overlay_arm(config_t *cfg) {
-    av_state_t *st = av_st(cfg);
-    const av_board_desc_t *desc = av_board(cfg)->desc;
-    uint32_t rom_size = cfg->machine->rom_size;
-    uint32_t rom_pages = rom_size >> PAGE_SHIFT;
-    uint8_t *rom_data = ram_native_pointer(cfg->mem_map, cfg->ram_size);
-
-    st->rom_overlay = true;
-
-    // ROM mapped read-only at zero (2 MB).
-    for (uint32_t p = 0; p < rom_pages && (int)p < g_page_count; p++)
-        mac030_fill_page(p, rom_data + (p << PAGE_SHIFT), false);
-
-    // Route the aperture through the trigger device (page plumbing was done
-    // once by memory_map_add; later arms re-point the pages manually).
-    uint32_t start_page = desc->common.rom_base >> PAGE_SHIFT;
-    uint32_t end_page = desc->common.rom_end >> PAGE_SHIFT;
-    for (uint32_t p = start_page; p < end_page && (int)p < g_page_count; p++) {
-        g_page_table[p].host_base = NULL;
-        g_page_table[p].dev = &st->overlay_interface;
-        g_page_table[p].dev_context = cfg;
-        g_page_table[p].base_addr = desc->common.rom_base;
-        g_page_table[p].writable = false;
-        if (g_supervisor_read)
-            g_supervisor_read[p] = 0;
-        if (g_supervisor_write)
-            g_supervisor_write[p] = 0;
-        if (g_user_read)
-            g_user_read[p] = 0;
-        if (g_user_write)
-            g_user_write[p] = 0;
-    }
-}
-
-// Trigger-device handlers: any access drops the overlay and completes from
-// the ROM image.  `offset` is relative to the aperture base.
-static inline uint8_t *av_rom_ptr(config_t *cfg, uint32_t offset) {
-    uint32_t rom_size = cfg->machine->rom_size;
-    return ram_native_pointer(cfg->mem_map, cfg->ram_size) + (offset % rom_size);
-}
-
-static uint8_t av_overlay_read8(void *ctx, uint32_t offset) {
-    config_t *cfg = (config_t *)ctx;
-    av_overlay_drop(cfg);
-    return av_rom_ptr(cfg, offset)[0];
-}
-
-// Composed from byte reads so every byte wraps within the mirror
-// independently, the shape iifx_rom_read_uint16/32 already use.  Indexing
-// p[1..3] off a single wrapped base instead would read past the end of the
-// RAM+ROM allocation when the base landed on the last bytes of a mirror
-// period -- the ROM sits at the top of that one calloc.
-//
-// That was not reachable: the memory dispatcher only calls a device's 16/32-bit
-// handler when (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2/-4 and splits anything
-// closer to a page end, and rom_size is a multiple of the 4 KiB page size, so
-// "within 3 bytes of a mirror top" is always also "within 3 bytes of a page
-// end".  Confirmed under ASAN: a long read at the top of a q700 mirror reaches
-// this handler only after being decomposed.  But that safety lives in another
-// file and depends on an unstated size relationship, so it is made local here.
-// (av_overlay_drop is idempotent, so the repeated call costs nothing.)
-static uint16_t av_overlay_read16(void *ctx, uint32_t offset) {
-    return (uint16_t)((av_overlay_read8(ctx, offset) << 8) | av_overlay_read8(ctx, offset + 1));
-}
-
-static uint32_t av_overlay_read32(void *ctx, uint32_t offset) {
-    return ((uint32_t)av_overlay_read16(ctx, offset) << 16) | av_overlay_read16(ctx, offset + 2);
-}
-
-static void av_overlay_write8(void *ctx, uint32_t offset, uint8_t value) {
-    (void)value;
-    av_overlay_drop((config_t *)ctx); // a write access also triggers the switch
-    LOG(2, "ROM aperture write $%X ignored", offset);
-}
-
-static void av_overlay_write16(void *ctx, uint32_t offset, uint16_t value) {
-    av_overlay_write8(ctx, offset, (uint8_t)value);
-}
-
-static void av_overlay_write32(void *ctx, uint32_t offset, uint32_t value) {
-    av_overlay_write8(ctx, offset, (uint8_t)value);
-}
-
 // ============================================================
 // Memory layout
 // ============================================================
@@ -613,16 +497,11 @@ static void av_memory_layout(config_t *cfg) {
 
     // The overlay-trigger device for the ROM aperture is registered once;
     // arming/dropping only re-points page entries.
-    st->overlay_interface.read_uint8 = av_overlay_read8;
-    st->overlay_interface.read_uint16 = av_overlay_read16;
-    st->overlay_interface.read_uint32 = av_overlay_read32;
-    st->overlay_interface.write_uint8 = av_overlay_write8;
-    st->overlay_interface.write_uint16 = av_overlay_write16;
-    st->overlay_interface.write_uint32 = av_overlay_write32;
+    mac030_rom_overlay_init(&st->overlay, cfg, desc->common.rom_base, desc->common.rom_end, av_map_ram, "AV");
     memory_map_add(cfg->mem_map, desc->common.rom_base, desc->common.rom_end - desc->common.rom_base, "ROM aperture",
-                   &st->overlay_interface, cfg);
+                   &st->overlay.iface, &st->overlay);
 
-    av_overlay_arm(cfg);
+    mac030_rom_overlay_arm(&av_st(cfg)->overlay);
 }
 
 // ============================================================
@@ -673,7 +552,7 @@ int av_build_devices(config_t *cfg, checkpoint_t *cp) {
         LOG(0, "Error: out of memory constructing the PSC");
         return -1;
     }
-    av_psc_set_memory_hooks(st->psc, av_psc_mem_read, av_psc_mem_write, cfg);
+    av_psc_set_memory_port(st->psc, &dma_mem_port_physical); // the pair that lived here is shared now (F-16)
 
     // The DSP3210 aux core on the PSC's dspOverRun reset latch, and the
     // Singer sound frame engine that feeds it EXT1 ticks.
@@ -834,15 +713,16 @@ static int av_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void av_reset(config_t *cfg) {
+static void av_bus_reset(config_t *cfg) {
     av_state_t *st = av_st(cfg);
-    // Hardware RESET: overlay re-arms; the CPU-owned 040 MMU state is reset
-    // by cpu_hardware_reset_040.
-    av_overlay_arm(cfg);
+    // Overlay re-arms; the 040's own MMU is reset by cpu_hardware_reset_040.
+    mac030_rom_overlay_arm(&st->overlay);
+    // The AV's BUS mmu is a board part, so it stays on this side.
     if (st->bus_mmu) {
         st->bus_mmu->enabled = false;
         mmu_invalidate_tlb(st->bus_mmu);
     }
+    system_reset_common_devices(cfg);
 }
 
 static void av_teardown(config_t *cfg) {
@@ -907,7 +787,7 @@ static void av_teardown(config_t *cfg) {
 
 static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     av_state_t *st = av_st(cfg);
-    mac030_checkpoint_save_core(cfg, cp);
+    machine_checkpoint_save_core(cfg, cp);
     // Device order mirrors the checkpoint READS in av_build_devices — the
     // stream is sequential, so save and restore must walk it identically.
     av_psc_checkpoint(st->psc, cp);
@@ -924,7 +804,7 @@ static void av_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
         scsi_checkpoint(cfg->scsi, cp);
     scsi_53c96_checkpoint(st->scsi96, cp);
     // Substrate-private tail (mirrored by the restore block in av_init).
-    system_write_checkpoint_data(cp, &st->rom_overlay, sizeof(st->rom_overlay));
+    system_write_checkpoint_data(cp, &st->overlay.armed, sizeof(st->overlay.armed));
     system_write_checkpoint_data(cp, st->ymca_regs, sizeof(st->ymca_regs));
     system_write_checkpoint_data(cp, &st->muni_intcntrl, sizeof(st->muni_intcntrl));
     system_write_checkpoint_data(cp, &st->muni_control, sizeof(st->muni_control));
@@ -956,7 +836,7 @@ static struct display *av_display(config_t *cfg) {
 
 const machine_substrate_t av_substrate = {
     .init = av_init,
-    .reset = av_reset,
+    .bus_reset = av_bus_reset,
     .teardown = av_teardown,
     .checkpoint_save = av_checkpoint_save,
     .nubus_slot_irq = av_nubus_slot_irq, // slots C/D/E → PSC SInt bits 3-5
@@ -974,7 +854,7 @@ const machine_substrate_t av_substrate = {
 // Public overlay control for checkpoint restore / tests.
 void av_set_overlay(config_t *cfg, bool on) {
     if (on)
-        av_overlay_arm(cfg);
+        mac030_rom_overlay_arm(&av_st(cfg)->overlay);
     else
-        av_overlay_drop(cfg);
+        mac030_rom_overlay_drop(&av_st(cfg)->overlay);
 }

@@ -171,6 +171,37 @@ static value_t attr_machine_ram(struct object *self, const member_t *m) {
     return val_uint(4, cfg->ram_size / 1024u);
 }
 
+// `machine.irq` and `machine.ipl` — the family's raw interrupt-source
+// bitmap and the level the CPU is actually seeing (05-chipsets-irq F-26).
+//
+// Every family aggregates its controllers into cfg->irq and resolves one
+// IPL from it, and neither was readable from anywhere: an investigation
+// could see a controller's own view through machine.<chip> and the CPU's
+// behaviour, with the step between them invisible.  The bit meanings are
+// per family (MAC030_GLUE_IRQ_* and the family equivalents), which is why
+// this is a bitmap and not an enum.
+static value_t attr_machine_irq(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.irq: no machine");
+    value_t v = val_uint(4, (uint64_t)(uint32_t)cfg->irq);
+    v.flags |= VAL_HEX;
+    return v;
+}
+
+static value_t attr_machine_ipl(struct object *self, const member_t *m) {
+    (void)self;
+    (void)m;
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine)
+        return val_err("machine.ipl: no machine");
+    if (!cfg->cpu)
+        return val_uint(1, 0); // a PowerPC machine has an external-interrupt pin, not an IPL
+    return val_uint(1, cpu_get_ipl(cfg->cpu));
+}
+
 static value_t attr_machine_created(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
@@ -900,19 +931,25 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
         nubus_staged_mode_set(NUBUS_STAGED_WILDCARD, doc.video_mode);
     if (doc.custom_mode && *doc.custom_mode)
         nubus_staged_custom_mode_set(NUBUS_STAGED_WILDCARD, doc.custom_mode);
-    if (doc.video_sense >= 0) {
-        if (doc.video_sense <= 7)
-            jmfb_pending_sense_set((uint8_t)doc.video_sense);
-        dafb_pending_sense_set((uint8_t)doc.video_sense); // built-in Quadra video
+    // One channel for every video model that needs the sense at construction
+    // -- the JMFB cards, the Quadras' DAFB, PDM's Ariel.  This used to poke
+    // two per-module one-shot statics by name, which is why machine.c had to
+    // include a machine header for each one and why a family added later
+    // would have been missed silently.
+    machine_build_opts_t build_opts = machine_build_opts_default();
+    if (doc.video_sense >= 0)
+        build_opts.video_sense = doc.video_sense;
+    // The built-in monitor strap resolves to a sense code and joins the other
+    // build options.  Validated above, so this cannot fail.
+    if (doc.monitor && *doc.monitor) {
+        uint8_t mon_sense = 0;
+        if (profile->builtin_video->monitor_sense(doc.monitor, &mon_sense))
+            build_opts.video_sense = mon_sense;
     }
-    // The built-in monitor strap, staged by whichever family owns this port.
-    // Validated above, so this cannot fail.
-    if (doc.monitor && *doc.monitor)
-        (void)profile->builtin_video->stage_monitor(doc.monitor);
 
     machine_config_reset_vroms();
     machine_config_reset_slot_cards();
-    config_t *cfg = system_create(profile, NULL);
+    config_t *cfg = system_create(profile, &build_opts, NULL);
     if (!cfg) {
         for (int i = 0; i < n_media; ++i)
             image_close(media[i].img); // machine gone; nothing to attach to
@@ -1013,6 +1050,30 @@ static value_t machine_method_boot(struct object *self, const member_t *m, int a
 // construction configuration (volume, host capture sources) is out of scope
 // — the frontend re-asserts it.  Scheduler pacing is the exception every
 // rebuild keeps: it is the harness's setting, not the machine's.
+// Level 2 -- a warm reset: the board's /RESET net plus the CPU back to its
+// reset vector, with the machine left standing.  Nothing is torn down and
+// nothing is rebuilt, so RAM, the PRAM/NVRAM, mounted media and the object
+// tree all survive; this is the reset button, not machine.restart.
+//
+// The reset proposal §1.3 records why this had to exist: the machine object
+// exposed only `boot` and `restart`, both of which construct a new machine,
+// so there was NO VERB for level 2 at all.  A test that wanted "reboot this
+// machine, keeping its NVRAM" had to drive the guest's own restart through
+// the UI or use machine.restart, which tears the machine down -- and that is
+// exactly why the TNT NVRAM carry was invented.  The reset button is real
+// hardware on every machine modelled here and was not reachable from
+// anywhere.
+static value_t machine_method_reset(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    (void)argv;
+    if (!global_emulator)
+        return val_err("machine.reset: no machine is running; boot one first");
+    system_machine_reset();
+    return val_bool(true);
+}
+
 static value_t machine_method_restart(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
@@ -1191,6 +1252,16 @@ static const member_t machine_members[] = {
      .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = attr_machine_ram, .set = NULL}},
     {.kind = M_ATTR,
+     .name = "irq",
+     .doc = "Raw interrupt-source bitmap the family aggregates (bit meanings are per family)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_HEX | VAL_VOLATILE, .get = attr_machine_irq, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "ipl",
+     .doc = "CPU interrupt level asserted now (0 on a PowerPC machine, which has a single pin)",
+     .flags = VAL_RO,
+     .attr = {.type = V_UINT, .presentation_flags = VAL_VOLATILE, .get = attr_machine_ipl, .set = NULL}},
+    {.kind = M_ATTR,
      .name = "created",
      .doc = "True if a machine has been booted",
      .flags = VAL_RO,
@@ -1206,6 +1277,10 @@ static const member_t machine_members[] = {
                 .nargs = sizeof(machine_boot_args) / sizeof(machine_boot_args[0]),
                 .result = V_BOOL,
                 .fn = machine_method_boot}},
+    {.kind = M_METHOD,
+     .name = "reset",
+     .doc = "Warm-reset the running machine: the /RESET net plus the CPU, keeping RAM, PRAM and media",
+     .method = {.args = NULL, .nargs = 0, .result = V_BOOL, .fn = machine_method_reset}},
     {.kind = M_METHOD,
      .name = "restart",
      .doc = "Power-cycle the running machine: rebuild it from machine.config, keeping mounted media attached",

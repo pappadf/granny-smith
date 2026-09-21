@@ -16,6 +16,7 @@
 #define GS_CORE_MACHINE_PROFILE_H
 
 #include "common.h"
+#include "machine_build_opts.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -112,11 +113,14 @@ typedef struct builtin_video_desc {
     // Enumerate what the port accepts: fill *id/*name for index i, or return
     // false once past the end.
     bool (*monitor_at)(size_t i, const char **id, const char **name);
-    // Stage the pick for the next machine built; false if id is not one of
-    // the above.  (On the staging channel this rides, and why it is a
-    // construction input rather than a post-boot write, see
-    // proposal-construction-inputs.md.)
-    bool (*stage_monitor)(const char *id);
+    // Resolve one of the ids above to its monitor sense code; false if the id
+    // is not one of them.  RESOLVE ONLY -- the caller puts the answer into
+    // machine_build_opts_t and system_create carries it to the device.  This
+    // used to be `stage_monitor`, which wrote a family-private static that the
+    // next construction consumed, so the value was invisible to everything but
+    // the two modules that agreed on it and a second construction silently got
+    // the default (proposal-construction-inputs R1).
+    bool (*monitor_sense)(const char *id, uint8_t *out_sense);
 } builtin_video_desc_t;
 
 struct floppy_slot {
@@ -210,22 +214,45 @@ typedef struct machine_substrate {
     // NULL, which machine_boot_apply already handles, so a machine that cannot
     // be constructed rejects the boot instead of leaving a half-built config
     // for the caller to dereference.
+    // Construction inputs that must be known before devices exist reach the
+    // family through `cfg->build_opts`, filled by system_create from what the
+    // caller asked for (machine_build_opts.h).  Devices several layers below
+    // this seam read it too, which is why it rides on the config rather than
+    // being a parameter here -- one name for one thing.
     int (*init)(struct config *cfg, checkpoint_t *cp);
-    // Hardware RESET line, reached through system_hardware_reset().
+    // The board's /RESET net: every device THIS BOARD wires to it.
+    //
+    // /RESET is ONE bidirectional net with one destination list (MC68030 UM
+    // 3rd ed. §5.10.1; Guide to the Macintosh Family Hardware 2e, the 68000
+    // PDS signal table: "Master reset for entire board").  The emulator used
+    // to hold two lists -- system_reset_devices() reset cfg->scsi and
+    // cfg->nubus and nothing else, while substrate->reset re-armed the ROM
+    // overlay and disabled the MMU -- and they reset DISJOINT sets, which is
+    // how two lists always end up.  They are one list now, and both entry
+    // points call it (proposal-reset-and-nonvolatile-state.md §3.1).
+    //
+    // CPU-INTERNAL STATE IS NOT HERE.  On the 68030 the MMU is inside the
+    // CPU, so an external chip reset must not touch it; that half lives in
+    // cpu_hardware_reset / cpu_hardware_reset_040.  The dividing line is the
+    // package boundary, which is the only line the hardware draws.
+    //
+    // The ROM overlay IS here, and that is not arbitrary: the overlay is a
+    // VIA1 OUTPUT and VIA1 is on the net.  Guide p.256 -- "When VIA1 is
+    // reset, it pulls the Overlay signal high, which causes the
+    // memory-control IC (GLUE or MDU) to use the ROM overlay address map."
     //
     // NULL on the `compact` (Plus) and `lisa` substrates, and that is a GAP,
-    // not a statement about the hardware: both machines physically reset -- the
-    // Plus from the programmer's switch, and either from a guest executing the
-    // 68000 RESET opcode -- and today the call silently does nothing on them.
-    // Owned by proposal-reset-and-nonvolatile-state.md, whose S1.2 is "Reset
-    // already means four different things, and no two families agree".
+    // not a statement about the hardware: both machines physically reset --
+    // the Plus from the programmer's switch, and either from a guest
+    // executing the 68000 RESET opcode -- and today the call silently does
+    // nothing on them.  Owned by the reset proposal's §5 conformance table.
     //
     // Distinguish this from `nubus_slot_irq` and `pci_slot_irq` below, which
     // are NULL because the bus genuinely is not on the board.  A NULL that
     // means "no such hardware" and a NULL that means "not written yet" must
     // not read the same way here, or this header becomes the reason nobody
     // notices the second kind.
-    void (*reset)(struct config *cfg);
+    void (*bus_reset)(struct config *cfg);
     void (*teardown)(struct config *cfg);
     void (*checkpoint_save)(struct config *cfg, checkpoint_t *cp);
 
@@ -244,7 +271,7 @@ typedef struct machine_substrate {
     // poke (proposal §4.4).  NULL on the three substrates with no NuBus --
     // `compact` (Plus), `lisa`, and `tnt`, which is PCI -- and they never
     // reach it.
-    void (*nubus_slot_irq)(struct config *cfg, int slot, bool active, bool umbrella_edge);
+    void (*nubus_slot_irq)(struct config *cfg, int slot, bool active);
 
     // Drive PCI slot `slot`'s strapped INTA-D line active/inactive.  The
     // PCI slot lines are level-sensitive and have no umbrella (each has
@@ -408,7 +435,7 @@ typedef struct hw_profile {
     //
     // "Bespoke substrate" is not "bespoke machine": every 68k family, the IIfx
     // included, builds through mac030_build_core + mac030_build_lowspeed,
-    // checkpoints through mac030_checkpoint_save_core, and tears down through
+    // checkpoints through machine_checkpoint_save_core, and tears down through
     // machine_teardown_config_devices.  What a family keeps for itself is what
     // its hardware actually does differently -- for the IIfx, the OSS
     // interrupt controller, the FMC ROM-invert POST window, the SCSI DMA

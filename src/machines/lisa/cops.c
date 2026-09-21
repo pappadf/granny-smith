@@ -380,11 +380,8 @@ cops_t *cops_init(via_t *via1, struct scheduler *scheduler, checkpoint_t *cp) {
 void cops_delete(cops_t *c) {
     if (!c)
         return;
-    if (c->sched) {
-        remove_event(c->sched, &cops_pump, c);
-        remove_event(c->sched, &cops_mouse_tick, c);
-        remove_event(c->sched, &cops_crdy_tick, c);
-    }
+    // Seven scheduling sites, three callbacks removed here.
+    scheduler_forget_source(c->sched, c);
     free(c);
 }
 

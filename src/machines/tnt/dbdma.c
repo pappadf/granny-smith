@@ -91,9 +91,7 @@ typedef struct dbdma_chan {
 struct tnt_dbdma {
     dbdma_chan_t chan[TNT_DBDMA_CHANNELS];
     tnt_dbdma_port_t port[TNT_DBDMA_CHANNELS]; // device ports (out==in==NULL when absent)
-    tnt_dbdma_mem_read_fn mem_read;
-    tnt_dbdma_mem_write_fn mem_write;
-    void *mem_ctx;
+    dma_mem_port_t mem; // guest-physical port (dma_mem.h)
     tnt_dbdma_irq_fn irq;
     void *irq_ctx;
 };
@@ -129,10 +127,8 @@ void tnt_dbdma_reset(tnt_dbdma_t *d) {
     memset(d->chan, 0, sizeof(d->chan));
 }
 
-void tnt_dbdma_set_memory_hooks(tnt_dbdma_t *d, tnt_dbdma_mem_read_fn rd, tnt_dbdma_mem_write_fn wr, void *ctx) {
-    d->mem_read = rd;
-    d->mem_write = wr;
-    d->mem_ctx = ctx;
+void tnt_dbdma_set_memory_port(tnt_dbdma_t *d, const dma_mem_port_t *port) {
+    d->mem = port ? *port : (dma_mem_port_t){0};
 }
 
 void tnt_dbdma_set_irq_hook(tnt_dbdma_t *d, tnt_dbdma_irq_fn fn, void *ctx) {
@@ -156,7 +152,7 @@ void tnt_dbdma_set_port(tnt_dbdma_t *d, int chan, const tnt_dbdma_port_t *port) 
 // Read the descriptor at `addr` into its four little-endian words.
 static void desc_fetch(tnt_dbdma_t *d, uint32_t addr, uint32_t w[4]) {
     uint8_t raw[16];
-    d->mem_read(d->mem_ctx, addr, raw, 16);
+    dma_mem_read_block(&d->mem, addr, raw, 16);
     for (int i = 0; i < 4; i++)
         w[i] = RD_LE32(raw + 4 * i);
 }
@@ -164,7 +160,7 @@ static void desc_fetch(tnt_dbdma_t *d, uint32_t addr, uint32_t w[4]) {
 // Write one little-endian 32-bit descriptor field back to guest memory.
 static void desc_store32(tnt_dbdma_t *d, uint32_t addr, uint32_t value) {
     uint8_t raw[4] = {(uint8_t)value, (uint8_t)(value >> 8), (uint8_t)(value >> 16), (uint8_t)(value >> 24)};
-    d->mem_write(d->mem_ctx, addr, raw, 4);
+    dma_mem_write_block(&d->mem, addr, raw, 4);
 }
 
 // The channel's live device-status byte: host-latched s-bits OR the
@@ -225,7 +221,7 @@ static bool runnable(const dbdma_chan_t *c) {
 // guest's next instruction.
 static void run_channel(tnt_dbdma_t *d, int n) {
     dbdma_chan_t *c = &d->chan[n];
-    if (!d->mem_read || !d->mem_write) {
+    if (!dma_mem_port_bound(&d->mem)) {
         LOG(1, "ch%d activated with no memory hooks", n);
         return;
     }
@@ -270,19 +266,22 @@ static void run_channel(tnt_dbdma_t *d, int n) {
                 LOG(1, "ch%d %s $%04X bytes with no device port — stalling", n, out ? "OUTPUT" : "INPUT", req);
                 return;
             }
+            uint32_t burst_left = p->burst > 0 ? (uint32_t)p->burst : 0;
             while (c->cursor < req) {
                 uint8_t buf[PORT_CHUNK];
                 int want = (int)(req - c->cursor);
                 if (want > PORT_CHUNK)
                     want = PORT_CHUNK;
+                if (p->burst > 0 && (uint32_t)want > burst_left)
+                    want = (int)burst_left; // the yield lands ON the budget
                 int moved;
                 if (out) {
-                    d->mem_read(d->mem_ctx, w[1] + c->cursor, buf, (uint32_t)want);
+                    dma_mem_read_block(&d->mem, w[1] + c->cursor, buf, (uint32_t)want);
                     moved = p->out(p->ctx, buf, want);
                 } else {
                     moved = p->in(p->ctx, buf, want);
                     if (moved > 0)
-                        d->mem_write(d->mem_ctx, w[1] + c->cursor, buf, (uint32_t)moved);
+                        dma_mem_write_block(&d->mem, w[1] + c->cursor, buf, (uint32_t)moved);
                 }
                 if (moved < 0)
                     moved = 0;
@@ -292,6 +291,17 @@ static void run_channel(tnt_dbdma_t *d, int n) {
                     // descriptor is refetched on the device's kick.
                     LOG(3, "ch%d stalled at %u/%u bytes", n, c->cursor, req);
                     return;
+                }
+                if (p->burst > 0) {
+                    // Rate-limited port: yield after its burst, the same way
+                    // a short return yields, so the transfer costs emulated
+                    // time instead of completing inside one register store
+                    // (F-15).  The device's pump kicks us back.
+                    burst_left -= (uint32_t)moved;
+                    if (burst_left == 0 && c->cursor < req) {
+                        LOG(3, "ch%d yielding at %u/%u bytes (burst %d)", n, c->cursor, req, p->burst);
+                        return;
+                    }
                 }
             }
             // Command complete: branch decision, then result write-back,
@@ -314,10 +324,10 @@ static void run_channel(tnt_dbdma_t *d, int n) {
                 LOG(2, "ch%d quad with reqCount $%04X treated as 4 bytes", n, req);
             if (cmd == CMD_STORE_QUAD) {
                 uint8_t raw[4] = {(uint8_t)w[2], (uint8_t)(w[2] >> 8), (uint8_t)(w[2] >> 16), (uint8_t)(w[2] >> 24)};
-                d->mem_write(d->mem_ctx, w[1], raw, len);
+                dma_mem_write_block(&d->mem, w[1], raw, len);
             } else {
                 uint8_t raw[4] = {0, 0, 0, 0};
-                d->mem_read(d->mem_ctx, w[1], raw, len);
+                dma_mem_read_block(&d->mem, w[1], raw, len);
                 desc_store32(d, c->cmdptr + 8, RD_LE32(raw)); // into cmdDep
             }
             // cmdDep carries the quad, so these commands have no branch
@@ -384,7 +394,7 @@ static void run_channel(tnt_dbdma_t *d, int n) {
 // channel).  Needs a refetch for reqCount — descriptors are never cached.
 static void partial_writeback(tnt_dbdma_t *d, int n) {
     dbdma_chan_t *c = &d->chan[n];
-    if (c->cursor == 0 || !d->mem_read || !d->mem_write)
+    if (c->cursor == 0 || !dma_mem_port_bound(&d->mem))
         return;
     uint32_t w[4];
     desc_fetch(d, c->cmdptr, w);
@@ -400,7 +410,14 @@ uint32_t tnt_dbdma_reg_read(tnt_dbdma_t *d, int chan, uint32_t offset) {
     LOG(4, "ch%d rd +$%02X (status $%04X cmdptr $%08X)", chan, offset & 0xFCu, status16(d, chan), c->cmdptr);
     switch (offset & 0xFCu) {
     case TNT_DBDMA_REG_CONTROL:
-        return 0; // write-only in effect
+        // Apple's DBDMA architecture defines ChannelControl and ChannelStatus
+        // as the same 16-bit field; ChannelControl merely adds the mask/value
+        // write semantics on top.  It used to return 0 with a comment calling
+        // it "write-only in effect" and no source, which would make a driver
+        // that does read-modify-write on ChannelControl (rather than using the
+        // mask/value idiom) compute from zero.  No corpus driver does, which
+        // is why this was Low.
+        return (uint32_t)status16(d, chan);
     case TNT_DBDMA_REG_STATUS:
         return (uint32_t)status16(d, chan);
     case TNT_DBDMA_REG_CMDPTRLO:

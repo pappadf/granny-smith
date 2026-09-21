@@ -211,4 +211,21 @@ machine.boot model="pm9500" ram=32768 rom="${$ROM}" pci_card="voodoo2"
 assert machine.pci.slot[1].card.name == "3dfx Voodoo2" "the ROM-less card seats with no PROM staged"
 assert machine.pci.slot[7].card.name == "Control" "a 3d-class card must NOT retire the display fallback"
 
+# --- The SWIM3 is on the board's /RESET net. --------------------------------
+# It is TNT's floppy CONTROLLER (Grand Central +$15000, 16 registers on $10
+# centres), and it was the one controller in the tree that survived a machine
+# reset -- `W-01` from the 2026-09-03 review. cfg->floppy has always been
+# reset by the shared chain; the chip in front of it was not.
+#
+# The PDM suite asserts the same thing, and deliberately not instead of this
+# one: the two families call swim3_reset from their own bus_reset, so a
+# missing call on either side has to be caught on that side. $24 is
+# GCR + IBMDrive, and NOT $80, which is the self-clearing SoftReset bit and
+# would make the chip reset itself and prove nothing.
+machine.memory.poke.b(0xF3015050, 0x24)
+assert machine.memory.peek.b(0xF3015050) == 0x24 "tnt: SWIM3 Setup did not take the poke"
+machine.reset
+scheduler.run 200000
+assert machine.memory.peek.b(0xF3015050) == 0 "tnt: SWIM3 Setup survived a machine reset"
+
 quit

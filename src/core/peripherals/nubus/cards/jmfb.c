@@ -50,7 +50,7 @@ LOG_USE_CATEGORY_NAME("video");
 // live near the bottom of this file (next to the per-card kind
 // descriptor that references the list); the JMFB factory body
 // further up needs to reach them.  Forward declarations here let the
-// factory call `monitor_for_sense` and read `s_pending_sense` without
+// factory call `monitor_for_sense` and read the resolved sense without
 // reshuffling the file.
 static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
 
@@ -66,10 +66,13 @@ static const struct nubus_monitor *monitor_for_sense(uint8_t sense);
 // as an ARGUMENT, which is also what proposal-reset-and-nonvolatile-state.md
 // R3 means by "no holder, no staged copy, no pending slot".  Do not add
 // another one; the per-slot channel is already there to carry it.
-static uint8_t s_pending_sense = 0x6;
+// The default monitor when the caller chooses nothing: $6, Standard RGB /
+// 13" AppleColor.  The sense itself is no longer a file static -- it arrives
+// in cfg->build_opts and lives as a local through the factory below.
+#define JMFB_SENSE_DEFAULT 0x6u
 
 // Pending video-mode selection set via `machine.video_mode = "id"`
-// (mirrors s_pending_sense above; consumed in the same factory
+// (a pending video-mode id, consumed in the same factory
 // invocation).  At most 31 chars + NUL fits any "monitor_Nbpp" id.
 // Empty string means "no pending mode — fall back to plain sense".
 // STAGING -- see the note above; R1 deletes this too.
@@ -345,6 +348,15 @@ static bool load_vrom(jmfb_priv_t *p) {
 }
 
 static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp, bool generic) {
+    // The monitor sense the caller asked for, or the board default.  This used
+    // to be a file-static "pending" slot that machine.c poked by name and the
+    // factory consumed destructively -- so a second card of this kind in a
+    // second slot silently got the default, and nothing outside these two
+    // modules could see the value (issue #156, proposal-construction-inputs
+    // R1).  It is now an ordinary local, seeded from what the caller chose.
+    uint8_t sense = JMFB_SENSE_DEFAULT;
+    if (cfg->build_opts.video_sense >= 0 && cfg->build_opts.video_sense <= 7)
+        sense = (uint8_t)cfg->build_opts.video_sense;
     (void)cp;
     jmfb_priv_t *p = calloc(1, sizeof(*p));
     if (!p)
@@ -453,7 +465,7 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
     int seeded_depth_bpp = 0;
     if (s_pending_video_mode_id[0]) {
         if (jmfb_video_mode_lookup(s_pending_video_mode_id, &seeded_monitor, &seeded_depth_bpp)) {
-            s_pending_sense = seeded_monitor->sense_code;
+            sense = seeded_monitor->sense_code;
         } else {
             LOG(1, "jmfb: pending video_mode '%s' did not match any catalog entry; ignored", s_pending_video_mode_id);
         }
@@ -471,18 +483,14 @@ static int card_init_common(nubus_card_t *card, config_t *cfg, checkpoint_t *cp,
             }
         }
         seeded_depth_bpp = (int)custom_d;
-        s_pending_sense = 0x6;
+        sense = JMFB_SENSE_DEFAULT;
     }
 
-    // Monitor sense code — consumed from the pending-sense slot the
-    // shell can set via `nubus.video_sense = N` before `machine.boot`.
-    // The default is $6 (Standard RGB / 13" AppleColor), which keeps
-    // existing tests/integration paths reproducing the same boot we've
-    // baselined.  After consumption the pending slot is left at the
-    // default so a forgotten configuration doesn't leak into the next
-    // machine.boot.
-    p->regs.sense_code = s_pending_sense;
-    s_pending_sense = 0x6;
+    // Monitor sense code, as resolved above: what the caller asked for,
+    // overridden by an explicit video_mode or custom resolution.  Nothing to
+    // reset afterwards -- a local cannot leak into the next machine.boot,
+    // which is what the old consume-and-restore dance was for.
+    p->regs.sense_code = sense;
 
     const nubus_monitor_t *monitor = monitor_for_sense(p->regs.sense_code);
     uint32_t mon_w = monitor ? monitor->width : 640;
@@ -957,17 +965,6 @@ static const nubus_monitor_t *monitor_for_sense(uint8_t sense) {
         }
     }
     return NULL;
-}
-
-// (s_pending_sense defined near the top of this
-// file alongside the matching forward declarations.)
-
-void jmfb_pending_sense_set(uint8_t sense) {
-    s_pending_sense = sense & 7;
-}
-
-uint8_t jmfb_pending_sense_get(void) {
-    return s_pending_sense;
 }
 
 void jmfb_pending_video_mode_set(const char *id) {

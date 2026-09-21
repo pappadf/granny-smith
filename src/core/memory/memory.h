@@ -121,6 +121,11 @@ extern bool g_mem_debug_access;
 // non-NuBus slots).
 void memory_set_bus_error_range(memory_map_t *m, uint32_t start, uint32_t end);
 
+// True when an unanswered access at `addr` should raise a bus error rather
+// than float to $FF.  The window is a BUS property, so it applies with the
+// MMU on or off -- see memory.c.
+bool memory_addr_faults_when_unmapped(uint32_t addr);
+
 extern void memory_map_remove(memory_map_t *mem, uint32_t addr, uint32_t size, const char *name,
                               memory_interface_t *iface, void *device);
 

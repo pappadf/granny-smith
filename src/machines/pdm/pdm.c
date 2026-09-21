@@ -33,6 +33,7 @@
 #include "image.h"
 #include "log.h"
 #include "mac_host_io.h"
+#include "machine_checkpoint.h"
 #include "machine_teardown.h" // the shared config_t-owned delete chain
 #include "nubus.h"
 #include "ppc.h"
@@ -41,9 +42,11 @@
 #include "scheduler.h"
 #include "scsi.h"
 #include "scsi_53c96.h"
+#include "swim3.h"
 #include "via.h"
 
 #include <assert.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -414,6 +417,7 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     // Board state + memory map.
     pdm_hmc_init(cfg);
     pdm_amic_init(cfg);
+    pdm_amic_attach_object(cfg); // machine.amic; construction only, not on reset
     pdm_amic_register_events(cfg);
     pdm_awacs_register_events(cfg);
     pdm_swim3_bind(cfg);
@@ -436,7 +440,9 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
         // sense in the device's own stream.
         system_read_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
         st->video.sense_restored = true;
-        system_read_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+        // Mirrors the save: the prefix only, then *_swim3_bind re-attaches
+        // the pointer tail.
+        system_read_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
         pdm_swim3_bind(cfg); // the restore overwrote the chip's pointer tail
         system_read_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
         system_read_checkpoint_data(cp, &st->bart, sizeof(st->bart));
@@ -473,13 +479,15 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     return 0;
 }
 
-static void pdm_reset(config_t *cfg) {
+static void pdm_bus_reset(config_t *cfg) {
     pdm_state_t *st = pdm_st(cfg);
-    // Power-on reset: the 601 back to the reset vector, AMIC and HMC to
-    // their power-on state.  (The 68k-RESET warm path re-enters HWInit
-    // with MSR[IR] on and AMIC state SURVIVING — that path is guest-driven
-    // and becomes a first-class test row in Phase D.)
-    ppc_reset(cfg->ppc);
+    // The chipset half only.  The 601 going back to its reset vector is the
+    // CPU half and belongs to level 2 (system_machine_reset), not to the
+    // board's /RESET net -- this used to call ppc_reset() from here, which is
+    // why the Cuda path happened to work on PDM and TNT while leaving the AV
+    // families' 68040 running (05-chipsets-irq F-04).  (The 68k-RESET warm
+    // path re-enters HWInit with MSR[IR] on and AMIC state SURVIVING — that
+    // path is guest-driven and becomes a first-class test row in Phase D.)
     // Note pdm_amic_init memsets the whole AMIC.  The SWIM3 model is
     // deliberately NOT inside pdm_amic_t (pdm.h), so this cannot clear the
     // chip's bound fd/sched/backend pointers the way it once did.
@@ -488,6 +496,10 @@ static void pdm_reset(config_t *cfg) {
     // to the cards themselves is the bus controller's (system_reset_devices).
     memset(&st->bart, 0, sizeof(st->bart));
     scc_reset(cfg->scc);
+    // The floppy CONTROLLER.  cfg->floppy (the drive and its media) is reset
+    // by the shared chain; the SWIM3 is this family's controller and was the
+    // one in the tree that survived a reset (`W-01`).
+    swim3_reset(&st->swim3);
     for (int i = 0; i < 2; i++)
         if (st->scsi96[i])
             scsi_53c96_reset(st->scsi96[i]);
@@ -498,6 +510,7 @@ static void pdm_reset(config_t *cfg) {
     st->icr_sources = 0;
     pdm_hmc_remap(cfg);
     pdm_video_update(cfg); // blanked power-on raster follows the reset regs
+    system_reset_common_devices(cfg); // scsi/scsi2, NuBus, PCI -- the same net
 }
 
 static void pdm_teardown(config_t *cfg) {
@@ -505,6 +518,7 @@ static void pdm_teardown(config_t *cfg) {
         scheduler_stop(cfg->scheduler);
     pdm_state_t *st = pdm_st(cfg);
     if (st) {
+        pdm_amic_detach_object(cfg);
         pdm_awacs_teardown(cfg);
         pdm_video_teardown(cfg);
         for (int i = 0; i < 2; i++) {
@@ -544,13 +558,11 @@ static void pdm_teardown(config_t *cfg) {
 
 static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     pdm_state_t *st = pdm_st(cfg);
-    memory_map_checkpoint(cfg->mem_map, cp);
-    ppc_checkpoint(cfg->ppc, cp);
-    scheduler_checkpoint(cfg->scheduler, cp);
-    rtc_checkpoint(cfg->rtc, cp);
-    scc_checkpoint(cfg->scc, cp);
-    appletalk_checkpoint(cp);
-    via_checkpoint(cfg->via1, cp);
+    // The shared core prefix (05-chipsets-irq F-18).  Byte-identical to the
+    // seven lines that used to be written out here: this machine has cfg->ppc
+    // and no cfg->via2, so the helper takes the ppc block, skips cfg->irq and
+    // passes straight through the second VIA.
+    machine_checkpoint_save_core(cfg, cp);
     adb_checkpoint(cfg->adb, cp);
     av_cuda_checkpoint(st->cuda, cp);
     // Same relative order as the pdm_init construction sequence (the
@@ -565,7 +577,15 @@ static void pdm_checkpoint_save(config_t *cfg, checkpoint_t *cp) {
     system_write_checkpoint_data(cp, &st->hmc, sizeof(st->hmc));
     system_write_checkpoint_data(cp, &st->amic, sizeof(st->amic));
     system_write_checkpoint_data(cp, &st->video.sense, sizeof(st->video.sense));
-    system_write_checkpoint_data(cp, &st->swim3, sizeof(st->swim3));
+    // offsetof, not sizeof: swim3_t's tail is `struct floppy *fd; struct
+    // scheduler *sched; swim3_backend_t be;` and swim3.h labels it "not
+    // checkpointed; swim3_bind".  Writing the whole struct put host pointers
+    // in a user-shareable save file, and made two saves of the same guest
+    // state differ -- which defeats any diff-based checkpoint testing.  The
+    // restore re-binds through *_swim3_bind either way, so the values were
+    // harmless; the leak and the non-reproducibility were not
+    // (05-chipsets-irq F-09).
+    system_write_checkpoint_data(cp, &st->swim3, offsetof(swim3_t, fd));
     system_write_checkpoint_data(cp, &st->icr_sources, sizeof(st->icr_sources));
     system_write_checkpoint_data(cp, &st->bart, sizeof(st->bart));
     // Card-side state (framebuffer, palette, mode) last — see the restore
@@ -585,8 +605,7 @@ static void pdm_trigger_vbl(config_t *cfg) {
 // A NuBus card's /NMRQ.  The umbrella edge is AMIC's own business (the
 // pseudo-VIA2 "any slot" bit is recomputed from the slot levels on every
 // read), so the bus controller's edge hint is not needed here.
-static void pdm_nubus_slot_irq(config_t *cfg, int slot, bool active, bool umbrella_edge) {
-    (void)umbrella_edge;
+static void pdm_nubus_slot_irq(config_t *cfg, int slot, bool active) {
     pdm_bart_slot_irq(cfg, slot, active);
 }
 
@@ -612,7 +631,7 @@ static bool pdm_fd_present(config_t *cfg, int drive) {
 
 const machine_substrate_t pdm_substrate = {
     .init = pdm_init,
-    .reset = pdm_reset,
+    .bus_reset = pdm_bus_reset,
     .teardown = pdm_teardown,
     .checkpoint_save = pdm_checkpoint_save,
     .nubus_slot_irq = pdm_nubus_slot_irq,

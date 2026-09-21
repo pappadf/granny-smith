@@ -8,6 +8,7 @@
 #define SETUP_H
 
 // === Includes ===
+#include "machine_build_opts.h"
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -92,7 +93,11 @@ extern void setup_init(void);
 // Create an emulator instance for the given machine profile.
 // If checkpoint is non-NULL, device state is restored from that checkpoint.
 // Sets global_emulator and returns the new config handle.
-extern config_t *system_create(const hw_profile_t *profile, checkpoint_t *checkpoint);
+// `opts` carries the choices that must be known before devices exist (see
+// machine_build_opts.h).  Pass NULL for "nothing chosen", which is what the
+// internal rebuild paths want; machine_boot_apply and the checkpoint restore
+// both fill it from what the caller actually asked for.
+extern config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t *opts, checkpoint_t *checkpoint);
 
 // Destroy an emulator instance: call machine teardown and free all resources.
 extern void system_destroy(config_t *config);
@@ -130,6 +135,14 @@ void system_keyboard_update(key_event_t event, int key);
 // peripherals (VIA overlay, MMU, etc.).  Called by the CPU on double bus error
 // (HALT → GLU RESET) BEFORE the CPU reads SSP/PC from $0/$4.
 // Weak: unit tests that don't link system.c get a no-op stub.
+// Level 2 -- a machine reset: the board's /RESET net plus the CPU back to its
+// reset vector.  The reset button, machine.reset(), Finder > Restart, the
+// Cuda's CMD_RESET.  Weak for the same reason as its two siblings here: a
+// unit suite that links a device without system.c must still resolve it.
+__attribute__((weak)) void system_machine_reset(void);
+
+// Retained under its old name for callers that mean level 2; an alias for
+// system_machine_reset above.
 __attribute__((weak)) void system_hardware_reset(void);
 
 // Bus /RESET line asserted by the 68k RESET instruction: reset the external
@@ -139,6 +152,10 @@ __attribute__((weak)) void system_hardware_reset(void);
 // the single-step CPU unit test (which executes the RESET opcode) links a
 // no-op stub in tests/unit/support/stub_system.c.
 __attribute__((weak)) void system_reset_devices(void);
+
+// The devices every Macintosh board wires to /RESET.  A family's bus_reset
+// calls this, then resets its own chipset.
+void system_reset_common_devices(struct config *cfg);
 
 // System-level scheduler accessor: returns the current scheduler object
 scheduler_t *system_scheduler(void);

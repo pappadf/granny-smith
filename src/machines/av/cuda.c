@@ -838,7 +838,13 @@ static bool cuda_bus_idle(av_cuda_t *cuda) {
 static void cuda_reset_event(void *source, uint64_t data) {
     (void)source;
     (void)data;
-    system_hardware_reset();
+    // Level 2: the bus AND the CPU.  This used to call the bus half alone,
+    // which on the AV families left the 68040 executing from wherever it was
+    // while the ROM overlay came back under it -- RAM yanked out from beneath
+    // $00000000 with the machine still running (05-chipsets-irq F-04).  It
+    // survived on PDM and TNT only because their substrate handlers called
+    // ppc_reset() from inside the bus half, which is now where it is not.
+    system_machine_reset();
 }
 
 // 1-second tick: [attn, tickPkt] — drives the OS one-second timer.
@@ -961,11 +967,9 @@ av_cuda_t *av_cuda_init(struct via *via1, struct rtc *rtc, struct adb *adb, stru
 void av_cuda_delete(av_cuda_t *cuda) {
     if (!cuda)
         return;
-    if (cuda->sched) {
-        remove_event(cuda->sched, &cuda_tick_event, cuda);
-        remove_event(cuda->sched, &cuda_autopoll_event, cuda);
-        remove_event(cuda->sched, &cuda_push_event, cuda);
-    }
+    // Thirteen scheduling sites, three callbacks removed here: one call
+    // covers whatever is actually queued.
+    scheduler_forget_source(cuda->sched, cuda);
     free(cuda);
 }
 

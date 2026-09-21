@@ -137,8 +137,6 @@ typedef struct mmu_state {
     // NuBus bus error range: only unmapped reads in this physical address
     // range generate bus errors.  Outside this range, unmapped TT-mapped
     // reads return 0 silently (as the hardware does for non-NuBus slots).
-    uint32_t nubus_berr_start; // first address that can bus error (inclusive)
-    uint32_t nubus_berr_end; // last address that can bus error (inclusive)
 
     // 68040 front-end (Quadra proposal §6.5): when non-NULL, this machine's
     // translation front-end (TTR match + fixed three-level walk in mmu040.c)

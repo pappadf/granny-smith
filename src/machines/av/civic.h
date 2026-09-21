@@ -44,16 +44,16 @@ void av_civic_install_memory(config_t *cfg, av_civic_t *cv);
 // === I/O island handlers ====================================================
 
 // CIVIC serial registers (island $36000; also aliased at $50036000).
-uint8_t av_civic_read(config_t *cfg, uint32_t addr);
-void av_civic_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_civic_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_civic_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // Sebastian RAMDAC (island $30800: index/data/PCBR, $10 stride).
-uint8_t av_civic_seb_read(config_t *cfg, uint32_t addr);
-void av_civic_seb_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_civic_seb_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_civic_seb_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // Endeavor/Clifton/PUMA clock synthesizer (island $2E000).
-uint8_t av_civic_clk_read(config_t *cfg, uint32_t addr);
-void av_civic_clk_write(config_t *cfg, uint32_t addr, uint8_t value);
+uint8_t av_civic_clk_read(config_t *cfg, uint32_t win_off, uint32_t addr);
+void av_civic_clk_write(config_t *cfg, uint32_t win_off, uint32_t addr, uint8_t value);
 
 // === Video-in datapath hooks (consumed by vdc.c; video-in.md §5) ============
 
