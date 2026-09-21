@@ -148,8 +148,7 @@ static void ext_write(rtc_t *rtc, uint8_t addr, uint8_t data) {
 
 static void set_protect(rtc_t *rtc, bool on) {
     // $35 is the write-protect register; bit 7 of the data byte is the latch.
-    // rtc.md's prose and register table both state this backwards; the code
-    // and the command examples ($35 $55 = off, $35 $D5 = on) are right.
+    // $35 $55 clears it (writes allowed), $35 $D5 sets it (protected).
     legacy_write(rtc, 0x35, on ? 0xD5 : 0x55);
 }
 
@@ -246,6 +245,41 @@ static void test_legacy_group_mapping(void) {
     rtc_delete(legacy);
 }
 
+// A fresh chip is waiting for a command byte (unit C1 / N-03).
+//
+// rtc_init() memset the whole struct, so rx_bits and tx_bits were both zero,
+// and the ONLY path that reloads rx_bits from idle is rtc_input's `disable`
+// branch — a rising clock edge seen while CE is deasserted.  Every other
+// helper here calls begin() first, which is why the rest of the suite never
+// noticed.  A guest that asserts CE and starts clocking without that prelude
+// hit the bit-count invariant at rtc.c's first assert; with assertions
+// compiled out (the GS_FAST / NDEBUG wasm profile) it fell into the transmit
+// branch instead, decremented tx_bits to -1 and shifted garbage onto the VIA
+// data line forever, since the `!--tx_bits` reload can never be reached from
+// a negative count.
+//
+// So this test drives a legacy write with NO begin(), straight off rtc_init.
+// It runs first: reintroducing the defect aborts here, at rtc.c's invariant,
+// before the rest of the suite has run.
+static void test_fresh_chip_accepts_a_command(void) {
+    rtc_t *rtc = rtc_init(NULL, NULL, true);
+    CHECK(rtc != NULL, "rtc_init returned NULL");
+    if (!rtc)
+        return;
+
+    // No begin() anywhere in this function — CE stays asserted throughout.
+    send_byte(rtc, 0x35); // write-protect register
+    send_byte(rtc, 0x55); // protection off
+    send_byte(rtc, 0x21); // legacy group A, index 0
+    send_byte(rtc, 0x77);
+
+    CHECK(rtc_pram_read(rtc, 0x08) == 0x77,
+          "a fresh chip dropped the first command clocked at it without a CE-deasserted prelude (got $%02X at $08)",
+          rtc_pram_read(rtc, 0x08));
+
+    rtc_delete(rtc);
+}
+
 // rtc_pram_write() is the shell/host path.  It honours the protect bit as a
 // deliberate policy choice (a test that protects PRAM should see writes
 // refused), which is separate from the chip law above.
@@ -266,6 +300,7 @@ static void test_host_path_honours_protect(void) {
 }
 
 int main(void) {
+    test_fresh_chip_accepts_a_command();
     test_protect_covers_both_windows();
     test_extended_address_decode();
     test_legacy_group_mapping();

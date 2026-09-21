@@ -434,6 +434,17 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
 
     rtc->seconds = wall_clock_seconds();
 
+    // The serial state machine starts waiting for a command byte.  Without
+    // this, rx_bits and tx_bits are both zero after the memset and the only
+    // path that sets rx_bits = 8 from idle is rtc_input's `if (disable)`
+    // branch -- a rising clock edge observed while CE is DEasserted.  A guest
+    // that lowers CE and starts clocking without that prelude trips the
+    // bit-count invariant on its very first edge.  Shipped ROMs happen to
+    // clock while disabled first, which is the only reason this has never
+    // fired.  Placed before the checkpoint read below so a restore overwrites
+    // it with the saved mid-transaction state.
+    rtc->rx_bits = 8;
+
     LOG(1, "rtc_init: seconds=%u", rtc->seconds);
 
     // Register event type for checkpointing

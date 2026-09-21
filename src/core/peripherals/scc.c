@@ -475,16 +475,34 @@ static uint8_t rr2(scc_t *scc, int ch) {
     if (scc->ch[0].wr[9] & WR9_STATUS_HIGH)
         LOG(1, "scc: WR9.STATUS_HIGH set but only STATUS_LOW is modeled");
 
-    if (scc->ch[0].rr[3]) { // if interrups are pending...
+    // The vector the guest programmed into WR2, with ONLY the status field
+    // replaced.  Z8530 UM §5.3.3: "RR2 contains the interrupt vector written
+    // into WR2 ... When this register is accessed in Channel B, the vector
+    // returned includes status information in bits 1, 2 and 3 or in bits 6, 5
+    // and 4."  Figure 5-21 shows D7..D0 as V7..V0 -- ordinary vector bits.
+    //
+    // This used to return the bare 3-bit status code and DISCARD V7, V6, V5,
+    // V4 and V0 entirely, so any driver dispatching on RR2B read a wrong
+    // vector.  The `(rr[2] & 0xC0) == 0` assert that used to sit here was a
+    // vestige of a version that did merge, and was guest-reachable besides:
+    // wr2 writes land straight in rr[2] (see scc_write_uint8 case 2), so a
+    // guest writing WR2 = $C0 and then reading RR2B would have aborted the
+    // emulator.  Fixing the merge removes the need for it.
+    uint8_t vec = scc->ch[0].wr[2];
 
-        // two highest bits always zero
-        assert((scc->ch[0].rr[2] & 0xC0) == 0);
+    // RR3 has exactly six defined bits, the RR3_CHANNEL_* masks above; D7 and
+    // D6 are unused and this model never sets them.  Masking rather than
+    // trusting that is what keeps the index below in range: GS_ASSERT reports
+    // and RETURNS, so it is a diagnostic, not a guard, and a stray high bit
+    // would otherwise walk off the end of irq_status[].
+    uint8_t pending = (uint8_t)(scc->ch[0].rr[3] & 0x3F);
 
+    if (pending) { // if interrupts are pending...
         // [x] table 4-1: interrupt priority
         // same order as the bits in rr3 (msb to lsb)
-        int irq = platform_bsr32(scc->ch[0].rr[3]);
+        int irq = platform_bsr32(pending);
 
-        assert(irq >= 0 && irq < 6);
+        GS_ASSERT(irq >= 0 && irq < 6);
 
         // [x] table 4-2 or 7-4: status encoded in the vector
         int irq_status[6] = {0x02, 0x00, 0x04, 0x0A, 0x08, 0x0C};
@@ -497,9 +515,11 @@ static uint8_t rr2(scc_t *scc, int ch) {
             v = 0x06;
         else if (irq == 5 && scc->ch[0].rx_special)
             v = 0x0E;
-        return v;
-    } else
-        return 0x06; // if no interrupts pending, V3,V2,V1 = 011 (UM §5.3.3)
+        return (uint8_t)((vec & ~0x0E) | v);
+    }
+    // No interrupts pending: V3,V2,V1 = 011 (UM §5.3.3).  The vector is merged
+    // here too -- this branch discarded it as well.
+    return (uint8_t)((vec & ~0x0E) | 0x06);
 }
 
 static uint8_t rr8(ch_t *ch) {
