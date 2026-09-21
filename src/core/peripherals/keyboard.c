@@ -4,16 +4,16 @@
 // keyboard.c
 // Implements Mac Plus keyboard emulation via VIA shift register interface.
 
-#include <assert.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-
 #include "keyboard.h"
 #include "log.h"
 #include "scheduler.h"
 #include "system.h"
 #include "via.h"
+
+#include <assert.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 LOG_USE_CATEGORY_NAME("keyboard");
 
@@ -113,10 +113,10 @@ static void tx_to_via(keyboard_t *keyboard, uint8_t byte) {
 }
 
 // Called when inquiry command times out with no key events
-void timeout_callback(void *source, uint64_t data) {
+static void keyboard_timeout_callback(void *source, uint64_t data) {
     keyboard_t *keyboard = (keyboard_t *)source;
 
-    LOG(3, "timeout_callback: inquiry timed out, sending NULL_RESPONSE 0x%02X", NULL_RESPONSE);
+    LOG(3, "keyboard_timeout_callback: inquiry timed out, sending NULL_RESPONSE 0x%02X", NULL_RESPONSE);
 
     // Send null response to signal that no key event occurred
     tx_to_via(keyboard, NULL_RESPONSE);
@@ -126,27 +126,27 @@ void timeout_callback(void *source, uint64_t data) {
 }
 
 // Enters the data transfer phase after receiving a command
-void tx_callback(void *source, uint64_t data) {
+static void keyboard_tx_callback(void *source, uint64_t data) {
     keyboard_t *keyboard = (keyboard_t *)source;
 
-    LOG(3, "tx_callback: active_cmd=0x%02X, queue_empty=%d", keyboard->active_cmd, queue_empty(keyboard));
+    LOG(3, "keyboard_tx_callback: active_cmd=0x%02X, queue_empty=%d", keyboard->active_cmd, queue_empty(keyboard));
 
     // if there is data queued up...
     if (!queue_empty(keyboard)) {
         uint8_t byte = dequeue(keyboard);
-        LOG(3, "tx_callback: sending queued byte 0x%02X", byte);
+        LOG(3, "keyboard_tx_callback: sending queued byte 0x%02X", byte);
 
         // ...then send it
         tx_to_via(keyboard, byte);
 
         // remove any pending timeout
-        remove_event(keyboard->scheduler, &timeout_callback, (void *)keyboard);
+        remove_event(keyboard->scheduler, &keyboard_timeout_callback, (void *)keyboard);
     } else if (keyboard->active_cmd == CMD_INSTANT) {
-        LOG(3, "tx_callback: INSTANT with empty queue, sending NULL_RESPONSE");
-        assert(!has_event(keyboard->scheduler, &timeout_callback));
+        LOG(3, "keyboard_tx_callback: INSTANT with empty queue, sending NULL_RESPONSE");
+        assert(!has_event(keyboard->scheduler, &keyboard_timeout_callback));
         tx_to_via(keyboard, NULL_RESPONSE);
     } else {
-        LOG(3, "tx_callback: no data, setting tx_pending=true");
+        LOG(3, "keyboard_tx_callback: no data, setting tx_pending=true");
         keyboard->tx_pending = true;
     }
 }
@@ -161,7 +161,7 @@ static void add_key_event(keyboard_t *keyboard, uint8_t key) {
         LOG(2, "add_key_event: sending immediately to via");
         tx_to_via(keyboard, key);
         keyboard->tx_pending = false;
-        remove_event(keyboard->scheduler, &timeout_callback, (void *)keyboard);
+        remove_event(keyboard->scheduler, &keyboard_timeout_callback, (void *)keyboard);
     } else {
         LOG(2, "add_key_event: enqueueing for later");
         enqueue(keyboard, key);
@@ -510,7 +510,7 @@ void keyboard_input(keyboard_t *keyboard, uint8_t byte) {
         break;
     case CMD_INQUIRY:
         LOG(2, "keyboard_input: INQUIRY command, scheduling 250ms timeout");
-        scheduler_new_cpu_event(keyboard->scheduler, &timeout_callback, keyboard, 0, 0, NS_PER_SEC / 4);
+        scheduler_new_cpu_event(keyboard->scheduler, &keyboard_timeout_callback, keyboard, 0, 0, NS_PER_SEC / 4);
         // Respond promptly (spec: host polls roughly every 0.25s; keyboard must not wait that long)
         break;
     case CMD_INSTANT:
@@ -534,7 +534,7 @@ void keyboard_input(keyboard_t *keyboard, uint8_t byte) {
 
     if (schedule_tx) {
         LOG(3, "keyboard_input: scheduling tx callback");
-        scheduler_new_cpu_event(keyboard->scheduler, &tx_callback, keyboard, 0, 0, RX_TO_TX_DELAY);
+        scheduler_new_cpu_event(keyboard->scheduler, &keyboard_tx_callback, keyboard, 0, 0, RX_TO_TX_DELAY);
     }
 }
 
@@ -552,8 +552,8 @@ keyboard_t *keyboard_init(struct scheduler *scheduler, scc_t *scc, via_t *via, c
     memset(keyboard->pressed, 0, sizeof(keyboard->pressed));
 
     // Register event types for checkpointing
-    scheduler_new_event_type(scheduler, "keyboard", keyboard, "timeout", &timeout_callback);
-    scheduler_new_event_type(scheduler, "keyboard", keyboard, "tx", &tx_callback);
+    scheduler_new_event_type(scheduler, "keyboard", keyboard, "timeout", &keyboard_timeout_callback);
+    scheduler_new_event_type(scheduler, "keyboard", keyboard, "tx", &keyboard_tx_callback);
 
     // Load from checkpoint if provided
     if (checkpoint) {

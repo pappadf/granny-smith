@@ -132,12 +132,6 @@ unsigned sound_get_sample_rate(const sound_t *sound) {
     (void)sound;
     return sound ? SOUND_SRC_RATE_HZ : 0u;
 }
-void sound_mute(sound_t *sound, bool muted) {
-    if (!sound)
-        return;
-    sound_enable(sound, !muted);
-}
-
 // Flushes the pending push batch to the shared host audio stream
 static void sound_flush(sound_t *sound) {
     if (sound->out_count <= 0)

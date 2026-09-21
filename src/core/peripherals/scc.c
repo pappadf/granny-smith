@@ -320,7 +320,7 @@ static void update_irqs(scc_t *scc) {
 }
 
 // Check for incoming SDLC frames and move them to the receive buffer
-void check_rx(ch_t *ch) {
+static void check_rx(ch_t *ch) {
     assert(SDLC_MODE(ch));
     assert(RX_ENABLED(ch));
 

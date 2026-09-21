@@ -1364,12 +1364,21 @@ const class_desc_t keyboard_class = {
 
 // === ADB bus container ======================================================
 //
-// `machine.adb` is the logical ADB bus node (proposal-system-object-model.md
-// §5.6). The physical transport (VIA shift register / Egret / CUDA / IOP) is
-// an implementation detail; this node just groups the two well-known devices
-// — keyboard and mouse — as named children, the shape the user expects. It is
-// a namespace-only process-singleton (like the keyboard/mouse facades it
-// parents), created lazily under machine_object().
+// `machine.adb` is the logical input-device node (proposal-system-object-model.md
+// §5.6). The physical transport is an implementation detail; this node just
+// groups the two well-known devices — keyboard and mouse — as named children,
+// the shape the user expects. It is a namespace-only process-singleton (like
+// the keyboard/mouse facades it parents), created lazily under machine_object().
+//
+// The name is ADB but the contents are not: `keyboard.press` and `mouse.move`
+// route through the machine substrate, so on a Mac Plus they reach the VIA
+// shift-register keyboard and the quadrature mouse, and on a Lisa they reach
+// the COPS.  Neither machine has an ADB bus.  That mismatch is known and the
+// name is deliberate — §5.6 chose the logical bus the user expects over the
+// wire that happens to carry it, and the path is load-bearing (AGENTS.md's
+// canonical node list, ~1,588 references across the tests, the web UI and the
+// docs).  06-io-controllers F-12 proposed renaming it to `machine.input` with
+// an alias; that was refused.  Read this node as "input devices", not "ADB".
 static const class_desc_t adb_class = {
     .name = "adb",
     .members = NULL,
