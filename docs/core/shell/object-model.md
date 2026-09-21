@@ -100,6 +100,14 @@ table. Each `member_t` is one of three kinds:
   dispatchers shared across many attributes (the 471-entry
   `mac.globals` is one such case) recover their context from the
   member descriptor instead of via lookup tables.
+
+  `user_data` answers *"which member am I?"*. It is the wrong tool for
+  *"which instance am I?"* — that is what `object_new`'s
+  `instance_data` is for, and it is per-object. Sibling objects of the
+  same class (`scc.a` and `scc.b`, say) should each carry their own
+  instance pointer and share one member table; encoding the instance in
+  `user_data` forces a second table per sibling, which then has to be
+  kept in step by hand.
 - **`M_METHOD`** — a callable taking declared `arg_decl_t` parameters
   and returning a `value_t`. Each parameter declares its kind,
   optional `width`, optional `enum_values`, optional `default_value`,

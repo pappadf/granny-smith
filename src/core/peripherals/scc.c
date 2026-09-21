@@ -36,8 +36,7 @@ LOG_USE_CATEGORY_NAME("scc");
 // Forward declarations — class descriptors are at the bottom of the file but
 // scc_init / scc_delete reference them.
 extern const class_desc_t scc_class;
-extern const class_desc_t scc_channel_a_class;
-extern const class_desc_t scc_channel_b_class;
+extern const class_desc_t scc_channel_class;
 
 static inline bool scc_should_log(int level) {
     return log_would_log(_log_get_local_category(), level);
@@ -1344,10 +1343,14 @@ scc_t *scc_init(memory_map_t *map, struct scheduler *scheduler, scc_irq_fn irq_c
         object_set_label(scc->object, "SCC");
         object_set_order(scc->object, 50);
         object_attach(machine_object(), scc->object);
-        scc->channel_a = object_new(&scc_channel_a_class, scc, "a");
+        // instance_data is the CHANNEL, not the chip: that is what lets one
+        // member table serve both children.  No free hazard from handing out
+        // an interior pointer -- class_desc_t has no destructor, and the
+        // channels live and die with the scc_t that contains them.
+        scc->channel_a = object_new(&scc_channel_class, &scc->ch[0], "a");
         if (scc->channel_a)
             object_attach(scc->object, scc->channel_a);
-        scc->channel_b = object_new(&scc_channel_b_class, scc, "b");
+        scc->channel_b = object_new(&scc_channel_class, &scc->ch[1], "b");
         if (scc->channel_b)
             object_attach(scc->object, scc->channel_b);
     }
@@ -1515,14 +1518,29 @@ void scc_checkpoint(scc_t *restrict scc, checkpoint_t *checkpoint) {
 // children `a` / `b` (proposal goal: "scc class with loopback, reset,
 // channel children a/b").
 //
-// instance_data is the scc_t* itself (lifetime is tied to scc_init /
-// scc_delete). Channel objects also carry the same scc_t*; their
-// per-member user_data encodes the channel index (0 = A, 1 = B), so
-// a single getter per attribute can serve both children (mirrors the
-// trick the auto-populated `mac` class uses).
+// The root object's instance_data is the scc_t* (lifetime is tied to
+// scc_init / scc_delete).  Each CHANNEL object's instance_data is its own
+// `&scc->ch[i]`, which carries both `index` and a back-pointer to the chip,
+// so one shared member table serves both children.
+//
+// It used to be two tables, one per channel, with the index encoded in each
+// member's `user_data` -- and a comment saying a shared table "would need
+// per-instance member data, which the substrate intentionally avoids".  That
+// reasoning was wrong, and worth correcting rather than deleting, because it
+// would have taught the next multi-instance object the same thing:
+// per-OBJECT instance_data has always existed -- it is the second argument
+// to object_new -- and it is the right place for "which instance am I".
+// `user_data` is per-MEMBER, which is why using it forced a second table and
+// a pair of thunks per method, and why the two tables could silently drift
+// apart.
 
 static scc_t *scc_from(struct object *self) {
     return (scc_t *)object_data(self);
+}
+
+// ...and for a channel node, whose instance_data is the ch_t.
+static ch_t *ch_from(struct object *self) {
+    return (ch_t *)object_data(self);
 }
 
 // `loopback` is the writable head attribute — get/set wrap the C API.
@@ -1574,51 +1592,54 @@ static value_t scc_method_reset(struct object *self, const member_t *m, int argc
 // (`scc_channel_*`). Heavier per-channel views (BRG, baud, sync mode)
 // can land later once a real consumer needs them.
 
-static unsigned channel_index_from_member(const member_t *m) {
-    return (unsigned)(uintptr_t)m->attr.user_data;
-}
-
 static value_t scc_ch_attr_index(struct object *self, const member_t *m) {
-    (void)self;
-    return val_int((int)channel_index_from_member(m));
+    (void)m;
+    ch_t *c = ch_from(self);
+    return val_int(c ? c->index : 0);
 }
 
 static value_t scc_ch_attr_dcd(struct object *self, const member_t *m) {
-    scc_t *scc = scc_from(self);
-    return val_bool(scc_channel_dcd(scc, channel_index_from_member(m)));
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
+        return val_err("scc not available");
+    return val_bool(scc_channel_dcd(c->scc, (unsigned)c->index));
 }
 
 static value_t scc_ch_attr_tx_empty(struct object *self, const member_t *m) {
-    scc_t *scc = scc_from(self);
-    return val_bool(scc_channel_tx_empty(scc, channel_index_from_member(m)));
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
+        return val_err("scc not available");
+    return val_bool(scc_channel_tx_empty(c->scc, (unsigned)c->index));
 }
 
 // Bytes waiting in this channel's host-side transmit capture, and the count
 // lost to overflow — a nonzero `sent_dropped` says the script drained too
 // late, so an assertion on the text is missing bytes rather than merely failing.
 static value_t scc_ch_attr_sent_pending(struct object *self, const member_t *m) {
-    scc_t *scc = scc_from(self);
-    if (!scc)
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
         return val_err("scc not available");
-    return val_uint(8, scc_channel_sent_pending(scc, channel_index_from_member(m)));
+    return val_uint(8, scc_channel_sent_pending(c->scc, (unsigned)c->index));
 }
 
 static value_t scc_ch_attr_sent_dropped(struct object *self, const member_t *m) {
-    scc_t *scc = scc_from(self);
-    if (!scc)
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
         return val_err("scc not available");
-    return val_uint(8, scc_channel_sent_dropped(scc, channel_index_from_member(m)));
+    return val_uint(8, scc_channel_sent_dropped(c->scc, (unsigned)c->index));
 }
 
 static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
-    scc_t *scc = scc_from(self);
-    return val_uint(4, scc_channel_rx_pending(scc, channel_index_from_member(m)));
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
+        return val_err("scc not available");
+    return val_uint(4, scc_channel_rx_pending(c->scc, (unsigned)c->index));
 }
-
-// Two member tables — one per channel — because the user_data slot
-// has to encode the channel index statically. (Trying to share a
-// single table across both channels would need per-instance member
-// data, which the substrate intentionally avoids.)
 
 // Feed bytes into a channel's receive FIFO as though they had arrived on the
 // wire.  Delivery mirrors the loopback path in wr8: buffer the byte, latch
@@ -1630,14 +1651,15 @@ static value_t scc_ch_attr_rx_pending(struct object *self, const member_t *m) {
 // "(Debug)" build is the case that prompted it: its loader prints over the
 // modem port and then polls RR0 bit 0 for a reply from the Power Macintosh
 // Debugger, forever, because nothing on this side can ever set that bit.
-static value_t scc_ch_receive(struct object *self, unsigned idx, int argc, const value_t *argv) {
-    scc_t *scc = scc_from(self);
-    if (!scc)
+static value_t scc_ch_method_receive(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    ch_t *c = ch_from(self);
+    if (!c)
         return val_err("scc not available");
     if (argc != 1)
         return val_err("receive: expected one argument");
 
-    ch_t *c = &scc->ch[idx];
+    scc_t *scc = c->scc;
 
     const uint8_t *bytes;
     size_t len;
@@ -1677,16 +1699,6 @@ static value_t scc_ch_receive(struct object *self, unsigned idx, int argc, const
     return val_uint(4, accepted);
 }
 
-static value_t scc_ch_a_method_receive(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    return scc_ch_receive(self, 0, argc, argv);
-}
-
-static value_t scc_ch_b_method_receive(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    return scc_ch_receive(self, 1, argc, argv);
-}
-
 // Drain this channel's transmit capture and return it as text — the mirror of
 // `receive`, and the reason it exists: a guest serial console (MkLinux's
 // `console=ttya`, Copland's loader) could previously only be read by turning on
@@ -1696,10 +1708,15 @@ static value_t scc_ch_b_method_receive(struct object *self, const member_t *m, i
 // Printable ASCII, tab, CR and LF pass through; a literal backslash is doubled
 // and every other byte is escaped `\xNN`, so the result is greppable text that
 // still says exactly which bytes came off the wire.
-static value_t scc_ch_sent(struct object *self, unsigned idx) {
-    scc_t *scc = scc_from(self);
-    if (!scc)
+static value_t scc_ch_method_sent(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    (void)argc;
+    (void)argv;
+    ch_t *c = ch_from(self);
+    if (!c)
         return val_err("scc not available");
+    scc_t *scc = c->scc;
+    unsigned idx = (unsigned)c->index;
     size_t pending = scc_channel_sent_pending(scc, idx);
     if (pending == 0)
         return val_str("");
@@ -1734,103 +1751,37 @@ static value_t scc_ch_sent(struct object *self, unsigned idx) {
     return v;
 }
 
-static value_t scc_ch_a_method_sent(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
-    return scc_ch_sent(self, 0);
-}
-
-static value_t scc_ch_b_method_sent(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)m;
-    (void)argc;
-    (void)argv;
-    return scc_ch_sent(self, 1);
-}
-
 static const arg_decl_t scc_ch_receive_args[] = {
     {.name = "data", .kind = V_NONE, .doc = "String to deliver, or a single byte value"},
 };
 
-static const member_t scc_ch_a_members[] = {
-    {.kind = M_ATTR,
-     .name = "index",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)0}        },
-    {.kind = M_ATTR,
-     .name = "dcd",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)0}         },
-    {.kind = M_ATTR,
-     .name = "tx_empty",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)0}    },
-    {.kind = M_ATTR,
-     .name = "rx_pending",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)0}  },
+static const member_t scc_ch_members[] = {
+    {.kind = M_ATTR,   .name = "index",      .flags = VAL_RO,                             .attr = {.type = V_INT, .get = scc_ch_attr_index}      },
+    {.kind = M_ATTR,   .name = "dcd",        .flags = VAL_RO,                             .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd}       },
+    {.kind = M_ATTR,   .name = "tx_empty",   .flags = VAL_RO,                             .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty}  },
+    {.kind = M_ATTR,   .name = "rx_pending", .flags = VAL_RO,                             .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending}},
     {.kind = M_ATTR,
      .name = "sent_pending",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending, .set = NULL, .user_data = (void *)(uintptr_t)0}},
+     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending}                                                                                   },
     {.kind = M_ATTR,
      .name = "sent_dropped",
      .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped, .set = NULL, .user_data = (void *)(uintptr_t)0}},
+     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped}                                                                                   },
     {.kind = M_METHOD,
      .name = "receive",
      .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
-     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_a_method_receive}     },
+     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_method_receive}                                          },
     {.kind = M_METHOD,
      .name = "sent",
      .doc = "Drain and return the text this channel has transmitted since the last call",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_a_method_sent}                     },
+     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_method_sent}                                                          },
 };
 
-static const member_t scc_ch_b_members[] = {
-    {.kind = M_ATTR,
-     .name = "index",
-     .flags = VAL_RO,
-     .attr = {.type = V_INT, .get = scc_ch_attr_index, .set = NULL, .user_data = (void *)(uintptr_t)1}        },
-    {.kind = M_ATTR,
-     .name = "dcd",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_dcd, .set = NULL, .user_data = (void *)(uintptr_t)1}         },
-    {.kind = M_ATTR,
-     .name = "tx_empty",
-     .flags = VAL_RO,
-     .attr = {.type = V_BOOL, .get = scc_ch_attr_tx_empty, .set = NULL, .user_data = (void *)(uintptr_t)1}    },
-    {.kind = M_ATTR,
-     .name = "rx_pending",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_rx_pending, .set = NULL, .user_data = (void *)(uintptr_t)1}  },
-    {.kind = M_ATTR,
-     .name = "sent_pending",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_pending, .set = NULL, .user_data = (void *)(uintptr_t)1}},
-    {.kind = M_ATTR,
-     .name = "sent_dropped",
-     .flags = VAL_RO,
-     .attr = {.type = V_UINT, .get = scc_ch_attr_sent_dropped, .set = NULL, .user_data = (void *)(uintptr_t)1}},
-    {.kind = M_METHOD,
-     .name = "receive",
-     .doc = "Deliver bytes to this channel's receiver, as if they arrived on the wire",
-     .method = {.args = scc_ch_receive_args, .nargs = 1, .result = V_UINT, .fn = scc_ch_b_method_receive}     },
-    {.kind = M_METHOD,
-     .name = "sent",
-     .doc = "Drain and return the text this channel has transmitted since the last call",
-     .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_b_method_sent}                     },
-};
-
-const class_desc_t scc_channel_a_class = {
+const class_desc_t scc_channel_class = {
     .name = "scc_channel",
-    .members = scc_ch_a_members,
-    .n_members = sizeof(scc_ch_a_members) / sizeof(scc_ch_a_members[0]),
-};
-const class_desc_t scc_channel_b_class = {
-    .name = "scc_channel",
-    .members = scc_ch_b_members,
-    .n_members = sizeof(scc_ch_b_members) / sizeof(scc_ch_b_members[0]),
+    .members = scc_ch_members,
+    .n_members = sizeof(scc_ch_members) / sizeof(scc_ch_members[0]),
 };
 
 static const member_t scc_members[] = {
