@@ -103,27 +103,26 @@ def row_lisa_xenix_hdinit() {
 
     # (§1.5.2) Type "hdinit" + RETURN.
     #
-    # By NAME.  Until 2026-09-21 lisa_input_key took only "0xNN" and dropped
-    # the key-up leg entirely, so each character needed two calls -- an
-    # explicit down byte and an explicit up byte, hand-assembled from the
-    # COPS encoding.  That is what these twelve lines used to be.  Both
-    # limitations were drift, not hardware, and this block is the end-to-end
-    # proof: the names resolve through the boot ROM's own AsciiTable and each
-    # press now emits its own down and up.
-    machine.adb.keyboard.press "h"
-    scheduler.run 600000
-    machine.adb.keyboard.press "d"
-    scheduler.run 600000
-    machine.adb.keyboard.press "i"
-    scheduler.run 600000
-    machine.adb.keyboard.press "n"
-    scheduler.run 600000
-    machine.adb.keyboard.press "i"
-    scheduler.run 600000
-    machine.adb.keyboard.press "t"
-    scheduler.run 600000
-    machine.adb.keyboard.press "return"
-    scheduler.run 30000000
+    # One call, and it is the end-to-end proof for two changes at once.
+    # This used to be twelve lines of hand-assembled COPS bytes, because
+    # lisa_input_key took only "0xNN" and dropped the key-up leg; then six
+    # keyboard.press calls by name; and now keyboard.type, which until
+    # 2026-09-21 answered "the machine has no keyboard" anywhere but an ADB
+    # Mac.  Each step was drift, not hardware.
+    #
+    # What it exercises: ASCII resolves to ADB keycodes, those translate to
+    # COPS keycodes through the boot ROM's own key table, and the transitions
+    # are paced 4 ms apart by a scheduler source that belongs to this machine
+    # rather than to an adb_t the Lisa has not got.  "hdinit\n" is 7
+    # characters = 14 bytes, inside the Lisa's 24-byte COPS budget.
+    machine.adb.keyboard.type("hdinit\n")
+    scheduler.run 34000000
+    # The budget is per machine, and it has to be: the COPS FIFO is 32 bytes
+    # against the ADB ring's 128, so a line that is fine on a Quadra overflows
+    # here.  Thirteen characters is 26 bytes, over the Lisa's 24, and must be
+    # refused rather than half-typed.  (With the ADB budget in place this
+    # line succeeds, which is what it is here to catch.)
+    assert try(machine.adb.keyboard.type("abcdefghijklm"), none) == none "the Lisa accepted a line its COPS FIFO cannot hold"
     # "WARNING: ... Do you want to continue <y/n>?"
     check("goldens/lisa-xenix3.0-720x364x1-hdinit-continue.png")
 

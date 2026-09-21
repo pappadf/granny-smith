@@ -1162,6 +1162,27 @@ bool has_event(struct scheduler *restrict scheduler, event_callback_t callback) 
     return false;
 }
 
+// When the LAST event still queued for this callback is due, in emulated
+// nanoseconds on the same clock as scheduler_time_ns; 0 if none is queued.
+// Read-only, and the same walk has_event does.
+//
+// keyboard.type needs it: each call paces its transitions one spacing apart
+// and has to start after whatever a previous call left in flight.  That
+// instant used to be a shadow field in adb_t, which meant the answer lived in
+// two places and only one of them was per-machine.  Asking the queue cannot
+// drift, and it survives a checkpoint restore for free -- the events are
+// restored, so the answer is too.
+double scheduler_last_event_ns(struct scheduler *restrict scheduler, event_callback_t callback) {
+    GS_ASSERT(scheduler != NULL);
+    GS_ASSERT(callback != NULL);
+
+    uint64_t last = 0;
+    for (event_t *e = scheduler->cpu_events; e != NULL; e = e->next)
+        if (e->callback == callback && e->timestamp > last)
+            last = e->timestamp;
+    return (double)last * (1e9 / (double)scheduler->frequency);
+}
+
 // Returns the current cpu_cycles including in-progress sprint execution
 uint64_t scheduler_cpu_cycles(struct scheduler *restrict scheduler) {
     GS_ASSERT(scheduler != NULL);

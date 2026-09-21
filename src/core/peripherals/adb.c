@@ -62,15 +62,6 @@ LOG_USE_CATEGORY_NAME("adb");
 // 11 ms to match real hardware timing.
 #define ADB_AUTOPOLL_INTERVAL (11 * 1000 * 1000)
 
-// Spacing between the key events keyboard.type() queues, in nanoseconds.
-// A real keyboard reports two key transitions in one Talk R0 only when both
-// happened inside one poll interval; a typist's Shift-down and the key it
-// shifts never do.  Queued back to back they would, and a guest that reads
-// one transition per report (the Network Server Diagnostic Utility does)
-// then sees Shift go down and never come up.  4 ms per event is a brisk
-// 125 events/s — faster than any typist, slower than any poll loop.
-#define ADB_TYPE_SPACING ((uint64_t)4 * 1000 * 1000)
-
 // Default ADB device addresses assigned at power-on
 #define KBD_DEFAULT_ADDR   2
 #define MOUSE_DEFAULT_ADDR 3
@@ -191,11 +182,6 @@ struct adb {
     bool reply_from_mouse; // reply_buf holds freshly-consumed mouse deltas
     int mouse_reply_dx, mouse_reply_dy; // the consumed deltas (for abort restore)
 
-    // keyboard.type() pacing: the scheduler time the next typed key event
-    // may be queued, so consecutive calls keep typing at a human rate
-    // rather than landing in one report (adb_typed_key_deferred).
-    uint64_t type_next_ns;
-
     // The most recently used ADB address, in the IOP ADB Driver ERS's sense:
     // the one that answered the last autonomous auto-poll.  adb_autopoll_next
     // anchors its scan here.  Plain data, so it checkpoints with the rest.
@@ -224,10 +210,7 @@ static void adb_reset(adb_t *adb);
 static void adb_deliver_next_byte(adb_t *adb);
 static void adb_deliver_next_byte_deferred(void *source, uint64_t data);
 static void adb_shift_complete_deferred(void *source, uint64_t data);
-static void adb_typed_key_deferred(void *source, uint64_t data);
 
-// The controller the keyboard object types into (one machine at a time).
-static adb_t *s_adb_current;
 static void adb_autopoll_deferred(void *source, uint64_t data);
 static void adb_decode_command(adb_t *adb, uint8_t cmd);
 
@@ -1059,10 +1042,6 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
     // Register the auto-poll event type (IDLE-state Talk R0 repetition)
     scheduler_new_event_type(scheduler, "adb", adb, "autopoll", &adb_autopoll_deferred);
 
-    // Register the paced keyboard.type() key event
-    scheduler_new_event_type(scheduler, "adb", adb, "typed", &adb_typed_key_deferred);
-    s_adb_current = adb;
-
     // Set device register 3 defaults and clear all queues/deltas
     adb_reset(adb);
     adb->state = ADB_STATE_IDLE;
@@ -1088,8 +1067,6 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 
 // Frees all resources associated with an ADB controller instance
 void adb_delete(adb_t *adb) {
-    if (s_adb_current == adb)
-        s_adb_current = NULL;
     if (!adb)
         return;
     // Four callbacks are scheduled with `adb` as their source and the
@@ -1402,232 +1379,6 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     return true;
 }
 
-// === Object-model class descriptor =========================================
-//
-// `keyboard.press(key)` — inject a key-down + key-up via the keyboard
-// subsystem. The arg is either a string name ("return", "space",
-// "esc", a-z, 0-9 …) resolved by debug_mac_resolve_key_name, or an
-// integer ADB virtual keycode (0x00–0x7F).
-
-// Shared arg decode for press/down/up: a key NAME or an ADB virtual keycode.
-// Both resolve to an ADB keycode here, once, because that is the model's
-// universal key identity -- see machine_profile.h's input_key.  Substrates
-// never see a name, and an integer means the same key on every machine.
-//
-// It used to render the integer back into "0x%02x" and hand the string down
-// for each substrate to re-parse, which is how `keyboard.press 0xC8` came to
-// mean an ADB keycode on a Mac and a raw COPS wire byte on a Lisa.  The wire
-// form has its own method now (`keyboard.raw`).
-static int keyboard_arg_keycode(const value_t *arg) {
-    if (arg->kind == V_STRING)
-        return arg->s ? debug_mac_resolve_key_name(arg->s) : -1;
-    if (arg->kind == V_INT || arg->kind == V_UINT) {
-        long long raw = (arg->kind == V_INT) ? (long long)arg->i : (long long)arg->u;
-        return (raw >= 0 && raw <= 0x7F) ? (int)raw : -1;
-    }
-    return -1;
-}
-
-// How the key was spelled, for an error message.
-static const char *keyboard_arg_text(const value_t *arg, char *buf, size_t size) {
-    if (arg->kind == V_STRING)
-        return arg->s ? arg->s : "";
-    if (arg->kind == V_INT || arg->kind == V_UINT) {
-        long long raw = (arg->kind == V_INT) ? (long long)arg->i : (long long)arg->u;
-        snprintf(buf, size, "0x%02llx", raw);
-        return buf;
-    }
-    return "?";
-}
-
-static value_t keyboard_method_press(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    char buf[8];
-    const char *as_written = keyboard_arg_text(&argv[0], buf, sizeof(buf));
-    int code = keyboard_arg_keycode(&argv[0]);
-    if (code < 0)
-        return val_err("keyboard.press: unknown key '%s'", as_written);
-
-    // Tap (down then up) through the machine substrate: Macs inject via the
-    // keyboard / Toolbox path, the Lisa via its COPS — one uniform path
-    // (proposal §4.4).  A negative result here means this KEYBOARD has no
-    // such key, which is a different thing from an unknown name: the Lisa has
-    // no Control key and no function keys.
-    if (system_input_key(code, true) < 0)
-        return val_err("keyboard.press: this machine's keyboard has no '%s' key", as_written);
-    system_input_key(code, false);
-    LOG(3, "keyboard.press: key=%s adb=0x%02X", as_written, code);
-    return val_bool(true);
-}
-
-// `keyboard.down(key)` / `keyboard.up(key)` — the two halves of press, for
-// chords that hold a modifier across another key (e.g. Shift+/ to type '?').
-static value_t keyboard_half(const value_t *arg, bool down, const char *what) {
-    char buf[8];
-    const char *as_written = keyboard_arg_text(arg, buf, sizeof(buf));
-    int code = keyboard_arg_keycode(arg);
-    if (code < 0)
-        return val_err("keyboard.%s: unknown key '%s'", what, as_written);
-    if (system_input_key(code, down) < 0)
-        return val_err("keyboard.%s: this machine's keyboard has no '%s' key", what, as_written);
-    LOG(3, "keyboard.%s: key=%s adb=0x%02X", what, as_written, code);
-    return val_bool(true);
-}
-
-static value_t keyboard_method_down(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    return keyboard_half(&argv[0], true, "down");
-}
-
-static value_t keyboard_method_up(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    return keyboard_half(&argv[0], false, "up");
-}
-
-// `keyboard.raw(byte)` — inject one byte in the machine's own keyboard
-// encoding, direction bit and all.  Deliberately not portable: it is for
-// tests that drive a keyboard wire rather than press a key.  The Lisa's COPS
-// carries down/up in bit 7, so `raw 0xC8` is "$48 down" and `raw 0x48` is
-// "$48 up"; no Mac implements this and the error says so.
-static value_t keyboard_method_raw(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    if (argv[0].kind != V_INT && argv[0].kind != V_UINT)
-        return val_err("keyboard.raw: expected a byte");
-    long long raw = (argv[0].kind == V_INT) ? (long long)argv[0].i : (long long)argv[0].u;
-    if (raw < 0 || raw > 0xFF)
-        return val_err("keyboard.raw: 0x%llx is not a byte", raw);
-    if (system_input_key_raw((uint8_t)raw) < 0)
-        return val_err("keyboard.raw: this machine has no raw keyboard encoding — use press/down/up with a key name");
-    LOG(3, "keyboard.raw: 0x%02llX", raw);
-    return val_bool(true);
-}
-
-// `keyboard.type(text)` — tap the keys that produce `text` on a US layout,
-// holding Shift for the characters that need it.  Newline and tab in the
-// string type Return and Tab, so a whole command line ends itself.
-//
-// Everything is queued at once, with no guest time in between: the ADB
-// keyboard ring holds 128 bytes and each character costs two (four when
-// shifted), so a long line would silently lose its head to the ring's
-// drop-oldest overflow.  Rather than let a test type into a void, refuse
-// anything that could not fit and say so — callers type a line at a time and
-// let the guest run.
-#define KEYBOARD_TYPE_MAX_BYTES 96
-
-static value_t keyboard_method_type(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    if (argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("keyboard.type: text must be a string");
-    const char *text = argv[0].s;
-
-    // Cost the line before typing any of it: a partially typed command is
-    // worse than a refused one.
-    size_t cost = 0;
-    for (const char *p = text; *p; p++) {
-        bool shift = false;
-        if (debug_mac_resolve_ascii(*p, &shift) < 0)
-            return val_err("keyboard.type: no US-layout key types '%c' (0x%02x)", *p, (unsigned char)*p);
-        cost += shift ? 4 : 2;
-    }
-    if (cost > KEYBOARD_TYPE_MAX_BYTES)
-        return val_err("keyboard.type: %zu bytes of ADB events exceeds the %d the keyboard queue can hold — "
-                       "type fewer characters per call",
-                       cost, KEYBOARD_TYPE_MAX_BYTES);
-
-    adb_t *adb = s_adb_current;
-    if (!adb || !adb->scheduler)
-        return val_err("keyboard.type: the machine has no keyboard");
-
-    // Pace the events in guest time (ADB_TYPE_SPACING apart), continuing
-    // from where the previous call left off so a line typed in pieces
-    // still arrives one transition at a time.
-    // The first transition lands one spacing out (never "now": a zero
-    // delay is not a schedulable event).
-    uint64_t now = (uint64_t)scheduler_time_ns(adb->scheduler);
-    uint64_t at = adb->type_next_ns > now + ADB_TYPE_SPACING ? adb->type_next_ns : now + ADB_TYPE_SPACING;
-    uint64_t typed = 0;
-    for (const char *p = text; *p; p++) {
-        bool shift = false;
-        int code = debug_mac_resolve_ascii(*p, &shift);
-        // data: bit 0 = down, bits 8:1 = the ADB keycode
-        if (shift) {
-            scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, (ADB_KEY_SHIFT << 1) | 1u, 0,
-                                    at - now);
-            at += ADB_TYPE_SPACING;
-        }
-        scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, ((uint64_t)code << 1) | 1u, 0, at - now);
-        at += ADB_TYPE_SPACING;
-        scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, (uint64_t)code << 1, 0, at - now);
-        at += ADB_TYPE_SPACING;
-        if (shift) {
-            scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, ADB_KEY_SHIFT << 1, 0, at - now);
-            at += ADB_TYPE_SPACING;
-        }
-        typed++;
-    }
-    adb->type_next_ns = at;
-    LOG(3, "keyboard.type: %llu character(s), paced to %llu ns", (unsigned long long)typed, (unsigned long long)at);
-    return val_uint(8, typed);
-}
-
-// A keyboard.type() key transition coming due.
-static void adb_typed_key_deferred(void *source, uint64_t data) {
-    adb_t *adb = (adb_t *)source;
-    adb_keyboard_event(adb, (data & 1u) ? key_down : key_up, (int)((data >> 1) & 0xFFu));
-}
-
-static const arg_decl_t keyboard_raw_args[] = {
-    {.name = "byte", .kind = V_UINT, .doc = "Raw keyboard byte in the machine's own encoding"},
-};
-
-static const arg_decl_t keyboard_type_args[] = {
-    {.name = "text", .kind = V_STRING, .doc = "Text to type; newline types Return, tab types Tab"},
-};
-
-static const arg_decl_t keyboard_press_args[] = {
-    // V_NONE: body accepts either a name string or a numeric ADB keycode.
-    {.name = "key", .kind = V_NONE, .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
-};
-
-static const member_t keyboard_members[] = {
-    {.kind = M_METHOD,
-     .name = "press",
-     .doc = "Tap a key (down + up) on the emulated keyboard",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_press}},
-    {.kind = M_METHOD,
-     .name = "down",
-     .doc = "Hold a key down on the emulated keyboard (pair with up)",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_down} },
-    {.kind = M_METHOD,
-     .name = "up",
-     .doc = "Release a key held by down",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_up}   },
-    {.kind = M_METHOD,
-     .name = "type",
-     .doc = "Type a short line of text (US layout; newline = Return)",
-     .method = {.args = keyboard_type_args, .nargs = 1, .result = V_UINT, .fn = keyboard_method_type}  },
-    {.kind = M_METHOD,
-     .name = "raw",
-     .doc = "Inject one byte in this machine's own keyboard encoding (Lisa COPS only)",
-     .method = {.args = keyboard_raw_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_raw}    },
-};
-
-const class_desc_t keyboard_class = {
-    .name = "keyboard",
-    .members = keyboard_members,
-    .n_members = sizeof(keyboard_members) / sizeof(keyboard_members[0]),
-};
-
 // === ADB bus container ======================================================
 //
 // `machine.adb` is the logical input-device node (proposal-system-object-model.md
@@ -1663,30 +1414,4 @@ struct object *adb_bus_object(void) {
         }
     }
     return s_adb_object;
-}
-
-// === Process-singleton lifecycle ============================================
-//
-// `keyboard` is a stateless facade — its press() method routes through
-// adb_press_key on the active machine. Register once at shell_init.
-
-static struct object *s_keyboard_object = NULL;
-
-void keyboard_class_register(void) {
-    if (s_keyboard_object)
-        return;
-    s_keyboard_object = object_new(&keyboard_class, NULL, "keyboard");
-    if (s_keyboard_object) {
-        object_set_label(s_keyboard_object, "Keyboard");
-        object_set_order(s_keyboard_object, 10);
-        object_attach(adb_bus_object(), s_keyboard_object);
-    }
-}
-
-void keyboard_class_unregister(void) {
-    if (s_keyboard_object) {
-        object_detach(s_keyboard_object);
-        object_delete(s_keyboard_object);
-        s_keyboard_object = NULL;
-    }
 }

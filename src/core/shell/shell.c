@@ -536,7 +536,6 @@ int shell_init(void) {
     extern void checkpoint_init(void);
     extern void archive_init(void);
     extern void mouse_class_register(void);
-    extern void keyboard_class_register(void);
     extern void screen_class_register(void);
     extern void vfs_class_register(void);
     extern void find_class_register(void);
@@ -548,7 +547,9 @@ int shell_init(void) {
     checkpoint_init();
     archive_init();
     mouse_class_register();
-    keyboard_class_register();
+    // `keyboard` is NOT registered here: it is per machine now, built by
+    // system_create (host_input.h).  It needs a scheduler source that lives
+    // and dies with the machine, which a process-lifetime facade cannot have.
     screen_class_register();
     vfs_class_register();
     find_class_register();

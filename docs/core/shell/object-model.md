@@ -108,6 +108,16 @@ table. Each `member_t` is one of three kinds:
   instance pointer and share one member table; encoding the instance in
   `user_data` forces a second table per sibling, which then has to be
   kept in step by hand.
+
+  A node that holds **per-machine state should be built and destroyed with
+  the machine**, not registered once at `shell_init`. `machine` itself is a
+  long-lived container whose children come and go, so both shapes appear
+  under it, and the distinction is not cosmetic: a process-lifetime node
+  cannot own a scheduler source, because the scheduler does not outlive the
+  machine. `machine.adb.keyboard` was a facade for that reason and its
+  `type()` could only reach a machine that had an `adb_t` to borrow a
+  source from; it is per-machine now (`host_input.c`). A container with no
+  state of its own — `machine.adb` — can stay a singleton.
 - **`M_METHOD`** — a callable taking declared `arg_decl_t` parameters
   and returning a `value_t`. Each parameter declares its kind,
   optional `width`, optional `enum_values`, optional `default_value`,

@@ -326,6 +326,15 @@ typedef struct machine_substrate {
     // implements its own (parallel FDC + ProFile).
     int (*media_detach)(struct config *cfg, media_slot_t *out, int max);
     int (*media_attach)(struct config *cfg, const media_slot_t *slot);
+
+    // How many key-transition bytes this machine's keyboard queue holds
+    // before it starts dropping, which is what keyboard.type costs itself
+    // against: it refuses a line it could not deliver rather than typing half
+    // of it.  0 means the ADB default.  The Lisa's COPS FIFO is 32 bytes
+    // against the ADB ring's 128, so this cannot be one constant -- and it
+    // was one constant, sized for ADB, until keyboard.type could reach a
+    // Lisa at all.
+    int key_queue_bytes;
 } machine_substrate_t;
 
 // Machine descriptor: static metadata for each emulated machine model.  The

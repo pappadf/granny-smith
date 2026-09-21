@@ -15,6 +15,7 @@
 #include "display.h"
 #include "drive_catalog.h"
 #include "floppy.h"
+#include "host_input.h"
 #include "image.h"
 #include "image_vfs.h"
 #include "jmfb.h" // restored-record sense seeding on checkpoint load
@@ -916,6 +917,11 @@ config_t *system_create(const hw_profile_t *profile, const machine_build_opts_t 
         scsi_add_device(cfg->scsi, profile->cdrom_id, "SONY", "CD-ROM CDU-8002", "1.8g", NULL, scsi_dev_cdrom, 2048,
                         true);
 
+    // The `machine.adb.keyboard` object, per machine.  After the substrate
+    // because it wants the scheduler, before scheduler_start because its
+    // event type has to exist when the scheduler re-binds restored events.
+    cfg->host_input = host_input_init(cfg, cfg->scheduler);
+
     // Stand up the object-model root (M2): attaches stub classes for
     // cpu/memory/scheduler/machine/shell/storage so `eval` can read
     // runtime state. The legacy shell remains primary.
@@ -951,6 +957,12 @@ void system_destroy(config_t *config) {
     // system_destroy(old) runs *after* system_create(new) has already
     // pinned a fresh emulator that still references the rom object.
     root_uninstall_if(config);
+
+    // The keyboard object goes with the root teardown: it is per machine, and
+    // any typing still paced out on the scheduler is aimed at a machine that
+    // is about to stop existing.
+    host_input_delete(config->host_input);
+    config->host_input = NULL;
 
     // Tear down the expansion buses before the peripherals, so cards --
     // which hold pointers to devices the substrate owns -- free cleanly

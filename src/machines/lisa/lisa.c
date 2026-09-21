@@ -1251,6 +1251,10 @@ static const machine_substrate_t lisa_substrate = {
     .fd_present = lisa_fd_present,
     .input_key = lisa_input_key,
     .input_key_raw = lisa_input_key_raw,
+    // The COPS response FIFO is 32 bytes (cops.c COPS_FIFO) and carries mouse
+    // reports as well as keys, so keyboard.type gets a quarter of the ADB
+    // budget and leaves the rest as headroom.
+    .key_queue_bytes = 24,
     .input_mouse_move = lisa_input_mouse_move,
     .input_mouse_button = lisa_input_mouse_button,
     .media_detach = lisa_media_detach,
