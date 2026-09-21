@@ -85,6 +85,34 @@ LOG_USE_CATEGORY_NAME("egret");
 // 1-second tick cadence.
 #define EGRET_TICK_NS 1000000000.0
 
+// Give up on a host that never takes the attention byte.  Without this the
+// transport sits in EG_SENDING for the rest of the run, and since
+// egret_try_unsolicited is nothing but `state == EG_IDLE`, the 1-second tick
+// and ADB autopoll both stop: no clock, no keyboard, no mouse.
+//
+// Cuda's equivalent is 20 ms, bounded from both sides by measurement on CUDA
+// guests -- AIX's 5.4 ms Talk-R3 turnaround below, MkLinux's OF-to-68k
+// hand-off above -- and neither of those hosts runs on an Egret machine, so
+// neither bound transfers.  What matters here is the slowest legitimate
+// attention-to-engagement latency an Egret guest produces.  Measured, by
+// timing egret_begin_send to the first port-B edge in EG_SENDING across
+// every row of suite-iisi and suite-quadra (2026-09-21):
+//
+//   IIsi   (6.0.8, 7.0.1, 7.1 + ADB keyboard, 7.5)   worst 969 us, mean 257 us
+//   Q900   (7.5 HD, 7.6 floppy)                      worst 435 us, mean 328 us
+//
+// So 20 ms is 20x the worst observed turnaround, and there is no known
+// Egret-side hand-off bounding it from above the way MkLinux bounds Cuda's.
+// Keeping Cuda's number is therefore a measured choice here, not an
+// inherited one -- and it keeps the two watchdogs identical for the
+// consolidation that follows.
+#define EGRET_SEND_ABANDON_NS 20000000.0
+
+// Delay before re-presenting a reaped response, mirroring Cuda's: long
+// enough to clear the host's driver-install window, so the watchdog above
+// does not simply reap it a second time.
+#define EGRET_RESEND_DELAY_NS 2000000.0
+
 // Transfer state.
 typedef enum {
     EG_IDLE = 0, // bus idle, ready to receive a command or initiate a packet
@@ -113,6 +141,20 @@ struct egret {
     bool onesec_enabled; // 1-second tick active
     uint8_t autopoll_phase; // rotates the polled ADB address each tick
 
+    // A response whose ATTENTION byte the host never takes is abandoned
+    // after EGRET_SEND_ABANDON_NS.  Named as on the Cuda side, which runs
+    // the same protocol behind the same Apple host driver (EgretMgr.a
+    // serves both), so the consolidation R-1 proposes has two watchdogs of
+    // one shape to merge rather than two designs to reconcile.
+    bool send_timeout_pending;
+    // A response the watchdog reaped unclaimed is RE-PRESENTED once the bus
+    // settles.  The reap resets the TRANSPORT; the firmware's output queue
+    // still holds the packet, and an autopoll reply's ADB data was consumed
+    // from the device queue when the packet was built, so dropping it loses
+    // real input.  Cuda's flag also serves its sync-abort path; Egret's
+    // protocol has no sync, so that half does not carry over.
+    bool resend_pending;
+
     // --- pointers / callbacks (not checkpointed) ---
     struct via *via1;
     struct rtc *rtc;
@@ -125,6 +167,8 @@ struct egret {
 // Forward declarations.
 static void egret_tick_event(void *source, uint64_t data);
 static void egret_autopoll_event(void *source, uint64_t data);
+static void egret_send_timeout_event(void *source, uint64_t data);
+static void egret_resend_event(void *source, uint64_t data);
 
 // === xcvrSes / SR helpers ===================================================
 
@@ -143,8 +187,17 @@ static void egret_push_byte(egret_t *eg, int idx) {
     via_input_sr(eg->via1, eg->tx_buf[idx]);
 }
 
+// Cancel the abandonment watchdog: the host engaged with the response.
+static void egret_send_progress(egret_t *eg) {
+    if (!eg->send_timeout_pending)
+        return;
+    eg->send_timeout_pending = false;
+    remove_event(eg->sched, &egret_send_timeout_event, eg);
+}
+
 // Finish a send: return to idle with xcvrSes released high.
 static void egret_finish_tx(egret_t *eg) {
+    egret_send_progress(eg); // the only exit from EG_SENDING
     eg->state = EG_IDLE;
     egret_set_xcvr(eg, true);
 }
@@ -166,6 +219,61 @@ static void egret_begin_send(egret_t *eg) {
     eg->state = EG_SENDING;
     eg->tx_idx = 0;
     egret_push_byte(eg, 0);
+    // See EGRET_SEND_ABANDON_NS; any transport progress cancels this.
+    eg->send_timeout_pending = true;
+    remove_event(eg->sched, &egret_send_timeout_event, eg);
+    scheduler_new_cpu_event(eg->sched, &egret_send_timeout_event, eg, 0, 0, (uint64_t)EGRET_SEND_ABANDON_NS);
+}
+
+// The host never took the attention byte: return the transport to idle, as
+// the firmware's own transaction timeout does.  The response itself is NOT
+// thrown away -- a tick aside.  A host that is merely busy must still get
+// its data, and an autopoll packet's ADB data left the device queue when
+// the packet was built, so dropping it loses a keystroke or a mouse move
+// outright.  So: reap the transport, park the packet, re-present it once
+// the bus settles.
+static void egret_send_timeout_event(void *source, uint64_t data) {
+    (void)data;
+    egret_t *eg = (egret_t *)source;
+    if (!eg->send_timeout_pending)
+        return;
+    eg->send_timeout_pending = false;
+    if (eg->state != EG_SENDING || eg->tx_idx != 0)
+        return;
+    eg->state = EG_IDLE;
+    egret_set_xcvr(eg, true);
+    if (eg->tx_buf[1] == PKT_TICK) {
+        LOG(2, "tick unclaimed by host - transport reset to idle, tick dropped");
+        return;
+    }
+    LOG(2, "response unclaimed by host - transport reset to idle, parked for re-presentation");
+    eg->resend_pending = true;
+    remove_event(eg->sched, &egret_resend_event, eg);
+    scheduler_new_cpu_event(eg->sched, &egret_resend_event, eg, 0, 0, (uint64_t)EGRET_RESEND_DELAY_NS);
+}
+
+// Re-present a reaped response once the bus has settled: raise xcvrSes and
+// clock the attention byte again.  A command the host started in the
+// meantime supersedes the stale reply (egret_process_command clears the
+// flag), and so does a later reap of a different packet.
+static void egret_resend_event(void *source, uint64_t data) {
+    (void)data;
+    egret_t *eg = (egret_t *)source;
+    if (!eg->resend_pending)
+        return;
+    eg->resend_pending = false;
+    // Every parkable packet carries the 4-byte RespHeader; the 2-byte tick
+    // is the one packet that is dropped rather than parked.  Same guard as
+    // Cuda's, for the same reason.
+    if (eg->state != EG_IDLE || eg->tx_len < 4)
+        return; // the host moved on
+    LOG(2, "re-presenting the parked response (%d bytes)", eg->tx_len);
+    egret_begin_send(eg);
+    // No abandonment watchdog on a re-presented reply: the host is
+    // mid-driver-install with interrupts masked -- which is WHY it missed
+    // the first presentation -- and the reply must survive until the
+    // unmask.  A later command still clears it.
+    egret_send_progress(eg);
 }
 
 // Lay down the 4-byte response header [attn, pktType, flags, cmd].
@@ -309,6 +417,7 @@ static void egret_process_pseudo(egret_t *eg) {
 
 // Dispatch a completed command packet by its packet-type byte.
 static void egret_process_command(egret_t *eg) {
+    eg->resend_pending = false; // a new command supersedes a stale reply
     uint8_t pkt_type = (eg->rx_len >= 1) ? eg->rx_buf[0] : PKT_PSEUDO;
     LOG(4, "command pkt type=$%02X len=%d", pkt_type, eg->rx_len);
     switch (pkt_type) {
@@ -377,6 +486,7 @@ void egret_via1_pb_input(egret_t *eg, uint8_t port_b) {
             egret_finish_tx(eg);
         } else if (sys_rise || full_fall) {
             // Host consumed a byte and is ready for the next one.
+            egret_send_progress(eg); // host engaged: cancel the watchdog
             egret_advance_tx(eg);
         }
         break;
@@ -473,8 +583,18 @@ egret_t *egret_init(struct via *via1, struct rtc *rtc, struct adb *adb, struct s
     if (eg->sched) {
         scheduler_new_event_type(eg->sched, "egret", eg, "tick", &egret_tick_event);
         scheduler_new_event_type(eg->sched, "egret", eg, "autopoll", &egret_autopoll_event);
+        scheduler_new_event_type(eg->sched, "egret", eg, "sendto", &egret_send_timeout_event);
+        scheduler_new_event_type(eg->sched, "egret", eg, "resend", &egret_resend_event);
         scheduler_new_cpu_event(eg->sched, &egret_tick_event, eg, 0, 0, (uint64_t)EGRET_TICK_NS);
         scheduler_new_cpu_event(eg->sched, &egret_autopoll_event, eg, 0, 0, (uint64_t)EGRET_AUTOPOLL_NS);
+        // A checkpoint taken with either watchdog in flight re-arms it here;
+        // the flags ride in the plain-data block above via1.  (Cuda re-arms
+        // send_timeout_pending but not resend_pending -- a gap on that side,
+        // left for R-1's consolidation rather than changed here.)
+        if (eg->send_timeout_pending)
+            scheduler_new_cpu_event(eg->sched, &egret_send_timeout_event, eg, 0, 0, (uint64_t)EGRET_SEND_ABANDON_NS);
+        if (eg->resend_pending)
+            scheduler_new_cpu_event(eg->sched, &egret_resend_event, eg, 0, 0, (uint64_t)EGRET_RESEND_DELAY_NS);
     }
 
     LOG(1, "Egret init (firmware Egret8)");
