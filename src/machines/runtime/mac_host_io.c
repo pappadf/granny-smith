@@ -27,12 +27,13 @@ bool mac_fd_present(config_t *cfg, int drive) {
     return cfg->floppy ? floppy_is_inserted(cfg->floppy, drive) : true;
 }
 
-int mac_input_key(config_t *cfg, const char *key, bool down) {
+// Every Mac family already spoke ADB keycodes at this boundary: the same int
+// reaches the ADB transceiver or, on a Plus, keyboard.c, which converts to the
+// M0110A's wire codes.  All this ever added was the name lookup, which now
+// happens once above the substrate.
+int mac_input_key(config_t *cfg, int adb_code, bool down) {
     (void)cfg;
-    int keycode = debug_mac_resolve_key_name(key);
-    if (keycode < 0)
-        return -1; // unknown key name
-    system_keyboard_update(down ? key_down : key_up, keycode);
+    system_keyboard_update(down ? key_down : key_up, adb_code);
     return 0;
 }
 

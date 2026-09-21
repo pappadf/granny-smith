@@ -848,9 +848,28 @@ which is why there are no separate lower-case codes.
 Two entries to check a transcription against: `$EB` is `H` held down (`$6B` with
 bit 7 set) — the boot menu's "boot from ProFile" key — and `$F2` is `3`.
 
-`src/machines/lisa/lisa.c`'s `lisa_resolve_key_name()` implements this, so
+`src/machines/lisa/lisa_keymap.c` carries this table, and beside it the
+**ADB keycode → Lisa keycode** map the substrate actually uses, so
 `keyboard.press("h")` and `keyboard.down "shift"` work on the Lisa the way they
-do on a Mac.
+do on a Mac. Key identity across the model is the ADB virtual keycode
+(`machine_profile.h`'s `input_key`) — names are resolved once, above the
+substrate, and never reach a machine.
+
+The ROM's **row comments** are what make that map writable: they name the
+physical key behind each code, including which are on the keypad. The ASCII
+column alone cannot, because keypad `5` and main-row `5` both produce `'5'`.
+An earlier resolver inverted that column by character and so sent
+`keyboard.press "5"` to the keypad; `tests/unit/suites/lisa_keymap` now checks
+the map against the ROM table in both directions, and pins the keypad split
+for all ten digits.
+
+Keys one keyboard has and the other does not are **refused, not substituted** —
+the Lisa has no Control and no function keys, no backquote and no backslash;
+the ADB keypad's `*`, `+`, `/` and `=` have no Lisa equivalent.
+
+For the rows that drive the COPS wire rather than press a key —
+the boot menu and the Xenix installer — `machine.adb.keyboard.raw 0xC8` sends
+that byte exactly as given, direction bit and all. No Mac implements it.
 
 ### 11.4 Mouse
 

@@ -31,7 +31,7 @@ bool mac_fd_present(struct config *cfg, int drive);
 // Host input: resolve + inject through the Mac keyboard / Toolbox-cursor path.
 // `down` distinguishes key-press from key-release; `mode` is the cursor mode
 // ("default" / "global" / "hw" / "aux").
-int mac_input_key(struct config *cfg, const char *key, bool down);
+int mac_input_key(struct config *cfg, int adb_code, bool down);
 int mac_input_mouse_move(struct config *cfg, int x, int y, const char *mode);
 int mac_input_mouse_button(struct config *cfg, bool down, const char *mode);
 

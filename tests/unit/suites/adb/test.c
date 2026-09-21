@@ -57,12 +57,23 @@ void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t
 void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
     (void)cp, (void)data, (void)size, (void)file, (void)line;
 }
-void system_input_key(int key, bool down) {
-    (void)key, (void)down;
+int system_input_key(int adb_code, bool down) {
+    (void)adb_code, (void)down;
+    return 0;
 }
-// keyboard.type()'s character lookup; this suite drives raw port-B writes.
+int system_input_key_raw(uint8_t byte) {
+    (void)byte;
+    return -1;
+}
+// keyboard.type()'s character lookup, and the key-name resolver the object
+// surface uses; this suite drives raw port-B writes and the auto-poll engine,
+// neither of which goes near either.
 int debug_mac_resolve_ascii(char c, bool *shift) {
     (void)c, (void)shift;
+    return -1;
+}
+int debug_mac_resolve_key_name(const char *name) {
+    (void)name;
     return -1;
 }
 

@@ -1409,65 +1409,104 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
 // "esc", a-z, 0-9 …) resolved by debug_mac_resolve_key_name, or an
 // integer ADB virtual keycode (0x00–0x7F).
 
-// Shared arg decode for press/down/up: a string name or an integer ADB
-// virtual keycode, rendered into hexbuf when numeric.
-static const char *keyboard_key_display_name(const value_t *arg, char *hexbuf, size_t hexbuf_size) {
+// Shared arg decode for press/down/up: a key NAME or an ADB virtual keycode.
+// Both resolve to an ADB keycode here, once, because that is the model's
+// universal key identity -- see machine_profile.h's input_key.  Substrates
+// never see a name, and an integer means the same key on every machine.
+//
+// It used to render the integer back into "0x%02x" and hand the string down
+// for each substrate to re-parse, which is how `keyboard.press 0xC8` came to
+// mean an ADB keycode on a Mac and a raw COPS wire byte on a Lisa.  The wire
+// form has its own method now (`keyboard.raw`).
+static int keyboard_arg_keycode(const value_t *arg) {
+    if (arg->kind == V_STRING)
+        return arg->s ? debug_mac_resolve_key_name(arg->s) : -1;
+    if (arg->kind == V_INT || arg->kind == V_UINT) {
+        long long raw = (arg->kind == V_INT) ? (long long)arg->i : (long long)arg->u;
+        return (raw >= 0 && raw <= 0x7F) ? (int)raw : -1;
+    }
+    return -1;
+}
+
+// How the key was spelled, for an error message.
+static const char *keyboard_arg_text(const value_t *arg, char *buf, size_t size) {
     if (arg->kind == V_STRING)
         return arg->s ? arg->s : "";
     if (arg->kind == V_INT || arg->kind == V_UINT) {
         long long raw = (arg->kind == V_INT) ? (long long)arg->i : (long long)arg->u;
-        snprintf(hexbuf, hexbuf_size, "0x%02llx", raw);
-        return hexbuf;
+        snprintf(buf, size, "0x%02llx", raw);
+        return buf;
     }
-    return NULL;
+    return "?";
 }
 
 static value_t keyboard_method_press(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    char hexbuf[8];
-    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
-    if (!display_name)
-        return val_err("keyboard.press: key must be a string name or integer keycode");
+    char buf[8];
+    const char *as_written = keyboard_arg_text(&argv[0], buf, sizeof(buf));
+    int code = keyboard_arg_keycode(&argv[0]);
+    if (code < 0)
+        return val_err("keyboard.press: unknown key '%s'", as_written);
 
     // Tap (down then up) through the machine substrate: Macs inject via the
     // keyboard / Toolbox path, the Lisa via its COPS — one uniform path
-    // (proposal §4.4).  A negative result means the key name didn't resolve.
-    if (system_input_key(display_name, true) < 0)
-        return val_err("keyboard.press: unknown key '%s'", display_name);
-    system_input_key(display_name, false);
-    LOG(3, "keyboard.press: key=%s", display_name);
+    // (proposal §4.4).  A negative result here means this KEYBOARD has no
+    // such key, which is a different thing from an unknown name: the Lisa has
+    // no Control key and no function keys.
+    if (system_input_key(code, true) < 0)
+        return val_err("keyboard.press: this machine's keyboard has no '%s' key", as_written);
+    system_input_key(code, false);
+    LOG(3, "keyboard.press: key=%s adb=0x%02X", as_written, code);
     return val_bool(true);
 }
 
 // `keyboard.down(key)` / `keyboard.up(key)` — the two halves of press, for
 // chords that hold a modifier across another key (e.g. Shift+/ to type '?').
+static value_t keyboard_half(const value_t *arg, bool down, const char *what) {
+    char buf[8];
+    const char *as_written = keyboard_arg_text(arg, buf, sizeof(buf));
+    int code = keyboard_arg_keycode(arg);
+    if (code < 0)
+        return val_err("keyboard.%s: unknown key '%s'", what, as_written);
+    if (system_input_key(code, down) < 0)
+        return val_err("keyboard.%s: this machine's keyboard has no '%s' key", what, as_written);
+    LOG(3, "keyboard.%s: key=%s adb=0x%02X", what, as_written, code);
+    return val_bool(true);
+}
+
 static value_t keyboard_method_down(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    char hexbuf[8];
-    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
-    if (!display_name)
-        return val_err("keyboard.down: key must be a string name or integer keycode");
-    if (system_input_key(display_name, true) < 0)
-        return val_err("keyboard.down: unknown key '%s'", display_name);
-    LOG(3, "keyboard.down: key=%s", display_name);
-    return val_bool(true);
+    return keyboard_half(&argv[0], true, "down");
 }
 
 static value_t keyboard_method_up(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    char hexbuf[8];
-    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
-    if (!display_name)
-        return val_err("keyboard.up: key must be a string name or integer keycode");
-    if (system_input_key(display_name, false) < 0)
-        return val_err("keyboard.up: unknown key '%s'", display_name);
-    LOG(3, "keyboard.up: key=%s", display_name);
+    return keyboard_half(&argv[0], false, "up");
+}
+
+// `keyboard.raw(byte)` — inject one byte in the machine's own keyboard
+// encoding, direction bit and all.  Deliberately not portable: it is for
+// tests that drive a keyboard wire rather than press a key.  The Lisa's COPS
+// carries down/up in bit 7, so `raw 0xC8` is "$48 down" and `raw 0x48` is
+// "$48 up"; no Mac implements this and the error says so.
+static value_t keyboard_method_raw(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    if (argv[0].kind != V_INT && argv[0].kind != V_UINT)
+        return val_err("keyboard.raw: expected a byte");
+    long long raw = (argv[0].kind == V_INT) ? (long long)argv[0].i : (long long)argv[0].u;
+    if (raw < 0 || raw > 0xFF)
+        return val_err("keyboard.raw: 0x%llx is not a byte", raw);
+    if (system_input_key_raw((uint8_t)raw) < 0)
+        return val_err("keyboard.raw: this machine has no raw keyboard encoding — use press/down/up with a key name");
+    LOG(3, "keyboard.raw: 0x%02llX", raw);
     return val_bool(true);
 }
 
@@ -1547,6 +1586,10 @@ static void adb_typed_key_deferred(void *source, uint64_t data) {
     adb_keyboard_event(adb, (data & 1u) ? key_down : key_up, (int)((data >> 1) & 0xFFu));
 }
 
+static const arg_decl_t keyboard_raw_args[] = {
+    {.name = "byte", .kind = V_UINT, .doc = "Raw keyboard byte in the machine's own encoding"},
+};
+
 static const arg_decl_t keyboard_type_args[] = {
     {.name = "text", .kind = V_STRING, .doc = "Text to type; newline types Return, tab types Tab"},
 };
@@ -1573,6 +1616,10 @@ static const member_t keyboard_members[] = {
      .name = "type",
      .doc = "Type a short line of text (US layout; newline = Return)",
      .method = {.args = keyboard_type_args, .nargs = 1, .result = V_UINT, .fn = keyboard_method_type}  },
+    {.kind = M_METHOD,
+     .name = "raw",
+     .doc = "Inject one byte in this machine's own keyboard encoding (Lisa COPS only)",
+     .method = {.args = keyboard_raw_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_raw}    },
 };
 
 const class_desc_t keyboard_class = {

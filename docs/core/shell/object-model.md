@@ -300,7 +300,8 @@ kind" sentinel — the framework skips kind / width / enum checks
 and the body discriminates the input. Used for legitimately
 multi-kind attributes and parameters: `machine.rtc.time` accepts either an
 ISO-8601 string or a Mac-epoch integer; `machine.adb.keyboard.press` accepts
-either a key name or an ADB keycode; `machine.memory.dump.addr` accepts
+either a key name or an ADB keycode (and an integer means the same key on
+every machine — the Lisa's own wire bytes live on `keyboard.raw`); `machine.memory.dump.addr` accepts
 either an address integer or an alias / expression string. Most
 slots should declare a concrete kind; the sentinel is reserved for
 genuine dual-input shapes.

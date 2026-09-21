@@ -100,7 +100,11 @@ These are wired generically: `machine.h`'s `hw_profile_t.input_key /
 input_mouse_move / input_mouse_button` hooks let the standard `keyboard` /
 `mouse` object methods (`keyboard.press`, `mouse.move`, `mouse.click`) route to
 the Lisa COPS (via `system_input_*` in `system.c`) instead of the default Mac
-ADB/Toolbox path — which is untouched, so Mac machines are unaffected.  Verified:
+ADB/Toolbox path — which is untouched, so Mac machines are unaffected.
+`input_key` takes an **ADB virtual keycode**, the model's universal key
+identity; `lisa_keymap.c` translates it to a COPS keycode. A fourth hook,
+`input_key_raw`, carries a COPS wire byte verbatim for the rows that are
+testing the wire (`keyboard.raw`), and is NULL on every Mac.  Verified:
 keycodes and `[$00,dx,dy]` reports are delivered to and consumed by the OS's
 COPS state machine, and `MouseMovement` updates the OS cursor globals.  (Note: the
 Lisa boot **menu** is mouse-driven — its input loop watches for the mouse-button

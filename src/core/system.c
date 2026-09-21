@@ -332,11 +332,19 @@ config_t *system_config(void) {
 // (keyboard / Toolbox cursor), the Lisa to its COPS — so there is one uniform
 // path and no caller-side fallback.  Each returns 0 on success, <0 on failure
 // (unknown key/mode, uninitialised memory, no machine).
-int system_input_key(const char *key, bool down) {
+int system_input_key(int adb_code, bool down) {
     config_t *cfg = global_emulator;
     if (!cfg || !cfg->machine || !cfg->machine->substrate->input_key)
         return -1;
-    return cfg->machine->substrate->input_key(cfg, key, down);
+    if (adb_code < 0 || adb_code > 0x7F)
+        return -1;
+    return cfg->machine->substrate->input_key(cfg, adb_code, down);
+}
+int system_input_key_raw(uint8_t byte) {
+    config_t *cfg = global_emulator;
+    if (!cfg || !cfg->machine || !cfg->machine->substrate->input_key_raw)
+        return -1;
+    return cfg->machine->substrate->input_key_raw(cfg, byte);
 }
 int system_input_mouse_move(int x, int y, const char *mode) {
     config_t *cfg = global_emulator;

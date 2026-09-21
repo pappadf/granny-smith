@@ -25,6 +25,7 @@
 #include "display.h"
 #include "image.h"
 #include "lisa_fdc.h"
+#include "lisa_keymap.h"
 #include "lisa_mmu.h"
 #include "lisa_profile.h"
 #include "log.h"
@@ -362,139 +363,34 @@ static void lisa_profile_update_lines(config_t *cfg) {
         via_input(cfg->via2, 1, 0, !connected); // PB0 = OCD/ (0 = connected)
     lisa_profile_bsy(cfg, false); // idle: not busy
 }
-
-// ============================================================
-// Host input → COPS (keyboard scancodes, mouse deltas + button)
-// ============================================================
+// keyboard.press / down / up -> the Lisa COPS, by ADB keycode.
 //
-// hw_profile_t.input_* hooks: the `keyboard`/`mouse` object methods route here
-// (instead of the Mac ADB/Toolbox path) because the Lisa's input device is the
-// COPS, which uses its own keycodes and a relative-delta mouse (§11.4).
-
-// Resolve a key NAME to a Lisa COPS keycode ($20-$7F), or -1.
-//
-// The table is the boot ROM's own, transcribed: `AsciiTable` in
-// local/gs-docs/projects/Lisa/AppleLisa - Boot ROM Source/Lisa Boot ROM
-// RM248.G.TEXT, 96 bytes covering keycodes $20..$7F.  The indexing law is in
-// "Lisa Boot ROM Asm Listing" (`KeyToAscii`): ANDI #$007F,D1 then
-// SUBI #32,D1 -- so AsciiTable[0] is keycode $20 and bit 7 is the direction
-// bit, not part of the index.
-//
-// docs/machines/lisa/lisa.md §11.3 documents the wire encoding but carries no
-// keycode table, which is why F-22's suggested fix pointed at something that
-// does not exist.  The two examples in this file's own history check out
-// against the transcription: $EB -> $6B = 'H' (the boot menu's ProFile key)
-// and $F2 -> $72 = '3'.
-//
-// Entries the ROM leaves at $00 are keys with no ASCII form (Option, Tab,
-// Alpha Lock, Shift, Command) or unused slots; they are spelled out by name
-// below rather than derived.
-static int lisa_resolve_key_name(const char *name) {
-    if (!name || !*name)
+// lisa.md §11.3 documents the COPS byte as `d rrr nnnn` with d=1 down / d=0
+// up, and the boot ROM's ReadKey does `TST.B D0 / BPL.S ReadKey` to SKIP up
+// transitions -- which only makes sense because they arrive.  Until
+// 2026-09-21 the up leg was a no-op and only a raw wire byte was accepted, so
+// `keyboard.press("return")` failed with "unknown key" and no chord could
+// hold a modifier.
+static int lisa_input_key(config_t *cfg, int adb_code, bool down) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls || !ls->cops)
         return -1;
-
-    // AsciiTable[i] is the ASCII the ROM produces for keycode $20 + i.
-    static const unsigned char ascii_table[96] = {
-        /* $20 */ 0x1B, 0x2D, 0x11, 0x12, 0x37, 0x38, 0x39, 0x14,
-        /* $28 */ 0x34, 0x35, 0x36, 0x13, 0x2E, 0x32, 0x33, 0x03,
-        /* $30 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        /* $38 */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        /* $40 */ 0x2D, 0x3D, 0x00, 0x00, 0x50, 0x08, 0x00, 0x00,
-        /* $48 */ 0x0D, 0x30, 0x00, 0x00, 0x2F, 0x31, 0x00, 0x00,
-        /* $50 */ 0x39, 0x30, 0x55, 0x49, 0x4A, 0x4B, 0x5B, 0x5D,
-        /* $58 */ 0x4D, 0x4C, 0x3B, 0x27, 0x20, 0x2C, 0x2E, 0x4F,
-        /* $60 */ 0x45, 0x36, 0x37, 0x38, 0x35, 0x52, 0x54, 0x59,
-        /* $68 */ 0x00, 0x46, 0x47, 0x48, 0x56, 0x43, 0x42, 0x4E,
-        /* $70 */ 0x41, 0x32, 0x33, 0x34, 0x31, 0x51, 0x53, 0x57,
-        /* $78 */ 0x00, 0x5A, 0x58, 0x44, 0x00, 0x00, 0x00, 0x00,
-    };
-
-    // Keys with no ASCII form, plus friendlier spellings for those that have
-    // one.  Names match debug_mac_resolve_key_name's where they overlap, so a
-    // script reads the same on a Lisa and a Mac.
-    static const struct {
-        const char *name;
-        int code;
-    } named[] = {
-        {"return",    0x48},
-        {"enter",     0x2F},
-        {"space",     0x5C},
-        {"tab",       0x78},
-        {"backspace", 0x45},
-        {"delete",    0x45},
-        {"clear",     0x20},
-        {"up",        0x27},
-        {"down",      0x2B},
-        {"left",      0x22},
-        {"right",     0x23},
-        {"shift",     0x7E},
-        {"option",    0x68},
-        {"alt",       0x68},
-        {"command",   0x7F},
-        {"cmd",       0x7F},
-        {"apple",     0x7F},
-        {"capslock",  0x7D},
-        {"caps",      0x7D},
-        {"alphalock", 0x7D},
-    };
-    for (size_t i = 0; i < sizeof named / sizeof named[0]; i++)
-        if (strcasecmp(name, named[i].name) == 0)
-            return named[i].code;
-
-    // A single printable character resolves by inverting the ROM table.  The
-    // table holds upper-case letters, so fold the input; the Lisa has no
-    // separate lower-case keycodes (the comment in RM248.G.TEXT says the
-    // table "assumes alpha-lock so upper case only").
-    if (name[1] == '\0') {
-        unsigned char want = (unsigned char)toupper((unsigned char)name[0]);
-        for (int i = 0; i < 96; i++)
-            if (ascii_table[i] == want)
-                return 0x20 + i;
-    }
-    return -1;
+    uint8_t code = lisa_keycode_for_adb(adb_code);
+    if (code == LISA_NO_KEY)
+        return -1; // a key this keyboard does not have
+    cops_inject_key(ls->cops, (uint8_t)(down ? (code | 0x80) : (code & 0x7F)));
+    return 0;
 }
 
-// keyboard.press / down / up -> the Lisa COPS.
-//
-// Two accepted forms, deliberately different:
-//
-//   "0xNN"  a raw COPS wire byte, injected VERBATIM on the down leg and
-//           ignored on the up leg.  The caller is supplying the whole byte
-//           including bit 7 (the direction bit), so honouring it literally is
-//           the only sane reading -- `press 0xC8` means "send $C8", not "send
-//           $C8 then $48".  This is what the boot-menu rows use.
-//
-//   a name  "h", "3", "return", "space", "shift", ... resolved through the
-//           boot ROM's own layout table (see lisa_resolve_key_name) and then
-//           given the direction bit: `| 0x80` on down, `& ~0x80` on up.
-//
-// Until 2026-09-21 only the first form existed and the up leg was a no-op, so
-// `keyboard.press("return")` failed with "unknown key" and no chord could
-// hold a modifier.  Both were drift rather than hardware: lisa.md §11.3
-// documents the byte as `d rrr nnnn` with d=1 down / d=0 up, and the boot
-// ROM's ReadKey does `TST.B D0 / BPL.S ReadKey` to SKIP up transitions --
-// which only makes sense because they arrive.
-static int lisa_input_key(config_t *cfg, const char *key, bool down) {
+// A raw COPS byte, direction bit included -- `raw 0xC8` sends $C8 and nothing
+// else.  The boot-menu and Xenix-install rows drive the wire this way because
+// that is what they are testing; it is not a portable key press, and the
+// substrate hook is NULL on every other machine.
+static int lisa_input_key_raw(config_t *cfg, uint8_t byte) {
     lisa_state_t *ls = lisa_state(cfg);
-    if (!ls || !ls->cops || !key)
+    if (!ls || !ls->cops)
         return -1;
-
-    if (key[0] == '0' && (key[1] == 'x' || key[1] == 'X')) {
-        if (!down)
-            return 0; // explicit wire byte: the caller owns the direction bit
-        char *end = NULL;
-        long v = strtol(key, &end, 16);
-        if (end && *end == '\0' && v >= 0 && v <= 0xFF) {
-            cops_inject_key(ls->cops, (uint8_t)v);
-            return 0;
-        }
-        return -1;
-    }
-
-    int code = lisa_resolve_key_name(key);
-    if (code < 0)
-        return -1; // unknown name (no Mac fallback on the Lisa)
-    cops_inject_key(ls->cops, (uint8_t)(down ? (code | 0x80) : (code & 0x7F)));
+    cops_inject_key(ls->cops, byte);
     return 0;
 }
 
@@ -1354,6 +1250,7 @@ static const machine_substrate_t lisa_substrate = {
     .fd_insert = lisa_fd_insert,
     .fd_present = lisa_fd_present,
     .input_key = lisa_input_key,
+    .input_key_raw = lisa_input_key_raw,
     .input_mouse_move = lisa_input_mouse_move,
     .input_mouse_button = lisa_input_mouse_button,
     .media_detach = lisa_media_detach,
