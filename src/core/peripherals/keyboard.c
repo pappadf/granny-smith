@@ -143,7 +143,19 @@ static void keyboard_tx_callback(void *source, uint64_t data) {
         remove_event(keyboard->scheduler, &keyboard_timeout_callback, (void *)keyboard);
     } else if (keyboard->active_cmd == CMD_INSTANT) {
         LOG(3, "keyboard_tx_callback: INSTANT with empty queue, sending NULL_RESPONSE");
-        assert(!has_event(keyboard->scheduler, &keyboard_timeout_callback));
+
+        // This used to assert that no timeout was armed.  It is an ordinary
+        // guest sequence that arms one: INQUIRY schedules the 250 ms timer
+        // and nothing cancels it when a later command supersedes it, so an
+        // INSTANT arriving with the queue still empty finds it live.  The
+        // INSTANT answers now, which is precisely what the INQUIRY's timeout
+        // was there to do if nothing else did; leaving it armed would put a
+        // second, unsolicited NULL_RESPONSE on the wire 250 ms later.
+        if (has_event(keyboard->scheduler, &keyboard_timeout_callback)) {
+            LOG(2, "keyboard_tx_callback: dropping the INQUIRY timeout superseded by this INSTANT");
+            remove_event(keyboard->scheduler, &keyboard_timeout_callback, (void *)keyboard);
+        }
+
         tx_to_via(keyboard, NULL_RESPONSE);
     } else {
         LOG(3, "keyboard_tx_callback: no data, setting tx_pending=true");

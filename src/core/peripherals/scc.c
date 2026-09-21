@@ -534,8 +534,23 @@ static uint8_t rr8(ch_t *ch) {
     // Check if local loopback mode is enabled (WR14 bit 4)
     bool loopback_mode = (ch->wr[14] & 0x10) != 0;
 
+    // Frame assembly is modelled on channel B, the Mac's LocalTalk channel.
+    // Channel A in SDLC is perfectly legal -- Z8530 UM §1, "two independent
+    // full-duplex channels" -- and a bare guest can put bytes in channel A's
+    // receive buffer in four register writes: WR14 |= $10 for internal
+    // loopback, write WR8 (the byte lands in ch[0].rx.buf), WR14 &= ~$10,
+    // then WR4 to select SDLC.  A script's scc.a.receive() does the same.
+    // This used to be `assert(ch->index == 1)` below.
+    //
+    // Whatever is in that buffer arrived as plain bytes, so reading it as
+    // async is the right answer for it; only the framing is missing.  That
+    // makes this the LOG-and-fall-back case, not GS_UNIMPLEMENTED, which
+    // would stop the scheduler over a read the model can honestly serve.
+    if (SDLC_MODE(ch) && ch->index != 1)
+        LOG(1, "rr8: SDLC receive is not modelled on channel A; reading the byte as async");
+
     // In loopback or non-SDLC mode, use simple async byte read
-    if (loopback_mode || !SDLC_MODE(ch)) {
+    if (loopback_mode || !SDLC_MODE(ch) || ch->index != 1) {
         // Simple byte read from circular buffer
         uint8_t value = ch->rx.buf[ch->rx.tail++];
 
@@ -550,8 +565,6 @@ static uint8_t rr8(ch_t *ch) {
     }
 
     // SDLC mode handling
-    assert(ch->index == 1);
-
     if (RX_LEN(ch) < 3) {
         bool was_eof = (ch->rr[1] & RR1_END_OF_FRAME) != 0;
         ch->rr[1] |= RR1_END_OF_FRAME | RR1_RESIDUE_8BIT;
@@ -1089,10 +1102,29 @@ bool scc_sdlc_ready(const scc_t *restrict scc) {
 int scc_sdlc_send(scc_t *restrict scc, uint8_t *buf, size_t len) {
     ch_t *ch = &scc->ch[1];
 
-    assert(SDLC_MODE(ch));
-
-    assert(len >= 3);
-    assert(len <= SDLC_MAX_FRAME);
+    // Every one of these three was an assert.  None of them could be.
+    //
+    // SDLC_MODE: appletalk.c reaches here from its RTS retry timer and its
+    // CTS handler, neither of which repeats llap_send's scc_sdlc_ready
+    // check.  The frame was queued while the channel was in SDLC, so the
+    // guest has to leave SDLC between the enqueue and the retry -- inside a
+    // 2 ms RTS timeout, or between an RTS and its CTS.  An AppleTalk
+    // shutdown or a WR4 rewrite does exactly that.
+    //
+    // The length bounds are a host-stack contract, but SDLC_MAX_FRAME is a
+    // BUFFER BOUND: rx_queue_enqueue memcpys len bytes into a slot that
+    // size.  gs_assert_fail RETURNS, so even a live GS_ASSERT would report
+    // and then overflow; and the release profile (-DGS_FAST -DNDEBUG)
+    // strips assert and GS_ASSERT alike.  A bounds check has to be a
+    // runtime check in every build or it is not a check.
+    if (!SDLC_MODE(ch)) {
+        LOG(1, "scc_sdlc_send: channel B left SDLC mode before the frame went out; dropping len=%zu", len);
+        return -1;
+    }
+    if (len < 3 || len > SDLC_MAX_FRAME) {
+        LOG(1, "scc_sdlc_send: frame length %zu outside [3, %d]; dropping", len, SDLC_MAX_FRAME);
+        return -1;
+    }
 
     if (rx_queue_enqueue(ch, buf, len) != 0) {
         LOG(1, "scc:rx queue full dropping len=%zu", len);
