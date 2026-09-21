@@ -14,6 +14,7 @@
 
 #include "checkpoint.h"
 #include "log.h"
+#include "mouse.h"
 #include "scheduler.h"
 #include "via.h"
 
@@ -38,13 +39,28 @@ LOG_USE_CATEGORY_NAME("cops");
 #define COPS_BTN_DOWN 0x86
 #define COPS_BTN_UP   0x06
 
-// Clamp accumulated mouse movement to the signed-byte report range.
-#define COPS_DELTA_CLAMP(v) ((v) > 127 ? 127 : ((v) < -127 ? -127 : (v)))
+// Accumulated mouse movement clamps to the signed-byte report range
+// (lisa.md §11.4).  This was a function-like macro that evaluated its argument
+// three times; the shared input_clamp_delta() in mouse.h replaced it.
+#define COPS_DELTA_MAX 127
 
 // Mouse report interval: nnn (command low 3 bits) × 4 ms.  At the Lisa's
-// 5.09375 MHz CPU, 4 ms ≈ 20375 cycles.  Once enabled, the COPS reports every
-// interval even when idle (dx=dy=0) — the boot ROM's COPS input loop (WT4INPUT)
-// blocks on these, so the periodic report is what keeps boot alive.
+// 5.09375 MHz CPU, 4 ms ≈ 20375 cycles.
+//
+// The interval is when we CHECK for accumulated motion, not a heartbeat: a
+// report goes out only if there is movement to report.  See cops_mouse_tick,
+// which records why (flooding idle reports desynchronises the host's
+// multi-byte decoder and made the keyboard unusable at the Xenix boot-loader
+// prompt).
+//
+// This comment used to claim the opposite — that the COPS reports every
+// interval even when idle and that those reports are "what keeps boot alive"
+// — while the emitter 175 lines below said, at length, that it does not.  The
+// emitter is right; ReadCOPS in the boot ROM (RM248.M.TEXT) is an unbounded
+// spin on VIA1 IFR with no timeout, and every WT4INPUT caller is a menu state
+// machine with nothing to do until input arrives, so nothing needs a
+// heartbeat.  Leaving the wrong half here next to the constant was how a
+// future editor would have reinstated the Xenix bug from inside this file.
 #define COPS_MOUSE_4MS_CYCLES 20375
 
 // Response pacing: re-check host consumption this many CPU cycles apart.  The
@@ -84,6 +100,8 @@ struct cops {
     bool mouse_scheduled;
     int8_t mouse_dx; // accumulated movement, reset on each report
     int8_t mouse_dy;
+    int mouse_carry_x; // motion that did not fit the last clamp, re-added below
+    int mouse_carry_y;
     bool mouse_button; // last host-injected button state (for edge detection)
 
     // Absolute-positioning "warp" (mouse.move x y "global").  The Lisa mouse is
@@ -107,14 +125,45 @@ static bool fifo_empty(const cops_t *c) {
     return c->head == c->tail;
 }
 
-static void fifo_push(cops_t *c, uint8_t byte) {
-    int next = (c->tail + 1) % COPS_FIFO;
-    if (next == c->head) {
-        LOG(1, "cops response FIFO full, dropping 0x%02x", byte);
+static int fifo_free(const cops_t *c) {
+    int used = (c->tail - c->head + COPS_FIFO) % COPS_FIFO;
+    return COPS_FIFO - 1 - used; // one slot always kept to distinguish full/empty
+}
+
+static void fifo_push_raw(cops_t *c, uint8_t byte) {
+    c->fifo[c->tail] = byte;
+    c->tail = (c->tail + 1) % COPS_FIFO;
+}
+
+// Enqueue a whole COPS response, or none of it.
+//
+// The FIFO carries FRAMED messages -- a 3-byte mouse report ($00 dx dy), a
+// 2-byte reset/status reply, a 7-byte clock reply -- and the host decodes
+// them as multi-byte sequences.  Pushing byte-at-a-time meant a FIFO with
+// room for two bytes of a three-byte report stored a partial message and
+// desynchronised that decoder.  That is the same failure the emitter below
+// records as having made the keyboard unusable at the Xenix boot-loader
+// prompt; it was simply reachable a second way.
+//
+// So the unit of overflow is the MESSAGE.  Note this is deliberately NOT the
+// drop-oldest policy adb.c and keyboard.c use: their rings are unframed, one
+// entry per key transition, so dropping the oldest byte loses one event and
+// nothing else.  Dropping the oldest BYTE here would desynchronise the
+// decoder exactly as a partial write does.  (06-io-controllers F-26, N-09.)
+static void fifo_push_msg(cops_t *c, const uint8_t *bytes, int n) {
+    if (n <= 0)
+        return;
+    if (fifo_free(c) < n) {
+        LOG(1, "cops response FIFO full, dropping a %d-byte message (first byte 0x%02x)", n, bytes[0]);
         return;
     }
-    c->fifo[c->tail] = byte;
-    c->tail = next;
+    for (int i = 0; i < n; i++)
+        fifo_push_raw(c, bytes[i]);
+}
+
+// Single-byte messages (a key code, a reset lead-in) are still messages.
+static void fifo_push(cops_t *c, uint8_t byte) {
+    fifo_push_msg(c, &byte, 1);
 }
 
 // Drive CRDY (PB6) — an input pin to the VIA, sourced by the COPS.
@@ -234,11 +283,14 @@ static void cops_mouse_tick(void *source, uint64_t data) {
     // coordinate.  This made the keyboard unusable at the Xenix boot-loader prompt.
     // LOS cursor warp/move still works — it sets non-zero deltas while converging.
     if (c->mouse_dx != 0 || c->mouse_dy != 0) {
-        fifo_push(c, COPS_MOUSE_MARK);
-        fifo_push(c, (uint8_t)c->mouse_dx);
-        fifo_push(c, (uint8_t)c->mouse_dy);
-        c->mouse_dx = 0; // deltas reset once reported
-        c->mouse_dy = 0;
+        const uint8_t report[3] = {COPS_MOUSE_MARK, (uint8_t)c->mouse_dx, (uint8_t)c->mouse_dy};
+        fifo_push_msg(c, report, 3);
+        // Reported deltas clear, but the CARRY does not: it is motion that has
+        // not been reported yet, so it moves into the accumulator and goes out
+        // in the next report.  That is what makes a large mouse.move arrive in
+        // full rather than being truncated to one report's worth.
+        c->mouse_dx = (int8_t)input_clamp_delta(c->mouse_carry_x, -COPS_DELTA_MAX, COPS_DELTA_MAX, &c->mouse_carry_x);
+        c->mouse_dy = (int8_t)input_clamp_delta(c->mouse_carry_y, -COPS_DELTA_MAX, COPS_DELTA_MAX, &c->mouse_carry_y);
         cops_kick_pump(c);
     }
     scheduler_new_cpu_event(c->sched, &cops_mouse_tick, c, 0, c->mouse_interval, 0);
@@ -273,8 +325,8 @@ void cops_soft_power_off(cops_t *c) {
         return;
     // The soft power-off switch is reported like a reset/status response: the
     // $80 lead-in byte followed by the $FB code (docs/machines/lisa/lisa.md §11.2).
-    fifo_push(c, COPS_RSTCODE);
-    fifo_push(c, COPS_PWROFF);
+    const uint8_t pwroff[2] = {COPS_RSTCODE, COPS_PWROFF};
+    fifo_push_msg(c, pwroff, 2);
     cops_kick_pump(c);
     LOG(1, "cops soft power-off ($80 $FB)");
 }
@@ -299,8 +351,17 @@ void cops_inject_mouse(cops_t *c, int dx, int dy, int button) {
     c->warp_active = false; // an explicit relative move cancels any pending warp
     // Accumulate deltas the way the real COPS sums pulse edges between reports;
     // cops_mouse_tick emits them (guest must have enabled mouse interrupts).
-    c->mouse_dx = (int8_t)COPS_DELTA_CLAMP((int)c->mouse_dx + dx);
-    c->mouse_dy = (int8_t)COPS_DELTA_CLAMP((int)c->mouse_dy + dy);
+    // Clamp with CARRY, not destructively.  The leftover is re-added to the
+    // accumulator so the next report continues the motion, the way a real
+    // counter would -- adb.c has always done this and cops.c discarded the
+    // overflow, so a large synthetic mouse.move silently lost distance here.
+    // Unreachable from a human hand (a real mouse never produces >127 counts
+    // in one 4 ms interval), which is exactly why only injection saw it.
+    // The carry from last time is part of this injection's motion.
+    int total_x = (int)c->mouse_dx + dx + c->mouse_carry_x;
+    int total_y = (int)c->mouse_dy + dy + c->mouse_carry_y;
+    c->mouse_dx = (int8_t)input_clamp_delta(total_x, -COPS_DELTA_MAX, COPS_DELTA_MAX, &c->mouse_carry_x);
+    c->mouse_dy = (int8_t)input_clamp_delta(total_y, -COPS_DELTA_MAX, COPS_DELTA_MAX, &c->mouse_carry_y);
     if (button >= 0) {
         bool down = button != 0;
         if (down != c->mouse_button) {
@@ -328,10 +389,14 @@ static void cops_command(cops_t *c, uint8_t cmd) {
         // marker (y = year nibble), then 5 packed time bytes (docs §11.5).  A
         // zeroed time is a valid default; the deterministic/real clock layers
         // in with the RTC work (Step 9).
-        fifo_push(c, COPS_RSTCODE); // $80
-        fifo_push(c, 0xE0); // clock-data marker
-        for (int i = 0; i < 5; i++)
-            fifo_push(c, 0x00); // 5 time bytes
+        // The clock reply is one 7-byte message: $80, the $E0 clock-data
+        // marker, then five time bytes.  READCLK in the boot ROM
+        // (RM248.M.TEXT) reads exactly that shape, so a partial enqueue would
+        // leave it waiting mid-sequence.  The five bytes are zero because the
+        // COPS clock is not modelled -- see 06-io-controllers F-27, which is
+        // deferred pending a decision on the Ey,dd,dh,hm,ms,st format.
+        const uint8_t clock_reply[7] = {COPS_RSTCODE, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00};
+        fifo_push_msg(c, clock_reply, 7);
         cops_kick_pump(c);
     }
     // 0x1n write-clock, 0x2x set-modes, 0x5n/0x6n NMI-key: accepted.
@@ -358,8 +423,8 @@ void cops_via_output(cops_t *c, uint8_t port, uint8_t value) {
         if (c->reset_asserted && !reset_now) {
             // Reset released → report a connected keyboard ($80, id).  No mouse
             // codes are sent, which RSTSCAN reads as "mouse connected".
-            fifo_push(c, COPS_RSTCODE);
-            fifo_push(c, COPS_KBD_ID);
+            const uint8_t reset_id[2] = {COPS_RSTCODE, COPS_KBD_ID};
+            fifo_push_msg(c, reset_id, 2);
             cops_kick_pump(c);
             LOG(1, "cops reset released → keyboard id 0x%02x", COPS_KBD_ID);
         }

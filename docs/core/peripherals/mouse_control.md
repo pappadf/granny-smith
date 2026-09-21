@@ -569,7 +569,7 @@ with and without SCSI loopback, confirming it is an ADB timing issue.
 
 ### Purpose
 
-Prevents phantom ADB data from corrupting MTemp after `set-mouse --global`.
+Prevents phantom ADB data from corrupting MTemp after `mouse.move ... "global"`.
 
 ### Design
 
@@ -637,9 +637,39 @@ approaches for a proper fix:
 - **Buffer pre-clear:** In `adb_autopoll_deferred()`, write zero-delta mouse
   bytes (`$80 $80`) to `ADBBase+$164`/`$165` via direct memory access before
   signaling the ROM.  This is the same approach used by ChromiVNC and MiniVNC.
+  — **CONSIDERED AND REJECTED, 2026-09-21** (06-io-controllers F-55). Three
+  reasons. (1) `ADBBase` is a Mac OS low-memory global invented by the ROM;
+  real ADB hardware knows nothing of it. The guard at least lives in
+  `debug_mac.c`, whose job *is* poking guest globals — moving it into
+  `core/peripherals/adb.c`, the one genuinely shared, transport-agnostic,
+  five-consumer module in that area, would make it depend on classic Mac OS
+  memory layout. That is a worse place, not a better one. (2) The
+  ChromiVNC/MiniVNC precedent does not transfer: those are guest-side INITs,
+  and a program running *inside* the Mac is a legitimate participant in the
+  ROM's data structures. An emulator's device model doing the same thing is
+  impersonating the ROM. (3) Doing it instead from the existing
+  `mouse_guard_tick` in `debug_mac.c` — which already knows `ADBBase` and
+  already runs only on the global-mouse path — dodges (1) and (2), but not the
+  objection below, which is the one that decides it.
 - **SRQ scan audit:** Trace the ROM's SRQ scan path to understand exactly when
   and why the mouse handler is called with keyboard buffer data.  May reveal a
-  state machine timing issue in the emulator.
+  state machine timing issue in the emulator. — A concrete starting point, if
+  anyone takes this up: the SRQ branch of `adb_autopoll_deferred()` fires
+  `IFR_SR` with `reply_len = 0`, i.e. it wakes the ROM with no bytes queued,
+  which is the shape of "the mouse handler runs with the previous device's
+  bytes still in the buffer". Note that branch is the deliberate BUG-008a
+  design (`adb.md`), so this is a hypothesis about it, not a known defect in
+  it.
+
+> **Why the pre-clear is not being implemented.** It is **not testable**.
+> Knowing whether `$80 $80` is the *correct* thing to leave in that buffer
+> requires knowing what a real SE/30 transceiver leaves there, which is not
+> in any source we hold — searched Guide 2e ch. 8, `library/serial/`,
+> `projects/` and `notes/`. The only observable is the fuzzy measurement in
+> §9 above: an error of `(+18, +1)` pixels. A change whose success criterion
+> is "the number got smaller" is exactly what this project's standing rule
+> excludes, so the 1 kHz guard stays and this is recorded as a decision
+> rather than left as an open suggestion.
 
 ### Implementation
 
@@ -651,38 +681,56 @@ Source: `src/core/debug/debug_mac.c`
 
 ---
 
-## 11. Emulator Debugger Commands
+## 11. The mouse object surface
 
-### set-mouse
+> **Rewritten 2026-09-21.** This section documented `set-mouse` and
+> `mouse-button`, which **do not exist** — no such commands are registered
+> anywhere in `src/core/shell/`. They were replaced by the object model, and
+> the doc was never updated; the names survive only in stale comments. The
+> `--global`/`--hw` flags map to the `mode` argument below, and a fourth mode,
+> `aux`, was missing from this document entirely. The retired vocabulary still
+> appears in the *analysis* sections above, which are kept as written because
+> they are a record of how the behaviour was measured.
+
+### `mouse.move`
 
 ```
-set-mouse [--global|--hw] X Y
+mouse.move X Y [mode]
 ```
 
-| Mode | Behavior |
-|------|----------|
-| `--global` | Writes MTemp, RawMouse, Mouse to (X, Y).  Sets CrsrNew = CrsrCouple.  **Activates MTemp guard.**  Recommended for test scripts. |
-| `--hw` | Injects relative deltas (X, Y) through ADB hardware.  Deactivates guard. |
-| (default) | Computes delta from current MTemp to (X, Y), injects via ADB.  Subject to ~6px phantom data error.  Deactivates guard. |
+| `mode` | Behaviour |
+|--------|-----------|
+| `"global"` | Writes MTemp, RawMouse, Mouse to (X, Y).  Sets CrsrNew = CrsrCouple.  **Activates MTemp guard.**  Recommended for test scripts. |
+| `"hw"` | Injects relative deltas (X, Y) through the hardware path — ADB on ADB machines, the quadrature encoder on a Plus.  Deactivates guard. |
+| `"aux"` | A/UX MAE routing. |
+| `"default"` (or omitted) | Computes the delta from the current MTemp to (X, Y) and injects it.  Subject to the ~6 px phantom-data error described in §9.  Deactivates guard. |
 
-**Coordinate convention:** `set-mouse X Y` where X = horizontal (column),
+**Coordinate convention:** `mouse.move X Y` where X = horizontal (column),
 Y = vertical (row).  Origin (0, 0) = top-left of screen.  The Mac Point struct
-stores (v, h) = (Y, X), but the command uses the more natural (X, Y) order.
+stores (v, h) = (Y, X), but the method uses the more natural (X, Y) order.
 
 **Known MacTest SE/30 button coordinates:**
-- Commencer button: `set-mouse 100 121 --global`
-- Floppy dialog OK: `set-mouse 370 185 --global`
+- Commencer button: `mouse.move 100 121 "global"`
+- Floppy dialog OK: `mouse.move 370 185 "global"`
 
-### mouse-button
+### `mouse.click`
 
 ```
-mouse-button [--global|--hw] up|down
+mouse.click down [mode]
 ```
 
-| Mode | Behavior |
-|------|----------|
-| `--global` | Writes MBState directly.  No event posted.  Only works for code that polls MBState (ModalDialog).  On Mac Plus, also sets MBTicks to future value (MBTicks hack). |
-| `--hw` / (default) | Routes through ADB: `adb_mouse_event(button, 0, 0)`.  ROM handler writes MBState and calls `_PostEvent`.  Works for both ModalDialog and WaitNextEvent code. |
+`down` is a boolean: `true` presses, `false` releases.
+
+| `mode` | Behaviour |
+|--------|-----------|
+| `"global"` | Writes MBState directly.  No event posted.  Only works for code that polls MBState (ModalDialog).  On Mac Plus, also sets MBTicks to a future value (the MBTicks hack). |
+| `"hw"` / `"default"` | Routes through the hardware path: `adb_mouse_event(button, 0, 0)`.  The ROM handler writes MBState and calls `_PostEvent`, so this works for both ModalDialog and WaitNextEvent code. |
+| `"aux"` | A/UX MAE routing. |
+
+On the Lisa, `mouse.click` reaches the COPS and the mode is not consulted —
+the Lisa button is a single COPS key code with no Toolbox-versus-hardware
+distinction to make. `mouse.move` *does* honour `"global"` there, through the
+closed-loop cursor warp described in `lisa.md` §11.4.
 
 ### post-event
 

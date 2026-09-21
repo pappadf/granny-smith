@@ -100,8 +100,6 @@ static void schedule_axis(mouse_t *restrict m, int delta, bool horizontal, uint6
     if (!horizontal && *tail == now_cycles)
         *tail += per_slot / 2;
 
-    const char *ev_name = horizontal ? "mouse X slot" : "mouse Y slot";
-
     for (int i = 0; i < steps; ++i) {
         *tail += per_slot; // Advance tail by one slot period
         uint64_t delta_cycles = *tail - now_cycles; // Relative delay from now

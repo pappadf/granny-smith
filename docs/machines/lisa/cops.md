@@ -1,6 +1,6 @@
 # Lisa COPS microcontroller — implementation notes
 
-`src/core/peripherals/cops.{c,h}` models the Apple Lisa **COPS** (National
+`src/machines/lisa/cops.{c,h}` models the Apple Lisa **COPS** (National
 COP421-class) microcontroller, which services the keyboard, mouse, real-time
 clock, and soft-power through the A-port of VIA1. [docs/machines/lisa/lisa.md](lisa.md) §11 is
 the hardware reference; this note records the implementation and the host-side
@@ -23,8 +23,18 @@ never on guest memory.
 5. Host sets DDRA = 0 and re-enables CA1.
 
 The model detects the jam in the port-A callback by querying
-`via_port_direction(via1, 0) == $FF`, captures `via_port_output` as the command,
-drives CRDY high, then drops it back to ready on release. CRDY idles low.
+`via_port_direction(via1, 0) == $FF` and captures `via_port_output` as the
+command.
+
+> **Corrected 2026-09-21.** This paragraph used to add that the model "drives
+> CRDY high, then drops it back to ready on release. CRDY idles low." That
+> contradicts the CRDY section of *this same document* below, and the
+> implementation: CRDY is a **free-running toggle**, because the COP421 cycles
+> through its scan loop becoming ready and busy in turn, and both the boot
+> ROM's `COPSCMD` and MacWorks' send routine synchronise to its *edges*.
+> `lisa.md` §10 records why holding it at a fixed level is wrong — one sender
+> gets through and the other hangs waiting for an edge that never comes, which
+> is how MacWorks XL failed.
 
 ### Response path — `GETDATA` / `ReadCOPS`
 The COPS drives port A with a response byte and pulses **CA1** (sets VIA1 IFR
@@ -41,12 +51,35 @@ edge the COPS emits its reset codes. The model replies `$80` (reset lead-in) +
 with no errors.
 
 ### Mouse
-`#111 ennn` (`$78`–`$7F`) enables mouse interrupts at `nnn × 4 ms`. Once
-enabled, the COPS reports `$00 dx dy` every interval **even when idle** — the
-boot ROM's input loop (`WT4INPUT`/`COPS0`) blocks on `ReadCOPS`, so these
-periodic reports are what keep the boot/monitor loop alive between keypresses.
-The model schedules a recurring "mouse" event and enqueues the marker + the
-accumulated `dx`/`dy` (host-injected via `cops_inject_mouse`, below).
+`#111 ennn` (`$78`–`$7F`) enables mouse interrupts at `nnn × 4 ms`. The model
+schedules a recurring "mouse" event and, **only when there is accumulated
+motion**, enqueues the `$00` marker plus `dx`/`dy` (host-injected via
+`cops_inject_mouse`, below). The interval is when the model *checks* for
+movement, not a heartbeat.
+
+> **Corrected 2026-09-21.** This section previously said the COPS reports
+> `$00 dx dy` every interval "even when idle", and that those periodic reports
+> "are what keep the boot/monitor loop alive". Both halves are wrong, and the
+> implementation has said so at length since the behaviour was changed — see
+> the comment on `cops_mouse_tick`.
+>
+> Streaming idle reports corrupts the host's multi-byte COPS decoder: the `$00`
+> mouse marker repeatedly re-enters the "expect dx/dy" state, so a keystroke
+> landing off the 3-byte boundary is consumed as a coordinate. **That made the
+> keyboard unusable at the Xenix boot-loader prompt.** Restoring "the
+> documented behaviour" would reintroduce that bug, which is precisely why the
+> doc is being corrected rather than the code.
+>
+> The causal claim is unsupported too: `ReadCOPS` (`RM248.M.TEXT`) is an
+> unbounded spin on VIA1 IFR with no timeout, and every `WT4INPUT` caller is a
+> menu state machine with nothing to do until input arrives. Nothing needs a
+> heartbeat to stay alive; the loop is *supposed* to block.
+>
+> Honest limit: no primary source we hold states what the real COPS does when
+> idle. `lisa.md` §11.4 says only that deltas "accumulate in the COPS until the
+> host reads them, then reset", and the Lisa Hardware Manual section the code
+> cites is in neither the library nor `projects/Lisa`. So this is an empirical
+> result from a real guest, not a datasheet fact, and is recorded as such.
 
 Unlike the Mac (whose CPU reads raw mouse **quadrature** off the VIA/SCC), the
 Lisa mouse plugs into the COPS, which decodes the pulse edges itself and reports

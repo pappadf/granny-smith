@@ -21,6 +21,7 @@
 #include "keyboard.h"
 #include "log.h"
 #include "machine_profile.h"
+#include "mouse.h"
 #include "object.h"
 #include "system.h"
 #include "value.h"
@@ -251,16 +252,10 @@ static void kbd_queue_reset(adb_t *adb) {
     adb->kbd_queue.head = adb->kbd_queue.tail = 0;
 }
 
-// Clamps a mouse axis delta to ADB's 7-bit signed range (-64..+63) and returns
-// the clamped value. *remaining is set to the leftover delta not yet reported.
+// Clamps a mouse axis delta to ADB's 7-bit signed range (-64..+63), carrying
+// the remainder.  The shared helper is in mouse.h; the range is ADB's own.
 static int clamp_delta(int delta, int *remaining) {
-    int clamped = delta;
-    if (clamped > 63)
-        clamped = 63;
-    if (clamped < -64)
-        clamped = -64;
-    *remaining = delta - clamped;
-    return clamped;
+    return input_clamp_delta(delta, -64, 63, remaining);
 }
 
 // Encodes a clamped delta into ADB's 7-bit signed format (2's complement)
