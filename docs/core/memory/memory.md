@@ -42,21 +42,35 @@ entirely inline in `memory.h` with no function call overhead:
 ```c
 static inline uint8_t memory_read_uint8(uint32_t addr)
 {
-    addr &= g_address_mask;
-    page_entry_t *pe = &g_page_table[addr >> PAGE_SHIFT];
-    if (__builtin_expect(pe->host_base != NULL, 1))
-        return LOAD_BE8(pe->host_base + (addr & PAGE_MASK));
-    if (pe->dev)
-        return pe->dev->read_uint8(pe->dev_context, addr - pe->base_addr);
-    return 0;
+    uint32_t masked = addr & g_address_mask;
+    uintptr_t base = g_active_read[masked >> PAGE_SHIFT];
+    if (__builtin_expect(base != 0, 1))
+        return LOAD_BE8((uint8_t *)(base + masked));
+    return memory_read_uint8_slow(masked);
 }
 ```
 
-For 16-bit and 32-bit reads, the inline accessor additionally checks that the
-access does not cross a page boundary (`(addr & PAGE_MASK) <= PAGE_SIZE - N`).
-If the check fails, control falls through to the slow path.
+The fast path reads a **structure-of-arrays** table, not the `page_entry_t`
+array: `g_active_read` and `g_active_write` hold one `uintptr_t` per page, and
+a **zero entry means "take the slow path"** — device window, unmapped page, or
+a page covered by a memory logpoint. The stored value is a host pointer
+pre-biased by the guest address, so the fast path indexes it directly with no
+second add.
 
-Write accessors additionally check `pe->writable` to prevent writes to ROM.
+`g_active_read`/`g_active_write` point at the supervisor or user table
+according to the current privilege level; `write_sr` and the exception paths
+repoint them. That is what makes a write-protected or supervisor-only page fall
+to the slow path without any per-access permission test.
+
+For 16-bit and 32-bit reads, the inline accessor additionally checks that the
+access does not cross a page boundary (`(masked & PAGE_MASK) <= MEM_PAGE_SIZE -
+N`); a failing check falls through to the slow path. Instruction prefetch uses
+`memory_read_prefetch32`, which is the same fast path but returns only the
+opcode word when the 32-bit read would cross into the next page — real hardware
+aligns its prefetch DOWN and never reads past the page (MC68030UM §7.2).
+
+There is no `pe->writable` test on this path: write protection is expressed by
+leaving the page's `g_active_write` entry zero.
 
 ### Slow Path
 
@@ -142,14 +156,28 @@ For the Macintosh IIcx, the 68030's built-in PMMU translates logical addresses
 to physical addresses. The page table serves as the translation layer:
 
 - When the guest OS writes to MMU registers via `PMOVE` or executes `PFLUSH`,
-  the emulator **rebuilds the entire page table** by walking the guest's
-  translation tables in emulated RAM.
-- During normal execution, memory accesses use the same inline fast path with
-  **zero additional overhead** — the translation is baked into the page table.
-- For the Plus (no MMU), the page table is populated once at startup and never
-  changes.
+  the emulator **invalidates** the affected SoA entries. It does **not** rebuild
+  them: an earlier design walked the guest's tables eagerly on every
+  invalidation and that loop alone cost **37% of an SE/30 boot**
+  (`docs/notes/mmu-tlb-invalidate-perf.md`). Entries are refilled lazily, one
+  page per fault.
+- The fault path is `mmu_handle_fault`: a zero SoA entry takes the slow path,
+  which walks the guest's translation tables, maintains the architectural U/M
+  history bits in them, and fills the entry. A page becomes writable through
+  the SoA only once its descriptor is marked modified, so the first write to a
+  clean page deliberately re-faults — that is the hardware's modified-bit
+  protocol, and it is what a guest's VM dirty-page accounting depends on.
+- During normal execution, a translated access uses the same inline fast path
+  with **zero additional overhead** — the translation is baked into the SoA
+  entry.
+- For the Plus (no MMU), the SoA is populated lazily from the identity map and
+  changes only when a device window or logpoint is installed.
 
-The MMU interface is defined in `src/core/memory/mmu.h` (currently a stub).
+The 68030 PMMU is `src/core/memory/mmu.c` (with `mmu.h`, a full interface, not
+a stub); the 68040's on-chip MMU is `mmu040.c`; the Lisa's segment MMU is
+`lisa_mmu.c`; and the PowerPC BAT/HTAB translation is `ppc_mmu.c`. The 68030
+walker also caches early-termination descriptors in a small block cache that
+models the real ATC's residency — see the comments around `atc_record`.
 
 ## Memory Logpoints (Fast-Path-Preserving Watchpoints)
 

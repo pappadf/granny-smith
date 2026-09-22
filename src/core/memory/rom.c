@@ -579,7 +579,7 @@ static const member_t rom_members[] = {
      .attr = {.type = V_BOOL, .get = rom_attr_loaded, .set = NULL}},
     {.kind = M_ATTR,
      .name = "checksum",
-     .doc = "Stored checksum of the loaded ROM (8 uppercase hex chars, no prefix)",
+     .doc = "Computed checksum of the loaded ROM (8 uppercase hex chars, no prefix)",
      .flags = VAL_RO,
      .attr = {.type = V_STRING, .get = rom_attr_checksum, .set = NULL}},
     {.kind = M_ATTR,
