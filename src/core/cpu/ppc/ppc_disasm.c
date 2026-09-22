@@ -16,28 +16,11 @@
 
 #include "ppc_disasm.h"
 
+#include "ppc_fields.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-
-// Field extraction (BE bit numbering) — the dependency-free copy of the
-// accessor set ppc_internal.h provides to the emulator; kept in sync.
-#define PPC_OPCD(iw) ((iw) >> 26)
-#define PPC_RT(iw)   (((iw) >> 21) & 31)
-#define PPC_RA(iw)   (((iw) >> 16) & 31)
-#define PPC_RB(iw)   (((iw) >> 11) & 31)
-#define PPC_XO10(iw) (((iw) >> 1) & 0x3FF)
-#define PPC_XO9(iw)  (((iw) >> 1) & 0x1FF)
-#define PPC_XO5(iw)  (((iw) >> 1) & 0x1F)
-#define PPC_OE(iw)   (((iw) >> 10) & 1)
-#define PPC_RC(iw)   ((iw) & 1)
-#define PPC_SIMM(iw) ((int32_t)(int16_t)(iw))
-#define PPC_UIMM(iw) ((iw) & 0xFFFFu)
-#define PPC_MB(iw)   (((iw) >> 6) & 31)
-#define PPC_ME(iw)   (((iw) >> 1) & 31)
-#define PPC_FRC(iw)  (((iw) >> 6) & 31)
-#define PPC_CRFD(iw) (((iw) >> 23) & 7)
-#define PPC_CRFS(iw) (((iw) >> 18) & 7)
 
 // === Printing helpers =======================================================
 

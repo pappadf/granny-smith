@@ -143,13 +143,21 @@ uint8_t *g_mem_logpoint_phys_page_count = NULL;
 static uint32_t g_mem_logpoints_active = 0;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
 bool g_user_soa_reserved = false;
-void (*g_mem_fastpath_changed)(void) = NULL;
+void (*g_mem_map_changed)(void) = NULL;
 uint32_t (*g_mem_logical_xlate)(uint32_t addr, bool *ok) = NULL;
 
 // Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
 uint64_t g_mem_slowpath_count = 0;
 // 1 MB-granularity histogram of slow-path addresses (24-bit space = 16 buckets)
-uint64_t g_mem_slowpath_hist[16] = {0};
+// Slow-path histogram bucket.  The old single `(addr >> 20) & 0xF` indexed
+// address bits 20-23 only, so buckets aliased every 16 MB and $50F00000 (an
+// SE/30 I/O window) shared a bucket with $FFF00000 (a ROM mirror) -- the
+// histogram could not tell them apart, which is most of what you want it for.
+// Split instead: the low 16 MB, where a 24-bit machine spends all its time,
+// keeps bits 20-23 so the VIA, IWM and ROM-overlay windows stay separate;
+// everything above is bucketed by bits 28-31 in the upper half of the table.
+#define MEM_SLOWPATH_BUCKET(a) (((a) < 0x01000000u) ? (((a) >> 20) & 0xFu) : (0x10u | (((a) >> 28) & 0xFu)))
+uint64_t g_mem_slowpath_hist[32] = {0};
 
 // Value-trap support: catches a specific (PA, size, value) write on the fast
 // path.  Disabled when g_value_trap_active == 0 (the common case).
@@ -316,31 +324,83 @@ static inline void logpoint_notify_device(uint32_t addr, unsigned size, uint32_t
 // Device dispatch + logpoint notify, one wrapper per access width.  `addr` is
 // the access address the logpoint matches against (logical or physical, as
 // the caller resolved it); `off` is the device-relative offset it dispatches.
+// A device that does not implement one access width is decoded a byte at a
+// time, which is what a real bus does for a peripheral that only claims the
+// byte lanes.  These dispatches used to call the width handler unconditionally:
+// a device page whose write_uint16 is NULL then jumped to address 0 and took
+// the HOST down, reachable from ordinary guest state -- a crashed 68000 guest
+// pushing an exception frame with a garbage A7 lands on exactly such a page.
+// Composing is both the safe answer and the hardware-shaped one.  Slow path
+// only; the fast path never reaches a device page.
+static inline uint8_t dev_raw8(const page_entry_t *pe, uint32_t off) {
+    return pe->dev->read_uint8 ? pe->dev->read_uint8(pe->dev_context, off) : 0xFF;
+}
+static inline void dev_raw_w8(const page_entry_t *pe, uint32_t off, uint8_t v) {
+    if (pe->dev->write_uint8)
+        pe->dev->write_uint8(pe->dev_context, off, v);
+}
+
 static inline uint8_t dev_read8(const page_entry_t *pe, uint32_t addr, uint32_t off) {
-    uint8_t v = pe->dev->read_uint8(pe->dev_context, off);
+    uint8_t v = dev_raw8(pe, off);
     logpoint_notify_device(addr, 1, v, false);
     return v;
 }
+static inline uint16_t dev_read16_raw(const page_entry_t *pe, uint32_t off) {
+    return pe->dev->read_uint16 ? pe->dev->read_uint16(pe->dev_context, off)
+                                : (uint16_t)((dev_raw8(pe, off) << 8) | dev_raw8(pe, off + 1));
+}
+static inline uint32_t dev_read32_raw(const page_entry_t *pe, uint32_t off) {
+    if (pe->dev->read_uint32)
+        return pe->dev->read_uint32(pe->dev_context, off);
+    if (pe->dev->read_uint16)
+        return ((uint32_t)pe->dev->read_uint16(pe->dev_context, off) << 16) |
+               pe->dev->read_uint16(pe->dev_context, off + 2);
+    return ((uint32_t)dev_raw8(pe, off) << 24) | ((uint32_t)dev_raw8(pe, off + 1) << 16) |
+           ((uint32_t)dev_raw8(pe, off + 2) << 8) | dev_raw8(pe, off + 3);
+}
 static inline uint16_t dev_read16(const page_entry_t *pe, uint32_t addr, uint32_t off) {
-    uint16_t v = pe->dev->read_uint16(pe->dev_context, off);
+    uint16_t v = dev_read16_raw(pe, off);
     logpoint_notify_device(addr, 2, v, false);
     return v;
 }
 static inline uint32_t dev_read32(const page_entry_t *pe, uint32_t addr, uint32_t off) {
-    uint32_t v = pe->dev->read_uint32(pe->dev_context, off);
+    uint32_t v = dev_read32_raw(pe, off);
     logpoint_notify_device(addr, 4, v, false);
     return v;
 }
 static inline void dev_write8(const page_entry_t *pe, uint32_t addr, uint32_t off, uint8_t value) {
-    pe->dev->write_uint8(pe->dev_context, off, value);
+    dev_raw_w8(pe, off, value);
     logpoint_notify_device(addr, 1, value, true);
 }
+static inline void dev_write16_raw(const page_entry_t *pe, uint32_t off, uint16_t value) {
+    if (pe->dev->write_uint16) {
+        pe->dev->write_uint16(pe->dev_context, off, value);
+        return;
+    }
+    dev_raw_w8(pe, off, (uint8_t)(value >> 8));
+    dev_raw_w8(pe, off + 1, (uint8_t)value);
+}
+static inline void dev_write32_raw(const page_entry_t *pe, uint32_t off, uint32_t value) {
+    if (pe->dev->write_uint32) {
+        pe->dev->write_uint32(pe->dev_context, off, value);
+        return;
+    }
+    if (pe->dev->write_uint16) {
+        pe->dev->write_uint16(pe->dev_context, off, (uint16_t)(value >> 16));
+        pe->dev->write_uint16(pe->dev_context, off + 2, (uint16_t)value);
+        return;
+    }
+    dev_raw_w8(pe, off, (uint8_t)(value >> 24));
+    dev_raw_w8(pe, off + 1, (uint8_t)(value >> 16));
+    dev_raw_w8(pe, off + 2, (uint8_t)(value >> 8));
+    dev_raw_w8(pe, off + 3, (uint8_t)value);
+}
 static inline void dev_write16(const page_entry_t *pe, uint32_t addr, uint32_t off, uint16_t value) {
-    pe->dev->write_uint16(pe->dev_context, off, value);
+    dev_write16_raw(pe, off, value);
     logpoint_notify_device(addr, 2, value, true);
 }
 static inline void dev_write32(const page_entry_t *pe, uint32_t addr, uint32_t off, uint32_t value) {
-    pe->dev->write_uint32(pe->dev_context, off, value);
+    dev_write32_raw(pe, off, value);
     logpoint_notify_device(addr, 4, value, true);
 }
 
@@ -407,264 +467,150 @@ void memory_signal_bus_error(uint32_t addr, bool write) {
 }
 
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
-uint8_t memory_read_uint8_slow(uint32_t addr) {
+// One body for memory_read_uint{8,16,32}_slow.
+//
+// `size` is a compile-time constant at every call site, so every `size ==`
+// test and the whole in-page guard fold away: the three generated functions
+// come out within a few instructions of the hand-written ones they replace,
+// with no new out-of-line call.  The FAST path is unaffected either way --
+// it never CALLS these, it falls out to them through a tail branch.
+//
+// These six slow paths carried ~60-75% duplicated logic, which is why a fix
+// here historically had to be made six times over.
+static inline __attribute__((always_inline)) uint32_t load_be_n(const uint8_t *p, unsigned size) {
+    return size == 1 ? LOAD_BE8(p) : size == 2 ? LOAD_BE16(p) : LOAD_BE32(p);
+}
+static inline __attribute__((always_inline)) uint32_t dev_read_n(const page_entry_t *pe, uint32_t addr, uint32_t off,
+                                                                 unsigned size) {
+    return size == 1 ? dev_read8(pe, addr, off) : size == 2 ? dev_read16(pe, addr, off) : dev_read32(pe, addr, off);
+}
+
+static inline __attribute__((always_inline)) uint32_t read_slow_n(uint32_t addr, unsigned size) {
     g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
+    g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
+
+    const bool supervisor = g_active_read == g_supervisor_read;
+
     // Lisa segment MMU owns translation, routing, and bus errors for Lisa/XL
     // machines (its SoA stays empty so every access reaches here).
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return lisa_mmu_read8(addr, g_active_read == g_supervisor_read);
+        return size == 1   ? lisa_mmu_read8(addr, supervisor)
+               : size == 2 ? lisa_mmu_read16(addr, supervisor)
+                           : lisa_mmu_read32(addr, supervisor);
+
+    // A byte can never straddle a page, so this is constant-true for size 1.
+    const bool in_page = (size == 1) || ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - size);
+    const uint32_t fill = size == 1 ? 0xFFu : size == 2 ? 0xFFFFu : 0xFFFFFFFFu;
+
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
-    // Memory logpoint: page is forced to slow path but backed by RAM/ROM.
-    // Read via the MMU-translated host pointer, then notify the hook.
+
+    // Memory logpoint: page is forced to the slow path but backed by RAM/ROM.
+    // Read through the MMU-translated host pointer, then notify the hook.
     uint8_t *lp_host;
     bool lp_writable;
-    if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
-        uint8_t v = LOAD_BE8(lp_host);
+    if (in_page && logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
+        uint32_t v = load_be_n(lp_host, size);
         if (g_mem_logpoint_hook)
-            g_mem_logpoint_hook(addr, 1, v, false);
+            g_mem_logpoint_hook(addr, size, v, false);
         return v;
     }
+
     // Lazy-install identity SoA for a host-backed page when the MMU is off.
-    if (can_lazy_install(page, pe)) {
+    if (in_page && can_lazy_install(page, pe)) {
         rebuild_soa_page(page);
-        return LOAD_BE8(pe->host_base + (addr & PAGE_MASK));
+        return load_be_n(pe->host_base + (addr & PAGE_MASK), size);
     }
+
     // Gate logical-device dispatch via dispatch_device_at_logical(): identity /
     // MMU-off / non-identity-to-device cases dispatch immediately; non-identity-
     // to-RAM (e.g. 24-bit Memory Manager flag-tagged master pointers $40xxxxxx
-    // → $00xxxxxx) falls through to the MMU walk below so the translated RAM
+    // -> $00xxxxxx) falls through to the MMU walk below so the translated RAM
     // is read instead of returning ROM bytes from the $40000000 device window.
-    if (pe->dev && dispatch_device_at_logical(addr, g_active_read == g_supervisor_read))
-        return dev_read8(pe, addr, addr - pe->base_addr);
-    // When MMU is enabled, dispatch via PHYSICAL address (after table walk),
-    // not via the logical page-table entry — otherwise a user-virtual address
-    // whose upper byte coincides with a host-machine MMIO range (e.g. virtual
-    // $47f01000 hitting the IIfx ROM device window at $40000000-$4FFFFFFF)
-    // silently returns the device's read value instead of faulting.  A/UX's
-    // copyin depends on the fault to demand-page user pages.
-    //
-    // Fast path: TT (transparent translation) match means logical = physical,
-    // so the logical-page-table dev entry IS the correct dispatch.  Skip the
-    // expensive table walk for kernel I/O which is typically TT-mapped.
-    if (g_mmu && g_mmu->enabled) {
-        bool supervisor = g_active_read == g_supervisor_read;
+    if (pe->dev && in_page && dispatch_device_at_logical(addr, supervisor))
+        return dev_read_n(pe, addr, addr - pe->base_addr, size);
+
+    // With the MMU enabled, dispatch via the PHYSICAL address (after the table
+    // walk) rather than the logical page-table entry -- otherwise a user-virtual
+    // address whose upper byte coincides with a host MMIO range (virtual
+    // $47f01000 hitting the IIfx ROM window at $40000000-$4FFFFFFF) silently
+    // returns the device's value instead of faulting, and A/UX's copyin depends
+    // on that fault to demand-page user pages.  A TT match means logical ==
+    // physical, so the logical entry IS the right dispatch and the walk is
+    // skipped -- kernel I/O is typically TT-mapped.  Cross-page accesses fall
+    // through to the split below, whose halves handle the MMU correctly.
+    if (g_mmu && g_mmu->enabled && in_page) {
         if (pe->dev && mmu_check_tt(g_mmu, addr, false, supervisor))
-            return dev_read8(pe, addr, addr - pe->base_addr);
+            return dev_read_n(pe, addr, addr - pe->base_addr, size);
         if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
             uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
             if (base != 0)
-                return LOAD_BE8((uint8_t *)(base + addr));
-            // SoA still 0: physical page is device, unmapped, or logpointed.
-            // Translate to physical and dispatch on the PHYSICAL page-table
-            // entry.
+                return load_be_n((uint8_t *)(base + addr), size);
+            // SoA still 0: the physical page is a device, unmapped, or
+            // logpointed.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
             uint32_t phys_page = phys >> PAGE_SHIFT;
             if ((int)phys_page < g_page_count) {
                 page_entry_t *phys_pe = &g_page_table[phys_page];
                 if (phys_pe->dev)
-                    return dev_read8(phys_pe, addr, phys - phys_pe->base_addr);
+                    return dev_read_n(phys_pe, addr, phys - phys_pe->base_addr, size);
             }
-            // Re-check the logpoint now that mmu_handle_fault has run
-            // (physical-space logpoints suppress the fill and require
-            // translation here).
+            // Re-check the logpoint now that mmu_handle_fault has run:
+            // physical-space logpoints suppress the fill and need translation.
             if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
-                uint8_t v = LOAD_BE8(lp_host);
+                uint32_t v = load_be_n(lp_host, size);
                 if (g_mem_logpoint_hook)
-                    g_mem_logpoint_hook(addr, 1, v, false);
+                    g_mem_logpoint_hook(addr, size, v, false);
                 return v;
             }
-        } else {
-            // MMU fault (invalid descriptor, unmapped physical, permission, etc.)
-            if (!g_bus_error_pending) {
-                g_bus_error_pending = true;
-                g_bus_error_address = addr;
-                g_bus_error_rw = true; // read
-                g_bus_error_fc = supervisor ? 5 : 1;
-                if (g_bus_error_instr_ptr)
-                    *g_bus_error_instr_ptr = 0; // force decoder loop exit
-            }
+        } else if (!g_bus_error_pending) {
+            // MMU fault: invalid descriptor, unmapped physical, permission.
+            g_bus_error_pending = true;
+            g_bus_error_address = addr;
+            g_bus_error_rw = true; // read
+            g_bus_error_fc = supervisor ? 5 : 1;
+            if (g_bus_error_instr_ptr)
+                *g_bus_error_instr_ptr = 0; // force decoder loop exit
         }
-        // Unmapped physical memory returns $FF.
-        return 0xFF;
+        return fill; // unmapped physical reads $FF
     }
+
     // MMU disabled: logical == physical, dispatch by logical page-table entry.
-    if (pe->dev)
-        return dev_read8(pe, addr, addr - pe->base_addr);
-    // Nothing answered.  Inside the board's bus-error window the watchdog
-    // fires; outside it the bus floats to the pull-ups and reads $FF.
-    //
-    // The window used to be consulted only on the MMU's transparent-
-    // translation path, so with the MMU disabled -- which is most of POST --
-    // an unpopulated slot read $FF and never faulted (05-chipsets-irq F-23).
-    if (memory_addr_faults_when_unmapped(addr)) {
-        memory_signal_bus_error(addr, false);
+    if (pe->dev && in_page)
+        return dev_read_n(pe, addr, addr - pe->base_addr, size);
+
+    if (size == 1) {
+        // Nothing answered.  Inside the board's bus-error window the watchdog
+        // fires; outside it the bus floats to the pull-ups and reads $FF.  The
+        // window used to be consulted only on the transparent-translation path,
+        // so with the MMU disabled -- most of POST -- an unpopulated slot read
+        // $FF and never faulted (05-chipsets-irq F-23).
+        //
+        // $FF on a float matches real 68k Mac hardware and is load-bearing for
+        // ROM RAM sizing (write pattern, read back $FF, find the boundary) and
+        // for the POST memory test.
+        if (memory_addr_faults_when_unmapped(addr))
+            memory_signal_bus_error(addr, false);
         return 0xFF;
     }
-    // Unmapped physical memory returns $FF (floating bus, pull-up resistors).
-    // This matches real 68k Mac hardware behavior and is critical for:
-    //   - ROM RAM sizing (write pattern / read-back $FF → detects boundary)
-    //   - ROM POST memory test (pattern mismatch → knows address is invalid)
-    return 0xFF;
+
+    // Cross-page, or host memory at a page boundary: split into two halves.
+    // Real hardware splits too -- MC68030UM Table 7-6 gives a misaligned long
+    // two or more bus cycles -- and each half re-enters here in-page.
+    uint32_t hi = size == 2 ? memory_read_uint8(addr) : memory_read_uint16(addr);
+    uint32_t lo =
+        size == 2 ? memory_read_uint8((addr + 1) & g_address_mask) : memory_read_uint16((addr + 2) & g_address_mask);
+    return (hi << (size * 4)) | lo;
 }
 
-// Slow path for 16-bit reads: cross-page or device I/O
+uint8_t memory_read_uint8_slow(uint32_t addr) {
+    return (uint8_t)read_slow_n(addr, 1);
+}
 uint16_t memory_read_uint16_slow(uint32_t addr) {
-    g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
-    if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return lisa_mmu_read16(addr, g_active_read == g_supervisor_read);
-    uint32_t page = addr >> PAGE_SHIFT;
-    page_entry_t *pe = &g_page_table[page];
-
-    // Memory logpoint: forced slow path on RAM/ROM page
-    uint8_t *lp_host;
-    bool lp_writable;
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 && logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
-        uint16_t v = LOAD_BE16(lp_host);
-        if (g_mem_logpoint_hook)
-            g_mem_logpoint_hook(addr, 2, v, false);
-        return v;
-    }
-
-    // Lazy-install identity SoA for in-page accesses to host-backed pages.
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 && can_lazy_install(page, pe)) {
-        rebuild_soa_page(page);
-        return LOAD_BE16(pe->host_base + (addr & PAGE_MASK));
-    }
-
-    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix — see
-    // dispatch_device_at_logical above).
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 &&
-        dispatch_device_at_logical(addr, g_active_read == g_supervisor_read))
-        return dev_read16(pe, addr, addr - pe->base_addr);
-
-    // When MMU is enabled, dispatch via PHYSICAL address (see write_uint8_slow
-    // comment for the rationale).  Cross-page accesses fall through to byte
-    // reads which already handle MMU correctly.
-    if (g_mmu && g_mmu->enabled && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
-        bool supervisor = g_active_read == g_supervisor_read;
-        if (pe->dev && mmu_check_tt(g_mmu, addr, false, supervisor))
-            return dev_read16(pe, addr, addr - pe->base_addr);
-        if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
-            uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
-            if (base != 0)
-                return LOAD_BE16((uint8_t *)(base + addr));
-            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
-            uint32_t phys_page = phys >> PAGE_SHIFT;
-            if ((int)phys_page < g_page_count) {
-                page_entry_t *phys_pe = &g_page_table[phys_page];
-                if (phys_pe->dev)
-                    return dev_read16(phys_pe, addr, phys - phys_pe->base_addr);
-            }
-            if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
-                uint16_t v = LOAD_BE16(lp_host);
-                if (g_mem_logpoint_hook)
-                    g_mem_logpoint_hook(addr, 2, v, false);
-                return v;
-            }
-        } else {
-            if (!g_bus_error_pending) {
-                g_bus_error_pending = true;
-                g_bus_error_address = addr;
-                g_bus_error_rw = true;
-                g_bus_error_fc = supervisor ? 5 : 1;
-                if (g_bus_error_instr_ptr)
-                    *g_bus_error_instr_ptr = 0;
-            }
-        }
-        return 0xFFFF;
-    }
-
-    // MMU-off fallback: dispatch device on logical page-table entry.
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2)
-        return dev_read16(pe, addr, addr - pe->base_addr);
-
-    // Cross-page or host memory at page boundary: split into two byte reads
-    uint16_t hi = memory_read_uint8(addr);
-    uint16_t lo = memory_read_uint8((addr + 1) & g_address_mask);
-    return (hi << 8) | lo;
+    return (uint16_t)read_slow_n(addr, 2);
 }
-
-// Slow path for 32-bit reads: cross-page or device I/O
 uint32_t memory_read_uint32_slow(uint32_t addr) {
-    g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
-    if (__builtin_expect(g_lisa_mmu != NULL, 0))
-        return lisa_mmu_read32(addr, g_active_read == g_supervisor_read);
-    uint32_t page = addr >> PAGE_SHIFT;
-    page_entry_t *pe = &g_page_table[page];
-
-    // Memory logpoint: forced slow path on RAM/ROM page
-    uint8_t *lp_host;
-    bool lp_writable;
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 && logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
-        uint32_t v = LOAD_BE32(lp_host);
-        if (g_mem_logpoint_hook)
-            g_mem_logpoint_hook(addr, 4, v, false);
-        return v;
-    }
-
-    // Lazy-install identity SoA for in-page accesses to host-backed pages.
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 && can_lazy_install(page, pe)) {
-        rebuild_soa_page(page);
-        return LOAD_BE32(pe->host_base + (addr & PAGE_MASK));
-    }
-
-    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix).
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 &&
-        dispatch_device_at_logical(addr, g_active_read == g_supervisor_read)) {
-        uint32_t v = dev_read32(pe, addr, addr - pe->base_addr);
-        return v;
-    }
-
-    // When MMU is enabled, dispatch via PHYSICAL address (see write_uint8_slow
-    // comment).  Cross-page accesses fall through to 16-bit reads.
-    if (g_mmu && g_mmu->enabled && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
-        bool supervisor = g_active_read == g_supervisor_read;
-        if (pe->dev && mmu_check_tt(g_mmu, addr, false, supervisor))
-            return dev_read32(pe, addr, addr - pe->base_addr);
-        if (mmu_handle_fault(g_mmu, addr, false, supervisor)) {
-            uintptr_t base = g_active_read[addr >> PAGE_SHIFT];
-            if (base != 0)
-                return LOAD_BE32((uint8_t *)(base + addr));
-            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
-            uint32_t phys_page = phys >> PAGE_SHIFT;
-            if ((int)phys_page < g_page_count) {
-                page_entry_t *phys_pe = &g_page_table[phys_page];
-                if (phys_pe->dev)
-                    return dev_read32(phys_pe, addr, phys - phys_pe->base_addr);
-            }
-            if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host) {
-                uint32_t v = LOAD_BE32(lp_host);
-                if (g_mem_logpoint_hook)
-                    g_mem_logpoint_hook(addr, 4, v, false);
-                return v;
-            }
-        } else {
-            if (!g_bus_error_pending) {
-                g_bus_error_pending = true;
-                g_bus_error_address = addr;
-                g_bus_error_rw = true;
-                g_bus_error_fc = supervisor ? 5 : 1;
-                if (g_bus_error_instr_ptr)
-                    *g_bus_error_instr_ptr = 0;
-            }
-        }
-        return 0xFFFFFFFFu;
-    }
-
-    // MMU-off fallback: dispatch device on logical page-table entry.
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
-        uint32_t v = dev_read32(pe, addr, addr - pe->base_addr);
-        return v;
-    }
-
-    // Cross-page: split into two 16-bit reads
-    uint32_t hi = memory_read_uint16(addr);
-    uint32_t lo = memory_read_uint16(addr + 2);
-    return (hi << 16) | lo;
+    return read_slow_n(addr, 4);
 }
 
 // === Side-effect-free debug reads ==========================================
@@ -674,22 +620,24 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
 // (memory_signal_bus_error) stays inert while it is up, so examining an
 // empty NuBus slot cannot inject a fault into the running guest.
 static inline uint32_t debug_dev_read(const page_entry_t *pe, uint32_t phys, unsigned size) {
+    // Same NULL-safety as the dev_read*/dev_write* wrappers: the debugger must
+    // never be the thing that takes the host down.
+    uint32_t off = phys - pe->base_addr;
     g_mem_debug_access = true;
-    uint32_t v = size == 1   ? pe->dev->read_uint8(pe->dev_context, phys - pe->base_addr)
-                 : size == 2 ? pe->dev->read_uint16(pe->dev_context, phys - pe->base_addr)
-                             : pe->dev->read_uint32(pe->dev_context, phys - pe->base_addr);
+    uint32_t v = size == 1 ? dev_raw8(pe, off) : size == 2 ? dev_read16_raw(pe, off) : dev_read32_raw(pe, off);
     g_mem_debug_access = false;
     return v;
 }
 
 static inline void debug_dev_write(const page_entry_t *pe, uint32_t phys, unsigned size, uint32_t value) {
+    uint32_t off = phys - pe->base_addr;
     g_mem_debug_access = true;
     if (size == 1)
-        pe->dev->write_uint8(pe->dev_context, phys - pe->base_addr, (uint8_t)value);
+        dev_raw_w8(pe, off, (uint8_t)value);
     else if (size == 2)
-        pe->dev->write_uint16(pe->dev_context, phys - pe->base_addr, (uint16_t)value);
+        dev_write16_raw(pe, off, (uint16_t)value);
     else
-        pe->dev->write_uint32(pe->dev_context, phys - pe->base_addr, value);
+        dev_write32_raw(pe, off, value);
     g_mem_debug_access = false;
 }
 
@@ -898,279 +846,157 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
 }
 
 // Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
-void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+// One body for memory_write_uint{8,16,32}_slow -- the write-side twin of
+// read_slow_n above, and the same reasoning applies: `size` is a compile-time
+// constant, so the in-page guard and every `size ==` test fold away, and the
+// fast path is untouched because it falls out to these rather than calling
+// them.
+static inline __attribute__((always_inline)) void store_be_n(uint8_t *p, uint32_t value, unsigned size) {
+    if (size == 1)
+        STORE_BE8(p, value);
+    else if (size == 2)
+        STORE_BE16(p, value);
+    else
+        STORE_BE32(p, value);
+}
+static inline __attribute__((always_inline)) void dev_write_n(const page_entry_t *pe, uint32_t addr, uint32_t off,
+                                                              uint32_t value, unsigned size) {
+    if (size == 1)
+        dev_write8(pe, addr, off, (uint8_t)value);
+    else if (size == 2)
+        dev_write16(pe, addr, off, (uint16_t)value);
+    else
+        dev_write32(pe, addr, off, value);
+}
+
+static inline __attribute__((always_inline)) void write_slow_n(uint32_t addr, uint32_t value, unsigned size) {
     g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
+    g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
+
+    const bool supervisor = g_active_write == g_supervisor_write;
+
+    // Lisa segment MMU owns translation, routing and bus errors for Lisa/XL.
     if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
-        lisa_mmu_write8(addr, g_active_write == g_supervisor_write, value);
+        if (size == 1)
+            lisa_mmu_write8(addr, supervisor, (uint8_t)value);
+        else if (size == 2)
+            lisa_mmu_write16(addr, supervisor, (uint16_t)value);
+        else
+            lisa_mmu_write32(addr, supervisor, value);
         return;
     }
+
+    // A byte can never straddle a page, so this is constant-true for size 1.
+    const bool in_page = (size == 1) || ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - size);
+
     uint32_t page = addr >> PAGE_SHIFT;
     page_entry_t *pe = &g_page_table[page];
-    // Memory logpoint: forced slow path for RAM write on logged page
+
+    // Memory logpoint: forced slow path for a RAM write on a logged page.
     uint8_t *lp_host;
     bool lp_writable;
-    if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
-        STORE_BE8(lp_host, value);
+    if (in_page && logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
+        store_be_n(lp_host, value, size);
         if (g_mem_logpoint_hook)
-            g_mem_logpoint_hook(addr, 1, value, true);
+            g_mem_logpoint_hook(addr, size, value, true);
         return;
     }
-    // Lazy-install identity SoA for a writable host-backed page when MMU off.
-    // Read-only pages (ROM) still drop the write silently via the fall-through.
-    if (can_lazy_install(page, pe)) {
+
+    // Lazy-install identity SoA for a writable host-backed page when the MMU is
+    // off.  Read-only pages (ROM) still drop the write via the fall-through.
+    if (in_page && can_lazy_install(page, pe)) {
         rebuild_soa_page(page);
         if (pe->writable)
-            STORE_BE8(pe->host_base + (addr & PAGE_MASK), value);
+            store_be_n(pe->host_base + (addr & PAGE_MASK), value, size);
         return;
     }
-    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix — see
+
+    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix -- see
     // dispatch_device_at_logical above).
-    if (pe->dev && dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
-        dev_write8(pe, addr, addr - pe->base_addr, value);
+    if (pe->dev && in_page && dispatch_device_at_logical(addr, supervisor)) {
+        dev_write_n(pe, addr, addr - pe->base_addr, value, size);
         return;
     }
-    // When MMU is enabled, the page-table device lookup must use the PHYSICAL
-    // address — otherwise a user-virtual address whose upper byte coincides
-    // with a host-machine MMIO range (e.g. virtual $47f01000 hitting the IIfx
-    // ROM device window at physical $40000000-$4FFFFFFF) silently absorbs the
-    // write via the device's noop write handler, never reaching the MMU walk.
-    // A/UX's copyout depends on that walk faulting on unmapped user pages so
-    // its fault handler can demand-page them in.  Hide-the-fault → realvtop
-    // returns 0 → p_blt overwrites virtual $0 (the kernel exception vectors).
-    if (g_mmu && g_mmu->enabled) {
-        bool supervisor = g_active_write == g_supervisor_write;
-        // Fast path: TT match means logical = physical, so the logical pe->dev
-        // IS the correct dispatch — skip the table walk.
+
+    // With the MMU enabled the device lookup must use the PHYSICAL address --
+    // otherwise a user-virtual address whose upper byte coincides with a host
+    // MMIO range (virtual $47f01000 hitting the IIfx ROM window at physical
+    // $40000000-$4FFFFFFF) silently absorbs the write through the device's noop
+    // handler and never reaches the walk.  A/UX's copyout depends on that walk
+    // faulting on unmapped user pages so its handler can demand-page them in;
+    // hiding the fault makes realvtop return 0 and p_blt overwrite virtual $0,
+    // the kernel exception vectors.  A TT match means logical == physical, so
+    // the logical pe->dev IS the right dispatch and the walk is skipped.
+    if (g_mmu && g_mmu->enabled && in_page) {
         if (pe->dev && mmu_check_tt(g_mmu, addr, true, supervisor)) {
-            dev_write8(pe, addr, addr - pe->base_addr, value);
+            dev_write_n(pe, addr, addr - pe->base_addr, value, size);
             return;
         }
         if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
             uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
             if (base != 0) {
-                STORE_BE8((uint8_t *)(base + addr), value);
+                store_be_n((uint8_t *)(base + addr), value, size);
                 return;
             }
-            // SoA still 0: physical page is a device, unmapped, or covered by
-            // a logpoint.  Translate to physical and dispatch on the PHYSICAL
-            // page-table entry (mirrors the MMU-disabled path below).
+            // SoA still 0: the physical page is a device, unmapped, or covered
+            // by a logpoint.  Translate and dispatch on the PHYSICAL entry.
             uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
             uint32_t phys_page = phys >> PAGE_SHIFT;
             if ((int)phys_page < g_page_count) {
                 page_entry_t *phys_pe = &g_page_table[phys_page];
                 if (phys_pe->dev) {
-                    dev_write8(phys_pe, addr, phys - phys_pe->base_addr, value);
+                    dev_write_n(phys_pe, addr, phys - phys_pe->base_addr, value, size);
                     return;
                 }
             }
-            // Re-check logpoint now that the fault has run — physical-space
+            // Re-check the logpoint now the fault has run: physical-space
             // logpoints are only detectable after mmu_translate_debug.
             if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
-                STORE_BE8(lp_host, value);
+                store_be_n(lp_host, value, size);
                 if (g_mem_logpoint_hook)
-                    g_mem_logpoint_hook(addr, 1, value, true);
+                    g_mem_logpoint_hook(addr, size, value, true);
                 return;
             }
-            // Unmapped physical but no fault — drop write
-        } else {
-            // MMU fault (invalid descriptor, unmapped physical, permission, etc.)
-            if (!g_bus_error_pending) {
-                g_bus_error_pending = true;
-                g_bus_error_address = addr;
-                g_bus_error_rw = false; // write
-                g_bus_error_fc = supervisor ? 5 : 1;
-                if (g_bus_error_instr_ptr)
-                    *g_bus_error_instr_ptr = 0; // force decoder loop exit
-            }
+            // Unmapped physical but no fault: drop the write.
+        } else if (!g_bus_error_pending) {
+            // MMU fault: invalid descriptor, unmapped physical, permission.
+            g_bus_error_pending = true;
+            g_bus_error_address = addr;
+            g_bus_error_rw = false; // write
+            g_bus_error_fc = supervisor ? 5 : 1;
+            if (g_bus_error_instr_ptr)
+                *g_bus_error_instr_ptr = 0; // force decoder loop exit
         }
         return;
     }
+
     // MMU disabled: logical == physical, dispatch by logical page-table entry.
-    if (pe->dev) {
-        dev_write8(pe, addr, addr - pe->base_addr, value);
+    if (pe->dev && in_page) {
+        dev_write_n(pe, addr, addr - pe->base_addr, value, size);
         return;
+    }
+
+    if (size == 1)
+        return; // nothing answered: the write is dropped
+
+    // Cross-page, or host memory at a page boundary: split into two halves.
+    if (size == 2) {
+        memory_write_uint8(addr, (uint8_t)(value >> 8));
+        memory_write_uint8((addr + 1) & g_address_mask, (uint8_t)value);
+    } else {
+        memory_write_uint16(addr, (uint16_t)(value >> 16));
+        memory_write_uint16((addr + 2) & g_address_mask, (uint16_t)value);
     }
 }
 
-// Slow path for 16-bit writes: cross-page or device I/O
+void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
+    write_slow_n(addr, value, 1);
+}
 void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
-    g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
-    if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
-        lisa_mmu_write16(addr, g_active_write == g_supervisor_write, value);
-        return;
-    }
-    uint32_t page = addr >> PAGE_SHIFT;
-    page_entry_t *pe = &g_page_table[page];
-
-    // Memory logpoint: forced slow path for RAM write on logged page
-    uint8_t *lp_host;
-    bool lp_writable;
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 && logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host &&
-        lp_writable) {
-        STORE_BE16(lp_host, value);
-        if (g_mem_logpoint_hook)
-            g_mem_logpoint_hook(addr, 2, value, true);
-        return;
-    }
-
-    // Lazy-install identity SoA for in-page writes to host-backed pages.
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 && can_lazy_install(page, pe)) {
-        rebuild_soa_page(page);
-        if (pe->writable)
-            STORE_BE16(pe->host_base + (addr & PAGE_MASK), value);
-        return;
-    }
-
-    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix).
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2 &&
-        dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
-        dev_write16(pe, addr, addr - pe->base_addr, value);
-        return;
-    }
-
-    // When MMU is enabled, dispatch via PHYSICAL address (see write_uint8_slow
-    // comment).  Cross-page accesses fall through to byte writes.
-    if (g_mmu && g_mmu->enabled && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
-        bool supervisor = g_active_write == g_supervisor_write;
-        if (pe->dev && mmu_check_tt(g_mmu, addr, true, supervisor)) {
-            dev_write16(pe, addr, addr - pe->base_addr, value);
-            return;
-        }
-        if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
-            uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
-            if (base != 0) {
-                STORE_BE16((uint8_t *)(base + addr), value);
-                return;
-            }
-            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
-            uint32_t phys_page = phys >> PAGE_SHIFT;
-            if ((int)phys_page < g_page_count) {
-                page_entry_t *phys_pe = &g_page_table[phys_page];
-                if (phys_pe->dev) {
-                    dev_write16(phys_pe, addr, phys - phys_pe->base_addr, value);
-                    return;
-                }
-            }
-            if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
-                STORE_BE16(lp_host, value);
-                if (g_mem_logpoint_hook)
-                    g_mem_logpoint_hook(addr, 2, value, true);
-                return;
-            }
-        } else {
-            if (!g_bus_error_pending) {
-                g_bus_error_pending = true;
-                g_bus_error_address = addr;
-                g_bus_error_rw = false;
-                g_bus_error_fc = supervisor ? 5 : 1;
-                if (g_bus_error_instr_ptr)
-                    *g_bus_error_instr_ptr = 0;
-            }
-        }
-        return;
-    }
-
-    // MMU-off fallback: dispatch device on logical page-table entry.
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 2) {
-        dev_write16(pe, addr, addr - pe->base_addr, value);
-        return;
-    }
-
-    // Cross-page: split into two byte writes
-    memory_write_uint8(addr, (uint8_t)(value >> 8));
-    memory_write_uint8((addr + 1) & g_address_mask, (uint8_t)(value & 0xFF));
+    write_slow_n(addr, value, 2);
 }
-
-// Slow path for 32-bit writes: cross-page or device I/O
 void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
-    g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
-    if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
-        lisa_mmu_write32(addr, g_active_write == g_supervisor_write, value);
-        return;
-    }
-    uint32_t page = addr >> PAGE_SHIFT;
-    page_entry_t *pe = &g_page_table[page];
-
-    // Memory logpoint: forced slow path for RAM write on logged page
-    uint8_t *lp_host;
-    bool lp_writable;
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 && logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host &&
-        lp_writable) {
-        STORE_BE32(lp_host, value);
-        if (g_mem_logpoint_hook)
-            g_mem_logpoint_hook(addr, 4, value, true);
-        return;
-    }
-
-    // Lazy-install identity SoA for in-page writes to host-backed pages.
-    if ((addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 && can_lazy_install(page, pe)) {
-        rebuild_soa_page(page);
-        if (pe->writable)
-            STORE_BE32(pe->host_base + (addr & PAGE_MASK), value);
-        return;
-    }
-
-    // Gate logical-device dispatch (24-bit Mac OS master-pointer fix).
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4 &&
-        dispatch_device_at_logical(addr, g_active_write == g_supervisor_write)) {
-        dev_write32(pe, addr, addr - pe->base_addr, value);
-        return;
-    }
-
-    // When MMU is enabled, dispatch via PHYSICAL address (see write_uint8_slow
-    // comment).  Cross-page accesses fall through to 16-bit writes.
-    if (g_mmu && g_mmu->enabled && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
-        bool supervisor = g_active_write == g_supervisor_write;
-        if (pe->dev && mmu_check_tt(g_mmu, addr, true, supervisor)) {
-            dev_write32(pe, addr, addr - pe->base_addr, value);
-            return;
-        }
-        if (mmu_handle_fault(g_mmu, addr, true, supervisor)) {
-            uintptr_t base = g_active_write[addr >> PAGE_SHIFT];
-            if (base != 0) {
-                STORE_BE32((uint8_t *)(base + addr), value);
-                return;
-            }
-            uint32_t phys = mmu_translate_debug(g_mmu, addr, supervisor);
-            uint32_t phys_page = phys >> PAGE_SHIFT;
-            if ((int)phys_page < g_page_count) {
-                page_entry_t *phys_pe = &g_page_table[phys_page];
-                if (phys_pe->dev) {
-                    dev_write32(phys_pe, addr, phys - phys_pe->base_addr, value);
-                    return;
-                }
-            }
-            if (logpoint_lookup(addr, &lp_host, &lp_writable) && lp_host && lp_writable) {
-                STORE_BE32(lp_host, value);
-                if (g_mem_logpoint_hook)
-                    g_mem_logpoint_hook(addr, 4, value, true);
-                return;
-            }
-        } else {
-            if (!g_bus_error_pending) {
-                g_bus_error_pending = true;
-                g_bus_error_address = addr;
-                g_bus_error_rw = false;
-                g_bus_error_fc = supervisor ? 5 : 1;
-                if (g_bus_error_instr_ptr)
-                    *g_bus_error_instr_ptr = 0;
-            }
-        }
-        return;
-    }
-
-    // MMU-off fallback: dispatch device on logical page-table entry.
-    if (pe->dev && (addr & PAGE_MASK) <= MEM_PAGE_SIZE - 4) {
-        dev_write32(pe, addr, addr - pe->base_addr, value);
-        return;
-    }
-
-    // Cross-page: split into two 16-bit writes
-    memory_write_uint16(addr, (uint16_t)(value >> 16));
-    memory_write_uint16(addr + 2, (uint16_t)(value & 0xFFFF));
+    write_slow_n(addr, value, 4);
 }
 
 // Read memory at the given address with specified size (1, 2, or 4 bytes)
@@ -1266,8 +1092,8 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
         if (g_user_write)
             g_user_write[p] = 0;
     }
-    if (g_mem_fastpath_changed)
-        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
@@ -1281,8 +1107,8 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
         if (g_mem_logpoint_page_count[p] == 0)
             rebuild_soa_page(p);
     }
-    if (g_mem_fastpath_changed)
-        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
@@ -1306,8 +1132,8 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
         memset(g_user_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
     if (g_user_write)
         memset(g_user_write, 0, (size_t)g_page_count * sizeof(uintptr_t));
-    if (g_mem_fastpath_changed)
-        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
@@ -1320,8 +1146,8 @@ void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
             g_mem_logpoint_phys_page_count[p]--;
     }
     // No need to rebuild SoA entries; they refill lazily on next access.
-    if (g_mem_fastpath_changed)
-        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
 
 // ============================================================================
@@ -1414,6 +1240,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
                 g_user_write[p] = 0;
         }
     }
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // fetch caches hold host pointers the SoA cannot evict
 }
 
 // Clear page-table entries for [addr, addr+size) that point at `iface_ptr`.
@@ -1433,6 +1261,8 @@ static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const mem
             g_page_table[p].writable = false;
         }
     }
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // ditto: a freed window may still be cached by PC
 }
 
 // Remove a memory-mapped device from the memory map
@@ -1662,7 +1492,7 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // after a PPC one must get the classic all-four-arrays behavior back;
     // the new machine's CPU init re-registers what it needs).
     g_user_soa_reserved = false;
-    g_mem_fastpath_changed = NULL;
+    g_mem_map_changed = NULL;
     g_mem_logical_xlate = NULL;
     // Card host regions filled through the hook (PowerPC families) belong to
     // the outgoing machine's page table; forget them with it.
@@ -2063,10 +1893,10 @@ static value_t attr_mem_slowpath_count(struct object *self, const member_t *m) {
 static value_t attr_mem_slowpath_hist(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    char buf[512];
+    char buf[1024];
     size_t off = 0;
-    for (int i = 0; i < 16; i++)
-        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s$%X:%llu", i ? " " : "", i,
+    for (int i = 0; i < 32; i++)
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s$%02X:%llu", i ? " " : "", i,
                                 (unsigned long long)g_mem_slowpath_hist[i]);
     return val_str(buf);
 }

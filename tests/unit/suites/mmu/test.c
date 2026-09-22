@@ -25,12 +25,139 @@ static void cleanup(memory_map_t *mem, mmu_state_t *mmu) {
         memory_map_delete(mem);
 }
 
+// Load a 32-bit big-endian value from a buffer
+static uint32_t load_be32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
+}
+
 // Store a 32-bit big-endian value into a buffer
 static void store_be32(uint8_t *p, uint32_t val) {
     p[0] = (uint8_t)(val >> 24);
     p[1] = (uint8_t)(val >> 16);
     p[2] = (uint8_t)(val >> 8);
     p[3] = (uint8_t)(val);
+}
+
+// ============================================================================
+// Test: the LIMIT field bounds the next level's table index
+// ============================================================================
+//
+// Long-format descriptors -- and the root pointer -- carry L/U in bit 31 and a
+// 15-bit LIMIT in bits 30:16, bounding the index into the table they point at.
+// MC68030UM: "When the L/U bit is set, the limit is a lower limit, and an index
+// less than the limit is out of bounds.  When the L/U bit is zero, the limit is
+// an upper limit, and an index greater than the limit is out of bounds", and on
+// violation a PTEST sets "the invalid (I) and limit (L) bits ... in the MMUSR".
+//
+// MMUSR_L was defined in mmu.h and set by nothing: the field was never checked,
+// so a guest could walk straight out of a table it had explicitly bounded.
+TEST(test_limit_field_bounds_index) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // One level: 8 bits of index at level A, 24-bit pages (IS=0, TIA=8, PS=24).
+    uint32_t tc = (1u << 31) | (24u << 20) | (8u << 12);
+    uint32_t level_a_base = 0x10000;
+
+    // Two page descriptors at level-A indexes 0 and 1.
+    store_be32(ram + level_a_base + 0, 0x00000000 | DESC_DT_PAGE);
+    store_be32(ram + level_a_base + 4, 0x00100000 | DESC_DT_PAGE);
+
+    mmu->tc = tc;
+    mmu->enabled = true;
+
+    // Upper limit 0 (L/U = 0): index 0 is in bounds, index 1 is not.
+    mmu->crp = ((uint64_t)((0u << 31) | (0u << 16) | DESC_DT_TABLE4) << 32) | level_a_base;
+    mmu_invalidate_tlb(mmu);
+    uint16_t ok = mmu_test_address(mmu, 0x00000000, false, true, NULL);
+    ASSERT_TRUE((ok & MMUSR_L) == 0);
+    ASSERT_TRUE((ok & MMUSR_I) == 0);
+    uint16_t bad = mmu_test_address(mmu, 0x01000000, false, true, NULL); // index 1
+    ASSERT_TRUE((bad & MMUSR_L) != 0);
+    ASSERT_TRUE((bad & MMUSR_I) != 0);
+
+    // Lower limit 1 (L/U = 1): the sense inverts -- index 1 is in bounds now
+    // and index 0 is not.
+    mmu->crp = ((uint64_t)((1u << 31) | (1u << 16) | DESC_DT_TABLE4) << 32) | level_a_base;
+    mmu_invalidate_tlb(mmu);
+    uint16_t lo_bad = mmu_test_address(mmu, 0x00000000, false, true, NULL);
+    ASSERT_TRUE((lo_bad & MMUSR_L) != 0);
+    uint16_t lo_ok = mmu_test_address(mmu, 0x01000000, false, true, NULL);
+    ASSERT_TRUE((lo_ok & MMUSR_L) == 0);
+
+    // The documented "suppress" encoding: L/U = 0 with LIMIT = $7FFF lets every
+    // index through, which is what a guest that does not want limits writes.
+    mmu->crp = ((uint64_t)((0u << 31) | (0x7FFFu << 16) | DESC_DT_TABLE4) << 32) | level_a_base;
+    mmu_invalidate_tlb(mmu);
+    ASSERT_TRUE((mmu_test_address(mmu, 0x00000000, false, true, NULL) & MMUSR_L) == 0);
+    ASSERT_TRUE((mmu_test_address(mmu, 0x01000000, false, true, NULL) & MMUSR_L) == 0);
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
+// Test: the architectural U/M history-bit protocol
+// ============================================================================
+//
+// MC68030UM, descriptor field definitions.  U (bit 3): "automatically set by
+// the processor when a descriptor is accessed in which the U bit is clear ...
+// Updates of the U bit are performed before the MC68030 allows a page to be
+// accessed.  The processor never clears this bit" -- and it is set on EVERY
+// descriptor encountered, pointer tables included.  M (bit 4): "The MC68030
+// sets the M bit in the corresponding page descriptor before a write operation
+// to a page for which the M bit is zero ... The MC68030 never clears this bit."
+//
+// The walker used to read both and write neither, so a guest's VM saw every
+// dirty page as clean.  PTEST must NOT touch them (M68000PRM PTEST: it "alters
+// neither the used or modified bits of the translation tables nor the address
+// translation cache") -- the opposite of the 68040, whose PTEST does update
+// them, which is why the two walkers cannot share a default.
+TEST(test_um_history_bits) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // Two-level walk with 4KB pages: 8 bits level-A, 12 bits level-B.
+    uint32_t tc = (1u << 31) | (4u << 20) | (8u << 12) | (12u << 8);
+    uint32_t level_a_base = 0x10000;
+    uint32_t level_b_base = 0x20000;
+    uint64_t crp = ((uint64_t)DESC_DT_TABLE4 << 32) | level_a_base;
+
+    // Both descriptors start with U and M clear.
+    store_be32(ram + level_a_base, level_b_base | DESC_DT_TABLE4);
+    store_be32(ram + level_b_base, 0x00080000 | DESC_DT_PAGE);
+
+    mmu->tc = tc;
+    mmu->crp = crp;
+    mmu->enabled = true;
+    mmu_invalidate_tlb(mmu);
+
+    // A READ sets U on the pointer table AND the page descriptor, and leaves M
+    // clear on both.
+    ASSERT_TRUE(mmu_handle_fault(mmu, 0x00000000, false, true));
+    ASSERT_TRUE((load_be32(ram + level_a_base) & (1u << 3)) != 0); // U on the table
+    ASSERT_TRUE((load_be32(ram + level_b_base) & (1u << 3)) != 0); // U on the page
+    ASSERT_TRUE((load_be32(ram + level_b_base) & (1u << 4)) == 0); // M still clear
+
+    // A WRITE sets M on the page descriptor only.
+    mmu_invalidate_tlb(mmu);
+    ASSERT_TRUE(mmu_handle_fault(mmu, 0x00000000, true, true));
+    ASSERT_TRUE((load_be32(ram + level_b_base) & (1u << 4)) != 0); // M now set
+    ASSERT_TRUE((load_be32(ram + level_a_base) & (1u << 4)) == 0); // never on a table
+
+    // PTEST must not disturb either bit.  Clear them, run a level-7 PTEST on a
+    // second page, and confirm the descriptors come back untouched.
+    store_be32(ram + level_a_base, level_b_base | DESC_DT_TABLE4);
+    store_be32(ram + level_b_base + 4, 0x00090000 | DESC_DT_PAGE);
+    mmu_invalidate_tlb(mmu);
+    uint16_t mmusr = mmu_test_address(mmu, 0x00001000, true, true, NULL);
+    ASSERT_TRUE((mmusr & MMUSR_I) == 0); // the walk succeeded
+    ASSERT_TRUE((load_be32(ram + level_a_base) & (1u << 3)) == 0); // U untouched
+    ASSERT_TRUE((load_be32(ram + level_b_base + 4) & (1u << 3)) == 0);
+    ASSERT_TRUE((load_be32(ram + level_b_base + 4) & (1u << 4)) == 0); // M untouched
+
+    cleanup(mem, mmu);
 }
 
 // ============================================================================
@@ -264,6 +391,18 @@ TEST(test_short_table_descriptor_with_wp_bit) {
     phys = mmu_translate_debug(mmu, 0x00001000, true);
     ASSERT_EQ_INT(0x00090000, (int)phys);
 
+    // The WP bit on the level-A TABLE descriptor must protect every page
+    // reached through it, even though both level-B page descriptors have WP
+    // clear.  MC68030UM 9.5.5.4: "When a table search encounters a WP bit set in
+    // ANY table or page descriptor ... an ATC descriptor ... is created with the
+    // WP bit set."  The walker used to report only the leaf's bit, so a
+    // write-protected pointer table was silently bypassed.
+    uint16_t mmusr_wp = mmu_test_address(mmu, 0x00000000, false, true, NULL);
+    ASSERT_TRUE((mmusr_wp & MMUSR_W) != 0);
+    // And the neighbouring page through the same protected table.
+    uint16_t mmusr_wp1 = mmu_test_address(mmu, 0x00001000, false, true, NULL);
+    ASSERT_TRUE((mmusr_wp1 & MMUSR_W) != 0);
+
     cleanup(mem, mmu);
 }
 
@@ -494,6 +633,8 @@ int main(void) {
     RUN(test_tlb_invalidation);
     RUN(test_two_level_translation);
     RUN(test_short_table_descriptor_with_wp_bit);
+    RUN(test_limit_field_bounds_index);
+    RUN(test_um_history_bits);
     RUN(test_invalid_descriptor_bus_error);
     RUN(test_transparent_translation);
     RUN(test_write_protection);

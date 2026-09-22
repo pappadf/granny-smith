@@ -27,7 +27,7 @@ INCLUDES := -I$(CORE_DIR) -I$(CORE_CPU_DIR) -I$(CORE_CPU_DIR)/dsp3210 -I$(CORE_C
             -include $(TOOL_DIR)/platform.h
 
 # Tool-specific sources (local to this directory)
-LOCAL_SRCS := disasm.c trap_lookup.c stubs.c
+LOCAL_SRCS := disasm.c stubs.c
 
 # Core sources compiled directly from src/ (not copied).  annotate_disasm.c
 # lives next to dump.c in tools/dump/ now and is shared between the two tools.

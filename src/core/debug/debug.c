@@ -630,7 +630,7 @@ static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
         buf[0] = '\0';
         n = 2;
     } else {
-        n = dif->disasm(dif->ctx, pc, buf);
+        n = dif->disasm(dif->ctx, pc, buf, sizeof(buf));
     }
 
     if (strlen(buf) == 0) {

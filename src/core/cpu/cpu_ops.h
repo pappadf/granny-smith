@@ -512,13 +512,21 @@
     UPDATE_X_SHIFT(c);                                                                                                 \
     UPDATE_NZ_CLEAR_V(r);
 
+// Arithmetic shift left.  Both shift counts in the V term are masked to the
+// operand width: a count >= bits is reachable (DX & $3F yields 0-63, and
+// ASL.B #8 yields 8), which makes the inner >> c and the then-negative
+// (bits - c - 1) undefined.  The || short-circuits whenever d != 0, so the
+// UB is only reached with d == 0, where the accidental answer happens to be
+// correct -- latent rather than wrong.  Masking is a no-op for every count
+// below the width, so defined inputs are unaffected.
 #define ASHIFT_LEFT(bits, data, count, op)                                                                             \
     SHIFT_COMMON(bits, data, count, op);                                                                               \
     UPDATE_C_SHIFT_L(d, c);                                                                                            \
     UPDATE_X_SHIFT(c);                                                                                                 \
     UPDATE_N(r);                                                                                                       \
     UPDATE_Z(r);                                                                                                       \
-    CC_V = !r && d || (UINT(bits))((INT(bits))(1u << (bits - 1) & d) >> c ^ d) >> (bits - c - 1);
+    CC_V = !r && d ||                                                                                                  \
+           (UINT(bits))((INT(bits))(1u << (bits - 1) & d) >> (c & (bits - 1)) ^ d) >> ((bits - c - 1) & (bits - 1));
 
 #define LSHIFT_LEFT(bits, data, count, op)                                                                             \
     SHIFT_COMMON(bits, data, count, op);                                                                               \
@@ -570,11 +578,11 @@
     if (!divisor) {                                                                                                    \
         EXC_DIVIDE_BY_ZERO();                                                                                          \
     } else {                                                                                                           \
-        uint32_t quotient = DN / (uint16_t)divisor;                                                                    \
+        uint32_t quotient = dividend / (uint16_t)divisor;                                                              \
         if (quotient > UINT16_MAX) {                                                                                   \
             CC_V = CC_N = 1;                                                                                           \
         } else {                                                                                                       \
-            uint32_t remainder = DN % (uint16_t)divisor;                                                               \
+            uint32_t remainder = dividend % (uint16_t)divisor;                                                         \
             DX = (remainder << 16) | (quotient & 0xFFFF);                                                              \
             CC_N = quotient & 0x8000;                                                                                  \
             CC_Z = (quotient == 0);                                                                                    \
@@ -588,12 +596,17 @@
     CLEAR_NZVC();                                                                                                      \
     if (!divisor) {                                                                                                    \
         EXC_DIVIDE_BY_ZERO();                                                                                          \
+    } else if ((int16_t)divisor == -1 && dividend == INT32_MIN) {                                                      \
+        /* INT32_MIN / -1 has no representable quotient.  The C division is UB,                                        \
+         * and the shipping wasm build's i32.div_s traps on it by specification,                                       \
+         * so the test has to precede the divide rather than inspect its result. */                                    \
+        CC_V = CC_N = 1;                                                                                               \
     } else {                                                                                                           \
-        int32_t q = (INT(32))DN / (int16_t)divisor;                                                                    \
-        if (((int16_t)divisor == -1 && (INT(32))DN == INT32_MIN) || q > INT16_MAX || q < INT16_MIN) {                  \
+        int32_t q = dividend / (int16_t)divisor;                                                                       \
+        if (q > INT16_MAX || q < INT16_MIN) {                                                                          \
             CC_V = CC_N = 1;                                                                                           \
         } else {                                                                                                       \
-            int32_t remainder = (INT(32))DN % (int16_t)divisor;                                                        \
+            int32_t remainder = dividend % (int16_t)divisor;                                                           \
             DX = ((uint32_t)remainder << 16) | ((uint32_t)q & 0xFFFF);                                                 \
             CC_N = q & 0x8000;                                                                                         \
             CC_Z = (q == 0);                                                                                           \
@@ -794,10 +807,27 @@
 // STOP (e.g. fall through past the Lisa scheduler's Pause), corrupting state.
 // SET_SR runs cpu_check_interrupt last, so an already-pending interrupt clears
 // `stopped` and is taken normally on the next sprint.
-#define OP_STOP_DATA OP(SUPER(uint16_t sr = FETCH16(); cpu->stopped = 1; *instructions = 0; SET_SR(sr)))
-#define OP_RTS       OP(POP32(PC))
-#define OP_TRAPV     OP(if (CC_V) EXC_TRAPV())
-#define OP_RTR       OP(uint16_t ccr; POP16(ccr); WRITE_CCR(ccr); POP32(PC))
+// STOP: load SR from the immediate, then halt until an interrupt.
+//
+// MC68030UM 8.1.7 / MC68040UM 8.2.6: "A STOP instruction that begins execution
+// with T1 = 1 and T0 = 0 forces a trace exception after it loads the status
+// register.  Upon return from the trace handler routine, execution continues
+// with the instruction following the STOP, and THE PROCESSOR NEVER ENTERS THE
+// STOPPED CONDITION."  So the stop is suppressed by the T1 state the
+// instruction STARTED with -- read before SET_SR overwrites it -- not by the
+// value the immediate loads.
+#define OP_STOP_DATA                                                                                                   \
+    OP(SUPER({                                                                                                         \
+        uint16_t sr = FETCH16();                                                                                       \
+        bool _traced = (cpu->trace & 2) != 0;                                                                          \
+        if (!_traced)                                                                                                  \
+            cpu->stopped = 1;                                                                                          \
+        *instructions = 0;                                                                                             \
+        SET_SR(sr);                                                                                                    \
+    }))
+#define OP_RTS   OP(POP32(PC))
+#define OP_TRAPV OP(if (CC_V) EXC_TRAPV())
+#define OP_RTR   OP(uint16_t ccr; POP16(ccr); WRITE_CCR(ccr); POP32(PC))
 // LINK: fetch the displacement word *before* mutating any register, so a
 // page-cross fault on the immediate restarts the instruction cleanly (the
 // pre-PUSH/AY-update state is untouched). M68000PRM §8.1: An is pushed,
@@ -972,8 +1002,8 @@
 // ============================================================
 #ifdef CPU_DECODER_IS_68030
 
-// OP_UNDEFINED: 68030 pushes instruction_pc (cpu->pc - 2, no extension words consumed).
-#define OP_UNDEFINED OP(exception(cpu, 0x010, cpu->pc - 2, cpu_get_sr(cpu)); continue)
+// OP_UNDEFINED: the saved PC is the instruction's own address (MC68030UM 8.1.5).
+#define OP_UNDEFINED OP(exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu)); continue)
 
 // --- Bit-field helper functions (register and memory operands) ---
 
@@ -1458,16 +1488,23 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
         } else {                                                                                                       \
             if (_signed) {                                                                                             \
                 int64_t _dividend = _size64 ? (int64_t)(((uint64_t)D(_dr) << 32) | D(_dq)) : (int64_t)(int32_t)D(_dq); \
-                int64_t _q = _dividend / (int32_t)_divisor;                                                            \
-                int64_t _r = _dividend % (int32_t)_divisor;                                                            \
-                if (_q > INT32_MAX || _q < INT32_MIN) {                                                                \
+                /* INT64_MIN / -1 has no representable quotient.  The C division is UB,                                \
+                 * and the shipping wasm build's i64.div_s traps on it by specification,                               \
+                 * so the test must precede the divide -- inspecting _q cannot work. */                                \
+                if (_dividend == INT64_MIN && (int32_t)_divisor == -1) {                                               \
                     CC_V = CC_N = 1;                                                                                   \
                 } else {                                                                                               \
-                    D(_dq) = (uint32_t)_q;                                                                             \
-                    if (_dr != _dq)                                                                                    \
-                        D(_dr) = (uint32_t)_r;                                                                         \
-                    CC_N = (_q < 0);                                                                                   \
-                    CC_Z = (_q == 0);                                                                                  \
+                    int64_t _q = _dividend / (int32_t)_divisor;                                                        \
+                    int64_t _r = _dividend % (int32_t)_divisor;                                                        \
+                    if (_q > INT32_MAX || _q < INT32_MIN) {                                                            \
+                        CC_V = CC_N = 1;                                                                               \
+                    } else {                                                                                           \
+                        D(_dq) = (uint32_t)_q;                                                                         \
+                        if (_dr != _dq)                                                                                \
+                            D(_dr) = (uint32_t)_r;                                                                     \
+                        CC_N = (_q < 0);                                                                               \
+                        CC_Z = (_q == 0);                                                                              \
+                    }                                                                                                  \
                 }                                                                                                      \
             } else {                                                                                                   \
                 uint64_t _dividend = _size64 ? (((uint64_t)D(_dr) << 32) | D(_dq)) : (uint64_t)D(_dq);                 \
@@ -1818,19 +1855,25 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
     })
 
 // --- BKPT: Software Breakpoint (generate BKPT trap = vector 4 illegal instruction) ---
-// Push opcode address (cpu->pc - 2), not current pc
-#define OP_BKPT_DATA OP(exception(cpu, 0x010, cpu->pc - 2, cpu_get_sr(cpu)))
+// Push the opcode's own address, not the advanced pc.
+#define OP_BKPT_DATA OP(exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu)))
 
 // --- MOVE CCR,<ea>: read CCR into EA as a word (not privileged on 68010+) ---
 #define OP_MOVE_B_CCR_EA OP(VALID_EA(ea_data &ea_alterable); STORE_EA(16, READ_CCR()))
 
 // --- LINK.L (32-bit displacement) ---
+// Fetch the displacement BEFORE touching SP or An, mirroring OP_LINK.  With
+// the fetch last, a page fault on the immediate left An and SP already
+// updated, so the Format $B retry re-ran the push and double-linked the
+// frame.  68020+ only (the 68000 arm maps this to OP_UNDEFINED), so reaching
+// it needs a PMMU or an 040.
 #define OP_LINK_L_AN_DISP                                                                                              \
     OP({                                                                                                               \
+        int32_t _disp = (int32_t)FETCH32();                                                                            \
         uint32_t _a = AY;                                                                                              \
         PUSH32(_a);                                                                                                    \
         AY = SP;                                                                                                       \
-        SP += (int32_t)FETCH32();                                                                                      \
+        SP += _disp;                                                                                                   \
     })
 
 // --- MMU branch conditionals: stub as not-taken (MMU conditions always false) ---

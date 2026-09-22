@@ -60,6 +60,118 @@ checkpoint as POD, object class) with these core-specific requirements:
 | Logging | own `LOG_USE_CATEGORY_NAME("<arch>")` (in the glue; the core itself stays I/O-free) |
 | Tests | unit suite under `tests/unit/suites/<arch>/` against a mock bus |
 
+### The interpreter loop has exactly one exit
+
+**Rule.** A sprint loop is left by one condition and one only — the burn-down
+counter reaching zero. Anything that wants the loop to stop says so by
+**setting `*instructions = 0`**, and then does its work either in the
+instruction that triggered it or in the epilogue, which runs once per sprint
+after the loop closes. No `break`, no second exit test, and above all **no
+per-instruction inspection of state that only a rare path ever sets**.
+
+**Why it is a contract and not a preference.** The loop body is the only code in
+the emulator that runs tens of millions of times a second, and a conditional
+there is not a rounding error. Measured on this tree, callgrind over a 25 M
+instruction Plus boot: removing the two deferred-bus-error tests from the 68K
+loops took **116.61 → 113.09 host instructions per emulated instruction, about
+−3%**. A separate experiment adding a single perfectly-predicted `if` to the
+68000 prologue cost **+3.05 host instructions per emulated instruction, +2.24%**
+— and two thirds of that was second-order: the extra register pressure spilled
+the opcode jump-table base. You cannot estimate this by reading the diff.
+
+**The mechanism already exists.** `g_bus_error_instr_ptr` points at the live
+burn-down counter; the memory slow paths, `lisa_mmu.c` and the exception
+helpers all zero it through that pointer (28 sites). `OP_STOP_DATA` uses the
+same idiom to halt, and the trace arming in `write_sr` uses it to end a sprint
+so the next one begins with the new T1 — deliberately, instead of re-sampling
+`cpu->trace` per instruction, which measured +2.17% on an SE/30 row.
+
+**The shape for a new exception:**
+
+```c
+/* in the op that detects it */
+cpu->my_exception_pending = 1;      /* or a global, if the memory layer raises it */
+if (g_bus_error_instr_ptr)
+    *g_bus_error_instr_ptr = 0;     /* the loop's own condition now ends it */
+
+/* in CPU_DECODER_EPILOGUE, once per sprint, outside the loop */
+if (__builtin_expect(cpu->my_exception_pending, 0)) { ... }
+```
+
+**`break` is not available at all.** The decode tree is a nested `switch`, and
+every case already ends in `break;` — so a `break` inside an op macro binds to
+the innermost *switch*, falls through to the outer switch's own `break`, and
+runs on to the end of the loop body. It cannot leave the loop. That is why the
+two ops which do leave early, `OP_UNDEFINED` and `VALIDATE_EA_030`, use
+`continue`: `switch` captures `break` but not `continue`.
+
+**`goto` to a per-exception label is a legitimate alternative**, and on its own
+terms a better one than a flag. The label *is* the dispatch, so there is no
+flag to store and no test outside the loop — only the detection `if` in the op,
+which is irreducible whatever mechanism follows it. It also skips the rest of
+the iteration (`pc += 2`, the burn-down decrement), which counter-zeroing
+cannot do: zeroing lets the current iteration finish.
+
+Two practicalities if you use it: the label must zero `*instructions` itself,
+because the epilogue asserts the sprint spent its budget; and `goto` leaves the
+loop's block scope, so an exception carrying a payload — a fault address — has
+to put it in `cpu_t` rather than a local. Payload-free exceptions are where it
+is cleanest.
+
+**What does NOT settle any of this is the exit mechanism's own cost.** `break`,
+`goto` and counter-zeroing differ only in what happens *after* the decision to
+stop; the per-instruction cost is entirely in the **deciding**, and the loop
+condition is evaluated every iteration regardless. The theoretical worry about
+multiple exits inhibiting loop transforms is weak here — this loop is a 30k-
+instruction switch full of calls and memory clobbers that no loop transform was
+going to touch. If someone revisits it, measure register pressure rather than
+control flow: that is what dominated every measurement behind this rule.
+
+**If the faulting instruction must not complete**, the two are NOT
+interchangeable — zeroing the counter lets the current iteration finish, so a
+faulting fetch would go on to execute garbage. Even then, do not add a second
+test: make a test that already exists carry the information. `ppc_run`'s fetch is the
+worked example: it returns false for an ISI and the loop already tests that, so
+a fetch bus error belongs in the same return value rather than in the extra
+`if (g_bus_error_pending) break;` that sits beside it today.
+
+**Known deviations**, all in the deferred-bus-error path and all measured
+above. Removing them is its own piece of work, specified in
+`local/gs-docs/proposals/proposal-interpreter-loop-exit-discipline.md`
+(raised from `2026-09-03-code-review/07-WORK-ORDER.md` §9.2):
+
+| site | decoders | what it should become |
+|---|---|---|
+| `if (!g_bus_error_pending)` guarding the `cpu->ir` / `ir_pc` latch | 68000 | latch unconditionally; let the faulting path supply the pre-fault `ir` for the group-0 frame |
+| `if (last_bus_error_pc != 0 && !supervisor && last_bus_error_pc != pc)` | all three 68K | clear the latch in the epilogue or at delivery, not per instruction |
+| `if (g_bus_error_pending) break;` after the fetch | `ppc_run` | fold into `ppc_fetch`'s existing false return |
+
+### Known exception: the DSP3210 has two decoders
+
+The AV families' DSP3210 is the one core that does **not** follow the shared
+decode-tree rule above. `dsp3210.c` and `dsp3210_disasm.c` each carry their own
+dispatch, and there is no `dsp3210_decode.h`.
+
+The duplication is concrete, not notional: `dsp3210_disassemble` and
+`exec_insn` carry **36 `case` labels each, in identical order**, behind the
+same three-step preamble (`op6 = w >> 26`, then `opcode_is_illegal(op6)`, then
+the `w >> 29` DA-class dispatch). `opcode_is_illegal` is **14 byte-identical
+lines** in both, as are `bits()` and `sext16()`. Four helper pairs
+(`dis_da`/`exec_da`, `dis_ca_alu_reg`/`exec_alu_reg`,
+`dis_ca_alu_imm`/`exec_alu_imm`, `dis_ca_move`/`exec_move`) and several operand
+tables are hand-synchronised. Nothing but the `dsp3210_disasm` unit suite stops
+them drifting, and that suite checks agreement after the fact rather than by
+construction.
+
+**No ISA reason has been established.** The rule's escape hatch — "unless the
+ISA gives a concrete reason not to" — requires one to be recorded, and neither
+this file nor `proposal-dsp3210-plaintalk.md` records any. Until someone
+examines whether the DA/format encodings genuinely resist a shared tree, this
+is **debt, not a sanctioned exception**, and it is written down here so it
+cannot be mistaken for one.
+
+Raised as F-06b in the 2026-09-03 code review, batch 07.
+
 Why injected hooks and not the global fast path: aux cores are physical
 bus masters (the main CPU's translated, mode-switched view would be
 wrong under an MMU), the inline accessors charge I/O penalties against

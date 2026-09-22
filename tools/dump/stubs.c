@@ -23,36 +23,8 @@ void gs_assert_fail(const char *expr, const char *file, int line, const char *fu
     __builtin_trap();
 }
 
-// A-trap name lookup.  cpu_disasm.c and annotate_disasm.c both call
-// macos_atrap_name() to render `_DoSomething`-style annotations.  The
-// data table is in src/core/debug/mac_traps_data.c (already linked); the
-// emulator's debug_mac.c provides the full implementation but pulls in
-// heavy dependencies.  Mirror tools/disasm/trap_lookup.c verbatim so
-// both tools render identical trap names.
-extern struct {
-    const char *name;
-    uint32_t trap;
-} macos_atraps[];
-extern const size_t macos_atraps_count;
-
-static const char *lookup_atrap(uint16_t trap) {
-    for (size_t i = 0; i < macos_atraps_count; i++) {
-        if (macos_atraps[i].trap == trap)
-            return macos_atraps[i].name;
-    }
-    return NULL;
-}
-
-const char *macos_atrap_name(uint16_t trap) {
-    static char buffer[32];
-    const char *name;
-    if (trap & 0x0800) { // toolbox trap
-        if ((name = lookup_atrap(trap & 0xFBFF)))
-            return name;
-    } else { // OS trap
-        if ((name = lookup_atrap(trap)))
-            return name;
-    }
-    snprintf(buffer, sizeof(buffer), "_%04X", trap);
-    return buffer;
-}
+// A-trap name lookup is NOT stubbed here any more: the canonical
+// macos_atrap_name() now lives in src/core/debug/mac_traps_data.c, beside its
+// table, which this tool already links.  The three former copies each
+// re-declared the table with a `uint32_t trap` member where the definition has
+// `uint16_t` -- C11 6.2.7 undefined behaviour across translation units.

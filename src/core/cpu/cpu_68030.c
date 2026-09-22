@@ -105,6 +105,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // EA → TT0
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
                 uint32_t val = memory_read_uint32(ea);
+                if (g_bus_error_pending)
+                    break;
                 if (mmu) {
                     mmu->tt0 = val;
                     mmu_invalidate_tlb(mmu);
@@ -123,6 +125,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // EA → TT1
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
                 uint32_t val = memory_read_uint32(ea);
+                if (g_bus_error_pending)
+                    break;
                 if (mmu) {
                     mmu->tt1 = val;
                     mmu_invalidate_tlb(mmu);
@@ -164,12 +168,24 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
                 mmu_pload(mmu, ea, rw == 0, fc_supervisor);
             }
-        } else if (mmu) {
-            // PFLUSH variants: invalidate ATC entries
-            // mode=001: PFLUSHA (flush all entries)
-            // mode=100: PFLUSH FC,#mask (flush by FC)
-            // mode=110: PFLUSH FC,#mask,<ea> (flush by FC and EA)
-            mmu_invalidate_tlb(mmu);
+        } else if (flush_mode == 1u || flush_mode == 4u || flush_mode == 6u) {
+            // The only three PFLUSH modes the MC68030 implements (M68000PRM
+            // PFLUSH, "Mode field"): 001 PFLUSHA, 100 PFLUSH FC,#mask,
+            // 110 PFLUSH FC,#mask,<ea>.  All three take the full flush --
+            // over-flushing is architecturally invisible, because MC68030UM
+            // 9.4 lets the replacement algorithm discard any valid entry at
+            // any time, so a guest cannot tell a selective flush from a total
+            // one.
+            if (mmu)
+                mmu_invalidate_tlb(mmu);
+        } else {
+            // Modes 010/011/101/111 are not MC68030 encodings; 010/011 are the
+            // 68851's PFLUSHS.  MC68030UM 10.3 lists PFLUSHS among the
+            // instructions that "must be avoided or emulated in the exception
+            // routine for F-line unimplemented instructions".  Flushing the
+            // whole ATC instead hid them completely.
+            f_trap(cpu);
+            return;
         }
         break;
     }
@@ -189,6 +205,8 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                 // EA → TC
                 uint32_t ea = calculate_ea(cpu, 4, ea_mode, ea_reg, true);
                 uint32_t val = memory_read_uint32(ea);
+                if (g_bus_error_pending)
+                    break;
                 // FD (Force Descriptor) bit 8: when set, suppress ATC flush.
                 // Used by ROM "swap MMU state" sequences that need the OLD
                 // mapping to remain valid for the immediately following
@@ -205,8 +223,20 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
                     // PS field (bits 23:20) holds the page size exponent directly (valid: 8–15)
                     if (mmu->enabled) {
                         uint32_t sum = TC_IS(val) + TC_PS(val) + TC_TIA(val) + TC_TIB(val) + TC_TIC(val) + TC_TID(val);
-                        if (sum != 32) {
-                            // MMU configuration exception (vector 56 = 0xE0)
+                        // MC68030UM 9.7.5.3: the consistency check fails if the
+                        // sum is not 32, AND separately if PS holds one of the
+                        // reserved values $0-$7.  Only the sum was checked.
+                        if (sum != 32 || TC_PS(val) < 8) {
+                            // MC68030UM 9.7.2: "If an MMU configuration
+                            // exception occurs, the TC register is updated with
+                            // the data, and the E bit is cleared."  Leaving
+                            // enabled set returned a guest probing for a
+                            // supported configuration from vector 56 with
+                            // translation still ON.  The flush must happen too:
+                            // the early break used to skip it, stranding ATC
+                            // entries built under the old TC.
+                            mmu->enabled = false;
+                            mmu_invalidate_tlb(mmu);
                             exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
                             break;
                         }
@@ -230,14 +260,28 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
             } else {
                 // EA → SRP
                 uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
+                // A faulting operand fetch must not commit a half-read root.
+                // Every comparable multi-access op guards; cpu_pmmu_general did
+                // not, so a bus error on either long left the register loaded
+                // from whatever the failed read returned.
                 uint32_t upper = memory_read_uint32(ea);
+                if (g_bus_error_pending)
+                    break;
                 uint32_t lower = memory_read_uint32(ea + 4);
+                if (g_bus_error_pending)
+                    break;
                 uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
                 if (mmu) {
                     uint64_t val = ((uint64_t)upper << 32) | lower;
                     // Validate DT field (bits 1:0 of upper word)
                     if ((upper & 3) == DESC_DT_INVALID) {
-                        mmu->srp = val; // loaded before exception
+                        // MC68030UM 9.7.5.3: the register is loaded before the
+                        // exception is taken (commit-then-except -- this is a
+                        // post-instruction exception, so validate-before-commit
+                        // would be wrong).  The flush was being skipped by the
+                        // early break, leaving ATC entries from the old root.
+                        mmu->srp = val;
+                        mmu_invalidate_tlb(mmu);
                         exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
                         break;
                     }
@@ -261,14 +305,28 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
             } else {
                 // EA → CRP
                 uint32_t ea = calculate_ea(cpu, 8, ea_mode, ea_reg, true);
+                // A faulting operand fetch must not commit a half-read root.
+                // Every comparable multi-access op guards; cpu_pmmu_general did
+                // not, so a bus error on either long left the register loaded
+                // from whatever the failed read returned.
                 uint32_t upper = memory_read_uint32(ea);
+                if (g_bus_error_pending)
+                    break;
                 uint32_t lower = memory_read_uint32(ea + 4);
+                if (g_bus_error_pending)
+                    break;
                 uint32_t fd = (ext >> 8) & 1u; // FD: suppress ATC flush (see TC case above)
                 if (mmu) {
                     uint64_t val = ((uint64_t)upper << 32) | lower;
                     // Validate DT field (bits 1:0 of upper word)
                     if ((upper & 3) == DESC_DT_INVALID) {
-                        mmu->crp = val; // loaded before exception
+                        // MC68030UM 9.7.5.3: the register is loaded before the
+                        // exception is taken (commit-then-except -- this is a
+                        // post-instruction exception, so validate-before-commit
+                        // would be wrong).  The flush was being skipped by the
+                        // early break, leaving ATC entries from the old root.
+                        mmu->crp = val;
+                        mmu_invalidate_tlb(mmu);
                         exception(cpu, 0xE0, cpu->pc, cpu_get_sr(cpu));
                         break;
                     }
@@ -311,6 +369,17 @@ static void cpu_pmmu_general(cpu_t *cpu, uint16_t opcode) {
         bool write = (rw_bit == 0);
         uint32_t a_field = (ext >> 8) & 1u; // 1 = write descriptor addr to An
         uint32_t a_reg = (ext >> 5) & 7u;
+        uint32_t level = (ext >> 10) & 7u;
+        // M68000PRM PTEST, "Level field": "When this field contains 0, the A
+        // field and the register field must also be 0.  The instruction takes
+        // an F-line exception when the level field is 0 and the A field is not
+        // 0."  A level-0 PTEST searches only the ATC, so there is no "last
+        // descriptor searched" to hand back, which is why the encoding is
+        // illegal rather than merely useless.
+        if (level == 0 && a_field != 0) {
+            f_trap(cpu);
+            return;
+        }
         // FC specifier in extension word bits 4:0 (per MC68030UM § 7.4.30):
         //   1xxxx → immediate FC = bits 2:0
         //   01xxx → FC from data register Dn where n = bits 2:0
@@ -472,7 +541,11 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     cpu->vbr = 0;
     cpu->cacr = 0;
     // Clear pre-halt latches so the reset doesn't inherit the state that
-    // caused the double-bus-error halt in the first place.
+    // caused the double-bus-error halt in the first place.  Clearing `halted`
+    // here is the other half of MC68030UM 7.5.4's rule -- "Only an external
+    // reset operation can restart a halted processor" -- and it is what lets
+    // the 68000 simply STAY halted rather than resuming on its own.
+    cpu->halted = 0;
     cpu->ipl = 0;
     cpu->last_bus_error_pc = 0;
     g_bus_error_pending = false;
@@ -533,9 +606,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
      * reconcile_sprint on any SE/30 sprint that ended its last instruction                                            \
      * on a slow I/O access. */                                                                                        \
     while (*instructions > 0) {                                                                                        \
-        uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
+        uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
-        uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         cpu->instruction_pc = cpu->pc;                                                                                 \
         /* Double-fault tracking: a bus error on an instruction fetch leaves                                           \
          * last_bus_error_pc set so a retry at the SAME PC can be detected as                                          \
@@ -554,7 +626,12 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
             (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
     }                                                                                                                  \
-    /* Exception priority order (MC68030 UM §8.1): bus error > address error > reset > */                             \
+    /* Exception priority (MC68030UM Table 8-5): group 0 RESET, then group 1   */                                      \
+    /* 1.0 ADDRESS ERROR and 1.1 BUS ERROR, ... then group 4 4.1 TRACE, 4.2      */                                    \
+    /* INTERRUPT.  Reset is highest and address error outranks bus error -- the  */                                    \
+    /* old comment here had both backwards.  No behavioural consequence today    */                                    \
+    /* (we implement neither reset-as-exception nor address error), but it would */                                    \
+    /* mislead whoever implements F-05.  Handle the deferred bus error first so  */                                    \
     /* trace > interrupt. Handle deferred bus error first so it preempts a trace */                                    \
     /* that the same instruction would otherwise have raised. */                                                       \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \

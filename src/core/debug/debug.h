@@ -33,7 +33,14 @@ typedef struct cpu_debug_if {
     // buf (mnemonic + '\t' + operands, empty string for illegal encodings;
     // buf must hold >= 100 bytes).  Returns bytes consumed (68K: 2..20;
     // PPC: always 4).
-    int (*disasm)(void *ctx, uint32_t pc, char *buf);
+    // Disassemble one instruction into `buf`, which holds `buflen` bytes.
+    // The length is passed explicitly because the 68K adapter's backend is 39
+    // unbounded sprintf calls into whatever the caller supplied.  An exhaustive
+    // sweep (every MOVEM mask x every full-format extension word x six MOVEM
+    // opcodes, plus an all-opcode pass) puts the true worst case at 76 bytes
+    // against the caller's 100, so there is no live overflow -- this is the
+    // contract being written down rather than left to coincide.
+    int (*disasm)(void *ctx, uint32_t pc, char *buf, size_t buflen);
     // Translate a logical address in the core's current context; *ok reports
     // whether a valid translation exists (identity when translation is off).
     uint32_t (*translate)(void *ctx, uint32_t logical, bool *ok);

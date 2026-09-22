@@ -374,7 +374,15 @@ def row_xl_no_media() {
 # a state bug that only a running OS reveals, that is the row to extend.
 def row_lisa_checkpoint() {
     machine.boot model="lisa" ram=2048 rom="../../data/roms/lisa2-revh-098917b2.rom"
-    scheduler.run 5000000
+    # Run far enough that the ROM has PROGRAMMED the segment MMU and is running
+    # mapped code before the save.  At 5M instructions it has not: the MMU is
+    # still in power-on START mode with zeroed descriptors, which is exactly the
+    # state lisa_mmu_init recreates -- so a save/restore that dropped all 4 KiB
+    # of descriptor RAM was indistinguishable from a correct one, and this row
+    # passed against a checkpoint that was a literal no-op on both sides
+    # (07-cpu-mmu F-58).  Saving from a mapped state is what makes the round
+    # trip observable.
+    scheduler.run 60000000
     # Put COPS state in the machine BEFORE saving.  Until 2026-09-21
     # cops_checkpoint was a no-op, so a restored Lisa came up with an empty
     # response FIFO, the mouse disabled and any in-flight warp forgotten --
@@ -396,6 +404,15 @@ def row_lisa_checkpoint() {
     # now in the stream, a mismatched save/restore pair fails HERE with a
     # positional size error naming both sites, which is the failure mode this
     # row exists to catch.
-    scheduler.run 5000000
+    #
+    # And it must keep executing THROUGH THE MMU.  A restore that lost the
+    # descriptor RAM resumes a mid-boot CPU against a power-on MMU -- start
+    # re-routes every low access to ROM/descriptor RAM and every mapped segment
+    # reads slr = 0, below ACC_MEM_RO_STK, so it faults immediately.  The screen
+    # match is the oracle: reaching the same raster the un-checkpointed boot
+    # reaches proves the translation state survived, which neither the load
+    # itself nor a size check can show.
+    scheduler.run 40000000
+    check("goldens/lisa-checkpoint-720x364x1-restored.png")
     report_perf("suite-lisa/lisa-checkpoint", scheduler.instr_count)
 }

@@ -11,7 +11,6 @@
 #include "mmu040.h"
 
 #include <assert.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -72,6 +71,7 @@ typedef struct atc_block {
     uint32_t phys_base; // physical range base (same alignment)
     bool supervisor_only; // S bit from the walked descriptor
     bool write_protected; // W bit from the walked descriptor
+    bool modified; // M bit from the walked descriptor (write-fill gate)
     bool fc_super; // FC class of the walk (matters when TC.SRE=1)
     bool valid; // entry live?
 } atc_block_t;
@@ -89,6 +89,31 @@ static int g_atc_next = 0; // round-robin replacement cursor
 static void atc_flush(void) {
     memset(g_atc_blocks, 0, sizeof(g_atc_blocks));
     g_atc_next = 0;
+}
+
+// Reset the file-scope translation caches that belong to one machine.
+//
+// Called from BOTH mmu_init and mmu_delete, and the init side is the one that
+// matters.  g_tlb_track*, g_last_user_crp and the ATC block cache are file
+// statics shared by every machine in the process, and mmu_delete only resets
+// them when the machine being destroyed is still the live one.  On
+// checkpoint.load the new machine is CONSTRUCTED BEFORE the old one is
+// destroyed (system.c), so that guard fails: the outgoing mmu_delete skips the
+// reset, and the incoming machine's first invalidate then walks the previous
+// machine's page-index list -- zeroing the wrong SoA entries and leaving its
+// own eagerly-installed identity entries live under an enabled PMMU.  Stale
+// indices can also point past a smaller machine's SoA arrays.  Resetting at
+// construction is ordering-independent, which the teardown-side reset is not.
+static void mmu_reset_global_caches(void) {
+    // A fresh machine must not inherit the previous instance's user-CRP
+    // snapshot.
+    g_last_user_crp = 0;
+    // overflow=true makes the first invalidate fall back to a full memset,
+    // matching the file-scope default.
+    g_tlb_track_count = 0;
+    g_tlb_track_overflow = true;
+    // Cached block descriptors belong to the old machine's tables.
+    atc_flush();
 }
 
 // Find the cached block covering logical_addr for this FC class, if any.
@@ -121,7 +146,7 @@ static void atc_invalidate_covering(mmu_state_t *mmu, uint32_t logical_addr, boo
 
 // Record a successful walk's early-termination descriptor in the block cache.
 static void atc_record(uint32_t log_base, uint32_t log_mask, uint32_t phys_base, bool supervisor_only,
-                       bool write_protected, bool fc_super) {
+                       bool write_protected, bool modified, bool fc_super) {
     atc_block_t *b = &g_atc_blocks[g_atc_next];
     g_atc_next = (g_atc_next + 1) % ATC_BLOCKS;
     b->log_base = log_base;
@@ -129,6 +154,7 @@ static void atc_record(uint32_t log_base, uint32_t log_mask, uint32_t phys_base,
     b->phys_base = phys_base;
     b->supervisor_only = supervisor_only;
     b->write_protected = write_protected;
+    b->modified = modified;
     b->fc_super = fc_super;
     b->valid = true;
 }
@@ -169,6 +195,19 @@ static inline __attribute__((always_inline)) uint32_t phys_read32(mmu_state_t *m
         uint32_t offset = (phys_addr - mmu->rom_phys_base) % mmu->physical_rom_size;
         if (mmu->physical_rom_size >= 4 && offset <= mmu->physical_rom_size - 4)
             return LOAD_BE32(mmu->physical_rom + offset);
+    }
+    // Host-backed regions (card VRAM, declaration ROMs, aliases).  This was the
+    // ONE resolver of the three that skipped them: phys_to_host and
+    // phys_is_writable both scan the list, so a descriptor placed in NuBus VRAM
+    // could be written by mmu_write_physical_uint8 and then read back here as
+    // 0 -- DT = 0 -- which the walker reports as an invalid descriptor and the
+    // CPU takes as a spurious bus error.  Bounded for the 4-byte read, which
+    // the page-granular phys_to_host does not need to do.
+    for (int i = 0; i < mmu->host_region_count; i++) {
+        const mmu_host_region_t *r = &mmu->host_regions[i];
+        uint32_t off = phys_addr - r->phys_base;
+        if (phys_addr >= r->phys_base && r->size >= 4 && off <= r->size - 4)
+            return LOAD_BE32(r->host + off);
     }
     return 0; // unmapped physical address
 }
@@ -285,8 +324,14 @@ bool mmu_check_tt(mmu_state_t *mmu, uint32_t addr, bool write, bool supervisor) 
 
 // Walk the guest's PMMU translation descriptor table tree.
 // Resolves a logical address to a physical address + permission bits.
-static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor) {
-    (void)write; // write check handled by caller after walk
+// `update_um` selects whether the search maintains the architectural history
+// bits in the guest's tables.  True for real translations and PLOAD; FALSE for
+// PTEST, which M68000PRM states "alters neither the used or modified bits of
+// the translation tables nor the address translation cache", and for the
+// side-effect-free debug translators.  The 68040 walker takes the same flag
+// but defaults the other way, so the two cannot share a default.
+static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr, bool write, bool supervisor,
+                                        bool update_um) {
     mmu_walk_result_t result = {0};
     result.valid = false;
     result.mmusr = 0;
@@ -300,6 +345,13 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     ti[1] = TC_TIB(tc);
     ti[2] = TC_TIC(tc);
     ti[3] = TC_TID(tc);
+
+    // LIMIT, carried from the root pointer or the long-format descriptor just
+    // followed.  It bounds the index into the table at the NEXT level, so it
+    // cannot be checked where it is read.
+    bool limit_active = false;
+    bool limit_is_lower = false;
+    uint32_t limit_value = 0;
 
     // Select root pointer based on SRE bit and supervisor mode
     uint64_t root_ptr;
@@ -330,9 +382,30 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     // entry's worth — breaking every subsequent lookup by one index.
     uint32_t table_addr = root_lower & 0xFFFFFFF0;
 
+    // The root pointer carries its own L/U + LIMIT, bounding the index into
+    // the FIRST table (MC68030UM Figure 9-35: "LIMIT -- LIMIT ON TABLE INDEX
+    // FOR THIS TABLE ADDRESS").  Seed the carried limit from it so level A is
+    // checked like every level below.
+    limit_active = true;
+    limit_is_lower = (root_upper >> 31) & 1;
+    limit_value = (root_upper >> 16) & 0x7FFF;
+
     // Current bit position in logical address (start after IS bits)
     uint32_t bit_pos = 32 - is;
     int levels_walked = 0;
+
+    // Protection accumulates across the WHOLE search, not just the leaf.
+    // MC68030UM 9.5.5.4 (WRITE PROTECT): "When a table search encounters a WP
+    // bit set in ANY table or page descriptor, the table search is completed
+    // and an ATC descriptor ... is created with the WP bit set ... The WP bit
+    // can be used to protect the entire area of memory defined in a branch of
+    // the translation tree."  9.5.5.3 (SUPERVISOR ONLY) is the same shape for
+    // S, with the added detail that only the LONG formats carry an S bit.
+    // Taking either from the page descriptor alone let protection placed on a
+    // POINTER table be bypassed by a permissive leaf, which defeats the point
+    // of putting it there.  mmu040.c already accumulates this way.
+    bool acc_wp = false;
+    bool acc_s = false;
 
     // Walk through up to 4 table levels (A, B, C, D)
     for (int level = 0; level < 4; level++) {
@@ -351,6 +424,26 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         // Extract index from logical address
         bit_pos -= index_bits;
         uint32_t index = (logical_addr >> bit_pos) & ((1u << index_bits) - 1);
+
+        // Limit check on the index into THIS table, from the long-format
+        // descriptor that pointed here.  MC68030UM: "When the L/U bit is set,
+        // the limit is a lower limit, and an index less than the limit is out
+        // of bounds.  When the L/U bit is zero, the limit is an upper limit,
+        // and an index greater than the limit is out of bounds."  The field is
+        // disabled by L/U = 1 with limit 0, or L/U = 0 with limit $7FFF, both
+        // of which the comparisons below satisfy without a special case.
+        //
+        // On violation: "During a table search for a normal translation or a
+        // PLOAD instruction, if a limit violation is detected, the ATC is
+        // loaded with an entry having the bus error (B) bit set.  If a limit
+        // violation is detected during a table search for a PTEST instruction,
+        // the invalid (I) and limit (L) bits are set in the MMUSR."  MMUSR_L
+        // was defined and never set by anything until now.
+        if (limit_active && (limit_is_lower ? (index < limit_value) : (index > limit_value))) {
+            result.mmusr |= MMUSR_I | MMUSR_L | MMUSR_B;
+            result.mmusr |= (levels_walked & 7);
+            return result;
+        }
 
         // Fetch descriptor from physical memory.
         // Short format: all fields (DT, flags, address) live in one 32-bit word.
@@ -372,6 +465,25 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             return result;
         }
 
+        // OR in this descriptor's protection bits.  Must happen before long_desc
+        // is reassigned at the bottom of the loop: that reassignment describes
+        // the NEXT level's format, not this one's.
+        acc_wp |= ((desc_hi >> 2) & 1) != 0; // WP, both formats
+        if (long_desc)
+            acc_s |= ((desc_hi >> 8) & 1) != 0; // S, long format only
+
+        // U (bit 3) is set on EVERY descriptor the search touches, pointer
+        // tables included.  MC68030UM, descriptor field definitions: "This bit
+        // is automatically set by the processor when a descriptor is accessed
+        // in which the U bit is clear except after a supervisor violation is
+        // detected ... Updates of the U bit are performed before the MC68030
+        // allows a page to be accessed.  The processor never clears this bit."
+        // The same text notes a pointer may have its U set for an address that
+        // is denied at a lower level, which is why this is not deferred until
+        // the walk is known to succeed.
+        if (update_um && !(acc_s && !supervisor) && !((desc_hi >> 3) & 1))
+            (void)mmu_write_physical_uint32(mmu, desc_addr, desc_hi | (1u << 3));
+
         if (dt == DESC_DT_PAGE) {
             // Page descriptor (early termination) — translation complete.
             // The remaining address bits below bit_pos form the page offset.
@@ -389,11 +501,25 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             result.physical_addr = phys_base | (logical_addr & page_mask);
             result.page_size_bits = bit_pos;
             result.valid = true;
-            result.write_protected = (desc_hi >> 2) & 1; // W bit
-            result.modified = (desc_hi >> 4) & 1; // M bit
-            // S bit: only in long-format descriptors (bit 8 of upper word)
-            if (long_desc)
-                result.supervisor_only = (desc_hi >> 8) & 1;
+            // Accumulated above, this descriptor included.  M is deliberately
+            // NOT accumulated: it is a per-page modified flag, not a protection
+            // attribute, and nothing in 9.5.5 ORs it.
+            result.write_protected = acc_wp;
+            result.supervisor_only = acc_s;
+            result.modified = (desc_hi >> 4) & 1;
+
+            // M (bit 4) is set in the PAGE descriptor ahead of the write.
+            // MC68030UM, descriptor field definitions: "The MC68030 sets the M
+            // bit in the corresponding page descriptor before a write operation
+            // to a page for which the M bit is zero, except after a descriptor
+            // with the WP bit set is encountered, or after a supervisor
+            // violation is encountered.  An access is considered to be a write
+            // for updating purposes if either the R/W or RMC signal is low.
+            // The MC68030 never clears this bit."
+            if (update_um && write && !result.modified && !acc_wp && !(acc_s && !supervisor)) {
+                (void)mmu_write_physical_uint32(mmu, desc_addr, desc_hi | (1u << 4));
+                result.modified = true;
+            }
 
             // Build MMUSR
             if (result.write_protected)
@@ -411,6 +537,15 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         // Long:  bits 31:4 of the lower word hold TA; bits 3:0 must be zero.
         // Either way mask with 0xFFFFFFF0 to strip the flag nibble.
         table_addr = desc_lo & 0xFFFFFFF0;
+        // A long-format table descriptor carries L/U in bit 31 of its upper
+        // word and the 15-bit LIMIT in bits 30:16; both bound the next level's
+        // index.  Short-format descriptors have no limit field, so following
+        // one clears any limit inherited from above.
+        limit_active = long_desc;
+        if (long_desc) {
+            limit_is_lower = (desc_hi >> 31) & 1;
+            limit_value = (desc_hi >> 16) & 0x7FFF;
+        }
         long_desc = (dt == DESC_DT_TABLE8);
     }
 
@@ -431,67 +566,29 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
 // may map the same logical page to different physical pages, so we only
 // populate the SoA matching the walk's FC.  When SRE=0, a single walk
 // produces the mapping for both FCs so we populate both tables.
+// Fill the SoA entries for one translated page from a 68030 table walk.
+//
+// The mechanical half of this -- resolve the host pointer, bound the page
+// index, suppress the fill for a logical- or physical-space logpoint, compute
+// the adjusted base, track the page, write the four arrays -- is
+// mmu_fill_soa_page, which the 68040 walker already calls directly.  What is
+// specific to the 030 is only the POLICY for which of the two SoAs to fill, so
+// that is all that lives here.
+//
+// Fill rules:
+//   TT match: the transparent-translation registers are FC-specific
+//     (supervisor-only or user-only), so fill ONLY the SoA matching the walk's
+//     FC.  Filling both would leak the supervisor TT identity into the user
+//     SoA, where the same VA actually maps elsewhere via the (C)RP.
+//   Table walk, SRE=0: supervisor and user share the CRP, so fill both.
+//   Table walk, SRE=1: supervisor uses the SRP and user the CRP, which may map
+//     the same VA to different PAs -- fill only the matching SoA.
 static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool supervisor_only,
                                bool write_protected, bool supervisor, bool tt_match) {
-    // Get host pointer for the physical page
-    uint8_t *host_ptr = phys_to_host(mmu, physical_page);
-    if (!host_ptr)
-        return; // unmapped physical address — leave SoA entry as zero
-
-    bool host_writable = phys_is_writable(mmu, physical_page);
-    uint32_t page_index = logical_page >> PAGE_SHIFT;
-    if ((int)page_index >= g_page_count)
-        return;
-
-    // Memory logpoint: if this logical page has a logpoint installed, the SoA
-    // must stay zero so every access routes through the slow path where the
-    // logpoint check runs.  The next access will re-enter this code via
-    // mmu_handle_fault, but the entry will again be suppressed — at the
-    // steady-state cost of one extra call per access, which is the whole
-    // point of a watchpoint.
-    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page_index])
-        return;
-    // Same rule for physical-space logpoints: if the physical page being
-    // mapped is watched, suppress the fill.  This catches aliased mappings
-    // (same physical page reached via multiple logical addresses), which a
-    // purely logical-space logpoint misses.
-    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[physical_page >> PAGE_SHIFT])
-        return;
-
-    // Compute adjusted base: host_ptr points to start of physical page,
-    // but we want (uintptr_t)(base + logical_addr) to yield the host address.
-    uintptr_t adjusted = (uintptr_t)host_ptr - logical_page;
-
-    // Track this page for fast invalidation
-    tlb_track_page(page_index);
-
-    // Fill rules:
-    //   TT match: TT registers are FC-specific (supervisor-only or user-only),
-    //     so fill ONLY the SoA matching the walk's FC.  Filling both would
-    //     leak the supervisor TT identity into the user SoA, where the same
-    //     VA actually maps to a different PA via the (C)RP.
-    //   Table walk under SRE=0: super and user share CRP, so fill both SoAs.
-    //   Table walk under SRE=1: super uses SRP, user uses CRP — they may map
-    //     the same VA to different PAs, so only fill the matching SoA.
     bool sre_split = TC_SRE(mmu->tc) != 0;
     bool fill_super = tt_match ? supervisor : (!sre_split || supervisor);
     bool fill_user = tt_match ? !supervisor : ((!sre_split || !supervisor) && !supervisor_only);
-    if (!tt_match && supervisor_only)
-        fill_user = false;
-
-    if (fill_super) {
-        if (g_supervisor_read)
-            g_supervisor_read[page_index] = adjusted;
-        if (g_supervisor_write && !write_protected && host_writable)
-            g_supervisor_write[page_index] = adjusted;
-    }
-
-    if (fill_user) {
-        if (g_user_read)
-            g_user_read[page_index] = adjusted;
-        if (g_user_write && !write_protected && host_writable)
-            g_user_write[page_index] = adjusted;
-    }
+    mmu_fill_soa_page(mmu, logical_page, physical_page, fill_super, fill_user, !write_protected);
 }
 
 // ============================================================================
@@ -513,6 +610,8 @@ mmu_state_t *mmu_init(uint8_t *physical_ram, uint32_t ram_size, uint32_t ram_siz
     mmu->rom_phys_base = rom_phys_base;
     mmu->rom_region_end = rom_region_end;
     mmu->enabled = false;
+    mmu->tlb_was_enabled = false;
+    mmu_reset_global_caches();
 
     return mmu;
 }
@@ -523,17 +622,7 @@ void mmu_delete(mmu_state_t *mmu) {
         return;
     if (g_mmu == mmu) {
         g_mmu = NULL;
-        // Clear the user-CRP snapshot so a fresh machine doesn't inherit
-        // a stale CRP from the previous instance.
-        g_last_user_crp = 0;
-        // Reset TLB-tracker state. Stale indices from this machine could
-        // index past the next machine's smaller SoA arrays. Setting
-        // overflow=true also makes the first post-init invalidate fall
-        // back to a full memset (matches the file-scope default).
-        g_tlb_track_count = 0;
-        g_tlb_track_overflow = true;
-        // Cached block descriptors belong to this machine's tables too.
-        atc_flush();
+        mmu_reset_global_caches();
     }
     free(mmu);
 }
@@ -719,6 +808,8 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
             if (r->phys_base == phys_base && r->size == size) {
                 r->host = host_ptr;
                 r->writable = writable;
+                if (g_mem_map_changed)
+                    g_mem_map_changed();
                 return;
             }
         }
@@ -729,9 +820,13 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
         }
         g_host_fill_regions[g_host_fill_count++] =
             (mem_host_fill_region_t){.host = host_ptr, .phys_base = phys_base, .size = size, .writable = writable};
+        if (g_mem_map_changed)
+            g_mem_map_changed();
         return;
     }
     mmu_register_host_region(g_mmu, host_ptr, phys_base, size, writable);
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // fetch caches hold host pointers the SoA cannot evict
 }
 
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {
@@ -847,19 +942,6 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
 // faulting, and our deferred bus error mechanism is incompatible with the
 // ROM's bail-out handler for data probes.  So only bus error for physical
 // addresses that are clearly garbage — outside all known hardware regions.
-static inline bool mmu_fault_epilogue(mmu_state_t *mmu, uint32_t emu_page, uint32_t phys_page, bool write) {
-    uint32_t page_index = emu_page >> PAGE_SHIFT;
-    if ((int)page_index < g_page_count) {
-        uintptr_t *active = write ? g_active_write : g_active_read;
-        if (active && active[page_index] == 0) {
-            // For closer ranges (e.g., $006DB000 from corrupted page tables),
-            // the f_trap handler detects unmapped instruction fetches separately.
-            if (phys_page >= mmu->ram_size_max && phys_page < mmu->rom_phys_base)
-                return false;
-        }
-    }
-    return true;
-}
 
 // Handle a TLB miss: perform table walk or TT check, fill SoA entry.
 // `probe_atc` selects whether the block-descriptor cache may satisfy the miss
@@ -904,15 +986,21 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // path reads it).
     if (probe_atc) {
         atc_block_t *b = atc_probe(mmu, logical_addr, supervisor);
-        if (b && !(b->supervisor_only && !supervisor) && !(b->write_protected && write)) {
+        // A write to a block whose descriptor still has M clear must fall
+        // through to the real walk, so the walk can set M -- otherwise the
+        // block cache would silently bypass the modified-bit protocol for every
+        // page the block covers.
+        if (b && !(b->supervisor_only && !supervisor) && !(b->write_protected && write) && !(write && !b->modified)) {
             uint32_t phys_page = b->phys_base + (emu_page - b->log_base);
-            mmu_fill_soa_entry(mmu, emu_page, phys_page, b->supervisor_only, b->write_protected, supervisor, false);
+            bool b_writable = !b->write_protected && b->modified;
+            mmu_fill_soa_entry(mmu, emu_page, phys_page, b->supervisor_only, !b_writable, supervisor, false);
             return mmu_fault_epilogue(mmu, emu_page, phys_page, write);
         }
     }
 
-    // Perform table walk
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor);
+    // Perform table walk.  This is the real translation path (and PLOAD), so
+    // the architectural history bits are maintained.
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor, /*update_um=*/true);
 
     // Publish the walk's MMUSR to mmu->mmusr so that any PMOVE MMUSR,EA the
     // kernel issues from its bus-error handler reflects the actual fault
@@ -925,15 +1013,6 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // condition and never reach the right page-allocator branch.
     if (mmu)
         mmu->mmusr = result.mmusr;
-
-    // TEMP DIAG: trace user-mode faults on page 0 (icode copyout to user VA 0).
-    if (getenv("GS_VA0_TRACE") && write && !supervisor && logical_addr < 0x1000) {
-        static int n = 0;
-        if (n++ < 30)
-            fprintf(stderr, "[VA0] la=%08x W usr valid=%d wp=%d suponly=%d phys=%08x mmusr=%08x crp=%08x:%08x\n",
-                    logical_addr, result.valid, result.write_protected, result.supervisor_only, result.physical_addr,
-                    result.mmusr, (unsigned)(mmu->crp >> 32), (unsigned)mmu->crp);
-    }
 
     if (!result.valid) {
         // Invalid descriptor: PMMU walk fault, retry semantics (Format $B)
@@ -957,7 +1036,19 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // The physical address from the walk gives us the physical page base.
     // We need to map the emulator's 4KB page granularity.
     uint32_t phys_page = result.physical_addr & ~(uint32_t)PAGE_MASK;
-    mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, result.write_protected, supervisor, false);
+    // Write-array fill policy: a page becomes writable through the SoA only
+    // once it is marked modified -- which this access establishes when it is a
+    // write.  A read fault on a clean page deliberately leaves the write entry
+    // empty so the first write re-faults and the walk sets M.  That is the
+    // architectural modified-bit protocol (MC68030UM's ATC M-bit description:
+    // on a write to a page whose entry has M clear the processor "aborts the
+    // access and initiates a table search, setting the M bit in the page
+    // descriptor ... and the access is retried"), and it is what a guest's VM
+    // dirty-page accounting depends on.  Without this gate the write-back
+    // above would be cosmetic: nothing would ever re-fault to trigger it.
+    // mmu040.c has had the identical policy all along.
+    bool soa_writable = !result.write_protected && (write || result.modified);
+    mmu_fill_soa_entry(mmu, emu_page, phys_page, result.supervisor_only, !soa_writable, supervisor, false);
 
     // When the descriptor covers more than one emulator 4KB page (e.g. an
     // early-termination page descriptor at level A with 32 MB coverage), the
@@ -974,7 +1065,7 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     if (ps_bits > PAGE_SHIFT && ps_bits < 32) {
         uint32_t log_mask = ~((1u << ps_bits) - 1);
         atc_record(logical_addr & log_mask, log_mask, result.physical_addr & log_mask, result.supervisor_only,
-                   result.write_protected, supervisor);
+                   result.write_protected, result.modified, supervisor);
     }
 
     // If phys_to_host returned NULL (unmapped physical), the SoA entry
@@ -1017,8 +1108,12 @@ uint16_t mmu_test_address(mmu_state_t *mmu, uint32_t logical_addr, bool write, b
         return 0;
     }
 
-    // Perform table walk (without modifying SoA entries)
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor);
+    // Perform table walk (without modifying SoA entries).  M68000PRM PTEST:
+    // the instruction "alters neither the used or modified bits of the
+    // translation tables nor the address translation cache", so update_um is
+    // false -- the opposite default from the 68040, whose PTEST does update
+    // them (MC68040UM 3.7.3).
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, write, supervisor, /*update_um=*/false);
 
     mmu->mmusr = result.mmusr;
     if (desc_addr_out)
@@ -1052,7 +1147,7 @@ uint32_t mmu_translate_debug(mmu_state_t *mmu, uint32_t logical_addr, bool super
     if (mmu_check_tt(mmu, logical_addr, false, supervisor))
         return logical_addr;
 
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor);
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor, /*update_um=*/false);
 
     if (result.valid)
         return result.physical_addr;
@@ -1077,7 +1172,7 @@ bool mmu_translate_checked(mmu_state_t *mmu, uint32_t logical_addr, bool supervi
             *pa_out = logical_addr;
         return true; // transparent translation: identity, valid
     }
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor);
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, supervisor, /*update_um=*/false);
     if (pa_out)
         *pa_out = result.valid ? result.physical_addr : logical_addr;
     return result.valid;
@@ -1108,7 +1203,7 @@ bool mmu_translate_with_crp(mmu_state_t *mmu, uint32_t logical_addr, uint64_t cr
     // via phys_to_host but does not touch the SoA arrays.
     uint64_t saved_crp = mmu->crp;
     mmu->crp = crp_root;
-    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, /*supervisor=*/false);
+    mmu_walk_result_t result = mmu_table_walk(mmu, logical_addr, false, /*supervisor=*/false, /*update_um=*/false);
     mmu->crp = saved_crp;
     if (!result.valid)
         return false;

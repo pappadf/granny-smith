@@ -65,6 +65,15 @@ void ppc_context_sync(ppc_t *p) {
 // prefixed $FFF00000 when MSR[EP] is set.
 void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_pc) {
     ppc_context_sync(p); // taking an exception is context-synchronizing
+    // MPC601UM 3.5.7 lists what clears an lwarx reservation, including
+    // "execution of an instruction that causes an exception" and "occurrence
+    // of an asynchronous exception"; 5.2.2 step 6 repeats it.  Without this a
+    // DEC or external interrupt arriving between lwarx and stwcx. leaves the
+    // reservation live across the handler and the rfi, so the conditional
+    // store succeeds where hardware fails it -- the exact atomicity break the
+    // pair exists to prevent.  reserve_addr is deliberately left alone:
+    // proposal-multi-cpu.md 11.7 needs it for the granule compare.
+    p->reserve = 0;
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
     p->msr &= ppc_msr_exception_keep(p);
@@ -741,7 +750,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     // The user SoA arrays carry this MMU's logical fills — the generic
     // identity-restore paths must leave them alone (memory.h).
     g_user_soa_reserved = true;
-    g_mem_fastpath_changed = ppc_fastpath_changed;
+    g_mem_map_changed = ppc_fastpath_changed;
     g_hook_ppc = p;
     g_mem_logical_xlate = ppc_hook_logical_xlate;
 
@@ -872,14 +881,14 @@ static void ppc_dbgif_set_pc(void *ctx, uint32_t pc) {
 // One instruction at pc through the debug memory view; always 4 bytes.
 // The pc is translated with the fetch rules so disassembly through
 // translated pages shows the bytes the CPU would execute.
-static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
+static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf, size_t buflen) {
     ppc_t *p = (ppc_t *)ctx;
     bool ok;
     uint32_t pa = ppc_mmu_translate_debug(p, pc, false, &ok);
     ppc_insn ins;
     ppc_disassemble_model(ok ? memory_debug_read_uint32(pa) : 0, pc, p->cpu_model, &ins);
     // debug.c splits on '\t'; ppc_disasm emits "mnemonic\toperands" already.
-    snprintf(buf, 100, "%s", ins.text);
+    snprintf(buf, buflen, "%s", ins.text); // ins.text is char[96]; caller gives 100
     return 4;
 }
 

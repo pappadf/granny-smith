@@ -338,6 +338,31 @@ static void test_mul_div(void) {
     CHECK_EQ(P->gpr[3], 3);
 }
 
+// Two branches that fold to each other must not spin the sprint forever.
+//
+// ppc_record_fold excludes only a branch to its OWN address, so `A: b B` and
+// `B: b A` both classify as folded, and the fold path consumed no budget slot.
+// The sprint then never terminated: 100% host CPU, no timer, no interrupt and
+// no debugger break, because ext_irq/dec_pending are only raised between
+// sprints and emulated time stops at a sprint boundary.  Reachable from
+// ordinary guest memory corruption -- two mutually-returning blrs after a
+// smashed LR fold the same way.  ppc_run now allows a bounded number of folds
+// per sprint (4x the initial budget, far above any real branch density, so
+// ordinary code still folds at CPI 1.0).
+//
+// Without the bound this does not fail, it HANGS -- the honest shape for a
+// liveness bug.
+static void test_mutual_branch_fold_terminates(void) {
+    fresh();
+    memory_write_uint32(0x2000, e_bc(20, 0, 4, 0, 0)); // bc always, +4 -> $2004
+    memory_write_uint32(0x2004, e_bc(20, 0, -4, 0, 0)); // bc always, -4 -> $2000
+    uint32_t budget = 1000;
+    P->pc = 0x2000;
+    ppc_run(P, &budget);
+    CHECK_EQ(budget, 0u); // ppc_run zeroes the budget on exit
+    CHECK(P->pc == 0x2000u || P->pc == 0x2004u); // still inside the pair
+}
+
 // POWER holdovers against their 601UM RTL
 static void test_power_arith(void) {
     fresh();
@@ -390,6 +415,21 @@ static void test_power_arith(void) {
     step1_valid(e_xo(3, 4, 5, 0, 331, 0));
     CHECK_EQ(P->gpr[3], (uint32_t)-14);
     CHECK_EQ(P->mq, (uint32_t)-2); // remainder sign follows dividend
+    // div of INT64_MIN by -1: the quotient is unrepresentable, so the overflow
+    // has to be recognised BEFORE the divide -- the shipping emcc/wasm build's
+    // i64.div_s traps on this pair by specification rather than returning a
+    // wrong answer.  The dividend is also assembled through unsigned, because
+    // (int64_t)rA << 32 shifts into the sign bit for every rA >= $80000000,
+    // which the -100 case just above already exercises.  Both show up under
+    // MODE=sanitize; on native they are silent.
+    fresh();
+    P->gpr[4] = 0x80000000u; // rA||MQ = $8000000000000000
+    P->mq = 0;
+    P->gpr[5] = 0xFFFFFFFFu; // -1
+    step1_valid(e_xo(3, 4, 5, 1, 331, 0)); // divo
+    CHECK_EQ(P->gpr[3], 0x80000000u);
+    CHECK_EQ(P->mq, 0u);
+    CHECK(P->xer & PPC_XER_OV);
     // divs
     fresh();
     P->gpr[4] = (uint32_t)-100;
@@ -1609,6 +1649,7 @@ int main(void) {
     test_shifts();
     test_rotates();
     test_mul_div();
+    test_mutual_branch_fold_terminates();
     test_power_arith();
     test_power_masks_shifts();
     test_branches();

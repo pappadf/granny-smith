@@ -179,14 +179,11 @@ void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value) {
 uint16_t cpu_get_sr(cpu_t *restrict cpu) {
     uint16_t sr = read_ccr(cpu);
 
+    sr |= (cpu->trace >> 1 & 1) << 15; // T1 -- bit 1 of cpu->trace on every model
     if (cpu->cpu_model >= CPU_MODEL_68030) {
-        sr |= (cpu->trace >> 1 & 1) << 15; // T1
-        sr |= (cpu->trace & 1) << 14; // T0
+        sr |= (cpu->trace & 1) << 14; // T0 (does not exist below the 030)
         if (cpu->m)
             sr |= 1 << 12;
-    } else {
-        if (cpu->trace)
-            sr |= 1 << 15; // T1 only
     }
     if (cpu->supervisor)
         sr |= 1 << 13;
@@ -269,7 +266,7 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
         // rebuilt for THIS machine — a stale non-NULL pointer here made
         // teardown free another machine's objects after a same-process
         // restore (double free) and left machine.cpu.mmu unbound.
-        system_read_checkpoint_data(checkpoint, cpu, sizeof(cpu_t));
+        system_read_checkpoint_data(checkpoint, cpu, offsetof(struct cpu, mmu));
         cpu->mmu = NULL;
         cpu->fpu = NULL;
         cpu->cpu_object = NULL;
@@ -305,6 +302,11 @@ extern cpu_t *cpu_init(int cpu_model, checkpoint_t *checkpoint) {
             ((mmu040_state_t *)cpu->mmu)->bus = NULL;
         }
     }
+
+    // FP register file, in the same order cpu_checkpoint wrote it (after the
+    // 040 MMU blob).  cpu->fpu was allocated above, so this lands in place.
+    if (checkpoint && cpu->fpu)
+        system_read_checkpoint_data(checkpoint, cpu->fpu, sizeof(fpu_state_t));
 
     // Object-tree binding — instance_data on the cpu node is the cpu_t
     // itself, on the fpu node it's the fpu_state_t* directly.
@@ -389,12 +391,23 @@ void cpu_delete(cpu_t *cpu) {
 void cpu_checkpoint(cpu_t *restrict cpu, checkpoint_t *checkpoint) {
     if (!cpu || !checkpoint)
         return;
-    // Write contiguous plain-data portion of cpu_t in one operation
-    system_write_checkpoint_data(checkpoint, cpu, sizeof(cpu_t));
+    // Write the plain-data PREFIX of cpu_t.  sizeof(cpu_t) reached past the
+    // last guest-state member and shipped five host pointers -- void *mmu,
+    // void *fpu and the three object bindings -- whose bytes are meaningless
+    // in a stream and differ run to run, so they also made checkpoints
+    // non-deterministic.  offsetof ends the blob at the first of them.
+    system_write_checkpoint_data(checkpoint, cpu, offsetof(struct cpu, mmu));
     // 68040: the on-chip MMU register file follows the cpu_t blob (the 030
     // PMMU is machine-owned and checkpointed by the machine instead).
     if (cpu->cpu_model == CPU_MODEL_68040 && cpu->mmu)
         system_write_checkpoint_data(checkpoint, cpu->mmu, sizeof(mmu040_state_t));
+    // The FP register file is guest state and was never saved at all: every
+    // restore silently resumed against a zeroed FPU, so guest arithmetic came
+    // back wrong rather than merely non-deterministic.  fpu_state_t is pure
+    // POD (eight 80-bit registers plus four words and a flag), so it rides as
+    // one blob like the 040 MMU above.
+    if (cpu->fpu)
+        system_write_checkpoint_data(checkpoint, cpu->fpu, sizeof(fpu_state_t));
 }
 
 // === Runtime Dispatch ===
@@ -432,8 +445,9 @@ static void cpu_dbgif_set_pc(void *ctx, uint32_t pc) {
 
 // Disassemble one 68K instruction at pc, reading the instruction stream
 // through the debug memory view (side-effect-free).  Returns bytes consumed.
-static int cpu_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
+static int cpu_dbgif_disasm(void *ctx, uint32_t pc, char *buf, size_t buflen) {
     (void)ctx;
+    (void)buflen; // cpu_disasm's worst case is 76 bytes; see debug.h
     uint16_t words[16]; // longest 68K instruction is 10 words; decoder may peek further
     for (int i = 0; i < 16; i++)
         words[i] = memory_debug_read_uint16(pc + (uint32_t)(i * 2));

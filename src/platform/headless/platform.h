@@ -95,15 +95,6 @@ static inline int platform_bsr32(uint32_t value) {
 #endif
 }
 
-// Reverse bits in a 16-bit value
-static inline uint16_t reverse16(uint16_t x) {
-    x = (x & 0x5555) << 1 | (x & 0xAAAA) >> 1;
-    x = (x & 0x3333) << 2 | (x & 0xCCCC) >> 2;
-    x = (x & 0x0F0F) << 4 | (x & 0xF0F0) >> 4;
-    x = (x & 0x00FF) << 8 | (x & 0xFF00) >> 8;
-    return x;
-}
-
 // Count leading zeros
 static inline int platform_nlz32(uint32_t mask) {
     if (mask == 0)
