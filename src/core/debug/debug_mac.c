@@ -31,13 +31,7 @@ extern struct {
 } mac_global_vars[];
 extern const size_t mac_global_vars_count;
 
-// A-trap info (defined in mac_traps_data.c)
-extern struct {
-    const char *name;
-    uint16_t trap;
-} macos_atraps[];
-extern const size_t macos_atraps_count;
-
+// macos_atrap_name() lives in mac_traps_data.c, beside the table it reads.
 uint32_t debug_mac_lookup_global_address(const char *name) {
     if (!name)
         return 0;
@@ -47,40 +41,6 @@ uint32_t debug_mac_lookup_global_address(const char *name) {
         }
     }
     return 0; // Not found
-}
-
-static const char *lookup_atrap(uint16_t trap) {
-    for (int i = 0; i < macos_atraps_count; i++) {
-        if (macos_atraps[i].trap == trap) {
-            return macos_atraps[i].name;
-        }
-    }
-    return NULL;
-}
-
-const char *macos_atrap_name(uint16_t trap) {
-
-    static char buffer[32];
-
-    // Most A-trap flag-bit combinations are pre-expanded in the table
-    // (e.g. _BlockMove appears at 0xA02E/0xA12E/0xA42E/...).  Try the exact
-    // form first; only fall back to masked lookups if it misses.
-    const char *name = lookup_atrap(trap);
-    if (name)
-        return name;
-
-    // Strip the flag bits that aren't part of the selector and retry.
-    //   Toolbox traps (bit 11 set):  bit 10 ($0400, auto-pop)
-    //   OS traps      (bit 11 clr):  bit 9 ($0200, immediate) + bit 10 ($0400, async)
-    uint16_t masked = (trap & 0x0800) ? (trap & ~0x0400) : (trap & ~0x0600);
-    if (masked != trap) {
-        name = lookup_atrap(masked);
-        if (name)
-            return name;
-    }
-
-    snprintf(buffer, sizeof(buffer), "_%04X", trap);
-    return buffer;
 }
 
 // Every 68k-world address in this file resolves through the mac-world
