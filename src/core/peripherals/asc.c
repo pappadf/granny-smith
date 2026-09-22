@@ -726,7 +726,7 @@ asc_t *asc_init(memory_map_t *map, scheduler_t *scheduler, checkpoint_t *checkpo
     // Restore plain-data state from checkpoint if provided
     if (checkpoint) {
         size_t data_size = offsetof(asc_t, memory_interface);
-        system_read_checkpoint_data(checkpoint, asc, data_size);
+        system_read_checkpoint_data(checkpoint, asc, data_size, "asc");
     }
 
     // Register the FIFO drain event type for checkpoint save/restore
@@ -802,7 +802,7 @@ void asc_checkpoint(asc_t *restrict asc, checkpoint_t *checkpoint) {
     if (!asc || !checkpoint)
         return;
     size_t data_size = offsetof(asc_t, memory_interface);
-    system_write_checkpoint_data(checkpoint, asc, data_size);
+    system_write_checkpoint_data(checkpoint, asc, data_size, "asc");
 }
 
 // ============================================================================

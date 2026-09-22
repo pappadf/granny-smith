@@ -889,7 +889,7 @@ floppy_t *floppy_init(int type, memory_map_t *map, struct scheduler *scheduler, 
         // Every one of them is replaced below -- save writes has_data from
         // `data != NULL`, so a NULL at save restores as NULL -- but nothing
         // here may dereference one before that loop runs.
-        system_read_checkpoint_data(checkpoint, floppy, FLOPPY_CHECKPOINT_SIZE);
+        system_read_checkpoint_data(checkpoint, floppy, FLOPPY_CHECKPOINT_SIZE, "floppy");
         floppy_validate_restored_state(floppy);
 
         // Restore disk images by filename
@@ -1091,7 +1091,7 @@ void floppy_checkpoint(floppy_t *restrict floppy, checkpoint_t *checkpoint) {
             }
         }
     }
-    system_write_checkpoint_data(checkpoint, prefix, FLOPPY_CHECKPOINT_SIZE);
+    system_write_checkpoint_data(checkpoint, prefix, FLOPPY_CHECKPOINT_SIZE, "floppy");
     free(prefix);
 
     // Write disk filenames for each drive

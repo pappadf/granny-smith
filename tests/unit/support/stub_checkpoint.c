@@ -19,17 +19,20 @@ typedef enum {
 
 // Checkpoint read/write helpers referenced via x_system_* from cpu.c when
 // checkpoint instrumentation is compiled in. Provide no-op versions.
-void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line) {
     (void)checkpoint;
+    (void)tag;
     (void)data;
     (void)size;
     (void)file;
     (void)line;
 }
 
-void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
-                                      int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
     (void)checkpoint;
+    (void)tag;
     (void)data;
     (void)size;
     (void)file;

@@ -37,7 +37,9 @@
 static uint8_t s_cp_buf[4096];
 static size_t s_cp_w, s_cp_r;
 
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)tag;
     (void)cp;
     (void)file;
     (void)line;
@@ -45,7 +47,9 @@ void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t
     s_cp_w += size;
 }
 
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)tag;
     (void)cp;
     (void)file;
     (void)line;

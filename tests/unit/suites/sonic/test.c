@@ -420,13 +420,17 @@ TEST(test_mac_loopback_two_fragments_and_rde) {
 static uint8_t cp_buf[8192];
 static size_t cp_w, cp_r;
 
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)tag;
     (void)cp, (void)file, (void)line;
     ASSERT_TRUE(cp_w + size <= sizeof cp_buf);
     memcpy(cp_buf + cp_w, data, size);
     cp_w += size;
 }
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)tag;
     (void)cp, (void)file, (void)line;
     ASSERT_TRUE(cp_r + size <= cp_w);
     memcpy(data, cp_buf + cp_r, size);

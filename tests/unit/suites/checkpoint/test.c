@@ -501,6 +501,110 @@ TEST(block_header_filename_length_is_bounded) {
     // the shipping target does not have.
 }
 
+// === Block identity (F-21) ==================================================
+//
+// The stream is positional and BOTH formats compare only a size, so two
+// same-sized blocks in the wrong order cross-load in silence.  F-20 was
+// exactly that: the IIfx saved ASC -> ADB -> floppy and restored ASC ->
+// floppy -> ADB.
+//
+// Every block now carries a 32-bit tag beside its size.  The name is passed as
+// an optional fourth argument to the ordinary read/write calls rather than by
+// a separate call, so it cannot drift from the block it describes -- and
+// because it is passed INSIDE the subsystem, one edit in adb.c protects every
+// machine that saves ADB.
+//
+// A source location cannot serve as the tag: the writer and reader sit at
+// different lines, which is why the stored __FILE__/__LINE__ is a diagnostic
+// and not a check.
+
+TEST(matching_tags_round_trip) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t a = BLOCK_A, b32 = 0xBBBBBBBBu;
+    system_write_checkpoint_data(cp, &a, sizeof(a), "asc");
+    system_write_checkpoint_data(cp, &b32, sizeof(b32), "adb");
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t ra = 0, rb = 0;
+    system_read_checkpoint_data(cp, &ra, sizeof(ra), "asc");
+    system_read_checkpoint_data(cp, &rb, sizeof(rb), "adb");
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 0);
+    ASSERT_TRUE(ra == BLOCK_A);
+    ASSERT_TRUE(rb == 0xBBBBBBBBu);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+// F-20 in miniature: two SAME-SIZED blocks saved in one order and restored in
+// the other.  Without a tag nothing notices -- the sizes agree, so the size
+// check passes and each subsystem loads the other's state.
+TEST(swapped_same_sized_blocks_fail_by_name) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t adb_state = 0x0ADB0ADBu, floppy_state = 0x0F10F10Fu;
+    system_write_checkpoint_data(cp, &adb_state, sizeof(adb_state), "adb");
+    system_write_checkpoint_data(cp, &floppy_state, sizeof(floppy_state), "floppy");
+    checkpoint_close(cp);
+
+    // Restore in the opposite order, as iifx_init did.
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t got = 0;
+    system_read_checkpoint_data(cp, &got, sizeof(got), "floppy");
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1); // caught AT the swap
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+// Same, in the quick format the browser writes every 15 seconds.
+TEST(swapped_blocks_fail_by_name_in_quick_format_too) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_QUICK, "plus", 4096);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t x = 0x11111111u, y = 0x22222222u;
+    system_write_checkpoint_data(cp, &x, sizeof(x), "adb");
+    system_write_checkpoint_data(cp, &y, sizeof(y), "floppy");
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t got = 0;
+    system_read_checkpoint_data(cp, &got, sizeof(got), "floppy");
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+// Untagged blocks stay readable by tagged callers and vice versa, so a block
+// can gain a name on one side before the other without the stream ever
+// desynchronising.  If NULL meant "write nothing" instead of "write 0", this
+// is the case that would silently shift every subsequent block.
+TEST(tagged_and_untagged_sides_interoperate) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t a = 0xAAAAAAAAu, b32 = 0xBBBBBBBBu;
+    system_write_checkpoint_data(cp, &a, sizeof(a)); // writer does not name it
+    system_write_checkpoint_data(cp, &b32, sizeof(b32), "adb"); // writer does
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t ra = 0, rb = 0;
+    system_read_checkpoint_data(cp, &ra, sizeof(ra), "asc"); // reader names an untagged block
+    system_read_checkpoint_data(cp, &rb, sizeof(rb)); // reader ignores a tagged one
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 0);
+    ASSERT_TRUE(ra == 0xAAAAAAAAu);
+    ASSERT_TRUE(rb == 0xBBBBBBBBu);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
 int main(void) {
     cp_unlink();
     RUN(consolidated_round_trip);
@@ -515,6 +619,10 @@ int main(void) {
     RUN(bounded_string_terminates_what_the_writer_did_not);
     RUN(bounded_string_refuses_over_cap);
     RUN(block_header_filename_length_is_bounded);
+    RUN(matching_tags_round_trip);
+    RUN(swapped_same_sized_blocks_fail_by_name);
+    RUN(swapped_blocks_fail_by_name_in_quick_format_too);
+    RUN(tagged_and_untagged_sides_interoperate);
     cp_unlink();
     return 0;
 }

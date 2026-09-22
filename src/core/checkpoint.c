@@ -268,6 +268,35 @@ static char *cp_read_block_fname(checkpoint_t *checkpoint) {
     return saved_file;
 }
 
+// FNV-1a over the block name.  The hash only has to separate the names a
+// single machine uses, and a collision costs a missed diagnostic rather than
+// wrong behaviour -- the size check still stands behind it.
+static uint32_t cp_tag_hash(const char *name) {
+    uint32_t h = 2166136261u;
+    for (const unsigned char *p = (const unsigned char *)name; *p; p++) {
+        h ^= (uint32_t)*p;
+        h *= 16777619u;
+    }
+    return h ? h : 1u; // 0 is reserved for "unchecked"
+}
+
+// Compare a stored tag against what the caller expects.  0 on either side
+// means "unchecked", so a block can gain a name on the write and read paths
+// independently.  Returns false and flags the checkpoint on a real mismatch.
+static bool cp_tag_ok(checkpoint_t *checkpoint, uint32_t stored, const char *tag, const char *file, int line) {
+    if (!tag || stored == 0)
+        return true;
+    uint32_t want = cp_tag_hash(tag);
+    if (stored == want)
+        return true;
+    LOG(0,
+        "Error: checkpoint block order diverges -- reading '%s' at %s:%d, but the stream holds a different block "
+        "here (tag %08x, expected %08x). The save and restore orders disagree.",
+        tag, file ? file : "(unknown)", line, stored, want);
+    checkpoint_set_error(checkpoint);
+    return false;
+}
+
 bool checkpoint_read_count(checkpoint_t *checkpoint, uint32_t *out, uint32_t max, const char *what) {
     *out = 0;
     uint32_t v = 0;
@@ -310,7 +339,8 @@ char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char 
 // === Block I/O ===
 
 // Read a data block with size validation, source metadata, and RLE decompression
-void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line) {
     if (!checkpoint || checkpoint->error || checkpoint->is_writing) {
         LOG(0, "Error: Invalid checkpoint handle for reading");
         if (checkpoint)
@@ -322,6 +352,11 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     if (checkpoint->buf) {
         uint32_t stored_size = 0;
         if (!buf_read(checkpoint, &stored_size, sizeof(stored_size)))
+            return;
+        uint32_t stored_tag = 0;
+        if (!buf_read(checkpoint, &stored_tag, sizeof(stored_tag)))
+            return;
+        if (!cp_tag_ok(checkpoint, stored_tag, tag, file, line))
             return;
         if ((size_t)stored_size != size) {
             LOG(0, "Error: v3 checkpoint size mismatch: expected %zu but got %u at %s:%d", size, stored_size,
@@ -344,6 +379,18 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
         checkpoint->error = true;
         return;
     }
+
+    uint32_t stored_tag = 0;
+    got = fread(&stored_tag, 1, sizeof(stored_tag), checkpoint->file);
+    if (got != sizeof(stored_tag)) {
+        LOG(0, "Error: Failed to read block tag from checkpoint (got %zu)", got);
+        checkpoint->error = true;
+        return;
+    }
+    // Checked before the size, so a divergence is reported by NAME rather than
+    // as the size mismatch that only sometimes follows it.
+    if (!cp_tag_ok(checkpoint, stored_tag, tag, file, line))
+        return;
 
     // Read filename length and filename (for diagnostics)
     char *saved_file = cp_read_block_fname(checkpoint);
@@ -452,8 +499,8 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
 }
 
 // Write a data block with size header, source metadata, and optional RLE compression
-void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
-                                      int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
     if (!checkpoint || checkpoint->error || !checkpoint->is_writing) {
         LOG(0, "Error: Invalid checkpoint handle for writing");
         if (checkpoint)
@@ -461,10 +508,12 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
         return;
     }
 
-    // v3 buffered write: append size + raw data to accumulation buffer
+    // v3 buffered write: append size + tag + raw data to accumulation buffer
     if (checkpoint->buf) {
         uint32_t sz = (uint32_t)size;
+        uint32_t tg = tag ? cp_tag_hash(tag) : 0u;
         buf_append(checkpoint, &sz, sizeof(sz));
+        buf_append(checkpoint, &tg, sizeof(tg));
         buf_append(checkpoint, data, size);
         return;
     }
@@ -476,6 +525,16 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
     size_t w = fwrite(&store_size, 1, sizeof(store_size), checkpoint->file);
     if (w != sizeof(store_size)) {
         LOG(0, "Error: Failed to write size header to checkpoint (wrote %zu)", w);
+        checkpoint->error = true;
+        return;
+    }
+
+    // Block tag: 0 when the caller did not name this block.  Always written,
+    // so the layout never depends on whether a block happens to be named.
+    uint32_t store_tag = tag ? cp_tag_hash(tag) : 0u;
+    w = fwrite(&store_tag, 1, sizeof(store_tag), checkpoint->file);
+    if (w != sizeof(store_tag)) {
+        LOG(0, "Error: Failed to write block tag to checkpoint (wrote %zu)", w);
         checkpoint->error = true;
         return;
     }

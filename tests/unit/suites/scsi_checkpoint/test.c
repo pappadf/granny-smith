@@ -47,14 +47,18 @@ static void cp_reset(void) {
     s_cp_w = s_cp_r = 0;
 }
 
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)tag;
     (void)cp, (void)file, (void)line;
     ASSERT_TRUE(s_cp_w + size <= sizeof(s_cp_buf));
     memcpy(s_cp_buf + s_cp_w, data, size);
     s_cp_w += size;
 }
 
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *tag, const char *file,
+                                     int line) {
+    (void)tag;
     (void)cp, (void)file, (void)line;
     ASSERT_TRUE(s_cp_r + size <= s_cp_w);
     memcpy(data, s_cp_buf + s_cp_r, size);

@@ -66,10 +66,13 @@
 // ============================================================
 
 // This suite never checkpoints -- it exercises the register file.
-void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *d, size_t n, const char *f, int l) {
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *d, size_t n, const char *tag, const char *f,
+                                      int l) {
+    (void)tag;
     (void)cp, (void)d, (void)n, (void)f, (void)l;
 }
-void system_read_checkpoint_data_loc(checkpoint_t *cp, void *d, size_t n, const char *f, int l) {
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *d, size_t n, const char *tag, const char *f, int l) {
+    (void)tag;
     (void)cp, (void)d, (void)n, (void)f, (void)l;
 }
 

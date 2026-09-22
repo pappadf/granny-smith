@@ -1051,7 +1051,7 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
     if (checkpoint) {
         // Restore plain-data state; pointers are re-filled above
         size_t data_size = offsetof(adb_t, via);
-        system_read_checkpoint_data(checkpoint, adb, data_size);
+        system_read_checkpoint_data(checkpoint, adb, data_size, "adb");
         // vADBInt was restored as part of the VIA checkpoint; no extra call needed
     } else {
         // Cold boot: no pending data, so deassert SRQ (vADBInt high)
@@ -1084,7 +1084,7 @@ void adb_checkpoint(adb_t *restrict adb, checkpoint_t *checkpoint) {
     if (!adb || !checkpoint)
         return;
     size_t data_size = offsetof(adb_t, via);
-    system_write_checkpoint_data(checkpoint, adb, data_size);
+    system_write_checkpoint_data(checkpoint, adb, data_size, "adb");
 }
 
 // ============================================================================

@@ -146,8 +146,9 @@ static uint8_t g_cp[2][65536];
 static size_t g_cp_w[2], g_cp_r;
 static int g_cp_slot;
 
-void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *file, int line) {
-    (void)checkpoint, (void)file, (void)line;
+void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_t size, const char *tag,
+                                     const char *file, int line) {
+    (void)checkpoint, (void)tag, (void)file, (void)line;
     if (g_cp_r + size > g_cp_w[0]) {
         memset(data, 0, size);
         return;
@@ -155,9 +156,9 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     memcpy(data, g_cp[0] + g_cp_r, size);
     g_cp_r += size;
 }
-void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *file,
-                                      int line) {
-    (void)checkpoint, (void)file, (void)line;
+void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data, size_t size, const char *tag,
+                                      const char *file, int line) {
+    (void)checkpoint, (void)tag, (void)file, (void)line;
     if (g_cp_w[g_cp_slot] + size > sizeof(g_cp[0]))
         return;
     memcpy(g_cp[g_cp_slot] + g_cp_w[g_cp_slot], data, size);
