@@ -11,7 +11,6 @@
 #include "mmu040.h"
 
 #include <assert.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -925,15 +924,6 @@ static bool mmu_handle_fault_internal(mmu_state_t *mmu, uint32_t logical_addr, b
     // condition and never reach the right page-allocator branch.
     if (mmu)
         mmu->mmusr = result.mmusr;
-
-    // TEMP DIAG: trace user-mode faults on page 0 (icode copyout to user VA 0).
-    if (getenv("GS_VA0_TRACE") && write && !supervisor && logical_addr < 0x1000) {
-        static int n = 0;
-        if (n++ < 30)
-            fprintf(stderr, "[VA0] la=%08x W usr valid=%d wp=%d suponly=%d phys=%08x mmusr=%08x crp=%08x:%08x\n",
-                    logical_addr, result.valid, result.write_protected, result.supervisor_only, result.physical_addr,
-                    result.mmusr, (unsigned)(mmu->crp >> 32), (unsigned)mmu->crp);
-    }
 
     if (!result.valid) {
         // Invalid descriptor: PMMU walk fault, retry semantics (Format $B)

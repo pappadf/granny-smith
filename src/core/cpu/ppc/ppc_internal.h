@@ -137,6 +137,7 @@ struct ppc {
 
     // --- execution state ---
     uint32_t instruction_pc; // address of the instruction being executed
+    uint32_t fold; // 601 branch-folding classification for the sprint loop
     uint32_t reserve; // lwarx reservation held
     uint32_t reserve_addr;
     uint32_t ext_irq; // level of the external-interrupt line
