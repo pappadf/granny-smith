@@ -807,10 +807,27 @@
 // STOP (e.g. fall through past the Lisa scheduler's Pause), corrupting state.
 // SET_SR runs cpu_check_interrupt last, so an already-pending interrupt clears
 // `stopped` and is taken normally on the next sprint.
-#define OP_STOP_DATA OP(SUPER(uint16_t sr = FETCH16(); cpu->stopped = 1; *instructions = 0; SET_SR(sr)))
-#define OP_RTS       OP(POP32(PC))
-#define OP_TRAPV     OP(if (CC_V) EXC_TRAPV())
-#define OP_RTR       OP(uint16_t ccr; POP16(ccr); WRITE_CCR(ccr); POP32(PC))
+// STOP: load SR from the immediate, then halt until an interrupt.
+//
+// MC68030UM 8.1.7 / MC68040UM 8.2.6: "A STOP instruction that begins execution
+// with T1 = 1 and T0 = 0 forces a trace exception after it loads the status
+// register.  Upon return from the trace handler routine, execution continues
+// with the instruction following the STOP, and THE PROCESSOR NEVER ENTERS THE
+// STOPPED CONDITION."  So the stop is suppressed by the T1 state the
+// instruction STARTED with -- read before SET_SR overwrites it -- not by the
+// value the immediate loads.
+#define OP_STOP_DATA                                                                                                   \
+    OP(SUPER({                                                                                                         \
+        uint16_t sr = FETCH16();                                                                                       \
+        bool _traced = (cpu->trace & 2) != 0;                                                                          \
+        if (!_traced)                                                                                                  \
+            cpu->stopped = 1;                                                                                          \
+        *instructions = 0;                                                                                             \
+        SET_SR(sr);                                                                                                    \
+    }))
+#define OP_RTS   OP(POP32(PC))
+#define OP_TRAPV OP(if (CC_V) EXC_TRAPV())
+#define OP_RTR   OP(uint16_t ccr; POP16(ccr); WRITE_CCR(ccr); POP32(PC))
 // LINK: fetch the displacement word *before* mutating any register, so a
 // page-cross fault on the immediate restarts the instruction cleanly (the
 // pre-PUSH/AY-update state is untouched). M68000PRM §8.1: An is pushed,

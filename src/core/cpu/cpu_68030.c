@@ -611,7 +611,12 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset(cpu_t *restrict c
             (*instructions)--;
 #define CPU_DECODER_EPILOGUE                                                                                           \
     }                                                                                                                  \
-    /* Exception priority order (MC68030 UM §8.1): bus error > address error > reset > */                             \
+    /* Exception priority (MC68030UM Table 8-5): group 0 RESET, then group 1   */                                      \
+    /* 1.0 ADDRESS ERROR and 1.1 BUS ERROR, ... then group 4 4.1 TRACE, 4.2      */                                    \
+    /* INTERRUPT.  Reset is highest and address error outranks bus error -- the  */                                    \
+    /* old comment here had both backwards.  No behavioural consequence today    */                                    \
+    /* (we implement neither reset-as-exception nor address error), but it would */                                    \
+    /* mislead whoever implements F-05.  Handle the deferred bus error first so  */                                    \
     /* trace > interrupt. Handle deferred bus error first so it preempts a trace */                                    \
     /* that the same instruction would otherwise have raised. */                                                       \
     if (__builtin_expect(g_bus_error_pending, 0)) {                                                                    \

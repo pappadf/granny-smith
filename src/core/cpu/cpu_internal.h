@@ -1086,7 +1086,12 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
             cpu->ssp = cpu->a[7];
             cpu->a[7] = cpu->usp;
         }
-        cpu->trace = (sr >> 15) & 1; // only T1
+        // T1 in bit 1, matching the 030 encoding above.  M68000PRM 1.3.2: below
+        // the 68030 "only one trace mode [is] supported, where T0 is always
+        // zero", so the single bit these models have IS T1.  Storing it in bit 0
+        // made cpu->trace mean two different things by model, and left every
+        // `cpu->trace & 2` test silently false on the 68000.
+        cpu->trace = ((sr >> 15) & 1) << 1;
         // Repoint the SoA active tables on a supervisor-bit change (e.g. RTE back
         // to user, or MOVE/ANDI to SR).  The Lisa segment MMU keys the active
         // translation context off whether g_active_read is the supervisor table
@@ -1106,6 +1111,23 @@ static inline void write_sr(cpu_t *restrict cpu, uint16_t sr) {
     cpu->supervisor = new_s;
     cpu->interrupt_mask = (sr >> 8) & 7;
     write_ccr(cpu, sr);
+    // Arm tracing at the right instruction.  The decoders sample _saved_trace
+    // once per SPRINT, so an instruction that SETS T1 mid-sprint would not
+    // start tracing until the next sprint -- potentially thousands of
+    // instructions later.  Ending the sprint here makes the next one sample T1
+    // at its top and trace exactly the instruction that follows, which is what
+    // MC68030UM 8.1.7 requires: "the state of these bits when an instruction
+    // begins execution determines whether the instruction generates a trace
+    // exception after the instruction completes".  The SR writer itself began
+    // with T1 clear and is therefore correctly NOT traced.
+    //
+    // write_sr is the single seam for every SR write (TO_SR, MOVE to SR, STOP,
+    // both RTE forms), so this one test covers them all -- and it costs
+    // nothing per instruction, unlike re-sampling cpu->trace inside the decoder
+    // loop, which measured +2 instructions in the 68030 loop header and +2.17%
+    // on the SE/30 row.  OP_STOP_DATA already uses the same idiom.
+    if (__builtin_expect((cpu->trace & 2) != 0, 0) && g_bus_error_instr_ptr)
+        *g_bus_error_instr_ptr = 0;
     cpu_check_interrupt(cpu);
 }
 

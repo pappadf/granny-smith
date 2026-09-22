@@ -179,14 +179,11 @@ void cpu_set_vbr(cpu_t *restrict cpu, uint32_t value) {
 uint16_t cpu_get_sr(cpu_t *restrict cpu) {
     uint16_t sr = read_ccr(cpu);
 
+    sr |= (cpu->trace >> 1 & 1) << 15; // T1 -- bit 1 of cpu->trace on every model
     if (cpu->cpu_model >= CPU_MODEL_68030) {
-        sr |= (cpu->trace >> 1 & 1) << 15; // T1
-        sr |= (cpu->trace & 1) << 14; // T0
+        sr |= (cpu->trace & 1) << 14; // T0 (does not exist below the 030)
         if (cpu->m)
             sr |= 1 << 12;
-    } else {
-        if (cpu->trace)
-            sr |= 1 << 15; // T1 only
     }
     if (cpu->supervisor)
         sr |= 1 << 13;
