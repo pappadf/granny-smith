@@ -98,19 +98,34 @@ if (g_bus_error_instr_ptr)
 if (__builtin_expect(cpu->my_exception_pending, 0)) { ... }
 ```
 
-**Why not `break` or `goto`?** Not because jumping out is wrong in itself — it
-may well compile fine, and the theoretical objection (multiple exits inhibiting
-loop transforms) is weak here, since this loop is a 30k-instruction switch full
-of calls and memory clobbers that no loop transform was going to touch anyway.
-The real reason is narrower and harder to argue with: **none of the three
-mechanisms avoids the cost that matters.** `break`, `goto` and zeroing the
-counter differ only in what happens *after* you have decided to stop; each
-still needs something to make that decision, and the per-instruction cost is
-entirely in the **deciding**. What settles it is that the loop condition is
-evaluated every iteration regardless — so saying "stop" through it is free,
-while `break` needs a test that would not otherwise exist. If someone wants to
-revisit this, measure register pressure rather than control flow: that is what
-dominated every measurement behind this rule.
+**`break` is not available at all.** The decode tree is a nested `switch`, and
+every case already ends in `break;` — so a `break` inside an op macro binds to
+the innermost *switch*, falls through to the outer switch's own `break`, and
+runs on to the end of the loop body. It cannot leave the loop. That is why the
+two ops which do leave early, `OP_UNDEFINED` and `VALIDATE_EA_030`, use
+`continue`: `switch` captures `break` but not `continue`.
+
+**`goto` to a per-exception label is a legitimate alternative**, and on its own
+terms a better one than a flag. The label *is* the dispatch, so there is no
+flag to store and no test outside the loop — only the detection `if` in the op,
+which is irreducible whatever mechanism follows it. It also skips the rest of
+the iteration (`pc += 2`, the burn-down decrement), which counter-zeroing
+cannot do: zeroing lets the current iteration finish.
+
+Two practicalities if you use it: the label must zero `*instructions` itself,
+because the epilogue asserts the sprint spent its budget; and `goto` leaves the
+loop's block scope, so an exception carrying a payload — a fault address — has
+to put it in `cpu_t` rather than a local. Payload-free exceptions are where it
+is cleanest.
+
+**What does NOT settle any of this is the exit mechanism's own cost.** `break`,
+`goto` and counter-zeroing differ only in what happens *after* the decision to
+stop; the per-instruction cost is entirely in the **deciding**, and the loop
+condition is evaluated every iteration regardless. The theoretical worry about
+multiple exits inhibiting loop transforms is weak here — this loop is a 30k-
+instruction switch full of calls and memory clobbers that no loop transform was
+going to touch. If someone revisits it, measure register pressure rather than
+control flow: that is what dominated every measurement behind this rule.
 
 **If the faulting instruction must not complete**, the two are NOT
 interchangeable — zeroing the counter lets the current iteration finish, so a
