@@ -52,10 +52,12 @@
 
 // === Stubs for everything past checkpoint.c's module boundary ================
 //
-// Note what this list is evidence of: linking the checkpoint module alone drags
-// in cmd_load_checkpoint and cmd_save_checkpoint from system.c, because the
-// typed methods wrap the retired argc/argv handlers (F-31, Track I).  When that
-// track lands, four of these stubs should disappear.
+// Note what this list is evidence of: linking the checkpoint module alone still
+// drags in system.c's checkpoint entry points, because the typed methods call
+// them.  Track I replaced what used to be here -- cmd_load_checkpoint and
+// cmd_save_checkpoint, the retired argc/argv handlers the methods reached by
+// building a fake argv[] (F-31) -- so these are now ordinary typed functions
+// rather than a command layer wearing a costume.
 
 static char g_build_id[BUILD_ID_LEN + 1] = "unit-test-build-0001";
 
@@ -63,15 +65,17 @@ const char *get_build_id(void) {
     return g_build_id;
 }
 
-uint64_t cmd_load_checkpoint(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+int system_checkpoint_load(const char *filename) {
+    (void)filename;
     return 1;
 }
-uint64_t cmd_save_checkpoint(int argc, char *argv[]) {
-    (void)argc;
-    (void)argv;
+int system_checkpoint_save(const char *filename, bool files_as_refs) {
+    (void)filename;
+    (void)files_as_refs;
     return 1;
+}
+bool system_checkpoint_probe(void) {
+    return false;
 }
 const char *find_valid_checkpoint_path(void) {
     return NULL;

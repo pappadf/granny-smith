@@ -1350,7 +1350,7 @@ static value_t checkpoint_method_probe(struct object *self, const member_t *m, i
     (void)m;
     (void)argc;
     (void)argv;
-    return val_bool(find_valid_checkpoint_path() != NULL);
+    return val_bool(system_checkpoint_probe());
 }
 
 static value_t checkpoint_method_clear(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -1361,36 +1361,42 @@ static value_t checkpoint_method_clear(struct object *self, const member_t *m, i
     return val_bool(gs_checkpoint_clear() == 0);
 }
 
-// `checkpoint.load([path])` — load the named checkpoint file or, when
-// path is omitted/empty, auto-load the latest valid checkpoint for the
-// active machine. Routes through cmd_load_checkpoint so the legacy
-// shell command and the typed method share one body.
+// `checkpoint.load([path])` — load the named checkpoint file or, when path is
+// omitted/empty, auto-load the latest valid checkpoint for the active machine.
+//
+// This used to build a fake argv[] and hand it to cmd_load_checkpoint, the
+// retired command shape, which then string-matched its way back out.  That was
+// the last place the pre-object-model command layer was load-bearing, and it
+// carried a live collision: cmd_load_checkpoint tested argv[1] against the
+// literal "probe", and argv[1] is where this method put the user's path -- so
+// `checkpoint.load("probe")` ran a probe instead of loading a file called
+// probe.  `checkpoint.probe()` above has been the real entry point all along,
+// so that string-match was vestigial -- reachable, but only by accident
+// (08-core-infra F-31).
 static value_t checkpoint_method_load(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    if (argc >= 1 && argv[0].s && *argv[0].s) {
-        char *fake_argv[2] = {"--load", (char *)argv[0].s};
-        return val_bool(cmd_load_checkpoint(2, fake_argv) == 0);
-    }
-    char *fake_argv[1] = {"--load"};
-    return val_bool(cmd_load_checkpoint(1, fake_argv) == 0);
+    const char *path = (argc >= 1 && argv[0].s && *argv[0].s) ? argv[0].s : NULL;
+    return val_bool(system_checkpoint_load(path) == 0);
 }
 
-// `checkpoint.save(path, [mode])` — write a consolidated checkpoint to
-// the given path. `mode` is "content" (default; embed image bytes) or
-// "refs" (record paths only — smaller file, requires the same images
-// to exist on restore).
+// `checkpoint.save(path, [mode])` — write a consolidated checkpoint to the
+// given path. `mode` is "content" (default; embed image bytes) or "refs"
+// (record paths only — smaller file, requires the same images on restore).
+//
+// `mode` is a real V_ENUM, so the framework rejects anything outside the table
+// and completion can offer both values.  It was a V_STRING that the legacy
+// handler strcmp'd against FIVE spellings — refs / reference / names /
+// content / inline — of which only two ever appeared in its usage line or its
+// error message.  The three undocumented aliases are dropped.
 static value_t checkpoint_method_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
-    const char *path = argv[0].s;
-    char *fake_argv[3] = {"--save", (char *)path, NULL};
-    int fake_argc = 2;
-    if (argc >= 2 && argv[1].s && *argv[1].s) {
-        fake_argv[2] = (char *)argv[1].s;
-        fake_argc = 3;
-    }
-    return val_bool(cmd_save_checkpoint(fake_argc, fake_argv) == 0);
+    if (argc < 1 || !argv[0].s || !*argv[0].s)
+        return val_err("checkpoint.save: path is required");
+    // enum index 0 = "content", 1 = "refs"; absent means content.
+    bool as_refs = (argc >= 2 && argv[1].kind == V_ENUM && argv[1].enm.idx == 1);
+    return val_bool(system_checkpoint_save(argv[0].s, as_refs) == 0);
 }
 
 // `checkpoint.snapshot(name)` — capture a quick (background) checkpoint
@@ -1426,12 +1432,15 @@ static const arg_decl_t checkpoint_load_args[] = {
      .doc = "Checkpoint path; empty auto-loads the latest"},
 };
 
+static const char *const checkpoint_mode_values[] = {"content", "refs", NULL};
+
 static const arg_decl_t checkpoint_save_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Checkpoint output path"},
     {.name = "mode",
-     .kind = V_STRING,
+     .kind = V_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"content\" (default) or \"refs\""},
+     .enum_values = checkpoint_mode_values,
+     .doc = "\"content\" (default) embeds image bytes; \"refs\" records paths only"},
 };
 
 static const arg_decl_t checkpoint_snapshot_args[] = {

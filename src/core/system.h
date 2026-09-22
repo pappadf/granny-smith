@@ -117,8 +117,13 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind);
 config_t *system_restore(const char *filename);
 
 // Command handlers for checkpoint operations
-uint64_t cmd_save_checkpoint(int argc, char *argv[]);
-uint64_t cmd_load_checkpoint(int argc, char *argv[]);
+// Checkpoint save / load / probe.  These replace the retired
+// cmd_save_checkpoint(argc, argv) and cmd_load_checkpoint(argc, argv), which
+// the typed checkpoint.* methods reached by building a fake argv[] and then
+// string-matching their arguments back out of it (08-core-infra F-31).
+int system_checkpoint_save(const char *filename, bool files_as_refs);
+int system_checkpoint_load(const char *filename); // NULL/empty = auto-load latest
+bool system_checkpoint_probe(void);
 
 // Lookup an image by its full filename within the current config's image list
 image_t *setup_get_image_by_filename(const char *filename);

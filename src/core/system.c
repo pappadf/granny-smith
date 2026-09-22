@@ -1376,25 +1376,18 @@ config_t *system_restore(const char *filename) {
     return config;
 }
 
-// Command handlers for checkpoint operations
-uint64_t cmd_save_checkpoint(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: checkpoint --save <filename> [content|refs]\n");
+// Save the current state to a checkpoint file.
+//
+// Was cmd_save_checkpoint(argc, argv) -- the retired command shape -- reached
+// by the typed checkpoint.save() building a fake argv[] and then string-
+// matching the mode back out of it.  The typed method calls this directly now
+// and the mode arrives as a validated V_ENUM, so the framework rejects a typo
+// instead of the body re-checking it (08-core-infra F-31, Track I).
+int system_checkpoint_save(const char *filename, bool files_as_refs) {
+    if (!filename || !*filename)
         return -1;
-    }
-    const char *filename = argv[1];
     bool prev_mode = checkpoint_get_files_as_refs();
-    if (argc >= 3) {
-        const char *mode = argv[2];
-        if (strcmp(mode, "refs") == 0 || strcmp(mode, "reference") == 0 || strcmp(mode, "names") == 0) {
-            checkpoint_set_files_as_refs(true);
-        } else if (strcmp(mode, "content") == 0 || strcmp(mode, "inline") == 0) {
-            checkpoint_set_files_as_refs(false);
-        } else {
-            printf("checkpoint --save: unknown mode '%s' (use 'content' or 'refs')\n", mode);
-            return -1;
-        }
-    }
+    checkpoint_set_files_as_refs(files_as_refs);
     int result = system_checkpoint(filename, CHECKPOINT_KIND_CONSOLIDATED);
     checkpoint_set_files_as_refs(prev_mode); // restore previous setting
     return result;
@@ -1407,52 +1400,50 @@ __attribute__((weak)) const char *find_valid_checkpoint_path(void) {
     return NULL;
 }
 
-// Shell command to load a saved checkpoint from file
-// Also supports "checkpoint --probe" to check for a valid background checkpoint
-uint64_t cmd_load_checkpoint(int argc, char *argv[]) {
-    // Handle probe subcommand: return 0 if valid checkpoint exists, 1 otherwise
-    if (argc >= 2 && strcmp(argv[1], "probe") == 0) {
-        const char *path = find_valid_checkpoint_path();
-        return (path != NULL) ? 0 : 1;
-    }
-
-    if (argc < 2) {
-        // No filename argument: auto-load the latest valid checkpoint
+// Load a saved checkpoint.  `filename` NULL or empty auto-loads the latest
+// valid background checkpoint.
+//
+// The "probe" subcommand this used to carry is now system_checkpoint_probe():
+// it was reached by string-matching argv[1], and since the typed method passed
+// the USER'S PATH as argv[1], `checkpoint.load("probe")` ran a probe instead
+// of loading a file called probe.  That collision goes with the argv[] layer.
+int system_checkpoint_load(const char *filename) {
+    char auto_buf[1024];
+    if (!filename || !*filename) {
         const char *auto_path = find_valid_checkpoint_path();
         if (!auto_path) {
-            printf("No valid checkpoint found\n");
+            LOG(0, "No valid checkpoint found");
             return 1;
         }
-        printf("Auto-loading checkpoint: %s\n", auto_path);
-        argc = 2;
-        argv[1] = (char *)auto_path;
+        snprintf(auto_buf, sizeof(auto_buf), "%s", auto_path);
+        LOG(1, "Auto-loading checkpoint: %s", auto_buf);
+        filename = auto_buf;
     }
 
-    const char *filename = argv[1];
     config_t *old_config = global_emulator;
     config_t *new_config = system_restore(filename);
-    if (new_config) {
-        // Replace global emulator with restored state
-        global_emulator = new_config;
-        // Free the old emulator state after replacing it
-        // This is safe because:
-        // 1. Commands are registered globally, not per-config
-        // 2. global_emulator now points to new_config
-        // 3. No part of the call stack holds direct references to old_config
-        if (old_config) {
-            system_destroy(old_config);
-        }
-        // Force a one-shot screen redraw so the restored framebuffer appears
-        extern void frontend_force_redraw(void);
-        frontend_force_redraw();
+    if (!new_config)
+        return -1;
 
-        // Resume execution if checkpoint was saved while running
-        if (scheduler_is_running(new_config->scheduler)) {
-            printf("Checkpoint was saved while running - resuming execution\n");
-        }
-        return 0;
-    }
-    return -1;
+    // Replace global emulator with restored state.  Safe because commands are
+    // registered globally rather than per-config, global_emulator now names
+    // new_config, and no part of the call stack holds old_config.
+    global_emulator = new_config;
+    if (old_config)
+        system_destroy(old_config);
+
+    // Force a one-shot screen redraw so the restored framebuffer appears
+    extern void frontend_force_redraw(void);
+    frontend_force_redraw();
+
+    if (scheduler_is_running(new_config->scheduler))
+        LOG(1, "Checkpoint was saved while running - resuming execution");
+    return 0;
+}
+
+// True when a valid background checkpoint exists to load.
+bool system_checkpoint_probe(void) {
+    return find_valid_checkpoint_path() != NULL;
 }
 
 // ===== Typed object-model entry points =====================================
