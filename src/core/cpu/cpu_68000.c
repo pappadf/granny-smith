@@ -70,23 +70,25 @@ LOG_USE_CATEGORY_NAME("cpu");
  * in scheduler.c:reconcile_sprint on any SE/30 sprint that ended its last
  * instruction on a slow I/O access. */
 #define CPU_DECODER_PROLOGUE                                                                                           \
-    /* A double bus fault stops a 68000 dead.  MC68030UM 7.5.4 states the                                              \
-     * family rule: "Only an external reset operation can restart a halted                                             \
-     * processor" -- so consume the sprint and execute nothing until something                                         \
-     * outside the CPU (machine.reset, the reset button, Cuda/Egret) calls                                             \
-     * cpu_reset_to_vector_68030, which clears the flag.  Previously the                                               \
-     * decoder just returned, leaving pc already advanced past the faulting                                            \
-     * opcode by this prologue, so the NEXT sprint resumed mid-instruction.                                            \
+    /* Double bus fault: the CPU halts, and on Mac hardware the halt line is                                           \
+     * wired straight to the board's reset input, so the machine reboots.                                              \
+     * Apple's Guide to the Macintosh Family Hardware documents the wiring for                                         \
+     * the Mac SE -- itself a 68000 machine -- twice: "/HALT ... Tied to                                               \
+     * MC68000 /RES line", and "/RESET ... Master reset for entire board; tied                                         \
+     * to MC68000 /HALT line".  MC68030UM 7.5.4 gives the CPU half of the same                                         \
+     * rule ("Only an external reset operation can restart a halted                                                    \
+     * processor"); the board is what supplies that external reset.                                                    \
      *                                                                                                                 \
-     * The 030 and 040 decoders instead model the board glue asserting RESET.                                          \
-     * That divergence is deliberate there (the Mac ROM's RAM-sizing probes                                            \
-     * rely on it) but must NOT be extended to the 68000: doing so re-entered                                          \
-     * a Plus from a guest-induced double fault with a stack pointer the reset                                         \
-     * had not established, and the next fault's frame push dispatched through                                         \
-     * a device page with no write handler -- a host segfault.  Caught by                                              \
-     * appletalk-afp-e2e, whose last stage launches a guest app that faults. */                                        \
+     * Deliberately IDENTICAL to the 68030 and 68040 decoders.  The 68000                                              \
+     * previously just returned instead, leaving pc already advanced past the                                          \
+     * faulting opcode by this prologue, so the next sprint resumed                                                    \
+     * mid-instruction -- and that left the Plus and Lisa as the only machines                                         \
+     * in the tree behaving differently on a double fault, with no hardware                                            \
+     * basis for the difference. */                                                                                    \
     if (__builtin_expect(cpu->halted, 0)) {                                                                            \
-        *instructions = 0;                                                                                             \
+        cpu->halted = 0;                                                                                               \
+        system_reset_devices(); /* the board's /RESET net; precedes the vector read */                                 \
+        cpu_reset_to_vector_68030(cpu); /* CPU half only; not 030-specific */                                          \
     }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \

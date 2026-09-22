@@ -324,31 +324,83 @@ static inline void logpoint_notify_device(uint32_t addr, unsigned size, uint32_t
 // Device dispatch + logpoint notify, one wrapper per access width.  `addr` is
 // the access address the logpoint matches against (logical or physical, as
 // the caller resolved it); `off` is the device-relative offset it dispatches.
+// A device that does not implement one access width is decoded a byte at a
+// time, which is what a real bus does for a peripheral that only claims the
+// byte lanes.  These dispatches used to call the width handler unconditionally:
+// a device page whose write_uint16 is NULL then jumped to address 0 and took
+// the HOST down, reachable from ordinary guest state -- a crashed 68000 guest
+// pushing an exception frame with a garbage A7 lands on exactly such a page.
+// Composing is both the safe answer and the hardware-shaped one.  Slow path
+// only; the fast path never reaches a device page.
+static inline uint8_t dev_raw8(const page_entry_t *pe, uint32_t off) {
+    return pe->dev->read_uint8 ? pe->dev->read_uint8(pe->dev_context, off) : 0xFF;
+}
+static inline void dev_raw_w8(const page_entry_t *pe, uint32_t off, uint8_t v) {
+    if (pe->dev->write_uint8)
+        pe->dev->write_uint8(pe->dev_context, off, v);
+}
+
 static inline uint8_t dev_read8(const page_entry_t *pe, uint32_t addr, uint32_t off) {
-    uint8_t v = pe->dev->read_uint8(pe->dev_context, off);
+    uint8_t v = dev_raw8(pe, off);
     logpoint_notify_device(addr, 1, v, false);
     return v;
 }
+static inline uint16_t dev_read16_raw(const page_entry_t *pe, uint32_t off) {
+    return pe->dev->read_uint16 ? pe->dev->read_uint16(pe->dev_context, off)
+                                : (uint16_t)((dev_raw8(pe, off) << 8) | dev_raw8(pe, off + 1));
+}
+static inline uint32_t dev_read32_raw(const page_entry_t *pe, uint32_t off) {
+    if (pe->dev->read_uint32)
+        return pe->dev->read_uint32(pe->dev_context, off);
+    if (pe->dev->read_uint16)
+        return ((uint32_t)pe->dev->read_uint16(pe->dev_context, off) << 16) |
+               pe->dev->read_uint16(pe->dev_context, off + 2);
+    return ((uint32_t)dev_raw8(pe, off) << 24) | ((uint32_t)dev_raw8(pe, off + 1) << 16) |
+           ((uint32_t)dev_raw8(pe, off + 2) << 8) | dev_raw8(pe, off + 3);
+}
 static inline uint16_t dev_read16(const page_entry_t *pe, uint32_t addr, uint32_t off) {
-    uint16_t v = pe->dev->read_uint16(pe->dev_context, off);
+    uint16_t v = dev_read16_raw(pe, off);
     logpoint_notify_device(addr, 2, v, false);
     return v;
 }
 static inline uint32_t dev_read32(const page_entry_t *pe, uint32_t addr, uint32_t off) {
-    uint32_t v = pe->dev->read_uint32(pe->dev_context, off);
+    uint32_t v = dev_read32_raw(pe, off);
     logpoint_notify_device(addr, 4, v, false);
     return v;
 }
 static inline void dev_write8(const page_entry_t *pe, uint32_t addr, uint32_t off, uint8_t value) {
-    pe->dev->write_uint8(pe->dev_context, off, value);
+    dev_raw_w8(pe, off, value);
     logpoint_notify_device(addr, 1, value, true);
 }
+static inline void dev_write16_raw(const page_entry_t *pe, uint32_t off, uint16_t value) {
+    if (pe->dev->write_uint16) {
+        pe->dev->write_uint16(pe->dev_context, off, value);
+        return;
+    }
+    dev_raw_w8(pe, off, (uint8_t)(value >> 8));
+    dev_raw_w8(pe, off + 1, (uint8_t)value);
+}
+static inline void dev_write32_raw(const page_entry_t *pe, uint32_t off, uint32_t value) {
+    if (pe->dev->write_uint32) {
+        pe->dev->write_uint32(pe->dev_context, off, value);
+        return;
+    }
+    if (pe->dev->write_uint16) {
+        pe->dev->write_uint16(pe->dev_context, off, (uint16_t)(value >> 16));
+        pe->dev->write_uint16(pe->dev_context, off + 2, (uint16_t)value);
+        return;
+    }
+    dev_raw_w8(pe, off, (uint8_t)(value >> 24));
+    dev_raw_w8(pe, off + 1, (uint8_t)(value >> 16));
+    dev_raw_w8(pe, off + 2, (uint8_t)(value >> 8));
+    dev_raw_w8(pe, off + 3, (uint8_t)value);
+}
 static inline void dev_write16(const page_entry_t *pe, uint32_t addr, uint32_t off, uint16_t value) {
-    pe->dev->write_uint16(pe->dev_context, off, value);
+    dev_write16_raw(pe, off, value);
     logpoint_notify_device(addr, 2, value, true);
 }
 static inline void dev_write32(const page_entry_t *pe, uint32_t addr, uint32_t off, uint32_t value) {
-    pe->dev->write_uint32(pe->dev_context, off, value);
+    dev_write32_raw(pe, off, value);
     logpoint_notify_device(addr, 4, value, true);
 }
 
@@ -682,22 +734,24 @@ uint32_t memory_read_uint32_slow(uint32_t addr) {
 // (memory_signal_bus_error) stays inert while it is up, so examining an
 // empty NuBus slot cannot inject a fault into the running guest.
 static inline uint32_t debug_dev_read(const page_entry_t *pe, uint32_t phys, unsigned size) {
+    // Same NULL-safety as the dev_read*/dev_write* wrappers: the debugger must
+    // never be the thing that takes the host down.
+    uint32_t off = phys - pe->base_addr;
     g_mem_debug_access = true;
-    uint32_t v = size == 1   ? pe->dev->read_uint8(pe->dev_context, phys - pe->base_addr)
-                 : size == 2 ? pe->dev->read_uint16(pe->dev_context, phys - pe->base_addr)
-                             : pe->dev->read_uint32(pe->dev_context, phys - pe->base_addr);
+    uint32_t v = size == 1 ? dev_raw8(pe, off) : size == 2 ? dev_read16_raw(pe, off) : dev_read32_raw(pe, off);
     g_mem_debug_access = false;
     return v;
 }
 
 static inline void debug_dev_write(const page_entry_t *pe, uint32_t phys, unsigned size, uint32_t value) {
+    uint32_t off = phys - pe->base_addr;
     g_mem_debug_access = true;
     if (size == 1)
-        pe->dev->write_uint8(pe->dev_context, phys - pe->base_addr, (uint8_t)value);
+        dev_raw_w8(pe, off, (uint8_t)value);
     else if (size == 2)
-        pe->dev->write_uint16(pe->dev_context, phys - pe->base_addr, (uint16_t)value);
+        dev_write16_raw(pe, off, (uint16_t)value);
     else
-        pe->dev->write_uint32(pe->dev_context, phys - pe->base_addr, value);
+        dev_write32_raw(pe, off, value);
     g_mem_debug_access = false;
 }
 
