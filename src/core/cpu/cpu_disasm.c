@@ -379,6 +379,18 @@ static int ea_words(int mode, int reg, int size, uint16_t first_ext) {
     return 0;
 }
 
+// Reverse a 16-bit MOVEM register mask.  MOVEM's predecrement form numbers its
+// mask the other way round (M68000PRM MOVEM, register list mask), and this is
+// the only caller in the tree -- it used to be defined five times over, once in
+// each target's platform.h, for this one use.
+static inline uint16_t reverse16(uint16_t x) {
+    x = (uint16_t)((x & 0x5555) << 1 | (x & 0xAAAA) >> 1);
+    x = (uint16_t)((x & 0x3333) << 2 | (x & 0xCCCC) >> 2);
+    x = (uint16_t)((x & 0x0F0F) << 4 | (x & 0xF0F0) >> 4);
+    x = (uint16_t)((x & 0x00FF) << 8 | (x & 0xFF00) >> 8);
+    return x;
+}
+
 static char *asm_movem(uint16_t opcode, uint16_t mask) {
 
     // for the predecrement mode, register mask is reversed

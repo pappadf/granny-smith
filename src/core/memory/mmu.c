@@ -522,67 +522,29 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
 // may map the same logical page to different physical pages, so we only
 // populate the SoA matching the walk's FC.  When SRE=0, a single walk
 // produces the mapping for both FCs so we populate both tables.
+// Fill the SoA entries for one translated page from a 68030 table walk.
+//
+// The mechanical half of this -- resolve the host pointer, bound the page
+// index, suppress the fill for a logical- or physical-space logpoint, compute
+// the adjusted base, track the page, write the four arrays -- is
+// mmu_fill_soa_page, which the 68040 walker already calls directly.  What is
+// specific to the 030 is only the POLICY for which of the two SoAs to fill, so
+// that is all that lives here.
+//
+// Fill rules:
+//   TT match: the transparent-translation registers are FC-specific
+//     (supervisor-only or user-only), so fill ONLY the SoA matching the walk's
+//     FC.  Filling both would leak the supervisor TT identity into the user
+//     SoA, where the same VA actually maps elsewhere via the (C)RP.
+//   Table walk, SRE=0: supervisor and user share the CRP, so fill both.
+//   Table walk, SRE=1: supervisor uses the SRP and user the CRP, which may map
+//     the same VA to different PAs -- fill only the matching SoA.
 static void mmu_fill_soa_entry(mmu_state_t *mmu, uint32_t logical_page, uint32_t physical_page, bool supervisor_only,
                                bool write_protected, bool supervisor, bool tt_match) {
-    // Get host pointer for the physical page
-    uint8_t *host_ptr = phys_to_host(mmu, physical_page);
-    if (!host_ptr)
-        return; // unmapped physical address — leave SoA entry as zero
-
-    bool host_writable = phys_is_writable(mmu, physical_page);
-    uint32_t page_index = logical_page >> PAGE_SHIFT;
-    if ((int)page_index >= g_page_count)
-        return;
-
-    // Memory logpoint: if this logical page has a logpoint installed, the SoA
-    // must stay zero so every access routes through the slow path where the
-    // logpoint check runs.  The next access will re-enter this code via
-    // mmu_handle_fault, but the entry will again be suppressed — at the
-    // steady-state cost of one extra call per access, which is the whole
-    // point of a watchpoint.
-    if (g_mem_logpoint_page_count && g_mem_logpoint_page_count[page_index])
-        return;
-    // Same rule for physical-space logpoints: if the physical page being
-    // mapped is watched, suppress the fill.  This catches aliased mappings
-    // (same physical page reached via multiple logical addresses), which a
-    // purely logical-space logpoint misses.
-    if (g_mem_logpoint_phys_page_count && g_mem_logpoint_phys_page_count[physical_page >> PAGE_SHIFT])
-        return;
-
-    // Compute adjusted base: host_ptr points to start of physical page,
-    // but we want (uintptr_t)(base + logical_addr) to yield the host address.
-    uintptr_t adjusted = (uintptr_t)host_ptr - logical_page;
-
-    // Track this page for fast invalidation
-    tlb_track_page(page_index);
-
-    // Fill rules:
-    //   TT match: TT registers are FC-specific (supervisor-only or user-only),
-    //     so fill ONLY the SoA matching the walk's FC.  Filling both would
-    //     leak the supervisor TT identity into the user SoA, where the same
-    //     VA actually maps to a different PA via the (C)RP.
-    //   Table walk under SRE=0: super and user share CRP, so fill both SoAs.
-    //   Table walk under SRE=1: super uses SRP, user uses CRP — they may map
-    //     the same VA to different PAs, so only fill the matching SoA.
     bool sre_split = TC_SRE(mmu->tc) != 0;
     bool fill_super = tt_match ? supervisor : (!sre_split || supervisor);
     bool fill_user = tt_match ? !supervisor : ((!sre_split || !supervisor) && !supervisor_only);
-    if (!tt_match && supervisor_only)
-        fill_user = false;
-
-    if (fill_super) {
-        if (g_supervisor_read)
-            g_supervisor_read[page_index] = adjusted;
-        if (g_supervisor_write && !write_protected && host_writable)
-            g_supervisor_write[page_index] = adjusted;
-    }
-
-    if (fill_user) {
-        if (g_user_read)
-            g_user_read[page_index] = adjusted;
-        if (g_user_write && !write_protected && host_writable)
-            g_user_write[page_index] = adjusted;
-    }
+    mmu_fill_soa_page(mmu, logical_page, physical_page, fill_super, fill_user, !write_protected);
 }
 
 // ============================================================================
