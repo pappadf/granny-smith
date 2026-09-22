@@ -37,11 +37,11 @@
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // debug_init / debug_cleanup reference them.
-extern const class_desc_t debug_class;
-extern const class_desc_t bp_collection_class;
-extern const class_desc_t lp_collection_class;
-extern const class_desc_t debug_mac_class;
-extern const class_desc_t debug_mac_globals_class;
+static const class_desc_t debug_class;
+static const class_desc_t bp_collection_class;
+static const class_desc_t lp_collection_class;
+static const class_desc_t debug_mac_class;
+static const class_desc_t debug_mac_globals_class;
 
 // Mac low-memory globals table (defined in mac_globals_data.c). Used by
 // debug.mac.globals.{read,write,address,list}.
@@ -2491,7 +2491,7 @@ static const member_t bp_entry_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = bp_method_remove}},
 };
 
-const class_desc_t breakpoint_entry_class = {
+static const class_desc_t breakpoint_entry_class = {
     .name = "breakpoint",
     .members = bp_entry_members,
     .n_members = sizeof(bp_entry_members) / sizeof(bp_entry_members[0]),
@@ -2622,7 +2622,7 @@ static const member_t lp_entry_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = lpe_method_remove}},
 };
 
-const class_desc_t logpoint_entry_class = {
+static const class_desc_t logpoint_entry_class = {
     .name = "logpoint",
     .members = lp_entry_members,
     .n_members = sizeof(lp_entry_members) / sizeof(lp_entry_members[0]),
@@ -2933,7 +2933,7 @@ static const member_t bp_collection_members[] = {
                .lookup = NULL}},
 };
 
-const class_desc_t bp_collection_class = {
+static const class_desc_t bp_collection_class = {
     .name = "breakpoints",
     .members = bp_collection_members,
     .n_members = sizeof(bp_collection_members) / sizeof(bp_collection_members[0]),
@@ -2959,7 +2959,7 @@ static const member_t lp_collection_members[] = {
                .lookup = NULL}},
 };
 
-const class_desc_t lp_collection_class = {
+static const class_desc_t lp_collection_class = {
     .name = "logpoints",
     .members = lp_collection_members,
     .n_members = sizeof(lp_collection_members) / sizeof(lp_collection_members[0]),
@@ -3400,7 +3400,7 @@ static const member_t debug_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_MAP, .fn = debug_method_log_levels}                                                                                                                     },
 };
 
-const class_desc_t debug_class = {
+static const class_desc_t debug_class = {
     .name = "debug",
     .members = debug_members,
     .n_members = sizeof(debug_members) / sizeof(debug_members[0]),
@@ -3586,7 +3586,7 @@ static const member_t debug_mac_globals_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_LIST, .fn = method_mac_globals_list}                   },
 };
 
-const class_desc_t debug_mac_globals_class = {
+static const class_desc_t debug_mac_globals_class = {
     .name = "globals",
     .members = debug_mac_globals_members,
     .n_members = sizeof(debug_mac_globals_members) / sizeof(debug_mac_globals_members[0]),
@@ -3616,7 +3616,7 @@ static const member_t debug_mac_members[] = {
      .method = {.args = mac_atrap_args, .nargs = 1, .result = V_STRING, .fn = method_mac_atrap}},
 };
 
-const class_desc_t debug_mac_class = {
+static const class_desc_t debug_mac_class = {
     .name = "mac",
     .members = debug_mac_members,
     .n_members = sizeof(debug_mac_members) / sizeof(debug_mac_members[0]),
@@ -3971,7 +3971,7 @@ static const member_t screen_members[] = {
      .child = {.cls = NULL, .reference = true, .lookup = screen_source_lookup}},
 };
 
-const class_desc_t screen_class = {
+static const class_desc_t screen_class = {
     .name = "screen",
     .members = screen_members,
     .n_members = sizeof(screen_members) / sizeof(screen_members[0]),

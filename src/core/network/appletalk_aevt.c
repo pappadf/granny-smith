@@ -607,12 +607,12 @@ static struct object *g_aevt_event_objs[AEVT_MAX_EVENTS];
 static aevt_slot_data_t g_aevt_inbox_data[AEVT_MAX_INBOX];
 static struct object *g_aevt_inbox_objs[AEVT_MAX_INBOX];
 
-extern const class_desc_t aevt_class;
-extern const class_desc_t aevt_events_class;
-extern const class_desc_t aevt_event_class;
-extern const class_desc_t aevt_inbox_class;
-extern const class_desc_t aevt_inbox_entry_class;
-extern const class_desc_t aevt_stats_class;
+static const class_desc_t aevt_class;
+static const class_desc_t aevt_events_class;
+static const class_desc_t aevt_event_class;
+static const class_desc_t aevt_inbox_class;
+static const class_desc_t aevt_inbox_entry_class;
+static const class_desc_t aevt_stats_class;
 
 static int aevt_obj_slot(struct object *self) {
     const aevt_slot_data_t *d = (const aevt_slot_data_t *)object_data(self);
@@ -749,7 +749,7 @@ static const member_t aevt_event_members[] = {
      .attr = {.type = V_UINT, .width = 4, .get = aevt_event_attr_return_id}                 },
 };
 
-const class_desc_t aevt_event_class = {
+static const class_desc_t aevt_event_class = {
     .name = "aevt_event",
     .members = aevt_event_members,
     .n_members = ARRAY_LEN(aevt_event_members),
@@ -802,7 +802,7 @@ static const member_t aevt_events_members[] = {
                .lookup = aevt_events_lookup}},
 };
 
-const class_desc_t aevt_events_class = {
+static const class_desc_t aevt_events_class = {
     .name = "aevt_events",
     .members = aevt_events_members,
     .n_members = ARRAY_LEN(aevt_events_members),
@@ -885,7 +885,7 @@ static const member_t aevt_inbox_entry_members[] = {
      .attr = {.type = V_STRING, .get = aevt_inbox_attr_error} },
 };
 
-const class_desc_t aevt_inbox_entry_class = {
+static const class_desc_t aevt_inbox_entry_class = {
     .name = "aevt_inbox_entry",
     .members = aevt_inbox_entry_members,
     .n_members = ARRAY_LEN(aevt_inbox_entry_members),
@@ -927,7 +927,7 @@ static const member_t aevt_inbox_members[] = {
                .next = aevt_inbox_next}},
 };
 
-const class_desc_t aevt_inbox_class = {
+static const class_desc_t aevt_inbox_class = {
     .name = "aevt_inbox",
     .members = aevt_inbox_members,
     .n_members = ARRAY_LEN(aevt_inbox_members),
@@ -960,7 +960,7 @@ static const member_t aevt_stats_members[] = {
     AEVT_STAT_MEMBER(auto_replies, "Automatic replies we sent"),
 };
 
-const class_desc_t aevt_stats_class = {
+static const class_desc_t aevt_stats_class = {
     .name = "aevt_stats",
     .members = aevt_stats_members,
     .n_members = ARRAY_LEN(aevt_stats_members),
@@ -1224,7 +1224,7 @@ static const member_t aevt_members[] = {
                 .ui_flags = MM_MUTATE}                                                       },
 };
 
-const class_desc_t aevt_class = {
+static const class_desc_t aevt_class = {
     .name = "aevt",
     .members = aevt_members,
     .n_members = ARRAY_LEN(aevt_members),

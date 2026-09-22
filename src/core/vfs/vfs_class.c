@@ -189,7 +189,7 @@ static const member_t vfs_members[] = {
      .method = {.args = vfs_path_arg, .nargs = 1, .result = V_BOOL, .fn = vfs_method_cat}          },
 };
 
-const class_desc_t vfs_class = {
+static const class_desc_t vfs_class = {
     .name = "vfs",
     .members = vfs_members,
     .n_members = sizeof(vfs_members) / sizeof(vfs_members[0]),

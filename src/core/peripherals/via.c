@@ -25,9 +25,9 @@
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // via_init / via_delete reference them.
-extern const class_desc_t via_class;
-extern const class_desc_t via_port_a_class;
-extern const class_desc_t via_port_b_class;
+static const class_desc_t via_class;
+static const class_desc_t via_port_a_class;
+static const class_desc_t via_port_b_class;
 
 // ============================================================================
 // Constants and Macros
@@ -1257,12 +1257,12 @@ VIA_PORT_MEMBERS(via_port_a_members, 0);
 VIA_PORT_MEMBERS(via_port_b_members, 1);
 // clang-format on
 
-const class_desc_t via_port_a_class = {.name = "via_port",
-                                       .members = via_port_a_members,
-                                       .n_members = sizeof(via_port_a_members) / sizeof(via_port_a_members[0])};
-const class_desc_t via_port_b_class = {.name = "via_port",
-                                       .members = via_port_b_members,
-                                       .n_members = sizeof(via_port_b_members) / sizeof(via_port_b_members[0])};
+static const class_desc_t via_port_a_class = {.name = "via_port",
+                                              .members = via_port_a_members,
+                                              .n_members = sizeof(via_port_a_members) / sizeof(via_port_a_members[0])};
+static const class_desc_t via_port_b_class = {.name = "via_port",
+                                              .members = via_port_b_members,
+                                              .n_members = sizeof(via_port_b_members) / sizeof(via_port_b_members[0])};
 
 // Status-register member table (shared by via1 / via2 via instance_data).
 static const member_t via_members[] = {
@@ -1292,7 +1292,7 @@ static const member_t via_members[] = {
      .attr = {.type = V_UINT, .get = via_attr_freq_factor, .set = NULL}                       },
 };
 
-const class_desc_t via_class = {
+static const class_desc_t via_class = {
     .name = "via",
     .members = via_members,
     .n_members = sizeof(via_members) / sizeof(via_members[0]),

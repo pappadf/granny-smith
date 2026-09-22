@@ -249,7 +249,7 @@ static inline uint64_t host_clock_ns(clockid_t clk) {
 static uint64_t current_cpu_cycles(struct scheduler *s);
 static int num_events_in_queue(struct scheduler *restrict s);
 
-extern const class_desc_t scheduler_class;
+static const class_desc_t scheduler_class;
 
 // ============================================================================
 // Static Helpers
@@ -2054,7 +2054,7 @@ static const member_t scheduler_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = sched_method_stop}},
 };
 
-const class_desc_t scheduler_class = {
+static const class_desc_t scheduler_class = {
     .name = "scheduler",
     .members = scheduler_members,
     .n_members = sizeof(scheduler_members) / sizeof(scheduler_members[0]),

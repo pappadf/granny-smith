@@ -156,7 +156,6 @@ bool checkpoint_validate_build_id(const char *filename);
 // legacy `checkpoint --foo` shell-form parser.
 
 struct class_desc;
-extern const struct class_desc checkpoint_class;
 
 void checkpoint_init(void);
 void checkpoint_delete(void);

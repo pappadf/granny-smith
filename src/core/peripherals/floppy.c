@@ -19,11 +19,11 @@
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // floppy_init / floppy_delete reference them.
-extern const class_desc_t floppy_class;
-extern const class_desc_t floppy_drive_class;
-extern const class_desc_t floppy_disk_class;
-extern const class_desc_t floppy_drives_collection_class;
-extern const class_desc_t floppy_controller_class;
+static const class_desc_t floppy_class;
+static const class_desc_t floppy_drive_class;
+static const class_desc_t floppy_disk_class;
+static const class_desc_t floppy_drives_collection_class;
+static const class_desc_t floppy_controller_class;
 
 #include <assert.h>
 #include <math.h>
@@ -1256,7 +1256,7 @@ static const member_t floppy_members[] = {
      .method = {.args = floppy_create_args, .nargs = 2, .result = V_BOOL, .fn = floppy_method_create}},
 };
 
-const class_desc_t floppy_class = {
+static const class_desc_t floppy_class = {
     .name = "floppy",
     .members = floppy_members,
     .n_members = sizeof(floppy_members) / sizeof(floppy_members[0]),
@@ -1357,7 +1357,7 @@ static const member_t floppy_controller_members[] = {
      .attr = {.type = V_INT, .get = floppy_ctrl_attr_fifo_count, .set = NULL}},
 };
 
-const class_desc_t floppy_controller_class = {
+static const class_desc_t floppy_controller_class = {
     .name = "floppy_controller",
     .members = floppy_controller_members,
     .n_members = sizeof(floppy_controller_members) / sizeof(floppy_controller_members[0]),
@@ -1524,7 +1524,7 @@ static const member_t floppy_disk_members[] = {
                 .task_category = "storage"}},
 };
 
-const class_desc_t floppy_disk_class = {
+static const class_desc_t floppy_disk_class = {
     .name = "disk",
     .members = floppy_disk_members,
     .n_members = sizeof(floppy_disk_members) / sizeof(floppy_disk_members[0]),
@@ -1608,7 +1608,7 @@ static const member_t floppy_drive_members[] = {
      .method = {.args = floppy_drive_insert_args, .nargs = 2, .result = V_BOOL, .fn = floppy_drive_method_insert}},
 };
 
-const class_desc_t floppy_drive_class = {
+static const class_desc_t floppy_drive_class = {
     .name = "floppy_drive",
     .members = floppy_drive_members,
     .n_members = sizeof(floppy_drive_members) / sizeof(floppy_drive_members[0]),
@@ -1644,7 +1644,7 @@ static const member_t floppy_drives_collection_members[] = {
                .next = floppy_drives_next,
                .lookup = NULL}},
 };
-const class_desc_t floppy_drives_collection_class = {
+static const class_desc_t floppy_drives_collection_class = {
     .name = "floppy_drives",
     .members = floppy_drives_collection_members,
     .n_members = 1,

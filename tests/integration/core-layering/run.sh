@@ -55,3 +55,53 @@ if [ "$fail" -ne 0 ]; then
     exit 1
 fi
 echo "core-layering: OK — no path fabrication in the ROM/vROM loader areas"
+
+# 08-core-infra F-50: a class_desc_t is file-local unless another file uses it.
+#
+# 87 of 127 were non-static, and only 7 had a consumer outside their own file.
+# The other 80 exported a global symbol for nothing -- and, worse, there was no
+# way to tell from a declaration whether a class was part of another file's
+# contract.  Five of them were declared `extern` in their own headers while
+# nothing imported them, claiming a contract that did not exist.
+#
+# via_port_a_class and via_port_b_class are the live hazard this prevents:
+# both were non-static and both named "via_port", a link-time collision
+# waiting for either to move.
+#
+# The allow-list is the set with a real cross-file consumer.  Adding to it is
+# a deliberate act; growing it by accident is what this check stops.
+ALLOWED_EXTERNAL_CLASSES="
+display_fb_class
+nubus_class
+pci_class
+shell_alias_class
+shell_class
+storage_class_real
+storage_images_collection_class
+"
+
+fail=0
+while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    name=$(echo "$line" | sed 's/.*class_desc_t \([a-z_0-9]*\) = {.*/\1/')
+    if ! echo "$ALLOWED_EXTERNAL_CLASSES" | grep -qx "$name"; then
+        echo "NON-STATIC CLASS: $line"
+        echo "    '$name' has no cross-file consumer; make it 'static const'."
+        fail=1
+    fi
+done < <(grep -rn 'class_desc_t [a-z_0-9]* = {' "$ROOT/src" --include=*.c | grep -v 'static const' | sed "s|$ROOT/||")
+
+# ...and the converse: an allow-listed class must actually BE external, or the
+# list is stale.
+for name in $ALLOWED_EXTERNAL_CLASSES; do
+    if ! grep -rq "^const class_desc_t $name = {" "$ROOT/src" --include=*.c; then
+        echo "STALE ALLOW-LIST ENTRY: '$name' is no longer a non-static class_desc_t"
+        fail=1
+    fi
+done
+
+if [ "$fail" -ne 0 ]; then
+    echo "core-layering: FAILED — class_desc_t visibility (08-core-infra F-50)"
+    exit 1
+fi
+echo "core-layering: OK — every non-static class_desc_t has a cross-file consumer"

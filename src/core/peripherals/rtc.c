@@ -26,7 +26,7 @@ LOG_USE_CATEGORY_NAME("rtc");
 
 // Forward declaration — class descriptor is defined at the bottom of the
 // file but rtc_init / rtc_delete reference it.
-extern const class_desc_t rtc_class;
+static const class_desc_t rtc_class;
 
 // === Private Types ===
 // RTC state structure (opaque to callers)
@@ -56,7 +56,7 @@ struct rtc {
     bool extended;
 };
 
-extern const class_desc_t rtc_pram_class;
+static const class_desc_t rtc_pram_class;
 
 // diff between mac (1904) and unix (1970) epochs
 // precalculated using any online epoch converter
@@ -630,7 +630,7 @@ static const member_t rtc_members[] = {
      .attr = {.type = V_BOOL, .get = rtc_attr_read_only, .set = NULL}            },
 };
 
-const class_desc_t rtc_class = {
+static const class_desc_t rtc_class = {
     .name = "rtc",
     .members = rtc_members,
     .n_members = sizeof(rtc_members) / sizeof(rtc_members[0]),
@@ -802,7 +802,7 @@ static const member_t rtc_pram_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = rtc_pram_method_validate}                },
 };
 
-const class_desc_t rtc_pram_class = {
+static const class_desc_t rtc_pram_class = {
     .name = "pram",
     .members = rtc_pram_members,
     .n_members = sizeof(rtc_pram_members) / sizeof(rtc_pram_members[0]),

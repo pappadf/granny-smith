@@ -124,7 +124,7 @@ static const member_t storage_image_members[] = {
      .attr = {.type = V_ENUM, .get = storage_image_attr_type, .set = NULL}      },
 };
 
-const class_desc_t storage_image_class = {
+static const class_desc_t storage_image_class = {
     .name = "image",
     .members = storage_image_members,
     .n_members = sizeof(storage_image_members) / sizeof(storage_image_members[0]),

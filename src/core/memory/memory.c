@@ -57,9 +57,9 @@ bool memory_addr_faults_when_unmapped(uint32_t addr) {
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // memory_map_init / memory_map_delete reference them.
-extern const class_desc_t memory_class;
-extern const class_desc_t mem_peek_class;
-extern const class_desc_t mem_poke_class;
+static const class_desc_t memory_class;
+static const class_desc_t mem_peek_class;
+static const class_desc_t mem_poke_class;
 
 #include <assert.h>
 #include <stdio.h>
@@ -1949,7 +1949,7 @@ static const member_t memory_members[] = {
      .method = {.args = mem_translate_args, .nargs = 1, .result = V_STRING, .fn = method_mem_translate}},
 };
 
-const class_desc_t memory_class = {
+static const class_desc_t memory_class = {
     .name = "memory",
     .members = memory_members,
     .n_members = sizeof(memory_members) / sizeof(memory_members[0]),
@@ -2041,7 +2041,7 @@ static const member_t mem_peek_members[] = {
      .method = {.args = mem_peek_bytes_args, .nargs = 2, .result = V_BYTES, .fn = method_mem_peek_bytes}},
 };
 
-const class_desc_t mem_peek_class = {
+static const class_desc_t mem_peek_class = {
     .name = "peek",
     .members = mem_peek_members,
     .n_members = sizeof(mem_peek_members) / sizeof(mem_peek_members[0]),
@@ -2095,7 +2095,7 @@ static const member_t mem_poke_members[] = {
      .method = {.args = mem_poke_args, .nargs = 2, .result = V_NONE, .fn = method_mem_poke_l}},
 };
 
-const class_desc_t mem_poke_class = {
+static const class_desc_t mem_poke_class = {
     .name = "poke",
     .members = mem_poke_members,
     .n_members = sizeof(mem_poke_members) / sizeof(mem_poke_members[0]),

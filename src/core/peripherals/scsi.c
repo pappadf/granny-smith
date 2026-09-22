@@ -28,11 +28,11 @@ static void scsi_static_detach(void);
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // scsi_init / scsi_delete reference them.
-extern const class_desc_t scsi_class;
-extern const class_desc_t scsi_bus_class;
-extern const class_desc_t scsi_devices_collection_class;
-extern const class_desc_t scsi_device_class;
-extern const class_desc_t scsi_image_class;
+static const class_desc_t scsi_class;
+static const class_desc_t scsi_bus_class;
+static const class_desc_t scsi_devices_collection_class;
+static const class_desc_t scsi_device_class;
+static const class_desc_t scsi_image_class;
 
 #include <assert.h>
 #include <limits.h>
@@ -1877,7 +1877,7 @@ static const member_t scsi_image_members[] = {
                 .task_category = "storage"}},
 };
 
-const class_desc_t scsi_image_class = {
+static const class_desc_t scsi_image_class = {
     .name = "image",
     .members = scsi_image_members,
     .n_members = sizeof(scsi_image_members) / sizeof(scsi_image_members[0]),
@@ -1943,7 +1943,7 @@ static const member_t scsi_device_members[] = {
      .child = {.cls = &scsi_image_class, .lookup = scsi_dev_image_lookup}},
 };
 
-const class_desc_t scsi_device_class = {
+static const class_desc_t scsi_device_class = {
     .name = "scsi_device",
     .members = scsi_device_members,
     .n_members = sizeof(scsi_device_members) / sizeof(scsi_device_members[0]),
@@ -1981,7 +1981,7 @@ static const member_t scsi_bus_members[] = {
      .flags = VAL_RO,
      .attr = {.type = V_INT, .get = scsi_bus_attr_initiator, .set = NULL}},
 };
-const class_desc_t scsi_bus_class = {
+static const class_desc_t scsi_bus_class = {
     .name = "scsi_bus",
     .members = scsi_bus_members,
     .n_members = sizeof(scsi_bus_members) / sizeof(scsi_bus_members[0]),
@@ -2032,7 +2032,7 @@ static const member_t scsi_devices_collection_members[] = {
                .next = scsi_devices_next,
                .lookup = NULL}},
 };
-const class_desc_t scsi_devices_collection_class = {
+static const class_desc_t scsi_devices_collection_class = {
     .name = "scsi_devices",
     .members = scsi_devices_collection_members,
     .n_members = 1,
@@ -2277,7 +2277,7 @@ static const member_t scsi_members[] = {
      .method = {.args = scsi_attach_args, .nargs = 2, .result = V_BOOL, .fn = scsi_method_attach_cdrom}},
 };
 
-const class_desc_t scsi_class = {
+static const class_desc_t scsi_class = {
     .name = "scsi",
     .members = scsi_members,
     .n_members = sizeof(scsi_members) / sizeof(scsi_members[0]),

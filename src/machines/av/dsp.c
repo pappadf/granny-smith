@@ -67,7 +67,7 @@ struct av_dsp {
     struct object *object; // the machine.dsp node
 };
 
-extern const class_desc_t av_dsp_class;
+static const class_desc_t av_dsp_class;
 
 static void av_dsp_burst_event(void *source, uint64_t data);
 
@@ -475,7 +475,7 @@ static const member_t av_dsp_members[] = {
      .method = {.args = dsp_disasm_args, .nargs = 2, .result = V_STRING, .fn = dsp_method_disasm}},
 };
 
-const class_desc_t av_dsp_class = {
+static const class_desc_t av_dsp_class = {
     .name = "dsp",
     .members = av_dsp_members,
     .n_members = sizeof(av_dsp_members) / sizeof(av_dsp_members[0]),

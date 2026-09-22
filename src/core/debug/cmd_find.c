@@ -266,7 +266,7 @@ static const member_t find_members[] = {
      .method = {.args = find_int_args, .nargs = 3, .result = V_LIST, .fn = find_method_word}   },
 };
 
-const class_desc_t find_class = {
+static const class_desc_t find_class = {
     .name = "find",
     .members = find_members,
     .n_members = sizeof(find_members) / sizeof(find_members[0]),

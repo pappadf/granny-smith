@@ -35,8 +35,8 @@ LOG_USE_CATEGORY_NAME("scc");
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // scc_init / scc_delete reference them.
-extern const class_desc_t scc_class;
-extern const class_desc_t scc_channel_class;
+static const class_desc_t scc_class;
+static const class_desc_t scc_channel_class;
 
 static inline bool scc_should_log(int level) {
     return log_would_log(_log_get_local_category(), level);
@@ -1778,7 +1778,7 @@ static const member_t scc_ch_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_STRING, .fn = scc_ch_method_sent}                                                          },
 };
 
-const class_desc_t scc_channel_class = {
+static const class_desc_t scc_channel_class = {
     .name = "scc_channel",
     .members = scc_ch_members,
     .n_members = sizeof(scc_ch_members) / sizeof(scc_ch_members[0]),
@@ -1807,7 +1807,7 @@ static const member_t scc_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = scc_method_reset}      },
 };
 
-const class_desc_t scc_class = {
+static const class_desc_t scc_class = {
     .name = "scc",
     .members = scc_members,
     .n_members = sizeof(scc_members) / sizeof(scc_members[0]),

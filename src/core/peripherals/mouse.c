@@ -311,7 +311,7 @@ static const member_t mouse_members[] = {
      .method = {.args = mouse_trace_args, .nargs = 1, .result = V_NONE, .fn = mouse_method_trace}},
 };
 
-const class_desc_t mouse_class = {
+static const class_desc_t mouse_class = {
     .name = "mouse",
     .members = mouse_members,
     .n_members = sizeof(mouse_members) / sizeof(mouse_members[0]),

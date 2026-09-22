@@ -24,7 +24,7 @@
 LOG_USE_CATEGORY_NAME("ppc");
 
 // Forward declaration — class descriptor is at the bottom of the file.
-extern const class_desc_t ppc_cpu_class;
+static const class_desc_t ppc_cpu_class;
 
 // === Exception machinery ====================================================
 
@@ -781,14 +781,14 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
         object_set_order(p->cpu_object, 10);
         object_attach(machine_object(), p->cpu_object);
         // machine.cpu.mmu: the translation debug window (§3.9d).
-        extern const class_desc_t ppc_mmu_class;
+        static const class_desc_t ppc_mmu_class;
         p->mmu_object = object_new(&ppc_mmu_class, p, "mmu");
         if (p->mmu_object) {
             object_set_label(p->mmu_object, "MMU");
             object_attach(p->cpu_object, p->mmu_object);
         }
         // machine.cpu.fpu: the FPR file + FPSCR (Phase E, §3.9d).
-        extern const class_desc_t ppc_fpu_class;
+        static const class_desc_t ppc_fpu_class;
         p->fpu_object = object_new(&ppc_fpu_class, p, "fpu");
         if (p->fpu_object) {
             object_set_label(p->fpu_object, "FPU");
@@ -1088,7 +1088,7 @@ static const member_t ppc_members[] = {
 };
 // clang-format on
 
-const class_desc_t ppc_cpu_class = {
+static const class_desc_t ppc_cpu_class = {
     .name = "ppc",
     .members = ppc_members,
     .n_members = sizeof(ppc_members) / sizeof(ppc_members[0]),
@@ -1154,7 +1154,7 @@ static const member_t ppc_mmu_members[] = {
      .method = {.args = mmu_peek_args, .nargs = 2, .result = V_UINT, .fn = mmu_method_peek}          },
 };
 
-const class_desc_t ppc_mmu_class = {
+static const class_desc_t ppc_mmu_class = {
     .name = "ppc_mmu",
     .members = ppc_mmu_members,
     .n_members = sizeof(ppc_mmu_members) / sizeof(ppc_mmu_members[0]),
@@ -1211,7 +1211,7 @@ static const member_t ppc_fpu_members[] = {
 };
 // clang-format on
 
-const class_desc_t ppc_fpu_class = {
+static const class_desc_t ppc_fpu_class = {
     .name = "ppc_fpu",
     .members = ppc_fpu_members,
     .n_members = sizeof(ppc_fpu_members) / sizeof(ppc_fpu_members[0]),

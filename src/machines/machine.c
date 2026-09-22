@@ -1300,7 +1300,7 @@ static const member_t machine_members[] = {
      .method = {.args = machine_register_args, .nargs = 2, .result = V_BOOL, .fn = machine_method_register}},
 };
 
-const class_desc_t machine_class = {
+static const class_desc_t machine_class = {
     .name = "machine",
     .members = machine_members,
     .n_members = sizeof(machine_members) / sizeof(machine_members[0]),

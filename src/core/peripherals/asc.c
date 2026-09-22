@@ -34,7 +34,7 @@
 
 // Forward declaration — the `machine.sound` class descriptor lives with the
 // object-model section near the bottom of the file; asc_init references it.
-extern const class_desc_t asc_detail_class;
+static const class_desc_t asc_detail_class;
 
 #include <assert.h>
 #include <stddef.h>
@@ -923,7 +923,7 @@ static const member_t asc_detail_members[] = {
      .attr = {.type = V_BOOL, .get = asc_attr_fifo_armed_b, .set = NULL}   },
 };
 
-const class_desc_t asc_detail_class = {
+static const class_desc_t asc_detail_class = {
     .name = "asc",
     .members = asc_detail_members,
     .n_members = sizeof asc_detail_members / sizeof asc_detail_members[0],

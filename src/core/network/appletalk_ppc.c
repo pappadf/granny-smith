@@ -1003,12 +1003,12 @@ static struct object *g_ppc_port_objs[PPC_MAX_PORTS];
 static ppc_slot_data_t g_ppc_session_data[PPC_MAX_SESSIONS];
 static struct object *g_ppc_session_objs[PPC_MAX_SESSIONS];
 
-extern const class_desc_t ppc_class;
-extern const class_desc_t ppc_ports_class;
-extern const class_desc_t ppc_port_class;
-extern const class_desc_t ppc_sessions_class;
-extern const class_desc_t ppc_session_class;
-extern const class_desc_t ppc_stats_class;
+static const class_desc_t ppc_class;
+static const class_desc_t ppc_ports_class;
+static const class_desc_t ppc_port_class;
+static const class_desc_t ppc_sessions_class;
+static const class_desc_t ppc_session_class;
+static const class_desc_t ppc_stats_class;
 
 static int ppc_obj_slot(struct object *self) {
     const ppc_slot_data_t *d = (const ppc_slot_data_t *)object_data(self);
@@ -1081,7 +1081,7 @@ static const member_t ppc_port_members[] = {
      .attr = {.type = V_BOOL, .get = ppc_port_attr_auth}              },
 };
 
-const class_desc_t ppc_port_class = {
+static const class_desc_t ppc_port_class = {
     .name = "ppc_port",
     .members = ppc_port_members,
     .n_members = ARRAY_LEN(ppc_port_members),
@@ -1131,7 +1131,7 @@ static const member_t ppc_ports_members[] = {
                .lookup = ppc_ports_lookup}},
 };
 
-const class_desc_t ppc_ports_class = {
+static const class_desc_t ppc_ports_class = {
     .name = "ppc_ports",
     .members = ppc_ports_members,
     .n_members = ARRAY_LEN(ppc_ports_members),
@@ -1213,7 +1213,7 @@ static const member_t ppc_session_members[] = {
      .attr = {.type = V_UINT, .width = 8, .get = ppc_session_attr_bytes_out}                        },
 };
 
-const class_desc_t ppc_session_class = {
+static const class_desc_t ppc_session_class = {
     .name = "ppc_session",
     .members = ppc_session_members,
     .n_members = ARRAY_LEN(ppc_session_members),
@@ -1272,7 +1272,7 @@ static const member_t ppc_sessions_members[] = {
                .lookup = ppc_sessions_lookup}},
 };
 
-const class_desc_t ppc_sessions_class = {
+static const class_desc_t ppc_sessions_class = {
     .name = "ppc_sessions",
     .members = ppc_sessions_members,
     .n_members = ARRAY_LEN(ppc_sessions_members),
@@ -1306,7 +1306,7 @@ static const member_t ppc_stats_members[] = {
     PPC_STAT_MEMBER(browses, "Port browses started"),
 };
 
-const class_desc_t ppc_stats_class = {
+static const class_desc_t ppc_stats_class = {
     .name = "ppc_stats",
     .members = ppc_stats_members,
     .n_members = ARRAY_LEN(ppc_stats_members),
@@ -1343,7 +1343,7 @@ static const member_t ppc_members[] = {
      .method = {.args = NULL, .nargs = 0, .result = V_NONE, .fn = ppc_method_browse, .ui_flags = MM_MUTATE}},
 };
 
-const class_desc_t ppc_class = {
+static const class_desc_t ppc_class = {
     .name = "ppc",
     .members = ppc_members,
     .n_members = ARRAY_LEN(ppc_members),

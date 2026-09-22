@@ -19,10 +19,10 @@
 
 // Forward declarations — class descriptors are at the bottom of the file but
 // cpu_init / cpu_delete reference them.
-extern const class_desc_t cpu_class;
-extern const class_desc_t fpu_class;
-extern const class_desc_t mmu_class;
-extern const class_desc_t mmu040_class;
+static const class_desc_t cpu_class;
+static const class_desc_t fpu_class;
+static const class_desc_t mmu_class;
+static const class_desc_t mmu040_class;
 LOG_USE_CATEGORY_NAME("cpu");
 
 // Declare decoder functions (defined in cpu_68000.c, cpu_68030.c, cpu_68040.c)
@@ -784,7 +784,7 @@ static const member_t cpu_members[] = {
     ATTR_RW_BIT("x", attr_cpu_cc_x, set_cpu_cc_x), ATTR_RO("instr_count", attr_cpu_instr_count),
 };
 
-const class_desc_t cpu_class = {
+static const class_desc_t cpu_class = {
     .name = "cpu",
     .members = cpu_members,
     .n_members = sizeof(cpu_members) / sizeof(cpu_members[0]),
@@ -876,7 +876,7 @@ static const member_t fpu_members[] = {
          .attr = {.type = V_UINT, .presentation_flags = VAL_HEX, .get = attr_fpu_fpiar, .set = NULL}},
 };
 
-const class_desc_t fpu_class = {
+static const class_desc_t fpu_class = {
     .name = "fpu",
     .members = fpu_members,
     .n_members = sizeof(fpu_members) / sizeof(fpu_members[0]),
@@ -1020,7 +1020,7 @@ static const member_t mmu_members[] = {
      .attr = {.type = V_UINT, .get = attr_mmu_enabled, .set = NULL}                              },
 };
 
-const class_desc_t mmu_class = {
+static const class_desc_t mmu_class = {
     .name = "mmu",
     .members = mmu_members,
     .n_members = sizeof(mmu_members) / sizeof(mmu_members[0]),
@@ -1106,7 +1106,7 @@ static const member_t mmu040_members[] = {
      .attr = {.type = V_UINT, .get = attr_mmu040_enabled, .set = NULL}                             },
 };
 
-const class_desc_t mmu040_class = {
+static const class_desc_t mmu040_class = {
     .name = "mmu040",
     .members = mmu040_members,
     .n_members = sizeof(mmu040_members) / sizeof(mmu040_members[0]),

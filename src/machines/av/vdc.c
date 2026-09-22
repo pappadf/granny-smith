@@ -83,7 +83,7 @@ struct av_vdc {
     struct object *object; // the machine.videoin node
 };
 
-extern const class_desc_t videoin_class;
+static const class_desc_t videoin_class;
 
 static void vdc_field_event(void *source, uint64_t data);
 
@@ -497,7 +497,7 @@ static const member_t videoin_members[] = {
      .method = {.args = videoin_load_args, .nargs = 1, .result = V_NONE, .fn = videoin_method_load}},
 };
 
-const class_desc_t videoin_class = {
+static const class_desc_t videoin_class = {
     .name = "videoin",
     .members = videoin_members,
     .n_members = sizeof(videoin_members) / sizeof(videoin_members[0]),

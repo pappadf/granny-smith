@@ -1475,7 +1475,7 @@ static const member_t checkpoint_members[] = {
      .method = {.args = checkpoint_snapshot_args, .nargs = 1, .result = V_BOOL, .fn = checkpoint_method_snapshot}},
 };
 
-const class_desc_t checkpoint_class = {
+static const class_desc_t checkpoint_class = {
     .name = "checkpoint",
     .members = checkpoint_members,
     .n_members = sizeof(checkpoint_members) / sizeof(checkpoint_members[0]),

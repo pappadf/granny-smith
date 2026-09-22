@@ -318,7 +318,7 @@ static const member_t archive_members[] = {
      .method = {.args = archive_extract_args, .nargs = 2, .result = V_BOOL, .fn = archive_method_extract}},
 };
 
-const class_desc_t archive_class = {
+static const class_desc_t archive_class = {
     .name = "archive",
     .members = archive_members,
     .n_members = sizeof(archive_members) / sizeof(archive_members[0]),

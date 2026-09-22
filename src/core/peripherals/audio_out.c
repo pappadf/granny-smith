@@ -22,7 +22,7 @@
 LOG_USE_CATEGORY_NAME("audio");
 
 // Forward declaration — class descriptor is at the bottom of the file.
-extern const class_desc_t audio_capture_class;
+static const class_desc_t audio_capture_class;
 
 // ============================================================================
 // Module State
@@ -454,7 +454,7 @@ static const member_t capture_members[] = {
      .method = {.args = capture_stop_args, .nargs = 1, .result = V_UINT, .fn = capture_method_stop}},
 };
 
-const class_desc_t audio_capture_class = {
+static const class_desc_t audio_capture_class = {
     .name = "capture",
     .members = capture_members,
     .n_members = sizeof(capture_members) / sizeof(capture_members[0]),
