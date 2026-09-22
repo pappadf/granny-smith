@@ -346,6 +346,13 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     ti[2] = TC_TIC(tc);
     ti[3] = TC_TID(tc);
 
+    // LIMIT, carried from the root pointer or the long-format descriptor just
+    // followed.  It bounds the index into the table at the NEXT level, so it
+    // cannot be checked where it is read.
+    bool limit_active = false;
+    bool limit_is_lower = false;
+    uint32_t limit_value = 0;
+
     // Select root pointer based on SRE bit and supervisor mode
     uint64_t root_ptr;
     if (TC_SRE(tc) && supervisor)
@@ -374,6 +381,14 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     // pick up WP as an address bit and shift the table base by 4 bytes — one
     // entry's worth — breaking every subsequent lookup by one index.
     uint32_t table_addr = root_lower & 0xFFFFFFF0;
+
+    // The root pointer carries its own L/U + LIMIT, bounding the index into
+    // the FIRST table (MC68030UM Figure 9-35: "LIMIT -- LIMIT ON TABLE INDEX
+    // FOR THIS TABLE ADDRESS").  Seed the carried limit from it so level A is
+    // checked like every level below.
+    limit_active = true;
+    limit_is_lower = (root_upper >> 31) & 1;
+    limit_value = (root_upper >> 16) & 0x7FFF;
 
     // Current bit position in logical address (start after IS bits)
     uint32_t bit_pos = 32 - is;
@@ -409,6 +424,26 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         // Extract index from logical address
         bit_pos -= index_bits;
         uint32_t index = (logical_addr >> bit_pos) & ((1u << index_bits) - 1);
+
+        // Limit check on the index into THIS table, from the long-format
+        // descriptor that pointed here.  MC68030UM: "When the L/U bit is set,
+        // the limit is a lower limit, and an index less than the limit is out
+        // of bounds.  When the L/U bit is zero, the limit is an upper limit,
+        // and an index greater than the limit is out of bounds."  The field is
+        // disabled by L/U = 1 with limit 0, or L/U = 0 with limit $7FFF, both
+        // of which the comparisons below satisfy without a special case.
+        //
+        // On violation: "During a table search for a normal translation or a
+        // PLOAD instruction, if a limit violation is detected, the ATC is
+        // loaded with an entry having the bus error (B) bit set.  If a limit
+        // violation is detected during a table search for a PTEST instruction,
+        // the invalid (I) and limit (L) bits are set in the MMUSR."  MMUSR_L
+        // was defined and never set by anything until now.
+        if (limit_active && (limit_is_lower ? (index < limit_value) : (index > limit_value))) {
+            result.mmusr |= MMUSR_I | MMUSR_L | MMUSR_B;
+            result.mmusr |= (levels_walked & 7);
+            return result;
+        }
 
         // Fetch descriptor from physical memory.
         // Short format: all fields (DT, flags, address) live in one 32-bit word.
@@ -502,6 +537,15 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
         // Long:  bits 31:4 of the lower word hold TA; bits 3:0 must be zero.
         // Either way mask with 0xFFFFFFF0 to strip the flag nibble.
         table_addr = desc_lo & 0xFFFFFFF0;
+        // A long-format table descriptor carries L/U in bit 31 of its upper
+        // word and the 15-bit LIMIT in bits 30:16; both bound the next level's
+        // index.  Short-format descriptors have no limit field, so following
+        // one clears any limit inherited from above.
+        limit_active = long_desc;
+        if (long_desc) {
+            limit_is_lower = (desc_hi >> 31) & 1;
+            limit_value = (desc_hi >> 16) & 0x7FFF;
+        }
         long_desc = (dt == DESC_DT_TABLE8);
     }
 

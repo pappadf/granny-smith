@@ -39,6 +39,64 @@ static void store_be32(uint8_t *p, uint32_t val) {
 }
 
 // ============================================================================
+// Test: the LIMIT field bounds the next level's table index
+// ============================================================================
+//
+// Long-format descriptors -- and the root pointer -- carry L/U in bit 31 and a
+// 15-bit LIMIT in bits 30:16, bounding the index into the table they point at.
+// MC68030UM: "When the L/U bit is set, the limit is a lower limit, and an index
+// less than the limit is out of bounds.  When the L/U bit is zero, the limit is
+// an upper limit, and an index greater than the limit is out of bounds", and on
+// violation a PTEST sets "the invalid (I) and limit (L) bits ... in the MMUSR".
+//
+// MMUSR_L was defined in mmu.h and set by nothing: the field was never checked,
+// so a guest could walk straight out of a table it had explicitly bounded.
+TEST(test_limit_field_bounds_index) {
+    memory_map_t *mem = memory_map_init(32, 0x400000, 0x040000, NULL);
+    uint8_t *ram = ram_native_pointer(mem, 0);
+    mmu_state_t *mmu = mmu_init(ram, 0x400000, 0x8000000, NULL, 0, 0, 0);
+
+    // One level: 8 bits of index at level A, 24-bit pages (IS=0, TIA=8, PS=24).
+    uint32_t tc = (1u << 31) | (24u << 20) | (8u << 12);
+    uint32_t level_a_base = 0x10000;
+
+    // Two page descriptors at level-A indexes 0 and 1.
+    store_be32(ram + level_a_base + 0, 0x00000000 | DESC_DT_PAGE);
+    store_be32(ram + level_a_base + 4, 0x00100000 | DESC_DT_PAGE);
+
+    mmu->tc = tc;
+    mmu->enabled = true;
+
+    // Upper limit 0 (L/U = 0): index 0 is in bounds, index 1 is not.
+    mmu->crp = ((uint64_t)((0u << 31) | (0u << 16) | DESC_DT_TABLE4) << 32) | level_a_base;
+    mmu_invalidate_tlb(mmu);
+    uint16_t ok = mmu_test_address(mmu, 0x00000000, false, true, NULL);
+    ASSERT_TRUE((ok & MMUSR_L) == 0);
+    ASSERT_TRUE((ok & MMUSR_I) == 0);
+    uint16_t bad = mmu_test_address(mmu, 0x01000000, false, true, NULL); // index 1
+    ASSERT_TRUE((bad & MMUSR_L) != 0);
+    ASSERT_TRUE((bad & MMUSR_I) != 0);
+
+    // Lower limit 1 (L/U = 1): the sense inverts -- index 1 is in bounds now
+    // and index 0 is not.
+    mmu->crp = ((uint64_t)((1u << 31) | (1u << 16) | DESC_DT_TABLE4) << 32) | level_a_base;
+    mmu_invalidate_tlb(mmu);
+    uint16_t lo_bad = mmu_test_address(mmu, 0x00000000, false, true, NULL);
+    ASSERT_TRUE((lo_bad & MMUSR_L) != 0);
+    uint16_t lo_ok = mmu_test_address(mmu, 0x01000000, false, true, NULL);
+    ASSERT_TRUE((lo_ok & MMUSR_L) == 0);
+
+    // The documented "suppress" encoding: L/U = 0 with LIMIT = $7FFF lets every
+    // index through, which is what a guest that does not want limits writes.
+    mmu->crp = ((uint64_t)((0u << 31) | (0x7FFFu << 16) | DESC_DT_TABLE4) << 32) | level_a_base;
+    mmu_invalidate_tlb(mmu);
+    ASSERT_TRUE((mmu_test_address(mmu, 0x00000000, false, true, NULL) & MMUSR_L) == 0);
+    ASSERT_TRUE((mmu_test_address(mmu, 0x01000000, false, true, NULL) & MMUSR_L) == 0);
+
+    cleanup(mem, mmu);
+}
+
+// ============================================================================
 // Test: the architectural U/M history-bit protocol
 // ============================================================================
 //
@@ -575,6 +633,7 @@ int main(void) {
     RUN(test_tlb_invalidation);
     RUN(test_two_level_translation);
     RUN(test_short_table_descriptor_with_wp_bit);
+    RUN(test_limit_field_bounds_index);
     RUN(test_um_history_bits);
     RUN(test_invalid_descriptor_bus_error);
     RUN(test_transparent_translation);
