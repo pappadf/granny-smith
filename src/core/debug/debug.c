@@ -305,9 +305,19 @@ logpoint_t *set_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, log_c
 // installed (no logical-page watch) — the caller observes every alias.
 logpoint_t *set_memory_logpoint(debug_t *debug, uint32_t addr, uint32_t end_addr, addr_space_t space, int kind,
                                 log_category_t *category, int level) {
-    logpoint_t *lp = malloc(sizeof(logpoint_t));
+    // calloc, and the no-range sentinel set explicitly below, matching
+    // set_logpoint.  This used to malloc and then assign 14 of the 16 fields
+    // by hand, leaving start_phys/end_phys as heap garbage.  Inert today only
+    // because the single reader is guarded by `lp->kind == LP_KIND_PC` -- a
+    // coincidence of the current control flow, not an invariant anyone stated,
+    // and any future pass that iterates all logpoints (a unified hit test, an
+    // entries column, a checkpoint of the list) reads uninitialised memory.
+    // MSan and valgrind flag it now (08-core-infra F-40).
+    logpoint_t *lp = calloc(1, sizeof(logpoint_t));
     if (!lp)
         return NULL;
+    lp->start_phys = 1; // start > end == "no physical range", as set_logpoint
+    lp->end_phys = 0;
     lp->addr = addr;
     lp->end_addr = end_addr;
     lp->space = space;
@@ -418,6 +428,30 @@ static value_t lp_binding(void *ud, const char *name) {
     return shell_binding_get(name);
 }
 
+// Render a logpoint's `message=` template.
+//
+// The template is stored raw and re-interpolated on every fire, so each hit
+// runs interp_walk -> expr_eval -> object_resolve with a malloc per `${...}`
+// body.  08-core-infra F-42 calls this a performance defect and says a write
+// logpoint on a hot page is "effectively unusable".
+//
+// MEASURED before restructuring, per the work order's rule for this unit.
+// A Plus, a write logpoint over 0x0000-0xFFFF, 20M cycles, 71,650 fires in
+// every run, output discarded, best of three:
+//
+//     no message=            455 ms
+//     plain message=         468 ms   (+13 ms; no ${} so it short-circuits)
+//     two-expression ${}=    529 ms   (+61 ms over plain)
+//
+// So the re-parse costs about 0.85 us per fire, roughly 13% -- on top of a
+// path that already costs 6.4 us per fire for the slow-path routing the
+// logpoint itself forces.  The defect is real; the severity is not.  The
+// template is not what makes a hot-page logpoint expensive, and pre-splitting
+// it into a {literal, expr-body} chunk list would add cached state and its
+// invalidation to recover a small fraction of an already-slow debugging path.
+//
+// Deliberately not restructured.  If that changes, the number to beat is
+// above and the shape is in the finding.
 static void format_logpoint_message(char *buf, size_t buf_size, const char *msg, uint32_t addr, uint32_t value,
                                     unsigned size) {
     if (!msg) {
@@ -2350,6 +2384,17 @@ static breakpoint_t *bp_from(struct object *self) {
     return (breakpoint_t *)object_data(self);
 }
 
+// The address-space enumeration, declared ONCE.
+//
+// It was a V_ENUM on the read side (bp.space, and lpe.kind's sibling) and a
+// V_STRING plus a hand-rolled strcmp on the two method ARGUMENTS, in this same
+// file.  So reads were typed and writes were not: an unrecognised string
+// silently meant "logical", nothing could complete the values, and
+// object-model.md explicitly lists enum membership as something bodies must
+// not re-check (08-core-infra F-32).
+static const char *const debug_space_values[] = {"logical", "physical", NULL};
+#define DEBUG_SPACE_COUNT 2
+
 static value_t bp_attr_addr(struct object *self, const member_t *m) {
     (void)m;
     breakpoint_t *bp = bp_from(self);
@@ -2365,9 +2410,8 @@ static value_t bp_attr_space(struct object *self, const member_t *m) {
     breakpoint_t *bp = bp_from(self);
     if (!bp)
         return val_err("breakpoint detached");
-    static const char *const names[] = {"logical", "physical"};
     int idx = breakpoint_get_space(bp);
-    return val_enum(idx, names, 2);
+    return val_enum(idx, debug_space_values, DEBUG_SPACE_COUNT);
 }
 
 static value_t bp_attr_condition(struct object *self, const member_t *m) {
@@ -2646,7 +2690,7 @@ static value_t bp_method_add(struct object *self, const member_t *m, int argc, c
     // the MMU active; on the Plus the two address spaces coincide.
     addr_space_t space = ADDR_LOGICAL;
     if (argc >= 3 && argv[2].s && *argv[2].s) {
-        if (strcmp(argv[2].s, "physical") == 0)
+        if (argv[2].kind == V_ENUM && argv[2].enm.idx == 1)
             space = ADDR_PHYSICAL;
         else if (strcmp(argv[2].s, "logical") != 0)
             return val_err("breakpoints.add: space must be \"logical\" or \"physical\"");
@@ -2768,7 +2812,7 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
 
     addr_space_t space = ADDR_LOGICAL;
     if (argc > 8 && argv[8].kind == V_STRING && argv[8].s && argv[8].s[0]) {
-        if (strcmp(argv[8].s, "physical") == 0)
+        if (argv[8].kind == V_ENUM && argv[8].enm.idx == 1)
             space = ADDR_PHYSICAL;
         else if (strcmp(argv[8].s, "logical") != 0)
             return val_err("logpoints.add: space must be \"logical\" or \"physical\"");
@@ -2797,12 +2841,13 @@ static value_t lp_method_add(struct object *self, const member_t *m, int argc, c
 }
 
 static const arg_decl_t bp_add_args[] = {
-    {.name = "addr",      .kind = V_UINT,   .presentation_flags = VAL_HEX,        .doc = "address"                  },
+    {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address"},
     {.name = "condition", .kind = V_STRING, .validation_flags = OBJ_ARG_OPTIONAL, .doc = "optional condition string"},
     {.name = "space",
-     .kind = V_STRING,
+     .kind = V_ENUM,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"logical\" (default) or \"physical\""                                                                 },
+     .enum_values = debug_space_values,
+     .doc = "\"logical\" (default) or \"physical\""},
 };
 
 // Interior optional slots need defaults so the named-argument binder's
@@ -2814,7 +2859,11 @@ static const value_t lp_def_message = {.kind = V_STRING, .s = (char *)""};
 static const value_t lp_def_level = {.kind = V_INT, .i = 0};
 static const value_t lp_def_category = {.kind = V_STRING, .s = (char *)""};
 static const value_t lp_def_value = {.kind = V_INT, .i = -1};
-static const value_t lp_def_space = {.kind = V_STRING, .s = (char *)"logical"};
+// The default must be a V_ENUM now that the slot is one, so it agrees with
+// what validate_slot produces for an explicitly-passed "logical".
+static const value_t lp_def_space = {
+    .kind = V_ENUM, .enm = {.idx = 0, .table = debug_space_values, .n_table = DEBUG_SPACE_COUNT}
+};
 
 static const arg_decl_t lp_add_args[] = {
     {.name = "addr", .kind = V_UINT, .presentation_flags = VAL_HEX, .doc = "address (or range start)"},

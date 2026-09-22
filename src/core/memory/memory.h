@@ -349,13 +349,13 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value);
 // Per-page memory-logpoint reference count.  Non-zero entries indicate pages
 // whose SoA fast-path must stay at 0 (force slow path). Allocated alongside the
 // page tables in memory_map_init.
-extern uint8_t *g_mem_logpoint_page_count;
+extern uint16_t *g_mem_logpoint_page_count;
 
 // Per-physical-page memory-logpoint reference count.  Non-zero entries mean
 // "any logical alias mapping to this physical page must stay on the slow
 // path so the logpoint fires regardless of which alias the CPU uses."
 // Indexed by physical page number.  mmu_fill_soa_entry consults both arrays.
-extern uint8_t *g_mem_logpoint_phys_page_count;
+extern uint16_t *g_mem_logpoint_phys_page_count;
 
 // Hook invoked by the slow path on logpoint pages.  is_write=true on writes.
 // Installed by debug.c.  NULL means no hook (skip check).
