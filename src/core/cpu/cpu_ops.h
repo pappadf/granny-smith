@@ -972,8 +972,8 @@
 // ============================================================
 #ifdef CPU_DECODER_IS_68030
 
-// OP_UNDEFINED: 68030 pushes instruction_pc (cpu->pc - 2, no extension words consumed).
-#define OP_UNDEFINED OP(exception(cpu, 0x010, cpu->pc - 2, cpu_get_sr(cpu)); continue)
+// OP_UNDEFINED: the saved PC is the instruction's own address (MC68030UM 8.1.5).
+#define OP_UNDEFINED OP(exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu)); continue)
 
 // --- Bit-field helper functions (register and memory operands) ---
 
@@ -1818,8 +1818,8 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
     })
 
 // --- BKPT: Software Breakpoint (generate BKPT trap = vector 4 illegal instruction) ---
-// Push opcode address (cpu->pc - 2), not current pc
-#define OP_BKPT_DATA OP(exception(cpu, 0x010, cpu->pc - 2, cpu_get_sr(cpu)))
+// Push the opcode's own address, not the advanced pc.
+#define OP_BKPT_DATA OP(exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu)))
 
 // --- MOVE CCR,<ea>: read CCR into EA as a word (not privileged on 68010+) ---
 #define OP_MOVE_B_CCR_EA OP(VALID_EA(ea_data &ea_alterable); STORE_EA(16, READ_CCR()))

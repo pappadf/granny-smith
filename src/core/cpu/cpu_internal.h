@@ -1120,13 +1120,15 @@ static inline void trapv(cpu_t *restrict cpu) {
     exception(cpu, 0x1c, cpu->pc, cpu_get_sr(cpu));
 }
 static inline void privilege_violation(cpu_t *restrict cpu) {
-    exception(cpu, 0x020, cpu->pc - 2, cpu_get_sr(cpu));
+    // MC68030UM 8.1.6: the saved PC is the first word of the violating instruction.
+    exception(cpu, 0x020, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 static inline void trap(cpu_t *restrict cpu, int trap_num) {
     exception(cpu, 0x080 + trap_num * 4, cpu->pc, cpu_get_sr(cpu));
 }
 static inline void a_trap(cpu_t *restrict cpu) {
-    exception(cpu, 0x28, cpu->pc - 2, cpu_get_sr(cpu));
+    // MC68030UM 8.1.5: the saved PC is the address of the unimplemented instruction.
+    exception(cpu, 0x28, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 // MC68000 code-fetch bus error: the prefetch that faulted left the PC advanced
 // past the start of the control-transfer instruction that branched into the
@@ -1224,7 +1226,8 @@ static inline void f_trap(cpu_t *restrict cpu) {
         exception_bus_error(cpu, cpu->instruction_pc, 1);
         return;
     }
-    exception(cpu, 0x2C, cpu->pc - 2, cpu_get_sr(cpu));
+    // MC68030UM 8.1.5: the saved PC is the address of the F-line instruction.
+    exception(cpu, 0x2C, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 
 // Advance cpu->pc past EA extension words (68030 exception path only).
@@ -1277,8 +1280,7 @@ static inline void skip_ea_extension_words(cpu_t *restrict cpu, int mode, int re
 // Raise illegal instruction exception (vector 4).
 // Stacked PC points to the first word of the illegal instruction (per M68000 PRM).
 static inline void illegal_instruction(cpu_t *restrict cpu) {
-    uint32_t pc = (cpu->cpu_model >= CPU_MODEL_68030) ? cpu->instruction_pc : (cpu->pc - 2);
-    exception(cpu, 0x010, pc, cpu_get_sr(cpu));
+    exception(cpu, 0x010, cpu->instruction_pc, cpu_get_sr(cpu));
 }
 
 #endif // CPU_INTERNAL_H
