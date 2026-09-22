@@ -8,6 +8,7 @@
 #include "adb.h"
 #include "cpu.h"
 #include "debug_mac.h"
+#include "log.h"
 #include "object.h"
 #include "system.h"
 #include "value.h"
@@ -15,6 +16,8 @@
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
+
+LOG_USE_CATEGORY_NAME("mouse");
 
 // Represents the mouse device state and scheduling tails for each axis
 struct mouse {
@@ -45,12 +48,6 @@ struct mouse {
 // ~2,600 counts/s — comfortably above any real drag's count rate — and
 // interrupt density can never exceed what hardware produces.
 #define MOUSE_CYCLES_PER_SLOT 3000
-
-static inline uint64_t cycles_per_slot(mouse_t *restrict m, int steps_in_batch) {
-    (void)m;
-    (void)steps_in_batch;
-    return MOUSE_CYCLES_PER_SLOT;
-}
 
 #define EVENT_DATA_HORIZONTAL 2
 #define EVENT_DATA_POSITIVE   1
@@ -84,7 +81,12 @@ static void schedule_axis(mouse_t *restrict m, int delta, bool horizontal, uint6
 
     int steps = delta > 0 ? delta : -delta; // Number of slot transitions to emit
     bool positive = delta > 0; // Direction sign used for quadrature relationship
-    uint64_t per_slot = cycles_per_slot(m, steps); // Constant delay between successive slots
+    // Constant, deliberately independent of `steps`: the old per-batch pacing
+    // divided a fixed window by the batch size, so a big delta emitted pulses
+    // faster than hardware ever could.  See the comment above the constant.
+    uint64_t per_slot = MOUSE_CYCLES_PER_SLOT;
+    LOG(3, "schedule_axis: %s %+d -> %d slot(s) @ %llu cycles", horizontal ? "X" : "Y", delta, steps,
+        (unsigned long long)per_slot);
 
     // Choose tail pointer for axis so new events follow any already queued pulses
     uint64_t *tail = horizontal ? &m->tail_timestamp_x : &m->tail_timestamp_y;
@@ -97,8 +99,6 @@ static void schedule_axis(mouse_t *restrict m, int delta, bool horizontal, uint6
     // causing DCD to toggle twice and the ROM to miss the intermediate edge.
     if (!horizontal && *tail == now_cycles)
         *tail += per_slot / 2;
-
-    const char *ev_name = horizontal ? "mouse X slot" : "mouse Y slot";
 
     for (int i = 0; i < steps; ++i) {
         *tail += per_slot; // Advance tail by one slot period
@@ -124,6 +124,7 @@ static int scale(int value, int8_t *rem) {
     int total = value + *rem;
     int out = total / 2; // Truncates toward zero
     *rem = (int8_t)(total - out * 2);
+    LOG(3, "scale: %+d + rem %+d -> %+d, rem %+d", value, (int)(total - value), out, (int)*rem);
     return out;
 }
 
@@ -215,18 +216,24 @@ void mouse_checkpoint(mouse_t *restrict mouse, checkpoint_t *checkpoint) {
 //   "hw"             → 'h'
 //   "aux"            → 'a'
 // Returns 'd' for default, the mode char otherwise, or 0 on bad input.
-static char mouse_mode_char(const value_t *v) {
-    if (!v || v->kind != V_STRING || !v->s || !*v->s)
+// The single mode parser, declared in mouse.h and also used by the machine
+// side (mac_host_io.c).  See the header for the mapping.
+char input_mouse_mode_parse(const char *mode) {
+    if (!mode || !*mode || strcmp(mode, "default") == 0)
         return 'd';
-    if (strcmp(v->s, "default") == 0)
-        return 'd';
-    if (strcmp(v->s, "global") == 0)
+    if (strcmp(mode, "global") == 0)
         return 'g';
-    if (strcmp(v->s, "hw") == 0)
+    if (strcmp(mode, "hw") == 0)
         return 'h';
-    if (strcmp(v->s, "aux") == 0)
+    if (strcmp(mode, "aux") == 0)
         return 'a';
     return 0;
+}
+
+static char mouse_mode_char(const value_t *v) {
+    if (!v || v->kind != V_STRING || !v->s)
+        return 'd';
+    return input_mouse_mode_parse(v->s);
 }
 
 static value_t mouse_method_move(struct object *self, const member_t *m, int argc, const value_t *argv) {
@@ -252,7 +259,7 @@ static value_t mouse_method_click(struct object *self, const member_t *m, int ar
     const char *modestr = (argc >= 2 && argv[1].kind == V_STRING && argv[1].s) ? argv[1].s : "default";
     // Validate the cursor mode up front so a bad mode gives a clear error.
     if ((argc >= 2) && !mouse_mode_char(&argv[1]))
-        return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"");
+        return val_err("mouse.click: mode must be one of \"default\"/\"global\"/\"hw\"/\"aux\"");
     // Inject through the machine substrate (Mac Toolbox cursor / Lisa COPS).
     if (system_input_mouse_button(down, modestr) < 0)
         return val_err("mouse.click: machine rejected request");
@@ -279,11 +286,11 @@ static const arg_decl_t mouse_click_args[] = {
     {.name = "down",
      .kind = V_BOOL,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "true = press, false = release (default true)"                             },
+     .doc = "true = press, false = release (default true)"                                                 },
     {.name = "mode",
      .kind = V_STRING,
      .validation_flags = OBJ_ARG_OPTIONAL,
-     .doc = "\"default\" (per-platform), \"global\" (Toolbox MBState), or \"hw\" (raw)"},
+     .doc = "\"default\" (per-platform), \"global\" (Toolbox MBState), \"hw\" (raw), or \"aux\" (A/UX MAE)"},
 };
 static const arg_decl_t mouse_trace_args[] = {
     {.name = "enabled", .kind = V_BOOL, .doc = "true = log mouse position once per second"},

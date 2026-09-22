@@ -70,6 +70,9 @@ struct config {
     mouse_t *mouse;
     keyboard_t *keyboard;
     adb_t *adb; // ADB controller (SE/30, IIcx); NULL for Plus
+    // The machine.adb.keyboard object and its paced typing (host_input.h).
+    // Per machine on every family, including the ones with no adb_t.
+    struct host_input *host_input;
 
     debug_t *debugger;
 

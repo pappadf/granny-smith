@@ -296,7 +296,21 @@ typedef struct machine_substrate {
     // then describe the fallback two lines later.)
     int (*fd_insert)(struct config *cfg, int drive, struct image *disk);
     bool (*fd_present)(struct config *cfg, int drive);
-    int (*input_key)(struct config *cfg, const char *key, bool down);
+    // Key identity across the whole model is the ADB virtual keycode
+    // (0x00-0x7F), whatever the machine's own keyboard actually speaks.  That
+    // was already true for every Mac -- system_keyboard_update hands the same
+    // int to the ADB transceiver or to the Plus's M0110A, which converts on
+    // the wire with Guide 2e p.282's `(adb << 1) | 1` plus its keypad
+    // exceptions -- and the Lisa now joins, converting ADB to COPS from the
+    // boot ROM's own key table.  Name resolution happens ONCE, above the
+    // substrate, so a substrate never sees a key name.
+    int (*input_key)(struct config *cfg, int adb_code, bool down);
+    // Inject a byte in this machine's NATIVE keyboard encoding, direction bit
+    // and all.  Not portable and deliberately so: it exists for tests that
+    // drive a keyboard wire rather than press a key (the Lisa's COPS, whose
+    // bit 7 is down/up).  NULL on every machine that has no such notion, and
+    // the object surface reports that rather than guessing.
+    int (*input_key_raw)(struct config *cfg, uint8_t byte);
     int (*input_mouse_move)(struct config *cfg, int x, int y, const char *mode);
     int (*input_mouse_button)(struct config *cfg, bool down, const char *mode);
     struct display *(*display)(struct config *cfg);
@@ -312,6 +326,15 @@ typedef struct machine_substrate {
     // implements its own (parallel FDC + ProFile).
     int (*media_detach)(struct config *cfg, media_slot_t *out, int max);
     int (*media_attach)(struct config *cfg, const media_slot_t *slot);
+
+    // How many key-transition bytes this machine's keyboard queue holds
+    // before it starts dropping, which is what keyboard.type costs itself
+    // against: it refuses a line it could not deliver rather than typing half
+    // of it.  0 means the ADB default.  The Lisa's COPS FIFO is 32 bytes
+    // against the ADB ring's 128, so this cannot be one constant -- and it
+    // was one constant, sized for ADB, until keyboard.type could reach a
+    // Lisa at all.
+    int key_queue_bytes;
 } machine_substrate_t;
 
 // Machine descriptor: static metadata for each emulated machine model.  The

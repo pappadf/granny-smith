@@ -908,6 +908,49 @@ static void forget_cb_b(void *src, uint64_t data) {
 // the event-type rows.  remove_event() matches on callback AND source, so a
 // device with N callbacks needs N calls and 27 of 38 destructors got that
 // wrong; this cannot be half-done.
+// When is the last event for this callback due?  keyboard.type asks, so that
+// a line typed in pieces continues after whatever a previous call left in
+// flight instead of interleaving with it.  That instant used to be a shadow
+// field in adb_t -- one that only an ADB Mac had, which is part of why
+// keyboard.type only worked on one.
+TEST(test_last_event_ns_reports_the_furthest_pending) {
+    scheduler_t *s = fresh_scheduler(false);
+    int src = 0;
+
+    scheduler_new_event_type(s, "typer", &src, "a", forget_cb_a);
+    scheduler_new_event_type(s, "typer", &src, "b", forget_cb_b);
+
+    // Nothing queued: nothing due.
+    ASSERT_TRUE(scheduler_last_event_ns(s, forget_cb_a) == 0.0);
+
+    // Three under callback a, deliberately out of time order so "last"
+    // cannot be "whatever was added most recently" or "head of the queue".
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 5000, 0);
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 20000, 0);
+    scheduler_new_cpu_event(s, forget_cb_a, &src, 0, 9000, 0);
+    // One under b, further out than any of them.
+    scheduler_new_cpu_event(s, forget_cb_b, &src, 0, 90000, 0);
+
+    double last_a = scheduler_last_event_ns(s, forget_cb_a);
+    double last_b = scheduler_last_event_ns(s, forget_cb_b);
+    ASSERT_TRUE(last_a > 0.0 && last_b > 0.0);
+
+    // The ratio is the assertion, so this says nothing about the clock: b's
+    // event is at 90000 cycles and a's furthest at 20000, so 4.5x.  A query
+    // that ignored the callback would return b's answer for both and the
+    // ratio would be 1 -- which is exactly the mistake worth catching, since
+    // two devices pacing at once would otherwise shove each other along.
+    double ratio = last_b / last_a;
+    ASSERT_TRUE(ratio > 4.49 && ratio < 4.51);
+
+    // Draining takes the answer back to zero, which is what makes it safe to
+    // derive rather than remember: there is nothing to go stale.
+    scheduler_forget_source(s, &src);
+    ASSERT_TRUE(scheduler_last_event_ns(s, forget_cb_a) == 0.0);
+
+    teardown(s);
+}
+
 TEST(test_forget_source_drops_events_and_types) {
     scheduler_t *s = fresh_scheduler(false);
     int victim = 0, bystander = 0;
@@ -1017,6 +1060,7 @@ int main(void) {
     RUN(test_governor_audio_pressure);
     RUN(test_governor_max_speed_cap);
     RUN(test_governor_pin_unpin);
+    RUN(test_last_event_ns_reports_the_furthest_pending);
     RUN(test_forget_source_drops_events_and_types);
     RUN(test_checkpoint_carries_no_host_timing);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");

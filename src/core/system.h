@@ -183,7 +183,12 @@ config_t *system_config(void);
 // Host-input dispatch to a machine-specific hook (e.g. the Lisa COPS).  Each
 // returns 1 if the machine hook handled the request, 0 if there is no hook (the
 // caller should use the default Mac path), or -1 if the hook rejected it.
-int system_input_key(const char *key, bool down);
+// `adb_code` is an ADB virtual keycode (0x00-0x7F) -- the model's universal
+// key identity, see machine_profile.h.  Resolve names with
+// debug_mac_resolve_key_name before calling.
+int system_input_key(int adb_code, bool down);
+// This machine's own keyboard wire byte; -1 if the machine has no raw form.
+int system_input_key_raw(uint8_t byte);
 int system_input_mouse_move(int x, int y, const char *mode);
 int system_input_mouse_button(bool down, const char *mode);
 

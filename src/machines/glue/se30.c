@@ -97,7 +97,6 @@ static inline se30_state_t *se30_state(config_t *cfg) {
 // ============================================================
 
 static void se30_via1_output(void *context, uint8_t port, uint8_t output);
-static void se30_via1_shift_out(void *context, uint8_t byte);
 static void se30_via2_output(void *context, uint8_t port, uint8_t output);
 static void se30_via2_shift_out(void *context, uint8_t byte);
 
@@ -202,33 +201,14 @@ static void se30_via1_output(void *context, uint8_t port, uint8_t output) {
         // Bits 0-2: sound volume (legacy, ignored for ASC)
     } else {
         // Port B outputs:
-        // Bits 4-5: ADB state lines (ST0/ST1) → ADB controller
-        // Only notify ADB when ST bits actually transition.  The ROM
-        // bit-bangs the RTC via port B bits 0-2 without intending to
-        // change ST; on real hardware the ADB transceiver ignores writes
-        // where the ST lines don't change electrically (BUG-004).
-        if (se30->adb) {
-            uint8_t st_mask = 0x30; // bits 5:4 = ST1:ST0
-            uint8_t old_st = se30->last_port_b & st_mask;
-            uint8_t new_st = output & st_mask;
-            if (new_st != old_st) {
-                adb_port_b_output(se30->adb, output);
-            }
-        }
-        se30->last_port_b = output;
+        // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
+        // ST-transition filter and its port-B shadow live in adb.c now.
+        if (se30->adb)
+            adb_port_b_output(se30->adb, output);
         // Bit 3: vADBInt (input — read-only, driven by ADB module)
         // Bits 0-2: RTC chip select/clock/data
-        if (cfg->rtc)
-            rtc_input(cfg->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
+        rtc_via1_pb_output(cfg->rtc, output);
     }
-}
-
-// VIA1 shift-out callback: ADB byte data transfer
-static void se30_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    se30_state_t *se30 = se30_state(cfg);
-    if (se30->adb)
-        adb_shift_byte(se30->adb, byte);
 }
 
 // VIA1 IRQ callback: VIA1 drives IPL level 1
@@ -405,7 +385,12 @@ static const mac030_board_desc_t se30_board_desc = {
 static const mac030_glue_board_t se30_board = {
     .desc = &se30_board_desc,
     .via1_output = se30_via1_output,
-    .via1_shift_out = se30_via1_shift_out,
+    // No VIA1 shift-out routing: adb.c reads the VIA's shift register
+    // directly at each port-B ST transition, because in mode 7 the ADB
+    // transceiver clocks the shift, not the VIA's internal timer, and the
+    // ROM's SR writes during interrupt handling fire the callback
+    // spuriously (BUG-004).  via.c tolerates a NULL here.
+    .via1_shift_out = NULL,
     .via2_output = se30_via2_output,
     .via2_shift_out = se30_via2_shift_out,
     .setup_id = se30_setup_id,

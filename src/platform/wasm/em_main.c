@@ -89,13 +89,12 @@ static bool host_machine_is_lisa(void) {
     return id && (strcmp(id, "lisa") == 0 || strcmp(id, "macxl") == 0);
 }
 
-// Inject a raw Lisa COPS key byte through the substrate (system_input_key parses
-// the "0xNN" form and queues it on the COPS).  A down code is 0xC0-0xFF; the
-// matching up code is the same byte with bit 7 cleared (code & 0x7F).
+// Inject a raw Lisa COPS key byte through the substrate.  A down code is
+// 0xC0-0xFF; the matching up code is the same byte with bit 7 cleared
+// (code & 0x7F), which is why this is the raw path and not system_input_key:
+// the browser side already holds COPS codes with their direction bit.
 static void host_lisa_key(uint8_t code) {
-    char buf[8];
-    snprintf(buf, sizeof(buf), "0x%02X", code);
-    system_input_key(buf, true);
+    system_input_key_raw(code);
 }
 
 // Track which Lisa COPS keys we've sent a down for but not yet an up, indexed by

@@ -21,6 +21,7 @@
 #include "keyboard.h"
 #include "log.h"
 #include "machine_profile.h"
+#include "mouse.h"
 #include "object.h"
 #include "system.h"
 #include "value.h"
@@ -60,15 +61,6 @@ LOG_USE_CATEGORY_NAME("adb");
 // Talk R0 command approximately every 11 ms while in idle (state 3).  We use
 // 11 ms to match real hardware timing.
 #define ADB_AUTOPOLL_INTERVAL (11 * 1000 * 1000)
-
-// Spacing between the key events keyboard.type() queues, in nanoseconds.
-// A real keyboard reports two key transitions in one Talk R0 only when both
-// happened inside one poll interval; a typist's Shift-down and the key it
-// shifts never do.  Queued back to back they would, and a guest that reads
-// one transition per report (the Network Server Diagnostic Utility does)
-// then sees Shift go down and never come up.  4 ms per event is a brisk
-// 125 events/s — faster than any typist, slower than any poll loop.
-#define ADB_TYPE_SPACING ((uint64_t)4 * 1000 * 1000)
 
 // Default ADB device addresses assigned at power-on
 #define KBD_DEFAULT_ADDR   2
@@ -118,6 +110,14 @@ LOG_USE_CATEGORY_NAME("adb");
 typedef struct {
     uint8_t address;
     uint8_t handler;
+    // Register 3 bit 13, Service Request enable.  Real per-device state, not
+    // a constant: Guide 2e :7810-7812 -- "To disable a device's ability to
+    // send a Service Request signal, set bit 13 in register 3 to 0 by using a
+    // Listen Register 3 command with a Device Handler ID of $00... To enable
+    // the Service Request ability, set this bit to 1."  Powers up set
+    // (Table 8-15 marks bit 14 "always 1 if not used" and bit 13 the SRQ
+    // enable; a device that never had it turned off can service-request).
+    bool srq_enabled;
 } adb_device_t;
 
 // Full ADB transceiver state; plain data placed first so the checkpoint
@@ -182,10 +182,20 @@ struct adb {
     bool reply_from_mouse; // reply_buf holds freshly-consumed mouse deltas
     int mouse_reply_dx, mouse_reply_dy; // the consumed deltas (for abort restore)
 
-    // keyboard.type() pacing: the scheduler time the next typed key event
-    // may be queued, so consecutive calls keep typing at a human rate
-    // rather than landing in one report (adb_typed_key_deferred).
-    uint64_t type_next_ns;
+    // The most recently used ADB address, in the IOP ADB Driver ERS's sense:
+    // the one that answered the last autonomous auto-poll.  adb_autopoll_next
+    // anchors its scan here.  Plain data, so it checkpoints with the rest.
+    uint8_t autopoll_mru;
+
+    // Shadow of the last VIA1 port-B output, for the ST-transition filter in
+    // adb_port_b_output.  It lived in four machine-state structs -- se30_t,
+    // iicx/iix, iici and q700 -- each with its own copy of the filter and,
+    // in three of the four, no comment saying what the filter was for.  None
+    // of those copies was checkpointed: all three initialisers set it to
+    // $30 at machine init and a restore simply got $30 back, whatever the
+    // VIA's actual ORB was.  Here it rides in adb_t's plain-data block and
+    // round-trips exactly.
+    uint8_t last_port_b;
 
     // === Pointers last (not checkpointed) ===
     via_t *via;
@@ -200,10 +210,7 @@ static void adb_reset(adb_t *adb);
 static void adb_deliver_next_byte(adb_t *adb);
 static void adb_deliver_next_byte_deferred(void *source, uint64_t data);
 static void adb_shift_complete_deferred(void *source, uint64_t data);
-static void adb_typed_key_deferred(void *source, uint64_t data);
 
-// The controller the keyboard object types into (one machine at a time).
-static adb_t *s_adb_current;
 static void adb_autopoll_deferred(void *source, uint64_t data);
 static void adb_decode_command(adb_t *adb, uint8_t cmd);
 
@@ -251,16 +258,10 @@ static void kbd_queue_reset(adb_t *adb) {
     adb->kbd_queue.head = adb->kbd_queue.tail = 0;
 }
 
-// Clamps a mouse axis delta to ADB's 7-bit signed range (-64..+63) and returns
-// the clamped value. *remaining is set to the leftover delta not yet reported.
+// Clamps a mouse axis delta to ADB's 7-bit signed range (-64..+63), carrying
+// the remainder.  The shared helper is in mouse.h; the range is ADB's own.
 static int clamp_delta(int delta, int *remaining) {
-    int clamped = delta;
-    if (clamped > 63)
-        clamped = 63;
-    if (clamped < -64)
-        clamped = -64;
-    *remaining = delta - clamped;
-    return clamped;
+    return input_clamp_delta(delta, -64, 63, remaining);
 }
 
 // Encodes a clamped delta into ADB's 7-bit signed format (2's complement)
@@ -290,6 +291,14 @@ static bool has_pending_data(const adb_t *adb) {
     return !kbd_queue_empty(adb) || adb->mouse_data_pending || adb->mouse_button;
 }
 
+// Returns true if the device at `addr` both has data AND is allowed to say so
+// unasked -- Register 3 bit 13, the Service Request enable.  This is what the
+// bit MEANS: once it is real per-device state (F-04), a device with it clear
+// must stop triggering the SRQ path, or the state is cosmetic readback and
+// the host's SetSRQ has no effect.  A device with SRQ off is still polled and
+// still answers; it simply cannot interrupt to announce itself.
+static bool device_can_service_request(const adb_t *adb, uint8_t addr);
+
 // Returns true if the device at the given ADB address has unreported data.
 // On real hardware, a device with no pending data simply doesn't respond to
 // Talk R0 — the transceiver sees a timeout and stays quiet.
@@ -298,6 +307,24 @@ static bool device_has_pending_data(const adb_t *adb, uint8_t addr) {
         return !kbd_queue_empty(adb);
     if (addr == adb->mouse.address)
         return adb->mouse_data_pending || adb->mouse_button;
+    return false;
+}
+
+static bool device_can_service_request(const adb_t *adb, uint8_t addr) {
+    if (!device_has_pending_data(adb, addr))
+        return false;
+    if (addr == adb->kbd.address)
+        return adb->kbd.srq_enabled;
+    if (addr == adb->mouse.address)
+        return adb->mouse.srq_enabled;
+    return false;
+}
+
+// True if any device OTHER than `except` is service-requesting.
+static bool other_device_service_requesting(const adb_t *adb, uint8_t except) {
+    for (uint8_t addr = 0; addr < 16; addr++)
+        if (addr != except && device_can_service_request(adb, addr))
+            return true;
     return false;
 }
 
@@ -357,6 +384,103 @@ uint8_t adb_mouse_address(adb_t *adb) {
     return adb ? adb->mouse.address : 3;
 }
 
+uint16_t adb_device_mask(const adb_t *adb) {
+    if (!adb)
+        return 0;
+    return (uint16_t)((1u << (adb->kbd.address & 0x0F)) | (1u << (adb->mouse.address & 0x0F)));
+}
+
+// True if this address may be polled under `mask`.  A zero mask means the
+// host has not installed one, so nothing is excluded.
+static bool autopoll_addr_enabled(uint16_t mask, uint8_t addr) {
+    return mask == 0 || (mask & (1u << addr)) != 0;
+}
+
+// One pass of the auto-poll scan, starting at `first` and wrapping through
+// all sixteen addresses.  Returns the address that answered, or -1.
+static int autopoll_scan(adb_t *adb, uint16_t mask, uint8_t first, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
+    for (int step = 0; step < 16; step++) {
+        uint8_t addr = (uint8_t)((first + step) & 0x0F);
+        if (!autopoll_addr_enabled(mask, addr))
+            continue;
+        if (!device_has_pending_data(adb, addr))
+            continue;
+        uint8_t cmd = (uint8_t)((addr << 4) | 0x0C); // Talk register 0
+        int n = 0;
+        if (adb_iop_transact(adb, cmd, NULL, 0, out_data, &n) && n > 0) {
+            *cmd_out = cmd;
+            *len_out = n;
+            return addr;
+        }
+    }
+    return -1;
+}
+
+// True if any address other than `except` is service-requesting under `mask`.
+// This is the model's stand-in for the ADB bus's Service Request line, which
+// nothing here drives: a device with data AND Register 3 bit 13 set is a
+// device that would be pulling SRQ low.
+static bool autopoll_others_pending(const adb_t *adb, uint16_t mask, uint8_t except) {
+    for (uint8_t addr = 0; addr < 16; addr++) {
+        if (addr == except || !autopoll_addr_enabled(mask, addr))
+            continue;
+        if (device_can_service_request(adb, addr))
+            return true;
+    }
+    return false;
+}
+
+bool adb_autopoll_next(adb_t *adb, uint16_t enable_mask, uint8_t *cmd_out, uint8_t *out_data, int *len_out) {
+    if (!adb || !cmd_out || !out_data || !len_out)
+        return false;
+
+    uint8_t mru = (uint8_t)(adb->autopoll_mru & 0x0F);
+
+    // The ERS (library/serial/apple-iop-adb-driver-ers/markdown.md:70):
+    // "it will poll the most recently used device (which has its polling
+    // enable bit set) until it receives data, or until another device asserts
+    // Service Request.  To handle a service request, it will start polling
+    // all of the other devices ... in most recently used order until it hits
+    // one that returns data.  If after polling all of the enabled devices,
+    // SRQ is active, and no data was received from any of the devices, SRQ
+    // polling will continue, polling ALL device addresses, ignoring the
+    // enable mask."
+    //
+    // Three clauses, three scans.  The only liberty taken is that the ERS's
+    // per-address MRU CHAIN collapses to "start at the MRU address and go
+    // round": the chain is permuted only by which device replied, and with
+    // no SRQ line to make the intermediate hops observable, the order in
+    // which empty addresses are visited cannot be seen by any guest.  What
+    // IS observable -- who is re-polled, and who wins when two devices have
+    // data at once -- is exactly what the clauses below decide.
+    //
+    // Honouring the SRQ clause matters, and is not pedantry: without it the
+    // rule is "re-poll the MRU device", and a mouse in continuous motion
+    // always has data, so typing while dragging would never be delivered.
+    int answered;
+    if (autopoll_addr_enabled(enable_mask, mru) && device_has_pending_data(adb, mru) &&
+        !autopoll_others_pending(adb, enable_mask, mru)) {
+        // Clause 1: the MRU device, and nobody else is asking.
+        answered = autopoll_scan(adb, enable_mask, mru, cmd_out, out_data, len_out);
+    } else {
+        // Clause 2: somebody else is asking (or the MRU has nothing) -- walk
+        // the others, MRU-relative, starting past the MRU address.
+        answered = autopoll_scan(adb, enable_mask, (uint8_t)((mru + 1) & 0x0F), cmd_out, out_data, len_out);
+    }
+
+    // Clause 3: nothing enabled answered.  If an address outside the mask has
+    // data, SRQ is still asserted as far as the bus is concerned, so poll
+    // everything.  (Skipped when there is no mask: that scan just ran.)
+    if (answered < 0 && enable_mask != 0)
+        answered = autopoll_scan(adb, 0, (uint8_t)((mru + 1) & 0x0F), cmd_out, out_data, len_out);
+
+    if (answered < 0)
+        return false;
+
+    adb->autopoll_mru = (uint8_t)answered;
+    return true;
+}
+
 // The two halves of carrying the mechanical latch across machine.restart
 // (machine.c reads it off the old machine and re-latches on the new one).
 bool adb_capslock_latched(adb_t *adb) {
@@ -374,8 +498,10 @@ static void adb_reset(adb_t *adb) {
 
     adb->kbd.address = KBD_DEFAULT_ADDR;
     adb->kbd.handler = KBD_HANDLER_ID;
+    adb->kbd.srq_enabled = true;
     adb->mouse.address = MOUSE_DEFAULT_ADDR;
     adb->mouse.handler = MOUSE_HANDLER_ID;
+    adb->mouse.srq_enabled = true;
 
     kbd_queue_reset(adb);
 
@@ -418,6 +544,17 @@ static void flush_device(adb_t *adb, uint8_t addr) {
         LOG(2, "flush_device: flushing mouse at addr %d", addr);
         adb->mouse_dx = 0;
         adb->mouse_dy = 0;
+        // Clear the pending flag too, or device_has_pending_data() keeps
+        // reporting data and the next Talk R0 delivers a zero-delta report
+        // the host did not ask for.  Guide 2e: "Any user input data being
+        // stored by the device ... are lost."  Self-healing before this (one
+        // spurious report per Flush, until prepare_mouse_reply clears it),
+        // but mouse_control.md records spurious zero-delta reports as what
+        // corrupts MTemp on the SE/30 ROM path.
+        //
+        // mouse_button is deliberately NOT cleared: a held button is a level,
+        // not buffered input, so a Flush mid-drag should still report it.
+        adb->mouse_data_pending = false;
     } else {
         LOG(2, "flush_device: unknown device at addr %d, ignoring", addr);
     }
@@ -476,10 +613,25 @@ static void prepare_mouse_reply(adb_t *adb) {
         adb->mouse_data_pending = false;
 }
 
-// Populates reply_buf with Register 3 data (address + handler ID) for a device
+// Populates reply_buf with Register 3 (Guide 2e Table 8-15, :7726-7739):
+//
+//   15    reserved, must be 0
+//   14    exceptional event, device specific; always 1 if not used
+//   13    Service Request enable; 1 = enabled
+//   12    reserved, must be 0
+//   11-8  device address
+//   7-0   device handler ID
+//
+// So an ordinary idle device answers $6X, and this used to answer $0X --
+// bits 14 and 13 both clear, i.e. "an exceptional event is in progress and
+// I cannot service-request".  The specific value $6X is DERIVED from the
+// table rather than quoted: the Guide has register-0 and register-2 content
+// tables per device (8-4, 8-7, 8-8, 8-10, 8-11) but no register-3 one.
 static void prepare_reg3_reply(adb_t *adb, const adb_device_t *dev) {
-    // Byte 0: device address in bits 3-0; byte 1: handler ID
-    adb->reply_buf[0] = dev->address & 0x0F;
+    uint8_t hi = 0x40; // bit 14: no exceptional event
+    if (dev->srq_enabled)
+        hi |= 0x20; // bit 13
+    adb->reply_buf[0] = (uint8_t)(hi | (dev->address & 0x0F));
     adb->reply_buf[1] = dev->handler;
     adb->reply_len = 2;
 }
@@ -610,8 +762,28 @@ static void apply_listen_data(adb_t *adb) {
             uint8_t cmd_byte = adb->listen_buf[1];
             switch (cmd_byte) {
             case 0x00:
+                // The $00 form is the one the Guide ties bit 13 to
+                // (:7810-7812): "To disable a device's ability to send a
+                // Service Request signal, set bit 13 in register 3 to 0 by
+                // using a Listen Register 3 command with a Device Handler ID
+                // of $00... To enable the Service Request ability, set this
+                // bit to 1."  So this form moves the address AND sets SRQ.
+                LOG(2, "listen R3 addr=%d: move to addr=%d, SRQ %s (handler preserved)", adb->listen_addr, new_addr,
+                    (adb->listen_buf[0] & 0x20) ? "on" : "off");
+                dev->address = new_addr;
+                dev->srq_enabled = (adb->listen_buf[0] & 0x20) != 0;
+                break;
             case 0xFE:
-                LOG(2, "listen R3 addr=%d: move to addr=%d (handler preserved)", adb->listen_addr, new_addr);
+                // The collision-safe move.  Bit 13 is DELIBERATELY not taken
+                // from this form.  Nothing in the Guide ties bit 13 to $FE --
+                // :7810-7812 names $00 and only $00 -- and the two readings
+                // are not symmetric in cost: if a host moves a device with
+                // $FE and a bare address in bits 11-8, taking bit 13 from it
+                // would silently switch that device's Service Request off and
+                // its input would stop arriving unasked.  Leaving SRQ alone
+                // here costs nothing if the guess is wrong, because the host
+                // has the $00 form when it means to change the bit.
+                LOG(2, "listen R3 addr=%d: move to addr=%d (handler and SRQ preserved)", adb->listen_addr, new_addr);
                 dev->address = new_addr;
                 break;
             case 0xFD:
@@ -654,14 +826,30 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
 
     switch (type) {
     case CMD_TYPE_SENDRESET:
-        // Type-00 sub-commands: bits 1-0 distinguish SendReset ($X0) from
-        // Flush ($X1).  Inside Mac V "The Apple Desktop Bus" §6.2:
-        //   $X0  Reserved for SendReset to addr X (no real device implements it)
-        //   $X1  Flush device X (discard buffered output, keep address remap)
-        // Treating $X1 as a broadcast reset would wipe the device-address
-        // remap state set up by an earlier Listen-R3 — every Talk poll after
-        // the Flush would then see the original default addresses and the OS
-        // would loop probing the same devices forever.
+        // Type-00 sub-commands: bits 1-0 distinguish SendReset from Flush.
+        // Guide to the Macintosh Family Hardware 2e, Table 8-13 "Command byte
+        // syntax" (p.315):
+        //
+        //     x x x x 0 0 0 0   SendReset      <- address bits IGNORED
+        //     A3 A2 A1 A0 0 0 0 1   Flush      <- addressed
+        //     ...
+        //     Note: x = ignored
+        //
+        // and p.316: "The SendReset command causes all devices on the network
+        // to reset to their power-on states."  So $30 and $00 are the same
+        // command on the wire, and resetting every device for any $X0 is
+        // correct rather than over-broad.  Apple's own egretequ.a agrees
+        // ("%0000xxxx SendReset (addr field ignored)").
+        //
+        // An earlier version of this comment cited Inside Mac V for "$X0
+        // reserved for SendReset to addr X"; Table 8-13 contradicts that, and
+        // narrowing $X0 to addr==0 would make the model refuse a valid
+        // broadcast reset.
+        //
+        // Flush stays addressed: treating $X1 as a broadcast reset would wipe
+        // the device-address remap set up by an earlier Listen-R3 — every Talk
+        // poll after the Flush would see the original default addresses and
+        // the OS would loop probing the same devices forever.
         if (reg == 1)
             flush_device(adb, addr);
         else
@@ -669,10 +857,12 @@ static void adb_decode_command(adb_t *adb, uint8_t cmd) {
         break;
 
     case CMD_TYPE_FLUSH:
-        // Type-01 is "Reserved" per the ADB spec.  Earlier code mapped this
-        // here, but real OSes use the type-00 + sub=01 encoding (above);
-        // we keep this case as a defensive alias.
-        flush_device(adb, addr);
+        // Type-01 ($X4-$X7) is *Reserved* per Table 8-13 ("x x x x 0 1 x x"),
+        // exactly as $X2 and $X3 are.  Flush is type-00 sub=01, handled above.
+        // Mapping this to flush_device was a "defensive alias" that is not in
+        // the spec: a host probing with $24 would get its keyboard buffer
+        // flushed.  Log and ignore, the way an unimplemented encoding should.
+        LOG(1, "ADB: reserved command type 01 ($%02X) ignored (Guide 2e Table 8-13)", cmd);
         break;
 
     case CMD_TYPE_LISTEN:
@@ -785,17 +975,24 @@ static void adb_autopoll_deferred(void *source, uint64_t data) {
     if (adb->state != ADB_STATE_IDLE)
         return;
 
-    if (!has_pending_data(adb)) {
-        // No device has data: the real transceiver gets no response and stays
-        // quiet.  Don't fire IFR_SR — the ROM remains waiting.
-        LOG(3, "autopoll: no pending data, rescheduling");
-        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
-        return;
-    }
-
     // Always repeat the last Talk R0 target, matching real transceiver behaviour.
     uint8_t poll_addr = adb->last_poll_addr;
     bool polled_device_has_data = device_has_pending_data(adb, poll_addr);
+
+    // There is something to do only if the polled device answers, or if some
+    // other device is SERVICE-REQUESTING.  The second half is where Register
+    // 3 bit 13 bites (F-04): a device the host has told to stop
+    // service-requesting has data nobody has asked for, and the transceiver
+    // stays quiet until that device is polled again.  Before bit 13 was real
+    // state the test here was has_pending_data(), which could not tell the
+    // difference.
+    if (!polled_device_has_data && !other_device_service_requesting(adb, poll_addr)) {
+        // The real transceiver gets no response and stays quiet.  Don't fire
+        // IFR_SR — the ROM remains waiting.
+        LOG(3, "autopoll: nothing to report, rescheduling");
+        scheduler_new_cpu_event(adb->scheduler, &adb_autopoll_deferred, adb, 0, 0, ADB_AUTOPOLL_INTERVAL);
+        return;
+    }
 
     if (polled_device_has_data) {
         // Last-polled device has data: prepare reply and fire IFR_SR with
@@ -845,13 +1042,11 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
     // Register the auto-poll event type (IDLE-state Talk R0 repetition)
     scheduler_new_event_type(scheduler, "adb", adb, "autopoll", &adb_autopoll_deferred);
 
-    // Register the paced keyboard.type() key event
-    scheduler_new_event_type(scheduler, "adb", adb, "typed", &adb_typed_key_deferred);
-    s_adb_current = adb;
-
     // Set device register 3 defaults and clear all queues/deltas
     adb_reset(adb);
     adb->state = ADB_STATE_IDLE;
+    adb->last_port_b = 0x30; // ADB ST1:ST0 idle = 11; before the read below,
+                             // so a restore overwrites it with the saved value
 
     if (checkpoint) {
         // Restore plain-data state; pointers are re-filled above
@@ -872,8 +1067,6 @@ adb_t *adb_init(via_t *via, struct scheduler *scheduler, checkpoint_t *checkpoin
 
 // Frees all resources associated with an ADB controller instance
 void adb_delete(adb_t *adb) {
-    if (s_adb_current == adb)
-        s_adb_current = NULL;
     if (!adb)
         return;
     // Four callbacks are scheduled with `adb` as their source and the
@@ -898,21 +1091,6 @@ void adb_checkpoint(adb_t *restrict adb, checkpoint_t *checkpoint) {
 // VIA Callback Hooks
 // ============================================================================
 
-// Called by the machine's VIA shift-out callback when the VIA completes an
-// internal 80-cycle shift timer.  On the SE/30, VIA1 SR operates in mode 7
-// (shift out under external clock CB1), so the real shift timing is controlled
-// by the ADB transceiver, not the VIA's internal timer.  The ROM sometimes
-// writes SR during interrupt handling (e.g., to clear it) while ACR is still
-// in mode 7, which triggers spurious sr_shift_complete callbacks.
-//
-// To avoid decoding stale or spurious bytes, the ADB module reads VIA SR
-// directly at each port-B state transition (CMD, EVEN, ODD) instead of
-// relying on this callback.  This function is therefore intentionally a no-op.
-void adb_shift_byte(adb_t *adb, uint8_t byte) {
-    (void)adb;
-    (void)byte;
-}
-
 // Called by the machine's VIA port-B output callback when the OS changes ST0/ST1.
 //
 // On the SE/30 the VIA shift register operates in mode 7 (shift-out under
@@ -922,6 +1100,18 @@ void adb_shift_byte(adb_t *adb, uint8_t byte) {
 // each CMD and Listen-data transition.  This matches real hardware where the
 // ADB transceiver controls shift timing via CB1 (BUG-004).
 void adb_port_b_output(adb_t *adb, uint8_t value) {
+    // ST-transition filter.  The ROM bit-bangs the RTC on PB0-PB2 without
+    // intending to touch ST1:ST0 on PB5:PB4, and on real hardware the
+    // transceiver ignores writes where the ST lines do not change
+    // electrically (BUG-004).  Four machines each carried this test in their
+    // VIA1 port-B callback; only se30.c carried the reason.  It belongs
+    // here, where the ST lines are what the module is about.
+    const uint8_t st_mask = 0x30; // PB5:PB4 = ST1:ST0
+    bool st_changed = ((value ^ adb->last_port_b) & st_mask) != 0;
+    adb->last_port_b = value;
+    if (!st_changed)
+        return;
+
     int new_state = extract_state(value);
     adb->state = new_state;
 
@@ -1149,9 +1339,15 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     if (type == CMD_TYPE_TALK) {
         if (adb->reply_len == 0)
             return false; // no device at this address
+        // Bound by the SOURCE, not by the caller's 8-byte buffer.  This was
+        // `if (n > 8) n = 8;`, which is the wrong bound in the dangerous
+        // direction: reply_buf is 2 bytes, so a reply_len above 2 would have
+        // over-read the struct rather than being clamped.  reply_len is only
+        // ever set to 0 or 2 today, so the clamp has never fired either way —
+        // but the version that is safe if that changes is this one.
         int n = adb->reply_len;
-        if (n > 8)
-            n = 8;
+        if (n > (int)sizeof adb->reply_buf)
+            n = (int)sizeof adb->reply_buf;
         memcpy(out_data, adb->reply_buf, (size_t)n);
         *out_data_len = n;
         // Drain the reply buffer so a follow-up Talk poll on the same
@@ -1183,193 +1379,23 @@ bool adb_iop_transact(adb_t *adb, uint8_t cmd, const uint8_t *in_data, int in_da
     return true;
 }
 
-// === Object-model class descriptor =========================================
-//
-// `keyboard.press(key)` — inject a key-down + key-up via the keyboard
-// subsystem. The arg is either a string name ("return", "space",
-// "esc", a-z, 0-9 …) resolved by debug_mac_resolve_key_name, or an
-// integer ADB virtual keycode (0x00–0x7F).
-
-// Shared arg decode for press/down/up: a string name or an integer ADB
-// virtual keycode, rendered into hexbuf when numeric.
-static const char *keyboard_key_display_name(const value_t *arg, char *hexbuf, size_t hexbuf_size) {
-    if (arg->kind == V_STRING)
-        return arg->s ? arg->s : "";
-    if (arg->kind == V_INT || arg->kind == V_UINT) {
-        long long raw = (arg->kind == V_INT) ? (long long)arg->i : (long long)arg->u;
-        snprintf(hexbuf, hexbuf_size, "0x%02llx", raw);
-        return hexbuf;
-    }
-    return NULL;
-}
-
-static value_t keyboard_method_press(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    char hexbuf[8];
-    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
-    if (!display_name)
-        return val_err("keyboard.press: key must be a string name or integer keycode");
-
-    // Tap (down then up) through the machine substrate: Macs inject via the
-    // keyboard / Toolbox path, the Lisa via its COPS — one uniform path
-    // (proposal §4.4).  A negative result means the key name didn't resolve.
-    if (system_input_key(display_name, true) < 0)
-        return val_err("keyboard.press: unknown key '%s'", display_name);
-    system_input_key(display_name, false);
-    LOG(3, "keyboard.press: key=%s", display_name);
-    return val_bool(true);
-}
-
-// `keyboard.down(key)` / `keyboard.up(key)` — the two halves of press, for
-// chords that hold a modifier across another key (e.g. Shift+/ to type '?').
-static value_t keyboard_method_down(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    char hexbuf[8];
-    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
-    if (!display_name)
-        return val_err("keyboard.down: key must be a string name or integer keycode");
-    if (system_input_key(display_name, true) < 0)
-        return val_err("keyboard.down: unknown key '%s'", display_name);
-    LOG(3, "keyboard.down: key=%s", display_name);
-    return val_bool(true);
-}
-
-static value_t keyboard_method_up(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    char hexbuf[8];
-    const char *display_name = keyboard_key_display_name(&argv[0], hexbuf, sizeof(hexbuf));
-    if (!display_name)
-        return val_err("keyboard.up: key must be a string name or integer keycode");
-    if (system_input_key(display_name, false) < 0)
-        return val_err("keyboard.up: unknown key '%s'", display_name);
-    LOG(3, "keyboard.up: key=%s", display_name);
-    return val_bool(true);
-}
-
-// `keyboard.type(text)` — tap the keys that produce `text` on a US layout,
-// holding Shift for the characters that need it.  Newline and tab in the
-// string type Return and Tab, so a whole command line ends itself.
-//
-// Everything is queued at once, with no guest time in between: the ADB
-// keyboard ring holds 128 bytes and each character costs two (four when
-// shifted), so a long line would silently lose its head to the ring's
-// drop-oldest overflow.  Rather than let a test type into a void, refuse
-// anything that could not fit and say so — callers type a line at a time and
-// let the guest run.
-#define KEYBOARD_TYPE_MAX_BYTES 96
-
-static value_t keyboard_method_type(struct object *self, const member_t *m, int argc, const value_t *argv) {
-    (void)self;
-    (void)m;
-    (void)argc;
-    if (argv[0].kind != V_STRING || !argv[0].s)
-        return val_err("keyboard.type: text must be a string");
-    const char *text = argv[0].s;
-
-    // Cost the line before typing any of it: a partially typed command is
-    // worse than a refused one.
-    size_t cost = 0;
-    for (const char *p = text; *p; p++) {
-        bool shift = false;
-        if (debug_mac_resolve_ascii(*p, &shift) < 0)
-            return val_err("keyboard.type: no US-layout key types '%c' (0x%02x)", *p, (unsigned char)*p);
-        cost += shift ? 4 : 2;
-    }
-    if (cost > KEYBOARD_TYPE_MAX_BYTES)
-        return val_err("keyboard.type: %zu bytes of ADB events exceeds the %d the keyboard queue can hold — "
-                       "type fewer characters per call",
-                       cost, KEYBOARD_TYPE_MAX_BYTES);
-
-    adb_t *adb = s_adb_current;
-    if (!adb || !adb->scheduler)
-        return val_err("keyboard.type: the machine has no keyboard");
-
-    // Pace the events in guest time (ADB_TYPE_SPACING apart), continuing
-    // from where the previous call left off so a line typed in pieces
-    // still arrives one transition at a time.
-    // The first transition lands one spacing out (never "now": a zero
-    // delay is not a schedulable event).
-    uint64_t now = (uint64_t)scheduler_time_ns(adb->scheduler);
-    uint64_t at = adb->type_next_ns > now + ADB_TYPE_SPACING ? adb->type_next_ns : now + ADB_TYPE_SPACING;
-    uint64_t typed = 0;
-    for (const char *p = text; *p; p++) {
-        bool shift = false;
-        int code = debug_mac_resolve_ascii(*p, &shift);
-        // data: bit 0 = down, bits 8:1 = the ADB keycode
-        if (shift) {
-            scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, (ADB_KEY_SHIFT << 1) | 1u, 0,
-                                    at - now);
-            at += ADB_TYPE_SPACING;
-        }
-        scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, ((uint64_t)code << 1) | 1u, 0, at - now);
-        at += ADB_TYPE_SPACING;
-        scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, (uint64_t)code << 1, 0, at - now);
-        at += ADB_TYPE_SPACING;
-        if (shift) {
-            scheduler_new_cpu_event(adb->scheduler, &adb_typed_key_deferred, adb, ADB_KEY_SHIFT << 1, 0, at - now);
-            at += ADB_TYPE_SPACING;
-        }
-        typed++;
-    }
-    adb->type_next_ns = at;
-    LOG(3, "keyboard.type: %llu character(s), paced to %llu ns", (unsigned long long)typed, (unsigned long long)at);
-    return val_uint(8, typed);
-}
-
-// A keyboard.type() key transition coming due.
-static void adb_typed_key_deferred(void *source, uint64_t data) {
-    adb_t *adb = (adb_t *)source;
-    adb_keyboard_event(adb, (data & 1u) ? key_down : key_up, (int)((data >> 1) & 0xFFu));
-}
-
-static const arg_decl_t keyboard_type_args[] = {
-    {.name = "text", .kind = V_STRING, .doc = "Text to type; newline types Return, tab types Tab"},
-};
-
-static const arg_decl_t keyboard_press_args[] = {
-    // V_NONE: body accepts either a name string or a numeric ADB keycode.
-    {.name = "key", .kind = V_NONE, .doc = "Key name (\"return\"/\"esc\"/\"a\"/...) or ADB keycode int"},
-};
-
-static const member_t keyboard_members[] = {
-    {.kind = M_METHOD,
-     .name = "press",
-     .doc = "Tap a key (down + up) on the emulated keyboard",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_press}},
-    {.kind = M_METHOD,
-     .name = "down",
-     .doc = "Hold a key down on the emulated keyboard (pair with up)",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_down} },
-    {.kind = M_METHOD,
-     .name = "up",
-     .doc = "Release a key held by down",
-     .method = {.args = keyboard_press_args, .nargs = 1, .result = V_BOOL, .fn = keyboard_method_up}   },
-    {.kind = M_METHOD,
-     .name = "type",
-     .doc = "Type a short line of text (US layout; newline = Return)",
-     .method = {.args = keyboard_type_args, .nargs = 1, .result = V_UINT, .fn = keyboard_method_type}  },
-};
-
-const class_desc_t keyboard_class = {
-    .name = "keyboard",
-    .members = keyboard_members,
-    .n_members = sizeof(keyboard_members) / sizeof(keyboard_members[0]),
-};
-
 // === ADB bus container ======================================================
 //
-// `machine.adb` is the logical ADB bus node (proposal-system-object-model.md
-// §5.6). The physical transport (VIA shift register / Egret / CUDA / IOP) is
-// an implementation detail; this node just groups the two well-known devices
-// — keyboard and mouse — as named children, the shape the user expects. It is
-// a namespace-only process-singleton (like the keyboard/mouse facades it
-// parents), created lazily under machine_object().
+// `machine.adb` is the logical input-device node (proposal-system-object-model.md
+// §5.6). The physical transport is an implementation detail; this node just
+// groups the two well-known devices — keyboard and mouse — as named children,
+// the shape the user expects. It is a namespace-only process-singleton (like
+// the keyboard/mouse facades it parents), created lazily under machine_object().
+//
+// The name is ADB but the contents are not: `keyboard.press` and `mouse.move`
+// route through the machine substrate, so on a Mac Plus they reach the VIA
+// shift-register keyboard and the quadrature mouse, and on a Lisa they reach
+// the COPS.  Neither machine has an ADB bus.  That mismatch is known and the
+// name is deliberate — §5.6 chose the logical bus the user expects over the
+// wire that happens to carry it, and the path is load-bearing (AGENTS.md's
+// canonical node list, ~1,588 references across the tests, the web UI and the
+// docs).  06-io-controllers F-12 proposed renaming it to `machine.input` with
+// an alias; that was refused.  Read this node as "input devices", not "ADB".
 static const class_desc_t adb_class = {
     .name = "adb",
     .members = NULL,
@@ -1388,30 +1414,4 @@ struct object *adb_bus_object(void) {
         }
     }
     return s_adb_object;
-}
-
-// === Process-singleton lifecycle ============================================
-//
-// `keyboard` is a stateless facade — its press() method routes through
-// adb_press_key on the active machine. Register once at shell_init.
-
-static struct object *s_keyboard_object = NULL;
-
-void keyboard_class_register(void) {
-    if (s_keyboard_object)
-        return;
-    s_keyboard_object = object_new(&keyboard_class, NULL, "keyboard");
-    if (s_keyboard_object) {
-        object_set_label(s_keyboard_object, "Keyboard");
-        object_set_order(s_keyboard_object, 10);
-        object_attach(adb_bus_object(), s_keyboard_object);
-    }
-}
-
-void keyboard_class_unregister(void) {
-    if (s_keyboard_object) {
-        object_detach(s_keyboard_object);
-        object_delete(s_keyboard_object);
-        s_keyboard_object = NULL;
-    }
 }

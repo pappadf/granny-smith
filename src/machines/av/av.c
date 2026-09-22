@@ -511,17 +511,13 @@ static void av_memory_layout(config_t *cfg) {
 // out — via1-cuda.md §2); the SR shift-out is a Cuda command byte.
 
 void av_via1_output(void *context, uint8_t port, uint8_t value) {
-    config_t *cfg = (config_t *)context;
-    av_state_t *st = av_st(cfg);
-    if (port == 1 && st && st->cuda)
-        av_cuda_via1_pb_input(st->cuda, value);
+    av_state_t *st = av_st((config_t *)context);
+    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 void av_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    av_state_t *st = av_st(cfg);
-    if (st && st->cuda)
-        av_cuda_via1_shift_input(st->cuda, byte);
+    av_state_t *st = av_st((config_t *)context);
+    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // ============================================================

@@ -12,6 +12,7 @@
 #include "debug_mac.h"
 #include "floppy.h"
 #include "keyboard.h" // key_event_t
+#include "mouse.h" // input_mouse_mode_parse
 #include "system.h"
 #include "system_config.h"
 
@@ -26,31 +27,21 @@ bool mac_fd_present(config_t *cfg, int drive) {
     return cfg->floppy ? floppy_is_inserted(cfg->floppy, drive) : true;
 }
 
-int mac_input_key(config_t *cfg, const char *key, bool down) {
+// Every Mac family already spoke ADB keycodes at this boundary: the same int
+// reaches the ADB transceiver or, on a Plus, keyboard.c, which converts to the
+// M0110A's wire codes.  All this ever added was the name lookup, which now
+// happens once above the substrate.
+int mac_input_key(config_t *cfg, int adb_code, bool down) {
     (void)cfg;
-    int keycode = debug_mac_resolve_key_name(key);
-    if (keycode < 0)
-        return -1; // unknown key name
-    system_keyboard_update(down ? key_down : key_up, keycode);
+    system_keyboard_update(down ? key_down : key_up, adb_code);
     return 0;
 }
 
 // Cursor mode string → debug_mac mode char ('d'/'g'/'h'/'a'); 0 if unknown.
-static char mac_mouse_mode_char(const char *mode) {
-    if (!mode || !*mode || strcmp(mode, "default") == 0)
-        return 'd';
-    if (strcmp(mode, "global") == 0)
-        return 'g';
-    if (strcmp(mode, "hw") == 0)
-        return 'h';
-    if (strcmp(mode, "aux") == 0)
-        return 'a';
-    return 0;
-}
 
 int mac_input_mouse_move(config_t *cfg, int x, int y, const char *mode) {
     (void)cfg;
-    char m = mac_mouse_mode_char(mode);
+    char m = input_mouse_mode_parse(mode);
     if (!m)
         return -1; // unknown mode
     return debug_mac_set_mouse_mode((long)x, (long)y, m) < 0 ? -1 : 0;
@@ -58,7 +49,7 @@ int mac_input_mouse_move(config_t *cfg, int x, int y, const char *mode) {
 
 int mac_input_mouse_button(config_t *cfg, bool down, const char *mode) {
     (void)cfg;
-    char m = mac_mouse_mode_char(mode);
+    char m = input_mouse_mode_parse(mode);
     if (!m)
         return -1; // unknown mode
     debug_mac_mouse_button_mode(down, m);

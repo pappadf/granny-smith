@@ -100,6 +100,24 @@ table. Each `member_t` is one of three kinds:
   dispatchers shared across many attributes (the 471-entry
   `mac.globals` is one such case) recover their context from the
   member descriptor instead of via lookup tables.
+
+  `user_data` answers *"which member am I?"*. It is the wrong tool for
+  *"which instance am I?"* — that is what `object_new`'s
+  `instance_data` is for, and it is per-object. Sibling objects of the
+  same class (`scc.a` and `scc.b`, say) should each carry their own
+  instance pointer and share one member table; encoding the instance in
+  `user_data` forces a second table per sibling, which then has to be
+  kept in step by hand.
+
+  A node that holds **per-machine state should be built and destroyed with
+  the machine**, not registered once at `shell_init`. `machine` itself is a
+  long-lived container whose children come and go, so both shapes appear
+  under it, and the distinction is not cosmetic: a process-lifetime node
+  cannot own a scheduler source, because the scheduler does not outlive the
+  machine. `machine.adb.keyboard` was a facade for that reason and its
+  `type()` could only reach a machine that had an `adb_t` to borrow a
+  source from; it is per-machine now (`host_input.c`). A container with no
+  state of its own — `machine.adb` — can stay a singleton.
 - **`M_METHOD`** — a callable taking declared `arg_decl_t` parameters
   and returning a `value_t`. Each parameter declares its kind,
   optional `width`, optional `enum_values`, optional `default_value`,
@@ -292,7 +310,8 @@ kind" sentinel — the framework skips kind / width / enum checks
 and the body discriminates the input. Used for legitimately
 multi-kind attributes and parameters: `machine.rtc.time` accepts either an
 ISO-8601 string or a Mac-epoch integer; `machine.adb.keyboard.press` accepts
-either a key name or an ADB keycode; `machine.memory.dump.addr` accepts
+either a key name or an ADB keycode (and an integer means the same key on
+every machine — the Lisa's own wire bytes live on `keyboard.raw`); `machine.memory.dump.addr` accepts
 either an address integer or an alias / expression string. Most
 slots should declare a concrete kind; the sentinel is reserved for
 genuine dual-input shapes.

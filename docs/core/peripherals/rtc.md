@@ -219,9 +219,13 @@ addresses via extended commands, providing full backward compatibility.
 ### Write Protection
 
 The **write-protect register** at address 0x0D is write-only. Setting bit 7 to
-1 enables writes to all other registers; setting it to 0 locks them. The Mac ROM
-disables write-protect before modifying the clock or PRAM, then re-enables
-protection afterward.
+1 locks the clock and the whole 256-byte PRAM; clearing it to 0 allows writes.
+That is the polarity of the commands below, and of `rtc->read_only` in the
+model. The Mac ROM disables write-protect before modifying the clock or PRAM,
+then re-enables protection afterward.
+
+The latch gates **both** addressing windows — the legacy one-byte commands and
+the extended ones reach the same array through the same latch.
 
 **Disable Write Protection (required before writing):**
 
@@ -254,7 +258,7 @@ address, contains four functional regions:
 | 0x04–0x07 | Seconds counter (mirror)          | Same 32-bit counter, may be read-only |
 | 0x08–0x0B | PRAM group 1 (4 bytes)            | "Low" traditional PRAM                |
 | 0x0C      | Test register                     | Factory use only (write-only)         |
-| 0x0D      | **Write-protect register**        | Bit 7: 0 = protected, 1 = writes OK  |
+| 0x0D      | **Write-protect register**        | Bit 7: 1 = protected, 0 = writes OK  |
 | 0x0E–0x0F | Extended command prefix           | Triggers XPRAM addressing             |
 | 0x10–0x1F | PRAM group 2 (16 bytes)           | "High" traditional PRAM               |
 

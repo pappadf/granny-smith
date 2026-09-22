@@ -159,6 +159,8 @@ Read-only image opens (`image_open_readonly`) park their throwaway delta and jou
 
 - **Struct layout guideline:**
   - Place POD (plain old data) fields first, pointers and non-POD fields last. This allows a single block I/O for the contiguous POD region, then serializes any pointed-to buffers separately. Use `offsetof(struct <type>, first_pointer_field)` to bound the POD region when helpful.
+  - Restated for device authors, alongside the scheduler-lifetime and assert rules, in [`../../guide/STYLE_GUIDE.md`](../../guide/STYLE_GUIDE.md) § "Device module conventions".
+  - **Layout changes are free.** The stream is positional with no version field and a build-ID mismatch is rejected outright (`checkpoint.c`; the ID is `__DATE__ " " __TIME__`, force-recompiled every build), so a checkpoint can only ever be restored by the exact binary that wrote it. There is no old format to support. The one real constraint is that a save and its restore must change **together, in the same commit** — a swapped pair does not fail at the swap, it cross-loads and dies later at whichever block first disagrees on size.
 
 - **Orchestration and ordering:**
   - `setup_plus_checkpoint(file, kind)` opens a write handle and invokes each subsystem's `<subsystem>_checkpoint` in a well-defined order (RAM, CPU, scheduler, RTC, SCC, sound, VIA, mouse, SCSI, keyboard, floppy, etc.).

@@ -25,6 +25,7 @@
 #include "display.h"
 #include "image.h"
 #include "lisa_fdc.h"
+#include "lisa_keymap.h"
 #include "lisa_mmu.h"
 #include "lisa_profile.h"
 #include "log.h"
@@ -37,10 +38,12 @@
 #include "via.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 LOG_USE_CATEGORY_NAME("board");
 
@@ -360,33 +363,35 @@ static void lisa_profile_update_lines(config_t *cfg) {
         via_input(cfg->via2, 1, 0, !connected); // PB0 = OCD/ (0 = connected)
     lisa_profile_bsy(cfg, false); // idle: not busy
 }
-
-// ============================================================
-// Host input → COPS (keyboard scancodes, mouse deltas + button)
-// ============================================================
+// keyboard.press / down / up -> the Lisa COPS, by ADB keycode.
 //
-// hw_profile_t.input_* hooks: the `keyboard`/`mouse` object methods route here
-// (instead of the Mac ADB/Toolbox path) because the Lisa's input device is the
-// COPS, which uses its own keycodes and a relative-delta mouse (§11.4).
-
-// keyboard.press → a raw COPS scancode.  Accepts a "0xNN" keycode string (the
-// boot-menu keys, e.g. $EB = 'H'/ProFile, $F2 = '3').  The COPS reports a key on
-// its press edge, so we inject on `down` and treat the release as a no-op.
-static int lisa_input_key(config_t *cfg, const char *key, bool down) {
+// lisa.md §11.3 documents the COPS byte as `d rrr nnnn` with d=1 down / d=0
+// up, and the boot ROM's ReadKey does `TST.B D0 / BPL.S ReadKey` to SKIP up
+// transitions -- which only makes sense because they arrive.  Until
+// 2026-09-21 the up leg was a no-op and only a raw wire byte was accepted, so
+// `keyboard.press("return")` failed with "unknown key" and no chord could
+// hold a modifier.
+static int lisa_input_key(config_t *cfg, int adb_code, bool down) {
     lisa_state_t *ls = lisa_state(cfg);
     if (!ls || !ls->cops)
         return -1;
-    if (!down)
-        return 0; // release: nothing to send (press edge already reported)
-    if (key && key[0] == '0' && (key[1] == 'x' || key[1] == 'X')) {
-        char *end = NULL;
-        long v = strtol(key, &end, 16);
-        if (end && *end == '\0' && v >= 0 && v <= 0xFF) {
-            cops_inject_key(ls->cops, (uint8_t)v);
-            return 0;
-        }
-    }
-    return -1; // unknown key (no Mac fallback on the Lisa)
+    uint8_t code = lisa_keycode_for_adb(adb_code);
+    if (code == LISA_NO_KEY)
+        return -1; // a key this keyboard does not have
+    cops_inject_key(ls->cops, (uint8_t)(down ? (code | 0x80) : (code & 0x7F)));
+    return 0;
+}
+
+// A raw COPS byte, direction bit included -- `raw 0xC8` sends $C8 and nothing
+// else.  The boot-menu and Xenix-install rows drive the wire this way because
+// that is what they are testing; it is not a portable key press, and the
+// substrate hook is NULL on every other machine.
+static int lisa_input_key_raw(config_t *cfg, uint8_t byte) {
+    lisa_state_t *ls = lisa_state(cfg);
+    if (!ls || !ls->cops)
+        return -1;
+    cops_inject_key(ls->cops, byte);
+    return 0;
 }
 
 // mouse.move → COPS mouse deltas (default/relative), or absolute screen-pixel
@@ -697,6 +702,32 @@ static const arg_decl_t lisa_hd_save_args[] = {
 // the ProFile to that table at clean shutdown ("Finished" -> turn off / start
 // up); persisting it lets an installed system boot from the ProFile on a later
 // (cold) launch.  Load before booting (the ROM reads PRAM during startup).
+// Re-seed the parameter memory in the model, the way the owning device does
+// at construction: factory defaults, an EMPTY device table, and a checksum
+// computed by lisa_pram_checksum().  `boot_vol` is the BootVol nibble
+// (pram_format.md §4): 1 = built-in Sony floppy, 2 = the parallel-port
+// ProFile.
+//
+// This replaces loading a 64-byte image synthesised outside the emulator.
+// The device table stays empty deliberately: the OS's INIT_CONFIG restores it
+// from the boot volume's own MDDF snapshot, which is what real hardware does
+// and which makes the boot depend on the disk image actually carrying a good
+// clean-shutdown snapshot rather than on a pre-seeded hardware entry masking
+// a broken one.
+static value_t lisa_hd_pram_init(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)m;
+    lisa_state_t *ls = lisa_state((config_t *)object_data(self));
+    if (!ls || !ls->fdc)
+        return val_err("pram: no controller");
+    uint64_t boot_vol = (argc >= 1) ? argv[0].u : 1;
+    if (boot_vol > 15)
+        return val_err("pram_init: boot_vol must be 0..15 (see pram_format.md §4)");
+    bool valid = (argc >= 2) ? (argv[1].b != 0) : true;
+    bool installed = (argc >= 3) ? (argv[2].b != 0) : false;
+    lisa_fdc_pram_init(ls->fdc, (uint8_t)boot_vol, valid, installed);
+    return val_bool(true);
+}
+
 static value_t lisa_hd_pram_save(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)m;
     lisa_state_t *ls = lisa_state((config_t *)object_data(self));
@@ -723,6 +754,23 @@ static value_t lisa_hd_pram_load(struct object *self, const member_t *m, int arg
     return val_bool(true);
 }
 
+static const arg_decl_t lisa_hd_pram_init_args[] = {
+    {.name = "boot_vol",
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "BootVol nibble: 1 = built-in Sony floppy, 2 = parallel-port ProFile (pram_format.md §4)"},
+    {.name = "valid",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "true (default) = a verifying checksum; false = a fresh battery, so the OS rebuilds the device table "
+            "from the boot volume's MDDF snapshot"                                                    },
+    {.name = "installed",
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "true = also pack the LOS 3.1 installer's device table (ProFile as cd_paraport); needed only for a "
+            "volume installed onto but not yet cleanly shut down"                                     },
+};
+
 static const arg_decl_t lisa_hd_pram_args[] = {
     {.name = "path", .kind = V_STRING, .doc = "Parameter-memory (PRAM) file path"},
 };
@@ -736,27 +784,31 @@ static const arg_decl_t lisa_hd_attach_args[] = {
 };
 
 static const member_t lisa_hd_members[] = {
-    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO,                                             .attr = {.type = V_BOOL, .get = lisa_hd_present}                                       },
+    {.kind = M_ATTR,   .name = "present", .flags = VAL_RO,                                             .attr = {.type = V_BOOL, .get = lisa_hd_present}                                                 },
     {.kind = M_METHOD,
      .name = "detach",
      .doc = "Flush and disconnect the ProFile",
-     .method = {.result = V_NONE, .fn = lisa_hd_detach}                                                                                                                                       },
+     .method = {.result = V_NONE, .fn = lisa_hd_detach}                                                                                                                                                 },
     {.kind = M_METHOD,
      .name = "attach",
      .doc = "Attach a ProFile image (created blank if missing; omit path for a blank in-memory disk)",
-     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}                                                                                              },
+     .method = {.args = lisa_hd_attach_args, .nargs = 2, .result = V_BOOL, .fn = lisa_hd_attach}                                                                                                        },
     {.kind = M_METHOD,
      .name = "save",
      .doc = "Write the current ProFile contents to a new self-contained single-file image (consolidated; not a "
-            "base+delta pair)",                                                                        .method = {.args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}},
+            "base+delta pair)",                                                                        .method = {.args = lisa_hd_save_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_save}          },
+    {.kind = M_METHOD,
+     .name = "pram_init",
+     .doc = "Seed the parameter memory in the model: BootVol nibble, checksum validity, and optionally the LOS "
+            "installer's device table",                                                                .method = {.args = lisa_hd_pram_init_args, .nargs = 3, .result = V_BOOL, .fn = lisa_hd_pram_init}},
     {.kind = M_METHOD,
      .name = "pram_save",
      .doc = "Save the machine parameter memory (battery-backed NVRAM at $FCC181) to a file",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}                                                                                             },
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_save}                                                                                                       },
     {.kind = M_METHOD,
      .name = "pram_load",
      .doc = "Load the machine parameter memory from a file (call before booting)",
-     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}                                                                                             },
+     .method = {.args = lisa_hd_pram_args, .nargs = 1, .result = V_BOOL, .fn = lisa_hd_pram_load}                                                                                                       },
 };
 static const class_desc_t lisa_hd_class = {.name = "profile", .members = lisa_hd_members, .n_members = 6};
 
@@ -1198,6 +1250,11 @@ static const machine_substrate_t lisa_substrate = {
     .fd_insert = lisa_fd_insert,
     .fd_present = lisa_fd_present,
     .input_key = lisa_input_key,
+    .input_key_raw = lisa_input_key_raw,
+    // The COPS response FIFO is 32 bytes (cops.c COPS_FIFO) and carries mouse
+    // reports as well as keys, so keyboard.type gets a quarter of the ADB
+    // budget and leaves the rest as headroom.
+    .key_queue_bytes = 24,
     .input_mouse_move = lisa_input_mouse_move,
     .input_mouse_button = lisa_input_mouse_button,
     .media_detach = lisa_media_detach,

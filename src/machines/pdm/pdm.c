@@ -257,20 +257,16 @@ static void pdm_memory_layout(config_t *cfg) {
 // VIA1 (the AMIC pseudo-VIA) callbacks — Cuda transport
 // ============================================================
 
+// Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out, PB5 TIP
+// out — the classic Cuda bit positions); the SR shift-out is a command byte.
 static void pdm_via1_output(void *context, uint8_t port, uint8_t value) {
-    config_t *cfg = (config_t *)context;
-    pdm_state_t *st = pdm_st(cfg);
-    // Port B carries the Cuda handshake (PB3 TREQ in, PB4 BYTEACK out,
-    // PB5 TIP out — the classic Cuda bit positions).
-    if (port == 1 && st && st->cuda)
-        av_cuda_via1_pb_input(st->cuda, value);
+    pdm_state_t *st = pdm_st((config_t *)context);
+    av_cuda_via1_port_output(st ? st->cuda : NULL, port, value);
 }
 
 static void pdm_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    pdm_state_t *st = pdm_st(cfg);
-    if (st && st->cuda)
-        av_cuda_via1_shift_input(st->cuda, byte);
+    pdm_state_t *st = pdm_st((config_t *)context);
+    av_cuda_via1_shift_input(st ? st->cuda : NULL, byte);
 }
 
 // VIA1 aggregate IRQ → ICR bit 0.
@@ -337,17 +333,6 @@ static int pdm_init(config_t *cfg, checkpoint_t *cp) {
     ppc_bind_time(cfg->ppc, cfg->scheduler, cfg->machine->freq, 7833600u);
 
     cfg->rtc = rtc_init(cfg->scheduler, cp, true);
-
-    // Deterministic RTC: the PDM guest clock is live (the Mode3Clock tick
-    // carries the RTC), so the seed reaches goldens.  Adopt any `rtc.time`
-    // pinned before machine.boot as the simulated-time seed, so nothing past
-    // this point depends on the host wall clock.  Cold boot only — a
-    // checkpoint restore has already loaded the counter from the stream.
-    if (cfg->rtc && !cp) {
-        uint32_t seed;
-        if (rtc_take_boot_seed(&seed))
-            rtc_set_seconds(cfg->rtc, seed);
-    }
 
     // The ESCC cell in Curio behind the AMIC island decode (escc-serial.md
     // §2: single base $50F04000, +0 bCtl / +2 aCtl / +4 bData / +6 aData;

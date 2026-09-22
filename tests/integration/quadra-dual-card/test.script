@@ -6,7 +6,6 @@
 
 include "../lib/mac.script"
 
-machine.rtc.time = 3000000000
 
 # Seat both cards before the boot consumes the staging channels: the 24AC
 # in socket $D (where the single-card tests put their card) and the 8*24 GC
@@ -19,6 +18,7 @@ machine.nubus.slot[14].card_id = "824gc"
 # card default and the depth assert below fails.
 machine.nubus.slot[13].video_mode = "rgb_640x480_8bpp"
 machine.boot model="q700" ram=8192 rom="${$ROM}"
+machine.rtc.time = 3000000000
 machine.scsi.attach_hd "$WORK_DIR/hd.img" 0
 scheduler.run 700000000
 wait_stable(1800000000)

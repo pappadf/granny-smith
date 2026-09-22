@@ -70,18 +70,12 @@ static inline mcu_state_t *q900_state(config_t *cfg) {
 // is all model-sense inputs on the tower (no head select: floppy is behind
 // the SWIM IOP).
 void q900_via1_output(void *context, uint8_t port, uint8_t output) {
-    config_t *cfg = (config_t *)context;
-    mcu_state_t *st = q900_state(cfg);
-    if (port == 1 && st->caboose)
-        egret_via1_pb_input(st->caboose, output);
+    egret_via1_port_output(q900_state((config_t *)context)->caboose, port, output);
 }
 
 // VIA1 SR shift-out: a command byte for Caboose (Egret byte pump).
 void q900_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    mcu_state_t *st = q900_state(cfg);
-    if (st->caboose)
-        egret_via1_shift_input(st->caboose, byte);
+    egret_via1_shift_input(q900_state((config_t *)context)->caboose, byte);
 }
 
 // VIA2 outputs: PB3/PB6 select the sound input source on the towers; DFAC

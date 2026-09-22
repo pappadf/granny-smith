@@ -107,7 +107,12 @@ static const mac030_board_desc_t iix_board_desc = {
 static const mac030_glue_board_t iix_board = {
     .desc = &iix_board_desc,
     .via1_output = iicx_via1_output,
-    .via1_shift_out = iicx_via1_shift_out,
+    // No VIA1 shift-out routing: adb.c reads the VIA's shift register
+    // directly at each port-B ST transition, because in mode 7 the ADB
+    // transceiver clocks the shift, not the VIA's internal timer, and the
+    // ROM's SR writes during interrupt handling fire the callback
+    // spuriously (BUG-004).  via.c tolerates a NULL here.
+    .via1_shift_out = NULL,
     .via2_output = iix_via2_output,
     .via2_shift_out = iix_via2_shift_out,
     .setup_id = iix_setup_id,

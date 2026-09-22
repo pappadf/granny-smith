@@ -1065,5 +1065,25 @@ int debug_mac_resolve_key_name(const char *name) {
             return (int)val;
     }
 
+    // A single printable character -- "a", "7", ";".  This is what makes
+    // keyboard.press("a") work, and it had been missing: the resolver knew
+    // fourteen named keys and the hex form and nothing else, while adb.c's
+    // argument doc promised `Key name ("return"/"esc"/"a"/...)` and its
+    // keyboard.type doc promised a-z and 0-9.  So keyboard.press("a") failed
+    // on EVERY machine, Mac included (06-io-controllers N-04).
+    //
+    // debug_mac_resolve_ascii already holds the layout; it simply was never
+    // consulted from here.  Shift is deliberately ignored: this resolves the
+    // KEY, and a caller wanting a capital presses shift itself with
+    // keyboard.down "shift".  A character that only exists shifted (e.g. "!")
+    // therefore resolves to its unshifted key, which is the honest answer for
+    // a key-press API.
+    if (name[1] == '\0') {
+        bool shift = false;
+        int code = debug_mac_resolve_ascii(name[0], &shift);
+        if (code >= 0)
+            return code;
+    }
+
     return -1;
 }

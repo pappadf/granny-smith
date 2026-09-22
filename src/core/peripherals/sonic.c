@@ -13,6 +13,7 @@
 
 #include "log.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -129,8 +130,8 @@ struct sonic {
     bool irq_line; // current INT output level
 
     uint8_t rba_seq, pkt_seq; // RSC halves (datasheet 3.4.3.2)
-    uint8_t byte2_latch; // high byte of an in-flight 16-bit register write
 
+    // === Pointers last (not checkpointed; see sonic_checkpoint) ===
     sonic_irq_cb irq_cb;
     void *irq_ctx;
     dma_mem_port_t mem; // guest-physical port (dma_mem.h)
@@ -501,6 +502,12 @@ void sonic_hard_reset(sonic_t *s) {
     s->rba_seq = s->pkt_seq = 0;
     // TCR.NCRS and TCR.BCM are set by a hardware reset (datasheet 4.3.4).
     s->reg[R_TCR] = TCR_NCRS | TCR_BCM;
+    // EOBC comes up at $02F8 (datasheet 4.3.9), not zero.  It is the word
+    // count below which the receiver treats the remaining RBA space as too
+    // small for another packet; at zero the "last buffer in the RBA" test in
+    // rx_place is `rbwc < 0`, which is never true, so a driver that never
+    // programs EOBC would fill the RBA past its end instead of switching.
+    s->reg[R_EOBC] = 0x02F8;
     if (s->irq_line) {
         s->irq_line = false;
         if (s->irq_cb)
@@ -514,17 +521,13 @@ sonic_t *sonic_init(checkpoint_t *cp) {
         return NULL;
     sonic_hard_reset(s);
     if (cp) {
-        sonic_t saved;
-        system_read_checkpoint_data(cp, &saved, sizeof(saved));
-        // Restore value state; callbacks/hooks are rebound by the machine.
-        memcpy(s->reg, saved.reg, sizeof(s->reg));
-        memcpy(s->cam, saved.cam, sizeof(s->cam));
-        s->in_reset = saved.in_reset;
-        s->rx_enabled = saved.rx_enabled;
-        s->timer_on = saved.timer_on;
-        s->irq_line = saved.irq_line;
-        s->rba_seq = saved.rba_seq;
-        s->pkt_seq = saved.pkt_seq;
+        // The plain-data prefix, in one block, the way every other device in
+        // the tree does it.  This read used to take sizeof(sonic_t) into a
+        // scratch copy and then pick fields out of it by hand -- which worked,
+        // but only because the WRITE below was equally wide, and that write
+        // put three host pointers (irq_cb, irq_ctx and the dma_mem_port_t's
+        // internals) into every save file.
+        system_read_checkpoint_data(cp, s, offsetof(sonic_t, irq_cb));
     }
     return s;
 }
@@ -534,7 +537,9 @@ void sonic_delete(sonic_t *s) {
 }
 
 void sonic_checkpoint(sonic_t *s, checkpoint_t *cp) {
-    system_write_checkpoint_data(cp, s, sizeof(*s));
+    // Up to the first pointer.  This was the last whole-struct checkpoint
+    // write in the tree.
+    system_write_checkpoint_data(cp, s, offsetof(sonic_t, irq_cb));
 }
 
 void sonic_set_irq_callback(sonic_t *s, sonic_irq_cb cb, void *context) {

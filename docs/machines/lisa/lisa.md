@@ -813,6 +813,64 @@ software): `$0F` = old US layout, `$3E` = Dvorak, `$3F` = final US layout (plus
 several international layouts). An emulator maps host key events to Lisa key
 codes through the layout table for the configured layout.
 
+#### The final-US key code table
+
+Transcribed from the boot ROM's own `AsciiTable`
+(`local/gs-docs/projects/Lisa/AppleLisa - Boot ROM Source/Lisa Boot ROM RM248.G.TEXT`),
+96 bytes covering key codes `$20`–`$7F`. The indexing law is in
+*Lisa Boot ROM Asm Listing*, routine `KeyToAscii`: `ANDI #$007F,D1` then
+`SUBI #32,D1` — so the first table byte is key code `$20`, and bit 7 is the
+direction bit rather than part of the index.
+
+This table was previously undocumented here, which is worth recording because
+a code review cited "lisa.md §11" as its location and the citation was wrong.
+
+|      | `+0`  | `+1` | `+2` | `+3` | `+4` | `+5` | `+6` | `+7` |
+| ---- | ----- | ---- | ---- | ---- | ---- | ---- | ---- | ---- |
+| `$20`| Clear | Pad&nbsp;- | Left | Right | Pad&nbsp;7 | Pad&nbsp;8 | Pad&nbsp;9 | Up |
+| `$28`| Pad&nbsp;4 | Pad&nbsp;5 | Pad&nbsp;6 | Down | Pad&nbsp;. | Pad&nbsp;2 | Pad&nbsp;3 | Enter |
+| `$30`| —     | —    | —    | —    | —    | —    | —    | —    |
+| `$38`| —     | —    | —    | —    | —    | —    | —    | —    |
+| `$40`| `-`   | `=`  | —    | —    | `P`  | BkSp | —    | —    |
+| `$48`| Return | Pad&nbsp;0 | —  | —    | `/`  | Pad&nbsp;1 | — | —    |
+| `$50`| `9`   | `0`  | `U`  | `I`  | `J`  | `K`  | `[`  | `]`  |
+| `$58`| `M`   | `L`  | `;`  | `'`  | Space | `,` | `.`  | `O`  |
+| `$60`| `E`   | `6`  | `7`  | `8`  | `5`  | `R`  | `T`  | `Y`  |
+| `$68`| Option | `F` | `G`  | `H`  | `V`  | `C`  | `B`  | `N`  |
+| `$70`| `A`   | `2`  | `3`  | `4`  | `1`  | `Q`  | `S`  | `W`  |
+| `$78`| Tab   | `Z`  | `X`  | `D`  | —    | Alpha&nbsp;Lock | Shift | Command |
+
+The ROM's table stores `$00` for keys with no ASCII form (Option, Tab, Alpha
+Lock, Shift, Command) and for unused slots; those are named above rather than
+derived. Its own comment notes it "assumes alpha-lock so upper case only",
+which is why there are no separate lower-case codes.
+
+Two entries to check a transcription against: `$EB` is `H` held down (`$6B` with
+bit 7 set) — the boot menu's "boot from ProFile" key — and `$F2` is `3`.
+
+`src/machines/lisa/lisa_keymap.c` carries this table, and beside it the
+**ADB keycode → Lisa keycode** map the substrate actually uses, so
+`keyboard.press("h")` and `keyboard.down "shift"` work on the Lisa the way they
+do on a Mac. Key identity across the model is the ADB virtual keycode
+(`machine_profile.h`'s `input_key`) — names are resolved once, above the
+substrate, and never reach a machine.
+
+The ROM's **row comments** are what make that map writable: they name the
+physical key behind each code, including which are on the keypad. The ASCII
+column alone cannot, because keypad `5` and main-row `5` both produce `'5'`.
+An earlier resolver inverted that column by character and so sent
+`keyboard.press "5"` to the keypad; `tests/unit/suites/lisa_keymap` now checks
+the map against the ROM table in both directions, and pins the keypad split
+for all ten digits.
+
+Keys one keyboard has and the other does not are **refused, not substituted** —
+the Lisa has no Control and no function keys, no backquote and no backslash;
+the ADB keypad's `*`, `+`, `/` and `=` have no Lisa equivalent.
+
+For the rows that drive the COPS wire rather than press a key —
+the boot menu and the Xenix installer — `machine.adb.keyboard.raw 0xC8` sends
+that byte exactly as given, direction bit and all. No Mac implements it.
+
 ### 11.4 Mouse
 
 The mouse is enabled with a command of the form `#111 ennn`, where `e` enables
@@ -861,11 +919,49 @@ tracked; the cursor becomes visible once a dialog opens.)
 
 ### 11.5 Real-time clock
 
-Resolution is 1/10 second with a 16-year span. The clock is set and read via the
-`0001 nnnn` (write nibble) and `0000 0010` (read) commands; read-back is the
-`$80 $Ey …` 5-byte form. The clock timer can interrupt and/or power the machine
-on after a programmed interval. An emulator drives the clock from the host wall
-clock, with a deterministic override for reproducible boots.
+Resolution is 1/10 second with a 16-year span. The clock timer can interrupt
+and/or power the machine on after a programmed interval.
+
+**Reading** (`0000 0010`) returns `$80` then six bytes — an `$Ey` marker
+carrying the year nibble, then five packed BCD bytes. `READCLK`
+(`RM248.M.TEXT`) reads exactly that, and parameter memory reserves
+`$1BA-1BF : Clock setting (Ey,dd,dh,hm,ms,st)` (`RM248.E.TEXT`). `DSPCLK`
+(`RM248.B.TEXT`) pins the widths by loading `CLKDATA+2` as a longword and
+rotating out 1 day digit, 2 hour, 2 minute and 2 second:
+
+| byte | nibbles | |
+|---|---|---|
+| 0 | `E` `y` | marker, **year** |
+| 1 | `d` `d` | day-of-year hundreds, tens |
+| 2 | `d` `h` | day units, hour tens |
+| 3 | `h` `m` | hour units, minute tens |
+| 4 | `m` `s` | minute units, second tens |
+| 5 | `s` `t` | second units, **tenths** |
+
+Eleven digits, which is where the "1/10 second, 16-year span" comes from.
+
+**Setting** is `$2C`, then sixteen `0001 nnnn` one-nibble commands MSB-first
+(`TODSET`), then `$25` to enable. Sixteen and not eleven because the first
+five digits are the **alarm**: the burn-in code sends `SET1` ("initial
+alarm/year/dd setting") and `SET2` = `$10000000`, commented as "day=01, all
+other values=0". That places the clock's eleven digits contiguously from
+digit 5, which is the consistency check — the alarm width itself is inferred
+from what is left over, not stated by a source.
+
+**The year nibble is anchored at 1980**, giving 1980–1995, and the Office
+System enforces a floor of 1981. That anchor is *not* in any source in this
+tree — the ROM never displays or validates a year — and is recorded as a
+project determination.
+
+One consequence: a present-day host clock cannot be represented, so unlike
+every other machine the Lisa does **not** seed from the wall clock. It powers
+up at a fixed **1 January 1984**, inside the usable window and the year the
+Lisa 2 shipped, which also makes Lisa rows reproducible without pinning
+anything. Until 2026-09-21 the model answered the read with five zero bytes,
+which is not "unset" but impossible — day-of-year is 1-based and year 0 is
+1980, below the floor — so Lisa Office System opened a "clock/calendar is not
+set properly" note on every boot and two integration rows dismissed it by
+clicking OK.
 
 ### 11.6 Soft power
 

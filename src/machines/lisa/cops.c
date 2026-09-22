@@ -12,10 +12,13 @@
 
 #include "cops.h"
 
+#include "checkpoint.h"
 #include "log.h"
+#include "mouse.h"
 #include "scheduler.h"
 #include "via.h"
 
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -36,13 +39,28 @@ LOG_USE_CATEGORY_NAME("cops");
 #define COPS_BTN_DOWN 0x86
 #define COPS_BTN_UP   0x06
 
-// Clamp accumulated mouse movement to the signed-byte report range.
-#define COPS_DELTA_CLAMP(v) ((v) > 127 ? 127 : ((v) < -127 ? -127 : (v)))
+// Accumulated mouse movement clamps to the signed-byte report range
+// (lisa.md §11.4).  This was a function-like macro that evaluated its argument
+// three times; the shared input_clamp_delta() in mouse.h replaced it.
+#define COPS_DELTA_MAX 127
 
 // Mouse report interval: nnn (command low 3 bits) × 4 ms.  At the Lisa's
-// 5.09375 MHz CPU, 4 ms ≈ 20375 cycles.  Once enabled, the COPS reports every
-// interval even when idle (dx=dy=0) — the boot ROM's COPS input loop (WT4INPUT)
-// blocks on these, so the periodic report is what keeps boot alive.
+// 5.09375 MHz CPU, 4 ms ≈ 20375 cycles.
+//
+// The interval is when we CHECK for accumulated motion, not a heartbeat: a
+// report goes out only if there is movement to report.  See cops_mouse_tick,
+// which records why (flooding idle reports desynchronises the host's
+// multi-byte decoder and made the keyboard unusable at the Xenix boot-loader
+// prompt).
+//
+// This comment used to claim the opposite — that the COPS reports every
+// interval even when idle and that those reports are "what keeps boot alive"
+// — while the emitter 175 lines below said, at length, that it does not.  The
+// emitter is right; ReadCOPS in the boot ROM (RM248.M.TEXT) is an unbounded
+// spin on VIA1 IFR with no timeout, and every WT4INPUT caller is a menu state
+// machine with nothing to do until input arrives, so nothing needs a
+// heartbeat.  Leaving the wrong half here next to the constant was how a
+// future editor would have reinstated the Xenix bug from inside this file.
 #define COPS_MOUSE_4MS_CYCLES 20375
 
 // Response pacing: re-check host consumption this many CPU cycles apart.  The
@@ -61,10 +79,65 @@ LOG_USE_CATEGORY_NAME("cops");
 
 #define COPS_FIFO 32 // response queue depth
 
-struct cops {
-    via_t *via1;
-    struct scheduler *sched;
+// === The COPS real-time clock ===============================================
+//
+// The Lisa's clock lives in the COPS, and the boot ROM proves its shape.
+// `READCLK` (RM248.M.TEXT) sends $02, expects $80, then a byte masked
+// `ANDI.B #$F0` against `#$E0`, then five more bytes; parameter memory
+// reserves "$1BA-1BF : Clock setting (Ey,dd,dh,hm,ms,st)" (RM248.E.TEXT).
+// Six bytes, twelve nibbles: an $E marker and eleven BCD digits.
+//
+// `DSPCLK` (RM248.B.TEXT) pins the field widths.  It loads CLKDATA+2 as a
+// longword -- so skipping `Ey` and `dd` -- and then rotates out 1 digit of
+// day, 2 of hour, 2 of minute and 2 of seconds, leaving one nibble it does
+// not display.  That gives:
+//
+//     byte 0:  E y      marker, year
+//     byte 1:  d d      day-of-year hundreds, tens
+//     byte 2:  d h      day-of-year units, hour tens
+//     byte 3:  h m      hour units, minute tens
+//     byte 4:  m s      minute units, second tens
+//     byte 5:  s t      second units, tenths
+//
+// year 1 + day 3 + hh 2 + mm 2 + ss 2 + tenths 1 = eleven digits, and
+// lisa.md §11.5 independently says "1/10 second with a 16-year span".
+//
+// THE YEAR NIBBLE IS ANCHORED AT 1980.  Four bits give 1980..1995, and the
+// Office System enforces a floor of 1981, so 1981..1995 is the usable range.
+// That anchor is NOT in any source in this tree -- the ROM never displays or
+// validates a year, which is consistent with it not caring -- and is recorded
+// here as a determination from the project owner rather than a derivation.
+//
+// One consequence worth stating plainly: a present-day host clock cannot be
+// represented at all.  So the Lisa does not seed from the wall clock the way
+// every other machine does; it powers up at a fixed, reproducible instant.
+#define CLK_YEAR_BASE 1980
 
+// year, ddd, hh, mm, ss, t
+#define CLK_DIGITS 11
+
+// A set sequence carries sixteen nibbles, not eleven: the burn-in code in
+// RM248.B.TEXT sends $2C, then TODSET twice with eight digits each
+// (SET1 = "initial alarm/year/dd setting", SET2 = $10000000 producing
+// "day=01, all other values=0"), then $25 to enable.  TODSET rotates
+// MSB-first and sends each digit as $1X.
+//
+// SET2's eight digits must therefore be d, h, h, m, m, s, s, t -- day UNITS
+// through tenths -- which places `dd` at digits 6 and 7 of SET1 and the year
+// at digit 5, leaving digits 0..4 as the alarm.  The alarm width is the one
+// inferred quantity here: it is what is left over, not something a source
+// states.  The clock digits are contiguous across the boundary, which is the
+// consistency check that makes the reading credible.
+#define CLK_SET_DIGITS       16
+#define CLK_SET_ALARM_DIGITS 5
+
+struct cops {
+    // Plain data first so the checkpoint can read/write one contiguous block
+    // bounded by offsetof(cops_t, via1) -- the convention the other nine
+    // modules in this area follow (STYLE_GUIDE.md, "Device module
+    // conventions").  This struct used to lead with its pointers, which is
+    // the mechanical reason cops_checkpoint stayed a no-op: the obvious
+    // offsetof bound would have written zero bytes.
     bool crdy; // current CRDY (PB6) level we drive: false = ready
     bool reset_asserted; // last observed PB0 reset state (true = held in reset)
 
@@ -79,6 +152,8 @@ struct cops {
     bool mouse_scheduled;
     int8_t mouse_dx; // accumulated movement, reset on each report
     int8_t mouse_dy;
+    int mouse_carry_x; // motion that did not fit the last clamp, re-added below
+    int mouse_carry_y;
     bool mouse_button; // last host-injected button state (for edge detection)
 
     // Absolute-positioning "warp" (mouse.move x y "global").  The Lisa mouse is
@@ -90,7 +165,79 @@ struct cops {
     bool warp_active;
     int warp_x, warp_y; // target screen pixel
     int warp_ticks; // convergence-loop safety counter
+
+    // The real-time clock (06-io-controllers F-27).  Eleven BCD nibbles:
+    // year, three day-of-year digits, hh, mm, ss and tenths.  Held unpacked,
+    // one digit per byte, because the wire packs them differently in each
+    // direction -- the read is six bytes with an $E marker nibble, the write
+    // is a stream of one-nibble commands -- and a packed form would need
+    // unpacking on both paths anyway.
+    uint8_t clock[CLK_DIGITS];
+    // Digits arriving from a $2C ... $1n ... $25 set sequence, and how many
+    // have landed.  -1 means no set is in progress.
+    uint8_t clock_set[CLK_SET_DIGITS];
+    int clock_set_count;
+    bool clock_setting;
+
+    // Pointers last (not checkpointed)
+    via_t *via1;
+    struct scheduler *sched;
 };
+
+// === Real-time clock ========================================================
+
+// The power-on clock.  Every other machine seeds its RTC from the host wall
+// clock; the Lisa cannot, because four bits of year reach only 1995.  So it
+// powers up at a fixed instant instead, which also makes every Lisa row
+// reproducible without pinning anything.
+//
+// 1 January 1984: inside the Office System's 1981..1995 window, and the year
+// the Lisa 2 shipped.
+#define CLK_DEFAULT_YEAR 1984
+#define CLK_DEFAULT_DAY  1
+
+static void cops_clock_reset(cops_t *c) {
+    int y = CLK_DEFAULT_YEAR - CLK_YEAR_BASE;
+    int d = CLK_DEFAULT_DAY;
+    c->clock[0] = (uint8_t)(y & 0x0F); // year
+    c->clock[1] = (uint8_t)(d / 100); // day hundreds
+    c->clock[2] = (uint8_t)((d / 10) % 10); // day tens
+    c->clock[3] = (uint8_t)(d % 10); // day units
+    for (int i = 4; i < CLK_DIGITS; i++)
+        c->clock[i] = 0; // hh:mm:ss.t = 00:00:00.0
+    c->clock_setting = false;
+    c->clock_set_count = 0;
+}
+
+// Pack the eleven digits into the five bytes after the $Ey marker, plus the
+// marker itself: E y | d d | d h | h m | m s | s t.
+static void cops_clock_pack(const cops_t *c, uint8_t out[6]) {
+    out[0] = (uint8_t)(0xE0 | (c->clock[0] & 0x0F));
+    out[1] = (uint8_t)((c->clock[1] << 4) | c->clock[2]);
+    out[2] = (uint8_t)((c->clock[3] << 4) | c->clock[4]);
+    out[3] = (uint8_t)((c->clock[5] << 4) | c->clock[6]);
+    out[4] = (uint8_t)((c->clock[7] << 4) | c->clock[8]);
+    out[5] = (uint8_t)((c->clock[9] << 4) | c->clock[10]);
+}
+
+// End of a $2C ... $25 sequence: take the eleven clock digits out of the
+// sixteen that arrived, skipping the alarm.  A short sequence is ignored
+// rather than half-applied -- the host either set the clock or it did not.
+static void cops_clock_commit(cops_t *c) {
+    if (!c->clock_setting)
+        return;
+    c->clock_setting = false;
+    if (c->clock_set_count < CLK_SET_DIGITS) {
+        LOG(1, "cops clock set abandoned after %d of %d digits", c->clock_set_count, CLK_SET_DIGITS);
+        c->clock_set_count = 0;
+        return;
+    }
+    for (int i = 0; i < CLK_DIGITS; i++)
+        c->clock[i] = c->clock_set[CLK_SET_ALARM_DIGITS + i] & 0x0F;
+    c->clock_set_count = 0;
+    LOG(2, "cops clock set to %d, day %d%d%d, %d%d:%d%d:%d%d.%d", CLK_YEAR_BASE + c->clock[0], c->clock[1], c->clock[2],
+        c->clock[3], c->clock[4], c->clock[5], c->clock[6], c->clock[7], c->clock[8], c->clock[9], c->clock[10]);
+}
 
 // === Response FIFO ==========================================================
 
@@ -98,14 +245,45 @@ static bool fifo_empty(const cops_t *c) {
     return c->head == c->tail;
 }
 
-static void fifo_push(cops_t *c, uint8_t byte) {
-    int next = (c->tail + 1) % COPS_FIFO;
-    if (next == c->head) {
-        LOG(1, "cops response FIFO full, dropping 0x%02x", byte);
+static int fifo_free(const cops_t *c) {
+    int used = (c->tail - c->head + COPS_FIFO) % COPS_FIFO;
+    return COPS_FIFO - 1 - used; // one slot always kept to distinguish full/empty
+}
+
+static void fifo_push_raw(cops_t *c, uint8_t byte) {
+    c->fifo[c->tail] = byte;
+    c->tail = (c->tail + 1) % COPS_FIFO;
+}
+
+// Enqueue a whole COPS response, or none of it.
+//
+// The FIFO carries FRAMED messages -- a 3-byte mouse report ($00 dx dy), a
+// 2-byte reset/status reply, a 7-byte clock reply -- and the host decodes
+// them as multi-byte sequences.  Pushing byte-at-a-time meant a FIFO with
+// room for two bytes of a three-byte report stored a partial message and
+// desynchronised that decoder.  That is the same failure the emitter below
+// records as having made the keyboard unusable at the Xenix boot-loader
+// prompt; it was simply reachable a second way.
+//
+// So the unit of overflow is the MESSAGE.  Note this is deliberately NOT the
+// drop-oldest policy adb.c and keyboard.c use: their rings are unframed, one
+// entry per key transition, so dropping the oldest byte loses one event and
+// nothing else.  Dropping the oldest BYTE here would desynchronise the
+// decoder exactly as a partial write does.  (06-io-controllers F-26, N-09.)
+static void fifo_push_msg(cops_t *c, const uint8_t *bytes, int n) {
+    if (n <= 0)
+        return;
+    if (fifo_free(c) < n) {
+        LOG(1, "cops response FIFO full, dropping a %d-byte message (first byte 0x%02x)", n, bytes[0]);
         return;
     }
-    c->fifo[c->tail] = byte;
-    c->tail = next;
+    for (int i = 0; i < n; i++)
+        fifo_push_raw(c, bytes[i]);
+}
+
+// Single-byte messages (a key code, a reset lead-in) are still messages.
+static void fifo_push(cops_t *c, uint8_t byte) {
+    fifo_push_msg(c, &byte, 1);
 }
 
 // Drive CRDY (PB6) — an input pin to the VIA, sourced by the COPS.
@@ -225,11 +403,14 @@ static void cops_mouse_tick(void *source, uint64_t data) {
     // coordinate.  This made the keyboard unusable at the Xenix boot-loader prompt.
     // LOS cursor warp/move still works — it sets non-zero deltas while converging.
     if (c->mouse_dx != 0 || c->mouse_dy != 0) {
-        fifo_push(c, COPS_MOUSE_MARK);
-        fifo_push(c, (uint8_t)c->mouse_dx);
-        fifo_push(c, (uint8_t)c->mouse_dy);
-        c->mouse_dx = 0; // deltas reset once reported
-        c->mouse_dy = 0;
+        const uint8_t report[3] = {COPS_MOUSE_MARK, (uint8_t)c->mouse_dx, (uint8_t)c->mouse_dy};
+        fifo_push_msg(c, report, 3);
+        // Reported deltas clear, but the CARRY does not: it is motion that has
+        // not been reported yet, so it moves into the accumulator and goes out
+        // in the next report.  That is what makes a large mouse.move arrive in
+        // full rather than being truncated to one report's worth.
+        c->mouse_dx = (int8_t)input_clamp_delta(c->mouse_carry_x, -COPS_DELTA_MAX, COPS_DELTA_MAX, &c->mouse_carry_x);
+        c->mouse_dy = (int8_t)input_clamp_delta(c->mouse_carry_y, -COPS_DELTA_MAX, COPS_DELTA_MAX, &c->mouse_carry_y);
         cops_kick_pump(c);
     }
     scheduler_new_cpu_event(c->sched, &cops_mouse_tick, c, 0, c->mouse_interval, 0);
@@ -264,8 +445,8 @@ void cops_soft_power_off(cops_t *c) {
         return;
     // The soft power-off switch is reported like a reset/status response: the
     // $80 lead-in byte followed by the $FB code (docs/machines/lisa/lisa.md §11.2).
-    fifo_push(c, COPS_RSTCODE);
-    fifo_push(c, COPS_PWROFF);
+    const uint8_t pwroff[2] = {COPS_RSTCODE, COPS_PWROFF};
+    fifo_push_msg(c, pwroff, 2);
     cops_kick_pump(c);
     LOG(1, "cops soft power-off ($80 $FB)");
 }
@@ -290,8 +471,17 @@ void cops_inject_mouse(cops_t *c, int dx, int dy, int button) {
     c->warp_active = false; // an explicit relative move cancels any pending warp
     // Accumulate deltas the way the real COPS sums pulse edges between reports;
     // cops_mouse_tick emits them (guest must have enabled mouse interrupts).
-    c->mouse_dx = (int8_t)COPS_DELTA_CLAMP((int)c->mouse_dx + dx);
-    c->mouse_dy = (int8_t)COPS_DELTA_CLAMP((int)c->mouse_dy + dy);
+    // Clamp with CARRY, not destructively.  The leftover is re-added to the
+    // accumulator so the next report continues the motion, the way a real
+    // counter would -- adb.c has always done this and cops.c discarded the
+    // overflow, so a large synthetic mouse.move silently lost distance here.
+    // Unreachable from a human hand (a real mouse never produces >127 counts
+    // in one 4 ms interval), which is exactly why only injection saw it.
+    // The carry from last time is part of this injection's motion.
+    int total_x = (int)c->mouse_dx + dx + c->mouse_carry_x;
+    int total_y = (int)c->mouse_dy + dy + c->mouse_carry_y;
+    c->mouse_dx = (int8_t)input_clamp_delta(total_x, -COPS_DELTA_MAX, COPS_DELTA_MAX, &c->mouse_carry_x);
+    c->mouse_dy = (int8_t)input_clamp_delta(total_y, -COPS_DELTA_MAX, COPS_DELTA_MAX, &c->mouse_carry_y);
     if (button >= 0) {
         bool down = button != 0;
         if (down != c->mouse_button) {
@@ -315,17 +505,36 @@ static void cops_command(cops_t *c, uint8_t cmd) {
         // #111 ennn: e (bit 3) = mouse-interrupt enable, nnn = interval units.
         cops_set_mouse(c, (cmd & 0x08) != 0, cmd & 0x07);
     } else if (cmd == 0x02) {
-        // Read clock: the COPS replies with a $80 lead-in, an $Ey clock-data
-        // marker (y = year nibble), then 5 packed time bytes (docs §11.5).  A
-        // zeroed time is a valid default; the deterministic/real clock layers
-        // in with the RTC work (Step 9).
-        fifo_push(c, COPS_RSTCODE); // $80
-        fifo_push(c, 0xE0); // clock-data marker
-        for (int i = 0; i < 5; i++)
-            fifo_push(c, 0x00); // 5 time bytes
+        // Read clock.  One 7-byte message -- $80, the $Ey marker carrying the
+        // year nibble, then five packed bytes -- because READCLK reads
+        // exactly that shape and a partial enqueue would leave it waiting
+        // mid-sequence.
+        //
+        // This used to be five zero bytes, which is not merely unset: day-of-
+        // year is 1-based, so 000 is not a date, and year 0 is 1980, below
+        // the Office System's floor.  LOS opened a "clock/calendar is not set
+        // properly" dialog on every boot and two suites dismissed it by
+        // warping the cursor onto its OK button.
+        uint8_t reply[7];
+        reply[0] = COPS_RSTCODE;
+        cops_clock_pack(c, &reply[1]);
+        fifo_push_msg(c, reply, 7);
         cops_kick_pump(c);
+    } else if (cmd == 0x2C) {
+        // Begin a clock set: the digits follow as $1n commands.
+        c->clock_setting = true;
+        c->clock_set_count = 0;
+    } else if (cmd == 0x25) {
+        // Clock enable, which is also the end of a set sequence.
+        cops_clock_commit(c);
+    } else if ((cmd & 0xF0) == 0x10) {
+        // One clock digit, MSB-first (TODSET).  Outside a set sequence these
+        // still arrive -- the ROM writes nibbles in other contexts -- so they
+        // are only collected between $2C and $25.
+        if (c->clock_setting && c->clock_set_count < CLK_SET_DIGITS)
+            c->clock_set[c->clock_set_count++] = cmd & 0x0F;
     }
-    // 0x1n write-clock, 0x2x set-modes, 0x5n/0x6n NMI-key: accepted.
+    // 0x2x set-modes, 0x5n/0x6n NMI-key: accepted.
     LOG(2, "cops command 0x%02x", cmd);
 }
 
@@ -349,8 +558,8 @@ void cops_via_output(cops_t *c, uint8_t port, uint8_t value) {
         if (c->reset_asserted && !reset_now) {
             // Reset released → report a connected keyboard ($80, id).  No mouse
             // codes are sent, which RSTSCAN reads as "mouse connected".
-            fifo_push(c, COPS_RSTCODE);
-            fifo_push(c, COPS_KBD_ID);
+            const uint8_t reset_id[2] = {COPS_RSTCODE, COPS_KBD_ID};
+            fifo_push_msg(c, reset_id, 2);
             cops_kick_pump(c);
             LOG(1, "cops reset released → keyboard id 0x%02x", COPS_KBD_ID);
         }
@@ -360,20 +569,36 @@ void cops_via_output(cops_t *c, uint8_t port, uint8_t value) {
 
 // === Lifecycle =============================================================
 
+// Mirror of cops_checkpoint; defined below, used while constructing.
+static void cops_restore(cops_t *c, checkpoint_t *cp);
+
 cops_t *cops_init(via_t *via1, struct scheduler *scheduler, checkpoint_t *cp) {
     cops_t *c = (cops_t *)calloc(1, sizeof(*c));
     if (!c)
         return NULL;
     c->via1 = via1;
     c->sched = scheduler;
+    cops_clock_reset(c); // before the checkpoint read below, so a restore wins
     scheduler_new_event_type(scheduler, "cops", c, "pump", &cops_pump);
     scheduler_new_event_type(scheduler, "cops", c, "mouse", &cops_mouse_tick);
     scheduler_new_event_type(scheduler, "cops", c, "crdy", &cops_crdy_tick);
-    // Start the free-running CRDY (PB6) toggle from the ready (low) state.
-    cops_set_crdy(c, false);
-    scheduler_new_cpu_event(scheduler, &cops_crdy_tick, c, 0, COPS_CRDY_HALF_CYCLES, 0);
-    if (cp)
-        cops_checkpoint(c, cp); // restore (symmetric with save below)
+    if (cp) {
+        // Restore the plain-data block.  Do NOT arm any events here: the
+        // scheduler's own checkpointed queue brings back this source's crdy,
+        // pump and mouse events in scheduler_start(), matching the
+        // pump_scheduled / mouse_scheduled flags we just read.
+        //
+        // Arming unconditionally (as this did before) meant a restored Lisa
+        // ran TWO free-running CRDY togglers: the one armed here and the one
+        // the saved queue brought back.  rtc_init has the correct shape and
+        // is the pattern followed here.
+        cops_restore(c, cp);
+        via_input(c->via1, 1, 6, c->crdy); // re-drive the restored level
+    } else {
+        // Cold boot: start the free-running CRDY (PB6) toggle from ready (low).
+        cops_set_crdy(c, false);
+        scheduler_new_cpu_event(scheduler, &cops_crdy_tick, c, 0, COPS_CRDY_HALF_CYCLES, 0);
+    }
     return c;
 }
 
@@ -385,10 +610,22 @@ void cops_delete(cops_t *c) {
     free(c);
 }
 
+// Save the COPS's plain-data region: the response FIFO and its indices, the
+// CRDY phase, the command/mouse state and the warp target.  None of it is
+// re-derived by the reset handshake -- a restored Lisa without this comes up
+// with an empty FIFO, the mouse disabled and any in-flight warp forgotten.
+//
+// The stream is positional and unversioned (build-ID gated), so this and
+// cops_restore must change together, in one commit.
 void cops_checkpoint(cops_t *c, checkpoint_t *cp) {
-    // Symmetric no-op for now (same discipline as lisa_mmu_checkpoint): the
-    // COPS reset handshake re-derives its state from VIA1 on the next scan.
-    // Full save/restore of the FIFO + command state lands in Step 9 (R7).
-    (void)c;
-    (void)cp;
+    if (!c || !cp)
+        return;
+    system_write_checkpoint_data(cp, c, offsetof(cops_t, via1));
+}
+
+// The mirror, called from cops_init while constructing.
+static void cops_restore(cops_t *c, checkpoint_t *cp) {
+    if (!c || !cp)
+        return;
+    system_read_checkpoint_data(cp, c, offsetof(cops_t, via1));
 }

@@ -463,6 +463,141 @@ bool lisa_fdc_pram_save(const lisa_fdc_t *fdc, const char *path) {
     return put == FDC_PM_LEN;
 }
 
+// === Parameter memory (PRAM) ===============================================
+//
+// The Lisa's 64 bytes of battery-backed parameter memory live inside this
+// controller's RAM at FDC_PM_IDX.  Layout and checksum are documented in
+// docs/machines/lisa/pram_format.md, reverse-engineered from LisaOS and
+// boot-ROM source and verified byte-for-byte against two captured images.
+//
+// This store is synthesised HERE, in the device model that owns it, per
+// proposal-reset-and-nonvolatile-state §4.1: "The store is synthesised in the
+// device model, in code.  The initialiser writes the signature, the partition
+// headers, the checksums and the defaults ... a factory-fresh chip, built by
+// the model that owns it."  Until 2026-09-21 it was synthesised by
+// tests/integration/suite-lisa/seed_pram.py -- 90 lines of Python OUTSIDE the
+// emulator that reimplemented the ROM's own checksum -- and delivered through
+// a path-taking pram_load, which made it the only file-backed non-volatile
+// store in the tree.
+
+// VFYCHKSM / prom_cksum ($FE00BC), pram_format.md §5: a 16-bit add-then-
+// rotate-left-1 sum over all 32 big-endian words.  PRAM is valid iff the sum
+// over the whole 64 bytes comes out zero, so the stored word (word 31) is the
+// two's-complement negate of the sum over words 0..30.
+//
+// Note ROL is a plain rotate (bit15 -> bit0), NOT rotate-through-carry.
+static uint16_t lisa_pram_checksum(const uint8_t *pm) {
+    uint16_t acc = 0;
+    for (int w = 0; w < 31; w++) {
+        acc = (uint16_t)(acc + (uint16_t)((pm[w * 2] << 8) | pm[w * 2 + 1]));
+        acc = (uint16_t)((acc << 1) | (acc >> 15));
+    }
+    return (uint16_t)(-acc);
+}
+
+// Pack one DevConfig entry (pram_format.md §3), returning its length.
+//
+//   byte 0: slot<<4 | chan<<1 | IDsize
+//   byte 1: dev<<3  | nExtWords<<1 | idHi
+//   byte 2 [+3]: the driver id, 9-bit or 17-bit
+//   then nExtWords big-endian extension words
+//
+// Slot codes are the internal cd_* constants directly (cd_scc = 9,
+// cd_paraport = 10); emptychan = 7, emptydev = 31.  The driver id is matched
+// against the installed system's SYSTEM.CDD by FIND_PM_IDS -- it is not
+// hard-coded in the OS, which is why these values are LOS-3.1-specific.
+static int lisa_pram_pack_dev(uint8_t *out, uint8_t slot, uint8_t chan, uint8_t dev, uint32_t driver_id,
+                              const uint16_t *ext, int n_ext) {
+    int idsize = (driver_id > 0x1FF) ? 1 : 0;
+    int id_hi = (int)((driver_id >> (idsize ? 16 : 8)) & 1u);
+    int n = 0;
+    out[n++] = (uint8_t)((slot << 4) | (chan << 1) | idsize);
+    out[n++] = (uint8_t)((dev << 3) | (n_ext << 1) | id_hi);
+    if (idsize) {
+        out[n++] = (uint8_t)((driver_id >> 8) & 0xFF);
+        out[n++] = (uint8_t)(driver_id & 0xFF);
+    } else {
+        out[n++] = (uint8_t)(driver_id & 0xFF);
+    }
+    for (int i = 0; i < n_ext; i++) {
+        out[n++] = (uint8_t)((ext[i] >> 8) & 0xFF);
+        out[n++] = (uint8_t)(ext[i] & 0xFF);
+    }
+    return n;
+}
+
+// Write a factory-fresh parameter memory: the defaults a new machine ships
+// with, a valid checksum, and an EMPTY device-configuration table.
+//
+// Empty is deliberate and is the faithful part.  A machine straight off the
+// line has no configured devices; the OS's INIT_CONFIG then restores the
+// device table from the boot volume's own on-disk MDDF snapshot, which is what
+// real hardware does.  Seeding a populated table is emulating a machine that
+// has already had an OS installed -- and seed_pram.py's own docstring records
+// the cost of doing that: it can MASK a broken disk image, which is precisely
+// why the script grew a --coldboot mode to turn the seeding back off.
+void lisa_fdc_pram_init(lisa_fdc_t *fdc, uint8_t boot_vol, bool valid, bool installed) {
+    if (!fdc)
+        return;
+    uint8_t *pm = &fdc->ram[FDC_PM_IDX];
+    memset(pm, 0, FDC_PM_LEN);
+
+    pm[0] = 0x00;
+    pm[1] = 0x04; // Version = cd_pm_version (4)
+    pm[2] = 0x9F;
+    pm[3] = 0x80; // TimeStamp -- any value; the on-disk snapshot must match it
+    pm[4] = (uint8_t)((boot_vol & 0x0F) << 4); // BootVol, NormCont = 0
+    pm[5] = (15 << 4) | 1; // DimCont = 15, BeepVol = 1
+    pm[6] = 0xC3; // MouseOn | ExtendMem, DoubleClick = 3
+    pm[7] = 0x34; // FadeDelay = 3, BeginRepeat = 4
+    pm[8] = 0x10; // SubRepeat = 1
+    pm[9] = 0x00; // CDcount = 0 -- no configured devices on a fresh machine
+    for (int i = 10; i < 60; i++)
+        pm[i] = 0xFF; // $FF filler doubles as the end-of-list sentinel
+
+    // `installed` reproduces the device-configuration table the LOS 3.1
+    // installer leaves at a clean shutdown, with the ProFile (cd_paraport)
+    // as the boot device.  It is NOT factory-fresh -- a new machine has no
+    // configured devices -- but it is needed by one case the empty table
+    // cannot serve: a volume that has been installed onto but has not yet
+    // shut down cleanly, so its on-disk MDDF snapshot is not usable and the
+    // OS has nothing to restore from.  Without it that boot stops at
+    // error 10738, which is the ProFile-not-found failure.
+    //
+    // The driver ids come from that system's SYSTEM.CDD and are matched by
+    // FIND_PM_IDS, so they are specific to LOS 3.1 rather than to the
+    // hardware.  Packing follows pram_format.md §3.
+    if (installed) {
+        static const uint16_t scc_ext[1] = {0xC020};
+        int n = 0;
+        n += lisa_pram_pack_dev(&pm[10 + n], 9, 1, 31, 32, NULL, 0); // SCC channel
+        n += lisa_pram_pack_dev(&pm[10 + n], 1, 7, 31, 34, NULL, 0); // slot device
+        n += lisa_pram_pack_dev(&pm[10 + n], 1, 0, 31, 35, NULL, 0); // slot device
+        n += lisa_pram_pack_dev(&pm[10 + n], 9, 0, 31, 32, scc_ext, 1); // SCC + ext word
+        n += lisa_pram_pack_dev(&pm[10 + n], 10, 7, 31, 35, NULL, 0); // cd_paraport: the ProFile
+        pm[9] = 5; // CDcount
+    }
+    pm[60] = 0x00;
+    pm[61] = 0x4C; // MemLoss
+
+    uint16_t sum = lisa_pram_checksum(pm);
+    // `valid` false stores the bitwise complement instead, which is guaranteed
+    // not to verify.  That is not a corruption hack -- it is the honest model
+    // of a machine whose battery has just been replaced: PRAM has never been
+    // written, VERIFY_CKSUM fails, pm_good comes out false, and the OS's
+    // INIT_CONFIG rebuilds the device configuration from the boot volume's own
+    // MDDF snapshot.  For the Lisa that cold start is the one that WORKS,
+    // because a valid-but-empty table is a table the OS will believe.
+    //
+    // It is also the more honest test posture: a boot that depends on the disk
+    // image carrying a good clean-shutdown snapshot fails loudly on a bad
+    // image, where a pre-seeded hardware entry would have masked it.
+    if (!valid)
+        sum = (uint16_t)(sum ^ 0xFFFF);
+    pm[62] = (uint8_t)(sum >> 8);
+    pm[63] = (uint8_t)(sum & 0xFF);
+}
+
 bool lisa_fdc_pram_load(lisa_fdc_t *fdc, const char *path) {
     if (!fdc || !path || !*path)
         return false;
@@ -488,13 +623,12 @@ lisa_fdc_t *lisa_fdc_init(struct scheduler *scheduler, lisa_fdc_fdir_fn fdir_cb,
     fdc->num_sides = 1;
     // Power-up parameter-memory default.  The COPS clock/PM region is battery-backed
     // on real hardware; with no persisted PRAM the boot ROM still needs a boot-device
-    // selection.  Seed BootVol=1 (PM byte 4 high nibble = built-in Sony floppy;
-    // docs/machines/lisa/pram_format.md §4) plus the checksum word so the ROM auto-boots the
-    // built-in floppy.  ProFile-boot tests override this with a full PRAM image
-    // (profile.pram_load); see lisa-profile-boot.
-    fdc->ram[196] = 0x10; // PM byte 4: BootVol=1 (built-in Sony), NormCont=0
-    fdc->ram[254] = 0xFE; // PM bytes 62-63: PRAM validity checksum word
-    fdc->ram[255] = 0x00;
+    // selection.  A factory-fresh parameter memory with BootVol = 1 (built-in
+    // Sony floppy, pram_format.md §4) and a COMPUTED checksum, so the ROM
+    // auto-boots the floppy.  This used to be three hand-poked bytes with a
+    // precomputed checksum word, which only stayed correct because nothing
+    // else in the region was ever set.
+    lisa_fdc_pram_init(fdc, 1, true, false); // BootVol = 1 (Sony floppy), valid, factory-fresh
     // Checkpoint restore (init-reads convention, mirroring lisa_profile_init):
     // read back exactly what lisa_fdc_checkpoint wrote, in the same order.
     if (cp) {

@@ -382,6 +382,38 @@ mouse, read back handler `$FE`, concluded "not a mouse", and dropped the
 device (its verbose boot console prints `ADB device @ 0 = 3-FE` when this
 model gets it wrong).
 
+#### Bit 13 is taken from the `$00` form only
+
+`adb_device_t` carries `srq_enabled` as real per-device state, set at reset
+and written by **Listen R3 with handler `$00`** — the form Guide 2e
+`:7810-7812` names: *"To disable a device's ability to send a Service
+Request signal, set bit 13 in register 3 to 0 by using a Listen Register 3
+command with a Device Handler ID of `$00`… To enable the Service Request
+ability, set this bit to 1."*
+
+The `$FE` form moves the address and leaves bit 13 alone. Nothing ties bit
+13 to `$FE`, and the two readings are not symmetric in cost: a host that
+moves a device with `$FE` and a bare address in bits 11–8 would, on the
+other reading, silently switch that device's Service Request off and stop
+receiving its input unasked.
+
+The state is real, not readback: a device with bit 13 clear still answers
+when it is polled, but it no longer raises the SRQ path — neither the VIA
+transceiver's `adb_autopoll_deferred` nor the shared `adb_autopoll_next`
+counts it as "another device is asking". If it did not change behaviour the
+bit would be decoration.
+
+#### What a Talk R3 answers
+
+Byte 0 is **not** the bare address. Per the table above it is bit 14 set
+("exceptional event … always 1 if unused"), bit 13 = `srq_enabled`, bits
+11–8 the address — so an ordinary idle device answers `$6X`. That value is
+*derived* from the bit table, not quoted: the Guide has register-0 and
+register-2 content tables per device (8-4, 8-7, 8-8, 8-10, 8-11) and no
+register-3 one. The model answered `$0X` until code review 06 — bits 14 and
+13 both clear, which reads as "an exceptional event is in progress and I
+cannot service-request".
+
 #### Caps Lock is a locking switch, and that has consequences
 
 Caps Lock is the only key here that is a mechanically *locking* switch rather than a
@@ -732,14 +764,22 @@ respecting the ROM's transaction state machine. This was incorrect:
 
 The ADB controller is driven primarily by the port B output callback:
 
-1. **`adb_shift_byte` (shift_cb)**: Intentionally a **no-op**. On the SE/30,
-   VIA1 SR operates in mode 7 (shift out under external clock). The ROM
-   sometimes writes SR during interrupt handling while ACR is still mode 7,
-   triggering spurious `sr_shift_complete` callbacks. The ADB module reads SR
-   directly at each port B state transition instead.
+1. **No `shift_cb` at all.** On the SE/30, VIA1 SR operates in mode 7 (shift
+   out under external clock). The ROM sometimes writes SR during interrupt
+   handling while ACR is still mode 7, triggering spurious
+   `sr_shift_complete` callbacks, so the ADB module reads SR directly at each
+   port B state transition instead. The machines that used to register a
+   callback forwarding to a no-op `adb_shift_byte` now register `NULL`;
+   `via.c` tolerates that.
 
 2. **`adb_port_b_output` (output_cb)**: The main entry point. Called by the
-   machine layer when the OS changes ST0/ST1 on port B. Handles all four states:
+   machine layer on **every** VIA1 port B write — not only on an ST change.
+   The ST-transition filter is here, in `adb.c`, not in the machine glue:
+   PB0–PB2 are the RTC's bit-banged serial lines and the ROM drives them
+   constantly, so a write whose PB5:PB4 do not change is not an ADB event
+   (BUG-004). The shadow it compares against, `last_port_b`, is part of the
+   checkpointed ADB state and starts at `$30` (ST idle). Handles all four
+   states:
 
    - **State 0 (CMD)**: Read the command byte directly from `via_read_sr()`.
      Decode the command, prepare the reply buffer, and schedule a deferred
@@ -841,10 +881,13 @@ caused the ROM to read uninitialised `ShiftIntResume` pointers. Fix: use deferre
 events with realistic ADB bus delays.
 
 **BUG-004** (fixed): The ROM sometimes writes SR while ACR is still in mode 7,
-triggering spurious `sr_shift_complete` callbacks. Fix: the `adb_shift_byte`
-callback is a no-op; command bytes are read directly from `via_read_sr()` in the
+triggering spurious `sr_shift_complete` callbacks. Fix: no `shift_cb` is
+registered at all; command bytes are read directly from `via_read_sr()` in the
 CMD handler. Additionally, `set_adb_int(true)` at CMD start deasserts vADBInt
-as real hardware would on seeing an attention pulse.
+as real hardware would on seeing an attention pulse. The same bug is why
+`adb_port_b_output` filters on ST: the ROM bit-bangs the RTC on PB0-PB2 of the
+same port, and real hardware ignores a write whose ST lines do not change
+electrically.
 
 **BUG-006d** (fixed): The ROM's data replay phase (Phase 2) toggles EVEN/ODD on
 port B, causing the emulator to schedule spurious dummy byte deliveries. Fix:

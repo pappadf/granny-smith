@@ -38,7 +38,6 @@ LDFLAGS ?=
 SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/dma_mem.c \
         $(EMU_ROOT)/core/peripherals/sonic.c \
-        $(UNIT_ROOT)/support/stub_checkpoint.c \
         $(UNIT_ROOT)/support/stub_system.c \
         $(UNIT_ROOT)/support/harness_common.c \
         $(UNIT_ROOT)/support/harness_isolated.c \

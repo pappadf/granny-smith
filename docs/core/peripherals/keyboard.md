@@ -22,37 +22,71 @@ them internally to Mac Plus raw transition bytes.
 
 ### The shell surface
 
-`machine.adb.keyboard` exposes four methods, all of which end up at the same
-ADB virtual key code:
+`machine.adb.keyboard` is a **per-machine object** (`src/core/host_input.c`),
+built by `system_create` and torn down with the machine. It has to be: `type`
+paces its key transitions as scheduler events, and a scheduler source must be
+constructed with the machine, registered as an event type before
+`scheduler_start` so a checkpoint with typing in flight can restore, and
+forgotten in the machine's teardown. It used to be a process-lifetime facade
+with no such anchor, which is why `type` reached past the substrate into
+`adb_t` and so worked *only* on ADB Macs — the Plus and the Lisa answered
+"the machine has no keyboard".
+
+It exposes five methods:
 
 | Method | What it takes |
 |---|---|
 | `press(key)` | one tap (down + up) |
 | `down(key)` / `up(key)` | the two halves, for chords that hold a modifier |
 | `type(text)` | a short line of text on a US layout |
+| `raw(byte)` | one byte in the machine's own keyboard encoding |
 
 `key` is either a **name** — `"return"`, `"tab"`, `"space"`, `"escape"`,
 `"delete"`, `"up"`/`"down"`/`"left"`/`"right"`, `"command"`, `"shift"`,
 `"option"`, `"control"`, `"capslock"` — or an **ADB keycode integer**
-(`0x2E` for `m`). Single letters are *not* names: `press("m")` is an error,
-`press(0x2E)` is the `m` key. `debug_mac_resolve_key_name()` is the whole
-table.
+(`0x2E` for `m`), and a single character (`"m"`, `"7"`, `";"`) resolves to
+its key. `debug_mac_resolve_key_name()` is the whole table.
+
+An integer means **the same key on every machine**: key identity across the
+model is the ADB virtual keycode (`machine_profile.h`'s `input_key`), names
+are resolved once above the substrate, and each machine translates from
+there — the Plus to M0110A wire codes, the Lisa to COPS keycodes
+(`lisa_keymap.c`). A key this keyboard has not got is an error rather than a
+substitution, so pressing `"control"` on a Lisa says so.
+
+`raw(byte)` is the exception and deliberately not portable: it hands one byte
+to the machine's own keyboard encoding, direction bit and all, for rows that
+are testing a keyboard wire rather than pressing a key. Only the Lisa
+implements it. Until 2026-09-21 this lived on `press`, so
+`keyboard.press 0xC8` meant an ADB keycode on a Mac and a COPS wire byte on a
+Lisa.
 
 `type(text)` walks a US-layout ASCII→keycode table
 (`debug_mac_resolve_ascii()`), holding Shift for the characters that need it;
 a newline in the string types Return and a tab types Tab, so a whole command
-line ends itself. On the ADB keyboard the transitions are **paced in guest
-time**, 4 ms apart (`ADB_TYPE_SPACING`), continuing from wherever the
-previous call left off: a real keyboard packs two key transitions into one
-Talk R0 report only when both happened inside a poll interval, and a
-typist's Shift-down and the key it shifts never do — queued back to back
-they did, and a guest that takes one transition per report (the Network
-Server Diagnostic Utility) saw Shift go down and never come up, so every
-key after a `*` arrived shifted. The ring holds 128 bytes — two per
-character, four when shifted — so a call **refuses** anything over 96
-bytes' worth rather than letting the ring's drop-oldest overflow silently
-eat the head of the line. Type a line at a time and let the guest run; a
-line of *n* characters has landed after roughly 8·*n* ms of guest time.
+line ends itself. The transitions are **paced in guest time**, 4 ms apart
+(`KEY_TYPE_SPACING`), continuing after whatever a previous call left in
+flight: a real keyboard packs two key transitions into one Talk R0 report
+only when both happened inside a poll interval, and a typist's Shift-down
+and the key it shifts never do — queued back to back they did, and a guest
+that takes one transition per report (the Network Server Diagnostic Utility)
+saw Shift go down and never come up, so every key after a `*` arrived
+shifted.
+
+"Whatever a previous call left in flight" is read off the scheduler
+(`scheduler_last_event_ns`) rather than remembered in a field, so there is
+nothing to go stale and the answer survives a checkpoint restore for free —
+the events are restored, so the instant is too.
+
+A call **refuses** a line longer than the machine's keyboard queue can hold,
+rather than letting the queue's drop-oldest overflow silently eat its head.
+The budget is **per machine**, declared by the substrate as
+`key_queue_bytes`: the ADB ring and the Plus's M0110A queue are both 128
+bytes and a character costs two of them (four when shifted), so 96; the
+Lisa's COPS FIFO is 32 bytes and carries mouse reports too, so 24. It was one
+constant sized for ADB, which was harmless only while `type` could not reach
+a Lisa. Type a line at a time and let the guest run; a line of *n* characters
+has landed after roughly 8·*n* ms of guest time.
 
 A guest may not agree with the ADB keycode a name resolves to. MkLinux DR3
 and AIX 4.1.5 on the Network Server are the cases in this tree: their ADB
@@ -407,18 +441,33 @@ codes for the Macintosh Plus keyboard.
 #### 6.4.2 Numeric keypad
 
 **Numeric keypad keys** use the keypad protocol: each transition is preceded by
-`$79` (keypad prefix), then the raw code which is shared with a main keyboard key:
+`$79` (keypad prefix), then the raw code which is shared with a main keyboard key.
+
+**Four of them take a `$71` Shift prefix as well.** Guide 2e p.283: the keypad
+`+`, `*` and `/` are *uppercase* keys on the separate keypad, so the Plus
+keyboard sends "the Shift key-down transition response (`$71`), followed by the
+Keypad response (`$79`), followed by the code".  `=` is not named in that
+sentence but takes it by the same mechanism: Figure 7-6 gives keypad `=` and
+the down-arrow the **same** raw byte `$11`, so the prefix is the only thing in
+the protocol that can distinguish them.  On release the Shift byte becomes
+`$F1` by the ordinary bit-7 rule — *inferred*, since the Guide specifies only
+the key-down direction.
+
+Before 2026-09-21 this table (and the code) omitted all four, and marked
+Keypad Clear as needing no prefix at all — so Clear typed `X`, and `+ * / =`
+arrived as Left, Right, Up and Down.  See §7.1, which had the rule right all
+along:
 
 | Key          | ADB Virtual | Raw Down         | Raw Up           | Shared With |
 | ------------ | ----------- | ---------------- | ---------------- | ----------- |
 | Keypad .     | `$41`       | `$79` then `$03` | `$79` then `$83` | S           |
-| Keypad \*    | `$43`       | `$79` then `$05` | `$79` then `$85` | D           |
-| Keypad +     | `$45`       | `$79` then `$0D` | `$79` then `$8D` | Z           |
-| Keypad Clear | `$47`       | `$0F`            | `$8F`            | X (unique)  |
-| Keypad /     | `$4B`       | `$79` then `$1B` | `$79` then `$9B` | W           |
+| Keypad \*    | `$43`       | `$71 $79 $05`    | `$F1 $79 $85`    | D + Shift   |
+| Keypad +     | `$45`       | `$71 $79 $0D`    | `$F1 $79 $8D`    | Left arrow + Shift |
+| Keypad Clear | `$47`       | `$79` then `$0F` | `$79` then `$8F` | X           |
+| Keypad /     | `$4B`       | `$71 $79 $1B`    | `$F1 $79 $9B`    | Up arrow + Shift |
 | Keypad Enter | `$4C`       | `$79` then `$19` | `$79` then `$99` | Q           |
 | Keypad -     | `$4E`       | `$79` then `$1D` | `$79` then `$9D` | E           |
-| Keypad =     | `$51`       | `$79` then `$11` | `$79` then `$91` | C           |
+| Keypad =     | `$51`       | `$71 $79 $11`    | `$F1 $79 $91`    | Down arrow + Shift |
 | Keypad 0     | `$52`       | `$79` then `$25` | `$79` then `$A5` | 1           |
 | Keypad 1     | `$53`       | `$79` then `$27` | `$79` then `$A7` | 2           |
 | Keypad 2     | `$54`       | `$79` then `$29` | `$79` then `$A9` | 3           |

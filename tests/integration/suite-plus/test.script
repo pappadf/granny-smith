@@ -162,6 +162,93 @@ def row_plus_71_hd() {
     report_perf("suite-plus/plus-71-hd", scheduler.instr_count)
 }
 
+# ---- plus-keyboard ----------------------------------------------------------
+# The Plus keypad sends aliased raw codes: every keypad key shares its byte
+# with a main-keyboard key, and the $79 / $71 prefixes are what make the
+# Keyboard Driver add $40 and produce the keypad key code instead.  Until
+# 2026-09-21 the model omitted the $71 Shift prefix entirely and gave Clear
+# no prefix at all, so five keys delivered the wrong character to the guest:
+# Clear typed X, and + * / = arrived as Left, Right, Up and Down.
+#
+# The oracle is the ROM's own KeyMap bitmap at $174 (keyboard.md §8.5): 16
+# bytes, byte = code >> 3, bit = code & 7, LSB-first within the byte.  It is
+# maintained by the keyboard VBL task hooked at JKybdTask, so it is live long
+# before the Finder -- but rather than guess how early, the row proves the
+# oracle with a control key first.
+def keymap_bit(code) {
+    let byte = machine.memory.peek.b(0x174 + ($code >> 3))
+    return ($byte >> ($code & 7)) & 1
+}
+
+def row_plus_keyboard() {
+    machine.boot model="plus" ram=4096 rom="${$ROM}"
+    machine.scsi.attach_hd "${$hd_71}" 0
+    scheduler.run 60000000
+    wait_stable(1200000000)
+
+    # KbdType is non-zero once the Model Number handshake has completed
+    # (Guide 2e p.281: the first command the computer sends is Model Number,
+    # and normal Inquiry operation only begins after a successful reply).
+    assert debug.mac.globals.read("KbdType") != 0 "plus-keyboard: keyboard handshake did not complete"
+
+    # Positive control.  Space is $31 -- deliberately NOT X ($07), because X
+    # is the very bit keypad Clear used to collide with, and a control that
+    # shared the bit under test would mask the defect it is there to catch.
+    machine.adb.keyboard.down 0x31
+    run_ticks(10)
+    assert keymap_bit(0x31) == 1 "plus-keyboard: control key (space) did not reach KeyMap -- oracle not live"
+    machine.adb.keyboard.up 0x31
+    run_ticks(10)
+    assert keymap_bit(0x31) == 0 "plus-keyboard: control key (space) stuck down"
+
+    # Keypad Clear must be $47, not X ($07).
+    machine.adb.keyboard.down 0x47
+    run_ticks(10)
+    assert keymap_bit(0x47) == 1 "plus-keyboard: keypad Clear did not set $47"
+    assert keymap_bit(0x07) == 0 "plus-keyboard: keypad Clear also typed X ($07)"
+    machine.adb.keyboard.up 0x47
+    run_ticks(10)
+
+    # The four Shift-prefixed operators.  On a Plus the keypad symbol and its
+    # arrow SHARE the key code, so the assertion is not "not the arrow bit" --
+    # it is that Shift is down alongside it.  Shift is $38.
+    machine.adb.keyboard.down 0x45
+    run_ticks(10)
+    assert keymap_bit(0x38) == 1 "plus-keyboard: keypad + did not assert Shift"
+    machine.adb.keyboard.up 0x45
+    run_ticks(10)
+    # ... and the Shift latch must clear on release, or every later keystroke
+    # arrives shifted.  This is the guard on the inferred $F1 release byte.
+    assert keymap_bit(0x38) == 0 "plus-keyboard: Shift latch stuck down after keypad + release"
+
+    machine.adb.keyboard.down 0x4B
+    run_ticks(10)
+    assert keymap_bit(0x38) == 1 "plus-keyboard: keypad / did not assert Shift"
+    machine.adb.keyboard.up 0x4B
+    run_ticks(10)
+    assert keymap_bit(0x38) == 0 "plus-keyboard: Shift latch stuck down after keypad / release"
+
+    # N-04: keyboard.press("a") failed on EVERY machine, Mac included --
+    # debug_mac_resolve_key_name knew fourteen named keys and the hex form and
+    # nothing else, while adb.c's own argument doc promised
+    # `Key name ("return"/"esc"/"a"/...)`.  Letters and digits now resolve
+    # through the layout table that was already there.
+    machine.adb.keyboard.down "a"
+    run_ticks(10)
+    assert keymap_bit(0x00) == 1 "plus-keyboard: keyboard.press(\"a\") did not resolve"
+    machine.adb.keyboard.up "a"
+    run_ticks(10)
+    assert keymap_bit(0x00) == 0 "plus-keyboard: 'a' stuck down"
+
+    machine.adb.keyboard.down "7"
+    run_ticks(10)
+    assert keymap_bit(0x1A) == 1 "plus-keyboard: keyboard.press(\"7\") did not resolve"
+    machine.adb.keyboard.up "7"
+    run_ticks(10)
+
+    report_row("7.1", "builtin", "hd-boot keypad-prefix keymap key-names")
+}
+
 # ---- plus-checkpoint --------------------------------------------------------
 # The Plus had no save/restore round trip at all, which is the coverage the
 # 2026-09-03 review's F-18 needed before the family could move onto the
@@ -195,6 +282,7 @@ if row_on("plus-4x-fd") { row_end("plus-4x-fd", try(row_plus_4x_fd(), "FAILED"))
 if row_on("plus-42-fd") { row_end("plus-42-fd", try(row_plus_42_fd(), "FAILED")) }
 if row_on("plus-608-fd") { row_end("plus-608-fd", try(row_plus_608_fd(), "FAILED")) }
 if row_on("plus-71-hd") { row_end("plus-71-hd", try(row_plus_71_hd(), "FAILED")) }
+if row_on("plus-keyboard") { row_end("plus-keyboard", try(row_plus_keyboard(), "FAILED")) }
 if row_on("plus-checkpoint") { row_end("plus-checkpoint", try(row_plus_checkpoint(), "FAILED")) }
 
 suite_done()

@@ -91,13 +91,13 @@ def settle(limit) {
 storage.hd_create "$WORK_DIR/blank.img" HD160SC
 
 # Pin the RTC so the boot is deterministic run-to-run.
-machine.rtc.time = 3000000000
 
 # Select the Display Card 8•24 and the 13" RGB 640x480 8 bpp mode, then boot
 # the IIfx with 16 MB.  The re-boot binds the card's declaration ROM
 # (mdc-8-24-revb-d1629664.vrom, found next to iifx-4147dd77.rom) and applies
 # the pending video mode — neither can be passed as a startup argument.
 machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 
 # Attach the blank HD at SCSI ID 0 (unformatted → won't boot / won't mount)
 # and insert the Mac OS 7.6 "Disk Tools 1" floppy, which carries Apple HD SC
@@ -176,8 +176,8 @@ assert len(vfs.list("$WORK_DIR/formatted.img")) == 4 "formatted HD partition map
 # unbootable) and the Installer floppy is the boot medium.  This is Apple's
 # documented floppy procedure: boot "Install 1", then feed the rest into the
 # same drive as the Installer asks for them.
-machine.rtc.time = 3000000000
 machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 machine.scsi.attach_hd "$WORK_DIR/formatted.img" 0
 machine.floppy.drive[0].insert "$src/Install 1.img" true
 
@@ -314,8 +314,8 @@ assert len($sysfolder) >= 10 "System Folder has fewer than 10 items — the inst
 # Boot the installed volume with no floppy in the drive.  Reaching the Finder
 # desktop from the freshly-installed System Folder is the end-to-end proof:
 # formatted, installed, bootable.
-machine.rtc.time = 3000000000
 machine.boot model="iifx" ram=16384 video_card="mdc_8_24" video_mode="13in_rgb_8bpp" rom="${$ROM}"
+machine.rtc.time = 3000000000
 machine.scsi.attach_hd "$WORK_DIR/installed.img" 0
 scheduler.run 900000000
 settle(120)

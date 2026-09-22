@@ -21,7 +21,6 @@ LOG_USE_CATEGORY_NAME("sound");
 // Forward declaration — class descriptor is at the bottom of the file but
 // sound_init / sound_delete reference it.
 
-#include <assert.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,7 +98,9 @@ void sound_use_buffer(sound_t *sound, bool main) {
 
 // Sets the sound volume (0-7)
 void sound_volume(sound_t *sound, unsigned int volume) {
-    assert(volume < 8);
+    // Both callers bound it: plus.c passes (output & 7), and the object
+    // surface rejects >= 8 with an error before it reaches here.
+    GS_ASSERT(volume < 8);
 
     sound->volume = volume;
 }
@@ -132,12 +133,6 @@ unsigned sound_get_sample_rate(const sound_t *sound) {
     (void)sound;
     return sound ? SOUND_SRC_RATE_HZ : 0u;
 }
-void sound_mute(sound_t *sound, bool muted) {
-    if (!sound)
-        return;
-    sound_enable(sound, !muted);
-}
-
 // Flushes the pending push batch to the shared host audio stream
 static void sound_flush(sound_t *sound) {
     if (sound->out_count <= 0)
@@ -209,7 +204,10 @@ void sound_vbl(sound_t *restrict sound) {
     if (sound->scheduler)
         remove_event(sound->scheduler, &sound_scan_batch_event, sound);
 
-    assert(sound->buffer != NULL);
+    // sound_init calls sound_use_buffer unconditionally, and
+    // ram_native_pointer is mem->image + addr -- it cannot be NULL for a
+    // live machine.  (F-40 listed this as reachable; it is not.)
+    GS_ASSERT(sound->buffer != NULL);
     sound->scan_idx = VBL_OFFSET;
     sound->scan_left = SCAN_BATCHES;
     if (sound->scheduler)

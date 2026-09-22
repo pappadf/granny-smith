@@ -28,16 +28,15 @@
 # only happens once the OS is running FROM the ProFile.  The image is saved after
 # the screen goes blank (powered off).
 #
-# TEST_SETUP synthesizes the boot PRAM with the shared seed_pram.py (now in suite-lisa/, reused from
-# suite-lisa): BootVol=2 + the ProFile in the device-config table, exactly
-# what the installer leaves in PRAM at clean shutdown.
+# The boot PRAM is seeded in the MODEL (machine.hd.pram_init), not by a
+# host-side script: BootVol=2 with a fresh-battery checksum, so the OS rebuilds
+# the device table from the volume the install just wrote.
 
 TEST_NAME := Apple Lisa 2 LOS 3.1 ProFile install
 TEST_DESC := Full LOS 3.1 install onto the ProFile, then reboot off it and cleanly power off
 
 TEST_ROM := roms/lisa2-revh-098917b2.rom
 TEST_ARGS := model=lisa ram=2048 fd=$(TEST_DATA)/Lisa/LisaOfficeSystem-3.1/LOS-3.1-1.image
-TEST_SETUP := python3 suite-lisa/seed_pram.py "$(WORK_DIR)/profile.pram"
 
 # CI tier (proposal-integration-test-rework §5.4): unit | matrix | extended
 TEST_TIER := extended

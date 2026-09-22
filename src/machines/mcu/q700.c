@@ -66,24 +66,12 @@ static void q700_via1_output(void *context, uint8_t port, uint8_t output) {
             floppy_set_sel_signal(st->floppy, (output & 0x20) != 0);
         // No overlay bit here: the MCU's overlay is access-triggered (mcu.c).
     } else {
-        if (st->adb) {
-            uint8_t st_mask = 0x30;
-            uint8_t old_st = st->last_port_b & st_mask;
-            uint8_t new_st = output & st_mask;
-            if (new_st != old_st)
-                adb_port_b_output(st->adb, output);
-        }
-        st->last_port_b = output;
-        if (cfg->rtc)
-            rtc_input(cfg->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
+        // Bits 4-5: ADB state lines (ST0/ST1) -> ADB controller.  The
+        // ST-transition filter and its port-B shadow live in adb.c now.
+        if (st->adb)
+            adb_port_b_output(st->adb, output);
+        rtc_via1_pb_output(cfg->rtc, output);
     }
-}
-
-static void q700_via1_shift_out(void *context, uint8_t byte) {
-    config_t *cfg = (config_t *)context;
-    mcu_state_t *st = q700_state(cfg);
-    if (st->adb)
-        adb_shift_byte(st->adb, byte);
 }
 
 // VIA2 outputs: PB4/PB3/PB0 drive the DFAC serial control on the Q700
@@ -256,7 +244,12 @@ static const mcu_board_desc_t q700_board_desc = {
 static const mcu_board_t q700_board = {
     .desc = &q700_board_desc,
     .via1_output = q700_via1_output,
-    .via1_shift_out = q700_via1_shift_out,
+    // No VIA1 shift-out routing: adb.c reads the VIA's shift register
+    // directly at each port-B ST transition, because in mode 7 the ADB
+    // transceiver clocks the shift, not the VIA's internal timer, and the
+    // ROM's SR writes during interrupt handling fire the callback
+    // spuriously (BUG-004).  via.c tolerates a NULL here.
+    .via1_shift_out = NULL,
     .via2_output = q700_via2_output,
     .build_devices = q700_build_devices,
 };

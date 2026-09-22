@@ -74,6 +74,10 @@ extern const class_desc_t rtc_pram_class;
 
 void rtc_input(rtc_t *rtc, bool disable, bool clock, bool data);
 
+// The one raw store into the PRAM array; see the definition below for why it
+// is unconditional and where the write-protect check lives instead.
+static void pram_store(rtc_t *rtc, uint8_t addr, uint8_t value);
+
 // Map a legacy one-byte PRAM command to its physical PRAM byte index, or -1
 // if `cmd` is not a PRAM register command.  The classic 20-byte SysParam
 // block is addressed as two register groups whose physical base differs by
@@ -95,7 +99,7 @@ static int legacy_pram_addr(const rtc_t *rtc, uint8_t cmd) {
 
 static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
     // high bits set equals read operation
-    assert(cmd >> 7);
+    GS_ASSERT(cmd >> 7); // read_cmd is only reached through IS_READ(shift)
 
     switch (cmd & 0x7F) {
 
@@ -140,7 +144,7 @@ static uint8_t read_cmd(rtc_t *rtc, uint8_t cmd) {
 
 static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
     // High bit clear indicates write operation
-    assert(cmd >> 7 == 0);
+    GS_ASSERT(cmd >> 7 == 0); // write_cmd is only reached when IS_READ is false
 
     // Write-protect command itself is always allowed
     if (cmd != CMD_WRITE_PROTECT) {
@@ -192,7 +196,7 @@ static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
         // legacy_pram_addr() resolves the physical byte per chip variant.
         int wa = legacy_pram_addr(rtc, cmd);
         if (wa >= 0)
-            rtc->pram[wa] = pram;
+            pram_store(rtc, (uint8_t)wa, pram);
         else
             LOG(1, "Unknown write command: 0x%02X data=0x%02X", cmd, pram);
     }
@@ -201,13 +205,30 @@ static void write_cmd(rtc_t *rtc, uint8_t cmd, uint8_t pram) {
     return;
 }
 
-// Extract address from extended command bytes
-// Extended commands use bits from both cmd1 and cmd2 to form the full address
-static uint8_t read_ext(rtc_t *rtc, uint8_t cmd1, uint8_t cmd2) {
-    // Extract address bits: bits [2:0] of cmd1 become addr[7:5], bits [6:2] of cmd2 become addr[4:0]
+// The extended-command address decode, used by both the read and the write
+// side.  3 high bits from cmd1 + 5 low bits from cmd2 = the 8 sectors of 32
+// bytes the Hardware Overview describes (rev.2 p.1759).  The decode itself is
+// CORRECT — it lived in two identical copies, which is the kind of duplication
+// that invites someone to "fix" one of them.
+static uint8_t ext_addr(uint8_t cmd1, uint8_t cmd2) {
     uint8_t addr_high = (cmd1 & 0x07) << 5; // bits 7:5 from cmd1
     uint8_t addr_low = (cmd2 >> 2) & 0x1F; // bits 4:0 from cmd2
-    uint8_t address = addr_high | addr_low;
+    return (uint8_t)(addr_high | addr_low);
+}
+
+// The one raw store into the PRAM array.  UNCONDITIONAL by design: the
+// write-protect latch is a property of the RTC's command decoder, so the check
+// belongs at each chip-path caller, not in here.  That matters because the
+// Egret and Cuda machines reach PRAM through a completely different chip — a
+// 68HC05 with a packet protocol and no $35 register anywhere on the wire
+// (Hardware Overview rev.2 p.1767) — and must not inherit a law their silicon
+// does not have.
+static void pram_store(rtc_t *rtc, uint8_t addr, uint8_t value) {
+    rtc->pram[addr] = value;
+}
+
+static uint8_t read_ext(rtc_t *rtc, uint8_t cmd1, uint8_t cmd2) {
+    uint8_t address = ext_addr(cmd1, cmd2);
 
     LOG(3, "Extended read: cmd1=0x%02X cmd2=0x%02X addr=0x%02X", cmd1, cmd2, address);
     LOG(3, "Extended PRAM read: addr=0x%02X value=0x%02X", address, rtc->pram[address]);
@@ -215,13 +236,28 @@ static uint8_t read_ext(rtc_t *rtc, uint8_t cmd1, uint8_t cmd2) {
 }
 
 static void write_ext(rtc_t *rtc, uint8_t cmd1, uint8_t cmd2, uint8_t value) {
-    // Extract address bits: bits [2:0] of cmd1 become addr[7:5], bits [6:2] of cmd2 become addr[4:0]
-    uint8_t addr_high = (cmd1 & 0x07) << 5; // bits 7:5 from cmd1
-    uint8_t addr_low = (cmd2 >> 2) & 0x1F; // bits 4:0 from cmd2
-    uint8_t address = addr_high | addr_low;
+    uint8_t address = ext_addr(cmd1, cmd2);
+
+    // The write-protect latch gates BOTH windows.  It is one chip, one 256-byte
+    // array and one latch in the command decoder; the legacy and extended forms
+    // are two addressing modes over the same storage (Macintosh Hardware
+    // Overview rev.2 p.1759: "A 256-byte battery-backed-up RAM on the RTC ...
+    // organized as 8 sectors of 32 bytes each, accessed by the 'extended
+    // address' mode.  Twenty bytes of RAM can also be directly accessed in
+    // order to provide compatibility with an older version of the RTC").
+    //
+    // Before this check the model enforced protection on $08..$1F and ignored
+    // it on all 256 bytes of the same array — self-inconsistent regardless of
+    // what the real 343-0042 does, which no document we hold states.  The Mac
+    // ROM's _WriteXPRam disables protection first, so no corpus guest reaches
+    // this path; the fix is right by inspection, not by a failing test.
+    if (rtc->read_only) {
+        LOG(1, "Extended write refused while write-protected: addr=0x%02X value=0x%02X", address, value);
+        return;
+    }
 
     LOG(3, "Extended write: cmd1=0x%02X cmd2=0x%02X addr=0x%02X value=0x%02X", cmd1, cmd2, address, value);
-    rtc->pram[address] = value;
+    pram_store(rtc, address, value);
 }
 
 void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
@@ -245,7 +281,9 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
     }
 
     // Allow valid state transitions where both may be 0 momentarily, or at least one is active
-    assert((rtc->rx_bits >= 0 && rtc->tx_bits >= 0) && (rtc->rx_bits > 0 || rtc->tx_bits > 0));
+    // A true invariant now that rtc_init seeds rx_bits: the chip is always
+    // either receiving or transmitting, never neither.
+    GS_ASSERT((rtc->rx_bits >= 0 && rtc->tx_bits >= 0) && (rtc->rx_bits > 0 || rtc->tx_bits > 0));
 
     if (rtc->rx_bits) {
 
@@ -284,7 +322,7 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
                 rtc->command = 0;
             } else { // normal (non extended) write command
 
-                assert(!IS_READ(rtc->command));
+                GS_ASSERT(!IS_READ(rtc->command)); // the read forms are handled above
                 write_cmd(rtc, rtc->command, (uint8_t)rtc->shift);
                 rtc->command = 0;
                 rtc->rx_bits = 8;
@@ -301,7 +339,7 @@ void rtc_input(rtc_t *restrict rtc, bool disable, bool clock, bool data) {
             rtc->shift <<= 1;
     }
 
-    assert((rtc->rx_bits && !rtc->tx_bits) || (!rtc->rx_bits && rtc->tx_bits));
+    GS_ASSERT((rtc->rx_bits && !rtc->tx_bits) || (!rtc->rx_bits && rtc->tx_bits));
 }
 
 static void one_second_interrupt(void *source, uint64_t data) {
@@ -323,51 +361,26 @@ static void one_second_interrupt(void *source, uint64_t data) {
     scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL);
 }
 
-static uint32_t wall_clock_seconds(void) {
-    assert(sizeof(time_t) >= 4);
+// A property of the toolchain, not of any run: it belongs at compile time,
+// where it cannot be compiled out by the release profile the way the
+// runtime assert it replaces was.
+static_assert(sizeof(time_t) >= 4, "time_t must hold at least 32 bits for the Mac epoch conversion");
 
+static uint32_t wall_clock_seconds(void) {
     // Promote to uint64_t before the cast so the wrap point is visible (Mac
     // epoch in 1904 + Unix epoch overflowing uint32_t in 2040): the explicit
     // 64-bit add documents the assumption, the (uint32_t) cast is the wrap.
     return (uint32_t)((uint64_t)time(NULL) + MAC_TO_UNIX_EPOCH);
 }
 
-// === Deterministic boot seed ===============================================
-//
-// The RTC is a simulated-time counter: seeded once, then advanced only by
-// the simulated one-second scheduler event above.  The *seed* is the sole
-// point that could reach for host wall-clock time.  A test that pins
-// `rtc.time = N` before `machine.boot` is asking for that seed to be N, so
-// that every downstream tick is deterministic regardless of the host clock.
-//
-// The pin lands on the pre-boot RTC object, but `machine.boot` constructs a
-// fresh rtc_t; without staging, the pinned value is lost and rtc_init falls
-// back to wall-clock.  `rtc_stage_boot_seed` records the pin in module scope
-// so the cold-boot path can adopt it.  Only machines that opt in (currently
-// the PDM family, whose live guest clock makes the seed golden-visible)
-// consume it via `rtc_take_boot_seed`; every other machine keeps the
-// wall-clock default untouched, so their goldens are unaffected.  The web UI
-// never pins `rtc.time`, so nothing is staged and it still boots at real
-// time.
-static uint32_t s_pending_boot_seed = 0;
-static bool s_pending_boot_seed_valid = false;
-
-void rtc_stage_boot_seed(uint32_t mac_seconds) {
-    s_pending_boot_seed = mac_seconds;
-    s_pending_boot_seed_valid = true;
-}
-
-bool rtc_take_boot_seed(uint32_t *out) {
-    if (!s_pending_boot_seed_valid)
-        return false;
-    if (out)
-        *out = s_pending_boot_seed;
-    s_pending_boot_seed_valid = false; // one-shot: consumed by the next cold boot
-    return true;
-}
-
 void rtc_set_via(rtc_t *restrict rtc, via_t *via) {
     rtc->via = via;
+}
+
+void rtc_via1_pb_output(rtc_t *restrict rtc, uint8_t port_b) {
+    if (!rtc)
+        return;
+    rtc_input(rtc, (port_b >> 2) & 1, (port_b >> 1) & 1, port_b & 1);
 }
 
 void rtc_set_seconds(rtc_t *restrict rtc, uint32_t mac_seconds) {
@@ -405,9 +418,18 @@ uint8_t rtc_pram_read(const rtc_t *rtc, uint8_t addr) {
 bool rtc_pram_write(rtc_t *rtc, uint8_t addr, uint8_t value) {
     if (!rtc)
         return false;
-    if (rtc->read_only)
-        return false; // honor the write-protect bit, same as the chip path
-    rtc->pram[addr] = value;
+    // Shell/host policy, not chip law: the scripting surface honours the
+    // protect bit so a test that sets it sees writes refused the way a guest
+    // would.  Egret/Cuda PRAM traffic also lands here today, which means those
+    // machines inherit a law their chip does not have -- unreachable, because
+    // read_only is only ever set by the RTC's own $35 command and rtc_input is
+    // never driven on those families, but it is the reason pram_store() exists
+    // separately.  Anything that must not be gated calls pram_store() instead.
+    if (rtc->read_only) {
+        LOG(1, "PRAM write refused while write-protected: addr=0x%02X value=0x%02X", addr, value);
+        return false;
+    }
+    pram_store(rtc, addr, value);
     return true;
 }
 
@@ -422,6 +444,17 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
     rtc->extended = extended; // fixed machine property; set after any checkpoint restore below
 
     rtc->seconds = wall_clock_seconds();
+
+    // The serial state machine starts waiting for a command byte.  Without
+    // this, rx_bits and tx_bits are both zero after the memset and the only
+    // path that sets rx_bits = 8 from idle is rtc_input's `if (disable)`
+    // branch -- a rising clock edge observed while CE is DEasserted.  A guest
+    // that lowers CE and starts clocking without that prelude trips the
+    // bit-count invariant on its very first edge.  Shipped ROMs happen to
+    // clock while disabled first, which is the only reason this has never
+    // fired.  Placed before the checkpoint read below so a restore overwrites
+    // it with the saved mid-transaction state.
+    rtc->rx_bits = 8;
 
     LOG(1, "rtc_init: seconds=%u", rtc->seconds);
 
@@ -533,20 +566,20 @@ static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t
         long long parsed = strtoll(in.s, &endp, 10);
         if (endp && endp != in.s && *endp == '\0') {
             // Reject negatives and values that would overflow the 32-bit Mac
-            // seconds counter after the epoch shift. UINT32_MAX - 2082844800
+            // seconds counter after the epoch shift. UINT32_MAX - MAC_TO_UNIX_EPOCH
             // corresponds to early 2040, the Mac-counter wraparound point.
-            if (parsed < 0 || (uint64_t)parsed > (UINT32_MAX - 2082844800ull)) {
+            if (parsed < 0 || (uint64_t)parsed > (UINT32_MAX - (uint64_t)MAC_TO_UNIX_EPOCH)) {
                 value_free(&in);
                 return val_err("rtc.time: epoch out of range (0 ≤ unix < 2040)");
             }
-            mac_seconds = (uint32_t)((uint64_t)parsed + 2082844800u /* MAC_TO_UNIX_EPOCH */);
+            mac_seconds = (uint32_t)((uint64_t)parsed + MAC_TO_UNIX_EPOCH);
             resolved = true;
         } else {
             struct tm tm = {0};
             if (strptime(in.s, "%Y-%m-%dT%H:%M:%S", &tm)) {
                 time_t t = timegm(&tm);
-                if (t != (time_t)-1 && t >= 0 && (uint64_t)t <= (UINT32_MAX - 2082844800ull)) {
-                    mac_seconds = (uint32_t)((uint64_t)t + 2082844800u);
+                if (t != (time_t)-1 && t >= 0 && (uint64_t)t <= (UINT32_MAX - (uint64_t)MAC_TO_UNIX_EPOCH)) {
+                    mac_seconds = (uint32_t)((uint64_t)t + MAC_TO_UNIX_EPOCH);
                     resolved = true;
                 }
             }
@@ -569,9 +602,6 @@ static value_t rtc_attr_time_set(struct object *self, const member_t *m, value_t
     }
     value_free(&in);
     rtc_set_seconds(rtc, mac_seconds);
-    // Also stage this as the deterministic seed for the next cold boot, so a
-    // pre-boot `rtc.time = N` survives machine.boot on machines that opt in.
-    rtc_stage_boot_seed(mac_seconds);
     return val_none();
 }
 

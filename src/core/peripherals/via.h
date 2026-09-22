@@ -42,7 +42,8 @@ typedef void (*via_porta_write_fn)(void *context, uint8_t value, bool handshake)
 // Create a VIA instance with per-instance callback routing.
 // freq_factor: CPU-to-VIA clock divisor (e.g. 10 for Plus at 7.8 MHz, 20 for SE/30 at 15.7 MHz)
 // output_cb: called when a port output value changes
-// shift_cb: called when the shift register completes a shift-out
+// shift_cb: called when the shift register completes a shift-out; may be NULL
+//           on a VIA whose SR goes nowhere
 // irq_cb: called when the aggregate interrupt line changes state
 // cb_context: opaque pointer passed to all three callbacks
 // `name` ("via1" / "via2") tags scheduler events for checkpointing and is

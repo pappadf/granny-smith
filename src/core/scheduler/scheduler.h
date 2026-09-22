@@ -91,6 +91,12 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
 // Check if an event with the given callback is currently scheduled
 bool has_event(struct scheduler *restrict scheduler, event_callback_t callback);
 
+// When the last event still queued for this callback is due, in emulated
+// nanoseconds (the scheduler_time_ns clock); 0 if none is queued.  See the
+// definition for why keyboard.type wants this rather than a shadow copy of
+// the same instant.
+double scheduler_last_event_ns(struct scheduler *restrict scheduler, event_callback_t callback);
+
 // Schedule a new CPU event to fire after the specified cycles or nanoseconds
 event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
                                  uint64_t data, uint64_t cycles, uint64_t ns);

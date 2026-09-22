@@ -243,8 +243,11 @@ static void sr_shift_complete_callback(void *source, uint64_t data) {
 
     via->sr_shift_pending = false;
 
-    // Deliver the byte via the per-instance shift-out callback
-    via->shift_cb(via->cb_context, via->sr_shift_data);
+    // Deliver the byte via the per-instance shift-out callback.  A machine
+    // with nothing to route it to registers NULL -- mcu.c already does for
+    // VIA2 -- so this is a live NULL, not a hypothetical one.
+    if (via->shift_cb)
+        via->shift_cb(via->cb_context, via->sr_shift_data);
 
     // Signal shift completion to the ROM.  On the Mac Plus the ROM relies
     // on IFR_SR from this callback (the 80-cycle timer IS the shift
@@ -1079,7 +1082,8 @@ void via_input_sr(via_t *restrict via, uint8_t byte) {
             via->sr_shift_pending = false;
             remove_event(via->scheduler, &sr_shift_complete_callback, via);
             LOG(3, "via_input_sr: mode 7 completes pending shift-out 0x%02x", via->sr_shift_data);
-            via->shift_cb(via->cb_context, via->sr_shift_data);
+            if (via->shift_cb)
+                via->shift_cb(via->cb_context, via->sr_shift_data);
         }
         LOG(3, "via_input_sr: mode 7 -> setting IFR_SR (byte=0x%02x, sr=0x%02x)", byte, via->sr);
         update_ifr(via, via->ifr | IFR_SR);

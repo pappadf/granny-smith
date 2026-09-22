@@ -58,6 +58,24 @@ void egret_checkpoint(egret_t *eg, checkpoint_t *cp);
 
 // The host shifted a byte OUT to Egret (VIA SR in output mode, mode 7).  Wired
 // from the machine's VIA1 shift-out callback.
+// The VIA1 glue is the same on every machine that wires this transport to
+// VIA1: port B is the handshake, the shift register is a command byte, and
+// only the port test and a NULL check stand between the VIA callback and
+// the transport (F-19).  Five machines each carried their own copy of that,
+// and they had already drifted -- two tested the machine-state pointer for
+// NULL and two did not.  Both entry points below are NULL-tolerant, and
+// egret_via1_port_output takes the port number, so a machine's callback is one
+// line and cannot get the port wrong.
+//
+// Registering the transport pointer as the VIA callback context, which
+// would remove the shim entirely, is NOT available: via_init takes one
+// cb_context for all three callbacks, and the IRQ callback needs cfg on
+// every one of these machines (av_via1_irq -> av_update_ipl((config_t *)
+// context), same shape on PDM and TNT), as does the IIsi's port-A output
+// for the ROM overlay.  A vtable returning the pair runs into the same
+// wall.  This is the available consolidation, not the preferred one.
+void egret_via1_port_output(egret_t *eg, uint8_t port, uint8_t output);
+
 void egret_via1_shift_input(egret_t *eg, uint8_t byte);
 
 // The host's VIA1 port-B output changed.  `port_b` is the VIA's masked port-B
@@ -73,9 +91,7 @@ void egret_set_power_off_callback(egret_t *eg, void (*cb)(void *ctx), void *ctx)
 // === Object-model / test helpers ============================================
 
 // Firmware identity string ("Egret8").
-const char *egret_firmware(const egret_t *eg);
 
 // Force a 1-second tick packet now (test helper; normally autonomous).
-void egret_force_tick(egret_t *eg);
 
 #endif // EGRET_H

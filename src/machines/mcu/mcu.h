@@ -136,8 +136,6 @@ typedef struct mcu_state {
 
     mac030_io_t io; // device handles for the shared I/O engine
 
-    uint8_t last_port_b; // VIA1 PB output, for ADB ST-transition filtering
-
     // Orwell memory controller ($5000E000).  `orwell_cfg` is the 34-bit
     // shift-in register; `bank_start` holds the values latched from it.
     uint64_t orwell_cfg; // staged config bits (bit N = config bit N)

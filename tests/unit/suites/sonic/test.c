@@ -411,7 +411,95 @@ TEST(test_mac_loopback_two_fragments_and_rde) {
     ASSERT_TRUE(sonic_reg_read(s, S_ISR) & I_RDE);
 }
 
+// ============================================================
+// Checkpoint and power-on defaults (code review 2026-09-03, unit E1/E3)
+// ============================================================
+
+// A recording checkpoint stream.  This suite used to link the no-op stub;
+// F-41 is precisely about what goes INTO the stream, so it needs to see it.
+static uint8_t cp_buf[8192];
+static size_t cp_w, cp_r;
+
+void system_write_checkpoint_data_loc(checkpoint_t *cp, const void *data, size_t size, const char *file, int line) {
+    (void)cp, (void)file, (void)line;
+    ASSERT_TRUE(cp_w + size <= sizeof cp_buf);
+    memcpy(cp_buf + cp_w, data, size);
+    cp_w += size;
+}
+void system_read_checkpoint_data_loc(checkpoint_t *cp, void *data, size_t size, const char *file, int line) {
+    (void)cp, (void)file, (void)line;
+    ASSERT_TRUE(cp_r + size <= cp_w);
+    memcpy(data, cp_buf + cp_r, size);
+    cp_r += size;
+}
+
+// sonic_checkpoint wrote sizeof(struct sonic) -- the whole struct, trailing
+// pointers and all.  It was the LAST whole-struct checkpoint write in the
+// tree.  Three host addresses rode in every save file: the IRQ callback, its
+// context, and the dma_mem_port_t's function pointers.  A save file with a
+// host address in it is a save file that cannot be moved between runs, let
+// alone between builds.
+//
+// The test looks for the callback's own address in the bytes.  That is the
+// defect stated directly, rather than through a proxy.
+TEST(test_the_checkpoint_carries_no_host_pointers) {
+    sonic_t *s = fresh(); // binds irq_cb and a dma_mem_port_t
+    cp_w = cp_r = 0;
+
+    sonic_reg_write(s, S_EOBC, 0x0BEE); // something identifiable in the prefix
+    sonic_checkpoint(s, (checkpoint_t *)1);
+    ASSERT_TRUE(cp_w > 0);
+
+    const void *needles[] = {(const void *)(uintptr_t)&irq_cb, (const void *)(uintptr_t)&mock_read,
+                             (const void *)(uintptr_t)&mock_write};
+    for (size_t k = 0; k < sizeof needles / sizeof needles[0]; k++) {
+        for (size_t i = 0; i + sizeof(void *) <= cp_w; i++) {
+            void *p;
+            memcpy(&p, cp_buf + i, sizeof p);
+            if (p == needles[k]) {
+                fprintf(stderr, "[FAIL] host pointer %p found at byte %zu of the %zu-byte stream\n", p, i, cp_w);
+                exit(1);
+            }
+        }
+    }
+}
+
+// ...and the prefix that IS written round-trips.
+TEST(test_the_checkpoint_round_trips) {
+    sonic_t *s = fresh();
+    cp_w = cp_r = 0;
+
+    sonic_reg_write(s, S_EOBC, 0x0BEE);
+    sonic_checkpoint(s, (checkpoint_t *)1);
+
+    cp_r = 0;
+    sonic_t *b = sonic_init((checkpoint_t *)1);
+    ASSERT_TRUE(b != NULL);
+    ASSERT_EQ_INT(0x0BEE, sonic_reg_read(b, S_EOBC));
+    sonic_delete(b);
+}
+
+// EOBC comes up at $02F8 (DP83932 datasheet 4.3.9), not zero.  It is the
+// word count below which the receiver stops treating the remaining RBA
+// space as usable; at zero the test is `rbwc < 0`, never true, so a driver
+// that relies on the power-on value would fill past the end of the RBA.
+// This exercises the DEFAULT, which is the point -- a programmed value read
+// back proves nothing about reset.
+TEST(test_eobc_powers_up_at_the_datasheet_value) {
+    sonic_t *s = fresh();
+    ASSERT_EQ_INT(0x02F8, sonic_reg_read(s, S_EOBC));
+
+    sonic_reg_write(s, S_EOBC, 0x0010);
+    ASSERT_EQ_INT(0x0010, sonic_reg_read(s, S_EOBC));
+
+    sonic_hard_reset(s);
+    ASSERT_EQ_INT(0x02F8, sonic_reg_read(s, S_EOBC));
+}
+
 int main(void) {
+    RUN(test_the_checkpoint_carries_no_host_pointers);
+    RUN(test_the_checkpoint_round_trips);
+    RUN(test_eobc_powers_up_at_the_datasheet_value);
     RUN(test_bitmarch_register_semantics);
     RUN(test_camdma_load_and_readback);
     RUN(test_interrupt_mask_gating);

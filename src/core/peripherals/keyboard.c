@@ -4,16 +4,15 @@
 // keyboard.c
 // Implements Mac Plus keyboard emulation via VIA shift register interface.
 
-#include <assert.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-
 #include "keyboard.h"
 #include "log.h"
 #include "scheduler.h"
 #include "system.h"
 #include "via.h"
+
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 LOG_USE_CATEGORY_NAME("keyboard");
 
@@ -82,7 +81,12 @@ static void enqueue(keyboard_t *keyboard, uint8_t byte) {
 }
 
 static uint8_t dequeue(keyboard_t *keyboard) {
-    assert(keyboard->queue.tail != keyboard->queue.head);
+    // The sole caller guards with `if (!queue_empty(...))`.  (F-40 called
+    // this reachable by analogy with adb.c's kbd_dequeue; adb.c's really is,
+    // from a bare guest register poll, and this one is not.)  A tripped
+    // GS_ASSERT returns, which here would hand back a stale byte and advance
+    // tail past head -- worth knowing, and the reason not to lean on it.
+    GS_ASSERT(keyboard->queue.tail != keyboard->queue.head);
 
     uint8_t byte = keyboard->queue.buf[keyboard->queue.tail];
 
@@ -113,10 +117,10 @@ static void tx_to_via(keyboard_t *keyboard, uint8_t byte) {
 }
 
 // Called when inquiry command times out with no key events
-void timeout_callback(void *source, uint64_t data) {
+static void keyboard_timeout_callback(void *source, uint64_t data) {
     keyboard_t *keyboard = (keyboard_t *)source;
 
-    LOG(3, "timeout_callback: inquiry timed out, sending NULL_RESPONSE 0x%02X", NULL_RESPONSE);
+    LOG(3, "keyboard_timeout_callback: inquiry timed out, sending NULL_RESPONSE 0x%02X", NULL_RESPONSE);
 
     // Send null response to signal that no key event occurred
     tx_to_via(keyboard, NULL_RESPONSE);
@@ -126,27 +130,39 @@ void timeout_callback(void *source, uint64_t data) {
 }
 
 // Enters the data transfer phase after receiving a command
-void tx_callback(void *source, uint64_t data) {
+static void keyboard_tx_callback(void *source, uint64_t data) {
     keyboard_t *keyboard = (keyboard_t *)source;
 
-    LOG(3, "tx_callback: active_cmd=0x%02X, queue_empty=%d", keyboard->active_cmd, queue_empty(keyboard));
+    LOG(3, "keyboard_tx_callback: active_cmd=0x%02X, queue_empty=%d", keyboard->active_cmd, queue_empty(keyboard));
 
     // if there is data queued up...
     if (!queue_empty(keyboard)) {
         uint8_t byte = dequeue(keyboard);
-        LOG(3, "tx_callback: sending queued byte 0x%02X", byte);
+        LOG(3, "keyboard_tx_callback: sending queued byte 0x%02X", byte);
 
         // ...then send it
         tx_to_via(keyboard, byte);
 
         // remove any pending timeout
-        remove_event(keyboard->scheduler, &timeout_callback, (void *)keyboard);
+        remove_event(keyboard->scheduler, &keyboard_timeout_callback, (void *)keyboard);
     } else if (keyboard->active_cmd == CMD_INSTANT) {
-        LOG(3, "tx_callback: INSTANT with empty queue, sending NULL_RESPONSE");
-        assert(!has_event(keyboard->scheduler, &timeout_callback));
+        LOG(3, "keyboard_tx_callback: INSTANT with empty queue, sending NULL_RESPONSE");
+
+        // This used to assert that no timeout was armed.  It is an ordinary
+        // guest sequence that arms one: INQUIRY schedules the 250 ms timer
+        // and nothing cancels it when a later command supersedes it, so an
+        // INSTANT arriving with the queue still empty finds it live.  The
+        // INSTANT answers now, which is precisely what the INQUIRY's timeout
+        // was there to do if nothing else did; leaving it armed would put a
+        // second, unsolicited NULL_RESPONSE on the wire 250 ms later.
+        if (has_event(keyboard->scheduler, &keyboard_timeout_callback)) {
+            LOG(2, "keyboard_tx_callback: dropping the INQUIRY timeout superseded by this INSTANT");
+            remove_event(keyboard->scheduler, &keyboard_timeout_callback, (void *)keyboard);
+        }
+
         tx_to_via(keyboard, NULL_RESPONSE);
     } else {
-        LOG(3, "tx_callback: no data, setting tx_pending=true");
+        LOG(3, "keyboard_tx_callback: no data, setting tx_pending=true");
         keyboard->tx_pending = true;
     }
 }
@@ -161,7 +177,7 @@ static void add_key_event(keyboard_t *keyboard, uint8_t key) {
         LOG(2, "add_key_event: sending immediately to via");
         tx_to_via(keyboard, key);
         keyboard->tx_pending = false;
-        remove_event(keyboard->scheduler, &timeout_callback, (void *)keyboard);
+        remove_event(keyboard->scheduler, &keyboard_timeout_callback, (void *)keyboard);
     } else {
         LOG(2, "add_key_event: enqueueing for later");
         enqueue(keyboard, key);
@@ -194,289 +210,179 @@ extern void keyboard_update(keyboard_t *keyboard, key_event_t event, int host_ke
     }
 
     // Translate ADB virtual key code to Mac Plus raw code.
-    // See notes/key-mappings.md for the complete translation table.
+    // The full table is docs/core/peripherals/keyboard.md §6.4, derived from
+    // Guide to the Macintosh Family Hardware 2e Figure 7-6 (p.282).
+    //
+    // Three prefix forms, not two.  Guide 2e p.283 (:6694):
+    //
+    //   "If a key transition occurs for one of the arrow keys -- which are
+    //    lowercase keys on the separate keypad -- the Macintosh Plus keyboard
+    //    responds to an Inquiry command by sending back the Keypad response
+    //    ($79) followed by the code shown in Figure 7-6.  If a key transition
+    //    occurs on the Macintosh Plus numeric keypad for the plus sign (+),
+    //    asterisk (*), or slash (/) keys -- which are UPPERCASE keys on the
+    //    separate keypad -- the Macintosh Plus keyboard responds ... by
+    //    sending back the Shift key-down transition response ($71), followed
+    //    by the Keypad response ($79), followed by the code."
+    //
+    // The Shift prefix is load-bearing, not decorative: on a Plus the keypad
+    // symbol and its arrow SHARE a raw code, and after the Keyboard Driver's
+    // conversion ($40 + ((raw & $7F) >> 1), p.282) they share a KEY code too.
+    // Shift is the only thing that tells them apart.
     uint8_t raw_code;
-    bool needs_keypad_prefix = false;
+    enum { PREFIX_NONE, PREFIX_KEYPAD, PREFIX_SHIFT_KEYPAD } prefix = PREFIX_NONE;
 
-    switch (host_key) {
-    // Main keyboard letters and numbers: raw = (virtual << 1) | 1
-    case 0x00:
-        raw_code = 0x01;
-        break; // A
-    case 0x01:
-        raw_code = 0x03;
-        break; // S
-    case 0x02:
-        raw_code = 0x05;
-        break; // D
-    case 0x03:
-        raw_code = 0x07;
-        break; // F
-    case 0x04:
-        raw_code = 0x09;
-        break; // H
-    case 0x05:
-        raw_code = 0x0B;
-        break; // G
-    case 0x06:
-        raw_code = 0x0D;
-        break; // Z
-    case 0x07:
-        raw_code = 0x0F;
-        break; // X
-    case 0x08:
-        raw_code = 0x11;
-        break; // C
-    case 0x09:
-        raw_code = 0x13;
-        break; // V
-    case 0x0B:
-        raw_code = 0x17;
-        break; // B
-    case 0x0C:
-        raw_code = 0x19;
-        break; // Q
-    case 0x0D:
-        raw_code = 0x1B;
-        break; // W
-    case 0x0E:
-        raw_code = 0x1D;
-        break; // E
-    case 0x0F:
-        raw_code = 0x1F;
-        break; // R
-    case 0x10:
-        raw_code = 0x21;
-        break; // Y
-    case 0x11:
-        raw_code = 0x23;
-        break; // T
-    case 0x12:
-        raw_code = 0x25;
-        break; // 1
-    case 0x13:
-        raw_code = 0x27;
-        break; // 2
-    case 0x14:
-        raw_code = 0x29;
-        break; // 3
-    case 0x15:
-        raw_code = 0x2B;
-        break; // 4
-    case 0x16:
-        raw_code = 0x2D;
-        break; // 6
-    case 0x17:
-        raw_code = 0x2F;
-        break; // 5
-    case 0x18:
-        raw_code = 0x31;
-        break; // =
-    case 0x19:
-        raw_code = 0x33;
-        break; // 9
-    case 0x1A:
-        raw_code = 0x35;
-        break; // 7
-    case 0x1B:
-        raw_code = 0x37;
-        break; // -
-    case 0x1C:
-        raw_code = 0x39;
-        break; // 8
-    case 0x1D:
-        raw_code = 0x3B;
-        break; // 0
-    case 0x1E:
-        raw_code = 0x3D;
-        break; // ]
-    case 0x1F:
-        raw_code = 0x3F;
-        break; // O
-    case 0x20:
-        raw_code = 0x41;
-        break; // U
-    case 0x21:
-        raw_code = 0x43;
-        break; // [
-    case 0x22:
-        raw_code = 0x45;
-        break; // I
-    case 0x23:
-        raw_code = 0x47;
-        break; // P
-    case 0x24:
-        raw_code = 0x49;
-        break; // Return
-    case 0x25:
-        raw_code = 0x4B;
-        break; // L
-    case 0x26:
-        raw_code = 0x4D;
-        break; // J
-    case 0x27:
-        raw_code = 0x4F;
-        break; // '
-    case 0x28:
-        raw_code = 0x51;
-        break; // K
-    case 0x29:
-        raw_code = 0x53;
-        break; // ;
-    case 0x2A:
-        raw_code = 0x55;
-        break; // backslash
-    case 0x2B:
-        raw_code = 0x57;
-        break; // ,
-    case 0x2C:
-        raw_code = 0x59;
-        break; // /
-    case 0x2D:
-        raw_code = 0x5B;
-        break; // N
-    case 0x2E:
-        raw_code = 0x5D;
-        break; // M
-    case 0x2F:
-        raw_code = 0x5F;
-        break; // .
-    case 0x30:
-        raw_code = 0x61;
-        break; // Tab
-    case 0x31:
-        raw_code = 0x63;
-        break; // Space
-    case 0x32:
-        raw_code = 0x65;
-        break; // `
-    case 0x33:
-        raw_code = 0x67;
-        break; // Delete
-    case 0x35:
-        raw_code = 0x6B;
-        break; // Escape (map to Mac Plus if desired)
-    case 0x37:
-        raw_code = 0x6F;
-        break; // Command
-    case 0x38:
-        raw_code = 0x71;
-        break; // Shift
-    case 0x39:
-        raw_code = 0x73;
-        break; // Caps Lock
-    case 0x3A:
-        raw_code = 0x75;
-        break; // Option
+    // One rule and one exception table, rather than 270 lines of switch.
+    //
+    // THE RULE (Guide 2e p.282): every main-keyboard key's Plus raw code is
+    // `(adb << 1) | 1`.  Verified against all 56 entries of the switch this
+    // replaces -- zero exceptions.  The Keyboard Driver inverts it by
+    // stripping bit 7 and shifting right, which is why the round trip works.
+    //
+    // THE EXCEPTIONS are the 22 keys that are physically on the separate
+    // keypad, where the raw code is SHARED with a main-keyboard key and a
+    // prefix selects the keypad meaning.  Those cannot be derived; they are
+    // Figure 7-6, transcribed.  The prefix column is the part that was wrong
+    // until 2026-09-21 -- see the enum above.
+    //
+    // THE GAPS below $3B are deliberate: $36 is Control, which the M0110A
+    // does not have; $0A is the ISO section/plus-minus key, a real (small)
+    // gap for international layouts; $34 is unassigned on ADB.
+    static const struct {
+        uint8_t adb;
+        uint8_t raw;
+        uint8_t prefix;
+    } keypad_aliases[] = {
+        // Arrow keys -- lowercase keys on the separate keypad, so $79 only.
+        // Each appears twice because the ADB extended keyboard reports them
+        // in both the $3B-$3E and $7B-$7E ranges.
+        {0x3B, 0x0D, PREFIX_KEYPAD      },
+        {0x7B, 0x0D, PREFIX_KEYPAD      }, // Left
+        {0x3C, 0x05, PREFIX_KEYPAD      },
+        {0x7C, 0x05, PREFIX_KEYPAD      }, // Right
+        {0x3D, 0x11, PREFIX_KEYPAD      },
+        {0x7D, 0x11, PREFIX_KEYPAD      }, // Down
+        {0x3E, 0x1B, PREFIX_KEYPAD      },
+        {0x7E, 0x1B, PREFIX_KEYPAD      }, // Up
 
-    // Arrow keys: need $79 prefix, then shared letter key code.  Both
-    // arrow code sets are accepted: 0x3B-0x3E are the RAW ADB scan
-    // codes (what the web layer and the ADB model use — on ADB
-    // keyboards raw 0x7B+ are the right-hand modifiers), 0x7B-0x7E
-    // the Extended-layout virtual codes kept for compatibility.
-    case 0x3B:
-    case 0x7B:
-        raw_code = 0x0D;
-        needs_keypad_prefix = true;
-        break; // Left (Z)
-    case 0x3C:
-    case 0x7C:
-        raw_code = 0x05;
-        needs_keypad_prefix = true;
-        break; // Right (D)
-    case 0x3D:
-    case 0x7D:
-        raw_code = 0x11;
-        needs_keypad_prefix = true;
-        break; // Down (C)
-    case 0x3E:
-    case 0x7E:
-        raw_code = 0x1B;
-        needs_keypad_prefix = true;
-        break; // Up (W)
+        // Numeric keypad.  The four operators are UPPERCASE keys on the
+        // separate keypad and take the $71 Shift prefix as well; without it
+        // they are indistinguishable from the arrows above, with which they
+        // share their raw codes.
+        {0x41, 0x03, PREFIX_KEYPAD      }, // .
+        {0x43, 0x05, PREFIX_SHIFT_KEYPAD}, // *   (shares Right's $05)
+        {0x45, 0x0D, PREFIX_SHIFT_KEYPAD}, // +   (shares Left's  $0D)
+        {0x47, 0x0F, PREFIX_KEYPAD      }, // Clear (shares X's $0F)
+        {0x4B, 0x1B, PREFIX_SHIFT_KEYPAD}, // /   (shares Up's    $1B)
+        {0x4C, 0x19, PREFIX_KEYPAD      }, // Enter
+        {0x4E, 0x1D, PREFIX_KEYPAD      }, // -
+        {0x51, 0x11, PREFIX_SHIFT_KEYPAD}, // =   (shares Down's  $11)
+        {0x52, 0x25, PREFIX_KEYPAD      }, // 0
+        {0x53, 0x27, PREFIX_KEYPAD      }, // 1
+        {0x54, 0x29, PREFIX_KEYPAD      }, // 2
+        {0x55, 0x2B, PREFIX_KEYPAD      }, // 3
+        {0x56, 0x2D, PREFIX_KEYPAD      }, // 4
+        {0x57, 0x2F, PREFIX_KEYPAD      }, // 5
+        {0x58, 0x31, PREFIX_KEYPAD      }, // 6
+        {0x59, 0x33, PREFIX_KEYPAD      }, // 7
+        {0x5B, 0x37, PREFIX_KEYPAD      }, // 8
+        {0x5C, 0x39, PREFIX_KEYPAD      }, // 9
+    };
 
-    // Numeric keypad: need $79 prefix, then shared main key code
-    case 0x41:
-        raw_code = 0x03;
-        needs_keypad_prefix = true;
-        break; // Keypad . (S)
-    case 0x43:
-        raw_code = 0x05;
-        needs_keypad_prefix = true;
-        break; // Keypad * (D)
-    case 0x45:
-        raw_code = 0x0D;
-        needs_keypad_prefix = true;
-        break; // Keypad + (Z)
-    case 0x47:
-        raw_code = 0x0F;
-        break; // Keypad Clear (X) - unique, no prefix
-    case 0x4B:
-        raw_code = 0x1B;
-        needs_keypad_prefix = true;
-        break; // Keypad / (W)
-    case 0x4C:
-        raw_code = 0x19;
-        needs_keypad_prefix = true;
-        break; // Keypad Enter (Q)
-    case 0x4E:
-        raw_code = 0x1D;
-        needs_keypad_prefix = true;
-        break; // Keypad - (E)
-    case 0x51:
-        raw_code = 0x11;
-        needs_keypad_prefix = true;
-        break; // Keypad = (C)
-    case 0x52:
-        raw_code = 0x25;
-        needs_keypad_prefix = true;
-        break; // Keypad 0 (1)
-    case 0x53:
-        raw_code = 0x27;
-        needs_keypad_prefix = true;
-        break; // Keypad 1 (2)
-    case 0x54:
-        raw_code = 0x29;
-        needs_keypad_prefix = true;
-        break; // Keypad 2 (3)
-    case 0x55:
-        raw_code = 0x2B;
-        needs_keypad_prefix = true;
-        break; // Keypad 3 (4)
-    case 0x56:
-        raw_code = 0x2D;
-        needs_keypad_prefix = true;
-        break; // Keypad 4 (6)
-    case 0x57:
-        raw_code = 0x2F;
-        needs_keypad_prefix = true;
-        break; // Keypad 5 (5)
-    case 0x58:
-        raw_code = 0x31;
-        needs_keypad_prefix = true;
-        break; // Keypad 6 (=)
-    case 0x59:
-        raw_code = 0x33;
-        needs_keypad_prefix = true;
-        break; // Keypad 7 (9)
-    case 0x5B:
-        raw_code = 0x37;
-        needs_keypad_prefix = true;
-        break; // Keypad 8 (-)
-    case 0x5C:
-        raw_code = 0x39;
-        needs_keypad_prefix = true;
-        break; // Keypad 9 (8)
+    // Keys the Plus keyboard actually has, as ADB virtual codes: $00-$3A
+    // minus the three gaps.  Anything outside this and the alias table is a
+    // key the M0110A has no equivalent for.
+    static const bool plus_has_key[0x3B] = {
+        [0x00] = true,
+        [0x01] = true,
+        [0x02] = true,
+        [0x03] = true,
+        [0x04] = true,
+        [0x05] = true,
+        [0x06] = true,
+        [0x07] = true,
+        [0x08] = true,
+        [0x09] = true, /* $0A ISO sect: absent */
+        [0x0B] = true,
+        [0x0C] = true,
+        [0x0D] = true,
+        [0x0E] = true,
+        [0x0F] = true,
+        [0x10] = true,
+        [0x11] = true,
+        [0x12] = true,
+        [0x13] = true,
+        [0x14] = true,
+        [0x15] = true,
+        [0x16] = true,
+        [0x17] = true,
+        [0x18] = true,
+        [0x19] = true,
+        [0x1A] = true,
+        [0x1B] = true,
+        [0x1C] = true,
+        [0x1D] = true,
+        [0x1E] = true,
+        [0x1F] = true,
+        [0x20] = true,
+        [0x21] = true,
+        [0x22] = true,
+        [0x23] = true,
+        [0x24] = true,
+        [0x25] = true,
+        [0x26] = true,
+        [0x27] = true,
+        [0x28] = true,
+        [0x29] = true,
+        [0x2A] = true,
+        [0x2B] = true,
+        [0x2C] = true,
+        [0x2D] = true,
+        [0x2E] = true,
+        [0x2F] = true,
+        [0x30] = true,
+        [0x31] = true,
+        [0x32] = true,
+        [0x33] = true,
+        /* $34 unassigned on ADB */
+        [0x35] = true, /* Escape: the Plus has no Esc key, but the driver maps
+                          the formula's $6B back to $35, so it round-trips */
+        /* $36 Control: the M0110A has no Control key */
+        [0x37] = true,
+        [0x38] = true,
+        [0x39] = true,
+        [0x3A] = true,
+    };
 
-    default:
-        LOG(1, "keyboard_update: unknown ADB virtual key 0x%02X", host_key);
-        return;
+    bool found = false;
+    for (size_t i = 0; i < sizeof keypad_aliases / sizeof keypad_aliases[0]; i++) {
+        if (keypad_aliases[i].adb == (uint8_t)host_key) {
+            raw_code = keypad_aliases[i].raw;
+            prefix = keypad_aliases[i].prefix;
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        if (host_key >= (int)(sizeof plus_has_key / sizeof plus_has_key[0]) || !plus_has_key[host_key]) {
+            LOG(1, "keyboard_update: unknown ADB virtual key 0x%02X", host_key);
+            return;
+        }
+        raw_code = (uint8_t)((host_key << 1) | 1);
     }
 
-    // Emit keypad prefix if needed (for arrow keys and numeric keypad)
-    if (needs_keypad_prefix) {
+    // Emit the prefix, if any.  $71 is the Shift KEY-DOWN code, so on release
+    // it becomes $F1 by the same bit-7 rule as every other key -- otherwise
+    // the driver's Shift latch stays down and every later keystroke arrives
+    // shifted.  INFERRED: Guide 2e specifies only the key-down sequence and
+    // Figure 7-6 is the key-down figure; no source we hold states what the
+    // Plus sends on release of keypad + * /.  The plus-keyboard test asserts
+    // Shift's KeyMap bit is clear afterwards, which catches a stuck latch
+    // whichever way the real hardware behaved.
+    if (prefix == PREFIX_SHIFT_KEYPAD)
+        add_key_event(keyboard, (event == key_up) ? 0xF1 : 0x71);
+    if (prefix != PREFIX_NONE)
         add_key_event(keyboard, 0x79);
-    }
 
     // Set key-up flag in bit 7
     if (event == key_up)
@@ -510,7 +416,7 @@ void keyboard_input(keyboard_t *keyboard, uint8_t byte) {
         break;
     case CMD_INQUIRY:
         LOG(2, "keyboard_input: INQUIRY command, scheduling 250ms timeout");
-        scheduler_new_cpu_event(keyboard->scheduler, &timeout_callback, keyboard, 0, 0, NS_PER_SEC / 4);
+        scheduler_new_cpu_event(keyboard->scheduler, &keyboard_timeout_callback, keyboard, 0, 0, NS_PER_SEC / 4);
         // Respond promptly (spec: host polls roughly every 0.25s; keyboard must not wait that long)
         break;
     case CMD_INSTANT:
@@ -534,7 +440,7 @@ void keyboard_input(keyboard_t *keyboard, uint8_t byte) {
 
     if (schedule_tx) {
         LOG(3, "keyboard_input: scheduling tx callback");
-        scheduler_new_cpu_event(keyboard->scheduler, &tx_callback, keyboard, 0, 0, RX_TO_TX_DELAY);
+        scheduler_new_cpu_event(keyboard->scheduler, &keyboard_tx_callback, keyboard, 0, 0, RX_TO_TX_DELAY);
     }
 }
 
@@ -552,8 +458,8 @@ keyboard_t *keyboard_init(struct scheduler *scheduler, scc_t *scc, via_t *via, c
     memset(keyboard->pressed, 0, sizeof(keyboard->pressed));
 
     // Register event types for checkpointing
-    scheduler_new_event_type(scheduler, "keyboard", keyboard, "timeout", &timeout_callback);
-    scheduler_new_event_type(scheduler, "keyboard", keyboard, "tx", &tx_callback);
+    scheduler_new_event_type(scheduler, "keyboard", keyboard, "timeout", &keyboard_timeout_callback);
+    scheduler_new_event_type(scheduler, "keyboard", keyboard, "tx", &keyboard_tx_callback);
 
     // Load from checkpoint if provided
     if (checkpoint) {

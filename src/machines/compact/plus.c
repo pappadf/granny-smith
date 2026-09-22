@@ -479,7 +479,7 @@ static void plus_via_output(void *context, uint8_t port, uint8_t output) {
             sound_volume(snd, output & 7);
         }
     } else {
-        rtc_input(sim->rtc, (output >> 2) & 1, (output >> 1) & 1, output & 1);
+        rtc_via1_pb_output(sim->rtc, output);
 
         if (snd)
             sound_enable(snd, (output & 0x80) == 0);

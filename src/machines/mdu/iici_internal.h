@@ -28,8 +28,8 @@ struct floppy;
 struct rbv;
 struct nubus_card;
 
-// IIci state is the unified MDU+RBV state struct (mdu_io.h).  The IIci uses
-// last_port_b and leaves the egret member NULL.
+// IIci state is the unified MDU+RBV state struct (mdu_io.h).  The IIci leaves
+// the egret member NULL.
 typedef mac030_mdu_state_t iici_state_t;
 
 static inline iici_state_t *iici_state(config_t *cfg) {
