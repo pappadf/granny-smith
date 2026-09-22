@@ -196,6 +196,19 @@ static inline __attribute__((always_inline)) uint32_t phys_read32(mmu_state_t *m
         if (mmu->physical_rom_size >= 4 && offset <= mmu->physical_rom_size - 4)
             return LOAD_BE32(mmu->physical_rom + offset);
     }
+    // Host-backed regions (card VRAM, declaration ROMs, aliases).  This was the
+    // ONE resolver of the three that skipped them: phys_to_host and
+    // phys_is_writable both scan the list, so a descriptor placed in NuBus VRAM
+    // could be written by mmu_write_physical_uint8 and then read back here as
+    // 0 -- DT = 0 -- which the walker reports as an invalid descriptor and the
+    // CPU takes as a spurious bus error.  Bounded for the 4-byte read, which
+    // the page-granular phys_to_host does not need to do.
+    for (int i = 0; i < mmu->host_region_count; i++) {
+        const mmu_host_region_t *r = &mmu->host_regions[i];
+        uint32_t off = phys_addr - r->phys_base;
+        if (phys_addr >= r->phys_base && r->size >= 4 && off <= r->size - 4)
+            return LOAD_BE32(r->host + off);
+    }
     return 0; // unmapped physical address
 }
 
@@ -789,6 +802,8 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
             if (r->phys_base == phys_base && r->size == size) {
                 r->host = host_ptr;
                 r->writable = writable;
+                if (g_mem_map_changed)
+                    g_mem_map_changed();
                 return;
             }
         }
@@ -799,9 +814,13 @@ void memory_map_host_region(memory_map_t *m, const char *name, uint8_t *host_ptr
         }
         g_host_fill_regions[g_host_fill_count++] =
             (mem_host_fill_region_t){.host = host_ptr, .phys_base = phys_base, .size = size, .writable = writable};
+        if (g_mem_map_changed)
+            g_mem_map_changed();
         return;
     }
     mmu_register_host_region(g_mmu, host_ptr, phys_base, size, writable);
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // fetch caches hold host pointers the SoA cannot evict
 }
 
 void memory_map_host_region_alias(memory_map_t *m, uint32_t alias_phys_base, uint32_t original_phys_base) {

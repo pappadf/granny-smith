@@ -374,7 +374,14 @@ extern bool g_user_soa_reserved;
 // owning CPU's control (memory logpoint install/uninstall): CPU-side
 // translation caches (fetch windows, TLBs) must drop entries that could
 // bypass the slow path.  NULL when no CPU registered one.
-extern void (*g_mem_fastpath_changed)(void);
+// Fired whenever the PHYSICAL MAP changes shape: a device window claimed or
+// released, a host region registered, or a logpoint installed or removed.
+// CPU-side fetch caches (g_ftlb, g_ppc_fetch) hold raw HOST POINTERS that
+// bypass the SoA arrays, so zeroing an SoA entry is not enough to evict them.
+// It used to be named g_mem_fastpath_changed and was fired only from the four
+// logpoint sites, which left those caches holding pointers into a window that
+// had since been remapped.
+extern void (*g_mem_map_changed)(void);
 
 // Current-context logical→physical translation for machines whose data
 // translation lives outside g_mmu (the PPC 601 front end).  Used by the

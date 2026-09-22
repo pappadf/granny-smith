@@ -750,7 +750,7 @@ ppc_t *ppc_init(checkpoint_t *checkpoint, int cpu_model) {
     // The user SoA arrays carry this MMU's logical fills — the generic
     // identity-restore paths must leave them alone (memory.h).
     g_user_soa_reserved = true;
-    g_mem_fastpath_changed = ppc_fastpath_changed;
+    g_mem_map_changed = ppc_fastpath_changed;
     g_hook_ppc = p;
     g_mem_logical_xlate = ppc_hook_logical_xlate;
 

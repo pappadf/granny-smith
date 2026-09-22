@@ -501,7 +501,21 @@ static inline void movem_to_register(cpu_t *restrict cpu, uint16_t opcode, int b
         if (a_set & (1 << i))
             cpu->a[i] = new_a[i];
 
-    if ((opcode & 0x38) == 0x18) // post-increment mode updates address register after MOVEM
+    // Postincrement mode writes the incremented address back, and it does so
+    // even when the base register is ALSO in the transfer list -- the loaded
+    // value is discarded.  M68000PRM MOVEM: "When the instruction has completed,
+    // the incremented address register contains the address of the last operand
+    // loaded plus the operand length.  If the addressing register is also
+    // loaded from memory, the memory value is ignored and the register is
+    // written with the postincremented effective address."
+    //
+    // That paragraph is on the family-wide page, so unlike the predecrement
+    // store side -- where movem_from_register gates the base-in-list case on
+    // cpu_model >= CPU_MODEL_68030, because the 68000 and 68020+ genuinely
+    // differ there -- this side needs NO model gate.  The asymmetry with the
+    // neighbouring function is correct, not an oversight; it was simply
+    // undocumented, which is what made it read as one.
+    if ((opcode & 0x38) == 0x18)
         cpu->a[opcode & 7] = ea;
 }
 

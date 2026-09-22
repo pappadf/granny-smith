@@ -143,13 +143,21 @@ uint8_t *g_mem_logpoint_phys_page_count = NULL;
 static uint32_t g_mem_logpoints_active = 0;
 memory_logpoint_hook_t g_mem_logpoint_hook = NULL;
 bool g_user_soa_reserved = false;
-void (*g_mem_fastpath_changed)(void) = NULL;
+void (*g_mem_map_changed)(void) = NULL;
 uint32_t (*g_mem_logical_xlate)(uint32_t addr, bool *ok) = NULL;
 
 // Slow-path access counter (diagnostic; exposed as memory.slowpath_count)
 uint64_t g_mem_slowpath_count = 0;
 // 1 MB-granularity histogram of slow-path addresses (24-bit space = 16 buckets)
-uint64_t g_mem_slowpath_hist[16] = {0};
+// Slow-path histogram bucket.  The old single `(addr >> 20) & 0xF` indexed
+// address bits 20-23 only, so buckets aliased every 16 MB and $50F00000 (an
+// SE/30 I/O window) shared a bucket with $FFF00000 (a ROM mirror) -- the
+// histogram could not tell them apart, which is most of what you want it for.
+// Split instead: the low 16 MB, where a 24-bit machine spends all its time,
+// keeps bits 20-23 so the VIA, IWM and ROM-overlay windows stay separate;
+// everything above is bucketed by bits 28-31 in the upper half of the table.
+#define MEM_SLOWPATH_BUCKET(a) (((a) < 0x01000000u) ? (((a) >> 20) & 0xFu) : (0x10u | (((a) >> 28) & 0xFu)))
+uint64_t g_mem_slowpath_hist[32] = {0};
 
 // Value-trap support: catches a specific (PA, size, value) write on the fast
 // path.  Disabled when g_value_trap_active == 0 (the common case).
@@ -409,7 +417,7 @@ void memory_signal_bus_error(uint32_t addr, bool write) {
 // Slow path for 8-bit reads: device I/O, MMU TLB miss, or unmapped
 uint8_t memory_read_uint8_slow(uint32_t addr) {
     g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
+    g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
     // Lisa segment MMU owns translation, routing, and bus errors for Lisa/XL
     // machines (its SoA stays empty so every access reaches here).
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
@@ -512,7 +520,7 @@ uint8_t memory_read_uint8_slow(uint32_t addr) {
 // Slow path for 16-bit reads: cross-page or device I/O
 uint16_t memory_read_uint16_slow(uint32_t addr) {
     g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
+    g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_read16(addr, g_active_read == g_supervisor_read);
     uint32_t page = addr >> PAGE_SHIFT;
@@ -590,7 +598,7 @@ uint16_t memory_read_uint16_slow(uint32_t addr) {
 // Slow path for 32-bit reads: cross-page or device I/O
 uint32_t memory_read_uint32_slow(uint32_t addr) {
     g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
+    g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0))
         return lisa_mmu_read32(addr, g_active_read == g_supervisor_read);
     uint32_t page = addr >> PAGE_SHIFT;
@@ -900,7 +908,7 @@ bool memory_debug_write_uint32(uint32_t addr, uint32_t value) {
 // Slow path for 8-bit writes: device I/O, MMU TLB miss, or unmapped
 void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
     g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
+    g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
         lisa_mmu_write8(addr, g_active_write == g_supervisor_write, value);
         return;
@@ -996,7 +1004,7 @@ void memory_write_uint8_slow(uint32_t addr, uint8_t value) {
 // Slow path for 16-bit writes: cross-page or device I/O
 void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
     g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
+    g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
         lisa_mmu_write16(addr, g_active_write == g_supervisor_write, value);
         return;
@@ -1086,7 +1094,7 @@ void memory_write_uint16_slow(uint32_t addr, uint16_t value) {
 // Slow path for 32-bit writes: cross-page or device I/O
 void memory_write_uint32_slow(uint32_t addr, uint32_t value) {
     g_mem_slowpath_count++;
-    g_mem_slowpath_hist[(addr >> 20) & 0xF]++;
+    g_mem_slowpath_hist[MEM_SLOWPATH_BUCKET(addr)]++;
     if (__builtin_expect(g_lisa_mmu != NULL, 0)) {
         lisa_mmu_write32(addr, g_active_write == g_supervisor_write, value);
         return;
@@ -1266,8 +1274,8 @@ void memory_logpoint_install(uint32_t start_page, uint32_t end_page) {
         if (g_user_write)
             g_user_write[p] = 0;
     }
-    if (g_mem_fastpath_changed)
-        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
@@ -1281,8 +1289,8 @@ void memory_logpoint_uninstall(uint32_t start_page, uint32_t end_page) {
         if (g_mem_logpoint_page_count[p] == 0)
             rebuild_soa_page(p);
     }
-    if (g_mem_fastpath_changed)
-        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
@@ -1306,8 +1314,8 @@ void memory_logpoint_install_phys(uint32_t start_page, uint32_t end_page) {
         memset(g_user_read, 0, (size_t)g_page_count * sizeof(uintptr_t));
     if (g_user_write)
         memset(g_user_write, 0, (size_t)g_page_count * sizeof(uintptr_t));
-    if (g_mem_fastpath_changed)
-        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
 
 void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
@@ -1320,8 +1328,8 @@ void memory_logpoint_uninstall_phys(uint32_t start_page, uint32_t end_page) {
             g_mem_logpoint_phys_page_count[p]--;
     }
     // No need to rebuild SoA entries; they refill lazily on next access.
-    if (g_mem_fastpath_changed)
-        g_mem_fastpath_changed(); // CPU-side caches must drop bypassing entries
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // CPU-side caches must drop bypassing entries
 }
 
 // ============================================================================
@@ -1414,6 +1422,8 @@ void memory_map_add(memory_map_t *mem, uint32_t addr, uint32_t size, const char 
                 g_user_write[p] = 0;
         }
     }
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // fetch caches hold host pointers the SoA cannot evict
 }
 
 // Clear page-table entries for [addr, addr+size) that point at `iface_ptr`.
@@ -1433,6 +1443,8 @@ static void clear_page_table_for_mapping(uint32_t addr, uint32_t size, const mem
             g_page_table[p].writable = false;
         }
     }
+    if (g_mem_map_changed)
+        g_mem_map_changed(); // ditto: a freed window may still be cached by PC
 }
 
 // Remove a memory-mapped device from the memory map
@@ -1662,7 +1674,7 @@ memory_map_t *memory_map_init(int address_bits, uint32_t ram_size, uint32_t rom_
     // after a PPC one must get the classic all-four-arrays behavior back;
     // the new machine's CPU init re-registers what it needs).
     g_user_soa_reserved = false;
-    g_mem_fastpath_changed = NULL;
+    g_mem_map_changed = NULL;
     g_mem_logical_xlate = NULL;
     // Card host regions filled through the hook (PowerPC families) belong to
     // the outgoing machine's page table; forget them with it.
@@ -2063,10 +2075,10 @@ static value_t attr_mem_slowpath_count(struct object *self, const member_t *m) {
 static value_t attr_mem_slowpath_hist(struct object *self, const member_t *m) {
     (void)self;
     (void)m;
-    char buf[512];
+    char buf[1024];
     size_t off = 0;
-    for (int i = 0; i < 16; i++)
-        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s$%X:%llu", i ? " " : "", i,
+    for (int i = 0; i < 32; i++)
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s$%02X:%llu", i ? " " : "", i,
                                 (unsigned long long)g_mem_slowpath_hist[i]);
     return val_str(buf);
 }
