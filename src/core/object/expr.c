@@ -24,6 +24,8 @@
 
 #include "expr.h"
 
+#include "value_format.h"
+
 #include <ctype.h>
 #include <math.h>
 #include <stdarg.h>
@@ -2053,187 +2055,23 @@ static void buf_append_formatted(char **buf, size_t *len, size_t *cap, const cha
     buf_append(buf, len, cap, tmp, take);
 }
 
+// Both formatters below are now thin bridges onto the one renderer in
+// value_format.c.  They keep expr.c's (char**, len, cap) buffer shape, whose
+// growth semantics vbuf_t reproduces exactly, so no caller changes.
+static void vbuf_bridge(const value_t *v, value_format_mode_t mode, char **buf, size_t *len, size_t *cap) {
+    vbuf_t b = {.p = *buf, .len = *len, .cap = *cap};
+    value_format(v, mode, &b);
+    *buf = b.p;
+    *len = b.len;
+    *cap = b.cap;
+}
+
 static void format_value_default(const value_t *v, char **buf, size_t *len, size_t *cap) {
-    char tmp[64];
-    int n = 0;
-    switch (v->kind) {
-    case V_NONE:
-        buf_append(buf, len, cap, "", 0);
-        return;
-    case V_BOOL:
-        n = snprintf(tmp, sizeof(tmp), "%s", v->b ? "true" : "false");
-        break;
-    case V_INT:
-        n = snprintf(tmp, sizeof(tmp), (v->flags & VAL_HEX) ? "0x%llx" : "%lld",
-                     (v->flags & VAL_HEX) ? (long long)(uint64_t)v->i : (long long)v->i);
-        break;
-    case V_UINT:
-        n = snprintf(tmp, sizeof(tmp), (v->flags & VAL_HEX) ? "0x%llx" : "%llu", (unsigned long long)v->u);
-        break;
-    case V_FLOAT:
-        n = snprintf(tmp, sizeof(tmp), "%g", v->f);
-        break;
-    case V_STRING:
-        if (v->s)
-            buf_append(buf, len, cap, v->s, strlen(v->s));
-        return;
-    case V_BYTES:
-        for (size_t i = 0; i < v->bytes.n; i++) {
-            int k = snprintf(tmp, sizeof(tmp), "%02x", v->bytes.p[i]);
-            if (k > 0)
-                buf_append(buf, len, cap, tmp, (size_t)k);
-        }
-        return;
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            buf_append(buf, len, cap, v->enm.table[v->enm.idx], strlen(v->enm.table[v->enm.idx]));
-        else
-            n = snprintf(tmp, sizeof(tmp), "<enum:%d>", v->enm.idx);
-        break;
-    case V_OBJECT:
-        n = snprintf(tmp, sizeof(tmp), "<object>");
-        break;
-    case V_ERROR:
-        n = snprintf(tmp, sizeof(tmp), "<error: %s>", v->err ? v->err : "");
-        break;
-    case V_REF:
-        if (v->ref)
-            buf_append(buf, len, cap, v->ref, strlen(v->ref));
-        return;
-    case V_RANGE:
-        n = snprintf(tmp, sizeof(tmp), "%lld..%lld", (long long)v->range.start, (long long)v->range.stop);
-        break;
-    case V_LIST:
-        buf_append(buf, len, cap, "[", 1);
-        for (size_t i = 0; i < v->list.len; i++) {
-            if (i)
-                buf_append(buf, len, cap, ", ", 2);
-            format_value_default(&v->list.items[i], buf, len, cap);
-        }
-        buf_append(buf, len, cap, "]", 1);
-        return;
-    case V_MAP:
-        // Maps interpolate as canonical compact JSON so `${machine.profile(m)}`
-        // stays machine-parseable text (schema probes pipe it to JSON parsers).
-        format_value_json_text(v, buf, len, cap);
-        return;
-    }
-    buf_append_formatted(buf, len, cap, tmp, sizeof(tmp), n);
+    vbuf_bridge(v, VFMT_TEXT, buf, len, cap);
 }
 
-// Append `s` as a JSON string literal (quotes + RFC 8259 escapes) to the
-// growable buffer. Serialization twin of api.c's buf_append_jstring.
-static void buf_append_json_string(char **buf, size_t *len, size_t *cap, const char *s) {
-    buf_append(buf, len, cap, "\"", 1);
-    for (const char *p = s ? s : ""; *p; p++) {
-        unsigned char c = (unsigned char)*p;
-        char esc[8];
-        switch (c) {
-        case '"':
-            buf_append(buf, len, cap, "\\\"", 2);
-            break;
-        case '\\':
-            buf_append(buf, len, cap, "\\\\", 2);
-            break;
-        case '\n':
-            buf_append(buf, len, cap, "\\n", 2);
-            break;
-        case '\r':
-            buf_append(buf, len, cap, "\\r", 2);
-            break;
-        case '\t':
-            buf_append(buf, len, cap, "\\t", 2);
-            break;
-        default:
-            if (c < 0x20) {
-                int k = snprintf(esc, sizeof(esc), "\\u%04x", c);
-                buf_append(buf, len, cap, esc, (size_t)k);
-            } else {
-                buf_append(buf, len, cap, (const char *)&c, 1);
-            }
-        }
-    }
-    buf_append(buf, len, cap, "\"", 1);
-}
-
-// Render a value subtree as strict compact JSON (the map interpolation
-// form). Follows the same per-kind rules as the gsEval bridge's
-// format_value_json so `${map}` text and the bridge agree byte-for-byte.
 static void format_value_json_text(const value_t *v, char **buf, size_t *len, size_t *cap) {
-    char tmp[64];
-    int n = 0;
-    switch (v->kind) {
-    case V_NONE:
-        buf_append(buf, len, cap, "null", 4);
-        return;
-    case V_BOOL:
-        buf_append(buf, len, cap, v->b ? "true" : "false", v->b ? 4 : 5);
-        return;
-    case V_INT:
-        n = snprintf(tmp, sizeof(tmp), "%lld", (long long)v->i);
-        break;
-    case V_UINT:
-        if (v->flags & VAL_HEX)
-            n = snprintf(tmp, sizeof(tmp), "\"0x%llx\"", (unsigned long long)v->u);
-        else
-            n = snprintf(tmp, sizeof(tmp), "%llu", (unsigned long long)v->u);
-        break;
-    case V_FLOAT:
-        n = snprintf(tmp, sizeof(tmp), "%g", v->f);
-        break;
-    case V_STRING:
-        buf_append_json_string(buf, len, cap, v->s);
-        return;
-    case V_BYTES:
-        buf_append(buf, len, cap, "\"0x", 3);
-        for (size_t i = 0; i < v->bytes.n; i++) {
-            int k = snprintf(tmp, sizeof(tmp), "%02x", v->bytes.p[i]);
-            buf_append(buf, len, cap, tmp, (size_t)k);
-        }
-        buf_append(buf, len, cap, "\"", 1);
-        return;
-    case V_ENUM:
-        if (v->enm.table && (size_t)v->enm.idx < v->enm.n_table && v->enm.table[v->enm.idx])
-            buf_append_json_string(buf, len, cap, v->enm.table[v->enm.idx]);
-        else
-            n = snprintf(tmp, sizeof(tmp), "%d", v->enm.idx);
-        break;
-    case V_LIST:
-        buf_append(buf, len, cap, "[", 1);
-        for (size_t i = 0; i < v->list.len; i++) {
-            if (i)
-                buf_append(buf, len, cap, ",", 1);
-            format_value_json_text(&v->list.items[i], buf, len, cap);
-        }
-        buf_append(buf, len, cap, "]", 1);
-        return;
-    case V_MAP:
-        buf_append(buf, len, cap, "{", 1);
-        for (size_t i = 0; i < v->map.len; i++) {
-            if (i)
-                buf_append(buf, len, cap, ",", 1);
-            buf_append_json_string(buf, len, cap, v->map.entries[i].key);
-            buf_append(buf, len, cap, ":", 1);
-            format_value_json_text(&v->map.entries[i].val, buf, len, cap);
-        }
-        buf_append(buf, len, cap, "}", 1);
-        return;
-    case V_OBJECT:
-    case V_ERROR:
-    case V_REF:
-    case V_RANGE:
-        // Non-data kinds inside a map: fall back to the display form,
-        // quoted so the surrounding document stays valid JSON.
-        {
-            char *inner = NULL;
-            size_t ilen = 0, icap = 0;
-            format_value_default(v, &inner, &ilen, &icap);
-            buf_append_json_string(buf, len, cap, inner ? inner : "");
-            free(inner);
-        }
-        return;
-    }
-    buf_append_formatted(buf, len, cap, tmp, sizeof(tmp), n);
+    vbuf_bridge(v, VFMT_JSON, buf, len, cap);
 }
 
 // Format a value with an optional spec (proposal §4.2.1).

@@ -31,5 +31,6 @@ EXTRA_SRCS   := ../../../../src/core/peripherals/scsi.c \
                 ../../../../src/core/object/value.c \
                 ../../../../src/core/object/meta.c \
                 ../../../../src/core/object/api.c \
+        ../../../../src/core/object/value_format.c \
                 ../../../../src/core/storage/drive_catalog.c
 include ../../common.mk
