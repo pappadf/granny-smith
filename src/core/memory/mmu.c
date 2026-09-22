@@ -358,6 +358,19 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
     uint32_t bit_pos = 32 - is;
     int levels_walked = 0;
 
+    // Protection accumulates across the WHOLE search, not just the leaf.
+    // MC68030UM 9.5.5.4 (WRITE PROTECT): "When a table search encounters a WP
+    // bit set in ANY table or page descriptor, the table search is completed
+    // and an ATC descriptor ... is created with the WP bit set ... The WP bit
+    // can be used to protect the entire area of memory defined in a branch of
+    // the translation tree."  9.5.5.3 (SUPERVISOR ONLY) is the same shape for
+    // S, with the added detail that only the LONG formats carry an S bit.
+    // Taking either from the page descriptor alone let protection placed on a
+    // POINTER table be bypassed by a permissive leaf, which defeats the point
+    // of putting it there.  mmu040.c already accumulates this way.
+    bool acc_wp = false;
+    bool acc_s = false;
+
     // Walk through up to 4 table levels (A, B, C, D)
     for (int level = 0; level < 4; level++) {
         uint32_t index_bits = ti[level];
@@ -396,6 +409,13 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             return result;
         }
 
+        // OR in this descriptor's protection bits.  Must happen before long_desc
+        // is reassigned at the bottom of the loop: that reassignment describes
+        // the NEXT level's format, not this one's.
+        acc_wp |= ((desc_hi >> 2) & 1) != 0; // WP, both formats
+        if (long_desc)
+            acc_s |= ((desc_hi >> 8) & 1) != 0; // S, long format only
+
         if (dt == DESC_DT_PAGE) {
             // Page descriptor (early termination) — translation complete.
             // The remaining address bits below bit_pos form the page offset.
@@ -413,11 +433,12 @@ static mmu_walk_result_t mmu_table_walk(mmu_state_t *mmu, uint32_t logical_addr,
             result.physical_addr = phys_base | (logical_addr & page_mask);
             result.page_size_bits = bit_pos;
             result.valid = true;
-            result.write_protected = (desc_hi >> 2) & 1; // W bit
-            result.modified = (desc_hi >> 4) & 1; // M bit
-            // S bit: only in long-format descriptors (bit 8 of upper word)
-            if (long_desc)
-                result.supervisor_only = (desc_hi >> 8) & 1;
+            // Accumulated above, this descriptor included.  M is deliberately
+            // NOT accumulated: it is a per-page modified flag, not a protection
+            // attribute, and nothing in 9.5.5 ORs it.
+            result.write_protected = acc_wp;
+            result.supervisor_only = acc_s;
+            result.modified = (desc_hi >> 4) & 1;
 
             // Build MMUSR
             if (result.write_protected)

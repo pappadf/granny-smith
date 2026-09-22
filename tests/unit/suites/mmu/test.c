@@ -264,6 +264,18 @@ TEST(test_short_table_descriptor_with_wp_bit) {
     phys = mmu_translate_debug(mmu, 0x00001000, true);
     ASSERT_EQ_INT(0x00090000, (int)phys);
 
+    // The WP bit on the level-A TABLE descriptor must protect every page
+    // reached through it, even though both level-B page descriptors have WP
+    // clear.  MC68030UM 9.5.5.4: "When a table search encounters a WP bit set in
+    // ANY table or page descriptor ... an ATC descriptor ... is created with the
+    // WP bit set."  The walker used to report only the leaf's bit, so a
+    // write-protected pointer table was silently bypassed.
+    uint16_t mmusr_wp = mmu_test_address(mmu, 0x00000000, false, true, NULL);
+    ASSERT_TRUE((mmusr_wp & MMUSR_W) != 0);
+    // And the neighbouring page through the same protected table.
+    uint16_t mmusr_wp1 = mmu_test_address(mmu, 0x00001000, false, true, NULL);
+    ASSERT_TRUE((mmusr_wp1 & MMUSR_W) != 0);
+
     cleanup(mem, mmu);
 }
 
