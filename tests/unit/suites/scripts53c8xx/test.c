@@ -39,6 +39,7 @@
 #include "sym53c8xx.h"
 #include "test_assert.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -67,11 +68,11 @@ void scsi_reset_pin(struct scsi *bus) {
 // to satisfy the linker and are never reached.
 struct scheduler;
 struct event;
-struct event *scheduler_new_cpu_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
-                                      uint64_t data, uint64_t cycles, uint64_t ns);
-struct event *scheduler_new_cpu_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
-                                      uint64_t data, uint64_t cycles, uint64_t ns) {
-    (void)scheduler, (void)cb, (void)source, (void)data, (void)cycles, (void)ns;
+struct event *scheduler_new_cpu_event_ex(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
+                                         uint64_t data, uint64_t cycles, uint64_t ns, bool periodic);
+struct event *scheduler_new_cpu_event_ex(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source,
+                                         uint64_t data, uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)scheduler, (void)cb, (void)source, (void)data, (void)cycles, (void)ns, (void)periodic;
     return 0;
 }
 void remove_event(struct scheduler *scheduler, void (*cb)(void *, uint64_t), void *source);

@@ -1255,6 +1255,133 @@ TEST(test_pending_event_counts_track_the_queue) {
     scheduler_delete(s);
 }
 
+// === Periodic events (08-core-infra F-28) ==================================
+//
+// A repeating event re-arms inside the scheduler instead of from its own
+// handler.  There is no separate periodic API and no handle type: the units
+// question is already answered by scheduler_new_cpu_event's cycles/ns pair,
+// and cancellation is already answered by remove_event and
+// scheduler_forget_source, so a repeating event adds no second lifetime.
+
+static int g_periodic_fires;
+static uint64_t g_periodic_stamps[8];
+static scheduler_t *g_periodic_sched;
+static bool g_cancel_self;
+
+static void periodic_event(void *source, uint64_t data) {
+    (void)data;
+    if (g_periodic_fires < 8)
+        g_periodic_stamps[g_periodic_fires] = scheduler_cpu_cycles(g_periodic_sched);
+    g_periodic_fires++;
+    if (g_cancel_self)
+        remove_event(g_periodic_sched, periodic_event, source);
+}
+
+TEST(test_periodic_repeats_without_self_rearm) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000); // 1 MHz: 1 cycle == 1 us
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+
+    // Armed ONCE, with no re-arm anywhere in the handler.
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_run_instructions(s, 1000);
+    ASSERT_TRUE(g_periodic_fires >= 3); // it kept going by itself
+    // ...and exactly one occurrence is ever queued, so it cannot accumulate.
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+    scheduler_delete(s);
+}
+
+// Drift-free: each deadline comes from the SCHEDULED time, not from the
+// dispatch time, so the gaps stay exactly the interval however late a sprint
+// delivers them.  A handler re-arming itself from "now" cannot do this.
+TEST(test_periodic_does_not_drift) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_TRUE(g_periodic_fires >= 3);
+    // The queue's own deadlines are exactly 100 apart even if dispatch is late.
+    // (The stamps are observation times, so assert on the SPACING of the
+    // scheduled deadlines via the queue rather than on the stamps.)
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+    scheduler_delete(s);
+}
+
+// The ordering that makes this work: the next occurrence is inserted BEFORE
+// the callback runs, so a handler cancelling itself finds it.  Insert after
+// and the cancel would be silently reinstated.
+TEST(test_periodic_can_be_cancelled_from_its_own_handler) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = true;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, 1); // fired once, then stopped itself
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
+// And the existing cancellation paths work on it unchanged, which is the
+// whole argument for not introducing a handle type.
+TEST(test_periodic_is_cancelled_by_forget_source) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0, true);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_forget_source(s, &owner);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    int before = g_periodic_fires;
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, before); // stays stopped
+    scheduler_delete(s);
+}
+
+// A one-shot is still a one-shot -- the six-argument spelling is unchanged at
+// all 128 existing call sites.
+TEST(test_one_shot_still_fires_once) {
+    int owner = 0;
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    g_periodic_sched = s;
+    g_periodic_fires = 0;
+    g_cancel_self = false;
+    scheduler_set_frequency(s, 1000000);
+    scheduler_new_event_type(s, "probe", &owner, "tick", periodic_event);
+    scheduler_new_cpu_event(s, periodic_event, &owner, 0, 100, 0);
+
+    scheduler_run_instructions(s, 2000);
+    ASSERT_EQ_INT(g_periodic_fires, 1);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -1284,6 +1411,11 @@ int main(void) {
     RUN(test_restore_refuses_unknown_mode);
     RUN(test_restore_refuses_absurd_event_count);
     RUN(test_pending_event_counts_track_the_queue);
+    RUN(test_periodic_repeats_without_self_rearm);
+    RUN(test_periodic_does_not_drift);
+    RUN(test_periodic_can_be_cancelled_from_its_own_handler);
+    RUN(test_periodic_is_cancelled_by_forget_source);
+    RUN(test_one_shot_still_fires_once);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

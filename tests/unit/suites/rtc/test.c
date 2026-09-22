@@ -69,8 +69,9 @@ void via_input_c(struct via *via, int port, int c, bool value) {
 // never advances time, so the events are inert.  Stubbed here rather than via
 // support/stub_system.c, which pulls in the display/framebuffer harness this
 // suite has no use for.
-event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
-                                 uint64_t data, uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
+                                    uint64_t data, uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)scheduler;
     (void)callback;
     (void)source;

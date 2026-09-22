@@ -81,8 +81,9 @@ int debug_mac_resolve_key_name(const char *name) {
     return -1;
 }
 
-event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)s, (void)cb, (void)src, (void)data, (void)cycles, (void)ns;
     return NULL;
 }

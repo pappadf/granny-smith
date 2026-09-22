@@ -358,7 +358,10 @@ static void one_second_interrupt(void *source, uint64_t data) {
         via_input_c(rtc->via, 0, 1, 1);
     }
 
-    scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL);
+    // No self re-arm: the event is periodic, so the scheduler re-arms it at
+    // the SCHEDULED deadline rather than at this handler's dispatch time.
+    // That is drift-free -- re-arming from "now" accumulated every sprint's
+    // dispatch lateness into the guest's second (08-core-infra F-28).
 }
 
 // A property of the toolchain, not of any run: it belongs at compile time,
@@ -470,8 +473,8 @@ rtc_t *rtc_init(struct scheduler *restrict scheduler, checkpoint_t *checkpoint, 
         // from the scheduler's checkpointed event queue in scheduler_start().
         LOG(1, "rtc_init: restored from checkpoint");
     } else {
-        // Fresh boot: schedule periodic one-second interrupt
-        scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL);
+        // Fresh boot: arm the one-second interrupt ONCE, periodically.
+        scheduler_new_cpu_event(rtc->scheduler, &one_second_interrupt, rtc, 0, 0, 1000000000ULL, true);
         LOG(1, "rtc_init: scheduled one-second interrupt");
     }
 

@@ -111,6 +111,12 @@ struct event {
     event_callback_t callback;
     void *source;
     uint64_t data;
+    // A repeating event re-arms itself inside the scheduler, at
+    // timestamp + interval -- from the time it was SCHEDULED, not from the
+    // time it was dispatched, so a periodic cannot drift.  `interval` is in
+    // CPU cycles, whichever unit the caller armed with.
+    uint64_t interval_cycles;
+    bool periodic;
 };
 
 // Checkpoint-friendly representation of an event (names instead of pointers)
@@ -119,6 +125,11 @@ typedef struct {
     char source_name[64];
     char event_name[64];
     uint64_t data;
+    // Without these a restored periodic fires once and stops -- the machine
+    // would come back with its timers dead and nothing would say so.
+    uint64_t interval_cycles;
+    uint8_t periodic;
+    uint8_t pad[7];
 } event_as_checkpoint_t;
 
 // Maps a source/callback pair to human-readable names for checkpointing
@@ -573,7 +584,7 @@ static event_t *insert_event_queue(event_t *queue, event_t *new_event) {
 
 // Create and insert a new event into the scheduler queue
 static event_t *add_event_internal(struct scheduler *restrict s, event_callback_t callback, void *source, uint64_t data,
-                                   uint64_t cycles, uint64_t ns) {
+                                   uint64_t cycles, uint64_t ns, bool periodic) {
     // Exactly one of cycles/ns must be non-zero
     GS_ASSERTF(cycles != 0 || ns != 0, "both cycles and ns are 0");
     GS_ASSERTF(!(cycles != 0 && ns != 0), "both cycles and ns are set");
@@ -591,6 +602,9 @@ static event_t *add_event_internal(struct scheduler *restrict s, event_callback_
     event->callback = callback;
     event->source = source;
     event->data = data;
+    event->periodic = periodic;
+    event->interval_cycles = periodic ? cycles : 0;
+    GS_ASSERTF(!periodic || cycles != 0, "periodic event with a zero interval would spin");
 
     // Timestamp relative to current time including in-sprint progress
     uint64_t now = current_cpu_cycles(s);
@@ -613,6 +627,29 @@ static void process_event_queue(event_t **queue, uint64_t current_time) {
         event_t *e = *queue;
         *queue = e->next;
         g_sched_events_fired++;
+
+        if (e->periodic) {
+            // Re-arm BEFORE the callback runs, and that ordering is
+            // load-bearing.  The event is unlinked above, so a handler that
+            // cancels itself with remove_event() or scheduler_forget_source()
+            // would not find it -- and re-arming afterwards would then
+            // silently reinstate what the handler just cancelled.  Inserting
+            // first means both cancel paths see the next occurrence and
+            // remove it, with no new API and no change to the callback
+            // signature.
+            //
+            // The next deadline comes from the SCHEDULED time, not from
+            // current_time, so a periodic does not drift the way a handler
+            // re-arming itself from "now" does.
+            event_t *next = event_alloc();
+            if (next) {
+                *next = *e;
+                next->next = NULL;
+                next->timestamp = e->timestamp + e->interval_cycles;
+                *queue = insert_event_queue(*queue, next);
+            }
+        }
+
         (e->callback)(e->source, e->data);
         event_free(e);
     }
@@ -910,6 +947,9 @@ void scheduler_checkpoint(struct scheduler *restrict scheduler, checkpoint_t *ch
         GS_ASSERT(e != NULL);
         events_to_save[i].timestamp = e->timestamp;
         events_to_save[i].data = e->data;
+        events_to_save[i].interval_cycles = e->interval_cycles;
+        events_to_save[i].periodic = e->periodic ? 1u : 0u;
+        memset(events_to_save[i].pad, 0, sizeof(events_to_save[i].pad));
 
         // Look up names by source+callback pair
         bool found = false;
@@ -980,6 +1020,10 @@ void scheduler_start(struct scheduler *restrict s) {
         e->callback = s->event_types[found].callback;
         e->source = s->event_types[found].source;
         e->data = saved->data;
+        // A periodic with a zero interval would spin, so refuse it rather
+        // than restore it -- this value came off disk like the rest (C1).
+        e->periodic = saved->periodic != 0 && saved->interval_cycles != 0;
+        e->interval_cycles = e->periodic ? saved->interval_cycles : 0;
 
         s->cpu_events = insert_event_queue(s->cpu_events, e);
     }
@@ -1028,8 +1072,8 @@ void scheduler_new_event_type(struct scheduler *restrict scheduler, const char *
 }
 
 // Schedule a new CPU event to fire after the specified number of cycles or nanoseconds
-event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
-                                 uint64_t data, uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict scheduler, event_callback_t callback, void *source,
+                                    uint64_t data, uint64_t cycles, uint64_t ns, bool periodic) {
     GS_ASSERT(scheduler != NULL);
     GS_ASSERT(scheduler->cpu.run_sprint != NULL);
     GS_ASSERT(callback != NULL);
@@ -1067,7 +1111,7 @@ event_t *scheduler_new_cpu_event(struct scheduler *restrict scheduler, event_cal
     validate_cpu_events(scheduler);
     reconcile_sprint(scheduler);
 
-    event_t *result = add_event_internal(scheduler, callback, source, data, cycles, ns);
+    event_t *result = add_event_internal(scheduler, callback, source, data, cycles, ns, periodic);
     CHECK_INVARIANTS(scheduler);
     return result;
 }

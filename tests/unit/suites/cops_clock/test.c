@@ -89,8 +89,9 @@ static struct {
     bool live;
 } s_events[MAX_EVENTS];
 
-event_t *scheduler_new_cpu_event(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
-                                 uint64_t cycles, uint64_t ns) {
+event_t *scheduler_new_cpu_event_ex(struct scheduler *restrict s, event_callback_t cb, void *src, uint64_t data,
+                                    uint64_t cycles, uint64_t ns, bool periodic) {
+    (void)periodic;
     (void)s, (void)data, (void)cycles, (void)ns;
     for (int i = 0; i < MAX_EVENTS; i++)
         if (!s_events[i].live) {
