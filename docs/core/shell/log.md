@@ -8,7 +8,10 @@ This document describes the implemented, lightweight logging framework for Grann
 - Goals
   - Let modules (e.g., `cpu`, `floppy`, `appletalk`) register a named logging category and emit messages tagged with that category and an integer level.
   - Allow users/tests to list categories and set a level per category at runtime via shell commands.
-  - Level 0 means “no output at all” for that category.
+  - Setting a category to level 0 suppresses every `LOG(n, …)` site with
+    `n >= 1`. It does **not** silence `LOG(0, …)` — see “Level 0 is the
+    always-on level” below, which is a deliberate convention with ~200 sites,
+    not an accident.
   - Make disabled log sites extremely cheap (no string formatting, minimal branches).
   - Keep dependencies small; portable C; compatible with Emscripten.
 
@@ -21,7 +24,9 @@ This document describes the implemented, lightweight logging framework for Grann
 ## Terminology
 
 - Category: a named source of log messages (e.g., "cpu"). Modules hold a pointer to their category for fast checks.
-- Level: an integer where higher typically means more verbose. Level 0 disables all output for that category.
+- Level: an integer where higher typically means more verbose. Setting a
+  category to 0 is the “off” position for ordinary sites (level 1 and up);
+  level-0 SITES still emit, by design — see below.
 - Site: a specific `LOG(...)` call in code. Sites pass both the category and the level.
 
 
@@ -133,7 +138,7 @@ the compile-time `LOG_COMPILE_MIN_LEVEL`.
   - Use a singly‑linked list of categories (`log_category` nodes) because the expected number of categories is small (dozens). Simpler, no dynamic map needed.
   - Each node contains:
     - `char* name;` (owned, NUL‑terminated)
-    - `int level;` (current threshold; 0 means off)
+    - `int level;` (current threshold; 0 is the off position for level-1-and-up sites)
     - `struct log_category* next;`
     - Optional `uint16_t id;` if we later want stable IDs.
 
@@ -277,7 +282,9 @@ The shell exposes a single, unified `log` command (category: "Logging") with arg
 
 ## Level guidelines and recommendations
 
-Levels are plain integers; higher values are more verbose. Level 0 disables all output for a category. To keep logs consistent and useful across modules/devices, use these guidelines:
+Levels are plain integers; higher values are more verbose. Setting a category
+to 0 is the off position for level-1-and-up sites; `LOG(0, …)` sites still
+emit, deliberately (see “Level 0 is the always-on level”). To keep logs consistent and useful across modules/devices, use these guidelines:
 
 - 0 — Off. No output.
 - 1 — High‑level, user‑visible events and major state transitions.

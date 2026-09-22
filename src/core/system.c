@@ -1200,11 +1200,11 @@ int system_media_attach_scsi_bus(config_t *cfg, struct scsi *bus, const media_sl
 // Returns GS_SUCCESS on success, GS_ERROR on failure.
 int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     if (!global_emulator) {
-        printf("Error: No emulator instance to checkpoint\n");
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: no emulator instance to checkpoint");
         return GS_ERROR;
     }
     if (!global_emulator->machine || !global_emulator->machine->substrate->checkpoint_save) {
-        printf("Error: Machine has no checkpoint_save callback\n");
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: machine has no checkpoint_save callback");
         return GS_ERROR;
     }
 
@@ -1221,7 +1221,7 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     uint32_t ram_size_kb = global_emulator->ram_size / 1024;
     checkpoint_t *checkpoint = checkpoint_open_write(filename, kind, model_id, ram_size_kb);
     if (!checkpoint) {
-        printf("Error: Failed to open checkpoint file for writing: %s\n", filename);
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to open checkpoint file for writing: %s", filename);
         return GS_ERROR;
     }
 
@@ -1234,7 +1234,7 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
     global_emulator->machine->substrate->checkpoint_save(global_emulator, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
-        printf("Error: Failed to write checkpoint\n");
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to write checkpoint");
         checkpoint_close(checkpoint);
         checkpoint_set_files_as_refs(prev_files_mode);
         return GS_ERROR;
@@ -1255,7 +1255,7 @@ int system_checkpoint(const char *filename, checkpoint_kind_t kind) {
 config_t *system_restore(const char *filename) {
     checkpoint_t *checkpoint = checkpoint_open_read(filename);
     if (!checkpoint) {
-        printf("Error: Failed to open checkpoint file for reading: %s\n", filename);
+        LOG_WITH(log_register_category("ckpt"), 0, "Error: failed to open checkpoint file for reading: %s", filename);
         return NULL;
     }
 
@@ -1372,7 +1372,7 @@ config_t *system_restore(const char *filename) {
     memcpy(rec->vroms, fresh_vroms, sizeof(rec->vroms));
     rec->n_vroms = fresh_n;
 
-    printf("Checkpoint restored from %s\n", filename);
+    LOG_WITH(log_register_category("ckpt"), 1, "Checkpoint restored from %s", filename);
     return config;
 }
 

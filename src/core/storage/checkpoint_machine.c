@@ -21,7 +21,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-LOG_USE_CATEGORY_NAME("checkpoint")
+// One category for the whole checkpoint path.  This file used "checkpoint"
+// while checkpoint.c uses "ckpt" and system.c reached for "ckpt" inline, so
+// `debug.log checkpoint 2` turned up a third of the subsystem and the other
+// two thirds stayed silent (08-core-infra F-34/F-36).
+LOG_USE_CATEGORY_NAME("ckpt")
 
 static char *g_machine_id = NULL;
 static char *g_machine_created = NULL;
