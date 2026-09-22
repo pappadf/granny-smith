@@ -60,6 +60,32 @@ checkpoint as POD, object class) with these core-specific requirements:
 | Logging | own `LOG_USE_CATEGORY_NAME("<arch>")` (in the glue; the core itself stays I/O-free) |
 | Tests | unit suite under `tests/unit/suites/<arch>/` against a mock bus |
 
+### Known exception: the DSP3210 has two decoders
+
+The AV families' DSP3210 is the one core that does **not** follow the shared
+decode-tree rule above. `dsp3210.c` and `dsp3210_disasm.c` each carry their own
+dispatch, and there is no `dsp3210_decode.h`.
+
+The duplication is concrete, not notional: `dsp3210_disassemble` and
+`exec_insn` carry **36 `case` labels each, in identical order**, behind the
+same three-step preamble (`op6 = w >> 26`, then `opcode_is_illegal(op6)`, then
+the `w >> 29` DA-class dispatch). `opcode_is_illegal` is **14 byte-identical
+lines** in both, as are `bits()` and `sext16()`. Four helper pairs
+(`dis_da`/`exec_da`, `dis_ca_alu_reg`/`exec_alu_reg`,
+`dis_ca_alu_imm`/`exec_alu_imm`, `dis_ca_move`/`exec_move`) and several operand
+tables are hand-synchronised. Nothing but the `dsp3210_disasm` unit suite stops
+them drifting, and that suite checks agreement after the fact rather than by
+construction.
+
+**No ISA reason has been established.** The rule's escape hatch — "unless the
+ISA gives a concrete reason not to" — requires one to be recorded, and neither
+this file nor `proposal-dsp3210-plaintalk.md` records any. Until someone
+examines whether the DA/format encodings genuinely resist a shared tree, this
+is **debt, not a sanctioned exception**, and it is written down here so it
+cannot be mistaken for one.
+
+Raised as F-06b in the 2026-09-03 code review, batch 07.
+
 Why injected hooks and not the global fast path: aux cores are physical
 bus masters (the main CPU's translated, mode-switched view would be
 wrong under an MMU), the inline accessors charge I/O penalties against
