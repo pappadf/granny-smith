@@ -215,7 +215,4 @@ uint64_t cpu_instr_count(void);
 // Reconcile sprint counters (called from IRQ handlers to stabilize accounting)
 void cpu_reschedule(void);
 
-// `events` argv handler — typed `info_events` calls this directly.
-uint64_t cmd_events(int argc, char *argv[]);
-
 #endif // SCHEDULE_H

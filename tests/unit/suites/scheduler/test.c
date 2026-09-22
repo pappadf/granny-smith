@@ -223,6 +223,56 @@ value_t val_float(double f) {
     (void)f;
     return val_none();
 }
+value_t val_int(int64_t i) {
+    value_t v = {0};
+    v.kind = V_INT;
+    v.width = 8;
+    v.i = i;
+    return v;
+}
+
+// scheduler.events builds a V_LIST of V_MAPs (08-core-infra F-30), so the
+// suite needs the map builder and the list accumulator.  Minimal versions:
+// this suite asserts on queue COUNTS, not on the rendered list.
+struct value_map_builder {
+    int unused;
+};
+static struct value_map_builder g_stub_builder;
+
+value_map_builder_t *val_map_new(void) {
+    return &g_stub_builder;
+}
+void val_map_put(value_map_builder_t *b, const char *key, value_t v) {
+    (void)b;
+    (void)key;
+    value_free(&v);
+}
+value_t val_map_finish(value_map_builder_t *b) {
+    (void)b;
+    return val_none();
+}
+bool val_list_push(value_t **items, size_t *len, size_t *cap, value_t v) {
+    if (*len + 1 > *cap) {
+        size_t nc = *cap ? *cap * 2 : 8;
+        value_t *n = (value_t *)realloc(*items, nc * sizeof(value_t));
+        if (!n) {
+            value_free(&v);
+            return false;
+        }
+        *items = n;
+        *cap = nc;
+    }
+    (*items)[(*len)++] = v;
+    return true;
+}
+value_t val_list(value_t *items, size_t len) {
+    value_t v = {0};
+    v.kind = V_LIST;
+    v.list.items = items;
+    v.list.len = len;
+    return v;
+}
+
 value_t val_err(const char *fmt, ...) {
     (void)fmt;
     return val_none();
@@ -1175,6 +1225,36 @@ TEST(test_restore_refuses_absurd_event_count) {
     scheduler_delete(b);
 }
 
+// === scheduler.events / machine-sourced cleanup (08-core-infra F-27, F-30) ==
+
+// F-30: the pending queue had no inspectable form at all.  cmd_events(argc,
+// argv) -- the retired command shape -- had zero callers, so the one thing
+// that could say WHICH event leaked did not exist, while machine_teardown's
+// backstop reported only a count.
+TEST(test_pending_event_counts_track_the_queue) {
+    g_now = 1000.0;
+    scheduler_t *s = scheduler_init(TEST_CPU, NULL);
+    ASSERT_TRUE(s != NULL);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+
+    int owner_a = 0, owner_b = 0;
+    scheduler_new_event_type(s, "a", &owner_a, "tick", ping_event);
+    scheduler_new_event_type(s, "b", &owner_b, "tick", ping_event);
+    scheduler_new_cpu_event(s, ping_event, &owner_a, 0, 0, 1000000);
+    scheduler_new_cpu_event(s, ping_event, &owner_b, 0, 0, 2000000);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 2);
+
+    // Forgetting one source leaves the other's event alone -- which is what
+    // makes a per-owner sweep safe, and why a shared source cannot be swept
+    // by one of its users.
+    scheduler_forget_source(s, &owner_a);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 1);
+
+    scheduler_forget_source(s, &owner_b);
+    ASSERT_EQ_INT(scheduler_pending_device_events(s), 0);
+    scheduler_delete(s);
+}
+
 int main(void) {
     RUN(test_paced_rate_60hz);
     RUN(test_paced_rate_5994hz);
@@ -1203,6 +1283,7 @@ int main(void) {
     RUN(test_restore_refuses_zero_cpi);
     RUN(test_restore_refuses_unknown_mode);
     RUN(test_restore_refuses_absurd_event_count);
+    RUN(test_pending_event_counts_track_the_queue);
     fprintf(stderr, "[OK  ] scheduler suite passed\n");
     return 0;
 }

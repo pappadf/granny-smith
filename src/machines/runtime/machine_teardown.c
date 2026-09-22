@@ -68,6 +68,25 @@ void machine_teardown_config_devices(config_t *cfg) {
         cfg->ppc = NULL;
     }
     if (cfg->scheduler) {
+        // Events sourced on the MACHINE rather than on a device are dropped
+        // here, because this is their owner's destructor.
+        //
+        // Several chipset modules arm with `cfg` as the source -- amic's vbl
+        // and sndout, the AWACS tick on both pdm and tnt, control's VBL,
+        // se30's slot de-assert.  None of them can call
+        // scheduler_forget_source themselves: the source they share is the
+        // machine, so the first module to tear down would drop every other
+        // module's events too, and the next arm from a still-live device
+        // would trip scheduler_new_cpu_event's "event type not registered"
+        // assert.  One call, at the point the machine itself goes away.
+        //
+        // Measured before adding it: a pm7100 teardown left one event queued
+        // (amic), which the backstop below reported but nothing cleaned.
+        // These are not the use-after-free half of F-27 -- `cfg` outlives
+        // them -- but they are the half that made the backstop's count noisy,
+        // and a count that is never zero cannot detect the dangerous kind.
+        scheduler_forget_source(cfg->scheduler, cfg);
+
         // Backstop (proposal-scheduler-source-lifetime §4): by here every
         // destructor above should have dropped what it owned, so anything
         // still queued is a destructor that missed.  Say so rather than

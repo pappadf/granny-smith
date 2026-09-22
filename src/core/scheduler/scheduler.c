@@ -664,47 +664,6 @@ static bool scheduler_run_with_budget(scheduler_t *s, uint64_t instructions) {
     return true;
 }
 
-// Shell command to print a readable view of the event queue
-uint64_t cmd_events(int argc, char *argv[]) {
-    struct scheduler *s = system_scheduler();
-    GS_ASSERT(s != NULL);
-
-    int count = num_events_in_queue(s);
-
-    printf("Event queue: %d pending | cpu_cycles=%llu | instr=%llu | freq=%llu Hz\n", count,
-           (unsigned long long)s->cpu_cycles, (unsigned long long)cpu_instr_count(), (unsigned long long)s->frequency);
-
-    if (count == 0)
-        return 0;
-
-    printf("#   when(cyc)      +Δcyc     +Δµs    source.event                       data\n");
-
-    int idx = 0;
-    for (event_t *e = s->cpu_events; e; e = e->next) {
-        int64_t delta_cycles = (int64_t)e->timestamp - (int64_t)s->cpu_cycles;
-        uint64_t abs_delta = (delta_cycles >= 0) ? (uint64_t)delta_cycles : (uint64_t)(-delta_cycles);
-
-        // Convert cycle delta to microseconds for display
-        double delta_us = 0.0;
-        if (s->frequency != 0)
-            delta_us = (double)(abs_delta * 1000000000ULL / s->frequency) / 1000.0;
-
-        // Look up human-readable name
-        const event_type_t *t = find_event_type(s, e->source, e->callback);
-        char namebuf[96];
-        if (t)
-            snprintf(namebuf, sizeof(namebuf), "%s.%s", t->source_name, t->event_name);
-        else
-            snprintf(namebuf, sizeof(namebuf), "unknown.unknown");
-
-        printf("%-3d %-13llu %-9lld %8.3f  %-30s  0x%016llx\n", idx, (unsigned long long)e->timestamp,
-               (long long)delta_cycles, delta_us, namebuf, (unsigned long long)e->data);
-        idx++;
-    }
-
-    return 0;
-}
-
 // ============================================================================
 // Lifecycle: Constructor
 // ============================================================================
@@ -1754,6 +1713,44 @@ static scheduler_t *sched_self_from(struct object *self) {
     return (scheduler_t *)object_data(self);
 }
 
+// `scheduler.events` — the pending queue as a list of maps.
+//
+// Replaces cmd_events(int argc, char *argv[]), which had ZERO callers: the
+// exact argc/argv shape docs/core/shell/object-model.md says was retired, so
+// the event queue was the one piece of scheduler state nothing could inspect
+// (08-core-infra F-30).  That mattered more than it sounds -- the teardown
+// warning in machine_teardown.c reports a COUNT of leaked events and nothing
+// could then say which.
+static value_t sched_attr_events(struct object *self, const member_t *m) {
+    (void)m;
+    struct scheduler *s = sched_self_from(self);
+    if (!s)
+        return val_err("scheduler.events: no scheduler");
+
+    value_t *items = NULL;
+    size_t len = 0, cap = 0;
+    for (event_t *e = s->cpu_events; e; e = e->next) {
+        const event_type_t *t = find_event_type(s, e->source, e->callback);
+        int64_t delta = (int64_t)e->timestamp - (int64_t)s->cpu_cycles;
+
+        value_map_builder_t *b = val_map_new();
+        val_map_put(b, "source", val_str(t ? t->source_name : "unknown"));
+        val_map_put(b, "event", val_str(t ? t->event_name : "unknown"));
+        val_map_put(b, "when", val_uint(8, e->timestamp));
+        val_map_put(b, "delta", val_int(delta));
+        val_map_put(b, "data", val_uint(8, e->data));
+        value_t entry = val_map_finish(b);
+        if (!val_list_push(&items, &len, &cap, entry)) {
+            value_free(&entry);
+            for (size_t i = 0; i < len; i++)
+                value_free(&items[i]);
+            free(items);
+            return val_err("out of memory");
+        }
+    }
+    return val_list(items, len);
+}
+
 static const char *mode_label(enum schedule_mode m) {
     switch (m) {
     case schedule_paced:
@@ -1990,6 +1987,11 @@ static const member_t scheduler_members[] = {
             "Sample before+after scheduler.run; divide instr_count delta by the time delta "
             "and multiply by 1e9 for perceived emulator throughput in instructions per real second.", .flags = VAL_RO,
      .attr = {.type = V_UINT, .get = sched_attr_host_wall_ns, .set = NULL}},
+    {.kind = M_ATTR,
+     .name = "events",
+     .doc = "Pending event queue: {source, event, when, delta, data} per entry",
+     .flags = VAL_VOLATILE,
+     .attr = {.type = V_LIST, .get = sched_attr_events}},
     {.kind = M_METHOD,
      .name = "run",
      .doc = "Start execution; with an instruction budget, stop after that many",
