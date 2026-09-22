@@ -715,9 +715,12 @@ void setup_init() {
     // Built-in machine profiles are a static const array in machine.c
     // (machine_find / machine_list walk it) — no runtime registration needed.
 
-    // Ensure logging categories of interest appear in `log list` even before any messages are emitted.
-    // shell_init() (called earlier) already invoked log_init(); categories default to level 0 (OFF).
-    (void)log_register_category("appletalk");
+    // Create every category the manifest declares, so `debug.log` with no
+    // arguments lists the complete set rather than only what has already been
+    // hit or configured.  This replaces a one-off registration of
+    // "appletalk" that existed for exactly this reason -- and whose presence
+    // was the tell that a manifest was missing (08-core-infra F-34).
+    log_register_manifest();
 
     image_init(NULL);
 }

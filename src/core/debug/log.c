@@ -13,12 +13,16 @@
 #include "debug.h" // debug_trace_capture_log()
 #include "log.h"
 
+#include "log_categories.h"
+
 #include "ppc.h" // PowerPC pc / r24 for the PC decoration
 #include "scheduler.h" // cpu_instr_count()
 #include "shell.h"
 #include "system.h" // system_config() / system_cpu()
 #include "system_config.h" // config_t::ppc
 #include "value.h"
+
+static bool name_in_manifest(const char *name);
 
 // Holds a single logging category node
 struct log_category {
@@ -211,15 +215,22 @@ int log_configure(const char *category, const char *spec) {
         print_category_config(c);
         return 0;
     }
-    // Setting options: create the category on demand for pre-config.
+    // Setting options: create on demand, but only for a name the manifest
+    // knows.  The on-demand path exists for PRE-CONFIGURATION -- setting a
+    // level before the owning module has emitted anything -- and that keeps
+    // working, because the manifest knows the name whether or not the module
+    // has run.  What it stops is inventing one: `debug.log cpuu 10` used to
+    // succeed and report a configured `cpuu` that could never emit (F-34).
     if (!c) {
-        c = create_category(category);
+        if (!name_in_manifest(category)) {
+            printf("unknown category \"%s\" (see `debug.log` for the full list)\n", category);
+            return -1;
+        }
+        c = log_register_category(category);
         if (!c) {
             puts("log: out of memory");
             return -1;
         }
-        c->next = s_registry_head;
-        s_registry_head = c;
     }
     // Split `spec` on whitespace into tokens and apply each.
     char *copy = strdup(spec);
@@ -245,9 +256,52 @@ void log_init(void) {
         s_sink_fn = NULL;
 }
 
+// === The manifest =========================================================
+
+static bool name_in_manifest(const char *name) {
+#define X(n, lvl, desc)                                                                                                \
+    if (strcmp(name, (n)) == 0)                                                                                        \
+        return true;
+    GS_LOG_CATEGORIES(X)
+#undef X
+    (void)name;
+    return false;
+}
+
+const char *log_category_description(const char *name) {
+    if (!name)
+        return NULL;
+#define X(n, lvl, desc)                                                                                                \
+    if (strcmp(name, (n)) == 0)                                                                                        \
+        return (desc);
+    GS_LOG_CATEGORIES(X)
+#undef X
+    return NULL;
+}
+
+// Create every category the manifest declares, so `debug.log` with no
+// arguments lists the real, complete set rather than only what has been hit
+// or configured so far (08-core-infra F-34).
+void log_register_manifest(void) {
+#define X(n, lvl, desc)                                                                                                \
+    do {                                                                                                               \
+        log_category_t *c = log_register_category(n);                                                                  \
+        if (c && (lvl) != 0)                                                                                           \
+            log_set_level(c, (lvl));                                                                                   \
+    } while (0);
+    GS_LOG_CATEGORIES(X)
+#undef X
+}
+
 // Registers a category by name (idempotent). Level defaults to 0 on first create.
 log_category_t *log_register_category(const char *name) {
     if (!name || !*name)
+        return NULL;
+    // A category that is not in the manifest is a typo, in code or in a
+    // `debug.log` argument.  It used to be created on the spot, which is how
+    // `debug.log cpuu 10` reported success and produced nothing (F-34).
+    GS_ASSERTF(name_in_manifest(name), "log category '%s' is not in GS_LOG_CATEGORIES", name);
+    if (!name_in_manifest(name))
         return NULL;
     struct log_category *c = find_category(name);
     if (c)

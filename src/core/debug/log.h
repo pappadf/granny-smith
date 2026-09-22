@@ -31,6 +31,14 @@ int log_configure(const char *category, const char *spec);
 // Returns NULL on OOM or invalid name.
 log_category_t *log_register_category(const char *name);
 
+// Create every category GS_LOG_CATEGORIES declares.  Called once from
+// setup_init so `debug.log` with no arguments lists the complete set rather
+// than only what has been hit so far (08-core-infra F-34).
+void log_register_manifest(void);
+
+// One-line description from the manifest, or NULL for an unknown name.
+const char *log_category_description(const char *name);
+
 // Lookup by name (case-sensitive). Returns NULL when not found.
 log_category_t *log_get_category(const char *name);
 
