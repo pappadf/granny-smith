@@ -316,16 +316,94 @@ static bool append_index_segment(const value_t *idx, char *buf, size_t buf_size,
 
 // Read an identifier starting at L->p, copying into buf. Returns true
 // on success, advancing L->p.
+// Read an identifier, FAILING rather than truncating when it does not fit.
+//
+// This used to copy buf_size-1 characters, keep advancing the cursor, and
+// discard the overflow -- then resolve the truncated name.  A 70-character
+// binding name became a 63-character lookup, which resolves to a DIFFERENT
+// binding when one happens to share the prefix rather than erroring.  Real
+// member names are short, so this is theoretical for paths a human types; a
+// generated script or a long machine.nubus.slot[N].card... path can reach the
+// 64-byte sub-path buffers (08-core-infra F-58).
 static bool lex_read_ident(lex_t *L, char *buf, size_t buf_size) {
     if (!isalpha((unsigned char)*L->p) && *L->p != '_')
         return false;
     size_t i = 0;
     while (*L->p && (isalnum((unsigned char)*L->p) || *L->p == '_')) {
-        if (i + 1 < buf_size)
-            buf[i++] = *L->p;
+        if (i + 1 >= buf_size) {
+            lex_error(L, "identifier too long (max %zu)", buf_size - 1);
+            return false;
+        }
+        buf[i++] = *L->p;
         L->p++;
     }
     buf[i] = '\0';
+    return true;
+}
+
+// Read `.ident` and `[expr]` continuation segments from *p, appending their
+// textual form to `out`, which already holds the head (or is empty for a
+// relative path).  Stops at the first character that cannot continue a path.
+// Sets *call_open and consumes the '(' when a call follows.
+//
+// ONE implementation.  script.c had its own -- scan_path_continuation plus
+// resolve_path_head_ex -- reimplementing identifier scanning, `.seg` and
+// `[expr]` appending, the `"`/`\` rejection for map keys and the
+// V_REF/V_OBJECT binding dance.  Any grammar change had to land twice, and
+// they had already drifted: this one accepts a numeric `.N` segment and
+// script.c's required ident_char after the dot, which agreed only because
+// isalnum happens to include digits.  Buffer sizes differed too, so the
+// longest usable path depended on which surface you typed it on
+// (08-core-infra F-38).
+bool expr_read_path_segments(const char **p, const expr_ctx_t *ctx, char *out, size_t out_size, bool *call_open,
+                             char *err_buf, size_t err_size) {
+    if (call_open)
+        *call_open = false;
+    size_t pi = strlen(out);
+    while (**p) {
+        if ((*p)[0] == '.' && (isalnum((unsigned char)(*p)[1]) || (*p)[1] == '_')) {
+            const char *q = *p + 1;
+            const char *start = q;
+            while (isalnum((unsigned char)*q) || *q == '_')
+                q++;
+            // snprintf truncates; the length check below is what turns that
+            // into a refusal rather than a silently shortened path (F-58).
+            int n = snprintf(out + pi, out_size - pi, ".%.*s", (int)(q - start), start);
+            if (n < 0 || (size_t)n >= out_size - pi) {
+                snprintf(err_buf, err_size, "path too long");
+                return false;
+            }
+            pi += (size_t)n;
+            *p = q;
+        } else if ((*p)[0] == '[') {
+            const char *q = *p + 1;
+            value_t idx = expr_eval_at(&q, ctx);
+            if (val_is_error(&idx)) {
+                snprintf(err_buf, err_size, "%s", idx.err ? idx.err : "bad index");
+                value_free(&idx);
+                return false;
+            }
+            while (*q && isspace((unsigned char)*q))
+                q++;
+            if (*q != ']') {
+                value_free(&idx);
+                snprintf(err_buf, err_size, "expected ']'");
+                return false;
+            }
+            q++;
+            bool ok = append_index_segment(&idx, out, out_size, &pi, err_buf, err_size);
+            value_free(&idx);
+            if (!ok)
+                return false;
+            *p = q;
+        } else if ((*p)[0] == '(' && call_open) {
+            (*p)++;
+            *call_open = true;
+            return true;
+        } else {
+            break;
+        }
+    }
     return true;
 }
 
@@ -340,73 +418,24 @@ static bool lex_read_ident(lex_t *L, char *buf, size_t buf_size) {
 // path_buf must be at least 256 bytes.
 static bool read_path_segments(lex_t *L, const expr_ctx_t *ctx, char *path_buf, size_t path_size, bool *call_open) {
     *call_open = false;
-    size_t pi = 0;
     char ident[64];
     if (!lex_read_ident(L, ident, sizeof(ident))) {
         lex_error(L, "expected identifier");
         return false;
     }
-    int n = snprintf(path_buf + pi, path_size - pi, "%s", ident);
-    if (n < 0 || (size_t)n >= path_size - pi) {
+    int n = snprintf(path_buf, path_size, "%s", ident);
+    if (n < 0 || (size_t)n >= path_size) {
         lex_error(L, "path too long");
         return false;
     }
-    pi += (size_t)n;
-
-    while (*L->p) {
-        if (*L->p == '.') {
-            // peek: only consume if followed by an ident character (a
-            // bare `.` followed by space/operator is not a path '.')
-            if (!(isalpha((unsigned char)L->p[1]) || L->p[1] == '_'))
-                break;
-            L->p++; // consume '.'
-            if (!lex_read_ident(L, ident, sizeof(ident))) {
-                lex_error(L, "expected identifier after '.'");
-                return false;
-            }
-            n = snprintf(path_buf + pi, path_size - pi, ".%s", ident);
-            if (n < 0 || (size_t)n >= path_size - pi) {
-                lex_error(L, "path too long");
-                return false;
-            }
-            pi += (size_t)n;
-        } else if (*L->p == '[') {
-            // Index: evaluate inner expression; integers address indexed
-            // children / list slots, strings address map keys.
-            L->p++;
-            value_t idx = parse_expr(L, ctx);
-            if (L->err_set) {
-                value_free(&idx);
-                return false;
-            }
-            if (val_is_error(&idx)) {
-                lex_error(L, "%s", idx.err ? idx.err : "bad index");
-                value_free(&idx);
-                return false;
-            }
-            lex_skip_ws(L);
-            if (*L->p != ']') {
-                value_free(&idx);
-                lex_error(L, "expected ']'");
-                return false;
-            }
-            L->p++;
-            char err[128];
-            bool ok = append_index_segment(&idx, path_buf, path_size, &pi, err, sizeof(err));
-            value_free(&idx);
-            if (!ok) {
-                lex_error(L, "%s", err);
-                return false;
-            }
-        } else if (*L->p == '(') {
-            L->p++;
-            *call_open = true;
-            return true;
-        } else {
-            break;
-        }
-    }
-    return true;
+    // The head is this function's own business; everything after it is the
+    // shared grammar (F-38).
+    char err[160];
+    err[0] = '\0';
+    if (expr_read_path_segments(&L->p, ctx, path_buf, path_size, call_open, err, sizeof(err)))
+        return true;
+    lex_error(L, "%s", err[0] ? err : "bad path");
+    return false;
 }
 
 // A parsed `name=expr` argument inside a call-args list: heap-owned
@@ -581,66 +610,13 @@ static value_t call_node_with_args(lex_t *L, const expr_ctx_t *ctx, node_t n) {
 // (leading '.' included for non-empty paths) and detect an opening `(`.
 // Mirrors read_path_segments but produces a *relative* path.
 static bool read_sub_segments(lex_t *L, const expr_ctx_t *ctx, char *sub_buf, size_t sub_size, bool *call_open) {
-    *call_open = false;
-    size_t pi = 0;
     sub_buf[0] = '\0';
-    char ident[64];
-    while (*L->p) {
-        if (*L->p == '.') {
-            if (!(isalpha((unsigned char)L->p[1]) || L->p[1] == '_' || isdigit((unsigned char)L->p[1])))
-                break;
-            L->p++;
-            if (isdigit((unsigned char)L->p[0])) {
-                // numeric segment (indexed child spelled `.N`)
-                size_t k = 0;
-                while (isdigit((unsigned char)*L->p) && k + 2 < sizeof(ident))
-                    ident[k++] = *L->p++;
-                ident[k] = '\0';
-            } else if (!lex_read_ident(L, ident, sizeof(ident))) {
-                lex_error(L, "expected identifier after '.'");
-                return false;
-            }
-            int n = snprintf(sub_buf + pi, sub_size - pi, ".%s", ident);
-            if (n < 0 || (size_t)n >= sub_size - pi) {
-                lex_error(L, "path too long");
-                return false;
-            }
-            pi += (size_t)n;
-        } else if (*L->p == '[') {
-            L->p++;
-            value_t idx = parse_expr(L, ctx);
-            if (L->err_set) {
-                value_free(&idx);
-                return false;
-            }
-            if (val_is_error(&idx)) {
-                lex_error(L, "%s", idx.err ? idx.err : "bad index");
-                value_free(&idx);
-                return false;
-            }
-            lex_skip_ws(L);
-            if (*L->p != ']') {
-                value_free(&idx);
-                lex_error(L, "expected ']'");
-                return false;
-            }
-            L->p++;
-            char err[128];
-            bool ok = append_index_segment(&idx, sub_buf, sub_size, &pi, err, sizeof(err));
-            value_free(&idx);
-            if (!ok) {
-                lex_error(L, "%s", err);
-                return false;
-            }
-        } else if (*L->p == '(') {
-            L->p++;
-            *call_open = true;
-            return true;
-        } else {
-            break;
-        }
-    }
-    return true;
+    char err[160];
+    err[0] = '\0';
+    if (expr_read_path_segments(&L->p, ctx, sub_buf, sub_size, call_open, err, sizeof(err)))
+        return true;
+    lex_error(L, "%s", err[0] ? err : "bad path");
+    return false;
 }
 
 // === Structured-value path access (V_MAP / V_LIST, shell v2) ================

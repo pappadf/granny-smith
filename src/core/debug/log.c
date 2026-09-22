@@ -12,11 +12,13 @@
 
 #include "debug.h" // debug_trace_capture_log()
 #include "log.h"
+
 #include "ppc.h" // PowerPC pc / r24 for the PC decoration
 #include "scheduler.h" // cpu_instr_count()
 #include "shell.h"
 #include "system.h" // system_config() / system_cpu()
 #include "system_config.h" // config_t::ppc
+#include "value.h"
 
 // Holds a single logging category node
 struct log_category {
@@ -128,18 +130,17 @@ static void print_category_config(const struct log_category *c) {
            c->file_path ? c->file_path : "off", c->timestamp ? "on" : "off", c->show_pc ? "on" : "off");
 }
 
+// One vocabulary, val_parse_bool's.  This was the fourth boolean table in the
+// tree and the only case-INsensitive one, which is why `debug.log cpu
+// stdout=ON` worked and the identical spelling failed on every typed bool
+// argument (08-core-infra F-55).  Nothing in tests/, app/ or docs/ spells one
+// in upper case.
 static int parse_onoff(const char *v, int *out) {
-    if (!v || !out)
+    bool b = false;
+    if (!v || !out || !val_parse_bool(v, &b))
         return -1;
-    if (strcasecmp(v, "on") == 0 || strcasecmp(v, "true") == 0 || strcmp(v, "1") == 0) {
-        *out = 1;
-        return 0;
-    }
-    if (strcasecmp(v, "off") == 0 || strcasecmp(v, "false") == 0 || strcmp(v, "0") == 0) {
-        *out = 0;
-        return 0;
-    }
-    return -1;
+    *out = b ? 1 : 0;
+    return 0;
 }
 
 // Apply one whitespace-delimited config token to category `c`: a bare

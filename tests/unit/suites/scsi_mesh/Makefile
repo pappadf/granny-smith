@@ -59,6 +59,7 @@ SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/scsi_mesh.c \
         $(EMU_ROOT)/core/peripherals/scsi_msgsession.c \
         $(EMU_ROOT)/core/object/object.c \
+        $(EMU_ROOT)/core/object/parse.c \
         $(EMU_ROOT)/core/object/value.c \
         $(EMU_ROOT)/core/object/meta.c \
         $(EMU_ROOT)/core/object/api.c \

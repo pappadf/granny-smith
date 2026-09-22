@@ -528,3 +528,21 @@ value_t value_copy(const value_t *v) {
     }
     return r;
 }
+
+bool val_parse_bool(const char *s, bool *out) {
+    if (!s || !out)
+        return false;
+    static const char *const yes[] = {"true", "on", "yes", "1", NULL};
+    static const char *const no[] = {"false", "off", "no", "0", NULL};
+    for (int i = 0; yes[i]; i++)
+        if (strcmp(s, yes[i]) == 0) {
+            *out = true;
+            return true;
+        }
+    for (int i = 0; no[i]; i++)
+        if (strcmp(s, no[i]) == 0) {
+            *out = false;
+            return true;
+        }
+    return false;
+}

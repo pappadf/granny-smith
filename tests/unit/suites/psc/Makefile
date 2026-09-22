@@ -42,6 +42,7 @@ SRCS := $(CURDIR)/test.c \
         $(EMU_ROOT)/core/peripherals/dma_mem.c \
         $(EMU_ROOT)/machines/av/psc.c \
         $(EMU_ROOT)/core/object/object.c \
+        $(EMU_ROOT)/core/object/parse.c \
         $(EMU_ROOT)/core/object/value.c \
         $(EMU_ROOT)/core/object/meta.c \
         $(EMU_ROOT)/core/peripherals/irq_controller.c \

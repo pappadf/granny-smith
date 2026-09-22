@@ -203,6 +203,19 @@ bool val_as_bool(const value_t *v); // truthiness (proposal §2.5)
 // while *v is alive.
 const char *val_as_str(const value_t *v);
 
+// Coerce a boolean-ish word to a bool.  Accepts true/on/yes/1 and
+// false/off/no/0, CASE-SENSITIVELY, matching the identifier rules everywhere
+// else in the object model.
+//
+// One vocabulary, because there were two that disagreed: validate_slot's was
+// case-sensitive and log.c's parse_onoff was case-INsensitive and accepted a
+// narrower set, so `debug.log cpu stdout=ON` worked while
+// `machine.floppy.drive[0].insert path ON` did not, for no reason a user
+// could infer (08-core-infra F-55).  Note this does NOT subsume the
+// true/false/none LITERAL grammars in parse.c and script.c: those are
+// language keywords, not coercions, and must not start accepting "yes".
+bool val_parse_bool(const char *s, bool *out);
+
 // True if *v carries an error.
 static inline bool val_is_error(const value_t *v) {
     return v && v->kind == V_ERROR;

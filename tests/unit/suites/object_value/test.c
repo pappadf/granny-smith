@@ -268,6 +268,46 @@ TEST(test_value_auto_cleanup) {
     // attribute is accepted by the compiler.
 }
 
+// === One boolean vocabulary (08-core-infra F-55) ===========================
+//
+// There were two coercion tables that disagreed on case: validate_slot's was
+// case-sensitive, log.c's parse_onoff case-INsensitive and narrower.  So
+// `debug.log cpu stdout=ON` worked while the same spelling failed on every
+// typed bool argument.  Case-sensitive wins, matching the identifier rules.
+//
+// This deliberately does NOT cover parse.c's and script.c's true/false/none:
+// those are language keyword literals, not coercions, and must not start
+// accepting "yes".
+TEST(test_parse_bool_vocabulary) {
+    bool b = false;
+    struct {
+        const char *s;
+        bool want;
+    } yes[] = {
+        {"true",  true },
+        {"on",    true },
+        {"yes",   true },
+        {"1",     true },
+        {"false", false},
+        {"off",   false},
+        {"no",    false},
+        {"0",     false}
+    };
+    for (size_t i = 0; i < sizeof(yes) / sizeof(yes[0]); i++) {
+        ASSERT_TRUE(val_parse_bool(yes[i].s, &b));
+        ASSERT_EQ_INT((int)b, (int)yes[i].want);
+    }
+}
+
+TEST(test_parse_bool_is_case_sensitive_and_rejects_junk) {
+    bool b = false;
+    ASSERT_TRUE(!val_parse_bool("ON", &b)); // upper case is not accepted
+    ASSERT_TRUE(!val_parse_bool("True", &b));
+    ASSERT_TRUE(!val_parse_bool("maybe", &b));
+    ASSERT_TRUE(!val_parse_bool("", &b));
+    ASSERT_TRUE(!val_parse_bool(NULL, &b));
+}
+
 int main(void) {
     RUN(test_inline_free_is_noop);
     RUN(test_string_ownership);
@@ -281,5 +321,7 @@ int main(void) {
     RUN(test_map_nested_free);
     RUN(test_map_copy);
     RUN(test_value_auto_cleanup);
+    RUN(test_parse_bool_vocabulary);
+    RUN(test_parse_bool_is_case_sensitive_and_rejects_junk);
     return 0;
 }

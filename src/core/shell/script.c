@@ -1185,66 +1185,16 @@ static exec_sig_t include_exec_file(const char *path, char *err, size_t err_size
 // Scan `('.' seg | '[' EXPR ']')*` at *p, appending to out (bracket
 // expressions evaluated to integers). Returns false with *errv set.
 static bool scan_path_continuation(const char **p, const expr_ctx_t *ectx, char *out, size_t out_size, value_t *errv) {
-    size_t pi = strlen(out);
-    while (1) {
-        if ((*p)[0] == '.' && (ident_char((*p)[1]))) {
-            const char *q = *p + 1;
-            const char *s = q;
-            while (ident_char(*q))
-                q++;
-            int n = snprintf(out + pi, out_size - pi, ".%.*s", (int)(q - s), s);
-            if (n < 0 || (size_t)n >= out_size - pi) {
-                *errv = val_err("path too long");
-                return false;
-            }
-            pi += (size_t)n;
-            *p = q;
-        } else if ((*p)[0] == '[') {
-            const char *q = *p + 1;
-            value_t idx = expr_eval_at(&q, ectx);
-            if (val_is_error(&idx)) {
-                *errv = idx;
-                return false;
-            }
-            q = skip_sp(q);
-            if (*q != ']') {
-                value_free(&idx);
-                *errv = val_err("expected ']'");
-                return false;
-            }
-            q++;
-            // Integer index (indexed child / list slot) or string index
-            // (map key, emitted as a `["key"]` segment).
-            int n;
-            if (idx.kind == V_STRING) {
-                const char *k = idx.s ? idx.s : "";
-                if (strpbrk(k, "\"\\")) {
-                    value_free(&idx);
-                    *errv = val_err("map key may not contain '\"' or '\\'");
-                    return false;
-                }
-                n = snprintf(out + pi, out_size - pi, "[\"%s\"]", k);
-            } else {
-                bool ok = false;
-                int64_t iv = val_as_i64(&idx, &ok);
-                if (!ok) {
-                    value_free(&idx);
-                    *errv = val_err("index must be numeric or a string key");
-                    return false;
-                }
-                n = snprintf(out + pi, out_size - pi, "[%lld]", (long long)iv);
-            }
-            value_free(&idx);
-            if (n < 0 || (size_t)n >= out_size - pi) {
-                *errv = val_err("path too long");
-                return false;
-            }
-            pi += (size_t)n;
-            *p = q;
-        } else {
-            return true;
-        }
-    }
+    // One grammar, in expr.c.  This used to be a second implementation of it
+    // (F-38): identifier scanning, `.seg` and `[expr]` appending, and the
+    // same `"`/`\` rejection for map keys, ~170 lines that had to be kept in
+    // step with expr.c by hand and had already drifted.
+    char err[160];
+    err[0] = '\0';
+    if (expr_read_path_segments(p, ectx, out, out_size, NULL, err, sizeof(err)))
+        return true;
+    *errv = val_err("%s", err[0] ? err : "bad path");
+    return false;
 }
 
 // Resolve a command/lvalue head at *p into a node. Handles both bare

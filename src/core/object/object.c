@@ -6,6 +6,8 @@
 
 #include "object.h"
 
+#include "parse.h"
+
 #include <assert.h>
 #include <ctype.h>
 #include <inttypes.h>
@@ -600,34 +602,30 @@ static const char *skip_ws(const char *p) {
     return p;
 }
 
-// Try to read an integer (decimal, 0x.. hex, or 0b.. binary). On success
-// writes the value into *out and returns the position after the digits.
-// Returns NULL if no integer was recognised at *p.
+// Read an integer at *p through the one integer grammar the object model
+// has, parse_integer_literal (parse.c).  On success writes the value into
+// *out and returns the position after the digits; NULL if none was found.
+//
+// This was a third hand-rolled scanner accepting decimal, 0x and 0b -- while
+// parse_integer_literal also accepts 0o, 0d, `$`, `_` separators and u/i
+// suffixes, and node_child's accepted base-0 octal.  Three grammars, all
+// reachable from path resolution (08-core-infra F-11).
 static const char *parse_int(const char *p, long long *out) {
     if (!p)
         return NULL;
-    int base = 10;
-    int sign = 1;
-    if (*p == '-') {
-        sign = -1;
-        p++;
-    } else if (*p == '+') {
-        p++;
-    }
-    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
-        base = 16;
-        p += 2;
-    } else if (p[0] == '0' && (p[1] == 'b' || p[1] == 'B')) {
-        base = 2;
-        p += 2;
-    }
-    char *endp = NULL;
-    long long v = strtoll(p, &endp, base);
-    if (!endp || endp == p)
+    const char *q = p;
+    value_t v = parse_integer_literal(&q);
+    if (val_is_error(&v)) {
+        value_free(&v);
         return NULL;
-    if (out)
-        *out = sign * v;
-    return endp;
+    }
+    bool ok = false;
+    int64_t iv = val_as_i64(&v, &ok);
+    value_free(&v);
+    if (!ok)
+        return NULL;
+    *out = (long long)iv;
+    return q;
 }
 
 // Try to read an identifier. On success copies up to buf_size-1 chars
@@ -667,12 +665,24 @@ node_t node_child(node_t n, const char *segment) {
     bool is_int = false;
     long long ival = 0;
     {
-        char *endp = NULL;
-        long long v = strtoll(segment, &endp, 0);
-        if (endp && endp != segment && *endp == '\0') {
-            is_int = true;
-            ival = v;
+        // One integer grammar, parse_integer_literal's.  This used to be
+        // strtoll(segment, &endp, 0) -- base 0, so a leading '0' meant OCTAL,
+        // while the bracket form `devices[010]` went through parse_int and
+        // read base 10.  So `devices.010` selected index 8 and
+        // `devices[010]` selected index 10, for the same object, and nobody
+        // writing a script could predict which grammar applied where
+        // (08-core-infra F-11).
+        const char *q = segment;
+        value_t iv = parse_integer_literal(&q);
+        if (!val_is_error(&iv) && q && *q == '\0') {
+            bool ok = false;
+            long long v = (long long)val_as_i64(&iv, &ok);
+            if (ok) {
+                is_int = true;
+                ival = v;
+            }
         }
+        value_free(&iv);
     }
 
     // Case 1: `n` is sitting on an indexed-child member with no index
@@ -1073,11 +1083,7 @@ static validate_status_t validate_slot(const typed_slot_t *s, const value_t *in,
         else if (s->kind == V_BOOL && in->kind == V_STRING) {
             const char *str = in->s ? in->s : "";
             bool bv;
-            if (!strcmp(str, "true") || !strcmp(str, "on") || !strcmp(str, "yes") || !strcmp(str, "1"))
-                bv = true;
-            else if (!strcmp(str, "false") || !strcmp(str, "off") || !strcmp(str, "no") || !strcmp(str, "0"))
-                bv = false;
-            else {
+            if (!val_parse_bool(str, &bv)) {
                 snprintf(err_buf, err_size, "must be a boolean (true/false/on/off/yes/no), got '%.20s'", str);
                 return VALIDATE_ERR;
             }
