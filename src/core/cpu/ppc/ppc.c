@@ -881,14 +881,14 @@ static void ppc_dbgif_set_pc(void *ctx, uint32_t pc) {
 // One instruction at pc through the debug memory view; always 4 bytes.
 // The pc is translated with the fetch rules so disassembly through
 // translated pages shows the bytes the CPU would execute.
-static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
+static int ppc_dbgif_disasm(void *ctx, uint32_t pc, char *buf, size_t buflen) {
     ppc_t *p = (ppc_t *)ctx;
     bool ok;
     uint32_t pa = ppc_mmu_translate_debug(p, pc, false, &ok);
     ppc_insn ins;
     ppc_disassemble_model(ok ? memory_debug_read_uint32(pa) : 0, pc, p->cpu_model, &ins);
     // debug.c splits on '\t'; ppc_disasm emits "mnemonic\toperands" already.
-    snprintf(buf, 100, "%s", ins.text);
+    snprintf(buf, buflen, "%s", ins.text); // ins.text is char[96]; caller gives 100
     return 4;
 }
 

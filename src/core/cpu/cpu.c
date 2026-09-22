@@ -445,8 +445,9 @@ static void cpu_dbgif_set_pc(void *ctx, uint32_t pc) {
 
 // Disassemble one 68K instruction at pc, reading the instruction stream
 // through the debug memory view (side-effect-free).  Returns bytes consumed.
-static int cpu_dbgif_disasm(void *ctx, uint32_t pc, char *buf) {
+static int cpu_dbgif_disasm(void *ctx, uint32_t pc, char *buf, size_t buflen) {
     (void)ctx;
+    (void)buflen; // cpu_disasm's worst case is 76 bytes; see debug.h
     uint16_t words[16]; // longest 68K instruction is 10 words; decoder may peek further
     for (int i = 0; i < 16; i++)
         words[i] = memory_debug_read_uint16(pc + (uint32_t)(i * 2));

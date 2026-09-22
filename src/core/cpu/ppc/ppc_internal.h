@@ -166,25 +166,8 @@ struct ppc {
     struct scheduler *scheduler; // time source (ppc_bind_time; NULL in tests)
 };
 
-// === Field extraction (BE bit numbering per 601UM Chapter 10 diagrams).
-// Kept in sync with the #ifndef-guarded copy in ppc_decode.h (which serves
-// the dependency-free disassembler TU).
-#define PPC_OPCD(iw) ((iw) >> 26)
-#define PPC_RT(iw)   (((iw) >> 21) & 31) // also RS, TO, BO, crfD<<2|..
-#define PPC_RA(iw)   (((iw) >> 16) & 31) // also BI
-#define PPC_RB(iw)   (((iw) >> 11) & 31) // also SH, NB
-#define PPC_XO10(iw) (((iw) >> 1) & 0x3FF) // X/XL/XFX-form extended opcode
-#define PPC_XO9(iw)  (((iw) >> 1) & 0x1FF) // XO-form (bit 21 = OE)
-#define PPC_XO5(iw)  (((iw) >> 1) & 0x1F) // A-form (FP arithmetic)
-#define PPC_OE(iw)   (((iw) >> 10) & 1)
-#define PPC_RC(iw)   ((iw) & 1)
-#define PPC_SIMM(iw) ((int32_t)(int16_t)(iw))
-#define PPC_UIMM(iw) ((iw) & 0xFFFFu)
-#define PPC_MB(iw)   (((iw) >> 6) & 31)
-#define PPC_ME(iw)   (((iw) >> 1) & 31)
-#define PPC_FRC(iw)  (((iw) >> 6) & 31) // A-form third operand
-#define PPC_CRFD(iw) (((iw) >> 23) & 7)
-#define PPC_CRFS(iw) (((iw) >> 18) & 7)
+// Instruction-field accessors, shared with the dependency-free disassembler.
+#include "ppc_fields.h"
 
 // (rA|0): a zero RA field reads as the value 0, not r0 (EA computation rule)
 static inline uint32_t ppc_ra0(ppc_t *p, uint32_t iw) {
