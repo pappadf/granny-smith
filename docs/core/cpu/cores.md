@@ -136,7 +136,9 @@ a fetch bus error belongs in the same return value rather than in the extra
 `if (g_bus_error_pending) break;` that sits beside it today.
 
 **Known deviations**, all in the deferred-bus-error path and all measured
-above — see `2026-09-03-code-review/07-WORK-ORDER.md` §9.2:
+above. Removing them is its own piece of work, specified in
+`local/gs-docs/proposals/proposal-interpreter-loop-exit-discipline.md`
+(raised from `2026-09-03-code-review/07-WORK-ORDER.md` §9.2):
 
 | site | decoders | what it should become |
 |---|---|---|
