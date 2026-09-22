@@ -253,22 +253,6 @@ static m040_walk_result_t m040_walk(mmu040_state_t *mmu, struct mmu_state *bus, 
 // TLB-miss handling (dispatched from mmu_handle_fault)
 // ============================================================================
 
-// Mirror of mmu.c's fault epilogue: after a fill attempt, if the SoA entry
-// stayed zero the physical page is a device, unmapped, or logpointed.  Only
-// clearly-garbage physical addresses (past the RAM controller's reach and
-// below the ROM window) bus-error; device windows dispatch in memory.c.
-static inline bool m040_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write) {
-    uint32_t page_index = emu_page >> PAGE_SHIFT;
-    if ((int)page_index < g_page_count) {
-        uintptr_t *active = write ? g_active_write : g_active_read;
-        if (active && active[page_index] == 0) {
-            if (phys_page >= bus->ram_size_max && phys_page < bus->rom_phys_base)
-                return false;
-        }
-    }
-    return true;
-}
-
 bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool write, bool supervisor) {
     mmu040_state_t *mmu = bus ? bus->m040 : NULL;
     if (!mmu || !mmu->enabled)
@@ -333,7 +317,7 @@ bool mmu040_handle_fault(struct mmu_state *bus, uint32_t logical_addr, bool writ
     bool fill_user = (!supervisor || shared_roots) && !r.supervisor_only;
 
     mmu_fill_soa_page(bus, emu_page, phys_page, fill_super, fill_user, writable);
-    return m040_fault_epilogue(bus, emu_page, phys_page, write);
+    return mmu_fault_epilogue(bus, emu_page, phys_page, write);
 }
 
 // Side-effect-free translation for debugger reads and memory.c dispatch

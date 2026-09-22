@@ -846,19 +846,6 @@ void mmu_invalidate_tlb(mmu_state_t *mmu) {
 // faulting, and our deferred bus error mechanism is incompatible with the
 // ROM's bail-out handler for data probes.  So only bus error for physical
 // addresses that are clearly garbage — outside all known hardware regions.
-static inline bool mmu_fault_epilogue(mmu_state_t *mmu, uint32_t emu_page, uint32_t phys_page, bool write) {
-    uint32_t page_index = emu_page >> PAGE_SHIFT;
-    if ((int)page_index < g_page_count) {
-        uintptr_t *active = write ? g_active_write : g_active_read;
-        if (active && active[page_index] == 0) {
-            // For closer ranges (e.g., $006DB000 from corrupted page tables),
-            // the f_trap handler detects unmapped instruction fetches separately.
-            if (phys_page >= mmu->ram_size_max && phys_page < mmu->rom_phys_base)
-                return false;
-        }
-    }
-    return true;
-}
 
 // Handle a TLB miss: perform table walk or TT check, fill SoA entry.
 // `probe_atc` selects whether the block-descriptor cache may satisfy the miss

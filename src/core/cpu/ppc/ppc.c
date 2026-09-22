@@ -65,6 +65,15 @@ void ppc_context_sync(ppc_t *p) {
 // prefixed $FFF00000 when MSR[EP] is set.
 void ppc_exception(ppc_t *p, uint32_t vector, uint32_t srr1_hi, uint32_t resume_pc) {
     ppc_context_sync(p); // taking an exception is context-synchronizing
+    // MPC601UM 3.5.7 lists what clears an lwarx reservation, including
+    // "execution of an instruction that causes an exception" and "occurrence
+    // of an asynchronous exception"; 5.2.2 step 6 repeats it.  Without this a
+    // DEC or external interrupt arriving between lwarx and stwcx. leaves the
+    // reservation live across the handler and the rfi, so the conditional
+    // store succeeds where hardware fails it -- the exact atomicity break the
+    // pair exists to prevent.  reserve_addr is deliberately left alone:
+    // proposal-multi-cpu.md 11.7 needs it for the granule compare.
+    p->reserve = 0;
     p->srr0 = resume_pc;
     p->srr1 = (srr1_hi & 0xFFFF0000u) | (p->msr & 0x0000FFFFu);
     p->msr &= ppc_msr_exception_keep(p);

@@ -7,6 +7,8 @@
 #ifndef MMU_H
 #define MMU_H
 
+#include "memory.h" // g_active_read/g_active_write/g_page_count for the shared fault epilogue
+
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -285,5 +287,37 @@ extern struct mmu_state *g_mmu;
 // when the CPU is currently in supervisor mode.  0 if no user-mode entry
 // has been observed yet.
 extern uint64_t g_last_user_crp;
+
+// Shared 68030/68040 fault epilogue.  After a fill attempt, a still-zero SoA
+// entry means the physical page is a device window, unmapped, or logpointed.
+// Only clearly-garbage physical addresses -- past the RAM controller's reach
+// and below the ROM window -- bus-error; device windows dispatch in memory.c.
+// The Mac ROM probes high addresses through page table entries and expects to
+// read $FF without faulting, and the deferred bus error mechanism is
+// incompatible with the ROM's bail-out handler for data probes.
+//
+// Returning false here is a BUS TIMEOUT, not a PMMU table-walk fault, so the
+// stack frame must be the skip form ($A) rather than the retry form ($B).
+// Both copies of this function used to return without touching
+// g_bus_error_is_pmmu, leaving whatever the walk had set -- and the common
+// writers set it true -- so an unmapped physical page reached through a valid
+// descriptor produced a Format $B retry frame and the handler RTE'd straight
+// back into the same access.  The 040's transparent-translation path already
+// set the flag false explicitly for exactly this reason.
+static inline bool mmu_fault_epilogue(struct mmu_state *bus, uint32_t emu_page, uint32_t phys_page, bool write) {
+    uint32_t page_index = emu_page >> PAGE_SHIFT;
+    if ((int)page_index < g_page_count) {
+        uintptr_t *active = write ? g_active_write : g_active_read;
+        if (active && active[page_index] == 0) {
+            // For closer ranges (e.g. $006DB000 from corrupted page tables) the
+            // f_trap handler detects unmapped instruction fetches separately.
+            if (phys_page >= bus->ram_size_max && phys_page < bus->rom_phys_base) {
+                g_bus_error_is_pmmu = false; // bus timeout: skip semantics
+                return false;
+            }
+        }
+    }
+    return true;
+}
 
 #endif // MMU_H
