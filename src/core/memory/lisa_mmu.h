@@ -57,6 +57,7 @@ bool lisa_mmu_get_cursor(int ctx, int *x, int *y);
 
 // Save / restore descriptor RAM + latches (checkpoint parity).
 void lisa_mmu_checkpoint(lisa_mmu_t *m, checkpoint_t *cp);
+void lisa_mmu_checkpoint_restore(lisa_mmu_t *m, checkpoint_t *cp);
 
 // === I/O-space device registration =========================================
 //

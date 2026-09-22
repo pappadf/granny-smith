@@ -25,6 +25,7 @@
 
 #include "lisa_mmu.h"
 
+#include "checkpoint.h" // system_{read,write}_checkpoint_data are macros
 #include "cpu.h"
 #include "memory.h"
 #include "scheduler.h"
@@ -149,7 +150,7 @@ lisa_mmu_t *lisa_mmu_init(uint8_t *ram, uint32_t ram_size, uint8_t *rom, uint32_
     m->bad_par_gran = 0xFFFFFFFFu; // no bad-parity location
     g_lisa_mmu = m;
     if (cp)
-        lisa_mmu_checkpoint(m, cp); // restore (same field order as save)
+        lisa_mmu_checkpoint_restore(m, cp); // same field order as the save
     return m;
 }
 
@@ -161,12 +162,55 @@ void lisa_mmu_delete(lisa_mmu_t *m) {
     free(m);
 }
 
+// Serialise the Lisa segment MMU's guest state, in one canonical order shared
+// by save and restore.
+//
+// This was a symmetric NO-OP -- `(void)m; (void)cp;` on both sides -- which is
+// why nothing ever noticed: a save wrote zero bytes and a restore read zero
+// bytes, so the stream stayed consistent and only the MACHINE came back wrong.
+// Lost were sor[4][128] and slr[4][128], i.e. 4 KiB of descriptor RAM covering
+// the entire address space, plus every latch below.  lisa_mmu_init hard-sets
+// start = true and zeroes the descriptors, so a restored machine resumed a
+// mid-boot CPU against a POWER-ON MMU: `start` re-routes every low access to
+// ROM/descriptor RAM and every mapped segment reads slr = 0, which is below
+// ACC_MEM_RO_STK, so it faults.  Unfinished R7 of
+// completed/proposal-machine-lisa-xl.md, not a new design question.
+//
+// Field-by-field rather than a POD blob because the struct interleaves host
+// pointers (rom, sched, the NMI and VBL-ack callbacks, the io[] table) with
+// guest state, so there is no single prefix to take.  Both directions walk the
+// same list; the stream is build-ID gated, so widening it later is free as long
+// as both halves move together.
+#define LISA_MMU_CP_FIELDS(OP, m, cp)                                                                                  \
+    OP(cp, &(m)->sor, sizeof((m)->sor)); /* descriptor RAM: origin per context */                                      \
+    OP(cp, &(m)->slr, sizeof((m)->slr)); /* descriptor RAM: limit/access */                                            \
+    OP(cp, &(m)->start, sizeof((m)->start)); /* START/SETUP latch */                                                   \
+    OP(cp, &(m)->seg1, sizeof((m)->seg1)); /* context selector bits */                                                 \
+    OP(cp, &(m)->seg2, sizeof((m)->seg2));                                                                             \
+    OP(cp, &(m)->vidlatch, sizeof((m)->vidlatch)); /* framebuffer base A15-A20 */                                      \
+    OP(cp, &(m)->vtir_enabled, sizeof((m)->vtir_enabled));                                                             \
+    OP(cp, &(m)->sfmsk, sizeof((m)->sfmsk));                                                                           \
+    OP(cp, &(m)->hdmsk, sizeof((m)->hdmsk));                                                                           \
+    OP(cp, &(m)->vbl_active, sizeof((m)->vbl_active));                                                                 \
+    OP(cp, &(m)->status_toggle, sizeof((m)->status_toggle));                                                           \
+    OP(cp, &(m)->vertical, sizeof((m)->vertical)); /* retrace latch */                                                 \
+    OP(cp, &(m)->last_retrace_frame, sizeof((m)->last_retrace_frame));                                                 \
+    OP(cp, &(m)->serial_ctr, sizeof((m)->serial_ctr)); /* RDSERN bit-stream cursor */                                  \
+    OP(cp, &(m)->wwp_on, sizeof((m)->wwp_on)); /* parity-test state */                                                 \
+    OP(cp, &(m)->parity_detect, sizeof((m)->parity_detect));                                                           \
+    OP(cp, &(m)->bad_par_gran, sizeof((m)->bad_par_gran));                                                             \
+    OP(cp, &(m)->mealtch, sizeof((m)->mealtch))
+
 void lisa_mmu_checkpoint(lisa_mmu_t *m, checkpoint_t *cp) {
-    // Symmetric no-op for now: save and restore both contribute zero bytes, so
-    // the surrounding subsystems' fixed checkpoint ordering is preserved.
-    // Full descriptor-RAM + latch save/restore lands in Step 9 (R7).
-    (void)m;
-    (void)cp;
+    if (!m || !cp)
+        return;
+    LISA_MMU_CP_FIELDS(system_write_checkpoint_data, m, cp);
+}
+
+void lisa_mmu_checkpoint_restore(lisa_mmu_t *m, checkpoint_t *cp) {
+    if (!m || !cp)
+        return;
+    LISA_MMU_CP_FIELDS(system_read_checkpoint_data, m, cp);
 }
 
 void lisa_mmu_map_io(lisa_mmu_t *m, uint32_t phys_base, uint32_t size, memory_interface_t *iface, void *dev) {
