@@ -964,6 +964,15 @@ value_t machine_boot_apply(const boot_config_t *doc_in) {
     if (rom_rc != 0) {
         for (int i = 0; i < n_media; ++i)
             image_close(media[i].img); // half-built machine; drop the transfer
+        // system_create() already succeeded, so the object root is installed
+        // for this cfg and global_emulator names it -- and the PREVIOUS machine
+        // is already gone.  Returning here left the process with a fully
+        // installed machine that has no valid ROM: machine.cpu.*,
+        // machine.memory.* and the whole machine.* subtree resolve and answer
+        // with garbage.  The `!cfg` branch a few lines above unwinds; this one
+        // did not, and it was the only partial-init failure in the create flow
+        // that did not (F-45).
+        system_destroy(cfg); // clears global_emulator itself
         return val_err("machine.boot: machine created but ROM staging failed for '%s'", doc.rom);
     }
 

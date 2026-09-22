@@ -2184,7 +2184,17 @@ void debug_cleanup(debug_t *debug) {
         lp = next;
     }
     debug->logpoints = NULL;
-    g_mem_logpoint_hook = NULL;
+    // The hook is process-global but installed and cleared by cfg-scoped
+    // construction and teardown, and the documented reload order is
+    // system_create(new) THEN system_destroy(old).  Clearing unconditionally
+    // therefore removed the hook the NEW machine had just installed: its
+    // logpoints stayed registered -- pages forced onto the slow path, the
+    // fast-path cost paid -- with nothing to call, so none of them ever fired
+    // and nothing reported it.  root.c guards exactly this shape with
+    // g_installed_cfg (root.c:295-309); this is the same guard, keyed on the
+    // handler rather than on a cfg we do not hold here.
+    if (g_mem_logpoint_hook == debug_memory_logpoint_hook)
+        g_mem_logpoint_hook = NULL;
 
     // Free trace log buffer entries
     if (debug->trace_log_buffer) {

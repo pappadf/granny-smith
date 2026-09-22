@@ -95,12 +95,22 @@ void object_root_reset(void) {
     // before we free the root. Callers own the children themselves.
     while (g_root->first_child)
         object_detach(g_root->first_child);
-    // Free the cached Meta node on the root, if any. Callers leak the
-    // synthetic introspection node otherwise — object_delete is the only
-    // path that runs meta_node_release, and the root bypasses it here.
-    meta_node_release(g_root);
-    free(g_root);
-    g_root = NULL;
+    // Route through object_delete rather than freeing directly.
+    //
+    // This path used to detach, release the Meta node and free() -- skipping
+    // object_fire_invalidators and the destructor hook, both of which
+    // object_delete runs.  The invalidator contract is the mechanism that
+    // makes a held node safe: shell_var.c's binding_store registers one on
+    // whatever V_OBJECT it holds, and without the fire it keeps a `watched`
+    // pointer into freed memory and is never marked stale, so the next read
+    // dereferences it.  This was the one path that bypassed it (F-57).
+    //
+    // Blast radius is small -- tests and process exit are the callers -- but
+    // it is the contract, not an optimisation, and a path that opts out of it
+    // is how the next holder gets a dangling pointer.
+    struct object *root = g_root;
+    g_root = NULL; // clear first: the destructor must not re-enter through it
+    object_delete(root);
 }
 
 struct object *object_new(const class_desc_t *cls, void *instance_data, const char *name) {

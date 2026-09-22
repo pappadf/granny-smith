@@ -314,8 +314,14 @@ static int g_stub_count = 0;
 static struct config *g_installed_cfg = NULL;
 
 static struct object *attach_stub(struct object *parent, const class_desc_t *cls, void *data, const char *name) {
-    if (g_stub_count >= MAX_STUBS)
+    if (g_stub_count >= MAX_STUBS) {
+        // Two callers discard this result (storage.images, shell.alias), so an
+        // exhausted table made a whole subtree quietly absent -- which reads
+        // as a missing feature, not a resource limit.  The class-validation
+        // failure a few lines below already prints; this one did not (F-62).
+        fprintf(stderr, "root: stub table full (%d); '%s' not attached\n", MAX_STUBS, name ? name : "(unnamed)");
         return NULL;
+    }
     char err[200];
     if (!object_validate_class(cls, err, sizeof(err))) {
         fprintf(stderr, "root: class '%s' invalid: %s\n", cls->name ? cls->name : "?", err);
@@ -417,9 +423,17 @@ void root_uninstall(void) {
     // teardown. Only the cfg-scoped storage.images entry array is freed
     // here.
     storage_object_classes_teardown();
-    // Restore the namespace-only root class so a fresh object_root()
-    // call after uninstall doesn't surface stale members.
-    object_root_set_class(NULL);
+    // The root method table is NOT reverted here, deliberately.
+    //
+    // It used to be, and that was a process-scoped global being undone by a
+    // cfg-scoped teardown: after system_destroy -- a headless quit,
+    // machine.boot's teardown, or a failed restore -- `echo`, `objects`,
+    // `attributes`, `methods`, `help`, `time` and `quit` all stopped
+    // resolving until a new machine existed.  The comment that stood here
+    // feared "stale members", but the stale things are the STUBS, and the loop
+    // above already detached them.  emu_root_class_real is a static descriptor
+    // whose members take a path and walk the tree; not one of them holds or
+    // dereferences a cfg, so there is nothing about it to go stale (F-16).
     // Aliases (built-in and user) survive machine teardown: they store
     // path text and re-resolve per access (shell v2 §3.5), so a
     // reference like `alias d = machine.floppy.drive[0]` tracks the

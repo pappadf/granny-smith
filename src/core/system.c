@@ -432,8 +432,7 @@ int system_ensure_machine(const char *model_id) {
     // Teardown existing machine if wrong type
     if (global_emulator) {
         LOG(1, "Switching machine from %s to %s", global_emulator->machine->id, model_id);
-        system_destroy(global_emulator);
-        global_emulator = NULL;
+        system_destroy(global_emulator); // clears global_emulator itself
     }
 
     // Create the new machine
@@ -997,6 +996,22 @@ void system_destroy(config_t *config) {
     }
     config->n_images = 0;
 
+    // The process-global pointer dies with the config it names.  This used to
+    // be every caller's job: five sites remembered and one -- system_restore's
+    // failure path, which deliberately restores a DIFFERENT config -- did not,
+    // which is what made the pattern look load-bearing rather than fragile.
+    // `global_emulator` is read from roughly sixty places (system_scheduler,
+    // system_cpu, system_memory, system_is_initialized, machine.c's attribute
+    // getters, checkpoint_machine.c, iop_swim.c), so a caller that forgot left
+    // all of them pointing at freed memory -- and system_is_initialized()
+    // answering true for it.
+    //
+    // The guard is what keeps system_restore working: it installs the new
+    // config first and destroys the old one after, so by the time this runs
+    // the global already names someone else and must not be cleared.
+    if (global_emulator == config)
+        global_emulator = NULL;
+
     free(config);
 }
 
@@ -1322,11 +1337,24 @@ config_t *system_restore(const char *filename) {
     config_t *config = system_create(profile, &build_opts, checkpoint);
 
     if (checkpoint_has_error(checkpoint)) {
-        printf("Error: Failed to read checkpoint\n");
+        LOG(0, "Error: Failed to read checkpoint");
         checkpoint_close(checkpoint);
         global_emulator = prev;
         if (config)
             system_destroy(config);
+        // Put the surviving machine's object tree back.
+        //
+        // system_create() ran root_install(config) on the way in, which tore
+        // down `prev`'s stubs and claimed g_installed_cfg; system_destroy()
+        // then ran root_uninstall_if(config), which matched and uninstalled
+        // again.  Nothing reinstalled `prev`.  So a truncated or mismatched
+        // checkpoint left the still-running machine executing with `shell`,
+        // `shell.functions`, `shell.alias`, `storage`, `storage.images`,
+        // `machine.nubus` and `machine.pci` all detached and the root methods
+        // gone -- the entire tooling surface evaporated, with no diagnostic
+        // beyond "Failed to read checkpoint" (F-17).
+        if (prev)
+            root_install(prev);
         return NULL;
     }
 
