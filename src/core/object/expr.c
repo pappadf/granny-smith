@@ -2037,6 +2037,22 @@ static void buf_append(char **buf, size_t *len, size_t *cap, const char *s, size
     (*buf)[*len] = '\0';
 }
 
+// snprintf reports the length it WOULD have written, so appending `n` bytes
+// out of a fixed scratch buffer reads past the end of it whenever the value
+// did not fit.  Every site that appends an snprintf result goes through here.
+//
+// The easiest trigger is not a format spec at all: `<error: %s>` rendered into
+// a 64-byte buffer overreads for any error message longer than about 54
+// characters, with no `${...:FMT}` involved (F-02).
+static void buf_append_formatted(char **buf, size_t *len, size_t *cap, const char *tmp, size_t tmp_size, int n) {
+    if (n <= 0)
+        return;
+    size_t take = (size_t)n;
+    if (take >= tmp_size)
+        take = tmp_size - 1;
+    buf_append(buf, len, cap, tmp, take);
+}
+
 static void format_value_default(const value_t *v, char **buf, size_t *len, size_t *cap) {
     char tmp[64];
     int n = 0;
@@ -2102,8 +2118,7 @@ static void format_value_default(const value_t *v, char **buf, size_t *len, size
         format_value_json_text(v, buf, len, cap);
         return;
     }
-    if (n > 0)
-        buf_append(buf, len, cap, tmp, (size_t)n);
+    buf_append_formatted(buf, len, cap, tmp, sizeof(tmp), n);
 }
 
 // Append `s` as a JSON string literal (quotes + RFC 8259 escapes) to the
@@ -2218,8 +2233,7 @@ static void format_value_json_text(const value_t *v, char **buf, size_t *len, si
         }
         return;
     }
-    if (n > 0)
-        buf_append(buf, len, cap, tmp, (size_t)n);
+    buf_append_formatted(buf, len, cap, tmp, sizeof(tmp), n);
 }
 
 // Format a value with an optional spec (proposal §4.2.1).
@@ -2230,96 +2244,148 @@ static void format_value_json_text(const value_t *v, char **buf, size_t *len, si
 //   [0]<W>d        width-padded decimal
 //   [0]<W>x|X      width-padded hex
 //   %<printf>      printf-style escape hatch (e.g. %-10s, %5d)
+// === Format specs =========================================================
+//
+// `${EXPR:FMT}` lets a script choose how a value renders.  The FMT text is
+// user input: it arrives from a script line, a logpoint `message=`, or a
+// gsEval string, and scripts under tests/integration/ are the same language,
+// so this is not a privileged surface.
+//
+// It used to be handed to snprintf as the format string.  Two consequences:
+//
+//   ${1:%s%d}  -- a second conversion reads the varargs area past the one
+//                 argument bound, passing a long long where %s expects a
+//                 pointer: an immediate crash or an arbitrary read.
+//   ${1:%n%d}  -- %n was rejected only when it was the LAST character, so
+//                 this selected the 'd' branch and executed %n, which WRITES
+//                 through a pointer taken from varargs.  An arbitrary-write
+//                 primitive available to any script line.
+//
+// So the user's text never reaches printf.  It is parsed into the struct
+// below, and the format string snprintf receives is REBUILT from those
+// fields -- one conversion, no %n, no '*', nothing the parser did not
+// produce itself.
+typedef struct {
+    bool left; // '-'
+    bool zero; // '0'
+    int width; // clamped to SPEC_MAX_FIELD
+    int prec; // -1 when unset
+    char conv; // one of d i o u x X f e E g G s
+} spec_t;
+
+// Width and precision are clamped so the rendered field cannot approach the
+// scratch buffer's size.  ${1:0500d} asked for a 500-character field out of a
+// 160-byte buffer, and snprintf's return value -- the length it WOULD have
+// written -- was then used as the copy length (F-02).
+#define SPEC_MAX_FIELD 64
+
+static bool spec_conv_valid(char c) {
+    switch (c) {
+    case 'd':
+    case 'i':
+    case 'o':
+    case 'u':
+    case 'x':
+    case 'X':
+    case 'f':
+    case 'e':
+    case 'E':
+    case 'g':
+    case 'G':
+    case 's':
+        return true;
+    default:
+        return false; // notably 'n', and anything else
+    }
+}
+
+// Parse `[%][-][0][width][.prec]conv`.  Returns false for anything that does
+// not match exactly -- a second '%', a '*', an unknown conversion, trailing
+// text -- and the caller then renders the value in its default form rather
+// than guessing at what was meant.
+static bool parse_spec(const char *spec, spec_t *out) {
+    const char *p = spec;
+    *out = (spec_t){.left = false, .zero = false, .width = 0, .prec = -1, .conv = 0};
+    if (*p == '%')
+        p++;
+    if (*p == '-') {
+        out->left = true;
+        p++;
+    }
+    if (*p == '0') {
+        out->zero = true;
+        p++;
+    }
+    while (*p >= '0' && *p <= '9') {
+        if (out->width < SPEC_MAX_FIELD)
+            out->width = out->width * 10 + (*p - '0');
+        p++;
+    }
+    if (*p == '.') {
+        p++;
+        out->prec = 0;
+        while (*p >= '0' && *p <= '9') {
+            if (out->prec < SPEC_MAX_FIELD)
+                out->prec = out->prec * 10 + (*p - '0');
+            p++;
+        }
+    }
+    if (!spec_conv_valid(*p))
+        return false;
+    out->conv = *p++;
+    if (*p != '\0')
+        return false; // trailing text: a second conversion, or junk
+    if (out->width > SPEC_MAX_FIELD)
+        out->width = SPEC_MAX_FIELD;
+    if (out->prec > SPEC_MAX_FIELD)
+        out->prec = SPEC_MAX_FIELD;
+    return true;
+}
+
+// Rebuild a one-conversion printf format from the parsed fields.  `len_mod`
+// is the length modifier the argument needs ("ll" for integers, "" for double
+// and char*).
+static void spec_build_fmt(const spec_t *sp, const char *len_mod, char *out, size_t out_size) {
+    char wbuf[16] = "";
+    char pbuf[16] = "";
+    if (sp->width > 0)
+        snprintf(wbuf, sizeof(wbuf), "%d", sp->width);
+    if (sp->prec >= 0)
+        snprintf(pbuf, sizeof(pbuf), ".%d", sp->prec);
+    snprintf(out, out_size, "%%%s%s%s%s%s%c", sp->left ? "-" : "", sp->zero ? "0" : "", wbuf, pbuf, len_mod, sp->conv);
+}
+
 static void format_value_with_spec(const value_t *v, const char *spec, char **buf, size_t *len, size_t *cap) {
     if (!spec || !*spec) {
         format_value_default(v, buf, len, cap);
         return;
     }
 
-    char tmp[160];
-    int n = 0;
-
-    // %<printf> escape hatch.
-    if (spec[0] == '%') {
-        const char *fmt_inner = spec; // includes leading '%'
-        // Build a printf-compatible format string. The spec arrives
-        // without the trailing conversion expectation, so we just hand
-        // the user's exact format to snprintf with the value bound to
-        // its declared kind. Coerce numerically for d/x/u/i; pass the
-        // string body for s; everything else falls back to default.
-        char endc = '\0';
-        for (size_t i = 1; spec[i]; i++)
-            endc = spec[i];
-        switch (endc) {
-        case 'd':
-        case 'i': {
-            bool ok = false;
-            int64_t iv = val_as_i64(v, &ok);
-            if (!ok)
-                iv = 0;
-            n = snprintf(tmp, sizeof(tmp), fmt_inner, (long long)iv);
-            break;
-        }
-        case 'u':
-        case 'x':
-        case 'X':
-        case 'o': {
-            bool ok = false;
-            uint64_t uv = val_as_u64(v, &ok);
-            if (!ok)
-                uv = 0;
-            n = snprintf(tmp, sizeof(tmp), fmt_inner, (unsigned long long)uv);
-            break;
-        }
-        case 'f':
-        case 'e':
-        case 'g':
-        case 'E':
-        case 'G': {
-            bool ok = false;
-            double dv = val_as_f64(v, &ok);
-            if (!ok)
-                dv = 0.0;
-            n = snprintf(tmp, sizeof(tmp), fmt_inner, dv);
-            break;
-        }
-        case 's':
-            n = snprintf(tmp, sizeof(tmp), fmt_inner, v->kind == V_STRING ? (v->s ? v->s : "") : "");
-            break;
-        default:
-            format_value_default(v, buf, len, cap);
-            return;
-        }
-        if (n > 0)
-            buf_append(buf, len, cap, tmp, (size_t)n);
+    spec_t sp;
+    if (!parse_spec(spec, &sp)) {
+        format_value_default(v, buf, len, cap);
         return;
     }
 
-    // Width-prefixed forms: optional '0' then digits then conversion.
-    char conv = spec[strlen(spec) - 1];
-    bool zero_pad = (spec[0] == '0');
-    int width = 0;
-    for (const char *q = spec + (zero_pad ? 1 : 0); *q && *q != conv; q++) {
-        if (*q >= '0' && *q <= '9')
-            width = width * 10 + (*q - '0');
-    }
+    char tmp[160];
+    char fmt[32];
+    int n = 0;
 
-    switch (conv) {
-    case 'd': {
+    switch (sp.conv) {
+    case 'd':
+    case 'i': {
         bool ok = false;
         int64_t iv = val_as_i64(v, &ok);
         if (!ok) {
             format_value_default(v, buf, len, cap);
             return;
         }
-        if (zero_pad && width > 0)
-            n = snprintf(tmp, sizeof(tmp), "%0*lld", width, (long long)iv);
-        else if (width > 0)
-            n = snprintf(tmp, sizeof(tmp), "%*lld", width, (long long)iv);
-        else
-            n = snprintf(tmp, sizeof(tmp), "%lld", (long long)iv);
+        spec_build_fmt(&sp, "ll", fmt, sizeof(fmt));
+        n = snprintf(tmp, sizeof(tmp), fmt, (long long)iv);
         break;
     }
+    case 'o':
+    case 'u':
     case 'x':
     case 'X': {
         bool ok = false;
@@ -2328,27 +2394,51 @@ static void format_value_with_spec(const value_t *v, const char *spec, char **bu
             format_value_default(v, buf, len, cap);
             return;
         }
-        const char *fmt = (conv == 'X') ? (zero_pad && width > 0 ? "%0*llX" : (width > 0 ? "%*llX" : "%llX"))
-                                        : (zero_pad && width > 0 ? "%0*llx" : (width > 0 ? "%*llx" : "%llx"));
-        if (width > 0)
-            n = snprintf(tmp, sizeof(tmp), fmt, width, (unsigned long long)uv);
-        else
-            n = snprintf(tmp, sizeof(tmp), fmt, (unsigned long long)uv);
+        spec_build_fmt(&sp, "ll", fmt, sizeof(fmt));
+        n = snprintf(tmp, sizeof(tmp), fmt, (unsigned long long)uv);
         break;
     }
-    case 's':
-        if (v->kind == V_STRING) {
-            buf_append(buf, len, cap, v->s ? v->s : "", v->s ? strlen(v->s) : 0);
+    case 'f':
+    case 'e':
+    case 'E':
+    case 'g':
+    case 'G': {
+        bool ok = false;
+        double dv = val_as_f64(v, &ok);
+        if (!ok) {
+            format_value_default(v, buf, len, cap);
             return;
         }
-        format_value_default(v, buf, len, cap);
-        return;
+        spec_build_fmt(&sp, "", fmt, sizeof(fmt));
+        n = snprintf(tmp, sizeof(tmp), fmt, dv);
+        break;
+    }
+    case 's': {
+        if (v->kind != V_STRING) {
+            format_value_default(v, buf, len, cap);
+            return;
+        }
+        const char *sv = v->s ? v->s : "";
+        // An unadorned %s appends the string whole; only a width or precision
+        // needs the scratch buffer, and those are clamped.
+        if (sp.width == 0 && sp.prec < 0) {
+            buf_append(buf, len, cap, sv, strlen(sv));
+            return;
+        }
+        spec_build_fmt(&sp, "", fmt, sizeof(fmt));
+        n = snprintf(tmp, sizeof(tmp), fmt, sv);
+        break;
+    }
     default:
         format_value_default(v, buf, len, cap);
         return;
     }
-    if (n > 0)
-        buf_append(buf, len, cap, tmp, (size_t)n);
+
+    // snprintf returns the length it WOULD have written.  Clamping here is
+    // what stops that value being used as a copy length out of `tmp` (F-02);
+    // the field clamps above make truncation unreachable in practice, and
+    // this is the guard that holds if one is ever relaxed.
+    buf_append_formatted(buf, len, cap, tmp, sizeof(tmp), n);
 }
 
 // Split body at the rightmost top-level ':' that introduces a format

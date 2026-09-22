@@ -454,6 +454,112 @@ TEST(test_map_equals_json_string) {
     value_free(&v);
 }
 
+// === Format-spec safety (08-core-infra F-01, F-02) =========================
+//
+// `${EXPR:FMT}` used to hand FMT to snprintf as the format string.  FMT is
+// user input -- a script line, a logpoint `message=`, a gsEval string -- and
+// integration scripts are the same language, so this was not a privileged
+// surface.  The spec is now parsed into a validated struct and the format
+// snprintf receives is rebuilt from it.
+//
+// Each test below asserts the value still renders (in its default form),
+// because the contract on a spec that cannot be honoured is to fall back, not
+// to error and not to guess.
+
+// The arbitrary-WRITE primitive.  %n was rejected only when it was the last
+// character, so "%n%d" selected the 'd' branch and executed %n, writing
+// through a pointer taken off the varargs area.
+TEST(test_spec_percent_n_is_refused) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:%n%d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "1") == 0);
+    value_free(&v);
+
+    value_t w = expr_interpolate_string("${1:%n}", &ctx);
+    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_TRUE(strcmp(w.s, "1") == 0);
+    value_free(&w);
+}
+
+// The arbitrary-READ primitive: a second conversion consumes varargs that
+// were never passed.  "%s%d" passed a long long where %s expects a pointer.
+TEST(test_spec_second_conversion_is_refused) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:%s%d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "1") == 0);
+    value_free(&v);
+}
+
+// '*' takes its width from varargs.
+TEST(test_spec_star_width_is_refused) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:%*d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(strcmp(v.s, "1") == 0);
+    value_free(&v);
+}
+
+// F-02: ${1:0500d} set width 500 against a 160-byte scratch buffer, snprintf
+// returned 500, and 500 bytes were copied out of it -- a 340-byte stack
+// overread landing in a string the caller prints or returns to JS.  The field
+// is clamped, so the result is bounded and correct rather than truncated
+// garbage.
+TEST(test_spec_width_is_clamped) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:0500d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(v.s != NULL);
+    ASSERT_EQ_INT((int)strlen(v.s), 64); // SPEC_MAX_FIELD, not 500
+    ASSERT_EQ_INT((int)v.s[63], (int)'1'); // still the value, right-aligned
+    ASSERT_EQ_INT((int)v.s[0], (int)'0'); // zero-padded as asked
+    value_free(&v);
+
+    // The %-prefixed spelling of the same thing.
+    value_t w = expr_interpolate_string("${1:%0500d}", &ctx);
+    ASSERT_EQ_INT(V_STRING, w.kind);
+    ASSERT_EQ_INT((int)strlen(w.s), 64);
+    value_free(&w);
+}
+
+// A precision is equally attacker-controlled and equally clamped.
+TEST(test_spec_precision_is_clamped) {
+    expr_ctx_t ctx = {0};
+    value_t v = expr_interpolate_string("${1:%.400f}", &ctx);
+    ASSERT_EQ_INT(V_STRING, v.kind);
+    ASSERT_TRUE(v.s != NULL);
+    ASSERT_TRUE(strlen(v.s) <= 159); // inside the scratch buffer either way
+    value_free(&v);
+}
+
+// The specs that were always legal must keep working, so the parser cannot
+// pass the tests above by rejecting everything.
+TEST(test_spec_valid_forms_still_render) {
+    expr_ctx_t ctx = {0};
+    struct {
+        const char *src;
+        const char *want;
+    } cases[] = {
+        {"${255:%x}",    "ff"  },
+        {"${255:%04X}",  "00FF"},
+        {"${5:%-3d}|",   "5  |"},
+        {"${5:%3d}|",    "  5|"},
+        {"${42:d}",      "42"  },
+        {"${255:04x}",   "00ff"},
+        {"${\"hi\":%s}", "hi"  },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        value_t v = expr_interpolate_string(cases[i].src, &ctx);
+        if (v.kind != V_STRING || strcmp(v.s, cases[i].want) != 0) {
+            fprintf(stderr, "[FAIL] spec %s -> \"%s\", expected \"%s\"\n", cases[i].src,
+                    v.kind == V_STRING ? v.s : "<not a string>", cases[i].want);
+            exit(1);
+        }
+        value_free(&v);
+    }
+}
+
 int main(void) {
     RUN(test_literal_addition);
     RUN(test_operator_precedence);
@@ -495,5 +601,11 @@ int main(void) {
     RUN(test_map_len_and_arithmetic);
     RUN(test_map_interpolates_as_json);
     RUN(test_map_equals_json_string);
+    RUN(test_spec_percent_n_is_refused);
+    RUN(test_spec_second_conversion_is_refused);
+    RUN(test_spec_star_width_is_refused);
+    RUN(test_spec_width_is_clamped);
+    RUN(test_spec_precision_is_clamped);
+    RUN(test_spec_valid_forms_still_render);
     return 0;
 }
