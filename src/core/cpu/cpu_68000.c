@@ -70,21 +70,24 @@ LOG_USE_CATEGORY_NAME("cpu");
  * in scheduler.c:reconcile_sprint on any SE/30 sprint that ended its last
  * instruction on a slow I/O access. */
 #define CPU_DECODER_PROLOGUE                                                                                           \
-    /* Double bus fault recovery.  The 68000 sets halted and, before this, the                                         \
-     * decoder simply returned -- leaving pc already advanced past the faulting                                        \
-     * opcode by the prologue, so the NEXT sprint resumed mid-instruction                                              \
-     * rather than at the pre-fault PC.  MC68030UM 7.5.4 gives the family rule                                         \
-     * ("Only an external reset operation can restart a halted processor"); a                                          \
-     * bare 68000 would simply stay halted, and modelling the board's glue                                             \
-     * asserting RESET is a divergence in the permissive direction that the                                            \
-     * 030 and 040 decoders already take.  This just stops the 68000 being the                                         \
-     * one that silently resumes inside an instruction.  Reached only on the                                           \
-     * Lisa in practice. */                                                                                            \
+    /* A double bus fault stops a 68000 dead.  MC68030UM 7.5.4 states the                                              \
+     * family rule: "Only an external reset operation can restart a halted                                             \
+     * processor" -- so consume the sprint and execute nothing until something                                         \
+     * outside the CPU (machine.reset, the reset button, Cuda/Egret) calls                                             \
+     * cpu_reset_to_vector_68030, which clears the flag.  Previously the                                               \
+     * decoder just returned, leaving pc already advanced past the faulting                                            \
+     * opcode by this prologue, so the NEXT sprint resumed mid-instruction.                                            \
+     *                                                                                                                 \
+     * The 030 and 040 decoders instead model the board glue asserting RESET.                                          \
+     * That divergence is deliberate there (the Mac ROM's RAM-sizing probes                                            \
+     * rely on it) but must NOT be extended to the 68000: doing so re-entered                                          \
+     * a Plus from a guest-induced double fault with a stack pointer the reset                                         \
+     * had not established, and the next fault's frame push dispatched through                                         \
+     * a device page with no write handler -- a host segfault.  Caught by                                              \
+     * appletalk-afp-e2e, whose last stage launches a guest app that faults. */                                        \
     if (__builtin_expect(cpu->halted, 0)) {                                                                            \
-        cpu->halted = 0;                                                                                               \
-        system_reset_devices(); /* the board's /RESET net; must precede the vector read */                             \
-        cpu_reset_to_vector_68030(cpu); /* CPU half only -- not 030-specific; system.c already */                      \
-    } /* uses it for plus and lisa, where cpu->mmu is NULL so the PMMU block is skipped */                             \
+        *instructions = 0;                                                                                             \
+    }                                                                                                                  \
     cpu_check_interrupt(cpu);                                                                                          \
     /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \
      * to exit immediately by zeroing the burndown counter, so a deferred DATA bus                                     \

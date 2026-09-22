@@ -541,7 +541,11 @@ void cpu_reset_to_vector_68030(cpu_t *restrict cpu) {
     cpu->vbr = 0;
     cpu->cacr = 0;
     // Clear pre-halt latches so the reset doesn't inherit the state that
-    // caused the double-bus-error halt in the first place.
+    // caused the double-bus-error halt in the first place.  Clearing `halted`
+    // here is the other half of MC68030UM 7.5.4's rule -- "Only an external
+    // reset operation can restart a halted processor" -- and it is what lets
+    // the 68000 simply STAY halted rather than resuming on its own.
+    cpu->halted = 0;
     cpu->ipl = 0;
     cpu->last_bus_error_pc = 0;
     g_bus_error_pending = false;
