@@ -21,6 +21,7 @@
 #include "fpu.h"
 #include "inflate.h"
 #include "log.h"
+#include "log_categories.h"
 #include "memory.h"
 #include "mmu.h"
 #include "nubus.h"
@@ -2964,26 +2965,61 @@ const class_desc_t lp_collection_class = {
     .n_members = sizeof(lp_collection_members) / sizeof(lp_collection_members[0]),
 };
 
-// `debug.log(category, level_or_spec)` — adjust per-subsystem log level.
-// The second arg accepts either an integer level or a full option spec
-// string (e.g. `"level=5 file=tmp/foo.txt stdout=off ts=on"`); both are
-// handed to log_configure directly (no line round-trip).
+// `debug.log(category, level=, stdout=, file=, ts=, pc=)` — per-subsystem
+// logging, with real named arguments.
+//
+// The second slot used to be declared V_NONE -- no type at all -- and accept
+// either an integer or a spec string like "level=5 file=tmp/foo.txt
+// stdout=off ts=on", which the body then parsed itself with strtok_r.  So the
+// framework validated nothing (it had been told nothing to validate),
+// completion could offer neither the keys nor their values, and the method
+// carried its own boolean vocabulary and its own error wording.
+// object-model.md 6 says in as many words that named arguments exist to
+// retire exactly this: "no flag grammars inside strings" (08-core-infra
+// F-35).
+//
+// `debug.log(cat)` with nothing else prints the category's current settings,
+// which is what the bare form always did.
 static value_t debug_method_log(struct object *self, const member_t *m, int argc, const value_t *argv) {
     (void)self;
     (void)m;
     (void)argc;
-    const char *category = (argv[0].kind == V_STRING) ? argv[0].s : NULL;
-    if (!category)
-        return val_err("debug.log: category must be a string");
-    if (argv[1].kind == V_STRING)
-        return val_bool(log_configure(category, argv[1].s) == 0);
-    bool ok = false;
-    int64_t level = val_as_i64(&argv[1], &ok);
-    if (!ok)
-        return val_err("debug.log: level must be integer or spec string");
-    char spec[32];
-    snprintf(spec, sizeof(spec), "%lld", (long long)level);
-    return val_bool(log_configure(category, spec) == 0);
+    if (argv[0].kind != V_ENUM || !argv[0].enm.table)
+        return val_err("debug.log: category is required");
+    const char *category = argv[0].enm.table[argv[0].enm.idx];
+
+    bool touched = false;
+
+    if (argv[1].kind != V_NONE) {
+        bool ok = false;
+        int64_t level = val_as_i64(&argv[1], &ok);
+        if (!ok || level < 0)
+            return val_err("debug.log: level must be a non-negative integer");
+        if (log_set_category_level(category, (int)level) != 0)
+            return val_err("debug.log: cannot set level on '%s'", category);
+        touched = true;
+    }
+    if (argv[2].kind == V_BOOL) {
+        log_set_category_stdout(category, argv[2].b);
+        touched = true;
+    }
+    if (argv[3].kind == V_STRING && argv[3].s) {
+        if (log_set_category_file(category, argv[3].s) != 0)
+            return val_err("debug.log: cannot open log file '%s'", argv[3].s);
+        touched = true;
+    }
+    if (argv[4].kind == V_BOOL) {
+        log_set_category_timestamp(category, argv[4].b);
+        touched = true;
+    }
+    if (argv[5].kind == V_BOOL) {
+        log_set_category_show_pc(category, argv[5].b);
+        touched = true;
+    }
+
+    log_print_category(category);
+    (void)touched;
+    return val_bool(true);
 }
 
 // log_foreach_category callback: put "<category>" → <level> into the map.
@@ -3006,9 +3042,51 @@ static value_t debug_method_log_levels(struct object *self, const member_t *m, i
     return val_map_finish(b);
 }
 
+// Every category the manifest declares, as an enum table, so the framework
+// rejects a typo and completion can offer all 62 names.
+static const char *const debug_log_category_values[] = {
+#define X(n, lvl, desc) n,
+    GS_LOG_CATEGORIES(X)
+#undef X
+        NULL};
+
+// "Not supplied", as a default.
+//
+// An optional slot with no default_value cannot be a HOLE before a later
+// given slot -- node_validate_args says so directly: "argc truncation only
+// works at the tail".  So `debug.log(cpu, level=3, ts=on)` would fail on
+// `file`, which sits between them.  A V_NONE default is filled in and skips
+// validation, which is precisely "the caller did not mention this one" and is
+// what the body below tests for.
+static const value_t log_arg_unset = {.kind = V_NONE};
+
 static const arg_decl_t debug_log_args[] = {
-    {.name = "category", .kind = V_STRING, .doc = "Subsystem name (memory, logpoint, ...)"            },
-    {.name = "level",    .kind = V_NONE,   .doc = "Integer level (0..5) or full named-arg spec string"},
+    {.name = "category", .kind = V_ENUM, .enum_values = debug_log_category_values, .doc = "Subsystem to configure"},
+    {.name = "level",
+     .default_value = &log_arg_unset,
+     .kind = V_UINT,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Verbosity; 0 silences level-1-and-up sites"},
+    {.name = "stdout",
+     .default_value = &log_arg_unset,
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Emit to stdout"},
+    {.name = "file",
+     .default_value = &log_arg_unset,
+     .kind = V_STRING,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Append to this path; \"off\" closes it"},
+    {.name = "ts",
+     .default_value = &log_arg_unset,
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Stamp each line with a timestamp"},
+    {.name = "pc",
+     .default_value = &log_arg_unset,
+     .kind = V_BOOL,
+     .validation_flags = OBJ_ARG_OPTIONAL,
+     .doc = "Stamp each line with the guest PC"},
 };
 
 // `debug.exceptions([filter])` — dump the always-on 256-entry exception ring.
@@ -3298,8 +3376,8 @@ static const arg_decl_t debug_step_args[] = {
 static const member_t debug_members[] = {
     {.kind = M_METHOD,
      .name = "log",
-     .doc = "Set per-subsystem log level (or pass a full spec string)",
-     .method = {.args = debug_log_args, .nargs = 2, .result = V_BOOL, .fn = debug_method_log}                                                                                                                 },
+     .doc = "Configure a log category: debug.log(cat, level=, stdout=, file=, ts=, pc=)",
+     .method = {.args = debug_log_args, .nargs = 6, .result = V_BOOL, .fn = debug_method_log}                                                                                                                 },
     {.kind = M_METHOD,
      .name = "disasm",
      .doc = "Disassemble forward. `disasm` from PC, `disasm <count>` from PC, `disasm <addr> <count>` from addr.",

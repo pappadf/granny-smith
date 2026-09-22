@@ -343,6 +343,76 @@ TEST(test_any_attribute_slot_rejected) {
     ASSERT_TRUE(strstr(err, "ANY") != NULL);
 }
 
+// === An optional slot needs a default to be skippable (08-core-infra F-35) ==
+//
+// node_validate_args says it directly: "argc truncation only works at the
+// tail", so an optional slot with NO default_value cannot be a hole before a
+// later given slot.  debug.log(cat, level=3, ts=on) hit exactly that on
+// `file`, which sits between them.
+//
+// A V_NONE default is filled in and SKIPS validation, so it means "the caller
+// did not mention this one" -- which is what a body needs to distinguish
+// "unset" from "set to the default".  This pins that property, because the
+// typed debug.log depends on it.
+static const value_t opt_unset = {.kind = V_NONE};
+
+static value_t skippable_fn(struct object *self, const member_t *m, int argc, const value_t *argv) {
+    (void)self;
+    (void)m;
+    (void)argc;
+    // Report which slots arrived set, as a bitmask.
+    int mask = 0;
+    for (int i = 0; i < 3; i++)
+        if (argv[i].kind != V_NONE)
+            mask |= 1 << i;
+    return val_int(mask);
+}
+
+static const arg_decl_t skippable_args[] = {
+    {.name = "a", .kind = V_UINT, .validation_flags = OBJ_ARG_OPTIONAL, .default_value = &opt_unset, .doc = "a"},
+    {.name = "b", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .default_value = &opt_unset, .doc = "b"},
+    {.name = "c", .kind = V_BOOL, .validation_flags = OBJ_ARG_OPTIONAL, .default_value = &opt_unset, .doc = "c"},
+};
+
+static const member_t skippable_members[] = {
+    {.kind = M_METHOD,
+     .name = "opt",
+     .doc = "optional slots",
+     .method = {.args = skippable_args, .nargs = 3, .result = V_INT, .fn = skippable_fn}},
+};
+
+static const class_desc_t skippable_class = {
+    .name = "skippable",
+    .members = skippable_members,
+    .n_members = sizeof(skippable_members) / sizeof(skippable_members[0]),
+};
+
+TEST(test_interior_optional_slot_can_be_skipped) {
+    object_root_reset();
+    struct object *o = object_new(&skippable_class, NULL, "sk");
+    object_attach(object_root(), o);
+
+    // Name the FIRST and THIRD slots, leaving a hole in the middle.  Without
+    // the V_NONE default this is "missing argument 'b'".
+    named_arg_t named[2] = {
+        {.name = "a", .value = val_uint(8, 7)},
+        {.name = "c", .value = val_bool(true)}
+    };
+    node_t n = object_resolve(object_root(), "sk.opt");
+    ASSERT_TRUE(node_valid(n));
+
+    value_t bound[8];
+    int bound_n = 0;
+    value_t e = node_bind_args(n, 0, NULL, 2, named, bound, &bound_n);
+    ASSERT_TRUE(!val_is_error(&e));
+    value_t r = node_call(n, bound_n, bound);
+    ASSERT_TRUE(!val_is_error(&r));
+    bool ok = false;
+    ASSERT_EQ_INT((int)val_as_i64(&r, &ok), 0b101); // a and c set, b unset
+    value_free(&r);
+    object_root_reset();
+}
+
 int main(void) {
     RUN(test_node_call_succeeds);
     RUN(test_node_call_too_few_args);
@@ -357,5 +427,6 @@ int main(void) {
     RUN(test_variant_result_in_expr);
     RUN(test_any_arg_slot_accepts_every_kind);
     RUN(test_any_attribute_slot_rejected);
+    RUN(test_interior_optional_slot_can_be_skipped);
     return 0;
 }

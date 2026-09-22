@@ -1035,17 +1035,53 @@ static void coerce_int_sign(value_t *out, value_kind_t target_kind, uint8_t widt
 }
 
 // Format a "{a, b, c}" list of enum values for error messages.
+// Render an enum's accepted values as `{a,b,c}`, truncating with an ellipsis
+// rather than running off the end of `buf`.
+//
+// This accumulated `off += wrote` where `wrote` is snprintf's WOULD-HAVE
+// length.  Once the names exceeded the buffer, `off` grew past `buf_size`,
+// the loop exited on `off < buf_size`, and the closing brace was written at
+// `buf + off` -- past the end of the array -- with `buf_size - off`
+// underflowing to a near-SIZE_MAX size_t (08-core-infra F-03).
+//
+// The work order calls this latent, because the longest enum table in the
+// tree totalled about 45 characters against a 120-byte buffer.  F-35 armed
+// it: `debug.log`'s category slot is an enum over all 62 log categories, so
+// a mistyped category now formats a ~400-character list.  The first thing
+// the typed method did on a bad name was overflow this.
 static void format_enum_list(char *buf, size_t buf_size, const char *const *values) {
+    if (!buf || buf_size == 0)
+        return;
     size_t off = 0;
-    int wrote = snprintf(buf + off, buf_size - off, "{");
-    if (wrote > 0)
-        off += (size_t)wrote;
-    for (size_t i = 0; values && values[i] && off < buf_size; i++) {
-        wrote = snprintf(buf + off, buf_size - off, "%s%s", i ? "," : "", values[i]);
-        if (wrote > 0)
-            off += (size_t)wrote;
+    bool truncated = false;
+
+    // Reserve room for the closing "}" (and "..." when truncating).
+    const size_t tail = 5; // "...}" plus the NUL
+    if (buf_size <= tail) {
+        buf[0] = '\0';
+        return;
     }
-    snprintf(buf + off, buf_size - off, "}");
+    const size_t limit = buf_size - tail;
+
+    buf[off++] = '{';
+    for (size_t i = 0; values && values[i]; i++) {
+        size_t sep = i ? 1u : 0u;
+        size_t n = strlen(values[i]);
+        if (off + sep + n >= limit) {
+            truncated = true;
+            break;
+        }
+        if (sep)
+            buf[off++] = ',';
+        memcpy(buf + off, values[i], n);
+        off += n;
+    }
+    if (truncated) {
+        memcpy(buf + off, "...", 3);
+        off += 3;
+    }
+    buf[off++] = '}';
+    buf[off] = '\0';
 }
 
 // Validate / coerce one slot. Writes a rewritten value to *out when coercion
