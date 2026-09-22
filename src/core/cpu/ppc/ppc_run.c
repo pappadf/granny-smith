@@ -540,6 +540,19 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
     // decoder precedent in cpu_68000.c/cpu_68030.c).
     g_bus_error_instr_ptr = instructions;
     p->fold = 0; // no stale classification from a prior sprint
+    // Bound on how many branches this sprint may fold without consuming a
+    // budget slot.  Two branches that fold to each other (A: b B / B: b A --
+    // neither is a self-branch, so neither is excluded) otherwise spin here
+    // forever: 100% host CPU with no timer, no interrupt and no debugger
+    // break, because ext_irq and dec_pending are only set BETWEEN sprints and
+    // scheduler.c:131 stops emulated time at a sprint boundary.  Reachable
+    // from ordinary guest memory corruption -- two mutually-returning blrs
+    // after a smashed LR fold exactly the same way -- which is precisely when
+    // the debugger needs to answer.  The multiplier keeps the bound far above
+    // any real code: folds available = 4x budget, folds required = budget *
+    // f/(1-f), so it cannot bind below 80% sustained branch density, where 1x
+    // would bind at 50% and perturb the CPI of ordinary branch-dense loops.
+    uint64_t folds_left = (uint64_t)*instructions * 4u;
     ppc_poll_interrupt(p);
     while (*instructions > 0) {
         // Level-sensitive interrupt inputs re-checked at every boundary —
@@ -549,8 +562,15 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
             ppc_poll_interrupt(p);
         p->instruction_pc = p->pc;
         uint32_t iw;
+        // ISI raised; pc now at the vector, and the redirect deliberately
+        // consumes no slot -- the handler's first instruction does (the
+        // single-step semantics the ISI-vector test pins down).  The review
+        // wanted a slot consumed here as a second liveness guard, but the ISI
+        // cannot recur: MPC601UM Table 5-11 clears MSR[IT] on entry and the
+        // IT == 0 arm of ppc_fetch_fill always succeeds.  The fold budget
+        // above is the bound that was actually missing.
         if (!ppc_fetch(p, &iw))
-            continue; // ISI raised; pc now at the vector
+            continue;
         if (__builtin_expect(g_bus_error_pending, 0))
             break; // fetch faulted; delivered below
         p->pc += 4;
@@ -566,8 +586,10 @@ void ppc_run(ppc_t *restrict p, uint32_t *instructions) {
         // breakpoints/logpoints skip branch targets.
         if (__builtin_expect(p->fold != 0, 0)) {
             p->fold = 0;
-            if (*instructions > 1)
+            if (*instructions > 1 && folds_left != 0) {
+                folds_left--;
                 continue; // folded: no budget slot consumed
+            }
         }
         if (*instructions > 0) // saturating (I/O penalty may have zeroed it)
             (*instructions)--;
