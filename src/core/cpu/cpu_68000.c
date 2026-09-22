@@ -70,6 +70,21 @@ LOG_USE_CATEGORY_NAME("cpu");
  * in scheduler.c:reconcile_sprint on any SE/30 sprint that ended its last
  * instruction on a slow I/O access. */
 #define CPU_DECODER_PROLOGUE                                                                                           \
+    /* Double bus fault recovery.  The 68000 sets halted and, before this, the                                         \
+     * decoder simply returned -- leaving pc already advanced past the faulting                                        \
+     * opcode by the prologue, so the NEXT sprint resumed mid-instruction                                              \
+     * rather than at the pre-fault PC.  MC68030UM 7.5.4 gives the family rule                                         \
+     * ("Only an external reset operation can restart a halted processor"); a                                          \
+     * bare 68000 would simply stay halted, and modelling the board's glue                                             \
+     * asserting RESET is a divergence in the permissive direction that the                                            \
+     * 030 and 040 decoders already take.  This just stops the 68000 being the                                         \
+     * one that silently resumes inside an instruction.  Reached only on the                                           \
+     * Lisa in practice. */                                                                                            \
+    if (__builtin_expect(cpu->halted, 0)) {                                                                            \
+        cpu->halted = 0;                                                                                               \
+        system_reset_devices(); /* the board's /RESET net; must precede the vector read */                             \
+        cpu_reset_to_vector_68030(cpu); /* CPU half only -- not 030-specific; system.c already */                      \
+    } /* uses it for plus and lisa, where cpu->mmu is NULL so the PMMU block is skipped */                             \
     cpu_check_interrupt(cpu);                                                                                          \
     /* Let a memory-layer fault (lisa_raise_bus_error / memory.c) force this sprint                                    \
      * to exit immediately by zeroing the burndown counter, so a deferred DATA bus                                     \
@@ -90,9 +105,8 @@ LOG_USE_CATEGORY_NAME("cpu");
          * mis-delivered as a line-F instead of demand-loading the segment).  No-op                                    \
          * for the Mac Plus, whose PC never exceeds 24 bits. */                                                        \
         cpu->pc &= 0x00FFFFFFu;                                                                                        \
-        uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
+        uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
-        uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         /* Record the address of the instruction being decoded.  The group-0                                           \
          * exception path (bus/address error, f_trap demand-segment fault on the                                       \
          * Lisa) reads cpu->instruction_pc to build the stack frame and to match                                       \

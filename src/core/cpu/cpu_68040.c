@@ -457,9 +457,8 @@ static __attribute__((noinline, cold)) void cpu_hardware_reset_040(cpu_t *restri
             *instructions = 1;                                                                                         \
     /* Saturating decrement on the trailing (*instructions)--: see cpu_68030.c */                                      \
     while (*instructions > 0) {                                                                                        \
-        uint32_t fetch = memory_read_uint32(cpu->pc);                                                                  \
+        uint32_t fetch = memory_read_prefetch32(cpu->pc);                                                              \
         uint16_t opcode = fetch >> 16;                                                                                 \
-        uint16_t ext_word = fetch & 0xFFFF;                                                                            \
         cpu->instruction_pc = cpu->pc;                                                                                 \
         /* Double-fault tracking: see the cpu_68030.c prologue for why this  */                                        \
         /* clears only in user mode once the CPU has moved past the PC.     */                                         \

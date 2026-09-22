@@ -1217,6 +1217,9 @@ static void disasm_fpu_sccdbcc(uint16_t opcode, uint16_t ext, char *buf, uint16_
 #define OP_PMMU_GENERAL      disasm_pmmu(opcode, ext_word, buf, &fetch_pos_src)
 #define OP_FTRAP             OP_UNDEFINED
 
+// The disassembler has the full instruction in a buffer, so it reads the
+// MOVES direction bit from there rather than through a live CPU.
+#define CPU_MOVES_DIR()         (ext_word & 0x0800)
 #define CPU_DECODER_NAME        cpu_disasm
 #define CPU_DECODER_RETURN_TYPE int
 #define CPU_DECODER_ARGS        uint16_t *instr, char *buf

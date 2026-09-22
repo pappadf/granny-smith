@@ -15,6 +15,19 @@
 // - CPU_DECODER_PROLOGUE: Code emitted at function start (e.g., prefetch, locals)
 // - CPU_DECODER_EPILOGUE: Code emitted before returning (e.g., commit/writeback)
 
+// MOVES direction bit.  The executing decoders read it from the instruction
+// stream rather than from the prologue's prefetch word: the prefetch now stops
+// at a page boundary (memory_read_prefetch32), so its low half is not the
+// extension word when the opcode occupies the last word of a page.  cpu->pc
+// already points at the extension word here, because the prologue advanced it
+// past the opcode, and MOVES genuinely needs that word -- so this is a real
+// access, not the speculative one the manual says must not fault.  The
+// disassembler overrides it, having its own ext_word from the caller's buffer
+// and no live CPU to read through.  Three sites, all 68010+.
+#ifndef CPU_MOVES_DIR
+#define CPU_MOVES_DIR() (memory_read_uint16(cpu->pc) & 0x0800)
+#endif
+
 // clang-format off
 
 #ifndef CPU_DECODER_NAME
@@ -89,9 +102,9 @@ CPU_DECODER_RETURN_TYPE CPU_DECODER_NAME(CPU_DECODER_ARGS) {
         case 0x32: OP_CMPI_L_DATA_EA; break;
         case 0x33: if (((opcode) & 0x3F) == 0x003C) { OP_CAS2_W_DC_DU_RN; } else { OP_CAS_W_DC_DU_EA; } break;
 
-        case 0x38: if (ext_word & 0x0800) { OP_MOVES_B_RN_EA; } else { OP_MOVES_B_EA_RN; } break;
-        case 0x39: if (ext_word & 0x0800) { OP_MOVES_W_RN_EA; } else { OP_MOVES_W_EA_RN; } break;
-        case 0x3A: if (ext_word & 0x0800) { OP_MOVES_L_RN_EA; } else { OP_MOVES_L_EA_RN; } break;
+        case 0x38: if (CPU_MOVES_DIR()) { OP_MOVES_B_RN_EA; } else { OP_MOVES_B_EA_RN; } break;
+        case 0x39: if (CPU_MOVES_DIR()) { OP_MOVES_W_RN_EA; } else { OP_MOVES_W_EA_RN; } break;
+        case 0x3A: if (CPU_MOVES_DIR()) { OP_MOVES_L_RN_EA; } else { OP_MOVES_L_EA_RN; } break;
         case 0x3B: if (((opcode) & 0x3F) == 0x003C) { OP_CAS2_L_DC_DU_RN; } else { OP_CAS_L_DC_DU_EA; } break;
 
         default:

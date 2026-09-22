@@ -1845,12 +1845,18 @@ static inline uint32_t bf_insert_reg(uint32_t dst, int32_t offset, uint32_t w, u
 #define OP_MOVE_B_CCR_EA OP(VALID_EA(ea_data &ea_alterable); STORE_EA(16, READ_CCR()))
 
 // --- LINK.L (32-bit displacement) ---
+// Fetch the displacement BEFORE touching SP or An, mirroring OP_LINK.  With
+// the fetch last, a page fault on the immediate left An and SP already
+// updated, so the Format $B retry re-ran the push and double-linked the
+// frame.  68020+ only (the 68000 arm maps this to OP_UNDEFINED), so reaching
+// it needs a PMMU or an 040.
 #define OP_LINK_L_AN_DISP                                                                                              \
     OP({                                                                                                               \
+        int32_t _disp = (int32_t)FETCH32();                                                                            \
         uint32_t _a = AY;                                                                                              \
         PUSH32(_a);                                                                                                    \
         AY = SP;                                                                                                       \
-        SP += (int32_t)FETCH32();                                                                                      \
+        SP += _disp;                                                                                                   \
     })
 
 // --- MMU branch conditionals: stub as not-taken (MMU conditions always false) ---
