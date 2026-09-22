@@ -214,11 +214,3 @@ void vfs_class_register(void) {
     }
     object_attach(object_root(), s_vfs_object);
 }
-
-void vfs_class_unregister(void) {
-    if (s_vfs_object) {
-        object_detach(s_vfs_object);
-        object_delete(s_vfs_object);
-        s_vfs_object = NULL;
-    }
-}

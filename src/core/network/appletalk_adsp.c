@@ -59,7 +59,7 @@ typedef enum {
 
 #define ADSP_NO_DEADLINE UINT64_MAX
 
-const char *const ADSP_STATE_NAMES[] = {"closed", "listening", "opening", "established", "open"};
+const char *const ADSP_STATE_NAMES[] = {"closed", "listening", "opening", "established", "open", NULL};
 
 // ============================================================================
 // Type Definitions

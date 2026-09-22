@@ -58,7 +58,7 @@ LOG_USE_CATEGORY_NAME("ppc");
 // How many ports we ask a machine for in one browse.
 #define PPC_LIST_REQUEST_COUNT 32
 
-const char *const PPC_SESSION_STATE_NAMES[] = {"free", "connecting", "requested", "open", "failed"};
+const char *const PPC_SESSION_STATE_NAMES[] = {"free", "connecting", "requested", "open", "failed", NULL};
 
 // ============================================================================
 // Type Definitions

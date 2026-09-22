@@ -335,11 +335,3 @@ void mouse_class_register(void) {
         object_attach(adb_bus_object(), s_mouse_object);
     }
 }
-
-void mouse_class_unregister(void) {
-    if (s_mouse_object) {
-        object_detach(s_mouse_object);
-        object_delete(s_mouse_object);
-        s_mouse_object = NULL;
-    }
-}

@@ -91,27 +91,25 @@ typedef struct {
     value_t *items;
     size_t len;
     size_t cap;
+    bool oom; // set when a push failed; the list must not be returned short
 } name_list_t;
 
+// The shared accumulator, val_list_push.  This was the second of five
+// near-identical copies, and like the others it discarded the failure -- so
+// meta.children and meta.indices returned a SILENTLY TRUNCATED list under
+// memory pressure, which the inspector renders as the complete set
+// (08-core-infra F-15, F-63).
 static bool name_list_push(name_list_t *acc, const char *name) {
     if (!name)
         return true;
-    if (acc->len + 1 > acc->cap) {
-        size_t cap = acc->cap ? acc->cap * 2 : 16;
-        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
-        if (!t)
-            return false;
-        acc->items = t;
-        acc->cap = cap;
-    }
-    acc->items[acc->len++] = val_str(name);
-    return true;
+    return val_list_push(&acc->items, &acc->len, &acc->cap, val_str(name));
 }
 
 static void each_attached_collect(struct object *parent, struct object *child, void *ud) {
     (void)parent;
     name_list_t *acc = (name_list_t *)ud;
-    name_list_push(acc, object_name(child));
+    if (!name_list_push(acc, object_name(child)))
+        acc->oom = true;
 }
 
 // === Attribute getters ====================================================
@@ -156,11 +154,18 @@ static value_t meta_get_children(struct object *self, const member_t *m) {
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_CHILD)
-                name_list_push(&acc, cls->members[i].name);
+                if (!name_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
     }
     // Attached (runtime) children in deterministic (order, attach_seq)
     // sequence so the SYSTEM tab renders stably (proposal §7.4).
     object_each_attached_ordered(insp, each_attached_collect, &acc);
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
+    }
     return val_list(acc.items, acc.len);
 }
 
@@ -174,7 +179,14 @@ static value_t meta_get_attributes(struct object *self, const member_t *m) {
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_ATTR)
-                name_list_push(&acc, cls->members[i].name);
+                if (!name_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
+    }
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
     }
     return val_list(acc.items, acc.len);
 }
@@ -189,7 +201,14 @@ static value_t meta_get_methods(struct object *self, const member_t *m) {
     if (cls) {
         for (size_t i = 0; i < cls->n_members; i++)
             if (cls->members[i].kind == M_METHOD)
-                name_list_push(&acc, cls->members[i].name);
+                if (!name_list_push(&acc, cls->members[i].name))
+                    acc.oom = true;
+    }
+    if (acc.oom) {
+        for (size_t i = 0; i < acc.len; i++)
+            value_free(&acc.items[i]);
+        free(acc.items);
+        return val_err("out of memory");
     }
     return val_list(acc.items, acc.len);
 }

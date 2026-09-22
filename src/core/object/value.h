@@ -224,9 +224,10 @@ static inline bool val_is_error(const value_t *v) {
 // True if *v is one of the heap-owning kinds.
 bool val_is_heap(const value_t *v);
 
-// Deep copy. Inline kinds are returned by value; heap-owning kinds duplicate
-// their storage. Lists recurse.
-value_t value_copy(const value_t *v);
+// (value_copy was a second deep-copier and is gone -- see value_dup.  It
+// reported OOM by silently returning a broken value, and for V_BYTES left
+// `n` at the source length with `p` NULL, breaking the invariant its readers
+// rely on.  Every new call site was a coin flip on error behaviour.)
 
 #ifdef __cplusplus
 }

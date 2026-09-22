@@ -634,7 +634,7 @@ static int disasm_at(uint32_t pc, char *mnemonic, char *operands) {
     }
 
     if (strlen(buf) == 0) {
-        sprintf(mnemonic, "ILLEGAL");
+        snprintf(mnemonic, sizeof(mnemonic), "ILLEGAL");
         operands[0] = '\0';
     } else {
         // Cap at 31 so we always have room for the trailing NUL even if
@@ -3866,13 +3866,5 @@ void screen_class_register(void) {
         object_set_label(s_screen_object, "Screen");
         object_set_order(s_screen_object, 120);
         object_attach(machine_object(), s_screen_object);
-    }
-}
-
-void screen_class_unregister(void) {
-    if (s_screen_object) {
-        object_detach(s_screen_object);
-        object_delete(s_screen_object);
-        s_screen_object = NULL;
     }
 }

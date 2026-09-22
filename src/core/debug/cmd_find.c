@@ -286,11 +286,3 @@ void find_class_register(void) {
     if (s_find_object)
         object_attach(object_root(), s_find_object);
 }
-
-void find_class_unregister(void) {
-    if (s_find_object) {
-        object_detach(s_find_object);
-        object_delete(s_find_object);
-        s_find_object = NULL;
-    }
-}

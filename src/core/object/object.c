@@ -436,6 +436,25 @@ bool object_validate_name(const char *name, char *err_buf, size_t err_size) {
 // Forward declaration: defined in the validator section below.
 static const char *kind_name(value_kind_t k);
 
+// A V_ENUM table must be NULL-terminated: validate_slot and the tab completer
+// both walk one looking for the sentinel, so a table without it reads past its
+// own end.  Checking only [0] -- which is all this used to do -- catches an
+// absent table and misses an unterminated one, and three tables in the tree
+// were unterminated (08-core-infra N-01, the shape F-04 warns about).
+//
+// The bound is generous: it exists so a malformed table is a validation
+// failure rather than a walk off the end, not to limit real enums.
+#define OBJ_MAX_ENUM_VALUES 256
+
+static bool enum_table_ok(const char *const *table) {
+    if (!table || !table[0])
+        return false;
+    for (size_t i = 0; i < OBJ_MAX_ENUM_VALUES; i++)
+        if (!table[i])
+            return true;
+    return false;
+}
+
 // Helpers for §3.13 ordering / coercion checks.
 static bool kind_supports_width(value_kind_t k) {
     return k == V_INT || k == V_UINT;
@@ -525,10 +544,11 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                                  kind_name(p->kind));
                     return false;
                 }
-                if (p->kind == V_ENUM && (!p->enum_values || !p->enum_values[0])) {
+                if (p->kind == V_ENUM && !enum_table_ok(p->enum_values)) {
                     if (err_buf && err_size)
-                        snprintf(err_buf, err_size, "%s.%s: arg '%s' is V_ENUM but has no enum_values table", cls->name,
-                                 m->name, p->name ? p->name : "?");
+                        snprintf(err_buf, err_size,
+                                 "%s.%s: arg '%s' is V_ENUM but has a missing or unterminated enum_values table",
+                                 cls->name, m->name, p->name ? p->name : "?");
                     return false;
                 }
                 if (p->width && !kind_supports_width(p->kind)) {
@@ -566,9 +586,10 @@ bool object_validate_class(const class_desc_t *cls, char *err_buf, size_t err_si
                     snprintf(err_buf, err_size, "%s.%s: V_ANY is not a valid attribute kind", cls->name, m->name);
                 return false;
             }
-            if (m->attr.type == V_ENUM && (!m->attr.enum_values || !m->attr.enum_values[0])) {
+            if (m->attr.type == V_ENUM && !enum_table_ok(m->attr.enum_values)) {
                 if (err_buf && err_size)
-                    snprintf(err_buf, err_size, "%s.%s: V_ENUM attribute slot has no enum_values table", cls->name,
+                    snprintf(err_buf, err_size,
+                             "%s.%s: V_ENUM attribute slot has a missing or unterminated enum_values table", cls->name,
                              m->name);
                 return false;
             }

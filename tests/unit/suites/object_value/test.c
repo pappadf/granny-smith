@@ -103,10 +103,11 @@ TEST(test_nested_list_free) {
     ASSERT_EQ_INT(V_NONE, outer_list.kind);
 }
 
-// value_copy duplicates heap kinds.
-TEST(test_value_copy) {
+// value_dup duplicates heap kinds.  (value_copy, the second deep-copier,
+// is gone -- 08-core-infra F-13.)
+TEST(test_value_dup_heap_kinds) {
     value_t s = val_str("original");
-    value_t c = value_copy(&s);
+    value_t c = value_dup(&s);
     ASSERT_EQ_INT(V_STRING, c.kind);
     ASSERT_TRUE(c.s != s.s);
     ASSERT_TRUE(strcmp(c.s, s.s) == 0);
@@ -117,7 +118,7 @@ TEST(test_value_copy) {
 
     value_t list_src = val_list((value_t *)calloc(1, sizeof(value_t)), 1);
     list_src.list.items[0] = val_str("inside");
-    value_t list_copy = value_copy(&list_src);
+    value_t list_copy = value_dup(&list_src);
     ASSERT_EQ_INT(1, (int)list_copy.list.len);
     ASSERT_TRUE(list_copy.list.items != list_src.list.items);
     value_free(&list_src);
@@ -233,7 +234,7 @@ TEST(test_map_nested_free) {
     ASSERT_EQ_INT(V_NONE, m.kind);
 }
 
-// value_dup / value_copy deep-copy maps: independent lifetimes.
+// value_dup deep-copies maps: independent lifetimes.
 TEST(test_map_copy) {
     value_map_builder_t *b = val_map_new();
     val_map_put(b, "k", val_str("v"));
@@ -243,7 +244,7 @@ TEST(test_map_copy) {
     value_t src = val_map_finish(b);
 
     value_t dup = value_dup(&src);
-    value_t cpy = value_copy(&src);
+    value_t cpy = value_dup(&src);
     value_free(&src);
 
     ASSERT_EQ_INT(V_MAP, dup.kind);
@@ -308,6 +309,31 @@ TEST(test_parse_bool_is_case_sensitive_and_rejects_junk) {
     ASSERT_TRUE(!val_parse_bool(NULL, &b));
 }
 
+// val_bytes holds `p != NULL whenever n > 0`, including when the allocation
+// fails.  value_copy's V_BYTES arm used to leave `n` at the source length
+// with `p` NULL, and the next reader -- format_value_default, same_kind_equal
+// -- dereferenced NULL with a non-zero length (08-core-infra F-13).
+TEST(test_bytes_invariant_holds) {
+    value_t a = val_bytes("abc", 3);
+    ASSERT_EQ_INT((int)a.bytes.n, 3);
+    ASSERT_TRUE(a.bytes.p != NULL);
+    value_free(&a);
+
+    // Zero length: no allocation, and n and p agree.
+    value_t z = val_bytes(NULL, 0);
+    ASSERT_EQ_INT((int)z.bytes.n, 0);
+    ASSERT_TRUE(z.bytes.p == NULL);
+    value_free(&z);
+
+    // A duplicate keeps the invariant too.
+    value_t src = val_bytes("xyzw", 4);
+    value_t d = value_dup(&src);
+    ASSERT_EQ_INT((int)d.bytes.n, 4);
+    ASSERT_TRUE(d.bytes.p != NULL && d.bytes.p != src.bytes.p);
+    value_free(&d);
+    value_free(&src);
+}
+
 int main(void) {
     RUN(test_inline_free_is_noop);
     RUN(test_string_ownership);
@@ -315,7 +341,7 @@ int main(void) {
     RUN(test_bytes_ownership);
     RUN(test_list_recursive_free);
     RUN(test_nested_list_free);
-    RUN(test_value_copy);
+    RUN(test_value_dup_heap_kinds);
     RUN(test_truthiness);
     RUN(test_map_builder);
     RUN(test_map_nested_free);
@@ -323,5 +349,6 @@ int main(void) {
     RUN(test_value_auto_cleanup);
     RUN(test_parse_bool_vocabulary);
     RUN(test_parse_bool_is_case_sensitive_and_rejects_junk);
+    RUN(test_bytes_invariant_holds);
     return 0;
 }

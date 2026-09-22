@@ -65,7 +65,7 @@ typedef enum {
     AEVT_STATE_TIMEOUT,
 } aevt_state_t;
 
-static const char *const AEVT_STATE_NAMES[] = {"queued", "sent", "replied", "error", "timeout"};
+static const char *const AEVT_STATE_NAMES[] = {"queued", "sent", "replied", "error", "timeout", NULL};
 #define AEVT_STATE_COUNT 5
 
 // ============================================================================
@@ -664,14 +664,14 @@ static value_t aevt_event_attr_reply(struct object *self, const member_t *m) {
     aevt_event_t *ev = aevt_obj_event(self);
     if (!ev || ev->reply.kind != V_MAP)
         return val_map(NULL, 0);
-    return value_copy(&ev->reply);
+    return value_dup(&ev->reply);
 }
 static value_t aevt_event_attr_request(struct object *self, const member_t *m) {
     (void)m;
     aevt_event_t *ev = aevt_obj_event(self);
     if (!ev || ev->request.kind != V_MAP)
         return val_map(NULL, 0);
-    return value_copy(&ev->request);
+    return value_dup(&ev->request);
 }
 static value_t aevt_event_attr_errn(struct object *self, const member_t *m) {
     (void)m;
@@ -837,7 +837,7 @@ static value_t aevt_inbox_attr_event(struct object *self, const member_t *m) {
     aevt_inbox_t *in = aevt_obj_inbox(self);
     if (!in || in->map.kind != V_MAP)
         return val_map(NULL, 0);
-    return value_copy(&in->map);
+    return value_dup(&in->map);
 }
 static value_t aevt_inbox_attr_text(struct object *self, const member_t *m) {
     (void)m;

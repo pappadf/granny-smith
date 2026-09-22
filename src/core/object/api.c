@@ -497,7 +497,7 @@ int gs_eval(const char *path, const char *args_json, char *out_buf, size_t out_s
     } else if (n.member && n.member->kind == M_ATTR && argc == 1) {
         // node_set takes ownership of its value; pass a copy so the
         // outer free_args() can still walk argv.
-        v = node_set(n, value_copy(&argv[0]));
+        v = node_set(n, value_dup(&argv[0]));
     } else if (argc > 0) {
         v = val_err("path '%s' does not accept %d arg(s)", path, argc);
     } else {

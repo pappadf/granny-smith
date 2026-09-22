@@ -64,18 +64,13 @@ typedef struct {
     size_t cap;
 } str_list_t;
 
+// The shared accumulator (F-15); this was the fourth of five copies, and the
+// one the report does not list.
 static bool str_list_push(str_list_t *acc, const char *s) {
     if (!s)
         return true;
-    if (acc->len + 1 > acc->cap) {
-        size_t cap = acc->cap ? acc->cap * 2 : 16;
-        value_t *t = (value_t *)realloc(acc->items, cap * sizeof(value_t));
-        if (!t)
-            return false;
-        acc->items = t;
-        acc->cap = cap;
-    }
-    acc->items[acc->len++] = val_str(s);
+    if (!val_list_push(&acc->items, &acc->len, &acc->cap, val_str(s)))
+        return false;
     return true;
 }
 

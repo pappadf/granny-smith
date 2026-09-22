@@ -71,16 +71,18 @@ value_t val_str(const char *s) {
 value_t val_bytes(const void *p, size_t n) {
     value_t v = {0};
     v.kind = V_BYTES;
+    v.bytes.n = 0;
+    v.bytes.p = NULL;
+    if (n == 0)
+        return v;
+    v.bytes.p = (uint8_t *)malloc(n);
+    if (!v.bytes.p)
+        return v; // length stays 0: p != NULL whenever n > 0, always
+    if (p)
+        memcpy(v.bytes.p, p, n);
+    else
+        memset(v.bytes.p, 0, n);
     v.bytes.n = n;
-    if (n > 0) {
-        v.bytes.p = (uint8_t *)malloc(n);
-        if (v.bytes.p && p)
-            memcpy(v.bytes.p, p, n);
-        else if (v.bytes.p)
-            memset(v.bytes.p, 0, n);
-    } else {
-        v.bytes.p = NULL;
-    }
     return v;
 }
 
@@ -476,57 +478,6 @@ const char *val_as_str(const value_t *v) {
     if (v->kind == V_ERROR)
         return v->err;
     return NULL;
-}
-
-value_t value_copy(const value_t *v) {
-    if (!v)
-        return val_none();
-    value_t r = *v;
-    switch (v->kind) {
-    case V_STRING:
-        r.s = xstrdup(v->s);
-        break;
-    case V_ERROR:
-        r.err = xstrdup(v->err);
-        break;
-    case V_REF:
-        r.ref = xstrdup(v->ref);
-        break;
-    case V_BYTES:
-        if (v->bytes.n > 0) {
-            r.bytes.p = (uint8_t *)malloc(v->bytes.n);
-            if (r.bytes.p)
-                memcpy(r.bytes.p, v->bytes.p, v->bytes.n);
-        }
-        break;
-    case V_LIST:
-        if (v->list.len > 0) {
-            r.list.items = (value_t *)malloc(v->list.len * sizeof(value_t));
-            if (r.list.items) {
-                for (size_t i = 0; i < v->list.len; i++)
-                    r.list.items[i] = value_copy(&v->list.items[i]);
-            } else {
-                r.list.len = 0;
-            }
-        }
-        break;
-    case V_MAP:
-        if (v->map.len > 0) {
-            r.map.entries = (struct value_entry *)calloc(v->map.len, sizeof(*r.map.entries));
-            if (r.map.entries) {
-                for (size_t i = 0; i < v->map.len; i++) {
-                    r.map.entries[i].key = xstrdup(v->map.entries[i].key);
-                    r.map.entries[i].val = value_copy(&v->map.entries[i].val);
-                }
-            } else {
-                r.map.len = 0;
-            }
-        }
-        break;
-    default:
-        break;
-    }
-    return r;
 }
 
 bool val_parse_bool(const char *s, bool *out) {
