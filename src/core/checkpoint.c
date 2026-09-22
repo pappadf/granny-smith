@@ -116,26 +116,35 @@ static bool rle_decode(const uint8_t *in, size_t in_size, uint8_t *out, size_t o
 
     while (ip < in_size && op < out_size) {
         uint8_t marker = in[ip++];
-        if (ip + 4 > in_size)
+        if (in_size - ip < 4)
             return false;
         uint32_t count;
         memcpy(&count, in + ip, 4);
         ip += 4;
 
+        // Every bound below is `count > remaining`, never `cursor + count >
+        // size`.  `count` is a uint32_t taken straight from the file and
+        // size_t is 32 bits on the shipping wasm build, so the sum form wraps:
+        // with op = 16 and count = 0xFFFFFFF8 it evaluates to 8, which passes
+        // a 64-byte bound and admits a four-gigabyte memcpy.  The subtraction
+        // form cannot wrap because op <= out_size and ip <= in_size are loop
+        // invariants.  (08-core-infra F-06.  Not reproducible on a 64-bit
+        // host, where the sum is computed in 64 bits and is correct -- see
+        // tests/unit/suites/checkpoint.)
         if (marker == 0x01) {
             // RUN: fill count bytes with next byte value
             if (ip >= in_size)
                 return false;
             uint8_t val = in[ip++];
-            if (op + count > out_size)
+            if (count > out_size - op)
                 return false;
             memset(out + op, val, count);
             op += count;
         } else if (marker == 0x00) {
             // LIT: copy count raw bytes
-            if (ip + count > in_size)
+            if (count > in_size - ip)
                 return false;
-            if (op + count > out_size)
+            if (count > out_size - op)
                 return false;
             memcpy(out + op, in + ip, count);
             ip += count;
@@ -204,6 +213,100 @@ static bool buf_read(checkpoint_t *cp, void *data, size_t len) {
     return true;
 }
 
+// === Bounded reads from an untrusted stream =================================
+//
+// Every length in a checkpoint comes off disk, and a checkpoint is a file the
+// user supplies.  The helpers here exist so that adding the next
+// variable-length field cannot reintroduce the same three bugs: an unbounded
+// allocation driven by an on-disk count (F-22), a string used without a
+// terminator the writer merely promised (F-23), and a loop bound taken from
+// the file (F-24).  Read a count through checkpoint_read_count(), a string
+// through checkpoint_read_string(), and both are correct by construction.
+
+// Longest diagnostic filename a block header may claim.  These are __FILE__
+// strings naming the save site; nothing in the tree is close, and the cap is
+// what stops a crafted 4 GB request on the 32-bit wasm heap.
+#define CP_MAX_FNAME 4096u
+
+// Longest path a restore may claim for an image or its delta directory.
+#define CP_MAX_PATH 4096u
+
+// Read the v2 block header's `uint32 length + bytes` filename directly from
+// the FILE, below the system_read_checkpoint_data layer.  Returns NULL both
+// for "absent" (length 0) and for "refused"; the caller distinguishes by
+// checking checkpoint->error, which is set only in the second case.  The
+// result is always NUL-terminated.
+static char *cp_read_block_fname(checkpoint_t *checkpoint) {
+    uint32_t fname_len = 0;
+    size_t got = fread(&fname_len, 1, sizeof(fname_len), checkpoint->file);
+    if (got != sizeof(fname_len)) {
+        LOG(0, "Error: Failed to read filename length from checkpoint (got %zu)", got);
+        checkpoint->error = true;
+        return NULL;
+    }
+    if (fname_len == 0)
+        return NULL;
+    if (fname_len > CP_MAX_FNAME) {
+        LOG(0, "Error: checkpoint block claims a %u-byte filename (cap %u); refusing", fname_len, CP_MAX_FNAME);
+        checkpoint->error = true;
+        return NULL;
+    }
+    char *saved_file = (char *)malloc((size_t)fname_len + 1);
+    if (!saved_file) {
+        LOG(0, "Error: Out of memory reading checkpoint filename");
+        checkpoint->error = true;
+        return NULL;
+    }
+    got = fread(saved_file, 1, fname_len, checkpoint->file);
+    if (got != fname_len) {
+        LOG(0, "Error: Failed to read filename from checkpoint (got %zu, expected %u)", got, fname_len);
+        free(saved_file);
+        checkpoint->error = true;
+        return NULL;
+    }
+    saved_file[fname_len] = '\0';
+    return saved_file;
+}
+
+bool checkpoint_read_count(checkpoint_t *checkpoint, uint32_t *out, uint32_t max, const char *what) {
+    *out = 0;
+    uint32_t v = 0;
+    system_read_checkpoint_data(checkpoint, &v, sizeof(v));
+    if (checkpoint_has_error(checkpoint))
+        return false;
+    if (v > max) {
+        LOG(0, "Error: checkpoint claims %u %s (cap %u); refusing the restore", v, what ? what : "items", max);
+        checkpoint_set_error(checkpoint);
+        return false;
+    }
+    *out = v;
+    return true;
+}
+
+char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char *what) {
+    uint32_t len = 0;
+    if (!checkpoint_read_count(checkpoint, &len, max, what))
+        return NULL;
+    if (len == 0)
+        return NULL;
+    // One byte more than claimed, and terminate unconditionally: the writer
+    // includes its own NUL in `len`, but a hostile file need not, and the
+    // result is handed to access(), fopen() and printf("%s").
+    char *buf = (char *)malloc((size_t)len + 1);
+    if (!buf) {
+        LOG(0, "Error: out of memory reading a %u-byte %s from checkpoint", len, what ? what : "string");
+        checkpoint_set_error(checkpoint);
+        return NULL;
+    }
+    system_read_checkpoint_data(checkpoint, buf, len);
+    if (checkpoint_has_error(checkpoint)) {
+        free(buf);
+        return NULL;
+    }
+    buf[len] = '\0';
+    return buf;
+}
+
 // === Block I/O ===
 
 // Read a data block with size validation, source metadata, and RLE decompression
@@ -243,31 +346,9 @@ void system_read_checkpoint_data_loc(checkpoint_t *checkpoint, void *data, size_
     }
 
     // Read filename length and filename (for diagnostics)
-    uint32_t fname_len = 0;
-    got = fread(&fname_len, 1, sizeof(fname_len), checkpoint->file);
-    if (got != sizeof(fname_len)) {
-        LOG(0, "Error: Failed to read filename length from checkpoint (got %zu)", got);
-        checkpoint->error = true;
+    char *saved_file = cp_read_block_fname(checkpoint);
+    if (checkpoint->error)
         return;
-    }
-
-    char *saved_file = NULL;
-    if (fname_len > 0) {
-        saved_file = (char *)malloc((size_t)fname_len + 1);
-        if (!saved_file) {
-            LOG(0, "Error: Out of memory reading checkpoint filename");
-            checkpoint->error = true;
-            return;
-        }
-        got = fread(saved_file, 1, fname_len, checkpoint->file);
-        if (got != fname_len) {
-            LOG(0, "Error: Failed to read filename from checkpoint (got %zu, expected %u)", got, fname_len);
-            free(saved_file);
-            checkpoint->error = true;
-            return;
-        }
-        saved_file[fname_len] = '\0';
-    }
 
     int32_t saved_line = 0;
     got = fread(&saved_line, 1, sizeof(saved_line), checkpoint->file);
@@ -1076,27 +1157,12 @@ size_t checkpoint_read_file_loc(checkpoint_t *checkpoint, uint8_t *dest, size_t 
         checkpoint->error = true;
         return 0;
     }
-    uint32_t fname_len = 0;
-    got = fread(&fname_len, 1, sizeof(fname_len), checkpoint->file);
-    if (got != sizeof(fname_len)) {
-        checkpoint->error = true;
+    // Same bounded read as the v2 path; the name is read for stream alignment
+    // and discarded, but an unbounded length here drove a 4 GB malloc too.
+    char *skipped = cp_read_block_fname(checkpoint);
+    if (checkpoint->error)
         return 0;
-    }
-    if (fname_len) {
-        char *saved_file = (char *)malloc(fname_len + 1);
-        if (!saved_file) {
-            checkpoint->error = true;
-            return 0;
-        }
-        got = fread(saved_file, 1, fname_len, checkpoint->file);
-        if (got != fname_len) {
-            free(saved_file);
-            checkpoint->error = true;
-            return 0;
-        }
-        saved_file[fname_len] = '\0';
-        free(saved_file);
-    }
+    free(skipped);
     int32_t saved_line = 0;
     got = fread(&saved_line, 1, sizeof(saved_line), checkpoint->file);
     if (got != sizeof(saved_line)) {

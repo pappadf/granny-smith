@@ -61,6 +61,27 @@ void system_write_checkpoint_data_loc(checkpoint_t *checkpoint, const void *data
 #define system_write_checkpoint_data(cp, data, size)                                                                   \
     system_write_checkpoint_data_loc((cp), (data), (size), __FILE__, __LINE__)
 
+// === Bounded reads from an untrusted stream ===
+//
+// A checkpoint is a user-supplied file and the build-ID gate is not a defence
+// (the ID is in the file).  Restore paths read counts and strings through
+// these rather than trusting the writer, so an on-disk length cannot drive an
+// allocation or a loop bound.  See 08-core-infra F-22/F-23/F-24.
+
+// Longest path a restore may claim for an image or its delta directory.
+#define CHECKPOINT_MAX_PATH 4096u
+
+// Read a uint32 count, refusing and flagging the checkpoint when it exceeds
+// `max`.  `what` names the items for the diagnostic ("images", "events").
+// Returns false with *out = 0 when the value is rejected or the read failed.
+bool checkpoint_read_count(checkpoint_t *checkpoint, uint32_t *out, uint32_t max, const char *what);
+
+// Read a `uint32 length + bytes` string, bounded by `max` and ALWAYS
+// NUL-terminated regardless of what the file claimed.  Returns NULL for an
+// empty string and for a refused one; check checkpoint_has_error() to tell
+// them apart.  Caller frees.
+char *checkpoint_read_string(checkpoint_t *checkpoint, uint32_t max, const char *what);
+
 // === File Serialization (content or reference mode) ===
 
 // Writes a file to the checkpoint (either embedded or as reference)

@@ -21,15 +21,21 @@
 // Defect injection, run while writing this suite (08-WORK-ORDER.md 7 requires
 // it, and it changed one test's documented claim):
 //
-//   guard disabled in checkpoint.c          test that failed
+//   guard disabled                          test that failed
 //   --------------------------------------  ----------------------------------
 //   build-ID comparison                     foreign_build_id_is_refused
-//   v3 block size check (:223)              corrupt_quick_payload_is_refused
-//   v2 size-header short read (:239)        NONE -- see truncated_stream_...
+//   v3 block size check                     corrupt_quick_payload_is_refused
+//   checkpoint_read_count's cap             bounded_count_refuses_over_cap
+//   checkpoint_read_string's terminator     bounded_string_terminates_...
+//   v2 size-header short read               NONE -- see truncated_stream_...
+//   CP_MAX_FNAME cap                        NONE -- see block_header_filen...
+//   rle_decode's subtraction form           NONE -- 64-bit host, see below
 //
-// The third row is why that test's comment says what it says: three further
-// guards stand behind the one disabled, so the suite pins the contract there
-// rather than the line.
+// The last three rows are the honest part.  Each of those guards is backed by
+// another that reaches the same verdict on THIS host, so disabling one alone
+// leaves the suite green; the comment on each test says which guard actually
+// caught it and why the one under test still matters on the 32-bit shipping
+// target.  A green suite is not evidence those guards are unnecessary.
 
 #include "build_id.h"
 #include "checkpoint.h"
@@ -286,7 +292,10 @@ TEST(block_size_divergence_is_caught_in_v2) {
 // written admits a count it must reject on a 32-bit target", not "the decoder
 // was observed overflowing here".
 //
-// The real-decoder coverage is the test below it.
+// The real-decoder coverage is the test below it -- and note that reverting
+// rle_decode to the summing form does NOT fail anything here, for exactly the
+// reason above.  That is a limit of testing a 32-bit defect on a 64-bit host,
+// not evidence the change is unnecessary.
 
 static bool guard_as_written_32(uint32_t op, uint32_t count, uint32_t out_size) {
     return op + count > out_size; // rejects when true
@@ -347,6 +356,151 @@ TEST(corrupt_quick_payload_is_refused) {
     cp_unlink();
 }
 
+// === Bounded reads (F-22, F-23, F-24 via the C3 helpers) ====================
+//
+// checkpoint_read_count() and checkpoint_read_string() are the shape that
+// makes the next variable-length field correct by construction, so they are
+// tested directly rather than only through their callers -- the callers
+// (checkpoint_images.c's restore loop and its two path strings) need a config
+// and an image stack that this suite deliberately does not build.
+
+TEST(bounded_count_accepts_within_cap) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t n = 7;
+    system_write_checkpoint_data(cp, &n, sizeof(n));
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t got = 0;
+    ASSERT_EQ_INT(checkpoint_read_count(cp, &got, 10, "images"), 1);
+    ASSERT_EQ_INT((int)got, 7);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 0);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+TEST(bounded_count_refuses_over_cap) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t n = 0xFFFFFFFFu; // the value F-24 turned into a four-billion-iteration loop
+    system_write_checkpoint_data(cp, &n, sizeof(n));
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t got = 12345;
+    ASSERT_EQ_INT(checkpoint_read_count(cp, &got, 10, "images"), 0);
+    ASSERT_EQ_INT((int)got, 0); // cleared, so a caller that ignores the return still loops zero times
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+// The writer includes its own NUL in the length (image.c writes strlen+1), and
+// the old reader trusted that: malloc(len), read len, then hand the buffer to
+// access(), image_open_with_geometry() and printf("%s").  A file that omits
+// the terminator read off the end of the allocation.  This writes a string
+// with NO terminator and requires the reader to supply one.
+TEST(bounded_string_terminates_what_the_writer_did_not) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t len = 5;
+    system_write_checkpoint_data(cp, &len, sizeof(len));
+    system_write_checkpoint_data(cp, "abcde", 5); // deliberately no '\0'
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    char *str = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
+    ASSERT_TRUE(str != NULL);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 0);
+    ASSERT_EQ_INT((int)strlen(str), 5); // terminated by the reader, not the file
+    ASSERT_EQ_INT(memcmp(str, "abcde", 5), 0);
+    free(str);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+TEST(bounded_string_refuses_over_cap) {
+    cp_unlink();
+    checkpoint_t *cp = checkpoint_open_write(CP_PATH, CHECKPOINT_KIND_CONSOLIDATED, "plus", 4096);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t len = 0xFFFFFFFFu; // F-22/F-23: a 4 GB malloc on the 32-bit wasm heap
+    system_write_checkpoint_data(cp, &len, sizeof(len));
+    checkpoint_close(cp);
+
+    cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    char *str = checkpoint_read_string(cp, CHECKPOINT_MAX_PATH, "image path");
+    ASSERT_TRUE(str == NULL);
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    checkpoint_close(cp);
+    cp_unlink();
+}
+
+// F-22 in its own right: the length is in the v2 BLOCK HEADER, below the
+// system_read_checkpoint_data layer the helpers above sit on, so it has its
+// own bounded reader and needs its own test.  The block header stores the
+// save site's __FILE__, which is this file -- so the stream contains the
+// literal path, and the four bytes before it are the length to poison.
+TEST(block_header_filename_length_is_bounded) {
+    write_valid(CHECKPOINT_KIND_CONSOLIDATED);
+
+    long sz = file_size(CP_PATH);
+    ASSERT_TRUE(sz > 0);
+    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
+    FILE *f = fopen(CP_PATH, "rb");
+    size_t got = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+
+    // Locate this file's name inside the first block header.  It must be the
+    // WHOLE __FILE__ string, not a suffix of it: the layout is
+    // [uint64 size][uint32 fname_len][fname bytes][int32 line][uint8 flag],
+    // so the length sits four bytes before the START of the path.  Matching a
+    // suffix put `at - 4` inside the path text, and the first version of this
+    // test poisoned four characters of the filename instead of its length --
+    // which the reader tolerated, because the name is diagnostic only.
+    const char *needle = __FILE__;
+    size_t nlen = strlen(needle);
+    long at = -1;
+    for (size_t i = 0; i + nlen <= got; i++) {
+        if (memcmp(buf + i, needle, nlen) == 0) {
+            at = (long)i;
+            break;
+        }
+    }
+    free(buf);
+    ASSERT_TRUE(at >= 4); // the length sits immediately before the name
+
+    uint32_t huge = 0xFFFFFFFFu;
+    poke(CP_PATH, at - 4, &huge, sizeof(huge));
+
+    checkpoint_t *cp = checkpoint_open_read(CP_PATH);
+    ASSERT_TRUE(cp != NULL);
+    uint32_t a = 0;
+    system_read_checkpoint_data(cp, &a, sizeof(a));
+    ASSERT_EQ_INT(checkpoint_has_error(cp), 1);
+    checkpoint_close(cp);
+    cp_unlink();
+
+    // Scope, measured: removing the CP_MAX_FNAME cap leaves this test passing,
+    // because a four-billion-byte malloc fails on this host and the
+    // out-of-memory branch flags the checkpoint instead.  So this pins the
+    // contract -- an absurd length is refused -- and not the cap specifically.
+    //
+    // The cap is still the guard that matters, and the reason it cannot be
+    // isolated here is the same reason F-06 cannot be: word size.  On the
+    // 32-bit wasm heap a 4 GB request is the entire address space, and the
+    // point of the cap is that the allocation is never ATTEMPTED.  A 64-bit
+    // host with 100+ GB of address space reaches the same verdict by a route
+    // the shipping target does not have.
+}
+
 int main(void) {
     cp_unlink();
     RUN(consolidated_round_trip);
@@ -356,6 +510,11 @@ int main(void) {
     RUN(block_size_divergence_is_caught_in_v2);
     RUN(rle_length_guard_wraps_on_32bit_targets);
     RUN(corrupt_quick_payload_is_refused);
+    RUN(bounded_count_accepts_within_cap);
+    RUN(bounded_count_refuses_over_cap);
+    RUN(bounded_string_terminates_what_the_writer_did_not);
+    RUN(bounded_string_refuses_over_cap);
+    RUN(block_header_filename_length_is_bounded);
     cp_unlink();
     return 0;
 }
