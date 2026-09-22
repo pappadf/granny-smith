@@ -60,6 +60,59 @@ checkpoint as POD, object class) with these core-specific requirements:
 | Logging | own `LOG_USE_CATEGORY_NAME("<arch>")` (in the glue; the core itself stays I/O-free) |
 | Tests | unit suite under `tests/unit/suites/<arch>/` against a mock bus |
 
+### The interpreter loop has exactly one exit
+
+**Rule.** A sprint loop is left by one condition and one only — the burn-down
+counter reaching zero. Anything that wants the loop to stop says so by
+**setting `*instructions = 0`**, and then does its work either in the
+instruction that triggered it or in the epilogue, which runs once per sprint
+after the loop closes. No `break`, no second exit test, and above all **no
+per-instruction inspection of state that only a rare path ever sets**.
+
+**Why it is a contract and not a preference.** The loop body is the only code in
+the emulator that runs tens of millions of times a second, and a conditional
+there is not a rounding error. Measured on this tree, callgrind over a 25 M
+instruction Plus boot: removing the two deferred-bus-error tests from the 68K
+loops took **116.61 → 113.09 host instructions per emulated instruction, about
+−3%**. A separate experiment adding a single perfectly-predicted `if` to the
+68000 prologue cost **+3.05 host instructions per emulated instruction, +2.24%**
+— and two thirds of that was second-order: the extra register pressure spilled
+the opcode jump-table base. You cannot estimate this by reading the diff.
+
+**The mechanism already exists.** `g_bus_error_instr_ptr` points at the live
+burn-down counter; the memory slow paths, `lisa_mmu.c` and the exception
+helpers all zero it through that pointer (28 sites). `OP_STOP_DATA` uses the
+same idiom to halt, and the trace arming in `write_sr` uses it to end a sprint
+so the next one begins with the new T1 — deliberately, instead of re-sampling
+`cpu->trace` per instruction, which measured +2.17% on an SE/30 row.
+
+**The shape for a new exception:**
+
+```c
+/* in the op that detects it */
+cpu->my_exception_pending = 1;      /* or a global, if the memory layer raises it */
+if (g_bus_error_instr_ptr)
+    *g_bus_error_instr_ptr = 0;     /* the loop's own condition now ends it */
+
+/* in CPU_DECODER_EPILOGUE, once per sprint, outside the loop */
+if (__builtin_expect(cpu->my_exception_pending, 0)) { ... }
+```
+
+**If the faulting instruction must not complete**, do not add a second test —
+make a test that already exists carry the information. `ppc_run`'s fetch is the
+worked example: it returns false for an ISI and the loop already tests that, so
+a fetch bus error belongs in the same return value rather than in the extra
+`if (g_bus_error_pending) break;` that sits beside it today.
+
+**Known deviations**, all in the deferred-bus-error path and all measured
+above — see `2026-09-03-code-review/07-WORK-ORDER.md` §9.2:
+
+| site | decoders | what it should become |
+|---|---|---|
+| `if (!g_bus_error_pending)` guarding the `cpu->ir` / `ir_pc` latch | 68000 | latch unconditionally; let the faulting path supply the pre-fault `ir` for the group-0 frame |
+| `if (last_bus_error_pc != 0 && !supervisor && last_bus_error_pc != pc)` | all three 68K | clear the latch in the epilogue or at delivery, not per instruction |
+| `if (g_bus_error_pending) break;` after the fetch | `ppc_run` | fold into `ppc_fetch`'s existing false return |
+
 ### Known exception: the DSP3210 has two decoders
 
 The AV families' DSP3210 is the one core that does **not** follow the shared
